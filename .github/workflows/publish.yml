@@ -1,0 +1,304 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+#
+# Publish raptor-hawk to PyPI through a Trusted Publisher (PyPI pending
+# publisher: owner amasat01, GitHub environment "pypi"). No tokens, no
+# secrets.
+#
+# Trigger: pushing a tag `v*` builds, checks, tests AND publishes.
+# `workflow_dispatch` builds, checks and tests but never publishes.
+#
+# hawk._core is a HOST-ONLY nanobind extension (no CUDA language, no arch
+# list, no nvcc — see hawk/CMakeLists.txt's header comment), so the only
+# reason this needs cibuildwheel at all is the per-Python/ABI tag; there is
+# no manylinux CUDA toolchain to provision. The build DOES need the aether
+# and eagle C++ HEADER TREES on disk (`hawk/_roots.py` resolves
+# $HAWK_AETHER_INCLUDE / $HAWK_EAGLE_INCLUDE directly against source
+# checkouts — no `cmake --install` step, per hawk's own ci.yml), so the
+# manylinux container is given the two sibling checkouts as extra bind
+# mounts (`CIBW_CONTAINER_ENGINE: ... create_args: --volume ...`) — this
+# construct was authored and YAML-validated offline against cibuildwheel's
+# documented container-engine create_args option; it has not been run on a
+# live runner (no docker was available where this was written).
+#
+# Release order across the family: hawk needs aether-dsc. test-wheel
+# installs the aether-dsc release matching the requirement the built wheel
+# declares from PyPI when one exists (what a user gets), and only otherwise
+# seals and builds it from the sibling aether checkout, so this workflow
+# works before AND after the family's first release. The sibling
+# repositories are public: the default GITHUB_TOKEN checks them out.
+
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hawk
+
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/aether
+          path: aether
+
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/eagle
+          path: eagle
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install --quiet build
+
+      # sdist first: pure-python-looking metadata, but scikit-build-core's
+      # sdist still needs the two header roots to stamp hawk's build digest
+      # at configure time (CMakeLists.txt point 3) — only the compiled
+      # wheels are built through cibuildwheel below.
+      - name: Build the sdist
+        env:
+          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
+          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+        run: cd hawk && python -m build --sdist --outdir ../dist
+
+      - name: Build manylinux wheels (cibuildwheel; CPython 3.10-3.13, x86_64)
+        uses: pypa/cibuildwheel@v4.2.1
+        with:
+          package-dir: hawk
+          output-dir: dist
+        env:
+          CIBW_BUILD: "cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64"
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_BUILD_FRONTEND: build
+          # Extra bind mounts: the sibling header trees are not inside
+          # package-dir, so cibuildwheel's default per-package-dir copy
+          # never sees them without this.
+          CIBW_CONTAINER_ENGINE: "docker; create_args: --volume ${{ github.workspace }}/aether:/sib/aether:ro --volume ${{ github.workspace }}/eagle:/sib/eagle:ro"
+          CIBW_ENVIRONMENT_LINUX: "HAWK_AETHER_INCLUDE=/sib/aether HAWK_EAGLE_INCLUDE=/sib/eagle CMAKE_BUILD_PARALLEL_LEVEL=2"
+          # The dedicated test-wheel job below (with the aether-dsc sibling
+          # wheel + the repo's own test suite) replaces cibuildwheel's
+          # built-in --test-command; skip it here to avoid solving sibling
+          # install twice.
+          CIBW_TEST_SKIP: "*"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: raptor-hawk-dist
+          path: dist/
+
+  check:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: raptor-hawk-dist
+          path: dist
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --quiet "twine>=6" packaging
+      - run: python -m twine check --strict dist/*
+      - name: tag == version guard (every wheel + the sdist must agree)
+        if: github.ref_type == 'tag'
+        run: |
+          python - <<'EOF'
+          import glob, os
+          from packaging.utils import parse_wheel_filename, parse_sdist_filename
+          tag = os.environ["GITHUB_REF_NAME"]
+          assert tag.startswith("v"), f"tag {tag!r} does not start with 'v'"
+          want = tag[1:]
+          seen = set()
+          for whl in glob.glob("dist/*.whl"):
+              _, version, _, _ = parse_wheel_filename(os.path.basename(whl))
+              seen.add(str(version))
+          for sdist in glob.glob("dist/*.tar.gz"):
+              _, version = parse_sdist_filename(os.path.basename(sdist))
+              seen.add(str(version))
+          assert seen == {want}, f"tag v{want} vs dist versions {seen}"
+          print(f"OK: tag v{want} == {len(seen)} agreeing dist version(s)")
+          EOF
+
+  test-wheel:
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    # The suite's toolchain, exactly as ci.yml's test job sets it: the
+    # fixture kernels build for BOTH the host and the cuda target (nvcc AOT
+    # compile only, never executed), so a compile-only CUDA 12.6 toolchain
+    # and g++-13 are installed below.
+    env:
+      CC: gcc-13
+      CXX: g++-13
+      HAWK_CXX: g++-13
+      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC_CCBIN: /usr/bin/g++-13
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hawk
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/aether
+          path: aether
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/eagle
+          path: eagle
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/raptor
+          path: raptor
+      - uses: actions/download-artifact@v8
+        with:
+          name: raptor-hawk-dist
+          path: dist
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # aether-dsc, hawk's one runtime dependency, resolved against the
+      # requirement the BUILT wheel declares: from PyPI when a matching
+      # release exists (what a user gets), otherwise sealed and built from
+      # the sibling aether checkout (before the family's first release).
+      # Sealing runs the NVRTC-clean gate, so that branch needs NVRTC plus
+      # the CCCL headers from PyPI (the runner has no CUDA toolkit).
+      - name: aether-dsc wheel (PyPI if released, else the sibling checkout)
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet build
+          REQ="$(python - <<'PY'
+          import glob, zipfile
+          whl = sorted(glob.glob("dist/*.whl"))[0]
+          with zipfile.ZipFile(whl) as z:
+              meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
+              for line in z.read(meta).decode().splitlines():
+                  if line.startswith("Requires-Dist:") and "aether-dsc" in line and "extra ==" not in line:
+                      print(line.split(":", 1)[1].strip()); break
+              else:
+                  raise SystemExit(f"{whl} declares no aether-dsc requirement")
+          PY
+          )"
+          echo "hawk requires: $REQ"
+          mkdir -p dist-dsc
+          if python -m pip download --quiet --no-deps --only-binary=:all: -d dist-dsc "$REQ"; then
+            echo "aether-dsc: from PyPI"
+          else
+            echo "aether-dsc: not on PyPI yet, building it from the sibling checkout"
+            python -m pip install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
+            (cd aether/dsc && python -m aether_dsc.seal && python -m build --wheel --outdir ../../dist-dsc)
+          fi
+          ls dist-dsc
+
+      - run: sudo apt-get update && sudo apt-get install -y g++-13
+
+      - name: Install compile-only CUDA 12.6 toolchain (nvcc; no driver/GPU)
+        run: |
+          curl -fsSL -o /tmp/cuda-keyring.deb \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i /tmp/cuda-keyring.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cuda-nvcc-12-6 cuda-cudart-dev-12-6 cuda-driver-dev-12-6
+          echo "/usr/local/cuda-12.6/bin" >> "$GITHUB_PATH"
+          echo "CUDA_HOME=/usr/local/cuda-12.6" >> "$GITHUB_ENV"
+
+      # eagle and raptor-core are TEST-only for hawk (the suite drives
+      # kernels through eagle; neither is a declared dependency). Same rule
+      # as aether-dsc: the released wheels from PyPI when they exist, else
+      # built from the sibling checkouts the way ci.yml builds them.
+      - name: eagle + raptor-core wheels (PyPI if released, else the sibling checkouts)
+        run: |
+          set -euo pipefail
+          mkdir -p dist-sib
+          if python -m pip download --quiet --only-binary=:all: -d dist-sib raptor-eagle; then
+            echo "raptor-eagle (+ raptor-core): from PyPI"
+          else
+            echo "raptor-eagle: not on PyPI yet, building it from the sibling checkouts"
+            cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
+              -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
+              -B aether/build -S aether
+            cmake --install aether/build
+            cmake -B eagle/__eagle_hdr -S eagle -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
+              -DCMAKE_CUDA_ARCHITECTURES=70 \
+              -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
+            cmake --install eagle/__eagle_hdr
+            export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install"
+            export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
+            (cd eagle/python && python -m build --wheel --outdir ../../dist-sib)
+            if ! python -m pip download --quiet --no-deps --only-binary=:all: -d dist-sib raptor-core; then
+              (cd raptor && python -m build --wheel --outdir ../dist-sib)
+            fi
+          fi
+          ls dist-sib
+
+      # Three installs, so each piece provably comes from where it should:
+      # aether-dsc from dist-dsc, raptor-hawk from THIS run's dist (never an
+      # index copy of the same version), then the [test] extras from PyPI
+      # (pytest, numpy, scipy are third-party; hawk is already satisfied)
+      # together with the test-only eagle (+ raptor-core) from dist-sib.
+      - name: Fresh venv, install hawk + aether-dsc, pip check
+        run: |
+          set -euo pipefail
+          python -m venv venv
+          . venv/bin/activate
+          pip install --quiet --no-index --find-links dist-dsc aether-dsc
+          # hawk's one third-party runtime dependency comes from PyPI; hawk and
+          # aether-dsc themselves only from the wheels built in this run
+          pip install --quiet numpy
+          pip install --quiet --no-index --find-links dist --find-links dist-dsc raptor-hawk
+          pip install --quiet --find-links dist --find-links dist-sib "raptor-hawk[test]" raptor-eagle
+          pip check
+
+      - name: Import smoke (the import-time build-digest/layout self-check runs here)
+        run: |
+          . venv/bin/activate
+          python - <<'EOF'
+          import hawk, pathlib, sys
+          print("hawk", hawk.__version__, hawk.__file__)
+          assert pathlib.Path(hawk.__file__).is_relative_to(sys.prefix), hawk.__file__
+          EOF
+
+      - name: The repo's own non-GPU suite (a copy outside the repo, against the installed wheel)
+        env:
+          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
+          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+        run: |
+          . venv/bin/activate
+          mkdir -p suite
+          cp -r hawk/tests suite/tests
+          cp hawk/pyproject.toml suite/pyproject.toml
+          cd suite
+          python -m pytest tests -q -m "not gpu and not repo_local"
+
+  publish:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [check, test-wheel]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/raptor-hawk
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: raptor-hawk-dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          packages-dir: dist/

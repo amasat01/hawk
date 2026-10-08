@@ -1,0 +1,17 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+**/.pytest_cache/
+**/.ruff_cache/
+**/build/
+**/_build/*
+**/dist/
+*.egg
+# an in-place build of the extension
+hawk/_core*.so
+
+# Sphinx autosummary output (regenerated on every build)
+docs/content/api/generated/

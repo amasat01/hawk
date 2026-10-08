@@ -1,0 +1,15 @@
+"""Generated at CONFIGURE time by ``hawk/CMakeLists.txt``
+-- do not edit, and do not commit the generated copy (it
+lives in the build directory and ships only inside a built wheel).
+
+The wheel-install twin of ``hawk_build_digest.h``'s C++ stamp. A wheel
+install carries no ``hawk/src`` or ``hawk/CMakeLists.txt`` beside the
+package, so ``hawk.__init__._self_check`` cannot recompute the source
+digest the way the dev tree does -- it compares ``hawk._core.build_digest()``
+against :data:`SOURCE_DIGEST` below instead, stamped from the SAME sources
+at the SAME configure step that built the ``_core`` this wheel ships
+alongside. A mismatch is still the editable-shadowing trap this stamp exists
+to catch, just read from a shipped stamp instead of a recompute.
+"""
+
+SOURCE_DIGEST = "@HAWK_BUILD_DIGEST@"

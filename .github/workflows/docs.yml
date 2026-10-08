@@ -1,0 +1,122 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+#
+# Builds the Sphinx docs and deploys them to GitHub Pages on push to main.
+# Notebooks are executed LOCALLY and committed WITH outputs (docs/Makefile's
+# `nbexec`); this job only checks they were (`nbcheck`) and renders them —
+# conf.py sets nb_execution_mode = "off", so this job never re-executes one.
+#
+# Builds the same compiled stack ci.yml does (hawk._core needs aether/eagle
+# headers to compile against, and autosummary needs the real package
+# importable to introspect) -- see ci.yml for the toolchain notes this
+# mirrors.
+
+name: docs
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CC: gcc-13
+      CXX: g++-13
+      HAWK_CXX: g++-13
+      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC_CCBIN: /usr/bin/g++-13
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hawk
+
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/aether
+          path: aether
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/eagle
+          path: eagle
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/raptor
+          path: raptor
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - run: sudo apt-get update && sudo apt-get install -y g++-13
+
+      - name: Install compile-only CUDA 12.6 toolchain (nvcc; no driver/GPU)
+        run: |
+          curl -fsSL -o /tmp/cuda-keyring.deb \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i /tmp/cuda-keyring.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cuda-nvcc-12-6 cuda-cudart-dev-12-6 cuda-driver-dev-12-6
+          echo "/usr/local/cuda-12.6/bin" >> "$GITHUB_PATH"
+          echo "CUDA_HOME=/usr/local/cuda-12.6" >> "$GITHUB_ENV"
+
+      - run: |
+          cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
+            -B aether/build -S aether
+          cmake --install aether/build
+          cmake -B eagle/__eagle_hdr -S eagle -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
+            -DCMAKE_CUDA_ARCHITECTURES=70 \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
+          cmake --install eagle/__eagle_hdr
+
+      - run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet ./aether/dsc ./raptor
+          export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install:${CMAKE_PREFIX_PATH}"
+          export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
+          python -m pip install --quiet ./eagle/python
+
+      - env:
+          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
+          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+        run: |
+          cd hawk
+          python -m pip install --quiet -e '.[test]'
+          python -m pip install --quiet -r docs/requirements.txt
+
+      - name: make nbcheck
+        run: cd hawk/docs && make nbcheck
+
+      - name: make strict
+        run: cd hawk/docs && make strict
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: hawk/docs/_build/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

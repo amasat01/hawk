@@ -1,0 +1,121 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+#
+# ── CUDA toolchain caveat — READ BEFORE trusting a green run ────────────────
+# tests/conftest.py's `built` session fixture (used by ~half the test files)
+# builds every fixture kernel for BOTH the "host" and "cuda" targets
+# (`BOTH = ("cuda", "host")`); tests/_toolchain.py is explicit that a missing
+# nvcc FAILS rather than skips ("a skipped compile row certifies nothing"),
+# and there is no gpu/cuda pytest marker to deselect with. Rather than accept
+# that as permanently red, this job provisions a COMPILE-ONLY CUDA toolchain
+# (nvcc AOT `-c`, never executed — no GPU or driver involved) via NVIDIA's
+# apt repo for Ubuntu 24.04. This was authored and YAML-validated offline;
+# it was NOT run anywhere, so the exact package set/versions below are
+# unverified against a live runner.
+
+name: CI
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      CC: gcc-13
+      CXX: g++-13
+      HAWK_CXX: g++-13
+      # tests/_toolchain.py's device_compiler(): $HAWK_NVCC first, else the
+      # hardcoded /usr/local/cuda-12.6/bin/nvcc, else bare `nvcc` on PATH.
+      # Set explicitly so it does not depend on PATH ordering.
+      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      # nvcc's host compiler for the device TU (env "NVCC_PREPEND_FLAGS
+      # -ccbin ..."); CUDA 12.6 rejects gcc > 13, so pin it to the g++-13
+      # installed below rather than /usr/bin/g++'s default alias.
+      HAWK_NVCC_CCBIN: /usr/bin/g++-13
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hawk
+
+      # aether/eagle as sibling checkouts; hawk's CMakeLists.txt (via
+      # hawk/_roots.py) resolves header roots from $HAWK_AETHER_INCLUDE /
+      # $HAWK_EAGLE_INCLUDE directly — no cmake --install step needed, these
+      # just need to point at the two repos' source roots.
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/aether
+          path: aether
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/eagle
+          path: eagle
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/raptor
+          path: raptor
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - run: sudo apt-get update && sudo apt-get install -y g++-13
+
+      # NVIDIA's apt repo for Ubuntu 24.04 (noble), x86_64. cuda-keyring adds
+      # the repo + signing key; package names/versions below are the current
+      # (as-authored) 12.6 set and are UNVERIFIED — not run on a live runner.
+      - name: Install compile-only CUDA 12.6 toolchain (nvcc; no driver/GPU)
+        run: |
+          curl -fsSL -o /tmp/cuda-keyring.deb \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i /tmp/cuda-keyring.deb
+          sudo apt-get update
+          # cuda-nvcc-12-6: nvcc/ptxas/cicc. cuda-cudart-dev-12-6: cuda_runtime.h
+          # + libcudart (nvcc auto-includes cuda_runtime.h even for -c-only
+          # compiles). cuda-driver-dev-12-6: the libcuda.so DRIVER STUB (under
+          # lib64/stubs, no actual driver) — added beyond the suggested pair
+          # because eagle's python/CMakeLists.txt links CUDA::cuda_driver.
+          sudo apt-get install -y --no-install-recommends \
+            cuda-nvcc-12-6 cuda-cudart-dev-12-6 cuda-driver-dev-12-6
+          echo "/usr/local/cuda-12.6/bin" >> "$GITHUB_PATH"
+          echo "CUDA_HOME=/usr/local/cuda-12.6" >> "$GITHUB_ENV"
+
+      # The siblings are not on PyPI yet: install aether's header package,
+      # raptor, and eagle's Python package (its _core builds against the
+      # aether + eagle headers installed into a local prefix).
+      - run: |
+          cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
+            -B aether/build -S aether
+          cmake --install aether/build
+          cmake -B eagle/__eagle_hdr -S eagle -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
+            -DCMAKE_CUDA_ARCHITECTURES=70 \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
+          cmake --install eagle/__eagle_hdr
+
+      - run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet ./aether/dsc ./raptor
+          export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install:${CMAKE_PREFIX_PATH}"
+          export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
+          python -m pip install --quiet ./eagle/python
+
+      - env:
+          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
+          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+        run: |
+          cd hawk
+          python -m pip install --quiet -e '.[test]'
+
+      - env:
+          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
+          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+        run: cd hawk && python -m pytest tests -q -m "not gpu"

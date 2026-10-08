@@ -1,0 +1,147 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+
+# HAWK grows a compiled half (`hawk._core`), so the backend
+# is scikit-build-core + nanobind — the SAME packaging eagle's binding uses
+# (`eagle/python/{pyproject.toml,CMakeLists.txt}`), deliberately, so the two
+# compiled halves of this family are built and installed one way and not two.
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+# DIST name carries the family namespace (mirrors the sibling packages'
+# "raptor-core" convention); the IMPORT name stays flat
+# (`import hawk`).
+name = "raptor-hawk"
+dynamic = ["version"]
+description = "HAWK — Hardware Agnostic Writing of Kernels: a Python DSL that writes GPU/CPU kernels and deploys them through eagle"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# Python versions match the cibuildwheel matrix publish.yml actually builds
+# and the test-wheel job actually runs (cp310-cp313, manylinux_2_28 x86_64) —
+# never wider than what a real wheel ships. GPU/CUDA: hawk's own compiled
+# core is host-only (see wheel.packages below), but its purpose is writing
+# and deploying GPU kernels through eagle, the reason this classifier exists.
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+# ZERO runtime dependencies beyond the binding itself and `aether-dsc` (the
+# severance is about raptor/eagle imports; this is about the
+# dependency graph): nothing under `hawk/hawk/` imports raptor or eagle,
+# — or numpy. `aether-dsc` is the ONE exception: the sealed
+# AETHER payload every NVRTC device compile serves headers from
+# (`hawk.compile.payload.current_payload()`), added the day the code that
+# uses it landed rather than pre-declared ahead of it.
+# numpy: hawk never imports it, but the host route and every example pass NumPy arrays
+dependencies = ["aether-dsc>=0.2.0,<0.3", "numpy"]
+
+[project.optional-dependencies]
+# numpy is a TEST dependency only: the finite-difference row evaluates a
+# primal and its derivative IR with the scratch interpreter in tests/_eval.py.
+# hawk itself still has zero runtime dependencies.
+test = ["pytest", "numpy", "scipy"]
+# The GPU route: NVRTC + CCCL + cuda-bindings for one CUDA major (no nvcc needed).
+# CUDA 13's wheels carry no -cu13 suffix (those names on PyPI are empty placeholders).
+cuda12 = ["cuda-bindings>=12.6,<13", "nvidia-cuda-nvrtc-cu12>=12.6,<13", "nvidia-cuda-cccl-cu12>=12.6,<13"]
+cuda13 = ["cuda-bindings>=13,<14", "nvidia-cuda-nvrtc>=13,<14", "nvidia-cuda-cccl>=13,<14"]
+
+# The compiled `hawk._core` is a nanobind extension, so a wheel is per-Python/ABI
+# (never py3-none-any). It is HOST-ONLY — no device kernels, no arch list, no nvcc
+# (eagle launches the device artifact, HAWK never does) — so one plain
+# CMake build per Python version is the whole story.
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["hawk"]
+cmake.version = ">=3.20"
+# Keep a dev build's in-tree extension out of the pure-python source collection;
+# the wheel's copy comes from the CMake install.
+sdist.exclude = ["**/*.so"]
+# LICENSE/NOTICE sit right next to this pyproject.toml (unlike eagle's, whose
+# Python packaging lives one directory below its repo root) -- scikit-build-core's
+# own glob (not PEP 639's project.license-files, which would force `license`
+# off the classic dict form the Apache classifier above still needs) copies
+# them into the wheel's dist-info/licenses/.
+wheel.license-files = ["LICENSE", "NOTICE"]
+
+# Single source of truth for the version (mirrors the family's shared convention and
+# (mirrors `attr = "hawk.__version__"`): the literal in hawk/__init__.py, read back
+# STATICALLY. It has to be a regex read now rather than an attribute import —
+# importing `hawk` to learn its version would run the self-check against a
+# `_core` this very build is producing.
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "hawk/__init__.py"
+regex = '''(?i)^__version__(?::.*)?\s*=\s*["\'](?P<value>.+?)["\']'''
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Makes `import hawk` work against the checked-out tree without an install --
+# this repo root, prepended to sys.path before collection (mirrors raptor
+# and the family's own pyproject convention).
+pythonpath = ["."]
+markers = [
+    "gpu: needs a CUDA GPU and cupy; CI on a GPU-less runner deselects it with -m \"not gpu\"",
+    "repo_local: reads the repository's source tree, which a wheel install does not carry; only the wheel test (publish.yml) deselects it",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "D"]
+ignore = [
+    "D102",
+    "D105",
+    "D107",
+    "D205",
+    "D209",
+    "D401",
+    "E741",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "F841", "E501"]
+"__init__.py" = ["D104"]
+# A tutorial/example notebook is READ as narrative prose with code alongside
+# it, the same reason "tests/**" above drops D (docstrings) and E501 (line
+# length): a kernel body defined inline for the reader is not a library
+# function that owes a docstring, and a `print(f"...")` line explaining a
+# result to the reader is not improved by an 88-column wrap. Real bugs in a
+# notebook cell (an unused import, an unsorted import block, a genuine
+# undefined name) still fail — only the narrative-vs-library rules are
+# scoped out here. E402 joins them for the same reason: a tutorial cell
+# routinely narrates a result BEFORE importing the module its next step
+# needs, which is prose structure, not an import-order bug.
+"docs/content/**/*.ipynb" = ["D", "E501", "E402"]
+# A named-axis plane declares its layout with Python's slice syntax INSIDE an
+# annotation -- `Table["row":rows, "col":cols]` (the spelling
+# a re-authored kernel's own named-dim style uses). ruff reads any annotation as a TYPE
+# expression, so each axis LABEL reads as a quoted forward reference: F821
+# "undefined name 'row'" and UP037 "remove quotes", on a declaration that is
+# neither a type nor a reference. Scoped to the modules that AUTHOR such kernels
+# -- a genuine undefined name in any other test still fails -- and the same
+# entry is what a consumer re-authoring a downstream package's kernels against HAWK will need.
+"tests/test_ir_contraction.py" = ["D", "F841", "E501", "F821", "UP037"]
+"tests/test_refusal_pins.py" = ["D", "F841", "E501", "F821", "UP037"]
+"tests/test_trace_loop_lowering.py" = ["D", "F841", "E501", "F821", "UP037"]
+"tests/test_loop_lowering_card.py" = ["D", "F841", "E501", "F821", "UP037"]
+"tests/_kan.py" = ["D", "F841", "E501", "F821", "UP037"]
+"tests/test_ir_loop_digest_memory.py" = ["D", "F841", "E501", "F821", "UP037"]
+"tests/test_diff_second_order_loops.py" = ["D", "F841", "E501", "F821", "UP037"]
+"tests/test_trace_loop_vector_index.py" = ["D", "F841", "E501", "F821", "UP037"]

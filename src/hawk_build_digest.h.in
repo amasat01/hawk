@@ -1,0 +1,23 @@
+// Generated at CONFIGURE time by hawk/CMakeLists.txt — do not edit, and do not
+// commit the generated copy (it lives in the build directory).
+//
+// This file's stamp. `HAWK_BUILD_DIGEST` is a content hash over the sorted `hawk/src`
+// sources plus `hawk/CMakeLists.txt`, computed by the same two-line rule
+// `hawk/__init__` recomputes from the tree at import: for each file, in
+// sorted-relative-name order, append "<name>\n<sha256 of contents>\n", then take
+// one sha256 of that string. When the two disagree, the binding on the import
+// path was not built from the sources beside it — the stale / wrong-arch /
+// editable-shadowed class — and `import hawk` refuses NAMING `build_digest`,
+// which is the whole point: that class of defect otherwise imports cleanly and
+// computes wrong answers at the first launch.
+//
+// The compiler identity, the flags and the two resolved header roots are stamped
+// beside it and EXPORTED by `build_info()`, never compared.
+#pragma once
+
+#define HAWK_BUILD_DIGEST   "@HAWK_BUILD_DIGEST@"
+#define HAWK_COMPILER       "@HAWK_COMPILER@"
+#define HAWK_COMPILER_ID    "@HAWK_COMPILER_ID@"
+#define HAWK_COMPILE_FLAGS  "@HAWK_COMPILE_FLAGS@"
+#define HAWK_AETHER_INCLUDE "@HAWK_AETHER_INCLUDE@"
+#define HAWK_EAGLE_INCLUDE  "@HAWK_EAGLE_INCLUDE@"

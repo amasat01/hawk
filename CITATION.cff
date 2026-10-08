@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use hawk, please cite it using the metadata below."
+type: software
+title: "hawk"
+abstract: "Kernels written once in Python and compiled into the captured graph at run time, with automatic differentiation, on the eagle runtime and aether."
+authors:
+  - family-names: "Masat"
+    given-names: "Alessandro"
+version: "0.3.0"
+date-released: "2026-10-02"
+license: Apache-2.0
+repository-code: "https://github.com/amasat01/hawk"
+# doi: "10.5281/zenodo.XXXXXXX"   # filled in after the first Zenodo archive of the tagged release
+keywords:
+  - Python
+  - CUDA
+  - GPU
+  - automatic differentiation
+  - kernel compilation
+  - code generation

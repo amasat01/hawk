@@ -1,0 +1,12 @@
+# Documentation build dependencies (Sphinx + MyST-NB). hawk's own runtime
+# dependencies (aether-dsc, plus eagle/raptor for a docs build that imports
+# and runs kernels) are installed separately -- see docs.yml / the
+# installation page's "from source" instructions.
+Sphinx==8.2.3
+sphinx-book-theme==1.2.0
+myst-nb==1.4.0
+sphinx-design==0.7.0
+sphinx-copybutton==0.5.2
+sphinx-autodoc-typehints==3.5.2
+nbformat
+nbclient
