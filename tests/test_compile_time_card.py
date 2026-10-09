@@ -20,6 +20,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 import _deployable as D
 from _cards import card_path
 
@@ -91,6 +93,7 @@ def _device_row(path: Path, tmp: Path) -> dict:
 _EAGLE_TU = Path(eagle_include()) / "tests" / "fixtures" / "host_plugin_execv2.cpp"
 
 
+@pytest.mark.repo_local  # compiles the eagle repository's fixture TU
 def test_the_compile_time_card_is_written(tmp_path):
     rows = {}
     for name in CLASSES:
@@ -135,6 +138,7 @@ def test_the_compile_time_card_is_written(tmp_path):
                        .encode()).hexdigest() == fence
 
 
+@pytest.mark.repo_local  # compiles the eagle repository's fixture TU
 def test_the_card_reports_a_phase_split_for_every_row():
     """A card whose rows carry only a wall time cannot answer either deferred
     question, so the split is part of what the row observes."""

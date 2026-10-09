@@ -403,8 +403,9 @@ class Cache:
         Two validity rules, by what the stored record carries: no
         ``payload_digest`` field (the nvcc/g++ path) re-hashes the
         recorded closure by content; a ``payload_digest`` field (an
-        NVRTC-compiled entry) is valid iff it matches the caller's own —
-        one string compare, no stat at all. A caller that omits
+        NVRTC or sealed-payload entry) is valid iff it matches the caller's
+        own (one string compare for the payload's headers) AND the recorded
+        closure of user headers, if any, is unchanged by content. A caller that omits
         ``payload_digest`` gets ``False`` rather than trusting an empty
         closure list — a miss is always the safe default."""
         slot = self.slot(key)
@@ -420,8 +421,12 @@ class Cache:
             return False
         recorded_payload_digest = data.get("payload_digest")
         if recorded_payload_digest is not None:
+            # The payload's own headers are covered by the digest; any USER
+            # headers the compile reached are a recorded closure, re-hashed by
+            # content like the source-header path's (empty for NVRTC entries).
             return (payload_digest is not None
-                    and recorded_payload_digest == payload_digest)
+                    and recorded_payload_digest == payload_digest
+                    and closure_unchanged(data.get("closure", ())))
         return closure_unchanged(data.get("closure", ()))
 
     def store(self, key: str, *, artifact: Path, closure, meta: dict) -> None:

@@ -144,3 +144,28 @@ def test_the_cap_reaches_the_real_driver(tmp_path):
             os.environ.pop("HAWK_COMPILE_ADDRESS_CAP", None)
         else:
             os.environ["HAWK_COMPILE_ADDRESS_CAP"] = held
+
+
+def test_the_cap_hint_reaches_the_sealed_payload_path(tmp_path, monkeypatch):
+    """The sealed-payload path (what a wheel install uses: aether-dsc, no
+    source headers) carries the SAME address-space-cap hint in its failure
+    as the source-header path does."""
+    from hawk.compile.drivers import _host_uses_sealed_payload
+
+    if not _host_uses_sealed_payload():
+        pytest.skip("source-header path ($HAWK_AETHER_INCLUDE is set): the sealed "
+                    "payload path is not the one in use, unset it to run this row")
+    monkeypatch.setenv("HAWK_COMPILE_ADDRESS_CAP", str(4 * 1024 * 1024))
+    with pytest.raises(HawkError) as excinfo:
+        compile_source('extern "C" int hawk_cap_probe_sealed(void) { return 1; }\n',
+                       "cap_probe_sealed", CompileOptions(
+                           backend="host", cache_dir=str(tmp_path / "capped")))
+    msg = str(excinfo.value)
+    assert "against the sealed payload" in msg and "address-space cap" in msg, msg
+    assert "$HAWK_COMPILE_ADDRESS_CAP" in msg, msg
+    # the positive control: cap off, same source, same driver -> it compiles
+    monkeypatch.setenv("HAWK_COMPILE_ADDRESS_CAP", "0")
+    assert compile_source('extern "C" int hawk_cap_probe_sealed(void) { return 1; }\n',
+                          "cap_probe_sealed", CompileOptions(
+                              backend="host", cache_dir=str(tmp_path / "free"))
+                          ).artifact.is_file()

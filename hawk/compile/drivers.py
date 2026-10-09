@@ -376,15 +376,17 @@ def _memo_still_valid(artifact: Path, closure,
     recorded closure by content (:func:`~hawk.compile.cache.closure_unchanged`)
     and requires the artifact still be on disk.
 
-    A ``closure`` shaped as the one pair ``((_PAYLOAD_MEMO_TAG,
-    payload_digest))`` is an NVRTC entry: its closure IS the payload digest
-    it was compiled against, so re-validating it is one string compare."""
+    A ``closure`` led by the pair ``(_PAYLOAD_MEMO_TAG, payload_digest)`` is
+    a payload-backed entry: the payload's headers are that digest (one
+    string compare), and any pairs after it are USER headers, re-verified by
+    content like any other closure (an NVRTC entry has none)."""
     if not artifact.is_file():
         return False
-    if (isinstance(closure, tuple) and len(closure) == 1
+    if (isinstance(closure, tuple) and closure
             and closure[0][0] == _PAYLOAD_MEMO_TAG):
         return (current_payload_digest is not None
-                and closure[0][1] == current_payload_digest)
+                and closure[0][1] == current_payload_digest
+                and closure_unchanged(closure[1:]))
     return closure_unchanged(closure)
 
 
@@ -491,10 +493,11 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> Compil
     The lookup key cannot include the served directory's own path (a fresh
     ``tempfile.mkdtemp`` every compile, never repeating) — the payload's
     digest is the stable substitute, the same one the NVRTC device path
-    uses. ``-MD`` still runs and its closure is recorded for the
-    compile-time card's sake, but validity is decided by payload digest
-    alone: re-stat'ing paths inside an already-removed served directory
-    would be a guaranteed miss.
+    uses, and it covers the payload's own headers (never re-hashed per
+    compile). Everything else the compiler opened (``-MD``: user ``-I``
+    headers, the kernel's own includes) is a recorded closure validated by
+    content exactly as on the source-header path, so a changed user header
+    is a miss.
     """
     art_ext, src_ext = _SUFFIX[HOST]
     cache = Cache(opts.cache_dir)
@@ -523,7 +526,10 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> Compil
 
         if cache.check(key, payload_digest=payload.digest):
             cache.note(True)
-            artifact_memo_put(key, payload_closure)
+            # The memo holds the USER closure only (the payload is part of the
+            # key already), the same shape the source-header path memoises.
+            user = tuple((p, d) for p, d in cache.record(key).get("closure", ()))
+            artifact_memo_put(key, user)
             return CompileResult(artifact, src_path, key, True, tuple(stable_flags),
                                  closure=payload_closure)
         return None
@@ -548,18 +554,32 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> Compil
                 tmp_dep.unlink(missing_ok=True)
             seconds = time.perf_counter() - start
             if done.returncode != 0:
+                cap = address_space_cap()
                 raise HawkError(
                     f"host compile of {name!r} failed against the sealed payload "
-                    f"(rc={done.returncode}).\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
+                    f"(rc={done.returncode})"
+                    + (f"; the compiler ran under a {cap}-byte address-space cap "
+                       "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
+                       "this translation unit is too large for one compile and not that "
+                       "the machine is out of memory" if cap else "")
+                    + f".\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
                 )
-            card_closure = closure_of(dep)  # card material only, see docstring
-        cache.store(key, artifact=artifact, closure=(),
+            reached = closure_of(dep)
+            # The served payload directory is private to this compile and
+            # vanishes with it: its headers are keyed by the payload digest.
+            # Everything ELSE the compiler opened (user -I headers, the
+            # kernel's own includes, system headers) is a real closure,
+            # validated by content exactly as on the source-header path.
+            prefixes = tuple({os.path.abspath(str(served_root)) + os.sep,
+                              os.path.realpath(str(served_root)) + os.sep})
+            user_closure = tuple(p for p in reached if not p.startswith(prefixes))
+        cache.store(key, artifact=artifact, closure=user_closure,
                     meta={"backend": HOST, "mode": opts.mode, "compiler": identity,
                           "flags": stable_flags, "seconds": seconds, "name": name,
                           "key_terms": list(key_terms),
                           "payload_digest": payload.digest,
-                          "served_closure_card": list(card_closure)})
-        artifact_memo_put(key, payload_closure)
+                          "served_closure_card": list(reached)})
+        artifact_memo_put(key, validity_digest(user_closure))
         return CompileResult(artifact, src_path, key, False, tuple(argv), seconds,
                              closure=payload_closure)
 

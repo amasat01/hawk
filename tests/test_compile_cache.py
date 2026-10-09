@@ -156,6 +156,55 @@ def test_a_touch_of_a_reached_header_is_a_hit(tree):
     )
 
 
+@pytest.fixture
+def sealed_path():
+    """Only meaningful on the sealed-payload path (aether-dsc, no
+    ``$HAWK_AETHER_INCLUDE``)."""
+    from hawk.compile.drivers import _host_uses_sealed_payload
+
+    if not _host_uses_sealed_payload():
+        pytest.skip("source-header path ($HAWK_AETHER_INCLUDE is set): this row "
+                    "covers the sealed-payload path")
+
+
+@pytest.mark.usefixtures("sealed_path")
+def test_sealed_path_a_changed_user_header_rebuilds_and_an_unchanged_one_hits(
+        tree, monkeypatch):
+    """On the sealed path the key carries the payload digest for the payload's
+    own headers, but a USER header reached through ``-I`` must still decide
+    validity by content, exactly as on the source-header path. Counts real
+    compiler invocations: unchanged and touched-only -> no rebuild, changed ->
+    exactly one."""
+    import os
+    import subprocess
+
+    real, box = subprocess.run, {"n": 0}
+
+    def counting(argv, *a, **kw):
+        if "-shared" in argv:
+            box["n"] += 1
+        return real(argv, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", counting)
+    _early, late, _cache = tree
+    header = late / "reached.h"
+
+    _r, first = _compile(tree)
+    assert (first, box["n"]) == ("miss", 1)
+    _r, again = _compile(tree)
+    assert (again, box["n"]) == ("hit", 1)
+    st = header.stat()
+    os.utime(header, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    _r, touched = _compile(tree)
+    assert (touched, box["n"]) == ("hit", 1)        # same bytes: no spurious rebuild
+
+    header.write_text("#define HAWK_PROBE_VALUE 2\n")
+    _r, changed = _compile(tree)
+    assert (changed, box["n"]) == ("miss", 2), "a changed user header was served stale"
+    _r, settled = _compile(tree)
+    assert (settled, box["n"]) == ("hit", 2)
+
+
 def test_a_content_change_of_a_reached_header_is_a_miss(tree):
     _early, late, _cache = tree
     _compile(tree)
