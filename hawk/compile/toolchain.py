@@ -25,6 +25,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from .. import _roots
@@ -319,6 +320,11 @@ def _resolve(fn):
 #: :func:`include_flags` has no natural "done with it" moment.
 _PIP_ONLY_ROOT: str | None = None
 
+#: Serialises the one-time materialisation of :data:`_PIP_ONLY_ROOT`, so two
+#: threads that both find it unset make ONE served directory and ONE ``atexit``
+#: hook, not two of each.
+_PIP_ONLY_LOCK = threading.Lock()
+
 
 def pip_only_root() -> str | None:
     """The pip-only served root this process is using as a real-root
@@ -338,15 +344,19 @@ def _pip_only_include_root() -> str:
     process reuses the first directory rather than paying `serve()`'s
     copy-to-tmpfs cost again."""
     global _PIP_ONLY_ROOT
-    if _PIP_ONLY_ROOT is None:
-        import atexit
+    root = _PIP_ONLY_ROOT
+    if root is not None:
+        return root
+    with _PIP_ONLY_LOCK:
+        if _PIP_ONLY_ROOT is None:
+            import atexit
 
-        from . import payload as _payload_module
-        served = _payload_module.current_payload().serve()
-        path = served.__enter__()
-        atexit.register(served.__exit__, None, None, None)
-        _PIP_ONLY_ROOT = str(path)
-    return _PIP_ONLY_ROOT
+            from . import payload as _payload_module
+            served = _payload_module.current_payload().serve()
+            path = served.__enter__()
+            atexit.register(served.__exit__, None, None, None)
+            _PIP_ONLY_ROOT = str(path)
+        return _PIP_ONLY_ROOT
 
 
 def _resolved_or_sealed(resolver) -> str:

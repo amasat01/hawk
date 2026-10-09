@@ -39,6 +39,14 @@ sample-major plane whose transpose is C-contiguous, which binds
 zero-copy (:func:`plane_layout`). :meth:`HostKernel.rebind` takes raw
 pointers, which carry none of this, and is the unchecked fast path over
 an already-validated bind.
+
+Threading. Two :class:`HostKernel` (or :class:`ArgBlock`) objects are
+independent and run freely in parallel. ONE object shared across threads is
+memory-safe but caller-ordered: its calls serialise on the object's own lock,
+so concurrent bind and launch on it never tear an argument block, but which
+call lands first is the caller's to order. Module-level state (the build
+counters, the primitive registry, the unit publisher) is always safe to use
+from any thread.
 """
 
 from __future__ import annotations

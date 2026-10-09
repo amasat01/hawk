@@ -29,6 +29,7 @@ IR depend on import order.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -40,6 +41,11 @@ from ..trace.value import Value, node_of
 #: Every registered primitive, by name: the name is the node's dedup
 #: identity and therefore part of ``Walk.digest``.
 _REGISTRY: dict = {}
+
+#: Makes the check-and-claim of a name one step: of N threads registering one
+#: name, exactly one wins and the others raise (a bare get-then-set would let
+#: two both pass the check).
+_REGISTRY_LOCK = threading.Lock()
 
 
 def primitives() -> dict:
@@ -138,8 +144,10 @@ def primitive(name: str, *, vjp: Callable | None = None,
             raise HawkError(
                 "primitive(): a primitive is registered by NAME — the name is the "
                 "boundary node's identity in the walk's digest")
-        held = _REGISTRY.get(name)
-        if held is not None:
+        definition = PrimitiveDef(name, fn, vjp, jvp)
+        with _REGISTRY_LOCK:
+            held = _REGISTRY.setdefault(name, definition)
+        if held is not definition:
             raise HawkError(
                 f"primitive {name!r} is already registered (its forward is "
                 f"{held.forward!r}); a second registration under the same name is "
@@ -148,7 +156,5 @@ def primitive(name: str, *, vjp: Callable | None = None,
                 "kernels the same content hash, and the cache would serve one for "
                 "the other"
             )
-        definition = PrimitiveDef(name, fn, vjp, jvp)
-        _REGISTRY[name] = definition
         return definition
     return register

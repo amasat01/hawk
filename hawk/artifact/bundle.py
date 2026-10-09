@@ -39,7 +39,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..compile import CompileOptions, compile_source, digest_file
-from ..compile.cache import ClosureWatch
+from ..compile.cache import ClosureWatch, publish_atomic, tmp_sibling
 from ..emit import BACKENDS, SegmentSpec, render_source, scalar_mode
 from ..emit.aether import binding_name as _binding_name
 from ..emit.backend import ActiveSpec
@@ -65,6 +65,7 @@ from .unit_cache import (
     arch,
 )
 from .unit_cache import COUNTERS as COUNTERS
+from .unit_cache import bump_builds as _bump_builds
 from .unit_cache import STAMP_NAME as STAMP_NAME
 from .unit_cache import counters_snapshot as counters_snapshot
 from .unit_cache import publish_log as publish_log
@@ -162,10 +163,19 @@ class _File:
 
     def write(self, directory: Path) -> Path:
         path = directory / self.name
-        if self.blob is not None:
-            path.write_bytes(self.blob)
-        else:
-            shutil.copyfile(self.source_path, path)
+        # Written whole to a private sibling, then renamed into place: a
+        # concurrent reader (or a second builder of the same unit) sees the
+        # old file or the new one, never a partial write.
+        tmp = tmp_sibling(path)
+        try:
+            if self.blob is not None:
+                tmp.write_bytes(self.blob)
+            else:
+                shutil.copyfile(self.source_path, tmp)
+            publish_atomic(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         return path
 
 
@@ -697,7 +707,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     ``-Xptxas -O<n>``); NVRTC device compiles always optimise and ignore it.
     Empty means ``$HAWK_OPT_LEVEL``, else
     :data:`hawk.compile.toolchain.DEFAULT_OPT_LEVEL` (``"O3"``)."""
-    COUNTERS["builds"] += 1  #: every CALL, attempt or success
+    _bump_builds()  #: every CALL, attempt or success (one locked increment)
     kernels = list(kernels)
     smode = scalar_mode(mode)
     directory = Path(directory)

@@ -10,11 +10,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 
 from .. import _contracts
 from ..compile import digest_file
-from ..compile.cache import ClosureWatch, artifact_memo_get, validity_digest
+from ..compile.cache import ClosureWatch, artifact_memo_get, validity_digest, write_atomic
 from ..compile.toolchain import host_profile as _host_profile
 from ..compile.toolchain import opt_level as _opt_level
 
@@ -38,10 +39,23 @@ _UNIT_MEMO_LIMIT = 64
 #: race over which observes a given increment.
 COUNTERS = {"builds": 0}
 
+#: One lock for every read-modify-write on this module's process state
+#: (``COUNTERS``, ``_UNIT_STATS``, ``_PUBLISH_LOG``): a bare ``+= 1`` on a
+#: dict item is not atomic on a free-threaded interpreter. Held for a few
+#: bytecodes at a time, never across I/O or a build.
+_STATE_LOCK = threading.Lock()
+
+
+def bump_builds() -> None:
+    """Count one :func:`~hawk.artifact.bundle.build_bundle` call."""
+    with _STATE_LOCK:
+        COUNTERS["builds"] += 1
+
 
 def counters_snapshot() -> dict:
     """A fresh ``dict`` copy of hawk's own static-graph counters."""
-    return dict(COUNTERS)
+    with _STATE_LOCK:
+        return dict(COUNTERS)
 
 #: Publish counters, record-only: a row that wants to know WHICH answer
 #: the publisher gave reads them instead of inferring it from wall time.
@@ -55,32 +69,41 @@ _PUBLISH_LOG_LIMIT = 64
 
 def unit_stats() -> dict:
     """A copy of the publish counters (memo hits, stamp hits, real publishes)."""
-    return dict(_UNIT_STATS)
+    with _STATE_LOCK:
+        return dict(_UNIT_STATS)
 
 
 def publish_log() -> tuple[str, ...]:
     """The recent publish decisions, oldest first, each naming a unit digest."""
-    return tuple(_PUBLISH_LOG)
+    with _STATE_LOCK:
+        return tuple(_PUBLISH_LOG)
 
 
 def reset_unit_memo() -> None:
     """Forget every memoised unit, the counters and the log — the door
     back to the disk path, for a row that wants a cold publisher."""
     _UNIT_MEMO.clear()
-    _PUBLISH_LOG.clear()
-    for k in _UNIT_STATS:
-        _UNIT_STATS[k] = 0
+    with _STATE_LOCK:
+        _PUBLISH_LOG.clear()
+        for k in _UNIT_STATS:
+            _UNIT_STATS[k] = 0
 
 
-def _log(message: str) -> None:
+def _log_locked(message: str) -> None:
     if len(_PUBLISH_LOG) >= _PUBLISH_LOG_LIMIT:
         del _PUBLISH_LOG[0]
     _PUBLISH_LOG.append(message)
 
 
+def _log(message: str) -> None:
+    with _STATE_LOCK:
+        _log_locked(message)
+
+
 def _note(kind: str, message: str) -> None:
-    _UNIT_STATS[kind] += 1
-    _log(message)
+    with _STATE_LOCK:
+        _UNIT_STATS[kind] += 1
+        _log_locked(message)
 
 
 def arch(device_arch: str = "") -> str:
@@ -115,7 +138,7 @@ def _stamp_digest(directory: Path) -> str | None:
 
 def _write_stamp(directory: Path, digest: str, files) -> None:
     """Record the unit's identity beside it, with per-file digests."""
-    (directory / STAMP_NAME).write_text(json.dumps(
+    write_atomic(directory / STAMP_NAME, json.dumps(
         {"unit": digest, "aether_abi": _contracts.AETHER_ABI_VERSION,
          "files": {f.name: f.digest for f in sorted(files, key=lambda f: f.name)}},
         indent=2) + "\n")

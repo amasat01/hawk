@@ -43,6 +43,7 @@ are recorded on the rows they belong to and were all removed.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -72,30 +73,43 @@ def fresh():
 class _Writes:
     """A counter over every route :mod:`hawk.artifact.bundle` writes through.
 
-    ALL FOUR of them, and the completeness is the point rather than an excess of
+    ALL FIVE of them, and the completeness is the point rather than an excess of
     caution: the unit's files go out through ``Path.write_bytes`` and
     ``shutil.copyfile``, the STAMP through ``Path.write_text``, and the
-    directory through ``Path.mkdir``. A counter that watched three of the four
+    directory through ``Path.mkdir``. Every file is written to a private
+    ``.tmp.*`` sibling and renamed into place (so a reader never sees a partial
+    file), which makes ``os.replace`` the fifth route: the counter records the
+    DESTINATION of each rename and ignores the temporary names. A counter that watched three of the four
     could report "wrote nothing" about a run that wrote — which is the one
     failure an instrument may not have."""
 
     def __init__(self, monkeypatch):
         self.files: list[str] = []
         self.dirs: list[str] = []
-        real_bytes, real_text, real_copy, real_mkdir = (
-            Path.write_bytes, Path.write_text, shutil.copyfile, Path.mkdir)
+        real_bytes, real_text, real_copy, real_mkdir, real_replace = (
+            Path.write_bytes, Path.write_text, shutil.copyfile, Path.mkdir,
+            os.replace)
+
+        def note(path):
+            if not Path(path).name.startswith(".tmp."):
+                self.files.append(str(path))
 
         def write_bytes(path, data):
-            self.files.append(str(path))
+            note(path)
             return real_bytes(path, data)
 
         def write_text(path, data, *a, **kw):
-            self.files.append(str(path))
+            note(path)
             return real_text(path, data, *a, **kw)
 
         def copyfile(src, dst, **kw):
-            self.files.append(str(dst))
+            note(dst)
             return real_copy(src, dst, **kw)
+
+        def replace(src, dst, *a, **kw):
+            if Path(src).name.startswith(".tmp."):
+                self.files.append(str(dst))
+            return real_replace(src, dst, *a, **kw)
 
         def mkdir(path, *a, **kw):
             self.dirs.append(str(path))
@@ -105,6 +119,7 @@ class _Writes:
         monkeypatch.setattr(Path, "write_text", write_text)
         monkeypatch.setattr(shutil, "copyfile", copyfile)
         monkeypatch.setattr(Path, "mkdir", mkdir)
+        monkeypatch.setattr(os, "replace", replace)
 
     @property
     def total(self) -> int:
