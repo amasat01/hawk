@@ -210,34 +210,37 @@ print(json.dumps({"bad": bad, "errors": errors}))
 
 # Exported by libc, so a dlsym through the artifact's dependency chain finds
 # each: the library's `entry()` caches by name and never calls what it finds.
-_LIBC_NAMES = [
-    "abs", "atoi", "atol", "atof", "bsearch", "calloc", "exit", "free", "getenv",
-    "labs", "malloc", "memchr", "memcmp", "memcpy", "memmove", "memset", "qsort",
-    "rand", "realloc", "srand", "strcat", "strchr", "strcmp", "strcpy", "strcspn",
-    "strlen", "strncat", "strncmp", "strncpy", "strpbrk", "strrchr", "strspn",
-    "strstr", "strtod", "strtol", "strtoul", "tolower", "toupper", "isalnum",
-    "isalpha", "isdigit", "islower", "isspace", "isupper", "puts", "putchar",
-    "printf", "sprintf", "snprintf", "sscanf", "fopen", "fclose", "fread",
-    "fwrite", "fgets", "fputs", "fseek", "ftell", "fflush", "remove", "rename",
-    "getpid", "getuid", "getcwd", "chdir", "mkdir", "rmdir", "unlink", "access",
-    "open", "close", "read", "write", "lseek", "dup", "dup2", "pipe", "fork",
-    "kill", "signal", "raise", "time", "clock", "difftime", "mktime", "gmtime",
-    "localtime", "strftime", "setlocale", "perror", "strerror", "sleep", "usleep",
-    "nanosleep", "gettimeofday", "clock_gettime", "stat", "fstat", "lstat",
-    "mmap", "munmap", "mprotect", "dlopen", "dlsym", "dlclose", "dlerror",
-]
-
-
 @register_ft_row("FT-5-HAWK-HOSTLIBRARY-SHARED")
-def test_shared_hostlibrary_entries_stay_intact(built):
+def test_shared_hostlibrary_entries_stay_intact(built, tmp_path):
     ft.require_free_threaded()
-    bundle = built["axpb"]
-    kernel_path = _artifact_so(bundle, "axpb")
-    serial = _core.HostLibrary(str(kernel_path))
-    names = [n for n in _LIBC_NAMES if _resolves(serial, n)]
-    assert len(names) >= 100, f"only {len(names)} libc symbols resolve here"
+    from hawk.compile import host_compiler, host_flags
+    from hawk.compile.toolchain import subprocess_env
+
+    # A real hawk artifact (its ABI tag and layout table) with many exported
+    # entries, so the threads race on many distinct names. The extra entries
+    # are no-ops appended to the kernel's own translation unit and built with
+    # hawk's host recipe, so nothing depends on what the toolchain links in.
+    names = [f"hawk_ft_entry_{i:03d}" for i in range(128)]
+    tu = tmp_path / "many_entries.cpp"
+    tu.write_text(
+        (built["axpb"].directory / "axpb.cpp").read_text()
+        + "\n"
+        + "".join(
+            f'extern "C" __attribute__((visibility("default"))) '
+            f"void {n}(void* const*, long, long, long) {{}}\n"
+            for n in names
+        )
+    )
+    lib_path = tmp_path / "many_entries.so"
+    done = subprocess.run(
+        [host_compiler(), *host_flags(), str(tu), "-o", str(lib_path)],
+        capture_output=True, text=True, env=subprocess_env(), check=False,
+    )
+    assert done.returncode == 0, done.stderr[-2000:]
+    serial = _core.HostLibrary(str(lib_path))
+    assert all(_resolves(serial, n) for n in names)
     proc = subprocess.run(
-        [sys.executable, "-c", _LIBRARY_CHILD, str(kernel_path), "200", "8",
+        [sys.executable, "-c", _LIBRARY_CHILD, str(lib_path), "200", "8",
          json.dumps(names)],
         capture_output=True, text=True, timeout=180, check=False,
         cwd=str(Path(__file__).resolve().parent),
@@ -254,13 +257,6 @@ def _resolves(lib, name: str) -> bool:
     except ValueError:
         return False
     return True
-
-
-def _artifact_so(bundle, kernel: str) -> Path:
-    from hawk import runtime
-
-    k = runtime.load(bundle.directory, kernel, sidecar_of(bundle, kernel))
-    return Path(k.path)
 
 
 # --------------------------------------------------------------------------- #
