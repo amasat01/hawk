@@ -84,6 +84,8 @@ import io
 import re
 import shutil
 import subprocess
+import sys
+import sysconfig
 import tokenize
 from pathlib import Path
 
@@ -388,6 +390,15 @@ def test_the_built_core_spawns_no_thread():
     are ordinary (``U``) references, so their strength says nothing about
     threading."""
     lines = _nm("-D")
+    if _static_libstdcxx() and sysconfig.get_config_var("Py_GIL_DISABLED"):
+        # nanobind's free-threaded build calls std::thread::hardware_concurrency,
+        # which a static libstdc++ packs in one object file with std::thread's
+        # start routine, so pthread_create is referenced without ever being
+        # called. The symbols cannot tell that apart in a stripped object; the
+        # behavioural row below (test_the_core_starts_no_thread_when_used) is the
+        # evidence for this build.
+        pytest.skip("free-threaded build with a static libstdc++: judged by "
+                    "test_the_core_starts_no_thread_when_used")
     assert not [ln for ln in lines if "pthread_create" in ln], (
         "hawk._core references pthread_create: the serial oracle spawns a thread "
         ""
@@ -402,6 +413,44 @@ def test_the_built_core_spawns_no_thread():
         "the object does not even reference __libc_single_threaded; the weak-pthread "
         "reading above is then unsupported and this row should be re-derived"
     )
+
+
+def _static_libstdcxx() -> bool:
+    """Whether hawk._core carries libstdc++ inside it (no libstdc++.so NEEDED)."""
+    done = subprocess.run(["readelf", "-d", str(_core_so())],
+                          capture_output=True, text=True, check=True)
+    return "libstdc++.so" not in done.stdout
+
+
+_THREAD_COUNT_CHILD = r"""
+import os, sys, tempfile
+from hawk import _core
+
+def tasks():
+    return len(os.listdir("/proc/self/task"))
+
+before = tasks()
+paths = [sys.executable, os.__file__, tempfile.gettempdir()] * 200
+for _ in range(50):
+    _core.crossings()
+    _core.build_info()
+    _core.layout_sizes()
+    _core.stat_many(paths)
+for _ in range(10_000):
+    _core._unsynchronised_bump()
+after = tasks()
+print(before, after)
+"""
+
+
+def test_the_core_starts_no_thread_when_used():
+    """Behavioural twin of the symbol rows: a fresh process exercises the core
+    and its thread count must not change."""
+    done = subprocess.run([sys.executable, "-c", _THREAD_COUNT_CHILD],
+                          capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr[-2000:]
+    before, after = (int(x) for x in done.stdout.split())
+    assert after == before, f"hawk._core started threads: {before} -> {after}"
 
 
 def test_the_built_core_links_no_threading_library():
