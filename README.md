@@ -163,7 +163,7 @@ pip install raptor-hawk                                     # CPU only: no GPU, 
 pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # GPU: hawk compiles, eagle runs; [cuda13] on both for CUDA 13
 ```
 
-Linux x86_64, CPython 3.10-3.13, and a host `g++` 11 or newer. `raptor-hawk` pulls `aether-dsc` (the sealed C++
+Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer. `raptor-hawk` pulls `aether-dsc` (the sealed C++
 headers hawk compiles against) automatically. No `nvcc` or CUDA toolkit is needed. Tested with CUDA 12.6 and
 CUDA 13.0 (CUDA 12.6 or newer).
 
@@ -172,7 +172,7 @@ CUDA 13.0 (CUDA 12.6 or newer).
 > `nvidia-cuda-nvrtc` 13 and `nvidia-cuda-cccl` 13 (CUDA 13's wheels have no `-cu13` suffix);
 > `raptor-eagle[cuda12]` / `[cuda13]` pull CuPy (`cupy-cuda12x` / `cupy-cuda13x`, with the CUDA headers CuPy compiles against). Without an extra pip installs no NVIDIA package: you get the CPU route, or the GPU route through a CUDA setup you already have. Pick the extra matching the CUDA version your driver reports (`nvidia-smi`, top right).
 
-**Platforms:** built and tested on Linux x86_64 only so far (CPython 3.10–3.13), on NVIDIA GPUs from Pascal (Quadro P2000) and Turing (Tesla T4). There are no wheels for macOS, Windows or ARM yet, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere.
+**Platforms:** built and tested on Linux x86_64 only so far (CPython 3.9–3.14, including free-threaded 3.13t and 3.14t), on NVIDIA GPUs from Pascal (Quadro P2000) and Turing (Tesla T4). There are no wheels for macOS, Windows or ARM yet, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. Free-threaded builds (3.13t, 3.14t) ship without declaring GIL-free support, so CPython re-enables the GIL when `hawk` is imported and prints a RuntimeWarning; results are correct, just not parallel.
 
 See [installation](https://amasat01.github.io/hawk/content/installation.html)
 for the CPU-only route (no GPU, driver or NVRTC needed at all) and every

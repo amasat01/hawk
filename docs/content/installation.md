@@ -7,7 +7,7 @@ pip install raptor-hawk                                     # CPU only
 pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # GPU route; [cuda13] on both for CUDA 13
 ```
 
-Linux x86_64, CPython 3.10-3.13, and a host `g++` 11 or newer. `raptor-hawk` pulls
+Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer. `raptor-hawk` pulls
 `aether-dsc` (the sealed C++ headers hawk compiles against) in automatically. No
 `nvcc` or CUDA toolkit is needed.
 
@@ -21,7 +21,7 @@ suffix); `raptor-eagle[cuda12]` / `[cuda13]` pull CuPy (`cupy-cuda12x` /
 matching the CUDA version your driver reports (`nvidia-smi`, top right).
 ```
 
-**Platforms:** built and tested on Linux x86_64 only so far (CPython 3.10–3.13), on NVIDIA GPUs from Pascal (Quadro P2000) and Turing (Tesla T4). There are no wheels for macOS, Windows or ARM yet, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere.
+**Platforms:** built and tested on Linux x86_64 only so far (CPython 3.9–3.14, including free-threaded 3.13t and 3.14t), on NVIDIA GPUs from Pascal (Quadro P2000) and Turing (Tesla T4). There are no wheels for macOS, Windows or ARM yet, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. Free-threaded builds (3.13t, 3.14t) ship without declaring GIL-free support, so CPython re-enables the GIL when `hawk` is imported and prints a RuntimeWarning; results are correct, just not parallel.
 
 To *run* a kernel on a GPU you also install eagle, which launches what hawk
 compiles: see [eagle's installation page](https://amasat01.github.io/eagle/content/userguide/installation.html)
@@ -119,7 +119,7 @@ no `eagle` at all: `hawk.load`/`hawk.run` run it directly, as
 
 ## Requirements
 
-- Python 3.10 or newer (CPython 3.10–3.13).
+- Python 3.9 or newer (CPython 3.9–3.14, including free-threaded 3.13t and 3.14t).
 - CUDA 12.6 or newer for the device target (tested with 12.6 and 13.0).
 - A CUDA-capable GPU is **optional** for authoring and host execution; it is
   required only to compile and run a kernel's device target. `hawk.compile`

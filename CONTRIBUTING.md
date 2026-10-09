@@ -26,7 +26,7 @@ test-wheel steps without publishing.
 
 1. Bump `__version__` in `hawk/__init__.py`, update `CHANGELOG.md`.
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
-3. The workflow builds manylinux wheels for CPython 3.10-3.13 with
+3. The workflow builds manylinux wheels for CPython 3.9-3.14 (plus free-threaded 3.13t and 3.14t) with
    `cibuildwheel` (hawk's extension is host-only: no CUDA toolchain is
    needed to build it, only the sibling `aether`/`eagle` header trees),
    runs `twine check --strict`, tests each wheel together with a freshly

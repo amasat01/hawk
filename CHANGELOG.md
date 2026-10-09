@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+Wheels now cover CPython 3.9 through 3.14, plus the free-threaded 3.13t and
+3.14t builds (manylinux_2_28, x86_64); `requires-python` is now `>=3.9`.
+Free-threaded wheels ship without declaring GIL-free support, so CPython
+re-enables the GIL when `hawk` is imported and prints a RuntimeWarning;
+results are correct, just not parallel. No API changes.
+
 ## 0.3.0 (first public release)
 
 hawk is the RAPTOR family's kernel-authoring layer: a Python DSL for

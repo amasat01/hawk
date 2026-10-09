@@ -17,20 +17,22 @@ name = "raptor-hawk"
 dynamic = ["version"]
 description = "HAWK — Hardware Agnostic Writing of Kernels: a Python DSL that writes GPU/CPU kernels and deploys them through eagle"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
 # Python versions match the cibuildwheel matrix publish.yml actually builds
-# and the test-wheel job actually runs (cp310-cp313, manylinux_2_28 x86_64) —
+# and the test-wheel job actually runs (cp39-cp314 plus free-threaded cp313t/cp314t, manylinux_2_28 x86_64) —
 # never wider than what a real wheel ships. GPU/CUDA: hawk's own compiled
 # core is host-only (see wheel.packages below), but its purpose is writing
 # and deploying GPU kernels through eagle, the reason this classifier exists.
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: POSIX :: Linux",
     "Environment :: GPU :: NVIDIA CUDA",
     "Topic :: Scientific/Engineering",
