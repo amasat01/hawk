@@ -203,8 +203,10 @@ def _timed(argv: list) -> tuple:
 
 def main(argv=None) -> int:
     """``python tests/_kan.py <n_in> <G> <k>`` — one KAN-scale end-to-end point."""
+    import atexit
     import json
     import pathlib
+    import shutil
     import sys
     import tempfile
     import time
@@ -223,6 +225,7 @@ def main(argv=None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
     n_in, G, k = int(args[0]), int(args[1]), int(args[2])
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="hawk_kan_scale_"))
+    atexit.register(shutil.rmtree, tmp, True)
 
     start = time.perf_counter()
     cell = kan_edge_cell(n_in, G, k)          # traces AND canonicalises
