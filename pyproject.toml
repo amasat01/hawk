@@ -6,7 +6,12 @@
 # (`eagle/python/{pyproject.toml,CMakeLists.txt}`), deliberately, so the two
 # compiled halves of this family are built and installed one way and not two.
 [build-system]
-requires = ["scikit-build-core>=0.10", "nanobind>=3.1,<4"]
+requires = [
+    "scikit-build-core>=0.10",
+    # nanobind 3 needs Python 3.10+; 3.9 (no free-threaded build) uses nanobind 2
+    "nanobind>=3.1,<4; python_version>='3.10'",
+    "nanobind>=2.2,<3; python_version<'3.10'",
+]
 build-backend = "scikit_build_core.build"
 
 [project]
