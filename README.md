@@ -179,7 +179,7 @@ other detail.
 
 ## Performance
 
-Every number in this section is read from eagle's committed cards (`benchmarks/perf_card/card_quadro-p2000.md`, `benchmarks/rk78_card/card_quadro-p2000.md`).
+Every number in this section is read from eagle's committed cards (`benchmarks/perf_card/card_quadro-p2000.md`, `benchmarks/perf_card/cpu_card_intel-xeon-w-2125.md`, `benchmarks/rk78_card/card_quadro-p2000.md`).
 Kernels authored with hawk are what eagle's performance card times: hawk + eagle (`eagle.simulate`) is
 **3.9×–47× faster** than NVIDIA Warp (3.9×), JAX (8.7×), CuPy and PyTorch (47×) at 1,000,000 RK4
 oscillators finishing at different times — **156 ms** on a
@@ -191,6 +191,8 @@ dense workload where nothing finishes early Warp ties it (693 ms vs 699 ms at N 
 N = 10,000 (7.22 ms vs 7.22 ms), and on this FP64-weak development card the CPU arm is the faster one there. See
 [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html) for every number, every arm,
 including the ones where it doesn't win.
+
+The same hawk kernel also runs on a CPU alone, through eagle's host team: on an Intel Xeon W-2125 (4 cores, 8 logical CPUs; card of 2026-10-08) the 8-thread spread S=1000 batch of 1,000,000 samples takes **145 ms**. eagle's [performance page](https://amasat01.github.io/eagle/content/performance.html#perf-card-cpu-intel-xeon-w-2125) shows that CPU card next to Numba, JAX, PyTorch, NumPy and multiprocessing, each with the setting where it fits best.
 
 ## Going deeper
 
