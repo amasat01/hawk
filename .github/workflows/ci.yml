@@ -223,14 +223,15 @@ jobs:
           python -m pip install --quiet ./aether/dsc ./raptor
           export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install:${CMAKE_PREFIX_PATH}"
           export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
-          python -m pip install --quiet ./eagle/python
+          python -m pip install --quiet --prefer-binary ./eagle/python
 
       - env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
         run: |
           cd hawk
-          python -m pip install --quiet -e '.[test]'
+          # SciPy ships no cp313t wheel: take the newest wheel over an sdist build
+          python -m pip install --quiet --prefer-binary -e '.[test]'
 
       # An ft leg is vacuous on a GIL interpreter (every ft row skips) and the
       # harness refuses a forced GIL-off (-X gil=0 / PYTHON_GIL): assert the
