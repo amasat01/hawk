@@ -104,9 +104,11 @@ jobs:
       - run: |
           python -m pip install --quiet --upgrade pip
           # aether-dsc's payload is sealed at build time (it is not tracked in
-          # git): seal it from the sibling checkout, as the release workflow does.
-          python -m pip install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
-          (cd aether/dsc && python -m aether_dsc.seal)
+          # git): seal it from the sibling checkout, as the release workflow does,
+          # in a throwaway venv so the NVRTC packages never reach the test env.
+          python -m venv "$RUNNER_TEMP/seal"
+          "$RUNNER_TEMP/seal/bin/pip" install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
+          (cd aether/dsc && "$RUNNER_TEMP/seal/bin/python" -m aether_dsc.seal)
           python -m pip install --quiet ./aether/dsc ./raptor
           export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install:${CMAKE_PREFIX_PATH}"
           export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
