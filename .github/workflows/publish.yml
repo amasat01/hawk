@@ -266,7 +266,7 @@ jobs:
           # aether-dsc themselves only from the wheels built in this run
           pip install --quiet numpy
           pip install --quiet --no-index --find-links dist --find-links dist-dsc raptor-hawk
-          pip install --quiet --find-links dist --find-links dist-sib "raptor-hawk[test]" raptor-eagle
+          pip install --quiet --prefer-binary --find-links dist --find-links dist-sib "raptor-hawk[test]" raptor-eagle
           pip check
 
       - name: Import smoke (the import-time build-digest/layout self-check runs here)
