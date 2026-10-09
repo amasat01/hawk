@@ -52,7 +52,7 @@ dependencies = ["aether-dsc>=0.2.0,<0.3", "numpy"]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
 # primal and its derivative IR with the scratch interpreter in tests/_eval.py.
 # hawk itself still has zero runtime dependencies.
-test = ["pytest", "numpy", "scipy", "raptor-core"]
+test = ["pytest", "numpy", "scipy", "raptor-core>=0.3"]
 # The GPU route: NVRTC + CCCL + cuda-bindings for one CUDA major (no nvcc needed).
 # CUDA 13's wheels carry no -cu13 suffix (those names on PyPI are empty placeholders).
 cuda12 = ["cuda-bindings>=12.6,<13", "nvidia-cuda-nvrtc-cu12>=12.6,<13", "nvidia-cuda-cccl-cu12>=12.6,<13"]

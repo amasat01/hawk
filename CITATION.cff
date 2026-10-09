@@ -6,7 +6,7 @@ abstract: "Kernels written once in Python and compiled into the captured graph a
 authors:
   - family-names: "Masat"
     given-names: "Alessandro"
-version: "0.3.1"
+version: "0.4.0"
 date-released: "2026-10-09"
 license: Apache-2.0
 repository-code: "https://github.com/amasat01/hawk"

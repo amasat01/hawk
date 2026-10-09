@@ -1,6 +1,23 @@
 # Changelog
 
-## 0.4.0 (unreleased)
+## 0.4.0 (2026-10-09)
+
+**Free-threaded CPython, GIL-free.** The compiled core now declares free-threading
+support, so on 3.13t and 3.14t hawk runs without the GIL and the GIL stays off after
+import. The compile drivers, the compile cache and hawk's Python-side state are
+thread-safe: any number of threads may build, compile and cache concurrently, distinct
+objects need no synchronisation, and one stateful object shared between threads is
+memory-safe with its calls serialised (the order of those calls is yours to decide).
+CI gained free-threading stress legs, and the package tests against the shared
+conformance harness in `raptor-core` 0.3 (the `test` extra now asks for
+`raptor-core>=0.3`).
+
+The sealed-path compile cache is now keyed on the user headers a kernel includes, so
+editing a header you include recompiles the kernel; that path also gives a hint when
+the address-space cap is what stops a compile.
+
+New tutorial 07, "gradients through branches and stops", with tests that pin hawk's
+tie conventions at a branch and at a stop.
 
 A per-sample plane whose shape reads both as component-major `(w, N)` and as
 sample-major `(N, w)` (a `(w, w)` array, or a square matrix head with
@@ -19,9 +36,8 @@ other's. Shapes that are not ambiguous behave as before.
 
 Wheels now cover CPython 3.9 through 3.14, plus the free-threaded 3.13t and
 3.14t builds (manylinux_2_28, x86_64); `requires-python` is now `>=3.9`.
-Free-threaded wheels ship without declaring GIL-free support, so CPython
-re-enables the GIL when `hawk` is imported and prints a RuntimeWarning;
-results are correct, just not parallel. No API changes.
+Free-threaded wheels first appeared here; 0.4.0 declares GIL-free support for
+them. No API changes.
 
 ## 0.3.0 (first public release)
 

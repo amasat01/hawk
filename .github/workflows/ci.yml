@@ -88,7 +88,8 @@ jobs:
           echo "/usr/local/cuda-12.6/bin" >> "$GITHUB_PATH"
           echo "CUDA_HOME=/usr/local/cuda-12.6" >> "$GITHUB_ENV"
 
-      # The siblings are not on PyPI yet: install aether's header package,
+      # The siblings are on PyPI, but CI installs the sibling checkouts so it tests
+      # unreleased changes: aether's header package,
       # raptor, and eagle's Python package (its _core builds against the
       # aether + eagle headers installed into a local prefix).
       - run: |
@@ -197,7 +198,8 @@ jobs:
           echo "/usr/local/cuda-12.6/bin" >> "$GITHUB_PATH"
           echo "CUDA_HOME=/usr/local/cuda-12.6" >> "$GITHUB_ENV"
 
-      # The siblings are not on PyPI yet: install aether's header package,
+      # The siblings are on PyPI, but CI installs the sibling checkouts so it tests
+      # unreleased changes: aether's header package,
       # raptor, and eagle's Python package (its _core builds against the
       # aether + eagle headers installed into a local prefix).
       - run: |
