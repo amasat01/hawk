@@ -79,8 +79,26 @@ accepts a sample-major plane only when no copy is needed:
   copy, so it is refused, naming the argument, both shapes and the fix:
   pass `np.ascontiguousarray(x.T)`, allocate the plane as `(3, N)`, or launch
   through eagle, which copies it for you with an `eagle.LayoutWarning`.
-- A square `(3, 3)` plane at `N == 3` is ambiguous and is taken as
-  component-major.
+- A square `(3, 3)` plane at `N == 3` reads both ways, as component-major
+  `(3, N)` and as sample-major `(N, 3)`, so hawk will not guess: it is refused,
+  naming the argument, its shape, both readings and the two fixes below. A
+  square matrix head with `N == R == C` is refused the same way.
+
+**Saying which axis holds the samples.** Both fixes are zero-copy, and neither
+changes a shape that is not ambiguous:
+
+- Per call: `hawk.run(k, ..., layout="samples_first")` (planes are `(N, 3)`) or
+  `layout="samples_last"` (planes are `(3, N)`, native) resolves every ambiguous
+  plane of that call. `HostKernel.bind_all` takes the same `layout=`.
+- Per array: `hawk.samples_first(x)` or `hawk.samples_last(x)` wraps one
+  argument. It is honoured for any shape, a marker that contradicts the shape
+  is refused naming the argument, and it wins over the call's `layout=`.
+
+`samples_first` still needs an array hawk can bind by address, so the `(N, 3)`
+plane must be a free transposed view as above. The markers are shared with
+eagle (`eagle.samples_first` / `eagle.samples_last`): each package accepts the
+other's, since a marker is any object carrying `__raptor_samples_axis__`
+(`"first"` or `"last"`) and the wrapped array as `.array`.
 
 Scalar planes are one-dimensional and are not affected.
 

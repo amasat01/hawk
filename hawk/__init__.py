@@ -61,7 +61,9 @@ _FROM_IR = ("HawkError",)
 #: The one authoring transform at the top level: ``hawk.steps(kernel, K)``.
 _FROM_STEPS = ("steps",)
 
-#: The three top-level convenience doors (:pep:`562`, lazy, pure
+#: The three top-level convenience doors (plus the two per-array layout
+#: markers, ``hawk.samples_first(x)`` / ``hawk.samples_last(x)``: which axis of
+#: a per-sample plane holds the samples; see :mod:`hawk._plane_layout`) (:pep:`562`, lazy, pure
 #: re-exports): ``{name: (submodule, attribute)}``. ``import hawk`` stays
 #: light and the submodule spellings keep working -- these only ever add a
 #: second spelling, never replace the first.
@@ -74,7 +76,9 @@ _FROM_STEPS = ("steps",)
 #: kernel once, in place (:func:`hawk.runtime.run`).
 _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "load": ("runtime", "load"),
-                    "run": ("runtime", "run")}
+                    "run": ("runtime", "run"),
+                    "samples_first": ("_plane_layout", "samples_first"),
+                    "samples_last": ("_plane_layout", "samples_last")}
 
 __all__ = ["__version__", *_AUTHORING, *_TOP_LEVEL_DOORS]
 

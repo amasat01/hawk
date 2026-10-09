@@ -36,7 +36,10 @@ requires a per-sample plane at least ``n_samples`` long (shorter is
 always the bug) and a ``Reduce(op)`` output one slot per sample; every
 plane must be C-contiguous and a sink role's plane writable, except a
 sample-major plane whose transpose is C-contiguous, which binds
-zero-copy (:func:`plane_layout`). :meth:`HostKernel.rebind` takes raw
+zero-copy (:func:`plane_layout`). A ``(w, w)`` plane reads both ways and is
+refused unless ``layout="samples_first"``/``"samples_last"`` (per call) or
+``hawk.samples_first(x)``/``hawk.samples_last(x)`` (per array, which wins) says
+which axis holds the samples. :meth:`HostKernel.rebind` takes raw
 pointers, which carry none of this, and is the unchecked fast path over
 an already-validated bind.
 
@@ -57,7 +60,12 @@ from pathlib import Path
 
 from . import _core
 from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from
-from ._plane_layout import _native_extent, plane_layout
+from ._plane_layout import (
+    LayoutChoice,
+    _native_extent,
+    plane_layout,
+    split_marks,
+)
 from .emit.aether import MIRROR_OF, mirror_of
 from .ir import HawkError
 from .types import TensorType
@@ -207,7 +215,7 @@ class HostKernel:
                 extra[name] = self.finished
         return {**arrays, **extra} if extra else arrays
 
-    def bind_all(self, arrays: dict, n_samples: int) -> None:
+    def bind_all(self, arrays: dict, n_samples: int, *, layout=None) -> None:
         """Bind every slot once (per bind). ``arrays`` maps a slot name to
         a buffer-protocol object; a ``uniform`` maps to a Python number
         and an ``nsamples`` role is bound from ``n_samples`` itself.
@@ -220,8 +228,10 @@ class HostKernel:
         automatic kernel's ``fused_steps`` word may be left out (it is
         bound to ``1``, one step per launch), and so may a finishing
         kernel's ``finished_count`` counter (bound to a fresh ``0``)."""
+        arrays, axes = split_marks(arrays, layout)
+        choice = LayoutChoice(layout, axes)
         arrays = self._one_step_word(arrays)
-        _check_bind(self.sidecar, self.arg_spec, arrays, n_samples)
+        _check_bind(self.sidecar, self.arg_spec, arrays, n_samples, choice)
         self._values, self._buffers = [], []
         widths = self.sidecar.get("arg_shapes", {})
         for slot, (role, name) in enumerate(self.arg_spec):
@@ -238,9 +248,12 @@ class HostKernel:
                 # read every component after the first at the wrong offset.
                 samples = n_samples
                 if self.descriptor[slot] == "gref" and name in arrays:
-                    samples = _native_extent(memoryview(arrays[name]),
-                                             int(widths.get(name) or 1))
-                self.block.bind(slot, self._buffer_address(arrays, name, role),
+                    mv = memoryview(arrays[name])
+                    width = int(widths.get(name) or 1)
+                    samples = _native_extent(mv, width,
+                                             choice.of(name, mv, width))
+                self.block.bind(slot,
+                                self._buffer_address(arrays, name, role, choice),
                                 samples, 1, DEVICE_CPU, 0)
 
     def rebind(self, slots, ptrs) -> None:
@@ -272,7 +285,8 @@ class HostKernel:
         self._values.append(box)
         return ctypes.addressof(box)
 
-    def _buffer_address(self, arrays: dict, name: str, role: str) -> int:
+    def _buffer_address(self, arrays: dict, name: str, role: str,
+                        choice=None) -> int:
         try:
             obj = arrays[name]
         except KeyError:
@@ -282,7 +296,9 @@ class HostKernel:
             ) from None
         width = int(self.sidecar.get("arg_shapes", {}).get(name) or 1)
         view = memoryview(obj)
-        if role in _PER_SAMPLE_ROLES and plane_layout(view, width) == "view":
+        kind = (choice.of(name, view, width) if choice is not None
+                else plane_layout(view, width))
+        if role in _PER_SAMPLE_ROLES and kind == "view":
             return _transposed_address(obj, self._buffers)
         return buffer_address(obj, self._buffers)
 
@@ -390,14 +406,25 @@ def load(directory, kernel: str, sidecar: dict | None = None) -> HostKernel:
 
 
 def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
-        n_samples: int | None = None, **arrays) -> None:
+        n_samples: int | None = None, layout: str | None = None,
+        **arrays) -> None:
     """Bind ``arrays`` and run the WHOLE range in ONE serial call.
 
     ``count`` defaults to ``n_samples``, and ``n_samples`` to the count
     every bound per-sample plane agrees on (:func:`_n_from`). Output
-    planes are the caller's, written in place; this returns nothing."""
+    planes are the caller's, written in place; this returns nothing.
+
+    A per-sample plane whose shape reads both as component-major ``(w, N)`` and
+    as sample-major ``(N, w)`` (``(w, w)``) is refused unless the call says
+    which axis holds the samples: ``layout="samples_first"`` or
+    ``layout="samples_last"`` resolves every such plane of the call, and
+    ``hawk.samples_first(x)`` / ``hawk.samples_last(x)`` say it for one array
+    (any shape; a contradiction is refused; the array's marker beats ``layout``).
+    Neither copies."""
+    plain, axes = split_marks(arrays, layout)
     if n_samples is None:
-        n_samples = _n_from(kernel_artifact.arg_spec, arrays,
-                            kernel_artifact.sidecar.get("arg_shapes", {}))
-    kernel_artifact.bind_all(arrays, n_samples)
+        n_samples = _n_from(kernel_artifact.arg_spec, plain,
+                            kernel_artifact.sidecar.get("arg_shapes", {}),
+                            LayoutChoice(layout, axes))
+    kernel_artifact.bind_all(arrays, n_samples, layout=layout)
     kernel_artifact.launch(base, n_samples if count is None else count, n_samples)

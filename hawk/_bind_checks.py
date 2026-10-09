@@ -8,7 +8,9 @@ any address is taken."""
 from __future__ import annotations
 
 from ._plane_layout import (
+    _NO_CHOICE,
     _native_extent,
+    layout_refusal,
     mixed_refusal,
     number_refusal,
     plane_layout,
@@ -40,7 +42,8 @@ assert set(_PER_SAMPLE_ROLES) | set(_NEVER_VOTES) | {"uniform", "nsamples"}\
 )
 
 
-def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None) -> int:
+def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None,
+            choice=_NO_CHOICE) -> int:
     """The sample count every bound PER-SAMPLE plane agrees on (the ``n``).
 
     An earlier version read the trailing extent of the FIRST plane in
@@ -71,8 +74,12 @@ def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None) -> int:
         # its leading axis, never its width
         width = int((arg_shapes or {}).get(name) or 1)
         mv = memoryview(value)
-        votes[name] = _native_extent(mv, width)
-        if plane_layout(mv, width) == "single":
+        kind = choice.of(name, mv, width)
+        if kind in ("ambiguous", "conflict"):
+            raise HawkError(f"hawk.runtime.run: " + layout_refusal(
+                kind, name, tuple(mv.shape), width, choice.axes.get(name)))
+        votes[name] = _native_extent(mv, width, kind)
+        if kind == "single":
             single = single or (name, tuple(mv.shape))
         else:
             batch = batch or (name, tuple(mv.shape), votes[name])
@@ -157,7 +164,7 @@ def _dtype_matches(mv: memoryview, expect: str) -> bool:
 
 def _check_plane_arg(role: str, name: str, value, arg_dtypes: dict,
                      arg_shapes: dict, n_samples: int, reduce_sized: bool,
-                     errors: list) -> None:
+                     errors: list, choice=_NO_CHOICE) -> None:
     """Every check one PLANE-bound argument (every role but ``uniform``/
     ``nsamples``) must pass, appended to ``errors`` rather than raised —
     :func:`_check_bind` reports every failing argument together."""
@@ -185,10 +192,11 @@ def _check_plane_arg(role: str, name: str, value, arg_dtypes: dict,
 
     layout = "native"
     if role in _PER_SAMPLE_ROLES:
-        layout = plane_layout(mv, int(arg_shapes.get(name) or 1))
-        if layout == "copy":
-            errors.append(sample_major_refusal(
-                name, tuple(mv.shape), int(arg_shapes.get(name) or 1)))
+        layout = choice.of(name, mv, int(arg_shapes.get(name) or 1))
+        if layout in ("copy", "ambiguous", "conflict"):
+            errors.append(layout_refusal(
+                layout, name, tuple(mv.shape), int(arg_shapes.get(name) or 1),
+                choice.axes.get(name)))
             return
 
     if not mv.c_contiguous and layout != "view":
@@ -288,7 +296,8 @@ def _check_uniform_arg(name: str, value, params: dict, errors: list) -> None:
         )
 
 
-def _check_bind(sidecar: dict, arg_spec, arrays: dict, n_samples: int) -> None:
+def _check_bind(sidecar: dict, arg_spec, arrays: dict, n_samples: int,
+                choice=_NO_CHOICE) -> None:
     """Every bound argument, checked against the kernel's own declaration
     — before any address is taken. Raises ONE :class:`~hawk.ir.HawkError`
     naming every failing argument, or returns silently when all match.
@@ -316,7 +325,7 @@ def _check_bind(sidecar: dict, arg_spec, arrays: dict, n_samples: int) -> None:
             _check_uniform_arg(name, arrays[name], params, errors)
         else:
             _check_plane_arg(role, name, arrays[name], arg_dtypes, arg_shapes,
-                             n_samples, reduce_sized, errors)
+                             n_samples, reduce_sized, errors, choice)
 
     if not errors:
         return

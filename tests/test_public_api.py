@@ -68,7 +68,7 @@ _EXPECTED_MANIFEST = {
         "Param", "Quantity", "Quat", "RawBlock", "Reduce", "Scalar",
         "Staged", "Table", "Terminated", "Value", "Vector", "Wide",
         "WideOut", "__version__", "build", "kernel", "load", "raw_device",
-        "run", "steps",
+        "run", "samples_first", "samples_last", "steps",
     ],
     "hawk.trace": [],
     "hawk.math": [

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+A per-sample plane whose shape reads both as component-major `(w, N)` and as
+sample-major `(N, w)` (a `(w, w)` array, or a square matrix head with
+`N == R == C`) is now refused, naming the argument, its shape, both readings
+and the fix; before, it was silently taken as component-major, which transposed
+a C-contiguous sample-major array. Say which axis holds the samples, zero-copy:
+per call with `hawk.run(..., layout="samples_first")` or
+`layout="samples_last"` (also `HostKernel.bind_all(..., layout=...)`), or per
+array with the new `hawk.samples_first(x)` / `hawk.samples_last(x)` markers,
+which work for any shape, are refused when they contradict the shape, and win
+over the call's `layout=`. The markers follow a small protocol shared with
+eagle (`__raptor_samples_axis__` plus `.array`), so each package accepts the
+other's. Shapes that are not ambiguous behave as before.
+
 ## 0.3.1
 
 Wheels now cover CPython 3.9 through 3.14, plus the free-threaded 3.13t and

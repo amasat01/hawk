@@ -82,11 +82,14 @@ def test_a_contiguous_sample_major_output_is_refused(built):
         rt.run(_vec3(built), x=x, a=2.0, y=y, n_samples=N)
 
 
-def test_a_square_plane_is_taken_as_native(built):
-    """(3, 3) is ambiguous at N == 3: it is taken as native, never guessed."""
+def test_a_square_plane_needs_its_axis_said(built):
+    """(3, 3) reads both ways at N == 3: it is refused (never guessed) and
+    resolved by ``layout="samples_last"`` (see test_runtime_layout_ambiguity)."""
     x = _x(3)
     y = np.zeros((3, 3))
-    rt.run(_vec3(built), x=x, a=3.0, y=y)
+    with pytest.raises(HawkError, match="samples_first"):
+        rt.run(_vec3(built), x=x, a=3.0, y=y)
+    rt.run(_vec3(built), x=x, a=3.0, y=y, layout="samples_last")
     np.testing.assert_allclose(y, 3.0 * x)
 
 
@@ -95,7 +98,7 @@ def test_plane_layout_classification():
     assert rt.plane_layout(memoryview(c), 3) == "native"
     assert rt.plane_layout(memoryview(c.T), 3) == "view"
     assert rt.plane_layout(memoryview(np.zeros((N, 3))), 3) == "copy"
-    assert rt.plane_layout(memoryview(np.zeros((3, 3))), 3) == "native"
+    assert rt.plane_layout(memoryview(np.zeros((3, 3))), 3) == "ambiguous"
     assert rt.plane_layout(memoryview(np.zeros(N)), 1) == "native"
     assert rt.plane_layout(memoryview(np.zeros((N, 3))), 1) == "native"
 
@@ -108,7 +111,7 @@ def test_plane_layout_single_sample_corpus():
     assert single(memoryview(np.zeros(3)), 3) == "single"
     assert single(memoryview(np.zeros((3, 1))), 3) == "native"   # batch of one
     assert single(memoryview(np.zeros((1, 3))), 3) == "view"     # sample-major one
-    assert single(memoryview(np.zeros((3, 3))), 3) == "native"   # batch of 3
+    assert single(memoryview(np.zeros((3, 3))), 3) == "ambiguous"  # both readings
     assert single(memoryview(np.zeros((2, 3))), 6) == "single"   # matrix (r, c)
     assert single(memoryview(np.zeros(6)), 6) == "single"        # matrix flat
     assert single(memoryview(np.zeros((3, 1))), 3) == "native"   # Matrix[3, 1]
