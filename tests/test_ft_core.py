@@ -67,7 +67,13 @@ def test_manifest_all_tests_collected(request):
     here = {
         i.name for i in request.session.items if i.module is sys.modules[__name__]
     }
-    assert EXPECTED_TESTS <= here, sorted(EXPECTED_TESTS - here)
+    # a marked row (repo_local) may be deselected by the leg's -m expression;
+    # every unmarked row must be collected
+    required = {
+        n for n in EXPECTED_TESTS
+        if not getattr(globals().get(n), "pytestmark", None)
+    }
+    assert required <= here, sorted(required - here)
     assert {n for n in here if "[" not in n} <= EXPECTED_TESTS
 
 
