@@ -60,6 +60,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: hawk/pyproject.toml
 
       - run: python -m pip install --quiet build
 
@@ -72,6 +74,15 @@ jobs:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
         run: cd hawk && python -m build --sdist --outdir ../dist
+
+      # ccache inside the manylinux container: the runner directory is bind-mounted at /ccache
+      - run: mkdir -p .ccache-cibw
+      - uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.ccache-cibw
+          key: ccache-${{ runner.os }}-${{ runner.arch }}-cibw-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ runner.arch }}-cibw-
 
       - name: Build manylinux wheels (cibuildwheel; CPython 3.9-3.14 + free-threaded 3.13t/3.14t, x86_64)
         uses: pypa/cibuildwheel@v3.4.1
@@ -88,8 +99,11 @@ jobs:
           # Extra bind mounts: the sibling header trees are not inside
           # package-dir, so cibuildwheel's default per-package-dir copy
           # never sees them without this.
-          CIBW_CONTAINER_ENGINE: "docker; create_args: --volume ${{ github.workspace }}/aether:/sib/aether:ro --volume ${{ github.workspace }}/eagle:/sib/eagle:ro"
-          CIBW_ENVIRONMENT_LINUX: "HAWK_AETHER_INCLUDE=/sib/aether HAWK_EAGLE_INCLUDE=/sib/eagle CMAKE_BUILD_PARALLEL_LEVEL=2"
+          CIBW_CONTAINER_ENGINE: "docker; create_args: --volume ${{ github.workspace }}/aether:/sib/aether:ro --volume ${{ github.workspace }}/eagle:/sib/eagle:ro --volume ${{ github.workspace }}/.ccache-cibw:/ccache"
+          CIBW_ENVIRONMENT_LINUX: "HAWK_AETHER_INCLUDE=/sib/aether HAWK_EAGLE_INCLUDE=/sib/eagle CMAKE_BUILD_PARALLEL_LEVEL=2 CCACHE_DIR=/ccache CCACHE_MAXSIZE=500M CCACHE_COMPILERCHECK=content CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          # ccache from EPEL (AlmaLinux 8); stats zeroed per run, printed before each repair
+          CIBW_BEFORE_ALL_LINUX: "dnf install -y epel-release && dnf install -y ccache && CCACHE_DIR=/ccache ccache -z"
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "ccache -s; auditwheel repair -w {dest_dir} {wheel}"
           # The dedicated test-wheel job below (with the aether-dsc sibling
           # wheel + the repo's own test suite) replaces cibuildwheel's
           # built-in --test-command; skip it here to avoid solving sibling
@@ -99,6 +113,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: raptor-hawk-dist
+          retention-days: 7
           path: dist/
 
   check:
@@ -175,6 +190,12 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            hawk/pyproject.toml
+            aether/dsc/pyproject.toml
+            raptor/pyproject.toml
+            eagle/python/pyproject.toml
 
       # aether-dsc, hawk's one runtime dependency, resolved against the
       # requirement the BUILT wheel declares: from PyPI when a matching
@@ -185,7 +206,8 @@ jobs:
       - name: aether-dsc wheel (PyPI if released, else the sibling checkout)
         run: |
           set -euo pipefail
-          python -m pip install --quiet build
+          # newest NumPy/SciPy ship no cp313t wheel: prefer a wheel over an sdist build
+          python -m pip install --quiet --prefer-binary build
           REQ="$(python - <<'PY'
           import glob, zipfile
           whl = sorted(glob.glob("dist/*.whl"))[0]
@@ -204,7 +226,7 @@ jobs:
             echo "aether-dsc: from PyPI"
           else
             echo "aether-dsc: not on PyPI yet, building it from the sibling checkout"
-            python -m pip install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
+            python -m pip install --quiet --prefer-binary "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
             (cd aether/dsc && python -m aether_dsc.seal && python -m build --wheel --outdir ../../dist-dsc)
           fi
           ls dist-dsc
@@ -230,7 +252,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist-sib
-          if python -m pip download --quiet --only-binary=:all: -d dist-sib raptor-eagle; then
+          if python -m pip download --quiet --only-binary=:all: -d dist-sib "raptor-eagle>=0.5"; then
             echo "raptor-eagle (+ raptor-core): from PyPI"
           else
             echo "raptor-eagle: not on PyPI yet, building it from the sibling checkouts"
@@ -264,9 +286,9 @@ jobs:
           pip install --quiet --no-index --find-links dist-dsc aether-dsc
           # hawk's one third-party runtime dependency comes from PyPI; hawk and
           # aether-dsc themselves only from the wheels built in this run
-          pip install --quiet numpy
+          pip install --quiet --prefer-binary numpy
           pip install --quiet --no-index --find-links dist --find-links dist-dsc raptor-hawk
-          pip install --quiet --prefer-binary --find-links dist --find-links dist-sib "raptor-hawk[test]" raptor-eagle
+          pip install --quiet --prefer-binary --find-links dist --find-links dist-sib "raptor-hawk[test]" "raptor-eagle>=0.5"
           pip check
 
       - name: Import smoke (the import-time build-digest/layout self-check runs here)
