@@ -10,19 +10,9 @@
 language) for writing a numerical kernel once and running it, unchanged,
 on CPU or GPU.
 
-```{image} _static/ecosystem/ecosystem_hawk_light.svg
-:alt: The RAPTOR family: hawk (write it), eagle (run it), aether (the C++/CUDA numerics underneath) and raptor (the shared contract); you are looking at hawk.
-:class: only-light
-:align: center
+```{raw} html
+:file: _static/ecosystem/ecosystem_cards_hawk.html
 ```
-
-```{image} _static/ecosystem/ecosystem_hawk_dark.svg
-:alt: The RAPTOR family: hawk (write it), eagle (run it), aether (the C++/CUDA numerics underneath) and raptor (the shared contract); you are looking at hawk.
-:class: only-dark
-:align: center
-```
-
-[aether](https://amasat01.github.io/aether/) · [hawk](https://amasat01.github.io/hawk/) · [eagle](https://amasat01.github.io/eagle/) · [raptor](https://amasat01.github.io/raptor/) · [the family](https://amasat01.github.io/)
 
 A kernel is a plain Python function decorated `@hawk.kernel`. hawk turns
 it into a small typed representation of what it computes, derives its

@@ -17,16 +17,11 @@ hawk compiles it for the GPU or the CPU and derives its gradient (reverse mode) 
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/amasat01/hawk/main/docs/_static/ecosystem/ecosystem_hawk_dark.svg">
-    <img src="https://raw.githubusercontent.com/amasat01/hawk/main/docs/_static/ecosystem/ecosystem_hawk_light.svg" alt="The RAPTOR family: hawk (write it), eagle (run it), aether (the C++/CUDA numerics underneath) and raptor (the shared contract); you are looking at hawk." width="760">
-  </picture>
-</p>
-
-<p align="center">
-
-[aether](https://amasat01.github.io/aether/) · [hawk](https://amasat01.github.io/hawk/) · [eagle](https://amasat01.github.io/eagle/) · [raptor](https://amasat01.github.io/raptor/) · [the family](https://amasat01.github.io/)
-
+  <a href="https://amasat01.github.io/"><b>The RAPTOR family</b></a><br>
+  <a href="https://amasat01.github.io/hawk/"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/amasat01/hawk/main/docs/_static/ecosystem/ecosystem_card_hawk_hawk_dark.svg"><img src="https://raw.githubusercontent.com/amasat01/hawk/main/docs/_static/ecosystem/ecosystem_card_hawk_hawk_light.svg" alt="hawk" width="430"></picture></a>
+  <a href="https://amasat01.github.io/eagle/"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/amasat01/hawk/main/docs/_static/ecosystem/ecosystem_card_eagle_hawk_dark.svg"><img src="https://raw.githubusercontent.com/amasat01/hawk/main/docs/_static/ecosystem/ecosystem_card_eagle_hawk_light.svg" alt="eagle" width="430"></picture></a><br>
+  <a href="https://amasat01.github.io/aether/"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/amasat01/hawk/main/docs/_static/ecosystem/ecosystem_card_aether_hawk_dark.svg"><img src="https://raw.githubusercontent.com/amasat01/hawk/main/docs/_static/ecosystem/ecosystem_card_aether_hawk_light.svg" alt="aether" width="430"></picture></a>
+  <a href="https://amasat01.github.io/raptor/"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/amasat01/hawk/main/docs/_static/ecosystem/ecosystem_card_raptor_hawk_dark.svg"><img src="https://raw.githubusercontent.com/amasat01/hawk/main/docs/_static/ecosystem/ecosystem_card_raptor_hawk_light.svg" alt="raptor" width="430"></picture></a>
 </p>
 
 hawk is the kernel-authoring layer of the [RAPTOR family](https://amasat01.github.io/): write a kernel once at the
