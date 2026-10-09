@@ -104,8 +104,8 @@ def _child(body: str, cap_kib: int, tmp_path: Path) -> dict:
     """Run ``body`` in a fresh interpreter under ``ulimit -v cap_kib`` and parse
     the ONE json line it prints. A non-zero return code, or no json, FAILS.
 
-    The cap is applied by the shell rather than by ``resource.setrlimit`` in a
-    ``preexec_fn`` so that a reader can reproduce the row by typing the same
+    The cap is applied by the shell rather than by ``resource.setrlimit`` in the
+    driver's cap trampoline so that a reader can reproduce the row by typing the same
     line — the same reason ``tests/test_loop_lowering_card.py`` sets it that
     way for the compilers."""
     script = tmp_path / "probe.py"

@@ -145,7 +145,7 @@ def _capped(argv: list) -> tuple:
     ``(returncode, wall seconds, peak RSS in KiB, stderr)``.
 
     ``ulimit`` is set in the shell rather than through the driver's own
-    ``preexec_fn`` on purpose: this row is measuring the compiler, so the cap it
+    cap trampoline on purpose: this row is measuring the compiler, so the cap it
     measures under must be the one a reader can reproduce from the card by
     typing the same line."""
     quoted = " ".join(f"'{a}'" for a in argv)

@@ -229,12 +229,12 @@ class ClosureWatch:
                 continue
             try:
                 st = os.stat(path)
-                rows.append([path, st.st_size, st.st_mtime_ns, want])
+                rows.append((path, st.st_size, st.st_mtime_ns, want))
             except OSError:
                 # Unreadable NOW: recorded with a signature nothing can match,
                 # so the check falls through to the content and says "miss".
-                rows.append([path, -1, -1, want])
-        self._rows = rows
+                rows.append((path, -1, -1, want))
+        self._rows = tuple(rows)
         # The stable object `valid()` hands to `_core.stat_many` on every
         # later check, built once from the rows' own path objects.
         self._paths = [row[0] for row in rows]
@@ -286,6 +286,7 @@ class ClosureWatch:
         microbench calls it directly to keep timing the crossing itself)."""
         sizes, mtimes_ns = _core.stat_many(self._paths)
         rows = self._rows
+        resynced = None
         for i in range(len(rows)):
             row = rows[i]
             size, mtime = sizes[i], mtimes_ns[i]
@@ -295,7 +296,13 @@ class ClosureWatch:
                 continue
             if digest_file(row[0]) != row[3]:
                 return False
-            row[1], row[2] = size, mtime
+            if resynced is None:
+                resynced = list(rows)
+            resynced[i] = (row[0], size, mtime, row[3])
+        if resynced is not None:
+            # One reference store of an immutable tuple: a concurrent
+            # reader sees the old rows or the new, never a half-updated row.
+            self._rows = tuple(resynced)
         return True
 
 

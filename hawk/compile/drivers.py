@@ -28,7 +28,7 @@ guard, not a codegen policy, so a pathological compile fails loudly instead
 of taking the box down (a 64x23 KAN cell once reached ptxas as one function
 and took 25-27 GB of RSS on a 31 GB machine, with nothing bounding it).
 :data:`ADDRESS_SPACE_CAP_BYTES` is that bound, applied with ``RLIMIT_AS`` in
-the child before ``exec``; ``$HAWK_COMPILE_ADDRESS_CAP`` overrides it
+the child before the compiler ``exec``s; ``$HAWK_COMPILE_ADDRESS_CAP`` overrides it
 (bytes; ``0`` disables it).
 """
 
@@ -36,9 +36,10 @@ from __future__ import annotations
 
 import os
 import platform
-import resource
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -89,24 +90,35 @@ def address_space_cap() -> int:
     return value
 
 
-def limiter():
-    """The ``preexec_fn`` that installs the cap in the child, or ``None``.
+#: The trampoline's program: lower ``RLIMIT_AS`` to the cap in argv[1], then
+#: ``exec`` the real command (argv[2:]). It runs in a fresh interpreter
+#: (``-I``), so no thread state of the calling process is involved.
+_TRAMPOLINE = (
+    "import os, resource, sys\n"
+    "cap = int(sys.argv[1])\n"
+    "soft, hard = resource.getrlimit(resource.RLIMIT_AS)\n"
+    "limit = cap if hard == resource.RLIM_INFINITY else min(cap, hard)\n"
+    "resource.setrlimit(resource.RLIMIT_AS, (limit, hard))\n"
+    "os.execvp(sys.argv[2], sys.argv[2:])\n"
+)
 
-    Applied after ``fork`` and before ``exec``, so the limit is inherited by
-    every process the compiler driver spawns — ``nvcc`` runs ``cicc`` and
-    ``ptxas``, and ``ptxas`` is the one that ran the machine out of memory.
-    The soft limit is raised no higher than the inherited hard limit."""
+
+def limited(argv: list[str]) -> list[str]:
+    """``argv`` wrapped so the child runs under the address-space cap, or
+    ``argv`` itself when the cap is disabled.
+
+    The cap is installed by a small exec trampoline (``python -I -c``: set
+    ``RLIMIT_AS``, then ``os.execvp`` the real command) rather than a
+    a fork-time hook, which is unsafe to run from a multi-threaded process.
+    The limit is inherited by every process the compiler driver spawns —
+    ``nvcc`` runs ``cicc`` and ``ptxas``, and ``ptxas`` is the one that ran
+    the machine out of memory. The soft limit is raised no higher than the
+    inherited hard limit."""
     cap = address_space_cap()
     if not cap:
-        return None
+        return list(argv)
+    return [sys.executable, "-I", "-c", _TRAMPOLINE, str(cap), *argv]
 
-    def apply() -> None:                        # pragma: no cover - child process
-        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-        limit = cap if hard == resource.RLIM_INFINITY else min(cap, hard)
-        resource.setrlimit(resource.RLIMIT_AS, (limit, hard))
-        del soft
-
-    return apply
 
 #: Artifact suffix + source suffix per backend id.
 _SUFFIX = {"host": (".so", ".cpp"), "cuda": (".ptx", ".cu")}
@@ -152,6 +164,41 @@ class CompileResult:
     argv: tuple[str, ...]
     seconds: float = 0.0
     closure: tuple[str, ...] = field(default=())
+
+
+#: Guards :data:`_INFLIGHT`.
+_LOCK = threading.Lock()
+#: Lookup key -> the event the thread compiling that key sets when it is done.
+_INFLIGHT: dict[str, threading.Event] = {}
+
+
+def _single_flight(key: str, lookup, build) -> CompileResult:
+    """In-process single-flight per lookup key: ``lookup()`` returns a hit's
+    :class:`CompileResult` or ``None``; ``build()`` compiles. The first
+    thread to miss a key builds; a second thread asking for the same key
+    waits for it and then takes the hit (if the build failed it retries as
+    the builder itself, so it raises the same refusal). There is no
+    cross-process lock: the publish is an atomic rename, so a duplicate
+    across processes costs one compile and nothing else."""
+    while True:
+        found = lookup()
+        if found is not None:
+            return found
+        with _LOCK:
+            event = _INFLIGHT.get(key)
+            leader = event is None
+            if leader:
+                event = _INFLIGHT[key] = threading.Event()
+        if not leader:
+            event.wait()
+            continue
+        try:
+            found = lookup()               # a build may have landed since the first look
+            return found if found is not None else build()
+        finally:
+            with _LOCK:
+                _INFLIGHT.pop(key, None)
+            event.set()
 
 
 def _argv(compiler: str, opts: CompileOptions, src: Path, out: Path,
@@ -258,62 +305,67 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
     artifact, src_path, dep = (slot / f"{name}{art_ext}", slot / f"{name}{src_ext}",
                                slot / f"{name}.d")
 
-    memo = artifact_memo_get(key)
-    if memo is not None and _memo_still_valid(artifact, memo):
-        # Per-process memo hit: same key, same recorded closure, still valid
-        # by content — counted as a cache hit; it only skips re-reading the
-        # on-disk record.
-        cache.note(True)
-        return CompileResult(artifact, src_path, key, True, tuple(probe),
-                             closure=tuple(p for p, _ in memo))
+    def lookup():
+        memo = artifact_memo_get(key)
+        if memo is not None and _memo_still_valid(artifact, memo):
+            # Per-process memo hit: same key, same recorded closure, still valid
+            # by content — counted as a cache hit; it only skips re-reading the
+            # on-disk record.
+            cache.note(True)
+            return CompileResult(artifact, src_path, key, True, tuple(probe),
+                                 closure=tuple(p for p, _ in memo))
 
-    if cache.check(key):
-        cache.note(True)
-        record = cache.record(key)
-        closure = tuple(record.get("closure", ()))
-        artifact_memo_put(key, tuple((p, d) for p, d in closure))
-        return CompileResult(artifact, src_path, key, True, tuple(probe),
-                             closure=tuple(p for p, _ in closure))
+        if cache.check(key):
+            cache.note(True)
+            record = cache.record(key)
+            closure = tuple(record.get("closure", ()))
+            artifact_memo_put(key, tuple((p, d) for p, d in closure))
+            return CompileResult(artifact, src_path, key, True, tuple(probe),
+                                 closure=tuple(p for p, _ in closure))
+        return None
 
-    cache.note(False)
-    slot.mkdir(parents=True, exist_ok=True)
-    write_atomic(src_path, source)
-    # Compile into private temporaries, then move into place: a concurrent
-    # reader of this slot sees the old artifact or the new one, never a
-    # partial write.
-    tmp_artifact, tmp_dep = tmp_sibling(artifact), tmp_sibling(dep)
-    argv = _argv(compiler, opts, src_path, tmp_artifact, tmp_dep,
-                 device_target=device_target)
-    start = time.perf_counter()
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True,
-                              env=tc.subprocess_env(), preexec_fn=limiter())
-        if done.returncode == 0:
-            publish_atomic(tmp_artifact, artifact)
-            publish_atomic(tmp_dep, dep)
-    finally:
-        tmp_artifact.unlink(missing_ok=True)
-        tmp_dep.unlink(missing_ok=True)
-    seconds = time.perf_counter() - start
-    if done.returncode != 0:
-        cap = address_space_cap()
-        raise HawkError(
-            f"{opts.backend} compile of {name!r} failed (rc={done.returncode})"
-            + (f"; the compiler ran under a {cap}-byte address-space cap "
-               "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
-               "this translation unit is too large for one compile and not that "
-               "the machine is out of memory" if cap else "")
-            + f".\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
-        )
-    closure = closure_of(dep)
-    cache.store(key, artifact=artifact, closure=closure,
-                meta={"backend": opts.backend, "mode": opts.mode,
-                      "compiler": identity, "flags": argv[1:-4],
-                      "key_terms": list(key_terms),
-                      "seconds": seconds, "name": name,
-                      "device_target": device_target})
-    artifact_memo_put(key, validity_digest(closure))
-    return CompileResult(artifact, src_path, key, False, tuple(argv), seconds, closure)
+    def build():
+        cache.note(False)
+        slot.mkdir(parents=True, exist_ok=True)
+        write_atomic(src_path, source)
+        # Compile into private temporaries, then move into place: a concurrent
+        # reader of this slot sees the old artifact or the new one, never a
+        # partial write.
+        tmp_artifact, tmp_dep = tmp_sibling(artifact), tmp_sibling(dep)
+        argv = _argv(compiler, opts, src_path, tmp_artifact, tmp_dep,
+                     device_target=device_target)
+        start = time.perf_counter()
+        try:
+            done = subprocess.run(limited(argv), capture_output=True, text=True,
+                                  env=tc.subprocess_env())
+            if done.returncode == 0:
+                publish_atomic(tmp_artifact, artifact)
+                publish_atomic(tmp_dep, dep)
+        finally:
+            tmp_artifact.unlink(missing_ok=True)
+            tmp_dep.unlink(missing_ok=True)
+        seconds = time.perf_counter() - start
+        if done.returncode != 0:
+            cap = address_space_cap()
+            raise HawkError(
+                f"{opts.backend} compile of {name!r} failed (rc={done.returncode})"
+                + (f"; the compiler ran under a {cap}-byte address-space cap "
+                   "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
+                   "this translation unit is too large for one compile and not that "
+                   "the machine is out of memory" if cap else "")
+                + f".\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
+            )
+        closure = closure_of(dep)
+        cache.store(key, artifact=artifact, closure=closure,
+                    meta={"backend": opts.backend, "mode": opts.mode,
+                          "compiler": identity, "flags": argv[1:-4],
+                          "key_terms": list(key_terms),
+                          "seconds": seconds, "name": name,
+                          "device_target": device_target})
+        artifact_memo_put(key, validity_digest(closure))
+        return CompileResult(artifact, src_path, key, False, tuple(argv), seconds, closure)
+
+    return _single_flight(key, lookup, build)
 
 
 def _memo_still_valid(artifact: Path, closure,
@@ -375,38 +427,43 @@ def _compile_nvrtc_source(source: str, name: str,
 
     payload_closure = ((_PAYLOAD_MEMO_TAG, payload.digest),)
 
-    memo = artifact_memo_get(key)
-    if memo is not None and _memo_still_valid(artifact, memo, payload.digest):
-        cache.note(True)
-        return CompileResult(artifact, src_path, key, True, argv,
-                             closure=payload_closure)
+    def lookup():
+        memo = artifact_memo_get(key)
+        if memo is not None and _memo_still_valid(artifact, memo, payload.digest):
+            cache.note(True)
+            return CompileResult(artifact, src_path, key, True, argv,
+                                 closure=payload_closure)
 
-    if cache.check(key, payload_digest=payload.digest):
-        cache.note(True)
+        if cache.check(key, payload_digest=payload.digest):
+            cache.note(True)
+            artifact_memo_put(key, payload_closure)
+            return CompileResult(artifact, src_path, key, True, argv,
+                                 closure=payload_closure)
+        return None
+
+    def build():
+        cache.note(False)
+        slot.mkdir(parents=True, exist_ok=True)
+        start = time.perf_counter()
+        compile_fn = (_nvrtc_driver.compile_cubin if target == "cubin"
+                     else _nvrtc_driver.compile_ptx)
+        result = compile_fn(source, name, arch, headers=payload.device_headers)
+        seconds = time.perf_counter() - start
+        if not result.ok:
+            raise HawkError(
+                f"cuda compile of {name!r} failed under NVRTC (target={target}, "
+                f"rc != NVRTC_SUCCESS).\n$ nvrtc {' '.join(argv)}\n{result.log[:4000]}"
+            )
+        write_atomic(artifact, result.ptx)
+        cache.store(key, artifact=artifact, closure=(),
+                    meta={"backend": DEVICE, "mode": opts.mode, "compiler": identity,
+                          "flags": list(argv), "seconds": seconds, "name": name,
+                          "payload_digest": payload.digest, "device_target": target})
         artifact_memo_put(key, payload_closure)
-        return CompileResult(artifact, src_path, key, True, argv,
+        return CompileResult(artifact, src_path, key, False, argv, seconds,
                              closure=payload_closure)
 
-    cache.note(False)
-    slot.mkdir(parents=True, exist_ok=True)
-    start = time.perf_counter()
-    compile_fn = (_nvrtc_driver.compile_cubin if target == "cubin"
-                 else _nvrtc_driver.compile_ptx)
-    result = compile_fn(source, name, arch, headers=payload.device_headers)
-    seconds = time.perf_counter() - start
-    if not result.ok:
-        raise HawkError(
-            f"cuda compile of {name!r} failed under NVRTC (target={target}, "
-            f"rc != NVRTC_SUCCESS).\n$ nvrtc {' '.join(argv)}\n{result.log[:4000]}"
-        )
-    write_atomic(artifact, result.ptx)
-    cache.store(key, artifact=artifact, closure=(),
-                meta={"backend": DEVICE, "mode": opts.mode, "compiler": identity,
-                      "flags": list(argv), "seconds": seconds, "name": name,
-                      "payload_digest": payload.digest, "device_target": target})
-    artifact_memo_put(key, payload_closure)
-    return CompileResult(artifact, src_path, key, False, argv, seconds,
-                         closure=payload_closure)
+    return _single_flight(key, lookup, build)
 
 
 def _host_uses_sealed_payload() -> bool:
@@ -457,51 +514,56 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> Compil
                                slot / f"{name}.d")
     payload_closure = ((_PAYLOAD_MEMO_TAG, payload.digest),)
 
-    memo = artifact_memo_get(key)
-    if memo is not None and _memo_still_valid(artifact, memo, payload.digest):
-        cache.note(True)
-        return CompileResult(artifact, src_path, key, True, tuple(stable_flags),
-                             closure=payload_closure)
+    def lookup():
+        memo = artifact_memo_get(key)
+        if memo is not None and _memo_still_valid(artifact, memo, payload.digest):
+            cache.note(True)
+            return CompileResult(artifact, src_path, key, True, tuple(stable_flags),
+                                 closure=payload_closure)
 
-    if cache.check(key, payload_digest=payload.digest):
-        cache.note(True)
+        if cache.check(key, payload_digest=payload.digest):
+            cache.note(True)
+            artifact_memo_put(key, payload_closure)
+            return CompileResult(artifact, src_path, key, True, tuple(stable_flags),
+                                 closure=payload_closure)
+        return None
+
+    def build():
+        cache.note(False)
+        slot.mkdir(parents=True, exist_ok=True)
+        write_atomic(src_path, source)
+        tmp_artifact, tmp_dep = tmp_sibling(artifact), tmp_sibling(dep)
+        with payload.serve() as served_root:
+            argv = [compiler, *stable_flags, f"-I{served_root}", "-MD", "-MF", str(tmp_dep),
+                    str(src_path), "-o", str(tmp_artifact)]
+            start = time.perf_counter()
+            try:
+                done = subprocess.run(limited(argv), capture_output=True, text=True,
+                                      env=tc.subprocess_env())
+                if done.returncode == 0:
+                    publish_atomic(tmp_artifact, artifact)
+                    publish_atomic(tmp_dep, dep)
+            finally:
+                tmp_artifact.unlink(missing_ok=True)
+                tmp_dep.unlink(missing_ok=True)
+            seconds = time.perf_counter() - start
+            if done.returncode != 0:
+                raise HawkError(
+                    f"host compile of {name!r} failed against the sealed payload "
+                    f"(rc={done.returncode}).\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
+                )
+            card_closure = closure_of(dep)  # card material only, see docstring
+        cache.store(key, artifact=artifact, closure=(),
+                    meta={"backend": HOST, "mode": opts.mode, "compiler": identity,
+                          "flags": stable_flags, "seconds": seconds, "name": name,
+                          "key_terms": list(key_terms),
+                          "payload_digest": payload.digest,
+                          "served_closure_card": list(card_closure)})
         artifact_memo_put(key, payload_closure)
-        return CompileResult(artifact, src_path, key, True, tuple(stable_flags),
+        return CompileResult(artifact, src_path, key, False, tuple(argv), seconds,
                              closure=payload_closure)
 
-    cache.note(False)
-    slot.mkdir(parents=True, exist_ok=True)
-    write_atomic(src_path, source)
-    tmp_artifact, tmp_dep = tmp_sibling(artifact), tmp_sibling(dep)
-    with payload.serve() as served_root:
-        argv = [compiler, *stable_flags, f"-I{served_root}", "-MD", "-MF", str(tmp_dep),
-                str(src_path), "-o", str(tmp_artifact)]
-        start = time.perf_counter()
-        try:
-            done = subprocess.run(argv, capture_output=True, text=True,
-                                  env=tc.subprocess_env(), preexec_fn=limiter())
-            if done.returncode == 0:
-                publish_atomic(tmp_artifact, artifact)
-                publish_atomic(tmp_dep, dep)
-        finally:
-            tmp_artifact.unlink(missing_ok=True)
-            tmp_dep.unlink(missing_ok=True)
-        seconds = time.perf_counter() - start
-        if done.returncode != 0:
-            raise HawkError(
-                f"host compile of {name!r} failed against the sealed payload "
-                f"(rc={done.returncode}).\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
-            )
-        card_closure = closure_of(dep)  # card material only, see docstring
-    cache.store(key, artifact=artifact, closure=(),
-                meta={"backend": HOST, "mode": opts.mode, "compiler": identity,
-                      "flags": stable_flags, "seconds": seconds, "name": name,
-                      "key_terms": list(key_terms),
-                      "payload_digest": payload.digest,
-                      "served_closure_card": list(card_closure)})
-    artifact_memo_put(key, payload_closure)
-    return CompileResult(artifact, src_path, key, False, tuple(argv), seconds,
-                         closure=payload_closure)
+    return _single_flight(key, lookup, build)
 
 
 def publish(result: CompileResult, destination: Path) -> Path:

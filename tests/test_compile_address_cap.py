@@ -9,7 +9,7 @@ WHY THE GUARD EXISTS AND WHAT IT IS NOT. A real KAN cell with 64 edges and
 a 31 GB box. The answer to that SIZE problem is loop lowering; this file is
 about the other half: whatever HAWK emits, a pathological compile must fail
 LOUDLY instead of taking the machine down. So ``hawk.compile.drivers``
-installs ``RLIMIT_AS`` in the child before ``exec`` — inherited by everything
+installs ``RLIMIT_AS`` in the child (an exec trampoline, so it is thread-safe) before the compiler runs — inherited by everything
 ``nvcc`` spawns, ptxas included — and an over-large compile comes back as a
 non-zero return code the driver already turns into a named refusal.
 
@@ -21,9 +21,9 @@ This cap rejects no kernel, inspects no IR and has no opinion about op counts;
 it is a ceiling on one subprocess, and ``$HAWK_COMPILE_ADDRESS_CAP`` (bytes; 0
 disables) is how a machine with a different budget says so.
 
-WRITTEN TO FAIL FIRST. Before ``hawk/compile/drivers.py`` passed no ``preexec_fn`` at
+WRITTEN TO FAIL FIRST. Before ``hawk/compile/drivers.py`` applied any cap at
 all, so :func:`test_a_child_under_the_cap_cannot_allocate_past_it` had nothing
-to import (``ImportError: cannot import name 'limiter'``) and
+to import (``ImportError: cannot import name 'limited'``) and
 :func:`test_the_cap_reaches_the_real_driver` compiled happily under a 64 MB
 setting. The plant for the GREEN direction is kept live below: every row that
 asserts the cap BITES is paired with the same run under ``cap=0``, so a cap that
@@ -66,8 +66,8 @@ def _child(cap: str | None) -> int:
     else:
         os.environ["HAWK_COMPILE_ADDRESS_CAP"] = cap
     try:
-        done = subprocess.run([sys.executable, "-c", _ALLOCATE],
-                              capture_output=True, preexec_fn=drivers.limiter())
+        done = subprocess.run(drivers.limited([sys.executable, "-c", _ALLOCATE]),
+                              capture_output=True)
         return done.returncode
     finally:
         if held is None:
@@ -79,7 +79,7 @@ def _child(cap: str | None) -> int:
 def test_a_child_under_the_cap_cannot_allocate_past_it():
     """The mechanism, with its own negative control beside it. The SAME child,
     the SAME allocation: it fails under the cap and succeeds without one, so a
-    ``preexec_fn`` that had quietly stopped applying would fail this row rather
+    cap that had quietly stopped applying would fail this row rather
     than pass it by doing nothing."""
     assert _child(str(SMALL_CAP)) != 0, (
         "a child under a 256 MB address-space cap allocated 512 MB — the "
@@ -96,10 +96,10 @@ def test_the_cap_is_read_from_the_environment_and_validated():
         assert drivers.address_space_cap() == drivers.ADDRESS_SPACE_CAP_BYTES
         os.environ["HAWK_COMPILE_ADDRESS_CAP"] = "0"
         assert drivers.address_space_cap() == 0
-        assert drivers.limiter() is None
+        assert drivers.limited(["x"]) == ["x"]
         os.environ["HAWK_COMPILE_ADDRESS_CAP"] = str(SMALL_CAP)
         assert drivers.address_space_cap() == SMALL_CAP
-        assert drivers.limiter() is not None
+        assert drivers.limited(["x"])[-1] == "x" and len(drivers.limited(["x"])) > 1
         os.environ["HAWK_COMPILE_ADDRESS_CAP"] = "not-a-number"
         with pytest.raises(HawkError, match="not an integer"):
             drivers.address_space_cap()
