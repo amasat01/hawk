@@ -295,8 +295,8 @@ def test_the_auditor_catches_a_planted_launch():
     subject = REPO / "src" / "hawk_core.cpp"
     text = subject.read_text()
     planted = text.replace(
-        "std::uint64_t g_crossings = 0;",
-        "std::uint64_t g_crossings = 0;\n"
+        "std::atomic<std::uint64_t> g_crossings{0};",
+        "std::atomic<std::uint64_t> g_crossings{0};\n"
         "// a comment that merely NAMES cuLaunchKernel and #pragma omp\n"
         "void hawk_plant() { cuLaunchKernel(nullptr); }\n"
         "#pragma omp parallel for\n")

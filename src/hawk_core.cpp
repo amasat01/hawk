@@ -69,6 +69,7 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -95,9 +96,23 @@ namespace {
 // call. It is incremented at the top of EVERY exported call — including
 // `crossings()` itself, which is why the row that reads it measures the
 // instrument's own cost (one crossing per read) instead of assuming it is free.
-std::uint64_t g_crossings = 0;
+std::atomic<std::uint64_t> g_crossings{0};
 
-inline void cross() { ++g_crossings; }
+// The documented FT-2 instrument: a counter that is DELIBERATELY plain, so a
+// free-threading run can prove its schedule is adversarial enough to lose
+// updates before it certifies anything else. Nothing real reads or writes it.
+// The read-modify-write is split by a short busy gap so the lost-update window is
+// wide enough to expose on every free-threaded build (a bare `++` loses ~4% on
+// 3.13t, where interpreter overhead dominates the call).
+volatile std::uint64_t g_unsynchronised = 0;
+
+inline void unsynchronised_bump() {
+    const std::uint64_t seen = g_unsynchronised;
+    for (volatile int spin = 0; spin < 32; spin = spin + 1) {}
+    g_unsynchronised = seen + 1;
+}
+
+inline void cross() { g_crossings.fetch_add(1, std::memory_order_relaxed); }
 
 // The v2 host entry, exactly as `hawk/emit/host.py` emits it and as
 // `eagle::exec::HostEntryV2` spells it: the packed role args, then the int64
@@ -537,13 +552,21 @@ NB_MODULE(_core, m) {
 
     m.def("crossings", [] {
         cross();
-        return g_crossings;
+        return g_crossings.load(std::memory_order_relaxed);
     }, "How many times the nanobind boundary has been crossed in this process "
        "(the instrument). Incremented at the top of EVERY exported call — this "
        "one included, so a reader measures the instrument rather than assuming it "
-       "is free. A plain counter, not an atomic: nothing here threads.");
+       "is free. A relaxed atomic: a count, never a fence.");
 
     // -- stat_many ------------------------------------------------
+    m.def("_unsynchronised_bump", [] { unsynchronised_bump(); },
+          "Free-threading canary: increments a deliberately PLAIN counter. "
+          "Concurrent calls lose updates; a run that cannot observe the loss "
+          "cannot certify the real counters. An instrument, not an API.");
+
+    m.def("_unsynchronised_count", [] { return std::uint64_t{g_unsynchronised}; },
+          "The canary counter `_unsynchronised_bump` increments.");
+
     m.def("stat_many", [](const nb::list& paths) {
         cross();
         return stat_many_impl(paths);
@@ -576,7 +599,7 @@ NB_MODULE(_core, m) {
                         std::int32_t device_type, std::int32_t device_id) {
                 cross();
                 self.bind(slot, ptr, samples, stride, device_type, device_id);
-             }, "slot"_a, "ptr"_a, "samples"_a, "stride"_a = 1,
+             }, nb::lock_self(), "slot"_a, "ptr"_a, "samples"_a, "stride"_a = 1,
                 "device_type"_a = eagle::plugin::kEagleAbiDeviceCPU, "device_id"_a = 0,
              "Write ONE slot's mirror in place (per bind, single slot). A by-value "
              "slot COPIES the bytes at `ptr`.")
@@ -592,7 +615,7 @@ NB_MODULE(_core, m) {
                         "length (they are one changed set, taken in ONE crossing)");
                 self.rebind(slots.data(), ptrs.data(),
                             static_cast<std::size_t>(slots.shape(0)));
-             }, "slots"_a, "ptrs"_a,
+             }, nb::lock_self(), "slots"_a, "ptrs"_a,
              "Write the WHOLE changed pointer set in ONE crossing. Both "
              "arguments are int64 buffers, never Python sequences of per-slot calls: "
              "the ODE shape, where every bound cache moves every step, must cost two "
@@ -612,7 +635,7 @@ NB_MODULE(_core, m) {
                        std::int64_t count, std::int64_t n_samples) {
                 cross();
                 self.run(args, base, count, n_samples);
-             }, "argblock"_a, "base"_a, "count"_a, "n_samples"_a,
+             }, "argblock"_a.lock(), "base"_a, "count"_a, "n_samples"_a,
              "THE launch crossing: one call with the whole `[base, base+count)` "
              "range and the TRUE `n_samples`. SERIAL by construction — this is the "
              "reference oracle every partitioned/tiled/ranked run is compared against "
@@ -636,7 +659,7 @@ NB_MODULE(_core, m) {
                 e.name = name;
                 e.lib = self.lib();
                 return e;
-             }, "name"_a, nb::keep_alive<0, 1>(),
+             }, nb::lock_self(), "name"_a, nb::keep_alive<0, 1>(),
              "dlsym + cache (per kernel).")
         .def_prop_ro("abi_tag", [](HostLibrary& self) { return self.abi_tag(); },
                      "The tag this artifact exported — what the load-time check READ, "

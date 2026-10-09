@@ -129,7 +129,7 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/_build_digest.py.in"
 # ---------------------------------------------------------------------------
 # The extension.
 # ---------------------------------------------------------------------------
-nanobind_add_module(_core MODULE src/hawk_core.cpp)
+nanobind_add_module(_core MODULE FREE_THREADED src/hawk_core.cpp)
 target_compile_features(_core PRIVATE cxx_std_23)
 # (2) MANDATED ORDER: aether first, eagle second.
 target_include_directories(_core PRIVATE
