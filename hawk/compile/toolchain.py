@@ -523,8 +523,8 @@ def device_compiler() -> str:
 #: same order per sample. Request one of them wherever results must match
 #: bit for bit (a reference, a regression baseline, host against host).
 #:
-#: ``native-vector-math`` (fast) — the default on x86-64 only: ``native``
-#: plus three trades. (1) ``-DAETHER_HOST_VECTOR_MATH`` and
+#: ``native-vector-math`` (fast) — the default on x86-64 with a GCC host
+#: compiler only: ``native`` plus three trades. (1) ``-DAETHER_HOST_VECTOR_MATH`` and
 #: ``-fno-trapping-math`` route aether's transcendental math to vector-ABI
 #: functions, so a calling loop is no longer kept scalar by the libm call;
 #: those functions are aether's packet math, faithfully rounded (1-3 ULP of
@@ -544,12 +544,60 @@ def device_compiler() -> str:
 HOST_PROFILES = ("native", "portable", "native-vector-math")
 #: The profiles whose builds are bit-identical to the scalar build.
 EXACT_HOST_PROFILES = ("native", "portable")
-#: The profile used when neither the compile options nor ``$HAWK_HOST_PROFILE``
-#: name one: ``native-vector-math`` on an x86-64 host, ``native`` on any other
-#: architecture (where ``native-vector-math`` is refused).
+#: The default host profile for a GCC host compiler on an x86-64 host:
+#: ``native-vector-math`` there, ``native`` on any other architecture (where
+#: ``native-vector-math`` is refused). With a non-GCC host compiler (clang,
+#: the ``zig c++`` fallback) the default is ``native`` on every architecture,
+#: because the vector profile rides on GCC's vector function ABI; use
+#: :func:`default_host_profile` for the default that applies to the compiler
+#: actually in use.
 DEFAULT_HOST_PROFILE = ("native-vector-math"
                         if platform.machine().lower() in ("x86_64", "amd64")
                         else "native")
+
+#: Per-process memo of :func:`compiler_is_gcc`, keyed on the resolved compiler
+#: path. Guarded by a lock so concurrent first callers (free-threaded CPython)
+#: probe at most a few times and always agree.
+_GCC_FAMILY_MEMO: dict = {}
+_GCC_FAMILY_LOCK = threading.Lock()
+
+
+def compiler_is_gcc(compiler: str) -> bool:
+    """Whether ``compiler`` is GCC proper (``__GNUC__`` defined and
+    ``__clang__`` not), read from its predefined macros
+    (``-dM -E -x c++``), never from ``--version`` text. Memoised per
+    compiler path for the process; a compiler that cannot be probed counts
+    as not GCC."""
+    with _GCC_FAMILY_LOCK:
+        known = _GCC_FAMILY_MEMO.get(compiler)
+    if known is not None:
+        return known
+    try:
+        out = subprocess.run([compiler, "-dM", "-E", "-x", "c++", os.devnull],
+                             capture_output=True, text=True, timeout=60,
+                             check=False)
+        macros = {ln.split()[1] for ln in out.stdout.splitlines()
+                  if ln.startswith("#define ") and len(ln.split()) > 1}
+        gcc = (out.returncode == 0 and "__GNUC__" in macros
+               and "__clang__" not in macros)
+    except (OSError, subprocess.SubprocessError):
+        gcc = False
+    with _GCC_FAMILY_LOCK:
+        return _GCC_FAMILY_MEMO.setdefault(compiler, gcc)
+
+
+def _is_x86_64() -> bool:
+    return platform.machine().lower() in ("x86_64", "amd64")
+
+
+def default_host_profile() -> str:
+    """The profile used when neither the compile options nor
+    ``$HAWK_HOST_PROFILE`` name one: ``native-vector-math`` when the host is
+    x86-64 AND the resolved host compiler is GCC, else ``native``."""
+    if _is_x86_64() and compiler_is_gcc(host_compiler()):
+        return "native-vector-math"
+    return "native"
+
 
 #: The FMA-contraction flag per profile (see :data:`HOST_PROFILES`): off for
 #: the exact profiles, fast for the fast one.
@@ -561,13 +609,24 @@ _HOST_CONTRACTION = {"native": "-ffp-contract=off",
 def host_profile(requested: str | None = None) -> str:
     """The host profile in effect: ``requested`` when given (the compile
     options' ``host_profile``), else ``$HAWK_HOST_PROFILE``, else
-    :data:`DEFAULT_HOST_PROFILE`. An unknown name RAISES."""
-    name = requested or os.environ.get("HAWK_HOST_PROFILE") or DEFAULT_HOST_PROFILE
+    :func:`default_host_profile`. An unknown name RAISES, and so does an
+    explicit ``native-vector-math`` under a non-GCC host compiler on x86-64
+    (its vector function ABI is GCC-only)."""
+    explicit = requested or os.environ.get("HAWK_HOST_PROFILE")
+    name = explicit or default_host_profile()
     if name not in HOST_PROFILES:
         raise HawkError(
             f"unknown host profile {name!r} (from "
             f"{'the compile options' if requested else '$HAWK_HOST_PROFILE'}); "
             f"the profiles are {HOST_PROFILES}")
+    if explicit and name == "native-vector-math" and _is_x86_64():
+        cxx = host_compiler()
+        if not compiler_is_gcc(cxx):
+            raise HawkError(
+                f"host profile 'native-vector-math' needs a GCC host compiler "
+                f"(its vector function ABI is GCC-only), but {cxx!r} is not "
+                f"GCC; use the 'native' profile, or point $HAWK_CXX at a GCC "
+                f"g++")
     return name
 
 

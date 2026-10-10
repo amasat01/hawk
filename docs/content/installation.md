@@ -166,11 +166,12 @@ SASS: the GPU's own machine code). Headers for any `#include` in
 <summary>SIMD and the host profiles</summary>
 
 The host target is compiled at run time by the host `g++` (or `$HAWK_CXX`)
-under one of three profiles. On x86-64 the default is `native-vector-math`
+under one of three profiles. On x86-64 with a GCC host compiler the default is `native-vector-math`
 (below), which vectorises transcendental math with aether's own functions,
 faithfully rounded (error < 1 ULP), and lets the compiler fuse `a*b + c`
-into one FMA instruction; on other architectures the default is
-`native`. The other two profiles are the EXACT ones: they
+into one FMA instruction; on other architectures, or with a non-GCC host compiler such as clang, the
+default is `native` (asking for `native-vector-math` under such a compiler is
+an error that says so). The other two profiles are the EXACT ones: they
 keep results bit-identical to libm and to a scalar build:
 
 - **`native`**: `-O3 -march=native -ffp-contract=off`, plus
@@ -191,7 +192,7 @@ Neither of these two profiles changes a result: FMA contraction is off and
 nothing enables fast-math or reassociation, so host results are
 bit-identical to a scalar build that calls libm.
 
-**`native-vector-math`** (the default on x86-64; x86-64 with GCC only): `native` plus
+**`native-vector-math`** (the default on x86-64 with a GCC host compiler; x86-64 with GCC only): `native` plus
 `-DAETHER_HOST_VECTOR_MATH -fno-trapping-math`, and `-ffp-contract=fast` in
 place of `-ffp-contract=off`. A per-sample loop that calls a
 transcendental function (`exp`, `log`, `pow`, `sin`, `cos`, `tan`, `tanh`,
@@ -228,7 +229,7 @@ run takes 6.5 s instead of 14.6 s on 1 thread and 5.1 s instead of 7.9 s on
 8. Every sample made the same accept/reject decisions and step count
 (49,797,416 attempts in both); final states differ by at most 1.3e-8 relative,
 and the error against the analytic solution is the same (2.2e-7 maximum).
-It is the default on x86-64, so `build`/`build_bundle` and the compile cache
+It is the default on x86-64 with GCC, so `build`/`build_bundle` and the compile cache
 use it unless a profile is named; it is part of the compile-cache key (with
 the CPU's identity, as for `native`), so entries compiled under another
 profile, including those cached when `native` was the default, are not

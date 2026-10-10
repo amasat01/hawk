@@ -695,10 +695,11 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
 
     ``host_profile`` picks the host code-gen profile
     (:data:`hawk.compile.toolchain.HOST_PROFILES`): ``"native-vector-math"``
-    (default on x86-64) or ``"native"`` (libm bit-identity) for a bundle
-    built on the machine that runs it, ``"portable"`` for one that's
-    prebuilt and shipped. Empty means ``$HAWK_HOST_PROFILE``, else
-    :data:`hawk.compile.toolchain.DEFAULT_HOST_PROFILE`.
+    (default on x86-64 with a GCC host compiler) or ``"native"`` (libm
+    bit-identity) for a bundle built on the machine that runs it,
+    ``"portable"`` for one that's prebuilt and shipped. Empty means
+    ``$HAWK_HOST_PROFILE``, else
+    :func:`hawk.compile.toolchain.default_host_profile`.
 
     ``opt_level`` picks the optimisation level
     (:data:`hawk.compile.toolchain.OPT_LEVELS`: ``"O0"``..``"O3"``), the

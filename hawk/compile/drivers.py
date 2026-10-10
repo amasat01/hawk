@@ -140,7 +140,7 @@ class CompileOptions:
     #: The host code-generation profile
     #: (:data:`hawk.compile.toolchain.HOST_PROFILES`). Empty means
     #: ``$HAWK_HOST_PROFILE``, else
-    #: :data:`~hawk.compile.toolchain.DEFAULT_HOST_PROFILE`. Ignored by the
+    #: :func:`~hawk.compile.toolchain.default_host_profile`. Ignored by the
     #: device backend.
     host_profile: str = ""
     #: The optimisation level (:data:`hawk.compile.toolchain.OPT_LEVELS`).

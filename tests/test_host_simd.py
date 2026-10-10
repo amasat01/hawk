@@ -406,7 +406,7 @@ def test_profile_flags_keep_the_bit_identity_guard():
 
 def test_the_profile_comes_from_the_options_then_the_environment(monkeypatch):
     monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
-    assert host_profile() == tc.DEFAULT_HOST_PROFILE
+    assert host_profile() == tc.default_host_profile()
     monkeypatch.setenv("HAWK_HOST_PROFILE", "portable")
     assert host_profile() == "portable"
     assert host_profile("native") == "native"
@@ -436,8 +436,8 @@ def test_a_cache_filled_under_the_old_default_is_not_served(tmp_path, monkeypatc
     reset_artifact_memo()
     new = compile_source(SOURCE, "probe", CompileOptions(
         backend=HOST, cache_dir=str(tmp_path)))
-    if tc.DEFAULT_HOST_PROFILE == "native":
-        pytest.skip("the default is still native on this architecture")
+    if tc.default_host_profile() == "native":
+        pytest.skip("the default is native here (architecture or compiler)")
     assert new.key != old.key and not new.hit
     reset_artifact_memo()
     again = compile_source(SOURCE, "probe", CompileOptions(
@@ -540,3 +540,82 @@ def test_a_host_build_actually_compiles_at_O0_and_at_O3(tmp_path):
         result = compile_source(SOURCE, "probe", CompileOptions(
             backend=HOST, cache_dir=str(tmp_path / level), opt_level=level))
         assert result.artifact.is_file() and not result.hit, level
+
+
+# --- the default follows the compiler -------------------------------------
+
+import shutil
+import threading
+
+
+def _fresh_family_memo(monkeypatch):
+    monkeypatch.setattr(tc, "_GCC_FAMILY_MEMO", {})
+
+
+def test_gcc_on_x86_defaults_to_vector_math(monkeypatch):
+    _fresh_family_memo(monkeypatch)
+    monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
+    monkeypatch.setattr(tc, "_is_x86_64", lambda: True)
+    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/g++")
+    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: True)
+    assert host_profile() == "native-vector-math"
+    assert tc.default_host_profile() == "native-vector-math"
+
+
+def test_a_clang_family_compiler_defaults_to_native(monkeypatch):
+    _fresh_family_memo(monkeypatch)
+    monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
+    clang = shutil.which("clang++")
+    if clang:
+        monkeypatch.setenv("HAWK_CXX", clang)
+        assert not tc.compiler_is_gcc(clang)
+    else:
+        monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/clang++")
+        monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
+    monkeypatch.setattr(tc, "_is_x86_64", lambda: True)
+    assert tc.default_host_profile() == "native"
+    assert host_profile() == "native"
+
+
+def test_explicit_vector_math_with_clang_raises_before_any_compile(monkeypatch, tmp_path):
+    _fresh_family_memo(monkeypatch)
+    monkeypatch.setattr(tc, "_is_x86_64", lambda: True)
+    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/clang++")
+    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
+    monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
+    with pytest.raises(hawk.HawkError, match=r"GCC.*clang\+\+.*native"):
+        host_profile("native-vector-math")
+    monkeypatch.setenv("HAWK_HOST_PROFILE", "native-vector-math")
+    with pytest.raises(hawk.HawkError, match="GCC-only"):
+        host_profile()
+    clang = shutil.which("clang++")
+    if clang:
+        monkeypatch.undo()
+        monkeypatch.setattr(tc, "_GCC_FAMILY_MEMO", {})
+        monkeypatch.setenv("HAWK_CXX", clang)
+        monkeypatch.setenv("HAWK_HOST_PROFILE", "native-vector-math")
+        with pytest.raises(hawk.HawkError, match="GCC-only"):
+            compile_source(SOURCE, "probe", CompileOptions(
+                backend=HOST, cache_dir=str(tmp_path)))
+        assert not list(tmp_path.glob("**/*.so"))
+
+
+def test_the_family_memo_agrees_across_threads(monkeypatch):
+    _fresh_family_memo(monkeypatch)
+    cxx = tc.host_compiler()
+    want = tc.compiler_is_gcc(cxx)
+    monkeypatch.setattr(tc, "_GCC_FAMILY_MEMO", {})
+    barrier = threading.Barrier(8)
+    seen = []
+
+    def work():
+        barrier.wait()
+        seen.append(tc.compiler_is_gcc(cxx))
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert seen == [want] * 8
+    assert tc._GCC_FAMILY_MEMO == {cxx: want}
