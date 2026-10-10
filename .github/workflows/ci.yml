@@ -167,6 +167,10 @@ jobs:
       CC: clang-18
       CXX: clang++-18
       TSAN_PY_VERSION: "3.14.8"
+      # the ft rows build their fixture bundles for the device too (compile-only,
+      # no GPU): the same nvcc the test/ft-stress jobs use, its host compiler g++-13
+      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC_CCBIN: /usr/bin/g++-13
     steps:
       - uses: actions/checkout@v7
         with:
@@ -197,6 +201,15 @@ jobs:
 
       # clang's OpenMP runtime (eagle._core needs OpenMP; gcc's libgomp does not pair with clang)
       - run: sudo apt-get update && sudo apt-get install -y libomp-18-dev
+
+      - name: Install compile-only CUDA 12.6 toolchain (nvcc; no driver/GPU)
+        run: |
+          curl -fsSL -o /tmp/cuda-keyring.deb \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i /tmp/cuda-keyring.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cuda-nvcc-12-6 cuda-cudart-dev-12-6 cuda-driver-dev-12-6 g++-13
 
       - name: TSan free-threaded CPython (cached)
         run: hawk/tests/sanitize/build_tsan_python.sh "$TSAN_PY_VERSION" "$RUNNER_TEMP/tsan-python"
