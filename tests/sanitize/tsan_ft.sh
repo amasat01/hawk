@@ -75,6 +75,12 @@ mkdir -p "$work/bin"
 printf '#!/bin/sh\nexec %s -fsanitize=thread -g "$@"\n' "$(command -v "$CXX")" > "$work/bin/tsan-cxx"
 chmod +x "$work/bin/tsan-cxx"
 export HAWK_CXX="$work/bin/tsan-cxx" HAWK_CACHE_DIR="$work/kernel-cache"
+# hawk caps a compiler's address space through a trampoline that runs under
+# sys.executable; a TSan interpreter has already reserved far more virtual
+# memory than any cap, so its allocator dies before exec'ing the compiler.
+# The cap protects against ptxas exhausting memory and is exercised by every
+# other CI job; here it is off (0 = unbounded, see hawk/compile/drivers.py).
+export HAWK_COMPILE_ADDRESS_CAP=0
 rm -rf "$HAWK_CACHE_DIR"
 
 # (ii) non-vacuity: the canary race must be reported with only CPython's file
