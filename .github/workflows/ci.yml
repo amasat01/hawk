@@ -86,9 +86,9 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ccache-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
+          key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ runner.arch }}-test-
+            ccache-v2-${{ runner.os }}-${{ runner.arch }}-test-
       - run: ccache -z
 
       # NVIDIA's apt repo for Ubuntu 24.04 (noble), x86_64. cuda-keyring adds
@@ -155,6 +155,68 @@ jobs:
         run: cd hawk && python -m pytest tests -q -m "not gpu"
       - if: always()
         run: ccache -s
+
+  # tsan-ft — hawk._core, eagle._core and hawk's run-time host kernels under
+  # ThreadSanitizer on a free-threaded CPython built with --with-thread-sanitizer
+  # (cached per version + compiler), running the ft rows. Green = the canary race
+  # is reported without our suppressions (the detector reaches _core) AND the ft
+  # rows give zero reports with them. See tests/sanitize/.
+  tsan-ft:
+    runs-on: ubuntu-latest
+    env:
+      CC: clang-18
+      CXX: clang++-18
+      TSAN_PY_VERSION: "3.14.8"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hawk
+
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/aether
+          path: aether
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/eagle
+          path: eagle
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/raptor
+          path: raptor
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      - uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/tsan-python
+          key: tsan-python-${{ runner.os }}-${{ runner.arch }}-${{ env.TSAN_PY_VERSION }}-clang18-${{ hashFiles('hawk/tests/sanitize/build_tsan_python.sh') }}
+
+      - name: TSan free-threaded CPython (cached)
+        run: hawk/tests/sanitize/build_tsan_python.sh "$TSAN_PY_VERSION" "$RUNNER_TEMP/tsan-python"
+
+      # aether + eagle headers for eagle's binding build (CPP mode, no CUDA)
+      - run: |
+          cmake -DAETHER_CPP_MODE=ON \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
+            -B aether/build -S aether
+          cmake --install aether/build
+          cmake -B eagle/__eagle_hdr -S eagle -DEAGLE_CPP_MODE=ON \
+            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install" \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
+          cmake --install eagle/__eagle_hdr
+
+      - name: ft rows under ThreadSanitizer
+        env:
+          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
+          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+        run: |
+          cd hawk
+          CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install" RAPTOR_DIR="${GITHUB_WORKSPACE}/raptor" \
+            tests/sanitize/tsan_ft.sh "$RUNNER_TEMP/tsan-python/bin/python${TSAN_PY_VERSION%.*}t"
 
   ft-stress:
     runs-on: ubuntu-latest
@@ -225,9 +287,9 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ccache-${{ runner.os }}-${{ runner.arch }}-ft-stress-${{ matrix.python-version }}-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
+          key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-ft-stress-${{ matrix.python-version }}-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ runner.arch }}-ft-stress-${{ matrix.python-version }}-
+            ccache-v2-${{ runner.os }}-${{ runner.arch }}-ft-stress-${{ matrix.python-version }}-
       - run: ccache -z
 
       # NVIDIA's apt repo for Ubuntu 24.04 (noble), x86_64. cuda-keyring adds
