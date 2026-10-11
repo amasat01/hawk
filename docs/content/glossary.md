@@ -35,6 +35,12 @@ jvp
 vjp
   Reverse-mode derivative: how a change of the output maps back to the inputs.
 
+step vjp
+  The vjp of one step of a kernel that updates its planes in place
+  (`hawk.diff.step_vjp`). It reads each plane's value before the step, takes
+  `bar_<plane>_next` (the gradient with respect to the value after the step)
+  and returns `bar_<plane>` (the gradient with respect to the value before it).
+
 derived
   A kernel that hawk builds from another one, such as its `jvp`, `vjp` or
   taping twin.

@@ -91,9 +91,19 @@ def steps(kernel: Any, K: int | str) -> Any:
     A default automatic kernel (``@hawk.kernel`` without ``steps=``) is
     derived from its single step ``.step``, so ``hawk.steps(k, 16)`` means
     the same with or without the default."""
-    if getattr(kernel, "step", None) is not None:
-        kernel = kernel.step
-    return _derive(kernel, K, f"{kernel.name}_x{K}")
+    kernel = default_step(kernel)
+    # the single step rides along for hawk.diff.tape; see default_step
+    return _derive(kernel, K, f"{kernel.name}_x{K}", step=kernel)
+
+
+def default_step(kernel: Any) -> Any:
+    """The single step a default automatic kernel stands for (its ``.step``,
+    under the same name), else ``kernel``. A ``steps=K`` kernel also carries
+    its single step, under another name; a derivative tagged with that name
+    would point at a kernel its bundle does not hold, so it is not used
+    here."""
+    step = getattr(kernel, "step", None)
+    return step if step is not None and step.name == kernel.name else kernel
 
 
 def admits_auto(kernel: Any) -> bool:

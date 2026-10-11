@@ -178,11 +178,11 @@ def _refuse_prior_read(seq: Sequence[Node]) -> None:
 def _single_step(primal: Any) -> Any:
     """The single step a default automatic kernel carries as ``.step``
     (same name, same planes), else ``primal``. An explicit ``steps="auto"``
-    or ``steps=K`` kernel carries none and is named ``<name>_x...``, so a
-    derivative tagged with the step's name would point at a kernel its
-    bundle does not hold."""
-    step = getattr(primal, "step", None)
-    return primal if step is None else step
+    or ``steps=K`` kernel is named ``<name>_x...``, so a derivative tagged
+    with its step's name would point at a kernel its bundle does not hold."""
+    from ..trace.steps import default_step
+
+    return default_step(primal)
 
 
 def _primal_name(primal: Any) -> str | None:

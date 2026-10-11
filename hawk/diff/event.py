@@ -71,8 +71,9 @@ class EventGuard(NamedTuple):
 
 
 def _single_step(kernel: Any) -> Any:
-    step = getattr(kernel, "step", None)
-    return kernel if step is None else step
+    from ..trace.steps import default_step
+
+    return default_step(kernel)
 
 
 def _refuse(kernel: str, cond: Node) -> HawkError:

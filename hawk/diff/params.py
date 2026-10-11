@@ -53,8 +53,10 @@ def param_planes(kernel: Any, names: Any = None) -> Any:
     from ..trace.kernel import Kernel
     from ..trace.steps import default_steps
 
-    step = (getattr(kernel, "step", None) or getattr(kernel, "one_step", None)
-            or kernel)
+    from ..trace.steps import default_step
+
+    step = default_step(kernel)
+    step = getattr(step, "one_step", None) or step
     nodes = _reachable(step.sinks)
     if any(getattr(n, "kind", None) == "loop" for n in nodes):
         raise HawkError(

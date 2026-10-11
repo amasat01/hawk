@@ -9,15 +9,16 @@ the same canonical walk, emitter and cache as any primal.
 
 :func:`~hawk.diff.params.param_planes` reads a kernel's uniforms from one-cell
 planes, so a recorded launch can change them without re-capture;
-:func:`~hawk.diff.tape.tape` and :func:`~hawk.diff.tape.refine_entry` build
+:func:`~hawk.diff.tape.tape`, :func:`~hawk.diff.tape.step_vjp` and
+:func:`~hawk.diff.tape.refine_entry` build
 the kernels a launching runtime needs to reverse a whole rollout of a step
 kernel and to refine its stop time; :mod:`hawk.diff.event` reads a stop rule
 as a smooth guard.
 """
 
 from .params import param_planes
-from .tape import refine_entry, tape
+from .tape import refine_entry, step_vjp, tape
 from .transform import ADJOINT_PREFIX, TANGENT_PREFIX, Derived, jvp, vjp
 
-__all__ = ["vjp", "jvp", "tape", "refine_entry", "param_planes", "ADJOINT_PREFIX",
+__all__ = ["vjp", "jvp", "tape", "step_vjp", "refine_entry", "param_planes", "ADJOINT_PREFIX",
            "TANGENT_PREFIX", "Derived"]

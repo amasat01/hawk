@@ -28,8 +28,9 @@ automatic kernel (``@hawk.kernel`` without ``steps=``, or ``steps="auto"``)
 gets the fused twin (one tape row per loop trip, the trip count read from
 the ``fused_steps`` word), carrying its single-step twin as ``.step`` and
 ``.one_step``; a single-step kernel (``steps=1``) gets the single-step twin.
-A fixed ``steps=K`` kernel is refused (differentiate the single step). The
-plain kernel is never changed.
+A fixed ``steps=K`` kernel gets the same fused twin from its single step
+``.step`` (the runtime keeps the trip count at most K). The plain kernel is
+never changed.
 """
 
 from __future__ import annotations
@@ -60,8 +61,9 @@ _FLOAT = ("f64", "f32")
 
 def tape(kernel: Any, window: int, *, events: str = "step") -> Any:
     """The taping twin of ``kernel`` for windows of ``window`` steps (see
-    the module docstring). A default automatic kernel is read through its
-    single step ``.step``.
+    the module docstring). A default automatic kernel, or a ``steps=K``
+    kernel, is read through its single step ``.step`` and gets the fused
+    twin (a launching runtime sets its trip count, at most ``K``).
 
     ``events="refine"`` (a kernel declaring ``time_step=``) makes the twin's
     stop test CLOSED and tolerant: a sample stops where a guard ``g`` (see
@@ -418,3 +420,65 @@ def refine_entry(kernel: Any) -> Any:
     out = Kernel(step.name + "_refine", sinks, {}, kind=step.kind)
     out.time, out.time_step = refined.time, refined.time_step
     return out
+
+
+#: The suffix naming a plane's value AFTER the step in :func:`step_vjp`.
+NEXT_SUFFIX = "_next"
+
+
+def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None) -> Any:
+    """The vjp of ONE step of an in-place step kernel (one that updates
+    ``Mutable`` planes and finishes its samples), for a reverse through a
+    rollout. :func:`~hawk.diff.vjp` refuses such a kernel, because a plane
+    read before it is assigned holds the previous step's value; here the
+    step is read as a pure function of the values its planes hold BEFORE it.
+
+    Naming contract (the planes of the result):
+
+    * a plane the derivative needs is read under its own name and holds its
+      value before the step (for a taped run, a row of :func:`tape`'s tape);
+    * ``bar_<plane>_next`` (adjoint in) is ∂J/∂(``<plane>`` after the step),
+      one per plane the step commits;
+    * ``bar_<plane>`` (gradient out) is ∂J/∂(``<plane>`` before the step),
+      one per differentiable input (``wrt`` narrows them, as for ``vjp``).
+
+    The stop rule and the step count are not differentiated (a sample's stop
+    step is fixed by the recorded run). A kernel declaring ``time_step=`` is
+    read in the taping twin's index form, so the result also reads
+    ``applied_steps`` (the step's index), ``<t>_0`` and the step size as a
+    per-sample plane — the same planes the twin binds. A default automatic or
+    ``steps=K`` kernel is differentiated through its single step.
+
+    The result is tagged as the derivative of that single step (its name):
+    publish it beside that step, or pass ``primal_unit=`` naming the unit it
+    was published in.
+
+    Example::
+
+        @hawk.kernel(steps=1)
+        def fall(dt: Param, terminated: Terminated, y: Mutable[Scalar],
+                 v: Mutable[Scalar]):
+            v_start = v
+            v = v_start - 9.81 * dt
+            y = y + dt * v_start
+            terminated = y < 0.0
+
+        back = hawk.Kernel("fall_step_vjp", hawk.diff.step_vjp(fall))
+        # reads y, v, dt, bar_y_next, bar_v_next; writes bar_y, bar_v, bar_dt
+    """
+    from ..trace.kernel import Kernel
+    from .event import as_plain_reads
+    from .transform import Derived, vjp
+
+    step = (getattr(kernel, "step", None) or getattr(kernel, "one_step", None)
+            or kernel)
+    twin = tape(kernel, 1)
+    single = getattr(twin, "one_step", None) or twin
+    commits = [s for s in single.sinks if isinstance(s, Assign) and s.name != APPLIED_STEPS]
+    values = as_plain_reads(tuple(s.value for s in commits))
+    function = Kernel(f"{step.name}_function",
+                      tuple(Assign(s.name + NEXT_SUFFIX, v, s.ttype)
+                            for s, v in zip(commits, values)), {})
+    out = vjp(function, wrt=wrt)
+    return Derived(tuple(out), primal=step.name, kind="vjp", wrt=out.wrt,
+                   primal_unit=primal_unit)

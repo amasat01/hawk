@@ -674,8 +674,9 @@ def test_the_default_is_the_auto_kernel_under_the_author_s_name():
         assert meta["kernel"] == "_osc_body"
         assert meta["finish"]["steps"] == "auto"
         assert meta["finish"]["steps_max"] == AUTO_K_MAX
-    assert plain.step is None and hawk.steps(plain, 4).step is None
-    assert kernel(steps="auto")(_osc_body).step is None
+    assert plain.step is None and hawk.steps(plain, 4).step is plain
+    explicit = kernel(steps="auto")(_osc_body)      # its step rides along under another name
+    assert explicit.name == "_osc_body_xauto" and explicit.step.name == "_osc_body"
 
 
 def _not_admitted():

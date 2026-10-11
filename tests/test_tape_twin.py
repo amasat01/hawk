@@ -336,8 +336,18 @@ def test_refusals_name_the_kernel():
 
     with pytest.raises(HawkError, match=r"nothing to tape"):
         tape(write_only, 4)
-    with pytest.raises(HawkError, match=r"takes 4 steps per launch"):
-        tape(hawk.steps(osc, 4), 4)
+
+
+def test_a_fixed_k_kernel_tapes_through_its_single_step():
+    """``steps=K`` keeps its single step as ``.step``: the twin is the fused
+    twin of that step (a runtime sets the trip count, at most K), the same
+    twin an automatic kernel of the same body gets."""
+    fixed = hawk.steps(osc, 4)
+    assert fixed.step is osc and fixed.name == "osc_x4"
+    twin, auto = tape(fixed, 8), tape(osc_auto, 8)
+    assert ("lookup", "fused_steps") in twin.walk.arg_spec
+    assert twin.walk.arg_spec == auto.walk.arg_spec
+    assert twin.one_step.walk.arg_spec == tape(osc, 8).walk.arg_spec
 
 
 @pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
