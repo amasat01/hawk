@@ -13,6 +13,7 @@ names no launch, no stream and no occupancy.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from ..ir import HawkError, Walk
@@ -103,7 +104,7 @@ class CudaBackend:
 
     def fast_prelude(self) -> str:
         """The device helper the fast-path entries share (:data:`STEPS_MAX`)."""
-        return STEPS_MAX + "\n\n" + STEPS_SUM + "\n\n" + FINISH_SUM
+        return STEPS_MAX + "\n\n" + STEPS_SUM + "\n\n" + FINISH_SUM + "\n\n" + PERSIST_REPORT
 
     def dispatch(self, kind_spelling: str, branch_spellings: Sequence[str],
                  policy: str, **kw: object) -> str:
@@ -202,6 +203,20 @@ static __device__ __forceinline__ void hawk_finish_sum(const ViewT& counter, uns
 }"""
 
 
+#: The persistent entry's lane-utilisation report: a lane's steps ``ran``
+#: since its last report into the pair (null: not counted) -- the steps, and
+#: the lane's slots: the steps rounded up to a :data:`PERSIST_CHUNK`, as every
+#: chunk but a lane's last runs whole. Counted per lane, so a warp split by
+#: independent thread scheduling counts each slot once.
+PERSIST_REPORT = f"""static __device__ __forceinline__ void hawk_persist_util(unsigned long long* util,
+                                                         unsigned ran)
+{{
+    if (util == nullptr) return;
+    atomicAdd(&util[0], static_cast<unsigned long long>(ran));
+    atomicAdd(&util[1], (ran + {PERSIST_CHUNK - 1}ull) / {PERSIST_CHUNK}u * {PERSIST_CHUNK}u);
+}}"""
+
+
 def entry_counts_finished(walk: Walk, split) -> bool:
     """Whether the fast entries count a sample finished ON ENTRY into the
     finish counter (as the step's own finish epilogue counts a sample that
@@ -237,8 +252,8 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
 
     ``<name>_persist`` takes the fused entry's parameters, then
     ``hawk_next`` (a ``uint32`` counter the caller zeroes),
-    ``hawk_util`` (two ``uint64``: the lane-steps run, and the lane-step
-    slots issued -- 32 x :data:`PERSIST_CHUNK` per chunk head -- or null)
+    ``hawk_util`` (two ``uint64``: the lanes' steps, and their slots --
+    each lane's steps rounded up to a :data:`PERSIST_CHUNK` -- or null)
     and ``hawk_steps`` (a ``uint32`` the caller zeroes: the run's longest
     per-sample step count, or null). Each
     lane fetches a sample ``base + atomicAdd(hawk_next, 1)`` until it passes
@@ -251,9 +266,9 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     whatever the grid. Lanes run :data:`PERSIST_CHUNK` steps between chunk
     heads and refill the moment their sample commits, inside the chunk, so
     no lane waits for the warp's slowest sample and the head costs once per
-    chunk, not once per step. Nothing in the loop is a warp collective (the
-    head's ``__activemask`` only names the lanes that count capacity), so it
-    is correct however independent thread scheduling splits a warp.
+    chunk, not once per step. Nothing in the loop is a warp collective and
+    capacity is counted per lane, so it is correct, and counts each slot
+    once, however independent thread scheduling splits a warp.
 
     No atomic runs per sample beyond the fetch: a lane keeps its committed
     samples' longest trip count and its finish count (the step's finish
@@ -285,65 +300,69 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     post = split.post.replace(per_sample, _PERSIST_FINISH) if split.post else split.post
     assert per_sample not in (post or "") and per_sample not in split.step \
         and per_sample not in (split.pre or "")
-    carries = [(f"hawk_pc{j}", carry_type(t), cname, init, nxt)
-               for j, (cname, t, init, nxt) in enumerate(split.carries)]
+    # A carry the step never reads (the fused loop's exit flag) is not held
+    # across trips: the commit reads this trip's value of it directly.
+    carries, fresh = [], []
+    for j, (cname, t, init, nxt) in enumerate(split.carries):
+        if re.search(rf"\b{cname}\b", split.step):
+            carries.append((f"hawk_pc{j}", carry_type(t), cname, init, nxt, bool(t.shape)))
+        else:
+            fresh.append((carry_type(t), cname, nxt))
+    # A value the step reads that no sample changes (a Param and what is
+    # computed from it alone) is evaluated once, at entry, instead of carried.
+    hoisted = set(split.sample_free)
+    free = {re.match(r"const [^=;]*?\b(\w+) = ", d).group(1) for d in hoisted}
+    pre = "\n".join(line for line in (split.pre or "").splitlines() if line.strip() not in hoisted)
     live = [(f"hawk_pl{m}", carry_type(t), lname)
-            for m, (lname, t) in enumerate(split.live_ins)]
+            for m, (lname, t) in enumerate(split.live_ins) if lname not in free]
 
     def put(store, ctype, value, shaped):
         return f"{store} = {ctype}({value});" if shaped else \
             f"{store} = static_cast<{ctype}>({value});"
 
-    shaped = [bool(t.shape) for _, t, _, _ in split.carries]
     head = backend.entry_signature(walk, name)
     assert head.endswith("    long long nSamples)")
     head = head[:-1] + ",\n" + ",\n".join(PERSIST_PARAMS) + ")"
     head = head.replace(f"void {name}(", f"void {name}_persist(", 1)
+    # Registers decide this entry's residency, so the bookkeeping is lean: the
+    # sample is ONE 32-bit offset from base (its index is rebuilt where read),
+    # and ONE counter, the lane's steps, also ends each chunk (every chunk but
+    # a lane's last runs all its steps), so the lane's slots are its steps
+    # rounded up to a chunk.
+    index = "aether::SampleIndex::make(static_cast<std::size_t>(base + hawk_s))"
     lines = [head, "{", backend.unpack(walk)]
     lines += [f"    {ctype} {store}{{}};" for store, ctype, *_ in carries]
     lines += [f"    {ctype} {store}{{}};" for store, ctype, _ in live]
+    lines += [f"    {d}" for d in split.sample_free]
     lines += [
         "    int hawk_cnt = 0;",
         "    int hawk_trip = 0;",
-        "    long long hawk_s = 0;",
-        "    long long hawk_i = 0;",
+        "    unsigned hawk_s = 0u;",
         "    unsigned hawk_maxtrip = 0u;",
         "    unsigned hawk_fin = 0u;",
+        "    unsigned hawk_ran = 0u;",
         "    bool hawk_have = false;",
         "    bool hawk_done = false;",
-        "    unsigned long long hawk_busy = 0;",
-        "    unsigned hawk_lane;",
-        '    asm("mov.u32 %0, %%laneid;" : "=r"(hawk_lane));',
-        "    (void)hawk_lane;",
+        "    (void)nSamples;",
         "    while (true) {",
-        f"        // the chunk head, once per {PERSIST_CHUNK} steps: no warp collective, so any split",
-        "        // of the warp is correct; the leader of the lanes here counts their capacity",
-        "        if (hawk_util != nullptr) {",
-        "            const unsigned hawk_warp = __activemask();",
-        "            if (hawk_lane == static_cast<unsigned>(__ffs(hawk_warp) - 1))",
-        f"                atomicAdd(&hawk_util[1], {32 * PERSIST_CHUNK}ull);",
-        "        }",
     ]
 
     def fetch(pad):
         """A lane's refill: fetch until a sample with steps to run, or none left."""
         out = [
             f"{pad}while (!hawk_have) {{",
-            f"{pad}    hawk_s = static_cast<long long>(atomicAdd(hawk_next, 1u));",
+            f"{pad}    hawk_s = atomicAdd(hawk_next, 1u);",
             f"{pad}    if (hawk_s >= count) {{ hawk_done = true; break; }}",
-            f"{pad}    hawk_i = base + hawk_s;",
-            f"{pad}    const aether::SampleIndex i =",
-            f"{pad}        aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));",
-            f"{pad}    (void)nSamples;",
+            f"{pad}    const aether::SampleIndex i = {index};",
         ]
         inner = pad + "    "
         if split.guard is not None:
             out.append(f"{inner}if (!{split.guard}) {{")
             inner += "    "
-        if split.pre:
-            out.append(split.pre)
+        if pre:
+            out.append(pre)
         out += [inner + put(store, ctype, init, sh)
-                for (store, ctype, _, init, _), sh in zip(carries, shaped)]
+                for store, ctype, _, init, _, sh in carries]
         out += [f"{inner}{store} = {lname};" for store, _, lname in live]
         out += [f"{inner}hawk_cnt = hawk_clamp_count({split.count});",
                 f"{inner}hawk_trip = 0;",
@@ -358,28 +377,28 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     lines += [
         "        if (hawk_done) break;",
         PERSIST_UNROLL_LINE if split.op_count <= SHORT_DEVICE_STEP_OPS else None,
-        f"        for (int hawk_j = 0; hawk_j < {PERSIST_CHUNK}; ++hawk_j) {{",
-        "            const aether::SampleIndex i =",
-        "                aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));",
+        "        do {",
+        "            ++hawk_ran;",
+        f"            const aether::SampleIndex i = {index};",
         "            (void)i;",
         f"            const Int {split.index} = hawk_trip;",
         f"            (void){split.index};",
     ]
     lines += [f"            const {ctype} {cname} = {store};"
-              for store, ctype, cname, _, _ in carries]
+              for store, ctype, cname, *_ in carries]
     lines += [f"            const {ctype} {lname} = {store};"
               for store, ctype, lname in live]
     lines.append(split.step)
-    lines += [f"            {store} = {nxt};" for store, _, _, _, nxt in carries]
+    lines += [f"            {store} = {nxt};" for store, _, _, _, nxt, _ in carries]
     lines += [
         "            ++hawk_trip;",
-        "            ++hawk_busy;",
         f"            if ({split.exit} || hawk_trip >= hawk_cnt) {{",
         "                hawk_maxtrip = max(hawk_maxtrip, static_cast<unsigned>(hawk_trip));",
         "                {",
     ]
     lines += [f"                const {ctype} {cname} = {store};"
-              for store, ctype, cname, _, _ in carries]
+              for store, ctype, cname, *_ in carries]
+    lines += [f"                const {ctype} {cname} = {nxt};" for ctype, cname, nxt in fresh]
     lines.append(post) if post else None
     lines += ["                }",
               "                hawk_have = false;",
@@ -387,11 +406,19 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     lines += fetch("                ")
     lines += ["                if (hawk_done) break;",
               "            }",
-              "        }",
+              f"        }} while (hawk_ran % {PERSIST_CHUNK}u != 0u);",
               "        if (hawk_done) break;",
+              f"        // the chunk head, once per {PERSIST_CHUNK} steps: no warp collective, so any split",
+              "        // of the warp is correct; the step count is reported long before it could wrap",
+              "        if (hawk_ran >= (1u << 31)) {",
+              "            hawk_persist_util(hawk_util, hawk_ran);",
+              "            if (hawk_stepsum != nullptr)",
+              "                atomicAdd(hawk_stepsum, static_cast<unsigned long long>(hawk_ran));",
+              "            hawk_ran = 0u;",
+              "        }",
               "    }",
-              "    if (hawk_util != nullptr) atomicAdd(&hawk_util[0], hawk_busy);",
-              "    if (hawk_stepsum != nullptr) hawk_steps_sum(hawk_stepsum, hawk_busy);",
+              "    hawk_persist_util(hawk_util, hawk_ran);",
+              "    if (hawk_stepsum != nullptr) hawk_steps_sum(hawk_stepsum, hawk_ran);",
               "    if (hawk_steps != nullptr) hawk_steps_max(hawk_steps, hawk_maxtrip);",
               f"    hawk_finish_sum({_finish_counter()}, hawk_fin);",
               "}"]

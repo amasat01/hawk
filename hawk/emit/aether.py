@@ -156,7 +156,10 @@ class LaneSplit:
     finish epilogue). ``guard`` is the body-wide mask condition (``None``
     without one); ``pre``/``post`` exclude it. ``carries`` holds ``(name,
     ttype, init text, next name)`` per carried slot; ``live_ins`` the
-    ``(name, ttype)`` of each value ``pre`` names and ``step`` reads.
+    ``(name, ttype)`` of each value ``pre`` names and ``step`` reads;
+    ``sample_free`` the declarations, in ``pre``'s order, of those of them
+    that read no per-sample value (a ``Param`` and constants only) and of the
+    values they read, which a backend may evaluate once instead of carrying.
     ``count`` is the runtime trip-count text (``None`` for a static
     ``stop``), ``index`` the loop index's name. ``speculative`` says one trip
     may run on a finished sample and its result be discarded: the step reads
@@ -177,6 +180,7 @@ class LaneSplit:
     op_count: int
     needs_random: bool = False
     reduce_op: str | None = None
+    sample_free: tuple = ()
 
 
 #: A declaration the renderer emits (``const auto t5 = ...``, ``const
@@ -197,6 +201,46 @@ def render_lane_split(sinks: Sequence[Sink], walk: Walk, *, indent: str = "     
     ``None`` and keeps its plain body: a body with its own inner ``for`` would
     need a second interchange."""
     return _Renderer(tuple(sinks), walk, indent, kind).lane_split()
+
+
+def _sample_free(node: Node) -> bool:
+    """Whether ``node`` reads no per-sample value: built from ``Param`` and
+    sample-count leaves and constants by non-random ops only."""
+    stack, seen = [node], set()
+    while stack:
+        n = _through(stack.pop())
+        if id(n) in seen:
+            continue
+        seen.add(id(n))
+        if isinstance(n, Leaf):
+            if n.role not in ("uniform", "nsamples"):
+                return False
+        elif isinstance(n, Op) and n.kind not in RANDOM_OPS and n.kind != RAW_KIND:
+            stack.extend(n.operands)
+        elif not isinstance(n, Const):
+            return False
+    return True
+
+
+def _declarations(pre: str, names: Sequence[str]) -> tuple:
+    """The one-line declarations in ``pre`` of ``names`` and of every value
+    declared in ``pre`` they read, in ``pre``'s order; ``()`` when one is not
+    a one-line declaration."""
+    lines = {}
+    for line in pre.splitlines():
+        m = _DECLARED.match(line)
+        if m:
+            lines[m.group(1)] = line
+    want, stack = set(), list(names)
+    while stack:
+        name = stack.pop()
+        line = lines.get(name)
+        if line is None or not line.rstrip().endswith(";"):
+            return ()
+        if name not in want:
+            want.add(name)
+            stack.extend(w for w in _WORD.findall(line.split("=", 1)[1]) if w in lines)
+    return tuple(line.strip() for name, line in lines.items() if name in want)
 
 
 class _Renderer(_DispatchMixin):
@@ -631,10 +675,12 @@ class _Renderer(_DispatchMixin):
             return None             # the step reads a head value not on the boundary
         live_ins = [(n, t) for n, t in live_ins if n in step_words]
         ops = sum(isinstance(n, Op) for n in loop.body_nodes())
+        free = {self._ref(value) for value in loop.free if _sample_free(value)}
         return LaneSplit(guard, pre, info["step"], post, info["carries"],
                          tuple(live_ins), info["count"], loop.stop, info["index"],
                          info["exit"], self._speculative(loop), ops,
-                         body.needs_random, body.reduce_op)
+                         body.needs_random, body.reduce_op,
+                         _declarations(pre, [n for n, _ in live_ins if n in free]))
 
     def _loop_split(self, loop: Loop) -> None:
         """:meth:`_loop` for the loop :meth:`lane_split` cuts at: marks where

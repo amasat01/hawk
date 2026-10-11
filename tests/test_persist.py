@@ -19,8 +19,8 @@ is pinned:
   are planes (``k``, ``n_acc``/``n_rej``), so they are compared too.
 * **The word is a runtime bound.** A word above 64 runs that many steps in
   one fused launch (the rows above use it).
-* **Lane utilisation** is counted when asked: active lanes over
-  warp-iterations, in ``(0, 1]``.
+* **Lane utilisation** is counted when asked, per lane: steps over the
+  lane's chunk slots, in ``(0, 1]``, whatever split of a warp runs them.
 * **Only automatic kernels** carry the entry, and only on the device.
 """
 
@@ -202,15 +202,16 @@ def test_persist_counts_every_step_once_on_a_uniform_batch(bundle):
 
 def test_the_persist_loop_has_no_warp_collective():
     """Correct however independent thread scheduling splits a warp: no
-    synchronising or exchanging warp intrinsic in the persistent loop, only
-    the one ``__activemask`` naming the lanes that count capacity."""
+    synchronising or exchanging warp intrinsic in the persistent loop, and
+    the capacity is counted per lane (no ``__activemask`` group)."""
     text = render_source(oscillator.name, oscillator.sinks, oscillator.walk, BACKENDS["cuda"],
                          kind=oscillator.kind, one_step=oscillator.one_step).text
     body = text.split(f"void {oscillator.name}_persist(", 1)[1].split("\n}\n", 1)[0]
     for token in ("__syncwarp", "__shfl", "__ballot", "__reduce", "__any_sync", "__all_sync"):
         assert token not in body, token
-    assert body.count("__activemask()") == 1
-    assert f"hawk_j < {PERSIST_CHUNK}" in body
+    loop = body.rsplit("    hawk_persist_util(", 1)[0]
+    assert "__activemask()" not in loop
+    assert f"while (hawk_ran % {PERSIST_CHUNK}u != 0u);" in body
 
 
 @pytest.mark.parametrize("kernel, light", [(oscillator, True), (rkf78_attempt, False)],
@@ -338,20 +339,20 @@ def test_the_persist_loop_reports_its_cells_once_at_exit(kernel):
     """No atomic on a shared cell per sample inside the persistent loop: a
     lane keeps its longest committed trip count and its finish count (the
     step's finish epilogue and the on-entry count) in registers and reports
-    each ONCE after the loop, warp-reduced. The sample's global index is
-    computed once per fetched sample, not once per step."""
+    each ONCE after the loop, warp-reduced. Nothing 64-bit is held across
+    a step: the sample is a 32-bit offset from ``base``."""
     text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
     body = _entry_body(text, kernel.name, "_persist")
-    loop, exit_ = body.rsplit("    if (hawk_util != nullptr) atomicAdd(&hawk_util[0]", 1)
+    loop, exit_ = body.rsplit("    hawk_persist_util(hawk_util, hawk_ran);", 1)
     assert "atomicMax(" not in body
     assert "hawk_abi::finish_count(" not in body
-    assert "hawk_steps" not in loop.split(f"hawk_j < {PERSIST_CHUNK}", 1)[1]
+    assert "hawk_steps" not in loop.split("        do {", 1)[1].split("} while (hawk_ran", 1)[0]
     assert loop.count("++hawk_fin;") == 3       # on entry (twice: both fetches), the epilogue
     assert exit_.count("hawk_steps_max(hawk_steps, hawk_maxtrip);") == 1
     assert exit_.count("hawk_finish_sum(lut_finished_count, hawk_fin);") == 1
-    chunk = loop.split(f"hawk_j < {PERSIST_CHUNK}", 1)[1].split("hawk_have = false;", 1)[0]
-    assert "base + hawk_s" not in chunk and "long long" not in chunk
+    chunk = loop.split("        do {", 1)[1].split("hawk_have = false;", 1)[0]
+    assert "long long" not in chunk
 
 
 #: sha256 of the text the persist entry's change must leave alone: each
@@ -413,3 +414,50 @@ def test_persist_reports_the_longest_trip_and_the_finished_count(bundle, name, c
             trips = (got["n_acc"] + got["n_rej"]) - (planes["n_acc"] + planes["n_rej"])
         assert int(steps.get()[0]) == int(trips.max()) > 0, (name, case, grid)
         assert int(got["counter"][0]) == int(np.count_nonzero(got["terminated"])), grid
+
+
+@pytest.mark.parametrize("kernel", [oscillator, rkf78_attempt], ids=lambda k: k.name)
+def test_the_persist_entry_holds_only_what_a_step_needs(kernel):
+    """The entry's residency is its register count, so it carries across a
+    step only what the next step reads: a value computed from ``Param`` inputs
+    alone is evaluated once at entry (not a per-lane copy), a carry the step
+    never reads (the loop's exit flag) is read by the commit from the trip that
+    set it, and one 32-bit counter is both the lane's steps and its chunk
+    end. The same rules hold for any kernel; these two are witnesses."""
+    text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+                         kind=kernel.kind, one_step=kernel.one_step).text
+    body = _entry_body(text, kernel.name, "_persist")
+    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
+    stores = [line.split("{}")[0].split()[-1] for line in body.splitlines()
+              if line.startswith("    ") and line.endswith("{};")]
+    read = [c for c in split.carries if c[0] in split.step]
+    assert len([s for s in stores if s.startswith("hawk_pc")]) == len(read) < len(split.carries)
+    free = len(split.sample_free and [d for d in split.sample_free
+                                       if any(d.split(" = ")[0].endswith(" " + n)
+                                              for n, _ in split.live_ins)])
+    assert len([s for s in stores if s.startswith("hawk_pl")]) == len(split.live_ins) - free
+    head = body.split("    while (true) {", 1)[0]
+    assert all(f"    {d}" in head for d in split.sample_free)
+    assert "unsigned hawk_ran = 0u;" in head and "long long hawk_" not in head
+    if kernel is oscillator:
+        assert free == 2, "dt/6 and dt/2 read no sample"
+
+
+@pytest.mark.gpu
+def test_persist_utilisation_is_per_lane_on_a_fragmented_warp(bundle):
+    """Every warp split down the middle: half its lanes run a 1-step
+    sample, half a 1000-step one. Counted per lane, the slots are each
+    lane's steps rounded up to a chunk, so the utilisation reads the lanes'
+    own work (about 0.95 here) however the warp is split; counting the
+    capacity once per converged group would read about half."""
+    import cupy as cp
+
+    lanes = 256
+    planes = _planes("oscillator", lanes, "spread", seed=20261011)
+    planes["nstop"][:] = np.where(np.arange(lanes) % 32 < 16, 1.0, 1000.0)
+    util = cp.zeros(2, dtype=cp.uint64)
+    _persist(bundle, "oscillator", planes, 1000, 1, util=util)
+    active, slots = (int(v) for v in util.get())
+    assert active == int(planes["nstop"].sum())
+    assert slots % PERSIST_CHUNK == 0 and active <= slots <= active + lanes * (PERSIST_CHUNK - 1)
+    assert active / slots > 0.9
