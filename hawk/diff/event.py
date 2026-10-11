@@ -40,7 +40,7 @@ from ..ir.ops import COMPARE, LOGICAL, PREDICATE
 from ..ir.walk import substitute
 from .transform import _READ_ROLE
 
-__all__ = ["EventGuard", "event_guard", "guard_kernel"]
+__all__ = ["EventGuard", "event_guard", "guard_kernel", "state_guard"]
 
 #: Comparisons a guard is read from, with the side ``g`` keeps positive
 #: while the sample runs: ``"lhs"`` -> ``g = lhs - rhs``, else ``rhs - lhs``.
@@ -200,6 +200,38 @@ def guard_kernel(kernel: Any) -> Any:
     planes = {k: v for k, v in kernel.planes.items()
               if getattr(v, "form", None) == "terminated"}
     return Kernel(f"{kernel.name}_guard", sinks, planes, kind=kernel.kind)
+
+
+def state_guard(kernel: Any) -> Any:
+    """A kernel committing each guard of ``kernel`` into ``event_g<i>`` as a
+    function of the state AFTER the step, named ``<name>_state_guard``: every
+    value the step commits is read back from its own plane (the time plane
+    included), so its :func:`~hawk.diff.vjp` is ``g_x`` over the extended
+    state — what a graze test measures at a located event. A guard that also
+    reads a value the step does not commit reads it as a plain plane.
+
+    Example::
+
+        @hawk.kernel(steps=1, time="t", time_step="dt")
+        def osc(dt: Param, a: Param, terminated: Terminated,
+                x: Mutable[Scalar], v: Mutable[Scalar], t: Mutable[Scalar]):
+            v_start = v
+            v = v_start - dt * x
+            x = x + dt * v_start
+            t = t + dt
+            terminated = x <= a * t
+
+        state_guard(osc)   # event_g0 = a*t - x... read from the planes x, t
+    """
+    from ..trace.kernel import Kernel
+
+    eg = event_guard(kernel)
+    step = _single_step(kernel)
+    mapping = {id(s.value): Leaf("vocab_read", _READ_ROLE[len(s.ttype.shape)], s.name, s.ttype)
+               for s in step.sinks if isinstance(s, Assign)}
+    guards = as_plain_reads(substitute(eg.guards, mapping))
+    sinks = tuple(Assign(f"{GUARD_PREFIX}{i}", g, g.ttype) for i, g in enumerate(guards))
+    return Kernel(f"{step.name}_state_guard", sinks, {}, kind=step.kind)
 
 
 def as_plain_reads(roots: tuple) -> tuple:

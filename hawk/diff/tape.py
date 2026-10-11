@@ -368,6 +368,8 @@ def _d_dt(g: Node, t_value: Node) -> Node:
     prior = {n.name: n for n in _reachable((g,))
              if isinstance(n, Leaf) and n.kind == "prior_read"}
     (plain,) = as_plain_reads(substitute((g,), {id(t_value): probe}))
+    if not any(isinstance(n, Leaf) and n.name == probe.name for n in _reachable((plain,))):
+        return Const(0.0, g.ttype)      # a guard that does not read the time
     (sink,) = jvp((Assign("hawk_event_g", plain, plain.ttype),), wrt=(probe.name,))
     back = {}
     for n in _reachable((sink.value,)):
