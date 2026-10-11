@@ -23,7 +23,7 @@ import importlib.util
 import os
 import platform
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -337,7 +337,7 @@ def identity(cccl_include: str | None = None) -> str:
 
 
 def options(arch: str, *, cccl_include: str | None = None,
-            virtual_arch: bool = True) -> list[str]:
+            virtual_arch: bool = True, extra: Sequence[str] = ()) -> list[str]:
     """The NVRTC options this profile compiles under: C++20, `-arch=
     compute_<N>` (NVRTC's PTX target is virtual, so `sm_61` becomes
     `compute_61`), `-default-device` so a bare `AETHER_DEVICE()` function
@@ -353,11 +353,15 @@ def options(arch: str, *, cccl_include: str | None = None,
     (there is no equivalent of nvcc/ptxas's ``-O0``..``-O3`` ladder to
     select), so :func:`hawk.compile.toolchain.opt_level`/``opt_level=`` has
     no effect on an NVRTC compile and this function does not pretend
-    otherwise by accepting or faking one."""
+    otherwise by accepting or faking one.
+
+    `extra` is appended as given: the build's own ``-D<name>[=<value>]``
+    defines and extra flags, so an NVRTC build sees the same macros an nvcc
+    build of the same request does."""
     device_arch = (arch.replace("sm_", "compute_")
                    if virtual_arch and arch.startswith("sm_") else arch)
     return ["-std=c++20", f"-arch={device_arch}", "-default-device",
-            f"-I{cccl_include or cccl_include_dir()}"]
+            f"-I{cccl_include or cccl_include_dir()}", *extra]
 
 
 class NvrtcResult:
@@ -373,13 +377,15 @@ class NvrtcResult:
 
 
 def compile_ptx(source: str, name: str, arch: str, *,
-                 headers: Mapping[str, bytes] | None = None) -> NvrtcResult:
+                 headers: Mapping[str, bytes] | None = None,
+                extra: Sequence[str] = ()) -> NvrtcResult:
     """Compile `source` (a HAWK-emitted device TU) through NVRTC, serving
     every header in `headers` (default: the sealed payload's own) from
     memory — no header is read from disk. Returns the PTX bytes on
     success; the diagnostic log always comes back, empty on a clean
     compile."""
-    return _compile_image(source, name, arch, target="ptx", headers=headers)
+    return _compile_image(source, name, arch, target="ptx", headers=headers,
+                          extra=extra)
 
 
 class DeviceImage(NamedTuple):
@@ -392,7 +398,8 @@ class DeviceImage(NamedTuple):
 
 
 def _compile_image(source: str, name: str, arch: str, *, target: str,
-                    headers: Mapping[str, bytes] | None = None) -> NvrtcResult:
+                    headers: Mapping[str, bytes] | None = None,
+                    extra: Sequence[str] = ()) -> NvrtcResult:
     """The NVRTC mechanics behind :func:`compile_ptx`, :func:`compile_cubin`
     and :func:`device`: serve the headers from memory, compile, and fetch the
     PTX or the CUBIN per ``target``. A CUBIN is a binary ELF image and is not
@@ -408,7 +415,7 @@ def _compile_image(source: str, name: str, arch: str, *, target: str,
     _, prog = _nvrtc.nvrtcCreateProgram(
         source.encode(), f"{name}.cu".encode(), len(names), header_bytes, include_names)
     try:
-        opts = options(arch, virtual_arch=(target == "ptx"))
+        opts = options(arch, virtual_arch=(target == "ptx"), extra=extra)
         (compile_result,) = _nvrtc.nvrtcCompileProgram(prog, len(opts),
                                                         [o.encode() for o in opts])
         _, log_size = _nvrtc.nvrtcGetProgramLogSize(prog)
@@ -433,13 +440,15 @@ def _compile_image(source: str, name: str, arch: str, *, target: str,
 
 
 def compile_cubin(source: str, name: str, arch: str, *,
-                   headers: Mapping[str, bytes] | None = None) -> NvrtcResult:
+                   headers: Mapping[str, bytes] | None = None,
+                  extra: Sequence[str] = ()) -> NvrtcResult:
     """:func:`compile_ptx`'s sibling: compile `source` through NVRTC
     straight to a CUBIN (SASS) for the concrete `arch`, for a caller
     (:mod:`hawk.compile.drivers`) that wants the same in-memory compile
     :func:`device`/:func:`cubin` offer, without their `DeviceImage`/
     arch-resolution wrapper."""
-    return _compile_image(source, name, arch, target="cubin", headers=headers)
+    return _compile_image(source, name, arch, target="cubin", headers=headers,
+                          extra=extra)
 
 
 def _guard_ptx_driver_support() -> None:

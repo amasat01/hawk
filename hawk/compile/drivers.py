@@ -402,7 +402,9 @@ def _compile_nvrtc_source(source: str, name: str,
     different payload is a different key". The target is picked the same
     way :func:`hawk.compile.nvrtc.device` does
     (:func:`~hawk.compile.nvrtc.select_target`), and is also folded into the
-    key, for the same never-share-a-slot reason.
+    key, for the same never-share-a-slot reason. ``opts.defines`` and
+    ``opts.extra`` are passed to NVRTC and are terms of the key, as they are
+    for nvcc: a build with a define and one without never share a slot.
 
     ``opts.opt_level`` is NOT read here: NVRTC always optimises and takes no
     ``-O`` option at all (:func:`hawk.compile.nvrtc.options` carries none),
@@ -418,7 +420,11 @@ def _compile_nvrtc_source(source: str, name: str,
     target = _nvrtc_driver.forced_target(arch) or _nvrtc_driver.select_target(
         _probed(_nvrtc_driver.nvrtc_version),
         _probed(_nvrtc_driver.driver_cuda_version))
-    device_opts = _nvrtc_driver.options(arch, virtual_arch=(target == "ptx"))
+    # the build's defines and extra flags reach NVRTC exactly as they reach
+    # nvcc (:func:`_argv`), and through ``device_opts`` the key as well
+    extra = (*(f"-D{d}" for d in opts.defines), *opts.extra)
+    device_opts = _nvrtc_driver.options(arch, virtual_arch=(target == "ptx"),
+                                        extra=extra)
     key = lookup_key(source, DEVICE, opts.mode, identity,
                       (*device_opts, f"device_target:{target}",
                        f"payload:{payload.digest}"))
@@ -449,7 +455,8 @@ def _compile_nvrtc_source(source: str, name: str,
         start = time.perf_counter()
         compile_fn = (_nvrtc_driver.compile_cubin if target == "cubin"
                      else _nvrtc_driver.compile_ptx)
-        result = compile_fn(source, name, arch, headers=payload.device_headers)
+        result = compile_fn(source, name, arch, headers=payload.device_headers,
+                            extra=extra)
         seconds = time.perf_counter() - start
         if not result.ok:
             raise HawkError(

@@ -331,3 +331,48 @@ def test_cccl_prefers_a_flat_toolkit_include(monkeypatch, tmp_path):
     _toolkit(tmp_path, f"targets/{hnvrtc.platform.machine()}-linux/include")
     monkeypatch.setenv("CUDA_PATH", str(tmp_path))
     assert hnvrtc.cccl_include_dir() == str(want)
+
+
+# -- Defines reach NVRTC, and its cache key ------------------------------------ #
+_FLAG_SRC = (
+    'extern "C" __global__ void hawk_flag_base(int* out) { *out = 1; }\n'
+    "#ifndef HAWK_PROBE_FLAG\n#define HAWK_PROBE_FLAG 0\n#endif\n"
+    "#if HAWK_PROBE_FLAG\n"
+    'extern "C" __global__ void hawk_flag_gated(int* out) { *out = 2; }\n'
+    "#endif\n")
+
+
+def test_nvrtc_options_carry_the_extra_flags_last():
+    """The build's ``-D`` defines and extra flags are appended to NVRTC's own
+    options as given (no toolkit needed: the include root is passed in)."""
+    opts = hnvrtc.options("sm_61", cccl_include="/cccl", extra=("-DA=1", "-DB"))
+    assert opts[-2:] == ["-DA=1", "-DB"]
+    assert hnvrtc.options("sm_61", cccl_include="/cccl")[-1] == "-I/cccl"
+
+
+@pytest.mark.gpu
+def test_nvrtc_build_honours_defines_in_one_cache(monkeypatch, tmp_path):
+    """One cache, the same source built under NVRTC without and then with a
+    define: the second build is a MISS on its own key and carries the code
+    the define gates, the first does not; a repeat of either is a hit on its
+    own key. (A device compile that dropped the defines built the gated
+    code out on every NVRTC box, and a key without them served the first
+    build to the second request.)"""
+    _skip_without_nvrtc_and_gpu()
+    monkeypatch.setenv("HAWK_DEVICE_COMPILER", "nvrtc")
+    cache = str(tmp_path / "cache")
+
+    def build(defines):
+        return compile_source(_FLAG_SRC, "hawk_flag_probe", CompileOptions(
+            backend="cuda", defines=defines, cache_dir=cache))
+
+    without = build(())
+    with_flag = build(("HAWK_PROBE_FLAG=1",))
+    assert not with_flag.hit, "a build with a define was served the build without it"
+    assert with_flag.key != without.key
+    assert b"hawk_flag_gated" in with_flag.artifact.read_bytes()
+    assert b"hawk_flag_gated" not in without.artifact.read_bytes()
+    assert b"hawk_flag_base" in without.artifact.read_bytes()
+    for defines, first in (((), without), (("HAWK_PROBE_FLAG=1",), with_flag)):
+        again = build(defines)
+        assert again.hit and again.key == first.key
