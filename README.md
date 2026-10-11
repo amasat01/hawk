@@ -196,7 +196,7 @@ N = 10,000 (7.22 ms vs 7.22 ms), and on this FP64-weak development card the CPU 
 [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html) for every number, every arm,
 including the ones where it doesn't win.
 
-<p align="center"><a href="https://amasat01.github.io/eagle/content/performance.html"><img src="https://raw.githubusercontent.com/amasat01/eagle/main/docs/_static/perf/readme_gpu.svg" alt="Wall time per tool for a million RK4 oscillators on the default GPU: eagle.simulate, NVIDIA Warp, JAX, CuPy and PyTorch; the numbers are on eagle's performance page." width="700"></a></p>
+<p align="center"><a href="https://amasat01.github.io/eagle/content/performance.html"><img src="https://raw.githubusercontent.com/amasat01/eagle/main/docs/_static/perf/readme_gpu.svg" alt="Wall time per tool for a million RK4 oscillators on the default GPU: eagle.simulate, NVIDIA Warp, JAX, CuPy and PyTorch; the numbers are on eagle's performance page." width="732"></a></p>
 
 The chart shows one GPU; [the performance page](https://amasat01.github.io/eagle/content/performance.html) has a tab for every device and CPU measured.
 

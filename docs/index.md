@@ -14,6 +14,15 @@ on CPU or GPU.
 :file: _static/ecosystem/ecosystem_cards_hawk.html
 ```
 
+**What hawk kernels do under eagle**
+
+```{raw} html
+<figure class="perf-glimpse">
+<a href="https://amasat01.github.io/eagle/content/performance.html"><img src="https://raw.githubusercontent.com/amasat01/eagle/main/docs/_static/perf/readme_gpu.svg" alt="Bar chart of wall time per tool for a million RK4 oscillators on one GPU, log scale: eagle.simulate, NVIDIA Warp, JAX, CuPy and PyTorch; the numbers are on eagle's performance page." style="max-width:100%;height:auto"></a>
+<figcaption>A million RK4 oscillators, each stopping at its own step, written as one hawk kernel and run by eagle: wall time per tool, log scale. Measured by eagle's committed performance cards. <a href="https://amasat01.github.io/eagle/content/performance.html">Every device, workload and arm</a>.</figcaption>
+</figure>
+```
+
 A kernel is a plain Python function decorated `@hawk.kernel`. hawk turns
 it into a small typed representation of what it computes, derives its
 forward- and reverse-mode derivatives from that representation, and
