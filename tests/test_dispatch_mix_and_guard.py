@@ -131,14 +131,14 @@ def test_the_mix_is_the_bincount_of_the_live_classes_on_the_device(built):
 
     rng = np.random.default_rng(3)
     k, bs, stopped = _inputs(rng)
-    mix = cp.zeros(K, dtype=cp.uint32)
+    mix = cp.zeros(K, dtype=cp.int64)   # declared int64; K uint32 counters at its start
     plugin = L.device_plugin(built["local"].directory, "mix_auto",
                              _sidecar(built["local"], "mix_auto"))
     eplan.plan(plugin, structure=eexec.DeviceKernel).bind(
         k=cp.asarray(k), bs=cp.asarray(bs), terminated=cp.asarray(stopped),
-        y=cp.zeros(N), dispatch0_mix=mix.view(cp.int32)).launch()
+        y=cp.zeros(N), dispatch0_mix=mix).launch()
     want = np.bincount(np.clip(k, 0, K - 1)[~stopped], minlength=K)
-    np.testing.assert_array_equal(cp.asnumpy(mix), want)
+    np.testing.assert_array_equal(cp.asnumpy(mix).view(np.uint32)[:K], want)
 
 
 def test_a_stale_sort_is_guarded_and_a_switch_sweep_completes_it(built):
@@ -250,18 +250,19 @@ def _fused_run(bundle, target, words):
                              eexec.DeviceKernel)
     rng = np.random.default_rng(12)
     k = rng.integers(0, K, N).astype(np.int64)
-    mix = xp.zeros(K, dtype=xp.uint32)
+    # the plane is declared int64; its K uint32 counters sit at its start
+    mix = xp.zeros(K, dtype=xp.int64)
     word = xp.zeros(1, dtype=xp.int64)
     bound = eplan.plan(plugin, structure=structure).bind(
         k=xp.asarray(k), bs=xp.asarray(rng.uniform(0.5, 1.0, (K, N))),
         terminated=xp.zeros(N, dtype=bool), x=xp.zeros(N),
         finished_count=xp.zeros(1, dtype=xp.uint32).view(xp.int32),
-        fused_steps=word, dispatch0_mix=mix.view(xp.int32))
+        fused_steps=word, dispatch0_mix=mix)
     for w in words:
         word[0] = w
         bound.launch()
     got = mix.get() if hasattr(mix, "get") else mix
-    return np.asarray(got), np.bincount(k, minlength=K)
+    return np.asarray(got).view(np.uint32)[:K], np.bincount(k, minlength=K)
 
 
 @pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
