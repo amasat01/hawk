@@ -29,7 +29,7 @@ from ..ir.nodes import (
     SampleIndex,
     WideWrite,
 )
-from ..types import TensorType
+from ..types import INT_PLANE_DTYPES, TensorType
 
 _F64 = TensorType((), "f64")
 _BOOL = TensorType((), "bool")
@@ -82,9 +82,28 @@ def _operands(args: tuple) -> tuple:
     derivation (:mod:`hawk.ir.contraction`)."""
     traced = [a for a in args if isinstance(a, (Value, Node))]
     dtypes = {(a.node if isinstance(a, Value) else a).ttype.dtype for a in traced}
+    plane = next((d for d in INT_PLANE_DTYPES if d in dtypes), None)
+    if plane is not None:
+        return tuple(int_literal(a, plane) if isinstance(a, int) and not isinstance(a, bool)
+                     else node_of(a) for a in args)
     integral = bool(dtypes) and dtypes <= {"i32", "i64"}
     return tuple(index_node(a) if integral and isinstance(a, int)
                  and not isinstance(a, bool) else node_of(a) for a in args)
+
+
+#: The value range of each integer plane dtype.
+_INT_RANGE = {"int32": (-2**31, 2**31 - 1), "uint32": (0, 2**32 - 1)}
+
+
+def int_literal(x: int, dtype: str) -> Const:
+    """A Python ``int`` beside an ``int32``/``uint32`` value, typed as that
+    value: a literal outside the type's range is refused, never wrapped."""
+    lo, hi = _INT_RANGE[dtype]
+    if not lo <= x <= hi:
+        raise HawkError(
+            f"the literal {x} is outside the {dtype} range [{lo}, {hi}]; write a "
+            f"value inside it (an {dtype} wraps only through arithmetic)")
+    return Const(int(x), TensorType((), dtype))
 
 
 def _op(kind: str, *args: Any, literal: Any = None) -> Value:
@@ -131,7 +150,7 @@ class Value:
         # call; the reciprocal folds into one FFMA). Integral values keep
         # the division — the contraction recognizer reads it as a stride.
         if (isinstance(o, (int, float)) and not isinstance(o, bool)
-                and self.ttype.dtype not in ("i32", "i64", "bool")
+                and self.ttype.dtype not in ("i32", "i64", "bool", *INT_PLANE_DTYPES)
                 and o != 0 and math.isfinite(o) and math.isfinite(1.0 / o)):
             return _op("mul", self, 1.0 / o)
         return _op("div", self, o)
@@ -147,6 +166,51 @@ class Value:
 
     def __abs__(self) -> Value:
         return _op("abs", self)
+
+    def __floordiv__(self, o: Any) -> Value:
+        return _op("floordiv", self, o)
+
+    def __rfloordiv__(self, o: Any) -> Value:
+        return _op("floordiv", o, self)
+
+    def __mod__(self, o: Any) -> Value:
+        return _op("mod", self, o)
+
+    def __rmod__(self, o: Any) -> Value:
+        return _op("mod", o, self)
+
+    def __and__(self, o: Any) -> Value:
+        return _op("band", self, o)
+
+    def __rand__(self, o: Any) -> Value:
+        return _op("band", o, self)
+
+    def __or__(self, o: Any) -> Value:
+        return _op("bor", self, o)
+
+    def __ror__(self, o: Any) -> Value:
+        return _op("bor", o, self)
+
+    def __xor__(self, o: Any) -> Value:
+        return _op("bxor", self, o)
+
+    def __rxor__(self, o: Any) -> Value:
+        return _op("bxor", o, self)
+
+    def __lshift__(self, o: Any) -> Value:
+        return _op("shl", self, o)
+
+    def __rlshift__(self, o: Any) -> Value:
+        return _op("shl", o, self)
+
+    def __rshift__(self, o: Any) -> Value:
+        return _op("shr", self, o)
+
+    def __rrshift__(self, o: Any) -> Value:
+        return _op("shr", o, self)
+
+    def __invert__(self) -> Value:
+        return _op("invert", self)
 
     def __matmul__(self, o: Any) -> Value:
         other = node_of(o)
@@ -221,6 +285,51 @@ class Value:
             "reaches a Python branch, comprehension or `and`/`or` the pass does not "
             "own — use select(cond, a, b), land/lor/lnot"
         )
+
+
+def _cast(x: Any, dtype: str) -> Value:
+    node = node_of(x)
+    if node.ttype.dtype == dtype:
+        return Value(node)
+    return Value(_make("cast", (node,), dtype))
+
+
+def int32(x: Any) -> Value:
+    """``x`` as an ``int32``: a float truncates toward zero, saturates at
+    ``[-2**31, 2**31 - 1]`` and maps NaN to 0; an integer wraps modulo 2**32
+    (``np.astype``). Zero derivative.
+
+    :param x: a traced rank-0 number.
+    :returns: the rank-0 ``int32`` value.
+    :raises HawkError: for a bool or a rank>=1 value.
+
+    Example: ``n = hawk.math.int32(x * 10.0)``"""
+    return _cast(x, "int32")
+
+
+def uint32(x: Any) -> Value:
+    """``x`` as a ``uint32``: a float truncates toward zero, saturates at
+    ``[0, 2**32 - 1]`` and maps NaN to 0; an integer wraps modulo 2**32
+    (``np.astype``). Zero derivative.
+
+    :param x: a traced rank-0 number.
+    :returns: the rank-0 ``uint32`` value.
+    :raises HawkError: for a bool or a rank>=1 value.
+
+    Example: ``count = hawk.math.uint32(steps)``"""
+    return _cast(x, "uint32")
+
+
+def real(x: Any) -> Value:
+    """``x`` as the kernel's floating type (``Real``: float64, or float32 under
+    ``mode="float32"``). The derivative with respect to an integer is zero.
+
+    :param x: a traced rank-0 number.
+    :returns: the rank-0 floating value.
+    :raises HawkError: for a bool or a rank>=1 value.
+
+    Example: ``y = hawk.math.real(n) * x``"""
+    return _cast(x, "f64")
 
 
 def _unary(kind: str):
@@ -451,7 +560,10 @@ def dispatch(kind: Any, branches: Any, policy: str = "switch") -> Value:
     :class:`~hawk.ir.nodes.Dispatch` does the type/arity checking."""
     bs = [node_of(b) for b in branches]
     ttype = bs[0].ttype if bs else TensorType((), "f64")
-    return Value(Dispatch(node_of(kind), bs, policy, ttype))
+    selector = node_of(kind)
+    if selector.ttype.dtype in INT_PLANE_DTYPES:
+        selector = _make("cast", (selector,), "i32")
+    return Value(Dispatch(selector, bs, policy, ttype))
 
 
 def n_samples() -> Value:

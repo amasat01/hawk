@@ -158,7 +158,7 @@ def canonical(sinks: Sequence[Sink], declared: Sequence[Slot] = (), *,
         if info.policy == "auto":
             name = f"{info.name}_mix"      # hawk.ir.segment.mix_name
             bindings.setdefault(("lookup", name), Leaf(
-                "vocab_read", "lookup", name, TensorType((), "i32")))
+                "vocab_read", "lookup", name, TensorType((), "uint32")))
     leaves, quantities = _order_bindings(order, bindings)
     arg_spec = tuple((s.role, s.name) for s in leaves)
     slot_of = {key: i for i, key in enumerate(arg_spec)}

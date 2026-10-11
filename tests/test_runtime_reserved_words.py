@@ -48,6 +48,6 @@ def test_a_bound_counter_is_used_as_given(finishing_unit):
     k = _unit_kernel(finishing_unit)
     t = np.array([0.95, 0.99])
     terminated = np.zeros(2, dtype=bool)
-    counter = np.zeros(1, dtype=np.int64)
+    counter = np.zeros(1, dtype=np.uint32)
     R.run(k, dt=0.1, t_end=1.0, t=t, terminated=terminated, finished_count=counter)
     assert counter[0] == 2

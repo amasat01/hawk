@@ -564,10 +564,10 @@ def element_count(ttype: TensorType) -> int:
 
 
 #: The reserved ``lookup`` plane a finishing kernel counts its newly finished
-#: samples into: ONE ``uint32`` cell, viewed as ``i32`` (the ``active_count``
-#: precedent). eagle's ``eagle.FINISHED_PLANE`` names the same plane.
+#: samples into: ONE ``uint32`` cell. eagle's ``eagle.FINISHED_PLANE``
+#: names the same plane.
 FINISHED_PLANE = "finished_count"
-FINISHED_TTYPE = TensorType((), "i32")
+FINISHED_TTYPE = TensorType((), "uint32")
 
 #: The reserved ``lookup`` plane a ``steps="auto"`` kernel reads its trip
 #: count from (:func:`hawk.steps`): set on the device by the runner, never

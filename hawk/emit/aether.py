@@ -51,7 +51,7 @@ from ..ir.nodes import (
 )
 from ..ir.ops import RANDOM_OPS
 from ..ir.walk import canonical_nodes
-from ..types import TensorType
+from ..types import INT_PLANE_DTYPES, TensorType
 from .dispatch import _DispatchMixin
 from .dispatch import render_dispatch_rank0 as render_dispatch_rank0
 from .spelling import (
@@ -925,6 +925,8 @@ class _Renderer(_DispatchMixin):
         if leaf.role == "nsamples":
             return f"static_cast<Int>({name})"
         if leaf.role == "uniform":
+            if leaf.ttype.dtype in INT_PLANE_DTYPES:
+                return f"static_cast<{element_spelling(leaf.ttype.dtype)}>({name})"
             return name
         if leaf.role == "mutable":
             # `.prior` — the only way a `mutable`-role LEAF (as opposed to its
@@ -959,6 +961,8 @@ class _Renderer(_DispatchMixin):
             return "true" if node.literal else "false"
         if t.dtype in ("i32", "i64"):
             return f"static_cast<Int>({int(node.literal)})"
+        if t.dtype in INT_PLANE_DTYPES:
+            return f"static_cast<{element_spelling(t.dtype)}>({int(node.literal)}LL)"
         return f"static_cast<Real>({_real_literal(float(node.literal))})"
 
     def _at(self, node: At) -> str:
@@ -1001,6 +1005,15 @@ class _Renderer(_DispatchMixin):
         return f"({block.text})"
 
     def _scalar_op(self, kind: str, args: Sequence[str], node: Op) -> str:
+        if kind in _INT_CALLS or (kind in _INT_WRAPPING and node.ttype.dtype in INT_PLANE_DTYPES):
+            # integer planes (and `//`, `%`, the bit operators on an index):
+            # the wrapping, numpy-defined helpers (hawk/emit/backend.py
+            # INT_HELPERS), since C++'s own `+ - * / % << >>` are undefined
+            # or differently defined at the edges numpy pins.
+            name = _INT_CALLS.get(kind) or _INT_WRAPPING[kind]
+            return f"hawk_abi::{name}({', '.join(args)})"
+        if kind == "cast":
+            return self._cast_op(args[0], node)
         if kind in RANDOM_OPS:
             return self._random_draw(kind, args)
         if kind == "spacing":
@@ -1024,6 +1037,17 @@ class _Renderer(_DispatchMixin):
         if kind in ("dot", "norm", "sum", "component"):
             return self._reduction(kind, args, node)
         raise HawkError(_no_spelling(kind, 0))
+
+    @staticmethod
+    def _cast_op(arg: str, node: Op) -> str:
+        """``cast``: float -> integer plane through the saturating helper,
+        every other pair a plain ``static_cast`` (modular between integers,
+        exact into ``Real`` up to its precision)."""
+        target, source = node.ttype.dtype, node.operands[0].ttype.dtype
+        elem = element_spelling(target)
+        if target in INT_PLANE_DTYPES and source in ("f64", "f32"):
+            return f"hawk_abi::int_from_real<{elem}>({arg})"
+        return f"static_cast<{elem}>({arg})"
 
     def _random_draw(self, kind: str, args: Sequence[str]) -> str:
         """HAWK's ``(seed, counter)`` draw: aether's stateless
@@ -1201,6 +1225,17 @@ class _Renderer(_DispatchMixin):
         if text.startswith(f"static_cast<{elem}>"):
             return text
         return f"static_cast<{elem}>({text})"
+
+
+#: Integer-only kinds -> their ``hawk_abi`` helper (any integer type).
+_INT_CALLS = {"floordiv": "int_floordiv", "mod": "int_mod", "band": "int_and",
+              "bor": "int_or", "bxor": "int_xor", "shl": "int_shl", "shr": "int_shr",
+              "invert": "int_invert"}
+#: Kinds an integer PLANE value routes through a wrapping helper, where the
+#: infix spelling would overflow a signed int (undefined) or promote.
+_INT_WRAPPING = {"add": "int_add", "sub": "int_sub", "mul": "int_mul",
+                 "neg": "int_neg", "abs": "int_abs", "min": "int_min",
+                 "max": "int_max"}
 
 
 def _flat_indices(shape: tuple) -> list:

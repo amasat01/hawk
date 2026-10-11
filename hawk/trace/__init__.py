@@ -47,6 +47,8 @@ launch — see :mod:`hawk.trace.steps` for the loop, bit-identity and
 from ..ir import Quantity as Quantity
 from .decl import Accum as Accum
 from .decl import Index as Index
+from .decl import Int32 as Int32
+from .decl import UInt32 as UInt32
 from .decl import Matrix as Matrix
 from .decl import Mutable as Mutable
 from .decl import Param as Param

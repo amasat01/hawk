@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ..types import TensorType
+from ..types import INT_PLANE_DTYPES, TensorType
 from .nodes import QUAT_OPS, HawkError, Node, Op
 
 #: Rank-generic elementwise binaries (a rank-0 operand broadcasts).
@@ -54,20 +54,45 @@ MATRIX_OPS = ("mv", "mm", "transpose", "outer")
 #: value re-evaluates the SAME two integers, never RNG state, so a
 #: captured graph replays by writing the wire, never recapturing.
 RANDOM_OPS = ("random_uniform", "random_normal")
+#: Integer-only binaries: ``floordiv``/``mod`` follow Python's sign rules
+#: (floor division; the remainder takes the divisor's sign) and give 0 for a
+#: zero divisor, as numpy does; shifts are numpy's (a count outside
+#: ``[0, 32)`` gives 0, or -1 for a negative ``int32`` shifted right).
+INT_BINARY = ("floordiv", "mod", "band", "bor", "bxor", "shl", "shr")
+#: Integer-only unaries.
+INT_UNARY = ("invert",)
+#: The explicit conversion; its ``literal`` is the target dtype. float ->
+#: integer truncates toward zero, saturates at the type's range and maps NaN
+#: to 0; integer -> integer wraps modulo 2^32 (numpy's ``astype``).
+CAST = ("cast",)
+#: What an integer plane value supports beside the explicit cast.
+_INT_PLANE_KINDS = (("add", "sub", "mul", "min", "max", "neg", "abs", "select")
+                    + COMPARE + INT_BINARY + INT_UNARY)
+#: The dtypes a ``cast`` reaches: a 32-bit integer plane, an index
+#: integer, or the kernel's ``Real`` (``f64``; the scalar mode narrows it).
+CAST_TARGETS = INT_PLANE_DTYPES + ("i32", "f64")
 
 #: Every op kind a traced body can mint (``at``/``select`` mint their own
 #: node subclasses but are KINDS here, since the rule table keys on kind).
 OP_KINDS = (ELEMENTWISE_BINARY + UNARY_MATH + COMPARE + LOGICAL + VECTOR_OPS
             + MATRIX_OPS + QUAT_OPS + RANDOM_OPS + ("select", "dispatch", "at")
-            + ELEMENTWISE_TERNARY + PREDICATE)
+            + ELEMENTWISE_TERNARY + PREDICATE + INT_BINARY + INT_UNARY + CAST)
 
 _DTYPE_RANK = {"bool": 0, "i32": 1, "i64": 2, "f32": 3, "f64": 4}
+_INDEX_INTS = ("i32", "i64")
 #: Kinds under which a semantic tag survives (a quaternion sum is a quaternion).
 _TAG_PRESERVING = ("add", "sub", "neg", "mul", "div", "select", "dispatch")
 
 
 def promote(a: str, b: str) -> str:
-    """The dtype of an elementwise combination of ``a`` and ``b``."""
+    """The dtype of an elementwise combination of ``a`` and ``b``.
+
+    An integer plane dtype (``int32``/``uint32``) combines only with itself:
+    any other partner is refused, naming the cast that makes it explicit."""
+    if a in INT_PLANE_DTYPES or b in INT_PLANE_DTYPES:
+        if a != b:
+            raise HawkError(_mix_message(a, b))
+        return a
     for d in (a, b):
         if d not in _DTYPE_RANK:
             raise HawkError(
@@ -91,6 +116,12 @@ def result_type(kind: str, operands: Sequence[Node],
             f"unknown op kind {kind!r}; the vocabulary is {OP_KINDS}"
         )
     _arity(kind, len(ts))
+    if kind in CAST:
+        return _cast_type(ts[0], literal)
+    if kind in INT_BINARY + INT_UNARY:
+        _integer_operands(kind, ts)
+    elif any(t.dtype in INT_PLANE_DTYPES for t in ts):
+        _int_plane_operands(kind, ts)
     binary_logical = kind in LOGICAL and kind != "lnot"
     if kind in ELEMENTWISE_BINARY or kind in COMPARE or binary_logical:
         shape = _broadcast(kind, ts[0], ts[1])
@@ -110,6 +141,10 @@ def result_type(kind: str, operands: Sequence[Node],
         if ts[1] != ts[2]:
             raise HawkError(f"select: the branches disagree — {ts[1]!r} vs {ts[2]!r}")
         return ts[1]
+    if kind in INT_BINARY:
+        return TensorType((), promote(ts[0].dtype, ts[1].dtype))
+    if kind in INT_UNARY:
+        return ts[0]
     if kind == "dispatch":
         if ts[0].shape != () or ts[0].dtype != "i32":
             raise HawkError(
@@ -132,6 +167,59 @@ def result_type(kind: str, operands: Sequence[Node],
         # widens it at emission time, never here.
         return TensorType((), "f64")
     return _shaped(kind, ts, literal)
+
+
+def _mix_message(a: str, b: str) -> str:
+    plane, other = (a, b) if a in INT_PLANE_DTYPES else (b, a)
+    if other in INT_PLANE_DTYPES:
+        fix = f"convert one side with hawk.math.{plane}(...) or hawk.math.{other}(...)"
+    elif other in ("f64", "f32"):
+        fix = (f"convert explicitly: hawk.math.real(n) for the float result, or "
+               f"hawk.math.{plane}(x) for the integer one")
+    else:
+        fix = f"convert explicitly with hawk.math.{plane}(...)"
+    return (f"an {plane} value does not mix with {other} without a cast (no silent "
+            f"promotion): {fix}")
+
+
+def _cast_type(t: TensorType, target: object) -> TensorType:
+    if target not in CAST_TARGETS:
+        raise HawkError(f"cast: the target dtype must be one of {CAST_TARGETS}, "
+                        f"got {target!r}")
+    if t.shape != () or t.dtype == "bool":
+        raise HawkError(
+            f"cast: converts a rank-0 number, got {t!r} — a bool picks a value "
+            "with hawk.math.where(cond, a, b)")
+    return TensorType((), target)
+
+
+def _integer_operands(kind: str, ts: list[TensorType]) -> None:
+    """``//``, ``%``, the bitwise ops and shifts: integer operands only."""
+    for t in ts:
+        if t.shape != () or t.dtype not in INT_PLANE_DTYPES + _INDEX_INTS:
+            raise HawkError(
+                f"op {kind!r} is an integer operator and takes rank-0 integer "
+                f"operands, got {t!r}; for floats use hawk.math.floor(a / b) or "
+                "hawk.math.remainder(a, b), or convert with hawk.math.int32(...)")
+
+
+def _int_plane_operands(kind: str, ts: list[TensorType]) -> None:
+    """The ops an ``int32``/``uint32`` value takes, rank-0 only."""
+    plane = next(t.dtype for t in ts if t.dtype in INT_PLANE_DTYPES)
+    if kind not in _INT_PLANE_KINDS:
+        hint = (" — integer division is `//`" if kind == "div" else "")
+        raise HawkError(
+            f"op {kind!r} is not defined on an {plane} value{hint}; convert it "
+            f"first with hawk.math.real(...) to compute in floating point")
+    if any(t.shape != () for t in ts):
+        raise HawkError(
+            f"op {kind!r}: an {plane} value is rank-0 (a per-sample integer "
+            f"plane), got operands {ts!r}")
+    if kind == "select":
+        return
+    for t in ts:
+        if t.dtype != plane:
+            raise HawkError(_mix_message(plane, t.dtype))
 
 
 def _shaped(kind: str, ts: list[TensorType], literal: object) -> TensorType:
@@ -242,7 +330,7 @@ def _quat(kind: str, ts: list[TensorType]) -> TensorType:
     return TensorType((3,), ts[0].dtype)
 
 
-_ARITY = {"lnot": 1, "select": 3, "fma": 3, "clip": 3,
+_ARITY = {"lnot": 1, "select": 3, "fma": 3, "clip": 3, "cast": 1, "invert": 1,
           "isnan": 1, "isinf": 1, "isfinite": 1,
           "at": 2, "component": 1, "transpose": 1,
           "component_at": 2, "set_component_at": 3,

@@ -106,7 +106,9 @@ class _LoopLocal:
 for _dunder in ("add", "radd", "sub", "rsub", "mul", "rmul", "truediv",
                 "rtruediv", "pow", "rpow", "neg", "abs", "matmul", "rmatmul",
                 "lt", "le", "gt", "ge", "eq", "ne", "getitem", "setitem",
-                "getattr", "call", "bool", "float", "int", "index", "iter"):
+                "getattr", "call", "bool", "float", "int", "index", "iter",
+                "floordiv", "rfloordiv", "mod", "rmod", "and", "rand", "or", "ror",
+                "xor", "rxor", "lshift", "rlshift", "rshift", "rrshift", "invert"):
     setattr(_LoopLocal, f"__{_dunder}__", _LoopLocal._hawk_refuse)
 _LoopLocal.__hash__ = object.__hash__
 del _dunder

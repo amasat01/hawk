@@ -85,7 +85,7 @@ ArgBlock = _core.ArgBlock
 #: (:data:`hawk.emit.aether.MIRROR_OF` on the left).
 _KIND_OF_MIRROR = {"GRefMirror": "gref", "ScalarHandle": "handle"}
 
-_INT_DTYPES = ("i32", "i64")
+_INT_DTYPES = ("i32", "i64", "int32", "uint32")
 
 
 def kind_for(role: str, ttype: TensorType, *, scalar_type: str = "float64") -> str:
@@ -126,6 +126,7 @@ def descriptor_for_sidecar(sidecar: dict) -> list:
     never enter: shape is decided by role and rank alone."""
     scalar_type = sidecar.get("scalar_type", "float64")
     mutables = {m["name"]: m for m in sidecar.get("mutables", ())}
+    wire = sidecar.get("arg_dtypes", {})
     params = {p["name"]: p for p in sidecar.get("params", ())}
     out = []
     for role, name in (tuple(pair) for pair in sidecar["arg_spec"]):
@@ -139,16 +140,21 @@ def descriptor_for_sidecar(sidecar: dict) -> list:
         elif role in ("vec_in", "mat_in"):
             ttype = _SHAPED[role]
         else:
-            ttype = TensorType((), "f64")
+            ttype = TensorType((), _WIRE_TO_DTYPE.get(wire.get(name), "f64"))
         out.append(kind_for(role, ttype, scalar_type=scalar_type))
     return out
 
+
+#: The IR dtype an integer ``arg_dtypes`` wire label stands for.
+_WIRE_TO_DTYPE = {"int64": "i64", "int32": "int32", "uint32": "uint32"}
 
 #: The TensorType shape each declared ``mutables`` dtype stands for.
 #: Only the RANK matters to :func:`kind_for`.
 _MUTABLE_TTYPE = {
     "scalar": TensorType((), "f64"),
     "int": TensorType((), "i64"),
+    "int32": TensorType((), "int32"),
+    "uint32": TensorType((), "uint32"),
     "vector": TensorType((3,), "f64"),
     "matrix": TensorType((3, 3), "f64"),
 }
@@ -211,7 +217,7 @@ class HostKernel:
                 extra[name] = self.one_step
             else:
                 if self.finished is None:
-                    self.finished = array.array("q", [0])
+                    self.finished = array.array("I", [0])
                 self.finished[0] = 0
                 extra[name] = self.finished
         for entry in self.sidecar.get("dispatch", ()):
@@ -219,7 +225,7 @@ class HostKernel:
             if mix is not None and mix not in arrays:
                 # an "auto" group's branch counters, left out: counted into a
                 # fresh scratch plane (bind your own to read them)
-                extra[mix] = array.array("q", [0] * int(entry["K"]))
+                extra[mix] = array.array("I", [0] * int(entry["K"]))
         return {**arrays, **extra} if extra else arrays
 
     def bind_all(self, arrays: dict, n_samples: int, *, layout=None) -> None:

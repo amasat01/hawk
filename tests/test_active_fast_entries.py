@@ -147,12 +147,12 @@ def _bind(bundle, name, planes, *, mapped):
     if mapped == "decoy":
         # a map and count no fast entry may read: only sample 0, once
         kw["active_map"] = cp.zeros(n, dtype=cp.int32)
-        kw["active_count"] = cp.ones(1, dtype=cp.int32)
+        kw["active_count"] = cp.ones(1, dtype=cp.uint32)
     elif mapped:
         kw["active_map"] = cp.arange(n, dtype=cp.int32)
-        kw["active_count"] = cp.full(1, n, dtype=cp.int32)
+        kw["active_count"] = cp.full(1, n, dtype=cp.uint32)
     bound = eplan.plan(plugin, structure=eexec.DeviceKernel).bind(
-        finished_count=counter.view(cp.int32), fused_steps=word, **kw, **dev)
+        finished_count=counter, fused_steps=word, **kw, **dev)
     return bound, dev, counter, word, plugin._keepalive[1].module, n
 
 

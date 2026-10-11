@@ -48,7 +48,7 @@ from . import _contracts
 #: :mod:`hawk.ir`, not the top level.
 _AUTHORING = (
     "kernel", "Kernel", "raw_device", "RawBlock", "Value", "Quantity",
-    "Scalar", "Index", "Quat", "Vector", "Matrix", "Param",
+    "Scalar", "Index", "Int32", "UInt32", "Quat", "Vector", "Matrix", "Param",
     "Mutable", "Table", "Staged", "Wide", "WideOut", "Accum", "Reduce",
     "Terminated", "HawkError", "steps", "resolve_dispatch",
 )

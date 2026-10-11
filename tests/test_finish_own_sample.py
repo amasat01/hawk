@@ -87,7 +87,7 @@ def smooth_finish(x: Scalar, terminated: Terminated, y: Mutable[Scalar]):
 def test_the_walk_records_the_finish_and_binds_the_counter():
     assert osc_finish.walk.finish == ("terminated", 1)
     assert ("lookup", "finished_count") in osc_finish.arg_spec
-    assert osc_finish.walk.slot_types[("lookup", "finished_count")].dtype == "i32"
+    assert osc_finish.walk.slot_types[("lookup", "finished_count")].dtype == "uint32"
     assert stop_only.walk.finish == ("terminated", 1)
 
 
@@ -256,7 +256,7 @@ def _step_until_done(bundle, target, preset=None):
     planes = {"t_final": xp.array(t_final), "x": xp.array(x),
               "v": xp.array(v), "t": xp.zeros(N), "terminated": xp.array(mask)}
     counter = xp.array(np.array([mask.sum()], dtype=np.uint32))
-    bound = plan.bind(dt=DT, finished_count=counter.view(xp.int32), **planes)
+    bound = plan.bind(dt=DT, finished_count=counter, **planes)
     launches = 0
     while int(counter[0]) < N and launches < MAX_LAUNCHES:
         bound.launch()      # the counter read is the stream-ordered host read
@@ -307,7 +307,7 @@ def test_a_stop_only_kernel_finishes_and_counts(bundles, target):
     mask = xp.zeros(N, dtype=bool)
     counter = xp.zeros(1, dtype=xp.uint32)
     bound = plan.bind(t=xp.array(t), t_final=0.5, terminated=mask,
-                      finished_count=counter.view(xp.int32))
+                      finished_count=counter)
     bound.launch()
     host_mask = np.asarray(mask.get() if hasattr(mask, "get") else mask)
     np.testing.assert_array_equal(host_mask, t >= 0.5)

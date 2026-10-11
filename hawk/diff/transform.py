@@ -49,7 +49,7 @@ from ..ir.loops import exit_kwargs
 from ..ir.nodes import (DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish,
                         param_cell_names)
 from ..ir.walk import dispatch_groups
-from ..types import TensorType
+from ..types import INT_PLANE_DTYPES, TensorType
 from .loops import forward_loop, reverse_loop
 from .rules import rule_for, zero_like
 
@@ -243,6 +243,8 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
                 "iteration, which only a DERIVED kernel does: second-order reverse "
                 "mode through a `for` is not built. Publish the first "
                 "derivative and differentiate that kernel")
+        if sink.ttype.dtype in INT_PLANE_DTYPES:
+            continue                # an integer plane takes no adjoint
         _accumulate(adjoint, key, sink.value, _seed(sink, name))
     scatters: list[Node] = []
     scattered: set[str] = set()
@@ -364,7 +366,8 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
             if got is not None:
                 tangent[key(node)] = got
     out = _mask_termination(
-        tuple(_tangent_sink(s, tangent.get(key(s.value)), name) for s in sinks),
+        tuple(_tangent_sink(s, tangent.get(key(s.value)), name) for s in sinks
+              if s.ttype.dtype not in INT_PLANE_DTYPES),
         primal)
     return Derived(
         out, primal=_primal_name(primal), kind="jvp",
@@ -580,6 +583,13 @@ def _wrt(seq: Iterable[Node], wrt: Sequence[str] | None) -> tuple[Leaf, ...]:
     if wrt is None:
         return tuple(leaves)
     wanted = tuple(wrt)
+    integers = sorted({n.name for n in seq if isinstance(n, Leaf) and n.name in wanted
+                       and n.ttype.dtype in INT_PLANE_DTYPES})
+    if integers:
+        raise HawkError(
+            f"wrt names {integers}: an integer plane (int32/uint32) carries no "
+            "derivative; drop it from wrt= (a float computed from it through "
+            "hawk.math.real is differentiated with respect to its float inputs)")
     unknown = [w for w in wanted if not any(leaf.name == w for leaf in leaves)]
     if unknown:
         raise HawkError(

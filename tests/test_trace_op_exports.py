@@ -85,6 +85,7 @@ from hawk.types import TensorType
 S = TensorType((), "f64")
 B = TensorType((), "bool")
 I32 = TensorType((), "i32")
+I32_PLANE = TensorType((), "int32")
 V3 = TensorType((3,), "f64")
 Q = TensorType((4,), "f64", "quaternion")
 M33 = TensorType((3, 3), "f64")
@@ -210,6 +211,15 @@ SPELLINGS = {
     "at": _spell_at,
     "random_uniform": lambda: hm.random_uniform(_v(I32, "seed"), _v(I32, "counter")),
     "random_normal": lambda: hm.random_normal(_v(I32, "seed"), _v(I32, "counter")),
+    "floordiv": lambda: _v(I32_PLANE) // _v(I32_PLANE, "b"),
+    "mod": lambda: _v(I32_PLANE) % _v(I32_PLANE, "b"),
+    "band": lambda: _v(I32_PLANE) & _v(I32_PLANE, "b"),
+    "bor": lambda: _v(I32_PLANE) | _v(I32_PLANE, "b"),
+    "bxor": lambda: _v(I32_PLANE) ^ _v(I32_PLANE, "b"),
+    "shl": lambda: _v(I32_PLANE) << _v(I32_PLANE, "b"),
+    "shr": lambda: _v(I32_PLANE) >> _v(I32_PLANE, "b"),
+    "invert": lambda: ~_v(I32_PLANE),
+    "cast": lambda: hm.real(_v(I32_PLANE)),
 }
 
 #: The ONE kind with no authoring spelling, and why. ``splat`` is a BROADCAST

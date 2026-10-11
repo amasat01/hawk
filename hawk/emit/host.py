@@ -527,7 +527,8 @@ def chunk_vectors(op_count: int) -> int:
     return 2 if op_count <= SHORT_STEP_OPS else 1
 
 
-_ELEM_BYTES = {"f64": 8, "f32": 8, "i32": 8, "i64": 8, "bool": 1}
+_ELEM_BYTES = {"f64": 8, "f32": 8, "i32": 8, "i64": 8, "bool": 1, "int32": 4,
+               "uint32": 4}
 
 
 def _width(ttype) -> int:
@@ -1102,9 +1103,7 @@ def _deref(slot: Slot, k: int) -> str:
     """The ``params[k]`` cast one slot's by-value mirror is read through."""
     shape = mirror_of(slot.role, slot.ttype)
     if shape == "value":
-        scalar = "EAGLE_ABI_INDEX_T" if slot.role == "nsamples"\
-            else element_spelling(slot.ttype.dtype)
-        return f"*static_cast<const {scalar}*>(params[{k}])"
+        return f"*static_cast<const {view_type(slot.role, slot.ttype)}*>(params[{k}])"
     return f"*static_cast<const eagle::plugin::{shape}*>(params[{k}])"
 
 

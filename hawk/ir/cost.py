@@ -17,7 +17,9 @@ Counting rules, per sample:
 - ``arith`` ops are adds, multiplies, compares, selects, ``sqrt``, ``div``;
   ``special`` ops are the transcendental and library calls (``exp``, ``sin``,
   ``pow``, ``atan2`` ...) and the random draws
-- an op on a 64-bit float lands in the ``64`` field, everything else in ``32``
+- an op on a 64-bit float lands in the ``64`` field, everything else in ``32``;
+  an integer op (an ``int32``/``uint32`` result, or ``//``, ``%``, a bit
+  operator or shift on an index) is ``arith32``, a float -> integer cast too
 - a plane leaf is one load per element; an ``at`` is one gather per element
 - a ``Loop`` counts its body once per trip
 - whatever the selector reads is left out (every sample evaluates it, whichever
@@ -34,7 +36,8 @@ from math import prod
 
 from .loop_nodes import Loop
 from .nodes import At, Const, Dispatch, Leaf, Node, Op, Select
-from .ops import OP_KINDS, RANDOM_OPS, UNARY_MATH
+from ..types import INT_PLANE_DTYPES
+from .ops import INT_BINARY, INT_UNARY, OP_KINDS, RANDOM_OPS, UNARY_MATH
 from .walk import Walk, dispatch_groups
 
 __all__ = ["BranchCost", "DispatchCost", "dispatch_costs"]
@@ -91,7 +94,12 @@ def _elements(node: Node) -> int:
 
 
 def _wide(node: Node) -> bool:
+    if node.ttype.dtype in INT_PLANE_DTYPES or getattr(node, "kind", None) in _INT_KINDS:
+        return False
     return node.ttype.dtype == "f64" or any(o.ttype.dtype == "f64" for o in node.operands)
+
+
+_INT_KINDS = INT_BINARY + INT_UNARY
 
 
 def _op_count(op: Op) -> tuple[str, float]:

@@ -23,8 +23,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 #: IR value dtypes. The compiled scalar mode (float64/float32/banded) is
-#: a separate axis carried by the artifact, never by a node.
-DTYPES = ("f64", "f32", "i32", "i64", "bool")
+#: a separate axis carried by the artifact, never by a node. ``i32``/``i64``
+#: are INDEX integers (addresses, counts; stored 64-bit as ``Int``);
+#: ``int32``/``uint32`` are the 32-bit integer PLANES (:data:`INT_PLANE_DTYPES`).
+DTYPES = ("f64", "f32", "i32", "i64", "bool", "int32", "uint32")
+
+#: The 32-bit integer plane dtypes: stored at their own width, wrapping
+#: arithmetic, never promoted to or from a float without an explicit cast,
+#: and never differentiated.
+INT_PLANE_DTYPES = ("int32", "uint32")
 
 #: The roles whose plane is addressed at the current sample index by
 #: construction: every leaf role here is read ``plane[i]``, so these are

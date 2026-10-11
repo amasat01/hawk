@@ -37,6 +37,9 @@ Element-wise math, on host and device alike, with numpy's names:
   ``fdim`` ``fma`` ``clip`` ``minimum`` (``min``) ``maximum`` (``max``)
   ``isnan`` ``isinf`` ``isfinite``
 * special: ``erf`` ``erfc``
+* conversions: ``int32`` ``uint32`` (to a 32-bit integer plane value) and
+  ``real`` (to the kernel's floating type) — the only way an integer and a
+  float meet (see :data:`hawk.Int32`)
 
 Semantics differing from numpy, by design: ``round`` is C's (halves away
 from zero; ``rint`` is numpy's half-to-even ``np.round``), and
@@ -107,6 +110,7 @@ from .trace.value import (
     fmod,
     hypot,
     index_node,
+    int32,
     isfinite,
     isinf,
     isnan,
@@ -129,6 +133,7 @@ from .trace.value import (
     quat_recip,
     quat_rotate,
     remainder,
+    real,
     rint,
     rsqrt,
     sample_index,
@@ -142,6 +147,7 @@ from .trace.value import (
     tanh,
     transpose,
     trunc,
+    uint32,
     vsum,
 )
 from .trace.value import random_normal as _normal01
@@ -259,16 +265,16 @@ __all__ = [
     "abs", "absolute", "acos", "acosh", "argmax", "as_pure", "as_vec3", "asin",
     "asinh", "atan", "atan2", "atanh", "cbrt", "ceil", "clip", "copysign", "cos",
     "cosh", "cross", "dispatch", "dot", "erf", "erfc",
-    "exp", "exp2", "expm1", "fdim", "floor", "fma", "fmod", "hypot", "isfinite",
+    "exp", "exp2", "expm1", "fdim", "floor", "fma", "fmod", "hypot", "int32", "isfinite",
     "isinf", "isnan", "land", "lnot", "log", "log10", "log1p", "log2", "lor",
     "max", "maximum", "min", "minimum",
     "n_samples", "norm", "outer", "pow", "power", "quat_conj", "quat_mul",
     "quat_recip", "quat_rotate", "random_bernoulli", "random_exponential",
     "random_lognormal", "random_multivariate_normal", "random_normal",
-    "random_poisson1", "random_uniform", "random_uniform_int", "remainder",
+    "random_poisson1", "random_uniform", "random_uniform_int", "real", "remainder",
     "rint", "round", "rsqrt", "sample_index", "select", "sign", "sin", "sinh",
-    "spacing", "split_index", "sqrt", "take", "tan", "tanh", "transpose", "trunc", "vec",
-    "vsum", "where",
+    "spacing", "split_index", "sqrt", "take", "tan", "tanh", "transpose", "trunc", "uint32",
+    "vec", "vsum", "where",
 ]
 
 

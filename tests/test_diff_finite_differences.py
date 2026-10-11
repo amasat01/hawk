@@ -27,7 +27,7 @@ from _eval import evaluate
 from hawk.diff import jvp, vjp
 from hawk.ir import Assign, Const, Leaf, Node, Op, Select
 from hawk.ir import make as mk
-from hawk.ir.ops import OP_KINDS
+from hawk.ir.ops import CAST, INT_BINARY, INT_UNARY, OP_KINDS
 from hawk.types import TensorType
 
 RNG = np.random.default_rng(20260904)
@@ -325,7 +325,11 @@ def test_every_op_kind_is_numerically_checked():
     # never gets one for it ("kind receives no adjoint" means it never does).
     # The case lives beside the rest of the dispatch rows instead of bending
     # that uniform assumption for one kind.
-    unchecked = sorted(set(OP_KINDS) - exercised - {"at", "dispatch"})
+    # The integer kinds carry no derivative (an integer plane is never
+    # differentiated); a float through `cast` has its own finite-difference
+    # rows beside the integer-plane rows (tests/test_int_planes.py).
+    integer = set(INT_BINARY + INT_UNARY + CAST)
+    unchecked = sorted(set(OP_KINDS) - exercised - {"at", "dispatch"} - integer)
     assert not unchecked, (
         "every op kind must have a case whose derivative is checked against a "
         f"finite difference; unchecked: {unchecked}"

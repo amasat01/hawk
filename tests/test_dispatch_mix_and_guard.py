@@ -117,14 +117,12 @@ def test_auto_counts_the_mix_and_a_forced_policy_counts_nothing(built):
 def _host_mix(built):
     rng = np.random.default_rng(3)
     k, bs, stopped = _inputs(rng)
-    # The counters are K uint32 cells at the start of the plane (the
-    # finished_count precedent); the host runtime binds integer planes as
-    # int64, so the cells are read back through a uint32 view.
-    mix = np.zeros(K, dtype=np.int64)
+    # The counters are K uint32 cells, declared uint32 by the sidecar.
+    mix = np.zeros(K, dtype=np.uint32)
     y = np.zeros(N)
     hawk.run(hawk.load(built["local"].directory, "mix_auto"), k=k, bs=bs,
              terminated=stopped.copy(), y=y, dispatch0_mix=mix)
-    return mix.view(np.uint32)[:K], np.bincount(np.clip(k, 0, K - 1)[~stopped],
+    return mix, np.bincount(np.clip(k, 0, K - 1)[~stopped],
                                                  minlength=K)
 
 
@@ -143,14 +141,14 @@ def test_the_mix_is_the_bincount_of_the_live_classes_on_the_device(built):
 
     rng = np.random.default_rng(3)
     k, bs, stopped = _inputs(rng)
-    mix = cp.zeros(K, dtype=cp.int64)   # declared int64; K uint32 counters at its start
+    mix = cp.zeros(K, dtype=cp.uint32)
     plugin = L.device_plugin(built["local"].directory, "mix_auto",
                              _sidecar(built["local"], "mix_auto"))
     eplan.plan(plugin, structure=eexec.DeviceKernel).bind(
         k=cp.asarray(k), bs=cp.asarray(bs), terminated=cp.asarray(stopped),
         y=cp.zeros(N), dispatch0_mix=mix).launch()
     want = np.bincount(np.clip(k, 0, K - 1)[~stopped], minlength=K)
-    np.testing.assert_array_equal(cp.asnumpy(mix).view(np.uint32)[:K], want)
+    np.testing.assert_array_equal(cp.asnumpy(mix), want)
 
 
 def test_a_stale_sort_is_guarded_and_a_switch_sweep_completes_it(built):
@@ -280,19 +278,18 @@ def _fused_run(bundle, target, words):
                              eexec.DeviceKernel)
     rng = np.random.default_rng(12)
     k = rng.integers(0, K, N).astype(np.int64)
-    # the plane is declared int64; its K uint32 counters sit at its start
-    mix = xp.zeros(K, dtype=xp.int64)
+    mix = xp.zeros(K, dtype=xp.uint32)
     word = xp.zeros(1, dtype=xp.int64)
     bound = eplan.plan(plugin, structure=structure).bind(
         k=xp.asarray(k), bs=xp.asarray(rng.uniform(0.5, 1.0, (K, N))),
         terminated=xp.zeros(N, dtype=bool), x=xp.zeros(N),
-        finished_count=xp.zeros(1, dtype=xp.uint32).view(xp.int32),
+        finished_count=xp.zeros(1, dtype=xp.uint32),
         fused_steps=word, dispatch0_mix=mix)
     for w in words:
         word[0] = w
         bound.launch()
     got = mix.get() if hasattr(mix, "get") else mix
-    return np.asarray(got).view(np.uint32)[:K], np.bincount(k, minlength=K)
+    return np.asarray(got), np.bincount(k, minlength=K)
 
 
 @pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
@@ -353,7 +350,7 @@ def test_auto_segmented_runs_unfused(tmp_path, cache_dir):
             O.run_kernel(unit, N, base=0, count=counts[j], k=k, bs=bs, x=x_split,
                          terminated=stopped, dispatch0_offsets=offsets,
                          dispatch0_class=cls, dispatch0_stale=stale,
-                         finished_count=np.zeros(1, dtype=np.int64))
+                         finished_count=np.zeros(1, dtype=np.uint32))
         hawk.run(hawk.load(ref_bundle.directory, "walker_ref"), k=k, bs=bs, x=x_ref,
                  terminated=np.zeros(N, dtype=bool))
         np.testing.assert_array_equal(x_split, x_ref)

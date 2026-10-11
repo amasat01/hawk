@@ -242,7 +242,8 @@ def _segment_spec(kernel) -> SegmentSpec | None:
 #: count. Matches eagle's own ``eagle._active_set.MAP_PLANE``/``COUNT_PLANE``.
 ACTIVE_MAP = "active_map"
 ACTIVE_COUNT = "active_count"
-_ACTIVE_TTYPE = TensorType((), "i32")
+_MAP_TTYPE = TensorType((), "int32")
+_COUNT_TTYPE = TensorType((), "uint32")
 
 
 class _ActiveUnit:
@@ -292,8 +293,8 @@ def _active_unit(kernel, name: str, kind):
         )
     declared = tuple(Slot(role, n, walk.slot_types[(role, n)])
                      for role, n in walk.arg_spec)
-    declared += (Slot("lookup", ACTIVE_MAP, _ACTIVE_TTYPE),
-                 Slot("lookup", ACTIVE_COUNT, _ACTIVE_TTYPE))
+    declared += (Slot("lookup", ACTIVE_MAP, _MAP_TTYPE),
+                 Slot("lookup", ACTIVE_COUNT, _COUNT_TTYPE))
     return _ActiveUnit(kernel, _canonical(kernel.sinks, declared=declared))
 
 

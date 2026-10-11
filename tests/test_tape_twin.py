@@ -167,7 +167,7 @@ class _Run:
             extra["fused_steps"] = xp.zeros(1, dtype=xp.int64)
         self.extra = extra
         self.bound = eplan.plan(plugin, structure=structure).bind(
-            finished_count=self.counter.view(xp.int32), **uniforms,
+            finished_count=self.counter, **uniforms,
             **self.planes, **extra)
 
     def launch(self, k=None):

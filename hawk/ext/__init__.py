@@ -125,8 +125,8 @@ class Guard:
     ``Terminated`` form.
 
     ``active_set=True`` makes the kernel read an active-set index map: the
-    build binds ``active_map`` (``i32``, ascending live indices) and
-    ``active_count`` (``i32``), and the index prologue maps launch
+    build binds ``active_map`` (``int32``, ascending live indices) and
+    ``active_count`` (``uint32``), and the index prologue maps launch
     position ``t`` to sample ``active_map[t]``, exiting past
     ``active_count[0]`` (:class:`eagle.ActiveSet` fills both). Only the
     prologue changes, so a stale map is safe. It needs a mask, so

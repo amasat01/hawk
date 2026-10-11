@@ -55,7 +55,7 @@ _SURFACES = {
 }
 
 #: ``hawk.types`` carries no ``__all__``; its public names are pinned here.
-_TYPES_PUBLIC_NAMES = frozenset({"DTYPES", "LaneMeta", "PER_SAMPLE_ROLES", "Slot",
+_TYPES_PUBLIC_NAMES = frozenset({"DTYPES", "INT_PLANE_DTYPES", "LaneMeta", "PER_SAMPLE_ROLES", "Slot",
                                  "TensorType", "Wire"})
 
 #: The exact, sorted public name set per surface — the MANIFEST. Any name
@@ -64,9 +64,9 @@ _TYPES_PUBLIC_NAMES = frozenset({"DTYPES", "LaneMeta", "PER_SAMPLE_ROLES", "Slot
 #: the SAME commit, same as any other committed manifest in this repo.
 _EXPECTED_MANIFEST = {
     "hawk": [
-        "Accum", "HawkError", "Index", "Kernel", "Matrix", "Mutable",
+        "Accum", "HawkError", "Index", "Int32", "Kernel", "Matrix", "Mutable",
         "Param", "Quantity", "Quat", "RawBlock", "Reduce", "Scalar",
-        "Staged", "Table", "Terminated", "Value", "Vector", "Wide",
+        "Staged", "Table", "Terminated", "UInt32", "Value", "Vector", "Wide",
         "WideOut", "__version__", "build", "kernel", "load", "raw_device",
         "resolve_dispatch", "run", "samples_first", "samples_last", "steps",
     ],
@@ -76,7 +76,7 @@ _EXPECTED_MANIFEST = {
         "as_vec3", "asin", "asinh", "atan", "atan2", "atanh", "cbrt",
         "ceil", "clip", "copysign", "cos", "cosh", "cross",
         "dispatch", "dot", "erf", "erfc", "exp", "exp2", "expm1",
-        "fdim", "floor", "fma", "fmod", "hypot", "isfinite", "isinf",
+        "fdim", "floor", "fma", "fmod", "hypot", "int32", "isfinite", "isinf",
         "isnan", "land", "lnot", "log", "log10", "log1p", "log2",
         "lor", "max", "maximum", "min", "minimum", "n_samples",
         "norm", "outer", "pow", "power", "quat_conj", "quat_mul",
@@ -84,9 +84,9 @@ _EXPECTED_MANIFEST = {
         "random_exponential", "random_lognormal",
         "random_multivariate_normal", "random_normal",
         "random_poisson1", "random_uniform", "random_uniform_int",
-        "remainder", "rint", "round", "rsqrt", "sample_index",
+        "real", "remainder", "rint", "round", "rsqrt", "sample_index",
         "select", "sign", "sin", "sinh", "spacing", "split_index", "sqrt",
-        "take", "tan", "tanh", "transpose", "trunc", "vec", "vsum",
+        "take", "tan", "tanh", "transpose", "trunc", "uint32", "vec", "vsum",
         "where",
     ],
     "hawk.runtime": [

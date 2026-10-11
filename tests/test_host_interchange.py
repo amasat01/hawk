@@ -253,7 +253,7 @@ def _launches(bundle, name, planes, words):
         extra["fused_steps"] = np.zeros(1, dtype=np.int64)
     kw = {"dt": DT} if "dt" in dict((n, r) for r, n in sidecar["arg_spec"]) else {}
     bound = eplan.plan(plugin, structure=eexec.HostTeam).bind(
-        finished_count=counter.view(np.int32), **kw, **planes, **extra)
+        finished_count=counter, **kw, **planes, **extra)
     snaps = []
     for word in words:
         if auto:
@@ -354,7 +354,7 @@ def _bound(bundle, name, planes):
     word = np.zeros(1, dtype=np.int64)
     kw = {"dt": DT} if "dt" in dict((n, r) for r, n in sidecar["arg_spec"]) else {}
     bound = eplan.plan(plugin, structure=eexec.HostTeam).bind(
-        finished_count=counter.view(np.int32), fused_steps=word, **kw, **planes)
+        finished_count=counter, fused_steps=word, **kw, **planes)
     return bound, planes, counter, word
 
 

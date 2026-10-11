@@ -290,7 +290,7 @@ def _run(bundle, name, which, target):
     planes["terminated"] = xp.zeros(N, dtype=bool)
     counter = xp.zeros(1, dtype=xp.uint32)
     bound = eplan.plan(plugin, structure=structure).bind(
-        dt=DT, finished_count=counter.view(xp.int32), **planes)
+        dt=DT, finished_count=counter, **planes)
     launches = 0
     while int(counter[0]) < N and launches < CAP:
         bound.launch()
@@ -446,9 +446,9 @@ def _driver(bundle, name, which, target, *, active=False, never=False):
         extra["fused_steps"] = xp.zeros(1, dtype=xp.int64)
     if active:
         extra["active_map"] = xp.arange(N, dtype=xp.int32)
-        extra["active_count"] = xp.full(1, N, dtype=xp.int32)
+        extra["active_count"] = xp.full(1, N, dtype=xp.uint32)
     bound = eplan.plan(plugin, structure=structure).bind(
-        dt=DT, finished_count=counter.view(xp.int32), **planes, **extra)
+        dt=DT, finished_count=counter, **planes, **extra)
     return bound, planes, counter, extra, xp
 
 

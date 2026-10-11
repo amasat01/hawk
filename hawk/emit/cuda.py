@@ -483,12 +483,11 @@ def range_entry(backend: CudaBackend, name: str, sinks, walk: Walk, kind=None,
 
 def _param_type(role: str, ttype) -> str:
     """The by-value ABI shape one role crosses the launch boundary as."""
-    from .spelling import element_spelling, mirror_of
+    from .spelling import mirror_of, view_type
 
     shape = mirror_of(role, ttype)
     if shape == "value":
-        return "EAGLE_ABI_INDEX_T" if role == "nsamples"\
-            else element_spelling(ttype.dtype)
+        return view_type(role, ttype)
     return f"eagle::plugin::{shape}"
 
 

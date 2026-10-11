@@ -400,6 +400,125 @@ template <class ViewT>
 }}
 """
 
+#: The integer helpers (``int32``/``uint32`` planes, and ``//``, ``%``, the
+#: bit operators on an index ``Int``): numpy's results at every edge C++
+#: leaves undefined or defines otherwise — wrapping ``+ - *`` and negation
+#: (through the unsigned twin: signed overflow is undefined), floor ``//``
+#: and divisor-signed ``%`` with a zero divisor giving 0, shifts by a count
+#: outside ``[0, bits)`` giving 0 (or -1 for a negative value shifted
+#: right), and float -> integer truncating toward zero, saturating at the
+#: range and mapping NaN to 0. No ``<limits>``: the device compiler may not
+#: carry it. Emitted only for a body that calls one.
+_INT_CALL = "hawk_abi::int_"
+_INT_HELPERS = """
+template <class T> struct int_traits;
+template <> struct int_traits<std::int32_t> {{
+    using U = std::uint32_t;
+    static constexpr bool is_signed = true;
+    static constexpr std::int32_t lo = -2147483647 - 1, hi = 2147483647;
+    static constexpr unsigned bits = 32u;
+}};
+template <> struct int_traits<std::uint32_t> {{
+    using U = std::uint32_t;
+    static constexpr bool is_signed = false;
+    static constexpr std::uint32_t lo = 0u, hi = 4294967295u;
+    static constexpr unsigned bits = 32u;
+}};
+template <> struct int_traits<long long> {{
+    using U = unsigned long long;
+    static constexpr bool is_signed = true;
+    static constexpr long long lo = -9223372036854775807LL - 1, hi = 9223372036854775807LL;
+    static constexpr unsigned bits = 64u;
+}};
+
+template <class T> {qualifier} T int_add(T a, T b)
+{{
+    using U = typename int_traits<T>::U;
+    return static_cast<T>(static_cast<U>(a) + static_cast<U>(b));
+}}
+template <class T> {qualifier} T int_sub(T a, T b)
+{{
+    using U = typename int_traits<T>::U;
+    return static_cast<T>(static_cast<U>(a) - static_cast<U>(b));
+}}
+template <class T> {qualifier} T int_mul(T a, T b)
+{{
+    using U = typename int_traits<T>::U;
+    return static_cast<T>(static_cast<U>(a) * static_cast<U>(b));
+}}
+template <class T> {qualifier} T int_neg(T a)
+{{
+    using U = typename int_traits<T>::U;
+    return static_cast<T>(U(0) - static_cast<U>(a));
+}}
+template <class T> {qualifier} T int_abs(T a)
+{{
+    if constexpr (int_traits<T>::is_signed)
+        return a < T(0) ? int_neg(a) : a;
+    else
+        return a;
+}}
+template <class T> {qualifier} T int_min(T a, T b) {{ return b < a ? b : a; }}
+template <class T> {qualifier} T int_max(T a, T b) {{ return a < b ? b : a; }}
+template <class T> {qualifier} T int_floordiv(T a, T b)
+{{
+    if (b == T(0))
+        return T(0);
+    if constexpr (int_traits<T>::is_signed) {{
+        if (b == T(-1))
+            return int_neg(a);
+        const T q = static_cast<T>(a / b);
+        return (a % b != T(0) && ((a < T(0)) != (b < T(0)))) ? static_cast<T>(q - T(1)) : q;
+    }} else {{
+        return static_cast<T>(a / b);
+    }}
+}}
+template <class T> {qualifier} T int_mod(T a, T b)
+{{
+    if (b == T(0))
+        return T(0);
+    if constexpr (int_traits<T>::is_signed) {{
+        if (b == T(-1))
+            return T(0);
+        const T r = static_cast<T>(a % b);
+        return (r != T(0) && ((r < T(0)) != (b < T(0)))) ? static_cast<T>(r + b) : r;
+    }} else {{
+        return static_cast<T>(a % b);
+    }}
+}}
+template <class T> {qualifier} T int_and(T a, T b) {{ return static_cast<T>(a & b); }}
+template <class T> {qualifier} T int_or(T a, T b) {{ return static_cast<T>(a | b); }}
+template <class T> {qualifier} T int_xor(T a, T b) {{ return static_cast<T>(a ^ b); }}
+template <class T> {qualifier} T int_invert(T a) {{ return static_cast<T>(~a); }}
+template <class T> {qualifier} T int_shl(T a, T b)
+{{
+    using U = typename int_traits<T>::U;
+    if (static_cast<U>(b) < U(int_traits<T>::bits))
+        return static_cast<T>(static_cast<U>(a) << static_cast<U>(b));
+    return T(0);
+}}
+template <class T> {qualifier} T int_shr(T a, T b)
+{{
+    using U = typename int_traits<T>::U;
+    if (static_cast<U>(b) < U(int_traits<T>::bits))
+        return static_cast<T>(a >> b);
+    if constexpr (int_traits<T>::is_signed)
+        return a < T(0) ? T(-1) : T(0);
+    else
+        return T(0);
+}}
+template <class T, class R> {qualifier} T int_from_real(R x)
+{{
+    if (aether::math::isnan(x))
+        return T(0);
+    if (x <= static_cast<R>(int_traits<T>::lo))
+        return int_traits<T>::lo;
+    if (x >= static_cast<R>(int_traits<T>::hi))
+        return int_traits<T>::hi;
+    return static_cast<T>(x);
+}}
+"""
+
 _CLAMP_COUNT = """{qualifier} int hawk_clamp_count(long long n)
 {{
     return n < 2147483647LL ? static_cast<int>(n) : 2147483647;
@@ -410,7 +529,8 @@ _CLAMP_COUNT = """{qualifier} int hawk_clamp_count(long long n)
 
 def abi_helpers(qualifier: str, *, compensated: bool = False,
                 store_compensated: bool = False, finish: bool = False,
-                spacing: bool = False, mix: bool = False) -> str:
+                spacing: bool = False, mix: bool = False,
+                integers: bool = False) -> str:
     """The view-from-mirror reconstruction helpers — byte-for-byte the same
     on both targets, only the function qualifier differs; reads the
     mirror's own stride fields so a non-contiguous plane rebuilds
@@ -421,7 +541,8 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
     (:func:`hawk.ext.compensated_target`), so a PLAIN unit's prelude stays
     byte-identical. ``finish`` appends ``finish_count`` under the same
     rule, for a kernel that finishes its own sample, and ``spacing`` the
-    ``spacing`` op's helper for a body that uses it."""
+    ``spacing`` op's helper for a body that uses it, ``integers`` the
+    integer helpers for a body that calls one."""
     helpers = []
     if compensated or store_compensated:
         helpers.append(_TWO_SUM_ERR.format(qualifier=qualifier))
@@ -435,6 +556,8 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
         helpers.append(_SPACING.format(qualifier=qualifier))
     if mix:
         helpers.append(_MIX_COUNT.format(qualifier=qualifier))
+    if integers:
+        helpers.append(_INT_HELPERS.format(qualifier=qualifier))
     return f"""namespace hawk_abi {{
 
 template <class T, std::size_t N>
@@ -501,7 +624,8 @@ template <class ViewT, class T>
 
 def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             store_compensated: bool = False, needs_random: bool = False,
-            finish: bool = False, spacing: bool = False, mix: bool = False) -> str:
+            finish: bool = False, spacing: bool = False, mix: bool = False,
+            integers: bool = False) -> str:
     """Includes + the scalar-mode aliases + the reconstruction helpers.
 
     ``compensated``/``store_compensated`` reach :func:`abi_helpers`'s gate.
@@ -516,7 +640,7 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             + _CLAMP_COUNT.format(qualifier=qualifier)
             + abi_helpers(qualifier, compensated=compensated,
                          store_compensated=store_compensated, finish=finish,
-                         spacing=spacing, mix=mix))
+                         spacing=spacing, mix=mix, integers=integers))
 
 
 def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
@@ -588,7 +712,8 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
         prelude(mode, backend.qualifier, compensated=compensated,
                store_compensated=store_compensated, needs_random=body.needs_random,
                finish=getattr(walk, "finish", None) is not None,
-               spacing=_SPACING_CALL in body.text, mix=_MIX_CALL in body.text),
+               spacing=_SPACING_CALL in body.text, mix=_MIX_CALL in body.text,
+               integers=_INT_CALL in body.text),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",
@@ -683,7 +808,8 @@ def _render_two_paths(name: str, sinks, walk: Walk, backend: Backend, *,
                 or single.needs_random,
                 finish=getattr(walk, "finish", None) is not None,
                 spacing=_SPACING_CALL in fused.text + single.text,
-                mix=_MIX_CALL in fused.text + single.text),
+                mix=_MIX_CALL in fused.text + single.text,
+                integers=_INT_CALL in fused.text + single.text),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",

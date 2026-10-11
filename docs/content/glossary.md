@@ -53,6 +53,18 @@ device image
   The compiled GPU code (`DeviceImage`, PTX or SASS) hawk produces for a
   kernel; eagle launches it.
 
+integer plane
+  A per-sample plane of 32-bit integers, declared `Int32` (`np.int32`) or
+  `UInt32` (`np.uint32`); `Param[Int32]` declares an integer parameter.
+  `+ - *` wrap modulo 2^32, `//` and `%` follow Python's sign rules (a
+  zero divisor gives 0), `& | ^ ~ << >>` act on the bits (a shift count
+  outside `[0, 32)` gives 0, or -1 for a negative value shifted right), as
+  NumPy does. An integer never mixes with a float without a cast:
+  `hawk.math.real(n)` gives the float, `hawk.math.int32(x)` /
+  `hawk.math.uint32(x)` the integer (truncating toward zero, saturating at
+  the type's range, NaN to 0). An integer plane is never differentiated.
+  `Index` is the separate 64-bit index type for addresses and selectors.
+
 payload
   The sealed bundle of aether's C++ headers that hawk's runtime GPU
   compiles build against. It ships in the `aether-dsc` package, so a GPU

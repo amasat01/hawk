@@ -15,7 +15,7 @@ from ..ir.nodes import (
     Op,
     Primitive,
 )
-from ..types import TensorType
+from ..types import INT_PLANE_DTYPES, TensorType
 
 #: The launch-geometry tokens forbidden anywhere in a body; the one place
 #: they may appear is the backend's index prologue. Warp-level spelling
@@ -186,6 +186,8 @@ def element_spelling(dtype: str) -> str:
         return "Real"
     if dtype in ("i32", "i64"):
         return "Int"
+    if dtype in INT_PLANE_DTYPES:
+        return f"std::{dtype}_t"
     if dtype == "bool":
         return "bool"
     raise HawkError(f"no C++ element spelling for dtype {dtype!r}")
@@ -208,8 +210,11 @@ def carry_type(ttype: TensorType) -> str:
 def view_type(role: str, ttype: TensorType) -> str:
     """The aether view / by-value spelling one wire binds as."""
     if mirror_of(role, ttype) == "value":
-        return "EAGLE_ABI_INDEX_T" if role == "nsamples"\
-            else element_spelling(ttype.dtype)
+        if role == "nsamples":
+            return "EAGLE_ABI_INDEX_T"
+        # an integer Param travels as the 64-bit by-value ``Int`` every
+        # integer uniform uses; the body narrows it to its declared width.
+        return "Int" if ttype.dtype in INT_PLANE_DTYPES else element_spelling(ttype.dtype)
     elem, shape = element_spelling(ttype.dtype), ttype.shape
     ext = ", ".join([*(str(e) for e in shape), "aether::dyn"])
     return f"aether::View<{elem}, aether::extents<{ext}>, aether::layout_right>"

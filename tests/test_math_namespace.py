@@ -166,6 +166,9 @@ SPELLINGS = {
     "absolute": lambda: M.absolute(_v(S)),
     "pow": lambda: M.pow(_v(S), _v(S, "b")),
     "power": lambda: M.power(_v(V3), 2.0),
+    "int32": lambda: M.int32(_v(S)),
+    "uint32": lambda: M.uint32(_v(S)),
+    "real": lambda: M.real(M.int32(_v(S))),
 }
 
 

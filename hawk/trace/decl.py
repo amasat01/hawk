@@ -30,6 +30,12 @@ from ..types import TensorType
 #: an extent is a TYPE, never a runtime value.
 Scalar = TensorType((), "f64")
 Index = TensorType((), "i32")
+#: The 32-bit integer plane payloads: stored at 4 bytes (``np.int32`` /
+#: ``np.uint32``), wrapping ``+ - *``, Python's ``//``/``%`` sign rules, the
+#: bitwise operators and shifts; mixed with a float only through
+#: ``hawk.math.real``/``int32``/``uint32``; never differentiated.
+Int32 = TensorType((), "int32")
+UInt32 = TensorType((), "uint32")
 Quat = TensorType((4,), "f64", "quaternion")
 
 
@@ -152,8 +158,29 @@ class Accum:
         return Plane("accum", _payload("Accum", t))
 
 
+@dataclass(frozen=True)
+class _ParamPlane(Plane):
+    """``Param`` — one broadcast by-value scalar (the ``uniform``);
+    ``Param[Int32]``/``Param[UInt32]`` declare an integer one (passed as a
+    Python ``int``, narrowed modulo 2**32 to the declared type)."""
+
+    def __getitem__(self, t: object) -> Plane:
+        """``Param[t]``: a by-value parameter of payload ``t``.
+
+        :param t: ``Scalar``, ``Int32`` or ``UInt32``.
+        :returns: the ``uniform`` declaration.
+        :raises HawkError: for any other payload.
+
+        Example: ``def k(x: Scalar, n: Param[Int32], y: Mutable[Scalar]): ...``"""
+        if t not in (Scalar, Int32, UInt32):
+            raise HawkError(
+                f"Param[...] takes Scalar, Int32 or UInt32, got {t!r}; a wider "
+                "shared value is a Table")
+        return Plane("uniform", t)
+
+
 #: ``Param`` — one broadcast by-value scalar (the ``uniform``).
-Param = Plane("uniform", Scalar)
+Param = _ParamPlane("uniform", Scalar)
 
 #: ``Terminated`` — the reserved per-sample boolean MASK (role
 #: ``terminated``). Declared, never written: HAWK's guard seam gates on it.
@@ -210,8 +237,8 @@ def _axes(what: str, key: object) -> tuple:
 def _payload(what: str, t: object) -> TensorType:
     if not isinstance(t, TensorType):
         raise HawkError(
-            f"{what}[...] takes a payload type (Scalar, Index, Quat, Vector[W], "
-            f"Matrix[R,C]), got {t!r}"
+            f"{what}[...] takes a payload type (Scalar, Index, Int32, UInt32, Quat, "
+            f"Vector[W], Matrix[R,C]), got {t!r}"
         )
     return t
 
@@ -224,7 +251,8 @@ def resolve(param: str, annotation: object) -> Plane | Quantity:
         return Plane("in", annotation)
     raise HawkError(
         f"parameter {param!r}: {annotation!r} is not a HAWK declaration. Annotate "
-        "it with a payload type (Scalar / Index / Quat / Vector[W] / Matrix[R,C]), "
+        "it with a payload type (Scalar / Index / Int32 / UInt32 / Quat / Vector[W] / "
+        "Matrix[R,C]), "
         "a Param / Mutable[...] / Table[...] / Staged[...] / Wide[W] / "
         "WideOut[...] / Accum[...] / Reduce(op) form, or a Quantity"
     )

@@ -45,10 +45,12 @@ consumer:
 * ``arg_dtypes`` — the plane's wire dtype, for every role including the
   runtime-length ones: the compiled ``scalar_type`` for an ``f64``/``f32``
   leaf (the compiled MODE decides the wire width, not the IR's own static
-  ``f64``), always ``int64`` for an ``i32``/``i64`` leaf (HAWK's emitted
-  entry spells every integer ``Int`` regardless of declared width, so
-  reporting ``int32`` would name the wrong wire), and ``bool`` for a
-  ``Terminated`` mask.
+  ``f64``), always ``int64`` for an ``i32``/``i64`` index leaf (HAWK's
+  emitted entry spells every index integer ``Int`` regardless of declared
+  width), ``int32``/``uint32`` for an integer plane (the reserved 4-byte
+  planes: ``active_map`` is ``int32``; the counters ``finished_count``,
+  ``active_count`` and an ``auto`` dispatch's ``<group>_mix`` are
+  ``uint32``), and ``bool`` for a ``Terminated`` mask.
 
 All three fields are additive, so no ``schema_version`` bump accompanies
 them; :func:`hawk.artifact.plan_view` projects all three straight through.
@@ -60,6 +62,7 @@ from .. import _contracts
 from ..compile import aether_include, eagle_include
 from ..ir import HawkError
 from ..ir.segment import class_name, mix_name, stale_name
+from ..types import INT_PLANE_DTYPES
 
 
 def _root_or_sealed_marker(resolver) -> str:
@@ -93,6 +96,8 @@ def _names(walk, role) -> list:
 def _mutable_dtype(ttype) -> str:
     if not ttype.shape and ttype.dtype in ("i32", "i64"):
         return "int"
+    if ttype.dtype in INT_PLANE_DTYPES:
+        return ttype.dtype
     return MUTABLE_DTYPES[len(ttype.shape)]
 
 
@@ -124,8 +129,8 @@ def _width(ttype) -> int:
 
 def _params(walk) -> list:
     return [{"name": name,
-             "dtype": ("int" if walk.slot_types[(role, name)].dtype in ("i32", "i64")
-                       else "float")}
+             "dtype": ("int" if walk.slot_types[(role, name)].dtype
+                       in ("i32", "i64", *INT_PLANE_DTYPES) else "float")}
             for role, name in walk.arg_spec if role == "uniform"]
 
 
@@ -151,6 +156,7 @@ _PLANE_ROLES = _SAMPLE_SHAPED_ROLES + _RUNTIME_LENGTH_ROLES
 #: regardless of the compiled scalar mode; ``None`` for ``f64``/``f32``
 #: marks "look at ``scalar_type`` instead" — see :func:`_wire_dtype`.
 _FIXED_WIRE_DTYPE = {"f64": None, "f32": None, "i32": "int64", "i64": "int64",
+                     "int32": "int32", "uint32": "uint32",
                      "bool": "bool"}
 
 
@@ -162,8 +168,10 @@ def _wire_dtype(ttype, scalar_type: str) -> str:
     artifact's compiled ``scalar_type`` that decides the wire's byte width
     (a ``mode="float32"`` build carries ``float32`` planes end to end
     regardless). An ``i32``/``i64`` leaf is reported ``int64``
-    unconditionally, since HAWK's emitted entry spells every integer
-    element ``Int`` (64-bit) regardless of the IR's declared width.
+    unconditionally, since HAWK's emitted entry spells every index
+    integer ``Int`` (64-bit) regardless of the IR's declared width; an
+    ``int32``/``uint32`` plane (the reserved 4-byte counters among them) is
+    reported at its own 4-byte dtype.
     ``bool`` passes straight through: the one dtype that never widens."""
     fixed = _FIXED_WIRE_DTYPE[ttype.dtype]
     return fixed if fixed is not None else scalar_type

@@ -26,7 +26,7 @@ from typing import Any
 
 from ..ir import Const, HawkError, Node, Select
 from ..ir import make as _mk
-from ..ir.ops import COMPARE, LOGICAL, PREDICATE, RANDOM_OPS
+from ..ir.ops import CAST, COMPARE, INT_BINARY, INT_UNARY, LOGICAL, PREDICATE, RANDOM_OPS
 from ..types import TensorType
 
 _F64 = TensorType((), "f64")
@@ -559,7 +559,10 @@ RULES: dict[tuple[str, int | None], DiffRule] = {
        # propagates through it; the class tests are bool-typed.
        # RANDOM_OPS joins too (a draw is a function of integer operands
        # only), keeping the table closed-world even for a `wrt=` caller.
-       for k in COMPARE + LOGICAL + RANDOM_OPS + PREDICATE
+       # The integer kinds join too: an integer value carries no derivative,
+       # and a `cast` is zero either way (into an integer it is piecewise
+       # constant; out of one, its operand is not differentiable).
+       for k in COMPARE + LOGICAL + RANDOM_OPS + PREDICATE + INT_BINARY + INT_UNARY + CAST
        + ("floor", "ceil", "trunc", "round", "rint", "sign", "spacing")},
     ("fma", None): DiffRule(vjp=_fma_vjp, jvp=_fma_jvp),
     ("clip", None): DiffRule(vjp=_clip_vjp, jvp=_clip_jvp),

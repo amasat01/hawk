@@ -69,7 +69,7 @@ def _bind(bundle, name, planes):
     word = cp.zeros(1, dtype=cp.int64)
     kw = {"dt": DT} if "dt" in dict((n, r) for r, n in sidecar["arg_spec"]) else {}
     bound = eplan.plan(plugin, structure=eexec.DeviceKernel).bind(
-        finished_count=counter.view(cp.int32), fused_steps=word, **kw, **dev)
+        finished_count=counter, fused_steps=word, **kw, **dev)
     return bound, dev, counter, word, plugin._keepalive[1].module
 
 
@@ -357,12 +357,12 @@ def test_the_persist_loop_reports_its_cells_once_at_exit(kernel):
 #: sha256 of the text the persist entry's change must leave alone: each
 #: kernel's own (fused) entry and ``_range`` entry, and its whole host TU.
 _FROZEN = {
-    ("oscillator", ""): "d98cd506d5f9f9be9d998aa3501f5cee6ff12a75e1e67d64acb7467e13f51606",
-    ("oscillator", "_range"): "68d0e37410029b9ba535d1d9db09b06f5fe561e364fc32c9760585cdd7e02f65",
-    ("oscillator", "host"): "21c9bc02e697a53ada5da2e2c506304a727472fc59595e0d295fa03b7b7cbc8c",
-    ("rkf78_attempt", ""): "322144bf209f87053cfc18ddac7f263d4269793061bc231e9b4b7f0e96748de8",
-    ("rkf78_attempt", "_range"): "f302e17c6f68be322f68fc3d37cdd101c6c5732f512f42e49e65c6547ea36a40",
-    ("rkf78_attempt", "host"): "6398950aa5ef257ff7e6ae00cea2fd3c43c79de35082960918bd14557e7d6017",
+    ("oscillator", ""): "c18c3f46b3d30faa40849a4847be5dea5a14e33540fd60ec71ba51a36cd0dc35",
+    ("oscillator", "_range"): "97944ac29526e49ff59cc64a13c40d68be07597e505bc5bb402289454d00912e",
+    ("oscillator", "host"): "3f65be80ef5276adb804c99b6e4ebf16cd10a2f6a6cdcc83b9f89ee75890b205",
+    ("rkf78_attempt", ""): "f7663ab3a0401183de32192038abcaf32453b5f5a18c2b209ac84bf60f296bf2",
+    ("rkf78_attempt", "_range"): "b6c7c041d665d592eac195e543d53d727a00f494261c6769b94160db987027a4",
+    ("rkf78_attempt", "host"): "5f6540717598e66361225f99cd55ed14996d5cc5f79c9138adb335db3f5212b5",
 }
 
 

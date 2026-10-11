@@ -113,7 +113,7 @@ def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None,
 #: must report. `itemsize` is read off the buffer itself; only kind needs
 #: a table.
 _WIRE_SPEC = {"float64": ("f", 8), "float32": ("f", 4), "int64": ("i", 8),
-             "bool": ("b", 1)}
+             "int32": ("i", 4), "uint32": ("i", 4), "bool": ("b", 1)}
 
 #: `memoryview.format` -> coarse kind. Signed and unsigned integer codes
 #: fold to the same two buckets so a platform's `long` vs `long long`
@@ -127,7 +127,8 @@ _FORMAT_KIND = {"f": "f", "d": "f", "e": "f",
 #: The `np.asarray(..., dtype=...)` spelling a FIX suggests for each wire
 #: dtype string.
 _NP_DTYPE_LITERAL = {"float64": "np.float64", "float32": "np.float32",
-                     "int64": "np.int64", "bool": "bool"}
+                     "int64": "np.int64", "int32": "np.int32",
+                     "uint32": "np.uint32", "bool": "bool"}
 
 
 def _buffer_kind(mv: memoryview) -> tuple:
