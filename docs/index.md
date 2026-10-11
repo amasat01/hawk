@@ -111,6 +111,7 @@ hawk authors and compiles the kernels eagle deploys.
 :hidden:
 
 content/installation
+content/quickstart
 ```
 
 ```{toctree}
@@ -142,8 +143,7 @@ content/examples
 :maxdepth: 1
 :hidden:
 
-content/compile_cache
-content/compile_options
+content/compiling
 content/interop
 ```
 
@@ -153,6 +153,7 @@ content/interop
 :hidden:
 
 content/api/index
+content/glossary
 ```
 
 ```{toctree}

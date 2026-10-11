@@ -9,12 +9,9 @@ covers the host crossing in full and then hands off.
 
 ## DLPack is the contract
 
-The family-wide rule, stated once by
-[raptor's interoperability certification matrix](https://amasat01.github.io/raptor/content/interop_protocols.html):
-every device crossing is, mechanically, a DLPack exchange, and a capability
-is claimed here only where a certification row backs it. hawk's own
-public claims are narrower than the family's, and are listed below with
-nothing implied beyond them.
+Every device crossing in the family is a DLPack exchange, stated once in
+[raptor's interoperability page](https://amasat01.github.io/raptor/content/interop_protocols.html).
+Below are hawk's own crossings.
 
 ## The host crossing: the buffer protocol, zero-copy
 

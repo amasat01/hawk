@@ -1,6 +1,6 @@
 # Tutorials
 
-Eight notebooks, each building on the last: write and run a kernel, pick the
+Eight notebooks (new words are in the [glossary](glossary)), each building on the last: write and run a kernel, pick the
 right plane type, write a kernel that stops itself, take gradients
 backward and forward, read/scatter/reduce across a batch, differentiate
 through branches and stops, and choose how a branch between several

@@ -12,9 +12,42 @@ Developer Certificate of Origin sign-off (`git commit -s`); see
 https://developercertificate.org/ for what that certifies. There is no
 Contributor License Agreement and no relicensing right.
 
+## Building from source (development)
+
+To work on hawk itself, build it from a clone. hawk has a compiled half (`hawk._core`, a nanobind extension) and depends
+on two build-time siblings, `aether` and `eagle`, taken from checkouts for development. Clone all three
+next to each other —
+
+```text
+workspace/
+├── aether/
+├── eagle/
+└── hawk/
+```
+
+— then install aether's sealed header payload before hawk itself:
+
+```bash
+pip install ../aether/dsc
+pip install -e .[test]
+```
+
+`pip install -e .` builds `hawk._core` through `CMakeLists.txt`
+(scikit-build-core + nanobind, the same packaging eagle's own binding uses),
+resolving the `aether`/`eagle` C++ header roots from the sibling checkouts
+above — or from `$HAWK_AETHER_INCLUDE` / `$HAWK_EAGLE_INCLUDE` when they live
+somewhere else.
+
+To run a DEVICE artifact end to end (not just author and compile it) you
+also need `eagle` installed as a Python package — see the "Python
+package" section of [eagle's installation page](https://amasat01.github.io/eagle/content/userguide/installation.html) — since hawk compiles
+a device artifact but never launches one itself. A host artifact needs
+no `eagle` at all: `hawk.load`/`hawk.run` run it directly, as
+[CPU-only](project:#cpu-only) shows.
+
 ## Building and testing
 
-From a source checkout (see [installation](installation)):
+From a source checkout (see above):
 
 ```bash
 pip install ../aether/dsc
@@ -49,8 +82,13 @@ the [README](https://github.com/amasat01/hawk#readme).
 
 ## How-to
 
+One guide for contributors:
+
+- [Add a native function](contributing/add_a_native_function): the contributor path for a native op.
+
 ```{toctree}
 :maxdepth: 1
+:hidden:
 
 contributing/add_a_native_function
 ```
