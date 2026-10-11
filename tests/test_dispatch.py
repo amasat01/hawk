@@ -481,13 +481,6 @@ def _seg_plane(offs_name: str, what: str) -> str:
     return offs_name.replace("_offsets", f"_{what}")
 
 
-def _seg_guard_planes(offs_name: str, kinds, xp=np) -> dict:
-    """The selector the units re-read, and the class/stale planes they write."""
-    return {"k": xp.asarray(kinds, dtype=np.int64),
-            _seg_plane(offs_name, "class"): xp.full(len(kinds), -1, dtype=np.int64),
-            _seg_plane(offs_name, "stale"): xp.zeros(len(kinds), dtype=bool)}
-
-
 @pytest.mark.parametrize("K", [2, 5, 16])
 def test_segmented_forward_matches_the_serial_oracle_on_the_host(segmented_bundle, K):
     """A `segmented` dispatch's K units, launched per-unit with the offsets BUILT ON
@@ -503,16 +496,18 @@ def test_segmented_forward_matches_the_serial_oracle_on_the_host(segmented_bundl
     want = bs[kinds, np.arange(N)]
     offs_name = _seg_offsets_name(segmented_bundle, base_name)
     y = np.zeros(N, dtype=np.float64)
-    guard = _seg_guard_planes(offs_name, kinds)
     for j in range(K):
         uname = f"{base_name}__k{j}"
         sidecar = sidecar_of(segmented_bundle, uname)
         kernel = O.load(segmented_bundle.directory, uname, sidecar)
         cap = counts[j] + _SEG_PAD               # cap_j > run length
-        O.run_kernel(kernel, N, base=0, count=cap, bs=bs, y=y,
-                    **{offs_name: offsets}, **guard)
-    np.testing.assert_array_equal(guard[_seg_plane(offs_name, "class")], kinds)
-    assert not guard[_seg_plane(offs_name, "stale")].any()
+        O.run_kernel(kernel, N, base=0, count=cap, bs=bs, y=y, **{offs_name: offsets})
+    # a static selector's classes come from the classify kernel
+    cname = f"{base_name}__cls"
+    classes = np.full(N, -1, dtype=np.int64)
+    O.run_kernel(O.load(segmented_bundle.directory, cname, sidecar_of(segmented_bundle, cname)),
+                 N, base=0, count=N, k=kinds, **{_seg_plane(offs_name, "class"): classes})
+    np.testing.assert_array_equal(classes, kinds)
     limit = _band(N, y, want)
     worst = float(np.max(np.abs(y - want)))
     assert worst <= limit, (
@@ -550,13 +545,12 @@ def test_segmented_forward_matches_the_serial_oracle_on_the_device(
     y_dev = cp.zeros(N, dtype=np.float64)
     bs_dev = cp.asarray(bs)
     off_dev = cp.asarray(offsets)
-    guard = _seg_guard_planes(offs_name, kinds, cp)
     for j in range(K):
         uname = f"{base_name}__k{j}"
         sidecar = sidecar_of(segmented_bundle, uname)
         plugin = device_plugin(segmented_bundle.directory, uname, sidecar)
         p = eplan.plan(plugin, structure=eexec.DeviceKernel, npartitions=1)
-        p.bind(bs=bs_dev, y=y_dev, **{offs_name: off_dev}, **guard).launch()
+        p.bind(bs=bs_dev, y=y_dev, **{offs_name: off_dev}).launch()
     cp.cuda.get_current_stream().synchronize()
     got = cp.asnumpy(y_dev)
     limit = _band(N, got, want)
@@ -852,7 +846,6 @@ def test_segmented_training_switch_rewrites_offsets_without_rebuild_or_retrace(
     bs_dev = cp.asarray(bs_host)
     y_dev = cp.zeros(n, dtype=np.float64)
     off_dev = cp.asarray(offsets_first)
-    guard = _seg_guard_planes(offs_name, kind_first, cp)
 
     bounds = []
     for j in range(K):
@@ -860,7 +853,7 @@ def test_segmented_training_switch_rewrites_offsets_without_rebuild_or_retrace(
         plugin = device_plugin(segmented_bundle.directory, uname,
                                sidecar_of(segmented_bundle, uname))
         p = eplan.plan(plugin, structure=eexec.DeviceKernel, npartitions=1)
-        bounds.append(p.bind(bs=bs_dev, y=y_dev, **{offs_name: off_dev}, **guard))
+        bounds.append(p.bind(bs=bs_dev, y=y_dev, **{offs_name: off_dev}))
 
     stream = cp.cuda.Stream(non_blocking=True)
     with stream:
@@ -890,14 +883,13 @@ def test_segmented_training_switch_rewrites_offsets_without_rebuild_or_retrace(
 
         # A DIFFERENT sorted arrangement — reversed bucket order, still SORTED
         # and still an exclusive-prefix histogram over the same n=32 — written
-        # on the device: both the kind plane (each unit re-reads it as its
-        # selector guard) and the offsets it implies move.
+        # on the device: the offsets move (a static selector's unit reads no
+        # kind plane; its run bounds alone place it).
         counts_second = list(reversed(counts_first))
         kind_second = np.concatenate(
             [np.full(counts_second[j], j, dtype=np.int64) for j in range(K)])
         offsets_second = _seg_offsets(counts_second)
         off_dev[...] = cp.asarray(offsets_second)
-        guard["k"][...] = cp.asarray(kind_second)
         assert id(graph) == graph_id
 
         graph.launch(stream=stream)
@@ -933,12 +925,14 @@ def test_segmented_units_are_divergence_free_by_construction():
     select chain over the branches) and evaluates its own branch alone — the
     "divergence-free by construction" claim asserted EXACTLY, because at
     few-percent effect sizes the timing form flipped run-to-run on identical
-    code. The kind plane is read once, for the selector guard (one compare:
-    keep or mark stale), never to choose between branches."""
+    code. A static selector's unit never reads the kind plane at all (its
+    classes come from the classify kernel, appended last), so it is
+    sample-local and its host loop vectorises."""
     for K in (2, 5, 16):
         units = split_segmented("seg", _dispatch_sinks("segmented", K=K))
-        assert units is not None and len(units) == K
-        for j, unit in enumerate(units):
+        assert units is not None and len(units) == K + 1
+        assert units[-1].name == "seg__cls"
+        for j, unit in enumerate(units[:K]):
             assert not any(isinstance(n, Dispatch) for n in unit.walk.order), (
                 f"unit {unit.name} (K={K}, j={j}) still carries a Dispatch node")
             text = render_body(unit.sinks, unit.walk).text
@@ -947,8 +941,9 @@ def test_segmented_units_are_divergence_free_by_construction():
             others = [i for i in range(K) if i != j]
             assert not any(re.search(rf"\bpsc_b{i}\b", text) for i in others), (
                 f"unit {unit.name} evaluates another branch:\n{text}")
-            assert text.count("psc_k[i]") == 1, (
-                f"unit {unit.name} reads the kind plane more than once:\n{text}")
+            assert text.count("psc_k[i]") == 0, (
+                f"unit {unit.name} reads the kind plane:\n{text}")
+            assert unit.walk.access.cls == "sample_local"
             assert f"b{j}" in text, (
                 f"unit {unit.name} must evaluate branch {j} alone:\n{text}")
 

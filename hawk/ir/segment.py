@@ -104,6 +104,22 @@ class SegmentInfo(NamedTuple):
 
 
 @dataclass(frozen=True)
+class ClassifyUnit:
+    """The kernel a static-selector split adds beside its K units: it writes
+    each sample's clamped selector to the class plane and nothing else, so
+    the runtime can sort (and count the mix) without running a branch."""
+
+    name: str
+    sinks: tuple
+    walk: Walk
+
+
+def classify_name(kernel_name: str) -> str:
+    """The classify kernel's name for segmented kernel ``kernel_name``."""
+    return f"{kernel_name}__cls"
+
+
+@dataclass(frozen=True)
 class SegmentUnit:
     """One of the K kernels :func:`split_segmented` returns — an ordinary
     kernel (``.name``/``.sinks``/``.walk``) plus the :class:`SegmentInfo` a
@@ -221,7 +237,14 @@ def _guarded(name: str, sinks: tuple, selector: Node, K: int, j: int,
 def split_segmented(name: str, sinks: Sequence[Sink]) -> list | None:
     """``None`` when ``sinks`` carries no ``segmented`` dispatch; otherwise
     the K :class:`SegmentUnit` records the split produces. Refuses MORE
-    THAN ONE segmented dispatch, and one reachable only from a loop body."""
+    THAN ONE segmented dispatch, and one reachable only from a loop body.
+
+    A static selector (no plane it reads is written by the kernel) cannot
+    change between sorts, so its units commit unguarded and write no class or
+    stale plane: they stay sample-local, which keeps the host loop
+    vectorisable. The classes then come from one extra :class:`ClassifyUnit`,
+    appended last. A state-dependent selector gets the guarded units, which
+    mark the samples whose branch moved."""
     sinks = tuple(sinks)
     walk0 = canonical(sinks)
     for node in walk0.order:
@@ -258,12 +281,18 @@ def split_segmented(name: str, sinks: Sequence[Sink]) -> list | None:
                 done.get(id(node.branches[j]), node.branches[j])
                 if id(node) in group_ids else None))
         selector = rebuilt.get(id(dnode.selector), dnode.selector)
-        sinks_j = _guarded(name, tuple(rebuilt[id(s)] for s in sinks), selector,
-                           K, j, dispatch_name)
-        walk_j = canonical(sinks_j, declared=(offsets_slot,),
-                           force_access="cross_sample_write")
+        sinks_j = tuple(rebuilt[id(s)] for s in sinks)
+        if info.static_selector:
+            walk_j = canonical(sinks_j, declared=(offsets_slot,))
+        else:
+            sinks_j = _guarded(name, sinks_j, selector, K, j, dispatch_name)
+            walk_j = canonical(sinks_j, declared=(offsets_slot,),
+                               force_access="cross_sample_write")
         units.append(SegmentUnit(
             unit_names[j], sinks_j, walk_j,
             SegmentInfo(j, K, offs_name, dispatch_name, unit_names,
                         info.static_selector, info.selector_reads)))
+    if info.static_selector:
+        cls = (Assign(class_name(dispatch_name), clamped(dnode.selector, K), _I32),)
+        units.append(ClassifyUnit(classify_name(name), cls, canonical(cls)))
     return units

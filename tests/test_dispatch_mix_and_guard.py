@@ -12,7 +12,11 @@ Rows:
   exactly (terminated samples are not counted), on the host (``cuda`` arm
   marked ``gpu``: one warp ballot per branch); a forced ``"switch"`` binds no
   counter and its body text is the ``"auto"`` body minus the one count line;
-* **selector guard** — the segmented units run on a sort that has gone
+* **static units** — a selector no kernel plane write can move gets
+  unguarded units that write no class or stale plane (sample-local, so the
+  host loop vectorises) and one classify kernel that writes the clamped
+  classes;
+* **selector guard** — a state-dependent selector's segmented units run on a sort that has gone
   stale (the selector drifted after the class sort): every drifted sample is
   marked stale and keeps its old value, the class plane holds the new
   classes, and a switch pass over just the stale samples completes the step
@@ -58,7 +62,13 @@ def mix_switch(k: Index, bs: Vector[K], terminated: Terminated, y: Mutable[Scala
 
 
 @hawk.kernel(steps=1)
-def mix_seg(k: Index, bs: Vector[K], y: Mutable[Scalar]):
+def mix_seg(k: Mutable[Index], bs: Vector[K], y: Mutable[Scalar]):
+    y = M.dispatch(k, _branches(bs), policy="segmented")
+    k = k * 1           # the step writes the selector's plane: state-dependent
+
+
+@hawk.kernel(steps=1)
+def mix_static(k: Index, bs: Vector[K], y: Mutable[Scalar]):
     y = M.dispatch(k, _branches(bs), policy="segmented")
 
 
@@ -75,6 +85,8 @@ def built(tmp_path_factory, cache_dir):
                               targets=("cuda", "host"), cache_dir=cache_dir),
         "seg": build_bundle([mix_seg], root / "seg", targets=("cuda", "host"),
                             cache_dir=cache_dir),
+        "static": build_bundle([mix_static], root / "static", targets=("cuda", "host"),
+                               cache_dir=cache_dir),
     }
 
 
@@ -172,6 +184,24 @@ def test_a_stale_sort_is_guarded_and_a_switch_sweep_completes_it(built):
     hawk.run(hawk.load(built["local"].directory, "plain_switch"), k=k_now, bs=bs, y=full)
     swept[stale] = full[stale]
     assert int(np.sum(swept != full)) == 0
+
+
+def test_static_units_write_no_class_and_a_classify_kernel_does(built):
+    from hawk.ir import split_segmented
+
+    static = built["static"]
+    for j in range(K):
+        spec = _sidecar(static, f"mix_static__k{j}")["arg_spec"]
+        assert all(nm not in ("dispatch0_class", "dispatch0_stale", "k") for _, nm in spec)
+    units = split_segmented("mix_static", mix_static.sinks)
+    assert [u.name for u in units][-1] == "mix_static__cls"
+    assert all(u.walk.access.cls == "sample_local" for u in units[:K])
+    rng = np.random.default_rng(5)
+    k = rng.integers(-2, K + 2, N).astype(np.int64)
+    cls = np.full(N, -1, dtype=np.int64)
+    kern = O.load(static.directory, "mix_static__cls", _sidecar(static, "mix_static__cls"))
+    O.run_kernel(kern, N, base=0, count=N, k=k, dispatch0_class=cls)
+    np.testing.assert_array_equal(cls, np.clip(k, 0, K - 1))
 
 
 def test_resolve_dispatch_lowers_an_auto_group_and_refuses_the_rest():

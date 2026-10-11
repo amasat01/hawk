@@ -142,9 +142,10 @@ def test_the_sidecar_and_a_segmented_unit_carry_the_classification():
     (entry,) = _dispatches(by_input.walk.dispatches)
     assert entry["static_selector"] is True
     assert ["per_sample", "kind"] in entry["selector_reads"]
-    units = split_segmented("seg", _primal("segmented"))
+    *units, classify = split_segmented("seg", _primal("segmented"))
     assert all(u.segment.static_selector for u in units)
     assert units[0].segment.selector_reads == (("per_sample", "k"),)
+    assert classify.name == "seg__cls"      # a static selector's classes come from here
 
 
 @kernel(steps=1)

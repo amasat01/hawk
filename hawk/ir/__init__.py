@@ -51,8 +51,13 @@ from .ops import result_type as result_type
 from .segment import OFFSETS_DTYPE as OFFSETS_DTYPE
 from .segment import OFFSETS_ROLE as OFFSETS_ROLE
 from .segment import SegmentInfo as SegmentInfo
+from .segment import ClassifyUnit as ClassifyUnit
 from .segment import SegmentUnit as SegmentUnit
+from .segment import classify_name as classify_name
 from .segment import split_segmented as split_segmented
+from .cost import BranchCost as BranchCost
+from .cost import DispatchCost as DispatchCost
+from .cost import dispatch_costs as dispatch_costs
 from .walk import DispatchInfo as DispatchInfo
 from .walk import Walk as Walk
 from .walk import canonical

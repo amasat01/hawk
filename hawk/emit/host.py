@@ -906,8 +906,9 @@ class HostBackend:
         lambda :meth:`index_epilogue` calls.
 
         ``segment`` maps ``tid`` onto ``offsets[j] + tid`` instead of
-        ``base + tid``, stopping once ``tid`` passes the device-read run
-        length, since the run is contiguous and sorted."""
+        ``base + tid``, for ``tid`` in ``[base, base + count)``, stopping once
+        ``tid`` passes the device-read run length, since the run is contiguous
+        and sorted: a team may split a run across threads."""
         guards = tuple(guards) if simd else ()
         finish = finish if finish is not None and finish[0] in guards else None
         if active is not None:
@@ -961,9 +962,8 @@ class HostBackend:
             # The `break` becomes the loop bound: since the run is
             # contiguous, `[begin, min(begin + count, end))` is exactly
             # what the plain loop visits before breaking.
-            return f"""    (void)base;
-    const std::int64_t hawk_seg_begin = static_cast<std::int64_t>({seg_begin});
-    const std::int64_t hawk_seg_end = static_cast<std::int64_t>({seg_end});
+            return f"""    const std::int64_t hawk_seg_end = static_cast<std::int64_t>({seg_end});
+    const std::int64_t hawk_seg_begin = static_cast<std::int64_t>({seg_begin}) + base;
     const std::int64_t hawk_seg_stop = hawk_seg_begin + count < hawk_seg_end
         ? hawk_seg_begin + count : hawk_seg_end;
     const aether::offset_t hawk_lo = static_cast<aether::offset_t>(hawk_seg_begin);
@@ -975,10 +975,9 @@ class HostBackend:
             aether::SampleIndex::make(static_cast<std::size_t>(hawk_j));
         (void)hawk_i;
         (void)nSamples;"""
-        return f"""    (void)base;
-    const std::int64_t hawk_seg_begin = static_cast<std::int64_t>({seg_begin});
+        return f"""    const std::int64_t hawk_seg_begin = static_cast<std::int64_t>({seg_begin});
     const std::int64_t hawk_seg_end = static_cast<std::int64_t>({seg_end});
-    for (std::int64_t hawk_tid = 0; hawk_tid < count; ++hawk_tid) {{
+    for (std::int64_t hawk_tid = base; hawk_tid < base + count; ++hawk_tid) {{
         const std::int64_t hawk_i = hawk_seg_begin + hawk_tid;
         if (hawk_i >= hawk_seg_end) break;
         const aether::SampleIndex i =

@@ -640,7 +640,8 @@ def build(kernel, directory, *, mode: str = "float64", targets=("cuda", "host"),
 
 def _expand_segmented(kernels: list, names: list, kinds: list) -> tuple:
     """Replace every segmented member of ``kernels``/``names``/``kinds`` with
-    its K :class:`~hawk.ir.segment.SegmentUnit` s, in place; an ordinary
+    its K :class:`~hawk.ir.segment.SegmentUnit` s (and, for a static selector,
+    the :class:`~hawk.ir.segment.ClassifyUnit`), in place; an ordinary
     member passes through untouched. ``_split_segmented`` itself refuses a
     kernel carrying more than one segmented dispatch node, so that refusal
     reaches the caller from here."""
