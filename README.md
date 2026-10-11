@@ -196,6 +196,10 @@ N = 10,000 (7.22 ms vs 7.22 ms), and on this FP64-weak development card the CPU 
 [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html) for every number, every arm,
 including the ones where it doesn't win.
 
+<p align="center"><a href="https://amasat01.github.io/eagle/content/performance.html"><img src="https://raw.githubusercontent.com/amasat01/eagle/main/docs/_static/perf/readme_gpu.svg" alt="Wall time per tool for a million RK4 oscillators on the default GPU: eagle.simulate, NVIDIA Warp, JAX, CuPy and PyTorch; the numbers are on eagle's performance page." width="700"></a></p>
+
+The chart shows one GPU; [the performance page](https://amasat01.github.io/eagle/content/performance.html) has a tab for every device and CPU measured.
+
 The same hawk kernel also runs on a CPU alone, through eagle's host team: on an Intel Xeon W-2125 (4 cores, 8 logical CPUs; card of 2026-10-08) the 8-thread spread S=1000 batch of 1,000,000 samples takes **145 ms**. eagle's [performance page](https://amasat01.github.io/eagle/content/performance.html#perf-card-cpu-intel-xeon-w-2125) shows that CPU card next to Numba, JAX, PyTorch, NumPy and multiprocessing, each with the setting where it fits best.
 
 ## Going deeper
