@@ -58,7 +58,8 @@ _TRANSFORM_MEMO_LIMIT = 512
 class Kernel:
     """A traced kernel: its sink set, its canonical walk and its declarations."""
 
-    __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step")
+    __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
+                 "time", "time_step")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
@@ -78,6 +79,11 @@ class Kernel:
         #: ``1`` (entry branches once per launch between this body and the
         #: fused loop); ``None`` otherwise. Emission only.
         self.one_step = one_step
+        #: The time plane and step-size parameter the author named
+        #: (``@hawk.kernel(time="t", time_step="dt")``), else ``None``: read
+        #: by the taping twin, never by the plain kernel's emission.
+        self.time: str | None = None
+        self.time_step: str | None = None
 
     @property
     def arg_spec(self) -> tuple[tuple[str, str], ...]:
@@ -96,7 +102,8 @@ class Kernel:
 
 
 def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
-           steps: Any = None) -> Any:
+           steps: Any = None, time: str | None = None,
+           time_step: str | None = None) -> Any:
     """Trace ``fn`` into a :class:`Kernel`. Refusals fire here.
 
     ``kind`` supplies the kernel's :class:`hawk.ext.Kind` (vocabulary,
@@ -116,11 +123,85 @@ def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
 
     Without ``steps=``, a kernel :func:`hawk.steps` admits for ``"auto"`` is
     built as the automatic kernel instead, paced by :func:`eagle.until_done`.
-    ``steps=1`` is the explicit opt-out: the plain kernel, always."""
+    ``steps=1`` is the explicit opt-out: the plain kernel, always.
+
+    ``time_step`` names the step-size parameter (a declared scalar input)
+    and ``time`` the time plane (default ``"t"`` once ``time_step`` is
+    given). The plain kernel is unchanged; :func:`hawk.diff.tape` reads
+    them to promote the step size to a per-sample plane and to write the
+    time plane in index form. A time plane the body updates must update as
+    ``t = t + dt`` (checked here, at decoration); one the body does not
+    declare is minted by the twin."""
     if fn is None:
         def decorate(f: Callable[..., None]) -> Any:
-            return kernel(f, kind=kind, steps=steps)
+            return kernel(f, kind=kind, steps=steps, time=time, time_step=time_step)
         return decorate
+    if time is not None and time_step is None:
+        raise HawkError(
+            f"kernel {fn.__name__!r}: time={time!r} needs time_step=, the "
+            "parameter the time plane advances by")
+    built = _kernel(fn, kind, steps)
+    if time_step is not None:
+        from ..diff.tape import check_time
+
+        check_time(built, time or "t", time_step)
+        for k in (built, built.step, built.one_step):
+            if k is not None:
+                k.time, k.time_step = time or "t", time_step
+    return built
+
+
+def resolve_dispatch(kernel: Kernel, policies: dict[str, str]) -> Kernel:
+    """``kernel`` with each ``"auto"`` dispatch group lowered as
+    ``policies[group]`` (``"switch"``, ``"segmented"`` or ``"predicated"``):
+    how a launching runtime applies the policy it chose. A group the author
+    declared a policy for is refused — the author's choice is never
+    overridden — as is an unknown group or policy. An automatic kernel is
+    resolved on its single step and re-derived, under the same name — except
+    to ``"segmented"``, which splits the step into one kernel per branch and
+    so returns the single step itself: its units run one step per launch."""
+    from ..ir.nodes import DISPATCH_POLICIES
+    from ..ir.segment import with_policies
+    from ..ir.walk import dispatch_groups, loop_body_groups
+    from .steps import default_steps
+
+    step = kernel.step if kernel.step is not None else kernel
+    groups = dispatch_groups(step.walk)
+    in_loops = loop_body_groups(step.walk)
+    chosen = {}
+    for group, policy in policies.items():
+        node = groups.get(group)
+        if node is None:
+            raise HawkError(
+                f"resolve_dispatch({kernel.name!r}): {group!r} is not a dispatch "
+                f"group of this kernel; its groups are {sorted(groups)}")
+        if node.policy != "auto":
+            raise HawkError(
+                f"resolve_dispatch({kernel.name!r}): {group!r} was declared "
+                f"policy={node.policy!r}; only an 'auto' group is resolved — the "
+                "author's policy is kept")
+        if group in in_loops:
+            raise HawkError(
+                f"resolve_dispatch({kernel.name!r}): {group!r} sits inside a loop "
+                "body, where a policy cannot be swapped yet; declare its policy "
+                "in the kernel instead")
+        if policy == "auto" or policy not in DISPATCH_POLICIES:
+            raise HawkError(
+                f"resolve_dispatch({kernel.name!r}): {group!r} resolves to one of "
+                f"'switch', 'segmented', 'predicated', got {policy!r}")
+        chosen[id(node)] = policy
+    resolved = Kernel(step.name, with_policies(step.sinks, chosen), step.planes,
+                      kind=step.kind)
+    resolved.time, resolved.time_step = step.time, step.time_step
+    if kernel.step is None or "segmented" in chosen.values():
+        return resolved
+    fused = default_steps(resolved)
+    fused.time, fused.time_step = step.time, step.time_step
+    return fused
+
+
+def _kernel(fn: Callable[..., None], kind: Any, steps: Any) -> Any:
+    """:func:`kernel`'s build, before the time declaration is recorded."""
     from .steps import check_steps
     from .steps import steps as derive_steps
 

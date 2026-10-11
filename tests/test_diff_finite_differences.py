@@ -201,6 +201,7 @@ CASES = [
     ("round", ("sp",), _u("round")),
     ("rint", ("sp",), _u("rint")),
     ("sign", ("s",), _u("sign")),
+    ("spacing", ("sp",), _u("spacing")),
     ("hypot", ("s", "s"), _b("hypot")),
     ("copysign_pos", ("s", "sp"), _b("copysign")),
     ("copysign_neg", ("sp", "s"),

@@ -38,6 +38,7 @@ from .nodes import (
     Node,
     Op,
     RoleConst,
+    is_param_cell,
     SampleIndex,
     WideWrite,
 )
@@ -84,6 +85,8 @@ def infer_over(order: Iterable[Node]) -> Access:
         if isinstance(node, MapreducePartial):
             # guarantees this sink is the only one, so it decides alone.
             return Access("mapreduce", node.op)
+        if is_param_cell(node):
+            continue            # one broadcast value, same for every sample
         if isinstance(node, At):
             # An absolute index into a lookup plane — cross-sample by form,
             # regardless of what it evaluates to (over-restriction is cheap).

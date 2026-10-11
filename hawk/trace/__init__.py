@@ -61,6 +61,7 @@ from .decl import Wide as Wide
 from .decl import WideOut as WideOut
 from .kernel import Kernel as Kernel
 from .kernel import kernel as kernel
+from .kernel import resolve_dispatch as resolve_dispatch
 from .kernel import trace_value as trace_value
 from .raw import RawBlock as RawBlock
 from .raw import raw_device as raw_device

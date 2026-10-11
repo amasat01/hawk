@@ -50,7 +50,7 @@ _AUTHORING = (
     "kernel", "Kernel", "raw_device", "RawBlock", "Value", "Quantity",
     "Scalar", "Index", "Quat", "Vector", "Matrix", "Param",
     "Mutable", "Table", "Staged", "Wide", "WideOut", "Accum", "Reduce",
-    "Terminated", "HawkError", "steps",
+    "Terminated", "HawkError", "steps", "resolve_dispatch",
 )
 
 #: The subset of :data:`_AUTHORING` resolved from :mod:`hawk.ir` rather

@@ -50,7 +50,8 @@ def plan_view(sidecar: dict) -> dict:
     Exactly the attributes ``eagle.plan`` looks for on a plugin —
     ``arg_spec``, ``exec_access``/``exec_op``, ``scalar_type``,
     ``arg_widths``, and the vector-/matrix-shaped ``mutable`` name sets
-    — projected with zero eagle import. The consumer adds the loaded
+    — projected with zero eagle import, plus ``derivative`` (the
+    sidecar's derivative tag, ``None`` for a primal). The consumer adds the loaded
     entry point; HAWK holds no launch path.
 
     ``arg_widths`` stays int-only, never ``None`` for a runtime-length
@@ -88,6 +89,12 @@ def plan_view(sidecar: dict) -> dict:
         **({"step_ops": int(sidecar["step_ops"])} if "step_ops" in sidecar else {}),
         # The fast entries count samples finished on entry into the finish counter.
         **({"entry_counts_finished": True} if sidecar.get("entry_counts_finished") else {}),
+        # A derivative kernel's ``{kind, wrt, primal, primal_unit}`` tag (its
+        # sidecar ``derivative`` block), ``None`` for a primal: a launching
+        # runtime refuses a prebuilt derivative at a forward-only door.
+        "derivative": (dict(sidecar["derivative"], wrt=tuple(sidecar["derivative"]
+                                                           .get("wrt", ())))
+                       if sidecar.get("derivative") is not None else None),
     }
 
 

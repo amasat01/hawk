@@ -29,7 +29,7 @@ UNARY_MATH = ("neg", "abs", "sqrt", "rsqrt", "exp", "log", "sin", "cos", "tan",
               "tanh", "asin", "acos", "atan", "floor",
               "exp2", "expm1", "log2", "log10", "log1p", "cbrt",
               "sinh", "cosh", "asinh", "acosh", "atanh",
-              "ceil", "trunc", "round", "rint", "sign", "erf", "erfc")
+              "ceil", "trunc", "round", "rint", "sign", "erf", "erfc", "spacing")
 #: Rank-generic elementwise ternaries (every non-rank-0 operand shares one shape).
 ELEMENTWISE_TERNARY = ("fma", "clip")
 #: Elementwise floating-point class tests: bool-typed, zero derivative.

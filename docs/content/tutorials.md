@@ -1,9 +1,10 @@
 # Tutorials
 
-Seven notebooks, each building on the last: write and run a kernel, pick the
+Eight notebooks, each building on the last: write and run a kernel, pick the
 right plane type, write a kernel that stops itself, take gradients
-backward and forward, read/scatter/reduce across a batch, and differentiate
-through branches and stops.
+backward and forward, read/scatter/reduce across a batch, differentiate
+through branches and stops, and choose how a branch between several
+formulas is compiled.
 
 ```{toctree}
 :maxdepth: 1
@@ -15,6 +16,7 @@ tutorials/04_gradients_backward
 tutorials/05_gradients_forward
 tutorials/06_lookups_scatters_and_sums
 tutorials/07_gradients_through_branches_and_stops
+tutorials/08_choosing_a_dispatch_policy
 ```
 
 Next: [Vocabulary](vocabulary) — declare a kernel's own vocabulary once and

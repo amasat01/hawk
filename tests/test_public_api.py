@@ -68,7 +68,7 @@ _EXPECTED_MANIFEST = {
         "Param", "Quantity", "Quat", "RawBlock", "Reduce", "Scalar",
         "Staged", "Table", "Terminated", "Value", "Vector", "Wide",
         "WideOut", "__version__", "build", "kernel", "load", "raw_device",
-        "run", "samples_first", "samples_last", "steps",
+        "resolve_dispatch", "run", "samples_first", "samples_last", "steps",
     ],
     "hawk.trace": [],
     "hawk.math": [
@@ -85,7 +85,7 @@ _EXPECTED_MANIFEST = {
         "random_multivariate_normal", "random_normal",
         "random_poisson1", "random_uniform", "random_uniform_int",
         "remainder", "rint", "round", "rsqrt", "sample_index",
-        "select", "sign", "sin", "sinh", "split_index", "sqrt",
+        "select", "sign", "sin", "sinh", "spacing", "split_index", "sqrt",
         "take", "tan", "tanh", "transpose", "trunc", "vec", "vsum",
         "where",
     ],
@@ -117,7 +117,9 @@ _EXPECTED_MANIFEST = {
         "nvrtc", "opt_level", "publish", "reset_cache_stats",
     ],
     "hawk.diff": [
-        "ADJOINT_PREFIX", "Derived", "TANGENT_PREFIX", "jvp", "vjp",
+        "ADJOINT_PREFIX", "Derived", "TANGENT_PREFIX", "jvp", "param_planes",
+        "refine_entry", "tape",
+        "vjp",
     ],
     "hawk.artifact": [
         "Artifact", "Bundle", "EXEC_ACCESS_CLASSES", "EXEC_OPS",

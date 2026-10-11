@@ -379,6 +379,8 @@ round = _lifted(  # noqa: A001 - a namespace module's names are its API (cf. num
 rint = _lifted("rint", f"Nearest integer, halves to even (``np.rint``). {_D} {_Z}")
 sign = _lifted("sign", "-1, 0 or 1 by the sign of ``x``; NaN stays NaN and both "
                f"zeros give +0 (``np.sign``). {_D} {_Z}")
+spacing = _lifted("spacing", "The gap from ``x`` to the next float away from zero, "
+                  f"signed like ``x`` (``np.spacing``): one ulp. {_D} {_Z}")
 erf = _lifted("erf", f"The error function (``scipy.special.erf``). {_D}")
 erfc = _lifted("erfc", "``1 - erf(x)``, accurate for large ``x`` "
                f"(``scipy.special.erfc``). {_D}")
@@ -441,8 +443,11 @@ def dispatch(kind: Any, branches: Any, policy: str = "switch") -> Value:
     ``kind`` is a per-element integer VALUE, never a Python literal — a body
     that knows the branch at TRACE time is writing ordinary control flow, not
     a dispatch. ``policy`` names one of three lowerings
-    (``predicated``/``switch``/``segmented``); the default ``switch`` is what
-    a compiler already picks for a branch-heavy chain.
+    (``predicated``/``switch``/``segmented``), or ``auto`` — the one value a
+    launching runtime's chooser resolves (:func:`hawk.resolve_dispatch`;
+    until then it renders as ``switch`` and counts the branch mix); the
+    default ``switch`` is what a compiler already picks for a branch-heavy
+    chain.
     :class:`~hawk.ir.nodes.Dispatch` does the type/arity checking."""
     bs = [node_of(b) for b in branches]
     ttype = bs[0].ttype if bs else TensorType((), "f64")

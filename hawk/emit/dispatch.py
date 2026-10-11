@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from ..ir import HawkError, Node
 from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex
 from ..ir.nodes import (
+    SWITCH_RENDERED,
     Const,
     Dispatch,
     Leaf,
@@ -19,7 +20,7 @@ from ..ir.nodes import (
     SampleIndex,
 )
 from ..types import TensorType
-from .spelling import _is_literal_zero, carry_type, element_spelling
+from .spelling import _is_literal_zero, binding_name, carry_type, element_spelling
 
 
 def _clamp_expr(kind_spelling: str, k: int) -> str:
@@ -65,6 +66,8 @@ def render_dispatch_rank0(kind_spelling: str, branch_spellings: Sequence[str],
         for j in range(len(branch_spellings) - 2, -1, -1):
             expr = f"({kind_spelling} == {j} ? {branch_spellings[j]} : {expr})"
         return expr
+    if policy == "auto":
+        policy = "switch"
     if policy != "switch":
         raise HawkError(
             f"dispatch: policy {policy!r} has no per-node text — 'segmented' "
@@ -120,7 +123,10 @@ class _DispatchMixin:
         k = node.K
         kname = f"hawk_disp{pos}_k"
         self._emit(f"const std::int32_t {kname} = {_clamp_expr(kind_expr, k)};")
-        if node.policy == "switch":
+        mix = self._mix_plane(node)
+        if mix is not None:
+            self._emit(f"hawk_abi::mix_count({mix}, {k}, {kname});")
+        if node.policy in SWITCH_RENDERED:
             return self._dispatch_switch(node, pos, kname)
         if node.policy != "predicated":
             raise HawkError(
@@ -136,6 +142,19 @@ class _DispatchMixin:
                                f"({kname} == {j})")
             expr = f"aether::select({cond}, {branch_texts[j]}, {expr})"
         return expr
+
+    def _mix_plane(self, node: Dispatch) -> str | None:
+        """The binding an ``auto`` group counts its picks into, else ``None``
+        (a declared policy counts nothing: its body stays the same text)."""
+        if node.policy != "auto":
+            return None
+        from ..ir.segment import mix_name
+        from ..ir.walk import dispatch_groups
+
+        for group, held in dispatch_groups(self.walk).items():
+            if held is node:
+                return binding_name("lookup", mix_name(group))
+        return None                    # inside a loop body: not a group
 
     def _dispatch_switch(self, node: Dispatch, pos, kname: str) -> str:
         """``switch`` with per-CASE scoped hoisting: same control shape
@@ -209,7 +228,7 @@ class _DispatchMixin:
                 continue
             if not expanded:
                 stack.append((n, True))
-                if isinstance(n, Dispatch) and n.policy == "switch":
+                if isinstance(n, Dispatch) and n.policy in SWITCH_RENDERED:
                     children = (n.selector,)
                 else:
                     children = n.operands

@@ -197,7 +197,8 @@ class HostKernel:
         one-cell ``fused_steps`` word of ``1`` (a launch outside a runner
         takes exactly one step) and a one-cell ``finished_count`` counter
         reset to ``0`` (a kernel that finishes its own samples counts them
-        there; bind your own buffer to read the count)."""
+        there; bind your own buffer to read the count), and a zeroed
+        ``<group>_mix`` plane per ``"auto"`` dispatch (its branch counts)."""
         from .ir.nodes import FINISHED_PLANE, FUSED_STEPS_PLANE
 
         extra = {}
@@ -213,6 +214,12 @@ class HostKernel:
                     self.finished = array.array("q", [0])
                 self.finished[0] = 0
                 extra[name] = self.finished
+        for entry in self.sidecar.get("dispatch", ()):
+            mix = entry.get("mix")
+            if mix is not None and mix not in arrays:
+                # an "auto" group's branch counters, left out: counted into a
+                # fresh scratch plane (bind your own to read them)
+                extra[mix] = array.array("q", [0] * int(entry["K"]))
         return {**arrays, **extra} if extra else arrays
 
     def bind_all(self, arrays: dict, n_samples: int, *, layout=None) -> None:

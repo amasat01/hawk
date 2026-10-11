@@ -560,7 +560,7 @@ RULES: dict[tuple[str, int | None], DiffRule] = {
        # RANDOM_OPS joins too (a draw is a function of integer operands
        # only), keeping the table closed-world even for a `wrt=` caller.
        for k in COMPARE + LOGICAL + RANDOM_OPS + PREDICATE
-       + ("floor", "ceil", "trunc", "round", "rint", "sign")},
+       + ("floor", "ceil", "trunc", "round", "rint", "sign", "spacing")},
     ("fma", None): DiffRule(vjp=_fma_vjp, jvp=_fma_jvp),
     ("clip", None): DiffRule(vjp=_clip_vjp, jvp=_clip_jvp),
     **{(k, None): rule for k, rule in _SHAPED.items()},

@@ -31,6 +31,7 @@ from ..ir.nodes import (
     AT_ROLES,
     FINISHED_PLANE,
     RAW_KIND,
+    SWITCH_RENDERED,
     AccumWrite,
     Assign,
     At,
@@ -44,7 +45,9 @@ from ..ir.nodes import (
     SampleIndex,
     Select,
     Sink,
+    TapeWrite,
     WideWrite,
+    is_param_cell,
 )
 from ..ir.ops import RANDOM_OPS
 from ..ir.walk import canonical_nodes
@@ -67,6 +70,7 @@ from .spelling import (
     _ordinal,
     _real_literal,
     _through,
+    param_cell_binding,
 )
 from .spelling import (
     GEOMETRY_TOKENS as GEOMETRY_TOKENS,
@@ -294,7 +298,7 @@ class _Renderer(_DispatchMixin):
             if pos in seen:
                 continue
             seen.add(pos)
-            if isinstance(n, Dispatch) and n.policy == "switch":
+            if isinstance(n, Dispatch) and n.policy in SWITCH_RENDERED:
                 children = (n.selector,)
             else:
                 children = n.operands
@@ -454,6 +458,8 @@ class _Renderer(_DispatchMixin):
         trade away."""
         if isinstance(node, Leaf) and node.role in ("uniform", "nsamples"):
             return False
+        if is_param_cell(node):
+            return False        # a bare identifier, loaded once before the loop
         if isinstance(node, (SampleIndex, LoopIndex, LoopCarry)):
             return False        # already a bare identifier the enclosing scope bound
         if isinstance(node, (Loop, Const, Primitive)):
@@ -591,7 +597,7 @@ class _Renderer(_DispatchMixin):
         for node in (*loop.body_nodes(), *loop.nexts, loop.exit_cond):
             if isinstance(node, (At, TapeRead)):
                 return False
-            if isinstance(node, Dispatch) and node.policy == "switch":
+            if isinstance(node, Dispatch) and node.policy in SWITCH_RENDERED:
                 return False
             if isinstance(node, Op) and (node.kind == RAW_KIND or (
                     node.kind in ("div", "fmod", "remainder", "floordiv", "mod")
@@ -775,6 +781,9 @@ class _Renderer(_DispatchMixin):
             # literal renders only through a ``splat``).
             return
         target = binding_name(sink.role, sink.name)
+        if isinstance(sink, TapeWrite):
+            self._tape_write(sink, target)
+            return
         value = self._ref(sink.value)
         if isinstance(sink, MapreducePartial):
             functor = REDUCE_FUNCTOR[sink.op]
@@ -803,6 +812,33 @@ class _Renderer(_DispatchMixin):
             self._emit(f"{target}[{index}] = {value};")
             return
         self._commit_scattered(sink, target, index, value)
+
+    def _tape_write(self, sink: TapeWrite, target: str) -> None:
+        """One tape ROW on the own column, under ``if (on)``: component
+        ``row*w + c`` of the sample's ``(W*w,)`` plane gets the ``c``-th
+        flattened component of the stored values, in order. Rendered where the
+        sink stands — a twin puts it FIRST, so it reads the pre-step state
+        before any commit overwrites it."""
+        row = self._ref(sink.row)
+        lines = []
+        offset = 0
+        for value in sink.values:
+            text = self._ref(value)
+            shape = value.ttype.shape
+            comps = ([((), text)] if not shape
+                     else [(idx, f"{text}.eval<{', '.join(map(str, idx))}>(i)")
+                           for idx in _flat_indices(shape)])
+            for _idx, comp in comps:
+                lines.append(f"{target}(static_cast<std::size_t>(hawk_tape_row * "
+                             f"{sink.width} + {offset}), i.global()) = {comp};")
+                offset += 1
+        self._emit(f"if ({self._ref(sink.on)} != 0) {{")
+        self.indent += "    "
+        self._emit(f"const std::int64_t hawk_tape_row = {row};")
+        for line in lines:
+            self._emit(line)
+        self.indent = self.indent[:-4]
+        self._emit("}")
 
     def _commit_scattered(self, sink: Sink, target: str, index: str,
                           value: str) -> None:
@@ -926,6 +962,8 @@ class _Renderer(_DispatchMixin):
         return f"static_cast<Real>({_real_literal(float(node.literal))})"
 
     def _at(self, node: At) -> str:
+        if is_param_cell(node):
+            return param_cell_binding(node.plane.name)
         plane = binding_name(node.plane.role, node.plane.name)
         idx = self._sample_index(self._ref(node.index))
         return f"{plane}[{idx}]" + (".get()" if node.ttype.shape else ".eval()")
@@ -965,6 +1003,8 @@ class _Renderer(_DispatchMixin):
     def _scalar_op(self, kind: str, args: Sequence[str], node: Op) -> str:
         if kind in RANDOM_OPS:
             return self._random_draw(kind, args)
+        if kind == "spacing":
+            return f"hawk_abi::spacing({args[0]})"
         if kind == "sign":
             # aether's sign maps NaN to 0; numpy keeps the NaN.
             x = args[0] if args[0].isidentifier() else self._hoist(args[0])
@@ -1161,3 +1201,11 @@ class _Renderer(_DispatchMixin):
         if text.startswith(f"static_cast<{elem}>"):
             return text
         return f"static_cast<{elem}>({text})"
+
+
+def _flat_indices(shape: tuple) -> list:
+    """Every index tuple of ``shape`` in row-major (C) order."""
+    out: list = [()]
+    for extent in shape:
+        out = [idx + (k,) for idx in out for k in range(int(extent))]
+    return out

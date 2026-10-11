@@ -24,8 +24,9 @@ from typing import Any
 from ..types import Slot, TensorType
 from . import access as _access
 from .access import Access
+from .nodes import param_cell_names
 from .compound import Quantity, QuantitySpan
-from .loop_nodes import Loop, LoopValue, TapeRead
+from .loop_nodes import Loop, LoopCarry, LoopValue, TapeRead
 from .nodes import (
     FINISHED_PLANE,
     FINISHED_TTYPE,
@@ -62,6 +63,14 @@ class DispatchInfo:
     #: other dispatch. A build-time caller overrides a published sidecar's
     #: record with one that DOES carry them, reusing this same shape.
     units: tuple[str, ...] = ()
+    #: The ``(role, name)`` slots the SELECTOR's leaf closure reads, sorted.
+    selector_reads: tuple[tuple[str, str], ...] = ()
+    #: ``True`` when no slot in :attr:`selector_reads` is a plane this
+    #: kernel writes (a Mutable/out/accum commit or its finished mask): the
+    #: class a sample takes then cannot change from one launch to the next
+    #: by this kernel's own hand. KERNEL-scoped; a whole step's verdict
+    #: (every kernel of one step) is :func:`static_selectors`.
+    static_selector: bool = False
 
 
 @dataclass(frozen=True)
@@ -89,6 +98,12 @@ class Walk:
     dispatches: tuple[DispatchInfo, ...] = ()
     prior_reads: frozenset[str] = frozenset()
     finish: tuple[str, int | str] | None = None
+
+    @property
+    def param_planes(self) -> tuple[str, ...]:
+        """The ``lookup`` planes that are promoted uniforms (one-cell
+        parameter planes, see :func:`hawk.diff.param_planes`)."""
+        return param_cell_names(self.order)
 
 
 #: The ranking, restated so :func:`canonical` can FLOOR access without
@@ -139,6 +154,11 @@ def canonical(sinks: Sequence[Sink], declared: Sequence[Slot] = (), *,
                 f"{slot.ttype!r} but the body binds it as {held.ttype!r}; a slot is "
                 "keyed on (role, name) ALONE"
             )
+    for info in _dispatches(order):
+        if info.policy == "auto":
+            name = f"{info.name}_mix"      # hawk.ir.segment.mix_name
+            bindings.setdefault(("lookup", name), Leaf(
+                "vocab_read", "lookup", name, TensorType((), "i32")))
     leaves, quantities = _order_bindings(order, bindings)
     arg_spec = tuple((s.role, s.name) for s in leaves)
     slot_of = {key: i for i, key in enumerate(arg_spec)}
@@ -387,8 +407,93 @@ def _dispatches(order: tuple[Node, ...]) -> tuple[DispatchInfo, ...]:
     POSITIONALLY named in the canonical order the digest hashes over —
     computed HERE since a consumer outside ``hawk/ir/`` may not re-derive
     one from ``order`` (see :class:`Walk`'s docstring)."""
-    return tuple(DispatchInfo(f"dispatch{i}", node.K, node.policy)
-                 for i, node in enumerate(n for n in order if isinstance(n, Dispatch)))
+    written = written_names(order)
+    out = []
+    for i, node in enumerate(_dispatch_nodes(order)):
+        reads = selector_reads(node)
+        out.append(DispatchInfo(
+            f"dispatch{i}", node.K, node.policy, selector_reads=reads,
+            static_selector=not any(name in written for _, name in reads)))
+    return tuple(out)
+
+
+def _dispatch_nodes(order: Sequence[Node]) -> list:
+    """The Dispatch nodes a group is named for: the top-level ones in
+    canonical order, then those inside lowered loop bodies (a fused step's
+    dispatch lives there, and is counted once per trip)."""
+    top = [n for n in order if isinstance(n, Dispatch)]
+    inner: list = []
+    seen = {id(n) for n in top}
+    loops = [n for n in order if isinstance(n, Loop)]
+    while loops:
+        for node in loops.pop(0).body_nodes():
+            if isinstance(node, Dispatch) and id(node) not in seen:
+                seen.add(id(node))
+                inner.append(node)
+            elif isinstance(node, Loop):
+                loops.append(node)
+    return top + inner
+
+
+def selector_reads(node: Dispatch) -> tuple[tuple[str, str], ...]:
+    """The sorted ``(role, name)`` slots ``node``'s selector reads, through
+    every operand (a loop's operands carry what its body reads; inside a
+    loop body, a carried value reads the Mutable plane it carries)."""
+    seen: set = set()
+    reads: set = set()
+    stack: list = [node.selector]
+    while stack:
+        n = stack.pop()
+        if id(n) in seen:
+            continue
+        seen.add(id(n))
+        if isinstance(n, Leaf):
+            reads.add((n.role, n.name))
+        elif isinstance(n, LoopCarry):
+            reads.add(("mutable", n.name))
+        stack.extend(n.operands)
+    return tuple(sorted(reads))
+
+
+def written_names(order: Sequence[Node]) -> frozenset[str]:
+    """Every plane name a node in ``order`` commits — sinks, a finish's
+    mask, and the per-iteration commits a lowered loop carries."""
+    out: set = set()
+    for n in order:
+        if isinstance(n, Sink):
+            out.add(n.name)
+        body = getattr(n, "body_sinks", None)
+        if body:
+            out.update(s.name for s in body if isinstance(s, Sink))
+    return frozenset(out)
+
+
+def dispatch_groups(walk: Walk) -> dict[str, Dispatch]:
+    """``{group name: Dispatch node}`` for ``walk``'s dispatches (top level,
+    then inside loop bodies), under the names :attr:`Walk.dispatches`
+    publishes."""
+    return dict(zip((info.name for info in walk.dispatches),
+                    _dispatch_nodes(walk.order)))
+
+
+def loop_body_groups(walk: Walk) -> frozenset[str]:
+    """The names of ``walk``'s dispatch groups that sit inside a loop body."""
+    top = sum(isinstance(n, Dispatch) for n in walk.order)
+    return frozenset(info.name for info in walk.dispatches[top:])
+
+
+def static_selectors(kernels: Sequence[Any]) -> dict[str, dict[str, bool]]:
+    """The step-scoped selector classification: ``{kernel: {group: static}}``
+    over ``kernels``, every kernel ONE step runs (a simulation step, a Dag
+    stage). A group is static iff its selector reads no plane ANY kernel of
+    the step writes — a plane another kernel rewrites changes the class
+    between launches exactly as the dispatching kernel's own commit would."""
+    written: set = set()
+    for k in kernels:
+        written |= written_names(k.walk.order)
+    return {k.name: {d.name: not any(name in written for _, name in d.selector_reads)
+                     for d in k.walk.dispatches}
+            for k in kernels}
 
 
 # --------------------------------------------------------------------------
@@ -432,6 +537,8 @@ def _rebuild(node: Node, operands: Sequence[Node]) -> Node:
     if isinstance(node, Primitive):
         return Primitive(node.name, node.rules, operands[0], operands[1:],
                          node.ttype)
+    if isinstance(node, Dispatch):
+        return Dispatch(operands[0], operands[1:], node.policy, node.ttype)
     if isinstance(node, Op):
         return Op(node.kind, tuple(operands), node.ttype, node.literal)
     raise HawkError(                              # pragma: no cover - closed set

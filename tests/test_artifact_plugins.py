@@ -122,3 +122,20 @@ def test_the_device_loader_is_called_once_and_gives_device_functions(
                for k, v in inputs.items()})
         ulps = np.abs(cp.asnumpy(dev).view(np.int64) - host.view(np.int64))
         assert int(ulps.max()) <= _CONTRACTIONS[art.name], art.name
+
+
+def test_a_derivative_plugin_carries_its_tag_and_a_primal_carries_none(tmp_path):
+    """A forward-only door (a run loop, a simulation, an automatic plan)
+    refuses a derivative kernel by reading ``plugin.derivative``: a PREBUILT
+    plugin must carry the same tag the sidecar does, and ``None`` for a primal."""
+    from hawk.diff import vjp
+
+    grad = hawk.Kernel("pl_affine_vjp", vjp(pl_affine, wrt=("a", "b")))
+    bundle = build_bundle([pl_affine, grad], tmp_path, targets=("host",))
+    got = plugins(bundle)
+    assert got["pl_affine"].derivative is None
+    tag = got["pl_affine_vjp"].derivative
+    assert tag == {"kind": "vjp", "wrt": ("a", "b"), "primal": "pl_affine",
+                   "primal_unit": None}
+    sidecar = next(a.sidecar for a in bundle.artifacts if a.name == "pl_affine_vjp")
+    assert plan_view(sidecar)["derivative"]["primal"] == sidecar["derivative"]["primal"]

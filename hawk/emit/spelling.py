@@ -163,6 +163,12 @@ def binding_name(role: str, name: str) -> str:
     return f"{IDENT_PREFIX[role]}_{name}"
 
 
+def param_cell_binding(name: str) -> str:
+    """The loop-invariant local a parameter cell is read through: the
+    promoted plane's one value, loaded once before the sample index."""
+    return f"{binding_name('lookup', name)}_cell"
+
+
 def finish_binding(mask: str) -> str:
     """The WRITABLE twin binding a finishing kernel marks its mask through."""
     return f"{binding_name('terminated', mask)}_w"

@@ -163,6 +163,7 @@ SPELLINGS = {
     "round": lambda: hm.round(_v(S)),
     "rint": lambda: hm.rint(_v(S)),
     "sign": lambda: hm.sign(_v(S)),
+    "spacing": lambda: hm.spacing(_v(S)),
     "erf": lambda: hm.erf(_v(S)),
     "erfc": lambda: hm.erfc(_v(S)),
     "hypot": lambda: hm.hypot(_v(S), _v(S, "b")),

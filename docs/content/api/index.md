@@ -22,6 +22,7 @@ them may change between releases.
    hawk.math
    hawk.ext
    hawk.diff
+   hawk.diff.event
    hawk.compile
    hawk.runtime
    hawk.artifact

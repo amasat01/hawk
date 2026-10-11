@@ -149,6 +149,7 @@ SPELLINGS = {
     "round": lambda: M.round(_v(S)),
     "rint": lambda: M.rint(_v(S)),
     "sign": lambda: M.sign(_v(S)),
+    "spacing": lambda: M.spacing(_v(S)),
     "erf": lambda: M.erf(_v(S)),
     "erfc": lambda: M.erfc(_v(S)),
     "hypot": lambda: M.hypot(_v(S), _v(S, "b")),

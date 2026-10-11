@@ -33,7 +33,7 @@ Element-wise math, on host and device alike, with numpy's names:
 * trigonometric: ``sin`` ``cos`` ``tan`` ``asin`` ``acos`` ``atan`` ``atan2``
 * hyperbolic: ``sinh`` ``cosh`` ``tanh`` ``asinh`` ``acosh`` ``atanh``
 * rounding: ``floor`` ``ceil`` ``trunc`` ``round`` ``rint``
-* misc: ``absolute`` (``abs``) ``sign`` ``copysign`` ``fmod`` ``remainder``
+* misc: ``absolute`` (``abs``) ``sign`` ``spacing`` ``copysign`` ``fmod`` ``remainder``
   ``fdim`` ``fma`` ``clip`` ``minimum`` (``min``) ``maximum`` (``max``)
   ``isnan`` ``isinf`` ``isfinite``
 * special: ``erf`` ``erfc``
@@ -55,7 +55,7 @@ re-assembled — aether spells them at rank 0 only — so a class test
 or a comparison on a matrix is a bool matrix, the mask
 :func:`where`/:func:`select` takes per entry (a rank-0 branch broadcasts).
 
-Derivatives: the rounding family, ``sign`` and the class tests carry a
+Derivatives: the rounding family, ``sign``, ``spacing`` and the class tests carry a
 zero derivative. ``abs`` takes ``+1`` at zero (as JAX); ``copysign`` is
 ``|a|`` times ``b``'s sign, constant in ``b``; ``fmod``/``remainder``
 differentiate as ``a - trunc(a/b)*b`` / ``a - floor(a/b)*b``; ``fdim`` is
@@ -134,6 +134,7 @@ from .trace.value import (
     sample_index,
     select,
     sign,
+    spacing,
     sin,
     sinh,
     sqrt,
@@ -266,7 +267,7 @@ __all__ = [
     "random_lognormal", "random_multivariate_normal", "random_normal",
     "random_poisson1", "random_uniform", "random_uniform_int", "remainder",
     "rint", "round", "rsqrt", "sample_index", "select", "sign", "sin", "sinh",
-    "split_index", "sqrt", "take", "tan", "tanh", "transpose", "trunc", "vec",
+    "spacing", "split_index", "sqrt", "take", "tan", "tanh", "transpose", "trunc", "vec",
     "vsum", "where",
 ]
 

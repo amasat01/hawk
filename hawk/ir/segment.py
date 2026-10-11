@@ -36,7 +36,19 @@ from typing import NamedTuple
 
 from ..types import Slot, TensorType
 from .loop_nodes import Loop
-from .nodes import Dispatch, HawkError, Node, Sink
+from .nodes import (
+    AccumWrite,
+    Assign,
+    Const,
+    Dispatch,
+    Finish,
+    HawkError,
+    Leaf,
+    MapreducePartial,
+    Node,
+    Select,
+    Sink,
+)
 from .walk import Walk, canonical
 
 #: The offsets plane rides the SAME role every other run-time-addressed
@@ -47,10 +59,32 @@ OFFSETS_ROLE = "lookup"
 #: integer leaf ``i64`` regardless of the emitted wire width).
 OFFSETS_DTYPE = "i64"
 
+_I32 = TensorType((), "i32")
+_BOOL = TensorType((), "bool")
+
 
 def offsets_name(dispatch_name: str) -> str:
     """The offsets plane's slot name for dispatch group ``dispatch_name``."""
     return f"{dispatch_name}_offsets"
+
+
+def mix_name(dispatch_name: str) -> str:
+    """The K-counter ``lookup`` plane an ``auto`` dispatch counts the classes
+    it picks into (one uint32 per branch, integer-atomic): the branch mix a
+    launching runtime's chooser reads."""
+    return f"{dispatch_name}_mix"
+
+
+def class_name(dispatch_name: str) -> str:
+    """The per-sample class plane a segmented unit writes (the clamped
+    selector: the next sort's key; its bincount is the branch mix)."""
+    return f"{dispatch_name}_class"
+
+
+def stale_name(dispatch_name: str) -> str:
+    """The per-sample mask a segmented unit sets where the selector no
+    longer picks the unit's own branch (the sample sits in a stale run)."""
+    return f"{dispatch_name}_stale"
 
 
 class SegmentInfo(NamedTuple):
@@ -63,6 +97,10 @@ class SegmentInfo(NamedTuple):
     offsets: str
     dispatch_name: str
     units: tuple[str, ...]
+    #: The group's selector classification, carried from the primal walk
+    #: (a unit's own walk holds no Dispatch node to classify).
+    static_selector: bool = False
+    selector_reads: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,15 +136,16 @@ def _loop_has_segmented(loop: Loop) -> bool:
     return any(visit(s) for s in loop.body_sinks)
 
 
-def _substitute(order: Sequence[Node], group_ids: set, j: int) -> dict:
-    """One forward pass over the canonical ``order``: every node in
-    ``group_ids`` becomes its branch ``j``; a node whose children moved is
-    cloned with the new operand tuple, else reused as-is."""
+def _substitute(order: Sequence[Node], swap) -> dict:
+    """One forward pass over the canonical ``order``: a node ``swap`` maps to
+    a replacement (``swap(node, rebuilt)``, given the rebuilt-so-far table)
+    becomes it; a node whose children moved is cloned with the new operand
+    tuple, else reused as-is."""
     rebuilt: dict = {}
     for node in order:
-        if id(node) in group_ids:
-            branch = node.branches[j]                 # type: ignore[attr-defined]
-            rebuilt[id(node)] = rebuilt.get(id(branch), branch)
+        replacement = swap(node, rebuilt)
+        if replacement is not None:
+            rebuilt[id(node)] = replacement
             continue
         new_ops = tuple(rebuilt.get(id(c), c) for c in node.operands)
         if new_ops == node.operands:
@@ -116,6 +155,67 @@ def _substitute(order: Sequence[Node], group_ids: set, j: int) -> dict:
             clone.operands = new_ops
             rebuilt[id(node)] = clone
     return rebuilt
+
+
+def with_policies(sinks: Sequence[Sink], chosen: dict) -> tuple:
+    """``sinks`` with each Dispatch node ``id`` in ``chosen`` lowered under
+    the policy ``chosen`` maps it to (same selector, branches and type)."""
+    order = canonical(tuple(sinks)).order
+
+    def swap(node, rebuilt):
+        if id(node) not in chosen:
+            return None
+        ops = [rebuilt.get(id(c), c) for c in node.operands]
+        return Dispatch(ops[0], ops[1:], chosen[id(node)], node.ttype)
+
+    rebuilt = _substitute(order, swap)
+    return tuple(rebuilt[id(s)] for s in sinks)
+
+
+def clamped(selector: Node, K: int) -> Node:
+    """``selector`` clamped to ``[0, K-1]`` — the branch every lowering picks."""
+    from .ops import make
+
+    zero, last = Const(0, _I32), Const(K - 1, _I32)
+    upper = Select(make("gt", (selector, last)), last, selector, _I32)
+    return Select(make("lt", (selector, zero)), zero, upper, _I32)
+
+
+def _guarded(name: str, sinks: tuple, selector: Node, K: int, j: int,
+             group: str) -> tuple:
+    """Unit ``j``'s sinks under the SELECTOR GUARD: every commit keeps its
+    old value, and the finish does not fire, where the selector no longer
+    picks branch ``j`` — the sample is marked stale instead — plus the class
+    and stale planes. A stale sample left by a sort that has gone out of date
+    is then never committed with another branch's arithmetic."""
+    from .ops import make
+
+    sel = clamped(selector, K)
+    mine = make("eq", (sel, Const(j, _I32)))
+    out = []
+    for sink in sinks:
+        if isinstance(sink, Finish):
+            out.append(Finish(sink.name, make("land", (mine, sink.value)),
+                              steps=sink.steps))
+        elif isinstance(sink, Assign):
+            old = Leaf("prior_read", "mutable", sink.name, sink.ttype)
+            out.append(Assign(sink.name, Select(mine, sink.value, old, sink.ttype),
+                              sink.ttype))
+        elif isinstance(sink, AccumWrite) and not isinstance(sink, MapreducePartial):
+            zero = Const(0.0, TensorType((), sink.ttype.dtype))
+            if sink.ttype.shape:
+                zero = make("splat", (zero,), sink.ttype.shape)
+            out.append(AccumWrite(sink.name, Select(mine, sink.value, zero, sink.ttype),
+                                  sink.index, sink.ttype))
+        else:
+            raise HawkError(
+                f"{name!r}: a segmented unit guards each commit by the selector, "
+                f"and a {sink.kind} {getattr(sink, 'name', '?')!r} has no old value "
+                "to keep where it does not apply; commit through a Mutable or an "
+                "Accum, or use policy='switch'")
+    out.append(Assign(class_name(group), sel, _I32))
+    out.append(Assign(stale_name(group), make("ne", (sel, Const(j, _I32))), _BOOL))
+    return tuple(out)
 
 
 def split_segmented(name: str, sinks: Sequence[Sink]) -> list | None:
@@ -144,7 +244,8 @@ def split_segmented(name: str, sinks: Sequence[Sink]) -> list | None:
         )
     idx, dnode = segmented[0]
     K = dnode.K
-    dispatch_name = walk0.dispatches[idx].name
+    info = walk0.dispatches[idx]
+    dispatch_name = info.name
     offs_name = offsets_name(dispatch_name)
     offsets_slot = Slot(OFFSETS_ROLE, offs_name, TensorType((), OFFSETS_DTYPE))
     group_ids = {id(dnode)}
@@ -152,11 +253,17 @@ def split_segmented(name: str, sinks: Sequence[Sink]) -> list | None:
 
     units = []
     for j in range(K):
-        rebuilt = _substitute(walk0.order, group_ids, j)
-        sinks_j = tuple(rebuilt[id(s)] for s in sinks)
+        rebuilt = _substitute(
+            walk0.order, lambda node, done: (
+                done.get(id(node.branches[j]), node.branches[j])
+                if id(node) in group_ids else None))
+        selector = rebuilt.get(id(dnode.selector), dnode.selector)
+        sinks_j = _guarded(name, tuple(rebuilt[id(s)] for s in sinks), selector,
+                           K, j, dispatch_name)
         walk_j = canonical(sinks_j, declared=(offsets_slot,),
                            force_access="cross_sample_write")
         units.append(SegmentUnit(
             unit_names[j], sinks_j, walk_j,
-            SegmentInfo(j, K, offs_name, dispatch_name, unit_names)))
+            SegmentInfo(j, K, offs_name, dispatch_name, unit_names,
+                        info.static_selector, info.selector_reads)))
     return units

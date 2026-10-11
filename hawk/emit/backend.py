@@ -28,7 +28,7 @@ from typing import Protocol
 from ..ir import HawkError, Walk
 from ..types import Slot
 from .aether import Body, render_body
-from .spelling import binding_name, finish_binding, view_type
+from .spelling import binding_name, finish_binding, param_cell_binding, view_type
 
 
 @dataclass(frozen=True)
@@ -352,6 +352,54 @@ template <class ViewT, class CompT, class T>
 
 # A runtime trip count as a 32-bit loop bound: counts past the int range
 # clamp to its top, which no loop reaches in practice.
+#: The ``spacing`` op's helper: one ulp of ``x``, signed like it
+#: (``np.spacing``) — ``nextafter`` away from zero, minus ``x``. Emitted only
+#: for a body that calls it, so every other unit's prelude is unchanged.
+_SPACING_CALL = "hawk_abi::spacing("
+_SPACING = """
+template <class T>
+{qualifier} T spacing(T x)
+{{
+    const T a = x < T(0) ? -x : x;
+#if defined(__CUDA_ARCH__)
+    const T up = ::nextafter(a, a * T(2) + T(1)) - a;
+#else
+    const T up = std::nextafter(a, a * T(2) + T(1)) - a;
+#endif
+    return x < T(0) ? -up : up;
+}}
+"""
+
+#: An ``auto`` dispatch's branch-mix count: +1 in counter ``k`` per live
+#: sample that picked branch ``k``. On the device one warp ballot per branch
+#: and one atomic per warp (the leader adds the popcount); on the host one
+#: relaxed atomic per sample. Integers only, so the counts are exact and
+#: independent of scheduling. Emitted only for a body that counts.
+_MIX_CALL = "hawk_abi::mix_count("
+_MIX_COUNT = """
+template <class ViewT>
+{qualifier} void mix_count(const ViewT& mix, int K, int k)
+{{
+    auto* cells = const_cast<std::uint32_t*>(
+        reinterpret_cast<const std::uint32_t*>(mix.data()));
+#if defined(__CUDA_ARCH__)
+    const unsigned active = __activemask();
+    unsigned below;
+    asm("mov.u32 %0, %%lanemask_lt;" : "=r"(below));
+    const bool leader = (active & below) == 0u;
+    for (int j = 0; j < K; ++j) {{
+        const unsigned picked = __ballot_sync(active, k == j);
+        if (leader && picked != 0u)
+            atomicAdd(reinterpret_cast<unsigned int*>(cells + j),
+                      static_cast<unsigned int>(__popc(picked)));
+    }}
+#else
+    (void)K;
+    std::atomic_ref<std::uint32_t>(cells[k]).fetch_add(1u, std::memory_order_relaxed);
+#endif
+}}
+"""
+
 _CLAMP_COUNT = """{qualifier} int hawk_clamp_count(long long n)
 {{
     return n < 2147483647LL ? static_cast<int>(n) : 2147483647;
@@ -361,7 +409,8 @@ _CLAMP_COUNT = """{qualifier} int hawk_clamp_count(long long n)
 
 
 def abi_helpers(qualifier: str, *, compensated: bool = False,
-                store_compensated: bool = False, finish: bool = False) -> str:
+                store_compensated: bool = False, finish: bool = False,
+                spacing: bool = False, mix: bool = False) -> str:
     """The view-from-mirror reconstruction helpers — byte-for-byte the same
     on both targets, only the function qualifier differs; reads the
     mirror's own stride fields so a non-contiguous plane rebuilds
@@ -371,7 +420,8 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
     emitted only for the unit whose resolved target needs it
     (:func:`hawk.ext.compensated_target`), so a PLAIN unit's prelude stays
     byte-identical. ``finish`` appends ``finish_count`` under the same
-    rule, for a kernel that finishes its own sample."""
+    rule, for a kernel that finishes its own sample, and ``spacing`` the
+    ``spacing`` op's helper for a body that uses it."""
     helpers = []
     if compensated or store_compensated:
         helpers.append(_TWO_SUM_ERR.format(qualifier=qualifier))
@@ -381,6 +431,10 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
         helpers.append(_STORE_COMPENSATED.format(qualifier=qualifier))
     if finish:
         helpers.append(_FINISH_COUNT.format(qualifier=qualifier))
+    if spacing:
+        helpers.append(_SPACING.format(qualifier=qualifier))
+    if mix:
+        helpers.append(_MIX_COUNT.format(qualifier=qualifier))
     return f"""namespace hawk_abi {{
 
 template <class T, std::size_t N>
@@ -447,7 +501,7 @@ template <class ViewT, class T>
 
 def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             store_compensated: bool = False, needs_random: bool = False,
-            finish: bool = False) -> str:
+            finish: bool = False, spacing: bool = False, mix: bool = False) -> str:
     """Includes + the scalar-mode aliases + the reconstruction helpers.
 
     ``compensated``/``store_compensated`` reach :func:`abi_helpers`'s gate.
@@ -461,7 +515,8 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             + f"\nusing Real = {mode.real_spelling};\nusing Int = long long;\n\n"
             + _CLAMP_COUNT.format(qualifier=qualifier)
             + abi_helpers(qualifier, compensated=compensated,
-                         store_compensated=store_compensated, finish=finish))
+                         store_compensated=store_compensated, finish=finish,
+                         spacing=spacing, mix=mix))
 
 
 def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
@@ -532,7 +587,8 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
         f"// Body text is the ONE renderer's; this file is the entry wrapper.\n",
         prelude(mode, backend.qualifier, compensated=compensated,
                store_compensated=store_compensated, needs_random=body.needs_random,
-               finish=getattr(walk, "finish", None) is not None),
+               finish=getattr(walk, "finish", None) is not None,
+               spacing=_SPACING_CALL in body.text, mix=_MIX_CALL in body.text),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",
@@ -625,7 +681,9 @@ def _render_two_paths(name: str, sinks, walk: Walk, backend: Backend, *,
         f"// Body text is the ONE renderer's; this file is the entry wrapper.\n",
         prelude(mode, backend.qualifier, needs_random=fused.needs_random
                 or single.needs_random,
-                finish=getattr(walk, "finish", None) is not None),
+                finish=getattr(walk, "finish", None) is not None,
+                spacing=_SPACING_CALL in fused.text + single.text,
+                mix=_MIX_CALL in fused.text + single.text),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",
@@ -732,6 +790,13 @@ def unpack_lines(walk: Walk, source_of) -> str:
         lines.append(f"    {qual}{view_type(role, slot.ttype)} {ident} =")
         lines.append(f"        {source_of(slot)};")
         lines.append(f"    (void){ident};")
+        if role == "lookup" and name in walk.param_planes:
+            # a promoted uniform: ONE load, ahead of the sample index, so the
+            # body reads it like the by-value immediate it replaces
+            cell = param_cell_binding(name)
+            lines.append(f"    const auto {cell} = {ident}[aether::SampleIndex::make("
+                         "static_cast<std::size_t>(0))].eval();")
+            lines.append(f"    (void){cell};")
         if role == "terminated" and name == finished_mask:
             # The finish epilogue's writable twin: same mirror, non-const
             # view, so the read binding is untouched.

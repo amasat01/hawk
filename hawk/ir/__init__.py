@@ -43,6 +43,7 @@ from .nodes import RoleConst as RoleConst
 from .nodes import SampleIndex as SampleIndex
 from .nodes import Select as Select
 from .nodes import Sink as Sink
+from .nodes import TapeWrite as TapeWrite
 from .nodes import WideWrite as WideWrite
 from .ops import OP_KINDS as OP_KINDS
 from .ops import make
@@ -56,6 +57,7 @@ from .walk import DispatchInfo as DispatchInfo
 from .walk import Walk as Walk
 from .walk import canonical
 from .walk import canonical_nodes as canonical_nodes
+from .walk import static_selectors as static_selectors
 
 __all__ = [
     "AccumWrite", "Assign", "At", "Const", "Op", "canonical", "infer", "make",

@@ -407,7 +407,9 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
 
     segment = getattr(kernel, "segment", None)
     dispatch_override = None if segment is None else (
-        DispatchInfo(segment.dispatch_name, segment.K, "segmented", segment.units),
+        DispatchInfo(segment.dispatch_name, segment.K, "segmented", segment.units,
+                     selector_reads=segment.selector_reads,
+                     static_selector=segment.static_selector),
     )
     meta = sidecar_meta(
         name, kernel.walk,

@@ -41,11 +41,14 @@ from ..ir import (
     Sink,
     WideWrite,
     build_loop,
+    canonical,
     canonical_nodes,
 )
 from ..ir import make as _mk
 from ..ir.loops import exit_kwargs
-from ..ir.nodes import NAMESPACE_SEP, RAW_KIND, Finish
+from ..ir.nodes import (DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish,
+                        param_cell_names)
+from ..ir.walk import dispatch_groups
 from ..types import TensorType
 from .loops import forward_loop, reverse_loop
 from .rules import rule_for, zero_like
@@ -200,7 +203,8 @@ _READ_ROLE = {0: "per_sample", 1: "vec_in", 2: "mat_in"}
 
 
 def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
-        primal_unit: str | None = None) -> Derived:
+        primal_unit: str | None = None,
+        policy: Mapping[str, str] | None = None) -> Derived:
     """The reverse-mode derivative IR of ``primal``: one adjoint plane per
     primal sink in, one gradient plane per ``wrt`` input out. Returned as
     :class:`Derived`, tagging ``primal``'s name and the resolved ``wrt``.
@@ -212,9 +216,20 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
     later through ``derivative={name: (primal_name, unit_digest)}``.
 
     A default automatic kernel is differentiated through its single step:
-    the derivative of one step, as for the plain kernel."""
+    the derivative of one step, as for the plain kernel.
+
+    ``policy={group: policy}`` sets the lowering of the derived dispatches
+    of the primal's dispatch GROUP ``group`` (the sidecar's positional
+    ``dispatch<i>`` name), which otherwise inherit the primal's policy: the
+    reverse takes its own structure. Any of
+    :data:`~hawk.ir.nodes.DISPATCH_POLICIES` is accepted; an unknown group
+    or policy refuses by name."""
     primal = _single_step(primal)
     sinks = _sinks_of(primal)
+    cells = param_cell_names(canonical_nodes(sinks)[0])
+    if cells:
+        return _vjp_param_cells(primal, cells, wrt, primal_unit, policy)
+    overrides = _policy_overrides(primal, policy)
     seq, position = canonical_nodes(sinks)
     _refuse_prior_read(seq)
     inputs = _wrt(seq, wrt)
@@ -231,7 +246,8 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
         _accumulate(adjoint, key, sink.value, _seed(sink, name))
     scatters: list[Node] = []
     scattered: set[str] = set()
-    _reverse_pass(seq, key, adjoint, inputs, name, scatters, scattered)
+    _reverse_pass(seq, key, adjoint, inputs, name, scatters, scattered,
+                  overrides=overrides)
     gradients = [
         Assign(name(leaf.name), adjoint.get(key(leaf)) or zero_like(leaf.ttype),
                leaf.ttype)
@@ -241,6 +257,30 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
     out = _mask_termination(gradients + scatters, primal)
     return Derived(out, primal=_primal_name(primal), kind="vjp",
                    wrt=tuple(leaf.name for leaf in inputs), primal_unit=primal_unit)
+
+
+def _vjp_param_cells(primal: Any, cells: tuple, wrt: Sequence[str] | None,
+                     primal_unit: str | None,
+                     policy: Mapping[str, str] | None) -> Derived:
+    """The reverse of a kernel reading parameter cells (see
+    :func:`hawk.diff.param_planes`): differentiate the form that reads each
+    cell as a per-sample plane, so each gradient is a per-sample ``bar_<name>``
+    plane, then read the cells again in the derived kernel."""
+    from .params import demote, promote
+
+    per_sample = _Demoted(primal, demote(_sinks_of(primal)))
+    d = vjp(per_sample, wrt=wrt, primal_unit=primal_unit, policy=policy)
+    return Derived(promote(d, cells), primal=_primal_name(primal), kind="vjp",
+                   wrt=d.wrt, primal_unit=primal_unit)
+
+
+class _Demoted:
+    """A primal's name and guard bindings over replaced sinks."""
+
+    def __init__(self, primal: Any, sinks: tuple) -> None:
+        self.name, self.sinks, self.walk = primal.name, sinks, primal.walk
+        self.planes = getattr(primal, "planes", {})
+        self.kind = getattr(primal, "kind", None)
 
 
 def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
@@ -337,7 +377,8 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
 
 def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
                   inputs: Sequence[Leaf], name: _Namer, scatters: list[Node],
-                  scattered: set[str], *, local_pass: bool = False) -> None:
+                  scattered: set[str], *, local_pass: bool = False,
+                  overrides: Mapping[int, str] | None = None) -> None:
     """One reverse-accumulation pass over ``seq``, given an already-seeded
     ``adjoint`` — the core step :func:`vjp` runs once over the whole walk,
     seeded at every primal sink.
@@ -397,7 +438,7 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
             continue
         if isinstance(node, Dispatch):
             _dispatch_vjp(node, g, seq, key, inputs, name, adjoint, scatters,
-                         scattered)
+                         scattered, overrides)
             continue
         for child, contribution in _rule(node).vjp(node, g):
             _accumulate(adjoint, key, child, _reduce_to(contribution, child.ttype))
@@ -405,7 +446,8 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
 
 def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
                   inputs: Sequence[Leaf], name: _Namer, adjoint: dict[Any, Node],
-                  scatters: list[Node], scattered: set[str]) -> None:
+                  scatters: list[Node], scattered: set[str],
+                  overrides: Mapping[int, str] | None = None) -> None:
     """K independent reverse passes, one per branch, each seeded only at that
     branch's own root with the dispatch's incoming adjoint ``g`` — never a
     per-node masked seed pushed through the ordinary chain rule, which would
@@ -414,18 +456,20 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
     Every node any branch's pass reached gets one combined adjoint term,
     ``dispatch(kind, [c_0 or 0, ..., c_K or 0])`` (same policy as the primal,
     so the emitter elides branches that stayed structurally zero),
-    accumulated into the enclosing pass like any other contribution, so a
+    accumulated into the enclosing pass like any other contribution (under
+    ``overrides``' policy for this node when :func:`vjp` was given one), so a
     node reached through multiple paths sums correctly. A reached
     :class:`~hawk.ir.nodes.At` is the one exception: its combined value
     becomes one scattered ``AccumWrite`` here, since a scatter is a sink, not
     something a downstream node could read further. ``kind`` itself is never
     seeded and receives no adjoint."""
+    policy = (overrides or {}).get(id(node), node.policy)
     reached: dict[int, dict[int, Node]] = {}
     for j, branch in enumerate(node.branches):
         seed_slot = key(branch)
         local: dict[Any, Node] = {seed_slot: g}
         _reverse_pass(seq, key, local, inputs, name, scatters, scattered,
-                      local_pass=True)
+                      local_pass=True, overrides=overrides)
         for slot, contribution in local.items():
             target = seq[slot]
             if not isinstance(target, (Leaf, At)):
@@ -442,7 +486,7 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
         target = seq[slot]
         branch_terms = [per_branch.get(j) if per_branch.get(j) is not None
                         else zero_like(target.ttype) for j in range(node.K)]
-        combined = Dispatch(node.selector, branch_terms, node.policy, target.ttype)
+        combined = Dispatch(node.selector, branch_terms, policy, target.ttype)
         if isinstance(target, At):
             if target.plane in inputs:
                 scattered.add(target.plane.name)
@@ -450,6 +494,32 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
                                            target.index, combined.ttype))
             continue
         _accumulate(adjoint, key, target, combined)
+
+
+def _policy_overrides(primal: Any, policy: Mapping[str, str] | None
+                      ) -> dict[int, str]:
+    """``{id(dispatch node): policy}`` for :func:`vjp`'s ``policy=``,
+    resolving each group name through the primal's own walk (the numbering
+    its sidecar publishes). Refuses an unknown group or policy by name."""
+    if not policy:
+        return {}
+    walk = getattr(primal, "walk", None)
+    if walk is None:
+        walk = canonical(tuple(getattr(primal, "sinks", primal)))
+    groups = dispatch_groups(walk)
+    out: dict[int, str] = {}
+    for group, chosen in policy.items():
+        if group not in groups:
+            raise HawkError(
+                f"vjp(policy=...): {group!r} is not a dispatch group of "
+                f"{_primal_name(primal) or 'this IR'}; its groups are "
+                f"{sorted(groups)}")
+        if chosen not in DISPATCH_POLICIES:
+            raise HawkError(
+                f"vjp(policy=...): unknown policy {chosen!r} for {group!r}; "
+                f"declared are {DISPATCH_POLICIES}")
+        out[id(groups[group])] = chosen
+    return out
 
 
 # --------------------------------------------------------------------------

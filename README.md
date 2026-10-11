@@ -107,7 +107,11 @@ between launches — hawk never zeroes or scratch-allocates a plane a kernel
 reads from. That memory is not differentiable: a launch-start read is a
 recurrence across launches, and hawk keeps no tape across them, so
 `hawk.diff.vjp`/`jvp` refuse a kernel that reads one — differentiate the
-per-launch term on its own instead.
+per-launch term on its own instead. A STEP kernel's whole rollout is the
+exception a runtime handles: `hawk.diff.tape(kernel, window)` builds the
+step's taping twin, which records the state every step read, so a
+launching runtime can reverse the rollout window by window
+([Tapes and events](https://amasat01.github.io/hawk/content/vocabulary/05_tapes_and_events.html)).
 </details>
 
 <details>

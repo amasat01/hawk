@@ -257,6 +257,28 @@ class At(Op):
         return self.operands[1]
 
 
+#: The label of the index a PARAMETER CELL carries: a ``uniform`` promoted to
+#: a one-cell ``lookup`` plane (:func:`hawk.diff.param_planes`) is read as
+#: ``At(plane, RoleConst(0, PARAM_CELL))``. The label tells the access
+#: classifier it is one broadcast value, not a cross-sample read.
+PARAM_CELL = "param_cell"
+
+
+def is_param_cell(node: Any) -> bool:
+    """Whether ``node`` is the read of a parameter cell."""
+    return (isinstance(node, At) and isinstance(node.index, RoleConst)
+            and node.index.label == PARAM_CELL)
+
+
+def param_cell_names(nodes: Any) -> tuple:
+    """The names of the parameter cells read in ``nodes``, in first-seen order."""
+    out: dict = {}
+    for node in nodes:
+        if is_param_cell(node):
+            out.setdefault(node.plane.name, None)
+    return tuple(out)
+
+
 class Primitive(Op):
     """A custom primitive's BOUNDARY.
 
@@ -315,10 +337,17 @@ class Select(Node):
 #: author picks a POLICY, a performance call the pass has no basis for).
 DISPATCH_KIND = "dispatch"
 
-#: Dispatch's three lowerings: ``predicated``/``switch`` are per-node text
+#: Dispatch's lowerings: ``predicated``/``switch`` are per-node text
 #: choices the renderer makes (:mod:`hawk.emit.aether`); ``segmented`` is a
-#: per-UNIT split the walk never sees.
-DISPATCH_POLICIES = ("predicated", "switch", "segmented")
+#: per-UNIT split the walk never sees. ``auto`` is the one value a
+#: launching runtime's chooser may resolve (to ``switch`` or
+#: ``segmented``); a declared policy is never overridden. Until resolved,
+#: ``auto`` renders as ``switch`` plus a count of the branch each sample
+#: picks into the group's ``<group>_mix`` plane (the chooser's input).
+DISPATCH_POLICIES = ("predicated", "switch", "segmented", "auto")
+
+#: The policies the renderer lowers as a ``switch`` statement.
+SWITCH_RENDERED = ("switch", "auto")
 
 
 class Dispatch(Node):
@@ -471,6 +500,67 @@ class MapreducePartial(Sink):
     @property
     def dedup_extra(self) -> Any:
         return (self.role, self.name, self.op)
+
+
+class TapeWrite(Sink):
+    """``tape[row, :] = (v_0, v_1, ...)`` on the OWN column, if ``on``.
+
+    The taping twin's store (:func:`hawk.diff.tape`): one dynamic ROW of a
+    per-sample ``(W*w,)`` plane (sample-last, so the memory is ``[W, w, N]``)
+    gets the flattened components of ``values`` in order, predicated on the
+    rank-0 integer ``on`` (the per-launch ``tape_on`` word). Own column
+    only — no other sample's memory is touched, so the access class stays
+    ``sample_local`` (:attr:`index` is ``None``). Operands are
+    ``(row, on, *values)``; :attr:`value` is the first stored value."""
+
+    __slots__ = ("width",)
+
+    def __init__(self, name: str, row: Node, on: Node, values: Sequence[Node],
+                 ttype: TensorType) -> None:
+        values = tuple(values)
+        Node.__init__(self, ttype, (row, on, *values))
+        width = sum(element_count(v.ttype) for v in values)
+        if (len(ttype.shape) != 1 or not values or ttype.shape[0] % width
+                or row.ttype != TensorType((), "i32")):
+            raise HawkError(
+                f"tape_write {name!r}: a {ttype!r} plane takes whole rows of the "
+                f"{width} stored components at an i32 row")
+        self.kind = "tape_write"
+        self.role = "out"
+        self.name = name
+        self.width = width
+
+    @property
+    def value(self) -> Node:
+        return self.operands[2]
+
+    @property
+    def index(self) -> Node | None:
+        return None
+
+    @property
+    def row(self) -> Node:
+        return self.operands[0]
+
+    @property
+    def on(self) -> Node:
+        return self.operands[1]
+
+    @property
+    def values(self) -> tuple:
+        return self.operands[2:]
+
+    @property
+    def dedup_extra(self) -> Any:
+        return (self.role, self.name, self.width)
+
+
+def element_count(ttype: TensorType) -> int:
+    """How many scalars one value of ``ttype`` holds."""
+    out = 1
+    for extent in ttype.shape:
+        out *= int(extent)
+    return out
 
 
 #: The reserved ``lookup`` plane a finishing kernel counts its newly finished

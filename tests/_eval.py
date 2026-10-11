@@ -57,6 +57,7 @@ _UNARY = {
     "log1p": np.log1p, "cbrt": np.cbrt, "sinh": np.sinh, "cosh": np.cosh,
     "asinh": np.arcsinh, "acosh": np.arccosh, "atanh": np.arctanh,
     "ceil": np.ceil, "trunc": np.trunc, "rint": np.rint, "sign": np.sign,
+    "spacing": np.spacing,
     "round": lambda x: c_round(x),
     "erf": np.vectorize(math.erf, otypes=[float]),
     "erfc": np.vectorize(math.erfc, otypes=[float]),

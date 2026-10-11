@@ -59,6 +59,7 @@ from __future__ import annotations
 from .. import _contracts
 from ..compile import aether_include, eagle_include
 from ..ir import HawkError
+from ..ir.segment import class_name, mix_name, stale_name
 
 
 def _root_or_sealed_marker(resolver) -> str:
@@ -198,7 +199,10 @@ def _arg_dtypes(walk, scalar_type: str) -> dict:
 
 
 def _dispatches(infos) -> list:
-    """The per-kernel dispatch listing: ``{name, K, policy}``, straight off
+    """The per-kernel dispatch listing: ``{name, K, policy,
+    static_selector, selector_reads}`` (the kernel-scoped classification and
+    the selector's read slots a launching runtime re-scopes to a whole
+    step), straight off
     an iterable of :class:`~hawk.ir.walk.DispatchInfo` — ordinarily
     :attr:`~hawk.ir.walk.Walk.dispatches` itself. A SEGMENTED unit's walk
     carries no Dispatch node at all (the per-unit split already replaced
@@ -206,7 +210,13 @@ def _dispatches(infos) -> list:
     original group's record instead, K ``units`` names included."""
     out = []
     for d in infos:
-        entry = {"name": d.name, "K": d.K, "policy": d.policy}
+        entry = {"name": d.name, "K": d.K, "policy": d.policy,
+                 "static_selector": d.static_selector,
+                 "selector_reads": [list(pair) for pair in d.selector_reads]}
+        if d.policy == "auto":
+            entry["mix"] = mix_name(d.name)
+        if d.policy == "segmented":
+            entry["class"], entry["stale"] = class_name(d.name), stale_name(d.name)
         if d.units:
             entry["units"] = list(d.units)
         out.append(entry)
@@ -297,6 +307,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         "arg_spec": [list(pair) for pair in walk.arg_spec],
         "terminated_readonly": getattr(walk, "finish", None) is None,
         **_finish(walk),
+        **({"param_planes": list(walk.param_planes)} if walk.param_planes else {}),
         # one step's operation count, for a kernel whose body steps (absent
         # otherwise): read by the launching runtime, never by the body
         **({"step_ops": step_ops} if step_ops is not None else {}),
