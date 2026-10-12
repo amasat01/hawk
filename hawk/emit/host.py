@@ -27,8 +27,9 @@ guard would otherwise size GCC's vectorisation factor at 64 samples per
 zmm, spilling every float64 value across eight registers; under AVX-512
 with GCC (``HAWK_HOST_LANE_GUARDS``) the loop instead runs in blocks of
 ``kHostLaneBlock`` samples, each widening its guard bytes into a
-lane-width ``double`` array first (``HostMask::lanes``) so the narrowest
-type in the per-sample loop is the float64 lane. A kernel that finishes
+lane-width array first (``HostMask::lanes``; the kernel's ``Real``, spelled
+``HAWK_LANE_T`` until :func:`hawk.emit.backend.render_source` fills it in) so
+the narrowest type in the per-sample loop is the state's own width. A kernel that finishes
 its own sample would otherwise call and store a byte inside the loop,
 which GCC refuses to vectorise; in a lane-guarded block that write lands
 in the sample's own guard lane (``HostLaneFinish``) and tally
@@ -93,13 +94,13 @@ static inline aether::offset_t lane_block_end(aether::offset_t lo, aether::offse
 }
 
 struct HostLaneMaskRef {
-    double lane;
+    HAWK_LANE_T lane;
     bool eval() const { return lane != 0.0; }
 };
 
 // A block's guards, one float64 lane per sample of [base, base + kHostLaneBlock).
 struct HostLaneMask {
-    const double* lanes;
+    const HAWK_LANE_T* lanes;
     aether::offset_t base;
     HostLaneMaskRef operator[](const aether::SampleIndex& at) const
     {
@@ -119,7 +120,7 @@ struct HostMask {
         return HostMaskRef{ data + at.global() };
     }
     // Widen the guards of samples [lo, hi) into out[0, hi - lo).
-    HostLaneMask lanes(double* out, aether::offset_t lo, aether::offset_t hi) const
+    HostLaneMask lanes(HAWK_LANE_T* out, aether::offset_t lo, aether::offset_t hi) const
     {
         for (aether::offset_t s = lo; s < hi; ++s)
             out[s - lo] = data[s] != 0 ? 1.0 : 0.0;
@@ -134,14 +135,14 @@ static inline HostMask host_mask(const eagle::plugin::ScalarHandle& m)
 
 #if HAWK_HOST_LANE_GUARDS
 struct HostLaneFinishRef {
-    double* lane;
+    HAWK_LANE_T* lane;
     void operator=(bool v) const { *lane = v ? 1.0 : 0.0; }
 };
 
 // The finish epilogue's mask writes inside a lane-guarded block land in the
 // sample's own guard lane, so the block's loop stores no byte and calls nothing.
 struct HostLaneFinish {
-    double* lanes;
+    HAWK_LANE_T* lanes;
     aether::offset_t base;
     HostLaneFinishRef operator[](const aether::SampleIndex& at) const
     {
@@ -154,7 +155,7 @@ struct HostLaneFinish {
 // (A float64 tally keeps the loop's narrowest type the float64 lane; it
 // counts at most kHostLaneBlock, exactly.)
 struct HostLaneTally {
-    double* finished;
+    HAWK_LANE_T* finished;
 };
 
 static inline void finish_count(const HostLaneTally& tally) { *tally.finished += 1.0; }
@@ -163,9 +164,9 @@ static inline void finish_count(const HostLaneTally& tally) { *tally.finished +=
 // set lane is a set byte), then its tally to the counter in ONE relaxed add:
 // the same total as one increment per newly finished sample.
 template <class ViewT>
-static inline void finish_lanes(const HostMask& m, const double* lanes,
+static inline void finish_lanes(const HostMask& m, const HAWK_LANE_T* lanes,
                                 aether::offset_t lo, aether::offset_t hi,
-                                double tally, const ViewT& counter)
+                                HAWK_LANE_T tally, const ViewT& counter)
 {
     unsigned char* bytes = const_cast<unsigned char*>(m.data);
     for (aether::offset_t s = lo; s < hi; ++s) {
@@ -248,7 +249,7 @@ def _contiguous_loop(guards: Sequence[str], finish: tuple | None = None) -> str:
     if not guards:
         return plain
     lines = ["#if HAWK_HOST_LANE_GUARDS"]
-    lines += [f"    alignas(64) double hawk_lanes{k}[hawk_abi::kHostLaneBlock];"
+    lines += [f"    alignas(64) HAWK_LANE_T hawk_lanes{k}[hawk_abi::kHostLaneBlock];"
               for k in range(len(guards))]
     lines += ["    for (aether::offset_t hawk_blo = hawk_lo; hawk_blo < hawk_hi;",
               "         hawk_blo += hawk_abi::kHostLaneBlock) {",
@@ -261,7 +262,7 @@ def _contiguous_loop(guards: Sequence[str], finish: tuple | None = None) -> str:
         k = guards.index(mask)
         lines += [f"    const hawk_abi::HostMask hawk_finish_mask = {mask};",
                   f"    const auto& hawk_finish_count = {counter};",
-                  "    double hawk_finished = 0.0;"]
+                  "    HAWK_LANE_T hawk_finished = 0.0;"]
     lines += [f"    const hawk_abi::HostLaneMask {g} = hawk_lane{k};"
               for k, g in enumerate(guards)]
     if finish is not None:
@@ -527,8 +528,14 @@ def chunk_vectors(op_count: int) -> int:
     return 2 if op_count <= SHORT_STEP_OPS else 1
 
 
-_ELEM_BYTES = {"f64": 8, "f32": 8, "i32": 8, "i64": 8, "bool": 1, "int32": 4,
+_ELEM_BYTES = {"f64": 8, "f32": 4, "i32": 8, "i64": 8, "bool": 1, "int32": 4,
                "uint32": 4}
+
+
+def _bytes_of(dtype: str, real_bytes: int) -> int:
+    """The bytes one element of IR ``dtype`` stores as: a float is the
+    compiled ``Real`` (``real_bytes``), whichever of ``f64``/``f32`` it is."""
+    return real_bytes if dtype in ("f64", "f32") else _ELEM_BYTES[dtype]
 
 
 def _width(ttype) -> int:
@@ -571,8 +578,8 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         "    const aether::offset_t hawk_lo = static_cast<aether::offset_t>(base);",
         "    const aether::offset_t hawk_hi =",
         "        static_cast<aether::offset_t>(base + count);",
-        *[f"    alignas(64) double hawk_tg{k}[hawk_tile];" for k in range(len(guards))],
-        "    alignas(64) double hawk_on[hawk_tile] = {};",
+        *[f"    alignas(64) HAWK_LANE_T hawk_tg{k}[hawk_tile];" for k in range(len(guards))],
+        "    alignas(64) HAWK_LANE_T hawk_on[hawk_tile] = {};",
     ]
     if split.count is not None:
         lines.append("    alignas(64) Int hawk_cnt[hawk_tile] = {};")
@@ -588,7 +595,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
           for k, g in enumerate(guards)],
         f"    const hawk_abi::HostMask hawk_finish_mask = {mask};",
         f"    const auto& hawk_finish_count = {counter};",
-        "    double hawk_finished = 0.0;",
+        "    HAWK_LANE_T hawk_finished = 0.0;",
         *[f"    const hawk_abi::HostLaneMask {g} = hawk_tlane{k};"
           for k, g in enumerate(guards)],
         f"    const hawk_abi::HostLaneFinish {twin}{{hawk_tg{on_k}, hawk_tlo}};",
@@ -627,7 +634,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         puts.append(f"hawk_go = {split.count} > 0 ? 1.0 : 0.0;")
     else:
         puts.append("hawk_go = 1.0;")
-    lines += [_INDEPENDENT_ITERATIONS, head, *sample, "        double hawk_go = 0.0;"]
+    lines += [_INDEPENDENT_ITERATIONS, head, *sample, "        HAWK_LANE_T hawk_go = 0.0;"]
     pad = "            "
     if split.guard is not None:
         lines.append(f"        if (!{split.guard}) {{")
@@ -665,7 +672,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         "         hawk_cb += hawk_w) {",
         *[f"    alignas(64) {element_spelling(t.dtype)} {mine}[{_width(t)} * hawk_w];"
           for mine, _, t in chunk],
-        "    alignas(64) double hawk_ron[hawk_w];",
+        "    alignas(64) HAWK_LANE_T hawk_ron[hawk_w];",
     ]
     if split.count is not None:
         lines.append("    alignas(64) Int hawk_rcnt[hawk_w];")
@@ -752,7 +759,8 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
     return "\n".join(line for line in lines if line is not None)
 
 
-def interchange(name: str, sinks, walk: Walk, kind=None) -> Interchange | None:
+def interchange(name: str, sinks, walk: Walk, kind=None,
+                real_bytes: int = 8) -> Interchange | None:
     """The interchanged fused-step loop of ``walk``'s host TU, or ``None``
     where the TU keeps its plain per-sample fused loop.
 
@@ -772,11 +780,11 @@ def interchange(name: str, sinks, walk: Walk, kind=None) -> Interchange | None:
     if split is None:
         return None
     guards = lane_guards(walk)
-    lane_bytes = 8 * (1 + len(guards) + (split.count is not None))
+    lane_bytes = real_bytes * (1 + len(guards)) + 8 * (split.count is not None)
     for _, ttype, _, _ in split.carries:
-        lane_bytes += _width(ttype) * _ELEM_BYTES[ttype.dtype]
+        lane_bytes += _width(ttype) * _bytes_of(ttype.dtype, real_bytes)
     for _, ttype in split.live_ins:
-        lane_bytes += _width(ttype) * _ELEM_BYTES[ttype.dtype]
+        lane_bytes += _width(ttype) * _bytes_of(ttype.dtype, real_bytes)
     rule = host_tile_rule(lane_bytes, split.op_count, True, split.stop)
     text = interchange_text(split, guards, finish, rule.tile)
     export = (f'extern "C" const std::int64_t {name}_host_tile = '
@@ -1087,10 +1095,10 @@ class HostBackend:
         return ""
 
     def interchange(self, name: str, sinks, walk: Walk,
-                    kind=None) -> Interchange | None:
+                    kind=None, real_bytes: int = 8) -> Interchange | None:
         """:func:`interchange`, as the hook
         :func:`~hawk.emit.backend.render_source` asks a backend for."""
-        return interchange(name, sinks, walk, kind)
+        return interchange(name, sinks, walk, kind, real_bytes)
 
     def dispatch(self, kind_spelling: str, branch_spellings: Sequence[str],
                  policy: str, **kw: object) -> str:

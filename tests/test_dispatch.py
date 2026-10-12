@@ -1059,3 +1059,68 @@ def test_a_kernel_written_kind_plane_is_consumed_in_the_same_captured_graph(
     assert not np.array_equal(kind_first, kind_second)
     assert calls["n"] == 0, (
         f"build_bundle was called {calls['n']} time(s) between launches")
+
+
+# --------------------------------------------------------------------------
+# The truthful per-branch `vectorised` flag of the cost counts.
+
+def _loop_branch_flags(trips: int, profile: str = "native-vector-math"):
+    from hawk.ir import dispatch_costs
+
+    @hawk.kernel
+    def looped(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+        acc = 0.0
+        for _ in range(trips):
+            acc = acc * x + 1.0
+        y = M.dispatch(k, [acc, x], policy="switch")
+
+    costs = dispatch_costs(canonical(looped.sinks), profile)["dispatch0"]
+    return [b.vectorised for b in costs.branches]
+
+
+def test_a_loop_the_compiler_will_not_unroll_is_not_vectorised():
+    assert _loop_branch_flags(16) == [True, True]
+    assert _loop_branch_flags(32) == [False, True]
+
+
+def test_a_float32_branch_vectorises_like_a_float64_one():
+    from hawk.ir import dispatch_costs
+    a = Leaf("vocab_read", "per_sample", "a", TensorType((), "f32"))
+    k = _leaf("k", I32)
+    d = Dispatch(k, [mk("mul", (a, a)), a], "switch", TensorType((), "f32"))
+    costs = dispatch_costs(canonical((Assign("out", d, TensorType((), "f32")),)))["dispatch0"]
+    assert [b.vectorised for b in costs.branches] == [True, True]
+
+
+def test_a_library_call_holds_only_its_own_branch_scalar_under_an_exact_profile():
+    from hawk.ir import dispatch_costs
+    x = _leaf("x", S)
+    k = _leaf("k", I32)
+    d = Dispatch(k, [mk("sin", (x,)), mk("mul", (x, x))], "switch", S)
+    walk = canonical((Assign("out", d, S),))
+    assert [b.vectorised for b in dispatch_costs(walk, "native")["dispatch0"].branches] == [False, True]
+    assert all(b.vectorised for b in dispatch_costs(walk, "native-vector-math")["dispatch0"].branches)
+
+
+def test_the_emitter_and_the_cost_counts_share_one_vectorisation_predicate():
+    from hawk.emit import render_source, scalar_mode
+    from hawk.emit.host import HOST
+    from hawk.ir.cost import kernel_cost
+
+    @hawk.kernel
+    def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+        acc = x
+        for _ in range(32):
+            acc = acc * x + 1.0
+        y = acc
+
+    @hawk.kernel
+    def short(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+        y = x * x + 1.0
+
+    for kernel, expected in ((plain, False), (short, True)):
+        source = render_source("k", kernel.sinks, kernel.walk, HOST, mode=scalar_mode("float64"))
+        assert source.vectorised is expected
+        assert kernel_cost(kernel.walk).vectorised is expected
+    f32 = render_source("k", short.sinks, short.walk, HOST, mode=scalar_mode("float32"))
+    assert f32.vectorised

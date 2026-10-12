@@ -25,6 +25,14 @@ Counting rules, per sample:
 - whatever the selector reads is left out (every sample evaluates it, whichever
   branch it takes), as is any value an ``at`` indexes into (the plane itself
   is not read, only the element)
+- the chain fields are the branch's longest dependent path of those ops by
+  class (the critical path of the DAG, not the count): independent work adds
+  to the counts but not to the path, and a ``Loop`` is its trip count times
+  the deepest path through its carries
+- ``vectorised`` says whether the host compiler can run the branch as a
+  vector loop over samples: sample-local, no library call that stays scalar
+  under an exact profile, no ``Loop`` the compiler will not unroll, no
+  32-bit float
 - a value two branches share is counted in each: a split unit runs only its
   own branch, so that is what it pays
 """
@@ -34,15 +42,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import prod
 
-from .loop_nodes import Loop
+from .loop_nodes import Loop, LoopCarry, LoopIndex
 from .nodes import At, Const, Dispatch, Leaf, Node, Op, Select
 from ..types import INT_PLANE_DTYPES
 from .ops import INT_BINARY, INT_UNARY, OP_KINDS, RANDOM_OPS, UNARY_MATH
 from .walk import Walk, dispatch_groups
 
-__all__ = ["BranchCost", "DispatchCost", "dispatch_costs", "fp64_ops"]
+__all__ = ["BranchCost", "DispatchCost", "dispatch_costs", "fp64_ops", "kernel_cost"]
 
 _FIELDS = ("arith32", "arith64", "special32", "special64", "loads", "gathers")
+_CHAINS = ("chain32", "chain64", "chainSpecial32", "chainSpecial64")
 
 #: Elementwise ops that are not transcendental: one hardware instruction.
 _CHEAP_UNARY = ("neg", "abs", "sqrt", "rsqrt", "floor", "ceil", "trunc", "round", "rint",
@@ -70,10 +79,21 @@ class BranchCost:
     special64: float = 0.0
     loads: float = 0.0
     gathers: float = 0.0
+    #: Longest dependent path, by class (``arith``/``special`` x 32/64).
+    chain32: float = 0.0
+    chain64: float = 0.0
+    chainSpecial32: float = 0.0
+    chainSpecial64: float = 0.0
+    #: The host compiler can run this branch as a vector loop over samples.
+    vectorised: bool = False
 
     def as_tuple(self) -> tuple[float, ...]:
-        """The six counts in field order (the form eagle's rule takes)."""
+        """The six counts in field order (the form an older eagle takes)."""
         return tuple(getattr(self, f) for f in _FIELDS)
+
+    def chain_tuple(self) -> tuple[float, ...]:
+        """The six counts followed by the four chain lengths (ten values)."""
+        return self.as_tuple() + tuple(getattr(self, f) for f in _CHAINS)
 
 
 @dataclass(frozen=True)
@@ -84,9 +104,8 @@ class DispatchCost:
     #: Sorted ``(role, name)`` slots of the selector's leaf closure.
     selector_reads: tuple[tuple[str, str], ...]
     static_selector: bool
-    #: The fused host loop is vectorised (the kernel is sample-local and any
-    #: library call in a branch has a vector form under the host profile), so
-    #: it evaluates every branch and selects: its cost is the sum over branches.
+    #: The fused host loop is vectorised (every branch is), so it evaluates
+    #: every branch and selects: its cost is the sum over branches.
     fused_vectorised: bool = False
 
 
@@ -150,6 +169,72 @@ def _work(nodes) -> list[float]:
     return total
 
 
+def _chain_class(node: Node) -> int | None:
+    """Index into the four chain classes ``node`` adds one step to, else ``None``."""
+    if isinstance(node, (Select, Dispatch)):
+        return 1 if _wide(node) else 0
+    if isinstance(node, Op) and node.kind in OP_KINDS and node.kind not in _FREE:
+        cls, _ = _op_count(node)
+        return (2 if cls == "special" else 0) + (1 if _wide(node) else 0)
+    return None
+
+
+def _paths(roots, zero: frozenset, carried: bool = False) -> tuple:
+    """The critical path (per class) to the deepest of ``roots``; the nodes in
+    ``zero`` and the loop placeholders cost nothing. An ``at`` depends on its index.
+
+    With ``carried`` only the paths that start at a loop-carried read count (what
+    one iteration adds to the recurrence); work that does not depend on a carry
+    runs alongside it and adds nothing to the chain."""
+    none = (0.0, 0.0, 0.0, 0.0)
+    memo: dict[int, tuple | None] = {}
+    stack = [(r, False) for r in roots]
+    while stack:
+        node, expanded = stack.pop()
+        key = id(node)
+        if key in memo:
+            continue
+        if isinstance(node, LoopCarry) and carried:
+            memo[key] = none
+            continue
+        if key in zero or isinstance(node, (Leaf, Const, LoopIndex, LoopCarry)):
+            memo[key] = None if carried else none
+            continue
+        deps = (node.index,) if isinstance(node, At) else node.operands
+        if not expanded:
+            stack.append((node, True))
+            stack.extend((d, False) for d in deps if id(d) not in memo)
+            continue
+        best = None if carried else none
+        for d in deps:
+            reached = memo[id(d)]
+            if reached is not None and (best is None or sum(reached) > sum(best)):
+                best = reached
+        if best is None:
+            memo[key] = None
+            continue
+        own = [0.0] * 4
+        if isinstance(node, Loop):
+            body = _paths(node.nexts, frozenset(id(o) for o in node.operands), carried=True)
+            own = [node.trip * c for c in body]
+        elif (cls := _chain_class(node)) is not None:
+            own[cls] = 1.0
+        memo[key] = tuple(a + b for a, b in zip(best, own))
+    reached = [memo[id(r)] for r in roots if memo[id(r)] is not None]
+    return max(reached, key=sum, default=none)
+
+
+def is_library_call(node: Node) -> bool:
+    """Whether ``node`` is a library call (``exp``, ``sin``, ``pow``, a random draw ...)."""
+    return isinstance(node, Op) and node.kind in _SPECIAL
+
+
+def _branch_cost(walk: Walk, nodes: list[Node], roots, zero: frozenset, profile: str | None) -> BranchCost:
+    from ..emit.vectorise import vectorises
+
+    return BranchCost(*_work(nodes), *_paths(roots, zero), vectorises(walk, profile, nodes=nodes))
+
+
 def _closure(root: Node, skip: set[int]) -> list[Node]:
     """Nodes ``root`` evaluates, each once, minus ``skip`` and what only ``skip`` reaches.
     An ``at`` reaches its index, never its plane."""
@@ -174,26 +259,36 @@ def fp64_ops(nodes) -> int:
     return int(work[1] + work[3])
 
 
+def kernel_cost(walk: Walk, host_profile: str | None = None) -> BranchCost:
+    """The cost of one whole sample of a kernel with no dispatch group:
+    counts, chains and ``vectorised`` under the same rules as a branch.
+    ``host_profile`` as in :func:`dispatch_costs`."""
+    nodes = list(walk.order)
+    return _branch_cost(walk, nodes, nodes, frozenset(), host_profile)
+
+
 def dispatch_costs(walk: Walk, host_profile: str | None = None) -> dict[str, DispatchCost]:
     """``{group name: DispatchCost}`` for every dispatch group of ``walk``,
     under the names ``walk.dispatches`` publishes.
 
-    ``fused_vectorised`` is set for a sample-local kernel whose branches call
-    no library math (``exp``, ``sin``, ``pow`` ...), or whose host profile
-    vectorises it (``native-vector-math``); under an exact profile such a call
-    stays scalar and the fused loop does not run all branches in lockstep.
-    ``host_profile`` names the profile (default: the one in effect, see
+    Each branch's ``vectorised`` is true for a sample-local branch that calls
+    no library math (``exp``, ``sin``, ``pow`` ...) or whose host profile
+    vectorises it (``native-vector-math``), has no ``Loop`` of more than
+    :data:`hawk.emit.vectorise.UNROLL_LIMIT` trips and no 32-bit float. ``fused_vectorised`` is
+    the group's flag: the fused loop runs every branch in lockstep only when
+    every branch vectorises. ``host_profile`` names
+    the profile (default: the one in effect, see
     :func:`hawk.compile.toolchain.host_profile`)."""
-    from ..compile.toolchain import EXACT_HOST_PROFILES, host_profile as _in_effect
-    exact = _in_effect(host_profile) in EXACT_HOST_PROFILES
+    sample_local = walk.access.cls == "sample_local"
     infos = {d.name: d for d in walk.dispatches}
     out = {}
     for name, node in dispatch_groups(walk).items():
         selector, *branches = node.operands
         evaluated = {id(n) for n in _closure(selector, set())}
-        costs = tuple(BranchCost(*_work(_closure(b, evaluated))) for b in branches)
-        library_call = any(c.special32 or c.special64 for c in costs)
+        zero = frozenset(evaluated)
+        costs = tuple(_branch_cost(walk, _closure(b, evaluated), (b,), zero, host_profile)
+                      for b in branches)
         out[name] = DispatchCost(
             costs, infos[name].selector_reads, infos[name].static_selector,
-            walk.access.cls == "sample_local" and not (exact and library_call))
+            sample_local and all(c.vectorised for c in costs))
     return out
