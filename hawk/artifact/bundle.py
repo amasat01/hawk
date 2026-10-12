@@ -40,7 +40,7 @@ from pathlib import Path
 
 from ..compile import CompileOptions, compile_source, digest_file
 from ..compile.cache import ClosureWatch, publish_atomic, tmp_sibling
-from ..emit import BACKENDS, SegmentSpec, render_source, scalar_mode
+from ..emit import BACKENDS, SegmentSpec, literal_table as _literal_table, render_source, scalar_mode
 from ..emit.aether import binding_name as _binding_name
 from ..emit.backend import ActiveSpec
 from ..ext import DEFAULT_KIND
@@ -306,14 +306,18 @@ def _active_spec(kind) -> ActiveSpec | None:
                       _binding_name("lookup", ACTIVE_COUNT))
 
 
-def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override) -> dict:
+def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
+             literal_table: bool = False) -> dict:
     """Every declared target's emitted TU. No compiler, no disk, no sidecar
     — the cheap half of a build, and what the unit key is computed from, so
     an emitter change is a key change even when the walk is unmoved.
 
     A kernel with its own ``fused_body`` hook (a composed lane group)
     renders it ONCE and hands it to both backends, so the two targets
-    provably wrap the same string."""
+    provably wrap the same string.
+
+    ``literal_table`` rewrites the device TU's ``double`` literals into one
+    ``__constant__`` table (:func:`hawk.emit.literal_table`)."""
     hook = getattr(kernel, "fused_body", None)
     body = None if hook is None else hook(kind)
     segment = _segment_spec(kernel)
@@ -328,6 +332,8 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override) -> di
             one_step=getattr(kernel, "one_step", None),
             exports=_layout.exports(target,
                                     layout_sizes_override=layout_sizes_override))
+        if literal_table and target == "cuda":
+            out[target] = _literal_table(out[target])
         if active is not None and out[target].reduce_op is not None:
             raise HawkError(
                 f"{name!r}: Guard(active_set=True) refuses a reducing kernel "
@@ -351,11 +357,10 @@ def _step_ops(kernel, kind) -> int | None:
     return None if split is None else int(split.op_count)
 
 
-def _ops_per_step(kernel, kind) -> int | None:
+def _fp64_ops_ir(kernel, kind) -> int | None:
     """The 64-bit floating-point operations one step of a stepping kernel
-    runs (as :func:`_step_ops`, ``None`` for any other kernel). A fact for a
-    profiler: FP64 instructions issued per step, against the hardware's
-    count, is how full the warps ran."""
+    runs, counted in the IR (as :func:`_step_ops`, ``None`` for any other
+    kernel): the step cost the launching runtime's chunk length reads."""
     from ..emit.aether import render_lane_split
 
     if getattr(kernel.walk, "finish", None) is None:
@@ -438,7 +443,7 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         lanes=getattr(kernel, "lanes", None),
         dispatch_override=dispatch_override,
         step_ops=_step_ops(kernel, kind),
-        ops_per_step=_ops_per_step(kernel, kind),
+        fp64_ops_ir=_fp64_ops_ir(kernel, kind),
         entry_counts_finished=_entry_counts_finished(kernel, kind),
     )
     sidecar_blob = _blob(json.dumps(meta, indent=2) + "\n")
@@ -611,7 +616,7 @@ def build(kernel, directory, *, mode: str = "float64", targets=("cuda", "host"),
           kind=None, layout_sizes_override=None, defines=(), cache_dir=None,
           device_arch: str = "", name: str | None = None,
           derivative: dict | None = None, host_profile: str = "",
-          opt_level: str = "") -> Artifact:
+          opt_level: str = "", literal_table: bool = False) -> Artifact:
     """Emit, compile and publish ONE kernel into ``directory``.
 
     ``kernel`` is anything carrying ``.name``/``.sinks``/``.walk`` (a
@@ -628,6 +633,8 @@ def build(kernel, directory, *, mode: str = "float64", targets=("cuda", "host"),
     ``$HAWK_OPT_LEVEL``, else :data:`hawk.compile.toolchain.DEFAULT_OPT_LEVEL`
     (``"O3"``). See :func:`build_bundle`'s own docstring for the full rule.
 
+    ``literal_table`` (default ``False``): see :func:`build_bundle`.
+
     Refuses a ``segmented`` dispatch, which needs K artifacts: call
     :func:`build_bundle` with ``[kernel]`` instead."""
     name = name or kernel.name
@@ -642,7 +649,8 @@ def build(kernel, directory, *, mode: str = "float64", targets=("cuda", "host"),
     smode = scalar_mode(mode)
     directory = Path(directory)
     sources = _sources(kernel, name=name, smode=smode, kind=kind, targets=targets,
-                       layout_sizes_override=layout_sizes_override)
+                       layout_sizes_override=layout_sizes_override,
+                       literal_table=literal_table)
     draft = _draft(kernel, sources, name=name, smode=smode, kind=kind,
                    defines=defines, cache_dir=cache_dir, device_arch=device_arch,
                    targets=targets, derivative=derivative,
@@ -691,7 +699,8 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                  defines=(), cache_dir=None, device_arch: str = "",
                  name: str | None = None,
                  derivative: Mapping[str, str] | None = None,
-                 host_profile: str = "", opt_level: str = "") -> Bundle:
+                 host_profile: str = "", opt_level: str = "",
+                 literal_table: bool = False) -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json``
     over them. Every member must agree on the execution axis (a
     manifest-level, not per-entry, declaration) — a set that doesn't agree is
@@ -725,7 +734,15 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     build and on an AOT nvcc device build (nvcc's own ``-O<n>`` plus
     ``-Xptxas -O<n>``); NVRTC device compiles always optimise and ignore it.
     Empty means ``$HAWK_OPT_LEVEL``, else
-    :data:`hawk.compile.toolchain.DEFAULT_OPT_LEVEL` (``"O3"``)."""
+    :data:`hawk.compile.toolchain.DEFAULT_OPT_LEVEL` (``"O3"``).
+
+    ``literal_table`` (default ``False``) makes the device source read its
+    ``double`` literals from one ``__constant__`` table per translation unit
+    instead of as operand immediates: the same bits, fewer constant-move
+    instructions on architectures that issue a move pair per literal (sm_90),
+    unchanged on the others. Off, the device code is byte-identical to a
+    build without the option. A ``float32`` build ignores it, and the host
+    build is not affected."""
     _bump_builds()  #: every CALL, attempt or success (one locked increment)
     kernels = list(kernels)
     smode = scalar_mode(mode)
@@ -749,7 +766,8 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                     smode=smode, kind=key_kind, defines=defines, cache_dir=cache_dir,
                     device_arch=device_arch, derivative_blocks=per_kernel_derivative,
                     layout_sizes_override=layout_sizes_override,
-                    host_profile=host_profile, opt_level=opt_level)
+                    host_profile=host_profile, opt_level=opt_level,
+                    literal_table=literal_table)
 
     memo = _UNIT_MEMO.get(key)
     if memo is not None:
@@ -783,7 +801,8 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     # Phase 2 — emit, compile and assemble the unit's content; still nothing
     # written. Each draft gets its own per_kernel_derivative[i] block.
     drafts = [_draft(k, _sources(k, name=n, smode=smode, kind=kd, targets=targets,
-                                 layout_sizes_override=layout_sizes_override),
+                                 layout_sizes_override=layout_sizes_override,
+                                 literal_table=literal_table),
                      name=n, smode=smode, kind=kd, defines=defines,
                      cache_dir=cache_dir, device_arch=device_arch, targets=targets,
                      derivative=d, host_profile=host_profile, opt_level=opt_level)

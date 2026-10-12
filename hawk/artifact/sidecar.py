@@ -255,7 +255,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
                  exec_targets=("device", "host"), host_entry: str | None = None,
                  derivative: dict | None = None, lanes=None,
                  dispatch_override=None, step_ops: int | None = None,
-                 ops_per_step: int | None = None,
+                 fp64_ops_ir: int | None = None,
                  entry_counts_finished: bool = False) -> dict:
     """The full v2 sidecar for one kernel.
 
@@ -281,8 +281,10 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
 
     ``step_ops`` (one step's operation count) is present only for a kernel
     whose body steps; the launching runtime reads it, the body does not.
-    ``ops_per_step`` (one step's 64-bit floating-point operations) sits
-    beside it, for a profiler that measures how full the warps ran.
+    ``fp64_ops_ir`` (one step's 64-bit floating-point operations, counted
+    in the IR) sits beside it: the cost of a step the runtime's chunk
+    length reads, not an instruction count -- the compiler fuses and shares
+    operations, so the machine issues fewer.
     ``entry_counts_finished`` is present (``true``) when the kernel's fast
     entries count samples finished on entry into the finish counter, so the
     runtime zeroes the counter instead of counting the mask before a run."""
@@ -322,7 +324,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         # one step's operation count, for a kernel whose body steps (absent
         # otherwise): read by the launching runtime, never by the body
         **({"step_ops": step_ops} if step_ops is not None else {}),
-        **({"ops_per_step": ops_per_step} if ops_per_step is not None else {}),
+        **({"fp64_ops_ir": fp64_ops_ir} if fp64_ops_ir is not None else {}),
         **({"entry_counts_finished": True} if entry_counts_finished else {}),
         "digest": walk.digest,
         "quantities": {p: list(span.wires) for p, span in walk.quantities.items()},

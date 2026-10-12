@@ -98,7 +98,7 @@ _EXPECTED_MANIFEST = {
         "infer", "make", "recognize",
     ],
     "hawk.emit": [
-        "BACKENDS", "compose", "render_body", "render_source",
+        "BACKENDS", "compose", "literal_table", "render_body", "render_source",
         "scalar_mode",
     ],
     "hawk.ext": [

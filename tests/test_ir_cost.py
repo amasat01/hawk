@@ -118,3 +118,16 @@ def test_the_sidecar_facts_ride_along():
 def test_every_group_of_a_kernel_is_costed_under_its_published_name():
     walk = canonical(_mixed.sinks)
     assert set(dispatch_costs(walk)) == {d.name for d in walk.dispatches}
+
+
+def test_a_library_call_vectorises_the_fused_loop_only_under_the_vector_math_profile():
+    walk = canonical(_mixed.sinks)
+    assert not dispatch_costs(walk, "native")["dispatch0"].fused_vectorised
+    assert not dispatch_costs(walk, "portable")["dispatch0"].fused_vectorised
+    assert dispatch_costs(walk, "native-vector-math")["dispatch0"].fused_vectorised
+
+
+def test_branches_without_a_library_call_vectorise_under_every_profile():
+    walk = canonical(_shared.sinks)
+    for profile in ("native", "portable", "native-vector-math"):
+        assert dispatch_costs(walk, profile)["dispatch0"].fused_vectorised

@@ -24,7 +24,7 @@ from .backend import Backend as Backend
 from .backend import ScalarMode as ScalarMode
 from .backend import SegmentSpec as SegmentSpec
 from .backend import Source as Source
-from .backend import render_source, scalar_mode
+from .backend import literal_table, render_source, scalar_mode
 from .cuda import CUDA as CUDA
 from .cuda import CudaBackend as CudaBackend
 from .fused import FusedKernel as FusedKernel
@@ -37,4 +37,4 @@ from .host import HostBackend as HostBackend
 #: The built backends, by id. ``metal`` is a later slot; no dead stub.
 BACKENDS = {b.id: b for b in (CUDA, _HOST)}
 
-__all__ = ["BACKENDS", "compose", "render_body", "render_source", "scalar_mode"]
+__all__ = ["BACKENDS", "compose", "literal_table", "render_body", "render_source", "scalar_mode"]

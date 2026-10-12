@@ -234,8 +234,10 @@ def test_the_persist_loop_is_warp_converged(kernel):
     for token in ("__syncwarp", "__shfl", "__ballot", "__any_sync", "__all_sync",
                   "__activemask", "atomic"):
         assert token not in chunk, token
-    for token in ("__syncwarp()", "__ballot_sync(", "__shfl_sync(", "__any_sync("):
+    for token in ("__ballot_sync(", "__shfl_sync(", "__any_sync("):
         assert token in head, token
+    # the ballot is the warp's meeting point at the head: no separate barrier
+    assert "__syncwarp" not in head
     assert tail.startswith("(static_cast<unsigned>(hawk_trip) & (hawk_chunk - 1u)) != 0u);")
     assert "% 32u" not in body and "unsigned int hawk_chunk)" in text
 
@@ -258,16 +260,30 @@ def test_only_a_light_step_unrolls_its_device_loops(kernel, light):
 
 def test_a_stepping_kernels_sidecar_carries_its_step_op_count(bundle):
     """``step_ops`` is the lane split's own operation count, for the runtime
-    that launches the kernel, and ``ops_per_step`` its 64-bit floating-point
-    operations, for a profiler; a kernel that does not step has neither."""
+    that launches the kernel, and ``fp64_ops_ir`` its 64-bit floating-point
+    operations in the IR; a kernel that does not step has neither."""
     from hawk.artifact.bundle import _step_ops
 
     for name, kernel in KERNELS.items():
         split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
         assert sidecar_of(bundle, name)["step_ops"] == split.op_count > 0, name
-        assert sidecar_of(bundle, name)["ops_per_step"] == split.fp64_ops > 0, name
+        assert sidecar_of(bundle, name)["fp64_ops_ir"] == split.fp64_ops > 0, name
         assert sidecar_of(bundle, name)["entry_counts_finished"] is True, name
+        assert "ops_per_step" not in sidecar_of(bundle, name), name
     assert _step_ops(oscillator.step, oscillator.step.kind) is None
+
+
+def test_the_plan_view_reads_the_fp64_op_count_under_either_key(bundle):
+    """``plan_view`` carries ``fp64_ops_ir``, and reads a sidecar that still
+    spells it ``ops_per_step`` the same."""
+    from hawk.artifact import plan_view
+
+    sidecar = sidecar_of(bundle, "oscillator")
+    want = sidecar["fp64_ops_ir"]
+    assert plan_view(sidecar)["fp64_ops_ir"] == want
+    old = {k: v for k, v in sidecar.items() if k != "fp64_ops_ir"}
+    assert plan_view(dict(old, ops_per_step=want))["fp64_ops_ir"] == want
+    assert "fp64_ops_ir" not in plan_view(old)
 
 
 def test_only_an_automatic_kernel_has_a_persist_entry():
@@ -295,13 +311,15 @@ def test_fast_entries_count_trips_in_32_bits(kernel):
 
     text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
-    for suffix in ("_persist", "_range"):
+    # the persist entry's trip budget is hawk_budget (the launch's one word),
+    # the range entry's hawk_cnt
+    for suffix, count in (("_persist", "hawk_budget"), ("_range", "hawk_cnt")):
         body = _entry_body(text, kernel.name, suffix)
-        for bad in ("Int hawk_trip", "Int hawk_cnt", "long long hawk_trip",
-                    "long long hawk_cnt"):
+        for bad in ("Int hawk_trip", f"Int {count}", "long long hawk_trip",
+                    f"long long {count}"):
             assert bad not in body, f"{kernel.name}{suffix}: 64-bit counter `{bad}`"
         assert "int hawk_trip" in body, f"{kernel.name}{suffix}: no `int hawk_trip`"
-        assert "int hawk_cnt" in body, f"{kernel.name}{suffix}: no `int hawk_cnt`"
+        assert f"int {count}" in body, f"{kernel.name}{suffix}: no `int {count}`"
     fused = _entry_body(text, kernel.name, "")
     assert "lut_fused_steps" in fused
     loops = re.findall(r"for \((\w+(?: \w+)*) hawk_\w+_step = 0;", fused)

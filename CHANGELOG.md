@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+`build()` and `build_bundle()` take `literal_table=` (default `False`). On, the device
+source reads its `double` literals from one `__constant__` table per translation unit,
+the same bits as operand immediates; off, the device code is byte-identical to before.
+It pays on architectures that issue a move pair per literal (sm_90); a `float32` build
+ignores it.
+
+`hawk.ir.dispatch_costs()` takes the host profile, and reports `fused_vectorised`
+only for a sample-local kernel whose branches either call no library math or are built
+under `native-vector-math`: under an exact profile `exp`, `sin` and the like stay scalar,
+so the fused host loop no longer counts as running every branch in lockstep.
+
 An automatic kernel's `_persist` entry runs warp-converged. At each chunk head the
 lanes of a warp without a sample claim the next ones together: one ballot, one
 `atomicAdd` on the sample counter by the warp's leader, the base shuffled out. A lane
@@ -12,7 +23,7 @@ whole), and the entry is launched in whole warps. The slot pair now counts each
 warp's slots at each head (32 lanes times the chunk), so steps over slots is the
 run's slot fill. Results are bit-identical to the fused entry for any chunk, and the
 entry holds no more registers than before. The sidecar of a stepping kernel gains
-`ops_per_step`, one step's 64-bit floating-point operation count from the IR.
+`fp64_ops_ir`, one step's 64-bit floating-point operation count from the IR.
 
 ## 0.4.0 (2026-10-09)
 

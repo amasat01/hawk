@@ -84,8 +84,9 @@ class DispatchCost:
     #: Sorted ``(role, name)`` slots of the selector's leaf closure.
     selector_reads: tuple[tuple[str, str], ...]
     static_selector: bool
-    #: The fused host loop is vectorised (the kernel is sample-local), so it
-    #: evaluates every branch and selects: its cost is the sum over branches.
+    #: The fused host loop is vectorised (the kernel is sample-local and any
+    #: library call in a branch has a vector form under the host profile), so
+    #: it evaluates every branch and selects: its cost is the sum over branches.
     fused_vectorised: bool = False
 
 
@@ -173,16 +174,26 @@ def fp64_ops(nodes) -> int:
     return int(work[1] + work[3])
 
 
-def dispatch_costs(walk: Walk) -> dict[str, DispatchCost]:
+def dispatch_costs(walk: Walk, host_profile: str | None = None) -> dict[str, DispatchCost]:
     """``{group name: DispatchCost}`` for every dispatch group of ``walk``,
-    under the names ``walk.dispatches`` publishes."""
+    under the names ``walk.dispatches`` publishes.
+
+    ``fused_vectorised`` is set for a sample-local kernel whose branches call
+    no library math (``exp``, ``sin``, ``pow`` ...), or whose host profile
+    vectorises it (``native-vector-math``); under an exact profile such a call
+    stays scalar and the fused loop does not run all branches in lockstep.
+    ``host_profile`` names the profile (default: the one in effect, see
+    :func:`hawk.compile.toolchain.host_profile`)."""
+    from ..compile.toolchain import EXACT_HOST_PROFILES, host_profile as _in_effect
+    exact = _in_effect(host_profile) in EXACT_HOST_PROFILES
     infos = {d.name: d for d in walk.dispatches}
     out = {}
     for name, node in dispatch_groups(walk).items():
         selector, *branches = node.operands
         evaluated = {id(n) for n in _closure(selector, set())}
+        costs = tuple(BranchCost(*_work(_closure(b, evaluated))) for b in branches)
+        library_call = any(c.special32 or c.special64 for c in costs)
         out[name] = DispatchCost(
-            tuple(BranchCost(*_work(_closure(b, evaluated))) for b in branches),
-            infos[name].selector_reads, infos[name].static_selector,
-            walk.access.cls == "sample_local")
+            costs, infos[name].selector_reads, infos[name].static_selector,
+            walk.access.cls == "sample_local" and not (exact and library_call))
     return out

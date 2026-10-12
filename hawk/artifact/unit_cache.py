@@ -160,7 +160,8 @@ def _first_moved(pairs) -> str | None:
 # -- The unit key. ----------------------------------------------------------- #
 def _unit_key(names, walk_digests, *, targets, smode, kind, defines, cache_dir,
               device_arch, derivative_blocks, layout_sizes_override,
-              host_profile: str = "", opt_level: str = "") -> str:
+              host_profile: str = "", opt_level: str = "",
+              literal_table: bool = False) -> str:
     """The per-process identity of a BUILD REQUEST: every input the
     unit's content is a function of, hashed term by term. Per kernel:
     :attr:`hawk.ir.walk.Walk.digest` and its name. Bundle-wide: the
@@ -180,7 +181,8 @@ def _unit_key(names, walk_digests, *, targets, smode, kind, defines, cache_dir,
     it); and the resolved opt level, UNCONDITIONALLY — unlike the host
     profile, it changes the AOT nvcc device compile too (``-O<n>`` /
     ``-Xptxas -O<n>``), so an ``"O0"`` request must never be served an
-    ``"O3"`` unit regardless of which targets this bundle builds.
+    ``"O3"`` unit regardless of which targets this bundle builds; and
+    ``literal_table``, which changes the device source.
 
     STATED EXPOSURE, accepted rather than closed: the key names the
     render's INPUTS, not its output, so an emitter monkeypatched between
@@ -197,7 +199,8 @@ def _unit_key(names, walk_digests, *, targets, smode, kind, defines, cache_dir,
                  str(os.environ.get("HAWK_EAGLE_INCLUDE")),
                  ("host_profile:" + _host_profile(host_profile or None)
                   if "host" in targets else ""),
-                 "opt_level:" + _opt_level(opt_level or None)):
+                 "opt_level:" + _opt_level(opt_level or None),
+                 "literal_table" if literal_table else ""):
         h.update(part.encode("utf-8"))
         h.update(b"\0")
     for name, walk_digest in zip(names, walk_digests):

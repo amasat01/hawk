@@ -21,8 +21,9 @@ manifest, a sidecar or a layout export: those are :mod:`hawk.artifact`'s job.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from ..ir import HawkError, Walk
@@ -726,6 +727,38 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
     ]
     return Source("\n".join(p for p in parts if p is not None), body.text, name,
                   backend.id, mode.id, body.reduce_op)
+
+
+_REAL_LITERAL = re.compile(r"static_cast<Real>\((-?[0-9][0-9.eE+-]*)\)")
+_LITERAL_TABLE = "hawk_f64_literals"
+
+
+def literal_table(source: Source) -> Source:
+    """``source`` with every ``double`` literal of its body read from one
+    ``__constant__`` table instead of being an operand immediate.
+
+    The table holds each distinct value once, in the literal's own
+    round-tripping text, so every value is bit-identical to the literal it
+    replaces. A ``float`` TU is returned unchanged (its literals are
+    single-precision immediates, and a table of doubles would put 64-bit loads
+    in a kernel that has none). The declaration goes after the last
+    ``#include`` of the TU, so the table is visible to the whole body."""
+    if source.mode != FLOAT64.id:
+        return source
+    slots: dict[str, int] = {}
+
+    def slot(match):
+        index = slots.setdefault(match.group(1), len(slots))
+        return f"static_cast<Real>({_LITERAL_TABLE}[{index}])"
+
+    head, sep, tail = source.text.rpartition("#include")
+    first_line, nl, rest = tail.partition("\n")
+    text = _REAL_LITERAL.sub(slot, rest)
+    if not slots:
+        return source
+    table = (f"static __constant__ double {_LITERAL_TABLE}[{len(slots)}] = {{"
+             + ", ".join(slots) + "};")
+    return replace(source, text=f"{head}{sep}{first_line}\n{table}\n{text}")
 
 
 def _interchange(backend: Backend, name: str, sinks, walk: Walk, kind):

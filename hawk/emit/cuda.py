@@ -205,6 +205,24 @@ PERSIST_REPORT = """static __device__ __forceinline__ void hawk_persist_util(uns
                                                          unsigned ran)
 {
     if (util != nullptr) atomicAdd(&util[0], static_cast<unsigned long long>(ran));
+}
+
+// Out of line: the flush runs on a lane's wrap only, and inlined its null
+// tests would have the claim loop compiled twice, once per pointer state;
+// a call keeps the rare path's instructions out of the chunk head.
+static __device__ __noinline__ void hawk_persist_flush(unsigned long long* util,
+                                                       unsigned long long* stepsum, unsigned ran)
+{
+    if (util != nullptr) atomicAdd(&util[0], static_cast<unsigned long long>(ran));
+    if (stepsum != nullptr) atomicAdd(stepsum, static_cast<unsigned long long>(ran));
+}
+
+// Out of line for the same reason: the chunk head keeps one predicated call.
+static __device__ __noinline__ void hawk_persist_slots(unsigned long long* util, unsigned chunk)
+{
+    unsigned hawk_lid;
+    asm volatile("mov.u32 %0, %%laneid;" : "=r"(hawk_lid));
+    if (hawk_lid == 0u) atomicAdd(&util[1], static_cast<unsigned long long>(chunk) * 32ull);
 }"""
 
 
@@ -236,6 +254,25 @@ def _finished_on_entry() -> str:
 _PERSIST_FINISH = "++hawk_fin;"
 
 
+def _launch_budget(pre: str, count: str | None) -> tuple:
+    """The declarations in ``pre`` of the step budget ``count`` when it reads
+    the launch's fused_steps word alone (no per-sample value), so the
+    persistent entry evaluates them once, at entry; ``()`` otherwise."""
+    from ..ir.nodes import FUSED_STEPS_PLANE
+    from .aether import _declarations
+    from .spelling import binding_name
+
+    if count is None or not re.fullmatch(r"\w+", count):
+        return ()
+    decls = _declarations(pre or "", [count])
+    word = binding_name("lookup", FUSED_STEPS_PLANE)
+    for d in decls:
+        reads = re.findall(r"\b(\w+)\[", d)
+        if re.search(r"\bi\b", d) or any(r != word for r in reads):
+            return ()
+    return decls
+
+
 def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
                   kind=None) -> str | None:
     """The persistent entry of an automatic (``steps="auto"``) kernel, or
@@ -256,8 +293,8 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     ``atomicAdd(hawk_next, needy lanes)`` by the warp's leader, the base
     shuffled out and each needy lane taking base plus its rank; a claimed
     sample not finished on entry loads its carried values and per-sample
-    inputs (the fused body's head, the ``fused_steps`` word read as its step
-    budget). The warp then runs up to ``hawk_chunk`` trips of the fused step,
+    inputs (the fused body's head; the ``fused_steps`` word, the step
+    budget, is read once, at entry). The warp then runs up to ``hawk_chunk`` trips of the fused step,
     each lane predicated on holding a sample: a lane whose sample exits or
     spends its budget commits it (the fused body's tail: write-back and
     finish) and is masked until the next head. A warp leaves once none of
@@ -322,6 +359,16 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
         return f"{store} = {ctype}({value});" if shaped else \
             f"{store} = static_cast<{ctype}>({value});"
 
+    # The step budget is the launch's one fused_steps word: read once, at
+    # entry, instead of at every claim.
+    budget = _launch_budget(pre, split.count)
+    if budget:
+        pre = "\n".join(line for line in pre.splitlines() if line.strip() not in budget)
+    # A sample claimed past its guard is not finished, and only its own lane
+    # writes it, so the commit need not read the guard again.
+    if split.guard is not None and post:
+        post = post.replace(f"!{split.guard} && ", "")
+
     head = backend.entry_signature(walk, name)
     assert head.endswith("    long long nSamples)")
     head = head[:-1] + ",\n" + ",\n".join(PERSIST_PARAMS) + ")"
@@ -334,22 +381,27 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     lines += [f"    {ctype} {store}{{}};" for store, ctype, *_ in carries]
     lines += [f"    {ctype} {store}{{}};" for store, ctype, _ in live]
     lines += [f"    {d}" for d in split.sample_free]
+    lines += [f"    {d}" for d in budget]
+    lines.append(f"    const int hawk_budget = hawk_clamp_count({split.count});" if budget else
+                 "    int hawk_budget = 0;")
     lines += [
-        "    // a lane holds a sample while it has steps left to run (hawk_cnt > 0), and",
-        "    // needs one while it holds none and its last claim fell inside count",
-        "    // (none yet: offset 0)",
-        "    int hawk_cnt = 0;",
-        "    int hawk_trip = 0;",
+        "    // a lane holds a sample while it has trips left to run (hawk_trip <",
+        "    // hawk_budget), and needs one while it holds none and its last claim fell",
+        "    // inside count (none yet: offset 0); a sample offset is 32-bit, as the",
+        "    // claim counter is",
+        "    const unsigned hawk_count = static_cast<unsigned>(count);",
+        "    int hawk_trip = hawk_budget;",
         "    unsigned hawk_s = 0u;",
         "    unsigned hawk_maxtrip = 0u;",
         "    unsigned hawk_fin = 0u;",
         "    unsigned hawk_ran = 0u;",
         "    (void)nSamples;",
         "    while (true) {",
-        "        // the chunk head: the warp's lanes without a sample claim the next ones together",
-        "        __syncwarp();",
+        "        // the chunk head: the warp's lanes without a sample claim the next ones",
+        "        // together (the ballot is the warp's meeting point)",
         "        while (true) {",
-        "            const unsigned hawk_need = __ballot_sync(0xffffffffu, hawk_cnt <= 0 && hawk_s < count);",
+        "            const bool hawk_needy = hawk_trip >= hawk_budget && hawk_s < hawk_count;",
+        "            const unsigned hawk_need = __ballot_sync(0xffffffffu, hawk_needy);",
         "            if (hawk_need == 0u) break;",
         "            // read here, not hoisted: a value held from entry would cost the step a register",
         "            unsigned hawk_lid, hawk_below;",
@@ -360,11 +412,16 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
         "            if (hawk_lid == static_cast<unsigned>(hawk_lead))",
         "                hawk_base = atomicAdd(hawk_next, static_cast<unsigned>(__popc(hawk_need)));",
         "            hawk_base = __shfl_sync(0xffffffffu, hawk_base, hawk_lead);",
-        "            if ((hawk_need >> hawk_lid) & 1u) {",
+        "            if (hawk_needy) {",
+        "                // a lane commits at most one sample between two claims, so its",
+        "                // step count is reported long before it could wrap",
+        "                if (hawk_ran >= (1u << 31)) {",
+        "                    hawk_persist_flush(hawk_util, hawk_stepsum, hawk_ran);",
+        "                    hawk_ran = 0u;",
+        "                }",
         "                hawk_s = hawk_base + static_cast<unsigned>(__popc(hawk_need & hawk_below));",
-        "                if (hawk_s < count) {",
+        "                if (hawk_s < hawk_count) {",
         f"                    const aether::SampleIndex i = {index};",
-        "                    hawk_cnt = 0;",
     ]
     inner = "                    "
     if split.guard is not None:
@@ -374,8 +431,9 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
         lines.append(pre)
     lines += [inner + put(store, ctype, init, sh) for store, ctype, _, init, _, sh in carries]
     lines += [f"{inner}{store} = {lname};" for store, _, lname in live]
-    lines += [f"{inner}hawk_cnt = hawk_clamp_count({split.count});",
-              f"{inner}hawk_trip = 0;"]
+    if not budget:
+        lines.append(f"{inner}hawk_budget = hawk_clamp_count({split.count});")
+    lines.append(f"{inner}hawk_trip = 0;")
     if split.guard is not None:
         lines.append(f"                    }} else {{ {_PERSIST_FINISH} }}"
                      if entry_counts_finished(walk, split) else "                    }")
@@ -383,18 +441,12 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
         "                }",
         "            }",
         "        }",
-        "        if (!__any_sync(0xffffffffu, hawk_cnt > 0)) break;",
-        "        if (hawk_util != nullptr) {",
-        "            unsigned hawk_lid, hawk_slots;",
-        '            asm volatile("mov.u32 %0, %%laneid;" : "=r"(hawk_lid));',
-        '            asm volatile("shl.b32 %0, %1, 5;" : "=r"(hawk_slots) : "r"(hawk_chunk));',
-        "            if (hawk_lid == 0u)",
-        "                atomicAdd(&hawk_util[1], static_cast<unsigned long long>(hawk_slots));",
-        "        }",
+        "        if (!__any_sync(0xffffffffu, hawk_trip < hawk_budget)) break;",
+        "        if (hawk_util != nullptr) hawk_persist_slots(hawk_util, hawk_chunk);",
         "        // the chunk: a lane whose sample commits is masked until the next head;",
         "        // a lane holding a sample at a head claimed it at a head, so every such",
         "        // lane reaches the chunk's end at the same trip count",
-        "        if (hawk_cnt > 0)",
+        "        if (hawk_trip < hawk_budget)",
         PERSIST_UNROLL_LINE if split.op_count <= SHORT_DEVICE_STEP_OPS else None,
         "        do {",
         f"            const aether::SampleIndex i = {index};",
@@ -410,7 +462,7 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     lines += [f"            {store} = {nxt};" for store, _, _, _, nxt, _ in carries]
     lines += [
         "            ++hawk_trip;",
-        f"            if ({split.exit} || hawk_trip >= hawk_cnt) {{",
+        f"            if ({split.exit} || hawk_trip >= hawk_budget) {{",
         "                hawk_maxtrip = max(hawk_maxtrip, static_cast<unsigned>(hawk_trip));",
         "                hawk_ran += static_cast<unsigned>(hawk_trip);",
         "                {",
@@ -420,18 +472,10 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     lines += [f"                const {ctype} {cname} = {nxt};" for ctype, cname, nxt in fresh]
     lines.append(post) if post else None
     lines += ["                }",
-              "                hawk_cnt = 0;",
+              "                hawk_trip = hawk_budget;",
               "                break;",
               "            }",
               "        } while ((static_cast<unsigned>(hawk_trip) & (hawk_chunk - 1u)) != 0u);",
-              "        // a lane commits at most one sample per chunk, so its step count is",
-              "        // reported long before it could wrap",
-              "        if (hawk_ran >= (1u << 31)) {",
-              "            hawk_persist_util(hawk_util, hawk_ran);",
-              "            if (hawk_stepsum != nullptr)",
-              "                atomicAdd(hawk_stepsum, static_cast<unsigned long long>(hawk_ran));",
-              "            hawk_ran = 0u;",
-              "        }",
               "    }",
               "    hawk_persist_util(hawk_util, hawk_ran);",
               "    if (hawk_stepsum != nullptr) hawk_steps_sum(hawk_stepsum, hawk_ran);",
