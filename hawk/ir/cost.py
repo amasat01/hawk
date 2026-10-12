@@ -230,7 +230,7 @@ def is_library_call(node: Node) -> bool:
 
 
 def _branch_cost(walk: Walk, nodes: list[Node], roots, zero: frozenset, profile: str | None) -> BranchCost:
-    from ..emit.vectorise import vectorises
+    from .vectorise import vectorises
 
     return BranchCost(*_work(nodes), *_paths(roots, zero), vectorises(walk, profile, nodes=nodes))
 
@@ -274,7 +274,7 @@ def dispatch_costs(walk: Walk, host_profile: str | None = None) -> dict[str, Dis
     Each branch's ``vectorised`` is true for a sample-local branch that calls
     no library math (``exp``, ``sin``, ``pow`` ...) or whose host profile
     vectorises it (``native-vector-math``), has no ``Loop`` of more than
-    :data:`hawk.emit.vectorise.UNROLL_LIMIT` trips and no 32-bit float. ``fused_vectorised`` is
+    :data:`hawk.ir.vectorise.UNROLL_LIMIT` trips. ``fused_vectorised`` is
     the group's flag: the fused loop runs every branch in lockstep only when
     every branch vectorises. ``host_profile`` names
     the profile (default: the one in effect, see

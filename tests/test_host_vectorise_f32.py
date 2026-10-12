@@ -29,7 +29,7 @@ from hawk import Mutable, Scalar, Terminated
 from hawk.compile import toolchain as tc
 from hawk.emit import render_source, scalar_mode
 from hawk.emit.host import HOST
-from hawk.emit.vectorise import vectorises
+from hawk.ir.vectorise import vectorises
 
 
 @hawk.kernel(steps=1)

@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from ..ir import Walk
-from ..ir.loop_nodes import Loop
-from ..ir.nodes import Node
+from .loop_nodes import Loop
+from .nodes import Node
+from .walk import Walk
 
 __all__ = ["UNROLL_LIMIT", "vectorises"]
 
@@ -42,7 +42,7 @@ def vectorises(walk: Walk, profile: str | None = None, scalar_type: str | None =
     kernel) is vectorised under host ``profile`` (default: the one in effect) and
     ``scalar_type`` (accepted for the callers' sake; the verdict is the same for every type)."""
     from ..compile.toolchain import EXACT_HOST_PROFILES, host_profile
-    from ..ir.cost import is_library_call
+    from .cost import is_library_call
 
     if walk.access.cls != "sample_local":
         return False

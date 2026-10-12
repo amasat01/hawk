@@ -187,7 +187,7 @@ class Source:
     backend: str
     mode: str
     reduce_op: str | None = None
-    #: The host loop over samples is vectorised (see :func:`hawk.emit.vectorise.vectorises`).
+    #: The host loop over samples is vectorised (see :func:`hawk.ir.vectorise.vectorises`).
     vectorised: bool = False
 
 
@@ -727,7 +727,7 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
         "}",
         "",
     ]
-    from .vectorise import vectorises
+    from ..ir.vectorise import vectorises
 
     return Source(_filled(parts, mode), body.text, name,
                   backend.id, mode.id, body.reduce_op,
