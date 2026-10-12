@@ -351,6 +351,19 @@ def _step_ops(kernel, kind) -> int | None:
     return None if split is None else int(split.op_count)
 
 
+def _ops_per_step(kernel, kind) -> int | None:
+    """The 64-bit floating-point operations one step of a stepping kernel
+    runs (as :func:`_step_ops`, ``None`` for any other kernel). A fact for a
+    profiler: FP64 instructions issued per step, against the hardware's
+    count, is how full the warps ran."""
+    from ..emit.aether import render_lane_split
+
+    if getattr(kernel.walk, "finish", None) is None:
+        return None
+    split = render_lane_split(kernel.sinks, kernel.walk, kind=kind)
+    return None if split is None else int(split.fp64_ops)
+
+
 def _entry_counts_finished(kernel, kind) -> bool:
     """Whether the kernel's fast entries count a sample finished on entry into
     the finish counter (:func:`hawk.emit.cuda.entry_counts_finished`), so the
@@ -425,6 +438,7 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         lanes=getattr(kernel, "lanes", None),
         dispatch_override=dispatch_override,
         step_ops=_step_ops(kernel, kind),
+        ops_per_step=_ops_per_step(kernel, kind),
         entry_counts_finished=_entry_counts_finished(kernel, kind),
     )
     sidecar_blob = _blob(json.dumps(meta, indent=2) + "\n")

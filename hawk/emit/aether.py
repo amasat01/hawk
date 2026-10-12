@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..ir import HawkError, Node, Walk
+from ..ir.cost import fp64_ops
 from ..ir.loop_nodes import Loop, LoopCarry, LoopCount, LoopIndex, LoopValue, TapeRead
 from ..ir.nodes import (
     AT_ROLES,
@@ -164,7 +165,8 @@ class LaneSplit:
     ``stop``), ``index`` the loop index's name. ``speculative`` says one trip
     may run on a finished sample and its result be discarded: the step reads
     no plane at a computed index and divides no integer. ``op_count`` is
-    the step's operation count."""
+    the step's operation count, ``fp64_ops`` its 64-bit floating-point
+    operations (:func:`hawk.ir.cost.fp64_ops`)."""
 
     guard: str | None
     pre: str
@@ -181,6 +183,7 @@ class LaneSplit:
     needs_random: bool = False
     reduce_op: str | None = None
     sample_free: tuple = ()
+    fp64_ops: int = 0
 
 
 #: A declaration the renderer emits (``const auto t5 = ...``, ``const
@@ -680,7 +683,8 @@ class _Renderer(_DispatchMixin):
                          tuple(live_ins), info["count"], loop.stop, info["index"],
                          info["exit"], self._speculative(loop), ops,
                          body.needs_random, body.reduce_op,
-                         _declarations(pre, [n for n, _ in live_ins if n in free]))
+                         _declarations(pre, [n for n, _ in live_ins if n in free]),
+                         fp64_ops(loop.body_nodes()))
 
     def _loop_split(self, loop: Loop) -> None:
         """:meth:`_loop` for the loop :meth:`lane_split` cuts at: marks where

@@ -40,7 +40,7 @@ from ..types import INT_PLANE_DTYPES
 from .ops import INT_BINARY, INT_UNARY, OP_KINDS, RANDOM_OPS, UNARY_MATH
 from .walk import Walk, dispatch_groups
 
-__all__ = ["BranchCost", "DispatchCost", "dispatch_costs"]
+__all__ = ["BranchCost", "DispatchCost", "dispatch_costs", "fp64_ops"]
 
 _FIELDS = ("arith32", "arith64", "special32", "special64", "loads", "gathers")
 
@@ -163,6 +163,14 @@ def _closure(root: Node, skip: set[int]) -> list[Node]:
         out.append(node)
         stack.extend((node.index,) if isinstance(node, At) else node.operands)
     return out
+
+
+def fp64_ops(nodes) -> int:
+    """The 64-bit floating-point operations ``nodes`` run once, by this
+    module's counting rules: the ``arith64`` and ``special64`` counts (a
+    transcendental or library call counts once per element)."""
+    work = _work(nodes)
+    return int(work[1] + work[3])
 
 
 def dispatch_costs(walk: Walk) -> dict[str, DispatchCost]:

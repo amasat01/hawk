@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+An automatic kernel's `_persist` entry runs warp-converged. At each chunk head the
+lanes of a warp without a sample claim the next ones together: one ballot, one
+`atomicAdd` on the sample counter by the warp's leader, the base shuffled out. A lane
+whose sample finishes mid-chunk waits, masked, for the next head; the step body holds
+no atomic and no warp collective. The chunk length is a new trailing launch argument,
+`hawk_chunk` (`uint32`, after `hawk_stepsum`; a power of two, 0 runs each sample
+whole), and the entry is launched in whole warps. The slot pair now counts each
+warp's slots at each head (32 lanes times the chunk), so steps over slots is the
+run's slot fill. Results are bit-identical to the fused entry for any chunk, and the
+entry holds no more registers than before. The sidecar of a stepping kernel gains
+`ops_per_step`, one step's 64-bit floating-point operation count from the IR.
+
 ## 0.4.0 (2026-10-09)
 
 **Free-threaded CPython, GIL-free.** The compiled core now declares free-threading

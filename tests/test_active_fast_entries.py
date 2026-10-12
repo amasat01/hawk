@@ -95,7 +95,8 @@ def test_an_active_set_automatic_kernel_has_the_fast_entries_on_cuda_only(name):
     assert sig[f"{name}_persist"] == (sig[name] + ",\n    unsigned int* hawk_next"
                                       ",\n    unsigned long long* hawk_util"
                                       ",\n    unsigned int* hawk_steps"
-                                      ",\n    unsigned long long* hawk_stepsum")
+                                      ",\n    unsigned long long* hawk_stepsum"
+                                      ",\n    unsigned int hawk_chunk")
 
 
 @pytest.mark.parametrize("name", list(KERNELS))
@@ -231,7 +232,8 @@ def _persist(bundle, name, planes, budget, grid, *, mapped):
     total = cp.zeros(1, dtype=cp.uint64)
     _launch(bound, module, f"{name}_persist", n, grid,
             (ctypes.c_void_p(nxt.data.ptr), ctypes.c_void_p(0),
-             ctypes.c_void_p(steps.data.ptr), ctypes.c_void_p(total.data.ptr)))
+             ctypes.c_void_p(steps.data.ptr), ctypes.c_void_p(total.data.ptr),
+             ctypes.c_uint(32)))
     assert int(nxt[0]) >= n, "every sample was fetched"
     out = _snap(dev, counter)
     _reported(name, planes, out, steps, total)
