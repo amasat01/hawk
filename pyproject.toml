@@ -12,7 +12,8 @@ requires = [
     "nanobind>=3.1,<4; python_version>='3.10'",
     "nanobind>=2.2,<3; python_version<'3.10'",
 ]
-build-backend = "scikit_build_core.build"
+build-backend = "_build_backend"
+backend-path = ["."]
 
 [project]
 # DIST name carries the family namespace (mirrors the sibling packages'
@@ -75,6 +76,8 @@ cmake.version = ">=3.20"
 # Keep a dev build's in-tree extension out of the pure-python source collection;
 # the wheel's copy comes from the CMake install.
 sdist.exclude = ["**/*.so"]
+# The header copy _build_backend.py makes; git-ignored, so listed.
+sdist.include = ["_sdist_include/**"]
 # LICENSE/NOTICE sit right next to this pyproject.toml (unlike eagle's, whose
 # Python packaging lives one directory below its repo root) -- scikit-build-core's
 # own glob (not PEP 639's project.license-files, which would force `license`
