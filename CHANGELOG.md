@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+Host-compiler discovery honours the standard `$CXX` (precedence: `$HAWK_CXX`, `$CXX`, `g++` on `PATH`, zig); an unresolvable `$CXX` falls through, and the not-found error names every candidate tried.
+
 `build()` and `build_bundle()` take `literal_table=` (default `False`). On, the device
 source reads its `double` literals from one `__constant__` table per translation unit,
 the same bits as operand immediates; off, the device code is byte-identical to before.
