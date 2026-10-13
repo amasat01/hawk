@@ -137,7 +137,8 @@ SASS: the GPU's own machine code). Headers for any `#include` in
 <details>
 <summary>SIMD and the host profiles</summary>
 
-The host target is compiled at run time by the host `g++` (or `$HAWK_CXX`)
+The host target is compiled at run time by the host `g++` (or `$HAWK_CXX`;
+hawk also honours the standard `$CXX`, with the precedence `$HAWK_CXX`, then `$CXX`, then `g++` on `PATH`, then zig)
 under one of three profiles. On x86-64 with a GCC host compiler the default is `native-vector-math`
 (below), which vectorises transcendental math with aether's own functions,
 faithfully rounded (error < 1 ULP), and lets the compiler fuse `a*b + c`

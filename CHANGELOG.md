@@ -13,6 +13,7 @@ it in its lane; a nested `for` stays each lane's own loop. Under `native` and
 `kernel_cost()` and per `dispatch_costs()` branch) reports these loops as vectorised;
 a loop pair that reads a tape or another loop's count, and a loop inside one `switch`
 case, keep the per-sample loop and the unroll limit.
+Host-compiler discovery honours the standard `$CXX` (precedence: `$HAWK_CXX`, `$CXX`, `g++` on `PATH`, zig); an unresolvable `$CXX` falls through, and the not-found error names every candidate tried.
 
 `build()` and `build_bundle()` take `literal_table=` (default `False`). On, the device
 source reads its `double` literals from one `__constant__` table per translation unit,

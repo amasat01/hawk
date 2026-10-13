@@ -389,9 +389,12 @@ def include_flags(*, aether_root: str | None = None,
 
 
 def host_compiler() -> str:
-    """The host compiler, in discovery order: ``$HAWK_CXX`` when set, else
-    ``g++`` on ``PATH``, else the ``ziglang`` wheel's ``zig c++`` — a
-    pip-only host tier for a box with no system C++ toolchain at all.
+    """The host compiler, in discovery order: ``$HAWK_CXX`` when set (an
+    explicit override: unresolvable raises), else the standard ``$CXX`` (its
+    first word, resolved through ``PATH``; unresolvable falls through, its
+    arguments are not kept), else ``g++`` on ``PATH``, else the ``ziglang``
+    wheel's ``zig c++`` — a pip-only host tier for a box with no system C++
+    toolchain at all.
 
     ``zig c++`` is a subcommand of the single ``zig`` binary, not its own
     executable — it cannot stand as one ``argv[0]`` the way ``g++``'s path
@@ -406,13 +409,19 @@ def host_compiler() -> str:
         if not found:
             raise HawkError(f"$HAWK_CXX={cxx!r} not found on PATH.")
         return found
+    std_cxx = os.environ.get("CXX", "")
+    words = std_cxx.split()
+    if words:
+        found = shutil.which(words[0])
+        if found:
+            return found
     found = shutil.which("g++")
     if found:
         return found
-    return _zig_cxx_wrapper()
+    return _zig_cxx_wrapper(tried_cxx=std_cxx)
 
 
-def _zig_cxx_wrapper() -> str:
+def _zig_cxx_wrapper(tried_cxx: str = "") -> str:
     """The stable ``argv[0]`` :func:`host_compiler` hands back for the
     ``ziglang`` fallback: a one-line ``exec <zig binary> c++ "$@"`` script,
     written once under :func:`~hawk.compile.cache.default_cache_dir` and
@@ -428,10 +437,12 @@ def _zig_cxx_wrapper() -> str:
         import ziglang
     except ImportError:
         raise HawkError(
-            "no g++ on PATH and the ziglang wheel is not installed; set "
-            "$HAWK_CXX, install g++, or `pip install ziglang` ("
-            "host-compiler discovery order). A skipped compile certifies "
-            "nothing.") from None
+            "no host compiler found. Tried, in order: $HAWK_CXX (unset), "
+            f"$CXX ({tried_cxx!r}, "
+            f"{'did not resolve on PATH' if tried_cxx else 'unset'}), "
+            "g++ on PATH (absent), the ziglang wheel (not installed). Set "
+            "$HAWK_CXX or $CXX, install g++, or `pip install ziglang`. "
+            "A skipped compile certifies nothing.") from None
     zig_bin = Path(ziglang.__file__).resolve().parent / "zig"
     if not zig_bin.is_file():
         raise HawkError(
