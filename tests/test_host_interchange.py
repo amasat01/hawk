@@ -251,7 +251,8 @@ def _launches(bundle, name, planes, words):
     auto = sidecar["finish"]["steps"] == "auto"
     if auto:
         extra["fused_steps"] = np.zeros(1, dtype=np.int64)
-    kw = {"dt": DT} if "dt" in dict((n, r) for r, n in sidecar["arg_spec"]) else {}
+    names = {n for _, n in sidecar["arg_spec"]}
+    kw = {p: v for p, v in (("dt", DT), ("g", 0.3)) if p in names}
     bound = eplan.plan(plugin, structure=eexec.HostTeam).bind(
         finished_count=counter, **kw, **planes, **extra)
     snaps = []
@@ -352,7 +353,8 @@ def _bound(bundle, name, planes):
     counter = np.zeros(1, dtype=np.uint32)
     counter[0] = np.count_nonzero(planes["terminated"])
     word = np.zeros(1, dtype=np.int64)
-    kw = {"dt": DT} if "dt" in dict((n, r) for r, n in sidecar["arg_spec"]) else {}
+    names = {n for _, n in sidecar["arg_spec"]}
+    kw = {p: v for p, v in (("dt", DT), ("g", 0.3)) if p in names}
     bound = eplan.plan(plugin, structure=eexec.HostTeam).bind(
         finished_count=counter, fused_steps=word, **kw, **planes)
     return bound, planes, counter, word
@@ -504,13 +506,19 @@ ACTIVE = Kind("interchange_active", guard=Guard(active_set=True))
 
 
 def test_what_keeps_the_plain_fused_loop_and_why():
-    for kernel, why in ((gathered, "not sample_local: dependent iterations"),
-                        (head_loop, "two lowered loops: the cut is at ONE")):
-        assert getattr(kernel, "one_step", None) is not None, kernel.name
-        assert interchange(kernel.name, kernel.sinks, kernel.walk, kernel.kind) is None, why
-        text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["host"],
-                             kind=kernel.kind, one_step=kernel.one_step).text
-        assert "HAWK_HOST_INTERCHANGE" not in text, why
+    kernel = gathered
+    assert getattr(kernel, "one_step", None) is not None, kernel.name
+    assert interchange(kernel.name, kernel.sinks, kernel.walk, kernel.kind) is None
+    text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["host"],
+                         kind=kernel.kind, one_step=kernel.one_step).text
+    assert "HAWK_HOST_INTERCHANGE" not in text, "not sample_local: dependent iterations"
+    # two lowered loops: the fused-step cut is at ONE, so both loops run as the
+    # loop interchange instead (hawk.emit.host.loop_interchange)
+    tiled = interchange(head_loop.name, head_loop.sinks, head_loop.walk, head_loop.kind)
+    assert tiled is not None and tiled.rule is None and tiled.prelude is not None
+    text = render_source(head_loop.name, head_loop.sinks, head_loop.walk, BACKENDS["host"],
+                         kind=head_loop.kind, one_step=head_loop.one_step).text
+    assert "hawk_abi::kHostLoopTile" in text and "_host_tile" not in text
     # an active-set kind: the tile is a gathered map, not a contiguous run
     from hawk.emit.backend import ActiveSpec
     from hawk.emit.spelling import binding_name
@@ -521,6 +529,28 @@ def test_what_keeps_the_plain_fused_loop_and_why():
                          BACKENDS["host"], kind=ACTIVE, active=active,
                          one_step=oscillator.one_step).text
     assert "HAWK_HOST_INTERCHANGE" not in text
+
+
+@pytest.mark.parametrize("n", [1, 37, 200, 1001])
+def test_a_loop_beside_the_fused_loop_interchanges_both_byte_identically(
+        tmp_path_factory, n):
+    """``head_loop``: the fused step loop (a runtime trip count per lane, the
+    word) and the 4-trip loop before it, both interchanged, against the
+    macro-off build, after every launch of the words."""
+    cache = str(tmp_path_factory.mktemp("head_loop_cache"))
+    built = {shape: build_bundle([head_loop], tmp_path_factory.mktemp(shape),
+                                 targets=("host",), cache_dir=cache, defines=defines,
+                                 host_profile=EXACT)
+             for shape, defines in (("interchanged", INTERCHANGED), ("plain", PLAIN))}
+    rng = np.random.default_rng([20261013, n])
+    planes = {"x": rng.uniform(-1, 1, n), "nstop": rng.integers(1, 200, n).astype(float),
+              "y": np.zeros(n), "k": np.zeros(n), "terminated": rng.random(n) < 0.2}
+    got = _launches(built["interchanged"], "head_loop", planes, WORDS)
+    want = _launches(built["plain"], "head_loop", planes, WORDS)
+    for launch, (a, b) in enumerate(zip(got, want)):
+        for key in b:
+            assert a[key].tobytes() == b[key].tobytes(), (key, launch)
+    assert want[-1]["terminated"].all() and want[-1]["y"].any()
 
 
 # --------------------------------------------------------------------------- #

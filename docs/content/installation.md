@@ -225,6 +225,20 @@ physical reorder, the tile runs the same contiguous, vectorisable loop. Any
 other map runs the map loop, whose loads are gathers that the compiler may
 leave scalar.
 
+A `for` loop in a `sample_local` kernel runs interchanged: its trips on the
+outside, a tile of samples on the inside, each carried value held in a lane
+array with one slot per sample. The tile spans eight vector registers of the
+kernel's float type (64 float64 or 128 float32 samples under AVX-512, half that
+under AVX2, a quarter on SSE2 or NEON), so eight independent chains of a
+dependent loop body are in flight at each trip, whatever the trip count. A
+sample that leaves at its own `break`, or runs its own trip count, stops in its
+lane and keeps its values; the trips end once every lane has stopped. A nested
+`for` stays each lane's own loop. Every sample runs the same operations in the
+same order as the per-sample loop, so `native` and `portable` keep their bits;
+the same source built with `-DHAWK_HOST_INTERCHANGE=0` runs the per-sample loop.
+A kernel whose loop pair reads a tape or another loop's count (a derived
+kernel), or whose loop sits in one `switch` case, keeps the per-sample loop.
+
 The plain scalar loop is kept for kernels that read or write other samples
 (`cross_sample_*`), for reductions (reordering them would change their bits),
 and for the body of a lowered inner `for`. GCC 14 vectorises a masked float64
