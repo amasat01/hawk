@@ -597,6 +597,71 @@ def compiler_is_gcc(compiler: str) -> bool:
         return _GCC_FAMILY_MEMO.setdefault(compiler, gcc)
 
 
+#: Per-process memo of each compiler's predefined macros (name -> value),
+#: behind :func:`compiler_macros`; guarded like :data:`_GCC_FAMILY_MEMO`.
+_MACRO_MEMO: dict = {}
+_MACRO_LOCK = threading.Lock()
+
+def compiler_macros(compiler: str) -> dict:
+    """``compiler``'s predefined macros (``-dM -E -x c++``) as a name -> value
+    dict, memoised per compiler path for the process; empty when the compiler
+    cannot be probed."""
+    with _MACRO_LOCK:
+        known = _MACRO_MEMO.get(compiler)
+    if known is not None:
+        return known
+    macros: dict = {}
+    try:
+        out = subprocess.run([compiler, "-dM", "-E", "-x", "c++", os.devnull],
+                             capture_output=True, text=True, timeout=60,
+                             check=False)
+        if out.returncode == 0:
+            for ln in out.stdout.splitlines():
+                parts = ln.split(None, 2)
+                if len(parts) >= 2 and parts[0] == "#define":
+                    macros[parts[1]] = parts[2] if len(parts) > 2 else ""
+    except (OSError, subprocess.SubprocessError):
+        macros = {}
+    with _MACRO_LOCK:
+        return _MACRO_MEMO.setdefault(compiler, macros)
+
+
+def gcc_maskcall_affected(macros: dict) -> bool:
+    """Whether a compiler with predefined ``macros`` is a GCC that miscompiles
+    a conditional call of a function with masked vector variants.
+
+    GCC 13.1-13.3 and 14.1-14.2 if-convert such a call with the mask of the
+    negated condition inverted, so the masked variant evaluates the lanes that
+    should be inactive. aether-dsc drops its masked variants on exactly these
+    compilers. Fixed upstream by "middle-end: Fix ifcvt predicate generation
+    for masked function calls" (commit abbfe1e2616d), which is in GCC 13.4 and
+    14.3. 13.x is told apart by ``__GNUC_PATCHLEVEL__``, 14.x by
+    ``__GNUC_MINOR__``."""
+    if "__clang__" in macros or "__GNUC__" not in macros:
+        return False
+    try:
+        major = int(macros["__GNUC__"])
+        minor = int(macros.get("__GNUC_MINOR__", "0"))
+        patch = int(macros.get("__GNUC_PATCHLEVEL__", "0"))
+    except ValueError:
+        return False
+    return (major == 13 and patch < 4) or (major == 14 and minor < 3)
+
+
+def masked_math_dropped(profile: str | None = None, *,
+                        macros: dict | None = None) -> bool:
+    """Whether aether's masked vector-math variants are absent from the host
+    build: under ``native-vector-math`` (the profile that declares vector
+    variants) with an affected GCC (:func:`gcc_maskcall_affected`), aether-dsc
+    stops declaring the masked ones, so a loop with a conditional math call is
+    not vectorised. ``macros`` overrides the host compiler's probed macros
+    (for tests)."""
+    if host_profile(profile) != "native-vector-math":
+        return False
+    return gcc_maskcall_affected(
+        compiler_macros(host_compiler()) if macros is None else macros)
+
+
 def _is_x86_64() -> bool:
     return platform.machine().lower() in ("x86_64", "amd64")
 
