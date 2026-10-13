@@ -25,6 +25,14 @@ run's slot fill. Results are bit-identical to the fused entry for any chunk, and
 entry holds no more registers than before. The sidecar of a stepping kernel gains
 `fp64_ops_ir`, one step's 64-bit floating-point operation count from the IR.
 
+The `_persist` entry writes a sample back at the next chunk head instead of where it
+ends: a lane whose sample exits or spends its budget only marks it in its trip count,
+and the warp's ending lanes commit together at the head, ahead of their claim, instead
+of one lane at a time in a branch of the step. The commit reads the carried values and
+rebuilds the loop's finish flag from the trip count, so the entry holds no more
+registers; a kernel committing a value the step neither carries nor sets as that flag
+keeps its commit in the chunk. Results stay bit-identical to the fused entry.
+
 ## 0.4.0 (2026-10-09)
 
 **Free-threaded CPython, GIL-free.** The compiled core now declares free-threading

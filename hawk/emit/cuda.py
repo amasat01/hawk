@@ -273,6 +273,34 @@ def _launch_budget(pre: str, count: str | None) -> tuple:
     return decls
 
 
+#: The bit a lane sets in its trip count once its sample has ended, until the
+#: sample is written back: above any budget (:func:`hawk_clamp_count` keeps
+#: one at or below ``INT_MAX``). The bits below keep the trips run when the
+#: step's exit fired, and are 0 when the budget alone ran out (the trips run
+#: are then the budget; a sample ends after at least one trip).
+_ENDED = "0x80000000u"
+
+
+def _exit_rebuilt(step: str, exit_flag: str, fresh) -> list | None:
+    """``[(ctype, name, text)]``: each value of ``fresh`` (a carry the step
+    never reads) spelled from the trip count of a lane whose sample has
+    ended, or ``None`` when one is not the step's exit flag selecting between
+    two constants (the loop's ``finished`` flag is). The trip count says
+    whether the last trip exited, so the value is the one that trip set."""
+    m = re.search(rf"^\s*const bool {re.escape(exit_flag)} = (\w+);$", step, re.M)
+    if m is None:
+        return None
+    const = r"(static_cast<\w+>\([-+0-9.e]+\))"
+    out = []
+    for ctype, cname, nxt in fresh:
+        d = re.search(rf"^\s*const \S+ {re.escape(nxt)} = \({m.group(1)} \? {const} : {const}\);$",
+                      step, re.M)
+        if d is None:
+            return None
+        out.append((ctype, cname, f"(hawk_trip != {_ENDED} ? {d.group(1)} : {d.group(2)})"))
+    return out
+
+
 def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
                   kind=None) -> str | None:
     """The persistent entry of an automatic (``steps="auto"``) kernel, or
@@ -296,9 +324,15 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     inputs (the fused body's head; the ``fused_steps`` word, the step
     budget, is read once, at entry). The warp then runs up to ``hawk_chunk`` trips of the fused step,
     each lane predicated on holding a sample: a lane whose sample exits or
-    spends its budget commits it (the fused body's tail: write-back and
-    finish) and is masked until the next head. A warp leaves once none of
-    its lanes holds a sample after a claim past ``count``. So each sample
+    spends its budget only marks it ended (:data:`_ENDED` in its trip count)
+    and is masked until the next head, where it commits it (the fused body's
+    tail: write-back and finish) together with the warp's other ending lanes,
+    then claims. The commit reads the carried values the step left and
+    rebuilds the loop's finish flag from the trip count, so it holds nothing
+    more across the step; a kernel committing a value the step neither
+    carries nor sets as that flag commits in the chunk instead, where its
+    sample ends. A warp leaves once none of its lanes holds a sample, ended
+    or not, after a claim past ``count``. So each sample
     runs exactly what one launch of the fused entry with that word runs, the
     same bits, whatever the grid or the chunk length; only which lane runs
     it, and when, moves. The step body holds no warp collective and no
@@ -340,7 +374,8 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     assert per_sample not in (post or "") and per_sample not in split.step \
         and per_sample not in (split.pre or "")
     # A carry the step never reads (the fused loop's exit flag) is not held
-    # across trips: the commit reads this trip's value of it directly.
+    # across trips: the commit rebuilds it from the trip count (or, in the
+    # chunk, reads this trip's value of it directly).
     carries, fresh = [], []
     for j, (cname, t, init, nxt) in enumerate(split.carries):
         if re.search(rf"\b{cname}\b", split.step):
@@ -375,30 +410,45 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     head = head.replace(f"void {name}(", f"void {name}_persist(", 1)
     # Registers decide this entry's residency, so the bookkeeping is lean: the
     # sample is ONE 32-bit offset from base (its index is rebuilt where read),
-    # and a lane's steps are added once per sample, at its commit.
+    # and a lane's steps are added once per sample, at its end.
     index = "aether::SampleIndex::make(static_cast<std::size_t>(base + hawk_s))"
+    # The commit is deferred to the next chunk head when every value it reads
+    # the step does not carry is the exit flag: the trip count then says
+    # whether the sample exited, and the commit runs there with the warp's
+    # other ending lanes instead of in a branch one lane takes.
+    rebuilt = _exit_rebuilt(split.step, split.exit, fresh) if post else None
+    commit = [f"{ctype} {cname} = {store};" for store, ctype, cname, *_ in carries]
+    if rebuilt is not None:
+        commit += [f"{ctype} {cname} = {text};" for ctype, cname, text in rebuilt]
+    else:
+        commit += [f"{ctype} {cname} = {nxt};" for ctype, cname, nxt in fresh]
+    commit = [f"const {line}" for line in commit]
     lines = [head, "{", backend.unpack(walk)]
     lines += [f"    {ctype} {store}{{}};" for store, ctype, *_ in carries]
     lines += [f"    {ctype} {store}{{}};" for store, ctype, _ in live]
     lines += [f"    {d}" for d in split.sample_free]
     lines += [f"    {d}" for d in budget]
-    lines.append(f"    const int hawk_budget = hawk_clamp_count({split.count});" if budget else
-                 "    int hawk_budget = 0;")
+    lines.append(f"    const unsigned int hawk_budget = "
+                 f"static_cast<unsigned>(hawk_clamp_count({split.count}));" if budget else
+                 "    unsigned int hawk_budget = 0u;")
     lines += [
         "    // a lane holds a sample while it has trips left to run (hawk_trip <",
-        "    // hawk_budget), and needs one while it holds none and its last claim fell",
-        "    // inside count (none yet: offset 0); a sample offset is 32-bit, as the",
-        "    // claim counter is",
+        "    // hawk_budget), and needs one while it holds none to run and its last",
+        "    // claim fell inside count (none yet: offset 0); a sample offset is 32-bit,",
+        "    // as the claim counter is",
+        f"    // (an ended sample not yet written back: hawk_trip carries {_ENDED})"
+        if rebuilt is not None else None,
         "    const unsigned hawk_count = static_cast<unsigned>(count);",
-        "    int hawk_trip = hawk_budget;",
+        "    unsigned int hawk_trip = hawk_budget;",
         "    unsigned hawk_s = 0u;",
         "    unsigned hawk_maxtrip = 0u;",
         "    unsigned hawk_fin = 0u;",
         "    unsigned hawk_ran = 0u;",
         "    (void)nSamples;",
         "    while (true) {",
-        "        // the chunk head: the warp's lanes without a sample claim the next ones",
-        "        // together (the ballot is the warp's meeting point)",
+        "        // the chunk head: the warp's lanes without a sample to run write back",
+        "        // the one that ended, then claim the next ones together (the ballot is",
+        "        // the warp's meeting point)",
         "        while (true) {",
         "            const bool hawk_needy = hawk_trip >= hawk_budget && hawk_s < hawk_count;",
         "            const unsigned hawk_need = __ballot_sync(0xffffffffu, hawk_needy);",
@@ -413,7 +463,20 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
         "                hawk_base = atomicAdd(hawk_next, static_cast<unsigned>(__popc(hawk_need)));",
         "            hawk_base = __shfl_sync(0xffffffffu, hawk_base, hawk_lead);",
         "            if (hawk_needy) {",
-        "                // a lane commits at most one sample between two claims, so its",
+    ]
+    if rebuilt is not None:
+        lines += ["                if (hawk_trip > hawk_budget) {",
+                  f"                    const unsigned hawk_t = hawk_trip & ~{_ENDED};",
+                  "                    const unsigned hawk_ran1 = hawk_t != 0u ? hawk_t : hawk_budget;",
+                  "                    hawk_maxtrip = max(hawk_maxtrip, hawk_ran1);",
+                  "                    hawk_ran += hawk_ran1;",
+                  f"                    const aether::SampleIndex i = {index};"]
+        lines += [f"                    {line}" for line in commit]
+        lines += [post,
+                  "                    hawk_trip = hawk_budget;",
+                  "                }"]
+    lines += [
+        "                // a lane ends at most one sample between two claims, so its",
         "                // step count is reported long before it could wrap",
         "                if (hawk_ran >= (1u << 31)) {",
         "                    hawk_persist_flush(hawk_util, hawk_stepsum, hawk_ran);",
@@ -432,8 +495,8 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     lines += [inner + put(store, ctype, init, sh) for store, ctype, _, init, _, sh in carries]
     lines += [f"{inner}{store} = {lname};" for store, _, lname in live]
     if not budget:
-        lines.append(f"{inner}hawk_budget = hawk_clamp_count({split.count});")
-    lines.append(f"{inner}hawk_trip = 0;")
+        lines.append(f"{inner}hawk_budget = static_cast<unsigned>(hawk_clamp_count({split.count}));")
+    lines.append(f"{inner}hawk_trip = 0u;")
     if split.guard is not None:
         lines.append(f"                    }} else {{ {_PERSIST_FINISH} }}"
                      if entry_counts_finished(walk, split) else "                    }")
@@ -443,7 +506,7 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
         "        }",
         "        if (!__any_sync(0xffffffffu, hawk_trip < hawk_budget)) break;",
         "        if (hawk_util != nullptr) hawk_persist_slots(hawk_util, hawk_chunk);",
-        "        // the chunk: a lane whose sample commits is masked until the next head;",
+        "        // the chunk: a lane whose sample ends is masked until the next head;",
         "        // a lane holding a sample at a head claimed it at a head, so every such",
         "        // lane reaches the chunk's end at the same trip count",
         "        if (hawk_trip < hawk_budget)",
@@ -463,19 +526,22 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     lines += [
         "            ++hawk_trip;",
         f"            if ({split.exit} || hawk_trip >= hawk_budget) {{",
-        "                hawk_maxtrip = max(hawk_maxtrip, static_cast<unsigned>(hawk_trip));",
-        "                hawk_ran += static_cast<unsigned>(hawk_trip);",
-        "                {",
     ]
-    lines += [f"                const {ctype} {cname} = {store};"
-              for store, ctype, cname, *_ in carries]
-    lines += [f"                const {ctype} {cname} = {nxt};" for ctype, cname, nxt in fresh]
-    lines.append(post) if post else None
-    lines += ["                }",
-              "                hawk_trip = hawk_budget;",
-              "                break;",
+    if rebuilt is not None:
+        # the sample ends: its lane only marks it, and writes it back at the head
+        lines.append(f"                hawk_trip = {split.exit} ? (hawk_trip | {_ENDED}) : {_ENDED};"
+                     if rebuilt else f"                hawk_trip |= {_ENDED};")
+    else:
+        lines += ["                hawk_maxtrip = max(hawk_maxtrip, hawk_trip);",
+                  "                hawk_ran += hawk_trip;",
+                  "                {"]
+        lines += [f"                {line}" for line in commit]
+        lines.append(post) if post else None
+        lines += ["                }",
+                  "                hawk_trip = hawk_budget;"]
+    lines += ["                break;",
               "            }",
-              "        } while ((static_cast<unsigned>(hawk_trip) & (hawk_chunk - 1u)) != 0u);",
+              "        } while ((hawk_trip & (hawk_chunk - 1u)) != 0u);",
               "    }",
               "    hawk_persist_util(hawk_util, hawk_ran);",
               "    if (hawk_stepsum != nullptr) hawk_steps_sum(hawk_stepsum, hawk_ran);",
