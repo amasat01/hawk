@@ -23,7 +23,7 @@ def gcc(major, minor=0, patch=0):
             "__GNUC_PATCHLEVEL__": str(patch)}
 
 
-TRUTH = ([(gcc(13, m, p), p < 4) for m in (1, 2, 3) for p in range(0, 6)]
+TRUTH = ([(gcc(13, m, p), m < 4) for m in range(0, 6) for p in (0, 1)]
          + [(gcc(14, m, p), m < 3) for m in range(0, 5) for p in (0, 1)]
          + [(gcc(12, 3, 0), False), (gcc(12, 5, 0), False),
             (gcc(15, 0, 0), False), (gcc(15, 1, 1), False)])
@@ -39,11 +39,14 @@ def test_clang_and_unprobed_are_never_affected():
     assert tc.gcc_maskcall_affected({}) is False
 
 
-@pytest.mark.parametrize("macros,dropped", [(gcc(13, 2, 0), True), (gcc(14, 4, 0), False)])
-def test_masked_math_dropped_only_under_native_vector_math(macros, dropped):
-    assert tc.masked_math_dropped(VM, macros=macros) is dropped
+@pytest.mark.parametrize("macros,dropped", [
+    (gcc(13, 2, 0), True), (gcc(14, 2, 0), True), (gcc(12, 3, 0), True),
+    (gcc(13, 4, 0), False), (gcc(13, 3, 0), True), (gcc(14, 4, 0), False), (gcc(15, 1, 0), False),
+    ({**gcc(4, 2, 1), "__clang__": "1"}, False)])
+def test_conditional_math_scalar_only_under_native_vector_math(macros, dropped):
+    assert tc.conditional_math_scalar(VM, macros=macros) is dropped
     for profile in ("native", "portable"):
-        assert tc.masked_math_dropped(profile, macros=macros) is False
+        assert tc.conditional_math_scalar(profile, macros=macros) is False
 
 
 def _inject(monkeypatch, macros):

@@ -8,10 +8,11 @@ writes (:func:`hawk.emit.backend.render_source` records it on the
 :class:`~hawk.emit.backend.Source`) and for the cost counts a launching runtime
 reads (:mod:`hawk.ir.cost`, per dispatch branch), so the two cannot drift apart.
 
-On a GCC that miscompiles masked vector-math calls (13.1-13.3, 14.1-14.2), aether-dsc
-declares no masked variants under ``native-vector-math``
-(:func:`hawk.compile.toolchain.masked_math_dropped`); an interchanged trip loop with a
-math call in it (its result feeds a per-lane select) then stays scalar.
+On a GCC that miscompiles masked vector-math calls (13.1-13.3, 14.1-14.2), where
+aether-dsc declares no masked variants, and on GCC 12, which never if-converts such a
+call, under ``native-vector-math``
+(:func:`hawk.compile.toolchain.conditional_math_scalar`), an interchanged trip loop with
+a math call in it (its result feeds a per-lane select) stays scalar.
 
 It holds when the kernel is sample-local, no library call stays scalar under an exact
 host profile, and no ``Loop`` the lanes run as a ``for`` of their own has more trips
@@ -109,14 +110,14 @@ def vectorises(walk: Walk, profile: str | None = None, scalar_type: str | None =
     kernel) is vectorised under host ``profile`` (default: the one in effect) and
     ``scalar_type`` (accepted for the callers' sake; the verdict is the same for every type)."""
     from ..compile.toolchain import (EXACT_HOST_PROFILES, host_profile,
-                                     masked_math_dropped)
+                                     conditional_math_scalar)
     from .cost import is_library_call
 
     if walk.access.cls != "sample_local":
         return False
     exact = host_profile(profile) in EXACT_HOST_PROFILES
     lanes = {id(loop) for loop in interchanged_loops(walk)}
-    dropped = bool(lanes) and masked_math_dropped(profile)
+    scalar_math = bool(lanes) and conditional_math_scalar(profile)
     for node in _flat(walk.order if nodes is None else nodes):
         if exact and is_library_call(node):
             return False
@@ -127,7 +128,7 @@ def vectorises(walk: Walk, profile: str | None = None, scalar_type: str | None =
                 if not speculative_step(node):
                     return False
                 inside = _flat((*node.body_nodes(), *node.nexts, node.exit_cond))
-                if dropped and any(is_library_call(n) for n in inside):
+                if scalar_math and any(is_library_call(n) for n in inside):
                     return False        # no masked variant to call
             elif node.trip > UNROLL_LIMIT:
                 return False

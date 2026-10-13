@@ -87,6 +87,7 @@ def test_a_math_free_kernel_emits_no_vector_math(tmp_path):
 @needs_x86
 def test_a_math_kernel_emits_only_the_functions_it_calls(tmp_path):
     syms = _hvm_symbols(_host_so(root_pow_step, tmp_path))
+    masked_dropped = tc.gcc_maskcall_affected(tc.compiler_macros(tc.host_compiler()))
     called = {re.sub(r"^.*aether_hvm_", "", s) for s in syms}
     assert called == {"sqrt", "pow"}, sorted(syms)
     # Every family is whole: the scalar symbol and the SSE pair at least,
@@ -94,11 +95,14 @@ def test_a_math_kernel_emits_only_the_functions_it_calls(tmp_path):
     for fn, arity in (("sqrt", "v"), ("pow", "vv")):
         assert f"aether_hvm_{fn}" in syms
         assert f"_ZGVbN2{arity}_aether_hvm_{fn}" in syms
-        assert f"_ZGVbM2{arity}_aether_hvm_{fn}" in syms
-        # _ZGV<isa><mask><lanes>: every ISA built for has both mask kinds.
+        if not masked_dropped:
+            assert f"_ZGVbM2{arity}_aether_hvm_{fn}" in syms
+        # _ZGV<isa><mask><lanes>: every ISA built for has both mask kinds, except
+        # on a GCC that miscompiles masked variants, where aether declares none.
         variants = {s[4:6] for s in syms if s.startswith("_ZGV") and s.endswith(f"_{fn}")}
         isas = {v[0] for v in variants}
-        assert variants == {i + k for i in isas for k in "NM"}, sorted(variants)
+        kinds = "N" if masked_dropped else "NM"
+        assert variants == {i + k for i in isas for k in kinds}, sorted(variants)
 
 
 class _Src:

@@ -635,31 +635,34 @@ def gcc_maskcall_affected(macros: dict) -> bool:
     should be inactive. aether-dsc drops its masked variants on exactly these
     compilers. Fixed upstream by "middle-end: Fix ifcvt predicate generation
     for masked function calls" (commit abbfe1e2616d), which is in GCC 13.4 and
-    14.3. 13.x is told apart by ``__GNUC_PATCHLEVEL__``, 14.x by
-    ``__GNUC_MINOR__``."""
+    14.3. The release number is ``__GNUC_MINOR__`` (13.4.0 has minor 4, patch 0)."""
     if "__clang__" in macros or "__GNUC__" not in macros:
         return False
     try:
         major = int(macros["__GNUC__"])
         minor = int(macros.get("__GNUC_MINOR__", "0"))
-        patch = int(macros.get("__GNUC_PATCHLEVEL__", "0"))
     except ValueError:
         return False
-    return (major == 13 and patch < 4) or (major == 14 and minor < 3)
+    return (major == 13 and minor < 4) or (major == 14 and minor < 3)
 
 
-def masked_math_dropped(profile: str | None = None, *,
-                        macros: dict | None = None) -> bool:
-    """Whether aether's masked vector-math variants are absent from the host
-    build: under ``native-vector-math`` (the profile that declares vector
-    variants) with an affected GCC (:func:`gcc_maskcall_affected`), aether-dsc
-    stops declaring the masked ones, so a loop with a conditional math call is
-    not vectorised. ``macros`` overrides the host compiler's probed macros
-    (for tests)."""
+def conditional_math_scalar(profile: str | None = None, *,
+                            macros: dict | None = None) -> bool:
+    """Whether the host compiler leaves a loop with a conditional math call
+    scalar under ``profile``: ``native-vector-math`` on a GCC that miscompiles
+    masked vector variants (:func:`gcc_maskcall_affected`, where aether-dsc
+    declares none) or that predates 13 (GCC 12 never if-converts a conditional
+    call of a function with simd clones). ``macros`` overrides the host
+    compiler's probed macros (for tests)."""
     if host_profile(profile) != "native-vector-math":
         return False
-    return gcc_maskcall_affected(
-        compiler_macros(host_compiler()) if macros is None else macros)
+    macros = compiler_macros(host_compiler()) if macros is None else macros
+    if gcc_maskcall_affected(macros):
+        return True
+    try:
+        return "__clang__" not in macros and int(macros.get("__GNUC__", "99")) < 13
+    except ValueError:
+        return False
 
 
 def _is_x86_64() -> bool:

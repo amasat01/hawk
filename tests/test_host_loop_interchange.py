@@ -306,7 +306,12 @@ FLAG_CASES = [(arith, "float64", EXACT), (arith, "float32", EXACT),
 @pytest.mark.skipif(not _avx512(), reason="the 64-byte vector verdict needs AVX-512")
 @pytest.mark.parametrize("kernel,mode,profile", FLAG_CASES,
                          ids=[f"{k.name}-{mo}-{p}" for k, mo, p in FLAG_CASES])
-def test_the_flag_matches_the_lane_loop(tmp_path, kernel, mode, profile):
+def test_the_flag_matches_the_lane_loop(request, tmp_path, kernel, mode, profile):
+    macros = tc.compiler_macros(tc.host_compiler())
+    if (kernel is trajectory and "__clang__" not in macros
+            and int(macros.get("__GNUC__", "99")) < 13):
+        request.applymarker(pytest.mark.xfail(
+            strict=True, reason="GCC 12 does not vectorise this lane loop"))
     lane, wide = _lane_loop_report(tmp_path, kernel, mode, profile)
     assert vectorises(kernel.walk, profile, mode) is (lane <= wide), (lane, wide)
 

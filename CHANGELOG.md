@@ -7,7 +7,7 @@ vector variants (fixed in GCC 13.4 and 14.3). aether-dsc 0.2.3, now the minimum,
 it automatically by declaring no masked vector-math variants on those compilers, and
 hawk reports the affected loops (an interchanged trip loop with a math call, under
 `native-vector-math`) as not `vectorised`. Only loops with a conditional math call run
-scalar there; everything else stays vectorised, and no compile flag is added.
+scalar there, and on GCC 12, which never if-converts such a call; everything else stays vectorised, and no compile flag is added.
 
 Every `for` loop of a `sample_local` kernel runs interchanged on the host: the trips
 outside, a tile of samples inside, the carried values in lane arrays. The tile spans
