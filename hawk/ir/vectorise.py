@@ -112,6 +112,8 @@ def vectorises(walk: Walk, profile: str | None = None, scalar_type: str | None =
     for node in _flat(walk.order if nodes is None else nodes):
         if exact and is_library_call(node):
             return False
+        if isinstance(node, Dispatch) and node.policy in SWITCH_RENDERED:
+            return False                # a rendered switch is control flow the compiler does not vectorise
         if isinstance(node, Loop):
             if id(node) in lanes:
                 if not speculative_step(node):

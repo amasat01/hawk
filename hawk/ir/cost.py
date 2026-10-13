@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from math import prod
 
 from .loop_nodes import Loop, LoopCarry, LoopIndex
-from .nodes import At, Const, Dispatch, Leaf, Node, Op, Select, Sink
+from .nodes import SWITCH_RENDERED, At, Const, Dispatch, Leaf, Node, Op, Select, Sink
 from ..types import INT_PLANE_DTYPES
 from .ops import INT_BINARY, INT_UNARY, OP_KINDS, RANDOM_OPS, UNARY_MATH
 from .walk import Walk, dispatch_groups
@@ -307,5 +307,6 @@ def dispatch_costs(walk: Walk, host_profile: str | None = None) -> dict[str, Dis
                       for b in branches)
         out[name] = DispatchCost(
             costs, infos[name].selector_reads, infos[name].static_selector,
-            sample_local and all(c.vectorised for c in costs))
+            sample_local and node.policy not in SWITCH_RENDERED   # a rendered switch keeps the loop scalar
+            and all(c.vectorised for c in costs))
     return out

@@ -1102,6 +1102,18 @@ def test_a_library_call_holds_only_its_own_branch_scalar_under_an_exact_profile(
     assert all(b.vectorised for b in dispatch_costs(walk, "native-vector-math")["dispatch0"].branches)
 
 
+@pytest.mark.parametrize("policy, fused", [("switch", False), ("auto", False), ("predicated", True)])
+def test_a_rendered_switch_keeps_the_fused_loop_scalar_while_each_branch_vectorises(policy, fused):
+    from hawk.ir import dispatch_costs
+    x = _leaf("x", S)
+    k = _leaf("k", I32)
+    d = Dispatch(k, [mk("exp", (x,)), mk("mul", (x, x))], policy, S)
+    walk = canonical((Assign("out", d, S),))
+    cost = dispatch_costs(walk, "native-vector-math")["dispatch0"]
+    assert cost.fused_vectorised is fused       # a C++ switch is control flow the compiler leaves scalar
+    assert all(b.vectorised for b in cost.branches)
+
+
 def test_the_emitter_and_the_cost_counts_share_one_vectorisation_predicate():
     from hawk.emit import render_source, scalar_mode
     from hawk.emit.host import HOST
