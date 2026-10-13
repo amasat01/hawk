@@ -809,6 +809,12 @@ jobs:
           python -m venv "$RUNNER_TEMP/venv"
           . "$RUNNER_TEMP/venv/bin/activate"
           pip install --quiet --upgrade pip
+          # aether-dsc from the companion checkout (sealed as the release workflow does), so a hawk that
+          # needs an unreleased aether-dsc installs against it instead of the newest one on PyPI
+          python -m venv "$RUNNER_TEMP/seal"
+          "$RUNNER_TEMP/seal/bin/pip" install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
+          (cd "$GITHUB_WORKSPACE/aether/dsc" && "$RUNNER_TEMP/seal/bin/python" -m aether_dsc.seal)
+          pip install --quiet "$GITHUB_WORKSPACE/aether/dsc"
           pip install -v -Ccmake.define.EAGLE_PYTHON_WARN_AS_ERR=ON dist/raptor_eagle-*.tar.gz
           pip install -v -Ccmake.define.HAWK_WARN_AS_ERR=ON dist/raptor_hawk-*.tar.gz
           pip check
