@@ -41,17 +41,22 @@ generic per-sample lambda called from two loops: the contiguous
 vectorisable loop when the tile's map is the identity (checked, never
 assumed), else the still-independent but gather/scatter map loop.
 
+A user ``Loop`` of a ``sample_local`` kernel runs INTERCHANGED
+(:func:`loop_interchange`): its trips outside, a tile of samples inside,
+the carried values in lane arrays, so the lane loop vectorises whatever the
+trip count; a ``Loop`` nested in it stays each lane's own ``for``.
+
 Any ``cross_sample_*``/``mapreduce`` kernel stays scalar (iterations
-aren't independent), as does a lowered inner ``for``'s body (only the
-innermost loop vectorises). Results are bit-identical to the scalar build
-of the same compile profile (:data:`hawk.compile.toolchain.HOST_PROFILES`)
-in every case.
+aren't independent). Results are bit-identical to the scalar build of the
+same compile profile (:data:`hawk.compile.toolchain.HOST_PROFILES`) in
+every case.
 """
 
 from __future__ import annotations
 
 import functools
 import os
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import prod
@@ -59,7 +64,7 @@ from math import prod
 from ..ir import HawkError, Walk
 from ..ir.nodes import FINISHED_PLANE
 from ..types import Slot
-from .aether import LaneSplit, render_lane_split
+from .aether import LaneSegments, LaneSplit, render_lane_segments, render_lane_split
 from .backend import ActiveSpec, SegmentSpec, active_reads, segment_reads, unpack_lines
 from .dispatch import render_dispatch_rank0
 from .spelling import (
@@ -509,9 +514,13 @@ class Interchange:
     under :data:`INTERCHANGE_MACRO`, and the ``export`` line that tells a
     runner the TU's tile (``0`` when built with the macro off)."""
 
-    rule: TileRule
+    rule: TileRule | None
     text: str
     export: str
+    #: The macro's default and the helpers' text of a loop interchange
+    #: (:func:`loop_interchange`), which has no tile rule; ``None`` for the
+    #: fused-step loop's.
+    prelude: str | None = None
 
 
 #: A step of at most this many operations is short: one dependent chain per
@@ -764,21 +773,19 @@ def interchange(name: str, sinks, walk: Walk, kind=None,
     """The interchanged fused-step loop of ``walk``'s host TU, or ``None``
     where the TU keeps its plain per-sample fused loop.
 
-    Interchanged: a :func:`simd_safe` kernel that finishes its own sample
-    through a lane-guarded mask (:func:`lane_finish`) and whose body
-    :func:`~hawk.emit.aether.render_lane_split` admits (one tail-break loop,
-    no inner ``for``). The rest keep today's path: a kernel that is not
-    ``sample_local`` has dependent iterations, so its lanes cannot run
-    together, and a body with its own lowered inner ``for`` would need a
-    second interchange."""
+    Interchanged as a fused step: a :func:`simd_safe` kernel that finishes
+    its own sample through a lane-guarded mask (:func:`lane_finish`) and
+    whose body :func:`~hawk.emit.aether.render_lane_split` admits (one
+    tail-break loop, no inner ``for``). Any other :func:`simd_safe` kernel
+    with a ``Loop`` runs its loops interchanged by :func:`loop_interchange`.
+    A kernel that is not ``sample_local`` has dependent iterations, so its
+    lanes cannot run together: it keeps its per-sample loop."""
     if not simd_safe(walk):
         return None
     finish = lane_finish(walk)
-    if finish is None:
-        return None
-    split = render_lane_split(sinks, walk, kind=kind)
+    split = None if finish is None else render_lane_split(sinks, walk, kind=kind)
     if split is None:
-        return None
+        return loop_interchange(sinks, walk, kind)
     guards = lane_guards(walk)
     lane_bytes = real_bytes * (1 + len(guards)) + 8 * (split.count is not None)
     for _, ttype, _, _ in split.carries:
@@ -793,6 +800,261 @@ def interchange(name: str, sinks, walk: Walk, kind=None,
     if run is not None:
         export = f"{export}\n{run}"
     return Interchange(rule, text, export)
+
+
+#: The text a loop-interchanged TU puts ahead of its helpers: the macro's
+#: default (``-DHAWK_HOST_INTERCHANGE=0`` builds the per-sample loop).
+LOOP_PRELUDE = (f"#ifndef {INTERCHANGE_MACRO}\n#define {INTERCHANGE_MACRO} 1\n#endif\n"
+                "// hawk host loop interchange: tile = hawk_abi::kHostLoopTile\n")
+
+#: The loop interchange's tile: the lanes of EIGHT vector registers of the
+#: kernel's ``Real``, so eight independent chains of a dependent loop body are
+#: in flight per trip (64 float64 / 128 float32 lanes under AVX-512, 32 / 64
+#: under AVX, 16 / 32 on a 16-byte ISA such as SSE2 or NEON).
+LOOP_HELPERS = """namespace hawk_abi {
+
+#if defined(__AVX512F__)
+inline constexpr aether::offset_t kHostVectorBytes = 64;
+#elif defined(__AVX__)
+inline constexpr aether::offset_t kHostVectorBytes = 32;
+#else
+inline constexpr aether::offset_t kHostVectorBytes = 16;
+#endif
+inline constexpr aether::offset_t kHostLoopRegisters = 8;
+inline constexpr aether::offset_t kHostLoopTile =
+    kHostLoopRegisters * kHostVectorBytes / static_cast<aether::offset_t>(sizeof(HAWK_LANE_T));
+
+}  // namespace hawk_abi
+"""
+
+#: A declaration in a rendered segment (``const auto t5 = ...``, ``Real
+#: hawk_v3_0_s = ...``, ``aether::Item<Real, 3> hz0 = ...``): group 1 is
+#: the declared name.
+_DECLARATION = re.compile(r"^\s*(?:const\s+)?[\w:]+(?:<[^;=]*?>)?\s+(\w+)\s*(?:=|\[|;)",
+                          re.M)
+_WORDS = re.compile(r"\b\w+\b")
+
+
+def loop_interchange(sinks, walk: Walk, kind=None) -> Interchange | None:
+    """The loop interchange of ``walk``'s host TU, or ``None`` where the TU
+    keeps its per-sample loop.
+
+    Every loop :func:`hawk.ir.vectorise.interchanged_loops` names runs as
+    ``for trip { for lane in tile { body } }`` (:func:`loop_interchange_text`);
+    ``-DHAWK_HOST_INTERCHANGE=0`` builds the same TU's per-sample loop. No
+    trip-count threshold and no kernel name: the decision is the IR's."""
+    from ..ir.vectorise import interchanged_loops
+
+    cut = interchanged_loops(walk)
+    if not cut:
+        return None
+    text = loop_interchange_text(render_lane_segments(sinks, walk, cut, kind=kind))
+    if text is None:
+        return None
+    return Interchange(None, text, "", LOOP_PRELUDE)
+
+
+def _row_put(arr: str, name: str, ttype, value: str | None = None) -> list:
+    """Store ``name`` (or the text ``value``, a carry's initial value) into
+    lane ``hawk_t`` of row ``arr``."""
+    lane = _lane_type(ttype)
+    if value is not None:
+        cast = f"static_cast<{lane}>({value})" if not ttype.shape else f"{lane}({value})"
+        return [f"hawk_abi::lane_put<hawk_tile>({arr}, hawk_t, {cast});"]
+    if ttype.shape:
+        return [f"hawk_abi::lane_put<hawk_tile>({arr}, hawk_t, {lane}({name}));"]
+    same = f"std::is_same_v<std::remove_cv_t<decltype({name})>, {lane}>"
+    return [f'static_assert({same}, "hawk: a lane row holds its value\'s own type");',
+            f"hawk_abi::lane_put<hawk_tile>({arr}, hawk_t, {name});"]
+
+
+def loop_interchange_text(segs: LaneSegments) -> str | None:
+    """The interchanged loops over ``[base, base + count)``, per tile of
+    ``hawk_abi::kHostLoopTile`` samples: each segment of the body
+    (:class:`~hawk.emit.aether.LaneSegments`) runs per sample of the tile,
+    each loop between two segments runs its trips OUTSIDE and the tile's
+    lanes inside. Every value a later text reads (a carried value included)
+    lives in a lane row ``hawk_r_<name>[c * tile + lane]``. A lane is live
+    from the start of a loop while its sample is unguarded; a loop with a
+    ``break`` stops a lane at its break (``hawk_more``) and the trips stop
+    once no lane of the tile is live. A stopped lane keeps its values by
+    select (a speculative trip) or skips the trip (any other). Per sample the
+    same operations run in the same order as the per-sample loop: under an
+    exact profile the same bits.
+
+    ``None`` when a value crossing a cut has no type the renderer recorded."""
+    n = len(segs.loops)
+    declared = [set(_DECLARATION.findall(t)) for t in segs.segments]
+    seg_words = [set(_WORDS.findall(t)) for t in segs.segments]
+    step_words = [set(_WORDS.findall(lp.step)) for lp in segs.loops]
+    for k, lp in enumerate(segs.loops):
+        # the carries' initial values and a runtime count's bounds are
+        # evaluated at the end of segment k
+        tail = [init for _, _, init, _ in lp.carries]
+        if lp.bounds is not None:
+            tail += [lp.bounds[1], lp.bounds[3]]
+        seg_words[k] |= set(_WORDS.findall(" ".join(tail)))
+    rows: dict = {}      # name -> (ttype, origin): ("seg", s) or ("loop", k)
+    for s in range(n + 1):
+        later = set().union(*seg_words[s + 1:], *step_words[s:])
+        for name in sorted(declared[s] & later):
+            if name not in segs.types:
+                return None
+            rows[name] = (segs.types[name], ("seg", s))
+    for k, lp in enumerate(segs.loops):
+        for name, ttype, _, _ in lp.carries:
+            rows[name] = (ttype, ("loop", k))
+
+    def arr(name: str) -> str:
+        return f"hawk_r_{name}"
+
+    def before(origin, stage: int) -> bool:
+        # a row is readable in segment `stage` once written: by an earlier
+        # segment, or by a loop that ran before it
+        kind, at = origin
+        return at < stage
+
+    def loads(names, lane: str) -> list:
+        return [f"const {_lane_type(rows[x][0])} {x} = "
+                f"hawk_abi::lane_get<{_lane_type(rows[x][0])}, hawk_tile>({arr(x)}, {lane});"
+                for x in sorted(names)]
+
+    lines = [
+        "    constexpr aether::offset_t hawk_tile = hawk_abi::kHostLoopTile;",
+        "    const aether::offset_t hawk_lo = static_cast<aether::offset_t>(base);",
+        "    const aether::offset_t hawk_hi =",
+        "        static_cast<aether::offset_t>(base + count);",
+        "    alignas(64) HAWK_LANE_T hawk_on[hawk_tile] = {};",
+        "    alignas(64) HAWK_LANE_T hawk_ron[hawk_tile] = {};",
+        *[f"    alignas(64) {element_spelling(t.dtype)} {arr(x)}[{_width(t)} * hawk_tile] = {{}};"
+          for x, (t, _) in sorted(rows.items())],
+        *[f"    alignas(64) {lp.bounds[0]} hawk_b{k}[hawk_tile] = {{}};\n"
+          f"    alignas(64) {lp.bounds[0]} hawk_e{k}[hawk_tile] = {{}};"
+          for k, lp in enumerate(segs.loops) if lp.bounds is not None],
+        "    for (aether::offset_t hawk_tlo = hawk_lo; hawk_tlo < hawk_hi;",
+        "         hawk_tlo += hawk_tile) {",
+        "    const aether::offset_t hawk_thi =",
+        "        hawk_hi - hawk_tlo < hawk_tile ? hawk_hi : hawk_tlo + hawk_tile;",
+        "    const aether::offset_t hawk_tn = hawk_thi - hawk_tlo;",
+    ]
+    pad = "            "
+    for s in range(n + 1):
+        # the segment, per sample of the tile
+        lines += [
+            _INDEPENDENT_ITERATIONS,
+            "    for (aether::offset_t hawk_j = hawk_tlo; hawk_j < hawk_thi; ++hawk_j) {",
+            "        const aether::offset_t hawk_t = hawk_j - hawk_tlo;",
+            "        const std::int64_t hawk_i = static_cast<std::int64_t>(hawk_j);",
+            "        const aether::SampleIndex i =",
+            "            aether::SampleIndex::make(static_cast<std::size_t>(hawk_j));",
+            "        (void)hawk_t;",
+            "        (void)hawk_i;",
+            "        (void)nSamples;",
+        ]
+        if s == 0:
+            lines.append("        HAWK_LANE_T hawk_go = 0.0;")
+        if segs.guard is not None:
+            lines.append(f"        if (!{segs.guard}) {{")
+        lines += [pad + x for x in loads(
+            [x for x, (_, o) in rows.items() if x in seg_words[s] and before(o, s)
+             and not (o == ("seg", s))], "hawk_t")]
+        if segs.segments[s]:
+            lines.append(segs.segments[s])
+        for x, (t, o) in sorted(rows.items()):
+            if o == ("seg", s):
+                lines += [pad + y for y in _row_put(arr(x), x, t)]
+        if s < n:
+            for x, t, init, _ in segs.loops[s].carries:
+                lines += [pad + y for y in _row_put(arr(x), x, t, init)]
+            bounds = segs.loops[s].bounds
+            if bounds is not None:
+                lines += [f"{pad}hawk_b{s}[hawk_t] = {bounds[1]};",
+                          f"{pad}hawk_e{s}[hawk_t] = {bounds[3]};"]
+        if s == 0:
+            lines.append(pad + "hawk_go = 1.0;")
+        if segs.guard is not None:
+            lines.append("        }")
+        if s == 0:
+            lines.append("        hawk_on[hawk_t] = hawk_go;")
+        lines.append("    }")
+        if s == n:
+            break
+        lines += _trips(segs.loops[s], k=s, rows=rows, step_words=step_words[s],
+                        loads=loads, arr=arr)
+    lines.append("    }")
+    return "\n".join(lines)
+
+
+def _trips(lp, *, k: int, rows: dict, step_words: set, loads, arr) -> list:
+    """The trips of one interchanged loop: trips outside, the tile's lanes
+    inside (see :func:`loop_interchange_text`)."""
+    pad = "            "
+    counted = lp.bounds is not None
+    stops = lp.exit != "false" or counted
+    if counted:
+        # the header's own index type, begin and end, per lane
+        itype, _, cmp_, _ = lp.bounds
+        index = f"hawk_b{k}[hawk_l] + static_cast<{itype}>(hawk_trip) * {lp.by}"
+        runs = f" && hawk_b{k}[hawk_l] {cmp_} hawk_e{k}[hawk_l]"
+        more = f" && {lp.index} + {lp.by} {cmp_} hawk_e{k}[hawk_l]"
+    else:
+        itype, runs, more = "Int", "", ""
+        index = ("hawk_trip" if (lp.start, lp.by) == (0, 1)
+                 else f"static_cast<Int>({lp.start}) + hawk_trip * static_cast<Int>({lp.by})")
+    reads = [x for x, (_, o) in rows.items() if x in step_words
+             and (o[0] == "seg" and o[1] <= k or o[0] == "loop" and o[1] <= k)]
+    lines = [
+        "    {",
+        "    std::int64_t hawk_any = 0;",
+        _INDEPENDENT_ITERATIONS,
+        "    for (aether::offset_t hawk_l = 0; hawk_l < hawk_tile; ++hawk_l) {",
+        f"        const bool hawk_in = hawk_l < hawk_tn && hawk_on[hawk_l] != 0.0{runs};",
+        "        hawk_ron[hawk_l] = hawk_in ? 1.0 : 0.0;",
+        "        hawk_any |= hawk_in ? std::int64_t{1} : std::int64_t{0};",
+        "    }",
+        (f"    for (Int hawk_trip = 0; hawk_any != 0 && hawk_trip < {lp.trips}; ++hawk_trip) {{"
+         if not counted else "    for (Int hawk_trip = 0; hawk_any != 0; ++hawk_trip) {"),
+    ]
+    if stops:
+        lines.append("    std::int64_t hawk_live = 0;")
+    lines += [
+        _INDEPENDENT_ITERATIONS,
+        "    for (aether::offset_t hawk_l = 0; hawk_l < hawk_tile; ++hawk_l) {",
+        "        const aether::offset_t hawk_t = hawk_l < hawk_tn ? hawk_l : hawk_tn - 1;",
+        "        const aether::SampleIndex i =",
+        "            aether::SampleIndex::make(static_cast<std::size_t>(hawk_tlo + hawk_t));",
+        "        (void)i;",
+        "        const bool hawk_lane_on = hawk_ron[hawk_l] != 0.0;",
+        f"        const {itype} {lp.index} = {index};",
+        f"        (void){lp.index};",
+    ]
+    nexts = [(x, nxt) for x, _, _, nxt in lp.carries]
+    if lp.speculative:
+        lines += ["        " + x for x in loads(reads, "hawk_l")]
+        lines.append(lp.step)
+        lines += [f"        hawk_abi::lane_keep<hawk_tile>({arr(x)}, hawk_l, hawk_lane_on, {nxt});"
+                  for x, nxt in nexts]
+        if stops:
+            lines.append(f"        const bool hawk_more = hawk_lane_on && !{lp.exit}{more};")
+    else:
+        if stops:
+            lines.append("        bool hawk_more = false;")
+        lines.append("        if (hawk_lane_on) {")
+        lines += [pad + x for x in loads(reads, "hawk_l")]
+        lines.append(lp.step)
+        lines += [f"{pad}hawk_abi::lane_put<hawk_tile>({arr(x)}, hawk_l, {nxt});"
+                  for x, nxt in nexts]
+        if stops:
+            lines.append(f"{pad}hawk_more = !{lp.exit}{more};")
+        lines.append("        }")
+    if stops:
+        lines += ["        hawk_ron[hawk_l] = hawk_more ? 1.0 : 0.0;",
+                  "        hawk_live |= hawk_more ? std::int64_t{1} : std::int64_t{0};"]
+    lines.append("    }")
+    if stops:
+        lines.append("    if (hawk_live == 0) break;")
+    lines += ["    }", "    }"]
+    return lines
 
 
 def run_entry(name: str, walk: Walk, mask: str, stop: int) -> str | None:
@@ -1082,8 +1344,12 @@ class HostBackend:
         :class:`Interchange`) adds the macro, the rule's record and the
         lane helpers, and builds the finish helpers whenever the macro is
         on, lane guards or not."""
-        if simd_safe(walk) and any(
-                role == "terminated" for role, _ in walk.arg_spec):
+        masks = simd_safe(walk) and any(
+            role == "terminated" for role, _ in walk.arg_spec)
+        if tiled is not None and tiled.prelude is not None:
+            return (tiled.prelude + (HOST_MASK_HELPERS if masks else "") + "\n"
+                    + INTERCHANGE_HELPERS + "\n" + LOOP_HELPERS)
+        if masks:
             if tiled is None:
                 return HOST_MASK_HELPERS
             helpers = HOST_MASK_HELPERS.replace(

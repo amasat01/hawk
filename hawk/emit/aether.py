@@ -189,6 +189,8 @@ class LaneSplit:
 #: A declaration the renderer emits (``const auto t5 = ...``, ``const
 #: aether::Item<...> hz0 = ...``): group 1 is the declared name.
 _DECLARED = re.compile(r"^\s*const [^=;]*?\b(\w+) = ", re.M)
+#: A lowered loop's header (``_for_header``): index type, begin, comparison, end.
+_HEADER = re.compile(r"^for \((\w+) \w+ = (.*); \w+ ([<>]) (.*); [^;]*\) \{$")
 _WORD = re.compile(r"\b\w+\b")
 
 
@@ -204,6 +206,58 @@ def render_lane_split(sinks: Sequence[Sink], walk: Walk, *, indent: str = "     
     ``None`` and keeps its plain body: a body with its own inner ``for`` would
     need a second interchange."""
     return _Renderer(tuple(sinks), walk, indent, kind).lane_split()
+
+
+@dataclass(frozen=True)
+class LaneLoop:
+    """One loop of a :class:`LaneSegments` body, cut out for the host's
+    loop interchange: ``step`` is ONE trip of it for one lane (the body,
+    then the ``const`` next values ``carries[j][3]`` and the ``const bool``
+    break flag ``exit``, ``"false"`` for a loop without a ``break``), the
+    carried values and the iteration index read through their usual names.
+    ``carries`` holds ``(name, ttype, init text, next name)`` per carried
+    slot; the index runs ``start + trip * by`` for ``trip`` in ``[0,
+    trips)``. ``speculative`` as :attr:`LaneSplit.speculative`.
+
+    A loop with a runtime trip count carries ``bounds``: the header's own
+    ``(index type, begin text, comparison, end text)``, which the segment
+    before it evaluates per sample; a lane then runs while ``begin + trip *
+    by`` compares true against its end, as the per-sample header does."""
+
+    step: str
+    carries: tuple
+    index: str
+    start: int
+    by: int
+    trips: int
+    exit: str
+    speculative: bool
+    op_count: int
+    bounds: tuple | None = None
+
+
+@dataclass(frozen=True)
+class LaneSegments:
+    """A body cut at each of its top-level loops: ``segments[k]`` is the
+    per-sample text before ``loops[k]`` (after ``loops[k - 1]``), the last
+    one everything after the last loop (the commits and the finish
+    epilogue). ``guard`` is the body-wide mask condition (``None`` without
+    one); no segment contains it. ``types`` maps every name a segment may
+    declare and a later text read to its IR type. Every text is the
+    renderer's own spelling of the same nodes the plain body renders, so
+    each sample runs the same operations in the same order."""
+
+    guard: str | None
+    segments: tuple
+    loops: tuple
+    types: dict
+
+
+def render_lane_segments(sinks: Sequence[Sink], walk: Walk, cut: Sequence[Loop], *,
+                         indent: str = "        ", kind=None) -> LaneSegments:
+    """The :class:`LaneSegments` of a body whose top-level loops ``cut``
+    (:func:`hawk.ir.vectorise.interchanged_loops`) run interchanged."""
+    return _Renderer(tuple(sinks), walk, indent, kind).lane_segments(cut)
 
 
 def _sample_free(node: Node) -> bool:
@@ -315,6 +369,10 @@ class _Renderer(_DispatchMixin):
         #: :meth:`_loop_split` recorded of it (``None`` on a plain render).
         self.split_loop: Loop | None = None
         self.split: dict | None = None
+        #: The loops :meth:`lane_segments` cuts the body at, and what
+        #: :meth:`_loop_cut` recorded of each, in order.
+        self.cut_loops: frozenset = frozenset()
+        self.cuts: list = []
         #: Positions the flat top-level walk reaches without crossing a Dispatch
         #: branch edge — see :meth:`_outside_reachable`. Computed once, after
         #: :attr:`position` exists and before anything renders.
@@ -427,6 +485,8 @@ class _Renderer(_DispatchMixin):
                 # LoopValue projections.
                 if node is self.split_loop:
                     self._loop_split(node)
+                elif id(node) in self.cut_loops:
+                    self._loop_cut(node)
                 else:
                     self._loop(node)
                 self.rendered[pos] = ""
@@ -639,18 +699,10 @@ class _Renderer(_DispatchMixin):
     @staticmethod
     def _speculative(loop: Loop) -> bool:
         """Whether one trip of ``loop`` is safe to run and discard on a
-        finished sample: no plane read at a computed index, no switch, no
-        raw block and no integer division anywhere in the step."""
-        for node in (*loop.body_nodes(), *loop.nexts, loop.exit_cond):
-            if isinstance(node, (At, TapeRead)):
-                return False
-            if isinstance(node, Dispatch) and node.policy in SWITCH_RENDERED:
-                return False
-            if isinstance(node, Op) and (node.kind == RAW_KIND or (
-                    node.kind in ("div", "fmod", "remainder", "floordiv", "mod")
-                    and node.ttype.dtype in ("i32", "i64"))):
-                return False
-        return True
+        finished sample (:func:`hawk.ir.vectorise.speculative_step`)."""
+        from ..ir.vectorise import speculative_step
+
+        return speculative_step(loop)
 
     def lane_split(self) -> LaneSplit | None:
         """Render the body with its loop cut out (:class:`LaneSplit`)."""
@@ -722,6 +774,112 @@ class _Renderer(_DispatchMixin):
             "carries": tuple((name, c.ttype, init, nxt) for name, c, init, nxt
                              in zip(names, loop.carries, inits, nexts)),
         }
+
+    # -- the lane segments (render_lane_segments) ------------------------
+
+    def lane_segments(self, cut: Sequence[Loop]) -> LaneSegments:
+        """Render the body with each loop of ``cut`` cut out
+        (:class:`LaneSegments`)."""
+        self.cut_loops = frozenset(id(loop) for loop in cut)
+        guard = self._guard_slot()
+        self.run()
+        lines = self.lines
+        start, end = (1, len(lines) - 1) if guard is not None else (0, len(lines))
+        marks = [start, *(c["mark"] for c in self.cuts), end]
+        segments = tuple("\n".join(lines[a:b]) for a, b in zip(marks, marks[1:]))
+        types: dict = {}
+        for node in self.nodes:
+            name = self.rendered.get(self.position[id(node)])
+            if name and _WORD.fullmatch(name) and getattr(node, "ttype", None) is not None:
+                types.setdefault(name, node.ttype)
+        for node_id, name in self.items.items():
+            node = next((n for n in self.nodes if id(n) == node_id), None)
+            if node is not None:
+                types.setdefault(name, node.ttype)
+        loops = []
+        for c in self.cuts:
+            for name, ttype, _, _ in c["carries"]:
+                types[name] = ttype
+            loops.append(LaneLoop(c["step"], c["carries"], c["index"], c["start"],
+                                  c["by"], c["trips"], c["exit"], c["speculative"],
+                                  c["ops"], c["bounds"]))
+        return LaneSegments(guard, segments, tuple(loops), types)
+
+    def _loop_cut(self, loop: Loop) -> None:
+        """:meth:`_loop` for a loop :meth:`lane_segments` cuts at: marks where
+        the segment before it ends and renders ONE trip into its own text. A
+        ``break`` at the head or the middle of the body becomes a select: the
+        trip's next values are the values at the break when the condition
+        holds (the rest of the body computed and discarded when the trip may
+        run speculatively, skipped otherwise), and the lane stops."""
+        pos = self.loop_pos[id(loop)]
+        names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
+                      for j, c in enumerate(loop.carries))
+        self.carry_names[pos] = names
+        inits = [self._ref(init) for init in loop.inits]
+        index = f"hawk_k{pos}_{_ident(loop.index.name)}"
+        bounds = None
+        if loop.count is not None:
+            header = _HEADER.match(_for_header(index, loop, self._ref(loop.count)))
+            if header is None:                       # pragma: no cover - structural
+                raise HawkError(f"lane segments: cannot read the header of loop {pos}")
+            bounds = header.group(1, 2, 3, 4)
+        mark = len(self.lines)
+        lines, self.lines = self.lines, []
+        outer, self.indent = self.indent, self.indent + "    "
+        saved, saved_items = self.local, self.items
+        self.local, self.items = dict(saved), dict(saved_items)
+        self.local[id(loop.index)] = index
+        for carry, name in zip(loop.carries, names):
+            self.local[id(carry)] = name
+        elems = [carry_type(c.ttype) for c in loop.carries]
+        speculative = self._speculative(loop)
+        form = loop.exit_form
+        flag = f"hawk_x{pos}"
+        nexts = [f"hawk_n{pos}_{j}" for j in range(len(names))]
+        if form in ("head", "middle"):
+            pre = self._exit_part(loop)
+            self._render_scope(loop, only=pre, sinks=False)
+            self._emit(f"const bool {flag} = {self._ref(loop.exit_cond)};")
+            held = [f"hawk_e{pos}_{j}" for j in range(len(names))]
+            for elem, name, value in zip(elems, held, loop.exit_values):
+                self._emit(f"const {elem} {name} = {self._ref(value)};")
+            if speculative:
+                self._render_scope(loop, skip=pre)
+                for j, (elem, nxt) in enumerate(zip(elems, loop.nexts)):
+                    self._emit(f"const {elem} hawk_r{pos}_{j} = {self._ref(nxt)};")
+                    self._emit(f"const {elem} {nexts[j]} = "
+                               f"{flag} ? {held[j]} : hawk_r{pos}_{j};")
+            else:
+                for elem, nxt, kept in zip(elems, nexts, held):
+                    self._emit(f"{elem} hawk_w{nxt[6:]} = {kept};")
+                self._emit(f"if (!{flag}) {{")
+                self.indent += "    "
+                self._render_scope(loop, skip=pre)
+                for nxt, value in zip(nexts, loop.nexts):
+                    self._emit(f"hawk_w{nxt[6:]} = {self._ref(value)};")
+                self.indent = self.indent[:-4]
+                self._emit("}")
+                for elem, nxt in zip(elems, nexts):
+                    self._emit(f"const {elem} {nxt} = hawk_w{nxt[6:]};")
+        else:
+            self._render_scope(loop)
+            for elem, nxt, value in zip(elems, nexts, loop.nexts):
+                self._emit(f"const {elem} {nxt} = {self._ref(value)};")
+            if form == "tail":
+                self._emit(f"const bool {flag} = {self._ref(loop.exit_cond)};")
+        step = "\n".join(self.lines)
+        self.lines = lines
+        self.local, self.items = saved, saved_items
+        self.indent = outer
+        self.cuts.append({
+            "mark": mark, "step": step, "index": index, "start": loop.start,
+            "by": loop.step, "trips": loop.trip,
+            "exit": "false" if form is None else flag, "speculative": speculative,
+            "ops": sum(isinstance(n, Op) for n in _flat_body(loop)), "bounds": bounds,
+            "carries": tuple((name, c.ttype, init, nxt) for name, c, init, nxt
+                             in zip(names, loop.carries, inits, nexts)),
+        })
 
     @staticmethod
     def _exit_part(loop: Loop) -> frozenset:
@@ -1286,6 +1444,22 @@ _INT_CALLS = {"floordiv": "int_floordiv", "mod": "int_mod", "band": "int_and",
 _INT_WRAPPING = {"add": "int_add", "sub": "int_sub", "mul": "int_mul",
                  "neg": "int_neg", "abs": "int_abs", "min": "int_min",
                  "max": "int_max"}
+
+
+def _flat_body(loop: Loop) -> list:
+    """``loop``'s body nodes and, recursively, those of every loop inside it
+    (with their results and break values)."""
+    out, stack = [], [loop]
+    while stack:
+        here = stack.pop()
+        for node in here.body_nodes():
+            out.append(node)
+            if isinstance(node, Loop):
+                out.extend(node.nexts)
+                out.extend(() if node.exit_cond is None
+                           else (node.exit_cond, *node.exit_values))
+                stack.append(node)
+    return out
 
 
 def _flat_indices(shape: tuple) -> list:

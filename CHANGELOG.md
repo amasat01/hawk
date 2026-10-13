@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+Every `for` loop of a `sample_local` kernel runs interchanged on the host: the trips
+outside, a tile of samples inside, the carried values in lane arrays. The tile spans
+eight vector registers of the kernel's float type (64 float64 or 128 float32 samples
+under AVX-512), so a dependent loop body keeps eight chains in flight and the lane loop
+vectorises whatever the trip count. A sample's own `break` or runtime trip count stops
+it in its lane; a nested `for` stays each lane's own loop. Under `native` and
+`portable` the results are bit-identical to the per-sample loop, which
+`-DHAWK_HOST_INTERCHANGE=0` still builds. `vectorised` (on a host `Source`, in
+`kernel_cost()` and per `dispatch_costs()` branch) reports these loops as vectorised;
+a loop pair that reads a tape or another loop's count, and a loop inside one `switch`
+case, keep the per-sample loop and the unroll limit.
+
 `build()` and `build_bundle()` take `literal_table=` (default `False`). On, the device
 source reads its `double` literals from one `__constant__` table per translation unit,
 the same bits as operand immediates; off, the device code is byte-identical to before.

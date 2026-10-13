@@ -30,9 +30,11 @@ Counting rules, per sample:
   to the counts but not to the path, and a ``Loop`` is its trip count times
   the deepest path through its carries
 - ``vectorised`` says whether the host compiler can run the branch as a
-  vector loop over samples: sample-local, no library call that stays scalar
-  under an exact profile, no ``Loop`` the compiler will not unroll, no
-  32-bit float
+  vector loop over samples (:func:`hawk.ir.vectorise.vectorises`):
+  sample-local, no library call that stays scalar under an exact profile,
+  and every ``Loop`` either run interchanged by the host (its trips outside,
+  the samples' lanes inside: any trip count) or short enough for the
+  compiler to unroll
 - a value two branches share is counted in each: a split unit runs only its
   own branch, so that is what it pays
 """
@@ -273,8 +275,9 @@ def dispatch_costs(walk: Walk, host_profile: str | None = None) -> dict[str, Dis
 
     Each branch's ``vectorised`` is true for a sample-local branch that calls
     no library math (``exp``, ``sin``, ``pow`` ...) or whose host profile
-    vectorises it (``native-vector-math``), has no ``Loop`` of more than
-    :data:`hawk.ir.vectorise.UNROLL_LIMIT` trips. ``fused_vectorised`` is
+    vectorises it (``native-vector-math``), and whose every ``Loop`` the host
+    runs interchanged (:func:`hawk.ir.vectorise.interchanged_loops`) or has at
+    most :data:`hawk.ir.vectorise.UNROLL_LIMIT` trips. ``fused_vectorised`` is
     the group's flag: the fused loop runs every branch in lockstep only when
     every branch vectorises. ``host_profile`` names
     the profile (default: the one in effect, see

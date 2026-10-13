@@ -770,10 +770,10 @@ def _interchange(backend: Backend, name: str, sinks, walk: Walk, kind,
                  mode: ScalarMode = FLOAT64):
     """The backend's interchanged fused-step loop for this TU (the host's
     optional ``interchange`` hook, :mod:`hawk.emit.host`), or ``None``: a
-    backend without the hook, or a kernel that is not a fused step, keeps
-    its text unchanged."""
+    backend without the hook, or a kernel the hook declines, keeps its text
+    unchanged."""
     hook = getattr(backend, "interchange", None)
-    if hook is None or getattr(walk, "finish", None) is None:
+    if hook is None:
         return None
     return hook(name, sinks, walk, kind, 4 if mode is FLOAT32 else 8)
 

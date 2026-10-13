@@ -12,8 +12,11 @@ Three observations, each with a known answer:
   of a guarded, finishing kernel "vectorized using 64 byte vectors" and the
   entry carries packed float32 arithmetic on zmm; before, the mixed lane width
   (``float`` state, ``double`` guards) kept that loop scalar.
-* **The flag.** ``vectorises`` answers what the compiler did, for float32 as
-  for float64, and for a ``Loop`` above the unroll limit.
+* **The flag.** ``vectorises`` answers what the compiler did with the default
+  build, whose ``Loop`` runs interchanged (its trips outside, the samples'
+  lanes inside), for float32 as for float64, and for a ``Loop`` above the
+  unroll limit. The two rows above read the per-sample build
+  (``-DHAWK_HOST_INTERCHANGE=0``), the loop the lane guards serve.
 """
 
 from __future__ import annotations
@@ -66,19 +69,29 @@ def _avx512() -> bool:
         return False
 
 
-def _compile(tmp_path, kernel, mode):
+def _compile(tmp_path, kernel, mode, interchanged=False):
+    """Build the TU; ``sample`` is the line of the loop that runs the kernel's
+    arithmetic across samples: the lane-guarded sample loop of the per-sample
+    build (``-DHAWK_HOST_INTERCHANGE=0``), or the lane loop of the interchanged
+    ``Loop``'s trips."""
     src = tmp_path / "k.cpp"
     so = tmp_path / "k.so"
     src.write_text(_source(kernel, mode).text)
+    shape = [] if interchanged else ["-DHAWK_HOST_INTERCHANGE=0"]
     cc = subprocess.run(
         [tc.host_compiler(), *tc.host_flags(profile="native",
-                                            extra=["-fopt-info-vec-optimized"]),
+                                            extra=["-fopt-info-vec-optimized", *shape]),
          "-o", str(so), str(src)], capture_output=True, text=True)
     assert cc.returncode == 0, cc.stderr
     assert "warning" not in cc.stderr
     lines = src.read_text().splitlines()
-    sample = next(i + 1 for i, ln in enumerate(lines)
-                  if "for (aether::offset_t hawk_j = hawk_blo" in ln)
+    if interchanged:
+        trips = next(i for i, ln in enumerate(lines) if "for (Int hawk_trip = 0;" in ln)
+        sample = next(i + 1 for i, ln in enumerate(lines)
+                      if i > trips and "for (aether::offset_t hawk_l = 0" in ln)
+    else:
+        sample = next(i + 1 for i, ln in enumerate(lines)
+                      if "for (aether::offset_t hawk_j = hawk_blo" in ln)
     wide = {int(m.group(1)) for m in re.finditer(
         r"k\.cpp:(\d+):\d+: optimized: loop vectorized using 64 byte vectors", cc.stderr)}
     return so, sample, wide
@@ -108,6 +121,6 @@ def test_the_float32_sample_loop_vectorises_with_packed_zmm_arithmetic(tmp_path)
 @pytest.mark.parametrize("mode", ["float32", "float64"])
 @pytest.mark.parametrize("kernel", [short_loop, long_loop])
 def test_the_flag_matches_the_vectoriser(tmp_path, kernel, mode):
-    _, sample, wide = _compile(tmp_path, kernel, mode)
+    _, sample, wide = _compile(tmp_path, kernel, mode, interchanged=True)
     assert vectorises(kernel.walk, "native", mode) is (sample in wide)
     assert _source(kernel, mode).vectorised is vectorises(kernel.walk, scalar_type=mode)
