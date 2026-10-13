@@ -22,7 +22,8 @@ is pinned:
 * **Warp-converged.** One warp-collective claim per chunk head (one
   ``atomicAdd(hawk_next`` in the entry), nothing collective or atomic in the
   step body, and the chunk length a launch argument: any length leaves the
-  same bits.
+  same bits. A sample ending in a chunk is written back at the next head,
+  with the warp's other ending lanes.
 * **Slot fill** is counted when asked: the steps run over the warps' chunk
   slots (32 lanes times the chunk length per head), a lane masked after its
   sample commits counting as an empty slot.
@@ -238,8 +239,60 @@ def test_the_persist_loop_is_warp_converged(kernel):
         assert token in head, token
     # the ballot is the warp's meeting point at the head: no separate barrier
     assert "__syncwarp" not in head
-    assert tail.startswith("(static_cast<unsigned>(hawk_trip) & (hawk_chunk - 1u)) != 0u);")
+    assert tail.startswith("(hawk_trip & (hawk_chunk - 1u)) != 0u);")
     assert "% 32u" not in body and "unsigned int hawk_chunk)" in text
+
+
+@pytest.mark.parametrize("kernel", [oscillator, rkf78_attempt], ids=lambda k: k.name)
+def test_a_sample_is_written_back_at_the_next_head(kernel):
+    """A lane whose sample ends in the chunk only marks it (the ended bit in
+    its trip count, the trips run below it when the step exited, 0 when the
+    budget ran out) and is written back at the next chunk head, with the
+    warp's other ending lanes, before the lane claims again: the chunk holds
+    no plane store and no report, and the head holds the commit once, ahead
+    of the claim's sample index. The loop's finish flag is rebuilt from the
+    trip count, not held."""
+    import re
+
+    text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+                         kind=kernel.kind, one_step=kernel.one_step).text
+    head, chunk, _ = _loop_parts(text, kernel.name)
+    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
+    stores = re.findall(r"^\s*(\w+)\[i\] = ", split.post, re.M)
+    assert stores
+    for plane in stores:
+        assert f"{plane}[i] = " not in chunk, plane
+        assert head.count(f"{plane}[i] = ") == 1, plane
+    assert "hawk_maxtrip" not in chunk and "hawk_ran" not in chunk
+    ended = chunk.split(f"if ({split.exit} || hawk_trip >= hawk_budget) {{", 1)[1]
+    assert ended.split("break;", 1)[0].strip() == \
+        f"hawk_trip = {split.exit} ? (hawk_trip | 0x80000000u) : 0x80000000u;"
+    commit = head.index("if (hawk_trip > hawk_budget) {")
+    assert commit < head.index("hawk_s = hawk_base + ") and "finished = (hawk_trip != 0x80000000u ?" in head
+
+
+def test_a_value_the_trip_count_cannot_rebuild_keeps_the_commit_in_the_chunk():
+    """A committed plane the step never reads (``energy`` here) is neither the
+    exit flag nor carried, so the head could not write it back: such a kernel
+    keeps the commit where the sample ends, in the chunk."""
+    import hawk
+    from hawk import Mutable, Param, Scalar, Terminated
+
+    @hawk.kernel
+    def decay(rate: Scalar, nstop: Scalar, dt: Param, terminated: Terminated,
+              x: Mutable[Scalar], energy: Mutable[Scalar], k: Mutable[Scalar]):
+        x = x - dt * rate * x
+        energy = x * x
+        kn = k + 1.0
+        k = kn
+        terminated = kn >= nstop
+
+    text = render_source(decay.name, decay.sinks, decay.walk, BACKENDS["cuda"],
+                         kind=decay.kind, one_step=decay.one_step).text
+    head, chunk, _ = _loop_parts(text, decay.name)
+    assert "mut_energy[i] = " in chunk and "mut_energy[i] = " not in head
+    assert "hawk_maxtrip = max(hawk_maxtrip, hawk_trip);" in chunk
+    assert "if (hawk_trip > hawk_budget) {" not in head
 
 
 @pytest.mark.parametrize("kernel, light", [(oscillator, True), (rkf78_attempt, False)],
@@ -467,8 +520,8 @@ def test_the_persist_entry_holds_only_what_a_step_needs(kernel):
     """The entry's residency is its register count, so it carries across a
     step only what the next step reads: a value computed from ``Param`` inputs
     alone is evaluated once at entry (not a per-lane copy), a carry the step
-    never reads (the loop's exit flag) is read by the commit from the trip that
-    set it, the trip count also ends the chunk (no chunk counter), and the
+    never reads (the loop's exit flag) is rebuilt by the commit from the trip
+    count, the trip count also ends the chunk (no chunk counter), and the
     step budget left says whether the lane holds a sample (no flag). The same
     rules hold for any kernel; these two are witnesses."""
     text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
