@@ -21,6 +21,10 @@ Counting rules, per sample:
   an integer op (an ``int32``/``uint32`` result, or ``//``, ``%``, a bit
   operator or shift on an index) is ``arith32``, a float -> integer cast too
 - a plane leaf is one load per element; an ``at`` is one gather per element
+- ``stores`` counts the plane elements the branch writes: for a whole kernel
+  every sink's elements, for a dispatch branch the elements of the value it
+  hands to the sink (``None`` when the branch feeds no sink directly, which
+  leaves its traffic to be estimated as one write per load)
 - a ``Loop`` counts its body once per trip
 - whatever the selector reads is left out (every sample evaluates it, whichever
   branch it takes), as is any value an ``at`` indexes into (the plane itself
@@ -45,7 +49,7 @@ from dataclasses import dataclass
 from math import prod
 
 from .loop_nodes import Loop, LoopCarry, LoopIndex
-from .nodes import At, Const, Dispatch, Leaf, Node, Op, Select
+from .nodes import At, Const, Dispatch, Leaf, Node, Op, Select, Sink
 from ..types import INT_PLANE_DTYPES
 from .ops import INT_BINARY, INT_UNARY, OP_KINDS, RANDOM_OPS, UNARY_MATH
 from .walk import Walk, dispatch_groups
@@ -88,6 +92,8 @@ class BranchCost:
     chainSpecial64: float = 0.0
     #: The host compiler can run this branch as a vector loop over samples.
     vectorised: bool = False
+    #: Plane elements written; ``None`` when not counted.
+    stores: float | None = None
 
     def as_tuple(self) -> tuple[float, ...]:
         """The six counts in field order (the form an older eagle takes)."""
@@ -96,6 +102,10 @@ class BranchCost:
     def chain_tuple(self) -> tuple[float, ...]:
         """The six counts followed by the four chain lengths (ten values)."""
         return self.as_tuple() + tuple(getattr(self, f) for f in _CHAINS)
+
+    def row_tuple(self) -> tuple[float, ...]:
+        """The ten values of :meth:`chain_tuple`, then ``stores`` when it is counted."""
+        return self.chain_tuple() + (() if self.stores is None else (self.stores,))
 
 
 @dataclass(frozen=True)
@@ -231,10 +241,11 @@ def is_library_call(node: Node) -> bool:
     return isinstance(node, Op) and node.kind in _SPECIAL
 
 
-def _branch_cost(walk: Walk, nodes: list[Node], roots, zero: frozenset, profile: str | None) -> BranchCost:
+def _branch_cost(walk: Walk, nodes: list[Node], roots, zero: frozenset, profile: str | None,
+                 stores: float | None = None) -> BranchCost:
     from .vectorise import vectorises
 
-    return BranchCost(*_work(nodes), *_paths(roots, zero), vectorises(walk, profile, nodes=nodes))
+    return BranchCost(*_work(nodes), *_paths(roots, zero), vectorises(walk, profile, nodes=nodes), stores)
 
 
 def _closure(root: Node, skip: set[int]) -> list[Node]:
@@ -266,7 +277,8 @@ def kernel_cost(walk: Walk, host_profile: str | None = None) -> BranchCost:
     counts, chains and ``vectorised`` under the same rules as a branch.
     ``host_profile`` as in :func:`dispatch_costs`."""
     nodes = list(walk.order)
-    return _branch_cost(walk, nodes, nodes, frozenset(), host_profile)
+    stores = float(sum(_elements(n) for n in nodes if isinstance(n, Sink)))
+    return _branch_cost(walk, nodes, nodes, frozenset(), host_profile, stores)
 
 
 def dispatch_costs(walk: Walk, host_profile: str | None = None) -> dict[str, DispatchCost]:
@@ -289,7 +301,9 @@ def dispatch_costs(walk: Walk, host_profile: str | None = None) -> dict[str, Dis
         selector, *branches = node.operands
         evaluated = {id(n) for n in _closure(selector, set())}
         zero = frozenset(evaluated)
-        costs = tuple(_branch_cost(walk, _closure(b, evaluated), (b,), zero, host_profile)
+        written = any(isinstance(n, Sink) and n.value is node for n in walk.order)
+        costs = tuple(_branch_cost(walk, _closure(b, evaluated), (b,), zero, host_profile,
+                                   float(_elements(b)) if written else None)
                       for b in branches)
         out[name] = DispatchCost(
             costs, infos[name].selector_reads, infos[name].static_selector,

@@ -184,3 +184,27 @@ def test_work_that_does_not_depend_on_a_carry_adds_nothing_to_the_chain():
 
     cost = _costs(gathered).branches[0]
     assert (cost.chain32, cost.chain64) == (0, 8)
+
+
+def test_a_whole_kernel_counts_the_plane_elements_it_writes():
+    @hawk.kernel
+    def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+        y = x * x + 1.0
+
+    cost = kernel_cost(canonical(plain.sinks), "native")
+    assert cost.stores == 1
+    assert cost.row_tuple() == cost.chain_tuple() + (1,)
+
+
+def test_a_dispatch_branch_stores_the_value_it_hands_to_the_sink():
+    for branch in _costs(_shared).branches:
+        assert branch.stores == 1
+        assert branch.row_tuple()[-1] == 1
+
+
+def test_a_cost_without_a_store_count_has_no_store_entry():
+    from hawk.ir.cost import BranchCost
+
+    bare = BranchCost(loads=2)
+    assert bare.stores is None
+    assert bare.row_tuple() == bare.chain_tuple()
