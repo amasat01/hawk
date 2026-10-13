@@ -612,7 +612,8 @@ jobs:
         run: |
           . "$RUNNER_TEMP/venv/bin/activate"
           cd "$RUNNER_TEMP"
-          python - <<'PY'
+          # hawk traces a kernel from its source, so the example runs from a file, not stdin
+          cat > readme_example.py <<'PY'
           import pathlib
           import platform
           import tempfile
@@ -645,3 +646,4 @@ jobs:
               assert "site-packages" in mod.__file__, mod.__file__
           print(f"OK on {platform.machine()}: energy {e}")
           PY
+          python readme_example.py
