@@ -809,8 +809,9 @@ LOOP_PRELUDE = (f"#ifndef {INTERCHANGE_MACRO}\n#define {INTERCHANGE_MACRO} 1\n#e
 
 #: The loop interchange's tile: the lanes of EIGHT vector registers of the
 #: kernel's ``Real``, so eight independent chains of a dependent loop body are
-#: in flight per trip (64 float64 / 128 float32 lanes under AVX-512, 32 / 64
-#: under AVX, 16 / 32 on a 16-byte ISA such as SSE2 or NEON).
+#: in flight per trip (eight covers the latency of a floating-point add or
+#: multiply times the ports that issue them): 64 float64 / 128 float32 lanes
+#: under AVX-512, 32 / 64 under AVX, 16 / 32 on a 16-byte ISA such as SSE2 or NEON.
 LOOP_HELPERS = """namespace hawk_abi {
 
 #if defined(__AVX512F__)

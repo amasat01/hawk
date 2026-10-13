@@ -29,7 +29,8 @@ from .walk import Walk
 __all__ = ["UNROLL_LIMIT", "interchanged_loops", "speculative_step", "vectorises"]
 
 #: The most trips of a ``Loop`` the host compiler fully unrolls (GCC's complete-peel
-#: limit); a longer one stays a rolled loop and the sample loop around it is scalar.
+#: limit, ``--param max-completely-peel-times``, whose default is 16); a longer one
+#: stays a rolled loop and the sample loop around it is scalar.
 UNROLL_LIMIT = 16
 
 

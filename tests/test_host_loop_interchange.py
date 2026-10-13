@@ -316,7 +316,7 @@ def test_the_cost_model_reads_the_same_predicate():
         for profile in (EXACT, "native-vector-math"):
             assert kernel_cost(kernel.walk, profile).vectorised is vectorises(
                 kernel.walk, profile)
-    # an interchanged loop's trip count no longer turns the flag off
+    # an interchanged loop's trip count leaves the vectorised flag on
     assert kernel_cost(arith.walk, EXACT).vectorised is True
     # a nested loop above the unroll limit stays each lane's own `for`
     assert kernel_cost(nested.walk, EXACT).vectorised is False

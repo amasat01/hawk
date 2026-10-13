@@ -1131,7 +1131,7 @@ def test_the_emitter_and_the_cost_counts_share_one_vectorisation_predicate():
         y = x * x + 1.0
 
     # a 32-trip loop runs interchanged on the host (trips outside, samples'
-    # lanes inside), so its trip count no longer keeps the loop scalar
+    # lanes inside), so its trip count does not keep the loop scalar
     for kernel, expected in ((plain, True), (short, True)):
         source = render_source("k", kernel.sinks, kernel.walk, HOST, mode=scalar_mode("float64"))
         assert source.vectorised is expected
