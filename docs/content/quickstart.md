@@ -28,11 +28,11 @@ it and run it:
 import pathlib
 import tempfile
 
-import hawk.artifact
+import hawk
 import numpy as np
 
 work_dir = pathlib.Path(tempfile.mkdtemp())
-hawk.artifact.build(scale, work_dir, targets=("host",));
+hawk.build([scale], work_dir, targets=("host",))
 
 host_kernel = hawk.load(work_dir, "scale")
 x = np.linspace(0.0, 7.0, 8)

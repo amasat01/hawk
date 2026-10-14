@@ -23,6 +23,8 @@ matching the CUDA version your driver reports (`nvidia-smi`, top right).
 
 **Platforms:** the wheels are Linux x86_64 (CPython 3.9–3.14, including free-threaded 3.13t and 3.14t; the exact versions are in `pyproject.toml`). The GPUs and CPUs hawk + eagle are measured on, including an aarch64 host run from source, are listed on [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html). There are no wheels for macOS, Windows or ARM yet, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. On free-threaded 3.13t and 3.14t, `hawk` runs GIL-free.
 
+To build from source, and for the supported-version table, see [build from source](https://amasat01.github.io/build_from_source.html).
+
 To *run* a kernel on a GPU you also install eagle, which launches what hawk
 compiles: see [eagle's installation page](https://amasat01.github.io/eagle/content/userguide/installation.html)
 (its Python package is `raptor-eagle`). What it buys you depends on what

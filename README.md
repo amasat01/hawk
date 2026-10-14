@@ -168,19 +168,7 @@ pip install raptor-hawk raptor-eagle matplotlib          # CPU: no GPU, driver o
 pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # GPU: hawk compiles, eagle runs; [cuda13] on both for CUDA 13
 ```
 
-Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer (check with `g++ --version`). `raptor-hawk` pulls `aether-dsc` (the sealed C++
-headers hawk compiles against) automatically. No `nvcc` or CUDA toolkit is needed. CUDA 12.6 or newer; the toolkit each performance card was measured with is recorded in the card.
-
-> **NVIDIA packages come only through the extras.** `raptor-hawk[cuda12]` pulls `cuda-bindings` 12,
-> `nvidia-cuda-nvrtc-cu12` and `nvidia-cuda-cccl-cu12`; `raptor-hawk[cuda13]` pulls `cuda-bindings` 13,
-> `nvidia-cuda-nvrtc` 13 and `nvidia-cuda-cccl` 13 (CUDA 13's wheels have no `-cu13` suffix);
-> `raptor-eagle[cuda12]` / `[cuda13]` pull CuPy (`cupy-cuda12x` / `cupy-cuda13x`, with the CUDA headers CuPy compiles against). Without an extra pip installs no NVIDIA package: you get the CPU route, or the GPU route through a CUDA setup you already have. Pick the extra matching the CUDA version your driver reports (`nvidia-smi`, top right).
-
-**Platforms:** the wheels are Linux x86_64 (CPython 3.9–3.14, including free-threaded 3.13t and 3.14t; the exact versions are in `pyproject.toml`). The GPUs and CPUs hawk + eagle are measured on, including an aarch64 host run from source, are listed on eagle's performance page. There are no wheels for macOS, Windows or ARM yet, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. On free-threaded 3.13t and 3.14t, `hawk` runs GIL-free.
-
-See [installation](https://amasat01.github.io/hawk/content/installation.html)
-for the CPU-only route (no GPU, driver or NVRTC needed at all) and every
-other detail.
+Extras, platforms, requirements and the CPU-only route: [installation](https://amasat01.github.io/hawk/content/installation.html).
 
 ## Performance
 
