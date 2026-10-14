@@ -44,6 +44,7 @@ nbexec:
 NB_PATHS = content/tutorials content/vocabulary content/examples content/compile_cache.ipynb content/compile_options.ipynb
 
 nbcheck:
+	python tools/nb_colab_setup.py --check
 	python tools/nb_check_filled.py $(NB_PATHS)
 	python tools/nb_run_gate.py $(NB_PATHS)
 
