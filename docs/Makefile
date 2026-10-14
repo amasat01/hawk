@@ -36,9 +36,16 @@ linkcheck:
 nbexec:
 	python tools/nb_execute.py content/tutorials content/vocabulary content/examples content/compile_cache.ipynb content/compile_options.ipynb
 
-# CI / pre-publish gate: refuse to build unless every notebook was executed.
+# CI / pre-publish gate: refuse to build unless every notebook was executed, then
+# RUN every notebook in memory: on the CPU always, and again on the GPU when one is
+# present (tools/nb_run_gate.py; a notebook declares "gate" metadata for what it
+# needs, and a GPU-only one skips cleanly on the CPU leg). A committed notebook can
+# no longer outlive the code that produced it.
+NB_PATHS = content/tutorials content/vocabulary content/examples content/compile_cache.ipynb content/compile_options.ipynb
+
 nbcheck:
-	python tools/nb_check_filled.py content/tutorials content/vocabulary content/examples content/compile_cache.ipynb content/compile_options.ipynb
+	python tools/nb_check_filled.py $(NB_PATHS)
+	python tools/nb_run_gate.py $(NB_PATHS)
 
 # Strip all outputs + execution counts from every notebook under content/.
 nbclear:
