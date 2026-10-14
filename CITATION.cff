@@ -7,7 +7,7 @@ authors:
   - family-names: "Masat"
     given-names: "Alessandro"
 version: "0.5.0"
-date-released: "2026-10-09"
+date-released: "2026-10-14"
 license: Apache-2.0
 repository-code: "https://github.com/amasat01/hawk"
 doi: "10.5281/zenodo.23250242"

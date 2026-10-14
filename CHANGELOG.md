@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-10-14)
 
 GCC 13.1-13.3 and 14.1-14.2 miscompile a conditional call of a function that has masked
 vector variants (fixed in GCC 13.4 and 14.3). aether-dsc 0.2.3, now the minimum, avoids
