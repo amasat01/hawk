@@ -187,7 +187,7 @@ Every number in this section is generated from the performance cards committed i
 Kernels authored with hawk are what eagle's performance card times.
 
 <!-- hero:begin -->
-hawk + eagle (`eagle.simulate`) integrates 1,000,000 RK4 oscillators, each stopping at its own step, in 613 µs on a NVIDIA H100 80GB HBM3 (199 µs for 100,000), 2.5×–600× faster than NVIDIA Warp (2.5×), JAX (76×), CuPy (600×), PyTorch (540×) at N = 1,000,000 (1.1×–1700× at N = 100,000), in 40 MiB of GPU memory
+hawk + eagle (`eagle.simulate`) integrates 1,000,000 RK4 oscillators, each stopping at its own step, in 613 µs on a NVIDIA H100 80GB HBM3 (199 µs for 100,000), 2.5×–600× faster than NVIDIA Warp (2.5×), JAX (76×), CuPy (600×), PyTorch with torch.compile (130×) at N = 1,000,000 (1.1×–1700× at N = 100,000), in 40 MiB of GPU memory
 <!-- hero:end -->
 — and, on the <!--c spec card=rk78 dev=h100 field=device.name-->NVIDIA H100 80GB HBM3<!--/c--> reference GPU, the same hawk kernel, unmodified, integrates 1,000,000 adaptive
 RK7(8) orbits in <!--c wall card=rk78 dev=h100 arm=eagle_simulate n=1000000-->43.6 ms<!--/c-->; on a CPU alone, through eagle's host team, the same batch takes <!--c wall card=rk78cpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000-->3.76 s<!--/c--> on 8 threads of an <!--c spec card=rk78cpu dev=amd-epyc-9b45 field=cpu-->AMD EPYC 9B45<!--/c--> (the no-GPU route, for machines without a GPU). This is the regime hawk + eagle's
