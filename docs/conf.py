@@ -136,6 +136,13 @@ html_static_path = ["_static"]
 # raptor-theme.css (shared skin, derives everything from --accent) ->
 # raptor-reveal.css (kit).
 html_css_files = ["raptor-tokens.css", "site-accent.css", "raptor-theme.css", "raptor-reveal.css"]
+
+# The family visuals (map, radar, rosette, bars): a bundle vendored from the landing site by its
+# sync_family_visuals.py, with LOCK.json. assets.json names the stylesheet and scripts to load.
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "_static", "family_visuals", "assets.json")) as _f:
+    _fv = __import__("json").load(_f)
+html_css_files += ["family_visuals/" + _n for _n in _fv["css"]]
+html_js_files = [("family_visuals/" + _n, {"defer": "defer"}) for _n in _fv["js"]]
 html_theme_options = {
     "repository_url": "https://github.com/amasat01/hawk",
     "repository_branch": "main",

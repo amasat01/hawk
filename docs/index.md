@@ -29,6 +29,12 @@ forward- and reverse-mode derivatives from that representation, and
 compiles it for the [eagle](https://amasat01.github.io/eagle/) runtime to
 run.
 
+```{raw} html
+:file: _static/family_visuals/fragments/map_radar.html
+```
+
+*Where each tool covers the work, drawn from eagle's committed performance cards; the tables behind the charts list every value.*
+
 ```python
 import hawk
 from hawk import Mutable, Param, Scalar
