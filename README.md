@@ -34,7 +34,7 @@ examples and the full Python API reference.
 
 ## Write a kernel, get its gradient
 
-This example runs on the CPU: no GPU needed. (`hawk.build` builds several kernels into one bundle; the quickstart's `hawk.artifact.build` builds one kernel.)
+Runs on CPU.
 
 ```python
 import pathlib, tempfile
@@ -77,7 +77,7 @@ print(bar_v)
 `energy = 0.5 |v|^2`, so `d(energy)/dv = v` exactly — the printed gradient above *is* the input `v`. Output above
 is the notebook's own: [`docs/content/tutorials/04_gradients_backward.ipynb`](https://github.com/amasat01/hawk/blob/main/docs/content/tutorials/04_gradients_backward.ipynb). `hawk.diff.jvp` derives the forward-mode (tangent) twin the same way.
 
-**[Five-minute quickstart](https://amasat01.github.io/hawk/content/quickstart.html)** · install: `pip install raptor-hawk raptor-eagle matplotlib` (CPU route, no extras; it brings `aether-dsc` along; the host-only path needs just `raptor-hawk`), or `pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"` for the GPU route
+**[Five-minute quickstart](https://amasat01.github.io/hawk/content/quickstart.html)** · install: `pip install raptor-hawk raptor-eagle matplotlib` (CPU route, no extras), or `pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"` for the GPU route
 
 ## Writing kernels
 
@@ -168,7 +168,7 @@ pip install raptor-hawk raptor-eagle matplotlib          # CPU: no GPU, driver o
 pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # GPU: hawk compiles, eagle runs; [cuda13] on both for CUDA 13
 ```
 
-Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer (check with `g++ --version`; without a compiler the first host kernel fails at build time, before it runs). `raptor-hawk` pulls `aether-dsc` (the sealed C++
+Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer (check with `g++ --version`). `raptor-hawk` pulls `aether-dsc` (the sealed C++
 headers hawk compiles against) automatically. No `nvcc` or CUDA toolkit is needed. CUDA 12.6 or newer; the toolkit each performance card was measured with is recorded in the card.
 
 > **NVIDIA packages come only through the extras.** `raptor-hawk[cuda12]` pulls `cuda-bindings` 12,

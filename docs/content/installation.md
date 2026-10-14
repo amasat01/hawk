@@ -7,7 +7,7 @@ pip install raptor-hawk raptor-eagle matplotlib             # CPU, no extras (ea
 pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # GPU route; [cuda13] on both for CUDA 13
 ```
 
-Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer (check with `g++ --version`; without one the first host kernel fails at build time, before it runs). `raptor-hawk` pulls
+Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer (check with `g++ --version`). `raptor-hawk` pulls
 `aether-dsc` (the sealed C++ headers hawk compiles against) in automatically. No
 `nvcc` or CUDA toolkit is needed.
 

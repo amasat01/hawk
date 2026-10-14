@@ -113,7 +113,7 @@ numbers for inputs and return head-shaped results; see
 
 ## Advanced: launch the persistent entry yourself
 
-You only need this section if you launch hawk's compiled entries by hand instead of through eagle; `hawk_chunk` is the number of steps a warp runs between claiming new samples, and `fp64_ops_ir` is one step's double-precision operation count. Skip it otherwise.
+Only needed if you launch hawk's compiled entries yourself instead of through eagle.
 
 A stepping kernel that hawk marks `auto` also gets a `<name>_persist` entry, which runs warp-converged: the lanes of a warp claim samples together and work in chunks. If you launch it yourself, it takes the fused entry's arguments and then `hawk_next` (a `uint32` you zero), `hawk_util` (two `uint64`, or null), `hawk_steps` (a `uint32` you zero, or null), `hawk_stepsum` (a `uint64` you zero, or null) and, last, `hawk_chunk`: a `uint32` giving the steps between chunk heads. It must be a power of two; `0` runs each sample whole. Launch it with a block size that is a multiple of 32. The results are bit-identical to the fused entry for any chunk.
 
