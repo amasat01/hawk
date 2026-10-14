@@ -30,6 +30,8 @@ import pytest
 _REPO = pathlib.Path(__file__).resolve().parent.parent
 _README = _REPO / "README.md"
 _SNAPSHOT = _REPO / "docs" / "perf_claims.json"
+if not (_REPO / "tools" / "sync_perf_claims.py").is_file():  # the suite also runs from a copy of tests/ outside the repository
+    pytest.skip("needs the repository's tools/sync_perf_claims.py", allow_module_level=True)
 _spec = importlib.util.spec_from_file_location(
     "hawk_sync_perf_claims", _REPO / "tools" / "sync_perf_claims.py"
 )
