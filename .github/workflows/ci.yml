@@ -22,7 +22,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docs-fresh:
+    # Freshness check, never a commit: the generator re-renders the pages and fails on any difference.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hawk
+      # companion eagle: same-named branch if it exists there, else main
+      - id: ref_eagle
+        env:
+          COMPANION_REPO: eagle
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
+          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
+          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
+          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
+          echo "companion ${COMPANION_REPO} @ ${ref}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/eagle
+          ref: ${{ steps.ref_eagle.outputs.ref }}
+          path: eagle
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: documented numbers match the committed cards
+        run: |
+          if ! python hawk/tools/sync_perf_claims.py --eagle-root eagle --check; then
+            echo "::error::The documented performance numbers are out of date with the committed cards. Regenerate them locally with: python tools/sync_perf_claims.py --eagle-root <path to an eagle checkout> -- then commit the result."
+            exit 1
+          fi
   test:
+    needs: docs-fresh
     runs-on: ubuntu-latest
     env:
       CC: gcc-13
@@ -409,6 +445,7 @@ jobs:
   # is reported without our suppressions (the detector reaches _core) AND the ft
   # rows give zero reports with them. See tests/sanitize/.
   tsan-ft:
+    needs: docs-fresh
     runs-on: ubuntu-latest
     env:
       CC: clang-18
@@ -524,6 +561,7 @@ jobs:
             tests/sanitize/tsan_ft.sh "$RUNNER_TEMP/tsan-python/bin/python${TSAN_PY_VERSION%.*}t"
 
   ft-stress:
+    needs: docs-fresh
     runs-on: ubuntu-latest
     strategy:
       # both free-threaded interpreters report, even when one fails
@@ -732,6 +770,7 @@ jobs:
   # roots, no CMAKE_PREFIX_PATH, no installed headers) and the README host example
   # run. On x86_64 and on aarch64; compiler warnings in our own sources are errors.
   sdist-install:
+    needs: docs-fresh
     strategy:
       fail-fast: false
       matrix:

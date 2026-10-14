@@ -21,7 +21,7 @@ suffix); `raptor-eagle[cuda12]` / `[cuda13]` pull CuPy (`cupy-cuda12x` /
 matching the CUDA version your driver reports (`nvidia-smi`, top right).
 ```
 
-**Platforms:** built and tested on Linux x86_64 only so far (CPython 3.9–3.14, including free-threaded 3.13t and 3.14t), on NVIDIA GPUs from Pascal (Quadro P2000) and Turing (Tesla T4). There are no wheels for macOS, Windows or ARM yet, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. On free-threaded 3.13t and 3.14t, `hawk` runs GIL-free.
+**Platforms:** the wheels are Linux x86_64 (CPython 3.9–3.14, including free-threaded 3.13t and 3.14t; the exact versions are in `pyproject.toml`). The GPUs and CPUs hawk + eagle are measured on, including an aarch64 host run from source, are listed on [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html). There are no wheels for macOS, Windows or ARM yet, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. On free-threaded 3.13t and 3.14t, `hawk` runs GIL-free.
 
 To *run* a kernel on a GPU you also install eagle, which launches what hawk
 compiles: see [eagle's installation page](https://amasat01.github.io/eagle/content/userguide/installation.html)
@@ -92,7 +92,7 @@ To work on hawk itself, build it from a clone: see
 ## Requirements
 
 - Python 3.9 or newer (CPython 3.9–3.14, including free-threaded 3.13t and 3.14t).
-- CUDA 12.6 or newer for the device target (tested with 12.6 and 13.0).
+- CUDA 12.6 or newer for the device target (the toolkit each performance card was measured with is recorded in the card).
 - A CUDA-capable GPU is **optional** for authoring and host execution; it is
   required only to compile and run a kernel's device target. `hawk.compile`
   reports what is available on the current machine:
@@ -176,8 +176,7 @@ vector versions (its own packet math), so the loop vectorises; `fmax`/`fmin`
 become inline selects with libm's results (up to the sign of a +0/-0 tie,
 which C leaves unspecified). The accuracy trade:
 the transcendental functions are aether's, faithfully rounded (error < 1 ULP,
-verified against a 128-bit reference over more than 10^6 inputs per function;
-the per-function table is in aether's
+verified against a 128-bit reference; the per-function accuracy table is in aether's
 `aether/backend/cpu/simd/math/PacketMath.h`), but not glibc's, so results are
 not bit-identical to `native` or to the device. Arithmetic is contracted:
 the compiler fuses a multiply and an add into one FMA instruction (on every
@@ -194,14 +193,13 @@ iteration.
 `-fno-trapping-math` lets GCC if-convert the guarded loop body; it changes no
 floating-point value, only how floating-point exceptions may be raised.
 
-Measured before FMA contraction joined this profile, on the RKF7(8) attempt
-kernel of eagle's `rk78_card` (10^5 Kepler orbits to t = 64, Xeon W-2125,
-GCC 14.3): the loop vectorises (1514 packed zmm float64 instructions in the
-kernel, masked 8-lane `pow` calls) where `native` keeps it scalar; the whole
-run takes 6.5 s instead of 14.6 s on 1 thread and 5.1 s instead of 7.9 s on
-8. Every sample made the same accept/reject decisions and step count
-(49,797,416 attempts in both); final states differ by at most 1.3e-8 relative,
-and the error against the analytic solution is the same (2.2e-7 maximum).
+One caveat on GCC: on GCC 13.1-13.3 and 14.1-14.2 a masked call to a vector
+math function can be miscompiled, so aether-dsc 0.2.3 and newer declare no masked
+variants there, and a loop with a conditional math call runs scalar (the rule is `AETHER_HVM_MASKED`: off on GCC 13 before 13.4 and on
+GCC 14 before 14.3, on elsewhere). hawk reports those loops as not
+`vectorised`, and results stay correct; other loops stay vectorised, and GCC 13.4,
+14.3 or newer vectorises these too.
+
 It is the default on x86-64 with GCC, so `build`/`build_bundle` and the compile cache
 use it unless a profile is named; it is part of the compile-cache key (with
 the CPU's identity, as for `native`), so entries compiled under another

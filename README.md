@@ -167,15 +167,14 @@ pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # GPU: hawk compiles
 ```
 
 Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer. `raptor-hawk` pulls `aether-dsc` (the sealed C++
-headers hawk compiles against) automatically. No `nvcc` or CUDA toolkit is needed. Tested with CUDA 12.6 and
-CUDA 13.0 (CUDA 12.6 or newer).
+headers hawk compiles against) automatically. No `nvcc` or CUDA toolkit is needed. CUDA 12.6 or newer; the toolkit each performance card was measured with is recorded in the card.
 
 > **NVIDIA packages come only through the extras.** `raptor-hawk[cuda12]` pulls `cuda-bindings` 12,
 > `nvidia-cuda-nvrtc-cu12` and `nvidia-cuda-cccl-cu12`; `raptor-hawk[cuda13]` pulls `cuda-bindings` 13,
 > `nvidia-cuda-nvrtc` 13 and `nvidia-cuda-cccl` 13 (CUDA 13's wheels have no `-cu13` suffix);
 > `raptor-eagle[cuda12]` / `[cuda13]` pull CuPy (`cupy-cuda12x` / `cupy-cuda13x`, with the CUDA headers CuPy compiles against). Without an extra pip installs no NVIDIA package: you get the CPU route, or the GPU route through a CUDA setup you already have. Pick the extra matching the CUDA version your driver reports (`nvidia-smi`, top right).
 
-**Platforms:** built and tested on Linux x86_64 only so far (CPython 3.9–3.14, including free-threaded 3.13t and 3.14t), on NVIDIA GPUs from Pascal (Quadro P2000) and Turing (Tesla T4). There are no wheels for macOS, Windows or ARM yet, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. On free-threaded 3.13t and 3.14t, `hawk` runs GIL-free.
+**Platforms:** the wheels are Linux x86_64 (CPython 3.9–3.14, including free-threaded 3.13t and 3.14t; the exact versions are in `pyproject.toml`). The GPUs and CPUs hawk + eagle are measured on, including an aarch64 host run from source, are listed on eagle's performance page. There are no wheels for macOS, Windows or ARM yet, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. On free-threaded 3.13t and 3.14t, `hawk` runs GIL-free.
 
 See [installation](https://amasat01.github.io/hawk/content/installation.html)
 for the CPU-only route (no GPU, driver or NVRTC needed at all) and every
@@ -183,16 +182,19 @@ other detail.
 
 ## Performance
 
-Every number in this section is read from eagle's committed cards (`benchmarks/perf_card/card_quadro-p2000.md`, `benchmarks/perf_card/cpu_card_intel-xeon-w-2125.md`, `benchmarks/rk78_card/card_quadro-p2000.md`).
-Kernels authored with hawk are what eagle's performance card times: hawk + eagle (`eagle.simulate`) is
-**3.9×–47× faster** than NVIDIA Warp (3.9×), JAX (8.7×), CuPy and PyTorch (47×) at 1,000,000 RK4
-oscillators finishing at different times — **156 ms** on a
-Quadro P2000, using **3.8×–5.2× less GPU memory** than CuPy and PyTorch (a million samples in 50 MiB, 1.31× the
-bare minimum state; CuPy 5.1×, PyTorch 6.9×; NVIDIA Warp 64 MiB, 1.7×) — and the same hawk kernel, unmodified, integrates 1,000,000 adaptive
-RK7(8) orbits in **13.0 s** on the GPU or **7.15 s** on 8 CPU threads alone. This is the regime hawk + eagle's
-compaction targets (many samples stopping at different times); in other regimes the other tools hold their own — on a
-dense workload where nothing finishes early Warp ties it (693 ms vs 699 ms at N = 1,000,000) and is level at
-N = 10,000 (7.22 ms vs 7.22 ms), and on this FP64-weak development card the CPU arm is the faster one there. See
+Every number in this section is generated from the performance cards committed in eagle (`benchmarks/perf_card` and `benchmarks/rk78_card`):
+`tools/sync_perf_claims.py` rewrites them, and `tests/test_perf_claims.py` fails if this text, the snapshot `docs/perf_claims.json` or (with `RAPTOR_EAGLE_ROOT` set to an eagle checkout) the cards disagree.
+Kernels authored with hawk are what eagle's performance card times.
+
+<!-- hero:begin -->
+hawk + eagle (`eagle.simulate`) integrates 1,000,000 RK4 oscillators, each stopping at its own step, in 613 µs on a NVIDIA H100 80GB HBM3 (199 µs for 100,000), 2.5×–600× faster than NVIDIA Warp (2.5×), JAX (76×), CuPy (600×), PyTorch (540×) at N = 1,000,000 (1.1×–1700× at N = 100,000), in 40 MiB of GPU memory
+<!-- hero:end -->
+— and, on the <!--c spec card=rk78 dev=h100 field=device.name-->NVIDIA H100 80GB HBM3<!--/c--> reference GPU, the same hawk kernel, unmodified, integrates 1,000,000 adaptive
+RK7(8) orbits in <!--c wall card=rk78 dev=h100 arm=eagle_simulate n=1000000-->43.6 ms<!--/c-->; on a CPU alone, through eagle's host team, the same batch takes <!--c wall card=rk78cpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000-->3.76 s<!--/c--> on 8 threads of an <!--c spec card=rk78cpu dev=amd-epyc-9b45 field=cpu-->AMD EPYC 9B45<!--/c--> (the no-GPU route, for machines without a GPU). This is the regime hawk + eagle's
+compaction targets (many samples stopping at different times); in other regimes the other tools hold their own. On a
+dense workload where nothing finishes early, NVIDIA Warp is the fastest arm on that H100 at N = 1,000,000
+(<!--c wall card=rk4 dev=h100 n=1000000 dist=uniform steps=1000 arm=warp_kernel-->1.71 ms<!--/c--> vs <!--c wall card=rk4 dev=h100 n=1000000 dist=uniform steps=1000 arm=eagle_simulate-->1.75 ms<!--/c--> for `eagle.simulate`, which takes <!--c pctgap card=rk4 dev=h100 n=1000000 dist=uniform steps=1000 arm=eagle_simulate den_arm=warp_kernel-->2.5%<!--/c--> longer), while at N = 10,000 on the same workload
+`eagle.simulate` is ahead (<!--c wall card=rk4 dev=h100 n=10000 dist=uniform steps=1000 arm=eagle_simulate-->112 µs<!--/c--> vs <!--c wall card=rk4 dev=h100 n=10000 dist=uniform steps=1000 arm=warp_kernel-->121 µs<!--/c-->). The development card the tutorials teach on is the Quadro P2000; its numbers are on the performance page next to every other device. See
 [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html) for every number, every arm,
 including the ones where it doesn't win.
 
@@ -200,7 +202,7 @@ including the ones where it doesn't win.
 
 The chart shows one GPU; [the performance page](https://amasat01.github.io/eagle/content/performance.html) has a tab for every device and CPU measured.
 
-The same hawk kernel also runs on a CPU alone, through eagle's host team: on an Intel Xeon W-2125 (4 cores, 8 logical CPUs; card of 2026-10-08) the 8-thread spread S=1000 batch of 1,000,000 samples takes **145 ms**. eagle's [performance page](https://amasat01.github.io/eagle/content/performance.html#perf-card-cpu-intel-xeon-w-2125) shows that CPU card next to Numba, JAX, PyTorch, NumPy and multiprocessing, each with the setting where it fits best.
+The same hawk kernel also runs on a CPU alone, through eagle's host team: on an <!--c spec card=rk4cpu dev=amd-epyc-9b45 field=cpu.model-->AMD EPYC 9B45<!--/c--> (<!--c spec card=rk4cpu dev=amd-epyc-9b45 field=cpu.cores-->8<!--/c--> cores, <!--c spec card=rk4cpu dev=amd-epyc-9b45 field=cpu.logical_cpus-->16<!--/c--> logical CPUs) the 8-thread spread S=1000 batch of 1,000,000 samples takes **<!--c wall card=rk4cpu dev=amd-epyc-9b45 arm=eagle_term8 n=1000000 dist=spread steps=1000-->142 ms<!--/c-->**. eagle's [performance page](https://amasat01.github.io/eagle/content/performance.html) has a tab for every CPU and GPU measured, with Numba, JAX, PyTorch, NumPy and multiprocessing on the CPU cards, each with the setting where it fits best; on some cells and CPUs another tool is ahead, and the card shows which.
 
 ## Going deeper
 
