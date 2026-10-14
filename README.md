@@ -75,7 +75,7 @@ print(bar_v)
 `energy = 0.5 |v|^2`, so `d(energy)/dv = v` exactly — the printed gradient above *is* the input `v`. Output above
 is the notebook's own: [`docs/content/tutorials/04_gradients_backward.ipynb`](https://github.com/amasat01/hawk/blob/main/docs/content/tutorials/04_gradients_backward.ipynb). `hawk.diff.jvp` derives the forward-mode (tangent) twin the same way.
 
-**[Five-minute quickstart](https://amasat01.github.io/hawk/)** · install: `pip install raptor-hawk` (CPU route; it brings `aether-dsc` along), or `pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"` for the GPU route
+**[Five-minute quickstart](https://amasat01.github.io/hawk/content/quickstart.html)** · install: `pip install raptor-hawk` (CPU route; it brings `aether-dsc` along), or `pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"` for the GPU route
 
 ## Writing kernels
 
