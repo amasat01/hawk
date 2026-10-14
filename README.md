@@ -34,6 +34,8 @@ examples and the full Python API reference.
 
 ## Write a kernel, get its gradient
 
+This example runs on the CPU: no GPU needed. (`hawk.build` builds several kernels into one bundle; the quickstart's `hawk.artifact.build` builds one kernel.)
+
 ```python
 import pathlib, tempfile
 
@@ -75,7 +77,7 @@ print(bar_v)
 `energy = 0.5 |v|^2`, so `d(energy)/dv = v` exactly — the printed gradient above *is* the input `v`. Output above
 is the notebook's own: [`docs/content/tutorials/04_gradients_backward.ipynb`](https://github.com/amasat01/hawk/blob/main/docs/content/tutorials/04_gradients_backward.ipynb). `hawk.diff.jvp` derives the forward-mode (tangent) twin the same way.
 
-**[Five-minute quickstart](https://amasat01.github.io/hawk/content/quickstart.html)** · install: `pip install raptor-hawk` (CPU route; it brings `aether-dsc` along), or `pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"` for the GPU route
+**[Five-minute quickstart](https://amasat01.github.io/hawk/content/quickstart.html)** · install: `pip install raptor-hawk raptor-eagle matplotlib` (CPU route, no extras; it brings `aether-dsc` along; the host-only path needs just `raptor-hawk`), or `pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"` for the GPU route
 
 ## Writing kernels
 
@@ -162,11 +164,11 @@ Free-threaded CPython (3.13t/3.14t) is supported: the compiled modules declare G
 ## Install
 
 ```bash
-pip install raptor-hawk                                     # CPU only: no GPU, driver or CUDA packages needed
+pip install raptor-hawk raptor-eagle matplotlib          # CPU: no GPU, driver or CUDA packages (matplotlib is for the tutorials' plots)
 pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # GPU: hawk compiles, eagle runs; [cuda13] on both for CUDA 13
 ```
 
-Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer. `raptor-hawk` pulls `aether-dsc` (the sealed C++
+Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer (check with `g++ --version`; without a compiler the first host kernel fails at build time, before it runs). `raptor-hawk` pulls `aether-dsc` (the sealed C++
 headers hawk compiles against) automatically. No `nvcc` or CUDA toolkit is needed. CUDA 12.6 or newer; the toolkit each performance card was measured with is recorded in the card.
 
 > **NVIDIA packages come only through the extras.** `raptor-hawk[cuda12]` pulls `cuda-bindings` 12,
@@ -187,7 +189,7 @@ Every number in this section is generated from the performance cards committed i
 Kernels authored with hawk are what eagle's performance card times.
 
 <!-- hero:begin -->
-hawk + eagle (`eagle.simulate`) integrates 1,000,000 RK4 oscillators, each stopping at its own step, in 613 µs on a NVIDIA H100 80GB HBM3 (199 µs for 100,000), 2.5×–600× faster than NVIDIA Warp (2.5×), JAX (76×), CuPy (600×), PyTorch with torch.compile (130×) at N = 1,000,000 (1.1×–1700× at N = 100,000), in 40 MiB of GPU memory
+hawk + eagle (`eagle.simulate`) integrates 1,000,000 RK4 oscillators, each stopping at its own step, in 613 µs on an NVIDIA H100 80GB HBM3 (199 µs for 100,000), 2.5×–600× faster than NVIDIA Warp (2.5×), JAX (76×), CuPy (600×), PyTorch with torch.compile (130×) at N = 1,000,000 (1.1×–1700× at N = 100,000), in 40 MiB of GPU memory
 <!-- hero:end -->
 — and, on the <!--c spec card=rk78 dev=h100 field=device.name-->NVIDIA H100 80GB HBM3<!--/c--> reference GPU, the same hawk kernel, unmodified, integrates 1,000,000 adaptive
 RK7(8) orbits in <!--c wall card=rk78 dev=h100 arm=eagle_simulate n=1000000-->43.6 ms<!--/c-->; on a CPU alone, through eagle's host team, the same batch takes <!--c wall card=rk78cpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000-->3.76 s<!--/c--> on 8 threads of an <!--c spec card=rk78cpu dev=amd-epyc-9b45 field=cpu-->AMD EPYC 9B45<!--/c--> (the no-GPU route, for machines without a GPU). This is the regime hawk + eagle's

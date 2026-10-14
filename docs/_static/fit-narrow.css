@@ -1,0 +1,5 @@
+/* Narrow screens: code blocks and wide tables scroll inside their own box; the page never scrolls sideways. */
+.bd-article pre,
+.bd-article div.highlight { max-width: 100%; overflow-x: auto; }
+.bd-article table.table,
+.bd-article table.docutils { display: block; max-width: 100%; overflow-x: auto; }

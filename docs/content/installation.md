@@ -3,11 +3,11 @@
 **Time:** ~2 min &middot; **You need:** a terminal and `pip`
 
 ```bash
-pip install raptor-hawk                                     # CPU only
+pip install raptor-hawk raptor-eagle matplotlib             # CPU, no extras (eagle and matplotlib: the tutorials import them)
 pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # GPU route; [cuda13] on both for CUDA 13
 ```
 
-Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer. `raptor-hawk` pulls
+Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer (check with `g++ --version`; without one the first host kernel fails at build time, before it runs). `raptor-hawk` pulls
 `aether-dsc` (the sealed C++ headers hawk compiles against) in automatically. No
 `nvcc` or CUDA toolkit is needed.
 
@@ -54,6 +54,7 @@ the GPU side entirely), and `hawk.load`/`hawk.run` execute it directly
 — no `eagle` import anywhere on that path, exactly as
 [Your first kernel](tutorials/01_your_first_kernel)'s host cell shows.
 
+```{dropdown} How the CPU route was verified
 Verified: a clean venv built from this project's own wheels
 (`raptor-hawk`, `aether-dsc`, `numpy`; `eagle` and `cupy` not installed),
 run with `$PATH` stripped to the system's own `/usr/bin:/bin` (no `nvcc`,
@@ -62,6 +63,7 @@ no CUDA toolkit), `$LD_LIBRARY_PATH` unset and no GPU selected
 and ran, computing the right answer, with `eagle` and `cupy` both absent
 and unneeded. The GPU route below is for compiling and *running* a device
 artifact; it changes nothing about this one.
+```
 
 (with-a-gpu)=
 ## With a GPU (no `nvcc` needed)

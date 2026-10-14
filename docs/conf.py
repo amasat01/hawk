@@ -135,7 +135,7 @@ html_static_path = ["_static"]
 # raptor-tokens.css (kit) -> site-accent.css (this site's --accent) ->
 # raptor-theme.css (shared skin, derives everything from --accent) ->
 # raptor-reveal.css (kit).
-html_css_files = ["raptor-tokens.css", "site-accent.css", "raptor-theme.css", "raptor-reveal.css"]
+html_css_files = ["raptor-tokens.css", "site-accent.css", "raptor-theme.css", "raptor-reveal.css", "fit-narrow.css"]
 
 # The family visuals (map, radar, rosette, bars): a bundle vendored from the landing site by its
 # sync_family_visuals.py, with LOCK.json. assets.json names the stylesheet and scripts to load.
