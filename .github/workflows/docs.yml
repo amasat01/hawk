@@ -143,7 +143,7 @@ jobs:
       - name: make strict
         run: cd hawk/docs && make strict
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: hawk/docs/_build/html
           retention-days: 7
@@ -159,4 +159,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
