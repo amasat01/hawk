@@ -3,7 +3,7 @@
   "files": {
     "assets.json": "6165d9a834c61c476dcd8d2b63beff80",
     "family_visuals.js": "ddca6d54b7e8749e47efb6e108b13203",
-    "fragments/map_radar.html": "35a8db3439d5dae8f2f7366b1d3c825d",
+    "fragments/map_radar.html": "61a20e1494a1726c0ffbb1c7241d6547",
     "icons.svg": "3f1e63040276ebe1b6c2d21289406c63",
     "perf-state.js": "470940933ae3d6e32d48d63e1299882b",
     "radar.js": "e229f7ccf9cfda6e30c778c769f94dbd",
@@ -11,7 +11,7 @@
     "visuals.js": "b91816374f88b33aa47784c180430d85"
   },
   "inputs": {
-    "_generated/perf_switch.md": "19b110801971c09758e662fe2850653f",
+    "_generated/perf_switch.md": "1468cc64f6eed16f8bfb769d3e8e138a",
     "_generated/radar_detailed.md": "81e44a3e54a5d7fef49bae853c25d9e3",
     "_static/custom.css": "80c94e883a321f4857e1cc8e996a0be4",
     "_static/js/perf-state.js": "470940933ae3d6e32d48d63e1299882b",
