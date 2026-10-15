@@ -52,7 +52,7 @@ classifiers = [
 # (`hawk.compile.payload.current_payload()`), added the day the code that
 # uses it landed rather than pre-declared ahead of it.
 # numpy: hawk never imports it, but the host route and every example pass NumPy arrays
-dependencies = ["aether-dsc>=0.2.3,<0.3", "numpy"]
+dependencies = ["aether-dsc>=0.2.3,<0.3", "numpy>=1.26"]
 
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
