@@ -22,7 +22,68 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docs-fresh:
+    # Freshness check, never a commit: the generator re-renders the pages and fails on any difference.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hawk
+      # companion eagle: same-named branch if it exists there, else main
+      - id: ref_eagle
+        env:
+          COMPANION_REPO: eagle
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
+          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
+          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
+          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
+          echo "companion ${COMPANION_REPO} @ ${ref}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/eagle
+          ref: ${{ steps.ref_eagle.outputs.ref }}
+          path: eagle
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: documented numbers match the committed cards
+        run: |
+          if ! python hawk/tools/sync_perf_claims.py --eagle-root eagle --check; then
+            echo "::error::The documented performance numbers are out of date with the committed cards. Regenerate them locally with: python tools/sync_perf_claims.py --eagle-root <path to an eagle checkout> -- then commit the result."
+            exit 1
+          fi
+      # companion site (amasat01.github.io): same-named branch if it exists there, else main
+      - id: ref_site
+        env:
+          COMPANION_REPO: amasat01.github.io
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
+          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
+          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
+          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
+          echo "companion ${COMPANION_REPO} @ ${ref}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/amasat01.github.io
+          ref: ${{ steps.ref_site.outputs.ref }}
+          path: site
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+      - name: family visuals match the landing site and the cards
+        run: |
+          if ! python site/tools/sync_family_visuals.py --check --site-root site --eagle-root eagle --target hawk=hawk; then
+            echo "::error::The family visuals bundle is out of date with the landing site or the cards. Regenerate it locally with: python tools/sync_family_visuals.py --site-root <path to the site checkout> --eagle-root <path to an eagle checkout> --target hawk=<this repo> -- then commit docs/_static/family_visuals."
+            exit 1
+          fi
   test:
+    needs: docs-fresh
     runs-on: ubuntu-latest
     env:
       CC: gcc-13
@@ -198,12 +259,218 @@ jobs:
       - if: always()
         run: ccache -s
 
+  # host-gcc: the host-compiler matrix. 13.1-13.3 and 14.1-14.2 miscompile a
+  # conditional call of a function with masked vector variants; aether-dsc drops
+  # those variants there and hawk reports such loops scalar. The sufficiency step
+  # is the whole non-GPU suite on each compiler; on 13 and 14 the necessity step
+  # forces the masked variants back on and the early-exit host rows must then
+  # fail, so the avoidance is shown to be needed.
+  host-gcc:
+    name: host-gcc (${{ matrix.gcc }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        gcc: [12, 13, 14]
+    env:
+      CC: gcc-13
+      CXX: g++-13
+      HAWK_CXX: g++-${{ matrix.gcc }}
+      # tests/_toolchain.py's device_compiler(): $HAWK_NVCC first, else the
+      # hardcoded /usr/local/cuda-12.6/bin/nvcc, else bare `nvcc` on PATH.
+      # Set explicitly so it does not depend on PATH ordering.
+      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      # nvcc's host compiler for the device TU (env "NVCC_PREPEND_FLAGS
+      # -ccbin ..."); CUDA 12.6 rejects gcc > 13, so pin it to the g++-13
+      # installed below rather than /usr/bin/g++'s default alias.
+      HAWK_NVCC_CCBIN: /usr/bin/g++-13
+      # ccache: CMake reads the *_COMPILER_LAUNCHER variables, also under scikit-build-core
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPILERCHECK: content
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CMAKE_CUDA_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hawk
+
+      # aether/eagle as sibling checkouts; hawk's CMakeLists.txt (via
+      # hawk/_roots.py) resolves header roots from $HAWK_AETHER_INCLUDE /
+      # $HAWK_EAGLE_INCLUDE directly — no cmake --install step needed, these
+      # just need to point at the two repos' source roots.
+      # companion aether: same-named branch if it exists there, else main
+      - id: ref_aether
+        env:
+          COMPANION_REPO: aether
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
+          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
+          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
+          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
+          echo "companion ${COMPANION_REPO} @ ${ref}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/aether
+          ref: ${{ steps.ref_aether.outputs.ref }}
+          path: aether
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      # companion eagle: same-named branch if it exists there, else main
+      - id: ref_eagle
+        env:
+          COMPANION_REPO: eagle
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
+          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
+          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
+          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
+          echo "companion ${COMPANION_REPO} @ ${ref}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/eagle
+          ref: ${{ steps.ref_eagle.outputs.ref }}
+          path: eagle
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      # companion raptor: same-named branch if it exists there, else main
+      - id: ref_raptor
+        env:
+          COMPANION_REPO: raptor
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
+          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
+          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
+          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
+          echo "companion ${COMPANION_REPO} @ ${ref}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/raptor
+          ref: ${{ steps.ref_raptor.outputs.ref }}
+          path: raptor
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            hawk/pyproject.toml
+            aether/dsc/pyproject.toml
+            raptor/pyproject.toml
+            eagle/python/pyproject.toml
+
+      - run: sudo apt-get update && sudo apt-get install -y g++-13 g++-${{ matrix.gcc }} ccache
+
+      # compiled objects persist across runs; one cache per job and architecture
+      - uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-host-gcc-${{ matrix.gcc }}-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
+          restore-keys: |
+            ccache-v2-${{ runner.os }}-${{ runner.arch }}-host-gcc-${{ matrix.gcc }}-
+      - run: ccache -z
+
+      # NVIDIA's apt repo for Ubuntu 24.04 (noble), x86_64. cuda-keyring adds
+      # the repo + signing key; package names/versions below are the current
+      # (as-authored) 12.6 set and are UNVERIFIED — not run on a live runner.
+      - name: Install compile-only CUDA 12.6 toolchain (nvcc; no driver/GPU)
+        run: |
+          curl -fsSL -o /tmp/cuda-keyring.deb \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i /tmp/cuda-keyring.deb
+          sudo apt-get update
+          # cuda-nvcc-12-6: nvcc/ptxas/cicc. cuda-cudart-dev-12-6: cuda_runtime.h
+          # + libcudart (nvcc auto-includes cuda_runtime.h even for -c-only
+          # compiles). cuda-driver-dev-12-6: the libcuda.so DRIVER STUB (under
+          # lib64/stubs, no actual driver) — added beyond the suggested pair
+          # because eagle's python/CMakeLists.txt links CUDA::cuda_driver.
+          sudo apt-get install -y --no-install-recommends \
+            cuda-nvcc-12-6 cuda-cudart-dev-12-6 cuda-driver-dev-12-6
+          echo "/usr/local/cuda-12.6/bin" >> "$GITHUB_PATH"
+          echo "CUDA_HOME=/usr/local/cuda-12.6" >> "$GITHUB_ENV"
+
+      # The siblings are on PyPI, but CI installs the sibling checkouts so it tests
+      # unreleased changes: aether's header package,
+      # raptor, and eagle's Python package (its _core builds against the
+      # aether + eagle headers installed into a local prefix).
+      - run: |
+          cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
+            -B aether/build -S aether
+          cmake --install aether/build
+          cmake -B eagle/__eagle_hdr -S eagle -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
+            -DCMAKE_CUDA_ARCHITECTURES=70 \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
+          cmake --install eagle/__eagle_hdr
+
+      - run: |
+          python -m pip install --quiet --upgrade pip
+          # aether-dsc's payload is sealed at build time (it is not tracked in
+          # git): seal it from the sibling checkout, as the release workflow does,
+          # in a throwaway venv so the NVRTC packages never reach the test env.
+          python -m venv "$RUNNER_TEMP/seal"
+          "$RUNNER_TEMP/seal/bin/pip" install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
+          (cd aether/dsc && "$RUNNER_TEMP/seal/bin/python" -m aether_dsc.seal)
+          python -m pip install --quiet ./aether/dsc ./raptor
+          export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install:${CMAKE_PREFIX_PATH}"
+          # build deps preinstalled + --no-build-isolation: an isolated build compiles nanobind from a
+          # random /tmp build env, so every compile line differs and ccache never hits;
+          # --only-binary=:all: still builds this local project but never a dependency from
+          # source, so no third-party sdist is ever built without its own isolated env
+          python -m pip install --quiet "scikit-build-core>=0.10" "nanobind>=3.1,<4"
+          export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
+          python -m pip install --quiet --no-build-isolation --only-binary=:all: ./eagle/python
+
+      - env:
+          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
+          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+        run: |
+          cd hawk
+          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]'
+
+      - env:
+          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
+          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+        run: cd hawk && python -m pytest tests -q -m "not gpu"
+      - if: matrix.gcc != 12
+        name: Necessity (masked variants forced on must fail the early-exit rows)
+        env:
+          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
+          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+        run: |
+          printf '#!/bin/sh\nexec g++-%s "$@" -DAETHER_HVM_MASKED=1\n' "${{ matrix.gcc }}" > "$RUNNER_TEMP/gxx-masked"
+          chmod +x "$RUNNER_TEMP/gxx-masked"
+          cd hawk
+          set +e
+          HAWK_CXX="$RUNNER_TEMP/gxx-masked" python -m pytest tests/test_loop_early_exit.py -q -m "not gpu" \
+            -k "middle-host or head_jvp-host or middle_jvp-host"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 1 ]; then
+            echo "expected pytest exit 1 (test failures) with masked variants on, got $rc" >&2
+            exit 1
+          fi
+      - if: always()
+        run: ccache -s
+
   # tsan-ft — hawk._core, eagle._core and hawk's run-time host kernels under
   # ThreadSanitizer on a free-threaded CPython built with --with-thread-sanitizer
   # (cached per version + compiler), running the ft rows. Green = the canary race
   # is reported without our suppressions (the detector reaches _core) AND the ft
   # rows give zero reports with them. See tests/sanitize/.
   tsan-ft:
+    needs: docs-fresh
     runs-on: ubuntu-latest
     env:
       CC: clang-18
@@ -319,6 +586,7 @@ jobs:
             tests/sanitize/tsan_ft.sh "$RUNNER_TEMP/tsan-python/bin/python${TSAN_PY_VERSION%.*}t"
 
   ft-stress:
+    needs: docs-fresh
     runs-on: ubuntu-latest
     strategy:
       # both free-threaded interpreters report, even when one fails
@@ -520,3 +788,137 @@ jobs:
       - if: always()
         run: ccache -s
 
+
+  # The source distributions as a user without matching wheels gets them: the
+  # companion eagle's sdist and hawk's, each built as its publish.yml builds it,
+  # then pip installed into a clean venv with nothing else provided (no HAWK_*
+  # roots, no CMAKE_PREFIX_PATH, no installed headers) and the README host example
+  # run. On x86_64 and on aarch64; compiler warnings in our own sources are errors.
+  sdist-install:
+    needs: docs-fresh
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    env:
+      CC: gcc-13
+      CXX: g++-13
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hawk
+
+      # companion aether: same-named branch if it exists there, else main
+      - id: ref_aether
+        env:
+          COMPANION_REPO: aether
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
+          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
+          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
+          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
+          echo "companion ${COMPANION_REPO} @ ${ref}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/aether
+          ref: ${{ steps.ref_aether.outputs.ref }}
+          path: aether
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      # companion eagle: same-named branch if it exists there, else main
+      - id: ref_eagle
+        env:
+          COMPANION_REPO: eagle
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
+          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
+          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
+          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
+          echo "companion ${COMPANION_REPO} @ ${ref}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: amasat01/eagle
+          ref: ${{ steps.ref_eagle.outputs.ref }}
+          path: eagle
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - run: sudo apt-get update && sudo apt-get install -y g++-13
+
+      # The header roots are named for the SDIST step only, as publish.yml does;
+      # the install below sees none of them.
+      - name: Build both sdists (as their publish.yml do)
+        env:
+          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
+          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+        run: |
+          python -m pip install --quiet build
+          (cd eagle/python && python -m build --sdist --outdir ../../dist)
+          (cd hawk && python -m build --sdist --outdir ../dist)
+          ls -l dist
+
+      - name: Clean venv, pip install eagle's sdist then hawk's (warnings are errors)
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv"
+          . "$RUNNER_TEMP/venv/bin/activate"
+          pip install --quiet --upgrade pip
+          # aether-dsc from the companion checkout (sealed as the release workflow does), so a hawk that
+          # needs an unreleased aether-dsc installs against it instead of the newest one on PyPI
+          python -m venv "$RUNNER_TEMP/seal"
+          "$RUNNER_TEMP/seal/bin/pip" install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
+          (cd "$GITHUB_WORKSPACE/aether/dsc" && "$RUNNER_TEMP/seal/bin/python" -m aether_dsc.seal)
+          pip install --quiet "$GITHUB_WORKSPACE/aether/dsc"
+          pip install -v -Ccmake.define.EAGLE_PYTHON_WARN_AS_ERR=ON dist/raptor_eagle-*.tar.gz
+          pip install -v -Ccmake.define.HAWK_WARN_AS_ERR=ON dist/raptor_hawk-*.tar.gz
+          pip check
+
+      - name: The README host example (forward + vjp) on the installed packages
+        run: |
+          . "$RUNNER_TEMP/venv/bin/activate"
+          cd "$RUNNER_TEMP"
+          # hawk traces a kernel from its source, so the example runs from a file, not stdin
+          cat > readme_example.py <<'PY'
+          import pathlib
+          import platform
+          import tempfile
+
+          import numpy as np
+
+          import eagle
+          import hawk
+          from hawk import Kernel, Mutable, Scalar, Vector
+          from hawk.diff import vjp
+          from hawk.math import dot
+
+
+          @hawk.kernel
+          def energy(v: Vector[3], out: Mutable[Scalar]):
+              out = 0.5 * dot(v, v)
+
+
+          energy_vjp = Kernel("energy_vjp", vjp(energy, wrt=("v",)))
+          work = pathlib.Path(tempfile.mkdtemp())
+          hawk.build([energy, energy_vjp], work, targets=("host",))
+          v = np.array([[1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]])
+          e = np.zeros(4)
+          hawk.run(hawk.load(work, "energy"), v=v, out=e)
+          assert np.allclose(e, [0.5, 2.5, 5.0, 9.0]), e
+          bar_v = np.zeros((3, 4))
+          hawk.run(hawk.load(work, "energy_vjp"), v=v, bar_out=np.ones(4), bar_v=bar_v)
+          assert np.allclose(bar_v, v), bar_v
+          for mod in (eagle._core, hawk._core):
+              assert "site-packages" in mod.__file__, mod.__file__
+          print(f"OK on {platform.machine()}: energy {e}")
+          PY
+          python readme_example.py

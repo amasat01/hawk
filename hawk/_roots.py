@@ -27,6 +27,13 @@ from pathlib import Path
 #: The workspace root the four ``*-abi`` worktrees and ``aether`` hang off.
 WORKSPACE = Path(__file__).resolve().parents[2]
 
+#: The header copy a source distribution carries (see ``_build_backend.py``):
+#: the last candidate for both roots, so a checkout keeps its live ones.
+SDIST_INCLUDE = Path(__file__).resolve().parents[1] / "_sdist_include"
+#: It carries only what ``hawk._core`` compiles, so aether is probed there by
+#: the one aether header the extension includes.
+_SDIST_PROBES = {"aether/aether.h": "aether/typedefs.h"}
+
 
 class RootError(Exception):
     """An include root that cannot be resolved.
@@ -39,16 +46,18 @@ class RootError(Exception):
 
 def aether_include() -> str:
     """The aether header root — ``$HAWK_AETHER_INCLUDE``, else a prefix, else
-    the workspace checkout ((a)'s shape, applied to aether)."""
+    the workspace checkout ((a)'s shape, applied to aether), else the copy a
+    source distribution carries."""
     return _root("HAWK_AETHER_INCLUDE",
-                 [Path(p) / "include" for p in _prefixes()] + [WORKSPACE / "aether"],
+                 [Path(p) / "include" for p in _prefixes()]
+                 + [WORKSPACE / "aether", SDIST_INCLUDE],
                  "aether/aether.h")
 
 
 def eagle_include() -> str:
     """The eagle header root: the directory ``plugin/gref_abi.h`` hangs
     off ((a)) — ``$HAWK_EAGLE_INCLUDE``, else ``<prefix>/include/eagle``,
-    else the ``eagle`` checkout.
+    else the ``eagle`` checkout, else the copy a source distribution carries.
 
     The candidate must be an **aether-abi/2** header: a dev env's prefix
     can easily hold a pre-v2 eagle, so one not defining the v2 macro is
@@ -56,7 +65,7 @@ def eagle_include() -> str:
     return _root("HAWK_EAGLE_INCLUDE",
                  [Path(p) / "include" / "eagle" for p in _prefixes()]
                  + [Path(p) / "include" for p in _prefixes()]
-                 + [WORKSPACE / "eagle", WORKSPACE / "eagle-abi"],
+                 + [WORKSPACE / "eagle", WORKSPACE / "eagle-abi", SDIST_INCLUDE],
                  "plugin/gref_abi.h", must_contain="EAGLE_AETHER_ABI_V2")
 
 
@@ -80,7 +89,8 @@ def _root(var: str, candidates: list, probe: str,
     if override:
         return override
     for candidate in candidates:
-        header = candidate / probe
+        header = candidate / (_SDIST_PROBES.get(probe, probe)
+                              if candidate == SDIST_INCLUDE else probe)
         if not header.is_file():
             continue
         if must_contain is not None and must_contain not in header.read_text():

@@ -325,7 +325,11 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
     out = {}
     for target in targets:
         if target not in _TARGET:
-            raise HawkError(f"unknown target {target!r}; built are {tuple(_TARGET)}")
+            raise HawkError(
+                f"unknown target {target!r}: the valid targets are "
+                + " and ".join(repr(t) for t in _TARGET)
+                + " ('cuda' builds for the GPU, 'host' for the CPU); "
+                + f"pass targets=({next(iter(_TARGET))!r},) or targets=('host',)")
         out[target] = render_source(
             name, kernel.sinks, kernel.walk, BACKENDS[target], mode=smode, kind=kind,
             body=body, segment=segment, active=active,

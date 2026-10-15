@@ -4,7 +4,7 @@ The shortest path from install to a first answer: one kernel, built for
 the CPU, run, and read back. New words (plane, kernel kind, ...) are in the
 [glossary](glossary).
 
-Install first (`pip install raptor-hawk`; see [installation](installation)).
+Install first (`pip install raptor-hawk raptor-eagle matplotlib` for the CPU route; see [installation](installation)).
 Then write a kernel. It is a plain Python function decorated
 `@hawk.kernel`; each parameter's type says what role it plays for every
 sample:
@@ -28,11 +28,11 @@ it and run it:
 import pathlib
 import tempfile
 
-import hawk.artifact
+import hawk
 import numpy as np
 
 work_dir = pathlib.Path(tempfile.mkdtemp())
-hawk.artifact.build(scale, work_dir, targets=("host",));
+hawk.build([scale], work_dir, targets=("host",))
 
 host_kernel = hawk.load(work_dir, "scale")
 x = np.linspace(0.0, 7.0, 8)
