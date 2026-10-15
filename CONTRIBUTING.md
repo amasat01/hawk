@@ -37,3 +37,15 @@ test-wheel steps without publishing.
 **Publish order across the family:** `raptor-hawk` depends on `aether-dsc`
 (in the `aether` repo), which — together with `raptor-core` — has no family
 dependencies and publishes first. Release `aether-dsc` before `raptor-hawk`.
+
+## How work flows
+
+- Changes go to the long-lived `dev` branch, either directly or through a
+  short-lived feature branch that is merged into `dev`.
+- Work that spans repositories uses the SAME branch name in each repository.
+  CI checks out the companion repositories at that branch if it exists there,
+  and at `main` otherwise; the log line "companion <repo> @ <branch>" shows
+  which one was used.
+- CI runs on every push, so a red result is seen before anything reaches `main`.
+- `main` is updated only by merging `dev` at a clean state (a release or
+  milestone point) with green CI. Nothing is pushed to `main` directly.

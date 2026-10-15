@@ -389,9 +389,12 @@ def include_flags(*, aether_root: str | None = None,
 
 
 def host_compiler() -> str:
-    """The host compiler, in discovery order: ``$HAWK_CXX`` when set, else
-    ``g++`` on ``PATH``, else the ``ziglang`` wheel's ``zig c++`` — a
-    pip-only host tier for a box with no system C++ toolchain at all.
+    """The host compiler, in discovery order: ``$HAWK_CXX`` when set (an
+    explicit override: unresolvable raises), else the standard ``$CXX`` (its
+    first word, resolved through ``PATH``; unresolvable falls through, its
+    arguments are not kept), else ``g++`` on ``PATH``, else the ``ziglang``
+    wheel's ``zig c++`` — a pip-only host tier for a box with no system C++
+    toolchain at all.
 
     ``zig c++`` is a subcommand of the single ``zig`` binary, not its own
     executable — it cannot stand as one ``argv[0]`` the way ``g++``'s path
@@ -406,13 +409,19 @@ def host_compiler() -> str:
         if not found:
             raise HawkError(f"$HAWK_CXX={cxx!r} not found on PATH.")
         return found
+    std_cxx = os.environ.get("CXX", "")
+    words = std_cxx.split()
+    if words:
+        found = shutil.which(words[0])
+        if found:
+            return found
     found = shutil.which("g++")
     if found:
         return found
-    return _zig_cxx_wrapper()
+    return _zig_cxx_wrapper(tried_cxx=std_cxx)
 
 
-def _zig_cxx_wrapper() -> str:
+def _zig_cxx_wrapper(tried_cxx: str = "") -> str:
     """The stable ``argv[0]`` :func:`host_compiler` hands back for the
     ``ziglang`` fallback: a one-line ``exec <zig binary> c++ "$@"`` script,
     written once under :func:`~hawk.compile.cache.default_cache_dir` and
@@ -428,10 +437,12 @@ def _zig_cxx_wrapper() -> str:
         import ziglang
     except ImportError:
         raise HawkError(
-            "no g++ on PATH and the ziglang wheel is not installed; set "
-            "$HAWK_CXX, install g++, or `pip install ziglang` ("
-            "host-compiler discovery order). A skipped compile certifies "
-            "nothing.") from None
+            "no host compiler found. Tried, in order: $HAWK_CXX (unset), "
+            f"$CXX ({tried_cxx!r}, "
+            f"{'did not resolve on PATH' if tried_cxx else 'unset'}), "
+            "g++ on PATH (absent), the ziglang wheel (not installed). Set "
+            "$HAWK_CXX or $CXX, install g++, or `pip install ziglang`. "
+            "A skipped compile certifies nothing.") from None
     zig_bin = Path(ziglang.__file__).resolve().parent / "zig"
     if not zig_bin.is_file():
         raise HawkError(
@@ -584,6 +595,74 @@ def compiler_is_gcc(compiler: str) -> bool:
         gcc = False
     with _GCC_FAMILY_LOCK:
         return _GCC_FAMILY_MEMO.setdefault(compiler, gcc)
+
+
+#: Per-process memo of each compiler's predefined macros (name -> value),
+#: behind :func:`compiler_macros`; guarded like :data:`_GCC_FAMILY_MEMO`.
+_MACRO_MEMO: dict = {}
+_MACRO_LOCK = threading.Lock()
+
+def compiler_macros(compiler: str) -> dict:
+    """``compiler``'s predefined macros (``-dM -E -x c++``) as a name -> value
+    dict, memoised per compiler path for the process; empty when the compiler
+    cannot be probed."""
+    with _MACRO_LOCK:
+        known = _MACRO_MEMO.get(compiler)
+    if known is not None:
+        return known
+    macros: dict = {}
+    try:
+        out = subprocess.run([compiler, "-dM", "-E", "-x", "c++", os.devnull],
+                             capture_output=True, text=True, timeout=60,
+                             check=False)
+        if out.returncode == 0:
+            for ln in out.stdout.splitlines():
+                parts = ln.split(None, 2)
+                if len(parts) >= 2 and parts[0] == "#define":
+                    macros[parts[1]] = parts[2] if len(parts) > 2 else ""
+    except (OSError, subprocess.SubprocessError):
+        macros = {}
+    with _MACRO_LOCK:
+        return _MACRO_MEMO.setdefault(compiler, macros)
+
+
+def gcc_maskcall_affected(macros: dict) -> bool:
+    """Whether a compiler with predefined ``macros`` is a GCC that miscompiles
+    a conditional call of a function with masked vector variants.
+
+    GCC 13.1-13.3 and 14.1-14.2 if-convert such a call with the mask of the
+    negated condition inverted, so the masked variant evaluates the lanes that
+    should be inactive. aether-dsc drops its masked variants on exactly these
+    compilers. Fixed upstream by "middle-end: Fix ifcvt predicate generation
+    for masked function calls" (commit abbfe1e2616d), which is in GCC 13.4 and
+    14.3. The release number is ``__GNUC_MINOR__`` (13.4.0 has minor 4, patch 0)."""
+    if "__clang__" in macros or "__GNUC__" not in macros:
+        return False
+    try:
+        major = int(macros["__GNUC__"])
+        minor = int(macros.get("__GNUC_MINOR__", "0"))
+    except ValueError:
+        return False
+    return (major == 13 and minor < 4) or (major == 14 and minor < 3)
+
+
+def conditional_math_scalar(profile: str | None = None, *,
+                            macros: dict | None = None) -> bool:
+    """Whether the host compiler leaves a loop with a conditional math call
+    scalar under ``profile``: ``native-vector-math`` on a GCC that miscompiles
+    masked vector variants (:func:`gcc_maskcall_affected`, where aether-dsc
+    declares none) or that predates 13 (GCC 12 never if-converts a conditional
+    call of a function with simd clones). ``macros`` overrides the host
+    compiler's probed macros (for tests)."""
+    if host_profile(profile) != "native-vector-math":
+        return False
+    macros = compiler_macros(host_compiler()) if macros is None else macros
+    if gcc_maskcall_affected(macros):
+        return True
+    try:
+        return "__clang__" not in macros and int(macros.get("__GNUC__", "99")) < 13
+    except ValueError:
+        return False
 
 
 def _is_x86_64() -> bool:

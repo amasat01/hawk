@@ -111,6 +111,14 @@ pass `np.array(x)`). eagle's own entry points apply the same rule and also accep
 numbers for inputs and return head-shaped results; see
 [Stop when you're done](tutorials/03_stop_when_youre_done.ipynb).
 
+## Advanced: launch the persistent entry yourself
+
+Only needed if you launch hawk's compiled entries yourself instead of through eagle.
+
+A stepping kernel that hawk marks `auto` also gets a `<name>_persist` entry, which runs warp-converged: the lanes of a warp claim samples together and work in chunks. If you launch it yourself, it takes the fused entry's arguments and then `hawk_next` (a `uint32` you zero), `hawk_util` (two `uint64`, or null), `hawk_steps` (a `uint32` you zero, or null), `hawk_stepsum` (a `uint64` you zero, or null) and, last, `hawk_chunk`: a `uint32` giving the steps between chunk heads. It must be a power of two; `0` runs each sample whole. Launch it with a block size that is a multiple of 32. The results are bit-identical to the fused entry for any chunk.
+
+The kernel's sidecar carries `fp64_ops_ir`: one step's 64-bit floating-point operation count, counted in the IR. It is the cost of a step, useful for choosing a chunk length; the compiler fuses and shares operations, so the machine issues fewer. Read it from `artifact.sidecar` like any other field; it is absent for a kernel that does not step.
+
 ## The device crossing: eagle
 
 A compiled device artifact (`.ptx`/`.cubin`, from

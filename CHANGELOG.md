@@ -1,6 +1,37 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-10-14)
+
+GCC 13.1-13.3 and 14.1-14.2 miscompile a conditional call of a function that has masked
+vector variants (fixed in GCC 13.4 and 14.3). aether-dsc 0.2.3, now the minimum, avoids
+it automatically by declaring no masked vector-math variants on those compilers, and
+hawk reports the affected loops (an interchanged trip loop with a math call, under
+`native-vector-math`) as not `vectorised`. Only loops with a conditional math call run
+scalar there, and on GCC 12, which never if-converts such a call; everything else stays vectorised, and no compile flag is added.
+
+Every `for` loop of a `sample_local` kernel runs interchanged on the host: the trips
+outside, a tile of samples inside, the carried values in lane arrays. The tile spans
+eight vector registers of the kernel's float type (64 float64 or 128 float32 samples
+under AVX-512), so a dependent loop body keeps eight chains in flight and the lane loop
+vectorises whatever the trip count. A sample's own `break` or runtime trip count stops
+it in its lane; a nested `for` stays each lane's own loop. Under `native` and
+`portable` the results are bit-identical to the per-sample loop, which
+`-DHAWK_HOST_INTERCHANGE=0` still builds. `vectorised` (on a host `Source`, in
+`kernel_cost()` and per `dispatch_costs()` branch) reports these loops as vectorised;
+a loop pair that reads a tape or another loop's count, and a loop inside one `switch`
+case, keep the per-sample loop and the unroll limit.
+Host-compiler discovery honours the standard `$CXX` (precedence: `$HAWK_CXX`, `$CXX`, `g++` on `PATH`, zig); an unresolvable `$CXX` falls through, and the not-found error names every candidate tried.
+
+`build()` and `build_bundle()` take `literal_table=` (default `False`). On, the device
+source reads its `double` literals from one `__constant__` table per translation unit,
+the same bits as operand immediates; off, the device code is byte-identical to before.
+It pays on architectures that issue a move pair per literal (sm_90); a `float32` build
+ignores it.
+
+`hawk.ir.dispatch_costs()` takes the host profile, and reports `fused_vectorised`
+only for a sample-local kernel whose branches either call no library math or are built
+under `native-vector-math`: under an exact profile `exp`, `sin` and the like stay scalar,
+so the fused host loop no longer counts as running every branch in lockstep.
 
 An automatic kernel's `_persist` entry runs warp-converged. At each chunk head the
 lanes of a warp without a sample claim the next ones together: one ballot, one
@@ -12,7 +43,15 @@ whole), and the entry is launched in whole warps. The slot pair now counts each
 warp's slots at each head (32 lanes times the chunk), so steps over slots is the
 run's slot fill. Results are bit-identical to the fused entry for any chunk, and the
 entry holds no more registers than before. The sidecar of a stepping kernel gains
-`ops_per_step`, one step's 64-bit floating-point operation count from the IR.
+`fp64_ops_ir`, one step's 64-bit floating-point operation count from the IR.
+
+The `_persist` entry writes a sample back at the next chunk head instead of where it
+ends: a lane whose sample exits or spends its budget only marks it in its trip count,
+and the warp's ending lanes commit together at the head, ahead of their claim, instead
+of one lane at a time in a branch of the step. The commit reads the carried values and
+rebuilds the loop's finish flag from the trip count, so the entry holds no more
+registers; a kernel committing a value the step neither carries nor sets as that flag
+keeps its commit in the chunk. Results stay bit-identical to the fused entry.
 
 ## 0.4.0 (2026-10-09)
 

@@ -134,7 +134,10 @@ jobs:
           python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]'
           python -m pip install --quiet -r docs/requirements.txt
 
-      - name: make nbcheck
+      # nbcheck also executes every notebook on the CPU, so the notebooks' own dependencies must be present
+      - run: python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: make nbcheck (every notebook filled, then run on the CPU)
         run: cd hawk/docs && make nbcheck
 
       - name: make strict

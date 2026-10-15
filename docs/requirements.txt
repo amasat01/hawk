@@ -10,3 +10,7 @@ sphinx-copybutton==0.5.2
 sphinx-autodoc-typehints==3.5.2
 nbformat
 nbclient
+ipykernel
+matplotlib
+# NVIDIA Warp: examples/04_hawk_next_to_warp compares against it (the notebook gate skips it when absent)
+warp-lang

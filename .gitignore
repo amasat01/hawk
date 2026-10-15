@@ -15,3 +15,5 @@ hawk/_core*.so
 
 # Sphinx autosummary output (regenerated on every build)
 docs/content/api/generated/
+# the header copy _build_backend.py makes for the sdist
+_sdist_include/

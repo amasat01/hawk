@@ -87,8 +87,10 @@ def plan_view(sidecar: dict) -> dict:
         **({"finish": dict(sidecar["finish"])} if "finish" in sidecar else {}),
         # One step's operation count, if the kernel steps.
         **({"step_ops": int(sidecar["step_ops"])} if "step_ops" in sidecar else {}),
-        # One step's 64-bit floating-point operations, if the kernel steps.
-        **({"ops_per_step": int(sidecar["ops_per_step"])} if "ops_per_step" in sidecar else {}),
+        # One step's 64-bit floating-point operations in the IR, if the kernel
+        # steps (``ops_per_step``: the same count under its earlier development name).
+        **({"fp64_ops_ir": int(sidecar.get("fp64_ops_ir", sidecar.get("ops_per_step")))}
+           if "fp64_ops_ir" in sidecar or "ops_per_step" in sidecar else {}),
         # The fast entries count samples finished on entry into the finish counter.
         **({"entry_counts_finished": True} if sidecar.get("entry_counts_finished") else {}),
         # A derivative kernel's ``{kind, wrt, primal, primal_unit}`` tag (its

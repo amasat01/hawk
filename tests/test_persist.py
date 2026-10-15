@@ -22,7 +22,8 @@ is pinned:
 * **Warp-converged.** One warp-collective claim per chunk head (one
   ``atomicAdd(hawk_next`` in the entry), nothing collective or atomic in the
   step body, and the chunk length a launch argument: any length leaves the
-  same bits.
+  same bits. A sample ending in a chunk is written back at the next head,
+  with the warp's other ending lanes.
 * **Slot fill** is counted when asked: the steps run over the warps' chunk
   slots (32 lanes times the chunk length per head), a lane masked after its
   sample commits counting as an empty slot.
@@ -234,10 +235,64 @@ def test_the_persist_loop_is_warp_converged(kernel):
     for token in ("__syncwarp", "__shfl", "__ballot", "__any_sync", "__all_sync",
                   "__activemask", "atomic"):
         assert token not in chunk, token
-    for token in ("__syncwarp()", "__ballot_sync(", "__shfl_sync(", "__any_sync("):
+    for token in ("__ballot_sync(", "__shfl_sync(", "__any_sync("):
         assert token in head, token
-    assert tail.startswith("(static_cast<unsigned>(hawk_trip) & (hawk_chunk - 1u)) != 0u);")
+    # the ballot is the warp's meeting point at the head: no separate barrier
+    assert "__syncwarp" not in head
+    assert tail.startswith("(hawk_trip & (hawk_chunk - 1u)) != 0u);")
     assert "% 32u" not in body and "unsigned int hawk_chunk)" in text
+
+
+@pytest.mark.parametrize("kernel", [oscillator, rkf78_attempt], ids=lambda k: k.name)
+def test_a_sample_is_written_back_at_the_next_head(kernel):
+    """A lane whose sample ends in the chunk only marks it (the ended bit in
+    its trip count, the trips run below it when the step exited, 0 when the
+    budget ran out) and is written back at the next chunk head, with the
+    warp's other ending lanes, before the lane claims again: the chunk holds
+    no plane store and no report, and the head holds the commit once, ahead
+    of the claim's sample index. The loop's finish flag is rebuilt from the
+    trip count, not held."""
+    import re
+
+    text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+                         kind=kernel.kind, one_step=kernel.one_step).text
+    head, chunk, _ = _loop_parts(text, kernel.name)
+    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
+    stores = re.findall(r"^\s*(\w+)\[i\] = ", split.post, re.M)
+    assert stores
+    for plane in stores:
+        assert f"{plane}[i] = " not in chunk, plane
+        assert head.count(f"{plane}[i] = ") == 1, plane
+    assert "hawk_maxtrip" not in chunk and "hawk_ran" not in chunk
+    ended = chunk.split(f"if ({split.exit} || hawk_trip >= hawk_budget) {{", 1)[1]
+    assert ended.split("break;", 1)[0].strip() == \
+        f"hawk_trip = {split.exit} ? (hawk_trip | 0x80000000u) : 0x80000000u;"
+    commit = head.index("if (hawk_trip > hawk_budget) {")
+    assert commit < head.index("hawk_s = hawk_base + ") and "finished = (hawk_trip != 0x80000000u ?" in head
+
+
+def test_a_value_the_trip_count_cannot_rebuild_keeps_the_commit_in_the_chunk():
+    """A committed plane the step never reads (``energy`` here) is neither the
+    exit flag nor carried, so the head could not write it back: such a kernel
+    keeps the commit where the sample ends, in the chunk."""
+    import hawk
+    from hawk import Mutable, Param, Scalar, Terminated
+
+    @hawk.kernel
+    def decay(rate: Scalar, nstop: Scalar, dt: Param, terminated: Terminated,
+              x: Mutable[Scalar], energy: Mutable[Scalar], k: Mutable[Scalar]):
+        x = x - dt * rate * x
+        energy = x * x
+        kn = k + 1.0
+        k = kn
+        terminated = kn >= nstop
+
+    text = render_source(decay.name, decay.sinks, decay.walk, BACKENDS["cuda"],
+                         kind=decay.kind, one_step=decay.one_step).text
+    head, chunk, _ = _loop_parts(text, decay.name)
+    assert "mut_energy[i] = " in chunk and "mut_energy[i] = " not in head
+    assert "hawk_maxtrip = max(hawk_maxtrip, hawk_trip);" in chunk
+    assert "if (hawk_trip > hawk_budget) {" not in head
 
 
 @pytest.mark.parametrize("kernel, light", [(oscillator, True), (rkf78_attempt, False)],
@@ -258,16 +313,30 @@ def test_only_a_light_step_unrolls_its_device_loops(kernel, light):
 
 def test_a_stepping_kernels_sidecar_carries_its_step_op_count(bundle):
     """``step_ops`` is the lane split's own operation count, for the runtime
-    that launches the kernel, and ``ops_per_step`` its 64-bit floating-point
-    operations, for a profiler; a kernel that does not step has neither."""
+    that launches the kernel, and ``fp64_ops_ir`` its 64-bit floating-point
+    operations in the IR; a kernel that does not step has neither."""
     from hawk.artifact.bundle import _step_ops
 
     for name, kernel in KERNELS.items():
         split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
         assert sidecar_of(bundle, name)["step_ops"] == split.op_count > 0, name
-        assert sidecar_of(bundle, name)["ops_per_step"] == split.fp64_ops > 0, name
+        assert sidecar_of(bundle, name)["fp64_ops_ir"] == split.fp64_ops > 0, name
         assert sidecar_of(bundle, name)["entry_counts_finished"] is True, name
+        assert "ops_per_step" not in sidecar_of(bundle, name), name
     assert _step_ops(oscillator.step, oscillator.step.kind) is None
+
+
+def test_the_plan_view_reads_the_fp64_op_count_under_either_key(bundle):
+    """``plan_view`` carries ``fp64_ops_ir``, and reads a sidecar that still
+    spells it ``ops_per_step`` the same."""
+    from hawk.artifact import plan_view
+
+    sidecar = sidecar_of(bundle, "oscillator")
+    want = sidecar["fp64_ops_ir"]
+    assert plan_view(sidecar)["fp64_ops_ir"] == want
+    old = {k: v for k, v in sidecar.items() if k != "fp64_ops_ir"}
+    assert plan_view(dict(old, ops_per_step=want))["fp64_ops_ir"] == want
+    assert "fp64_ops_ir" not in plan_view(old)
 
 
 def test_only_an_automatic_kernel_has_a_persist_entry():
@@ -295,13 +364,15 @@ def test_fast_entries_count_trips_in_32_bits(kernel):
 
     text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
-    for suffix in ("_persist", "_range"):
+    # the persist entry's trip budget is hawk_budget (the launch's one word),
+    # the range entry's hawk_cnt
+    for suffix, count in (("_persist", "hawk_budget"), ("_range", "hawk_cnt")):
         body = _entry_body(text, kernel.name, suffix)
-        for bad in ("Int hawk_trip", "Int hawk_cnt", "long long hawk_trip",
-                    "long long hawk_cnt"):
+        for bad in ("Int hawk_trip", f"Int {count}", "long long hawk_trip",
+                    f"long long {count}"):
             assert bad not in body, f"{kernel.name}{suffix}: 64-bit counter `{bad}`"
         assert "int hawk_trip" in body, f"{kernel.name}{suffix}: no `int hawk_trip`"
-        assert "int hawk_cnt" in body, f"{kernel.name}{suffix}: no `int hawk_cnt`"
+        assert f"int {count}" in body, f"{kernel.name}{suffix}: no `int {count}`"
     fused = _entry_body(text, kernel.name, "")
     assert "lut_fused_steps" in fused
     loops = re.findall(r"for \((\w+(?: \w+)*) hawk_\w+_step = 0;", fused)
@@ -449,8 +520,8 @@ def test_the_persist_entry_holds_only_what_a_step_needs(kernel):
     """The entry's residency is its register count, so it carries across a
     step only what the next step reads: a value computed from ``Param`` inputs
     alone is evaluated once at entry (not a per-lane copy), a carry the step
-    never reads (the loop's exit flag) is read by the commit from the trip that
-    set it, the trip count also ends the chunk (no chunk counter), and the
+    never reads (the loop's exit flag) is rebuilt by the commit from the trip
+    count, the trip count also ends the chunk (no chunk counter), and the
     step budget left says whether the lane holds a sample (no flag). The same
     rules hold for any kernel; these two are witnesses."""
     text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],

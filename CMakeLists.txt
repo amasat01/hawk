@@ -44,6 +44,7 @@ project(hawk_core LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+option(HAWK_WARN_AS_ERR "Compiler warnings in hawk's own sources are errors" OFF)
 
 find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(nanobind CONFIG QUIET)
@@ -143,6 +144,9 @@ target_compile_definitions(_core PRIVATE AETHER_CPP_MODE)
 # Bundle libstdc++/libgcc, exactly as eagle's binding does and for the same
 # reason: the runtime env's system libstdc++ can predate the build toolchain's.
 target_link_options(_core PRIVATE ${_hawk_static_runtime})
+if(HAWK_WARN_AS_ERR)
+  target_compile_options(_core PRIVATE -Werror)
+endif()
 # dlopen/dlsym live in libdl on older glibc and in libc since 2.34; CMake's
 # ${CMAKE_DL_LIBS} resolves whichever this platform needs.
 target_link_libraries(_core PRIVATE ${CMAKE_DL_LIBS})

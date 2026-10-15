@@ -13,6 +13,7 @@ from __future__ import annotations
 import hawk
 import hawk.math as M
 from hawk.ir import Assign, Dispatch, Leaf, canonical, dispatch_costs
+from hawk.ir.cost import kernel_cost
 from hawk.ir import make as mk
 from hawk.types import TensorType
 
@@ -118,3 +119,97 @@ def test_the_sidecar_facts_ride_along():
 def test_every_group_of_a_kernel_is_costed_under_its_published_name():
     walk = canonical(_mixed.sinks)
     assert set(dispatch_costs(walk)) == {d.name for d in walk.dispatches}
+
+
+def test_a_library_call_vectorises_the_fused_loop_only_under_the_vector_math_profile():
+    walk = canonical(_mixed.sinks)
+    lib = lambda profile: dispatch_costs(walk, profile)["dispatch0"].branches   # noqa: E731
+    assert not all(b.vectorised for b in lib("native"))
+    assert not all(b.vectorised for b in lib("portable"))
+    assert all(b.vectorised for b in lib("native-vector-math"))
+    # the fused loop renders the dispatch as a C++ switch, which stays scalar under every profile
+    assert not dispatch_costs(walk, "native-vector-math")["dispatch0"].fused_vectorised
+
+
+def test_branches_without_a_library_call_vectorise_under_every_profile():
+    walk = canonical(_shared.sinks)
+    for profile in ("native", "portable", "native-vector-math"):
+        cost = dispatch_costs(walk, profile)["dispatch0"]
+        assert all(b.vectorised for b in cost.branches)
+        assert not cost.fused_vectorised          # a rendered switch keeps the fused loop scalar
+
+
+@hawk.kernel
+def _two_chains(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+    a = 0.0
+    b = 0.0
+    for _ in range(8):
+        a = a * x + 1.0
+        b = b * x + 2.0
+    y = M.dispatch(k, [a + b, x], policy="switch")
+
+
+def test_a_chain_is_the_critical_path_not_the_op_count():
+    # two independent carries of 8 trips: 32 multiplies/adds in the loop, but each
+    # iteration is a multiply then an add, so the path is 8 x 2, plus the final add
+    cost = _costs(_two_chains).branches[0]
+    assert cost.arith64 == 33
+    assert (cost.chain32, cost.chain64, cost.chainSpecial32, cost.chainSpecial64) == (0, 17, 0, 0)
+    assert cost.chain_tuple() == cost.as_tuple() + (0, 17, 0, 0)
+    assert _costs(_two_chains).branches[1].chain_tuple()[6:] == (0, 0, 0, 0)
+
+
+def test_a_library_call_lands_in_the_special_chain():
+    cost = _costs(_mixed).branches
+    assert [b.chainSpecial64 for b in cost] == [0, 1, 1]
+    assert [b.chain64 for b in cost] == [1, 0, 3]   # x*x, +1, then log, then *b: arith path 3
+
+
+def test_the_loop_chain_is_trip_times_the_carry_depth():
+    assert _costs(_looped).branches[0].chain64 == 8
+
+
+def test_kernel_cost_covers_a_kernel_without_a_dispatch():
+    @hawk.kernel
+    def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+        y = x * x + 1.0
+
+    cost = kernel_cost(canonical(plain.sinks), "native")
+    assert (cost.arith64, cost.chain64, cost.vectorised) == (2, 2, True)
+
+
+def test_work_that_does_not_depend_on_a_carry_adds_nothing_to_the_chain():
+    @hawk.kernel
+    def gathered(k: hawk.Index, table: hawk.Table[hawk.Scalar], where: hawk.Index,
+                 x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+        acc = x
+        for i in range(8):
+            acc = acc + table.at(where + i)    # the index arithmetic is off the recurrence
+        y = M.dispatch(k, [acc, x], policy="switch")
+
+    cost = _costs(gathered).branches[0]
+    assert (cost.chain32, cost.chain64) == (0, 8)
+
+
+def test_a_whole_kernel_counts_the_plane_elements_it_writes():
+    @hawk.kernel
+    def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+        y = x * x + 1.0
+
+    cost = kernel_cost(canonical(plain.sinks), "native")
+    assert cost.stores == 1
+    assert cost.row_tuple() == cost.chain_tuple() + (1,)
+
+
+def test_a_dispatch_branch_stores_the_value_it_hands_to_the_sink():
+    for branch in _costs(_shared).branches:
+        assert branch.stores == 1
+        assert branch.row_tuple()[-1] == 1
+
+
+def test_a_cost_without_a_store_count_has_no_store_entry():
+    from hawk.ir.cost import BranchCost
+
+    bare = BranchCost(loads=2)
+    assert bare.stores is None
+    assert bare.row_tuple() == bare.chain_tuple()

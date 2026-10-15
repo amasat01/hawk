@@ -21,8 +21,9 @@ manifest, a sidecar or a layout export: those are :mod:`hawk.artifact`'s job.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from ..ir import HawkError, Walk
@@ -186,6 +187,8 @@ class Source:
     backend: str
     mode: str
     reduce_op: str | None = None
+    #: The host loop over samples is vectorised (see :func:`hawk.ir.vectorise.vectorises`).
+    vectorised: bool = False
 
 
 #: The headers every emitted TU includes, in the mandated order: aether
@@ -701,7 +704,7 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
         prologue_kw["finish"] = lane_finish(walk)
     epilogue = (backend.index_epilogue(segment, **prologue_kw)
                 if lane_guards is not None else backend.index_epilogue())
-    tiled = (_interchange(backend, name, sinks, walk, kind)
+    tiled = (_interchange(backend, name, sinks, walk, kind, mode)
              if own_body and segment is None and active is None
              and not compensated and not store_compensated else None)
     extra_prelude = getattr(backend, "extra_prelude", None)
@@ -724,19 +727,66 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
         "}",
         "",
     ]
-    return Source("\n".join(p for p in parts if p is not None), body.text, name,
-                  backend.id, mode.id, body.reduce_op)
+    from ..ir.vectorise import vectorises
+
+    return Source(_filled(parts, mode), body.text, name,
+                  backend.id, mode.id, body.reduce_op,
+                  backend.id == "host" and vectorises(walk, scalar_type=mode.id))
 
 
-def _interchange(backend: Backend, name: str, sinks, walk: Walk, kind):
+_REAL_LITERAL = re.compile(r"static_cast<Real>\((-?[0-9][0-9.eE+-]*)\)")
+_LITERAL_TABLE = "hawk_f64_literals"
+
+
+def literal_table(source: Source) -> Source:
+    """``source`` with every ``double`` literal of its body read from one
+    ``__constant__`` table instead of being an operand immediate.
+
+    The table holds each distinct value once, in the literal's own
+    round-tripping text, so every value is bit-identical to the literal it
+    replaces. A ``float`` TU is returned unchanged (its literals are
+    single-precision immediates, and a table of doubles would put 64-bit loads
+    in a kernel that has none). The declaration goes after the last
+    ``#include`` of the TU, so the table is visible to the whole body."""
+    if source.mode != FLOAT64.id:
+        return source
+    slots: dict[str, int] = {}
+
+    def slot(match):
+        index = slots.setdefault(match.group(1), len(slots))
+        return f"static_cast<Real>({_LITERAL_TABLE}[{index}])"
+
+    head, sep, tail = source.text.rpartition("#include")
+    first_line, nl, rest = tail.partition("\n")
+    text = _REAL_LITERAL.sub(slot, rest)
+    if not slots:
+        return source
+    table = (f"static __constant__ double {_LITERAL_TABLE}[{len(slots)}] = {{"
+             + ", ".join(slots) + "};")
+    return replace(source, text=f"{head}{sep}{first_line}\n{table}\n{text}")
+
+
+def _interchange(backend: Backend, name: str, sinks, walk: Walk, kind,
+                 mode: ScalarMode = FLOAT64):
     """The backend's interchanged fused-step loop for this TU (the host's
     optional ``interchange`` hook, :mod:`hawk.emit.host`), or ``None``: a
-    backend without the hook, or a kernel that is not a fused step, keeps
-    its text unchanged."""
+    backend without the hook, or a kernel the hook declines, keeps its text
+    unchanged."""
     hook = getattr(backend, "interchange", None)
-    if hook is None or getattr(walk, "finish", None) is None:
+    if hook is None:
         return None
-    return hook(name, sinks, walk, kind)
+    return hook(name, sinks, walk, kind, 4 if mode is FLOAT32 else 8)
+
+
+#: The host lane-guard ABI's lane type until the TU's scalar mode fills it in.
+_LANE_TYPE = "HAWK_LANE_T"
+
+
+def _filled(parts, mode: ScalarMode) -> str:
+    """The TU text of ``parts``, its guard/tally lanes spelled as the mode's
+    ``Real``, so a float32 loop has one width."""
+    return "\n".join(p for p in parts if p is not None).replace(
+        _LANE_TYPE, mode.real_spelling)
 
 
 def _extra_prelude(hook, walk: Walk, tiled) -> str | None:
@@ -799,7 +849,7 @@ def _render_two_paths(name: str, sinks, walk: Walk, backend: Backend, *,
     fused = render_body(sinks, walk, indent="        ", kind=kind)
     single = render_body(one_step.sinks, one_step.walk, indent="        ", kind=kind)
     tiled = None if active is not None else _interchange(backend, name, sinks,
-                                                         walk, kind)
+                                                         walk, kind, mode)
     extra_prelude = getattr(backend, "extra_prelude", None)
     parts = [
         f"// HAWK-emitted {backend.id} translation unit (scalar mode: {mode.id}).\n"
@@ -819,7 +869,7 @@ def _render_two_paths(name: str, sinks, walk: Walk, backend: Backend, *,
         *_fast_entries(backend, name, sinks, walk, kind, fused, single, one_step,
                        active),
     ]
-    return Source("\n".join(p for p in parts if p is not None),
+    return Source(_filled(parts, mode),
                   single.text + "\n" + fused.text, name, backend.id, mode.id,
                   fused.reduce_op)
 

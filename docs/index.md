@@ -29,6 +29,12 @@ forward- and reverse-mode derivatives from that representation, and
 compiles it for the [eagle](https://amasat01.github.io/eagle/) runtime to
 run.
 
+```{raw} html
+:file: _static/family_visuals/fragments/map_radar.html
+```
+
+*Where each tool covers the work, drawn from eagle's committed performance cards; the tables behind the charts list every value.*
+
 ```python
 import hawk
 from hawk import Mutable, Param, Scalar
@@ -44,7 +50,7 @@ input, a shared constant, or an output — and each parameter's type says
 which plane it fills (`Scalar` a per-sample input, `Param` a uniform
 constant, `Mutable[...]` an output plane; defined in full in the first
 tutorial, next), plus an ordinary arithmetic body.
-`hawk.artifact.build` compiles it for host and device in one call —
+`hawk.build` compiles it for host and device in one call —
 `pip install raptor-hawk` (the CPU route; for a GPU add the `[cuda12]` or `[cuda13]` extra, see the
 [full install guide](content/installation)) is all it takes to try it.
 
