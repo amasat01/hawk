@@ -51,12 +51,6 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: documented numbers match the committed cards
-        run: |
-          if ! python hawk/tools/sync_perf_claims.py --eagle-root eagle --check; then
-            echo "::error::The documented performance numbers are out of date with the committed cards. Regenerate them locally with: python tools/sync_perf_claims.py --eagle-root <path to an eagle checkout> -- then commit the result."
-            exit 1
-          fi
       # companion site (amasat01.github.io): same-named branch if it exists there, else main
       - id: ref_site
         env:
@@ -76,12 +70,8 @@ jobs:
           ref: ${{ steps.ref_site.outputs.ref }}
           path: site
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-      - name: family visuals match the landing site and the cards
-        run: |
-          if ! python site/tools/sync_family_visuals.py --check --site-root site --eagle-root eagle --target hawk=hawk; then
-            echo "::error::The family visuals bundle is out of date with the landing site or the cards. Regenerate it locally with: python tools/sync_family_visuals.py --site-root <path to the site checkout> --eagle-root <path to an eagle checkout> --target hawk=<this repo> -- then commit docs/_static/family_visuals."
-            exit 1
-          fi
+      - name: documented numbers and family visuals match the committed cards
+        run: bash hawk/tools/docs_fresh.sh eagle site
   test:
     needs: docs-fresh
     runs-on: ubuntu-latest
