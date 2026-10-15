@@ -245,6 +245,7 @@ jobs:
       - env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+          RAPTOR_EAGLE_ROOT: ${{ github.workspace }}/eagle
         run: cd hawk && python -m pytest tests -q -m "not gpu"
       - if: always()
         run: ccache -s
@@ -432,6 +433,7 @@ jobs:
       - env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+          RAPTOR_EAGLE_ROOT: ${{ github.workspace }}/eagle
         run: cd hawk && python -m pytest tests -q -m "not gpu"
       - if: matrix.gcc != 12
         name: Necessity (masked variants forced on must fail the early-exit rows)
@@ -767,6 +769,7 @@ jobs:
         env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+          RAPTOR_EAGLE_ROOT: ${{ github.workspace }}/eagle
         run: |
           set -euo pipefail
           cd hawk
