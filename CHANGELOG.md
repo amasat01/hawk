@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1 (unreleased)
+
+**NumPy 1.26 or newer.** The package declares `numpy>=1.26`, the oldest NumPy the host route and the examples are tested with.
+
+**docs-fresh tells its failures apart.** `tools/docs_fresh.sh` exits with a different code for stale docs, a missing card and a missing tool. The CI test steps point at the eagle checkout, so the docs-fresh card tests run there instead of skipping.
+
+**Docs.** The Colab and Kaggle setup cell installs the CUDA 12 or 13 extras, can test a release candidate and upgrades the family's own packages, and the notebooks are checked in a Colab-like environment. The capability map names JAX among the certified zero-copy frameworks. Pages actions moved to the Node 24 releases.
+
 ## 0.5.0 (2026-10-14)
 
 GCC 13.1-13.3 and 14.1-14.2 miscompile a conditional call of a function that has masked
