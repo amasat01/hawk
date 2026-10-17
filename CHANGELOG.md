@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.1 (unreleased)
+## 0.5.1 (2026-10-17)
 
 **One `HostKernel` shared across threads is safe.** In 0.5.0 `hawk.runtime.run` bound and launched in two steps, so a second thread calling `run` on the same kernel could rebind its planes between the two and the first thread's launch then wrote to, or read from, the wrong arrays (wrong results, and heap corruption with unequal sizes). It hit anyone calling one loaded kernel from several threads, such as an eight-thread framework call. `run`, `bind_all` and `launch` now hold a per-kernel lock for the whole call.
 
