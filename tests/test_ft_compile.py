@@ -25,6 +25,7 @@ import sys
 import threading
 
 import pytest
+from conftest import run_threads
 
 from hawk.compile import cache as cache_mod
 from hawk.compile import drivers
@@ -68,26 +69,6 @@ def compiles(monkeypatch):
     return box
 
 
-def _run_threads(fns):
-    """Start every callable at once; return ``(results, errors)`` by index."""
-    barrier = threading.Barrier(len(fns))
-    results, errors = [None] * len(fns), [None] * len(fns)
-
-    def work(i):
-        barrier.wait()
-        try:
-            results[i] = fns[i]()
-        except BaseException as exc:                      # noqa: BLE001
-            errors[i] = exc
-
-    pool = [threading.Thread(target=work, args=(i,)) for i in range(len(fns))]
-    for t in pool:
-        t.start()
-    for t in pool:
-        t.join()
-    return results, errors
-
-
 def _no_tmp(root):
     return sorted(str(p) for p in root.rglob(".tmp.*"))
 
@@ -95,7 +76,7 @@ def _no_tmp(root):
 @ft.register_ft_row("FT-3-HAWK-COMPILE-SINGLE-FLIGHT")
 def test_same_source_cold_compiles_exactly_once(tmp_path, compiles):
     opts = CompileOptions(backend="host", cache_dir=str(tmp_path / "c"))
-    results, errors = _run_threads(
+    results, errors = run_threads(
         [lambda: compile_source(_source(0), "ft_same", opts)] * THREADS)
     assert errors == [None] * THREADS
     assert compiles["n"] == 1
@@ -111,7 +92,7 @@ def test_same_source_cold_compiles_exactly_once(tmp_path, compiles):
 @ft.register_ft_row("FT-3-HAWK-COMPILE-DISTINCT")
 def test_distinct_sources_each_compile_once(tmp_path, compiles):
     opts = CompileOptions(backend="host", cache_dir=str(tmp_path / "c"))
-    results, errors = _run_threads(
+    results, errors = run_threads(
         [lambda i=i: compile_source(_source(i), f"ft_d{i}", opts)
          for i in range(THREADS)])
     assert errors == [None] * THREADS
@@ -127,7 +108,7 @@ def test_distinct_sources_each_compile_once(tmp_path, compiles):
 def test_failed_compile_releases_every_waiter(tmp_path, compiles):
     opts = CompileOptions(backend="host", cache_dir=str(tmp_path / "c"))
     bad = "this is not c++\n"
-    _, errors = _run_threads([lambda: compile_source(bad, "ft_bad", opts)] * 4)
+    _, errors = run_threads([lambda: compile_source(bad, "ft_bad", opts)] * 4)
     assert all(isinstance(e, HawkError) for e in errors), errors
     assert compiles["n"] == 4            # each waiter retried as its own builder
     assert drivers._INFLIGHT == {}
@@ -147,7 +128,7 @@ def test_cap_is_applied_through_the_trampoline_concurrently(monkeypatch):
         done = subprocess.run(drivers.limited(probe), capture_output=True, text=True)
         return done.returncode, done.stdout.strip()
 
-    results, errors = _run_threads([once] * 8)
+    results, errors = run_threads([once] * 8)
     assert errors == [None] * 8
     assert results == [(0, str(cap))] * 8
     monkeypatch.setenv("HAWK_COMPILE_ADDRESS_CAP", "0")
@@ -169,7 +150,7 @@ def test_closure_watch_resync_under_contention(tmp_path):
     for f in files:
         st = f.stat()
         os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000_000))
-    results, errors = _run_threads([lambda: [watch._check() for _ in range(200)]] * 8)
+    results, errors = run_threads([lambda: [watch._check() for _ in range(200)]] * 8)
     assert errors == [None] * 8
     assert all(all(r) and len(r) == 200 for r in results)
     assert isinstance(watch._rows, tuple) and all(isinstance(r, tuple) for r in watch._rows)

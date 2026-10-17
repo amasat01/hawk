@@ -26,7 +26,7 @@ from . import access as _access
 from .access import Access
 from .nodes import param_cell_names
 from .compound import Quantity, QuantitySpan
-from .loop_nodes import Loop, LoopCarry, LoopValue, TapeRead
+from .loop_nodes import Loop, LoopCarry, LoopCount, LoopValue, TapeRead
 from .nodes import (
     FINISHED_PLANE,
     FINISHED_TTYPE,
@@ -519,6 +519,35 @@ def _digest(order: tuple[Node, ...], position: Mapping[int, int],
     return h.hexdigest()
 
 
+def _rebuild_loop(loop: Loop, operands: Sequence[Node]) -> Loop:
+    """``loop`` with new boundary operands: its body is rewritten so every
+    boundary value that changed is replaced by its new one, then the loop is
+    minted again by :func:`~hawk.ir.loops.build_loop` (its boundary is
+    recomputed from the new body). The header, the placeholders and the
+    ``break`` structure are kept. A loop whose body commits sinks of its own
+    (a derived loop) is not rebuilt this way."""
+    from .loops import build_loop
+
+    if loop.body_sinks:
+        raise HawkError(
+            "a loop that commits once per iteration (a derived loop) cannot be "
+            "rewritten by substitution")
+    swapped = {id(old): new for old, new in zip(loop.operands, operands)
+               if old is not new}
+    n_exit = 0 if loop.exit_cond is None else 1 + len(loop.exit_values)
+    roots = loop.body_roots()
+    done = list(substitute(roots, swapped)) if swapped else list(roots)
+    nexts = done[:loop.carry_count]
+    exit_cond, exit_values = None, ()
+    if n_exit:
+        exit_cond, exit_values = done[loop.carry_count], tuple(done[loop.carry_count + 1:])
+    count = operands[-1] if loop.count is not None else None
+    return build_loop(loop.index, loop.carries, operands[:loop.carry_count], nexts,
+                      start=loop.start, stop=loop.stop, step=loop.step,
+                      exit_cond=exit_cond, exit_values=exit_values, count=count,
+                      count_tail=loop.count_tail)
+
+
 def _rebuild(node: Node, operands: Sequence[Node]) -> Node:
     """``node`` with new operands, same kind, type and literal.
 
@@ -534,11 +563,15 @@ def _rebuild(node: Node, operands: Sequence[Node]) -> Node:
         return TapeRead(operands[0], node.slot, operands[1])
     if isinstance(node, LoopValue):
         return LoopValue(operands[0], node.slot)
+    if isinstance(node, LoopCount):
+        return LoopCount(operands[0])
     if isinstance(node, Primitive):
         return Primitive(node.name, node.rules, operands[0], operands[1:],
                          node.ttype)
     if isinstance(node, Dispatch):
         return Dispatch(operands[0], operands[1:], node.policy, node.ttype)
+    if isinstance(node, Loop):
+        return _rebuild_loop(node, operands)
     if isinstance(node, Op):
         return Op(node.kind, tuple(operands), node.ttype, node.literal)
     raise HawkError(                              # pragma: no cover - closed set

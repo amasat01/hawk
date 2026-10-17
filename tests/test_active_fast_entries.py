@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""An active-set automatic kernel's fast-path entries move no bit.
+"""An active-set automatic kernel's fast-path entries agree with the map-free ones.
 
 An automatic kernel traced under an active-set kind (``Guard(active_set=True)``)
 reads its samples through the index map. Its device unit also carries the two
@@ -19,14 +19,15 @@ pinned:
 * **Codegen.** The two entries exist for an active-set automatic kernel on the
   device only, behind the macro; a map-free automatic kernel's text has no
   ``_range`` entry, and a single-step active-set kernel has neither.
-* **Bit identity.** The RK4 oscillator (uniform and spread stops) and the
+* **Agreement.** The RK4 oscillator (uniform and spread stops) and the
   RK7(8) attempt kernel (mixed eccentricities), N = 1, 33, 1000 and 10k, with
   a budget below the stops and with every sample terminated at launch: the
-  ``_range`` and ``_persist`` entries leave every plane, the mask and the
-  counter byte-equal to the map-free kernel's fused and persistent entries
-  and to a run of the map entry over the identity map (one launch of the
-  budget, and launches of at most 64 steps). Step counts are planes (``k``,
-  ``n_acc``/``n_rej``), compared too. The fast entries run with a decoy map
+  ``_range`` and ``_persist`` entries leave the step counts, the mask and the
+  counter equal to the map-free kernel's fused and persistent entries and to a
+  run of the map entry over the identity map (one launch of the budget, and
+  launches of at most 64 steps), and every float plane within the math libraries'
+  rounding of them (the entries are compiled apart). Step counts are planes
+  (``k``, ``n_acc``/``n_rej``), compared too. The fast entries run with a decoy map
   (sample 0 alone) bound, so a map read would show.
 * **Exact steps.** Every range and persist launch (map-free and active-set,
   N up to 10k, all finish / budget hit / terminated at launch / a second
@@ -45,6 +46,7 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 from test_host_interchange import _mixed, _planes, oscillator, rkf78_attempt
+from test_persist import _close
 
 from hawk.artifact import build_bundle
 from hawk.emit import FAST_ENTRIES_MACRO, RANGE_SUFFIX, scalar_mode
@@ -116,7 +118,7 @@ def test_a_single_step_active_set_kernel_has_neither():
 
 
 # --------------------------------------------------------------------------- #
-# -- compiled: bit for bit.
+# -- compiled: within rounding (counts exact).
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def bundles(tmp_path_factory, cache_dir):
@@ -261,7 +263,8 @@ def _same(got, want, what):
         assert got[key].tobytes() == want[key].tobytes(), f"{what}: {key}"
 
 
-CASES = [("oscillator", "uniform", 1000), ("oscillator", "spread", 1000),
+CASES = [("oscillator", "spread", 2), ("rkf78_attempt", "mixed", 2),  # 2: the eps bound
+         ("oscillator", "uniform", 1000), ("oscillator", "spread", 1000),
          ("oscillator", "spread", 37), ("oscillator", "terminated_at_0", 1000),
          ("rkf78_attempt", "mixed", 1000), ("rkf78_attempt", "mixed", 37),
          ("rkf78_attempt", "terminated_at_0", 1000), ("oscillator", "continuing", 1000),
@@ -272,21 +275,21 @@ CASES = [("oscillator", "uniform", 1000), ("oscillator", "spread", 1000),
 @pytest.mark.parametrize("n", [1, 33, 1000, 2049, 10_000])
 @pytest.mark.parametrize("name,case,budget", CASES,
                          ids=[f"{k}-{c}-{b}" for k, c, b in CASES])
-def test_the_fast_entries_are_the_map_free_entries_bit_for_bit(bundles, name, case,
-                                                               budget, n):
+def test_the_fast_entries_are_the_map_free_entries_within_rounding(bundles, name, case,
+                                                                   budget, n):
     plain, active = bundles
     planes = _cases(name, n, case, plain)
     want = _own(plain, name, planes, budget)
-    _same(_persist(plain, name, planes, budget, 64, mapped=False), want,
-          "map-free persist")
-    _same(_range(plain, name, planes, budget, mapped=False), want, "map-free range")
-    _same(_own(active, name, planes, budget, mapped=True), want, "identity map")
-    _same(_own(active, name, planes, budget, mapped=True, k_max=64), want,
-          "identity map, 64-step launches")
-    _same(_range(active, name, planes, budget), want, "range entry")
+    _close(_persist(plain, name, planes, budget, 64, mapped=False), want,
+          "map-free persist", budget, planes)
+    _close(_range(plain, name, planes, budget, mapped=False), want, "map-free range", budget, planes)
+    _close(_own(active, name, planes, budget, mapped=True), want, "identity map", budget, planes)
+    _close(_own(active, name, planes, budget, mapped=True, k_max=64), want,
+          "identity map, 64-step launches", budget, planes)
+    _close(_range(active, name, planes, budget), want, "range entry", budget, planes)
     for grid in (1, 64):
-        _same(_persist(active, name, planes, budget, grid, mapped="decoy"), want,
-              f"active persist grid={grid}")
+        _close(_persist(active, name, planes, budget, grid, mapped="decoy"), want,
+               f"active persist grid={grid}", budget, planes)
     steps = want["k"] if name == "oscillator" else want["n_acc"] + want["n_rej"]
     start = planes["k"] if name == "oscillator" else planes["n_acc"] + planes["n_rej"]
     if case == "terminated_at_0":

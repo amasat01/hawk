@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.1 (unreleased)
+
+**One `HostKernel` shared across threads is safe.** In 0.5.0 `hawk.runtime.run` bound and launched in two steps, so a second thread calling `run` on the same kernel could rebind its planes between the two and the first thread's launch then wrote to, or read from, the wrong arrays (wrong results, and heap corruption with unequal sizes). It hit anyone calling one loaded kernel from several threads, such as an eight-thread framework call. `run`, `bind_all` and `launch` now hold a per-kernel lock for the whole call.
+
+**Nested-derivative host kernels no longer read a stale value under GCC.** A host kernel with a termination guard, differentiated twice (`jvp` of `jvp`, as `jacfwd` of `jacfwd` emits), could read a stack slot it had not written when built with GCC 11.5 or 14.3, so its result was wrong or changed between calls. The fix is in aether-dsc 0.2.4, now the minimum; 0.5.0 users get it by upgrading aether-dsc. Vectorised loops and speed are unchanged.
+
+**Fused, persistent and range launches now agree within floating-point rounding, not bit for bit.** The compiler may contract a multiply-add differently in each entry; step counts and flags stay exact.
+
+**Derivatives of derivatives, to any order.** `vjp` and `jvp` of a derivative kernel (any mix, up to three levels) name each level's planes apart (`bar_x`, `bar2_x`, `bar2_bar_x`, `dot3_x`) instead of clashing on the primal's names; each plane is found under its own prefix, in float64 and float32, on the host and the device.
+
+**`param_planes` reaches uniforms read inside loops.** A `Param` read in a loop body is promoted to a one-cell plane like any other, the loop is rebuilt over it, and its `vjp`, `jvp` and second-order routes match the `Param` kernel.
+
+**Two examples, with notebooks and a benchmark card.** The autodiff-against-torch and hybrid orbit examples (moved here from raptor-core) show hawk gradients inside a torch program and a model with shared weights as one `Table`.
+
+**NumPy 1.26 or newer.** The package declares `numpy>=1.26`, the oldest NumPy the host route and the examples are tested with.
+
+**docs-fresh tells its failures apart.** `tools/docs_fresh.sh` exits with a different code for stale docs, a missing card and a missing tool. The CI test steps point at the eagle checkout, so the docs-fresh card tests run there instead of skipping.
+
+**Docs.** The Colab and Kaggle setup cell installs the CUDA 12 or 13 extras, can test a release candidate and upgrades the family's own packages, and the notebooks are checked in a Colab-like environment. The capability map names JAX among the certified zero-copy frameworks. Pages actions moved to the Node 24 releases.
+
 ## 0.5.0 (2026-10-14)
 
 GCC 13.1-13.3 and 14.1-14.2 miscompile a conditional call of a function that has masked

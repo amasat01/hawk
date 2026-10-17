@@ -1,65 +1,45 @@
 # Contributing
 
-Contributions — issues and pull requests — are welcome on GitHub, under the
-terms below.
+Read [How we build](https://amasat01.github.io/raptor/content/principles.html) first: the twelve rules every pull request in the
+family is read against, plus the style, release and license terms.
 
-## Terms
+**This repo:** turns your Python into fast kernels. It traces a function, emits C++ built on aether, compiles it, and differentiates it.
+Running a device artifact is eagle's job.
 
-Contributions are accepted under the Apache License 2.0, the license this
-project ships under (inbound = outbound). Every contribution must carry a
-Developer Certificate of Origin sign-off (`git commit -s`); see
-https://developercertificate.org/ for what that certifies. There is no
-Contributor License Agreement and no relicensing right.
+## Build and run the gate
 
-## Using the code
+hawk has a compiled half (`hawk._core`) and builds against two sibling checkouts. Clone `aether`, `eagle` and `hawk` side by side, then:
 
-The code is available under the Apache License 2.0 (see `LICENSE`).
-Contributions are accepted under the same terms (inbound = outbound).
+```bash
+pip install ../aether/dsc               # aether's sealed header payload, first
+pip install -e .[test]                  # builds hawk._core; $HAWK_AETHER_INCLUDE / $HAWK_EAGLE_INCLUDE override the sibling paths
+python -m pytest tests -q -m "not gpu"  # the gate (.github/workflows/ci.yml)
+```
 
-## Checking the notebooks as a hosted user runs them
+Most tests also need `eagle` installed as a Python package to run traced kernels. Without it, host artifacts still run through
+`hawk.load` and `hawk.run`. The free-threading rows run with `python -m pytest tests -m ft -W error::RuntimeWarning`.
 
-`make nbcheck` runs the docs notebooks in your own environment against source checkouts. `make nbcheck-hosted` (in `docs/`) runs
-them the way a Colab user does: it builds CPU-only wheels of `aether-dsc`, `raptor-core`, `raptor-eagle` and `raptor-hawk` from the
-four checkouts (side by side, or given as `AETHER_ROOT`, `EAGLE_ROOT`, `HAWK_ROOT`, `RAPTOR_ROOT`), installs them into a fresh venv
-pinned to Colab's CPU runtime (`docs/_tools/hosted_env/colab-cpu.txt`, generated from Google's published package list by
-`refresh_colab_lock.py`; refresh it each release), and executes every notebook of this repository from a copy in an empty directory
-with a stand-in `google.colab` module, so the generated setup cell takes its hosted branch (pip from the local wheels, helper files
-from a local mirror). `make nbcheck-floor` does the same with the oldest numpy and torch that have Python 3.13 wheels
-(`floor-cpu.txt`). Needs `uv`, a Python 3.13 (`NBH_PYTHON=...`), a C++23 compiler (`CXX=...`) and network access to the package indexes; one
-PASS, FAIL or SKIP line per notebook, exit 1 on a FAIL. `NBH_ARGS="--work DIR --keep"` keeps the wheelhouse between runs.
-`make nbcheck-hosted-gpu` runs the same on a GPU: Colab's GPU-runtime lock with CUDA 12 builds (`colab-gpu.txt`), eagle's CUDA plugin built for
-`NBH_GPU_ARCH`, and the GPU-only notebooks run too, on GPU `NBH_GPU_INDEX` (under the `flock` file `NBH_GPU_LOCK`, if set). It needs about 5 GB of disk.
+Docs (`cd docs`): `make strict` (zero warnings), `make linkcheck`, and for notebooks `make nbexec` then `make nbcheck`. Keep a new
+notebook under a minute with small committed outputs. `make nbcheck-hosted` runs them as a Colab user would; the comments above the
+target in `docs/Makefile` say what it needs.
 
-## Releasing
+## What a PR here must show
 
-`raptor-hawk` publishes to PyPI through `.github/workflows/publish.yml`,
-triggered by pushing a tag `v<version>` that matches the `__version__`
-literal in `hawk/__init__.py` (a mismatch fails the `check` job before
-anything is published). `workflow_dispatch` runs the same build, check and
-test-wheel steps without publishing.
+- **Generated code mirrors the user's Python.** The emitted C++ keeps the user's names and structure, so it reads beside their
+  source. A change to emit shows the generated code before and after for a small kernel.
+- **A new native function touches six files in two repos.** Follow
+  [Add a native function](https://amasat01.github.io/hawk/content/contributing/add_a_native_function.html); the gate
+  (`tests/test_math_namespace.py`) fails if a step is missed.
+- **Limits.** What hawk cannot spell is stated once, with the way out, in
+  [when hawk can't spell it](https://amasat01.github.io/hawk/content/vocabulary/when_hawk_cant_spell_it.html).
+- **Derivatives and host/device.** A new op has a derivative rule and runs on host and device.
+- The family checklist from [How we build](https://amasat01.github.io/raptor/content/principles.html), nothing more.
 
-1. Bump `__version__` in `hawk/__init__.py`, update `CHANGELOG.md`.
-2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
-3. The workflow builds manylinux wheels for CPython 3.9-3.14 (plus free-threaded 3.13t and 3.14t) with
-   `cibuildwheel` (hawk's extension is host-only: no CUDA toolchain is
-   needed to build it, only the sibling `aether`/`eagle` header trees),
-   runs `twine check --strict`, tests each wheel together with a freshly
-   built `aether-dsc` sibling on every supported CPython, then publishes
-   via a PyPI Trusted Publisher (environment `pypi`; no token in this
-   repository).
+## Style specifics
 
-**Publish order across the family:** `raptor-hawk` depends on `aether-dsc`
-(in the `aether` repo), which — together with `raptor-core` — has no family
-dependencies and publishes first. Release `aether-dsc` before `raptor-hawk`.
+`ruff` as configured in `pyproject.toml` (line length 88, pep257 docstrings). Run `ruff check .` before pushing.
 
-## How work flows
+## Release
 
-- Changes go to the long-lived `dev` branch, either directly or through a
-  short-lived feature branch that is merged into `dev`.
-- Work that spans repositories uses the SAME branch name in each repository.
-  CI checks out the companion repositories at that branch if it exists there,
-  and at `main` otherwise; the log line "companion <repo> @ <branch>" shows
-  which one was used.
-- CI runs on every push, so a red result is seen before anything reaches `main`.
-- `main` is updated only by merging `dev` at a clean state (a release or
-  milestone point) with green CI. Nothing is pushed to `main` directly.
+Bump `__version__` in `hawk/__init__.py`, update `CHANGELOG.md`, tag `vX.Y.Z`. `.github/workflows/publish.yml` does the rest;
+`workflow_dispatch` dry-runs it. `aether-dsc` publishes first (see the family guide).

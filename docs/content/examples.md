@@ -11,5 +11,7 @@ examples/01_ensemble_drag_throughput
 examples/02_autodiff_finite_difference_check
 examples/03_kernelkind_reuse
 examples/04_hawk_next_to_warp
+examples/autodiff_vs_torch
+examples/two_body_hybrid
 vocabulary/when_hawk_cant_spell_it
 ```
