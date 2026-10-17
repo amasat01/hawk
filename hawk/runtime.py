@@ -43,11 +43,12 @@ which axis holds the samples. :meth:`HostKernel.rebind` takes raw
 pointers, which carry none of this, and is the unchecked fast path over
 an already-validated bind.
 
-Threading. Two :class:`HostKernel` (or :class:`ArgBlock`) objects are
-independent and run freely in parallel. ONE object shared across threads is
-memory-safe but caller-ordered: its calls serialise on the object's own lock,
-so concurrent bind and launch on it never tear an argument block, but which
-call lands first is the caller's to order. Module-level state (the build
+Threading. Two :class:`HostKernel` objects are independent and run freely in
+parallel. ONE :class:`HostKernel` shared across threads is safe: :func:`run`
+(bind and launch together), :meth:`~HostKernel.bind_all` and
+:meth:`~HostKernel.launch` each hold the kernel's lock, so concurrent calls
+queue and each sees only its own planes. Separate ``bind_all`` and ``launch``
+calls from different threads are still the caller's to order. Module-level state (the build
 counters, the primitive registry, the unit publisher) is always safe to use
 from any thread.
 """
@@ -56,6 +57,7 @@ from __future__ import annotations
 
 import array
 import ctypes
+import threading
 from pathlib import Path
 
 from . import _core
@@ -195,6 +197,9 @@ class HostKernel:
         self.one_step = None       # the word of 1 an unbound fused_steps reads
         self.finished = None       # the counter an unbound finished_count fills
         self._buffers = []         # keeps every exported buffer view alive
+        #: Held across everything one call touches (the block, the keepalive
+        #: lists, the shared scratch above), until its launch returns.
+        self._lock = threading.Lock()
 
     # -- per bind ----------------------------------------------------------
     def _one_step_word(self, arrays: dict) -> dict:
@@ -241,6 +246,10 @@ class HostKernel:
         automatic kernel's ``fused_steps`` word may be left out (it is
         bound to ``1``, one step per launch), and so may a finishing
         kernel's ``finished_count`` counter (bound to a fresh ``0``)."""
+        with self._lock:
+            self._bind_all(arrays, n_samples, layout)
+
+    def _bind_all(self, arrays: dict, n_samples: int, layout) -> None:
         arrays, axes = split_marks(arrays, layout)
         choice = LayoutChoice(layout, axes)
         arrays = self._one_step_word(arrays)
@@ -290,6 +299,10 @@ class HostKernel:
 
         SERIAL, always: the reference oracle every partitioned, tiled or
         ranked run is judged against, so it never grows a schedule."""
+        with self._lock:
+            self._launch(base, count, n_samples)
+
+    def _launch(self, base: int, count: int, n_samples: int) -> None:
         self.entry.run(self.block, int(base), int(count), int(n_samples))
 
     # -- helpers -----------------------------------------------------------
@@ -439,5 +452,6 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
         n_samples = _n_from(kernel_artifact.arg_spec, plain,
                             kernel_artifact.sidecar.get("arg_shapes", {}),
                             LayoutChoice(layout, axes))
-    kernel_artifact.bind_all(arrays, n_samples, layout=layout)
-    kernel_artifact.launch(base, n_samples if count is None else count, n_samples)
+    with kernel_artifact._lock:
+        kernel_artifact._bind_all(arrays, n_samples, layout)
+        kernel_artifact._launch(base, n_samples if count is None else count, n_samples)

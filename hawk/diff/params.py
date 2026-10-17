@@ -19,6 +19,9 @@ to each floating-point promoted parameter as a PER-SAMPLE plane
 (``bar_<name>``, one value per sample), never a scatter into the cell, so the
 caller sums it in a fixed sample order and the gradient is reproducible. The
 plain kernel is never changed.
+
+A uniform read inside a ``for`` is promoted the same way: the loop's body reads
+it as a loop-invariant boundary value, so the cell is read once before the loop.
 """
 
 from __future__ import annotations
@@ -58,10 +61,6 @@ def param_planes(kernel: Any, names: Any = None) -> Any:
     step = default_step(kernel)
     step = getattr(step, "one_step", None) or step
     nodes = _reachable(step.sinks)
-    if any(getattr(n, "kind", None) == "loop" for n in nodes):
-        raise HawkError(
-            f"hawk.diff.param_planes({step.name!r}): promoting a uniform through "
-            "a loop in the step body is not built")
     leaves = [n for n in nodes if isinstance(n, Leaf) and n.role == "uniform"
               and n.name != TAPE_ON]
     have = {n.name for n in leaves}

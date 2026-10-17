@@ -233,7 +233,8 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
     seq, position = canonical_nodes(sinks)
     _refuse_prior_read(seq)
     inputs = _wrt(seq, wrt)
-    name = _Namer(ADJOINT_PREFIX, _taken(seq))
+    name = _Namer(ADJOINT_PREFIX, _taken(seq),
+                  _named(sinks, inputs))
     key = _keyer(position)
     adjoint: dict[Any, Node] = {}
     for sink in sinks:
@@ -304,7 +305,8 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
     seq, position = canonical_nodes(sinks)
     _refuse_prior_read(seq)
     inputs = _wrt(seq, wrt)
-    name = _Namer(TANGENT_PREFIX, _taken(seq))
+    name = _Namer(TANGENT_PREFIX, _taken(seq),
+                  _named(sinks, inputs))
     key = _keyer(position)
     tangent: dict[Any, Node] = {
         key(leaf): Leaf(leaf.kind, leaf.role, name(leaf.name), leaf.ttype)
@@ -603,25 +605,52 @@ def _taken(seq: Iterable[Node]) -> set[str]:
     return {n.binding.name for n in seq if n.binding is not None}
 
 
+def _named(sinks: Iterable[Node], inputs: Iterable[Leaf]) -> list[str]:
+    """The primal planes a derivative will name: its sinks (a lowered loop has none
+    and is refused later) and its inputs."""
+    return [n.name for n in (*sinks, *inputs) if hasattr(n, "name")]
+
+
 class _Namer:
     """Derived plane names: ``<prefix>_<primal name>`` with the compound-wire
-    namespace flattened, since only a Quantity declaration may mint a name in it. A
-    flattening that would collide is refused, never shared."""
+    namespace flattened, since only a Quantity declaration may mint a name in it.
+    A flattening that would make two primal planes one is refused, never shared.
 
-    def __init__(self, prefix: str, taken: set[str]) -> None:
+    A derivative of a derivative meets its own first-level names among the
+    primal's planes (the reverse of a reverse kernel has ``bar_x`` as a sink and
+    wants ``bar_x`` as the gradient of ``x``). Such a name is never reused: the
+    whole derivative moves up one level together, ``bar2_x``, ``bar3_x``, taking
+    the first level at which none of the planes it must name is already held, so
+    the level counts the nesting depth. ``names`` are the primal planes the
+    derivative will name; a kernel that never collides keeps ``<prefix>_<name>``
+    exactly. Every name is a pure function of the primal's planes."""
+
+    def __init__(self, prefix: str, taken: set[str],
+                 names: Iterable[str] = ()) -> None:
         self.prefix = prefix
         self.taken = taken
         self.source: dict[str, str] = {}
+        flat = [n.replace(NAMESPACE_SEP, "_") for n in names]
+        self.level = 1
+        while any(self._spell(self.level, f) in taken for f in flat):
+            self.level += 1
+
+    def _spell(self, level: int, flat: str) -> str:
+        return f"{self.prefix}{level if level > 1 else ''}_{flat}"
 
     def __call__(self, name: str) -> str:
         """The derived plane name for one primal plane."""
-        derived = f"{self.prefix}_{name.replace(NAMESPACE_SEP, '_')}"
+        flat = name.replace(NAMESPACE_SEP, "_")
+        derived = self._spell(self.level, flat)
+        while derived in self.taken:        # a plane this derivative was not told of
+            self.level += 1
+            derived = self._spell(self.level, flat)
         held = self.source.setdefault(derived, name)
-        if held != name or derived in self.taken:
+        if held != name:
             raise HawkError(
                 f"the derived name {derived!r} for {name!r} collides with "
-                f"{held if held != name else 'a primal plane'!r} — flattening the "
-                "compound-wire namespace made two planes one"
+                f"{held!r} — flattening the compound-wire namespace made two "
+                "planes one"
             )
         return derived
 

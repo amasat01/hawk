@@ -91,7 +91,7 @@ launches it.
 ## Building from source (development)
 
 To work on hawk itself, build it from a clone: see
-[Building from source](contributing) on the contributing page.
+[Build and run the gate](contributing) on the contributing page.
 
 ## Requirements
 

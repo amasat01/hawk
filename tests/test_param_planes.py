@@ -235,11 +235,7 @@ def test_the_cell_is_loaded_once_before_the_sample_loop(bundle):
             == body(cell))
 
 
-def test_a_cell_costs_what_the_immediate_costs(bundle):
-    """Paired host timing, alternating arms, a large launch: the loop reads
-    the hoisted value, so it vectorises like the by-value kernel."""
-    import time
-
+def _cell_and_value_arms(bundle):
     import eagle.exec as eexec
     from eagle import plan as eplan
 
@@ -252,6 +248,23 @@ def test_a_cell_costs_what_the_immediate_costs(bundle):
 
     by_value = bind("law", k=1.7, b=-0.4, y=y1)
     cell = bind("law_params", k=np.array([1.7]), b=np.array([-0.4]), y=y2)
+    return by_value, cell, y1, y2
+
+
+def test_a_cell_gives_the_bits_the_immediate_gives(bundle):
+    by_value, cell, y1, y2 = _cell_and_value_arms(bundle)
+    by_value.launch()
+    cell.launch()
+    np.testing.assert_array_equal(y1, y2)
+
+
+@pytest.mark.wall_clock
+def test_a_cell_costs_what_the_immediate_costs(bundle):
+    """Paired host timing, alternating arms, a large launch: the loop reads
+    the hoisted value, so it vectorises like the by-value kernel."""
+    import time
+
+    by_value, cell, y1, y2 = _cell_and_value_arms(bundle)
     for arm in (by_value, cell):
         arm.launch()
     best = {"value": np.inf, "cell": np.inf}
@@ -260,7 +273,6 @@ def test_a_cell_costs_what_the_immediate_costs(bundle):
             t0 = time.perf_counter()
             arm.launch()
             best[key] = min(best[key], time.perf_counter() - t0)
-    np.testing.assert_array_equal(y1, y2)
     ratio = best["cell"] / best["value"]
     print(f"cell {best['cell'] * 1e6:.0f} us, value {best['value'] * 1e6:.0f} us, "
           f"ratio {ratio:.3f}, load {os.getloadavg()[0]:.1f}")

@@ -23,17 +23,17 @@ from __future__ import annotations
 import json
 import sys
 import threading
-from pathlib import Path
 
 import pytest
+from conftest import run_threads
+from raptor.conformance import freethreading as ft
+from raptor.conformance.freethreading import declare_ft_row, register_ft_row
 
+import hawk.ext.primitive  # noqa: F401  (the name on hawk.ext is the function)
 from hawk.artifact import build_bundle, unit_cache
 from hawk.artifact import bundle as bundle_mod
 from hawk.compile import toolchain as tc
-import hawk.ext.primitive  # noqa: F401  (the name on hawk.ext is the function)
 from hawk.ir import HawkError
-from raptor.conformance import freethreading as ft
-from raptor.conformance.freethreading import declare_ft_row, register_ft_row
 
 pytestmark = pytest.mark.ft
 
@@ -72,26 +72,6 @@ def test_rows_declared_and_collected():
     ft.assert_ft_rows_complete("hawk")
 
 
-def _run_threads(fns):
-    """Start every callable at once; return ``(results, errors)`` by index."""
-    barrier = threading.Barrier(len(fns))
-    results, errors = [None] * len(fns), [None] * len(fns)
-
-    def work(i):
-        barrier.wait()
-        try:
-            results[i] = fns[i]()
-        except BaseException as exc:                      # noqa: BLE001
-            errors[i] = exc
-
-    pool = [threading.Thread(target=work, args=(i,)) for i in range(len(fns))]
-    for t in pool:
-        t.start()
-    for t in pool:
-        t.join()
-    return results, errors
-
-
 @register_ft_row("FT-3-HAWK-BUILDS-EXACT")
 def test_builds_counter_is_exact(tmp_path):
     per_thread = 20_000
@@ -103,7 +83,7 @@ def test_builds_counter_is_exact(tmp_path):
             with pytest.raises(HawkError):
                 build_bundle([], tmp_path / "none", targets=("host",))
 
-    _, errors = _run_threads([calls] * THREADS)
+    _, errors = run_threads([calls] * THREADS)
     assert errors == [None] * THREADS
     assert bundle_mod.counters_snapshot()["builds"] - before == THREADS * per_thread
 
@@ -116,7 +96,7 @@ def test_builds_counter_is_exact(tmp_path):
             unit_cache._note("stamp_hits", "y")
             unit_cache._note("published", "z")
 
-    _, errors = _run_threads([notes] * THREADS)
+    _, errors = run_threads([notes] * THREADS)
     assert errors == [None] * THREADS
     assert unit_cache.unit_stats() == {k: THREADS * n for k in
                                        ("memo_hits", "stamp_hits", "published")}
@@ -132,7 +112,7 @@ def test_publish_log_is_a_bounded_ring_under_contention():
             unit_cache._log(f"m{i}")
             unit_cache.publish_log()
 
-    _, errors = _run_threads([notes] * THREADS)
+    _, errors = run_threads([notes] * THREADS)
     assert errors == [None] * THREADS
     assert len(unit_cache.publish_log()) == unit_cache._PUBLISH_LOG_LIMIT
 
@@ -179,7 +159,7 @@ def test_unit_files_are_never_observed_partial(tmp_path):
     rd = [threading.Thread(target=reader) for _ in range(3)]
     for t in rd:
         t.start()
-    _, errors = _run_threads([writer] * 3)
+    _, errors = run_threads([writer] * 3)
     stop.set()
     for t in rd:
         t.join()
@@ -248,7 +228,7 @@ def test_one_pip_only_root(monkeypatch, tmp_path):
     monkeypatch.setattr(payload_mod, "current_payload", lambda: _Payload())
     monkeypatch.setattr(tc, "_PIP_ONLY_ROOT", None)
     monkeypatch.setattr(atexit, "register", lambda fn, *a, **k: hooks.append(fn))
-    results, errors = _run_threads([tc._pip_only_include_root] * 16)
+    results, errors = run_threads([tc._pip_only_include_root] * 16)
     assert errors == [None] * 16
     assert len(entered) == 1
     assert len(hooks) == 1
