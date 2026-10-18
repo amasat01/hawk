@@ -41,5 +41,6 @@ target in `docs/Makefile` say what it needs.
 
 ## Release
 
-Bump `__version__` in `hawk/__init__.py`, update `CHANGELOG.md`, tag `vX.Y.Z`. `.github/workflows/publish.yml` does the rest;
-`workflow_dispatch` dry-runs it. `aether-dsc` publishes first (see the family guide).
+Bump `__version__` in `hawk/__init__.py` and update `CHANGELOG.md` in a pull request. Its green run builds and tests the
+wheels and the sdist; merge it up to date, then tag `vX.Y.Z` on that commit. `.github/workflows/publish.yml` uploads the files
+the pull request built (`workflow_dispatch` dry-runs it). `aether-dsc` publishes first (see the family guide).
