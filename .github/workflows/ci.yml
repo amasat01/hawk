@@ -15,7 +15,10 @@
 
 name: CI
 
-on: [push, pull_request]
+# Pull requests only: main receives the tested tree, nothing re-runs there.
+on:
+  pull_request:
+  workflow_dispatch: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
