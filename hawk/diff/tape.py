@@ -41,7 +41,7 @@ from ..ir import Const, HawkError, Leaf, Node
 from ..ir import make as _mk
 from ..ir.loop_nodes import LoopCarry, LoopIndex, LoopValue
 from ..ir.loops import build_loop
-from ..ir.nodes import Assign, Finish, Select, TapeWrite, element_count
+from ..ir.nodes import Assign, Finish, SampleSum, Select, TapeWrite, element_count
 from ..ir.walk import substitute
 from ..types import TensorType
 
@@ -275,11 +275,13 @@ def _time(step: Any) -> tuple | None:
 def _resink(sink: Node, value: Node) -> Node:
     if isinstance(sink, Finish):
         return Finish(sink.name, value, steps=sink.steps)
+    if isinstance(sink, SampleSum):
+        return sink.rebuilt(value)
     if isinstance(sink, Assign):
         return Assign(sink.name, value, sink.ttype)
     raise HawkError(
-        f"a promotion rebuilds Mutable commits and a finish; "
-        f"{sink.kind} {getattr(sink, 'name', '?')!r} is neither")
+        f"a promotion rebuilds Mutable commits, sample sums and a finish; "
+        f"{sink.kind} {getattr(sink, 'name', '?')!r} is none of them")
 
 
 def _index_time(t: str, h: Node, k: Node) -> Node:

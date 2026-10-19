@@ -47,7 +47,7 @@ from ..ir import (
 from ..ir import make as _mk
 from ..ir.loops import exit_kwargs
 from ..ir.nodes import (DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish,
-                        param_cell_names)
+                        ReduceSamples, SampleSum, param_cell_names)
 from ..ir.walk import dispatch_groups
 from ..types import INT_PLANE_DTYPES, TensorType
 from .loops import forward_loop, reverse_loop
@@ -141,6 +141,8 @@ def _masked_sink(sink: Node, mask: Node) -> Node:
         return AccumWrite(sink.name, value, sink.index, sink.ttype)
     if isinstance(sink, WideWrite):
         return WideWrite(sink.name, value, sink.index, sink.ttype)
+    if isinstance(sink, SampleSum):
+        return sink.rebuilt(value)
     return Assign(sink.name, value, sink.ttype)
 
 
@@ -229,6 +231,14 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
     cells = param_cell_names(canonical_nodes(sinks)[0])
     if cells:
         return _vjp_param_cells(primal, cells, wrt, primal_unit, policy)
+    return _vjp(primal, sinks, wrt, primal_unit, policy, summed=())
+
+
+def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
+         primal_unit: str | None, policy: Mapping[str, str] | None,
+         summed: tuple) -> Derived:
+    """:func:`vjp` proper; the gradient of each input named in ``summed``
+    is summed over samples (:class:`~hawk.ir.nodes.SampleSum`)."""
     overrides = _policy_overrides(primal, policy)
     seq, position = canonical_nodes(sinks)
     _refuse_prior_read(seq)
@@ -252,8 +262,8 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
     _reverse_pass(seq, key, adjoint, inputs, name, scatters, scattered,
                   overrides=overrides)
     gradients = [
-        Assign(name(leaf.name), adjoint.get(key(leaf)) or zero_like(leaf.ttype),
-               leaf.ttype)
+        _gradient_sink(leaf, name(leaf.name), summed,
+                       adjoint.get(key(leaf)) or zero_like(leaf.ttype))
         for leaf in inputs
         if leaf.role != "lookup" and leaf.name not in scattered
     ]
@@ -262,17 +272,26 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
                    wrt=tuple(leaf.name for leaf in inputs), primal_unit=primal_unit)
 
 
+def _gradient_sink(leaf: Node, name: str, summed: tuple, value: Node) -> Node:
+    """The sink of one input's gradient: the sum over samples of the per-sample
+    adjoint for a promoted parameter, else the adjoint plane itself."""
+    if leaf.name in summed:
+        return ReduceSamples("sum", value).stored(name, leaf.ttype)
+    return Assign(name, value, leaf.ttype)
+
+
 def _vjp_param_cells(primal: Any, cells: tuple, wrt: Sequence[str] | None,
                      primal_unit: str | None,
                      policy: Mapping[str, str] | None) -> Derived:
     """The reverse of a kernel reading parameter cells (see
     :func:`hawk.diff.param_planes`): differentiate the form that reads each
-    cell as a per-sample plane, so each gradient is a per-sample ``bar_<name>``
-    plane, then read the cells again in the derived kernel."""
+    cell as a per-sample plane, sum each cell's gradient over every 32
+    samples (``bar_<name>`` rows, :class:`~hawk.ir.nodes.SampleSum`), then
+    read the cells again in the derived kernel."""
     from .params import demote, promote
 
     per_sample = _Demoted(primal, demote(_sinks_of(primal)))
-    d = vjp(per_sample, wrt=wrt, primal_unit=primal_unit, policy=policy)
+    d = _vjp(per_sample, per_sample.sinks, wrt, primal_unit, policy, summed=cells)
     return Derived(promote(d, cells), primal=_primal_name(primal), kind="vjp",
                    wrt=d.wrt, primal_unit=primal_unit)
 
@@ -655,9 +674,21 @@ class _Namer:
         return derived
 
 
+_TIE_TEXT = (
+    "no derivative for the {op} over samples stored to {name!r}: its subgradient "
+    "is ambiguous at a tie, so differentiating it would return one of several "
+    "answers with nothing recording which. Differentiate the per-sample value "
+    "and take the {op} on the host, or reduce with a sum")
+
+
 def _seed(sink: Sink, name: _Namer) -> Node:
     """The incoming adjoint plane of one primal sink (the four sink kinds)."""
     derived, t = name(sink.name), sink.ttype
+    if isinstance(sink, SampleSum):
+        if sink.op != "sum":
+            raise HawkError(_TIE_TEXT.format(name=sink.name, op=sink.op))
+        # the reverse of a sum over samples is a broadcast of its adjoint
+        return Leaf("uniform", "uniform", derived, t)
     if isinstance(sink, MapreducePartial):
         if sink.op != "sum" or t.shape != ():
             raise HawkError(
@@ -688,6 +719,10 @@ def _tangent_sink(sink: Sink, tangent: Node | None, name: _Namer) -> Node:
         return AccumWrite(derived, value, sink.index, sink.ttype)
     if isinstance(sink, WideWrite):
         return WideWrite(derived, value, sink.index, sink.ttype)
+    if isinstance(sink, SampleSum):
+        if sink.op != "sum":
+            raise HawkError(_TIE_TEXT.format(name=sink.name, op=sink.op))
+        return SampleSum(derived, value, sink.ttype)
     return Assign(derived, value, sink.ttype)
 
 

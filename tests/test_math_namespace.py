@@ -94,6 +94,8 @@ SPELLINGS = {
     "lor": lambda: M.select(M.lor(_v(B), _v(B, "c")), _v(S), _v(S, "b")),
     "max": lambda: M.max(_v(S), _v(S, "b")),
     "maximum": lambda: M.maximum(_v(S), _v(S, "b")),
+    "mean": lambda: M.mean(_v(V3)),
+    "sum": lambda: M.sum(_v(V3)),
     "min": lambda: M.min(_v(S), _v(S, "b")),
     "minimum": lambda: M.minimum(_v(S), _v(S, "b")),
     "n_samples": lambda: _v(S) * M.n_samples(),
@@ -222,6 +224,8 @@ ADAPTERS = {
     "random_uniform": "accepts lo/hi: the primitive at the defaults, lo + (hi-lo)*u otherwise",
     "random_normal": "accepts mean/sd: the primitive at the defaults, mean + sd*z otherwise",
     "take": "the free-function spelling of a plane's own at()",
+    "sum": "a value's own-axis sum (the samples axis is hawk.all_samples)",
+    "mean": "a value's own-axis mean (the samples axis is hawk.all_samples)",
     "argmax": "a select chain over the components: the first index of the maximum, as i32",
 }
 

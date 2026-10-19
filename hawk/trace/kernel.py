@@ -26,7 +26,7 @@ from typing import Any
 from ..ir import Const, HawkError, Leaf, Node, Quantity, Walk, canonical, make
 from ..ir.nodes import Assign
 from ..types import Slot, TensorType
-from . import astpass
+from . import astpass, reduce
 from .decl import Plane, resolve, role_of
 from .value import (
     AccumRef,
@@ -604,6 +604,7 @@ def _retrace(fn: Callable[..., None], scope: dict[str, Any],
     scope[astpass.SELECT_HELPER] = astpass.merge
     scope[astpass.LOOP_HELPER] = astpass.open_loop
     scope[astpass.SETITEM_HELPER] = astpass.set_component
+    scope[astpass.MAXMIN_HELPER] = reduce.maxmin
     exec(compiled, scope)  # the author's rewritten body
     return scope[fn.__name__]
 

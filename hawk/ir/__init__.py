@@ -41,6 +41,7 @@ from .nodes import Node as Node
 from .nodes import Primitive as Primitive
 from .nodes import RoleConst as RoleConst
 from .nodes import SampleIndex as SampleIndex
+from .nodes import SampleSum as SampleSum
 from .nodes import Select as Select
 from .nodes import Sink as Sink
 from .nodes import TapeWrite as TapeWrite

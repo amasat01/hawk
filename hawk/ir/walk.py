@@ -39,6 +39,7 @@ from .nodes import (
     Leaf,
     MapreducePartial,
     Node,
+    SampleSum,
     Op,
     Primitive,
     Select,
@@ -100,6 +101,20 @@ class Walk:
     finish: tuple[str, int | str] | None = None
 
     @property
+    def sample_sums(self) -> tuple[str, ...]:
+        """The ``accum_out`` planes written one row per 32 samples
+        (:class:`~hawk.ir.nodes.SampleSum`), in sink order."""
+        return tuple(n.name for n in self.order if isinstance(n, SampleSum))
+
+    @property
+    def cells(self) -> dict:
+        """The reductions over samples stored by this kernel: plane name to
+        ``{"op", "columns"}`` (``columns`` is the width of one cell, 1 for a
+        rank-0 value)."""
+        return {n.name: {"op": n.op, "columns": 1}
+                for n in self.order if isinstance(n, SampleSum)}
+
+    @property
     def param_planes(self) -> tuple[str, ...]:
         """The ``lookup`` planes that are promoted uniforms (one-cell
         parameter planes, see :func:`hawk.diff.param_planes`)."""
@@ -154,6 +169,16 @@ def canonical(sinks: Sequence[Sink], declared: Sequence[Slot] = (), *,
                 f"{slot.ttype!r} but the body binds it as {held.ttype!r}; a slot is "
                 "keyed on (role, name) ALONE"
             )
+    for sink in sinks:
+        if isinstance(sink, SampleSum) and sink.op == "sum":
+            # the compensation plane: written with the row, by no body node
+            comp = sink.companion
+            if (comp.role, comp.name) in bindings:
+                raise HawkError(
+                    f"sample_sum {sink.name!r}: its compensation plane "
+                    f"{comp.name!r} collides with a plane of the same name")
+            bindings[(comp.role, comp.name)] = Sink(
+                sink.kind, comp.role, comp.name, sink.value, ttype=comp.ttype)
     for info in _dispatches(order):
         if info.policy == "auto":
             name = f"{info.name}_mix"      # hawk.ir.segment.mix_name

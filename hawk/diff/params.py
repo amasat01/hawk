@@ -15,10 +15,11 @@ reads naturally. The sidecar lists the promoted planes under ``param_planes``;
 a launching runtime binds each to a one-element array.
 
 :func:`hawk.diff.vjp` of the promoted kernel gives the gradient with respect
-to each floating-point promoted parameter as a PER-SAMPLE plane
-(``bar_<name>``, one value per sample), never a scatter into the cell, so the
-caller sums it in a fixed sample order and the gradient is reproducible. The
-plain kernel is never changed.
+to each floating-point promoted parameter as one sum per 32 samples
+(``bar_<name>`` plus its compensation ``bar_<name>_comp``, ``ceil(n/32)``
+values each, :class:`hawk.ir.nodes.SampleSum`), never a scatter into the cell,
+so the gradient is the same bits on every launch. The plain kernel is never
+changed.
 
 A uniform read inside a ``for`` is promoted the same way: the loop's body reads
 it as a loop-invariant boundary value, so the cell is read once before the loop.

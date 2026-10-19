@@ -43,6 +43,8 @@ SELECT_HELPER = "__hawk_select__"
 LOOP_HELPER = "__hawk_loop__"
 #: The name the rewritten body reaches :func:`set_component` under.
 SETITEM_HELPER = "__hawk_setitem__"
+#: The name the rewritten body reaches :func:`hawk.trace.reduce.maxmin` under.
+MAXMIN_HELPER = "__hawk_maxmin__"
 
 _ALLOWED_STMTS = (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Expr, ast.If,
                   ast.For, ast.Pass)
@@ -312,6 +314,7 @@ def transform(fn: ast.FunctionDef, filename: str, sinks: frozenset[str],
                            ctx=ast.Load()), args=[], keywords=[]))
             for name in written if name in finishes] + body
     params = fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs
+    body = [_MaxMin().visit(st) for st in body]
     body = _Rewriter(filename).block(body, {a.arg for a in params})
     body += [_commit(name) for name in written]
     if returns_value:
@@ -779,6 +782,21 @@ def _commit(name: str) -> ast.stmt:
                     args=[ast.Name(id=_mutable_name(name), ctx=ast.Load())],
                     keywords=[])
     return ast.Expr(value=call)
+
+
+class _MaxMin(ast.NodeTransformer):
+    """The builtin ``max(a, b)`` / ``min(a, b)`` reach ``hawk.math.max/min``
+    through :func:`hawk.trace.reduce.maxmin`, which keeps the Python builtin
+    for operands that are not traced."""
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
+        if isinstance(node.func, ast.Name) and node.func.id in ("max", "min"):
+            return ast.copy_location(ast.Call(
+                func=ast.Name(id=MAXMIN_HELPER, ctx=ast.Load()),
+                args=[ast.Constant(value=node.func.id), *node.args],
+                keywords=node.keywords), node)
+        return node
 
 
 class _Rewriter:

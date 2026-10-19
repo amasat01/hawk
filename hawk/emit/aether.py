@@ -44,11 +44,13 @@ from ..ir.nodes import (
     Op,
     Primitive,
     SampleIndex,
+    SampleSum,
     Select,
     Sink,
     TapeWrite,
     WideWrite,
     is_param_cell,
+    sample_sums,
 )
 from ..ir.ops import RANDOM_OPS
 from ..ir.walk import canonical_nodes
@@ -992,6 +994,9 @@ class _Renderer(_DispatchMixin):
         if isinstance(sink, TapeWrite):
             self._tape_write(sink, target)
             return
+        if isinstance(sink, SampleSum):
+            self._sample_sum(sink)
+            return
         value = self._ref(sink.value)
         if isinstance(sink, MapreducePartial):
             functor = REDUCE_FUNCTOR[sink.op]
@@ -1047,6 +1052,12 @@ class _Renderer(_DispatchMixin):
             self._emit(line)
         self.indent = self.indent[:-4]
         self._emit("}")
+
+    def _sample_sum(self, sink: SampleSum) -> None:
+        """The sample's term into its column of the row the wrapper sums
+        (:data:`SAMPLE_SUM_TERMS`)."""
+        column = sample_sums(self.sinks).index(sink)
+        self._emit(f"{SAMPLE_SUM_TERMS}[{column}] = {self._ref(sink.value)};")
 
     def _commit_scattered(self, sink: Sink, target: str, index: str,
                           value: str) -> None:
@@ -1460,6 +1471,11 @@ def _flat_body(loop: Loop) -> list:
                            else (node.exit_cond, *node.exit_values))
                 stack.append(node)
     return out
+
+
+#: The local row of per-sample terms a ``sample_sum`` body writes; the
+#: backend's wrapper declares it and sums it.
+SAMPLE_SUM_TERMS = "hawk_ss"
 
 
 def _flat_indices(shape: tuple) -> list:

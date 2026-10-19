@@ -66,6 +66,7 @@ from .kernel import kernel as kernel
 from .kernel import resolve_dispatch as resolve_dispatch
 from .kernel import trace_value as trace_value
 from .raw import RawBlock as RawBlock
+from .reduce import all_samples as all_samples
 from .raw import raw_device as raw_device
 from .value import Value as Value
 from .value import random_normal as random_normal

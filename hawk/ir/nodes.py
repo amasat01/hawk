@@ -88,6 +88,14 @@ AT_ROLES = ("lookup", "wide_in")
 NAMESPACE_SEP = "__"
 
 
+#: The kind of the transient node :func:`hawk.all_samples` reductions mint;
+#: a store turns it into a :class:`SampleSum` sink, any other use is refused.
+REDUCE_KIND = "reduce"
+
+#: The reductions over samples a cell can hold.
+CELL_OPS = ("sum", "max", "min")
+
+
 class Node:
     """Base of every IR node: a :class:`~hawk.types.TensorType` plus ordered
     operands. Identity-hashed on purpose (the canonical walk dedups by a
@@ -107,6 +115,11 @@ class Node:
         for o in self.operands:
             if not isinstance(o, Node):
                 raise HawkError(f"{type(self).__name__}: operand {o!r} is not a Node")
+            if o.kind == REDUCE_KIND:
+                raise HawkError(
+                    "a value reduced over samples is not readable in this release "
+                    "of the kernel: store it to a Mutable output "
+                    "(total = hawk.all_samples(x).sum()) and read the cell on the host")
 
     @property
     def binding(self) -> Slot | None:
@@ -500,6 +513,80 @@ class MapreducePartial(Sink):
     @property
     def dedup_extra(self) -> Any:
         return (self.role, self.name, self.op)
+
+
+#: The suffix of a ``sample_sum`` plane's compensation companion.
+SAMPLE_SUM_COMP = "_comp"
+
+
+class ReduceSamples(Node):
+    """``reduce(op, samples)``: the sum, max or min of a rank-0 floating
+    value over every sample. A trace-time node only: storing it to a Mutable
+    makes the :class:`SampleSum` sink, and nothing else may read it."""
+
+    __slots__ = ("op",)
+
+    kind = REDUCE_KIND
+
+    def __init__(self, op: str, value: Node) -> None:
+        if op not in CELL_OPS:
+            raise HawkError(f"reduce over samples: op {op!r} is not one of {CELL_OPS}")
+        if value.ttype.shape or value.ttype.dtype not in ("f64", "f32"):
+            raise HawkError(
+                f"reduce over samples: a rank-0 f64/f32 value is reduced, got "
+                f"{value.ttype!r}; reducing a vector over samples is not in this "
+                "release (reduce its components one by one)")
+        super().__init__(value.ttype, (value,))
+        self.op = op
+
+    @property
+    def dedup_extra(self) -> Any:
+        return self.op
+
+    def stored(self, name: str, ttype: TensorType | None = None) -> SampleSum:
+        """The cell sink that stores this reduction to the plane ``name``."""
+        return SampleSum(name, self.operands[0], ttype, self.op)
+
+
+class SampleSum(Sink):
+    """``sample_sum(accum_out)``: the sum (or max, or min) of a rank-0
+    floating ``value`` over each run of 32 consecutive samples (one warp).
+
+    The plane ``name`` holds one result per run (``ceil(n/32)`` of them); a
+    sum also writes its compensation term to ``name + "_comp"``. A run's
+    result is a fixed pairwise tree over its 32 slots (a slot past ``n``
+    holds the identity: 0, -inf, +inf), the same on both targets."""
+
+    __slots__ = ("op",)
+
+    def __init__(self, name: str, value: Node, ttype: TensorType | None = None,
+                 op: str = "sum") -> None:
+        super().__init__("sample_sum", "accum_out", name, value, None, ttype)
+        if op not in CELL_OPS:
+            raise HawkError(f"sample_sum {name!r}: op {op!r} is not one of {CELL_OPS}")
+        self.op = op
+        if self.ttype.shape or self.ttype.dtype not in ("f64", "f32"):
+            raise HawkError(
+                f"sample_sum {name!r}: sums a rank-0 f64/f32 value, got {self.ttype!r}")
+
+    @property
+    def dedup_extra(self) -> Any:
+        return (self.role, self.name, self.op)
+
+    @property
+    def companion(self) -> Slot:
+        """The compensation plane's slot (a sum only)."""
+        return Slot(self.role, self.name + SAMPLE_SUM_COMP, self.ttype)
+
+    def rebuilt(self, value: Node) -> SampleSum:
+        """The same sink over ``value``."""
+        return SampleSum(self.name, value, self.ttype, self.op)
+
+
+def sample_sums(sinks: Sequence[Node]) -> tuple:
+    """The :class:`SampleSum` sinks of ``sinks``, in order: column ``k`` of
+    the kernel's row of terms is the ``k``-th."""
+    return tuple(s for s in sinks if isinstance(s, SampleSum))
 
 
 class TapeWrite(Sink):

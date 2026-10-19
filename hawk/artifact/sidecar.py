@@ -321,6 +321,10 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         "terminated_readonly": getattr(walk, "finish", None) is None,
         **_finish(walk),
         **({"param_planes": list(walk.param_planes)} if walk.param_planes else {}),
+        # planes written one row per 32 samples: (ceil(n/32), width) each
+        **({"sample_sums": list(walk.sample_sums)} if walk.sample_sums else {}),
+        # every reduction over samples, with its op
+        **({"cells": walk.cells} if walk.cells else {}),
         # one step's operation count, for a kernel whose body steps (absent
         # otherwise): read by the launching runtime, never by the body
         **({"step_ops": step_ops} if step_ops is not None else {}),

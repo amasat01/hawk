@@ -10,9 +10,10 @@ Rows (host; the ``cuda`` arm of a compiled row is marked ``gpu``):
 * **bitwise** — promoted-form results equal the by-value results exactly;
 * **rebind** — changing the cell between two launches of ONE built artifact
   changes the result, no recompile;
-* **vjp** — the gradient with respect to a promoted uniform is a per-sample
-  plane whose sum equals the finite-difference ``dJ/dk``; the vjp of the
-  plain kernel gives the same numbers;
+* **vjp** — the gradient with respect to a promoted uniform is one sum per
+  32 samples (plus its ``_comp`` term) whose total equals the
+  finite-difference ``dJ/dk``; the plain kernel's per-sample gradient,
+  summed the same way, gives the same numbers;
 * **sidecar** — ``param_planes`` lists the promoted planes (absent on the
   plain kernel); the access class is the plain kernel's;
 * **refusals** — a name clash with an existing plane, an unknown name.
@@ -155,18 +156,28 @@ def _loss_gradients(bundle, name, k, b):
     planes = {"x": x, "bar_y": bar_y, "bar_k": np.zeros(N), "bar_b": np.zeros(N),
               "bar_x": np.zeros(N)}
     if name == "law_pvjp":
+        rows = -(-N // 32)
         planes.update(k=np.array([k]), b=np.array([b]))
+        planes.update({n: np.full(rows, np.nan) for n in
+                       ("bar_k", "bar_k_comp", "bar_b", "bar_b_comp")})
     else:
         planes.update(k=k, b=b)
     assert {"bar_k", "bar_b"} <= {n for _, n in sc["arg_spec"]}
     _launch(bundle, name, "host", **planes)
+    if name == "law_pvjp":
+        return (planes["bar_k"] + planes["bar_k_comp"],
+                planes["bar_b"] + planes["bar_b_comp"])
     return planes["bar_k"], planes["bar_b"]
 
 
-def test_vjp_gradient_is_per_sample_and_sums_to_finite_difference(bundle):
+def _per_32(plane):
+    return np.add.reduceat(plane, np.arange(0, plane.size, 32))
+
+
+def test_vjp_gradient_is_summed_per_32_samples_and_matches_finite_difference(bundle):
     k, b, h = 1.3, 0.7, 1e-6
     gk, gb = _loss_gradients(bundle, "law_pvjp", k, b)
-    assert gk.shape == (N,) and gb.shape == (N,)
+    assert gk.shape == (-(-N // 32),) and gb.shape == (-(-N // 32),)
     x = _x()
 
     def loss(kk, bb):
@@ -175,8 +186,8 @@ def test_vjp_gradient_is_per_sample_and_sums_to_finite_difference(bundle):
     assert abs(gk.sum() - (loss(k + h, b) - loss(k - h, b)) / (2 * h)) < 1e-6
     assert abs(gb.sum() - (loss(k, b + h) - loss(k, b - h)) / (2 * h)) < 1e-6
     pk, pb = _loss_gradients(bundle, "law_vjp", k, b)
-    np.testing.assert_array_equal(gk, pk)
-    np.testing.assert_array_equal(gb, pb)
+    np.testing.assert_allclose(gk, _per_32(pk), rtol=1e-14)
+    np.testing.assert_allclose(gb, _per_32(pb), rtol=1e-14)
 
 
 def test_a_name_clash_and_an_unknown_name_are_refused():

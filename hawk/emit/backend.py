@@ -27,9 +27,16 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 
 from ..ir import HawkError, Walk
+from ..ir.nodes import sample_sums
 from ..types import Slot
 from .aether import Body, render_body
-from .spelling import binding_name, finish_binding, param_cell_binding, view_type
+from .spelling import (
+    binding_name,
+    element_spelling,
+    finish_binding,
+    param_cell_binding,
+    view_type,
+)
 
 
 @dataclass(frozen=True)
@@ -169,6 +176,14 @@ class Backend(Protocol):
         by-value mirror — ``params[]`` casts on the host, by-value binds
         on the device."""
 
+    def sample_sum_frame(self, width: int, elem: str, store: str,
+                         op: str = "sum") -> tuple:
+        """``(open, close)`` around the body of a kernel with ``sample_sum``
+        sinks: the body writes ``width`` terms of type ``elem`` per sample
+        into ``hawk_ss``; each row of 32 samples is reduced by ``op`` (sum,
+        max or min) and handed to ``store`` (the entry-local
+        ``hawk_ss_store``) at row ``hawk_row``."""
+
     def dispatch(self, kind_spelling: str, branch_spellings: Sequence[str],
                  policy: str, **kw: object) -> str:
         """The per-node ``predicated``/``switch`` text — identical C++ on
@@ -303,6 +318,136 @@ template <class ViewT>
     std::atomic_ref<std::uint32_t>(*cell).fetch_add(1u, std::memory_order_relaxed);
 #endif
 }}
+"""
+
+#: The ``sample_sum`` row sum (:class:`hawk.ir.nodes.SampleSum`): the pair
+#: combine, its host twin over one row of 32 slots, and the device's warp
+#: butterfly over the same pairs. Needs ``twoSumErr_`` above.
+_SAMPLE_SUM = """
+template <class E>
+{qualifier} E ssExtreme_(int op, E a, E b)
+{{
+    // max (op 1) or min (op 2) that ignores a NaN operand, as hawk.math.max/min.
+    if (a != a) return b;
+    if (b != b) return a;
+    return op == 1 ? (b > a ? b : a) : (b < a ? b : a);
+}}
+
+template <int OP, class E>
+{qualifier} E ssIdentity_()
+{{
+    // What a slot past the last sample holds: 0, -inf, +inf.
+    if constexpr (OP == 0) return E(0);
+    else if constexpr (OP == 1) return -static_cast<E>(__builtin_inf());
+    else return static_cast<E>(__builtin_inf());
+}}
+
+template <int OP = 0, class E>
+{qualifier} void pairCombine_(E& s, E& c, E s2, E c2)
+{{
+    if constexpr (OP != 0) {{
+        s = ssExtreme_(OP, s, s2);
+        return;
+    }}
+    // Compensated combine of two partials (s, c) and (s2, c2), kept verbatim
+    // with aether/accum/atomic.h. Symmetric: either side may hold either
+    // partial. A non-finite sum drops its compensation, so Inf and NaN
+    // follow IEEE through s.
+    AETHER_FP_BARRIER(s);
+    AETHER_FP_BARRIER(s2);
+    const E t = s + s2;
+    const E e = twoSumErr_(s, s2, t);
+    c = (t - t == E(0)) ? (c + c2) + e : E(0);
+    s = t;
+}}
+
+template <int N, int OP = 0, class E, class Store>
+{qualifier} void sampleSumRow_(E* terms, Store&& store)
+{{
+    // One row: 32 slots of N terms (row-major), slot l combined with slot
+    // l + off for off = 16, 8, 4, 2, 1 -- the pairs of sampleSumWarp_ --
+    // then store(column, sum, compensation). Leaves the slots zeroed.
+    E comp[32 * N] = {{}};
+    for (int off = 16; off >= 1; off >>= 1)
+        for (int l = 0; l < off; ++l)
+            for (int k = 0; k < N; ++k)
+                pairCombine_<OP>(terms[l * N + k], comp[l * N + k],
+                             terms[(l + off) * N + k], comp[(l + off) * N + k]);
+    for (int k = 0; k < N; ++k) store(k, terms[k], comp[k]);
+    for (int k = 0; k < 32 * N; ++k) terms[k] = ssIdentity_<OP, E>();
+}}
+
+#if defined(__CUDACC__)
+template <class E>
+__device__ __forceinline__ void ssPin_(E& x)
+{{
+    // A rounded term: a product in the body is never fused into a combine.
+    if constexpr (sizeof(E) == 4) asm("" : "+f"(x));
+    else asm("" : "+d"(x));
+}}
+
+template <int M, int OP, class E>
+__device__ __forceinline__ void ssRound_(E* h, E* c, int off, bool up)
+{{
+    // One butterfly round over a lane's M columns: it keeps one contiguous
+    // half (the upper one when `up`), adds its partner's (lane ^ off) copy
+    // of that half, and ships the other half to the partner.
+    constexpr int LO = M / 2, UP = M - LO;
+#pragma unroll
+    for (int j = 0; j < UP; ++j) {{
+        const E sh = up ? (j < LO ? h[j] : ssIdentity_<OP, E>()) : h[LO + j];
+        const E sc = up ? (j < LO ? c[j] : E(0)) : c[LO + j];
+        const E rh = __shfl_xor_sync(0xffffffffu, sh, off);
+        const E rc = __shfl_xor_sync(0xffffffffu, sc, off);
+        if (up) pairCombine_<OP>(h[LO + j], c[LO + j], rh, rc);
+        else if (j < LO) pairCombine_<OP>(h[j], c[j], rh, rc);
+    }}
+#pragma unroll
+    for (int j = 0; j < UP; ++j) {{
+        h[j] = up ? h[LO + j] : (j < LO ? h[j] : ssIdentity_<OP, E>());
+        c[j] = up ? c[LO + j] : (j < LO ? c[j] : E(0));
+    }}
+}}
+
+template <int N, int OP = 0, class E, class Store>
+__device__ __forceinline__ void sampleSumWarp_(E (&h)[N], Store&& store)
+{{
+    // The warp's 32 lanes' terms summed column by column in five rounds
+    // (lane ^ 16, 8, 4, 2, 1); each lane then stores the sums of the
+    // contiguous run of columns it holds. Every lane of the warp calls it.
+    E c[N];
+#pragma unroll
+    for (int k = 0; k < N; ++k) {{
+        ssPin_(h[k]);
+        c[k] = E(0);
+    }}
+    unsigned lane;
+    asm("mov.u32 %0, %%laneid;" : "=r"(lane));
+    constexpr int M2 = N - N / 2, M3 = M2 - M2 / 2, M4 = M3 - M3 / 2;
+    constexpr int M5 = M4 - M4 / 2, M6 = M5 - M5 / 2;
+    ssRound_<N, OP>(h, c, 16, (lane & 16u) != 0u);
+    ssRound_<M2, OP>(h, c, 8, (lane & 8u) != 0u);
+    ssRound_<M3, OP>(h, c, 4, (lane & 4u) != 0u);
+    ssRound_<M4, OP>(h, c, 2, (lane & 2u) != 0u);
+    ssRound_<M5, OP>(h, c, 1, (lane & 1u) != 0u);
+    // the columns a lane holds: the rounds' split points are M / 2 of the
+    // padded counts above, so a lane may hold fewer than M (or none)
+    const int halves[5] = {{N / 2, M2 / 2, M3 / 2, M4 / 2, M5 / 2}};
+    int lo = 0, m = N;
+#pragma unroll
+    for (int r = 0; r < 5; ++r) {{
+        if (lane & (16u >> r)) {{
+            lo += halves[r];
+            m -= halves[r];
+        }} else if (m > halves[r]) {{
+            m = halves[r];
+        }}
+    }}
+#pragma unroll
+    for (int j = 0; j < M6; ++j)
+        if (j < m) store(lo + j, h[j], c[j]);
+}}
+#endif
 """
 
 _STORE_COMPENSATED = """
@@ -533,7 +678,7 @@ _CLAMP_COUNT = """{qualifier} int hawk_clamp_count(long long n)
 def abi_helpers(qualifier: str, *, compensated: bool = False,
                 store_compensated: bool = False, finish: bool = False,
                 spacing: bool = False, mix: bool = False,
-                integers: bool = False) -> str:
+                integers: bool = False, sample_sum: bool = False) -> str:
     """The view-from-mirror reconstruction helpers — byte-for-byte the same
     on both targets, only the function qualifier differs; reads the
     mirror's own stride fields so a non-contiguous plane rebuilds
@@ -545,10 +690,13 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
     byte-identical. ``finish`` appends ``finish_count`` under the same
     rule, for a kernel that finishes its own sample, and ``spacing`` the
     ``spacing`` op's helper for a body that uses it, ``integers`` the
-    integer helpers for a body that calls one."""
+    integer helpers for a body that calls one, ``sample_sum`` the row sum
+    for a kernel with a :class:`~hawk.ir.nodes.SampleSum` sink."""
     helpers = []
-    if compensated or store_compensated:
+    if compensated or store_compensated or sample_sum:
         helpers.append(_TWO_SUM_ERR.format(qualifier=qualifier))
+    if sample_sum:
+        helpers.append(_SAMPLE_SUM.format(qualifier=qualifier))
     if compensated:
         helpers.append(_ACCUM_ADD_COMPENSATED.format(qualifier=qualifier))
     if store_compensated:
@@ -628,7 +776,7 @@ template <class ViewT, class T>
 def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             store_compensated: bool = False, needs_random: bool = False,
             finish: bool = False, spacing: bool = False, mix: bool = False,
-            integers: bool = False) -> str:
+            integers: bool = False, sample_sum: bool = False) -> str:
     """Includes + the scalar-mode aliases + the reconstruction helpers.
 
     ``compensated``/``store_compensated`` reach :func:`abi_helpers`'s gate.
@@ -643,7 +791,8 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             + _CLAMP_COUNT.format(qualifier=qualifier)
             + abi_helpers(qualifier, compensated=compensated,
                          store_compensated=store_compensated, finish=finish,
-                         spacing=spacing, mix=mix, integers=integers))
+                         spacing=spacing, mix=mix, integers=integers,
+                         sample_sum=sample_sum))
 
 
 def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
@@ -670,7 +819,13 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
     word and branches — ``1`` runs the single step's own loop and body, any
     other word the fused loop. Each side opens with its own empty device
     ``asm`` marker so the compiler can't fold the two together. Omitted,
-    the TU is unchanged."""
+    the TU is unchanged.
+
+    A kernel with :class:`~hawk.ir.nodes.SampleSum` sinks runs the
+    backend's ``sample_sum_frame`` instead of the index loop, and is refused
+    under the segmented, active-set and automatic (``_persist``) entries."""
+    sums = sample_sums(sinks)
+    _refuse_sample_sums(sums, segment=segment, active=active, one_step=one_step)
     if (one_step is not None and body is None and segment is None
             and getattr(getattr(kind, "sink", None), "id", None) != "compensated"):
         return _render_two_paths(name, sinks, walk, backend, mode=mode,
@@ -706,9 +861,14 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
                 if lane_guards is not None else backend.index_epilogue())
     tiled = (_interchange(backend, name, sinks, walk, kind, mode)
              if own_body and segment is None and active is None
-             and not compensated and not store_compensated else None)
+             and not compensated and not store_compensated and not sums else None)
     extra_prelude = getattr(backend, "extra_prelude", None)
     loop = [backend.index_prologue(segment, **prologue_kw), body.text, epilogue]
+    if sums:
+        opened, closed = backend.sample_sum_frame(
+            len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums),
+            sums[0].op)
+        loop = [opened, body.text, closed]
     parts = [
         f"// HAWK-emitted {backend.id} translation unit (scalar mode: {mode.id}).\n"
         f"// Body text is the ONE renderer's; this file is the entry wrapper.\n",
@@ -716,7 +876,7 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
                store_compensated=store_compensated, needs_random=body.needs_random,
                finish=getattr(walk, "finish", None) is not None,
                spacing=_SPACING_CALL in body.text, mix=_MIX_CALL in body.text,
-               integers=_INT_CALL in body.text),
+               integers=_INT_CALL in body.text, sample_sum=bool(sums)),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",
@@ -732,6 +892,51 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
     return Source(_filled(parts, mode), body.text, name,
                   backend.id, mode.id, body.reduce_op,
                   backend.id == "host" and vectorises(walk, scalar_type=mode.id))
+
+
+def _refuse_sample_sums(sums, *, segment, active, one_step) -> None:
+    """A row sums 32 consecutive samples of ONE warp; the segmented,
+    active-set and ``_persist`` entries map a warp onto other samples."""
+    entry = ("segmented" if segment is not None else "active-set" if active is not None
+             else "_persist" if one_step is not None else None)
+    if len({s.op for s in sums}) > 1:
+        raise HawkError(
+            f"sample_sum {[s.name for s in sums]}: one kernel reduces over samples "
+            "with one op (sum, max or min) in this release; split the kernel")
+    if sums and entry is not None:
+        raise HawkError(
+            f"sample_sum {[s.name for s in sums]}: a row is the sum over one "
+            f"warp of 32 consecutive samples, and the {entry} entry's warp does not "
+            "hold 32 consecutive samples; launch this kernel on its plain entry")
+
+
+SAMPLE_SUM_OP_CODE = {"sum": 0, "max": 1, "min": 2}
+
+
+def sample_sum_fill(op: str, width: int, array: str, elem: str) -> str:
+    """The statement that sets ``array`` (``width`` slots) to the identity of
+    ``op``: nothing a zero-initialised array lacks for a sum."""
+    if op == "sum":
+        return ""
+    return (f"    for (int hawk_k = 0; hawk_k < {width}; ++hawk_k) "
+            f"{array}[hawk_k] = hawk_abi::ssIdentity_<{SAMPLE_SUM_OP_CODE[op]}, {elem}>();\n")
+
+
+def _sample_sum_store(sums) -> str:
+    """The entry-local ``hawk_ss_store(column, sum, compensation)`` the row
+    sum calls: column ``k`` goes to the ``k``-th sink's two planes at row
+    ``hawk_row``."""
+    lines = ["    auto hawk_ss_store = "
+             "[&](int hawk_col, auto hawk_s, auto hawk_c) {"]
+    for k, sink in enumerate(sums):
+        hi = binding_name(sink.role, sink.name)
+        lines += [f"        {'else ' if k else ''}if (hawk_col == {k}) {{",
+                  f"            {hi}.data()[hawk_row] = hawk_s;"]
+        if sink.op == "sum":
+            comp = binding_name(sink.role, sink.companion.name)
+            lines.append(f"            {comp}.data()[hawk_row] = hawk_c;")
+        lines.append("        }")
+    return "\n".join(lines + ["    };"])
 
 
 _REAL_LITERAL = re.compile(r"static_cast<Real>\((-?[0-9][0-9.eE+-]*)\)")

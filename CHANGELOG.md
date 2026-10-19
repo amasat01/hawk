@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+**Reductions and `hawk.all_samples`.** A value's own axes reduce with `.sum/.max/.min/.mean(axis)` (`axis` is a number, `"components"`, `"rows"` or `"columns"`), `hawk.math.sum/mean`, and the views `.components`, `.rows`, `.columns`; `axis="samples"` on one sample's value refuses and names `hawk.all_samples`. `max(a, b)` and `min(a, b)` on traced values are `hawk.math.max/min` (a tie keeps the first operand). `total = hawk.all_samples(x).sum()` (also `.max()`, `.min()`, `.mean()`) stored to a `Mutable` writes one row per 32 samples (sum and mean: with `_comp`; max and min: exact), listed in the sidecar under `cells` beside `sample_sums`; a kernel reduces with one op, and reading a reduced value in the body refuses. The derivative of a sum over samples broadcasts its adjoint; a max or min refuses.
+
+**A parameter's gradient is summed in the derived kernel.** `vjp` of a `param_planes` kernel writes each parameter's gradient `bar_<name>` as one sum per 32 samples (a warp), plus its compensation term in `bar_<name>_comp`: `ceil(n/32)` values each instead of `n`, in the same kernel as the per-sample `bar_x`. A row is a fixed compensated tree over its 32 samples, bitwise across launches, and the host gives the device's rows within rounding. The sidecar lists these planes under `sample_sums`. Add `bar_<name>` and `bar_<name>_comp` over the rows to get the gradient. A launch covers whole rows (its first sample is a multiple of 32), and the segmented, active-set and persistent entries refuse such a kernel.
+
 ## 0.5.1 (2026-10-17)
 
 **One `HostKernel` shared across threads is safe.** In 0.5.0 `hawk.runtime.run` bound and launched in two steps, so a second thread calling `run` on the same kernel could rebind its planes between the two and the first thread's launch then wrote to, or read from, the wrong arrays (wrong results, and heap corruption with unequal sizes). It hit anyone calling one loaded kernel from several threads, such as an eight-thread framework call. `run`, `bind_all` and `launch` now hold a per-kernel lock for the whole call.

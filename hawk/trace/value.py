@@ -25,6 +25,7 @@ from ..ir.nodes import (
     Dispatch,
     Finish,
     MapreducePartial,
+    ReduceSamples,
     RoleConst,
     SampleIndex,
     WideWrite,
@@ -277,6 +278,44 @@ class Value:
             ". This call is in a plain-python helper, whose body the "
             "pass never sees: return the component values and let the kernel "
             "body write them, or build the whole value at once with vec(...)")
+
+    def sum(self, axis: Any = None) -> Value:
+        """The sum over the value's own ``axis`` (None: every entry)."""
+        from .reduce import reduce_own
+        return reduce_own(self, "sum", axis)
+
+    def max(self, axis: Any = None) -> Value:
+        """The maximum over the value's own ``axis`` (None: every entry)."""
+        from .reduce import reduce_own
+        return reduce_own(self, "max", axis)
+
+    def min(self, axis: Any = None) -> Value:
+        """The minimum over the value's own ``axis`` (None: every entry)."""
+        from .reduce import reduce_own
+        return reduce_own(self, "min", axis)
+
+    def mean(self, axis: Any = None) -> Value:
+        """The mean over the value's own ``axis`` (None: every entry)."""
+        from .reduce import reduce_own
+        return reduce_own(self, "mean", axis)
+
+    @property
+    def components(self) -> Any:
+        """A vector's components, by name: ``v.components[k]``."""
+        from .reduce import view
+        return view(self, "components")
+
+    @property
+    def rows(self) -> Any:
+        """A matrix's rows, by name: ``m.rows[r]`` is the row as a vector."""
+        from .reduce import view
+        return view(self, "rows")
+
+    @property
+    def columns(self) -> Any:
+        """A matrix's columns, by name: ``m.columns[c]`` is the column as a vector."""
+        from .reduce import view
+        return view(self, "columns")
 
     def __bool__(self) -> bool:
         raise HawkError(
@@ -801,8 +840,13 @@ class MutableRef(_SinkRef):
         self.write(value)
 
     def write(self, value: Any) -> None:
-        """Commit ``value`` to this plane (the ``assign``)."""
-        self.sinks = [Assign(self.name, self._typed(value), self.ttype)]
+        """Commit ``value`` to this plane (the ``assign``); a reduction over
+        samples (``hawk.all_samples(x).sum()``) commits a cell."""
+        node = self._typed(value)
+        if isinstance(node, ReduceSamples):
+            self.sinks = [node.stored(self.name, self.ttype)]
+        else:
+            self.sinks = [Assign(self.name, node, self.ttype)]
 
 
 class AccumRef(_SinkRef):

@@ -11,10 +11,10 @@ loop. Rows, for an accumulator, a recurrence, a nested loop and a loop with a
 
 * the promoted kernel's values equal the ``Param`` kernel's (bit for bit on the
   host, to a few ulps on the device, whose compiler contracts the spellings apart);
-* its ``vjp`` gives the same per-sample gradient plane, which sums to a central
-  difference (float64);
+* its ``vjp`` gives the ``Param`` kernel's per-sample gradient summed per 32
+  samples, which sums to a central difference (float64);
 * its ``jvp``, and the second-order routes ``jvp(vjp)`` and ``vjp(jvp)``, equal
-  the ``Param`` kernel's.
+  the ``Param`` kernel's (a parameter's gradient summed per 32 samples).
 """
 
 from __future__ import annotations
@@ -112,9 +112,14 @@ def _run(built, kernel, target, values, dtype):
     if target == "cuda":
         import cupy as xp
     bound, outs = {}, {}
+    summed = set(kernel.walk.sample_sums)
     for role, name in kernel.arg_spec:
         if role == "mutable":
             outs[name] = bound[name] = xp.zeros(N, dtype=dtype)
+        elif role == "accum_out":
+            bound[name] = xp.full(-(-N // 32), np.nan, dtype=dtype)
+            if name in summed:
+                outs[name] = bound[name]
         elif role == "uniform":
             bound[name] = float(values[name])
         elif role == "lookup":
@@ -129,8 +134,18 @@ def _run(built, kernel, target, values, dtype):
         plugin, structure = (L.device_plugin(built.directory, kernel.name, sidecar),
                              eexec.DeviceKernel)
     eplan.plan(plugin, structure=structure).bind(**bound).launch()
-    return {n: np.asarray(a.get() if target == "cuda" else a, dtype=np.float64)
+
+    def host(a):
+        return np.asarray(a.get() if target == "cuda" else a, dtype=np.float64)
+
+    # a sample_sum plane comes back as its row sums: the plane plus its compensation
+    return {n: host(a) + (host(bound[n + "_comp"]) if n in summed else 0.0)
             for n, a in outs.items()}
+
+
+def _per_32(plane):
+    """A per-sample plane summed over every 32 samples, as a sample_sum row."""
+    return np.add.reduceat(plane, np.arange(0, plane.size, 32))
 
 
 def _point(kernel, dtype):
@@ -157,7 +172,11 @@ def test_a_promoted_loop_kernel_equals_the_param_kernel_at_every_level(
     want = _run(built, plain, target, point, MODES[mode])
     assert got.keys() == want.keys()
     for n in want:
-        if target == "host":
+        if n in promoted.walk.sample_sums:
+            # the promoted gradient is summed per 32 samples; the plain one is not
+            np.testing.assert_allclose(got[n], _per_32(want[n]),
+                                       rtol=64 * np.finfo(MODES[mode]).eps)
+        elif target == "host":
             np.testing.assert_array_equal(got[n], want[n])
         else:   # the device compiler contracts the two spellings differently: a few ulps
             eps = np.finfo(MODES[mode]).eps
@@ -167,7 +186,7 @@ def test_a_promoted_loop_kernel_equals_the_param_kernel_at_every_level(
 
 @pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("subject", sorted(SUBJECTS))
-def test_the_promoted_gradient_is_per_sample_and_sums_to_a_difference(bundle, subject, target):
+def test_the_promoted_gradient_is_summed_per_32_samples_and_sums_to_a_difference(bundle, subject, target):
     mode, built = bundle
     if mode != "float64":
         pytest.skip("the float64 reference row")
@@ -176,7 +195,7 @@ def test_the_promoted_gradient_is_per_sample_and_sums_to_a_difference(bundle, su
     point = _point(v, np.float64)
     point["bar_y"] = np.ones(N)
     bar = _run(built, v, target, point, np.float64)["bar_g"]
-    assert bar.shape == (N,)
+    assert bar.shape == (-(-N // 32),)
 
     def total(g):
         return _run(built, f, target, {**point, "g": g}, np.float64)["y"].sum()
