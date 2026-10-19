@@ -43,6 +43,9 @@ check() {
 check "documented performance numbers" "python tools/sync_perf_claims.py --eagle-root <eagle checkout>, then commit the result" \
   python "$here/tools/sync_perf_claims.py" --eagle-root "$eagle" --check
 
+check "manifesto copy" "copy the Manifesto lines of raptor docs/content/principles.md between the manifesto markers" \
+  bash "$here"/tools/manifesto_check.sh "$here"/CONTRIBUTING.md
+
 if [ -f "$site/tools/sync_family_visuals.py" ]; then
   check "family visuals" "python tools/sync_family_visuals.py --site-root <site checkout> --eagle-root <eagle checkout> --target hawk=<this repo>, then commit docs/_static/family_visuals" \
     python "$site/tools/sync_family_visuals.py" --check --site-root "$site" --eagle-root "$eagle" --target hawk="$here"
