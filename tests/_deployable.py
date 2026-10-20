@@ -128,6 +128,16 @@ def diagnostic_two(x: Scalar, terminated: Terminated, rejected: Terminated,
 
 
 @kernel
+def two_fin(x: Scalar, lim: Scalar, terminated: Terminated, rejected: Terminated,
+            y: Mutable[Scalar]):
+    """ fixture: two masks AND a finish in one kernel. Under :data:`TWO_MASKS`
+    the guard skips a sample flagged by either mask; the finish sets only
+    ``terminated``. Automatic (no ``steps=``): export ``two_fin.step``."""
+    y = x * 2.0
+    terminated = y > lim
+
+
+@kernel
 def fraction(x: Scalar, y: Mutable[Scalar]):
     """The subject: a body that READS the sample count, so the ``nsamples``
     ROLE is a real parameter of the emitted entry — the one whose width must
