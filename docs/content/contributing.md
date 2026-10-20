@@ -59,6 +59,13 @@ pytest -m "not gpu"
 the rest additionally need `eagle` installed as a Python package to execute
 traced kernels on host or device.
 
+The embedded-C rows (`tests/test_embedded_*.py`) compile the emitted C and
+run cppcheck's MISRA addon over it, so they need a C compiler and cppcheck
+(`brew install cppcheck`, or `apt-get install cppcheck`). Without them the
+rows fail rather than skip: a skipped check certifies nothing. `$HAWK_CC`
+names the C compiler and `$HAWK_CPPCHECK` the cppcheck binary when they are
+not on `PATH`.
+
 ## Building the docs
 
 ```bash

@@ -113,7 +113,7 @@ intersphinx_mapping = {
 
 # Templates and exclusions
 templates_path = ["_templates"]
-exclude_patterns = ["_templates", "_build", "Thumbs.db", ".DS_Store", "README.md"]
+exclude_patterns = ["_templates", "_build", "Thumbs.db", ".DS_Store", "README.md", "superpowers"]
 
 # Two narrow, tooling-internal rough edges, not content bugs:
 # - "autodoc": sphinx_autodoc_typehints' autodoc-process-signature hook

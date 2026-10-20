@@ -26,4 +26,5 @@ them may change between releases.
    hawk.compile
    hawk.runtime
    hawk.artifact
+   hawk.embedded
 ```

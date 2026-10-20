@@ -150,6 +150,7 @@ content/examples
 :hidden:
 
 content/compiling
+content/embedded
 content/interop
 ```
 

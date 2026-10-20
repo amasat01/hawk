@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+A new `c` target emits a kernel as standalone MISRA C:2012: `<name>.c`, `<name>.h` and a
+`<name>.embedded.json` report, serial, with a status-returning entry and a plain
+structure-of-arrays ABI, bit-identical to the `native` host build and compiled with
+`-ffp-contract=off`. `hawk.embedded.export(kernel, directory)` is the engine and
+`hawk.build(..., targets=("c",))` the build door, alone or beside `host` and `cuda`, with the
+new `embedded_profile=` keyword taking an `EmbeddedProfile`. The `c` target never enters the
+eagle manifest, and `hawk.load` and `hawk.artifact.plugins` refuse a build that holds only a `c` unit. A verify pass
+runs before emission: it refuses by name what the target does not build (twelve features, among them random
+draws, raw device blocks, mapreduce partials, active-set guards, segmented units, the
+compensated sink policy, fused lanes, automatic kernels and libm functions on `Int` operands), records
+the worst-case trips, operations and static bytes, classifies every runtime index as proven or
+clamped, reports the floating-point domain of each division and root, and applies the
+profile's opt-in caps. A text audit and the C compiler (`-std=c99` and `-std=c11`) and
+cppcheck's MISRA addon then check the output; the report records the deviations. The
+embedded rows need cppcheck and fail rather than skip without it.
+
+`Kernel.source_digest` holds the sha256 of a kernel's source (`None` when it is unavailable) and
+reaches the header and the report. `hawk.emit` gains a `Dialect` seam (`Dialect`, `AETHER`,
+`render_body(..., dialect=)`): the traversal is unchanged and the CUDA and host output is
+byte-identical except for one change: the renderer no longer emits a dead load at the sample
+index (`lut_<name>_i = lut_<name>[i]...`) for a lookup or wide-input plane (`Table`, `Wide`) read
+twice, nor for a rank>=1 lookup plane (a `Table[Vector[3]]`) read at all.
+
+hawk now requires `aether-dsc>=0.2.4`, which brings `aether_dsc.c_core`, the generator whose
+scalar reference functions the `c` target inlines into the unit.
+
 ## 0.5.0 (2026-10-14)
 
 GCC 13.1-13.3 and 14.1-14.2 miscompile a conditional call of a function that has masked
