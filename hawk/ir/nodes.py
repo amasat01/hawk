@@ -147,11 +147,6 @@ class Node:
                     "a cut inside a `for` is not in this release (it would be one "
                     "launch per iteration); hoist hawk.all_samples(x).sum() out of the "
                     "loop")
-            if o.kind == REDUCE_KIND:
-                raise HawkError(
-                    "a value reduced over samples is not readable in this release "
-                    "of the kernel: store it to a Mutable output "
-                    "(total = hawk.all_samples(x).sum()) and read the cell on the host")
 
     @property
     def binding(self) -> Slot | None:

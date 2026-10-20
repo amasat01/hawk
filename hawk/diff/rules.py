@@ -27,6 +27,7 @@ from typing import Any
 from ..ir import Const, HawkError, Node, Select
 from ..ir import make as _mk
 from ..ir.ops import CAST, COMPARE, INT_BINARY, INT_UNARY, LOGICAL, PREDICATE, RANDOM_OPS
+from ..ir.nodes import REDUCE_KIND, ReduceSamples
 from ..types import TensorType
 
 _F64 = TensorType((), "f64")
@@ -549,6 +550,25 @@ _SHAPED: dict[str, DiffRule] = {
     ),
 }
 
+def _reduce_only_sum(n: Node) -> None:
+    if n.op != "sum":
+        raise HawkError(
+            f"no derivative for the {n.op} over samples read in the body: its "
+            "subgradient picks one sample, so it is not in this release; reduce "
+            "with a sum")
+
+
+def _reduce_vjp(n: Node, g: Node):
+    _reduce_only_sum(n)
+    return ((n.operands[0], ReduceSamples("sum", g)),)
+
+
+def _reduce_jvp(n: Node, t: Callable[[Node], Node | None]) -> Node | None:
+    _reduce_only_sum(n)
+    d = t(n.operands[0])
+    return None if d is None else ReduceSamples("sum", d)
+
+
 #: The table proper: ``(kind, rank)`` -> rule, ``rank=None`` generic.
 RULES: dict[tuple[str, int | None], DiffRule] = {
     **{(k, None): DiffRule(vjp=_bin_vjp, jvp=_bin_jvp) for k in _BIN_VJP},
@@ -568,6 +588,9 @@ RULES: dict[tuple[str, int | None], DiffRule] = {
     ("clip", None): DiffRule(vjp=_clip_vjp, jvp=_clip_jvp),
     **{(k, None): rule for k, rule in _SHAPED.items()},
     ("at", None): DiffRule(mode="walker"),
+    #: A sum over samples read later in the body: its adjoint is the sum over
+    #: samples of every sample's contribution, broadcast back to each sample.
+    (REDUCE_KIND, None): DiffRule(vjp=_reduce_vjp, jvp=_reduce_jvp),
     #: A dispatch's two directions are the transform's own — K per-branch
     #: adjoints combined (VJP), a branch-wise mirror (JVP).
     ("dispatch", None): DiffRule(mode="walker"),

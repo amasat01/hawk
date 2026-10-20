@@ -57,6 +57,16 @@ def _clamp_expr(kind_spelling: str, k: int) -> str:
            f"static_cast<std::int32_t>({kind_spelling})))"
 
 
+def _in_range(selector: Node, k: int) -> bool:
+    """Whether ``selector`` is a select between two integer literals that are
+    branch indices already, so the clamp has nothing to clamp."""
+    if getattr(selector, "kind", None) != "select":
+        return False
+    return all(isinstance(o, Const) and isinstance(o.literal, int)
+               and not isinstance(o.literal, bool) and 0 <= o.literal < k
+               for o in selector.operands[1:])
+
+
 def render_dispatch_rank0(kind_spelling: str, branch_spellings: Sequence[str],
                           policy: str, *, elided: frozenset = frozenset(),
                           cpp_type: str = "", name: str = "",
@@ -147,8 +157,7 @@ class _DispatchMixin:
                 "'segmented' replaces the node with its own branch inside a "
                 "per-unit walk before this point")
         kname = f"hawk_disp{self._disp_pos(node)}_k"
-        self._emit(f"const std::int32_t {kname} = "
-                   f"{_clamp_expr(self._ref(node.selector), node.K)};")
+        self._selector(kname, node.selector, node.K)
         branch_texts = [self._ref(b) for b in node.branches]
         if not node.ttype.shape:
             return render_dispatch_rank0(kname, branch_texts, "predicated")
@@ -158,6 +167,14 @@ class _DispatchMixin:
                                f"({kname} == {j})")
             expr = f"aether::select({cond}, {branch_texts[j]}, {expr})"
         return expr
+
+    def _selector(self, kname: str, selector: Node, k: int) -> None:
+        """Emit ``kname``, the selector clamped to ``[0, k)``; no clamp for a
+        select between two in-range literals."""
+        ref = self._ref(selector)
+        spelled = (f"static_cast<std::int32_t>({ref})" if _in_range(selector, k)
+                   else _clamp_expr(ref, k))
+        self._emit(f"const std::int32_t {kname} = {spelled};")
 
     def _disp_pos(self, node: Dispatch):
         """The suffix a dispatch's emitted names carry: its canonical position,
@@ -196,8 +213,7 @@ class _DispatchMixin:
         poses = [self._disp_pos(n) for n in nodes]
         k = nodes[0].K
         kname = f"hawk_disp{poses[0]}_k"
-        self._emit(f"const std::int32_t {kname} = "
-                   f"{_clamp_expr(self._ref(nodes[0].selector), k)};")
+        self._selector(kname, nodes[0].selector, k)
         names = [f"hawk_disp{p}" for p in poses]
         for node, name in zip(nodes, names):
             mix = self._mix_plane(node)

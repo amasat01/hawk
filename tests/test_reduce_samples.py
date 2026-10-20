@@ -187,7 +187,7 @@ def test_sidecar_lists_the_cells(built):
     bundle, _ = built
     assert sidecar_of(bundle, "cell_sum")["cells"] == {"t": {"op": "sum", "columns": 1}}
     assert sidecar_of(bundle, "cell_max")["cells"] == {"t": {"op": "max", "columns": 1}}
-    assert sidecar_of(bundle, "cell_max")["sample_sums"] == ["t"]
+    assert all("sample_sums" not in sidecar_of(bundle, f"cell_{op}") for op in OPS)
 
 
 @pytest.mark.gpu
@@ -264,12 +264,15 @@ def test_max_of_an_iterable_refuses():
             y = max(v)
 
 
-def test_a_reduced_value_is_not_readable():
-    with pytest.raises(HawkError, match="not readable in this release"):
-        @kernel
-        def k(x: Scalar, t: Mutable[Scalar], u: Mutable[Scalar]):
-            t = hawk.all_samples(x).sum()
-            u = t + 1.0
+def test_a_reduced_value_read_later_is_a_launch_boundary():
+    from hawk.ir.split import stages
+
+    @kernel
+    def k(x: Scalar, t: Mutable[Scalar], u: Mutable[Scalar]):
+        t = hawk.all_samples(x).sum()
+        u = t + 1.0
+    first, second = stages("k", k.sinks)
+    assert first.cells_out == ("t",) and second.cells_in == ("t",)
 
 
 def test_arithmetic_on_the_view_and_a_nested_view_refuse():

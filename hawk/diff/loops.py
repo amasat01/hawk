@@ -124,14 +124,15 @@ def _reduce_to(contribution: Node, target) -> Node:
 
 
 def _pullback(roots: Sequence[Node], seeds: Sequence[tuple], stop: set,
-              inputs, name) -> tuple:
+              inputs, name, jump=None) -> tuple:
     """One reverse pass over a loop body. Returns
     ``(adjoints, scatters, scattered)``.
 
     ``adjoints`` is ``{id(node): adjoint}`` for every node reached, read by
     the caller at the stop nodes. ``scatters`` are the body sinks the
     transpose produces: the reverse of a gather ``t.at(e(k))`` is a
-    scatter-add at the same row, once per iteration."""
+    scatter-add at the same row, once per iteration. ``jump`` is the body's
+    :class:`~hawk.diff.jump.JumpPlan` of a ``jump=`` kernel, else ``None``."""
     store: dict = {}
     for node, seed in seeds:
         _accumulate(store, node, seed)
@@ -160,6 +161,10 @@ def _pullback(roots: Sequence[Node], seeds: Sequence[tuple], stop: set,
         if isinstance(node, Primitive):
             for child, contribution in node.rules.vjp_contributions(node, g):
                 _accumulate(store, child, _reduce_to(contribution, child.ttype))
+            continue
+        if jump is not None and jump.apply_vjp(
+                node, g, lambda child, c: _accumulate(store, child,
+                                                      _reduce_to(c, child.ttype))):
             continue
         rule = rule_for(node.kind, len(node.ttype.shape))
         if rule.vjp is None:
@@ -193,12 +198,13 @@ def _readable(loop: Loop) -> tuple:
     )
 
 
-def reverse_loop(loop: Loop, seeds: dict, inputs, name) -> LoopReverse:
+def reverse_loop(loop: Loop, seeds: dict, inputs, name, jump=None) -> LoopReverse:
     """The reverse-mode derivative of one lowered ``for``.
 
     ``seeds`` maps a carried SLOT to the adjoint of that slot's final value.
     ``inputs`` are the ``wrt`` leaves (an ``at()`` read of one scatters), and
-    ``name`` is the transform's own :class:`hawk.diff.transform._Namer`."""
+    ``name`` is the transform's own :class:`hawk.diff.transform._Namer`;
+    ``jump`` the kernel's :class:`~hawk.diff.jump.JumpPlan`, else ``None``."""
     if not seeds:
         return LoopReverse()
     if loop.body_sinks:
@@ -224,12 +230,12 @@ def reverse_loop(loop: Loop, seeds: dict, inputs, name) -> LoopReverse:
     count = None if loop.exit_cond is None else LoopCount(loop)
     if kind.name == ACCUMULATOR:
         return _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
-                                    count)
-    return _reverse_recurrence(loop, seeds, targets, inputs, name, count)
+                                    count, jump)
+    return _reverse_recurrence(loop, seeds, targets, inputs, name, count, jump)
 
 
 def _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
-                         count=None) -> LoopReverse:
+                         count=None, jump=None) -> LoopReverse:
     """``c = c + a(k)``: the adjoint of the carry never changes, so the reverse
     is a FORWARD loop accumulating ``d a / d x`` weighted by that one adjoint,
     and nothing is stored ((a))."""
@@ -239,8 +245,10 @@ def _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
     if not live:
         return LoopReverse(tuple(contributions))
     stop = {id(o) for o in loop.operands} | {id(loop.index)}
+    roots = [a for a, _g in live]
     store, scatters, scattered = _pullback(
-        [a for a, _g in live], live, stop, inputs, name)
+        roots, live, stop, inputs, name,
+        None if jump is None else jump.body(loop, roots))
     carried = [t for t in targets if store.get(id(t)) is not None]
     if not carried and not scatters:
         return LoopReverse(tuple(contributions))
@@ -269,7 +277,7 @@ def _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
 
 
 def _reverse_recurrence(loop, seeds, targets, inputs, name,
-                        count=None) -> LoopReverse:
+                        count=None, jump=None) -> LoopReverse:
     """The general case: the carry's adjoint evolves, so the derived loop
     runs backwards over the forward loop's own per-iteration carried
     values, reached through :class:`~hawk.ir.loop_nodes.TapeRead` — why it
@@ -293,8 +301,10 @@ def _reverse_recurrence(loop, seeds, targets, inputs, name,
     # `add` of zero, but a missing one is a plausible wrong number nothing
     # folds.
     live = [(body[j], bars[j]) for j in range(m)]
-    store, scatters, scattered = _pullback([b for b, _g in live], live, stop,
-                                           inputs, name)
+    roots = [b for b, _g in live]
+    store, scatters, scattered = _pullback(
+        roots, live, stop, inputs, name,
+        None if jump is None else jump.body(loop, roots))
     carried = [t for t in targets if store.get(id(t)) is not None]
     accums = tuple(
         LoopCarry(loop.index.depth, m + j, _bar_name(t, j), t.ttype)
@@ -356,7 +366,8 @@ def _tape_tangent(node: TapeRead, augmented_of) -> Node | None:
     return TapeRead(augmented, node.loop.carry_count + node.slot, node.index)
 
 
-def forward_loop(loop: Loop, tangent_of, name, augmented_of=None) -> Node | None:
+def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
+                 jump=None) -> Node | None:
     """The forward-mode derivative of one lowered ``for``: one loop carrying
     the primal slots and their tangents side by side.
 
@@ -373,7 +384,8 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None) -> Node | None
     :class:`~hawk.ir.loop_nodes.TapeRead` (:func:`_tape_tangent`). The
     remaining refusals are structural: a loop committing once per
     iteration is a derived loop's scatter, and reverse-over-reverse still
-    has no tape rule."""
+    has no tape rule. ``jump`` is the kernel's
+    :class:`~hawk.diff.jump.JumpPlan` of a ``jump=`` kernel, else ``None``."""
     del name
     if loop.body_sinks:
         raise HawkError(
@@ -401,9 +413,21 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None) -> Node | None
             tangent[id(operand)] = got
     stop = ({id(o) for o in loop.operands} | {id(loop.index)}
             | {id(c) for c in carries})
+    plan = None if jump is None else jump.body(loop, body + exits)
+
+    def t(c: Node) -> Node | None:
+        return tangent.get(id(c))
+
     for node in _post_order(body + exits, stop):
         if isinstance(node, _TERMINALS) or id(node) in stop:
             continue
+        if plan is not None:
+            handled, got = plan.apply_jvp(
+                node, t, lambda n: rule_for(n.kind, len(n.ttype.shape)).jvp(n, t))
+            if got is not None:
+                tangent[id(node)] = got
+            if handled:
+                continue
         if isinstance(node, At):
             plane = tangent.get(id(node.plane))
             if plane is not None:

@@ -331,6 +331,7 @@ def _promoted(step: Any, *, tau: bool = False) -> Any:
         sinks = (*others, Assign(t, t_value, ttype), *finishes)
     out = Kernel(step.name, sinks, step.planes, kind=step.kind)
     out.time, out.time_step = t, dt
+    out.jump = step.jump
     return out, t_value
 
 
@@ -357,6 +358,7 @@ def _closed_stop(step: Any, t_value: Node) -> Any:
                   for s in step.sinks)
     out = Kernel(step.name, sinks, step.planes, kind=step.kind)
     out.time, out.time_step = step.time, step.time_step
+    out.jump = step.jump
     return out
 
 
@@ -423,6 +425,7 @@ def refine_entry(kernel: Any) -> Any:
                    for i, g in enumerate(new[len(commits):]))
     out = Kernel(step.name + "_refine", sinks, {}, kind=step.kind)
     out.time, out.time_step = refined.time, refined.time_step
+    out.jump = refined.jump
     return out
 
 
@@ -483,6 +486,7 @@ def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None) -> Any:
     function = Kernel(f"{step.name}_function",
                       tuple(Assign(s.name + NEXT_SUFFIX, v, s.ttype)
                             for s, v in zip(commits, values)), {})
+    function.jump = getattr(step, "jump", None)
     out = vjp(function, wrt=wrt)
     return Derived(tuple(out), primal=step.name, kind="vjp", wrt=out.wrt,
-                   primal_unit=primal_unit)
+                   primal_unit=primal_unit, jump=out.jump)

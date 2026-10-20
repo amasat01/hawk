@@ -57,7 +57,7 @@ class Kernel:
     """A traced kernel: its sink set, its canonical walk and its declarations."""
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
-                 "time", "time_step")
+                 "time", "time_step", "jump")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
@@ -82,6 +82,11 @@ class Kernel:
         #: by the taping twin, never by the plain kernel's emission.
         self.time: str | None = None
         self.time_step: str | None = None
+        #: The width of the derivative through the kernel's switches
+        #: (``@hawk.kernel(jump=...)``): a number, ``"auto"`` or a Param
+        #: name; ``None`` (a switch has derivative zero) otherwise. Read by
+        #: :mod:`hawk.diff`, never by the kernel's own emission.
+        self.jump: Any = None
 
     @property
     def arg_spec(self) -> tuple[tuple[str, str], ...]:
@@ -101,7 +106,7 @@ class Kernel:
 
 def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
            steps: Any = None, time: str | None = None,
-           time_step: str | None = None) -> Any:
+           time_step: str | None = None, jump: Any = None) -> Any:
     """Trace ``fn`` into a :class:`Kernel`. Refusals fire here.
 
     ``kind`` supplies the kernel's :class:`hawk.ext.Kind` (vocabulary,
@@ -129,16 +134,34 @@ def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
     them to promote the step size to a per-sample plane and to write the
     time plane in index form. A time plane the body updates must update as
     ``t = t + dt`` (checked here, at decoration); one the body does not
-    declare is minted by the twin."""
+    declare is minted by the twin.
+
+    ``jump`` makes :func:`hawk.diff.vjp`/:func:`~hawk.diff.jvp` differentiate
+    the kernel's parameter-dependent ``if``/``where`` switches as the
+    smoothed loss: a comparison ``l < r`` passes on the jump between its
+    branches, spread over ``|l - r| < sqrt(5) * jump`` (Epanechnikov kernel
+    of standard deviation ``jump``). ``jump=`` is the width in the units of
+    the compared values (about 2% of their span), or the name of a
+    ``Param[Scalar]`` holding it; ``"auto"`` picks it per batch from the
+    spread of the compared values. The primal kernel is unchanged."""
     if fn is None:
         def decorate(f: Callable[..., None]) -> Any:
-            return kernel(f, kind=kind, steps=steps, time=time, time_step=time_step)
+            return kernel(f, kind=kind, steps=steps, time=time, time_step=time_step,
+                          jump=jump)
         return decorate
     if time is not None and time_step is None:
         raise HawkError(
             f"kernel {fn.__name__!r}: time={time!r} needs time_step=, the "
             "parameter the time plane advances by")
     built = _kernel(fn, kind, steps)
+    if jump is not None:
+        from ..diff.jump import check_jump
+
+        planes = (built.step or built).planes
+        checked = check_jump(fn.__name__, jump, planes)
+        for k in (built, built.step, built.one_step):
+            if k is not None:
+                k.jump = checked
     if time_step is not None:
         from ..diff.tape import check_time
 
@@ -191,10 +214,12 @@ def resolve_dispatch(kernel: Kernel, policies: dict[str, str]) -> Kernel:
     resolved = Kernel(step.name, with_policies(step.sinks, chosen), step.planes,
                       kind=step.kind)
     resolved.time, resolved.time_step = step.time, step.time_step
+    resolved.jump = step.jump
     if kernel.step is None or "segmented" in chosen.values():
         return resolved
     fused = default_steps(resolved)
     fused.time, fused.time_step = step.time, step.time_step
+    fused.jump = step.jump
     return fused
 
 

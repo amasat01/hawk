@@ -41,6 +41,7 @@ from .nodes import (
     SampleSum,
     Op,
     Primitive,
+    ReduceSamples,
     Select,
     Sink,
 )
@@ -585,6 +586,8 @@ def _rebuild(node: Node, operands: Sequence[Node]) -> Node:
         return _rebuild_loop(node, operands)
     if isinstance(node, Op):
         return Op(node.kind, tuple(operands), node.ttype, node.literal)
+    if isinstance(node, ReduceSamples):
+        return ReduceSamples(node.op, operands[0])
     raise HawkError(                              # pragma: no cover - closed set
         f"no substitution rule for node {node!r} inside a loop body")
 

@@ -50,9 +50,9 @@ import pathlib
 from hawk.artifact import build_bundle
 from hawk.trace import Index, Mutable, Param, Scalar, all_samples, kernel, raw_device
 
-#: The four classes eagle's bed certifies (``v2_artifact.REQUIRED_ACCESS_CLASSES``).
-REQUIRED_ACCESS_CLASSES = ("sample_local", "cross_sample_read", "mapreduce",
-                           "cross_sample_write")
+#: The classes this bed certifies. ``mapreduce`` is not among them: no kernel
+#: declares it in this release (folding cells across ranks returns in the next).
+REQUIRED_ACCESS_CLASSES = ("sample_local", "cross_sample_read", "cross_sample_write")
 
 #: The shifted absolute read, spelled in the two identifiers BOTH backends bind:
 #: the plane's own view (``psc_<name>``, ``hawk.emit.aether.binding_name``) and
@@ -85,14 +85,6 @@ def rank_gather(table: Scalar, y: Mutable[Scalar]):
 
 
 @kernel
-def rank_partial(x: Scalar, total: Mutable[Scalar]):
-    """``mapreduce``. The body stays ELEMENTWISE — one per-sample contribution,
-    never a reduction: eagle owns the COMBINE, which is what makes the
-    combine ORDER a property of the partitioning and not of the plugin."""
-    total = all_samples(x).sum()
-
-
-@kernel
 def rank_scatter(x: Scalar, lane: Index, acc: Mutable[Scalar]):
     """``cross_sample_write``: refused above one partition, and refused under the
     rank structure at EVERY world size including one (F-e). It is in the artifact
@@ -103,8 +95,7 @@ def rank_scatter(x: Scalar, lane: Index, acc: Mutable[Scalar]):
 #: ``(kernel, unit name)`` — the unit DIRECTORIES carry no information, exactly
 #: as eagle's default artifact does: a bed row must find its unit by the
 #: manifest's declaration, never by a path it could have guessed.
-UNITS = ((rank_local, "unit0"), (rank_gather, "unit1"),
-         (rank_partial, "unit2"), (rank_scatter, "unit3"))
+UNITS = ((rank_local, "unit0"), (rank_gather, "unit1"), (rank_scatter, "unit2"))
 
 
 def build(root, *, cache_dir: str | None = None) -> pathlib.Path:

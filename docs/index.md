@@ -149,6 +149,8 @@ content/examples
 :maxdepth: 1
 :hidden:
 
+content/across_samples
+content/control_vs_warp
 content/compiling
 content/interop
 ```

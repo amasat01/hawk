@@ -87,6 +87,7 @@ def param_planes(kernel: Any, names: Any = None) -> Any:
     sinks = swap(step.sinks, mapping)
     out = Kernel(step.name + SUFFIX, sinks, step.planes, kind=step.kind)
     out.time, out.time_step = step.time, step.time_step
+    out.jump = step.jump
     return default_steps(out) if step is not kernel else out
 
 

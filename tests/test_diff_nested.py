@@ -173,7 +173,7 @@ def _run(built, kernel, target, values: dict, dtype) -> dict:
     sidecar = sidecar_of(built, kernel.name)
     widths = sidecar.get("arg_widths", {})
     bound, outs = {}, {}
-    summed = set(sidecar.get("sample_sums", ()))
+    summed = set(sidecar.get("cells", ()))
     for role, name in kernel.arg_spec:
         if role == "mutable":
             outs[name] = bound[name] = xp.zeros(_shape(widths, name), dtype=dtype)
@@ -260,7 +260,7 @@ def _against_a_difference(built, parent, child, chain, target):
     widths = sidecar_of(built, child.name).get("arg_widths", {})
     roles = _roles(child)
     base = _draw(child, 7 + len(chain), widths)
-    summed = set(sidecar_of(built, parent.name).get("sample_sums", ()))
+    summed = set(sidecar_of(built, parent.name).get("cells", ()))
     sinks = [n for r, n in parent.arg_spec if r == "mutable" or n in summed]
     wanted = _floats(parent)
     cell = lambda n: roles[n] in ("uniform", "lookup")

@@ -49,6 +49,7 @@ from ..ir.nodes import (DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish, Op,
                         ReduceSamples, SampleSum, param_cell_names)
 from ..ir.walk import dispatch_groups
 from ..types import INT_PLANE_DTYPES, TensorType
+from .jump import JumpPlan, drop_width, jump_of
 from .loops import forward_loop, reverse_loop
 from .rules import rule_for, zero_like
 
@@ -76,8 +77,11 @@ class Derived(tuple):
     """
 
     def __new__(cls, sinks, *, primal: str | None, kind: str, wrt: tuple[str, ...],
-                primal_unit: str | None = None):
+                primal_unit: str | None = None, jump: dict | None = None):
         self = super().__new__(cls, sinks)
+        #: The sidecar ``jump`` record of a derivative smoothed through its
+        #: switches (``@kernel(jump=...)``), else ``None``.
+        self.jump = jump
         self.primal = primal
         self.kind = kind
         self.wrt = wrt
@@ -237,12 +241,15 @@ def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
     """:func:`vjp` proper; the gradient of each input named in ``summed``
     is summed over samples (:class:`~hawk.ir.nodes.SampleSum`)."""
     overrides = _policy_overrides(primal, policy)
+    jump = jump_of(primal)
+    drop_width((), wrt, jump)
     seq, position = canonical_nodes(sinks)
     _refuse_prior_read(seq)
-    inputs = _wrt(seq, wrt)
+    inputs = drop_width(_wrt(seq, wrt), None, jump)
     name = _Namer(ADJOINT_PREFIX, _taken(seq),
                   _named(sinks, inputs))
     key = _keyer(position)
+    plan = _plan(seq, key, inputs, jump, primal)
     adjoint: dict[Any, Node] = {}
     for sink in sinks:
         if isinstance(sink, Loop):
@@ -257,7 +264,7 @@ def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
     scatters: list[Node] = []
     scattered: set[str] = set()
     _reverse_pass(seq, key, adjoint, inputs, name, scatters, scattered,
-                  overrides=overrides)
+                  overrides=overrides, jump=plan)
     gradients = [
         _gradient_sink(leaf, name(leaf.name), summed,
                        adjoint.get(key(leaf)) or zero_like(leaf.ttype))
@@ -265,8 +272,22 @@ def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
         if leaf.role != "lookup" and leaf.name not in scattered
     ]
     out = _mask_termination(gradients + scatters, primal)
-    return Derived(out, primal=_primal_name(primal), kind="vjp",
-                   wrt=tuple(leaf.name for leaf in inputs), primal_unit=primal_unit)
+    names = tuple(leaf.name for leaf in inputs)
+    if plan is not None:
+        out += plan.spread_cells()
+    return Derived(out, primal=_primal_name(primal), kind="vjp", wrt=names,
+                   primal_unit=primal_unit,
+                   jump=None if plan is None else plan.record(names))
+
+
+def _plan(seq: Sequence[Node], key, inputs: Sequence[Leaf], jump: Any,
+          primal: Any) -> JumpPlan | None:
+    """The switching comparisons of a ``jump=`` primal, ``None`` when it
+    declares none or none of its comparisons switches."""
+    if jump is None:
+        return None
+    plan = JumpPlan(seq, key, inputs, jump, _primal_name(primal))
+    return plan if plan.sites else None
 
 
 def _gradient_sink(leaf: Node, name: str, summed: tuple, value: Node) -> Node:
@@ -290,7 +311,7 @@ def _vjp_param_cells(primal: Any, cells: tuple, wrt: Sequence[str] | None,
     per_sample = _Demoted(primal, demote(_sinks_of(primal)))
     d = _vjp(per_sample, per_sample.sinks, wrt, primal_unit, policy, summed=cells)
     return Derived(promote(d, cells), primal=_primal_name(primal), kind="vjp",
-                   wrt=d.wrt, primal_unit=primal_unit)
+                   wrt=d.wrt, primal_unit=primal_unit, jump=d.jump)
 
 
 class _Demoted:
@@ -300,6 +321,7 @@ class _Demoted:
         self.name, self.sinks, self.walk = primal.name, sinks, primal.walk
         self.planes = getattr(primal, "planes", {})
         self.kind = getattr(primal, "kind", None)
+        self.jump = getattr(primal, "jump", None)
 
 
 def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
@@ -318,12 +340,15 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
                 "this IR's root set contains a lowered loop that COMMITS once per "
                 "iteration, which only a DERIVED kernel does: second-order forward "
                 "mode through a `for` is not built")
+    jump = jump_of(primal)
+    drop_width((), wrt, jump)
     seq, position = canonical_nodes(sinks)
     _refuse_prior_read(seq)
-    inputs = _wrt(seq, wrt)
+    inputs = drop_width(_wrt(seq, wrt), None, jump)
     name = _Namer(TANGENT_PREFIX, _taken(seq),
                   _named(sinks, inputs))
     key = _keyer(position)
+    plan = _plan(seq, key, inputs, jump, primal)
     tangent: dict[Any, Node] = {
         key(leaf): Leaf(leaf.kind, leaf.role, name(leaf.name), leaf.ttype)
         for leaf in inputs
@@ -335,6 +360,8 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
     for node in seq:
         if isinstance(node, _TERMINALS):
             continue
+        if plan is not None and _jump_jvp(node, plan, tangent, key):
+            continue
         if isinstance(node, Loop):
             # `loop_tangent` is also consulted by the LoopValue arm below: a
             # reverse loop's body reads the forward loop's tape, and the
@@ -343,7 +370,7 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
             # forward loop before the reverse loop that reads it, so the
             # twin is always already in this table when needed.
             got = forward_loop(node, lambda c: tangent.get(key(c)), name,
-                               lambda lp: loop_tangent.get(key(lp)))
+                               lambda lp: loop_tangent.get(key(lp)), jump=plan)
             if got is not None:
                 loop_tangent[key(node)] = got
             continue
@@ -387,9 +414,25 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
         tuple(_tangent_sink(s, tangent.get(key(s.value)), name) for s in sinks
               if s.ttype.dtype not in INT_PLANE_DTYPES),
         primal)
+    names = tuple(leaf.name for leaf in inputs)
+    if plan is not None:
+        out += plan.spread_cells()
     return Derived(
-        out, primal=_primal_name(primal), kind="jvp",
-        wrt=tuple(leaf.name for leaf in inputs), primal_unit=primal_unit)
+        out, primal=_primal_name(primal), kind="jvp", wrt=names,
+        primal_unit=primal_unit,
+        jump=None if plan is None else plan.record(names))
+
+
+def _jump_jvp(node: Node, plan: JumpPlan, tangent: dict, key) -> bool:
+    """Forward mode's boolean-op rules of a ``jump=`` primal: whether
+    ``node`` was one (its tangent, if any, recorded)."""
+    def t(c: Node) -> Node | None:
+        return tangent.get(key(c))
+
+    handled, got = plan.apply_jvp(node, t, lambda n: _rule(n).jvp(n, t))
+    if got is not None:
+        tangent[key(node)] = got
+    return handled
 
 
 # --------------------------------------------------------------------------
@@ -400,7 +443,8 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
                   inputs: Sequence[Leaf], name: _Namer, scatters: list[Node],
                   scattered: set[str], *, local_pass: bool = False,
                   overrides: Mapping[int, str] | None = None,
-                  cut: frozenset = frozenset()) -> None:
+                  cut: frozenset = frozenset(),
+                  jump: JumpPlan | None = None) -> None:
     """One reverse-accumulation pass over ``seq``, given an already-seeded
     ``adjoint`` — the core step :func:`vjp` runs once over the whole walk,
     seeded at every primal sink.
@@ -432,7 +476,7 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
             continue
         if isinstance(node, Loop):
             derived = reverse_loop(node, loop_seeds.get(key(node), {}), inputs,
-                                   name)
+                                   name, jump=jump)
             for child, contribution in derived.contributions:
                 _accumulate(adjoint, key, child,
                             _reduce_to(contribution, child.ttype))
@@ -462,7 +506,11 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
             continue
         if isinstance(node, Dispatch):
             _dispatch_vjp(node, g, seq, key, inputs, name, adjoint, scatters,
-                         scattered, overrides)
+                         scattered, overrides, jump)
+            continue
+        if jump is not None and jump.apply_vjp(
+                node, g, lambda child, c: _accumulate(adjoint, key, child,
+                                                      _reduce_to(c, child.ttype))):
             continue
         for child, contribution in _rule(node).vjp(node, g):
             _accumulate(adjoint, key, child, _reduce_to(contribution, child.ttype))
@@ -471,7 +519,8 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
 def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
                   inputs: Sequence[Leaf], name: _Namer, adjoint: dict[Any, Node],
                   scatters: list[Node], scattered: set[str],
-                  overrides: Mapping[int, str] | None = None) -> None:
+                  overrides: Mapping[int, str] | None = None,
+                  jump: JumpPlan | None = None) -> None:
     """K independent reverse passes, one per branch, each seeded only at that
     branch's own root with the dispatch's incoming adjoint ``g`` — never a
     per-node masked seed pushed through the ordinary chain rule, which would
@@ -501,7 +550,8 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
         seed_slot = key(branch)
         local: dict[Any, Node] = {seed_slot: g}
         _reverse_pass(seq, key, local, inputs, name, scatters, scattered,
-                      local_pass=True, overrides=overrides, cut=shared)
+                      local_pass=True, overrides=overrides, cut=shared,
+                      jump=jump)
         for slot, contribution in local.items():
             target = seq[slot]
             if not isinstance(target, (Leaf, At)) and slot not in shared:

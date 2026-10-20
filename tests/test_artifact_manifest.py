@@ -42,7 +42,7 @@ def test_top_level_key_order_is_the_contractual_one(built):
 def test_the_schema_and_abi_twins_are_the_max_ones(built):
     for bundle in built.values():
         doc = bundle.manifest
-        assert doc["schema_version"] == _contracts.MAX_SCHEMA_VERSION == 2
+        assert doc["schema_version"] == _contracts.MAX_SCHEMA_VERSION == 3
         assert doc["aether_abi"] == _contracts.AETHER_ABI_VERSION == "aether-abi/2"
 
 

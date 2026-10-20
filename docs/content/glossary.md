@@ -5,6 +5,34 @@ DLPack, certification row, ...) see the
 [family glossary](https://amasat01.github.io/raptor/content/glossary.html).
 
 ```{glossary}
+all-samples view
+  `hawk.all_samples(x)`: every sample's `x` at once, as against `x`, which is
+  this sample's. It is indexed, masked or reduced, never used in arithmetic.
+  See [Across samples](across_samples).
+
+cell
+  One value for the whole run, made by storing a reduction over samples
+  (`total = hawk.all_samples(x).sum()`) to a `Mutable` output. A vector or
+  matrix cell comes back as one array per entry (`total_0`, `total_1`, ...).
+
+stage
+  One launch of a kernel that reads a value reduced over samples. The read is
+  a launch boundary: the kernel is built as stages, run in sequence, with the
+  cell passed between them. See [Across samples](across_samples).
+
+jump width
+  The `jump=` of a kernel: how far from a switch a sample still pulls on a
+  parameter that moves the switch (about 0.02 of the compared values' range).
+  See [Gradients through branches and stops](tutorials/07_gradients_through_branches_and_stops).
+
+extent
+  How many values a plane holds: one per sample, one per key (a by-key
+  store), or one for the whole run (a cell).
+
+reduction policy
+  How eagle adds up the rows of a cell: `"compensated"` (default),
+  `"ordered"` (the same bits on every run) or `"auto"`.
+
 plane
   The role one argument plays for every sample: a per-sample input
   (`Scalar`), a shared constant (`Param`) or an output (`Mutable[...]`).

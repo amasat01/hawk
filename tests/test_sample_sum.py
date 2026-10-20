@@ -14,7 +14,7 @@ Rows (host; the ``cuda`` arm is marked ``gpu``):
   summed per 32 samples;
 * **bitwise** — repeated device launches give the same bits;
 * **twins** — host rows equal device rows within the sum contract;
-* **sidecar** — ``sample_sums`` names the planes; the access class is the
+* **sidecar** — ``cells`` names the planes; the access class is the
   primal's, so both share one bundle;
 * **refusals** — the segmented, active-set and ``_persist`` entries.
 """
@@ -196,9 +196,10 @@ def test_host_rows_equal_device_rows_within_the_contract(built, n):
         assert np.all(np.abs(h - d) <= 2 * TOL[mode] * scale + 1e-300), name
 
 
-def test_sidecar_lists_the_sample_sums(built):
+def test_sidecar_lists_the_cells(built):
     sidecar = sidecar_of(built[0], "law_ss")
-    assert sidecar["sample_sums"] == ["bar_k", "bar_b"]
+    assert "sample_sums" not in sidecar
+    assert list(sidecar["cells"]) == ["bar_k", "bar_b"]
     assert {"bar_k", "bar_k_comp", "bar_b", "bar_b_comp"} <= set(sidecar["accum_outputs"])
     assert sidecar["exec_access"] == sidecar_of(built[0], "law_params")["exec_access"]
 
