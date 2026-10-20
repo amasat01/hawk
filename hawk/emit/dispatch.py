@@ -19,8 +19,7 @@ from ..ir.nodes import (
     Primitive,
     SampleIndex,
 )
-from ..types import TensorType
-from .spelling import _is_literal_zero, binding_name, carry_type, element_spelling
+from .spelling import _is_literal_zero, binding_name
 
 
 def _clamp_expr(kind_spelling: str, k: int) -> str:
@@ -122,10 +121,10 @@ class _DispatchMixin:
         kind_expr = self._ref(node.selector)
         k = node.K
         kname = f"hawk_disp{pos}_k"
-        self._emit(f"const std::int32_t {kname} = {_clamp_expr(kind_expr, k)};")
+        self._emit(self.dialect.selector_decl(self, kname, kind_expr, k))
         mix = self._mix_plane(node)
         if mix is not None:
-            self._emit(f"hawk_abi::mix_count({mix}, {k}, {kname});")
+            self._emit(self.dialect.mix_count(mix, k, kname))
         if node.policy in SWITCH_RENDERED:
             return self._dispatch_switch(node, pos, kname)
         if node.policy != "predicated":
@@ -135,13 +134,8 @@ class _DispatchMixin:
                 "per-unit walk before this point")
         branch_texts = [self._ref(b) for b in node.branches]
         if not node.ttype.shape:
-            return render_dispatch_rank0(kname, branch_texts, "predicated")
-        expr = branch_texts[-1]
-        for j in range(len(branch_texts) - 2, -1, -1):
-            cond = self._hoist(f"aether::constant<aether::extents<>>"
-                               f"({kname} == {j})")
-            expr = f"aether::select({cond}, {branch_texts[j]}, {expr})"
-        return expr
+            return self.dialect.predicated_rank0(kname, branch_texts)
+        return self.dialect.predicated_tensor(self, kname, branch_texts)
 
     def _mix_plane(self, node: Dispatch) -> str | None:
         """The binding an ``auto`` group counts its picks into, else ``None``
@@ -167,7 +161,7 @@ class _DispatchMixin:
                            if _is_literal_zero(b))
         last = node.K - 1
         name = f"hawk_disp{pos}"
-        self._emit(f"{carry_type(node.ttype)} {name};")
+        self._emit(f"{self.dialect.carry_type(node.ttype)} {name};")
         self._emit(f"switch ({kname}) {{")
         outer, self.indent = self.indent, self.indent + "    "
         for j, branch in enumerate(node.branches):
@@ -179,11 +173,18 @@ class _DispatchMixin:
             self._emit_case_body(branch, name)
             self._emit("break;")
             self._emit("}")
+        tail = self.dialect.switch_default_tail()
         if elided:
-            self._emit(f"default: {name} = {self._typed_zero(node.ttype)};")
+            self._emit(f"default: {name} = {self.dialect.typed_zero(node.ttype)};")
+            if tail:
+                self._emit(tail)
         else:
             self._emit("default: {")
             self._emit_case_body(node.branches[last], name)
+            if tail:
+                self.indent += "    "
+                self._emit(tail)
+                self.indent = self.indent[:-4]
             self._emit("}")
         self.indent = outer
         self._emit("}")
@@ -249,6 +250,8 @@ class _DispatchMixin:
             return False
         if isinstance(node, (Loop, Const, Primitive)):
             return False
+        if self.dialect.names_every_tensor and node.ttype.shape:
+            return True
         return fanout >= 2 or self._leaf_valued(node)
 
     def _render_branch(self, root: Node) -> str:
@@ -280,19 +283,8 @@ class _DispatchMixin:
             if named:
                 name = f"tb{self.temps}"
                 self.temps += 1
-                self._emit(f"const auto {name} = {text};")
+                self._emit(self.dialect.declare(name, node.ttype, text))
                 self.local[id(node)] = name
             else:
                 self.local[id(node)] = text
         return self._ref(root)
-
-    def _typed_zero(self, ttype: TensorType) -> str:
-        """The typed zero the ``switch`` ``default:`` writes when at
-        least one branch was elided — the same spelling :meth:`_broadcast`
-        builds, inlined rather than hoisted, since it's assigned straight
-        into the declared local, which copies it out immediately."""
-        elem = element_spelling(ttype.dtype)
-        if not ttype.shape:
-            return f"static_cast<{elem}>(0)"
-        ext = ", ".join(str(e) for e in ttype.shape)
-        return f"aether::constant<aether::extents<{ext}>>(static_cast<{elem}>(0))"
