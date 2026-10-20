@@ -198,7 +198,8 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
     done = make("gt", (LoopValue(loop, len(commits)), Const(0.5, _FLAG)))
     out.append(Finish(finish.name, done, steps=K))
     return Kernel(out_name, tuple(out), kernel.planes, kind=kernel.kind,
-                  step=step, one_step=kernel if auto else None)
+                  step=step, one_step=kernel if auto else None,
+                  source_digest=getattr(kernel, "source_digest", None))
 
 
 def _clamped_word() -> Node:
