@@ -167,96 +167,33 @@ jobs:
             raptor/pyproject.toml
             eagle/python/pyproject.toml
 
-      # aether-dsc, hawk's one runtime dependency, resolved against the
-      # requirement the BUILT wheel declares: from PyPI when a matching
-      # release exists (what a user gets), otherwise sealed and built from
-      # the sibling aether checkout (before the family's first release).
-      # Sealing runs the NVRTC-clean gate, so that branch needs NVRTC plus
-      # the CCCL headers from PyPI (the runner has no CUDA toolkit).
-      - name: aether-dsc wheel (PyPI if released, else the sibling checkout)
-        run: |
-          set -euo pipefail
-          # newest NumPy/SciPy ship no cp313t wheel: prefer a wheel over an sdist build
-          python -m pip install --quiet --prefer-binary build
-          REQ="$(python - <<'PY'
-          import glob, zipfile
-          whl = sorted(glob.glob("dist/*.whl"))[0]
-          with zipfile.ZipFile(whl) as z:
-              meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
-              for line in z.read(meta).decode().splitlines():
-                  if line.startswith("Requires-Dist:") and "aether-dsc" in line and "extra ==" not in line:
-                      print(line.split(":", 1)[1].strip()); break
-              else:
-                  raise SystemExit(f"{whl} declares no aether-dsc requirement")
-          PY
-          )"
-          echo "hawk requires: $REQ"
-          mkdir -p dist-dsc
-          if python -m pip download --quiet --no-deps --only-binary=:all: -d dist-dsc "$REQ"; then
-            echo "aether-dsc: from PyPI"
-          else
-            echo "aether-dsc: not on PyPI yet, building it from the sibling checkout"
-            python -m pip install --quiet --prefer-binary "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
-            (cd aether/dsc && python -m aether_dsc.seal && python -m build --wheel --outdir ../../dist-dsc)
-          fi
-          ls dist-dsc
-
       - run: sudo apt-get update && sudo apt-get install -y g++-13
 
       - uses: ./hawk/.github/actions/cuda-toolchain
 
-      # eagle and raptor-core are TEST-only for hawk (the suite drives
-      # kernels through eagle; neither is a declared dependency). Same rule
-      # as aether-dsc: the released wheels from PyPI when the sibling
-      # checkouts' own versions are released, else built from those
-      # checkouts the way ci.yml builds them. The exact version matters: an
+      # aether-dsc (hawk's runtime dependency) and the test-only eagle + raptor-core: each from PyPI when
+      # its checkout's version is released, else built from the checkout. The exact version matters: an
       # older eagle on PyPI cannot load what this hawk emits during a release.
-      - name: eagle + raptor-core wheels (PyPI if released, else the sibling checkouts)
-        run: |
-          set -euo pipefail
-          mkdir -p dist-sib
-          EAGLE_V=$(sed -n 's/^version = "\(.*\)"/\1/p' eagle/python/pyproject.toml)
-          CORE_V=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' raptor/raptor/version.py)
-          echo "EAGLE_V=$EAGLE_V" >> "$GITHUB_ENV"
-          echo "sibling versions: raptor-eagle $EAGLE_V, raptor-core $CORE_V"
-          if python -m pip download --quiet --only-binary=:all: -d dist-sib \
-               "raptor-eagle==$EAGLE_V" "raptor-core==$CORE_V"; then
-            echo "raptor-eagle (+ raptor-core): from PyPI"
-          else
-            echo "raptor-eagle: not on PyPI yet, building it from the sibling checkouts"
-            cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-              -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
-              -B aether/build -S aether
-            cmake --install aether/build
-            cmake -B eagle/__eagle_hdr -S eagle -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-              -DCMAKE_CUDA_ARCHITECTURES=70 \
-              -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
-            cmake --install eagle/__eagle_hdr
-            export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install"
-            export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
-            (cd eagle/python && python -m build --wheel --outdir ../../dist-sib)
-            if ! python -m pip download --quiet --no-deps --only-binary=:all: -d dist-sib "raptor-core==$CORE_V"; then
-              (cd raptor && python -m build --wheel --outdir ../dist-sib)
-            fi
-          fi
-          ls dist-sib
+      - id: sib
+        uses: ./hawk/.github/actions/install-siblings
+        with:
+          siblings: aether-dsc=aether/dsc raptor-eagle=eagle/python raptor-core=raptor
 
-      # Three installs, so each piece provably comes from where it should:
-      # aether-dsc from dist-dsc, raptor-hawk from THIS run's dist (never an
-      # index copy of the same version), then the [test] extras from PyPI
-      # (pytest, numpy, scipy are third-party; hawk is already satisfied)
-      # together with the test-only eagle (+ raptor-core) from dist-sib.
+      # The siblings first (PyPI or built above; eagle builds from its sdist here), then raptor-hawk from
+      # THIS run's dist only (never an index copy of the same version), then the [test] extras.
       - name: Fresh venv, install hawk + aether-dsc, pip check
+        env:
+          SIB_DIR: ${{ steps.sib.outputs.dir }}
+          SIB_PINS: ${{ steps.sib.outputs.pins }}
         run: |
           set -euo pipefail
           python -m venv venv
           . venv/bin/activate
-          pip install --quiet --no-index --find-links dist-dsc aether-dsc
-          # hawk's one third-party runtime dependency comes from PyPI; hawk and
-          # aether-dsc themselves only from the wheels built in this run
-          pip install --quiet --prefer-binary numpy
-          pip install --quiet --no-index --find-links dist --find-links dist-dsc raptor-hawk
-          pip install --quiet --prefer-binary --find-links dist --find-links dist-sib "raptor-hawk[test]" "raptor-eagle==$EAGLE_V"
+          export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
+          # newest NumPy/SciPy ship no cp313t wheel: prefer a wheel over an sdist build
+          pip install --quiet --prefer-binary --find-links "$SIB_DIR" $SIB_PINS numpy
+          pip install --quiet --no-index --find-links dist raptor-hawk
+          pip install --quiet --prefer-binary --find-links dist --find-links "$SIB_DIR" "raptor-hawk[test]" $SIB_PINS
           pip check
 
       - name: Import smoke (the import-time build-digest/layout self-check runs here)
