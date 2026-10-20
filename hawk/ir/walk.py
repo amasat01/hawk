@@ -26,7 +26,7 @@ from . import access as _access
 from .access import Access
 from .nodes import param_cell_names
 from .compound import Quantity, QuantitySpan
-from .loop_nodes import Loop, LoopCarry, LoopValue, TapeRead
+from .loop_nodes import Loop, LoopCarry, LoopCount, LoopValue, TapeRead
 from .nodes import (
     FINISHED_PLANE,
     FINISHED_TTYPE,
@@ -37,10 +37,11 @@ from .nodes import (
     Finish,
     HawkError,
     Leaf,
-    MapreducePartial,
     Node,
+    SampleSum,
     Op,
     Primitive,
+    ReduceSamples,
     Select,
     Sink,
 )
@@ -100,6 +101,20 @@ class Walk:
     finish: tuple[str, int | str] | None = None
 
     @property
+    def sample_sums(self) -> tuple[str, ...]:
+        """The ``accum_out`` planes written one row per 32 samples
+        (:class:`~hawk.ir.nodes.SampleSum`), in sink order."""
+        return tuple(n.name for n in self.order if isinstance(n, SampleSum))
+
+    @property
+    def cells(self) -> dict:
+        """The reductions over samples stored by this kernel: plane name to
+        ``{"op", "columns"}`` (``columns`` is the width of one cell, 1 for a
+        rank-0 value; a wider cell is the planes ``name_0 .. name_{columns-1}``)."""
+        return {n.cell: {"op": n.op, "columns": n.columns}
+                for n in self.order if isinstance(n, SampleSum)}
+
+    @property
     def param_planes(self) -> tuple[str, ...]:
         """The ``lookup`` planes that are promoted uniforms (one-cell
         parameter planes, see :func:`hawk.diff.param_planes`)."""
@@ -112,10 +127,8 @@ _ACCESS_RANK = {"sample_local": 0, "cross_sample_read": 1, "cross_sample_write":
 
 
 def _floored(acc: Access, floor: str) -> Access:
-    """``acc``, raised to at least ``floor`` under the ranking — UNLESS
-    ``acc`` is ``mapreduce`` (disjoint from the other three: an un-folded
-    partial is a wrong answer, not a placement cost, so nothing floors it)."""
-    if acc.cls == "mapreduce" or _ACCESS_RANK[acc.cls] >= _ACCESS_RANK[floor]:
+    """``acc``, raised to at least ``floor`` under the ranking."""
+    if _ACCESS_RANK[acc.cls] >= _ACCESS_RANK[floor]:
         return acc
     return Access(floor, acc.op)
 
@@ -154,6 +167,16 @@ def canonical(sinks: Sequence[Sink], declared: Sequence[Slot] = (), *,
                 f"{slot.ttype!r} but the body binds it as {held.ttype!r}; a slot is "
                 "keyed on (role, name) ALONE"
             )
+    for sink in sinks:
+        if isinstance(sink, SampleSum) and sink.op == "sum":
+            # the compensation plane: written with the row, by no body node
+            comp = sink.companion
+            if (comp.role, comp.name) in bindings:
+                raise HawkError(
+                    f"sample_sum {sink.name!r}: its compensation plane "
+                    f"{comp.name!r} collides with a plane of the same name")
+            bindings[(comp.role, comp.name)] = Sink(
+                sink.kind, comp.role, comp.name, sink.value, ttype=comp.ttype)
     for info in _dispatches(order):
         if info.policy == "auto":
             name = f"{info.name}_mix"      # hawk.ir.segment.mix_name
@@ -229,17 +252,6 @@ def _check_sink_set(sinks: tuple[Sink, ...]) -> None:
             raise HawkError(
                 f"canonical(): {s!r} is not a sink; the root set is sinks only"
             )
-    reduces = [s for s in sinks if isinstance(s, MapreducePartial)]
-    if reduces and len(sinks) > 1:
-        other = next(s for s in sinks if s is not reduces[0])
-        raise HawkError(
-            f"mapreduce sink {reduces[0].name!r} (op={reduces[0].op!r}) may not "
-            f"coexist with sink {other.name!r} (role {other.role!r}) in one kernel "
-            "exec_access is ONE scalar and exec_op ONE value per manifest, so "
-            "eagle would never fold the partials and Plan.run would return un-combined "
-            "per-partition partials — a wrong answer, not a placement cost. A kernel "
-            "that needs both is two kernels, sequenced by the plan."
-        )
 
 
 # --------------------------------------------------------------------------
@@ -519,6 +531,35 @@ def _digest(order: tuple[Node, ...], position: Mapping[int, int],
     return h.hexdigest()
 
 
+def _rebuild_loop(loop: Loop, operands: Sequence[Node]) -> Loop:
+    """``loop`` with new boundary operands: its body is rewritten so every
+    boundary value that changed is replaced by its new one, then the loop is
+    minted again by :func:`~hawk.ir.loops.build_loop` (its boundary is
+    recomputed from the new body). The header, the placeholders and the
+    ``break`` structure are kept. A loop whose body commits sinks of its own
+    (a derived loop) is not rebuilt this way."""
+    from .loops import build_loop
+
+    if loop.body_sinks:
+        raise HawkError(
+            "a loop that commits once per iteration (a derived loop) cannot be "
+            "rewritten by substitution")
+    swapped = {id(old): new for old, new in zip(loop.operands, operands)
+               if old is not new}
+    n_exit = 0 if loop.exit_cond is None else 1 + len(loop.exit_values)
+    roots = loop.body_roots()
+    done = list(substitute(roots, swapped)) if swapped else list(roots)
+    nexts = done[:loop.carry_count]
+    exit_cond, exit_values = None, ()
+    if n_exit:
+        exit_cond, exit_values = done[loop.carry_count], tuple(done[loop.carry_count + 1:])
+    count = operands[-1] if loop.count is not None else None
+    return build_loop(loop.index, loop.carries, operands[:loop.carry_count], nexts,
+                      start=loop.start, stop=loop.stop, step=loop.step,
+                      exit_cond=exit_cond, exit_values=exit_values, count=count,
+                      count_tail=loop.count_tail)
+
+
 def _rebuild(node: Node, operands: Sequence[Node]) -> Node:
     """``node`` with new operands, same kind, type and literal.
 
@@ -534,13 +575,19 @@ def _rebuild(node: Node, operands: Sequence[Node]) -> Node:
         return TapeRead(operands[0], node.slot, operands[1])
     if isinstance(node, LoopValue):
         return LoopValue(operands[0], node.slot)
+    if isinstance(node, LoopCount):
+        return LoopCount(operands[0])
     if isinstance(node, Primitive):
         return Primitive(node.name, node.rules, operands[0], operands[1:],
                          node.ttype)
     if isinstance(node, Dispatch):
         return Dispatch(operands[0], operands[1:], node.policy, node.ttype)
+    if isinstance(node, Loop):
+        return _rebuild_loop(node, operands)
     if isinstance(node, Op):
         return Op(node.kind, tuple(operands), node.ttype, node.literal)
+    if isinstance(node, ReduceSamples):
+        return ReduceSamples(node.op, operands[0])
     raise HawkError(                              # pragma: no cover - closed set
         f"no substitution rule for node {node!r} inside a loop body")
 

@@ -36,11 +36,11 @@ from .nodes import AccumWrite, Assign, At, Const, Op
 from .nodes import Dispatch as Dispatch
 from .nodes import HawkError as HawkError
 from .nodes import Leaf as Leaf
-from .nodes import MapreducePartial as MapreducePartial
 from .nodes import Node as Node
 from .nodes import Primitive as Primitive
 from .nodes import RoleConst as RoleConst
 from .nodes import SampleIndex as SampleIndex
+from .nodes import SampleSum as SampleSum
 from .nodes import Select as Select
 from .nodes import Sink as Sink
 from .nodes import TapeWrite as TapeWrite

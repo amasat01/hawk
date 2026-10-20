@@ -21,11 +21,11 @@ Three observations, each with a known answer:
 
 from __future__ import annotations
 
-import platform
 import re
 import subprocess
 
 import pytest
+from conftest import avx512
 
 import hawk
 from hawk import Mutable, Scalar, Terminated
@@ -57,16 +57,6 @@ def long_loop(x: Mutable[Scalar], t: Mutable[Scalar], terminated: Terminated):
 
 def _source(kernel, mode):
     return render_source("k", kernel.sinks, kernel.walk, HOST, mode=scalar_mode(mode))
-
-
-def _avx512() -> bool:
-    if platform.machine().lower() not in ("x86_64", "amd64"):
-        return False
-    try:
-        with open("/proc/cpuinfo") as f:
-            return "avx512f" in f.read()
-    except OSError:
-        return False
 
 
 def _compile(tmp_path, kernel, mode, interchanged=False):
@@ -108,7 +98,7 @@ def test_the_lane_guard_abi_follows_the_kernels_real():
     assert "const double* lanes;" in f64
 
 
-@pytest.mark.skipif(not _avx512(), reason="the 64-byte vector verdict needs AVX-512")
+@pytest.mark.skipif(not avx512(), reason="the 64-byte vector verdict needs AVX-512")
 def test_the_float32_sample_loop_vectorises_with_packed_zmm_arithmetic(tmp_path):
     so, sample, wide = _compile(tmp_path, short_loop, "float32")
     assert sample in wide, (sample, wide)
@@ -117,7 +107,7 @@ def test_the_float32_sample_loop_vectorises_with_packed_zmm_arithmetic(tmp_path)
     assert re.search(r"\bv(?:mul|add|fmadd\w*)ps\b.*zmm", asm)
 
 
-@pytest.mark.skipif(not _avx512(), reason="the 64-byte vector verdict needs AVX-512")
+@pytest.mark.skipif(not avx512(), reason="the 64-byte vector verdict needs AVX-512")
 @pytest.mark.parametrize("mode", ["float32", "float64"])
 @pytest.mark.parametrize("kernel", [short_loop, long_loop])
 def test_the_flag_matches_the_vectoriser(tmp_path, kernel, mode):

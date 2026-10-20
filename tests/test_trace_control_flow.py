@@ -176,15 +176,6 @@ def test_a_name_assigned_in_only_one_branch_must_be_bound_before_the_if():
         _traced(source)
 
 
-def test_a_sink_commit_inside_a_branch_is_refused():
-    source = ("@kernel\ndef k(x: Scalar, acc: Accum, out: Mutable[Scalar]):\n"
-              "    if x > 0.0:\n        acc.add(x)\n    else:\n        y = x\n"
-              "    out = x\n")
-    from hawk import Accum
-    with pytest.raises(HawkError, match="inside a branch"):
-        _traced(source, Accum=Accum[Scalar])
-
-
 def test_a_traced_value_has_no_truth_value_outside_the_pass():
     @kernel
     def k(x: Scalar, out: Mutable[Scalar]):

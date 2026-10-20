@@ -40,14 +40,13 @@ from conftest import sidecar_of
 
 import hawk
 from hawk import (
-    Accum,
     Index,
     Mutable,
     Param,
-    Reduce,
     Scalar,
     Terminated,
     Vector,
+    all_samples,
     kernel,
 )
 from hawk.artifact import build_bundle
@@ -108,18 +107,19 @@ def test_a_kernel_without_a_finish_refuses():
 
 
 def test_a_reduce_or_out_sink_refuses():
-    """A ``Reduce`` beside a finish already refuses at trace (a mapreduce sink
-    is exclusive); an ``Accum`` traces and is refused here."""
-    def reducing(x: Scalar, terminated: Terminated, total: Reduce("sum")):
-        total.contribute(x)
+    """A sum over samples beside a finish and a by-key store both trace and
+    are refused here."""
+    @kernel
+    def reducing(x: Scalar, terminated: Terminated, total: Mutable[Scalar]):
+        total = all_samples(x).sum()
         terminated = x > 1.0
-    with pytest.raises(HawkError, match=r"mapreduce sink 'total'"):
-        kernel(reducing)
+    with pytest.raises(HawkError, match=r"'reducing'.*not a step kernel"):
+        hawk.steps(reducing, 4)
 
     @kernel
     def scattering(x: Scalar, lane: Index, terminated: Terminated,
-                   acc: Accum[Scalar]):
-        acc.add(x, at=lane)
+                   acc: Mutable[Scalar]):
+        all_samples(acc)[lane] += x
         terminated = x > 1.0
     with pytest.raises(HawkError, match=r"'scattering'.*not a step kernel"):
         hawk.steps(scattering, 4)
@@ -215,8 +215,8 @@ def test_the_decorator_form_refuses_what_hawk_steps_refuses():
         kernel(steps=4)(plain)
 
     def scattering(x: Scalar, lane: Index, terminated: Terminated,
-                   acc: Accum[Scalar]):
-        acc.add(x, at=lane)
+                   acc: Mutable[Scalar]):
+        all_samples(acc)[lane] += x
         terminated = x > 1.0
     with pytest.raises(HawkError, match=r"'scattering'.*not a step kernel"):
         kernel(steps=4)(scattering)
@@ -393,8 +393,8 @@ def test_auto_refuses_what_hawk_steps_refuses():
         hawk.steps(plain, "auto")
 
     def scattering(x: Scalar, lane: Index, terminated: Terminated,
-                   acc: Accum[Scalar]):
-        acc.add(x, at=lane)
+                   acc: Mutable[Scalar]):
+        all_samples(acc)[lane] += x
         terminated = x > 1.0
     with pytest.raises(HawkError, match=r"'scattering'.*not a step kernel"):
         kernel(steps="auto")(scattering)
@@ -685,14 +685,14 @@ def _not_admitted():
         y = y + x
 
     def scatters(x: Scalar, lane: Index, terminated: Terminated,
-                 acc: Accum[Scalar]):
-        acc.add(x, at=lane)
+                 acc: Mutable[Scalar]):
+        all_samples(acc)[lane] += x
         terminated = x > 1.0
 
     def scatters_and_steps(x: Scalar, lane: Index, terminated: Terminated,
-                           acc: Accum[Scalar], y: Mutable[Scalar]):
+                           acc: Mutable[Scalar], y: Mutable[Scalar]):
         y_start = y
-        acc.add(x, at=lane)
+        all_samples(acc)[lane] += x
         y = y_start + x
         terminated = y_start > 1.0
 

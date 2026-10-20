@@ -4,7 +4,7 @@
 """A derived (``vjp``/``jvp``) kernel honours the PRIMAL's own ``terminated``
 guard: a sample the primal's guard skips contributes EXACTLY zero to
 every derived output — an own-column gradient/tangent, and a scattered
-Accum/Param sum alike — and a LIVE sample's derivative is unchanged.
+by-key/Param sum alike — and a LIVE sample's derivative is unchanged.
 
 Two tiers: an IR-level check (:mod:`_eval`, the same scratch interpreter
 ``test_diff_finite_differences.py`` uses) covering the own-column AND the
@@ -77,7 +77,7 @@ def _gather_masked(table: Table[Scalar], where: Index, terminated: Terminated,
 def test_vjp_scatter_adds_nothing_from_a_terminated_sample():
     """The gather/scatter transpose (module docstring, ``hawk/diff/transform.py``):
     ``table.at(where)``'s reverse is an ``AccumWrite`` scattered at ``where`` —
-    exactly the "Param/Accum sums included" shape the gap names. A terminated
+    exactly the "Param/by-key sums included" shape the gap names. A terminated
     sample must add exactly 0 at its own target lane; a live one adds its
     seeded adjoint there."""
     derived = vjp(_gather_masked, wrt=("table",))

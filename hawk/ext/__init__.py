@@ -215,7 +215,7 @@ class Output:
 
     @classmethod
     def named(cls, *names: str) -> Output:
-        """Every name given is a Mutable/Accum/Reduce/WideOut parameter the
+        """Every name given is a Mutable/WideOut parameter the
         body commits; no names (the default) means every sink parameter."""
         return cls(names=tuple(names))
 
@@ -485,7 +485,7 @@ def compensated_target(kind: Kind, sinks: Sequence[Any]) -> tuple[str, bool] | N
     is excluded from the candidate pool before counting."""
     if getattr(kind.sink, "id", None) != "compensated":
         return None
-    from ..ir.nodes import AccumWrite, Assign, MapreducePartial, WideWrite
+    from ..ir.nodes import AccumWrite, Assign, WideWrite
 
     comp = kind.sink.compensation
     all_names = tuple(dict.fromkeys(s.name for s in sinks))
@@ -504,12 +504,10 @@ def compensated_target(kind: Kind, sinks: Sequence[Any]) -> tuple[str, bool] | N
         )
     name = candidates[0]
     matches = [s for s in sinks if s.name == name]
-    bad = [s for s in matches if isinstance(s, (MapreducePartial, WideWrite))]
-    if bad:
-        kind_name = "Reduce" if isinstance(bad[0], MapreducePartial) else "WideOut"
+    if any(isinstance(s, WideWrite) for s in matches):
         raise HawkError(
-            f"Kind({kind.slug!r}): compensated target {name!r} is a {kind_name} "
-            "sink; a compensated commit targets a Mutable or an Accum only"
+            f"Kind({kind.slug!r}): compensated target {name!r} is a WideOut "
+            "sink; a compensated commit targets a Mutable only"
         )
     own_column = any(isinstance(s, Assign) for s in matches) or any(
         isinstance(s, AccumWrite) and s.index is None for s in matches)

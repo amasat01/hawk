@@ -47,6 +47,16 @@ HERO = re.compile(r"(<!-- hero:begin -->\n)(.*?)(\n<!-- hero:end -->)", re.DOTAL
 SPAN = re.compile(r"<!--c\s+(?P<spec>[^>]*?)\s*-->(?P<body>.*?)<!--/c-->", re.DOTALL)
 SUBJECT = "hawk + eagle (`eagle.simulate`)"
 
+# Exit codes shared by the docs-fresh generators.
+EXIT_STALE = 1
+EXIT_USAGE = 2  # argparse only
+EXIT_MISSING_CARD = 3
+EXIT_MISSING_TOOL = 4
+
+
+class MissingTool(Exception):
+    """The eagle checkout has no claim engine."""
+
 
 _LOADED = {}
 
@@ -57,7 +67,10 @@ def load_eagle(root: pathlib.Path):
     if path in _LOADED:
         return _LOADED[path]
     if not path.is_file():
-        raise SystemExit(f"{path} not found: pass --eagle-root of an eagle checkout")
+        raise MissingTool(
+            f"{path} not found: pass --eagle-root of an eagle checkout "
+            "(its branch must have tools/prose_claims.py)"
+        )
     spec = importlib.util.spec_from_file_location("eagle_prose_claims", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -127,14 +140,18 @@ def main(argv=None) -> int:
             "pass --eagle-root (or set RAPTOR_EAGLE_ROOT) to an eagle checkout",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_MISSING_TOOL
     root = pathlib.Path(args.eagle_root).resolve()
-    pcl = load_eagle(root)
+    try:
+        pcl = load_eagle(root)
+    except MissingTool as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_MISSING_TOOL
     try:
         snapshot = build(root, with_headline=not args.without_headline)
     except pcl.ClaimError as exc:
-        print(f"headline card missing, nothing written: {exc}", file=sys.stderr)
-        return 2
+        print(f"missing card or cell, nothing written: {exc}", file=sys.stderr)
+        return EXIT_MISSING_CARD
     if args.without_headline:
         old = json.loads(SNAPSHOT.read_text()) if SNAPSHOT.is_file() else {}
         snapshot["hero"] = old.get("hero")
@@ -148,7 +165,7 @@ def main(argv=None) -> int:
     if args.check:
         if stale:
             print("stale (run tools/sync_perf_claims.py): " + ", ".join(stale))
-            return 1
+            return EXIT_STALE
         print("README.md's performance numbers are up to date")
         return 0
     README.write_text(readme)

@@ -36,9 +36,9 @@ REPO = "hawk"
 GITHUB = "amasat01"
 CONTENT = "docs/content"
 #: repo-relative directories whose modules a notebook may import as helpers
-HELPER_DIRS = ("docs/content/_shared",)
+HELPER_DIRS = ("docs/content/_shared", "examples")
 #: third-party packages a helper needs beyond its module-level imports (it imports them inside functions)
-HELPER_NEEDS = {"docs/content/_shared/nb_helpers.py": ("matplotlib",)}
+HELPER_NEEDS = {"docs/content/_shared/nb_helpers.py": ("matplotlib",), "examples/autodiff_vs_torch.py": ("torch",), "examples/two_body_hybrid.py": ("torch",)}
 #: a notebook that mentions this directory name gets the whole directory downloaded
 FIXTURE_DIRNAME = "_fixtures"
 # ------------------------------------------------------------------------------------

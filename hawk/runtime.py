@@ -33,7 +33,7 @@ and return garbage or segfault. Dtype is exact and fixed by role (every
 integer-valued role rides a 64-bit wire regardless of how it was
 declared in Python, and ``Terminated`` is always ``bool``); shape
 requires a per-sample plane at least ``n_samples`` long (shorter is
-always the bug) and a ``Reduce(op)`` output one slot per sample; every
+always the bug); every
 plane must be C-contiguous and a sink role's plane writable, except a
 sample-major plane whose transpose is C-contiguous, which binds
 zero-copy (:func:`plane_layout`). A ``(w, w)`` plane reads both ways and is
@@ -43,11 +43,12 @@ which axis holds the samples. :meth:`HostKernel.rebind` takes raw
 pointers, which carry none of this, and is the unchecked fast path over
 an already-validated bind.
 
-Threading. Two :class:`HostKernel` (or :class:`ArgBlock`) objects are
-independent and run freely in parallel. ONE object shared across threads is
-memory-safe but caller-ordered: its calls serialise on the object's own lock,
-so concurrent bind and launch on it never tear an argument block, but which
-call lands first is the caller's to order. Module-level state (the build
+Threading. Two :class:`HostKernel` objects are independent and run freely in
+parallel. ONE :class:`HostKernel` shared across threads is safe: :func:`run`
+(bind and launch together), :meth:`~HostKernel.bind_all` and
+:meth:`~HostKernel.launch` each hold the kernel's lock, so concurrent calls
+queue and each sees only its own planes. Separate ``bind_all`` and ``launch``
+calls from different threads are still the caller's to order. Module-level state (the build
 counters, the primitive registry, the unit publisher) is always safe to use
 from any thread.
 """
@@ -56,9 +57,11 @@ from __future__ import annotations
 
 import array
 import ctypes
+import threading
 from pathlib import Path
 
-from . import _core
+from . import _cells, _core
+from ._cells import ROW
 from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from
 from ._plane_layout import (
     LayoutChoice,
@@ -195,6 +198,9 @@ class HostKernel:
         self.one_step = None       # the word of 1 an unbound fused_steps reads
         self.finished = None       # the counter an unbound finished_count fills
         self._buffers = []         # keeps every exported buffer view alive
+        #: Held across everything one call touches (the block, the keepalive
+        #: lists, the shared scratch above), until its launch returns.
+        self._lock = threading.Lock()
 
     # -- per bind ----------------------------------------------------------
     def _one_step_word(self, arrays: dict) -> dict:
@@ -241,6 +247,10 @@ class HostKernel:
         automatic kernel's ``fused_steps`` word may be left out (it is
         bound to ``1``, one step per launch), and so may a finishing
         kernel's ``finished_count`` counter (bound to a fresh ``0``)."""
+        with self._lock:
+            self._bind_all(arrays, n_samples, layout)
+
+    def _bind_all(self, arrays: dict, n_samples: int, layout) -> None:
         arrays, axes = split_marks(arrays, layout)
         choice = LayoutChoice(layout, axes)
         arrays = self._one_step_word(arrays)
@@ -284,12 +294,33 @@ class HostKernel:
         return self.block.rebind(array.array("q", (int(s) for s in slots)),
                                  array.array("q", (int(p) for p in ptrs)))
 
+    def _cell_scratch_for(self, cells: dict, n_samples: int, arrays: dict):
+        """``(scratch, cell outputs, arrays)``: the caller binds each CELL
+        (``(columns,)``, the plane ``name`` or ``name_k`` of a wide one is its
+        column k); the rows are this kernel's own, made once per sample count."""
+        missing = [c for c in cells if c not in arrays]
+        if missing:
+            raise HawkError(
+                f"{self.path.name}: this kernel reduces over samples into the cells "
+                f"{sorted(cells)}; bind {missing} (one value per column), not its rows")
+        outputs = {c: arrays[c] for c in cells}
+        held = self.__dict__.setdefault("_cell_scratches", {})
+        if n_samples not in held:
+            held[n_samples] = _cells.Scratch(cells, n_samples, self.scalar_type)
+        scratch = held[n_samples]
+        planes = {k: v for k, v in arrays.items() if k not in cells}
+        return scratch, outputs, {**planes, **scratch.rows}
+
     # -- per launch --------------------------------------------------------
     def launch(self, base: int, count: int, n_samples: int) -> None:
         """THE launch crossing: one call over ``[base, base+count)``.
 
         SERIAL, always: the reference oracle every partitioned, tiled or
         ranked run is judged against, so it never grows a schedule."""
+        with self._lock:
+            self._launch(base, count, n_samples)
+
+    def _launch(self, base: int, count: int, n_samples: int) -> None:
         self.entry.run(self.block, int(base), int(count), int(n_samples))
 
     # -- helpers -----------------------------------------------------------
@@ -451,5 +482,54 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
         n_samples = _n_from(kernel_artifact.arg_spec, plain,
                             kernel_artifact.sidecar.get("arg_shapes", {}),
                             LayoutChoice(layout, axes))
-    kernel_artifact.bind_all(arrays, n_samples, layout=layout)
-    kernel_artifact.launch(base, n_samples if count is None else count, n_samples)
+    if kernel_artifact.sidecar.get("stages"):
+        if base != 0 or count not in (None, n_samples):
+            raise HawkError(
+                f"{kernel_artifact.path.name}: this kernel reads a value reduced over "
+                "every sample, so it runs over every sample (no base= or count=)")
+        with kernel_artifact._lock:
+            _run_stages(kernel_artifact, n_samples, layout, arrays)
+        return
+    cells = kernel_artifact.sidecar.get("cells") or {}
+    with kernel_artifact._lock:
+        scratch = None
+        if cells:
+            scratch, outputs, arrays = kernel_artifact._cell_scratch_for(
+                cells, n_samples, arrays)
+        kernel_artifact._bind_all(arrays, n_samples, layout)
+        count = n_samples if count is None else count
+        kernel_artifact._launch(base, count, n_samples)
+        if scratch is not None:
+            scratch.finish(outputs, base // ROW, -(-(base + count) // ROW))
+
+
+def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict) -> None:
+    """A split kernel: stage ``k``, then the host finish of its cells, then
+    stage ``k + 1`` reading those cells as one-cell planes. A cell the caller
+    does not bind (one only a later stage reads) is this kernel's own."""
+    import numpy as np
+
+    cells = first.sidecar["cells"]
+    held = first.__dict__.setdefault("_split", {})
+    if "stages" not in held:
+        held["stages"] = [first] + [load(first.path.parent, st["kernel"])
+                                    for st in first.sidecar["stages"][1:]]
+        held["own"] = {c: np.zeros(spec["columns"], dtype=first.scalar_type)
+                       for c, spec in cells.items()}
+    values = {c: arrays[c] if c in arrays else held["own"][c] for c in cells}
+    for stage, record in zip(held["stages"], first.sidecar["stages"]):
+        names = {name for _, name in stage.arg_spec}
+        bound = {k: v for k, v in arrays.items() if k in names and k not in cells}
+        for cell in record["cells_in"]:
+            column = np.asarray(values[cell]).reshape(-1)
+            for k, plane in enumerate(_cells.planes(cell, cells[cell]["columns"])):
+                bound[plane] = column[k:k + 1]
+        out = {c: cells[c] for c in record["cells_out"]}
+        scratch = None
+        if out:
+            scratch, outputs, bound = stage._cell_scratch_for(
+                out, n_samples, {**bound, **{c: values[c] for c in out}})
+        stage._bind_all(bound, n_samples, layout)
+        stage._launch(0, n_samples, n_samples)
+        if scratch is not None:
+            scratch.finish(outputs, 0, -(-n_samples // ROW))

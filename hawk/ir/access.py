@@ -34,7 +34,6 @@ from .nodes import (
     At,
     Const,
     HawkError,
-    MapreducePartial,
     Node,
     Op,
     RoleConst,
@@ -82,9 +81,6 @@ def infer_over(order: Iterable[Node]) -> Access:
     for node in _with_loop_bodies(order):
         if id(node) in seam:
             continue
-        if isinstance(node, MapreducePartial):
-            # guarantees this sink is the only one, so it decides alone.
-            return Access("mapreduce", node.op)
         if is_param_cell(node):
             continue            # one broadcast value, same for every sample
         if isinstance(node, At):

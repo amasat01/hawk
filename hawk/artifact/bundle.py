@@ -47,6 +47,8 @@ from ..ext import DEFAULT_KIND
 from ..ir import DispatchInfo, HawkError
 from ..ir import canonical as _canonical
 from ..ir import split_segmented as _split_segmented
+from ..ir.split import internal as _split_internal
+from ..ir.split import stages as _split_stages
 from ..types import Slot, TensorType
 from . import layout as _layout
 from . import manifest as _manifest
@@ -369,13 +371,6 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
                                     layout_sizes_override=layout_sizes_override))
         if literal_table and target == "cuda":
             out[target] = _literal_table(out[target])
-        if active is not None and out[target].reduce_op is not None:
-            raise HawkError(
-                f"{name!r}: Guard(active_set=True) refuses a reducing kernel "
-                f"({out[target].reduce_op}): the map would change which samples "
-                "each partial folds, so the result would not be the map-free one "
-                "bit for bit"
-            )
     if "c" in targets:
         from .. import embedded
 
@@ -463,7 +458,7 @@ def _embedded_part(source, profile) -> tuple:
 
 def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arch,
            targets, derivative, host_profile: str = "", opt_level: str = "",
-           embedded_profile=None) -> _Draft:
+           embedded_profile=None, split: dict | None = None) -> _Draft:
     """Compile every target and assemble the unit CONTENT for one kernel.
 
     Everything here is a pure function of the inputs plus the
@@ -545,7 +540,11 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         step_ops=_step_ops(kernel, kind),
         fp64_ops_ir=_fp64_ops_ir(kernel, kind),
         entry_counts_finished=_entry_counts_finished(kernel, kind),
+        ptxas=entries["cuda"][0].ptxas if "cuda" in entries else None,
     )
+    if split is not None:
+        # the first stage of a split kernel names every stage and every cell
+        meta.update(split)
     sidecar_blob = _blob(json.dumps(meta, indent=2) + "\n")
     files.append(_File(f"{name}.json", _digest_bytes(sidecar_blob),
                        blob=sidecar_blob))
@@ -753,6 +752,11 @@ def build(kernel, directory, *, mode: str = "float64", targets=("cuda", "host"),
             "ONE artifact, and a segmented kernel needs K — call "
             f"build_bundle([kernel], ...) instead"
         )
+    if _split_stages(name, kernel.sinks) is not None:
+        raise HawkError(
+            f"{name!r} reads a value reduced over samples, so it runs as several "
+            "launches: build() publishes ONE artifact — call "
+            f"build_bundle([kernel], ...) instead")
     kind = _resolve_kind(name, getattr(kernel, "kind", None), kind)
     kernel = _active_unit(kernel, name, kind)
     smode = scalar_mode(mode)
@@ -791,6 +795,48 @@ def _expand_segmented(kernels: list, names: list, kinds: list) -> tuple:
             out_names.append(u.name)
             out_kinds.append(kd)
     return out_kernels, out_names, out_kinds
+
+
+def _expand_split(kernels: list, names: list, kinds: list) -> tuple:
+    """Replace every member that reads a value reduced over samples with its
+    stages (:func:`hawk.ir.split.stages`), named ``<name>``, ``<name>_2``, ...;
+    the rest pass through untouched. Also returns, per first-stage name, the
+    sidecar block naming every stage and every cell."""
+    from ..diff import Derived
+    from ..trace.kernel import Kernel
+
+    out_kernels, out_names, out_kinds, blocks = [], [], [], {}
+    for k, n, kd in zip(kernels, names, kinds):
+        found = _split_stages(n, k.sinks)
+        if found is None:
+            out_kernels.append(k)
+            out_names.append(n)
+            out_kinds.append(kd)
+            continue
+        if getattr(k, "one_step", None) is not None or getattr(k, "segment", None) is not None:
+            raise HawkError(
+                f"{n!r} reads a value reduced over samples inside a stepping or "
+                "segmented kernel; a split kernel is one plain step in this release")
+        cells: dict = {}
+        for stage in found:
+            sinks = stage.sinks
+            if isinstance(k.sinks, Derived):
+                sinks = Derived(sinks, primal=k.sinks.primal, kind=k.sinks.kind,
+                                wrt=k.sinks.wrt, primal_unit=k.sinks.primal_unit,
+                                jump=k.sinks.jump)
+            member = Kernel(stage.name, sinks, k.planes, kind=getattr(k, "kind", None))
+            cells.update(member.walk.cells)
+            out_kernels.append(member)
+            out_names.append(stage.name)
+            out_kinds.append(kd)
+        # a cell only a later stage reads is the kernel's own
+        for c in _split_internal(found, k.planes):
+            cells[c] = {**cells[c], "internal": True}
+        blocks[n] = {"cells": cells, "stages": [
+            {"kernel": st.name, "cells_in": list(st.cells_in),
+             "cells_out": list(st.cells_out), "recomputed": list(st.recomputed)}
+            for st in found]}
+    return out_kernels, out_names, out_kinds, blocks
 
 
 def _member_kind(kernel, kind, explicit: bool):
@@ -905,6 +951,9 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     # Replace each segmented member in place by its K units, so everything
     # downstream sees K ordinary-looking kernels.
     kernels, names, kinds = _expand_segmented(kernels, names, kinds)
+    # A member reading a value reduced over samples becomes its stages, each
+    # its own compile (its own cache key: its own source and options).
+    kernels, names, kinds, split = _expand_split(kernels, names, kinds)
     kernels = [_active_unit(k, n, kd) for k, n, kd in zip(kernels, names, kinds)]
     key_kind = kind if all(kd is kind for kd in kinds) else tuple(kinds)
 
@@ -959,7 +1008,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                      name=n, smode=smode, kind=kd, defines=defines,
                      cache_dir=cache_dir, device_arch=device_arch, targets=targets,
                      derivative=d, host_profile=host_profile, opt_level=opt_level,
-                     embedded_profile=embedded_profile)
+                     embedded_profile=embedded_profile, split=split.get(n))
               for k, n, kd, d in zip(kernels, names, kinds, per_kernel_derivative)]
     files = tuple(f for d in drafts for f in d.files)
     # The manifest describes the NATIVE targets only; a unit built for the

@@ -15,7 +15,10 @@
 
 name: CI
 
-on: [push, pull_request]
+# Pull requests only: main receives the tested tree, nothing re-runs there.
+on:
+  pull_request:
+  workflow_dispatch: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -29,59 +32,25 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: hawk
-      # companion eagle: same-named branch if it exists there, else main
-      - id: ref_eagle
-        env:
-          COMPANION_REPO: eagle
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/eagle
-          ref: ${{ steps.ref_eagle.outputs.ref }}
+          repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: documented numbers match the committed cards
-        run: |
-          if ! python hawk/tools/sync_perf_claims.py --eagle-root eagle --check; then
-            echo "::error::The documented performance numbers are out of date with the committed cards. Regenerate them locally with: python tools/sync_perf_claims.py --eagle-root <path to an eagle checkout> -- then commit the result."
-            exit 1
-          fi
-      # companion site (amasat01.github.io): same-named branch if it exists there, else main
-      - id: ref_site
-        env:
-          COMPANION_REPO: amasat01.github.io
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion site (amasat01.github.io): the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/amasat01.github.io
-          ref: ${{ steps.ref_site.outputs.ref }}
+          repo: amasat01.github.io
           path: site
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-      - name: family visuals match the landing site and the cards
-        run: |
-          if ! python site/tools/sync_family_visuals.py --check --site-root site --eagle-root eagle --target hawk=hawk; then
-            echo "::error::The family visuals bundle is out of date with the landing site or the cards. Regenerate it locally with: python tools/sync_family_visuals.py --site-root <path to the site checkout> --eagle-root <path to an eagle checkout> --target hawk=<this repo> -- then commit docs/_static/family_visuals."
-            exit 1
-          fi
+          pins: hawk/.github/companions
+      - name: documented numbers and family visuals match the committed cards
+        run: bash hawk/tools/docs_fresh.sh eagle site
   test:
     needs: docs-fresh
     runs-on: ubuntu-latest
@@ -113,65 +82,29 @@ jobs:
       # hawk/_roots.py) resolves header roots from $HAWK_AETHER_INCLUDE /
       # $HAWK_EAGLE_INCLUDE directly — no cmake --install step needed, these
       # just need to point at the two repos' source roots.
-      # companion aether: same-named branch if it exists there, else main
-      - id: ref_aether
-        env:
-          COMPANION_REPO: aether
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion aether: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/aether
-          ref: ${{ steps.ref_aether.outputs.ref }}
+          repo: aether
           path: aether
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion eagle: same-named branch if it exists there, else main
-      - id: ref_eagle
-        env:
-          COMPANION_REPO: eagle
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/eagle
-          ref: ${{ steps.ref_eagle.outputs.ref }}
+          repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion raptor: same-named branch if it exists there, else main
-      - id: ref_raptor
-        env:
-          COMPANION_REPO: raptor
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion raptor: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/raptor
-          ref: ${{ steps.ref_raptor.outputs.ref }}
+          repo: raptor
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
       - uses: actions/setup-python@v7
         with:
@@ -194,24 +127,7 @@ jobs:
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-test-
       - run: ccache -z
 
-      # NVIDIA's apt repo for Ubuntu 24.04 (noble), x86_64. cuda-keyring adds
-      # the repo + signing key; package names/versions below are the current
-      # (as-authored) 12.6 set and are UNVERIFIED — not run on a live runner.
-      - name: Install compile-only CUDA 12.6 toolchain (nvcc; no driver/GPU)
-        run: |
-          curl -fsSL -o /tmp/cuda-keyring.deb \
-            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i /tmp/cuda-keyring.deb
-          sudo apt-get update
-          # cuda-nvcc-12-6: nvcc/ptxas/cicc. cuda-cudart-dev-12-6: cuda_runtime.h
-          # + libcudart (nvcc auto-includes cuda_runtime.h even for -c-only
-          # compiles). cuda-driver-dev-12-6: the libcuda.so DRIVER STUB (under
-          # lib64/stubs, no actual driver) — added beyond the suggested pair
-          # because eagle's python/CMakeLists.txt links CUDA::cuda_driver.
-          sudo apt-get install -y --no-install-recommends \
-            cuda-nvcc-12-6 cuda-cudart-dev-12-6 cuda-driver-dev-12-6
-          echo "/usr/local/cuda-12.6/bin" >> "$GITHUB_PATH"
-          echo "CUDA_HOME=/usr/local/cuda-12.6" >> "$GITHUB_ENV"
+      - uses: ./hawk/.github/actions/cuda-toolchain
 
       # The siblings are on PyPI, but CI installs the sibling checkouts so it tests
       # unreleased changes: aether's header package,
@@ -255,6 +171,7 @@ jobs:
       - env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+          RAPTOR_EAGLE_ROOT: ${{ github.workspace }}/eagle
         run: cd hawk && python -m pytest tests -q -m "not gpu"
       - if: always()
         run: ccache -s
@@ -300,65 +217,29 @@ jobs:
       # hawk/_roots.py) resolves header roots from $HAWK_AETHER_INCLUDE /
       # $HAWK_EAGLE_INCLUDE directly — no cmake --install step needed, these
       # just need to point at the two repos' source roots.
-      # companion aether: same-named branch if it exists there, else main
-      - id: ref_aether
-        env:
-          COMPANION_REPO: aether
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion aether: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/aether
-          ref: ${{ steps.ref_aether.outputs.ref }}
+          repo: aether
           path: aether
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion eagle: same-named branch if it exists there, else main
-      - id: ref_eagle
-        env:
-          COMPANION_REPO: eagle
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/eagle
-          ref: ${{ steps.ref_eagle.outputs.ref }}
+          repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion raptor: same-named branch if it exists there, else main
-      - id: ref_raptor
-        env:
-          COMPANION_REPO: raptor
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion raptor: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/raptor
-          ref: ${{ steps.ref_raptor.outputs.ref }}
+          repo: raptor
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
       - uses: actions/setup-python@v7
         with:
@@ -381,24 +262,7 @@ jobs:
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-host-gcc-${{ matrix.gcc }}-
       - run: ccache -z
 
-      # NVIDIA's apt repo for Ubuntu 24.04 (noble), x86_64. cuda-keyring adds
-      # the repo + signing key; package names/versions below are the current
-      # (as-authored) 12.6 set and are UNVERIFIED — not run on a live runner.
-      - name: Install compile-only CUDA 12.6 toolchain (nvcc; no driver/GPU)
-        run: |
-          curl -fsSL -o /tmp/cuda-keyring.deb \
-            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i /tmp/cuda-keyring.deb
-          sudo apt-get update
-          # cuda-nvcc-12-6: nvcc/ptxas/cicc. cuda-cudart-dev-12-6: cuda_runtime.h
-          # + libcudart (nvcc auto-includes cuda_runtime.h even for -c-only
-          # compiles). cuda-driver-dev-12-6: the libcuda.so DRIVER STUB (under
-          # lib64/stubs, no actual driver) — added beyond the suggested pair
-          # because eagle's python/CMakeLists.txt links CUDA::cuda_driver.
-          sudo apt-get install -y --no-install-recommends \
-            cuda-nvcc-12-6 cuda-cudart-dev-12-6 cuda-driver-dev-12-6
-          echo "/usr/local/cuda-12.6/bin" >> "$GITHUB_PATH"
-          echo "CUDA_HOME=/usr/local/cuda-12.6" >> "$GITHUB_ENV"
+      - uses: ./hawk/.github/actions/cuda-toolchain
 
       # The siblings are on PyPI, but CI installs the sibling checkouts so it tests
       # unreleased changes: aether's header package,
@@ -442,6 +306,7 @@ jobs:
       - env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+          RAPTOR_EAGLE_ROOT: ${{ github.workspace }}/eagle
         run: cd hawk && python -m pytest tests -q -m "not gpu"
       - if: matrix.gcc != 12
         name: Necessity (masked variants forced on must fail the early-exit rows)
@@ -485,65 +350,29 @@ jobs:
         with:
           path: hawk
 
-      # companion aether: same-named branch if it exists there, else main
-      - id: ref_aether
-        env:
-          COMPANION_REPO: aether
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion aether: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/aether
-          ref: ${{ steps.ref_aether.outputs.ref }}
+          repo: aether
           path: aether
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion eagle: same-named branch if it exists there, else main
-      - id: ref_eagle
-        env:
-          COMPANION_REPO: eagle
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/eagle
-          ref: ${{ steps.ref_eagle.outputs.ref }}
+          repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion raptor: same-named branch if it exists there, else main
-      - id: ref_raptor
-        env:
-          COMPANION_REPO: raptor
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion raptor: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/raptor
-          ref: ${{ steps.ref_raptor.outputs.ref }}
+          repo: raptor
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
       - uses: actions/cache@v6
         with:
@@ -621,65 +450,29 @@ jobs:
       # hawk/_roots.py) resolves header roots from $HAWK_AETHER_INCLUDE /
       # $HAWK_EAGLE_INCLUDE directly — no cmake --install step needed, these
       # just need to point at the two repos' source roots.
-      # companion aether: same-named branch if it exists there, else main
-      - id: ref_aether
-        env:
-          COMPANION_REPO: aether
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion aether: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/aether
-          ref: ${{ steps.ref_aether.outputs.ref }}
+          repo: aether
           path: aether
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion eagle: same-named branch if it exists there, else main
-      - id: ref_eagle
-        env:
-          COMPANION_REPO: eagle
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/eagle
-          ref: ${{ steps.ref_eagle.outputs.ref }}
+          repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion raptor: same-named branch if it exists there, else main
-      - id: ref_raptor
-        env:
-          COMPANION_REPO: raptor
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion raptor: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/raptor
-          ref: ${{ steps.ref_raptor.outputs.ref }}
+          repo: raptor
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
       - uses: actions/setup-python@v7
         with:
@@ -702,24 +495,7 @@ jobs:
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-ft-stress-${{ matrix.python-version }}-
       - run: ccache -z
 
-      # NVIDIA's apt repo for Ubuntu 24.04 (noble), x86_64. cuda-keyring adds
-      # the repo + signing key; package names/versions below are the current
-      # (as-authored) 12.6 set and are UNVERIFIED — not run on a live runner.
-      - name: Install compile-only CUDA 12.6 toolchain (nvcc; no driver/GPU)
-        run: |
-          curl -fsSL -o /tmp/cuda-keyring.deb \
-            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i /tmp/cuda-keyring.deb
-          sudo apt-get update
-          # cuda-nvcc-12-6: nvcc/ptxas/cicc. cuda-cudart-dev-12-6: cuda_runtime.h
-          # + libcudart (nvcc auto-includes cuda_runtime.h even for -c-only
-          # compiles). cuda-driver-dev-12-6: the libcuda.so DRIVER STUB (under
-          # lib64/stubs, no actual driver) — added beyond the suggested pair
-          # because eagle's python/CMakeLists.txt links CUDA::cuda_driver.
-          sudo apt-get install -y --no-install-recommends \
-            cuda-nvcc-12-6 cuda-cudart-dev-12-6 cuda-driver-dev-12-6
-          echo "/usr/local/cuda-12.6/bin" >> "$GITHUB_PATH"
-          echo "CUDA_HOME=/usr/local/cuda-12.6" >> "$GITHUB_ENV"
+      - uses: ./hawk/.github/actions/cuda-toolchain
 
       # The siblings are on PyPI, but CI installs the sibling checkouts so it tests
       # unreleased changes: aether's header package,
@@ -777,6 +553,7 @@ jobs:
         env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+          RAPTOR_EAGLE_ROOT: ${{ github.workspace }}/eagle
         run: |
           set -euo pipefail
           cd hawk
@@ -809,45 +586,29 @@ jobs:
         with:
           path: hawk
 
-      # companion aether: same-named branch if it exists there, else main
-      - id: ref_aether
-        env:
-          COMPANION_REPO: aether
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion aether: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/aether
-          ref: ${{ steps.ref_aether.outputs.ref }}
+          repo: aether
           path: aether
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion eagle: same-named branch if it exists there, else main
-      - id: ref_eagle
-        env:
-          COMPANION_REPO: eagle
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-          GH_TOKEN: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
-        run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-none}" | base64 -w0)"
-          [ -n "${GH_TOKEN:-}" ] || auth="X-Unauthenticated: 1"
-          found="$(git -c http.extraHeader="$auth" ls-remote --heads "https://github.com/amasat01/${COMPANION_REPO}" "refs/heads/${BRANCH_NAME}" | awk '{print $2}')"
-          if [ "$found" = "refs/heads/${BRANCH_NAME}" ]; then ref="$BRANCH_NAME"; else ref=main; fi
-          echo "companion ${COMPANION_REPO} @ ${ref}"
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
+      - uses: ./hawk/.github/actions/companion
         with:
-          repository: amasat01/eagle
-          ref: ${{ steps.ref_eagle.outputs.ref }}
+          repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
+
+      # companion raptor: used only while its version is not on PyPI yet (a release in flight)
+      - uses: ./hawk/.github/actions/companion
+        with:
+          repo: raptor
+          path: raptor
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
       - uses: actions/setup-python@v7
         with:
@@ -879,6 +640,12 @@ jobs:
           "$RUNNER_TEMP/seal/bin/pip" install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
           (cd "$GITHUB_WORKSPACE/aether/dsc" && "$RUNNER_TEMP/seal/bin/python" -m aether_dsc.seal)
           pip install --quiet "$GITHUB_WORKSPACE/aether/dsc"
+          # raptor-core from PyPI like any user, unless the sibling's version is not released yet
+          CORE_V=$(sed -n 's/^version = "\(.*\)"/\1/p' raptor/pyproject.toml)
+          if ! pip download --quiet --no-deps --only-binary=:all: -d "$RUNNER_TEMP/rc" "raptor-core==$CORE_V"; then
+            echo "raptor-core $CORE_V: not on PyPI yet, installing the sibling checkout"
+            pip install --quiet ./raptor
+          fi
           pip install -v -Ccmake.define.EAGLE_PYTHON_WARN_AS_ERR=ON dist/raptor_eagle-*.tar.gz
           pip install -v -Ccmake.define.HAWK_WARN_AS_ERR=ON dist/raptor_hawk-*.tar.gz
           pip check

@@ -12,7 +12,10 @@ piece they need.
 
 from __future__ import annotations
 
+import os
 import pathlib
+import platform
+import threading
 
 import _deployable as D
 import pytest
@@ -79,6 +82,16 @@ def built(tmp_path_factory, cache_dir) -> dict:
     return out
 
 
+def pytest_collection_modifyitems(config, items):
+    """Skip ``wall_clock`` rows (measured run times) unless HAWK_WALL_CLOCK_ROWS is set."""
+    if os.environ.get("HAWK_WALL_CLOCK_ROWS"):
+        return
+    skip = pytest.mark.skip(reason="measured-time row; set HAWK_WALL_CLOCK_ROWS=1")
+    for item in items:
+        if "wall_clock" in item.keywords:
+            item.add_marker(skip)
+
+
 def sidecar_of(bundle, name: str) -> dict:
     """The named artifact's sidecar out of a built bundle."""
     return next(a.sidecar for a in bundle.artifacts if a.name == name)
@@ -86,3 +99,33 @@ def sidecar_of(bundle, name: str) -> dict:
 
 __all__ = ["BOTH", "sidecar_of"]
 assert BACKENDS  # the emitter's backend table is what `targets` names
+
+
+def run_threads(fns):
+    """Start every callable at once; return ``(results, errors)`` by index."""
+    barrier = threading.Barrier(len(fns))
+    results, errors = [None] * len(fns), [None] * len(fns)
+
+    def work(i):
+        barrier.wait()
+        try:
+            results[i] = fns[i]()
+        except BaseException as exc:                      # noqa: BLE001
+            errors[i] = exc
+
+    pool = [threading.Thread(target=work, args=(i,)) for i in range(len(fns))]
+    for t in pool:
+        t.start()
+    for t in pool:
+        t.join()
+    return results, errors
+
+
+def avx512() -> bool:
+    if platform.machine().lower() not in ("x86_64", "amd64"):
+        return False
+    try:
+        with open("/proc/cpuinfo") as f:
+            return "avx512f" in f.read()
+    except OSError:
+        return False

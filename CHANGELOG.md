@@ -9,8 +9,8 @@ structure-of-arrays ABI, bit-identical to the `native` host build and compiled w
 `hawk.build(..., targets=("c",))` the build door, alone or beside `host` and `cuda`, with the
 new `embedded_profile=` keyword taking an `EmbeddedProfile`. The `c` target never enters the
 eagle manifest, and `hawk.load` and `hawk.artifact.plugins` refuse a build that holds only a `c` unit. A verify pass
-runs before emission: it refuses by name what the target does not build (twelve features, among them random
-draws, raw device blocks, mapreduce partials, active-set guards, segmented units, the
+runs before emission: it refuses by name what the target does not build (thirteen features, among them random
+draws, raw device blocks, reductions over samples and cross-sample reads (`hawk.all_samples`), active-set guards, segmented units, the
 compensated sink policy, fused lanes, automatic kernels and libm functions on `Int` operands), records
 the worst-case trips, operations and static bytes, classifies every runtime index as proven or
 clamped, reports the floating-point domain of each division and root, and applies the
@@ -27,6 +27,38 @@ twice, nor for a rank>=1 lookup plane (a `Table[Vector[3]]`) read at all.
 
 hawk now requires `aether-dsc>=0.2.4`, which brings `aether_dsc.c_core`, the generator whose
 scalar reference functions the `c` target inlines into the unit.
+
+## 0.6.3 (2026-10-20)
+
+**Cells are the only record of a reduction over samples, and a reduced value can be read later in the body.** A kernel that reduces over samples is bound by its cells (`t` of shape `(1,)`, or `(columns,)` for a wider cell); `hawk.run` owns the row scratch (made once per sample count), launches, and finishes the rows on the host in eagle's ordered tree, bitwise the cell eagle's `ordered` policy gives. The sidecar no longer carries `sample_sums`; `cells` is the record, and a kernel with cells declares `exec_access = "mapreduce"` with its op (`sum` or `max`), so a bundle holds only kernels of one execution axis. `z = x / hawk.all_samples(x).sum()` builds as launches run in sequence, `<name>`, `<name>_2`, ...: each later launch reads the earlier cells as one-cell `lookup` planes, and a per-sample value it needs is computed again there. The first launch's sidecar lists every launch under `stages` (`kernel`, `cells_in`, `cells_out`, `recomputed`) and every cell under `cells`; a kernel that reads no reduction is one launch, unchanged. `hawk.run` runs the launches with the host finish between them; a cell only a later launch reads is the kernel's own, so the caller binds only its outputs. Each launch is its own compile, so a change after the cut recompiles only the later launch. Derivatives are taken on the whole kernel and then split; the derivative of a sum over samples read in the body is the sum of its adjoint, and a max or min refuses. A reduction inside a `for` still refuses.
+
+**Gradients through a parameter-dependent switch, `@hawk.kernel(jump=...)`.** With `jump=<width>`, `vjp` and `jvp` differentiate an `if`, a conditional expression or `where` comparing a differentiated value (`x < t`, `<=`, `>`, `>=`, combined with `land`/`lor`/`not`, nested, entrywise on a vector, or inside a `for` body) as the smoothed loss: a sample within `sqrt(5) * width` of the switch passes on the jump between the branches, weighted by an Epanechnikov kernel of standard deviation `width`; farther samples cost one comparison. `jump="h"` reads the width from a `Param[Scalar]` (no rebuild per width, no gradient for it) and the derivative also writes spread cells `jump_sd<i>_0/1/2` for each switch outside a loop (sum of `l - r`, of its square, and the count). The primal kernel and its digest are unchanged, and a kernel without `jump=` derives exactly as before. The derived sidecar lists the switches under `derivative.jump` (each with the comparison it came from as `group`, and its loop). A `dispatch` whose selector is a select between two branch indices is no longer clamped. Refused by name: `==`/`!=` on a differentiated value, a `break` depending on one, a rounding or integer cast before the comparison, a second derivative of a `jump=` derivative, and a width that is not a positive number, `"auto"` or a `Param[Scalar]`. `jump="auto"` picks each comparison's width from the batch, `0.02·√12` times the standard deviation of `l - r` (a vector comparison's entries pooled), in a first stage of the derived kernel that sums `l - r`, its square and the count into the cells `jump_sd<g>_0/1/2`; the second stage writes the width it used to `jump_h<g>`. One derived kernel serves every batch. A switch inside a `for` takes a number or a `Param` width.
+
+**Removed: `Accum`, `Reduce`, `.add`, `.contribute`, `.write(at=)`.** Declare `Mutable[...]` (or `WideOut[...]`) and use `hawk.all_samples`: `hawk.all_samples(bins)[key] += term` accumulates by key, `hawk.all_samples(buf)[key] = v` stores by key, and `total = hawk.all_samples(term).sum()` (or `.max()`, `.min()`, `.mean()`) reduces over samples. `x.add(v)` with no `at` is `x += v`; `buf.write(v)` is `buf = v`. `hawk.Accum` and `hawk.Reduce` raise an error that names the replacement, as do `.add`, `.contribute` and `.write` on an output. Forward mode (`jvp`) through a max or min over samples is refused, as reverse already was.
+
+**Reductions and `hawk.all_samples`.** A value's own axes reduce with `.sum/.max/.min/.mean(axis)` (`axis` is a number, `"components"`, `"rows"` or `"columns"`), `hawk.math.sum/mean`, and the views `.components`, `.rows`, `.columns`; `axis="samples"` on one sample's value refuses and names `hawk.all_samples`. `max(a, b)` and `min(a, b)` on traced values are `hawk.math.max/min` (a tie keeps the first operand). `total = hawk.all_samples(x).sum()` (also `.max()`, `.min()`, `.mean()`) stored to a `Mutable` writes one row per 32 samples (sum and mean: with `_comp`; max and min: exact), listed in the sidecar under `cells`; a kernel reduces with one op. The derivative of a sum over samples broadcasts its adjoint; a max or min refuses.
+
+**A parameter's gradient is summed in the derived kernel.** `vjp` of a `param_planes` kernel writes each parameter's gradient `bar_<name>` as one sum per 32 samples (a warp), plus its compensation term in `bar_<name>_comp`: `ceil(n/32)` values each instead of `n`, in the same kernel as the per-sample `bar_x`. A row is a fixed compensated tree over its 32 samples, bitwise across launches, and the host gives the device's rows within rounding. The sidecar lists these planes under `cells`. Add `bar_<name>` and `bar_<name>_comp` over the rows to get the gradient. A launch covers whole rows (its first sample is a multiple of 32), and the segmented, active-set and persistent entries refuse such a kernel.
+
+## 0.5.1 (2026-10-17)
+
+**One `HostKernel` shared across threads is safe.** In 0.5.0 `hawk.runtime.run` bound and launched in two steps, so a second thread calling `run` on the same kernel could rebind its planes between the two and the first thread's launch then wrote to, or read from, the wrong arrays (wrong results, and heap corruption with unequal sizes). It hit anyone calling one loaded kernel from several threads, such as an eight-thread framework call. `run`, `bind_all` and `launch` now hold a per-kernel lock for the whole call.
+
+**Nested-derivative host kernels no longer read a stale value under GCC.** A host kernel with a termination guard, differentiated twice (`jvp` of `jvp`, as `jacfwd` of `jacfwd` emits), could read a stack slot it had not written when built with GCC 11.5 or 14.3, so its result was wrong or changed between calls. The fix is in aether-dsc 0.2.4, now the minimum; 0.5.0 users get it by upgrading aether-dsc. Vectorised loops and speed are unchanged.
+
+**Fused, persistent and range launches now agree within floating-point rounding, not bit for bit.** The compiler may contract a multiply-add differently in each entry; step counts and flags stay exact.
+
+**Derivatives of derivatives, to any order.** `vjp` and `jvp` of a derivative kernel (any mix, up to three levels) name each level's planes apart (`bar_x`, `bar2_x`, `bar2_bar_x`, `dot3_x`) instead of clashing on the primal's names; each plane is found under its own prefix, in float64 and float32, on the host and the device.
+
+**`param_planes` reaches uniforms read inside loops.** A `Param` read in a loop body is promoted to a one-cell plane like any other, the loop is rebuilt over it, and its `vjp`, `jvp` and second-order routes match the `Param` kernel.
+
+**Two examples, with notebooks and a benchmark card.** The autodiff-against-torch and hybrid orbit examples (moved here from raptor-core) show hawk gradients inside a torch program and a model with shared weights as one `Table`.
+
+**NumPy 1.26 or newer.** The package declares `numpy>=1.26`, the oldest NumPy the host route and the examples are tested with.
+
+**docs-fresh tells its failures apart.** `tools/docs_fresh.sh` exits with a different code for stale docs, a missing card and a missing tool. The CI test steps point at the eagle checkout, so the docs-fresh card tests run there instead of skipping.
+
+**Docs.** The Colab and Kaggle setup cell installs the CUDA 12 or 13 extras, can test a release candidate and upgrades the family's own packages, and the notebooks are checked in a Colab-like environment. The capability map names JAX among the certified zero-copy frameworks. Pages actions moved to the Node 24 releases.
 
 ## 0.5.0 (2026-10-14)
 

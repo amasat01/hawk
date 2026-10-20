@@ -15,10 +15,14 @@ reads naturally. The sidecar lists the promoted planes under ``param_planes``;
 a launching runtime binds each to a one-element array.
 
 :func:`hawk.diff.vjp` of the promoted kernel gives the gradient with respect
-to each floating-point promoted parameter as a PER-SAMPLE plane
-(``bar_<name>``, one value per sample), never a scatter into the cell, so the
-caller sums it in a fixed sample order and the gradient is reproducible. The
-plain kernel is never changed.
+to each floating-point promoted parameter as one sum per 32 samples
+(``bar_<name>`` plus its compensation ``bar_<name>_comp``, ``ceil(n/32)``
+values each, :class:`hawk.ir.nodes.SampleSum`), never a scatter into the cell,
+so the gradient is the same bits on every launch. The plain kernel is never
+changed.
+
+A uniform read inside a ``for`` is promoted the same way: the loop's body reads
+it as a loop-invariant boundary value, so the cell is read once before the loop.
 """
 
 from __future__ import annotations
@@ -58,10 +62,6 @@ def param_planes(kernel: Any, names: Any = None) -> Any:
     step = default_step(kernel)
     step = getattr(step, "one_step", None) or step
     nodes = _reachable(step.sinks)
-    if any(getattr(n, "kind", None) == "loop" for n in nodes):
-        raise HawkError(
-            f"hawk.diff.param_planes({step.name!r}): promoting a uniform through "
-            "a loop in the step body is not built")
     leaves = [n for n in nodes if isinstance(n, Leaf) and n.role == "uniform"
               and n.name != TAPE_ON]
     have = {n.name for n in leaves}
@@ -87,6 +87,7 @@ def param_planes(kernel: Any, names: Any = None) -> Any:
     sinks = swap(step.sinks, mapping)
     out = Kernel(step.name + SUFFIX, sinks, step.planes, kind=step.kind)
     out.time, out.time_step = step.time, step.time_step
+    out.jump = step.jump
     return default_steps(out) if step is not kernel else out
 
 

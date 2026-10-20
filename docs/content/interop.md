@@ -115,9 +115,11 @@ numbers for inputs and return head-shaped results; see
 
 Only needed if you launch hawk's compiled entries yourself instead of through eagle.
 
-A stepping kernel that hawk marks `auto` also gets a `<name>_persist` entry, which runs warp-converged: the lanes of a warp claim samples together and work in chunks. If you launch it yourself, it takes the fused entry's arguments and then `hawk_next` (a `uint32` you zero), `hawk_util` (two `uint64`, or null), `hawk_steps` (a `uint32` you zero, or null), `hawk_stepsum` (a `uint64` you zero, or null) and, last, `hawk_chunk`: a `uint32` giving the steps between chunk heads. It must be a power of two; `0` runs each sample whole. Launch it with a block size that is a multiple of 32. The results are bit-identical to the fused entry for any chunk.
+A stepping kernel that hawk marks `auto` also gets a `<name>_persist` entry, which runs warp-converged: the lanes of a warp claim samples together and work in chunks. If you launch it yourself, it takes the fused entry's arguments and then `hawk_next` (a `uint32` you zero), `hawk_util` (two `uint64`, or null), `hawk_steps` (a `uint32` you zero, or null), `hawk_stepsum` (a `uint64` you zero, or null) and, last, `hawk_chunk`: a `uint32` giving the steps between chunk heads. It must be a power of two; `0` runs each sample whole. Launch it with a block size that is a multiple of 32. The results agree with the fused entry's within floating-point rounding (step counts exactly), and are the same bits for any chunk.
 
 The kernel's sidecar carries `fp64_ops_ir`: one step's 64-bit floating-point operation count, counted in the IR. It is the cost of a step, useful for choosing a chunk length; the compiler fuses and shares operations, so the machine issues fewer. Read it from `artifact.sidecar` like any other field; it is absent for a kernel that does not step.
+
+Sidecar schema is v3: `cells` (each cell's operation and width) replaces `sample_sums`, and a split kernel adds `stages` (a cell only a later stage reads is marked `internal`). An eagle that predates v3 refuses the artifact.
 
 ## The device crossing: eagle
 
@@ -134,11 +136,11 @@ raptor's matrix certifies. See:
   for the family-wide, row-cited statement of what is certified — the
   authority this page defers to for anything about the device side.
 
-:::{admonition} Roadmap
+:::{admonition} JAX and other frameworks
 :class: note
 
-`jax` and `tensorflow`/`keras` are both DLPack-capable and both foreseen for
-the family. Neither is certified today anywhere in the stack hawk compiles
-for — treat a claim that either works now as a documentation bug, here or
-upstream.
+JAX arrays are certified for eagle's device crossings (raptor's `JX-*` rows,
+Python 3.12 and newer). `tensorflow`/`keras` is DLPack-capable and foreseen,
+not certified today: treat a claim that it works now as a documentation bug,
+here or upstream.
 :::

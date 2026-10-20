@@ -4,7 +4,7 @@
 """ONE canonical import path per public name, and the public manifest.
 
 The authoring vocabulary (``kernel``, ``Param``, ``Mutable``, ``Table``,
-``Vector``, ``Scalar``, ``Accum``, ``Reduce``, ``Quantity``, ``Terminated``,
+``Vector``, ``Scalar``, ``Quantity``, ``Terminated``,
 ``HawkError``, …) lives at the top level; math functions live at
 ``hawk.math``; the dependency-free types (``TensorType``, ``Wire``,
 ``PER_SAMPLE_ROLES``, …) at ``hawk.types``. ``hawk.trace`` exports nothing,
@@ -64,10 +64,10 @@ _TYPES_PUBLIC_NAMES = frozenset({"DTYPES", "INT_PLANE_DTYPES", "LaneMeta", "PER_
 #: the SAME commit, same as any other committed manifest in this repo.
 _EXPECTED_MANIFEST = {
     "hawk": [
-        "Accum", "HawkError", "Index", "Int32", "Kernel", "Matrix", "Mutable",
-        "Param", "Quantity", "Quat", "RawBlock", "Reduce", "Scalar",
+        "HawkError", "Index", "Int32", "Kernel", "Matrix", "Mutable",
+        "Param", "Quantity", "Quat", "RawBlock", "Scalar",
         "Staged", "Table", "Terminated", "UInt32", "Value", "Vector", "Wide",
-        "WideOut", "__version__", "build", "kernel", "load", "raw_device",
+        "WideOut", "__version__", "all_samples", "build", "kernel", "load", "raw_device",
         "resolve_dispatch", "run", "samples_first", "samples_last", "steps",
     ],
     "hawk.trace": [],
@@ -78,14 +78,14 @@ _EXPECTED_MANIFEST = {
         "dispatch", "dot", "erf", "erfc", "exp", "exp2", "expm1",
         "fdim", "floor", "fma", "fmod", "hypot", "int32", "isfinite", "isinf",
         "isnan", "land", "lnot", "log", "log10", "log1p", "log2",
-        "lor", "max", "maximum", "min", "minimum", "n_samples",
+        "lor", "max", "maximum", "mean", "min", "minimum", "n_samples",
         "norm", "outer", "pow", "power", "quat_conj", "quat_mul",
         "quat_recip", "quat_rotate", "random_bernoulli",
         "random_exponential", "random_lognormal",
         "random_multivariate_normal", "random_normal",
         "random_poisson1", "random_uniform", "random_uniform_int",
         "real", "remainder", "rint", "round", "rsqrt", "sample_index",
-        "select", "sign", "sin", "sinh", "spacing", "split_index", "sqrt",
+        "select", "sign", "sin", "sinh", "spacing", "split_index", "sqrt", "sum",
         "take", "tan", "tanh", "transpose", "trunc", "uint32", "vec", "vsum",
         "where",
     ],

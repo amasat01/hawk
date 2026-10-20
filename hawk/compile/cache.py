@@ -374,17 +374,6 @@ def validity_digest(closure) -> tuple[tuple[str, str | None], ...]:
     return tuple((p, digest_file(p)) for p in closure)
 
 
-@dataclass(frozen=True)
-class CacheEntry:
-    """One cached compile: where its files live and whether the lookup HIT."""
-
-    key: str
-    directory: Path
-    artifact: Path
-    source: Path
-    hit: bool
-
-
 class Cache:
     """A content-closure cache rooted at ``directory``: the compiled
     object, its emitted source and its validity record all live under the

@@ -25,7 +25,7 @@ description = "HAWK — Hardware Agnostic Writing of Kernels: a Python DSL that 
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
-# Python versions match the cibuildwheel matrix publish.yml actually builds
+# Python versions match the cibuildwheel matrix release.yml actually builds
 # and the test-wheel job actually runs (cp39-cp314 plus free-threaded cp313t/cp314t, manylinux_2_28 x86_64) —
 # never wider than what a real wheel ships. GPU/CUDA: hawk's own compiled
 # core is host-only (see wheel.packages below), but its purpose is writing
@@ -53,7 +53,7 @@ classifiers = [
 # uses it landed rather than pre-declared ahead of it.
 # aether-dsc 0.2.4 brings `aether_dsc.c_core`, which the `c` target imports.
 # numpy: hawk never imports it, but the host route and every example pass NumPy arrays
-dependencies = ["aether-dsc>=0.2.4,<0.3", "numpy"]
+dependencies = ["aether-dsc>=0.2.4,<0.3", "numpy>=1.26"]
 
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
@@ -105,7 +105,8 @@ pythonpath = ["."]
 markers = [
     "gpu: needs a CUDA GPU and cupy; CI on a GPU-less runner deselects it with -m \"not gpu\"",
     "ft: free-threading rows (need a free-threaded interpreter; skip on a GIL build)",
-    "repo_local: reads the repository's source tree, which a wheel install does not carry; only the wheel test (publish.yml) deselects it",
+    "repo_local: reads the repository's source tree, which a wheel install does not carry; only the wheel test (release.yml) deselects it",
+    "wall_clock: compares measured run times, which flip with machine load; skipped unless HAWK_WALL_CLOCK_ROWS=1 is set (run on a quiet machine)",
 ]
 
 [tool.ruff]

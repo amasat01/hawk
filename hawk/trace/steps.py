@@ -22,7 +22,7 @@ may overshoot a run's step cap by fewer than ``K`` steps, so exact caps
 use ``K = 1``.
 
 Admissible shape: sinks are Mutable commits plus ONE finish; reads are any
-leaf role. Refused, naming the kernel: an out/wide_out/accum_out/Reduce
+leaf role. Refused, naming the kernel: an out/wide_out/accum_out
 sink, a kernel without a finish, and a body loop depending on the carried
 state. A derived kernel of the result refuses through the launch-start-read
 rule: differentiate the single step instead.
@@ -156,7 +156,7 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
             raise HawkError(
                 f"hawk.steps({name!r}): {what} is not a step kernel's commit; a "
                 "step kernel commits Mutable planes and finishes — an "
-                "out/wide_out/accum_out/Reduce sink has no per-sample state to "
+                "out/wide_out/accum_out sink has no per-sample state to "
                 "carry from one step to the next")
     if not commits:
         raise HawkError(

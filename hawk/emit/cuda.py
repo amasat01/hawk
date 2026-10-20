@@ -17,7 +17,16 @@ import re
 from collections.abc import Sequence
 
 from ..ir import HawkError, Walk
-from .backend import ActiveSpec, SegmentSpec, active_reads, segment_reads, unpack_lines
+from .aether import SAMPLE_SUM_TERMS
+from .backend import (
+    SAMPLE_SUM_OP_CODE,
+    ActiveSpec,
+    SegmentSpec,
+    active_reads,
+    sample_sum_fill,
+    segment_reads,
+    unpack_lines,
+)
 from .dispatch import render_dispatch_rank0
 from .spelling import param_name, reconstruct_call
 
@@ -85,6 +94,27 @@ class CudaBackend:
 
     def index_epilogue(self) -> str:
         return "    }"
+
+    def sample_sum_frame(self, width: int, elem: str, store: str,
+                         op: str = "sum") -> tuple:
+        """The index prologue with no early return: a lane past ``count``
+        skips the body (``hawk_active``) but takes part in its warp's row
+        sum with zero terms; a warp wholly past ``count`` exits together."""
+        plain = self.index_prologue()
+        exit_line = "    if (hawk_flat >= count) return;\n    {"
+        assert exit_line in plain
+        opened = plain.replace(exit_line, (
+            "    if ((hawk_flat & ~31LL) >= count) return;\n"
+            f"    {elem} {SAMPLE_SUM_TERMS}[{width}] = {{}};\n"
+            + sample_sum_fill(op, width, SAMPLE_SUM_TERMS, elem) +
+            "    const bool hawk_active = hawk_flat < count;\n"
+            "    if (hawk_active) {"))
+        closed = ("    }\n"
+                  "    const long long hawk_row = (base + hawk_flat) >> 5;\n"
+                  f"{store}\n"
+                  f"    hawk_abi::sampleSumWarp_<{width}, {SAMPLE_SUM_OP_CODE[op]}>"
+                  f"({SAMPLE_SUM_TERMS}, hawk_ss_store);")
+        return opened, closed
 
     def unpack(self, walk: Walk) -> str:
         """The prologue: every role arg arrives by value, as the source."""

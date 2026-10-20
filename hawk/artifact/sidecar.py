@@ -59,7 +59,7 @@ them; :func:`hawk.artifact.plan_view` projects all three straight through.
 from __future__ import annotations
 
 from .. import _contracts
-from ..compile import aether_include, eagle_include
+from ..compile.toolchain import _strict_aether_include, _strict_eagle_include
 from ..ir import HawkError
 from ..ir.segment import class_name, mix_name, stale_name
 from ..types import INT_PLANE_DTYPES
@@ -256,7 +256,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
                  derivative: dict | None = None, lanes=None,
                  dispatch_override=None, step_ops: int | None = None,
                  fp64_ops_ir: int | None = None,
-                 entry_counts_finished: bool = False) -> dict:
+                 entry_counts_finished: bool = False,
+                 ptxas: dict | None = None) -> dict:
     """The full v2 sidecar for one kernel.
 
     ``buffers`` is emitted present-and-empty: a HAWK ``lookup`` plane's
@@ -287,7 +288,10 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     operations, so the machine issues fewer.
     ``entry_counts_finished`` is present (``true``) when the kernel's fast
     entries count samples finished on entry into the finish counter, so the
-    runtime zeroes the counter instead of counting the mask before a run."""
+    runtime zeroes the counter instead of counting the mask before a run.
+    ``ptxas`` (present when the device compile ran ptxas, i.e. built a CUBIN)
+    is ``{kernel: {regs, spill_store_B, spill_load_B, stack_B}}``, recorded for a
+    reader of the artifact; nothing in the build acts on it."""
     meta = {
         "format": fmt,
         "schema_version": _contracts.MAX_SCHEMA_VERSION,
@@ -321,15 +325,19 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         "terminated_readonly": getattr(walk, "finish", None) is None,
         **_finish(walk),
         **({"param_planes": list(walk.param_planes)} if walk.param_planes else {}),
+        # every reduction over samples, with its op: the rows it writes (one
+        # per 32 samples) are the runtime's scratch, finished into the cell
+        **({"cells": walk.cells} if walk.cells else {}),
         # one step's operation count, for a kernel whose body steps (absent
         # otherwise): read by the launching runtime, never by the body
         **({"step_ops": step_ops} if step_ops is not None else {}),
         **({"fp64_ops_ir": fp64_ops_ir} if fp64_ops_ir is not None else {}),
         **({"entry_counts_finished": True} if entry_counts_finished else {}),
+        **({"ptxas": ptxas} if ptxas else {}),
         "digest": walk.digest,
         "quantities": {p: list(span.wires) for p, span in walk.quantities.items()},
-        "aether_include": _root_or_sealed_marker(aether_include),
-        "eagle_include": _root_or_sealed_marker(eagle_include),
+        "aether_include": _root_or_sealed_marker(_strict_aether_include),
+        "eagle_include": _root_or_sealed_marker(_strict_eagle_include),
     }
     if lanes:
         meta["lanes"] = [{"name": lane.name,

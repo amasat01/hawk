@@ -5,9 +5,8 @@
 
 A parameter's annotation IS its vocabulary declaration: a payload type
 declares a per-sample input plane whose ROLE follows its rank; a wrapper
-(``Mutable[...]``, ``Table[...]``, ``Accum[...]``, ``Param``,
-``Reduce(op)``) declares the output/lookup/accumulate/uniform/mapreduce
-forms; a :class:`~hawk.ir.compound.Quantity` declares a compound access,
+(``Mutable[...]``, ``Table[...]``, ``Param``) declares the
+output/lookup/uniform forms; a :class:`~hawk.ir.compound.Quantity` declares a compound access,
 namespaced and all-or-nothing. Nothing here builds IR; it resolves an
 annotation to the ``(form, ttype)`` pair :mod:`hawk.trace.kernel` binds.
 
@@ -23,7 +22,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..ir import HawkError, Quantity
-from ..ir.nodes import REDUCE_OPS
 from ..types import TensorType
 
 #: Payload types. ``Vector``/``Matrix`` are subscripted with static extents —
@@ -63,7 +61,6 @@ class Plane:
 
     form: str
     ttype: TensorType
-    op: str | None = None
     dims: tuple = ()
     staged: bool = False
 
@@ -143,19 +140,12 @@ class Wide:
 
 class WideOut:
     """``WideOut[...]`` — the wide OUTPUT plane a body commits to, assigned
-    ``buf = v`` for the own column or scattered with
-    ``buf.write(v, at=lane)``, for the same reason :class:`Wide` is here: a
+    ``buf = v`` for the own column or stored by key with
+    ``hawk.all_samples(buf)[k] = v``, for the same reason :class:`Wide` is here: a
     role an author cannot write is a hole in the language."""
 
     def __class_getitem__(cls, t: TensorType) -> Plane:
         return Plane("wide_out", _payload("WideOut", t))
-
-
-class Accum:
-    """``Accum[...]`` — a cross-sample accumulate target (the walk's scatter)."""
-
-    def __class_getitem__(cls, t: TensorType) -> Plane:
-        return Plane("accum", _payload("Accum", t))
 
 
 @dataclass(frozen=True)
@@ -185,17 +175,6 @@ Param = _ParamPlane("uniform", Scalar)
 #: ``Terminated`` — the reserved per-sample boolean MASK (role
 #: ``terminated``). Declared, never written: HAWK's guard seam gates on it.
 Terminated = Plane("terminated", TensorType((), "bool"))
-
-
-def Reduce(op: str, of: TensorType = Scalar) -> Plane:  # a declaration
-    """``Reduce(op)`` — a mapreduce partial sink, EXCLUSIVE per; ``op``
-    must be a declared aether functor."""
-    if op not in REDUCE_OPS:
-        raise HawkError(
-            f"Reduce({op!r}): not a declared aether functor; declared ops "
-            f"are {REDUCE_OPS}"
-        )
-    return Plane("reduce", _payload("Reduce", of), op)
 
 
 def _extent(what: str, w: object) -> int:
@@ -254,14 +233,13 @@ def resolve(param: str, annotation: object) -> Plane | Quantity:
         "it with a payload type (Scalar / Index / Int32 / UInt32 / Quat / Vector[W] / "
         "Matrix[R,C]), "
         "a Param / Mutable[...] / Table[...] / Staged[...] / Wide[W] / "
-        "WideOut[...] / Accum[...] / Reduce(op) form, or a Quantity"
+        "WideOut[...] form, or a Quantity"
     )
 
 
 #: How an input plane's RANK picks its role.
 _IN_ROLE = {0: "per_sample", 1: "vec_in", 2: "mat_in"}
 _FORM_ROLE = {"uniform": "uniform", "table": "lookup", "mutable": "mutable",
-              "accum": "accum_out", "reduce": "accum_out",
               "terminated": "terminated", "wide": "wide_in",
               "wide_out": "wide_out"}
 

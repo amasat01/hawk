@@ -27,13 +27,12 @@ tile spans eight vector registers of the kernel's ``Real``. The SAME TU built wi
 
 from __future__ import annotations
 
-import platform
 import re
 import subprocess
 
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from conftest import avx512, sidecar_of
 
 import hawk
 import hawk.math as m
@@ -255,16 +254,6 @@ def _loop_free(x: Scalar, y: Mutable[Scalar]):
 # --------------------------------------------------------------------------- #
 # The vectoriser and the flag
 # --------------------------------------------------------------------------- #
-def _avx512() -> bool:
-    if platform.machine().lower() not in ("x86_64", "amd64"):
-        return False
-    try:
-        with open("/proc/cpuinfo") as f:
-            return "avx512f" in f.read()
-    except OSError:
-        return False
-
-
 def _lane_loop_report(tmp_path, kernel, mode, profile):
     """(lines of the trips' lane loops, lines GCC vectorised with 64-byte vectors)."""
     src = tmp_path / f"{kernel.name}_{mode}_{profile}.cpp"
@@ -290,7 +279,7 @@ def _lane_loop_report(tmp_path, kernel, mode, profile):
     return lane, wide
 
 
-@pytest.mark.skipif(not _avx512(), reason="the 64-byte vector verdict needs AVX-512")
+@pytest.mark.skipif(not avx512(), reason="the 64-byte vector verdict needs AVX-512")
 @pytest.mark.parametrize("mode", ["float64", "float32"])
 def test_the_lane_loop_of_an_arithmetic_chain_vectorises(tmp_path, mode):
     lane, wide = _lane_loop_report(tmp_path, arith, mode, EXACT)
@@ -303,7 +292,7 @@ FLAG_CASES = [(arith, "float64", EXACT), (arith, "float32", EXACT),
               (trajectory, "float64", EXACT), (middle, "float64", "native-vector-math")]
 
 
-@pytest.mark.skipif(not _avx512(), reason="the 64-byte vector verdict needs AVX-512")
+@pytest.mark.skipif(not avx512(), reason="the 64-byte vector verdict needs AVX-512")
 @pytest.mark.parametrize("kernel,mode,profile", FLAG_CASES,
                          ids=[f"{k.name}-{mo}-{p}" for k, mo, p in FLAG_CASES])
 def test_the_flag_matches_the_lane_loop(request, tmp_path, kernel, mode, profile):

@@ -115,6 +115,9 @@ def _per_kernel_derivative(kernels, names, derivative) -> list:
             # at this point in the build, and "in this bundle" already
             # says everything a digest would.
             primal_unit = None
-        out.append({"kind": auto.kind, "wrt": list(auto.wrt), "primal": primal_name,
-                    "primal_unit": primal_unit})
+        block = {"kind": auto.kind, "wrt": list(auto.wrt), "primal": primal_name,
+                 "primal_unit": primal_unit}
+        if getattr(auto, "jump", None) is not None:
+            block["jump"] = auto.jump
+        out.append(block)
     return out

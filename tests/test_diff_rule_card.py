@@ -36,7 +36,6 @@ from hawk.ir import (
     Const,
     Dispatch,
     Leaf,
-    MapreducePartial,
     SampleIndex,
     WideWrite,
 )
@@ -57,7 +56,6 @@ _FAMILIES = {
     "assign": "seeded from an adjoint plane / mirrored as a tangent sink",
     "wide_write": "seeded from an adjoint plane / mirrored as a tangent sink",
     "accum_write": "reverse = gather of its adjoint plane",
-    "mapreduce_partial": "reverse = broadcast of a rank-0 'sum' adjoint",
     "at": "reverse = scatter-add AccumWrite; forward = tangent lookup",
     "sample_index": "terminal: an address, not a differentiable quantity",
     "primitive": "the AUTHOR's supplied rule, applied to the "
@@ -191,7 +189,6 @@ def test_every_sink_family_survives_both_transforms(family):
         "assign": (Assign("out", value, F64),),
         "wide_write": (WideWrite("wide", value, None, F64),),
         "accum_write": (AccumWrite("acc", value, idx, F64),),
-        "mapreduce_partial": (MapreducePartial("total", value, "sum", F64),),
         "at": (Assign("out", mk("mul", (At(tab, idx, F64), x)), F64),),
         "dispatch": (Assign("out", Dispatch(idx, [x, mk("mul", (x, x))], "switch",
                                             F64), F64),),

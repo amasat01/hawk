@@ -67,7 +67,10 @@ def test_the_detector_can_see_the_tokens_it_looks_for():
 def test_every_geometry_token_in_a_full_unit_lies_in_the_index_prologue():
     for name, backend, mode, src in sources():
         prologue = backend.index_prologue()
-        outside = src.text.replace(prologue, "")
+        # the flat-index line both backend frames open with (the plain prologue
+        # and the sample-sum frame, which keeps whole warps alive for the row sum)
+        flat_index = prologue.split("    if (hawk_flat")[0]
+        outside = src.text.replace(prologue, "").replace(flat_index, "")
         stray = sorted({t for _n, t, _l in geometry_hits(outside)})
         assert not stray, (
             f"{name}/{backend.id}/{mode.id}: geometry token(s) {stray} appear outside "

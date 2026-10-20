@@ -223,7 +223,7 @@ def test_an_integer_per_sample_plane_is_told_apart_from_a_real_one(built):
 
 def test_declared_widths_never_sees_a_runtime_length_none(built):
     """THE REGRESSION, reproduced directly (this module's docstring's second
-    RED). ``energy``'s ``total`` is an ``accum_out`` plane (``Reduce("sum")``)
+    RED). ``energy``'s ``total`` is an ``accum_out`` plane (a sum over samples)
     — the SAME role shape as the ``mapreduce`` unit whose ``eagle.plan._declared_widths`` call turned eagle's OWN MPI rank bed red the first
     time this fix tried to put ``None`` in ``arg_widths``. Both the raw
     sidecar's ``arg_widths`` and ``hawk.artifact.plan_view``'s projection of

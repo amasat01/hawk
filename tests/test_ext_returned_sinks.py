@@ -4,7 +4,7 @@
 """``Output.returned`` may coexist with ordinary named sinks.
 
 The refusal that used to fire the instant a returned-output kernel also
-declared a Mutable/Accum parameter is LIFTED: the returned slot is an
+declared a Mutable parameter is LIFTED: the returned slot is an
 ordinary synthesised ``Assign``, so a body may commit through it AND through
 whatever else it declares — a diagnostic ``Mutable`` beside a returned
 acceleration, say. Sink order is every named sink in PARAMETER order, then
@@ -26,7 +26,7 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
-from hawk import Accum, Mutable, Scalar, Terminated, Vector
+from hawk import Mutable, Scalar, Terminated, Vector, all_samples
 from hawk.artifact import build_bundle as _build_bundle
 from hawk.emit import render_body
 from hawk.ext import Kind, Output, compensated
@@ -69,10 +69,10 @@ def returned_with_diagnostic_guarded(term: Vector[3], terminated: Terminated,
 
 
 @RETURNED
-def returned_with_scatter_diagnostic(term: Vector[3], hits: Accum[Scalar]):
-    """a SCATTERED diagnostic Accum beside the returned compensated
+def returned_with_scatter_diagnostic(term: Vector[3], hits: Mutable[Scalar]):
+    """a SCATTERED diagnostic by-key store beside the returned compensated
     target — the scatter is not the target, so it commits plain."""
-    hits.add(1.0, at=0)
+    all_samples(hits)[0] += 1.0
     return term
 
 

@@ -13,7 +13,13 @@ Also refuses a notebook whose OUTPUT (stream text, `text/plain`,
 path. hawk's docs publish to a public site; a committed output with
 `/local/...`, `/home/<user>/...`, `~/.cache/hawk/...` (as an
 absolute path) etc. leaks the machine that built them. Only rendered
-OUTPUT is scanned, not cell source.
+OUTPUT is scanned, not cell source. A stored Python warning (``UserWarning:``
+and the like) is refused too: it is noise from the machine that ran the
+notebook, and it usually carries such a path.
+
+Finally, refuses a stored image larger than IMAGE_BUDGET: the docs show the
+stored plots (nothing re-executes at build), so a runaway figure would bloat
+the repository.
 """
 import pathlib
 import re
@@ -23,7 +29,13 @@ import nbformat
 
 # Deliberately narrow: absolute local-filesystem roots a committed output
 # should never contain, not a general "looks like a path" heuristic.
-_LEAK_PATTERNS = [re.compile(p) for p in (r"/local/", r"/home/", r"/tmp/", r"/root/", r"/Users/", r"C:\\Users")]
+# Bytes of base64 per stored image output. Measured on the 9 shipped notebooks:
+# mean ~30 KB, largest 109 KB.
+IMAGE_BUDGET = 120_000
+
+_LEAK_PATTERNS = [re.compile(p) for p in (r"/local/", r"/home/", r"/tmp/", r"/dev/shm/", r"/root/", r"/Users/",
+                                          r"C:\\Users")]
+_WARNING = re.compile(r"\b\w*Warning: ")
 
 
 def _text_of(value) -> str:
@@ -52,7 +64,15 @@ def _output_leaks(cell) -> list[str]:
             pattern = _leaked_path(text)
             if pattern:
                 leaks.append(pattern)
+            if _WARNING.search(text):
+                leaks.append("a Python warning")
     return leaks
+
+
+def _oversized_images(cell) -> list[int]:
+    return [len(_text_of(out["data"][mime])) for out in cell.get("outputs", [])
+            for mime in ("image/png", "image/jpeg")
+            if mime in out.get("data", {}) and len(_text_of(out["data"][mime])) > IMAGE_BUDGET]
 
 
 def main(argv: list[str]) -> int:
@@ -71,6 +91,7 @@ def main(argv: list[str]) -> int:
     bad = []
     errored = []
     leaked = []
+    heavy = []
     for p in notebooks:
         nb = nbformat.read(p, as_version=4)
         unexecuted = [
@@ -93,6 +114,7 @@ def main(argv: list[str]) -> int:
                 continue
             for pattern in _output_leaks(c):
                 leaked.append((p, i, pattern))
+            heavy.extend((p, i, size) for size in _oversized_images(c))
     for p, cells in bad:
         shown = cells[:6]
         more = "…" if len(cells) > 6 else ""
@@ -102,10 +124,13 @@ def main(argv: list[str]) -> int:
         more = "…" if len(cells) > 6 else ""
         print(f"[nb_check_filled] ERROR OUTPUT {p}: code cells {shown}{more}")
     for p, i, pattern in leaked:
-        print(f"[nb_check_filled] LEAKED PATH {p}: code cell {i} output matched {pattern!r}")
+        print(f"[nb_check_filled] LEAKED OUTPUT {p}: code cell {i} output matched {pattern!r}")
+    for p, i, size in heavy:
+        print(f"[nb_check_filled] IMAGE OVER BUDGET {p}: code cell {i} image is {size} bytes "
+              f"(budget {IMAGE_BUDGET})")
     filled = len(notebooks) - len({p for p, _ in bad} | {p for p, _ in errored})
     print(f"[nb_check_filled] {filled}/{len(notebooks)} notebooks fully executed, no errors")
-    return 1 if (bad or errored or leaked) else 0
+    return 1 if (bad or errored or leaked or heavy) else 0
 
 
 if __name__ == "__main__":
