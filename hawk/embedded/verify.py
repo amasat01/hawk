@@ -29,15 +29,15 @@ from ..ir.cost import fp64_ops, kernel_cost
 from ..ir.loop_nodes import Loop, LoopIndex, TapeRead
 from ..ir.nodes import (
     FINISHED_PLANE,
+    GATHER_ROLES,
     RAW_KIND,
     AccumWrite,
     At,
     Const,
     Dispatch,
-    GATHER_ROLES,
+    Op,
     ReduceSamples,
     SampleSum,
-    Op,
     Select,
     Sink,
     TapeWrite,

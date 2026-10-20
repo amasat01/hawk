@@ -193,12 +193,37 @@ def cppcheck() -> str | None:
     return shutil.which("cppcheck")
 
 
+#: The file name :func:`run_checks` writes :data:`STDINT_LIBRARY` to, beside the unit.
+STDINT_LIBRARY_NAME = "hawk_stdint.cfg"
+
+#: <stdint.h> constant macros (INT64_C, ...) as glibc defines them. cppcheck
+#: does not read system headers here, and older releases (2.13, Ubuntu 24.04)
+#: then report each use as an undeclared function (Rule 17.3). Not a suppression.
+STDINT_LIBRARY = """<?xml version="1.0"?>
+<def format="2">
+  <define name="INT8_C(c)" value="c"/>
+  <define name="INT16_C(c)" value="c"/>
+  <define name="INT32_C(c)" value="c"/>
+  <define name="INT64_C(c)" value="c ## L"/>
+  <define name="UINT8_C(c)" value="c"/>
+  <define name="UINT16_C(c)" value="c"/>
+  <define name="UINT32_C(c)" value="c ## U"/>
+  <define name="UINT64_C(c)" value="c ## UL"/>
+  <define name="INTMAX_C(c)" value="c ## L"/>
+  <define name="UINTMAX_C(c)" value="c ## UL"/>
+</def>
+"""
+
+
 def cppcheck_argv(exe: str, c_path: str, include_dir: str) -> list[str]:
-    """The cppcheck command line with the MISRA addon for ``c_path``."""
+    """The cppcheck command line with the MISRA addon for ``c_path``. The
+    :data:`STDINT_LIBRARY` file is expected in ``include_dir`` (:func:`run_checks`
+    writes it there)."""
     return [exe, "--addon=misra", "--std=c99", "--language=c",
             "--enable=warning,style", "--error-exitcode=2",
             "--suppress=missingIncludeSystem",
             *[f"--suppress={d['rule']}" for d in DEVIATIONS],
+            f"--library={include_dir}/{STDINT_LIBRARY_NAME}",
             f"-I{include_dir}", c_path]
 
 
@@ -228,6 +253,7 @@ def run_checks(c_text: str, h_text: str, name: str, profile=None) -> dict:
         c_path = Path(tmp) / f"{name}.c"
         c_path.write_text(c_text)
         (Path(tmp) / f"{name}.h").write_text(h_text)
+        (Path(tmp) / STDINT_LIBRARY_NAME).write_text(STDINT_LIBRARY)
         cc_runs = []
         for std in _STDS:
             argv = [cc, *c_check_flags(std), f"-I{tmp}", str(c_path)]

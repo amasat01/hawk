@@ -159,6 +159,44 @@ def test_run_checks_passes_an_exported_function():
     assert result["cppcheck"]["suppressed"] == [d["rule"] for d in tc.DEVIATIONS]
 
 
+#: A unit that uses every <stdint.h> constant macro the emitted C uses.
+STDINT_C = """\
+#include <stdint.h>
+#include "t.h"
+
+int64_t t_pick(int64_t a, uint32_t b)
+{
+    int64_t out;
+    if ((a < INT64_C(0)) && (b < UINT32_C(32))) {
+        out = INT64_C(-1);
+    } else {
+        out = (int64_t)INT32_C(7);
+    }
+    return out;
+}
+"""
+STDINT_H = ("#ifndef T_H\n#define T_H\n#include <stdint.h>\n\n"
+            "int64_t t_pick(int64_t a, uint32_t b);\n\n#endif\n")
+
+
+def test_cppcheck_knows_the_stdint_constant_macros():
+    """The run never reads <stdint.h> (``missingIncludeSystem``), and an older
+    cppcheck's standard library does not declare ``INT64_C`` and the rest, so
+    without hawk's library file the misra addon reports every use as an
+    implicitly declared function (Rule 17.3; cppcheck 2.13, Ubuntu 24.04's)."""
+    checks = tc.run_checks(STDINT_C, STDINT_H, "t")
+    assert checks["cppcheck"].get("findings") == []
+    argv = checks["cppcheck"]["argv"]
+    lib = next(a for a in argv if a.startswith("--library="))
+    assert lib.endswith(tc.STDINT_LIBRARY_NAME)
+
+
+def test_the_stdint_library_declares_every_constant_macro():
+    for macro in ("INT8_C", "INT16_C", "INT32_C", "INT64_C", "UINT8_C", "UINT16_C",
+                  "UINT32_C", "UINT64_C", "INTMAX_C", "UINTMAX_C"):
+        assert f'<define name="{macro}(c)"' in tc.STDINT_LIBRARY
+
+
 def test_cppcheck_argv_carries_the_deviation_suppression():
     argv = tc.cppcheck_argv("cppcheck", "t.c", "/inc")
     assert "--suppress=misra-c2012-8.7" in argv

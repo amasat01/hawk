@@ -42,8 +42,8 @@ from ..emit.spelling import (
 )
 from ..ir import HawkError
 from ..ir.nodes import (
-    GATHER_ROLES,
     FINISHED_PLANE,
+    GATHER_ROLES,
     RAW_KIND,
     At,
     Const,
@@ -257,13 +257,17 @@ class CDialect:
         r._emit(f"const int32_t {cnt} = {trips}({count}, {lit(loop.trip)});")
         if loop.count_tail:
             sign = "+" if loop.step > 0 else "-"
-            begin = (f"{lit(loop.start)} {sign} (({lit(loop.trip)} - {cnt}) * "
-                     f"{lit(abs(loop.step))})")
+            # no `* 1`: an operation with no effect is dead code (Rule 2.2)
+            span = f"({lit(loop.trip)} - {cnt})"
+            if abs(loop.step) != 1:
+                span = f"({span} * {lit(abs(loop.step))})"
+            begin = f"{lit(loop.start)} {sign} {span}"
             end = lit(loop.stop)
         else:
             begin = lit(loop.start)
+            scaled = cnt if loop.step == 1 else f"({cnt} * {lit(loop.step)})"
             end = (cnt if (loop.start, loop.step) == (0, 1)
-                   else f"({lit(loop.start)} + ({cnt} * {lit(loop.step)}))")
+                   else f"({lit(loop.start)} + {scaled})")
         return f"for (int32_t {index} = {begin}; {index} {cmp_} {end}; {incr}) {{"
 
     def tail_break(self, flag: str) -> str:

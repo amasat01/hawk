@@ -166,6 +166,22 @@ def test_runtime_count_loop_clamps_to_trip():
         assert "if (hawk_v" in s.body and "if ((" not in s.body and "break;" in s.body
 
 
+def test_a_runtime_count_header_never_multiplies_by_one():
+    """MISRA C:2012 Rule 2.2: an operation with no effect is dead code. A
+    runtime-count header scales by the step's magnitude only when it is not 1
+    (cppcheck 2.13 reports ``(12 - cnt) * INT32_C(1)``)."""
+    import test_loop_early_exit as E
+
+    from hawk.diff import vjp
+
+    for name, fwd in (("head_vjp", E.head), ("tail_vjp", E.tail)):
+        k = _derived(name, vjp(fwd, wrt=("x",)))
+        for mode in (FLOAT64, FLOAT32):
+            text = render(k, mode=mode.id).text
+            assert "hawk_clamp_trips(" in text
+            assert not re.search(r"\* (INT32_C|INT64_C)\(1\)\)", text), name
+
+
 def test_a_vjp_kernel_renders():
     """``drag_vjp()`` is a sink set, not a Kernel; :func:`_derived` gives it the
     three attributes ``render`` reads (name, sinks, walk; kind defaults)."""
