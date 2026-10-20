@@ -46,7 +46,7 @@ from ..ir import (
 )
 from ..ir import make as _mk
 from ..ir.loops import exit_kwargs
-from ..ir.nodes import (DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish,
+from ..ir.nodes import (DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish, Op,
                         param_cell_names)
 from ..ir.walk import dispatch_groups
 from ..types import INT_PLANE_DTYPES, TensorType
@@ -383,7 +383,8 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
 def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
                   inputs: Sequence[Leaf], name: _Namer, scatters: list[Node],
                   scattered: set[str], *, local_pass: bool = False,
-                  overrides: Mapping[int, str] | None = None) -> None:
+                  overrides: Mapping[int, str] | None = None,
+                  cut: frozenset = frozenset()) -> None:
     """One reverse-accumulation pass over ``seq``, given an already-seeded
     ``adjoint`` — the core step :func:`vjp` runs once over the whole walk,
     seeded at every primal sink.
@@ -407,6 +408,8 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
     loop_seeds: dict[Any, dict] = {}
     for node in reversed(seq):
         g = adjoint.get(key(node))
+        if cut and key(node) in cut:
+            continue        # a shared node: :func:`_dispatch_vjp` seeds it once
         if isinstance(node, LoopValue):
             if g is not None:
                 loop_seeds.setdefault(key(node.loop), {})[node.slot] = g
@@ -467,17 +470,25 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
     :class:`~hawk.ir.nodes.At` is the one exception: its combined value
     becomes one scattered ``AccumWrite`` here, since a scatter is a sink, not
     something a downstream node could read further. ``kind`` itself is never
-    seeded and receives no adjoint."""
+    seeded and receives no adjoint.
+
+    A compute node every non-zero branch reads (:func:`_shared_by_all`) is NOT
+    differentiated through once per branch: each branch's pass stops at it and
+    reports its contribution, and the combined ``dispatch(kind, [c_0, ...])``
+    seeds its own reverse ONCE in the enclosing pass (the adjoint is linear in
+    the seed). Every case contributes a real term, so no chain ever runs on a
+    zero seed; a node only some branches read keeps the per-branch path."""
     policy = (overrides or {}).get(id(node), node.policy)
+    shared = _shared_by_all(node, key)
     reached: dict[int, dict[int, Node]] = {}
     for j, branch in enumerate(node.branches):
         seed_slot = key(branch)
         local: dict[Any, Node] = {seed_slot: g}
         _reverse_pass(seq, key, local, inputs, name, scatters, scattered,
-                      local_pass=True, overrides=overrides)
+                      local_pass=True, overrides=overrides, cut=shared)
         for slot, contribution in local.items():
             target = seq[slot]
-            if not isinstance(target, (Leaf, At)):
+            if not isinstance(target, (Leaf, At)) and slot not in shared:
                 # Not a leaf of the sub-transform: every other node this
                 # isolated pass reached was already differentiated through,
                 # down to its own leaves, within this one pass. Reporting it
@@ -499,6 +510,27 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
                                            target.index, combined.ttype))
             continue
         _accumulate(adjoint, key, target, combined)
+
+
+def _shared_by_all(node: Dispatch, key) -> frozenset:
+    """The keys of the compute nodes (operators, selects, dispatches) read, at any
+    depth, by EVERY branch of ``node`` that is not a literal constant — empty
+    unless two or more branches are live."""
+    live = [b for b in node.branches if not isinstance(b, Const)]
+    if len(live) < 2:
+        return frozenset()
+    common: set | None = None
+    for branch in live:
+        seen: dict = {}
+        stack = [branch]
+        while stack:
+            n = stack.pop()
+            if key(n) not in seen:
+                seen[key(n)] = n
+                stack.extend(n.operands)
+        mine = {k for k, n in seen.items() if isinstance(n, (Op, Dispatch, Select))}
+        common = mine if common is None else common & mine
+    return frozenset(common)
 
 
 def _policy_overrides(primal: Any, policy: Mapping[str, str] | None

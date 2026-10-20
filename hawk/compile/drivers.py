@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -164,6 +165,9 @@ class CompileResult:
     argv: tuple[str, ...]
     seconds: float = 0.0
     closure: tuple[str, ...] = field(default=())
+    #: ``{kernel: {regs, spill_store_B, spill_load_B, stack_B}}`` ptxas reported
+    #: for a device compile that ran ptxas (a CUBIN); ``{}`` otherwise.
+    ptxas: dict = field(default_factory=dict)
 
 
 #: Guards :data:`_INFLIGHT`.
@@ -199,6 +203,34 @@ def _single_flight(key: str, lookup, build) -> CompileResult:
             with _LOCK:
                 _INFLIGHT.pop(key, None)
             event.set()
+
+
+_PTXAS_ENTRY = re.compile(r"Compiling entry function '([^']+)'")
+_PTXAS_FRAME = re.compile(
+    r"(\d+) bytes stack frame, (\d+) bytes spill stores, (\d+) bytes spill loads")
+_PTXAS_REGS = re.compile(r"Used (\d+) registers")
+
+
+def parse_ptxas_info(stderr: str) -> dict:
+    """``{kernel: {regs, spill_store_B, spill_load_B, stack_B}}`` from the
+    ``ptxas info`` lines of an nvcc ``-Xptxas -v`` stderr; ``{}`` when it carries
+    none. A kernel compiled for several archs keeps the largest figures."""
+    found: dict = {}
+    entry = None
+    for line in stderr.splitlines():
+        if (m := _PTXAS_ENTRY.search(line)):
+            entry = found.setdefault(m.group(1), {})
+        elif entry is not None and (m := _PTXAS_FRAME.search(line)):
+            _grow(entry, stack_B=m.group(1), spill_store_B=m.group(2),
+                  spill_load_B=m.group(3))
+        elif entry is not None and (m := _PTXAS_REGS.search(line)):
+            _grow(entry, regs=m.group(1))
+    return found
+
+
+def _grow(entry: dict, **values: str) -> None:
+    for key, value in values.items():
+        entry[key] = max(entry.get(key, 0), int(value))
 
 
 def _argv(compiler: str, opts: CompileOptions, src: Path, out: Path,
@@ -313,7 +345,8 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
             # on-disk record.
             cache.note(True)
             return CompileResult(artifact, src_path, key, True, tuple(probe),
-                                 closure=tuple(p for p, _ in memo))
+                                 closure=tuple(p for p, _ in memo),
+                                 ptxas=cache.record(key).get("ptxas", {}))
 
         if cache.check(key):
             cache.note(True)
@@ -321,7 +354,8 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
             closure = tuple(record.get("closure", ()))
             artifact_memo_put(key, tuple((p, d) for p, d in closure))
             return CompileResult(artifact, src_path, key, True, tuple(probe),
-                                 closure=tuple(p for p, _ in closure))
+                                 closure=tuple(p for p, _ in closure),
+                                 ptxas=record.get("ptxas", {}))
         return None
 
     def build():
@@ -356,14 +390,16 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
                 + f".\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
             )
         closure = closure_of(dep)
+        ptxas = parse_ptxas_info(done.stderr) if opts.backend == DEVICE else {}
         cache.store(key, artifact=artifact, closure=closure,
                     meta={"backend": opts.backend, "mode": opts.mode,
                           "compiler": identity, "flags": argv[1:-4],
                           "key_terms": list(key_terms),
                           "seconds": seconds, "name": name,
-                          "device_target": device_target})
+                          "device_target": device_target, "ptxas": ptxas})
         artifact_memo_put(key, validity_digest(closure))
-        return CompileResult(artifact, src_path, key, False, tuple(argv), seconds, closure)
+        return CompileResult(artifact, src_path, key, False, tuple(argv), seconds,
+                             closure, ptxas)
 
     return _single_flight(key, lookup, build)
 

@@ -84,33 +84,16 @@ def test_switch_emits_one_case_block_per_branch():
     assert "switch (" in text
 
 
-def test_switch_has_no_const_auto_temporary_before_the_switch():
-    """Every value this micro-kernel's branches touch (``a``, ``x``, ``b``)
-    is used at most once WITHIN any single branch except ``x`` inside the
-    default branch (``x * x``) -- none of that is shared with anything
-    OUTSIDE a branch, so nothing should be materialised before the switch at
-    all (the selector's own clamp local is the one line before it, and it is
-    not a ``const auto``)."""
-    before, _ = _split_before_after_switch(_switch_text())
+def test_switch_hoists_only_what_every_case_reads():
+    """``x`` is read by the default case twice (``x * x``) and by cases 0 and 1
+    once: every case reads it, so it is computed ONCE above the switch (and named,
+    being read more than once). ``a``/``b`` are read by one case each and stay in
+    their case."""
+    before, after = _split_before_after_switch(_switch_text())
     before_text = "\n".join(before)
-    assert "const auto" not in before_text
-
-
-def test_the_default_branch_names_x_only_inside_its_own_case():
-    """``x`` is read twice inside the default branch (``x * x``) -- HAWK's
-    own rule fires there (local fan-out 2), but ONLY there: case 0 and case 1
-    each read ``x`` once and must inline it, never sharing a name with the
-    default case's own materialisation."""
-    text = _switch_text()
-    lines = text.splitlines()
-    default_i = next(i for i, l in enumerate(lines) if "default: {" in l)
-    close_i = next(i for i in range(default_i, len(lines)) if lines[i].strip() == "}")
-    default_block = "\n".join(lines[default_i:close_i])
-    assert re.search(r"const auto \w+ = psc_x\[i\]\.eval\(\);", default_block)
-    case0_i = next(i for i, l in enumerate(lines) if "case 0: {" in l)
-    case1_i = next(i for i, l in enumerate(lines) if "case 1: {" in l)
-    case0_block = "\n".join(lines[case0_i:case1_i])
-    assert "const auto" not in case0_block
+    assert before_text.count("psc_x[i].eval()") == 1
+    assert "psc_a" not in before_text and "psc_b" not in before_text
+    assert "psc_x[i].eval()" not in "\n".join(after)
 
 
 # --------------------------------------------------------------------------- #
@@ -132,35 +115,52 @@ def test_predicated_still_hoists_the_shared_read_before_the_ternary():
 
 
 # --------------------------------------------------------------------------- #
-# 3. A value two DIFFERENT switch branches both need is DUPLICATED, not
-#    hoisted back before the switch (Part A's own design choice).
+# 3. A value EVERY non-elided branch reads is computed once, above the switch;
+#    one only some branches read stays in its case.
 # --------------------------------------------------------------------------- #
 @hawk.kernel
 def _dk_shared_across_branches(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-    # branch 0 and branch 1 both compute the IDENTICAL `x * x` subexpression
-    # (structurally deduped to ONE IR node) as part of a DIFFERENT
-    # outer expression each.
     y = M.dispatch(k, [x * x + 1.0, x * x + 2.0, x * x + 3.0],
                         policy="switch")
 
 
-def test_a_value_two_branches_share_is_duplicated_not_hoisted():
-    """``x`` is read TWICE within each branch (``x * x``), so HAWK's own
-    materialisation rule names it inside EVERY case that needs it (local
-    fan-out 2) -- never once, shared, before the switch: no ``psc_x[i].eval()``
-    read may appear before the switch at all, and it must appear at least
-    TWICE after it (once per case's own, independently-named local)."""
+@hawk.kernel
+def _dk_shared_by_two_of_three(k: hawk.Index, x: hawk.Scalar, w: hawk.Scalar,
+                               y: hawk.Mutable[hawk.Scalar]):
+    y = M.dispatch(k, [x * x + 1.0, x * x + 2.0, w + 3.0], policy="switch")
+
+
+def test_a_value_every_branch_shares_is_hoisted_once_above_the_switch():
     sinks = _dk_shared_across_branches.sinks
     text = render_body(sinks, canonical(sinks)).text
     before, after = _split_before_after_switch(text)
-    before_text = "\n".join(before)
-    assert "psc_x[i].eval()" not in before_text
-    after_text = "\n".join(after)
-    assert after_text.count("psc_x[i].eval()") >= 2
-    # each occurrence is its OWN `const auto` local (never one name shared
-    # by two cases, which would mean the value was hoisted back outside).
-    names = set(re.findall(r"const auto (\w+) = psc_x\[i\]\.eval\(\);", after_text))
-    assert len(names) >= 2
+    assert "\n".join(before).count("psc_x[i].eval()") == 1
+    assert "psc_x[i].eval()" not in "\n".join(after)
+    # `x * x` is the common sub-expression and is named once, before the switch.
+    assert len(re.findall(r"const auto \w+ = \(?tb?\w+ \* ", "\n".join(before))) <= 1
+
+
+@hawk.kernel
+def _dk_shared_by_two_of_four(k: hawk.Index, x: hawk.Scalar, w: hawk.Scalar,
+                              y: hawk.Mutable[hawk.Scalar]):
+    y = M.dispatch(k, [x * x + 1.0, x * x + 2.0, w + 3.0, w * 2.0], policy="switch")
+
+
+def test_a_value_all_but_one_branch_reads_is_hoisted():
+    """With three or more cases, what all but one read is computed once above
+    the switch (the extra case computes it unused)."""
+    sinks = _dk_shared_by_two_of_three.sinks
+    before, after = _split_before_after_switch(render_body(sinks, canonical(sinks)).text)
+    assert "\n".join(before).count("psc_x[i].eval()") == 1
+    assert "psc_x[i].eval()" not in "\n".join(after)
+
+
+def test_a_value_fewer_branches_read_is_not_hoisted():
+    """``x * x`` is read by two of four cases: the other two must not pay for it."""
+    sinks = _dk_shared_by_two_of_four.sinks
+    before, after = _split_before_after_switch(render_body(sinks, canonical(sinks)).text)
+    assert "psc_x" not in "\n".join(before)
+    assert "psc_x[i].eval()" in "\n".join(after)
 
 
 # --------------------------------------------------------------------------- #
@@ -212,3 +212,59 @@ def test_switch_numeric_matches_numpy_on_the_host(tmp_path_factory, cache_dir):
     worst = float(np.max(np.abs(got - want)))
     limit = 8 * np.finfo(np.float64).eps * max(1.0, float(np.max(np.abs(want))))
     assert worst <= limit, f"host dispatch differs from numpy by {worst}, band {limit}"
+
+
+# --------------------------------------------------------------------------- #
+# 6. Sibling switches on one selector fuse into ONE switch.
+# --------------------------------------------------------------------------- #
+@hawk.kernel
+def _dk_siblings(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar],
+                 z: hawk.Mutable[hawk.Scalar]):
+    s = M.exp(x * x)
+    g = M.log(s + 2.0)
+    y = M.dispatch(k, [s + 1.0, g], policy="switch")
+    z = M.dispatch(k, [s * 3.0, g * 4.0], policy="switch")
+
+
+def test_sibling_switches_on_one_selector_fuse_into_one():
+    sinks = _dk_siblings.sinks
+    text = render_body(sinks, canonical(sinks)).text
+    assert text.count("switch (") == 1
+    assert text.count("const std::int32_t hawk_disp") == 1       # one clamp
+    assert text.count("aether::math::log(") == 1                  # shared by both members
+    assert len(re.findall(r"hawk_disp\d+ = ", text)) == 4         # each case assigns both
+
+
+# --------------------------------------------------------------------------- #
+# 7. The derived dispatch seeds a node every branch reads ONCE.
+# --------------------------------------------------------------------------- #
+@hawk.kernel
+def _dk_shared_operand(k: hawk.Index, a: hawk.Scalar, b: hawk.Scalar, x: hawk.Scalar,
+                       y: hawk.Mutable[hawk.Scalar]):
+    s = M.sin(x)
+    y = M.dispatch(k, [s * a, s * b], policy="switch")
+
+
+def test_vjp_runs_a_shared_operands_chain_once_with_a_combined_seed():
+    from hawk.diff import vjp
+
+    derived = vjp(_dk_shared_operand.sinks)
+    text = render_body(derived, canonical(derived)).text
+    assert text.count("aether::math::cos(") == 1          # d sin(x), once, not per case
+
+
+# --------------------------------------------------------------------------- #
+# 8. The all-but-one hoist is speculative, so it refuses what could fault.
+# --------------------------------------------------------------------------- #
+@hawk.kernel
+def _dk_unsafe_shared(k: hawk.Index, m: hawk.Index, x: hawk.Scalar,
+                      y: hawk.Mutable[hawk.Scalar]):
+    q = M.real(m // 3) + x          # integer division: SIGFPE on the host if run unneeded
+    y = M.dispatch(k, [q * 1.0, q * 2.0, x + 3.0], policy="switch")
+
+
+def test_the_all_but_one_hoist_refuses_an_integer_division():
+    sinks = _dk_unsafe_shared.sinks
+    before, after = _split_before_after_switch(render_body(sinks, canonical(sinks)).text)
+    assert "int_floordiv" not in "\n".join(before)
+    assert "int_floordiv" in "\n".join(after)

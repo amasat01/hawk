@@ -658,18 +658,21 @@ def test_jvp_matches_finite_differences(policy):
             f"{policy} kind={kind_value}: JVP {got['dot_out']} vs FD {expect}")
 
 
-_SWITCH_BLOCK_RE = re.compile(
-    r"(?P<type>.+?) (?P<var>hawk_disp\d+);\n\s*switch \([^)]*\) \{\n"
-    r"(?P<body>(?:.*\n)*?)\s*\}", re.M)
-
-
 def _switch_blocks(text: str) -> dict:
-    """``{declared local -> the set of case labels its own switch carries}``,
-    parsed straight off the emitted text (no re-implementation of the
-    emitter's own logic — this is an AUDIT of the string the row below asks
-    for)."""
-    return {m.group("var"): set(re.findall(r"case (\d+):", m.group("body")))
-            for m in _SWITCH_BLOCK_RE.finditer(text)}
+    """``{declared switch local -> the set of case labels that assign it a
+    non-zero value}``, parsed straight off the emitted text. Sibling switches on
+    one selector are fused into ONE ``switch`` (each case assigns every member),
+    so the audit reads assignments, not switch boundaries."""
+    declared = set(re.findall(r"^\s*\S.*? (hawk_disp\d+);$", text, re.M))
+    blocks: dict = {v: set() for v in declared}
+    label = None
+    for line in text.splitlines():
+        m = re.match(r"\s*case (\d+): \{", line)
+        label = m.group(1) if m else ("default" if "default:" in line else label)
+        a = re.search(r"(hawk_disp\d+) = (.*);", line)
+        if a and a.group(1) in blocks and "static_cast<Real>(0)" not in a.group(2):
+            blocks[a.group(1)].add(label)
+    return blocks
 
 
 def test_no_accum_add_for_an_elided_branch_in_the_derived_source():
