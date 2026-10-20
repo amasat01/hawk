@@ -29,10 +29,8 @@ from ..types import Slot, TensorType
 from . import astpass, reduce
 from .decl import Plane, resolve, role_of
 from .value import (
-    AccumRef,
     FinishRefusal,
     MutableRef,
-    ReduceRef,
     TableRef,
     TerminatedRef,
     Value,
@@ -43,7 +41,7 @@ from .value import (
 _LEAF_KIND = {"per_sample": "vocab_read", "vec_in": "vocab_read",
               "mat_in": "vocab_read", "uniform": "uniform",
               "terminated": "terminated"}
-_SINK_FORMS = ("mutable", "accum", "reduce", "wide_out")
+_SINK_FORMS = ("mutable", "wide_out")
 
 #: per-process AST-transform memo: the ``ast`` pass is a PURE function of
 #: the source and the declared sink/mutable sets, so retracing the SAME
@@ -266,7 +264,7 @@ def _bound_planes(fn: Callable[..., Any], params: list[str], own: dict[str, Any]
     ``mutables`` names every Mutable AND WideOut OWN-COLUMN parameter: both
     forms get the SAME plain-variable ast-front-end treatment
     (:mod:`hawk.trace.astpass`) — a WideOut's SCATTER write
-    (``buf.write(v, at=lane)``) is a method call, untouched either way."""
+    (``hawk.all_samples(buf)[k] = v``) is a subscript store, untouched either way."""
     planes = _resolve_planes(fn, params, own, vocab, kind)
     for name, plane in vocab.items():
         if (name not in planes and isinstance(plane, Plane)
@@ -299,9 +297,11 @@ def _returned_kernel(fn: Callable[..., Any], kind: Any) -> Kernel:
         )
     planes, args, sink_names, mutables, finishes = _bound_planes(
         fn, params, own, vocab, kind)
+    scope[astpass.REFS] = args
     traced = _retrace(fn, scope, sink_names, mutables, returns_value=True,
                       finishes=finishes)
     out = _call_finishing(traced, fn, args)
+    _retag_by_key(planes, args)
     if not isinstance(out, Value):
         raise HawkError(
             f"kernel {fn.__name__!r}: the body returned {type(out).__name__} "
@@ -566,10 +566,6 @@ def _bind(name: str, plane: Plane | Quantity) -> Any:
     role = role_of(plane)
     if plane.form == "mutable":
         return MutableRef(name, plane.ttype)
-    if plane.form == "accum":
-        return AccumRef(name, plane.ttype)
-    if plane.form == "reduce":
-        return ReduceRef(name, plane.ttype, plane.op)
     if plane.form == "wide_out":
         return WideOutRef(name, plane.ttype)
     if plane.form == "terminated":
@@ -640,6 +636,6 @@ def _collect(name: str, params: list[str], args: dict[str, Any],
     if not sinks and not finishing:
         raise HawkError(
             f"kernel {name!r}: declares no output plane; a kernel commits through a "
-            "Mutable / Accum / Reduce parameter"
+            "Mutable / WideOut parameter"
         )
     return tuple(sinks)

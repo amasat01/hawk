@@ -201,7 +201,6 @@ class Source:
     entry: str
     backend: str
     mode: str
-    reduce_op: str | None = None
     #: The host loop over samples is vectorised (see :func:`hawk.ir.vectorise.vectorises`).
     vectorised: bool = False
 
@@ -890,7 +889,7 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
     from ..ir.vectorise import vectorises
 
     return Source(_filled(parts, mode), body.text, name,
-                  backend.id, mode.id, body.reduce_op,
+                  backend.id, mode.id,
                   backend.id == "host" and vectorises(walk, scalar_type=mode.id))
 
 
@@ -1075,8 +1074,7 @@ def _render_two_paths(name: str, sinks, walk: Walk, backend: Backend, *,
                        active),
     ]
     return Source(_filled(parts, mode),
-                  single.text + "\n" + fused.text, name, backend.id, mode.id,
-                  fused.reduce_op)
+                  single.text + "\n" + fused.text, name, backend.id, mode.id)
 
 
 def _two_path_entry(entry: str, walk: Walk, backend: Backend, fused, single,

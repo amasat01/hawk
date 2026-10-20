@@ -46,7 +46,7 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
-from hawk import Accum, Index, Kernel, Mutable, Scalar, Table, Terminated, kernel
+from hawk import Index, Kernel, Mutable, Scalar, Table, Terminated, all_samples, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk.emit import render_body
@@ -59,22 +59,22 @@ GUARD = "if (!trm_terminated[i].eval()) {"
 
 @kernel
 def _busy(x: Scalar, lane: Index, terminated: Terminated, y: Mutable[Scalar],
-          acc: Accum[Scalar]):
+          acc: Mutable[Scalar]):
     s = x * x + 0.25
     for _ in range(5):
         s = s * 0.5 + x
-    acc.add(s, at=lane)
+    all_samples(acc)[lane] += s
     y = y + s * x
 
 
 @kernel
 def _busy_d(x: Scalar, lane: Index, terminated: Terminated, y: Mutable[Scalar],
-            acc: Accum[Scalar]):
+            acc: Mutable[Scalar]):
     """:func:`_busy` without a launch-start read a derivative refuses."""
     s = x * x + 0.25
     for _ in range(5):
         s = s * 0.5 + x
-    acc.add(s, at=lane)
+    all_samples(acc)[lane] += s
     y = s * x
 
 

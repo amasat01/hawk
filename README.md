@@ -120,7 +120,7 @@ launching runtime can reverse the rollout window by window
 <summary>Kernel kinds and returned outputs</summary>
 
 A kernel may commit through several **sinks** — the places a kernel's
-result goes: declared `Mutable`/`Accum` parameters (`Output.named(...)`),
+result goes: declared `Mutable` parameters (`Output.named(...)`),
 a `return <expr>` committed into a **synthesised slot** (a result sink
 hawk creates for you rather than one you declared as a parameter;
 `Output.returned(ttype, slot=...)` names it), or both together — a

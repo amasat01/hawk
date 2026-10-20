@@ -49,7 +49,7 @@ from . import _contracts
 _AUTHORING = (
     "kernel", "Kernel", "raw_device", "RawBlock", "Value", "Quantity",
     "Scalar", "Index", "Int32", "UInt32", "Quat", "Vector", "Matrix", "Param",
-    "Mutable", "Table", "Staged", "Wide", "WideOut", "Accum", "Reduce",
+    "Mutable", "Table", "Staged", "Wide", "WideOut",
     "Terminated", "HawkError", "steps", "resolve_dispatch", "all_samples",
 )
 
@@ -194,6 +194,14 @@ def _self_check() -> None:
 
 _self_check()
 
+#: Names that no longer exist, each with the replacement its refusal names.
+_RETIRED = {
+    "Accum": "Accum is gone: declare Mutable[Scalar] and write "
+             "hawk.all_samples(bins)[key] += term in the body",
+    "Reduce": "Reduce is gone: declare Mutable[Scalar] and write "
+              "total = hawk.all_samples(term).sum()",
+}
+
 
 def __getattr__(name: str) -> Any:
     """Bind an authoring name, or a top-level door, lazily (importing hawk
@@ -217,6 +225,9 @@ def __getattr__(name: str) -> Any:
             value = getattr(trace, name)
         globals()[name] = value
         return value
+    if name in _RETIRED:
+        from .ir import HawkError
+        raise HawkError(_RETIRED[name])
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

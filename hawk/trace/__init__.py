@@ -45,7 +45,6 @@ launch — see :mod:`hawk.trace.steps` for the loop, bit-identity and
 # `__all__`). The self-alias is the standard "yes, this is unused by this
 # file, on purpose" static-analysis idiom.
 from ..ir import Quantity as Quantity
-from .decl import Accum as Accum
 from .decl import Index as Index
 from .decl import Int32 as Int32
 from .decl import UInt32 as UInt32
@@ -53,7 +52,6 @@ from .decl import Matrix as Matrix
 from .decl import Mutable as Mutable
 from .decl import Param as Param
 from .decl import Quat as Quat
-from .decl import Reduce as Reduce
 from .decl import Scalar as Scalar
 from .decl import Staged as Staged
 from .decl import Table as Table

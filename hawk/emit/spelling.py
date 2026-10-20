@@ -75,15 +75,6 @@ _HANDLE_ONLY = ("per_sample", "lookup", "terminated", "wide_in", "wide_out",
                 "accum_out")
 
 
-#: The declared aether reduction functors -> their aether spelling. Emitted
-#: as an alias so an unbuilt functor fails to COMPILE rather than reaching
-#: a manifest.
-REDUCE_FUNCTOR = {"sum": "aether::detail::SumOp",
-                  "times": "aether::detail::TimesOp",
-                  "max": "aether::detail::MaxOp",
-                  "land": "aether::detail::LogicalAndOp"}
-
-
 #: The one-argument ``aether::math`` names a rank-0 unary lowers to.
 #: Kinds with no ``cwise*`` companion are rank-0 ONLY here: ``hawk.math``
 #: maps a vector or matrix operand entry by entry before the IR sees it.

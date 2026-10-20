@@ -338,13 +338,6 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
                                     layout_sizes_override=layout_sizes_override))
         if literal_table and target == "cuda":
             out[target] = _literal_table(out[target])
-        if active is not None and out[target].reduce_op is not None:
-            raise HawkError(
-                f"{name!r}: Guard(active_set=True) refuses a reducing kernel "
-                f"({out[target].reduce_op}): the map would change which samples "
-                "each partial folds, so the result would not be the map-free one "
-                "bit for bit"
-            )
     return out
 
 

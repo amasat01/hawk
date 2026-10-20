@@ -33,7 +33,7 @@ and return garbage or segfault. Dtype is exact and fixed by role (every
 integer-valued role rides a 64-bit wire regardless of how it was
 declared in Python, and ``Terminated`` is always ``bool``); shape
 requires a per-sample plane at least ``n_samples`` long (shorter is
-always the bug) and a ``Reduce(op)`` output one slot per sample; every
+always the bug); every
 plane must be C-contiguous and a sink role's plane writable, except a
 sample-major plane whose transpose is C-contiguous, which binds
 zero-copy (:func:`plane_layout`). A ``(w, w)`` plane reads both ways and is

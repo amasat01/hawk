@@ -394,7 +394,7 @@ def _traced(source: str, name: str = "k", **extra):
     filename = "<authored>"
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
     scope: dict = {"kernel": hawk.kernel, "Scalar": hawk.Scalar, "Param": hawk.Param,
-                   "Mutable": hawk.Mutable, "Vector": hawk.Vector, "Accum": hawk.Accum,
+                   "Mutable": hawk.Mutable, "Vector": hawk.Vector,
                    "Table": hawk.Table, "m": m, **extra}
     exec(compile(source, filename, "exec"), scope)
     return scope[name]
@@ -409,10 +409,6 @@ REFUSALS = [
      "    acc = 0.0\n    for j in range(3):\n        acc = acc + 1.0\n"
      "    out = acc + j\n",
      "loop VARIABLE"),
-    ("a sink commit inside the loop",
-     "    acc = 0.0\n    for j in range(3):\n        a.add(acc)\n"
-     "        acc = acc + 1.0\n    out = acc\n",
-     "may not sit inside a `for`"),
     ("a loop that carries nothing",
      "    for j in range(3):\n        z = x + 1.0\n    out = x\n",
      "computes nothing observable"),
@@ -426,10 +422,10 @@ REFUSALS = [
 @pytest.mark.parametrize("case", REFUSALS[:-1], ids=[c[0] for c in REFUSALS[:-1]])
 def test_every_loop_refusal_names_its_construct(case):
     _label, body, needle = case
-    source = ("@kernel\ndef k(x: Scalar, a: Accum, out: Mutable[Scalar]):\n"
+    source = ("@kernel\ndef k(x: Scalar, out: Mutable[Scalar]):\n"
               + body)
     with pytest.raises(HawkError) as excinfo:
-        _traced(source, Accum=hawk.Accum[hawk.Scalar])
+        _traced(source)
     assert needle in str(excinfo.value), str(excinfo.value)
 
 

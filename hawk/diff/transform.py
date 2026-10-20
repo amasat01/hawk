@@ -33,7 +33,6 @@ from ..ir import (
     LoopCarry,
     LoopIndex,
     LoopValue,
-    MapreducePartial,
     Node,
     Primitive,
     SampleIndex,
@@ -135,8 +134,6 @@ def _masked_sink(sink: Node, mask: Node) -> Node:
                           start=sink.start, stop=sink.stop, step=sink.step,
                           body_sinks=masked_body, **exit_kwargs(sink))
     value = Select(mask, zero_like(sink.value.ttype), sink.value, sink.value.ttype)
-    if isinstance(sink, MapreducePartial):
-        return MapreducePartial(sink.name, value, sink.op, sink.ttype)
     if isinstance(sink, AccumWrite):
         return AccumWrite(sink.name, value, sink.index, sink.ttype)
     if isinstance(sink, WideWrite):
@@ -721,20 +718,6 @@ def _seed(sink: Sink, name: _Namer) -> Node:
             raise HawkError(_TIE_TEXT.format(name=sink.name, op=sink.op))
         # the reverse of a sum over samples is a broadcast of its adjoint
         return Leaf("uniform", "uniform", derived, t)
-    if isinstance(sink, MapreducePartial):
-        if sink.op != "sum" or t.shape != ():
-            raise HawkError(
-                f"no reverse rule for a mapreduce_partial with op={sink.op!r} "
-                f"type={t!r} (sink {sink.name!r}). The ONLY seeding rule HAWK "
-                "defines for a mapreduce sink is the rank-0 'sum' one — the reverse "
-                "of a sum-reduction is a broadcast of its adjoint — and a 'max' fold "
-                "has no such rule at all: its subgradient is ambiguous at a tie, so "
-                "differentiating it would return one of several answers with nothing "
-                "recording which. A two-pass reduction whose first pass is a max "
-                "(a softmax's row peak) declares that pass FORWARD-ONLY; the pass "
-                "that carries the gradient is the sum"
-            )
-        return Leaf("uniform", "uniform", derived, t)
     if isinstance(sink, (AccumWrite, WideWrite)) and sink.index is not None:
         # the transpose of a scatter-add is a gather of the adjoint plane
         return At(Leaf("table_read", "lookup", derived, t), sink.index, t)
@@ -745,8 +728,6 @@ def _tangent_sink(sink: Sink, tangent: Node | None, name: _Namer) -> Node:
     """The forward-mode twin of one primal sink, same kind and same lane."""
     value = tangent if tangent is not None else zero_like(sink.ttype)
     derived = name(sink.name)
-    if isinstance(sink, MapreducePartial):
-        return MapreducePartial(derived, value, sink.op, sink.ttype)
     if isinstance(sink, AccumWrite):
         return AccumWrite(derived, value, sink.index, sink.ttype)
     if isinstance(sink, WideWrite):

@@ -4,7 +4,7 @@
 """ONE canonical import path per public name, and the public manifest.
 
 The authoring vocabulary (``kernel``, ``Param``, ``Mutable``, ``Table``,
-``Vector``, ``Scalar``, ``Accum``, ``Reduce``, ``Quantity``, ``Terminated``,
+``Vector``, ``Scalar``, ``Quantity``, ``Terminated``,
 ``HawkError``, …) lives at the top level; math functions live at
 ``hawk.math``; the dependency-free types (``TensorType``, ``Wire``,
 ``PER_SAMPLE_ROLES``, …) at ``hawk.types``. ``hawk.trace`` exports nothing,
@@ -64,8 +64,8 @@ _TYPES_PUBLIC_NAMES = frozenset({"DTYPES", "INT_PLANE_DTYPES", "LaneMeta", "PER_
 #: the SAME commit, same as any other committed manifest in this repo.
 _EXPECTED_MANIFEST = {
     "hawk": [
-        "Accum", "HawkError", "Index", "Int32", "Kernel", "Matrix", "Mutable",
-        "Param", "Quantity", "Quat", "RawBlock", "Reduce", "Scalar",
+        "HawkError", "Index", "Int32", "Kernel", "Matrix", "Mutable",
+        "Param", "Quantity", "Quat", "RawBlock", "Scalar",
         "Staged", "Table", "Terminated", "UInt32", "Value", "Vector", "Wide",
         "WideOut", "__version__", "all_samples", "build", "kernel", "load", "raw_device",
         "resolve_dispatch", "run", "samples_first", "samples_last", "steps",

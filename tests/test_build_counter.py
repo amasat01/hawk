@@ -38,12 +38,12 @@ def _n20i_h1_sample_local(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
 
 
 @hawk.kernel
-def _n20i_h1_mapreduce(v: hawk.Scalar, total: hawk.Reduce("sum")):
-    """``mapreduce`` — DISAGREES with ``_n20i_h1_sample_local``'s axis, so
+def _n20i_h1_scatter(x: hawk.Scalar, lane: hawk.Index, acc: hawk.Mutable[hawk.Scalar]):
+    """``cross_sample_write`` — DISAGREES with ``_n20i_h1_sample_local``'s axis, so
     bundling the two together trips build_bundle's execution-axis
     refusal (``hawk/artifact/bundle.py`` ~:763-767) — a real, already-
     documented raise, not a fixture-invented one."""
-    total.contribute(v)
+    hawk.all_samples(acc)[lane] += x
 
 
 def _delta(before: dict, after: dict) -> dict:
@@ -69,7 +69,7 @@ def test_a_raising_build_bundle_call_still_moves_builds(tmp_path):
     before = counters_snapshot()
     with pytest.raises(HawkError, match="ONE execution axis"):
         build_bundle(
-            [_n20i_h1_sample_local, _n20i_h1_mapreduce], tmp_path / "bad",
+            [_n20i_h1_sample_local, _n20i_h1_scatter], tmp_path / "bad",
             targets=("host",), device_arch=DEVICE_ARCH,
         )
     after = counters_snapshot()

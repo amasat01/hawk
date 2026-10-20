@@ -22,10 +22,8 @@ string but bind their arguments differently (by value vs a ``params[]``
 block), and a merged ``arg_spec`` is exactly the thing those two paths could
 disagree about.
 
-Around it sit the three refusals a merged entry cannot survive: one NAME
-meaning two things across lanes, two lanes committing to one output plane,
-and a mapreduce sink beside anything else (which belongs to ``canonical``,
-so the row checks that composition does not route around it).
+Around it sit the two refusals a merged entry cannot survive: one NAME
+meaning two things across lanes, and two lanes committing to one output plane.
 
 This test previously failed via two plants, both observed and both removed; recorded per row.
 """
@@ -244,30 +242,6 @@ def test_two_lanes_committing_to_one_plane_are_refused_naming_both():
     message = str(excinfo.value)
     assert "writes_y_a" in message and "writes_y_b" in message, message
     assert "write it twice" in message
-
-
-def test_a_mapreduce_lane_beside_another_lane_is_refused_by_h86():
-    """ is not re-implemented here: the merged sink set goes through
-    ``canonical()``, which refuses it for the same reason it refuses a single
-    kernel's — ``exec_access`` is ONE scalar per manifest, so eagle would never
-    fold the partials."""
-    @hawk.kernel
-    def reduces(v: hawk.Vector[3], total: hawk.Reduce("sum")):
-        total.contribute(hm.dot(v, v))
-
-    with pytest.raises(HawkError, match="may not coexist"):
-        compose([reduces, lane_energy], "reduce_plus_mutable")
-
-    @hawk.kernel
-    def reduces_again(v: hawk.Vector[3], other: hawk.Reduce("sum")):
-        other.contribute(hm.norm(v))
-
-    with pytest.raises(HawkError, match="may not coexist"):
-        compose([reduces, reduces_again], "two_reduces")
-
-    lone = compose([reduces], "lone_reduce")
-    assert lone.walk.access == ("mapreduce", "sum")
-    assert lone.fused_body().reduce_op == "sum"
 
 
 def test_an_empty_or_ambiguous_group_and_an_unbuilt_scalar_mode_are_refused():

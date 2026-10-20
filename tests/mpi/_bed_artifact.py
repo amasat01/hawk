@@ -48,7 +48,7 @@ import json
 import pathlib
 
 from hawk.artifact import build_bundle
-from hawk.trace import Accum, Index, Mutable, Param, Reduce, Scalar, kernel, raw_device
+from hawk.trace import Index, Mutable, Param, Scalar, all_samples, kernel, raw_device
 
 #: The four classes eagle's bed certifies (``v2_artifact.REQUIRED_ACCESS_CLASSES``).
 REQUIRED_ACCESS_CLASSES = ("sample_local", "cross_sample_read", "mapreduce",
@@ -85,19 +85,19 @@ def rank_gather(table: Scalar, y: Mutable[Scalar]):
 
 
 @kernel
-def rank_partial(x: Scalar, total: Reduce("sum")):
+def rank_partial(x: Scalar, total: Mutable[Scalar]):
     """``mapreduce``. The body stays ELEMENTWISE — one per-sample contribution,
     never a reduction: eagle owns the COMBINE, which is what makes the
     combine ORDER a property of the partitioning and not of the plugin."""
-    total.contribute(x)
+    total = all_samples(x).sum()
 
 
 @kernel
-def rank_scatter(x: Scalar, lane: Index, acc: Accum[Scalar]):
+def rank_scatter(x: Scalar, lane: Index, acc: Mutable[Scalar]):
     """``cross_sample_write``: refused above one partition, and refused under the
     rank structure at EVERY world size including one (F-e). It is in the artifact
     so the bed's placement row has a real body to be refused, not a stub."""
-    acc.add(x, at=lane)
+    all_samples(acc)[lane] += x
 
 
 #: ``(kernel, unit name)`` — the unit DIRECTORIES carry no information, exactly

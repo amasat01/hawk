@@ -304,7 +304,7 @@ def test_guard_names_reads_both_spellings():
 
 # --------------------------------------------------------------------------- #
 # -- the own-column compensated sink. Same mechanism as the `compensated` sink policy,
-# -- reshaped: a Mutable target (or an Accum target committed with no `at=`)
+# -- reshaped: a Mutable target
 # -- accumulates into the host's PRIOR value instead of storing, and the
 # -- companion is synthesised by the KIND rather than declared by the author.
 # --------------------------------------------------------------------------- #
@@ -534,18 +534,6 @@ def test_a_companion_name_colliding_with_a_parameter_refuses():
         @K
         def bad(x: _Scalar, y: _Mutable[_Scalar]):
             y = x
-
-
-def test_a_reduce_target_refuses():
-    from hawk import Reduce as _Reduce
-    from hawk.ir import HawkError
-
-    K = _Kind("reduce_target_refused", sink=_compensated(into="c"),
-             output=_Output.named("total"))
-    with pytest.raises(HawkError, match="Reduce"):
-        @K
-        def bad(x: _Scalar, total: _Reduce("sum")):
-            total.contribute(x)
 
 
 def test_matches_the_neumaier_reference_bit_for_bit(tmp_path, cache_dir):

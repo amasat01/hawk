@@ -415,7 +415,7 @@ def viewstore(refs: dict, name: str, key: Any, value: Any, op: str, current: Any
     A bool ``key`` is a mask (``y = select(mask, value, y)``, the per-sample
     store); an Index or integer ``key`` is by key: ``+=`` accumulates
     (``accum_write``), ``=`` stores (``wide_write``)."""
-    from .value import AccumRef, MutableRef, _SinkRef
+    from .value import MutableRef, _SinkRef
 
     ref = refs.get(name)
     if not isinstance(ref, _SinkRef):

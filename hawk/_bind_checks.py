@@ -105,7 +105,7 @@ def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None,
 
 # -- Bind-time validation, run in `HostKernel.bind_all` before any
 # argument's address is taken. The single source of truth is the SIDECAR
-# itself (`arg_dtypes`, `arg_shapes`, `params`, `exec_access`) — never a
+# itself (`arg_dtypes`, `arg_shapes`, `params`) — never a
 # per-feature rule hard-coded here, so a kernel declaring a new role or
 # dtype is covered for free. --------------------------------------------- #
 
@@ -164,7 +164,7 @@ def _dtype_matches(mv: memoryview, expect: str) -> bool:
 
 
 def _check_plane_arg(role: str, name: str, value, arg_dtypes: dict,
-                     arg_shapes: dict, n_samples: int, reduce_sized: bool,
+                     arg_shapes: dict, n_samples: int,
                      errors: list, choice=_NO_CHOICE) -> None:
     """Every check one PLANE-bound argument (every role but ``uniform``/
     ``nsamples``) must pass, appended to ``errors`` rather than raised —
@@ -240,22 +240,6 @@ def _check_plane_arg(role: str, name: str, value, arg_dtypes: dict,
                 f"sample), got {shape} — pass an array of at least that "
                 f"length (never shorter than n_samples)"
             )
-    elif role == "accum_out" and reduce_sized:
-        # A `MapreducePartial` sink (`Reduce(op)`) always writes its own
-        # column — the one case a deployed artifact's flat sidecar can
-        # still tell "own column" from "scattered", since
-        # `exec_access == "mapreduce"` means this is the kernel's only
-        # sink. A plain scattered `Accum`/`WideOut` is NOT shape-checked
-        # here: its length is a genuine runtime quantity the sidecar never
-        # declares (see `_NEVER_VOTES`). Same minimum-length rule as above.
-        shape = tuple(mv.shape)
-        if len(shape) != 1 or shape[0] < n_samples:
-            errors.append(
-                f"argument {name!r}: a Reduce(...) output holds ONE slot per "
-                f"sample, expected shape (L,) with L >= n_samples={n_samples}, "
-                f"got {shape} — pass np.zeros(n_samples), not a single "
-                f"accumulator slot"
-            )
 
 
 def _check_uniform_arg(name: str, value, params: dict, errors: list) -> None:
@@ -304,13 +288,12 @@ def _check_bind(sidecar: dict, arg_spec, arrays: dict, n_samples: int,
     naming every failing argument, or returns silently when all match.
 
     The declaration is read from the sidecar alone — ``arg_dtypes``,
-    ``arg_shapes``, ``params`` and ``exec_access`` — so nothing here
+    ``arg_shapes``, and ``params`` — so nothing here
     special-cases a kernel or feature by name."""
     kernel_name = sidecar.get("kernel", "?")
     arg_dtypes = sidecar.get("arg_dtypes", {})
     arg_shapes = sidecar.get("arg_shapes", {})
     params = {p["name"]: p for p in sidecar.get("params", ())}
-    reduce_sized = sidecar.get("exec_access") == "mapreduce"
 
     errors: list = []
     for role, name in arg_spec:
@@ -326,7 +309,7 @@ def _check_bind(sidecar: dict, arg_spec, arrays: dict, n_samples: int,
             _check_uniform_arg(name, arrays[name], params, errors)
         else:
             _check_plane_arg(role, name, arrays[name], arg_dtypes, arg_shapes,
-                             n_samples, reduce_sized, errors, choice)
+                             n_samples, errors, choice)
 
     if not errors:
         return

@@ -44,7 +44,6 @@ from .nodes import (
     Finish,
     HawkError,
     Leaf,
-    MapreducePartial,
     Node,
     Select,
     Sink,
@@ -217,7 +216,7 @@ def _guarded(name: str, sinks: tuple, selector: Node, K: int, j: int,
             old = Leaf("prior_read", "mutable", sink.name, sink.ttype)
             out.append(Assign(sink.name, Select(mine, sink.value, old, sink.ttype),
                               sink.ttype))
-        elif isinstance(sink, AccumWrite) and not isinstance(sink, MapreducePartial):
+        elif isinstance(sink, AccumWrite):
             zero = Const(0.0, TensorType((), sink.ttype.dtype))
             if sink.ttype.shape:
                 zero = make("splat", (zero,), sink.ttype.shape)
@@ -227,8 +226,8 @@ def _guarded(name: str, sinks: tuple, selector: Node, K: int, j: int,
             raise HawkError(
                 f"{name!r}: a segmented unit guards each commit by the selector, "
                 f"and a {sink.kind} {getattr(sink, 'name', '?')!r} has no old value "
-                "to keep where it does not apply; commit through a Mutable or an "
-                "Accum, or use policy='switch'")
+                "to keep where it does not apply; commit through a Mutable or a "
+                "by-key store, or use policy='switch'")
     out.append(Assign(class_name(group), sel, _I32))
     out.append(Assign(stale_name(group), make("ne", (sel, Const(j, _I32))), _BOOL))
     return tuple(out)

@@ -37,7 +37,6 @@ from .nodes import (
     Finish,
     HawkError,
     Leaf,
-    MapreducePartial,
     Node,
     SampleSum,
     Op,
@@ -127,10 +126,8 @@ _ACCESS_RANK = {"sample_local": 0, "cross_sample_read": 1, "cross_sample_write":
 
 
 def _floored(acc: Access, floor: str) -> Access:
-    """``acc``, raised to at least ``floor`` under the ranking — UNLESS
-    ``acc`` is ``mapreduce`` (disjoint from the other three: an un-folded
-    partial is a wrong answer, not a placement cost, so nothing floors it)."""
-    if acc.cls == "mapreduce" or _ACCESS_RANK[acc.cls] >= _ACCESS_RANK[floor]:
+    """``acc``, raised to at least ``floor`` under the ranking."""
+    if _ACCESS_RANK[acc.cls] >= _ACCESS_RANK[floor]:
         return acc
     return Access(floor, acc.op)
 
@@ -254,17 +251,6 @@ def _check_sink_set(sinks: tuple[Sink, ...]) -> None:
             raise HawkError(
                 f"canonical(): {s!r} is not a sink; the root set is sinks only"
             )
-    reduces = [s for s in sinks if isinstance(s, MapreducePartial)]
-    if reduces and len(sinks) > 1:
-        other = next(s for s in sinks if s is not reduces[0])
-        raise HawkError(
-            f"mapreduce sink {reduces[0].name!r} (op={reduces[0].op!r}) may not "
-            f"coexist with sink {other.name!r} (role {other.role!r}) in one kernel "
-            "exec_access is ONE scalar and exec_op ONE value per manifest, so "
-            "eagle would never fold the partials and Plan.run would return un-combined "
-            "per-partition partials — a wrong answer, not a placement cost. A kernel "
-            "that needs both is two kernels, sequenced by the plan."
-        )
 
 
 # --------------------------------------------------------------------------

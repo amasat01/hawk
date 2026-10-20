@@ -343,7 +343,7 @@ def _normalize_returns(stmts: list[ast.stmt], filename: str) -> list[ast.stmt]:
             if st.body[-1].value is not None:
                 raise _err(st.body[-1], filename,
                            "a kernel returns nothing — it commits through its "
-                           "Mutable / Accum / Reduce parameters")
+                           "Mutable / WideOut parameters")
             guard = ast.copy_location(
                 ast.If(test=st.test, body=st.body[:-1] or [ast.Pass()],
                        orelse=_normalize_returns(stmts[i + 1:], filename)), st)
@@ -363,7 +363,7 @@ def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
         if isinstance(st, ast.Return):
             raise _err(st, filename,
                        "a kernel returns nothing — it commits through its Mutable / "
-                       "Accum / Reduce parameters, and an early `return` is supported "
+                       "WideOut parameters, and an early `return` is supported "
                        "only as a guard: `if cond: ...; return` at the top level of "
                        "the body")
         if isinstance(st, ast.Break):
@@ -391,6 +391,11 @@ def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
             _check_expr(expr, filename)
         _check_view_store(st, filename, in_branch, in_loop)
         _check_targets(st, filename)
+        if (isinstance(st, ast.Expr) and _is_sink_call(st, sinks)
+                and st.value.func.attr in ("add", "write", "contribute")):
+            from .value import retired_sink_method
+            raise _err(st, filename, retired_sink_method(
+                st.value.func.value.id, st.value.func.attr))
         if isinstance(st, ast.Expr) and in_branch and _is_sink_call(st, sinks):
             raise _err(st, filename,
                        "a sink commit may not sit inside a branch — it would commit "
@@ -585,7 +590,7 @@ def _check_no_prior_attr(stmts: list[ast.stmt], filename: str,
     is no longer a HAWK form — the plane's bare name is an ordinary local,
     and a read before its first store is the launch-start value
     automatically. Scans the AUTHOR's own, un-rewritten source; ``.prior``
-    on any OTHER name (an Accum/Reduce plane, which has no own-column form
+    on any OTHER name (a by-key plane, which has no own-column form
     and keeps `.prior`'s existing "scattered or reduced" refusal unchanged)
     is not this rule's concern."""
     for st in stmts:
@@ -677,7 +682,7 @@ def _rewrite_mutable_stores(stmts: list[ast.stmt], sinks: frozenset[str],
             if name in mutables:
                 return _component_store(node, t, node.value)
             if name in sinks:
-                return node          # Accum/Reduce, or a WideOut scatter: own protocol
+                return node          # a by-key store: its own protocol
             if whole:
                 raise _err(node, filename,
                            f"kernel {kernel!r}: `{name}[...] = …` commits "

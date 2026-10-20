@@ -61,7 +61,6 @@ class FusedBody:
 
     text: str
     lanes: tuple = field(default=())
-    reduce_op: str | None = None
     #: True the instant any lane's render used a random op — the OR of
     #: each lane's :attr:`~hawk.emit.aether.Body.needs_random`.
     needs_random: bool = False
@@ -71,7 +70,7 @@ class FusedBody:
 
         A fused group's body is a body: the entry wrapper, unpack and
         index prologue are all the backend's, same as for a solo kernel."""
-        return Body(self.text, self.reduce_op, self.needs_random)
+        return Body(self.text, self.needs_random)
 
 
 def render_lane_body(lanes: Sequence[Lane], *, indent: str = "        ",
@@ -89,7 +88,7 @@ def render_lane_body(lanes: Sequence[Lane], *, indent: str = "        ",
             "lanes, and which lanes fuse is the composing consumer's decision"
         )
     seen = set()
-    chunks, meta, reduce_ops = [], [], []
+    chunks, meta = [], []
     needs_random = False
     for lane in lanes:
         if lane.name in seen:
@@ -99,8 +98,6 @@ def render_lane_body(lanes: Sequence[Lane], *, indent: str = "        ",
             )
         seen.add(lane.name)
         body = render_body(lane.sinks, lane.walk, indent=indent + "    ", kind=kind)
-        if body.reduce_op is not None:
-            reduce_ops.append(body.reduce_op)
         needs_random = needs_random or body.needs_random
         chunks.append(f"{indent}{{  // lane {lane.name}")
         if lane.prologue:
@@ -109,8 +106,7 @@ def render_lane_body(lanes: Sequence[Lane], *, indent: str = "        ",
         chunks.append(body.text)
         chunks.append(f"{indent}}}  // lane {lane.name}")
         meta.append(LaneMeta(lane.name, lane.walk.arg_spec, lane.walk.digest))
-    return FusedBody("\n".join(chunks), tuple(meta),
-                     reduce_ops[0] if reduce_ops else None, needs_random)
+    return FusedBody("\n".join(chunks), tuple(meta), needs_random)
 
 
 @dataclass(frozen=True)

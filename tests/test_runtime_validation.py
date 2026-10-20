@@ -5,16 +5,14 @@
 declaration before any address is taken (``hawk/_bind_checks.py``'s
 ``_check_bind``, wired into ``HostKernel.bind_all`` and hence ``run``).
 
-Three REAL defects motivate this row, each one a wrong binding that used to
+Two REAL defects motivate this row, each one a wrong binding that used to
 run silently and return garbage or segfault (an out-of-bounds read) rather
 than refuse:
 
 1. an Index plane (``Table[...].at()``'s index, a scatter ``lane``) bound as
    ``int32`` — HAWK spells every integer element ``Int`` (``long long``), so
    it must be ``int64``;
-2. a ``Terminated`` mask bound as ``int32`` — it must be ``bool``;
-3. a ``Reduce("sum")`` output sized 1 — it must hold ONE SLOT PER SAMPLE,
-   because a ``MapreducePartial`` sink always writes its own column.
+2. a ``Terminated`` mask bound as ``int32`` — it must be ``bool``.
 
 Every row below runs the real, compiled, HAWK-emitted artifact (the
 ``built`` fixture, shared with the rest of the suite) through
@@ -83,7 +81,7 @@ def test_table_at_index_bound_as_int64_passes(built):
 
 
 def test_scatter_lane_bound_as_int32_is_refused(built):
-    """``scatter``'s ``lane`` (the ``Accum.add(..., at=lane)`` index) must
+    """``scatter``'s ``lane`` (the ``all_samples(acc)[lane]`` index) must
     also be int64 — the same Index rule, a different kernel."""
     kernel = _scatter(built)
     x = np.arange(N, dtype=float) + 1.0
@@ -129,35 +127,24 @@ def test_terminated_mask_bound_as_bool_passes(built):
 
 
 # --------------------------------------------------------------------------- #
-# 3. a Reduce("sum") output: one slot PER SAMPLE, never a single accumulator.
+# 3. a sum over samples: one row per 32 samples, plus its compensation plane.
 # --------------------------------------------------------------------------- #
-def test_reduce_output_sized_one_is_refused(built):
-    """``energy``'s ``total`` (a ``Reduce("sum")`` sink) must hold
-    ``n_samples`` slots; a single-slot accumulator is refused naming the
-    Reduce rule, not a generic shape mismatch."""
+def test_a_sum_over_samples_binds_one_row_per_32_samples(built):
+    """``energy``'s ``total`` holds ``ceil(n/32)`` rows and ``total_comp``
+    its compensation; their sum is the reference total."""
     kernel = _energy(built)
     v = np.arange(3 * N, dtype=float).reshape(3, N) * 0.25 + 1.0
-    total = np.zeros(1)
-    with pytest.raises(HawkError, match=r"'total'.*Reduce.*ONE slot per sample"):
-        rt.run(kernel, v=v, total=total, n_samples=N)
-
-
-def test_reduce_output_sized_n_passes(built):
-    """Sized ``n_samples``, ``energy`` matches the per-sample reference."""
-    kernel = _energy(built)
-    v = np.arange(3 * N, dtype=float).reshape(3, N) * 0.25 + 1.0
-    total = np.zeros(N)
-    rt.run(kernel, v=v, total=total, n_samples=N)
-    np.testing.assert_allclose(total, D.ref_energy(v))
+    rows = -(-N // 32)
+    total, comp = np.zeros(rows), np.zeros(rows)
+    rt.run(kernel, v=v, total=total, total_comp=comp, n_samples=N)
+    np.testing.assert_allclose(total.sum() + comp.sum(), D.ref_energy(v).sum())
 
 
 def test_a_scattered_accum_out_plane_is_not_shape_checked(built):
-    """Non-vacuity for the Reduce rule above: an ORDINARY ``Accum`` scatter
-    target (``scatter``'s own ``acc``) is NOT forced to ``n_samples`` —
-    only a ``Reduce``'s exclusive, own-column sink is. ``scatter``'s fixture
-    happens to use ``N`` lanes too, so this row sizes ``acc`` to HALF that
-    on purpose, to prove the validator does not quietly assume a Reduce-style
-    rule for every ``accum_out`` plane."""
+    """A by-key store target (``scatter``'s ``acc``) is NOT forced to
+    ``n_samples``. ``scatter``'s fixture happens to use ``N`` lanes too, so
+    this row sizes ``acc`` to HALF that on purpose, to prove the validator
+    does not assume an own-column length for every ``accum_out`` plane."""
     kernel = _scatter(built)
     x = np.arange(N, dtype=float) + 1.0
     lane = (np.arange(N) % (N // 2)).astype(np.int64)

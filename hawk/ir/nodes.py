@@ -56,10 +56,6 @@ ROLE_ORDER = ("mutable", "out", "wide_out", "accum_out", "vec_in", "mat_in",
 #: ``asPureQuaternion()``, ``asBack3DVector()``) in emitter.
 QUAT_OPS = ("quat_mul", "quat_conj", "quat_recip", "quat_rotate", "as_pure", "as_vec3")
 
-#: The DECLARED aether reduction functors (:data:`raptor.schema.manifest.EXEC_OPS`);
-#: an undeclared reduction is a refusal, never an inferred ``sum``.
-REDUCE_OPS = ("sum", "times", "max", "land")
-
 #: The op KIND an ``@raw_device`` block splices under: opaque author text,
 #: not a HAWK op, so it has no type or derivative rule (differentiating it
 #: refuses, naming the kind) and its access class must be DECLARED.
@@ -527,28 +523,6 @@ class AccumWrite(Sink):
     def __init__(self, name: str, value: Node, index: Node | None = None,
                  ttype: TensorType | None = None) -> None:
         super().__init__("accum_write", "accum_out", name, value, index, ttype)
-
-
-class MapreducePartial(Sink):
-    """``mapreduce_partial(op)``: the first-stage partials plane eagle folds
-    (``eagle.exec.fold``). EXCLUSIVE — it may not coexist with any other sink,
-    and ``op`` must be a DECLARED aether functor."""
-
-    __slots__ = ("op",)
-
-    def __init__(self, name: str, value: Node, op: str,
-                 ttype: TensorType | None = None) -> None:
-        if op not in REDUCE_OPS:
-            raise HawkError(
-                f"mapreduce_partial {name!r}: reduction op {op!r} is not a declared "
-                f"aether functor; declared ops are {REDUCE_OPS}"
-            )
-        super().__init__("mapreduce_partial", "accum_out", name, value, None, ttype)
-        self.op = op
-
-    @property
-    def dedup_extra(self) -> Any:
-        return (self.role, self.name, self.op)
 
 
 #: The suffix of a ``sample_sum`` plane's compensation companion.

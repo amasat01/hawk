@@ -40,7 +40,6 @@ from ..ir.nodes import (
     Dispatch,
     Finish,
     Leaf,
-    MapreducePartial,
     Op,
     Primitive,
     SampleIndex,
@@ -85,9 +84,6 @@ from .spelling import (
     MIRROR_OF as MIRROR_OF,
 )
 from .spelling import (
-    REDUCE_FUNCTOR as REDUCE_FUNCTOR,
-)
-from .spelling import (
     SAMPLE_INDEX_IDENT as SAMPLE_INDEX_IDENT,
 )
 from .spelling import (
@@ -130,7 +126,6 @@ class Body:
     no random op stays byte-identical to before this flag existed."""
 
     text: str
-    reduce_op: str | None = None
     needs_random: bool = False
 
 
@@ -183,7 +178,6 @@ class LaneSplit:
     speculative: bool
     op_count: int
     needs_random: bool = False
-    reduce_op: str | None = None
     sample_free: tuple = ()
     fp64_ops: int = 0
 
@@ -505,7 +499,6 @@ class _Renderer(_DispatchMixin):
         leaves with, and skipping the computation drops nothing the guarded
         commits would have stored. A kernel whose guard binds no mask renders
         exactly as before."""
-        reduce_op: str | None = None
         guard = self._guard_slot()
         if guard is not None:
             self._emit(f"if (!{guard}) {{")
@@ -522,15 +515,13 @@ class _Renderer(_DispatchMixin):
             if isinstance(sink, Finish):
                 finish = sink   # the epilogue: after EVERY other commit, below
                 continue
-            if isinstance(sink, MapreducePartial):
-                reduce_op = sink.op
             self._sink(sink)
         if finish is not None:
             self._finish(finish)
         if guard is not None:
             self.indent = self.indent[:-4]
             self._emit("}")
-        return Body("\n".join(self.lines), reduce_op, self.uses_random)
+        return Body("\n".join(self.lines), self.uses_random)
 
     def _emit_outside(self, node: Node) -> None:
         """Render one node of the flat walk at the top scope, unless it is
@@ -809,7 +800,7 @@ class _Renderer(_DispatchMixin):
         return LaneSplit(guard, pre, info["step"], post, info["carries"],
                          tuple(live_ins), info["count"], loop.stop, info["index"],
                          info["exit"], self._speculative(loop), ops,
-                         body.needs_random, body.reduce_op,
+                         body.needs_random,
                          _declarations(pre, [n for n, _ in live_ins if n in free]),
                          fp64_ops(loop.body_nodes()))
 
@@ -1071,11 +1062,7 @@ class _Renderer(_DispatchMixin):
             self._sample_sum(sink)
             return
         value = self._ref(sink.value)
-        if isinstance(sink, MapreducePartial):
-            functor = REDUCE_FUNCTOR[sink.op]
-            self._emit(f"using hawk_reduce_{sink.name} = "
-                       f"{functor}<{element_spelling(sink.ttype.dtype)}>;")
-        if not isinstance(sink, (Assign, WideWrite, AccumWrite, MapreducePartial)):
+        if not isinstance(sink, (Assign, WideWrite, AccumWrite)):
             raise HawkError(f"no lowering for sink kind {sink.kind!r}")
         if sink.index is None:
             # The own column: one elementwise contribution, one store (eagle
@@ -1143,7 +1130,7 @@ class _Renderer(_DispatchMixin):
         closing the same race a prior non-atomic read-modify-write left open.
 
         The compensated policy applies only to the kind's resolved OUTPUT
-        TARGET (:func:`hawk.ext.compensated_target`): a scattered Accum beside,
+        TARGET (:func:`hawk.ext.compensated_target`): a scattered by-key store beside,
         but not itself, that target commits ``plain`` — applying the policy to
         every scattered sink would misfire on an unrelated diagnostic plane."""
         if sink.ttype.shape:

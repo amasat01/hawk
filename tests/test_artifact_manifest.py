@@ -46,9 +46,7 @@ def test_the_schema_and_abi_twins_are_the_max_ones(built):
         assert doc["aether_abi"] == _contracts.AETHER_ABI_VERSION == "aether-abi/2"
 
 
-def test_exec_op_is_present_iff_mapreduce(built):
-    assert built["energy"].manifest["exec_access"] == "mapreduce"
-    assert built["energy"].manifest["exec_op"] == "sum"
+def test_exec_op_is_absent_without_a_fold(built):
     assert "exec_op" not in built["vec3"].manifest
     assert built["gather"].manifest["exec_access"] == "cross_sample_read"
     assert built["scatter"].manifest["exec_access"] == "cross_sample_write"
@@ -69,5 +67,5 @@ def test_a_bundle_whose_members_disagree_on_the_axis_is_refused(tmp_path, cache_
     from hawk.ir import HawkError
 
     with pytest.raises(HawkError, match="ONE execution axis"):
-        build_bundle([D.axpb, D.energy], tmp_path / "mixed", targets=("host",),
+        build_bundle([D.axpb, D.scatter], tmp_path / "mixed", targets=("host",),
                      cache_dir=cache_dir)

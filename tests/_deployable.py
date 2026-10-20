@@ -25,18 +25,17 @@ from __future__ import annotations
 import numpy as np
 
 from hawk import (
-    Accum,
     Index,
     Matrix,
     Mutable,
     Param,
     Quantity,
     Quat,
-    Reduce,
     Scalar,
     Table,
     Terminated,
     Vector,
+    all_samples,
     kernel,
 )
 from hawk.ext import DATA_ONLY, Guard, Kind, sink_policy
@@ -77,8 +76,8 @@ def gather(table: Table[Scalar], where: Index, y: Mutable[Scalar]):
 
 
 @kernel
-def energy(v: Vector[3], total: Reduce("sum")):
-    total.contribute(dot(v, v))
+def energy(v: Vector[3], total: Mutable[Scalar]):
+    total = all_samples(dot(v, v)).sum()
 
 
 @kernel
@@ -97,18 +96,18 @@ def speed(v: Vector[3], y: Mutable[Scalar]):
 
 
 @kernel
-def scatter(x: Scalar, lane: Index, acc: Accum[Scalar]):
-    acc.add(x, at=lane)
+def scatter(x: Scalar, lane: Index, acc: Mutable[Scalar]):
+    all_samples(acc)[lane] += x
 
 
 @kernel
-def scatter_c(x: Scalar, lane: Index, acc: Accum[Scalar], acc_c: Accum[Scalar]):
+def scatter_c(x: Scalar, lane: Index, acc: Mutable[Scalar], acc_c: Mutable[Scalar]):
     """ fixture: the SAME body as :func:`scatter`, but built under the
     compensated kind, which commits its Neumaier correction to ``acc_c``. The
     second plane is the kernel's own declaration; the SEAM decides the
     arithmetic."""
-    acc.add(x, at=lane)
-    acc_c.add(0.0, at=lane)
+    all_samples(acc)[lane] += x
+    all_samples(acc_c)[lane] += 0.0
 
 
 @kernel
@@ -290,7 +289,6 @@ def cases(n: int) -> list:
         ("multi", "two_outputs", {"x": x3}, tuple(reversed(ref_two_outputs(x3)))),
         ("gather", "gather", {"table": table, "where": where},
          ref_gather(table, where)),
-        ("energy", "energy", {"v": x3}, ref_energy(x3)),
         ("speed", "speed", {"v": x3}, ref_speed(x3)),
         ("scatter", "scatter", {"x": xs, "lane": lane}, ref_scatter(xs, lane, n)),
         ("fraction", "fraction", {"x": xs}, ref_fraction(xs, n)),
