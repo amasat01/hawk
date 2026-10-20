@@ -276,7 +276,7 @@ def _gradient_sink(leaf: Node, name: str, summed: tuple, value: Node) -> Node:
     """The sink of one input's gradient: the sum over samples of the per-sample
     adjoint for a promoted parameter, else the adjoint plane itself."""
     if leaf.name in summed:
-        return ReduceSamples("sum", value).stored(name, leaf.ttype)
+        return ReduceSamples("sum", value).stored(name, leaf.ttype)[0]
     return Assign(name, value, leaf.ttype)
 
 

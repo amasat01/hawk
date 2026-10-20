@@ -110,8 +110,8 @@ class Walk:
     def cells(self) -> dict:
         """The reductions over samples stored by this kernel: plane name to
         ``{"op", "columns"}`` (``columns`` is the width of one cell, 1 for a
-        rank-0 value)."""
-        return {n.name: {"op": n.op, "columns": 1}
+        rank-0 value; a wider cell is the planes ``name_0 .. name_{columns-1}``)."""
+        return {n.cell: {"op": n.op, "columns": n.columns}
                 for n in self.order if isinstance(n, SampleSum)}
 
     @property

@@ -45,6 +45,10 @@ LOOP_HELPER = "__hawk_loop__"
 SETITEM_HELPER = "__hawk_setitem__"
 #: The name the rewritten body reaches :func:`hawk.trace.reduce.maxmin` under.
 MAXMIN_HELPER = "__hawk_maxmin__"
+#: The name the rewritten body reaches :func:`hawk.trace.reduce.viewstore` under,
+#: and the name of the dict of the kernel's output refs it reads.
+VIEWSTORE_HELPER = "__hawk_viewstore__"
+REFS = "__hawk_refs__"
 
 _ALLOWED_STMTS = (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Expr, ast.If,
                   ast.For, ast.Pass)
@@ -238,9 +242,10 @@ def set_component(vector: Any, index: Any, value: Any, name: str) -> Any:
     node = node_of(vector)
     if not node.ttype.shape:
         raise HawkError(
-            f"{name!r} is a rank-0 value typed {node.ttype!r}, so it has no "
-            "components to write; `v[k] = …` writes one component of a rank>=1 "
-            "value (a Vector, a matrix row is not a HAWK form)")
+            f"{name!r}[key] indexes a component; samples are indexed on the view: "
+            f"hawk.all_samples({name})[key] += t. {name!r} is a rank-0 value typed "
+            f"{node.ttype!r}, so it has no components to write; `v[k] = …` writes "
+            "one component of a rank>=1 value (a Vector, a matrix row is not a HAWK form)")
     return Value(_make("set_component_at",
                        (node, index_node(index), node_of(value))))
 
@@ -306,6 +311,7 @@ def transform(fn: ast.FunctionDef, filename: str, sinks: frozenset[str],
                        value=last.value), last)
     body = _normalize_returns(body, filename)
     _validate(body, filename, sinks, in_branch=False)
+    body = _rewrite_view_stores(body)
     _check_no_prior_attr(body, filename, mutables | finishes)
     body, written = _rewrite_mutable_stores(body, sinks, mutables, finishes,
                                             filename, fn.name)
@@ -383,6 +389,7 @@ def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
                        "(default-deny)")
         for expr in _expressions(st):
             _check_expr(expr, filename)
+        _check_view_store(st, filename, in_branch, in_loop)
         _check_targets(st, filename)
         if isinstance(st, ast.Expr) and in_branch and _is_sink_call(st, sinks):
             raise _err(st, filename,
@@ -420,6 +427,56 @@ def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
                 _check_expr(x.test, filename)
             _validate([x for x in st.body if not _is_break_if(x)], filename,
                       sinks, in_branch, True)
+
+
+def _check_view_store(st: ast.stmt, filename: str, in_branch: bool,
+                      in_loop: bool) -> None:
+    """The static refusals of one store through ``hawk.all_samples(y)[...]``."""
+    target = (st.targets[0] if isinstance(st, ast.Assign) and len(st.targets) == 1
+              else getattr(st, "target", None))
+    t = _view_target(target) if target is not None else None
+    if t is None:
+        return
+    if in_branch or in_loop:
+        raise _err(st, filename,
+                   "a store through hawk.all_samples(y)[...] may not sit inside a "
+                   "branch or a `for`: it would commit unconditionally, or once "
+                   "instead of once per iteration; fold the condition into the "
+                   "mask (hawk.all_samples(y)[mask] = v) at the top level")
+    if len(t.value.args) != 1 or t.value.keywords or not isinstance(t.value.args[0],
+                                                                    ast.Name):
+        raise _err(st, filename,
+                   "a store target is hawk.all_samples(name)[...] with the name of "
+                   "an output plane")
+    if isinstance(st, ast.AugAssign) and not isinstance(st.op, ast.Add):
+        raise _err(st, filename,
+                   "only `hawk.all_samples(y)[key] += t` accumulates by key; "
+                   "`-=` is `+= -t`, and max/min by key are not in this release")
+
+
+def _rewrite_view_stores(stmts: list[ast.stmt]) -> list[ast.stmt]:
+    """``hawk.all_samples(y)[k] (op)= e`` as
+    ``y = __hawk_viewstore__(__hawk_refs__, "y", k, e, "op=", y)``: the name
+    carries the per-sample plane through a mask store, and a marker through a
+    store by key."""
+    out = []
+    for st in stmts:
+        target = (st.targets[0] if isinstance(st, ast.Assign) and len(st.targets) == 1
+                  else getattr(st, "target", None))
+        t = _view_target(target) if target is not None else None
+        if t is None:
+            out.append(st)
+            continue
+        name = t.value.args[0].id
+        call = ast.Call(
+            func=ast.Name(id=VIEWSTORE_HELPER, ctx=ast.Load()),
+            args=[ast.Name(id=REFS, ctx=ast.Load()), ast.Constant(value=name),
+                  t.slice, st.value,
+                  ast.Constant(value="+=" if isinstance(st, ast.AugAssign) else "="),
+                  ast.Name(id=name, ctx=ast.Load())], keywords=[])
+        out.append(ast.copy_location(ast.Assign(
+            targets=[ast.Name(id=name, ctx=ast.Store())], value=call), st))
+    return out
 
 
 def _is_break_if(st: ast.stmt) -> bool:
@@ -460,10 +517,24 @@ def _check_expr(expr: ast.expr, filename: str) -> None:
             raise _err(n, filename, f"the name prefix {PREFIX!r} is reserved")
 
 
+def _view_target(t: ast.AST) -> ast.Subscript | None:
+    """``t`` when it is a store through the view, ``hawk.all_samples(y)[...]``
+    or ``all_samples(y)[...]``."""
+    if not (isinstance(t, ast.Subscript) and isinstance(t.value, ast.Call)):
+        return None
+    f = t.value.func
+    named = ((isinstance(f, ast.Name) and f.id == "all_samples")
+             or (isinstance(f, ast.Attribute) and f.attr == "all_samples"
+                 and isinstance(f.value, ast.Name) and f.value.id == "hawk"))
+    return t if named else None
+
+
 def _check_targets(st: ast.stmt, filename: str) -> None:
     targets = getattr(st, "targets", None) or (
         [st.target] if hasattr(st, "target") else [])
     for t in targets:
+        if _view_target(t) is not None:
+            continue
         for n in ast.walk(t):
             if isinstance(n, ast.Attribute):
                 raise _err(n, filename, "an attribute store is not a HAWK body form")

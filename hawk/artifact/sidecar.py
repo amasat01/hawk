@@ -59,7 +59,7 @@ them; :func:`hawk.artifact.plan_view` projects all three straight through.
 from __future__ import annotations
 
 from .. import _contracts
-from ..compile import aether_include, eagle_include
+from ..compile.toolchain import _strict_aether_include, _strict_eagle_include
 from ..ir import HawkError
 from ..ir.segment import class_name, mix_name, stale_name
 from ..types import INT_PLANE_DTYPES
@@ -332,8 +332,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         **({"entry_counts_finished": True} if entry_counts_finished else {}),
         "digest": walk.digest,
         "quantities": {p: list(span.wires) for p, span in walk.quantities.items()},
-        "aether_include": _root_or_sealed_marker(aether_include),
-        "eagle_include": _root_or_sealed_marker(eagle_include),
+        "aether_include": _root_or_sealed_marker(_strict_aether_include),
+        "eagle_include": _root_or_sealed_marker(_strict_eagle_include),
     }
     if lanes:
         meta["lanes"] = [{"name": lane.name,

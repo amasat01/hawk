@@ -29,7 +29,7 @@ from ..ir import HawkError, Node, Walk
 from ..ir.cost import fp64_ops
 from ..ir.loop_nodes import Loop, LoopCarry, LoopCount, LoopIndex, LoopValue, TapeRead
 from ..ir.nodes import (
-    AT_ROLES,
+    GATHER_ROLES,
     FINISHED_PLANE,
     RAW_KIND,
     SWITCH_RENDERED,
@@ -360,7 +360,7 @@ class _Renderer(_DispatchMixin):
             if isinstance(node, Loop):
                 for child in node.operands:
                     child = _through(child)
-                    if isinstance(child, Leaf) and child.role in AT_ROLES:
+                    if isinstance(child, Leaf) and child.role in GATHER_ROLES:
                         # A plane read through at() is spelled BY NAME at the
                         # computed index (`_at`), never via a reference to the leaf —
                         # naming it here would emit a dead `plane[i].eval()`.

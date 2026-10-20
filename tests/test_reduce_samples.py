@@ -272,11 +272,7 @@ def test_a_reduced_value_is_not_readable():
             u = t + 1.0
 
 
-def test_the_view_forms_of_a_later_release_refuse():
-    with pytest.raises(HawkError, match="not in this release"):
-        @kernel
-        def k(x: Scalar, i: Scalar, t: Mutable[Scalar]):
-            t = hawk.all_samples(x)[0]
+def test_arithmetic_on_the_view_and_a_nested_view_refuse():
     with pytest.raises(HawkError, match="compute per sample first"):
         @kernel
         def k2(x: Scalar, t: Mutable[Scalar]):
