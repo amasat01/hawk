@@ -161,7 +161,8 @@ def _first_moved(pairs) -> str | None:
 def _unit_key(names, walk_digests, *, targets, smode, kind, defines, cache_dir,
               device_arch, derivative_blocks, layout_sizes_override,
               host_profile: str = "", opt_level: str = "",
-              literal_table: bool = False) -> str:
+              literal_table: bool = False, embedded_profile: str = "",
+              source_digests=()) -> str:
     """The per-process identity of a BUILD REQUEST: every input the
     unit's content is a function of, hashed term by term. Per kernel:
     :attr:`hawk.ir.walk.Walk.digest` and its name. Bundle-wide: the
@@ -182,14 +183,22 @@ def _unit_key(names, walk_digests, *, targets, smode, kind, defines, cache_dir,
     profile, it changes the AOT nvcc device compile too (``-O<n>`` /
     ``-Xptxas -O<n>``), so an ``"O0"`` request must never be served an
     ``"O3"`` unit regardless of which targets this bundle builds; and
-    ``literal_table``, which changes the device source.
+    ``literal_table``, which changes the device source; and
+    ``embedded_profile``, the ``repr`` of the
+    :class:`hawk.embedded.EmbeddedProfile` a ``"c"`` target renders under
+    (its caps and policies reach the C text and its report; empty when
+    ``"c"`` is not a target); and, only when ``"c"`` is a target, each
+    kernel's ``source_digest`` (``source_digests``, in kernel order: the C
+    report and header stamp it, and two kernels sharing a walk can differ
+    in source text) and ``aether_dsc.c_core.CORE_VERSION`` (the inlined
+    core functions the C unit carries).
 
     STATED EXPOSURE, accepted rather than closed: the key names the
     render's INPUTS, not its output, so an emitter monkeypatched between
     two builds of the same kernel is invisible to it and would be served
     the first build's unit. :func:`reset_unit_memo` is the door out."""
     h = hashlib.sha256()
-    h.update(b"hawk.artifact.unit-key/5\n")
+    h.update(b"hawk.artifact.unit-key/6\n")
     for part in (_contracts.AETHER_ABI_VERSION, smode.id, repr(kind),
                  "\x00".join(targets), "\x00".join(str(d) for d in defines),
                  arch(device_arch) if "cuda" in targets else "", str(cache_dir),
@@ -200,7 +209,12 @@ def _unit_key(names, walk_digests, *, targets, smode, kind, defines, cache_dir,
                  ("host_profile:" + _host_profile(host_profile or None)
                   if "host" in targets else ""),
                  "opt_level:" + _opt_level(opt_level or None),
-                 "literal_table" if literal_table else ""):
+                 "literal_table" if literal_table else "",
+                 ("embedded_profile:" + embedded_profile
+                  if embedded_profile else ""),
+                 ("source_digests:" + "\x00".join(str(d) for d in source_digests)
+                  if "c" in targets else ""),
+                 ("c_core:" + _c_core_version() if "c" in targets else "")):
         h.update(part.encode("utf-8"))
         h.update(b"\0")
     for name, walk_digest in zip(names, walk_digests):
@@ -209,6 +223,14 @@ def _unit_key(names, walk_digests, *, targets, smode, kind, defines, cache_dir,
         h.update(str(walk_digest).encode("utf-8"))
         h.update(b"\0")
     return h.hexdigest()
+
+
+def _c_core_version() -> str:
+    """``aether_dsc.c_core.CORE_VERSION``, read at call time: the core
+    functions a ``"c"`` unit inlines, a term of its unit key."""
+    from aether_dsc import c_core
+
+    return c_core.CORE_VERSION
 
 
 def _closure_watch(drafts) -> ClosureWatch:

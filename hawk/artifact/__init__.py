@@ -16,6 +16,7 @@ from __future__ import annotations
 import ctypes
 from types import SimpleNamespace
 
+from ..ir import HawkError
 from .bundle import (
     STAMP_NAME,
     Artifact,
@@ -119,7 +120,11 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
     Without one a plugin carries its host entry only.
 
     Everything an entry point points into is held on the plugin's
-    ``_keepalive``, so it stays valid as long as the caller holds it."""
+    ``_keepalive``, so it stays valid as long as the caller holds it.
+
+    A kernel built for the ``c`` target alone (a standalone C unit,
+    :mod:`hawk.embedded`) has no entry point to plan and is refused, as
+    :func:`hawk.load` refuses its directory."""
     from .. import _core
 
     registry = None
@@ -128,6 +133,13 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
         registry = device_loader(bundle.manifest_path)
     out = {}
     for art in bundle.artifacts:
+        if not art.entries.keys() - {"c"}:
+            raise HawkError(
+                f"{art.name!r} was built for the 'c' target only: it is a "
+                "standalone C unit (<name>.c, <name>.h, <name>.embedded.json, "
+                "see hawk.embedded) for an embedded build, with no host or "
+                "device entry point to plan; build it with targets=('host',) "
+                "or ('cuda',) for plugins")
         view = plan_view(art.sidecar)
         symbol = view.pop("host_entry", None)
         entries, keep = {}, []

@@ -409,11 +409,23 @@ def _index_ctype():
 
 
 def load(directory, kernel: str, sidecar: dict | None = None) -> HostKernel:
-    """Load ``<directory>/<kernel>.so``, reading its sidecar JSON if omitted."""
+    """Load ``<directory>/<kernel>.so``, reading its sidecar JSON if omitted.
+
+    Refuses a directory holding only ``kernel``'s standalone C unit (a
+    ``<kernel>.embedded.json`` and no ``<kernel>.json``): that is source for
+    an embedded build, not a host artifact."""
     import json
 
     directory = Path(directory)
     if sidecar is None:
+        if (not (directory / f"{kernel}.json").exists()
+                and (directory / f"{kernel}.embedded.json").exists()):
+            raise HawkError(
+                f"{kernel!r} in {directory} was built for the 'c' target only: "
+                "it is a standalone C unit (<name>.c, <name>.h, "
+                "<name>.embedded.json, see hawk.embedded) for an embedded build, "
+                "not a host artifact hawk.load can run; build it with "
+                "targets=('host',) to load it here")
         sidecar = json.loads((directory / f"{kernel}.json").read_text())
     return HostKernel(directory / f"{kernel}.so", sidecar)
 
