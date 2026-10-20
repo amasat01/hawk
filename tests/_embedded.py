@@ -58,7 +58,7 @@ _SHARED_SUFFIX = ".dylib" if sys.platform == "darwin" else ".so"
 
 def corpus():
     """``(name, sinks, walk)`` of every C-target corpus case:
-    ``tests/_emitted.cases()`` without ``energy`` (a mapreduce, refused)."""
+    ``tests/_emitted.cases()`` without ``energy`` (a sum over samples, refused)."""
     import _emitted
 
     return [c for c in _emitted.cases() if c[0] != "energy"]

@@ -16,13 +16,13 @@ import pytest
 
 import hawk
 import hawk.math as hm
-from hawk import Accum, Index, Mutable, Param, Scalar, Terminated, Vector
+from hawk import Index, Mutable, Param, Scalar, Terminated, Vector, all_samples
 from hawk.embedded.verify import UNSUPPORTED, refuse_unsupported
 from hawk.emit import compose
 from hawk.ext import DEFAULT_KIND, Guard, Kind
 from hawk.ir import Assign, HawkError, Leaf, canonical
 from hawk.ir.loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from hawk.ir.nodes import Const
+from hawk.ir.nodes import AccumWrite, Const
 from hawk.ir.ops import make
 from hawk.trace.kernel import Kernel
 from hawk.types import TensorType
@@ -83,9 +83,20 @@ def int_min_max_abs(a: Index, b: Index, y: Mutable[Index]):
     y = hm.minimum(a, b) + hm.maximum(a, b) + abs(a)
 
 
+def _vector_scatter():
+    """A scattered accumulate of a ``Vector[3]``, as IR: hawk's tracer refuses
+    ``all_samples(acc)[lane] += v`` for a vector itself (one plane per
+    component), so no ``@hawk.kernel`` reaches the node; the C target keeps
+    its own refusal behind that one."""
+    v = Leaf("vocab_read", "vec_in", "v", TensorType((3,), "f64"))
+    lane = Leaf("vocab_read", "per_sample", "lane", TensorType((), "i64"))
+    return Kernel("vector_scatter",
+                  (AccumWrite("acc", v, lane, TensorType((3,), "f64")),))
+
+
 @hawk.kernel
-def vector_scatter(v: Vector[3], lane: Index, acc: Accum[Vector[3]]):
-    acc.add(v, at=lane)
+def gather_other(x: Scalar, i: Index, y: Mutable[Scalar]):
+    y = all_samples(x)[i]
 
 
 def _zero_trip():
@@ -115,8 +126,10 @@ def _case(kernel, kind=None):
 CASES = {
     "random": (lambda: _case(draw), "no counter-based draw is built for C yet"),
     "raw_device": (lambda: _case(spliced), "spell the block with hawk.math"),
-    "mapreduce": (lambda: _case(K.energy),
-                  "commit the own column and reduce in the caller"),
+    "sample_reduction": (lambda: _case(K.energy),
+                         "commit the own column and reduce in the caller"),
+    "cross_sample_at": (lambda: _case(gather_other),
+                        "pass the values the kernel needs as a Table plane"),
     "active_set": (lambda: _case(active), "run without the index map"),
     "segmented": (lambda: _case(segmented), "export each branch as its own kernel"),
     "compensated": (lambda: _case(D.scatter_c, D.COMPENSATED),
@@ -129,7 +142,7 @@ CASES = {
     "int_libm": (lambda: _case(int_hypot),
                  "use maximum(minimum(i, hi), lo) (Int min/max are allowed) or "
                  "convert to Real explicitly"),
-    "scattered_tensor_accum": (lambda: _case(vector_scatter),
+    "scattered_tensor_accum": (lambda: _case(_vector_scatter()),
                                "declare one scalar accumulate plane per component"),
     "zero_trip_loop": (lambda: _case(_zero_trip()), "give the loop at least one trip"),
     "tensor_select_cond": (lambda: _case(tensor_select), "select per component"),

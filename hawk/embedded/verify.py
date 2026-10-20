@@ -34,7 +34,9 @@ from ..ir.nodes import (
     At,
     Const,
     Dispatch,
-    MapreducePartial,
+    GATHER_ROLES,
+    ReduceSamples,
+    SampleSum,
     Op,
     Select,
     Sink,
@@ -124,11 +126,16 @@ def _segmented(kernel, nodes):
     return found
 
 
-def _mapreduce(walk, nodes):
-    found = _first(nodes, lambda n: isinstance(n, MapreducePartial))
+def _sample_reduction(walk, nodes):
+    found = _first(nodes, lambda n: isinstance(n, (SampleSum, ReduceSamples)))
     if found is None and walk.access.cls == "mapreduce":
         return "kernel", "mapreduce"
     return found
+
+
+def _cross_sample_at(nodes):
+    return _first(nodes, lambda n: isinstance(n, At)
+                  and n.operands[0].role not in GATHER_ROLES)
 
 
 def _whole(flag: bool, what: str):
@@ -148,10 +155,16 @@ UNSUPPORTED: dict[str, tuple[Callable, tuple[str, str]]] = {
         lambda k, kind, w, nodes: _first(nodes, lambda n: n.kind == RAW_KIND),
         ("a raw_device block splices C++ text the C target cannot check",
          "spell the block with hawk.math")),
-    "mapreduce": (
-        lambda k, kind, w, nodes: _mapreduce(w, nodes),
-        ("a mapreduce partial needs eagle's fold, which a standalone build does "
-         "not have", "commit the own column and reduce in the caller")),
+    "sample_reduction": (
+        lambda k, kind, w, nodes: _sample_reduction(w, nodes),
+        ("a reduction over samples needs the wrapper's cross-sample fold, which a "
+         "standalone build does not have",
+         "commit the own column and reduce in the caller")),
+    "cross_sample_at": (
+        lambda k, kind, w, nodes: _cross_sample_at(nodes),
+        ("an at() read of a per-sample plane reads another sample's value, which a "
+         "partition call may not hold",
+         "pass the values the kernel needs as a Table plane")),
     "active_set": (
         lambda k, kind, w, nodes: _whole(
             bool(getattr(getattr(kind, "guard", None), "active_set", False)), "guard"),

@@ -27,7 +27,6 @@ from ..ir.nodes import (
     Const,
     Finish,
     Leaf,
-    MapreducePartial,
     Op,
     Select,
     TapeWrite,
@@ -46,7 +45,6 @@ from .spelling import (
     _METHOD0,
     _METHOD1,
     _RANDOM_FN,
-    REDUCE_FUNCTOR,
     SAMPLE_INDEX_IDENT,
     _for_header,
     _no_spelling,
@@ -115,9 +113,13 @@ class AetherDialect:
 
     # -- dispatch -------------------------------------------------------
 
-    def selector_decl(self, r, kname: str, kind_expr: str, k: int) -> str:
-        """The clamped selector, materialised once (:func:`_clamp_expr`)."""
-        return f"const std::int32_t {kname} = {_clamp_expr(kind_expr, k)};"
+    def selector_decl(self, r, kname: str, kind_expr: str, k: int, *,
+                      in_range: bool = False) -> str:
+        """The selector, materialised once: clamped (:func:`_clamp_expr`), or a
+        plain cast when it is a select between two in-range literals."""
+        spelled = (f"static_cast<std::int32_t>({kind_expr})" if in_range
+                   else _clamp_expr(kind_expr, k))
+        return f"const std::int32_t {kname} = {spelled};"
 
     def mix_count(self, mix: str, k: int, kname: str) -> str:
         """An ``auto`` dispatch's branch-mix count (``hawk_abi::mix_count``)."""
@@ -176,12 +178,12 @@ class AetherDialect:
         index = self._sample_index(r._ref(sink.index))
         r._emit(f"hawk_abi::accum_add_compensated({target}, {comp}, {index}, {value});")
 
-    def mapreduce_alias(self, r, sink: MapreducePartial) -> None:
-        """The declared reduction functor as an alias, so an unbuilt one fails
-        to COMPILE rather than reaching a manifest."""
-        functor = REDUCE_FUNCTOR[sink.op]
-        r._emit(f"using hawk_reduce_{sink.name} = "
-                f"{functor}<{element_spelling(sink.ttype.dtype)}>;")
+    def sample_sum(self, r, sink, column: int) -> None:
+        """The sample's term into its column of the row the wrapper sums
+        (:data:`hawk.emit.aether.SAMPLE_SUM_TERMS`)."""
+        from .aether import SAMPLE_SUM_TERMS
+
+        r._emit(f"{SAMPLE_SUM_TERMS}[{column}] = {r._ref(sink.value)};")
 
     # -- expressions ----------------------------------------------------
 

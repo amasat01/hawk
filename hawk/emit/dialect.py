@@ -33,7 +33,7 @@ DIALECT_MEMBERS: tuple[str, ...] = (
     "switch_default_tail", "typed_zero",
     "leaf", "const", "at", "select", "op",
     "guard", "store", "scatter_store", "accum_scattered", "store_compensated",
-    "mapreduce_alias", "tape_write", "finish", "exit_if",
+    "sample_sum", "tape_write", "finish", "exit_if",
 )
 
 
@@ -82,8 +82,11 @@ class Dialect(Protocol):
         """Bind ``text`` to a fresh local ahead of the current line; its name."""
 
     # -- dispatch -------------------------------------------------------
-    def selector_decl(self, r: Any, kname: str, kind_expr: str, k: int) -> str:
-        """The clamped selector local: ``const std::int32_t {kname} = ...;``."""
+    def selector_decl(self, r: Any, kname: str, kind_expr: str, k: int, *,
+                      in_range: bool = False) -> str:
+        """The clamped selector local: ``const std::int32_t {kname} = ...;``.
+        ``in_range``: the selector is a select between two in-range literals,
+        so a dialect may skip the clamp (the aether dialect does)."""
 
     def mix_count(self, mix: str, k: int, kname: str) -> str:
         """An ``auto`` dispatch's branch-mix count statement."""
@@ -135,8 +138,9 @@ class Dialect(Protocol):
                           value: str) -> None:
         """The ``compensated`` kind's commit (own column or scattered)."""
 
-    def mapreduce_alias(self, r: Any, sink: Any) -> None:
-        """A ``MapreducePartial``'s functor alias, ahead of its store."""
+    def sample_sum(self, r: Any, sink: Any, column: int) -> None:
+        """A ``SampleSum``'s per-sample term into column ``column`` of the row
+        the wrapper reduces."""
 
     def tape_write(self, r: Any, sink: Any, target: str) -> None:
         """A tape row write under ``if (on)``."""

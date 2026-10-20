@@ -20,7 +20,7 @@ import pytest
 
 import hawk
 import hawk.math as hm
-from hawk import Accum, Index, Mutable, Param, Scalar, Terminated, Vector, WideOut
+from hawk import Index, Mutable, Param, Scalar, Terminated, Vector, WideOut
 from hawk.diff import vjp
 from hawk.embedded.profile import EmbeddedProfile
 from hawk.embedded.verify import (
@@ -34,7 +34,10 @@ from hawk.embedded.verify import (
 from hawk.ext import DEFAULT_KIND
 from hawk.ir import HawkError, canonical
 from hawk.ir.loop_nodes import Loop
-from hawk.ir.nodes import At
+from hawk.ir.nodes import AccumWrite, At, Leaf
+from hawk.ir.ops import make
+from hawk.trace.kernel import Kernel
+from hawk.types import TensorType
 
 
 def _report(kernel, profile=None):
@@ -436,9 +439,19 @@ def accumulate_in_place(x: Scalar, y: Mutable[Scalar]):
     y = y + x
 
 
-@hawk.kernel
-def own_partials(x: Scalar, acc: Accum[Scalar]):
-    acc.add(x * x)
+def _own_partial(name: str, *, guarded: bool = False) -> Kernel:
+    """An own-column accumulate partial (``AccumWrite`` with no index, role
+    ``accum_out``: one partial per sample, the caller reduces) built as IR.
+    hawk 0.6 removed its authoring form (``Accum.add``); the node and its
+    interface row remain, so the C target's handling of it stays pinned.
+    ``guarded`` declares the default ``terminated`` mask, as a traced
+    ``terminated: Terminated`` parameter would."""
+    x = Leaf("vocab_read", "per_sample", "x", TensorType((), "f64"))
+    planes = {"terminated": Terminated} if guarded else None
+    return Kernel(name, (AccumWrite("acc", make("mul", (x, x))),), planes)
+
+
+own_partials = _own_partial("own_partials")
 
 
 def _rows(kernel):
@@ -474,9 +487,7 @@ def test_interface_directions():
     assert "partial" in acc["reason"]
 
 
-@hawk.kernel
-def guarded_partials(x: Scalar, terminated: Terminated, acc: Accum[Scalar]):
-    acc.add(x * x)
+guarded_partials = _own_partial("guarded_partials", guarded=True)
 
 
 @hawk.kernel

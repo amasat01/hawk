@@ -4,7 +4,7 @@
 """Every C unit the corpus renders compiles strictly and passes the MISRA
 checker.
 
-For every corpus kernel (``energy`` is a mapreduce, refused by the C target)
+For every corpus kernel (``energy`` is a sum over samples, refused by the C target)
 in both scalar modes, :func:`hawk.embedded.check` runs the C compiler under
 the strict flag set for ``-std=c99`` and ``-std=c11`` and then cppcheck with
 the MISRA C:2012 addon; any diagnostic or finding raises. The rows run under

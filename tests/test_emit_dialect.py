@@ -20,7 +20,7 @@ def test_the_dialect_protocol_names_every_spelling_seam():
                 "tail_break", "sample_index_value", "hoist", "selector_decl", "mix_count",
                 "predicated_rank0", "predicated_tensor", "switch_default_tail", "typed_zero",
                 "leaf", "const", "at", "select", "op", "guard", "store", "scatter_store",
-                "accum_scattered", "store_compensated", "mapreduce_alias", "tape_write",
+                "accum_scattered", "store_compensated", "sample_sum", "tape_write",
                 "finish", "exit_if"}
     assert set(DIALECT_MEMBERS) == expected
     assert len(DIALECT_MEMBERS) == 28

@@ -16,7 +16,7 @@ Three groups:
 * **the deployable fixtures** (session ``built`` fixture, which compiles the
   cuda target too, so these rows run on Linux CI): every in-scope
   ``_deployable.cases(N)`` case against ``_oracle.run_kernel`` on the built
-  host artifact; ``energy`` (a mapreduce) is not in scope, and its refusal,
+  host artifact; ``energy`` (a sum over samples) is not in scope, and its refusal,
   with every other feature the C target refuses, is asserted by name;
 * **the loop / dispatch / finish / derivative corpus** (this file's own
   host-only bundles, one per access class per mode, built once per session):
@@ -72,9 +72,13 @@ import numpy as np
 import pytest
 
 import hawk
-from hawk import Accum, Index, Mutable, Param, Scalar, Terminated, Vector
+from hawk import Index, Mutable, Param, Scalar, Terminated, Vector
 from hawk.embedded import export
 from hawk.ir import HawkError
+from hawk.ir.nodes import AccumWrite, Leaf
+from hawk.ir.ops import make
+from hawk.trace.kernel import Kernel
+from hawk.types import TensorType
 
 N = 96
 SEED = 20261016
@@ -160,7 +164,7 @@ def c_units(tmp_path_factory):
 # --------------------------------------------------------------------------- #
 # group 1: the deployable fixtures against the session `built` bundles (CI)
 # --------------------------------------------------------------------------- #
-#: The fixture cases the C target builds. ``energy`` is a mapreduce (refused,
+#: The fixture cases the C target builds. ``energy`` is a sum over samples (refused,
 #: asserted below); ``scatter_c`` is not a ``cases()`` entry, and its
 #: compensated build is refused below too.
 _OUT_OF_SCOPE = {"energy"}
@@ -203,7 +207,7 @@ def _refused():
     import test_embedded_refusals as R
 
     return {
-        "energy": (D.energy, None, "mapreduce"),
+        "energy": (D.energy, None, "sample_reduction"),
         "scatter_c_compensated": (D.scatter_c, D.COMPENSATED, "compensated"),
         "random": (R.draw, None, "random"),
         "active_set": (R.active, None, "active_set"),
@@ -237,12 +241,17 @@ _SELECTOR = {"disp_r0_k5_pred": 5, "disp_r0_k5_switch": 5, "disp_r1_k3_pred": 3,
              "mix_auto": 3, "mix_switch": 3}
 
 
-@hawk.kernel
-def gp(x: Scalar, terminated: Terminated, acc: Accum[Scalar]):
+def _gp() -> Kernel:
     """Own-column partials under the default mask guard: a masked sample
     keeps the partial the caller handed over (the interface row is ``inout``,
-    init by caller)."""
-    acc.add(x * x)
+    init by caller). Built as IR: hawk 0.6 removed ``Accum.add``, the
+    ``AccumWrite`` it made remains."""
+    x = Leaf("vocab_read", "per_sample", "x", TensorType((), "f64"))
+    return Kernel("gp", (AccumWrite("acc", make("mul", (x, x))),),
+                  {"terminated": Terminated})
+
+
+gp = _gp()
 
 
 @hawk.kernel

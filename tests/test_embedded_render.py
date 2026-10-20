@@ -12,7 +12,7 @@ Rows:
 * **body** — every rank>=1 value is a named C struct value, every fold a CORE
   function inlined above the entry, the SoA pitch is ``n_samples`` (never the
   partition's ``count``), a float32 unit never names ``double``;
-* **corpus** — every corpus kernel (``energy`` is a mapreduce, refused) renders
+* **corpus** — every corpus kernel (``energy`` is a sum over samples, refused) renders
   in both modes, deterministically, with no aether C++ left in it;
 * **sites** — a scattered accumulate is a clamped ``+=``, a runtime-count loop
   clamps its count to the static trip, the guard and the finish epilogue spell

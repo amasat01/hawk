@@ -42,7 +42,7 @@ from ..emit.spelling import (
 )
 from ..ir import HawkError
 from ..ir.nodes import (
-    AT_ROLES,
+    GATHER_ROLES,
     FINISHED_PLANE,
     RAW_KIND,
     At,
@@ -293,9 +293,12 @@ class CDialect:
 
     # -- dispatch -------------------------------------------------------
 
-    def selector_decl(self, r, kname: str, kind_expr: str, k: int) -> str:
+    def selector_decl(self, r, kname: str, kind_expr: str, k: int, *,
+                      in_range: bool = False) -> str:
         """The selector clamped into ``[0, K)`` as an ``int32_t``, over a named
-        ``hawk_int_t`` operand."""
+        ``hawk_int_t`` operand. Always clamped, ``in_range`` or not: the verify
+        pass records every selector as a clamped site, and the clamp is a no-op
+        on an in-range value."""
         if not re.fullmatch(_IDENT, kind_expr):
             kind_expr = self.hoist(r, kind_expr, TensorType((), "i64"))
         x = kind_expr
@@ -370,10 +373,11 @@ class CDialect:
         raise HawkError(f"{self.name!r}: the C target does not lower the "
                         "compensated sink policy; use the plain sink policy")
 
-    def mapreduce_alias(self, r, sink) -> None:
-        """Refused: a mapreduce partial needs eagle's fold."""
-        raise HawkError(f"{self.name!r}: the C target does not lower a mapreduce "
-                        "partial; commit the own column and reduce in the caller")
+    def sample_sum(self, r, sink, column: int) -> None:
+        """Refused (belt and braces; the verify pass refuses it first): a sum
+        over samples needs the wrapper's cross-sample reduction."""
+        raise HawkError(f"{self.name!r}: the C target does not lower a sum over "
+                        "samples; commit the own column and reduce in the caller")
 
     # -- expressions ----------------------------------------------------
 
@@ -388,7 +392,7 @@ class CDialect:
             return name
         if leaf.role == "terminated":
             return self._mask(name)
-        if leaf.role in AT_ROLES:
+        if leaf.role in GATHER_ROLES:
             # Read only through at(): the renderer still visits the plane leaf,
             # whose text no expression uses, and never names it (:meth:`declare`
             # keeps a belt-and-braces check).
