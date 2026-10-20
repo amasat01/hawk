@@ -43,15 +43,11 @@ jobs:
         with:
           path: hawk
 
-      - uses: actions/checkout@v7
-        with:
-          repository: amasat01/aether
-          path: aether
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: aether, path: aether, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
 
-      - uses: actions/checkout@v7
-        with:
-          repository: amasat01/eagle
-          path: eagle
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: eagle, path: eagle, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
 
       - uses: actions/setup-python@v7
         with:
@@ -151,18 +147,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: hawk
-      - uses: actions/checkout@v7
-        with:
-          repository: amasat01/aether
-          path: aether
-      - uses: actions/checkout@v7
-        with:
-          repository: amasat01/eagle
-          path: eagle
-      - uses: actions/checkout@v7
-        with:
-          repository: amasat01/raptor
-          path: raptor
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: aether, path: aether, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: eagle, path: eagle, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: raptor, path: raptor, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
       - uses: actions/download-artifact@v8
         with:
           name: dist-${{ needs.build.outputs.tree }}
@@ -327,23 +317,14 @@ jobs:
         with:
           path: hawk
 
-      - uses: actions/checkout@v7
-        with:
-          repository: amasat01/aether
-          path: aether
-          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: aether, path: aether, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
 
-      - uses: actions/checkout@v7
-        with:
-          repository: amasat01/eagle
-          path: eagle
-          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: eagle, path: eagle, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
 
-      - uses: actions/checkout@v7
-        with:
-          repository: amasat01/raptor
-          path: raptor
-          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: raptor, path: raptor, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
 
       - uses: actions/setup-python@v7
         with:
