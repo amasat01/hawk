@@ -32,21 +32,23 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: hawk
-      # companion eagle: same-named branch if it exists there, else main
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      # companion site (amasat01.github.io): same-named branch if it exists there, else main
+      # companion site (amasat01.github.io): the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: amasat01.github.io
           path: site
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
       - name: documented numbers and family visuals match the committed cards
         run: bash hawk/tools/docs_fresh.sh eagle site
   test:
@@ -80,26 +82,29 @@ jobs:
       # hawk/_roots.py) resolves header roots from $HAWK_AETHER_INCLUDE /
       # $HAWK_EAGLE_INCLUDE directly — no cmake --install step needed, these
       # just need to point at the two repos' source roots.
-      # companion aether: same-named branch if it exists there, else main
+      # companion aether: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: aether
           path: aether
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion eagle: same-named branch if it exists there, else main
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion raptor: same-named branch if it exists there, else main
+      # companion raptor: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: raptor
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
       - uses: actions/setup-python@v7
         with:
@@ -212,26 +217,29 @@ jobs:
       # hawk/_roots.py) resolves header roots from $HAWK_AETHER_INCLUDE /
       # $HAWK_EAGLE_INCLUDE directly — no cmake --install step needed, these
       # just need to point at the two repos' source roots.
-      # companion aether: same-named branch if it exists there, else main
+      # companion aether: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: aether
           path: aether
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion eagle: same-named branch if it exists there, else main
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion raptor: same-named branch if it exists there, else main
+      # companion raptor: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: raptor
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
       - uses: actions/setup-python@v7
         with:
@@ -342,26 +350,29 @@ jobs:
         with:
           path: hawk
 
-      # companion aether: same-named branch if it exists there, else main
+      # companion aether: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: aether
           path: aether
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion eagle: same-named branch if it exists there, else main
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion raptor: same-named branch if it exists there, else main
+      # companion raptor: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: raptor
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
       - uses: actions/cache@v6
         with:
@@ -439,26 +450,29 @@ jobs:
       # hawk/_roots.py) resolves header roots from $HAWK_AETHER_INCLUDE /
       # $HAWK_EAGLE_INCLUDE directly — no cmake --install step needed, these
       # just need to point at the two repos' source roots.
-      # companion aether: same-named branch if it exists there, else main
+      # companion aether: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: aether
           path: aether
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion eagle: same-named branch if it exists there, else main
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion raptor: same-named branch if it exists there, else main
+      # companion raptor: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: raptor
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
       - uses: actions/setup-python@v7
         with:
@@ -572,19 +586,29 @@ jobs:
         with:
           path: hawk
 
-      # companion aether: same-named branch if it exists there, else main
+      # companion aether: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: aether
           path: aether
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
-      # companion eagle: same-named branch if it exists there, else main
+      # companion eagle: the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
           repo: eagle
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
+
+      # companion raptor: used only while its version is not on PyPI yet (a release in flight)
+      - uses: ./hawk/.github/actions/companion
+        with:
+          repo: raptor
+          path: raptor
+          token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
+          pins: hawk/.github/companions
 
       - uses: actions/setup-python@v7
         with:
@@ -616,6 +640,12 @@ jobs:
           "$RUNNER_TEMP/seal/bin/pip" install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
           (cd "$GITHUB_WORKSPACE/aether/dsc" && "$RUNNER_TEMP/seal/bin/python" -m aether_dsc.seal)
           pip install --quiet "$GITHUB_WORKSPACE/aether/dsc"
+          # raptor-core from PyPI like any user, unless the sibling's version is not released yet
+          CORE_V=$(sed -n 's/^version = "\(.*\)"/\1/p' raptor/pyproject.toml)
+          if ! pip download --quiet --no-deps --only-binary=:all: -d "$RUNNER_TEMP/rc" "raptor-core==$CORE_V"; then
+            echo "raptor-core $CORE_V: not on PyPI yet, installing the sibling checkout"
+            pip install --quiet ./raptor
+          fi
           pip install -v -Ccmake.define.EAGLE_PYTHON_WARN_AS_ERR=ON dist/raptor_eagle-*.tar.gz
           pip install -v -Ccmake.define.HAWK_WARN_AS_ERR=ON dist/raptor_hawk-*.tar.gz
           pip check

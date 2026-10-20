@@ -292,15 +292,30 @@ _IDENTITY_MEMO_LIMIT = 32
 IDENTITY_TIMEOUT_S = 180
 
 
-def aether_include() -> str:
-    """The aether header root (:func:`hawk._roots.aether_include`)."""
+def _strict_aether_include() -> str:
+    """The aether header root, or a :class:`~hawk.ir.HawkError` when no real
+    tree resolves (:func:`hawk._roots.aether_include`)."""
     return _resolve(_roots.aether_include)
 
 
-def eagle_include() -> str:
-    """The eagle header root — the directory ``plugin/gref_abi.h`` hangs off
-    (:func:`hawk._roots.eagle_include`)."""
+def _strict_eagle_include() -> str:
+    """The eagle header root, or a :class:`~hawk.ir.HawkError` when no real
+    tree resolves (:func:`hawk._roots.eagle_include`)."""
     return _resolve(_roots.eagle_include)
+
+
+def aether_include() -> str:
+    """The aether header root: the resolved tree, else the sealed payload's
+    served root (a wheel install carries no C++ header tree), like
+    :func:`include_flags`."""
+    return _resolved_or_sealed(_strict_aether_include)
+
+
+def eagle_include() -> str:
+    """The eagle header root — the directory ``plugin/gref_abi.h`` hangs off:
+    the resolved tree, else the sealed payload's served root, like
+    :func:`include_flags`."""
+    return _resolved_or_sealed(_strict_eagle_include)
 
 
 def _resolve(fn):
@@ -360,11 +375,10 @@ def _pip_only_include_root() -> str:
 
 
 def _resolved_or_sealed(resolver) -> str:
-    """``resolver()`` (:func:`aether_include` or :func:`eagle_include`), or
-    the pip-only served root when it raises. Scoped to :func:`include_flags`
-    alone: the resolvers themselves stay unchanged and keep raising for
-    every other caller — this is the one place a real compiler subprocess
-    needs an ``-I`` root and has nowhere else to get one."""
+    """``resolver()`` (a strict root resolver), or the pip-only served root
+    when it raises: the one place a compiler needs an ``-I`` root and has
+    nowhere else to get one. Sealing the payload and the provenance marker
+    use the strict resolvers directly."""
     try:
         return resolver()
     except HawkError:
@@ -377,14 +391,14 @@ def include_flags(*, aether_root: str | None = None,
 
     ``aether_root``/``eagle_root`` bypass the resolvers entirely when given:
     a caller that already knows its root (a sealed payload's served
-    directory) must never call :func:`aether_include`/:func:`eagle_include`
+    directory) must never call the root resolvers
     to confirm it, since a wheel-only install carries no C++ header tree for
     those resolvers to find. Omitted, this falls back to the sealed
     payload's own served directory for whichever root does not resolve."""
     resolved_aether = (aether_root if aether_root is not None
-                      else _resolved_or_sealed(aether_include))
+                      else _resolved_or_sealed(_strict_aether_include))
     resolved_eagle = (eagle_root if eagle_root is not None
-                      else _resolved_or_sealed(eagle_include))
+                      else _resolved_or_sealed(_strict_eagle_include))
     return ["-I", resolved_aether, "-I", resolved_eagle]
 
 
@@ -838,8 +852,11 @@ def device_flags(*, arch: str = "", target: str = "ptx", extra=(),
         raise HawkError(
             f"device_flags(): arch {resolved} is virtual (PTX only); a CUBIN "
             "needs a real sm_<N> arch")
+    # ptxas runs only for a CUBIN; `-v` has it report each kernel's registers,
+    # spills and stack on stderr (:func:`hawk.compile.drivers.parse_ptxas_info`).
+    verbose = ["-Xptxas", "-v"] if target == "cubin" else []
     return [f"-{target}", f"-std={DEVICE_STD}", f"-arch={resolved}",
-            f"-{level}", "-Xptxas", f"-{level}", *include_flags(), *extra]
+            f"-{level}", "-Xptxas", f"-{level}", *verbose, *include_flags(), *extra]
 
 
 #: ``nvcc --version``'s own release line, e.g. ``"Cuda compilation tools,

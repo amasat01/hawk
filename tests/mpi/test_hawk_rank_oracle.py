@@ -192,7 +192,7 @@ def test_the_artifact_under_test_is_a_hawk_emission(units):
     )
     for access, (_directory, sidecar) in units.items():
         assert sidecar["aether_abi"] == "aether-abi/2", access
-        assert sidecar["schema_version"] == 2, access
+        assert sidecar["schema_version"] == 3, access
         for key in ("digest", "aether_include", "eagle_include", "host_entry",
                     "host_artifact"):
             assert sidecar.get(key), f"{access}: sidecar carries no {key!r}"

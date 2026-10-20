@@ -20,7 +20,7 @@ import pytest
 import hawk
 import hawk.math as m
 from hawk.artifact import build_bundle
-from hawk.diff import jvp, vjp
+from hawk.diff import vjp
 from hawk.emit import SCALAR_MODES, compose, render_source, scalar_mode
 from hawk.emit.backend import _UNBUILT_MODES
 from hawk.ext import sink_policy
@@ -30,15 +30,15 @@ ROWS = 4
 
 
 @hawk.kernel
-def row_max(scores: hawk.Table["row":ROWS], peak: hawk.Reduce("max")):
-    """softmax's first pass as a mapreduce sink: the row's largest score."""
-    peak.contribute(scores.at(row=m.sample_index()))
+def row_max(scores: hawk.Table["row":ROWS], peak: hawk.Mutable[hawk.Scalar]):
+    """softmax's first pass as a max over samples: the row's largest score."""
+    peak = hawk.all_samples(scores.at(row=m.sample_index())).max()
 
 
 @hawk.kernel
-def row_sum(scores: hawk.Table["row":ROWS], total: hawk.Reduce("sum")):
+def row_sum(scores: hawk.Table["row":ROWS], total: hawk.Mutable[hawk.Scalar]):
     """The pass that DOES carry the gradient — the control beside the refusal."""
-    total.contribute(scores.at(row=m.sample_index()))
+    total = hawk.all_samples(scores.at(row=m.sample_index())).sum()
 
 
 @hawk.kernel
@@ -47,47 +47,65 @@ def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
 
 
 # --------------------------------------------------------------------------- #
-# (a) Reduce(max) has no reverse rule, and the refusal says which rule.
+# (a) a max over samples has no reverse rule, and the refusal says which rule.
 # --------------------------------------------------------------------------- #
 def test_the_reverse_of_a_max_reduction_is_refused_naming_the_rule():
     """Needs the ``sink.op != "sum"`` guard in ``hawk/diff/transform._seed``,
-    or a ``max`` partial is seeded with a broadcast adjoint exactly like a
-    ``sum``::
+    or a ``max`` is seeded with a broadcast adjoint exactly like a ``sum``::
 
         Failed: DID NOT RAISE <class 'hawk.ir.nodes.HawkError'>
 
-    and ``vjp(row_max)`` returned a gradient — a number, for a fold whose
+    and ``vjp(row_max)`` returned a gradient — a number, for a max whose
     subgradient is ambiguous at every tie."""
     with pytest.raises(HawkError) as excinfo:
         vjp(row_max)
     message = str(excinfo.value)
-    for needle in ("mapreduce_partial", "op='max'", "'sum'", "subgradient",
-                   "FORWARD-ONLY"):
+    for needle in ("max over samples", "subgradient", "reduce with a sum"):
         assert needle in message, (
             f"the refusal must name the rule that is missing and why; {needle!r} "
             f"is absent from: {message}")
 
 
 def test_the_sum_pass_beside_it_still_derives():
-    """Non-vacuity: the refusal is about the ``max`` FOLD, not about mapreduce
-    sinks. A row that refused both would be an implementation gap wearing a
+    """Non-vacuity: the refusal is about the ``max``, not about reductions
+    over samples. A row that refused both would be an implementation gap wearing a
     principle's clothes."""
-    assert vjp(row_sum), "a rank-0 'sum' partial reverses to a broadcast"
-    assert jvp(row_max), (
-        "forward mode is unaffected: a directional derivative of a max fold is "
-        "its own value's, and softmax's max pass is FORWARD-only, not undefined")
+    assert vjp(row_sum), "a rank-0 'sum' reverses to a broadcast"
 
 
-def test_a_wide_max_reduction_is_refused_for_its_shape_too():
-    """The rule HAWK defines is the RANK-0 'sum' one; both halves are named."""
-    from hawk.ir import Leaf, MapreducePartial
-    from hawk.types import TensorType
+# --------------------------------------------------------------------------- #
+# (a2) The retired Accum / Reduce / .add / .contribute / .write forms refuse,
+# each naming its replacement.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("name, needle", [
+    ("Accum", "hawk.all_samples(bins)[key] += term"),
+    ("Reduce", "total = hawk.all_samples(term).sum()"),
+])
+def test_a_retired_declaration_refuses_naming_its_replacement(name, needle):
+    with pytest.raises(HawkError, match=f"{name} is gone") as excinfo:
+        getattr(hawk, name)
+    assert needle in str(excinfo.value)
 
-    v3 = TensorType((3,), "f64")
-    wide = MapreducePartial("total", Leaf("vocab_read", "vec_in", "v", v3),
-                            "sum", v3)
-    with pytest.raises(HawkError, match="no reverse rule"):
-        vjp((wide,))
+
+def test_a_retired_add_refuses_naming_its_replacement():
+    with pytest.raises(HawkError, match=r"'out'.*all_samples\(out\)\[key\] \+= v"):
+        @hawk.kernel
+        def bad(x: hawk.Scalar, lane: hawk.Index, out: hawk.Mutable[hawk.Scalar]):
+            out.add(x, at=lane)
+
+
+def test_a_retired_write_refuses_naming_its_replacement():
+    with pytest.raises(HawkError, match=r"'out'.*all_samples\(out\)\[key\] = v"):
+        @hawk.kernel
+        def bad(x: hawk.Scalar, lane: hawk.Index, out: hawk.WideOut[hawk.Scalar]):
+            out.write(x, at=lane)
+
+
+def test_a_retired_contribute_refuses_naming_its_replacement():
+    with pytest.raises(HawkError, match=r"'out'.*out = hawk.all_samples\(v\).sum\(\)"):
+        @hawk.kernel
+        def bad(x: hawk.Scalar, out: hawk.Mutable[hawk.Scalar]):
+            out.contribute(x)
 
 
 # --------------------------------------------------------------------------- #

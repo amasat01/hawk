@@ -31,9 +31,9 @@ def current_payload() -> aether_dsc.Payload:
     `aether_dsc.payload()` (the shipped blob) is used when
     `$HAWK_AETHER_INCLUDE` is unset and a blob exists; otherwise a fresh
     :func:`aether_dsc.seal` is built from this process's own resolved
-    roots: `hawk.compile.toolchain.aether_include()`, the aether
+    roots: the strict aether resolver, the aether
     checkout's `rtc/` shims (via `hawk._roots.WORKSPACE`), and eagle's
-    `plugin/gref_layout.h` (`hawk.compile.toolchain.eagle_include()`).
+    `plugin/gref_layout.h` (the strict eagle resolver).
     """
     global _PAYLOAD_MEMO
     if _PAYLOAD_MEMO is not None:
@@ -47,9 +47,9 @@ def current_payload() -> aether_dsc.Payload:
             pass  # no shipped blob in this install -> fall through to seal()
 
     _PAYLOAD_MEMO = aether_dsc.seal(
-        aether_root=tc.aether_include(),
+        aether_root=tc._strict_aether_include(),
         rtc_dir=_roots.WORKSPACE / "aether" / "rtc",
-        layout_header=Path(tc.eagle_include()) / "plugin" / "gref_layout.h",
+        layout_header=Path(tc._strict_eagle_include()) / "plugin" / "gref_layout.h",
     )
     return _PAYLOAD_MEMO
 

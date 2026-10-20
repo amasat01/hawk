@@ -162,7 +162,8 @@ def bundle64(tmp_path_factory, cache_dir):
 
 
 def _run(built, kernel, target, values: dict, dtype) -> dict:
-    """One launch of ``kernel`` over ``values``; every mutable plane back as numpy."""
+    """One launch of ``kernel`` over ``values``; every mutable plane back as numpy,
+    and every sample_sum plane as its row sums (plane plus compensation)."""
     import eagle.exec as eexec
     from eagle import plan as eplan
 
@@ -172,9 +173,14 @@ def _run(built, kernel, target, values: dict, dtype) -> dict:
     sidecar = sidecar_of(built, kernel.name)
     widths = sidecar.get("arg_widths", {})
     bound, outs = {}, {}
+    summed = set(sidecar.get("cells", ()))
     for role, name in kernel.arg_spec:
         if role == "mutable":
             outs[name] = bound[name] = xp.zeros(_shape(widths, name), dtype=dtype)
+        elif role == "accum_out":
+            bound[name] = xp.full(-(-N // 32), np.nan, dtype=dtype)
+            if name in summed:
+                outs[name] = bound[name]
         elif role == "terminated":
             bound[name] = xp.zeros(N, dtype=bool)
         elif role == "uniform":
@@ -189,7 +195,11 @@ def _run(built, kernel, target, values: dict, dtype) -> dict:
         plugin, structure = (L.device_plugin(built.directory, kernel.name, sidecar),
                              eexec.DeviceKernel)
     eplan.plan(plugin, structure=structure).bind(**bound).launch()
-    return {n: np.asarray(a.get() if target == "cuda" else a, dtype=np.float64)
+
+    def host(a):
+        return np.asarray(a.get() if target == "cuda" else a, dtype=np.float64)
+
+    return {n: host(a) + (host(bound[n + "_comp"]) if n in summed else 0.0)
             for n, a in outs.items()}
 
 
@@ -250,7 +260,8 @@ def _against_a_difference(built, parent, child, chain, target):
     widths = sidecar_of(built, child.name).get("arg_widths", {})
     roles = _roles(child)
     base = _draw(child, 7 + len(chain), widths)
-    sinks = [n for r, n in parent.arg_spec if r == "mutable"]
+    summed = set(sidecar_of(built, parent.name).get("cells", ()))
+    sinks = [n for r, n in parent.arg_spec if r == "mutable" or n in summed]
     wanted = _floats(parent)
     cell = lambda n: roles[n] in ("uniform", "lookup")
 
@@ -277,7 +288,9 @@ def _against_a_difference(built, parent, child, chain, target):
                                        rtol=0, atol=_tol(ref, 2e-6))
     else:
         shapes = {s: call(base)[s].shape for s in sinks}
-        seeds = {s: rng.normal(size=shapes[s]) for s in sinks}
+        # a summed sink's seed is one value: the adjoint of a sum over samples
+        seeds = {s: float(rng.normal()) if s in summed else rng.normal(size=shapes[s])
+                 for s in sinks}
         for s, v in seeds.items():
             base[_new(child, parent, "bar", s)] = v
         got = _run(built, child, target, base, np.float64)
@@ -293,10 +306,14 @@ def _against_a_difference(built, parent, child, chain, target):
                 plus, minus = (call(_bump(base, {n: one}, 1.0)),
                                call(_bump(base, {n: one}, -1.0)))
                 ref = sum((seeds[s] * (plus[s] - minus[s])).reshape(-1, N).sum(axis=0)
-                          for s in sinks) / (2 * H)
+                          for s in sinks if s not in summed) / (2 * H)
                 got_r = grad if r is None else grad[r]
-                if cell(n):       # a parameter's gradient is per sample; the caller sums it
-                    ref, got_r = ref.sum(), got_r.sum()
+                if cell(n) or summed:
+                    # a parameter's gradient is summed over samples, and a summed
+                    # sink's difference holds its row's samples together: totals
+                    ref = np.sum(ref) + sum(np.sum(seeds[s] * (plus[s] - minus[s]))
+                                            for s in summed) / (2 * H)
+                    got_r = got_r.sum()
                 np.testing.assert_allclose(got_r, ref, rtol=0, atol=_tol(ref, 2e-6 * N))
 
 

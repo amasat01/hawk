@@ -22,7 +22,7 @@ catch a miss.
 UNLIKE the previous code generator's contracts module (which pinned only
 :data:`SCHEMA_VERSION`, the
 four-way cross-repo floor), HAWK carries the MAX twin as well
-(:data:`MAX_SCHEMA_VERSION`) because HAWK writes ONLY schema-v2 documents — the number a
+(:data:`MAX_SCHEMA_VERSION`) because HAWK writes ONLY schema-v3 documents (v2 with ``cells`` in place of ``sample_sums``) — the number a
 v2 document actually declares is the ceiling, not the
 floor.
 """
@@ -45,7 +45,7 @@ SCHEMA_VERSION = 1
 #: Emitting ``SCHEMA_VERSION`` (1) into a v2 document is refused by
 #: ``raptor.schema.manifest.check_execution_axis``; emitting this value
 #: without the exec keys is refused by the same function's v2 arm.
-MAX_SCHEMA_VERSION = 2
+MAX_SCHEMA_VERSION = 3
 
 #: The by-value POD layout contract tag HAWK stamps on every artifact.
 #: Copy of ``eagle.abi.ABI_TAG_V2`` (``eagle/python/eagle/abi.py``),

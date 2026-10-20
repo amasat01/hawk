@@ -155,6 +155,19 @@ from .trace.value import random_uniform as _uniform01
 from .trace.value import round as round  # noqa: A004 - numpy's spelling
 from .trace.value import vec as _vec
 
+
+
+def sum(x: Any, axis: Any = None) -> Value:  # noqa: A001 - numpy's spelling
+    """``np.sum`` over a value's own axes (``"components"``, ``"rows"``,
+    ``"columns"`` or a number); the sum over samples is ``hawk.all_samples``."""
+    return Value(node_of(x)).sum(axis)
+
+
+def mean(x: Any, axis: Any = None) -> Value:
+    """``np.mean`` over a value's own axes, as :func:`sum`."""
+    return Value(node_of(x)).mean(axis)
+
+
 #: Familiar spellings for the two-argument, NaN-ignoring element-wise
 #: min/max (``np.fmin``/``np.fmax``, never the array reductions) —
 #: aliases of :func:`hawk.trace.minimum`/:func:`~hawk.trace.maximum`.
@@ -267,13 +280,13 @@ __all__ = [
     "cosh", "cross", "dispatch", "dot", "erf", "erfc",
     "exp", "exp2", "expm1", "fdim", "floor", "fma", "fmod", "hypot", "int32", "isfinite",
     "isinf", "isnan", "land", "lnot", "log", "log10", "log1p", "log2", "lor",
-    "max", "maximum", "min", "minimum",
+    "max", "maximum", "mean", "min", "minimum",
     "n_samples", "norm", "outer", "pow", "power", "quat_conj", "quat_mul",
     "quat_recip", "quat_rotate", "random_bernoulli", "random_exponential",
     "random_lognormal", "random_multivariate_normal", "random_normal",
     "random_poisson1", "random_uniform", "random_uniform_int", "real", "remainder",
     "rint", "round", "rsqrt", "sample_index", "select", "sign", "sin", "sinh",
-    "spacing", "split_index", "sqrt", "take", "tan", "tanh", "transpose", "trunc", "uint32",
+    "spacing", "split_index", "sqrt", "sum", "take", "tan", "tanh", "transpose", "trunc", "uint32",
     "vec", "vsum", "where",
 ]
 

@@ -26,7 +26,6 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
-from hawk import Accum as _Accum
 from hawk import Mutable as _Mutable
 from hawk import Scalar as _Scalar
 from hawk import Terminated as _Terminated
@@ -182,14 +181,6 @@ def test_a_mutable_read_through_prior_but_never_committed_refuses():
         @_hkernel
         def bad(a: _Scalar, r: _Mutable[_Scalar]):  # noqa: F841
             b = a + r  # noqa: F841
-
-
-def test_prior_on_a_scattered_or_reduced_plane_refuses():
-    with pytest.raises(HawkError, match="scattered or reduced"):
-        @_hkernel
-        def bad(a: _Scalar, acc: _Accum[_Scalar]):  # noqa: F841
-            b = a + acc.prior
-            acc.add(b)
 
 
 def test_the_derivative_of_a_prior_recurrence_refuses():

@@ -26,13 +26,11 @@ from typing import Any
 from ..ir import Const, HawkError, Leaf, Node, Quantity, Walk, canonical, make
 from ..ir.nodes import Assign
 from ..types import Slot, TensorType
-from . import astpass
+from . import astpass, reduce
 from .decl import Plane, resolve, role_of
 from .value import (
-    AccumRef,
     FinishRefusal,
     MutableRef,
-    ReduceRef,
     TableRef,
     TerminatedRef,
     Value,
@@ -43,7 +41,7 @@ from .value import (
 _LEAF_KIND = {"per_sample": "vocab_read", "vec_in": "vocab_read",
               "mat_in": "vocab_read", "uniform": "uniform",
               "terminated": "terminated"}
-_SINK_FORMS = ("mutable", "accum", "reduce", "wide_out")
+_SINK_FORMS = ("mutable", "wide_out")
 
 #: per-process AST-transform memo: the ``ast`` pass is a PURE function of
 #: the source and the declared sink/mutable sets, so retracing the SAME
@@ -59,7 +57,7 @@ class Kernel:
     """A traced kernel: its sink set, its canonical walk and its declarations."""
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
-                 "time", "time_step")
+                 "time", "time_step", "jump")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
@@ -84,6 +82,11 @@ class Kernel:
         #: by the taping twin, never by the plain kernel's emission.
         self.time: str | None = None
         self.time_step: str | None = None
+        #: The width of the derivative through the kernel's switches
+        #: (``@hawk.kernel(jump=...)``): a number, ``"auto"`` or a Param
+        #: name; ``None`` (a switch has derivative zero) otherwise. Read by
+        #: :mod:`hawk.diff`, never by the kernel's own emission.
+        self.jump: Any = None
 
     @property
     def arg_spec(self) -> tuple[tuple[str, str], ...]:
@@ -103,7 +106,7 @@ class Kernel:
 
 def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
            steps: Any = None, time: str | None = None,
-           time_step: str | None = None) -> Any:
+           time_step: str | None = None, jump: Any = None) -> Any:
     """Trace ``fn`` into a :class:`Kernel`. Refusals fire here.
 
     ``kind`` supplies the kernel's :class:`hawk.ext.Kind` (vocabulary,
@@ -131,16 +134,34 @@ def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
     them to promote the step size to a per-sample plane and to write the
     time plane in index form. A time plane the body updates must update as
     ``t = t + dt`` (checked here, at decoration); one the body does not
-    declare is minted by the twin."""
+    declare is minted by the twin.
+
+    ``jump`` makes :func:`hawk.diff.vjp`/:func:`~hawk.diff.jvp` differentiate
+    the kernel's parameter-dependent ``if``/``where`` switches as the
+    smoothed loss: a comparison ``l < r`` passes on the jump between its
+    branches, spread over ``|l - r| < sqrt(5) * jump`` (Epanechnikov kernel
+    of standard deviation ``jump``). ``jump=`` is the width in the units of
+    the compared values (about 2% of their span), or the name of a
+    ``Param[Scalar]`` holding it; ``"auto"`` picks it per batch from the
+    spread of the compared values. The primal kernel is unchanged."""
     if fn is None:
         def decorate(f: Callable[..., None]) -> Any:
-            return kernel(f, kind=kind, steps=steps, time=time, time_step=time_step)
+            return kernel(f, kind=kind, steps=steps, time=time, time_step=time_step,
+                          jump=jump)
         return decorate
     if time is not None and time_step is None:
         raise HawkError(
             f"kernel {fn.__name__!r}: time={time!r} needs time_step=, the "
             "parameter the time plane advances by")
     built = _kernel(fn, kind, steps)
+    if jump is not None:
+        from ..diff.jump import check_jump
+
+        planes = (built.step or built).planes
+        checked = check_jump(fn.__name__, jump, planes)
+        for k in (built, built.step, built.one_step):
+            if k is not None:
+                k.jump = checked
     if time_step is not None:
         from ..diff.tape import check_time
 
@@ -193,10 +214,12 @@ def resolve_dispatch(kernel: Kernel, policies: dict[str, str]) -> Kernel:
     resolved = Kernel(step.name, with_policies(step.sinks, chosen), step.planes,
                       kind=step.kind)
     resolved.time, resolved.time_step = step.time, step.time_step
+    resolved.jump = step.jump
     if kernel.step is None or "segmented" in chosen.values():
         return resolved
     fused = default_steps(resolved)
     fused.time, fused.time_step = step.time, step.time_step
+    fused.jump = step.jump
     return fused
 
 
@@ -225,8 +248,10 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
     vocab, scope, own, params = _declarations(fn, resolved_kind)
     planes, args, sink_names, mutables, finishes = _bound_planes(
         fn, params, own, vocab, resolved_kind)
+    scope[astpass.REFS] = args
     traced = _retrace(fn, scope, sink_names, mutables, finishes=finishes)
     _call_finishing(traced, fn, args)
+    _retag_by_key(planes, args)
     finished = _finished(fn.__name__, params, args, finishes, resolved_kind)
     sinks = _collect(fn.__name__, params, args, sink_names,
                      finishing=bool(finished)) + finished
@@ -234,6 +259,15 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
     if extra is not None:
         sinks = sinks + (extra,)
     return Kernel(fn.__name__, sinks, planes, kind=resolved_kind)
+
+
+def _retag_by_key(planes: dict[str, Any], args: dict[str, Any]) -> None:
+    """A plane a body wrote by key (``hawk.all_samples(y)[key] (+)= v``) is
+    shared, so its declaration becomes the matching accumulate / store plane."""
+    for name, ref in args.items():
+        kind = getattr(ref, "by_key_kind", None)
+        if kind is not None:
+            planes[name] = Plane(kind, planes[name].ttype)
 
 
 def _declarations(fn: Callable[..., Any], kind: Any) -> tuple:
@@ -255,7 +289,7 @@ def _bound_planes(fn: Callable[..., Any], params: list[str], own: dict[str, Any]
     ``mutables`` names every Mutable AND WideOut OWN-COLUMN parameter: both
     forms get the SAME plain-variable ast-front-end treatment
     (:mod:`hawk.trace.astpass`) — a WideOut's SCATTER write
-    (``buf.write(v, at=lane)``) is a method call, untouched either way."""
+    (``hawk.all_samples(buf)[k] = v``) is a subscript store, untouched either way."""
     planes = _resolve_planes(fn, params, own, vocab, kind)
     for name, plane in vocab.items():
         if (name not in planes and isinstance(plane, Plane)
@@ -288,9 +322,11 @@ def _returned_kernel(fn: Callable[..., Any], kind: Any) -> Kernel:
         )
     planes, args, sink_names, mutables, finishes = _bound_planes(
         fn, params, own, vocab, kind)
+    scope[astpass.REFS] = args
     traced = _retrace(fn, scope, sink_names, mutables, returns_value=True,
                       finishes=finishes)
     out = _call_finishing(traced, fn, args)
+    _retag_by_key(planes, args)
     if not isinstance(out, Value):
         raise HawkError(
             f"kernel {fn.__name__!r}: the body returned {type(out).__name__} "
@@ -555,10 +591,6 @@ def _bind(name: str, plane: Plane | Quantity) -> Any:
     role = role_of(plane)
     if plane.form == "mutable":
         return MutableRef(name, plane.ttype)
-    if plane.form == "accum":
-        return AccumRef(name, plane.ttype)
-    if plane.form == "reduce":
-        return ReduceRef(name, plane.ttype, plane.op)
     if plane.form == "wide_out":
         return WideOutRef(name, plane.ttype)
     if plane.form == "terminated":
@@ -604,6 +636,8 @@ def _retrace(fn: Callable[..., None], scope: dict[str, Any],
     scope[astpass.SELECT_HELPER] = astpass.merge
     scope[astpass.LOOP_HELPER] = astpass.open_loop
     scope[astpass.SETITEM_HELPER] = astpass.set_component
+    scope[astpass.MAXMIN_HELPER] = reduce.maxmin
+    scope[astpass.VIEWSTORE_HELPER] = reduce.viewstore
     exec(compiled, scope)  # the author's rewritten body
     return scope[fn.__name__]
 
@@ -627,6 +661,6 @@ def _collect(name: str, params: list[str], args: dict[str, Any],
     if not sinks and not finishing:
         raise HawkError(
             f"kernel {name!r}: declares no output plane; a kernel commits through a "
-            "Mutable / Accum / Reduce parameter"
+            "Mutable / WideOut parameter"
         )
     return tuple(sinks)

@@ -43,8 +43,12 @@ def test_device_flags_swaps_ptx_for_cubin():
     cubin = tc.device_flags(arch=real_arch(), target="cubin")
     assert "-ptx" in ptx and "-cubin" not in ptx
     assert "-cubin" in cubin and "-ptx" not in cubin
-    # every other flag is unchanged -- only the target flag itself differs.
-    assert [f for f in ptx if f != "-ptx"] == [f for f in cubin if f != "-cubin"]
+    # every other flag is unchanged -- only the target flag itself differs, and
+    # a cubin (the one target ptxas runs for) adds the ptxas report flags.
+    i = cubin.index("-v")
+    assert cubin[i - 1] == "-Xptxas" and "-v" not in ptx
+    rest = cubin[:i - 1] + cubin[i + 1:]
+    assert [f for f in ptx if f != "-ptx"] == [f for f in rest if f != "-cubin"]
 
 
 def test_device_flags_rejects_an_unknown_target():

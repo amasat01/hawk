@@ -7,7 +7,7 @@ A :class:`Value` wraps one IR node; every operator mints an
 :func:`hawk.ir.ops.make` call, building the DAG as the body runs once. Free
 functions below cover what operators can't spell (``norm``, ``dot``,
 ``cross``, ``select``); three REF objects cover the write side (a mutable
-plane, an accumulate target, a mapreduce sink) plus a :class:`TableRef` read
+plane, a wide plane) plus a :class:`TableRef` read
 with ``t.at(i)``. A :class:`Value` has no truth value — control flow reaches
 the IR only through the ``ast`` pass's ``select`` rewrite.
 """
@@ -24,7 +24,7 @@ from ..ir.nodes import (
     Assign,
     Dispatch,
     Finish,
-    MapreducePartial,
+    ReduceSamples,
     RoleConst,
     SampleIndex,
     WideWrite,
@@ -252,6 +252,10 @@ class Value:
                 "a bool is a mask, not an address")
         if isinstance(k, int):
             return _op("component", self, literal=k)
+        if not self.node.ttype.shape and isinstance(k, Value):
+            raise HawkError(
+                "x[key] indexes a component and a rank-0 value has none; samples "
+                "are indexed on the view: hawk.all_samples(x)[key]")
         node = k.node if isinstance(k, Value) else k
         if isinstance(node, Node) and node.ttype.shape == ()\
                 and node.ttype.dtype in ("i32", "i64"):
@@ -277,6 +281,44 @@ class Value:
             ". This call is in a plain-python helper, whose body the "
             "pass never sees: return the component values and let the kernel "
             "body write them, or build the whole value at once with vec(...)")
+
+    def sum(self, axis: Any = None) -> Value:
+        """The sum over the value's own ``axis`` (None: every entry)."""
+        from .reduce import reduce_own
+        return reduce_own(self, "sum", axis)
+
+    def max(self, axis: Any = None) -> Value:
+        """The maximum over the value's own ``axis`` (None: every entry)."""
+        from .reduce import reduce_own
+        return reduce_own(self, "max", axis)
+
+    def min(self, axis: Any = None) -> Value:
+        """The minimum over the value's own ``axis`` (None: every entry)."""
+        from .reduce import reduce_own
+        return reduce_own(self, "min", axis)
+
+    def mean(self, axis: Any = None) -> Value:
+        """The mean over the value's own ``axis`` (None: every entry)."""
+        from .reduce import reduce_own
+        return reduce_own(self, "mean", axis)
+
+    @property
+    def components(self) -> Any:
+        """A vector's components, by name: ``v.components[k]``."""
+        from .reduce import view
+        return view(self, "components")
+
+    @property
+    def rows(self) -> Any:
+        """A matrix's rows, by name: ``m.rows[r]`` is the row as a vector."""
+        from .reduce import view
+        return view(self, "rows")
+
+    @property
+    def columns(self) -> Any:
+        """A matrix's columns, by name: ``m.columns[c]`` is the column as a vector."""
+        from .reduce import view
+        return view(self, "columns")
 
     def __bool__(self) -> bool:
         raise HawkError(
@@ -631,6 +673,10 @@ class TableRef:
         """The ``at(expr)``: an absolute-index read of this plane."""
         return Value(At(self.leaf, self._index(positional, named), self.leaf.ttype))
 
+    def __getitem__(self, i: Any) -> Value:
+        """``t[i]``: the flat read, the same as ``t.at(i)``."""
+        return self.at(i)
+
     def _index(self, positional: tuple, named: dict) -> Node:
         if named and positional:
             raise HawkError(
@@ -730,15 +776,62 @@ class TerminatedRef(Value):
         self.sinks = [Finish(name, node)]
 
 
+_INDEX_DTYPES = ("i32", "i64") + tuple(INT_PLANE_DTYPES)
+
+
+def _is_stored(value: Any) -> bool:
+    from .reduce import _Stored
+    return isinstance(value, _Stored)
+
+
+def _by_key(ref: Any, key: Any, value: Any, accumulate: bool) -> None:
+    """One store by key into ``ref``: an accumulate (``AccumWrite``) or a
+    store (``WideWrite``), both carrying the index."""
+    if any(not isinstance(k, (AccumWrite, WideWrite)) for k in ref.sinks):
+        raise HawkError(
+            f"{ref.name!r} is written per sample (locked) and by key "
+            f"(hawk.all_samples({ref.name})[key]): one plane has one extent")
+    index = index_node(key)
+    if index.ttype.shape != () or index.ttype.dtype not in _INDEX_DTYPES:
+        raise HawkError(f"hawk.all_samples({ref.name})[key]: key is an Index or an "
+                        f"integer value, got {index.ttype!r}")
+    kind = "accum" if accumulate else "wide_out"
+    if ref.ttype.shape:
+        raise HawkError(
+            f"hawk.all_samples({ref.name})[key]: a by-key commit is the target's "
+            "atomic add, which is per component in this release; write one "
+            f"Mutable[Scalar] plane per component ({ref.name}0, ...) and "
+            f"hawk.all_samples({ref.name}0)[key] += u[0]")
+    if ref.by_key_kind is not None and (ref.by_key_kind != kind or not accumulate):
+        raise HawkError(
+            f"{ref.name!r} is stored by key twice (or both accumulated and stored): "
+            "one plane takes one by-key statement, or several `+=`")
+    if accumulate:
+        ref.sinks.append(AccumWrite(ref.name, ref._typed(value), index, ref.ttype))
+    else:
+        ref.sinks = [WideWrite(ref.name, ref._typed(value), index, ref.ttype)]
+    ref.by_key_kind = kind
+
+
+def retired_sink_method(name: str, method: str) -> str:
+    """The refusal for ``.add`` / ``.write`` / ``.contribute`` on an output."""
+    if method == "contribute":
+        return (f"{name!r}: write {name} = hawk.all_samples(v).sum() "
+                "(or .max()/.min()/.mean())")
+    return (f"{name!r}: write hawk.all_samples({name})[key] += v (accumulate by "
+            f"key) or hawk.all_samples({name})[key] = v (store by key)")
+
+
 class _SinkRef:
     """Shared write-side state: the sinks a body commits through one plane."""
 
-    __slots__ = ("name", "ttype", "sinks")
+    __slots__ = ("name", "ttype", "sinks", "by_key_kind")
 
     def __init__(self, name: str, ttype: TensorType) -> None:
         self.name = name
         self.ttype = ttype
         self.sinks: list[Node] = []
+        self.by_key_kind: str | None = None
 
     def _typed(self, value: Any) -> Node:
         node = node_of(value)
@@ -749,11 +842,20 @@ class _SinkRef:
             )
         return node
 
+    def add(self, *_: Any, **__: Any) -> None:
+        raise HawkError(retired_sink_method(self.name, "add"))
+
+    def write(self, *_: Any, **__: Any) -> None:
+        raise HawkError(retired_sink_method(self.name, "write"))
+
+    def contribute(self, *_: Any, **__: Any) -> None:
+        raise HawkError(retired_sink_method(self.name, "contribute"))
+
     @property
     def prior(self) -> Value:
         """``.prior`` reads the plane's value as THIS launch began it — a
         Mutable's own seam (:class:`MutableRef` overrides this). A scattered
-        or reduced plane (Accum/Reduce/WideOut) has no single prior value one
+        or reduced plane (a by-key or WideOut one) has no single prior value one
         sample owns, so the base form refuses by name.
 
         A HOST-FACING API: this property is unaffected by the refusal of the
@@ -800,25 +902,30 @@ class MutableRef(_SinkRef):
             )
         self.write(value)
 
+    def by_key(self, key: Any, value: Any, accumulate: bool) -> None:
+        """``hawk.all_samples(out)[key] += value`` (``accum_write``) or
+        ``= value`` (``wide_write``): the plane becomes shared, free length."""
+        _by_key(self, key, value, accumulate)
+
     def write(self, value: Any) -> None:
-        """Commit ``value`` to this plane (the ``assign``)."""
-        self.sinks = [Assign(self.name, self._typed(value), self.ttype)]
-
-
-class AccumRef(_SinkRef):
-    """An ``Accum[...]`` parameter: ``acc.add(v)`` / ``acc.add(v, at=lane)``."""
-
-    __slots__ = ()
-
-    def add(self, value: Any, at: Any = None) -> None:
-        """Accumulate ``value`` into the own column, or scatter it to ``at``."""
-        index = None if at is None else index_node(at)
-        self.sinks.append(AccumWrite(self.name, self._typed(value), index, self.ttype))
+        """Commit ``value`` to this plane (the ``assign``); a reduction over
+        samples (``hawk.all_samples(x).sum()``) commits a cell."""
+        if _is_stored(value):
+            return
+        if any(isinstance(k, (AccumWrite, WideWrite)) for k in self.sinks):
+            raise HawkError(
+                f"{self.name!r} is written per sample (locked) and by key "
+                f"(hawk.all_samples({self.name})[key]): one plane has one extent")
+        node = self._typed(value)
+        if isinstance(node, ReduceSamples):
+            self.sinks = list(node.stored(self.name, self.ttype))
+        else:
+            self.sinks = [Assign(self.name, node, self.ttype)]
 
 
 class WideOutRef(_SinkRef):
-    """A ``WideOut[...]`` parameter: ``buf = v`` / ``buf.write(v, at=lane)``
-    (the ``wide_write``, the scatter)."""
+    """A ``WideOut[...]`` parameter: ``buf = v`` or
+    ``hawk.all_samples(buf)[k] = v`` (the ``wide_write``)."""
 
     __slots__ = ()
 
@@ -826,25 +933,16 @@ class WideOutRef(_SinkRef):
         if key is not Ellipsis:
             raise HawkError(
                 f"{self.name!r}: a wide plane is committed whole — write "
-                "`buf = value`, or scatter with `buf.write(value, at=lane)`")
+                "`buf = value`, or store by key with "
+                "`hawk.all_samples(buf)[key] = value`")
         self.write(value)
 
-    def write(self, value: Any, at: Any = None) -> None:
-        """Commit ``value`` to the own column, or to the row ``at``."""
-        index = None if at is None else index_node(at)
-        self.sinks = [WideWrite(self.name, self._typed(value), index, self.ttype)]
+    def by_key(self, key: Any, value: Any, accumulate: bool) -> None:
+        """``hawk.all_samples(out)[key] = value``."""
+        _by_key(self, key, value, accumulate)
 
-
-class ReduceRef(_SinkRef):
-    """A ``Reduce(op)`` parameter: ``total.contribute(v)``."""
-
-    __slots__ = ("op",)
-
-    def __init__(self, name: str, ttype: TensorType, op: str) -> None:
-        super().__init__(name, ttype)
-        self.op = op
-
-    def contribute(self, value: Any) -> None:
-        """Contribute this sample's partial to the reduction."""
-        self.sinks = [MapreducePartial(self.name, self._typed(value), self.op,
-                                       self.ttype)]
+    def write(self, value: Any) -> None:
+        """Commit ``value`` to the own column."""
+        if _is_stored(value):
+            return
+        self.sinks = [WideWrite(self.name, self._typed(value), None, self.ttype)]

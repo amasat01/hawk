@@ -115,7 +115,7 @@ def test_every_gap_row_of_h51_is_closed(built):
     cpp = (bundle.directory / "fraction.cpp").read_text()
 
     assert sc["aether_abi"] == bundle.manifest["aether_abi"] == eexec.ABI_TAG_V2
-    assert sc["schema_version"] == bundle.manifest["schema_version"] == 2
+    assert sc["schema_version"] == bundle.manifest["schema_version"] == 3
     assert {"exec_targets", "exec_access"} <= set(bundle.manifest)
     assert L.host_selfcheck(bundle.directory / "fraction.so")[1] == eexec.layout_sizes()
     assert ("void fraction_host(void* const* params,\n    std::int64_t base,\n"

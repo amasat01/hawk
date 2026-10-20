@@ -119,6 +119,8 @@ A stepping kernel that hawk marks `auto` also gets a `<name>_persist` entry, whi
 
 The kernel's sidecar carries `fp64_ops_ir`: one step's 64-bit floating-point operation count, counted in the IR. It is the cost of a step, useful for choosing a chunk length; the compiler fuses and shares operations, so the machine issues fewer. Read it from `artifact.sidecar` like any other field; it is absent for a kernel that does not step.
 
+Sidecar schema is v3: `cells` (each cell's operation and width) replaces `sample_sums`, and a split kernel adds `stages` (a cell only a later stage reads is marked `internal`). An eagle that predates v3 refuses the artifact.
+
 ## The device crossing: eagle
 
 A compiled device artifact (`.ptx`/`.cubin`, from

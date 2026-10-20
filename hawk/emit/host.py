@@ -64,8 +64,22 @@ from math import prod
 from ..ir import HawkError, Walk
 from ..ir.nodes import FINISHED_PLANE
 from ..types import Slot
-from .aether import LaneSegments, LaneSplit, render_lane_segments, render_lane_split
-from .backend import ActiveSpec, SegmentSpec, active_reads, segment_reads, unpack_lines
+from .aether import (
+    SAMPLE_SUM_TERMS,
+    LaneSegments,
+    LaneSplit,
+    render_lane_segments,
+    render_lane_split,
+)
+from .backend import (
+    SAMPLE_SUM_OP_CODE,
+    ActiveSpec,
+    SegmentSpec,
+    active_reads,
+    sample_sum_fill,
+    segment_reads,
+    unpack_lines,
+)
 from .dispatch import render_dispatch_rank0
 from .spelling import (
     binding_name,
@@ -1256,6 +1270,30 @@ class HostBackend:
             aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));
         (void)hawk_i;
         (void)nSamples;"""
+
+    def sample_sum_frame(self, width: int, elem: str, store: str,
+                         op: str = "sum") -> tuple:
+        """The serial loop over the rows of 32 samples that START in
+        ``[base, base + count)``, the last one cut at ``nSamples``: a row
+        belongs to exactly one call however the team tiles the run. Each
+        row's terms are summed by the device's pairs once its last sample
+        ran."""
+        opened = f"""    const std::int64_t hawk_lo = (base + 31) / 32 * 32;
+    std::int64_t hawk_hi = (base + count + 31) / 32 * 32;
+    if (hawk_hi > nSamples) hawk_hi = nSamples;
+    {elem} hawk_ss_rows[32 * {width}] = {{}};
+{sample_sum_fill(op, 32 * width, "hawk_ss_rows", elem)}    std::int64_t hawk_row = 0;
+{store}
+    for (std::int64_t hawk_i = hawk_lo; hawk_i < hawk_hi; ++hawk_i) {{
+        {elem}* const {SAMPLE_SUM_TERMS} = hawk_ss_rows + (hawk_i & 31) * {width};
+        const aether::SampleIndex i =
+            aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));"""
+        closed = f"""        if ((hawk_i & 31) == 31 || hawk_i + 1 == hawk_hi) {{
+            hawk_row = hawk_i >> 5;
+            hawk_abi::sampleSumRow_<{width}, {SAMPLE_SUM_OP_CODE[op]}>(hawk_ss_rows, hawk_ss_store);
+        }}
+    }}"""
+        return opened, closed
 
     def index_epilogue(self, segment: SegmentSpec | None = None, *,
                        active: ActiveSpec | None = None, simd: bool = False,

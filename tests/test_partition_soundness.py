@@ -67,7 +67,7 @@ import pytest
 from conftest import sidecar_of
 from test_serial_oracle import band
 
-from hawk.ir.nodes import AccumWrite, At, MapreducePartial, WideWrite
+from hawk.ir.nodes import AccumWrite, At, WideWrite
 
 N = 96
 K = 3
@@ -87,9 +87,7 @@ def _forms_present(walk) -> set:
     itself. This reads the node kinds defines the forms as."""
     forms = set()
     for node in walk.order:
-        if isinstance(node, MapreducePartial):
-            forms.add("mapreduce")
-        elif isinstance(node, At):
+        if isinstance(node, At):
             forms.add("cross_sample_read")
         elif isinstance(node, (WideWrite, AccumWrite)) and node.index is not None:
             forms.add("cross_sample_write")
@@ -113,12 +111,6 @@ def test_the_declared_class_is_never_less_restrictive_than_the_forms(built, name
     is a wrong answer under a partitioning the class does not permit."""
     declared = sidecar_of(built[name], kernel)["exec_access"]
     forms = _forms_present(getattr(D, kernel).walk)
-    if "mapreduce" in forms:
-        assert declared == "mapreduce", (
-            f"{kernel} carries a mapreduce partial sink but declares {declared!r}; "
-            "makes that sink exclusive and eagle would return un-folded partials"
-        )
-        return
     floor = max((_RANK[f] for f in forms), default=0)
     assert _RANK[declared] >= floor, (
         f"{kernel} declares {declared!r} but its walk carries "
@@ -268,8 +260,7 @@ def test_every_access_class_the_contract_names_is_covered_by_a_fixture(built):
     is a class this row silently certifies nothing about."""
     declared = {sidecar_of(built[name], kernel)["exec_access"]
                 for name, kernel, _kw, _w in _CASES}
-    assert declared == {"sample_local", "cross_sample_read", "cross_sample_write",
-                        "mapreduce"}, sorted(declared)
+    assert declared == {"sample_local", "cross_sample_read", "cross_sample_write"}, sorted(declared)
 
 
 def test_the_serial_oracle_is_the_invariant_arm(built):

@@ -56,10 +56,6 @@ ROLE_ORDER = ("mutable", "out", "wide_out", "accum_out", "vec_in", "mat_in",
 #: ``asPureQuaternion()``, ``asBack3DVector()``) in emitter.
 QUAT_OPS = ("quat_mul", "quat_conj", "quat_recip", "quat_rotate", "as_pure", "as_vec3")
 
-#: The DECLARED aether reduction functors (:data:`raptor.schema.manifest.EXEC_OPS`);
-#: an undeclared reduction is a refusal, never an inferred ``sum``.
-REDUCE_OPS = ("sum", "times", "max", "land")
-
 #: The op KIND an ``@raw_device`` block splices under: opaque author text,
 #: not a HAWK op, so it has no type or derivative rule (differentiating it
 #: refuses, naming the kind) and its access class must be DECLARED.
@@ -80,12 +76,50 @@ PRIMITIVE_KIND = "primitive"
 SAMPLE_INDEX_KIND = "sample_index"
 
 #: The leaf ROLES an ``at(expr)`` read may target: ``lookup`` (table plane)
-#: and ``wide_in`` (pinned to the SAME 32-byte ``ScalarHandle``, same access).
-AT_ROLES = ("lookup", "wide_in")
+#: and ``wide_in`` (pinned to the SAME 32-byte ``ScalarHandle``, same access),
+#: and the per-sample input planes, read at another sample through
+#: ``hawk.all_samples(x)[i]``.
+#: ``GATHER_ROLES`` are the ones read ONLY through ``at()``.
+GATHER_ROLES = ("lookup", "wide_in")
+AT_ROLES = GATHER_ROLES + ("per_sample", "vec_in", "mat_in")
+
+#: The extents a value can have: one sample's, every sample's (a reduction
+#: over samples), or one that does not depend on the sample.
+EXTENTS = ("per_sample", "all_samples", "shared")
 
 #: The compound-quantity wire namespace separator: a bound name
 #: containing it must be owned by a quantity.
 NAMESPACE_SEP = "__"
+
+
+#: The kind of the transient node :func:`hawk.all_samples` reductions mint;
+#: a store turns it into a :class:`SampleSum` sink, any other use is refused.
+REDUCE_KIND = "reduce"
+
+#: The reductions over samples a cell can hold.
+CELL_OPS = ("sum", "max", "min")
+
+
+def extent_of(node: Any) -> str:
+    """The extent of ``node``: ``all_samples`` for a reduction over samples,
+    ``shared`` when nothing under it depends on the sample (constants, uniforms,
+    the sample count), else ``per_sample``."""
+    if isinstance(node, ReduceSamples):
+        return "all_samples"
+    stack, seen = [node], set()
+    while stack:
+        n = stack.pop()
+        if id(n) in seen:
+            continue
+        seen.add(id(n))
+        if isinstance(n, SampleIndex) or (
+                isinstance(n, Leaf) and n.role not in ("uniform", "nsamples", "lookup",
+                                                       "wide_in")):
+            return "per_sample"
+        if isinstance(n, At) and not is_param_cell(n):
+            return "per_sample"
+        stack.extend(n.operands)
+    return "shared"
 
 
 class Node:
@@ -107,6 +141,12 @@ class Node:
         for o in self.operands:
             if not isinstance(o, Node):
                 raise HawkError(f"{type(self).__name__}: operand {o!r} is not a Node")
+            if o.kind == REDUCE_KIND and any(
+                    getattr(c, "kind", "").startswith("loop") for c in self.operands):
+                raise HawkError(
+                    "a cut inside a `for` is not in this release (it would be one "
+                    "launch per iteration); hoist hawk.all_samples(x).sum() out of the "
+                    "loop")
 
     @property
     def binding(self) -> Slot | None:
@@ -480,26 +520,92 @@ class AccumWrite(Sink):
         super().__init__("accum_write", "accum_out", name, value, index, ttype)
 
 
-class MapreducePartial(Sink):
-    """``mapreduce_partial(op)``: the first-stage partials plane eagle folds
-    (``eagle.exec.fold``). EXCLUSIVE — it may not coexist with any other sink,
-    and ``op`` must be a DECLARED aether functor."""
+#: The suffix of a ``sample_sum`` plane's compensation companion.
+SAMPLE_SUM_COMP = "_comp"
+
+
+class ReduceSamples(Node):
+    """``reduce(op, samples)``: the sum, max or min of a rank-0 floating
+    value over every sample (a vector or matrix: one cell per component,
+    row-major). A trace-time node only: storing it to a Mutable makes the
+    :class:`SampleSum` sink(s), and nothing else may read it."""
 
     __slots__ = ("op",)
 
-    def __init__(self, name: str, value: Node, op: str,
-                 ttype: TensorType | None = None) -> None:
-        if op not in REDUCE_OPS:
+    kind = REDUCE_KIND
+
+    def __init__(self, op: str, value: Node) -> None:
+        if op not in CELL_OPS:
+            raise HawkError(f"reduce over samples: op {op!r} is not one of {CELL_OPS}")
+        if value.ttype.dtype not in ("f64", "f32") or len(value.ttype.shape) > 2:
             raise HawkError(
-                f"mapreduce_partial {name!r}: reduction op {op!r} is not a declared "
-                f"aether functor; declared ops are {REDUCE_OPS}"
-            )
-        super().__init__("mapreduce_partial", "accum_out", name, value, None, ttype)
+                f"reduce over samples: an f64/f32 scalar, vector or matrix is "
+                f"reduced, got {value.ttype!r}")
+        super().__init__(value.ttype, (value,))
         self.op = op
 
     @property
     def dedup_extra(self) -> Any:
-        return (self.role, self.name, self.op)
+        return self.op
+
+    def stored(self, name: str, ttype: TensorType | None = None) -> tuple:
+        """The cell sinks that store this reduction to the plane ``name``: one
+        for a scalar, one per component (planes ``name_0``, ``name_1``, ...)
+        for a vector or matrix."""
+        value = self.operands[0]
+        shape = value.ttype.shape
+        if not shape:
+            return (SampleSum(name, value, ttype, self.op),)
+        scalar = TensorType((), value.ttype.dtype)
+        index = [(r,) if len(shape) == 1 else (r, c)
+                 for r in range(shape[0]) for c in range(shape[-1] if len(shape) == 2 else 1)]
+        width = len(index)
+        return tuple(SampleSum(f"{name}_{k}", Op("component", (value,), scalar, ix if len(shape) == 2 else ix[0]),
+                               scalar, self.op, cell=name, columns=width)
+                     for k, ix in enumerate(index))
+
+
+class SampleSum(Sink):
+    """``sample_sum(accum_out)``: the sum (or max, or min) of a rank-0
+    floating ``value`` over each run of 32 consecutive samples (one warp).
+
+    The plane ``name`` holds one result per run (``ceil(n/32)`` of them); a
+    sum also writes its compensation term to ``name + "_comp"``. A run's
+    result is a fixed pairwise tree over its 32 slots (a slot past ``n``
+    holds the identity: 0, -inf, +inf), the same on both targets."""
+
+    __slots__ = ("op", "cell", "columns")
+
+    def __init__(self, name: str, value: Node, ttype: TensorType | None = None,
+                 op: str = "sum", cell: str | None = None, columns: int = 1) -> None:
+        super().__init__("sample_sum", "accum_out", name, value, None, ttype)
+        self.cell = cell or name
+        self.columns = columns
+        if op not in CELL_OPS:
+            raise HawkError(f"sample_sum {name!r}: op {op!r} is not one of {CELL_OPS}")
+        self.op = op
+        if self.ttype.shape or self.ttype.dtype not in ("f64", "f32"):
+            raise HawkError(
+                f"sample_sum {name!r}: sums a rank-0 f64/f32 value, got {self.ttype!r}")
+
+    @property
+    def dedup_extra(self) -> Any:
+        return (self.role, self.name, self.op, self.cell, self.columns)
+
+    @property
+    def companion(self) -> Slot:
+        """The compensation plane's slot (a sum only)."""
+        return Slot(self.role, self.name + SAMPLE_SUM_COMP, self.ttype)
+
+    def rebuilt(self, value: Node) -> SampleSum:
+        """The same sink over ``value``."""
+        return SampleSum(self.name, value, self.ttype, self.op, self.cell, self.columns)
+
+
+def sample_sums(sinks: Sequence[Node]) -> tuple:
+    """The :class:`SampleSum` sinks of ``sinks``, in order: column ``k`` of
+    the kernel's row of terms is the ``k``-th."""
+    return tuple(s for s in sinks if isinstance(s, SampleSum))
 
 
 class TapeWrite(Sink):

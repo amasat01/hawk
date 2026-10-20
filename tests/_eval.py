@@ -28,7 +28,6 @@ from hawk.ir import (
     Loop,
     LoopCount,
     LoopValue,
-    MapreducePartial,
     Node,
     Primitive,
     SampleIndex,
@@ -157,8 +156,6 @@ def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0) -> dict:
             target = np.asarray(out.get(sink.name, np.zeros(lanes)), dtype=float)
             target[int(_value(sink.index, env, memo_here))] += value
             out[sink.name] = target
-        elif isinstance(sink, MapreducePartial):
-            out[sink.name] = value
         else:
             out[sink.name] = value
     return out
