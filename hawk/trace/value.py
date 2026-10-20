@@ -253,6 +253,10 @@ class Value:
                 "a bool is a mask, not an address")
         if isinstance(k, int):
             return _op("component", self, literal=k)
+        if not self.node.ttype.shape and isinstance(k, Value):
+            raise HawkError(
+                "x[key] indexes a component and a rank-0 value has none; samples "
+                "are indexed on the view: hawk.all_samples(x)[key]")
         node = k.node if isinstance(k, Value) else k
         if isinstance(node, Node) and node.ttype.shape == ()\
                 and node.ttype.dtype in ("i32", "i64"):
@@ -670,6 +674,10 @@ class TableRef:
         """The ``at(expr)``: an absolute-index read of this plane."""
         return Value(At(self.leaf, self._index(positional, named), self.leaf.ttype))
 
+    def __getitem__(self, i: Any) -> Value:
+        """``t[i]``: the flat read, the same as ``t.at(i)``."""
+        return self.at(i)
+
     def _index(self, positional: tuple, named: dict) -> Node:
         if named and positional:
             raise HawkError(
@@ -769,15 +777,53 @@ class TerminatedRef(Value):
         self.sinks = [Finish(name, node)]
 
 
+_INDEX_DTYPES = ("i32", "i64") + tuple(INT_PLANE_DTYPES)
+
+
+def _is_stored(value: Any) -> bool:
+    from .reduce import _Stored
+    return isinstance(value, _Stored)
+
+
+def _by_key(ref: Any, key: Any, value: Any, accumulate: bool) -> None:
+    """One store by key into ``ref``: an accumulate (``AccumWrite``) or a
+    store (``WideWrite``), both carrying the index."""
+    if any(not isinstance(k, (AccumWrite, WideWrite)) for k in ref.sinks):
+        raise HawkError(
+            f"{ref.name!r} is written per sample (locked) and by key "
+            f"(hawk.all_samples({ref.name})[key]): one plane has one extent")
+    index = index_node(key)
+    if index.ttype.shape != () or index.ttype.dtype not in _INDEX_DTYPES:
+        raise HawkError(f"hawk.all_samples({ref.name})[key]: key is an Index or an "
+                        f"integer value, got {index.ttype!r}")
+    kind = "accum" if accumulate else "wide_out"
+    if ref.ttype.shape:
+        raise HawkError(
+            f"hawk.all_samples({ref.name})[key]: a by-key commit is the target's "
+            "atomic add, which is per component in this release; write one "
+            f"Mutable[Scalar] plane per component ({ref.name}0, ...) and "
+            f"hawk.all_samples({ref.name}0)[key] += u[0]")
+    if ref.by_key_kind is not None and (ref.by_key_kind != kind or not accumulate):
+        raise HawkError(
+            f"{ref.name!r} is stored by key twice (or both accumulated and stored): "
+            "one plane takes one by-key statement, or several `+=`")
+    if accumulate:
+        ref.sinks.append(AccumWrite(ref.name, ref._typed(value), index, ref.ttype))
+    else:
+        ref.sinks = [WideWrite(ref.name, ref._typed(value), index, ref.ttype)]
+    ref.by_key_kind = kind
+
+
 class _SinkRef:
     """Shared write-side state: the sinks a body commits through one plane."""
 
-    __slots__ = ("name", "ttype", "sinks")
+    __slots__ = ("name", "ttype", "sinks", "by_key_kind")
 
     def __init__(self, name: str, ttype: TensorType) -> None:
         self.name = name
         self.ttype = ttype
         self.sinks: list[Node] = []
+        self.by_key_kind: str | None = None
 
     def _typed(self, value: Any) -> Node:
         node = node_of(value)
@@ -839,12 +885,23 @@ class MutableRef(_SinkRef):
             )
         self.write(value)
 
+    def by_key(self, key: Any, value: Any, accumulate: bool) -> None:
+        """``hawk.all_samples(out)[key] += value`` (``accum_write``) or
+        ``= value`` (``wide_write``): the plane becomes shared, free length."""
+        _by_key(self, key, value, accumulate)
+
     def write(self, value: Any) -> None:
         """Commit ``value`` to this plane (the ``assign``); a reduction over
         samples (``hawk.all_samples(x).sum()``) commits a cell."""
+        if _is_stored(value):
+            return
+        if any(isinstance(k, (AccumWrite, WideWrite)) for k in self.sinks):
+            raise HawkError(
+                f"{self.name!r} is written per sample (locked) and by key "
+                f"(hawk.all_samples({self.name})[key]): one plane has one extent")
         node = self._typed(value)
         if isinstance(node, ReduceSamples):
-            self.sinks = [node.stored(self.name, self.ttype)]
+            self.sinks = list(node.stored(self.name, self.ttype))
         else:
             self.sinks = [Assign(self.name, node, self.ttype)]
 
@@ -853,6 +910,10 @@ class AccumRef(_SinkRef):
     """An ``Accum[...]`` parameter: ``acc.add(v)`` / ``acc.add(v, at=lane)``."""
 
     __slots__ = ()
+
+    def by_key(self, key: Any, value: Any, accumulate: bool) -> None:
+        """``hawk.all_samples(out)[key] += value``."""
+        _by_key(self, key, value, accumulate)
 
     def add(self, value: Any, at: Any = None) -> None:
         """Accumulate ``value`` into the own column, or scatter it to ``at``."""
@@ -873,8 +934,14 @@ class WideOutRef(_SinkRef):
                 "`buf = value`, or scatter with `buf.write(value, at=lane)`")
         self.write(value)
 
+    def by_key(self, key: Any, value: Any, accumulate: bool) -> None:
+        """``hawk.all_samples(out)[key] = value``."""
+        _by_key(self, key, value, accumulate)
+
     def write(self, value: Any, at: Any = None) -> None:
         """Commit ``value`` to the own column, or to the row ``at``."""
+        if _is_stored(value):
+            return
         index = None if at is None else index_node(at)
         self.sinks = [WideWrite(self.name, self._typed(value), index, self.ttype)]
 

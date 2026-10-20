@@ -225,8 +225,10 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
     vocab, scope, own, params = _declarations(fn, resolved_kind)
     planes, args, sink_names, mutables, finishes = _bound_planes(
         fn, params, own, vocab, resolved_kind)
+    scope[astpass.REFS] = args
     traced = _retrace(fn, scope, sink_names, mutables, finishes=finishes)
     _call_finishing(traced, fn, args)
+    _retag_by_key(planes, args)
     finished = _finished(fn.__name__, params, args, finishes, resolved_kind)
     sinks = _collect(fn.__name__, params, args, sink_names,
                      finishing=bool(finished)) + finished
@@ -234,6 +236,15 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
     if extra is not None:
         sinks = sinks + (extra,)
     return Kernel(fn.__name__, sinks, planes, kind=resolved_kind)
+
+
+def _retag_by_key(planes: dict[str, Any], args: dict[str, Any]) -> None:
+    """A plane a body wrote by key (``hawk.all_samples(y)[key] (+)= v``) is
+    shared, so its declaration becomes the matching accumulate / store plane."""
+    for name, ref in args.items():
+        kind = getattr(ref, "by_key_kind", None)
+        if kind is not None:
+            planes[name] = Plane(kind, planes[name].ttype)
 
 
 def _declarations(fn: Callable[..., Any], kind: Any) -> tuple:
@@ -605,6 +616,7 @@ def _retrace(fn: Callable[..., None], scope: dict[str, Any],
     scope[astpass.LOOP_HELPER] = astpass.open_loop
     scope[astpass.SETITEM_HELPER] = astpass.set_component
     scope[astpass.MAXMIN_HELPER] = reduce.maxmin
+    scope[astpass.VIEWSTORE_HELPER] = reduce.viewstore
     exec(compiled, scope)  # the author's rewritten body
     return scope[fn.__name__]
 

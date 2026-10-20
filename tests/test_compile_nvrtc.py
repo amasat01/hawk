@@ -254,9 +254,9 @@ def test_pip_only_roots_unresolvable_device_and_host_compile_still_succeed(
     monkeypatch.setenv("HAWK_DEVICE_COMPILER", "nvrtc")
 
     with pytest.raises(HawkError):
-        tc.aether_include()
+        tc._strict_aether_include()
     with pytest.raises(HawkError):
-        tc.eagle_include()
+        tc._strict_eagle_include()
 
     # `include_flags()` is the one place a REAL nvcc/g++ compile still needs
     # an `-I` root even when neither resolves for real -- not exercised by

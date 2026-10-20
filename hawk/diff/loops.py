@@ -183,12 +183,12 @@ def _readable(loop: Loop) -> tuple:
     loop and a non-differentiable dtype are excluded too. This is only the
     pre-filter; whether an operand is actually reached is decided
     afterwards, by the pullback's own store."""
-    from ..ir.nodes import AT_ROLES
+    from ..ir.nodes import GATHER_ROLES
 
     return tuple(
         operand for operand in loop.operands
         if not isinstance(operand, (Const, Loop))
-        and not (isinstance(operand, Leaf) and operand.role in AT_ROLES)
+        and not (isinstance(operand, Leaf) and operand.role in GATHER_ROLES)
         and operand.ttype.dtype in _DIFFERENTIABLE
     )
 
