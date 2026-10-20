@@ -13,7 +13,9 @@ Also refuses a notebook whose OUTPUT (stream text, `text/plain`,
 path. hawk's docs publish to a public site; a committed output with
 `/local/...`, `/home/<user>/...`, `~/.cache/hawk/...` (as an
 absolute path) etc. leaks the machine that built them. Only rendered
-OUTPUT is scanned, not cell source.
+OUTPUT is scanned, not cell source. A stored Python warning (``UserWarning:``
+and the like) is refused too: it is noise from the machine that ran the
+notebook, and it usually carries such a path.
 
 Finally, refuses a stored image larger than IMAGE_BUDGET: the docs show the
 stored plots (nothing re-executes at build), so a runaway figure would bloat
@@ -31,7 +33,9 @@ import nbformat
 # mean ~30 KB, largest 109 KB.
 IMAGE_BUDGET = 120_000
 
-_LEAK_PATTERNS = [re.compile(p) for p in (r"/local/", r"/home/", r"/tmp/", r"/root/", r"/Users/", r"C:\\Users")]
+_LEAK_PATTERNS = [re.compile(p) for p in (r"/local/", r"/home/", r"/tmp/", r"/dev/shm/", r"/root/", r"/Users/",
+                                          r"C:\\Users")]
+_WARNING = re.compile(r"\b\w*Warning: ")
 
 
 def _text_of(value) -> str:
@@ -60,6 +64,8 @@ def _output_leaks(cell) -> list[str]:
             pattern = _leaked_path(text)
             if pattern:
                 leaks.append(pattern)
+            if _WARNING.search(text):
+                leaks.append("a Python warning")
     return leaks
 
 
@@ -118,7 +124,7 @@ def main(argv: list[str]) -> int:
         more = "…" if len(cells) > 6 else ""
         print(f"[nb_check_filled] ERROR OUTPUT {p}: code cells {shown}{more}")
     for p, i, pattern in leaked:
-        print(f"[nb_check_filled] LEAKED PATH {p}: code cell {i} output matched {pattern!r}")
+        print(f"[nb_check_filled] LEAKED OUTPUT {p}: code cell {i} output matched {pattern!r}")
     for p, i, size in heavy:
         print(f"[nb_check_filled] IMAGE OVER BUDGET {p}: code cell {i} image is {size} bytes "
               f"(budget {IMAGE_BUDGET})")
