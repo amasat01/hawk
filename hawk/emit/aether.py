@@ -379,6 +379,9 @@ class _Renderer(_DispatchMixin):
         #: branch edge — see :meth:`_outside_reachable`. Computed once, after
         #: :attr:`position` exists and before anything renders.
         self._outside = self._outside_reachable()
+        #: position -> the members of its fused ``switch`` group
+        #: (:meth:`_fusion_groups`), for every member of a group of two or more.
+        self._fused = self._fusion_groups()
 
     def _outside_reachable(self) -> frozenset:
         """Positions some path from a root reaches WITHOUT following a
@@ -388,9 +391,9 @@ class _Renderer(_DispatchMixin):
 
         A Dispatch's own ``selector`` edge IS followed; only ``branches`` is
         excluded, so anything reached ONLY through a branch on EVERY path is absent
-        here and :meth:`run` leaves it for :meth:`_dispatch` to render fresh, scoped
-        to whichever case(s) reach it (duplicated per branch rather than hoisted —
-        hoisting would recompute a branch-local value in every case).
+        here and :meth:`run` leaves it for :meth:`_dispatch_switches` to render, scoped
+        to its case — or, when every non-elided case reads it, once above the
+        switch.
 
         The exclusion is ``switch``-only; ``predicated`` evaluates every branch
         regardless, so it stays reachable like today. A :class:`Loop`'s body is
@@ -410,6 +413,42 @@ class _Renderer(_DispatchMixin):
             else:
                 children = n.operands
             stack.extend(children)
+        return frozenset(seen)
+
+    def _fusion_groups(self) -> dict:
+        """Switch dispatches the flat walk reaches that share a selector node and
+        ``K`` and do not depend on each other, grouped to render as ONE ``switch``
+        (:meth:`_dispatch_switches`), emitted at the group's first member. Greedy
+        in walk order: a dispatch joins the first group of its key none of whose
+        members it depends on (a data dependence through its branches, however
+        deep, closes the group to it)."""
+        open_groups: dict = {}
+        for node in self.nodes:
+            if not (isinstance(node, Dispatch) and node.policy in SWITCH_RENDERED
+                    and self.position[id(node)] in self._outside):
+                continue
+            groups = open_groups.setdefault((id(node.selector), node.K), [])
+            deps = self._closure(node) if groups else frozenset()
+            for g in groups:
+                if not any(id(m) in deps for m in g):
+                    g.append(node)
+                    break
+            else:
+                groups.append([node])
+        return {self.position[id(m)]: tuple(g)
+                for groups in open_groups.values() for g in groups
+                if len(g) > 1 for m in g}
+
+    def _closure(self, root: Node) -> frozenset:
+        """The ids of every node ``root`` reads, through ALL operands (branches
+        included)."""
+        seen: set = set()
+        stack = [root]
+        while stack:
+            n = stack.pop()
+            if id(n) not in seen:
+                seen.add(id(n))
+                stack.extend(n.operands)
         return frozenset(seen)
 
     def _index_loops(self) -> None:
@@ -475,32 +514,7 @@ class _Renderer(_DispatchMixin):
         for node in self.nodes:
             if isinstance(node, Sink):
                 continue
-            pos = self.position[id(node)]
-            if pos not in self._outside:
-                # Exclusively reachable through some Dispatch's branches —
-                # rendered fresh, scoped to its case(s), when that Dispatch is
-                # reached below (:meth:`_dispatch_switch`), never hoisted here.
-                continue
-            if isinstance(node, Loop):
-                # A lowered `for` is a STATEMENT, not a value: it emits its carried
-                # locals, header and scope here; its values are read through
-                # LoopValue projections.
-                if node is self.split_loop:
-                    self._loop_split(node)
-                elif id(node) in self.cut_loops:
-                    self._loop_cut(node)
-                else:
-                    self._loop(node)
-                self.rendered[pos] = ""
-                continue
-            named = self._materialised(node, pos)
-            text = self._expr(node, materialised=named)
-            if named:
-                name = self._name(node, pos)
-                self._emit(f"const auto {name} = {text};")
-                self.rendered[pos] = name
-            else:
-                self.rendered[pos] = text
+            self._emit_outside(node)
         finish = None
         for sink in self.sinks:
             if not isinstance(sink, Sink):
@@ -517,6 +531,65 @@ class _Renderer(_DispatchMixin):
             self.indent = self.indent[:-4]
             self._emit("}")
         return Body("\n".join(self.lines), reduce_op, self.uses_random)
+
+    def _emit_outside(self, node: Node) -> None:
+        """Render one node of the flat walk at the top scope, unless it is
+        reached only through a Dispatch's branches (rendered scoped to its case(s),
+        :meth:`_dispatch_switches`) or already rendered ahead of its turn as an
+        operand of a fused group."""
+        pos = self.position[id(node)]
+        if pos not in self._outside or pos in self.rendered:
+            return
+        group = self._fused.get(pos)
+        if group is not None:
+            self._emit_group(group)
+            return
+        if isinstance(node, Loop):
+            # A lowered `for` is a STATEMENT, not a value: it emits its carried
+            # locals, header and scope here; its values are read through
+            # LoopValue projections.
+            if node is self.split_loop:
+                self._loop_split(node)
+            elif id(node) in self.cut_loops:
+                self._loop_cut(node)
+            else:
+                self._loop(node)
+            self.rendered[pos] = ""
+            return
+        self._bind(node, pos, self._expr(node, materialised=self._materialised(node, pos)))
+
+    def _bind(self, node: Node, pos: int, text: str) -> None:
+        """Record ``text`` as ``node``'s rendering, named when :meth:`_materialised`."""
+        if self._materialised(node, pos):
+            name = self._name(node, pos)
+            self._emit(f"const auto {name} = {text};")
+            self.rendered[pos] = name
+        else:
+            self.rendered[pos] = text
+
+    def _emit_group(self, group: tuple) -> None:
+        """A fused ``switch`` group, at its first member. Everything a later member's
+        branches read that the flat walk has not reached yet is rendered first
+        (exact: it is rendered anyway, only earlier, and none of it reads a member)."""
+        members = {id(m) for m in group}
+        seen: set = set()
+        stack = [b for m in group for b in m.branches]
+        need: list = []
+        while stack:
+            n = stack.pop()
+            if id(n) in seen or id(n) in members:
+                continue
+            seen.add(id(n))
+            pos = self.position.get(id(n))
+            if pos is not None and pos in self.rendered:
+                continue
+            if pos is not None and pos in self._outside:
+                need.append(n)
+            stack.extend(n.operands)
+        for n in sorted(need, key=lambda n: self.position[id(n)]):
+            self._emit_outside(n)
+        for node, name in zip(group, self._dispatch_switches(group)):
+            self._bind(node, self.position[id(node)], name)
 
     def _finish(self, sink: Finish) -> None:
         """The finish epilogue — the last text of the guarded scope, so the step's

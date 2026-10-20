@@ -256,7 +256,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
                  derivative: dict | None = None, lanes=None,
                  dispatch_override=None, step_ops: int | None = None,
                  fp64_ops_ir: int | None = None,
-                 entry_counts_finished: bool = False) -> dict:
+                 entry_counts_finished: bool = False,
+                 ptxas: dict | None = None) -> dict:
     """The full v2 sidecar for one kernel.
 
     ``buffers`` is emitted present-and-empty: a HAWK ``lookup`` plane's
@@ -287,7 +288,10 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     operations, so the machine issues fewer.
     ``entry_counts_finished`` is present (``true``) when the kernel's fast
     entries count samples finished on entry into the finish counter, so the
-    runtime zeroes the counter instead of counting the mask before a run."""
+    runtime zeroes the counter instead of counting the mask before a run.
+    ``ptxas`` (present when the device compile ran ptxas, i.e. built a CUBIN)
+    is ``{kernel: {regs, spill_store_B, spill_load_B, stack_B}}``, recorded for a
+    reader of the artifact; nothing in the build acts on it."""
     meta = {
         "format": fmt,
         "schema_version": _contracts.MAX_SCHEMA_VERSION,
@@ -330,6 +334,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         **({"step_ops": step_ops} if step_ops is not None else {}),
         **({"fp64_ops_ir": fp64_ops_ir} if fp64_ops_ir is not None else {}),
         **({"entry_counts_finished": True} if entry_counts_finished else {}),
+        **({"ptxas": ptxas} if ptxas else {}),
         "digest": walk.digest,
         "quantities": {p: list(span.wires) for p, span in walk.quantities.items()},
         "aether_include": _root_or_sealed_marker(_strict_aether_include),

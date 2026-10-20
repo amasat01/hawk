@@ -449,6 +449,7 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         step_ops=_step_ops(kernel, kind),
         fp64_ops_ir=_fp64_ops_ir(kernel, kind),
         entry_counts_finished=_entry_counts_finished(kernel, kind),
+        ptxas=entries["cuda"][0].ptxas if "cuda" in entries else None,
     )
     sidecar_blob = _blob(json.dumps(meta, indent=2) + "\n")
     files.append(_File(f"{name}.json", _digest_bytes(sidecar_blob),

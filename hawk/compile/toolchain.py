@@ -852,8 +852,11 @@ def device_flags(*, arch: str = "", target: str = "ptx", extra=(),
         raise HawkError(
             f"device_flags(): arch {resolved} is virtual (PTX only); a CUBIN "
             "needs a real sm_<N> arch")
+    # ptxas runs only for a CUBIN; `-v` has it report each kernel's registers,
+    # spills and stack on stderr (:func:`hawk.compile.drivers.parse_ptxas_info`).
+    verbose = ["-Xptxas", "-v"] if target == "cubin" else []
     return [f"-{target}", f"-std={DEVICE_STD}", f"-arch={resolved}",
-            f"-{level}", "-Xptxas", f"-{level}", *include_flags(), *extra]
+            f"-{level}", "-Xptxas", f"-{level}", *verbose, *include_flags(), *extra]
 
 
 #: ``nvcc --version``'s own release line, e.g. ``"Cuda compilation tools,
