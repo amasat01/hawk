@@ -47,16 +47,19 @@ int main(void)
 }
 """
 CLEAN_H = "#ifndef T_H\n#define T_H\n\n#endif\n"
+#: A float promoted to double to meet a double operand: refused by GCC and Clang
+#: alike under -Wdouble-promotion. (A float passed to ``sqrt``'s double
+#: parameter is refused by Clang only; the float32 text rows of
+#: test_embedded_render pin that no bare ``sqrt(`` is ever emitted.)
 PROMOTE_C = """\
-#include <math.h>
 #include "t.h"
 
-float t_root(float x)
+float t_twice(float x)
 {
-    return (float)sqrt((float)x);
+    return (float)(x * 2.0);
 }
 """
-PROMOTE_H = "#ifndef T_H\n#define T_H\n\nfloat t_root(float x);\n\n#endif\n"
+PROMOTE_H = "#ifndef T_H\n#define T_H\n\nfloat t_twice(float x);\n\n#endif\n"
 
 
 def test_hawk_cc_must_resolve(monkeypatch):
@@ -120,7 +123,7 @@ def test_run_checks_refuses_a_double_promotion(tmp_path):
     text = str(err.value)
     argv_line, _, stderr = text.partition("\n$ ")[2].partition("\n")
     assert "-Wdouble-promotion" in argv_line
-    assert "double-promotion" in stderr and "precision" in stderr
+    assert "double-promotion" in stderr
     # The flag is what refuses it: the same file compiles without it.
     (tmp_path / "t.c").write_text(PROMOTE_C)
     (tmp_path / "t.h").write_text(PROMOTE_H)
