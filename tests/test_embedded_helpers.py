@@ -3,16 +3,32 @@
 
 """Tests for the hawk-owned C helpers of the standalone C target."""
 
+import importlib
 import shutil
 import subprocess
 
 import pytest
-from aether_dsc import c_core
 
-from hawk.embedded import helpers as H
 from hawk.embedded import spelling as S
 from hawk.emit import FLOAT32, FLOAT64
 from hawk.ir import HawkError
+
+
+class _Lazy:
+    """A module imported on first attribute access, not at collection. Jobs that
+    run only the ``ft`` rows install a released aether-dsc without ``c_core``
+    (tests/sanitize/tsan_ft.sh); collecting this file must not import it there.
+    A row that runs still imports it, and fails, never skips, when it is missing."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __getattr__(self, attr: str):
+        return getattr(importlib.import_module(self._name), attr)
+
+
+c_core = _Lazy("aether_dsc.c_core")
+H = _Lazy("hawk.embedded.helpers")
 
 SHAPES = ((1,), (3,), (2, 2), (2, 3))
 MODES = (FLOAT64, FLOAT32)
