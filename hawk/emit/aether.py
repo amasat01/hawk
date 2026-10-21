@@ -21,6 +21,7 @@ the rank and what aether would need — never a silent approximation.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -184,6 +185,11 @@ class LaneSplit:
 
 #: A declaration the renderer emits (``const auto t5 = ...``, ``const
 #: aether::Item<...> hz0 = ...``): group 1 is the declared name.
+#: INTERIM (hawk 0.6.4), replaced by the 0.6.5 emit policy (template/runtime choice
+#: from an IR register-pressure model): the element count above which a read-only
+#: leaf read only by static ``component`` is bound as a proxy, not copied whole.
+LAZY_LEAF_WIDTH = 32
+
 _DECLARED = re.compile(r"^\s*const [^=;]*?\b(\w+) = ", re.M)
 #: A lowered loop's header (``_for_header``): index type, begin, comparison, end.
 _HEADER = re.compile(r"^for \((\w+) \w+ = (.*); \w+ ([<>]) (.*); [^;]*\) \{$")
@@ -360,6 +366,7 @@ class _Renderer(_DispatchMixin):
                         # naming it here would emit a dead `plane[i].eval()`.
                         continue
                     self.forced.add(self.position[id(child)])
+        self.lazy = self._lazy_leaves()
         self._index_loops()
         #: The loop :meth:`lane_split` cuts the body at, and what
         #: :meth:`_loop_split` recorded of it (``None`` on a plain render).
@@ -376,6 +383,34 @@ class _Renderer(_DispatchMixin):
         #: position -> the members of its fused ``switch`` group
         #: (:meth:`_fusion_groups`), for every member of a group of two or more.
         self._fused = self._fusion_groups()
+
+    def _lazy_leaves(self) -> frozenset:
+        """Positions of the wide read-only leaves bound as the ``[i]`` proxy.
+
+        INTERIM (hawk 0.6.4), replaced by the 0.6.5 emit policy (a template or
+        runtime choice from an IR register-pressure model): a non-mutable
+        rank>=1 leaf of more than :data:`LAZY_LEAF_WIDTH` elements whose every
+        use is a ``component`` read at a static index is not copied whole
+        (``.get()`` is one register per element); each read goes through the
+        proxy."""
+        used: dict[int, bool] = {}
+        for node in self.nodes:
+            if isinstance(node, Leaf):
+                continue
+            read = isinstance(node, Op) and node.kind == "component"
+            for k, child in enumerate(node.operands):
+                child = _through(child)
+                if isinstance(child, Leaf):
+                    p = self.position[id(child)]
+                    used[p] = used.get(p, True) and read and k == 0
+        out = set()
+        for p, ok in used.items():
+            leaf = self.nodes[p]
+            if (ok and leaf.ttype.shape and leaf.role not in ("mutable", "uniform", "nsamples")
+                    and not is_param_cell(leaf)
+                    and math.prod(leaf.ttype.shape) > LAZY_LEAF_WIDTH):
+                out.add(p)
+        return frozenset(out)
 
     def _outside_reachable(self) -> frozenset:
         """Positions some path from a root reaches WITHOUT following a
@@ -1219,6 +1254,8 @@ class _Renderer(_DispatchMixin):
             if leaf.ttype.shape:
                 return f"{name}[i].get()"
             return f"{name}[i].get()()"
+        if leaf.ttype.shape and self.position.get(id(leaf)) in self.lazy:
+            return f"{name}[i]"     # proxy, element reads only (LAZY_LEAF_WIDTH)
         if leaf.ttype.shape:
             # Rank >= 1: always the body's own sample, never the whole plane.
             # `view[i].get()` materialises the row into an `Item`, which is what
@@ -1349,7 +1386,10 @@ class _Renderer(_DispatchMixin):
         """The rank>=1 -> rank-0 forms: they READ a tensor and RETURN a scalar."""
         if kind == "component":
             index = node.literal if isinstance(node.literal, tuple) else (node.literal,)
-            return f"{args[0]}.eval<{', '.join(str(int(k)) for k in index)}>(i)"
+            ks = ', '.join(str(int(k)) for k in index)
+            if self.position.get(id(_through(node.operands[0]))) in self.lazy:
+                return f"{args[0]}.eval<{ks}>()"
+            return f"{args[0]}.eval<{ks}>(i)"
         if kind == "sum" and len(node.operands[0].ttype.shape) == 2:
             return self._matrix_sum(args[0], node.operands[0].ttype)
         if kind in _METHOD1:
