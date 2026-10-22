@@ -64,6 +64,7 @@ class AetherDialect:
     #: aether's lazy expressions inline until the renderer's fan-out rule
     #: names them; only leaf values (``Item``/``Constant``) are forced.
     names_every_tensor = False
+    commits_per_component = True
 
     # -- declarations and loops ----------------------------------------
 
@@ -178,6 +179,16 @@ class AetherDialect:
         index = self._sample_index(r._ref(sink.index))
         r._emit(f"hawk_abi::accum_add_compensated({target}, {comp}, {index}, {value});")
 
+    def component_commit(self, r, target: str, at: str, op: str, value: str) -> str:
+        return f"{target}({at}, i.global()) {op} {value};"
+
+    def in_place_accumulate(self, r, target: str, k: str, value: str) -> str:
+        return f"{target}[i].at({k}) += {value};"
+
+    def zero_row(self, r, target: str, width: int) -> str:
+        return (f"for (Int hk = 0; hk < {width}; ++hk) "
+                f"{target}[i].at(hk) = {self.typed_zero(TensorType((), 'f64'))};")
+
     def sample_sum(self, r, sink, column: int) -> None:
         """The sample's term into its column of the row the wrapper sums
         (:data:`hawk.emit.aether.SAMPLE_SUM_TERMS`)."""
@@ -207,6 +218,8 @@ class AetherDialect:
             if leaf.ttype.shape:
                 return f"{name}[i].get()"
             return f"{name}[i].get()()"
+        if leaf.ttype.shape and r.position.get(id(leaf)) in r.lazy:
+            return f"{name}[i]"     # proxy, element reads only (LAZY_LEAF_WIDTH)
         if leaf.ttype.shape:
             # Rank >= 1: always the body's own sample, never the whole plane.
             # `view[i].get()` materialises the row into an `Item`, which is what
@@ -334,8 +347,13 @@ class AetherDialect:
     def _reduction(self, r, kind: str, args: Sequence[str], node: Op) -> str:
         """The rank>=1 -> rank-0 forms: they READ a tensor and RETURN a scalar."""
         if kind == "component":
+            from .aether import _through
+
             index = node.literal if isinstance(node.literal, tuple) else (node.literal,)
-            return f"{args[0]}.eval<{', '.join(str(int(k)) for k in index)}>(i)"
+            ks = ', '.join(str(int(k)) for k in index)
+            if r.position.get(id(_through(node.operands[0]))) in r.lazy:
+                return f"{args[0]}.eval<{ks}>()"
+            return f"{args[0]}.eval<{ks}>(i)"
         if kind == "sum" and len(node.operands[0].ttype.shape) == 2:
             return self._matrix_sum(r, args[0], node.operands[0].ttype)
         if kind in _METHOD1:
@@ -353,7 +371,13 @@ class AetherDialect:
         materialisation is named once per value per SCOPE (:attr:`items`), so
         two runtime reads of one vector inside a loop body share one Item, and
         an Item built inside a loop isn't referenced after the scope closes."""
+        from .aether import _reads_in_place
+
         source = node.operands[0]
+        if _reads_in_place(source):
+            # a read-only input plane: the element at the runtime index straight
+            # from the view (`SampleRef::at`), no `Item` of the whole row
+            return f"{binding_name(source.role, source.name)}[i].at({args[1]})"
         held = r.items.get(id(source))
         if held is None:
             t = source.ttype
@@ -365,7 +389,8 @@ class AetherDialect:
             r.items[id(source)] = held
         return f"{held}({args[1]})"
 
-    def _runtime_component_store(self, r, node: Op, args: Sequence[str]) -> str:
+    def _runtime_component_store(self, r, node: Op, args: Sequence[str],
+                                 accumulate: bool = False) -> str:
         """``v[k] = e`` at a RUNTIME index, as a VALUE.
 
         The IR node is functional — ``v`` with one component replaced — and C++
@@ -381,7 +406,8 @@ class AetherDialect:
         name = f"hawk_sv{r.hoists}"
         r.hoists += 1
         r._emit(f"{carry_type(t)} {name} = {args[0]};")
-        r._emit(f"{name}({args[1]}) = {self._cast(args[2], t.dtype)};")
+        op = "+=" if accumulate else "="
+        r._emit(f"{name}({args[1]}) {op} {self._cast(args[2], t.dtype)};")
         return name
 
     def _matrix_sum(self, r, arg: str, ttype: TensorType) -> str:
@@ -407,6 +433,8 @@ class AetherDialect:
             return self._runtime_component(r, node, args)
         if kind == "set_component_at":
             return self._runtime_component_store(r, node, args)
+        if kind == "add_at":
+            return self._runtime_component_store(r, node, args, accumulate=True)
         if kind in ("dot", "norm", "sum", "component"):
             return self._reduction(r, kind, args, node)
         if kind == "splat":

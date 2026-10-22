@@ -104,6 +104,8 @@ class CDialect:
     id = "c"
     #: Every rank>=1 value is a C struct value and gets its own statement.
     names_every_tensor = True
+    #: The C unit stores a vector once (``hawk_<S>_store``), never per component.
+    commits_per_component = False
 
     def __init__(self, mode, name: str, sites: dict, *, lengths: dict | None = None,
                  positions: dict | None = None) -> None:
@@ -376,6 +378,25 @@ class CDialect:
         it first; this is the belt and braces)."""
         raise HawkError(f"{self.name!r}: the C target does not lower the "
                         "compensated sink policy; use the plain sink policy")
+
+    def component_commit(self, r, target: str, at: str, op: str, value: str) -> str:
+        """Never reached: :attr:`commits_per_component` is off, so the renderer
+        keeps the single vector store."""
+        raise HawkError(f"{self.name!r}: the C target stores a vector once, never "
+                        "per component")
+
+    def in_place_accumulate(self, r, target: str, k: str, value: str) -> str:
+        """Refused: a runtime-indexed accumulate inside a lowered loop updates a
+        plane row in place, which the C target does not lower."""
+        raise HawkError(
+            f"{self.name!r}: the C target does not lower a gradient accumulated in "
+            f"place inside a loop ({target} at a runtime index, as a vjp through a "
+            "runtime-indexed loop writes it); differentiate the unrolled loop, or "
+            "export the primal")
+
+    def zero_row(self, r, target: str, width: int) -> str:
+        """Refused with :meth:`in_place_accumulate`, whose prologue this is."""
+        return self.in_place_accumulate(r, target, "hk", "0")
 
     def sample_sum(self, r, sink, column: int) -> None:
         """Refused (belt and braces; the verify pass refuses it first): a sum

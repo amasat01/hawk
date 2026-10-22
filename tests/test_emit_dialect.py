@@ -21,12 +21,13 @@ def test_the_dialect_protocol_names_every_spelling_seam():
                 "predicated_rank0", "predicated_tensor", "switch_default_tail", "typed_zero",
                 "leaf", "const", "at", "select", "op", "guard", "store", "scatter_store",
                 "accum_scattered", "store_compensated", "sample_sum", "tape_write",
-                "finish", "exit_if"}
+                "finish", "exit_if", "component_commit", "in_place_accumulate", "zero_row"}
     assert set(DIALECT_MEMBERS) == expected
-    assert len(DIALECT_MEMBERS) == 28
+    assert len(DIALECT_MEMBERS) == 31
     assert all(callable(getattr(Dialect, m)) for m in DIALECT_MEMBERS)
     assert "id" in Dialect.__annotations__
     assert "names_every_tensor" in Dialect.__annotations__
+    assert "commits_per_component" in Dialect.__annotations__
 
 
 # -- the seam is live -------------------------------------------------------

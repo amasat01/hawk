@@ -34,6 +34,7 @@ DIALECT_MEMBERS: tuple[str, ...] = (
     "leaf", "const", "at", "select", "op",
     "guard", "store", "scatter_store", "accum_scattered", "store_compensated",
     "sample_sum", "tape_write", "finish", "exit_if",
+    "component_commit", "in_place_accumulate", "zero_row",
 )
 
 
@@ -50,6 +51,10 @@ class Dialect(Protocol):
     #: renderer's own fan-out rule. ``False`` for aether, whose lazy
     #: expressions inline until the fan-out rule names them.
     names_every_tensor: bool
+    #: Whether the renderer may store a vector built from scalars one
+    #: component at a time (:meth:`component_commit`), so a wide value is never
+    #: live whole; otherwise it keeps the single store at the end.
+    commits_per_component: bool
 
     # -- declarations and loops ----------------------------------------
     def declare(self, name: str, ttype: Any, text: str) -> str:
@@ -141,6 +146,18 @@ class Dialect(Protocol):
     def sample_sum(self, r: Any, sink: Any, column: int) -> None:
         """A ``SampleSum``'s per-sample term into column ``column`` of the row
         the wrapper reduces."""
+
+    def component_commit(self, r: Any, target: str, at: str, op: str, value: str) -> str:
+        """Component ``at`` (static, row-major) of the sample's row of plane
+        ``target`` stored (``op`` ``=``) or accumulated (``+=``)."""
+
+    def in_place_accumulate(self, r: Any, target: str, k: str, value: str) -> str:
+        """``value`` added to component ``k`` (a runtime index) of the sample's
+        row of plane ``target``: a lowered loop's per-iteration accumulate."""
+
+    def zero_row(self, r: Any, target: str, width: int) -> str:
+        """The whole of the sample's row of plane ``target`` (``width``
+        components) zeroed, once, before a loop accumulates into it."""
 
     def tape_write(self, r: Any, sink: Any, target: str) -> None:
         """A tape row write under ``if (on)``."""

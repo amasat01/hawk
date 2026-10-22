@@ -228,7 +228,7 @@ class _DispatchMixin:
                             + [r for _t, a, b in stmts[j] for r in (a, b)]
                             for j in range(k)])
         for i in shown:
-            self._emit(f"{carry_type(nodes[i].ttype)} {names[i]};")
+            self._emit(f"{self.dialect.carry_type(nodes[i].ttype)} {names[i]};")
         self._emit(f"switch ({kname}) {{")
         outer, self.indent = self.indent, self.indent + "    "
         for j in range(k):
@@ -237,7 +237,7 @@ class _DispatchMixin:
             self._emit(f"case {j}: {{")
             self._emit_case_body(
                 [(names[i], nodes[i].branches[j]) for i in active[j]],
-                [names[i] + " = " + self._typed_zero(nodes[i].ttype)
+                [names[i] + " = " + self.dialect.typed_zero(nodes[i].ttype)
                  for i in shown if j in elided[i]], stmts[j])
             self._emit("break;")
             self._emit("}")
@@ -246,13 +246,19 @@ class _DispatchMixin:
             self._emit("default: {")
             self._emit_case_body(
                 [(names[i], nodes[i].branches[last]) for i in active[last]],
-                [names[i] + " = " + self._typed_zero(nodes[i].ttype)
+                [names[i] + " = " + self.dialect.typed_zero(nodes[i].ttype)
                  for i in shown if last in elided[i]], stmts[last])
+            if tail:
+                self.indent += "    "
+                self._emit(tail)
+                self.indent = self.indent[:-4]
             self._emit("}")
         else:
             for n, i in enumerate(shown):
                 label = "default: " if n == 0 else ""
-                self._emit(f"{label}{names[i]} = {self._typed_zero(nodes[i].ttype)};")
+                self._emit(f"{label}{names[i]} = {self.dialect.typed_zero(nodes[i].ttype)};")
+            if tail:
+                self._emit(tail)
         self.indent = outer
         self._emit("}")
         return [None if id(n) in hidden else name for n, name in zip(nodes, names)]
@@ -327,7 +333,8 @@ class _DispatchMixin:
         for name, root in assigns:
             self._emit(f"{name} = {self._ref(root)};")
         for target, at, value in stmts:
-            self._emit(f"{target}[i].at({self._ref(at)}) += {self._ref(value)};")
+            self._emit(self.dialect.in_place_accumulate(
+                self, target, self._ref(at), self._ref(value)))
         for zero in zeros:
             self._emit(f"{zero};")
         self.local, self.items = saved_local, saved_items

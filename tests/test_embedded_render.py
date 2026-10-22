@@ -254,3 +254,34 @@ def test_a_clamped_tape_read_is_refused_by_name(monkeypatch):
     for needle in ("'drag'", "node loop7.3", "(tape_read)", "index.unproven",
                    "the C target cannot clamp a tape subscript yet"):
         assert needle in message
+
+
+def test_per_component_commits_stay_in_the_aether_dialect(tmp_path):
+    """hawk 0.6.4 stores a vector built from scalars one component at a time
+    (``target(k, i.global()) = part``) so a wide value is never live whole. That
+    is an aether-view optimisation: the C dialect keeps the single store, and the
+    unit passes every check (render, audit, strict cc, cppcheck)."""
+    import test_math_parity as MP
+
+    from hawk.embedded import export
+
+    for mode in (FLOAT64, FLOAT32):
+        body = render(MP.unary_all, mode=mode.id).body
+        assert "i.global()" not in body and "hawk_vec" in body
+        export(MP.unary_all, tmp_path / mode.id, mode=mode.id)
+
+
+def test_a_runtime_index_accumulate_in_a_loop_is_refused_by_name():
+    """A vjp through a rolled, runtime-indexed loop accumulates its gradient in
+    place, ``bar[i].at(k) += g`` per iteration: the C target does not lower it
+    and says so, rather than emitting aether view syntax."""
+    import _spline_forms as SF
+    import test_rolled_reverse as RR
+
+    from hawk.diff import vjp
+
+    k = _derived("kan_vjp", vjp(SF.kan_rolled("plain", 8), wrt=RR.WRT))
+    with pytest.raises(HawkError) as err:
+        render(k)
+    text = str(err.value)
+    assert "'kan_vjp'" in text and "the C target" in text and "in place" in text
