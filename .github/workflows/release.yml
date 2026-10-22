@@ -70,7 +70,12 @@ jobs:
       # macOS builds on the runner itself: the header trees are read in place
       CIBW_ENVIRONMENT_MACOS: "HAWK_AETHER_INCLUDE=${{ github.workspace }}/aether HAWK_EAGLE_INCLUDE=${{ github.workspace }}/eagle"
       # ccache from EPEL (AlmaLinux 8); stats zeroed per run, printed before each repair
-      CIBW_BEFORE_ALL_LINUX: "dnf install -y epel-release && dnf install -y ccache && CCACHE_DIR=/ccache ccache -z"
+      # EPEL mirrors fail often on aarch64: retry, then run uncached through a pass-through ccache stand-in
+      CIBW_BEFORE_ALL_LINUX: >-
+        for i in 1 2 3; do dnf install -y epel-release && dnf install -y ccache && break; dnf clean all; done;
+        command -v ccache >/dev/null || { printf '%s\n' '#!/bin/sh' 'case $1 in -*) exit 0;; esac' 'exec "$@"' > /usr/local/bin/ccache;
+        chmod +x /usr/local/bin/ccache; };
+        CCACHE_DIR=/ccache ccache -z
       CIBW_REPAIR_WHEEL_COMMAND_LINUX: "ccache -s; auditwheel repair -w {dest_dir} {wheel}"
       # The dedicated test-wheel job below (with the aether-dsc sibling
       # wheel + the repo's own test suite) replaces cibuildwheel's
