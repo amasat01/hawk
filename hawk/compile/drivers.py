@@ -106,7 +106,10 @@ _TRAMPOLINE = (
     "cap = int(sys.argv[1])\n"
     "soft, hard = resource.getrlimit(resource.RLIMIT_AS)\n"
     "limit = cap if hard == resource.RLIM_INFINITY else min(cap, hard)\n"
-    "resource.setrlimit(resource.RLIMIT_AS, (limit, hard))\n"
+    "try:\n"
+    "    resource.setrlimit(resource.RLIMIT_AS, (limit, hard))\n"
+    "except (ValueError, OSError):\n"
+    "    pass  # macOS cannot cap the address space; the timeout and source budget still bound the compile\n"
     "os.execvp(sys.argv[2], sys.argv[2:])\n"
 )
 
