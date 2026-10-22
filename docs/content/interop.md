@@ -126,12 +126,17 @@ Sidecar schema is v3: `cells` (each cell's operation and width) replaces `sample
 A compiled device artifact (`.ptx`/`.cubin`, from
 `hawk.artifact.build(..., targets=("cuda",))` or the pip-only
 `hawk.compile.cubin`) is loaded and launched by eagle, which is where
-`cupy` and CUDA `torch` tensors cross — through the same DLPack contract
-raptor's matrix certifies. See:
+`cupy`, CUDA `torch` tensors, Warp arrays and JAX arrays cross — through the same
+DLPack contract raptor's matrix certifies. The gradients of a hawk-derived kernel
+cross too: `jax.grad`, torch autograd and `wp.Tape` each read one
+(`JX-GRAD-TRANSFORMS`, `T-GRAD-AUTOGRAD`, `T-GRAD-FUNC`, `WP-GRAD-TAPE`). See:
 
 - [eagle's interoperability pages](https://amasat01.github.io/eagle/) for
   the device-side numpy/cupy/torch crossing eagle performs on hawk's
   behalf.
+- A hawk bundle also carries a `host` build (a `.so` with the same sidecar). eagle runs it on a
+  CPU, and a C++ program with no Python can load it; see
+  [Embed a compiled kernel in your own C++ program](https://amasat01.github.io/eagle/content/userguide/cpp/c4_embed_a_kernel.html).
 - [raptor's interoperability certification matrix](https://amasat01.github.io/raptor/content/interop_protocols.html)
   for the family-wide, row-cited statement of what is certified — the
   authority this page defers to for anything about the device side.

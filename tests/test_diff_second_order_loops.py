@@ -333,6 +333,22 @@ def test_an_unseeded_carry_still_gets_its_adjoint_recurrence():
 # --------------------------------------------------------------------------- #
 # What stays refused.
 # --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("case", SECOND_ORDER_CASES[:2],
+                         ids=[c[0] for c in SECOND_ORDER_CASES[:2]])
+def test_reverse_over_reverse_through_an_accumulator_matches_a_difference_of_the_gradient(case):
+    """An accumulator's reverse is a forward loop with no tape and no body sink,
+    so ``vjp(vjp(k))`` is built there: seeded with ``v`` on the two gradient
+    outputs it returns ``H v``. A recurrence (``chebyshev`` below) still refuses."""
+    _id, kernel, env, wrt, tangent = case
+    sink = kernel.sinks[0].name
+    want = _hessian_vector_reference(kernel, env, wrt, sink, tangent)
+    got = evaluate(vjp(vjp(kernel, wrt=wrt), wrt=wrt),
+                   {**env, f"bar_{sink}": 1.0,
+                    **{f"bar2_bar_{n}": tangent[n] for n in wrt}})
+    for held in wrt:
+        assert float(got[f"bar2_{held}"]) == pytest.approx(want[held], rel=1e-6, abs=1e-7), held
+
+
 def test_reverse_over_reverse_is_refused_and_names_the_route_that_works():
     """The one direction that is genuinely not built. The adjoint of a tape read
     is a scatter INTO the tape, and rather than guess at it the refusal names

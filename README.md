@@ -157,6 +157,32 @@ def drag(velocity: Vector[3], k: Param):
 ```
 </details>
 
+<details>
+<summary>Read a table at a computed position, and keep its gradient cheap</summary>
+
+`hawk.math.index(x, n)` turns a float into an index into `n` slots (truncated, held inside `0 .. n-1`), and
+`theta[i]` reads that slot. The gradient of such a read is one add into the slot that was read, so a wide
+spline table differentiates without a column of selects per read. It works inside a `for`, also with a
+`dispatch` in the body, which reverses as a rolled loop; a `break` in the middle of a loop differentiates
+too. The index clamps, so a wrong position reads the end slot instead of failing.
+
+```python
+@hawk.kernel
+def curve(x: Scalar, theta: Vector[16], y: Mutable[Scalar]):
+    u = x * 15.0
+    f = hawk.math.floor(u)
+    i = hawk.math.index(f, 15)          # a runtime index
+    y = theta[i] * (1.0 - (u - f)) + theta[i + 1] * (u - f)
+```
+
+Worked, with the gradient checked against finite differences, in
+[Lookups, scatters and sums](https://amasat01.github.io/hawk/content/tutorials/06_lookups_scatters_and_sums.html).
+`hawk.diff.param_planes(kernel, per_cell=True)` lets one launch run many parameter values, each sample reading its own
+entry ([Gradients, backward](https://amasat01.github.io/hawk/content/tutorials/04_gradients_backward.html)).
+A kernel can also draw its own random inputs inside the launch, the same on the CPU and the GPU
+([the ensemble example](https://amasat01.github.io/hawk/content/examples/01_ensemble_drag_throughput.html)).
+</details>
+
 ## Threading
 
 Free-threaded CPython (3.13t/3.14t) is supported: the compiled modules declare GIL-free operation and the GIL stays disabled after import. Any number of threads may call module-level functions, build, compile, plan and cache concurrently. Distinct objects may be used from distinct threads without synchronisation. One stateful object (a stream, capture, launcher, graph, composer, plan, pipeline, active set, host kernel or arg block) shared by several threads is memory-safe — its calls serialise and a consumed object raises — but the ORDER of those calls is the caller's responsibility, exactly as for a NumPy array or a CuPy stream. CUDA adds two rules of its own: a stream capture is begun, filled and ended by one thread, and while any capture is open no thread may synchronise the whole device (stream-level synchronisation is fine). GPU routes are supported on free-threaded 3.14; on 3.13t the CPU route runs. hawk's compile cache is shared safely between threads, and a sealed-path kernel's cache key follows the user headers it includes.

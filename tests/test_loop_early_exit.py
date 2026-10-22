@@ -17,10 +17,10 @@ at the break (Python's semantics). Rows:
   and a sample-major plane.
 * **Emission.** The break is really emitted; a loop without one renders
   exactly as before (no counter, no test).
-* **Derivatives.** jvp through every form and vjp through a head or tail break
-  match central differences, compiled derivatives match the interpreter, the
-  second-order routes match a difference of the gradient, and a middle-break
-  vjp is refused rather than guessed.
+* **Derivatives.** jvp and vjp through every form
+  match central differences (a middle break reverses as the tail form through
+  a select on the exit condition), compiled derivatives match the interpreter,
+  and the second-order routes match a difference of the gradient.
 """
 
 from __future__ import annotations
@@ -311,7 +311,7 @@ def test_the_digest_tells_a_break_apart():
 
 
 def test_a_vjp_keeps_the_count_only_where_a_derived_loop_reads_it():
-    for k in (head, tail, gated_sum):
+    for k in (head, middle, tail, gated_sum):
         d = vjp(k, wrt=("x",))
         text = render_body(d, canonical(d)).text
         assert "Int hawk_c" in text and "++hawk_c" in text, text
@@ -347,7 +347,7 @@ def test_jvp_matches_a_central_difference(name, point, held):
                                                 rel=1e-6, abs=1e-8)
 
 
-@pytest.mark.parametrize("name", ["head", "tail", "gated_sum"])
+@pytest.mark.parametrize("name", ["head", "middle", "tail", "gated_sum"])
 @pytest.mark.parametrize("point", POINTS[1:])
 def test_vjp_matches_a_central_difference(name, point):
     k, _ref = SUBJECTS[name]
@@ -359,9 +359,9 @@ def test_vjp_matches_a_central_difference(name, point):
             _central(name, point, held), rel=1e-6, abs=1e-8), held
 
 
-def test_a_middle_break_vjp_is_refused_by_name():
-    with pytest.raises(HawkError, match="MIDDLE"):
-        vjp(middle, wrt=("x",))
+def test_second_order_reverse_through_a_middle_break_refuses_by_name():
+    with pytest.raises(HawkError, match="reverse-over-reverse through a `for` with a `break`"):
+        vjp(vjp(middle, wrt=("x", "g")), wrt=("x", "g"))
 
 
 def _gradient(k, env):
@@ -404,6 +404,7 @@ def bundles(tmp_path_factory, cache_dir):
     kernels = [head, middle, tail, gated_sum, trajectory, vec_head,
                _derived(head, vjp, "head_vjp"), _derived(tail, vjp, "tail_vjp"),
                _derived(gated_sum, vjp, "gated_sum_vjp"),
+               _derived(middle, vjp, "middle_vjp"),
                _derived(middle, jvp, "middle_jvp"), _derived(head, jvp, "head_jvp")]
     out = {"main": build_bundle(kernels, root / "main", targets=("cuda", "host"),
                                 cache_dir=cache_dir)}
@@ -468,6 +469,7 @@ def test_compiled_primal_matches_python(bundles, runner, name):
 DERIVED = [("head_vjp", head, {"bar_y"}, ("bar_x", "bar_g")),
            ("tail_vjp", tail, {"bar_y"}, ("bar_x", "bar_g")),
            ("gated_sum_vjp", gated_sum, {"bar_y"}, ("bar_x", "bar_g")),
+           ("middle_vjp", middle, {"bar_y"}, ("bar_x", "bar_g")),
            ("head_jvp", head, {"dot_x", "dot_g"}, ("dot_y",)),
            ("middle_jvp", middle, {"dot_x", "dot_g"}, ("dot_y",))]
 

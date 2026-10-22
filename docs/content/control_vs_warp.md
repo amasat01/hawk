@@ -22,7 +22,7 @@ anything beyond that, read Warp's docs. The two tools exchange arrays without a 
 Cross-sample steps used to be separate plane kinds (`Accum`, `Reduce`). Now they are
 written in the body, as named forms, and each says what it costs. A read is
 `all_samples(x)[i]`. A by-key `+=` is the target's atomic add, so its order is not fixed. A
-reduction is finished in a fixed order if you ask for `policy="ordered"`.
+reduction is finished in a fixed order if you ask for `policy="ordered"`. A worked example: [One sample, one lane](tutorials/09_per_sample_control).
 
 ## Where Warp still offers more
 

@@ -368,23 +368,29 @@ def _component_vjp(n: Node, g: Node) -> tuple:
 
 
 def _component_at_vjp(n: Node, g: Node) -> tuple:
-    """The reverse of a RUNTIME-indexed component read.
-
-    ``v[k]`` with a symbolic ``k`` selects one component at a row only the
-    running kernel knows, so its adjoint is ``g`` placed in that row and
-    zero elsewhere — spelled with ops the table already carries
-    (``vec(select(k == 0, 1, 0), ...) * g``) rather than a new node: a
-    rank-1 value's fixed, small extent makes ``W`` selects a cost the
-    compiler folds, and a purpose-built node would need an aether spelling
-    that is a STATEMENT, putting the emitter's scope rules into this
-    table."""
+    """The reverse of a RUNTIME-indexed component read: ``g`` ADDED at that
+    row of a structural zero (``add_at``, the runtime form). The slotwise pass
+    keeps it as an accumulate where the consumer can take one (an own-column
+    commit becomes ``bar[i].at(k) += g``) and lowers it to ``W`` selects where
+    a static slot form is forced."""
     v, index = n.operands
-    scalar = TensorType((), v.ttype.dtype)
-    one, zero = Const(1.0, scalar), Const(0.0, scalar)
-    hot = _o("vec", *[
-        Select(_o("eq", index, Const(i, index.ttype)), one, zero, scalar)
-        for i in range(v.ttype.shape[0])])
-    return ((v, _mul(hot, g)),)
+    return ((v, _o("add_at", zero_like(v.ttype), index, g)),)
+
+
+def _add_at_vjp(n: Node, g: Node) -> tuple:
+    """The reverse of ``v`` with ``e`` added at ``k``: ``v``'s adjoint is ``g``
+    whole, ``e``'s is ``g[k]``."""
+    v, index, value = n.operands
+    return ((v, g), (value, _o("component_at", g, index)))
+
+
+def _add_at_jvp(n: Node, t: Callable[[Node], Node | None]) -> Node | None:
+    v, index, value = n.operands
+    tv, tvalue = t(v), t(value)
+    if tv is None and tvalue is None:
+        return None
+    return _o("add_at", tv if tv is not None else zero_like(v.ttype), index,
+              tvalue if tvalue is not None else zero_like(value.ttype))
 
 
 def _component_at_jvp(n: Node, t: Callable[[Node], Node | None]) -> Node | None:
@@ -504,6 +510,7 @@ _SHAPED: dict[str, DiffRule] = {
         jvp=lambda n, t: _o("component", t(n.operands[0]), literal=n.literal),
     ),
     "component_at": DiffRule(vjp=_component_at_vjp, jvp=_component_at_jvp),
+    "add_at": DiffRule(vjp=_add_at_vjp, jvp=_add_at_jvp),
     "set_component_at": DiffRule(vjp=_set_component_at_vjp,
                                  jvp=_set_component_at_jvp),
     "vec": DiffRule(vjp=_vec_vjp, jvp=_vec_jvp),

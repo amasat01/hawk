@@ -26,7 +26,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
 # Python versions match the cibuildwheel matrix release.yml actually builds
-# and the test-wheel job actually runs (cp39-cp314 plus free-threaded cp313t/cp314t, manylinux_2_28 x86_64) —
+# and the test-wheel job actually runs (cp39-cp315 plus free-threaded cp313t/cp314t/cp315t; manylinux_2_28 x86_64 and aarch64, macOS arm64) —
 # never wider than what a real wheel ships. GPU/CUDA: hawk's own compiled
 # core is host-only (see wheel.packages below), but its purpose is writing
 # and deploying GPU kernels through eagle, the reason this classifier exists.
@@ -39,7 +39,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Environment :: GPU :: NVIDIA CUDA",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",

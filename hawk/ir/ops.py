@@ -44,7 +44,7 @@ LOGICAL = ("land", "lor", "lnot")
 #: arity, type rule and emission differ. ``set_component_at`` is its WRITE
 #: twin: a VALUE, not a statement, so ``v[k] = e`` rebinds the name to it.
 VECTOR_OPS = ("dot", "cross", "norm", "sum", "component", "component_at",
-              "set_component_at", "vec", "splat")
+              "set_component_at", "add_at", "vec", "splat")
 #: Matrix algebra: matrix-vector, matrix-matrix, transpose, outer product.
 MATRIX_OPS = ("mv", "mm", "transpose", "outer")
 #: aether's stateless, counter-based draws: arity 2, ``(seed, counter)``,
@@ -270,11 +270,11 @@ def _shaped(kind: str, ts: list[TensorType], literal: object) -> TensorType:
                 "std::size_t (the same rule hawk.trace.value.index_node applies "
                 "to a table subscript)")
         return TensorType((), ts[0].dtype)
-    if kind == "set_component_at":
+    if kind in ("set_component_at", "add_at"):
         _rank(kind, ts[0], 1)
         if ts[1].shape != () or ts[1].dtype not in ("i32", "i64"):
             raise HawkError(
-                f"set_component_at: the index must be a rank-0 integer value, "
+                f"{kind}: the index must be a rank-0 integer value, "
                 f"got {ts[1]!r} (see component_at)")
         _rank(kind, ts[2], 0)
         return TensorType(ts[0].shape, promote(ts[0].dtype, ts[2].dtype),
@@ -333,7 +333,7 @@ def _quat(kind: str, ts: list[TensorType]) -> TensorType:
 _ARITY = {"lnot": 1, "select": 3, "fma": 3, "clip": 3, "cast": 1, "invert": 1,
           "isnan": 1, "isinf": 1, "isfinite": 1,
           "at": 2, "component": 1, "transpose": 1,
-          "component_at": 2, "set_component_at": 3,
+          "component_at": 2, "set_component_at": 3, "add_at": 3,
           "norm": 1, "sum": 1, "splat": 1, "quat_conj": 1, "quat_recip": 1,
           "as_pure": 1, "as_vec3": 1}
 

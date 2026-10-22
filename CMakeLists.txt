@@ -108,8 +108,10 @@ set(HAWK_COMPILER_ID "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 # distribution gcc without libstdc++-static links them dynamically instead).
 include(CheckLinkerFlag)
 check_linker_flag(CXX "-static-libstdc++" HAWK_STATIC_LIBSTDCXX)
-if(HAWK_STATIC_LIBSTDCXX)
+if(HAWK_STATIC_LIBSTDCXX AND NOT APPLE)
   set(_hawk_static_runtime -static-libstdc++ -static-libgcc)
+elseif(APPLE)
+  set(_hawk_static_runtime "")  # macOS links libc++ from the system
 else()
   set(_hawk_static_runtime "")
   message(WARNING "hawk: no static libstdc++ in this toolchain; linking it dynamically")
