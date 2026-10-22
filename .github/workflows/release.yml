@@ -344,6 +344,9 @@ jobs:
           allow-prereleases: true  # 3.15 until its release is on the runner image
       - run: sudo apt-get update && sudo apt-get install -y g++-13
         if: runner.os == 'Linux'
+      # eagle builds from its sdist here until 0.6.x is on PyPI; its host core needs OpenMP, which Apple clang lacks
+      - run: brew install libomp && { echo "OpenMP_ROOT=$(brew --prefix libomp)"; echo "CMAKE_PREFIX_PATH=$(brew --prefix libomp)"; } >> "$GITHUB_ENV"
+        if: runner.os == 'macOS'
       # eagle is the test-only sibling: PyPI when released, else built from its sdist here (CPU-only on ARM)
       - id: sib
         uses: ./hawk/.github/actions/install-siblings
