@@ -222,14 +222,17 @@ SPELLINGS = {
     "cast": lambda: hm.real(_v(I32_PLANE)),
 }
 
-#: The ONE kind with no authoring spelling, and why. ``splat`` is a BROADCAST
+#: The kinds with no authoring spelling, and why. ``add_at`` is the adjoint of
+#: ``component_at``: ``v[k]`` reverses into "add ``g`` at ``k``", IR the
+#: transform mints (an author accumulates with ``+``). ``splat`` is a BROADCAST
 #: node: an author never writes one, because writing ``a + 1.0`` against a
 #: rank-1 value already broadcasts through the elementwise type rule.
 #: The kind exists so a DERIVATIVE can name the transpose of that broadcast —
 #: ``hawk/diff/rules.zero_like`` and the ``sum``/``splat`` pair — which is IR
 #: the transform mints, never text an author types.
 UNSPELLED = {"splat": "the broadcast a derivative mints; an author's rank-0 "
-                      "operand broadcasts through the elementwise type rule"}
+                      "operand broadcasts through the elementwise type rule",
+             "add_at": "the adjoint of component_at, minted by the derivative rule"}
 
 
 def _mint(spell):

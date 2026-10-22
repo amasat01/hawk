@@ -16,7 +16,11 @@ Rows (host; the ``cuda`` arm of a compiled row is marked ``gpu``):
   summed the same way, gives the same numbers;
 * **sidecar** — ``param_planes`` lists the promoted planes (absent on the
   plain kernel); the access class is the plain kernel's;
-* **refusals** — a name clash with an existing plane, an unknown name.
+* **refusals** — a name clash with an existing plane, an unknown name;
+* **per cell** — ``per_cell=True`` reads each sample's own cell of the plane:
+  values equal a loop over the entries bit for bit, the gradient of each
+  entry is the sum of the per-sample gradients of the samples that read it,
+  and a kernel with cells of its own or a ``jump=`` plan is refused.
 """
 
 from __future__ import annotations
@@ -288,3 +292,101 @@ def test_a_cell_costs_what_the_immediate_costs(bundle):
     print(f"cell {best['cell'] * 1e6:.0f} us, value {best['value'] * 1e6:.0f} us, "
           f"ratio {ratio:.3f}, load {os.getloadavg()[0]:.1f}")
     assert ratio < 1.10, ratio
+
+
+# --------------------------------------------------------------------------- #
+# per_cell=True: one launch, many parameter values
+# --------------------------------------------------------------------------- #
+@kernel
+def stateful(x: Scalar, g: Param, y: Mutable[Scalar]):
+    s = x
+    for _k in range(5):
+        s = hawk.math.tanh(g * s + x)
+    y = s
+
+
+CELLS = 3
+
+
+@pytest.fixture(scope="module")
+def per_cell(tmp_path_factory, cache_dir):
+    from hawk import Kernel
+    from hawk import runtime as rt
+
+    root = tmp_path_factory.mktemp("per_cell")
+    cells = param_planes(stateful, per_cell=True)
+    grad = Kernel("stateful_vjp_cells", tuple(vjp(cells, wrt=("g",))))
+    arms = {"value": ([cells], "stateful_params_cells"),
+            "grad": ([grad], "stateful_vjp_cells"),
+            "plain": ([stateful, Kernel("stateful_vjp", vjp(stateful, wrt=("g",)))],
+                      None)}
+    out = {}
+    for key, (kernels, name) in arms.items():
+        b = build_bundle(kernels, root / key, targets=("host",), cache_dir=cache_dir,
+                         host_profile="native", mode="float64")
+        out[key] = (lambda n, b=b: rt.load(b.directory, n, sidecar_of(b, n)))
+    return out, rt
+
+
+def _cell_case():
+    rng = np.random.default_rng(1)
+    n = 20
+    return (rng.uniform(-1.0, 1.0, n), np.arange(n) % CELLS,
+            np.array([0.5, 1.5, -0.8]))
+
+
+def test_per_cell_values_equal_a_loop_over_the_entries(per_cell):
+    load, rt = per_cell
+    x, cell, g = _cell_case()
+    y = np.zeros(x.size)
+    rt.run(load["value"]("stateful_params_cells"), x=x, g=g,
+           param_cell=cell.astype(np.int64), y=y)
+    want = np.zeros(x.size)
+    for c in range(CELLS):
+        pick = cell == c
+        out = np.zeros(pick.sum())
+        rt.run(load["plain"]("stateful"), x=x[pick], g=float(g[c]), y=out)
+        want[pick] = out
+    np.testing.assert_array_equal(y, want)
+    assert len(set(np.round(want, 12))) > CELLS          # the entries differ
+
+
+def test_per_cell_gradient_is_the_sum_over_the_samples_that_read_the_entry(per_cell):
+    load, rt = per_cell
+    x, cell, g = _cell_case()
+    bar = np.zeros(CELLS)
+    rt.run(load["grad"]("stateful_vjp_cells"), x=x, g=g,
+           param_cell=cell.astype(np.int64), bar_y=np.ones(x.size), bar_g=bar)
+    want = np.zeros(CELLS)
+    for c in range(CELLS):
+        pick = cell == c
+        per_sample = np.zeros(pick.sum())
+        rt.run(load["plain"]("stateful_vjp"), x=x[pick], g=float(g[c]),
+               bar_y=np.ones(pick.sum()), bar_g=per_sample)
+        want[c] = per_sample.sum()
+    np.testing.assert_allclose(bar, want, rtol=1e-13)
+    assert np.all(bar != 0.0)
+
+
+def test_per_cell_names_and_refusals():
+    cells = param_planes(stateful, per_cell=True)
+    assert cells.name == "stateful_params_cells"
+    assert dict((n, r) for r, n in cells.walk.arg_spec)["param_cell"] == "per_sample"
+    assert cells.walk.digest != param_planes(stateful).walk.digest
+
+    @kernel
+    def reduces(x: Scalar, g: Param, y: Mutable[Scalar]):
+        y = hawk.all_samples(g * x).sum()
+
+    with pytest.raises(HawkError, match="reduces over samples into cells of its own"):
+        param_planes(reduces, per_cell=True)
+
+    @kernel(jump=0.04)
+    def switches(x: Scalar, t: Param, y: Mutable[Scalar]):
+        if x < t:
+            y = x
+        else:
+            y = 2.0 * x
+
+    with pytest.raises(HawkError, match="`jump=` plan"):
+        param_planes(switches, per_cell=True)

@@ -53,7 +53,7 @@ eagle with no change to its source; the tutorial shows how.
 
 ## Where next
 
-- [Tutorials](tutorials): eight notebooks that build on each other,
+- [Tutorials](tutorials): nine notebooks that build on each other,
   starting with this kernel in full.
 - [Vocabulary](vocabulary): declare your own kernel family, derivative and
   tape.

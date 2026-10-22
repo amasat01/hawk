@@ -383,6 +383,20 @@ class _Renderer(_DispatchMixin):
         #: position -> the members of its fused ``switch`` group
         #: (:meth:`_fusion_groups`), for every member of a group of two or more.
         self._fused = self._fusion_groups()
+        #: Per-component commits (:meth:`_plan_commits`): position -> the stores
+        #: due once that node is rendered; the sinks they replace; the ``vec``
+        #: positions no longer rendered whole.
+        self._due: dict = {}
+        self._held: set = set()
+        self._skip: set = set()
+        #: the slots an accumulate may reach before their own part is stored:
+        #: zeroed first (``_plan_commits``)
+        self._zero: list = []
+        self._late_ready: dict = {}
+        #: group position -> the accumulates rendered inside that group's cases
+        self._inline_links: dict = {}
+        #: How many lowered-loop scopes are open (a body sink renders inside one).
+        self._scope_depth = 0
 
     def _lazy_leaves(self) -> frozenset:
         """Positions of the wide read-only leaves bound as the ``[i]`` proxy.
@@ -394,21 +408,25 @@ class _Renderer(_DispatchMixin):
         (``.get()`` is one register per element); each read goes through the
         proxy."""
         used: dict[int, bool] = {}
+        runtime: set = set()
         for node in self.nodes:
             if isinstance(node, Leaf):
                 continue
-            read = isinstance(node, Op) and node.kind == "component"
+            read = isinstance(node, Op) and node.kind in ("component", "component_at")
             for k, child in enumerate(node.operands):
                 child = _through(child)
                 if isinstance(child, Leaf):
                     p = self.position[id(child)]
                     used[p] = used.get(p, True) and read and k == 0
+                    if read and k == 0 and node.kind == "component_at":
+                        runtime.add(p)
         out = set()
         for p, ok in used.items():
             leaf = self.nodes[p]
             if (ok and leaf.ttype.shape and leaf.role not in ("mutable", "uniform", "nsamples")
                     and not is_param_cell(leaf)
-                    and math.prod(leaf.ttype.shape) > LAZY_LEAF_WIDTH):
+                    and (math.prod(leaf.ttype.shape) > LAZY_LEAF_WIDTH
+                         or (p in runtime and _reads_in_place(leaf)))):
                 out.add(p)
         return frozenset(out)
 
@@ -539,14 +557,27 @@ class _Renderer(_DispatchMixin):
             self._emit(f"if (!{guard}) {{")
             self.indent += "    "
             self.guarded = True
+        self._plan_commits()
+        for target, at in self._zero:
+            self._emit(f"{target}({at}, i.global()) = {self._cast('0', 'f64')};")
+        for target, width in self._accumulated_planes():
+            # a plane a lowered loop accumulates at runtime indices once per
+            # iteration (`bar[i].at(k) += e`, constraint 7): zeroed whole, once,
+            # before the walk; the loop's links are the only other writes
+            self._emit(f"for (Int hk = 0; hk < {width}; ++hk) "
+                       f"{target}[i].at(hk) = {self._cast('0', 'f64')};")
         for node in self.nodes:
             if isinstance(node, Sink):
                 continue
             self._emit_outside(node)
+        if self._due:                                  # pragma: no cover
+            raise HawkError("a per-component commit was planned for a value the "
+                            "walk never rendered")
         finish = None
         for sink in self.sinks:
-            if not isinstance(sink, Sink):
-                continue        # a lowered loop ROOT: already emitted, scope and all
+            if not isinstance(sink, Sink) or id(sink) in self._held:
+                continue        # a lowered loop ROOT (emitted, scope and all), or a
+                                # sink already committed per component
             if isinstance(sink, Finish):
                 finish = sink   # the epilogue: after EVERY other commit, below
                 continue
@@ -558,7 +589,182 @@ class _Renderer(_DispatchMixin):
             self._emit("}")
         return Body("\n".join(self.lines), self.uses_random)
 
+    def _accumulated_planes(self) -> list:
+        """``(target, width)`` of every plane some lowered loop in the walk
+        accumulates per iteration (:func:`_accumulate_sink`), each once."""
+        out, seen = [], set()
+        pending = [n for n in self.nodes if isinstance(n, Loop)]
+        while pending:
+            loop = pending.pop()
+            pending.extend(n for n in loop.body_nodes() if isinstance(n, Loop))
+            for sink in loop.body_sinks:
+                links = _accumulate_sink(sink)
+                if links is None:
+                    continue
+                target = binding_name(sink.role, sink.name)
+                if target not in seen:
+                    seen.add(target)
+                    out.append((target, math.prod(sink.ttype.shape)))
+        return out
+
+    def _plan_commits(self) -> None:
+        """Choose the own-column sinks that commit per component.
+
+        An ``Assign``/``WideWrite`` whose value is a ``vec`` stores component
+        ``k`` as ``target(k, i.global()) = part_k;`` right after the statement
+        that defines the part, so a wide value is never live whole. Only when
+        no leaf reads the plane (its prior value would see the early store),
+        the sink is not the compensated target, and the body is a plain one
+        (a lane split or segment cut moves statements between texts). Anything
+        else keeps today's single store at the end."""
+        if self.split_loop is not None or self.cut_loops:
+            return
+        read = {(n.role, n.name) for n in self.nodes if isinstance(n, Leaf)}
+        ready = self._ready_times()
+        compensated = self.kind.sink.id == "compensated"
+        users: dict = {}
+        planned = []
+        for sink in self.sinks:
+            value = getattr(sink, "value", None)
+            base, links = _chain(value)
+            parts = _parts(base)
+            if (not isinstance(sink, (Assign, WideWrite)) or sink.index is not None
+                    or parts is None
+                    or (sink.role, sink.name) in read
+                    or (compensated and (sink.name == self.kind.sink.compensation
+                                         or self._is_compensated_own_column(sink)))
+                    or any(self.position[id(p)] not in self._outside
+                           for p in parts)
+                    or any(self.position[id(n)] not in self._outside
+                           for k, e in links for n in (k, e))):
+                continue
+            planned.append((sink, base, links, parts))
+        # everything the walk positions after the first planned base is reached
+        # only through runtime links or later sinks: ready when its inputs are
+        late = min((self.position[id(b)] for _s, b, _l, _p in planned), default=-1)
+        for sink, base, links, parts in planned:
+            target = binding_name(sink.role, sink.name)
+            # a runtime accumulate is due once both its index and its value are;
+            # a static part stored BEFORE the first accumulate is a plain store,
+            # any other is an accumulate over the zero the prologue wrote
+            due_links = [max(self._ready_at(k, ready, late), self._ready_at(e, ready, late))
+                         for k, e in links]
+            first = min(due_links, default=None)
+            for at, part in zip(_flat_indices(sink.ttype.shape), parts):
+                when = self._ready_at(part, ready, late)
+                plain = first is None or when < first
+                if not plain:
+                    self._zero.append((target, ", ".join(map(str, at))))
+                self._due.setdefault(when, []).append(
+                    (target, ", ".join(map(str, at)), part, "=" if plain else "+="))
+            for when, (k, e) in zip(due_links, links):
+                if not self._link_in_case(target, k, e):
+                    self._due.setdefault(when, []).append((target, k, e, "at+="))
+            self._held.add(id(sink))
+            node = sink.value
+            while node is not base:
+                users[self.position[id(node)]] = users.get(self.position[id(node)], 0) + 1
+                node = node.operands[0]
+            pos = self.position[id(base)]
+            users[pos] = users.get(pos, 0) + 1
+        self._skip = {pos for pos, n in users.items() if self.fanout.get(pos, 0) == n}
+
+    def _link_in_case(self, target: str, index: Node, value: Node) -> bool:
+        """Whether an accumulate renders inside the cases of the one fused
+        ``switch`` that defines its index and its value, so a case that does not
+        take the link writes nothing (and no slot is touched by a no-op add). It
+        needs both to be members of that group and read by this link alone."""
+        pi, pv = self.position[id(index)], self.position[id(value)]
+        group = self._fused.get(pi)
+        if (group is None or group != self._fused.get(pv)
+                or not isinstance(index, Dispatch) or not isinstance(value, Dispatch)
+                or self.fanout.get(pi, 0) != 1 or self.fanout.get(pv, 0) != 1):
+            return False
+        self._inline_links.setdefault(self.position[id(group[0])], []).append(
+            (target, index, value))
+        return True
+
+    def _ready_times(self) -> list:
+        """Per position: the position whose render makes the node renderable.
+
+        A fused ``switch`` member renders when its group's first member does, a
+        loop at its own position, everything else whenever its operands are
+        there; so a node is ready at the latest of those over what it reads
+        (``-1``: it reads none)."""
+        ready: list = []
+        for pos, node in enumerate(self.nodes):
+            if isinstance(node, Dispatch) and node.policy in SWITCH_RENDERED:
+                kids = (node.selector,)
+            else:
+                kids = node.operands
+            at = max((ready[self.position[id(c)]] for c in kids), default=-1)
+            group = self._fused.get(pos)
+            if group is not None:
+                at = max(at, self.position[id(group[0])])
+            elif isinstance(node, Loop):
+                at = max(at, pos)
+            ready.append(at)
+        return ready
+
+    def _ready_at(self, part: Node, ready: list, late: int = -1) -> int:
+        """The position at whose render ``part`` can be rendered and stored.
+
+        A node the walk reaches only through the sink's runtime links sits
+        AFTER the base (position > ``late``) although its inputs are early:
+        it is ready when they are (the deepest early input, or the switch
+        group it is a member of), and :meth:`_flush` renders it there."""
+        pos = self.position[id(part)]
+        if pos <= late or pos not in self._outside:
+            return pos if ready[pos] < 0 else min(ready[pos], pos)
+        memo = self._late_ready
+        if pos in memo:
+            return memo[pos]
+        if isinstance(part, Dispatch) and part.policy in SWITCH_RENDERED:
+            kids = (part.selector,)
+        else:
+            kids = part.operands
+        at = max((self._ready_at(c, ready, late) for c in kids), default=0)
+        group = self._fused.get(pos)
+        if group is not None:
+            at = max(at, self.position[id(group[0])])
+        memo[pos] = at
+        return at
+
+    def _flush(self, pos: int) -> None:
+        """The per-component stores due now that ``pos`` is rendered. A part
+        whose inputs are all there is rendered here (with whatever of its own it
+        still needs, in walk order) rather than at its turn in the walk."""
+        for target, at, part, op in self._due.pop(pos, ()):
+            need, seen, stack = [], set(), [part] + ([at] if op == "at+=" else [])
+            while stack:
+                n = stack.pop()
+                p = self.position[id(n)]
+                if p in self.rendered or p not in self._outside or p in seen:
+                    continue
+                seen.add(p)
+                need.append(n)
+                stack.extend((n.selector,) if isinstance(n, Dispatch)
+                             and n.policy in SWITCH_RENDERED else n.operands)
+            for n in sorted(need, key=lambda n: self.position[id(n)]):
+                self._emit_outside(n)
+            if op == "at+=":
+                self._emit(f"{target}[i].at({self._ref(at)}) += {self._ref(part)};")
+            else:
+                self._emit(f"{target}({at}, i.global()) {op} {self._ref(part)};")
+
     def _emit_outside(self, node: Node) -> None:
+        """:meth:`_render_outside`, then the commits that were waiting on it."""
+        pos = self.position[id(node)]
+        if pos in self._skip:
+            self.rendered.setdefault(pos, "")   # committed per part, never whole
+            return
+        self._render_outside(node)
+        if self._due:
+            group = self._fused.get(pos, ())
+            for held in (pos, *(self.position[id(m)] for m in group)):
+                self._flush(held)
+
+    def _render_outside(self, node: Node) -> None:
         """Render one node of the flat walk at the top scope, unless it is
         reached only through a Dispatch's branches (rendered scoped to its case(s),
         :meth:`_dispatch_switches`) or already rendered ahead of its turn as an
@@ -615,7 +821,10 @@ class _Renderer(_DispatchMixin):
         for n in sorted(need, key=lambda n: self.position[id(n)]):
             self._emit_outside(n)
         for node, name in zip(group, self._dispatch_switches(group)):
-            self._bind(node, self.position[id(node)], name)
+            if name is None:                   # an accumulate of a case, not a value
+                self.rendered.setdefault(self.position[id(node)], "")
+            else:
+                self._bind(node, self.position[id(node)], name)
 
     def _finish(self, sink: Finish) -> None:
         """The finish epilogue — the last text of the guarded scope, so the step's
@@ -739,6 +948,7 @@ class _Renderer(_DispatchMixin):
         outer, self.indent = self.indent, self.indent + "    "
         saved, saved_items = self.local, self.items
         self.local, self.items = dict(saved), dict(saved_items)
+        self._scope_depth += 1
         self.local[id(loop.index)] = index
         for carry, name in zip(loop.carries, names):
             self.local[id(carry)] = name
@@ -756,6 +966,8 @@ class _Renderer(_DispatchMixin):
                 self._emit(f"const {elems[j]} hawk_e{pos}_{j} = {self._ref(value)};")
             for j, _value in moved:
                 self._emit(f"{names[j]} = hawk_e{pos}_{j};")
+            if counter is not None and form == "middle":
+                self._emit(f"++{counter};")   # the exiting iteration ran in part: its row counts
             self._emit("break;")
             self.indent = self.indent[:-4]
             self._emit("}")
@@ -778,6 +990,7 @@ class _Renderer(_DispatchMixin):
         if form == "tail":
             self._emit(f"if (hawk_x{pos}) break;")
         self.local, self.items = saved, saved_items
+        self._scope_depth -= 1
         self.indent = outer
         self._emit("}")
 
@@ -1009,6 +1222,17 @@ class _Renderer(_DispatchMixin):
         scope a name would live in; a value read from outside was already named
         by the boundary rule before the loop opened."""
         body = loop.body_nodes()
+        # the add_at chain of a per-iteration accumulate is committed link by
+        # link by its sink (:func:`_accumulate_sink`), never rendered as a value
+        chains: set = set()
+        for sink in loop.body_sinks:
+            if _accumulate_sink(sink) is not None:
+                node = sink.value
+                while isinstance(node, Op) and node.kind == "add_at":
+                    chains.add(id(node))
+                    node = node.operands[0]
+        if chains:
+            skip = frozenset(skip) | frozenset(chains)
         fanout: dict[int, int] = {}
         exits = ([] if loop.exit_cond is None
                  else [loop.exit_cond, *loop.exit_values])
@@ -1095,6 +1319,13 @@ class _Renderer(_DispatchMixin):
             return
         if isinstance(sink, SampleSum):
             self._sample_sum(sink)
+            return
+        links = _accumulate_sink(sink) if self._scope_depth else None
+        if links is not None:
+            # a per-iteration runtime accumulate (constraint 7): each link on
+            # the own column where it stands, nothing for the zero base
+            for k, e in links:
+                self._emit(f"{target}[i].at({self._ref(k)}) += {self._ref(e)};")
             return
         value = self._ref(sink.value)
         if not isinstance(sink, (Assign, WideWrite, AccumWrite)):
@@ -1408,6 +1639,10 @@ class _Renderer(_DispatchMixin):
         two runtime reads of one vector inside a loop body share one Item, and
         an Item built inside a loop isn't referenced after the scope closes."""
         source = node.operands[0]
+        if _reads_in_place(source):
+            # a read-only input plane: the element at the runtime index straight
+            # from the view (`SampleRef::at`), no `Item` of the whole row
+            return f"{binding_name(source.role, source.name)}[i].at({args[1]})"
         held = self.items.get(id(source))
         if held is None:
             t = source.ttype
@@ -1419,7 +1654,8 @@ class _Renderer(_DispatchMixin):
             self.items[id(source)] = held
         return f"{held}({args[1]})"
 
-    def _runtime_component_store(self, node: Op, args: Sequence[str]) -> str:
+    def _runtime_component_store(self, node: Op, args: Sequence[str],
+                                 accumulate: bool = False) -> str:
         """``v[k] = e`` at a RUNTIME index, as a VALUE.
 
         The IR node is functional — ``v`` with one component replaced — and C++
@@ -1435,7 +1671,8 @@ class _Renderer(_DispatchMixin):
         name = f"hawk_sv{self.hoists}"
         self.hoists += 1
         self._emit(f"{carry_type(t)} {name} = {args[0]};")
-        self._emit(f"{name}({args[1]}) = {self._cast(args[2], t.dtype)};")
+        op = "+=" if accumulate else "="
+        self._emit(f"{name}({args[1]}) {op} {self._cast(args[2], t.dtype)};")
         return name
 
     def _matrix_sum(self, arg: str, ttype: TensorType) -> str:
@@ -1461,6 +1698,8 @@ class _Renderer(_DispatchMixin):
             return self._runtime_component(node, args)
         if kind == "set_component_at":
             return self._runtime_component_store(node, args)
+        if kind == "add_at":
+            return self._runtime_component_store(node, args, accumulate=True)
         if kind in ("dot", "norm", "sum", "component"):
             return self._reduction(kind, args, node)
         if kind == "splat":
@@ -1576,6 +1815,50 @@ def _flat_body(loop: Loop) -> list:
 #: The local row of per-sample terms a ``sample_sum`` body writes; the
 #: backend's wrapper declares it and sums it.
 SAMPLE_SUM_TERMS = "hawk_ss"
+
+
+def _chain(node: Node) -> tuple:
+    """``(base, [(k, e), ...])`` of an ``add_at`` chain (the runtime form of a
+    wide value, :mod:`hawk.ir.slotwise`); a plain value is a chain of none."""
+    links = []
+    while isinstance(node, Op) and node.kind == "add_at":
+        links.append((node.operands[1], node.operands[2]))
+        node = node.operands[0]
+    return node, links[::-1]
+
+
+def _accumulate_sink(sink: Node) -> list | None:
+    """The links of an own-column ``Assign`` whose value is an ``add_at`` chain
+    over a structural zero — a lowered loop's per-iteration accumulate — else
+    ``None``."""
+    from ..ir.slotwise import is_structural_zero
+
+    if not isinstance(sink, Assign) or sink.index is not None:
+        return None
+    base, links = _chain(sink.value)
+    if not links or not is_structural_zero(base):
+        return None
+    return links
+
+
+def _parts(node: Node) -> list | None:
+    """The scalar parts of a ``vec`` (or of a ``splat``: its one scalar per
+    slot); ``None`` for anything else."""
+    if not isinstance(node, Op):
+        return None
+    if node.kind == "vec":
+        return list(node.operands)
+    if node.kind == "splat":
+        return [node.operands[0]] * math.prod(node.ttype.shape)
+    return None
+
+
+def _reads_in_place(node: Node) -> bool:
+    """Whether a runtime component read of ``node`` goes through the plane's own
+    view (``name[i].at(k)``): a read-only rank-1 input leaf. A mutable plane,
+    a parameter cell and every computed vector keep the ``Item`` copy."""
+    return (isinstance(node, Leaf) and node.role in ("vec_in", "per_sample")
+            and len(node.ttype.shape) == 1 and not is_param_cell(node))
 
 
 def _flat_indices(shape: tuple) -> list:

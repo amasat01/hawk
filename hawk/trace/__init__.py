@@ -27,9 +27,14 @@ The ``break`` is a real per-sample exit:
   samples that stop together sit together.
 
 Forward mode (``jvp``) follows each sample's own iterations. Reverse mode
-(``vjp``) supports a ``break`` only as the loop body's FIRST or LAST
-statement, refusing one in the middle by name — the derivative is
-undefined where a sample's exit step changes.
+(``vjp``) supports a ``break`` anywhere in the body; one in the middle is
+reversed as the tail form through a select on the exit condition, which
+costs one body plus a select per iteration. The derivative is undefined
+where a sample's exit step changes.
+
+Second order: ``vjp(vjp(k))`` is built through an accumulator loop (a sum
+that reads no earlier carry); the second order of a recurrence goes through
+``jvp(vjp(k))``.
 
 STEPS PER LAUNCH: ``hawk.steps(kernel, K)`` (or ``@hawk.kernel(steps=K)``)
 derives a kernel that runs ``K`` steps of a finishing step kernel per

@@ -32,12 +32,13 @@ Two honest limits, today:
   calls a `raw_device` block, by name — there is no rule for opaque text,
   and there will not be one (the point of the seam is that the text is
   outside hawk's own IR).
-- **There is no end-to-end compile-and-run test for it yet.** Its own test
-  suite (`tests/test_trace_raw_device.py`) stops at the trace and IR
-  level — it checks that an unannotated block is refused and that a
-  declared access class folds into the walk's inferred class, but no test
-  compiles and runs a kernel that calls one. This page shows no runnable
-  example because none is tested yet.
+- **Little of it is tested end to end.** Its own test suite
+  (`tests/test_trace_raw_device.py`) stops at the trace and IR
+  level: it checks that an unannotated block is refused and that a
+  declared access class folds into the walk's inferred class. The only
+  place a compiled kernel that calls one runs is the multi-process (MPI)
+  rank test bed. This page shows no runnable example because none is
+  tested in the regular suite.
 
 Reach for `raw_device` only when a primitive genuinely cannot express what
 you need, and expect to lose autodiff on that kernel.

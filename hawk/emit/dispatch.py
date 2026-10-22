@@ -36,7 +36,7 @@ def _speculable(node: Node) -> bool:
     if isinstance(node, Loop):
         return False
     kind = getattr(node, "kind", "")
-    if kind in ("floordiv", "mod", "set_component_at"):
+    if kind in ("floordiv", "mod", "set_component_at", "add_at"):
         return False
     if isinstance(node, At):
         return is_param_cell(node)
@@ -212,6 +212,8 @@ class _DispatchMixin:
         Returns each member's output name."""
         poses = [self._disp_pos(n) for n in nodes]
         k = nodes[0].K
+        links = self._inline_links.pop(self.position.get(id(nodes[0])), [])
+        hidden = {id(n) for _t, a, b in links for n in (a, b)}
         kname = f"hawk_disp{poses[0]}_k"
         self._selector(kname, nodes[0].selector, k)
         names = [f"hawk_disp{p}" for p in poses]
@@ -221,24 +223,29 @@ class _DispatchMixin:
                 self._emit(f"hawk_abi::mix_count({mix}, {k}, {kname});")
         elided = [frozenset(j for j, b in enumerate(n.branches)
                             if _is_literal_zero(b)) for n in nodes]
-        plain = any(not e for e in elided)
+        shown = [i for i, n in enumerate(nodes) if id(n) not in hidden]
+        plain = any(not elided[i] for i in shown)
         last = k - 1
-        active = {j: [i for i in range(len(nodes)) if j not in elided[i]]
-                  for j in range(k)}
+        active = {j: [i for i in shown if j not in elided[i]] for j in range(k)}
+        # a link (:meth:`_plan_commits`) whose index and value are members of this
+        # group is a statement of the case that owns it, not a value of every case
+        stmts = {j: [(t, a.branches[j], b.branches[j]) for t, a, b in links
+                     if not _is_literal_zero(b.branches[j])] for j in range(k)}
         self._hoist_common([[nodes[i].branches[j] for i in active[j]]
+                            + [r for _t, a, b in stmts[j] for r in (a, b)]
                             for j in range(k)])
-        for node, name in zip(nodes, names):
-            self._emit(f"{carry_type(node.ttype)} {name};")
+        for i in shown:
+            self._emit(f"{carry_type(nodes[i].ttype)} {names[i]};")
         self._emit(f"switch ({kname}) {{")
         outer, self.indent = self.indent, self.indent + "    "
         for j in range(k):
-            if not active[j] or (j == last and plain):
+            if (not active[j] and not stmts[j]) or (j == last and plain):
                 continue          # falls to `default:` below
             self._emit(f"case {j}: {{")
             self._emit_case_body(
                 [(names[i], nodes[i].branches[j]) for i in active[j]],
                 [names[i] + " = " + self._typed_zero(nodes[i].ttype)
-                 for i in range(len(nodes)) if j in elided[i]])
+                 for i in shown if j in elided[i]], stmts[j])
             self._emit("break;")
             self._emit("}")
         if plain:
@@ -246,15 +253,15 @@ class _DispatchMixin:
             self._emit_case_body(
                 [(names[i], nodes[i].branches[last]) for i in active[last]],
                 [names[i] + " = " + self._typed_zero(nodes[i].ttype)
-                 for i in range(len(nodes)) if last in elided[i]])
+                 for i in shown if last in elided[i]], stmts[last])
             self._emit("}")
         else:
-            for i, (node, name) in enumerate(zip(nodes, names)):
-                label = "default: " if i == 0 else ""
-                self._emit(f"{label}{name} = {self._typed_zero(node.ttype)};")
+            for n, i in enumerate(shown):
+                label = "default: " if n == 0 else ""
+                self._emit(f"{label}{names[i]} = {self._typed_zero(nodes[i].ttype)};")
         self.indent = outer
         self._emit("}")
-        return names
+        return [None if id(n) in hidden else name for n, name in zip(nodes, names)]
 
     def _hoist_common(self, case_roots: list) -> None:
         """Render, above the switch, every node reachable from ALL of its cases
@@ -308,7 +315,7 @@ class _DispatchMixin:
                     tally[id(r)] = tally.get(id(r), 0) + 1
         self._render_nodes(hoisted, tally)
 
-    def _emit_case_body(self, assigns: list, zeros: list) -> None:
+    def _emit_case_body(self, assigns: list, zeros: list, stmts: Sequence = ()) -> None:
         """Render ONE ``case``'s own scope — a fresh :attr:`local`/
         :attr:`items` snapshot (:meth:`_loop`'s save-a-copy/restore idiom):
         a temporary this case mints must not leak to the next one, while
@@ -316,13 +323,17 @@ class _DispatchMixin:
         the instant the block closes, so another case's equal temporary
         is a fresh duplicate, not a stale reference. ``assigns`` is
         ``[(output name, branch root)]``, ``zeros`` the zero assignments of
-        members elided here."""
+        members elided here, ``stmts`` the ``[(plane, index root, value root)]``
+        accumulates this case owns."""
         inner, self.indent = self.indent, self.indent + "    "
         saved_local, saved_items = self.local, self.items
         self.local, self.items = dict(saved_local), dict(saved_items)
-        self._render_branch([root for _, root in assigns])
+        self._render_branch([root for _, root in assigns]
+                            + [r for _t, a, b in stmts for r in (a, b)])
         for name, root in assigns:
             self._emit(f"{name} = {self._ref(root)};")
+        for target, at, value in stmts:
+            self._emit(f"{target}[i].at({self._ref(at)}) += {self._ref(value)};")
         for zero in zeros:
             self._emit(f"{zero};")
         self.local, self.items = saved_local, saved_items

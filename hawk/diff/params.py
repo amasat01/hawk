@@ -30,30 +30,43 @@ from __future__ import annotations
 from typing import Any
 
 from ..ir import HawkError, Leaf
-from ..ir.nodes import PARAM_CELL, At, RoleConst, is_param_cell
+from ..ir.nodes import PARAM_CELL, At, RoleConst, SampleSum, is_param_cell
 from ..ir.walk import substitute
 from ..types import TensorType
 from .tape import TAPE_ON, _reachable, _resink
 
-#: The promoted kernel's name suffix.
+#: The promoted kernel's name suffix, and the one a per-cell kernel adds to it.
 SUFFIX = "_params"
+CELLS_SUFFIX = "_cells"
+
+#: The per-sample ``i32`` plane that holds each sample's parameter cell.
+CELL_PLANE = "param_cell"
 
 _INDEX = TensorType((), "i32")
 
 
-def param_cell(name: str, ttype: TensorType) -> At:
-    """The read of parameter ``name``: cell 0 of a one-cell ``lookup`` plane."""
-    return At(Leaf("table_read", "lookup", name, ttype),
-              RoleConst(0, PARAM_CELL, _INDEX), ttype)
+def param_cell(name: str, ttype: TensorType, per_cell: bool = False) -> At:
+    """The read of parameter ``name``: cell 0 of a one-cell ``lookup`` plane,
+    or, with ``per_cell``, the cell the sample's ``param_cell`` plane names."""
+    plane = Leaf("table_read", "lookup", name, ttype)
+    if per_cell:
+        return At(plane, Leaf("vocab_read", "per_sample", CELL_PLANE, _INDEX), ttype)
+    return At(plane, RoleConst(0, PARAM_CELL, _INDEX), ttype)
 
 
-def param_planes(kernel: Any, names: Any = None) -> Any:
+def param_planes(kernel: Any, names: Any = None, per_cell: bool = False) -> Any:
     """``kernel`` with its ``uniform`` parameters read from one-cell planes.
 
     ``names`` selects which uniforms (default: every one the body reads, the
     taping flag aside); an unknown name, or a plane of that name that is not
     the uniform, is refused. The result is named ``<name>_params``. A default
-    automatic kernel is promoted through its single step and rebuilt."""
+    automatic kernel is promoted through its single step and rebuilt.
+
+    With ``per_cell=True`` a sample reads cell ``param_cell[i]`` of each plane
+    (an ``i32`` per-sample plane) instead of cell 0, so one launch can run many
+    parameter values; the result is named ``<name>_params_cells``, and ``vjp``
+    gives the gradient of each cell, summed over the samples that read it. A
+    kernel with reductions of its own, or a ``jump=`` plan, is refused."""
     from ..trace.kernel import Kernel
     from ..trace.steps import default_steps
 
@@ -81,11 +94,29 @@ def param_planes(kernel: Any, names: Any = None) -> Any:
         raise HawkError(
             f"hawk.diff.param_planes({step.name!r}): the kernel reads no uniform "
             "parameter, so there is nothing to promote")
-    cells = {n: param_cell(n, next(l.ttype for l in leaves if l.name == n))
+    if per_cell:
+        if any(isinstance(n, SampleSum) for n in nodes):
+            raise HawkError(
+                f"hawk.diff.param_planes({step.name!r}, per_cell=True): the kernel "
+                "already reduces over samples into cells of its own, and a "
+                "parameter cell index would be a second use of the word. Promote "
+                "its parameters with per_cell=False, or move the reduction out")
+        if step.jump is not None:
+            raise HawkError(
+                f"hawk.diff.param_planes({step.name!r}, per_cell=True): the kernel "
+                "has a `jump=` plan, whose switching comparisons are written per "
+                "launch, not per parameter cell. Promote with per_cell=False")
+        if CELL_PLANE in {n for _, n in step.walk.arg_spec}:
+            raise HawkError(
+                f"hawk.diff.param_planes({step.name!r}, per_cell=True): a plane "
+                f"named {CELL_PLANE!r} already exists; the cell index takes that "
+                "name, so rename the plane")
+    cells = {n: param_cell(n, next(l.ttype for l in leaves if l.name == n), per_cell)
              for n in wanted}
     mapping = {id(l): cells[l.name] for l in leaves if l.name in cells}
     sinks = swap(step.sinks, mapping)
-    out = Kernel(step.name + SUFFIX, sinks, step.planes, kind=step.kind)
+    out = Kernel(step.name + SUFFIX + (CELLS_SUFFIX if per_cell else ""), sinks,
+                 step.planes, kind=step.kind)
     out.time, out.time_step = step.time, step.time_step
     out.jump = step.jump
     return default_steps(out) if step is not kernel else out
@@ -111,5 +142,14 @@ def promote(sinks: Any, names: Any) -> tuple:
 
 def swap(sinks: Any, mapping: dict) -> tuple:
     """``sinks`` with the nodes in ``mapping`` (by ``id``) replaced."""
+    if mapping and any(not hasattr(s, "value") for s in sinks):
+        raise HawkError(
+            "a kernel that reads a parameter cell cannot also be differentiated "
+            "through a `for` that commits a gradient per iteration (a plane "
+            "read at a runtime index inside the loop): the per-sample "
+            "accumulate that feeds the per-32-sample sum of the parameter is "
+            "not built. Differentiate the kernel with the parameter passed as a "
+            "plain `Param` (not through param_planes), or read the plane outside "
+            "the loop")
     values = substitute(tuple(s.value for s in sinks), mapping)
     return tuple(_resink(s, v) for s, v in zip(sinks, values))

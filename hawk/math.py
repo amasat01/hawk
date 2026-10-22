@@ -39,7 +39,8 @@ Element-wise math, on host and device alike, with numpy's names:
 * special: ``erf`` ``erfc``
 * conversions: ``int32`` ``uint32`` (to a 32-bit integer plane value) and
   ``real`` (to the kernel's floating type) — the only way an integer and a
-  float meet (see :data:`hawk.Int32`)
+  float meet (see :data:`hawk.Int32`); ``index(x, n)`` (a float to an index
+  into an extent of ``n``: truncated, then clamped to ``[0, n)``)
 
 Semantics differing from numpy, by design: ``round`` is C's (halves away
 from zero; ``rint`` is numpy's half-to-even ``np.round``), and
@@ -109,6 +110,7 @@ from .trace.value import (
     fma,
     fmod,
     hypot,
+    index,
     index_node,
     int32,
     isfinite,
@@ -278,7 +280,7 @@ __all__ = [
     "abs", "absolute", "acos", "acosh", "argmax", "as_pure", "as_vec3", "asin",
     "asinh", "atan", "atan2", "atanh", "cbrt", "ceil", "clip", "copysign", "cos",
     "cosh", "cross", "dispatch", "dot", "erf", "erfc",
-    "exp", "exp2", "expm1", "fdim", "floor", "fma", "fmod", "hypot", "int32", "isfinite",
+    "exp", "exp2", "expm1", "fdim", "floor", "fma", "fmod", "hypot", "index", "int32", "isfinite",
     "isinf", "isnan", "land", "lnot", "log", "log10", "log1p", "log2", "lor",
     "max", "maximum", "mean", "min", "minimum",
     "n_samples", "norm", "outer", "pow", "power", "quat_conj", "quat_mul",

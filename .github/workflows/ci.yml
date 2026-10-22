@@ -70,8 +70,12 @@ jobs:
           path: site
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
           pins: hawk/.github/companions
-      - name: documented numbers and family visuals match the committed cards
-        run: bash hawk/tools/docs_fresh.sh eagle site
+      - name: documented numbers and the capability map match the committed cards
+        run: |
+          python -m pip install --quiet ./site
+          cd hawk && python -m raptor_docs.fresh --check --site ../site
+      - name: manifesto copy matches raptor's
+        run: bash hawk/tools/manifesto_check.sh hawk/CONTRIBUTING.md
   test:
     needs: docs-fresh
     runs-on: ubuntu-latest

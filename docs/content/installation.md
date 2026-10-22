@@ -7,7 +7,7 @@ pip install raptor-hawk raptor-eagle matplotlib             # CPU, no extras (ea
 pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # GPU route; [cuda13] on both for CUDA 13
 ```
 
-Linux x86_64, CPython 3.9-3.14 (including free-threaded 3.13t and 3.14t), and a host `g++` 11 or newer (check with `g++ --version`). `raptor-hawk` pulls
+Linux x86_64 or aarch64, or macOS arm64 (a host `clang++` there), CPython 3.9-3.15 (including free-threaded 3.13t, 3.14t and 3.15t), and on Linux a host `g++` 11 or newer (check with `g++ --version`). `raptor-hawk` pulls
 `aether-dsc` (the sealed C++ headers hawk compiles against) in automatically. No
 `nvcc` or CUDA toolkit is needed.
 
@@ -21,7 +21,7 @@ suffix); `raptor-eagle[cuda12]` / `[cuda13]` pull CuPy (`cupy-cuda12x` /
 matching the CUDA version your driver reports (`nvidia-smi`, top right).
 ```
 
-**Platforms:** the wheels are Linux x86_64 (CPython 3.9–3.14, including free-threaded 3.13t and 3.14t; the exact versions are in `pyproject.toml`). The GPUs and CPUs hawk + eagle are measured on, including an aarch64 host run from source, are listed on [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html). There are no wheels for macOS, Windows or ARM yet, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. On free-threaded 3.13t and 3.14t, `hawk` runs GIL-free.
+**Platforms:** the wheels are Linux x86_64 and aarch64 and macOS arm64 (CPython 3.9–3.15, including free-threaded 3.13t, 3.14t and 3.15t; the exact versions are in `pyproject.toml`). The GPUs and CPUs hawk + eagle are measured on are listed on [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html). There are no wheels for Windows, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. On free-threaded 3.13t and 3.14t, `hawk` runs GIL-free.
 
 To build from source, and for the supported-version table, see [build from source](https://amasat01.github.io/build_from_source.html).
 

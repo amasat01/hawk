@@ -53,6 +53,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx_autodoc_typehints",
     "sphinx_copybutton",
+    "raptor_docs.sphinx",
 ]
 
 myst_enable_extensions = [
@@ -64,7 +65,7 @@ myst_enable_extensions = [
 ]
 
 # -- Notebook execution (myst_nb) --------------------------------------------
-# Tutorials/examples are executed LOCALLY (`make nbexec`, see docs/tools/) and
+# Tutorials/examples are executed LOCALLY (`make nbexec`) and
 # committed WITH outputs; the published build never re-executes them, so a
 # stale or missing output cannot diverge silently between a local render and
 # the deployed one — it is the `make nbcheck` gate's job to refuse that.
@@ -132,64 +133,15 @@ suppress_warnings = ["autodoc", "sphinx_autodoc_typehints.forward_reference"]
 
 html_theme = "sphinx_book_theme"
 html_static_path = ["_static"]
-# raptor-tokens.css (kit) -> site-accent.css (this site's --accent) ->
-# raptor-theme.css (shared skin, derives everything from --accent) ->
-# raptor-reveal.css (kit).
-html_css_files = ["raptor-tokens.css", "site-accent.css", "raptor-theme.css", "raptor-reveal.css", "fit-narrow.css"]
-
-# The family visuals (map, radar, rosette, bars): a bundle vendored from the landing site by its
-# sync_family_visuals.py, with LOCK.json. assets.json names the stylesheet and scripts to load.
-with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "_static", "family_visuals", "assets.json")) as _f:
-    _fv = __import__("json").load(_f)
-html_css_files += ["family_visuals/" + _n for _n in _fv["css"]]
-html_js_files = [("family_visuals/" + _n, {"defer": "defer"}) for _n in _fv["js"]]
+# The skin (font, raptor-*.css, favicon links, theme defaults) comes from raptor_docs.sphinx; only this site's accent is local.
+html_css_files = ["site-accent.css", "fit-narrow.css"]
 html_theme_options = {
     "repository_url": "https://github.com/amasat01/hawk",
-    "repository_branch": "main",
-    "path_to_docs": "docs",
-    "use_repository_button": True,
-    "collapse_navigation": True,
-    "navigation_with_keys": True,
-    # Colab + download launch buttons on notebook pages (no Binder: not configured).
-    "launch_buttons": {
-        "colab_url": "https://colab.research.google.com",
-        "notebook_interface": "classic",
-    },
     # One transparent logo file works on light AND dark pages (RAPTOR brand kit).
     "logo": {
         "image_light": "_static/brand/family_hawk.svg",
         "image_dark": "_static/brand/family_hawk.svg",
         "alt_text": "hawk",
     },
-    # Family frame: purple "part of RAPTOR" chip in the footer, every site
-    # (raptor-theme.css's .raptor-family-chip; theme's own extension point).
-    "extra_footer": (
-        '<div class="raptor-family-chip">part of '
-        '<a href="https://amasat01.github.io/">RAPTOR</a></div>'
-    ),
 }
 html_title = f"hawk — write one kernel, run it on CPU or GPU ({version})"
-
-# RAPTOR brand: favicons + home-screen icon. Leave html_favicon unset: the
-# hook below writes the icon links itself (SVG where supported, favicon.ico
-# for Safari/older tools, 180 px icon for iOS home screens).
-_RAPTOR_ICONS = [
-    ("icon", "brand/favicon.ico", 'sizes="any"'),
-    ("icon", "brand/favicon.svg", 'type="image/svg+xml"'),
-    ("apple-touch-icon", "brand/app_icon_180.png", ""),
-]
-
-
-def _raptor_icons(app, pagename, templatename, context, doctree):
-    pathto = context.get("pathto")
-    if pathto is None:
-        return
-    links = "".join(
-        f'<link rel="{rel}" href="{pathto("_static/" + path, 1)}" {extra}>\n'
-        for rel, path, extra in _RAPTOR_ICONS
-    )
-    context["metatags"] = context.get("metatags", "") + links
-
-
-def setup(app):
-    app.connect("html-page-context", _raptor_icons)

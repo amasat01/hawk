@@ -2,7 +2,27 @@
 
 ## Unreleased
 
-A read-only vector input wider than 32 elements that a kernel reads only by constant component is now read in place instead of copied whole per sample, so wide parameter rows no longer spill registers on the device; results are bit-identical (interim rule, replaced by the 0.6.5 emit policy).
+**Wheels for more platforms.** Linux aarch64 and macOS arm64 wheels, and Python 3.15 and 3.15t wheels for every platform (the other versions are CPython 3.9-3.14 and free-threaded 3.13t and 3.14t).
+
+**Wide read-only inputs are read in place.** A read-only vector input wider than 32 elements that a kernel reads only by constant component is no longer copied whole per sample, so wide parameter rows no longer spill registers on the device. Results are bit-identical. A later release will choose this per kernel.
+
+**Wide gradients are stored component by component.** A reverse-mode or forward-mode kernel that builds a wide gradient from component reads (a wide parameter row read per case) keeps one scalar per component and stores each as soon as it is ready, so the derived kernel no longer holds the whole width live: stack and spill at 12 to 32 inputs go to zero and build time stops growing with the width. Each component equals the earlier value (same summation order). The sign of an exact zero may differ, and a non-finite seed no longer turns components the case never touches into NaN.
+
+**Gradient of a read at a runtime index.** `v[k]` with a traced `k` (a spline coefficient window, say) now differentiates as one add at that index, `bar[i].at(k) += g`, instead of a column of `width` selects per read. A local B-spline edge builds at 8 to 32 inputs in seconds with no stack, where it took minutes and hundreds of kilobytes of spill. Read a read-only input plane at a runtime index as `name[i].at(k)`; no copy of the row is made.
+
+**`hawk.math.index(x, n)`.** Turns a float into an index, truncated and clamped to `[0, n)`. The clamp can hide an index bug, and an index outside the extent is not otherwise checked on read or write.
+
+**Compile limits.** A translation unit over 8 MiB is refused before it is compiled (`$HAWK_COMPILE_SOURCE_BUDGET`, 0 disables), and a compiler subprocess is stopped after 1800 s (`$HAWK_COMPILE_TIMEOUT`, 0 disables).
+
+**A `for` over a wide plane with `dispatch` reverses as a rolled loop.** A `for` that reads a wide plane at a runtime index, with a `dispatch` anywhere in its body, reverses as a rolled loop that commits the gradient once per iteration (`vjp`; a `dispatch` in a loop body also differentiates forward), so a rolled spline layer builds at 8 to 32 inputs with no stack or spill. Second order through that reverse is refused, as for any loop that commits per iteration.
+
+**`vjp` through a `for` with a `break`.** A `break` in the middle of the body is now differentiated: the exiting iteration is reversed as the tail form through a select on the exit condition (one body plus a select per iteration). The forward kernel is unchanged; the derived loop's count now includes the exiting iteration.
+
+**Reverse over reverse through an accumulator loop.** A sum that reads no earlier carry now differentiates twice and matches a difference of the gradient. A recurrence still refuses by name; take its second order with `jvp(vjp(k))`.
+
+**`param_planes(kernel, per_cell=True)`.** Each sample reads its own cell of a parameter plane, named by an `i32` per-sample plane `param_cell`, so one launch runs many parameter values (the kernel is named `<name>_params_cells`). Its `vjp` gives the gradient of each cell by the scatter a table read already has. A kernel with reductions of its own or a `jump=` plan is refused.
+
+**Fixed: `param_planes` kernel with a per-iteration gradient in a `for`.** A kernel read through `param_planes` that also commits a per-iteration gradient in a `for` failed inside the rewrite; it is now refused by name.
 
 ## 0.6.3 (2026-10-20)
 

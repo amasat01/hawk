@@ -88,6 +88,7 @@ SPELLINGS = {
     "exp": lambda: M.exp(_v(S)),
     "argmax": lambda: M.argmax(_v(V3)),
     "floor": lambda: M.floor(_v(S)),
+    "index": lambda: _v(V3)[M.index(_v(S), 3)],
     "land": lambda: M.select(M.land(_v(B), _v(B, "c")), _v(S), _v(S, "b")),
     "lnot": lambda: M.select(M.lnot(_v(B)), _v(S), _v(S, "b")),
     "log": lambda: M.log(_v(S)),

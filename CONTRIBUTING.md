@@ -31,9 +31,11 @@ python -m pytest tests -q -m "not gpu"  # the gate (.github/workflows/ci.yml)
 Most tests also need `eagle` installed as a Python package to run traced kernels. Without it, host artifacts still run through
 `hawk.load` and `hawk.run`. The free-threading rows run with `python -m pytest tests -m ft -W error::RuntimeWarning`.
 
-Docs (`cd docs`): `make strict` (zero warnings), `make linkcheck`, and for notebooks `make nbexec` then `make nbcheck`. Keep a new
-notebook under a minute with small committed outputs. `make nbcheck-hosted` runs them as a Colab user would; the comments above the
-target in `docs/Makefile` say what it needs.
+Docs (`cd docs`): `pip install -r requirements.txt` (it pulls the shared `raptor-docs` package; offline, `pip install ./site` from a
+checkout of the landing site). `make strict` (zero warnings), `make linkcheck`, and for notebooks `make nbexec` then `make nbcheck`.
+Keep a new notebook under a minute with small committed outputs. `make nbcheck-hosted` runs them as a Colab user would; the comments
+above the target in `docs/Makefile` say what it needs. Settings for these tools are in `docs/raptor_docs.toml`;
+`python -m raptor_docs.fresh --check` tells whether the generated numbers and the capability map are current (`--write` regenerates).
 
 ## What a PR here must show
 

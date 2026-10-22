@@ -47,6 +47,7 @@ from ..ir import make as _mk
 from ..ir.loops import exit_kwargs
 from ..ir.nodes import (DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish, Op,
                         ReduceSamples, SampleSum, param_cell_names)
+from ..ir.slotwise import slotwise
 from ..ir.walk import dispatch_groups
 from ..types import INT_PLANE_DTYPES, TensorType
 from .jump import JumpPlan, drop_width, jump_of
@@ -133,7 +134,7 @@ def _masked_sink(sink: Node, mask: Node) -> Node:
     loop's boundary is recomputed by the same code every other loop producer
     uses."""
     if isinstance(sink, Loop):
-        masked_body = tuple(_masked_sink(s, mask) for s in sink.body_sinks)
+        masked_body = slotwise(tuple(_masked_sink(s, mask) for s in sink.body_sinks))
         return build_loop(sink.index, sink.carries, sink.inits, sink.nexts,
                           start=sink.start, stop=sink.stop, step=sink.step,
                           body_sinks=masked_body, **exit_kwargs(sink))
@@ -263,21 +264,43 @@ def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
         _accumulate(adjoint, key, sink.value, _seed(sink, name))
     scatters: list[Node] = []
     scattered: set[str] = set()
+    accumulated: set[str] = set()
     _reverse_pass(seq, key, adjoint, inputs, name, scatters, scattered,
-                  overrides=overrides, jump=plan)
+                  overrides=overrides, jump=plan, accumulated=accumulated,
+                  exclusive=_loop_exclusive(seq, inputs))
+    for leaf in inputs:
+        if name(leaf.name) not in accumulated:
+            continue
+        if adjoint.get(key(leaf)) is not None:   # pragma: no cover - by the pre-scan
+            raise HawkError(
+                f"the gradient of {leaf.name!r} is accumulated at runtime indices "
+                "inside a loop AND reaches a contribution outside that loop")
     gradients = [
         _gradient_sink(leaf, name(leaf.name), summed,
                        adjoint.get(key(leaf)) or zero_like(leaf.ttype))
         for leaf in inputs
         if leaf.role != "lookup" and leaf.name not in scattered
+        and name(leaf.name) not in accumulated
     ]
-    out = _mask_termination(gradients + scatters, primal)
+    out = slotwise(_mask_termination(gradients + scatters, primal))
     names = tuple(leaf.name for leaf in inputs)
     if plan is not None:
         out += plan.spread_cells()
     return Derived(out, primal=_primal_name(primal), kind="vjp", wrt=names,
                    primal_unit=primal_unit,
                    jump=None if plan is None else plan.record(names))
+
+
+def _loop_exclusive(seq: Sequence[Node], inputs: Sequence[Leaf]) -> frozenset:
+    """The ids of the ``wrt`` leaves read ONLY inside lowered-loop bodies: no
+    top-level node (a sink included) reads one, and none is a carried slot's
+    initial value. Such a leaf's gradient can be committed by the loops alone
+    (:func:`hawk.diff.loops.reverse_loop`, the per-iteration accumulate)."""
+    dense: set = set()
+    for n in seq:
+        held = n.inits if isinstance(n, Loop) else n.operands
+        dense.update(id(c) for c in held if isinstance(c, Leaf))
+    return frozenset(id(leaf) for leaf in inputs if id(leaf) not in dense)
 
 
 def _plan(seq: Sequence[Node], key, inputs: Sequence[Leaf], jump: Any,
@@ -410,10 +433,10 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
             got = _rule(node).jvp(node, lambda c: tangent.get(key(c)))
             if got is not None:
                 tangent[key(node)] = got
-    out = _mask_termination(
+    out = slotwise(_mask_termination(
         tuple(_tangent_sink(s, tangent.get(key(s.value)), name) for s in sinks
               if s.ttype.dtype not in INT_PLANE_DTYPES),
-        primal)
+        primal))
     names = tuple(leaf.name for leaf in inputs)
     if plan is not None:
         out += plan.spread_cells()
@@ -444,7 +467,9 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
                   scattered: set[str], *, local_pass: bool = False,
                   overrides: Mapping[int, str] | None = None,
                   cut: frozenset = frozenset(),
-                  jump: JumpPlan | None = None) -> None:
+                  jump: JumpPlan | None = None,
+                  accumulated: set | None = None,
+                  exclusive: frozenset = frozenset()) -> None:
     """One reverse-accumulation pass over ``seq``, given an already-seeded
     ``adjoint`` — the core step :func:`vjp` runs once over the whole walk,
     seeded at every primal sink.
@@ -476,12 +501,19 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
             continue
         if isinstance(node, Loop):
             derived = reverse_loop(node, loop_seeds.get(key(node), {}), inputs,
-                                   name, jump=jump)
+                                   name, jump=jump, exclusive=exclusive)
             for child, contribution in derived.contributions:
                 _accumulate(adjoint, key, child,
                             _reduce_to(contribution, child.ttype))
             scatters.extend(derived.roots)
             scattered |= set(derived.scattered)
+            if derived.accumulated:
+                if accumulated is None:
+                    raise HawkError(
+                        "a loop that accumulates a gradient plane per iteration "
+                        "reached a reverse pass that cannot own it (a dispatch "
+                        "branch): not built")
+                accumulated |= set(derived.accumulated)
             continue
         if g is None or isinstance(node, _TERMINALS):
             continue

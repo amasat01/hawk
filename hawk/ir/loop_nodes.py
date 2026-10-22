@@ -413,7 +413,7 @@ class LoopCount(Op):
 
     Reverse mode needs it: the derived loop runs over exactly the
     iterations that sample ran. A head-form ``break`` doesn't count the
-    exiting iteration; a tail-form one does. An index-like value, so a
+    exiting iteration; a tail-form or middle-form one does. An index-like value, so a
     TERMINAL for both directions."""
 
     __slots__ = ()
