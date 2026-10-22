@@ -20,5 +20,5 @@ tutorials/08_choosing_a_dispatch_policy
 tutorials/09_per_sample_control
 ```
 
-Next: [Vocabulary](vocabulary) — declare a kernel's own vocabulary once and
+Next: {doc}`hawk in your domain <vocabulary>` — declare a kernel's own vocabulary once and
 reuse it across a whole family of models.

@@ -116,6 +116,9 @@ launching runtime can reverse the rollout window by window
 ([Tapes and events](https://amasat01.github.io/hawk/content/vocabulary/05_tapes_and_events.html)).
 </details>
 
+hawk is also a language you extend to your field: declare your own vocabulary once and every kernel speaks it. See
+[hawk in your domain](https://amasat01.github.io/hawk/content/vocabulary.html), with a worked orbits example.
+
 <details>
 <summary>Kernel kinds and returned outputs</summary>
 
