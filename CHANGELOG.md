@@ -25,7 +25,7 @@ byte-identical except for one change: the renderer no longer emits a dead load a
 index (`lut_<name>_i = lut_<name>[i]...`) for a lookup or wide-input plane (`Table`, `Wide`) read
 twice, nor for a rank>=1 lookup plane (a `Table[Vector[3]]`) read at all.
 
-hawk now requires `aether-dsc>=0.2.6`, which brings `aether_dsc.c_core`, the generator whose
+hawk now requires `aether-dsc>=0.2.7`, which brings `aether_dsc.c_core`, the generator whose
 scalar reference functions the `c` target inlines into the unit.
 
 ## 0.6.3 (2026-10-20)

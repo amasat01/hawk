@@ -391,4 +391,4 @@ compensated sink policy, fused lanes and automatic (two-path) kernels.
 Nothing is threaded: scattered accumulates are plain `+=`. The scalar
 reference functions (every fold, product and component-wise operation) come
 from `aether_dsc.c_core`, version `aether-c/1`, which hawk inlines verbatim
-into the unit; hawk requires `aether-dsc>=0.2.6` for it.
+into the unit; hawk requires `aether-dsc>=0.2.7` for it.
