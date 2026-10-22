@@ -8,7 +8,8 @@
 
 **One kernel, two machines.** hawk is a Python DSL (domain-specific
 language) for writing a numerical kernel once and running it, unchanged,
-on CPU or GPU.
+on CPU or GPU. It is also a language you extend to your own domain: teach it
+the objects of your field once, and every kernel speaks them.
 
 ```{raw} html
 :file: _static/ecosystem/ecosystem_cards_hawk.html
@@ -29,7 +30,15 @@ forward- and reverse-mode derivatives from that representation, and
 compiles it for the [eagle](https://amasat01.github.io/eagle/) runtime to
 run.
 
-![Capability map: which tool has a documented way to do each block of work, on the CPU and the GPU.](_static/capmap.svg)
+```{image} _static/capmap.svg
+:alt: Capability map, which tool has a documented way to do each block of work, on the CPU and the GPU.
+:class: only-light
+```
+
+```{image} _static/capmap-dark.svg
+:alt: ""
+:class: only-dark
+```
 
 *Where each tool covers the work.* The [comparison across tools](https://amasat01.github.io/where_raptor_fits.html) has the charts and the numbers behind them.
 
@@ -62,18 +71,19 @@ Write, build and run a kernel in about five minutes — then run the same
 one on a GPU with the same call.
 :::
 
+:::{grid-item-card} hawk in your domain
+:link: content/vocabulary
+:link-type: doc
+Teach hawk the objects of your field once; every kernel then speaks them,
+compiles for CPU and GPU, and differentiates. A vocabulary, a custom
+derivative, an orbits example and a capstone.
+:::
+
 :::{grid-item-card} Tutorials
 :link: content/tutorials
 :link-type: doc
 Arguments and shapes, stopping conditions, gradients backward and
 forward, lookups and sums.
-:::
-
-:::{grid-item-card} Vocabulary
-:link: content/vocabulary
-:link-type: doc
-Write your own vocabulary and pair it to a new kernel kind: inheritance, a
-custom derivative, and a capstone running the whole stack through PyTorch.
 :::
 
 :::{grid-item-card} Reference
@@ -119,19 +129,19 @@ content/quickstart
 ```
 
 ```{toctree}
+:caption: hawk in your domain
+:maxdepth: 1
+:hidden:
+
+content/vocabulary
+```
+
+```{toctree}
 :caption: Tutorials
 :maxdepth: 1
 :hidden:
 
 content/tutorials
-```
-
-```{toctree}
-:caption: Vocabulary
-:maxdepth: 1
-:hidden:
-
-content/vocabulary
 ```
 
 ```{toctree}

@@ -6,6 +6,7 @@ nb_roots = ["docs/content"]
 fresh = [
   "python tools/sync_perf_claims.py --eagle-root ../eagle",
   "python -m raptor_docs.capmap -o docs/_static/capmap.svg",
+  "python -m raptor_docs.themed_figure --sync docs/content/_shared/themed_figure.py",
 ]
 
 [helper_needs]

@@ -5,6 +5,10 @@ DLPack, certification row, ...) see the
 [family glossary](https://amasat01.github.io/raptor/content/glossary.html).
 
 ```{glossary}
+vocabulary
+  The named per-sample arrays and parameters a family of kernels shares, declared once as a `Kind`; each kernel then
+  reads them by name. See {doc}`hawk in your domain <vocabulary>`.
+
 all-samples view
   `hawk.all_samples(x)`: every sample's `x` at once, as against `x`, which is
   this sample's. It is indexed, masked or reduced, never used in arithmetic.
