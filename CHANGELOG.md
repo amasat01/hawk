@@ -28,6 +28,30 @@ twice, nor for a rank>=1 lookup plane (a `Table[Vector[3]]`) read at all.
 hawk now requires `aether-dsc>=0.2.7`, which brings `aether_dsc.c_core`, the generator whose
 scalar reference functions the `c` target inlines into the unit.
 
+## 0.6.4 (2026-10-22)
+
+**Wheels for more platforms.** Linux aarch64 and macOS arm64 wheels (on macOS, kernels compile with Homebrew's LLVM clang; see the installation page), and Python 3.15 and 3.15t wheels for every platform (the other versions are CPython 3.9-3.14 and free-threaded 3.13t and 3.14t).
+
+**Wide read-only inputs are read in place.** A read-only vector input wider than 32 elements that a kernel reads only by constant component is no longer copied whole per sample, so wide parameter rows no longer spill registers on the device. Results are bit-identical. A later release will choose this per kernel.
+
+**Wide gradients are stored component by component.** A reverse-mode or forward-mode kernel that builds a wide gradient from component reads (a wide parameter row read per case) keeps one scalar per component and stores each as soon as it is ready, so the derived kernel no longer holds the whole width live: stack and spill at 12 to 32 inputs go to zero and build time stops growing with the width. Each component equals the earlier value (same summation order). The sign of an exact zero may differ, and a non-finite seed no longer turns components the case never touches into NaN.
+
+**Gradient of a read at a runtime index.** `v[k]` with a traced `k` (a spline coefficient window, say) now differentiates as one add at that index, `bar[i].at(k) += g`, instead of a column of `width` selects per read. A local B-spline edge builds at 8 to 32 inputs in seconds with no stack, where it took minutes and hundreds of kilobytes of spill. Read a read-only input plane at a runtime index as `name[i].at(k)`; no copy of the row is made.
+
+**`hawk.math.index(x, n)`.** Turns a float into an index, truncated and clamped to `[0, n)`. The clamp can hide an index bug, and an index outside the extent is not otherwise checked on read or write.
+
+**Compile limits.** A translation unit over 8 MiB is refused before it is compiled (`$HAWK_COMPILE_SOURCE_BUDGET`, 0 disables), and a compiler subprocess is stopped after 1800 s (`$HAWK_COMPILE_TIMEOUT`, 0 disables).
+
+**A `for` over a wide plane with `dispatch` reverses as a rolled loop.** A `for` that reads a wide plane at a runtime index, with a `dispatch` anywhere in its body, reverses as a rolled loop that commits the gradient once per iteration (`vjp`; a `dispatch` in a loop body also differentiates forward), so a rolled spline layer builds at 8 to 32 inputs with no stack or spill. Second order through that reverse is refused, as for any loop that commits per iteration.
+
+**`vjp` through a `for` with a `break`.** A `break` in the middle of the body is now differentiated: the exiting iteration is reversed as the tail form through a select on the exit condition (one body plus a select per iteration). The forward kernel is unchanged; the derived loop's count now includes the exiting iteration.
+
+**Reverse over reverse through an accumulator loop.** A sum that reads no earlier carry now differentiates twice and matches a difference of the gradient. A recurrence still refuses by name; take its second order with `jvp(vjp(k))`.
+
+**`param_planes(kernel, per_cell=True)`.** Each sample reads its own cell of a parameter plane, named by an `i32` per-sample plane `param_cell`, so one launch runs many parameter values (the kernel is named `<name>_params_cells`). Its `vjp` gives the gradient of each cell by the scatter a table read already has. A kernel with reductions of its own or a `jump=` plan is refused.
+
+**Fixed: `param_planes` kernel with a per-iteration gradient in a `for`.** A kernel read through `param_planes` that also commits a per-iteration gradient in a `for` failed inside the rewrite; it is now refused by name.
+
 ## 0.6.3 (2026-10-20)
 
 **Cells are the only record of a reduction over samples, and a reduced value can be read later in the body.** A kernel that reduces over samples is bound by its cells (`t` of shape `(1,)`, or `(columns,)` for a wider cell); `hawk.run` owns the row scratch (made once per sample count), launches, and finishes the rows on the host in eagle's ordered tree, bitwise the cell eagle's `ordered` policy gives. The sidecar no longer carries `sample_sums`; `cells` is the record, and a kernel with cells declares `exec_access = "mapreduce"` with its op (`sum` or `max`), so a bundle holds only kernels of one execution axis. `z = x / hawk.all_samples(x).sum()` builds as launches run in sequence, `<name>`, `<name>_2`, ...: each later launch reads the earlier cells as one-cell `lookup` planes, and a per-sample value it needs is computed again there. The first launch's sidecar lists every launch under `stages` (`kernel`, `cells_in`, `cells_out`, `recomputed`) and every cell under `cells`; a kernel that reads no reduction is one launch, unchanged. `hawk.run` runs the launches with the host finish between them; a cell only a later launch reads is the kernel's own, so the caller binds only its outputs. Each launch is its own compile, so a change after the cut recompiles only the later launch. Derivatives are taken on the whole kernel and then split; the derivative of a sum over samples read in the body is the sum of its adjoint, and a max or min refuses. A reduction inside a `for` still refuses.

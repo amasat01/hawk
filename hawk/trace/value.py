@@ -349,6 +349,25 @@ def int32(x: Any) -> Value:
     return _cast(x, "int32")
 
 
+def index(x: Any, n: int) -> Value:
+    """``x`` as an INDEX into an extent of ``n``: truncated toward zero, then
+    clamped to ``[0, n)`` (NaN gives 0). The runtime component form
+    ``v[hawk.math.index(x, n)]`` takes it; an extent is a type, so an index outside it
+    is not an error the read or the write can report, and this is where it is made
+    safe. The clamp can HIDE an index bug (an input far outside the grid reads the
+    end element); an author who wants the error computes the index without it.
+
+    :param x: a traced rank-0 number.
+    :param n: the extent, a Python integer >= 1.
+    :returns: the rank-0 ``i32`` index.
+    :raises HawkError: for a bool, a rank>=1 value or ``n < 1``.
+
+    Example: ``c = theta[hawk.math.index(u * 5.0, 13)]``"""
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        raise HawkError(f"index: the extent must be a Python integer >= 1, got {n!r}")
+    return _cast(minimum(maximum(real(x), 0.0), float(n - 1)), "i32")
+
+
 def uint32(x: Any) -> Value:
     """``x`` as a ``uint32``: a float truncates toward zero, saturates at
     ``[0, 2**32 - 1]`` and maps NaN to 0; an integer wraps modulo 2**32

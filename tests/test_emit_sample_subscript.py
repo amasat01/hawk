@@ -465,3 +465,58 @@ def test_the_corpus_enumerates_both_fanouts_and_all_four_forms():
                 for f in FORMS for n in FANOUTS}
         assert {c["id"] for c in cases} == want, (
             f"{kind}/rank{rank} no longer enumerates every (form, fan-out) pair")
+
+
+def _wide_kernel(width: int, *, whole_use: bool = False) -> tuple:
+    """A per-sample parameter row read element-wise under branches (a KAN block's shape)."""
+    from hawk.ir import Select
+
+    p = Leaf("vocab_read", "vec_in", "p", TensorType((width,), "f64"))
+    x = Leaf("vocab_read", "per_sample", "x", S)
+
+    def c(k):
+        return mk("component", (p,), k)
+
+    a = Select(mk("gt", (x, mk("sub", (x, x)))), mk("mul", (c(3), x)), c(width - 1), S)
+    b = Select(mk("lt", (x, c(0))), mk("add", (c(1), c(2))), mk("mul", (c(3), c(width // 2))), S)
+    sinks = [Assign("out_a", a, S), Assign("out_b", b, S)]
+    if whole_use:
+        sinks.append(Assign("echo", p, p.ttype))
+    return tuple(sinks)
+
+
+def _host_run(width, directory, cache, **kw):
+    sinks = _wide_kernel(width, **kw)
+    from types import SimpleNamespace
+
+    kernel = SimpleNamespace(name="wide", sinks=sinks, walk=canonical(sinks))
+    build(kernel, directory, targets=("host",), cache_dir=str(cache))
+    loaded = O.load(directory, "wide")
+    rng = np.random.default_rng(7)
+    got = O.run_kernel(loaded, 32, p=rng.standard_normal((width, 32)),
+                       x=rng.standard_normal(32))
+    names = [nm for role, nm in loaded.arg_spec if role in O.OUTPUT_ROLES]
+    got = dict(zip(names, got))
+    return np.stack([got["out_a"], got["out_b"]]), render_body(sinks, kernel.walk).text
+
+
+def test_wide_readonly_leaf_is_read_through_the_proxy(tmp_path, monkeypatch):
+    """INTERIM wide-leaf rule: > LAZY_LEAF_WIDTH elements, read only by static
+    ``component`` => no ``.get()``, proxy reads, bits equal to the whole-leaf emit;
+    a narrow leaf, or a wide one also used whole, keeps today's text."""
+    import hawk.emit.aether as A
+
+    wide, wide_text = _host_run(144, tmp_path / "w", tmp_path / "c1")
+    assert ".get()" not in wide_text and "vin_p_i = vin_p[i];" in wide_text
+    assert "vin_p_i.eval<143>()" in wide_text
+
+    _, whole_text = _host_run(144, tmp_path / "u", tmp_path / "c2", whole_use=True)
+    assert "vin_p[i].get()" in whole_text and ".eval<3>(i)" in whole_text
+
+    _, narrow_text = _host_run(16, tmp_path / "n", tmp_path / "c3")
+    assert "vin_p[i].get()" in narrow_text and ".eval<15>(i)" in narrow_text
+
+    monkeypatch.setattr(A, "LAZY_LEAF_WIDTH", 10**9)
+    old, old_text = _host_run(144, tmp_path / "o", tmp_path / "c4")
+    assert "vin_p[i].get()" in old_text
+    assert (wide == old).all()

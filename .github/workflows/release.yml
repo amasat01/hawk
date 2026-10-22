@@ -34,7 +34,105 @@ permissions:
   contents: read
 
 jobs:
+  # One leg per architecture; `build` below assembles them. The extension is host-only C++, so both legs are the same
+  # build: native runners, no emulation, same Python versions, manylinux_2_28.
+  wheels:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            plat: manylinux_x86_64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            plat: manylinux_aarch64
+          - arch: macos-arm64
+            runner: macos-14
+            plat: macosx_arm64
+    name: wheels (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    env:
+      CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+      CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
+      # no isolation, deps installed per Python first: an isolated build env sits at a random
+      # /tmp path that lands in every compile line, so ccache could never hit across runs
+      CIBW_BUILD_FRONTEND: "build; args: --no-isolation"
+      CIBW_BEFORE_BUILD: >-
+        python -m pip install 'scikit-build-core>=0.10' 'ninja>=1.5'
+        'nanobind>=3.1,<4; python_version >= "3.10"'
+        'nanobind>=2.2,<3; python_version < "3.10"'
+      # Extra bind mounts: the sibling header trees are not inside
+      # package-dir, so cibuildwheel's default per-package-dir copy
+      # never sees them without this.
+      CIBW_CONTAINER_ENGINE: "docker; create_args: --volume ${{ github.workspace }}/aether:/sib/aether:ro --volume ${{ github.workspace }}/eagle:/sib/eagle:ro --volume ${{ github.workspace }}/.ccache-cibw:/ccache"
+      CIBW_ENVIRONMENT_LINUX: "HAWK_AETHER_INCLUDE=/sib/aether HAWK_EAGLE_INCLUDE=/sib/eagle CMAKE_BUILD_PARALLEL_LEVEL=2 CCACHE_DIR=/ccache CCACHE_MAXSIZE=500M CCACHE_COMPILERCHECK=content CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+      # macOS builds on the runner itself: the header trees are read in place
+      CIBW_ENVIRONMENT_MACOS: "HAWK_AETHER_INCLUDE=${{ github.workspace }}/aether HAWK_EAGLE_INCLUDE=${{ github.workspace }}/eagle"
+      # ccache from EPEL (AlmaLinux 8); stats zeroed per run, printed before each repair
+      # EPEL mirrors fail often on aarch64: retry, then run uncached through a pass-through ccache stand-in
+      CIBW_BEFORE_ALL_LINUX: >-
+        for i in 1 2 3; do dnf install -y epel-release && dnf install -y ccache && break; dnf clean all; done;
+        command -v ccache >/dev/null || { printf '%s\n' '#!/bin/sh' 'case $1 in -*) exit 0;; esac' 'exec "$@"' > /usr/local/bin/ccache;
+        chmod +x /usr/local/bin/ccache; };
+        CCACHE_DIR=/ccache ccache -z
+      CIBW_REPAIR_WHEEL_COMMAND_LINUX: "ccache -s; auditwheel repair -w {dest_dir} {wheel}"
+      # The dedicated test-wheel job below (with the aether-dsc sibling
+      # wheel + the repo's own test suite) replaces cibuildwheel's
+      # built-in --test-command; skip it here to avoid solving sibling
+      # install twice.
+      CIBW_TEST_SKIP: "*"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hawk
+
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: aether, path: aether, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: eagle, path: eagle, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+
+      # ccache inside the manylinux container: the runner directory is bind-mounted at /ccache
+      - run: mkdir -p .ccache-cibw
+        if: runner.os == 'Linux'
+      - uses: actions/cache@v6
+        if: runner.os == 'Linux'
+        with:
+          path: ${{ github.workspace }}/.ccache-cibw
+          key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-cibw-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
+          restore-keys: |
+            ccache-v2-${{ runner.os }}-${{ runner.arch }}-cibw-
+
+      - name: Build wheels (cibuildwheel 3.x; CPython 3.9-3.14 plus free-threaded 3.13t/3.14t)
+        uses: pypa/cibuildwheel@v3.4.1
+        with:
+          package-dir: hawk
+          output-dir: dist
+        env:
+          # the 4.x line dropped the CPython 3.13 free-threading build, so this pass stays on 3.x,
+          # where cp313t needs this enable group
+          CIBW_ENABLE: cpython-freethreading
+          CIBW_BUILD: "cp39-${{ matrix.plat }} cp310-${{ matrix.plat }} cp311-${{ matrix.plat }} cp312-${{ matrix.plat }} cp313-${{ matrix.plat }} cp314-${{ matrix.plat }} cp313t-${{ matrix.plat }} cp314t-${{ matrix.plat }}"
+      # 3.15 needs cibuildwheel 4.x: a second pass for the 3.15 tags only
+      - name: Build the CPython 3.15 and 3.15t wheels (cibuildwheel 4.x)
+        uses: pypa/cibuildwheel@v4.3.3
+        with:
+          package-dir: hawk
+          output-dir: dist
+        env:
+          CIBW_ENABLE: ""
+          CIBW_BUILD: "cp315-${{ matrix.plat }} cp315t-${{ matrix.plat }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.arch }}
+          retention-days: 7
+          path: dist/
+
+  # Assembles what `wheels` built into the one artifact the rest of the workflow and publish.yml use.
   build:
+    needs: wheels
     outputs:
       tree: ${{ steps.tree.outputs.tree }}
     runs-on: ubuntu-latest
@@ -60,56 +158,28 @@ jobs:
       - name: publish and deploy workflows only download, verify and upload
         run: python hawk/tools/ci_publish_subset.py
 
-      # sdist first: pure-python-looking metadata, but scikit-build-core's
-      # sdist still needs the two header roots to stamp hawk's build digest
-      # at configure time (CMakeLists.txt point 3) — only the compiled
-      # wheels are built through cibuildwheel below.
+      # sdist: scikit-build-core's sdist still needs the two header roots to stamp hawk's build digest
+      # at configure time (CMakeLists.txt point 3).
       - name: Build the sdist
         env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
         run: cd hawk && python -m build --sdist --outdir ../dist
 
-      # ccache inside the manylinux container: the runner directory is bind-mounted at /ccache
-      - run: mkdir -p .ccache-cibw
-      - uses: actions/cache@v6
+      - uses: actions/download-artifact@v8
         with:
-          path: ${{ github.workspace }}/.ccache-cibw
-          key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-cibw-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
-          restore-keys: |
-            ccache-v2-${{ runner.os }}-${{ runner.arch }}-cibw-
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
 
-      - name: Build manylinux wheels (cibuildwheel; CPython 3.9-3.14 + free-threaded 3.13t/3.14t, x86_64)
-        uses: pypa/cibuildwheel@v3.4.1
-        with:
-          package-dir: hawk
-          output-dir: dist
-        env:
-          CIBW_BUILD: "cp39-manylinux_x86_64 cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64 cp314-manylinux_x86_64 cp313t-manylinux_x86_64 cp314t-manylinux_x86_64"
-          # cibuildwheel 4.x dropped the CPython 3.13 free-threading builds, so
-          # the pin stays on 3.x, where cp313t needs this enable group.
-          CIBW_ENABLE: cpython-freethreading
-          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
-          # no isolation, deps installed per Python first: an isolated build env sits at a random
-          # /tmp path that lands in every compile line, so ccache could never hit across runs
-          CIBW_BUILD_FRONTEND: "build; args: --no-isolation"
-          CIBW_BEFORE_BUILD: >-
-            python -m pip install 'scikit-build-core>=0.10' 'ninja>=1.5'
-            'nanobind>=3.1,<4; python_version >= "3.10"'
-            'nanobind>=2.2,<3; python_version < "3.10"'
-          # Extra bind mounts: the sibling header trees are not inside
-          # package-dir, so cibuildwheel's default per-package-dir copy
-          # never sees them without this.
-          CIBW_CONTAINER_ENGINE: "docker; create_args: --volume ${{ github.workspace }}/aether:/sib/aether:ro --volume ${{ github.workspace }}/eagle:/sib/eagle:ro --volume ${{ github.workspace }}/.ccache-cibw:/ccache"
-          CIBW_ENVIRONMENT_LINUX: "HAWK_AETHER_INCLUDE=/sib/aether HAWK_EAGLE_INCLUDE=/sib/eagle CMAKE_BUILD_PARALLEL_LEVEL=2 CCACHE_DIR=/ccache CCACHE_MAXSIZE=500M CCACHE_COMPILERCHECK=content CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache"
-          # ccache from EPEL (AlmaLinux 8); stats zeroed per run, printed before each repair
-          CIBW_BEFORE_ALL_LINUX: "dnf install -y epel-release && dnf install -y ccache && CCACHE_DIR=/ccache ccache -z"
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "ccache -s; auditwheel repair -w {dest_dir} {wheel}"
-          # The dedicated test-wheel job below (with the aether-dsc sibling
-          # wheel + the repo's own test suite) replaces cibuildwheel's
-          # built-in --test-command; skip it here to avoid solving sibling
-          # install twice.
-          CIBW_TEST_SKIP: "*"
+      - name: Ten wheels per platform (3.9-3.15 plus 3.13t, 3.14t, 3.15t), none unrepaired
+        run: |
+          for plat in manylinux*_x86_64 manylinux*_aarch64 macosx_*_arm64; do
+            n=$(find dist -name "*-${plat}.whl" | wc -l)
+            [ "$n" -eq 10 ] || { echo "::error::$n wheels for $plat, expected 10"; exit 1; }
+          done
+          [ "$(find dist -name '*.whl' | wc -l)" -eq 30 ] || { echo "::error::unexpected wheel in dist"; ls dist; exit 1; }
+          echo "OK: 10 wheels each for x86_64, aarch64 and macOS arm64"
 
       - run: python -m twine check --strict dist/*
 
@@ -132,7 +202,7 @@ jobs:
       # every Python version reports, even when one fails
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.13t", "3.14t"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15", "3.13t", "3.14t", "3.15t"]
     # The suite's toolchain, exactly as ci.yml's test job sets it: the
     # fixture kernels build for BOTH the host and the cuda target (nvcc AOT
     # compile only, never executed), so a compile-only CUDA 12.6 toolchain
@@ -160,6 +230,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          allow-prereleases: true  # 3.15 until its release is on the runner image
           cache: pip
           cache-dependency-path: |
             hawk/pyproject.toml
@@ -167,96 +238,33 @@ jobs:
             raptor/pyproject.toml
             eagle/python/pyproject.toml
 
-      # aether-dsc, hawk's one runtime dependency, resolved against the
-      # requirement the BUILT wheel declares: from PyPI when a matching
-      # release exists (what a user gets), otherwise sealed and built from
-      # the sibling aether checkout (before the family's first release).
-      # Sealing runs the NVRTC-clean gate, so that branch needs NVRTC plus
-      # the CCCL headers from PyPI (the runner has no CUDA toolkit).
-      - name: aether-dsc wheel (PyPI if released, else the sibling checkout)
-        run: |
-          set -euo pipefail
-          # newest NumPy/SciPy ship no cp313t wheel: prefer a wheel over an sdist build
-          python -m pip install --quiet --prefer-binary build
-          REQ="$(python - <<'PY'
-          import glob, zipfile
-          whl = sorted(glob.glob("dist/*.whl"))[0]
-          with zipfile.ZipFile(whl) as z:
-              meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
-              for line in z.read(meta).decode().splitlines():
-                  if line.startswith("Requires-Dist:") and "aether-dsc" in line and "extra ==" not in line:
-                      print(line.split(":", 1)[1].strip()); break
-              else:
-                  raise SystemExit(f"{whl} declares no aether-dsc requirement")
-          PY
-          )"
-          echo "hawk requires: $REQ"
-          mkdir -p dist-dsc
-          if python -m pip download --quiet --no-deps --only-binary=:all: -d dist-dsc "$REQ"; then
-            echo "aether-dsc: from PyPI"
-          else
-            echo "aether-dsc: not on PyPI yet, building it from the sibling checkout"
-            python -m pip install --quiet --prefer-binary "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
-            (cd aether/dsc && python -m aether_dsc.seal && python -m build --wheel --outdir ../../dist-dsc)
-          fi
-          ls dist-dsc
-
-      - run: sudo apt-get update && sudo apt-get install -y g++-13 cppcheck
+      - run: sudo apt-get update && sudo apt-get install -y g++-13
 
       - uses: ./hawk/.github/actions/cuda-toolchain
 
-      # eagle and raptor-core are TEST-only for hawk (the suite drives
-      # kernels through eagle; neither is a declared dependency). Same rule
-      # as aether-dsc: the released wheels from PyPI when the sibling
-      # checkouts' own versions are released, else built from those
-      # checkouts the way ci.yml builds them. The exact version matters: an
+      # aether-dsc (hawk's runtime dependency) and the test-only eagle + raptor-core: each from PyPI when
+      # its checkout's version is released, else built from the checkout. The exact version matters: an
       # older eagle on PyPI cannot load what this hawk emits during a release.
-      - name: eagle + raptor-core wheels (PyPI if released, else the sibling checkouts)
-        run: |
-          set -euo pipefail
-          mkdir -p dist-sib
-          EAGLE_V=$(sed -n 's/^version = "\(.*\)"/\1/p' eagle/python/pyproject.toml)
-          CORE_V=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' raptor/raptor/version.py)
-          echo "EAGLE_V=$EAGLE_V" >> "$GITHUB_ENV"
-          echo "sibling versions: raptor-eagle $EAGLE_V, raptor-core $CORE_V"
-          if python -m pip download --quiet --only-binary=:all: -d dist-sib \
-               "raptor-eagle==$EAGLE_V" "raptor-core==$CORE_V"; then
-            echo "raptor-eagle (+ raptor-core): from PyPI"
-          else
-            echo "raptor-eagle: not on PyPI yet, building it from the sibling checkouts"
-            cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-              -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
-              -B aether/build -S aether
-            cmake --install aether/build
-            cmake -B eagle/__eagle_hdr -S eagle -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-              -DCMAKE_CUDA_ARCHITECTURES=70 \
-              -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
-            cmake --install eagle/__eagle_hdr
-            export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install"
-            export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
-            (cd eagle/python && python -m build --wheel --outdir ../../dist-sib)
-            if ! python -m pip download --quiet --no-deps --only-binary=:all: -d dist-sib "raptor-core==$CORE_V"; then
-              (cd raptor && python -m build --wheel --outdir ../dist-sib)
-            fi
-          fi
-          ls dist-sib
+      - id: sib
+        uses: ./hawk/.github/actions/install-siblings
+        with:
+          siblings: aether-dsc=aether/dsc raptor-eagle=eagle/python raptor-core=raptor
 
-      # Three installs, so each piece provably comes from where it should:
-      # aether-dsc from dist-dsc, raptor-hawk from THIS run's dist (never an
-      # index copy of the same version), then the [test] extras from PyPI
-      # (pytest, numpy, scipy are third-party; hawk is already satisfied)
-      # together with the test-only eagle (+ raptor-core) from dist-sib.
+      # The siblings first (PyPI or built above; eagle builds from its sdist here), then raptor-hawk from
+      # THIS run's dist only (never an index copy of the same version), then the [test] extras.
       - name: Fresh venv, install hawk + aether-dsc, pip check
+        env:
+          SIB_DIR: ${{ steps.sib.outputs.dir }}
+          SIB_PINS: ${{ steps.sib.outputs.pins }}
         run: |
           set -euo pipefail
           python -m venv venv
           . venv/bin/activate
-          pip install --quiet --no-index --find-links dist-dsc aether-dsc
-          # hawk's one third-party runtime dependency comes from PyPI; hawk and
-          # aether-dsc themselves only from the wheels built in this run
-          pip install --quiet --prefer-binary numpy
-          pip install --quiet --no-index --find-links dist --find-links dist-dsc raptor-hawk
-          pip install --quiet --prefer-binary --find-links dist --find-links dist-sib "raptor-hawk[test]" "raptor-eagle==$EAGLE_V"
+          export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
+          # newest NumPy/SciPy ship no cp313t wheel: prefer a wheel over an sdist build
+          pip install --quiet --prefer-binary --find-links "$SIB_DIR" $SIB_PINS numpy
+          pip install --quiet --no-index --only-binary=raptor-hawk --find-links dist raptor-hawk
+          pip install --quiet --prefer-binary --find-links dist --find-links "$SIB_DIR" "raptor-hawk[test]" $SIB_PINS
           pip check
 
       - name: Import smoke (the import-time build-digest/layout self-check runs here)
@@ -304,6 +312,106 @@ jobs:
           python -m pytest tests -m "ft and not repo_local" -q -rs -p no:cacheprovider -W error::RuntimeWarning
           python -m pytest tests -q -p no:cacheprovider -W error::RuntimeWarning -m "not gpu and not repo_local"
 
+  # The aarch64 and macOS arm64 wheels, installed and run on native runners: host build and run of the README example,
+  # forward and vjp. The x86_64 test-wheel above also needs the compile-only CUDA toolchain, which is x86_64 only.
+  test-wheel-cpu:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, macos-14]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15", "3.13t", "3.14t", "3.15t"]
+    env:
+      # macOS: Homebrew's LLVM clang (C++23-complete); Apple's clang 15 rejects -std=c++23 (Apple clang support: 0.6.5)
+      HAWK_CXX: ${{ matrix.os == 'macos-14' && '/opt/homebrew/opt/llvm/bin/clang++' || 'g++-13' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: hawk
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: aether, path: aether, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: eagle, path: eagle, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: raptor, path: raptor, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-${{ needs.build.outputs.tree }}
+          path: dist
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true  # 3.15 until its release is on the runner image
+      - run: sudo apt-get update && sudo apt-get install -y g++-13
+        if: runner.os == 'Linux'
+      # libomp: eagle builds from its sdist here until 0.6.x is on PyPI, and its host core needs OpenMP; llvm: HAWK_CXX above
+      - run: brew install libomp llvm && { echo "OpenMP_ROOT=$(brew --prefix libomp)"; echo "CMAKE_PREFIX_PATH=$(brew --prefix libomp)"; } >> "$GITHUB_ENV"
+        if: runner.os == 'macOS'
+      # eagle is the test-only sibling: PyPI when released, else built from its sdist here (CPU-only on ARM)
+      - id: sib
+        uses: ./hawk/.github/actions/install-siblings
+        with:
+          siblings: aether-dsc=aether/dsc raptor-eagle=eagle/python raptor-core=raptor
+      - name: Fresh venv, install the aarch64 wheel, pip check
+        env:
+          SIB_DIR: ${{ steps.sib.outputs.dir }}
+          SIB_PINS: ${{ steps.sib.outputs.pins }}
+        run: |
+          set -euo pipefail
+          python -m venv venv
+          . venv/bin/activate
+          # shellcheck disable=SC2086  # the pins are separate arguments
+          pip install --quiet --prefer-binary --find-links "$SIB_DIR" $SIB_PINS numpy
+          pip install --quiet --no-index --only-binary=raptor-hawk --find-links dist raptor-hawk
+          pip check
+      - name: The README host example (forward + vjp) on the installed wheel
+        run: |
+          . venv/bin/activate
+          cd "$RUNNER_TEMP"
+          # hawk traces a kernel from its source, so the example runs from a file, not stdin
+          cat > readme_example.py <<'PY'
+          import os
+          import pathlib
+          import platform
+
+          import numpy as np
+
+          import hawk
+          from hawk import Kernel, Mutable, Scalar, Vector
+          from hawk.diff import vjp
+          from hawk.math import dot
+
+
+          @hawk.kernel
+          def energy(v: Vector[3], out: Mutable[Scalar]):
+              out = 0.5 * dot(v, v)
+
+
+          energy_vjp = Kernel("energy_vjp", vjp(energy, wrt=("v",)))
+          work = pathlib.Path(os.environ["HAWK_WORK"])
+          work.mkdir()
+          hawk.build([energy, energy_vjp], work, targets=("host",))
+          v = np.array([[1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]])
+          e = np.zeros(4)
+          hawk.run(hawk.load(work, "energy"), v=v, out=e)
+          assert np.allclose(e, [0.5, 2.5, 5.0, 9.0]), e
+          bar_v = np.zeros((3, 4))
+          hawk.run(hawk.load(work, "energy_vjp"), v=v, bar_out=np.ones(4), bar_v=bar_v)
+          assert np.allclose(bar_v, v), bar_v
+          assert platform.machine() in ("aarch64", "arm64"), platform.machine()
+          assert "site-packages" in hawk._core.__file__, hawk._core.__file__
+          print(f"OK on {platform.machine()}: energy {e}")
+          PY
+          HAWK_WORK="$RUNNER_TEMP/hawk_work" python readme_example.py
+      # Reports, never fails: does the compiled host loop use NEON (fmla v.2d) or SVE (z registers)?
+      - name: Probe whether the ARM host loop vectorises
+        if: runner.os == 'Linux' && matrix.python-version == '3.12'
+        run: |
+          for so in "$RUNNER_TEMP"/hawk_work/*.so; do
+            echo "$so: fmla v.2d = $(objdump -d "$so" | grep -cE 'fmla\s+v[0-9]+\.2d'), sve z-register ops = $(objdump -d "$so" | grep -cE '\sz[0-9]+\.d')" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+
   docs:
     runs-on: ubuntu-latest
     env:
@@ -332,6 +440,9 @@ jobs:
 
       - uses: ./hawk/.github/actions/companion
         with: {repo: raptor, path: raptor, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+
+      - uses: ./hawk/.github/actions/companion
+        with: {repo: amasat01.github.io, path: site, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
 
       - uses: actions/setup-python@v7
         with:
@@ -392,6 +503,8 @@ jobs:
           cd hawk
           python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]'
           python -m pip install --quiet -r docs/requirements.txt
+          # the companion site's raptor-docs, not main's
+          python -m pip install --quiet --force-reinstall --no-deps ../site
 
       # nbcheck also executes every notebook on the CPU, so the notebooks' own dependencies must be present
       - run: python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu

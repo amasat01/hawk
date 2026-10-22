@@ -67,7 +67,7 @@ _LIBRARY_BINARY = ("pow", "atan2", "hypot", "fmod", "remainder")
 _SPECIAL = (frozenset(UNARY_MATH) - frozenset(_CHEAP_UNARY)) | frozenset(_LIBRARY_BINARY) \
     | frozenset(RANDOM_OPS)
 #: Ops that only move or re-label values.
-_FREE = frozenset(("component", "component_at", "set_component_at", "vec", "splat", "transpose",
+_FREE = frozenset(("component", "component_at", "set_component_at", "add_at", "vec", "splat", "transpose",
                    "as_pure", "as_vec3", "quat_conj"))
 #: Role of a leaf that is a scalar parameter or a count, not a plane read.
 _NOT_A_PLANE = ("uniform", "nsamples")

@@ -151,6 +151,16 @@ def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0) -> dict:
         # a loop body sink is evaluated in ITS iteration's memo alone, for the
         # reason :func:`_iterations` states.
         memo_here = memo if bindings is None else dict(bindings)
+        if bindings is not None and sink.kind == "assign" and _links(sink.value):
+            # a loop's per-iteration runtime accumulate on the own column:
+            # the links in chain order onto the plane, exactly the emitted
+            # `bar[i].at(k) += e` statements (the base is a structural zero)
+            target = np.asarray(out.get(sink.name, np.zeros(sink.ttype.shape)),
+                                dtype=float)
+            for k, e in _links(sink.value):
+                target[int(_value(k, env, memo_here))] += float(_value(e, env, memo_here))
+            out[sink.name] = target
+            continue
         value = _value(sink.value, env, memo_here)
         if isinstance(sink, AccumWrite) and sink.index is not None:
             target = np.asarray(out.get(sink.name, np.zeros(lanes)), dtype=float)
@@ -159,6 +169,15 @@ def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0) -> dict:
         else:
             out[sink.name] = value
     return out
+
+
+def _links(node: Node) -> list:
+    """``[(k, e), ...]`` of an ``add_at`` chain, in order (empty: not a chain)."""
+    links = []
+    while getattr(node, "kind", None) == "add_at":
+        links.append((node.operands[1], node.operands[2]))
+        node = node.operands[0]
+    return links[::-1]
 
 
 def _value(node: Node, env: dict, memo: dict):
@@ -205,7 +224,7 @@ def _iterations(loop, env: dict, memo: dict):
         if form is not None and bool(_value(loop.exit_cond, env, per_iter)):
             # Python's own `break`: the carried names keep their values AT it.
             carry = [_value(v, env, per_iter) for v in loop.exit_values]
-            count += form == "tail"
+            count += form in ("tail", "middle")
             break
         carry = [_value(nxt, env, per_iter) for nxt in loop.nexts]
         count += 1
@@ -282,6 +301,10 @@ def _compute(node: Node, env: dict, memo: dict):
         out = np.array(args[0], dtype=float)
         out[int(args[1])] = args[2]
         return out
+    if kind == "add_at":
+        out = np.array(args[0], dtype=float)
+        out[int(args[1])] += args[2]
+        return out
     if kind == "component_at":
         # the RUNTIME-indexed component: the same read `component`
         # does, at a row this evaluation computed rather than one the type
@@ -294,6 +317,13 @@ def _compute(node: Node, env: dict, memo: dict):
         return flat if node.literal is None else flat.reshape(node.literal)
     if kind == "splat":
         return np.full(node.literal, float(args[0]))
+    if kind == "cast":
+        # float -> integer truncates toward zero, saturates, maps NaN to 0
+        if node.literal in ("i32", "int32", "i64", "uint32"):
+            x = np.asarray(args[0], dtype=float)
+            lo, hi = (0.0, 2.0**32 - 1) if node.literal == "uint32" else (-2.0**31, 2.0**31 - 1)
+            return int(np.clip(np.nan_to_num(np.trunc(x), nan=0.0), lo, hi))
+        return float(args[0])
     if kind in _UNARY:
         return _UNARY[kind](args[0])
     if kind in _RANDOM:

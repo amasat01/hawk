@@ -25,6 +25,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-gate:
+    # Every merge to main is a release unless docs-only (tools/release_gate.sh). Skipped on other PRs.
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: bash tools/release_gate.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+  version:
+    # Every version string and the CHANGELOG heading agree (tools/version_sites.toml)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python tools/version.py check
   docs-fresh:
     # Freshness check, never a commit: the generator re-renders the pages and fails on any difference.
     runs-on: ubuntu-latest
@@ -49,8 +70,12 @@ jobs:
           path: site
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
           pins: hawk/.github/companions
-      - name: documented numbers and family visuals match the committed cards
-        run: bash hawk/tools/docs_fresh.sh eagle site
+      - name: documented numbers and the capability map match the committed cards
+        run: |
+          python -m pip install --quiet ./site
+          cd hawk && python -m raptor_docs.fresh --check --site ../site
+      - name: manifesto copy matches raptor's
+        run: bash hawk/tools/manifesto_check.sh hawk/CONTRIBUTING.md
   test:
     needs: docs-fresh
     runs-on: ubuntu-latest
@@ -616,6 +641,12 @@ jobs:
 
       - run: sudo apt-get update && sudo apt-get install -y g++-13
 
+      # aether-dsc and raptor-core: PyPI when the checkout's version is released, else built from it
+      - id: sib
+        uses: ./hawk/.github/actions/install-siblings
+        with:
+          siblings: aether-dsc=aether/dsc raptor-core=raptor
+
       # The header roots are named for the SDIST step only, as publish.yml does;
       # the install below sees none of them.
       - name: Build both sdists (as their publish.yml do)
@@ -629,23 +660,15 @@ jobs:
           ls -l dist
 
       - name: Clean venv, pip install eagle's sdist then hawk's (warnings are errors)
+        env:
+          SIB_DIR: ${{ steps.sib.outputs.dir }}
+          SIB_PINS: ${{ steps.sib.outputs.pins }}
         run: |
           set -euo pipefail
           python -m venv "$RUNNER_TEMP/venv"
           . "$RUNNER_TEMP/venv/bin/activate"
           pip install --quiet --upgrade pip
-          # aether-dsc from the companion checkout (sealed as the release workflow does), so a hawk that
-          # needs an unreleased aether-dsc installs against it instead of the newest one on PyPI
-          python -m venv "$RUNNER_TEMP/seal"
-          "$RUNNER_TEMP/seal/bin/pip" install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
-          (cd "$GITHUB_WORKSPACE/aether/dsc" && "$RUNNER_TEMP/seal/bin/python" -m aether_dsc.seal)
-          pip install --quiet "$GITHUB_WORKSPACE/aether/dsc"
-          # raptor-core from PyPI like any user, unless the sibling's version is not released yet
-          CORE_V=$(sed -n 's/^version = "\(.*\)"/\1/p' raptor/pyproject.toml)
-          if ! pip download --quiet --no-deps --only-binary=:all: -d "$RUNNER_TEMP/rc" "raptor-core==$CORE_V"; then
-            echo "raptor-core $CORE_V: not on PyPI yet, installing the sibling checkout"
-            pip install --quiet ./raptor
-          fi
+          pip install --quiet --prefer-binary --find-links "$SIB_DIR" $SIB_PINS
           pip install -v -Ccmake.define.EAGLE_PYTHON_WARN_AS_ERR=ON dist/raptor_eagle-*.tar.gz
           pip install -v -Ccmake.define.HAWK_WARN_AS_ERR=ON dist/raptor_hawk-*.tar.gz
           pip check

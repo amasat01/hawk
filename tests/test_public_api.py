@@ -76,7 +76,7 @@ _EXPECTED_MANIFEST = {
         "as_vec3", "asin", "asinh", "atan", "atan2", "atanh", "cbrt",
         "ceil", "clip", "copysign", "cos", "cosh", "cross",
         "dispatch", "dot", "erf", "erfc", "exp", "exp2", "expm1",
-        "fdim", "floor", "fma", "fmod", "hypot", "int32", "isfinite", "isinf",
+        "fdim", "floor", "fma", "fmod", "hypot", "index", "int32", "isfinite", "isinf",
         "isnan", "land", "lnot", "log", "log10", "log1p", "log2",
         "lor", "max", "maximum", "mean", "min", "minimum", "n_samples",
         "norm", "outer", "pow", "power", "quat_conj", "quat_mul",

@@ -1,0 +1,14 @@
+# Settings for the shared docs tools (python -m raptor_docs.nb / .fresh); see the raptor-docs package.
+repo = "hawk"
+helper_dirs = ["docs/content/_shared", "examples"]
+image_budget = 120_000
+nb_roots = ["docs/content"]
+fresh = [
+  "python tools/sync_perf_claims.py --eagle-root ../eagle",
+  "python -m raptor_docs.capmap -o docs/_static/capmap.svg",
+]
+
+[helper_needs]
+"docs/content/_shared/nb_helpers.py" = ["matplotlib"]
+"examples/autodiff_vs_torch.py" = ["torch"]
+"examples/two_body_hybrid.py" = ["torch"]

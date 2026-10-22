@@ -139,24 +139,37 @@ ENV = {"v": np.array([0.3, -0.7, 1.1]), "k1": np.array([0.5, 0.25, -0.4]),
 # --------------------------------------------------------------------------- #
 # The IR and the emission.
 # --------------------------------------------------------------------------- #
-def test_a_read_at_the_loop_index_lowers_to_aethers_runtime_item_access():
-    """The aether fact, read off the generated body: ``Item::operator()`` at the
-    loop's own index, on a value MATERIALISED into an ``Item`` first.
-
-    Both halves are asserted because both are load-bearing. Without the
-    materialisation the subscript would be taken on an aether EXPRESSION, which
-    carries only the compile-time ``eval<Is...>`` and would not compile; and if
-    the emitter had reached for a local ``Real[W]`` array copy instead — the
-    other option named — the body would carry an array declaration and a
-    copy loop that aether does not need."""
+def test_a_read_at_the_loop_index_of_an_input_plane_reads_the_view_in_place():
+    """A runtime read of a read-only INPUT plane is aether's ``at()`` on the
+    plane's own sample proxy, at the loop's own index: no ``Item`` of the row
+    is built for it (a wide row would be one register per element)."""
     text = render_body(rollout_read.sinks, rollout_read.walk).text
-    assert "const aether::Item<Real, 3> hawk_it" in text, text
     index = [ln for ln in text.splitlines() if "for (Int hawk_k" in ln]
     assert len(index) == 1, text
     variable = index[0].split("Int ")[1].split(" ")[0]
-    assert f"hawk_it0({variable})" in text, text
-    assert "[3];" not in text, ("a Real[W] array copy was emitted; aether's Item "
-                                f"carries a runtime operator()\n{text}")
+    assert f"vin_v[i].at({variable})" in text, text
+    assert f"vin_k1[i].at({variable})" in text, text
+    assert "hawk_it" not in text and "[3];" not in text, text
+
+
+def test_a_runtime_read_of_a_computed_vector_keeps_the_item():
+    """What ``at()`` does not apply to keeps aether's ``Item::operator()``: a
+    computed vector has no plane to read from."""
+    text = render_body(*_computed_runtime_read()).text
+    assert "const aether::Item<Real, 3> hawk_it" in text, text
+    assert ".at(" not in text, text
+
+
+def _computed_runtime_read():
+    from hawk.ir import Assign, Leaf
+    from hawk.ir import make as mk
+    from hawk.types import TensorType
+
+    s, v = TensorType((), "f64"), TensorType((3,), "f64")
+    x = Leaf("vocab_read", "vec_in", "x", v)
+    k = Leaf("vocab_read", "per_sample", "k", TensorType((), "i32"))
+    sinks = (Assign("y", mk("component_at", (mk("mul", (x, x)), k)), s),)
+    return sinks, canonical(sinks)
 
 
 def test_a_write_at_the_loop_index_is_a_carried_Item_the_body_reassigns():

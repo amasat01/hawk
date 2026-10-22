@@ -8,7 +8,7 @@ DLPack, certification row, ...) see the
 all-samples view
   `hawk.all_samples(x)`: every sample's `x` at once, as against `x`, which is
   this sample's. It is indexed, masked or reduced, never used in arithmetic.
-  See [Across samples](across_samples).
+  See [Across samples](across_samples) and [One sample, one lane](tutorials/09_per_sample_control).
 
 cell
   One value for the whole run, made by storing a reduction over samples

@@ -30,6 +30,13 @@ and took 25-27 GB of RSS on a 31 GB machine, with nothing bounding it).
 :data:`ADDRESS_SPACE_CAP_BYTES` is that bound, applied with ``RLIMIT_AS`` in
 the child before the compiler ``exec``s; ``$HAWK_COMPILE_ADDRESS_CAP`` overrides it
 (bytes; ``0`` disables it).
+
+Two more guards keep a compile from running away unseen: a translation unit
+over :data:`SOURCE_BYTES_BUDGET` is refused BEFORE it is compiled
+(``$HAWK_COMPILE_SOURCE_BUDGET``, bytes, ``0`` disables), because compile time
+grows with the source (about 20-30 KB/s on the device compiler), and the
+compiler subprocess gets a wall-clock timeout, :data:`COMPILE_TIMEOUT_SECONDS`
+(``$HAWK_COMPILE_TIMEOUT``, seconds, ``0`` disables).
 """
 
 from __future__ import annotations
@@ -99,9 +106,61 @@ _TRAMPOLINE = (
     "cap = int(sys.argv[1])\n"
     "soft, hard = resource.getrlimit(resource.RLIMIT_AS)\n"
     "limit = cap if hard == resource.RLIM_INFINITY else min(cap, hard)\n"
-    "resource.setrlimit(resource.RLIMIT_AS, (limit, hard))\n"
+    "try:\n"
+    "    resource.setrlimit(resource.RLIMIT_AS, (limit, hard))\n"
+    "except (ValueError, OSError):\n"
+    "    pass  # macOS cannot cap the address space; the timeout and source budget still bound the compile\n"
     "os.execvp(sys.argv[2], sys.argv[2:])\n"
 )
+
+
+#: The largest translation unit, in bytes, a driver compiles. A kernel whose
+#: source is bigger than this is too wide for one compile (a 3.6 MB source took
+#: 163 s on the device compiler); split it or narrow it. A machine guard like
+#: :data:`ADDRESS_SPACE_CAP_BYTES`, not a codegen policy.
+SOURCE_BYTES_BUDGET = 8 * 1024 * 1024
+
+#: The wall-clock limit, in seconds, on one compiler subprocess.
+COMPILE_TIMEOUT_SECONDS = 1800
+
+
+def _env_number(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise HawkError(f"${name}={raw!r} is not a non-negative integer (0 disables it)")
+    return value
+
+
+def check_source_budget(name: str, source: str) -> None:
+    """Refuse a translation unit over the byte budget, before any compile."""
+    budget = _env_number("HAWK_COMPILE_SOURCE_BUDGET", SOURCE_BYTES_BUDGET)
+    size = len(source.encode("utf-8"))
+    if budget and size > budget:
+        raise HawkError(
+            f"the translation unit of {name!r} is {size} bytes, over the compile "
+            f"budget of {budget} bytes ($HAWK_COMPILE_SOURCE_BUDGET, 0 disables): "
+            "a source this large is too wide for one compile. Narrow the kernel "
+            "(roll an unrolled loop, read a wide plane by runtime index) or raise "
+            "the budget for one build")
+
+
+def run_compiler(argv: list[str], what: str) -> subprocess.CompletedProcess:
+    """Run one compiler command under the address-space cap and the wall-clock
+    timeout; a timeout raises a :class:`HawkError` that names the limit."""
+    limit = _env_number("HAWK_COMPILE_TIMEOUT", COMPILE_TIMEOUT_SECONDS) or None
+    try:
+        return subprocess.run(limited(argv), capture_output=True, text=True,
+                              env=tc.subprocess_env(), timeout=limit)
+    except subprocess.TimeoutExpired:
+        raise HawkError(
+            f"{what} did not finish within {limit} s ($HAWK_COMPILE_TIMEOUT, "
+            "0 disables): the translation unit is too large for one compile") from None
 
 
 def limited(argv: list[str]) -> list[str]:
@@ -360,6 +419,7 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
 
     def build():
         cache.note(False)
+        check_source_budget(name, source)
         slot.mkdir(parents=True, exist_ok=True)
         write_atomic(src_path, source)
         # Compile into private temporaries, then move into place: a concurrent
@@ -370,8 +430,7 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
                      device_target=device_target)
         start = time.perf_counter()
         try:
-            done = subprocess.run(limited(argv), capture_output=True, text=True,
-                                  env=tc.subprocess_env())
+            done = run_compiler(argv, f"{opts.backend} compile of {name!r}")
             if done.returncode == 0:
                 publish_atomic(tmp_artifact, artifact)
                 publish_atomic(tmp_dep, dep)
@@ -579,6 +638,7 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> Compil
 
     def build():
         cache.note(False)
+        check_source_budget(name, source)
         slot.mkdir(parents=True, exist_ok=True)
         write_atomic(src_path, source)
         tmp_artifact, tmp_dep = tmp_sibling(artifact), tmp_sibling(dep)
@@ -587,8 +647,7 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> Compil
                     str(src_path), "-o", str(tmp_artifact)]
             start = time.perf_counter()
             try:
-                done = subprocess.run(limited(argv), capture_output=True, text=True,
-                                      env=tc.subprocess_env())
+                done = run_compiler(argv, f"host compile of {name!r}")
                 if done.returncode == 0:
                     publish_atomic(tmp_artifact, artifact)
                     publish_atomic(tmp_dep, dep)

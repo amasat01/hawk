@@ -38,8 +38,10 @@ from dataclasses import dataclass
 
 from ..ir import (
     AccumWrite,
+    Assign,
     At,
     Const,
+    Dispatch,
     HawkError,
     Leaf,
     Loop,
@@ -50,11 +52,14 @@ from ..ir import (
     Node,
     Primitive,
     SampleIndex,
+    Select,
     Sink,
     TapeRead,
 )
 from ..ir import make as _mk
-from ..ir.loops import ACCUMULATOR, build_loop, classify_loop
+from ..ir.loops import ACCUMULATOR, RECURRENCE, LoopClass, build_loop, classify_loop
+from ..ir.slotwise import chain as _chain
+from ..ir.slotwise import is_structural_zero, slotwise
 from ..ir.walk import substitute as _substitute
 from .rules import rule_for, zero_like
 
@@ -79,6 +84,10 @@ class LoopReverse:
     contributions: tuple = ()
     roots: tuple = ()
     scattered: frozenset = frozenset()
+    #: Planes the derived loop ACCUMULATES at runtime indices once per
+    #: iteration (``bar[i].at(k) += e``): the caller zeroes them and emits no
+    #: dense gradient plane for them either.
+    accumulated: frozenset = frozenset()
 
 
 # --------------------------------------------------------------------------
@@ -124,7 +133,7 @@ def _reduce_to(contribution: Node, target) -> Node:
 
 
 def _pullback(roots: Sequence[Node], seeds: Sequence[tuple], stop: set,
-              inputs, name, jump=None) -> tuple:
+              inputs, name, jump=None, local_pass: bool = False) -> tuple:
     """One reverse pass over a loop body. Returns
     ``(adjoints, scatters, scattered)``.
 
@@ -143,10 +152,20 @@ def _pullback(roots: Sequence[Node], seeds: Sequence[tuple], stop: set,
         if g is None or id(node) in stop or isinstance(node, _TERMINALS):
             continue
         if isinstance(node, At):
+            if local_pass:
+                raise HawkError(
+                    "a plane gathered with at() inside a `dispatch` branch inside "
+                    "a loop body being differentiated in REVERSE: the scatter "
+                    "that transposes it would have to be committed under the "
+                    "branch's case, which is not built. Read the plane outside "
+                    "the dispatch (the branches may use the value)")
             if node.plane in inputs:
                 scattered.add(node.plane.name)
                 scatters.append(AccumWrite(name(node.plane.name), g, node.index,
                                            g.ttype))
+            continue
+        if isinstance(node, Dispatch):
+            _dispatch_pullback(node, g, store, stop, inputs, name, jump)
             continue
         if isinstance(node, (LoopValue, TapeRead)):
             raise HawkError(
@@ -176,6 +195,70 @@ def _pullback(roots: Sequence[Node], seeds: Sequence[tuple], stop: set,
     return store, tuple(scatters), frozenset(scattered)
 
 
+def _shared_by_all(node: Dispatch) -> frozenset:
+    """The ids of the compute nodes read, at any depth, by EVERY non-literal
+    branch of ``node`` (:func:`hawk.diff.transform._shared_by_all`, keyed by
+    id as the whole of this module is) — empty unless two or more are live."""
+    from ..ir.nodes import Op, Select
+
+    live = [b for b in node.branches if not isinstance(b, Const)]
+    if len(live) < 2:
+        return frozenset()
+    common: set | None = None
+    for branch in live:
+        seen: dict = {}
+        stack = [branch]
+        while stack:
+            n = stack.pop()
+            if id(n) not in seen:
+                seen[id(n)] = n
+                stack.extend(n.operands)
+        mine = {k for k, n in seen.items() if isinstance(n, (Op, Dispatch, Select))}
+        common = mine if common is None else common & mine
+    return frozenset(common)
+
+
+def _dispatch_pullback(node: Dispatch, g: Node, store: dict, stop: set,
+                       inputs, name, jump) -> None:
+    """The reverse of a ``dispatch`` inside a loop body — the loop twin of
+    :func:`hawk.diff.transform._dispatch_vjp`: K isolated pullbacks, one per
+    branch, each seeded at that branch's root with ``g`` and stopped at the
+    body's own stops plus what every branch shares; what each reaches at a
+    stop node (a boundary operand, the index, a tape row, a leaf) is merged
+    into ONE ``dispatch(kind, [c_0 or 0, ...])`` term per target, accumulated
+    into the enclosing pass. A shared node is seeded once by the merge and
+    differentiated through once, by the enclosing pass. ``kind`` takes no
+    adjoint."""
+    if jump is not None:
+        raise HawkError(
+            "a `dispatch` inside a loop body of a `jump=` kernel differentiated "
+            "in REVERSE: the switching comparisons of the plan are not applied "
+            "under a branch; this is not built")
+    shared = _shared_by_all(node)
+    cut = set(stop) | set(shared)
+    reached: dict[int, tuple] = {}
+    for j, branch in enumerate(node.branches):
+        if isinstance(branch, Const):
+            continue
+        local, _scatters, _scattered = _pullback(
+            [branch], [(branch, g)], cut, inputs, name, None, local_pass=True)
+        for target in _post_order([branch], cut):
+            c = local.get(id(target))
+            if c is None or isinstance(target, Const):
+                continue
+            if not (id(target) in cut or isinstance(target, _TERMINALS)):
+                continue        # differentiated through within the local pass
+            if target.ttype.dtype not in _DIFFERENTIABLE:
+                continue
+            held = reached.setdefault(id(target), (target, {}))
+            held[1][j] = c
+    for target, per_branch in reached.values():
+        terms = [per_branch.get(j) if per_branch.get(j) is not None
+                 else zero_like(target.ttype) for j in range(node.K)]
+        _accumulate(store, target, Dispatch(node.selector, terms, node.policy,
+                                            target.ttype))
+
+
 # --------------------------------------------------------------------------
 # reverse mode
 
@@ -198,7 +281,8 @@ def _readable(loop: Loop) -> tuple:
     )
 
 
-def reverse_loop(loop: Loop, seeds: dict, inputs, name, jump=None) -> LoopReverse:
+def reverse_loop(loop: Loop, seeds: dict, inputs, name, jump=None,
+                 exclusive: frozenset = frozenset()) -> LoopReverse:
     """The reverse-mode derivative of one lowered ``for``.
 
     ``seeds`` maps a carried SLOT to the adjoint of that slot's final value.
@@ -217,25 +301,30 @@ def reverse_loop(loop: Loop, seeds: dict, inputs, name, jump=None) -> LoopRevers
             f"the loop over {loop.index.name!r} is a DERIVED loop bounded by a "
             "forward loop's per-sample iteration count: reverse-over-reverse "
             "through a `for` with a `break` is not built")
+    nexts = loop.nexts
     if loop.exit_form == "middle":
-        raise HawkError(
-            f"the loop over {loop.index.name!r} leaves early through a `break` "
-            "in the MIDDLE of its body, so the iteration that exits runs only "
-            "partly. Reverse mode (vjp) is built for a `break` that is the "
-            "FIRST statement of the body (the exiting iteration does nothing) or "
-            "the LAST one (it runs in full); move the `if ...: break` to either "
-            "end, or use forward mode (jvp), which supports every position")
-    kind = classify_loop(loop)
+        # The exiting iteration runs only up to the break and its carries leave
+        # as `exit_values`: the tail form of the same loop, whose body result
+        # is `select(exit_cond, exit_values, nexts)`. The forward loop is
+        # untouched; its tape row for the exiting iteration is written before
+        # the test, and its count includes that iteration.
+        nexts = tuple(Select(loop.exit_cond, ev, nx, nx.ttype)
+                      for ev, nx in zip(loop.exit_values, loop.nexts))
+        kind = LoopClass(RECURRENCE)
+    else:
+        kind = classify_loop(loop)
     targets = _readable(loop)
     count = None if loop.exit_cond is None else LoopCount(loop)
     if kind.name == ACCUMULATOR:
         return _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
-                                    count, jump)
-    return _reverse_recurrence(loop, seeds, targets, inputs, name, count, jump)
+                                    count, jump, exclusive)
+    return _reverse_recurrence(loop, seeds, targets, inputs, name, count, jump,
+                               exclusive, nexts)
 
 
 def _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
-                         count=None, jump=None) -> LoopReverse:
+                         count=None, jump=None,
+                         exclusive: frozenset = frozenset()) -> LoopReverse:
     """``c = c + a(k)``: the adjoint of the carry never changes, so the reverse
     is a FORWARD loop accumulating ``d a / d x`` weighted by that one adjoint,
     and nothing is stored ((a))."""
@@ -250,6 +339,9 @@ def _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
         roots, live, stop, inputs, name,
         None if jump is None else jump.body(loop, roots))
     carried = [t for t in targets if store.get(id(t)) is not None]
+    carried, runtime, accumulated = _runtime_sinks(carried, store, inputs, name,
+                                                   exclusive)
+    scatters = scatters + runtime
     if not carried and not scatters:
         return LoopReverse(tuple(contributions))
     if carried:
@@ -267,24 +359,27 @@ def _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
         accums = (LoopCarry(loop.index.depth, 0, "bar_step", ttype),)
         inits = (zero_like(ttype),)
         nexts = (accums[0],)
+    nexts, scatters = _slotwise_body(nexts, scatters)
     derived = build_loop(loop.index, accums, inits, nexts,
                          start=loop.start, stop=loop.stop, step=loop.step,
                          body_sinks=scatters, count=count)
     for j, target in enumerate(carried):
         contributions.append((target, LoopValue(derived, j)))
     roots = (derived,) if scatters else ()
-    return LoopReverse(tuple(contributions), roots, scattered)
+    return LoopReverse(tuple(contributions), roots, scattered, accumulated)
 
 
 def _reverse_recurrence(loop, seeds, targets, inputs, name,
-                        count=None, jump=None) -> LoopReverse:
+                        count=None, jump=None,
+                        exclusive: frozenset = frozenset(),
+                        nexts=None) -> LoopReverse:
     """The general case: the carry's adjoint evolves, so the derived loop
     runs backwards over the forward loop's own per-iteration carried
     values, reached through :class:`~hawk.ir.loop_nodes.TapeRead` — why it
     declares one bounded local array per carried slot."""
     m = loop.carry_count
     tapes = tuple(TapeRead(loop, i, loop.index) for i in range(m))
-    body = _substitute(loop.nexts,
+    body = _substitute(loop.nexts if nexts is None else nexts,
                        {id(loop.carries[i]): tapes[i] for i in range(m)})
     bars = tuple(
         LoopCarry(loop.index.depth, j, f"bar_{_clean(loop.carries[j].name)}",
@@ -306,6 +401,9 @@ def _reverse_recurrence(loop, seeds, targets, inputs, name,
         roots, live, stop, inputs, name,
         None if jump is None else jump.body(loop, roots))
     carried = [t for t in targets if store.get(id(t)) is not None]
+    carried, runtime, accumulated = _runtime_sinks(carried, store, inputs, name,
+                                                   exclusive)
+    scatters = scatters + runtime
     accums = tuple(
         LoopCarry(loop.index.depth, m + j, _bar_name(t, j), t.ttype)
         for j, t in enumerate(carried))
@@ -314,6 +412,7 @@ def _reverse_recurrence(loop, seeds, targets, inputs, name,
     nexts = tuple(store.get(id(tapes[i])) or zero_like(loop.carries[i].ttype)
                   for i in range(m)) + tuple(
         _mk("add", (accums[j], store[id(t)])) for j, t in enumerate(carried))
+    nexts, scatters = _slotwise_body(nexts, scatters)
     derived = build_loop(
         loop.index, bars + accums, inits, nexts,
         start=loop.start + (loop.trip - 1) * loop.step,
@@ -323,7 +422,39 @@ def _reverse_recurrence(loop, seeds, targets, inputs, name,
     for j, target in enumerate(carried):
         contributions.append((target, LoopValue(derived, m + j)))
     roots = (derived,) if scatters else ()
-    return LoopReverse(tuple(contributions), roots, scattered)
+    return LoopReverse(tuple(contributions), roots, scattered, accumulated)
+
+
+def _runtime_sinks(carried: list, store: dict, inputs, name,
+                   exclusive: frozenset) -> tuple:
+    """Constraint 7 (the flat form): a carried target that is a ``wrt`` leaf
+    read ONLY inside loop bodies (``exclusive``, the transform's pre-scan of
+    the flat walk) and whose body cotangent is an ``add_at`` chain over a
+    structural zero is NOT carried — its links commit as BODY SINKS,
+    ``bar[i].at(k) += e`` once per iteration on the own column (no atomics:
+    one sample, one column), so the reverse loop never holds the leaf's full
+    width. Any other target is carried as before (a wide ``Item``). Returns
+    ``(still carried, body sinks, accumulated plane names)``."""
+    kept, sinks, names = [], [], set()
+    for t in carried:
+        if not (isinstance(t, Leaf) and id(t) in exclusive and t.ttype.shape):
+            kept.append(t)
+            continue
+        (value,) = slotwise((store[id(t)],))
+        base, links = _chain(value)
+        if not links or not is_structural_zero(base):
+            kept.append(t)
+            continue
+        plane = name(t.name)
+        sinks.append(Assign(plane, value, t.ttype))
+        names.add(plane)
+    return kept, tuple(sinks), frozenset(names)
+
+
+def _slotwise_body(nexts: Sequence, scatters: Sequence) -> tuple:
+    """A derived loop's body roots in slotwise form (:mod:`hawk.ir.slotwise`)."""
+    both = slotwise((*nexts, *scatters))
+    return both[:len(nexts)], both[len(nexts):]
 
 
 def _clean(text: str) -> str:
@@ -453,6 +584,17 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
                 if got is not None:
                     tangent[id(node)] = got
             continue
+        if isinstance(node, Dispatch):
+            # the straight-line rule (hawk.diff.transform.jvp): the same
+            # selector picks among the branch tangents, a tangent-free
+            # branch contributing the structural zero
+            branch_tangents = [tangent.get(id(b)) for b in node.branches]
+            if any(t is not None for t in branch_tangents):
+                filled = [t if t is not None else zero_like(b.ttype)
+                          for t, b in zip(branch_tangents, node.branches)]
+                tangent[id(node)] = Dispatch(node.selector, filled, node.policy,
+                                             node.ttype)
+            continue
         if any(tangent.get(id(c)) is not None for c in node.operands):
             rule = rule_for(node.kind, len(node.ttype.shape))
             got = rule.jvp(node, lambda c: tangent.get(id(c)))
@@ -475,5 +617,11 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
             else tangent.get(id(exits[j])) or zero_like(loop.carries[j].ttype)
             for j in range(m))
         extra.update(exit_cond=loop.exit_cond, exit_values=exits + dot_exits)
+    n_next, n_exit = len(nexts), len(extra.get("exit_values", ()))
+    exits_now = tuple(extra.get("exit_values", ()))
+    rooted = slotwise((*nexts, *exits_now, *([loop.exit_cond] if n_exit else [])))
+    nexts = rooted[:n_next]
+    if n_exit:
+        extra.update(exit_values=rooted[n_next:n_next + n_exit], exit_cond=rooted[-1])
     return build_loop(loop.index, carries + dots, inits, nexts,
                       start=loop.start, stop=loop.stop, step=loop.step, **extra)

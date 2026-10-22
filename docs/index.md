@@ -29,11 +29,9 @@ forward- and reverse-mode derivatives from that representation, and
 compiles it for the [eagle](https://amasat01.github.io/eagle/) runtime to
 run.
 
-```{raw} html
-:file: _static/family_visuals/fragments/map_radar.html
-```
+![Capability map: which tool has a documented way to do each block of work, on the CPU and the GPU.](_static/capmap.svg)
 
-*Where each tool covers the work, drawn from eagle's committed performance cards; the tables behind the charts list every value.*
+*Where each tool covers the work.* The [comparison across tools](https://amasat01.github.io/where_raptor_fits.html) has the charts and the numbers behind them.
 
 ```python
 import hawk
