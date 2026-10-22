@@ -171,7 +171,8 @@ def test_a_non_finite_factor_leaves_an_untouched_slot_zero_not_nan():
     onehot = mk("vec", (zero, g, zero))
     dense = (Assign("o", mk("mul", (onehot, scale)), V3),)
     env = {"g": 2.0, "scale": np.inf}
-    old, new = evaluate(dense, env)["o"], evaluate(slotwise(dense), env)["o"]
+    with np.errstate(invalid="ignore"):  # 0 * inf in the dense form is the NaN this test shows
+        old, new = evaluate(dense, env)["o"], evaluate(slotwise(dense), env)["o"]
     assert np.isnan(old[0]) and new[0] == 0.0 and np.isinf(new[1])
 
 
