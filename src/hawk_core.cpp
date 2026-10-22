@@ -494,9 +494,14 @@ stat_many_impl(const nb::list& paths) {
         struct ::stat st {};
         if (cpath != nullptr && ::stat(cpath, &st) == 0) {
             sizes[i] = static_cast<std::int64_t>(st.st_size);
-            mtimes_ns[i] = static_cast<std::int64_t>(st.st_mtim.tv_sec) *
+#if defined(__APPLE__)
+            const struct ::timespec& mtime = st.st_mtimespec;  // macOS names it st_mtimespec
+#else
+            const struct ::timespec& mtime = st.st_mtim;
+#endif
+            mtimes_ns[i] = static_cast<std::int64_t>(mtime.tv_sec) *
                           std::int64_t{1000000000} +
-                          static_cast<std::int64_t>(st.st_mtim.tv_nsec);
+                          static_cast<std::int64_t>(mtime.tv_nsec);
         } else {
             sizes[i] = -1;         // sentinel: the "missing/unreadable => miss"
             mtimes_ns[i] = 0;      // meaningless whenever size == -1
