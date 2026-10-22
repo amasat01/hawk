@@ -2,7 +2,7 @@
 
 ## 0.6.4 (2026-10-22)
 
-**Wheels for more platforms.** Linux aarch64 and macOS arm64 wheels, and Python 3.15 and 3.15t wheels for every platform (the other versions are CPython 3.9-3.14 and free-threaded 3.13t and 3.14t).
+**Wheels for more platforms.** Linux aarch64 and macOS arm64 wheels (on macOS, kernels compile with Homebrew's LLVM clang; see the installation page), and Python 3.15 and 3.15t wheels for every platform (the other versions are CPython 3.9-3.14 and free-threaded 3.13t and 3.14t).
 
 **Wide read-only inputs are read in place.** A read-only vector input wider than 32 elements that a kernel reads only by constant component is no longer copied whole per sample, so wide parameter rows no longer spill registers on the device. Results are bit-identical. A later release will choose this per kernel.
 
