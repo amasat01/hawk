@@ -51,9 +51,9 @@ classifiers = [
 # AETHER payload every NVRTC device compile serves headers from
 # (`hawk.compile.payload.current_payload()`), added the day the code that
 # uses it landed rather than pre-declared ahead of it.
-# aether-dsc 0.2.4 brings `aether_dsc.c_core`, which the `c` target imports.
+# aether-dsc 0.2.6 brings `aether_dsc.c_core`, which the `c` target imports.
 # numpy: hawk never imports it, but the host route and every example pass NumPy arrays
-dependencies = ["aether-dsc>=0.2.4,<0.3", "numpy>=1.26"]
+dependencies = ["aether-dsc>=0.2.6,<0.3", "numpy>=1.26"]
 
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
