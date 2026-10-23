@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.5 (2026-10-23)
 
 A new `c` target emits a kernel as standalone MISRA C:2012: `<name>.c`, `<name>.h` and a
 `<name>.embedded.json` report, serial, with a status-returning entry and a plain

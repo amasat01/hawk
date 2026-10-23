@@ -86,7 +86,7 @@ _SUBMODULE_DOORS = ("embedded",)
 
 __all__ = ["__version__", *_AUTHORING, *_TOP_LEVEL_DOORS]
 
-__version__ = "0.6.4"
+__version__ = "0.6.5"
 
 
 # --------------------------------------------------------------------------- #
