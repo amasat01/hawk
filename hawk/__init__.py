@@ -80,9 +80,13 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "samples_first": ("_plane_layout", "samples_first"),
                     "samples_last": ("_plane_layout", "samples_last")}
 
+#: Submodules ``import hawk`` resolves lazily: the door returns the module
+#: itself (``hawk.embedded.export``), imported on first access.
+_SUBMODULE_DOORS = ("embedded",)
+
 __all__ = ["__version__", *_AUTHORING, *_TOP_LEVEL_DOORS]
 
-__version__ = "0.6.4"
+__version__ = "0.6.5"
 
 
 # --------------------------------------------------------------------------- #
@@ -213,6 +217,12 @@ def __getattr__(name: str) -> Any:
         value = getattr(importlib.import_module(f".{module_name}", __name__), attr)
         globals()[name] = value
         return value
+    if name in _SUBMODULE_DOORS:
+        import importlib
+
+        value = importlib.import_module(f".{name}", __name__)
+        globals()[name] = value
+        return value
     if name in _AUTHORING:
         if name in _FROM_IR:
             from . import ir
@@ -232,4 +242,4 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(__all__)
+    return sorted((*__all__, *_SUBMODULE_DOORS))

@@ -5,6 +5,9 @@ How hawk turns a kernel into something that runs.
 - [The compile cache](compile_cache): why building the same kernel twice compiles once.
 - [Compile options](compile_options): the flags and profiles a build takes.
 
+The `c` target emits standalone MISRA-C for an embedded build instead of a
+native library; see [Embedded C target](embedded.md).
+
 ## The compile guard
 
 Two guards keep a compile from running away unseen: a very large source is refused before the

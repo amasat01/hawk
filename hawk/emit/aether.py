@@ -31,7 +31,6 @@ from ..ir.cost import fp64_ops
 from ..ir.loop_nodes import Loop, LoopCarry, LoopCount, LoopIndex, LoopValue, TapeRead
 from ..ir.nodes import (
     GATHER_ROLES,
-    FINISHED_PLANE,
     RAW_KIND,
     SWITCH_RENDERED,
     AccumWrite,
@@ -54,27 +53,10 @@ from ..ir.nodes import (
 )
 from ..ir.ops import RANDOM_OPS
 from ..ir.walk import canonical_nodes
-from ..types import INT_PLANE_DTYPES, TensorType
+from ..types import TensorType
+from .dialect_aether import AETHER
 from .dispatch import _DispatchMixin
 from .dispatch import render_dispatch_rank0 as render_dispatch_rank0
-from .spelling import (
-    _CWISE,
-    _CWISE1,
-    _INFIX,
-    _MATH1,
-    _MATH2,
-    _MATH3,
-    _METHOD0,
-    _METHOD1,
-    _RANDOM_FN,
-    _for_header,
-    _ident,
-    _no_spelling,
-    _ordinal,
-    _real_literal,
-    _through,
-    param_cell_binding,
-)
 from .spelling import (
     GEOMETRY_TOKENS as GEOMETRY_TOKENS,
 )
@@ -86,6 +68,12 @@ from .spelling import (
 )
 from .spelling import (
     SAMPLE_INDEX_IDENT as SAMPLE_INDEX_IDENT,
+)
+from .spelling import (
+    _for_header,
+    _ident,
+    _ordinal,
+    _through,
 )
 from .spelling import (
     binding_name as binding_name,
@@ -104,6 +92,9 @@ from .spelling import (
 )
 from .spelling import (
     mirror_of as mirror_of,
+)
+from .spelling import (
+    param_cell_binding as param_cell_binding,
 )
 from .spelling import (
     param_name as param_name,
@@ -131,13 +122,15 @@ class Body:
 
 
 def render_body(sinks: Sequence[Sink], walk: Walk, *, indent: str = "    ",
-                kind=None) -> Body:
+                kind=None, dialect=None) -> Body:
     """Render one kernel's body STRING from its sink set and its walk.
 
     The traversal is the walk's own; every slot name comes from
     :attr:`~hawk.ir.walk.Walk.arg_spec`. ``kind`` is the
-    :class:`hawk.ext.Kind` the commits render under; omitted, the default applies."""
-    return _Renderer(tuple(sinks), walk, indent, kind).run()
+    :class:`hawk.ext.Kind` the commits render under; omitted, the default applies.
+    ``dialect`` is the :class:`hawk.emit.dialect.Dialect` that spells the text;
+    omitted, the aether C++ dialect."""
+    return _Renderer(tuple(sinks), walk, indent, kind, dialect=dialect).run()
 
 
 @dataclass(frozen=True)
@@ -305,13 +298,17 @@ def _declarations(pre: str, names: Sequence[str]) -> tuple:
 class _Renderer(_DispatchMixin):
     """One rendering pass. Held as a class only to carry the memo tables."""
 
-    def __init__(self, sinks: tuple, walk: Walk, indent: str, kind=None) -> None:
+    def __init__(self, sinks: tuple, walk: Walk, indent: str, kind=None, *,
+                 dialect=None) -> None:
         from ..ext import DEFAULT_KIND
 
         self.sinks = sinks
         self.walk = walk
         self.indent = indent
         self.kind = kind if kind is not None else DEFAULT_KIND
+        #: The spelling seam (:mod:`hawk.emit.dialect`): every target text
+        #: this traversal emits comes from here.
+        self.dialect = dialect if dialect is not None else AETHER
         self.nodes, self.position = canonical_nodes(sinks)
         self.rendered: dict[int, str] = {}
         self.lines: list[str] = []
@@ -559,13 +556,13 @@ class _Renderer(_DispatchMixin):
             self.guarded = True
         self._plan_commits()
         for target, at in self._zero:
-            self._emit(f"{target}({at}, i.global()) = {self._cast('0', 'f64')};")
+            self._emit(self.dialect.component_commit(
+                self, target, at, "=", self.dialect.typed_zero(_F64_SCALAR)))
         for target, width in self._accumulated_planes():
             # a plane a lowered loop accumulates at runtime indices once per
             # iteration (`bar[i].at(k) += e`, constraint 7): zeroed whole, once,
             # before the walk; the loop's links are the only other writes
-            self._emit(f"for (Int hk = 0; hk < {width}; ++hk) "
-                       f"{target}[i].at(hk) = {self._cast('0', 'f64')};")
+            self._emit(self.dialect.zero_row(self, target, width))
         for node in self.nodes:
             if isinstance(node, Sink):
                 continue
@@ -618,6 +615,8 @@ class _Renderer(_DispatchMixin):
         (a lane split or segment cut moves statements between texts). Anything
         else keeps today's single store at the end."""
         if self.split_loop is not None or self.cut_loops:
+            return
+        if not self.dialect.commits_per_component:
             return
         read = {(n.role, n.name) for n in self.nodes if isinstance(n, Leaf)}
         ready = self._ready_times()
@@ -748,9 +747,11 @@ class _Renderer(_DispatchMixin):
             for n in sorted(need, key=lambda n: self.position[id(n)]):
                 self._emit_outside(n)
             if op == "at+=":
-                self._emit(f"{target}[i].at({self._ref(at)}) += {self._ref(part)};")
+                self._emit(self.dialect.in_place_accumulate(
+                    self, target, self._ref(at), self._ref(part)))
             else:
-                self._emit(f"{target}({at}, i.global()) {op} {self._ref(part)};")
+                self._emit(self.dialect.component_commit(
+                    self, target, at, op, self._ref(part)))
 
     def _emit_outside(self, node: Node) -> None:
         """:meth:`_render_outside`, then the commits that were waiting on it."""
@@ -794,7 +795,7 @@ class _Renderer(_DispatchMixin):
         """Record ``text`` as ``node``'s rendering, named when :meth:`_materialised`."""
         if self._materialised(node, pos):
             name = self._name(node, pos)
-            self._emit(f"const auto {name} = {text};")
+            self._emit(self.dialect.declare(name, node.ttype, text))
             self.rendered[pos] = name
         else:
             self.rendered[pos] = text
@@ -828,15 +829,8 @@ class _Renderer(_DispatchMixin):
 
     def _finish(self, sink: Finish) -> None:
         """The finish epilogue — the last text of the guarded scope, so the step's
-        own commits land before the sample is marked: an unfinished sample whose
-        condition holds sets its mask (via :func:`finish_binding`) and adds one to
-        the reserved counter (``hawk_abi::finish_count``)."""
-        mask = binding_name("terminated", sink.name)
-        cond = self._ref(sink.value)
-        counter = binding_name("lookup", FINISHED_PLANE)
-        self._emit(f"if (!{mask}[i].eval() && {cond}) {{ "
-                   f"{finish_binding(sink.name)}[i] = true; "
-                   f"hawk_abi::finish_count({counter}); }}")
+        own commits land before the sample is marked (the dialect spells it)."""
+        self.dialect.finish(self, sink)
 
     def _guard_slot(self) -> str | None:
         """The guard's CONDITION against the walk's own slots: each mask the
@@ -845,11 +839,7 @@ class _Renderer(_DispatchMixin):
         never fires, nor does a guard none of whose masks the kernel binds."""
         bound = [binding_name("terminated", m) for m in self.kind.guard.names
                  if ("terminated", m) in self.walk.slot_of]
-        if not bound:
-            return None
-        if len(bound) == 1:
-            return f"{bound[0]}[i].eval()"
-        return "(" + " || ".join(f"{b}[i].eval()" for b in bound) + ")"
+        return self.dialect.guard(bound)
 
     def _emit(self, line: str) -> None:
         self.lines.append(self.indent + line)
@@ -875,12 +865,19 @@ class _Renderer(_DispatchMixin):
         trade away."""
         if isinstance(node, Leaf) and node.role in ("uniform", "nsamples"):
             return False
+        if isinstance(node, Leaf) and node.role in GATHER_ROLES:
+            # read BY NAME at a computed index (`_at`), never through a
+            # reference to the leaf: naming it would emit a dead (and possibly
+            # out-of-bounds) `plane[i].eval()` at the sample index.
+            return False
         if is_param_cell(node):
             return False        # a bare identifier, loaded once before the loop
         if isinstance(node, (SampleIndex, LoopIndex, LoopCarry)):
             return False        # already a bare identifier the enclosing scope bound
         if isinstance(node, (Loop, Const, Primitive)):
             return False        # a statement / a literal / a boundary: none is named
+        if self.dialect.names_every_tensor and node.ttype.shape:
+            return True         # a C struct value: always its own statement
         if pos in self.forced:
             return True
         return self.fanout.get(pos, 0) >= 2 or self._leaf_valued(node)
@@ -902,14 +899,10 @@ class _Renderer(_DispatchMixin):
             return held
         return self.rendered[self.position[id(child)]]
 
-    def _hoist(self, text: str) -> str:
-        """Bind ``text`` to a fresh named local ahead of the current line — the
-        lifetime-safe home for a value that is an aether LEAF but not a node of
-        its own (a broadcast ``Constant``, a raw block's operand)."""
-        name = f"hz{self.hoists}"
-        self.hoists += 1
-        self._emit(f"const auto {name} = {text};")
-        return name
+    def _hoist(self, text: str, ttype=None) -> str:
+        """Bind ``text`` to a fresh named local ahead of the current line (the
+        dialect's :meth:`~hawk.emit.dialect.Dialect.hoist`)."""
+        return self.dialect.hoist(self, text, ttype)
 
     # -- lowered loops -----------------------------------------------
 
@@ -930,7 +923,7 @@ class _Renderer(_DispatchMixin):
         feed one carry's new value into the next carry's expression — a
         different, silently wrong recurrence."""
         pos = self.loop_pos[id(loop)]
-        elems = [carry_type(c.ttype) for c in loop.carries]
+        elems = [self.dialect.carry_type(c.ttype) for c in loop.carries]
         names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
                       for j, c in enumerate(loop.carries))
         self.carry_names[pos] = names
@@ -938,13 +931,13 @@ class _Renderer(_DispatchMixin):
             self._emit(f"{elem} {name} = {self._ref(init)};")
         tapes = self.tape_names.get(pos, {})
         for slot in sorted(tapes):
-            self._emit(f"{elems[slot]} {tapes[slot]}[{loop.trip}];")
+            self._emit(self.dialect.tape_decl(elems[slot], tapes[slot], loop.trip))
         counter = self.count_names.get(pos)
         if counter is not None:
-            self._emit(f"Int {counter} = 0;")
+            self._emit(self.dialect.counter_decl(counter))
         index = f"hawk_k{pos}_{_ident(loop.index.name)}"
         count = None if loop.count is None else self._ref(loop.count)
-        self._emit(_for_header(index, loop, count))
+        self._emit(self.dialect.for_header(self, index, loop, count))
         outer, self.indent = self.indent, self.indent + "    "
         saved, saved_items = self.local, self.items
         self.local, self.items = dict(saved), dict(saved_items)
@@ -958,7 +951,7 @@ class _Renderer(_DispatchMixin):
         if form in ("head", "middle"):
             pre = self._exit_part(loop)
             self._render_scope(loop, only=pre, sinks=False)
-            self._emit(f"if ({self._ref(loop.exit_cond)}) {{")
+            self._emit(self.dialect.exit_if(self._ref(loop.exit_cond)))
             self.indent += "    "
             moved = [(j, v) for j, v in enumerate(loop.exit_values)
                      if v is not loop.carries[j]]
@@ -988,7 +981,7 @@ class _Renderer(_DispatchMixin):
         if counter is not None:
             self._emit(f"++{counter};")
         if form == "tail":
-            self._emit(f"if (hawk_x{pos}) break;")
+            self._emit(self.dialect.tail_break(f"hawk_x{pos}"))
         self.local, self.items = saved, saved_items
         self._scope_depth -= 1
         self.indent = outer
@@ -1257,7 +1250,7 @@ class _Renderer(_DispatchMixin):
             if named:
                 name = f"tb{self.temps}"
                 self.temps += 1
-                self._emit(f"const auto {name} = {text};")
+                self._emit(self.dialect.declare(name, node.ttype, text))
                 self.local[id(node)] = name
             else:
                 self.local[id(node)] = text
@@ -1315,7 +1308,7 @@ class _Renderer(_DispatchMixin):
             return
         target = binding_name(sink.role, sink.name)
         if isinstance(sink, TapeWrite):
-            self._tape_write(sink, target)
+            self.dialect.tape_write(self, sink, target)
             return
         if isinstance(sink, SampleSum):
             self._sample_sum(sink)
@@ -1325,7 +1318,8 @@ class _Renderer(_DispatchMixin):
             # a per-iteration runtime accumulate (constraint 7): each link on
             # the own column where it stands, nothing for the zero base
             for k, e in links:
-                self._emit(f"{target}[i].at({self._ref(k)}) += {self._ref(e)};")
+                self._emit(self.dialect.in_place_accumulate(
+                    self, target, self._ref(k), self._ref(e)))
             return
         value = self._ref(sink.value)
         if not isinstance(sink, (Assign, WideWrite, AccumWrite)):
@@ -1336,54 +1330,25 @@ class _Renderer(_DispatchMixin):
             # compensated kind's own-column target, which accumulates into the
             # host's prior value instead.
             if self._is_compensated_own_column(sink):
-                # `i` is already the body's bound `aether::SampleIndex`, so
-                # unlike a computed scatter index it needs no `_sample_index` wrap.
                 comp = binding_name("mutable", self.kind.sink.compensation)
-                self._emit(
-                    f"hawk_abi::store_compensated({target}, {comp}, i, {value});")
+                self.dialect.store_compensated(self, sink, target, comp, value)
                 return
-            self._emit(f"{target}[i] = {value};")
+            self.dialect.store(self, sink, target, value)
             return
-        index = self._sample_index(self._ref(sink.index))
+        index = self._ref(sink.index)
         if not isinstance(sink, AccumWrite):
             # A scattered wide_write targets a computed ROW: a store, exactly as
             # the reference evaluator reads it.
-            self._emit(f"{target}[{index}] = {value};")
+            self.dialect.scatter_store(self, sink, target, index, value)
             return
         self._commit_scattered(sink, target, index, value)
 
-    def _tape_write(self, sink: TapeWrite, target: str) -> None:
-        """One tape ROW on the own column, under ``if (on)``: component
-        ``row*w + c`` of the sample's ``(W*w,)`` plane gets the ``c``-th
-        flattened component of the stored values, in order. Rendered where the
-        sink stands — a twin puts it FIRST, so it reads the pre-step state
-        before any commit overwrites it."""
-        row = self._ref(sink.row)
-        lines = []
-        offset = 0
-        for value in sink.values:
-            text = self._ref(value)
-            shape = value.ttype.shape
-            comps = ([((), text)] if not shape
-                     else [(idx, f"{text}.eval<{', '.join(map(str, idx))}>(i)")
-                           for idx in _flat_indices(shape)])
-            for _idx, comp in comps:
-                lines.append(f"{target}(static_cast<std::size_t>(hawk_tape_row * "
-                             f"{sink.width} + {offset}), i.global()) = {comp};")
-                offset += 1
-        self._emit(f"if ({self._ref(sink.on)} != 0) {{")
-        self.indent += "    "
-        self._emit(f"const std::int64_t hawk_tape_row = {row};")
-        for line in lines:
-            self._emit(line)
-        self.indent = self.indent[:-4]
-        self._emit("}")
 
     def _sample_sum(self, sink: SampleSum) -> None:
         """The sample's term into its column of the row the wrapper sums
         (:data:`SAMPLE_SUM_TERMS`)."""
         column = sample_sums(self.sinks).index(sink)
-        self._emit(f"{SAMPLE_SUM_TERMS}[{column}] = {self._ref(sink.value)};")
+        self.dialect.sample_sum(self, sink, column)
 
     def _commit_scattered(self, sink: Sink, target: str, index: str,
                           value: str) -> None:
@@ -1398,7 +1363,8 @@ class _Renderer(_DispatchMixin):
         The compensated policy applies only to the kind's resolved OUTPUT
         TARGET (:func:`hawk.ext.compensated_target`): a scattered by-key store beside,
         but not itself, that target commits ``plain`` — applying the policy to
-        every scattered sink would misfire on an unrelated diagnostic plane."""
+        every scattered sink would misfire on an unrelated diagnostic plane.
+        The dialect spells each commit; this method decides which."""
         if sink.ttype.shape:
             raise HawkError(
                 f"{sink.name!r}: a scattered accumulate of a rank-"
@@ -1422,24 +1388,21 @@ class _Renderer(_DispatchMixin):
                         "The kernel declares the plane; the seam only decides the "
                         "arithmetic"
                     )
-                self._emit(f"hawk_abi::accum_add_compensated({target}, "
-                           f"{binding_name('accum_out', comp)}, {index}, {value});")
+                self.dialect.store_compensated(
+                    self, sink, target, binding_name("accum_out", comp), value)
                 return
-        self._emit(f"hawk_abi::accum_add({target}, {index}, {value});")
+        self.dialect.accum_scattered(self, sink, target, index, value)
 
-    @staticmethod
-    def _sample_index(expr: str) -> str:
-        return f"aether::SampleIndex::make(static_cast<std::size_t>({expr}))"
 
-    # -- expressions ------------------------------------
+    # -- expressions (spelled by the dialect) -----------------------------
 
     def _expr(self, node: Node, *, materialised: bool) -> str:
         if isinstance(node, Leaf):
-            return self._leaf(node, materialised)
+            return self.dialect.leaf(self, node, materialised)
         if isinstance(node, Const):
-            return self._const(node)
+            return self.dialect.const(node)
         if isinstance(node, SampleIndex):
-            return f"static_cast<Int>({SAMPLE_INDEX_IDENT})"
+            return self.dialect.sample_index_value()
         if isinstance(node, (LoopIndex, LoopCarry)):
             # Bound by the enclosing loop's header/carried local, seeded into
             # `self.local` before the body renders.
@@ -1456,344 +1419,17 @@ class _Renderer(_DispatchMixin):
             # forward subgraph it stands in front of.
             return self._ref(node.forward)
         if isinstance(node, At):
-            return self._at(node)
+            return self.dialect.at(self, node)
         if isinstance(node, Select):
-            return self._select(node)
+            c, a, b = (self._ref(o) for o in node.operands)
+            return self.dialect.select(self, node, c, a, b)
         if isinstance(node, Dispatch):
             return self._dispatch(node)
         if isinstance(node, Op):
-            return self._op(node)
+            args = [self._ref(o) for o in node.operands]
+            ranks = [len(o.ttype.shape) for o in node.operands]
+            return self.dialect.op(self, node, args, ranks)
         raise HawkError(f"no aether rendering for node {node!r}")
-
-    def _leaf(self, leaf: Leaf, materialised: bool) -> str:
-        name = binding_name(leaf.role, leaf.name)
-        if leaf.role == "nsamples":
-            return f"static_cast<Int>({name})"
-        if leaf.role == "uniform":
-            if leaf.ttype.dtype in INT_PLANE_DTYPES:
-                return f"static_cast<{element_spelling(leaf.ttype.dtype)}>({name})"
-            return name
-        if leaf.role == "mutable":
-            # `.prior` — the only way a `mutable`-role LEAF (as opposed to its
-            # SINK) reaches here. The plane's local is a WRITABLE view, so `[i]`
-            # calls the non-const `View::operator[]` and returns a `SampleRef`,
-            # which offers only `.get()` (no bare `.eval()` — that's
-            # `ConstSampleRef`'s overload, reached only through a `const` view).
-            # Rank>=1 stops at the materialised `Item`; rank 0 additionally
-            # calls its zero-argument `operator()()` to recover the raw scalar
-            # `aether::math::fmax`/`+`/... require.
-            if leaf.ttype.shape:
-                return f"{name}[i].get()"
-            return f"{name}[i].get()()"
-        if leaf.ttype.shape and self.position.get(id(leaf)) in self.lazy:
-            return f"{name}[i]"     # proxy, element reads only (LAZY_LEAF_WIDTH)
-        if leaf.ttype.shape:
-            # Rank >= 1: always the body's own sample, never the whole plane.
-            # `view[i].get()` materialises the row into an `Item`, which is what
-            # makes the value sample-bound — a bare view carries no sample, and
-            # every aether fold reached through one silently answers at
-            # `SampleIndex::make(0)`. `_materialised` names every rank>=1 leaf,
-            # so this branch has no unmaterialised arm to take.
-            return f"{name}[i].get()"
-        return f"{name}[i].eval()"
-
-    def _const(self, node: Const) -> str:
-        t = node.ttype
-        if t.shape:
-            raise HawkError(
-                f"a rank-{len(t.shape)} literal typed {t!r} has no aether spelling; "
-                "a broadcast literal is a rank-0 constant under a 'splat'"
-            )
-        if t.dtype == "bool":
-            return "true" if node.literal else "false"
-        if t.dtype in ("i32", "i64"):
-            return f"static_cast<Int>({int(node.literal)})"
-        if t.dtype in INT_PLANE_DTYPES:
-            return f"static_cast<{element_spelling(t.dtype)}>({int(node.literal)}LL)"
-        return f"static_cast<Real>({_real_literal(float(node.literal))})"
-
-    def _at(self, node: At) -> str:
-        if is_param_cell(node):
-            return param_cell_binding(node.plane.name)
-        plane = binding_name(node.plane.role, node.plane.name)
-        idx = self._sample_index(self._ref(node.index))
-        return f"{plane}[{idx}]" + (".get()" if node.ttype.shape else ".eval()")
-
-    def _select(self, node: Select) -> str:
-        """The ``cond ? a : b``. A rank-0 select is a plain C++ ternary; a
-        rank>=1 one is ``aether::select``, which reads both branches through
-        the shared working-type helper — a raw ternary can't name them, since
-        two aether expressions of different C++ types have no common type."""
-        c, a, b = (self._ref(o) for o in node.operands)
-        if not node.ttype.shape:
-            return f"({c} ? {a} : {b})"
-        cond_rank = len(node.operands[0].ttype.shape)
-        if cond_rank == 0:
-            # A per-sample mask: aether::select needs an EXPRESSION, and a
-            # rank-0 C++ bool isn't one, so it broadcasts through a rank-0
-            # Constant (Select's `Cond::element_extents::Rank == 0` arm).
-            c = self._hoist(f"aether::constant<aether::extents<>>({c})")
-        return f"aether::select({c}, {a}, {b})"
-
-    def _op(self, node: Op) -> str:
-        kind, rank = node.kind, len(node.ttype.shape)
-        args = [self._ref(o) for o in node.operands]
-        ranks = [len(o.ttype.shape) for o in node.operands]
-        if kind == RAW_KIND:
-            return self._raw(node, args)
-        if rank == 0 and all(r == 0 for r in ranks):
-            return self._scalar_op(kind, args, node)
-        return self._tensor_op(kind, args, ranks, node)
-
-    def _raw(self, node: Op, args: Sequence[str]) -> str:
-        block = node.literal
-        for k, arg in enumerate(args):
-            self._emit(f"const auto hawk_raw_arg{k} = {arg};")
-        return f"({block.text})"
-
-    def _scalar_op(self, kind: str, args: Sequence[str], node: Op) -> str:
-        if kind in _INT_CALLS or (kind in _INT_WRAPPING and node.ttype.dtype in INT_PLANE_DTYPES):
-            # integer planes (and `//`, `%`, the bit operators on an index):
-            # the wrapping, numpy-defined helpers (hawk/emit/backend.py
-            # INT_HELPERS), since C++'s own `+ - * / % << >>` are undefined
-            # or differently defined at the edges numpy pins.
-            name = _INT_CALLS.get(kind) or _INT_WRAPPING[kind]
-            return f"hawk_abi::{name}({', '.join(args)})"
-        if kind == "cast":
-            return self._cast_op(args[0], node)
-        if kind in RANDOM_OPS:
-            return self._random_draw(kind, args)
-        if kind == "spacing":
-            return f"hawk_abi::spacing({args[0]})"
-        if kind == "sign":
-            # aether's sign maps NaN to 0; numpy keeps the NaN.
-            x = args[0] if args[0].isidentifier() else self._hoist(args[0])
-            return f"(aether::math::isnan({x}) ? {x} : aether::math::sign({x}))"
-        if kind in _MATH1:
-            return f"aether::math::{_MATH1[kind]}({args[0]})"
-        if kind in _MATH2:
-            return f"aether::math::{_MATH2[kind]}({args[0]}, {args[1]})"
-        if kind in _MATH3:
-            return f"aether::math::{_MATH3[kind]}({', '.join(args)})"
-        if kind in _INFIX and len(args) == 2:
-            return f"({args[0]} {_INFIX[kind]} {args[1]})"
-        if kind == "neg":
-            return f"(-{args[0]})"
-        if kind == "lnot":
-            return f"(!{args[0]})"
-        if kind in ("dot", "norm", "sum", "component"):
-            return self._reduction(kind, args, node)
-        raise HawkError(_no_spelling(kind, 0))
-
-    @staticmethod
-    def _cast_op(arg: str, node: Op) -> str:
-        """``cast``: float -> integer plane through the saturating helper,
-        every other pair a plain ``static_cast`` (modular between integers,
-        exact into ``Real`` up to its precision)."""
-        target, source = node.ttype.dtype, node.operands[0].ttype.dtype
-        elem = element_spelling(target)
-        if target in INT_PLANE_DTYPES and source in ("f64", "f32"):
-            return f"hawk_abi::int_from_real<{elem}>({arg})"
-        return f"static_cast<{elem}>({arg})"
-
-    def _random_draw(self, kind: str, args: Sequence[str]) -> str:
-        """HAWK's ``(seed, counter)`` draw: aether's stateless
-        ``detail::uniform01``/``detail::standardNormal<Real>(seed, global,
-        counter)`` (:data:`_RANDOM_FN`), with ``global`` the kernel's own
-        flattened sample index spelled here as the bound :data:`SAMPLE_INDEX_IDENT`
-        directly. Every lane is its own stream by construction (an author names
-        only ``seed``/``counter``), which is also what lets a captured graph
-        re-draw by writing one of those wires rather than re-capturing. Sets
-        :attr:`uses_random` so :class:`Body` carries the fact
-        :func:`hawk.emit.backend.prelude` needs to add the header."""
-        self.uses_random = True
-        seed, counter = args
-        return (f"aether::random::detail::{_RANDOM_FN[kind]}<Real>("
-                f"static_cast<std::uint64_t>({seed}), "
-                f"static_cast<aether::offset_t>({SAMPLE_INDEX_IDENT}), "
-                f"static_cast<std::uint64_t>({counter}))")
-
-    def _reduction(self, kind: str, args: Sequence[str], node: Op) -> str:
-        """The rank>=1 -> rank-0 forms: they READ a tensor and RETURN a scalar."""
-        if kind == "component":
-            index = node.literal if isinstance(node.literal, tuple) else (node.literal,)
-            ks = ', '.join(str(int(k)) for k in index)
-            if self.position.get(id(_through(node.operands[0]))) in self.lazy:
-                return f"{args[0]}.eval<{ks}>()"
-            return f"{args[0]}.eval<{ks}>(i)"
-        if kind == "sum" and len(node.operands[0].ttype.shape) == 2:
-            return self._matrix_sum(args[0], node.operands[0].ttype)
-        if kind in _METHOD1:
-            return f"{args[0]}.{_METHOD1[kind]}({args[1]})"
-        return f"{args[0]}.{_METHOD0[kind]}()"
-
-    def _runtime_component(self, node: Op, args: Sequence[str]) -> str:
-        """``v[k]`` at a RUNTIME index, in aether's own spelling.
-
-        aether answers this through ``Item::operator()``, which casts each
-        index to ``std::size_t`` and folds them row-major over the static
-        extents — no local array copy is needed. The catch: ``operator()`` is
-        ``Item``'s own, not the plain ``Expression`` CRTP's, so the operand must
-        first be MATERIALISED into an ``aether::Item`` local. That
-        materialisation is named once per value per SCOPE (:attr:`items`), so
-        two runtime reads of one vector inside a loop body share one Item, and
-        an Item built inside a loop isn't referenced after the scope closes."""
-        source = node.operands[0]
-        if _reads_in_place(source):
-            # a read-only input plane: the element at the runtime index straight
-            # from the view (`SampleRef::at`), no `Item` of the whole row
-            return f"{binding_name(source.role, source.name)}[i].at({args[1]})"
-        held = self.items.get(id(source))
-        if held is None:
-            t = source.ttype
-            extents = ", ".join(str(e) for e in t.shape)
-            held = f"hawk_it{self.hoists}"
-            self.hoists += 1
-            self._emit(f"const aether::Item<{element_spelling(t.dtype)}, "
-                       f"{extents}> {held} = {args[0]};")
-            self.items[id(source)] = held
-        return f"{held}({args[1]})"
-
-    def _runtime_component_store(self, node: Op, args: Sequence[str],
-                                 accumulate: bool = False) -> str:
-        """``v[k] = e`` at a RUNTIME index, as a VALUE.
-
-        The IR node is functional — ``v`` with one component replaced — and C++
-        has no such expression, so this is the one place the emitter turns a
-        value into two statements: a non-const ``aether::Item`` copy of the
-        incoming vector, then a write through its non-const ``operator()``.
-        The copy preserves the IR's functional meaning (a later read of ``v``
-        sees the old value); it's register-resident, so a compiler that can
-        see the original elides it. Emitting statements mid-expression is safe
-        because :meth:`_expr` runs once per node in traversal order, so the
-        lines land above their use."""
-        t = node.ttype
-        name = f"hawk_sv{self.hoists}"
-        self.hoists += 1
-        self._emit(f"{carry_type(t)} {name} = {args[0]};")
-        op = "+=" if accumulate else "="
-        self._emit(f"{name}({args[1]}) {op} {self._cast(args[2], t.dtype)};")
-        return name
-
-    def _matrix_sum(self, arg: str, ttype: TensorType) -> str:
-        """The FULL reduction of a rank-2 expression, in aether's own spelling.
-
-        ``hawk.ir.ops`` admits ``sum`` over a rank-2 operand, and the reverse
-        rule mints one for the adjoint of a rank-0 operand broadcast against a
-        matrix. aether's ``Expression::sum()`` asserts rank 1, so this uses
-        ``Expression::matDot()`` instead — the Frobenius inner product with a
-        matrix of ones gives the same total, one aether node, no scalarised
-        per-element chain. The ones matrix is HOISTED like any other broadcast
-        constant: ``aether::constant`` is a leaf and ``matDot`` binds it by
-        reference."""
-        ext = ", ".join(str(e) for e in ttype.shape)
-        ones = self._hoist(f"aether::constant<aether::extents<{ext}>>("
-                           f"{self._cast('1', ttype.dtype)})")
-        return f"{arg}.matDot({ones})"
-
-    def _tensor_op(self, kind: str, args: Sequence[str], ranks: Sequence[int],
-                   node: Op) -> str:
-        rank = len(node.ttype.shape)
-        if kind == "component_at":
-            return self._runtime_component(node, args)
-        if kind == "set_component_at":
-            return self._runtime_component_store(node, args)
-        if kind == "add_at":
-            return self._runtime_component_store(node, args, accumulate=True)
-        if kind in ("dot", "norm", "sum", "component"):
-            return self._reduction(kind, args, node)
-        if kind == "splat":
-            ext = ", ".join(str(e) for e in node.ttype.shape)
-            return (f"aether::constant<aether::extents<{ext}>>("
-                    f"{self._cast(args[0], node.ttype.dtype)})")
-        if kind == "vec":
-            if not args:
-                raise HawkError("vec: a vector literal needs at least one component")
-            elem = element_spelling(node.ttype.dtype)
-            # aether added the 1-component `Item<T,1>{v}` ctor beside the
-            # N-scalar one, so the arity floor is 1, not 2.
-            ext = ", ".join(str(e) for e in node.ttype.shape)
-            return f"aether::Item<{elem}, {ext}>{{{', '.join(args)}}}"
-        if kind in ("add", "sub"):
-            return self._additive(kind, args, ranks, node)
-        if kind == "mul":
-            return self._multiplicative(args, ranks, "*", "cwiseMul", node)
-        if kind == "div" and ranks[1] == 0:
-            return self._multiplicative(args, ranks, "/", None, node)
-        if kind in _CWISE:
-            # min/max/div/pow: one spelling for both operand shapes —
-            # `f(expr, bound)` when the right operand is rank-0, `f(expr, expr)`
-            # otherwise. Only the LEFT operand must be an expression in every
-            # overload, so a rank-0 left one broadcasts through a Constant first.
-            left = args[0] if ranks[0] else self._broadcast(args[0], node.ttype)
-            return f"{_CWISE[kind]}({left}, {args[1]})"
-        if kind == "neg":
-            return f"({args[0]} * static_cast<Real>(-1))"
-        if kind == "abs":
-            return f"aether::cwiseAbs({args[0]})"
-        if kind in _CWISE1:
-            return f"aether::{_CWISE1[kind]}({args[0]})"
-        if kind in ("mv", "mm"):
-            return f"({args[0]} * {args[1]})"
-        if kind == "outer":
-            return f"aether::outer({args[0]}, {args[1]})"
-        if kind in _METHOD1:
-            return f"{args[0]}.{_METHOD1[kind]}({args[1]})"
-        if kind in _METHOD0:
-            return f"{args[0]}.{_METHOD0[kind]}()"
-        raise HawkError(_no_spelling(kind, rank))
-
-    def _additive(self, kind: str, args: Sequence[str], ranks: Sequence[int],
-                  node: Op) -> str:
-        sym = "+" if kind == "add" else "-"
-        left, right = args
-        if ranks[0] == 0:
-            left = self._broadcast(left, node.ttype)
-        if ranks[1] == 0:
-            right = self._broadcast(right, node.ttype)
-        return f"({left} {sym} {right})"
-
-    def _multiplicative(self, args: Sequence[str], ranks: Sequence[int], sym: str,
-                        cwise: str | None, node: Op) -> str:
-        a, b = args
-        if ranks[0] == 0 and sym == "*":
-            return f"({self._cast(a, node.ttype.dtype)} * {b})"
-        if ranks[1] == 0:
-            return f"({a} {sym} {self._cast(b, node.ttype.dtype)})"
-        if cwise is not None and ranks[0] == ranks[1]:
-            return f"{a}.{cwise}({b})"
-        kind = "div" if sym == "/" else "mul"
-        raise HawkError(
-            _no_spelling(kind, len(node.ttype.shape))
-            + " for two rank>=1 operands: aether carries a component-wise PRODUCT "
-            "(Expression::cwiseMul) and no component-wise quotient"
-        )
-
-    def _broadcast(self, scalar: str, ttype: TensorType) -> str:
-        """A rank-0 operand added to a tensor becomes an aether broadcast leaf —
-        HOISTED, since a ``Constant`` is a leaf and would be stored by reference
-        by the enclosing node."""
-        ext = ", ".join(str(e) for e in ttype.shape)
-        return self._hoist(f"aether::constant<aether::extents<{ext}>>("
-                           f"{self._cast(scalar, ttype.dtype)})")
-
-    @staticmethod
-    def _cast(text: str, dtype: str) -> str:
-        elem = element_spelling(dtype)
-        if text.startswith(f"static_cast<{elem}>"):
-            return text
-        return f"static_cast<{elem}>({text})"
-
-
-#: Integer-only kinds -> their ``hawk_abi`` helper (any integer type).
-_INT_CALLS = {"floordiv": "int_floordiv", "mod": "int_mod", "band": "int_and",
-              "bor": "int_or", "bxor": "int_xor", "shl": "int_shl", "shr": "int_shr",
-              "invert": "int_invert"}
-#: Kinds an integer PLANE value routes through a wrapping helper, where the
-#: infix spelling would overflow a signed int (undefined) or promote.
-_INT_WRAPPING = {"add": "int_add", "sub": "int_sub", "mul": "int_mul",
-                 "neg": "int_neg", "abs": "int_abs", "min": "int_min",
-                 "max": "int_max"}
 
 
 def _flat_body(loop: Loop) -> list:
@@ -1810,6 +1446,11 @@ def _flat_body(loop: Loop) -> list:
                            else (node.exit_cond, *node.exit_values))
                 stack.append(node)
     return out
+
+
+#: A rank-0 float64 type: the zero :meth:`_Renderer.run` writes into planes it
+#: zero-fills is the dialect's typed zero of it.
+_F64_SCALAR = TensorType((), "f64")
 
 
 #: The local row of per-sample terms a ``sample_sum`` body writes; the

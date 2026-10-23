@@ -31,6 +31,11 @@ python -m pytest tests -q -m "not gpu"  # the gate (.github/workflows/ci.yml)
 Most tests also need `eagle` installed as a Python package to run traced kernels. Without it, host artifacts still run through
 `hawk.load` and `hawk.run`. The free-threading rows run with `python -m pytest tests -m ft -W error::RuntimeWarning`.
 
+The embedded-C rows (`tests/test_embedded_*.py`) compile the emitted C and run cppcheck's MISRA addon over it, so they need a C
+compiler and cppcheck (`brew install cppcheck`, or `apt-get install cppcheck`). Without them the rows fail rather than skip: a
+skipped check certifies nothing. `$HAWK_CC` names the C compiler and `$HAWK_CPPCHECK` the cppcheck binary when they are not on
+`PATH`.
+
 Docs (`cd docs`): `pip install -r requirements.txt` (it pulls the shared `raptor-docs` package; offline, `pip install ./site` from a
 checkout of the landing site). `make strict` (zero warnings), `make linkcheck`, and for notebooks `make nbexec` then `make nbcheck`.
 Keep a new notebook under a minute with small committed outputs. `make nbcheck-hosted` runs them as a Colab user would; the comments

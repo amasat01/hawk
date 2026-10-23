@@ -21,8 +21,7 @@ from ..ir.nodes import (
     Primitive,
     SampleIndex,
 )
-from ..types import TensorType
-from .spelling import _is_literal_zero, binding_name, carry_type, element_spelling
+from .spelling import _is_literal_zero, binding_name
 
 
 def _speculable(node: Node) -> bool:
@@ -160,21 +159,15 @@ class _DispatchMixin:
         self._selector(kname, node.selector, node.K)
         branch_texts = [self._ref(b) for b in node.branches]
         if not node.ttype.shape:
-            return render_dispatch_rank0(kname, branch_texts, "predicated")
-        expr = branch_texts[-1]
-        for j in range(len(branch_texts) - 2, -1, -1):
-            cond = self._hoist(f"aether::constant<aether::extents<>>"
-                               f"({kname} == {j})")
-            expr = f"aether::select({cond}, {branch_texts[j]}, {expr})"
-        return expr
+            return self.dialect.predicated_rank0(kname, branch_texts)
+        return self.dialect.predicated_tensor(self, kname, branch_texts)
 
     def _selector(self, kname: str, selector: Node, k: int) -> None:
         """Emit ``kname``, the selector clamped to ``[0, k)``; no clamp for a
         select between two in-range literals."""
         ref = self._ref(selector)
-        spelled = (f"static_cast<std::int32_t>({ref})" if _in_range(selector, k)
-                   else _clamp_expr(ref, k))
-        self._emit(f"const std::int32_t {kname} = {spelled};")
+        self._emit(self.dialect.selector_decl(self, kname, ref, k,
+                                              in_range=_in_range(selector, k)))
 
     def _disp_pos(self, node: Dispatch):
         """The suffix a dispatch's emitted names carry: its canonical position,
@@ -220,7 +213,7 @@ class _DispatchMixin:
         for node, name in zip(nodes, names):
             mix = self._mix_plane(node)
             if mix is not None:
-                self._emit(f"hawk_abi::mix_count({mix}, {k}, {kname});")
+                self._emit(self.dialect.mix_count(mix, k, kname))
         elided = [frozenset(j for j, b in enumerate(n.branches)
                             if _is_literal_zero(b)) for n in nodes]
         shown = [i for i, n in enumerate(nodes) if id(n) not in hidden]
@@ -235,7 +228,7 @@ class _DispatchMixin:
                             + [r for _t, a, b in stmts[j] for r in (a, b)]
                             for j in range(k)])
         for i in shown:
-            self._emit(f"{carry_type(nodes[i].ttype)} {names[i]};")
+            self._emit(f"{self.dialect.carry_type(nodes[i].ttype)} {names[i]};")
         self._emit(f"switch ({kname}) {{")
         outer, self.indent = self.indent, self.indent + "    "
         for j in range(k):
@@ -244,21 +237,28 @@ class _DispatchMixin:
             self._emit(f"case {j}: {{")
             self._emit_case_body(
                 [(names[i], nodes[i].branches[j]) for i in active[j]],
-                [names[i] + " = " + self._typed_zero(nodes[i].ttype)
+                [names[i] + " = " + self.dialect.typed_zero(nodes[i].ttype)
                  for i in shown if j in elided[i]], stmts[j])
             self._emit("break;")
             self._emit("}")
+        tail = self.dialect.switch_default_tail()
         if plain:
             self._emit("default: {")
             self._emit_case_body(
                 [(names[i], nodes[i].branches[last]) for i in active[last]],
-                [names[i] + " = " + self._typed_zero(nodes[i].ttype)
+                [names[i] + " = " + self.dialect.typed_zero(nodes[i].ttype)
                  for i in shown if last in elided[i]], stmts[last])
+            if tail:
+                self.indent += "    "
+                self._emit(tail)
+                self.indent = self.indent[:-4]
             self._emit("}")
         else:
             for n, i in enumerate(shown):
                 label = "default: " if n == 0 else ""
-                self._emit(f"{label}{names[i]} = {self._typed_zero(nodes[i].ttype)};")
+                self._emit(f"{label}{names[i]} = {self.dialect.typed_zero(nodes[i].ttype)};")
+            if tail:
+                self._emit(tail)
         self.indent = outer
         self._emit("}")
         return [None if id(n) in hidden else name for n, name in zip(nodes, names)]
@@ -333,7 +333,8 @@ class _DispatchMixin:
         for name, root in assigns:
             self._emit(f"{name} = {self._ref(root)};")
         for target, at, value in stmts:
-            self._emit(f"{target}[i].at({self._ref(at)}) += {self._ref(value)};")
+            self._emit(self.dialect.in_place_accumulate(
+                self, target, self._ref(at), self._ref(value)))
         for zero in zeros:
             self._emit(f"{zero};")
         self.local, self.items = saved_local, saved_items
@@ -384,6 +385,8 @@ class _DispatchMixin:
             return False
         if isinstance(node, (Loop, Const, Primitive)):
             return False
+        if self.dialect.names_every_tensor and node.ttype.shape:
+            return True
         return fanout >= 2 or self._leaf_valued(node)
 
     @staticmethod
@@ -423,18 +426,7 @@ class _DispatchMixin:
             if named:
                 name = f"tb{self.temps}"
                 self.temps += 1
-                self._emit(f"const auto {name} = {text};")
+                self._emit(self.dialect.declare(name, node.ttype, text))
                 self.local[id(node)] = name
             else:
                 self.local[id(node)] = text
-
-    def _typed_zero(self, ttype: TensorType) -> str:
-        """The typed zero the ``switch`` ``default:`` writes when at
-        least one branch was elided — the same spelling :meth:`_broadcast`
-        builds, inlined rather than hoisted, since it's assigned straight
-        into the declared local, which copies it out immediately."""
-        elem = element_spelling(ttype.dtype)
-        if not ttype.shape:
-            return f"static_cast<{elem}>(0)"
-        ext = ", ".join(str(e) for e in ttype.shape)
-        return f"aether::constant<aether::extents<{ext}>>(static_cast<{elem}>(0))"

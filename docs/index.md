@@ -150,6 +150,7 @@ content/examples
 content/across_samples
 content/control_vs_warp
 content/compiling
+content/embedded
 content/interop
 ```
 

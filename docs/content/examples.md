@@ -18,5 +18,6 @@ examples/03_kernelkind_reuse
 examples/04_hawk_next_to_warp
 examples/autodiff_vs_torch
 examples/two_body_hybrid
+examples/05_embedded_c_target
 vocabulary/when_hawk_cant_spell_it
 ```

@@ -78,14 +78,19 @@ from .unit_cache import unit_stats as unit_stats
 #: the FALLBACK manifest ``format``, used as-is for ``host`` and overridden
 #: for ``cuda`` by :func:`_sniff_device_format` below, since the ``cuda``
 #: leg can compile to PTX *or* CUBIN depending on the box's toolchain).
-_TARGET = {"cuda": (".ptx", ".cu", "ptx"), "host": (".so", ".cpp", "host")}
+#: ``c`` is the standalone MISRA-C unit (:mod:`hawk.embedded`): its
+#: "artifact" is the ``.h`` a consumer includes, its source the ``.c``; it is
+#: never compiled here and never enters the manifest or the sidecar.
+_TARGET = {"cuda": (".ptx", ".cu", "ptx"), "host": (".so", ".cpp", "host"),
+           "c": (".h", ".c", "c")}
 
 #: The published extension for each real device format
 #: :func:`_sniff_device_format` can return (NVRTC/nvcc here never emit a
 #: ``fatbin``, the third ``eagle.roles.MANIFEST_FORMATS`` member).
 _DEVICE_EXT = {"ptx": ".ptx", "cubin": ".cubin"}
 
-#: HAWK's backend id -> the manifest's ``exec_targets`` spelling.
+#: HAWK's backend id -> the manifest's ``exec_targets`` spelling. ``c`` has
+#: none on purpose: a standalone C unit is not something eagle executes.
 _EXEC_TARGET = {"cuda": "device", "host": "host"}
 
 
@@ -101,7 +106,9 @@ def _sniff_device_format(path: Path) -> str:
 
 @dataclass(frozen=True)
 class Entry:
-    """One compiled target of one kernel."""
+    """One compiled target of one kernel. A ``c`` entry's ``artifact`` is the
+    ``.h``, its ``source`` the ``.c`` and its ``report`` the
+    ``<name>.embedded.json``; ``report`` is ``None`` for every other target."""
 
     backend: str
     artifact: Path
@@ -110,6 +117,7 @@ class Entry:
     hit: bool
     seconds: float
     closure: tuple = field(default=())
+    report: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -130,22 +138,28 @@ class Bundle:
     ``digest`` is the unit's own content identity — the same value
     :func:`_unit_digest` computes and :data:`STAMP_NAME` records, exposed
     here because a second unit's derivative can name this one as its
-    primal's home (:func:`_per_kernel_derivative`'s cross-unit reference)."""
+    primal's home (:func:`_per_kernel_derivative`'s cross-unit reference).
+
+    ``manifest_path``/``manifest`` are ``None`` for a unit built for the
+    ``c`` target alone: a standalone C unit has nothing for eagle to load."""
 
     directory: Path
-    manifest_path: Path
-    manifest: dict
+    manifest_path: Path | None
+    manifest: dict | None
     artifacts: tuple
     digest: str | None = None
 
     def files(self) -> list:
-        """EVERY file this unit published — the set row greps."""
-        out = [self.manifest_path]
+        """EVERY file this unit published — the set row greps. Each path
+        once: a c-only artifact's sidecar IS its ``c`` entry's report."""
+        out = [] if self.manifest_path is None else [self.manifest_path]
         for a in self.artifacts:
             out.append(a.sidecar_path)
             for entry in a.entries.values():
                 out += [entry.artifact, entry.source]
-        return out
+                if entry.report is not None:
+                    out.append(entry.report)
+        return list(dict.fromkeys(out))
 
 
 # -- The unit's CONTENT, computed before anything is written. -------------- #
@@ -188,7 +202,7 @@ class _Draft:
     name: str
     sidecar: dict
     sidecar_name: str
-    entries: dict                      # target -> (CompileResult, art name, src name)
+    entries: dict                      # target -> (result, art name, src name, fmt)
     files: tuple                       # the _File records this kernel contributes
 
 
@@ -308,8 +322,14 @@ def _active_spec(kind) -> ActiveSpec | None:
                       _binding_name("lookup", ACTIVE_COUNT))
 
 
+def _native(targets) -> tuple:
+    """The targets this module compiles and the manifest describes: every
+    one but ``c``, the standalone C unit :mod:`hawk.embedded` renders."""
+    return tuple(t for t in targets if t != "c")
+
+
 def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
-             literal_table: bool = False) -> dict:
+             literal_table: bool = False, embedded_profile=None) -> dict:
     """Every declared target's emitted TU. No compiler, no disk, no sidecar
     — the cheap half of a build, and what the unit key is computed from, so
     an emitter change is a key change even when the walk is unmoved.
@@ -319,19 +339,30 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
     provably wrap the same string.
 
     ``literal_table`` rewrites the device TU's ``double`` literals into one
-    ``__constant__`` table (:func:`hawk.emit.literal_table`)."""
-    hook = getattr(kernel, "fused_body", None)
+    ``__constant__`` table (:func:`hawk.emit.literal_table`).
+
+    A ``"c"`` target is :func:`hawk.embedded.render`'s
+    :class:`~hawk.embedded.EmbeddedSource` under ``embedded_profile``
+    (:class:`~hawk.embedded.EmbeddedProfile` when ``None``), never a
+    :data:`hawk.emit.BACKENDS` render."""
+    if not targets:
+        raise HawkError(
+            f"{name!r}: no target to build; pass targets=('cuda',), "
+            "targets=('host',) or targets=('c',)")
+    for target in targets:
+        if target not in _TARGET:
+            raise HawkError(
+                f"unknown target {target!r}: the valid targets are 'cuda', 'host' "
+                "and 'c' ('cuda' builds for the GPU, 'host' for the CPU, 'c' a "
+                "standalone MISRA C unit for an embedded build); pass "
+                "targets=('cuda',), targets=('host',) or targets=('c',)")
+    native = _native(targets)
+    hook = getattr(kernel, "fused_body", None) if native else None
     body = None if hook is None else hook(kind)
     segment = _segment_spec(kernel)
     active = _active_spec(kind)
     out = {}
-    for target in targets:
-        if target not in _TARGET:
-            raise HawkError(
-                f"unknown target {target!r}: the valid targets are "
-                + " and ".join(repr(t) for t in _TARGET)
-                + " ('cuda' builds for the GPU, 'host' for the CPU); "
-                + f"pass targets=({next(iter(_TARGET))!r},) or targets=('host',)")
+    for target in native:
         out[target] = render_source(
             name, kernel.sinks, kernel.walk, BACKENDS[target], mode=smode, kind=kind,
             body=body, segment=segment, active=active,
@@ -340,6 +371,13 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
                                     layout_sizes_override=layout_sizes_override))
         if literal_table and target == "cuda":
             out[target] = _literal_table(out[target])
+    if "c" in targets:
+        from .. import embedded
+
+        out["c"] = embedded.render(
+            kernel, name=name, mode=smode.id, kind=kind,
+            profile=(embedded_profile if embedded_profile is not None
+                     else embedded.EmbeddedProfile()))
     return out
 
 
@@ -380,9 +418,47 @@ def _entry_counts_finished(kernel, kind) -> bool:
     return entry_counts_finished(kernel.walk, render_lane_split(kernel.sinks, kernel.walk, kind=kind))
 
 
+@dataclass(frozen=True)
+class _EmbeddedResult:
+    """A ``c`` target's stand-in for a compile result: the fields
+    :func:`_artifact_of`, :func:`_served` and :func:`_closure_watch` read.
+    ``key`` is the sha256 of the ``.c`` and ``.h`` texts (no compile cache
+    entry exists for it, so its closure is empty), ``seconds`` the toolchain
+    checks' run time."""
+
+    key: str
+    hit: bool
+    seconds: float
+    closure: tuple = ()
+
+
+def _embedded_part(source, profile) -> tuple:
+    """A ``c`` target's share of a draft: the audit and the toolchain checks
+    (any finding refuses, before anything is written), then the report
+    :func:`hawk.embedded.export` writes, built by the same code. Returns
+    ``(result, report, files)``."""
+    from .. import embedded
+
+    embedded.refuse_audit_hits(source)
+    checks = embedded.check(source, profile=profile)
+    report = embedded.finish_report(source, checks)
+    name = source.name
+    h = hashlib.sha256()
+    for text in (source.text, source.header):
+        h.update(_blob(text))
+        h.update(b"\0")
+    result = _EmbeddedResult(h.hexdigest(), False, float(checks.get("seconds", 0.0)))
+    files = []
+    for fname, text in ((f"{name}.c", source.text), (f"{name}.h", source.header),
+                        (f"{name}.embedded.json", embedded.report_text(report))):
+        blob = _blob(text)
+        files.append(_File(fname, _digest_bytes(blob), blob=blob))
+    return result, report, files
+
+
 def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arch,
            targets, derivative, host_profile: str = "", opt_level: str = "",
-           split: dict | None = None) -> _Draft:
+           embedded_profile=None, split: dict | None = None) -> _Draft:
     """Compile every target and assemble the unit CONTENT for one kernel.
 
     Everything here is a pure function of the inputs plus the
@@ -393,16 +469,23 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
     The device arch is resolved ONCE here, not per target, and only when
     ``"cuda"`` is actually one of ``targets``: the resolver may reach the
     device probe (:func:`hawk.artifact.arch`), so a host-only build must
-    never pay for it."""
+    never pay for it.
+
+    A ``"c"`` target is not compiled: its source is audited and checked
+    (:func:`_embedded_part`) and contributes ``<name>.c``, ``<name>.h`` and
+    ``<name>.embedded.json``. The JSON sidecar describes the NATIVE targets
+    only and is written only when there is one; a c-only draft carries the
+    embedded report in the sidecar's place and writes no ``<name>.json``."""
+    native = _native(targets)
     entries, files = {}, []
-    resolved_arch = arch(device_arch) if "cuda" in targets else ""
+    resolved_arch = arch(device_arch) if "cuda" in native else ""
     options = {target: kind.apply(CompileOptions(
         backend=target, mode=smode.id, arch=resolved_arch,
         defines=tuple(defines), cache_dir=cache_dir,
         host_profile=host_profile or "", opt_level=opt_level or ""))
-        for target in targets}
-    results = _compile_targets(sources, name, options)
-    for target in targets:
+        for target in native}
+    results = _compile_targets(sources, name, options) if native else {}
+    for target in native:
         art_ext, src_ext, fmt = _TARGET[target]
         source = sources[target]
         result = results[target]
@@ -424,6 +507,18 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         files.append(_File(src_name, _digest_bytes(blob), blob=blob))
         entries[target] = (result, art_name, src_name, fmt)
 
+    report = None
+    if "c" in targets:
+        from ..embedded import EmbeddedProfile
+
+        result, report, c_files = _embedded_part(
+            sources["c"], embedded_profile if embedded_profile is not None
+            else EmbeddedProfile())
+        files += c_files
+        entries["c"] = (result, f"{name}.h", f"{name}.c", "c")
+    if not native:
+        return _Draft(name, report, f"{name}.embedded.json", entries, tuple(files))
+
     segment = getattr(kernel, "segment", None)
     dispatch_override = None if segment is None else (
         DispatchInfo(segment.dispatch_name, segment.K, "segmented", segment.units,
@@ -437,8 +532,8 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         # choice so the sidecar and manifest never disagree.
         fmt=entries["cuda"][3] if "cuda" in entries else entries["host"][3],
         scalar_type=smode.id,
-        exec_targets=[_EXEC_TARGET[t] for t in targets],
-        host_entry=f"{name}_host" if "host" in targets else None,
+        exec_targets=[_EXEC_TARGET[t] for t in native],
+        host_entry=f"{name}_host" if "host" in native else None,
         derivative=derivative,
         lanes=getattr(kernel, "lanes", None),
         dispatch_override=dispatch_override,
@@ -504,7 +599,9 @@ def _artifact_of(draft: _Draft, directory: Path) -> Artifact:
     entries = {
         target: Entry(target, directory / art_name, directory / src_name,
                       result.key, result.hit, result.seconds,
-                      tuple(result.closure))
+                      tuple(result.closure),
+                      directory / f"{draft.name}.embedded.json" if target == "c"
+                      else None)
         for target, (result, art_name, src_name, _fmt) in draft.entries.items()
     }
     return Artifact(draft.name, directory, directory / draft.sidecar_name,
@@ -518,8 +615,7 @@ def _served(bundle: Bundle) -> Bundle:
     compiler and not a lookup."""
     artifacts = tuple(
         Artifact(a.name, a.directory, a.sidecar_path, a.sidecar,
-                 {t: Entry(e.backend, e.artifact, e.source, e.key, True, 0.0,
-                           e.closure)
+                 {t: replace(e, hit=True, seconds=0.0)
                   for t, e in a.entries.items()})
         for a in bundle.artifacts
     )
@@ -535,14 +631,20 @@ def _rehome_bundle(bundle: Bundle, directory: Path) -> Bundle:
     :func:`_materialize` is what puts them there first."""
     artifacts = tuple(
         Artifact(a.name, directory, directory / a.sidecar_path.name, a.sidecar,
-                 {t: Entry(e.backend, directory / e.artifact.name,
-                           directory / e.source.name, e.key, e.hit, e.seconds,
-                           e.closure)
+                 {t: replace(e, artifact=directory / e.artifact.name,
+                             source=directory / e.source.name,
+                             report=_rehomed(e.report, directory))
                   for t, e in a.entries.items()})
         for a in bundle.artifacts
     )
-    return Bundle(directory, directory / bundle.manifest_path.name, bundle.manifest,
-                 artifacts, digest=bundle.digest)
+    return Bundle(directory, _rehomed(bundle.manifest_path, directory),
+                 bundle.manifest, artifacts, digest=bundle.digest)
+
+
+def _rehomed(path: Path | None, directory: Path) -> Path | None:
+    """``path``'s name under ``directory``; ``None`` (no manifest, no
+    report) stays ``None``."""
+    return None if path is None else directory / path.name
 
 
 def _materialize(bundle: Bundle, files, digest: str, directory: Path) -> Bundle:
@@ -620,7 +722,8 @@ def build(kernel, directory, *, mode: str = "float64", targets=("cuda", "host"),
           kind=None, layout_sizes_override=None, defines=(), cache_dir=None,
           device_arch: str = "", name: str | None = None,
           derivative: dict | None = None, host_profile: str = "",
-          opt_level: str = "", literal_table: bool = False) -> Artifact:
+          opt_level: str = "", literal_table: bool = False,
+          embedded_profile=None) -> Artifact:
     """Emit, compile and publish ONE kernel into ``directory``.
 
     ``kernel`` is anything carrying ``.name``/``.sinks``/``.walk`` (a
@@ -637,7 +740,8 @@ def build(kernel, directory, *, mode: str = "float64", targets=("cuda", "host"),
     ``$HAWK_OPT_LEVEL``, else :data:`hawk.compile.toolchain.DEFAULT_OPT_LEVEL`
     (``"O3"``). See :func:`build_bundle`'s own docstring for the full rule.
 
-    ``literal_table`` (default ``False``): see :func:`build_bundle`.
+    ``literal_table`` (default ``False``) and ``embedded_profile``: see
+    :func:`build_bundle`.
 
     Refuses a ``segmented`` dispatch, which needs K artifacts: call
     :func:`build_bundle` with ``[kernel]`` instead."""
@@ -659,11 +763,12 @@ def build(kernel, directory, *, mode: str = "float64", targets=("cuda", "host"),
     directory = Path(directory)
     sources = _sources(kernel, name=name, smode=smode, kind=kind, targets=targets,
                        layout_sizes_override=layout_sizes_override,
-                       literal_table=literal_table)
+                       literal_table=literal_table, embedded_profile=embedded_profile)
     draft = _draft(kernel, sources, name=name, smode=smode, kind=kind,
                    defines=defines, cache_dir=cache_dir, device_arch=device_arch,
                    targets=targets, derivative=derivative,
-                   host_profile=host_profile, opt_level=opt_level)
+                   host_profile=host_profile, opt_level=opt_level,
+                   embedded_profile=embedded_profile)
     directory.mkdir(parents=True, exist_ok=True)
     for f in draft.files:
         f.write(directory)
@@ -745,13 +850,39 @@ def _member_kind(kernel, kind, explicit: bool):
     return replace(kind, guard=replace(guard, active_set=False))
 
 
+def _manifest_of(drafts) -> dict:
+    """The ``manifest.json`` document over ``drafts``' native targets: one
+    execution axis (every member must agree), one plugin entry per kernel
+    naming its device object when it has one, else its host object."""
+    axes = {(tuple(d.sidecar["exec_targets"]), d.sidecar["exec_access"],
+             d.sidecar.get("exec_op")) for d in drafts}
+    if len(axes) != 1:
+        raise HawkError(
+            "a bundle declares ONE execution axis at the manifest level, but "
+            f"its members disagree: {sorted(axes)}. Split them into two bundles"
+        )
+    axis_targets, access, op = axes.pop()
+    entries = [
+        _manifest.plugin_entry(
+            d.name, order,
+            d.entries["cuda"][1] if "cuda" in d.entries else d.entries["host"][1],
+            d.sidecar_name,
+            # The real format (``ptx``/``cubin``, read off the compiled
+            # bytes), not a static "ptx" guess.
+            d.entries["cuda"][3] if "cuda" in d.entries else "host")
+        for order, d in enumerate(drafts)
+    ]
+    return _manifest.manifest_doc(entries, exec_targets=axis_targets,
+                                  exec_access=access, exec_op=op)
+
+
 def build_bundle(kernels, directory, *, mode: str = "float64",
                  targets=("cuda", "host"), kind=None, layout_sizes_override=None,
                  defines=(), cache_dir=None, device_arch: str = "",
                  name: str | None = None,
                  derivative: Mapping[str, str] | None = None,
                  host_profile: str = "", opt_level: str = "",
-                 literal_table: bool = False) -> Bundle:
+                 literal_table: bool = False, embedded_profile=None) -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json``
     over them. Every member must agree on the execution axis (a
     manifest-level, not per-entry, declaration) — a set that doesn't agree is
@@ -793,12 +924,25 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     instructions on architectures that issue a move pair per literal (sm_90),
     unchanged on the others. Off, the device code is byte-identical to a
     build without the option. A ``float32`` build ignores it, and the host
-    build is not affected."""
+    build is not affected.
+
+    ``"c"`` in ``targets`` adds each kernel's standalone MISRA C unit
+    (:mod:`hawk.embedded`: ``<name>.c``, ``<name>.h``,
+    ``<name>.embedded.json``, audited and toolchain-checked) under
+    ``embedded_profile`` (:class:`hawk.embedded.EmbeddedProfile` when
+    ``None``). It never enters the manifest or a sidecar: those describe
+    the native targets only, and a unit built for ``("c",)`` alone writes
+    neither (``Bundle.manifest`` is ``None``)."""
     _bump_builds()  #: every CALL, attempt or success (one locked increment)
     kernels = list(kernels)
     smode = scalar_mode(mode)
     directory = Path(directory)
     targets = tuple(targets)
+    native = _native(targets)
+    if "c" in targets and embedded_profile is None:
+        from ..embedded import EmbeddedProfile
+
+        embedded_profile = EmbeddedProfile()
     names = [name or k.name for k in kernels]
     explicit = kind is not None
     kind = _resolve_bundle_kind(names, kernels, kind)
@@ -821,7 +965,10 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                     device_arch=device_arch, derivative_blocks=per_kernel_derivative,
                     layout_sizes_override=layout_sizes_override,
                     host_profile=host_profile, opt_level=opt_level,
-                    literal_table=literal_table)
+                    literal_table=literal_table,
+                    embedded_profile=repr(embedded_profile) if "c" in targets else "",
+                    source_digests=([getattr(k, "source_digest", None) for k in kernels]
+                                    if "c" in targets else ()))
 
     memo = _UNIT_MEMO.get(key)
     if memo is not None:
@@ -856,35 +1003,21 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     # written. Each draft gets its own per_kernel_derivative[i] block.
     drafts = [_draft(k, _sources(k, name=n, smode=smode, kind=kd, targets=targets,
                                  layout_sizes_override=layout_sizes_override,
-                                 literal_table=literal_table),
+                                 literal_table=literal_table,
+                                 embedded_profile=embedded_profile),
                      name=n, smode=smode, kind=kd, defines=defines,
                      cache_dir=cache_dir, device_arch=device_arch, targets=targets,
                      derivative=d, host_profile=host_profile, opt_level=opt_level,
-                     split=split.get(n))
+                     embedded_profile=embedded_profile, split=split.get(n))
               for k, n, kd, d in zip(kernels, names, kinds, per_kernel_derivative)]
-    axes = {(tuple(d.sidecar["exec_targets"]), d.sidecar["exec_access"],
-             d.sidecar.get("exec_op")) for d in drafts}
-    if len(axes) != 1:
-        raise HawkError(
-            "a bundle declares ONE execution axis at the manifest level, but "
-            f"its members disagree: {sorted(axes)}. Split them into two bundles"
-        )
-    axis_targets, access, op = axes.pop()
-    entries = [
-        _manifest.plugin_entry(
-            d.name, order,
-            d.entries["cuda"][1] if "cuda" in d.entries else d.entries["host"][1],
-            d.sidecar_name,
-            # The real format (``ptx``/``cubin``, read off the compiled
-            # bytes), not a static "ptx" guess.
-            d.entries["cuda"][3] if "cuda" in d.entries else "host")
-        for order, d in enumerate(drafts)
-    ]
-    doc = _manifest.manifest_doc(entries, exec_targets=axis_targets,
-                                 exec_access=access, exec_op=op)
-    manifest_blob = _blob(json.dumps(doc, indent=2) + "\n")
-    files = tuple(f for d in drafts for f in d.files) + (
-        _File("manifest.json", _digest_bytes(manifest_blob), blob=manifest_blob),)
+    files = tuple(f for d in drafts for f in d.files)
+    # The manifest describes the NATIVE targets only; a unit built for the
+    # standalone C target alone has nothing for eagle to load and writes none.
+    doc = _manifest_of(drafts) if native else None
+    if doc is not None:
+        manifest_blob = _blob(json.dumps(doc, indent=2) + "\n")
+        files += (_File("manifest.json", _digest_bytes(manifest_blob),
+                        blob=manifest_blob),)
     digest = _unit_digest(files)
 
     # Phase 3 — publish idempotently: a directory already holding this
@@ -900,8 +1033,9 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
         _write_stamp(directory, digest, files)
         _note("published", f"unit {digest[:12]} published at {directory}")
 
-    bundle = Bundle(directory, directory / "manifest.json", doc,
-                    tuple(_artifact_of(d, directory) for d in drafts), digest=digest)
+    bundle = Bundle(directory, None if doc is None else directory / "manifest.json",
+                    doc, tuple(_artifact_of(d, directory) for d in drafts),
+                    digest=digest)
     if len(_UNIT_MEMO) >= _UNIT_MEMO_LIMIT:
         _UNIT_MEMO.clear()
     _UNIT_MEMO[key] = _Unit(
@@ -909,5 +1043,3 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
         tuple((str(directory / f.name), f.digest) for f in files),
         _closure_watch(drafts), kind)
     return bundle
-
-

@@ -17,6 +17,7 @@ wire of that quantity at once.
 from __future__ import annotations
 
 import ast
+import hashlib
 import inspect
 import sys
 import textwrap
@@ -57,12 +58,13 @@ class Kernel:
     """A traced kernel: its sink set, its canonical walk and its declarations."""
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
-                 "time", "time_step", "jump")
+                 "time", "time_step", "source_digest", "jump")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
                  step: Kernel | None = None,
-                 one_step: Kernel | None = None) -> None:
+                 one_step: Kernel | None = None,
+                 source_digest: str | None = None) -> None:
         from ..ext import DEFAULT_KIND
 
         self.name = name
@@ -82,6 +84,10 @@ class Kernel:
         #: by the taping twin, never by the plain kernel's emission.
         self.time: str | None = None
         self.time_step: str | None = None
+        #: The sha256 of the traced function's dedented source (see
+        #: :func:`source_digest`); ``None`` for a hand-built kernel or one
+        #: whose source cannot be read. Traceability only.
+        self.source_digest = source_digest
         #: The width of the derivative through the kernel's switches
         #: (``@hawk.kernel(jump=...)``): a number, ``"auto"`` or a Param
         #: name; ``None`` (a switch has derivative zero) otherwise. Read by
@@ -212,7 +218,7 @@ def resolve_dispatch(kernel: Kernel, policies: dict[str, str]) -> Kernel:
                 f"'switch', 'segmented', 'predicated', got {policy!r}")
         chosen[id(node)] = policy
     resolved = Kernel(step.name, with_policies(step.sinks, chosen), step.planes,
-                      kind=step.kind)
+                      kind=step.kind, source_digest=step.source_digest)
     resolved.time, resolved.time_step = step.time, step.time_step
     resolved.jump = step.jump
     if kernel.step is None or "segmented" in chosen.values():
@@ -258,7 +264,19 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
     extra = _compensated_companion(resolved_kind, planes, vocab, sinks)
     if extra is not None:
         sinks = sinks + (extra,)
-    return Kernel(fn.__name__, sinks, planes, kind=resolved_kind)
+    return Kernel(fn.__name__, sinks, planes, kind=resolved_kind,
+                  source_digest=source_digest(fn))
+
+
+def source_digest(fn: Callable[..., Any]) -> str | None:
+    """The sha256 hex digest of ``fn``'s dedented source, as
+    :func:`inspect.getsource` returns it (decorators included), or ``None``
+    when the source cannot be read."""
+    try:
+        text = textwrap.dedent(inspect.getsource(fn))
+    except (OSError, TypeError):
+        return None
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def _retag_by_key(planes: dict[str, Any], args: dict[str, Any]) -> None:
@@ -341,7 +359,8 @@ def _returned_kernel(fn: Callable[..., Any], kind: Any) -> Kernel:
     extra = _compensated_companion(kind, planes, vocab, sinks)
     if extra is not None:
         sinks = sinks + (extra,)
-    return Kernel(fn.__name__, sinks, planes, kind=kind)
+    return Kernel(fn.__name__, sinks, planes, kind=kind,
+                  source_digest=source_digest(fn))
 
 
 def _own_declarations(fn: Callable[..., None], scope: dict[str, Any]

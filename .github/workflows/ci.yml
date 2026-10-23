@@ -141,7 +141,7 @@ jobs:
             raptor/pyproject.toml
             eagle/python/pyproject.toml
 
-      - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache
+      - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache cppcheck
 
       # compiled objects persist across runs; one cache per job and architecture
       - uses: actions/cache@v6
@@ -276,7 +276,7 @@ jobs:
             raptor/pyproject.toml
             eagle/python/pyproject.toml
 
-      - run: sudo apt-get update && sudo apt-get install -y g++-13 g++-${{ matrix.gcc }} ccache
+      - run: sudo apt-get update && sudo apt-get install -y g++-13 g++-${{ matrix.gcc }} ccache cppcheck
 
       # compiled objects persist across runs; one cache per job and architecture
       - uses: actions/cache@v6
@@ -509,7 +509,7 @@ jobs:
             raptor/pyproject.toml
             eagle/python/pyproject.toml
 
-      - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache
+      - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache cppcheck
 
       # compiled objects persist across runs; one cache per job and architecture
       - uses: actions/cache@v6
