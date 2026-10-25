@@ -22,7 +22,7 @@ import hawk.math as m
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
 from hawk.emit import SCALAR_MODES, compose, render_source, scalar_mode
-from hawk.emit.backend import _UNBUILT_MODES
+from hawk.emit.wrapper import _UNBUILT_MODES
 from hawk.ext import sink_policy
 from hawk.ir import HawkError
 
@@ -32,13 +32,13 @@ ROWS = 4
 @hawk.kernel
 def row_max(scores: hawk.Table["row":ROWS], peak: hawk.Mutable[hawk.Scalar]):
     """softmax's first pass as a max over samples: the row's largest score."""
-    peak = hawk.all_samples(scores.at(row=m.sample_index())).max()
+    peak = hawk.max(scores.at(row=m.sample_index()))
 
 
 @hawk.kernel
 def row_sum(scores: hawk.Table["row":ROWS], total: hawk.Mutable[hawk.Scalar]):
     """The pass that DOES carry the gradient — the control beside the refusal."""
-    total = hawk.all_samples(scores.at(row=m.sample_index())).sum()
+    total = hawk.sum(scores.at(row=m.sample_index()))
 
 
 @hawk.kernel
@@ -78,8 +78,8 @@ def test_the_sum_pass_beside_it_still_derives():
 # each naming its replacement.
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("name, needle", [
-    ("Accum", "hawk.all_samples(bins)[key] += term"),
-    ("Reduce", "total = hawk.all_samples(term).sum()"),
+    ("Accum", "hawk.scatter(bins)[key] += term"),
+    ("Reduce", "total = hawk.sum(term)"),
 ])
 def test_a_retired_declaration_refuses_naming_its_replacement(name, needle):
     with pytest.raises(HawkError, match=f"{name} is gone") as excinfo:
@@ -88,21 +88,21 @@ def test_a_retired_declaration_refuses_naming_its_replacement(name, needle):
 
 
 def test_a_retired_add_refuses_naming_its_replacement():
-    with pytest.raises(HawkError, match=r"'out'.*all_samples\(out\)\[key\] \+= v"):
+    with pytest.raises(HawkError, match=r"'out'.*hawk.scatter\(out\)\[key\] \+= v"):
         @hawk.kernel
         def bad(x: hawk.Scalar, lane: hawk.Index, out: hawk.Mutable[hawk.Scalar]):
             out.add(x, at=lane)
 
 
 def test_a_retired_write_refuses_naming_its_replacement():
-    with pytest.raises(HawkError, match=r"'out'.*all_samples\(out\)\[key\] = v"):
+    with pytest.raises(HawkError, match=r"'out'.*hawk.scatter\(out\)\[key\] = v"):
         @hawk.kernel
         def bad(x: hawk.Scalar, lane: hawk.Index, out: hawk.WideOut[hawk.Scalar]):
             out.write(x, at=lane)
 
 
 def test_a_retired_contribute_refuses_naming_its_replacement():
-    with pytest.raises(HawkError, match=r"'out'.*out = hawk.all_samples\(v\).sum\(\)"):
+    with pytest.raises(HawkError, match=r"'out'.*out = hawk.sum\(v\)"):
         @hawk.kernel
         def bad(x: hawk.Scalar, out: hawk.Mutable[hawk.Scalar]):
             out.contribute(x)
@@ -134,7 +134,7 @@ def test_the_banded_scalar_mode_is_refused_naming_the_seam_and_the_wave():
 def test_every_door_into_the_scalar_mode_refuses_banded(tmp_path, door):
     """One seam, and every entrance to it. A mode resolved in three places is a
     mode that can be built in two of them."""
-    from hawk.emit import BACKENDS
+    from hawk.targets import TARGETS
 
     if door == "build_bundle":
         with pytest.raises(HawkError, match="declared but not built yet"):
@@ -142,7 +142,7 @@ def test_every_door_into_the_scalar_mode_refuses_banded(tmp_path, door):
                          targets=("host",))
     elif door == "render_source":
         with pytest.raises(HawkError, match="declared but not built yet"):
-            render_source("plain", plain.sinks, plain.walk, BACKENDS["host"],
+            render_source("plain", plain.sinks, plain.walk, TARGETS["host"],
                           mode=scalar_mode("banded"))
     else:
         with pytest.raises(HawkError, match="declared but not built yet"):

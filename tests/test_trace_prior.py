@@ -96,22 +96,21 @@ def test_running_max_recovers_the_max_across_launches(prior_bundle):
 
 
 # --------------------------------------------------------------------------- #
-# host/cuda BODY byte identity (the renderer is backend-agnostic by
-# construction; this row pins that no per-backend branch ever creeps in for
+# host/cuda BODY byte identity (the renderer is wrapper-agnostic by
+# construction; this row pins that no per-wrapper branch ever creeps in for
 # a `prior_read` leaf).
 # --------------------------------------------------------------------------- #
 def test_prior_recurrence_renders_byte_identical_host_and_cuda_bodies():
-    from hawk.emit.backend import render_source
-    from hawk.emit.cuda import CudaBackend
-    from hawk.emit.host import HostBackend
+    from hawk.emit.wrapper import render_source
+    from hawk.targets import TARGETS
 
     for k in (running_apogee, spin_prior):
-        h = render_source(k.name, k.sinks, k.walk, HostBackend(), kind=k.kind)
-        c = render_source(k.name, k.sinks, k.walk, CudaBackend(), kind=k.kind)
+        h = render_source(k.name, k.sinks, k.walk, TARGETS["host"], kind=k.kind)
+        c = render_source(k.name, k.sinks, k.walk, TARGETS["cuda"], kind=k.kind)
         assert h.body == c.body, k.name
 
     spin_body = render_source(spin_prior.name, spin_prior.sinks, spin_prior.walk,
-                              HostBackend(), kind=spin_prior.kind).body
+                              TARGETS["host"], kind=spin_prior.kind).body
     assert "mut_v_i = mut_v[i].get()" in spin_body, (
         "a rank>=1 launch-start read must be materialised BEFORE the store:\n" + spin_body)
 

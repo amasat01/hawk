@@ -49,11 +49,11 @@ venv_py="$work/venv/bin/python"
 curl -fsSL -o "$work/get-pip.py" https://bootstrap.pypa.io/get-pip.py
 "$venv_py" "$work/get-pip.py" --quiet
 "$venv_py" -m pip install --quiet --only-binary=:all: pytest numpy scipy \
-    "scikit-build-core>=0.10" "nanobind>=3.1,<4" "aether-dsc>=0.2,<0.3"
+    "scikit-build-core>=0.10" "nanobind>=3.1,<4" "aether-dsc>=0.7,<0.8"
 if [ -n "${RAPTOR_DIR:-}" ]; then
     "$venv_py" -m pip install --quiet --no-deps "$RAPTOR_DIR"
 else
-    "$venv_py" -m pip install --quiet --only-binary=:all: "raptor-core>=0.3"
+    "$venv_py" -m pip install --quiet --only-binary=:all: "raptor-core>=0.7,<0.8"
 fi
 
 # eagle and hawk, instrumented, with debug info so reports name file:line

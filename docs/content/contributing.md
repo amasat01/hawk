@@ -7,4 +7,5 @@
 :maxdepth: 1
 
 contributing/add_a_native_function
+contributing/add_a_target
 ```

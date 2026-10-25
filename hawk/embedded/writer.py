@@ -1,10 +1,10 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The plain-C dialect: the standalone C target's spelling of every text the
-body renderer produces, behind the :class:`hawk.emit.dialect.Dialect` seam.
+"""The plain-C writer: the standalone C target's spelling of every text the
+body renderer produces, behind the :class:`hawk.emit.writer.Writer` seam.
 
-Mirrors :mod:`hawk.emit.dialect_aether` member for member. ``r`` is the
+Mirrors :mod:`hawk.emit.writer_aether` member for member. ``r`` is the
 renderer (``r._emit``, ``r._ref``, ``r.hoists``, ``r.indent``, ``r.loop_pos``).
 Every rank>=1 value is a named C struct value (``aether_c_<w>_vecN_t``,
 ``aether_c_<w>_matRxC_t``); every fold, product and component-wise function
@@ -13,7 +13,7 @@ is an aether CORE function requested by ``(kind, shape, width)``
 integer helpers are hawk's own (:mod:`hawk.embedded.helpers`). Rank-0 Real
 math is libm at the mode's width (:func:`~hawk.embedded.spelling.libm_name`).
 
-The dialect collects, as it spells, what the translation-unit assembler and
+The writer collects, as it spells, what the translation-unit assembler and
 the report need: ``declared`` (every named local), ``helpers`` and
 ``helper_requests`` (hawk helpers by name, and how to regenerate each),
 ``core`` (core function names), ``libm``, ``fp_eq_sites``,
@@ -98,7 +98,7 @@ _ATOM = re.compile(
     r"|\(\(hawk_real_t\)-?[\w.+\-]+\)")
 
 
-class CDialect:
+class CWriter:
     """The plain-C spelling (see the module docstring)."""
 
     id = "c"
@@ -289,7 +289,7 @@ class CDialect:
     def hoist(self, r, text: str, ttype: TensorType | None = None) -> str:
         """Bind ``text`` to a fresh typed local ahead of the current line."""
         if ttype is None:
-            raise HawkError("the C dialect hoists only a typed value "
+            raise HawkError("the C writer hoists only a typed value "
                             f"(no type for {text!r})")
         name = f"hz{r.hoists}"
         r.hoists += 1
@@ -328,7 +328,7 @@ class CDialect:
         if ttype is None or not ttype.shape:
             raise HawkError(
                 f"a rank>=1 predicated dispatch in {self.name!r} reached the C "
-                f"dialect with an unnamed branch ({texts[-1]!r}); use policy='switch'")
+                f"writer with an unnamed branch ({texts[-1]!r}); use policy='switch'")
         select = self._helper("select", ttype.shape)
         expr = texts[-1]
         for j in range(len(texts) - 2, -1, -1):
@@ -469,7 +469,9 @@ class CDialect:
     def op(self, r, node: Op, args: Sequence[str], ranks: Sequence[int]) -> str:
         kind, rank = node.kind, len(node.ttype.shape)
         if kind == RAW_KIND or kind in RANDOM_OPS:
-            raise HawkError(f"{self.name!r}: op {kind!r} has no C spelling "
+            what = (f"a raw block written in {node.literal.language!r}" if kind == RAW_KIND
+                    else f"op {kind!r}")
+            raise HawkError(f"{self.name!r}: {what} has no C spelling "
                             "(the C target refuses it)")
         if rank == 0 and all(rk == 0 for rk in ranks):
             return self._scalar_op(r, kind, args, node)

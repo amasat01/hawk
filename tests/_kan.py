@@ -219,7 +219,8 @@ def main(argv=None) -> int:
     from hawk.artifact.layout import exports
     from hawk.compile import device_compiler, host_compiler, host_flags
     from hawk.compile.toolchain import resolve_arch, device_flags
-    from hawk.emit import BACKENDS, FLOAT64, render_source
+    from hawk.emit import FLOAT64, render_source
+    from hawk.targets import TARGETS
     from hawk.ir import Loop
 
     args = sys.argv[1:] if argv is None else list(argv)
@@ -242,13 +243,13 @@ def main(argv=None) -> int:
     }
 
     sources = {}
-    for backend in ("cuda", "host"):
-        text = render_source(cell.name, cell.sinks, cell.walk, BACKENDS[backend],
-                             mode=FLOAT64, exports=exports(backend)).text
-        path = tmp / f"{cell.name}.{'cu' if backend == 'cuda' else 'cpp'}"
+    for target in ("cuda", "host"):
+        text = render_source(cell.name, cell.sinks, cell.walk, TARGETS[target],
+                             mode=FLOAT64, exports=exports(target)).text
+        path = tmp / f"{cell.name}.{'cu' if target == 'cuda' else 'cpp'}"
         path.write_text(text)
-        sources[backend] = path
-        row[f"{backend}_tu_bytes"] = path.stat().st_size
+        sources[target] = path
+        row[f"{target}_tu_bytes"] = path.stat().st_size
 
     ptx = tmp / f"{cell.name}.ptx"
     rc, wall, peak, err = _timed([device_compiler(), *device_flags(),

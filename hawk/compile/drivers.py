@@ -4,7 +4,7 @@
 """The compile drivers, both through the content-closure cache.
 
 ``g++`` builds the host ``.so`` (flags from one host profile, see
-:data:`hawk.compile.toolchain.HOST_PROFILES`). The device backend has two
+:data:`hawk.compile.toolchain.HOST_PROFILES`). The device toolchain has two
 compilers, chosen by :func:`hawk.compile.toolchain.device_compiler_kind`:
 ``nvcc`` ahead of time on the developer/CI tree (the only path for
 LTO/relocatable fatbins), or an in-memory NVRTC compile
@@ -20,7 +20,7 @@ tree HAWK does not own. The NVRTC path has no such closure to discover: the
 payload's digest IS the closure, known before the compile runs, so
 re-validating a hit is one string compare, never a stat walk.
 
-A driver is a pure function of its inputs: source, backend, scalar mode,
+A driver is a pure function of its inputs: source, target, scalar mode,
 compiler and flags produce the same key and slot.
 
 Every compiler subprocess runs under an address-space cap — a machine
@@ -180,18 +180,13 @@ def limited(argv: list[str]) -> list[str]:
     return [sys.executable, "-I", "-c", _TRAMPOLINE, str(cap), *argv]
 
 
-#: Artifact suffix + source suffix per backend id.
-_SUFFIX = {"host": (".so", ".cpp"), "cuda": (".ptx", ".cu")}
-HOST = "host"
-DEVICE = "cuda"
-
-
 @dataclass(frozen=True)
 class CompileOptions:
     """Everything outside the source text that changes the output — and so
     every term of the LOOKUP key beyond the source itself."""
 
-    backend: str = HOST
+    #: The id of the :data:`hawk.targets.TARGETS` row to compile for.
+    target: str
     mode: str = "float64"
     arch: str = ""
     defines: tuple[str, ...] = ()
@@ -201,12 +196,12 @@ class CompileOptions:
     #: (:data:`hawk.compile.toolchain.HOST_PROFILES`). Empty means
     #: ``$HAWK_HOST_PROFILE``, else
     #: :func:`~hawk.compile.toolchain.default_host_profile`. Ignored by the
-    #: device backend.
+    #: device compile.
     host_profile: str = ""
     #: The optimisation level (:data:`hawk.compile.toolchain.OPT_LEVELS`).
     #: Empty means ``$HAWK_OPT_LEVEL``, else
     #: :data:`~hawk.compile.toolchain.DEFAULT_OPT_LEVEL`. Used by the host
-    #: backend's ``-O<n>`` and the device backend's AOT nvcc compile
+    #: host compile's ``-O<n>`` and the device AOT nvcc compile
     #: (``-O<n>`` / ``-Xptxas -O<n>``); ignored by the NVRTC device compile,
     #: which always optimises and takes no ``-O`` option.
     opt_level: str = ""
@@ -293,9 +288,9 @@ def _grow(entry: dict, **values: str) -> None:
 
 
 def _argv(compiler: str, opts: CompileOptions, src: Path, out: Path,
-          dep: Path, *, device_target: str = "ptx") -> list[str]:
+          dep: Path, *, cpu: bool, device_target: str = "ptx") -> list[str]:
     defines = [f"-D{d}" for d in opts.defines]
-    if opts.backend == HOST:
+    if cpu:
         flags = tc.host_flags(extra=(*defines, *opts.extra),
                               profile=opts.host_profile or None,
                               opt=opts.opt_level or None)
@@ -337,47 +332,73 @@ def _device_target(compiler: str, arch: str) -> str:
     if forced is not None:
         return forced
     return _nvrtc_driver.select_target(
-        tc.nvcc_version(compiler), _probed(_nvrtc_driver.driver_cuda_version))
+        tc.nvcc_version(compiler),
+        _nvrtc_driver._probed(_nvrtc_driver.driver_cuda_version))
 
 
-def _probed(fn):
-    """``fn()``, or ``None`` on a :class:`HawkError` — see
-    :func:`_device_target`'s own docstring for why this never raises."""
+def _run_and_publish(argv, label, failed_tail, tmp_artifact, artifact, tmp_dep, dep,
+                     cache_root):
+    """Run the compiler into the private temporaries and move the artifact and
+    its dependency file into place; ``(done, seconds)``, or a :class:`HawkError`
+    carrying the compiler's stderr when it failed."""
+    start = time.perf_counter()
     try:
-        return fn()
-    except HawkError:
-        return None
+        done = run_compiler(argv, label)
+        if done.returncode == 0:
+            publish_atomic(tmp_artifact, artifact)
+            publish_atomic(tmp_dep, dep)
+    finally:
+        tmp_artifact.unlink(missing_ok=True)
+        tmp_dep.unlink(missing_ok=True)
+    seconds = time.perf_counter() - start
+    if done.returncode != 0:
+        cap = address_space_cap()
+        raise HawkError(
+            f"{label} failed{failed_tail} (rc={done.returncode})"
+            + (f"; the compiler ran under a {cap}-byte address-space cap "
+               "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
+               "this translation unit is too large for one compile and not that "
+               "the machine is out of memory" if cap else "")
+            + f".\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
+            + tc.compile_hint(cache_root)
+        )
+    return done, seconds
 
 
 def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResult:
-    """Compile ``source`` for ``opts.backend``, through the content-closure
+    """Compile ``source`` for the ``opts.target`` row, through the content-closure
     cache: a valid lookup is a hit and no compiler runs; anything else is a
     miss that compiles into the key's own slot and rewrites its validity
     record from the compiler-reported closure.
 
-    Two forks: the device backend forks on
+    Two forks: a device-compiled row forks on
     :func:`~hawk.compile.toolchain.device_compiler_kind` — ``"nvrtc"`` goes
-    to :func:`_compile_nvrtc_source`. The host backend forks on
+    to :func:`_compile_nvrtc_source`. A host-compiled row forks on
     :func:`_host_uses_sealed_payload` — a host compile against the shipped
     sealed payload goes to :func:`_compile_host_sealed`, serving the payload
     into a private directory for the compile's lifetime instead of pointing
     ``-I`` at a real include root.
     """
-    if opts.backend not in _SUFFIX:
-        raise HawkError(f"unknown backend {opts.backend!r}; built are {tuple(_SUFFIX)}")
-    if opts.backend == HOST and _host_uses_sealed_payload():
-        return _compile_host_sealed(source, name, opts)
-    if opts.backend == DEVICE and tc.device_compiler_kind() == "nvrtc":
-        return _compile_nvrtc_source(source, name, opts)
-    compiler = tc.host_compiler() if opts.backend == HOST else tc.device_compiler()
+    from ..targets import CPU, GPU, TARGETS
+
+    row = TARGETS.get(opts.target)
+    if row is None or row.compile is None:
+        built = tuple(t for t, r in TARGETS.items() if r.compile is not None)
+        raise HawkError(f"unknown target {opts.target!r}; built are {built}")
+    cpu, gpu = row.compile == CPU, row.compile == GPU
+    if cpu and _host_uses_sealed_payload():
+        return _compile_host_sealed(source, name, opts, row)
+    if gpu and tc.device_compiler_kind() == "nvrtc":
+        return _compile_nvrtc_source(source, name, opts, row)
+    compiler = tc.host_compiler() if cpu else tc.device_compiler()
     identity = tc.compiler_identity(compiler)
-    art_ext, src_ext = _SUFFIX[opts.backend]
+    art_ext, src_ext = row.artifact, row.source
     cache = Cache(opts.cache_dir)
 
     # The device artifact that actually loads on the driver present; "ptx"
     # for every host compile, which carries no such choice.
     device_target = (_device_target(compiler, tc.resolve_arch(opts.arch))
-                     if opts.backend == DEVICE else "ptx")
+                     if gpu else "ptx")
 
     # The key is computed from a nominal compile's flags; -o/-MF are
     # excluded (they say where output goes, not what it is). The chosen
@@ -385,13 +406,13 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
     # (-ptx vs -cubin): the same source to two targets must never share a
     # slot.
     probe = _argv(compiler, opts, Path("<src>"), Path("<out>"), Path("<dep>"),
-                  device_target=device_target)
+                  cpu=cpu, device_target=device_target)
     # A device key also carries nvcc's host compiler (-ccbin): it compiles
     # the TU's host side and its version gates what nvcc accepts.
-    key_terms = (_host_key_terms(probe[1:-4], opts) if opts.backend == HOST
+    key_terms = (_host_key_terms(probe[1:-4], opts) if cpu
                 else (*probe[1:-4], f"device_target:{device_target}",
                       tc.device_host_compiler_identity()))
-    key = lookup_key(source, opts.backend, opts.mode, identity, key_terms)
+    key = lookup_key(source, opts.target, opts.mode, identity, key_terms)
     slot = cache.slot(key)
     artifact, src_path, dep = (slot / f"{name}{art_ext}", slot / f"{name}{src_ext}",
                                slot / f"{name}.d")
@@ -419,6 +440,7 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
 
     def build():
         cache.note(False)
+        tc.announce_build(name, opts.target, cache.root)
         check_source_budget(name, source)
         slot.mkdir(parents=True, exist_ok=True)
         write_atomic(src_path, source)
@@ -427,31 +449,14 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
         # partial write.
         tmp_artifact, tmp_dep = tmp_sibling(artifact), tmp_sibling(dep)
         argv = _argv(compiler, opts, src_path, tmp_artifact, tmp_dep,
-                     device_target=device_target)
-        start = time.perf_counter()
-        try:
-            done = run_compiler(argv, f"{opts.backend} compile of {name!r}")
-            if done.returncode == 0:
-                publish_atomic(tmp_artifact, artifact)
-                publish_atomic(tmp_dep, dep)
-        finally:
-            tmp_artifact.unlink(missing_ok=True)
-            tmp_dep.unlink(missing_ok=True)
-        seconds = time.perf_counter() - start
-        if done.returncode != 0:
-            cap = address_space_cap()
-            raise HawkError(
-                f"{opts.backend} compile of {name!r} failed (rc={done.returncode})"
-                + (f"; the compiler ran under a {cap}-byte address-space cap "
-                   "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
-                   "this translation unit is too large for one compile and not that "
-                   "the machine is out of memory" if cap else "")
-                + f".\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
-            )
+                     cpu=cpu, device_target=device_target)
+        done, seconds = _run_and_publish(
+            argv, f"{opts.target} compile of {name!r}", "",
+            tmp_artifact, artifact, tmp_dep, dep, cache.root)
         closure = closure_of(dep)
-        ptxas = parse_ptxas_info(done.stderr) if opts.backend == DEVICE else {}
+        ptxas = parse_ptxas_info(done.stderr) if gpu else {}
         cache.store(key, artifact=artifact, closure=closure,
-                    meta={"backend": opts.backend, "mode": opts.mode,
+                    meta={"target": opts.target, "mode": opts.mode,
                           "compiler": identity, "flags": argv[1:-4],
                           "key_terms": list(key_terms),
                           "seconds": seconds, "name": name,
@@ -485,8 +490,8 @@ def _memo_still_valid(artifact: Path, closure,
     return closure_unchanged(closure)
 
 
-def _compile_nvrtc_source(source: str, name: str,
-                          opts: CompileOptions) -> CompileResult:
+def _compile_nvrtc_source(source: str, name: str, opts: CompileOptions,
+                          row) -> CompileResult:
     """The NVRTC device compile, parallel to :func:`compile_source`'s body
     but with an NVRTC-shaped key and validity record: the compiler term is
     :func:`hawk.compile.nvrtc.identity`, the flags term is
@@ -507,20 +512,20 @@ def _compile_nvrtc_source(source: str, name: str,
     only fragment the cache for free.
     """
     arch = tc.resolve_arch(opts.arch)
-    art_ext, src_ext = _SUFFIX[DEVICE]
+    art_ext, src_ext = row.artifact, row.source
     cache = Cache(opts.cache_dir)
 
     payload = _payload.current_payload()
     identity = _nvrtc_driver.identity()
     target = _nvrtc_driver.forced_target(arch) or _nvrtc_driver.select_target(
-        _probed(_nvrtc_driver.nvrtc_version),
-        _probed(_nvrtc_driver.driver_cuda_version))
+        _nvrtc_driver._probed(_nvrtc_driver.nvrtc_version),
+        _nvrtc_driver._probed(_nvrtc_driver.driver_cuda_version))
     # the build's defines and extra flags reach NVRTC exactly as they reach
     # nvcc (:func:`_argv`), and through ``device_opts`` the key as well
     extra = (*(f"-D{d}" for d in opts.defines), *opts.extra)
     device_opts = _nvrtc_driver.options(arch, virtual_arch=(target == "ptx"),
                                         extra=extra)
-    key = lookup_key(source, DEVICE, opts.mode, identity,
+    key = lookup_key(source, opts.target, opts.mode, identity,
                       (*device_opts, f"device_target:{target}",
                        f"payload:{payload.digest}"))
     slot = cache.slot(key)
@@ -560,7 +565,7 @@ def _compile_nvrtc_source(source: str, name: str,
             )
         write_atomic(artifact, result.ptx)
         cache.store(key, artifact=artifact, closure=(),
-                    meta={"backend": DEVICE, "mode": opts.mode, "compiler": identity,
+                    meta={"target": opts.target, "mode": opts.mode, "compiler": identity,
                           "flags": list(argv), "seconds": seconds, "name": name,
                           "payload_digest": payload.digest, "device_target": target})
         artifact_memo_put(key, payload_closure)
@@ -586,7 +591,8 @@ def _host_uses_sealed_payload() -> bool:
         return False
 
 
-def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> CompileResult:
+def _compile_host_sealed(source: str, name: str, opts: CompileOptions,
+                         row) -> CompileResult:
     """The host ``g++`` compile against the sealed payload: ``-I`` points at
     a private directory :meth:`~aether_dsc.Payload.serve` materialises for
     exactly this compile's lifetime, removed afterwards on success or
@@ -601,7 +607,7 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> Compil
     content exactly as on the source-header path, so a changed user header
     is a miss.
     """
-    art_ext, src_ext = _SUFFIX[HOST]
+    art_ext, src_ext = row.artifact, row.source
     cache = Cache(opts.cache_dir)
     compiler = tc.host_compiler()
     identity = tc.compiler_identity(compiler)
@@ -613,7 +619,7 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> Compil
                     f"-std={tc.HOST_STD}", "-shared", "-fPIC",
                     "-DAETHER_CPP_MODE", *defines, *opts.extra]
     key_terms = (*_host_key_terms(stable_flags, opts), f"payload:{payload.digest}")
-    key = lookup_key(source, HOST, opts.mode, identity, key_terms)
+    key = lookup_key(source, opts.target, opts.mode, identity, key_terms)
     slot = cache.slot(key)
     artifact, src_path, dep = (slot / f"{name}{art_ext}", slot / f"{name}{src_ext}",
                                slot / f"{name}.d")
@@ -638,6 +644,7 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> Compil
 
     def build():
         cache.note(False)
+        tc.announce_build(name, opts.target, cache.root)
         check_source_budget(name, source)
         slot.mkdir(parents=True, exist_ok=True)
         write_atomic(src_path, source)
@@ -645,27 +652,9 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> Compil
         with payload.serve() as served_root:
             argv = [compiler, *stable_flags, f"-I{served_root}", "-MD", "-MF", str(tmp_dep),
                     str(src_path), "-o", str(tmp_artifact)]
-            start = time.perf_counter()
-            try:
-                done = run_compiler(argv, f"host compile of {name!r}")
-                if done.returncode == 0:
-                    publish_atomic(tmp_artifact, artifact)
-                    publish_atomic(tmp_dep, dep)
-            finally:
-                tmp_artifact.unlink(missing_ok=True)
-                tmp_dep.unlink(missing_ok=True)
-            seconds = time.perf_counter() - start
-            if done.returncode != 0:
-                cap = address_space_cap()
-                raise HawkError(
-                    f"host compile of {name!r} failed against the sealed payload "
-                    f"(rc={done.returncode})"
-                    + (f"; the compiler ran under a {cap}-byte address-space cap "
-                       "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
-                       "this translation unit is too large for one compile and not that "
-                       "the machine is out of memory" if cap else "")
-                    + f".\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
-                )
+            done, seconds = _run_and_publish(
+                argv, f"host compile of {name!r}", " against the sealed payload",
+                tmp_artifact, artifact, tmp_dep, dep, cache.root)
             reached = closure_of(dep)
             # The served payload directory is private to this compile and
             # vanishes with it: its headers are keyed by the payload digest.
@@ -676,7 +665,7 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions) -> Compil
                               os.path.realpath(str(served_root)) + os.sep})
             user_closure = tuple(p for p in reached if not p.startswith(prefixes))
         cache.store(key, artifact=artifact, closure=user_closure,
-                    meta={"backend": HOST, "mode": opts.mode, "compiler": identity,
+                    meta={"target": opts.target, "mode": opts.mode, "compiler": identity,
                           "flags": stable_flags, "seconds": seconds, "name": name,
                           "key_terms": list(key_terms),
                           "payload_digest": payload.digest,

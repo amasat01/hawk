@@ -3,7 +3,7 @@
 
 """The content-closure compile cache.
 
-Two objects. The **lookup key** is ``H(source text || backend id || scalar
+Two objects. The **lookup key** is ``H(source text || target id || scalar
 mode || compiler identity + full flag string)`` — every term is known
 before any compile. Stored under that key is the **validity record**: the
 compiler-reported dependency closure of the last compile (``-MD``/``-MMD``
@@ -32,7 +32,6 @@ import json
 import os
 import secrets
 import threading
-from dataclasses import dataclass
 from pathlib import Path
 
 # `import hawk.compile.cache` cannot run before `hawk/__init__` has
@@ -75,7 +74,7 @@ _MEMO_LIMIT = 4096
 #: lookup already answered in this process still pays for the whole
 #: answer again (record read and JSON-parsed twice, slot re-made, source
 #: re-written) for nothing: the key is a pure function of the
-#: source/backend/mode/compiler. It does not short-circuit the validity
+#: source/target/mode/compiler. It does not short-circuit the validity
 #: record: :func:`hawk.compile.drivers.compile_source` re-verifies every
 #: stored pair by content on a memo hit, through the same
 #: :func:`closure_unchanged` the on-disk record uses — the memo replaces
@@ -336,14 +335,14 @@ def write_atomic(path: Path, data: bytes | str) -> None:
         raise
 
 
-def lookup_key(source: str, backend: str, mode: str, compiler: str,
+def lookup_key(source: str, target: str, mode: str, compiler: str,
                flags) -> str:
     """The lookup key. Every term is available before any compile; the two
     resolved header roots ride inside ``flags`` (``-I`` entries), so
     moving either root is a key change, not a validity question."""
     h = hashlib.sha256()
     h.update(b"hawk.compile.cache/1\n")
-    for part in (source, backend, mode, compiler, "\x00".join(str(f) for f in flags)):
+    for part in (source, target, mode, compiler, "\x00".join(str(f) for f in flags)):
         h.update(part.encode("utf-8"))
         h.update(b"\0")
     return h.hexdigest()

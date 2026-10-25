@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import numpy as np
 
+import hawk
 from hawk import (
     Index,
     Matrix,
@@ -35,7 +36,6 @@ from hawk import (
     Table,
     Terminated,
     Vector,
-    all_samples,
     kernel,
 )
 from hawk.ext import DATA_ONLY, Guard, Kind, sink_policy
@@ -77,7 +77,7 @@ def gather(table: Table[Scalar], where: Index, y: Mutable[Scalar]):
 
 @kernel
 def energy(v: Vector[3], total: Mutable[Scalar]):
-    total = all_samples(dot(v, v)).sum()
+    total = hawk.sum(dot(v, v))
 
 
 @kernel
@@ -97,7 +97,7 @@ def speed(v: Vector[3], y: Mutable[Scalar]):
 
 @kernel
 def scatter(x: Scalar, lane: Index, acc: Mutable[Scalar]):
-    all_samples(acc)[lane] += x
+    hawk.scatter(acc, policy="plain")[lane] += x
 
 
 @kernel
@@ -106,8 +106,8 @@ def scatter_c(x: Scalar, lane: Index, acc: Mutable[Scalar], acc_c: Mutable[Scala
     compensated kind, which commits its Neumaier correction to ``acc_c``. The
     second plane is the kernel's own declaration; the SEAM decides the
     arithmetic."""
-    all_samples(acc)[lane] += x
-    all_samples(acc_c)[lane] += 0.0
+    hawk.scatter(acc, policy="plain")[lane] += x
+    hawk.scatter(acc_c, policy="plain")[lane] += 0.0
 
 
 @kernel
@@ -274,7 +274,7 @@ def cases(n: int) -> list:
     m = np.arange(9 * n, dtype=float).reshape(3, 3, n) * 0.1
     table = np.arange(n, dtype=float) * 3.0
     # An INDEX plane binds at the emitted wire width: HAWK spells every integer
-    # element `Int` (`long long`, hawk/emit/aether.element_spelling), and eagle's
+    # element `Int` (`long long`, hawk/emit/render.element_spelling), and eagle's
     # packer passes an integer array through AT ITS OWN dtype rather than
     # re-casting it -- so an int32 array would be decoded 8 bytes at a time.
     where = ((np.arange(n) * 7 + 3) % n).astype(np.int64)

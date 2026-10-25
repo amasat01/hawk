@@ -1,4 +1,0 @@
-# Version sites: first entry is the primary; each regex has ONE capture group around the version.
-[[site]]
-file = "hawk/__init__.py"
-pattern = '^__version__ = "([^"]+)"'

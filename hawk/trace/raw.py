@@ -17,7 +17,7 @@ from typing import Any
 
 from ..ir import HawkError, Op
 from ..ir.access import ACCESS_CLASSES
-from ..ir.nodes import RAW_KIND
+from ..ir.nodes import RAW_KIND, RAW_LANGUAGE
 from ..types import TensorType
 from .decl import Scalar
 from .value import Value, node_of
@@ -26,11 +26,13 @@ from .value import Value, node_of
 class RawBlock:
     """One spliceable block of author text plus its declared access."""
 
-    __slots__ = ("text", "access", "reads", "writes", "returns", "name")
+    __slots__ = ("text", "access", "reads", "writes", "returns", "name", "language")
 
     def __init__(self, text: str, access: str, reads: tuple[str, ...],
-                 writes: tuple[str, ...], returns: TensorType) -> None:
+                 writes: tuple[str, ...], returns: TensorType,
+                 language: str = RAW_LANGUAGE) -> None:
         self.text = text
+        self.language = language
         self.access = access
         self.reads = reads
         self.writes = writes
@@ -51,11 +53,13 @@ class RawBlock:
 
 
 def raw_device(text: str, *, access: str | None = None, reads: Sequence[str] = (),
-               writes: Sequence[str] = (), returns: TensorType = Scalar) -> RawBlock:
+               writes: Sequence[str] = (), returns: TensorType = Scalar,
+               language: str = RAW_LANGUAGE) -> RawBlock:
     """Declare a raw device block (the escape hatch for code the
     vocabulary cannot spell): ``text`` spliced verbatim, with ``access=``
     required (the walk can't see inside text), ``reads``/``writes`` naming
-    the touched slots, and ``returns`` the value type."""
+    the touched slots, ``returns`` the value type and ``language`` the language
+    ``text`` is written in (a writer refuses one it cannot write)."""
     if access is None:
         raise HawkError(
             "@raw_device requires an explicit access= annotation: the walk "
@@ -67,4 +71,4 @@ def raw_device(text: str, *, access: str | None = None, reads: Sequence[str] = (
             f"@raw_device: access={access!r} is not an access class; declare one of "
             f"{ACCESS_CLASSES}"
         )
-    return RawBlock(text, access, tuple(reads), tuple(writes), returns)
+    return RawBlock(text, access, tuple(reads), tuple(writes), returns, language)

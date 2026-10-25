@@ -24,9 +24,10 @@ import hawk
 from hawk import Mutable, Param, Terminated, Vector
 from hawk.compile import toolchain as tc
 from hawk.diff import jvp
-from hawk.emit import BACKENDS, FLOAT64, render_source
+from hawk.emit import FLOAT64, render_source
 from hawk.ir import canonical
 from hawk.math import dot, sqrt
+from hawk.targets import TARGETS
 from hawk.trace import Kernel
 
 HARNESS = Path(__file__).with_name("stale_stack_harness.cpp")
@@ -42,7 +43,7 @@ def kernel_so(tmp_path_factory):
     # a derived level is a kernel in its own right (its guard is applied again): two nested selects
     first = Kernel("drag_jvp", jvp(drag_guarded))
     sinks = jvp(first)
-    text = render_source("drag_jj", sinks, canonical(sinks), BACKENDS["host"], mode=FLOAT64).text
+    text = render_source("drag_jj", sinks, canonical(sinks), TARGETS["host"], mode=FLOAT64).text
     work = tmp_path_factory.mktemp("stale_stack")
     (work / "k.cpp").write_text(text)
     cxx = tc.host_compiler()

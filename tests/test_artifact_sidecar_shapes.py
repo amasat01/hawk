@@ -123,7 +123,7 @@ def _expected_width(ttype) -> int:
 def _expected_dtype(ttype, scalar_type: str) -> str:
     """The wire dtype string INDEPENDENTLY re-derived from the role→mirror
     map's own vocabulary (``tests/test_emit_role_mirror_map.py``,
-    ``hawk/emit/aether.element_spelling``): an ``f64``/``f32`` leaf always
+    ``hawk/emit/render.element_spelling``): an ``f64``/``f32`` leaf always
     resolves through the compiled ``Real`` (so it tracks ``scalar_type``, never
     its own IR literal); an ``i32``/``i64`` leaf always resolves through the
     emitted ``Int`` (``long long``, unconditionally 64-bit); ``bool`` passes
@@ -314,3 +314,51 @@ def test_the_hawk_consumer_check_accepts_correctly_declared_planes(built):
               "where": (np.arange(N) % N).astype(np.int64),
               "table": np.arange(N, dtype=np.float64)}
     L.check_declared_planes(sc, arrays, N)  # must not raise
+
+
+@pytest.mark.parametrize("bundle_name,kernel,kw,want", _cases(),
+                         ids=[c[0] for c in _cases()])
+def test_every_kernel_declares_its_launch_shape(built, bundle_name, kernel, kw, want):
+    """``launch.lane_space`` is written for EVERY kernel: a kernel that declares no
+    ``Grid`` is one unlabelled runtime axis with group 1, and the block passes the
+    shape check raptor's manifest validator runs. No ``sorted_inputs`` or
+    ``plane_axes`` key appears unless a declaration asks for it."""
+    from raptor.schema.manifest import check_lane_space
+
+    sc = sidecar_of(built[bundle_name], kernel)
+    assert sc["launch"] == {"lane_space": {"axes": [{"label": None, "extent": None}],
+                                           "group": 1}}
+    check_lane_space(sc, name=kernel)
+    assert "sorted_inputs" not in sc and "plane_axes" not in sc
+
+
+def test_a_fixed_block_and_a_thread_box_are_written_to_launch():
+    """``launch.block`` appears only when an emit fixed one and must be an integer >= 1;
+    ``launch.box`` is the thread box. The sidecar passes raptor's lane-space check and,
+    when ``jsonschema`` is installed, the published schema."""
+    import json
+    from pathlib import Path
+
+    import raptor
+    from raptor.schema.manifest import check_lane_space
+
+    import hawk
+    from hawk.artifact.sidecar import sidecar_meta
+    from hawk.emit.box import Box
+
+    @hawk.kernel
+    def k(a: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+        y = a * 2.0
+
+    kw = dict(fmt="host", scalar_type="float64")
+    assert "block" not in sidecar_meta("k", k.walk, **kw)["launch"]
+    meta = sidecar_meta("k", k.walk, box=Box(0, 8, 256), block=128, **kw)
+    assert meta["launch"]["block"] == 128 and meta["launch"]["box"] == {"axis": 0, "T": 8, "stride": 256}
+    check_lane_space(meta, name="k")
+    for bad in (0, -4, "128", 64.0, True):
+        with pytest.raises(ValueError, match=r"launch\.block"):
+            sidecar_meta("k", k.walk, block=bad, **kw)
+    schema = Path(raptor.__file__).parents[1] / "docs/schemas/sidecar-v1.schema.json"
+    jsonschema = pytest.importorskip("jsonschema")
+    if schema.exists():
+        jsonschema.validate(meta, json.loads(schema.read_text()))

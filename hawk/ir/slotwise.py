@@ -12,7 +12,7 @@ pass rewrites a node whose rank>=1 operands are all ``vec``/``splat`` into a
 only one case writes is one scalar, not a column of an aggregate.
 
 Rewritten: ``component`` of a ``vec``; ``sum`` of a rank-1 ``vec`` (left-nested
-``add``, aether's own fold order); ``add``/``sub``/``neg``/``mul``/``div``;
+``add``, the language's own fold order); ``add``/``sub``/``neg``/``mul``/``div``;
 ``select``; ``dispatch`` (one dispatch per slot, same selector, ``K`` and
 policy, so the renderer still fuses them into ONE ``switch``). Everything else
 over a ``vec`` keeps its node. Structural zero: a ``Const`` of value 0.
@@ -110,7 +110,7 @@ def _resink(sink: Sink, memo: dict) -> Node:
     if isinstance(sink, WideWrite):
         return WideWrite(sink.name, *new, ttype=sink.ttype)
     if isinstance(sink, AccumWrite):
-        return AccumWrite(sink.name, *new, ttype=sink.ttype)
+        return AccumWrite(sink.name, *new, ttype=sink.ttype, policy=sink.policy)
     return sink                                     # TapeWrite/Finish: untouched
 
 
@@ -199,7 +199,9 @@ def _dispatch(node: Dispatch, ops: tuple) -> Node | None:
     selector, branches = ops[0], ops[1:]
 
     def build(*parts):
-        return _switch(selector, parts, node.policy)
+        if all(p is parts[0] for p in parts) or all(_is_zero(p) for p in parts):
+            return parts[0]
+        return Dispatch(selector, parts, node.policy, parts[0].ttype)
 
     return _per_slot(node, branches, build) if all(
         b.ttype.shape == node.ttype.shape for b in branches) else None
@@ -272,12 +274,6 @@ def _where(cond: Node, a: Node, b: Node) -> Node:
     return Select(cond, a, b, a.ttype)
 
 
-def _switch(selector: Node, parts: Sequence[Node], policy: str) -> Node:
-    if all(p is parts[0] for p in parts) or all(_is_zero(p) for p in parts):
-        return parts[0]
-    return Dispatch(selector, parts, policy, parts[0].ttype)
-
-
 # --------------------------------------------------------------------------
 # the runtime form: an ``add_at`` chain over a slot-form base
 #
@@ -297,17 +293,13 @@ def _is_chain(node: Node) -> bool:
     return isinstance(node, Op) and node.kind == "add_at"
 
 
-def _chain(node: Node) -> tuple:
+def chain(node: Node) -> tuple:
     """``(base, [(k, e), ...])`` of an ``add_at`` chain, links in order."""
     links = []
     while _is_chain(node):
         links.append((node.operands[1], node.operands[2]))
         node = node.operands[0]
     return node, links[::-1]
-
-
-#: The public spelling of :func:`_chain`, for the loop transform and the emitter.
-chain = _chain
 
 
 def is_structural_zero(node: Node) -> bool:
@@ -324,7 +316,7 @@ def _rechain(base: Node, links: list) -> Node:
 
 def _lower(node: Node) -> list | None:
     """The slots of ``node`` with every link of its chain as a select."""
-    base, links = _chain(node)
+    base, links = chain(node)
     slots = _slots(base)
     if slots is None:
         return None
@@ -349,7 +341,7 @@ def _runtime(node: Node, ops: tuple) -> Node | None:
         c, a, b = ops
         if c.ttype.shape != () or a.ttype.shape != shape:
             return _lowered(node, ops)
-        (ab, al), (bb, bl) = _chain(a), _chain(b)
+        (ab, al), (bb, bl) = chain(a), chain(b)
         zero = Const(0.0, TensorType((), node.ttype.dtype))
         links = ([(k, _gate(c, e, zero, e)) for k, e in al]
                  + [(k, _gate(c, zero, e, e)) for k, e in bl])
@@ -361,31 +353,31 @@ def _runtime(node: Node, ops: tuple) -> Node | None:
         slots = _lower(ops[0])
         return None if slots is None else _component(node, (_assemble(ops[0].ttype.shape, slots, ops[0].ttype),))
     if kind == "sum":
-        base, links = _chain(ops[0])
+        base, links = chain(ops[0])
         acc = _sum(node, (base,)) if _slots(base) is not None else make("sum", (base,))
         for _k, e in links:
             acc = _add(acc, e)
         return acc
     if kind in ("add", "sub"):
         a, b = ops
-        (ab, al), (bb, bl) = _chain(a), _chain(b)
+        (ab, al), (bb, bl) = chain(a), chain(b)
         if kind == "sub":
             bl = [(k, _neg(e)) for k, e in bl]
         inner = _elementwise(node, (ab, bb)) or make(kind, (ab, bb))
         return _rechain(inner, al + bl)
     if kind == "neg":
-        base, links = _chain(ops[0])
+        base, links = chain(ops[0])
         inner = _elementwise(node, (base,)) or make("neg", (base,))
         return _rechain(inner, [(k, _neg(e)) for k, e in links])
     if kind in ("mul", "div"):
         a, b = ops
         if _is_chain(a) and b.ttype.shape == ():
-            base, links = _chain(a)
+            base, links = chain(a)
             build = _mul if kind == "mul" else _div
             inner = _elementwise(node, (base, b)) or make(kind, (base, b))
             return _rechain(inner, [(k, build(e, b)) for k, e in links])
         if kind == "mul" and _is_chain(b) and a.ttype.shape == ():
-            base, links = _chain(b)
+            base, links = chain(b)
             inner = _elementwise(node, (a, base)) or make(kind, (a, base))
             return _rechain(inner, [(k, _mul(a, e)) for k, e in links])
         return _lowered(node, ops)
@@ -424,7 +416,7 @@ def _runtime_dispatch(node: Dispatch, ops: tuple) -> Node | None:
         return None
     bases, links = [], []
     for i, b in enumerate(branches):
-        base, bl = _chain(b)
+        base, bl = chain(b)
         bases.append(base)
         for k, e in bl:
             zk = Const(0, k.ttype)

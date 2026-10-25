@@ -24,7 +24,7 @@ from typing import Any
 from ..types import Slot, TensorType
 from . import access as _access
 from .access import Access
-from .nodes import param_cell_names
+from .nodes import COMPANION_SUFFIX, AccumWrite, compensates, param_cell_names
 from .compound import Quantity, QuantitySpan
 from .loop_nodes import Loop, LoopCarry, LoopCount, LoopValue, TapeRead
 from .nodes import (
@@ -107,12 +107,27 @@ class Walk:
         return tuple(n.name for n in self.order if isinstance(n, SampleSum))
 
     @property
+    def reduces(self) -> bool:
+        """``True`` when the kernel reduces over samples
+        (:class:`~hawk.ir.nodes.ReduceSamples`) — its access class stays
+        ``sample_local``, so the reduction is only visible here."""
+        return any(isinstance(n, ReduceSamples) for n in self.order)
+
+    @property
     def cells(self) -> dict:
         """The reductions over samples stored by this kernel: plane name to
         ``{"op", "columns"}`` (``columns`` is the width of one cell, 1 for a
         rank-0 value; a wider cell is the planes ``name_0 .. name_{columns-1}``)."""
         return {n.cell: {"op": n.op, "columns": n.columns}
                 for n in self.order if isinstance(n, SampleSum)}
+
+    @property
+    def companions(self) -> dict:
+        """The companion planes the runtime owns: ``<plane>_c`` to ``<plane>``
+        for each ``policy="compensated"`` keyed accumulate. The caller never
+        binds them."""
+        return {n.name + COMPANION_SUFFIX: n.name for n in self.order
+                if isinstance(n, AccumWrite) and compensates(n.policy)}
 
     @property
     def param_planes(self) -> tuple[str, ...]:

@@ -46,7 +46,6 @@ from hawk import (
     Scalar,
     Terminated,
     Vector,
-    all_samples,
     kernel,
 )
 from hawk.artifact import build_bundle
@@ -111,7 +110,7 @@ def test_a_reduce_or_out_sink_refuses():
     are refused here."""
     @kernel
     def reducing(x: Scalar, terminated: Terminated, total: Mutable[Scalar]):
-        total = all_samples(x).sum()
+        total = hawk.sum(x)
         terminated = x > 1.0
     with pytest.raises(HawkError, match=r"'reducing'.*not a step kernel"):
         hawk.steps(reducing, 4)
@@ -119,7 +118,7 @@ def test_a_reduce_or_out_sink_refuses():
     @kernel
     def scattering(x: Scalar, lane: Index, terminated: Terminated,
                    acc: Mutable[Scalar]):
-        all_samples(acc)[lane] += x
+        hawk.scatter(acc)[lane] += x
         terminated = x > 1.0
     with pytest.raises(HawkError, match=r"'scattering'.*not a step kernel"):
         hawk.steps(scattering, 4)
@@ -146,9 +145,10 @@ def _osc_body(dt: Param, t_final: Scalar, terminated: Terminated,
 
 
 def _sources(k):
-    from hawk.emit import BACKENDS, render_source
+    from hawk.emit import render_source
+    from hawk.targets import TARGETS
 
-    return [render_source(k.name, k.sinks, k.walk, b) for b in BACKENDS.values()]
+    return [render_source(k.name, k.sinks, k.walk, b) for b in TARGETS.values() if b.wrapper]
 
 
 @pytest.mark.parametrize("k", [4, 16])
@@ -216,7 +216,7 @@ def test_the_decorator_form_refuses_what_hawk_steps_refuses():
 
     def scattering(x: Scalar, lane: Index, terminated: Terminated,
                    acc: Mutable[Scalar]):
-        all_samples(acc)[lane] += x
+        hawk.scatter(acc)[lane] += x
         terminated = x > 1.0
     with pytest.raises(HawkError, match=r"'scattering'.*not a step kernel"):
         kernel(steps=4)(scattering)
@@ -312,8 +312,7 @@ def test_k_steps_per_launch_are_bit_identical_to_one(bundles, which, target):
         assert counted_k == N, f"{which}_x{k}/{target}: counter {counted_k}"
         assert launches_k == math.ceil(launches / k), (k, launches_k, launches)
         for plane, ref in one.items():
-            np.testing.assert_array_equal(got[plane], ref,
-                                          err_msg=f"{which}_x{k}/{target}:{plane}")
+            _assert_same(got[plane], ref, target, err_msg=f"{which}_x{k}/{target}:{plane}")
 
 
 # --------------------------------------------------------------------------- #
@@ -370,7 +369,7 @@ def test_the_auto_loop_reads_the_word_once_and_the_fixed_loop_does_not():
                 rf"static_cast<Int>\(0\) : {w}\);", text)
             assert clamp, "the word is clamped below at 0 before the loop"
             assert "static_cast<Int>(64)" not in text, "no static bound on the word"
-            if shape == "plain" or source.backend != "host":
+            if shape == "plain" or source.target != "host":
                 assert re.search(rf"hawk_k\d+_step < hawk_clamp_count\({clamp.group(1)}\);", text)
             else:
                 # the interchanged loop: the word is each lane's trip count
@@ -380,7 +379,7 @@ def test_the_auto_loop_reads_the_word_once_and_the_fixed_loop_does_not():
     for source in _sources(hawk.steps(osc, 16)):
         for shape, text in builds(source.text).items():
             assert "fused_steps" not in text
-            plain = shape == "plain" or source.backend != "host"
+            plain = shape == "plain" or source.target != "host"
             assert re.search(r"hawk_k\d+_step < 16;" if plain
                              else r"hawk_trip < 16;", text), shape
 
@@ -394,7 +393,7 @@ def test_auto_refuses_what_hawk_steps_refuses():
 
     def scattering(x: Scalar, lane: Index, terminated: Terminated,
                    acc: Mutable[Scalar]):
-        all_samples(acc)[lane] += x
+        hawk.scatter(acc)[lane] += x
         terminated = x > 1.0
     with pytest.raises(HawkError, match=r"'scattering'.*not a step kernel"):
         kernel(steps="auto")(scattering)
@@ -605,17 +604,16 @@ def test_the_word_is_a_runtime_bound_clamped_below_at_zero(bundles, target):
 def test_a_one_step_launch_is_the_single_step_bit_for_bit(bundles, which, name,
                                                           target):
     """A launch whose word is 1 runs the single step's straight-line body, so
-    one step per launch of the auto artifact is the K = 1 kernel bit for bit,
-    host AND device, after every launch until every sample finished (the
-    device fused loop is held only to the ULP rule)."""
+    one step per launch of the auto artifact is the K = 1 kernel bit for bit on
+    the host and within :data:`_DEVICE_RTOL` on the device (another entry, so
+    another contraction), after every launch until every sample finished."""
     auto = _one_step_snapshots(bundles, name, which, target)
     one = _one_step_snapshots(bundles, which, which, target)
     assert len(auto) == len(one) > 2
     for step, (got, want) in enumerate(zip(auto, one)):
         for plane in want:
-            np.testing.assert_array_equal(got[plane], want[plane],
-                                          err_msg=f"{name}/{target}: {plane} "
-                                          f"after {step} steps")
+            _assert_same(got[plane], want[plane], target,
+                         err_msg=f"{name}/{target}: {plane} after {step} steps")
 
 
 def test_the_auto_entry_branches_once_on_the_word_between_the_step_and_the_loop():
@@ -629,7 +627,7 @@ def test_the_auto_entry_branches_once_on_the_word_between_the_step_and_the_loop(
     auto = hawk.steps(osc, "auto")
     texts = built_sources(auto, name=auto.name, smode=FLOAT64, kind=auto.kind,
                           targets=("host", "cuda"), layout_sizes_override=None)
-    plain = {s.backend: s for s in _sources(osc)}
+    plain = {s.target: s for s in _sources(osc)}
     for target, src in texts.items():
         head, _, rest = src.text.partition("== 1) {")
         assert "lut_fused_steps[" in head.splitlines()[-1]
@@ -647,9 +645,10 @@ def test_the_auto_entry_branches_once_on_the_word_between_the_step_and_the_loop(
 # -- admits it, under the author's name; everything else stays plain.
 # --------------------------------------------------------------------------- #
 def _renamed(k, name="k"):
-    from hawk.emit import BACKENDS, render_source
+    from hawk.emit import render_source
+    from hawk.targets import TARGETS
 
-    return [render_source(name, k.sinks, k.walk, b).text for b in BACKENDS.values()]
+    return [render_source(name, k.sinks, k.walk, b).text for b in TARGETS.values() if b.wrapper]
 
 
 def test_the_default_is_the_auto_kernel_under_the_author_s_name():
@@ -686,13 +685,13 @@ def _not_admitted():
 
     def scatters(x: Scalar, lane: Index, terminated: Terminated,
                  acc: Mutable[Scalar]):
-        all_samples(acc)[lane] += x
+        hawk.scatter(acc)[lane] += x
         terminated = x > 1.0
 
     def scatters_and_steps(x: Scalar, lane: Index, terminated: Terminated,
                            acc: Mutable[Scalar], y: Mutable[Scalar]):
         y_start = y
-        all_samples(acc)[lane] += x
+        hawk.scatter(acc)[lane] += x
         y = y_start + x
         terminated = y_start > 1.0
 

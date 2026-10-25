@@ -126,7 +126,8 @@ def demote(sinks: Any) -> tuple:
     """``sinks`` with every parameter cell read as a per-sample plane of the
     same name — the form whose reverse yields a per-sample gradient."""
     nodes = _reachable(sinks)
-    mapping = {id(n): Leaf("vocab_read", "per_sample", n.plane.name, n.ttype)
+    mapping = {id(n): Leaf("vocab_read", "per_sample", n.plane.name, n.ttype,
+                           sorted=n.plane.sorted)
                for n in nodes if is_param_cell(n)}
     return tuple(sinks) if not mapping else swap(sinks, mapping)
 

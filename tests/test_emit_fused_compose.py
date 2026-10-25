@@ -35,6 +35,8 @@ import _oracle as O
 import numpy as np
 import pytest
 
+from test_math_parity import _ulps
+
 import hawk
 import hawk.math as hm
 from hawk.artifact import build_bundle
@@ -167,10 +169,16 @@ def _fused_run(built_group, plugin_of, structure):
     return eplan.plan(plugin, structure=structure).run(**kw)
 
 
+#: The fused and the solo device entries are separate compiles, so ``dot`` may contract its two
+#: additions differently: at most one rounding each (half an ulp) on positive terms with no
+#: cancellation, and ``norm + k`` adds one more: 2 ulp. A lane reading another's register is O(1) off.
+_DEVICE_ULPS = 2
+
+
 @pytest.mark.parametrize("arm", ("host", pytest.param("device", marks=pytest.mark.gpu)))
 def test_the_fused_entry_computes_what_the_lanes_compute(built_group, fused, arm):
-    """Bit-identical, both targets. A tolerance here would hide the one failure
-    fusion can introduce: a lane reading another lane's register copy."""
+    """Bit-identical on the host, within :data:`_DEVICE_ULPS` on the device. Either way the one
+    failure fusion can introduce, a lane reading another lane's register copy, is far outside."""
     import eagle.exec as eexec
 
     plugin_of, structure = ((L.host_plugin, eexec.HostTeam) if arm == "host"
@@ -183,9 +191,15 @@ def test_the_fused_entry_computes_what_the_lanes_compute(built_group, fused, arm
         solo_names = [name for role, name in kernel.arg_spec if role == "mutable"]
         alone_by_name = alone if isinstance(alone, dict) else {solo_names[0]: alone}
         for name in solo_names:
-            np.testing.assert_array_equal(
-                np.asarray(by_name[name]), np.asarray(alone_by_name[name]),
-                err_msg=f"lane {kernel.name!r} plane {name!r} on the {arm} arm")
+            got_plane, alone_plane = np.asarray(by_name[name]), np.asarray(alone_by_name[name])
+            if arm == "host":
+                np.testing.assert_array_equal(
+                    got_plane, alone_plane,
+                    err_msg=f"lane {kernel.name!r} plane {name!r} on the {arm} arm")
+            else:
+                worst = _ulps(got_plane.ravel(), alone_plane.ravel()).max()
+                assert worst <= _DEVICE_ULPS, (
+                    f"lane {kernel.name!r} plane {name!r} on the {arm} arm: {worst} ulp")
 
 
 def test_the_fused_entry_agrees_with_hawks_own_serial_oracle(built_group, fused):

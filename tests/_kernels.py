@@ -12,6 +12,7 @@ is what an author's kernel actually produces.
 
 from __future__ import annotations
 
+import hawk
 from hawk import (
     Index,
     Mutable,
@@ -21,7 +22,6 @@ from hawk import (
     Scalar,
     Table,
     Vector,
-    all_samples,
     kernel,
 )
 from hawk.diff import vjp
@@ -73,12 +73,12 @@ def gather(table: Table[Scalar], where: Index, y: Mutable[Scalar]):
 
 @kernel
 def energy(v: Vector[3], total: Mutable[Scalar]):
-    total = all_samples(dot(v, v)).sum()
+    total = hawk.sum(dot(v, v))
 
 
 @kernel
 def scatter(x: Scalar, lane: Index, acc: Mutable[Scalar]):
-    all_samples(acc)[lane] += x * x
+    hawk.scatter(acc)[lane] += x * x
 
 
 @kernel

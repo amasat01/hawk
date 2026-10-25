@@ -47,7 +47,7 @@ import pathlib
 from types import SimpleNamespace
 
 from hawk import _core
-from hawk.artifact import plan_view
+from hawk.artifact import fold_entries, plan_view
 
 #: How many entries the layout-sizes array carries (``gref_abi.h``'s own constant).
 LAYOUT_FIELDS = 5
@@ -142,7 +142,7 @@ def host_plugin(bundle_dir, name, sidecar):
     view = plan_view(sidecar)
     entry = getattr(lib, view.pop("host_entry"))
     return SimpleNamespace(host_entry=ctypes.cast(entry, ctypes.c_void_p).value,
-                           _keepalive=lib, **view)
+                           _keepalive=lib, **fold_entries(lib, sidecar), **view)
 
 
 #: The sidecar's ``arg_dtypes`` string -> the numpy dtype a caller-bound array

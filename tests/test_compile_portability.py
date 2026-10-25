@@ -309,7 +309,7 @@ def test_compile_writes_through_a_temporary_and_keys_libc(monkeypatch, tmp_path)
 
     monkeypatch.setattr(hdrivers, "publish_atomic", _spy)
     result = compile_source(HOST_SRC, "hawk_probe_host",
-                            CompileOptions(backend="host",
+                            CompileOptions(target="host",
                                            cache_dir=str(tmp_path / "cache")))
     assert not result.hit
     assert any(path == result.artifact for _, path in moves)
@@ -358,7 +358,7 @@ def test_device_key_carries_the_host_compiler(monkeypatch, tmp_path):
     if tc.device_compiler_kind() != "nvcc":
         pytest.skip("$HAWK_DEVICE_COMPILER forces nvrtc on this box")
     result = compile_source(KERNEL_SRC, "hawk_probe_kernel",
-                            CompileOptions(backend="cuda",
+                            CompileOptions(target="cuda",
                                            cache_dir=str(tmp_path / "cache")))
     record = hcache.Cache(str(tmp_path / "cache")).record(result.key)
     assert tc.device_host_compiler_identity() in record["key_terms"]

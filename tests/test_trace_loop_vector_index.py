@@ -62,8 +62,9 @@ import hawk
 import hawk.math as m
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
-from hawk.emit import BACKENDS, CUDA, FLOAT64, render_body, render_source
+from hawk.emit import FLOAT64, render_body, render_source
 from hawk.ir import HawkError, canonical
+from hawk.targets import TARGETS
 
 #: Classical RK4 (Kutta 1901), the stage and combine weights
 #: a downstream rollout kernel carries as structural constants.
@@ -136,6 +137,14 @@ ENV = {"v": np.array([0.3, -0.7, 1.1]), "k1": np.array([0.5, 0.25, -0.4]),
        "dt": 0.1}
 
 
+@pytest.fixture(autouse=True)
+def _card_free_select_weight(monkeypatch):
+    """The emitted text must not depend on the device the tests run on."""
+    from hawk.emit import rtstore
+
+    monkeypatch.setattr(rtstore, "_select_weight", lambda dtype: 1.0)
+
+
 # --------------------------------------------------------------------------- #
 # The IR and the emission.
 # --------------------------------------------------------------------------- #
@@ -174,20 +183,14 @@ def _computed_runtime_read():
 
 def test_a_write_at_the_loop_index_is_a_carried_Item_the_body_reassigns():
     """The WRITE half's emission. The carried vector is an ``aether::Item``
-    declared before the loop; each iteration takes a NON-const copy, writes one
-    component through ``operator()``, and the copy becomes the next iteration's
-    carried value. The copy is what keeps the IR's functional meaning — the node
-    produces a new value and leaves its operand alone — and it is registers, not
-    memory, because an ``Item`` has all-static extents."""
+    declared before the loop; each iteration writes the next value into it
+    (the loop's own index is uniform over the warp, so the indexed write is cheap). The node produces a new value and leaves its operand alone."""
     text = render_body(rollout_write.sinks, rollout_write.walk).text
     assert "aether::Item<Real, 3> hawk_v" in text, text
-    stores = [ln.strip() for ln in text.splitlines() if "hawk_sv" in ln]
-    # the copy, the component write, and the carried local taking the result
-    assert len(stores) == 3, text
-    assert stores[0].startswith("aether::Item<Real, 3> hawk_sv"), stores
-    assert not stores[0].startswith("const"), (
-        "the copy a component is written into must be NON-const", stores)
-    assert ") = static_cast<Real>(" in stores[1], stores
+    # the index is the loop's own, the same for every lane of a warp: one indexed
+    # write into the carried local
+    assert " == " not in text and "(hawk_k" in text, text
+    assert "aether::Item<Real, 3> hawk_sv" not in text, text
     assert "mut_out[i] = hawk_v" in text, text
 
 
@@ -195,16 +198,16 @@ def test_both_backends_wrap_the_same_body():
     """ONE renderer, and a runtime component access is not a host
     construct the device path re-derives."""
     for kernel in (rollout_read, rollout_write):
-        host = render_source("k", kernel.sinks, kernel.walk, BACKENDS["host"])
-        device = render_source("k", kernel.sinks, kernel.walk, CUDA)
+        host = render_source("k", kernel.sinks, kernel.walk, TARGETS["host"])
+        device = render_source("k", kernel.sinks, kernel.walk, TARGETS["cuda"])
         assert host.body == device.body
         assert "for (" in host.body
 
 
-@pytest.mark.parametrize("backend", ["host", "cuda"])
+@pytest.mark.parametrize("target", ["host", "cuda"])
 @pytest.mark.parametrize("case", ["read", "write", "read_vjp", "write_vjp"],
                          ids=["read", "write", "read_vjp", "write_vjp"])
-def test_the_emitted_translation_unit_compiles(backend, case, tmp_path):
+def test_the_emitted_translation_unit_compiles(target, case, tmp_path):
     """The compiler is the judge of whether ``Item::operator()`` was spelled
     correctly, at the right constness, on a value of the right type — including
     in the DERIVED kernels, whose loops carry rank-1 ``Item`` locals. Never
@@ -215,11 +218,11 @@ def test_the_emitted_translation_unit_compiles(backend, case, tmp_path):
         walk = canonical(sinks)
     else:
         sinks, walk = primal.sinks, primal.walk
-    src = render_source("k", sinks, walk, BACKENDS[backend], mode=FLOAT64,
-                        exports=exports(backend))
-    path = pathlib.Path(tmp_path) / ("k.cpp" if backend == "host" else "k.cu")
+    src = render_source("k", sinks, walk, TARGETS[target], mode=FLOAT64,
+                        exports=exports(target))
+    path = pathlib.Path(tmp_path) / ("k.cpp" if target == "host" else "k.cu")
     path.write_text(src.text)
-    rc, err, argv = TC.compile_check(path, backend)
+    rc, err, argv = TC.compile_check(path, target)
     assert rc == 0, f"$ {' '.join(argv)}\n{err[-4000:]}"
 
 

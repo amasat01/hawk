@@ -4,8 +4,8 @@
 """Whether the host compiler vectorises the loop over samples of an emitted kernel.
 
 ONE predicate, :func:`vectorises`, answers it for the translation unit the emitter
-writes (:func:`hawk.emit.backend.render_source` records it on the
-:class:`~hawk.emit.backend.Source`) and for the cost counts a launching runtime
+writes (:func:`hawk.emit.wrapper.render_source` records it on the
+:class:`~hawk.emit.wrapper.Source`) and for the cost counts a launching runtime
 reads (:mod:`hawk.ir.cost`, per dispatch branch), so the two cannot drift apart.
 
 On a GCC that miscompiles masked vector-math calls (13.1-13.3, 14.1-14.2), where

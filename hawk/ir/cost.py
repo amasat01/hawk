@@ -64,7 +64,7 @@ _CHEAP_UNARY = ("neg", "abs", "sqrt", "rsqrt", "floor", "ceil", "trunc", "round"
                 "sign", "spacing")
 #: Elementwise binaries that call into the math library.
 _LIBRARY_BINARY = ("pow", "atan2", "hypot", "fmod", "remainder")
-_SPECIAL = (frozenset(UNARY_MATH) - frozenset(_CHEAP_UNARY)) | frozenset(_LIBRARY_BINARY) \
+SPECIAL_KINDS = (frozenset(UNARY_MATH) - frozenset(_CHEAP_UNARY)) | frozenset(_LIBRARY_BINARY) \
     | frozenset(RANDOM_OPS)
 #: Ops that only move or re-label values.
 _FREE = frozenset(("component", "component_at", "set_component_at", "add_at", "vec", "splat", "transpose",
@@ -137,7 +137,7 @@ _INT_KINDS = INT_BINARY + INT_UNARY
 def _op_count(op: Op) -> tuple[str, float]:
     """``(class, amount)`` of an op: ``class`` is ``arith`` or ``special``."""
     kind, ops = op.kind, op.operands
-    if kind in _SPECIAL:
+    if kind in SPECIAL_KINDS:
         return "special", _elements(op)
     if kind in _QUAT_OPS:
         return "arith", _QUAT_OPS[kind]
@@ -238,7 +238,7 @@ def _paths(roots, zero: frozenset, carried: bool = False) -> tuple:
 
 def is_library_call(node: Node) -> bool:
     """Whether ``node`` is a library call (``exp``, ``sin``, ``pow``, a random draw ...)."""
-    return isinstance(node, Op) and node.kind in _SPECIAL
+    return isinstance(node, Op) and node.kind in SPECIAL_KINDS
 
 
 def _branch_cost(walk: Walk, nodes: list[Node], roots, zero: frozenset, profile: str | None,

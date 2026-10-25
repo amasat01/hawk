@@ -54,7 +54,7 @@ from .walk import Walk, canonical
 #: plane does (``lookup``), read like any other lookup table.
 OFFSETS_ROLE = "lookup"
 
-#: K+1 exclusive-prefix entries, ``aether::idx_t``-wide (HAWK types an
+#: K+1 exclusive-prefix entries, the language index type's width (HAWK types an
 #: integer leaf ``i64`` regardless of the emitted wire width).
 OFFSETS_DTYPE = "i64"
 
@@ -221,7 +221,7 @@ def _guarded(name: str, sinks: tuple, selector: Node, K: int, j: int,
             if sink.ttype.shape:
                 zero = make("splat", (zero,), sink.ttype.shape)
             out.append(AccumWrite(sink.name, Select(mine, sink.value, zero, sink.ttype),
-                                  sink.index, sink.ttype))
+                                  sink.index, sink.ttype, sink.policy))
         else:
             raise HawkError(
                 f"{name!r}: a segmented unit guards each commit by the selector, "

@@ -17,3 +17,4 @@ warp-lang
 # Not listed: torch (a CPU wheel is enough) for the autodiff_vs_torch and two_body_hybrid notebooks; the gate skips them without it.
 # shared docs tools and skin. Offline or private box: pip install ./site (a checkout of amasat01.github.io)
 raptor-docs @ git+https://github.com/amasat01/amasat01.github.io@main
+setuptools-scm

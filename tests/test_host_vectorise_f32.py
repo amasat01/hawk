@@ -31,8 +31,8 @@ import hawk
 from hawk import Mutable, Scalar, Terminated
 from hawk.compile import toolchain as tc
 from hawk.emit import render_source, scalar_mode
-from hawk.emit.host import HOST
 from hawk.ir.vectorise import vectorises
+from hawk.targets import TARGETS
 
 
 @hawk.kernel(steps=1)
@@ -56,7 +56,7 @@ def long_loop(x: Mutable[Scalar], t: Mutable[Scalar], terminated: Terminated):
 
 
 def _source(kernel, mode):
-    return render_source("k", kernel.sinks, kernel.walk, HOST, mode=scalar_mode(mode))
+    return render_source("k", kernel.sinks, kernel.walk, TARGETS["host"], mode=scalar_mode(mode))
 
 
 def _compile(tmp_path, kernel, mode, interchanged=False):

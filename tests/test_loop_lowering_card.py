@@ -51,6 +51,7 @@ import numpy as np
 import pytest
 from _cards import card_path
 from _eval import evaluate
+from _kan import shallow_kan_cell as kan_cell
 
 import hawk
 import hawk.math as m
@@ -65,8 +66,9 @@ from hawk.compile import (
 )
 from hawk.compile.drivers import ADDRESS_SPACE_CAP_BYTES
 from hawk.compile.toolchain import resolve_arch, device_flags, subprocess_env
-from hawk.emit import BACKENDS, FLOAT64, render_source
+from hawk.emit import FLOAT64, render_source
 from hawk.ir import Loop
+from hawk.targets import TARGETS
 
 CARD = card_path("CARD_LOOP_LOWERING.md")
 
@@ -97,30 +99,6 @@ _RSS = re.compile(r"Maximum resident set size \(kbytes\):\s*(\d+)")
 N = 512
 
 
-def kan_cell(n_in: int, basis: int):
-    """The synthetic KAN edge cell: one lane per sample, ``n_in`` edges, each a
-    ``basis``-term cosine expansion, folded through a nonlinearity.
-
-    Two NESTED lowered loops — the shape exhibit has, at the sizes that
-    broke it. Every trace-time constant (both bounds, both declared strides) is
-    a literal in the emitted TU, which is what lets the compiler decide for
-    itself whether any of it is worth unrolling."""
-    @hawk.kernel
-    def cell(x: hawk.Table["edge":n_in],
-             theta: hawk.Table["edge":n_in, "basis":basis],
-             g: hawk.Param,
-             y: hawk.Mutable[hawk.Scalar]):
-        total = 0.0
-        for e in range(n_in):
-            xe = x.at(edge=e)
-            acc = 0.0
-            for b in range(basis):
-                acc = acc + theta.at(edge=e, basis=b) * m.cos(g * (b + 1) * xe)
-            total = total + m.tanh(acc)
-        y = total
-    return cell
-
-
 def _reference(x, theta, g, n_in, basis):
     """The same arithmetic in numpy, in the loop's own association order."""
     total = 0.0
@@ -132,10 +110,10 @@ def _reference(x, theta, g, n_in, basis):
     return total
 
 
-def _source(kernel, backend: str, tmp: Path) -> Path:
-    src = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS[backend],
-                        mode=FLOAT64, exports=exports(backend))
-    path = tmp / f"{kernel.name}.{'cu' if backend == 'cuda' else 'cpp'}"
+def _source(kernel, target: str, tmp: Path) -> Path:
+    src = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
+                        mode=FLOAT64, exports=exports(target))
+    path = tmp / f"{kernel.name}.{'cu' if target == 'cuda' else 'cpp'}"
     path.write_text(src.text)
     return path
 

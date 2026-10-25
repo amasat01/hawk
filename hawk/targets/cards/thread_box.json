@@ -1,0 +1,53 @@
+{
+  "about": "Per-device lowering choices by scalar type. Thread box: one thread computes T lanes along a non-fastest axis, so a read that does not move along that axis is loaded once for all T. A row {cc, device, dtype, ...} applies on the device whose compute capability (\"sm_61\") and name match; T is 2..16. Without a matching row the defaults apply. They are the fastest thread box measured on a contraction over a shared axis (64 x 64 tables, 8192 samples, a Quadro P2000, sm_61): float64 T = 16 (5.08 ms against 10.55 ms without a box; 64 to 128 registers, no spills); float32 T = 8 (2.25 ms against 5.62 ms; T = 16 within 1 %). HAWK_BOX=0 in the environment builds without a box. Contraction: \"gemm\" (a recognised sum of products goes to a matrix multiply) or \"direct\" (it stays the kernel's own loop); a row may set it, the defaults are \"gemm\" for both scalar types. Select weight: what one add of a runtime-index store written as selects costs against an indexed access (hawk.emit.rtstore); 1.0 by default, 4.0 for float64 on sm_61 (Quadro P2000, FP64 rate 1:32). Its rows are keyed by compute capability alone and read through the arch the build resolved for its device targets, so a host-only build never probes. Block tile: a row may carry tile = {kind, SB, T, R, EB, smem}: kind BF stages a read invariant along a non-fastest axis, BT stages the row a clamped slot read gathers from; SB threads per block, T lanes per thread, R rows per block, EB steps per staged tile, smem bytes of shared memory; absent by default, so no block tile. \"examples\" is documentation the reader ignores: two block-tile rows measured on the same contraction (P2000), not active until a tile emit reads them.",
+  "defaults": {
+    "float64": 16,
+    "float32": 8
+  },
+  "rows": [],
+  "select_weight": {
+    "defaults": {
+      "float64": 1.0,
+      "float32": 1.0
+    },
+    "rows": [
+      {
+        "cc": "sm_61",
+        "dtype": "float64",
+        "select_weight": 4.0
+      }
+    ]
+  },
+  "contraction": {
+    "float64": "gemm",
+    "float32": "gemm"
+  },
+  "examples": [
+    {
+      "cc": "sm_61",
+      "device": "Quadro P2000",
+      "dtype": "float32",
+      "tile": {
+        "kind": "BT",
+        "SB": 128,
+        "T": 16,
+        "R": 1,
+        "EB": 4,
+        "smem": 49152
+      }
+    },
+    {
+      "cc": "sm_61",
+      "device": "Quadro P2000",
+      "dtype": "float64",
+      "tile": {
+        "kind": "BF",
+        "SB": 64,
+        "T": 8,
+        "R": 2,
+        "EB": 1,
+        "smem": 49152
+      }
+    }
+  ]
+}

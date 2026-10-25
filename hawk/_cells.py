@@ -3,8 +3,8 @@
 
 """The host finish of a kernel's cells: rows to the cell, in eagle's ``ordered`` tree.
 
-A kernel that stores ``all_samples(x).sum()`` (or ``.mean()``, ``.max()``,
-``.min()``) writes one row per 32 samples. :func:`hawk.runtime.run` owns that
+A kernel that stores ``hawk.sum(x)`` (or ``hawk.mean``, ``hawk.max``,
+``hawk.min``) writes one row per 32 samples. :func:`hawk.runtime.run` owns that
 row scratch (made once per kernel and sample count), launches, and finishes the
 rows into the cell the caller bound. The finish replays the ``ordered`` tree
 of ``eagle/reduce/canonical.h`` operation for operation (leaves of 256 slots of
@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import numpy as np
 
-#: samples per row, fixed by the kernel
-ROW = 32
+from .ir.nodes import ROW_WIDTH
+
+#: samples per row, fixed by the language
+ROW = ROW_WIDTH
 SLOTS, TERMS = 256, 16
 LEAF = SLOTS * TERMS
 #: row scratch sets made so far (one per kernel and sample count)

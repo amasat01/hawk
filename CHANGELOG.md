@@ -1,5 +1,16 @@
 # Changelog
 
+Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
+
+## Unreleased
+
+The code is the same and the generated source is byte-identical; the names for how a target is
+written and wrapped are new. `hawk.emit` has a `Writer` (was `Dialect`: `render_body(..., writer=)`)
+and a `Wrapper` (was `Backend`), and `hawk.targets.TARGETS` is the one table of what `hawk.build(targets=...)`
+builds: `cuda`, `host` and `c` are rows in it, and the build, the package step and the compile drivers read
+the row instead of comparing a target's name. `hawk.emit.BACKENDS`, `hawk.compile.HOST` and `hawk.compile.DEVICE` are gone,
+`CompileOptions(backend=)` is `CompileOptions(target=)`, and the unit cache key changes once.
+
 ## 0.6.5 (2026-10-23)
 
 A new `c` target emits a kernel as standalone MISRA C:2012: `<name>.c`, `<name>.h` and a

@@ -279,7 +279,7 @@ def test_pip_only_roots_unresolvable_device_and_host_compile_still_succeed(
     host_src = 'extern "C" int hawk_pip_only_probe(void) { return 42; }\n'
     host_result = compile_source(
         host_src, "pip_only_probe",
-        CompileOptions(backend="host", cache_dir=str(tmp_path / "host_cache")))
+        CompileOptions(target="host", cache_dir=str(tmp_path / "host_cache")))
     assert host_result.artifact.is_file()
 
     if not cubin_available():
@@ -287,7 +287,7 @@ def test_pip_only_roots_unresolvable_device_and_host_compile_still_succeed(
                     "device half of this probe")
     device_result = compile_source(
         KERNEL_SRC, "pip_only_probe_device",
-        CompileOptions(backend="cuda", cache_dir=str(tmp_path / "device_cache")))
+        CompileOptions(target="cuda", cache_dir=str(tmp_path / "device_cache")))
     assert device_result.artifact.is_file()
 
 
@@ -364,7 +364,7 @@ def test_nvrtc_build_honours_defines_in_one_cache(monkeypatch, tmp_path):
 
     def build(defines):
         return compile_source(_FLAG_SRC, "hawk_flag_probe", CompileOptions(
-            backend="cuda", defines=defines, cache_dir=cache))
+            target="cuda", defines=defines, cache_dir=cache))
 
     without = build(())
     with_flag = build(("HAWK_PROBE_FLAG=1",))

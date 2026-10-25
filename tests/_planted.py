@@ -33,7 +33,8 @@ from pathlib import Path
 
 from hawk.artifact.layout import exports
 from hawk.compile import CompileOptions, compile_source
-from hawk.emit import BACKENDS, FLOAT64, render_source
+from hawk.emit import FLOAT64, render_source
+from hawk.targets import TARGETS
 
 #: What the emitted ``fraction`` body reads, and what the plant makes it read.
 TRUE_TOTAL = "static_cast<Int>(nsm_n_samples)"
@@ -51,7 +52,7 @@ def count_reading_bundle(kernel, directory, *, name: str = "fraction",
     comparison fail."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    source = render_source(name, kernel.sinks, kernel.walk, BACKENDS["host"],
+    source = render_source(name, kernel.sinks, kernel.walk, TARGETS["host"],
                            mode=FLOAT64, exports=exports("host"))
     if TRUE_TOTAL not in source.text:
         raise AssertionError(
@@ -61,7 +62,7 @@ def count_reading_bundle(kernel, directory, *, name: str = "fraction",
         )
     planted = source.text.replace(TRUE_TOTAL, PARTITION_WIDTH)
     result = compile_source(planted, name,
-                            CompileOptions(backend="host", mode="float64",
+                            CompileOptions(target="host", mode="float64",
                                            cache_dir=cache_dir))
     shutil.copyfile(result.artifact, directory / f"{name}.so")
     (directory / f"{name}.cpp").write_text(planted)

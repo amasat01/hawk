@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The standalone C target's renderer: ``hawk.embedded.render`` turns a kernel
-into a ``.c``/``.h`` pair through the one body traversal and the C dialect.
+into a ``.c``/``.h`` pair through the one body traversal and the C writer.
 
 Rows:
 
@@ -256,10 +256,10 @@ def test_a_clamped_tape_read_is_refused_by_name(monkeypatch):
         assert needle in message
 
 
-def test_per_component_commits_stay_in_the_aether_dialect(tmp_path):
+def test_per_component_commits_stay_in_the_aether_writer(tmp_path):
     """hawk 0.6.4 stores a vector built from scalars one component at a time
     (``target(k, i.global()) = part``) so a wide value is never live whole. That
-    is an aether-view optimisation: the C dialect keeps the single store, and the
+    is an aether-view optimisation: the C writer keeps the single store, and the
     unit passes every check (render, audit, strict cc, cppcheck)."""
     import test_math_parity as MP
 

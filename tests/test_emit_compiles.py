@@ -28,7 +28,7 @@ This test previously failed. Two observations, one of which changed the emitter:
       types are 'aether::ConstSampleRef<const aether::View<double,
       aether::extents<...>, aether::layout_stride, false, false> >' and 'Real'
       {aka 'double'})
-    ``hawk/emit/backend.WRITABLE_ROLES`` (binding a write target NON-const) is
+    ``hawk/emit/wrapper.WRITABLE_ROLES`` (binding a write target NON-const) is
     the fix that observation bought; the plant was then removed.
   * a second, environmental red worth recording because it makes this row
     non-vacuous: a conda activation exports ``NVCC_PREPEND_FLAGS`` pointing at
@@ -54,11 +54,11 @@ _REQUIRED = {"scale", "drag", "spin", "gather", "energy", "drag_vjp"}
 def emitted(tmp_path_factory) -> list:
     root = tmp_path_factory.mktemp("hawk_emit")
     units = []
-    for name, backend, mode, src in sources():
-        suffix = "cu" if backend.id == "cuda" else "cpp"
-        path = Path(root) / f"{name}_{backend.id}_{mode.id}.{suffix}"
+    for name, target, mode, src in sources():
+        suffix = "cu" if target.id == "cuda" else "cpp"
+        path = Path(root) / f"{name}_{target.id}_{mode.id}.{suffix}"
         path.write_text(src.text)
-        units.append((name, backend.id, mode.id, path))
+        units.append((name, target.id, mode.id, path))
     return units
 
 
@@ -70,12 +70,34 @@ def test_the_smoke_covers_every_required_shape(emitted):
 
 def test_every_emitted_unit_compiles(emitted):
     failures = []
-    for name, backend, mode, path in emitted:
-        rc, stderr, argv = compile_check(path, backend)
+    for name, target, mode, path in emitted:
+        rc, stderr, argv = compile_check(path, target)
         if rc != 0:
-            failures.append(f"--- {name}/{backend}/{mode}\n$ {' '.join(argv)}\n"
+            failures.append(f"--- {name}/{target}/{mode}\n$ {' '.join(argv)}\n"
                             + stderr[:2000])
     assert not failures, (
         "an emitted translation unit does not compile -- the emitter is wrong, not "
         "the test:\n" + "\n".join(failures)
     )
+
+
+def test_every_run_commit_form_compiles(tmp_path):
+    """The ``aether::accum::run`` calls a keyed commit lowers to (an aligned
+    run of 32, a compensated run of 16, a tested run, a compensated sorted
+    run) with the entry's run state: real C++ on both targets."""
+    from test_keyed_commit import kfb_c, ksrt_c, ktst, kuni
+
+    from hawk.emit import FLOAT64, render_source
+    from hawk.targets import TARGETS
+
+    failures = []
+    for kernel in (kuni, kfb_c, ktst, ksrt_c):
+        for target in ("cuda", "host"):
+            src = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
+                                mode=FLOAT64, kind=kernel.kind)
+            path = tmp_path / f"{kernel.name}_{target}.{'cu' if target == 'cuda' else 'cpp'}"
+            path.write_text(src.text)
+            rc, stderr, argv = compile_check(path, target)
+            if rc != 0:
+                failures.append(f"--- {kernel.name}/{target}\n$ {' '.join(argv)}\n{stderr[:2000]}")
+    assert not failures, "\n".join(failures)

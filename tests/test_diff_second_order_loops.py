@@ -61,8 +61,9 @@ import hawk
 import hawk.math as m
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
-from hawk.emit import BACKENDS, CUDA, FLOAT64, render_body, render_source
+from hawk.emit import FLOAT64, render_body, render_source
 from hawk.ir import HawkError, Loop, canonical
+from hawk.targets import TARGETS
 
 #: The central-difference step for the SECOND derivative row. It differences the
 #: analytic FIRST derivative (not the primal twice), so the usual h**2 error of a
@@ -263,25 +264,25 @@ def test_both_backends_wrap_the_same_second_order_body():
     construct the device path re-derives."""
     derived = jvp(vjp(saturating, wrt=("x", "g")), wrt=("x", "g"))
     walk = canonical(derived)
-    host = render_source("hvp", derived, walk, BACKENDS["host"])
-    device = render_source("hvp", derived, walk, CUDA)
+    host = render_source("hvp", derived, walk, TARGETS["host"])
+    device = render_source("hvp", derived, walk, TARGETS["cuda"])
     assert host.body == device.body
     assert host.body.count("for (") == 3
 
 
-@pytest.mark.parametrize("backend", ["host", "cuda"])
-def test_a_second_order_loop_kernel_compiles(backend, tmp_path):
+@pytest.mark.parametrize("target", ["host", "cuda"])
+def test_a_second_order_loop_kernel_compiles(target, tmp_path):
     """The emitted second-order TU is real C++ / CUDA, checked by the compiler
     rather than by eye — a body full of correctly-named tape arrays that does
     not compile certifies nothing. Never skipped: an unresolvable toolchain
     FAILS and names the variable that would fix it (``tests/_toolchain.py``)."""
     derived = jvp(vjp(saturating, wrt=("x", "g")), wrt=("x", "g"))
     walk = canonical(derived)
-    src = render_source("hvp", derived, walk, BACKENDS[backend], mode=FLOAT64,
-                        exports=exports(backend))
-    path = pathlib.Path(tmp_path) / ("hvp.cpp" if backend == "host" else "hvp.cu")
+    src = render_source("hvp", derived, walk, TARGETS[target], mode=FLOAT64,
+                        exports=exports(target))
+    path = pathlib.Path(tmp_path) / ("hvp.cpp" if target == "host" else "hvp.cu")
     path.write_text(src.text)
-    rc, err, argv = TC.compile_check(path, backend)
+    rc, err, argv = TC.compile_check(path, target)
     assert rc == 0, f"$ {' '.join(argv)}\n{err[-4000:]}"
 
 

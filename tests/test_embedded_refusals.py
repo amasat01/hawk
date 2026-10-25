@@ -16,7 +16,7 @@ import pytest
 
 import hawk
 import hawk.math as hm
-from hawk import Index, Mutable, Param, Scalar, Terminated, Vector, all_samples
+from hawk import Index, Mutable, Param, Scalar, Terminated, Vector
 from hawk.embedded.verify import UNSUPPORTED, refuse_unsupported
 from hawk.emit import compose
 from hawk.ext import DEFAULT_KIND, Guard, Kind
@@ -85,7 +85,7 @@ def int_min_max_abs(a: Index, b: Index, y: Mutable[Index]):
 
 def _vector_scatter():
     """A scattered accumulate of a ``Vector[3]``, as IR: hawk's tracer refuses
-    ``all_samples(acc)[lane] += v`` for a vector itself (one plane per
+    ``hawk.scatter(acc)[lane] += v`` for a vector itself (one plane per
     component), so no ``@hawk.kernel`` reaches the node; the C target keeps
     its own refusal behind that one."""
     v = Leaf("vocab_read", "vec_in", "v", TensorType((3,), "f64"))
@@ -96,7 +96,7 @@ def _vector_scatter():
 
 @hawk.kernel
 def gather_other(x: Scalar, i: Index, y: Mutable[Scalar]):
-    y = all_samples(x)[i]
+    y = x.at(i)
 
 
 def _zero_trip():

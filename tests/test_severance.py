@@ -28,14 +28,27 @@ _SEVERED_IMPORT_RE = re.compile(
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "hawk"
 
+#: The one module that may import them, lazily inside a function: a kernel is
+#: called through eagle (``Kernel.__call__``) and its source is lifted by
+#: ``raptor.flow`` (``python -c``). Nothing at import time, nowhere else.
+_LAZY_IMPORTERS = {Path("trace") / "kernel.py"}
+
 
 def _severed_imports_under(root: Path) -> list[str]:
     hits: list[str] = []
     for path in sorted(root.rglob("*.py")):
+        if path.relative_to(root) in _LAZY_IMPORTERS:
+            continue
         text = path.read_text()
         for m in _SEVERED_IMPORT_RE.finditer(text):
             hits.append(f"{path}:{text.count(chr(10), 0, m.start()) + 1}: {m.group(0).strip()}")
     return hits
+
+
+@pytest.mark.repo_local
+def test_the_lazy_importer_imports_only_inside_functions():
+    text = (_PACKAGE_ROOT / "trace" / "kernel.py").read_text()
+    assert not re.search(r"^(?:import|from)[ \t]+(raptor|eagle)\b", text, re.MULTILINE)
 
 
 @pytest.mark.repo_local

@@ -122,7 +122,7 @@ def tree(tmp_path):
 
 def _opts(tree, *, defines=(), extra=()):
     early, late, cache = tree
-    return CompileOptions(backend="host", cache_dir=str(cache), defines=tuple(defines),
+    return CompileOptions(target="host", cache_dir=str(cache), defines=tuple(defines),
                           extra=("-I", str(early), "-I", str(late), *extra))
 
 
@@ -667,7 +667,7 @@ def test_a_fresh_process_still_misses_on_a_changed_reached_header(tree):
     probe = (
         "import json\n"
         "from hawk.compile import CompileOptions, compile_source, cache_stats\n"
-        f"opts = CompileOptions(backend='host', cache_dir={str(_cache)!r}, "
+        f"opts = CompileOptions(target='host', cache_dir={str(_cache)!r}, "
         f"extra=('-I', {str(early)!r}, '-I', {str(late)!r}))\n"
         f"compile_source({SOURCE!r}, 'cache_probe', opts)\n"
         "print(json.dumps(cache_stats()['hits'] > 0))\n"

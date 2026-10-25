@@ -26,7 +26,8 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
-from hawk import Mutable, Scalar, Terminated, Vector, all_samples
+import hawk
+from hawk import Mutable, Scalar, Terminated, Vector
 from hawk.artifact import build_bundle as _build_bundle
 from hawk.emit import render_body
 from hawk.ext import Kind, Output, compensated
@@ -72,7 +73,7 @@ def returned_with_diagnostic_guarded(term: Vector[3], terminated: Terminated,
 def returned_with_scatter_diagnostic(term: Vector[3], hits: Mutable[Scalar]):
     """a SCATTERED diagnostic by-key store beside the returned compensated
     target — the scatter is not the target, so it commits plain."""
-    all_samples(hits)[0] += 1.0
+    hawk.scatter(hits, policy="plain")[0] += 1.0
     return term
 
 
@@ -144,7 +145,9 @@ def test_a_scattered_diagnostic_beside_a_compensated_returned_target_commits_pla
                            targets=("host", "cuda"), cache_dir=cache_dir)
     for src in ("returned_with_scatter_diagnostic.cpp", "returned_with_scatter_diagnostic.cu"):
         text = (bundle.directory / src).read_text()
-        assert text.count("hawk_abi::accum_add(") == 1, text
+        # the constant key commits once per warp (aether::accum::run::add<32>)
+        assert (text.count("hawk_abi::accum_add(")
+                + text.count("aether::accum::run::add<32>(")) == 1, text
         assert text.count("hawk_abi::store_compensated(") == 1, text
         assert "accum_add_compensated" not in text
 

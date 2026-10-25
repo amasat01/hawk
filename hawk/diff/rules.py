@@ -28,6 +28,7 @@ from ..ir import Const, HawkError, Node, Select
 from ..ir import make as _mk
 from ..ir.ops import CAST, COMPARE, INT_BINARY, INT_UNARY, LOGICAL, PREDICATE, RANDOM_OPS
 from ..ir.nodes import REDUCE_KIND, ReduceSamples
+from ..trace.value import _entries
 from ..types import TensorType
 
 _F64 = TensorType((), "f64")
@@ -344,14 +345,6 @@ def _qc(x: Node) -> Node:
 
 def _qm(a: Node, b: Node) -> Node:
     return _o("quat_mul", a, b)
-
-
-def _entries(shape: tuple) -> list:
-    """Every static index of ``shape``, row-major: the ``component`` literal
-    of each entry (an ``int`` for a vector, ``(row, col)`` for a matrix)."""
-    if len(shape) == 1:
-        return list(range(shape[0]))
-    return [(r, c) for r in range(shape[0]) for c in range(shape[1])]
 
 
 def _vec_like(parts: list, shape: tuple) -> Node:

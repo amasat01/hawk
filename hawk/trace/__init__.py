@@ -50,6 +50,7 @@ launch — see :mod:`hawk.trace.steps` for the loop, bit-identity and
 # `__all__`). The self-alias is the standard "yes, this is unused by this
 # file, on purpose" static-analysis idiom.
 from ..ir import Quantity as Quantity
+from .decl import Grid as Grid
 from .decl import Index as Index
 from .decl import Int32 as Int32
 from .decl import UInt32 as UInt32
@@ -58,6 +59,7 @@ from .decl import Mutable as Mutable
 from .decl import Param as Param
 from .decl import Quat as Quat
 from .decl import Scalar as Scalar
+from .decl import Sorted as Sorted
 from .decl import Staged as Staged
 from .decl import Table as Table
 from .decl import Terminated as Terminated
@@ -69,7 +71,11 @@ from .kernel import kernel as kernel
 from .kernel import resolve_dispatch as resolve_dispatch
 from .kernel import trace_value as trace_value
 from .raw import RawBlock as RawBlock
-from .reduce import all_samples as all_samples
+from .reduce import max as max
+from .reduce import mean as mean
+from .reduce import min as min
+from .reduce import scatter as scatter
+from .reduce import sum as sum
 from .raw import raw_device as raw_device
 from .value import Value as Value
 from .value import random_normal as random_normal

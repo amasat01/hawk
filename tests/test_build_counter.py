@@ -43,7 +43,7 @@ def _n20i_h1_scatter(x: hawk.Scalar, lane: hawk.Index, acc: hawk.Mutable[hawk.Sc
     bundling the two together trips build_bundle's execution-axis
     refusal (``hawk/artifact/bundle.py`` ~:763-767) — a real, already-
     documented raise, not a fixture-invented one."""
-    hawk.all_samples(acc)[lane] += x
+    hawk.scatter(acc)[lane] += x
 
 
 def _delta(before: dict, after: dict) -> dict:

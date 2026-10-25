@@ -21,14 +21,17 @@ import hashlib
 import inspect
 import sys
 import textwrap
+import threading
+import typing
 from collections.abc import Callable
 from typing import Any
 
 from ..ir import Const, HawkError, Leaf, Node, Quantity, Walk, canonical, make
-from ..ir.nodes import Assign
+from ..ir.nodes import COMPANION_SUFFIX, AccumWrite, Assign, compensates
 from ..types import Slot, TensorType
 from . import astpass, reduce
-from .decl import Plane, resolve, role_of
+from .decl import Plane, resolve, role_of, spell
+from .lane_axes import LaneAxes, check_group, lane_space, tracing
 from .value import (
     FinishRefusal,
     MutableRef,
@@ -58,20 +61,29 @@ class Kernel:
     """A traced kernel: its sink set, its canonical walk and its declarations."""
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
-                 "time", "time_step", "source_digest", "jump")
+                 "time", "time_step", "source_digest", "jump", "returns",
+                 "lane_space", "group", "_plan", "_lock")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
                  step: Kernel | None = None,
                  one_step: Kernel | None = None,
-                 source_digest: str | None = None) -> None:
+                 source_digest: str | None = None,
+                 returns: Any = None) -> None:
         from ..ext import DEFAULT_KIND
 
         self.name = name
+        self.kind = kind if kind is not None else DEFAULT_KIND
+        sinks = _scattered_companion(self.kind, sinks)
         self.sinks = sinks
         self.planes = {} if planes is None else planes
-        self.kind = kind if kind is not None else DEFAULT_KIND
         self.walk: Walk = canonical(sinks, _declared(self.planes))
+        #: The launch shape, ``((label|None, extent|None), ...)`` row-major with the
+        #: fastest axis last: the ``Grid[...]`` declared, else one unlabelled
+        #: runtime axis. Read by the sidecar and the bind doors.
+        self.lane_space = lane_space(self.planes)
+        #: The compaction group, a lane count (``@hawk.kernel(group=...)``): 1.
+        self.group = 1
         #: The single step a default automatic kernel was derived from (see
         #: :func:`kernel`); ``None`` otherwise, used by ``vjp``/``jvp``.
         self.step = step
@@ -93,6 +105,13 @@ class Kernel:
         #: name; ``None`` (a switch has derivative zero) otherwise. Read by
         #: :mod:`hawk.diff`, never by the kernel's own emission.
         self.jump: Any = None
+        #: What the body ``return``s, as the same tree of tuples / lists /
+        #: dicts with each leaf replaced by its ``Mutable`` slot name (a bare
+        #: name for one array); ``None`` for a kernel that commits through
+        #: its parameters and for a hand-built one.
+        self.returns = returns
+        self._plan = None
+        self._lock = threading.Lock()
 
     @property
     def arg_spec(self) -> tuple[tuple[str, str], ...]:
@@ -100,11 +119,25 @@ class Kernel:
         return self.walk.arg_spec
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        raise HawkError(
-            f"kernel {self.name!r} cannot be launched yet: HAWK's execution path is "
-            "the C++ host entry and the device artifact eagle deploys "
-            " — HAWK delivers tracing and autodiff only"
-        )
+        """Run one launch where the arrays live, through the plan eagle
+        deploys for this kernel (built on the first call, cached on disk)."""
+        plan = self._plan
+        if plan is None:
+            plan = self._deploy()
+        return plan(*args, **kwargs)
+
+    def _deploy(self) -> Any:
+        try:
+            import eagle
+        except ModuleNotFoundError as exc:
+            if exc.name != "eagle":
+                raise
+            raise ImportError(f"{self.name}(...) runs through eagle: "
+                              "pip install raptor-eagle") from None
+        with self._lock:
+            if self._plan is None:
+                self._plan = eagle.deploy(self)
+        return self._plan
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
         return f"<Kernel {self.name} slots={len(self.arg_spec)}>"
@@ -112,7 +145,8 @@ class Kernel:
 
 def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
            steps: Any = None, time: str | None = None,
-           time_step: str | None = None, jump: Any = None) -> Any:
+           time_step: str | None = None, jump: Any = None,
+           group: int | str = 1) -> Any:
     """Trace ``fn`` into a :class:`Kernel`. Refusals fire here.
 
     ``kind`` supplies the kernel's :class:`hawk.ext.Kind` (vocabulary,
@@ -149,17 +183,26 @@ def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
     of standard deviation ``jump``). ``jump=`` is the width in the units of
     the compared values (about 2% of their span), or the name of a
     ``Param[Scalar]`` holding it; ``"auto"`` picks it per batch from the
-    spread of the compared values. The primal kernel is unchanged."""
+    spread of the compared values. The primal kernel is unchanged.
+
+    ``group`` is the compaction unit: a lane count (``group=32``) or the label of
+    a ``Grid`` axis (``group="sample"``: that axis and every axis after it). A
+    run that drops finished lanes keeps whole groups together. The default, 1,
+    compacts lane by lane."""
     if fn is None:
         def decorate(f: Callable[..., None]) -> Any:
             return kernel(f, kind=kind, steps=steps, time=time, time_step=time_step,
-                          jump=jump)
+                          jump=jump, group=group)
         return decorate
     if time is not None and time_step is None:
         raise HawkError(
             f"kernel {fn.__name__!r}: time={time!r} needs time_step=, the "
             "parameter the time plane advances by")
     built = _kernel(fn, kind, steps)
+    count = check_group(fn.__name__, group, built.planes)
+    for k in (built, built.step, built.one_step):
+        if k is not None:
+            k.group = count
     if jump is not None:
         from ..diff.jump import check_jump
 
@@ -218,7 +261,8 @@ def resolve_dispatch(kernel: Kernel, policies: dict[str, str]) -> Kernel:
                 f"'switch', 'segmented', 'predicated', got {policy!r}")
         chosen[id(node)] = policy
     resolved = Kernel(step.name, with_policies(step.sinks, chosen), step.planes,
-                      kind=step.kind, source_digest=step.source_digest)
+                      kind=step.kind, source_digest=step.source_digest,
+                      returns=step.returns)
     resolved.time, resolved.time_step = step.time, step.time_step
     resolved.jump = step.jump
     if kernel.step is None or "segmented" in chosen.values():
@@ -245,27 +289,51 @@ def _kernel(fn: Callable[..., None], kind: Any, steps: Any) -> Any:
 
 def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
     """The trace :func:`kernel` runs: ``fn`` under ``kind`` (or the default
-    kind) into one :class:`Kernel`."""
+    kind) into one :class:`Kernel`. A body ending ``return <expr>`` is traced
+    as a VALUE tree whose leaves commit into synthesised ``Mutable`` slots."""
     from ..ext import DEFAULT_KIND
 
     resolved_kind = kind if kind is not None else DEFAULT_KIND
-    if resolved_kind.output.returned_ttype is not None:
-        return _returned_kernel(fn, resolved_kind)
+    forced = resolved_kind.output.returned_ttype
     vocab, scope, own, params = _declarations(fn, resolved_kind)
+    if forced is not None:
+        slot = resolved_kind.output.slot
+        if slot in params:
+            raise HawkError(
+                f"kernel {fn.__name__!r}: Output.returned's synthesised slot "
+                f"{slot!r} may not also be a parameter name"
+            )
+        if slot in vocab:
+            raise HawkError(
+                f"kernel {fn.__name__!r}: Output.returned's synthesised slot "
+                f"{slot!r} collides with kind {resolved_kind.slug!r}'s own vocabulary"
+            )
     planes, args, sink_names, mutables, finishes = _bound_planes(
         fn, params, own, vocab, resolved_kind)
     scope[astpass.REFS] = args
-    traced = _retrace(fn, scope, sink_names, mutables, finishes=finishes)
-    _call_finishing(traced, fn, args)
+    traced, returning, shape = _retrace(
+        fn, scope, sink_names, mutables, finishes=finishes,
+        returns_value=True if forced is not None else None)
+    with tracing(lane_space(planes)):
+        out = _call_finishing(traced, fn, args)
     _retag_by_key(planes, args)
+    _check_axis_sinks(fn.__name__, planes, args)
     finished = _finished(fn.__name__, params, args, finishes, resolved_kind)
-    sinks = _collect(fn.__name__, params, args, sink_names,
-                     finishing=bool(finished)) + finished
+    if returning:
+        refs, returns = _commit_returns(fn, out, shape, forced, resolved_kind,
+                                        planes, vocab, scope)
+        named = _collect(fn.__name__, params, args, sink_names) if sink_names else ()
+        sinks = named + tuple(s for r in refs for s in r.sinks) + finished
+    else:
+        returns = None
+        sinks = _collect(fn.__name__, params, args, sink_names,
+                         finishing=bool(finished)) + finished
     extra = _compensated_companion(resolved_kind, planes, vocab, sinks)
     if extra is not None:
         sinks = sinks + (extra,)
+    sinks = sinks + _policy_companions(fn.__name__, planes, sinks)
     return Kernel(fn.__name__, sinks, planes, kind=resolved_kind,
-                  source_digest=source_digest(fn))
+                  source_digest=source_digest(fn), returns=returns)
 
 
 def source_digest(fn: Callable[..., Any]) -> str | None:
@@ -280,12 +348,26 @@ def source_digest(fn: Callable[..., Any]) -> str | None:
 
 
 def _retag_by_key(planes: dict[str, Any], args: dict[str, Any]) -> None:
-    """A plane a body wrote by key (``hawk.all_samples(y)[key] (+)= v``) is
-    shared, so its declaration becomes the matching accumulate / store plane."""
+    """A plane a body wrote by key (``hawk.scatter(y)[key] (+)= v``, or
+    ``y = hawk.sum(x, over=...)``) is shared, so its declaration becomes the
+    matching accumulate / store plane."""
     for name, ref in args.items():
         kind = getattr(ref, "by_key_kind", None)
         if kind is not None:
-            planes[name] = Plane(kind, planes[name].ttype)
+            planes[name] = Plane(kind, planes[name].ttype, dims=planes[name].dims)
+
+
+def _check_axis_sinks(name: str, planes: dict[str, Any], args: dict[str, Any]) -> None:
+    """A sink with named axes is bound ``(*payload, *axes)``, not one value per
+    lane: a body that assigns it on its own column is refused."""
+    for p, plane in planes.items():
+        if (isinstance(plane, Plane) and plane.form == "mutable" and plane.dims
+                and p in args and any(isinstance(s, Assign) for s in args[p].sinks)):
+            axes = ", ".join(f'"{label}":{size}' for label, size, _stride in plane.dims)
+            raise HawkError(
+                f"kernel {name!r}: {p!r} is declared with the axes [{axes}], so it is "
+                f"written by key (hawk.scatter({p})[key] += v, or {p} = hawk.sum(x, "
+                "over=...)), not assigned per lane")
 
 
 def _declarations(fn: Callable[..., Any], kind: Any) -> tuple:
@@ -295,6 +377,17 @@ def _declarations(fn: Callable[..., Any], kind: Any) -> tuple:
     defining = _defining_frame(fn)
     scope = _scope(fn, defining.f_locals if defining is not None else {})
     own, params = _own_declarations(fn, scope)
+    from ..compile.toolchain import libc_symbols
+
+    if fn.__name__ in libc_symbols():
+        raise HawkError(
+            f"kernel {fn.__name__!r}: the name is a C library function, and the kernel's "
+            "entry would redeclare it; rename the kernel")
+    if "buffer" in params:
+        raise HawkError(
+            f"kernel {fn.__name__!r}: `buffer` is a reserved parameter name — "
+            "`buffer=` is the keyword a kernel call takes inside an eagle graph "
+            "builder for the array an output is written to; rename the parameter")
     return vocab, scope, own, params
 
 
@@ -307,12 +400,13 @@ def _bound_planes(fn: Callable[..., Any], params: list[str], own: dict[str, Any]
     ``mutables`` names every Mutable AND WideOut OWN-COLUMN parameter: both
     forms get the SAME plain-variable ast-front-end treatment
     (:mod:`hawk.trace.astpass`) — a WideOut's SCATTER write
-    (``hawk.all_samples(buf)[k] = v``) is a subscript store, untouched either way."""
+    (``hawk.scatter(buf)[k] = v``) is a subscript store, untouched either way."""
     planes = _resolve_planes(fn, params, own, vocab, kind)
     for name, plane in vocab.items():
         if (name not in planes and isinstance(plane, Plane)
                 and plane.form == "terminated"):
             planes[name] = plane
+    _check_grid(fn.__name__, params, planes)
     args = {name: _bind(name, planes[name]) for name in params}
     sink_names = frozenset(n for n in params if _is_sink(planes[n]))
     mutables = frozenset(n for n in sink_names
@@ -321,46 +415,168 @@ def _bound_planes(fn: Callable[..., Any], params: list[str], own: dict[str, Any]
     return planes, args, sink_names, mutables, finishes
 
 
-def _returned_kernel(fn: Callable[..., Any], kind: Any) -> Kernel:
-    """The ``Output.returned`` path: trace ``fn``'s body as a VALUE — the
-    same ``returns_value`` retrace :func:`trace_value` itself uses — and
-    commit it into the ``Mutable`` slot the KIND synthesises. Reached only
-    from :func:`kernel` when ``kind.output.returned_ttype`` is set."""
-    ttype, slot = kind.output.returned_ttype, kind.output.slot
-    vocab, scope, own, params = _declarations(fn, kind)
-    if slot in params:
+def _check_grid(name: str, params: list[str], planes: dict[str, Any]) -> None:
+    """Refuse a second ``Grid[...]`` and a Grid label that is also a parameter name (a bind keyword
+    would name two things)."""
+    grids = [p for p in params if isinstance(planes[p], Plane) and planes[p].grid]
+    if not grids:
+        return
+    if len(grids) > 1:
         raise HawkError(
-            f"kernel {fn.__name__!r}: Output.returned's synthesised slot "
-            f"{slot!r} may not also be a parameter name"
-        )
-    if slot in vocab:
+            f"kernel {name!r}: {grids} are all Grid[...] declarations; a kernel has "
+            "ONE launch shape")
+    axes = planes[grids[0]].grid
+    clash = [label for label, _ in axes if label in params]
+    if clash:
         raise HawkError(
-            f"kernel {fn.__name__!r}: Output.returned's synthesised slot "
-            f"{slot!r} collides with kind {kind.slug!r}'s own vocabulary"
-        )
-    planes, args, sink_names, mutables, finishes = _bound_planes(
-        fn, params, own, vocab, kind)
-    scope[astpass.REFS] = args
-    traced = _retrace(fn, scope, sink_names, mutables, returns_value=True,
-                      finishes=finishes)
-    out = _call_finishing(traced, fn, args)
-    _retag_by_key(planes, args)
-    if not isinstance(out, Value):
-        raise HawkError(
-            f"kernel {fn.__name__!r}: the body returned {type(out).__name__} "
-            f"{out!r}, not a traced value; the returned expression must depend "
-            "on at least one parameter"
-        )
-    ref = MutableRef(slot, ttype)
-    ref.write(out)
-    named = _collect(fn.__name__, params, args, sink_names) if sink_names else ()
-    sinks = (tuple(named) + tuple(ref.sinks)
-             + _finished(fn.__name__, params, args, finishes, kind))
-    extra = _compensated_companion(kind, planes, vocab, sinks)
-    if extra is not None:
-        sinks = sinks + (extra,)
-    return Kernel(fn.__name__, sinks, planes, kind=kind,
-                  source_digest=source_digest(fn))
+            f"kernel {name!r}: the Grid axis label(s) {clash} are also parameter "
+            "names, so a launch could not tell which one a keyword binds; rename the label")
+
+
+class _Leaf:
+    """One returned array: its slot name (``None`` until named) and its value."""
+
+    __slots__ = ("name", "value")
+
+    def __init__(self, name: str | None, value: Value) -> None:
+        self.name, self.value = name, value
+
+
+def _commit_returns(fn: Callable[..., Any], out: Any, shape: Any, forced: Any,
+                    kind: Any, planes: dict[str, Any], vocab: dict[str, Any],
+                    scope: dict[str, Any]) -> tuple[list[MutableRef], Any]:
+    """Commit what the body returned into one ``Mutable`` slot per leaf.
+    Returns the refs (leaf order) and the ``Kernel.returns`` tree. ``forced``
+    is the ttype of the slot a kind synthesises (``Output.returned``): a
+    single value, written to that slot."""
+    where = f"kernel {fn.__name__!r}"
+    leaves: list[_Leaf] = []
+    if forced is not None:
+        tree = _leaves(out, None, None, where, leaves)
+        if not isinstance(tree, _Leaf):
+            raise HawkError(f"{where}: kind {kind.slug!r} returns one value into "
+                            f"{kind.output.slot!r}, not a tuple/list/dict")
+        tree.name = kind.output.slot
+        ttypes = [forced]
+    else:
+        tree = _leaves(out, shape, None, where, leaves)
+        taken = set(planes) | set(vocab)
+        for k, leaf in enumerate(leaves):
+            if leaf.name is None:
+                leaf.name = "out" if len(leaves) == 1 else f"out{k}"
+            if leaf.name in taken:
+                raise HawkError(
+                    f"{where}: the return names an output {leaf.name!r} after a "
+                    f"parameter or another output; use another name "
+                    f"({leaf.name}_next)")
+            taken.add(leaf.name)
+        ann = _return_annotation(fn, scope)
+        if ann is not inspect.Signature.empty:
+            _check_annotation(where, ann, tree, "")
+        ttypes = [leaf.value.ttype for leaf in leaves]
+    refs = []
+    for leaf, ttype in zip(leaves, ttypes):
+        if isinstance(leaf.value, reduce.Reduced):
+            dims = reduce.axes_plane(leaf.value.kept)
+            ref = MutableRef(leaf.name, ttype, dims)
+            ref.write(leaf.value)
+            planes[leaf.name] = Plane("accum", ttype, dims=dims)
+        else:
+            ref = MutableRef(leaf.name, ttype)
+            ref.write(leaf.value)
+            planes[leaf.name] = Plane("mutable", ttype)
+        refs.append(ref)
+    return refs, _names(tree)
+
+
+def _leaves(out: Any, shape: Any, hint: str | None, where: str,
+            leaves: list[_Leaf]) -> Any:
+    """``out`` with every traced value replaced by a :class:`_Leaf`, named by
+    the dict key or variable the static ``shape`` (``astpass.return_shape``)
+    gives it."""
+    kind = type(out)
+    if kind is tuple or kind is list:
+        kids = (shape[1] if isinstance(shape, tuple) and shape[0] == kind.__name__
+                and len(shape[1]) == len(out) else (None,) * len(out))
+        return kind(_leaves(o, k, None, where, leaves) for o, k in zip(out, kids))
+    if kind is dict:
+        if not (isinstance(shape, tuple) and shape[0] == "dict"
+                and [k for k, _ in shape[1]] == list(out)):
+            raise HawkError(f"{where}: a returned dict is written in the return "
+                            'statement with string-literal keys (`return {"pos": p}`)')
+        return {k: _leaves(out[k], s, k, where, leaves) for k, s in shape[1]}
+    if not isinstance(out, (Value, reduce.Reduced)):
+        what = ("a class instance is not supported — return a value, a tuple/list, "
+                "or a dict of them" if hasattr(out, "__dict__") else
+                "the returned expression must depend on at least one parameter")
+        raise HawkError(f"{where}: the body returned {type(out).__name__} {out!r}, "
+                        f"not a traced value; {what}")
+    leaf = _Leaf(hint or (shape if isinstance(shape, str) else None), out)
+    leaves.append(leaf)
+    return leaf
+
+
+def _names(tree: Any) -> Any:
+    """``tree`` with each leaf replaced by its slot name."""
+    if isinstance(tree, _Leaf):
+        return tree.name
+    if isinstance(tree, dict):
+        return {k: _names(v) for k, v in tree.items()}
+    return type(tree)(_names(v) for v in tree)
+
+
+def _return_annotation(fn: Callable[..., Any], scope: dict[str, Any]) -> Any:
+    ann = getattr(fn, "__annotations__", {}).get("return", inspect.Signature.empty)
+    if isinstance(ann, str):
+        try:
+            return eval(ann, scope)  # the author's own annotation
+        except Exception as exc:                  # pragma: no cover - author error
+            raise HawkError(f"kernel {fn.__name__!r}: the return annotation {ann!r} "
+                            f"does not resolve in the function's scope ({exc})") from exc
+    return ann
+
+
+def _spelled(ann: Any) -> str:
+    """A return annotation as the author wrote it: payload types by name
+    (``Scalar``, ``Vector[3]``), containers around them."""
+    if isinstance(ann, TensorType):
+        return spell(ann)
+    org, args = typing.get_origin(ann), typing.get_args(ann)
+    if org in (tuple, list, dict) and args:
+        return f"{org.__name__}[{', '.join('...' if a is Ellipsis else _spelled(a) for a in args)}]"
+    return getattr(ann, "__name__", repr(ann))
+
+
+def _check_annotation(where: str, ann: Any, tree: Any, at: str) -> None:
+    """Refuse a ``-> T`` the traced ``tree`` does not match: container kind,
+    item count, then each leaf's type."""
+    org = typing.get_origin(ann) or (ann if ann in (tuple, list, dict) else None)
+    args = typing.get_args(ann)
+    got = (spell(tree.value.ttype) if isinstance(tree, _Leaf)
+           else f"a {type(tree).__name__}")
+    if org is None:
+        if not isinstance(ann, TensorType):
+            raise HawkError(f"{where}: `-> {_spelled(ann)}` is not a payload type "
+                            "(Scalar, Vector[W], ...) or a tuple/list/dict of them")
+        if not isinstance(tree, _Leaf) or tree.value.ttype != ann:
+            raise HawkError(f"{where}: `-> {spell(ann)}`, but the return{at} is {got}")
+        return
+    if type(tree) is not org:
+        raise HawkError(f"{where}: `-> {_spelled(ann)}` declares a {org.__name__}, but the "
+                        f"return{at} is {got}")
+    if org is dict:
+        items = [(f"{at}[{k!r}]", v, args[1] if args else None)
+                 for k, v in tree.items()]
+    else:
+        many = org is list or (len(args) == 2 and args[1] is Ellipsis)
+        if args and not many and len(args) != len(tree):
+            raise HawkError(f"{where}: `-> {_spelled(ann)}` declares {len(args)} items, but the "
+                            f"return{at} has {len(tree)}")
+        items = [(f"{at}[{i}]", v, (args[0] if many else args[i]) if args else None)
+                 for i, v in enumerate(tree)]
+    for loc, v, a in items:
+        if a is not None:
+            _check_annotation(where, a, v, loc)
 
 
 def _own_declarations(fn: Callable[..., None], scope: dict[str, Any]
@@ -432,13 +648,56 @@ def _compensated_companion(kind: Any, planes: dict[str, Any],
         )
     target_sink = next(s for s in sinks if s.name == name)
     # A real Assign sink, shaped like an author's own Mutable commit (never
-    # rendered: `_sink` in hawk/emit/aether.py skips `kind.sink.compensation`).
+    # rendered: `_sink` in hawk/emit/render.py skips `kind.sink.compensation`).
     # The dummy value is a structural zero of the target's rank — a bare
     # rank>=1 `Const` has no aether spelling, so it is splatted instead.
     ttype = target_sink.ttype
     zero = Const(0.0, TensorType((), ttype.dtype))
     value = zero if not ttype.shape else make("splat", (zero,), ttype.shape)
     return Assign(comp, value, ttype)
+
+
+def _scattered_companion(kind: Any, sinks: tuple[Node, ...]) -> tuple[Node, ...]:
+    """``sinks`` plus the companion of a compensated SCATTERED target when no
+    sink commits it yet: ``kind.sink.compensation`` accumulated at the target's
+    own key, a zero never rendered (`_sink` in hawk/emit/render.py skips it), so
+    the kernel declares and binds the plane. How a ``vjp``'s ``bar_<p>`` scatter
+    gets its ``bar_<p>_c``. A tagged sink tuple (``Derived``) keeps its tags."""
+    from ..ext import compensated_target
+    from ..ir.nodes import AccumWrite
+
+    resolved = compensated_target(kind, sinks)
+    if resolved is None or resolved[1] or any(
+            s.name == kind.sink.compensation for s in sinks):
+        return sinks
+    target = next(s for s in sinks if s.name == resolved[0])
+    extra = AccumWrite(kind.sink.compensation, Const(0.0, TensorType((), target.ttype.dtype)),
+                       target.index, target.ttype)
+    out = (*sinks, extra)
+    if hasattr(sinks, "__dict__"):
+        out = tuple.__new__(type(sinks), out)
+        out.__dict__.update(vars(sinks))
+    return out
+
+
+def _policy_companions(name: str, planes: dict[str, Any], sinks: tuple[Node, ...]) -> tuple:
+    """The companion plane ``<plane>_c`` of each ``policy="compensated"``
+    accumulate, bound by a zero commit at the same key (the commit's correction
+    lands there; the target writes it, not this sink). Declared like its plane."""
+    out: dict = {}
+    for s in sinks:
+        if isinstance(s, AccumWrite) and compensates(s.policy):
+            comp = s.name + COMPANION_SUFFIX
+            if comp in planes and comp not in out and not any(
+                    isinstance(c, AccumWrite) and c.name == comp for c in sinks):
+                raise HawkError(
+                    f"kernel {name!r}: {s.name!r} is added under policy='compensated', "
+                    f"whose correction lands in {comp!r}, which names a parameter; "
+                    "rename the parameter")
+            zero = Const(0.0, TensorType((), s.ttype.dtype))
+            out.setdefault(comp, []).append(AccumWrite(comp, zero, s.index, s.ttype))
+            planes[comp] = Plane("accum", planes[s.name].ttype, dims=planes[s.name].dims)
+    return tuple(c for group in out.values() for c in group)
 
 
 def trace_value(fn: Callable[..., Any], bindings: dict[str, Any]) -> Value:
@@ -464,7 +723,7 @@ def trace_value(fn: Callable[..., Any], bindings: dict[str, Any]) -> Value:
             "that uses it")
     args = {name: _bind(name, planes[name]) for name in params}
     traced = _retrace(fn, _scope(fn, {}), frozenset(), frozenset(),
-                      returns_value=True)
+                      returns_value=True)[0]
     out = _call(traced, fn, args)
     if not isinstance(out, Value):
         raise HawkError(
@@ -608,57 +867,89 @@ def _bind(name: str, plane: Plane | Quantity) -> Any:
     if isinstance(plane, Quantity):
         return plane.read_with(Value)
     role = role_of(plane)
+    if plane.grid:
+        return LaneAxes(plane.grid)
     if plane.form == "mutable":
-        return MutableRef(name, plane.ttype)
+        return MutableRef(name, plane.ttype, plane.dims)
     if plane.form == "wide_out":
-        return WideOutRef(name, plane.ttype)
+        return WideOutRef(name, plane.ttype, plane.dims)
     if plane.form == "terminated":
         return TerminatedRef(Leaf("terminated", role, name, plane.ttype))
     if plane.form in ("table", "wide"):
         # one READ form for both roles: pins `lookup` and `wide_in` to the
         # same 32-byte ScalarHandle, so the access is the at(expr) either way.
         return TableRef(name, plane.ttype, role=role, dims=plane.dims)
-    return Value(Leaf(_LEAF_KIND[role], role, name, plane.ttype))
+    return Value(Leaf(_LEAF_KIND[role], role, name, plane.ttype, sorted=plane.sorted))
 
 
 def _retrace(fn: Callable[..., None], scope: dict[str, Any],
              sink_names: frozenset[str],
              mutables: frozenset[str],
-             returns_value: bool = False,
-             finishes: frozenset[str] = frozenset()) -> Callable[..., None]:
+             returns_value: bool | None = False,
+             finishes: frozenset[str] = frozenset()) -> tuple[Callable[..., None], bool, Any]:
     """Parse, rewrite and re-materialise the body (the ``ast`` pass) — the
     transform runs once PER DEFINITION; the trace itself, below
     in :func:`kernel`, still runs on every call, since the values it produces
-    differ per call."""
+    differ per call. ``returns_value=None`` lets the body decide: it returns
+    when its last statement is ``return <expr>``. Gives ``(function, whether
+    it returns, the static shape of its return)``."""
     filename = inspect.getsourcefile(fn) or "<kernel>"
     code = fn.__code__
     check = (code.co_code, code.co_firstlineno, filename, sink_names, mutables,
              returns_value, finishes)
     cached = _TRANSFORM_MEMO.get(id(code))
     if cached is not None and cached[0] == check:
-        compiled = cached[1]
+        compiled, returning, shape = cached[1:]
     else:
-        source, first = inspect.getsourcelines(fn)
+        source, first = _source_lines(fn)
         tree = ast.parse(textwrap.dedent("".join(source)), filename=filename)
         ast.increment_lineno(tree, first - 1)
         fn_def = tree.body[0]
         if not isinstance(fn_def, ast.FunctionDef):
             raise HawkError(
                 f"kernel {fn.__name__!r}: only a `def` can be traced")
+        last = fn_def.body[-1]
+        returning = (returns_value if returns_value is not None else
+                     isinstance(last, ast.Return) and last.value is not None)
+        shape = (astpass.return_shape(last.value, filename)
+                 if returning and isinstance(last, ast.Return) and last.value else None)
         rewritten = astpass.transform(fn_def, filename, sink_names, mutables,
-                                      returns_value, finishes=finishes)
+                                      returning, finishes=finishes)
         module = ast.Module(body=[rewritten], type_ignores=[])
         compiled = compile(module, filename, "exec")  # the author's body
         if len(_TRANSFORM_MEMO) >= _TRANSFORM_MEMO_LIMIT:
             _TRANSFORM_MEMO.clear()
-        _TRANSFORM_MEMO[id(code)] = (check, compiled)
+        _TRANSFORM_MEMO[id(code)] = (check, compiled, returning, shape)
     scope[astpass.SELECT_HELPER] = astpass.merge
     scope[astpass.LOOP_HELPER] = astpass.open_loop
     scope[astpass.SETITEM_HELPER] = astpass.set_component
     scope[astpass.MAXMIN_HELPER] = reduce.maxmin
-    scope[astpass.VIEWSTORE_HELPER] = reduce.viewstore
+    scope[astpass.SCATTER_HELPER] = reduce.scatter_store
+    scope[astpass.RANGE_HELPER] = astpass.static_range
     exec(compiled, scope)  # the author's rewritten body
-    return scope[fn.__name__]
+    return scope[fn.__name__], returning, shape
+
+
+def _source_lines(fn: Callable[..., None]) -> tuple[list[str], int]:
+    """``inspect.getsourcelines(fn)``; the text of a kernel defined under
+    ``python -c`` is lifted through :mod:`raptor.flow`, and any other source
+    that is not on disk is refused with the way out."""
+    try:
+        return inspect.getsourcelines(fn)
+    except (OSError, TypeError):
+        from raptor import flow
+
+        if flow.lift_dash_c(fn):
+            return inspect.getsourcelines(fn)
+        raise HawkError(
+            f"kernel {fn.__name__!r}: its source is not on disk (python -c with "
+            "other code, exec, the REPL before Python 3.13) — hawk traces the "
+            "source text. Put the kernel in a .py file, or use IPython / Jupyter, "
+            "which keep cell sources; to define it from a string, run it with "
+            "`raptor.flow.exec_source(text, namespace)`, or register the text "
+            "yourself: `linecache.cache[filename] = (len(text), None, "
+            "text.splitlines(True), filename)` and compile under that filename"
+        ) from None
 
 
 def _collect(name: str, params: list[str], args: dict[str, Any],

@@ -57,7 +57,7 @@ import hawk
 from hawk import Index, Mutable, Param, Scalar, Table, Terminated, Vector
 from hawk import math as m
 from hawk.artifact import build_bundle
-from hawk.emit import BACKENDS, render_source
+from hawk.emit import render_source
 from hawk.emit.host import (
     FALLBACK_CACHES,
     TILE_MAX,
@@ -68,6 +68,7 @@ from hawk.emit.host import (
     machine_caches,
 )
 from hawk.ext import Guard, Kind
+from hawk.targets import TARGETS
 
 #: The macro-off build: the plain per-sample fused loop of the SAME TU.
 PLAIN = ("HAWK_HOST_INTERCHANGE=0",)
@@ -426,7 +427,7 @@ def test_the_trip_loop_runs_on_the_chunk_alone():
             chunk_vectors(SHORT_STEP_OPS + 1)) == (2, 2, 1)
     vectors = {"oscillator": 2, "oscillator_x16": 2, "rkf78_attempt": 1}
     for kernel in KERNELS.values():
-        host = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["host"],
+        host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
                              kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
         text = builds(host.text)["interchanged"]
         trips = _trip_loop(text)
@@ -456,7 +457,7 @@ def test_the_two_builds_are_the_two_shapes(shapes):
 
 def test_the_device_source_carries_no_interchange():
     for kernel in KERNELS.values():
-        cuda = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+        cuda = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                              kind=kernel.kind,
                              one_step=getattr(kernel, "one_step", None)).text
         for token in ("HAWK_HOST_INTERCHANGE", "hawk_tile", "lane_put", "_host_tile"):
@@ -466,9 +467,9 @@ def test_the_device_source_carries_no_interchange():
 def test_both_shapes_wrap_the_one_body_string():
     """The plain build of the host TU is the fused body string verbatim."""
     for kernel in KERNELS.values():
-        host = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["host"],
+        host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
                              kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
-        cuda = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+        cuda = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                              kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
         assert host.body == cuda.body
         fused = host.body.split("\n")[-1]
@@ -509,24 +510,24 @@ def test_what_keeps_the_plain_fused_loop_and_why():
     kernel = gathered
     assert getattr(kernel, "one_step", None) is not None, kernel.name
     assert interchange(kernel.name, kernel.sinks, kernel.walk, kernel.kind) is None
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["host"],
+    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
                          kind=kernel.kind, one_step=kernel.one_step).text
     assert "HAWK_HOST_INTERCHANGE" not in text, "not sample_local: dependent iterations"
     # two lowered loops: the fused-step cut is at ONE, so both loops run as the
     # loop interchange instead (hawk.emit.host.loop_interchange)
     tiled = interchange(head_loop.name, head_loop.sinks, head_loop.walk, head_loop.kind)
     assert tiled is not None and tiled.rule is None and tiled.prelude is not None
-    text = render_source(head_loop.name, head_loop.sinks, head_loop.walk, BACKENDS["host"],
+    text = render_source(head_loop.name, head_loop.sinks, head_loop.walk, TARGETS["host"],
                          kind=head_loop.kind, one_step=head_loop.one_step).text
     assert "hawk_abi::kHostLoopTile" in text and "_host_tile" not in text
     # an active-set kind: the tile is a gathered map, not a contiguous run
-    from hawk.emit.backend import ActiveSpec
+    from hawk.emit.wrapper import ActiveSpec
     from hawk.emit.spelling import binding_name
 
     active = ActiveSpec(binding_name("lookup", "active_map"),
                         binding_name("lookup", "active_count"))
     text = render_source(oscillator.name, oscillator.sinks, oscillator.walk,
-                         BACKENDS["host"], kind=ACTIVE, active=active,
+                         TARGETS["host"], kind=ACTIVE, active=active,
                          one_step=oscillator.one_step).text
     assert "HAWK_HOST_INTERCHANGE" not in text
 

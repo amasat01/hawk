@@ -29,7 +29,7 @@ This test previously failed via three plants, all then removed:
 * ``host_codegen_flags`` with ``-ffp-contract=off`` dropped -- the native
   build contracts to FMA and ``test_the_exact_profiles_are_bit_identical_to_numpy``
   fails on x/v;
-* ``HostBackend.unpack``'s mask rebinding skipped -- the loop stays scalar
+* ``HostWrapper.unpack``'s mask rebinding skipped -- the loop stays scalar
   (``packed float64 ops: 0``);
 * ``_host_key_terms`` without the ``host_target`` term --
   ``test_the_native_key_names_the_target_cpu`` fails.
@@ -60,7 +60,6 @@ import hawk
 from hawk import Mutable, Param, Scalar, Terminated
 from hawk.artifact import build_bundle
 from hawk.compile import (
-    HOST,
     OPT_LEVELS,
     Cache,
     CompileOptions,
@@ -420,7 +419,7 @@ SOURCE = 'extern "C" int hawk_simd_probe(int a) { return a + 1; }\n'
 
 def test_the_two_profiles_never_share_a_slot(tmp_path):
     keys = {p: compile_source(SOURCE, "probe", CompileOptions(
-        backend=HOST, cache_dir=str(tmp_path), host_profile=p)).key
+        target="host", cache_dir=str(tmp_path), host_profile=p)).key
         for p in tc.HOST_PROFILES}
     assert len(set(keys.values())) == len(keys), keys
 
@@ -432,16 +431,16 @@ def test_a_cache_filled_under_the_old_default_is_not_served(tmp_path, monkeypatc
     monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
     from hawk.compile import _reset_artifact_memo as reset_artifact_memo
     old = compile_source(SOURCE, "probe", CompileOptions(
-        backend=HOST, cache_dir=str(tmp_path), host_profile="native"))
+        target="host", cache_dir=str(tmp_path), host_profile="native"))
     reset_artifact_memo()
     new = compile_source(SOURCE, "probe", CompileOptions(
-        backend=HOST, cache_dir=str(tmp_path)))
+        target="host", cache_dir=str(tmp_path)))
     if tc.default_host_profile() == "native":
         pytest.skip("the default is native here (architecture or compiler)")
     assert new.key != old.key and not new.hit
     reset_artifact_memo()
     again = compile_source(SOURCE, "probe", CompileOptions(
-        backend=HOST, cache_dir=str(tmp_path), host_profile="native"))
+        target="host", cache_dir=str(tmp_path), host_profile="native"))
     assert again.key == old.key and again.hit
 
 
@@ -449,7 +448,7 @@ def test_a_cache_filled_under_the_old_default_is_not_served(tmp_path, monkeypatc
 def test_the_native_key_names_the_target_cpu(tmp_path, monkeypatch, profile):
     if profile == "native-vector-math" and platform.machine().lower() not in ("x86_64", "amd64"):
         pytest.skip("native-vector-math is x86-64 only")
-    opts = CompileOptions(backend=HOST, cache_dir=str(tmp_path), host_profile=profile)
+    opts = CompileOptions(target="host", cache_dir=str(tmp_path), host_profile=profile)
     first = compile_source(SOURCE, "probe", opts)
     record = Cache(str(tmp_path)).record(first.key)
     assert f"host_target:{tc.host_target_identity()}" in record["key_terms"]
@@ -513,7 +512,7 @@ def test_host_codegen_flags_rejects_an_unknown_opt_level():
 
 def test_the_opt_levels_never_share_a_slot(tmp_path):
     keys = {o: compile_source(SOURCE, "probe", CompileOptions(
-        backend=HOST, cache_dir=str(tmp_path), opt_level=o)).key
+        target="host", cache_dir=str(tmp_path), opt_level=o)).key
         for o in OPT_LEVELS}
     assert len(set(keys.values())) == len(keys), keys
 
@@ -521,7 +520,7 @@ def test_the_opt_levels_never_share_a_slot(tmp_path):
 def test_an_opt_level_change_is_a_key_change_and_therefore_a_miss(tmp_path):
     from hawk.compile import _reset_artifact_memo as reset_artifact_memo
 
-    opts = dict(backend=HOST, cache_dir=str(tmp_path))
+    opts = dict(target="host", cache_dir=str(tmp_path))
     o3 = compile_source(SOURCE, "probe", CompileOptions(**opts, opt_level="O3"))
     reset_artifact_memo()
     o0 = compile_source(SOURCE, "probe", CompileOptions(**opts, opt_level="O0"))
@@ -538,7 +537,7 @@ def test_a_host_build_actually_compiles_at_O0_and_at_O3(tmp_path):
     text: one tiny kernel, compiled on the CPU at each end of the ladder."""
     for level in OPT_LEVELS:
         result = compile_source(SOURCE, "probe", CompileOptions(
-            backend=HOST, cache_dir=str(tmp_path / level), opt_level=level))
+            target="host", cache_dir=str(tmp_path / level), opt_level=level))
         assert result.artifact.is_file() and not result.hit, level
 
 
@@ -596,7 +595,7 @@ def test_explicit_vector_math_with_clang_raises_before_any_compile(monkeypatch, 
         monkeypatch.setenv("HAWK_HOST_PROFILE", "native-vector-math")
         with pytest.raises(hawk.HawkError, match="GCC-only"):
             compile_source(SOURCE, "probe", CompileOptions(
-                backend=HOST, cache_dir=str(tmp_path)))
+                target="host", cache_dir=str(tmp_path)))
         assert not list(tmp_path.glob("**/*.so"))
 
 

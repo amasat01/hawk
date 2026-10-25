@@ -43,9 +43,10 @@ from _eval import evaluate
 import hawk
 import hawk.math as m
 from hawk.diff import jvp, vjp
-from hawk.emit import BACKENDS, CUDA, render_body, render_source
+from hawk.emit import render_body, render_source
 from hawk.ir import HawkError, Loop, LoopValue, canonical
 from hawk.ir.loops import ACCUMULATOR, LOOP_CLASSES, RECURRENCE, classify_loop
+from hawk.targets import TARGETS
 
 H = 1e-5
 ROWS, COLS = 4, 5
@@ -225,8 +226,8 @@ def test_both_backends_wrap_the_same_body_string():
     """ for a lowered loop: ONE renderer produces the body and a
     BACKEND supplies only the wrapper, so the loop is not a host construct that
     the device path re-derives."""
-    host = render_source("g", gathering.sinks, gathering.walk, BACKENDS["host"])
-    device = render_source("g", gathering.sinks, gathering.walk, CUDA)
+    host = render_source("g", gathering.sinks, gathering.walk, TARGETS["host"])
+    device = render_source("g", gathering.sinks, gathering.walk, TARGETS["cuda"])
     assert host.body == device.body
     assert "for (" in host.body
 
@@ -372,7 +373,9 @@ def test_a_gather_loops_reverse_scatters_once_per_iteration_in_the_same_scope():
         want[r * COLS + 2] += 1.5
     np.testing.assert_allclose(got, want, rtol=1e-14, atol=1e-14)
     text = render_body(derived, walk).text
-    assert text.count("for (") == 1 and "hawk_abi::accum_add(aout_bar_t, " in text, text
+    commits = (text.count("hawk_abi::accum_add(aout_bar_t, ")
+               + text.count("aether::accum::run::add<32>(aout_bar_t, "))
+    assert text.count("for (") == 1 and commits == 1, text
 
 
 def test_the_reverse_of_a_max_fold_is_the_branch_the_fold_took():

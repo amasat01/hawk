@@ -29,13 +29,13 @@ OPS = ("sum", "mean", "max", "min")
 def _scalar(op):
     @kernel
     def cell(x: Scalar, t: Mutable[Scalar]):
-        t = getattr(hawk.all_samples(x * x), op)()
+        t = getattr(hawk, op)(x * x)
     return cell
 
 
 @kernel
 def wide(x: Scalar, t: Mutable[Vector[3]]):
-    t = hawk.all_samples(hawk.math.vec(x, x * x, 1.5 * x)).sum(axis="samples")
+    t = hawk.sum(hawk.math.vec(x, x * x, 1.5 * x))
 
 
 @pytest.fixture(scope="module", params=["float64", "float32"])

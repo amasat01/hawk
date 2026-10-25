@@ -306,14 +306,14 @@ def header_text(name: str, walk, mode, report: dict, profile) -> str:
 # the translation unit: closures
 
 
-def core_closure(dialect) -> tuple[str, list[str]]:
+def core_closure(writer) -> tuple[str, list[str]]:
     """The aether core functions the body and the helpers call, with every
     struct typedef a declared local needs: the dependency-ordered text
     (:func:`aether_dsc.c_core.emit`) and the sorted function names."""
-    names = set(dialect.core) | set(dialect.structs)
-    functions = set(dialect.core)
-    for name in _helper_order(dialect):
-        for dep in _helper_fn(dialect, name).deps:
+    names = set(writer.core) | set(writer.structs)
+    functions = set(writer.core)
+    for name in _helper_order(writer):
+        for dep in _helper_fn(writer, name).deps:
             if dep.startswith("aether_c_"):
                 names.add(dep)
                 if not dep.endswith("_t"):
@@ -322,9 +322,9 @@ def core_closure(dialect) -> tuple[str, list[str]]:
     return text, sorted(functions)
 
 
-def _helper_fn(dialect, name: str):
-    base, shape = dialect.helper_requests[name]
-    return helper(base, mode=dialect.mode, shape=shape)
+def _helper_fn(writer, name: str):
+    base, shape = writer.helper_requests[name]
+    return helper(base, mode=writer.mode, shape=shape)
 
 
 #: Helper families in emission order: clamps, integers, reals, aggregates.
@@ -333,28 +333,28 @@ _SHAPED_ORDER = ("load", "store", "splat", "make", "select", "at", "at_raw",
                  "set", "set_raw")
 
 
-def _helper_order(dialect) -> list[str]:
+def _helper_order(writer) -> list[str]:
     """Every hawk helper the body references plus their ``hawk_*`` deps,
     each once, deps before users, in a fixed family order."""
-    for name in list(dialect.helper_requests):
-        for dep in _helper_fn(dialect, name).deps:
-            if dep.startswith("hawk_") and dep not in dialect.helper_requests:
-                dialect.helper_requests[dep] = (dep.removeprefix("hawk_"), None)
+    for name in list(writer.helper_requests):
+        for dep in _helper_fn(writer, name).deps:
+            if dep.startswith("hawk_") and dep not in writer.helper_requests:
+                writer.helper_requests[dep] = (dep.removeprefix("hawk_"), None)
 
     def key(name: str):
-        base, shape = dialect.helper_requests[name]
+        base, shape = writer.helper_requests[name]
         if shape is None:
             return (_FAMILY.get(base.split("_", 1)[0], 2), (), 0, name)
         return (3, (len(shape), shape), _SHAPED_ORDER.index(base), name)
 
-    return sorted(dialect.helper_requests, key=key)
+    return sorted(writer.helper_requests, key=key)
 
 
-def helper_closure(dialect) -> tuple[str, list[str], list[str]]:
+def helper_closure(writer) -> tuple[str, list[str], list[str]]:
     """The hawk helpers' text in dependency order, their names, and the libm
     names they call."""
-    order = _helper_order(dialect)
-    fns = [_helper_fn(dialect, n) for n in order]
+    order = _helper_order(writer)
+    fns = [_helper_fn(writer, n) for n in order]
     libm = sorted({m for fn in fns for m in fn.libm})
     return "\n".join(fn.text for fn in fns), order, libm
 
@@ -470,7 +470,7 @@ def _run(name: str, fields: list[dict], body: str, walk) -> list[str]:
     return lines
 
 
-def tu_text(name: str, walk, mode, body: str, dialect, core_closure: str,
+def tu_text(name: str, walk, mode, body: str, writer, core_closure: str,
             helper_closure: str, *, rows: list) -> str:
     """The ``<name>.c`` text: includes, the guarded size asserts, the core
     closure, the helper closure, the run function and the validating entry.

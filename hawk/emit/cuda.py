@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The ``cuda`` backend: the device entry wrapper around the ONE body string.
+"""The device wrapper: the entry around the ONE body string.
 
 Everything device-specific lives here: the ``__global__`` entry taking
 its role args as by-value mirrors followed by the int64 partition
@@ -17,8 +17,9 @@ import re
 from collections.abc import Sequence
 
 from ..ir import HawkError, Walk
-from .aether import SAMPLE_SUM_TERMS
-from .backend import (
+from .box import BOX_OWN, owned_lane
+from .render import SAMPLE_SUM_TERMS
+from .wrapper import (
     SAMPLE_SUM_OP_CODE,
     ActiveSpec,
     SegmentSpec,
@@ -31,10 +32,9 @@ from .dispatch import render_dispatch_rank0
 from .spelling import param_name, reconstruct_call
 
 
-class CudaBackend:
+class CudaWrapper:
     """The device half of the seam."""
 
-    id = "cuda"
     #: Force-inlined: a real call would add an ABI-shim frame for nothing.
     qualifier = "__device__ __forceinline__"
 
@@ -47,14 +47,16 @@ class CudaBackend:
         return (f'extern "C" __global__ void {name}(\n' + ",\n".join(params) + ")")
 
     def index_prologue(self, segment: SegmentSpec | None = None, *,
-                       active: ActiveSpec | None = None) -> str:
+                       active: ActiveSpec | None = None, box=None) -> str:
         """THE one geometry seam: the only text in a HAWK artifact that
         may name a launch-geometry builtin.
 
         ``segment`` replaces ``base + flat`` with ``offsets[j] + flat``,
         reading the run's own bounds off the offsets view and exiting a
         lane past the device-read run length rather than the launch's
-        own cap; ``base`` is unused in that case."""
+        own cap; ``base`` is unused in that case. ``box``
+        (:class:`hawk.emit.box.Box`) makes ``base + flat`` a thread and ends
+        at its first owned lane (:func:`hawk.emit.box.frame` binds ``i``)."""
         # The launch-geometry builtins are spelled ONCE in this file; the
         # segmented prologue is DERIVED from it by swapping the
         # own-column line, never by restating them.
@@ -80,7 +82,13 @@ class CudaBackend:
                 "        const long long hawk_t = base + hawk_flat;\n"
                 f"        if (hawk_t >= static_cast<long long>({count_expr})) return;\n"
                 "        const long long hawk_i = "
-                f"static_cast<long long>({sample_expr});"))
+                f"static_cast<long long>({sample_expr});"
+                + ("\n        if (hawk_i >= nSamples) return;" if active.group > 1 else "")))
+        if box is not None:
+            own = "        const long long hawk_i = base + hawk_flat;"
+            return (plain[:plain.index(own)] + "        const long long hawk_t = base + hawk_flat;\n"
+                    + owned_lane("long long", "hawk_t", box)
+                    + f"\n        if ({BOX_OWN} >= nSamples) return;")
         if segment is None:
             return plain
         seg_begin, seg_end = segment_reads(segment)
@@ -289,7 +297,7 @@ def _launch_budget(pre: str, count: str | None) -> tuple:
     the launch's fused_steps word alone (no per-sample value), so the
     persistent entry evaluates them once, at entry; ``()`` otherwise."""
     from ..ir.nodes import FUSED_STEPS_PLANE
-    from .aether import _declarations
+    from .render import _declarations
     from .spelling import binding_name
 
     if count is None or not re.fullmatch(r"\w+", count):
@@ -331,7 +339,24 @@ def _exit_rebuilt(step: str, exit_flag: str, fresh) -> list | None:
     return out
 
 
-def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
+def _fused_split(sinks, walk: Walk, kind):
+    """The lane split of a ``sample_local`` kernel with the ``fused_steps``
+    word and a finish, or ``None`` where the persist and range entries don't
+    apply."""
+    from ..ir.nodes import FUSED_STEPS_PLANE
+    from .render import render_lane_split
+
+    if getattr(walk, "finish", None) is None or walk.access.cls != "sample_local":
+        return None
+    if not any(n == FUSED_STEPS_PLANE for _, n in walk.arg_spec):
+        return None
+    split = render_lane_split(sinks, walk, kind=kind)
+    if split is None or split.count is None:
+        return None
+    return split
+
+
+def persist_entry(wrapper: CudaWrapper, name: str, sinks, walk: Walk,
                   kind=None) -> str | None:
     """The persistent entry of an automatic (``steps="auto"``) kernel, or
     ``None`` for any other kernel.
@@ -386,17 +411,11 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
 
     Admitted: a ``sample_local`` kernel with the ``fused_steps`` word whose
     fused body cuts into head, one trip and tail
-    (:func:`~hawk.emit.aether.render_lane_split`)."""
-    from ..ir.nodes import FUSED_STEPS_PLANE
-    from .aether import render_lane_split
+    (:func:`~hawk.emit.render.render_lane_split`)."""
     from .spelling import carry_type
 
-    if getattr(walk, "finish", None) is None or walk.access.cls != "sample_local":
-        return None
-    if not any(n == FUSED_STEPS_PLANE for _, n in walk.arg_spec):
-        return None
-    split = render_lane_split(sinks, walk, kind=kind)
-    if split is None or split.count is None:
+    split = _fused_split(sinks, walk, kind)
+    if split is None:
         return None
     # The finish epilogue's per-sample count becomes a register count here.
     per_sample = _finished_on_entry()
@@ -434,7 +453,7 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     if split.guard is not None and post:
         post = post.replace(f"!{split.guard} && ", "")
 
-    head = backend.entry_signature(walk, name)
+    head = wrapper.entry_signature(walk, name)
     assert head.endswith("    long long nSamples)")
     head = head[:-1] + ",\n" + ",\n".join(PERSIST_PARAMS) + ")"
     head = head.replace(f"void {name}(", f"void {name}_persist(", 1)
@@ -453,7 +472,7 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     else:
         commit += [f"{ctype} {cname} = {nxt};" for ctype, cname, nxt in fresh]
     commit = [f"const {line}" for line in commit]
-    lines = [head, "{", backend.unpack(walk)]
+    lines = [head, "{", wrapper.unpack(walk)]
     lines += [f"    {ctype} {store}{{}};" for store, ctype, *_ in carries]
     lines += [f"    {ctype} {store}{{}};" for store, ctype, _ in live]
     lines += [f"    {d}" for d in split.sample_free]
@@ -581,7 +600,7 @@ def persist_entry(backend: CudaBackend, name: str, sinks, walk: Walk,
     return "\n".join(line for line in lines if line is not None)
 
 
-def range_entry(backend: CudaBackend, name: str, sinks, walk: Walk, kind=None,
+def range_entry(wrapper: CudaWrapper, name: str, sinks, walk: Walk, kind=None,
                 single: str = "") -> str | None:
     """The contiguous-range entry of an automatic kernel, or ``None`` where
     :func:`persist_entry` is.
@@ -597,19 +616,14 @@ def range_entry(backend: CudaBackend, name: str, sinks, walk: Walk, kind=None,
     entry, else ``0``) are maxed into ``hawk_steps`` after every lane is
     done, one atomic per warp."""
     from ..ir.nodes import FUSED_STEPS_PLANE
-    from .aether import render_lane_split
     from .spelling import binding_name, carry_type
 
-    if getattr(walk, "finish", None) is None or walk.access.cls != "sample_local":
-        return None
-    if not any(n == FUSED_STEPS_PLANE for _, n in walk.arg_spec):
-        return None
-    split = render_lane_split(sinks, walk, kind=kind)
-    if split is None or split.count is None:
+    split = _fused_split(sinks, walk, kind)
+    if split is None:
         return None
     # DERIVED from the one geometry seam: the lane past ``count`` skips its
     # sample instead of returning, so the warp meets at the report.
-    plain = backend.index_prologue()
+    plain = wrapper.index_prologue()
     exit_line = "    if (hawk_flat >= count) return;\n    {"
     assert exit_line in plain
     opened = plain.replace(exit_line, "    if (hawk_flat < count) {")
@@ -618,12 +632,12 @@ def range_entry(backend: CudaBackend, name: str, sinks, walk: Walk, kind=None,
     live = "true" if split.guard is None else f"!({split.guard})"
     carries = [(f"hawk_pc{j}", carry_type(t), cname, init, nxt, bool(t.shape))
                for j, (cname, t, init, nxt) in enumerate(split.carries)]
-    head = backend.entry_signature(walk, name)
+    head = wrapper.entry_signature(walk, name)
     assert head.endswith("    long long nSamples)")
     head = head[:-1] + ",\n" + ",\n".join(RANGE_PARAMS) + ")"
     head = head.replace(f"void {name}(", f"void {name}_range(", 1)
     pad = "            "
-    lines = [head, "{", backend.unpack(walk), "    unsigned hawk_ran = 0u;",
+    lines = [head, "{", wrapper.unpack(walk), "    unsigned hawk_ran = 0u;",
              f"    if ({word} == 1) {{", opened,
              f"        const bool hawk_live = {live};", single,
              "        hawk_ran = hawk_live ? 1u : 0u;",
@@ -674,5 +688,5 @@ def _param_type(role: str, ttype) -> str:
     return f"eagle::plugin::{shape}"
 
 
-#: The built device backend.
-CUDA = CudaBackend()
+#: The built device wrapper.
+CUDA = CudaWrapper()

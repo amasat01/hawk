@@ -1,17 +1,17 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reductions: a value's own axes, and ``hawk.all_samples(x)`` cells.
+"""Reductions: a value's own axes, and ``hawk.sum(x)`` cells.
 
 Rows (the ``cuda`` arm is marked ``gpu``):
 
 * **own axes** — ``.sum/.max/.min/.mean(axis)``, ``hawk.math.sum/mean`` and the
   views ``.components / .rows / .columns`` on one sample's value equal numpy;
-* **cells** — ``hawk.all_samples(x).sum/max/min/mean()`` stored to a
+* **cells** — ``hawk.sum/max/min/mean(x)`` stored to a
   ``Mutable`` gives one row per 32 samples: sums within the sum contract,
   max and min exactly, for ragged and aligned ``n``, float32 and float64;
 * **bitwise** — repeated device launches give the same bits;
-* **identity** — a hand-written ``all_samples(bar_y * x).sum()`` is the
+* **identity** — a hand-written ``hawk.sum(bar_y * x)`` is the
   parameter gradient ``vjp`` derives: the same sidecar entry, the same rows;
 * **derivative** — the sum over samples differentiates (a broadcast of its
   adjoint); a max or a min refuses, naming the tie;
@@ -20,11 +20,10 @@ Rows (the ``cuda`` arm is marked ``gpu``):
 
 from __future__ import annotations
 
-import _deploy as L
 import numpy as np
 import pytest
 from _eval import evaluate
-from conftest import sidecar_of
+from conftest import _launch, _xp, sidecar_of
 
 import hawk
 from hawk import HawkError, Kernel, Matrix, Mutable, Param, Scalar, Vector, kernel
@@ -70,19 +69,19 @@ def _cell(op):
     if op == "mean":
         @kernel
         def cell(x: Scalar, t: Mutable[Scalar]):
-            t = hawk.all_samples(x * x).mean()
+            t = hawk.mean(x * x)
     elif op == "max":
         @kernel
         def cell(x: Scalar, t: Mutable[Scalar]):
-            t = hawk.all_samples(x * 1.5).max()
+            t = hawk.max(x * 1.5)
     elif op == "min":
         @kernel
         def cell(x: Scalar, t: Mutable[Scalar]):
-            t = hawk.all_samples(x * 1.5).min()
+            t = hawk.min(x * 1.5)
     else:
         @kernel
         def cell(x: Scalar, t: Mutable[Scalar]):
-            t = hawk.all_samples(x * x).sum()
+            t = hawk.sum(x * x)
     return cell
 
 
@@ -96,7 +95,7 @@ def kx(x: Scalar, k: Param, y: Mutable[Scalar]):
 
 @kernel
 def user_grad(x: Scalar, bar_y: Scalar, bar_k: Mutable[Scalar]):
-    bar_k = hawk.all_samples(bar_y * x).sum()
+    bar_k = hawk.sum(bar_y * x)
 
 
 KX = param_planes(kx)
@@ -110,26 +109,6 @@ def built(request, tmp_path_factory, cache_dir):
     bundle = build_bundle(kernels, root, mode=request.param, targets=("cuda", "host"),
                           cache_dir=cache_dir, host_profile="native")
     return bundle, request.param
-
-
-def _launch(bundle, name, target, planes):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    sidecar = sidecar_of(bundle, name)
-    if target == "host":
-        plugin, structure = L.host_plugin(bundle.directory, name, sidecar), eexec.HostTeam
-    else:
-        plugin, structure = L.device_plugin(bundle.directory, name, sidecar), eexec.DeviceKernel
-    return eplan.plan(plugin, structure=structure).bind(**planes)
-
-
-def _xp(target):
-    if target == "host":
-        return np
-    import cupy
-
-    return cupy
 
 
 def _x(n, mode):
@@ -243,15 +222,15 @@ def test_max_and_min_over_samples_refuse_to_differentiate(op):
         jvp(_cell(op), wrt=("x",))
 
 
-def test_axis_samples_on_a_locked_value_names_all_samples():
-    with pytest.raises(HawkError, match=r"hawk\.all_samples\(x\)\.sum\(\)"):
+def test_axis_samples_on_a_value_names_hawk_sum():
+    with pytest.raises(HawkError, match=r"axis='samples'\) is gone.*hawk\.sum\(x\)"):
         @kernel
         def k(v: Vector[3], y: Mutable[Scalar]):
             y = v.sum(axis="samples")
 
 
 def test_a_scalar_has_no_axis_to_fold():
-    with pytest.raises(HawkError, match=r"hawk\.all_samples\(x\)\.sum\(\)"):
+    with pytest.raises(HawkError, match=r"over the lanes is hawk\.sum\(x\)"):
         @kernel
         def k(x: Scalar, y: Mutable[Scalar]):
             y = x.sum()
@@ -269,28 +248,26 @@ def test_a_reduced_value_read_later_is_a_launch_boundary():
 
     @kernel
     def k(x: Scalar, t: Mutable[Scalar], u: Mutable[Scalar]):
-        t = hawk.all_samples(x).sum()
+        t = hawk.sum(x)
         u = t + 1.0
     first, second = stages("k", k.sinks)
     assert first.cells_out == ("t",) and second.cells_in == ("t",)
 
 
-def test_arithmetic_on_the_view_and_a_nested_view_refuse():
-    with pytest.raises(HawkError, match="compute per sample first"):
+def test_arithmetic_on_a_sum_over_some_axes_refuses():
+    with pytest.raises(HawkError, match="Reading it back in the body is in the next release"):
         @kernel
-        def k2(x: Scalar, t: Mutable[Scalar]):
-            t = hawk.all_samples(x) * 2.0
-    with pytest.raises(HawkError, match="already every sample"):
-        hawk.all_samples(hawk.all_samples(1.0))
+        def k2(lane: hawk.Grid["a", "b":4], x: Scalar, t: Mutable["a":2]):
+            t = hawk.sum(x, over="b") * 2.0
 
 
 def test_one_kernel_reduces_with_one_op():
     @kernel
     def k(x: Scalar, a: Mutable[Scalar], b: Mutable[Scalar]):
-        a = hawk.all_samples(x).sum()
-        b = hawk.all_samples(x).max()
+        a = hawk.sum(x)
+        b = hawk.max(x)
 
-    from hawk.emit.backend import render_source
-    from hawk.emit.cuda import CudaBackend
+    from hawk.emit.wrapper import render_source
+    from hawk.targets import TARGETS
     with pytest.raises(HawkError, match="one op"):
-        render_source(k.name, k.sinks, k.walk, CudaBackend())
+        render_source(k.name, k.sinks, k.walk, TARGETS["cuda"])

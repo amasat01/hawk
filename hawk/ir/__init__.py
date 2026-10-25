@@ -19,6 +19,9 @@ from .compound import QuantitySpan as QuantitySpan
 from .contraction import ContractionOperand as ContractionOperand
 from .contraction import RecognizedContraction as RecognizedContraction
 from .contraction import recognize
+from .lanes import KeyRun as KeyRun
+from .lanes import LaneFacts as LaneFacts
+from .lanes import key_run as key_run
 from .loop_nodes import Loop as Loop
 from .loop_nodes import LoopCarry as LoopCarry
 from .loop_nodes import LoopCount as LoopCount

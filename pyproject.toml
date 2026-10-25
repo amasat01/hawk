@@ -8,6 +8,7 @@
 [build-system]
 requires = [
     "scikit-build-core>=0.10",
+    "setuptools-scm>=8",
     # nanobind 3 needs Python 3.10+; 3.9 (no free-threaded build) uses nanobind 2
     "nanobind>=3.1,<4; python_version>='3.10'",
     "nanobind>=2.2,<3; python_version<'3.10'",
@@ -46,22 +47,20 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
-# ZERO runtime dependencies beyond the binding itself and `aether-dsc` (the
-# severance is about raptor/eagle imports; this is about the
-# dependency graph): nothing under `hawk/hawk/` imports raptor or eagle,
-# — or numpy. `aether-dsc` is the ONE exception: the sealed
+# Runtime dependencies beyond the binding itself: `raptor-core` (`raptor.flow`, which the
+# frontend imports) and `aether-dsc`: the sealed
 # AETHER payload every NVRTC device compile serves headers from
 # (`hawk.compile.payload.current_payload()`), added the day the code that
 # uses it landed rather than pre-declared ahead of it.
-# aether-dsc 0.2.7 brings `aether_dsc.c_core`, which the `c` target imports.
+# raptor-core, aether-dsc, raptor-hawk and raptor-eagle share one version from 0.7.0; aether-dsc
+# 0.7.0 brings `aether/accum/run.h`, which keyed sums over a repeated key emit.
 # numpy: hawk never imports it, but the host route and every example pass NumPy arrays
-dependencies = ["aether-dsc>=0.2.7,<0.3", "numpy>=1.26"]
+dependencies = ["aether-dsc>=0.7.0,<0.8", "raptor-core>=0.7.0,<0.8", "numpy>=1.26"]
 
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
 # primal and its derivative IR with the scratch interpreter in tests/_eval.py.
-# hawk itself still has zero runtime dependencies.
-test = ["pytest", "numpy", "scipy", "raptor-core>=0.3"]
+test = ["pytest", "numpy", "scipy", "raptor-core>=0.7.0,<0.8"]
 # The GPU route: NVRTC + CCCL + cuda-bindings for one CUDA major (no nvcc needed).
 # CUDA 13's wheels carry no -cu13 suffix (those names on PyPI are empty placeholders).
 cuda12 = ["cuda-bindings>=12.6,<13", "nvidia-cuda-nvrtc-cu12>=12.6,<13", "nvidia-cuda-cccl-cu12>=12.6,<13"]
@@ -88,15 +87,18 @@ sdist.include = ["_sdist_include/**"]
 # them into the wheel's dist-info/licenses/.
 wheel.license-files = ["LICENSE", "NOTICE"]
 
-# Single source of truth for the version (mirrors the family's shared convention and
-# (mirrors `attr = "hawk.__version__"`): the literal in hawk/__init__.py, read back
-# STATICALLY. It has to be a regex read now rather than an attribute import —
-# importing `hawk` to learn its version would run the self-check against a
-# `_core` this very build is producing.
+# The version is the latest vX.Y.Z git tag (a PR build tags its checkout first); sdists carry it
+# in PKG-INFO. The wheel also carries it as hawk/_version.py, which hawk/__init__.py reads:
+# importing hawk to learn its version would run the self-check against a `_core` this very
+# build is producing, and importlib.metadata at import costs more than a module.
 [tool.scikit-build.metadata.version]
-provider = "scikit_build_core.metadata.regex"
-input = "hawk/__init__.py"
-regex = '''(?i)^__version__(?::.*)?\s*=\s*["\'](?P<value>.+?)["\']'''
+provider = "scikit_build_core.metadata.setuptools_scm"
+
+[tool.setuptools_scm]   # setuptools-scm < 9 refuses a project without this section
+
+[[tool.scikit-build.generate]]
+path = "hawk/_version.py"
+template = 'version = "${version}"'
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

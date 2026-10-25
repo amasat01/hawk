@@ -75,7 +75,7 @@ def _no_tmp(root):
 
 @ft.register_ft_row("FT-3-HAWK-COMPILE-SINGLE-FLIGHT")
 def test_same_source_cold_compiles_exactly_once(tmp_path, compiles):
-    opts = CompileOptions(backend="host", cache_dir=str(tmp_path / "c"))
+    opts = CompileOptions(target="host", cache_dir=str(tmp_path / "c"))
     results, errors = run_threads(
         [lambda: compile_source(_source(0), "ft_same", opts)] * THREADS)
     assert errors == [None] * THREADS
@@ -91,7 +91,7 @@ def test_same_source_cold_compiles_exactly_once(tmp_path, compiles):
 
 @ft.register_ft_row("FT-3-HAWK-COMPILE-DISTINCT")
 def test_distinct_sources_each_compile_once(tmp_path, compiles):
-    opts = CompileOptions(backend="host", cache_dir=str(tmp_path / "c"))
+    opts = CompileOptions(target="host", cache_dir=str(tmp_path / "c"))
     results, errors = run_threads(
         [lambda i=i: compile_source(_source(i), f"ft_d{i}", opts)
          for i in range(THREADS)])
@@ -106,7 +106,7 @@ def test_distinct_sources_each_compile_once(tmp_path, compiles):
 
 
 def test_failed_compile_releases_every_waiter(tmp_path, compiles):
-    opts = CompileOptions(backend="host", cache_dir=str(tmp_path / "c"))
+    opts = CompileOptions(target="host", cache_dir=str(tmp_path / "c"))
     bad = "this is not c++\n"
     _, errors = run_threads([lambda: compile_source(bad, "ft_bad", opts)] * 4)
     assert all(isinstance(e, HawkError) for e in errors), errors

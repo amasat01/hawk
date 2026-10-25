@@ -1,12 +1,12 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The aether C++ dialect: today's spelling of every text the body renderer
-produces, behind the :class:`hawk.emit.dialect.Dialect` seam.
+"""The aether C++ writer: today's spelling of every text the body renderer
+produces, behind the :class:`hawk.emit.writer.Writer` seam.
 
-Every method here is the text :class:`hawk.emit.aether._Renderer` emitted
+Every method here is the text :class:`hawk.emit.render._Renderer` emitted
 before the seam existed, moved verbatim; the renderer keeps the traversal
-and hands this dialect already-rendered operand text. ``r`` is the renderer
+and hands this writer already-rendered operand text. ``r`` is the renderer
 (``r._emit``, ``r._ref``, ``r.items``, ``r.hoists``, ``r.indent``,
 ``r.uses_random``). Rank is the dispatch axis: rank-0 spells through
 ``aether::math``, rank>=1 through ``Expression``'s methods and
@@ -23,10 +23,12 @@ from ..ir import HawkError
 from ..ir.nodes import (
     FINISHED_PLANE,
     RAW_KIND,
+    RAW_LANGUAGE,
     At,
     Const,
     Finish,
     Leaf,
+    Node,
     Op,
     Select,
     TapeWrite,
@@ -34,6 +36,8 @@ from ..ir.nodes import (
 )
 from ..ir.ops import RANDOM_OPS
 from ..types import INT_PLANE_DTYPES, TensorType
+from .box import BOX_OWN
+from . import rtstore
 from .dispatch import _clamp_expr, render_dispatch_rank0
 from .spelling import (
     _CWISE,
@@ -46,6 +50,7 @@ from .spelling import (
     _METHOD1,
     _RANDOM_FN,
     SAMPLE_INDEX_IDENT,
+    _flat_indices,
     _for_header,
     _no_spelling,
     _real_literal,
@@ -57,13 +62,20 @@ from .spelling import (
 )
 
 
-class AetherDialect:
+#: The namespace of aether's run commits (``aether/accum/run.h``) and the
+#: prefix of the entry-local run state each target's calls share.
+RUN_CALL = "aether::accum::run::"
+RUN_STATE = "hawk_run_"
+
+class AetherWriter:
     """The aether C++ spelling (see the module docstring)."""
 
     id = "aether"
     #: aether's lazy expressions inline until the renderer's fan-out rule
     #: names them; only leaf values (``Item``/``Constant``) are forced.
     names_every_tensor = False
+    #: stores at a runtime index are written in place (:mod:`hawk.emit.rtstore`)
+    in_place_stores = True
     commits_per_component = True
 
     # -- declarations and loops ----------------------------------------
@@ -165,6 +177,11 @@ class AetherDialect:
         the reference evaluator reads it."""
         r._emit(f"{target}[{self._sample_index(index)}] = {value};")
 
+    def box_store(self, r, target: str, lane: str, value: str) -> None:
+        """A thread box lane's own-column store, only for a lane the thread
+        owns (:mod:`hawk.emit.box`)."""
+        r._emit(f"if ({lane} >= {BOX_OWN}) {target}[{self._sample_index(lane)}] = {value};")
+
     def accum_scattered(self, r, sink, target: str, index: str, value: str) -> None:
         """The scattered ``plain``/``atomic`` commit: the target's atomic add."""
         r._emit(f"hawk_abi::accum_add({target}, {self._sample_index(index)}, {value});")
@@ -179,6 +196,21 @@ class AetherDialect:
         index = self._sample_index(r._ref(sink.index))
         r._emit(f"hawk_abi::accum_add_compensated({target}, {comp}, {index}, {value});")
 
+    def accum_run(self, r, sink, target: str, comp: str | None, index: str, value: str,
+                  run) -> None:
+        """A scattered commit whose key moves in runs of lanes
+        (:func:`hawk.ir.lanes.key_run`): ``aether::accum::run``'s call for the
+        run's form, compensated when ``comp`` names the companion. ``i`` is
+        the lane's own sample (the alignment vote reads it); the run state
+        ``hawk_run_<target>`` is declared and closed by the entry
+        (:func:`hawk.emit.wrapper.run_states`)."""
+        c = "Compensated" if comp else ""
+        name = {"proven": f"add{c}<{run.width}>", "tested": f"addTested{c}",
+                "sorted": f"addSorted{c}"}[run.form]
+        args = [target, *([comp] if comp else []), self._sample_index(index), value,
+                *(["i"] if run.form == "proven" else []), f"{RUN_STATE}{target}"]
+        r._emit(f"{RUN_CALL}{name}({', '.join(args)});")
+
     def component_commit(self, r, target: str, at: str, op: str, value: str) -> str:
         return f"{target}({at}, i.global()) {op} {value};"
 
@@ -191,8 +223,8 @@ class AetherDialect:
 
     def sample_sum(self, r, sink, column: int) -> None:
         """The sample's term into its column of the row the wrapper sums
-        (:data:`hawk.emit.aether.SAMPLE_SUM_TERMS`)."""
-        from .aether import SAMPLE_SUM_TERMS
+        (:data:`hawk.emit.render.SAMPLE_SUM_TERMS`)."""
+        from .render import SAMPLE_SUM_TERMS
 
         r._emit(f"{SAMPLE_SUM_TERMS}[{column}] = {r._ref(sink.value)};")
 
@@ -277,6 +309,9 @@ class AetherDialect:
 
     def _raw(self, r, node: Op, args: Sequence[str]) -> str:
         block = node.literal
+        if block.language != RAW_LANGUAGE:
+            raise HawkError(f"a raw block written in {block.language!r} cannot be "
+                            f"spliced into aether text; write it in {RAW_LANGUAGE!r}")
         for k, arg in enumerate(args):
             r._emit(f"const auto hawk_raw_arg{k} = {arg};")
         return f"({block.text})"
@@ -285,7 +320,7 @@ class AetherDialect:
         if kind in _INT_CALLS or (kind in _INT_WRAPPING
                                   and node.ttype.dtype in INT_PLANE_DTYPES):
             # integer planes (and `//`, `%`, the bit operators on an index):
-            # the wrapping, numpy-defined helpers (hawk/emit/backend.py
+            # the wrapping, numpy-defined helpers (hawk/emit/wrapper.py
             # INT_HELPERS), since C++'s own `+ - * / % << >>` are undefined
             # or differently defined at the edges numpy pins.
             name = _INT_CALLS.get(kind) or _INT_WRAPPING[kind]
@@ -336,7 +371,7 @@ class AetherDialect:
         only ``seed``/``counter``), which is also what lets a captured graph
         re-draw by writing one of those wires rather than re-capturing. Sets
         :attr:`uses_random` so :class:`Body` carries the fact
-        :func:`hawk.emit.backend.prelude` needs to add the header."""
+        :func:`hawk.emit.wrapper.prelude` needs to add the header."""
         r.uses_random = True
         seed, counter = args
         return (f"aether::random::detail::{_RANDOM_FN[kind]}<Real>("
@@ -347,7 +382,7 @@ class AetherDialect:
     def _reduction(self, r, kind: str, args: Sequence[str], node: Op) -> str:
         """The rank>=1 -> rank-0 forms: they READ a tensor and RETURN a scalar."""
         if kind == "component":
-            from .aether import _through
+            from .render import _through
 
             index = node.literal if isinstance(node.literal, tuple) else (node.literal,)
             ks = ', '.join(str(int(k)) for k in index)
@@ -371,13 +406,22 @@ class AetherDialect:
         materialisation is named once per value per SCOPE (:attr:`items`), so
         two runtime reads of one vector inside a loop body share one Item, and
         an Item built inside a loop isn't referenced after the scope closes."""
-        from .aether import _reads_in_place
+        from .render import _reads_in_place
 
         source = node.operands[0]
+        if r.stores.skips(node):
+            return ""               # a store of the same slot adds in place
         if _reads_in_place(source):
             # a read-only input plane: the element at the runtime index straight
             # from the view (`SampleRef::at`), no `Item` of the whole row
             return f"{binding_name(source.role, source.name)}[i].at({args[1]})"
+        held = self._held_item(r, source, args[0])
+        return f"{held}({args[1]})"
+
+    @staticmethod
+    def _held_item(r, source: Node, arg: str) -> str:
+        """The name of ``source``'s value materialised once per scope as a
+        const ``aether::Item`` (``arg`` is its expression)."""
         held = r.items.get(id(source))
         if held is None:
             t = source.ttype
@@ -385,30 +429,21 @@ class AetherDialect:
             held = f"hawk_it{r.hoists}"
             r.hoists += 1
             r._emit(f"const aether::Item<{element_spelling(t.dtype)}, "
-                       f"{extents}> {held} = {args[0]};")
+                       f"{extents}> {held} = {arg};")
             r.items[id(source)] = held
-        return f"{held}({args[1]})"
+        return held
 
-    def _runtime_component_store(self, r, node: Op, args: Sequence[str],
-                                 accumulate: bool = False) -> str:
+    def _runtime_component_store(self, r, node: Op, args: Sequence[str]) -> str:
         """``v[k] = e`` at a RUNTIME index, as a VALUE.
 
         The IR node is functional — ``v`` with one component replaced — and C++
         has no such expression, so this is the one place the emitter turns a
-        value into two statements: a non-const ``aether::Item`` copy of the
-        incoming vector, then a write through its non-const ``operator()``.
-        The copy preserves the IR's functional meaning (a later read of ``v``
-        sees the old value); it's register-resident, so a compiler that can
-        see the original elides it. Emitting statements mid-expression is safe
-        because :meth:`_expr` runs once per node in traversal order, so the
-        lines land above their use."""
-        t = node.ttype
-        name = f"hawk_sv{r.hoists}"
-        r.hoists += 1
-        r._emit(f"{carry_type(t)} {name} = {args[0]};")
-        op = "+=" if accumulate else "="
-        r._emit(f"{name}({args[1]}) {op} {self._cast(args[2], t.dtype)};")
-        return name
+        value into statements: :func:`hawk.emit.rtstore.emit` writes the whole
+        run of stores on one vector into one mutable local, at the run's last
+        store, and the stores before it render nothing. Emitting statements
+        mid-expression is safe because :meth:`_expr` runs once per node in
+        traversal order, so the lines land above their use."""
+        return rtstore.emit(self, r, node, args)
 
     def _matrix_sum(self, r, arg: str, ttype: TensorType) -> str:
         """The FULL reduction of a rank-2 expression, in aether's own spelling.
@@ -434,7 +469,7 @@ class AetherDialect:
         if kind == "set_component_at":
             return self._runtime_component_store(r, node, args)
         if kind == "add_at":
-            return self._runtime_component_store(r, node, args, accumulate=True)
+            return self._runtime_component_store(r, node, args)
         if kind in ("dot", "norm", "sum", "component"):
             return self._reduction(r, kind, args, node)
         if kind == "splat":
@@ -585,13 +620,5 @@ _INT_WRAPPING = {"add": "int_add", "sub": "int_sub", "mul": "int_mul",
                  "max": "int_max"}
 
 
-def _flat_indices(shape: tuple) -> list:
-    """Every index tuple of ``shape`` in row-major (C) order."""
-    out: list = [()]
-    for extent in shape:
-        out = [idx + (k,) for idx in out for k in range(int(extent))]
-    return out
-
-
-#: The built aether dialect: what every backend wraps today.
-AETHER = AetherDialect()
+#: The built aether writer: what every wrapper wraps today.
+AETHER = AetherWriter()

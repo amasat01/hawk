@@ -7,14 +7,15 @@ any address is taken."""
 
 from __future__ import annotations
 
+import array
+import os
+
 from ._plane_layout import (
     _NO_CHOICE,
     _native_extent,
     layout_refusal,
     mixed_refusal,
     number_refusal,
-    plane_layout,
-    sample_major_refusal,
 )
 from .ir import HawkError
 from .ir import nodes as _ir_nodes
@@ -242,6 +243,59 @@ def _check_plane_arg(role: str, name: str, value, arg_dtypes: dict,
             )
 
 
+def widen_index(names, arrays: dict) -> dict:
+    """``arrays`` with each 32-bit integer plane among ``names`` (the input planes
+    on the 64-bit index wire) widened to 64 bits, so an ``Index`` plane takes an
+    int32 column. A copy, made only for such a plane; anything else is untouched."""
+    out = arrays
+    for name in names:
+        value = arrays.get(name)
+        if value is None or isinstance(value, (bool, int, float, complex)):
+            continue
+        try:
+            mv = memoryview(value)
+        except TypeError:
+            continue
+        if mv.itemsize == 4 and _buffer_kind(mv)[0] in ("i", "u") and mv.c_contiguous:
+            if out is arrays:
+                out = dict(arrays)
+            out[name] = array.array("q", mv.cast("B").cast(mv.format).tolist())
+    return out
+
+
+def _check_sorted(name: str, value, n_samples: int, errors: list) -> None:
+    """Under ``HAWK_CHECK_SORTED``: a ``Sorted[Index]`` input must not decrease
+    along the first ``n_samples`` lanes."""
+    try:
+        mv = memoryview(value)
+        flat = mv.cast("B").cast(mv.format).tolist()[:n_samples]
+    except (TypeError, ValueError):
+        return                                    # not a buffer: the plane check says so
+    for i in range(1, len(flat)):
+        if flat[i] < flat[i - 1]:
+            errors.append(
+                f"argument {name!r} is declared Sorted[Index] but position {i} "
+                f"({flat[i]}) is below position {i - 1} ({flat[i - 1]}) — sort it, or "
+                "declare it Index")
+            return
+
+
+def _check_axes_arg(sidecar: dict, name: str, value, n_samples: int, errors: list) -> None:
+    """A sink declared with named axes is bound ``(*payload, *axes)``."""
+    from ._lane_bind import output_shape
+
+    try:
+        got = tuple(memoryview(value).shape)
+    except TypeError:
+        return
+    spec = sidecar["plane_axes"][name]
+    want = output_shape(sidecar, name, 1, n_samples)
+    if got != want:
+        axes = ", ".join(f'{ax["label"]}={ax["extent"]}' for ax in spec["axes"])
+        errors.append(f"argument {name!r}: declared with the axes ({axes}), so it is bound "
+                      f"{want} (payload first), got {got}")
+
+
 def _check_uniform_arg(name: str, value, params: dict, errors: list) -> None:
     """A ``uniform``'s value: a Python number or a 0-d buffer, matching
     the ``params`` block's declared ``int``/``float``. int->float is
@@ -294,6 +348,8 @@ def _check_bind(sidecar: dict, arg_spec, arrays: dict, n_samples: int,
     arg_dtypes = sidecar.get("arg_dtypes", {})
     arg_shapes = sidecar.get("arg_shapes", {})
     params = {p["name"]: p for p in sidecar.get("params", ())}
+    plane_axes = sidecar.get("plane_axes") or {}
+    check_sorted = (sidecar.get("sorted_inputs") or ()) if os.environ.get("HAWK_CHECK_SORTED") else ()
 
     errors: list = []
     for role, name in arg_spec:
@@ -310,6 +366,10 @@ def _check_bind(sidecar: dict, arg_spec, arrays: dict, n_samples: int,
         else:
             _check_plane_arg(role, name, arrays[name], arg_dtypes, arg_shapes,
                              n_samples, errors, choice)
+            if name in plane_axes:
+                _check_axes_arg(sidecar, name, arrays[name], n_samples, errors)
+            if name in check_sorted:
+                _check_sorted(name, arrays[name], n_samples, errors)
 
     if not errors:
         return

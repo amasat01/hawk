@@ -41,13 +41,13 @@ from hawk.artifact import (
     reset_unit_memo,
     unit_stats,
 )
-from hawk.artifact import bundle as _bundle
 from hawk.artifact import manifest as _manifest
 from hawk.artifact.unit_cache import _unit_key
 from hawk.embedded import EmbeddedProfile, export
 from hawk.emit import scalar_mode
 from hawk.ext import DEFAULT_KIND
 from hawk.ir import HawkError
+from hawk.targets import TARGETS
 
 C_FILES = ["drag.c", "drag.embedded.json", "drag.h"]
 
@@ -75,7 +75,7 @@ def test_c_only_bundle_writes_sources_report_and_no_manifest(tmp_path, cache_dir
     (art,) = bundle.artifacts
     assert list(art.entries) == ["c"]
     entry = art.entries["c"]
-    assert (entry.backend, entry.artifact, entry.source, entry.report) == (
+    assert (entry.target, entry.artifact, entry.source, entry.report) == (
         "c", d / "drag.h", d / "drag.c", d / "drag.embedded.json")
     assert art.sidecar_path == d / "drag.embedded.json"
     assert art.sidecar == json.loads(entry.report.read_text())
@@ -123,9 +123,10 @@ def test_host_and_c_together_keep_the_manifest_host_only(tmp_path, cache_dir, fr
 
 
 def test_exec_targets_table_never_learns_c():
-    assert "c" not in _bundle._EXEC_TARGET
+    row = TARGETS["c"]
+    assert row.entry is None and row.wrapper is None and row.compile is None
     assert _manifest.EXEC_TARGETS == ("device", "host")
-    assert _bundle._TARGET["c"] == (".h", ".c", "c")
+    assert (row.artifact, row.source, row.format) == (".h", ".c", "c")
 
 
 def test_c_only_directory_refuses_cleanly_to_load(tmp_path, cache_dir, fresh):
@@ -139,7 +140,7 @@ def test_c_only_directory_refuses_cleanly_to_load(tmp_path, cache_dir, fresh):
 
 def test_unit_key_differs_by_profile(tmp_path, cache_dir, fresh):
     def key(profile: str) -> str:
-        return _unit_key(["drag"], [K.drag.walk.digest], targets=("c",),
+        return _unit_key(["drag"], [K.drag.walk.digest], [""], targets=("c",),
                          smode=scalar_mode("float64"), kind=DEFAULT_KIND, defines=(),
                          cache_dir=cache_dir, device_arch="", derivative_blocks=[None],
                          layout_sizes_override=None, embedded_profile=profile)
@@ -209,7 +210,7 @@ def test_same_walk_different_source_reports_its_own_digest(tmp_path, cache_dir, 
 
 
 def _key_for(targets, cache_dir, **kw) -> str:
-    return _unit_key(["drag"], [K.drag.walk.digest], targets=targets,
+    return _unit_key(["drag"], [K.drag.walk.digest], [""], targets=targets,
                      smode=scalar_mode("float64"), kind=DEFAULT_KIND, defines=(),
                      cache_dir=cache_dir, device_arch="", derivative_blocks=[None],
                      layout_sizes_override=None, host_profile="native", **kw)

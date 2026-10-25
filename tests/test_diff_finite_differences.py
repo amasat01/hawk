@@ -93,7 +93,7 @@ CASES = [
     # produced, and the RANK of that sum is the rank it broadcast INTO. Rank 1
     # is the pair above; rank 2 is these two, and they are here because the
     # rank-2 `sum` they mint is the node aether has no `Expression::sum()` for
-    # (`hawk/emit/aether._matrix_sum` spells it `matDot` against a ones matrix).
+    # (`hawk/emit/render._matrix_sum` spells it `matDot` against a ones matrix).
     # The rank axis of a broadcast is not a detail of one op: it decides which
     # aether reduction the emitter must reach for.
     ("mul_broadcast_rank2", ("s", "m33"), _b("mul")),

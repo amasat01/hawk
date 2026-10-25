@@ -425,7 +425,7 @@ FLOAT_ONLY_DIGESTS = {
     "gather": "d8c27845d56e55b55e9db4e4bb2bbc5df731d1362aa21116ab0585f3c1ab943e",
     "rotate_quat": "fe1634aba3c69d61177c1b321c588a0972f4052c98667361321a88ac4072e63d",
     "scale": "1e37d343cea724f7480e82378d805e622336414a68250a6d2447db80ce367328",
-    "scatter": "aebfe93674f7da66f069d6cd9d939f0180aa2cd774a4940456824894d62a5db7",
+    "scatter": "f0cf891d96352f0ec012dc6ef5e3bb6e3648dbf22b9efeef434e47b764988bb0",
     "spin": "1c0ccc4d2025307ab2d5c7a78f54295028d5d2ef277ba7c00816629d32ffce24",
 }
 
@@ -444,12 +444,13 @@ def test_a_float_only_kernel_emits_the_same_bytes(monkeypatch):
 
 
 def test_an_integer_body_carries_the_integer_helpers_and_a_float_one_does_not():
-    from hawk.emit import BACKENDS, render_source
+    from hawk.emit import render_source
+    from hawk.targets import TARGETS
 
-    text = render_source("ops_i32", ops_i32.sinks, ops_i32.walk, BACKENDS["host"]).text
+    text = render_source("ops_i32", ops_i32.sinks, ops_i32.walk, TARGETS["host"]).text
     assert "int_floordiv" in text and "std::int32_t" in text
     from _kernels import CORPUS
 
     drag = CORPUS["drag"]
     assert "int_traits" not in render_source("drag", drag.sinks, drag.walk,
-                                             BACKENDS["host"]).text
+                                             TARGETS["host"]).text

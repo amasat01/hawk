@@ -317,6 +317,9 @@ def _gradient_sink(leaf: Node, name: str, summed: tuple, value: Node) -> Node:
     """The sink of one input's gradient: the sum over samples of the per-sample
     adjoint for a promoted parameter, else the adjoint plane itself."""
     if leaf.name in summed:
+        if leaf.ttype.shape:
+            raise HawkError(f"the gradient of {leaf.name!r} cannot be summed over samples: "
+                            f"only a scalar leaf is, and it has shape {leaf.ttype.shape}")
         return ReduceSamples("sum", value).stored(name, leaf.ttype)[0]
     return Assign(name, value, leaf.ttype)
 
@@ -373,7 +376,8 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
     key = _keyer(position)
     plan = _plan(seq, key, inputs, jump, primal)
     tangent: dict[Any, Node] = {
-        key(leaf): Leaf(leaf.kind, leaf.role, name(leaf.name), leaf.ttype)
+        key(leaf): Leaf(leaf.kind, leaf.role, name(leaf.name), leaf.ttype,
+                        sorted=leaf.sorted)
         for leaf in inputs
     }
     #: The AUGMENTED loop a lowered `for` becomes in forward mode — one loop

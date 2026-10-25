@@ -30,8 +30,10 @@ from __future__ import annotations
 import ast
 from typing import Any
 
-from ..ir import HawkError
-from ..ir.loop_nodes import LoopCarry, LoopIndex, LoopValue
+from ..ir import Const, Dispatch, HawkError, Node, Select
+from ..ir.cost import SPECIAL_KINDS
+from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from ..types import TensorType
 from ..ir.loops import build_loop
 from .value import Value, index_node, node_of, own_column_rewrite_advice, select
 
@@ -45,9 +47,11 @@ LOOP_HELPER = "__hawk_loop__"
 SETITEM_HELPER = "__hawk_setitem__"
 #: The name the rewritten body reaches :func:`hawk.trace.reduce.maxmin` under.
 MAXMIN_HELPER = "__hawk_maxmin__"
-#: The name the rewritten body reaches :func:`hawk.trace.reduce.viewstore` under,
-#: and the name of the dict of the kernel's output refs it reads.
-VIEWSTORE_HELPER = "__hawk_viewstore__"
+#: The name the rewritten body reaches :func:`hawk.trace.reduce.scatter_store`
+#: under, and the name of the dict of the kernel's output refs it reads.
+SCATTER_HELPER = "__hawk_scatter__"
+#: The name a ``for`` unrolled while the body is traced reaches :func:`static_range` under.
+RANGE_HELPER = "__hawk_range__"
 REFS = "__hawk_refs__"
 
 _ALLOWED_STMTS = (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Expr, ast.If,
@@ -218,6 +222,15 @@ class _LoopBuilder:
         return _LoopLocal(name, self.where, what)
 
 
+def static_range(*bounds: Any, where: str) -> range:
+    """The ``range`` of a ``for`` unrolled while the body is traced: its bounds
+    are compile-time ints."""
+    if any(isinstance(b, bool) or not isinstance(b, int) for b in bounds):
+        raise HawkError(f"{where}: a `for` that scatters is unrolled while the body is "
+                        f"traced, so its bounds are compile-time ints; got {bounds!r}")
+    return range(*bounds)
+
+
 def open_loop(*args: Any, where: str, names: tuple, index_name: str,
               depth: int) -> _LoopBuilder:
     """The rewrite's entry point: resolve one ``for``'s bounds and open it."""
@@ -242,8 +255,8 @@ def set_component(vector: Any, index: Any, value: Any, name: str) -> Any:
     node = node_of(vector)
     if not node.ttype.shape:
         raise HawkError(
-            f"{name!r}[key] indexes a component; samples are indexed on the view: "
-            f"hawk.all_samples({name})[key] += t. {name!r} is a rank-0 value typed "
+            f"{name!r}[key] indexes a component; a store by key is "
+            f"hawk.scatter({name})[key] += t. {name!r} is a rank-0 value typed "
             f"{node.ttype!r}, so it has no components to write; `v[k] = …` writes "
             "one component of a rank>=1 value (a Vector, a matrix row is not a HAWK form)")
     return Value(_make("set_component_at",
@@ -257,7 +270,7 @@ def merge(cond: Any, on_true: Any, on_false: Any, name: str) -> Any:
     if on_true is on_false:
         return on_true
     if isinstance(on_true, Value) or isinstance(on_false, Value):
-        return select(cond, on_true, on_false)
+        return _as_switch(select(cond, on_true, on_false))
     if on_true == on_false:
         return on_true
     numbers = (int, float)
@@ -271,8 +284,120 @@ def merge(cond: Any, on_true: Any, on_false: Any, name: str) -> Any:
     )
 
 
+_I32 = TensorType((), "i32")
+
+
+def _as_switch(value: Value) -> Value:
+    """An ``if``/``elif``/``else`` chain as a ``switch`` dispatch, when its ``select``
+    would run an arm's costly work on every path: the value is a vector or matrix
+    (``aether::select`` evaluates every arm), or an arm's own transcendental,
+    division, loop or dispatch is read twice in it (so it is named ahead of the
+    ``?:``). A rank-0 chain whose costly work inlines into the ``?:`` is lazy
+    already and stays a ``select``.
+
+    The selector is ``c0 ? 0 : c1 ? 1 : ... : n`` over the chain's conditions, so
+    the dispatch picks exactly the arm the chain picks, whatever the conditions."""
+    node = node_of(value)
+    if not isinstance(node, Select) or node.operands[0].ttype.shape:
+        return value
+    conds: list = []
+    arms: list = []
+    rest = node
+    while True:
+        tail = _switch_chain(rest)
+        if tail is not None:                # an inner `elif` already lowered
+            conds += tail[0]
+            arms += tail[1]
+            break
+        if not isinstance(rest, Select) or rest.operands[0].ttype.shape:
+            arms.append(rest)
+            if not _costly_arm(arms, conds, bool(node.ttype.shape)):
+                return value
+            break
+        conds.append(rest.operands[0])
+        arms.append(rest.operands[1])
+        rest = rest.operands[2]
+    selector = Const(len(conds), _I32)
+    for j in range(len(conds) - 1, -1, -1):
+        selector = Select(conds[j], Const(j, _I32), selector, _I32)
+    return Value(Dispatch(selector, arms, "switch", node.ttype))
+
+
+def _switch_chain(node: Node) -> tuple | None:
+    """``(conditions, arms)`` of a dispatch :func:`_as_switch` built, else ``None``."""
+    if not (isinstance(node, Dispatch) and node.policy == "switch"):
+        return None
+    conds, sel = [], node.selector
+    while isinstance(sel, Select):
+        cond, pick, sel = sel.operands
+        if not (isinstance(pick, Const) and pick.literal == len(conds)):
+            return None
+        conds.append(cond)
+    if not (isinstance(sel, Const) and sel.literal == len(conds) == node.K - 1):
+        return None
+    return conds, list(node.branches)
+
+
+def _costly_arm(arms: list, conds: list, vector: bool) -> bool:
+    """Whether some arm owns (no other arm and no condition reads it) a costly
+    node that a ``select`` would compute on every path."""
+    reach = [_reached(a) for a in arms]
+    shared = _reached(*conds)
+    for j, mine in enumerate(reach):
+        others = set(shared).union(*(r for k, r in enumerate(reach) if k != j))
+        own = {k: n for k, n in mine.items() if k not in others}
+        reads: dict = {}
+        for n in own.values():
+            for o in n.operands:
+                reads[id(o)] = reads.get(id(o), 0) + 1
+        for k, n in own.items():
+            if isinstance(n, (Loop, Dispatch)):
+                return True
+            if (n.kind in SPECIAL_KINDS or n.kind == "div") and (vector or reads.get(k, 0) >= 2):
+                return True
+    return False
+
+
+def _reached(*roots: Node) -> dict:
+    """``{id: node}`` of every node ``roots`` read, themselves included."""
+    seen: dict = {}
+    stack = list(roots)
+    while stack:
+        n = stack.pop()
+        if id(n) not in seen:
+            seen[id(n)] = n
+            stack.extend(n.operands)
+    return seen
+
+
 #: The local a value-returning body's final `return` expression is bound to.
 RESULT_NAME = "hawk_returned_value"
+
+#: A `return <value>` anywhere but the last statement.
+_EARLY_RETURN = ("a kernel that returns a value ends with its one `return <expr>`; "
+                 "a kernel that returns nothing commits through its Mutable / "
+                 "WideOut parameters, and an early `return` there is only a "
+                 "guard: `if cond: ...; return` at the top level of the body")
+
+
+def return_shape(expr: ast.expr, filename: str) -> Any:
+    """The static shape of a final ``return`` expression, read for slot names:
+    a name is its identifier, a tuple / list is ``("tuple" | "list", items)``, a
+    dict literal is ``("dict", ((key, item), ...))``, anything else is ``None``."""
+    if isinstance(expr, ast.Name):
+        return expr.id
+    if isinstance(expr, (ast.Tuple, ast.List)):
+        return ("tuple" if isinstance(expr, ast.Tuple) else "list",
+                tuple(return_shape(e, filename) for e in expr.elts))
+    if isinstance(expr, ast.Dict):
+        for key in expr.keys:
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                raise _err(key or expr, filename,
+                           "a returned dict names its outputs with string literals "
+                           '(`return {"pos": p}`); a computed key cannot name a slot')
+        return ("dict", tuple((k.value, return_shape(v, filename))
+                              for k, v in zip(expr.keys, expr.values)))
+    return None
 
 
 def transform(fn: ast.FunctionDef, filename: str, sinks: frozenset[str],
@@ -306,6 +431,13 @@ def transform(fn: ast.FunctionDef, filename: str, sinks: frozenset[str],
         if not (isinstance(last, ast.Return) and last.value is not None):
             raise _err(last, filename,
                        "a traced value's body must end with `return <expression>`")
+        for st in body[:-1]:
+            for node in ast.walk(st):
+                if isinstance(node, ast.Return):
+                    raise _err(node, filename, _EARLY_RETURN if node.value is not None
+                               else "a bare `return` in a kernel that returns a "
+                                    "value: the last `return <expr>` ends the body; "
+                                    "use if / else for a guard")
         body[-1] = ast.copy_location(
             ast.Assign(targets=[ast.Name(RESULT_NAME, ast.Store())],
                        value=last.value), last)
@@ -341,9 +473,7 @@ def _normalize_returns(stmts: list[ast.stmt], filename: str) -> list[ast.stmt]:
         if isinstance(st, ast.If) and not st.orelse and st.body\
                 and isinstance(st.body[-1], ast.Return):
             if st.body[-1].value is not None:
-                raise _err(st.body[-1], filename,
-                           "a kernel returns nothing — it commits through its "
-                           "Mutable / WideOut parameters")
+                raise _err(st.body[-1], filename, _EARLY_RETURN)
             guard = ast.copy_location(
                 ast.If(test=st.test, body=st.body[:-1] or [ast.Pass()],
                        orelse=_normalize_returns(stmts[i + 1:], filename)), st)
@@ -361,11 +491,7 @@ def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
               in_branch: bool, in_loop: bool = False) -> None:
     for st in stmts:
         if isinstance(st, ast.Return):
-            raise _err(st, filename,
-                       "a kernel returns nothing — it commits through its Mutable / "
-                       "WideOut parameters, and an early `return` is supported "
-                       "only as a guard: `if cond: ...; return` at the top level of "
-                       "the body")
+            raise _err(st, filename, _EARLY_RETURN)
         if isinstance(st, ast.Break):
             raise _err(st, filename,
                        "a `break` is a HAWK form only as `if cond: break` — an "
@@ -434,38 +560,58 @@ def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
                       sinks, in_branch, True)
 
 
+#: The reductions over lane axes: a collective, never inside a branch or a ``for``.
+_REDUCTIONS = ("sum", "max", "min", "mean")
+
+
 def _check_view_store(st: ast.stmt, filename: str, in_branch: bool,
                       in_loop: bool) -> None:
-    """The static refusals of one store through ``hawk.all_samples(y)[...]``."""
+    """The static refusals of one store through ``hawk.scatter(y)[...]``, and of
+    a reduction over lane axes inside a branch or a ``for``."""
+    if in_branch or in_loop:
+        for expr in _expressions(st):
+            for n in ast.walk(expr):
+                if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                        and n.func.attr in _REDUCTIONS and isinstance(n.func.value, ast.Name)
+                        and n.func.value.id == "hawk"):
+                    raise _err(n, filename,
+                               f"hawk.{n.func.attr}(...) reduces over the lanes, a "
+                               "collective every lane reaches: it may not sit inside a "
+                               "branch or a `for`; reduce at the top level and fold the "
+                               "condition into where=")
     target = (st.targets[0] if isinstance(st, ast.Assign) and len(st.targets) == 1
               else getattr(st, "target", None))
     t = _view_target(target) if target is not None else None
     if t is None:
         return
-    if in_branch or in_loop:
+    if in_branch:
         raise _err(st, filename,
-                   "a store through hawk.all_samples(y)[...] may not sit inside a "
-                   "branch or a `for`: it would commit unconditionally, or once "
-                   "instead of once per iteration; fold the condition into the "
-                   "mask (hawk.all_samples(y)[mask] = v) at the top level")
-    if len(t.value.args) != 1 or t.value.keywords or not isinstance(t.value.args[0],
-                                                                    ast.Name):
+                   "a store through hawk.scatter(y)[...] may not sit inside a "
+                   "branch: it would commit unconditionally; add "
+                   "m.where(cond, v, 0.0) instead")
+    call = t.value
+    if (len(call.args) != 1 or not isinstance(call.args[0], ast.Name)
+            or any(k.arg != "policy" for k in call.keywords)):
         raise _err(st, filename,
-                   "a store target is hawk.all_samples(name)[...] with the name of "
-                   "an output plane")
+                   "a store target is hawk.scatter(name)[...] (or "
+                   "hawk.scatter(name, policy=...)[...]) with the name of an output plane")
     if isinstance(st, ast.AugAssign) and not isinstance(st.op, ast.Add):
         raise _err(st, filename,
-                   "only `hawk.all_samples(y)[key] += t` accumulates by key; "
+                   "only `hawk.scatter(y)[key] += t` accumulates by key; "
                    "`-=` is `+= -t`, and max/min by key are not in this release")
 
 
-def _rewrite_view_stores(stmts: list[ast.stmt]) -> list[ast.stmt]:
-    """``hawk.all_samples(y)[k] (op)= e`` as
-    ``y = __hawk_viewstore__(__hawk_refs__, "y", k, e, "op=", y)``: the name
-    carries the per-sample plane through a mask store, and a marker through a
-    store by key."""
+def _rewrite_view_stores(stmts: list[ast.stmt], in_loop: bool = False) -> list[ast.stmt]:
+    """``hawk.scatter(y, policy=p)[k] (op)= e`` as
+    ``y = __hawk_scatter__(__hawk_refs__, "y", k, e, "op=", y, policy=p)``: the
+    name carries a marker after a store by key. Inside a ``for`` the call is a
+    statement of its own, so the sink is not a loop-carried name."""
     out = []
     for st in stmts:
+        if isinstance(st, ast.For):
+            st.body = _rewrite_view_stores(st.body, True)
+            out.append(st)
+            continue
         target = (st.targets[0] if isinstance(st, ast.Assign) and len(st.targets) == 1
                   else getattr(st, "target", None))
         t = _view_target(target) if target is not None else None
@@ -474,12 +620,12 @@ def _rewrite_view_stores(stmts: list[ast.stmt]) -> list[ast.stmt]:
             continue
         name = t.value.args[0].id
         call = ast.Call(
-            func=ast.Name(id=VIEWSTORE_HELPER, ctx=ast.Load()),
+            func=ast.Name(id=SCATTER_HELPER, ctx=ast.Load()),
             args=[ast.Name(id=REFS, ctx=ast.Load()), ast.Constant(value=name),
                   t.slice, st.value,
                   ast.Constant(value="+=" if isinstance(st, ast.AugAssign) else "="),
-                  ast.Name(id=name, ctx=ast.Load())], keywords=[])
-        out.append(ast.copy_location(ast.Assign(
+                  ast.Name(id=name, ctx=ast.Load())], keywords=t.value.keywords)
+        out.append(ast.copy_location(ast.Expr(value=call) if in_loop else ast.Assign(
             targets=[ast.Name(id=name, ctx=ast.Store())], value=call), st))
     return out
 
@@ -522,16 +668,38 @@ def _check_expr(expr: ast.expr, filename: str) -> None:
             raise _err(n, filename, f"the name prefix {PREFIX!r} is reserved")
 
 
+#: A store through the retired view, refused with its replacements.
+_RETIRED_STORE = ("hawk.all_samples is gone: a store by key is hawk.scatter(y)[key] += v "
+                  "(or = v), and a masked store keeps the old value where the mask is "
+                  "false: y = m.where(mask, v, y)")
+
+
+def _named_call(f: ast.AST, name: str) -> bool:
+    """``f`` is ``name`` or ``hawk.name``."""
+    return ((isinstance(f, ast.Name) and f.id == name)
+            or (isinstance(f, ast.Attribute) and f.attr == name
+                and isinstance(f.value, ast.Name) and f.value.id == "hawk"))
+
+
 def _view_target(t: ast.AST) -> ast.Subscript | None:
-    """``t`` when it is a store through the view, ``hawk.all_samples(y)[...]``
-    or ``all_samples(y)[...]``."""
+    """``t`` when it is a store through ``hawk.scatter(y)[...]`` or
+    ``scatter(y)[...]``; the retired ``hawk.all_samples(y)[...]`` is refused."""
     if not (isinstance(t, ast.Subscript) and isinstance(t.value, ast.Call)):
         return None
-    f = t.value.func
-    named = ((isinstance(f, ast.Name) and f.id == "all_samples")
-             or (isinstance(f, ast.Attribute) and f.attr == "all_samples"
-                 and isinstance(f.value, ast.Name) and f.value.id == "hawk"))
-    return t if named else None
+    if _named_call(t.value.func, "all_samples"):
+        raise HawkError(f"line {t.lineno}: {_RETIRED_STORE}")
+    return t if _named_call(t.value.func, "scatter") else None
+
+
+def _stored(t: ast.AST):
+    """The nodes a store target writes through; a subscript's index is a
+    read, so ``acc[M.index(v, 5)] = ...`` is not an attribute store."""
+    yield t
+    if isinstance(t, (ast.Subscript, ast.Attribute, ast.Starred)):
+        yield from _stored(t.value)
+    elif isinstance(t, (ast.Tuple, ast.List)):
+        for e in t.elts:
+            yield from _stored(e)
 
 
 def _check_targets(st: ast.stmt, filename: str) -> None:
@@ -540,7 +708,7 @@ def _check_targets(st: ast.stmt, filename: str) -> None:
     for t in targets:
         if _view_target(t) is not None:
             continue
-        for n in ast.walk(t):
+        for n in _stored(t):
             if isinstance(n, ast.Attribute):
                 raise _err(n, filename, "an attribute store is not a HAWK body form")
             if isinstance(n, ast.Name) and n.id.startswith(PREFIX):
@@ -919,6 +1087,9 @@ class _Rewriter:
         before the loop; otherwise it is loop-LOCAL and is left as a refusing
         sentinel rather than leaking one iteration's expression out (the loop
         VARIABLE is treated the same way)."""
+        if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+               and n.func.id == SCATTER_HELPER for n in ast.walk(st)):
+            return self._unrolled(st, bound)
         assigned = _assigned(st.body)
         carried = sorted(assigned & bound)
         locals_ = sorted(assigned - bound)
@@ -983,6 +1154,23 @@ class _Rewriter:
                                                  "a loop-LOCAL name")))
         bound |= set(carried)
         return [ast.copy_location(ast.fix_missing_locations(s), st) for s in out]
+
+    def _unrolled(self, st: ast.For, bound: set[str]) -> list[ast.stmt]:
+        """A ``for`` whose body scatters runs as Python's own loop while the
+        body is traced: each iteration's add is its own commit, at a static
+        index."""
+        if any(_is_break_if(x) for x in ast.walk(st) if isinstance(x, ast.stmt)):
+            raise _err(st, self.filename,
+                       "a `for` that scatters is unrolled while the body is traced, so "
+                       "it may not `break`")
+        call = st.iter
+        st.iter = ast.copy_location(ast.Call(
+            func=ast.Name(id=RANGE_HELPER, ctx=ast.Load()), args=call.args, keywords=[
+                ast.keyword(arg="where", value=ast.Constant(
+                    value=f"{self.filename}:{getattr(st, 'lineno', '?')}"))]), call)
+        st.body = self.block(st.body, set(bound) | {st.target.id})
+        bound |= _assigned([st])
+        return [ast.fix_missing_locations(st)]
 
     def _if(self, st: ast.If, bound: set[str]) -> list[ast.stmt]:
         k, self.k = self.k, self.k + 1

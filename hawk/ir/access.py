@@ -76,7 +76,7 @@ def infer_over(order: Iterable[Node]) -> Access:
     traced body can mint, so a kernel's class is its single step's."""
     order = tuple(order)
     seam = {id(_step_word(node.count)) for node in _with_loop_bodies(order)
-            if isinstance(node, Loop) and _is_step_count(node.count)}
+            if isinstance(node, Loop) and _step_word(node.count) is not None}
     cls = "sample_local"
     for node in _with_loop_bodies(order):
         if id(node) in seam:
@@ -94,12 +94,6 @@ def infer_over(order: Iterable[Node]) -> Access:
             # DECLARED class folds in here; an unannotated one is refused.
             cls = _more_restrictive(cls, _declared(node))
     return Access(cls, None)
-
-
-def _is_step_count(count: Node | None) -> bool:
-    """Whether ``count`` is the read of the reserved ``fused_steps`` word
-    (possibly clamped)."""
-    return _step_word(count) is not None
 
 
 def _step_word(count: Node | None) -> Node | None:
@@ -197,7 +191,8 @@ def index_form(node: Node, var: Node | None = None, *,
     half, a nested quotient, a bad division, any other op). Conservative:
     ``None`` claims nothing."""
     if not _carries(node, var):
-        return IndexForm(Fraction(0), _int_value(node))
+        value, _label = _int_factor(node)
+        return IndexForm(Fraction(0), None if value is None else Fraction(value))
     if _is_var(node, var):
         return IndexForm(Fraction(1), Fraction(0))
     if not isinstance(node, Op):
@@ -235,11 +230,6 @@ def _int_factor(node: Node) -> tuple:
     if isinstance(node, Const) and node.ttype.dtype in ("i32", "i64"):
         return int(node.literal), None
     return None, None
-
-
-def _int_value(node: Node) -> Fraction | None:
-    value, _label = _int_factor(node)
-    return None if value is None else Fraction(value)
 
 
 def _exact(form: IndexForm) -> bool:

@@ -376,7 +376,7 @@ def test_per_cell_names_and_refusals():
 
     @kernel
     def reduces(x: Scalar, g: Param, y: Mutable[Scalar]):
-        y = hawk.all_samples(g * x).sum()
+        y = hawk.sum(g * x)
 
     with pytest.raises(HawkError, match="reduces over samples into cells of its own"):
         param_planes(reduces, per_cell=True)
@@ -390,3 +390,15 @@ def test_per_cell_names_and_refusals():
 
     with pytest.raises(HawkError, match="`jump=` plan"):
         param_planes(switches, per_cell=True)
+
+
+def test_a_summed_gradient_refuses_a_non_scalar_leaf_by_name():
+    """A summed sink holds one value: a vector leaf would silently keep one column."""
+    from hawk.diff.transform import _vjp
+
+    @kernel
+    def wide(w: hawk.Vector[3], y: Mutable[Scalar]):
+        y = hawk.math.dot(w, w)
+
+    with pytest.raises(HawkError, match=r"'w' cannot be summed over samples.*shape \(3,\)"):
+        _vjp(wide, wide.sinks, None, None, None, summed=("w",))

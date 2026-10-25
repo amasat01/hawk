@@ -3,7 +3,7 @@
 
 """The split: a value reduced over samples and read later is a launch boundary.
 
-``z = x / hawk.all_samples(x).sum()`` needs every sample's ``x`` before any
+``z = x / hawk.sum(x)`` needs every sample's ``x`` before any
 sample's ``z``, so one kernel becomes stages run in sequence. Stage ``k`` holds
 the nodes whose every reduction over samples is a cell an earlier stage
 produced: stage 1 is the per-sample kernel with its reductions stored as rows
@@ -22,7 +22,6 @@ like any other.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from .._cells import planes
 from .nodes import (
@@ -53,12 +52,6 @@ class Stage:
     cells_in: tuple
     cells_out: tuple
     recomputed: tuple
-
-
-def _swap(sinks, mapping: dict) -> tuple:
-    from ..diff.params import swap
-
-    return swap(sinks, mapping)
 
 
 def _post_order(roots, stop=()) -> list:
@@ -121,7 +114,7 @@ def _cell_read(cut: ReduceSamples, cell: str) -> Node:
     if len(ttype.shape) == 2:
         raise HawkError(
             "a matrix reduced over samples is not read back whole in this release: "
-            "reduce each entry the kernel reads (hawk.all_samples(m[i, j]).sum())")
+            "reduce each entry the kernel reads (hawk.sum(m[i, j]))")
     scalar = TensorType((), ttype.dtype)
     return make("vec", [param_cell(f"{cell}_{k}", scalar) for k in range(ttype.shape[0])])
 
@@ -184,13 +177,15 @@ def stages(name: str, sinks) -> tuple | None:
                 stage_of[id(s)] = place[id(s)] = later
                 changed = True
 
+    from ..diff.params import swap
+
     out, seen_before, keys = [], set(), {}
     for k in range(1, count + 1):
         own = [s for s in sinks if place[id(s)] == k]
         own += [s for c in cuts if id(c) in made and depth[id(c)] == k
                 for s in c.stored(made[id(c)])]
         mapping = {id(c): _cell_read(c, cell_of[id(c)]) for c in cuts if depth[id(c)] < k}
-        new = _swap(own, mapping) if mapping else tuple(own)
+        new = swap(own, mapping) if mapping else tuple(own)
         original = _post_order(own, stop=mapping)
         interior = [n for n in original
                     if not isinstance(n, (Leaf, Const, RoleConst, ReduceSamples))

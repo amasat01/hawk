@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The standalone C target: hawk kernels rendered as freestanding MISRA-C
-instead of aether expression templates. The package holds the C dialect
-(``dialect``), the spelling tables (``spelling``), the runtime helpers
+instead of aether expression templates. The package holds the C writer
+(``writer``), the spelling tables (``spelling``), the runtime helpers
 (``helpers``), the header and ABI layout (``abi``), the verification harness
 (``verify``), the rule audit (``audit``), the toolchain driver (``toolchain``)
 and the target profile (``profile``)."""
@@ -66,18 +66,19 @@ def render(kernel, *, name=None, mode="float64", kind=None,
     ``kernel`` is anything with ``sinks`` and ``walk`` (and ``name``/``kind``
     unless given): the kind resolves as ``build()`` resolves it, the verify
     pass refuses what the C target does not build and classifies every index
-    site, the one body traversal renders through :class:`CDialect`, and the
+    site, the one body traversal renders through :class:`CWriter`, and the
     report gains what the render learned (helpers, core functions, libm,
     floating-point equality sites, special literals, static bytes) before
     the profile's caps apply. Deterministic: the same call gives the same
     bytes."""
     from ..artifact.bundle import _resolve_kind
     from ..emit import render_body
-    from ..emit.backend import scalar_mode
+    from ..emit.wrapper import scalar_mode
     from . import abi, verify
-    from .dialect import CDialect
+    from .writer import CWriter
     from .profile import EmbeddedProfile
 
+    kernel = _without_companions(kernel)
     name = name if name is not None else kernel.name
     kind = _resolve_kind(name, getattr(kernel, "kind", None), kind)
     smode = scalar_mode(getattr(mode, "id", mode))
@@ -93,27 +94,47 @@ def render(kernel, *, name=None, mode="float64", kind=None,
     by_pos = {site["node"]: site for site in report["indices"]}
     sites = {nid: by_pos[p]["status"] for nid, p in where.items() if p in by_pos}
     lengths = {nid: by_pos[p]["length"] for nid, p in where.items() if p in by_pos}
-    dialect = CDialect(smode, name, sites, lengths=lengths, positions=where)
-    body = render_body(sinks, walk, indent="        ", kind=kind, dialect=dialect).text
-    core_text, core_names = abi.core_closure(dialect)
-    helper_text, helper_names, helper_libm = abi.helper_closure(dialect)
-    core_libm = {m for n in core_names for m in _core_libm(dialect, n)}
+    writer = CWriter(smode, name, sites, lengths=lengths, positions=where)
+    body = render_body(sinks, walk, indent="        ", kind=kind, writer=writer).text
+    core_text, core_names = abi.core_closure(writer)
+    helper_text, helper_names, helper_libm = abi.helper_closure(writer)
+    core_libm = {m for n in core_names for m in _core_libm(writer, n)}
     report["helpers"] = sorted(helper_names)
     report["core"] = core_names
     report["core_version"] = _core_version()
-    report["libm"] = sorted(set(dialect.libm) | core_libm | set(helper_libm))
+    report["libm"] = sorted(set(writer.libm) | core_libm | set(helper_libm))
     # a switch renders a branch-exclusive node once per case: one site each
     report["fp_equality_sites"] = list(dict.fromkeys(
-        p for p in dialect.fp_eq_sites if p is not None))
-    report["literal_specials"] = list(dialect.literal_specials)
+        p for p in writer.fp_eq_sites if p is not None))
+    report["literal_specials"] = list(writer.literal_specials)
     static = report["budgets"]["static_bytes"]
-    static["temporaries"] = sum(dialect.sizeof(t) for _n, t in dialect.declared)
+    static["temporaries"] = sum(writer.sizeof(t) for _n, t in writer.declared)
     static["total"] = static["tapes"] + static["carries"] + static["temporaries"]
     verify.apply_caps(name, report, profile)
     header = abi.header_text(name, walk, smode, report, profile)
-    text = abi.tu_text(name, walk, smode, body, dialect, core_text, helper_text,
+    text = abi.tu_text(name, walk, smode, body, writer, core_text, helper_text,
                        rows=report["interface"])
     return EmbeddedSource(text, header, body, report, name, smode.id)
+
+
+def _without_companions(kernel):
+    """``kernel`` as the C target lowers it: a keyed ``hawk.scatter`` under
+    ``auto`` is the serial add into its target, so its companion plane and the
+    commits to it are left out. An explicit ``compensated`` keeps its companion
+    and is refused by the writer."""
+    from ..ir.nodes import KEYED_AUTO, AccumWrite
+    from ..trace.kernel import Kernel
+
+    auto = {s.name for s in kernel.sinks
+            if isinstance(s, AccumWrite) and s.policy == KEYED_AUTO}
+    gone = {c for c, t in kernel.walk.companions.items() if t in auto}
+    if not auto:
+        return kernel
+    sinks = tuple(AccumWrite(s.name, s.value, s.index, s.ttype) if s.name in auto else s
+                  for s in kernel.sinks if s.name not in gone)
+    planes = {n: p for n, p in kernel.planes.items() if n not in gone}
+    return Kernel(kernel.name, sinks, planes, kind=kernel.kind,
+                  source_digest=kernel.source_digest, returns=kernel.returns)
 
 
 def _traceability(kernel, name: str, walk, smode, profile) -> dict:
@@ -287,10 +308,10 @@ def _core_version() -> str:
     return c_core.CORE_VERSION
 
 
-def _core_libm(dialect, name: str) -> tuple:
+def _core_libm(writer, name: str) -> tuple:
     """The libm names a core function calls; a helper's core dependency (the
     scalar ``sign`` under ``hawk_sign_nan``) calls none."""
-    held = dialect.core_functions.get(name)
+    held = writer.core_functions.get(name)
     return () if held is None else held.libm
 
 

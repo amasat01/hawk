@@ -31,13 +31,14 @@ def _modules(probe: str) -> list[str]:
 #: What ``import hawk`` may pull in, and nothing else.
 _ALLOWED_BARE = ["hawk", "hawk._contracts", "hawk._core"]
 
-#: A wheel install has no source tree beside the package, so its self-check
-#: compares against the stamped digest module instead (see hawk/__init__.py).
-_WHEEL_DIGEST = "hawk._build_digest"
+#: Modules only a wheel build writes: a wheel install has no source tree beside
+#: the package, so its self-check compares against the stamped digest module
+#: instead, and the version comes from the generated module (see hawk/__init__.py).
+_WHEEL_GENERATED = ("hawk._build_digest", "hawk._version")
 
 
 def _without_wheel_digest(mods: list[str]) -> list[str]:
-    return [m for m in mods if m != _WHEEL_DIGEST]
+    return [m for m in mods if m not in _WHEEL_GENERATED]
 
 
 def test_importing_hawk_imports_no_heavy_module():
@@ -59,6 +60,15 @@ def test_the_import_time_self_check_actually_ran():
     digest, info_keys = _modules(probe)
     assert len(digest) == 64, f"the stamped build digest is not a sha256: {digest!r}"
     assert "aether_include" in info_keys and "eagle_include" in info_keys, info_keys
+
+
+def test_hawk_imports_with_a_version_when_the_generated_module_is_absent():
+    """A checkout that was never built has no ``hawk/_version.py``: the version
+    then comes from the installed metadata, else the ``0.0.0+unknown`` placeholder."""
+    probe = ("import sys; sys.modules['hawk._version'] = None; import hawk, json; "
+             "print(json.dumps(hawk.__version__))")
+    version = _modules(probe)
+    assert isinstance(version, str) and version, version
 
 
 def test_touching_an_authoring_name_binds_the_tracer():

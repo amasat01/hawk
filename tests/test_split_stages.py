@@ -3,7 +3,7 @@
 
 """A value reduced over samples and read later is a launch boundary.
 
-* **two stages** — ``z = x / all_samples(x).sum()`` is two kernels; ``hawk.run``
+* **two stages** — ``z = x / hawk.sum(x)`` is two kernels; ``hawk.run``
   runs them with the host finish between, matches numpy, and is bitwise the
   same stages run through eagle's ``ordered`` finish (skipped without eagle);
 * **three stages** — a chain whose reduction reads an earlier cell;
@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import numpy as np
 import pytest
@@ -31,59 +32,67 @@ from hawk.compile import cache as compile_cache
 from hawk.ir.split import stages
 
 SIZES = (1, 31, 33, 1000, 65536)
+RUN = 4096
 
 
 @kernel
 def share(x: Scalar, z: Mutable[Scalar]):
-    z = x / hawk.all_samples(x).sum()
+    z = x / hawk.sum(x)
 
 
 @kernel
 def standard(x: Scalar, mu: Mutable[Scalar], z: Mutable[Scalar], t: Mutable[Scalar]):
-    mu = hawk.all_samples(x).mean()
-    v = hawk.all_samples((x - mu) * (x - mu)).mean()
+    mu = hawk.mean(x)
+    v = hawk.mean((x - mu) * (x - mu))
     z = (x - mu) / hawk.math.sqrt(v)
-    t = hawk.all_samples(z * z).sum()
+    t = hawk.sum(z * z)
 
 
 @kernel
 def wave(x: Scalar, k: Param, z: Mutable[Scalar]):
     y = hawk.math.sin(k * x)
-    z = y / hawk.all_samples(y * y).sum()
+    z = y / hawk.sum(y * y)
 
 
 @kernel
 def centred(x: Scalar, z: Mutable[Vector[3]]):
     v = hawk.math.vec(x, x * x, 2.0 * x)
-    z = v - hawk.all_samples(v).mean(axis="samples")
+    z = v - hawk.mean(v)
 
 
 @kernel
 def scaled_two(x: Scalar, z: Mutable[Scalar]):
-    z = 2.0 * x / hawk.all_samples(x).sum()
+    z = 2.0 * x / hawk.sum(x)
 
 
 @kernel
 def scaled_three(x: Scalar, z: Mutable[Scalar]):
-    z = 3.0 * x / hawk.all_samples(x).sum()
+    z = 3.0 * x / hawk.sum(x)
 
 
 @kernel
 def rescale(y: Mutable[Scalar], z: Mutable[Scalar]):
-    z = y / hawk.all_samples(y).sum()
+    z = y / hawk.sum(y)
     y = 2.0 * y
 
 
 @kernel
 def stored_vec(x: Scalar, tot: Mutable[Vector[3]], z: Mutable[Vector[3]]):
     v = hawk.math.vec(x, x * x, 2.0 * x)
-    tot = hawk.all_samples(v).sum(axis="samples")
-    z = v / hawk.all_samples(v).sum(axis="samples")
+    tot = hawk.sum(v)
+    z = v / hawk.sum(v)
+
+
+@kernel
+def split_keyed(x: Scalar, z: Mutable[Scalar], acc: Mutable[Scalar]):
+    j, _ = hawk.math.split_index(RUN)
+    hawk.scatter(acc)[j] += x
+    z = x / hawk.sum(x)
 
 
 @kernel
 def plain(x: Scalar, t: Mutable[Scalar]):
-    t = hawk.all_samples(x * x).sum()
+    t = hawk.sum(x * x)
 
 
 def _bundle(kernels, tmp, mode, cache_dir):
@@ -245,19 +254,19 @@ def test_build_names_build_bundle_for_a_split_kernel(tmp_path, cache_dir):
 
 
 def test_a_cut_inside_a_for_is_still_refused():
-    with pytest.raises(HawkError, match="inside a `for`"):
+    with pytest.raises(HawkError, match="a collective.*inside a branch or a `for`"):
         @kernel
         def looped(x: Scalar, z: Mutable[Scalar]):
             acc = 0.0
             for _ in range(2):
-                acc = acc + hawk.all_samples(x).sum()
+                acc = acc + hawk.sum(x)
             z = x / acc
 
 
 def test_a_max_over_samples_read_in_the_body_has_no_derivative():
     @kernel
     def peak(x: Scalar, z: Mutable[Scalar]):
-        z = x / hawk.all_samples(x).max()
+        z = x / hawk.max(x)
     with pytest.raises(HawkError, match="max over samples"):
         hawk.diff.vjp(peak)
 
@@ -333,3 +342,34 @@ def test_the_first_stage_names_every_stage_and_cell(built):
     assert first["cells"] == {"mu": {"op": "sum", "columns": 1},
                               "cut0": {"op": "sum", "columns": 1, "internal": True},
                               "t": {"op": "sum", "columns": 1}}
+
+
+# -- a keyed compensated sum inside a split kernel ---------------------------
+
+@pytest.mark.parametrize("mode", ["float64", "float32"])
+def test_a_keyed_compensated_sum_in_a_split_kernel_is_folded(tmp_path, cache_dir, mode,
+                                                             monkeypatch):
+    """The runtime owns the companion and folds it after the stage that
+    writes it: the target alone is within eps * sum|w| (and one ulp) of ``math.fsum``."""
+    # the scatter sits in stage 1 only; the bundle's one-axis check is not under test
+    from hawk.artifact import bundle as bundles
+    manifest = bundles._manifest_of
+
+    def one_axis(drafts):
+        for d in drafts:
+            d.sidecar["exec_access"] = "cross_sample_write"
+        return manifest(drafts)
+
+    monkeypatch.setattr(bundles, "_manifest_of", one_axis)
+    bundle = _bundle([split_keyed], tmp_path, mode, cache_dir)
+    n = 1 << 16
+    rng = np.random.default_rng(7)
+    x = (rng.uniform(-1, 1, n) * np.exp(rng.uniform(0, 8, n))).astype(mode)
+    acc = np.zeros(n // RUN, dtype=mode)
+    z = np.zeros(n, dtype=mode)
+    runtime.run(runtime.load(bundle.directory, "split_keyed"), x=x, z=z, acc=acc)
+    terms = x.astype(np.float64).reshape(-1, RUN)
+    want = np.array([math.fsum(t) for t in terms])
+    err = np.abs(acc.astype(np.float64) - want)
+    assert np.all(err <= np.finfo(mode).eps * np.abs(terms).sum(axis=1))
+    assert np.all(err <= np.abs(np.spacing(want.astype(mode))).astype(np.float64))

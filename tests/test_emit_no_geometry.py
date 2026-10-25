@@ -10,16 +10,16 @@ the audit has two halves, and the second is what keeps the first from being
 vacuous:
 
   1. no geometry token appears in ANY emitted body;
-  2. the cuda backend's index prologue DOES name them, and in a full emitted
+  2. the cuda wrapper's index prologue DOES name them, and in a full emitted
      translation unit every occurrence lies inside that prologue's text.
 
 Without (2) a renderer that emitted nothing at all would pass (1).
 
 This test previously failed when the device flat index moved out
-of ``CudaBackend.index_prologue`` and into the renderer (one ``self._emit`` line
+of ``CudaWrapper.index_prologue`` and into the renderer (one ``self._emit`` line
 at the top of ``_Renderer.run``) --
 
-    AssertionError: : a launch-geometry token escaped the backend's ONE
+    AssertionError: : a launch-geometry token escaped the wrapper's ONE
     index prologue into the body. Found:
       scale:1: 'blockIdx' in `const long long hawk_flat = blockIdx.x *
         blockDim.x + threadIdx.x;`
@@ -36,8 +36,9 @@ from __future__ import annotations
 
 from _emitted import bodies, sources
 
-from hawk.emit import BACKENDS, CUDA
-from hawk.emit.aether import geometry_hits
+from hawk.emit import CUDA
+from hawk.emit.render import geometry_hits
+from hawk.targets import TARGETS
 
 
 def test_no_body_contains_a_geometry_token():
@@ -46,7 +47,7 @@ def test_no_body_contains_a_geometry_token():
         hits += [f"  {name}:{n}: {token!r} in `{line}`"
                  for n, token, line in geometry_hits(body.text)]
     assert not hits, (
-        "a launch-geometry token escaped the backend's ONE index prologue "
+        "a launch-geometry token escaped the wrapper's ONE index prologue "
         "into the body (EC-I1). Found:\n" + "\n".join(hits)
     )
 
@@ -58,21 +59,21 @@ def test_the_detector_can_see_the_tokens_it_looks_for():
         "the cuda index prologue no longer names the geometry builtins the audit "
         f"greps for — it names {present}, so the first half proves nothing"
     )
-    assert not geometry_hits(BACKENDS["host"].index_prologue()), (
+    assert not geometry_hits(TARGETS["host"].wrapper.index_prologue()), (
         "the SERIAL host entry named a geometry token: threading and "
         "tiling are eagle's HostTeam, never HAWK's"
     )
 
 
 def test_every_geometry_token_in_a_full_unit_lies_in_the_index_prologue():
-    for name, backend, mode, src in sources():
-        prologue = backend.index_prologue()
-        # the flat-index line both backend frames open with (the plain prologue
+    for name, target, mode, src in sources():
+        prologue = target.wrapper.index_prologue()
+        # the flat-index line both wrapper frames open with (the plain prologue
         # and the sample-sum frame, which keeps whole warps alive for the row sum)
         flat_index = prologue.split("    if (hawk_flat")[0]
         outside = src.text.replace(prologue, "").replace(flat_index, "")
         stray = sorted({t for _n, t, _l in geometry_hits(outside)})
         assert not stray, (
-            f"{name}/{backend.id}/{mode.id}: geometry token(s) {stray} appear outside "
-            "the backend's ONE index prologue"
+            f"{name}/{target.id}/{mode.id}: geometry token(s) {stray} appear outside "
+            "the wrapper's ONE index prologue"
         )

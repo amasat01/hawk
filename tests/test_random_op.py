@@ -13,7 +13,7 @@ Related coverage lives beside the harness it extends: the NVRTC route in
 ``test_math_namespace.py``.
 
 The device rows bind ``seed``/``counter`` as per-sample i32 planes (bound as
-int64 arrays -- `hawk.emit.aether.element_spelling` collapses BOTH i32 and
+int64 arrays -- `hawk.emit.render.element_spelling` collapses BOTH i32 and
 i64 to the SAME C++ ``Int`` = ``long long``); the by-value ``uniform`` form is
 covered separately
 (``test_uniform_by_value_integer_seed_crosses_the_launch_intact``). That
@@ -183,7 +183,7 @@ def test_math_random_uniform_refuses_a_literal_float_seed_by_name():
 # --------------------------------------------------------------------------- #
 # helpers shared below: bind seed/counter as per-sample INT64 planes
 # (the C++ side is `Int` = `long long` regardless of the IR's i32/i64 dtype,
-# `hawk.emit.aether.element_spelling`) and run the compiled artifact.
+# `hawk.emit.render.element_spelling`) and run the compiled artifact.
 # --------------------------------------------------------------------------- #
 def _plane(n: int, value) -> np.ndarray:
     if np.ndim(value) == 0:

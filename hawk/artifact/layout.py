@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from .. import _contracts
 from ..ir import HawkError
+from ..targets import ENTRY_DEVICE, TARGETS
 
 #: The array's positional field order, fixed by the mirror PODs'
 #: ``static_assert`` layout pins; authoritative over any prose list.
@@ -31,7 +32,7 @@ _DERIVED = ("sizeof(eagle::plugin::GRefMirror)",
             "sizeof(eagle::plugin::PartitionTriple)")
 
 
-def exports(backend: str, *, layout_sizes_override=None) -> str:
+def exports(target: str, *, layout_sizes_override=None) -> str:
     """The export block for one target's TU.
 
     The host object exports plain externs a loader reaches with ``dlsym``; the
@@ -47,7 +48,7 @@ def exports(backend: str, *, layout_sizes_override=None) -> str:
             )
         values = tuple(f"{int(v)}ull" for v in got)
     tag = _contracts.AETHER_ABI_VERSION
-    if backend == "cuda":
+    if TARGETS[target].entry == ENTRY_DEVICE:
         head = ('extern "C" __device__ const char eagle_abi_tag[] = '
                 f'"{tag}";\n'
                 'extern "C" __device__ unsigned long long eagle_layout_sizes[5] = {')

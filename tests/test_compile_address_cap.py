@@ -124,7 +124,7 @@ def test_the_cap_reaches_the_real_driver(tmp_path):
     try:
         with pytest.raises(HawkError) as excinfo:
             compile_source(source, "cap_probe", CompileOptions(
-                backend="host", cache_dir=str(tmp_path / "capped")))
+                target="host", cache_dir=str(tmp_path / "capped")))
         assert "address-space cap" in str(excinfo.value), str(excinfo.value)
     finally:
         if held is None:
@@ -137,7 +137,7 @@ def test_the_cap_reaches_the_real_driver(tmp_path):
     os.environ["HAWK_COMPILE_ADDRESS_CAP"] = "0"
     try:
         result = compile_source(source, "cap_probe", CompileOptions(
-            backend="host", cache_dir=str(tmp_path / "free")))
+            target="host", cache_dir=str(tmp_path / "free")))
         assert result.artifact.is_file()
     finally:
         if held is None:
@@ -159,7 +159,7 @@ def test_the_cap_hint_reaches_the_sealed_payload_path(tmp_path, monkeypatch):
     with pytest.raises(HawkError) as excinfo:
         compile_source('extern "C" int hawk_cap_probe_sealed(void) { return 1; }\n',
                        "cap_probe_sealed", CompileOptions(
-                           backend="host", cache_dir=str(tmp_path / "capped")))
+                           target="host", cache_dir=str(tmp_path / "capped")))
     msg = str(excinfo.value)
     assert "against the sealed payload" in msg and "address-space cap" in msg, msg
     assert "$HAWK_COMPILE_ADDRESS_CAP" in msg, msg
@@ -167,5 +167,5 @@ def test_the_cap_hint_reaches_the_sealed_payload_path(tmp_path, monkeypatch):
     monkeypatch.setenv("HAWK_COMPILE_ADDRESS_CAP", "0")
     assert compile_source('extern "C" int hawk_cap_probe_sealed(void) { return 1; }\n',
                           "cap_probe_sealed", CompileOptions(
-                              backend="host", cache_dir=str(tmp_path / "free"))
+                              target="host", cache_dir=str(tmp_path / "free"))
                           ).artifact.is_file()

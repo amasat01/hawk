@@ -3,7 +3,7 @@
 
 """Two built scalar modes, one named but unbuilt slot.
 
-The scalar-mode seam is the same principle as the backend seam: two modes
+The scalar-mode seam is the same principle as the wrapper seam: two modes
 built, a third slot named rather than silently absent. So the row has three
 halves -- ``float64`` and ``float32`` both emit, they DIFFER (a built mode that
 were a no-op would be decorative), and ``banded`` raises a HawkError that
@@ -34,7 +34,7 @@ import pytest
 from _emitted import cases
 
 from hawk.emit import FLOAT32, FLOAT64, SCALAR_MODES, render_source, scalar_mode
-from hawk.emit.backend import _UNBUILT_MODES
+from hawk.emit.wrapper import _UNBUILT_MODES
 from hawk.ir import HawkError
 
 
@@ -46,12 +46,12 @@ def test_the_seam_declares_exactly_the_two_built_modes():
 
 def test_both_built_modes_emit_and_differ():
     for name, sinks, walk in cases():
-        for backend_id, backend in _backends():
-            f64 = render_source(name, sinks, walk, backend, mode=FLOAT64).text
-            f32 = render_source(name, sinks, walk, backend, mode=FLOAT32).text
+        for target_id, target in _targets():
+            f64 = render_source(name, sinks, walk, target, mode=FLOAT64).text
+            f32 = render_source(name, sinks, walk, target, mode=FLOAT32).text
             assert _substance(f64) != _substance(f32), (
                 f"float64 and float32 emitted IDENTICAL text for {name!r} on "
-                f"{backend_id} -- a built scalar mode that changes nothing is "
+                f"{target_id} -- a built scalar mode that changes nothing is "
                 "decorative. (The comparison drops the banner comment, which "
                 "names the mode and would make any two modes 'differ' for free.)"
             )
@@ -89,7 +89,7 @@ def _substance(text: str) -> str:
     return text.split("\n", 2)[2]
 
 
-def _backends():
-    from hawk.emit import BACKENDS
+def _targets():
+    from hawk.targets import TARGETS
 
-    return sorted(BACKENDS.items())
+    return sorted((t, row) for t, row in TARGETS.items() if row.wrapper)

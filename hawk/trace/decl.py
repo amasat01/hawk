@@ -19,6 +19,7 @@ producer's layout uncheckably. Layout is ROW-MAJOR, last axis innermost.
 
 from __future__ import annotations
 
+import keyword
 from dataclasses import dataclass
 
 from ..ir import HawkError, Quantity
@@ -63,6 +64,11 @@ class Plane:
     ttype: TensorType
     dims: tuple = ()
     staged: bool = False
+    #: ``Grid[...]``: ``((label, extent|None), ...)``, the launch shape.
+    grid: tuple = ()
+    #: ``Sorted[Index]``: the values are non-decreasing along the flat lane (a
+    #: promise the bind checks only under ``HAWK_CHECK_SORTED``).
+    sorted: bool = False
 
     def __setitem__(self, key: object, value: object) -> None:
         from ..ir import HawkError
@@ -80,10 +86,19 @@ class Plane:
 
 
 class Mutable:
-    """``Mutable[...]`` — the output plane a body assigns (the ``assign``)."""
+    """``Mutable[...]`` — the output plane a body assigns (the ``assign``).
 
-    def __class_getitem__(cls, t: TensorType) -> Plane:
-        return Plane("mutable", _payload("Mutable", t))
+    ``Mutable["bin":256]`` and ``Mutable[Vector[3], "channel":64, "input":64]``
+    name the sink's own axes: a plane the body writes by key, bound
+    ``(*payload, *axes)`` (the payload is ``Scalar`` unless given first). A sink
+    you pass keeps its contents; one you omit starts at zero."""
+
+    def __class_getitem__(cls, key: object) -> Plane:
+        items = key if isinstance(key, tuple) else (key,)
+        if isinstance(items[0], slice):
+            return Plane("mutable", Scalar, dims=_axes("Mutable", items))
+        dims = _axes("Mutable", items[1:]) if items[1:] else ()
+        return Plane("mutable", _payload("Mutable", items[0]), dims=dims)
 
 
 class Table:
@@ -97,6 +112,57 @@ class Table:
         if isinstance(key, TensorType):
             return Plane("table", _payload("Table", key))
         return Plane("table", Scalar, dims=_axes("Table", key))
+
+
+class Grid:
+    """``Grid["channel", "sample":8192]`` — the shape of the launch: one lane per
+    point, the body is one lane's code.
+
+    Labels are in numpy order and the LAST axis is the fastest (consecutive
+    lanes). A bare label is a runtime extent and may only be first; ``"l":k`` is
+    static, and every axis may be. The body reads an axis as an Index:
+    ``lane.channel``, ``lane[0]`` (0 is the slowest, -1 the fastest), and
+    ``lane.flat`` is the flat lane index. A coordinate, never a neighbour: read
+    another lane with ``u.at(...)``."""
+
+    def __class_getitem__(cls, key: object) -> Plane:
+        items = key if isinstance(key, tuple) else (key,)
+        if not items:
+            raise HawkError('Grid[...] needs at least one axis, e.g. Grid["i"]')
+        axes = []
+        for pos, item in enumerate(items):
+            if isinstance(item, str) and item and not pos:
+                axes.append((item, None))
+            elif isinstance(item, slice) and item.step is None \
+                    and isinstance(item.start, str) and item.start:
+                axes.append((item.start, _extent("Grid", item.stop)))
+            elif isinstance(item, str) and item:
+                raise HawkError(
+                    f"Grid[...]: axis {item!r} at position {pos} has no extent; only "
+                    f'the FIRST axis may be bare (a runtime extent), write "{item}":<extent>')
+            else:
+                raise HawkError(
+                    f'Grid[...]: an axis is "<label>" (first only) or "<label>":<extent>, '
+                    f'e.g. Grid["channel", "sample":8192]; got {item!r}')
+        labels = [a for a, _ in axes]
+        for label in labels:
+            why = _label_refusal(label)
+            if why:
+                raise HawkError(f"Grid[...]: the axis label {label!r} {why}")
+        if len(set(labels)) != len(labels):
+            raise HawkError(f"Grid[...]: duplicate axis label(s) in {labels}")
+        return Plane("in", Index, grid=tuple(axes))
+
+
+class Sorted:
+    """``Sorted[Index]`` — a per-sample Index plane whose values never decrease
+    along the flat lane (segment ids): a promise the compiler may build on.
+    Set ``HAWK_CHECK_SORTED`` to have each bind check it."""
+
+    def __class_getitem__(cls, t: TensorType) -> Plane:
+        if t != Index:
+            raise HawkError(f"Sorted[...] takes Index (a per-sample segment id), got {t!r}")
+        return Plane("in", Index, sorted=True)
 
 
 class Staged:
@@ -141,7 +207,7 @@ class Wide:
 class WideOut:
     """``WideOut[...]`` — the wide OUTPUT plane a body commits to, assigned
     ``buf = v`` for the own column or stored by key with
-    ``hawk.all_samples(buf)[k] = v``, for the same reason :class:`Wide` is here: a
+    ``hawk.scatter(buf)[k] = v``, for the same reason :class:`Wide` is here: a
     role an author cannot write is a hole in the language."""
 
     def __class_getitem__(cls, t: TensorType) -> Plane:
@@ -185,6 +251,19 @@ def _extent(what: str, w: object) -> int:
     return int(w)
 
 
+#: Words a ``Grid`` label may not be: the flat lane, and the launch keywords an
+#: extent passed by label would collide with.
+RESERVED_LABELS = ("flat", "n", "n_samples", "base", "count", "layout")
+
+
+def _label_refusal(label: str) -> str:
+    if not label.isidentifier() or keyword.iskeyword(label):
+        return "must be a plain identifier (not a Python keyword): it is read as lane.<label>"
+    if label in RESERVED_LABELS:
+        return f"is reserved ({', '.join(RESERVED_LABELS)}); pick another"
+    return ""
+
+
 def _axes(what: str, key: object) -> tuple:
     """``key`` as a ROW-MAJOR axis layout ``((label, size, stride), …)``.
 
@@ -220,6 +299,19 @@ def _payload(what: str, t: object) -> TensorType:
             f"Vector[W], Matrix[R,C]), got {t!r}"
         )
     return t
+
+
+def spell(t: TensorType) -> str:
+    """``t`` as an author writes it: ``Scalar``, ``Vector[3]``, ``Matrix[2, 3]``."""
+    for name, named in (("Scalar", Scalar), ("Index", Index), ("Int32", Int32),
+                        ("UInt32", UInt32), ("Quat", Quat)):
+        if t == named:
+            return name
+    if t.dtype == "f64" and len(t.shape) == 1:
+        return f"Vector[{t.shape[0]}]"
+    if t.dtype == "f64" and len(t.shape) == 2:
+        return f"Matrix[{t.shape[0]}, {t.shape[1]}]"
+    return repr(t)
 
 
 def resolve(param: str, annotation: object) -> Plane | Quantity:
