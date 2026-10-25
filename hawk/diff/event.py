@@ -38,6 +38,7 @@ from ..ir.loop_nodes import LoopIndex
 from ..ir.nodes import Assign, Dispatch, Finish, SampleIndex, Select
 from ..ir.ops import COMPARE, LOGICAL, PREDICATE
 from ..ir.walk import substitute
+from .tape import _reachable
 from .transform import _READ_ROLE
 
 __all__ = ["EventGuard", "event_guard", "guard_kernel", "state_guard"]
@@ -239,14 +240,8 @@ def as_plain_reads(roots: tuple) -> tuple:
     plain read of the same plane: a pure function of its inputs, which is
     what ``jvp``/``vjp`` differentiate (they refuse a launch-start read)."""
     mapping: dict = {}
-    stack, seen = list(roots), set()
-    while stack:
-        node = stack.pop()
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
+    for node in _reachable(roots):
         if isinstance(node, Leaf) and node.kind == "prior_read":
             role = _READ_ROLE[len(node.ttype.shape)]
             mapping[id(node)] = Leaf("vocab_read", role, node.name, node.ttype)
-        stack.extend(node.operands)
     return substitute(roots, mapping) if mapping else tuple(roots)

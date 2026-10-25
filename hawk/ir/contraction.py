@@ -370,7 +370,8 @@ def _touches(node: Node, carry: Node) -> bool:
     return any(n is carry for n in _walk(node))
 
 
-def recognize(kernel: Any, vjp: Any = None) -> RecognizedContraction | None:
+def recognize(kernel: Any, vjp: Any = None, *, mapping: dict | None = None
+              ) -> RecognizedContraction | None:
     """Describe ``kernel``'s lowered additive fold as a contraction, or
     ``None`` for anything outside the single-additive-fold family.
 
@@ -379,7 +380,13 @@ def recognize(kernel: Any, vjp: Any = None) -> RecognizedContraction | None:
     DERIVED reverse IR: the accumulate outputs the adjoint contributes to,
     telling a consumer whether the reverse direction lands in shared slots.
     A recognised-but-not-dense contraction still returns, ``dense=False``
-    and the reasons named."""
+    and the reasons named.
+
+    ``mapping`` is :func:`hawk.ir.lanes.choose_mapping`'s record: when the
+    device card chose ``"direct"`` for the scalar type, the fold stays the
+    kernel's own loop and nothing is recognised (``None``)."""
+    if mapping is not None and mapping.get("contraction") == "direct":
+        return None
     sinks = _sinks_of(kernel)
     if len(sinks) != 1 or not isinstance(sinks[0], (Assign, WideWrite)):
         return None

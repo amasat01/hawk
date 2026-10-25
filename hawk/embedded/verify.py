@@ -19,50 +19,43 @@ A node position is its index in ``walk.order``, or ``loop<i>.<k>`` for the
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from math import prod
 
-from ..emit.spelling import _MATH1, _MATH2, _MATH3, binding_name
+from ..emit.spelling import binding_name
 from ..ext import DEFAULT_KIND
 from ..ir import HawkError
 from ..ir.cost import fp64_ops, kernel_cost
 from ..ir.loop_nodes import Loop, LoopIndex, TapeRead
 from ..ir.nodes import (
     FINISHED_PLANE,
-    GATHER_ROLES,
-    RAW_KIND,
     AccumWrite,
     At,
     Const,
     Dispatch,
     Op,
-    ReduceSamples,
-    SampleSum,
-    Select,
     Sink,
     TapeWrite,
     WideWrite,
     is_param_cell,
 )
-from ..ir.ops import RANDOM_OPS
 from ..ir.walk import canonical_nodes
+from ..targets import FEATURES, TARGETS
+from ..targets.features import INDEX_INTS
 from ..types import INT_PLANE_DTYPES
 
 _FLOATS = ("f64", "f32")
-_INDEX_INTS = ("i32", "i64")
 #: Bytes one element of a dtype occupies in the C build (an index Int is 64-bit).
 _SIZEOF = {"f64": 8, "f32": 4, "i32": 8, "i64": 8, "int32": 4, "uint32": 4, "bool": 1}
 #: The named fields of ``BranchCost.row_tuple()``, the ``ops`` budget's keys.
 _OPS = ("arith32", "arith64", "special32", "special64", "loads", "gathers",
         "chain32", "chain64", "chainSpecial32", "chainSpecial64", "stores")
 _ARITH = ("arith32", "arith64", "special32", "special64")
-#: libm kinds the C target spells with an integer helper on an Int operand.
-_INT_LIBM_OK = ("abs", "min", "max")
 #: Index kinds where the two builds part: the C++ spells them infix (signed
 #: overflow, and a division by zero or ``MIN / -1``, is undefined), the C
 #: defines them through ``hawk_i64_*``. An Int32/UInt32 operation and every
 #: Index ``//``, ``%`` and shift go through the host's own helper too
-#: (``hawk/emit/backend.py`` ``_INT_HELPERS``), so they are no site.
+#: (``hawk/emit/wrapper.py`` ``_INT_HELPERS``), so they are no site.
 _INT_UB = ("add", "sub", "mul", "neg", "div")
 _INPUT_ROLES = ("per_sample", "vec_in", "mat_in", "lookup", "wide_in", "uniform",
                 "nsamples")
@@ -109,113 +102,9 @@ def positions(sinks) -> dict[int, int | str]:
     return {id(node): pos for pos, node, _ in _every_node(_top(sinks))}
 
 
-def _first(nodes, test) -> tuple | None:
-    return next(((pos, node.kind) for pos, node, _ in nodes if test(node)), None)
-
-
-def _int_libm(node) -> bool:
-    return (isinstance(node, Op) and node.kind not in _INT_LIBM_OK
-            and (node.kind in _MATH1 or node.kind in _MATH2 or node.kind in _MATH3)
-            and any(o.ttype.dtype in _INDEX_INTS for o in node.operands))
-
-
-def _segmented(kernel, nodes):
-    found = _first(nodes, lambda n: isinstance(n, Dispatch) and n.policy == "segmented")
-    if found is None and getattr(kernel, "segment", None) is not None:
-        return "kernel", "segment"
-    return found
-
-
-def _sample_reduction(walk, nodes):
-    found = _first(nodes, lambda n: isinstance(n, (SampleSum, ReduceSamples)))
-    if found is None and walk.access.cls == "mapreduce":
-        return "kernel", "mapreduce"
-    return found
-
-
-def _cross_sample_at(nodes):
-    return _first(nodes, lambda n: isinstance(n, At)
-                  and n.operands[0].role not in GATHER_ROLES)
-
-
-def _whole(flag: bool, what: str):
-    return ("kernel", what) if flag else None
-
-
-#: feature -> (predicate(kernel, kind, walk, nodes) -> (pos, node kind) | None,
-#: (why, fix)). Checked in this order; the first hit refuses.
-UNSUPPORTED: dict[str, tuple[Callable, tuple[str, str]]] = {
-    "random": (
-        lambda k, kind, w, nodes: _first(
-            nodes, lambda n: isinstance(n, Op) and n.kind in RANDOM_OPS),
-        ("a random draw lowers to aether's counter-based generator",
-         "no counter-based draw is built for C yet; draw in the caller and pass "
-         "the values in as a plane")),
-    "raw_device": (
-        lambda k, kind, w, nodes: _first(nodes, lambda n: n.kind == RAW_KIND),
-        ("a raw_device block splices C++ text the C target cannot check",
-         "spell the block with hawk.math")),
-    "sample_reduction": (
-        lambda k, kind, w, nodes: _sample_reduction(w, nodes),
-        ("a reduction over samples needs the wrapper's cross-sample fold, which a "
-         "standalone build does not have",
-         "commit the own column and reduce in the caller")),
-    "cross_sample_at": (
-        lambda k, kind, w, nodes: _cross_sample_at(nodes),
-        ("an at() read of a per-sample plane reads another sample's value, which a "
-         "partition call may not hold",
-         "pass the values the kernel needs as a Table plane")),
-    "active_set": (
-        lambda k, kind, w, nodes: _whole(
-            bool(getattr(getattr(kind, "guard", None), "active_set", False)), "guard"),
-        ("an active-set guard reads an index map the C entry does not take",
-         "run without the index map (the plain mask guard)")),
-    "segmented": (
-        lambda k, kind, w, nodes: _segmented(k, nodes),
-        ("a segmented dispatch is a per-unit split the C target does not run",
-         "export each branch as its own kernel")),
-    "compensated": (
-        lambda k, kind, w, nodes: _whole(
-            getattr(getattr(kind, "sink", None), "id", None) == "compensated",
-            "sink policy"),
-        ("the compensated sink policy commits a correction plane the C target "
-         "does not lower", "use the plain sink policy")),
-    "fused_lanes": (
-        lambda k, kind, w, nodes: _whole(
-            getattr(k, "fused_body", None) is not None
-            or getattr(k, "lanes", None) is not None, "fused lanes"),
-        ("a fused lane group is composed for a launching runtime",
-         "export each lane as its own kernel")),
-    "two_path": (
-        lambda k, kind, w, nodes: _whole(
-            getattr(k, "one_step", None) is not None, "automatic kernel"),
-        ("an automatic kernel branches once per launch on a runtime step word",
-         "export `kernel.step` (the single step) or `hawk.steps(step, K)` with "
-         "an integer K")),
-    "int_libm": (
-        lambda k, kind, w, nodes: _first(nodes, _int_libm),
-        ("a libm function on an Int operand takes an implicit double round-trip "
-         "a safety build must not rely on",
-         "use maximum(minimum(i, hi), lo) (Int min/max are allowed) or convert "
-         "to Real explicitly")),
-    "scattered_tensor_accum": (
-        lambda k, kind, w, nodes: _first(
-            nodes, lambda n: isinstance(n, AccumWrite) and n.index is not None
-            and len(n.ttype.shape) >= 1),
-        ("a scattered accumulate of a rank>=1 value is not lowered",
-         "declare one scalar accumulate plane per component")),
-    "zero_trip_loop": (
-        lambda k, kind, w, nodes: _first(
-            nodes, lambda n: isinstance(n, Loop) and n.trip == 0),
-        ("a loop that never runs is dead code (MISRA C:2012 Rule 14.3)",
-         "give the loop at least one trip")),
-    "tensor_select_cond": (
-        lambda k, kind, w, nodes: _first(
-            nodes, lambda n: isinstance(n, Select)
-            and len(n.operands[0].ttype.shape) >= 1),
-        ("a select on a rank>=1 condition picks per component, which is not "
-         "lowered", "select per component with a rank-0 condition")),
-}
+#: The features the C target refuses, from the shared table (:data:`hawk.targets.FEATURES`).
+UNSUPPORTED = {f: entry for f, entry in FEATURES.items()
+               if f not in TARGETS["c"].features}
 
 
 def refuse_unsupported(name: str, kernel, kind, walk, sinks) -> None:
@@ -499,7 +388,7 @@ def _fp_domain(nodes) -> list:
 
 def _guard_masks(walk, kind) -> list[str]:
     """The fields of the masks that guard every store, exactly as the renderer
-    computes them (:meth:`hawk.emit.aether._Renderer._guard_slot`): each mask
+    computes them (:meth:`hawk.emit.render._Renderer._guard_slot`): each mask
     the kind's guard names counts only if bound in the ``terminated`` role. A
     finishing kernel binds its mask there too, so it is guarded the same way."""
     kind = DEFAULT_KIND if kind is None else kind
@@ -571,7 +460,7 @@ def ir_checks(name: str, sinks, walk, kind, profile) -> dict:
     nodes = list(_every_node(top))
     max_trips, loops = _max_trips(top)
     cost = kernel_cost(walk)
-    ints = _INDEX_INTS + INT_PLANE_DTYPES
+    ints = INDEX_INTS + INT_PLANE_DTYPES
     return {
         "interface": _interface(walk, nodes, kind),
         "budgets": {
@@ -592,7 +481,7 @@ def ir_checks(name: str, sinks, walk, kind, profile) -> dict:
             and n.kind in ("div", "floordiv", "mod") and n.ttype.dtype in ints],
         "int_ub_sites": [
             pos for pos, n, _ in nodes if isinstance(n, Op)
-            and n.kind in _INT_UB and n.ttype.dtype in _INDEX_INTS],
+            and n.kind in _INT_UB and n.ttype.dtype in INDEX_INTS],
         "unsupported_checked": sorted(UNSUPPORTED),
     }
 

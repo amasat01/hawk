@@ -183,7 +183,8 @@ def sample_major_refusal(name: str, shape: tuple, width: int) -> str:
         f"kernel's plane is component-major ({width}, L). hawk.runtime binds "
         f"by address and never copies, so it accepts a sample-major plane only "
         f"as a zero-copy transposed view (the .T of a contiguous ({width}, L) "
-        f"array). Pass np.ascontiguousarray({name}.T), allocate it as "
+        f"array). Pass np.ascontiguousarray({name}.T), mark a free view with "
+        f"hawk.samples_first({name}), allocate it as "
         f"({width}, L), or launch through eagle, which copies it with an "
         f"eagle.LayoutWarning"
     )

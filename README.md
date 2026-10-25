@@ -32,6 +32,30 @@ four-part story.
 **[Read the documentation](https://amasat01.github.io/hawk/)** — installation, a five-minute quickstart, tutorials,
 examples and the full Python API reference.
 
+## Write a kernel, call it
+
+Runs on CPU.
+
+```python
+import numpy as np
+import hawk
+from hawk import Param, Scalar
+
+
+@hawk.kernel
+def scale(x: Scalar, a: Param, b: Param) -> Scalar:
+    return a * x + b
+
+
+print(scale(np.arange(4.0), 2.0, 1.0))
+# [1. 3. 5. 7.]
+```
+
+The function is the kernel for one sample; `scale(x, 2.0, 1.0)` runs it over the whole array and gives back what it
+returns (a value, a tuple, a list or a dict of them). The first call builds it and caches the build; the same call runs on the GPU
+when `x` is a CuPy array. [Every form, executed](https://amasat01.github.io/hawk/content/examples/06_every_form_of_a_kernel.html)
+· [what a call does](https://amasat01.github.io/hawk/content/under_the_hood.html).
+
 ## Write a kernel, get its gradient
 
 Runs on CPU.
@@ -115,6 +139,9 @@ step's taping twin, which records the state every step read, so a
 launching runtime can reverse the rollout window by window
 ([Tapes and events](https://amasat01.github.io/hawk/content/vocabulary/05_tapes_and_events.html)).
 </details>
+
+hawk is also a language you extend to your field: declare your own vocabulary once and every kernel speaks it. See
+[hawk in your domain](https://amasat01.github.io/hawk/content/vocabulary.html), with a worked orbits example.
 
 <details>
 <summary>Kernel kinds and returned outputs</summary>

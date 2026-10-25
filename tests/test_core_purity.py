@@ -38,9 +38,9 @@ one hit and not two (an instrument needs a known answer).
 Two spans are excised before matching, each named and each asserted to have
 actually been removed, so neither exception can silently become a hole:
 
-* each backend's ``index_prologue()`` string — the ONE place a launch-geometry
+* each wrapper's ``index_prologue()`` string — the ONE place a launch-geometry
   token may appear as plain wording, not real code (warp-level spelling is a
-  second, separate seam: the CUDA backend's persistent and fast entries use
+  second, separate seam: the CUDA wrapper's persistent and fast entries use
   ``%laneid``/``__activemask``/shuffle reductions, which this list does not audit);
 * the ``GEOMETRY_TOKENS`` assignment in ``hawk/emit/spelling.py`` — the audit's own
   vocabulary, which contains ``MPI_`` and ``nccl`` because it is what looks for
@@ -93,8 +93,8 @@ import pytest
 
 import hawk
 from hawk import _core
-from hawk.emit import BACKENDS
-from hawk.emit.aether import GEOMETRY_TOKENS
+from hawk.emit.render import GEOMETRY_TOKENS
+from hawk.targets import TARGETS
 
 REPO = Path(hawk.__file__).resolve().parent.parent
 PACKAGE = REPO / "hawk"
@@ -216,9 +216,9 @@ def _excise(path: Path, text: str) -> tuple:
     ``(text, [what was removed])`` so each removal can be asserted real."""
     removed = []
     if path.name in ("cuda.py", "host.py") and path.parent.name == "emit":
-        span = BACKENDS[path.stem].index_prologue()
+        span = TARGETS[path.stem].wrapper.index_prologue()
         assert span and span in text, (
-            f"{path}: the backend's index_prologue() string is not present verbatim "
+            f"{path}: the wrapper's index_prologue() string is not present verbatim "
             "in its own source, so the named exception cannot be located — the "
             "audit would either scan it or excise the wrong thing"
         )

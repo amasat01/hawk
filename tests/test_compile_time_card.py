@@ -35,7 +35,8 @@ from hawk.compile import (
     host_flags,
 )
 from hawk.compile.toolchain import resolve_arch, device_flags, subprocess_env
-from hawk.emit import BACKENDS, FLOAT64, render_source
+from hawk.emit import FLOAT64, render_source
+from hawk.targets import TARGETS
 
 CARD = card_path("CARD_COMPILE_TIME.md")
 
@@ -46,11 +47,11 @@ CLASSES = ("axpb", "vec3_scale", "spin", "vocab")
 _GPP_PHASE = re.compile(r"^\s*(phase [a-z. ]+|TOTAL)\s*:\s+([\d.]+)")
 
 
-def _emit(name: str, backend: str, tmp: Path) -> Path:
+def _emit(name: str, target: str, tmp: Path) -> Path:
     kernel = getattr(D, name)
-    src = render_source(name, kernel.sinks, kernel.walk, BACKENDS[backend],
-                        mode=FLOAT64, exports=exports(backend))
-    path = tmp / f"{name}.{'cu' if backend == 'cuda' else 'cpp'}"
+    src = render_source(name, kernel.sinks, kernel.walk, TARGETS[target],
+                        mode=FLOAT64, exports=exports(target))
+    path = tmp / f"{name}.{'cu' if target == 'cuda' else 'cpp'}"
     path.write_text(src.text)
     return path
 

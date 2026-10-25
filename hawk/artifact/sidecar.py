@@ -23,6 +23,9 @@ key order is contractual.
 check a bound plane's shape against what the body was compiled for, nor to
 tell an integer-valued handle from a Real one.
 
+``vec_widths`` is the schema's per-name vector width (``arg_widths`` restricted to
+the vector inputs), so a host can allocate ``(W, N)`` buffers.
+
 ``arg_widths`` stays INT-ONLY and NEVER ``None`` — a load-bearing
 constraint. ``eagle.plan._declared_widths`` reads a plugin's
 ``arg_widths`` through an unconditional ``int(v)`` on every value,
@@ -62,6 +65,7 @@ from .. import _contracts
 from ..compile.toolchain import _strict_aether_include, _strict_eagle_include
 from ..ir import HawkError
 from ..ir.segment import class_name, mix_name, stale_name
+from ..targets import ENTRY_KINDS
 from ..types import INT_PLANE_DTYPES
 
 
@@ -120,6 +124,43 @@ def _mutables(walk) -> list:
     return out
 
 
+def _launch(lane_space, group: int, box=None, block: int | None = None) -> dict:
+    """The ``launch.lane_space`` block: the launch shape (row-major, the last axis
+    fastest, only the first extent may be ``None``: known at run time) and the
+    compaction ``group``, a lane count. With a thread ``box``
+    (:class:`hawk.emit.box.Box`), ``launch.box`` = ``{axis, T, stride}``: a
+    launch of ``n`` lanes runs ``ceil(n / (T * stride)) * stride`` threads
+    (:func:`hawk.emit.box.threads`), and ``base``/``count`` count threads.
+    ``block`` is the exact threads per block an emit that fixed one (a staged
+    tile) needs; a launch uses it verbatim."""
+    axes = [{"label": label, "extent": extent} for label, extent in lane_space]
+    out = {"lane_space": {"axes": axes, "group": int(group)}}
+    if box is not None:
+        out["box"] = box.sidecar()
+    if block is not None:
+        if not isinstance(block, int) or isinstance(block, bool) or block < 1:
+            raise ValueError(f"launch.block must be an integer >= 1, got {block!r}")
+        out["block"] = block
+    return out
+
+
+def _sorted_inputs(walk, planes) -> list:
+    """The bound inputs declared ``Sorted[Index]``."""
+    return [name for _role, name in walk.arg_spec if getattr(planes.get(name), "sorted", False)]
+
+
+def _plane_axes(walk, planes) -> dict:
+    """``{name: {payload, axes}}`` for each bound sink declared with named axes:
+    it is bound ``(*payload, *axes)``."""
+    out = {}
+    for role, name in walk.arg_spec:
+        dims = getattr(planes.get(name), "dims", ())
+        if dims and role in _SINK_ROLES:
+            out[name] = {"payload": list(planes[name].ttype.shape),
+                         "axes": [{"label": label, "extent": size} for label, size, _s in dims]}
+    return out
+
+
 def _width(ttype) -> int:
     w = 1
     for e in ttype.shape:
@@ -146,6 +187,9 @@ _SAMPLE_SHAPED_ROLES = ("per_sample", "vec_in", "mat_in", "terminated", "mutable
 #: never ``None`` either — see the module docstring); declared ``None`` in
 #: ``arg_shapes`` instead.
 _RUNTIME_LENGTH_ROLES = ("lookup", "wide_in", "wide_out", "accum_out")
+
+#: The roles a body writes.
+_SINK_ROLES = ("mutable", "out", "wide_out", "accum_out")
 
 #: Every role that binds a memory plane at all — the domain ``arg_widths``
 #: and ``arg_dtypes`` are complete over. ``uniform``/``nsamples`` are
@@ -252,8 +296,10 @@ def _finish(walk) -> dict:
 
 
 def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
-                 exec_targets=("device", "host"), host_entry: str | None = None,
+                 exec_targets=ENTRY_KINDS, host_entry: str | None = None,
                  derivative: dict | None = None, lanes=None,
+                 lane_space=((None, None),), group: int = 1, box=None, block: int | None = None,
+                 planes: dict | None = None,
                  dispatch_override=None, step_ops: int | None = None,
                  fp64_ops_ir: int | None = None,
                  entry_counts_finished: bool = False,
@@ -276,6 +322,13 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     role) and wire dtype the body was compiled for. ``arg_widths`` is
     their int-only, backward-compatible subset (see the module docstring).
 
+    ``lane_space`` and ``group`` are the kernel's launch shape and compaction
+    unit, written as ``launch.lane_space`` for every kernel (one unlabelled
+    runtime axis and group 1 when none is declared). ``block`` is the threads
+    per block of an emit that fixed one, written as ``launch.block``. ``planes`` are the kernel's
+    declarations: ``sorted_inputs`` names the bound ``Sorted[Index]`` inputs and
+    ``plane_axes`` the sinks declared with named axes, each only when present.
+
     ``dispatch_override`` (the per-unit split) replaces ``walk.dispatches``
     as the ``dispatch`` block's source when given, since a segmented
     unit's own walk carries no Dispatch node.
@@ -292,6 +345,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     ``ptxas`` (present when the device compile ran ptxas, i.e. built a CUBIN)
     is ``{kernel: {regs, spill_store_B, spill_load_B, stack_B}}``, recorded for a
     reader of the artifact; nothing in the build acts on it."""
+    planes = planes or {}
+    sorted_in, axes = _sorted_inputs(walk, planes), _plane_axes(walk, planes)
     meta = {
         "format": fmt,
         "schema_version": _contracts.MAX_SCHEMA_VERSION,
@@ -312,7 +367,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         "mat_shapes": {n: list(walk.slot_types[("mat_in", n)].shape)
                        for n in _names(walk, "mat_in")},
         "mutables": _mutables(walk),
-        "arg_widths": _arg_widths(walk),
+        "arg_widths": (widths := _arg_widths(walk)),
+        "vec_widths": {n: widths[n] for n in _names(walk, "vec_in")},
         "arg_shapes": _arg_shapes(walk),
         "arg_dtypes": _arg_dtypes(walk, scalar_type),
         "wide_inputs": _names(walk, "wide_in"),
@@ -328,12 +384,18 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         # every reduction over samples, with its op: the rows it writes (one
         # per 32 samples) are the runtime's scratch, finished into the cell
         **({"cells": walk.cells} if walk.cells else {}),
+        # the companion planes of the compensated keyed sums: the runtime
+        # makes them with the bind and the caller never passes them
+        **({"companions": walk.companions} if walk.companions else {}),
         # one step's operation count, for a kernel whose body steps (absent
         # otherwise): read by the launching runtime, never by the body
         **({"step_ops": step_ops} if step_ops is not None else {}),
         **({"fp64_ops_ir": fp64_ops_ir} if fp64_ops_ir is not None else {}),
         **({"entry_counts_finished": True} if entry_counts_finished else {}),
         **({"ptxas": ptxas} if ptxas else {}),
+        "launch": _launch(lane_space, group, box, block),
+        **({"sorted_inputs": sorted_in} if sorted_in else {}),
+        **({"plane_axes": axes} if axes else {}),
         "digest": walk.digest,
         "quantities": {p: list(span.wires) for p, span in walk.quantities.items()},
         "aether_include": _root_or_sealed_marker(_strict_aether_include),

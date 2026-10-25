@@ -3,7 +3,7 @@
 
 """Tests the `dispatch` node and its `predicated`/`switch`/`segmented`
 emission: K in {2, 5, 16}, a kind plane INCLUDING out-of-range values,
-rank-0/rank-1 branches, both backends. The built policies agree with the
+rank-0/rank-1 branches, both wrappers. The built policies agree with the
 serial oracle (EXACT for an integer-typed branch set), and each policy's
 units carry DISTINCT unit digests.
 
@@ -216,14 +216,14 @@ def test_segmented_has_no_per_node_emission_yet():
 
 
 def test_both_backends_share_one_dispatch_helper():
-    from hawk.emit import BACKENDS
-    text = {b.id: b.dispatch("hawk_disp0_k", ["b0", "b1"], "predicated")
-            for b in BACKENDS.values()}
+    from hawk.targets import TARGETS
+    text = {b.id: b.wrapper.dispatch("hawk_disp0_k", ["b0", "b1"], "predicated")
+            for b in TARGETS.values() if b.wrapper}
     assert text["cuda"] == text["host"]
 
 
 # --------------------------------------------------------------------------- #
-# 2a. Numeric: real artifacts, both backends, both built policies.
+# 2a. Numeric: real artifacts, both wrappers, both built policies.
 # --------------------------------------------------------------------------- #
 def _branches(bs, k):
     """A PLAIN-PYTHON helper (never traced by the `ast` pass): the K static
@@ -1119,7 +1119,7 @@ def test_a_rendered_switch_keeps_the_fused_loop_scalar_while_each_branch_vectori
 
 def test_the_emitter_and_the_cost_counts_share_one_vectorisation_predicate():
     from hawk.emit import render_source, scalar_mode
-    from hawk.emit.host import HOST
+    from hawk.targets import TARGETS
     from hawk.ir.cost import kernel_cost
 
     @hawk.kernel
@@ -1136,8 +1136,8 @@ def test_the_emitter_and_the_cost_counts_share_one_vectorisation_predicate():
     # a 32-trip loop runs interchanged on the host (trips outside, samples'
     # lanes inside), so its trip count does not keep the loop scalar
     for kernel, expected in ((plain, True), (short, True)):
-        source = render_source("k", kernel.sinks, kernel.walk, HOST, mode=scalar_mode("float64"))
+        source = render_source("k", kernel.sinks, kernel.walk, TARGETS["host"], mode=scalar_mode("float64"))
         assert source.vectorised is expected
         assert kernel_cost(kernel.walk).vectorised is expected
-    f32 = render_source("k", short.sinks, short.walk, HOST, mode=scalar_mode("float32"))
+    f32 = render_source("k", short.sinks, short.walk, TARGETS["host"], mode=scalar_mode("float32"))
     assert f32.vectorised

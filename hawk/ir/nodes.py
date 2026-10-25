@@ -51,15 +51,18 @@ SINK_ROLES = ("mutable", "out", "wide_out", "accum_out")
 ROLE_ORDER = ("mutable", "out", "wide_out", "accum_out", "vec_in", "mat_in",
               "wide_in", "per_sample", "lookup", "terminated", "uniform", "nsamples")
 
-#: The quaternion op kinds; they render as aether Expression METHODS
-#: (``quatMul()``, ``quatConj()``, ``quatReciprocal()``, ``quatRotate()``,
-#: ``asPureQuaternion()``, ``asBack3DVector()``) in emitter.
+#: The quaternion op kinds; the language spells each as a method of the
+#: quaternion value.
 QUAT_OPS = ("quat_mul", "quat_conj", "quat_recip", "quat_rotate", "as_pure", "as_vec3")
 
 #: The op KIND an ``@raw_device`` block splices under: opaque author text,
 #: not a HAWK op, so it has no type or derivative rule (differentiating it
 #: refuses, naming the kind) and its access class must be DECLARED.
 RAW_KIND = "raw_device"
+
+#: The language a raw block is written in unless it says otherwise; a writer
+#: refuses a block in a language it cannot write.
+RAW_LANGUAGE = "aether"
 
 #: The op KIND a custom PRIMITIVE records its boundary under, deliberately
 #: NOT in ``hawk.ir.ops.OP_KINDS`` like :data:`RAW_KIND`: untyped by any
@@ -77,8 +80,7 @@ SAMPLE_INDEX_KIND = "sample_index"
 
 #: The leaf ROLES an ``at(expr)`` read may target: ``lookup`` (table plane)
 #: and ``wide_in`` (pinned to the SAME 32-byte ``ScalarHandle``, same access),
-#: and the per-sample input planes, read at another sample through
-#: ``hawk.all_samples(x)[i]``.
+#: and the per-sample input planes, read at another lane through ``u.at(i)``.
 #: ``GATHER_ROLES`` are the ones read ONLY through ``at()``.
 GATHER_ROLES = ("lookup", "wide_in")
 AT_ROLES = GATHER_ROLES + ("per_sample", "vec_in", "mat_in")
@@ -92,12 +94,16 @@ EXTENTS = ("per_sample", "all_samples", "shared")
 NAMESPACE_SEP = "__"
 
 
-#: The kind of the transient node :func:`hawk.all_samples` reductions mint;
+#: The kind of the transient node :func:`hawk.sum` (and max/min/mean) mint;
 #: a store turns it into a :class:`SampleSum` sink, any other use is refused.
 REDUCE_KIND = "reduce"
 
 #: The reductions over samples a cell can hold.
 CELL_OPS = ("sum", "max", "min")
+
+#: The width of the language's row reduction: a fixed pairwise tree over this
+#: many consecutive samples, the same on every target.
+ROW_WIDTH = 32
 
 
 def extent_of(node: Any) -> str:
@@ -145,7 +151,7 @@ class Node:
                     getattr(c, "kind", "").startswith("loop") for c in self.operands):
                 raise HawkError(
                     "a cut inside a `for` is not in this release (it would be one "
-                    "launch per iteration); hoist hawk.all_samples(x).sum() out of the "
+                    "launch per iteration); hoist hawk.sum(x) out of the "
                     "loop")
 
     @property
@@ -168,10 +174,10 @@ class Leaf(Node):
     compound quantity that MINTED this wire; a consumer never sets them
     by hand, :meth:`hawk.ir.compound.Quantity.read` does."""
 
-    __slots__ = ("kind", "role", "name", "quantity", "wire_index")
+    __slots__ = ("kind", "role", "name", "quantity", "wire_index", "sorted")
 
     def __init__(self, kind: str, role: str, name: str, ttype: TensorType, *,
-                 quantity: Any = None, wire_index: int = 0) -> None:
+                 quantity: Any = None, wire_index: int = 0, sorted: bool = False) -> None:
         super().__init__(ttype)
         if kind not in LEAF_KINDS:
             raise HawkError(
@@ -188,6 +194,9 @@ class Leaf(Node):
         self.name = name
         self.quantity = quantity
         self.wire_index = wire_index
+        #: DECLARED (``Sorted[Index]``): the plane is non-decreasing along the flat lane.
+        #: A fact for :mod:`hawk.ir.lanes` only; never part of identity, digest or emit.
+        self.sorted = sorted
 
     @property
     def binding(self) -> Slot:
@@ -373,12 +382,13 @@ class Select(Node):
 
 
 #: The op KIND of HAWK's finite per-element dispatch, control-shaped like
-#: :data:`Select.kind`, but never minted by the ``ast`` pass itself (the
-#: author picks a POLICY, a performance call the pass has no basis for).
+#: :data:`Select.kind`. The ``ast`` pass mints one (policy ``switch``) only
+#: for an ``if``/``elif`` chain whose branches would otherwise all run;
+#: otherwise the author picks the POLICY.
 DISPATCH_KIND = "dispatch"
 
 #: Dispatch's lowerings: ``predicated``/``switch`` are per-node text
-#: choices the renderer makes (:mod:`hawk.emit.aether`); ``segmented`` is a
+#: choices the renderer makes (:mod:`hawk.emit.render`); ``segmented`` is a
 #: per-UNIT split the walk never sees. ``auto`` is the one value a
 #: launching runtime's chooser may resolve (to ``switch`` or
 #: ``segmented``); a declared policy is never overridden. Until resolved,
@@ -509,15 +519,48 @@ class WideWrite(Sink):
         super().__init__("wide_write", "wide_out", name, value, index, ttype)
 
 
+#: The sum contracts an accumulate commits under (``policy=``): ``auto`` (the
+#: target's default), ``compensated`` (a companion plane ``<name>_c`` carries the
+#: correction) and ``ordered`` (bitwise repeatable).
+POLICIES = ("auto", "compensated", "ordered")
+
+#: What a keyed ``hawk.scatter`` takes: the above, and ``plain`` (the target's
+#: atomic add alone, no companion).
+SCATTER_POLICIES = (*POLICIES, "plain")
+
+#: The policy a keyed ``hawk.scatter`` under ``auto`` is traced with: compensated
+#: on the targets that lower it (:func:`compensates`), the target's own serial
+#: add on the C target, which lowers no companion.
+KEYED_AUTO = "keyed_auto"
+
+
+def compensates(policy: str) -> bool:
+    """Whether an accumulate under ``policy`` commits through a companion plane."""
+    return policy in ("compensated", KEYED_AUTO)
+
+#: The suffix of a compensated accumulate plane's companion.
+COMPANION_SUFFIX = "_c"
+
+
 class AccumWrite(Sink):
     """``accum_write(accum_out)`` — the cross-sample accumulate plane;
-    an ``index`` other than the own column is a scatter."""
+    an ``index`` other than the own column is a scatter. ``policy`` is the
+    sum contract (:data:`POLICIES`)."""
 
-    __slots__ = ()
+    __slots__ = ("policy",)
 
     def __init__(self, name: str, value: Node, index: Node | None = None,
-                 ttype: TensorType | None = None) -> None:
+                 ttype: TensorType | None = None, policy: str = "auto") -> None:
         super().__init__("accum_write", "accum_out", name, value, index, ttype)
+        if policy not in (*SCATTER_POLICIES, KEYED_AUTO):
+            raise HawkError(
+                f"accum_write {name!r}: policy {policy!r} is not one of {SCATTER_POLICIES}")
+        self.policy = policy
+
+    @property
+    def dedup_extra(self) -> Any:
+        return (self.role, self.name) if self.policy in ("auto", "plain") else (
+            self.role, self.name, self.policy)
 
 
 #: The suffix of a ``sample_sum`` plane's compensation companion.
@@ -530,19 +573,30 @@ class ReduceSamples(Node):
     row-major). A trace-time node only: storing it to a Mutable makes the
     :class:`SampleSum` sink(s), and nothing else may read it."""
 
-    __slots__ = ("op",)
+    __slots__ = ("op", "key", "count", "policy")
 
     kind = REDUCE_KIND
 
-    def __init__(self, op: str, value: Node) -> None:
+    def __init__(self, op: str, value: Node, *, key: Node | None = None,
+                 count: Node | None = None, policy: str = "auto") -> None:
         if op not in CELL_OPS:
             raise HawkError(f"reduce over samples: op {op!r} is not one of {CELL_OPS}")
         if value.ttype.dtype not in ("f64", "f32") or len(value.ttype.shape) > 2:
             raise HawkError(
                 f"reduce over samples: an f64/f32 scalar, vector or matrix is "
                 f"reduced, got {value.ttype!r}")
+        if key is not None and op != "sum":
+            raise HawkError(f"reduce over some lane axes: op {op!r} is not built, only sum")
+        if policy not in POLICIES:
+            raise HawkError(f"reduce over samples: policy {policy!r} is not one of {POLICIES}")
         super().__init__(value.ttype, (value,))
         self.op = op
+        #: Over SOME lane axes: the flat index of the kept coordinates (``None``:
+        #: every axis, one cell) and the number of kept coordinates, the
+        #: component stride of a vector or matrix payload.
+        self.key = key
+        self.count = count
+        self.policy = policy
 
     @property
     def dedup_extra(self) -> Any:
@@ -554,6 +608,8 @@ class ReduceSamples(Node):
         for a vector or matrix."""
         value = self.operands[0]
         shape = value.ttype.shape
+        if self.key is not None:
+            return self._keyed(name)
         if not shape:
             return (SampleSum(name, value, ttype, self.op),)
         scalar = TensorType((), value.ttype.dtype)
@@ -564,15 +620,36 @@ class ReduceSamples(Node):
                                scalar, self.op, cell=name, columns=width)
                      for k, ix in enumerate(index))
 
+    def _keyed(self, name: str) -> tuple:
+        """The accumulates of a reduction over some lane axes: entry ``k`` of
+        the payload (row-major) adds into ``name`` at ``key + k * count``, so the
+        plane is ``(*payload, *kept)``, payload first."""
+        value = self.operands[0]
+        shape = value.ttype.shape
+        scalar = TensorType((), value.ttype.dtype)
+        if not shape:
+            return (AccumWrite(name, value, self.key, scalar, self.policy),)
+        index = [(r,) if len(shape) == 1 else (r, c)
+                 for r in range(shape[0]) for c in range(shape[-1] if len(shape) == 2 else 1)]
+        from .ops import make
+
+        out = []
+        for k, ix in enumerate(index):
+            entry = Op("component", (value,), scalar, ix if len(shape) == 2 else ix[0])
+            at = self.key if k == 0 else make("add", (self.key, make(
+                "mul", (Const(k, self.count.ttype), self.count))))
+            out.append(AccumWrite(name, entry, at, scalar, self.policy))
+        return tuple(out)
+
 
 class SampleSum(Sink):
     """``sample_sum(accum_out)``: the sum (or max, or min) of a rank-0
-    floating ``value`` over each run of 32 consecutive samples (one warp).
+    floating ``value`` over each row of :data:`ROW_WIDTH` consecutive samples.
 
-    The plane ``name`` holds one result per run (``ceil(n/32)`` of them); a
-    sum also writes its compensation term to ``name + "_comp"``. A run's
-    result is a fixed pairwise tree over its 32 slots (a slot past ``n``
-    holds the identity: 0, -inf, +inf), the same on both targets."""
+    The plane ``name`` holds one result per row (``ceil(n/ROW_WIDTH)`` of them); a
+    sum also writes its compensation term to ``name + "_comp"``. A row's
+    result is a fixed pairwise tree over its slots (a slot past ``n``
+    holds the identity: 0, -inf, +inf), the same on every target."""
 
     __slots__ = ("op", "cell", "columns")
 

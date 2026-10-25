@@ -21,18 +21,17 @@ Rows (host; the ``cuda`` arm is marked ``gpu``):
 
 from __future__ import annotations
 
-import _deploy as L
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from conftest import _launch, _xp, sidecar_of
 
 import hawk
 from hawk import Kernel, Mutable, Param, Scalar, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import param_planes, vjp
-from hawk.emit.backend import ActiveSpec, SegmentSpec, render_source
-from hawk.emit.cuda import CudaBackend
+from hawk.emit.wrapper import ActiveSpec, SegmentSpec, render_source
 from hawk.ir import HawkError
+from hawk.targets import TARGETS
 
 SIZES = (1, 31, 32, 33, 1000, 65536)
 #: Row tolerance, relative to the run's sum of |term|.
@@ -77,26 +76,6 @@ def _inputs(n, mode):
     dt = np.dtype(mode)
     return (rng.uniform(-2.0, 2.0, n).astype(dt), rng.standard_normal(n).astype(dt),
             dt.type(1.3), dt.type(-0.7))
-
-
-def _launch(bundle, name, target, planes):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    sidecar = sidecar_of(bundle, name)
-    if target == "host":
-        plugin, structure = L.host_plugin(bundle.directory, name, sidecar), eexec.HostTeam
-    else:
-        plugin, structure = L.device_plugin(bundle.directory, name, sidecar), eexec.DeviceKernel
-    return eplan.plan(plugin, structure=structure).bind(**planes)
-
-
-def _xp(target):
-    if target == "host":
-        return np
-    import cupy
-
-    return cupy
 
 
 def _run(bundle, target, n, mode):
@@ -212,4 +191,4 @@ def test_sidecar_lists_the_cells(built):
 def test_entries_whose_warp_is_not_32_samples_refuse_by_name(entry, kw):
     derived = Kernel("law_ss", VJP)
     with pytest.raises(HawkError, match=rf"sample_sum \['bar_k', 'bar_b'\].*{entry} entry"):
-        render_source(derived.name, derived.sinks, derived.walk, CudaBackend(), **kw)
+        render_source(derived.name, derived.sinks, derived.walk, TARGETS["cuda"], **kw)

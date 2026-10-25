@@ -4,6 +4,7 @@ Standalone notebooks, each one task. Unlike the tutorials, these do not
 build on each other — start wherever the task matches what you need. The last page,
 *When hawk can't spell it*, helps choose between a primitive, `raw_device` and a native op.
 
+- [Every way to write and call a kernel](examples/06_every_form_of_a_kernel): returns, names, `Mutable`, the first build and what is refused.
 - [A drag kernel over a large ensemble](examples/01_ensemble_drag_throughput): CPU and GPU agree, with the draws made inside the kernel.
 - [A gradient checked against finite differences](examples/02_autodiff_finite_difference_check) and [against torch](examples/autodiff_vs_torch).
 - [One kernel family, reused](examples/03_kernelkind_reuse) and [hawk next to Warp](examples/04_hawk_next_to_warp).
@@ -12,6 +13,7 @@ build on each other — start wherever the task matches what you need. The last 
 ```{toctree}
 :maxdepth: 1
 
+examples/06_every_form_of_a_kernel
 examples/01_ensemble_drag_throughput
 examples/02_autodiff_finite_difference_check
 examples/03_kernelkind_reuse

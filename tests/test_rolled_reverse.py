@@ -134,7 +134,7 @@ def test_the_rolled_vjp_commits_inside_the_loop_and_holds_no_row(form):
     lines = render_body(tuple(sinks), canonical(tuple(sinks))).text.splitlines()
     text = "\n".join(lines)
     # no carried or copied row (the dead zero base the loop boundary names is
-    # dropped by the compiler: a 0.6.5 item)
+    # dropped by the compiler: an open item)
     assert "hawk_sv" not in text and "hawk_it" not in text
     for plane in ("mut_bar_theta", "mut_bar_x"):         # one prologue per plane
         assert sum("for (Int hk" in ln and plane in ln for ln in lines) == 1, plane

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import warnings
 
+from themed_figure import show  # noqa: F401  re-exported: a chart is shown as a light/dark pair
+
 # An optional dependency's own notice (seen when importing torch alongside
 # certain NumPy/SciPy builds); not something any notebook's lesson is about.
 warnings.filterwarnings("ignore", category=FutureWarning)

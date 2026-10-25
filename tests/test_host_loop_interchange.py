@@ -41,10 +41,11 @@ from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.compile import toolchain as tc
 from hawk.diff import vjp
-from hawk.emit import BACKENDS, render_source, scalar_mode
+from hawk.emit import render_source, scalar_mode
 from hawk.emit.host import INTERCHANGE_MACRO, loop_interchange
 from hawk.ir.cost import kernel_cost
 from hawk.ir.vectorise import interchanged_loops, vectorises
+from hawk.targets import TARGETS
 
 PLAIN = ("HAWK_HOST_INTERCHANGE=0",)
 INTERCHANGED = ("HAWK_HOST_INTERCHANGE=1",)
@@ -221,7 +222,7 @@ def test_interchanged_and_per_sample_loops_are_byte_identical(twins, name, mode,
 def test_every_twin_tu_carries_the_interchange():
     for name, mode in TWINS:
         k = KERNELS[name]
-        text = render_source(name, k.sinks, k.walk, BACKENDS["host"],
+        text = render_source(name, k.sinks, k.walk, TARGETS["host"],
                              mode=scalar_mode(mode)).text
         assert f"#if {INTERCHANGE_MACRO}" in text, name
         assert "hawk_abi::kHostLoopTile" in text, name
@@ -229,7 +230,7 @@ def test_every_twin_tu_carries_the_interchange():
 
 
 def test_a_nested_loop_interchanges_its_outermost_only():
-    text = render_source("nested", nested.sinks, nested.walk, BACKENDS["host"]).text
+    text = render_source("nested", nested.sinks, nested.walk, TARGETS["host"]).text
     trips = re.findall(r"for \(Int hawk_trip = 0; hawk_any != 0 && hawk_trip < (\d+);",
                        text)
     assert trips == ["40"]
@@ -258,7 +259,7 @@ def _lane_loop_report(tmp_path, kernel, mode, profile):
     """(lines of the trips' lane loops, lines GCC vectorised with 64-byte vectors)."""
     src = tmp_path / f"{kernel.name}_{mode}_{profile}.cpp"
     so = src.with_suffix(".so")
-    src.write_text(render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["host"],
+    src.write_text(render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
                                  mode=scalar_mode(mode)).text)
     cc = subprocess.run(
         [tc.host_compiler(), *tc.host_flags(profile=profile,

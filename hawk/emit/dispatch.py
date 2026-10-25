@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """How a :class:`~hawk.ir.nodes.Dispatch` node renders: the rank-0
-``predicated``/``switch`` text both backends share, and the renderer's
-dispatch methods as a :class:`hawk.emit.aether._Renderer` mixin."""
+``predicated``/``switch`` text both wrappers share, and the renderer's
+dispatch methods as a :class:`hawk.emit.render._Renderer` mixin."""
 
 from __future__ import annotations
 
@@ -57,13 +57,14 @@ def _clamp_expr(kind_spelling: str, k: int) -> str:
 
 
 def _in_range(selector: Node, k: int) -> bool:
-    """Whether ``selector`` is a select between two integer literals that are
-    branch indices already, so the clamp has nothing to clamp."""
+    """Whether ``selector`` is a select (or a chain of them) between integer
+    literals that are branch indices already, so the clamp has nothing to clamp."""
+    if isinstance(selector, Const):
+        return (isinstance(selector.literal, int) and not isinstance(selector.literal, bool)
+                and 0 <= selector.literal < k)
     if getattr(selector, "kind", None) != "select":
         return False
-    return all(isinstance(o, Const) and isinstance(o.literal, int)
-               and not isinstance(o.literal, bool) and 0 <= o.literal < k
-               for o in selector.operands[1:])
+    return all(_in_range(o, k) for o in selector.operands[1:])
 
 
 def render_dispatch_rank0(kind_spelling: str, branch_spellings: Sequence[str],
@@ -72,8 +73,8 @@ def render_dispatch_rank0(kind_spelling: str, branch_spellings: Sequence[str],
                           zero_spelling: str = "") -> str:
     """The per-node dispatch text for ``predicated``/``switch`` — identical
     C++ on both targets (no ABI shape, no launch geometry), which is why
-    :class:`~hawk.emit.backend.Backend` gains one member both built
-    backends implement by calling this same function.
+    :class:`~hawk.emit.wrapper.Wrapper` gains one member both built
+    wrappers implement by calling this same function.
 
     Every input here is already rendered: ``kind_spelling`` names the
     clamped selector local (:func:`_clamp_expr`, materialised once so a
@@ -159,14 +160,14 @@ class _DispatchMixin:
         self._selector(kname, node.selector, node.K)
         branch_texts = [self._ref(b) for b in node.branches]
         if not node.ttype.shape:
-            return self.dialect.predicated_rank0(kname, branch_texts)
-        return self.dialect.predicated_tensor(self, kname, branch_texts)
+            return self.writer.predicated_rank0(kname, branch_texts)
+        return self.writer.predicated_tensor(self, kname, branch_texts)
 
     def _selector(self, kname: str, selector: Node, k: int) -> None:
         """Emit ``kname``, the selector clamped to ``[0, k)``; no clamp for a
         select between two in-range literals."""
         ref = self._ref(selector)
-        self._emit(self.dialect.selector_decl(self, kname, ref, k,
+        self._emit(self.writer.selector_decl(self, kname, ref, k,
                                               in_range=_in_range(selector, k)))
 
     def _disp_pos(self, node: Dispatch):
@@ -213,7 +214,7 @@ class _DispatchMixin:
         for node, name in zip(nodes, names):
             mix = self._mix_plane(node)
             if mix is not None:
-                self._emit(self.dialect.mix_count(mix, k, kname))
+                self._emit(self.writer.mix_count(mix, k, kname))
         elided = [frozenset(j for j, b in enumerate(n.branches)
                             if _is_literal_zero(b)) for n in nodes]
         shown = [i for i, n in enumerate(nodes) if id(n) not in hidden]
@@ -228,7 +229,7 @@ class _DispatchMixin:
                             + [r for _t, a, b in stmts[j] for r in (a, b)]
                             for j in range(k)])
         for i in shown:
-            self._emit(f"{self.dialect.carry_type(nodes[i].ttype)} {names[i]};")
+            self._emit(f"{self.writer.carry_type(nodes[i].ttype)} {names[i]};")
         self._emit(f"switch ({kname}) {{")
         outer, self.indent = self.indent, self.indent + "    "
         for j in range(k):
@@ -237,16 +238,16 @@ class _DispatchMixin:
             self._emit(f"case {j}: {{")
             self._emit_case_body(
                 [(names[i], nodes[i].branches[j]) for i in active[j]],
-                [names[i] + " = " + self.dialect.typed_zero(nodes[i].ttype)
+                [names[i] + " = " + self.writer.typed_zero(nodes[i].ttype)
                  for i in shown if j in elided[i]], stmts[j])
             self._emit("break;")
             self._emit("}")
-        tail = self.dialect.switch_default_tail()
+        tail = self.writer.switch_default_tail()
         if plain:
             self._emit("default: {")
             self._emit_case_body(
                 [(names[i], nodes[i].branches[last]) for i in active[last]],
-                [names[i] + " = " + self.dialect.typed_zero(nodes[i].ttype)
+                [names[i] + " = " + self.writer.typed_zero(nodes[i].ttype)
                  for i in shown if last in elided[i]], stmts[last])
             if tail:
                 self.indent += "    "
@@ -256,7 +257,7 @@ class _DispatchMixin:
         else:
             for n, i in enumerate(shown):
                 label = "default: " if n == 0 else ""
-                self._emit(f"{label}{names[i]} = {self.dialect.typed_zero(nodes[i].ttype)};")
+                self._emit(f"{label}{names[i]} = {self.writer.typed_zero(nodes[i].ttype)};")
             if tail:
                 self._emit(tail)
         self.indent = outer
@@ -315,7 +316,31 @@ class _DispatchMixin:
                     tally[id(r)] = tally.get(id(r), 0) + 1
         self._render_nodes(hoisted, tally)
 
-    def _emit_case_body(self, assigns: list, zeros: list, stmts: Sequence = ()) -> None:
+    def _render_one(self, node: Node, named: bool) -> None:
+        """Render ``node``'s expression: declared as a ``tb`` temporary when
+        ``named``, else bound inline."""
+        text = self._expr(node, materialised=named)
+        if named:
+            name = f"tb{self.temps}"
+            self.temps += 1
+            self._emit(self.writer.declare(name, node.ttype, text))
+            self.local[id(node)] = name
+        else:
+            self.local[id(node)] = text
+
+    def _push_scope(self) -> tuple:
+        """Open a nested block: indent one level and snapshot
+        :attr:`local`/:attr:`items`, so a temporary minted inside doesn't leak
+        out. Returns the state for :meth:`_pop_scope`."""
+        state = (self.indent, self.local, self.items)
+        self.indent += "    "
+        self.local, self.items = dict(self.local), dict(self.items)
+        return state
+
+    def _pop_scope(self, state: tuple) -> None:
+        self.indent, self.local, self.items = state
+
+    def _emit_case_body(self, assigns: list, zeros: list, stmts: Sequence) -> None:
         """Render ONE ``case``'s own scope — a fresh :attr:`local`/
         :attr:`items` snapshot (:meth:`_loop`'s save-a-copy/restore idiom):
         a temporary this case mints must not leak to the next one, while
@@ -325,20 +350,17 @@ class _DispatchMixin:
         ``[(output name, branch root)]``, ``zeros`` the zero assignments of
         members elided here, ``stmts`` the ``[(plane, index root, value root)]``
         accumulates this case owns."""
-        inner, self.indent = self.indent, self.indent + "    "
-        saved_local, saved_items = self.local, self.items
-        self.local, self.items = dict(saved_local), dict(saved_items)
+        scope = self._push_scope()
         self._render_branch([root for _, root in assigns]
                             + [r for _t, a, b in stmts for r in (a, b)])
         for name, root in assigns:
             self._emit(f"{name} = {self._ref(root)};")
         for target, at, value in stmts:
-            self._emit(self.dialect.in_place_accumulate(
+            self._emit(self.writer.in_place_accumulate(
                 self, target, self._ref(at), self._ref(value)))
         for zero in zeros:
             self._emit(f"{zero};")
-        self.local, self.items = saved_local, saved_items
-        self.indent = inner
+        self._pop_scope(scope)
 
     def _branch_order(self, roots: Sequence[Node]) -> tuple:
         """Post-order over ``roots``' dependency subgraph, excluding
@@ -383,15 +405,14 @@ class _DispatchMixin:
             return False
         if isinstance(node, (SampleIndex, LoopIndex, LoopCarry)):
             return False
-        if isinstance(node, (Loop, Const, Primitive)):
+        if isinstance(node, (Loop, Const, Primitive)) or self.stores.unnamed(node):
             return False
-        if self.dialect.names_every_tensor and node.ttype.shape:
+        if self.writer.names_every_tensor and node.ttype.shape:
             return True
         return fanout >= 2 or self._leaf_valued(node)
 
-    @staticmethod
-    def _tally_operands(node: Node, tally: dict) -> None:
-        if isinstance(node, Primitive):
+    def _tally_operands(self, node: Node, tally: dict) -> None:
+        if isinstance(node, Primitive) or self.stores.skips(node):
             return
         for child in node.operands:
             tally[id(child)] = tally.get(id(child), 0) + 1
@@ -422,11 +443,4 @@ class _DispatchMixin:
                 self.local[id(node)] = self._ref(node.forward)
                 continue
             named = self._should_name(node, tally.get(id(node), 0))
-            text = self._expr(node, materialised=named)
-            if named:
-                name = f"tb{self.temps}"
-                self.temps += 1
-                self._emit(self.dialect.declare(name, node.ttype, text))
-                self.local[id(node)] = name
-            else:
-                self.local[id(node)] = text
+            self._render_one(node, named)

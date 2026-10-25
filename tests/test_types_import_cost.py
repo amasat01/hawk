@@ -56,7 +56,7 @@ def _hawk_modules_after_importing_types() -> list[str]:
 
 def test_import_hawk_types_pulls_in_nothing_else():
     # a wheel install's self-check also reads the stamped digest module
-    mods = [m for m in _hawk_modules_after_importing_types() if m != "hawk._build_digest"]
+    mods = [m for m in _hawk_modules_after_importing_types() if m not in ("hawk._build_digest", "hawk._version")]
     assert mods == ["hawk", "hawk._contracts", "hawk._core", "hawk.types"], (
         "hawk.types must be the light tier: importing it should pull "
         "in only the package, the two self-check modules and hawk.types itself, "

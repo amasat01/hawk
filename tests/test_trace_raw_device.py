@@ -83,3 +83,22 @@ def test_a_raw_block_cannot_be_differentiated():
     sinks = (Assign("out", block(x).node, F64),)
     with pytest.raises(HawkError, match="raw_device"):
         vjp(sinks)
+
+
+def test_a_raw_block_is_written_in_aether_unless_it_says_otherwise():
+    assert raw_device(TEXT, access="sample_local").language == "aether"
+    assert raw_device(TEXT, access="sample_local", language="c").language == "c"
+
+
+def test_a_writer_refuses_a_block_in_a_language_it_cannot_write():
+    from hawk.emit.wrapper import render_source
+    from hawk.targets import TARGETS
+
+    for language, spliced in (("aether", True), ("c", False)):
+        block = raw_device("psc_x", access="sample_local", returns=Scalar, language=language)
+        sinks = (Assign("out", block(Leaf("vocab_read", "per_sample", "x", F64)).node, F64),)
+        if spliced:
+            render_source("raw", sinks, canonical(sinks), TARGETS["host"])
+        else:
+            with pytest.raises(HawkError, match="'c'"):
+                render_source("raw", sinks, canonical(sinks), TARGETS["host"])

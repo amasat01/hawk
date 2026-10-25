@@ -7,38 +7,23 @@ the CPU, run, and read back. New words (plane, kernel kind, ...) are in the
 Install first (`pip install raptor-hawk raptor-eagle matplotlib` for the CPU route; see [installation](installation)).
 Then write a kernel. It is a plain Python function decorated
 `@hawk.kernel`; each parameter's type says what role it plays for every
-sample:
+sample, and `return` is the output:
 
 ```python
 import hawk
-from hawk import Mutable, Param, Scalar
+import numpy as np
+from hawk import Param, Scalar
 
 
 @hawk.kernel
 def scale(x: Scalar,              # a per-sample input
-          a: Param, b: Param,     # a shared constant: one value for the run
-          y: Mutable[Scalar]):    # an output plane the body assigns
-    y = a * x + b
-```
+          a: Param, b: Param      # a shared constant: one value for the run
+          ) -> Scalar:            # optional, and checked: what the body returns
+    return a * x + b              # the output, one value per sample
 
-Build it for the host (the CPU alone, no GPU and no eagle involved), load
-it and run it:
 
-```python
-import pathlib
-import tempfile
-
-import hawk
-import numpy as np
-
-work_dir = pathlib.Path(tempfile.mkdtemp())
-hawk.build([scale], work_dir, targets=("host",))
-
-host_kernel = hawk.load(work_dir, "scale")
 x = np.linspace(0.0, 7.0, 8)
-y = np.zeros(8)
-hawk.run(host_kernel, x=x, a=2.0, b=1.0, y=y)
-y
+scale(x, 2.0, 1.0)                # call it: the first call builds and caches it
 ```
 
 The printed answer, as recorded in the
@@ -48,13 +33,16 @@ The printed answer, as recorded in the
 array([ 1.,  3.,  5.,  7.,  9., 11., 13., 15.])
 ```
 
-That is `2x + 1` for every `x`. The same kernel runs on a GPU through
-eagle with no change to its source; the tutorial shows how.
+That is `2x + 1` for every `x`, on the CPU because `x` is a NumPy array. Give it a
+CuPy array and it runs on the GPU, with no change to its source. A kernel can return a
+tuple, a list or a dict, and can update a `Mutable` in place:
+[every form, executed](examples/06_every_form_of_a_kernel). Building a kernel yourself
+(`hawk.build`, `hawk.load`, `hawk.run`) is what the tutorials start from.
 
 ## Where next
 
 - [Tutorials](tutorials): nine notebooks that build on each other,
   starting with this kernel in full.
-- [Vocabulary](vocabulary): declare your own kernel family, derivative and
+- {doc}`hawk in your domain <vocabulary>`: declare your own kernel family, derivative and
   tape.
 - [How-to guides](examples): one task per notebook.

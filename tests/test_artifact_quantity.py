@@ -36,8 +36,9 @@ import pathlib
 import _deployable as D
 from conftest import sidecar_of
 
-from hawk.emit import BACKENDS, render_body, render_source
-from hawk.emit.aether import RAW_KIND
+from hawk.emit import render_body, render_source
+from hawk.emit.render import RAW_KIND
+from hawk.targets import TARGETS
 
 #: The IR node constructors a raw-IR workaround would have to name.
 _RAW_IR_NAMES = frozenset({"Leaf", "Op", "Const", "At", "Select", "Assign",
@@ -56,12 +57,12 @@ def test_the_quantitys_wires_are_namespaced_and_contiguous():
 
 
 def test_zero_text_surgery():
-    """The body both backends compile is the SAME string, and it
+    """The body both wrappers compile is the SAME string, and it
     carries no spliced raw text — so there is nothing for a lowering pass to
     edit and no anchor for one to find."""
     body = render_body(D.spin.sinks, D.spin.walk).text
     sources = [render_source("spin", D.spin.sinks, D.spin.walk, b)
-               for b in BACKENDS.values()]
+               for b in TARGETS.values() if b.wrapper]
     assert len({s.body for s in sources}) == 1
     assert "hawk_raw_arg" not in body and RAW_KIND not in body
     assert "earth__orientation__q" in body and "earth__orientation__w" in body

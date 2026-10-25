@@ -11,9 +11,10 @@ under the heterogeneous execution contract eagle enforces.
 This module is the authoring surface. Importing it never imports
 :mod:`hawk.ir`, :mod:`hawk.emit` or :mod:`hawk.compile`.
 
-Runtime severance: no module under ``hawk/hawk/`` imports ``raptor`` or
-``eagle`` at runtime, mechanically checked by
-``hawk/tests/test_severance.py`` and by raptor's own conformance reader.
+Runtime dependencies: ``raptor-core`` (source lifts for ``python -c``).
+``eagle`` is imported lazily, by calling a kernel (``k(...)``) only, and
+nothing else under ``hawk/hawk/`` imports ``raptor`` or ``eagle``;
+``hawk/tests/test_severance.py`` checks it.
 
 This module also adds the authoring names (``kernel``, the declaration
 vocabulary, ``raw_device``, ``Quantity``), bound lazily through
@@ -49,8 +50,9 @@ from . import _contracts
 _AUTHORING = (
     "kernel", "Kernel", "raw_device", "RawBlock", "Value", "Quantity",
     "Scalar", "Index", "Int32", "UInt32", "Quat", "Vector", "Matrix", "Param",
-    "Mutable", "Table", "Staged", "Wide", "WideOut",
-    "Terminated", "HawkError", "steps", "resolve_dispatch", "all_samples",
+    "Mutable", "Table", "Grid", "Sorted", "Staged", "Wide", "WideOut",
+    "Terminated", "HawkError", "steps", "resolve_dispatch",
+    "sum", "max", "min", "mean", "scatter",
 )
 
 #: The subset of :data:`_AUTHORING` resolved from :mod:`hawk.ir` rather
@@ -86,7 +88,15 @@ _SUBMODULE_DOORS = ("embedded",)
 
 __all__ = ["__version__", *_AUTHORING, *_TOP_LEVEL_DOORS]
 
-__version__ = "0.6.5"
+try:
+    from ._version import version as __version__
+except ImportError:  # a checkout that was never built: hawk/_version.py is generated
+    try:
+        from importlib.metadata import version as _metadata_version
+
+        __version__ = _metadata_version("raptor-hawk")
+    except Exception:
+        __version__ = "0.0.0+unknown"
 
 
 # --------------------------------------------------------------------------- #
@@ -200,10 +210,17 @@ _self_check()
 
 #: Names that no longer exist, each with the replacement its refusal names.
 _RETIRED = {
-    "Accum": "Accum is gone: declare Mutable[Scalar] and write "
-             "hawk.all_samples(bins)[key] += term in the body",
-    "Reduce": "Reduce is gone: declare Mutable[Scalar] and write "
-              "total = hawk.all_samples(term).sum()",
+    "Accum": "Accum is gone: declare Mutable[\"bin\":n] and write "
+             "hawk.scatter(bins)[key] += term in the body",
+    "Reduce": "Reduce is gone: write total = hawk.sum(term) "
+              "(or return it)",
+    "all_samples": "hawk.all_samples is gone. all_samples(x).sum() is hawk.sum(x) "
+                   "(max/min/mean the same; over=\"<axis>\" keeps the other lane axes); "
+                   "all_samples(x)[mask].sum() is hawk.sum(x, where=mask); "
+                   "all_samples(m).rows[0].sum() is hawk.sum(m.rows[0]); "
+                   "all_samples(y)[key] += v is hawk.scatter(y)[key] += v; "
+                   "all_samples(y)[mask] = v is y = m.where(mask, v, y); "
+                   "all_samples(u)[i] is u.at(i)",
 }
 
 

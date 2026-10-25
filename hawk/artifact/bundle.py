@@ -40,15 +40,18 @@ from pathlib import Path
 
 from ..compile import CompileOptions, compile_source, digest_file
 from ..compile.cache import ClosureWatch, publish_atomic, tmp_sibling
-from ..emit import BACKENDS, SegmentSpec, literal_table as _literal_table, render_source, scalar_mode
-from ..emit.aether import binding_name as _binding_name
-from ..emit.backend import ActiveSpec
+from ..emit import SegmentSpec, literal_table as _literal_table, render_source, scalar_mode
+from ..emit.box import thread_box
+from ..emit.render import binding_name as _binding_name
+from ..emit.wrapper import ActiveSpec
 from ..ext import DEFAULT_KIND
 from ..ir import DispatchInfo, HawkError
 from ..ir import canonical as _canonical
 from ..ir import split_segmented as _split_segmented
 from ..ir.split import internal as _split_internal
 from ..ir.split import stages as _split_stages
+from ..targets import DEFAULT_TARGETS, ENTRY_DEVICE, ENTRY_HOST, GPU, TARGETS
+from ..targets.cards import build_arch
 from ..types import Slot, TensorType
 from . import layout as _layout
 from . import manifest as _manifest
@@ -64,6 +67,7 @@ from .unit_cache import (
     _stamp_digest,
     _unit_key,
     _write_stamp,
+    declaration_digest,
     arch,
 )
 from .unit_cache import COUNTERS as COUNTERS
@@ -74,25 +78,10 @@ from .unit_cache import publish_log as publish_log
 from .unit_cache import reset_unit_memo as reset_unit_memo
 from .unit_cache import unit_stats as unit_stats
 
-#: Which compiled container each backend produces (the SOURCE extension and
-#: the FALLBACK manifest ``format``, used as-is for ``host`` and overridden
-#: for ``cuda`` by :func:`_sniff_device_format` below, since the ``cuda``
-#: leg can compile to PTX *or* CUBIN depending on the box's toolchain).
-#: ``c`` is the standalone MISRA-C unit (:mod:`hawk.embedded`): its
-#: "artifact" is the ``.h`` a consumer includes, its source the ``.c``; it is
-#: never compiled here and never enters the manifest or the sidecar.
-_TARGET = {"cuda": (".ptx", ".cu", "ptx"), "host": (".so", ".cpp", "host"),
-           "c": (".h", ".c", "c")}
-
 #: The published extension for each real device format
 #: :func:`_sniff_device_format` can return (NVRTC/nvcc here never emit a
 #: ``fatbin``, the third ``eagle.roles.MANIFEST_FORMATS`` member).
 _DEVICE_EXT = {"ptx": ".ptx", "cubin": ".cubin"}
-
-#: HAWK's backend id -> the manifest's ``exec_targets`` spelling. ``c`` has
-#: none on purpose: a standalone C unit is not something eagle executes.
-_EXEC_TARGET = {"cuda": "device", "host": "host"}
-
 
 def _sniff_device_format(path: Path) -> str:
     r"""``"cubin"`` if the compiled device object at ``path`` is an ELF
@@ -106,11 +95,11 @@ def _sniff_device_format(path: Path) -> str:
 
 @dataclass(frozen=True)
 class Entry:
-    """One compiled target of one kernel. A ``c`` entry's ``artifact`` is the
-    ``.h``, its ``source`` the ``.c`` and its ``report`` the
-    ``<name>.embedded.json``; ``report`` is ``None`` for every other target."""
+    """One built target of one kernel. An exported entry's ``artifact`` is its
+    header, its ``source`` the unit and its ``report`` the
+    ``<name>.embedded.json``; ``report`` is ``None`` for every compiled target."""
 
-    backend: str
+    target: str
     artifact: Path
     source: Path
     key: str
@@ -242,7 +231,7 @@ def _unit_digest(files) -> str:
 
 
 def _segment_spec(kernel) -> SegmentSpec | None:
-    """Build the :class:`~hawk.emit.backend.SegmentSpec` a segmented unit's
+    """Build the :class:`~hawk.emit.wrapper.SegmentSpec` a segmented unit's
     source render needs, or ``None`` for an ordinary kernel. Resolves
     ``kernel.segment`` (:class:`hawk.ir.segment.SegmentInfo`) to a C++
     binding name here, once, since ``hawk/emit/`` itself knows nothing of
@@ -314,18 +303,48 @@ def _active_unit(kernel, name: str, kind):
     return _ActiveUnit(kernel, _canonical(kernel.sinks, declared=declared))
 
 
-def _active_spec(kind) -> ActiveSpec | None:
-    """The map prologue's bindings when ``kind`` asks for one, else ``None``."""
+def _active_spec(kind, group: int = 1) -> ActiveSpec | None:
+    """The map prologue's bindings when ``kind`` asks for one, else ``None``;
+    ``group`` is the kernel's declared compaction group."""
     if not getattr(getattr(kind, "guard", None), "active_set", False):
         return None
     return ActiveSpec(_binding_name("lookup", ACTIVE_MAP),
-                      _binding_name("lookup", ACTIVE_COUNT))
+                      _binding_name("lookup", ACTIVE_COUNT), group)
 
 
 def _native(targets) -> tuple:
     """The targets this module compiles and the manifest describes: every
-    one but ``c``, the standalone C unit :mod:`hawk.embedded` renders."""
-    return tuple(t for t in targets if t != "c")
+    one whose row has a compiler. The rest are exported units
+    (:mod:`hawk.embedded`)."""
+    return tuple(t for t in targets if TARGETS[t].compile is not None)
+
+
+def _exported(targets) -> tuple:
+    """The targets whose row is written whole and never compiled."""
+    return tuple(t for t in targets if TARGETS[t].compile is None)
+
+
+def _lead(entries) -> str:
+    """The compiled entry a manifest plugin names: the device object when the
+    unit has one, else the first compiled."""
+    native = _native(entries)
+    return next((t for t in native if TARGETS[t].entry == ENTRY_DEVICE), native[0])
+
+
+def _refuse_targets(name: str, targets) -> None:
+    """Refuse an empty ``targets`` or an id that is no row of
+    :data:`hawk.targets.TARGETS`, naming the valid ones."""
+    each = [f"targets=({t!r},)" for t in TARGETS]
+    hint = f"pass {', '.join(each[:-1])} or {each[-1]}"
+    if not targets:
+        raise HawkError(f"{name!r}: no target to build; {hint}")
+    for target in targets:
+        if target not in TARGETS:
+            ids = [repr(t) for t in TARGETS]
+            about = ", ".join(f"{t!r} {row.about}" for t, row in TARGETS.items())
+            raise HawkError(
+                f"unknown target {target!r}: the valid targets are "
+                f"{', '.join(ids[:-1])} and {ids[-1]} ({about}); {hint}")
 
 
 def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
@@ -335,50 +354,43 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
     an emitter change is a key change even when the walk is unmoved.
 
     A kernel with its own ``fused_body`` hook (a composed lane group)
-    renders it ONCE and hands it to both backends, so the two targets
+    renders it ONCE and hands it to both wrappers, so the two targets
     provably wrap the same string.
 
     ``literal_table`` rewrites the device TU's ``double`` literals into one
     ``__constant__`` table (:func:`hawk.emit.literal_table`).
 
-    A ``"c"`` target is :func:`hawk.embedded.render`'s
-    :class:`~hawk.embedded.EmbeddedSource` under ``embedded_profile``
-    (:class:`~hawk.embedded.EmbeddedProfile` when ``None``), never a
-    :data:`hawk.emit.BACKENDS` render."""
-    if not targets:
-        raise HawkError(
-            f"{name!r}: no target to build; pass targets=('cuda',), "
-            "targets=('host',) or targets=('c',)")
-    for target in targets:
-        if target not in _TARGET:
-            raise HawkError(
-                f"unknown target {target!r}: the valid targets are 'cuda', 'host' "
-                "and 'c' ('cuda' builds for the GPU, 'host' for the CPU, 'c' a "
-                "standalone MISRA C unit for an embedded build); pass "
-                "targets=('cuda',), targets=('host',) or targets=('c',)")
-    native = _native(targets)
-    hook = getattr(kernel, "fused_body", None) if native else None
+    A row without a wrapper is its exporter's render, under
+    ``embedded_profile`` (:class:`~hawk.embedded.EmbeddedProfile` when
+    ``None``): for ``c``, :func:`hawk.embedded.render`'s
+    :class:`~hawk.embedded.EmbeddedSource`."""
+    _refuse_targets(name, targets)
+    hook = getattr(kernel, "fused_body", None) if _native(targets) else None
     body = None if hook is None else hook(kind)
     segment = _segment_spec(kernel)
-    active = _active_spec(kind)
+    active = _active_spec(kind, getattr(kernel, "group", 1))
+    one_step = getattr(kernel, "one_step", None)
+    box = thread_box(kernel, smode.id, kind=kind, segment=segment, active=active,
+                     one_step=one_step, body=body)
     out = {}
-    for target in native:
+    for target in targets:
+        row = TARGETS[target]
+        if row.wrapper is None:
+            export = row.export
+            out[target] = export.render(
+                kernel, name=name, mode=smode.id, kind=kind,
+                profile=(embedded_profile if embedded_profile is not None
+                         else export.EmbeddedProfile()))
+            continue
         out[target] = render_source(
-            name, kernel.sinks, kernel.walk, BACKENDS[target], mode=smode, kind=kind,
-            body=body, segment=segment, active=active,
-            one_step=getattr(kernel, "one_step", None),
-            exports=_layout.exports(target,
-                                    layout_sizes_override=layout_sizes_override))
-        if literal_table and target == "cuda":
+            name, kernel.sinks, kernel.walk, row, mode=smode, kind=kind,
+            body=body, segment=segment, active=active, one_step=one_step, box=box,
+            exports=_layout.exports(target, layout_sizes_override=layout_sizes_override))
+        if literal_table and row.compile == GPU:
             out[target] = _literal_table(out[target])
-    if "c" in targets:
-        from .. import embedded
-
-        out["c"] = embedded.render(
-            kernel, name=name, mode=smode.id, kind=kind,
-            profile=(embedded_profile if embedded_profile is not None
-                     else embedded.EmbeddedProfile()))
     return out
+
+
 
 
 def _step_ops(kernel, kind) -> int | None:
@@ -386,7 +398,7 @@ def _step_ops(kernel, kind) -> int | None:
     samples by stepping (its body cuts into head, one step and tail), else
     ``None``. A fact for the launching runtime: the emitted code does not
     read it."""
-    from ..emit.aether import render_lane_split
+    from ..emit.render import render_lane_split
 
     if getattr(kernel.walk, "finish", None) is None:
         return None
@@ -398,7 +410,7 @@ def _fp64_ops_ir(kernel, kind) -> int | None:
     """The 64-bit floating-point operations one step of a stepping kernel
     runs, counted in the IR (as :func:`_step_ops`, ``None`` for any other
     kernel): the step cost the launching runtime's chunk length reads."""
-    from ..emit.aether import render_lane_split
+    from ..emit.render import render_lane_split
 
     if getattr(kernel.walk, "finish", None) is None:
         return None
@@ -410,7 +422,7 @@ def _entry_counts_finished(kernel, kind) -> bool:
     """Whether the kernel's fast entries count a sample finished on entry into
     the finish counter (:func:`hawk.emit.cuda.entry_counts_finished`), so the
     launching runtime need not count the mask before a run."""
-    from ..emit.aether import render_lane_split
+    from ..emit.render import render_lane_split
     from ..emit.cuda import entry_counts_finished
 
     if getattr(kernel.walk, "finish", None) is None:
@@ -419,8 +431,8 @@ def _entry_counts_finished(kernel, kind) -> bool:
 
 
 @dataclass(frozen=True)
-class _EmbeddedResult:
-    """A ``c`` target's stand-in for a compile result: the fields
+class _ExportResult:
+    """An exported target's stand-in for a compile result: the fields
     :func:`_artifact_of`, :func:`_served` and :func:`_closure_watch` read.
     ``key`` is the sha256 of the ``.c`` and ``.h`` texts (no compile cache
     entry exists for it, so its closure is empty), ``seconds`` the toolchain
@@ -432,28 +444,36 @@ class _EmbeddedResult:
     closure: tuple = ()
 
 
-def _embedded_part(source, profile) -> tuple:
-    """A ``c`` target's share of a draft: the audit and the toolchain checks
-    (any finding refuses, before anything is written), then the report
+def _export_part(row, source, profile) -> tuple:
+    """An exported target's share of a draft: the audit and the toolchain
+    checks (any finding refuses, before anything is written), then the report
     :func:`hawk.embedded.export` writes, built by the same code. Returns
     ``(result, report, files)``."""
-    from .. import embedded
-
-    embedded.refuse_audit_hits(source)
-    checks = embedded.check(source, profile=profile)
-    report = embedded.finish_report(source, checks)
+    export = row.export
+    export.refuse_audit_hits(source)
+    checks = export.check(source, profile=profile)
+    report = export.finish_report(source, checks)
     name = source.name
     h = hashlib.sha256()
     for text in (source.text, source.header):
         h.update(_blob(text))
         h.update(b"\0")
-    result = _EmbeddedResult(h.hexdigest(), False, float(checks.get("seconds", 0.0)))
+    result = _ExportResult(h.hexdigest(), False, float(checks.get("seconds", 0.0)))
     files = []
-    for fname, text in ((f"{name}.c", source.text), (f"{name}.h", source.header),
-                        (f"{name}.embedded.json", embedded.report_text(report))):
+    for fname, text in ((f"{name}{row.source}", source.text),
+                        (f"{name}{row.artifact}", source.header),
+                        (f"{name}.embedded.json", export.report_text(report))):
         blob = _blob(text)
         files.append(_File(fname, _digest_bytes(blob), blob=blob))
     return result, report, files
+
+
+def _emit_arch(targets, device_arch: str) -> str:
+    """The device arch the emit may read cards for: resolved (once, memoised) only
+    when a target compiles with the device toolchain, so a host-only build never
+    probes."""
+    gpu = any(TARGETS[t].compile == GPU for t in targets if t in TARGETS)
+    return arch(device_arch) if gpu else ""
 
 
 def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arch,
@@ -466,32 +486,34 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
     publish step ask "is this already on disk?" before "where do I put
     it?".
 
-    The device arch is resolved ONCE here, not per target, and only when
-    ``"cuda"`` is actually one of ``targets``: the resolver may reach the
+    The device arch is resolved ONCE here, not per target, and only when a
+    target compiles with the device toolchain: the resolver may reach the
     device probe (:func:`hawk.artifact.arch`), so a host-only build must
     never pay for it.
 
-    A ``"c"`` target is not compiled: its source is audited and checked
-    (:func:`_embedded_part`) and contributes ``<name>.c``, ``<name>.h`` and
+    An exported target is not compiled: its source is audited and checked
+    (:func:`_export_part`) and contributes its unit, its header and
     ``<name>.embedded.json``. The JSON sidecar describes the NATIVE targets
-    only and is written only when there is one; a c-only draft carries the
-    embedded report in the sidecar's place and writes no ``<name>.json``."""
+    only and is written only when there is one; an export-only draft carries
+    the report in the sidecar's place and writes no ``<name>.json``."""
     native = _native(targets)
     entries, files = {}, []
-    resolved_arch = arch(device_arch) if "cuda" in native else ""
+    resolved_arch = (arch(device_arch)
+                     if any(TARGETS[t].compile == GPU for t in native) else "")
     options = {target: kind.apply(CompileOptions(
-        backend=target, mode=smode.id, arch=resolved_arch,
+        target=target, mode=smode.id, arch=resolved_arch,
         defines=tuple(defines), cache_dir=cache_dir,
         host_profile=host_profile or "", opt_level=opt_level or ""))
         for target in native}
     results = _compile_targets(sources, name, options) if native else {}
     for target in native:
-        art_ext, src_ext, fmt = _TARGET[target]
+        row = TARGETS[target]
+        art_ext, src_ext, fmt = row.artifact, row.source, row.format
         source = sources[target]
         result = results[target]
-        if target == "cuda":
-            # The real format, read off the compiled bytes, not the static
-            # ".ptx" :data:`_TARGET` default — the same build can land PTX
+        if row.compile == GPU:
+            # The real format, read off the compiled bytes, not the row's
+            # static ".ptx" default — the same build can land PTX
             # or CUBIN depending on the box's compiler/driver versions.
             fmt = _sniff_device_format(result.artifact)
             art_ext = _DEVICE_EXT[fmt]
@@ -508,14 +530,14 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         entries[target] = (result, art_name, src_name, fmt)
 
     report = None
-    if "c" in targets:
-        from ..embedded import EmbeddedProfile
-
-        result, report, c_files = _embedded_part(
-            sources["c"], embedded_profile if embedded_profile is not None
-            else EmbeddedProfile())
-        files += c_files
-        entries["c"] = (result, f"{name}.h", f"{name}.c", "c")
+    for target in _exported(targets):
+        row = TARGETS[target]
+        result, report, part = _export_part(
+            row, sources[target], embedded_profile if embedded_profile is not None
+            else row.export.EmbeddedProfile())
+        files += part
+        entries[target] = (result, f"{name}{row.artifact}", f"{name}{row.source}",
+                           row.format)
     if not native:
         return _Draft(name, report, f"{name}.embedded.json", entries, tuple(files))
 
@@ -525,22 +547,28 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
                      selector_reads=segment.selector_reads,
                      static_selector=segment.static_selector),
     )
+    lead = _lead(entries)
     meta = sidecar_meta(
         name, kernel.walk,
-        # The real format: the detected ``cuda`` format when a device object
-        # was built, else ``host`` — mirrors build_bundle's manifest-entry
-        # choice so the sidecar and manifest never disagree.
-        fmt=entries["cuda"][3] if "cuda" in entries else entries["host"][3],
+        # The real format: the detected device format when a device object
+        # was built, else the first compiled one — mirrors build_bundle's
+        # manifest-entry choice so the sidecar and manifest never disagree.
+        fmt=entries[lead][3],
         scalar_type=smode.id,
-        exec_targets=[_EXEC_TARGET[t] for t in native],
-        host_entry=f"{name}_host" if "host" in native else None,
+        exec_targets=[TARGETS[t].entry for t in native],
+        host_entry=(f"{name}_host"
+                    if any(TARGETS[t].entry == ENTRY_HOST for t in native) else None),
         derivative=derivative,
         lanes=getattr(kernel, "lanes", None),
+        lane_space=getattr(kernel, "lane_space", ((None, None),)),
+        group=getattr(kernel, "group", 1),
+        box=getattr(sources[lead], "box", None),
+        planes=getattr(kernel, "planes", None),
         dispatch_override=dispatch_override,
         step_ops=_step_ops(kernel, kind),
         fp64_ops_ir=_fp64_ops_ir(kernel, kind),
         entry_counts_finished=_entry_counts_finished(kernel, kind),
-        ptxas=entries["cuda"][0].ptxas if "cuda" in entries else None,
+        ptxas=entries[lead][0].ptxas if TARGETS[lead].entry == ENTRY_DEVICE else None,
     )
     if split is not None:
         # the first stage of a split kernel names every stage and every cell
@@ -600,8 +628,8 @@ def _artifact_of(draft: _Draft, directory: Path) -> Artifact:
         target: Entry(target, directory / art_name, directory / src_name,
                       result.key, result.hit, result.seconds,
                       tuple(result.closure),
-                      directory / f"{draft.name}.embedded.json" if target == "c"
-                      else None)
+                      directory / f"{draft.name}.embedded.json"
+                      if TARGETS[target].compile is None else None)
         for target, (result, art_name, src_name, _fmt) in draft.entries.items()
     }
     return Artifact(draft.name, directory, directory / draft.sidecar_name,
@@ -718,7 +746,7 @@ def _resolve_bundle_kind(names: list, kernels: list, explicit_kind):
 
 
 # -- The public entry points. ----------------------------------------------- #
-def build(kernel, directory, *, mode: str = "float64", targets=("cuda", "host"),
+def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
           kind=None, layout_sizes_override=None, defines=(), cache_dir=None,
           device_arch: str = "", name: str | None = None,
           derivative: dict | None = None, host_profile: str = "",
@@ -761,9 +789,10 @@ def build(kernel, directory, *, mode: str = "float64", targets=("cuda", "host"),
     kernel = _active_unit(kernel, name, kind)
     smode = scalar_mode(mode)
     directory = Path(directory)
-    sources = _sources(kernel, name=name, smode=smode, kind=kind, targets=targets,
-                       layout_sizes_override=layout_sizes_override,
-                       literal_table=literal_table, embedded_profile=embedded_profile)
+    with build_arch(_emit_arch(targets, device_arch)):
+        sources = _sources(kernel, name=name, smode=smode, kind=kind, targets=targets,
+                           layout_sizes_override=layout_sizes_override,
+                           literal_table=literal_table, embedded_profile=embedded_profile)
     draft = _draft(kernel, sources, name=name, smode=smode, kind=kind,
                    defines=defines, cache_dir=cache_dir, device_arch=device_arch,
                    targets=targets, derivative=derivative,
@@ -865,11 +894,11 @@ def _manifest_of(drafts) -> dict:
     entries = [
         _manifest.plugin_entry(
             d.name, order,
-            d.entries["cuda"][1] if "cuda" in d.entries else d.entries["host"][1],
+            d.entries[_lead(d.entries)][1],
             d.sidecar_name,
             # The real format (``ptx``/``cubin``, read off the compiled
             # bytes), not a static "ptx" guess.
-            d.entries["cuda"][3] if "cuda" in d.entries else "host")
+            d.entries[_lead(d.entries)][3])
         for order, d in enumerate(drafts)
     ]
     return _manifest.manifest_doc(entries, exec_targets=axis_targets,
@@ -877,7 +906,7 @@ def _manifest_of(drafts) -> dict:
 
 
 def build_bundle(kernels, directory, *, mode: str = "float64",
-                 targets=("cuda", "host"), kind=None, layout_sizes_override=None,
+                 targets=DEFAULT_TARGETS, kind=None, layout_sizes_override=None,
                  defines=(), cache_dir=None, device_arch: str = "",
                  name: str | None = None,
                  derivative: Mapping[str, str] | None = None,
@@ -938,12 +967,12 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     smode = scalar_mode(mode)
     directory = Path(directory)
     targets = tuple(targets)
-    native = _native(targets)
-    if "c" in targets and embedded_profile is None:
-        from ..embedded import EmbeddedProfile
-
-        embedded_profile = EmbeddedProfile()
     names = [name or k.name for k in kernels]
+    _refuse_targets(names[0] if names else "", targets)
+    native = _native(targets)
+    exported = _exported(targets)
+    if exported and embedded_profile is None:
+        embedded_profile = TARGETS[exported[0]].export.EmbeddedProfile()
     explicit = kind is not None
     kind = _resolve_bundle_kind(names, kernels, kind)
     kinds = [_member_kind(k, kind, explicit) for k in kernels]
@@ -960,15 +989,17 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     # Phase 1 — resolve `derivative` and hash the RESOLVED blocks into the
     # unit key before anything is emitted: a refusal here is validation.
     per_kernel_derivative = _per_kernel_derivative(kernels, names, derivative)
-    key = _unit_key(names, [k.walk.digest for k in kernels], targets=targets,
+    key = _unit_key(names, [k.walk.digest for k in kernels],
+                    [declaration_digest(k) for k in kernels], targets=targets,
                     smode=smode, kind=key_kind, defines=defines, cache_dir=cache_dir,
                     device_arch=device_arch, derivative_blocks=per_kernel_derivative,
                     layout_sizes_override=layout_sizes_override,
                     host_profile=host_profile, opt_level=opt_level,
                     literal_table=literal_table,
-                    embedded_profile=repr(embedded_profile) if "c" in targets else "",
+                    groups=tuple(getattr(k, "group", 1) for k in kernels),
+                    embedded_profile=repr(embedded_profile) if exported else "",
                     source_digests=([getattr(k, "source_digest", None) for k in kernels]
-                                    if "c" in targets else ()))
+                                    if exported else ()))
 
     memo = _UNIT_MEMO.get(key)
     if memo is not None:
@@ -1001,10 +1032,15 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
 
     # Phase 2 — emit, compile and assemble the unit's content; still nothing
     # written. Each draft gets its own per_kernel_derivative[i] block.
-    drafts = [_draft(k, _sources(k, name=n, smode=smode, kind=kd, targets=targets,
-                                 layout_sizes_override=layout_sizes_override,
-                                 literal_table=literal_table,
-                                 embedded_profile=embedded_profile),
+    emit_arch = _emit_arch(targets, device_arch)
+
+    def sources_of(k, n, kd):
+        with build_arch(emit_arch):
+            return _sources(k, name=n, smode=smode, kind=kd, targets=targets,
+                            layout_sizes_override=layout_sizes_override,
+                            literal_table=literal_table, embedded_profile=embedded_profile)
+
+    drafts = [_draft(k, sources_of(k, n, kd),
                      name=n, smode=smode, kind=kd, defines=defines,
                      cache_dir=cache_dir, device_arch=device_arch, targets=targets,
                      derivative=d, host_profile=host_profile, opt_level=opt_level,

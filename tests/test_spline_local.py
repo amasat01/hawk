@@ -12,6 +12,7 @@ import _spline_forms as S
 import numpy as np
 import pytest
 from _eval import evaluate
+from test_math_parity import _ulps
 
 from hawk.diff import vjp
 
@@ -43,10 +44,6 @@ def cells():
     return S.edge_cell("dense"), S.edge_cell("local"), S.edge_cell("local", False)
 
 
-def _ulps(a, b):
-    return abs(int(np.float64(a).view(np.int64)) - int(np.float64(b).view(np.int64)))
-
-
 def test_local_equals_dense_bitwise_on_the_grid(cells):
     """Forward value and the cotangent of every coefficient and of ``w_b``,
     ``w_s`` are bit for bit the dense form's at every point inside the grid, on
@@ -64,7 +61,7 @@ def test_local_equals_dense_bitwise_on_the_grid(cells):
         assert want[0] == got[0], f"forward at {x!r}"
         assert np.array_equal(want[2][:S.W - 2], got[2][:S.W - 2]), f"bar_theta at {x!r}"
         tail = [(want[1], got[1]), *zip(want[2][S.W - 2:], got[2][S.W - 2:])]
-        assert all(_ulps(a, b) <= 4 for a, b in tail), f"bar_u at {x!r}"
+        assert _ulps(*map(np.array, zip(*tail))).max() <= 4, f"bar_u at {x!r}"
         off_by_order += any(a != b for a, b in tail)
     assert off_by_order <= len(points) // 20, off_by_order
 

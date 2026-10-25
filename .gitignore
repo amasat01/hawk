@@ -17,3 +17,4 @@ hawk/_core*.so
 docs/content/api/generated/
 # the header copy _build_backend.py makes for the sdist
 _sdist_include/
+hawk/_version.py

@@ -12,7 +12,7 @@ runtime; it is the last mile of the DEFINITION.
 
 The descriptor is derived, never re-tabulated: a slot's kind comes from
 the same role -> mirror map the emitter generated the entry signature
-from (:data:`hawk.emit.aether.MIRROR_OF`), so a slot cannot be described
+from (:data:`hawk.emit.render.MIRROR_OF`), so a slot cannot be described
 one way to the compiler and another to the marshal — the failure mode
 being a 32-byte handle where the kernel reads a 40-byte mirror, which
 is deterministic garbage, not a crash.
@@ -60,16 +60,18 @@ import ctypes
 import threading
 from pathlib import Path
 
-from . import _cells, _core
+from . import _cells, _core, _lane_bind
 from ._cells import ROW
-from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from
+from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, widen_index
 from ._plane_layout import (
     LayoutChoice,
     _native_extent,
     plane_layout,
     split_marks,
 )
-from .emit.aether import MIRROR_OF, mirror_of
+from .emit.box import threads
+from .emit.render import MIRROR_OF, mirror_of
+from .emit.wrapper import fold_entry_name
 from .ir import HawkError
 from .types import TensorType
 
@@ -85,7 +87,7 @@ DEVICE_CPU = 1
 ArgBlock = _core.ArgBlock
 
 #: The by-value ABI shape -> ``_core`` descriptor-kind vocabulary
-#: (:data:`hawk.emit.aether.MIRROR_OF` on the left).
+#: (:data:`hawk.emit.render.MIRROR_OF` on the left).
 _KIND_OF_MIRROR = {"GRefMirror": "gref", "ScalarHandle": "handle"}
 
 _INT_DTYPES = ("i32", "i64", "int32", "uint32")
@@ -192,8 +194,18 @@ class HostKernel:
         #: refuses, naming the field, rather than computing garbage.
         self.library = _core.HostLibrary(str(self.path))
         self.entry = self.library.entry(entry_name)
+        #: ``{target: entry}``: the fold of each owned companion
+        #: (:func:`hawk.emit.wrapper.fold_entries`), run after the kernel.
+        self.folds = {target: self.library.entry(fold_entry_name(sidecar["kernel"], target)
+                                                 + "_host")
+                      for target in (sidecar.get("companions") or {}).values()}
         self.block = _core.ArgBlock(self.descriptor)
         self.slot_of = {pair: i for i, pair in enumerate(self.arg_spec)}
+        #: The input planes riding the 64-bit index wire: a 32-bit one is widened at bind.
+        self._index_inputs = tuple(
+            name for role, name in self.arg_spec
+            if role in ("per_sample", "lookup", "wide_in")
+            and sidecar.get("arg_dtypes", {}).get(name) == "int64")
         self._values = []          # keeps every by-value ctypes box alive
         self.one_step = None       # the word of 1 an unbound fused_steps reads
         self.finished = None       # the counter an unbound finished_count fills
@@ -254,6 +266,8 @@ class HostKernel:
         arrays, axes = split_marks(arrays, layout)
         choice = LayoutChoice(layout, axes)
         arrays = self._one_step_word(arrays)
+        if self._index_inputs:
+            arrays = widen_index(self._index_inputs, arrays)
         _check_bind(self.sidecar, self.arg_spec, arrays, n_samples, choice)
         self._values, self._buffers = [], []
         widths = self.sidecar.get("arg_shapes", {})
@@ -358,13 +372,14 @@ def buffer_address(obj, keepalive: list) -> int:
     if not view.c_contiguous:
         raise HawkError(
             "hawk.runtime binds a plane at computed sample offsets, so it must be "
-            "C-contiguous; got a strided buffer"
+            "C-contiguous; got a strided buffer — pass np.ascontiguousarray(x)"
         )
     if view.readonly:
         raise HawkError(
             "hawk.runtime binds a plane by ADDRESS, never by copy, so a read-only "
             "buffer cannot be bound: a copy would silently drop the kernel's writes "
-            "and silently freeze an input's later updates"
+            "and silently freeze an input's later updates — pass a writable array, "
+            "e.g. np.array(x)"
         )
     exported = (ctypes.c_char * view.nbytes).from_buffer(obj)
     keepalive.append(exported)
@@ -461,6 +476,32 @@ def load(directory, kernel: str, sidecar: dict | None = None) -> HostKernel:
     return HostKernel(directory / f"{kernel}.so", sidecar)
 
 
+def _own_companions(sidecar: dict, arrays: dict) -> tuple:
+    """``(arrays, owned)``: ``arrays`` plus a zeroed companion, the target's
+    shape, for each compensated keyed sum whose companion the caller did not
+    bind (the run owns it and the caller never passes it), and the
+    ``{companion: target}`` it made."""
+    owned = {comp: target for comp, target in (sidecar.get("companions") or {}).items()
+             if comp not in arrays and target in arrays}
+    if not owned:
+        return arrays, owned
+    import numpy as np
+
+    return {**arrays, **{comp: np.zeros_like(np.asarray(arrays[target]))
+                         for comp, target in owned.items()}}, owned
+
+
+def _fold_companions(kernel_artifact: HostKernel, arrays: dict, owned: dict) -> None:
+    """Each owned companion into its target, after the launch, through the
+    kernel's fold entry over the target's slots (the block is still bound):
+    the target alone then holds the compensated sum."""
+    import numpy as np
+
+    for target in owned.values():
+        size = int(np.asarray(arrays[target]).size)
+        kernel_artifact.folds[target].run(kernel_artifact.block, 0, size, size)
+
+
 def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
         n_samples: int | None = None, layout: str | None = None,
         **arrays) -> None:
@@ -468,7 +509,9 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
 
     ``count`` defaults to ``n_samples``, and ``n_samples`` to the count
     every bound per-sample plane agrees on (:func:`_n_from`). Output
-    planes are the caller's, written in place; this returns nothing.
+    planes are the caller's, written in place; this returns nothing. A
+    thread-box kernel (sidecar ``launch.box``) counts ``base``/``count`` in
+    threads, ``count`` defaulting to the threads that cover ``n_samples``.
 
     A per-sample plane whose shape reads both as component-major ``(w, N)`` and
     as sample-major ``(N, w)`` (``(w, w)``) is refused unless the call says
@@ -476,19 +519,30 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
     ``layout="samples_last"`` resolves every such plane of the call, and
     ``hawk.samples_first(x)`` / ``hawk.samples_last(x)`` say it for one array
     (any shape; a contradiction is refused; the array's marker beats ``layout``).
-    Neither copies."""
+    Neither copies.
+
+    A kernel declaring ``hawk.Grid[...]`` takes its runtime extent by label
+    (``run(k, x=x, y=y, channel=64)``) or from lane-shaped planes, and refuses
+    ``n_samples=``."""
+    sidecar = kernel_artifact.sidecar
+    arrays, lane_n = _lane_bind.bind(sidecar, kernel_artifact.arg_spec, arrays,
+                                     n_samples, _PER_SAMPLE_ROLES)
+    arrays, owned = _own_companions(sidecar, arrays)
     plain, axes = split_marks(arrays, layout)
+    if lane_n is not None:
+        n_samples = lane_n
     if n_samples is None:
         n_samples = _n_from(kernel_artifact.arg_spec, plain,
-                            kernel_artifact.sidecar.get("arg_shapes", {}),
+                            sidecar.get("arg_shapes", {}),
                             LayoutChoice(layout, axes))
+        _lane_bind.check_total(sidecar, n_samples)
     if kernel_artifact.sidecar.get("stages"):
         if base != 0 or count not in (None, n_samples):
             raise HawkError(
                 f"{kernel_artifact.path.name}: this kernel reads a value reduced over "
                 "every sample, so it runs over every sample (no base= or count=)")
         with kernel_artifact._lock:
-            _run_stages(kernel_artifact, n_samples, layout, arrays)
+            _run_stages(kernel_artifact, n_samples, layout, arrays, owned)
         return
     cells = kernel_artifact.sidecar.get("cells") or {}
     with kernel_artifact._lock:
@@ -497,13 +551,17 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
             scratch, outputs, arrays = kernel_artifact._cell_scratch_for(
                 cells, n_samples, arrays)
         kernel_artifact._bind_all(arrays, n_samples, layout)
-        count = n_samples if count is None else count
+        # a thread-box kernel's base and count count threads (sidecar launch.box)
+        count = (threads(sidecar.get("launch", {}).get("box"), n_samples)
+                 if count is None else count)
         kernel_artifact._launch(base, count, n_samples)
+        _fold_companions(kernel_artifact, arrays, owned)
         if scratch is not None:
             scratch.finish(outputs, base // ROW, -(-(base + count) // ROW))
 
 
-def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict) -> None:
+def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
+                owned: dict) -> None:
     """A split kernel: stage ``k``, then the host finish of its cells, then
     stage ``k + 1`` reading those cells as one-cell planes. A cell the caller
     does not bind (one only a later stage reads) is this kernel's own."""
@@ -517,7 +575,7 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict) -> None
         held["own"] = {c: np.zeros(spec["columns"], dtype=first.scalar_type)
                        for c, spec in cells.items()}
     values = {c: arrays[c] if c in arrays else held["own"][c] for c in cells}
-    for stage, record in zip(held["stages"], first.sidecar["stages"]):
+    for at, (stage, record) in enumerate(zip(held["stages"], first.sidecar["stages"])):
         names = {name for _, name in stage.arg_spec}
         bound = {k: v for k, v in arrays.items() if k in names and k not in cells}
         for cell in record["cells_in"]:
@@ -531,5 +589,8 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict) -> None
                 out, n_samples, {**bound, **{c: values[c] for c in out}})
         stage._bind_all(bound, n_samples, layout)
         stage._launch(0, n_samples, n_samples)
+        later = {name for st in held["stages"][at + 1:] for _, name in st.arg_spec}
+        _fold_companions(stage, bound, {c: t for c, t in owned.items()
+                                        if c in names and c not in later})
         if scratch is not None:
             scratch.finish(outputs, 0, -(-n_samples // ROW))

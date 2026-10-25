@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The ``host`` backend: the SERIAL host entry around the ONE body string.
+"""The host wrapper: the SERIAL entry around the ONE body string.
 
 Everything host-specific lives here: the ``extern "C"`` entry taking a
 packed ``params[]`` block and the int64 partition triple, the
@@ -28,7 +28,7 @@ zmm, spilling every float64 value across eight registers; under AVX-512
 with GCC (``HAWK_HOST_LANE_GUARDS``) the loop instead runs in blocks of
 ``kHostLaneBlock`` samples, each widening its guard bytes into a
 lane-width array first (``HostMask::lanes``; the kernel's ``Real``, spelled
-``HAWK_LANE_T`` until :func:`hawk.emit.backend.render_source` fills it in) so
+``HAWK_LANE_T`` until :func:`hawk.emit.wrapper.render_source` fills it in) so
 the narrowest type in the per-sample loop is the state's own width. A kernel that finishes
 its own sample would otherwise call and store a byte inside the loop,
 which GCC refuses to vectorise; in a lane-guarded block that write lands
@@ -64,14 +64,14 @@ from math import prod
 from ..ir import HawkError, Walk
 from ..ir.nodes import FINISHED_PLANE
 from ..types import Slot
-from .aether import (
+from .render import (
     SAMPLE_SUM_TERMS,
     LaneSegments,
     LaneSplit,
     render_lane_segments,
     render_lane_split,
 )
-from .backend import (
+from .wrapper import (
     SAMPLE_SUM_OP_CODE,
     ActiveSpec,
     SegmentSpec,
@@ -80,6 +80,7 @@ from .backend import (
     segment_reads,
     unpack_lines,
 )
+from .box import BOX_OWN, owned_lane
 from .dispatch import render_dispatch_rank0
 from .spelling import (
     binding_name,
@@ -571,6 +572,15 @@ def _lane_type(ttype) -> str:
     return carry_type(ttype)
 
 
+_TILE_LOOP_HEAD = (
+    "    for (aether::offset_t hawk_tlo = hawk_lo; hawk_tlo < hawk_hi;",
+    "         hawk_tlo += hawk_tile) {",
+    "    const aether::offset_t hawk_thi =",
+    "        hawk_hi - hawk_tlo < hawk_tile ? hawk_hi : hawk_tlo + hawk_tile;",
+    "    const aether::offset_t hawk_tn = hawk_thi - hawk_tlo;",
+)
+
+
 def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
                      tile: int) -> str:
     """The interchanged loop over ``[base, base + count)``: per tile of
@@ -608,11 +618,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         lines.append("    alignas(64) Int hawk_cnt[hawk_tile] = {};")
     lines += arrays
     lines += [
-        "    for (aether::offset_t hawk_tlo = hawk_lo; hawk_tlo < hawk_hi;",
-        "         hawk_tlo += hawk_tile) {",
-        "    const aether::offset_t hawk_thi =",
-        "        hawk_hi - hawk_tlo < hawk_tile ? hawk_hi : hawk_tlo + hawk_tile;",
-        "    const aether::offset_t hawk_tn = hawk_thi - hawk_tlo;",
+        *_TILE_LOOP_HEAD,
         *[f"    const hawk_abi::HostLaneMask hawk_tlane{k} =\n"
           f"        {g}.lanes(hawk_tg{k}, hawk_tlo, hawk_thi);"
           for k, g in enumerate(guards)],
@@ -789,7 +795,7 @@ def interchange(name: str, sinks, walk: Walk, kind=None,
 
     Interchanged as a fused step: a :func:`simd_safe` kernel that finishes
     its own sample through a lane-guarded mask (:func:`lane_finish`) and
-    whose body :func:`~hawk.emit.aether.render_lane_split` admits (one
+    whose body :func:`~hawk.emit.render.render_lane_split` admits (one
     tail-break loop, no inner ``for``). Any other :func:`simd_safe` kernel
     with a ``Loop`` runs its loops interchanged by :func:`loop_interchange`.
     A kernel that is not ``sample_local`` has dependent iterations, so its
@@ -886,7 +892,7 @@ def _row_put(arr: str, name: str, ttype, value: str | None = None) -> list:
 def loop_interchange_text(segs: LaneSegments) -> str | None:
     """The interchanged loops over ``[base, base + count)``, per tile of
     ``hawk_abi::kHostLoopTile`` samples: each segment of the body
-    (:class:`~hawk.emit.aether.LaneSegments`) runs per sample of the tile,
+    (:class:`~hawk.emit.render.LaneSegments`) runs per sample of the tile,
     each loop between two segments runs its trips OUTSIDE and the tile's
     lanes inside. Every value a later text reads (a carried value included)
     lives in a lane row ``hawk_r_<name>[c * tile + lane]``. A lane is live
@@ -946,11 +952,7 @@ def loop_interchange_text(segs: LaneSegments) -> str | None:
         *[f"    alignas(64) {lp.bounds[0]} hawk_b{k}[hawk_tile] = {{}};\n"
           f"    alignas(64) {lp.bounds[0]} hawk_e{k}[hawk_tile] = {{}};"
           for k, lp in enumerate(segs.loops) if lp.bounds is not None],
-        "    for (aether::offset_t hawk_tlo = hawk_lo; hawk_tlo < hawk_hi;",
-        "         hawk_tlo += hawk_tile) {",
-        "    const aether::offset_t hawk_thi =",
-        "        hawk_hi - hawk_tlo < hawk_tile ? hawk_hi : hawk_tlo + hawk_tile;",
-        "    const aether::offset_t hawk_tn = hawk_thi - hawk_tlo;",
+        *_TILE_LOOP_HEAD,
     ]
     pad = "            "
     for s in range(n + 1):
@@ -1159,10 +1161,9 @@ def interchange_prelude(rule: TileRule) -> str:
     return f"#ifndef {INTERCHANGE_MACRO}\n{default}#endif\n{rule.comment()}\n"
 
 
-class HostBackend:
+class HostWrapper:
     """The host half of the seam."""
 
-    id = "host"
     #: Ordinary TU-local inlining; a host entry is not a launch hot path.
     qualifier = "static inline"
 
@@ -1176,7 +1177,7 @@ class HostBackend:
     def index_prologue(self, segment: SegmentSpec | None = None, *,
                        active: ActiveSpec | None = None, simd: bool = False,
                        guards: Sequence[str] = (),
-                       finish: tuple | None = None) -> str:
+                       finish: tuple | None = None, box=None) -> str:
         """The SERIAL range over ``[base, base + count)``. No OpenMP, no
         thread, no tile: those are eagle's.
 
@@ -1194,7 +1195,16 @@ class HostBackend:
         ``segment`` maps ``tid`` onto ``offsets[j] + tid`` instead of
         ``base + tid``, for ``tid`` in ``[base, base + count)``, stopping once
         ``tid`` passes the device-read run length, since the run is contiguous
-        and sorted: a team may split a run across threads."""
+        and sorted: a team may split a run across threads.
+
+        ``box`` (:class:`hawk.emit.box.Box`) visits threads ``[base, base +
+        count)``, each ending at its first owned lane (the device's thread
+        box, serially; :func:`hawk.emit.box.frame` binds ``i``)."""
+        if box is not None:
+            return f"""    const std::int64_t hawk_end = base + count;
+    for (std::int64_t hawk_t = base; hawk_t < hawk_end; ++hawk_t) {{
+{owned_lane("long long", "hawk_t", box)}
+        if ({BOX_OWN} >= nSamples) break;"""
         guards = tuple(guards) if simd else ()
         finish = finish if finish is not None and finish[0] in guards else None
         if active is not None:
@@ -1207,9 +1217,12 @@ class HostBackend:
     const std::int64_t hawk_stop = hawk_end < hawk_live ? hawk_end : hawk_live;
 """
             if not simd:
+                # a grouped map's last group may run past the batch
+                past = ("        if (hawk_i >= nSamples) continue;\n"
+                        if active.group > 1 else "")
                 return bound + f"""    for (std::int64_t hawk_t = base; hawk_t < hawk_stop; ++hawk_t) {{
         const std::int64_t hawk_i = static_cast<std::int64_t>({sample_expr});
-        const aether::SampleIndex i =
+{past}        const aether::SampleIndex i =
             aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));
         (void)hawk_i;
         (void)nSamples;"""
@@ -1364,7 +1377,7 @@ class HostBackend:
 
     def simd_safe(self, walk: Walk) -> bool:
         """:func:`simd_safe`, as the hook
-        :func:`~hawk.emit.backend.render_source` asks a backend for."""
+        :func:`~hawk.emit.wrapper.render_source` asks a wrapper for."""
         return simd_safe(walk)
 
     def lane_guards(self, walk: Walk) -> tuple:
@@ -1402,7 +1415,7 @@ class HostBackend:
     def interchange(self, name: str, sinks, walk: Walk,
                     kind=None, real_bytes: int = 8) -> Interchange | None:
         """:func:`interchange`, as the hook
-        :func:`~hawk.emit.backend.render_source` asks a backend for."""
+        :func:`~hawk.emit.wrapper.render_source` asks a wrapper for."""
         return interchange(name, sinks, walk, kind, real_bytes)
 
     def dispatch(self, kind_spelling: str, branch_spellings: Sequence[str],
@@ -1420,5 +1433,5 @@ def _deref(slot: Slot, k: int) -> str:
     return f"*static_cast<const eagle::plugin::{shape}*>(params[{k}])"
 
 
-#: The built host backend.
-HOST = HostBackend()
+#: The built host wrapper.
+HOST = HostWrapper()

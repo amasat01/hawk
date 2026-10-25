@@ -1,22 +1,22 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The spelling seam: what a DIALECT supplies to the one body renderer.
+"""The spelling seam: what a WRITER supplies to the one body renderer.
 
-:class:`hawk.emit.aether._Renderer` owns the traversal — the walk order,
+:class:`hawk.emit.render._Renderer` owns the traversal — the walk order,
 fan-out naming, loop scopes and carries, the per-case ``switch`` scopes, the
 mask guard and the finish epilogue. Every piece of TARGET TEXT it produces
-comes from a :class:`Dialect`: the aether C++ spelling
-(:mod:`hawk.emit.dialect_aether`, the default, and what both built backends
+comes from a :class:`Writer`: the aether C++ spelling
+(:mod:`hawk.emit.writer_aether`, the default, and what both built wrappers
 wrap) or a plain-C spelling (:mod:`hawk.embedded`). The traversal is written
-once; a dialect never re-walks the IR.
+once; a writer never re-walks the IR.
 
 Every member takes already-rendered operand TEXT and returns text (or, for
 the sink members, emits statements through the renderer's ``_emit``). ``r``
-is the renderer: a dialect reads ``r.walk``, ``r.kind``, ``r.sinks``,
+is the renderer: a writer reads ``r.walk``, ``r.kind``, ``r.sinks``,
 ``r.items``, ``r.hoists`` and calls ``r._emit``/``r._ref`` exactly as the
 moved aether code did through ``self``. Nothing here imports the renderer,
-so a dialect module never cycles through :mod:`hawk.emit.aether`.
+so a writer module never cycles through :mod:`hawk.emit.render`.
 """
 
 from __future__ import annotations
@@ -24,9 +24,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Protocol
 
-#: Every spelling member a dialect supplies, in the order the renderer
+#: Every spelling member a writer supplies, in the order the renderer
 #: reaches them: declarations and loops, dispatch, expressions, sinks.
-DIALECT_MEMBERS: tuple[str, ...] = (
+WRITER_MEMBERS: tuple[str, ...] = (
     "declare", "carry_type", "tape_decl", "counter_decl", "for_header",
     "tail_break", "sample_index_value", "hoist",
     "selector_decl", "mix_count", "predicated_rank0", "predicated_tensor",
@@ -38,14 +38,14 @@ DIALECT_MEMBERS: tuple[str, ...] = (
 )
 
 
-class Dialect(Protocol):
+class Writer(Protocol):
     """One target's spelling of every text the renderer produces.
 
-    The docstring of each member states the aether dialect's text, which is
-    the renderer's output today; a second dialect answers the same question
+    The docstring of each member states the aether writer's text, which is
+    the renderer's output today; a second writer answers the same question
     in its own language."""
 
-    #: The dialect's id (``"aether"``, ``"c"``).
+    #: The writer's id (``"aether"``, ``"c"``).
     id: str
     #: Whether EVERY rank>=1 value is named (a C struct value), beyond the
     #: renderer's own fan-out rule. ``False`` for aether, whose lazy
@@ -72,7 +72,7 @@ class Dialect(Protocol):
     def for_header(self, r: Any, index: str, loop: Any, count: str | None) -> str:
         """The lowered loop's ``for`` header (``spelling._for_header``). Takes
         the renderer because a runtime-count header may need a statement of
-        its own ahead of the ``for`` (the C dialect's clamped count)."""
+        its own ahead of the ``for`` (the C writer's clamped count)."""
 
     def tail_break(self, flag: str) -> str:
         """The tail-form exit: ``if ({flag}) break;``."""
@@ -91,7 +91,7 @@ class Dialect(Protocol):
                       in_range: bool = False) -> str:
         """The clamped selector local: ``const std::int32_t {kname} = ...;``.
         ``in_range``: the selector is a select between two in-range literals,
-        so a dialect may skip the clamp (the aether dialect does)."""
+        so a writer may skip the clamp (the aether writer does)."""
 
     def mix_count(self, mix: str, k: int, kname: str) -> str:
         """An ``auto`` dispatch's branch-mix count statement."""

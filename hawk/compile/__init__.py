@@ -28,8 +28,6 @@ from .cache import (
     reset_artifact_memo as _cache_reset_artifact_memo,
 )
 from .drivers import (
-    DEVICE,
-    HOST,
     CompileOptions,
     compile_source,
     publish,
@@ -56,8 +54,8 @@ from .toolchain import (
     opt_level,
 )
 
-__all__ = ["Cache", "CompileOptions", "DeviceImage", "DEVICE", "HOST",
-           "HOST_PROFILES", "OPT_LEVELS", "aether_include", "cache_stats",
+__all__ = ["Cache", "CompileOptions", "DeviceImage", "HOST_PROFILES",
+           "OPT_LEVELS", "aether_include", "cache_stats",
            "compile_source", "compiler_identity", "cubin", "cubin_available",
            "current_payload", "default_cache_dir", "device", "device_compiler",
            "device_compiler_kind", "digest_file", "eagle_include",

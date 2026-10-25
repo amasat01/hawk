@@ -1,33 +1,33 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The spelling seam: one renderer, N dialects.
+"""The spelling seam: one renderer, N writers.
 
-``hawk.emit.dialect.Dialect`` names every text the body renderer produces;
-``hawk.emit.dialect_aether.AETHER`` is today's aether C++ spelling moved
+``hawk.emit.writer.Writer`` names every text the body renderer produces;
+``hawk.emit.writer_aether.AETHER`` is today's aether C++ spelling moved
 behind it. These rows pin that the protocol is complete and that the
-renderer really delegates (a dialect that spells declarations differently
-changes the body), while the aether dialect's own text stays what it was.
+renderer really delegates (a writer that spells declarations differently
+changes the body), while the aether writer's own text stays what it was.
 """
 
 from __future__ import annotations
 
-from hawk.emit.dialect import DIALECT_MEMBERS, Dialect
+from hawk.emit.writer import WRITER_MEMBERS, Writer
 
 
-def test_the_dialect_protocol_names_every_spelling_seam():
+def test_the_writer_protocol_names_every_spelling_seam():
     expected = {"declare", "carry_type", "tape_decl", "counter_decl", "for_header",
                 "tail_break", "sample_index_value", "hoist", "selector_decl", "mix_count",
                 "predicated_rank0", "predicated_tensor", "switch_default_tail", "typed_zero",
                 "leaf", "const", "at", "select", "op", "guard", "store", "scatter_store",
                 "accum_scattered", "store_compensated", "sample_sum", "tape_write",
                 "finish", "exit_if", "component_commit", "in_place_accumulate", "zero_row"}
-    assert set(DIALECT_MEMBERS) == expected
-    assert len(DIALECT_MEMBERS) == 31
-    assert all(callable(getattr(Dialect, m)) for m in DIALECT_MEMBERS)
-    assert "id" in Dialect.__annotations__
-    assert "names_every_tensor" in Dialect.__annotations__
-    assert "commits_per_component" in Dialect.__annotations__
+    assert set(WRITER_MEMBERS) == expected
+    assert len(WRITER_MEMBERS) == 31
+    assert all(callable(getattr(Writer, m)) for m in WRITER_MEMBERS)
+    assert "id" in Writer.__annotations__
+    assert "names_every_tensor" in Writer.__annotations__
+    assert "commits_per_component" in Writer.__annotations__
 
 
 # -- the seam is live -------------------------------------------------------
@@ -35,11 +35,11 @@ def test_the_dialect_protocol_names_every_spelling_seam():
 import _kernels as K  # noqa: E402
 
 from hawk.emit import render_body  # noqa: E402
-from hawk.emit.dialect_aether import AETHER, AetherDialect  # noqa: E402
+from hawk.emit.writer_aether import AETHER, AetherWriter  # noqa: E402
 
 
-class _Probe(AetherDialect):
-    """The aether dialect with ONE spelling changed: declarations drop ``const``."""
+class _Probe(AetherWriter):
+    """The aether writer with ONE spelling changed: declarations drop ``const``."""
 
     id = "probe"
 
@@ -47,32 +47,32 @@ class _Probe(AetherDialect):
         return f"auto {name} = {text};"
 
 
-def test_render_body_defaults_to_the_aether_dialect():
+def test_render_body_defaults_to_the_aether_writer():
     k = K.chain6
     assert render_body(k.sinks, k.walk).text == render_body(
-        k.sinks, k.walk, dialect=AETHER).text
+        k.sinks, k.walk, writer=AETHER).text
 
 
-def test_a_dialect_that_spells_declarations_differently_changes_the_body():
+def test_a_writer_that_spells_declarations_differently_changes_the_body():
     k = K.chain6
     plain = render_body(k.sinks, k.walk).text
-    probed = render_body(k.sinks, k.walk, dialect=_Probe()).text
+    probed = render_body(k.sinks, k.walk, writer=_Probe()).text
     assert plain != probed
     assert "const auto " in plain and "const auto " not in probed
     assert plain.replace("const auto ", "auto ") == probed
 
 
-def test_the_aether_dialect_implements_every_member_and_for_header_takes_the_renderer():
+def test_the_aether_writer_implements_every_member_and_for_header_takes_the_renderer():
     import inspect
 
-    assert all(callable(getattr(AETHER, m)) for m in DIALECT_MEMBERS)
-    # a runtime-count header is TWO statements for a C dialect (the clamped
+    assert all(callable(getattr(AETHER, m)) for m in WRITER_MEMBERS)
+    # a runtime-count header is TWO statements for a C writer (the clamped
     # count, then the loop), so the member gets the renderer like `hoist` does
     assert list(inspect.signature(AETHER.for_header).parameters)[:2] == ["r", "index"]
 
 
-def test_param_cell_binding_still_re_exports_from_hawk_emit_aether():
-    from hawk.emit.aether import param_cell_binding
+def test_param_cell_binding_still_re_exports_from_hawk_emit_render():
+    from hawk.emit.render import param_cell_binding
 
     assert param_cell_binding("k") == "lut_k_cell"
 
@@ -112,9 +112,9 @@ def test_a_rank1_table_read_once_is_not_loaded_at_the_sample_index():
     assert text.count("lut_table[aether::SampleIndex::make(") == 1
 
 
-def test_a_head_break_test_is_spelled_by_the_dialect():
-    """The ``if (cond) {`` that opens a head/middle-form ``break`` is dialect
-    text: a C dialect must not wrap an already parenthesised ``(a == b)`` in a
+def test_a_head_break_test_is_spelled_by_the_writer():
+    """The ``if (cond) {`` that opens a head/middle-form ``break`` is writer
+    text: a C writer must not wrap an already parenthesised ``(a == b)`` in a
     second pair (clang's ``-Wparentheses-equality`` under ``-Werror``)."""
     import inspect
 

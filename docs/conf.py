@@ -9,7 +9,6 @@
 """Sphinx configuration for building the hawk documentation."""
 
 import os
-import re
 
 # -- Project information -----------------------------------------------------
 
@@ -17,26 +16,11 @@ project = "hawk"
 copyright = "2026, Alessandro Masat"
 author = "Alessandro Masat"
 
-# Read the version from hawk/__init__.py (the single source of truth, matched
-# by pyproject.toml's own scikit-build regex reader) rather than importing
-# hawk: this file runs under autodoc too, and hawk's import-time self-check
-# refuses a _core that is not built from the tree beside it, which a docs
-# venv has no business tripping over just to read a version string.
-_version = "0.0.0"
-_init = os.path.join(os.path.dirname(__file__), "..", "hawk", "__init__.py")
-_pattern = re.compile(r'''^__version__\s*=\s*["'](?P<value>.+?)["']''')
-try:
-    with open(_init) as _f:
-        for _line in _f:
-            _m = _pattern.match(_line)
-            if _m:
-                _version = _m.group("value")
-                break
-except FileNotFoundError:
-    pass
+# The version is the latest git tag (setuptools-scm), never written into the tree; hawk itself is
+# not imported: its import-time self-check refuses a _core not built from the tree beside it.
+import setuptools_scm
 
-version = _version
-release = _version
+release = version = setuptools_scm.get_version(root="..", relative_to=__file__, fallback_version="0.0.0")
 
 # -- General configuration ---------------------------------------------------
 

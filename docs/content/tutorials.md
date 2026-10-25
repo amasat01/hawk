@@ -4,7 +4,7 @@ Nine notebooks (new words are in the [glossary](glossary)), each building on the
 right plane type, write a kernel that stops itself, take gradients
 backward and forward, read/scatter/reduce across a batch, differentiate
 through branches and stops, and choose how a branch between several
-formulas is compiled, and reach neighbouring samples with `all_samples` and `sample_index`.
+formulas is compiled, and reach neighbouring samples with `.at` and `sample_index`.
 
 ```{toctree}
 :maxdepth: 1
@@ -20,5 +20,5 @@ tutorials/08_choosing_a_dispatch_policy
 tutorials/09_per_sample_control
 ```
 
-Next: [Vocabulary](vocabulary) — declare a kernel's own vocabulary once and
+Next: {doc}`hawk in your domain <vocabulary>` — declare a kernel's own vocabulary once and
 reuse it across a whole family of models.

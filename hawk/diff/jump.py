@@ -37,6 +37,7 @@ from ..ir import make as _mk
 from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex
 from ..ir.nodes import ReduceSamples, SampleIndex
 from ..types import TensorType
+from .tape import _reachable
 
 #: The kernel and the rule names the sidecar records.
 KERNEL = "epanechnikov"
@@ -533,8 +534,10 @@ class JumpPlan:
             return None
         param = width_param(self.jump)
         sites = []
+        wanted = set(wrt)
         for i, (site, info) in enumerate(zip(self.sites, self.info)):
-            names = sorted(_reached(site, set(wrt)))
+            names = sorted({n.name for n in _reachable((site,))
+                            if isinstance(n, Leaf) and n.name in wanted})
             entry = {"name": f"jump{i}", "cond": spell(site), "reaches": names,
                      "group": info["group"]}
             if info["loop"] is not None:
@@ -565,7 +568,9 @@ def _reach_of(node: Node, get, leaf) -> int:
     elif isinstance(node, Dispatch):
         ops = node.branches
     got = max((get(o) for o in ops), default=0)
-    if got and (kind in _stepwise() or kind == "cast"):
+    from .event import _STEPWISE
+
+    if got and (kind in _STEPWISE or kind == "cast"):
         return 2
     return got
 
@@ -575,12 +580,6 @@ def spell(node: Node) -> str:
     from .event import spell as spelled
 
     return spelled(node)
-
-
-def _stepwise() -> tuple:
-    from .event import _STEPWISE
-
-    return _STEPWISE
 
 
 def _zero(t: TensorType) -> Node:
@@ -596,21 +595,3 @@ def _comparison_operands(cond: Node) -> list:
     if kind in _ORDERED or kind in _EQUALITY:
         return list(cond.operands)
     return []
-
-
-def _walk(roots: Sequence[Node]) -> list:
-    seen: set = set()
-    out: list = []
-    stack = list(roots)
-    while stack:
-        n = stack.pop()
-        if id(n) in seen:
-            continue
-        seen.add(id(n))
-        out.append(n)
-        stack.extend(getattr(n, "operands", ()))
-    return out
-
-
-def _reached(site: Node, wrt: set) -> set:
-    return {n.name for n in _walk((site,)) if isinstance(n, Leaf) and n.name in wrt}

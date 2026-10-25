@@ -34,7 +34,7 @@ import pytest
 from conftest import sidecar_of
 
 from hawk import runtime
-from hawk.emit.aether import MIRROR_OF, mirror_of
+from hawk.emit.render import MIRROR_OF, mirror_of
 from hawk.ir import HawkError
 from hawk.types import TensorType
 

@@ -46,7 +46,8 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
-from hawk import Index, Kernel, Mutable, Scalar, Table, Terminated, all_samples, kernel
+import hawk
+from hawk import Index, Kernel, Mutable, Scalar, Table, Terminated, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk.emit import render_body
@@ -63,7 +64,7 @@ def _busy(x: Scalar, lane: Index, terminated: Terminated, y: Mutable[Scalar],
     s = x * x + 0.25
     for _ in range(5):
         s = s * 0.5 + x
-    all_samples(acc)[lane] += s
+    hawk.scatter(acc)[lane] += s
     y = y + s * x
 
 
@@ -74,7 +75,7 @@ def _busy_d(x: Scalar, lane: Index, terminated: Terminated, y: Mutable[Scalar],
     s = x * x + 0.25
     for _ in range(5):
         s = s * 0.5 + x
-    all_samples(acc)[lane] += s
+    hawk.scatter(acc)[lane] += s
     y = s * x
 
 

@@ -431,7 +431,7 @@ def test_compensation_stays_exact_under_fma_contraction(tmp_path, cache_dir):
     its rounded value is p = 1 + 2^-29. Accumulated onto 1.0 the sum 1 + p is
     exact, so the companion must stay 0. Fused, the residual would see the
     2^-60 tail (confirmed by removing the AETHER_FP_BARRIER lines from
-    hawk/emit/backend.py: c = 2^-60). The probe kernel shows this very build
+    hawk/emit/wrapper.py: c = 2^-60). The probe kernel shows this very build
     does contract (non-vacuity)."""
     import platform
 
@@ -762,7 +762,7 @@ def test_a_unit_using_no_compensated_helper_renders_the_plain_prelude():
     must render the prelude exactly as a plain unit always has: one blank line
     before the namespace closes, never one per unused helper. Downstream render
     goldens pin this text byte for byte."""
-    from hawk.emit.backend import abi_helpers
+    from hawk.emit.wrapper import abi_helpers
 
     for qualifier in ("__host__ __device__", "inline"):
         plain = abi_helpers(qualifier)

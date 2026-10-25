@@ -1,13 +1,13 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The backend seam and the scalar-mode seam.
+"""The wrapper seam and the scalar-mode seam.
 
 Both seams are PROTOCOLS with their built implementations beside them,
-never a class hierarchy: a backend supplies the entry wrapper around the
-ONE body string :mod:`hawk.emit.aether` renders, and a scalar mode supplies
+never a class hierarchy: a wrapper supplies the entry around the
+ONE body string :mod:`hawk.emit.render` renders, and a scalar mode supplies
 the ``Real`` the translation unit resolves to. Built today: the ``cuda``
-and ``host`` backends, the ``float64``/``float32`` modes; ``metal`` and
+and ``host`` wrappers, the ``float64``/``float32`` modes; ``metal`` and
 ``banded`` are the seams' NAMED empty slots — asking for ``banded`` raises
 and says who is expected to build it and when.
 
@@ -29,7 +29,9 @@ from typing import Protocol
 from ..ir import HawkError, Walk
 from ..ir.nodes import sample_sums
 from ..types import Slot
-from .aether import Body, render_body
+from .box import boxed_sinks, frame
+from .render import Body, render_body
+from .writer_aether import RUN_CALL, RUN_STATE
 from .spelling import (
     binding_name,
     element_spelling,
@@ -42,7 +44,7 @@ from .spelling import (
 @dataclass(frozen=True)
 class SegmentSpec:
     """Per-unit geometry override for a ``segmented`` unit's index prologue
-    (``hawk/ir/segment.py`` builds the unit and hands this to the backend
+    (``hawk/ir/segment.py`` builds the unit and hands this to the wrapper
     so the prologue can read the run's own bounds).
 
     ``offsets_binding`` is the C++ identifier :func:`unpack_lines` already
@@ -56,7 +58,7 @@ class SegmentSpec:
 def segment_reads(segment: SegmentSpec) -> tuple:
     """``(seg_begin_expr, seg_end_expr)``: run ``j``'s two bounds off the
     offsets plane at compile-time indices ``j``/``j + 1``, shared by both
-    backends so the two spellings cannot drift."""
+    wrappers so the two spellings cannot drift."""
     off = segment.offsets_binding
     begin_idx = f"aether::SampleIndex::make(static_cast<std::size_t>({segment.j}))"
     end_idx = f"aether::SampleIndex::make(static_cast<std::size_t>({segment.j + 1}))"
@@ -69,15 +71,19 @@ class ActiveSpec:
     or past the device-read ``count``.
 
     ``map_binding``/``count_binding`` are bound by :func:`unpack_lines`
-    exactly as :class:`SegmentSpec`'s offsets are."""
+    exactly as :class:`SegmentSpec`'s offsets are. ``group`` is the
+    compaction group, a lane count: at 1 the map holds sample indices; above
+    1 it holds group indices and position ``t`` reads sample ``map[t / group]
+    * group + t % group``."""
 
     map_binding: str
     count_binding: str
+    group: int = 1
 
 
 def active_reads(active: ActiveSpec, position: str) -> tuple:
     """``(count_expr, sample_expr)``: the live count and the sample at
-    launch position ``position``, shared by both backends.
+    launch position ``position``, shared by both wrappers.
 
     The map and count are 32-bit words (eagle's compaction), unlike a HAWK
     integer plane's 64-bit ``Int`` spelling, so both read through their
@@ -85,7 +91,20 @@ def active_reads(active: ActiveSpec, position: str) -> tuple:
     def word(binding: str, at: str) -> str:
         return f"reinterpret_cast<const std::int32_t*>({binding}.data())[{at}]"
 
+    if active.group > 1:
+        g = active.group
+        return (word(active.count_binding, "0"),
+                f"static_cast<long long>({word(active.map_binding, f'({position}) / {g}')})"
+                f" * {g} + ({position}) % {g}")
     return word(active.count_binding, "0"), word(active.map_binding, position)
+
+
+def lane_loop_simd(wrapper, walk: Walk, active: ActiveSpec | None) -> bool:
+    """Whether ``wrapper`` writes ``walk``'s loop over samples in its SIMD
+    form: not behind a grouped map, whose positions are not contiguous."""
+    simd_safe = getattr(wrapper, "simd_safe", None)
+    return (simd_safe is not None and simd_safe(walk)
+            and not (active is not None and active.group > 1))
 
 #: Roles a body WRITES through. Their view binds non-const: a ``const``
 #: ``View`` returns a read-only ``ConstSampleRef`` and cannot be assigned
@@ -137,15 +156,15 @@ def scalar_mode(name: str) -> ScalarMode:
     )
 
 
-class Backend(Protocol):
-    """The backend seam. ``metal`` will implement exactly these members.
+class Wrapper(Protocol):
+    """The wrapper seam: how a kernel is wrapped for one execution model.
+    A new target with its own execution model implements exactly these members.
 
     ``storage`` takes the whole :class:`~hawk.types.Slot`, since the ABI
     shape a wire binds as is keyed on its role as well as its type. The one
     index seam splits into ``index_prologue``/``index_epilogue`` because a
     serial host loop's closing brace belongs to the same seam."""
 
-    id: str
     qualifier: str
 
     def entry_signature(self, walk: Walk, name: str) -> str:
@@ -153,7 +172,7 @@ class Backend(Protocol):
         int64 partition triple."""
 
     def index_prologue(self, segment: SegmentSpec | None = None, *,
-                       active: ActiveSpec | None = None) -> str:
+                       active: ActiveSpec | None = None, box=None) -> str:
         """THE one geometry seam — the only place a launch-geometry token
         may appear. Binds the body's ``i``.
 
@@ -162,12 +181,14 @@ class Backend(Protocol):
         ``map[t]``; never combined with ``segment``. ``segment``: a
         ``segmented`` unit's column is ``offsets[j] + tid``, so the
         prologue reads its run's bounds off the offsets plane and exits a
-        lane past the device-read run length. Omitted, this is the
-        ordinary partition-relative prologue."""
+        lane past the device-read run length. ``box``
+        (:class:`hawk.emit.box.Box`): ``base + flat`` is a thread and ``i``
+        its first lane. Omitted, this is the ordinary partition-relative
+        prologue."""
 
     def index_epilogue(self) -> str:
         """The closing half of the index seam (empty where the prologue
-        opens no scope). A backend declaring the optional ``lane_guards``
+        opens no scope). A wrapper declaring the optional ``lane_guards``
         hook (the host) is handed the prologue's own arguments here too,
         since what it closes depends on them."""
 
@@ -187,8 +208,8 @@ class Backend(Protocol):
     def dispatch(self, kind_spelling: str, branch_spellings: Sequence[str],
                  policy: str, **kw: object) -> str:
         """The per-node ``predicated``/``switch`` text — identical C++ on
-        both targets, so both built backends implement this member by
-        calling :func:`hawk.emit.aether.render_dispatch_rank0` directly.
+        both targets, so both built wrappers implement this member by
+        calling :func:`hawk.emit.render.render_dispatch_rank0` directly.
         ``segmented`` never reaches here."""
 
 
@@ -199,10 +220,12 @@ class Source:
     text: str
     body: str
     entry: str
-    backend: str
+    target: str
     mode: str
     #: The host loop over samples is vectorised (see :func:`hawk.ir.vectorise.vectorises`).
     vectorised: bool = False
+    #: The thread box the entry was emitted with (:class:`hawk.emit.box.Box`), or ``None``.
+    box: object = None
 
 
 #: The headers every emitted TU includes, in the mandated order: aether
@@ -235,6 +258,31 @@ _INCLUDES = """#include <aether/typedefs.h>
 #: when ``needs_random`` is true, so a unit with none is unaffected.
 _RANDOM_INCLUDE = '#include "aether/random/detail/Backend.h"\n'
 _RANDOM_INCLUDE_MARKER = "#include <aether/math/math.h>\n"
+
+#: The run commits' header, spliced after the same marker only for a body
+#: that calls one (:func:`run_states`).
+_RUN_INCLUDE = "#include <aether/accum/run.h>\n"
+
+_RUN_SITE = re.compile(rf"\b{RUN_STATE}(\w+)\);")
+
+
+def run_states(text: str) -> list:
+    """The targets a body's run commits name, in order, once each: each
+    shares the entry-local state ``hawk_run_<target>``."""
+    return list(dict.fromkeys(_RUN_SITE.findall(text)))
+
+
+def _with_runs(loop: list, text: str) -> list:
+    """``loop`` between the declarations of the run states ``text`` calls
+    and their closes: the host commits each open run at the end of the
+    entry's range; on the device both are no-ops. Unchanged for a body with
+    no run commit."""
+    runs = run_states(text)
+    if not runs:
+        return loop
+    return ["\n".join(f"    auto {RUN_STATE}{t} = {RUN_CALL}open({t});" for t in runs),
+            *loop,
+            "\n".join(f"    {RUN_CALL}close({RUN_STATE}{t});" for t in runs)]
 
 #: The Knuth two-sum residual both compensated commits below share — pure
 #: arithmetic (no atomics), so one definition serves the scattered and
@@ -296,6 +344,23 @@ template <class ViewT, class T>
     std::atomic_ref<E>(compSlot).fetch_add(twoSumErr_(old, t, s),
                                            std::memory_order_relaxed);
 #endif
+}}
+"""
+
+#: The fold of an owned companion into its target (:func:`fold_entries`):
+#: the two-sum of the pair, the rounded sum into the target and its exact
+#: residual into the companion, none for a non-finite sum. One lane per slot.
+_FOLD_COMPANION = """
+template <class ViewT>
+{qualifier} void fold_companion(ViewT& target, ViewT& comp, const aether::SampleIndex& at)
+{{
+    auto& t = target(at.global());
+    auto& c = comp(at.global());
+    using E = std::remove_reference_t<decltype(t)>;
+    const E s = t + c;
+    const E e = twoSumErr_(t, c, s);
+    t = s;
+    c = s - s == E(0) ? e : E(0);
 }}
 """
 
@@ -677,7 +742,8 @@ _CLAMP_COUNT = """{qualifier} int hawk_clamp_count(long long n)
 def abi_helpers(qualifier: str, *, compensated: bool = False,
                 store_compensated: bool = False, finish: bool = False,
                 spacing: bool = False, mix: bool = False,
-                integers: bool = False, sample_sum: bool = False) -> str:
+                integers: bool = False, sample_sum: bool = False,
+                fold: bool = False) -> str:
     """The view-from-mirror reconstruction helpers — byte-for-byte the same
     on both targets, only the function qualifier differs; reads the
     mirror's own stride fields so a non-contiguous plane rebuilds
@@ -692,8 +758,10 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
     integer helpers for a body that calls one, ``sample_sum`` the row sum
     for a kernel with a :class:`~hawk.ir.nodes.SampleSum` sink."""
     helpers = []
-    if compensated or store_compensated or sample_sum:
+    if compensated or store_compensated or sample_sum or fold:
         helpers.append(_TWO_SUM_ERR.format(qualifier=qualifier))
+    if fold:
+        helpers.append(_FOLD_COMPANION.format(qualifier=qualifier))
     if sample_sum:
         helpers.append(_SAMPLE_SUM.format(qualifier=qualifier))
     if compensated:
@@ -775,33 +843,38 @@ template <class ViewT, class T>
 def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             store_compensated: bool = False, needs_random: bool = False,
             finish: bool = False, spacing: bool = False, mix: bool = False,
-            integers: bool = False, sample_sum: bool = False) -> str:
+            integers: bool = False, sample_sum: bool = False,
+            runs: bool = False, fold: bool = False) -> str:
     """Includes + the scalar-mode aliases + the reconstruction helpers.
 
     ``compensated``/``store_compensated`` reach :func:`abi_helpers`'s gate.
     ``needs_random`` applies the same discipline to :data:`_INCLUDES`: only
-    a unit whose body emitted a random draw gets the extra header."""
+    a unit whose body emitted a random draw gets the extra header, and
+    ``runs`` the run commits' header."""
     includes = _INCLUDES
-    if needs_random:
+    extra = (_RANDOM_INCLUDE if needs_random else "") + (_RUN_INCLUDE if runs else "")
+    if extra:
         includes = includes.replace(_RANDOM_INCLUDE_MARKER,
-                                    _RANDOM_INCLUDE_MARKER + _RANDOM_INCLUDE, 1)
+                                    _RANDOM_INCLUDE_MARKER + extra, 1)
     return (includes
             + f"\nusing Real = {mode.real_spelling};\nusing Int = long long;\n\n"
             + _CLAMP_COUNT.format(qualifier=qualifier)
             + abi_helpers(qualifier, compensated=compensated,
                          store_compensated=store_compensated, finish=finish,
                          spacing=spacing, mix=mix, integers=integers,
-                         sample_sum=sample_sum))
+                         sample_sum=sample_sum, fold=fold))
 
 
-def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
+def render_source(name: str, sinks, walk: Walk, target, *,
                   mode: ScalarMode = FLOAT64, kind=None, exports: str = "",
                   body: Body | None = None,
                   segment: SegmentSpec | None = None,
-                  active: ActiveSpec | None = None, one_step=None) -> Source:
+                  active: ActiveSpec | None = None, one_step=None,
+                  box=None) -> Source:
     """Assemble ONE translation unit around the ONE body string.
 
-    Both backends are handed the SAME :class:`~hawk.emit.aether.Body`; the
+    ``target`` is the :class:`hawk.targets.Target` row: its writer spells the
+    body and its wrapper wraps it. Both wrappers are handed the SAME :class:`~hawk.emit.render.Body`; the
     row that observes it compares :attr:`Source.body`, not the files.
     ``kind`` is the :class:`hawk.ext.Kind` the body's commits render under;
     ``exports`` is a per-TU export block spliced between the prelude and
@@ -809,9 +882,9 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
 
     ``body`` supplies an already-rendered body (how a fused lane group
     reaches this wrapper); omitted, it's rendered here from ``sinks``/
-    ``walk``. ``segment`` threads to :meth:`Backend.index_prologue` (see
+    ``walk``. ``segment`` threads to :meth:`Wrapper.index_prologue` (see
     :class:`SegmentSpec`). ``active`` (:class:`ActiveSpec`) is passed to
-    the backend only when given, so a map-free kernel's text is unchanged.
+    the wrapper only when given, so a map-free kernel's text is unchanged.
 
     ``one_step`` is an automatic kernel's single-step kernel
     (``hawk.steps(kernel, "auto")``): the entry reads the ``fused_steps``
@@ -820,20 +893,31 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
     ``asm`` marker so the compiler can't fold the two together. Omitted,
     the TU is unchanged.
 
+    ``box`` (:class:`hawk.emit.box.Box`, from :func:`hawk.emit.box.thread_box`)
+    emits the plain entry with a thread box: each thread computes ``box.T``
+    lanes (:func:`hawk.emit.box.boxed_sinks`).
+
     A kernel with :class:`~hawk.ir.nodes.SampleSum` sinks runs the
-    backend's ``sample_sum_frame`` instead of the index loop, and is refused
+    wrapper's ``sample_sum_frame`` instead of the index loop, and is refused
     under the segmented, active-set and automatic (``_persist``) entries."""
     sums = sample_sums(sinks)
     _refuse_sample_sums(sums, segment=segment, active=active, one_step=one_step)
     if (one_step is not None and body is None and segment is None
             and getattr(getattr(kind, "sink", None), "id", None) != "compensated"):
-        return _render_two_paths(name, sinks, walk, backend, mode=mode,
+        return _render_two_paths(name, sinks, walk, target, mode=mode,
                                  kind=kind, exports=exports, active=active,
                                  one_step=one_step)
     own_body = body is None
+    if box is not None:
+        # the box's body, and the box-free one for a launch with fewer rows than T
+        plain = render_body(sinks, walk, indent=" " * 16, kind=kind, writer=target.writer)
+        boxed = render_body(boxed_sinks(sinks, box), walk, indent=" " * 12, kind=kind,
+                            writer=target.writer)
+        body = Body(frame(box, plain.text, boxed.text))
     if body is None:
-        body = render_body(sinks, walk, indent="        ", kind=kind)
+        body = render_body(sinks, walk, indent="        ", kind=kind, writer=target.writer)
     compensated = False
+    wrapper = target.wrapper
     store_compensated = False
     if kind is not None and getattr(kind.sink, "id", None) == "compensated":
         from ..ext import compensated_target
@@ -842,55 +926,86 @@ def render_source(name: str, sinks, walk: Walk, backend: Backend, *,
         if resolved is not None:
             store_compensated = resolved[1]
             compensated = not resolved[1]
-    # Optional backend hooks, asked only of a backend that declares them
+    # a policy="compensated" scatter that commits per lane
+    compensated = compensated or "hawk_abi::accum_add_compensated(" in body.text
+    # Optional wrapper hooks, asked only of a wrapper that declares them
     # (the host's SIMD loop, lane-guarded blocks, hawk/emit/host.py); every
-    # other backend's call and text are unchanged. A backend with lane
+    # other wrapper's call and text are unchanged. A wrapper with lane
     # guards closes its loop from the same arguments it opened with.
     prologue_kw: dict = {} if active is None else {"active": active}
-    simd_safe = getattr(backend, "simd_safe", None)
-    if simd_safe is not None:
-        prologue_kw["simd"] = simd_safe(walk)
-    lane_guards = getattr(backend, "lane_guards", None)
+    if getattr(wrapper, "simd_safe", None) is not None:
+        prologue_kw["simd"] = lane_loop_simd(wrapper, walk, active)
+    lane_guards = getattr(wrapper, "lane_guards", None)
     if lane_guards is not None:
         prologue_kw["guards"] = lane_guards(walk)
-    lane_finish = getattr(backend, "lane_finish", None)
+    lane_finish = getattr(wrapper, "lane_finish", None)
     if lane_finish is not None:
         prologue_kw["finish"] = lane_finish(walk)
-    epilogue = (backend.index_epilogue(segment, **prologue_kw)
-                if lane_guards is not None else backend.index_epilogue())
-    tiled = (_interchange(backend, name, sinks, walk, kind, mode)
-             if own_body and segment is None and active is None
+    epilogue = (wrapper.index_epilogue(segment, **prologue_kw)
+                if lane_guards is not None else wrapper.index_epilogue())
+    tiled = (_interchange(wrapper, name, sinks, walk, kind, mode)
+             if own_body and segment is None and active is None and box is None
              and not compensated and not store_compensated and not sums else None)
-    extra_prelude = getattr(backend, "extra_prelude", None)
-    loop = [backend.index_prologue(segment, **prologue_kw), body.text, epilogue]
+    if run_states(body.text):
+        tiled = None                    # the interchanged loop holds no run state
+    extra_prelude = getattr(wrapper, "extra_prelude", None)
+    loop = [wrapper.index_prologue(segment, **prologue_kw), body.text, epilogue]
+    if box is not None:
+        loop = [wrapper.index_prologue(box=box), body.text, wrapper.index_epilogue()]
     if sums:
-        opened, closed = backend.sample_sum_frame(
+        opened, closed = wrapper.sample_sum_frame(
             len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums),
             sums[0].op)
         loop = [opened, body.text, closed]
+    loop = _with_runs(loop, body.text)
     parts = [
-        f"// HAWK-emitted {backend.id} translation unit (scalar mode: {mode.id}).\n"
+        f"// HAWK-emitted {target.id} translation unit (scalar mode: {mode.id}).\n"
         f"// Body text is the ONE renderer's; this file is the entry wrapper.\n",
-        prelude(mode, backend.qualifier, compensated=compensated,
+        prelude(mode, wrapper.qualifier, compensated=compensated,
                store_compensated=store_compensated, needs_random=body.needs_random,
                finish=getattr(walk, "finish", None) is not None,
                spacing=_SPACING_CALL in body.text, mix=_MIX_CALL in body.text,
-               integers=_INT_CALL in body.text, sample_sum=bool(sums)),
+               integers=_INT_CALL in body.text, sample_sum=bool(sums),
+               runs=RUN_CALL in body.text, fold=bool(walk.companions)),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",
-        backend.entry_signature(walk, name),
+        wrapper.entry_signature(walk, name),
         "{",
-        backend.unpack(walk),
+        wrapper.unpack(walk),
         *_tiled_or(tiled, loop),
         "}",
         "",
+        *fold_entries(name, walk, wrapper),
     ]
     from ..ir.vectorise import vectorises
 
     return Source(_filled(parts, mode), body.text, name,
-                  backend.id, mode.id,
-                  backend.id == "host" and vectorises(walk, scalar_type=mode.id))
+                  target.id, mode.id,
+                  "vectorise" in target.features and box is None
+                  and vectorises(walk, scalar_type=mode.id), box)
+
+
+def fold_entry_name(kernel: str, target: str) -> str:
+    """The entry that folds ``target``'s owned companion into it (the host
+    spelling appends ``_host``, as every host entry does)."""
+    return f"{kernel}__fold_{target}"
+
+
+def fold_entries(name: str, walk: Walk, wrapper) -> list:
+    """One entry per owned companion (:attr:`hawk.ir.Walk.companions`): the
+    kernel's own signature and argument block, one lane per slot of the
+    target, ``hawk_abi::fold_companion``. The runtime launches it after the
+    kernel, over the target's slots, so the target alone holds the
+    compensated sum and the companion keeps the residual."""
+    out = []
+    for comp, target in walk.companions.items():
+        out += [wrapper.entry_signature(walk, fold_entry_name(name, target)), "{",
+                wrapper.unpack(walk), wrapper.index_prologue(),
+                f"        hawk_abi::fold_companion({binding_name('accum_out', target)}, "
+                f"{binding_name('accum_out', comp)}, i);",
+                wrapper.index_epilogue(), "}", ""]
+    return out
 
 
 def _refuse_sample_sums(sums, *, segment, active, one_step) -> None:
@@ -970,13 +1085,13 @@ def literal_table(source: Source) -> Source:
     return replace(source, text=f"{head}{sep}{first_line}\n{table}\n{text}")
 
 
-def _interchange(backend: Backend, name: str, sinks, walk: Walk, kind,
+def _interchange(wrapper: Wrapper, name: str, sinks, walk: Walk, kind,
                  mode: ScalarMode = FLOAT64):
-    """The backend's interchanged fused-step loop for this TU (the host's
+    """The wrapper's interchanged fused-step loop for this TU (the host's
     optional ``interchange`` hook, :mod:`hawk.emit.host`), or ``None``: a
-    backend without the hook, or a kernel the hook declines, keeps its text
+    wrapper without the hook, or a kernel the hook declines, keeps its text
     unchanged."""
-    hook = getattr(backend, "interchange", None)
+    hook = getattr(wrapper, "interchange", None)
     if hook is None:
         return None
     return hook(name, sinks, walk, kind, 4 if mode is FLOAT32 else 8)
@@ -994,7 +1109,7 @@ def _filled(parts, mode: ScalarMode) -> str:
 
 
 def _extra_prelude(hook, walk: Walk, tiled) -> str | None:
-    """The backend's extra prelude, told about an interchange only when there
+    """The wrapper's extra prelude, told about an interchange only when there
     is one, so every other TU's text is unchanged."""
     if hook is None:
         return None
@@ -1016,22 +1131,21 @@ def _tiled_or(tiled, plain: list) -> list:
     return [f"#if {INTERCHANGE_MACRO}", tiled.text, "#else", *plain, "#endif"]
 
 
-def _frame(walk: Walk, backend: Backend, active: ActiveSpec | None) -> tuple:
+def _frame(walk: Walk, wrapper: Wrapper, active: ActiveSpec | None) -> tuple:
     """The index prologue and epilogue :func:`render_source` wraps a body of
     ``walk`` in (the host's SIMD/lane-guard hooks asked of ``walk``)."""
     kw: dict = {} if active is None else {"active": active}
-    simd_safe = getattr(backend, "simd_safe", None)
-    if simd_safe is not None:
-        kw["simd"] = simd_safe(walk)
-    lane_guards = getattr(backend, "lane_guards", None)
+    if getattr(wrapper, "simd_safe", None) is not None:
+        kw["simd"] = lane_loop_simd(wrapper, walk, active)
+    lane_guards = getattr(wrapper, "lane_guards", None)
     if lane_guards is not None:
         kw["guards"] = lane_guards(walk)
-    lane_finish = getattr(backend, "lane_finish", None)
+    lane_finish = getattr(wrapper, "lane_finish", None)
     if lane_finish is not None:
         kw["finish"] = lane_finish(walk)
-    epilogue = (backend.index_epilogue(None, **kw)
-                if lane_guards is not None else backend.index_epilogue())
-    return backend.index_prologue(None, **kw), epilogue
+    epilogue = (wrapper.index_epilogue(None, **kw)
+                if lane_guards is not None else wrapper.index_epilogue())
+    return wrapper.index_prologue(None, **kw), epilogue
 
 
 #: The marker each side of an automatic kernel's branch opens with (device
@@ -1040,7 +1154,7 @@ def _frame(walk: Walk, backend: Backend, active: ActiveSpec | None) -> tuple:
 _PATH_MARKER = '#if defined(__CUDA_ARCH__)\n    asm volatile("// hawk: {}");\n#endif'
 
 
-def _render_two_paths(name: str, sinks, walk: Walk, backend: Backend, *,
+def _render_two_paths(name: str, sinks, walk: Walk, target, *,
                       mode: ScalarMode, kind, exports: str,
                       active: ActiveSpec | None, one_step) -> Source:
     """The TU of an automatic kernel: :func:`render_source` with the entry's
@@ -1048,17 +1162,19 @@ def _render_two_paths(name: str, sinks, walk: Walk, backend: Backend, *,
     ``fused_steps`` word — the single step's (``one_step``) when the word is
     ``1``, the fused loop's otherwise.
 
-    On a backend with the ``persist`` hook (the device), the TU also carries
+    On a wrapper with the ``persist`` hook (the device), the TU also carries
     the kernel's fast-path entries (:func:`_fast_entries`)."""
-    fused = render_body(sinks, walk, indent="        ", kind=kind)
-    single = render_body(one_step.sinks, one_step.walk, indent="        ", kind=kind)
-    tiled = None if active is not None else _interchange(backend, name, sinks,
+    wrapper = target.wrapper
+    fused = render_body(sinks, walk, indent="        ", kind=kind, writer=target.writer)
+    single = render_body(one_step.sinks, one_step.walk, indent="        ", kind=kind,
+                         writer=target.writer)
+    tiled = None if active is not None else _interchange(wrapper, name, sinks,
                                                          walk, kind, mode)
-    extra_prelude = getattr(backend, "extra_prelude", None)
+    extra_prelude = getattr(wrapper, "extra_prelude", None)
     parts = [
-        f"// HAWK-emitted {backend.id} translation unit (scalar mode: {mode.id}).\n"
+        f"// HAWK-emitted {target.id} translation unit (scalar mode: {mode.id}).\n"
         f"// Body text is the ONE renderer's; this file is the entry wrapper.\n",
-        prelude(mode, backend.qualifier, needs_random=fused.needs_random
+        prelude(mode, wrapper.qualifier, needs_random=fused.needs_random
                 or single.needs_random,
                 finish=getattr(walk, "finish", None) is not None,
                 spacing=_SPACING_CALL in fused.text + single.text,
@@ -1067,17 +1183,17 @@ def _render_two_paths(name: str, sinks, walk: Walk, backend: Backend, *,
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",
-        *_two_path_entry(name, walk, backend, fused, single, one_step, active,
+        *_two_path_entry(name, walk, wrapper, fused, single, one_step, active,
                          tiled),
         "",
-        *_fast_entries(backend, name, sinks, walk, kind, fused, single, one_step,
+        *_fast_entries(wrapper, name, sinks, walk, kind, fused, single, one_step,
                        active),
     ]
     return Source(_filled(parts, mode),
-                  single.text + "\n" + fused.text, name, backend.id, mode.id)
+                  single.text + "\n" + fused.text, name, target.id, mode.id)
 
 
-def _two_path_entry(entry: str, walk: Walk, backend: Backend, fused, single,
+def _two_path_entry(entry: str, walk: Walk, wrapper: Wrapper, fused, single,
                     one_step, active: ActiveSpec | None, tiled) -> list:
     """The two-path entry ``entry`` of an automatic kernel: its signature,
     unpack and the branch on the ``fused_steps`` word between the single
@@ -1087,12 +1203,12 @@ def _two_path_entry(entry: str, walk: Walk, backend: Backend, fused, single,
 
     word = (f"{binding_name('lookup', FUSED_STEPS_PLANE)}"
             "[aether::SampleIndex::make(static_cast<std::size_t>(0))].eval()")
-    one_open, one_close = _frame(one_step.walk, backend, active)
-    many_open, many_close = _frame(walk, backend, active)
+    one_open, one_close = _frame(one_step.walk, wrapper, active)
+    many_open, many_close = _frame(walk, wrapper, active)
     return [
-        backend.entry_signature(walk, entry),
+        wrapper.entry_signature(walk, entry),
         "{",
-        backend.unpack(walk),
+        wrapper.unpack(walk),
         f"    if ({word} == 1) {{",
         _PATH_MARKER.format("one step"),
         one_open,
@@ -1118,10 +1234,10 @@ RANGE_SUFFIX = "_range"
 FAST_ENTRIES_MACRO = "HAWK_FAST_ENTRIES"
 
 
-def _fast_entries(backend: Backend, name: str, sinks, walk: Walk, kind, fused,
+def _fast_entries(wrapper: Wrapper, name: str, sinks, walk: Walk, kind, fused,
                   single, one_step, active: ActiveSpec | None) -> list:
     """The fast-path entries an automatic kernel's TU carries beside its own
-    entry, on a backend with the ``persist`` hook (the device); ``[]`` on
+    entry, on a wrapper with the ``persist`` hook (the device); ``[]`` on
     any other.
 
     ``<name>_persist`` (:func:`hawk.emit.cuda.persist_entry`) and
@@ -1132,18 +1248,18 @@ def _fast_entries(backend: Backend, name: str, sinks, walk: Walk, kind, fused,
     among them, unread), so a caller binds every entry alike. The range
     entry, and an active-set kernel's persist entry, compile only under
     :data:`FAST_ENTRIES_MACRO`; a map-free kernel's persist entry always."""
-    hook = getattr(backend, "persist", None)
+    hook = getattr(wrapper, "persist", None)
     if hook is None:
         return []
     persist = hook(name, sinks, walk, kind)
-    ranged = backend.range(name, sinks, walk, kind, single.text)
+    ranged = wrapper.range(name, sinks, walk, kind, single.text)
     always = [] if persist is None or active is not None else [persist, ""]
     gated = [] if ranged is None else [ranged, ""]
     if persist is not None and active is not None:
         gated += [persist, ""]
     if not always and not gated:
         return []
-    out = [backend.fast_prelude(), "", *always]
+    out = [wrapper.fast_prelude(), "", *always]
     if gated:
         out += [f"#ifndef {FAST_ENTRIES_MACRO}\n#define {FAST_ENTRIES_MACRO} 0\n#endif",
                 f"#if {FAST_ENTRIES_MACRO}", *gated, f"#endif  // {FAST_ENTRIES_MACRO}",
@@ -1152,7 +1268,7 @@ def _fast_entries(backend: Backend, name: str, sinks, walk: Walk, kind, fused,
 
 
 def unpack_lines(walk: Walk, source_of) -> str:
-    """The shared half of both backends' ``unpack``: one binding per
+    """The shared half of both wrappers' ``unpack``: one binding per
     ``arg_spec`` slot, in ``arg_spec`` order, each typed by ``storage`` and
     rebuilt from the by-value mirror ``source_of`` names on that target.
 

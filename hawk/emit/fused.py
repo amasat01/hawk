@@ -7,7 +7,7 @@ Lane fusion is a HAWK codegen surface because a fused emitter must see
 ``Walk``: lane boundaries, shared leaves and the merged ``arg_spec`` are
 walk products, and an out-of-tree fuser would be a second enumeration.
 This module delivers the BODY half — one body string per fused lane
-group, each lane rendered by the same renderer every backend consumes
+group, each lane rendered by the same renderer every wrapper consumes
 into its own scope, opened by a lane-local prologue hook the composing
 consumer supplies. :func:`compose` closes the other half: it takes a
 group whose membership the consumer decided and turns it into a
@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from ..ir import HawkError, Walk, canonical
 from ..ir.nodes import LEAF_ROLES, SINK_ROLES
 from ..types import LaneMeta, Slot
-from .aether import Body, render_body
+from .render import Body, render_body
 
 
 @dataclass(frozen=True)
@@ -62,14 +62,14 @@ class FusedBody:
     text: str
     lanes: tuple = field(default=())
     #: True the instant any lane's render used a random op — the OR of
-    #: each lane's :attr:`~hawk.emit.aether.Body.needs_random`.
+    #: each lane's :attr:`~hawk.emit.render.Body.needs_random`.
     needs_random: bool = False
 
     def as_body(self) -> Body:
-        """The :class:`~hawk.emit.aether.Body` a backend wrapper consumes.
+        """The :class:`~hawk.emit.render.Body` a wrapper consumes.
 
         A fused group's body is a body: the entry wrapper, unpack and
-        index prologue are all the backend's, same as for a solo kernel."""
+        index prologue are all the wrapper's, same as for a solo kernel."""
         return Body(self.text, self.needs_random)
 
 
@@ -77,7 +77,7 @@ def render_lane_body(lanes: Sequence[Lane], *, indent: str = "        ",
                      kind=None) -> FusedBody:
     """Render ONE body for a fused lane group (the body path).
 
-    Every lane goes through :func:`hawk.emit.aether.render_body` — the
+    Every lane goes through :func:`hawk.emit.render.render_body` — the
     same renderer, so a fused lane's text is what it would emit alone.
     ``kind`` is the :class:`hawk.ext.Kind` every lane's commits render
     under: one kind for the group, since a fused group is one entry."""
@@ -188,7 +188,7 @@ def compose(group: Sequence, name: str, scalar_type: str = "float64",
     time. Every slot each lane bound is carried into the merged walk as
     a declared slot, not only the ones its body reaches: a dropped
     ``terminated`` mask would give a fused entry a different signature."""
-    from .backend import scalar_mode
+    from .wrapper import scalar_mode
 
     lanes = tuple(_lane_of(member) for member in group)
     if not lanes:

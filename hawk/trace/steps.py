@@ -199,7 +199,8 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
     out.append(Finish(finish.name, done, steps=K))
     return Kernel(out_name, tuple(out), kernel.planes, kind=kernel.kind,
                   step=step, one_step=kernel if auto else None,
-                  source_digest=getattr(kernel, "source_digest", None))
+                  source_digest=getattr(kernel, "source_digest", None),
+                  returns=getattr(kernel, "returns", None))
 
 
 def _clamped_word() -> Node:

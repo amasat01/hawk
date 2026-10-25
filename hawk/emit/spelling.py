@@ -18,9 +18,9 @@ from ..ir.nodes import (
 from ..types import INT_PLANE_DTYPES, TensorType
 
 #: The launch-geometry tokens forbidden anywhere in a body; the one place
-#: they may appear is the backend's index prologue. Warp-level spelling
+#: they may appear is the wrapper's index prologue. Warp-level spelling
 #: (``%laneid``, ``__activemask``, the shuffle reductions) has its own sanctioned
-#: place, the CUDA backend's persistent and fast entries, and is not listed.
+#: place, the CUDA wrapper's persistent and fast entries, and is not listed.
 GEOMETRY_TOKENS = ("blockIdx", "threadIdx", "gridDim", "blockDim", "omp", "MPI_",
                    "nccl")
 
@@ -39,7 +39,7 @@ def geometry_hits(text: str) -> list:
     return out
 
 
-#: The identifier both backends' index prologues bind the lane's own
+#: The identifier both wrappers' index prologues bind the lane's own
 #: integer index to, and so the one name a
 #: :class:`~hawk.ir.nodes.SampleIndex` node renders as. Spelled here
 #: because the body and both wrappers must agree on it, and a row checks
@@ -135,6 +135,14 @@ _METHOD0 = {"norm": "norm", "sum": "sum", "transpose": "transpose",
 #: Rank>=1 one-argument Expression METHODS.
 _METHOD1 = {"dot": "dot", "cross": "cross", "mul": "cwiseMul",
             "quat_mul": "quatMul", "quat_rotate": "quatRotate"}
+
+
+def _flat_indices(shape: tuple) -> list:
+    """Every index tuple of ``shape`` in row-major (C) order."""
+    out: list = [()]
+    for extent in shape:
+        out = [idx + (k,) for idx in out for k in range(int(extent))]
+    return out
 
 
 def _is_literal_zero(node: Node) -> bool:

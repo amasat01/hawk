@@ -195,29 +195,6 @@ def _pullback(roots: Sequence[Node], seeds: Sequence[tuple], stop: set,
     return store, tuple(scatters), frozenset(scattered)
 
 
-def _shared_by_all(node: Dispatch) -> frozenset:
-    """The ids of the compute nodes read, at any depth, by EVERY non-literal
-    branch of ``node`` (:func:`hawk.diff.transform._shared_by_all`, keyed by
-    id as the whole of this module is) — empty unless two or more are live."""
-    from ..ir.nodes import Op, Select
-
-    live = [b for b in node.branches if not isinstance(b, Const)]
-    if len(live) < 2:
-        return frozenset()
-    common: set | None = None
-    for branch in live:
-        seen: dict = {}
-        stack = [branch]
-        while stack:
-            n = stack.pop()
-            if id(n) not in seen:
-                seen[id(n)] = n
-                stack.extend(n.operands)
-        mine = {k for k, n in seen.items() if isinstance(n, (Op, Dispatch, Select))}
-        common = mine if common is None else common & mine
-    return frozenset(common)
-
-
 def _dispatch_pullback(node: Dispatch, g: Node, store: dict, stop: set,
                        inputs, name, jump) -> None:
     """The reverse of a ``dispatch`` inside a loop body — the loop twin of
@@ -234,7 +211,9 @@ def _dispatch_pullback(node: Dispatch, g: Node, store: dict, stop: set,
             "a `dispatch` inside a loop body of a `jump=` kernel differentiated "
             "in REVERSE: the switching comparisons of the plan are not applied "
             "under a branch; this is not built")
-    shared = _shared_by_all(node)
+    from .transform import _shared_by_all
+
+    shared = _shared_by_all(node, id)
     cut = set(stop) | set(shared)
     reached: dict[int, tuple] = {}
     for j, branch in enumerate(node.branches):

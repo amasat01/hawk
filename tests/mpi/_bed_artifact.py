@@ -47,15 +47,16 @@ import hashlib
 import json
 import pathlib
 
+import hawk
 from hawk.artifact import build_bundle
-from hawk.trace import Index, Mutable, Param, Scalar, all_samples, kernel, raw_device
+from hawk.trace import Index, Mutable, Param, Scalar, kernel, raw_device
 
 #: The classes this bed certifies. ``mapreduce`` is not among them: no kernel
 #: declares it in this release (folding cells across ranks returns in the next).
 REQUIRED_ACCESS_CLASSES = ("sample_local", "cross_sample_read", "cross_sample_write")
 
 #: The shifted absolute read, spelled in the two identifiers BOTH backends bind:
-#: the plane's own view (``psc_<name>``, ``hawk.emit.aether.binding_name``) and
+#: the plane's own view (``psc_<name>``, ``hawk.emit.render.binding_name``) and
 #: the loop's global index ``hawk_i`` / the triple's ``nSamples``, which the host
 #: and device prologues each define. Same index expression as
 #: ``eagle/tests/fixtures/host_plugin_execv2.cpp``'s ``exec_gather``.
@@ -89,7 +90,7 @@ def rank_scatter(x: Scalar, lane: Index, acc: Mutable[Scalar]):
     """``cross_sample_write``: refused above one partition, and refused under the
     rank structure at EVERY world size including one (F-e). It is in the artifact
     so the bed's placement row has a real body to be refused, not a stub."""
-    all_samples(acc)[lane] += x
+    hawk.scatter(acc)[lane] += x
 
 
 #: ``(kernel, unit name)`` — the unit DIRECTORIES carry no information, exactly

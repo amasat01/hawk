@@ -124,7 +124,7 @@ using HostEntryV2 = void (*)(void* const*, std::int64_t, std::int64_t, std::int6
 // ---------------------------------------------------------------------------
 // The Python side (`hawk/runtime.py`) resolves a role to one of these names
 // through the SAME map the emitter generates the entry signature from
-// (`hawk.emit.aether.MIRROR_OF`), so a slot cannot be described one way to the
+// (`hawk.emit.render.MIRROR_OF`), so a slot cannot be described one way to the
 // compiler and another way to the marshal. An unknown name is refused here
 // naming the vocabulary — never defaulted to a handle, which is how a 40-byte
 // mirror ends up decoded as a 32-byte one (deterministic garbage, no crash).

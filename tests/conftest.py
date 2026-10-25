@@ -18,10 +18,11 @@ import platform
 import threading
 
 import _deployable as D
+import numpy as np
 import pytest
 
 from hawk.artifact import build_bundle
-from hawk.emit import BACKENDS
+from hawk.targets import TARGETS
 
 BOTH = ("cuda", "host")
 
@@ -97,8 +98,29 @@ def sidecar_of(bundle, name: str) -> dict:
     return next(a.sidecar for a in bundle.artifacts if a.name == name)
 
 
+def _launch(bundle, name, target, planes):
+    import _deploy as L
+    import eagle.exec as eexec
+    from eagle import plan as eplan
+
+    sidecar = sidecar_of(bundle, name)
+    if target == "host":
+        plugin, structure = L.host_plugin(bundle.directory, name, sidecar), eexec.HostTeam
+    else:
+        plugin, structure = L.device_plugin(bundle.directory, name, sidecar), eexec.DeviceKernel
+    return eplan.plan(plugin, structure=structure).bind(**planes)
+
+
+def _xp(target):
+    if target == "host":
+        return np
+    import cupy
+
+    return cupy
+
+
 __all__ = ["BOTH", "sidecar_of"]
-assert BACKENDS  # the emitter's backend table is what `targets` names
+assert TARGETS  # the targets table is what `targets` names
 
 
 def run_threads(fns):

@@ -104,8 +104,8 @@ class Loop(Node):
     reachable from the ordinary walk.
 
     A carried slot may be rank>=1: the emitter declares it as
-    ``aether::Item<T, Es...>`` (STORAGE, not an expression tree) rather than
-    ``const auto``, since a rank>=1 aether expression stores operands BY
+    an item (STORAGE, not an expression tree) rather than a deduced local,
+    since a rank>=1 expression of the language stores operands BY
     REFERENCE and would dangle once the iteration that built it ends. A
     REVERSE loop needs no flag of its own — it is the same node with its
     header run backwards (a negative ``step``), one emitter arm.
@@ -189,7 +189,7 @@ class Loop(Node):
             if len(carry.ttype.shape) > 2:
                 raise HawkError(   # pragma: no cover - no rank>2 type exists yet
                     f"Loop: carried slot {j} ({carry.name!r}) is typed "
-                    f"{carry.ttype!r}; a carried slot is one aether value with "
+                    f"{carry.ttype!r}; a carried slot is one language value with "
                     "static extents and HAWK declares none above rank 2")
         free = tuple(free)
         tail = () if count is None else (count,)

@@ -25,6 +25,7 @@ name: Release
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -59,7 +60,7 @@ jobs:
       # /tmp path that lands in every compile line, so ccache could never hit across runs
       CIBW_BUILD_FRONTEND: "build; args: --no-isolation"
       CIBW_BEFORE_BUILD: >-
-        python -m pip install 'scikit-build-core>=0.10' 'ninja>=1.5'
+        python -m pip install 'scikit-build-core>=0.10' 'setuptools-scm>=8' 'ninja>=1.5'
         'nanobind>=3.1,<4; python_version >= "3.10"'
         'nanobind>=2.2,<3; python_version < "3.10"'
       # Extra bind mounts: the sibling header trees are not inside
@@ -72,6 +73,7 @@ jobs:
       # ccache from EPEL (AlmaLinux 8); stats zeroed per run, printed before each repair
       # EPEL mirrors fail often on aarch64: retry, then run uncached through a pass-through ccache stand-in
       CIBW_BEFORE_ALL_LINUX: >-
+        git config --global --add safe.directory '*';
         for i in 1 2 3; do dnf install -y epel-release && dnf install -y ccache && break; dnf clean all; done;
         command -v ccache >/dev/null || { printf '%s\n' '#!/bin/sh' 'case $1 in -*) exit 0;; esac' 'exec "$@"' > /usr/local/bin/ccache;
         chmod +x /usr/local/bin/ccache; };
@@ -84,6 +86,10 @@ jobs:
       CIBW_TEST_SKIP: "*"
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: hawk
+          fetch-depth: 0
+      - uses: ./hawk/.github/actions/tag-version
         with:
           path: hawk
 
@@ -138,6 +144,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: hawk
+          fetch-depth: 0
+      - uses: ./hawk/.github/actions/tag-version
         with:
           path: hawk
 
@@ -217,6 +227,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: hawk
+          fetch-depth: 0
+      - uses: ./hawk/.github/actions/tag-version
+        with:
+          path: hawk
       - uses: ./hawk/.github/actions/companion
         with: {repo: aether, path: aether, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
       - uses: ./hawk/.github/actions/companion
@@ -270,9 +284,11 @@ jobs:
       - name: Import smoke (the import-time build-digest/layout self-check runs here)
         run: |
           . venv/bin/activate
-          python - <<'EOF'
+          want=$(ls dist/raptor_hawk-*.whl | head -n 1 | xargs basename | cut -d- -f2)   # every wheel carries the same version
+          python - <<EOF
           import hawk, pathlib, sys
           print("hawk", hawk.__version__, hawk.__file__)
+          assert hawk.__version__ == "$want", hawk.__version__
           assert pathlib.Path(hawk.__file__).is_relative_to(sys.prefix), hawk.__file__
           EOF
 
@@ -323,10 +339,14 @@ jobs:
         os: [ubuntu-24.04-arm, macos-14]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15", "3.13t", "3.14t", "3.15t"]
     env:
-      # macOS: Homebrew's LLVM clang (C++23-complete); Apple's clang 15 rejects -std=c++23 (Apple clang support: 0.6.5)
+      # macOS: Homebrew's LLVM clang (C++23-complete); Apple's clang 15 rejects -std=c++23 (Apple clang support: a later release)
       HAWK_CXX: ${{ matrix.os == 'macos-14' && '/opt/homebrew/opt/llvm/bin/clang++' || 'g++-13' }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: hawk
+          fetch-depth: 0
+      - uses: ./hawk/.github/actions/tag-version
         with:
           path: hawk
       - uses: ./hawk/.github/actions/companion
@@ -431,6 +451,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: hawk
+          fetch-depth: 0
+      - uses: ./hawk/.github/actions/tag-version
+        with:
+          path: hawk
 
       - uses: ./hawk/.github/actions/companion
         with: {repo: aether, path: aether, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
@@ -492,7 +516,7 @@ jobs:
           # random /tmp build env, so every compile line differs and ccache never hits;
           # --only-binary=:all: still builds this local project but never a dependency from
           # source, so no third-party sdist is ever built without its own isolated env
-          python -m pip install --quiet "scikit-build-core>=0.10" "nanobind>=3.1,<4"
+          python -m pip install --quiet "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4"
           export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
           python -m pip install --quiet --no-build-isolation --only-binary=:all: ./eagle/python
 
@@ -526,7 +550,7 @@ jobs:
       - if: always()
         run: ccache -s
 
-  # Informational: a non-release PR carries an already published version.
+  # Informational: a docs-only PR carries an already published version.
   pypi-version:
     needs: build
     runs-on: ubuntu-latest

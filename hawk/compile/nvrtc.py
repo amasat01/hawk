@@ -78,7 +78,7 @@ _CCCL_MISSING = (
 
 
 def _has_cccl(candidate: Path) -> bool:
-    return (candidate / "cuda" / "std").is_dir()
+    return (candidate / "cuda/std").is_dir()
 
 
 def _include_candidates(base: Path) -> list[Path]:
@@ -195,7 +195,7 @@ def cccl_digest(cccl_include: str | None = None) -> str:
     `cuda/std/*` file names, sizes and mtimes. Content is not read: these
     files change only when the wheel/toolkit version changes, and
     name+size+mtime already tells one install apart from another."""
-    root = Path(cccl_include or cccl_include_dir()) / "cuda" / "std"
+    root = Path(cccl_include or cccl_include_dir()) / "cuda/std"
     h = hashlib.sha256()
     for f in sorted(root.rglob("*")):
         if f.is_file():

@@ -111,7 +111,7 @@ def test_the_boundary_node_is_recorded_in_the_dag():
 
 
 def test_the_emitted_body_is_byte_identical_to_the_longhand_body():
-    """Needs the ``Primitive`` branch in ``hawk/emit/aether._Renderer._expr``,
+    """Needs the ``Primitive`` branch in ``hawk/emit/render._Renderer._expr``,
     or the boundary falls through to the op dispatch::
 
         hawk.ir.nodes.HawkError: op 'primitive' has no aether spelling at rank 0

@@ -18,6 +18,10 @@ from ..compile import digest_file
 from ..compile.cache import ClosureWatch, artifact_memo_get, validity_digest, write_atomic
 from ..compile.toolchain import host_profile as _host_profile
 from ..compile.toolchain import opt_level as _opt_level
+from ..emit.box import BOX_ENV
+from ..targets import CPU, GPU, TARGETS
+from ..targets.cards import thread_box as thread_box_card
+from ..trace.decl import Plane
 
 #: The digest stamp a published unit carries. Dot-prefixed and
 #: extension-less so it's not a member of the unit in any consumer's
@@ -115,7 +119,7 @@ def arch(device_arch: str = "") -> str:
     use (:mod:`hawk.artifact.bundle` and this module both called a function
     of this name before the resolver grew the env/probe/fallback chain).
 
-    Call only where ``"cuda"`` is actually a build target: every call may
+    Call only where a target compiles with the device toolchain: every call may
     reach the device probe, so a host-only build must never call this at
     all."""
     from ..compile.toolchain import resolve_arch
@@ -158,16 +162,19 @@ def _first_moved(pairs) -> str | None:
 
 
 # -- The unit key. ----------------------------------------------------------- #
-def _unit_key(names, walk_digests, *, targets, smode, kind, defines, cache_dir,
+def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, defines, cache_dir,
               device_arch, derivative_blocks, layout_sizes_override,
               host_profile: str = "", opt_level: str = "",
               literal_table: bool = False, embedded_profile: str = "",
-              source_digests=()) -> str:
+              source_digests=(), groups=()) -> str:
     """The per-process identity of a BUILD REQUEST: every input the
     unit's content is a function of, hashed term by term. Per kernel:
-    :attr:`hawk.ir.walk.Walk.digest` and its name. Bundle-wide: the
+    :attr:`hawk.ir.walk.Walk.digest`, its name and its declarations
+    (``declarations``, :func:`declaration_digest`: the walk omits plane
+    extents, which reach the sidecar, so one factory body built at two
+    sizes has one walk and two units). Bundle-wide: the
     target list, scalar mode, :class:`hawk.ext.Kind` (by ``repr``),
-    ``defines``, the RESOLVED arch (only when ``"cuda"`` is a target --
+    ``defines``, the RESOLVED arch (only when a target compiles for the device --
     calling the resolver at all may reach the device probe, which a
     host-only key must never pay for) and ``layout_sizes_override``; the
     ``aether_abi`` tag; ``derivative_blocks`` — the RESOLVED per-kernel
@@ -178,51 +185,69 @@ def _unit_key(names, walk_digests, *, targets, smode, kind, defines, cache_dir,
     from the wrong sample); the two header-root overrides (so re-pointing
     ``$HAWK_AETHER_INCLUDE`` mid-process never hands back a stale unit);
     the resolved host profile, so a ``portable`` build is never served the
-    ``native`` unit (``host`` targets only — the device backend ignores
+    ``native`` unit (host-compiled targets only — the device compile ignores
     it); and the resolved opt level, UNCONDITIONALLY — unlike the host
     profile, it changes the AOT nvcc device compile too (``-O<n>`` /
     ``-Xptxas -O<n>``), so an ``"O0"`` request must never be served an
     ``"O3"`` unit regardless of which targets this bundle builds; and
     ``literal_table``, which changes the device source; and
+    the thread-box inputs (``$HAWK_BOX`` and the card's ``T`` for the scalar
+    mode, :mod:`hawk.emit.box`), which change the emitted entry; and
     ``embedded_profile``, the ``repr`` of the
-    :class:`hawk.embedded.EmbeddedProfile` a ``"c"`` target renders under
+    :class:`hawk.embedded.EmbeddedProfile` an exported target renders under
     (its caps and policies reach the C text and its report; empty when
-    ``"c"`` is not a target); and, only when ``"c"`` is a target, each
+    none is a target); and, only when one is, each
     kernel's ``source_digest`` (``source_digests``, in kernel order: the C
     report and header stamp it, and two kernels sharing a walk can differ
     in source text) and ``aether_dsc.c_core.CORE_VERSION`` (the inlined
-    core functions the C unit carries).
+    core functions the C unit carries); and each kernel's compaction
+    ``group`` (``groups``, hashed only when one exceeds 1: a grouped
+    active-set map reads its index prologue differently).
 
     STATED EXPOSURE, accepted rather than closed: the key names the
     render's INPUTS, not its output, so an emitter monkeypatched between
     two builds of the same kernel is invisible to it and would be served
     the first build's unit. :func:`reset_unit_memo` is the door out."""
     h = hashlib.sha256()
-    h.update(b"hawk.artifact.unit-key/6\n")
+    h.update(b"hawk.artifact.unit-key/9\n")
+    rows = [TARGETS[t] for t in targets]
+    exported = any(row.compile is None for row in rows)
     for part in (_contracts.AETHER_ABI_VERSION, smode.id, repr(kind),
                  "\x00".join(targets), "\x00".join(str(d) for d in defines),
-                 arch(device_arch) if "cuda" in targets else "", str(cache_dir),
+                 arch(device_arch) if any(r.compile == GPU for r in rows) else "",
+                 str(cache_dir),
                  json.dumps(derivative_blocks, sort_keys=True, default=str),
                  repr(layout_sizes_override),
                  str(os.environ.get("HAWK_AETHER_INCLUDE")),
                  str(os.environ.get("HAWK_EAGLE_INCLUDE")),
                  ("host_profile:" + _host_profile(host_profile or None)
-                  if "host" in targets else ""),
+                  if any(r.compile == CPU for r in rows) else ""),
                  "opt_level:" + _opt_level(opt_level or None),
                  "literal_table" if literal_table else "",
+                 f"box:{os.environ.get(BOX_ENV)}:{thread_box_card(smode.id)['T']}",
                  ("embedded_profile:" + embedded_profile
                   if embedded_profile else ""),
                  ("source_digests:" + "\x00".join(str(d) for d in source_digests)
-                  if "c" in targets else ""),
-                 ("c_core:" + _c_core_version() if "c" in targets else "")):
+                  if exported else ""),
+                 ("c_core:" + _c_core_version() if exported else "")):
         h.update(part.encode("utf-8"))
         h.update(b"\0")
-    for name, walk_digest in zip(names, walk_digests):
-        h.update(name.encode("utf-8"))
-        h.update(b"\0")
-        h.update(str(walk_digest).encode("utf-8"))
-        h.update(b"\0")
+    if any(g > 1 for g in groups):
+        h.update(("groups:" + ",".join(map(str, groups))).encode("ascii") + b"\0")
+    if not len(names) == len(walk_digests) == len(declarations):
+        raise ValueError("unit key: names, walk digests and declarations differ in length")
+    for name, walk_digest, decl in zip(names, walk_digests, declarations):
+        h.update(f"{name}\0{walk_digest}\0{decl}\0".encode("utf-8"))
     return h.hexdigest()
+
+
+def declaration_digest(kernel) -> str:
+    """The sha256 of ``kernel``'s resolved plane declarations (extents, launch
+    shape, sortedness), by name: what its sidecar reads besides the walk."""
+    planes = getattr(kernel, "planes", None) or {}
+    return hashlib.sha256(repr(sorted(
+        (name, p) for name, p in planes.items()
+        if isinstance(p, Plane))).encode("utf-8")).hexdigest()
 
 
 def _c_core_version() -> str:

@@ -4,7 +4,7 @@
 """The authoring surface spells EVERY op the IR carries.
 
 WHY THIS ROW EXISTS. ``hawk.ir.ops.OP_KINDS`` is the vocabulary, the rule
-table is keyed on it and ``hawk/emit/aether.py`` renders it — three consumers
+table is keyed on it and ``hawk/emit/render.py`` renders it — three consumers
 that a row already checks against each other. Nobody was checking the FOURTH:
 the surface an author writes a kernel through. ``outer`` was in ``MATRIX_OPS``,
 carried a derivative rule, and rendered as ``aether::outer(...)``, but

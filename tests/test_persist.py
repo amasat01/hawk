@@ -54,9 +54,10 @@ from test_host_interchange import (
 )
 
 from hawk.artifact import build_bundle
-from hawk.emit import BACKENDS, render_source
-from hawk.emit.aether import render_lane_split
+from hawk.emit import render_source
+from hawk.emit.render import render_lane_split
 from hawk.emit.cuda import SHORT_DEVICE_STEP_OPS
+from hawk.targets import TARGETS
 
 DT = 0.01
 #: The chunk length these rows launch with unless they vary it.
@@ -313,7 +314,7 @@ def test_the_persist_loop_is_warp_converged(kernel):
     the step body holds no warp collective and no atomic: a lane whose sample
     commits is masked until the next head. The chunk length is the launch's
     ``hawk_chunk``, never a constant in the code."""
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
     body = _entry_body(text, kernel.name, "_persist")
     head, chunk, tail = _loop_parts(text, kernel.name)
@@ -340,7 +341,7 @@ def test_a_sample_is_written_back_at_the_next_head(kernel):
     trip count, not held."""
     import re
 
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
     head, chunk, _ = _loop_parts(text, kernel.name)
     split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
@@ -373,7 +374,7 @@ def test_a_value_the_trip_count_cannot_rebuild_keeps_the_commit_in_the_chunk():
         k = kn
         terminated = kn >= nstop
 
-    text = render_source(decay.name, decay.sinks, decay.walk, BACKENDS["cuda"],
+    text = render_source(decay.name, decay.sinks, decay.walk, TARGETS["cuda"],
                          kind=decay.kind, one_step=decay.one_step).text
     head, chunk, _ = _loop_parts(text, decay.name)
     assert "mut_energy[i] = " in chunk and "mut_energy[i] = " not in head
@@ -389,7 +390,7 @@ def test_only_a_light_step_unrolls_its_device_loops(kernel, light):
     unrolls neither."""
     split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
     assert (split.op_count <= SHORT_DEVICE_STEP_OPS) == light, split.op_count
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
     for suffix in ("_persist", "_range"):
         body = _entry_body(text, kernel.name, suffix)
@@ -429,12 +430,12 @@ def test_only_an_automatic_kernel_has_a_persist_entry():
     one = oscillator.step          # the single step: no fused_steps word
     for kernel, want in ((oscillator, True), (rkf78_attempt, True),
                          (oscillator_x16, False), (one, False)):
-        for backend in ("cuda", "host"):
+        for target in ("cuda", "host"):
             text = render_source(kernel.name, kernel.sinks, kernel.walk,
-                                 BACKENDS[backend], kind=kernel.kind,
+                                 TARGETS[target], kind=kernel.kind,
                                  one_step=getattr(kernel, "one_step", None)).text
             has = f"void {kernel.name}_persist(" in text
-            assert has == (want and backend == "cuda"), (kernel.name, backend)
+            assert has == (want and target == "cuda"), (kernel.name, target)
 
 
 def _entry_body(text, name, suffix):
@@ -448,7 +449,7 @@ def test_fast_entries_count_trips_in_32_bits(kernel):
     trip loop are 32-bit ``int``, never ``Int``/``long long``."""
     import re
 
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
     # the persist entry's trip budget is hawk_budget (the launch's one word),
     # the range entry's hawk_cnt
@@ -506,10 +507,10 @@ def test_the_fast_entries_count_samples_finished_on_entry():
     as the step adds one finishing in the run, so the counter -- zeroed before
     the launch -- holds the batch's finished count, and the sidecar says so."""
     from hawk.emit.cuda import entry_counts_finished
-    from hawk.emit.aether import render_lane_split
+    from hawk.emit.render import render_lane_split
 
     k = KERNELS["oscillator"]
-    text = render_source(k.name, k.sinks, k.walk, BACKENDS["cuda"],
+    text = render_source(k.name, k.sinks, k.walk, TARGETS["cuda"],
                          kind=k.kind, one_step=k.one_step).text
     for entry in ("_persist", "_range"):
         body = text.split(f"void {k.name}{entry}(", 1)[1].split("\n}\n", 1)[0]
@@ -526,7 +527,7 @@ def test_the_persist_loop_reports_its_cells_once_at_exit(kernel):
     step's finish epilogue and the on-entry count) in registers and reports
     each ONCE after the loop, warp-reduced. Nothing 64-bit is held across
     a step: the sample is a 32-bit offset from ``base``."""
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
     body = _entry_body(text, kernel.name, "_persist")
     loop, exit_ = body.rsplit("    hawk_persist_util(hawk_util, hawk_ran);", 1)
@@ -567,9 +568,9 @@ def test_the_other_entries_are_unchanged_by_the_persist_report(kernel, monkeypat
     def digest(text):
         return hashlib.sha256(text.encode()).hexdigest()
 
-    cuda = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+    cuda = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
-    host = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["host"],
+    host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
                          kind=kernel.kind, one_step=kernel.one_step).text
     for suffix in ("", "_range"):
         assert digest(_entry_body(cuda, kernel.name, suffix)) == \
@@ -610,7 +611,7 @@ def test_the_persist_entry_holds_only_what_a_step_needs(kernel):
     count, the trip count also ends the chunk (no chunk counter), and the
     step budget left says whether the lane holds a sample (no flag). The same
     rules hold for any kernel; these two are witnesses."""
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, BACKENDS["cuda"],
+    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
     body = _entry_body(text, kernel.name, "_persist")
     split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)

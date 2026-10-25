@@ -47,9 +47,9 @@ VECTOR_OPS = ("dot", "cross", "norm", "sum", "component", "component_at",
               "set_component_at", "add_at", "vec", "splat")
 #: Matrix algebra: matrix-vector, matrix-matrix, transpose, outer product.
 MATRIX_OPS = ("mv", "mm", "transpose", "outer")
-#: aether's stateless, counter-based draws: arity 2, ``(seed, counter)``,
-#: both rank-0 integer-typed, lowered to aether's
-#: ``random::detail::{uniform01,standardNormal}`` with the kernel's
+#: The language's stateless, counter-based draws: arity 2, ``(seed, counter)``,
+#: both rank-0 integer-typed, lowered to its uniform and normal generators
+#: with the kernel's
 #: flattened sample index as the stream's third coordinate. A re-drawn
 #: value re-evaluates the SAME two integers, never RNG state, so a
 #: captured graph replays by writing the wire, never recapturing.

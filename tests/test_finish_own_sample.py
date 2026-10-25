@@ -18,7 +18,8 @@ Rows:
 * **structure** — the epilogue is the last statement inside the guard, after
   every commit; non-finishing kernels never see the helper or the twin binding.
 * **oracle, host AND device** — an oscillator stepped until its counter reaches
-  ``n``: every plane bit-equal to a NumPy reference with the same stop rule, the
+  ``n``: every plane equal to a NumPy reference with the same stop rule (bit for bit on
+  the host, within a derived ULP bound on the device, whose compiler may fuse), the
   mask all set, the counter exactly ``n`` and the launch count exactly the
   longest sample's stop step. Pre-set mask entries are skipped, never counted.
 * **non-vacuity** — the same run against an epilogue with the count dropped
@@ -43,6 +44,10 @@ from hawk.ir import HawkError, canonical
 N = 40
 DT = 0.125
 MAX_LAUNCHES = 200
+#: The device contracts ``a + dt*b`` into one rounding, NumPy rounds twice: at most one rounding
+#: (half an ulp) per update, and the explicit-Euler step grows the carried error by
+#: sqrt(1 + DT^2) per step, over at most 29 steps (``_inputs``). In ulps of the plane's largest value.
+_DEVICE_ULPS = 29 * (1 + DT * DT) ** (29 / 2)
 EPILOGUE = ("if (!trm_terminated[i].eval() && (t11 >= psc_t_final[i].eval())) { "
             "trm_terminated_w[i] = true; "
             "hawk_abi::finish_count(lut_finished_count); }")
@@ -277,7 +282,11 @@ def _check(bundle, target):
     assert launches == rlaunches == int(round(t_final.max() / DT)), (
         launches, rlaunches)
     for name, ref in (("x", rx), ("v", rv), ("t", rt)):
-        np.testing.assert_array_equal(got[name], ref, err_msg=f"{target}:{name}")
+        if target == "host" or name == "t":
+            np.testing.assert_array_equal(got[name], ref, err_msg=f"{target}:{name}")
+        else:
+            err = np.abs(got[name] - ref).max()
+            assert err <= _DEVICE_ULPS * np.spacing(np.abs(ref).max()), f"{target}:{name} off by {err}"
 
 
 def test_compiled_host_finishes_counts_and_matches_the_reference(bundles):
@@ -322,7 +331,7 @@ def test_a_stop_only_kernel_finishes_and_counts(bundles, target):
 @pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
 def test_dropping_the_count_from_the_epilogue_is_caught(tmp_path, cache_dir,
                                                         monkeypatch, target):
-    from hawk.emit import aether
+    from hawk.emit import render as aether
 
     original = aether._Renderer._emit
 

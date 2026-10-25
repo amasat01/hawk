@@ -259,8 +259,8 @@ refusal has a different shape and no fix clause:
 |---|---|---|
 | `random` | a random draw lowers to aether's counter-based generator | draw in the caller and pass the values in as a plane |
 | `raw_device` | a `raw_device` block splices C++ text | spell the block with `hawk.math` |
-| `sample_reduction` | a reduction over samples (`hawk.all_samples(x).sum()`, `.max()`, ...) needs the wrapper's cross-sample fold | commit the own column and reduce in the caller |
-| `cross_sample_at` | `hawk.all_samples(x)[i]` reads another sample's value, which a partition call may not hold | pass the values the kernel needs as a `Table` plane |
+| `sample_reduction` | a reduction over lanes (`hawk.sum(x)`, `hawk.max(x)`, ...) needs the wrapper's cross-sample fold | commit the own column and reduce in the caller |
+| `cross_sample_at` | `u.at(i)` reads another lane's value, which a partition call may not hold | pass the values the kernel needs as a `Table` plane |
 | `active_set` | an active-set guard reads an index map the C entry does not take | run without the index map (the plain mask guard) |
 | `segmented` | a segmented dispatch is a per-unit split | export each branch as its own kernel |
 | `compensated` | the compensated sink policy commits a correction plane | use the plain sink policy |
@@ -385,8 +385,8 @@ Mac), a weaker row compares the C against the interpreter within a band.
 ## What is deferred
 
 Not built, and refused by name: random draws (they need aether's Philox
-generator in C), reductions over samples and cross-sample reads
-(`hawk.all_samples`), active-set guards, segmented units, the
+generator in C), reductions over lanes (`hawk.sum`), cross-lane
+reads (`.at`), active-set guards, segmented units, the
 compensated sink policy, fused lanes and automatic (two-path) kernels.
 Nothing is threaded: scattered accumulates are plain `+=`. The scalar
 reference functions (every fold, product and component-wise operation) come

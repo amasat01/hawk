@@ -18,6 +18,8 @@ compiler raises and names the variable that would fix it.
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
 import platform
 import re
@@ -93,15 +95,14 @@ _DRIVER_LIBRARIES_DEFAULT = ("libcuda.so.1", "libcuda.so")
 _CC_MAJOR, _CC_MINOR = 75, 76
 
 
-def _driver_device_arch(device_index: int | None = None) -> str | None:
+def _driver_device_arch() -> str | None:
     """The running GPU's ``sm_XX`` read from the CUDA driver library itself
     (through :mod:`ctypes`), or ``None`` when no driver or device is there:
     the probe for an environment without cuda-bindings. The driver is present
     wherever a kernel can run at all, so this needs no Python package.
 
-    ``device_index=None`` reads the CURRENT context's device
-    (``cuCtxGetDevice``), falling back to ordinal 0 when no context is
-    current; an explicit index reads that ordinal."""
+    Reads the CURRENT context's device (``cuCtxGetDevice``), falling back to
+    ordinal 0 when no context is current."""
     import ctypes
 
     lib = None
@@ -114,8 +115,8 @@ def _driver_device_arch(device_index: int | None = None) -> str | None:
     if lib is None or lib.cuInit(0) != 0:
         return None
     dev, major, minor = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
-    if device_index is not None or lib.cuCtxGetDevice(ctypes.byref(dev)) != 0:
-        if lib.cuDeviceGet(ctypes.byref(dev), device_index or 0) != 0:
+    if lib.cuCtxGetDevice(ctypes.byref(dev)) != 0:
+        if lib.cuDeviceGet(ctypes.byref(dev), 0) != 0:
             return None
     if (lib.cuDeviceGetAttribute(ctypes.byref(major), _CC_MAJOR, dev) != 0
             or lib.cuDeviceGetAttribute(ctypes.byref(minor), _CC_MINOR, dev) != 0):
@@ -267,7 +268,7 @@ def resolve_arch(device_arch: str = "") -> str:
     against the device toolkit's supported archs, and a PTX-only
     ``compute_<min>`` when no GPU is reachable (:func:`resolve_device_arch`).
 
-    Call this only where ``"cuda"`` is actually a build target: every call
+    Call this only where a target compiles with the device toolchain: every call
     may reach the device probe, so a host-only build must never call it at
     all (:mod:`hawk.artifact.bundle`/:mod:`hawk.artifact.unit_cache` gate it
     on ``targets`` before calling)."""
@@ -402,6 +403,26 @@ def include_flags(*, aether_root: str | None = None,
     return ["-I", resolved_aether, "-I", resolved_eagle]
 
 
+#: The way out of a missing or unsuitable host compiler.
+_NO_COMPILER_FIX = ("install g++ 11+ (apt install g++ / brew install llvm) or set "
+                    "HAWK_CXX=/path/to/c++")
+
+
+def compile_hint(cache_dir: Path | str | None = None) -> str:
+    """The tail every compile error ends with: where the build lives and how
+    to pick another compiler."""
+    return (f"\nbuild directory: {cache_dir or default_cache_dir()}; "
+            "another host compiler: set HAWK_CXX=/path/to/c++")
+
+
+def announce_build(kernel: str, target: str, cache_dir: Path | str | None = None) -> None:
+    """The one INFO line (logger ``hawk``) a first build of ``kernel`` for
+    ``target`` logs; silent unless the application enables INFO."""
+    logging.getLogger("hawk").info(
+        "building %s (%s) in %s — delete the directory to rebuild",
+        kernel, target, cache_dir or default_cache_dir())
+
+
 def host_compiler() -> str:
     """The host compiler, in discovery order: ``$HAWK_CXX`` when set (an
     explicit override: unresolvable raises), else the standard ``$CXX`` (its
@@ -421,7 +442,8 @@ def host_compiler() -> str:
     if cxx:
         found = shutil.which(cxx)
         if not found:
-            raise HawkError(f"$HAWK_CXX={cxx!r} not found on PATH.")
+            raise HawkError(f"$HAWK_CXX={cxx!r} not found on PATH; "
+                            + _NO_COMPILER_FIX)
         return found
     std_cxx = os.environ.get("CXX", "")
     words = std_cxx.split()
@@ -454,8 +476,8 @@ def _zig_cxx_wrapper(tried_cxx: str = "") -> str:
             "no host compiler found. Tried, in order: $HAWK_CXX (unset), "
             f"$CXX ({tried_cxx!r}, "
             f"{'did not resolve on PATH' if tried_cxx else 'unset'}), "
-            "g++ on PATH (absent), the ziglang wheel (not installed). Set "
-            "$HAWK_CXX or $CXX, install g++, or `pip install ziglang`. "
+            "g++ on PATH (absent), the ziglang wheel (not installed): "
+            + _NO_COMPILER_FIX + " ($CXX and `pip install ziglang` also work). "
             "A skipped compile certifies nothing.") from None
     zig_bin = Path(ziglang.__file__).resolve().parent / "zig"
     if not zig_bin.is_file():
@@ -476,7 +498,7 @@ def _zig_cxx_wrapper(tried_cxx: str = "") -> str:
 
 
 def device_compiler_kind() -> str:
-    """``"nvcc"`` or ``"nvrtc"`` — which compiles the device backend.
+    """``"nvcc"`` or ``"nvrtc"`` — which compiles the device target.
 
     ``nvcc`` when found on ``PATH``/``$HAWK_NVCC`` (the developer/CI tree),
     else ``nvrtc``, the shipped Python tier's in-memory device compile
@@ -638,6 +660,97 @@ def compiler_macros(compiler: str) -> dict:
         macros = {}
     with _MACRO_LOCK:
         return _MACRO_MEMO.setdefault(compiler, macros)
+
+
+#: The system headers whose C declarations an emitted entry must not collide with,
+#: added to the emitted unit's own includes when the list is derived.
+_SYSTEM_HEADERS = ("cstdlib", "cstdio", "cstring", "cmath", "unistd.h")
+
+_C_CALL_NAME = re.compile(r"[A-Za-z_]\w*(?=\s*\()")
+_C_NOISE = re.compile(r"\b(?:__attribute__|__asm__|__asm|asm|__extension__|__THROW)\b")
+
+
+def _c_declared_names(text: str) -> set[str]:
+    """The function names declared inside the ``extern "C" { ... }`` blocks of
+    preprocessed C++ ``text``."""
+    names: set[str] = set()
+    for block in re.finditer(r'extern\s+"C"\s*\{', text):
+        depth, start, i = 1, block.end(), block.end()
+        while i < len(text) and depth:
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            elif ch == ";" and depth == 1:
+                names.update(_declared_name(text[start:i]))
+                start = i + 1
+            i += 1
+    return names
+
+
+def _declared_name(stmt: str) -> list[str]:
+    """The function a one-statement declaration declares, as a 0- or 1-item list."""
+    if "{" in stmt or re.search(r"\b(?:typedef|struct|union|enum|class)\b", stmt):
+        return []
+    stmt = re.sub(r"\(\s*([A-Za-z_]\w*)\s*\)(?=\s*\()", r"\1", stmt)    # (name)(args)
+    while True:                              # drop attribute / asm label groups, innermost first
+        cut = _C_NOISE.search(stmt)
+        if cut is None:
+            break
+        depth, j = 0, stmt.find("(", cut.end())
+        if j < 0:
+            stmt = stmt[:cut.start()] + stmt[cut.end():]
+            continue
+        k = j
+        while k < len(stmt):
+            depth += (stmt[k] == "(") - (stmt[k] == ")")
+            k += 1
+            if depth == 0:
+                break
+        stmt = stmt[:cut.start()] + stmt[k:]
+    call = _C_CALL_NAME.search(stmt)
+    return [call.group()] if call is not None else []
+
+
+_LIBC_MEMO: list = []
+
+
+def libc_symbols() -> frozenset[str]:
+    """The C function names the emitted unit's own headers (and the system C
+    headers) declare with C linkage: names a kernel's entry must not take, since
+    its ``extern "C"`` entry would redeclare them. Derived by preprocessing the
+    unit's includes with the host compiler, once per compiler and header set,
+    and kept as ``libc-symbols-<key>.json`` under :func:`default_cache_dir`.
+    Empty when no host compiler can preprocess them."""
+    if _LIBC_MEMO:
+        return _LIBC_MEMO[0]
+    from ..emit.wrapper import _INCLUDES
+
+    names: frozenset[str] = frozenset()
+    try:
+        compiler = host_compiler()
+        probe = _INCLUDES + "".join(f"#include <{h}>\n" for h in _SYSTEM_HEADERS)
+        flags = include_flags()
+        key = hashlib.sha256("\0".join(
+            [compiler_identity(compiler), probe, *flags]).encode()).hexdigest()[:16]
+        path = default_cache_dir() / f"libc-symbols-{key}.json"
+        try:
+            names = frozenset(json.loads(path.read_text()))
+        except (OSError, ValueError):
+            run = subprocess.run([compiler, "-E", "-P", "-x", "c++", f"-std={HOST_STD}", "-DAETHER_CPP_MODE", *flags, "-"],
+                                 input=probe, capture_output=True, text=True, timeout=120,
+                                 check=False)
+            if run.returncode == 0:
+                names = frozenset(_c_declared_names(run.stdout))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(f".{os.getpid()}.tmp")
+                tmp.write_text(json.dumps(sorted(names)))
+                os.replace(tmp, path)
+    except (HawkError, OSError, subprocess.SubprocessError):
+        return names
+    _LIBC_MEMO.append(names)
+    return names
 
 
 def gcc_maskcall_affected(macros: dict) -> bool:
@@ -840,7 +953,7 @@ def device_flags(*, arch: str = "", target: str = "ptx", extra=(),
     ``arch`` is resolved through :func:`resolve_arch`: an explicit value is
     checked against the toolkit's supported archs, and an empty one falls to
     ``$HAWK_CUDA_ARCH``/the running GPU/the toolkit's minimum -- this
-    function is reached only for the ``cuda`` backend, so that chain
+    function is reached only for a device-compiled target, so that chain
     (including its device probe) is always in scope here. A virtual
     ``compute_<N>`` arch has no CUBIN and refuses ``target="cubin"``."""
     if target not in ("ptx", "cubin"):

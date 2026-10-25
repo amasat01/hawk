@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 
 import numpy as np
+import pytest
 
 import hawk
 import hawk.math as M
@@ -268,3 +269,223 @@ def test_the_all_but_one_hoist_refuses_an_integer_division():
     before, after = _split_before_after_switch(render_body(sinks, canonical(sinks)).text)
     assert "int_floordiv" not in "\n".join(before)
     assert "int_floordiv" in "\n".join(after)
+
+
+# --------------------------------------------------------------------------- #
+# 9. A switch inside a loop body is scoped like one outside it.
+# --------------------------------------------------------------------------- #
+def _twice(v, x):
+    """``v`` read twice, so the renderer names it."""
+    return v * x + v
+
+
+@hawk.kernel
+def _dk_switch_in_loop(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+    acc = 0.0
+    for t in range(4):
+        xv = x + 0.25 * t
+        acc = acc + M.dispatch(k, [_twice(M.exp(xv), xv), _twice(M.log(xv * xv + 1.0), xv), xv],
+                               policy="switch")
+    y = acc
+
+
+def _loop_body(text: str) -> str:
+    return text[text.index("for ("):]
+
+
+def test_a_switch_in_a_loop_body_keeps_its_math_in_its_cases():
+    sinks = _dk_switch_in_loop.sinks
+    body = _loop_body(render_body(sinks, canonical(sinks)).text)
+    before, after = body.split("switch (", 1)
+    assert "aether::math::exp(" not in before and "aether::math::log(" not in before
+    assert "aether::math::exp(" in after and "aether::math::log(" in after
+
+
+def test_a_switch_in_a_loop_body_matches_numpy_on_the_host(tmp_path_factory, cache_dir):
+    import _oracle as O
+    from conftest import sidecar_of
+
+    from hawk.artifact import build_bundle
+
+    root = tmp_path_factory.mktemp("hawk_disp_loop")
+    bundle = build_bundle([_dk_switch_in_loop], root, targets=("host",), cache_dir=cache_dir)
+    n = 48
+    rng = np.random.default_rng(20261025)
+    kind = rng.integers(0, 3, size=n).astype(np.int64)
+    x = rng.uniform(0.1, 0.9, n)
+    got = np.asarray(O.run(bundle.directory, "_dk_switch_in_loop", n,
+                           sidecar_of(bundle, "_dk_switch_in_loop"),
+                           k=kind, x=x, y=np.zeros(n, dtype=np.float64)))
+    want = np.zeros(n)
+    for t in range(4):
+        xv = x + 0.25 * t
+        want += np.choose(kind, [np.exp(xv) * xv + np.exp(xv),
+                                 np.log(xv * xv + 1.0) * xv + np.log(xv * xv + 1.0), xv])
+    np.testing.assert_allclose(got, want, rtol=1e-14, atol=0.0)
+
+
+# --------------------------------------------------------------------------- #
+# 10. A traced if/elif chain that would run every arm's costly work lowers as a
+#     switch; one whose costly work inlines into `?:` stays a select.
+# --------------------------------------------------------------------------- #
+@hawk.kernel
+def _dk_ladder(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar],
+               z: hawk.Mutable[hawk.Scalar], w: hawk.Mutable[hawk.Scalar]):
+    v = 0.0
+    if k == 0:
+        v = _twice(M.exp(x), x)
+    elif k == 1:
+        v = _twice(M.log(x * x + 1.0), x)
+    else:
+        v = _twice(M.tanh(x), x)
+    y = v
+    u = 0.0                                  # no `else`: k == 0 keeps the zero
+    if k == 1:
+        u = _twice(M.sin(x), x)
+    elif k == 2:
+        u = _twice(M.cos(x), x)
+    z = u
+    if x > 0.5:                              # not an equality on a kind
+        s = _twice(M.exp(-x), x)
+    else:
+        s = _twice(M.sqrt(x) / (x + 1.0), x)
+    w = s
+
+
+@hawk.kernel
+def _dk_ladder_explicit(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar],
+                        z: hawk.Mutable[hawk.Scalar], w: hawk.Mutable[hawk.Scalar]):
+    y = M.dispatch(k, [_twice(M.exp(x), x), _twice(M.log(x * x + 1.0), x),
+                       _twice(M.tanh(x), x)], policy="switch")
+    z = M.dispatch(k, [0.0, _twice(M.sin(x), x), _twice(M.cos(x), x)], policy="switch")
+    w = M.dispatch(M.int32(M.where(x > 0.5, 0.0, 1.0)),
+                   [_twice(M.exp(-x), x), _twice(M.sqrt(x) / (x + 1.0), x)], policy="switch")
+
+
+@hawk.kernel
+def _dk_ladder_vector(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Vector[2]]):
+    v = M.vec(0.0, 0.0)
+    if k == 0:
+        v = M.vec(M.exp(x), 1.0)
+    elif k == 1:
+        v = M.vec(M.log(x + 1.0), 2.0)
+    else:
+        v = M.vec(M.tanh(x), 3.0)
+    y = v
+
+
+@hawk.kernel
+def _dk_ladder_lazy(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+    v = 0.0
+    if k == 0:
+        v = M.exp(x) * x
+    elif k == 1:
+        v = M.log(x * x + 1.0) + x
+    else:
+        v = M.tanh(x)
+    y = v
+
+
+def _text(kernel) -> str:
+    return render_body(kernel.sinks, canonical(kernel.sinks)).text
+
+
+def test_a_costly_ladder_renders_one_switch_per_chain():
+    text = _text(_dk_ladder)
+    assert text.count("switch (") == 3
+    head = text[:text.index("switch (")]
+    assert "aether::math::" not in head
+    assert [d.policy for d in _dk_ladder.walk.dispatches] == ["switch"] * 3
+
+
+def test_a_vector_ladder_renders_one_switch():
+    text = _text(_dk_ladder_vector)
+    assert text.count("switch (") == 1
+    assert "aether::select(" not in text
+    assert "aether::math::" not in text[:text.index("switch (")]
+
+
+def test_a_lazy_ladder_stays_a_select():
+    text = _text(_dk_ladder_lazy)
+    assert "switch (" not in text and " ? " in text
+    assert not _dk_ladder_lazy.walk.dispatches
+
+
+def _ladder_inputs(n: int):
+    rng = np.random.default_rng(20261026)
+    return rng.integers(0, 3, size=n).astype(np.int64), rng.uniform(0.05, 0.95, n)
+
+
+def test_a_ladder_equals_its_explicit_dispatch_on_the_host(tmp_path_factory, cache_dir):
+    import _oracle as O
+    from conftest import sidecar_of
+
+    from hawk.artifact import build_bundle
+
+    root = tmp_path_factory.mktemp("hawk_ladder_host")
+    bundle = build_bundle([_dk_ladder, _dk_ladder_explicit], root, targets=("host",),
+                          cache_dir=cache_dir)
+    n = 64
+    kind, x = _ladder_inputs(n)
+    outs = []
+    for name in ("_dk_ladder", "_dk_ladder_explicit"):
+        planes = {p: np.zeros(n) for p in ("y", "z", "w")}
+        O.run(bundle.directory, name, n, sidecar_of(bundle, name), k=kind, x=x, **planes)
+        outs.append(planes)
+    for p in ("y", "z", "w"):
+        np.testing.assert_array_equal(outs[0][p], outs[1][p])
+    assert np.all(outs[0]["z"][kind == 0] == 0.0)
+
+
+@pytest.mark.gpu
+def test_a_ladder_equals_its_explicit_dispatch_on_the_device(tmp_path_factory, cache_dir):
+    import cupy as cp
+    import eagle.exec as eexec
+    from _deploy import device_plugin
+    from conftest import sidecar_of
+    from eagle import plan as eplan
+
+    from hawk.artifact import build_bundle
+
+    root = tmp_path_factory.mktemp("hawk_ladder_cuda")
+    bundle = build_bundle([_dk_ladder, _dk_ladder_explicit], root, targets=("cuda",),
+                          cache_dir=cache_dir)
+    n = 256
+    kind, x = _ladder_inputs(n)
+    outs = []
+    for name in ("_dk_ladder", "_dk_ladder_explicit"):
+        plugin = device_plugin(bundle.directory, name, sidecar_of(bundle, name))
+        planes = {p: cp.zeros(n) for p in ("y", "z", "w")}
+        eplan.plan(plugin, structure=eexec.DeviceKernel, npartitions=1).run(
+            k=cp.asarray(kind), x=cp.asarray(x), **planes)
+        outs.append({p: v.get() for p, v in planes.items()})
+    for p in ("y", "z", "w"):
+        np.testing.assert_array_equal(outs[0][p], outs[1][p])
+
+
+def test_the_reverse_of_a_ladder_is_scoped_and_matches_a_finite_difference():
+    from _eval import evaluate
+
+    from hawk.diff import vjp
+
+    @hawk.kernel
+    def ladder(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+        v = 0.0
+        if k == 0:
+            v = _twice(M.exp(x), x)
+        elif k == 1:
+            v = _twice(M.log(x * x + 1.0), x)
+        else:
+            v = _twice(M.tanh(x), x)
+        y = v
+
+    derived = vjp(ladder.sinks)
+    text = render_body(derived, canonical(derived)).text
+    assert "aether::math::" not in text[:text.index("switch (")]
+    h = 1e-6
+    for kind in range(3):
+        for x in (0.3, 0.7):
+            got = evaluate(derived, {"k": kind, "x": x, "bar_y": 1.0})["bar_x"]
+            plus = evaluate(ladder.sinks, {"k": kind, "x": x + h})["y"]
+            minus = evaluate(ladder.sinks, {"k": kind, "x": x - h})["y"]
+            assert abs(got - (plus - minus) / (2 * h)) <= 1e-7 * max(1.0, abs(got))

@@ -54,7 +54,7 @@ nobody could emit. It is checked here beside the first half because it is the
 same question (how does a rank>=1 value reach a rank-0 aether result) and the
 same fix site.
 
-This test previously failed: restoring ``hawk/emit/aether.py`` to an
+This test previously failed: restoring ``hawk/emit/render.py`` to an
 earlier state under this row gave **77 failed, 42 passed**.
 
   * the NUMERIC row failed on 28 cases — every fan-out-1 case of ``norm``,
@@ -101,7 +101,7 @@ from _eval import evaluate
 from hawk.artifact import build
 from hawk.diff import vjp
 from hawk.emit import render_body
-from hawk.emit.aether import mirror_of
+from hawk.emit.render import mirror_of
 from hawk.ir import Assign, HawkError, Leaf, canonical
 from hawk.ir import make as mk
 from hawk.ir.ops import OP_KINDS
@@ -504,7 +504,7 @@ def test_wide_readonly_leaf_is_read_through_the_proxy(tmp_path, monkeypatch):
     """INTERIM wide-leaf rule: > LAZY_LEAF_WIDTH elements, read only by static
     ``component`` => no ``.get()``, proxy reads, bits equal to the whole-leaf emit;
     a narrow leaf, or a wide one also used whole, keeps today's text."""
-    import hawk.emit.aether as A
+    import hawk.emit.render as A
 
     wide, wide_text = _host_run(144, tmp_path / "w", tmp_path / "c1")
     assert ".get()" not in wide_text and "vin_p_i = vin_p[i];" in wide_text

@@ -3,12 +3,12 @@
 
 """Reductions and named axes on traced values.
 
-A value is ONE sample's, so ``x.sum(axis=...)`` folds the value's own axes:
-the components of a vector, the rows or columns of a matrix. The samples
-axis is reached through ``hawk.all_samples(x)``, whose ``.sum() / .max() /
-.min() / .mean()`` give a reduction over every sample that is stored to a
-``Mutable`` output (a cell). The labelled views ``.components``, ``.rows`` and
-``.columns`` read a component, a row or a column by name.
+A value is ONE lane's, so ``x.sum(axis=...)`` folds the value's own axes:
+the components of a vector, the rows or columns of a matrix. Across lanes there
+are two doors: ``hawk.sum/max/min/mean(x, over=, where=, policy=)`` reduces over
+lane axes, and ``hawk.scatter(sink)[key] += v`` adds into a sink by key (another
+lane's input is read with ``u.at(i)``). The labelled views ``.components``,
+``.rows`` and ``.columns`` read a component, a row or a column by name.
 """
 
 from __future__ import annotations
@@ -17,9 +17,8 @@ from typing import Any
 
 from ..ir import HawkError
 from ..ir import make as _make
-from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from ..ir.nodes import At, Leaf, Node, ReduceSamples, extent_of
-from .value import Value, _operands, index_node, node_of, real, select, vec
+from ..ir.nodes import POLICIES, SCATTER_POLICIES, Leaf, ReduceSamples
+from .value import Value, _operands, index_node, n_samples, node_of, real, select, vec
 
 
 def _axis(value: Value, axis: Any, op: str):
@@ -27,14 +26,14 @@ def _axis(value: Value, axis: Any, op: str):
     rank = len(value.ttype.shape)
     if rank == 0:
         raise HawkError(
-            f"x.{op}(): a rank-0 value is this sample's and has no axis to fold; "
-            f"the reduction over samples is hawk.all_samples(x).{op}()")
+            f"x.{op}(): a rank-0 value is this lane's and has no axis to fold; "
+            f"the {op} over the lanes is hawk.{op}(x)")
     if axis is None:
         return None
     if axis == "samples":
         raise HawkError(
-            f"axis='samples' on a value of one sample: the {op} over samples is "
-            f"hawk.all_samples(x).{op}()")
+            f"x.{op}(axis='samples') is gone: the {op} over every lane is "
+            f"hawk.{op}(x), over some lane axes hawk.{op}(x, over=...)")
     if axis == "components" and rank == 1:
         return 0
     if axis == "rows" and rank == 2:
@@ -46,7 +45,7 @@ def _axis(value: Value, axis: Any, op: str):
     own = "0 or 'components'" if rank == 1 else "0 / 'rows', 1 / 'columns'"
     raise HawkError(
         f"x.{op}(axis={axis!r}): a rank-{rank} value has the axes {own} "
-        "(the samples axis is hawk.all_samples(x))")
+        "(the lane axes are reduced by hawk.sum(x, over=...))")
 
 
 def _entry(value: Value, index: tuple) -> Value:
@@ -137,64 +136,13 @@ def view(value: Value, axis: str) -> _View:
     return _View(value, axis)
 
 
-from ..types import INT_PLANE_DTYPES
-
-_INDEX_DTYPES = ("i32", "i64") + tuple(INT_PLANE_DTYPES)
-_GATHER_ROLES = ("per_sample", "vec_in", "mat_in")
-
-_BARE = ("'hawk.all_samples(x)' is every sample; compute per sample first "
-         "(hawk.all_samples(x * 2)), then index, mask or reduce it")
-_MASKED = ("a masked view has no fixed length; reduce it "
-           "(hawk.all_samples(x)[mask].sum()) or store through it "
-           "(hawk.all_samples(y)[mask] = v)")
+_MASK_STORE = ("a mask is not a key: a masked store keeps the old value where the "
+               "mask is false, y = m.where(mask, v, y)")
 
 
-def _identity(op: str, like: Value) -> Value:
-    """The identity of ``op`` as a value broadcast against ``like``."""
+def _identity(op: str) -> Value:
+    """The identity of ``op``."""
     return real({"sum": 0.0, "max": float("-inf"), "min": float("inf")}[op])
-
-
-def _as_float(v: Value) -> Value:
-    """A bool term (a count's mask) as 1.0 / 0.0."""
-    return select(v, real(1.0), real(0.0)) if v.ttype.dtype == "bool" else v
-
-
-def _reread(value: Value, index: Node) -> Value:
-    """``value`` as sample ``index`` computed it: every per-sample input read
-    at ``index`` (pure recompute, no plane). Refused by name when the
-    subtree reads something that exists only for this sample."""
-    from ..ir.nodes import SampleIndex
-    from ..ir.walk import substitute
-
-    mapping: dict = {}
-    stack, seen = [value.node], set()
-    while stack:
-        node = stack.pop()
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        why = None
-        if isinstance(node, Leaf):
-            if node.role in _GATHER_ROLES:
-                mapping[id(node)] = At(node, index, node.ttype)
-            elif node.kind == "prior_read":
-                why = node.name
-            elif node.role == "terminated":
-                why = node.name
-        elif isinstance(node, SampleIndex):
-            mapping[id(node)] = index
-        elif isinstance(node, At) and node.plane.role in _GATHER_ROLES:
-            why = f"another sample's {node.plane.name!r}"
-        elif getattr(node, "kind", "").startswith("random"):
-            why = "a random draw"
-        elif isinstance(node, (LoopCarry, LoopValue, LoopIndex, Loop)):
-            why = "a loop-carried value"
-        if why is not None:
-            raise HawkError(
-                f"'hawk.all_samples(expr)[i]' re-reads expr at sample i, but expr "
-                f"reads {why}, which exists only for this sample")
-        stack.extend(node.operands)
-    return Value(substitute([value.node], mapping)[0])
 
 
 def _own_view(value: Value, axis: str, k: Any) -> Value:
@@ -217,184 +165,184 @@ def _own_view(value: Value, axis: str, k: Any) -> Value:
     return vec(*out)
 
 
-class _AllView:
-    """``hawk.all_samples(m).rows`` / ``.columns`` / ``.components``."""
-
-    __slots__ = ("value", "axis")
-
-    def __init__(self, value: Value, axis: str) -> None:
-        self.value = value
-        self.axis = axis
-
-    def __getitem__(self, k: Any) -> AllSamples:
-        return AllSamples(_own_view(self.value, self.axis, k))
+def _policy(policy: Any, where: str, allowed: tuple = POLICIES) -> str:
+    if policy not in allowed:
+        raise HawkError(f"{where}: policy={policy!r} is not one of {allowed}")
+    return policy
 
 
-class AllSamples:
-    """``hawk.all_samples(x)``: every sample's ``x``. It is indexed (``[i]``),
-    masked (``[mask]``), sliced to a component (``[:, k]``), reduced
-    (``.sum()``) or stored through (``all_samples(y)[key] += t``); it is
-    never arithmetic and never stored whole."""
+def _term(value: Any, where: str) -> Value:
+    """``value`` as the floating term a reduction or a scatter adds (a bool
+    counts 1 / 0)."""
+    from .value import _SinkRef
 
-    __slots__ = ("value",)
-
-    def __init__(self, value: Value) -> None:
-        self.value = value
-
-    def _hawk_refuse(self, *_: Any) -> Any:
-        raise HawkError(_BARE)
-
-    __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = _hawk_refuse
-    __truediv__ = __rtruediv__ = __neg__ = __pow__ = _hawk_refuse
-
-    @property
-    def components(self) -> _AllView:
-        return _AllView(self.value, view(self.value, "components").axis)
-
-    @property
-    def rows(self) -> _AllView:
-        return _AllView(self.value, view(self.value, "rows").axis)
-
-    @property
-    def columns(self) -> _AllView:
-        return _AllView(self.value, view(self.value, "columns").axis)
-
-    def __getattr__(self, name: str) -> Any:
-        if name in ("batch", "samples"):
-            raise HawkError("the samples axis is read through hawk.all_samples(v)[i]")
-        raise AttributeError(name)
-
-    def __getitem__(self, k: Any) -> Any:
-        v = self.value
-        if isinstance(k, tuple):
-            if not (k and isinstance(k[0], slice) and k[0] == slice(None)
-                    and len(k) - 1 == len(v.ttype.shape) and len(k) > 1):
-                raise HawkError(
-                    "hawk.all_samples(v)[:, k] takes every sample (':') then one "
-                    "static index per axis of v")
-            return AllSamples(v[k[1]] if len(k) == 2 else _entry(v, tuple(k[1:])))
-        if isinstance(k, Value) and k.ttype.dtype == "bool":
-            if v.ttype.dtype == "bool":
-                raise HawkError(
-                    "a mask of a mask: hawk.all_samples(x > 0)[mask] is refused; "
-                    "combine the conditions (land) and mask the value once")
-            return Masked(v, k)
-        if isinstance(k, (slice, bool)) or k is Ellipsis:
-            raise HawkError(
-                "hawk.all_samples(x)[i] takes an Index or integer value, or a "
-                "bool mask; slices beyond [:, k] are not in this release")
-        idx = index_node(k)
-        if idx.ttype.shape != () or idx.ttype.dtype not in _INDEX_DTYPES:
-            raise HawkError(
-                f"hawk.all_samples(x)[i]: i must be an integer value, got {idx.ttype!r}")
-        node = v.node
-        if isinstance(node, Leaf) and node.kind == "prior_read":
-            raise HawkError(
-                f"{node.name!r} is written by this launch; another sample's value is "
-                "not defined here — stage it (Staged) or pass it as an input")
-        if isinstance(node, Leaf) and node.role in _GATHER_ROLES:
-            return Value(At(node, idx, node.ttype))
-        return _reread(v, idx)
-
-    def __setitem__(self, k: Any, v: Any) -> None:     # pragma: no cover
-        raise HawkError("a store through hawk.all_samples(y)[key] is written as a "
-                        "statement of the kernel body, on a Mutable output")
-
-    def _reduce(self, op: str, axis: Any) -> Value:
-        return _cut(self.value, op, axis)
-
-    def sum(self, axis: Any = None) -> Value:
-        """The sum over every sample."""
-        return self._reduce("sum", axis)
-
-    def max(self, axis: Any = None) -> Value:
-        """The maximum over every sample (NaN-ignoring, exact)."""
-        return self._reduce("max", axis)
-
-    def min(self, axis: Any = None) -> Value:
-        """The minimum over every sample (NaN-ignoring, exact)."""
-        return self._reduce("min", axis)
-
-    def mean(self, axis: Any = None) -> Value:
-        """The mean over every sample: the sum of each sample's term over
-        ``n_samples()``."""
-        return self._reduce("mean", axis)
-
-
-def _cut(value: Value, op: str, axis: Any, mask: Value | None = None) -> Value:
-    """The reduction of ``value`` over samples (and over the own axes ``axis``
-    names beside ``"samples"``), as the transient value a store turns into
-    cells."""
-    own = ()
-    if isinstance(axis, tuple):
-        if not any(a in ("samples", 0) for a in axis):
-            raise HawkError(f"all_samples(x).{op}(axis={axis!r}): name 'samples' too")
-        own = tuple(a for a in axis if a not in ("samples", 0))
-        axis = "samples"
-    if axis not in (None, 0, "samples"):
-        raise HawkError(
-            f"hawk.all_samples(x).{op}(axis={axis!r}): the view has the axis "
-            "'samples' (or 0), plus the value's own named axes in a tuple")
-    value = _as_float(value)
+    if isinstance(value, (Reduced, _SinkRef)):
+        raise HawkError(f"{where}: the term is a value of this lane, got the output "
+                        f"{getattr(value, 'name', 'of a reduction')!r}")
+    if not isinstance(value, Value):
+        value = Value(node_of(value))
+    if value.ttype.dtype == "bool":
+        value = select(value, real(1.0), real(0.0))
     if value.ttype.dtype not in ("f64", "f32"):
-        raise HawkError(f"hawk.all_samples(x).{op}(): a float or bool value, "
-                        f"got {value.ttype!r}")
-    for a in own:
-        value = reduce_own(value, op, a)
-    if axis is None and value.ttype.shape:
-        value = reduce_own(value, op)
+        raise HawkError(f"{where}: a float or bool value is reduced, got {value.ttype!r}")
+    return value
+
+
+def _reduced_axes(over: Any, axes: tuple, where: str) -> tuple:
+    """The positions of the lane axes ``over`` names (``None``: every axis)."""
+    n = len(axes)
+    if over is None:
+        return tuple(range(n))
+    labels = [label for label, _ in axes]
+    out = []
+    for a in over if isinstance(over, tuple) else (over,):
+        if isinstance(a, str):
+            if a not in labels:
+                raise HawkError(
+                    f"{where}: over={a!r} names no lane axis; "
+                    + (f"this kernel's Grid declares {labels}" if labels[0] is not None
+                       else "the kernel declares no Grid[...], so its one axis is over=0"))
+            out.append(labels.index(a))
+        elif isinstance(a, int) and not isinstance(a, bool) and -n <= a < n:
+            out.append(a % n)
+        else:
+            raise HawkError(f"{where}: over= takes lane axis labels or positions "
+                            f"(0 the slowest, -1 the fastest of {n}), got {a!r}")
+    if len(set(out)) != len(out):
+        raise HawkError(f"{where}: over={over!r} names an axis twice")
+    return tuple(sorted(out))
+
+
+def _extent(axes: tuple, i: int) -> Any:
+    """The extent of lane axis ``i``: its declared number, or the runtime one
+    read off the lane count."""
+    if axes[i][1] is not None:
+        return axes[i][1]
+    rest = 1
+    for _label, extent in axes[1:]:
+        rest *= extent
+    return n_samples() / rest if rest != 1 else n_samples()
+
+
+def _product(items: list) -> Any:
+    out: Any = 1
+    for item in items:
+        out = item if isinstance(out, int) and out == 1 else out * item
+    return out
+
+
+def _reduce(op: str, x: Any, over: Any, where_mask: Any, policy: Any) -> Any:
+    from .lane_axes import LaneAxes, _trace
+
+    call = f"hawk.{op}(x, over={over!r})" if over is not None else f"hawk.{op}(x)"
+    policy = _policy(policy, call)
+    value = _term(x, call)
+    axes = getattr(_trace, "axes", ((None, None),))
+    gone = _reduced_axes(over, axes, call)
+    kept = tuple(i for i in range(len(axes)) if i not in gone)
     base = "sum" if op == "mean" else op
-    if mask is not None:
+    if kept and base != "sum":
+        raise HawkError(
+            f"{call}: a {op} over some of the lane axes is in the next release; "
+            f"hawk.{op}(x) (one value for the run) and hawk.sum/mean(x, over=...) "
+            "work now")
+    if kept and policy == "ordered":
+        raise HawkError(
+            f"{call}: policy='ordered' over some of the lane axes is in the next "
+            "release; use policy='auto' or 'compensated' here (hawk.sum(x, "
+            "policy='ordered') over every axis is ordered now)")
+    if where_mask is not None:
+        mask = where_mask if isinstance(where_mask, Value) else Value(node_of(where_mask))
+        if mask.ttype.dtype != "bool" or mask.ttype.shape:
+            raise HawkError(f"{call}: where= is this lane's bool mask, got {mask.ttype!r}")
         if op == "mean":
             raise HawkError(
-                "the mean of a masked view needs the count of the mask, which is "
-                "another cell: store hawk.all_samples(x)[mask].sum() and "
-                "hawk.all_samples(mask).sum() and divide on the host")
-        value = select(mask, value, _identity(base, value))
-    term = value / real(_n_samples()) if op == "mean" else value
-    return Value(ReduceSamples(base, node_of(term)))
+                f"{call}: the mean of the masked lanes needs their count, a second "
+                "reduction: hawk.sum(x, where=mask) / hawk.sum(mask)")
+        value = select(mask, value, _identity(base))
+    if not kept:
+        term = value / real(n_samples()) if op == "mean" else value
+        return Value(ReduceSamples(base, node_of(term), policy=policy))
+    if op == "mean":
+        value = value / real(_product([_extent(axes, i) for i in gone]))
+    lane = LaneAxes(axes)
+    key, stride = None, 1
+    for i in reversed(kept):
+        term = lane[i] if stride == 1 else lane[i] * stride
+        key = term if key is None else term + key
+        stride *= axes[i][1] or 1
+    count = _product([_extent(axes, i) for i in kept])
+    count = Value(index_node(count)) if isinstance(count, int) else count
+    return Reduced(ReduceSamples("sum", node_of(value), key=node_of(key),
+                                 count=node_of(count), policy=policy),
+                   tuple(axes[i] for i in kept))
 
 
-class Masked:
-    """``hawk.all_samples(x)[mask]``: reduced, or stored through; nothing else."""
+def sum(x: Any, over: Any = None, where: Any = None, policy: str = "auto") -> Any:  # noqa: A001
+    """The sum of ``x`` over the lane axes ``over`` names (a label, a position
+    or a tuple of them; ``None``: every axis, one value for the run). Masked
+    lanes (``where=`` false) add nothing; ``policy`` is the sum contract
+    (``"auto"``, ``"compensated"``, ``"ordered"``). Over every axis the result
+    may be read back later in the body (a stage boundary); over some axes it is
+    an output, one value per kept coordinate, bound ``(*payload, *kept)``."""
+    return _reduce("sum", x, over, where, policy)
 
-    __slots__ = ("value", "mask")
 
-    def __init__(self, value: Value, mask: Value) -> None:
-        self.value = value
-        self.mask = mask
+def max(x: Any, over: Any = None, where: Any = None, policy: str = "auto") -> Any:  # noqa: A001
+    """The maximum of ``x`` over every lane (NaN-ignoring, exact)."""
+    return _reduce("max", x, over, where, policy)
+
+
+def min(x: Any, over: Any = None, where: Any = None, policy: str = "auto") -> Any:  # noqa: A001
+    """The minimum of ``x`` over every lane (NaN-ignoring, exact)."""
+    return _reduce("min", x, over, where, policy)
+
+
+def mean(x: Any, over: Any = None, where: Any = None, policy: str = "auto") -> Any:
+    """The mean of ``x`` over the lane axes ``over`` names: the sum over the
+    count of reduced lanes."""
+    return _reduce("mean", x, over, where, policy)
+
+
+class Reduced:
+    """``hawk.sum(x, over=...)`` over some lane axes: an output, one value per
+    kept coordinate. It is returned or assigned to a ``Mutable`` declared with
+    the kept axes; nothing else."""
+
+    __slots__ = ("node", "kept")
+
+    def __init__(self, node: ReduceSamples, kept: tuple) -> None:
+        self.node = node
+        self.kept = kept
+
+    @property
+    def ttype(self) -> Any:
+        return self.node.ttype
 
     def _hawk_refuse(self, *_: Any) -> Any:
-        raise HawkError(_MASKED)
+        raise HawkError(
+            "hawk.sum(x, over=...) is an output, one value per kept coordinate: "
+            "return it or assign it to a Mutable declared with those axes. Reading "
+            "it back in the body is in the next release (hawk.sum(x) over every "
+            "axis can be read back)")
 
     __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = _hawk_refuse
     __truediv__ = __rtruediv__ = __neg__ = __pow__ = __getitem__ = _hawk_refuse
-
-    def sum(self, axis: Any = None) -> Value:
-        """The sum of the masked samples."""
-        return _cut(self.value, "sum", axis, self.mask)
-
-    def max(self, axis: Any = None) -> Value:
-        """The maximum of the masked samples."""
-        return _cut(self.value, "max", axis, self.mask)
-
-    def min(self, axis: Any = None) -> Value:
-        """The minimum of the masked samples."""
-        return _cut(self.value, "min", axis, self.mask)
-
-    def mean(self, axis: Any = None) -> Value:
-        """Refused: the count is a second cell."""
-        return _cut(self.value, "mean", axis, self.mask)
+    __lt__ = __le__ = __gt__ = __ge__ = __bool__ = _hawk_refuse
 
 
-def _n_samples() -> Value:
-    from .value import n_samples
-    return n_samples()
+def axes_plane(kept: tuple) -> tuple:
+    """A plane's ``dims`` for the kept lane axes ``((label, extent|None), ...)``."""
+    out, stride = [], 1
+    for label, extent in reversed(kept):
+        out.append((label, extent, stride))
+        stride = stride * extent if extent is not None and stride is not None else None
+    return tuple(out[::-1])
 
 
 class _Stored:
-    """What a store through ``hawk.all_samples(y)[key]`` leaves in ``y``'s name:
-    the plane is written by key, so the name has no per-sample value."""
+    """What a scatter leaves in the sink's name: the plane is written by key,
+    so the name has no value of this lane to read."""
 
     __slots__ = ("name",)
 
@@ -402,61 +350,76 @@ class _Stored:
         self.name = name
 
     def _hawk_refuse(self, *_: Any) -> Any:
-        raise HawkError(f"{self.name!r} is stored by key; it has no per-sample "
-                        "value to read in this kernel")
+        raise HawkError(f"{self.name!r} is written by key (hawk.scatter); it has no "
+                        "value of this lane to read in this kernel")
 
     __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = _hawk_refuse
     __truediv__ = __rtruediv__ = __neg__ = __pow__ = __getitem__ = _hawk_refuse
 
 
-def viewstore(refs: dict, name: str, key: Any, value: Any, op: str, current: Any) -> Any:
-    """``hawk.all_samples(name)[key] (op)= value``, as the ast pass reaches it.
+def scatter(sink: Any, policy: str = "auto") -> Any:
+    """``hawk.scatter(sink)[key] += v`` adds ``v`` into ``sink`` at ``key``,
+    ``= v`` stores it there. Many lanes may share a key; the adds are combined
+    (atomics or a segmented sum), never a race; the order is not fixed unless
+    ``policy="ordered"``. ``"auto"`` and ``"compensated"`` add with a
+    correction kept in a companion plane ``<sink>_c`` that the runtime owns
+    (the caller never passes it); ``"plain"`` is the atomic add alone. ``key``
+    is an index, one coordinate per axis of a sink declared with named axes, an
+    ``Index`` plane or a ``Sorted[Index]`` one.
+    Written only as the target of a store in a kernel body."""
+    raise HawkError(
+        "hawk.scatter(y) is the target of a store: write hawk.scatter(y)[key] += v "
+        "or hawk.scatter(y)[key] = v as a statement of the kernel body")
 
-    A bool ``key`` is a mask (``y = select(mask, value, y)``, the per-sample
-    store); an Index or integer ``key`` is by key: ``+=`` accumulates
-    (``accum_write``), ``=`` stores (``wide_write``)."""
-    from .value import MutableRef, _SinkRef
 
+def _flat_key(ref: Any, key: Any, where: str) -> Any:
+    """``key`` as one flat index into ``ref``: a coordinate per declared axis of
+    a named-axis sink, folded with its strides, or a flat index."""
+    if isinstance(key, tuple):
+        labels = [label for label, _size, _stride in ref.dims]
+        if len(key) != len(labels):
+            raise HawkError(
+                f"{where}: a tuple key gives one coordinate per declared axis "
+                f"{labels or '(none: this sink is flat, give one index)'}, got {len(key)}")
+        flat = None
+        for k, (_label, _size, stride) in zip(key, ref.dims):
+            term = Value(index_node(k)) * stride if stride != 1 else Value(index_node(k))
+            flat = term if flat is None else flat + term
+        return node_of(flat)
+    if isinstance(key, slice) or key is Ellipsis:
+        raise HawkError(f"{where}: key is an index, an Index plane or a tuple of "
+                        "coordinates")
+    return index_node(key)
+
+
+def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current: Any,
+                  policy: str = "auto") -> Any:
+    """``hawk.scatter(name, policy=...)[key] (op)= value``, as the ast pass
+    reaches it: ``+=`` accumulates (``accum_write``), ``=`` stores
+    (``wide_write``)."""
+    from .value import MutableRef, _SinkRef, by_key
+
+    where = f"hawk.scatter({name})[key] {op} v"
     ref = refs.get(name)
     if not isinstance(ref, _SinkRef):
-        raise HawkError(
-            f"hawk.all_samples({name})[...] stores through an output plane; "
-            f"{name!r} is not one (declare it Mutable[...])")
+        raise HawkError(f"{where}: {name!r} is not an output plane (declare it "
+                        "Mutable[...])")
+    policy = _policy(policy, where, SCATTER_POLICIES)
     if isinstance(key, Value) and key.ttype.dtype == "bool":
-        if not isinstance(ref, MutableRef) or not isinstance(current, Value):
-            raise HawkError(f"hawk.all_samples({name})[mask] = v stores through a Mutable")
-        new = current + value if op == "+=" else value
-        return select(key, new, current)
-    if isinstance(key, (slice, tuple)) or key is Ellipsis:
-        raise HawkError(f"hawk.all_samples({name})[key]: key is an Index, an "
-                        "integer value or a bool mask")
-    if isinstance(ref, MutableRef):
-        if isinstance(current, Value) and not (
-                isinstance(current.node, Leaf) and current.node.kind == "prior_read"):
-            raise HawkError(
-                f"{name!r} is written per sample (locked) and by key "
-                f"(hawk.all_samples({name})[key]): one plane has one extent")
-    ref.by_key(key, value, accumulate=(op == "+="))
-    return current if isinstance(current, _Stored) else _Stored(name)
-
-
-def all_samples(x: Any) -> AllSamples:
-    """Every sample's ``x``, to be indexed, masked or reduced:
-    ``total = hawk.all_samples(r * r).sum()`` stored to a ``Mutable`` output
-    gives one sum over every sample."""
-    from .value import _SinkRef
-
-    if isinstance(x, (AllSamples, Masked)):
-        raise HawkError("hawk.all_samples(hawk.all_samples(x)): already every sample")
-    if isinstance(x, _SinkRef):
+        raise HawkError(f"{where}: {_MASK_STORE}")
+    if op == "=" and policy != "auto":
+        raise HawkError(f"{where}: a store has no sum contract; policy= is for += only")
+    if policy == "ordered":
         raise HawkError(
-            f"{x.name!r} is written by this launch; another sample's value is not "
-            "defined here — stage it (Staged) or pass it as an input")
-    if not isinstance(x, Value):
-        x = Value(node_of(x))
-    if extent_of(x.node) == "all_samples":
-        raise HawkError("hawk.all_samples(hawk.all_samples(x)): already every sample")
-    return AllSamples(x)
+            f"{where}: policy='ordered' on a scatter is in the next release; use "
+            "policy='auto' or 'compensated'")
+    if isinstance(ref, MutableRef) and isinstance(current, Value) and not (
+            isinstance(current.node, Leaf) and current.node.kind == "prior_read"):
+        raise HawkError(
+            f"{name!r} is written per lane (locked) and by key "
+            f"(hawk.scatter({name})[key]): one plane has one extent")
+    by_key(ref, _flat_key(ref, key, where), value, op == "+=", policy)
+    return current if isinstance(current, _Stored) else _Stored(name)
 
 
 def maxmin(which: str, *args: Any, **kwargs: Any) -> Any:
@@ -464,7 +427,7 @@ def maxmin(which: str, *args: Any, **kwargs: Any) -> Any:
     traced operands are ``hawk.math.max/min`` (a tie keeps the first
     operand); anything untraced is the Python builtin."""
     import builtins
-    traced = [a for a in args if isinstance(a, (Value, AllSamples))]
+    traced = [a for a in args if isinstance(a, Value)]
     if len(args) == 1 and not kwargs:
         only = args[0]
         if isinstance(only, Value) or (isinstance(only, (list, tuple))
@@ -472,8 +435,8 @@ def maxmin(which: str, *args: Any, **kwargs: Any) -> Any:
             raise HawkError(
                 f"{which}(x) of one traced value or an iterable of them is not a "
                 f"HAWK form; compare values two at a time: {which}(a, b) is "
-                f"hawk.math.{which}(a, b), and the {which} over samples is "
-                f"hawk.all_samples(x).{which}()")
+                f"hawk.math.{which}(a, b), and the {which} over the lanes is "
+                f"hawk.{which}(x)")
     if not traced:
         return getattr(builtins, which)(*args, **kwargs)
     if kwargs:

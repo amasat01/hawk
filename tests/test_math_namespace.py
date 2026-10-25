@@ -225,8 +225,8 @@ ADAPTERS = {
     "random_uniform": "accepts lo/hi: the primitive at the defaults, lo + (hi-lo)*u otherwise",
     "random_normal": "accepts mean/sd: the primitive at the defaults, mean + sd*z otherwise",
     "take": "the free-function spelling of a plane's own at()",
-    "sum": "a value's own-axis sum (the samples axis is hawk.all_samples)",
-    "mean": "a value's own-axis mean (the samples axis is hawk.all_samples)",
+    "sum": "a value's own-axis sum (the lane axes are hawk.sum)",
+    "mean": "a value's own-axis mean (the lane axes are hawk.sum)",
     "argmax": "a select chain over the components: the first index of the maximum, as i32",
 }
 
@@ -260,16 +260,18 @@ def test_every_exported_name_is_resolvable_and_is_the_trace_surface_itself():
 def test_both_backends_bind_the_name_a_sample_index_renders_as():
     """The body knows exactly ONE thing about its wrapper: the identifier the
     index prologue binds the lane's integer index to ( lets it know no more).
-    Both backends must bind that name, and the name has one spelling
-    (:data:`hawk.emit.aether.SAMPLE_INDEX_IDENT`) — otherwise a body that reads
+    Both wrappers must bind that name, and the name has one spelling
+    (:data:`hawk.emit.render.SAMPLE_INDEX_IDENT`) — otherwise a body that reads
     the lane index compiles on one target and not the other."""
-    from hawk.emit import BACKENDS
-    from hawk.emit.aether import SAMPLE_INDEX_IDENT
+    from hawk.targets import TARGETS
+    from hawk.emit.render import SAMPLE_INDEX_IDENT
 
-    for backend in BACKENDS.values():
-        prologue = backend.index_prologue()
+    for target in TARGETS.values():
+        if target.wrapper is None:
+            continue
+        prologue = target.wrapper.index_prologue()
         assert f" {SAMPLE_INDEX_IDENT} =" in prologue, (
-            f"the {backend.id} prologue binds no {SAMPLE_INDEX_IDENT!r}:\n{prologue}")
+            f"the {target.id} prologue binds no {SAMPLE_INDEX_IDENT!r}:\n{prologue}")
     lane = M.sample_index()
     sinks = (Assign("out", node_of(lane * 1.0), S),)
     assert SAMPLE_INDEX_IDENT in render_body(sinks, canonical(sinks)).text

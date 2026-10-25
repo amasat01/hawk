@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """HAWK's OWN copies of the schema / aether-ABI / mirror-layout constants
-(the severance law this module satisfies, described below).
+(the severance law this module satisfies, described below; the only
+runtime uses of raptor-core and eagle are ``Kernel.__call__`` and the
+source lifts in ``hawk/trace/kernel.py``).
 
 HAWK's authoring/codegen/compile/emit path needs these values — they are stamped into
 every manifest/sidecar it writes and
 size every by-value mirror that crosses the nanobind boundary — but must
-import ZERO raptor/eagle at runtime. So this
+not import raptor/eagle for them. So this
 module holds conformance-gated, VERBATIM copies of the values raptor's schema
 module and eagle's Python + C++ sources define.
 

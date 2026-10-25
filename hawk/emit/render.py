@@ -4,7 +4,7 @@
 """Aether expression-tree rendering: turns a :class:`~hawk.ir.walk.Walk`
 into the kernel body as a STRING.
 
-One renderer builds the body; a backend wraps it with the entry
+One renderer builds the body; a wrapper wraps it with the entry
 prologue, so the body never contains a host ``for`` header or a
 ``params[]`` unpack. A sink lowers to one assignment whose right-hand
 side is one aether expression — HAWK never scalarises a chain into
@@ -30,6 +30,7 @@ from ..ir import HawkError, Node, Walk
 from ..ir.cost import fp64_ops
 from ..ir.loop_nodes import Loop, LoopCarry, LoopCount, LoopIndex, LoopValue, TapeRead
 from ..ir.nodes import (
+    COMPANION_SUFFIX,
     GATHER_ROLES,
     RAW_KIND,
     SWITCH_RENDERED,
@@ -48,15 +49,21 @@ from ..ir.nodes import (
     Sink,
     TapeWrite,
     WideWrite,
+    compensates,
     is_param_cell,
     sample_sums,
 )
 from ..ir.ops import RANDOM_OPS
+from ..ir.lanes import warp_uniform
+from ..ir.slotwise import chain, is_structural_zero
 from ..ir.walk import canonical_nodes
 from ..types import TensorType
-from .dialect_aether import AETHER
+from . import rtstore
+from .box import BoxStore
+from .writer_aether import AETHER
 from .dispatch import _DispatchMixin
 from .dispatch import render_dispatch_rank0 as render_dispatch_rank0
+from .spelling import _flat_indices
 from .spelling import (
     GEOMETRY_TOKENS as GEOMETRY_TOKENS,
 )
@@ -109,11 +116,11 @@ from .spelling import (
 
 @dataclass(frozen=True)
 class Body:
-    """A rendered body: the STRING both backends consume, plus what a wrapper needs
+    """A rendered body: the STRING both wrappers consume, plus what a wrapper needs
     to know about it.
 
     ``needs_random`` is set the instant the render emits a
-    ``random_uniform``/``random_normal`` call, since both backends
+    ``random_uniform``/``random_normal`` call, since both wrappers
     render through this one pass. ``False`` by default so a unit with
     no random op stays byte-identical to before this flag existed."""
 
@@ -122,20 +129,20 @@ class Body:
 
 
 def render_body(sinks: Sequence[Sink], walk: Walk, *, indent: str = "    ",
-                kind=None, dialect=None) -> Body:
+                kind=None, writer=None) -> Body:
     """Render one kernel's body STRING from its sink set and its walk.
 
     The traversal is the walk's own; every slot name comes from
     :attr:`~hawk.ir.walk.Walk.arg_spec`. ``kind`` is the
     :class:`hawk.ext.Kind` the commits render under; omitted, the default applies.
-    ``dialect`` is the :class:`hawk.emit.dialect.Dialect` that spells the text;
-    omitted, the aether C++ dialect."""
-    return _Renderer(tuple(sinks), walk, indent, kind, dialect=dialect).run()
+    ``writer`` is the :class:`hawk.emit.writer.Writer` that spells the text;
+    omitted, the aether C++ writer."""
+    return _Renderer(tuple(sinks), walk, indent, kind, writer=writer).run()
 
 
 @dataclass(frozen=True)
 class LaneSplit:
-    """A fused-step body cut at its ONE lowered loop, for a backend that
+    """A fused-step body cut at its ONE lowered loop, for a wrapper that
     runs the loop's trips across a tile of samples (the host's
     interchanged loop, :mod:`hawk.emit.host`) instead of one sample at a
     time. Every text is the renderer's own spelling of the same nodes the
@@ -151,7 +158,7 @@ class LaneSplit:
     ``(name, ttype)`` of each value ``pre`` names and ``step`` reads;
     ``sample_free`` the declarations, in ``pre``'s order, of those of them
     that read no per-sample value (a ``Param`` and constants only) and of the
-    values they read, which a backend may evaluate once instead of carrying.
+    values they read, which a wrapper may evaluate once instead of carrying.
     ``count`` is the runtime trip-count text (``None`` for a static
     ``stop``), ``index`` the loop index's name. ``speculative`` says one trip
     may run on a finished sample and its result be discarded: the step reads
@@ -178,7 +185,7 @@ class LaneSplit:
 
 #: A declaration the renderer emits (``const auto t5 = ...``, ``const
 #: aether::Item<...> hz0 = ...``): group 1 is the declared name.
-#: INTERIM (hawk 0.6.4), replaced by the 0.6.5 emit policy (template/runtime choice
+#: INTERIM (hawk 0.6.4), until an emit policy replaces it (template/runtime choice
 #: from an IR register-pressure model): the element count above which a read-only
 #: leaf read only by static ``component`` is bound as a proxy, not copied whole.
 LAZY_LEAF_WIDTH = 32
@@ -299,17 +306,23 @@ class _Renderer(_DispatchMixin):
     """One rendering pass. Held as a class only to carry the memo tables."""
 
     def __init__(self, sinks: tuple, walk: Walk, indent: str, kind=None, *,
-                 dialect=None) -> None:
+                 writer=None) -> None:
         from ..ext import DEFAULT_KIND
 
         self.sinks = sinks
         self.walk = walk
         self.indent = indent
         self.kind = kind if kind is not None else DEFAULT_KIND
-        #: The spelling seam (:mod:`hawk.emit.dialect`): every target text
+        #: The spelling seam (:mod:`hawk.emit.writer`): every target text
         #: this traversal emits comes from here.
-        self.dialect = dialect if dialect is not None else AETHER
+        self.writer = writer if writer is not None else AETHER
         self.nodes, self.position = canonical_nodes(sinks)
+        #: The stores at a runtime index, as runs of one mutable local
+        #: (:mod:`hawk.emit.rtstore`), and the carried locals a plain loop lets
+        #: such a run write in place.
+        self.stores = rtstore.plan(self)
+        self._uniform = None
+        self.mutable_carries: set = set()
         self.rendered: dict[int, str] = {}
         self.lines: list[str] = []
         self.hoists = 0
@@ -349,7 +362,7 @@ class _Renderer(_DispatchMixin):
             # So it's neither a reference nor a referent here — attributing fan-out
             # to it would alias an already-named forward, and the inlined body would
             # stop being byte-identical to the same arithmetic written longhand.
-            if isinstance(node, Primitive):
+            if isinstance(node, Primitive) or self.stores.skips(node):
                 continue
             for child in node.operands:
                 p = self.position[id(_through(child))]
@@ -395,10 +408,16 @@ class _Renderer(_DispatchMixin):
         #: How many lowered-loop scopes are open (a body sink renders inside one).
         self._scope_depth = 0
 
+    def uniform(self, node: Node) -> bool:
+        """Whether ``node`` is proven equal over every warp of lanes."""
+        if self._uniform is None:
+            self._uniform = warp_uniform(self.sinks)
+        return self._uniform(node)
+
     def _lazy_leaves(self) -> frozenset:
         """Positions of the wide read-only leaves bound as the ``[i]`` proxy.
 
-        INTERIM (hawk 0.6.4), replaced by the 0.6.5 emit policy (a template or
+        INTERIM (hawk 0.6.4), until an emit policy replaces it (a template or
         runtime choice from an IR register-pressure model): a non-mutable
         rank>=1 leaf of more than :data:`LAZY_LEAF_WIDTH` elements whose every
         use is a ``component`` read at a static index is not copied whole
@@ -556,13 +575,13 @@ class _Renderer(_DispatchMixin):
             self.guarded = True
         self._plan_commits()
         for target, at in self._zero:
-            self._emit(self.dialect.component_commit(
-                self, target, at, "=", self.dialect.typed_zero(_F64_SCALAR)))
+            self._emit(self.writer.component_commit(
+                self, target, at, "=", self.writer.typed_zero(_F64_SCALAR)))
         for target, width in self._accumulated_planes():
             # a plane a lowered loop accumulates at runtime indices once per
             # iteration (`bar[i].at(k) += e`, constraint 7): zeroed whole, once,
             # before the walk; the loop's links are the only other writes
-            self._emit(self.dialect.zero_row(self, target, width))
+            self._emit(self.writer.zero_row(self, target, width))
         for node in self.nodes:
             if isinstance(node, Sink):
                 continue
@@ -616,7 +635,7 @@ class _Renderer(_DispatchMixin):
         else keeps today's single store at the end."""
         if self.split_loop is not None or self.cut_loops:
             return
-        if not self.dialect.commits_per_component:
+        if not self.writer.commits_per_component:
             return
         read = {(n.role, n.name) for n in self.nodes if isinstance(n, Leaf)}
         ready = self._ready_times()
@@ -625,7 +644,7 @@ class _Renderer(_DispatchMixin):
         planned = []
         for sink in self.sinks:
             value = getattr(sink, "value", None)
-            base, links = _chain(value)
+            base, links = chain(value)
             parts = _parts(base)
             if (not isinstance(sink, (Assign, WideWrite)) or sink.index is not None
                     or parts is None
@@ -705,7 +724,7 @@ class _Renderer(_DispatchMixin):
             ready.append(at)
         return ready
 
-    def _ready_at(self, part: Node, ready: list, late: int = -1) -> int:
+    def _ready_at(self, part: Node, ready: list, late: int) -> int:
         """The position at whose render ``part`` can be rendered and stored.
 
         A node the walk reaches only through the sink's runtime links sits
@@ -747,10 +766,10 @@ class _Renderer(_DispatchMixin):
             for n in sorted(need, key=lambda n: self.position[id(n)]):
                 self._emit_outside(n)
             if op == "at+=":
-                self._emit(self.dialect.in_place_accumulate(
+                self._emit(self.writer.in_place_accumulate(
                     self, target, self._ref(at), self._ref(part)))
             else:
-                self._emit(self.dialect.component_commit(
+                self._emit(self.writer.component_commit(
                     self, target, at, op, self._ref(part)))
 
     def _emit_outside(self, node: Node) -> None:
@@ -795,7 +814,7 @@ class _Renderer(_DispatchMixin):
         """Record ``text`` as ``node``'s rendering, named when :meth:`_materialised`."""
         if self._materialised(node, pos):
             name = self._name(node, pos)
-            self._emit(self.dialect.declare(name, node.ttype, text))
+            self._emit(self.writer.declare(name, node.ttype, text))
             self.rendered[pos] = name
         else:
             self.rendered[pos] = text
@@ -829,8 +848,8 @@ class _Renderer(_DispatchMixin):
 
     def _finish(self, sink: Finish) -> None:
         """The finish epilogue — the last text of the guarded scope, so the step's
-        own commits land before the sample is marked (the dialect spells it)."""
-        self.dialect.finish(self, sink)
+        own commits land before the sample is marked (the writer spells it)."""
+        self.writer.finish(self, sink)
 
     def _guard_slot(self) -> str | None:
         """The guard's CONDITION against the walk's own slots: each mask the
@@ -839,7 +858,7 @@ class _Renderer(_DispatchMixin):
         never fires, nor does a guard none of whose masks the kernel binds."""
         bound = [binding_name("terminated", m) for m in self.kind.guard.names
                  if ("terminated", m) in self.walk.slot_of]
-        return self.dialect.guard(bound)
+        return self.writer.guard(bound)
 
     def _emit(self, line: str) -> None:
         self.lines.append(self.indent + line)
@@ -876,8 +895,10 @@ class _Renderer(_DispatchMixin):
             return False        # already a bare identifier the enclosing scope bound
         if isinstance(node, (Loop, Const, Primitive)):
             return False        # a statement / a literal / a boundary: none is named
-        if self.dialect.names_every_tensor and node.ttype.shape:
+        if self.writer.names_every_tensor and node.ttype.shape:
             return True         # a C struct value: always its own statement
+        if self.stores.unnamed(node):
+            return False        # a store a run absorbs, or its key: no local
         if pos in self.forced:
             return True
         return self.fanout.get(pos, 0) >= 2 or self._leaf_valued(node)
@@ -901,8 +922,8 @@ class _Renderer(_DispatchMixin):
 
     def _hoist(self, text: str, ttype=None) -> str:
         """Bind ``text`` to a fresh named local ahead of the current line (the
-        dialect's :meth:`~hawk.emit.dialect.Dialect.hoist`)."""
-        return self.dialect.hoist(self, text, ttype)
+        writer's :meth:`~hawk.emit.writer.Writer.hoist`)."""
+        return self.writer.hoist(self, text, ttype)
 
     # -- lowered loops -----------------------------------------------
 
@@ -923,7 +944,7 @@ class _Renderer(_DispatchMixin):
         feed one carry's new value into the next carry's expression — a
         different, silently wrong recurrence."""
         pos = self.loop_pos[id(loop)]
-        elems = [self.dialect.carry_type(c.ttype) for c in loop.carries]
+        elems = [self.writer.carry_type(c.ttype) for c in loop.carries]
         names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
                       for j, c in enumerate(loop.carries))
         self.carry_names[pos] = names
@@ -931,27 +952,27 @@ class _Renderer(_DispatchMixin):
             self._emit(f"{elem} {name} = {self._ref(init)};")
         tapes = self.tape_names.get(pos, {})
         for slot in sorted(tapes):
-            self._emit(self.dialect.tape_decl(elems[slot], tapes[slot], loop.trip))
+            self._emit(self.writer.tape_decl(elems[slot], tapes[slot], loop.trip))
         counter = self.count_names.get(pos)
         if counter is not None:
-            self._emit(self.dialect.counter_decl(counter))
+            self._emit(self.writer.counter_decl(counter))
         index = f"hawk_k{pos}_{_ident(loop.index.name)}"
         count = None if loop.count is None else self._ref(loop.count)
-        self._emit(self.dialect.for_header(self, index, loop, count))
-        outer, self.indent = self.indent, self.indent + "    "
-        saved, saved_items = self.local, self.items
-        self.local, self.items = dict(saved), dict(saved_items)
+        self._emit(self.writer.for_header(self, index, loop, count))
+        scope = self._push_scope()
         self._scope_depth += 1
         self.local[id(loop.index)] = index
         for carry, name in zip(loop.carries, names):
             self.local[id(carry)] = name
+            if loop.exit_cond is None:
+                self.mutable_carries.add(id(carry))
         for slot in sorted(tapes):
             self._emit(f"{tapes[slot]}[{_ordinal(index, loop)}] = {names[slot]};")
         form = loop.exit_form
         if form in ("head", "middle"):
             pre = self._exit_part(loop)
             self._render_scope(loop, only=pre, sinks=False)
-            self._emit(self.dialect.exit_if(self._ref(loop.exit_cond)))
+            self._emit(self.writer.exit_if(self._ref(loop.exit_cond)))
             self.indent += "    "
             moved = [(j, v) for j, v in enumerate(loop.exit_values)
                      if v is not loop.carries[j]]
@@ -981,10 +1002,9 @@ class _Renderer(_DispatchMixin):
         if counter is not None:
             self._emit(f"++{counter};")
         if form == "tail":
-            self._emit(self.dialect.tail_break(f"hawk_x{pos}"))
-        self.local, self.items = saved, saved_items
+            self._emit(self.writer.tail_break(f"hawk_x{pos}"))
+        self._pop_scope(scope)
         self._scope_depth -= 1
-        self.indent = outer
         self._emit("}")
 
     # -- the lane split (render_lane_split) ---------------------------
@@ -1048,7 +1068,7 @@ class _Renderer(_DispatchMixin):
     def _loop_split(self, loop: Loop) -> None:
         """:meth:`_loop` for the loop :meth:`lane_split` cuts at: marks where
         the head ends and renders ONE trip into its own text, the carried
-        values read through their usual names, which the backend binds."""
+        values read through their usual names, which the wrapper binds."""
         pos = self.loop_pos[id(loop)]
         names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
                       for j, c in enumerate(loop.carries))
@@ -1058,9 +1078,7 @@ class _Renderer(_DispatchMixin):
         count = None if loop.count is None else self._ref(loop.count)
         mark = len(self.lines)
         lines, self.lines = self.lines, []
-        outer, self.indent = self.indent, self.indent + "    "
-        saved, saved_items = self.local, self.items
-        self.local, self.items = dict(saved), dict(saved_items)
+        scope = self._push_scope()
         self.local[id(loop.index)] = index
         for carry, name in zip(loop.carries, names):
             self.local[id(carry)] = name
@@ -1074,8 +1092,7 @@ class _Renderer(_DispatchMixin):
         self._emit(f"const bool {flag} = {self._ref(loop.exit_cond)};")
         step = "\n".join(self.lines)
         self.lines = lines
-        self.local, self.items = saved, saved_items
-        self.indent = outer
+        self._pop_scope(scope)
         self.split = {
             "mark": mark, "step": step, "index": index, "count": count, "exit": flag,
             "carries": tuple((name, c.ttype, init, nxt) for name, c, init, nxt
@@ -1133,9 +1150,7 @@ class _Renderer(_DispatchMixin):
             bounds = header.group(1, 2, 3, 4)
         mark = len(self.lines)
         lines, self.lines = self.lines, []
-        outer, self.indent = self.indent, self.indent + "    "
-        saved, saved_items = self.local, self.items
-        self.local, self.items = dict(saved), dict(saved_items)
+        scope = self._push_scope()
         self.local[id(loop.index)] = index
         for carry, name in zip(loop.carries, names):
             self.local[id(carry)] = name
@@ -1177,8 +1192,7 @@ class _Renderer(_DispatchMixin):
                 self._emit(f"const bool {flag} = {self._ref(loop.exit_cond)};")
         step = "\n".join(self.lines)
         self.lines = lines
-        self.local, self.items = saved, saved_items
-        self.indent = outer
+        self._pop_scope(scope)
         self.cuts.append({
             "mark": mark, "step": step, "index": index, "start": loop.start,
             "by": loop.step, "trips": loop.trip,
@@ -1213,7 +1227,8 @@ class _Renderer(_DispatchMixin):
         inside the body is named, an aether leaf value is named unconditionally,
         everything else inlines. Fan-out is counted WITHIN the body — that's the
         scope a name would live in; a value read from outside was already named
-        by the boundary rule before the loop opened."""
+        by the boundary rule before the loop opened. A node only a ``switch``
+        dispatch's branches read is left to its case (:func:`_scope_live`)."""
         body = loop.body_nodes()
         # the add_at chain of a per-iteration accumulate is committed link by
         # link by its sink (:func:`_accumulate_sink`), never rendered as a value
@@ -1230,14 +1245,17 @@ class _Renderer(_DispatchMixin):
         exits = ([] if loop.exit_cond is None
                  else [loop.exit_cond, *loop.exit_values])
         for node in list(body) + list(loop.nexts) + exits:
-            if isinstance(node, Primitive):
+            if isinstance(node, Primitive) or self.stores.skips(node):
                 continue                  # not a reference, not a referent
             for child in node.operands:
                 child = _through(child)
                 fanout[id(child)] = fanout.get(id(child), 0) + 1
+        live = _scope_live(loop)
         for node in body:
             if id(node) in skip or (only is not None and id(node) not in only):
                 continue
+            if id(node) not in live:
+                continue                  # its switch case renders it
             if isinstance(node, Loop):
                 self._loop(node)
                 self.local[id(node)] = ""
@@ -1245,15 +1263,9 @@ class _Renderer(_DispatchMixin):
             if isinstance(node, Primitive):
                 self.local[id(node)] = self._ref(node.forward)
                 continue
-            named = (fanout.get(id(node), 0) >= 2 or self._leaf_valued(node))
-            text = self._expr(node, materialised=named)
-            if named:
-                name = f"tb{self.temps}"
-                self.temps += 1
-                self._emit(self.dialect.declare(name, node.ttype, text))
-                self.local[id(node)] = name
-            else:
-                self.local[id(node)] = text
+            named = ((fanout.get(id(node), 0) >= 2 or self._leaf_valued(node))
+                     and not self.stores.unnamed(node))
+            self._render_one(node, named)
         if not loop.body_sinks or not sinks:
             return
         # Inside the body-wide guard :meth:`run` opened, the loop's commits are
@@ -1306,19 +1318,24 @@ class _Renderer(_DispatchMixin):
             # has no direct ``Const`` spelling at rank>=1 anyway (a broadcast
             # literal renders only through a ``splat``).
             return
+        if sink.name in _companions(self.sinks):
+            return      # a ``policy="compensated"`` add's correction plane: same rule
         target = binding_name(sink.role, sink.name)
         if isinstance(sink, TapeWrite):
-            self.dialect.tape_write(self, sink, target)
+            self.writer.tape_write(self, sink, target)
             return
         if isinstance(sink, SampleSum):
             self._sample_sum(sink)
+            return
+        if isinstance(sink, BoxStore):
+            self.writer.box_store(self, target, self._ref(sink.index), self._ref(sink.value))
             return
         links = _accumulate_sink(sink) if self._scope_depth else None
         if links is not None:
             # a per-iteration runtime accumulate (constraint 7): each link on
             # the own column where it stands, nothing for the zero base
             for k, e in links:
-                self._emit(self.dialect.in_place_accumulate(
+                self._emit(self.writer.in_place_accumulate(
                     self, target, self._ref(k), self._ref(e)))
             return
         value = self._ref(sink.value)
@@ -1331,15 +1348,15 @@ class _Renderer(_DispatchMixin):
             # host's prior value instead.
             if self._is_compensated_own_column(sink):
                 comp = binding_name("mutable", self.kind.sink.compensation)
-                self.dialect.store_compensated(self, sink, target, comp, value)
+                self.writer.store_compensated(self, sink, target, comp, value)
                 return
-            self.dialect.store(self, sink, target, value)
+            self.writer.store(self, sink, target, value)
             return
         index = self._ref(sink.index)
         if not isinstance(sink, AccumWrite):
             # A scattered wide_write targets a computed ROW: a store, exactly as
             # the reference evaluator reads it.
-            self.dialect.scatter_store(self, sink, target, index, value)
+            self.writer.scatter_store(self, sink, target, index, value)
             return
         self._commit_scattered(sink, target, index, value)
 
@@ -1348,7 +1365,7 @@ class _Renderer(_DispatchMixin):
         """The sample's term into its column of the row the wrapper sums
         (:data:`SAMPLE_SUM_TERMS`)."""
         column = sample_sums(self.sinks).index(sink)
-        self.dialect.sample_sum(self, sink, column)
+        self.writer.sample_sum(self, sink, column)
 
     def _commit_scattered(self, sink: Sink, target: str, index: str,
                           value: str) -> None:
@@ -1364,7 +1381,11 @@ class _Renderer(_DispatchMixin):
         TARGET (:func:`hawk.ext.compensated_target`): a scattered by-key store beside,
         but not itself, that target commits ``plain`` — applying the policy to
         every scattered sink would misfire on an unrelated diagnostic plane.
-        The dialect spells each commit; this method decides which."""
+
+        A key the lane facts show moving in runs (:meth:`_key_run`) commits
+        once per run through ``aether::accum::run``, the compensated twin for
+        the compensated target. The writer spells each commit; this method
+        decides which."""
         if sink.ttype.shape:
             raise HawkError(
                 f"{sink.name!r}: a scattered accumulate of a rank-"
@@ -1373,6 +1394,8 @@ class _Renderer(_DispatchMixin):
                 "(see hawk.ext), which is per component; declare one scalar "
                 "accumulate plane per component, or commit the own column"
             )
+        comp = (binding_name("accum_out", sink.name + COMPANION_SUFFIX)
+                if compensates(getattr(sink, "policy", "auto")) else None)
         if self.kind.sink.id == "compensated":
             from ..ext import compensated_target
 
@@ -1388,21 +1411,36 @@ class _Renderer(_DispatchMixin):
                         "The kernel declares the plane; the seam only decides the "
                         "arithmetic"
                     )
-                self.dialect.store_compensated(
-                    self, sink, target, binding_name("accum_out", comp), value)
-                return
-        self.dialect.accum_scattered(self, sink, target, index, value)
+                comp = binding_name("accum_out", comp)
+        run = self._key_run(sink)
+        if run is not None:
+            self.writer.accum_run(self, sink, target, comp, index, value, run)
+        elif comp is not None:
+            self.writer.store_compensated(self, sink, target, comp, value)
+        else:
+            self.writer.accum_scattered(self, sink, target, index, value)
+
+    def _key_run(self, sink: Sink):
+        """The run its key moves in (:func:`hawk.ir.lanes.key_run`: proven,
+        tested or sorted), or ``None`` for the per-lane commit. Asked only of
+        a writer that spells the run commit, so every other writer's text is
+        unchanged."""
+        if not hasattr(self.writer, "accum_run"):
+            return None
+        from ..ir.lanes import key_run
+
+        return key_run(self.sinks, sink)
 
 
-    # -- expressions (spelled by the dialect) -----------------------------
+    # -- expressions (spelled by the writer) -----------------------------
 
     def _expr(self, node: Node, *, materialised: bool) -> str:
         if isinstance(node, Leaf):
-            return self.dialect.leaf(self, node, materialised)
+            return self.writer.leaf(self, node, materialised)
         if isinstance(node, Const):
-            return self.dialect.const(node)
+            return self.writer.const(node)
         if isinstance(node, SampleIndex):
-            return self.dialect.sample_index_value()
+            return self.writer.sample_index_value()
         if isinstance(node, (LoopIndex, LoopCarry)):
             # Bound by the enclosing loop's header/carried local, seeded into
             # `self.local` before the body renders.
@@ -1419,17 +1457,42 @@ class _Renderer(_DispatchMixin):
             # forward subgraph it stands in front of.
             return self._ref(node.forward)
         if isinstance(node, At):
-            return self.dialect.at(self, node)
+            return self.writer.at(self, node)
         if isinstance(node, Select):
             c, a, b = (self._ref(o) for o in node.operands)
-            return self.dialect.select(self, node, c, a, b)
+            return self.writer.select(self, node, c, a, b)
         if isinstance(node, Dispatch):
             return self._dispatch(node)
         if isinstance(node, Op):
             args = [self._ref(o) for o in node.operands]
             ranks = [len(o.ttype.shape) for o in node.operands]
-            return self.dialect.op(self, node, args, ranks)
+            return self.writer.op(self, node, args, ranks)
         raise HawkError(f"no aether rendering for node {node!r}")
+
+
+def _companions(sinks) -> frozenset:
+    """The correction planes of the ``policy="compensated"`` accumulates."""
+    return frozenset(s.name + COMPANION_SUFFIX for s in sinks
+                     if isinstance(s, AccumWrite) and compensates(s.policy))
+
+
+def _scope_live(loop: Loop) -> set:
+    """The ids of the body nodes some root of ``loop`` reaches WITHOUT following a
+    ``switch`` dispatch's ``branches``: the loop-body twin of
+    :meth:`_Renderer._outside_reachable`. What only a branch reads is left to
+    that branch's case."""
+    seen: set = set()
+    stack: list = list(loop.body_roots())
+    while stack:
+        n = stack.pop()
+        if id(n) in seen:
+            continue
+        seen.add(id(n))
+        if isinstance(n, Dispatch) and n.policy in SWITCH_RENDERED:
+            stack.append(n.selector)
+        else:
+            stack.extend(n.operands)
+    return seen
 
 
 def _flat_body(loop: Loop) -> list:
@@ -1449,34 +1512,22 @@ def _flat_body(loop: Loop) -> list:
 
 
 #: A rank-0 float64 type: the zero :meth:`_Renderer.run` writes into planes it
-#: zero-fills is the dialect's typed zero of it.
+#: zero-fills is the writer's typed zero of it.
 _F64_SCALAR = TensorType((), "f64")
 
 
 #: The local row of per-sample terms a ``sample_sum`` body writes; the
-#: backend's wrapper declares it and sums it.
+#: wrapper declares it and sums it.
 SAMPLE_SUM_TERMS = "hawk_ss"
-
-
-def _chain(node: Node) -> tuple:
-    """``(base, [(k, e), ...])`` of an ``add_at`` chain (the runtime form of a
-    wide value, :mod:`hawk.ir.slotwise`); a plain value is a chain of none."""
-    links = []
-    while isinstance(node, Op) and node.kind == "add_at":
-        links.append((node.operands[1], node.operands[2]))
-        node = node.operands[0]
-    return node, links[::-1]
 
 
 def _accumulate_sink(sink: Node) -> list | None:
     """The links of an own-column ``Assign`` whose value is an ``add_at`` chain
     over a structural zero — a lowered loop's per-iteration accumulate — else
     ``None``."""
-    from ..ir.slotwise import is_structural_zero
-
     if not isinstance(sink, Assign) or sink.index is not None:
         return None
-    base, links = _chain(sink.value)
+    base, links = chain(sink.value)
     if not links or not is_structural_zero(base):
         return None
     return links
@@ -1502,9 +1553,3 @@ def _reads_in_place(node: Node) -> bool:
             and len(node.ttype.shape) == 1 and not is_param_cell(node))
 
 
-def _flat_indices(shape: tuple) -> list:
-    """Every index tuple of ``shape`` in row-major (C) order."""
-    out: list = [()]
-    for extent in shape:
-        out = [idx + (k,) for idx in out for k in range(int(extent))]
-    return out

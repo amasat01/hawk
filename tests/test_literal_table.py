@@ -24,7 +24,8 @@ from _toolchain import real_arch
 import hawk
 import hawk.math as M
 from hawk import Mutable, Scalar, kernel
-from hawk.emit import BACKENDS, literal_table, render_source, scalar_mode
+from hawk.emit import literal_table, render_source, scalar_mode
+from hawk.targets import TARGETS
 
 
 @kernel(steps=1)
@@ -33,7 +34,7 @@ def poly(x: Scalar, y: Mutable[Scalar]):
 
 
 def _source(mode="float64"):
-    return render_source(poly.name, poly.sinks, poly.walk, BACKENDS["cuda"],
+    return render_source(poly.name, poly.sinks, poly.walk, TARGETS["cuda"],
                          mode=scalar_mode(mode), kind=poly.kind)
 
 

@@ -9,9 +9,9 @@ Two REAL defects motivate this row, each one a wrong binding that used to
 run silently and return garbage or segfault (an out-of-bounds read) rather
 than refuse:
 
-1. an Index plane (``Table[...].at()``'s index, a scatter ``lane``) bound as
-   ``int32`` — HAWK spells every integer element ``Int`` (``long long``), so
-   it must be ``int64``;
+1. an Index plane (``Table[...].at()``'s index, a scatter ``lane``) bound as a
+   type that is neither ``int64`` nor ``int32`` — HAWK spells every integer
+   element ``Int`` (``long long``); an ``int32`` column is widened at the bind;
 2. a ``Terminated`` mask bound as ``int32`` — it must be ``bool``.
 
 Every row below runs the real, compiled, HAWK-emitted artifact (the
@@ -57,16 +57,27 @@ def _diagnostic(built):
 # --------------------------------------------------------------------------- #
 # 1. the Index plane: Table[...].at()'s index, and a scatter `lane`.
 # --------------------------------------------------------------------------- #
-def test_table_at_index_bound_as_int32_is_refused(built):
-    """``gather``'s ``where`` (the ``Table.at()`` index) must be int64; an
-    int32 binding is refused naming the kernel, the argument, the expected
+def test_table_at_index_bound_as_float_is_refused(built):
+    """``gather``'s ``where`` (the ``Table.at()`` index) must be an integer
+    column; a float one is refused naming the kernel, the argument, the expected
     and the actual dtype, and the fix — never reaches ``hawk._core``."""
+    kernel = _gather(built)
+    table = np.arange(N, dtype=float) * 3.0
+    where = ((np.arange(N) * 7 + 3) % N).astype(np.float32)
+    y = np.zeros(N)
+    with pytest.raises(HawkError, match=r"'where'.*int64.*float32"):
+        rt.run(kernel, table=table, where=where, y=y, n_samples=N)
+
+
+def test_table_at_index_bound_as_int32_is_widened_and_matches(built):
+    """An int32 index column binds (the bind widens a copy of it): the same
+    answer as the int64 one."""
     kernel = _gather(built)
     table = np.arange(N, dtype=float) * 3.0
     where = ((np.arange(N) * 7 + 3) % N).astype(np.int32)
     y = np.zeros(N)
-    with pytest.raises(HawkError, match=r"'where'.*int64.*int32"):
-        rt.run(kernel, table=table, where=where, y=y, n_samples=N)
+    rt.run(kernel, table=table, where=where, y=y, n_samples=N)
+    np.testing.assert_allclose(y, D.ref_gather(table, where))
 
 
 def test_table_at_index_bound_as_int64_passes(built):
@@ -80,15 +91,15 @@ def test_table_at_index_bound_as_int64_passes(built):
     np.testing.assert_allclose(y, D.ref_gather(table, where))
 
 
-def test_scatter_lane_bound_as_int32_is_refused(built):
-    """``scatter``'s ``lane`` (the ``all_samples(acc)[lane]`` index) must
-    also be int64 — the same Index rule, a different kernel."""
+def test_scatter_lane_bound_as_int32_matches_int64(built):
+    """``scatter``'s ``lane`` (the ``hawk.scatter(acc)[lane]`` index) takes an
+    int32 column too — the same Index rule, a different kernel."""
     kernel = _scatter(built)
     x = np.arange(N, dtype=float) + 1.0
     lane = ((np.arange(N) * 7 + 3) % N).astype(np.int32)
     acc = np.zeros(N)
-    with pytest.raises(HawkError, match=r"'lane'.*int64.*int32"):
-        rt.run(kernel, x=x, lane=lane, acc=acc, n_samples=N)
+    rt.run(kernel, x=x, lane=lane, acc=acc, n_samples=N)
+    np.testing.assert_allclose(acc, D.ref_scatter(x, lane, N))
 
 
 def test_scatter_lane_bound_as_int64_passes(built):

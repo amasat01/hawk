@@ -64,11 +64,12 @@ _TYPES_PUBLIC_NAMES = frozenset({"DTYPES", "INT_PLANE_DTYPES", "LaneMeta", "PER_
 #: the SAME commit, same as any other committed manifest in this repo.
 _EXPECTED_MANIFEST = {
     "hawk": [
-        "HawkError", "Index", "Int32", "Kernel", "Matrix", "Mutable",
-        "Param", "Quantity", "Quat", "RawBlock", "Scalar",
+        "Grid", "HawkError", "Index", "Int32", "Kernel", "Matrix", "Mutable",
+        "Param", "Quantity", "Quat", "RawBlock", "Scalar", "Sorted",
         "Staged", "Table", "Terminated", "UInt32", "Value", "Vector", "Wide",
-        "WideOut", "__version__", "all_samples", "build", "kernel", "load", "raw_device",
-        "resolve_dispatch", "run", "samples_first", "samples_last", "steps",
+        "WideOut", "__version__", "build", "kernel", "load", "max", "mean", "min",
+        "raw_device", "resolve_dispatch", "run", "samples_first", "samples_last",
+        "scatter", "steps", "sum",
     ],
     "hawk.trace": [],
     "hawk.math": [
@@ -98,7 +99,7 @@ _EXPECTED_MANIFEST = {
         "infer", "make", "recognize",
     ],
     "hawk.emit": [
-        "BACKENDS", "compose", "literal_table", "render_body", "render_source",
+        "compose", "literal_table", "render_body", "render_source",
         "scalar_mode",
     ],
     "hawk.ext": [
@@ -107,8 +108,8 @@ _EXPECTED_MANIFEST = {
         "compensated", "primitive", "primitives", "sink_policy",
     ],
     "hawk.compile": [
-        "Cache", "CompileOptions", "DEVICE", "DeviceImage", "HOST",
-        "HOST_PROFILES", "OPT_LEVELS", "aether_include", "cache_stats",
+        "Cache", "CompileOptions", "DeviceImage", "HOST_PROFILES",
+        "OPT_LEVELS", "aether_include", "cache_stats",
         "compile_source", "compiler_identity", "cubin",
         "cubin_available", "current_payload", "default_cache_dir",
         "device", "device_compiler", "device_compiler_kind",
@@ -160,11 +161,18 @@ def test_the_public_manifest_is_exactly_this():
 #: named exception, not a loophole.
 _TOP_LEVEL_DOOR_NAMES = frozenset({"build", "load", "run"})
 
+#: The reductions named twice ON PURPOSE: ``hawk.<op>`` reduces across lanes
+#: (``over=``), ``hawk.math.<op>`` within one value (``np.sum`` over its own
+#: axes, ``np.fmax``/``np.fmin`` of two values). Different objects, the second
+#: named exception.
+_ACROSS_AND_WITHIN = frozenset({"sum", "mean", "max", "min"})
+
 
 def test_no_public_name_answers_to_two_paths():
     """No public name is reachable from more than one surface, except the
     top-level convenience doors in :data:`_TOP_LEVEL_DOOR_NAMES`, which
-    answer at ``hawk`` by design beside their submodule's own export."""
+    answer at ``hawk`` by design beside their submodule's own export, and the
+    reductions in :data:`_ACROSS_AND_WITHIN`."""
     owners: dict[str, set] = defaultdict(set)
     for surface, mod in _SURFACES.items():
         for name in mod.__all__:
@@ -174,7 +182,8 @@ def test_no_public_name_answers_to_two_paths():
     duplicates = {name: paths for name, paths in owners.items() if len(paths) > 1}
     unexpected = {name: paths for name, paths in duplicates.items()
                  if not (name in _TOP_LEVEL_DOOR_NAMES and "hawk" in paths
-                        and len(paths) == 2)}
+                        and len(paths) == 2)
+                 and not (name in _ACROSS_AND_WITHIN and paths == {"hawk", "hawk.math"})}
     assert not unexpected, (
         f"these public names answer to MORE THAN ONE canonical path: {unexpected}"
     )

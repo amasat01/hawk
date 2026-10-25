@@ -124,7 +124,7 @@ def test_compile_source_emits_cubin_when_nvcc_outruns_the_driver(monkeypatch, tm
     _skip_without_nvcc()
     monkeypatch.setattr(hnvrtc, "driver_cuda_version", lambda: (1, 0))
     result = compile_source(KERNEL_SRC, "hawk_probe_kernel",
-                            CompileOptions(backend="cuda", arch=real_arch(),
+                            CompileOptions(target="cuda", arch=real_arch(),
                                            cache_dir=str(tmp_path / "cache")))
     data = result.artifact.read_bytes()
     assert data[:4] == b"\x7fELF", (
@@ -136,7 +136,7 @@ def test_compile_source_emits_ptx_when_the_driver_is_current(monkeypatch, tmp_pa
     _skip_without_nvcc()
     monkeypatch.setattr(hnvrtc, "driver_cuda_version", lambda: (999, 9))
     result = compile_source(KERNEL_SRC, "hawk_probe_kernel",
-                            CompileOptions(backend="cuda", arch=real_arch(),
+                            CompileOptions(target="cuda", arch=real_arch(),
                                            cache_dir=str(tmp_path / "cache")))
     data = result.artifact.read_bytes()
     assert data[:4] != b"\x7fELF" and b"hawk_probe_kernel" in data
@@ -147,7 +147,7 @@ def test_compile_source_keys_ptx_and_cubin_into_different_slots(monkeypatch, tmp
     SAME source, same compiler, same arch, differing only in the
     driver-forced target, must not collide on one cache slot."""
     _skip_without_nvcc()
-    opts = CompileOptions(backend="cuda", arch=real_arch(),
+    opts = CompileOptions(target="cuda", arch=real_arch(),
                           cache_dir=str(tmp_path / "cache"))
     monkeypatch.setattr(hnvrtc, "driver_cuda_version", lambda: (1, 0))
     cubin_result = compile_source(KERNEL_SRC, "hawk_probe_kernel", opts)
@@ -167,9 +167,9 @@ def test_compile_source_keys_differ_by_opt_level_for_the_AOT_nvcc_path(
     monkeypatch.setattr(hnvrtc, "driver_cuda_version", lambda: (999, 9))  # PTX, same arm both times
     cache_dir = str(tmp_path / "cache")
     o3 = compile_source(KERNEL_SRC, "hawk_probe_kernel", CompileOptions(
-        backend="cuda", arch=real_arch(), cache_dir=cache_dir, opt_level="O3"))
+        target="cuda", arch=real_arch(), cache_dir=cache_dir, opt_level="O3"))
     o0 = compile_source(KERNEL_SRC, "hawk_probe_kernel", CompileOptions(
-        backend="cuda", arch=real_arch(), cache_dir=cache_dir, opt_level="O0"))
+        target="cuda", arch=real_arch(), cache_dir=cache_dir, opt_level="O0"))
     assert o3.key != o0.key
     assert o3.artifact != o0.artifact
     assert o3.artifact.is_file() and o0.artifact.is_file()

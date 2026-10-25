@@ -33,10 +33,10 @@ import importlib
 import pytest
 
 import hawk
-from hawk import Index, Kernel, Mutable, Param, Scalar, Terminated, all_samples
+from hawk import Index, Kernel, Mutable, Param, Scalar, Terminated
 from hawk.diff import jvp
 from hawk.emit import scalar_mode
-from hawk.emit.aether import geometry_hits
+from hawk.emit.render import geometry_hits
 from hawk.ext import DEFAULT_KIND, Guard, Kind
 from hawk.ir import HawkError
 
@@ -139,7 +139,7 @@ def test_a_derived_kernel_carries_the_map_prologue():
 def test_refuses_an_accumulating_kernel():
     def scatter(x: Scalar, lane: Index, terminated: Terminated,
                 acc: Mutable[Scalar]):
-        all_samples(acc)[lane] += x
+        hawk.scatter(acc)[lane] += x
 
     k = hawk.kernel(scatter, kind=MAP)
     with pytest.raises(HawkError, match="accum_out"):

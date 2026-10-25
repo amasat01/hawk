@@ -161,7 +161,7 @@ from .trace.value import vec as _vec
 
 def sum(x: Any, axis: Any = None) -> Value:  # noqa: A001 - numpy's spelling
     """``np.sum`` over a value's own axes (``"components"``, ``"rows"``,
-    ``"columns"`` or a number); the sum over samples is ``hawk.all_samples``."""
+    ``"columns"`` or a number); the sum across lanes is ``hawk.sum``."""
     return Value(node_of(x)).sum(axis)
 
 

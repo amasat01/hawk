@@ -87,8 +87,8 @@ def test_a_helper_calling_malloc_is_a_banned_token(monkeypatch):
 
     real = abi.helper_closure
 
-    def planted(dialect):
-        text, names, libm = real(dialect)
+    def planted(writer):
+        text, names, libm = real(writer)
         return text.replace("out.v[0] = plane[i];",
                             "out.v[0] = plane[i];\n    (void)malloc(8U);", 1), names, libm
 
@@ -238,8 +238,8 @@ def test_export_refuses_an_audit_hit_by_rule_and_line(monkeypatch, tmp_path):
 
     real = abi.helper_closure
 
-    def planted(dialect):
-        text, names, libm = real(dialect)
+    def planted(writer):
+        text, names, libm = real(writer)
         return text + "\nstatic inline int64_t hawk_orphan(int64_t a)\n{\n    return a;\n}", names, libm
 
     monkeypatch.setattr(abi, "helper_closure", planted)

@@ -19,11 +19,12 @@ from pathlib import Path
 
 from .. import _contracts
 from ..ir import HawkError
+from ..targets import ENTRY_KINDS
 
 TOP_LEVEL_KEY_ORDER_V2 = ("schema_version", "pattern", "aether_abi", "exec_targets",
                           "exec_access", "exec_op", "plugins")
 #: Verbatim twins of raptor's v2 execution-axis vocabularies.
-EXEC_TARGETS = ("device", "host")
+EXEC_TARGETS = ENTRY_KINDS
 EXEC_ACCESS_CLASSES = ("sample_local", "cross_sample_read", "cross_sample_write",
                        "mapreduce")
 EXEC_OPS = ("sum", "times", "max", "land")

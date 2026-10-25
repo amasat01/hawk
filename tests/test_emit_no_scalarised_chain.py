@@ -26,7 +26,7 @@ THE DETECTOR, stated so it can fail. Over an emitted body:
   e. POSITIVE half -- a fan-out-2 node IS named once and READ twice.
 
 This test previously failed via both plants in ``_Renderer._materialised``
-(``hawk/emit/aether.py``):
+(``hawk/emit/render.py``):
   * ``return True`` -- the "materialise everything" scalarising emitter. It
     fired (c) AND (d):
       AssertionError: (c): 'scale' has a fan-out-1 interior node bound to a
@@ -54,7 +54,7 @@ import re
 from _emitted import cases
 
 from hawk.emit import render_body
-from hawk.emit.aether import binding_name
+from hawk.emit.render import binding_name
 
 #: A named temporary the renderer binds: ``const auto <name> = <rhs>;``
 _BINDING = re.compile(r"^\s*const auto (\w+) = (.*);$")
@@ -63,7 +63,7 @@ _BINDING = re.compile(r"^\s*const auto (\w+) = (.*);$")
 #: accumulate commits through (the target's own atomic add, one subscript
 #: on the target). Still exactly ONE statement per sink, which is what the
 #: row counts; the compensated kind's companion plane keeps its ``+=``.
-_SINK = re.compile(r"^\s*(?:\w+\[.*\] (?:\+)?= .*|hawk_abi::accum_add\(\w+, .*\));$")
+_SINK = re.compile(r"^\s*(?:\w+\[.*\] (?:\+)?= .*|hawk_abi::accum_add(?:_compensated)?\(\w+, .*\));$")
 #: A per-ELEMENT read -- the scalarisation signature.
 _ELEMENT_READ = re.compile(r"\.eval<\d+>\(")
 
@@ -76,9 +76,10 @@ def test_every_sink_is_exactly_one_assignment():
     for name, sinks, walk in cases():
         body = render_body(sinks, walk).text
         assignments = [s for s in _statements(body) if _SINK.match(s)]
-        assert len(assignments) == len(sinks), (
+        committed = [s for s in sinks if s.name not in walk.companions]   # a companion is no commit
+        assert len(assignments) == len(committed), (
             f"{name!r} emitted {len(assignments)} assignment(s) for "
-            f"{len(sinks)} sink(s) -- a sink lowers to ONE assignment:\n{body}"
+            f"{len(committed)} sink(s) -- a sink lowers to ONE assignment:\n{body}"
         )
 
 
