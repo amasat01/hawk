@@ -284,7 +284,7 @@ jobs:
       - name: Import smoke (the import-time build-digest/layout self-check runs here)
         run: |
           . venv/bin/activate
-          want=$(basename dist/raptor_hawk-*.whl | cut -d- -f2)
+          want=$(ls dist/raptor_hawk-*.whl | head -n 1 | xargs basename | cut -d- -f2)   # every wheel carries the same version
           python - <<EOF
           import hawk, pathlib, sys
           print("hawk", hawk.__version__, hawk.__file__)

@@ -443,7 +443,7 @@ jobs:
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
         run: |
           cd hawk
-          CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install" RAPTOR_DIR="${GITHUB_WORKSPACE}/raptor" \
+          CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install" RAPTOR_DIR="${GITHUB_WORKSPACE}/raptor" AETHER_DIR="${GITHUB_WORKSPACE}/aether" \
             tests/sanitize/tsan_ft.sh "$RUNNER_TEMP/tsan-python/bin/python${TSAN_PY_VERSION%.*}t"
 
   ft-stress:

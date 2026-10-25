@@ -7,7 +7,8 @@
 #
 # Inputs from the environment: HAWK_AETHER_INCLUDE and HAWK_EAGLE_INCLUDE (the
 # aether and eagle checkouts, as for any hawk build), RAPTOR_DIR (a raptor
-# checkout; else raptor-core from PyPI), CC/CXX (default clang/clang++; TSan
+# checkout; else raptor-core from PyPI), AETHER_DIR (an aether checkout; else aether-dsc
+# from PyPI), CC/CXX (default clang/clang++; TSan
 # runtimes must match the interpreter's). eagle is built from
 # $HAWK_EAGLE_INCLUDE without its CUDA plugin; no GPU is used.
 #
@@ -49,7 +50,12 @@ venv_py="$work/venv/bin/python"
 curl -fsSL -o "$work/get-pip.py" https://bootstrap.pypa.io/get-pip.py
 "$venv_py" "$work/get-pip.py" --quiet
 "$venv_py" -m pip install --quiet --only-binary=:all: pytest numpy scipy \
-    "scikit-build-core>=0.10" "nanobind>=3.1,<4" "aether-dsc>=0.7,<0.8"
+    "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4"
+if [ -n "${AETHER_DIR:-}" ]; then
+    "$venv_py" -m pip install --quiet --no-deps "$AETHER_DIR/dsc"
+else
+    "$venv_py" -m pip install --quiet --only-binary=:all: "aether-dsc>=0.7,<0.8"
+fi
 if [ -n "${RAPTOR_DIR:-}" ]; then
     "$venv_py" -m pip install --quiet --no-deps "$RAPTOR_DIR"
 else

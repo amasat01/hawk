@@ -234,7 +234,9 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
         h.update(b"\0")
     if any(g > 1 for g in groups):
         h.update(("groups:" + ",".join(map(str, groups))).encode("ascii") + b"\0")
-    for name, walk_digest, decl in zip(names, walk_digests, declarations, strict=True):
+    if not len(names) == len(walk_digests) == len(declarations):
+        raise ValueError("unit key: names, walk digests and declarations differ in length")
+    for name, walk_digest, decl in zip(names, walk_digests, declarations):
         h.update(f"{name}\0{walk_digest}\0{decl}\0".encode("utf-8"))
     return h.hexdigest()
 
