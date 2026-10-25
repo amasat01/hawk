@@ -25,6 +25,7 @@ _KERNEL = textwrap.dedent("""
 """)
 
 
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="the -c text comes from sys.orig_argv, Python 3.10+")
 def test_python_dash_c_source_is_lifted():
     done = subprocess.run([sys.executable, "-c", _KERNEL], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
