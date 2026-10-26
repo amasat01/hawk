@@ -245,13 +245,25 @@ def _gather_in_a_case(x: hawk.Vector[4], kinds: hawk.Vector[4],
     y = t
 
 
-def test_a_gather_inside_a_case_inside_a_loop_refuses_by_name():
-    with pytest.raises(HawkError) as e:
-        vjp(_gather_in_a_case, wrt=("theta",))
-    text = str(e.value)
-    assert "at() inside a `dispatch` branch inside a loop body" in text      # what
-    assert "committed under the branch's case" in text                        # why
-    assert "Read the plane outside the dispatch" in text                      # instead
+def test_a_gather_inside_a_case_inside_a_loop_matches_finite_differences():
+    """The gather's reverse commits ONE scatter, outside the `dispatch`, with the
+    masked value (zero for a lane whose case did not gather) at the row only the
+    gathering case computes (see tests/test_diff_loop_dispatch_gather.py)."""
+    rng = np.random.default_rng(7)
+    theta = rng.normal(0.0, 0.5, size=6)
+    x = rng.normal(0.0, 0.5, size=4)
+    for kinds in ([0, 0, 0, 0], [1, 1, 1, 1], [0, 1, 0, 1], [1, 0, 0, 1]):
+        env = {"x": x, "kinds": np.array(kinds, dtype=float), "theta": theta,
+               "terminated": False, "bar_y": 1.0}
+        got = np.asarray(evaluate(vjp(_gather_in_a_case, wrt=("theta",)), env, lanes=6)["bar_theta"])
+        want = np.zeros(6)
+        for i in range(6):
+            hi, lo = theta.copy(), theta.copy()
+            hi[i] += 1e-6
+            lo[i] -= 1e-6
+            f = lambda th: float(evaluate(_gather_in_a_case.sinks, {**env, "theta": th}, lanes=6)["y"])
+            want[i] = (f(hi) - f(lo)) / 2e-6
+        np.testing.assert_allclose(got, want, rtol=1e-7, atol=1e-8)
 
 
 @hawk.kernel(jump=0.04)

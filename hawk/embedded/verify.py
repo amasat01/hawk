@@ -26,6 +26,7 @@ from ..emit.spelling import binding_name
 from ..ext import DEFAULT_KIND
 from ..ir import HawkError
 from ..ir.cost import fp64_ops, kernel_cost
+from ..ir.linalg import FACTORISATIONS
 from ..ir.loop_nodes import Loop, LoopIndex, TapeRead
 from ..ir.nodes import (
     FINISHED_PLANE,
@@ -454,6 +455,19 @@ def _interface(walk, nodes, kind) -> list:
 # the report and the caps
 
 
+def _status_dropped(nodes, where) -> list:
+    """The positions of the factorisations whose status nothing reads: the
+    ``info`` of ``lu``, ``chol`` or ``eigh`` is a result like any other, and a
+    kernel that drops it carries on with zeros where a lane failed."""
+    def key(node):
+        return where.get(id(node), id(node))
+
+    read = {key(n.operands[0]) for _, n, _ in nodes
+            if isinstance(n, Op) and n.kind.endswith("_info")}
+    return [pos for pos, n, _ in nodes
+            if isinstance(n, Op) and n.kind in FACTORISATIONS and key(n) not in read]
+
+
 def ir_checks(name: str, sinks, walk, kind, profile) -> dict:
     """The verify report of one kernel (never refuses; see :func:`apply_caps`)."""
     top = _top(sinks)
@@ -461,7 +475,11 @@ def ir_checks(name: str, sinks, walk, kind, profile) -> dict:
     max_trips, loops = _max_trips(top)
     cost = kernel_cost(walk)
     ints = INDEX_INTS + INT_PLANE_DTYPES
+    linalg = {}
+    if any(isinstance(n, Op) and n.kind in FACTORISATIONS for _, n, _ in nodes):
+        linalg = {"linalg.status_dropped": _status_dropped(nodes, canonical_nodes(tuple(sinks))[1])}
     return {
+        **linalg,
         "interface": _interface(walk, nodes, kind),
         "budgets": {
             "max_trips": max_trips,
@@ -508,9 +526,12 @@ def apply_caps(name: str, report: dict, profile) -> None:
     if profile.max_stack_bytes is not None and used > profile.max_stack_bytes:
         raise _refusal(name, "kernel", "stack", "budget.stack",
                        f"{used} static bytes (tapes {static['tapes']}, carries "
-                       f"{static['carries']}) exceed max_stack_bytes="
-                       f"{profile.max_stack_bytes}",
-                       "shorten the taped loop or raise the cap")
+                       f"{static['carries']}"
+                       + ("" if static["temporaries"] is None
+                          else f", temporaries {static['temporaries']}") + ") "
+                       f"exceed max_stack_bytes={profile.max_stack_bytes}",
+                       "shorten the taped loop, lower the matrix dimension or "
+                       "raise the cap")
     if profile.index_policy == "refuse":
         for site in report["indices"]:
             if site["status"] == "clamped":

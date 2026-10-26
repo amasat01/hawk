@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ..emit.spelling import _MATH1, _MATH2, _MATH3
+from ..ir.linalg import LINALG_OPS
 from ..ir.loop_nodes import Loop
 from ..ir.nodes import (
     GATHER_ROLES,
@@ -77,6 +78,12 @@ FEATURES: dict[str, tuple[Callable, tuple[str, str]]] = {
         ("a random draw lowers to aether's counter-based generator",
          "no counter-based draw is built for C yet; draw in the caller and pass "
          "the values in as a plane")),
+    "linalg": (
+        lambda k, kind, w, nodes: _first(
+            nodes, lambda n: isinstance(n, Op) and n.kind in LINALG_OPS),
+        ("a factorisation or a solve against one lowers to aether's linalg",
+         "no per-lane linear algebra is built for this target; factor in the caller "
+         "and pass the result in as a plane")),
     "raw_device": (
         lambda k, kind, w, nodes: _first(nodes, lambda n: n.kind == RAW_KIND),
         ("a raw_device block splices C++ text the C target cannot check",

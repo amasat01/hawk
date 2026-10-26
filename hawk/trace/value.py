@@ -19,6 +19,7 @@ from typing import Any
 
 from ..ir import At, Const, HawkError, Leaf, Node, Select
 from ..ir import make as _make
+from ..ir.linalg import as_matrix
 from ..ir.nodes import (
     KEYED_AUTO,
     AccumWrite,
@@ -56,6 +57,10 @@ def node_of(x: Any) -> Node:
         return Const(x, _BOOL)
     if isinstance(x, (int, float)):
         return Const(float(x), _F64)
+    from .reduce import Reduced
+
+    if isinstance(x, Reduced):
+        return x.node
     raise HawkError(
         f"{x!r} is not a traced value, an IR node or a numeric literal — a kernel "
         "body may only combine declared vocabulary and literals"
@@ -260,6 +265,9 @@ class Value:
                 "a bool is a mask, not an address")
         if isinstance(k, int):
             return _op("component", self, literal=k)
+        if (isinstance(k, tuple) and len(k) == len(self.node.ttype.shape) == 2
+                and all(isinstance(x, int) and not isinstance(x, bool) for x in k)):
+            return _op("component", self, literal=k)        # a matrix entry, `m[i, j]`
         if not self.node.ttype.shape and isinstance(k, Value):
             raise HawkError(
                 "x[key] indexes a component and a rank-0 value has none; another "
@@ -660,7 +668,7 @@ def _random(kind: str, seed: Any, counter: Any) -> Value:
 
 
 def random_uniform(seed: Any, counter: Any) -> Value:
-    """A reproducible ``U[0, 1)``-shaped draw.
+    """A reproducible ``U(0, 1)`` draw, open at both ends.
 
     ``(seed, counter)`` pick the stream: aether's draw is a PURE function of
     ``(seed, lane index, counter)``, so the SAME pair on the SAME lane is
@@ -831,6 +839,10 @@ def by_key(ref: Any, index: Node, value: Any, accumulate: bool, policy: str = "a
             "plane has one extent")
     if index.ttype.shape != () or index.ttype.dtype not in _INDEX_DTYPES:
         raise HawkError(f"{where}: key is an Index or an integer value, got {index.ttype!r}")
+    if policy == "or" and (ref.ttype.shape or ref.ttype.dtype not in INT_PLANE_DTYPES):
+        raise HawkError(
+            f"{where}: |= sets bits of an Int32 or UInt32 plane (a word per key), "
+            f"{ref.name!r} is declared {ref.ttype!r}")
     kind = "accum" if accumulate else "wide_out"
     if ref.ttype.shape and not (accumulate and ref.dims):
         raise HawkError(
@@ -881,7 +893,7 @@ class _SinkRef:
         self.by_key_kind: str | None = None
 
     def _typed(self, value: Any) -> Node:
-        node = node_of(value)
+        node = as_matrix(node_of(value))
         if node.ttype != self.ttype:
             raise HawkError(
                 f"{self.name!r} is declared {self.ttype!r} but the committed value is "
@@ -941,6 +953,20 @@ class MutableRef(_SinkRef):
         author source."""
         return Value(Leaf("prior_read", "mutable", self.name, self.ttype))
 
+    def zero_cover(self, spec: Any) -> Value:
+        """The start value of a body that stores elements before it reads them: zeros
+        when :func:`hawk.trace.cover.cover_of` proves the body stores EVERY element
+        of this plane before reading any (nothing of the launch-start value
+        survives, so the kernel differentiates), else the launch-start value (a
+        partial cover, a read of an element not yet stored, or a body the analysis
+        cannot decide keep it). Reached by the ast front end only."""
+        from .cover import cover_of
+
+        shape = self.ttype.shape
+        if len(shape) == 1 and cover_of(spec, shape[0]) == frozenset(range(shape[0])):
+            return vec(*([0.0] * shape[0]))
+        return self.prior
+
     def __setitem__(self, key: Any, value: Any) -> None:
         if key is not Ellipsis:
             raise HawkError(
@@ -991,7 +1017,8 @@ class MutableRef(_SinkRef):
             for _label, size in kept:
                 extent *= size
             node = ReduceSamples("sum", node.operands[0], key=node.key,
-                                 count=Const(extent, node.key.ttype), policy=node.policy)
+                                 count=Const(extent, node.key.ttype), policy=node.policy,
+                                 kept=node.kept)
         self.sinks = list(node.stored(self.name))
         self.by_key_kind = "accum"
 

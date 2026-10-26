@@ -48,13 +48,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import prod
 
+from . import linalg
 from .loop_nodes import Loop, LoopCarry, LoopIndex
 from .nodes import SWITCH_RENDERED, At, Const, Dispatch, Leaf, Node, Op, Select, Sink
 from ..types import INT_PLANE_DTYPES
 from .ops import INT_BINARY, INT_UNARY, OP_KINDS, RANDOM_OPS, UNARY_MATH
 from .walk import Walk, dispatch_groups
 
-__all__ = ["BranchCost", "DispatchCost", "dispatch_costs", "fp64_ops", "kernel_cost"]
+__all__ = ["BranchCost", "DispatchCost", "dispatch_costs", "fp64_ops", "kernel_cost",
+           "linalg_bytes"]
 
 _FIELDS = ("arith32", "arith64", "special32", "special64", "loads", "gathers")
 _CHAINS = ("chain32", "chain64", "chainSpecial32", "chainSpecial64")
@@ -68,7 +70,7 @@ SPECIAL_KINDS = (frozenset(UNARY_MATH) - frozenset(_CHEAP_UNARY)) | frozenset(_L
     | frozenset(RANDOM_OPS)
 #: Ops that only move or re-label values.
 _FREE = frozenset(("component", "component_at", "set_component_at", "add_at", "vec", "splat", "transpose",
-                   "as_pure", "as_vec3", "quat_conj"))
+                   "as_pure", "as_vec3", "quat_conj", *linalg.PROJECTIONS))
 #: Role of a leaf that is a scalar parameter or a count, not a plane read.
 _NOT_A_PLANE = ("uniform", "nsamples")
 #: Operation totals of the quaternion ops (a Hamilton product is 16 multiplies and 12 adds).
@@ -94,6 +96,8 @@ class BranchCost:
     vectorised: bool = False
     #: Plane elements written; ``None`` when not counted.
     stores: float | None = None
+    #: Bytes of storage the branch's linear-algebra nodes hold (:func:`linalg_bytes`).
+    held_bytes: int = 0
 
     def as_tuple(self) -> tuple[float, ...]:
         """The six counts in field order (the form an older eagle takes)."""
@@ -137,6 +141,8 @@ _INT_KINDS = INT_BINARY + INT_UNARY
 def _op_count(op: Op) -> tuple[str, float]:
     """``(class, amount)`` of an op: ``class`` is ``arith`` or ``special``."""
     kind, ops = op.kind, op.operands
+    if kind in linalg.LINALG_OPS:
+        return "arith", linalg.op_count(op)
     if kind in SPECIAL_KINDS:
         return "special", _elements(op)
     if kind in _QUAT_OPS:
@@ -245,7 +251,8 @@ def _branch_cost(walk: Walk, nodes: list[Node], roots, zero: frozenset, profile:
                  stores: float | None = None) -> BranchCost:
     from .vectorise import vectorises
 
-    return BranchCost(*_work(nodes), *_paths(roots, zero), vectorises(walk, profile, nodes=nodes), stores)
+    return BranchCost(*_work(nodes), *_paths(roots, zero), vectorises(walk, profile, nodes=nodes), stores,
+                      linalg_bytes(nodes))
 
 
 def _closure(root: Node, skip: set[int]) -> list[Node]:
@@ -270,6 +277,19 @@ def fp64_ops(nodes) -> int:
     transcendental or library call counts once per element)."""
     work = _work(nodes)
     return int(work[1] + work[3])
+
+
+def linalg_bytes(nodes) -> int:
+    """Bytes of storage the linear-algebra nodes of ``nodes`` hold, each counted
+    once (a loop body once, however many trips): what a factorisation, a solve
+    and the fields read from it occupy (:func:`hawk.ir.linalg.op_bytes`)."""
+    total = 0
+    for node in nodes:
+        if isinstance(node, Loop):
+            total += linalg_bytes(node.body_nodes())
+        elif linalg.is_linalg(node):
+            total += linalg.op_bytes(node)
+    return total
 
 
 def kernel_cost(walk: Walk, host_profile: str | None = None) -> BranchCost:
@@ -310,3 +330,27 @@ def dispatch_costs(walk: Walk, host_profile: str | None = None) -> dict[str, Dis
             sample_local and node.policy not in SWITCH_RENDERED   # a rendered switch keeps the loop scalar
             and all(c.vectorised for c in costs))
     return out
+
+
+def working_set_bytes(sinks) -> int:
+    """Bytes of per-lane storage the emitted text declares for its library results: every
+    linear-algebra node at :func:`hawk.ir.linalg.op_bytes`, and each product or built matrix
+    past :data:`hawk.emit.policy.ROLLED_FOLD_MIN` as the ``Item`` it is written into.
+    Values the kernel may keep in registers are not counted. A figure to read a kernel's local
+    memory against: a kernel whose frame is much larger is copying a matrix it need not."""
+    from ..emit import policy
+    from .linalg import LINALG_OPS, op_bytes
+    from .walk import canonical_nodes
+
+    width = {"f64": 8, "f32": 4}
+    total = 0
+    for node in canonical_nodes(tuple(sinks))[0]:
+        if not isinstance(node, Op):
+            continue
+        if node.kind in LINALG_OPS and node.ttype.shape:
+            total += op_bytes(node)
+        elif node.ttype.shape and (policy.rolled(node) or (
+                node.kind == "vec" and len(node.ttype.shape) == 2
+                and prod(node.ttype.shape) > policy.ROLLED_FOLD_MIN)):
+            total += prod(node.ttype.shape) * width.get(node.ttype.dtype, 8)
+    return total

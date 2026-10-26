@@ -34,10 +34,14 @@ from typing import Any
 
 from ..ir import Const, Dispatch, HawkError, Leaf, Node, Select
 from ..ir import make as _mk
-from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex
-from ..ir.nodes import ReduceSamples, SampleIndex
+from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from ..ir.nodes import AccumWrite, ReduceSamples, SampleIndex, WideWrite
 from ..types import TensorType
 from .tape import _reachable
+
+#: The derivative kernel's uniform input keying the alternate path's draw
+#: (:mod:`hawk.diff.altpath`).
+SEED = "jump_seed"
 
 #: The kernel and the rule names the sidecar records.
 KERNEL = "epanechnikov"
@@ -130,6 +134,7 @@ class JumpPlan:
                  record: bool = True) -> None:
         self.key, self.jump, self.kernel = key, jump, kernel or "<sinks>"
         self.root, self.loop, self.record_sites = root or self, loop, record
+        self.engaged = False
         if root is None:
             self.names = {leaf.name for leaf in inputs}
             self.sites: list[Node] = []
@@ -143,6 +148,12 @@ class JumpPlan:
                 lambda leaf: self._leaf(leaf, wanted)))
         self.live: set = set()
         self._seen: set = set()
+        if root is None:
+            self.rounded: list = []
+        self.root.rounded.extend(
+            idx for idx in map(_runtime_index, seq)
+            if idx is not None and self.reach.get(key(idx), 0) == 2
+            and self._from_input(idx))
         for node in seq:
             if isinstance(node, Select):
                 self._classify(node.operands[0], None)
@@ -155,12 +166,36 @@ class JumpPlan:
                               record=True)
             if jump == AUTO:
                 self._refuse_auto()
+            if self.sites and self.rounded:
+                raise self._refuse(
+                    self.rounded[0], "a rounding, sign or integer cast of a "
+                    "differentiated input picks a row or a bin: its crossings are "
+                    "switches the jump does not see, so the derivative would "
+                    "silently leave them out. Key the row by a value that does not "
+                    "depend on the differentiated input")
 
     def _leaf(self, leaf: Leaf, wanted: set | None) -> int:
         if wanted is not None:
             return 1 if self.key(leaf) in wanted else 0
         return 1 if (leaf.name in self.root.names
                      and leaf.ttype.dtype in _FLOAT) else 0
+
+    def _from_input(self, node: Node) -> bool:
+        """Whether a differentiated input (or a carry on its path) reaches
+        ``node`` without crossing a loop's result, whose reach is the loop's
+        as a whole."""
+        stack, seen = [node], set()
+        while stack:
+            n = stack.pop()
+            if id(n) in seen or isinstance(n, (Loop, LoopValue)):
+                continue
+            seen.add(id(n))
+            if not n.operands:
+                if self.reach.get(self.key(n), 0):
+                    return True
+                continue
+            stack.extend(n.operands[1:] if isinstance(n, Select) else n.operands)
+        return False
 
     def _refuse(self, cond: Node, why: str) -> HawkError:
         return HawkError(f"jump= in kernel {self.kernel!r}: {spell(cond)}: {why}")
@@ -545,10 +580,23 @@ class JumpPlan:
             sites.append(entry)
         auto = self.jump == AUTO
         rule = "spread_v1" if auto else "param" if param else "fixed"
-        return {"kernel": KERNEL, "rule": rule,
-                "h": None if param or auto else self.jump,
-                "constant": SPREAD if auto else None,
-                "param": param, "sites": sites}
+        record = {"kernel": KERNEL, "rule": rule,
+                  "h": None if param or auto else self.jump,
+                  "constant": SPREAD if auto else None,
+                  "param": param, "sites": sites}
+        if self.engaged:
+            record.update(rule="altpath_v1", seed_param=SEED, engaged=True,
+                          width_rule=rule)
+        return record
+
+
+def _runtime_index(node: Node) -> Node | None:
+    """The runtime row or key ``node`` reads or commits at, else ``None``."""
+    if isinstance(node, (AccumWrite, WideWrite)):
+        return node.index
+    if getattr(node, "kind", "") in ("at", "component_at", "set_component_at", "add_at"):
+        return node.operands[1]
+    return None
 
 
 def _reach_of(node: Node, get, leaf) -> int:

@@ -18,6 +18,8 @@ from __future__ import annotations
 import math
 
 import numpy as np
+from scipy import linalg as sla
+from scipy.linalg import lapack
 
 from hawk.ir import (
     AccumWrite,
@@ -125,6 +127,76 @@ _RANDOM = {
 }
 
 
+class _Factor:
+    """What a factorisation node evaluates to: the factor and its status."""
+
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+
+
+def _lu(a):
+    lu, piv, info = lapack.dgetrf(np.asarray(a, dtype=float))
+    return _Factor(lu=lu, piv=piv, info=info, n=len(lu))
+
+
+def _chol(a):
+    a = np.asarray(a, dtype=float)
+    l, info = lapack.dpotrf((a + a.T) / 2, lower=1, clean=1)
+    return _Factor(l=l, info=info, n=len(l))
+
+
+def _chol_from(a):
+    """The factor a built lower triangular matrix is: its lower triangle, zeros and an
+    ``info`` at the first diagonal entry that is not positive and finite."""
+    low = np.tril(np.asarray(a, dtype=float))
+    bad = ~(np.diag(low) > 0) | ~np.isfinite(np.diag(low))
+    info = int(np.argmax(bad)) + 1 if bad.any() else 0
+    return _Factor(l=np.zeros_like(low) if info else low, info=info, n=len(low))
+
+
+def _eigh(a):
+    a = np.asarray(a, dtype=float)
+    s = (a + a.T) / 2
+    w, v = np.linalg.eigh(s)
+    big = np.argmax(np.abs(v), axis=0)
+    v = v * np.sign(v[big, np.arange(len(w))])
+    close = len(w) > 1 and np.min(np.diff(w)) <= len(w) * np.finfo(float).eps * np.linalg.norm(s)
+    return _Factor(w=w, v=v, info=2 if close else 0, n=len(w))
+
+
+def _lu_solve(f, b, trans=0):
+    b = np.asarray(b, dtype=float)
+    return np.zeros_like(b) if f.info else sla.lu_solve((f.lu, f.piv), b, trans=trans)
+
+
+def _tri(f, b, trans):
+    b = np.asarray(b, dtype=float)
+    if f.info:                      # a partial factor: the library divides by what it holds
+        return np.full_like(b, np.nan)
+    return sla.solve_triangular(f.l, b, lower=True, trans=trans)
+
+
+def _lu_det(f):
+    if f.info:
+        return 0.0
+    return float(np.prod(np.diag(f.lu)) * (-1.0) ** np.count_nonzero(f.piv != np.arange(f.n)))
+
+
+#: The linear-algebra kinds the interpreter evaluates; a failed lane is
+#: all zeros, as the library's.
+_LINALG = {
+    "lu": _lu, "chol": _chol, "eigh": _eigh, "chol_from": _chol_from,
+    "lu_solve": _lu_solve, "lu_solve_t": lambda f, b: _lu_solve(f, b, 1),
+    "cho_solve": lambda f, b: (np.zeros_like(np.asarray(b, dtype=float)) if f.info
+                               else sla.cho_solve((f.l, True), np.asarray(b, dtype=float))),
+    "tri_lower": lambda f, b: _tri(f, b, 0), "tri_upper_t": lambda f, b: _tri(f, b, 1),
+    "lu_info": lambda f: f.info, "chol_info": lambda f: f.info, "eigh_info": lambda f: f.info,
+    "lu_det": _lu_det,
+    "chol_factor": lambda f: np.zeros_like(f.l) if f.info else f.l,
+    "eigh_w": lambda f: f.w, "eigh_v": lambda f: f.v,
+}
+
+
 def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0) -> dict:
     """Evaluate ``sinks`` at ``env`` (leaf name -> value); returns sink values.
 
@@ -199,6 +271,13 @@ def _iterations(loop, env: dict, memo: dict):
     # is a statement, not a value, and it is reached through TapeRead instead.
     outside = {id(operand): _value(operand, env, memo)
                for operand in loop.operands if not isinstance(operand, Loop)}
+    # a Loop operand is a forward loop this one tapes (a statement before it, in the
+    # scope that holds both): run it HERE, in the caller's memo, and hand its state
+    # across the fresh per-iteration memos (a nested loop's tape source reads values
+    # of the enclosing iteration, which only the caller's memo holds)
+    for operand in loop.operands:
+        if isinstance(operand, Loop):
+            outside[("loop", id(operand))] = _loop_state(operand, env, memo)
     carry = [_value(init, env, memo) for init in loop.inits]
     ks = list(range(loop.start, loop.stop, loop.step))
     if loop.count is not None:
@@ -278,7 +357,12 @@ def _compute(node: Node, env: dict, memo: dict):
         plane = _value(node.plane, env, memo)
         return np.asarray(plane)[int(_value(node.index, env, memo))]
     if isinstance(node, Select):
-        cond, a, b = (_value(c, env, memo) for c in node.operands)
+        cond = _value(node.operands[0], env, memo)
+        if np.ndim(cond) == 0:
+            # the emitted `cond ? a : b` runs ONE arm: a gather in the arm the
+            # condition rules out (a row valid only where it holds) is never read
+            return _value(node.operands[1 if cond else 2], env, memo)
+        a, b = (_value(c, env, memo) for c in node.operands[1:])
         return np.where(cond, a, b)
     if isinstance(node, Dispatch):
         # The serial oracle: the SAME clamp every emitted policy shares —
@@ -293,6 +377,8 @@ def _compute(node: Node, env: dict, memo: dict):
     kind = node.kind
     if kind in _QUAT:
         return _QUAT[kind](*args)
+    if kind in _LINALG:
+        return _LINALG[kind](*args)
     if kind == "component":
         return args[0][node.literal]
     if kind == "set_component_at":

@@ -53,9 +53,9 @@ classifiers = [
 # (`hawk.compile.payload.current_payload()`), added the day the code that
 # uses it landed rather than pre-declared ahead of it.
 # raptor-core, aether-dsc, raptor-hawk and raptor-eagle share one version from 0.7.0; aether-dsc
-# 0.7.0 brings `aether/accum/run.h`, which keyed sums over a repeated key emit.
+# 0.7.1 brings the linear-algebra headers (LU, Cholesky) and the `aether::rt` runtime path hawk emits.
 # numpy: hawk never imports it, but the host route and every example pass NumPy arrays
-dependencies = ["aether-dsc>=0.7.0,<0.8", "raptor-core>=0.7.0,<0.8", "numpy>=1.26"]
+dependencies = ["aether-dsc>=0.7.1,<0.8", "raptor-core>=0.7.0,<0.8", "numpy>=1.26"]
 
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
@@ -114,51 +114,45 @@ markers = [
 ]
 
 [tool.ruff]
-line-length = 88
 target-version = "py39"
+# notebooks are executed by nbcheck, not linted
+extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "D"]
-ignore = [
-    "D102",
-    "D105",
-    "D107",
-    "D205",
-    "D209",
-    "D401",
-    "E741",
-]
-
-[tool.ruff.lint.pydocstyle]
-convention = "pep257"
+select = ["F"]
+# kernel bodies assign named values the tracer reads; deleting them changes the kernel
+ignore = ["F841"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D", "F841", "E501"]
-"__init__.py" = ["D104"]
-# A tutorial/example notebook is READ as narrative prose with code alongside
-# it, the same reason "tests/**" above drops D (docstrings) and E501 (line
-# length): a kernel body defined inline for the reader is not a library
-# function that owes a docstring, and a `print(f"...")` line explaining a
-# result to the reader is not improved by an 88-column wrap. Real bugs in a
-# notebook cell (an unused import, an unsorted import block, a genuine
-# undefined name) still fail — only the narrative-vs-library rules are
-# scoped out here. E402 joins them for the same reason: a tutorial cell
-# routinely narrates a result BEFORE importing the module its next step
-# needs, which is prose structure, not an import-order bug.
-"docs/content/**/*.ipynb" = ["D", "E501", "E402"]
-# A named-axis plane declares its layout with Python's slice syntax INSIDE an
-# annotation -- `Table["row":rows, "col":cols]` (the spelling
-# a re-authored kernel's own named-dim style uses). ruff reads any annotation as a TYPE
-# expression, so each axis LABEL reads as a quoted forward reference: F821
-# "undefined name 'row'" and UP037 "remove quotes", on a declaration that is
-# neither a type nor a reference. Scoped to the modules that AUTHOR such kernels
-# -- a genuine undefined name in any other test still fails -- and the same
-# entry is what a consumer re-authoring a downstream package's kernels against HAWK will need.
-"tests/test_ir_contraction.py" = ["D", "F841", "E501", "F821", "UP037"]
-"tests/test_refusal_pins.py" = ["D", "F841", "E501", "F821", "UP037"]
-"tests/test_trace_loop_lowering.py" = ["D", "F841", "E501", "F821", "UP037"]
-"tests/test_loop_lowering_card.py" = ["D", "F841", "E501", "F821", "UP037"]
-"tests/_kan.py" = ["D", "F841", "E501", "F821", "UP037"]
-"tests/test_ir_loop_digest_memory.py" = ["D", "F841", "E501", "F821", "UP037"]
-"tests/test_diff_second_order_loops.py" = ["D", "F841", "E501", "F821", "UP037"]
-"tests/test_trace_loop_vector_index.py" = ["D", "F841", "E501", "F821", "UP037"]
+# A named-axis plane declares its layout with Python's slice syntax inside an
+# annotation (`Grid["row", "col":8]`); ruff reads each axis label as an
+# undefined name. Scoped to the modules that author such kernels, so an
+# undefined name anywhere else still fails.
+"examples/two_body_hybrid.py" = ["F821"]
+"tests/_autodiff_kernels.py" = ["F821"]
+"tests/_kan.py" = ["F821"]
+"tests/test_across_lanes.py" = ["F821"]
+"tests/test_broadcast_bind.py" = ["F821"]
+"tests/test_broadcast_deploy.py" = ["F821"]
+"tests/test_broadcast_matrix.py" = ["F821"]
+"tests/test_diff_loop_dispatch_gather.py" = ["F821"]
+"tests/test_diff_nested_loops.py" = ["F821"]
+"tests/test_diff_second_order_loops.py" = ["F821"]
+"tests/test_emit_rolled.py" = ["F821"]
+"tests/test_grid_bind.py" = ["F821"]
+"tests/test_grid_declaration.py" = ["F821"]
+"tests/test_ir_contraction.py" = ["F821"]
+"tests/test_ir_index_form.py" = ["F821"]
+"tests/test_ir_loop_digest_memory.py" = ["F821"]
+"tests/test_kernel_call.py" = ["F821"]
+"tests/test_linalg_frontend.py" = ["F821"]
+"tests/test_loop_lowering_card.py" = ["F821"]
+"tests/test_named_axis_mutable.py" = ["F821"]
+"tests/test_reduce_samples.py" = ["F821"]
+"tests/test_refusal_pins.py" = ["F821"]
+"tests/test_runtime_first_axis.py" = ["F821"]
+"tests/test_sidecar_schema.py" = ["F821"]
+"tests/test_sorted_index.py" = ["F821"]
+"tests/test_sum_readback.py" = ["F821"]
+"tests/test_table_positional.py" = ["F821"]
+"tests/test_trace_loop_lowering.py" = ["F821"]

@@ -334,18 +334,29 @@ def test_normal_distribution_bands(tmp_path, cache_dir):
 # aether::math, not bit-reproducible against a from-scratch reimplementation
 # by construction, and the header says so).
 # --------------------------------------------------------------------------- #
-#: (seed, counter, uniformDoubleBits, normalDouble) at global=0 -- transcribed
-#: from aether/tests/random/golden_random.h's kCoreRows.
+#: (backend seed, counter, uniformDoubleBits, normalDouble) at global=0 --
+#: transcribed MECHANICALLY from aether/tests/random/golden_random.h's kCoreRows.
+#: HAWK XORs a per-kind salt into the seed it is given, so the seed bound here
+#: is `backend_seed ^ salt` (see `_hawk_seed`).
 _GOLDEN_ROWS = (
-    (0x0000000000000000, 0, 0x3FD989FA35800000, -0.31039573600037634),
-    (0x0000000000000000, 1, 0x3FEC2D38B1C00000, -0.13595797896327272),
-    (0x0000000000000000, 2, 0x3FE78AF589A00000, 0.76338801926953026),
-    (0x0000000000000000, 3, 0x3FE3601B7B200000, -0.22271010206952083),
-    (0x0000000000000000, 4, 0x3FEF1C9994A00000, 0.3292107012677683),
-    (0x0000000000000000, 7, 0x3FA2FDFED0000000, 2.1735188577861648),
-    (0x0000000000000000, 9, 0x3FD471CCA9C00000, -1.9252709937181016),
-    (-1, 0, 0x3FDCA91DC2800000, 1.6700178282651672),  # seed 0xFFFF...FFFF
+    (0x0000000000000000, 0, 0x3FD989FA35600000, -0.31039573600037634),
+    (0x0000000000000000, 1, 0x3FEF1C9994900000, 0.3292107012677683),
+    (0x0000000000000000, 2, 0x3F93EA8CA6000000, 1.496658890412502),
+    (0x0000000000000000, 3, 0x3FE9321DE5300000, 0.58879303697750685),
+    (0x0000000000000000, 4, 0x3FEDE7B86A900000, -0.42620584005128648),
+    (0x0000000000000000, 7, 0x3FE51663A6300000, 0.73727725377480147),
+    (0x0000000000000000, 9, 0x3FE2DD2037900000, 1.1636559786717489),
+    (0xFFFFFFFFFFFFFFFF, 0, 0x3FDCA91DC2600000, 1.6700178282651672),
 )
+
+_SALT_UNIFORM = 0x243F6A8885A308D3
+_SALT_NORMAL = 0x13198A2E03707344
+
+
+def _hawk_seed(backend_seed: int, salt: int) -> int:
+    """The int64 seed plane value whose salted form is ``backend_seed``."""
+    v = (backend_seed ^ salt) & 0xFFFFFFFFFFFFFFFF
+    return v - (1 << 64) if v >= (1 << 63) else v
 
 
 def _bits_to_double(bits: int) -> float:
@@ -365,14 +376,14 @@ def test_matches_the_aether_golden_oracle(tmp_path, cache_dir):
     n_loaded = O.load(tmp_path / "r4n", "draw_normal")
 
     for seed, counter, u_bits, n_val in _GOLDEN_ROWS:
-        u_planes = O.planes(u_loaded, 1, {"seed": _plane(1, seed), "counter": _plane(1, counter)})
+        u_planes = O.planes(u_loaded, 1, {"seed": _plane(1, _hawk_seed(seed, _SALT_UNIFORM)), "counter": _plane(1, counter)})
         u = float(np.asarray(O.run_kernel(u_loaded, 1, **u_planes))[0])
         want_u = _bits_to_double(u_bits)
         assert u == want_u, (
             f"R4 uniform: seed={seed:#x} counter={counter}: got {u!r}, golden "
             f"{want_u!r} (bits {u_bits:#018x})")
 
-        n_planes = O.planes(n_loaded, 1, {"seed": _plane(1, seed), "counter": _plane(1, counter)})
+        n_planes = O.planes(n_loaded, 1, {"seed": _plane(1, _hawk_seed(seed, _SALT_NORMAL)), "counter": _plane(1, counter)})
         got_n = float(np.asarray(O.run_kernel(n_loaded, 1, **n_planes))[0])
         assert abs(got_n - n_val) <= 1e-12, (
             f"R4 normal: seed={seed:#x} counter={counter}: got {got_n!r}, golden "

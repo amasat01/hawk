@@ -71,6 +71,11 @@ jobs:
           cd hawk && python -m raptor_docs.fresh --check --site ../site
       - name: manifesto copy matches raptor's
         run: bash hawk/tools/manifesto_check.sh hawk/CONTRIBUTING.md
+      - name: ruff, pyflakes rules (repo config)
+        working-directory: hawk
+        run: |
+          python -m pip install --quiet --only-binary=:all: ruff==0.15.18
+          ruff check
   test:
     needs: docs-fresh
     runs-on: ubuntu-latest

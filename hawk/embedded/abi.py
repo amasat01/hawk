@@ -29,6 +29,7 @@ import re
 from aether_dsc import c_core
 
 from ..ir.nodes import FINISHED_PLANE
+from . import linalg
 from .helpers import helper
 from .spelling import WIDTH
 
@@ -343,6 +344,8 @@ def _helper_order(writer) -> list[str]:
 
     def key(name: str):
         base, shape = writer.helper_requests[name]
+        if base in linalg.BASES:
+            return (4, (), linalg.BASES.index(base), name)
         if shape is None:
             return (_FAMILY.get(base.split("_", 1)[0], 2), (), 0, name)
         return (3, (len(shape), shape), _SHAPED_ORDER.index(base), name)

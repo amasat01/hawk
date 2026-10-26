@@ -18,10 +18,12 @@ naming the kind, the rank and what aether would need.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from math import prod
 
 from ..ir import HawkError
 from ..ir.nodes import (
     FINISHED_PLANE,
+    GATHER_ROLES,
     RAW_KIND,
     RAW_LANGUAGE,
     At,
@@ -34,10 +36,13 @@ from ..ir.nodes import (
     TapeWrite,
     is_param_cell,
 )
+from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS
 from ..ir.ops import RANDOM_OPS
 from ..types import INT_PLANE_DTYPES, TensorType
 from .box import BOX_OWN
 from . import rtstore
+from . import policy
+from .policy import rolled
 from .dispatch import _clamp_expr, render_dispatch_rank0
 from .spelling import (
     _CWISE,
@@ -54,12 +59,18 @@ from .spelling import (
     _for_header,
     _no_spelling,
     _real_literal,
+    _through,
     binding_name,
     carry_type,
     element_spelling,
     finish_binding,
     param_cell_binding,
 )
+
+#: aether's per-distribution salts (`UniformLeaf::salt`, `NormalLeaf::salt` in
+#: `aether/random/detail/DistributionLeaf.h`): the seed handed to the backend
+#: is `seed ^ salt`, so each kind keys its own stream.
+_RANDOM_SALT = {"random_uniform": "0x243F6A8885A308D3ULL", "random_normal": "0x13198A2E03707344ULL"}
 
 
 #: The namespace of aether's run commits (``aether/accum/run.h``) and the
@@ -71,6 +82,10 @@ class AetherWriter:
     """The aether C++ spelling (see the module docstring)."""
 
     id = "aether"
+    #: sites over the fold threshold spell as ``aether::rt`` twins
+    #: (:mod:`hawk.emit.policy`), which the renderer prepares for through
+    #: :meth:`unrendered` and :meth:`fresh_value`
+    rolled_forms = True
     #: aether's lazy expressions inline until the renderer's fan-out rule
     #: names them; only leaf values (``Item``/``Constant``) are forced.
     names_every_tensor = False
@@ -169,8 +184,15 @@ class AetherWriter:
         return "(" + " || ".join(f"{b}[i].eval()" for b in bound) + ")"
 
     def store(self, r, sink, target: str, value: str) -> None:
-        """The own column: one elementwise contribution, one store."""
-        r._emit(f"{target}[i] = {value};")
+        """The own column: one elementwise contribution, one store. A fresh ``Item`` of
+        more than :data:`~hawk.emit.policy.ROLLED_FOLD_MIN` elements is copied by a loop
+        (``aether::rt::store``): the unrolled assignment holds a register per element."""
+        if value == f"{target}[i]":
+            return                  # a library result already written into the plane
+        if value in r.fresh_items and prod(sink.value.ttype.shape) > policy.ROLLED_FOLD_MIN:
+            r._emit(f"aether::rt::store({target}[i], {value});")
+        else:
+            r._emit(f"{target}[i] = {value};")
 
     def scatter_store(self, r, sink, target: str, index: str, value: str) -> None:
         """A scattered wide_write targets a computed ROW: a store, exactly as
@@ -185,6 +207,10 @@ class AetherWriter:
     def accum_scattered(self, r, sink, target: str, index: str, value: str) -> None:
         """The scattered ``plain``/``atomic`` commit: the target's atomic add."""
         r._emit(f"hawk_abi::accum_add({target}, {self._sample_index(index)}, {value});")
+
+    def or_scattered(self, r, sink, target: str, index: str, value: str) -> None:
+        """The scattered ``policy="or"`` commit: the target's atomic OR."""
+        r._emit(f"hawk_abi::accum_or({target}, {self._sample_index(index)}, {value});")
 
     def store_compensated(self, r, sink, target: str, comp: str, value: str) -> None:
         """The ``compensated`` kind's commit: a Neumaier accumulate into the
@@ -282,6 +308,8 @@ class AetherWriter:
             return param_cell_binding(node.plane.name)
         plane = binding_name(node.plane.role, node.plane.name)
         idx = self._sample_index(r._ref(node.index))
+        if r.position.get(id(node)) in r.lazy:
+            return f"{plane}[{idx}]"        # proxy, handed to a library call as it stands
         return f"{plane}[{idx}]" + (".get()" if node.ttype.shape else ".eval()")
 
     def select(self, r, node: Select, c: str, a: str, b: str) -> str:
@@ -303,9 +331,161 @@ class AetherWriter:
         kind, rank = node.kind, len(node.ttype.shape)
         if kind == RAW_KIND:
             return self._raw(r, node, args)
+        if kind in LINALG_OPS:
+            return self._linalg(r, node, args)
         if rank == 0 and all(rk == 0 for rk in ranks):
             return self._scalar_op(r, kind, args, node)
         return self._tensor_op(r, kind, args, ranks, node)
+
+    def _linalg(self, r, node: Op, args: Sequence[str]) -> str:
+        """A factorisation, a solve against one, or a read of a field of one,
+        through ``aether::linalg`` (``aether/linalg/``).
+
+        A factor is the library's struct, a named local the call fills in place
+        (a struct of ``n x n`` returned by value is copied, and the copies are
+        what spill). Matrices go in and
+        out as per-sample operands: a plane leaf as its ``[i]`` proxy, so the
+        library reads the plane element by element and the lane holds only the
+        factor and one column; any other value as a named ``Item``. A solve or
+        a matrix field is written into a fresh ``Item`` by statements ahead of
+        the line that uses it, as the runtime-index stores do; ``info``,
+        ``det`` and the factor itself are plain expressions."""
+        kind = node.kind
+        n = node.operands[0].ttype.shape[0]
+        if kind in FACTORISATIONS:
+            name = f"hawk_lf{r.hoists}"
+            r.hoists += 1
+            r._emit(f"aether::linalg::{_STRUCT[kind]}<{element_spelling(node.ttype.dtype)}, {n}> {name};")
+            self._linalg_call(r, _FACTORISE[kind], (n,), name,
+                              self._operand(r, node.operands[0], args[0]), emit=True)
+            return name
+        if kind.endswith("_info"):
+            return f"{args[0]}.info"
+        if kind == "lu_det":
+            return self._linalg_call(r, "luDet", (), args[0])
+        out = r.direct.get(r.position.get(id(node))) or self._fresh_item(r, node.ttype)
+        if kind in CONSUMERS:
+            rhs = node.operands[1]
+            k = rhs.ttype.shape[1] if len(rhs.ttype.shape) == 2 else 1
+            if kind == "lu_solve" and _is_identity(rhs):
+                self._linalg_call(r, "luInverse", (), args[0], out, emit=True)
+                return out
+            held = self._operand(r, rhs, args[1])
+            if kind in _TRIANGULAR:
+                self._linalg_call(r, _TRIANGULAR[kind], (n, k), f"{args[0]}.l", held, out, emit=True)
+            else:
+                self._linalg_call(r, _SOLVE[kind], (k,), args[0], held, out, emit=True)
+        elif kind == "chol_factor":
+            self._linalg_call(r, "choleskyFactor", (), args[0], out, emit=True)
+        else:
+            field = "w" if kind == "eigh_w" else "v"
+            count = 1
+            for extent in node.ttype.shape:
+                count *= extent
+            slot = f"{out}.data()[hawk_lk]" if out in r.fresh_items else (
+                f"{out}.at(hawk_lk)" if len(node.ttype.shape) == 1
+                else f"{out}.at(hawk_lk / {node.ttype.shape[1]}, hawk_lk % {node.ttype.shape[1]})")
+            r._emit(f"for (Int hawk_lk = 0; hawk_lk < {count}; ++hawk_lk) "
+                    f"{slot} = {args[0]}.{field}[hawk_lk];")
+        return out
+
+    @staticmethod
+    def _linalg_call(r, fn: str, targs: Sequence[int], *args: str, emit: bool = False) -> str:
+        """The one place a call into ``aether::linalg`` is spelled: ``fn<targs>(args)``,
+        as a statement when ``emit`` (the call writes its last operand), else
+        as the expression it is."""
+        spelled = f"aether::linalg::{fn}" + (f"<{', '.join(map(str, targs))}>" if targs else "")
+        call = f"{spelled}({', '.join(args)})"
+        if emit:
+            r._emit(call + ";")
+        return call
+
+    def _operand(self, r, source: Node, arg: str) -> str:
+        """``source`` as a per-sample operand a library twin reads by element
+        (``aether::rt`` and ``aether::linalg``): a read-only plane is its proxy
+        (the leaf's own local when it is bound as one, else ``plane[i]``), a
+        value that is already a named ``Item`` itself, anything else an ``Item``
+        held for the scope (:meth:`_held_item`)."""
+        source = _through(source)
+        pos = r.position.get(id(source))
+        if _is_plane(source):
+            return arg if pos in r.lazy else f"{binding_name(source.role, source.name)}[i]"
+        if isinstance(source, At) and pos in r.lazy:
+            return arg          # a plane read at another lane: its proxy
+        if arg in r.fresh_items or (isinstance(source, Op) and source.kind == "vec"):
+            return arg          # already a named Item: a library result, an assembled matrix
+        if isinstance(source, Leaf) and source.ttype.shape and source.role != "mutable" \
+                and r._materialised(source, pos):
+            return arg
+        return self._held_item(r, source, arg)
+
+    def _product_operand(self, r, source: Node) -> str:
+        """An operand of a rolled product: a transpose is read through its operand
+        (``aether::rt::transposed``), so the transposed value is never built."""
+        source = _through(source)
+        if isinstance(source, Op) and source.kind == "transpose":
+            return f"aether::rt::transposed({self._product_operand(r, source.operands[0])})"
+        return self._operand(r, source, r._ref(source))
+
+    def _assemble(self, r, node: Op, args: Sequence[str]) -> str:
+        """A matrix built from entries, past the threshold: a fresh ``Item`` its entries
+        are stored into one statement each. The brace initialiser of the same entries
+        is one expression whose every entry is live at once."""
+        out = self._fresh_item(r, node.ttype)
+        cols = node.ttype.shape[1]
+        for k, arg in enumerate(args):
+            r._emit(f"{out}({k // cols}, {k % cols}) = {arg};")
+        return out
+
+    def _rolled_product(self, r, node: Op) -> str:
+        """A product over the fold threshold (:func:`hawk.emit.policy.rolled`) as its
+        ``aether::rt`` twin, written into a fresh ``Item`` ahead of the line that uses it.
+        The static text multiplies register ``Item``s, so the twin is the one that
+        contracts as they do (``matVecItems``)."""
+        out = self._fresh_item(r, node.ttype)
+        left, right = (self._product_operand(r, o) for o in node.operands)
+        r._emit(f"aether::rt::{'matVecItems' if node.kind == 'mv' else 'matMat'}({out}, {left}, {right});")
+        return out
+
+    def unrendered(self, r) -> frozenset:
+        """The positions no statement renders: a value every one of whose users reads
+        it through its own operand (an identity right-hand side ``luInverse``
+        replaces, a transpose a rolled product reads through)."""
+        reads: dict = {}
+        for node in r.nodes:
+            if not isinstance(node, Op) or r.stores.skips(node):
+                continue
+            for k, child in enumerate(node.operands):
+                child = _through(child)
+                if _absorbs(node, k, child):
+                    p = r.position[id(child)]
+                    reads[p] = reads.get(p, 0) + 1
+        return frozenset(p for p, n in reads.items() if n == r.fanout.get(p, 0))
+
+    @staticmethod
+    def direct_kind(node: Op) -> bool:
+        """Whether ``node`` is a library result that can be written into the plane it is stored to."""
+        return node.kind in CONSUMERS or node.kind in ("chol_factor", "eigh_w", "eigh_v")
+
+    @staticmethod
+    def own_shape(node: Op) -> tuple:
+        return node.ttype.shape
+
+    def fresh_value(self, node: Node) -> bool:
+        """Whether ``node`` renders as the name of a fresh local its statements
+        fill (a factor, a library result, a rolled product): it is never copied."""
+        return isinstance(node, Op) and bool(node.ttype.shape) and (
+            node.kind in LINALG_OPS or rolled(node) or _assembled(node))
+
+    @staticmethod
+    def _fresh_item(r, ttype: TensorType) -> str:
+        """A declared, unset ``aether::Item`` of ``ttype`` for statements to fill."""
+        name = f"hawk_la{r.hoists}"
+        r.hoists += 1
+        r.fresh_items.add(name)
+        extents = ", ".join(str(e) for e in ttype.shape)
+        r._emit(f"aether::Item<{element_spelling(ttype.dtype)}, {extents}> {name};")
+        return name
 
     def _raw(self, r, node: Op, args: Sequence[str]) -> str:
         block = node.literal
@@ -365,9 +545,11 @@ class AetherWriter:
     def _random_draw(self, r, kind: str, args: Sequence[str]) -> str:
         """HAWK's ``(seed, counter)`` draw: aether's stateless
         ``detail::uniform01``/``detail::standardNormal<Real>(seed, global,
-        counter)`` (:data:`_RANDOM_FN`), with ``global`` the kernel's own
-        flattened sample index spelled here as the bound :data:`SAMPLE_INDEX_IDENT`
-        directly. Every lane is its own stream by construction (an author names
+        counter)`` (:data:`_RANDOM_FN`) under the seed XOR-ed with the kind's own
+        salt (:data:`_RANDOM_SALT`, aether's per-leaf constants), so a uniform
+        and a normal drawn on the same ``(seed, counter)`` are unrelated
+        streams. ``global`` is the kernel's own flattened sample index, spelled
+        here as the bound :data:`SAMPLE_INDEX_IDENT` directly. Every lane is its own stream by construction (an author names
         only ``seed``/``counter``), which is also what lets a captured graph
         re-draw by writing one of those wires rather than re-capturing. Sets
         :attr:`uses_random` so :class:`Body` carries the fact
@@ -375,12 +557,15 @@ class AetherWriter:
         r.uses_random = True
         seed, counter = args
         return (f"aether::random::detail::{_RANDOM_FN[kind]}<Real>("
-                f"static_cast<std::uint64_t>({seed}), "
+                f"static_cast<std::uint64_t>({seed}) ^ {_RANDOM_SALT[kind]}, "
                 f"static_cast<aether::offset_t>({SAMPLE_INDEX_IDENT}), "
                 f"static_cast<std::uint64_t>({counter}))")
 
     def _reduction(self, r, kind: str, args: Sequence[str], node: Op) -> str:
         """The rank>=1 -> rank-0 forms: they READ a tensor and RETURN a scalar."""
+        if kind != "component" and rolled(node):
+            operands = ", ".join(self._operand(r, o, a) for o, a in zip(node.operands, args))
+            return f"aether::rt::{kind}({operands})"
         if kind == "component":
             from .render import _through
 
@@ -476,6 +661,8 @@ class AetherWriter:
             ext = ", ".join(str(e) for e in node.ttype.shape)
             return (f"aether::constant<aether::extents<{ext}>>("
                     f"{self._cast(args[0], node.ttype.dtype)})")
+        if kind == "vec" and _assembled(node):
+            return self._assemble(r, node, args)
         if kind == "vec":
             if not args:
                 raise HawkError("vec: a vector literal needs at least one component")
@@ -504,6 +691,8 @@ class AetherWriter:
         if kind in _CWISE1:
             return f"aether::{_CWISE1[kind]}({args[0]})"
         if kind in ("mv", "mm"):
+            if rolled(node):
+                return self._rolled_product(r, node)
             return f"({args[0]} * {args[1]})"
         if kind == "outer":
             return f"aether::outer({args[0]}, {args[1]})"
@@ -608,6 +797,44 @@ class AetherWriter:
         ext = ", ".join(str(e) for e in ttype.shape)
         return f"aether::constant<aether::extents<{ext}>>(static_cast<{elem}>(0))"
 
+
+def _assembled(node: Node) -> bool:
+    """A matrix built from more entries than the static threshold (:mod:`hawk.emit.policy`)."""
+    return (isinstance(node, Op) and node.kind == "vec" and len(node.ttype.shape) == 2
+            and prod(node.ttype.shape) > policy.ROLLED_FOLD_MIN)
+
+
+def _is_identity(node: Node) -> bool:
+    """Whether ``node`` is the literal identity matrix (``hawk.trace.linalg.eye``)."""
+    node = _through(node)
+    return (isinstance(node, Op) and node.kind == "vec" and len(node.ttype.shape) == 2
+            and node.ttype.shape[0] == node.ttype.shape[1]
+            and all(isinstance(c, Const) and c.literal == (1.0 if k // node.ttype.shape[0] == k % node.ttype.shape[0] else 0.0)
+                    for k, c in enumerate(node.operands)))
+
+
+def _is_plane(node: Node) -> bool:
+    """A read-only rank>=1 plane leaf: ``plane[i]`` reads it element by element, and
+    nothing in the kernel writes it."""
+    return (isinstance(node, Leaf) and bool(node.ttype.shape)
+            and node.role not in ("mutable", "uniform", "nsamples") and node.role not in GATHER_ROLES
+            and not is_param_cell(node))
+
+
+def _absorbs(node: Op, k: int, child: Node) -> bool:
+    """Whether ``node`` reads operand ``k`` through ``child``'s own operand instead of
+    its text: an identity right-hand side of ``lu_solve``, a transpose under a rolled product."""
+    if node.kind == "lu_solve":
+        return k == 1 and _is_identity(child)
+    return rolled(node) and isinstance(child, Op) and child.kind == "transpose"
+
+
+#: The ``aether::linalg`` function each factorisation kind calls, the struct it fills, and each solve.
+_FACTORISE = {"lu": "lu", "chol": "cholesky", "eigh": "eigh", "chol_from": "choleskyFrom"}
+_STRUCT = {"lu": "Lu", "chol": "Cholesky", "eigh": "Eigh", "chol_from": "Cholesky"}
+_SOLVE = {"lu_solve": "luSolve", "lu_solve_t": "luSolveT", "cho_solve": "choSolve"}
+#: The solves against the factor's ``L`` alone (they read the struct's ``l``).
+_TRIANGULAR = {"tri_lower": "triLower", "tri_upper_t": "triUpperT"}
 
 #: Integer-only kinds -> their ``hawk_abi`` helper (any integer type).
 _INT_CALLS = {"floordiv": "int_floordiv", "mod": "int_mod", "band": "int_and",

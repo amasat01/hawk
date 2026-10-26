@@ -32,7 +32,7 @@ WRITER_MEMBERS: tuple[str, ...] = (
     "selector_decl", "mix_count", "predicated_rank0", "predicated_tensor",
     "switch_default_tail", "typed_zero",
     "leaf", "const", "at", "select", "op",
-    "guard", "store", "scatter_store", "accum_scattered", "store_compensated",
+    "guard", "store", "scatter_store", "accum_scattered", "or_scattered", "store_compensated",
     "sample_sum", "tape_write", "finish", "exit_if",
     "component_commit", "in_place_accumulate", "zero_row",
 )
@@ -55,6 +55,10 @@ class Writer(Protocol):
     #: component at a time (:meth:`component_commit`), so a wide value is never
     #: live whole; otherwise it keeps the single store at the end.
     commits_per_component: bool
+    #: Whether sites over the fold threshold spell as library twins
+    #: (:mod:`hawk.emit.policy`). A writer that does gives the renderer
+    #: ``unrendered(r)`` and ``fresh_value(node)``.
+    rolled_forms: bool
 
     # -- declarations and loops ----------------------------------------
     def declare(self, name: str, ttype: Any, text: str) -> str:
@@ -138,6 +142,11 @@ class Writer(Protocol):
     def accum_scattered(self, r: Any, sink: Any, target: str, index: str,
                         value: str) -> None:
         """A scattered ``plain``/``atomic`` accumulate."""
+
+    def or_scattered(self, r: Any, sink: Any, target: str, index: str,
+                     value: str) -> None:
+        """A scattered ``policy="or"`` commit: the bits OR-ed into the word at
+        the computed index."""
 
     def store_compensated(self, r: Any, sink: Any, target: str, comp: str,
                           value: str) -> None:

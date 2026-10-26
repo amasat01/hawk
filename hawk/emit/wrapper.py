@@ -263,6 +263,15 @@ _RANDOM_INCLUDE_MARKER = "#include <aether/math/math.h>\n"
 #: that calls one (:func:`run_states`).
 _RUN_INCLUDE = "#include <aether/accum/run.h>\n"
 
+#: The linear-algebra header, spliced after the same marker only for a body
+#: that calls it.
+_LINALG_CALL = "aether::linalg::"
+_LINALG_INCLUDE = "#include <aether/linalg/linalg.h>\n"
+
+#: The rolled-loop twins' header (:mod:`hawk.emit.policy`), likewise.
+_RT_CALL = "aether::rt::"
+_RT_INCLUDE = "#include <aether/expr/Rt.h>\n"
+
 _RUN_SITE = re.compile(rf"\b{RUN_STATE}(\w+)\);")
 
 
@@ -343,6 +352,26 @@ template <class ViewT, class T>
     const E s = old + t;
     std::atomic_ref<E>(compSlot).fetch_add(twoSumErr_(old, t, s),
                                            std::memory_order_relaxed);
+#endif
+}}
+"""
+
+#: The scattered ``policy="or"`` commit: an atomic OR of a 32-bit word into the
+#: target's slot, the device's own ``atomicOr`` or an ``atomic_ref`` under the
+#: OpenMP host team. Spliced only into a unit whose body calls it.
+_ACCUM_OR = """
+template <class ViewT, class T>
+{qualifier} void accum_or(ViewT& target, const aether::SampleIndex& at, T bits)
+{{
+    auto& slot = target(at.global());
+    using E = std::remove_reference_t<decltype(slot)>;
+    static_assert(std::is_integral_v<E> && sizeof(E) == 4,
+                  "hawk_abi::accum_or: a scattered OR commits through the "
+                  "target's atomic OR, on a 32-bit integer plane");
+#if defined(__CUDA_ARCH__)
+    atomicOr(reinterpret_cast<unsigned int*>(&slot), static_cast<unsigned int>(bits));
+#else
+    std::atomic_ref<E>(slot).fetch_or(static_cast<E>(bits), std::memory_order_relaxed);
 #endif
 }}
 """
@@ -622,6 +651,7 @@ template <class ViewT>
 #: range and mapping NaN to 0. No ``<limits>``: the device compiler may not
 #: carry it. Emitted only for a body that calls one.
 _INT_CALL = "hawk_abi::int_"
+_OR_CALL = "hawk_abi::accum_or("
 _INT_HELPERS = """
 template <class T> struct int_traits;
 template <> struct int_traits<std::int32_t> {{
@@ -743,7 +773,7 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
                 store_compensated: bool = False, finish: bool = False,
                 spacing: bool = False, mix: bool = False,
                 integers: bool = False, sample_sum: bool = False,
-                fold: bool = False) -> str:
+                fold: bool = False, scatter_or: bool = False) -> str:
     """The view-from-mirror reconstruction helpers — byte-for-byte the same
     on both targets, only the function qualifier differs; reads the
     mirror's own stride fields so a non-contiguous plane rebuilds
@@ -776,6 +806,8 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
         helpers.append(_MIX_COUNT.format(qualifier=qualifier))
     if integers:
         helpers.append(_INT_HELPERS.format(qualifier=qualifier))
+    if scatter_or:
+        helpers.append(_ACCUM_OR.format(qualifier=qualifier))
     return f"""namespace hawk_abi {{
 
 template <class T, std::size_t N>
@@ -844,7 +876,8 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             store_compensated: bool = False, needs_random: bool = False,
             finish: bool = False, spacing: bool = False, mix: bool = False,
             integers: bool = False, sample_sum: bool = False,
-            runs: bool = False, fold: bool = False) -> str:
+            runs: bool = False, fold: bool = False, linalg: bool = False,
+            rt: bool = False, scatter_or: bool = False) -> str:
     """Includes + the scalar-mode aliases + the reconstruction helpers.
 
     ``compensated``/``store_compensated`` reach :func:`abi_helpers`'s gate.
@@ -852,7 +885,8 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
     a unit whose body emitted a random draw gets the extra header, and
     ``runs`` the run commits' header."""
     includes = _INCLUDES
-    extra = (_RANDOM_INCLUDE if needs_random else "") + (_RUN_INCLUDE if runs else "")
+    extra = ((_RANDOM_INCLUDE if needs_random else "") + (_RUN_INCLUDE if runs else "")
+             + (_LINALG_INCLUDE if linalg else "") + (_RT_INCLUDE if rt else ""))
     if extra:
         includes = includes.replace(_RANDOM_INCLUDE_MARKER,
                                     _RANDOM_INCLUDE_MARKER + extra, 1)
@@ -862,7 +896,7 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             + abi_helpers(qualifier, compensated=compensated,
                          store_compensated=store_compensated, finish=finish,
                          spacing=spacing, mix=mix, integers=integers,
-                         sample_sum=sample_sum, fold=fold))
+                         sample_sum=sample_sum, fold=fold, scatter_or=scatter_or))
 
 
 def render_source(name: str, sinks, walk: Walk, target, *,
@@ -966,7 +1000,9 @@ def render_source(name: str, sinks, walk: Walk, target, *,
                finish=getattr(walk, "finish", None) is not None,
                spacing=_SPACING_CALL in body.text, mix=_MIX_CALL in body.text,
                integers=_INT_CALL in body.text, sample_sum=bool(sums),
-               runs=RUN_CALL in body.text, fold=bool(walk.companions)),
+               runs=RUN_CALL in body.text, fold=bool(walk.companions),
+               linalg=_LINALG_CALL in body.text, rt=_RT_CALL in body.text,
+               scatter_or=_OR_CALL in body.text),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",
@@ -1179,7 +1215,10 @@ def _render_two_paths(name: str, sinks, walk: Walk, target, *,
                 finish=getattr(walk, "finish", None) is not None,
                 spacing=_SPACING_CALL in fused.text + single.text,
                 mix=_MIX_CALL in fused.text + single.text,
-                integers=_INT_CALL in fused.text + single.text),
+                integers=_INT_CALL in fused.text + single.text,
+                linalg=_LINALG_CALL in fused.text + single.text,
+                rt=_RT_CALL in fused.text + single.text,
+                scatter_or=_OR_CALL in fused.text + single.text),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",

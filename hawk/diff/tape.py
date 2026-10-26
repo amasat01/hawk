@@ -41,7 +41,16 @@ from ..ir import Const, HawkError, Leaf, Node
 from ..ir import make as _mk
 from ..ir.loop_nodes import LoopCarry, LoopIndex, LoopValue
 from ..ir.loops import build_loop
-from ..ir.nodes import Assign, Finish, SampleSum, Select, TapeWrite, element_count
+from ..ir.nodes import (
+    AccumWrite,
+    Assign,
+    Finish,
+    SampleSum,
+    Select,
+    TapeWrite,
+    element_count,
+    is_param_cell,
+)
 from ..ir.walk import substitute
 from ..types import TensorType
 
@@ -275,12 +284,12 @@ def _time(step: Any) -> tuple | None:
 def _resink(sink: Node, value: Node) -> Node:
     if isinstance(sink, Finish):
         return Finish(sink.name, value, steps=sink.steps)
-    if isinstance(sink, SampleSum):
+    if isinstance(sink, (SampleSum, AccumWrite)):
         return sink.rebuilt(value)
     if isinstance(sink, Assign):
         return Assign(sink.name, value, sink.ttype)
     raise HawkError(
-        f"a promotion rebuilds Mutable commits, sample sums and a finish; "
+        f"a promotion rebuilds Mutable commits, sample sums, keyed accumulates and a finish; "
         f"{sink.kind} {getattr(sink, 'name', '?')!r} is none of them")
 
 
@@ -473,6 +482,12 @@ def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None) -> Any:
         back = hawk.Kernel("fall_step_vjp", hawk.diff.step_vjp(fall))
         # reads y, v, dt, bar_y_next, bar_v_next; writes bar_y, bar_v, bar_dt
     """
+    from .transform import _rederivable
+
+    return _rederivable(_step_vjp)(kernel, wrt=wrt, primal_unit=primal_unit)
+
+
+def _step_vjp(kernel: Any, *, wrt, primal_unit) -> Any:
     from ..trace.kernel import Kernel
     from .event import as_plain_reads
     from .transform import Derived, vjp
@@ -488,5 +503,68 @@ def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None) -> Any:
                             for s, v in zip(commits, values)), {})
     function.jump = getattr(step, "jump", None)
     out = vjp(function, wrt=wrt)
+    if (out.jump or {}).get("engaged"):
+        raise HawkError(
+            f"step_vjp({step.name!r}): a jump= switch whose value reaches control or a "
+            "nonlinear op is differentiated by an alternate path of ONE launch; "
+            "carrying it across launches (steps=, time_step, eagle stepping) is not "
+            "built. Differentiate the whole rollout in one kernel with hawk.diff.vjp")
     return Derived(tuple(out), primal=step.name, kind="vjp", wrt=out.wrt,
                    primal_unit=primal_unit, jump=out.jump)
+
+
+def step_jvp(kernel: Any, *, wrt=None) -> Any:
+    """The forward-mode twin of ONE step of an in-place step kernel, for a
+    tangent carried across launches: a kernel that commits each state plane
+    ``<plane>`` AND ``dot_<plane>`` (its tangent), both advanced by the same
+    step. Where :func:`step_vjp` runs backwards over a taped rollout, this
+    runs forward beside the primal and needs no tape, so it launches like
+    any step kernel: ``hawk.steps(result, K)``, or paced by ``eagle.until_done``.
+
+    The tangent of a state plane is carried like the plane (``dot_<plane>``
+    is read at the launch start and written at its end); ``wrt`` names the
+    other inputs differentiated (a ``Param`` by name, ``None`` for all), and
+    every state plane is always differentiated. Seed ``dot_<input>`` before
+    the first launch. A sample that terminates keeps its tangent, as it keeps
+    its state. A kernel declaring ``jump=`` or reading parameter cells is
+    refused: their tangent is not carried here.
+
+    Example::
+
+        @hawk.kernel(steps=1)
+        def decay(a: Param, terminated: Terminated, x: Mutable[Scalar]):
+            x = x * a
+            terminated = x < 0.5
+
+        fwd = hawk.diff.step_jvp(decay)
+        # reads a, dot_a, x, dot_x; commits x and dot_x
+    """
+    from ..trace.kernel import Kernel
+    from .event import as_plain_reads
+    from .transform import TANGENT_PREFIX, jvp
+
+    step = (getattr(kernel, "step", None) or getattr(kernel, "one_step", None)
+            or kernel)
+    if getattr(step, "jump", None) is not None:
+        raise HawkError(
+            f"step_jvp({step.name!r}): a kernel declaring jump= is not carried forward; "
+            "differentiate its per-launch term with hawk.diff.jvp")
+    if any(is_param_cell(n) for n in _reachable(tuple(s.value for s in step.sinks))):
+        raise HawkError(
+            f"step_jvp({step.name!r}): the kernel reads parameter cells, whose tangent "
+            "is not carried across launches")
+    state = tuple(dict.fromkeys(s.name for s in step.sinks if isinstance(s, Assign)))
+    plain = Kernel(f"{step.name}_plain", tuple(
+        _resink(s, v) for s, v in zip(step.sinks, as_plain_reads(tuple(s.value for s in step.sinks)))),
+        step.planes, kind=step.kind)
+    tangent = jvp(plain, wrt=None if wrt is None else tuple(dict.fromkeys((*wrt, *state))))
+    carried = set(state) | {f"{TANGENT_PREFIX}_{name}" for name in state}
+    values = tuple(s.value for s in tangent)
+    start = {id(n): Leaf("prior_read", "mutable", n.name, n.ttype)
+             for n in _reachable(values)
+             if isinstance(n, Leaf) and n.kind != "prior_read" and n.name in carried}
+    values = substitute(values, start) if start else values
+    out = Kernel(f"{step.name}_jvp", tuple(step.sinks) + tuple(
+        _resink(s, v) for s, v in zip(tangent, values)), step.planes, kind=step.kind)
+    out.time, out.time_step = step.time, step.time_step
+    return out

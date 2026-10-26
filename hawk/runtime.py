@@ -127,8 +127,11 @@ def descriptor_for_sidecar(sidecar: dict) -> list:
     types are reconstructed from the sidecar's own blocks: ``mutables``
     (resolves a ``mutable`` role's shape — without it a
     ``Mutable[Vector[3]]`` packs as a 32-byte handle where the kernel
-    expects a 40-byte mirror), ``params`` and ``scalar_type``. Widths
-    never enter: shape is decided by role and rank alone."""
+    expects a 40-byte mirror), ``vec_widths`` and ``mat_shapes`` (the
+    declared extents of the vector and matrix inputs), ``params`` and
+    ``scalar_type``. A slot's kind is decided by role and rank, but the
+    type handed to :func:`kind_for` is the declared one, whatever the
+    extents (``Matrix[R, C]``, ``Vector[W]``)."""
     scalar_type = sidecar.get("scalar_type", "float64")
     mutables = {m["name"]: m for m in sidecar.get("mutables", ())}
     wire = sidecar.get("arg_dtypes", {})
@@ -136,34 +139,49 @@ def descriptor_for_sidecar(sidecar: dict) -> list:
     out = []
     for role, name in (tuple(pair) for pair in sidecar["arg_spec"]):
         if role in ("mutable", "out"):
-            decl = mutables.get(name, {})
-            dtype = decl.get("dtype", "scalar")
-            ttype = _MUTABLE_TTYPE[dtype]
+            ttype = _mutable_ttype(name, mutables.get(name, {}))
         elif role == "uniform":
             ttype = TensorType((), "i64" if params.get(name, {}).get("dtype") == "int"
                                else "f64")
-        elif role in ("vec_in", "mat_in"):
-            ttype = _SHAPED[role]
+        elif role == "vec_in":
+            ttype = TensorType((int(_extent(sidecar.get("vec_widths", {}).get(name),
+                                            "vec_widths", name)),), "f64")
+        elif role == "mat_in":
+            shape = _extent(sidecar.get("mat_shapes", {}).get(name), "mat_shapes", name)
+            ttype = TensorType(tuple(int(e) for e in shape), "f64")
         else:
             ttype = TensorType((), _WIRE_TO_DTYPE.get(wire.get(name), "f64"))
         out.append(kind_for(role, ttype, scalar_type=scalar_type))
     return out
 
 
+def _extent(value, block: str, name: str):
+    """``value``, the extent the artifact declares for the plane ``name`` in
+    ``block``; a sidecar that omits it cannot be bound."""
+    if value is None:
+        raise HawkError(
+            f"the sidecar declares no {block!r} entry for {name!r}, so its shape "
+            "cannot be read; rebuild the artifact")
+    return value
+
+
+def _mutable_ttype(name: str, decl: dict) -> TensorType:
+    """The type of a ``mutables`` entry: ``dtype`` names the rank, ``width`` and
+    ``shape`` the extents."""
+    dtype = decl.get("dtype", "scalar")
+    if dtype == "vector":
+        return TensorType((int(_extent(decl.get("width"), "mutables.width", name)),), "f64")
+    if dtype == "matrix":
+        shape = _extent(decl.get("shape"), "mutables.shape", name)
+        return TensorType(tuple(int(e) for e in shape), "f64")
+    return TensorType((), _MUTABLE_DTYPE[dtype])
+
+
 #: The IR dtype an integer ``arg_dtypes`` wire label stands for.
 _WIRE_TO_DTYPE = {"int64": "i64", "int32": "int32", "uint32": "uint32"}
 
-#: The TensorType shape each declared ``mutables`` dtype stands for.
-#: Only the RANK matters to :func:`kind_for`.
-_MUTABLE_TTYPE = {
-    "scalar": TensorType((), "f64"),
-    "int": TensorType((), "i64"),
-    "int32": TensorType((), "int32"),
-    "uint32": TensorType((), "uint32"),
-    "vector": TensorType((3,), "f64"),
-    "matrix": TensorType((3, 3), "f64"),
-}
-_SHAPED = {"vec_in": TensorType((3,), "f64"), "mat_in": TensorType((3, 3), "f64")}
+#: The IR dtype of each rank-0 ``mutables`` dtype.
+_MUTABLE_DTYPE = {"scalar": "f64", "int": "i64", "int32": "int32", "uint32": "uint32"}
 
 assert set(_KIND_OF_MIRROR) | {"value"} == set(MIRROR_OF.values()), (
     "hawk.runtime's kind vocabulary must cover every by-value shape the map "
@@ -222,10 +240,14 @@ class HostKernel:
         takes exactly one step) and a one-cell ``finished_count`` counter
         reset to ``0`` (a kernel that finishes its own samples counts them
         there; bind your own buffer to read the count), and a zeroed
-        ``<group>_mix`` plane per ``"auto"`` dispatch (its branch counts)."""
+        ``<group>_mix`` plane per ``"auto"`` dispatch (its branch counts), and
+        a ``jump_seed`` of ``0`` for an alternate-path ``jump=`` derivative."""
+        from .diff.jump import SEED
         from .ir.nodes import FINISHED_PLANE, FUSED_STEPS_PLANE
 
         extra = {}
+        if SEED not in arrays and any(n == SEED for _, n in self.slot_of):
+            extra[SEED] = 0
         for name in (FUSED_STEPS_PLANE, FINISHED_PLANE):
             if name in arrays or not any(n == name for _, n in self.slot_of):
                 continue
@@ -287,8 +309,8 @@ class HostKernel:
                 if self.descriptor[slot] == "gref" and name in arrays:
                     mv = memoryview(arrays[name])
                     width = int(widths.get(name) or 1)
-                    samples = _native_extent(mv, width,
-                                             choice.of(name, mv, width))
+                    samples = (mv.shape[-1] if name in (self.sidecar.get("gather_mats") or {})
+                               else _native_extent(mv, width, choice.of(name, mv, width)))
                 self.block.bind(slot,
                                 self._buffer_address(arrays, name, role, choice),
                                 samples, 1, DEVICE_CPU, 0)
@@ -532,7 +554,9 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
     if lane_n is not None:
         n_samples = lane_n
     if n_samples is None:
-        n_samples = _n_from(kernel_artifact.arg_spec, plain,
+        compact = sidecar.get("gather_mats") or {}
+        n_samples = _n_from([(r, n) for r, n in kernel_artifact.arg_spec
+                             if not (r == "mat_in" and n in compact)], plain,
                             sidecar.get("arg_shapes", {}),
                             LayoutChoice(layout, axes))
         _lane_bind.check_total(sidecar, n_samples)
@@ -560,6 +584,27 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
             scratch.finish(outputs, base // ROW, -(-(base + count) // ROW))
 
 
+def _keyed_planes(first: HostKernel, held: dict, n_samples: int) -> dict:
+    """The keyed planes a split kernel owns between its stages, and the
+    companions of their compensated sums: made once per sample count and
+    ZEROED for every run (a stage accumulates into them)."""
+    import numpy as np
+
+    out = {}
+    for cell, spec in (first.sidecar.get("keyed") or {}).items():
+        size = _lane_bind.keyed_size(first.sidecar, spec, n_samples)
+        out[cell] = held.setdefault("keyed", {}).setdefault(
+            (cell, size), np.zeros(size, dtype=first.scalar_type))
+        for stage in held["stages"]:
+            for comp, target in (stage.sidecar.get("companions") or {}).items():
+                if target == cell:
+                    out[comp] = held["keyed"].setdefault(
+                        (comp, size), np.zeros(size, dtype=first.scalar_type))
+    for plane in out.values():
+        plane.fill(0)
+    return out
+
+
 def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
                 owned: dict) -> None:
     """A split kernel: stage ``k``, then the host finish of its cells, then
@@ -575,9 +620,11 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
         held["own"] = {c: np.zeros(spec["columns"], dtype=first.scalar_type)
                        for c, spec in cells.items()}
     values = {c: arrays[c] if c in arrays else held["own"][c] for c in cells}
+    keyed = _keyed_planes(first, held, n_samples)
     for at, (stage, record) in enumerate(zip(held["stages"], first.sidecar["stages"])):
         names = {name for _, name in stage.arg_spec}
         bound = {k: v for k, v in arrays.items() if k in names and k not in cells}
+        bound.update({k: v for k, v in keyed.items() if k in names})
         for cell in record["cells_in"]:
             column = np.asarray(values[cell]).reshape(-1)
             for k, plane in enumerate(_cells.planes(cell, cells[cell]["columns"])):
@@ -590,7 +637,9 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
         stage._bind_all(bound, n_samples, layout)
         stage._launch(0, n_samples, n_samples)
         later = {name for st in held["stages"][at + 1:] for _, name in st.arg_spec}
-        _fold_companions(stage, bound, {c: t for c, t in owned.items()
-                                        if c in names and c not in later})
+        mine = {c: t for c, t in owned.items() if c in names and c not in later}
+        mine.update({c: t for c, t in (stage.sidecar.get("companions") or {}).items()
+                     if t in keyed and c in keyed})
+        _fold_companions(stage, bound, mine)
         if scratch is not None:
             scratch.finish(outputs, 0, -(-n_samples // ROW))

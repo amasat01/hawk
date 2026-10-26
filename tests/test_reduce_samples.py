@@ -254,8 +254,8 @@ def test_a_reduced_value_read_later_is_a_launch_boundary():
     assert first.cells_out == ("t",) and second.cells_in == ("t",)
 
 
-def test_arithmetic_on_a_sum_over_some_axes_refuses():
-    with pytest.raises(HawkError, match="Reading it back in the body is in the next release"):
+def test_arithmetic_on_a_sum_over_some_axes_is_not_stored_per_lane():
+    with pytest.raises(HawkError, match="is written by key"):
         @kernel
         def k2(lane: hawk.Grid["a", "b":4], x: Scalar, t: Mutable["a":2]):
             t = hawk.sum(x, over="b") * 2.0

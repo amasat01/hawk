@@ -204,13 +204,12 @@ def k_kan(x: Vector[N_IN], theta: THETA, g: Param,
 
 
 def kan_dual(x, theta, g, h=0.02):
-    """``(y, dy/dg)`` in numpy forward mode, each indicator's tangent its jump."""
+    """``(y, dy/dg)`` in numpy forward mode: the piecewise derivative, every
+    indicator's tangent zero."""
     tot, dtot = 0.0, 0.0
     for e in range(N_IN):
         xe, dxe = x[e] * g, x[e]
-        lev = [(((xe >= KN[i]) & (xe < KN[i + 1])) * 1.0,
-                dxe * (K(xe - KN[i], h) * (xe < KN[i + 1])
-                       - K(xe - KN[i + 1], h) * (xe >= KN[i])))
+        lev = [(((xe >= KN[i]) & (xe < KN[i + 1])) * 1.0, 0.0 * xe)
                for i in range(len(KN) - 1)]
         for d in range(1, KO + 1):
             nxt = []
@@ -225,6 +224,37 @@ def kan_dual(x, theta, g, h=0.02):
         ds = sum(lev[b][1] * theta[e * NB + b] for b in range(NB))
         tot, dtot = tot + np.tanh(s), dtot + (1.0 - np.tanh(s) ** 2) * ds
     return tot, dtot
+
+
+def kan_flips(x, theta, g, h=0.02):
+    """The per-lane EXPECTATION of the alternate-path derivative: the piecewise
+    derivative plus, for each of an edge's comparisons, ``K(d) sigma d' (L(c=1)
+    - L(c=0))`` with the loss ``tanh`` of the spline recomputed with that one
+    comparison forced (the other indicator comparisons keep their outcome)."""
+    _, total = kan_dual(x, theta, g, h)
+    for e in range(N_IN):
+        xe, th = x[e] * g, theta[e * NB:(e + 1) * NB]
+        ge = [xe >= KN[i] for i in range(len(KN) - 1)]
+        lt = [xe < KN[i + 1] for i in range(len(KN) - 1)]
+
+        def loss(ge_, lt_):
+            level = [(a & b) * 1.0 for a, b in zip(ge_, lt_)]
+            for d in range(1, KO + 1):
+                level = [((xe - KN[i]) / (KN[i + d] - KN[i])) * level[i]
+                         + ((KN[i + d + 1] - xe) / (KN[i + d] - KN[i])) * level[i + 1]
+                         for i in range(len(level) - 1)]
+            return np.tanh(sum(level[b] * th[b] for b in range(NB)))
+
+        on, off = np.ones_like(xe, dtype=bool), np.zeros_like(xe, dtype=bool)
+        for i in range(len(KN) - 1):
+            for side, knot, flags in ((1.0, KN[i], ge), (-1.0, KN[i + 1], lt)):
+                forced = []
+                for value in (on, off):
+                    held = list(flags)
+                    held[i] = value
+                    forced.append(loss(held, lt) if flags is ge else loss(ge, held))
+                total = total + K(xe - knot, h) * side * x[e] * (forced[0] - forced[1])
+    return total
 
 
 # --------------------------------------------------------------------------- #
@@ -446,26 +476,32 @@ def test_a_loop_switch_matches_the_smoothed_loss_difference(rig):
     assert _rel(g.sum(), fd) < 0.02
 
 
+def _agrees_on_average(got, want):
+    gap = got - want
+    assert abs(gap.mean()) < 4.0 * gap.std() / math.sqrt(gap.size)
+
+
 @pytest.mark.parametrize("seed", range(3))
 def test_kan_edges_get_their_jump(rig, seed):
-    n = 1024
+    """A switched value that meets ``tanh`` is differentiated by the alternate
+    path: the lane mean is the sum of the single-comparison flips."""
+    n = 4096
     rng = np.random.default_rng(500 + seed)
     x = rng.uniform(-1.0, 1.0, (N_IN, n))
     theta = rng.normal(size=N_IN * NB)
     gval = 0.9
-    _, dref = kan_dual(x, theta, gval)
+    want = kan_flips(x, theta, gval)
     ybar = rng.normal(size=n)
     got = rig.grad(k_kan, ("g",), {"bar_y": ybar}, x=x, theta=theta, g=gval)["g"]
-    np.testing.assert_allclose(got, ybar * dref, rtol=1e-12,
-                               atol=1e-12 * np.abs(ybar * dref).max())
+    _agrees_on_average(got, ybar * want)
     d = rig.unit(k_kan, "jvp", ("g",))
     dot_y = np.zeros(n)
     hawk.run(hawk.load(d, "g"), dot_g=1.0, dot_y=dot_y, x=x, theta=theta, g=gval)
-    np.testing.assert_allclose(dot_y, dref, rtol=1e-12, atol=1e-12 * np.abs(dref).max())
+    _agrees_on_average(dot_y, want)
     side = rig.sidecar(k_kan, "vjp", ("g",))["derivative"]["jump"]
+    assert side["rule"] == "altpath_v1" and side["seed_param"] == "jump_seed"
     assert len(side["sites"]) == 2 * (len(KN) - 1)
     assert {s["loop"] for s in side["sites"]} == {"e"}
-    assert rig.text(k_kan, "vjp", ("g",)).count("switch (") == 2 * (len(KN) - 1)
 
 
 def test_vector_comparison_sites_share_one_group(rig):

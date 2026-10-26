@@ -26,6 +26,7 @@ import typing
 from collections.abc import Callable
 from typing import Any
 
+from .._broadcast import route
 from ..ir import Const, HawkError, Leaf, Node, Quantity, Walk, canonical, make
 from ..ir.nodes import COMPANION_SUFFIX, AccumWrite, Assign, compensates
 from ..types import Slot, TensorType
@@ -62,7 +63,7 @@ class Kernel:
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
                  "time", "time_step", "source_digest", "jump", "returns",
-                 "lane_space", "group", "_plan", "_lock")
+                 "lane_space", "group", "broadcast", "_variants", "_plan", "_lock")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
@@ -81,9 +82,16 @@ class Kernel:
         #: The launch shape, ``((label|None, extent|None), ...)`` row-major with the
         #: fastest axis last: the ``Grid[...]`` declared, else one unlabelled
         #: runtime axis. Read by the sidecar and the bind doors.
+        #: A derivative (:func:`hawk.diff.vjp`) declares no planes and launches over its primal's.
         self.lane_space = lane_space(self.planes)
+        if self.lane_space[0][0] is None:
+            self.lane_space = getattr(sinks, "lane_space", self.lane_space)
         #: The compaction group, a lane count (``@hawk.kernel(group=...)``): 1.
-        self.group = 1
+        self.group = getattr(sinks, "group", 1)
+        #: The planes this kernel reads broadcast, with their patterns (a variant, see
+        #: :mod:`hawk._broadcast`), and the variants made of it by pattern.
+        self.broadcast: dict[str, tuple] = {}
+        self._variants: dict = {}
         #: The single step a default automatic kernel was derived from (see
         #: :func:`kernel`); ``None`` otherwise, used by ``vjp``/``jvp``.
         self.step = step
@@ -120,10 +128,13 @@ class Kernel:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Run one launch where the arrays live, through the plan eagle
-        deploys for this kernel (built on the first call, cached on disk)."""
-        plan = self._plan
+        deploys for this kernel (built on the first call, cached on disk). A
+        per-lane input of a ``Grid`` kernel may be given broadcast
+        (:mod:`hawk._broadcast`): the call then runs that pattern's variant."""
+        run, args, kwargs = route(self, args, kwargs)
+        plan = run._plan
         if plan is None:
-            plan = self._deploy()
+            plan = run._deploy()
         return plan(*args, **kwargs)
 
     def _deploy(self) -> Any:
@@ -136,6 +147,10 @@ class Kernel:
                               "pip install raptor-eagle") from None
         with self._lock:
             if self._plan is None:
+                source = getattr(self.sinks, "source", None)
+                if isinstance(source, Kernel) and self.sinks.primal_unit is None:
+                    # a derivative names the unit its primal was built into
+                    self.sinks.primal_unit = eagle.deploy(source).plugin._hawk_source[1]
                 self._plan = eagle.deploy(self)
         return self._plan
 
@@ -363,7 +378,8 @@ def _check_axis_sinks(name: str, planes: dict[str, Any], args: dict[str, Any]) -
     for p, plane in planes.items():
         if (isinstance(plane, Plane) and plane.form == "mutable" and plane.dims
                 and p in args and any(isinstance(s, Assign) for s in args[p].sinks)):
-            axes = ", ".join(f'"{label}":{size}' for label, size, _stride in plane.dims)
+            axes = ", ".join(f'"{label}"' if size is None else f'"{label}":{size}'
+                             for label, size, _stride in plane.dims)
             raise HawkError(
                 f"kernel {name!r}: {p!r} is declared with the axes [{axes}], so it is "
                 f"written by key (hawk.scatter({p})[key] += v, or {p} = hawk.sum(x, "
@@ -417,8 +433,20 @@ def _bound_planes(fn: Callable[..., Any], params: list[str], own: dict[str, Any]
 
 def _check_grid(name: str, params: list[str], planes: dict[str, Any]) -> None:
     """Refuse a second ``Grid[...]`` and a Grid label that is also a parameter name (a bind keyword
-    would name two things)."""
+    would name two things); likewise a bare first label of a ``Table``/``Mutable`` that no Grid axis
+    shares."""
     grids = [p for p in params if isinstance(planes[p], Plane) and planes[p].grid]
+    lane_labels = {label for g in grids for label, _ in planes[g].grid}
+    for p in params:
+        plane = planes[p]
+        if isinstance(plane, Plane) and plane.dims and plane.dims[0][1] is None \
+                and plane.form in ("mutable", "table", "accum") \
+                and plane.dims[0][0] not in lane_labels \
+                and plane.dims[0][0] in params:
+            raise HawkError(
+                f"kernel {name!r}: the axis label {plane.dims[0][0]!r} of {p!r} is also a "
+                "parameter name, so a launch could not tell which one a keyword binds; "
+                "rename the label")
     if not grids:
         return
     if len(grids) > 1:
@@ -792,6 +820,24 @@ def _finished(name: str, params: list[str], args: dict[str, Any],
             f"kernel {name!r}: finishes {len(out)} masks "
             f"({[s.name for s in out]}); a kernel finishes its sample through ONE")
     return tuple(out)
+
+
+def derived_axes(walk: Walk, primal: Any) -> dict[str, Any]:
+    """The named axes of a derivative's sinks, from its primal's: ``dot_<s>`` (and its
+    companion) is bound as ``<s>`` is (``Mutable["node"]`` gives ``node=N``), and the
+    gradient ``bar_<t>`` of a one-axis ``Table["node"]`` as that table (the length is the caller's,
+    the label its run-time extent). Planes the primal declares no axes for stay undeclared."""
+    declared = getattr(primal, "planes", None) or {}
+    out: dict[str, Any] = {}
+    for role, name in walk.arg_spec:
+        base = name[4:] if name[:4] in ("dot_", "bar_") else None
+        plane = declared.get(base) if base else None
+        if role in ("mutable", "out", "wide_out", "accum_out") and isinstance(plane, Plane) \
+                and plane.dims and (name[:4] == "dot_" or (len(plane.dims) == 1
+                                                         and plane.dims[0][1] is None)):
+            out[name] = Plane("accum" if role == "accum_out" else "mutable", plane.ttype,
+                              dims=plane.dims)
+    return out
 
 
 def _declared(planes: dict[str, Any]) -> tuple:

@@ -67,7 +67,7 @@ TARGETS: dict[str, Target] = {t.id: t for t in (
     Target("host", "for the CPU", AETHER, HOST, CPU, ENTRY_HOST, "host",
            ".so", ".cpp", frozenset(FEATURES) | {"vectorise"}),
     Target("c", "a standalone MISRA C unit for an embedded build", CWriter, None,
-           None, None, "c", ".h", ".c", frozenset(), export=embedded),
+           None, None, "c", ".h", ".c", frozenset({"linalg"}), export=embedded),
 )}
 
 #: What ``build`` builds when ``targets`` is not given: every row with a compiler.

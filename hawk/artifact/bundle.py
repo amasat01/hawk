@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import warnings
 import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -40,6 +41,9 @@ from pathlib import Path
 
 from ..compile import CompileOptions, compile_source, digest_file
 from ..compile.cache import ClosureWatch, publish_atomic, tmp_sibling
+from ..emit import policy
+from ..ir.cost import working_set_bytes
+from ..trace.kernel import derived_axes as _derived_axes
 from ..emit import SegmentSpec, literal_table as _literal_table, render_source, scalar_mode
 from ..emit.box import thread_box
 from ..emit.render import binding_name as _binding_name
@@ -476,6 +480,28 @@ def _emit_arch(targets, device_arch: str) -> str:
     return arch(device_arch) if gpu else ""
 
 
+#: A frame this many times the declared working set is reported as a spill.
+_FRAME_SLACK = 1.25
+
+
+def _resource_report(kernel, ptxas: dict | None) -> dict | None:
+    """The sidecar's ptxas figures with the kernel's expected working set beside them
+    (:func:`hawk.ir.cost.working_set_bytes`) and a ``spills`` flag: registers spilled, or a
+    local frame past :data:`_FRAME_SLACK` times that working set. A flagged kernel warns."""
+    if not ptxas:
+        return ptxas
+    working = working_set_bytes(kernel.sinks)
+    report = {}
+    for entry, row in ptxas.items():
+        spills = row["spill_store_B"] > 0 or (working > 0 and row["stack_B"] > _FRAME_SLACK * working)
+        report[entry] = {**row, "working_set_B": working, "spills": spills}
+        if spills:
+            warnings.warn(f"hawk: kernel {entry!r} uses {row['regs']} registers and a {row['stack_B']}-byte "
+                          f"local frame ({row['spill_store_B']} bytes spilled) against an expected working set "
+                          f"of {working} bytes", stacklevel=2)
+    return report
+
+
 def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arch,
            targets, derivative, host_profile: str = "", opt_level: str = "",
            embedded_profile=None, split: dict | None = None) -> _Draft:
@@ -563,12 +589,15 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         lane_space=getattr(kernel, "lane_space", ((None, None),)),
         group=getattr(kernel, "group", 1),
         box=getattr(sources[lead], "box", None),
-        planes=getattr(kernel, "planes", None),
+        planes=getattr(kernel, "planes", None) or _derived_axes(
+            kernel.walk, getattr(kernel.sinks, "source", None)),
+        broadcast=getattr(kernel, "broadcast", None),
         dispatch_override=dispatch_override,
         step_ops=_step_ops(kernel, kind),
         fp64_ops_ir=_fp64_ops_ir(kernel, kind),
         entry_counts_finished=_entry_counts_finished(kernel, kind),
-        ptxas=entries[lead][0].ptxas if TARGETS[lead].entry == ENTRY_DEVICE else None,
+        ptxas=(_resource_report(kernel, entries[lead][0].ptxas)
+               if TARGETS[lead].entry == ENTRY_DEVICE else None),
     )
     if split is not None:
         # the first stage of a split kernel names every stage and every cell
@@ -846,6 +875,11 @@ def _expand_split(kernels: list, names: list, kinds: list) -> tuple:
             raise HawkError(
                 f"{n!r} reads a value reduced over samples inside a stepping or "
                 "segmented kernel; a split kernel is one plain step in this release")
+        if any(st.keyed for st in found) and getattr(k, "group", 1) != 1:
+            raise HawkError(
+                f"{n!r} reads hawk.sum/mean(x, over=...) in the body and declares "
+                "group=: a split kernel runs every lane, so a compaction group is "
+                "not built for it in this release")
         cells: dict = {}
         for stage in found:
             sinks = stage.sinks
@@ -853,6 +887,9 @@ def _expand_split(kernels: list, names: list, kinds: list) -> tuple:
                 sinks = Derived(sinks, primal=k.sinks.primal, kind=k.sinks.kind,
                                 wrt=k.sinks.wrt, primal_unit=k.sinks.primal_unit,
                                 jump=k.sinks.jump)
+                for attr in ("lane_space", "group"):     # the stages launch over the derivative's lanes
+                    if hasattr(k.sinks, attr):
+                        setattr(sinks, attr, getattr(k.sinks, attr))
             member = Kernel(stage.name, sinks, k.planes, kind=getattr(k, "kind", None))
             cells.update(member.walk.cells)
             out_kernels.append(member)
@@ -865,6 +902,11 @@ def _expand_split(kernels: list, names: list, kinds: list) -> tuple:
             {"kernel": st.name, "cells_in": list(st.cells_in),
              "cells_out": list(st.cells_out), "recomputed": list(st.recomputed)}
             for st in found]}
+        # the keyed planes the runtime owns between the stages
+        keyed = {kd.name: {"width": kd.width, "axes": [list(a) for a in kd.kept]}
+                 for st in found for kd in st.keyed}
+        if keyed:
+            blocks[n]["keyed"] = keyed
     return out_kernels, out_names, out_kinds, blocks
 
 
@@ -883,8 +925,11 @@ def _manifest_of(drafts) -> dict:
     """The ``manifest.json`` document over ``drafts``' native targets: one
     execution axis (every member must agree), one plugin entry per kernel
     naming its device object when it has one, else its host object."""
-    axes = {(tuple(d.sidecar["exec_targets"]), d.sidecar["exec_access"],
-             d.sidecar.get("exec_op")) for d in drafts}
+    # the stages of one split kernel run in sequence under the first stage's axis
+    first = {st["kernel"]: d.sidecar for d in drafts for st in d.sidecar.get("stages", ())[1:]}
+    axes = {(tuple(first.get(d.name, d.sidecar)["exec_targets"]),
+             first.get(d.name, d.sidecar)["exec_access"],
+             first.get(d.name, d.sidecar).get("exec_op")) for d in drafts}
     if len(axes) != 1:
         raise HawkError(
             "a bundle declares ONE execution axis at the manifest level, but "
@@ -911,9 +956,13 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                  name: str | None = None,
                  derivative: Mapping[str, str] | None = None,
                  host_profile: str = "", opt_level: str = "",
-                 literal_table: bool = False, embedded_profile=None) -> Bundle:
+                 literal_table: bool = False, embedded_profile=None,
+                 emit_form: str = "auto") -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json``
-    over them. Every member must agree on the execution axis (a
+    over them. ``emit_form`` is how a product, dot, sum or norm is spelled
+    (:mod:`hawk.emit.policy`): ``"auto"`` unrolls a site of at most 16 elements and
+    writes a longer one as a loop, ``"static"`` unrolls every site, ``"rolled"`` writes
+    every site as a loop, the fast-compile mode (the compiler does no per-element work). Every member must agree on the execution axis (a
     manifest-level, not per-entry, declaration) — a set that doesn't agree is
     two bundles.
 
@@ -982,6 +1031,8 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     kernels, names, kinds = _expand_segmented(kernels, names, kinds)
     # A member reading a value reduced over samples becomes its stages, each
     # its own compile (its own cache key: its own source and options).
+    if emit_form not in policy.FORMS:
+        raise HawkError(f"emit_form must be one of {policy.FORMS}, got {emit_form!r}")
     kernels, names, kinds, split = _expand_split(kernels, names, kinds)
     kernels = [_active_unit(k, n, kd) for k, n, kd in zip(kernels, names, kinds)]
     key_kind = kind if all(kd is kind for kd in kinds) else tuple(kinds)
@@ -995,7 +1046,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                     device_arch=device_arch, derivative_blocks=per_kernel_derivative,
                     layout_sizes_override=layout_sizes_override,
                     host_profile=host_profile, opt_level=opt_level,
-                    literal_table=literal_table,
+                    literal_table=literal_table, emit_form=emit_form,
                     groups=tuple(getattr(k, "group", 1) for k in kernels),
                     embedded_profile=repr(embedded_profile) if exported else "",
                     source_digests=([getattr(k, "source_digest", None) for k in kernels]
@@ -1035,7 +1086,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     emit_arch = _emit_arch(targets, device_arch)
 
     def sources_of(k, n, kd):
-        with build_arch(emit_arch):
+        with build_arch(emit_arch), policy.using(emit_form):
             return _sources(k, name=n, smode=smode, kind=kd, targets=targets,
                             layout_sizes_override=layout_sizes_override,
                             literal_table=literal_table, embedded_profile=embedded_profile)

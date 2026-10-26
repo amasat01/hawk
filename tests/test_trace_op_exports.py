@@ -220,6 +220,21 @@ SPELLINGS = {
     "shr": lambda: _v(I32_PLANE) >> _v(I32_PLANE, "b"),
     "invert": lambda: ~_v(I32_PLANE),
     "cast": lambda: hm.real(_v(I32_PLANE)),
+    "lu": lambda: hm.lu(_v(M33))[0],
+    "lu_solve": lambda: hm.lu_solve(hm.lu(_v(M33))[0], _v(V3, "b")),
+    "lu_info": lambda: hm.lu(_v(M33))[1],
+    "lu_det": lambda: hm.det(_v(M33)),
+    "chol": lambda: hm.cholesky(_v(M33))[0],
+    # the projection is minted where an author uses L as a matrix: the operand
+    # of the transpose below is that projection, one link down
+    "chol_factor": lambda: node_of(hm.transpose(hm.cholesky(_v(M33))[0])).operands[0],
+    "chol_info": lambda: hm.cholesky(_v(M33))[1],
+    "chol_from": lambda: hm.chol_from(_v(M33))[0],
+    "cho_solve": lambda: hm.cho_solve(hm.cholesky(_v(M33))[0], _v(V3, "b")),
+    "eigh": lambda: node_of(hm.eigh(_v(M33))[0]).operands[0],     # the node the fields read
+    "eigh_w": lambda: hm.eigh(_v(M33))[0],
+    "eigh_v": lambda: hm.eigh(_v(M33))[1],
+    "eigh_info": lambda: hm.eigh(_v(M33))[2],
 }
 
 #: The kinds with no authoring spelling, and why. ``add_at`` is the adjoint of
@@ -230,7 +245,10 @@ SPELLINGS = {
 #: The kind exists so a DERIVATIVE can name the transpose of that broadcast —
 #: ``hawk/diff/rules.zero_like`` and the ``sum``/``splat`` pair — which is IR
 #: the transform mints, never text an author types.
-UNSPELLED = {"splat": "the broadcast a derivative mints; an author's rank-0 "
+UNSPELLED = {"lu_solve_t": "the transposed solve a derivative of lu_solve/lu_det mints",
+             "tri_lower": "the forward half of the Cholesky solve a derivative mints",
+             "tri_upper_t": "the back half of the Cholesky solve a derivative mints",
+             "splat": "the broadcast a derivative mints; an author's rank-0 "
                       "operand broadcasts through the elementwise type rule",
              "add_at": "the adjoint of component_at, minted by the derivative rule"}
 

@@ -26,7 +26,7 @@ GENERATOR = "hawk.embedded/1"
 REPORT_KEYS = (
     "kernel", "generator", "hawk_version", "walk_digest", "source_digest",
     "scalar_mode", "profile", "interface", "budgets", "indices", "fp_domain",
-    "fp_equality_sites", "int_division_sites", "int_ub_sites",
+    "fp_equality_sites", "int_division_sites", "int_ub_sites", "linalg.status_dropped",
     "literal_specials", "libm", "helpers", "core", "core_version", "deviations",
     "unsupported_checked", "audit", "checks",
 )

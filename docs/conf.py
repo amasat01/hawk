@@ -8,7 +8,6 @@
 
 """Sphinx configuration for building the hawk documentation."""
 
-import os
 
 # -- Project information -----------------------------------------------------
 
@@ -18,9 +17,25 @@ author = "Alessandro Masat"
 
 # The version is the latest git tag (setuptools-scm), never written into the tree; hawk itself is
 # not imported: its import-time self-check refuses a _core not built from the tree beside it.
-import setuptools_scm
 
-release = version = setuptools_scm.get_version(root="..", relative_to=__file__, fallback_version="0.0.0")
+
+# -- Version and indexing ------------------------------------------------------
+# The version shown is the release this build is for, never a development string (tools/docs_version.py). The sitemap
+# and the canonical links come from html_baseurl; sphinx-sitemap adds the lastmod of each page from git history.
+import pathlib as _pathlib
+import sys as _sys
+
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1] / "tools"))
+import docs_version  # noqa: E402
+
+release = version = docs_version.release_version(_pathlib.Path(__file__).resolve().parents[1])
+html_baseurl = "https://amasat01.github.io/hawk/"
+sitemap_url_scheme = "{link}"
+try:
+    import sphinx_sitemap  # noqa: F401
+    _SITEMAP = True
+except ImportError:   # docs/requirements.txt installs it; an offline local build goes without
+    _SITEMAP = False
 
 # -- General configuration ---------------------------------------------------
 
@@ -117,6 +132,7 @@ suppress_warnings = ["autodoc", "sphinx_autodoc_typehints.forward_reference"]
 
 html_theme = "sphinx_book_theme"
 html_static_path = ["_static"]
+html_extra_path = ["_redirects"]   # stubs for pages that moved
 # The skin (font, raptor-*.css, favicon links, theme defaults) comes from raptor_docs.sphinx; only this site's accent is local.
 html_css_files = ["site-accent.css", "fit-narrow.css"]
 html_theme_options = {
@@ -129,3 +145,10 @@ html_theme_options = {
     },
 }
 html_title = f"hawk — write one kernel, run it on CPU or GPU ({version})"
+
+if _SITEMAP:
+    extensions.append("sphinx_sitemap")
+
+
+def setup(app):
+    app.connect("build-finished", docs_version.sitemap_lastmod)   # each page's lastmod, from git, into sitemap.xml

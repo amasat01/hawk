@@ -102,6 +102,7 @@ SPELLINGS = {
     "n_samples": lambda: _v(S) * M.n_samples(),
     "norm": lambda: M.norm(_v(V3)),
     "outer": lambda: M.vsum(M.outer(_v(V3), _v(V3, "b")) @ _v(V3, "c")),
+    "pair_index": lambda: _table().at(sum(M.pair_index())),
     "quat_conj": lambda: M.as_vec3(M.quat_conj(_v(Q))),
     "quat_mul": lambda: M.as_vec3(M.quat_mul(_v(Q), _v(Q, "b"))),
     "quat_recip": lambda: M.as_vec3(M.quat_recip(_v(Q))),
@@ -172,6 +173,30 @@ SPELLINGS = {
     "int32": lambda: M.int32(_v(S)),
     "uint32": lambda: M.uint32(_v(S)),
     "real": lambda: M.real(M.int32(_v(S))),
+    "nan": lambda: M.select(M.isnan(_v(S)), M.nan, _v(S, "b")),
+    "inf": lambda: M.minimum(_v(S), M.inf),
+    "solve": lambda: M.solve(_v(M33), _v(V3, "b"))[0],
+    "lu": lambda: M.lu_solve(M.lu(_v(M33))[0], _v(V3, "b")),
+    "lu_solve": lambda: M.lu_solve(M.lu(_v(M33))[0], _v(TensorType((3, 2), "f64"), "B")),
+    "cholesky": lambda: M.cholesky(_v(M33))[0],
+    "cho_solve": lambda: M.cho_solve(M.cholesky(_v(M33))[0], _v(V3, "b")),
+    "mat": lambda: M.mat([[_v(S), _v(S, "b")], [_v(S, "c"), _v(S, "d")]]),
+    "chol_from": lambda: M.cho_solve(M.chol_from(_v(M33))[0], _v(V3, "b")),
+    "inv": lambda: M.inv(_v(M33))[0],
+    "det": lambda: M.det(_v(M33)),
+    "eigh": lambda: M.eigh(_v(M33))[1],
+    "lstsq": lambda: M.lstsq(_v(TensorType((4, 3), "f64"), "J"),
+                             _v(TensorType((4,), "f64"), "r"))[0],
+    "lm_step": lambda: M.lm_step(_v(TensorType((4, 3), "f64"), "J"),
+                                 _v(TensorType((4,), "f64"), "r"), _v(S, "mu")),
+    "mvn_sample": lambda: M.mvn_sample(_v(TensorType((), "i32"), "seed"),
+                                       _v(TensorType((), "i32"), "counter"),
+                                       _v(V3, "mu"), _v(M33, "S")),
+    "eye": lambda: M.eye(3) @ _v(V3),
+    "diag": lambda: M.diag(_v(V3)) @ _v(V3, "b"),
+    "diagonal": lambda: M.diagonal(_v(M33)),
+    "trace": lambda: M.trace(_v(M33)),
+    "tril": lambda: M.tril(_v(M33)) @ _v(V3),
 }
 
 
@@ -384,3 +409,14 @@ def _run(kernel, directory, cache, **planes):
     wanted = {name: planes[name] for role, name in loaded.arg_spec
               if role in O.INPUT_ROLES or role == "uniform"}
     return O.run_kernel(loaded, N, **wanted)
+
+
+def test_nan_and_inf_are_the_float_constants(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAWK_CACHE_DIR", str(tmp_path / "cache"))
+
+    @hawk.kernel
+    def miss(x: hawk.Scalar) -> hawk.Scalar:
+        return M.where(x > 0.0, M.minimum(M.inf, x), M.nan)
+
+    got = miss(np.array([2.0, -1.0]))
+    assert got[0] == 2.0 and np.isnan(got[1])

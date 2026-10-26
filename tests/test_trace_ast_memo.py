@@ -36,7 +36,7 @@ def _defn(source: str, name: str, filename: str):
     twice — this helper is what lets a test do that."""
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
     scope: dict = {"Scalar": Scalar, "Param": Param, "Mutable": Mutable}
-    exec(compile(source, filename, "exec"), scope)  # noqa: - test fixture
+    exec(compile(source, filename, "exec"), scope)  # test fixture
     return scope[name]
 
 

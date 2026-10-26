@@ -539,6 +539,9 @@ jobs:
       - name: make strict
         run: cd hawk/docs && make strict
 
+      - name: every public name has a page
+        run: python hawk/tools/docs_inventory_check.py hawk/docs/_build/html/objects.inv hawk
+
       - id: tree
         run: echo "tree=$(git -C hawk rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
 

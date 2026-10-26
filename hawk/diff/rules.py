@@ -27,9 +27,10 @@ from typing import Any
 from ..ir import Const, HawkError, Node, Select
 from ..ir import make as _mk
 from ..ir.ops import CAST, COMPARE, INT_BINARY, INT_UNARY, LOGICAL, PREDICATE, RANDOM_OPS
-from ..ir.nodes import REDUCE_KIND, ReduceSamples
+from ..ir.nodes import REDUCE_KIND
 from ..trace.value import _entries
 from ..types import TensorType
+from .linalg_rules import LINALG_RULES
 
 _F64 = TensorType((), "f64")
 
@@ -560,13 +561,13 @@ def _reduce_only_sum(n: Node) -> None:
 
 def _reduce_vjp(n: Node, g: Node):
     _reduce_only_sum(n)
-    return ((n.operands[0], ReduceSamples("sum", g)),)
+    return ((n.operands[0], n.rebuilt(g)),)
 
 
 def _reduce_jvp(n: Node, t: Callable[[Node], Node | None]) -> Node | None:
     _reduce_only_sum(n)
     d = t(n.operands[0])
-    return None if d is None else ReduceSamples("sum", d)
+    return None if d is None else n.rebuilt(d)
 
 
 #: The table proper: ``(kind, rank)`` -> rule, ``rank=None`` generic.
@@ -583,7 +584,10 @@ RULES: dict[tuple[str, int | None], DiffRule] = {
        # and a `cast` is zero either way (into an integer it is piecewise
        # constant; out of one, its operand is not differentiable).
        for k in COMPARE + LOGICAL + RANDOM_OPS + PREDICATE + INT_BINARY + INT_UNARY + CAST
-       + ("floor", "ceil", "trunc", "round", "rint", "sign", "spacing")},
+       + ("floor", "ceil", "trunc", "round", "rint", "sign", "spacing")
+       # a status word is an integer plane: no derivative flows through it
+       + ("lu_info", "chol_info", "eigh_info")},
+    **{(k, None): DiffRule(vjp=v, jvp=j) for k, (v, j) in LINALG_RULES.items()},
     ("fma", None): DiffRule(vjp=_fma_vjp, jvp=_fma_jvp),
     ("clip", None): DiffRule(vjp=_clip_vjp, jvp=_clip_jvp),
     **{(k, None): rule for k, rule in _SHAPED.items()},

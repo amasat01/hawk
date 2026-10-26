@@ -17,6 +17,8 @@ three spellings have no free function elsewhere in HAWK yet:
 * :func:`sample_index` — the lane's own index as a value;
 * :func:`split_index` — the ``(major, minor)`` decomposition of a
   flattened two-dimensional launch domain;
+* :func:`pair_index` — the ``(i, j)``, ``i < j``, of a launch over the
+  pairs of ``N`` items, one lane per pair;
 * :func:`take` — the free-function spelling of a plane's ``at()`` read.
 
 The names match the previous code generator's ``vmath`` where it has
@@ -37,10 +39,18 @@ Element-wise math, on host and device alike, with numpy's names:
   ``fdim`` ``fma`` ``clip`` ``minimum`` (``min``) ``maximum`` (``max``)
   ``isnan`` ``isinf`` ``isfinite``
 * special: ``erf`` ``erfc``
+* constants: ``nan`` ``inf``
 * conversions: ``int32`` ``uint32`` (to a 32-bit integer plane value) and
   ``real`` (to the kernel's floating type) — the only way an integer and a
   float meet (see :data:`hawk.Int32`); ``index(x, n)`` (a float to an index
   into an extent of ``n``: truncated, then clamped to ``[0, n)``)
+
+Per-lane linear algebra on small square matrices (the tuples carry the
+status last; ``info`` is zero when the factorisation held, and a failed lane
+returns zeros): ``solve`` ``lu`` ``lu_solve`` ``inv`` ``det`` ``cholesky``
+``chol_from`` ``cho_solve`` ``eigh`` ``lstsq`` ``lm_step`` ``mvn_sample``, and the builders
+``eye`` ``diag`` ``diagonal`` ``trace`` ``tril`` ``mat``. They are defined in
+:mod:`hawk.trace.linalg` and reference page ``linear_algebra``.
 
 Semantics differing from numpy, by design: ``round`` is C's (halves away
 from zero; ``rint`` is numpy's half-to-even ``np.round``), and
@@ -152,6 +162,26 @@ from .trace.value import (
     uint32,
     vsum,
 )
+from .trace.linalg import (
+    chol_from,
+    cho_solve,
+    cholesky,
+    det,
+    diag,
+    diagonal,
+    eigh,
+    eye,
+    inv,
+    lm_step,
+    lstsq,
+    lu,
+    lu_solve,
+    mat,
+    mvn_sample,
+    solve,
+    trace,
+    tril,
+)
 from .trace.value import random_normal as _normal01
 from .trace.value import random_uniform as _uniform01
 from .trace.value import round as round  # noqa: A004 - numpy's spelling
@@ -207,7 +237,7 @@ def _is_default(x: Any, value: float) -> bool:
 
 
 def random_uniform(seed: Any, counter: Any, lo: Any = 0.0, hi: Any = 1.0) -> Value:
-    """A uniform draw on ``[lo, hi)`` — at the defaults exactly the
+    """A uniform draw on the open interval ``(lo, hi)`` — at the defaults exactly the
     primitive op, otherwise the composition ``lo + (hi - lo) * u``,
     aether's own formula. ``lo``/``hi`` may be traced values, giving the
     reparameterisation gradient for free."""
@@ -234,7 +264,7 @@ def random_lognormal(seed: Any, counter: Any, mu: Any = 0.0, sigma: Any = 1.0) -
 def random_exponential(seed: Any, counter: Any, rate: Any = 1.0) -> Value:
     """An exponential draw with ``rate`` (mean ``1/rate``): ``-log(1 - u)
     / rate``, not aether's own ``-log(u) / rate``, since ``u`` in
-    ``[0, 1)`` keeps the argument in ``(0, 1]`` so no lane draws ``+inf``."""
+    the open interval ``(0, 1)`` keeps the argument in ``(0, 1)`` so no lane draws ``+inf``."""
     u = _uniform01(seed, counter)
     return log(u * (-1.0) + 1.0) * (-1.0) / rate
 
@@ -246,7 +276,7 @@ def random_bernoulli(seed: Any, counter: Any, p: Any = 0.5) -> Value:
 
 def random_uniform_int(seed: Any, counter: Any, lo: Any, hi: Any) -> Value:
     """An integer draw uniform over the closed range ``[lo, hi]``,
-    carried as a real value: ``floor(lo + (hi - lo + 1) * u)`` — ``u < 1``
+    carried as a real value: ``floor(lo + (hi - lo + 1) * u)`` — ``0 < u < 1``
     strictly, so ``hi`` is reached and never exceeded (aether's
     ``uniformInt`` convention)."""
     return floor(_uniform01(seed, counter) * (hi - lo + 1) + lo)
@@ -276,14 +306,21 @@ random = SimpleNamespace(
     uniform_int=random_uniform_int, poisson1=random_poisson1,
     multivariate_normal=random_multivariate_normal)
 
+#: The float constants a body may write: ``nan`` marks a lane with no value
+#: (a miss), ``inf`` an unbounded start (``m.minimum(best, x)`` from ``inf``).
+nan = float("nan")
+inf = float("inf")
+
 __all__ = [
     "abs", "absolute", "acos", "acosh", "argmax", "as_pure", "as_vec3", "asin",
     "asinh", "atan", "atan2", "atanh", "cbrt", "ceil", "clip", "copysign", "cos",
-    "cosh", "cross", "dispatch", "dot", "erf", "erfc",
-    "exp", "exp2", "expm1", "fdim", "floor", "fma", "fmod", "hypot", "index", "int32", "isfinite",
+    "cho_solve", "chol_from", "cholesky", "cosh", "cross", "det", "diag", "diagonal", "dispatch", "dot",
+    "eigh", "erf", "erfc", "eye", "inv", "lm_step", "lstsq", "lu", "lu_solve",
+    "mat", "mvn_sample", "solve", "trace", "tril",
+    "exp", "exp2", "expm1", "fdim", "floor", "fma", "fmod", "hypot", "index", "inf", "int32", "isfinite",
     "isinf", "isnan", "land", "lnot", "log", "log10", "log1p", "log2", "lor",
     "max", "maximum", "mean", "min", "minimum",
-    "n_samples", "norm", "outer", "pow", "power", "quat_conj", "quat_mul",
+    "n_samples", "nan", "norm", "outer", "pair_index", "pow", "power", "quat_conj", "quat_mul",
     "quat_recip", "quat_rotate", "random_bernoulli", "random_exponential",
     "random_lognormal", "random_multivariate_normal", "random_normal",
     "random_poisson1", "random_uniform", "random_uniform_int", "real", "remainder",
@@ -298,10 +335,20 @@ def vec(*components: Any) -> Value:
     and ``vec([a, b, c])`` work, the second being what a static
     comprehension evaluates to. A single list argument is the
     components; anything else is taken positionally, so ``vec(x)`` is
-    still the width-1 vector, not a mis-read singleton."""
+    still the width-1 vector, not a mis-read singleton. A vector component
+    contributes its entries, so ``vec(v, w)`` concatenates."""
     if len(components) == 1 and isinstance(components[0], (list, tuple)):
         components = tuple(components[0])
-    return _vec(*components)
+    flat = []
+    for c in components:
+        shape = node_of(c).ttype.shape
+        if len(shape) > 1:
+            raise HawkError(f"vec: a component is a scalar or a vector, got shape {shape}")
+        if shape:
+            flat.extend(Value(node_of(c))[i] for i in range(shape[0]))
+        else:
+            flat.append(c)
+    return _vec(*flat)
 
 
 def where(cond: Any, a: Any, b: Any) -> Value:
@@ -368,6 +415,36 @@ def split_index(minor: int) -> tuple:
     divisor = Value(index_node(minor))
     major = lane / divisor
     return major, lane - major * divisor
+
+
+def _tri(j: Value) -> Value:
+    """``j * (j - 1) / 2``, the number of pairs in the rows below ``j``."""
+    return (j * (j - 1)) >> 1
+
+
+def pair_index() -> tuple:
+    """This lane's pair ``(i, j)`` with ``i < j``, for a launch over the ``N *
+    (N - 1) / 2`` pairs of ``N`` items: no lane for ``i >= j``.
+
+    Lane ``k`` is pair ``(i, j)`` with ``k = j * (j - 1) / 2 + i``: ``j`` runs
+    ``1 .. N - 1`` and ``i`` ``0 .. j - 1``, the last the fastest, so neighbouring
+    lanes read neighbouring ``i``. The map needs no ``N``: declare ``Grid["pair"]``
+    and pass ``pair=N * (N - 1) // 2``. ``i`` and ``j`` are ``Index`` values (64-bit
+    on every target), read items with ``plane.at(i)`` / ``plane.at(j)``.
+
+    ``j`` is the floor of ``(1 + sqrt(8k + 1)) / 2``, taken in floating point and
+    then put right with one step each way, so it is exact for every ``k`` the
+    ``Real`` represents (``float64``: every ``k < 2**53``; ``float32``: every
+    ``k < 2**31``, where the estimate alone is off by one from ``k = 10619135``).
+
+    :returns: ``(i, j)``, two rank-0 ``i32`` values.
+
+    Example: ``i, j = hawk.math.pair_index(); d = x.at(i) - x.at(j)``"""
+    k = sample_index()
+    j = index(sqrt(2.0 * real(k) + 0.25) + 0.5, 2**31)
+    j = select(k < _tri(j), j - 1, j)
+    j = select(k >= _tri(j + 1), j + 1, j)
+    return k - _tri(j), j
 
 
 def take(buf: Any, /, *positional: Any, **named: Any) -> Value:

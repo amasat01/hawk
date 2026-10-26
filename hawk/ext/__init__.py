@@ -279,11 +279,13 @@ class Kind:
                     "the vocabulary itself declares"
                 )
 
-    def __call__(self, fn):
-        """The decorator form: ``@Kind(...)`` == ``kernel(fn, kind=self)``."""
+    def __call__(self, fn=None, **launch):
+        """The decorator form: ``@kind`` == ``kernel(fn, kind=self)``, and
+        ``@kind(group=…, steps=…, time=…, time_step=…, jump=…)`` takes the
+        keywords :func:`hawk.kernel` takes."""
         from ..trace.kernel import kernel
 
-        return kernel(fn, kind=self)
+        return kernel(fn, kind=self, **launch)
 
     def apply(self, options):
         """Run the compile hook, if this kind declares one."""
@@ -371,7 +373,7 @@ def _resolve_annotation(cls: type, name: str, ann: Any, scope: dict[str, Any]) -
     if not isinstance(ann, str):
         return ann
     try:
-        return eval(ann, scope)  # noqa: - the author's own annotation
+        return eval(ann, scope)  # the author's own annotation
     except Exception as exc:                      # pragma: no cover - author error
         raise HawkError(
             f"class {cls.__name__!r}(KernelKind, ...): annotation {name!r}={ann!r} "
@@ -463,10 +465,11 @@ class KernelKind:
         cls._own_seams = own_seams
         cls.kind = Kind(slug, vocabulary=merged_vocabulary, **merged_seams)
 
-    def __new__(cls, fn):
+    def __new__(cls, fn=None, **launch):
         """``@X`` / ``X(fn)`` == ``kernel(fn, kind=X.kind)`` — the SAME
-        decorator :meth:`Kind.__call__` gives the instance form."""
-        return cls.kind(fn)
+        decorator :meth:`Kind.__call__` gives the instance form, launch
+        keywords included (``@X(group=32)``)."""
+        return cls.kind(fn, **launch)
 
 
 __all__.append("KernelKind")

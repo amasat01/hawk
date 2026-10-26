@@ -209,9 +209,9 @@ REFUSALS = [
     ("break inside a nested if", "    s = x\n    for j in range(4):\n"
      "        if s > 1.0:\n            if s > 2.0:\n                break\n"
      "        s = s * 2.0\n", "TOP-LEVEL"),
-    ("break with another statement", "    s = x\n    for j in range(4):\n"
-     "        if s > 1.0:\n            s = s + 1.0\n            break\n"
-     "        s = s * 2.0\n", "TOP-LEVEL"),
+    ("break after a non-assignment", "    s = x\n    for j in range(4):\n"
+     "        if s > 1.0:\n            pass\n            break\n"
+     "        s = s * 2.0\n", "takes only assignments"),
     ("break with an else", "    s = x\n    for j in range(4):\n"
      "        if s > 1.0:\n            break\n        else:\n"
      "            s = s * 2.0\n", "TOP-LEVEL"),

@@ -405,7 +405,7 @@ class _DispatchMixin:
             return False
         if isinstance(node, (SampleIndex, LoopIndex, LoopCarry)):
             return False
-        if isinstance(node, (Loop, Const, Primitive)) or self.stores.unnamed(node):
+        if isinstance(node, (Loop, Const, Primitive)) or self._unnamed(node):
             return False
         if self.writer.names_every_tensor and node.ttype.shape:
             return True

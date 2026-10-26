@@ -57,7 +57,8 @@ from ..ir import (
     TapeRead,
 )
 from ..ir import make as _mk
-from ..ir.loops import ACCUMULATOR, RECURRENCE, LoopClass, build_loop, classify_loop
+from ..ir.loops import (ACCUMULATOR, RECURRENCE, LoopClass, build_loop, classify_loop,
+                        refuse_unsupported_nesting)
 from ..ir.slotwise import chain as _chain
 from ..ir.slotwise import is_structural_zero, slotwise
 from ..ir.walk import substitute as _substitute
@@ -95,7 +96,12 @@ class LoopReverse:
 
 
 def _post_order(roots: Sequence[Node], stop: set) -> tuple:
-    """The body's nodes, post-order, stopping at ``stop`` (ids) and terminals."""
+    """The body's nodes, post-order, stopping at ``stop`` (ids) and terminals.
+
+    A NESTED :class:`Loop` is descended into (its operands, the boundary values it
+    reads) and appears in the order after them; the loop a tape read or a trip
+    count names is NOT (that is a statement the reverse loop reads, not a node
+    of this body)."""
     order: list = []
     seen: set = set()
     stack = [(r, False) for r in reversed(tuple(roots))]
@@ -105,7 +111,13 @@ def _post_order(roots: Sequence[Node], stop: set) -> tuple:
             continue
         if not expanded:
             stack.append((node, True))
-            if id(node) in stop or isinstance(node, _TERMINALS):
+            if id(node) in stop or (isinstance(node, _TERMINALS) and not isinstance(node, Loop)):
+                continue
+            if isinstance(node, (TapeRead, LoopCount)):
+                if isinstance(node, TapeRead):
+                    stack.append((node.index, False))
+                    if id(node.loop) not in stop:       # a NESTED forward loop's tape
+                        stack.append((node.loop, False))
                 continue
             for child in reversed(node.operands):
                 if id(child) not in seen:
@@ -133,7 +145,8 @@ def _reduce_to(contribution: Node, target) -> Node:
 
 
 def _pullback(roots: Sequence[Node], seeds: Sequence[tuple], stop: set,
-              inputs, name, jump=None, local_pass: bool = False) -> tuple:
+              inputs, name, jump=None, local_pass: bool = False,
+              inject: Sequence[tuple] = ()) -> tuple:
     """One reverse pass over a loop body. Returns
     ``(adjoints, scatters, scattered)``.
 
@@ -141,31 +154,44 @@ def _pullback(roots: Sequence[Node], seeds: Sequence[tuple], stop: set,
     the caller at the stop nodes. ``scatters`` are the body sinks the
     transpose produces: the reverse of a gather ``t.at(e(k))`` is a
     scatter-add at the same row, once per iteration. ``jump`` is the body's
-    :class:`~hawk.diff.jump.JumpPlan` of a ``jump=`` kernel, else ``None``."""
+    :class:`~hawk.diff.jump.JumpPlan` of a ``jump=`` kernel, else ``None``.
+    ``inject`` holds the ``(comparison, weight)`` pairs of an engaged plan's
+    alternate path: the weight is the pseudo-adjoint of ``l - r``."""
     store: dict = {}
     for node, seed in seeds:
         _accumulate(store, node, seed)
+    for site, weight in inject:
+        lhs, rhs = site.operands
+        _accumulate(store, lhs, weight)
+        _accumulate(store, rhs, _mk("neg", (weight,)))
     scatters: list = []
     scattered: set = set()
+    loop_seeds: dict = {}
     for node in reversed(_post_order(roots, stop)):
         g = store.get(id(node))
+        if isinstance(node, LoopValue) and id(node) not in stop:
+            if g is not None:
+                loop_seeds.setdefault(id(node.loop), {})[node.slot] = g
+            continue
+        if isinstance(node, Loop) and id(node) not in stop:
+            _nested_pullback(node, loop_seeds.get(id(node), {}), store, inputs, name, jump)
+            continue
         if g is None or id(node) in stop or isinstance(node, _TERMINALS):
             continue
         if isinstance(node, At):
             if local_pass:
-                raise HawkError(
-                    "a plane gathered with at() inside a `dispatch` branch inside "
-                    "a loop body being differentiated in REVERSE: the scatter "
-                    "that transposes it would have to be committed under the "
-                    "branch's case, which is not built. Read the plane outside "
-                    "the dispatch (the branches may use the value)")
+                # a branch-local pass: ``g`` stays in the local store and the
+                # enclosing :func:`_dispatch_pullback` commits ONE scatter, at a
+                # row only the taken branch computes
+                continue
             if node.plane in inputs:
                 scattered.add(node.plane.name)
                 scatters.append(AccumWrite(name(node.plane.name), g, node.index,
                                            g.ttype))
             continue
         if isinstance(node, Dispatch):
-            _dispatch_pullback(node, g, store, stop, inputs, name, jump)
+            _dispatch_pullback(node, g, store, stop, inputs, name, jump,
+                               scatters, scattered, local_pass)
             continue
         if isinstance(node, (LoopValue, TapeRead)):
             raise HawkError(
@@ -185,6 +211,12 @@ def _pullback(roots: Sequence[Node], seeds: Sequence[tuple], stop: set,
                 node, g, lambda child, c: _accumulate(store, child,
                                                       _reduce_to(c, child.ttype))):
             continue
+        if jump is None:
+            guarded = guarded_select(node)
+            if guarded is not None:
+                _dispatch_pullback(guarded, g, store, stop, inputs, name, jump,
+                                   scatters, scattered, local_pass)
+                continue
         rule = rule_for(node.kind, len(node.ttype.shape))
         if rule.vjp is None:
             raise HawkError(
@@ -195,8 +227,34 @@ def _pullback(roots: Sequence[Node], seeds: Sequence[tuple], stop: set,
     return store, tuple(scatters), frozenset(scattered)
 
 
+def _nested_pullback(inner: Loop, seeds: dict, store: dict, inputs, name, jump) -> None:
+    """The reverse of a ``for`` nested in the body being reversed: the loop's own
+    reverse (:func:`reverse_loop`), whose forward half is rebuilt INSIDE the
+    reversed iteration with its carried history in a local tape of the inner trip
+    count, folded into this body's adjoints like any other node's rule."""
+    if not seeds:
+        return
+    if jump is not None:
+        raise HawkError(
+            f"the nested loop over {inner.index.name!r} of a `jump=` kernel "
+            "differentiated in REVERSE: the switching comparisons of the plan are "
+            "not applied through a nested loop; this is not built")
+    derived = reverse_loop(inner, seeds, inputs, name)
+    if derived.roots or derived.accumulated:
+        raise HawkError(
+            f"the nested loop over {inner.index.name!r} gathers a plane being "
+            "differentiated (`at()` of a `wrt` input) inside a loop inside a loop, "
+            "differentiated in REVERSE: its scatter would be committed inside two "
+            "scopes, which is not built. Read the plane in the OUTER loop (or "
+            "before both) and let the inner loop use the value, or flatten the "
+            "two loops into one")
+    for child, contribution in derived.contributions:
+        _accumulate(store, child, _reduce_to(contribution, child.ttype))
+
+
 def _dispatch_pullback(node: Dispatch, g: Node, store: dict, stop: set,
-                       inputs, name, jump) -> None:
+                       inputs, name, jump, scatters: list, scattered: set,
+                       local_pass: bool = False) -> None:
     """The reverse of a ``dispatch`` inside a loop body — the loop twin of
     :func:`hawk.diff.transform._dispatch_vjp`: K isolated pullbacks, one per
     branch, each seeded at that branch's root with ``g`` and stopped at the
@@ -225,7 +283,8 @@ def _dispatch_pullback(node: Dispatch, g: Node, store: dict, stop: set,
             c = local.get(id(target))
             if c is None or isinstance(target, Const):
                 continue
-            if not (id(target) in cut or isinstance(target, _TERMINALS)):
+            if not (id(target) in cut or isinstance(target, _TERMINALS)
+                    or isinstance(target, At)):
                 continue        # differentiated through within the local pass
             if target.ttype.dtype not in _DIFFERENTIABLE:
                 continue
@@ -234,8 +293,70 @@ def _dispatch_pullback(node: Dispatch, g: Node, store: dict, stop: set,
     for target, per_branch in reached.values():
         terms = [per_branch.get(j) if per_branch.get(j) is not None
                  else zero_like(target.ttype) for j in range(node.K)]
-        _accumulate(store, target, Dispatch(node.selector, terms, node.policy,
-                                            target.ttype))
+        combined = Dispatch(node.selector, terms, node.policy, target.ttype)
+        if isinstance(target, At):
+            if local_pass:
+                raise HawkError(
+                    "a plane gathered with at() inside a `dispatch` inside a "
+                    "`dispatch` branch of a loop body differentiated in REVERSE: "
+                    "the scatter's row is only valid under both selectors, which "
+                    "is not built. Read the plane before the outer `dispatch`")
+            if target.plane in inputs:
+                scattered.add(target.plane.name)
+                scatters.append(AccumWrite(
+                    name(target.plane.name), combined,
+                    _taken_row(node, target, per_branch), combined.ttype))
+            continue
+        _accumulate(store, target, combined)
+
+
+def has_gather(node: Node, memo: dict | None = None) -> bool:
+    """Whether ``node``'s subtree reads a plane at a runtime row (an :class:`At`)."""
+    memo = {} if memo is None else memo
+    stack = [(node, False)]
+    while stack:
+        current, expanded = stack.pop()
+        if id(current) in memo and not expanded:
+            continue
+        if not expanded:
+            if isinstance(current, At):
+                memo[id(current)] = True
+                continue
+            stack.append((current, True))
+            stack.extend((c, False) for c in current.operands if id(c) not in memo)
+            continue
+        memo[id(current)] = any(memo.get(id(c), False) for c in current.operands)
+    return memo[id(node)]
+
+
+def guarded_select(node: Node) -> Dispatch | None:
+    """A ``select`` with a gather in an arm, as the two-case ``switch`` it guards
+    like: the arm's rows are valid only where its condition holds, so the reverse
+    must read and scatter them only there (a ``select``'s pullback would evaluate
+    both arms' gathers for every lane). ``None`` for any other node."""
+    if not (isinstance(node, Select) and any(has_gather(a) for a in node.operands[1:])):
+        return None
+    from ..types import TensorType
+
+    one, zero = TensorType((), "i32"), TensorType((), "i32")
+    sel = Select(node.operands[0], Const(1, one), Const(0, zero), one)
+    return Dispatch(sel, [node.operands[2], node.operands[1]], "switch", node.ttype)
+
+
+def _taken_row(node: Dispatch, target: At, per_branch: dict) -> Node:
+    """The row a branch-gathered plane's scatter commits at.
+
+    The gather's row is computed only by the branches that read it; the scatter
+    sits outside the ``dispatch`` and would evaluate it for every lane, so a lane
+    whose branch did NOT read the plane could commit (a zero) at a row that is out
+    of range for it. A row every branch computes is kept as it is; otherwise the row
+    is itself a ``dispatch`` of the same selector: the gather's row where the branch
+    gathered, row 0 (always in range, and a zero is added there) elsewhere."""
+    if len(per_branch) == node.K:
+        return target.index
+    zero = Const(0, target.index.ttype)
+    rows = [target.index if j in per_branch else zero for j in range(node.K)]
+    return Dispatch(node.selector, rows, node.policy, target.index.ttype)
 
 
 # --------------------------------------------------------------------------
@@ -261,15 +382,19 @@ def _readable(loop: Loop) -> tuple:
 
 
 def reverse_loop(loop: Loop, seeds: dict, inputs, name, jump=None,
-                 exclusive: frozenset = frozenset()) -> LoopReverse:
+                 exclusive: frozenset = frozenset(), alt=None) -> LoopReverse:
     """The reverse-mode derivative of one lowered ``for``.
 
     ``seeds`` maps a carried SLOT to the adjoint of that slot's final value.
     ``inputs`` are the ``wrt`` leaves (an ``at()`` read of one scatters), and
     ``name`` is the transform's own :class:`hawk.diff.transform._Namer`;
-    ``jump`` the kernel's :class:`~hawk.diff.jump.JumpPlan`, else ``None``."""
-    if not seeds:
+    ``jump`` the kernel's :class:`~hawk.diff.jump.JumpPlan`, else ``None``;
+    ``alt`` the :class:`~hawk.diff.altpath.AltPath` of an engaged one, whose
+    drawn comparison injects its weight into the body at its iteration."""
+    sites = () if alt is None else alt.sites_of(loop)
+    if not seeds and not sites:
         return LoopReverse()
+    refuse_unsupported_nesting(loop)
     if loop.body_sinks:
         raise HawkError(
             f"the loop over {loop.index.name!r} commits a sink once per iteration, "
@@ -290,6 +415,8 @@ def reverse_loop(loop: Loop, seeds: dict, inputs, name, jump=None,
         nexts = tuple(Select(loop.exit_cond, ev, nx, nx.ttype)
                       for ev, nx in zip(loop.exit_values, loop.nexts))
         kind = LoopClass(RECURRENCE)
+    elif sites:
+        kind = LoopClass(RECURRENCE)
     else:
         kind = classify_loop(loop)
     targets = _readable(loop)
@@ -298,7 +425,7 @@ def reverse_loop(loop: Loop, seeds: dict, inputs, name, jump=None,
         return _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
                                     count, jump, exclusive)
     return _reverse_recurrence(loop, seeds, targets, inputs, name, count, jump,
-                               exclusive, nexts)
+                               exclusive, nexts, alt)
 
 
 def _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
@@ -351,21 +478,24 @@ def _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
 def _reverse_recurrence(loop, seeds, targets, inputs, name,
                         count=None, jump=None,
                         exclusive: frozenset = frozenset(),
-                        nexts=None) -> LoopReverse:
+                        nexts=None, alt=None) -> LoopReverse:
     """The general case: the carry's adjoint evolves, so the derived loop
     runs backwards over the forward loop's own per-iteration carried
     values, reached through :class:`~hawk.ir.loop_nodes.TapeRead` — why it
     declares one bounded local array per carried slot."""
     m = loop.carry_count
     tapes = tuple(TapeRead(loop, i, loop.index) for i in range(m))
-    body = _substitute(loop.nexts if nexts is None else nexts,
-                       {id(loop.carries[i]): tapes[i] for i in range(m)})
+    forward = tuple(loop.nexts if nexts is None else nexts)
+    sites = () if alt is None else alt.sites_of(loop)
+    body = _substitute(forward + sites, {id(loop.carries[i]): tapes[i] for i in range(m)})
+    body, rest = body[:len(forward)], body[len(forward):]
+    stop = ({id(o) for o in loop.operands} | {id(loop.index)}
+            | {id(t) for t in tapes})
+    sites = alt.inject(loop, rest, body, stop) if sites else ()
     bars = tuple(
         LoopCarry(loop.index.depth, j, f"bar_{_clean(loop.carries[j].name)}",
                   loop.carries[j].ttype)
         for j in range(m))
-    stop = ({id(o) for o in loop.operands} | {id(loop.index)}
-            | {id(t) for t in tapes})
     # Every carried slot is pulled back, seeded or not. A slot with no
     # incoming seed starts its adjoint at zero, but a recurrence is exactly
     # the shape where that adjoint stops being zero mid-way: `bar_j`
@@ -378,7 +508,7 @@ def _reverse_recurrence(loop, seeds, targets, inputs, name,
     roots = [b for b, _g in live]
     store, scatters, scattered = _pullback(
         roots, live, stop, inputs, name,
-        None if jump is None else jump.body(loop, roots))
+        None if jump is None else jump.body(loop, roots), inject=sites)
     carried = [t for t in targets if store.get(id(t)) is not None]
     carried, runtime, accumulated = _runtime_sinks(carried, store, inputs, name,
                                                    exclusive)
@@ -477,7 +607,7 @@ def _tape_tangent(node: TapeRead, augmented_of) -> Node | None:
 
 
 def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
-                 jump=None) -> Node | None:
+                 jump=None, alt=None) -> Node | None:
     """The forward-mode derivative of one lowered ``for``: one loop carrying
     the primal slots and their tangents side by side.
 
@@ -495,7 +625,9 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
     remaining refusals are structural: a loop committing once per
     iteration is a derived loop's scatter, and reverse-over-reverse still
     has no tape rule. ``jump`` is the kernel's
-    :class:`~hawk.diff.jump.JumpPlan` of a ``jump=`` kernel, else ``None``."""
+    :class:`~hawk.diff.jump.JumpPlan` of a ``jump=`` kernel, else ``None``;
+    ``alt`` the :class:`~hawk.diff.altpath.AltPath` of an engaged one, which
+    adds the alternate path to the loop."""
     del name
     if loop.body_sinks:
         raise HawkError(
@@ -528,7 +660,30 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
     def t(c: Node) -> Node | None:
         return tangent.get(id(c))
 
+    nested: dict = {}
+
+    def twin(lp):
+        """The augmented twin of a loop this body reads the tape of: a loop NESTED in
+        the body is augmented here, any other one is the caller's."""
+        if id(lp) in nested:
+            return nested[id(lp)]
+        return None if augmented_of is None else augmented_of(lp)
+
     for node in _post_order(body + exits, stop):
+        if isinstance(node, Loop) and id(node) not in stop:
+            # a NESTED loop: its augmented twin carries the inner tangents; this
+            # body's tangent of one of its results is the twin's slot m + j
+            if plan is not None:
+                raise HawkError(
+                    f"the nested loop over {node.index.name!r} of a `jump=` kernel "
+                    "differentiated FORWARD: the switching comparisons of the plan "
+                    "are not applied through a nested loop; this is not built")
+            nested[id(node)] = forward_loop(node, t, None, twin)
+            continue
+        if isinstance(node, LoopValue) and id(node.loop) in nested:
+            got = nested[id(node.loop)]
+            tangent[id(node)] = LoopValue(got, node.loop.carry_count + node.slot)
+            continue
         if isinstance(node, _TERMINALS) or id(node) in stop:
             continue
         if plan is not None:
@@ -544,7 +699,8 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
                 tangent[id(node)] = At(plane, node.index, node.ttype)
             continue
         if isinstance(node, TapeRead):
-            got = _tape_tangent(node, augmented_of)
+            got = _tape_tangent(
+                node, twin if (id(node.loop) in nested or augmented_of is not None) else None)
             if got is not None:
                 tangent[id(node)] = got
             continue
@@ -596,6 +752,12 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
             else tangent.get(id(exits[j])) or zero_like(loop.carries[j].ttype)
             for j in range(m))
         extra.update(exit_cond=loop.exit_cond, exit_values=exits + dot_exits)
+    if alt is not None and alt.affects(loop):
+        from .altpath import Parts
+
+        return alt.joint(loop, Parts(
+            carries, dots, tuple(inits), body, dot_nexts, exits,
+            extra.get("exit_values", ())[m:], t))
     n_next, n_exit = len(nexts), len(extra.get("exit_values", ()))
     exits_now = tuple(extra.get("exit_values", ()))
     rooted = slotwise((*nexts, *exits_now, *([loop.exit_cond] if n_exit else [])))

@@ -295,11 +295,26 @@ def _finish(walk) -> dict:
     return {"finish": out}
 
 
+def _gather_mats(walk, broadcast: dict | None) -> dict:
+    """``{compact Matrix plane: the lane axes it varies along (one bool per axis of
+    the lane space), or None when the kernel is not a broadcast variant}``: what the
+    binder checks its column count against. A tangent plane takes its input's pattern."""
+    from ..diff.transform import TANGENT_PREFIX
+
+    held = broadcast or {}
+    out = {}
+    for name in walk.gather_mats:
+        base = name[len(TANGENT_PREFIX) + 1:] if name.startswith(TANGENT_PREFIX + "_") else name
+        kept = held.get(name) or held.get(base)
+        out[name] = None if kept is None else [bool(k) for k in kept]
+    return out
+
+
 def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
                  exec_targets=ENTRY_KINDS, host_entry: str | None = None,
                  derivative: dict | None = None, lanes=None,
                  lane_space=((None, None),), group: int = 1, box=None, block: int | None = None,
-                 planes: dict | None = None,
+                 planes: dict | None = None, broadcast: dict | None = None,
                  dispatch_override=None, step_ops: int | None = None,
                  fp64_ops_ir: int | None = None,
                  entry_counts_finished: bool = False,
@@ -387,6 +402,11 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         # the companion planes of the compensated keyed sums: the runtime
         # makes them with the bind and the caller never passes them
         **({"companions": walk.companions} if walk.companions else {}),
+        # an adjoint plane is its lookup plane's size, not the lane count
+        **({"adjoint_like": walk.adjoint_like} if walk.adjoint_like else {}),
+        # a Matrix read only at lane indices is the caller's compact plane: its
+        # column count is not the lane count (a broadcast input)
+        **({"gather_mats": _gather_mats(walk, broadcast)} if walk.gather_mats else {}),
         # one step's operation count, for a kernel whose body steps (absent
         # otherwise): read by the launching runtime, never by the body
         **({"step_ops": step_ops} if step_ops is not None else {}),
