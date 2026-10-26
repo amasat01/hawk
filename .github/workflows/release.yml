@@ -69,7 +69,7 @@ jobs:
       CIBW_CONTAINER_ENGINE: "docker; create_args: --volume ${{ github.workspace }}/aether:/sib/aether:ro --volume ${{ github.workspace }}/eagle:/sib/eagle:ro --volume ${{ github.workspace }}/.ccache-cibw:/ccache"
       CIBW_ENVIRONMENT_LINUX: "HAWK_AETHER_INCLUDE=/sib/aether HAWK_EAGLE_INCLUDE=/sib/eagle CMAKE_BUILD_PARALLEL_LEVEL=2 CCACHE_DIR=/ccache CCACHE_MAXSIZE=500M CCACHE_COMPILERCHECK=content CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache"
       # macOS builds on the runner itself: the header trees are read in place
-      CIBW_ENVIRONMENT_MACOS: "HAWK_AETHER_INCLUDE=${{ github.workspace }}/aether HAWK_EAGLE_INCLUDE=${{ github.workspace }}/eagle"
+      CIBW_ENVIRONMENT_MACOS: "HAWK_AETHER_INCLUDE=${{ github.workspace }}/aether HAWK_EAGLE_INCLUDE=${{ github.workspace }}/eagle CCACHE_DIR=${{ github.workspace }}/.ccache-cibw CCACHE_MAXSIZE=500M CCACHE_COMPILERCHECK=content CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache"
       # ccache from EPEL (AlmaLinux 8); stats zeroed per run, printed before each repair
       # EPEL mirrors fail often on aarch64: retry, then run uncached through a pass-through ccache stand-in
       CIBW_BEFORE_ALL_LINUX: >-
@@ -99,11 +99,34 @@ jobs:
       - uses: ./hawk/.github/actions/companion
         with: {repo: eagle, path: eagle, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
 
-      # ccache inside the manylinux container: the runner directory is bind-mounted at /ccache
-      - run: mkdir -p .ccache-cibw
-        if: runner.os == 'Linux'
+      # The finished wheels are remembered under a digest of everything that goes into them: the three header trees, the
+      # version, this workflow (cibuildwheel pins) and the platform. A hit skips the build; the checks downstream run on
+      # what is restored.
+      - id: wk
+        env:
+          PLAT: ${{ matrix.plat }}
+        run: |
+          args=(--tree hawk --skip docs/ --skip .github/ --tree aether --skip docs/ --skip .github/ --tree eagle --skip docs/ --skip .github/
+                --version hawk --file hawk/.github/workflows/release.yml --str "$PLAT $RUNNER_OS $RUNNER_ARCH")
+          if [ "$RUNNER_OS" = Linux ]; then
+            args+=(--str "manylinux_2_28 $(docker buildx imagetools inspect "quay.io/pypa/manylinux_2_28_$(uname -m)" --format '{{.Manifest.Digest}}' 2>/dev/null || true)")
+          fi
+          echo "key=wheels-v1-$PLAT-$(hawk/.github/ci_digest.sh "${args[@]}")" >> "$GITHUB_OUTPUT"
+      - id: wh
+        uses: actions/cache@v6
+        with:
+          path: dist
+          key: ${{ steps.wk.outputs.key }}
+      - if: steps.wh.outputs.cache-hit == 'true'
+        run: ls -l dist
+
+      # ccache inside the manylinux container: the runner directory is bind-mounted at /ccache; on macOS the build reads it in place
+      - if: steps.wh.outputs.cache-hit != 'true'
+        run: mkdir -p .ccache-cibw
+      - if: steps.wh.outputs.cache-hit != 'true' && runner.os == 'macOS'
+        run: brew install ccache
       - uses: actions/cache@v6
-        if: runner.os == 'Linux'
+        if: steps.wh.outputs.cache-hit != 'true'
         with:
           path: ${{ github.workspace }}/.ccache-cibw
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-cibw-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
@@ -111,6 +134,7 @@ jobs:
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-cibw-
 
       - name: Build wheels (cibuildwheel 3.x; CPython 3.9-3.14 plus free-threaded 3.13t/3.14t)
+        if: steps.wh.outputs.cache-hit != 'true'
         uses: pypa/cibuildwheel@v3.4.1
         with:
           package-dir: hawk
@@ -122,6 +146,7 @@ jobs:
           CIBW_BUILD: "cp39-${{ matrix.plat }} cp310-${{ matrix.plat }} cp311-${{ matrix.plat }} cp312-${{ matrix.plat }} cp313-${{ matrix.plat }} cp314-${{ matrix.plat }} cp313t-${{ matrix.plat }} cp314t-${{ matrix.plat }}"
       # 3.15 needs cibuildwheel 4.x: a second pass for the 3.15 tags only
       - name: Build the CPython 3.15 and 3.15t wheels (cibuildwheel 4.x)
+        if: steps.wh.outputs.cache-hit != 'true'
         uses: pypa/cibuildwheel@v4.3.3
         with:
           package-dir: hawk
@@ -129,6 +154,11 @@ jobs:
         env:
           CIBW_ENABLE: ""
           CIBW_BUILD: "cp315-${{ matrix.plat }} cp315t-${{ matrix.plat }}"
+      # on Linux the stats are printed inside the container, before each repair
+      - if: always() && steps.wh.outputs.cache-hit != 'true' && runner.os == 'macOS'
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache-cibw
+        run: ccache -s
 
       - uses: actions/upload-artifact@v7
         with:
@@ -363,6 +393,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true  # 3.15 until its release is on the runner image
+          cache: pip
+          cache-dependency-path: |
+            hawk/pyproject.toml
+            aether/dsc/pyproject.toml
+            raptor/pyproject.toml
+            eagle/python/pyproject.toml
       - run: sudo apt-get update && sudo apt-get install -y g++-13
         if: runner.os == 'Linux'
       # libomp: eagle builds from its sdist here until 0.6.x is on PyPI, and its host core needs OpenMP; llvm: HAWK_CXX above
