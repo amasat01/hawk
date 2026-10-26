@@ -172,12 +172,19 @@ def test_the_cholesky_factor_jvp_matches_fd_with_h_from_lambda_min(n, name, eigs
 def test_the_cholesky_factor_closed_form_cotangent_is_half_q(n, spectrum):
     """``Lbar = Q L`` gives ``Abar = Q / 2`` exactly: the deterministic row of
     the pathwise Gaussian gradient ``d E[f] / d Sigma`` for ``f = x^T Q x / 2``."""
+    rng = np.random.default_rng(20261026 + n)           # this row's own draw, whatever ran before
     eigs = np.linspace(1, 3, n) if spectrum == "linear" else np.r_[np.ones(n - 1), 1e-10]
-    sigma = _spd(n, eigs)
-    q = _sym(RNG.standard_normal((n, n)))
+    basis, _ = np.linalg.qr(rng.standard_normal((n, n)))
+    sigma = basis @ np.diag(eigs) @ basis.T
+    q = _sym(rng.standard_normal((n, n)))
     lower = np.linalg.cholesky(sigma)
     got = evaluate(vjp(_factor_kernel(n)), {"A": sigma, "bar_L": q @ lower})["bar_A"]
-    assert np.abs(got - q / 2).max() <= 1e-12 * max(1.0, np.abs(q).max())
+    # The rounding in Sigma and in L is amplified by the condition number of Sigma, so a
+    # spectrum down to 1e-10 (cond 1e10) can only be met to ~ 10 eps cond; the other
+    # spectrum is well conditioned and keeps the absolute 1e-12.
+    cond = eigs.max() / eigs.min()
+    tol = 1e-12 if spectrum == "linear" else max(1e-12, 10 * np.finfo(float).eps * cond)
+    assert np.abs(got - q / 2).max() <= tol * max(1.0, np.abs(q).max())
 
 
 @pytest.mark.parametrize("k", [3, 9, 15, 21, 27, 33])

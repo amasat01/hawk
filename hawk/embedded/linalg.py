@@ -191,8 +191,8 @@ def _lu(n: int, s: _Spelling) -> CFunction:
     t.add(f"{ft} f;")
     zero = s.r(0.0)
     if n == 1:
-        t.add("f.a.m[0][0] = a->m[0][0];", "f.piv[0] = INT32_C(0);",
-              f"f.info = (f.a.m[0][0] != {zero}) ? INT32_C(0) : INT32_C(1);")
+        t.add("f.a.m[0][0] = a->m[0][0];", "f.piv[0] = INT32_C(0);", "f.info = INT32_C(1);")
+        t.block(f"if (f.a.m[0][0] != {zero})", lambda: t.add("f.info = INT32_C(0);"))
     else:
         t.loop("i", _i(0), _i(n), lambda: t.loop(
             "c", _i(0), _i(n), lambda: t.add("f.a.m[i][c] = a->m[i][c];")))

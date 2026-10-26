@@ -94,7 +94,10 @@ def digests() -> dict:
     return found
 
 
-def test_kernels_without_linear_algebra_render_the_text_they_always_did():
+def test_kernels_without_linear_algebra_render_the_text_they_always_did(monkeypatch):
+    # The host tile rule is sized from (and names) the machine's caches: render as on the pinning machine.
+    pinning_machine = hawk.emit.host.CacheSizes(32 * 1024, 1024 * 1024, "/sys/devices/system/cpu/cpu0/cache")
+    monkeypatch.setattr(hawk.emit.host, "machine_caches", lambda *a, **k: pinning_machine)
     got = digests()
     assert got.keys() == PINNED.keys()
     changed = sorted(name for name in got if got[name] != PINNED[name])
