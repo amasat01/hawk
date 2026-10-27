@@ -23,8 +23,8 @@ must ask before differentiating a loop:
   storing NOTHING;
 * ``recurrence`` — anything else the rule table covers: the forward loop
   keeps one bounded array per carry and the reverse loop runs backwards;
-* refused, NAMED — a nested loop inside a differentiated body would need a
-  tape of a tape, which reverse mode does not ask for.
+* refused, NAMED — a nested loop that leaves early or commits per iteration
+  (:func:`refuse_unsupported_nesting`); any other nested loop differentiates.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .loop_nodes import Loop, LoopCarry, LoopIndex
-from .nodes import RAW_KIND, HawkError, Node
+from .nodes import RAW_KIND, At, Dispatch, HawkError, Node, Select
 
 #: The class whose adjoint stores nothing.
 ACCUMULATOR = "accumulator"
@@ -89,6 +89,27 @@ def _depends(node: Node, own: frozenset, memo: dict) -> bool:
     return memo[id(node)]
 
 
+def _gathers(node: Node, memo: dict) -> bool:
+    """Whether ``node``'s subtree contains an :class:`At` (memoised on ``id``)."""
+    hit = memo.get(id(node))
+    if hit is not None:
+        return hit
+    stack = [(node, False)]
+    while stack:
+        current, expanded = stack.pop()
+        if not expanded:
+            if id(current) in memo:
+                continue
+            if isinstance(current, At):
+                memo[id(current)] = True
+                continue
+            stack.append((current, True))
+            stack.extend((c, False) for c in current.operands)
+            continue
+        memo[id(current)] = any(memo.get(id(c), False) for c in current.operands)
+    return memo[id(node)]
+
+
 def boundary(nexts: Sequence[Node], own: frozenset) -> tuple:
     """The body's loop-invariant BOUNDARY values, in deterministic order.
 
@@ -97,20 +118,28 @@ def boundary(nexts: Sequence[Node], own: frozenset) -> tuple:
     invariant in its entirety is its own boundary value — a loop whose body
     ignores the index, odd but well-formed."""
     memo: dict = {}
+    gathers: dict = {}
     out: list = []
     seen: set = set()
-    stack = [n for n in reversed(tuple(nexts))]
+    # (node, guarded): a node under a `dispatch` / `select` ARM is guarded — the arm
+    # runs only where its case holds, and a plane read there at a runtime row is only
+    # valid there. Hoisting such a read out of the loop would evaluate it for every
+    # lane and iteration, so a guarded subtree that gathers stays in the body (its
+    # gather-free invariant parts still cross the boundary).
+    stack = [(n, False) for n in reversed(tuple(nexts))]
     while stack:
-        node = stack.pop()
+        node, guarded = stack.pop()
         if id(node) in seen:
             continue
-        if not _depends(node, own, memo):
+        if not _depends(node, own, memo) and not (guarded and _gathers(node, gathers)):
             seen.add(id(node))
             out.append(node)
             continue
         seen.add(id(node))
+        arms = (frozenset(id(a) for a in node.operands[1:])
+                if isinstance(node, (Dispatch, Select)) else frozenset())
         for child in reversed(node.operands):
-            stack.append(child)
+            stack.append((child, guarded or id(child) in arms))
     # de-dup, first-seen order: two paths may reach one invariant subexpression.
     unique: list = []
     held: set = set()
@@ -163,9 +192,15 @@ def _check_placeholders(loop: Loop) -> None:
     digest keys as this loop's own carry — a silently wrong recurrence,
     checked once, here."""
     own = {id(loop.index)} | {id(c) for c in loop.carries}
+    # an ENCLOSING loop's index or carry (shallower depth) legitimately crosses as
+    # an operand; a placeholder of the SAME depth that is not ours is a missed
+    # substitution and stays refused
+    crossing = {id(o) for o in loop.operands
+                if isinstance(o, (LoopIndex, LoopCarry)) and o.depth < loop.index.depth}
     for node in loop.body_nodes():
         for child in node.operands:
-            if isinstance(child, (LoopIndex, LoopCarry)) and id(child) not in own:
+            if (isinstance(child, (LoopIndex, LoopCarry)) and id(child) not in own
+                    and id(child) not in crossing):
                 raise HawkError(
                     f"the loop over {loop.index.name!r} reads {child.kind} "
                     f"{getattr(child, 'name', '?')!r} (depth {child.depth}), which "
@@ -173,7 +208,8 @@ def _check_placeholders(loop: Loop) -> None:
                     "index and its own carried slots; anything else must cross the "
                     "boundary as an operand")
     for root in loop.body_roots():
-        if isinstance(root, (LoopIndex, LoopCarry)) and id(root) not in own:
+        if (isinstance(root, (LoopIndex, LoopCarry)) and id(root) not in own
+                and id(root) not in crossing):
             raise HawkError(                      # pragma: no cover - as above
                 f"the loop over {loop.index.name!r} returns a placeholder of a "
                 "different loop")
@@ -185,6 +221,36 @@ def addends(node: Node) -> list:
     if getattr(node, "kind", None) == "add":
         return addends(node.operands[0]) + addends(node.operands[1])
     return [node]
+
+
+def refuse_unsupported_nesting(loop: Loop) -> None:
+    """Refuse, BY NAME, a body whose nested ``for`` neither direction can carry.
+
+    A nested loop differentiates: reverse recomputes the inner forward loop inside
+    each reversed outer iteration (its carried history lives in a LOCAL tape of
+    the inner trip count, never a tape of a tape), forward carries the inner
+    tangents in the inner loop. Three inner shapes are not built: one that leaves
+    early (its per-sample trip count would have to be threaded through every outer
+    iteration), one that commits a sink per iteration (a derived loop), and, in
+    reverse, one that gathers a plane being differentiated (its scatter would sit
+    inside a scope inside a scope: checked where the scatter is made)."""
+    for inner in loop.body_nodes():
+        if not isinstance(inner, Loop):
+            continue
+        if inner.exit_cond is not None:
+            raise HawkError(
+                f"loop over {loop.index.name!r} cannot be differentiated: its body "
+                f"contains a nested `for` over {inner.index.name!r} with a `break`. "
+                "A nested loop differentiates, but one that leaves early would "
+                "need its per-sample trip count threaded through every outer "
+                "iteration, which is not built. Move the `break` to the outer loop, "
+                "or run the inner loop to its bound and mask")
+        if inner.body_sinks or inner.count is not None:
+            raise HawkError(
+                f"loop over {loop.index.name!r} cannot be differentiated: its body "
+                f"contains a nested loop over {inner.index.name!r} that commits a "
+                "sink or runs a recorded trip count (a derived loop); "
+                "differentiating a derivative's nested loop is not built")
 
 
 # --------------------------------------------------------------------------
@@ -199,15 +265,8 @@ def classify_loop(loop: Loop) -> LoopClass:
     else. Anything weaker could differentiate a body whose adjoint
     genuinely depends on the carried value as if it didn't — a wrong
     gradient, not a refused one."""
+    refuse_unsupported_nesting(loop)
     for inner in loop.body_nodes():
-        if isinstance(inner, Loop):
-            raise HawkError(
-                f"loop over {loop.index.name!r} (bound {loop.trip}) cannot be "
-                "differentiated: its body contains a nested `for`. Reverse mode "
-                "would have to keep the inner loop's carried history for every "
-                "outer iteration — a tape of a tape — which is beyond what "
-                "lowers. Flatten the two loops into one, or take the derivative "
-                "of the inner loop's body as its own kernel")
         if getattr(inner, "kind", None) == RAW_KIND:
             raise HawkError(
                 f"loop over {loop.index.name!r} cannot be differentiated: its "

@@ -7,7 +7,7 @@ Three ordered steps over the decorated function's own source. (1) EARLY RETURN
 normalisation: ``if guard: ...; return`` followed by the rest of the body
 becomes that ``if``'s ``else``. (2) VALIDATION, default-deny: only assignment,
 expression, ``if``/``elif``/``else`` and a bounded ``for`` over a literal
-``range`` (holding at most one top-level ``if cond: break``) survive;
+``range`` (holding at most one top-level ``if cond: break`` or ``if cond: <assignments>; break``) survive;
 everything else — ``while``, ``continue``, any other ``break``, ``try``,
 ``with``, ``import``, comprehensions, lambdas, ``and``/``or``/``not``, chained
 or identity comparisons — is refused by a :class:`~hawk.ir.HawkError` naming
@@ -16,7 +16,8 @@ branch runs under Python's own evaluator and the names it assigns are merged
 afterwards by ``select``; a bounded ``for`` runs its body ONCE against a
 symbolic index and the names it carries become a :class:`~hawk.ir.Loop`. A
 loop's ``if cond: break`` becomes the loop's EXIT (:meth:`_LoopBuilder.exit`),
-lowered to a real per-sample ``break``. A sink method call may not sit inside
+lowered to a real per-sample ``break``; ``if cond: S; break`` is sugar for a snapshot of
+``cond``, ``if snapshot: S`` and the bare form (:func:`_lower_break_blocks`). A sink method call may not sit inside
 a branch or a loop — it would commit unconditionally, or once instead of once
 per iteration.
 
@@ -28,6 +29,7 @@ loop stays intact and the compiler decides whether to unroll it.
 from __future__ import annotations
 
 import ast
+import copy
 from typing import Any
 
 from ..ir import Const, Dispatch, HawkError, Node, Select
@@ -443,6 +445,7 @@ def transform(fn: ast.FunctionDef, filename: str, sinks: frozenset[str],
                        value=last.value), last)
     body = _normalize_returns(body, filename)
     _validate(body, filename, sinks, in_branch=False)
+    body = _lower_break_blocks(body, [0])
     body = _rewrite_view_stores(body)
     _check_no_prior_attr(body, filename, mutables | finishes)
     body, written = _rewrite_mutable_stores(body, sinks, mutables, finishes,
@@ -494,8 +497,9 @@ def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
             raise _err(st, filename, _EARLY_RETURN)
         if isinstance(st, ast.Break):
             raise _err(st, filename,
-                       "a `break` is a HAWK form only as `if cond: break` — an "
-                       "`if` with no `else` whose whole body is the `break` — "
+                       "a `break` is a HAWK form only as `if cond: break` or "
+                       "`if cond: <assignments>; break` — an `if` with no `else` "
+                       "whose body is plain assignments and ends in the `break` — "
                        "written as a TOP-LEVEL statement of a `for` body (not "
                        "inside another `if`)")
         if isinstance(st, ast.Continue):
@@ -549,14 +553,16 @@ def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
             if st.orelse:
                 raise _err(st, filename, "a `for ... else` clause is not a HAWK form")
             _check_range(st, filename)
-            exits = [x for x in st.body if _is_break_if(x)]
+            exits = [x for x in st.body if _is_exit(x)]
             if len(exits) > 1:
                 raise _err(exits[1], filename,
                            "a `for` may hold ONE `if cond: break`; combine the "
                            "conditions with lor(...)")
             for x in exits:
                 _check_expr(x.test, filename)
-            _validate([x for x in st.body if not _is_break_if(x)], filename,
+                _check_exit_block(x, filename)
+                _validate(x.body[:-1], filename, sinks, True, True)
+            _validate([x for x in st.body if not _is_exit(x)], filename,
                       sinks, in_branch, True)
 
 
@@ -595,10 +601,14 @@ def _check_view_store(st: ast.stmt, filename: str, in_branch: bool,
         raise _err(st, filename,
                    "a store target is hawk.scatter(name)[...] (or "
                    "hawk.scatter(name, policy=...)[...]) with the name of an output plane")
-    if isinstance(st, ast.AugAssign) and not isinstance(st.op, ast.Add):
+    if isinstance(st, ast.AugAssign) and not isinstance(st.op, (ast.Add, ast.BitOr)):
         raise _err(st, filename,
-                   "only `hawk.scatter(y)[key] += t` accumulates by key; "
+                   "only `hawk.scatter(y)[key] += t` accumulates by key, and "
+                   "`hawk.scatter(y, policy=\"or\")[key] |= bits` sets bits; "
                    "`-=` is `+= -t`, and max/min by key are not in this release")
+
+
+_STORE_OPS = {ast.Add: "+=", ast.BitOr: "|="}
 
 
 def _rewrite_view_stores(stmts: list[ast.stmt], in_loop: bool = False) -> list[ast.stmt]:
@@ -623,7 +633,8 @@ def _rewrite_view_stores(stmts: list[ast.stmt], in_loop: bool = False) -> list[a
             func=ast.Name(id=SCATTER_HELPER, ctx=ast.Load()),
             args=[ast.Name(id=REFS, ctx=ast.Load()), ast.Constant(value=name),
                   t.slice, st.value,
-                  ast.Constant(value="+=" if isinstance(st, ast.AugAssign) else "="),
+                  ast.Constant(value=_STORE_OPS[type(st.op)] if isinstance(st, ast.AugAssign)
+                               else "="),
                   ast.Name(id=name, ctx=ast.Load())], keywords=t.value.keywords)
         out.append(ast.copy_location(ast.Expr(value=call) if in_loop else ast.Assign(
             targets=[ast.Name(id=name, ctx=ast.Store())], value=call), st))
@@ -634,6 +645,47 @@ def _is_break_if(st: ast.stmt) -> bool:
     """``if cond: break`` exactly: no ``else``, the ``break`` its whole body."""
     return (isinstance(st, ast.If) and not st.orelse and len(st.body) == 1
             and isinstance(st.body[0], ast.Break))
+
+
+def _is_exit(st: ast.stmt) -> bool:
+    """A loop exit: ``if cond: break``, or ``if cond: S; break`` with no ``else``."""
+    return (isinstance(st, ast.If) and not st.orelse and bool(st.body)
+            and isinstance(st.body[-1], ast.Break))
+
+
+def _check_exit_block(st: ast.If, filename: str) -> None:
+    """``S`` of ``if cond: S; break``: plain assignments only."""
+    for x in st.body[:-1]:
+        if not isinstance(x, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            raise _err(x, filename,
+                       "`if cond: S; break` takes only assignments in S (names, "
+                       "scalars or vectors, augmented assignment included) — no "
+                       "nested `if` or `for`, no sink call or other statement; "
+                       "assign the value and use it after the loop")
+
+
+def _lower_break_blocks(stmts: list[ast.stmt], count: list[int]) -> list[ast.stmt]:
+    """``if c: S; break`` -> ``snap = c``, ``if snap: S``, ``if snap: break``.
+    ``c`` is read once, before ``S`` runs; the exit then sees ``S`` applied."""
+    out: list[ast.stmt] = []
+    for st in stmts:
+        if isinstance(st, ast.If):
+            st.body = _lower_break_blocks(st.body, count)
+            st.orelse = _lower_break_blocks(st.orelse, count)
+        elif isinstance(st, ast.For):
+            st.body = _lower_break_blocks(st.body, count)
+        if _is_exit(st) and not _is_break_if(st):
+            name = f"{PREFIX}brk{count[0]}"
+            count[0] += 1
+            snap = lambda: ast.Name(id=name, ctx=ast.Load())  # noqa: E731
+            out += [ast.copy_location(x, st) for x in (
+                ast.Assign(targets=[ast.Name(id=name, ctx=ast.Store())],
+                           value=st.test),
+                ast.If(test=snap(), body=st.body[:-1], orelse=[]),
+                ast.If(test=snap(), body=[st.body[-1]], orelse=[]))]
+        else:
+            out.append(st)
+    return out
 
 
 def _expressions(st: ast.stmt) -> list[ast.expr]:
@@ -901,9 +953,18 @@ def _rewrite_mutable_stores(stmts: list[ast.stmt], sinks: frozenset[str],
     seeds: list[ast.stmt] = []
     for name in present:
         if _needs_prior(out, name):
-            seeds.append(_assign(_mutable_name(name), ast.Attribute(
-                value=ast.Name(id=name, ctx=ast.Load()), attr="prior",
-                ctx=ast.Load())))
+            spec = _cover_spec(out, name)
+            if spec is not None:
+                # the body may store every element before it reads one: decided
+                # at trace time against the plane's width (hawk.trace.cover)
+                seeds.append(_assign(_mutable_name(name), ast.Call(
+                    func=ast.Attribute(value=ast.Name(id=name, ctx=ast.Load()),
+                                       attr="zero_cover", ctx=ast.Load()),
+                    args=[spec], keywords=[])))
+            else:
+                seeds.append(_assign(_mutable_name(name), ast.Attribute(
+                    value=ast.Name(id=name, ctx=ast.Load()), attr="prior",
+                    ctx=ast.Load())))
         if _is_stored(out, name) and name not in written:
             written.append(name)
     if present:
@@ -935,6 +996,136 @@ def _needs_prior(stmts: list[ast.stmt], name: str) -> bool:
     never reaches a sink, so the walk digest is unchanged) but wrong for a WideOut
     own column, which has no launch-start value."""
     return _first_access(stmts, name) == "read"
+
+
+def _cover_spec(stmts: list[ast.stmt], name: str) -> ast.expr | None:
+    """The expression building :mod:`hawk.trace.cover`'s spec of how ``stmts``
+    store and read the elements of ``name``, or ``None`` when no element store
+    is there to analyse. Every index and bound becomes a lambda over the loop
+    variables in scope, evaluated at trace time in the kernel's own namespace
+    (see the module for the node shapes); a construct the analysis does not
+    model becomes ``("opaque",)``, which it reports as unprovable."""
+    if not any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+               and n.func.id == SETITEM_HELPER and n.args
+               and isinstance(n.args[0], ast.Name) and n.args[0].id == name
+               for st in stmts for n in ast.walk(st)):
+        return None
+    return _spec_seq(stmts, name, ())
+
+
+def _spec_const(value: str) -> ast.expr:
+    return ast.Constant(value=value)
+
+
+def _spec_tuple(*elts: ast.expr) -> ast.expr:
+    return ast.Tuple(elts=list(elts), ctx=ast.Load())
+
+
+def _spec_list(elts: list) -> ast.expr:
+    return ast.List(elts=elts, ctx=ast.Load())
+
+
+def _spec_fn(expr: ast.expr, scope: tuple) -> ast.expr:
+    """``(lambda <scope>: expr, scope)`` — the expression evaluated against the
+    loop variables of ``scope``."""
+    lam = ast.Lambda(
+        args=ast.arguments(posonlyargs=[], args=[ast.arg(arg=v) for v in scope],
+                           kwonlyargs=[], kw_defaults=[], defaults=[]),
+        body=copy.deepcopy(expr))
+    return _spec_tuple(lam, _spec_tuple(*[_spec_const(v) for v in scope]))
+
+
+def _is_setitem(st: ast.stmt, name: str) -> bool:
+    return (isinstance(st, ast.Assign) and len(st.targets) == 1
+            and isinstance(st.targets[0], ast.Name) and st.targets[0].id == name
+            and isinstance(st.value, ast.Call)
+            and isinstance(st.value.func, ast.Name)
+            and st.value.func.id == SETITEM_HELPER and len(st.value.args) >= 3
+            and isinstance(st.value.args[0], ast.Name) and st.value.args[0].id == name)
+
+
+def _reads_in(node: ast.AST, name: str, scope: tuple, out: list) -> bool:
+    """Append the read specs of ``name`` under ``node`` to ``out``; ``False`` when
+    an index mentions ``name`` itself (not modelled)."""
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) \
+            and node.value.id == name and isinstance(node.ctx, ast.Load):
+        if _mentions([ast.Expr(value=node.slice)], name):
+            return False
+        out.append(_spec_fn(node.slice, scope))
+        return True
+    if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load):
+        out.append(ast.Constant(value=None))
+        return True
+    return all(_reads_in(child, name, scope, out) for child in ast.iter_child_nodes(node))
+
+
+def _rebinds(loop: ast.For, names: set) -> bool:
+    """Whether anything INSIDE ``loop``'s body binds one of ``names`` (an
+    assignment, an augmented one, a ``for`` target, a ``with``/``except`` alias):
+    ``for i in range(2): i = 0; out[i] = ...`` stores ``out[0]`` twice."""
+    for stmt in loop.body:
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)) \
+                    and n.id in names:
+                return True
+    return False
+
+
+def _spec_stmt(st: ast.stmt, name: str, scope: tuple) -> ast.expr | None:
+    if not _mentions([st], name):
+        return None
+    opaque = _spec_tuple(_spec_const("opaque"))
+    if isinstance(st, ast.For):
+        it = st.iter
+        if not (isinstance(st.target, ast.Name) and not st.orelse
+                and isinstance(it, ast.Call) and isinstance(it.func, ast.Name)
+                and it.func.id == "range" and not it.keywords and 1 <= len(it.args) <= 3
+                and not any(isinstance(n, (ast.Break, ast.Continue, ast.Return))
+                            for b in st.body for n in ast.walk(b))):
+            return opaque
+        var = st.target.id
+        if _rebinds(st, set(scope) | {var}):
+            # the body assigns (or re-loops over) a loop variable in scope: the
+            # index the analysis would compute is not the one the trace sees
+            return opaque
+        args = _spec_fn(ast.Tuple(elts=list(it.args), ctx=ast.Load()), scope)
+        return _spec_tuple(_spec_const("for"), _spec_const(var), args,
+                           _spec_seq(st.body, name, scope + (var,)))
+    if isinstance(st, ast.If):
+        reads: list = []
+        if not _reads_in(st.test, name, scope, reads):
+            return opaque
+        return _spec_tuple(_spec_const("seq"), _spec_list([
+            _spec_tuple(_spec_const("stmt"), _spec_list(reads), ast.Constant(value=None)),
+            _spec_tuple(_spec_const("if"), _spec_seq(st.body, name, scope),
+                        _spec_seq(st.orelse, name, scope))]))
+    reads = []
+    if _is_setitem(st, name):
+        call = st.value
+        if not (_reads_in(call.args[1], name, scope, reads)
+                and _reads_in(call.args[2], name, scope, reads)):
+            return opaque
+        if _mentions([ast.Expr(value=call.args[1])], name):
+            return opaque
+        return _spec_tuple(_spec_const("stmt"), _spec_list(reads),
+                           _spec_fn(call.args[1], scope))
+    if isinstance(st, ast.Assign) and len(st.targets) == 1 \
+            and isinstance(st.targets[0], ast.Name) and st.targets[0].id == name:
+        if not _reads_in(st.value, name, scope, reads):
+            return opaque
+        return _spec_tuple(_spec_const("stmt"), _spec_list(reads), _spec_const("all"))
+    if isinstance(st, (ast.Assign, ast.Expr)) and not any(
+            isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
+            for n in ast.walk(st)):
+        if not _reads_in(st, name, scope, reads):
+            return opaque
+        return _spec_tuple(_spec_const("stmt"), _spec_list(reads), ast.Constant(value=None))
+    return opaque
+
+
+def _spec_seq(stmts: list, name: str, scope: tuple) -> ast.expr:
+    parts = [p for p in (_spec_stmt(st, name, scope) for st in stmts) if p is not None]
+    return _spec_tuple(_spec_const("seq"), _spec_list(parts))
 
 
 def _mentions_as(node: ast.AST, name: str, ctx: type) -> bool:
@@ -1159,7 +1350,7 @@ class _Rewriter:
         """A ``for`` whose body scatters runs as Python's own loop while the
         body is traced: each iteration's add is its own commit, at a static
         index."""
-        if any(_is_break_if(x) for x in ast.walk(st) if isinstance(x, ast.stmt)):
+        if any(_is_exit(x) for x in ast.walk(st) if isinstance(x, ast.stmt)):
             raise _err(st, self.filename,
                        "a `for` that scatters is unrolled while the body is traced, so "
                        "it may not `break`")

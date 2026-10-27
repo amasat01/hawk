@@ -8,6 +8,7 @@ any address is taken."""
 from __future__ import annotations
 
 import array
+import math
 import os
 
 from ._plane_layout import (
@@ -77,7 +78,7 @@ def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None,
         mv = memoryview(value)
         kind = choice.of(name, mv, width)
         if kind in ("ambiguous", "conflict"):
-            raise HawkError(f"hawk.runtime.run: " + layout_refusal(
+            raise HawkError("hawk.runtime.run: " + layout_refusal(
                 kind, name, tuple(mv.shape), width, choice.axes.get(name)))
         votes[name] = _native_extent(mv, width, kind)
         if kind == "single":
@@ -280,20 +281,67 @@ def _check_sorted(name: str, value, n_samples: int, errors: list) -> None:
             return
 
 
-def _check_axes_arg(sidecar: dict, name: str, value, n_samples: int, errors: list) -> None:
-    """A sink declared with named axes is bound ``(*payload, *axes)``."""
-    from ._lane_bind import output_shape
+def _check_axes_arg(sidecar: dict, name: str, value, arrays: dict, n_samples: int,
+                    errors: list) -> None:
+    """A sink declared with named axes is bound ``(*payload, *axes)``; a runtime
+    axis no lane axis shares is the plane's own length, or ``<label>=N``."""
+    from ._lane_bind import free_labels, output_shape
 
     try:
         got = tuple(memoryview(value).shape)
     except TypeError:
         return
     spec = sidecar["plane_axes"][name]
-    want = output_shape(sidecar, name, 1, n_samples)
+    extents = {}
+    for label in free_labels(sidecar):
+        if label in arrays:
+            extents[label] = arrays[label]
+            if isinstance(extents[label], bool) or not isinstance(extents[label], int) \
+                    or extents[label] < 1:
+                errors.append(f"{label}= is the extent of the runtime axis {label!r}, "
+                              f"a positive int; got {extents[label]!r}")
+                return
+    for i, ax in enumerate(spec["axes"]):
+        at = len(spec["payload"]) + i
+        if ax["label"] in free_labels(sidecar) and ax["label"] not in extents and at < len(got):
+            extents[ax["label"]] = got[at]
+    want = output_shape(sidecar, name, 1, n_samples, extents)
     if got != want:
-        axes = ", ".join(f'{ax["label"]}={ax["extent"]}' for ax in spec["axes"])
+        axes = ", ".join(f'{ax["label"]}' if ax["extent"] is None else f'{ax["label"]}={ax["extent"]}'
+                         for ax in spec["axes"])
         errors.append(f"argument {name!r}: declared with the axes ({axes}), so it is bound "
                       f"{want} (payload first), got {got}")
+
+
+def _check_compact_arg(sidecar: dict, name: str, value, n_samples: int, errors: list) -> None:
+    """A Matrix the kernel reads only at lane indices (a broadcast input) is bound
+    compact, ``(rows*cols, columns)``: its columns are the extents of the axes it
+    varies along, so a lane can never index past the plane or into another's matrix."""
+    from ._lane_bind import gather_columns
+
+    try:
+        got = tuple(memoryview(value).shape)
+    except TypeError:
+        return
+    rows = int(sidecar.get("arg_shapes", {}).get(name) or 1)
+    cols = gather_columns(sidecar, name, n_samples)
+    if len(got) != 2 or got[0] != rows or (got[1] != cols if cols is not None else got[1] < 1):
+        want = f"({rows}, {cols if cols is not None else 'columns'})"
+        errors.append(f"argument {name!r}: is read at lane indices only, so it is bound compact "
+                      f"as {want} at n_samples={n_samples}, got shape {got}")
+
+
+def _check_adjoint_arg(sidecar: dict, name: str, value, arrays: dict, errors: list) -> None:
+    """The gradient of a lookup plane holds as many elements as that plane: the
+    kernel scatters into it by the plane's own index, never by lane."""
+    like = sidecar["adjoint_like"][name]
+    try:
+        got, want = memoryview(value).shape, memoryview(arrays[like]).shape
+    except (TypeError, KeyError):
+        return
+    if math.prod(got) < math.prod(want):
+        errors.append(f"argument {name!r}: the gradient of the lookup plane {like!r} (shape "
+                      f"{tuple(want)}) needs that many elements, got shape {tuple(got)}")
 
 
 def _check_uniform_arg(name: str, value, params: dict, errors: list) -> None:
@@ -363,11 +411,17 @@ def _check_bind(sidecar: dict, arg_spec, arrays: dict, n_samples: int,
             continue
         if role == "uniform":
             _check_uniform_arg(name, arrays[name], params, errors)
+        elif role == "mat_in" and name in (sidecar.get("gather_mats") or {}):
+            _check_plane_arg("wide_in", name, arrays[name], arg_dtypes, arg_shapes,
+                             n_samples, errors, choice)
+            _check_compact_arg(sidecar, name, arrays[name], n_samples, errors)
         else:
             _check_plane_arg(role, name, arrays[name], arg_dtypes, arg_shapes,
                              n_samples, errors, choice)
+            if name in (sidecar.get("adjoint_like") or {}):
+                _check_adjoint_arg(sidecar, name, arrays[name], arrays, errors)
             if name in plane_axes:
-                _check_axes_arg(sidecar, name, arrays[name], n_samples, errors)
+                _check_axes_arg(sidecar, name, arrays[name], arrays, n_samples, errors)
             if name in check_sorted:
                 _check_sorted(name, arrays[name], n_samples, errors)
 

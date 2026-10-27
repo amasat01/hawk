@@ -195,8 +195,9 @@ def _close(got, want, what, budget, start):
             assert got[key].tobytes() == want[key].tobytes(), f"{what}: {key}"
         elif key == "h":
             if short:
-                bound = MARGIN * abs(EXP_REJECT) * _kappa(start) * 8 * EPS
-                with np.errstate(all="ignore"):
+                kappa = _kappa(start)
+                with np.errstate(all="ignore"):  # an unbounded kappa gives an infinite bound, and a 0/0 rel
+                    bound = MARGIN * abs(EXP_REJECT) * kappa * 8 * EPS
                     rel = np.abs(got[key] - want[key]) / np.abs(want[key])
                 _report(kernel, what, budget, key, np.nanmax(rel / bound, initial=0.0),
                         rel.max(initial=0.0), bound[rel.argmax()] if rel.size else 0.0)

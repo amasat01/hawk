@@ -13,7 +13,9 @@ these names LAZILY and a light consumer keeps paying only for
 LOOPS: a body loops with ``for k in range(...)``, a compile-time cap. A
 sample can leave early with ONE ``if cond: break`` as a top-level loop
 statement, keeping the values its carried names held at the break, as in
-Python. ``while`` is refused — write
+Python. ``if cond: S; break`` also works: ``S`` is plain assignments (names,
+scalars, vectors, augmented assignment), run on the exiting trip after
+``cond`` was read. ``while`` is refused — write
 ``for _ in range(CAP): if lnot(cond): break`` instead. ``continue``, a
 nested ``break``, and a second ``break`` in one loop are refused too.
 

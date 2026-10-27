@@ -4,12 +4,46 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 
 ## Unreleased
 
+`hawk.math.pair_index()` gives a lane its pair `(i, j)`, `i < j`, for a launch over the N(N-1)/2 pairs of N items with no lane for `i >= j`: declare `Grid["pair"]`, pass `pair=N*(N-1)//2`, read items with `x.at(i)` / `x.at(j)`. Lane `k` is `k = j(j-1)/2 + i` (`j` slow, `i` fast), found from a float estimate corrected by one step each way, in 64-bit integers on the host, CUDA and C targets; it is exact for every `k < 2**31` in `float32` and every `k < 2**53` in `float64`. Per-pair outputs, a keyed `+=` row sum, an OR bit mask, `vjp` and `jvp` work on it as on any one-axis `Grid`.
+
+`hawk.scatter(mask, policy="or")[word] |= bits` ORs a 32-bit value into a keyed `Int32` or `UInt32` plane: an N x N bit mask is one word per key and one bit per value. The commit is the target's atomic OR (`atomicOr` on the device, an `atomic_ref` under the host team, a serial `|=` in the C target), so any number of lanes may hit one word and the result is the exact `np.bitwise_or.at`, bit for bit on every target. There is no 64-bit integer plane, so a wider mask is two words per key. `|=` without `policy="or"`, `policy="or"` with `+=`, and a float plane are refused by name; `vjp` and `jvp` of a kernel that writes a bit mask are refused by name. A kernel that does not use it generates the same text as before.
+
+Nested `for` differentiates, in `vjp` and `jvp` (and `jvp(vjp(...))`): reverse mode recomputes the inner loop inside each reversed outer iteration, its carried history in a local tape of the inner trip count; forward mode carries the inner tangents in the inner loop. An inner `break`, `jump=` through a nested loop and, in reverse, an inner loop that gathers a plane being differentiated are refused by name. The enclosing loop's index or carry can be read directly in an inner body (it used to be refused at trace time).
+
+A plane gathered with `at()` inside a `dispatch` branch of a loop differentiates in reverse: the gradient is one scatter outside the `dispatch`, at the gathering branch's row, with a zero at row 0 for a lane whose branch did not gather, so no row is committed out of range.
+
+A Mutable vector filled element by element differentiates whenever the body stores every element before it reads one: straight-line `out[0] = ...; out[1] = ...`, a nested index `out[3*i + d]`, a store on both arms of an `if`, a fill followed by a stencil, a loop bounded by a module constant. The check unrolls the (static) loops and counts the elements stored; a partial fill, a read of an element not yet stored, or an index it cannot compute keeps the launch-start value and the derivative is refused by name as before. A read of a not-yet-stored element inside a full-looking fill (`out[j] = ...; out[j] = out[j] + out[j + 1]`) used to start from zeros and is now refused.
+
+`if cond: S; break` in a `for`: `S` (plain assignments, augmented ones included) runs on the exiting trip, with `cond` read before it, so a kernel can record a time or a trip count where it leaves. Nested `if`/`for`, a sink call or a reduction in `S`, and a second exit are refused by name.
+
+`hawk.sum(x, over=...)` and `hawk.mean(x, over=...)` can be read back in the same kernel (`x / hawk.sum(x, over="col")`,
+`x - hawk.mean(x, over="col")`, a vector payload per component): the kernel runs in stages like one that reads
+`hawk.sum(x)`, the first adding into a plane the runtime owns and zeroes for every run. `policy='auto'` and
+`'compensated'` work; `'ordered'`, a keyed max or min, `group=`, and a stepping or segmented kernel are refused by name.
+`vjp` and `jvp` of a sum over samples keep its key, count and policy (before, they dropped them).
+
+`jump=` is now correct when the value a switch picks reaches another comparison, a `break` or a nonlinear
+function: `jvp` and `vjp` run the other side of one drawn switch (the integer input `jump_seed`, default `0`)
+instead of passing the branch difference along the taken path, and refuse what that cannot follow
+(`step_vjp` and rollouts over launches, a nested `for`, a read across samples, a row keyed by a rounded
+differentiated value). Kernels whose switched value only reaches the outputs affinely are unchanged.
+
 The code is the same and the generated source is byte-identical; the names for how a target is
 written and wrapped are new. `hawk.emit` has a `Writer` (was `Dialect`: `render_body(..., writer=)`)
 and a `Wrapper` (was `Backend`), and `hawk.targets.TARGETS` is the one table of what `hawk.build(targets=...)`
 builds: `cuda`, `host` and `c` are rows in it, and the build, the package step and the compile drivers read
 the row instead of comparing a target's name. `hawk.emit.BACKENDS`, `hawk.compile.HOST` and `hawk.compile.DEVICE` are gone,
 `CompileOptions(backend=)` is `CompileOptions(target=)`, and the unit cache key changes once.
+
+A product past a fold of 16 or a result of more than 16 elements is written as a rolled loop (`aether::rt`) instead of an unrolled expression, so `A @ B`, `transpose(A) @ A` and `lstsq` build at `n` = 16, 24 and 32 (the unrolled text failed to compile there) and keep a few registers live. The values are the same bits as the unrolled form, on the host and on the device; a kernel whose products are all under the threshold generates the same text as before. The linear algebra calls pass the library the planes themselves and fill each factor in place: an `n = 32` double `solve` uses 32 registers and 8.8 KB of local memory per thread on sm_61 (it was 255 and 33 KB), `inv`, `cholesky` and `eigh` 30 to 48 registers.
+
+`hawk.math.mat` builds a matrix in a kernel from traced entries (`m.mat([[a, b], [c, d]])`), from row vectors (`m.mat([u, v])`) or from column vectors (`columns=True`); `A[i, j]` reads a matrix entry and `m.vec(u, v)` joins vectors. The matrix feeds `m.solve`, `m.cholesky` and `m.eigh`, its derivatives are exact, and a built matrix of more than 16 entries is written entry by entry (host, CUDA and the C target) rather than as one wide expression. A wide input plane a loop reads, or a static component of one, is read through its proxy rather than copied whole.
+
+`build_bundle(..., emit_form=)` picks how a product, dot, sum or norm is spelled: `"auto"` (default) unrolls a site of at most 16 elements and writes a longer one as a loop, `"static"` unrolls every site (the text before this change; a wide product then fails to compile where it did), and `"rolled"` writes every site as a loop, a fast-compile mode. The forms give the same bits. A library result that an own-column store takes unchanged is written straight into the plane, so an `n = 32` double `eigh` keeps one working set of local memory (it held two) and `inv` half of what it did. The sidecar's `ptxas` rows gain `working_set_B` and a `spills` flag, and a kernel that spills or whose frame is 1.25 times its working set warns at build. On the P2000 at 1e4 lanes a double `solve` is 43, 251 and 1797 ns per matrix at n = 8, 16 and 32 (the batched cuSOLVER route: 192, 611, 3910).
+
+A `Matrix` input given broadcast and read by a rolled product (`M @ v` with a fold past 16) is read through the caller's compact plane as it stands: no `n x n` copy per lane. At 20 x 20 in double on sm_61 the kernel went from 255 registers, 6520 B of stack and 4396 B of spill to 96 registers, 160 B of stack (the result vector) and no spill, 3.5x faster, with identical bits.
+
+`hawk.math.chol_from(L)` takes a lower triangular matrix you built (a square-root factor from your own formulas) as the Cholesky factor of `L L^T`, for `m.cho_solve`, with no factoring: `factor, info = m.chol_from(L)`. `info` is the first column whose diagonal entry is zero, negative, NaN or infinite, and a failed lane's solve is zeros. `vjp` and `jvp` are exact in `L` (its lower triangle) and in the right-hand side; a failed lane's derivatives are zero. It has a C helper (MISRA clean, same bits as the host build) and a device spelling that reads the plane through its proxy. `cho_solve` of a matrix you built still refuses by name, and now points to `chol_from`. New in `aether::linalg`: `choleskyFrom`.
 
 ## 0.6.5 (2026-10-23)
 

@@ -3,7 +3,6 @@
 
 """Host-compiler discovery order: $HAWK_CXX > $CXX > g++ on PATH > zig."""
 
-import os
 import stat
 import sys
 

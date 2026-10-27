@@ -24,7 +24,7 @@ from typing import Any
 from ..types import Slot, TensorType
 from . import access as _access
 from .access import Access
-from .nodes import COMPANION_SUFFIX, AccumWrite, compensates, param_cell_names
+from .nodes import ADJOINT_PREFIX, COMPANION_SUFFIX, AccumWrite, compensates, param_cell_names
 from .compound import Quantity, QuantitySpan
 from .loop_nodes import Loop, LoopCarry, LoopCount, LoopValue, TapeRead
 from .nodes import (
@@ -128,6 +128,29 @@ class Walk:
         binds them."""
         return {n.name + COMPANION_SUFFIX: n.name for n in self.order
                 if isinstance(n, AccumWrite) and compensates(n.policy)}
+
+    @property
+    def adjoint_like(self) -> dict:
+        """``bar_<plane>`` to ``<plane>`` for each accumulate plane that is the
+        adjoint of a lookup plane: it is that plane's size, whatever the lane
+        count (a Table's length is the caller's)."""
+        reads = {n for r, n in self.arg_spec if r in ("lookup", "wide_in")}
+        prefix = ADJOINT_PREFIX + "_"
+        return {n: n[len(prefix):] for r, n in self.arg_spec
+                if r == "accum_out" and n.startswith(prefix) and n[len(prefix):] in reads}
+
+    @property
+    def gather_mats(self) -> tuple:
+        """The ``mat_in`` planes read ONLY through ``at()``: their column count
+        is the caller's (a broadcast Matrix binds compact), not the lane count."""
+        from .nodes import At
+
+        direct = {o.name for n in self.order
+                  if not isinstance(n, At) for o in n.operands
+                  if isinstance(o, Leaf) and o.role == "mat_in"}
+        crossed = {n.operands[0].name for n in self.order
+                   if isinstance(n, At) and n.operands[0].role == "mat_in"}
+        return tuple(sorted(crossed - direct))
 
     @property
     def param_planes(self) -> tuple[str, ...]:
@@ -602,7 +625,7 @@ def _rebuild(node: Node, operands: Sequence[Node]) -> Node:
     if isinstance(node, Op):
         return Op(node.kind, tuple(operands), node.ttype, node.literal)
     if isinstance(node, ReduceSamples):
-        return ReduceSamples(node.op, operands[0])
+        return node.rebuilt(operands[0])
     raise HawkError(                              # pragma: no cover - closed set
         f"no substitution rule for node {node!r} inside a loop body")
 

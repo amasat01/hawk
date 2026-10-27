@@ -1,4 +1,4 @@
-# hawk in your domain
+# Your own vocabulary
 
 Teach hawk the objects of your field once: a spacecraft state, a portfolio, a
 reaction network. Every kernel you write then speaks those terms, compiles for
@@ -48,38 +48,11 @@ is the one you extend, share across models, and give derivatives to.
 
 vocabulary/01_a_family_of_kernels
 vocabulary/02_extend_by_inheritance
-vocabulary/03_your_own_derivative
 vocabulary/04_capstone
-vocabulary/05_tapes_and_events
-vocabulary/06_orbits
-vocabulary/07_fem_assembly
-vocabulary/08_particle_binning
-vocabulary/09_heat_diffusion
-vocabulary/10_fluids
-vocabulary/11_batched_contraction
-vocabulary/12_monte_carlo_ensemble
 ```
 
-The tutorials go in order; [Orbits](vocabulary/06_orbits) is a short worked
-example of a vocabulary for orbital mechanics.
-
-## The same words in other fields
-
-Each of these is a short notebook that runs on a CPU at a small size and on a GPU at a larger one.
-
-- [Finite elements](vocabulary/07_fem_assembly): assemble a load vector from a triangle mesh. One lane per
-  (triangle, corner), `hawk.scatter` into the nodes, `t[e, a]` and `.at(...)` for reads, and the ways to read
-  where a lane is.
-- [Particle binning](vocabulary/08_particle_binning): add each particle's weight into its cell, with
-  `policy=` for the sum and `Sorted[Index]` for keys that are already in order.
-- [Heat diffusion](vocabulary/09_heat_diffusion): a 2-D `Grid` stencil, with neighbours read by `.at(...)`.
-  Animated.
-- [Fluids](vocabulary/10_fluids): shallow water on a 2-D `Grid`, with the total water checked.
-  Animated.
-- [Batched small matrices](vocabulary/11_batched_contraction): a matrix-vector product and a quadratic form per batch
-  element on `Grid["batch", "i":3, "j":3]`, with `hawk.sum(..., over=...)`, checked against `einsum`.
-- [Monte Carlo trajectories](vocabulary/12_monte_carlo_ensemble): one projectile's step with drag and a stop rule, run until every
-  sample has landed or left the field, checked against the exact solution. Animated.
+The three notebooks go in order; the two on derivatives, [your own derivative](vocabulary/03_your_own_derivative) and [tapes and stop rules](vocabulary/05_tapes_and_events), are under Derivatives in the tutorials. The worked cases, one per field, are on the [Domains](domains) pages;
+[Orbits](vocabulary/06_orbits) is a good first one.
 
 ## Words for lanes and targets
 
@@ -88,7 +61,27 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
 - A **lane** is one work item, and the body of a kernel is one lane's code.
 - The **lane space** is the shape a kernel gives its lanes. You declare it with a **`Grid`** parameter,
   `lane: Grid["channel", "sample":8192]`. The **fastest axis** is the last one declared: consecutive lanes
-  along it are consecutive threads or SIMD lanes.
+  along it are consecutive threads or SIMD lanes. A per-lane input you only read may be given **broadcast**,
+  as in NumPy: a scalar, an array with axes of size 1, or one with fewer axes, lined up from the last axis.
+  hawk binds your array as it is, without copying it, and compiles the kernel to read it along only the axes
+  it varies along. The gradient of such an input comes back in its own shape. Planes a kernel writes, and the
+  `terminated` mask, keep the exact lane shape.
+- A **bare label** (`Grid["channel", ...]`, `Mutable["node"]`, `Table["elem", "c":3]`) is an extent given when
+  you run, and only the first axis may be bare. Give it as `node=N` or by passing a plane of that length; one
+  build serves every size. A label that a `Grid` axis shares takes the lane extent.
+- The **pairs of N items** (`i < j`, no lane for `i >= j`) are `lane: Grid["pair"]` and `i, j = hawk.math.pair_index()`,
+  run as `pair=N * (N - 1) // 2`. Lane `k` is the pair with `k = j * (j - 1) / 2 + i`, so `j` is the slow index and
+  neighbouring lanes read neighbouring `i`. The index is exact in 64-bit integers on every target (`float32` builds: every
+  `k < 2**31`; `float64`: every `k < 2**53`). Items live in a `Table["node"]` read as `x.at(i)` and `x.at(j)`; the outputs
+  are one value per pair, a keyed `+=` gives a row sum (`hawk.scatter(rs)[j] += t`) and `policy="or"` an adjacency bit mask:
+
+  ```python
+  @hawk.kernel
+  def near(lane: Grid["pair"], x: Table["node"], mask: Mutable[UInt32]):
+      i, j = hawk.math.pair_index()
+      bit = hawk.math.select(x.at(i) * x.at(j) > 0.5, hawk.math.uint32(1) << hawk.math.uint32(j & 31), hawk.math.uint32(0))
+      hawk.scatter(mask, policy="or")[i * 4 + (j >> 5)] |= bit      # 4 words of 32 bits per row: up to 128 items
+  ```
 - A **group** is the lane count in which finished lanes are compacted away (`@hawk.kernel(group=32)`).
 - A **policy** says how a sum over lanes is added up: `"auto"`, `"compensated"` or `"ordered"`.
   See [Across lanes](across_lanes).

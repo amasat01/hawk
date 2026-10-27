@@ -59,11 +59,16 @@ def _sample(code: str):
         return RNG.normal(size=(3, 3))
     if code == "m32":
         return RNG.normal(size=(3, 2))
+    if code == "gen3":
+        return 3.0 * np.eye(3) + 0.6 * RNG.normal(size=(3, 3))
+    if code == "spd3":
+        g = RNG.normal(size=(3, 3))
+        return g @ g.T + 3.0 * np.eye(3)
     raise AssertionError(code)
 
 
 _TTYPE = {"s": S, "sp": S, "su": S, "sg1": S, "v3": V3, "v3p": V3, "q": Q, "m33": M33,
-          "m32": M32}
+          "m32": M32, "spd3": M33, "gen3": M33}
 _ROLE = {0: "per_sample", 1: "vec_in", 2: "mat_in"}
 
 
@@ -79,6 +84,46 @@ def _u(kind):
 def _b(kind):
     return lambda a, b: mk(kind, (a, b))
 
+
+def _lane(info_kind, f, value):
+    """``value`` where ``f`` reports success, zeros elsewhere: the user-level
+    read of a status."""
+    ok = mk("eq", (mk(info_kind, (f,)), Const(0, TensorType((), "int32"))))
+    return Select(ok, value, mk("splat", (Const(0.0, S),), value.ttype.shape), value.ttype)
+
+
+#: The rows of the linear-algebra kinds (each a SPD or general 3x3 at a point
+#: the finite difference stays inside the same branch of).
+LINALG_CASES = [
+    ("lu_solve_vector", ("gen3", "v3"), lambda a, b: mk("lu_solve", (mk("lu", (a,)), b))),
+    ("lu_solve_matrix", ("gen3", "m32"), lambda a, b: mk("lu_solve", (mk("lu", (a,)), b))),
+    ("lu_solve_t_vector", ("gen3", "v3"), lambda a, b: mk("lu_solve_t", (mk("lu", (a,)), b))),
+    ("lu_solve_t_matrix", ("gen3", "m32"), lambda a, b: mk("lu_solve_t", (mk("lu", (a,)), b))),
+    ("lu_det", ("gen3",), lambda a: mk("lu_det", (mk("lu", (a,)),))),
+    ("lu_info", ("gen3", "v3"),
+     lambda a, b: _lane("lu_info", mk("lu", (a,)), mk("lu_solve", (mk("lu", (a,)), b)))),
+    ("cho_solve_vector", ("spd3", "v3"), lambda a, b: mk("cho_solve", (mk("chol", (a,)), b))),
+    ("cho_solve_matrix", ("spd3", "m32"), lambda a, b: mk("cho_solve", (mk("chol", (a,)), b))),
+    ("chol_factor", ("spd3",), lambda a: mk("chol_factor", (mk("chol", (a,)),))),
+    ("chol_as_matrix", ("spd3", "m33"), lambda a, b: mk("mm", (mk("chol", (a,)), b))),
+    ("chol_info", ("spd3",),
+     lambda a: _lane("chol_info", mk("chol", (a,)), mk("chol_factor", (mk("chol", (a,)),)))),
+    ("chol_from_solve", ("gen3", "m32"), lambda a, b: mk("cho_solve", (mk("chol_from", (a,)), b))),
+    ("chol_from_factor", ("gen3",), lambda a: mk("chol_factor", (mk("chol_from", (a,)),))),
+    ("chol_from_tri", ("gen3", "v3"), lambda a, b: mk("tri_lower", (mk("chol_from", (a,)), b))),
+    ("tri_lower", ("spd3", "m32"), lambda a, b: mk("tri_lower", (mk("chol", (a,)), b))),
+    ("tri_upper_t", ("spd3", "m32"), lambda a, b: mk("tri_upper_t", (mk("chol", (a,)), b))),
+    ("tri_lower_vector", ("spd3", "v3"), lambda a, b: mk("tri_lower", (mk("chol", (a,)), b))),
+    ("tri_upper_t_vector", ("spd3", "v3"), lambda a, b: mk("tri_upper_t", (mk("chol", (a,)), b))),
+    ("eigh_w", ("gen3",), lambda a: mk("eigh_w", (mk("eigh", (a,)),))),
+    ("eigh_v", ("gen3",), lambda a: mk("eigh_v", (mk("eigh", (a,)),))),
+    ("eigh_info", ("gen3",),
+     lambda a: _lane("eigh_info", mk("eigh", (a,)), mk("eigh_w", (mk("eigh", (a,)),)))),
+    # pathwise mvn_sample: mean + L z, z the counter generator's draws
+    ("mvn_composition", ("v3", "spd3"),
+     lambda mean, cov: mk("add", (mean, mk("mv", (mk("chol", (cov,)), mk("vec", tuple(
+         mk("random_normal", (Const(11, I32), Const(k, I32))) for k in range(3)))))))),
+]
 
 #: ``(id, operand codes, builder)`` — one primal per rule under test.
 CASES = [
@@ -239,6 +284,9 @@ CASES = [
     ("abs_rank2", ("m33",), _u("abs")),
     ("max_rank2", ("m33", "m33"), _b("max")),
     ("min_broadcast_rank2", ("s", "m33"), _b("min")),
+    # The linear-algebra kinds: every consumer and projection reads ONE
+    # factorisation node, and the checked derivative flows through it.
+    *LINALG_CASES,
 ]
 
 

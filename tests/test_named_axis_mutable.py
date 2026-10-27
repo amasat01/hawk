@@ -65,7 +65,7 @@ def test_the_declaration_names_the_axes_and_the_payload():
 
 
 @pytest.mark.parametrize("spec,why", [
-    (lambda: Mutable[Scalar, "bin"], r"named axis is spelled <label>:<extent>"),
+    (lambda: Mutable[Scalar, 3], r"named axis is spelled <label>:<extent>"),
     (lambda: Mutable["bin":0], r"positive compile-time int"),
     (lambda: Mutable["bin":4, "bin":4], r"duplicate axis label"),
     (lambda: Mutable[3], r"takes a payload type"),

@@ -1,4 +1,4 @@
-# What happens under the hood
+# How a kernel is compiled and run
 
 You write a function and call it. This page follows that call, so you can see
 where each piece of the program lives. Nothing here is needed to use hawk.

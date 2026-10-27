@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..types import INT_PLANE_DTYPES, TensorType
+from . import linalg
 from .nodes import QUAT_OPS, HawkError, Node, Op
 
 #: Rank-generic elementwise binaries (a rank-0 operand broadcasts).
@@ -47,6 +48,9 @@ VECTOR_OPS = ("dot", "cross", "norm", "sum", "component", "component_at",
               "set_component_at", "add_at", "vec", "splat")
 #: Matrix algebra: matrix-vector, matrix-matrix, transpose, outer product.
 MATRIX_OPS = ("mv", "mm", "transpose", "outer")
+#: Per-lane linear algebra (:mod:`hawk.ir.linalg`): a factorisation node, the
+#: solves against it and the reads of its fields.
+LINALG_OPS = linalg.LINALG_OPS
 #: The language's stateless, counter-based draws: arity 2, ``(seed, counter)``,
 #: both rank-0 integer-typed, lowered to its uniform and normal generators
 #: with the kernel's
@@ -75,7 +79,7 @@ CAST_TARGETS = INT_PLANE_DTYPES + ("i32", "f64")
 #: Every op kind a traced body can mint (``at``/``select`` mint their own
 #: node subclasses but are KINDS here, since the rule table keys on kind).
 OP_KINDS = (ELEMENTWISE_BINARY + UNARY_MATH + COMPARE + LOGICAL + VECTOR_OPS
-            + MATRIX_OPS + QUAT_OPS + RANDOM_OPS + ("select", "dispatch", "at")
+            + MATRIX_OPS + LINALG_OPS + QUAT_OPS + RANDOM_OPS + ("select", "dispatch", "at")
             + ELEMENTWISE_TERNARY + PREDICATE + INT_BINARY + INT_UNARY + CAST)
 
 _DTYPE_RANK = {"bool": 0, "i32": 1, "i64": 2, "f32": 3, "f64": 4}
@@ -103,8 +107,18 @@ def promote(a: str, b: str) -> str:
 def make(kind: str, operands: Sequence[Node], literal: object = None) -> Op:
     """Mint an :class:`~hawk.ir.nodes.Op` of ``kind`` with its inferred type."""
     operands = tuple(operands)
+    if kind in OP_KINDS:
+        operands = _as_matrices(kind, operands)
     node = Op(kind, operands, result_type(kind, operands, literal), literal)
     return node
+
+
+def _as_matrices(kind: str, operands: tuple) -> tuple:
+    """``operands`` with every factorisation used as a matrix replaced by what a
+    matrix use means (:func:`hawk.ir.linalg.as_matrix`). The solves and reads
+    of a factor take it as itself, in the first operand."""
+    keep = 1 if kind in linalg.CONSUMERS or kind in linalg.PROJECTIONS else 0
+    return operands[:keep] + tuple(linalg.as_matrix(o) for o in operands[keep:])
 
 
 def result_type(kind: str, operands: Sequence[Node],
@@ -118,6 +132,8 @@ def result_type(kind: str, operands: Sequence[Node],
     _arity(kind, len(ts))
     if kind in CAST:
         return _cast_type(ts[0], literal)
+    if kind in LINALG_OPS:
+        return linalg.result_type(kind, ts)
     if kind in INT_BINARY + INT_UNARY:
         _integer_operands(kind, ts)
     elif any(t.dtype in INT_PLANE_DTYPES for t in ts):
@@ -335,7 +351,7 @@ _ARITY = {"lnot": 1, "select": 3, "fma": 3, "clip": 3, "cast": 1, "invert": 1,
           "at": 2, "component": 1, "transpose": 1,
           "component_at": 2, "set_component_at": 3, "add_at": 3,
           "norm": 1, "sum": 1, "splat": 1, "quat_conj": 1, "quat_recip": 1,
-          "as_pure": 1, "as_vec3": 1}
+          "as_pure": 1, "as_vec3": 1, **linalg.ARITY}
 
 
 def _arity(kind: str, n: int) -> None:

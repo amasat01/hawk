@@ -20,7 +20,7 @@ import pytest
 
 from hawk import Mutable, Scalar, Terminated, Vector, kernel
 from hawk.emit import render_body
-from hawk.ext import DEFAULT_KIND, Kind, Output
+from hawk.ext import DEFAULT_KIND, KernelKind, Kind, Output
 from hawk.ir import HawkError
 
 VOCAB = {"terminated": Terminated, "scale": Scalar}
@@ -170,7 +170,7 @@ def test_a_wrapper_decorator_does_not_see_a_shadowed_vocabulary_name():
     )
     linecache.cache[filename] = (len(src), None, src.splitlines(True), filename)
     ns: dict = {}
-    exec(compile(src, filename, "exec"), ns)  # noqa: - the row's own fixture
+    exec(compile(src, filename, "exec"), ns)  # the row's own fixture
     k = ns["k"]
 
     @kernel
@@ -296,3 +296,40 @@ def test_the_class_form_needs_a_slug():
     with pytest.raises(HawkError, match="slug"):
         class Bad(KernelKind):
             pass
+
+
+# --- the decorator takes the launch keywords hawk.kernel takes ------------------ #
+LAUNCH = Kind("launch_kind", vocabulary={"terminated": Terminated})
+
+
+def _launch_body():
+    def body(x: Scalar, dt: Scalar, t: Mutable[Scalar], terminated: Terminated,
+             y: Mutable[Scalar]):
+        y = x * dt + t
+        t = t + dt
+        terminated = y > 3.0
+
+    return body
+
+
+@pytest.mark.parametrize("launch", [
+    {"group": 4}, {"steps": 16}, {"time_step": "dt", "time": "t"}, {"jump": 0.05},
+])
+def test_a_kind_decorator_takes_the_launch_keywords_of_hawk_kernel(launch):
+    spelled = kernel(_launch_body(), kind=LAUNCH, **launch)
+    decorated = LAUNCH(**launch)(_launch_body())
+    assert decorated.name == spelled.name
+    assert decorated.walk.digest == spelled.walk.digest
+    for field in ("group", "time", "time_step", "jump"):
+        assert getattr(decorated, field) == getattr(spelled, field)
+
+
+def test_a_kernel_kind_class_takes_them_too():
+    class Launched(KernelKind, slug="launched"):
+        terminated: Terminated
+
+    @Launched(group=4)
+    def body(x: Scalar, y: Mutable[Scalar]):
+        y = x + 1.0
+
+    assert body.group == 4 and body.kind is Launched.kind

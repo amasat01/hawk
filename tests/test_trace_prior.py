@@ -221,3 +221,24 @@ def test_running_max_matches_on_host_and_device(prior_bundle):
     r_dev = two_launches(dev_plugin, eexec.DeviceKernel)
     np.testing.assert_array_equal(r_host, r_dev)
     np.testing.assert_array_equal(r_host, np.full(N, 9.0))
+
+
+def test_a_loop_that_fills_every_index_does_not_need_the_start_value():
+    from hawk import Vector, kernel
+    from hawk.diff import jvp, vjp
+
+    @kernel
+    def full(a: _Scalar, curve: _Mutable[Vector[4]]):
+        for j in range(4):
+            curve[j] = a * (j + 1.0)
+
+    @kernel
+    def partial(a: _Scalar, curve: _Mutable[Vector[4]]):
+        for j in range(3):
+            curve[j] = a * (j + 1.0)
+
+    assert not [r for r, n in full.arg_spec if n == "curve" and r == "per_sample"]
+    for derive in (vjp, jvp):
+        derive(full, wrt=("a",))
+        with pytest.raises(HawkError, match="start the plane from zeros"):
+            derive(partial, wrt=("a",))

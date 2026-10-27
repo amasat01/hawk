@@ -274,7 +274,8 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, policy: Any) -> Any:
     count = _product([_extent(axes, i) for i in kept])
     count = Value(index_node(count)) if isinstance(count, int) else count
     return Reduced(ReduceSamples("sum", node_of(value), key=node_of(key),
-                                 count=node_of(count), policy=policy),
+                                 count=node_of(count), policy=policy,
+                                 kept=tuple(axes[i] for i in kept)),
                    tuple(axes[i] for i in kept))
 
 
@@ -305,9 +306,11 @@ def mean(x: Any, over: Any = None, where: Any = None, policy: str = "auto") -> A
 
 
 class Reduced:
-    """``hawk.sum(x, over=...)`` over some lane axes: an output, one value per
-    kept coordinate. It is returned or assigned to a ``Mutable`` declared with
-    the kept axes; nothing else."""
+    """``hawk.sum(x, over=...)`` over some lane axes: one value per kept
+    coordinate. It is returned or assigned to a ``Mutable`` declared with the
+    kept axes, and it reads back in the body as the value of THIS lane's key
+    (``x / hawk.sum(x, over="col")``): the kernel runs in stages, the reduction
+    committed by the first."""
 
     __slots__ = ("node", "kept")
 
@@ -319,16 +322,24 @@ class Reduced:
     def ttype(self) -> Any:
         return self.node.ttype
 
-    def _hawk_refuse(self, *_: Any) -> Any:
+    def __bool__(self) -> bool:
         raise HawkError(
-            "hawk.sum(x, over=...) is an output, one value per kept coordinate: "
-            "return it or assign it to a Mutable declared with those axes. Reading "
-            "it back in the body is in the next release (hawk.sum(x) over every "
-            "axis can be read back)")
+            "hawk.sum(x, over=...) read in the body is a value, not a truth: "
+            "compare it, m.where(hawk.sum(x, over=...) > 0, a, b)")
 
-    __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = _hawk_refuse
-    __truediv__ = __rtruediv__ = __neg__ = __pow__ = __getitem__ = _hawk_refuse
-    __lt__ = __le__ = __gt__ = __ge__ = __bool__ = _hawk_refuse
+
+def _read_back(name: str) -> Any:
+    def op(self: Reduced, *args: Any) -> Any:
+        return getattr(Value(self.node), name)(*args)
+    op.__name__ = name
+    return op
+
+
+for _name in ("__add__", "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__",
+              "__truediv__", "__rtruediv__", "__neg__", "__pow__", "__getitem__",
+              "__lt__", "__le__", "__gt__", "__ge__"):
+    setattr(Reduced, _name, _read_back(_name))
+del _name
 
 
 def axes_plane(kept: tuple) -> tuple:
@@ -366,6 +377,11 @@ def scatter(sink: Any, policy: str = "auto") -> Any:
     (the caller never passes it); ``"plain"`` is the atomic add alone. ``key``
     is an index, one coordinate per axis of a sink declared with named axes, an
     ``Index`` plane or a ``Sorted[Index]`` one.
+    ``hawk.scatter(mask, policy="or")[word] |= bits`` sets bits of an ``Int32``
+    or ``UInt32`` plane (a bit mask: the word index is the key): the commit is
+    the target's atomic OR, so any number of lanes may hit one word and the
+    result is the exact ``np.bitwise_or.at``; the C target ORs serially. A bit
+    mask is discrete: ``vjp`` and ``jvp`` of a kernel that writes one refuse by name.
     Written only as the target of a store in a kernel body."""
     raise HawkError(
         "hawk.scatter(y) is the target of a store: write hawk.scatter(y)[key] += v "
@@ -407,6 +423,11 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
     policy = _policy(policy, where, SCATTER_POLICIES)
     if isinstance(key, Value) and key.ttype.dtype == "bool":
         raise HawkError(f"{where}: {_MASK_STORE}")
+    if op == "|=" and policy != "or":
+        raise HawkError(f"{where}: |= sets bits, written hawk.scatter({name}, "
+                        f"policy=\"or\")[key] |= bits")
+    if policy == "or" and op != "|=":
+        raise HawkError(f"{where}: policy='or' is for |= only")
     if op == "=" and policy != "auto":
         raise HawkError(f"{where}: a store has no sum contract; policy= is for += only")
     if policy == "ordered":
@@ -418,7 +439,7 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
         raise HawkError(
             f"{name!r} is written per lane (locked) and by key "
             f"(hawk.scatter({name})[key]): one plane has one extent")
-    by_key(ref, _flat_key(ref, key, where), value, op == "+=", policy)
+    by_key(ref, _flat_key(ref, key, where), value, op != "=", policy)
     return current if isinstance(current, _Stored) else _Stored(name)
 
 

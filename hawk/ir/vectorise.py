@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from . import linalg
 from .loop_nodes import Loop, LoopCount, TapeRead
 from .nodes import RAW_KIND, SWITCH_RENDERED, At, Dispatch, Node, Op
 from .ops import RANDOM_OPS
@@ -63,7 +64,7 @@ def interchanged_loops(walk: Walk) -> tuple:
     if not loops:
         return ()
     for node in _flat(walk.order):
-        if isinstance(node, (TapeRead, LoopCount)):
+        if isinstance(node, (TapeRead, LoopCount)) or linalg.is_linalg(node):
             return ()
         if isinstance(node, Op) and node.kind in RANDOM_OPS:
             return ()
@@ -121,6 +122,8 @@ def vectorises(walk: Walk, profile: str | None = None, scalar_type: str | None =
     for node in _flat(walk.order if nodes is None else nodes):
         if exact and is_library_call(node):
             return False
+        if linalg.is_linalg(node) and node.kind in linalg.FACTORISATIONS + linalg.CONSUMERS:
+            return False                # a pivot search or a convergence skip branches per lane
         if isinstance(node, Dispatch) and node.policy in SWITCH_RENDERED:
             return False                # a rendered switch is control flow the compiler does not vectorise
         if isinstance(node, Loop):

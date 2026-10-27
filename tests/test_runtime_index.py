@@ -19,7 +19,7 @@ import hawk.math as m
 from hawk import Index, Kernel, Mutable, Scalar, Vector
 from hawk.diff import vjp
 from hawk.emit import render_body
-from hawk.ir import Assign, Const, Leaf, canonical
+from hawk.ir import Assign, Leaf, canonical
 from hawk.ir import make as mk
 from hawk.types import TensorType
 

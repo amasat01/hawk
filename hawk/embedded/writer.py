@@ -41,7 +41,9 @@ from ..emit.spelling import (
     param_cell_binding,
 )
 from ..ir import HawkError
+from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, factor_bytes
 from ..ir.nodes import (
+    FACTOR_TAGS,
     FINISHED_PLANE,
     GATHER_ROLES,
     RAW_KIND,
@@ -69,6 +71,9 @@ from .spelling import (
 
 #: Real element dtypes (the scalar mode decides the width of both).
 _REAL = ("f64", "f32")
+
+#: The most entries a matrix is built from by one ``make`` call; C99 allows 127 parameters.
+MAKE_ARGS_MAX = 64
 #: Every integer element dtype; ``i32``/``i64`` are the 64-bit ``hawk_int_t``.
 _INTS = ("i32", "i64") + INT_PLANE_DTYPES
 #: Kinds an integer value always spells through the wrapping helpers.
@@ -106,6 +111,7 @@ class CWriter:
     names_every_tensor = True
     #: The C unit stores a vector once (``hawk_<S>_store``), never per component.
     commits_per_component = False
+    rolled_forms = False
 
     def __init__(self, mode, name: str, sites: dict, *, lengths: dict | None = None,
                  positions: dict | None = None) -> None:
@@ -137,10 +143,25 @@ class CWriter:
     # -- bookkeeping ---------------------------------------------------
 
     def _ctype(self, ttype: TensorType) -> str:
+        if ttype.tag in FACTOR_TAGS:
+            return self._helper(f"{ttype.tag.split('_')[0]}_t", ttype.shape[:1])
         if ttype.shape:
             self.shapes.add(tuple(ttype.shape))
             self.structs.add(c_core.struct(tuple(ttype.shape), self.width).name)
         return ctype(ttype, self.mode)
+
+    def _assemble(self, r, ttype: TensorType, args: Sequence[str], srcs: Sequence[str]) -> str:
+        """A matrix built from many entries: a local its entries are assigned into, one
+        statement each (the ``make`` helper takes one parameter per entry, and C99 allows
+        127)."""
+        name = f"hawk_asm{r.hoists}"
+        r.hoists += 1
+        self.shapes.add(tuple(ttype.shape))
+        r._emit(f"{self._ctype(ttype)} {name};")
+        cols = ttype.shape[1]
+        for k, (a, s) in enumerate(zip(args, srcs)):
+            r._emit(f"{name}.m[{k // cols}][{k % cols}] = {self._real(r, a, s)};")
+        return name
 
     def _helper(self, base: str, shape=None) -> str:
         shape = None if shape is None else tuple(shape)
@@ -169,6 +190,8 @@ class CWriter:
     def sizeof(self, ttype: TensorType) -> int:
         """Bytes one value of ``ttype`` occupies in this unit."""
         each = _SIZEOF[ttype.dtype] or (8 if self.mode.id == "float64" else 4)
+        if ttype.tag in FACTOR_TAGS:
+            return factor_bytes(ttype, each)
         count = 1
         for extent in ttype.shape:
             count *= int(extent)
@@ -373,6 +396,12 @@ class CWriter:
         row = self._clamped(sink, index, f"{target}_len")
         r._emit(f"{target}[{row}] += {value};")
 
+    def or_scattered(self, r, sink, target: str, index: str, value: str) -> None:
+        """A scattered OR: a serial ``|=`` at the clamped computed row."""
+        value = self._coerce(r, value, sink.value.ttype.dtype, sink.ttype.dtype)
+        row = self._clamped(sink, index, f"{target}_len")
+        r._emit(f"{target}[{row}] |= {value};")
+
     def store_compensated(self, r, sink, target: str, comp: str, value: str) -> None:
         """Refused: the compensated sink policy is not lowered (verify refuses
         it first; this is the belt and braces)."""
@@ -468,6 +497,8 @@ class CWriter:
 
     def op(self, r, node: Op, args: Sequence[str], ranks: Sequence[int]) -> str:
         kind, rank = node.kind, len(node.ttype.shape)
+        if kind in LINALG_OPS:
+            return self._linalg(r, node, args)
         if kind == RAW_KIND or kind in RANDOM_OPS:
             what = (f"a raw block written in {node.literal.language!r}" if kind == RAW_KIND
                     else f"op {kind!r}")
@@ -476,6 +507,30 @@ class CWriter:
         if rank == 0 and all(rk == 0 for rk in ranks):
             return self._scalar_op(r, kind, args, node)
         return self._tensor_op(r, kind, args, ranks, node)
+
+    def _linalg(self, r, node: Op, args: Sequence[str]) -> str:
+        """A factorisation, a solve against one, or a read of a field of one, as
+        the helper of :mod:`hawk.embedded.linalg`. A factor is a named struct
+        and an operand the helper takes by pointer is a named value, so both
+        are read by ``&name``; ``info`` and the eigen fields are member reads."""
+        kind = node.kind
+        first = node.operands[0].ttype
+        n = first.shape[0]
+        if kind in FACTORISATIONS:
+            a = self._named(r, args[0], first)
+            if kind == "lu":
+                self.fp_eq_sites.append(self.positions.get(id(node)))
+            return f"{self._helper(kind, (n,))}(&{a})"
+        f = self._named(r, args[0], first)
+        if kind.endswith("_info"):
+            return f"{f}.info"
+        if kind in ("eigh_w", "eigh_v"):
+            return f"{f}.{kind[-1]}"
+        if kind in CONSUMERS:
+            rhs = node.operands[1].ttype
+            b = self._named(r, args[1], rhs)
+            return f"{self._helper(kind, rhs.shape)}(&{f}, &{b})"
+        return f"{self._helper(kind, (n,))}(&{f})"
 
     def _scalar_op(self, r, kind: str, args: Sequence[str], node: Op) -> str:
         dtype = node.ttype.dtype
@@ -586,6 +641,8 @@ class CWriter:
         if kind == "vec":
             if not args:
                 raise HawkError("vec: a vector literal needs at least one component")
+            if rank == 2 and len(args) > MAKE_ARGS_MAX:
+                return self._assemble(r, t, args, srcs)
             parts = ", ".join(self._real(r, a, s) for a, s in zip(args, srcs))
             return f"{self._helper('make', t.shape)}({parts})"
         if kind == "mul" and 0 in ranks:

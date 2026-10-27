@@ -18,6 +18,7 @@ scatter-add ``AccumWrite`` are each other's reverse-mode transpose.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -45,17 +46,17 @@ from ..ir import (
 )
 from ..ir import make as _mk
 from ..ir.loops import exit_kwargs
-from ..ir.nodes import (DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish, Op,
-                        ReduceSamples, SampleSum, param_cell_names)
+from ..ir.nodes import (ADJOINT_PREFIX, COMPANION_SUFFIX, DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish,
+                        Op, ReduceSamples, SampleSum, param_cell_names)
 from ..ir.slotwise import slotwise
 from ..ir.walk import dispatch_groups
 from ..types import INT_PLANE_DTYPES, TensorType
+from .altpath import AltPath
 from .jump import JumpPlan, drop_width, jump_of
-from .loops import forward_loop, reverse_loop
+from .loops import _taken_row, forward_loop, guarded_select, reverse_loop
 from .rules import rule_for, zero_like
 
 #: Prefixes of the planes a derivative declares (never a wire namespace).
-ADJOINT_PREFIX = "bar"
 TANGENT_PREFIX = "dot"
 
 
@@ -140,7 +141,7 @@ def _masked_sink(sink: Node, mask: Node) -> Node:
                           body_sinks=masked_body, **exit_kwargs(sink))
     value = Select(mask, zero_like(sink.value.ttype), sink.value, sink.value.ttype)
     if isinstance(sink, AccumWrite):
-        return AccumWrite(sink.name, value, sink.index, sink.ttype)
+        return AccumWrite(sink.name, value, sink.index, sink.ttype, sink.policy)
     if isinstance(sink, WideWrite):
         return WideWrite(sink.name, value, sink.index, sink.ttype)
     if isinstance(sink, SampleSum):
@@ -174,8 +175,12 @@ def _refuse_prior_read(seq: Sequence[Node]) -> None:
                 f"{node.name!r} is read before it is assigned: a plane's "
                 "launch-start value is a recurrence across launches; its "
                 "derivative needs the value the primal launch overwrites, "
-                "and hawk keeps no tape — differentiate the per-launch term "
-                "instead"
+                "and hawk keeps no tape inside a launch. Across launches, "
+                "step_jvp (forward) or step_vjp with tape / eagle record=True "
+                "(reverse) carry it; to differentiate this kernel as it stands, "
+                "start the plane from zeros (`curve = hawk.math.vec(0.0, ...)`) "
+                "or write it element by element over every index, and "
+                "differentiate the per-launch term"
             )
 
 
@@ -206,6 +211,26 @@ _DIFFERENTIABLE = ("f64", "f32")
 _READ_ROLE = {0: "per_sample", 1: "vec_in", 2: "mat_in"}
 
 
+def _rederivable(derive):
+    """``derive`` with its result remembering how to be made again: the primal
+    it differentiated, a ``rebuild(primal)`` that differentiates another one the
+    same way (with the resolved ``wrt``), and the primal's launch shape and
+    group, so a kernel built from it launches over the same lanes and the
+    broadcast door can differentiate a broadcast variant of the primal instead
+    (:mod:`hawk._broadcast`)."""
+    @functools.wraps(derive)
+    def wrapped(primal, **kw):
+        out = derive(primal, **kw)
+        out.source = primal
+        out.rebuild = lambda other: wrapped(other, **{**kw, "wrt": out.wrt})
+        out.lane_space = getattr(primal, "lane_space", ((None, None),))
+        out.group = getattr(primal, "group", 1)
+        return out
+
+    return wrapped
+
+
+@_rederivable
 def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
         primal_unit: str | None = None,
         policy: Mapping[str, str] | None = None) -> Derived:
@@ -249,8 +274,14 @@ def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
     inputs = drop_width(_wrt(seq, wrt), None, jump)
     name = _Namer(ADJOINT_PREFIX, _taken(seq),
                   _named(sinks, inputs))
+    name.counts = _compact_counts(primal)
     key = _keyer(position)
     plan = _plan(seq, key, inputs, jump, primal)
+    alt = AltPath.of(plan, seq, reverse=True)
+    if alt is not None:
+        for node in seq:
+            if not isinstance(node, _TERMINALS):
+                alt.visit(node, None)
     adjoint: dict[Any, Node] = {}
     for sink in sinks:
         if isinstance(sink, Loop):
@@ -262,12 +293,19 @@ def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
         if sink.ttype.dtype in INT_PLANE_DTYPES:
             continue                # an integer plane takes no adjoint
         _accumulate(adjoint, key, sink.value, _seed(sink, name))
+    if alt is not None:
+        alt.g = alt.seed_gain(sinks, lambda s: _seed(s, name))
+        for site, weight in alt.injections():
+            lhs, rhs = site.operands
+            _accumulate(adjoint, key, lhs, weight)
+            _accumulate(adjoint, key, rhs, _mk("neg", (weight,)))
     scatters: list[Node] = []
     scattered: set[str] = set()
     accumulated: set[str] = set()
     _reverse_pass(seq, key, adjoint, inputs, name, scatters, scattered,
-                  overrides=overrides, jump=plan, accumulated=accumulated,
-                  exclusive=_loop_exclusive(seq, inputs))
+                  overrides=overrides, jump=None if alt is not None else plan,
+                  accumulated=accumulated, exclusive=_loop_exclusive(seq, inputs),
+                  alt=alt)
     for leaf in inputs:
         if name(leaf.name) not in accumulated:
             continue
@@ -282,13 +320,78 @@ def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
         if leaf.role != "lookup" and leaf.name not in scattered
         and name(leaf.name) not in accumulated
     ]
-    out = slotwise(_mask_termination(gradients + scatters, primal))
+    held = getattr(primal, "broadcast", ())
+    scatters = _compensated(scatters, {name(leaf.name) for leaf in inputs if leaf.name in held})
+    out = slotwise(_mask_termination(gradients + list(scatters), primal))
     names = tuple(leaf.name for leaf in inputs)
     if plan is not None:
         out += plan.spread_cells()
     return Derived(out, primal=_primal_name(primal), kind="vjp", wrt=names,
                    primal_unit=primal_unit,
                    jump=None if plan is None else plan.record(names))
+
+
+
+def _compact_counts(primal: Any) -> dict:
+    """``{plane: the column count of its compact plane}`` (an ``i32`` node) for each
+    plane a broadcast variant reads at the axes it varies along: the product of the
+    kept axes' extents, a kept runtime first axis through the lane count."""
+    held = getattr(primal, "broadcast", None) or {}
+    axes = getattr(primal, "lane_space", None)
+    out: dict = {}
+    for plane, kept in held.items():
+        if axes is None or kept is None:
+            continue
+        t = TensorType((), "i32")
+        fixed = 1
+        for (_label, extent), k in zip(axes, kept):
+            fixed *= extent if k and extent is not None else 1
+        if kept[0] and axes[0][1] is None:
+            rest = 1
+            for (_label, extent), k in zip(axes, kept):
+                rest *= 1 if k else extent
+            lanes = Leaf("nsamples", "nsamples", "n_samples", t)
+            out[plane] = lanes if rest == 1 else _mk("floordiv", (lanes, Const(rest, t)))
+        else:
+            out[plane] = Const(fixed, t)
+    return out
+
+
+def _scatter_payload(name: _Namer, plane: str, g: Node, index: Node) -> list:
+    """The scattered accumulate of ``g`` into the adjoint of ``plane`` at ``index``:
+    a rank-0 value as it is; a vector or matrix one scalar accumulate per entry
+    ``k`` (row-major) at ``index + k * count`` of ONE component-major plane, so the
+    gradient has the layout of the compact plane it is the gradient of. Only a
+    broadcast variant knows its column count (:func:`_compact_counts`); any other
+    rank >= 1 scatter is left whole, which the emitter refuses by name."""
+    shape = g.ttype.shape
+    if not shape:
+        return [AccumWrite(name(plane), g, index, g.ttype)]
+    count = name.counts.get(plane)
+    if count is None:       # not a broadcast variant: the emitter refuses a rank >= 1 scatter by name
+        return [AccumWrite(name(plane), g, index, g.ttype)]
+    t, scalar = index.ttype, TensorType((), g.ttype.dtype)
+    out = []
+    for k in range(g.ttype.shape[0] * (g.ttype.shape[1] if len(shape) == 2 else 1)):
+        at = (k // shape[1], k % shape[1]) if len(shape) == 2 else k
+        key = index if k == 0 else _mk("add", (index, _mk("mul", (count, Const(k, t)))))
+        out.append(AccumWrite(name(plane), _mk("component", (g,), literal=at), key, scalar))
+    return out
+
+def _compensated(scatters: Sequence[Node], planes: set) -> list:
+    """``scatters`` with each accumulate into a plane of ``planes`` compensated,
+    its companion bound by a zero commit at the same key. A gradient plane summed
+    over the lane axes a broadcast input does not vary along."""
+    out: list = []
+    for s in scatters:
+        if isinstance(s, AccumWrite) and s.name in planes:
+            s = AccumWrite(s.name, s.value, s.index, s.ttype, "compensated")
+            out.append(s)
+            out.append(AccumWrite(s.name + COMPANION_SUFFIX, Const(0.0, TensorType((), s.ttype.dtype)),
+                                  s.index, s.ttype))
+        else:
+            out.append(s)
+    return out
 
 
 def _loop_exclusive(seq: Sequence[Node], inputs: Sequence[Leaf]) -> frozenset:
@@ -350,6 +453,7 @@ class _Demoted:
         self.jump = getattr(primal, "jump", None)
 
 
+@_rederivable
 def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
         primal_unit: str | None = None) -> Derived:
     """The forward-mode derivative IR of ``primal``: one tangent plane
@@ -375,6 +479,7 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
                   _named(sinks, inputs))
     key = _keyer(position)
     plan = _plan(seq, key, inputs, jump, primal)
+    alt = AltPath.of(plan, seq)
     tangent: dict[Any, Node] = {
         key(leaf): Leaf(leaf.kind, leaf.role, name(leaf.name), leaf.ttype,
                         sorted=leaf.sorted)
@@ -387,7 +492,9 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
     for node in seq:
         if isinstance(node, _TERMINALS):
             continue
-        if plan is not None and _jump_jvp(node, plan, tangent, key):
+        if alt is not None:
+            alt.visit(node, lambda c: tangent.get(key(c)))
+        elif plan is not None and _jump_jvp(node, plan, tangent, key):
             continue
         if isinstance(node, Loop):
             # `loop_tangent` is also consulted by the LoopValue arm below: a
@@ -397,7 +504,8 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
             # forward loop before the reverse loop that reads it, so the
             # twin is always already in this table when needed.
             got = forward_loop(node, lambda c: tangent.get(key(c)), name,
-                               lambda lp: loop_tangent.get(key(lp)), jump=plan)
+                               lambda lp: loop_tangent.get(key(lp)),
+                               jump=None if alt is not None else plan, alt=alt)
             if got is not None:
                 loop_tangent[key(node)] = got
             continue
@@ -437,10 +545,13 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
             got = _rule(node).jvp(node, lambda c: tangent.get(key(c)))
             if got is not None:
                 tangent[key(node)] = got
-    out = slotwise(_mask_termination(
-        tuple(_tangent_sink(s, tangent.get(key(s.value)), name) for s in sinks
-              if s.ttype.dtype not in INT_PLANE_DTYPES),
-        primal))
+    if alt is not None:
+        made = alt.sinks(sinks, lambda v: tangent.get(key(v)),
+                         lambda s, v, index=None: _tangent_sink(s, v, name, index))
+    else:
+        made = tuple(_tangent_sink(s, tangent.get(key(s.value)), name) for s in sinks
+                     if s.ttype.dtype not in INT_PLANE_DTYPES)
+    out = slotwise(_mask_termination(made, primal))
     names = tuple(leaf.name for leaf in inputs)
     if plan is not None:
         out += plan.spread_cells()
@@ -473,7 +584,7 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
                   cut: frozenset = frozenset(),
                   jump: JumpPlan | None = None,
                   accumulated: set | None = None,
-                  exclusive: frozenset = frozenset()) -> None:
+                  exclusive: frozenset = frozenset(), alt=None) -> None:
     """One reverse-accumulation pass over ``seq``, given an already-seeded
     ``adjoint`` — the core step :func:`vjp` runs once over the whole walk,
     seeded at every primal sink.
@@ -505,7 +616,7 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
             continue
         if isinstance(node, Loop):
             derived = reverse_loop(node, loop_seeds.get(key(node), {}), inputs,
-                                   name, jump=jump, exclusive=exclusive)
+                                   name, jump=jump, exclusive=exclusive, alt=alt)
             for child, contribution in derived.contributions:
                 _accumulate(adjoint, key, child,
                             _reduce_to(contribution, child.ttype))
@@ -530,8 +641,7 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
                 continue
             if node.plane in inputs:
                 scattered.add(node.plane.name)
-                scatters.append(AccumWrite(name(node.plane.name), g, node.index,
-                                           g.ttype))
+                scatters.extend(_scatter_payload(name, node.plane.name, g, node.index))
             continue
         if isinstance(node, Primitive):
             # Operand 0 (the forward subgraph) is deliberately skipped: the
@@ -548,6 +658,12 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
                 node, g, lambda child, c: _accumulate(adjoint, key, child,
                                                       _reduce_to(c, child.ttype))):
             continue
+        if jump is None:
+            guarded = guarded_select(node)
+            if guarded is not None:
+                _dispatch_vjp(guarded, g, seq, key, inputs, name, adjoint, scatters,
+                              scattered, overrides, jump)
+                continue
         for child, contribution in _rule(node).vjp(node, g):
             _accumulate(adjoint, key, child, _reduce_to(contribution, child.ttype))
 
@@ -608,8 +724,8 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
         if isinstance(target, At):
             if target.plane in inputs:
                 scattered.add(target.plane.name)
-                scatters.append(AccumWrite(name(target.plane.name), combined,
-                                           target.index, combined.ttype))
+                scatters.extend(_scatter_payload(name, target.plane.name, combined,
+                                                 _taken_row(node, target, per_branch)))
             continue
         _accumulate(adjoint, key, target, combined)
 
@@ -665,6 +781,12 @@ def _policy_overrides(primal: Any, policy: Mapping[str, str] | None
 # the traversal and its keys
 
 
+def _sets_bits(node: Node) -> bool:
+    """Whether ``node`` is an OR-scatter, or a loop whose body holds one."""
+    return (isinstance(node, AccumWrite) and node.policy == "or") or any(
+        _sets_bits(s) for s in getattr(node, "body_sinks", ()))
+
+
 def _sinks_of(primal: Any) -> tuple[Sink, ...]:
     sinks = tuple(getattr(primal, "sinks", primal))
     if not sinks or not all(isinstance(s, (Sink, Loop)) for s in sinks):
@@ -676,6 +798,11 @@ def _sinks_of(primal: Any) -> tuple[Sink, ...]:
     # so the derived kernel binds no counter, writes no mask and carries no
     # sidecar ``finish``; it keeps the primal's mask READ (``_mask_termination``).
     kept = tuple(s for s in sinks if not isinstance(s, Finish))
+    if any(_sets_bits(s) for s in kept):
+        raise HawkError(
+            f"{primal!r} sets bits by key (hawk.scatter(y, policy=\"or\")): a bit mask is "
+            "discrete and has no derivative; differentiate a kernel that does not "
+            "write it")
     if not kept:
         raise HawkError(
             f"{primal!r} only finishes its sample — it commits no plane to "
@@ -763,6 +890,9 @@ class _Namer:
                  names: Iterable[str] = ()) -> None:
         self.prefix = prefix
         self.taken = taken
+        #: ``{plane: column count}`` of the compact planes of a broadcast kernel
+        #: (:func:`_compact_counts`)
+        self.counts: dict = {}
         self.source: dict[str, str] = {}
         flat = [n.replace(NAMESPACE_SEP, "_") for n in names]
         self.level = 1
@@ -810,14 +940,17 @@ def _seed(sink: Sink, name: _Namer) -> Node:
     return Leaf("vocab_read", _READ_ROLE[len(t.shape)], derived, t)
 
 
-def _tangent_sink(sink: Sink, tangent: Node | None, name: _Namer) -> Node:
-    """The forward-mode twin of one primal sink, same kind and same lane."""
+def _tangent_sink(sink: Sink, tangent: Node | None, name: _Namer,
+                  index: Node | None = None) -> Node:
+    """The forward-mode twin of one primal sink, same kind and same lane
+    (at ``index`` when the alternate path moved the key)."""
     value = tangent if tangent is not None else zero_like(sink.ttype)
     derived = name(sink.name)
+    index = sink.index if index is None else index
     if isinstance(sink, AccumWrite):
-        return AccumWrite(derived, value, sink.index, sink.ttype)
+        return AccumWrite(derived, value, index, sink.ttype, sink.policy)
     if isinstance(sink, WideWrite):
-        return WideWrite(derived, value, sink.index, sink.ttype)
+        return WideWrite(derived, value, index, sink.ttype)
     if isinstance(sink, SampleSum):
         if sink.op != "sum":
             raise HawkError(_TIE_TEXT.format(name=sink.name, op=sink.op))

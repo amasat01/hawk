@@ -347,20 +347,9 @@ def test_the_first_stage_names_every_stage_and_cell(built):
 # -- a keyed compensated sum inside a split kernel ---------------------------
 
 @pytest.mark.parametrize("mode", ["float64", "float32"])
-def test_a_keyed_compensated_sum_in_a_split_kernel_is_folded(tmp_path, cache_dir, mode,
-                                                             monkeypatch):
+def test_a_keyed_compensated_sum_in_a_split_kernel_is_folded(tmp_path, cache_dir, mode):
     """The runtime owns the companion and folds it after the stage that
     writes it: the target alone is within eps * sum|w| (and one ulp) of ``math.fsum``."""
-    # the scatter sits in stage 1 only; the bundle's one-axis check is not under test
-    from hawk.artifact import bundle as bundles
-    manifest = bundles._manifest_of
-
-    def one_axis(drafts):
-        for d in drafts:
-            d.sidecar["exec_access"] = "cross_sample_write"
-        return manifest(drafts)
-
-    monkeypatch.setattr(bundles, "_manifest_of", one_axis)
     bundle = _bundle([split_keyed], tmp_path, mode, cache_dir)
     n = 1 << 16
     rng = np.random.default_rng(7)

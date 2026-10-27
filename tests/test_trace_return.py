@@ -34,7 +34,7 @@ def _define(body: str, params: str = "x: Scalar, v: Vector[3], k: Param", ret: s
     scope = {"Scalar": Scalar, "Vector": Vector, "Matrix": Matrix, "Param": Param,
              "Mutable": Mutable, "Terminated": hawk.Terminated, "UInt32": hawk.UInt32,
              "hawk": hawk, "Box": Box}
-    exec(compile(source, name, "exec"), scope)  # noqa: - test fixture
+    exec(compile(source, name, "exec"), scope)  # test fixture
     return kernel(scope["f"])
 
 

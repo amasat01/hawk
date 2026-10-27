@@ -14,6 +14,7 @@ from aether_dsc import c_core
 from aether_dsc.c_core import CFunction
 
 from ..ir import HawkError
+from . import linalg
 from .spelling import (
     INT_HELPER,
     WIDTH,
@@ -315,6 +316,8 @@ def helper(name: str, *, mode, shape=None) -> CFunction:
     """The C helper ``name`` under a scalar mode; shape-bearing helpers need
     ``shape`` (rank 1 or 2)."""
     w = WIDTH[mode.id]
+    if name in linalg.BASES:
+        return linalg.helper(name, shape, mode=mode)
     if name in _SHAPED:
         if shape is None or len(shape) not in (1, 2):
             raise HawkError(f"helper {name!r} needs a rank-1 or rank-2 shape")

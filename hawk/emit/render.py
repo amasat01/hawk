@@ -53,6 +53,7 @@ from ..ir.nodes import (
     is_param_cell,
     sample_sums,
 )
+from ..ir.linalg import CONSUMERS, FACTORISATIONS
 from ..ir.ops import RANDOM_OPS
 from ..ir.lanes import warp_uniform
 from ..ir.slotwise import chain, is_structural_zero
@@ -60,6 +61,7 @@ from ..ir.walk import canonical_nodes
 from ..types import TensorType
 from . import rtstore
 from .box import BoxStore
+from .policy import rolled
 from .writer_aether import AETHER
 from .dispatch import _DispatchMixin
 from .dispatch import render_dispatch_rank0 as render_dispatch_rank0
@@ -352,6 +354,9 @@ class _Renderer(_DispatchMixin):
         #: reads.
         self.count_names: dict[int, str] = {}
         self.fanout: dict[int, int] = {}
+        #: The names of the fresh ``Item`` locals the writer declares for a value its
+        #: statements fill (:meth:`~hawk.emit.writer_aether.AetherWriter.fresh_value`).
+        self.fresh_items: set = set()
         #: Positions a loop boundary forces to a name: a value a loop body reads from
         #: outside is computed once, before the loop, so an invariant ``View``
         #: subscript isn't a strided address computation repeated every iteration.
@@ -376,7 +381,12 @@ class _Renderer(_DispatchMixin):
                         # naming it here would emit a dead `plane[i].eval()`.
                         continue
                     self.forced.add(self.position[id(child)])
+        #: The positions no statement renders, because every user reads them through their
+        #: own operand (:meth:`~hawk.emit.writer_aether.AetherWriter.unrendered`).
+        self.unrendered = self.writer.unrendered(self) if self.writer.rolled_forms else frozenset()
         self.lazy = self._lazy_leaves()
+        #: the leaves only an ``At`` reads (by name, at its own index): no local of their own
+        self.crossed = self._crossed_leaves()
         self._index_loops()
         #: The loop :meth:`lane_split` cuts the body at, and what
         #: :meth:`_loop_split` recorded of it (``None`` on a plain render).
@@ -393,6 +403,8 @@ class _Renderer(_DispatchMixin):
         #: position -> the members of its fused ``switch`` group
         #: (:meth:`_fusion_groups`), for every member of a group of two or more.
         self._fused = self._fusion_groups()
+        #: position -> the target a library result is written into directly (:meth:`_direct_outputs`)
+        self.direct = self._direct_outputs() if self.writer.rolled_forms else {}
         #: Per-component commits (:meth:`_plan_commits`): position -> the stores
         #: due once that node is rendered; the sinks they replace; the ``vec``
         #: positions no longer rendered whole.
@@ -422,29 +434,114 @@ class _Renderer(_DispatchMixin):
         rank>=1 leaf of more than :data:`LAZY_LEAF_WIDTH` elements whose every
         use is a ``component`` read at a static index is not copied whole
         (``.get()`` is one register per element); each read goes through the
-        proxy."""
+        proxy. A leaf some library call takes as an operand is a proxy at any
+        width, when every use of it is a proxy use (:meth:`_proxy_use`)."""
         used: dict[int, bool] = {}
+        proxied: set = set()
         runtime: set = set()
+        scanned = list(self.nodes)
         for node in self.nodes:
+            if isinstance(node, Loop):
+                scanned.extend(_flat_body(node))
+                scanned.extend(node.body_sinks)
+        for node in scanned:
             if isinstance(node, Leaf):
                 continue
             read = isinstance(node, Op) and node.kind in ("component", "component_at")
-            for k, child in enumerate(node.operands):
+            for k, child in enumerate(self._used(node)):
                 child = _through(child)
                 if isinstance(child, Leaf):
                     p = self.position[id(child)]
-                    used[p] = used.get(p, True) and read and k == 0
+                    proxy = self._proxy_use(node, k)
+                    used[p] = used.get(p, True) and ((read and k == 0) or proxy)
+                    if proxy:
+                        proxied.add(p)
                     if read and k == 0 and node.kind == "component_at":
                         runtime.add(p)
+                elif isinstance(child, At) and _plane_read(child):
+                    p = self.position[id(child)]
+                    proxy = self._proxy_use(node, k)
+                    used[p] = used.get(p, True) and proxy
+                    if proxy:
+                        proxied.add(p)
         out = set()
         for p, ok in used.items():
             leaf = self.nodes[p]
-            if (ok and leaf.ttype.shape and leaf.role not in ("mutable", "uniform", "nsamples")
+            if isinstance(leaf, At):
+                if ok and p in proxied:
+                    out.add(p)      # a plane read at another lane, every use a library operand
+            elif (ok and leaf.ttype.shape and leaf.role not in ("mutable", "uniform", "nsamples")
                     and not is_param_cell(leaf)
-                    and (math.prod(leaf.ttype.shape) > LAZY_LEAF_WIDTH
+                    and (p in proxied or math.prod(leaf.ttype.shape) > LAZY_LEAF_WIDTH
                          or (p in runtime and _reads_in_place(leaf)))):
                 out.add(p)
         return frozenset(out)
+
+    def _crossed_leaves(self) -> frozenset:
+        """Positions of the read-only matrix leaves whose every use is an ``At`` of it: the
+        read is spelled by name at the computed index, so the leaf's own-lane copy
+        (``plane[i].get()``) would be dead."""
+        only: dict[int, bool] = {}
+        scanned = list(self.nodes)
+        for node in self.nodes:
+            if isinstance(node, Loop):
+                scanned.extend(_flat_body(node))
+                scanned.extend(node.body_sinks)
+        for node in scanned:
+            if isinstance(node, Leaf):
+                continue
+            for k, child in enumerate(self._used(node)):
+                child = _through(child)
+                if isinstance(child, Leaf) and child.role == "mat_in":
+                    p = self.position[id(child)]
+                    only[p] = only.get(p, True) and isinstance(node, At) and k == 0
+        return frozenset(p for p, ok in only.items() if ok)
+
+    def _direct_outputs(self) -> dict:
+        """The library results an own-column ``Assign`` stores unchanged: the call writes the
+        plane through its proxy, with no ``Item`` of the result to copy afterwards.
+
+        Only when the value has no other reader, stands in the flat top-level walk, and the
+        kernel never reads that plane's prior value (a read is a snapshot taken at its
+        own turn in the walk, and the write would now come earlier); no loop is in the kernel."""
+        if any(isinstance(n, Loop) for n in self.nodes):
+            return {}
+        read = {n.name for n in self.nodes if isinstance(n, Leaf) and n.role == "mutable"}
+        out: dict = {}
+        for sink in self.sinks:
+            if type(sink) is not Assign or sink.index is not None or sink.name in read:
+                continue
+            node = _through(sink.value)
+            pos = self.position.get(id(node))
+            if (isinstance(node, Op) and self.writer.direct_kind(node) and pos in self._outside
+                    and pos not in self._fused and self.fanout.get(pos, 0) == 1
+                    and not self._is_compensated_own_column(sink)
+                    and sink.name not in _companions(self.sinks)
+                    and self.writer.own_shape(node) == sink.value.ttype.shape):
+                out[pos] = f"{binding_name(sink.role, sink.name)}[i]"
+        return out
+
+    def _proxy_read(self, node: Node) -> bool:
+        """A static component read of a leaf bound as a proxy: a load the use re-issues
+        (a local per such read would keep one register each live across the kernel)."""
+        return (self.writer.rolled_forms and isinstance(node, Op) and node.kind == "component"
+                and self.position.get(id(_through(node.operands[0]))) in self.lazy)
+
+    @staticmethod
+    def _used(node: Node) -> Sequence[Node]:
+        """The operands of ``node`` it reads itself: a loop reads its initial values
+        (a carried local is a copy); what its body reads from outside is found in the body."""
+        return node.inits if isinstance(node, Loop) else node.operands
+
+    def _proxy_use(self, node: Node, k: int) -> bool:
+        """Whether ``node`` reads its operand ``k`` as a per-sample proxy: a library
+        call's operand, or the operand of a value no statement renders."""
+        if not self.writer.rolled_forms:
+            return False
+        if self.position.get(id(node)) in self.unrendered:
+            return True
+        return isinstance(node, Op) and (
+            (node.kind in FACTORISATIONS and k == 0) or (node.kind in CONSUMERS and k == 1) or rolled(node))
 
     def _outside_reachable(self) -> frozenset:
         """Positions some path from a root reaches WITHOUT following a
@@ -891,17 +988,29 @@ class _Renderer(_DispatchMixin):
             return False
         if is_param_cell(node):
             return False        # a bare identifier, loaded once before the loop
+        if pos in self.crossed:
+            return False        # only an `At` reads it, by name: a copy would be dead
         if isinstance(node, (SampleIndex, LoopIndex, LoopCarry)):
             return False        # already a bare identifier the enclosing scope bound
         if isinstance(node, (Loop, Const, Primitive)):
             return False        # a statement / a literal / a boundary: none is named
+        if isinstance(node, Op) and node.kind in FACTORISATIONS:
+            return not self._unnamed(node)      # a struct the solves and field reads share: one named local
         if self.writer.names_every_tensor and node.ttype.shape:
             return True         # a C struct value: always its own statement
-        if self.stores.unnamed(node):
-            return False        # a store a run absorbs, or its key: no local
+        if self._unnamed(node):
+            return False        # a store a run absorbs, or its key; a value the writer fills in place: no local
         if pos in self.forced:
             return True
         return self.fanout.get(pos, 0) >= 2 or self._leaf_valued(node)
+
+    def _unnamed(self, node: Node) -> bool:
+        """A node that never gets a local of its own: one a store run absorbs
+        (:mod:`hawk.emit.rtstore`), one no statement renders, and one the writer
+        renders as the name of a fresh ``Item`` already."""
+        return (self.stores.unnamed(node) or self._proxy_read(node)
+                or self.position.get(id(node)) in self.unrendered
+                or (self.writer.rolled_forms and self.writer.fresh_value(node)))
 
     @staticmethod
     def _leaf_valued(node: Node) -> bool:
@@ -1264,7 +1373,7 @@ class _Renderer(_DispatchMixin):
                 self.local[id(node)] = self._ref(node.forward)
                 continue
             named = ((fanout.get(id(node), 0) >= 2 or self._leaf_valued(node))
-                     and not self.stores.unnamed(node))
+                     and not self._unnamed(node))
             self._render_one(node, named)
         if not loop.body_sinks or not sinks:
             return
@@ -1394,6 +1503,9 @@ class _Renderer(_DispatchMixin):
                 "(see hawk.ext), which is per component; declare one scalar "
                 "accumulate plane per component, or commit the own column"
             )
+        if getattr(sink, "policy", "auto") == "or":
+            self.writer.or_scattered(self, sink, target, index, value)
+            return
         comp = (binding_name("accum_out", sink.name + COMPANION_SUFFIX)
                 if compensates(getattr(sink, "policy", "auto")) else None)
         if self.kind.sink.id == "compensated":
@@ -1464,6 +1576,8 @@ class _Renderer(_DispatchMixin):
         if isinstance(node, Dispatch):
             return self._dispatch(node)
         if isinstance(node, Op):
+            if self.position.get(id(node)) in self.unrendered:
+                return ""
             args = [self._ref(o) for o in node.operands]
             ranks = [len(o.ttype.shape) for o in node.operands]
             return self.writer.op(self, node, args, ranks)
@@ -1553,3 +1667,7 @@ def _reads_in_place(node: Node) -> bool:
             and len(node.ttype.shape) == 1 and not is_param_cell(node))
 
 
+def _plane_read(node: At) -> bool:
+    """Whether ``node`` is a rank>=1 value of a read-only input plane read at another lane,
+    which a proxy ``plane[index]`` can serve element by element."""
+    return bool(node.ttype.shape) and node.plane.role not in GATHER_ROLES and not is_param_cell(node)

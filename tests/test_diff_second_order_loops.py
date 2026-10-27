@@ -372,10 +372,10 @@ def test_differentiating_a_loop_that_COMMITS_is_still_refused_in_both_directions
         jvp(derived)
 
 
-def test_a_nested_loop_is_still_refused_by_the_derivative():
-    """The other standing refusal: reverse mode over a nested ``for`` would have
-    to keep the inner loop's carried history for every outer iteration — a tape
-    of a tape, which is not what a tape of PAIRS is and is not built."""
+def test_a_nested_loop_no_longer_refuses_in_the_second_order_pair():
+    """jvp(vjp(.)) of a nested ``for``: exactness rows live in
+    tests/test_diff_nested_loops.py (second order against a difference of the
+    gradient); this only pins that the old "tape of a tape" refusal is gone."""
     @hawk.kernel
     def grid(x: hawk.Scalar, out: hawk.Mutable[hawk.Scalar]):
         total = 0.0
@@ -386,5 +386,4 @@ def test_a_nested_loop_is_still_refused_by_the_derivative():
             total = total + inner
         out = total
 
-    with pytest.raises(HawkError, match="nested `for`"):
-        jvp(vjp(grid))
+    jvp(vjp(grid))

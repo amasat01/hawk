@@ -172,7 +172,8 @@ def mixed_refusal(single: tuple, batch: tuple) -> str:
         f"{s_name!r} is one sample (shape {s_shape}) but {b_name!r} is a batch "
         f"of {b_n} (shape {b_shape}); a call is one sample or one batch, never "
         f"both. A value shared by every sample is a Param (scalar) or a Table "
-        f"(vector); or tile it once: {tile}"
+        f"(vector); a Grid kernel's per-lane input also takes a scalar; or tile it "
+        f"once: {tile}"
     )
 
 

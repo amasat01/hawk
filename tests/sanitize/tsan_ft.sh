@@ -52,7 +52,8 @@ curl -fsSL -o "$work/get-pip.py" https://bootstrap.pypa.io/get-pip.py
 "$venv_py" -m pip install --quiet --only-binary=:all: pytest numpy scipy \
     "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4"
 if [ -n "${AETHER_DIR:-}" ]; then
-    "$venv_py" -m pip install --quiet --no-deps "$AETHER_DIR/dsc"
+    # CPU only: this leg runs no GPU, and the plugin build is gcc-only today (aether-dsc 0.7.1, -fno-gnu-unique)
+    AETHER_PYTHON_PLUGINS=OFF "$venv_py" -m pip install --quiet --no-deps "$AETHER_DIR/dsc"
 else
     "$venv_py" -m pip install --quiet --only-binary=:all: "aether-dsc>=0.7,<0.8"
 fi

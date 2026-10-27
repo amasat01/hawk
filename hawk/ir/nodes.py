@@ -85,6 +85,23 @@ SAMPLE_INDEX_KIND = "sample_index"
 GATHER_ROLES = ("lookup", "wide_in")
 AT_ROLES = GATHER_ROLES + ("per_sample", "vec_in", "mat_in")
 
+#: The tags a factorisation node carries (:mod:`hawk.ir.linalg`): a value so
+#: tagged is a struct of the factor, its pivots and its status, not a matrix.
+FACTOR_TAGS = ("lu_factor", "chol_factor", "eigh_factor")
+
+
+def refuse_factor_arms(what: str, ttype: TensorType) -> None:
+    """Refuse a ``select`` or ``dispatch`` whose arms are factorisations: a branch
+    picks one value of a type, and a factor (with its status) is not one a
+    program passes around; pick between the fields it reads instead."""
+    if ttype.tag in FACTOR_TAGS:
+        raise HawkError(
+            f"{what}: the arms are {ttype.tag.split('_')[0]} factorisations, which are "
+            "read through lu_solve/cho_solve and the field reads, never selected "
+            "between; select between the results (the solves, the determinant, the "
+            "eigenvalues) instead")
+
+
 #: The extents a value can have: one sample's, every sample's (a reduction
 #: over samples), or one that does not depend on the sample.
 EXTENTS = ("per_sample", "all_samples", "shared")
@@ -378,6 +395,7 @@ class Select(Node):
 
     def __init__(self, cond: Node, on_true: Node, on_false: Node,
                  ttype: TensorType) -> None:
+        refuse_factor_arms("select", ttype)
         super().__init__(ttype, (cond, on_true, on_false))
 
 
@@ -440,6 +458,7 @@ class Dispatch(Node):
                     f"dispatch: the branches disagree — {branches[0].ttype!r} vs "
                     f"{b.ttype!r} (every branch shares ONE TensorType)"
                 )
+        refuse_factor_arms("dispatch", ttype)
         super().__init__(ttype, (selector, *branches))
         self.policy = policy
 
@@ -524,9 +543,10 @@ class WideWrite(Sink):
 #: correction) and ``ordered`` (bitwise repeatable).
 POLICIES = ("auto", "compensated", "ordered")
 
-#: What a keyed ``hawk.scatter`` takes: the above, and ``plain`` (the target's
-#: atomic add alone, no companion).
-SCATTER_POLICIES = (*POLICIES, "plain")
+#: What a keyed ``hawk.scatter`` takes: the above, ``plain`` (the target's
+#: atomic add alone, no companion) and ``or`` (``|=`` into an integer plane:
+#: the target's atomic OR, no sum contract).
+SCATTER_POLICIES = (*POLICIES, "plain", "or")
 
 #: The policy a keyed ``hawk.scatter`` under ``auto`` is traced with: compensated
 #: on the targets that lower it (:func:`compensates`), the target's own serial
@@ -540,6 +560,9 @@ def compensates(policy: str) -> bool:
 
 #: The suffix of a compensated accumulate plane's companion.
 COMPANION_SUFFIX = "_c"
+
+#: The prefix of a vjp's adjoint plane (``bar_<plane>``).
+ADJOINT_PREFIX = "bar"
 
 
 class AccumWrite(Sink):
@@ -562,6 +585,10 @@ class AccumWrite(Sink):
         return (self.role, self.name) if self.policy in ("auto", "plain") else (
             self.role, self.name, self.policy)
 
+    def rebuilt(self, value: Node) -> AccumWrite:
+        """The same accumulate over ``value``."""
+        return AccumWrite(self.name, value, self.index, self.ttype, self.policy)
+
 
 #: The suffix of a ``sample_sum`` plane's compensation companion.
 SAMPLE_SUM_COMP = "_comp"
@@ -573,12 +600,13 @@ class ReduceSamples(Node):
     row-major). A trace-time node only: storing it to a Mutable makes the
     :class:`SampleSum` sink(s), and nothing else may read it."""
 
-    __slots__ = ("op", "key", "count", "policy")
+    __slots__ = ("op", "key", "count", "policy", "kept")
 
     kind = REDUCE_KIND
 
     def __init__(self, op: str, value: Node, *, key: Node | None = None,
-                 count: Node | None = None, policy: str = "auto") -> None:
+                 count: Node | None = None, policy: str = "auto",
+                 kept: tuple = ()) -> None:
         if op not in CELL_OPS:
             raise HawkError(f"reduce over samples: op {op!r} is not one of {CELL_OPS}")
         if value.ttype.dtype not in ("f64", "f32") or len(value.ttype.shape) > 2:
@@ -597,10 +625,17 @@ class ReduceSamples(Node):
         self.key = key
         self.count = count
         self.policy = policy
+        #: The kept lane axes ``((label, extent|None), ...)`` of a keyed reduction.
+        self.kept = kept
 
     @property
     def dedup_extra(self) -> Any:
         return self.op
+
+    def rebuilt(self, value: Node) -> ReduceSamples:
+        """The same reduction (key, count, policy) over ``value``."""
+        return ReduceSamples(self.op, value, key=self.key, count=self.count,
+                             policy=self.policy, kept=self.kept)
 
     def stored(self, name: str, ttype: TensorType | None = None) -> tuple:
         """The cell sinks that store this reduction to the plane ``name``: one

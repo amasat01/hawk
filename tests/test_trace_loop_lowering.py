@@ -479,10 +479,12 @@ def test_a_rank_one_carry_is_declared_as_an_aether_Item():
     np.testing.assert_allclose(got, np.array([4.0, 8.0, 12.0]))
 
 
-def test_a_nested_loop_is_refused_by_the_DERIVATIVE_and_not_by_the_tracer():
-    """Nesting emits fine (see the emission row); what is refused is
-    DIFFERENTIATING it, because reverse mode would have to keep the inner
-    loop's carried history for every outer iteration — a tape of a tape."""
+def test_a_nested_loop_differentiates_where_it_used_to_be_refused():
+    """Emission is fine, and so is the derivative: reverse recomputes the inner loop
+    inside each reversed outer iteration (a local tape of the inner trip count),
+    forward carries the inner tangents. Exactness rows: tests/test_diff_nested_loops.py;
+    what stays refused (an inner `break`, `jump=`, an inner gather of a differentiated
+    plane in reverse) is named there."""
     @hawk.kernel
     def grid(x: hawk.Scalar, out: hawk.Mutable[hawk.Scalar]):
         total = 0.0
@@ -494,8 +496,8 @@ def test_a_nested_loop_is_refused_by_the_DERIVATIVE_and_not_by_the_tracer():
         out = total
 
     render_body(grid.sinks, grid.walk)          # emission is fine
-    with pytest.raises(HawkError, match="nested `for`"):
-        vjp(grid)
+    got = evaluate(vjp(grid), {"x": 0.5, "terminated": False, "bar_out": 1.0})
+    np.testing.assert_allclose(got["bar_x"], 6.0)          # d/dx sum_r 2 r x = 2 (0+1+2)
 
 
 def test_second_order_through_a_loop_is_refused_rather_than_guessed():

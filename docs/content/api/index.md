@@ -28,3 +28,41 @@ them may change between releases.
    hawk.artifact
    hawk.embedded
 ```
+
+## The authoring names
+
+The declarations a kernel is written in, and the top-level functions. Each has its own page.
+
+```{eval-rst}
+.. autosummary::
+   :toctree: generated
+
+   hawk.kernel
+   hawk.Kernel
+   hawk.raw_device
+   hawk.RawBlock
+   hawk.steps
+   hawk.scatter
+   hawk.resolve_dispatch
+   hawk.samples_first
+   hawk.samples_last
+   hawk.Value
+   hawk.Quantity
+   hawk.Scalar
+   hawk.Index
+   hawk.Int32
+   hawk.UInt32
+   hawk.Quat
+   hawk.Vector
+   hawk.Matrix
+   hawk.Param
+   hawk.Mutable
+   hawk.Table
+   hawk.Grid
+   hawk.Sorted
+   hawk.Staged
+   hawk.Wide
+   hawk.WideOut
+   hawk.Terminated
+   hawk.HawkError
+```

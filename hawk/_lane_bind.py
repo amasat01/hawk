@@ -18,8 +18,10 @@ declared head tell the lane form from the flat ``(w, N)`` one. ``n_samples=`` an
 
 from __future__ import annotations
 
+import math
 from math import prod
 
+from . import _broadcast
 from .ir import HawkError
 
 
@@ -31,28 +33,69 @@ def lane_axes(sidecar: dict) -> list | None:
     return [(ax["label"], ax["extent"]) for ax in space["axes"]]
 
 
+def gather_columns(sidecar: dict, name: str, n: int):
+    """The column count the compact Matrix plane ``name`` must have at ``n`` lanes
+    (the product of the extents of the axes it varies along, a runtime one being
+    ``n`` over the static ones); ``None`` when the sidecar records no pattern."""
+    kept = (sidecar.get("gather_mats") or {}).get(name)
+    axes = lane_axes(sidecar)
+    if kept is None or axes is None:
+        return None
+    static = math.prod(e for _a, e in axes if e is not None)
+    return math.prod((n // static if e is None else e) for (_a, e), k in zip(axes, kept) if k)
+
+
 def spelling(axes) -> str:
     return "Grid[" + ", ".join(f'"{a}"' if e is None else f'"{a}":{e}' for a, e in axes) + "]"
 
 
-def output_shape(sidecar: dict, name: str, width: int, n: int) -> tuple:
+def free_labels(sidecar: dict) -> set:
+    """The labels of the sinks' runtime axes that no lane axis shares: each is its
+    own extent, given as ``<label>=N`` or by the plane passed."""
+    lane = {a for a, _e in lane_axes(sidecar) or ()}
+    return {ax["label"] for spec in (sidecar.get("plane_axes") or {}).values()
+            for ax in spec["axes"] if ax["extent"] is None and ax["label"] not in lane}
+
+
+def output_shape(sidecar: dict, name: str, width: int, n: int, extents: dict | None = None) -> tuple:
     """The shape to allocate for the output plane ``name`` of ``n`` lanes and
     per-lane ``width``: lane-shaped for a ``Grid`` kernel (``(width, *lane
     shape)``, the component axis only when ``width > 1``), the named-axis
     ``(*payload, *axes)`` for a sink declared with axes (a reduction's output:
-    the payload, then the kept lane axes), else the flat ``(width, n)`` / ``(n,)``."""
+    the payload, then the kept lane axes; a runtime axis no lane axis shares
+    takes its extent from ``extents[label]``), else the flat ``(width, n)`` / ``(n,)``."""
     declared = (sidecar.get("plane_axes") or {}).get(name)
     axes = lane_axes(sidecar)
     if declared is not None:
         # a kept runtime axis (a reduction's output) is as long as the lane axis
         runtime = n // prod(e for _a, e in axes[1:]) if axes else n
-        return tuple(declared["payload"]) + tuple(
-            runtime if ax["extent"] is None else ax["extent"] for ax in declared["axes"])
+        free = free_labels(sidecar)
+
+        def extent(ax):
+            if ax["extent"] is not None:
+                return ax["extent"]
+            if ax["label"] not in free:
+                return runtime
+            if (extents or {}).get(ax["label"]) is None:
+                raise HawkError(f"hawk.runtime.run: {name!r} has a runtime axis "
+                                f"{ax['label']!r}; pass {ax['label']}=<extent of {ax['label']!r}>")
+            return extents[ax["label"]]
+
+        return tuple(declared["payload"]) + tuple(extent(ax) for ax in declared["axes"])
     head = (width,) if width > 1 else ()
     if axes is None:
         return head + (n,)
     static = tuple(e for _a, e in axes[1:])
     return head + (n // prod(static),) + static
+
+
+def keyed_size(sidecar: dict, spec: dict, n: int) -> int:
+    """The elements of a keyed plane the runtime owns between the stages of a
+    split kernel: ``spec["width"]`` payload entries over the kept lane axes
+    (a runtime kept axis is as long as the lane axis)."""
+    axes = lane_axes(sidecar)
+    runtime = n // prod(e for _a, e in axes[1:]) if axes else n
+    return spec["width"] * prod(runtime if e is None else e for _a, e in spec["axes"])
 
 
 def check_total(sidecar: dict, n: int) -> None:
@@ -100,8 +143,21 @@ def bind(sidecar: dict, arg_spec, arrays: dict, n_samples, per_sample_roles) -> 
                 raise HawkError(f"{where}: {first}= is the extent of the first axis, "
                                 f"a positive int; got {extent!r}")
     shapes = sidecar.get("arg_shapes", {})
+    named = sidecar.get("plane_axes") or {}
+    mats = sidecar.get("mat_shapes") or {}
+    heads = {name: tuple(mats[name]) if role == "mat_in" and name in mats
+             else (int(shapes.get(name) or 1),) if int(shapes.get(name) or 1) > 1 else ()
+             for role, name in arg_spec if name in out and name not in named}
+    known = _broadcast.runtime_extent(
+        [(_broadcast.shape_of(out[n]), h) for n, h in heads.items()], axes, extent)
     seen = None
     for role, name in arg_spec:
+        if name in heads:
+            shape = _broadcast.shape_of(out[name])
+            kept = _broadcast.of(name, role, out[name], heads[name], axes, known, where, False)
+            if kept is not None:
+                raise HawkError(f"{where}: " + _broadcast.dense_only(
+                    name, shape, kept, heads[name], axes))
         if role not in per_sample_roles or role == "mat_in" or name not in out or len(axes) < 2:
             continue
         try:

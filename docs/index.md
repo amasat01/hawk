@@ -71,12 +71,11 @@ Write, build and run a kernel in about five minutes — then run the same
 one on a GPU with the same call.
 :::
 
-:::{grid-item-card} hawk in your domain
-:link: content/vocabulary
+:::{grid-item-card} Domains
+:link: content/domains
 :link-type: doc
-Teach hawk the objects of your field once; every kernel then speaks them,
-compiles for CPU and GPU, and differentiates. A vocabulary, a custom
-derivative, an orbits example and a capstone.
+One worked case per field, from orbits and fluids to finance and
+signals, each checked against an answer that does not come from hawk.
 :::
 
 :::{grid-item-card} Tutorials
@@ -129,14 +128,6 @@ content/quickstart
 ```
 
 ```{toctree}
-:caption: hawk in your domain
-:maxdepth: 1
-:hidden:
-
-content/vocabulary
-```
-
-```{toctree}
 :caption: Tutorials
 :maxdepth: 1
 :hidden:
@@ -153,16 +144,19 @@ content/examples
 ```
 
 ```{toctree}
+:caption: Domains
+:maxdepth: 1
+:hidden:
+
+content/domains
+```
+
+```{toctree}
 :caption: Explanation
 :maxdepth: 1
 :hidden:
 
-content/across_lanes
-content/control_vs_warp
-content/under_the_hood
-content/compiling
-content/embedded
-content/interop
+content/explanation
 ```
 
 ```{toctree}
@@ -171,6 +165,10 @@ content/interop
 :hidden:
 
 content/api/index
+content/broadcasting
+content/derivatives
+content/linear_algebra
+content/emit_form
 content/glossary
 ```
 

@@ -91,11 +91,13 @@ class Mutable:
     ``Mutable["bin":256]`` and ``Mutable[Vector[3], "channel":64, "input":64]``
     name the sink's own axes: a plane the body writes by key, bound
     ``(*payload, *axes)`` (the payload is ``Scalar`` unless given first). A sink
-    you pass keeps its contents; one you omit starts at zero."""
+    you pass keeps its contents; one you omit starts at zero. A bare label
+    (``Mutable["node"]``) is a runtime extent and may only be first, as in
+    ``Grid``: the caller gives it as ``node=N`` or by the plane it passes."""
 
     def __class_getitem__(cls, key: object) -> Plane:
         items = key if isinstance(key, tuple) else (key,)
-        if isinstance(items[0], slice):
+        if isinstance(items[0], (slice, str)):
             return Plane("mutable", Scalar, dims=_axes("Mutable", items))
         dims = _axes("Mutable", items[1:]) if items[1:] else ()
         return Plane("mutable", _payload("Mutable", items[0]), dims=dims)
@@ -106,7 +108,9 @@ class Table:
 
     ``Table[Scalar]`` is the POSITIONAL plane, read at a flat index;
     ``Table["row":rows, "col":cols]`` is the NAMED-AXIS plane, read
-    ``t.at(row=…, col=…)`` against declaration-minted strides."""
+    ``t.at(row=…, col=…)`` against declaration-minted strides. A bare first
+    label (``Table["elem", "c":3]``) is a runtime extent, as in ``Grid``: no
+    stride depends on it."""
 
     def __class_getitem__(cls, key: object) -> Plane:
         if isinstance(key, TensorType):
@@ -269,10 +273,19 @@ def _axes(what: str, key: object) -> tuple:
 
     Spelled ``Table["row":rows, "col":cols]`` via Python's slice syntax.
     The last declared axis is innermost (stride 1), so the axis the lane
-    varies fastest over goes LAST."""
+    varies fastest over goes LAST. A ``Mutable``/``Table`` may leave its FIRST
+    axis bare (``(label, None)``, a runtime extent): every stride is the
+    product of the axes after it, so none depends on that extent."""
     items = key if isinstance(key, tuple) else (key,)
     axes = []
-    for item in items:
+    for pos, item in enumerate(items):
+        if what in ("Mutable", "Table") and isinstance(item, str) and item:
+            if pos:
+                raise HawkError(
+                    f"{what}[...]: axis {item!r} at position {pos} has no extent; only "
+                    f'the FIRST axis may be bare (a runtime extent), write "{item}":<extent>')
+            axes.append((item, None))
+            continue
         if not isinstance(item, slice) or item.step is not None\
                 or not isinstance(item.start, str) or not item.start:
             raise HawkError(
@@ -280,6 +293,8 @@ def _axes(what: str, key: object) -> tuple:
                 f'{what}["row":rows, "col":cols]); got {item!r}')
         axes.append((item.start, _extent(what, item.stop)))
     labels = [a for a, _ in axes]
+    if axes and axes[0][1] is None and _label_refusal(labels[0]):
+        raise HawkError(f"{what}[...]: the axis label {labels[0]!r} {_label_refusal(labels[0])}")
     if len(set(labels)) != len(labels):
         raise HawkError(
             f"{what}[...]: duplicate axis label(s) in {labels} — an axis label "
@@ -288,7 +303,8 @@ def _axes(what: str, key: object) -> tuple:
     out, stride = [], 1
     for label, size in reversed(axes):
         out.append((label, size, stride))
-        stride *= size
+        if size is not None:
+            stride *= size
     return tuple(reversed(out))
 
 
