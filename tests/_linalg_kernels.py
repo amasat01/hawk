@@ -70,3 +70,13 @@ def eigh_kernel(n: int) -> Kernel:
         Assign("w", make("eigh_w", (f,)), TensorType((n,), F64)),
         Assign("V", make("eigh_v", (f,)), TensorType((n, n), F64)),
         Assign("info", make("eigh_info", (f,)), TensorType((), "int32"))))
+
+
+def lstsq_kernel(m: int, n: int) -> Kernel:
+    """``x, info = lstsq(J, r)`` for a tall ``m x n`` ``J`` (QR, a team stage): the solution and the status."""
+    j = Leaf("vocab_read", "mat_in", "J", TensorType((m, n), F64))
+    r = Leaf("vocab_read", "vec_in", "r", TensorType((m,), F64))
+    f = make("qr", (j,))
+    return Kernel(f"la_lstsq_{m}_{n}", (
+        Assign("x", make("qr_solve", (f, r)), TensorType((n,), F64)),
+        Assign("info", make("qr_info", (f,)), TensorType((), "int32"))))

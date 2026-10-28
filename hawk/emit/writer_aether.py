@@ -36,7 +36,9 @@ from ..ir.nodes import (
     TapeWrite,
     is_param_cell,
 )
-from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS
+from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, QR_OPS
+from ..ir.team import TeamRead
+from ..ir.rays import RAY_OPS
 from ..ir.ops import RANDOM_OPS
 from ..types import INT_PLANE_DTYPES, TensorType
 from .box import BOX_OWN
@@ -127,6 +129,11 @@ class AetherWriter:
         """A ``SampleIndex`` node: the lane's own integer index as an ``Int``."""
         return f"static_cast<Int>({SAMPLE_INDEX_IDENT})"
 
+    def lane_position_value(self, mapped: bool) -> str:
+        """A ``LanePosition`` node: ``hawk_t`` under an index map, else the
+        lane's own index (the launch position is the sample index there)."""
+        return f"static_cast<Int>({'hawk_t' if mapped else SAMPLE_INDEX_IDENT})"
+
     def hoist(self, r, text: str, ttype: TensorType | None = None) -> str:
         """Bind ``text`` to a fresh named local ahead of the current line — the
         lifetime-safe home for a value that is an aether LEAF but not a node of
@@ -198,6 +205,39 @@ class AetherWriter:
         """A scattered wide_write targets a computed ROW: a store, exactly as
         the reference evaluator reads it."""
         r._emit(f"{target}[{self._sample_index(index)}] = {value};")
+
+    def team_store(self, r, sink, target: str, value: str) -> None:
+        """A value a team stage works on, stored row-major into the lane's own slice of its scratch
+        plane (:class:`~hawk.ir.team.TeamStore`): one loop over the elements."""
+        shape = sink.value.ttype.shape
+        size = prod(shape)
+        base = f"static_cast<std::size_t>({r._ref(sink.index)}) * {size}"
+        if not shape:
+            r._emit(f"{target}.data()[{base}] = {value};")
+            return
+        held = self._operand(r, sink.value, value)
+        r._emit(f"for (Int hawk_lk = 0; hawk_lk < {size}; ++hawk_lk) "
+                f"{target}.data()[{base} + hawk_lk] = {self._element(r, held, shape)};")
+
+    def _team_read(self, r, node, plane: str) -> str:
+        """A vector or matrix a team stage left in the lane's own slice of its scratch plane, copied
+        row-major into a fresh ``Item`` by a loop ahead of the line that uses it."""
+        shape = node.ttype.shape
+        size = prod(shape)
+        out = self._fresh_item(r, node.ttype)
+        base = f"static_cast<std::size_t>({r._ref(node.index)}) * {size}"
+        r._emit(f"for (Int hawk_lk = 0; hawk_lk < {size}; ++hawk_lk) "
+                f"{out}.data()[hawk_lk] = {plane}.data()[{base} + hawk_lk];")
+        return out
+
+    @staticmethod
+    def _element(r, held: str, shape: tuple) -> str:
+        """Element ``hawk_lk`` (row-major) of the vector or matrix ``held``."""
+        if held in r.fresh_items or held in r.items.values():
+            return f"{held}.data()[hawk_lk]"
+        if len(shape) == 1:
+            return f"{held}.at(hawk_lk)"
+        return f"{held}.at(hawk_lk / {shape[1]}, hawk_lk % {shape[1]})"
 
     def box_store(self, r, target: str, lane: str, value: str) -> None:
         """A thread box lane's own-column store, only for a lane the thread
@@ -307,6 +347,8 @@ class AetherWriter:
         if is_param_cell(node):
             return param_cell_binding(node.plane.name)
         plane = binding_name(node.plane.role, node.plane.name)
+        if isinstance(node, TeamRead):
+            return self._team_read(r, node, plane)
         idx = self._sample_index(r._ref(node.index))
         if r.position.get(id(node)) in r.lazy:
             return f"{plane}[{idx}]"        # proxy, handed to a library call as it stands
@@ -333,9 +375,23 @@ class AetherWriter:
             return self._raw(r, node, args)
         if kind in LINALG_OPS:
             return self._linalg(r, node, args)
+        if kind in RAY_OPS:
+            return self._rays(r, node, args)
         if rank == 0 and all(rk == 0 for rk in ranks):
             return self._scalar_op(r, kind, args, node)
         return self._tensor_op(r, kind, args, ranks, node)
+
+    def _rays(self, r, node: Op, args: Sequence[str]) -> str:
+        """A ray primitive (``aether::geometry``): the library returns its four values
+        by value, held once, and the node is the ``(4,)`` item of them. The vector
+        operands go in as per-sample operands the library reads by element; the
+        rank-0 ones (``r``, ``tmax``) as they are."""
+        elem = element_spelling(node.ttype.dtype)
+        shapes = [len(o.ttype.shape) for o in node.operands]
+        spelled = [self._operand(r, o, a) if rank else a
+                   for o, a, rank in zip(node.operands, args, shapes)]
+        held = self._hoist(r, f"aether::geometry::{_RAY[node.kind]}<{elem}>({', '.join(spelled)})")
+        return f"aether::Item<{elem}, 4>{{{', '.join(f'{held}.v[{k}]' for k in range(4))}}}"
 
     def _linalg(self, r, node: Op, args: Sequence[str]) -> str:
         """A factorisation, a solve against one, or a read of a field of one,
@@ -352,6 +408,12 @@ class AetherWriter:
         ``det`` and the factor itself are plain expressions."""
         kind = node.kind
         n = node.operands[0].ttype.shape[0]
+        if n > MAX_DIM or kind in QR_OPS:
+            raise HawkError(
+                f"op {kind!r} at n={n} reached the per-lane writer, which holds the matrix in one "
+                f"lane (n <= {MAX_DIM}): above that a team of threads works on it, which is a stage "
+                "of its own the build splits out (a team stage inside a loop body, a thread box or "
+                "the embedded c target has none)")
         if kind in FACTORISATIONS:
             name = f"hawk_lf{r.hoists}"
             r.hoists += 1
@@ -473,7 +535,10 @@ class AetherWriter:
 
     def fresh_value(self, node: Node) -> bool:
         """Whether ``node`` renders as the name of a fresh local its statements
-        fill (a factor, a library result, a rolled product): it is never copied."""
+        fill (a factor, a library result, a rolled product, a team result read back): it is never
+        copied."""
+        if isinstance(node, TeamRead):
+            return True
         return isinstance(node, Op) and bool(node.ttype.shape) and (
             node.kind in LINALG_OPS or rolled(node) or _assembled(node))
 
@@ -828,6 +893,9 @@ def _absorbs(node: Op, k: int, child: Node) -> bool:
         return k == 1 and _is_identity(child)
     return rolled(node) and isinstance(child, Op) and child.kind == "transpose"
 
+
+#: The ``aether::geometry`` function each ray kind calls.
+_RAY = {"ray_tri": "rayTriangle", "ray_aabb": "rayAabb", "ray_sphere": "raySphere"}
 
 #: The ``aether::linalg`` function each factorisation kind calls, the struct it fills, and each solve.
 _FACTORISE = {"lu": "lu", "chol": "cholesky", "eigh": "eigh", "chol_from": "choleskyFrom"}

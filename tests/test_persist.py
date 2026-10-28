@@ -86,7 +86,7 @@ def _bind(bundle, name, planes):
     kw = {"dt": DT} if "dt" in dict((n, r) for r, n in sidecar["arg_spec"]) else {}
     bound = eplan.plan(plugin, structure=eexec.DeviceKernel).bind(
         finished_count=counter, fused_steps=word, **kw, **dev)
-    return bound, dev, counter, word, plugin._keepalive[1].module
+    return bound, dev, counter, word, L.module_of(plugin._keepalive[1])
 
 
 def _snap(dev, counter):

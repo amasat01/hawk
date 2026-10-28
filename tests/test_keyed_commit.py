@@ -283,7 +283,7 @@ def _commits(plugin, target):
     import cupy as cp
 
     arr = cp.ndarray((2,), dtype=cp.uint64,
-                     memptr=plugin._keepalive[1].module.get_global("aether_run_commits"))
+                     memptr=L.module_of(plugin._keepalive[1]).get_global("aether_run_commits"))
     return (lambda: tuple(int(v) for v in arr.get())), (lambda: arr.fill(0))
 
 

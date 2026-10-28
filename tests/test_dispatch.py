@@ -756,7 +756,7 @@ def test_training_switch_rewrites_the_kind_plane_without_rebuild_or_retrace(
     stream = cupy.cuda.Stream(non_blocking=True)
     with stream:
         stream.begin_capture()
-        bound.launch()
+        bound.launch(stream=stream)
         graph = stream.end_capture()
     graph_id = id(graph)
 
@@ -1026,8 +1026,8 @@ def test_a_kernel_written_kind_plane_is_consumed_in_the_same_captured_graph(
     stream = cp.cuda.Stream(non_blocking=True)
     with stream:
         stream.begin_capture()
-        bound_router.launch()
-        bound_consumer.launch()
+        bound_router.launch(stream=stream)
+        bound_consumer.launch(stream=stream)
         graph = stream.end_capture()
 
     _build = sys.modules["hawk.artifact.bundle"]

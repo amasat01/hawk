@@ -53,9 +53,9 @@ classifiers = [
 # (`hawk.compile.payload.current_payload()`), added the day the code that
 # uses it landed rather than pre-declared ahead of it.
 # raptor-core, aether-dsc, raptor-hawk and raptor-eagle share one version from 0.7.0; aether-dsc
-# 0.7.1 brings the linear-algebra headers (LU, Cholesky) and the `aether::rt` runtime path hawk emits.
+# 0.7.2 brings the team linear-algebra headers, keyed block sums and the QR solve hawk emits.
 # numpy: hawk never imports it, but the host route and every example pass NumPy arrays
-dependencies = ["aether-dsc>=0.7.1,<0.8", "raptor-core>=0.7.0,<0.8", "numpy>=1.26"]
+dependencies = ["aether-dsc>=0.7.2,<0.8", "raptor-core>=0.7.0,<0.8", "numpy>=1.26"]
 
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
@@ -131,11 +131,15 @@ ignore = ["F841"]
 "examples/two_body_hybrid.py" = ["F821"]
 "tests/_autodiff_kernels.py" = ["F821"]
 "tests/_kan.py" = ["F821"]
+"tests/_block_kernels.py" = ["F821"]
+"tests/_net_axis_kernels.py" = ["F821"]
 "tests/test_across_lanes.py" = ["F821"]
 "tests/test_broadcast_bind.py" = ["F821"]
 "tests/test_broadcast_deploy.py" = ["F821"]
 "tests/test_broadcast_matrix.py" = ["F821"]
 "tests/test_diff_loop_dispatch_gather.py" = ["F821"]
+"tests/test_index_set.py" = ["F821"]
+"tests/test_ir_loops_hoisting.py" = ["F821"]
 "tests/test_diff_nested_loops.py" = ["F821"]
 "tests/test_diff_second_order_loops.py" = ["F821"]
 "tests/test_emit_rolled.py" = ["F821"]

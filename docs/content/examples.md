@@ -37,6 +37,16 @@ Solve, factor and decompose a small matrix in every lane.
 howto_linear_algebra
 ```
 
+## Sparse lanes
+
+Run a list of lanes you built, and loops whose length is known at run time.
+
+```{toctree}
+:maxdepth: 1
+
+howto_index_set
+```
+
 ## Embedded C
 
 Emit a kernel as standalone C for a target without a runtime.

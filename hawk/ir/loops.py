@@ -33,7 +33,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .loop_nodes import Loop, LoopCarry, LoopIndex
-from .nodes import RAW_KIND, At, Dispatch, HawkError, Node, Select
+from .nodes import RAW_KIND, At, Const, Dispatch, HawkError, Node, Select
 
 #: The class whose adjoint stores nothing.
 ACCUMULATOR = "accumulator"
@@ -110,7 +110,71 @@ def _gathers(node: Node, memo: dict) -> bool:
     return memo[id(node)]
 
 
-def boundary(nexts: Sequence[Node], own: frozenset) -> tuple:
+def _gated_reads(nexts: Sequence[Node], own: frozenset) -> tuple:
+    """``nexts`` with each loop-invariant plane read of a ``dispatch`` arm gated by
+    the arm's own condition, and the ids of the gates made.
+
+    With a loop-invariant selector, a scalar invariant subtree of an arm that
+    gathers is valid exactly where the selector picks that arm. Wrapped as
+    ``select(arm taken, read, 0)`` it is valid everywhere, so :func:`boundary`
+    hoists it out of the loop and the arm reads the hoisted value. A read under a
+    nested arm keeps that arm's guard and is left alone."""
+    from .ops import make
+    from .walk import substitute
+
+    memo: dict = {}
+    gathers: dict = {}
+    swaps: dict = {}
+    gates: set = set()
+    seen: set = set()
+    stack = list(nexts)
+    while stack:
+        node = stack.pop()
+        if id(node) in seen or not _depends(node, own, memo):
+            continue
+        seen.add(id(node))
+        if not isinstance(node, Dispatch) or _depends(node.operands[0], own, memo):
+            stack.extend(node.operands)
+            continue
+        stack.append(node.operands[0])      # the arms are handled here, not descended
+        sel, arms = node.operands[0], list(node.operands[1:])
+        for i, arm in enumerate(arms):
+            found: dict = {}
+            walk, visited = [arm], set()
+            while walk:
+                n = walk.pop()
+                if id(n) in visited:
+                    continue
+                visited.add(id(n))
+                if isinstance(n, Loop):
+                    continue                        # a nested loop is never gated
+                if not _depends(n, own, memo):
+                    if _gathers(n, gathers) and not n.ttype.shape:
+                        found[id(n)] = n
+                        continue
+                    walk.extend(n.operands)
+                elif isinstance(n, (Dispatch, Select)):
+                    walk.append(n.operands[0])      # a nested arm keeps its guard
+                else:
+                    walk.extend(n.operands)
+            if not found:
+                continue
+            last = len(arms) - 1
+            kind = "le" if i == 0 else "ge" if i == last else "eq"
+            taken = make(kind, (sel, Const(i, sel.ttype)))
+            gate = {}
+            for key, g in found.items():
+                zero = Const(0 if g.ttype.dtype in ("i32", "int32") else 0.0, g.ttype)
+                gate[key] = Select(taken, g, zero, g.ttype)
+            gates.update(id(v) for v in gate.values())
+            arms[i] = substitute([arm], gate)[0]
+        if any(a is not b for a, b in zip(arms, node.operands[1:])):
+            swaps[id(node)] = Dispatch(sel, arms, node.policy, node.ttype)
+    return (substitute(nexts, swaps) if swaps else tuple(nexts)), frozenset(gates)
+
+
+def boundary(nexts: Sequence[Node], own: frozenset,
+             gates: frozenset = frozenset()) -> tuple:
     """The body's loop-invariant BOUNDARY values, in deterministic order.
 
     Maximal: the walk stops at the highest invariant node on each path, so
@@ -120,7 +184,7 @@ def boundary(nexts: Sequence[Node], own: frozenset) -> tuple:
     memo: dict = {}
     gathers: dict = {}
     out: list = []
-    seen: set = set()
+    seen: dict = {}                    # id -> was it last visited guarded
     # (node, guarded): a node under a `dispatch` / `select` ARM is guarded — the arm
     # runs only where its case holds, and a plane read there at a runtime row is only
     # valid there. Hoisting such a read out of the loop would evaluate it for every
@@ -129,13 +193,15 @@ def boundary(nexts: Sequence[Node], own: frozenset) -> tuple:
     stack = [(n, False) for n in reversed(tuple(nexts))]
     while stack:
         node, guarded = stack.pop()
-        if id(node) in seen:
+        # an UNGUARDED visit overrides a guarded one that stayed in the body: the
+        # node is read outside every arm too, so it is safe to hoist
+        if id(node) in seen and (guarded or not seen[id(node)]):
             continue
-        if not _depends(node, own, memo) and not (guarded and _gathers(node, gathers)):
-            seen.add(id(node))
+        seen[id(node)] = guarded
+        if not _depends(node, own, memo) and not (
+                guarded and id(node) not in gates and _gathers(node, gathers)):
             out.append(node)
             continue
-        seen.add(id(node))
         arms = (frozenset(id(a) for a in node.operands[1:])
                 if isinstance(node, (Dispatch, Select)) else frozenset())
         for child in reversed(node.operands):
@@ -154,25 +220,28 @@ def build_loop(index: LoopIndex, carries: Sequence[LoopCarry],
                inits: Sequence[Node], nexts: Sequence[Node], *, start: int,
                stop: int, step: int, body_sinks: Sequence[Node] = (),
                exit_cond: Node | None = None, exit_values: Sequence[Node] = (),
-               count: Node | None = None, count_tail: bool = False) -> Loop:
+               count: Node | None = None, count_tail: bool = False,
+               dynamic: str | None = None) -> Loop:
     """Mint a :class:`~hawk.ir.loop_nodes.Loop`, computing its boundary for it.
 
     THE constructor every producer uses (the tracer, :mod:`hawk.diff.loops`
     for a derived loop), so a derived loop's operands are computed by
     exactly the code that computed the primal's."""
-    nexts, body_sinks = tuple(nexts), tuple(body_sinks)
+    own = frozenset({id(index), *(id(c) for c in carries)})
+    nexts, gates = _gated_reads(nexts, own)
+    body_sinks = tuple(body_sinks)
     exit_values = tuple(exit_values)
     roots = nexts + tuple(o for sink in body_sinks for o in sink.operands)
     if exit_cond is not None:
         roots += (exit_cond, *exit_values)
-    own = frozenset({id(index), *(id(c) for c in carries)})
     held = {id(n) for n in inits}
     if count is not None:
         held.add(id(count))
-    free = tuple(n for n in boundary(roots, own) if id(n) not in held)
+    free = tuple(n for n in boundary(roots, own, gates) if id(n) not in held)
     loop = Loop(index, carries, inits, nexts, start=start, stop=stop, step=step,
                 free=free, body_sinks=body_sinks, exit_cond=exit_cond,
-                exit_values=exit_values, count=count, count_tail=count_tail)
+                exit_values=exit_values, count=count, count_tail=count_tail,
+                dynamic=dynamic)
     _check_placeholders(loop)
     return loop
 
@@ -181,7 +250,8 @@ def exit_kwargs(loop: Loop) -> dict:
     """``loop``'s ``break``/count as :func:`build_loop` keywords, for a
     REBUILD that must leave early exactly where the original did."""
     return {"exit_cond": loop.exit_cond, "exit_values": loop.exit_values,
-            "count": loop.count, "count_tail": loop.count_tail}
+            "count": loop.count, "count_tail": loop.count_tail,
+            "dynamic": loop.dynamic}
 
 
 def _check_placeholders(loop: Loop) -> None:

@@ -21,6 +21,7 @@ is differentiated by simulating the other side of one drawn switch
 from __future__ import annotations
 
 import numpy as np
+from conftest import declared
 import pytest
 
 import hawk
@@ -163,7 +164,8 @@ def test_a_lane_with_no_switch_in_reach_is_the_plain_tangent(tangent, lanes, tmp
 
     hawk.build([gate_off, Kernel("g", jvp(gate_off, wrt=("s",)))], d, targets=("host",), cache_dir=cache_dir)
     out = {k: np.zeros(LANES) for k in ("dot_tally", "dot_alive_out")}
-    hawk.run(hawk.load(d, "g"), u=lanes, s=S, dot_s=1.0, **out, n_samples=LANES)
+    loaded = hawk.load(d, "g")
+    hawk.run(loaded, **declared(loaded, {"u": lanes, "s": S, "dot_s": 1.0}), **out, n_samples=LANES)
     quiet = (np.abs(lanes - S) < W).sum(axis=0) == 0
     got, _ = tangent(KERNELS["gate"])
     assert quiet.sum() > LANES // 2 and np.array_equal(got[quiet], out["dot_tally"][quiet])

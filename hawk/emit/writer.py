@@ -87,6 +87,10 @@ class Writer(Protocol):
     def sample_index_value(self) -> str:
         """A ``SampleIndex`` node's value: ``static_cast<Int>(hawk_i)``."""
 
+    def lane_position_value(self, mapped: bool) -> str:
+        """A ``LanePosition`` node: the launch position ``t``; ``mapped`` is
+        true under an index map, where the sample index is ``map[t]``."""
+
     def hoist(self, r: Any, text: str, ttype: Any) -> str:
         """Bind ``text`` to a fresh local ahead of the current line; its name."""
 

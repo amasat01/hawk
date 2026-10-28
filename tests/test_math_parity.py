@@ -218,10 +218,10 @@ NAMES = [r[0] for r in REFS]
 def _run_all(plans, xp) -> dict:
     """Run the three kernels through their plans; ``name -> result row``."""
     out = {}
-    blocks = (plans[0].run(x=xp.asarray(XU)),
-              plans[1].run(a=xp.asarray(AB[0]), b=xp.asarray(AB[1])),
-              plans[2].run(a=xp.asarray(ABC[0]), b=xp.asarray(ABC[1]),
-                           c=xp.asarray(ABC[2])))
+    blocks = (plans[0].run(x=xp.ascontiguousarray(XU)),
+              plans[1].run(a=xp.ascontiguousarray(AB[0]), b=xp.ascontiguousarray(AB[1])),
+              plans[2].run(a=xp.ascontiguousarray(ABC[0]), b=xp.ascontiguousarray(ABC[1]),
+                           c=xp.ascontiguousarray(ABC[2])))
     rows = [np.asarray(b.get() if hasattr(b, "get") else b) for b in blocks]
     names = [list(UNARY) + list(PREDICATES), list(BINARY), list(TERNARY)]
     for block, row_names in zip(rows, names):

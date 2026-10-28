@@ -326,8 +326,8 @@ def test_every_kernel_declares_its_launch_shape(built, bundle_name, kernel, kw, 
     from raptor.schema.manifest import check_lane_space
 
     sc = sidecar_of(built[bundle_name], kernel)
-    assert sc["launch"] == {"lane_space": {"axes": [{"label": None, "extent": None}],
-                                           "group": 1}}
+    assert {k: v for k, v in sc["launch"].items() if not k.startswith("local_")} == {
+        "lane_space": {"axes": [{"label": None, "extent": None}], "group": 1}}
     check_lane_space(sc, name=kernel)
     assert "sorted_inputs" not in sc and "plane_axes" not in sc
 

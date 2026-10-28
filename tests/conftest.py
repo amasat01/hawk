@@ -98,6 +98,13 @@ def sidecar_of(bundle, name: str) -> dict:
     return next(a.sidecar for a in bundle.artifacts if a.name == name)
 
 
+def declared(kernel, arrays: dict) -> dict:
+    """``arrays`` cut to the planes ``kernel`` declares. A derivative binds what its body reads (a primal
+    input, or a seed, that its body does not read is no slot of it), and a run refuses a name that is none."""
+    names = {n for _, n in kernel.arg_spec}
+    return {k: v for k, v in arrays.items() if k in names}
+
+
 def _launch(bundle, name, target, planes):
     import _deploy as L
     import eagle.exec as eexec

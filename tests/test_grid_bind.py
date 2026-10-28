@@ -45,6 +45,16 @@ def fixed(lane: Grid["a":4, "b":8], x: Scalar) -> Scalar:
 
 
 @hawk.kernel
+def fixed_count(lane: Grid["a":4, "b":8], th: Table[Scalar], acc: Mutable["bin":4]):
+    hawk.scatter(acc)[lane.a] += th.at(lane.b)
+
+
+@hawk.kernel
+def cube_count(lane: Grid["a":2, "b":3, "c":4], th: Table[Scalar], acc: Mutable["bin":2]):
+    hawk.scatter(acc)[lane.a] += th.at(lane.c)
+
+
+@hawk.kernel
 def tables_only(lane: Grid["channel", "s":4], th: Table[Scalar], acc: Mutable["bin":4]):
     hawk.scatter(acc)[lane.s] += th.at(lane.channel)
 
@@ -69,7 +79,7 @@ def lap(lane: Grid["row", "col":16], u: Scalar) -> Scalar:
     return out
 
 
-KERNELS = (scale, rows, fixed, tables_only, tables_flat, flat, lap)
+KERNELS = (scale, rows, fixed, fixed_count, cube_count, tables_only, tables_flat, flat, lap)
 
 
 @pytest.fixture(scope="module")
@@ -186,6 +196,18 @@ def test_a_static_kernel_needs_no_extent(loaded):
     np.testing.assert_array_equal(out, x + np.arange(4)[:, None] * 10.0 + np.arange(8)[None, :])
 
 
+def test_a_static_first_axis_runs_every_lane_with_no_plane_to_read_it_from(loaded):
+    acc = np.zeros(4)
+    rt.run(loaded["fixed_count"], th=np.arange(8.0), acc=acc)
+    np.testing.assert_array_equal(acc, np.full(4, 28.0))          # 4 x 8 lanes, not the last 8
+
+
+def test_an_all_static_cube_runs_every_lane(loaded):
+    acc = np.zeros(2)
+    rt.run(loaded["cube_count"], th=np.arange(4.0), acc=acc)
+    np.testing.assert_array_equal(acc, np.full(2, 18.0))          # 2 x 3 x 4 lanes
+
+
 def test_a_static_kernel_given_an_extent_is_refused(loaded):
     x = np.zeros((4, 8))
     with pytest.raises(HawkError, match=r"the axis 'a' is static \(4\); drop a="):
@@ -236,3 +258,13 @@ def test_the_sidecar_carries_the_declared_shape(loaded):
     assert sc["launch"]["lane_space"] == {
         "axes": [{"label": "channel", "extent": None}, {"label": "sample", "extent": SAMPLE}],
         "group": 1}
+
+
+@pytest.mark.gpu
+def test_a_static_first_axis_runs_every_lane_on_the_device(cache_dir):
+    cp = pytest.importorskip("cupy")
+    import eagle
+    plan = eagle.deploy(fixed_count, cache_dir=cache_dir)
+    acc = cp.zeros(4)
+    plan.bind(th=cp.arange(8.0), acc=acc).launch()
+    np.testing.assert_array_equal(cp.asnumpy(acc), np.full(4, 28.0))

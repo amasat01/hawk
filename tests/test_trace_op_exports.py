@@ -235,6 +235,12 @@ SPELLINGS = {
     "eigh_w": lambda: hm.eigh(_v(M33))[0],
     "eigh_v": lambda: hm.eigh(_v(M33))[1],
     "eigh_info": lambda: hm.eigh(_v(M33))[2],
+    "qr": lambda: node_of(hm.lstsq(_v(TensorType((40, 34), "f64")), _v(TensorType((40,), "f64"), "b"))[0]).operands[0],
+    "qr_solve": lambda: hm.lstsq(_v(TensorType((40, 34), "f64")), _v(TensorType((40,), "f64"), "b"))[0],
+    "qr_info": lambda: hm.lstsq(_v(TensorType((40, 34), "f64")), _v(TensorType((40,), "f64"), "b"))[1],
+    "ray_tri": lambda: hm.ray_tri(*(_v(V3, n) for n in "oabcd")),
+    "ray_aabb": lambda: hm.ray_aabb(*(_v(V3, n) for n in "odlh")),
+    "ray_sphere": lambda: hm.ray_sphere(_v(V3, "o"), _v(V3, "d"), _v(V3, "c"), _v(S, "r")),
 }
 
 #: The kinds with no authoring spelling, and why. ``add_at`` is the adjoint of
@@ -248,6 +254,7 @@ SPELLINGS = {
 UNSPELLED = {"lu_solve_t": "the transposed solve a derivative of lu_solve/lu_det mints",
              "tri_lower": "the forward half of the Cholesky solve a derivative mints",
              "tri_upper_t": "the back half of the Cholesky solve a derivative mints",
+             "qr_gram_solve": "the solve with J^T J a derivative of lstsq mints (two triangular solves on R)",
              "splat": "the broadcast a derivative mints; an author's rank-0 "
                       "operand broadcasts through the elementwise type rule",
              "add_at": "the adjoint of component_at, minted by the derivative rule"}

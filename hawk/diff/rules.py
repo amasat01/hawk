@@ -31,6 +31,7 @@ from ..ir.nodes import REDUCE_KIND
 from ..trace.value import _entries
 from ..types import TensorType
 from .linalg_rules import LINALG_RULES
+from .ray_rules import RAY_RULES
 
 _F64 = TensorType((), "f64")
 
@@ -586,8 +587,9 @@ RULES: dict[tuple[str, int | None], DiffRule] = {
        for k in COMPARE + LOGICAL + RANDOM_OPS + PREDICATE + INT_BINARY + INT_UNARY + CAST
        + ("floor", "ceil", "trunc", "round", "rint", "sign", "spacing")
        # a status word is an integer plane: no derivative flows through it
-       + ("lu_info", "chol_info", "eigh_info")},
+       + ("lu_info", "chol_info", "eigh_info", "qr_info")},
     **{(k, None): DiffRule(vjp=v, jvp=j) for k, (v, j) in LINALG_RULES.items()},
+    **{(k, None): DiffRule(vjp=v, jvp=j) for k, (v, j) in RAY_RULES.items()},
     ("fma", None): DiffRule(vjp=_fma_vjp, jvp=_fma_jvp),
     ("clip", None): DiffRule(vjp=_clip_vjp, jvp=_clip_jvp),
     **{(k, None): rule for k, rule in _SHAPED.items()},

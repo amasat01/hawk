@@ -82,6 +82,11 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
       bit = hawk.math.select(x.at(i) * x.at(j) > 0.5, hawk.math.uint32(1) << hawk.math.uint32(j & 31), hawk.math.uint32(0))
       hawk.scatter(mask, policy="or")[i * 4 + (j >> 5)] |= bit      # 4 words of 32 bits per row: up to 128 items
   ```
+- An **index set** (`Kind("screen", lanes=IndexSet())`) runs a list of lanes you built: launch lane `t` runs lane
+  `map[t]`, with the map and its count bound as `active_map` and `active_count`. `hawk.lane_position()` is `t`
+  where `hawk.math.sample_index()` is `map[t]`. See [Run only the lanes you list](howto_index_set).
+- A **run-time trip count** is `for k in range(n, max=K)` with `n` an `Index` per lane: `n` iterations, held to
+  `[0, K]`, never unrolled. Without `max=` `jvp` works and `vjp` is refused.
 - A **group** is the lane count in which finished lanes are compacted away (`@hawk.kernel(group=32)`).
 - A **policy** says how a sum over lanes is added up: `"auto"`, `"compensated"` or `"ordered"`.
   See [Across lanes](across_lanes).

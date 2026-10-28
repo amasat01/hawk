@@ -166,7 +166,8 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
               device_arch, derivative_blocks, layout_sizes_override,
               host_profile: str = "", opt_level: str = "",
               literal_table: bool = False, embedded_profile: str = "",
-              source_digests=(), groups=(), emit_form: str = "auto") -> str:
+              source_digests=(), groups=(), emit_form: str = "auto",
+              linalg_form: str = "auto") -> str:
     """The per-process identity of a BUILD REQUEST: every input the
     unit's content is a function of, hashed term by term. Per kernel:
     :attr:`hawk.ir.walk.Walk.digest`, its name and its declarations
@@ -225,6 +226,8 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
                  "opt_level:" + _opt_level(opt_level or None),
                  "literal_table" if literal_table else "",
                  "emit_form:" + emit_form if emit_form != "auto" else "",
+                 "linalg_form:" + linalg_form if linalg_form != "auto" else "",
+                 f"team_threads:{os.environ.get('HAWK_TEAM_THREADS')}",
                  f"box:{os.environ.get(BOX_ENV)}:{thread_box_card(smode.id)['T']}",
                  ("embedded_profile:" + embedded_profile
                   if embedded_profile else ""),

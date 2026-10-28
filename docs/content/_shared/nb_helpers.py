@@ -57,8 +57,15 @@ except Exception:
 
 
 def to_numpy(a):
-    """``a`` as a NumPy array, regardless of which device it came from."""
+    """``a`` as a NumPy array, regardless of which device it came from (a CuPy array, a NumPy array or an eagle result)."""
+    if type(a).__module__.startswith("eagle"):
+        return a.to("numpy")
     return xp.asnumpy(a) if DEVICE == "gpu" else a
+
+
+def on_device(a) -> bool:
+    """``True`` iff ``a`` (a CuPy array or an eagle result) lives on the GPU."""
+    return type(a).__module__.startswith("cupy") or str(getattr(a, "device", "")).startswith("cuda")
 
 
 def batch_size(gpu: int, cpu: int) -> int:

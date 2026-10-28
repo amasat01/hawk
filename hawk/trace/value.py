@@ -28,6 +28,7 @@ from ..ir.nodes import (
     Finish,
     ReduceSamples,
     RoleConst,
+    LanePosition,
     SampleIndex,
     WideWrite,
 )
@@ -657,6 +658,16 @@ def sample_index() -> Value:
     return Value(SampleIndex())
 
 
+def lane_position() -> Value:
+    """This lane's position ``t`` in the launch, as a value: ``base + flat``.
+
+    Equal to :func:`sample_index` in a plain launch. Under a lane set
+    (``Kind(..., lanes=IndexSet())``) :func:`sample_index` is the lane the map
+    names, ``map[t]``, and this is ``t`` itself, the slot a compacted output
+    ``out[lane_position()]`` is written at."""
+    return Value(LanePosition())
+
+
 def _random(kind: str, seed: Any, counter: Any) -> Value:
     """The shared body of :func:`random_uniform`/:func:`random_normal`.
 
@@ -1016,9 +1027,7 @@ class MutableRef(_SinkRef):
             extent = 1
             for _label, size in kept:
                 extent *= size
-            node = ReduceSamples("sum", node.operands[0], key=node.key,
-                                 count=Const(extent, node.key.ttype), policy=node.policy,
-                                 kept=node.kept)
+            node = node.recount(Const(extent, node.key.ttype))
         self.sinks = list(node.stored(self.name))
         self.by_key_kind = "accum"
 

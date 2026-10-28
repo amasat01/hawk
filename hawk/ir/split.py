@@ -27,6 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .._cells import planes
+from . import team
 from .nodes import (
     COMPANION_SUFFIX,
     AccumWrite,
@@ -56,6 +57,9 @@ class Keyed:
     name: str
     width: int
     kept: tuple
+    #: The shape of one key's payload (``()`` a scalar, ``(p,)`` a vector, ``(p, q)`` a block), so a
+    #: runtime can return ``(*payload, keys)`` where ``width`` alone says ``(width, keys)``.
+    payload: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,9 @@ class Stage:
     cells_out: tuple
     recomputed: tuple
     keyed: tuple = ()
+    #: A team stage (:class:`hawk.ir.team.TeamSpec`): its sinks are markers that name the scratch
+    #: planes it works on, and the emitter writes its body from this record.
+    team: object = None
 
 
 def _post_order(roots, stop=()) -> list:
@@ -100,15 +107,16 @@ def _keys(order, memo: dict) -> None:
             memo[id(node)] = (type(node).__name__, node.kind, node.ttype,
                               getattr(node, "literal", None), node.dedup_extra,
                               getattr(node, "name", None),
-                              tuple(memo[id(c)] for c in node.operands))
+                              tuple(memo.get(id(c)) for c in node.operands))
 
 
-def _depths(order) -> dict:
-    """``id(node)`` -> the number of reductions over samples on its deepest path."""
+def _depths(order, members=frozenset()) -> dict:
+    """``id(node)`` -> the number of cuts on its deepest path: reductions over samples and the
+    members of team-form linear algebra (``members``, their ids)."""
     depth: dict = {}
     for node in order:
         d = max((depth[id(c)] for c in node.operands), default=0)
-        depth[id(node)] = d + 1 if isinstance(node, ReduceSamples) else d
+        depth[id(node)] = d + 1 if isinstance(node, ReduceSamples) or id(node) in members else d
     return depth
 
 
@@ -155,6 +163,24 @@ def _keyed_read(cut: ReduceSamples, cell: str) -> Node:
         for k in range(cut.ttype.shape[0])])
 
 
+def _block_cells(sinks, blocks) -> dict:
+    """``id(block) -> the output plane`` a :class:`~hawk.ir.team.BlockSumWrite` stores it to.
+    A block sum is lowered as a team stage, so ``linalg_form="thread"`` refuses it by name."""
+    from ..emit.policy import linalg_form
+
+    if blocks and linalg_form() == "thread":
+        raise HawkError("linalg_form='thread' keeps every sum in per-entry form: a sum over the "
+                        "lanes of a key of per-row products into a dense block is a team stage "
+                        "(build with linalg_form='auto' or 'team')")
+    out: dict = {}
+    for sink in sinks:
+        if isinstance(sink, team.BlockSumWrite):
+            if out.setdefault(id(sink.block), sink.name) != sink.name:
+                raise HawkError(f"one sum over the lanes of a key is stored to two planes, "
+                                f"{out[id(sink.block)]!r} and {sink.name!r}: store it once")
+    return out
+
+
 def _with_companions(sinks: tuple) -> tuple:
     """``sinks`` and, for a compensated keyed accumulate, the zero commit that
     binds its companion plane at the same key (as the tracer adds it for a
@@ -178,21 +204,77 @@ def internal(found, declared) -> frozenset:
     return frozenset(c for st in found for c in st.cells_in if c not in declared)
 
 
+def _ordered_scatters(name: str, sinks: tuple) -> tuple:
+    """``(sinks, {target: slots per lane})``: each ``hawk.scatter(t, policy="ordered")[key] += v``
+    replaced by the stores of its key and value into the lane's next log slots, one slot per add
+    in program order (:func:`hawk.ir.team.scatter_specs` adds the logs up). A ``for`` that scatters is
+    unrolled by the tracer, so each trip is an add of its own; a loop node holding one is refused."""
+    from ..types import TensorType
+    from .loop_nodes import Loop
+    from .nodes import SampleIndex
+    from .ops import make
+
+    def ordered(s):
+        return isinstance(s, AccumWrite) and s.policy == "ordered" and s.index is not None
+
+    sinks = tuple(sinks)
+    if any(isinstance(s, Loop) and any(ordered(b) or isinstance(b, Loop) for b in s.body_sinks) for s in sinks):
+        raise HawkError(f"{name!r}: hawk.scatter(policy='ordered') inside a lowered loop is not built "
+                        "(a `for` that scatters is unrolled by the trace, so this needs a loop node made by hand)")
+    width: dict = {}
+    for sink in sinks:
+        if ordered(sink):
+            width[sink.name] = width.get(sink.name, 0) + 1
+    if not width:
+        return sinks, {}
+    wide = TensorType((), "i64")
+    used: dict = {}
+    out: list = []
+    for sink in sinks:
+        if not ordered(sink):
+            out.append(sink)
+            continue
+        slot = used.get(sink.name, 0)
+        used[sink.name] = slot + 1
+        keys, values = team.scatter_names(sink.name)[:2]
+        at = make("add", (make("mul", (SampleIndex(wide), Const(width[sink.name], wide))), Const(slot, wide)))
+        key = sink.index if sink.index.ttype.dtype == "int32" else make("cast", (sink.index,), literal="int32")
+        out += [team.ScatterLog(keys, key, at, sink.name), team.ScatterLog(values, sink.value, at, sink.name)]
+    return tuple(out), width
+
+
 def stages(name: str, sinks) -> tuple | None:
     """The stages of the kernel ``name`` with sink set ``sinks``, or ``None``
     when the body reads no reduction over samples (one kernel, unchanged)."""
-    sinks = tuple(sinks)
+    sinks, scattered = _ordered_scatters(name, sinks)
     order = _post_order(sinks)
     cuts = [n for n in order if isinstance(n, ReduceSamples)]
-    if not cuts:
+    team.refuse_in_loop(order)
+    team.refuse_in_dispatch(sinks, order)
+    groups = team.members_of(order)
+    logs = {n.target: n for n in (*sinks, *(b for s in sinks if hasattr(s, "body_sinks") for b in s.body_sinks))
+            if isinstance(n, team.LogStore)}
+    if not cuts and not groups and not logs and not scattered:
         return None
+    blocks = [c for c in cuts if isinstance(c, team.BlockSum)]
+    stored_to = _block_cells(sinks, blocks)
+    sinks = tuple(s for s in sinks if not isinstance(s, team.BlockSumWrite))
     for cut in cuts:
-        if cut.key is not None and (cut.op != "sum" or cut.policy == "ordered"):
+        if cut.key is not None and not isinstance(cut, team.BlockSum) and (
+                cut.op != "sum" or cut.policy == "ordered"):
             raise HawkError(
                 f"a {cut.op} over some lane axes (policy={cut.policy!r}) read back in "
                 "the body is not in this release: read back hawk.sum/mean(x, over=...) "
                 "with policy 'auto' or 'compensated'")
-    depth = _depths(order)
+    member_group = {id(m): g for g in groups for m in g.members}
+    depth = _depths(order, frozenset(member_group))
+    # the values a team stage works on are stored by the per-lane stage that computes them
+    stores = [(team.TeamStore(plane, value), g) for g in groups for value, plane in team.stores(g)]
+    out_node = {id(m): team.output(g, m) for g in groups for m in g.members}
+    bi = {id(b): i for i, b in enumerate(blocks)}
+    read_back = {id(o) for n in order if not isinstance(n, team.BlockSumWrite) for o in n.operands
+                 if isinstance(o, team.BlockSum)}
+    sinks = (*sinks, *(s for s, _ in stores), *(s for b in blocks for s in team.factor_stores(bi[id(b)], b)))
 
     # a cut stored to a Mutable already has a cell: read that one
     # (a vector's columns are components of the reduced value)
@@ -201,6 +283,8 @@ def stages(name: str, sinks) -> tuple | None:
     taken = {getattr(n, "name", None) for n in order} - {None}
     cell_of, made = {}, {}
     for cut in cuts:
+        if isinstance(cut, team.BlockSum):
+            continue            # a block sum is read from its team stage's own plane
         cell = None if cut.key is not None else stored.get((id(cut.operands[0]), cut.op))
         if cell is None:
             cell = _fresh(taken, len(made))
@@ -208,12 +292,13 @@ def stages(name: str, sinks) -> tuple | None:
         cell_of[id(cut)] = cell
     cell_plane = {plane: cell_of[id(c)] for c in cuts if c.key is None
                   for plane in planes(cell_of[id(c)], c.ttype.shape[0] if c.ttype.shape else 1)}
-    keyed = {cell_of[id(c)]: Keyed(cell_of[id(c)], c.ttype.shape[0] if c.ttype.shape else 1, c.kept)
-             for c in cuts if c.key is not None}
+    keyed = {cell_of[id(c)]: Keyed(cell_of[id(c)], c.ttype.shape[0] if c.ttype.shape else 1, c.kept, c.ttype.shape)
+             for c in cuts if c.key is not None and not isinstance(c, team.BlockSum)}
 
     # the stage each sink lands in: after every reduction it reads
-    place = {id(s): depth[id(s)] + 1 for s in sinks}
-    count = max(max(place.values()), max(depth[id(c)] for c in cuts))
+    place = {id(s): (depth[id(s.value)] if isinstance(s, team.TeamStore) else depth[id(s)]) + 1
+             for s in sinks}
+    count = max([max(place.values()), *(depth[id(c)] for c in cuts), *(depth[i] for i in member_group)])
     # a Mutable's earlier value read by a later stage: its store waits for it
     read_by = [(id(s), _reads((s,))) for s in sinks]
     read_by += [(id(c), _reads(c.operands)) for c in cuts if id(c) in made]
@@ -233,12 +318,14 @@ def stages(name: str, sinks) -> tuple | None:
 
     from ..diff.params import swap
 
-    out, seen_before, keys = [], set(), {}
+    out, seen_before, keys, factored = [], set(), {}, set()
     for k in range(1, count + 1):
         own = [s for s in sinks if place[id(s)] == k]
         own += [s for c in cuts if id(c) in made and depth[id(c)] == k
                 for s in _with_companions(c.stored(made[id(c)]))]
-        mapping = {id(c): _cell_read(c, cell_of[id(c)]) for c in cuts if depth[id(c)] < k}
+        mapping = {id(c): (team.block_read(c, bi[id(c)]) if isinstance(c, team.BlockSum)
+                           else _cell_read(c, cell_of[id(c)])) for c in cuts if depth[id(c)] < k}
+        mapping.update({i: node for i, node in out_node.items() if depth[i] < k})
         new = swap(own, mapping) if mapping else tuple(own)
         original = _post_order(own, stop=mapping)
         interior = [n for n in original
@@ -254,6 +341,20 @@ def stages(name: str, sinks) -> tuple | None:
                                        if is_param_cell(n) and n.plane.name in cell_plane))
         keyed_out = tuple(dict.fromkeys(keyed[s.name] for s in new
                                         if isinstance(s, AccumWrite) and s.name in keyed))
-        out.append(Stage(name if k == 1 else f"{name}_{k}", new, cells_in, cells_out,
+        out.append(Stage(name if not out else f"{name}_{len(out) + 1}", new, cells_in, cells_out,
                          recomputed, keyed_out))
+        spec = team.spec_of(groups, k, depth, factored)
+        if spec is not None:
+            out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
+        for block in (b for b in blocks if depth[id(b)] == k):
+            spec = team.block_spec(bi[id(block)], block, stored_to.get(id(block)),
+                                   Keyed(f"{team.PLANE_PREFIX}b{bi[id(block)]}_g", team.size_of(block.ttype), block.kept, block.ttype.shape),
+                                   id(block) in read_back)
+            out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
+    for target, slots in scattered.items():     # an ordered scatter: add each target's logs after the stages that fill them
+        for spec in team.scatter_specs(target, slots):
+            out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
+    for log in logs.values():       # an ordered gradient: fold each log after the stages that fill it
+        spec = team.fold_spec(log, Keyed(log.target, 1, log.kept))
+        out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
     return tuple(out)

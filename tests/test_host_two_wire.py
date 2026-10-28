@@ -181,5 +181,5 @@ def test_eagle_agrees_about_both_wires(built):
     eagle_result = eplan.plan(plugin, structure=eexec.HostTeam).run(**kw)
     eagle_q, eagle_w = eagle_result["out_q"], eagle_result["out_w"]
     hawk_q, hawk_w = O.run(bundle.directory, "two_wire", N, sidecar, **kw)
-    assert eagle_q.tobytes() == hawk_q.tobytes()
-    assert eagle_w.tobytes() == hawk_w.tobytes()
+    assert np.asarray(eagle_q).tobytes() == np.asarray(hawk_q).tobytes()
+    assert np.asarray(eagle_w).tobytes() == np.asarray(hawk_w).tobytes()

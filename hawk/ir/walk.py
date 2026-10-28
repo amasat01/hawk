@@ -595,7 +595,7 @@ def _rebuild_loop(loop: Loop, operands: Sequence[Node]) -> Loop:
     return build_loop(loop.index, loop.carries, operands[:loop.carry_count], nexts,
                       start=loop.start, stop=loop.stop, step=loop.step,
                       exit_cond=exit_cond, exit_values=exit_values, count=count,
-                      count_tail=loop.count_tail)
+                      count_tail=loop.count_tail, dynamic=loop.dynamic)
 
 
 def _rebuild(node: Node, operands: Sequence[Node]) -> Node:

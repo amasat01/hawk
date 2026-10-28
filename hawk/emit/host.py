@@ -1285,7 +1285,7 @@ class HostWrapper:
         (void)nSamples;"""
 
     def sample_sum_frame(self, width: int, elem: str, store: str,
-                         op: str = "sum") -> tuple:
+                         op: str = "sum", live: str | None = None) -> tuple:
         """The serial loop over the rows of 32 samples that START in
         ``[base, base + count)``, the last one cut at ``nSamples``: a row
         belongs to exactly one call however the team tiles the run. Each
@@ -1300,8 +1300,17 @@ class HostWrapper:
     for (std::int64_t hawk_i = hawk_lo; hawk_i < hawk_hi; ++hawk_i) {{
         {elem}* const {SAMPLE_SUM_TERMS} = hawk_ss_rows + (hawk_i & 31) * {width};
         const aether::SampleIndex i =
-            aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));"""
-        closed = f"""        if ((hawk_i & 31) == 31 || hawk_i + 1 == hawk_hi) {{
+            aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));""" + (
+            "" if live is None else f"""
+        if (hawk_i < static_cast<std::int64_t>({live})) {{""")
+        # a sample at or past the prefix count adds the identity (its row is still stored)
+        ident = "0" if op == "sum" else f"hawk_abi::ssIdentity_<{SAMPLE_SUM_OP_CODE[op]}, {elem}>()"
+        skip = "" if live is None else f"""
+        }} else {{
+            for (int hawk_k = 0; hawk_k < {width}; ++hawk_k) {SAMPLE_SUM_TERMS}[hawk_k] = {ident};
+        }}
+"""
+        closed = skip + f"""        if ((hawk_i & 31) == 31 || hawk_i + 1 == hawk_hi) {{
             hawk_row = hawk_i >> 5;
             hawk_abi::sampleSumRow_<{width}, {SAMPLE_SUM_OP_CODE[op]}>(hawk_ss_rows, hawk_ss_store);
         }}

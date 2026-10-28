@@ -111,7 +111,9 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then
             args+=(--str "manylinux_2_28 $(docker buildx imagetools inspect "quay.io/pypa/manylinux_2_28_$(uname -m)" --format '{{.Manifest.Digest}}' 2>/dev/null || true)")
           fi
-          echo "key=wheels-v1-$PLAT-$(hawk/.github/ci_digest.sh "${args[@]}")" >> "$GITHUB_OUTPUT"
+          digest=$(hawk/.github/ci_digest.sh "${args[@]}") || exit 1
+          [ -n "$digest" ] || { echo "::error::empty digest"; exit 1; }
+          echo "key=wheels-v2-$PLAT-$digest" >> "$GITHUB_OUTPUT"
       - id: wh
         uses: actions/cache@v6
         with:
@@ -561,7 +563,7 @@ jobs:
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
         run: |
           cd hawk
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]'
+          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
           python -m pip install --quiet -r docs/requirements.txt
           # the companion site's raptor-docs, not main's
           python -m pip install --quiet --force-reinstall --no-deps ../site

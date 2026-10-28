@@ -51,7 +51,7 @@ consumer:
   ``f64``), always ``int64`` for an ``i32``/``i64`` index leaf (HAWK's
   emitted entry spells every index integer ``Int`` regardless of declared
   width), ``int32``/``uint32`` for an integer plane (the reserved 4-byte
-  planes: ``active_map`` is ``int32``; the counters ``finished_count``,
+  planes: ``active_map`` is ``int32`` (``int64`` for a 64-bit lane set); the counters ``finished_count``,
   ``active_count`` and an ``auto`` dispatch's ``<group>_mix`` are
   ``uint32``), and ``bool`` for a ``Terminated`` mask.
 
@@ -124,7 +124,12 @@ def _mutables(walk) -> list:
     return out
 
 
-def _launch(lane_space, group: int, box=None, block: int | None = None) -> dict:
+#: The local memory one thread may hold, per CUDA (all targeted archs), in bytes.
+LOCAL_LIMIT_B = 512 * 1024
+
+
+def _launch(lane_space, group: int, box=None, block: int | None = None,
+            index_set: dict | None = None, local: tuple | None = None) -> dict:
     """The ``launch.lane_space`` block: the launch shape (row-major, the last axis
     fastest, only the first extent may be ``None``: known at run time) and the
     compaction ``group``, a lane count. With a thread ``box``
@@ -132,11 +137,24 @@ def _launch(lane_space, group: int, box=None, block: int | None = None) -> dict:
     launch of ``n`` lanes runs ``ceil(n / (T * stride)) * stride`` threads
     (:func:`hawk.emit.box.threads`), and ``base``/``count`` count threads.
     ``block`` is the exact threads per block an emit that fixed one (a staged
-    tile) needs; a launch uses it verbatim."""
+    tile) needs; a launch uses it verbatim. ``index_set`` is the record of a kernel
+    declaring ``lanes=IndexSet()``: ``launch.index_set`` = ``{"width": bits}`` (the map word, the host
+    bind's cue to range- and duplicate-check the caller's ``active_map``), or, for the prefix form
+    (``IndexSet(prefix=True)``), ``{"width": 32, "prefix": true, "count": "active_count"}``: no map, the
+    named one-element ``uint32`` plane holds how many leading lanes run. Absent for every other kernel.
+    ``local`` is ``(bytes, source)`` of a device unit: ``launch.local_bytes`` is the local memory one thread
+    holds (``source`` ``launch.local_source``: ``"ptxas"``, the stack frame of a CUBIN, or ``"ptx"``, the
+    depots the PTX declares, a ceiling), ``launch.local_limit`` the device's per-thread limit. A launch of
+    ``n`` threads needs about ``n * local_bytes`` of device memory beside the planes. No threads-per-block
+    cap follows from it (hawk emits no ``__launch_bounds__``)."""
     axes = [{"label": label, "extent": extent} for label, extent in lane_space]
     out = {"lane_space": {"axes": axes, "group": int(group)}}
     if box is not None:
         out["box"] = box.sidecar()
+    if index_set is not None:
+        out["index_set"] = dict(index_set)
+    if local is not None:
+        out["local_bytes"], out["local_source"], out["local_limit"] = int(local[0]), local[1], LOCAL_LIMIT_B
     if block is not None:
         if not isinstance(block, int) or isinstance(block, bool) or block < 1:
             raise ValueError(f"launch.block must be an integer >= 1, got {block!r}")
@@ -314,11 +332,12 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
                  exec_targets=ENTRY_KINDS, host_entry: str | None = None,
                  derivative: dict | None = None, lanes=None,
                  lane_space=((None, None),), group: int = 1, box=None, block: int | None = None,
+                 index_set: dict | None = None,
                  planes: dict | None = None, broadcast: dict | None = None,
                  dispatch_override=None, step_ops: int | None = None,
                  fp64_ops_ir: int | None = None,
                  entry_counts_finished: bool = False,
-                 ptxas: dict | None = None) -> dict:
+                 ptxas: dict | None = None, local: tuple | None = None) -> dict:
     """The full v2 sidecar for one kernel.
 
     ``buffers`` is emitted present-and-empty: a HAWK ``lookup`` plane's
@@ -413,7 +432,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         **({"fp64_ops_ir": fp64_ops_ir} if fp64_ops_ir is not None else {}),
         **({"entry_counts_finished": True} if entry_counts_finished else {}),
         **({"ptxas": ptxas} if ptxas else {}),
-        "launch": _launch(lane_space, group, box, block),
+
+        "launch": _launch(lane_space, group, box, block, index_set, local),
         **({"sorted_inputs": sorted_in} if sorted_in else {}),
         **({"plane_axes": axes} if axes else {}),
         "digest": walk.digest,

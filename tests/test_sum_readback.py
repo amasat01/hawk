@@ -203,11 +203,10 @@ def test_two_runs_are_identical(tmp_path, cache_dir):
 
 # -- refused by name --------------------------------------------------------
 
-def test_ordered_and_a_keyed_max_are_refused_by_name():
-    with pytest.raises(HawkError, match="policy='ordered' over some of the lane axes"):
-        @kernel
-        def ordered(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:
-            return x / hawk.sum(x, over="col", policy="ordered")
+def test_a_keyed_max_is_refused_by_name_and_an_ordered_sum_reads_back():
+    @kernel
+    def ordered(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:
+        return x / hawk.sum(x, over="col", policy="ordered")
     with pytest.raises(HawkError, match="a max over some of the lane axes"):
         @kernel
         def peak(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:

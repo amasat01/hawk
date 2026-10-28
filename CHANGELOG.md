@@ -2,7 +2,40 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
-## Unreleased
+## 0.7.2
+
+This section covers what changes from 0.7.1. Names that left are in the table at the end. hawk now asks for `aether-dsc>=0.7.2`.
+
+### Added
+
+**Rays.** `hawk.math.ray_tri(o, d, a, b, c)`, `ray_aabb(o, d, lo, hi)` and `ray_sphere(o, d, c, r)` return a width-4 vector, `[hit, t, u, v]` for a triangle, `[hit, t_enter, t_exit, 0]` for a box and `[hit, t0, t1, 0]` for a sphere. `hit` is 0 or 1 with a zero derivative; the other entries differentiate (`vjp`, `jvp`), with no term for a ray that just grazes an edge. Parallel rays, zero-area triangles and zero direction components give finite values and finite gradients. They run on the host, CUDA and the C target. `hawk.geometry.build_bvh(triangles)` builds a bounding-volume tree on the host and `hawk.geometry.closest_hit(...)` walks it inside a kernel. A new domain page, [line of sight](docs/content/vocabulary/24_line_of_sight.ipynb), shows eclipse shadows from a mesh in single precision. This release checks correctness; speed numbers come later.
+
+**Lane sets.** `Kind("screen", lanes=IndexSet())` runs the lanes in a map you bind (`active_map`, `active_count`): launch lane `t` runs lane `map[t]`. `hawk.lane_position()` is `t`. Keyed sums, `hawk.scatter`, `vjp` and `jvp` work under a map; a keyed sum is rounded in the order the lanes arrive, so it matches a dense launch to the ULP contract, not bit for bit. `IndexSet(width=64)` is for a dense extent past `2**31 - 1`; the bind refuses a map that is out of range or lists a lane twice, and names the first bad position. `IndexSet(prefix=True)` runs the first `count` lanes, with the count read from a one-element plane on every run, so one build serves any batch size up to its bound; sums, keyed sums and `vjp` cover the live lanes only and the rest are untouched.
+
+**Run-time trip counts.** `for k in range(n, max=K)` runs `n` iterations, held to `[0, K]`, and is never unrolled. Without `max=`, `jvp` works and `vjp` is refused by name.
+
+**Larger matrices.** `m.solve`, `m.lu`, `m.cholesky`, `m.eigh` and the others take matrices up to 4096 by 4096. Past 32 by 32 a team of threads works each lane's matrix in scratch eagle owns; below it the one-thread form is unchanged, bit for bit. `build_bundle(..., linalg_form=)` (the build option, not kernel code) overrides: `"auto"` (size decides), `"team"` (a team at every size) or `"thread"` (refuses above 32). `m.lstsq` with more than 32 unknowns uses Householder QR instead of the normal equations. A Gram product and `J^T r` summed over rows (`hawk.sum(hawk.outer(j, j), over=...)`) is recognised and built as one ordered block sum. A team operation inside a loop body or under a `launch.box` is refused by name.
+
+**Ordered sums where they were refused.** `policy="ordered"` now works for a sum over a kept axis (`hawk.sum(x, over=...)`), for the gradient of such a sum, and for `hawk.scatter(sink, policy="ordered")` with a scalar or vector payload, in a `for` and with several statements per plane. A scatter adds each key's lanes in fixed chunks of lane order, with no atomics: the same lane count and target size give the same bits on every launch and thread count, and a different size differs from `np.add.at` only in the last bits.
+
+**Shared helpers are plain functions.** A function you define yourself and call from a kernel with traced values gets the same control-flow treatment as the kernel body (`if`, `for`, `break`), once per function, and is inlined; derivatives go through its body. Library functions are never rewritten. `@hawk.primitive` is the top-level spelling of `hawk.ext.primitive` for a custom derivative rule: bare `@hawk.primitive` names it after the function, a primitive with no rules differentiates through its body, and running a notebook cell twice re-registers the same function without an error.
+
+**Complex pairs.** `hawk.math.cmul`, `conj`, `abs2` and `arg` work on a `Vector[2]` of (re, im), with derivatives, beside `eagle.fft`.
+
+**Local memory is checked.** A kernel whose per-thread local memory is past the device limit is refused at build by name, with the number and the way out. The sidecar records `launch.local_bytes`, `local_source` and `local_limit`, and the keyed record carries the payload shape.
+
+### Changed
+
+- With `policy="ordered"`, the skip key of a scatter is `-1` only. Any other negative key, or a key past the end, is an error reported by name; before, any negative key added nothing.
+- The host runtime refuses a plane name the kernel does not declare, as the device route always did. An example that over-binds now fails by name.
+- Generated code for kernels that use none of the above is unchanged.
+
+### Fixed
+
+- A float32 kernel that reads a plane at a loop-invariant row from inside a branch re-read it on every trip of the loop (slower than 0.7.0). Those reads are hoisted again, and a read that may be out of range stays guarded.
+- An ordered scatter with a key outside the target stays in bounds and says so by name, and its key log can no longer carry an aborted launch into the next run.
+
+## 0.7.1
 
 `hawk.math.pair_index()` gives a lane its pair `(i, j)`, `i < j`, for a launch over the N(N-1)/2 pairs of N items with no lane for `i >= j`: declare `Grid["pair"]`, pass `pair=N*(N-1)//2`, read items with `x.at(i)` / `x.at(j)`. Lane `k` is `k = j(j-1)/2 + i` (`j` slow, `i` fast), found from a float estimate corrected by one step each way, in 64-bit integers on the host, CUDA and C targets; it is exact for every `k < 2**31` in `float32` and every `k < 2**53` in `float64`. Per-pair outputs, a keyed `+=` row sum, an OR bit mask, `vjp` and `jvp` work on it as on any one-axis `Grid`.
 
@@ -28,13 +61,6 @@ instead of passing the branch difference along the taken path, and refuse what t
 (`step_vjp` and rollouts over launches, a nested `for`, a read across samples, a row keyed by a rounded
 differentiated value). Kernels whose switched value only reaches the outputs affinely are unchanged.
 
-The code is the same and the generated source is byte-identical; the names for how a target is
-written and wrapped are new. `hawk.emit` has a `Writer` (was `Dialect`: `render_body(..., writer=)`)
-and a `Wrapper` (was `Backend`), and `hawk.targets.TARGETS` is the one table of what `hawk.build(targets=...)`
-builds: `cuda`, `host` and `c` are rows in it, and the build, the package step and the compile drivers read
-the row instead of comparing a target's name. `hawk.emit.BACKENDS`, `hawk.compile.HOST` and `hawk.compile.DEVICE` are gone,
-`CompileOptions(backend=)` is `CompileOptions(target=)`, and the unit cache key changes once.
-
 A product past a fold of 16 or a result of more than 16 elements is written as a rolled loop (`aether::rt`) instead of an unrolled expression, so `A @ B`, `transpose(A) @ A` and `lstsq` build at `n` = 16, 24 and 32 (the unrolled text failed to compile there) and keep a few registers live. The values are the same bits as the unrolled form, on the host and on the device; a kernel whose products are all under the threshold generates the same text as before. The linear algebra calls pass the library the planes themselves and fill each factor in place: an `n = 32` double `solve` uses 32 registers and 8.8 KB of local memory per thread on sm_61 (it was 255 and 33 KB), `inv`, `cholesky` and `eigh` 30 to 48 registers.
 
 `hawk.math.mat` builds a matrix in a kernel from traced entries (`m.mat([[a, b], [c, d]])`), from row vectors (`m.mat([u, v])`) or from column vectors (`columns=True`); `A[i, j]` reads a matrix entry and `m.vec(u, v)` joins vectors. The matrix feeds `m.solve`, `m.cholesky` and `m.eigh`, its derivatives are exact, and a built matrix of more than 16 entries is written entry by entry (host, CUDA and the C target) rather than as one wide expression. A wide input plane a loop reads, or a static component of one, is read through its proxy rather than copied whole.
@@ -44,6 +70,15 @@ A product past a fold of 16 or a result of more than 16 elements is written as a
 A `Matrix` input given broadcast and read by a rolled product (`M @ v` with a fold past 16) is read through the caller's compact plane as it stands: no `n x n` copy per lane. At 20 x 20 in double on sm_61 the kernel went from 255 registers, 6520 B of stack and 4396 B of spill to 96 registers, 160 B of stack (the result vector) and no spill, 3.5x faster, with identical bits.
 
 `hawk.math.chol_from(L)` takes a lower triangular matrix you built (a square-root factor from your own formulas) as the Cholesky factor of `L L^T`, for `m.cho_solve`, with no factoring: `factor, info = m.chol_from(L)`. `info` is the first column whose diagonal entry is zero, negative, NaN or infinite, and a failed lane's solve is zeros. `vjp` and `jvp` are exact in `L` (its lower triangle) and in the right-hand side; a failed lane's derivatives are zero. It has a C helper (MISRA clean, same bits as the host build) and a device spelling that reads the plane through its proxy. `cho_solve` of a matrix you built still refuses by name, and now points to `chol_from`. New in `aether::linalg`: `choleskyFrom`.
+
+## 0.7.0
+
+The code is the same and the generated source is byte-identical; the names for how a target is
+written and wrapped are new. `hawk.emit` has a `Writer` (was `Dialect`: `render_body(..., writer=)`)
+and a `Wrapper` (was `Backend`), and `hawk.targets.TARGETS` is the one table of what `hawk.build(targets=...)`
+builds: `cuda`, `host` and `c` are rows in it, and the build, the package step and the compile drivers read
+the row instead of comparing a target's name. `hawk.emit.BACKENDS`, `hawk.compile.HOST` and `hawk.compile.DEVICE` are gone,
+`CompileOptions(backend=)` is `CompileOptions(target=)`, and the unit cache key changes once.
 
 ## 0.6.5 (2026-10-23)
 

@@ -21,7 +21,7 @@ import linecache
 import pytest
 from _eval import evaluate
 
-from hawk import Mutable, Param, Scalar, Value, Vector, kernel
+from hawk import Index, Mutable, Param, Scalar, Value, Vector, kernel
 from hawk.ir import HawkError, Select
 from hawk.math import norm, select
 
@@ -136,9 +136,11 @@ REFUSALS = [
     # every real kernel factory writes `range(rows)` with `rows` a local of the
     # function that builds the declaration. So the
     # refusal moved from "not a literal" to "not an int", asked of the VALUE at
-    # trace time; these three cases keep both halves of it under test.
+    # trace time; these three cases keep both halves of it under test. A run-time
+    # bound is allowed when it is an integer index (`range(n, max=K)`): a real
+    # `x` is still refused, and the allowed form is pinned below.
     ("runtime range bound", "    for i in range(x):\n        y = x\n",
-     "compile-time extent"),
+     "rank-0 integer index"),
     ("range over a tuple target",
      "    for i, j in range(3):\n        y = x\n", "single name"),
     ("range by keyword", "    for i in range(stop=3):\n        y = x\n",
@@ -158,6 +160,20 @@ def test_the_default_deny_surface_refuses_by_name_and_line(case):
     message = str(excinfo.value)
     assert needle in message, message
     assert "<authored>:" in message, f"a refusal must locate the line: {message}"
+
+
+def test_a_run_time_range_may_not_break_and_its_reverse_needs_max():
+    from hawk.diff import vjp
+
+    source = ("@kernel\ndef k(x: Scalar, n: Index, out: Mutable[Scalar]):\n"
+              "    s = x\n    for i in range(n, max=4):\n        s = s * x\n"
+              "        if s > 9.0:\n            break\n    out = s\n")
+    with pytest.raises(HawkError, match="cannot also `break`"):
+        _traced(source, Index=Index)
+    open_ = ("@kernel\ndef k(x: Scalar, n: Index, out: Mutable[Scalar]):\n"
+             "    s = x\n    for i in range(n):\n        s = s * x\n    out = s\n")
+    with pytest.raises(HawkError, match="give `max=` so the tape has a size"):
+        vjp(_traced(open_, Index=Index), wrt=("x",))
 
 
 def test_not_is_refused_with_its_own_line():

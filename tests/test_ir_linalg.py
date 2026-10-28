@@ -17,7 +17,7 @@ from hawk import runtime
 from hawk.ir import Const, Dispatch, HawkError, Leaf, Select, make
 from hawk.ir.cost import linalg_bytes
 from hawk.ir.cost import _op_count, _own_cost, _wide
-from hawk.ir.linalg import (CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, PROJECTIONS,
+from hawk.ir.linalg import (CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, PROJECTIONS, TEAM_MAX_DIM,
                             as_matrix, op_bytes, op_count, sweeps)
 from hawk.ir.ops import OP_KINDS
 from hawk.types import TensorType
@@ -38,7 +38,7 @@ def _rhs(n, k, dtype="f64"):
 def test_the_kinds_are_in_the_vocabulary():
     assert set(LINALG_OPS) <= set(OP_KINDS)
     assert LINALG_OPS == FACTORISATIONS + CONSUMERS + PROJECTIONS
-    assert FACTORISATIONS == ("lu", "chol", "eigh", "chol_from")
+    assert FACTORISATIONS == ("lu", "chol", "eigh", "chol_from", "qr")
 
 
 @pytest.mark.parametrize("kind,tag", [("lu", "lu_factor"), ("chol", "chol_factor"),
@@ -50,7 +50,7 @@ def test_a_factorisation_is_one_square_tagged_node(kind, tag, dtype):
 
 
 def test_the_consumers_and_projections_are_typed_off_the_factor():
-    lu, chol, eigh, _ = (make(k, (_mat(4),)) for k in FACTORISATIONS)
+    lu, chol, eigh, *_ = (make(k, (_mat(4),)) for k in FACTORISATIONS if k != "qr")
     assert make("lu_solve", (lu, _vec(4))).ttype == TensorType((4,), "f64")
     assert make("lu_solve", (lu, _rhs(4, 3))).ttype == TensorType((4, 3), "f64")
     assert make("cho_solve", (chol, _vec(4))).ttype == TensorType((4,), "f64")
@@ -92,11 +92,13 @@ def test_only_a_square_float_matrix_is_factored(bad):
 
 
 def test_the_dimension_is_static_and_at_most_the_limit():
-    assert MAX_DIM == 32
+    assert MAX_DIM == 32 and TEAM_MAX_DIM == 4096
     assert make("eigh", (_mat(1),)).ttype.shape == (1, 1)
     assert make("eigh", (_mat(32),)).ttype.shape == (32, 32)
-    with pytest.raises(HawkError, match=r"1 <= n <= 32, got n=33"):
-        make("chol", (_mat(33),))
+    assert make("chol", (_mat(33),)).ttype.shape == (33, 33)         # a team lowers it
+    assert make("chol", (_mat(4096),)).ttype.shape == (4096, 4096)
+    with pytest.raises(HawkError, match=r"1 <= n <= 4096, got n=4097"):
+        make("chol", (_mat(4097),))
 
 
 def test_a_solve_names_what_it_reads():
@@ -186,7 +188,7 @@ def test_the_derivative_solves_cost_their_triangular_halves(n, k):
 
 
 def test_determinant_is_n_multiplies_and_projections_are_free():
-    lu, chol, eigh, _ = (make(k, (_mat(6),)) for k in FACTORISATIONS)
+    lu, chol, eigh, *_ = (make(k, (_mat(6),)) for k in FACTORISATIONS if k != "qr")
     assert _count(make("lu_det", (lu,))) == 6
     for node in (make("lu_info", (lu,)), make("chol_info", (chol,)), make("chol_factor", (chol,)),
                  make("eigh_w", (eigh,)), make("eigh_v", (eigh,)), make("eigh_info", (eigh,))):
@@ -204,7 +206,7 @@ def test_cost_lands_in_the_arithmetic_class_of_the_working_width():
 
 @pytest.mark.parametrize("n,w,dtype", [(1, 8, "f64"), (5, 8, "f64"), (32, 4, "f32"), (7, 4, "f32")])
 def test_storage_bytes_per_kind(n, w, dtype):
-    lu, chol, eigh, _ = (make(k, (_mat(n, dtype),)) for k in FACTORISATIONS)
+    lu, chol, eigh, *_ = (make(k, (_mat(n, dtype),)) for k in FACTORISATIONS if k != "qr")
     assert op_bytes(lu) == n * n * w + 4 * n + 4
     assert op_bytes(chol) == n * n * w + 4
     assert op_bytes(eigh) == (2 * n * n + n) * w + 4
@@ -269,6 +271,7 @@ def test_select_and_dispatch_refuse_factorisation_arms(kind):
     with pytest.raises(HawkError, match="factorisations, which are read through"):
         Dispatch(index, (one, other), "switch", one.ttype)
     # the fields they read are values like any other
-    field = {"lu": "lu_det", "chol": "chol_info", "eigh": "eigh_info", "chol_from": "chol_info"}[kind]
+    field = {"lu": "lu_det", "chol": "chol_info", "eigh": "eigh_info", "chol_from": "chol_info",
+             "qr": "qr_info"}[kind]
     a, b = make(field, (one,)), make(field, (other,))
     assert make("select", (flag, a, b)).ttype == a.ttype

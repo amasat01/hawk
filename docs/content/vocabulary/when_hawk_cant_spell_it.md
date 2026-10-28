@@ -1,14 +1,38 @@
 # When hawk can't spell it
 
-Three ways to reach past hawk's own arithmetic, in the order to try them.
+Four ways to reach past hawk's own arithmetic, in the order to try them.
 
-## 1. A custom primitive (the common case)
+## 0. A plain function (try this first)
+
+Most of the time a shared piece of a kernel needs no hawk feature at all. Write it as an ordinary Python
+function and call it from the kernel with traced values:
+
+```python
+def soft_floor(x, lo):
+    r = x
+    if x < lo:
+        r = lo
+    return r
+
+@hawk.kernel
+def clipped(a: Scalar, b: Scalar, y: Mutable[Scalar]):
+    y = soft_floor(a, 0.0) + soft_floor(b, 1.0)
+```
+
+A function you define yourself gets the same treatment as the kernel body: `if`, `for` and `break` are traced, once
+per function, and the call is inlined. `vjp` and `jvp` go through its body, so it needs no rule. Library functions
+(hawk, installed packages, the standard library) are never rewritten. Reach for this before anything below, and
+factor repeated blocks of a kernel this way.
+
+## 1. A custom primitive
 
 If the function is a **composition of ops hawk already has** — `log`,
 `exp`, `norm`, `dot`, the arithmetic operators — and you know its
-derivative in closed form, [`hawk.ext.primitive`](03_your_own_derivative)
+derivative in closed form, `@hawk.primitive` ([`hawk.ext.primitive`](03_your_own_derivative))
 is the seam — the extension point where your own code plugs into hawk's:
-register the forward, supply `vjp=`/`jvp=`, done. The forward is inlined
+register the forward, supply `vjp=`/`jvp=`, done. Bare `@hawk.primitive` names it after the function; with no
+rules it differentiates through its own body, like a plain function; running a notebook cell twice registers the
+same function again without an error. The forward is inlined
 (no function call, no separate compiled translation unit), and the
 supplied rule replaces
 the table's for that subgraph. This covers almost everything a kernel

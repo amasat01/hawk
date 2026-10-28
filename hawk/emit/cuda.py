@@ -38,6 +38,9 @@ class CudaWrapper:
     #: Force-inlined: a real call would add an ABI-shim frame for nothing.
     qualifier = "__device__ __forceinline__"
 
+    #: Set: this wrapper writes a team stage's prologue (``index_prologue(team=...)``).
+    team_flat = True
+
     def entry_signature(self, walk: Walk, name: str) -> str:
         """The ``__global__`` entry: role args, then the int64 triple."""
         params = [f"    {_param_type(role, walk.slot_types[(role, name_)])} "
@@ -47,7 +50,8 @@ class CudaWrapper:
         return (f'extern "C" __global__ void {name}(\n' + ",\n".join(params) + ")")
 
     def index_prologue(self, segment: SegmentSpec | None = None, *,
-                       active: ActiveSpec | None = None, box=None) -> str:
+                       active: ActiveSpec | None = None, box=None,
+                       team: int | None = None) -> str:
         """THE one geometry seam: the only text in a HAWK artifact that
         may name a launch-geometry builtin.
 
@@ -56,12 +60,24 @@ class CudaWrapper:
         lane past the device-read run length rather than the launch's
         own cap; ``base`` is unused in that case. ``box``
         (:class:`hawk.emit.box.Box`) makes ``base + flat`` a thread and ends
-        at its first owned lane (:func:`hawk.emit.box.frame` binds ``i``)."""
+        at its first owned lane (:func:`hawk.emit.box.frame` binds ``i``). ``team`` (the
+        threads of the team, :mod:`hawk.emit.team`) makes the lane the BLOCK: ``flat`` is
+        ``blockIdx.x``, and a lane past ``count`` leaves with its whole block."""
         # The launch-geometry builtins are spelled ONCE in this file; the
         # segmented prologue is DERIVED from it by swapping the
         # own-column line, never by restating them.
         plain = """    const long long hawk_flat =
         static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (hawk_flat >= count) return;
+    {
+        const long long hawk_i = base + hawk_flat;
+        const aether::SampleIndex i =
+            aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));
+        (void)hawk_i;
+        (void)nSamples;"""
+        if team is not None:
+            plain = """    const long long hawk_flat =
+        static_cast<long long>(blockIdx.x);
     if (hawk_flat >= count) return;
     {
         const long long hawk_i = base + hawk_flat;
@@ -104,7 +120,7 @@ class CudaWrapper:
         return "    }"
 
     def sample_sum_frame(self, width: int, elem: str, store: str,
-                         op: str = "sum") -> tuple:
+                         op: str = "sum", live: str | None = None) -> tuple:
         """The index prologue with no early return: a lane past ``count``
         skips the body (``hawk_active``) but takes part in its warp's row
         sum with zero terms; a warp wholly past ``count`` exits together."""
@@ -115,7 +131,8 @@ class CudaWrapper:
             "    if ((hawk_flat & ~31LL) >= count) return;\n"
             f"    {elem} {SAMPLE_SUM_TERMS}[{width}] = {{}};\n"
             + sample_sum_fill(op, width, SAMPLE_SUM_TERMS, elem) +
-            "    const bool hawk_active = hawk_flat < count;\n"
+            (f"    const bool hawk_active = hawk_flat < count && base + hawk_flat < static_cast<long long>({live});\n"
+             if live is not None else "    const bool hawk_active = hawk_flat < count;\n") +
             "    if (hawk_active) {"))
         closed = ("    }\n"
                   "    const long long hawk_row = (base + hawk_flat) >> 5;\n"

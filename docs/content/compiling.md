@@ -22,6 +22,15 @@ A source this large is usually a wide kernel unrolled. Roll the loop, or read a 
 runtime index with [`hawk.math.index`](tutorials/06_lookups_scatters_and_sums), which keeps the
 source small and the gradient cheap.
 
+## Local memory
+
+A thread on the GPU can hold only so much local memory (spilled registers, arrays and matrices it indexes at run
+time): 512 KB. A kernel past that would fail at launch, so `hawk.build` refuses it by name, with the number and the
+way out: hold fewer live matrices per lane, build with `linalg_form="team"` (see
+[small linear algebra](linear_algebra)), or use a smaller `n`. The sidecar records the figure as
+`launch.local_bytes`, with `local_source` (how it was measured) and `local_limit`. A launch of `n` threads needs about
+`n * local_bytes` of device memory beside your planes, and eagle refuses a bind that cannot fit it.
+
 ```{toctree}
 :maxdepth: 1
 :hidden:

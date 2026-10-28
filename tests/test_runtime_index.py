@@ -11,6 +11,7 @@ import re
 
 import _spline_forms as S
 import numpy as np
+from conftest import declared
 import pytest
 from _eval import evaluate
 
@@ -121,7 +122,8 @@ def test_a_lane_hit_by_a_constant_and_a_runtime_index_sums_both(host):
     j = np.array([2, 2, 0, 1, 3, 2], dtype=np.int64)
     seed = rng.normal(size=n)
     bar = np.zeros((4, n))
-    hawk.run(host("double_hit_vjp", _double_hit, sinks), theta=theta, j=j, bar_y=seed, bar_theta=bar)
+    kernel = host("double_hit_vjp", _double_hit, sinks)
+    hawk.run(kernel, **declared(kernel, {"theta": theta, "j": j, "bar_y": seed}), bar_theta=bar)
     for s in range(n):
         want = evaluate(sinks, {"theta": theta[:, s], "j": int(j[s]), "bar_y": seed[s]})
         assert np.array_equal(bar[:, s], want["bar_theta"]), s

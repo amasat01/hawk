@@ -366,7 +366,10 @@ class _DispatchMixin:
         """Post-order over ``roots``' dependency subgraph, excluding
         whatever :meth:`_ref` can already resolve — an id already bound
         in the current :attr:`local`, or a position already in
-        :attr:`_outside`. What's left is this branch's exclusive work.
+        :attr:`_outside`. What's left is this branch's exclusive work. Inside a
+        loop body an outside position counts only once rendered: a guarded
+        plane read the loop did not hoist is also read after the loop, and its
+        first outside render may come after the loop, so the case renders it.
 
         A nested `switch` :class:`Dispatch` contributes only its own
         ``selector`` here; its ``branches`` stay unvisited, so the same
@@ -382,7 +385,8 @@ class _DispatchMixin:
             if id(n) in seen or id(n) in self.local:
                 continue
             p = self.position.get(id(n))
-            if p is not None and p in self._outside:
+            if p is not None and p in self._outside and (
+                    not self._scope_depth or p in self.rendered):
                 continue
             if not expanded:
                 stack.append((n, True))

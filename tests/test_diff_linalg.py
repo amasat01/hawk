@@ -396,7 +396,8 @@ def _plane(a):
 
 def _run(compiled, planes, outs):
     sink = {name: np.zeros(LANES if width == 1 else (width, LANES)) for name, width in outs.items()}
-    rt.run(compiled, **{k: _plane(v) for k, v in planes.items()}, **sink)
+    declared = {name for _, name in compiled.arg_spec}
+    rt.run(compiled, **{k: _plane(v) for k, v in planes.items() if k in declared}, **sink)
     return {name: plane.reshape(outs[name], LANES).T for name, plane in sink.items()}
 
 

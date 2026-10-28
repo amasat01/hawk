@@ -98,6 +98,62 @@ def keyed_size(sidecar: dict, spec: dict, n: int) -> int:
     return spec["width"] * prod(runtime if e is None else e for _a, e in spec["axes"])
 
 
+def key_count(sidecar: dict, spec: dict, n: int) -> int:
+    """The keys of a block sum over ``n`` lanes (``spec`` is a team stage's ``keyed``, or a team
+    plane's ``keys``): the kept lane axes' extents, a runtime axis as long as the lane axis allows."""
+    return keyed_size(sidecar, spec, n) // spec["width"]
+
+
+#: The most lane chunks an ordered ``hawk.scatter`` adds in (a chunk is one thread's run of lanes).
+SCATTER_CHUNKS = 256
+
+
+def scatter_chunks(n: int, targets: int) -> int:
+    """The chunks an ordered scatter of ``n`` lanes into ``targets`` cells adds in:
+    ``clamp(n // targets, 1, 256)``, so the partial sums (``chunks * targets`` cells) stay O(n)."""
+    return min(SCATTER_CHUNKS, max(1, n // max(targets, 1)))
+
+
+def target_size(arrays: dict, name: str) -> int:
+    """Elements of the bound plane ``name``, the cells an ordered scatter adds into."""
+    size = getattr(arrays[name], "size", None)
+    return int(size() if callable(size) else size)
+
+
+def team_grid(sidecar: dict, team: dict, n: int, arrays: dict) -> int:
+    """The blocks a team stage launches over ``n`` lanes: a lane (no ``grid``), a key of a block sum
+    (``"keys"``), a lane chunk (``"chunks"``) or a target cell (``"targets"``) of an ordered scatter
+    into the plane ``team["of"]``."""
+    kind = team.get("grid", "lanes")
+    if kind == "keys":
+        return key_count(sidecar, team["keyed"], n)
+    if kind == "chunks":
+        return scatter_chunks(n, target_size(arrays, team["of"]))
+    if kind == "targets":
+        return target_size(arrays, team["of"])
+    return n
+
+
+def team_units(sidecar: dict, spec: dict, n: int, arrays: dict) -> int:
+    """Elements of a team plane per ``per_lane``: lanes, keys, one (``once``), or (``per_target``: the
+    plane an ordered scatter adds into) ``chunks * targets`` cells."""
+    if spec.get("once"):
+        return 1
+    if "per_target" in spec:
+        size = target_size(arrays, spec["per_target"])
+        return scatter_chunks(n, size) * size
+    return n if "keys" not in spec else key_count(sidecar, spec["keys"], n)
+
+
+def check_scatter_status(kernel: str, team: dict, status, cells: int) -> None:
+    """Refuse, by name, a run whose ordered scatter into ``team["of"]`` met a key outside ``[0, cells)`` that
+    was not the skip key -1 (``status`` is the plane ``team["status"]`` after the run: flags from element 1)."""
+    if any(int(f) for f in status[1:]):
+        raise HawkError(
+            f"{kernel}: hawk.scatter({team['of']}, policy='ordered') got a key outside [0, {cells}) "
+            f"that is not the skip key -1; those adds were dropped, the rest are in {team['of']}")
+
+
 def check_total(sidecar: dict, n: int) -> None:
     """Refuse a flat lane count ``n`` that is not a whole number of rows of a
     ``Grid``'s static axes."""
@@ -112,10 +168,102 @@ def check_total(sidecar: dict, n: int) -> None:
                else f"({row * axes[0][1]} lanes)"))
 
 
+#: The largest dense extent a 32-bit map word can address.
+INT32_MAX = 2**31 - 1
+
+
+def index_width(extent: int, *, scalar_type: str = "float64", forced: int | str = "auto",
+                map_bits: int | None = None) -> int:
+    """The map word, 32 or 64 bits, of a lane set over ``extent`` dense lanes.
+
+    ``"auto"`` is 32 and promotes to 64 only past ``2**31 - 1`` lanes (a pair
+    grid of 65537 items); ``forced`` 32 or 64 is taken as given. ``map_bits``
+    is the width of the map the caller holds, when it holds one: a 64-bit map
+    over a 32-bit extent is refused rather than narrowed. A ``float32`` kernel
+    over a 64-bit extent is refused: its lane id cannot be held in a ``float``."""
+    if forced not in ("auto", 32, 64):
+        raise HawkError(f"IndexSet width is 'auto', 32 or 64, got {forced!r}")
+    wide = extent > INT32_MAX
+    if wide and scalar_type == "float32":
+        raise HawkError(
+            f"an index set over {extent} lanes needs 64-bit lane ids, which a float32 "
+            "kernel cannot hold (a pair kernel's ids are exact only below 2**31): "
+            "build the float64 unit")
+    if wide and forced == 32:
+        raise HawkError(f"IndexSet(width=32) cannot address {extent} lanes (more than "
+                        f"{INT32_MAX}); use width=64 or leave it 'auto'")
+    bits = 64 if wide or forced == 64 else 32
+    if map_bits == 64 and bits == 32:
+        raise HawkError(
+            f"the index map is int64, but the dense extent {extent} fits 32 bits: cast "
+            "the map to int32, or build the unit with IndexSet(width=64)")
+    return bits
+
+
+def check_index_set(sidecar: dict, arrays: dict, extent: int | None) -> None:
+    """The bind checks of a kernel that declares ``lanes=IndexSet()``: the map
+    holds ``active_count[0]`` lanes, each in ``[0, extent)`` and none twice, and
+    its word is the unit's. Refuses naming the FIRST offending position. A
+    kernel without a lane set is returned as it came."""
+    spec = (sidecar.get("launch") or {}).get("index_set")
+    lanes, live = arrays.get("active_map"), arrays.get(spec.get("count", "active_count") if spec else "active_count")
+    if spec is None or live is None or (lanes is None and not spec.get("prefix")):
+        return
+    where = f"kernel {sidecar.get('kernel', '?')!r}: the index set"
+    if spec.get("prefix"):
+        held = int(memoryview(live).cast("B").cast("I")[0])
+        if extent is not None and held > extent:
+            raise HawkError(f"{where}: {spec['count']} is {held}, but the kernel is bound at {extent} "
+                            "lanes; a count above the bound lane count needs a rebind")
+        return
+    mv, held = memoryview(lanes), int(memoryview(live).cast("B").cast("I")[0])
+    if mv.itemsize * 8 != spec["width"]:
+        raise HawkError(
+            f"{where} is a {spec['width']}-bit unit, but active_map holds "
+            f"{mv.itemsize * 8}-bit words: "
+            + ("cast the map to int32, or build the unit with IndexSet(width=64)"
+               if mv.itemsize == 8 else "pass an int64 map (the unit reads 64-bit words)"))
+    if extent is not None and extent > INT32_MAX and sidecar.get("scalar_type") == "float32":
+        index_width(extent, scalar_type="float32")
+    if held > mv.nbytes // mv.itemsize:
+        raise HawkError(f"{where}: active_count is {held}, but active_map holds only "
+                        f"{mv.nbytes // mv.itemsize} entries")
+    first: dict = {}
+    for position, lane in enumerate(mv.cast("B").cast(mv.format)[:held].tolist()):
+        if lane < 0 or (extent is not None and lane >= extent):
+            raise HawkError(f"{where}: active_map[{position}] = {lane} is outside the "
+                            f"dense lanes [0, {extent})")
+        if lane in first:
+            raise HawkError(f"{where}: active_map[{position}] = {lane} repeats "
+                            f"active_map[{first[lane]}]; each lane may be listed once")
+        first[lane] = position
+
+
+def _flat_extent(arg_spec, arrays: dict, per_sample_roles) -> int | None:
+    """The lane count a flat kernel's per-sample planes agree on, when one is bound."""
+    for role, name in arg_spec:
+        if role in per_sample_roles and role != "mat_in" and name in arrays:
+            try:
+                return int(memoryview(arrays[name]).shape[-1])
+            except TypeError:
+                return None
+    return None
+
+
 def bind(sidecar: dict, arg_spec, arrays: dict, n_samples, per_sample_roles) -> tuple:
     """``(arrays, n_samples)`` for a ``Grid`` kernel: the extent by label consumed,
     lane-shaped planes flattened, the total lane count settled. A kernel with no
-    ``Grid`` is returned as it came."""
+    ``Grid`` is returned as it came. A kernel declaring ``lanes=IndexSet()`` has its
+    map checked against the lane count (:func:`check_index_set`)."""
+    out, total = _bind_grid(sidecar, arg_spec, arrays, n_samples, per_sample_roles)
+    if (sidecar.get("launch") or {}).get("index_set") is not None:
+        check_index_set(sidecar, out, total if total is not None else n_samples
+                        if n_samples is not None
+                        else _flat_extent(arg_spec, out, per_sample_roles))
+    return out, total
+
+
+def _bind_grid(sidecar: dict, arg_spec, arrays: dict, n_samples, per_sample_roles) -> tuple:
     axes = lane_axes(sidecar)
     if axes is None:
         return arrays, n_samples
@@ -196,7 +344,7 @@ def bind(sidecar: dict, arg_spec, arrays: dict, n_samples, per_sample_roles) -> 
                             f"lane-shaped planes bound hold {total}")
         total = want
     elif total is None and not runtime:
-        total = prod(static)                          # every axis static: no extent to pass
+        total = prod(e for _a, e in axes)             # every axis static: no extent to pass
     elif total is None and not any(r in per_sample_roles and nm in out for r, nm in arg_spec):
         raise HawkError(
             f"{where} has a runtime first axis {first!r} and this launch binds no "

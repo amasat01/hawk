@@ -518,17 +518,23 @@ def test_refuses_an_unknown_policy():
             t = hawk.sum(x, policy="fast")
 
 
-def test_refuses_ordered_over_some_axes_naming_what_works():
-    with pytest.raises(HawkError, match=r"policy='ordered' over some of the lane axes is in "
-                                        r"the next release; use policy='auto' or 'compensated'"):
-        @kernel
-        def k(lane: Grid["a", "b":4], x: Scalar) -> Scalar:
-            return hawk.sum(x, over="b", policy="ordered")
-    with pytest.raises(HawkError, match=r"'ordered' on a scatter is in the next release; use "
-                                        r"policy='auto' or 'compensated'"):
-        @kernel
-        def k2(x: Scalar, key: Index, acc: Mutable[Scalar]):
-            hawk.scatter(acc, policy="ordered")[key] += x
+def test_ordered_over_some_axes_is_a_block_sum_and_an_ordered_scatter_is_a_keyed_add():
+    @kernel
+    def ok(lane: Grid["a", "b":4], x: Scalar) -> Scalar:
+        return hawk.sum(x, over="b", policy="ordered")
+
+    assert type(ok.sinks[0]).__name__ == "BlockSumWrite"
+
+    @kernel
+    def k2(x: Scalar, key: Index, acc: Mutable[Scalar]):
+        hawk.scatter(acc, policy="ordered")[key] += x
+
+    assert [(s.name, s.policy) for s in k2.sinks] == [("acc", "ordered")]
+    @kernel
+    def k3(x: Vector[3], key: Index, acc: Mutable[Vector[3], "bin":4]):
+        hawk.scatter(acc, policy="ordered")[key] += x
+
+    assert {s.policy for s in k3.sinks} == {"ordered"} and len(k3.sinks) == 3
 
 
 def test_refuses_a_policy_on_a_store():

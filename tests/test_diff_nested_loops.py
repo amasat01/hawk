@@ -14,6 +14,7 @@ reverse, ``jump=``."""
 from __future__ import annotations
 
 import numpy as np
+from conftest import declared
 import pytest
 from _eval import evaluate
 
@@ -302,11 +303,13 @@ def test_the_compiled_host_kernels_equal_the_twin(tmp_path_factory, cache_dir):
     x, g = rng.uniform(-0.6, 0.6, n), rng.uniform(0.4, 1.4, n)
     bar = rng.normal(size=n)
     bx, bg = np.zeros(n), np.zeros(n)
-    rt.run(rt.load(bundle.directory, "nested_rev", sidecar_of(bundle, "nested_rev")),
-           x=x, g=g, bar_out=bar, bar_x=bx, bar_g=bg, terminated=np.zeros(n, dtype=bool))
+    rev_run = rt.load(bundle.directory, "nested_rev", sidecar_of(bundle, "nested_rev"))
+    rt.run(rev_run, **declared(rev_run, {"x": x, "g": g, "bar_out": bar, "terminated": np.zeros(n, dtype=bool)}),
+           bar_x=bx, bar_g=bg)
     dx, dg, dout = rng.normal(size=n), rng.normal(size=n), np.zeros(n)
-    rt.run(rt.load(bundle.directory, "nested_fwd", sidecar_of(bundle, "nested_fwd")),
-           x=x, g=g, dot_x=dx, dot_g=dg, dot_out=dout, terminated=np.zeros(n, dtype=bool))
+    fwd_run = rt.load(bundle.directory, "nested_fwd", sidecar_of(bundle, "nested_fwd"))
+    rt.run(fwd_run, **declared(fwd_run, {"x": x, "g": g, "dot_x": dx, "dot_g": dg,
+                                         "terminated": np.zeros(n, dtype=bool)}), dot_out=dout)
     for s in range(n):
         env = {"x": x[s], "g": g[s], "terminated": False}
         want = evaluate(rev, {**env, "bar_out": bar[s]})

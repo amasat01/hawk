@@ -411,6 +411,45 @@ def test_a_lazy_ladder_stays_a_select():
     assert not _dk_ladder_lazy.walk.dispatches
 
 
+@hawk.kernel
+def _dk_ladder_rewritten(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+    v = 0.0
+    if k == 0:
+        v = M.exp(x) * M.exp(x) + M.exp(x)            # one value, written three times
+    elif k == 1:
+        v = x * 3.0
+    else:
+        v = x
+    y = v
+
+
+def test_a_scalar_chain_whose_arm_writes_a_costly_value_twice_is_a_switch():
+    text = _text(_dk_ladder_rewritten)
+    assert text.count("switch (") == 1
+    assert text.count("aether::math::exp(") == 1
+    assert text.index("aether::math::exp(") > text.index("case 0:")
+    assert text.index("aether::math::exp(") < text.index("case 1:")
+
+
+def test_a_scalar_chain_switch_keeps_its_value_and_its_derivatives():
+    from _eval import evaluate
+
+    from hawk.diff import jvp, vjp
+
+    h = 1e-6
+    for kind in range(3):
+        for x in (0.3, 0.7):
+            want = [np.exp(x) ** 2 + np.exp(x), 3.0 * x, x][kind]
+            assert evaluate(_dk_ladder_rewritten.sinks, {"k": kind, "x": x})["y"] == pytest.approx(
+                want, rel=1e-14)
+            slope = (evaluate(_dk_ladder_rewritten.sinks, {"k": kind, "x": x + h})["y"]
+                     - evaluate(_dk_ladder_rewritten.sinks, {"k": kind, "x": x - h})["y"]) / (2 * h)
+            rev = evaluate(vjp(_dk_ladder_rewritten.sinks), {"k": kind, "x": x, "bar_y": 1.0})["bar_x"]
+            assert rev == pytest.approx(slope, rel=1e-6)
+            fwd = evaluate(jvp(_dk_ladder_rewritten.sinks), {"k": kind, "x": x, "dot_x": 1.0})["dot_y"]
+            assert fwd == pytest.approx(slope, rel=1e-6)
+
+
 def _ladder_inputs(n: int):
     rng = np.random.default_rng(20261026)
     return rng.integers(0, 3, size=n).astype(np.int64), rng.uniform(0.05, 0.95, n)

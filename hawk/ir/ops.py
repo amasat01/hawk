@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..types import INT_PLANE_DTYPES, TensorType
-from . import linalg
+from . import linalg, rays
 from .nodes import QUAT_OPS, HawkError, Node, Op
 
 #: Rank-generic elementwise binaries (a rank-0 operand broadcasts).
@@ -51,6 +51,8 @@ MATRIX_OPS = ("mv", "mm", "transpose", "outer")
 #: Per-lane linear algebra (:mod:`hawk.ir.linalg`): a factorisation node, the
 #: solves against it and the reads of its fields.
 LINALG_OPS = linalg.LINALG_OPS
+#: Ray intersection (:mod:`hawk.ir.rays`): one node per primitive, a ``(4,)`` result.
+RAY_OPS = rays.RAY_OPS
 #: The language's stateless, counter-based draws: arity 2, ``(seed, counter)``,
 #: both rank-0 integer-typed, lowered to its uniform and normal generators
 #: with the kernel's
@@ -79,7 +81,7 @@ CAST_TARGETS = INT_PLANE_DTYPES + ("i32", "f64")
 #: Every op kind a traced body can mint (``at``/``select`` mint their own
 #: node subclasses but are KINDS here, since the rule table keys on kind).
 OP_KINDS = (ELEMENTWISE_BINARY + UNARY_MATH + COMPARE + LOGICAL + VECTOR_OPS
-            + MATRIX_OPS + LINALG_OPS + QUAT_OPS + RANDOM_OPS + ("select", "dispatch", "at")
+            + MATRIX_OPS + LINALG_OPS + RAY_OPS + QUAT_OPS + RANDOM_OPS + ("select", "dispatch", "at")
             + ELEMENTWISE_TERNARY + PREDICATE + INT_BINARY + INT_UNARY + CAST)
 
 _DTYPE_RANK = {"bool": 0, "i32": 1, "i64": 2, "f32": 3, "f64": 4}
@@ -134,6 +136,8 @@ def result_type(kind: str, operands: Sequence[Node],
         return _cast_type(ts[0], literal)
     if kind in LINALG_OPS:
         return linalg.result_type(kind, ts)
+    if kind in RAY_OPS:
+        return rays.result_type(kind, ts)
     if kind in INT_BINARY + INT_UNARY:
         _integer_operands(kind, ts)
     elif any(t.dtype in INT_PLANE_DTYPES for t in ts):
@@ -351,7 +355,7 @@ _ARITY = {"lnot": 1, "select": 3, "fma": 3, "clip": 3, "cast": 1, "invert": 1,
           "at": 2, "component": 1, "transpose": 1,
           "component_at": 2, "set_component_at": 3, "add_at": 3,
           "norm": 1, "sum": 1, "splat": 1, "quat_conj": 1, "quat_recip": 1,
-          "as_pure": 1, "as_vec3": 1, **linalg.ARITY}
+          "as_pure": 1, "as_vec3": 1, **linalg.ARITY, **rays.ARITY}
 
 
 def _arity(kind: str, n: int) -> None:

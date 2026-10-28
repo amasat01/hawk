@@ -323,6 +323,64 @@ def _eigh_v_jvp(n: Node, t: Tangent) -> Node | None:
     return _live(f, "eigh_info", dv, below=2)
 
 
+# --------------------------------------------------------------------------
+# QR least squares
+
+def _qr_solve_vjp(n: Node, g: Node) -> tuple:
+    f, r = n.operands
+    j = f.operands[0]
+    w = _o("qr_gram_solve", f, g)
+    jw = _times(j, w)
+    res = _o("sub", r, _times(j, n))
+    rbar = _live(f, "qr_info", jw)
+    return ((r, rbar), (f, _live(f, "qr_info", _o("sub", _outer(res, w), _outer(jw, n)))))
+
+
+def _qr_solve_jvp(n: Node, t: Tangent) -> Node | None:
+    """``dx = R^-1 R^-T (dJ^T res - J^T dJ x) + lstsq(J, dr)``: the first term by two triangular
+    solves on the forward factor's ``R``, the right-hand side's by the least-squares solve itself."""
+    f, r = n.operands
+    j = f.operands[0]
+    dj, dr = t(f), t(r)
+    out = None
+    if dj is not None:
+        res = _o("sub", r, _times(j, n))
+        rhs = _o("sub", _times(_t(dj), res), _times(_t(j), _times(dj, n)))
+        out = _o("qr_gram_solve", f, rhs)
+    if dr is not None:
+        step = _o("qr_solve", f, dr)
+        out = step if out is None else _o("add", out, step)
+    return None if out is None else _live(f, "qr_info", out)
+
+
+def _qr_gram_vjp(n: Node, g: Node) -> tuple:
+    """``X = G^-1 B`` with ``G = J^T J``: ``B_bar = G^-1 X_bar = W`` and ``J_bar = -J (W X^T + X W^T)``."""
+    f, b = n.operands
+    j = f.operands[0]
+    w = _o("qr_gram_solve", f, g)
+    cross = _outer(w, n)
+    return ((b, _live(f, "qr_info", w)),
+            (f, _live(f, "qr_info", _neg(_times(j, _o("add", cross, _t(cross)))))))
+
+
+def _qr_gram_jvp(n: Node, t: Tangent) -> Node | None:
+    """``dX = G^-1 (dB - dJ^T J X - J^T dJ X)``."""
+    f, b = n.operands
+    j = f.operands[0]
+    dj, db = t(f), t(b)
+    terms = []
+    if db is not None:
+        terms.append(db)
+    if dj is not None:
+        terms += [_neg(_times(_t(dj), _times(j, n))), _neg(_times(_t(j), _times(dj, n)))]
+    if not terms:
+        return None
+    rhs = terms[0]
+    for term in terms[1:]:
+        rhs = _o("add", rhs, term)
+    return _live(f, "qr_info", _o("qr_gram_solve", f, rhs))
+
+
 #: ``kind -> (vjp, jvp)``; the three ``*_info`` kinds are integer-typed and
 #: sit with the explicit zero rules in :mod:`hawk.diff.rules`.
 LINALG_RULES: dict[str, tuple[Callable, Callable]] = {
@@ -330,6 +388,9 @@ LINALG_RULES: dict[str, tuple[Callable, Callable]] = {
     "chol": (_carry_vjp, _carry_jvp),
     "chol_from": (_chol_from_vjp, _chol_from_jvp),
     "eigh": (_carry_vjp, _carry_jvp),
+    "qr": (_carry_vjp, _carry_jvp),
+    "qr_solve": (_qr_solve_vjp, _qr_solve_jvp),
+    "qr_gram_solve": (_qr_gram_vjp, _qr_gram_jvp),
     "lu_solve": (_lu_solve_vjp, _lu_solve_jvp),
     "lu_solve_t": (_lu_solve_t_vjp, _lu_solve_t_jvp),
     "lu_det": (_lu_det_vjp, _lu_det_jvp),

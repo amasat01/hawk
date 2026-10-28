@@ -65,4 +65,14 @@ vocabulary/12_monte_carlo_ensemble
 vocabulary/23_signal_processing
 ```
 
+## Geometry and visibility
+
+Rays against a mesh: eclipse shadows and satellite-to-satellite line of sight.
+
+```{toctree}
+:maxdepth: 1
+
+vocabulary/24_line_of_sight
+```
+
 eagle has short pages on how it launches and graphs the same kinds of case; they link back here for the domain.

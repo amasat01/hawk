@@ -115,7 +115,7 @@ def test_sink_policy_the_default_answer_is_wrong_for_the_compensated_kind(built)
     exact = float(N - 2)
 
     result = _run_host(built["scatter_c_plain"], "scatter_c", x=x, lane=lane)
-    acc, acc_c = result["acc"], result["acc_c"]
+    acc, acc_c = np.asarray(result["acc"]), np.asarray(result["acc_c"])
     assert acc[0] == 0.0 and acc_c[0] == 0.0, (
         "the DEFAULT commit must lose the small terms for this kind -- if it did "
         f"not, the seam would have nothing to fix (got {acc[0]}, {acc_c[0]})"
@@ -123,7 +123,7 @@ def test_sink_policy_the_default_answer_is_wrong_for_the_compensated_kind(built)
     assert acc[0] != exact
 
     result = _run_host(built["scatter_c_comp"], "scatter_c", x=x, lane=lane)
-    acc, acc_c = result["acc"], result["acc_c"]
+    acc, acc_c = np.asarray(result["acc"]), np.asarray(result["acc_c"])
     assert acc[0] + acc_c[0] == exact, (
         f"the compensated commit must recover the exact sum {exact}; got "
         f"{acc[0]} + {acc_c[0]}"
@@ -203,7 +203,7 @@ def test_sink_policy_a_multi_writer_scatter_commits_every_term_on_the_device_com
     plugin = L.device_plugin(bundle.directory, "scatter_c",
                              sidecar_of(bundle, "scatter_c"))
     result = eplan.plan(plugin, structure=eexec.DeviceKernel).run(x=x, lane=lane)
-    acc, acc_c = result["acc"], result["acc_c"]
+    acc, acc_c = np.asarray(result["acc"]), np.asarray(result["acc_c"])
     acc = np.asarray(acc.get() if hasattr(acc, "get") else acc)
     acc_c = np.asarray(acc_c.get() if hasattr(acc_c, "get") else acc_c)
     total = acc[:lanes] + acc_c[:lanes]
