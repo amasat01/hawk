@@ -275,7 +275,7 @@ _RUN_INCLUDE = "#include <aether/accum/run.h>\n"
 #: that calls it.
 _LINALG_CALL = "aether::linalg::"
 _LINALG_INCLUDE = "#include <aether/linalg/linalg.h>\n"
-_TEAM_INCLUDE = "#include <aether/linalg/team/team.h>\n"
+_TEAM_INCLUDE = "#include <aether/linalg/team.h>\n"
 
 #: The ray primitives' header, likewise.
 _RAY_CALL = "aether::geometry::"
