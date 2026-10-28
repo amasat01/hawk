@@ -430,5 +430,5 @@ def test_nan_and_inf_are_the_float_constants(tmp_path, monkeypatch):
     def miss(x: hawk.Scalar) -> hawk.Scalar:
         return M.where(x > 0.0, M.minimum(M.inf, x), M.nan)
 
-    got = miss(np.array([2.0, -1.0]))
+    got = np.asarray(miss(np.array([2.0, -1.0])))
     assert got[0] == 2.0 and np.isnan(got[1])

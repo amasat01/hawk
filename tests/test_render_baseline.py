@@ -10,6 +10,9 @@ modes, ``.c`` and ``.h``), for the kernel and its ``vjp`` and ``jvp``. The value
 were taken from the v0.7.0 tree before the change; the hawk version stamp in the C
 text is replaced by ``VERSION`` first. A deliberate change to the emitted text
 re-pins them in the same commit; an accidental one fails here.
+
+Re-pinned for 0.7.2: ``gather``, ``scatter`` and ``scatter_c`` read an ``Index`` plane, which binds
+``int32`` and is widened where the body reads it; no other kernel's text changed.
 """
 
 from __future__ import annotations
@@ -40,12 +43,12 @@ PINNED = {
     "drag": "3e75ec20e504e3a7a3608e54392815d83f7088949556da984c50a2d4de9c5a8c",
     "energy": "4b3ba2dc2c6781fc664ba2eb4cfdfb8ab21f31120ba77c66c296be0d0d041b2f",
     "fraction": "cb6e48abaec0f8d6fab4c956f0258db0e53eaea4910d614a3d0ba79610dbdd11",
-    "gather": "c4431ef79117cda7f7b7f7100d6a2fc15e4dd72092ad6e098dcae6d07a25f90a",
+    "gather": "9b491966f78841ed8683232585468f351adfb4eeccd1acc12f07d1d2961c6719",
     "mat_apply": "0a1e353c357258c49d7f55cb36153b9061b4baff13db92952b8db39dc499c009",
     "rotate_quat": "c660fe5309dce802136572e5b85217971eb9481e8244b0a73d96f69a4cdd2d6e",
     "scale": "6320908a72c41a0e5ca27e68dcb38dcd2794607099168e10162059ef25089af0",
-    "scatter": "8562be3b605b1d70d6f2cb8dabd25c8ab258adc9ff03b24f1ee2ea00237e71f2",
-    "scatter_c": "9946fd5ed17b1e7d3563fe4db2a9a022609a9a9220edd61b130ec7fe7192af48",
+    "scatter": "d182385cd8a35be4db6941c1e0570368c3ccb76b85c23f9d29b7f58d27d2fa6f",
+    "scatter_c": "fd8ff1fdec21b3596de808ff3f2c088e9a3d5c127f333d4384c318f8c667e6ba",
     "speed": "2f52cb7fd79d54f4db17c357278f2b099dd1cd3c219f19d44beb81a579f72e87",
     "spin": "5cfd6e47650778a097d0854031a7695ccf1132d984923c43006b5daed764165c",
     "two_fin": "1ee79388146d5d07543f08ff4b129156a73868db1f988e55267c9e9326654979",
