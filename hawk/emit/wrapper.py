@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 
 from ..ir import HawkError, Walk
-from ..ir.nodes import LanePosition, sample_sums
+from ..ir.nodes import sample_sums
 from ..types import Slot
 from .box import boxed_sinks, frame
 from .render import Body, render_body
@@ -109,8 +109,7 @@ def lane_loop_simd(wrapper, walk: Walk, active: ActiveSpec | None) -> bool:
     form: not behind a grouped map, whose positions are not contiguous."""
     simd_safe = getattr(wrapper, "simd_safe", None)
     return (simd_safe is not None and simd_safe(walk)
-            and not (active is not None and (active.group > 1 or any(
-                isinstance(n, LanePosition) for n in walk.order))))
+            and not (active is not None and (active.group > 1 or walk.reads_lane_position)))
 
 #: Roles a body WRITES through. Their view binds non-const: a ``const``
 #: ``View`` returns a read-only ``ConstSampleRef`` and cannot be assigned

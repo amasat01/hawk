@@ -36,6 +36,7 @@ from .nodes import (
     Dispatch,
     Finish,
     HawkError,
+    LanePosition,
     Leaf,
     Node,
     SampleSum,
@@ -105,6 +106,11 @@ class Walk:
         """The ``accum_out`` planes written one row per 32 samples
         (:class:`~hawk.ir.nodes.SampleSum`), in sink order."""
         return tuple(n.name for n in self.order if isinstance(n, SampleSum))
+
+    @property
+    def reads_lane_position(self) -> bool:
+        """``True`` when the body reads ``hawk.lane_position()`` (:class:`~hawk.ir.nodes.LanePosition`)."""
+        return any(isinstance(n, LanePosition) for n in self.order)
 
     @property
     def reduces(self) -> bool:

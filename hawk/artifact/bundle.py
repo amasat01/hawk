@@ -50,7 +50,7 @@ from ..emit.box import thread_box
 from ..emit.render import binding_name as _binding_name
 from ..emit.wrapper import ActiveSpec
 from ..ext import DEFAULT_KIND
-from ..ir import DispatchInfo, HawkError, LanePosition
+from ..ir import DispatchInfo, HawkError
 from ..ir.nodes import LEAF_ROLES
 from ..ir import canonical as _canonical
 from ..ir import split_segmented as _split_segmented
@@ -398,7 +398,7 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
     hook = getattr(kernel, "fused_body", None) if _native(targets) else None
     body = None if hook is None else hook(kind)
     segment = _segment_spec(kernel)
-    if segment is not None and any(isinstance(n, LanePosition) for n in kernel.walk.order):
+    if segment is not None and kernel.walk.reads_lane_position:
         raise HawkError(f"{name!r}: hawk.lane_position() is the launch slot, and a segmented "
                         "unit addresses its lanes through the run's offsets; use "
                         "sample_index() there")
