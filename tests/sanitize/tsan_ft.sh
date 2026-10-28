@@ -57,6 +57,14 @@ if [ -n "${AETHER_DIR:-}" ]; then
 else
     "$venv_py" -m pip install --quiet --only-binary=:all: "aether-dsc>=0.7,<0.8"
 fi
+# clang's -fopenmp calls LLVM's __kmpc_*: the runtime aether-dsc ships must be libomp, not libgomp, or eagle fails to import
+"$venv_py" - <<'EOF2'
+import aether_dsc
+omp = aether_dsc.openmp()
+assert omp is not None, "aether-dsc ships no OpenMP runtime"
+assert b"__kmpc_reduce_nowait" in omp.library.read_bytes(), (
+    f"RED: {omp.library} is not libomp: build aether-dsc with the same clang as eagle")
+EOF2
 if [ -n "${RAPTOR_DIR:-}" ]; then
     "$venv_py" -m pip install --quiet --no-deps "$RAPTOR_DIR"
 else
