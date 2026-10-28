@@ -2,7 +2,7 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
-## 0.7.2
+## 0.7.2 (2026-10-28)
 
 This section covers what changes from 0.7.1. Names that left are in the table at the end. hawk now asks for `aether-dsc>=0.7.2`.
 
