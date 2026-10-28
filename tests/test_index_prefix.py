@@ -133,7 +133,7 @@ def test_the_host_reads_the_count_each_run_from_one_loaded_kernel(built):
 def test_a_keyed_sum_adds_the_live_lanes_only(built, target):
     pre, _, name = built["bin"]
     rng = np.random.default_rng(4)
-    x, key = rng.normal(size=N), rng.integers(0, 6, N).astype(np.int64)
+    x, key = rng.normal(size=N), rng.integers(0, 6, N).astype(np.int32)
     for m in COUNTS:
         got = _go(pre, name, target, {"x": x, "key": key, "acc": np.zeros(6), "active_count": _count(m)}, ("acc",))["acc"]
         want = np.zeros(6)

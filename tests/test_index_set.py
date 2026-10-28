@@ -488,16 +488,16 @@ def _pattern_inputs(name, mode):
     rng = np.random.default_rng(11)
     n = 24
     if name == "padded":
-        return n, {"v": rng.uniform(1, 2, n).astype(mode), "slot": rng.integers(0, WIDTH, n)}, \
+        return n, {"v": rng.uniform(1, 2, n).astype(mode), "slot": rng.integers(0, WIDTH, n).astype(np.int32)}, \
             lambda i: {"row": np.zeros((WIDTH, n), mode)}
     table = rng.uniform(1, 2, 64).astype(mode)
     if name == "segment":
         kind = np.sort(rng.integers(0, 6, n))                      # lanes sorted by kind
         lo = np.cumsum(np.r_[0, rng.integers(0, KMAX + 3, 5)])[kind]
         hi = lo + np.minimum(rng.integers(0, KMAX + 3, 6), 7)[kind]
-        return n, {"lo": lo, "hi": hi, "t": table}, lambda i: {"y": np.zeros(n, mode)}
+        return n, {"lo": lo.astype(np.int32), "hi": hi.astype(np.int32), "t": table}, lambda i: {"y": np.zeros(n, mode)}
     order = rng.permutation(n)
-    return n, {"inv": np.argsort(order), "t": table}, lambda i: {"y": np.zeros(n, mode)}
+    return n, {"inv": np.argsort(order).astype(np.int32), "t": table}, lambda i: {"y": np.zeros(n, mode)}
 
 
 def _pattern_want(name, ins):

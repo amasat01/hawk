@@ -415,17 +415,18 @@ def test_eagle_reads_the_label_and_allocates_to_match(host_plans):
 # Zero cost for a float-only kernel.
 # --------------------------------------------------------------------------- #
 #: sha256 over every corpus kernel's emitted translation units (both backends,
-#: both scalar modes), taken before integer planes existed.
+#: both scalar modes), taken before integer planes existed; ``gather`` and ``scatter`` read an
+#: ``Index`` plane, re-taken when it moved to a 4-byte wire.
 FLOAT_ONLY_DIGESTS = {
     "as_body": "fabe9da159f0ff3e84534bd5e4f4e31fdfcc22138975fe51f0ff90d5a24e9aa8",
     "chain6": "8cc8a3e4e744156565c17777033e206c007e1df7bd6a0e51aafa08fddba77a77",
     "drag": "daee7a70d11748ebd82c1d03ffe2ab829a2bb507da18f8dceb01f3c256e8fc8c",
     "drag_vjp": "4ab402649410df495823357e4d01d248110fc24ee9b02d5691def5b8c44dcdd7",
     "energy": "e467c526d3c6f480348ce802997f6312b95bf0c85198942c54e8e47cad05f34c",
-    "gather": "d8c27845d56e55b55e9db4e4bb2bbc5df731d1362aa21116ab0585f3c1ab943e",
+    "gather": "589dd76e0bbb46c41076b86d3d133da99fd40127fe6b5a2ee25abcc3d8bc05b2",
     "rotate_quat": "fe1634aba3c69d61177c1b321c588a0972f4052c98667361321a88ac4072e63d",
     "scale": "1e37d343cea724f7480e82378d805e622336414a68250a6d2447db80ce367328",
-    "scatter": "f0cf891d96352f0ec012dc6ef5e3bb6e3648dbf22b9efeef434e47b764988bb0",
+    "scatter": "73e32eb3f0ed764c595787ca58278342ced41993a2f580cf6afe6aec2902e7fa",
     "spin": "1c0ccc4d2025307ab2d5c7a78f54295028d5d2ef277ba7c00816629d32ffce24",
 }
 

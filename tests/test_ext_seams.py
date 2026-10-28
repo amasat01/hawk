@@ -79,7 +79,7 @@ def _cancelling():
     """A sum whose exact value is ``N - 2`` and whose naive value is 0."""
     x = np.ones(N)
     x[0], x[-1] = 1e16, -1e16
-    return x, np.zeros(N, dtype=np.int64)
+    return x, np.zeros(N, dtype=np.int32)
 
 
 # --------------------------------------------------------------------------- #
@@ -171,7 +171,7 @@ def test_sink_policy_a_multi_writer_scatter_commits_every_term_on_the_device(bui
 
     n, lanes = 1 << 16, 8
     x = np.ones(n)
-    lane = (np.arange(n) % lanes).astype(np.int64)
+    lane = (np.arange(n) % lanes).astype(np.int32)
     bundle = built["scatter"]
     plugin = L.device_plugin(bundle.directory, "scatter", sidecar_of(bundle, "scatter"))
     got = eplan.plan(plugin, structure=eexec.DeviceKernel).run(x=x, lane=lane)
@@ -198,7 +198,7 @@ def test_sink_policy_a_multi_writer_scatter_commits_every_term_on_the_device_com
 
     n, lanes = 1 << 16, 8
     x = np.ones(n)
-    lane = (np.arange(n) % lanes).astype(np.int64)
+    lane = (np.arange(n) % lanes).astype(np.int32)
     bundle = built["scatter_c_comp"]
     plugin = L.device_plugin(bundle.directory, "scatter_c",
                              sidecar_of(bundle, "scatter_c"))

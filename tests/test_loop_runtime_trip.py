@@ -88,7 +88,7 @@ def test_the_jvp_of_a_loop_without_max_builds_and_matches_central_differences(tm
     bundle = build_bundle([powers_open, tangent], tmp_path, targets=("host",), cache_dir=cache_dir,
                           host_profile="native", derivative={"powers_jvp": "powers_open"})
     run = rt.load(bundle.directory, "powers_jvp", sidecar_of(bundle, "powers_jvp"))
-    counts = np.array([0, 3, 9, 40], dtype=np.int64)
+    counts = np.array([0, 3, 9, 40], dtype=np.int32)
     x, v = np.full(4, 0.7), np.ones(4)
     y, dot_y = np.zeros(4), np.zeros(4)
     rt.run(run, x=x, dot_x=v, n=counts, dot_y=dot_y)
@@ -169,7 +169,7 @@ def reverse_bundle(tmp_path_factory, cache_dir):
                         derivative={"powers_vjp": "powers"})
 
 
-COUNTS = np.array([0, 2, K, K + 3], dtype=np.int64)
+COUNTS = np.array([0, 2, K, K + 3], dtype=np.int32)
 
 
 def _want():

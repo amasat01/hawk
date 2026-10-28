@@ -10,8 +10,8 @@ run silently and return garbage or segfault (an out-of-bounds read) rather
 than refuse:
 
 1. an Index plane (``Table[...].at()``'s index, a scatter ``lane``) bound as a
-   type that is neither ``int64`` nor ``int32`` — HAWK spells every integer
-   element ``Int`` (``long long``); an ``int32`` column is widened at the bind;
+   type other than ``int32`` — an ``Index`` is a 4-byte plane, widened where the body reads
+   it; an ``int64`` column is converted when it fits and refused by name when it does not;
 2. a ``Terminated`` mask bound as ``int32`` — it must be ``bool``.
 
 Every row below runs the real, compiled, HAWK-emitted artifact (the
@@ -65,13 +65,12 @@ def test_table_at_index_bound_as_float_is_refused(built):
     table = np.arange(N, dtype=float) * 3.0
     where = ((np.arange(N) * 7 + 3) % N).astype(np.float32)
     y = np.zeros(N)
-    with pytest.raises(HawkError, match=r"'where'.*int64.*float32"):
+    with pytest.raises(HawkError, match=r"'where'.*int32.*float32"):
         rt.run(kernel, table=table, where=where, y=y, n_samples=N)
 
 
-def test_table_at_index_bound_as_int32_is_widened_and_matches(built):
-    """An int32 index column binds (the bind widens a copy of it): the same
-    answer as the int64 one."""
+def test_table_at_index_bound_as_int32_matches_the_reference(built):
+    """An int32 index column binds as it is: the answer is the numpy reference."""
     kernel = _gather(built)
     table = np.arange(N, dtype=float) * 3.0
     where = ((np.arange(N) * 7 + 3) % N).astype(np.int32)
@@ -80,20 +79,21 @@ def test_table_at_index_bound_as_int32_is_widened_and_matches(built):
     np.testing.assert_allclose(y, D.ref_gather(table, where))
 
 
-def test_table_at_index_bound_as_int64_passes(built):
-    """The SAME kernel, bound the way HAWK's own tests do (int64): runs and
-    matches the numpy reference."""
+def test_table_at_index_bound_as_int64_is_converted_when_it_fits(built):
     kernel = _gather(built)
     table = np.arange(N, dtype=float) * 3.0
     where = ((np.arange(N) * 7 + 3) % N).astype(np.int64)
     y = np.zeros(N)
     rt.run(kernel, table=table, where=where, y=y, n_samples=N)
     np.testing.assert_allclose(y, D.ref_gather(table, where))
+    where[2] = -(2**31) - 1
+    with pytest.raises(HawkError, match=r"'where': values exceed int32"):
+        rt.run(kernel, table=table, where=where, y=y, n_samples=N)
 
 
-def test_scatter_lane_bound_as_int32_matches_int64(built):
+def test_scatter_lane_bound_as_int32_matches_the_reference(built):
     """``scatter``'s ``lane`` (the ``hawk.scatter(acc)[lane]`` index) takes an
-    int32 column too — the same Index rule, a different kernel."""
+    int32 column — the same Index rule, a different kernel."""
     kernel = _scatter(built)
     x = np.arange(N, dtype=float) + 1.0
     lane = ((np.arange(N) * 7 + 3) % N).astype(np.int32)
@@ -102,8 +102,7 @@ def test_scatter_lane_bound_as_int32_matches_int64(built):
     np.testing.assert_allclose(acc, D.ref_scatter(x, lane, N))
 
 
-def test_scatter_lane_bound_as_int64_passes(built):
-    """Bound int64, ``scatter`` matches ``np.add.at``."""
+def test_scatter_lane_bound_as_int64_is_converted_when_it_fits(built):
     kernel = _scatter(built)
     x = np.arange(N, dtype=float) + 1.0
     lane = ((np.arange(N) * 7 + 3) % N).astype(np.int64)
@@ -158,7 +157,7 @@ def test_a_scattered_accum_out_plane_is_not_shape_checked(built):
     does not assume an own-column length for every ``accum_out`` plane."""
     kernel = _scatter(built)
     x = np.arange(N, dtype=float) + 1.0
-    lane = (np.arange(N) % (N // 2)).astype(np.int64)
+    lane = (np.arange(N) % (N // 2)).astype(np.int32)
     acc = np.zeros(N // 2)
     rt.run(kernel, x=x, lane=lane, acc=acc, n_samples=N)
     np.testing.assert_allclose(acc, D.ref_scatter(x, lane, N // 2))

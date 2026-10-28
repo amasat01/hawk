@@ -198,7 +198,7 @@ def test_switch_numeric_matches_numpy_on_the_host(tmp_path_factory, cache_dir):
     bundle = build_bundle([_dk_switch], root, targets=("host",), cache_dir=cache_dir)
     n = 64
     rng = np.random.default_rng(20260910)
-    kind = rng.integers(-2, 5, size=n).astype(np.int64)
+    kind = rng.integers(-2, 5, size=n).astype(np.int32)
     a = rng.standard_normal(n)
     x = rng.standard_normal(n)
     b = rng.standard_normal(n)
@@ -311,7 +311,7 @@ def test_a_switch_in_a_loop_body_matches_numpy_on_the_host(tmp_path_factory, cac
     bundle = build_bundle([_dk_switch_in_loop], root, targets=("host",), cache_dir=cache_dir)
     n = 48
     rng = np.random.default_rng(20261025)
-    kind = rng.integers(0, 3, size=n).astype(np.int64)
+    kind = rng.integers(0, 3, size=n).astype(np.int32)
     x = rng.uniform(0.1, 0.9, n)
     got = np.asarray(O.run(bundle.directory, "_dk_switch_in_loop", n,
                            sidecar_of(bundle, "_dk_switch_in_loop"),
@@ -452,7 +452,7 @@ def test_a_scalar_chain_switch_keeps_its_value_and_its_derivatives():
 
 def _ladder_inputs(n: int):
     rng = np.random.default_rng(20261026)
-    return rng.integers(0, 3, size=n).astype(np.int64), rng.uniform(0.05, 0.95, n)
+    return rng.integers(0, 3, size=n).astype(np.int32), rng.uniform(0.05, 0.95, n)
 
 
 def test_a_ladder_equals_its_explicit_dispatch_on_the_host(tmp_path_factory, cache_dir):

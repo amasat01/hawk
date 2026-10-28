@@ -264,6 +264,33 @@ def widen_index(names, arrays: dict) -> dict:
     return out
 
 
+def narrow_index(names, arrays: dict, kernel: str = "") -> dict:
+    """``arrays`` with each signed 64-bit integer array bound to an ``Index`` plane among ``names``
+    converted to ``int32`` (a copy), when every value fits ``[-2**31, 2**31 - 1]``; refused by name
+    when one does not. An ``int32`` array is untouched, so it binds zero-copy."""
+    out = arrays
+    for name in names:
+        value = arrays.get(name)
+        if value is None or isinstance(value, (bool, int, float, complex)):
+            continue
+        try:
+            mv = memoryview(value)
+        except TypeError:
+            continue
+        if mv.itemsize != 8 or _buffer_kind(mv)[0] != "i" or not mv.c_contiguous:
+            continue
+        flat = mv.cast("B").cast(mv.format)
+        lo, hi = (min(flat), max(flat)) if len(flat) else (0, 0)
+        if lo < -(2**31) or hi > 2**31 - 1:
+            where = f"kernel {kernel!r}: " if kernel else ""
+            raise HawkError(f"{where}argument {name!r}: values exceed int32; declare Index[int64]")
+        if out is arrays:
+            out = dict(arrays)
+        narrow = array.array("i", flat.tolist())
+        out[name] = memoryview(narrow).cast("B").cast("i", shape=mv.shape) if mv.ndim > 1 else narrow
+    return out
+
+
 def _check_sorted(name: str, value, n_samples: int, errors: list) -> None:
     """Under ``HAWK_CHECK_SORTED``: a ``Sorted[Index]`` input must not decrease
     along the first ``n_samples`` lanes."""

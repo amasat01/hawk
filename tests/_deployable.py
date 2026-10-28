@@ -277,13 +277,13 @@ def cases(n: int) -> list:
     # element `Int` (`long long`, hawk/emit/render.element_spelling), and eagle's
     # packer passes an integer array through AT ITS OWN dtype rather than
     # re-casting it -- so an int32 array would be decoded 8 bytes at a time.
-    where = ((np.arange(n) * 7 + 3) % n).astype(np.int64)
+    where = ((np.arange(n) * 7 + 3) % n).astype(np.int32)
     # a PERMUTATION of [0, n): the scatter targets a lane that is not the
     # sample's own column (so the class is cross_sample_write) while every lane
     # has exactly ONE writer -- a multi-writer scatter's DEVICE commit is the 
     # seam's `atomic` slot, which is named and not built (hawk/ext), and racing
     # a plain read-modify-write here would be measuring that gap, not the row.
-    lane = ((np.arange(n) * 7 + 3) % n).astype(np.int64)
+    lane = ((np.arange(n) * 7 + 3) % n).astype(np.int32)
     q, w = quat(n), np.linspace(0.5, 2.0, n)
     return [
         ("axpb", "axpb", {"x": xs, "a": 2.0, "b": -1.0}, ref_axpb(xs, 2.0, -1.0)),

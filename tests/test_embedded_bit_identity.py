@@ -255,8 +255,8 @@ gp = _gp()
 
 
 @hawk.kernel
-def index_arith(a: Index, b: Index, s: Mutable[Index], p: Mutable[Index],
-                ng: Mutable[Index]):
+def index_arith(a: Index[np.int64], b: Index[np.int64], s: Mutable[Index[np.int64]], p: Mutable[Index[np.int64]],
+                ng: Mutable[Index[np.int64]]):
     """Index ``+ - *`` and negation: infix in the C++ (signed overflow is
     undefined), ``hawk_i64_*`` in the C. Compared with the host only where the
     C++ is defined; pinned against NumPy at the overflow points."""
@@ -266,7 +266,7 @@ def index_arith(a: Index, b: Index, s: Mutable[Index], p: Mutable[Index],
 
 
 @hawk.kernel
-def index_div(a: Index, b: Index, q: Mutable[Index]):
+def index_div(a: Index[np.int64], b: Index[np.int64], q: Mutable[Index[np.int64]]):
     """Index true division: infix in the C++ (a zero divisor and ``MIN / -1``
     are undefined), ``hawk_i64_div`` in the C. Compared with the host only
     where the C++ is defined; the two undefined points are pinned C-only."""
@@ -274,8 +274,8 @@ def index_div(a: Index, b: Index, q: Mutable[Index]):
 
 
 @hawk.kernel
-def index_divshift(a: Index, b: Index, q: Mutable[Index], r: Mutable[Index],
-                   sh: Mutable[Index]):
+def index_divshift(a: Index[np.int64], b: Index[np.int64], q: Mutable[Index[np.int64]], r: Mutable[Index[np.int64]],
+                   sh: Mutable[Index[np.int64]]):
     """Index ``// %`` and the shifts: a wrapping helper on BOTH sides, so the
     host comparison takes the whole grid."""
     q = a // b
@@ -418,16 +418,17 @@ def _inputs(name: str, report: dict, n: int, mode: str, rng) -> dict:
             out[rname] = rng.uniform(-2.0, 2.0, n).astype(real)
         elif role == "accum_out":
             out[rname] = np.zeros(n, dtype=real)
-        elif dtype in ("int32", "uint32"):
+        elif dtype == "uint32" or (dtype == "int32" and name in EDGE_CASES):
             raise AssertionError(f"{name}: an integer plane takes its edge grid "
                                  "(EDGE_CASES), not a random draw")
-        elif dtype in ("i32", "i64"):
+        elif dtype in ("i32", "i64", "int32"):          # an Index plane: int32 on the wire, int64 when forced
+            wire = np.int32 if dtype == "int32" else np.int64
             if rname == "k" and name in _SELECTOR:
-                out[rname] = rng.integers(0, _SELECTOR[name], cells).astype(np.int64)
+                out[rname] = rng.integers(0, _SELECTOR[name], cells).astype(wire)
             elif rname == "lane":
-                out[rname] = rng.integers(0, n, cells).astype(np.int64)
+                out[rname] = rng.integers(0, n, cells).astype(wire)
             else:
-                out[rname] = rng.integers(-1000, 1000, cells).astype(np.int64)
+                out[rname] = rng.integers(-1000, 1000, cells).astype(wire)
         elif row["direction"] == "out":
             out[rname] = np.zeros(cells, dtype=real)
         else:

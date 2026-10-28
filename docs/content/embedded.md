@@ -184,7 +184,8 @@ its partial, so the caller zeroes the plane first, then reduces it.
 code; the caller zeroes it before the first call.
 
 **Types.** `hawk_real_t` is `double` or `float` by the scalar mode,
-`hawk_int_t` is `int64_t`. The three typedefs and the status enum sit behind
+`hawk_int_t` is `int64_t`; an `Index` input plane is an `int32_t*` (an `Index[int64]` one is `int64_t*`),
+widened where the body reads it. The three typedefs and the status enum sit behind
 `HAWK_EMBEDDED_TYPES`, so several hawk headers of one width coexist in a build;
 a header of another width fails with `#error`. The `.c` also checks the sizes
 with `_Static_assert`, but only under C11 (`__STDC_VERSION__ >= 201112L`):

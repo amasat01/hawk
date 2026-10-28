@@ -62,7 +62,7 @@ from pathlib import Path
 
 from . import _cells, _core, _lane_bind
 from ._cells import ROW
-from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, widen_index
+from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, narrow_index, widen_index
 from ._plane_layout import (
     LayoutChoice,
     _native_extent,
@@ -290,6 +290,8 @@ class HostKernel:
         arrays = self._one_step_word(arrays)
         if self._index_inputs:
             arrays = widen_index(self._index_inputs, arrays)
+        if self.sidecar.get("index_planes"):
+            arrays = narrow_index(self.sidecar["index_planes"], arrays, self.sidecar.get("kernel", ""))
         _check_bind(self.sidecar, self.arg_spec, arrays, n_samples, choice)
         self._values, self._buffers = [], []
         widths = self.sidecar.get("arg_shapes", {})

@@ -34,12 +34,15 @@ from . import astpass, helpers, reduce
 from .decl import Plane, resolve, role_of, spell
 from .lane_axes import LaneAxes, check_group, lane_space, tracing
 from .value import (
+    INDEX,
+    INDEX32,
     FinishRefusal,
     MutableRef,
     TableRef,
     TerminatedRef,
     Value,
     WideOutRef,
+    widened,
 )
 
 #: How an input plane's ROLE picks the leaf KIND it mints.
@@ -925,6 +928,8 @@ def _bind(name: str, plane: Plane | Quantity) -> Any:
         # one READ form for both roles: pins `lookup` and `wide_in` to the
         # same 32-byte ScalarHandle, so the access is the at(expr) either way.
         return TableRef(name, plane.ttype, role=role, dims=plane.dims)
+    if plane.ttype == INDEX and role == "per_sample":
+        return Value(widened(Leaf(_LEAF_KIND[role], role, name, INDEX32, sorted=plane.sorted)))
     return Value(Leaf(_LEAF_KIND[role], role, name, plane.ttype, sorted=plane.sorted))
 
 

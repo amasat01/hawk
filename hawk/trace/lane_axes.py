@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from ..ir import HawkError
 from ..ir import make as _make
 from ..ir.nodes import At, Leaf, RoleConst
-from .value import Value, index_node, sample_index
+from .value import Value, index_node, sample_index, widened
 
 
 def lane_space(planes: dict) -> tuple:
@@ -171,10 +171,15 @@ def read_at(value: Value, positional: tuple, named: dict) -> Value:
     lane index or by every Grid axis. Only a plane that existed before the launch
     can be read at another lane."""
     node = value.node
+    narrow = (node.kind == "cast" and isinstance(node.operands[0], Leaf)         # an Index plane, widened
+              and node.operands[0].ttype.dtype == "int32" and node.ttype.dtype == "i32")
+    if narrow:
+        node = node.operands[0]
     if not (isinstance(node, Leaf) and node.role in ("per_sample", "vec_in", "mat_in")
             and node.kind != "prior_read"):
         raise HawkError(
             "at() reads an input plane at another lane; a value computed in this "
             "launch has no other lane's value here — only a plane that existed before "
             "the launch can be read at another lane (stage it, or pass it as an input)")
-    return Value(At(node, _flat(node.name, _trace.axes, positional, named), node.ttype))
+    read = At(node, _flat(node.name, _trace.axes, positional, named), node.ttype)
+    return Value(widened(read) if narrow else read)

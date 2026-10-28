@@ -167,6 +167,12 @@ def _sorted_inputs(walk, planes) -> list:
     return [name for _role, name in walk.arg_spec if getattr(planes.get(name), "sorted", False)]
 
 
+def _index_planes(walk) -> list:
+    """The bound input planes declared ``Index`` (32-bit on the wire): a runtime may take a
+    wider integer array for one when every value fits ``int32``."""
+    return [name for role, name in walk.arg_spec if walk.slot_types[(role, name)].tag == "index"]
+
+
 def _plane_axes(walk, planes) -> dict:
     """``{name: {payload, axes}}`` for each bound sink declared with named axes:
     it is bound ``(*payload, *axes)``."""
@@ -360,7 +366,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     unit, written as ``launch.lane_space`` for every kernel (one unlabelled
     runtime axis and group 1 when none is declared). ``block`` is the threads
     per block of an emit that fixed one, written as ``launch.block``. ``planes`` are the kernel's
-    declarations: ``sorted_inputs`` names the bound ``Sorted[Index]`` inputs and
+    declarations: ``sorted_inputs`` names the bound ``Sorted[Index]`` inputs, ``index_planes`` the ``Index`` inputs
+    (32-bit on the wire; a wider integer array binds when every value fits) and
     ``plane_axes`` the sinks declared with named axes, each only when present.
 
     ``dispatch_override`` (the per-unit split) replaces ``walk.dispatches``
@@ -381,6 +388,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     reader of the artifact; nothing in the build acts on it."""
     planes = planes or {}
     sorted_in, axes = _sorted_inputs(walk, planes), _plane_axes(walk, planes)
+    index_in = _index_planes(walk)
     meta = {
         "format": fmt,
         "schema_version": _contracts.MAX_SCHEMA_VERSION,
@@ -435,6 +443,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
 
         "launch": _launch(lane_space, group, box, block, index_set, local),
         **({"sorted_inputs": sorted_in} if sorted_in else {}),
+        **({"index_planes": index_in} if index_in else {}),
         **({"plane_axes": axes} if axes else {}),
         "digest": walk.digest,
         "quantities": {p: list(span.wires) for p, span in walk.quantities.items()},

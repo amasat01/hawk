@@ -132,8 +132,8 @@ def _expected_dtype(ttype, scalar_type: str) -> str:
         return scalar_type
     if ttype.dtype in ("i32", "i64"):
         return "int64"
-    if ttype.dtype == "bool":
-        return "bool"
+    if ttype.dtype in ("int32", "uint32", "bool"):
+        return ttype.dtype
     raise AssertionError(f"no expected wire dtype for IR dtype {ttype.dtype!r}")
 
 
@@ -217,7 +217,7 @@ def test_an_integer_per_sample_plane_is_told_apart_from_a_real_one(built):
     ``tests/test_emit_role_mirror_map.py``'s ``_HANDLE_ALIASES`` documents as
     a real, then-unclosed gap in the field set."""
     sc = sidecar_of(built["gather"], "gather")
-    assert sc["arg_dtypes"]["where"] == "int64"
+    assert sc["arg_dtypes"]["where"] == "int32"
     assert sc["arg_dtypes"]["table"] == "float64"
 
 
@@ -299,7 +299,7 @@ def test_the_hawk_consumer_check_refuses_a_wrong_dtype_naming_the_slot(built):
     cannot be caught at bind."""
     sc = sidecar_of(built["gather"], "gather")
     arrays = {"y": np.zeros(N, dtype=np.float64),
-              "where": np.zeros(N, dtype=np.float64),   # wrong: declared int64
+              "where": np.zeros(N, dtype=np.float64),   # wrong: declared int32
               "table": np.arange(N, dtype=np.float64)}
     with pytest.raises(ValueError, match=r"per_sample 'where'"):
         L.check_declared_planes(sc, arrays, N)
@@ -311,7 +311,7 @@ def test_the_hawk_consumer_check_accepts_correctly_declared_planes(built):
     kernel's CORRECTLY bound planes pass clean."""
     sc = sidecar_of(built["gather"], "gather")
     arrays = {"y": np.zeros(N, dtype=np.float64),
-              "where": (np.arange(N) % N).astype(np.int64),
+              "where": (np.arange(N) % N).astype(np.int32),
               "table": np.arange(N, dtype=np.float64)}
     L.check_declared_planes(sc, arrays, N)  # must not raise
 

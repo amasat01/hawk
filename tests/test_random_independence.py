@@ -29,7 +29,7 @@ N = 1 << 21
 
 
 def _plane(n: int, value) -> np.ndarray:
-    return np.full(n, value, dtype=np.int64)
+    return np.full(n, value, dtype=np.int32)
 
 
 @hawk.kernel

@@ -26,6 +26,7 @@ This section covers what changes from 0.7.1. Names that left are in the table at
 
 ### Changed
 
+- `Index` planes bind as `int32`: the sidecar records `int32` and lists them in `index_planes`; an `int64` array whose values fit is converted, one that does not is refused by name. `Index[int64]` declares a 64-bit index plane. The C target takes an `Index` input as `int32_t*`.
 - With `policy="ordered"`, the skip key of a scatter is `-1` only. Any other negative key, or a key past the end, is an error reported by name; before, any negative key added nothing.
 - The host runtime refuses a plane name the kernel does not declare, as the device route always did. An example that over-binds now fails by name.
 - Generated code for kernels that use none of the above is unchanged.

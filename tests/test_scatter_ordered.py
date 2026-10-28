@@ -80,7 +80,7 @@ def _run(bundle, name, target, key, x, cells, acc0=None):
 
 def _case(n, cells, seed, heavy=False):
     rng = np.random.default_rng(seed)
-    key = rng.integers(0, cells, n).astype(np.int64)
+    key = rng.integers(0, cells, n).astype(np.int32)
     if heavy:
         key[rng.random(n) < 0.9] = cells // 2       # most lanes on one cell
     x = rng.normal(size=n) * np.exp(rng.normal(size=n))
@@ -289,7 +289,7 @@ def test_poisoned_partial_sums_do_not_change_the_result(bundles, target):
 def test_a_vector_payload_adds_each_component_into_its_own_plane_of_cells(more, target):
     n = 4000
     rng = np.random.default_rng(13)
-    key = rng.integers(0, 9, n).astype(np.int64)
+    key = rng.integers(0, 9, n).astype(np.int32)
     v = rng.normal(size=(3, n))
     planes = {"key": key, "v": np.ascontiguousarray(v), "acc": np.zeros(27)}
     got = _bits([_exec(more["add_vec"], "add_vec", target, planes) for _ in range(3)])
@@ -428,9 +428,9 @@ def test_a_key_out_of_range_stays_in_bounds_and_is_reported_by_name(bundles, tar
 def test_a_target_of_no_cells_reports_any_key_but_the_skip_key(bundles, target):
     n = 300
     x = np.ones(n)
-    _run(bundles["add"], "add", target, np.full(n, -1, np.int64), x, 0)       # all skipped: clean
-    key = np.full(n, -1, np.int64)
+    _run(bundles["add"], "add", target, np.full(n, -1, np.int32), x, 0)       # all skipped: clean
+    key = np.full(n, -1, np.int32)
     key[17] = 0
     with pytest.raises(HawkError, match=r"got a key outside \[0, 0\)"):
         _run(bundles["add"], "add", target, key, x, 0)
-    _run(bundles["add"], "add", target, np.full(n, -1, np.int64), x, 0)       # and the next run is clean
+    _run(bundles["add"], "add", target, np.full(n, -1, np.int32), x, 0)       # and the next run is clean

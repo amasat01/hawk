@@ -216,8 +216,8 @@ def _data(n, mode):
     rng = np.random.default_rng(n)
     return {"x": rng.uniform(-2, 2, n).astype(mode),
             "v": rng.uniform(-2, 2, (3, n)).astype(mode),
-            "i": rng.integers(0, n, n).astype(np.int64),
-            "lane": rng.integers(0, NB, n).astype(np.int64)}
+            "i": rng.integers(0, n, n).astype(np.int32),
+            "lane": rng.integers(0, NB, n).astype(np.int32)}
 
 
 def _empty(n, mode, **shapes):
@@ -294,7 +294,7 @@ def test_scatter_add_equals_add_at(built, target, n):
 def test_scatter_store_and_where(built, target, n):
     bundle, mode = built
     x = _data(n, mode)["x"]
-    perm = np.random.default_rng(5).permutation(n).astype(np.int64)
+    perm = np.random.default_rng(5).permutation(n).astype(np.int32)
     got, bound, planes = _run(bundle, "store", target, {"lane": perm, "x": x}, _empty(n, mode, buf=n))
     want = np.empty(n, mode)
     want[perm] = x
@@ -354,7 +354,7 @@ def test_fem_assembly_scatters_into_the_nodes(built, target):
     iteration of a ``for`` unrolled while the body is traced."""
     bundle, mode = built
     rng = np.random.default_rng(4)
-    conn = rng.integers(0, NN, (NE, 4)).astype(np.int64)
+    conn = rng.integers(0, NN, (NE, 4)).astype(np.int32)
     shape, wdet = rng.random((4, 4)).astype(mode), rng.random((NE, 4)).astype(mode)
     got, *_ = _run(bundle, "assemble", target,
                    {"conn": conn.ravel(), "shape": shape.ravel(), "wdet": wdet.ravel()},
@@ -735,7 +735,7 @@ def test_order_free_device_forms_are_bitwise_across_launches(built, name):
     bundle, mode = built
     n = 1000
     d = _data(n, mode)
-    perm = np.random.default_rng(5).permutation(n).astype(np.int64)
+    perm = np.random.default_rng(5).permutation(n).astype(np.int32)
     ins = {"gather": {"x": d["x"], "i": d["i"]}, "mstore": {"x": d["x"]},
            "store": {"lane": perm, "x": d["x"]}}[name]
     out = {"gather": "d", "mstore": "y", "store": "buf"}[name]

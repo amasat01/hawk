@@ -179,7 +179,7 @@ def host_plugin(bundle_dir, name, sidecar):
 #: ``hawk/artifact/sidecar.py``'s ``_wire_dtype`` writes, so this door and the
 #: sidecar cannot silently drift about what a string like ``"int64"`` means.
 _NUMPY_OF_WIRE = {"float64": "float64", "float32": "float32", "int64": "int64",
-                  "bool": "bool"}
+                  "int32": "int32", "uint32": "uint32", "bool": "bool"}
 
 
 def check_declared_planes(sidecar: dict, arrays: dict, n_samples: int) -> None:

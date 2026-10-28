@@ -205,7 +205,7 @@ def test_mvn_sample_is_the_mean_plus_the_cholesky_factor_times_the_draws(host):
     count = 20000
     cov = np.array([[2.0, 0.5, 0.2], [0.5, 1.0, 0.3], [0.2, 0.3, 1.5]])
     mean = np.array([1.0, -2.0, 0.5])
-    inputs = {"seed": np.full(count, 7, np.int64), "counter": np.zeros(count, np.int64),
+    inputs = {"seed": np.full(count, 7, np.int32), "counter": np.zeros(count, np.int32),
               "mu": np.tile(mean, (count, 1)), "S": np.tile(cov.ravel(), (count, 1))}
     sink = {"y": np.zeros((3, count))}
     rt.run(host(draw), **{k: _plane(v, count) for k, v in inputs.items()}, **sink)

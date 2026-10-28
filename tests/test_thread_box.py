@@ -67,7 +67,7 @@ def _run(bundle, target, rows, mode):
     n = rows * BATCH
     feat, th = _data(rows, mode)
     y = xp.full(n, np.nan, dtype=mode)
-    _launch(bundle, "kg_fwd", target, {"lane": xp.arange(n, dtype=np.int64),
+    _launch(bundle, "kg_fwd", target, {"lane": xp.arange(n, dtype=np.int32),
                                        "feat": xp.asarray(feat), "th": xp.asarray(th),
                                        "y": y}).launch()
     return np.asarray(y.get() if hasattr(y, "get") else y)
@@ -190,7 +190,7 @@ def test_hawk_run_counts_threads(host_pair):
     for tag, bundle in (("boxed", boxed), ("free", free)):
         art = hawk.load(bundle.directory, "kg_fwd")
         out[tag] = np.full(n, np.nan)
-        hawk.run(art, lane=np.arange(n, dtype=np.int64), feat=feat, th=th, y=out[tag])
+        hawk.run(art, lane=np.arange(n, dtype=np.int32), feat=feat, th=th, y=out[tag])
     assert np.array_equal(out["boxed"], out["free"])
 
 

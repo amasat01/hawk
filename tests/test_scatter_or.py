@@ -46,7 +46,7 @@ def mark_signed(word: Index, bit: Int32, mask: Mutable[Int32]):
 def _inputs(dtype):
     rng = np.random.default_rng(3)
     # most lanes hit word 0: the contended case; the rest spread over the others
-    word = np.where(rng.random(N) < 0.5, 0, rng.integers(0, WORDS, N)).astype(np.int64)
+    word = np.where(rng.random(N) < 0.5, 0, rng.integers(0, WORDS, N)).astype(np.int32)
     bit = (np.uint32(1) << (np.arange(N) % 32).astype(np.uint32)).astype(dtype)
     return word, bit
 

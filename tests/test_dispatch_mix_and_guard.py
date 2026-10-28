@@ -95,7 +95,7 @@ def _sidecar(bundle, name):
 
 
 def _inputs(rng):
-    k = rng.integers(-2, K + 2, N).astype(np.int64)          # out of range clamps
+    k = rng.integers(-2, K + 2, N).astype(np.int32)          # out of range clamps
     bs = rng.uniform(0.5, 2.0, (K, N))
     stopped = rng.random(N) < 0.2
     return k, bs, stopped
@@ -179,7 +179,7 @@ def test_a_stale_sort_is_guarded_and_a_switch_sweep_completes_it(built):
     # the sweep: the switch kernel over just the stale samples
     swept = y.copy()
     full = np.zeros(N)
-    hawk.run(hawk.load(built["local"].directory, "plain_switch"), k=k_now, bs=bs, y=full)
+    hawk.run(hawk.load(built["local"].directory, "plain_switch"), k=k_now.astype(np.int32), bs=bs, y=full)
     swept[stale] = full[stale]
     assert int(np.sum(swept != full)) == 0
 
@@ -195,7 +195,7 @@ def test_static_units_write_no_class_and_a_classify_kernel_does(built):
     assert [u.name for u in units][-1] == "mix_static__cls"
     assert all(u.walk.access.cls == "sample_local" for u in units[:K])
     rng = np.random.default_rng(5)
-    k = rng.integers(-2, K + 2, N).astype(np.int64)
+    k = rng.integers(-2, K + 2, N).astype(np.int32)
     cls = np.full(N, -1, dtype=np.int64)
     kern = O.load(static.directory, "mix_static__cls", _sidecar(static, "mix_static__cls"))
     O.run_kernel(kern, N, base=0, count=N, k=k, dispatch0_class=cls)
@@ -277,7 +277,7 @@ def _fused_run(bundle, target, words):
         plugin, structure = (L.device_plugin(bundle.directory, "walker", sidecar),
                              eexec.DeviceKernel)
     rng = np.random.default_rng(12)
-    k = rng.integers(0, K, N).astype(np.int64)
+    k = rng.integers(0, K, N).astype(np.int32)
     mix = xp.zeros(K, dtype=xp.uint32)
     word = xp.zeros(1, dtype=xp.int64)
     bound = eplan.plan(plugin, structure=structure).bind(
@@ -337,7 +337,7 @@ def test_auto_segmented_runs_unfused(tmp_path, cache_dir):
     assert {f"walker__k{j}" for j in range(K)} <= names
     rng = np.random.default_rng(13)
     counts = [17, 30, 14]
-    k = np.concatenate([np.full(c, j, dtype=np.int64) for j, c in enumerate(counts)])
+    k = np.concatenate([np.full(c, j, dtype=np.int32) for j, c in enumerate(counts)])
     offsets = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
     bs = rng.uniform(0.5, 1.0, (K, N))
     x_split, x_ref = np.zeros(N), np.zeros(N)
