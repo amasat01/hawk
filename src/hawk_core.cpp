@@ -57,12 +57,15 @@
 // `uint32_t` and the whole parameter block shifts. This is a BUILD dependency on
 // eagle, not a Python import, so the runtime severance is intact.
 
-#include <aether/typedefs.h>     // FIRST: defines AETHER_INDEX_T
+// Python.h (via nanobind) comes before every system header: it defines _POSIX_C_SOURCE and
+// _XOPEN_SOURCE, and a libc header seen first makes it redefine them.
+#include <nanobind/nanobind.h>
+
+#include <aether/typedefs.h>     // FIRST of the aether/eagle headers: defines AETHER_INDEX_T
 #include "plugin/gref_abi.h"     // SECOND: binds EAGLE_ABI_INDEX_T to it
 
 #include "hawk_build_digest.h"   // generated at configure
 
-#include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/map.h>
 #include <nanobind/stl/pair.h>

@@ -76,8 +76,10 @@ build-dir = "build/{wheel_tag}"
 wheel.packages = ["hawk"]
 cmake.version = ">=3.20"
 # Keep a dev build's in-tree extension out of the pure-python source collection;
-# the wheel's copy comes from the CMake install.
-sdist.exclude = ["**/*.so"]
+# the wheel's copy comes from the CMake install. .git_archival.txt stays out of the sdist: its
+# placeholders are only expanded by `git archive`, and unexpanded they make setuptools-scm warn
+# and ignore PKG-INFO's version.
+sdist.exclude = ["**/*.so", ".git_archival.txt"]
 # The header copy _build_backend.py makes; git-ignored, so listed.
 sdist.include = ["_sdist_include/**"]
 # LICENSE/NOTICE sit right next to this pyproject.toml (unlike eagle's, whose

@@ -135,17 +135,25 @@ jobs:
           restore-keys: |
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-cibw-
 
-      - name: Build wheels (cibuildwheel 3.x; CPython 3.9-3.14 plus free-threaded 3.13t/3.14t)
+      - name: Build wheels (cibuildwheel 3.x; CPython 3.9-3.14 plus free-threaded 3.14t)
         if: steps.wh.outputs.cache-hit != 'true'
         uses: pypa/cibuildwheel@v3.4.1
         with:
           package-dir: hawk
           output-dir: dist
         env:
-          # the 4.x line dropped the CPython 3.13 free-threading build, so this pass stays on 3.x,
-          # where cp313t needs this enable group
+          CIBW_BUILD: "cp39-${{ matrix.plat }} cp310-${{ matrix.plat }} cp311-${{ matrix.plat }} cp312-${{ matrix.plat }} cp313-${{ matrix.plat }} cp314-${{ matrix.plat }} cp314t-${{ matrix.plat }}"
+      # the 4.x line dropped the CPython 3.13 free-threading build, so cp313t stays on 3.x, where it needs
+      # the cpython-freethreading enable group (deprecated for later tags, and it warns); scoped to this one build
+      - name: Build the free-threaded CPython 3.13t wheel (cibuildwheel 3.x)
+        if: steps.wh.outputs.cache-hit != 'true'
+        uses: pypa/cibuildwheel@v3.4.1
+        with:
+          package-dir: hawk
+          output-dir: dist
+        env:
           CIBW_ENABLE: cpython-freethreading
-          CIBW_BUILD: "cp39-${{ matrix.plat }} cp310-${{ matrix.plat }} cp311-${{ matrix.plat }} cp312-${{ matrix.plat }} cp313-${{ matrix.plat }} cp314-${{ matrix.plat }} cp313t-${{ matrix.plat }} cp314t-${{ matrix.plat }}"
+          CIBW_BUILD: "cp313t-${{ matrix.plat }}"
       # 3.15 needs cibuildwheel 4.x: a second pass for the 3.15 tags only
       - name: Build the CPython 3.15 and 3.15t wheels (cibuildwheel 4.x)
         if: steps.wh.outputs.cache-hit != 'true'
@@ -371,6 +379,8 @@ jobs:
         os: [ubuntu-24.04-arm, macos-14]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15", "3.13t", "3.14t", "3.15t"]
     env:
+      # the runner's bundled pip (22.x on 3.9) nags about a newer release on every call
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
       # macOS: Homebrew's LLVM clang (C++23-complete); Apple's clang 15 rejects -std=c++23 (Apple clang support: a later release)
       HAWK_CXX: ${{ matrix.os == 'macos-14' && '/opt/homebrew/opt/llvm/bin/clang++' || 'g++-13' }}
     steps:
