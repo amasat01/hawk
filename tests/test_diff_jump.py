@@ -260,6 +260,13 @@ def kan_flips(x, theta, g, h=0.02):
 # --------------------------------------------------------------------------- #
 # -- the host route
 # --------------------------------------------------------------------------- #
+def _declared(kernel, arrays: dict) -> dict:
+    """``arrays`` cut to the planes ``kernel`` declares: a derivative binds what its body reads (a
+    primal input it does not read is no slot of it), and a run refuses a name that is none."""
+    names = {n for _, n in kernel.arg_spec}
+    return {k: v for k, v in arrays.items() if k in names}
+
+
 @pytest.fixture(scope="module")
 def rig(tmp_path_factory, cache_dir):
     root = tmp_path_factory.mktemp("jump")
@@ -283,7 +290,9 @@ def rig(tmp_path_factory, cache_dir):
         bars = {f"bar_{w}": np.zeros(n) for w in wrt}
         arrs = {k: (float(v) if np.ndim(v) == 0 else np.asarray(v, dtype=float))
                 for k, v in inputs.items()}
-        hawk.run(hawk.load(d, "g"), **seeds, **bars, **arrs)
+        kernel = hawk.load(d, "g")
+        arrs = _declared(kernel, arrs)
+        hawk.run(kernel, **seeds, **bars, **arrs)
         return {w: bars[f"bar_{w}"] for w in wrt}
 
     def tangent(primal, wrt, dots, out, **inputs):
@@ -294,7 +303,8 @@ def rig(tmp_path_factory, cache_dir):
                 for k, v in inputs.items()}
         tans = {f"dot_{k}": (float(v) if np.ndim(v) == 0 else np.asarray(v, dtype=float))
                 for k, v in dots.items()}
-        hawk.run(hawk.load(d, "g"), **tans, **res, **arrs)
+        kernel = hawk.load(d, "g")
+        hawk.run(kernel, **tans, **res, **_declared(kernel, arrs))
         return {o: res[f"dot_{o}"] for o in out}
 
     def sidecar(primal, direction, wrt):

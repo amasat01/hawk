@@ -242,17 +242,15 @@ def test_the_invariance_comparison_can_fail(built, tmp_path, cache_dir):
     kw = {"x": D.plane(N, w=1)[0]}
     whole = eplan.plan(plugin, structure=eexec.HostTeam, npartitions=1).run(**kw)
     split = eplan.plan(plugin, structure=eexec.HostTeam, npartitions=K).run(**kw)
-    assert whole.tobytes() != split.tobytes(), (
+    assert np.asarray(whole).tobytes() != np.asarray(split).tobytes(), (
         "the planted body — which divides by the partition's own count — came out "
         f"bit-identical whole and over {K} partitions; the invariance comparison "
         "above cannot detect the defect it exists for"
     )
     # ... and the un-planted artifact, through the identical comparison, agrees:
     real = L.host_plugin(built["fraction"].directory, "fraction", sidecar)
-    assert (eplan.plan(real, structure=eexec.HostTeam, npartitions=1).run(**kw)
-            .tobytes()
-            == eplan.plan(real, structure=eexec.HostTeam, npartitions=K).run(**kw)
-            .tobytes())
+    assert (np.asarray(eplan.plan(real, structure=eexec.HostTeam, npartitions=1).run(**kw)).tobytes()
+            == np.asarray(eplan.plan(real, structure=eexec.HostTeam, npartitions=K).run(**kw)).tobytes())
 
 
 def test_every_access_class_the_contract_names_is_covered_by_a_fixture(built):
@@ -279,6 +277,6 @@ def test_the_serial_oracle_is_the_invariant_arm(built):
     for npartitions in (1, 2, K, N):
         got = eplan.plan(plugin, structure=eexec.HostTeam,
                          npartitions=npartitions).run(**kw)
-        assert got.tobytes() == oracle.tobytes(), (
+        assert np.asarray(got).tobytes() == np.asarray(oracle).tobytes(), (
             f"HostTeam({npartitions}) differs from the serial oracle"
         )

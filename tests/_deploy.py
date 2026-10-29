@@ -119,11 +119,40 @@ def _check_tag(tag: str, subject) -> None:
         )
 
 
+class _EagleModule:
+    """The module eagle loaded for ``loaded`` (its handle, an int), with the two lookups the tests make:
+    a function's driver handle (``.kernel.ptr``) and a device global as a cupy memory pointer."""
+
+    def __init__(self, loaded):
+        loaded.function(loaded.device_id)               # loads the module on first use
+        self.handle = loaded._modules[loaded.device_id]
+
+    def get_function(self, name):
+        from cupy.cuda import driver
+        from types import SimpleNamespace
+
+        return SimpleNamespace(kernel=SimpleNamespace(ptr=driver.moduleGetFunction(self.handle, name)))
+
+    def get_global(self, name):
+        import cupy as cp
+        from cupy.cuda import driver
+
+        ptr = driver.moduleGetGlobal(self.handle, name)           # the global's address; the callers' globals are 16 bytes
+        return cp.cuda.MemoryPointer(cp.cuda.UnownedMemory(ptr, 16, self), 0)
+
+
+def module_of(loaded):
+    """:class:`_EagleModule` of an eagle ``LoadedPure`` (its own module, so a device global is the one its launches use)."""
+    return _EagleModule(loaded)
+
+
 def device_plugin(bundle_dir, name, sidecar):
     """The plan-able view of a bundle's DEVICE entry, self-checked."""
     reg = load_bundle(bundle_dir)
     loaded = reg[name]
-    device_selfcheck(loaded.module)
+    # eagle loads the module through its own seam; the self-check reads the globals off a cupy load of the same image
+    import cupy as cp
+    device_selfcheck(cp.RawModule(path=loaded.image_path))
     view = plan_view(sidecar)
     view.pop("host_entry", None)
     return SimpleNamespace(device_function=loaded.fn.kernel.ptr,
@@ -150,7 +179,7 @@ def host_plugin(bundle_dir, name, sidecar):
 #: ``hawk/artifact/sidecar.py``'s ``_wire_dtype`` writes, so this door and the
 #: sidecar cannot silently drift about what a string like ``"int64"`` means.
 _NUMPY_OF_WIRE = {"float64": "float64", "float32": "float32", "int64": "int64",
-                  "bool": "bool"}
+                  "int32": "int32", "uint32": "uint32", "bool": "bool"}
 
 
 def check_declared_planes(sidecar: dict, arrays: dict, n_samples: int) -> None:

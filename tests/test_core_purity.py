@@ -229,6 +229,12 @@ def _excise(path: Path, text: str) -> tuple:
         text = text.replace(span, "<index_prologue excised>"
                             + "\n" * span.count("\n"))
         removed.append(span)
+        if getattr(TARGETS[path.stem].wrapper, "team_flat", None):
+            # the team stage's prologue is the same seam: one block per lane
+            span = TARGETS[path.stem].wrapper.index_prologue(team=1)
+            assert span and span in text, f"{path}: the team prologue string is not present verbatim"
+            text = text.replace(span, "<team index_prologue excised>" + "\n" * span.count("\n"))
+            removed.append(span)
     if path.name == "spelling.py" and path.parent.name == "emit":
         tree = ast.parse(text, filename=str(path))
         for node in tree.body:

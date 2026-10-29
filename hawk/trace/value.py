@@ -28,6 +28,7 @@ from ..ir.nodes import (
     Finish,
     ReduceSamples,
     RoleConst,
+    LanePosition,
     SampleIndex,
     WideWrite,
 )
@@ -36,6 +37,10 @@ from ..types import INT_PLANE_DTYPES, TensorType
 _F64 = TensorType((), "f64")
 _BOOL = TensorType((), "bool")
 _I32 = TensorType((), "i32")
+INDEX = _I32
+INT32 = TensorType((), "int32")
+#: the stored type of an ``Index`` plane: the tag marks it for the sidecar
+INDEX32 = TensorType((), "int32", "index")
 
 
 def node_of(x: Any) -> Node:
@@ -657,6 +662,16 @@ def sample_index() -> Value:
     return Value(SampleIndex())
 
 
+def lane_position() -> Value:
+    """This lane's position ``t`` in the launch, as a value: ``base + flat``.
+
+    Equal to :func:`sample_index` in a plain launch. Under a lane set
+    (``Kind(..., lanes=IndexSet())``) :func:`sample_index` is the lane the map
+    names, ``map[t]``, and this is ``t`` itself, the slot a compacted output
+    ``out[lane_position()]`` is written at."""
+    return Value(LanePosition())
+
+
 def _random(kind: str, seed: Any, counter: Any) -> Value:
     """The shared body of :func:`random_uniform`/:func:`random_normal`.
 
@@ -686,6 +701,11 @@ def random_normal(seed: Any, counter: Any) -> Value:
     return _random("random_normal", seed, counter)
 
 
+def widened(node: Node) -> Node:
+    """``node``, an ``int32`` read of an ``Index`` plane, as the 64-bit index the body computes in."""
+    return _make("cast", (node,), "i32")
+
+
 class TableRef:
     """A ``Table``/``Staged``/``Wide`` parameter: read with ``at()``.
 
@@ -695,18 +715,21 @@ class TableRef:
     as a :class:`~hawk.ir.nodes.RoleConst` carrying its axis — recoverable as
     the declaration's, unlike the flat form."""
 
-    __slots__ = ("leaf", "name", "dims")
+    __slots__ = ("leaf", "name", "dims", "widen")
 
     def __init__(self, name: str, ttype: TensorType, *, role: str = "lookup",
                  dims: Any = ()) -> None:
         kind = "table_read" if role == "lookup" else "vocab_read"
-        self.leaf = Leaf(kind, role, name, ttype)
+        #: an ``Index`` payload is stored 32-bit and widened at the read
+        self.widen = ttype == INDEX
+        self.leaf = Leaf(kind, role, name, INDEX32 if self.widen else ttype)
         self.name = name
         self.dims = tuple(dims)
 
     def at(self, *positional: Any, **named: Any) -> Value:
         """The ``at(expr)``: an absolute-index read of this plane."""
-        return Value(At(self.leaf, self._index(positional, named), self.leaf.ttype))
+        read = At(self.leaf, self._index(positional, named), self.leaf.ttype)
+        return Value(widened(read) if self.widen else read)
 
     def __getitem__(self, i: Any) -> Value:
         """``t[i]``: the flat read, the same as ``t.at(i)``; ``t[e, a]``: one
@@ -1016,9 +1039,7 @@ class MutableRef(_SinkRef):
             extent = 1
             for _label, size in kept:
                 extent *= size
-            node = ReduceSamples("sum", node.operands[0], key=node.key,
-                                 count=Const(extent, node.key.ttype), policy=node.policy,
-                                 kept=node.kept)
+            node = node.recount(Const(extent, node.key.ttype))
         self.sinks = list(node.stored(self.name))
         self.by_key_kind = "accum"
 

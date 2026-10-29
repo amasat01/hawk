@@ -25,6 +25,7 @@ primals -- is ``test_diff_terminated.py``.
 from __future__ import annotations
 
 import numpy as np
+from conftest import declared
 import pytest
 
 import hawk
@@ -123,8 +124,8 @@ def derive(tmp_path_factory, cache_dir):
                 for k, v in inputs.items()}
         n = len(next(iter(arrs.values())))
         bars = {f"bar_{w}": np.zeros(n) for w in wrt}
-        hawk.run(hawk.load(d, "g_vjp"), bar_out=np.full(n, seed),
-                 **bars, **arrs)
+        kernel = hawk.load(d, "g_vjp")
+        hawk.run(kernel, **declared(kernel, {"bar_out": np.full(n, seed), **arrs}), **bars)
         return {w: bars[f"bar_{w}"] for w in wrt}
 
     def tangent(primal, wrt, dots, **inputs):
@@ -134,7 +135,8 @@ def derive(tmp_path_factory, cache_dir):
         n = len(next(iter(arrs.values())))
         tans = {f"dot_{w}": np.full(n, float(dots[w])) for w in wrt}
         dot_out = np.zeros(n)
-        hawk.run(hawk.load(d, "g_jvp"), dot_out=dot_out, **tans, **arrs)
+        kernel = hawk.load(d, "g_jvp")
+        hawk.run(kernel, **declared(kernel, {**tans, **arrs}), dot_out=dot_out)
         return dot_out
 
     return type("Rig", (), {"grad": staticmethod(grad), "tangent": staticmethod(tangent)})

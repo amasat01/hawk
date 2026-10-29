@@ -100,8 +100,9 @@ FEATURES: dict[str, tuple[Callable, tuple[str, str]]] = {
          "pass the values the kernel needs as a Table plane")),
     "active_set": (
         lambda k, kind, w, nodes: _whole(
-            bool(getattr(getattr(kind, "guard", None), "active_set", False)), "guard"),
-        ("an active-set guard reads an index map the C entry does not take",
+            bool(getattr(getattr(kind, "guard", None), "active_set", False)
+                 or getattr(kind, "lanes", None) is not None), "guard"),
+        ("an index map (an active-set guard or a lane set) is a plane the C entry does not take",
          "run without the index map (the plain mask guard)")),
     "segmented": (
         lambda k, kind, w, nodes: _segmented(k, nodes),

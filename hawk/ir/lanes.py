@@ -440,6 +440,25 @@ def _base_extent(base: _V, axes: tuple) -> int | None:
     return int(hi) + 1
 
 
+def _stored(node: Node) -> Node:
+    """The plane read under the widening cast of an ``Index`` read (``int32`` on the wire)."""
+    if isinstance(node, Op) and node.kind == "cast" and node.ttype.dtype == "i32" \
+            and node.operands[0].ttype.dtype == "int32":
+        return node.operands[0]
+    return node
+
+
+def _index_plane_read(node: Node, ev: "_Eval") -> bool:
+    """Whether ``node`` reads an ``Index`` plane: the own-lane leaf, or a ``Table[Index]`` read at a
+    data-free index (either through the widening cast of its ``int32`` storage)."""
+    stored = _stored(node)
+    dtypes = ("i32", "i64") if stored is node else ("int32",)
+    if isinstance(stored, Leaf):
+        return stored.role == "per_sample" and stored.ttype.dtype in dtypes
+    return (isinstance(stored, At) and stored.plane.ttype.dtype in dtypes
+            and stored.plane.role == "lookup" and not ev.value(stored.index).data)
+
+
 def _split_terms(ev: "_Eval", key: Node) -> tuple:
     """The additive terms of an index: ``(free, slots, planes, other)``. ``free``
     holds ``(node, value, sign)`` of data-free terms, ``slots`` ``(bound, sign)`` of
@@ -462,11 +481,8 @@ def _split_terms(ev: "_Eval", key: Node) -> tuple:
             free.append((node, v, sign))
         elif g is not None:
             slots.append((g, sign))
-        elif isinstance(node, Leaf) and node.role == "per_sample" and node.ttype.dtype == "i32":
-            planes.append((node, sign))
-        elif isinstance(node, At) and node.plane.ttype.dtype == "i32" \
-                and node.plane.role == "lookup" and not ev.value(node.index).data:
-            planes.append((node, sign))
+        elif _index_plane_read(node, ev):
+            planes.append((_stored(node), sign))
         else:
             other += 1
     return free, slots, planes, other

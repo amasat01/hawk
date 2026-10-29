@@ -110,6 +110,55 @@ _QUAT = {
     "as_vec3": lambda q: np.asarray(q)[1:],
 }
 
+
+def ray_tri(o, d, a, b, c, tmax, dtype=np.float64):
+    """Moller-Trumbore over the last axis (any leading shape), ``[hit, t, u, v]`` as
+    ``aether::geometry::rayTriangle``: safe denominator, two-sided."""
+    o, d, a, b, c = (np.asarray(x, dtype=dtype) for x in (o, d, a, b, c))
+    e1, e2 = b - a, c - a
+    p = np.cross(d, e2)
+    det = np.sum(e1 * p, axis=-1)
+    ok = det != 0
+    inv = np.where(ok, dtype(1) / np.where(ok, det, dtype(1)), dtype(0))
+    s = o - a
+    q = np.cross(s, e1)
+    u = inv * np.sum(s * p, axis=-1)
+    v = inv * np.sum(d * q, axis=-1)
+    t = inv * np.sum(e2 * q, axis=-1)
+    hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t >= 0) & (t <= tmax)
+    return np.stack([hit.astype(dtype), t, u, v], axis=-1)
+
+
+def ray_aabb(o, d, lo, hi, tmax, dtype=np.float64):
+    """Slab method, ``[hit, t_enter, t_exit, 0]``; a zero direction component uses ``+-1e18``."""
+    o, d, lo, hi = (np.asarray(x, dtype=dtype) for x in (o, d, lo, hi))
+    ok = d != 0
+    inv = np.where(ok, dtype(1) / np.where(ok, d, dtype(1)), np.copysign(dtype(1e18), d))
+    a, b = (lo - o) * inv, (hi - o) * inv
+    near, far = np.minimum(a, b), np.maximum(a, b)
+    tin, tout = near.max(axis=-1), far.min(axis=-1)
+    hit = (tin <= tout) & (tout >= 0) & (tin <= tmax)
+    return np.stack([hit.astype(dtype), tin, tout, np.zeros_like(tin)], axis=-1)
+
+
+def ray_sphere(o, d, c, r, tmax, dtype=np.float64):
+    """Quadratic roots ascending, ``[hit, t0, t1, 0]``; zeros when there is no real root."""
+    o, d, c = (np.asarray(x, dtype=dtype) for x in (o, d, c))
+    oc = o - c
+    qa, hb = np.sum(d * d, axis=-1), np.sum(oc * d, axis=-1)
+    qc = np.sum(oc * oc, axis=-1) - dtype(r) * dtype(r)
+    disc = hb * hb - qa * qc
+    ok = (qa > 0) & (disc >= 0)
+    sq = np.sqrt(np.where(ok, disc, dtype(1)))
+    inv = dtype(1) / np.where(qa > 0, qa, dtype(1))
+    t0 = np.where(ok, (-hb - sq) * inv, dtype(0))
+    t1 = np.where(ok, (-hb + sq) * inv, dtype(0))
+    hit = ok & (t1 >= 0) & (t0 <= tmax)
+    return np.stack([hit.astype(dtype), t0, t1, np.zeros_like(t0)], axis=-1)
+
+
+_RAYS = {"ray_tri": ray_tri, "ray_aabb": ray_aabb, "ray_sphere": ray_sphere}
+
 #: `random_uniform`/`random_normal`: NOT aether's actual Philox
 #: stream (the real thing is only reachable through a compiled artifact,
 #: tested against aether's own golden oracle in `tests/test_random_op.py`'s
@@ -137,6 +186,15 @@ class _Factor:
 def _lu(a):
     lu, piv, info = lapack.dgetrf(np.asarray(a, dtype=float))
     return _Factor(lu=lu, piv=piv, info=info, n=len(lu))
+
+
+def _qr(a):
+    """The factor of a tall matrix: its status is the first column whose ``R`` diagonal is exactly
+    zero (1-based), found by the same Householder sweep the library runs."""
+    a = np.asarray(a, dtype=float)
+    r = np.linalg.qr(a, mode="r")
+    zero = np.flatnonzero(np.diag(r) == 0)
+    return _Factor(a=a, info=int(zero[0]) + 1 if len(zero) else 0, n=a.shape[1])
 
 
 def _chol(a):
@@ -190,6 +248,11 @@ _LINALG = {
     "cho_solve": lambda f, b: (np.zeros_like(np.asarray(b, dtype=float)) if f.info
                                else sla.cho_solve((f.l, True), np.asarray(b, dtype=float))),
     "tri_lower": lambda f, b: _tri(f, b, 0), "tri_upper_t": lambda f, b: _tri(f, b, 1),
+    "qr": _qr, "qr_solve": lambda f, b: (np.zeros((f.n, *np.shape(b)[1:])) if f.info
+                                         else np.linalg.lstsq(f.a, np.asarray(b, dtype=float), rcond=None)[0]),
+    "qr_gram_solve": lambda f, b: (np.zeros_like(np.asarray(b, dtype=float)) if f.info
+                                   else np.linalg.solve(f.a.T @ f.a, np.asarray(b, dtype=float))),
+    "qr_info": lambda f: f.info,
     "lu_info": lambda f: f.info, "chol_info": lambda f: f.info, "eigh_info": lambda f: f.info,
     "lu_det": _lu_det,
     "chol_factor": lambda f: np.zeros_like(f.l) if f.info else f.l,
@@ -379,6 +442,8 @@ def _compute(node: Node, env: dict, memo: dict):
         return _QUAT[kind](*args)
     if kind in _LINALG:
         return _LINALG[kind](*args)
+    if kind in _RAYS:
+        return _RAYS[kind](*args)
     if kind == "component":
         return args[0][node.literal]
     if kind == "set_component_at":

@@ -48,7 +48,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import prod
 
-from . import linalg
+from . import linalg, rays
 from .loop_nodes import Loop, LoopCarry, LoopIndex
 from .nodes import SWITCH_RENDERED, At, Const, Dispatch, Leaf, Node, Op, Select, Sink
 from ..types import INT_PLANE_DTYPES
@@ -125,6 +125,12 @@ class DispatchCost:
     fused_vectorised: bool = False
 
 
+def _widens(node: Node) -> bool:
+    """An ``int32`` read widened to the 64-bit index the body computes in: a load-side extension, free."""
+    return (isinstance(node, Op) and node.kind == "cast" and node.ttype.dtype == "i32"
+            and node.operands[0].ttype.dtype == "int32")
+
+
 def _elements(node: Node) -> int:
     return prod(node.ttype.shape)
 
@@ -143,6 +149,8 @@ def _op_count(op: Op) -> tuple[str, float]:
     kind, ops = op.kind, op.operands
     if kind in linalg.LINALG_OPS:
         return "arith", linalg.op_count(op)
+    if kind in rays.RAY_OPS:
+        return "arith", rays.op_count(op)
     if kind in SPECIAL_KINDS:
         return "special", _elements(op)
     if kind in _QUAT_OPS:
@@ -160,6 +168,12 @@ def _op_count(op: Op) -> tuple[str, float]:
     return "arith", max(_elements(op), 1)
 
 
+def _trips(loop) -> int:
+    """The iterations a loop is costed at: its trip, and one for a loop whose
+    bound is a run-time value with no ``max=`` (its static trip is the int range)."""
+    return 1 if loop.dynamic == "open" else loop.trip
+
+
 def _own_cost(node: Node) -> list[float]:
     """The counts ``node`` itself adds (not its operands'), in :data:`_FIELDS` order."""
     out = [0.0] * len(_FIELDS)
@@ -169,10 +183,10 @@ def _own_cost(node: Node) -> list[float]:
     elif isinstance(node, At):
         out[5] = max(_elements(node), 1)
     elif isinstance(node, Loop):
-        out = [node.trip * c for c in _work(node.body_nodes())]
+        out = [_trips(node) * c for c in _work(node.body_nodes())]
     elif isinstance(node, (Select, Dispatch)):
         out[1 if _wide(node) else 0] = max(_elements(node), 1)
-    elif isinstance(node, Op) and node.kind in OP_KINDS and node.kind not in _FREE:
+    elif isinstance(node, Op) and node.kind in OP_KINDS and node.kind not in _FREE and not _widens(node):
         cls, amount = _op_count(node)
         out[(2 if cls == "special" else 0) + (1 if _wide(node) else 0)] = amount
     return out
@@ -191,7 +205,7 @@ def _chain_class(node: Node) -> int | None:
     """Index into the four chain classes ``node`` adds one step to, else ``None``."""
     if isinstance(node, (Select, Dispatch)):
         return 1 if _wide(node) else 0
-    if isinstance(node, Op) and node.kind in OP_KINDS and node.kind not in _FREE:
+    if isinstance(node, Op) and node.kind in OP_KINDS and node.kind not in _FREE and not _widens(node):
         cls, _ = _op_count(node)
         return (2 if cls == "special" else 0) + (1 if _wide(node) else 0)
     return None
@@ -234,7 +248,7 @@ def _paths(roots, zero: frozenset, carried: bool = False) -> tuple:
         own = [0.0] * 4
         if isinstance(node, Loop):
             body = _paths(node.nexts, frozenset(id(o) for o in node.operands), carried=True)
-            own = [node.trip * c for c in body]
+            own = [_trips(node) * c for c in body]
         elif (cls := _chain_class(node)) is not None:
             own[cls] = 1.0
         memo[key] = tuple(a + b for a, b in zip(best, own))

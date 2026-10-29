@@ -77,7 +77,8 @@ def _run(kernel, planes, outs, mode):
     sink = {name: np.zeros(LANES if width == 1 else (width, LANES),
                            dtype=np.int32 if name == "info" else dt)
             for name, width in outs.items()}
-    rt.run(kernel, **planes, **sink)
+    declared = {name for _, name in kernel.arg_spec}
+    rt.run(kernel, **{k: v for k, v in planes.items() if k in declared}, **sink)
     return {name: plane.reshape(outs[name], LANES).T for name, plane in sink.items()}
 
 

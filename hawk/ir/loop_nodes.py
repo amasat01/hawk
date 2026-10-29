@@ -120,11 +120,16 @@ class Loop(Node):
     DERIVED loop of such a loop instead carries ``count``, a runtime
     ``i32`` (:class:`LoopCount`): the first ``count`` iterations, or the
     last ``count`` with ``count_tail`` set (a reverse loop). Both stay
-    ``None`` otherwise."""
+    ``None`` otherwise.
+
+    A loop the author bounded by a run-time value (``range(n, max=K)``) also
+    carries ``count`` (``n`` clamped to ``[0, K]``) and says ``dynamic``:
+    ``"max"`` when ``stop`` is the author's ``K`` (a tape is that big), or
+    ``"open"`` when there is none (``stop`` is the int range, no tape fits)."""
 
     __slots__ = ("index", "carries", "nexts", "start", "stop", "step", "trip",
                  "carry_count", "body_sinks", "_body_key", "exit_cond",
-                 "exit_values", "count", "count_tail", "_free_end")
+                 "exit_values", "count", "count_tail", "dynamic", "_free_end")
 
     kind = LOOP_KIND
 
@@ -136,7 +141,8 @@ class Loop(Node):
                  exit_cond: Node | None = None,
                  exit_values: Sequence[Node] = (),
                  count: Node | None = None,
-                 count_tail: bool = False) -> None:
+                 count_tail: bool = False,
+                 dynamic: str | None = None) -> None:
         carries, inits, nexts = tuple(carries), tuple(inits), tuple(nexts)
         body_sinks = tuple(body_sinks)
         exit_values = tuple(exit_values)
@@ -157,6 +163,10 @@ class Loop(Node):
                         f"Loop: carried slot {j} ({carry.name!r}) is typed "
                         f"{carry.ttype!r} but its value at the `break` is typed "
                         f"{value.ttype!r}")
+        if dynamic not in (None, "max", "open"):
+            raise HawkError(f"Loop: dynamic is None, 'max' or 'open', got {dynamic!r}")
+        if dynamic is not None and count is None:
+            raise HawkError("Loop: a run-time trip count is carried as `count`")
         if count is not None and (count.ttype.shape != ()
                                   or count.ttype.dtype != "i32"):
             raise HawkError(f"Loop: a runtime iteration count is a rank-0 i32, "
@@ -199,6 +209,7 @@ class Loop(Node):
         self.exit_values = exit_values
         self.count = count
         self.count_tail = bool(count_tail)
+        self.dynamic = dynamic
         self.index = index
         self.carries = carries
         self.nexts = nexts
@@ -287,6 +298,8 @@ class Loop(Node):
             key += ("exit",)
         if self.count is not None:
             key += ("count", self.count_tail)
+        if self.dynamic is not None:
+            key += ("dynamic", self.dynamic)
         return key
 
 

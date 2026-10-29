@@ -108,7 +108,8 @@ def host(tmp_path_factory, cache_dir):
         sink = {name: np.zeros(LANES if width == 1 else (width, LANES),
                                dtype=np.int32 if name == "info" else _DTYPE[mode])
                 for name, width in outs.items()}
-        rt.run(loaded, **{k: _plane(v) for k, v in inputs.items()}, **sink)
+        declared = {name for _, name in loaded.arg_spec}
+        rt.run(loaded, **{k: _plane(v) for k, v in inputs.items() if k in declared}, **sink)
         return {name: plane.reshape(outs[name], LANES) for name, plane in sink.items()}
     return run
 

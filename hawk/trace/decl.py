@@ -28,7 +28,11 @@ from ..types import TensorType
 #: Payload types. ``Vector``/``Matrix`` are subscripted with static extents —
 #: an extent is a TYPE, never a runtime value.
 Scalar = TensorType((), "f64")
+#: ``Index``: a 32-bit index plane on the wire (an ``int32`` column), widened to the 64-bit
+#: ``Int`` the body computes in at every read. ``Index[int64]`` is the 64-bit plane (an
+#: ``int64`` column), for values past ``2**31 - 1``.
 Index = TensorType((), "i32")
+_INDEX64 = TensorType((), "i64")
 #: The 32-bit integer plane payloads: stored at 4 bytes (``np.int32`` /
 #: ``np.uint32``), wrapping ``+ - *``, Python's ``//``/``%`` sign rules, the
 #: bitwise operators and shifts; mixed with a float only through
@@ -164,9 +168,9 @@ class Sorted:
     Set ``HAWK_CHECK_SORTED`` to have each bind check it."""
 
     def __class_getitem__(cls, t: TensorType) -> Plane:
-        if t != Index:
+        if t not in (Index, _INDEX64):
             raise HawkError(f"Sorted[...] takes Index (a per-sample segment id), got {t!r}")
-        return Plane("in", Index, sorted=True)
+        return Plane("in", t, sorted=True)
 
 
 class Staged:
@@ -311,7 +315,7 @@ def _axes(what: str, key: object) -> tuple:
 def _payload(what: str, t: object) -> TensorType:
     if not isinstance(t, TensorType):
         raise HawkError(
-            f"{what}[...] takes a payload type (Scalar, Index, Int32, UInt32, Quat, "
+            f"{what}[...] takes a payload type (Scalar, Index, Index[int64], Int32, UInt32, Quat, "
             f"Vector[W], Matrix[R,C]), got {t!r}"
         )
     return t
@@ -319,7 +323,7 @@ def _payload(what: str, t: object) -> TensorType:
 
 def spell(t: TensorType) -> str:
     """``t`` as an author writes it: ``Scalar``, ``Vector[3]``, ``Matrix[2, 3]``."""
-    for name, named in (("Scalar", Scalar), ("Index", Index), ("Int32", Int32),
+    for name, named in (("Scalar", Scalar), ("Index", Index), ("Index[int64]", _INDEX64), ("Int32", Int32),
                         ("UInt32", UInt32), ("Quat", Quat)):
         if t == named:
             return name

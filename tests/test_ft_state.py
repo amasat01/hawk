@@ -184,7 +184,7 @@ def test_one_registry_winner_the_losers_raise(monkeypatch):
         for r in range(rounds):
             barrier.wait()
             try:
-                d = prim_mod.primitive(f"ft_state_prim_{r}")(lambda x: x)
+                d = prim_mod.primitive(f"ft_state_prim_{r}")(eval(f"lambda x: x + {t}"))   # a different forward each
                 with lock:
                     wins[r].append((t, d))
             except HawkError:

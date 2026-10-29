@@ -184,7 +184,8 @@ its partial, so the caller zeroes the plane first, then reduces it.
 code; the caller zeroes it before the first call.
 
 **Types.** `hawk_real_t` is `double` or `float` by the scalar mode,
-`hawk_int_t` is `int64_t`. The three typedefs and the status enum sit behind
+`hawk_int_t` is `int64_t`; an `Index` input plane is an `int32_t*` (an `Index[int64]` one is `int64_t*`),
+widened where the body reads it. The three typedefs and the status enum sit behind
 `HAWK_EMBEDDED_TYPES`, so several hawk headers of one width coexist in a build;
 a header of another width fails with `#error`. The `.c` also checks the sizes
 with `_Static_assert`, but only under C11 (`__STDC_VERSION__ >= 201112L`):
@@ -261,7 +262,7 @@ refusal has a different shape and no fix clause:
 | `raw_device` | a `raw_device` block splices C++ text | spell the block with `hawk.math` |
 | `sample_reduction` | a reduction over lanes (`hawk.sum(x)`, `hawk.max(x)`, ...) needs the wrapper's cross-sample fold | commit the own column and reduce in the caller |
 | `cross_sample_at` | `u.at(i)` reads another lane's value, which a partition call may not hold | pass the values the kernel needs as a `Table` plane |
-| `active_set` | an active-set guard reads an index map the C entry does not take | run without the index map (the plain mask guard) |
+| `active_set` | an index map (an active-set guard or a lane set) is a plane the C entry does not take | run without the index map (the plain mask guard) |
 | `segmented` | a segmented dispatch is a per-unit split | export each branch as its own kernel |
 | `compensated` | the compensated sink policy commits a correction plane | use the plain sink policy |
 | `fused_lanes` | a fused lane group is composed for a launching runtime | export each lane as its own kernel |

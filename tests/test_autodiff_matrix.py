@@ -88,9 +88,12 @@ STEPS_K = 6
 # --------------------------------------------------------------------------- #
 class Case:
     def __init__(self, primal, planes, wrt, shapes, door="bundle", ext=None, h=1e-6,
-                 rtol=1e-6, f32=None, extra=None):
+                 rtol=1e-6, f32=None, extra=None, dext=None):
         self.P, self.planes, self.wrt, self.shapes = primal, planes, tuple(wrt), shapes
         self.door, self.ext, self.h, self.rtol = door, ext or {}, h, rtol
+        #: the extents the derivatives take: a free sink label (``node``) is the extent of the primal's
+        #: sink axis, and a derivative's planes are sized by what is bound, so it takes the lane labels only
+        self.dext = self.ext if dext is None else dext
         self.f32 = door == "bundle" if f32 is None else f32
         self.extra = extra or {}      # extra: planes only the derivatives take
         self.outs = list(shapes)
@@ -159,7 +162,7 @@ CASES: dict = {
     "node_gather": Case(node_gather, {"w": _u(2, _NODE_E, 3), "x": _u(3, _NODE_E)}, ("x", "w"),
                         {"out": (_NODE_E,)}, ext={"e": _NODE_E}),
     "node_scatter": Case(node_scatter, {"x": _u(3, _NODE_E)}, ("x",), {"b": (4,)},
-                         ext={"e": _NODE_E, "node": 4}),
+                         ext={"e": _NODE_E, "node": 4}, dext={"e": _NODE_E}),
     "switch_if": _lane_case(switch_if, ("x", "g"), {"y": (N,)}, x=_SW, g=_G),
     "switch_dispatch": _lane_case(switch_dispatch, ("x", "g"), {"y": (N,)}, x=_SW, g=_G),
     "stop_break": _lane_case(stop_break, ("x", "g"), {"n": (N,), "e_out": (N,)}, x=_STOP_X,
@@ -228,11 +231,11 @@ class Rig:
             return _named(case.P(**p, **case.ext), case.outs)
 
         def j(p, t):
-            return _named(jk(**p, **{f"dot_{k}": v for k, v in t.items()}, **case.ext),
+            return _named(jk(**p, **{f"dot_{k}": v for k, v in t.items()}, **case.dext),
                           [f"dot_{o}" for o in case.outs])
 
         def v(p, u):
-            return _named(vk(**p, **{f"bar_{k}": x for k, x in u.items()}, **case.ext),
+            return _named(vk(**p, **{f"bar_{k}": x for k, x in u.items()}, **case.dext),
                           [f"bar_{w}" for w in case.wrt])
         return prim, j, v
 
@@ -306,7 +309,7 @@ class Rig:
                 base = name.removeprefix(prefix).removesuffix("_c")
                 if role == "accum_out" and name not in outs and name not in own and base in shapes:
                     outs[name] = np.zeros(shapes[base], dt)
-            rt.run(art, **{k: cast(v) for k, v in planes.items()}, **outs, **case.ext)
+            rt.run(art, **{k: cast(v) for k, v in planes.items()}, **outs, **(case.dext if prefix else case.ext))
             return {k: v.astype(np.float64) for k, v in outs.items()}
 
         in_shapes = {w: np.shape(case.planes[w]) for w in case.wrt}

@@ -36,6 +36,7 @@ from typing import Any
 
 from ..diff.rules import zero_like
 from ..ir import HawkError, Node, Primitive
+from ..trace.helpers import call
 from ..trace.value import Value, node_of
 
 #: Every registered primitive, by name: the name is the node's dedup
@@ -70,7 +71,9 @@ class PrimitiveDef:
     def __call__(self, *args: Any) -> Value:
         """Trace the forward INLINE over ``args`` and record the boundary."""
         inputs = tuple(node_of(a) for a in args)
-        traced = self.forward(*(Value(x) for x in inputs))
+        traced = call(self.forward, *(Value(x) for x in inputs))
+        if self.vjp is None and self.jvp is None:
+            return traced                # no rule to attach: the table differentiates it
         return Value(Primitive(self.name, self, node_of(traced), inputs))
 
     def vjp_contributions(self, node: Primitive, g: Node) -> tuple:
@@ -125,36 +128,61 @@ class PrimitiveDef:
         return value
 
 
-def primitive(name: str, *, vjp: Callable | None = None,
+def primitive(name: Callable | str | None = None, *, vjp: Callable | None = None,
               jvp: Callable | None = None) -> Callable:
-    """Register a custom primitive named ``name``.
+    """Register a custom primitive, named ``name`` or after the function.
 
     Used as a decorator on the forward::
 
-        @primitive("softplus", vjp=lambda x, bar: bar / (1.0 + exp(-x)))
+        @hawk.primitive("softplus", vjp=lambda x, bar: bar / (1.0 + exp(-x)))
         def softplus(x):
             return log(1.0 + exp(x))
 
-    The decorated object is a :class:`PrimitiveDef`, callable from a
-    kernel body like a free function. A second primitive under a taken
-    name is refused: a collision would make two kernels' walk digests
+    ``@hawk.primitive`` alone names it ``softplus`` after the function. The
+    decorated object is a :class:`PrimitiveDef`, callable from a kernel body
+    like a free function. With neither rule it is a plain inline helper whose
+    derivative goes through its forward.
+
+    Registering the same function again (a notebook cell run twice) is a
+    no-op that gives back the first registration. A different function under a
+    taken name is refused: a collision would make two kernels' walk digests
     agree while their derivatives disagreed."""
-    def register(fn: Callable) -> PrimitiveDef:
-        if not name:
+    def register(fn: Callable, label: str | None) -> PrimitiveDef:
+        label = label or getattr(fn, "__name__", "")
+        if not label:
             raise HawkError(
                 "primitive(): a primitive is registered by NAME — the name is the "
                 "boundary node's identity in the walk's digest")
-        definition = PrimitiveDef(name, fn, vjp, jvp)
+        definition = PrimitiveDef(label, fn, vjp, jvp)
         with _REGISTRY_LOCK:
-            held = _REGISTRY.setdefault(name, definition)
-        if held is not definition:
+            held = _REGISTRY.setdefault(label, definition)
+        if held is not definition and not _same_function(held.forward, fn):
             raise HawkError(
-                f"primitive {name!r} is already registered (its forward is "
+                f"primitive {label!r} is already registered (its forward is "
                 f"{held.forward!r}); a second registration under the same name is "
                 "refused because the name is what identifies the boundary node in "
                 "Walk.digest — two primitives sharing it would give two different "
                 "kernels the same content hash, and the cache would serve one for "
                 "the other"
             )
-        return definition
-    return register
+        return held
+    if callable(name):                                   # bare `@primitive`
+        return register(name, None)
+    return lambda fn: register(fn, name)
+
+
+def _same_function(a: Callable, b: Callable) -> bool:
+    """Whether ``b`` is ``a`` again: the same function, or one defined again from
+    the same text (a notebook cell run twice)."""
+    if a is b:
+        return True
+    ca, cb = getattr(a, "__code__", None), getattr(b, "__code__", None)
+    if ca is None or cb is None or a.__qualname__ != b.__qualname__:
+        return False
+    try:
+        held = ([c.cell_contents for c in a.__closure__ or ()]
+                == [c.cell_contents for c in b.__closure__ or ()])
+    except ValueError:                           # an unbound cell
+        held = False
+    return held and ca.co_code == cb.co_code and ca.co_consts == cb.co_consts \
+        and ca.co_names == cb.co_names

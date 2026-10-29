@@ -56,53 +56,53 @@ _AETHER_ROOT = os.environ.get("HAWK_AETHER_SOURCE", "")
 
 
 @hawk.kernel
-def draw_uniform(seed: hawk.Index, counter: hawk.Index, y: hawk.Mutable[hawk.Scalar]):
+def draw_uniform(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], y: hawk.Mutable[hawk.Scalar]):
     y = m.random.uniform(seed, counter)
 
 
 @hawk.kernel
-def draw_normal(seed: hawk.Index, counter: hawk.Index, y: hawk.Mutable[hawk.Scalar]):
+def draw_normal(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], y: hawk.Mutable[hawk.Scalar]):
     y = m.random.normal(seed, counter)
 
 
 @hawk.kernel
-def draw_exponential(seed: hawk.Index, counter: hawk.Index, y: hawk.Mutable[hawk.Scalar]):
+def draw_exponential(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], y: hawk.Mutable[hawk.Scalar]):
     y = m.random.exponential(seed, counter, rate=2.0)
 
 
 @hawk.kernel
-def draw_bernoulli(seed: hawk.Index, counter: hawk.Index, y: hawk.Mutable[hawk.Scalar]):
+def draw_bernoulli(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], y: hawk.Mutable[hawk.Scalar]):
     y = m.random.bernoulli(seed, counter, p=0.3)
 
 
 @hawk.kernel
-def draw_lognormal(seed: hawk.Index, counter: hawk.Index, y: hawk.Mutable[hawk.Scalar]):
+def draw_lognormal(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], y: hawk.Mutable[hawk.Scalar]):
     y = m.random.lognormal(seed, counter, mu=0.5, sigma=0.25)
 
 
 @hawk.kernel
-def draw_uniform_int(seed: hawk.Index, counter: hawk.Index, y: hawk.Mutable[hawk.Scalar]):
+def draw_uniform_int(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], y: hawk.Mutable[hawk.Scalar]):
     y = m.random.uniform_int(seed, counter, -2, 5)
 
 
 @hawk.kernel
-def draw_uniform_range(seed: hawk.Index, counter: hawk.Index, y: hawk.Mutable[hawk.Scalar]):
+def draw_uniform_range(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], y: hawk.Mutable[hawk.Scalar]):
     y = m.random.uniform(seed, counter, lo=-1.0, hi=3.0)
 
 
 @hawk.kernel
-def draw_normal_scaled(seed: hawk.Index, counter: hawk.Index, y: hawk.Mutable[hawk.Scalar]):
+def draw_normal_scaled(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], y: hawk.Mutable[hawk.Scalar]):
     y = m.random.normal(seed, counter, mean=2.0, sd=0.5)
 
 
 @hawk.kernel
-def draw_mvn(seed: hawk.Index, counter: hawk.Index, chol: hawk.Matrix[3, 3],
+def draw_mvn(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], chol: hawk.Matrix[3, 3],
              y: hawk.Mutable[hawk.Vector[3]]):
     y = m.random.multivariate_normal(seed, counter, m.vec(1.0, -2.0, 0.5), chol)
 
 
 @hawk.kernel
-def draw_poisson1(seed: hawk.Index, counter: hawk.Index, y: hawk.Mutable[hawk.Scalar]):
+def draw_poisson1(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], y: hawk.Mutable[hawk.Scalar]):
     y = m.random.poisson1(seed, counter)
 
 

@@ -156,7 +156,7 @@ def _bind(bundle, name, planes, *, mapped):
         kw["active_count"] = cp.full(1, n, dtype=cp.uint32)
     bound = eplan.plan(plugin, structure=eexec.DeviceKernel).bind(
         finished_count=counter, fused_steps=word, **kw, **dev)
-    return bound, dev, counter, word, plugin._keepalive[1].module, n
+    return bound, dev, counter, word, L.module_of(plugin._keepalive[1]), n
 
 
 def _snap(dev, counter):

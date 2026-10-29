@@ -49,6 +49,7 @@ from hawk.types import TensorType
 S = TensorType((), "f64")
 B = TensorType((), "bool")
 V3 = TensorType((3,), "f64")
+V2 = TensorType((2,), "f64")
 Q = TensorType((4,), "f64", "quaternion")
 M33 = TensorType((3, 3), "f64")
 
@@ -124,6 +125,13 @@ SPELLINGS = {
                                                _v(TensorType((), "i32"), "counter")),
     "random_uniform": lambda: M.random_uniform(_v(TensorType((), "i32"), "seed"),
                                                _v(TensorType((), "i32"), "counter")),
+    "cmul": lambda: M.vsum(M.cmul(_v(V2), _v(V2, "b"))),
+    "conj": lambda: M.vsum(M.conj(_v(V2))),
+    "abs2": lambda: M.abs2(_v(V2)),
+    "arg": lambda: M.arg(_v(V2)),
+    "ray_tri": lambda: M.ray_tri(_v(V3), _v(V3, "d"), _v(V3, "a"), _v(V3, "b"), _v(V3, "c"), _v(S, "tmax")),
+    "ray_aabb": lambda: M.ray_aabb(_v(V3), _v(V3, "d"), _v(V3, "lo"), _v(V3, "hi")),
+    "ray_sphere": lambda: M.ray_sphere(_v(V3), _v(V3, "d"), _v(V3, "c"), _v(S, "r")),
     "rsqrt": lambda: M.rsqrt(_v(S)),
     "sample_index": lambda: _table().at(M.sample_index()),
     "select": lambda: M.select(_v(B), _v(S), _v(S, "b")),
@@ -252,6 +260,10 @@ ADAPTERS = {
     "take": "the free-function spelling of a plane's own at()",
     "sum": "a value's own-axis sum (the lane axes are hawk.sum)",
     "mean": "a value's own-axis mean (the lane axes are hawk.sum)",
+    "cmul": "complex product of two (re, im) pairs",
+    "conj": "complex conjugate of an (re, im) pair",
+    "abs2": "squared modulus of an (re, im) pair",
+    "arg": "phase of an (re, im) pair, atan2(im, re)",
     "argmax": "a select chain over the components: the first index of the maximum, as i32",
 }
 
@@ -418,5 +430,5 @@ def test_nan_and_inf_are_the_float_constants(tmp_path, monkeypatch):
     def miss(x: hawk.Scalar) -> hawk.Scalar:
         return M.where(x > 0.0, M.minimum(M.inf, x), M.nan)
 
-    got = miss(np.array([2.0, -1.0]))
+    got = np.asarray(miss(np.array([2.0, -1.0])))
     assert got[0] == 2.0 and np.isnan(got[1])

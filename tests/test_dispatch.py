@@ -341,7 +341,7 @@ def _kind_plane(K: int, n: int = N) -> np.ndarray:
     """A kind plane that INCLUDES out-of-range values (negative and >= K),
     deterministic."""
     rng = np.random.default_rng(20260908)
-    return rng.integers(-3, K + 3, size=n).astype(np.int64)
+    return rng.integers(-3, K + 3, size=n).astype(np.int32)
 
 
 _CASES = [
@@ -357,8 +357,8 @@ def _case_kw_and_want(K: int, rank: int, dtype: str):
     kind_vals = _kind_plane(K)
     clamped = np.clip(kind_vals, 0, K - 1)
     if dtype == "i":
-        b0 = np.arange(N, dtype=np.int64) + 100
-        b1 = np.arange(N, dtype=np.int64) + 900
+        b0 = np.arange(N, dtype=np.int32) + 100
+        b1 = np.arange(N, dtype=np.int32) + 900
         want = np.where(clamped == 0, b0, b1)
         # a caller-supplied output plane is written IN PLACE on both targets
         # (hawk.runtime's and eagle's own rule, `_oracle.py`'s module note) —
@@ -453,7 +453,7 @@ def _sorted_kind_with_empty_run(K: int, n: int) -> tuple:
     for idx, j in enumerate(others):
         counts[j] = base + (1 if idx < extra else 0)
     kinds = np.concatenate(
-        [np.full(counts[j], j, dtype=np.int64) for j in range(K)])
+        [np.full(counts[j], j, dtype=np.int32) for j in range(K)])
     assert kinds.size == n
     return kinds, counts
 
@@ -743,7 +743,7 @@ def test_training_switch_rewrites_the_kind_plane_without_rebuild_or_retrace(
 
     n = 32
     rng = np.random.default_rng(20260908)
-    kind_first = rng.integers(0, K, size=n).astype(np.int64)
+    kind_first = rng.integers(0, K, size=n).astype(np.int32)
     bs_host = (np.arange(K * n, dtype=np.float64).reshape(K, n) * 0.1
               + np.arange(K)[:, None] * 10.0)
 
@@ -756,7 +756,7 @@ def test_training_switch_rewrites_the_kind_plane_without_rebuild_or_retrace(
     stream = cupy.cuda.Stream(non_blocking=True)
     with stream:
         stream.begin_capture()
-        bound.launch()
+        bound.launch(stream=stream)
         graph = stream.end_capture()
     graph_id = id(graph)
 
@@ -964,9 +964,10 @@ def _argmax_consumer_branches(x):
     return [x * 1.0, x * 2.0, x * 3.0, x * 4.0]
 
 
+# a plane a kernel WROTE (``Mutable[Index]``, 64-bit) is read back as ``Index[np.int64]``
 @hawk.kernel
-def argmax_consumer(x: hawk.Scalar, kind: hawk.Index, y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(kind, _argmax_consumer_branches(x), policy="switch")
+def argmax_consumer(x: hawk.Scalar, kind: hawk.Index[np.int64], y: hawk.Mutable[hawk.Scalar]):
+    y = M.dispatch(M.index(M.real(kind), 4), _argmax_consumer_branches(x), policy="switch")
 
 
 @pytest.mark.gpu
@@ -1026,8 +1027,8 @@ def test_a_kernel_written_kind_plane_is_consumed_in_the_same_captured_graph(
     stream = cp.cuda.Stream(non_blocking=True)
     with stream:
         stream.begin_capture()
-        bound_router.launch()
-        bound_consumer.launch()
+        bound_router.launch(stream=stream)
+        bound_consumer.launch(stream=stream)
         graph = stream.end_capture()
 
     _build = sys.modules["hawk.artifact.bundle"]

@@ -30,16 +30,19 @@ from .._broadcast import route
 from ..ir import Const, HawkError, Leaf, Node, Quantity, Walk, canonical, make
 from ..ir.nodes import COMPANION_SUFFIX, AccumWrite, Assign, compensates
 from ..types import Slot, TensorType
-from . import astpass, reduce
+from . import astpass, helpers, reduce
 from .decl import Plane, resolve, role_of, spell
 from .lane_axes import LaneAxes, check_group, lane_space, tracing
 from .value import (
+    INDEX,
+    INDEX32,
     FinishRefusal,
     MutableRef,
     TableRef,
     TerminatedRef,
     Value,
     WideOutRef,
+    widened,
 )
 
 #: How an input plane's ROLE picks the leaf KIND it mints.
@@ -925,6 +928,8 @@ def _bind(name: str, plane: Plane | Quantity) -> Any:
         # one READ form for both roles: pins `lookup` and `wide_in` to the
         # same 32-byte ScalarHandle, so the access is the at(expr) either way.
         return TableRef(name, plane.ttype, role=role, dims=plane.dims)
+    if plane.ttype == INDEX and role == "per_sample":
+        return Value(widened(Leaf(_LEAF_KIND[role], role, name, INDEX32, sorted=plane.sorted)))
     return Value(Leaf(_LEAF_KIND[role], role, name, plane.ttype, sorted=plane.sorted))
 
 
@@ -966,12 +971,7 @@ def _retrace(fn: Callable[..., None], scope: dict[str, Any],
         if len(_TRANSFORM_MEMO) >= _TRANSFORM_MEMO_LIMIT:
             _TRANSFORM_MEMO.clear()
         _TRANSFORM_MEMO[id(code)] = (check, compiled, returning, shape)
-    scope[astpass.SELECT_HELPER] = astpass.merge
-    scope[astpass.LOOP_HELPER] = astpass.open_loop
-    scope[astpass.SETITEM_HELPER] = astpass.set_component
-    scope[astpass.MAXMIN_HELPER] = reduce.maxmin
-    scope[astpass.SCATTER_HELPER] = reduce.scatter_store
-    scope[astpass.RANGE_HELPER] = astpass.static_range
+    helpers.install(scope)
     exec(compiled, scope)  # the author's rewritten body
     return scope[fn.__name__], returning, shape
 
@@ -1020,3 +1020,21 @@ def _collect(name: str, params: list[str], args: dict[str, Any],
             "Mutable / WideOut parameter"
         )
     return tuple(sinks)
+
+
+class TeamStage(Kernel):
+    """A team stage of a split kernel (:mod:`hawk.ir.team`): the launch that works one matrix per
+    lane with a team of threads. Its sinks only name the scratch planes it works on; its body is
+    :func:`hawk.emit.team.team_body`, handed to the entry wrappers like a fused group's."""
+
+    __slots__ = ("team",)
+
+    def __init__(self, name: str, sinks: tuple, team: Any) -> None:
+        super().__init__(name, sinks, {})
+        self.team = team
+
+    def fused_body(self, kind: Any = None) -> Any:
+        from ..artifact.bundle import _active_spec
+        from ..emit.team import team_body
+
+        return team_body(self.team, _active_spec(kind))

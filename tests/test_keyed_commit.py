@@ -238,7 +238,7 @@ TARGET_ARMS = ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
 def _mixed_runs(n):
     """Sorted segment ids whose runs are 1..40 lanes long."""
     lengths = np.random.default_rng(7).integers(1, 41, n)
-    return np.repeat(np.arange(n), lengths)[:n].astype(np.int64)
+    return np.repeat(np.arange(n), lengths)[:n].astype(np.int32)
 
 
 def _warp_runs(key):
@@ -251,11 +251,11 @@ AUTO = {kuni: kuni_a, kfb: kfb_a, ktst: ktst_a, ksrt: ksrt_a}
 
 #: case -> (plain kernel, compensated kernel, n, key(l), the device's run commits)
 CASES = {
-    "proven_8192": (kuni, kuni_c, N, np.arange(N) // NS, N // 32),
-    "proven_48": (kfb, kfb_c, 1024 * 48, np.arange(1024 * 48) // 48,
+    "proven_8192": (kuni, kuni_c, N, (np.arange(N) // NS).astype(np.int32), N // 32),
+    "proven_48": (kfb, kfb_c, 1024 * 48, (np.arange(1024 * 48) // 48).astype(np.int32),
                   1024 * 48 // 16),
-    "tested_64": (ktst, ktst_c, N, np.arange(N) // 64, N // 32),
-    "sorted_8192": (ksrt, ksrt_c, N, np.arange(N) // NS, N // 32),
+    "tested_64": (ktst, ktst_c, N, (np.arange(N) // 64).astype(np.int32), N // 32),
+    "sorted_8192": (ksrt, ksrt_c, N, (np.arange(N) // NS).astype(np.int32), N // 32),
     "sorted_mixed": (ksrt, ksrt_c, N, _mixed_runs(N),
                      _warp_runs(_mixed_runs(N))),
 }
@@ -283,7 +283,7 @@ def _commits(plugin, target):
     import cupy as cp
 
     arr = cp.ndarray((2,), dtype=cp.uint64,
-                     memptr=plugin._keepalive[1].module.get_global("aether_run_commits"))
+                     memptr=L.module_of(plugin._keepalive[1]).get_global("aether_run_commits"))
     return (lambda: tuple(int(v) for v in arr.get())), (lambda: arr.fill(0))
 
 
@@ -422,11 +422,11 @@ def _plan(kernel, target, mode, tmp_path, cache_dir):
 
 def _big_planes(keys, mode, xp):
     rng = np.random.default_rng(4)
-    key = np.minimum((rng.beta(2, 5, NBIG) * NB).astype(np.int64), NB - 1)
+    key = np.minimum((rng.beta(2, 5, NBIG) * NB).astype(np.int32), NB - 1)
     if keys == "sorted":
         key = np.sort(key)
     elif keys == "uniform":
-        key = np.zeros(NBIG, np.int64)
+        key = np.zeros(NBIG, np.int32)
     x = rng.uniform(0.5, 1.5, NBIG).astype(mode)
     return key, x, {"x": xp.asarray(x), "key": xp.asarray(key), "seg": xp.asarray(key),
                     "acc": xp.zeros(NB, mode)}
@@ -530,7 +530,7 @@ def test_a_launch_allocates_nothing_for_the_owned_companion(tmp_path, cache_dir)
 
     slots = 1 << 18
     plan = _plan(ksrt_a, "host", "float64", tmp_path, cache_dir)
-    seg = np.sort(np.random.default_rng(1).integers(0, slots, 4096)).astype(np.int64)
+    seg = np.sort(np.random.default_rng(1).integers(0, slots, 4096)).astype(np.int32)
     bound = plan.bind(x=np.ones(4096), seg=seg, acc=np.zeros(slots))
     bound.launch()
     tracemalloc.start()
@@ -557,11 +557,11 @@ def test_a_companion_the_caller_binds_keeps_target_plus_companion(target, keys, 
     bundle = build_bundle([kernel], tmp_path, mode=mode, targets=("cuda", "host"),
                           cache_dir=cache_dir)
     rng = np.random.default_rng(4)
-    key = np.minimum((rng.beta(2, 5, NBIG) * NB).astype(np.int64), NB - 1)
+    key = np.minimum((rng.beta(2, 5, NBIG) * NB).astype(np.int32), NB - 1)
     if keys == "sorted":
         key = np.sort(key)
     elif keys == "uniform":
-        key = np.zeros(NBIG, np.int64)
+        key = np.zeros(NBIG, np.int32)
     x = rng.uniform(0.5, 1.5, NBIG).astype(mode)
     xp = np if target == "host" else __import__("cupy")
     planes = {"x": xp.asarray(x), "key": xp.asarray(key), "seg": xp.asarray(key),

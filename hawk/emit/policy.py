@@ -28,17 +28,34 @@ FORMS = ("auto", "static", "rolled")
 
 _FORM: ContextVar[str] = ContextVar("hawk_emit_form", default="auto")
 
+#: The forms a build may ask of per-lane linear algebra (``linalg_form``): ``auto`` picks by size
+#: (one thread per matrix up to :data:`~hawk.ir.linalg.MAX_DIM`, a team above it), ``thread`` keeps
+#: every matrix in one lane (refused above that size, by name) and ``team`` runs every
+#: factorisation as a team stage whatever its size.
+LINALG_FORMS = ("auto", "thread", "team")
+
+_LINALG_FORM: ContextVar[str] = ContextVar("hawk_linalg_form", default="auto")
+
 
 @contextmanager
-def using(form: str) -> Iterator[None]:
-    """Render under ``form`` (one of :data:`FORMS`) for the duration of the block."""
+def using(form: str = "auto", *, linalg_form: str = "auto") -> Iterator[None]:
+    """Render under ``form`` (one of :data:`FORMS`) and ``linalg_form`` (one of
+    :data:`LINALG_FORMS`) for the duration of the block."""
     if form not in FORMS:
         raise ValueError(f"emit_form must be one of {FORMS}, got {form!r}")
-    token = _FORM.set(form)
+    if linalg_form not in LINALG_FORMS:
+        raise ValueError(f"linalg_form must be one of {LINALG_FORMS}, got {linalg_form!r}")
+    token, linalg_token = _FORM.set(form), _LINALG_FORM.set(linalg_form)
     try:
         yield
     finally:
+        _LINALG_FORM.reset(linalg_token)
         _FORM.reset(token)
+
+
+def linalg_form() -> str:
+    """The ``linalg_form`` the current build asks for."""
+    return _LINALG_FORM.get()
 
 
 #: A site is static while its fold length and its result size are both at most

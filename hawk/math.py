@@ -182,6 +182,7 @@ from .trace.linalg import (
     trace,
     tril,
 )
+from .trace.rays import ray_aabb, ray_sphere, ray_tri
 from .trace.value import random_normal as _normal01
 from .trace.value import random_uniform as _uniform01
 from .trace.value import round as round  # noqa: A004 - numpy's spelling
@@ -312,9 +313,9 @@ nan = float("nan")
 inf = float("inf")
 
 __all__ = [
-    "abs", "absolute", "acos", "acosh", "argmax", "as_pure", "as_vec3", "asin",
+    "abs", "abs2", "absolute", "acos", "acosh", "arg", "argmax", "as_pure", "as_vec3", "asin",
     "asinh", "atan", "atan2", "atanh", "cbrt", "ceil", "clip", "copysign", "cos",
-    "cho_solve", "chol_from", "cholesky", "cosh", "cross", "det", "diag", "diagonal", "dispatch", "dot",
+    "cho_solve", "chol_from", "cholesky", "cmul", "conj", "cosh", "cross", "det", "diag", "diagonal", "dispatch", "dot",
     "eigh", "erf", "erfc", "eye", "inv", "lm_step", "lstsq", "lu", "lu_solve",
     "mat", "mvn_sample", "solve", "trace", "tril",
     "exp", "exp2", "expm1", "fdim", "floor", "fma", "fmod", "hypot", "index", "inf", "int32", "isfinite",
@@ -323,7 +324,8 @@ __all__ = [
     "n_samples", "nan", "norm", "outer", "pair_index", "pow", "power", "quat_conj", "quat_mul",
     "quat_recip", "quat_rotate", "random_bernoulli", "random_exponential",
     "random_lognormal", "random_multivariate_normal", "random_normal",
-    "random_poisson1", "random_uniform", "random_uniform_int", "real", "remainder",
+    "random_poisson1", "random_uniform", "random_uniform_int", "ray_aabb", "ray_sphere", "ray_tri",
+    "real", "remainder",
     "rint", "round", "rsqrt", "sample_index", "select", "sign", "sin", "sinh",
     "spacing", "split_index", "sqrt", "sum", "take", "tan", "tanh", "transpose", "trunc", "uint32",
     "vec", "vsum", "where",
@@ -354,6 +356,39 @@ def vec(*components: Any) -> Value:
 def where(cond: Any, a: Any, b: Any) -> Value:
     """Branchless ``cond ? a: b`` — the ``np.where`` spelling of :func:`select`."""
     return select(cond, a, b)
+
+
+def _pair(z: Any, name: str) -> tuple:
+    """The (re, im) components of a ``Vector[2]``."""
+    shape = node_of(z).ttype.shape
+    if shape != (2,):
+        raise HawkError(f"{name}: a complex value is a Vector[2] (re, im), got shape {shape}")
+    value = Value(node_of(z))
+    return value[0], value[1]
+
+
+def cmul(a: Any, b: Any) -> Value:
+    """The product of two complex values held as ``Vector[2]`` (re, im)."""
+    (ar, ai), (br, bi) = _pair(a, "cmul"), _pair(b, "cmul")
+    return vec(ar * br - ai * bi, ar * bi + ai * br)
+
+
+def conj(z: Any) -> Value:
+    """The complex conjugate of a ``Vector[2]`` (re, im)."""
+    re, im = _pair(z, "conj")
+    return vec(re, -im)
+
+
+def abs2(z: Any) -> Value:
+    """``re**2 + im**2`` of a ``Vector[2]`` (re, im): the squared modulus."""
+    re, im = _pair(z, "abs2")
+    return re * re + im * im
+
+
+def arg(z: Any) -> Value:
+    """The phase of a ``Vector[2]`` (re, im), ``atan2(im, re)``."""
+    re, im = _pair(z, "arg")
+    return atan2(im, re)
 
 
 def argmax(v: Any, /, *components: Any) -> Value:

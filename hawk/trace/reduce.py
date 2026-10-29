@@ -246,11 +246,6 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, policy: Any) -> Any:
             f"{call}: a {op} over some of the lane axes is in the next release; "
             f"hawk.{op}(x) (one value for the run) and hawk.sum/mean(x, over=...) "
             "work now")
-    if kept and policy == "ordered":
-        raise HawkError(
-            f"{call}: policy='ordered' over some of the lane axes is in the next "
-            "release; use policy='auto' or 'compensated' here (hawk.sum(x, "
-            "policy='ordered') over every axis is ordered now)")
     if where_mask is not None:
         mask = where_mask if isinstance(where_mask, Value) else Value(node_of(where_mask))
         if mask.ttype.dtype != "bool" or mask.ttype.shape:
@@ -262,6 +257,12 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, policy: Any) -> Any:
         value = select(mask, value, _identity(base))
     if not kept:
         term = value / real(n_samples()) if op == "mean" else value
+        from ..emit.policy import linalg_form
+        from ..ir.team import BlockSum, wanted
+
+        if base == "sum" and wanted(node_of(term), linalg_form()):       # one key, every lane
+            return Value(BlockSum("sum", node_of(term), key=index_node(0), count=index_node(1),
+                                  policy=policy))
         return Value(ReduceSamples(base, node_of(term), policy=policy))
     if op == "mean":
         value = value / real(_product([_extent(axes, i) for i in gone]))
@@ -273,9 +274,13 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, policy: Any) -> Any:
         stride *= axes[i][1] or 1
     count = _product([_extent(axes, i) for i in kept])
     count = Value(index_node(count)) if isinstance(count, int) else count
-    return Reduced(ReduceSamples("sum", node_of(value), key=node_of(key),
-                                 count=node_of(count), policy=policy,
-                                 kept=tuple(axes[i] for i in kept)),
+    from ..emit.policy import linalg_form
+    from ..ir.team import BlockSum, wanted
+
+    cls = BlockSum if wanted(node_of(value), linalg_form(), policy) else ReduceSamples
+    return Reduced(cls("sum", node_of(value), key=node_of(key),
+                       count=node_of(count), policy=policy,
+                       kept=tuple(axes[i] for i in kept)),
                    tuple(axes[i] for i in kept))
 
 
@@ -285,7 +290,9 @@ def sum(x: Any, over: Any = None, where: Any = None, policy: str = "auto") -> An
     lanes (``where=`` false) add nothing; ``policy`` is the sum contract
     (``"auto"``, ``"compensated"``, ``"ordered"``). Over every axis the result
     may be read back later in the body (a stage boundary); over some axes it is
-    an output, one value per kept coordinate, bound ``(*payload, *kept)``."""
+    an output, one value per kept coordinate, bound ``(*payload, *kept)``. Over some axes,
+    ``policy="ordered"`` adds each key's lanes in lane order in a stage of its own (no atomics: the
+    same bits on every launch, for any lane count); the default policies commit atomically."""
     return _reduce("sum", x, over, where, policy)
 
 
@@ -372,7 +379,12 @@ def scatter(sink: Any, policy: str = "auto") -> Any:
     """``hawk.scatter(sink)[key] += v`` adds ``v`` into ``sink`` at ``key``,
     ``= v`` stores it there. Many lanes may share a key; the adds are combined
     (atomics or a segmented sum), never a race; the order is not fixed unless
-    ``policy="ordered"``. ``"auto"`` and ``"compensated"`` add with a
+    ``policy="ordered"``: then each key's adds are made in lane order within fixed lane chunks and the
+    chunks are added in order (no atomics: the same bits on every launch for one lane count and one
+    target size, ULP of ``np.add.at`` otherwise). A scalar or vector payload; any number of such
+    statements, and in a ``for`` of static trip; a lane that skips it (a masked or index-set lane)
+    adds nothing, and a negative key adds nothing (under ``policy="ordered"`` only -1 is the skip key: any
+    other key outside the target is reported by name). ``"auto"`` and ``"compensated"`` add with a
     correction kept in a companion plane ``<sink>_c`` that the runtime owns
     (the caller never passes it); ``"plain"`` is the atomic add alone. ``key``
     is an index, one coordinate per axis of a sink declared with named axes, an
@@ -430,10 +442,8 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
         raise HawkError(f"{where}: policy='or' is for |= only")
     if op == "=" and policy != "auto":
         raise HawkError(f"{where}: a store has no sum contract; policy= is for += only")
-    if policy == "ordered":
-        raise HawkError(
-            f"{where}: policy='ordered' on a scatter is in the next release; use "
-            "policy='auto' or 'compensated'")
+    if policy == "ordered" and op == "+=" and len(ref.ttype.shape) > 1:
+        raise HawkError(f"{where}: policy='ordered' adds a scalar or a vector payload")
     if isinstance(ref, MutableRef) and isinstance(current, Value) and not (
             isinstance(current.node, Leaf) and current.node.kind == "prior_read"):
         raise HawkError(

@@ -83,6 +83,38 @@ def newton_step(C: Matrix[22, 22], x: Vector[22], f: Vector[22], dx: Mutable[Vec
     dx, info = m.solve(jac(C, x, 22), f)
 ```
 
+## Past 32 by 32: a team per matrix
+
+Up to `n = 32` a lane holds its matrix itself, one thread per lane. Bigger matrices (up to `4096 x 4096`) use the
+same calls, `m.solve`, `m.lu`, `m.cholesky`, `m.eigh`, `m.lstsq` and the rest, and nothing in the kernel changes. hawk
+splits the launch where such a call sits: a stage before it stores each lane's matrix in scratch, a team of threads
+works one matrix in place, and a stage after reads the answer back. eagle owns the scratch and launches the stages in
+order, in one captured graph, so run these kernels through `eagle.deploy(...).run` or `.bind`.
+
+```python
+@hawk.kernel
+def fit(J: Matrix[71, 71], r: Vector[71], x: Mutable[Vector[71]], info: Mutable[Int32]):
+    x, info = m.solve(J, r)            # 71 by 71 per lane: a team per matrix
+```
+
+Size alone picks the form: `n <= 32` is the one-thread form, bit for bit as before, and `n > 32` is a team. To
+override it, pass `linalg_form=` to `hawk.build_bundle`: `"auto"` (the default), `"team"` (a team at every size) or
+`"thread"` (refuses a matrix above 32 by name). The override is a build option; kernel code never changes.
+
+Least squares with more than 32 unknowns (`m.lstsq` of an `m x n` matrix, `n > 32`) uses Householder QR, which does
+not square the conditioning. A product summed over rows into a dense block, `hawk.sum(m.outer(j, j), over=...)`
+and `hawk.sum(j * r, over=...)`, is built as one ordered block sum instead of one sink per entry.
+
+What to expect:
+
+- The team result is the same bits for any team size. Against the one-thread form (run both with `linalg_form=`) it
+  agrees to rounding, not bit for bit.
+- A team call inside a loop body, or under a `launch.box`, is refused by name. Iterate by replaying the plan.
+- Scratch is memory, not registers: each lane needs about `n*n` elements of the kernel's width for the matrix, and an
+  eigen-decomposition about three times that. A bind whose scratch is larger than the free device memory is refused,
+  with the byte sum and the stage. 130 lanes of `1800 x 1800` doubles need 3.4 GB for the matrices alone; one lane of
+  `800 x 800` needs 5 MB. Per-routine figures are on aether's team linear algebra page.
+
 ## `info`
 
 `info` is an `Int32` per lane: zero when the factorisation held. A positive value
@@ -124,6 +156,6 @@ fit is refused rather than overflowed. See {doc}`Embedded C target <embedded>`.
 
 ## Limits
 
-- Sizes are static and capped. <!-- limit: la-size --> The bind refuses a larger matrix and names the cap; split the problem into blocks, or solve it outside the kernel.
-- No complex, general (non-symmetric) eigenproblem, QR, SVD or pseudo-inverse yet. <!-- limit: la-more --> For these, factor in the caller and pass the result in as a plane; they are on the list.
+- Sizes are static and capped at 4096. <!-- limit: la-size --> The bind refuses a larger matrix and names the cap; split the problem into blocks, or solve it outside the kernel.
+- No complex, general (non-symmetric) eigenproblem, SVD or pseudo-inverse yet, and QR only as the least-squares solve past 32 unknowns. <!-- limit: la-more --> For these, factor in the caller and pass the result in as a plane; they are on the list.
 - A matrix input binds with the exact lane shape. <!-- limit: la-broadcast --> Only vectors and scalars broadcast along a `Grid`; expand the matrix first.

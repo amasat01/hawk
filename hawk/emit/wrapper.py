@@ -76,27 +76,32 @@ class ActiveSpec:
     1 it holds group indices and position ``t`` reads sample ``map[t / group]
     * group + t % group``."""
 
-    map_binding: str
+    map_binding: str | None     # None: the prefix form, lane ``t`` runs lane ``t``
     count_binding: str
     group: int = 1
+    #: The map word, 32 or 64 bits (the count is always 32).
+    map_bits: int = 32
 
 
 def active_reads(active: ActiveSpec, position: str) -> tuple:
     """``(count_expr, sample_expr)``: the live count and the sample at
     launch position ``position``, shared by both wrappers.
 
-    The map and count are 32-bit words (eagle's compaction), unlike a HAWK
-    integer plane's 64-bit ``Int`` spelling, so both read through their
-    views' raw data pointers as ``std::int32_t``."""
-    def word(binding: str, at: str) -> str:
-        return f"reinterpret_cast<const std::int32_t*>({binding}.data())[{at}]"
+    The count is a 32-bit word and the map is 32-bit (eagle's compaction) or,
+    for a lane set over an extent past ``2**31 - 1``, 64-bit; both read through
+    their views' raw data pointers, unlike a HAWK integer plane's ``Int``
+    spelling."""
+    def word(binding: str, at: str, bits: int = 32) -> str:
+        return f"reinterpret_cast<const std::int{bits}_t*>({binding}.data())[{at}]"
 
+    if active.map_binding is None:
+        return word(active.count_binding, "0"), f"({position})"
     if active.group > 1:
         g = active.group
         return (word(active.count_binding, "0"),
-                f"static_cast<long long>({word(active.map_binding, f'({position}) / {g}')})"
+                f"static_cast<long long>({word(active.map_binding, f'({position}) / {g}', active.map_bits)})"
                 f" * {g} + ({position}) % {g}")
-    return word(active.count_binding, "0"), word(active.map_binding, position)
+    return word(active.count_binding, "0"), word(active.map_binding, position, active.map_bits)
 
 
 def lane_loop_simd(wrapper, walk: Walk, active: ActiveSpec | None) -> bool:
@@ -104,7 +109,7 @@ def lane_loop_simd(wrapper, walk: Walk, active: ActiveSpec | None) -> bool:
     form: not behind a grouped map, whose positions are not contiguous."""
     simd_safe = getattr(wrapper, "simd_safe", None)
     return (simd_safe is not None and simd_safe(walk)
-            and not (active is not None and active.group > 1))
+            and not (active is not None and (active.group > 1 or walk.reads_lane_position)))
 
 #: Roles a body WRITES through. Their view binds non-const: a ``const``
 #: ``View`` returns a read-only ``ConstSampleRef`` and cannot be assigned
@@ -198,12 +203,14 @@ class Wrapper(Protocol):
         on the device."""
 
     def sample_sum_frame(self, width: int, elem: str, store: str,
-                         op: str = "sum") -> tuple:
+                         op: str = "sum", live: str | None = None) -> tuple:
         """``(open, close)`` around the body of a kernel with ``sample_sum``
         sinks: the body writes ``width`` terms of type ``elem`` per sample
         into ``hawk_ss``; each row of 32 samples is reduced by ``op`` (sum,
         max or min) and handed to ``store`` (the entry-local
-        ``hawk_ss_store``) at row ``hawk_row``."""
+        ``hawk_ss_store``) at row ``hawk_row``. ``live`` (a C++ expression) is
+        the device-read count of a prefix form: samples at or past it add the
+        identity, and a row wholly past it is not stored."""
 
     def dispatch(self, kind_spelling: str, branch_spellings: Sequence[str],
                  policy: str, **kw: object) -> str:
@@ -267,6 +274,12 @@ _RUN_INCLUDE = "#include <aether/accum/run.h>\n"
 #: that calls it.
 _LINALG_CALL = "aether::linalg::"
 _LINALG_INCLUDE = "#include <aether/linalg/linalg.h>\n"
+_TEAM_INCLUDE = "#include <aether/linalg/team.h>\n"
+
+#: The ray primitives' header, likewise.
+_RAY_CALL = "aether::geometry::"
+from .team import TEAM_CALL as _TEAM_CALL  # noqa: E402
+_RAY_INCLUDE = "#include <aether/geometry/geometry.h>\n"
 
 #: The rolled-loop twins' header (:mod:`hawk.emit.policy`), likewise.
 _RT_CALL = "aether::rt::"
@@ -877,7 +890,8 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             finish: bool = False, spacing: bool = False, mix: bool = False,
             integers: bool = False, sample_sum: bool = False,
             runs: bool = False, fold: bool = False, linalg: bool = False,
-            rt: bool = False, scatter_or: bool = False) -> str:
+            rt: bool = False, scatter_or: bool = False, rays: bool = False,
+            team: bool = False) -> str:
     """Includes + the scalar-mode aliases + the reconstruction helpers.
 
     ``compensated``/``store_compensated`` reach :func:`abi_helpers`'s gate.
@@ -886,7 +900,8 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
     ``runs`` the run commits' header."""
     includes = _INCLUDES
     extra = ((_RANDOM_INCLUDE if needs_random else "") + (_RUN_INCLUDE if runs else "")
-             + (_LINALG_INCLUDE if linalg else "") + (_RT_INCLUDE if rt else ""))
+             + (_LINALG_INCLUDE if linalg else "") + (_RT_INCLUDE if rt else "")
+             + (_RAY_INCLUDE if rays else "") + (_TEAM_INCLUDE if team else ""))
     if extra:
         includes = includes.replace(_RANDOM_INCLUDE_MARKER,
                                     _RANDOM_INCLUDE_MARKER + extra, 1)
@@ -904,7 +919,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
                   body: Body | None = None,
                   segment: SegmentSpec | None = None,
                   active: ActiveSpec | None = None, one_step=None,
-                  box=None) -> Source:
+                  box=None, team: int | None = None) -> Source:
     """Assemble ONE translation unit around the ONE body string.
 
     ``target`` is the :class:`hawk.targets.Target` row: its writer spells the
@@ -926,6 +941,9 @@ def render_source(name: str, sinks, walk: Walk, target, *,
     other word the fused loop. Each side opens with its own empty device
     ``asm`` marker so the compiler can't fold the two together. Omitted,
     the TU is unchanged.
+
+    ``team`` (the threads per team of a team stage, :mod:`hawk.emit.team`) makes the lane the
+    block on the device; the host entry is the plain lane loop, a team of one.
 
     ``box`` (:class:`hawk.emit.box.Box`, from :func:`hawk.emit.box.thread_box`)
     emits the plain entry with a thread box: each thread computes ``box.T``
@@ -967,8 +985,10 @@ def render_source(name: str, sinks, walk: Walk, target, *,
     # other wrapper's call and text are unchanged. A wrapper with lane
     # guards closes its loop from the same arguments it opened with.
     prologue_kw: dict = {} if active is None else {"active": active}
+    if team is not None and getattr(wrapper, "team_flat", None) is not None:
+        prologue_kw["team"] = team      # the device lane is the block, the team its threads
     if getattr(wrapper, "simd_safe", None) is not None:
-        prologue_kw["simd"] = lane_loop_simd(wrapper, walk, active)
+        prologue_kw["simd"] = team is None and lane_loop_simd(wrapper, walk, active)
     lane_guards = getattr(wrapper, "lane_guards", None)
     if lane_guards is not None:
         prologue_kw["guards"] = lane_guards(walk)
@@ -989,7 +1009,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
     if sums:
         opened, closed = wrapper.sample_sum_frame(
             len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums),
-            sums[0].op)
+            sums[0].op, None if active is None else active_reads(active, "0")[0])
         loop = [opened, body.text, closed]
     loop = _with_runs(loop, body.text)
     parts = [
@@ -1002,6 +1022,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
                integers=_INT_CALL in body.text, sample_sum=bool(sums),
                runs=RUN_CALL in body.text, fold=bool(walk.companions),
                linalg=_LINALG_CALL in body.text, rt=_RT_CALL in body.text,
+               rays=_RAY_CALL in body.text, team=_TEAM_CALL in body.text,
                scatter_or=_OR_CALL in body.text),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
@@ -1047,7 +1068,8 @@ def fold_entries(name: str, walk: Walk, wrapper) -> list:
 def _refuse_sample_sums(sums, *, segment, active, one_step) -> None:
     """A row sums 32 consecutive samples of ONE warp; the segmented,
     active-set and ``_persist`` entries map a warp onto other samples."""
-    entry = ("segmented" if segment is not None else "active-set" if active is not None
+    entry = ("segmented" if segment is not None
+             else "active-set" if active is not None and active.map_binding is not None
              else "_persist" if one_step is not None else None)
     if len({s.op for s in sums}) > 1:
         raise HawkError(
@@ -1218,6 +1240,7 @@ def _render_two_paths(name: str, sinks, walk: Walk, target, *,
                 integers=_INT_CALL in fused.text + single.text,
                 linalg=_LINALG_CALL in fused.text + single.text,
                 rt=_RT_CALL in fused.text + single.text,
+                rays=_RAY_CALL in fused.text + single.text,
                 scatter_or=_OR_CALL in fused.text + single.text),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),

@@ -242,7 +242,7 @@ def test_the_comparison_can_detect_a_body_that_is_not_partition_invariant(
     _assert_bit_identical(whole, oracle, "the plant, whole-view")
 
     split = eplan.plan(plugin, structure=eexec.HostTeam, npartitions=K).run(**kw)
-    assert split.tobytes() != oracle.tobytes(), (
+    assert np.asarray(split).tobytes() != np.asarray(oracle).tobytes(), (
         "the planted count-reading body agreed with the oracle under "
         f"{K} partitions; this row cannot detect a body that is not "
         "partition-invariant, and every bit-identity assertion above is vacuous"

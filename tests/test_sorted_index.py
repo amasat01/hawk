@@ -4,8 +4,8 @@
 """``Sorted[Index]``: a per-lane Index plane whose values never decrease along the
 flat lane. A promise the compiler may build on; the bind verifies it only when
 ``HAWK_CHECK_SORTED`` is set (an O(n) pass), refusing at the first position that
-breaks it. The plane is otherwise an ``Index``, and an ``Index`` binds an int32
-column as well as an int64 one."""
+breaks it. The plane is otherwise an ``Index``, and an ``Index`` binds an int32 column
+(an int64 one that fits is converted)."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def loaded(tmp_path_factory, cache_dir):
 
 
 def _data(n=40):
-    seg = np.sort(np.random.default_rng(4).integers(0, SEGMENTS, n)).astype(np.int64)
+    seg = np.sort(np.random.default_rng(4).integers(0, SEGMENTS, n)).astype(np.int32)
     x = np.random.default_rng(5).random(n)
     return x, seg, np.bincount(seg, weights=x, minlength=SEGMENTS)
 
@@ -141,8 +141,8 @@ def test_the_int32_column_is_checked_for_order_too(loaded, monkeypatch):
         rt.run(loaded["by_segment"], x=x, seg=seg, acc=np.zeros(SEGMENTS))
 
 
-def test_other_integer_widths_and_floats_are_still_refused(loaded):
+def test_other_integer_widths_and_floats_are_refused(loaded):
     x, seg, _ = _data()
     for bad in (seg.astype(np.int16), seg.astype(np.float64)):
-        with pytest.raises(HawkError, match=r"'seg'.*expected dtype int64"):
+        with pytest.raises(HawkError, match=r"'seg'.*expected dtype int32"):
             rt.run(loaded["by_index"], x=x, seg=bad, acc=np.zeros(SEGMENTS))

@@ -49,9 +49,11 @@ from ..ir.loops import exit_kwargs
 from ..ir.nodes import (ADJOINT_PREFIX, COMPANION_SUFFIX, DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish,
                         Op, ReduceSamples, SampleSum, param_cell_names)
 from ..ir.slotwise import slotwise
+from ..ir.team import expand_stores
 from ..ir.walk import dispatch_groups
 from ..types import INT_PLANE_DTYPES, TensorType
 from .altpath import AltPath
+from .ordered import kept_of, order
 from .jump import JumpPlan, drop_width, jump_of
 from .loops import _taken_row, forward_loop, guarded_select, reverse_loop
 from .rules import rule_for, zero_like
@@ -258,14 +260,15 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
     cells = param_cell_names(canonical_nodes(sinks)[0])
     if cells:
         return _vjp_param_cells(primal, cells, wrt, primal_unit, policy)
-    return _vjp(primal, sinks, wrt, primal_unit, policy, summed=())
+    return _vjp(primal, sinks, wrt, primal_unit, policy, summed=(), kept=kept_of(tuple(getattr(primal, "sinks", primal))))
 
 
 def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
          primal_unit: str | None, policy: Mapping[str, str] | None,
-         summed: tuple) -> Derived:
+         summed: tuple, kept: tuple | None = None) -> Derived:
     """:func:`vjp` proper; the gradient of each input named in ``summed``
-    is summed over samples (:class:`~hawk.ir.nodes.SampleSum`)."""
+    is summed over samples (:class:`~hawk.ir.nodes.SampleSum`). ``kept`` is set when the primal
+    stores an ordered keyed sum: its scatters become an ordered log (:mod:`hawk.diff.ordered`)."""
     overrides = _policy_overrides(primal, policy)
     jump = jump_of(primal)
     drop_width((), wrt, jump)
@@ -323,6 +326,8 @@ def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
     held = getattr(primal, "broadcast", ())
     scatters = _compensated(scatters, {name(leaf.name) for leaf in inputs if leaf.name in held})
     out = slotwise(_mask_termination(gradients + list(scatters), primal))
+    if kept is not None:
+        out = order(out, kept)
     names = tuple(leaf.name for leaf in inputs)
     if plan is not None:
         out += plan.spread_cells()
@@ -797,7 +802,7 @@ def _sinks_of(primal: Any) -> tuple[Sink, ...]:
     # Termination is DISCRETE: a primal's finish statement has no derivative,
     # so the derived kernel binds no counter, writes no mask and carries no
     # sidecar ``finish``; it keeps the primal's mask READ (``_mask_termination``).
-    kept = tuple(s for s in sinks if not isinstance(s, Finish))
+    kept = expand_stores(s for s in sinks if not isinstance(s, Finish))
     if any(_sets_bits(s) for s in kept):
         raise HawkError(
             f"{primal!r} sets bits by key (hawk.scatter(y, policy=\"or\")): a bit mask is "

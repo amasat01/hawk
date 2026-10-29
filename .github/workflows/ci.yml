@@ -195,7 +195,7 @@ jobs:
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
         run: |
           cd hawk
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]'
+          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
 
       - env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
@@ -334,7 +334,7 @@ jobs:
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
         run: |
           cd hawk
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]'
+          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
 
       - env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
@@ -420,14 +420,16 @@ jobs:
       # toolchain pins) and the runner image. On a hit the job succeeds without building.
       - id: memo
         run: |
-          echo "digest=$(hawk/.github/ci_digest.sh --tree hawk --skip docs/ --skip .github/ --tag hawk --tree aether --skip docs/ --skip .github/ \
+          digest=$(hawk/.github/ci_digest.sh --tree hawk --skip docs/ --skip .github/ --tag hawk --tree aether --skip docs/ --skip .github/ \
             --tree eagle --skip docs/ --skip .github/ --tree raptor --skip docs/ --skip .github/ \
-            --file hawk/.github/workflows/ci.yml --str "${ImageVersion:-}")" >> "$GITHUB_OUTPUT"
+            --file hawk/.github/workflows/ci.yml --str "${ImageVersion:-}") || exit 1
+          [ -n "$digest" ] || { echo "::error::empty digest"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - id: pass
         uses: actions/cache/restore@v6
         with:
           path: ci-pass
-          key: ci-pass-v1-tsan-ft-${{ steps.memo.outputs.digest }}
+          key: ci-pass-v2-tsan-ft-${{ steps.memo.outputs.digest }}
           lookup-only: true
       - id: plan
         env:
@@ -504,7 +506,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ci-pass
-          key: ci-pass-v1-tsan-ft-${{ steps.memo.outputs.digest }}
+          key: ci-pass-v2-tsan-ft-${{ steps.memo.outputs.digest }}
 
   ft-stress:
     needs: docs-fresh
@@ -632,7 +634,7 @@ jobs:
         run: |
           cd hawk
           # SciPy ships no cp313t wheel: take the newest wheel over an sdist build
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]'
+          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
 
       # An ft leg is vacuous on a GIL interpreter (every ft row skips) and the
       # harness refuses a forced GIL-off (-X gil=0 / PYTHON_GIL): assert the
@@ -749,7 +751,7 @@ jobs:
           python -m venv "$RUNNER_TEMP/venv"
           . "$RUNNER_TEMP/venv/bin/activate"
           pip install --quiet --upgrade pip
-          pip install --quiet --prefer-binary --find-links "$SIB_DIR" $SIB_PINS
+          pip install --quiet --prefer-binary --find-links "$SIB_DIR" $SIB_PINS "numpy>=1.26"
           pip install -v -Ccmake.define.EAGLE_PYTHON_WARN_AS_ERR=ON dist/raptor_eagle-*.tar.gz
           pip install -v -Ccmake.define.HAWK_WARN_AS_ERR=ON dist/raptor_hawk-*.tar.gz
           pip check

@@ -24,6 +24,10 @@ post-hoc edit of generated text. This module lands two seams:
   (eagle's ``ActiveSet``): the index prologue maps launch position ``t``
   to sample ``active_map[t]`` and stops at ``active_count``, so live
   samples share warps; the body is unchanged.
+* **Lane set** — ``Kind(..., lanes=IndexSet())`` runs a caller-built list of
+  lanes of the kernel's own space: launch lane ``t < count`` is lane
+  ``map[t]``. It is the active-set prologue without the mask, so a kernel
+  may accumulate or reduce under it (see :class:`IndexSet`).
 
 The custom-primitive seam (:mod:`hawk.ext.primitive`) adds a forward the
 author writes as an ordinary Python function of traced values, inlined at
@@ -40,14 +44,14 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from ..ir import HawkError
 from ..types import TensorType
 from .primitive import PrimitiveDef, primitive, primitives
 
-__all__ = ["Guard", "Kind", "Output", "PLAIN", "ATOMIC", "DEFAULT_GUARD",
+__all__ = ["Guard", "IndexSet", "Kind", "Output", "PLAIN", "ATOMIC", "DEFAULT_GUARD",
            "sink_policy", "compensated", "PrimitiveDef", "primitive", "primitives"]
 
 
@@ -174,6 +178,53 @@ class Guard:
         return () if self.mask is None else (self.mask,)
 
 
+@dataclass(frozen=True)
+class IndexSet:
+    """A caller-built set of lanes: launch lane ``t < count`` runs lane
+    ``map[t]`` of the kernel's own space (a flat grid, a ``Grid`` or a pair
+    grid), and ``hawk.lane_position()`` reads ``t``.
+
+    The build binds two ``lookup`` planes, ``active_map`` (ascending or not,
+    in range, each lane at most once) and ``active_count`` (``uint32``), the
+    names :class:`eagle.ActiveSet` already fills. Unlike
+    ``Guard(active_set=True)`` it needs no mask, and a kernel may commit keyed
+    sums under it; those sums are rounded in the order the lanes arrive, so
+    they match a dense launch to the ULP contract, not bit for bit.
+
+    ``width`` is the map word: ``"auto"`` (the default) is 32-bit, and the
+    caller picks the 64-bit unit when the dense extent is past ``2**31 - 1``
+    (:func:`hawk._lane_bind.index_width` makes the choice from the extent);
+    ``32`` and ``64`` force it. Only the 64-bit unit's key differs.
+
+    ``IndexSet(prefix=True)`` is the run-time sample count: launch lane ``t < count`` runs lane
+    ``t``, no map is read, and the build binds the one-element ``uint32`` plane ``active_count``
+    alone, so a captured graph stays valid when only that plane changes. One build bound at ``n``
+    lanes runs any count ``m <= n``; a count above ``n`` is refused at bind. Lanes ``>= count`` are
+    not touched: their outputs keep the values they held. A ``sample_sum`` (and ``hawk.sum`` of a
+    value) and a keyed sum add the live lanes only, and ``vjp`` of such a kernel under the same kind
+    does too."""
+
+    width: int | str = "auto"
+    prefix: bool = False
+
+    def __post_init__(self):
+        if self.width not in ("auto", 32, 64) or isinstance(self.width, bool):
+            raise HawkError(f"IndexSet(width=...) is 'auto', 32 or 64, got {self.width!r}")
+        if self.prefix and self.width != "auto":
+            raise HawkError("IndexSet(prefix=True) reads no map, so it has no width")
+
+    @property
+    def bits(self) -> int:
+        """The map word in bits: 64 only when asked for, else 32."""
+        return 64 if self.width == 64 else 32
+
+    def __repr__(self) -> str:
+        # part of a unit's key: only the 64-bit unit spells its width, so the
+        # 32-bit key is the same whether the width was left to "auto" or forced
+        return ("IndexSet(prefix=True)" if self.prefix
+                else "IndexSet(width=64)" if self.width == 64 else "IndexSet()")
+
+
 #: What a kind declaring no guard gets: gate on a bound ``terminated``
 #: slot. A kernel binding none is unguarded, trivially.
 DEFAULT_GUARD = Guard("terminated")
@@ -253,9 +304,25 @@ class Kind:
     guard: Guard = DEFAULT_GUARD
     quantities: Sequence[object] = field(default=())
     compile_hook: Callable | None = None
+    lanes: IndexSet | None = None
+
+    def __repr__(self) -> str:
+        # the dataclass spelling for every kind without a lane set, so a kind's
+        # repr (part of a unit's key) is unchanged for every existing kernel
+        shown = [f for f in fields(self) if f.name != "lanes" or self.lanes is not None]
+        return (f"{type(self).__name__}("
+                + ", ".join(f"{f.name}={getattr(self, f.name)!r}" for f in shown) + ")")
 
     def __post_init__(self) -> None:
         from ..trace.decl import Plane, resolve
+
+        if self.lanes is not None:
+            if not isinstance(self.lanes, IndexSet):
+                raise HawkError(f"Kind({self.slug!r}): lanes= is an IndexSet, got {self.lanes!r}")
+            if self.guard.active_set:
+                raise HawkError(
+                    f"Kind({self.slug!r}): lanes=IndexSet() and Guard(active_set=True) both "
+                    "read active_map/active_count; declare one of them")
 
         resolved: dict[str, Any] = {}
         for name, decl in dict(self.vocabulary).items():
@@ -355,7 +422,7 @@ def _merge_vocabulary(layers: Sequence[tuple[str, Mapping[str, Any]]],
 #: (``output = ...``), by plain assignment — every field except ``slug``
 #: (the class-statement keyword) and ``vocabulary`` (built from the class
 #: body's own annotations instead).
-_KIND_SEAM_FIELDS = ("output", "sink", "guard", "quantities", "compile_hook")
+_KIND_SEAM_FIELDS = ("output", "sink", "guard", "quantities", "compile_hook", "lanes")
 
 
 def _class_scope() -> dict[str, Any]:

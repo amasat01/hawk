@@ -43,6 +43,7 @@ from ..ir.nodes import (
     Leaf,
     Op,
     Primitive,
+    LanePosition,
     SampleIndex,
     SampleSum,
     Select,
@@ -61,6 +62,7 @@ from ..ir.walk import canonical_nodes
 from ..types import TensorType
 from . import rtstore
 from .box import BoxStore
+from ..ir.team import TeamStore
 from .policy import rolled
 from .writer_aether import AETHER
 from .dispatch import _DispatchMixin
@@ -540,6 +542,8 @@ class _Renderer(_DispatchMixin):
             return False
         if self.position.get(id(node)) in self.unrendered:
             return True
+        if isinstance(node, TeamStore):
+            return True         # the store loop reads the operand element by element
         return isinstance(node, Op) and (
             (node.kind in FACTORISATIONS and k == 0) or (node.kind in CONSUMERS and k == 1) or rolled(node))
 
@@ -799,6 +803,25 @@ class _Renderer(_DispatchMixin):
             (target, index, value))
         return True
 
+    def _ready_kids(self, node: Node) -> tuple:
+        """What must be rendered before ``node`` can be: its operands, or for a ``switch`` its selector
+        and every value its cases read that the flat walk renders (a loop's result, a named value):
+        the cases render into their own scopes, but they name those values."""
+        if not (isinstance(node, Dispatch) and node.policy in SWITCH_RENDERED):
+            return node.operands
+        kids, seen, stack = [node.selector], set(), list(node.branches)
+        while stack:
+            n = stack.pop()
+            if id(n) in seen:
+                continue
+            seen.add(id(n))
+            if self.position[id(n)] in self._outside:
+                kids.append(n)
+            else:
+                stack.extend((n.selector,) if isinstance(n, Dispatch) and n.policy in SWITCH_RENDERED
+                             else n.operands)
+        return tuple(kids)
+
     def _ready_times(self) -> list:
         """Per position: the position whose render makes the node renderable.
 
@@ -808,10 +831,7 @@ class _Renderer(_DispatchMixin):
         (``-1``: it reads none)."""
         ready: list = []
         for pos, node in enumerate(self.nodes):
-            if isinstance(node, Dispatch) and node.policy in SWITCH_RENDERED:
-                kids = (node.selector,)
-            else:
-                kids = node.operands
+            kids = self._ready_kids(node)
             at = max((ready[self.position[id(c)]] for c in kids), default=-1)
             group = self._fused.get(pos)
             if group is not None:
@@ -834,11 +854,7 @@ class _Renderer(_DispatchMixin):
         memo = self._late_ready
         if pos in memo:
             return memo[pos]
-        if isinstance(part, Dispatch) and part.policy in SWITCH_RENDERED:
-            kids = (part.selector,)
-        else:
-            kids = part.operands
-        at = max((self._ready_at(c, ready, late) for c in kids), default=0)
+        at = max((self._ready_at(c, ready, late) for c in self._ready_kids(part)), default=0)
         group = self._fused.get(pos)
         if group is not None:
             at = max(at, self.position[id(group[0])])
@@ -858,8 +874,7 @@ class _Renderer(_DispatchMixin):
                     continue
                 seen.add(p)
                 need.append(n)
-                stack.extend((n.selector,) if isinstance(n, Dispatch)
-                             and n.policy in SWITCH_RENDERED else n.operands)
+                stack.extend(self._ready_kids(n))
             for n in sorted(need, key=lambda n: self.position[id(n)]):
                 self._emit_outside(n)
             if op == "at+=":
@@ -1430,6 +1445,9 @@ class _Renderer(_DispatchMixin):
         if sink.name in _companions(self.sinks):
             return      # a ``policy="compensated"`` add's correction plane: same rule
         target = binding_name(sink.role, sink.name)
+        if isinstance(sink, TeamStore):
+            self.writer.team_store(self, sink, target, self._ref(sink.value))
+            return
         if isinstance(sink, TapeWrite):
             self.writer.tape_write(self, sink, target)
             return
@@ -1539,6 +1557,8 @@ class _Renderer(_DispatchMixin):
         unchanged."""
         if not hasattr(self.writer, "accum_run"):
             return None
+        if getattr(self.kind, "lanes", None) is not None:
+            return None                 # the lane facts read a dense lane id; a map breaks it
         from ..ir.lanes import key_run
 
         return key_run(self.sinks, sink)
@@ -1551,6 +1571,9 @@ class _Renderer(_DispatchMixin):
             return self.writer.leaf(self, node, materialised)
         if isinstance(node, Const):
             return self.writer.const(node)
+        if isinstance(node, LanePosition):
+            return self.writer.lane_position_value(
+                getattr(self.kind, "lanes", None) is not None or self.kind.guard.active_set)
         if isinstance(node, SampleIndex):
             return self.writer.sample_index_value()
         if isinstance(node, (LoopIndex, LoopCarry)):

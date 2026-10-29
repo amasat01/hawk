@@ -64,11 +64,24 @@ def _sample(code: str):
     if code == "spd3":
         g = RNG.normal(size=(3, 3))
         return g @ g.T + 3.0 * np.eye(3)
+    if code in _RAY_POINTS:
+        return np.array(_RAY_POINTS[code]) if isinstance(_RAY_POINTS[code], list) else _RAY_POINTS[code]
     raise AssertionError(code)
 
 
+#: Fixed scenes for the ray ops: the ray HITS each primitive, well inside it, so
+#: the central difference stays on the live branch (no RNG draw: no other row moves).
+_RAY_POINTS = {
+    "ro": [0.2, 0.1, -2.0], "rd": [0.05, -0.02, 1.0],
+    "ta": [-1.0, -1.0, 0.0], "tb": [1.0, -1.0, 0.2], "tc": [0.0, 1.5, -0.1],
+    "bo": [-3.0, 0.2, 0.1], "bd": [1.0, 0.1, 0.05],
+    "blo": [-1.0, -1.0, -1.0], "bhi": [1.2, 1.0, 0.9],
+    "sc": [0.1, 0.0, 0.0], "sr": 1.3,
+}
+
 _TTYPE = {"s": S, "sp": S, "su": S, "sg1": S, "v3": V3, "v3p": V3, "q": Q, "m33": M33,
-          "m32": M32, "spd3": M33, "gen3": M33}
+          "m32": M32, "spd3": M33, "gen3": M33,
+          **{k: (S if k == "sr" else V3) for k in _RAY_POINTS}}
 _ROLE = {0: "per_sample", 1: "vec_in", 2: "mat_in"}
 
 
@@ -119,10 +132,30 @@ LINALG_CASES = [
     ("eigh_v", ("gen3",), lambda a: mk("eigh_v", (mk("eigh", (a,)),))),
     ("eigh_info", ("gen3",),
      lambda a: _lane("eigh_info", mk("eigh", (a,)), mk("eigh_w", (mk("eigh", (a,)),)))),
+    ("qr_solve_vector", ("m32", "v3"), lambda j, r: mk("qr_solve", (mk("qr", (j,)), r))),
+    ("qr_solve_matrix", ("m32", "m32"), lambda j, r: mk("qr_solve", (mk("qr", (j,)), r))),
+    ("qr_gram_solve_vector", ("m32", "v3"),
+     lambda j, r: mk("qr_gram_solve", (mk("qr", (j,)), mk("mv", (mk("transpose", (j,)), r))))),
+    ("qr_gram_solve_matrix", ("m32", "m32"),
+     lambda j, b: mk("qr_gram_solve", (mk("qr", (j,)), mk("mm", (mk("transpose", (j,)), b))))),
+    ("qr_info", ("m32", "v3"),
+     lambda j, r: _lane("qr_info", mk("qr", (j,)), mk("qr_solve", (mk("qr", (j,)), r)))),
     # pathwise mvn_sample: mean + L z, z the counter generator's draws
     ("mvn_composition", ("v3", "spd3"),
      lambda mean, cov: mk("add", (mean, mk("mv", (mk("chol", (cov,)), mk("vec", tuple(
          mk("random_normal", (Const(11, I32), Const(k, I32))) for k in range(3)))))))),
+]
+
+_TMAX = Const(100.0, S)
+
+#: The ray ops: ``[hit, a, b, c]``, checked on a scene that hits.
+RAY_CASES = [
+    ("ray_tri", ("ro", "rd", "ta", "tb", "tc"),
+     lambda o, d, a, b, c: mk("ray_tri", (o, d, a, b, c, _TMAX))),
+    ("ray_aabb", ("bo", "bd", "blo", "bhi"),
+     lambda o, d, lo, hi: mk("ray_aabb", (o, d, lo, hi, _TMAX))),
+    ("ray_sphere", ("bo", "bd", "sc", "sr"),
+     lambda o, d, c, r: mk("ray_sphere", (o, d, c, r, _TMAX))),
 ]
 
 #: ``(id, operand codes, builder)`` — one primal per rule under test.
@@ -287,6 +320,7 @@ CASES = [
     # The linear-algebra kinds: every consumer and projection reads ONE
     # factorisation node, and the checked derivative flows through it.
     *LINALG_CASES,
+    *RAY_CASES,
 ]
 
 

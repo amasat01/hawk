@@ -29,6 +29,7 @@ loop stays intact and the compiler decides whether to unroll it.
 from __future__ import annotations
 
 import ast
+import builtins
 import copy
 from typing import Any
 
@@ -54,6 +55,8 @@ MAXMIN_HELPER = "__hawk_maxmin__"
 SCATTER_HELPER = "__hawk_scatter__"
 #: The name a ``for`` unrolled while the body is traced reaches :func:`static_range` under.
 RANGE_HELPER = "__hawk_range__"
+#: Runs a bare-name call, rewriting a user helper called with traced values.
+CALL_HELPER = "__hawk_call__"
 REFS = "__hawk_refs__"
 
 _ALLOWED_STMTS = (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Expr, ast.If,
@@ -137,10 +140,18 @@ class _LoopBuilder:
     evaluator, like an ``if`` branch."""
 
     __slots__ = ("start", "stop", "step", "trip", "where", "names", "depth",
-                 "index", "_inits", "_originals", "_carries", "_exit")
+                 "index", "_inits", "_originals", "_carries", "_exit", "_count",
+                 "_dynamic")
 
     def __init__(self, bounds: tuple, where: str, names: tuple, index_name: str,
-                 depth: int) -> None:
+                 depth: int, max: Any = None) -> None:
+        self._count, self._dynamic = None, None
+        if any(isinstance(b, Value) for b in bounds):
+            bounds = self._runtime_bound(bounds, where, max)
+        elif max is not None:
+            raise HawkError(
+                f"{where}: `max=` bounds a run-time trip count, and this `range` is "
+                "already a compile-time one; drop `max=`")
         resolved = []
         for bound in bounds:
             if isinstance(bound, bool) or not isinstance(bound, int):
@@ -168,6 +179,31 @@ class _LoopBuilder:
         self._originals: tuple = ()
         self._carries: tuple = ()
         self._exit: tuple | None = None
+
+    def _runtime_bound(self, bounds: tuple, where: str, cap: Any) -> tuple:
+        """The static ``(stop,)`` of ``range(n)`` with a traced ``n``, and the loop's
+        clamped run-time count: ``n`` held to ``[0, cap]`` (``cap`` the author's
+        ``max=``, else the int range, and then the loop has no tape size)."""
+        from ..ir import make as _make
+
+        if len(bounds) != 1:
+            raise HawkError(
+                f"{where}: a run-time `range` takes one bound, `range(n)` (or "
+                "`range(n, max=K)`); a start and a step are compile-time ints")
+        node = node_of(bounds[0])
+        if node.ttype.shape != () or node.ttype.dtype != "i32":
+            raise HawkError(
+                f"{where}: a run-time `for` bound is a rank-0 integer index "
+                f"(i32), got {node.ttype!r}; build it with hawk.math.index(x, n) "
+                "or declare the parameter `Index`")
+        if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int)
+                                or cap < 1):
+            raise HawkError(f"{where}: `max=` is a compile-time int >= 1, got {cap!r}")
+        self._dynamic = "open" if cap is None else "max"
+        top = 2**31 - 1 if cap is None else cap
+        lowest = _make("max", (node, Const(0, node.ttype)))
+        self._count = lowest if cap is None else _make("min", (lowest, Const(top, node.ttype)))
+        return (top,)
 
     def carries(self, *values: Any) -> tuple:
         """Swap each carried name for its placeholder, remembering its initial
@@ -214,6 +250,12 @@ class _LoopBuilder:
         extra: dict = {}
         if self._exit is not None:
             extra = {"exit_cond": self._exit[0], "exit_values": self._exit[1]}
+        if self._count is not None and self._exit is not None:
+            raise HawkError(
+                f"{self.where}: a `for` bounded by a run-time value cannot also "
+                "`break`; fold the exit into the bound (the count is already per sample)")
+        if self._count is not None:
+            extra.update(count=self._count, dynamic=self._dynamic)
         loop = build_loop(self.index.node, self._carries, self._inits, nexts,
                           start=self.start, stop=self.stop, step=self.step,
                           **extra)
@@ -234,9 +276,9 @@ def static_range(*bounds: Any, where: str) -> range:
 
 
 def open_loop(*args: Any, where: str, names: tuple, index_name: str,
-              depth: int) -> _LoopBuilder:
+              depth: int, max: Any = None) -> _LoopBuilder:
     """The rewrite's entry point: resolve one ``for``'s bounds and open it."""
-    return _LoopBuilder(args, where, names, index_name, depth)
+    return _LoopBuilder(args, where, names, index_name, depth, max)
 
 
 def set_component(vector: Any, index: Any, value: Any, name: str) -> Any:
@@ -265,14 +307,14 @@ def set_component(vector: Any, index: Any, value: Any, name: str) -> Any:
                        (node, index_node(index), node_of(value))))
 
 
-def merge(cond: Any, on_true: Any, on_false: Any, name: str) -> Any:
+def merge(cond: Any, on_true: Any, on_false: Any, name: str, shared: bool = False) -> Any:
     """Merge one name's two branch values (the rewrite's ``select`` call)."""
     if isinstance(cond, bool):
         return on_true if cond else on_false
     if on_true is on_false:
         return on_true
     if isinstance(on_true, Value) or isinstance(on_false, Value):
-        return _as_switch(select(cond, on_true, on_false))
+        return _as_switch(select(cond, on_true, on_false), shared)
     if on_true == on_false:
         return on_true
     numbers = (int, float)
@@ -289,13 +331,13 @@ def merge(cond: Any, on_true: Any, on_false: Any, name: str) -> Any:
 _I32 = TensorType((), "i32")
 
 
-def _as_switch(value: Value) -> Value:
+def _as_switch(value: Value, shared: bool = False) -> Value:
     """An ``if``/``elif``/``else`` chain as a ``switch`` dispatch, when its ``select``
     would run an arm's costly work on every path: the value is a vector or matrix
-    (``aether::select`` evaluates every arm), or an arm's own transcendental,
-    division, loop or dispatch is read twice in it (so it is named ahead of the
-    ``?:``). A rank-0 chain whose costly work inlines into the ``?:`` is lazy
-    already and stays a ``select``.
+    (``aether::select`` evaluates every arm), one of several names the same ``if`` merges
+    (``shared``: their arms read the same work, so a ``?:`` names it ahead and runs it in every
+    lane), or an arm's own transcendental, division, loop or dispatch is read twice in it. A lone
+    rank-0 chain whose costly work inlines into the ``?:`` is lazy already and stays a ``select``.
 
     The selector is ``c0 ? 0 : c1 ? 1 : ... : n`` over the chain's conditions, so
     the dispatch picks exactly the arm the chain picks, whatever the conditions."""
@@ -313,7 +355,7 @@ def _as_switch(value: Value) -> Value:
             break
         if not isinstance(rest, Select) or rest.operands[0].ttype.shape:
             arms.append(rest)
-            if not _costly_arm(arms, conds, bool(node.ttype.shape)):
+            if not _costly_arm(arms, conds, bool(node.ttype.shape) or shared):
                 return value
             break
         conds.append(rest.operands[0])
@@ -322,7 +364,25 @@ def _as_switch(value: Value) -> Value:
     selector = Const(len(conds), _I32)
     for j in range(len(conds) - 1, -1, -1):
         selector = Select(conds[j], Const(j, _I32), selector, _I32)
-    return Value(Dispatch(selector, arms, "switch", node.ttype))
+    return Value(Dispatch(selector, _one_node_per_value(arms), "switch", node.ttype))
+
+
+def _one_node_per_value(arms: list) -> list:
+    """``arms`` with equal-structure nodes merged to one, so a value written twice
+    in a case is named once there (a case renders by node, not by structure)."""
+    from ..ir.split import _keys, _post_order
+    from ..ir.walk import substitute
+
+    while True:
+        order, key, first, swaps = _post_order(arms), {}, {}, {}
+        _keys(order, key)
+        for n in order:
+            rep = first.setdefault(key[id(n)], n)
+            if rep is not n:
+                swaps[id(n)] = rep
+        if not swaps:
+            return arms
+        arms = list(substitute(arms, swaps))
 
 
 def _switch_chain(node: Node) -> tuple | None:
@@ -340,22 +400,30 @@ def _switch_chain(node: Node) -> tuple | None:
     return conds, list(node.branches)
 
 
-def _costly_arm(arms: list, conds: list, vector: bool) -> bool:
-    """Whether some arm owns (no other arm and no condition reads it) a costly
-    node that a ``select`` would compute on every path."""
+def _costly_arm(arms: list, conds: list, shared: bool) -> bool:
+    """Whether some arm owns (no other arm and no condition reads it) a costly node that a
+    ``select`` would compute on every path. ``shared`` says the value is not read alone: a vector or
+    matrix, or one of several names an ``if`` merges, whose arms read the same work (a ``?:`` is lazy
+    only while nothing else reads that work, so a named transcendental runs in every lane). Alone, a
+    transcendental or division counts when its arm reads it twice, by structure: a value written
+    twice is read twice."""
+    from ..ir.split import _keys, _post_order
+
+    key: dict = {}
+    _keys(_post_order([*arms, *conds]), key)
     reach = [_reached(a) for a in arms]
-    shared = _reached(*conds)
+    common = _reached(*conds)
     for j, mine in enumerate(reach):
-        others = set(shared).union(*(r for k, r in enumerate(reach) if k != j))
+        others = set(common).union(*(r for k, r in enumerate(reach) if k != j))
         own = {k: n for k, n in mine.items() if k not in others}
         reads: dict = {}
         for n in own.values():
             for o in n.operands:
-                reads[id(o)] = reads.get(id(o), 0) + 1
+                reads[key[id(o)]] = reads.get(key[id(o)], 0) + 1
         for k, n in own.items():
             if isinstance(n, (Loop, Dispatch)):
                 return True
-            if (n.kind in SPECIAL_KINDS or n.kind == "div") and (vector or reads.get(k, 0) >= 2):
+            if (n.kind in SPECIAL_KINDS or n.kind == "div") and (shared or reads.get(key[k], 0) >= 2):
                 return True
     return False
 
@@ -776,8 +844,8 @@ def _check_range(st: ast.For, filename: str) -> None:
     traced one."""
     call = st.iter
     ok = (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
-          and call.func.id == "range" and call.args and not call.keywords
-          and len(call.args) <= 3)
+          and call.func.id == "range" and call.args and len(call.args) <= 3
+          and all(k.arg == "max" for k in call.keywords) and len(call.keywords) <= 1)
     if not ok or not isinstance(st.target, ast.Name):
         raise _err(st, filename,
                    "a `for` must be bounded by a `range(...)` over a single name — "
@@ -1231,6 +1299,11 @@ class _MaxMin(ast.NodeTransformer):
                 func=ast.Name(id=MAXMIN_HELPER, ctx=ast.Load()),
                 args=[ast.Constant(value=node.func.id), *node.args],
                 keywords=node.keywords), node)
+        if (isinstance(node.func, ast.Name) and not hasattr(builtins, node.func.id)
+                and not node.func.id.startswith("__hawk")):
+            return ast.copy_location(ast.Call(
+                func=ast.Name(id=CALL_HELPER, ctx=ast.Load()),
+                args=[node.func, *node.args], keywords=node.keywords), node)
         return node
 
 
@@ -1303,6 +1376,7 @@ class _Rewriter:
                 func=ast.Name(id=LOOP_HELPER, ctx=ast.Load()),
                 args=list(call.args),
                 keywords=[
+                    *call.keywords,
                     ast.keyword(arg="where", value=ast.Constant(value=where)),
                     ast.keyword(arg="names", value=ast.Tuple(
                         elts=[ast.Constant(value=n) for n in carried],
@@ -1355,6 +1429,11 @@ class _Rewriter:
                        "a `for` that scatters is unrolled while the body is traced, so "
                        "it may not `break`")
         call = st.iter
+        if call.keywords:
+            raise _err(st, self.filename,
+                       "a `for` that scatters is unrolled while the body is traced, so "
+                       "its bound is a compile-time int: `max=` belongs to a run-time "
+                       "`range(n, max=K)` that does not scatter")
         st.iter = ast.copy_location(ast.Call(
             func=ast.Name(id=RANGE_HELPER, ctx=ast.Load()), args=call.args, keywords=[
                 ast.keyword(arg="where", value=ast.Constant(
@@ -1392,7 +1471,7 @@ class _Rewriter:
                       ast.Subscript(value=ast.Name(id=then, ctx=ast.Load()),
                                     slice=ast.Constant(value=i), ctx=ast.Load()),
                       ast.Name(id=name, ctx=ast.Load()),
-                      ast.Constant(value=name)], keywords=[])))
+                      ast.Constant(value=name), ast.Constant(value=len(merged) > 1 and self.depth == 0)], keywords=[])))
         bound |= set(merged)
         return [ast.copy_location(ast.fix_missing_locations(s), st) for s in out]
 

@@ -62,7 +62,7 @@ from pathlib import Path
 
 from . import _cells, _core, _lane_bind
 from ._cells import ROW
-from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, widen_index
+from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, narrow_index, widen_index
 from ._plane_layout import (
     LayoutChoice,
     _native_extent,
@@ -290,6 +290,8 @@ class HostKernel:
         arrays = self._one_step_word(arrays)
         if self._index_inputs:
             arrays = widen_index(self._index_inputs, arrays)
+        if self.sidecar.get("index_planes"):
+            arrays = narrow_index(self.sidecar["index_planes"], arrays, self.sidecar.get("kernel", ""))
         _check_bind(self.sidecar, self.arg_spec, arrays, n_samples, choice)
         self._values, self._buffers = [], []
         widths = self.sidecar.get("arg_shapes", {})
@@ -561,6 +563,7 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
                             LayoutChoice(layout, axes))
         _lane_bind.check_total(sidecar, n_samples)
     if kernel_artifact.sidecar.get("stages"):
+        _refuse_unbound_names(kernel_artifact, arrays, _stage_names(kernel_artifact))
         if base != 0 or count not in (None, n_samples):
             raise HawkError(
                 f"{kernel_artifact.path.name}: this kernel reads a value reduced over "
@@ -569,6 +572,7 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
             _run_stages(kernel_artifact, n_samples, layout, arrays, owned)
         return
     cells = kernel_artifact.sidecar.get("cells") or {}
+    _refuse_unbound_names(kernel_artifact, arrays, {name for _, name in kernel_artifact.arg_spec} | set(cells))
     with kernel_artifact._lock:
         scratch = None
         if cells:
@@ -582,6 +586,25 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
         _fold_companions(kernel_artifact, arrays, owned)
         if scratch is not None:
             scratch.finish(outputs, base // ROW, -(-(base + count) // ROW))
+
+
+def _stage_names(first: HostKernel) -> set:
+    """Every plane name a stage of the split kernel ``first`` declares."""
+    sidecar = first.sidecar
+    names = {name for _, name in first.arg_spec}
+    for record in sidecar["stages"][1:]:
+        names |= {name for _, name in load(first.path.parent, record["kernel"]).arg_spec}
+    return names | set(sidecar.get("cells") or ())
+
+
+def _refuse_unbound_names(kernel_artifact: HostKernel, arrays: dict, declared: set) -> None:
+    """Refuse a bound name the kernel declares no slot for, as eagle's ``bind`` does: a plane passed
+    under a wrong name is otherwise never written, and its zeros read as a result."""
+    unknown = sorted(set(arrays) - declared - _lane_bind.free_labels(kernel_artifact.sidecar))   # ``<label>=N`` is no plane
+    if unknown:
+        raise HawkError(
+            f"kernel {kernel_artifact.sidecar.get('kernel', '?')!r}: {unknown} are not planes it declares "
+            f"(declared: {sorted(declared)})")
 
 
 def _keyed_planes(first: HostKernel, held: dict, n_samples: int) -> dict:
@@ -605,6 +628,29 @@ def _keyed_planes(first: HostKernel, held: dict, n_samples: int) -> dict:
     return out
 
 
+def _team_planes(first: HostKernel, held: dict, n_samples: int, arrays: dict) -> dict:
+    """The scratch planes the team stages of a split kernel work on (``team_planes`` of its
+    sidecar), ``lanes x per_lane`` elements each, made once per sample count. They are the
+    kernel's own: the stages write them before they read them, so they are never zeroed. A block
+    sum's plane has ``per_lane`` elements for each key (``keys``) rather than each lane; an ordered
+    scatter's partial sums (``per_target``) are ``chunks x targets`` cells its first stage zeroes, and
+    its key log (``fill``: -1) is refilled at the start of every run, so what an aborted launch left in it
+    changes nothing."""
+    import numpy as np
+
+    out = {}
+    for name, spec in (first.sidecar.get("team_planes") or {}).items():
+        dtype = np.int32 if spec["dtype"] == "int32" else first.scalar_type
+        units = _lane_bind.team_units(first.sidecar, spec, n_samples, arrays)
+        made = held.setdefault("team", {})
+        if (name, n_samples, units) not in made:
+            made[name, n_samples, units] = np.full(spec.get("per_lane", 1) * units, spec.get("fill", 0), dtype=dtype)
+        out[name] = made[name, n_samples, units]
+        if "fill" in spec:              # a plane that holds its fill at the start of every run
+            out[name].fill(spec["fill"])
+    return out
+
+
 def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
                 owned: dict) -> None:
     """A split kernel: stage ``k``, then the host finish of its cells, then
@@ -621,10 +667,13 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
                        for c, spec in cells.items()}
     values = {c: arrays[c] if c in arrays else held["own"][c] for c in cells}
     keyed = _keyed_planes(first, held, n_samples)
+    scratch_planes = _team_planes(first, held, n_samples, arrays)
+    checks: list = []
     for at, (stage, record) in enumerate(zip(held["stages"], first.sidecar["stages"])):
         names = {name for _, name in stage.arg_spec}
         bound = {k: v for k, v in arrays.items() if k in names and k not in cells}
         bound.update({k: v for k, v in keyed.items() if k in names})
+        bound.update({k: v for k, v in scratch_planes.items() if k in names})
         for cell in record["cells_in"]:
             column = np.asarray(values[cell]).reshape(-1)
             for k, plane in enumerate(_cells.planes(cell, cells[cell]["columns"])):
@@ -635,7 +684,13 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
             scratch, outputs, bound = stage._cell_scratch_for(
                 out, n_samples, {**bound, **{c: values[c] for c in out}})
         stage._bind_all(bound, n_samples, layout)
-        stage._launch(0, n_samples, n_samples)
+        grid = _lane_bind.team_grid(first.sidecar, record.get("team") or {}, n_samples, arrays)
+        if grid == 0:                   # an ordered scatter into no cells adds nothing
+            continue
+        if record.get("team", {}).get("grid") == "chunks":
+            first.scatter_chunks = grid     # the chunks the run added in (a run's record)
+            checks.append(record["team"])
+        stage._launch(0, grid, n_samples)
         later = {name for st in held["stages"][at + 1:] for _, name in st.arg_spec}
         mine = {c: t for c, t in owned.items() if c in names and c not in later}
         mine.update({c: t for c, t in (stage.sidecar.get("companions") or {}).items()
@@ -643,3 +698,6 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
         _fold_companions(stage, bound, mine)
         if scratch is not None:
             scratch.finish(outputs, 0, -(-n_samples // ROW))
+    for team in checks:
+        _lane_bind.check_scatter_status(first.path.stem, team, scratch_planes[team["status"]],
+                                        _lane_bind.target_size(arrays, team["of"]))

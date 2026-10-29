@@ -22,6 +22,7 @@ from typing import Any
 
 from ..ir import Const, HawkError, Node
 from ..ir import make as _make
+from ..ir.linalg import MAX_DIM
 from ..types import TensorType
 from .value import Value, node_of, random_normal, vec
 
@@ -222,7 +223,15 @@ def _normal_equations(name: str, j: Any, r: Any, damping: Any = None):
 def lstsq(j: Any, r: Any) -> tuple[Value, Value]:
     """``x, info = lstsq(J, r)``: minimise ``|J x - r|`` through the normal
     equations, ``J^T J x = J^T r``, by Cholesky. ``info > 0`` when ``J`` is
-    rank deficient; the conditioning is squared, as in any normal-equations solve."""
+    rank deficient; the conditioning is squared, as in any normal-equations solve.
+
+    With more than 32 unknowns (``J`` is ``m x n``, ``m >= n``, ``n > 32``) the solve is by
+    Householder QR on a team of threads per lane, which does not square the conditioning:
+    ``info`` is then the first column whose ``R`` diagonal is exactly zero."""
+    jn = node_of(j)
+    if len(jn.ttype.shape) == 2 and jn.ttype.shape[1] > MAX_DIM:
+        f = _make("qr", (jn,))
+        return Value(_make("qr_solve", (f, node_of(r)))), Value(_make("qr_info", (f,)))
     (factor, info), rhs = _normal_equations("lstsq", j, r)
     return cho_solve(factor, rhs), info
 

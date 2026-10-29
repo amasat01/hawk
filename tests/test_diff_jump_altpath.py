@@ -21,6 +21,7 @@ is differentiated by simulating the other side of one drawn switch
 from __future__ import annotations
 
 import numpy as np
+from conftest import declared
 import pytest
 
 import hawk
@@ -163,7 +164,8 @@ def test_a_lane_with_no_switch_in_reach_is_the_plain_tangent(tangent, lanes, tmp
 
     hawk.build([gate_off, Kernel("g", jvp(gate_off, wrt=("s",)))], d, targets=("host",), cache_dir=cache_dir)
     out = {k: np.zeros(LANES) for k in ("dot_tally", "dot_alive_out")}
-    hawk.run(hawk.load(d, "g"), u=lanes, s=S, dot_s=1.0, **out, n_samples=LANES)
+    loaded = hawk.load(d, "g")
+    hawk.run(loaded, **declared(loaded, {"u": lanes, "s": S, "dot_s": 1.0}), **out, n_samples=LANES)
     quiet = (np.abs(lanes - S) < W).sum(axis=0) == 0
     got, _ = tangent(KERNELS["gate"])
     assert quiet.sum() > LANES // 2 and np.array_equal(got[quiet], out["dot_tally"][quiet])
@@ -263,7 +265,7 @@ def test_a_slab_with_a_break_matches_the_likelihood_ratio(tmp_path, cache_dir):
     alt, lr = hawk.load(tmp_path / "a", "alt"), hawk.load(tmp_path / "b", "lr")
     per_run = {"through": [], "back": [], "bins": []}
     for r in range(runs):
-        common = dict(seed=np.arange(n, dtype=np.int64) + r * n, width=np.full(n, 1.0), c=0.7,
+        common = dict(seed=np.arange(n, dtype=np.int32) + r * n, width=np.full(n, 1.0), c=0.7,
                       sigma_t=1.0, sigma_ref=1.0, n_samples=n)
         got = {k: np.zeros(n) for k in ("dot_through", "dot_back")}
         ref = {k: np.zeros(n) for k in ("dot_through", "dot_back")}
@@ -291,7 +293,7 @@ def test_the_slab_reverse_is_the_transpose_of_the_forward(tmp_path, cache_dir):
         (tmp_path / sub).mkdir()
         hawk.build([history, Kernel(sub, derived)] if sub == "j" else [Kernel(sub, derived)],
                    tmp_path / sub, targets=("host",), cache_dir=cache_dir)
-    common = dict(seed=np.arange(n, dtype=np.int64), width=np.full(n, 1.0), c=0.7,
+    common = dict(seed=np.arange(n, dtype=np.int32), width=np.full(n, 1.0), c=0.7,
                   sigma_t=1.0, sigma_ref=1.0, n_samples=n)
     rng = np.random.default_rng(3)
     vt, vb = rng.normal(size=n), rng.normal(size=n)

@@ -195,7 +195,7 @@ def test_a_vjp_kernel_renders():
 
 def test_scattered_accumulate_is_a_clamped_plus_equals():
     s = render(D.scatter)
-    assert "aout_acc[hawk_clamp_index(psc_lane[hawk_i], aout_acc_len)] += " in s.text
+    assert "aout_acc[hawk_clamp_index(((hawk_int_t)psc_lane[hawk_i]), aout_acc_len)] += " in s.text
     assert "    int64_t            aout_acc_len;" in _FIELD_COMMENT.sub("", s.header)
     (row,) = [r for r in s.report["interface"] if r["field"] == "aout_acc"]
     assert row["direction"] == "inout" and row["runtime_length"] is True

@@ -51,6 +51,7 @@ from ..ir.nodes import (
     element_count,
     is_param_cell,
 )
+from ..ir.team import TeamStore
 from ..ir.walk import substitute
 from ..types import TensorType
 
@@ -288,6 +289,8 @@ def _resink(sink: Node, value: Node) -> Node:
         return sink.rebuilt(value)
     if isinstance(sink, Assign):
         return Assign(sink.name, value, sink.ttype)
+    if isinstance(sink, TeamStore):
+        return TeamStore(sink.name, value)
     raise HawkError(
         f"a promotion rebuilds Mutable commits, sample sums, keyed accumulates and a finish; "
         f"{sink.kind} {getattr(sink, 'name', '?')!r} is none of them")

@@ -400,7 +400,12 @@ def reverse_loop(loop: Loop, seeds: dict, inputs, name, jump=None,
             f"the loop over {loop.index.name!r} commits a sink once per iteration, "
             "which only a DERIVED loop does: second-order reverse mode through a "
             "`for` is not built")
-    if loop.count is not None:
+    if loop.dynamic == "open":
+        raise HawkError(
+            f"the loop over {loop.index.name!r} has a run-time trip count and no "
+            "`max=`, so reverse mode cannot size its tape: give `max=` so the tape "
+            "has a size, `range(n, max=K)`")
+    if loop.count is not None and loop.dynamic is None:
         raise HawkError(
             f"the loop over {loop.index.name!r} is a DERIVED loop bounded by a "
             "forward loop's per-sample iteration count: reverse-over-reverse "
@@ -420,7 +425,8 @@ def reverse_loop(loop: Loop, seeds: dict, inputs, name, jump=None,
     else:
         kind = classify_loop(loop)
     targets = _readable(loop)
-    count = None if loop.exit_cond is None else LoopCount(loop)
+    count = (loop.count if loop.dynamic else
+             None if loop.exit_cond is None else LoopCount(loop))
     if kind.name == ACCUMULATOR:
         return _reverse_accumulator(loop, kind, seeds, targets, inputs, name,
                                     count, jump, exclusive)
@@ -742,7 +748,8 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
         tangent.get(id(body[j])) or zero_like(loop.carries[j].ttype)
         for j in range(m))
     nexts = tuple(body) + dot_nexts
-    extra: dict = {"count": loop.count, "count_tail": loop.count_tail}
+    extra: dict = {"count": loop.count, "count_tail": loop.count_tail,
+                   "dynamic": loop.dynamic}
     if loop.exit_cond is not None:
         # The augmented loop leaves where the primal does, over the same
         # condition, so tangents are carried along exactly the iterations

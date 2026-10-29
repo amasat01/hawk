@@ -190,7 +190,7 @@ def bundles(tmp_path_factory, cache_dir):
 def _inputs():
     rng = np.random.default_rng(36)
     x = rng.uniform(-1.0, 1.0, N)
-    lane = (np.arange(N) % 4).astype(np.int64)
+    lane = (np.arange(N) % 4).astype(np.int32)
     terminated = np.zeros(N, dtype=bool)
     terminated[[1, 2, 5, 8, 9, 10, 15]] = True
     return x, lane, terminated

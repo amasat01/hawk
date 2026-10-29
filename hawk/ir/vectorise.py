@@ -133,6 +133,6 @@ def vectorises(walk: Walk, profile: str | None = None, scalar_type: str | None =
                 inside = _flat((*node.body_nodes(), *node.nexts, node.exit_cond))
                 if scalar_math and any(is_library_call(n) for n in inside):
                     return False        # no masked variant to call
-            elif node.trip > UNROLL_LIMIT:
+            elif node.trip > UNROLL_LIMIT or node.dynamic is not None:
                 return False
     return True

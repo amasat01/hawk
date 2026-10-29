@@ -91,6 +91,12 @@ def plan_view(sidecar: dict) -> dict:
            if sidecar.get("launch", {}).get("box") else {}),
         # the exact threads per block an emit that fixed one needs (``launch.block``)
         **({"block": sidecar["launch"]["block"]} if sidecar.get("launch", {}).get("block") else {}),
+        # the lane-set map a kernel runs over (``launch.index_set``), so the runtime checks it at bind
+        **({"index_set": sidecar["launch"]["index_set"]}
+           if sidecar.get("launch", {}).get("index_set") is not None else {}),
+        # per-thread local memory and its limit (``launch.local_*``), so the runtime can refuse at bind
+        **{k: sidecar["launch"][k] for k in ("local_bytes", "local_source", "local_limit")
+           if sidecar.get("launch", {}).get(k) is not None},
         # the bound ``Sorted[Index]`` inputs and the named-axis sinks, when declared
         **({"sorted_inputs": tuple(sidecar["sorted_inputs"])}
            if sidecar.get("sorted_inputs") else {}),

@@ -91,6 +91,8 @@ _SPLAT_BINARY = {"add": "add", "sub": "sub", "min": "min", "max": "max",
 _QUAT = {"quat_mul": "quat_mul", "quat_conj": "quat_conj", "quat_recip": "quat_recip",
          "quat_rotate": "quat_rotate", "as_pure": "quat_as_pure",
          "as_vec3": "quat_as_vec3"}
+#: The ray kinds: core functions of the same name (``aether_dsc.c_core``).
+_RAYS = ("ray_tri", "ray_aabb", "ray_sphere")
 #: Bytes one element of a dtype occupies in the C build, by scalar mode.
 _SIZEOF = {"f64": None, "f32": None, "i32": 8, "i64": 8, "int32": 4, "uint32": 4,
            "bool": 1}
@@ -307,6 +309,10 @@ class CWriter:
 
     def sample_index_value(self) -> str:
         """A ``SampleIndex`` node: the loop's own ``int64_t`` sample index."""
+        return SAMPLE_INDEX_IDENT
+
+    def lane_position_value(self, mapped: bool) -> str:
+        """A ``LanePosition`` node: the loop's own index (a C unit has no map)."""
         return SAMPLE_INDEX_IDENT
 
     def hoist(self, r, text: str, ttype: TensorType | None = None) -> str:
@@ -636,6 +642,9 @@ class CWriter:
             raise HawkError(_no_spelling(kind, max(ranks)))
         word = "vec" if rank == 1 else "mat"
         srcs = [o.ttype.dtype for o in node.operands]
+        if kind in _RAYS:
+            return (f"{self._core(kind)}("
+                    f"{', '.join(self._real(r, a, s) if not rk.ttype.shape else a for a, s, rk in zip(args, srcs, node.operands))})")
         if kind == "splat":
             return self._splat(r, args[0], srcs[0], t.shape)
         if kind == "vec":

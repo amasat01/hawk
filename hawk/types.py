@@ -52,6 +52,21 @@ class TensorType:
     dtype: str
     tag: str | None = None
 
+    def __getitem__(self, width: object) -> TensorType:
+        """``Index[int64]``: the 64-bit index plane (``Index`` alone is the 32-bit one).
+        ``int32`` spells the default; any other width is refused by name."""
+        if self != _INDEX:
+            raise TypeError(f"{self!r} is not subscriptable; only Index takes a width, Index[int64]")
+        name = getattr(width, "name", None) or getattr(width, "__name__", None) or str(width)
+        if name == "int64":
+            return TensorType((), "i64")
+        if name == "int32":
+            return self
+        raise TypeError(f"Index[...] takes int32 (the default) or int64, got {width!r}")
+
+
+_INDEX = TensorType((), "i32")
+
 
 @dataclass(frozen=True)
 class Wire:

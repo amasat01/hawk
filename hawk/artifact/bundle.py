@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import warnings
 import os
 import shutil
@@ -50,6 +51,7 @@ from ..emit.render import binding_name as _binding_name
 from ..emit.wrapper import ActiveSpec
 from ..ext import DEFAULT_KIND
 from ..ir import DispatchInfo, HawkError
+from ..ir.nodes import LEAF_ROLES
 from ..ir import canonical as _canonical
 from ..ir import split_segmented as _split_segmented
 from ..ir.split import internal as _split_internal
@@ -60,7 +62,7 @@ from ..types import Slot, TensorType
 from . import layout as _layout
 from . import manifest as _manifest
 from .derivative import _per_kernel_derivative
-from .sidecar import sidecar_meta
+from .sidecar import LOCAL_LIMIT_B, sidecar_meta
 from .unit_cache import (
     _UNIT_MEMO,
     _UNIT_MEMO_LIMIT,
@@ -252,6 +254,7 @@ def _segment_spec(kernel) -> SegmentSpec | None:
 ACTIVE_MAP = "active_map"
 ACTIVE_COUNT = "active_count"
 _MAP_TTYPE = TensorType((), "int32")
+_MAP64_TTYPE = TensorType((), "i64")
 _COUNT_TTYPE = TensorType((), "uint32")
 
 
@@ -268,52 +271,75 @@ class _ActiveUnit:
         return getattr(self._kernel, attr)
 
 
+def _lane_set(kind):
+    """The :class:`~hawk.ext.IndexSet` ``kind`` declares, else ``None``."""
+    return getattr(kind, "lanes", None)
+
+
+def _reads_map(kind) -> bool:
+    """Whether ``kind`` reads an index map: a thinning guard or a lane set."""
+    return bool(getattr(getattr(kind, "guard", None), "active_set", False)
+                or _lane_set(kind) is not None)
+
+
+def _map_bits(kind) -> int:
+    lanes = _lane_set(kind)
+    return 32 if lanes is None else lanes.bits
+
+
 def _active_unit(kernel, name: str, kind):
-    """``kernel`` as an :class:`_ActiveUnit` when ``kind``'s guard asks for
-    an active-set index map, else ``kernel`` itself. Refuses a segmented
-    unit, a kernel accumulating across samples (the map would reorder the
-    sum), one binding none of the guard's masks, and one already using a
-    reserved plane name."""
-    if not getattr(getattr(kind, "guard", None), "active_set", False):
+    """``kernel`` as an :class:`_ActiveUnit` when ``kind`` asks for an index
+    map (``Guard(active_set=True)`` or ``lanes=IndexSet()``), else ``kernel``
+    itself. Refuses a segmented unit and one already using a reserved plane
+    name; the thinning guard also refuses a kernel accumulating across
+    samples (the map would reorder the sum) and one binding none of its
+    masks, which a lane set, a list the caller built, does not."""
+    if not _reads_map(kind):
         return kernel
+    what = "lanes=IndexSet()" if _lane_set(kind) is not None else "Guard(active_set=True)"
     walk = kernel.walk
     if (getattr(kernel, "segment", None) is not None
             or any(d.policy == "segmented" for d in walk.dispatches)):
         raise HawkError(
-            f"{name!r}: Guard(active_set=True) cannot read an index map in a "
+            f"{name!r}: {what} cannot read an index map in a "
             "segmented unit — the segmented prologue already addresses the run"
         )
-    if any(role == "accum_out" for role, _ in walk.arg_spec):
-        raise HawkError(
-            f"{name!r}: Guard(active_set=True) refuses a kernel that accumulates "
-            "across samples (accum_out): the map would change which samples each "
-            "lane sums, so the result would not be the map-free one bit for bit"
-        )
-    if not any(("terminated", m) in walk.slot_of for m in kind.guard.names):
-        raise HawkError(
-            f"{name!r}: Guard(active_set=True) needs the kernel to bind the mask "
-            f"the map follows ({list(kind.guard.names)}), and it binds none"
-        )
-    taken = [n for _, n in walk.arg_spec if n in (ACTIVE_MAP, ACTIVE_COUNT)]
+    if _lane_set(kind) is None:
+        if any(role == "accum_out" for role, _ in walk.arg_spec):
+            raise HawkError(
+                f"{name!r}: Guard(active_set=True) refuses a kernel that accumulates "
+                "across samples (accum_out): the map would change which samples each "
+                "lane sums, so the result would not be the map-free one bit for bit"
+            )
+        if not any(("terminated", m) in walk.slot_of for m in kind.guard.names):
+            raise HawkError(
+                f"{name!r}: Guard(active_set=True) needs the kernel to bind the mask "
+                f"the map follows ({list(kind.guard.names)}), and it binds none"
+            )
+    prefix = bool(getattr(_lane_set(kind), "prefix", False))
+    taken = [n for _, n in walk.arg_spec if n in ((ACTIVE_COUNT,) if prefix else (ACTIVE_MAP, ACTIVE_COUNT))]
     if taken:
         raise HawkError(
-            f"{name!r}: {taken[0]!r} is reserved for the active-set index map "
-            "under Guard(active_set=True); rename that parameter"
+            f"{name!r}: {taken[0]!r} is reserved for the index map "
+            f"under {what}; rename that parameter"
         )
     declared = tuple(Slot(role, n, walk.slot_types[(role, n)])
-                     for role, n in walk.arg_spec)
-    declared += (Slot("lookup", ACTIVE_MAP, _MAP_TTYPE),
-                 Slot("lookup", ACTIVE_COUNT, _COUNT_TTYPE))
+                     for role, n in walk.arg_spec if role in LEAF_ROLES)     # a row sum's companion is no leaf
+    declared += (() if prefix else (Slot("lookup", ACTIVE_MAP,
+                                         _MAP64_TTYPE if _map_bits(kind) == 64 else _MAP_TTYPE),))
+    declared += (Slot("lookup", ACTIVE_COUNT, _COUNT_TTYPE),)
     return _ActiveUnit(kernel, _canonical(kernel.sinks, declared=declared))
 
 
 def _active_spec(kind, group: int = 1) -> ActiveSpec | None:
     """The map prologue's bindings when ``kind`` asks for one, else ``None``;
     ``group`` is the kernel's declared compaction group."""
-    if not getattr(getattr(kind, "guard", None), "active_set", False):
+    if not _reads_map(kind):
         return None
+    if getattr(_lane_set(kind), "prefix", False):
+        return ActiveSpec(None, _binding_name("lookup", ACTIVE_COUNT), group, 32)
     return ActiveSpec(_binding_name("lookup", ACTIVE_MAP),
-                      _binding_name("lookup", ACTIVE_COUNT), group)
+                      _binding_name("lookup", ACTIVE_COUNT), group, _map_bits(kind))
 
 
 def _native(targets) -> tuple:
@@ -372,6 +398,10 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
     hook = getattr(kernel, "fused_body", None) if _native(targets) else None
     body = None if hook is None else hook(kind)
     segment = _segment_spec(kernel)
+    if segment is not None and kernel.walk.reads_lane_position:
+        raise HawkError(f"{name!r}: hawk.lane_position() is the launch slot, and a segmented "
+                        "unit addresses its lanes through the run's offsets; use "
+                        "sample_index() there")
     active = _active_spec(kind, getattr(kernel, "group", 1))
     one_step = getattr(kernel, "one_step", None)
     box = thread_box(kernel, smode.id, kind=kind, segment=segment, active=active,
@@ -388,7 +418,9 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
             continue
         out[target] = render_source(
             name, kernel.sinks, kernel.walk, row, mode=smode, kind=kind,
-            body=body, segment=segment, active=active, one_step=one_step, box=box,
+            body=body, segment=segment, one_step=one_step, box=box,
+            active=None if getattr(getattr(kernel, "team", None), "grid", None) in ("keys", "chunks", "targets") else active,
+            team=None if getattr(kernel, "team", None) is None else kernel.team.threads,
             exports=_layout.exports(target, layout_sizes_override=layout_sizes_override))
         if literal_table and row.compile == GPU:
             out[target] = _literal_table(out[target])
@@ -502,6 +534,40 @@ def _resource_report(kernel, ptxas: dict | None) -> dict | None:
     return report
 
 
+_PTX_DEPOT = re.compile(r"^\s*\.local\s+[^\n;]*__local_depot\d+\[(\d+)\]", re.M)
+_PTX_BODY = re.compile(r"^\.(visible\s+)?\.(entry|func)\b", re.M)
+
+
+def _local_memory(name: str, entries: dict, lead: str) -> tuple | None:
+    """``(bytes per thread, source)`` of the device unit, refused by name past the device limit.
+    ``source`` is ``"ptxas"`` (the compiler's stack frame of a CUBIN, the real number) or ``"ptx"``
+    (the local depots the PTX declares: ptxas can only shrink them, so it is a ceiling). ``None`` for a
+    unit with no device object."""
+    if TARGETS[lead].entry != ENTRY_DEVICE:
+        return None
+    result, _, _, fmt = entries[lead]
+    if result.ptxas:
+        held, source = max(row["stack_B"] for row in result.ptxas.values()), "ptxas"
+    elif fmt == "ptx":
+        text = Path(result.artifact).read_text()
+        cuts = [(m.start(), m.group(2)) for m in _PTX_BODY.finditer(text)] + [(len(text), "")]
+        frames = [(kind, sum(int(d.group(1)) for d in _PTX_DEPOT.finditer(text[at:end])))
+                  for (at, kind), (end, _) in zip(cuts, cuts[1:])]
+        # an entry runs alone; the device functions it may call add to it
+        held = (max((b for k, b in frames if k == "entry"), default=0)
+                + sum(b for k, b in frames if k == "func"))
+        source = "ptx"
+    else:
+        return None
+    if held > LOCAL_LIMIT_B:
+        raise HawkError(
+            f"kernel {name!r}: {held:,} bytes of local memory per thread ({source}), past the device limit "
+            f"of {LOCAL_LIMIT_B:,}; the launch would fail. Hold fewer live factorisations or matrices per "
+            "lane, build with linalg_form='team' so a team of threads works the matrix in scratch, or use "
+            "a smaller n")
+    return held, source
+
+
 def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arch,
            targets, derivative, host_profile: str = "", opt_level: str = "",
            embedded_profile=None, split: dict | None = None) -> _Draft:
@@ -589,6 +655,9 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         lane_space=getattr(kernel, "lane_space", ((None, None),)),
         group=getattr(kernel, "group", 1),
         box=getattr(sources[lead], "box", None),
+        index_set=(None if _lane_set(kind) is None else
+                   {"width": 32, "prefix": True, "count": ACTIVE_COUNT} if _lane_set(kind).prefix
+                   else {"width": _map_bits(kind)}),
         planes=getattr(kernel, "planes", None) or _derived_axes(
             kernel.walk, getattr(kernel.sinks, "source", None)),
         broadcast=getattr(kernel, "broadcast", None),
@@ -598,6 +667,7 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         entry_counts_finished=_entry_counts_finished(kernel, kind),
         ptxas=(_resource_report(kernel, entries[lead][0].ptxas)
                if TARGETS[lead].entry == ENTRY_DEVICE else None),
+        local=_local_memory(name, entries, lead),
     )
     if split is not None:
         # the first stage of a split kernel names every stage and every cell
@@ -855,13 +925,51 @@ def _expand_segmented(kernels: list, names: list, kinds: list) -> tuple:
     return out_kernels, out_names, out_kinds
 
 
+def _team_record(spec) -> dict:
+    """The sidecar's ``team`` of a team stage. ``grid`` says what a block is: a lane (the launch's
+    grid is the lane count) or a key of a block sum (the grid is the key count, ``keyed``
+    names the keys as a keyed plane does, and the launch's ``nSamples`` is the lane count)."""
+    out = {"threads": spec.threads}
+    if spec.grid == "keys":
+        out["grid"] = "keys"
+        out["keyed"] = _keys_record(spec.keyed)
+    elif spec.grid in ("chunks", "targets"):    # an ordered scatter: lane chunks, then the cells of ``of``
+        out["grid"], out["of"] = spec.grid, spec.target
+        if spec.grid == "chunks":       # the plane whose flags say a key was out of range
+            from ..ir.team import scatter_names
+
+            out["status"] = scatter_names(spec.target)[3]
+    return out
+
+
+def _keys_record(keyed) -> dict:
+    """The keys of a block sum as the sidecar spells a keyed plane: ``width`` entries over the kept
+    axes (:func:`hawk._lane_bind.key_count` gives their number for a lane count)."""
+    return {"width": keyed.width, "axes": [list(a) for a in keyed.kept], "payload": list(keyed.payload)}
+
+
+def _team_scratch(found) -> dict:
+    """The scratch planes the team stages of ``found`` work on, ``{name: {"dtype", "per_lane"}}``:
+    ``dtype`` is ``"real"`` (the bundle's scalar type) or ``"int32"``, ``per_lane`` the elements of
+    each lane's slice. The runtime makes each ``lanes x per_lane`` once per kernel and lane count."""
+    out: dict = {}
+    for st in found:
+        if st.team is not None:
+            out.update({p.name: {"dtype": p.dtype, "per_lane": p.per_lane,
+                                 **({"keys": _keys_record(st.team.keyed)} if p.unit == "key" else
+                                   {"per_target": st.team.target} if p.unit == "target" else {"once": True} if p.unit == "once" else {}),
+                                 **({} if p.fill is None else {"fill": p.fill})}
+                        for p in st.team.planes})
+    return out
+
+
 def _expand_split(kernels: list, names: list, kinds: list) -> tuple:
     """Replace every member that reads a value reduced over samples with its
     stages (:func:`hawk.ir.split.stages`), named ``<name>``, ``<name>_2``, ...;
     the rest pass through untouched. Also returns, per first-stage name, the
     sidecar block naming every stage and every cell."""
     from ..diff import Derived
-    from ..trace.kernel import Kernel
+    from ..trace.kernel import Kernel, TeamStage
 
     out_kernels, out_names, out_kinds, blocks = [], [], [], {}
     for k, n, kd in zip(kernels, names, kinds):
@@ -890,7 +998,10 @@ def _expand_split(kernels: list, names: list, kinds: list) -> tuple:
                 for attr in ("lane_space", "group"):     # the stages launch over the derivative's lanes
                     if hasattr(k.sinks, attr):
                         setattr(sinks, attr, getattr(k.sinks, attr))
-            member = Kernel(stage.name, sinks, k.planes, kind=getattr(k, "kind", None))
+            if stage.team is not None:
+                member = TeamStage(stage.name, sinks, stage.team)
+            else:
+                member = Kernel(stage.name, sinks, k.planes, kind=getattr(k, "kind", None))
             cells.update(member.walk.cells)
             out_kernels.append(member)
             out_names.append(stage.name)
@@ -900,10 +1011,14 @@ def _expand_split(kernels: list, names: list, kinds: list) -> tuple:
             cells[c] = {**cells[c], "internal": True}
         blocks[n] = {"cells": cells, "stages": [
             {"kernel": st.name, "cells_in": list(st.cells_in),
-             "cells_out": list(st.cells_out), "recomputed": list(st.recomputed)}
+             "cells_out": list(st.cells_out), "recomputed": list(st.recomputed),
+             **({} if st.team is None else {"team": _team_record(st.team)})}
             for st in found]}
+        scratch = _team_scratch(found)
+        if scratch:
+            blocks[n]["team_planes"] = scratch
         # the keyed planes the runtime owns between the stages
-        keyed = {kd.name: {"width": kd.width, "axes": [list(a) for a in kd.kept]}
+        keyed = {kd.name: _keys_record(kd)
                  for st in found for kd in st.keyed}
         if keyed:
             blocks[n]["keyed"] = keyed
@@ -916,9 +1031,9 @@ def _member_kind(kernel, kind, explicit: bool):
     from another member's guard unless ``kind=`` was given explicitly."""
     own = getattr(kernel, "kind", None) or DEFAULT_KIND
     guard = getattr(kind, "guard", None)
-    if explicit or own is not DEFAULT_KIND or not getattr(guard, "active_set", False):
+    if explicit or own is not DEFAULT_KIND or not _reads_map(kind):
         return kind
-    return replace(kind, guard=replace(guard, active_set=False))
+    return replace(kind, lanes=None, guard=replace(guard, active_set=False))
 
 
 def _manifest_of(drafts) -> dict:
@@ -957,12 +1072,16 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                  derivative: Mapping[str, str] | None = None,
                  host_profile: str = "", opt_level: str = "",
                  literal_table: bool = False, embedded_profile=None,
-                 emit_form: str = "auto") -> Bundle:
+                 emit_form: str = "auto", linalg_form: str = "auto") -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json``
     over them. ``emit_form`` is how a product, dot, sum or norm is spelled
     (:mod:`hawk.emit.policy`): ``"auto"`` unrolls a site of at most 16 elements and
     writes a longer one as a loop, ``"static"`` unrolls every site, ``"rolled"`` writes
-    every site as a loop, the fast-compile mode (the compiler does no per-element work). Every member must agree on the execution axis (a
+    every site as a loop, the fast-compile mode (the compiler does no per-element work).
+    ``linalg_form`` is how per-lane linear algebra is worked: ``"auto"`` keeps one thread per
+    matrix up to ``n = 32`` and uses a team of threads per matrix above it, ``"team"`` uses a
+    team at every size, ``"thread"`` refuses a matrix above 32 by name
+    (:mod:`hawk.ir.team`). Every member must agree on the execution axis (a
     manifest-level, not per-entry, declaration) — a set that doesn't agree is
     two bundles.
 
@@ -1033,12 +1152,23 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     # its own compile (its own cache key: its own source and options).
     if emit_form not in policy.FORMS:
         raise HawkError(f"emit_form must be one of {policy.FORMS}, got {emit_form!r}")
-    kernels, names, kinds, split = _expand_split(kernels, names, kinds)
+    if linalg_form not in policy.LINALG_FORMS:
+        raise HawkError(f"linalg_form must be one of {policy.LINALG_FORMS}, got {linalg_form!r}")
+    with policy.using(emit_form, linalg_form=linalg_form):
+        kernels, names, kinds, split = _expand_split(kernels, names, kinds)
+    if exported and any(getattr(k, "team", None) is not None for k in kernels):
+        raise HawkError(
+            f"{names[0]!r} has linear algebra worked by a team of threads (a matrix above 32, or "
+            "linalg_form='team'): the standalone C target has no team form, and its helpers hold "
+            "n <= 32; build the C unit from a kernel whose matrices fit one lane")
     kernels = [_active_unit(k, n, kd) for k, n, kd in zip(kernels, names, kinds)]
     key_kind = kind if all(kd is kind for kd in kinds) else tuple(kinds)
 
     # Phase 1 — resolve `derivative` and hash the RESOLVED blocks into the
     # unit key before anything is emitted: a refusal here is validation.
+    if derivative:      # the stage kernels of a split derivative name the primal their parent names
+        derivative = {**{st["kernel"]: v for n, v in derivative.items()
+                         for st in (split.get(n) or {}).get("stages", ())}, **derivative}
     per_kernel_derivative = _per_kernel_derivative(kernels, names, derivative)
     key = _unit_key(names, [k.walk.digest for k in kernels],
                     [declaration_digest(k) for k in kernels], targets=targets,
@@ -1046,7 +1176,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                     device_arch=device_arch, derivative_blocks=per_kernel_derivative,
                     layout_sizes_override=layout_sizes_override,
                     host_profile=host_profile, opt_level=opt_level,
-                    literal_table=literal_table, emit_form=emit_form,
+                    literal_table=literal_table, emit_form=emit_form, linalg_form=linalg_form,
                     groups=tuple(getattr(k, "group", 1) for k in kernels),
                     embedded_profile=repr(embedded_profile) if exported else "",
                     source_digests=([getattr(k, "source_digest", None) for k in kernels]
@@ -1086,7 +1216,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     emit_arch = _emit_arch(targets, device_arch)
 
     def sources_of(k, n, kd):
-        with build_arch(emit_arch), policy.using(emit_form):
+        with build_arch(emit_arch), policy.using(emit_form, linalg_form=linalg_form):
             return _sources(k, name=n, smode=smode, kind=kd, targets=targets,
                             layout_sizes_override=layout_sizes_override,
                             literal_table=literal_table, embedded_profile=embedded_profile)

@@ -87,7 +87,7 @@ AT_ROLES = GATHER_ROLES + ("per_sample", "vec_in", "mat_in")
 
 #: The tags a factorisation node carries (:mod:`hawk.ir.linalg`): a value so
 #: tagged is a struct of the factor, its pivots and its status, not a matrix.
-FACTOR_TAGS = ("lu_factor", "chol_factor", "eigh_factor")
+FACTOR_TAGS = ("lu_factor", "chol_factor", "eigh_factor", "qr_factor")
 
 
 def refuse_factor_arms(what: str, ttype: TensorType) -> None:
@@ -101,10 +101,6 @@ def refuse_factor_arms(what: str, ttype: TensorType) -> None:
             "between; select between the results (the solves, the determinant, the "
             "eigenvalues) instead")
 
-
-#: The extents a value can have: one sample's, every sample's (a reduction
-#: over samples), or one that does not depend on the sample.
-EXTENTS = ("per_sample", "all_samples", "shared")
 
 #: The compound-quantity wire namespace separator: a bound name
 #: containing it must be owned by a quantity.
@@ -274,6 +270,20 @@ class SampleIndex(Node):
 
     def __init__(self, ttype: TensorType | None = None) -> None:
         super().__init__(ttype or TensorType((), "i32"))
+
+
+LANE_POSITION_KIND = "lane_position"
+
+
+class LanePosition(SampleIndex):
+    """The launch position ``t`` of the lane: ``base + flat`` in a plain launch
+    (where it is the sample index) and the slot of the map under an index set,
+    where the sample index is ``map[t]``. A terminal like :class:`SampleIndex`,
+    and read through it everywhere a launch position is a lane index."""
+
+    __slots__ = ()
+
+    kind = LANE_POSITION_KIND
 
 
 class Op(Node):
@@ -635,6 +645,11 @@ class ReduceSamples(Node):
     def rebuilt(self, value: Node) -> ReduceSamples:
         """The same reduction (key, count, policy) over ``value``."""
         return ReduceSamples(self.op, value, key=self.key, count=self.count,
+                             policy=self.policy, kept=self.kept)
+
+    def recount(self, count: Node) -> ReduceSamples:
+        """The same keyed reduction over ``count`` kept coordinates."""
+        return ReduceSamples(self.op, self.operands[0], key=self.key, count=count,
                              policy=self.policy, kept=self.kept)
 
     def stored(self, name: str, ttype: TensorType | None = None) -> tuple:

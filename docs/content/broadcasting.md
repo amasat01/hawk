@@ -14,4 +14,8 @@ A bare label (`Grid["channel", ...]`, `Mutable["node"]`, `Table["elem", "c":3]`)
 
 The fastest axis is the last one declared: consecutive lanes along it are consecutive threads or SIMD lanes.
 
+## A list of lanes
+
+A launch need not cover the whole lane space. `Kind(..., lanes=IndexSet())` runs the lanes in a map you pass, and the extent you give (`node=N`, `pair=P`) is the size of the dense space the map points into. See [Run only the lanes you list](howto_index_set).
+
 See {doc}`Your own vocabulary <vocabulary>` for the same words in context, the [glossary](glossary) for one-line definitions, and [Heat diffusion](vocabulary/09_heat_diffusion) for a two-axis grid.

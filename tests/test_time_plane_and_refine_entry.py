@@ -28,6 +28,7 @@ import json
 import pathlib
 
 import numpy as np
+from conftest import declared
 import pytest
 from _eval import evaluate
 
@@ -181,8 +182,8 @@ def test_refine_entry_compiled_dt_dtau_is_one_and_tau_h_is_the_step(built):
                                     "event_g0")}
     dots = {f"dot_{n}": np.zeros(N) for n in out}
     common = dict(x=x, v=v, dt=dt, t_0=t0, applied_steps=k, a=0.4)
-    hawk.run(hawk.load(built, "osc_refine_jvp"), dt_tau=0.5 * dt,
-             dot_dt_tau=np.ones(N), **common, **dots)
+    kernel = hawk.load(built, "osc_refine_jvp")
+    hawk.run(kernel, **declared(kernel, {"dt_tau": 0.5 * dt, "dot_dt_tau": np.ones(N), **common}), **dots)
     assert (dots["dot_t_refined"] == 1.0).all()
     hawk.run(hawk.load(built, "osc_refine"), dt_tau=dt, **common, **out)
     # the stepping path, one step from the same state at k

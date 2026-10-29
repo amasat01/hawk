@@ -129,7 +129,9 @@ integer plane
   `hawk.math.real(n)` gives the float, `hawk.math.int32(x)` /
   `hawk.math.uint32(x)` the integer (truncating toward zero, saturating at
   the type's range, NaN to 0). An integer plane is never differentiated.
-  `Index` is the separate 64-bit index type for addresses and selectors.
+  `Index` is the separate index type for addresses and selectors: an `Index` plane is bound as an `int32`
+  column (an `int64` array whose values fit is converted; one that does not is refused) and the body computes with it in 64 bits; `Index[int64]` is the plane bound as `int64`, for an extent
+  past `2**31 - 1`.
 
 payload
   The sealed bundle of aether's C++ headers that hawk's runtime GPU

@@ -38,6 +38,7 @@ from .nodes import DISPATCH_POLICIES as DISPATCH_POLICIES
 from .nodes import AccumWrite, Assign, At, Const, Op
 from .nodes import Dispatch as Dispatch
 from .nodes import HawkError as HawkError
+from .nodes import LanePosition as LanePosition
 from .nodes import Leaf as Leaf
 from .nodes import Node as Node
 from .nodes import Primitive as Primitive
