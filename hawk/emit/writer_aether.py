@@ -131,6 +131,18 @@ class AetherWriter:
         """A ``SampleIndex`` node: the lane's own integer index as an ``Int``."""
         return f"static_cast<Int>({SAMPLE_INDEX_IDENT})"
 
+    def warp_lane_value(self) -> str:
+        """A ``WarpLane`` node: the lane's place in its warp (the team prologue binds ``hawk_wl``)."""
+        return "hawk_wl"
+
+    def warp_store(self, r, sink, target: str, value: str) -> None:
+        """The lane's slice of a wide value into elements ``j * 32 + lane`` of the Mutable's plane."""
+        n = sink.value.ttype.shape[0]
+        r._emit(f"const aether::Item<Real, {n}> hawk_ws = {value};")
+        r._emit("#pragma unroll")
+        r._emit(f"for (Int hawk_lk = 0; hawk_lk < {n}; ++hawk_lk) "
+                f"{target}[i].at(hawk_lk * 32 + hawk_wl) = hawk_ws.data()[hawk_lk];")
+
     def lane_position_value(self, mapped: bool) -> str:
         """A ``LanePosition`` node: ``hawk_t`` under an index map, else the
         lane's own index (the launch position is the sample index there)."""

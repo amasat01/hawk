@@ -977,6 +977,22 @@ def _wide_with_class(record: dict, resolved_arch: str) -> dict | None:
     return {**record, "class": wide_class.select(resolved_arch)} if record else None
 
 
+def _warp_kernel(kernel, name: str):
+    """``kernel`` in the warp form (:func:`hawk.ir.lane.slice_sinks`), or ``None`` when it is not one plain launch of wide
+    Mutables the form has a rule for."""
+    from ..ir.lane import WARP, slice_sinks
+    from ..ir.team import TeamSpec
+    from ..trace.kernel import WarpStage
+
+    if (type(kernel).__name__ != "Kernel" or getattr(kernel, "one_step", None) is not None
+            or getattr(kernel, "group", 1) != 1 or _split_stages(name, kernel.sinks) is not None):
+        return None
+    sinks = slice_sinks(_wide.simplified(kernel.sinks))
+    if sinks is None:
+        return None
+    return WarpStage(name, sinks, TeamSpec(WARP, (), ()))
+
+
 def _wide_ok(kernel, smode, device: bool):
     """Whether the placement pass may run on ``kernel`` (:func:`hawk.ir.split.stages` ``wide``): a build
     for the device, of a kernel that is one launch (a plain, grouped or segmented one, or an automatic one's two bodies)."""
@@ -998,6 +1014,14 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
 
     out_kernels, out_names, out_kinds, blocks = [], [], [], {}
     for k, n, kd in zip(kernels, names, kinds):
+        warp = _warp_kernel(k, n) if device and policy.wide_form() == "team" else None
+        if warp is not None:        # a warp per lane: one launch, no stages, no scratch
+            out_kernels.append(warp)
+            out_names.append(n)
+            out_kinds.append(kd)
+            blocks[n] = {"cells": warp.walk.cells, "stages": [
+                {"kernel": n, "cells_in": [], "cells_out": [], "recomputed": [], "team": _team_record(warp.team)}]}
+            continue
         ok, one = _wide_ok(k, smode, device), getattr(k, "one_step", None)
         real = 4 if smode is not None and smode.id == "float32" else 8
         if one is not None and (_split_stages(n, k.sinks) is not None or _split_stages(n, one.sinks) is not None):
@@ -1208,9 +1232,8 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
         raise HawkError(f"linalg_form must be one of {policy.LINALG_FORMS}, got {linalg_form!r}")
     if wide_form not in policy.WIDE_FORMS:
         raise HawkError(f"wide_form must be one of {policy.WIDE_FORMS}, got {wide_form!r}")
-    if wide_form == "team":
-        raise HawkError("wide_form='team' (a warp per lane) is not built in this release; use 'auto', which places "
-                        "each wide value in a plane, or 'thread', which keeps it in the lane's registers")
+    if wide_form == "team" and any(TARGETS[t].compile != GPU for t in targets if t in TARGETS):
+        raise HawkError("wide_form='team' (a warp per lane) is built for device targets only; use 'auto' with a host target")
     from ..ir import wide_class
 
     emit_arch = _emit_arch(targets, device_arch)

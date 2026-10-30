@@ -126,7 +126,7 @@ def test_the_thread_form_places_nothing(tmp_path, cache_dir):
 
 
 def test_the_team_form_is_refused_by_name(tmp_path, cache_dir):
-    with pytest.raises(HawkError, match=r"wide_form='team' \(a warp per lane\) is not built"):
+    with pytest.raises(HawkError, match=r"wide_form=.team. \(a warp per lane\) is built for device targets only"):
         build_bundle([W.fill_mask], tmp_path, targets=("host",), cache_dir=cache_dir, wide_form="team")
 
 
@@ -201,6 +201,38 @@ def test_an_automatic_kernel_places_the_wide_values_of_its_fused_and_its_single_
     assert side["launch"]["local_bytes"] == 0
     planes = {p for p in side["launch"]["wide"] if p != "class"}
     assert {p for p in side["team_planes"]} <= planes and len(side["team_planes"]) >= 2   # one set of scratch planes per body
+
+
+def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp_path, cache_dir):
+    from hawk.ir.lane import WARP, WarpStore, slice_sinks
+
+    sliced = slice_sinks(wide.simplified(W.matvec_in_vjp.sinks))
+    assert [type(s) for s in sliced] == [WarpStore] and sliced[0].value.ttype.shape == (W.W // WARP,)
+    assert slice_sinks(W.fill_mask.sinks) is None            # a runtime-indexed write has no rule in the warp form: it keeps its form
+    kernel, bundle = _build("matvec_in_vjp", tmp_path, cache_dir, mode="float64", wide_form="team")
+    side = sidecar_of(bundle, kernel.name)
+    assert side["launch"]["local_bytes"] == 0 and side["stages"][0]["team"] == {"threads": WARP}
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("mode", ["float32", "float64"])
+def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(mode, cache_dir):
+    import _probe_wide as probe
+    from eagle import arrays
+    from eagle._alloc import synchronize
+
+    entry, real, n = W.CORPUS["matvec_in_vjp"], np.float32 if mode == "float32" else np.float64, 2048
+    planes = entry.planes(np.random.default_rng(7), real, n, True)
+    bound_args = {k: arrays.asarray(np.ascontiguousarray(v), device="cuda:0") for k, v in planes.items()}
+    out = arrays.asarray(np.zeros(entry.shape(n), real), device="cuda:0")
+    bound = probe._auto(entry.kernel, mode, cache_dir, "team").bind(**bound_args, **{entry.out: out})
+    got = []
+    for _ in range(3):
+        bound.launch()
+        synchronize()
+        got.append(np.asarray(out.get()).copy())
+    assert np.array_equal(got[0], entry.want(real, planes, n))
+    assert all(np.array_equal(got[0], g) for g in got[1:])
 
 
 # -- the device feature classes -----------------------------------------------------------------

@@ -62,6 +62,7 @@ from ..ir.walk import canonical_nodes
 from ..types import TensorType
 from . import rtstore
 from .box import BoxStore
+from ..ir.lane import WarpLane, WarpStore
 from ..ir.team import TeamStore
 from ..ir.wide import is_resident, is_scratch
 from ..ir.wide import record as _placements
@@ -1493,6 +1494,9 @@ class _Renderer(_DispatchMixin):
         if isinstance(sink, TeamStore):
             self.writer.team_store(self, sink, target, self._ref(sink.value))
             return
+        if isinstance(sink, WarpStore):
+            self.writer.warp_store(self, sink, target, self._ref(sink.value))
+            return
         if isinstance(sink, TapeWrite):
             self.writer.tape_write(self, sink, target)
             return
@@ -1616,6 +1620,8 @@ class _Renderer(_DispatchMixin):
             return self.writer.leaf(self, node, materialised)
         if isinstance(node, Const):
             return self.writer.const(node)
+        if isinstance(node, WarpLane):
+            return self.writer.warp_lane_value()
         if isinstance(node, LanePosition):
             return self.writer.lane_position_value(
                 getattr(self.kind, "lanes", None) is not None or self.kind.guard.active_set)
