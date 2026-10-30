@@ -38,6 +38,7 @@ from .value import (
     INDEX32,
     FinishRefusal,
     MutableRef,
+    SharedValue,
     TableRef,
     TerminatedRef,
     Value,
@@ -924,6 +925,9 @@ def _bind(name: str, plane: Plane | Quantity) -> Any:
         return WideOutRef(name, plane.ttype, plane.dims)
     if plane.form == "terminated":
         return TerminatedRef(Leaf("terminated", role, name, plane.ttype))
+    if plane.shared and plane.ttype.shape:
+        # Param[Vector[W]] / Param[Matrix[R,C]]: one value, read cell by cell from its plane
+        return SharedValue(name, plane.shared, plane.dims)
     if plane.form in ("table", "wide"):
         # one READ form for both roles: pins `lookup` and `wide_in` to the
         # same 32-byte ScalarHandle, so the access is the at(expr) either way.

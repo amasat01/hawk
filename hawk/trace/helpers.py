@@ -63,7 +63,7 @@ def call(fn: Any, *args: Any, **kwargs: Any) -> Any:
             _NEEDS_REWRITE.add(code)
     rewritten = _rewrite(fn)
     if isinstance(rewritten, _Refused):
-        rewritten()
+        rewritten(fn.__name__)
     stack = _active()
     if code in stack:
         raise HawkError(
@@ -83,8 +83,14 @@ class _Refused:
     def __init__(self, refusal: HawkError) -> None:
         self.refusal = refusal
 
-    def __call__(self) -> None:
-        raise self.refusal
+    def __call__(self, name: str) -> None:
+        raise HawkError(
+            f"helper {name!r} reaches traced control flow, so it is inlined like a kernel "
+            "body, and a kernel body refuses it: "
+            f"{self.refusal} — rewrite the helper in the kernel-body form (one trailing "
+            "`return`, no comprehension over a traced value), or use `m.where`/`m.select`; "
+            "a helper with only static Python (a `for` over a list, arithmetic) runs as written"
+        ) from None
 
 
 def _active() -> list:

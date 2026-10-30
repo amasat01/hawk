@@ -264,6 +264,29 @@ def widen_index(names, arrays: dict) -> dict:
     return out
 
 
+def refuse_index_width(wide, narrow, arrays: dict, kernel: str = "") -> None:
+    """Refuse an ``Index`` input of the wrong width for a bind that keeps its planes: ``wide`` names
+    the planes the kernel declares ``int64``, ``narrow`` those it declares ``int32``. A copy made
+    to fit would stay behind when the caller later changes the plane; :func:`widen_index` and
+    :func:`narrow_index` serve the per-call ``run``, which has no such snapshot."""
+    bad = []
+    for names, want, got in ((wide, "int64", (4, "int32")), (narrow, "int32", (8, "int64"))):
+        for name in names:
+            value = arrays.get(name)
+            if value is None or isinstance(value, (bool, int, float, complex)):
+                continue
+            try:
+                mv = memoryview(value)
+            except TypeError:
+                continue
+            if mv.itemsize == got[0] and _buffer_kind(mv)[0] in (("i", "u") if want == "int64" else ("i",)):
+                bad.append(f"argument {name!r} is {got[1]}, but the kernel declares {want} for it; "
+                           f"pass {name} as {want}")
+    if bad:
+        where = f"kernel {kernel!r}: " if kernel else ""
+        raise HawkError(where + "; ".join(bad))
+
+
 def narrow_index(names, arrays: dict, kernel: str = "") -> dict:
     """``arrays`` with each signed 64-bit integer array bound to an ``Index`` plane among ``names``
     converted to ``int32`` (a copy), when every value fits ``[-2**31, 2**31 - 1]``; refused by name
