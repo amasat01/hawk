@@ -41,6 +41,7 @@ from .nodes import (
     Assign,
     At,
     Const,
+    Leaf,
     Node,
     Op,
     SampleIndex,
@@ -144,19 +145,65 @@ def _is_zero(node: Node) -> bool:
         and float(node.literal) == 0.0
 
 
+def _is_component(node: Node) -> bool:
+    """A runtime component read of a wide value: ``bf[j]`` with ``j`` traced."""
+    return isinstance(node, Op) and node.kind == "component_at"
+
+
+def _is_read(node: Node) -> bool:
+    """A plane read (``at``) or a wide value's component read — the two
+    shapes one term of a contraction multiplies."""
+    return isinstance(node, At) or _is_component(node)
+
+
 def _reads_of(term: Node) -> list:
-    """Every plane read in one term, in first-seen order."""
-    return [n for n in _walk(term) if isinstance(n, At)]
+    """Every read in one term, in first-seen order: plane reads and
+    component reads of a wide value.
+
+    A component read is ONE read of its value: the value (a ``Vector``
+    input, or a computed wide value built outside the loop) is not walked,
+    only the index is, since a gather in the index is still a gather."""
+    out: list = []
+
+    def visit(node: Node) -> None:
+        if _is_component(node):
+            out.append(node)
+            visit(node.operands[1])
+            return
+        if isinstance(node, At):
+            out.append(node)
+        for child in node.operands:
+            visit(child)
+
+    visit(term)
+    return out
 
 
-def _term_form(terms: Sequence[Node], operands: tuple) -> str:
+def _read_name(read: Node, names: dict) -> str:
+    """The operand a read belongs to: the plane's declared name, the wide
+    input's own name, or ``computed#k`` (first-seen order) for a wide value
+    built in the kernel. ``names`` is the call's ``{id(value): name}`` memo."""
+    if isinstance(read, At):
+        return read.plane.name
+    source = read.operands[0]
+    if isinstance(source, Leaf):
+        return source.name
+    return names.setdefault(id(source), f"computed#{len(names)}")
+
+
+def _read_index(read: Node) -> Node:
+    """The flat index a read walks: ``at``'s index, or a component's."""
+    return read.index if isinstance(read, At) else read.operands[1]
+
+
+def _term_form(terms: Sequence[Node], operands: tuple, names: dict) -> str:
     """Which of eagle's three term shapes every term is.
 
     Density says the operands can be WALKED as matrices; this says a matmul
     over them computes what the sum computes — ``sum(x[s,j])`` and
     ``sum(exp(x[s,j] - shift))`` are equally dense but only the first is a
     row sum."""
-    if len(operands) == 1 and all(isinstance(t, At) for t in terms):
+    if len(operands) == 1 and all(_is_read(t) for t in terms):
         return "bare_read"
     if len(operands) != 2:
         return "transformed"
@@ -164,9 +211,9 @@ def _term_form(terms: Sequence[Node], operands: tuple) -> str:
         if not (isinstance(term, Op) and term.kind == "mul"):
             return "transformed"
         factors = term.operands
-        if not all(isinstance(f, At) for f in factors):
+        if not all(_is_read(f) for f in factors):
             return "transformed"
-        if {f.plane.name for f in factors} != set(operands):
+        if {_read_name(f, names) for f in factors} != set(operands):
             return "transformed"
     return "product_of_reads"
 
@@ -226,12 +273,15 @@ def _fanin(indices: Sequence[Node]) -> int | None:
 
 
 def _describe(name: str, indices: list, dims: tuple, staged: bool,
-              loop_index: LoopIndex, trip: int) -> ContractionOperand:
+              loop_index: LoopIndex, trip: int, wide: str | None = None,
+              width: int = 0) -> ContractionOperand:
     """One operand's record: its declared layout, how its reads walk the
     reduce axis, and every reason that walk is not dense.
 
     ``indices`` are the flat index expressions WITHIN ONE ITERATION — the
-    loop traces once, so one iteration is the whole description."""
+    loop traces once, so one iteration is the whole description. ``wide`` is
+    ``"wide"`` (a vector input) or ``"computed"`` (a value built in the
+    kernel) for component reads, whose single axis is ``width`` long."""
     refusals: list = []
     strides: set = set()
     labels: tuple = ()
@@ -283,6 +333,15 @@ def _describe(name: str, indices: list, dims: tuple, staged: bool,
     for _d, size, _s in dims:
         bound *= int(size) if size else 0
     unique = tuple(dict.fromkeys(refusals))
+    if wide is not None:
+        # a wide value is addressed by component alone: one declared axis,
+        # unit stride, and "the axis" is the component axis only when the
+        # walk is dense.
+        return ContractionOperand(
+            name=name, role=wide, dims=(("component", width, 1),), bound=width,
+            reads=len(indices) * trip, reduce_stride=stride,
+            reduce_dim="component" if stride == 1 and not unique else None,
+            stride_labels=labels, dense=not unique, refusals=unique)
     return ContractionOperand(
         name=name,
         role="staged" if staged else ("named" if dims else "flat"),
@@ -373,7 +432,8 @@ def _touches(node: Node, carry: Node) -> bool:
 def recognize(kernel: Any, vjp: Any = None, *, mapping: dict | None = None
               ) -> RecognizedContraction | None:
     """Describe ``kernel``'s lowered additive fold as a contraction, or
-    ``None`` for anything outside the single-additive-fold family.
+    ``None`` for anything outside the additive-fold family: one or several
+    folds over ONE loop, reading planes and components of wide values.
 
     ``kernel`` is a traced :class:`hawk.trace.Kernel` (anything carrying
     ``sinks`` and, for declared axes, ``planes``). ``vjp`` is the optional
@@ -388,23 +448,32 @@ def recognize(kernel: Any, vjp: Any = None, *, mapping: dict | None = None
     if mapping is not None and mapping.get("contraction") == "direct":
         return None
     sinks = _sinks_of(kernel)
-    if len(sinks) != 1 or not isinstance(sinks[0], (Assign, WideWrite)):
+    if not sinks or not all(isinstance(s, (Assign, WideWrite)) for s in sinks):
         return None
-    sink = sinks[0]
-    fold = _fold(sink)
-    if fold is None:
+    folds = [_fold(sink) for sink in sinks]
+    if any(fold is None for fold in folds):
         return None
-    loop, _slot, terms = fold
+    # several sinks are ONE contraction only when they fold over the SAME
+    # loop (one reduce axis, one header); two loops are two contractions.
+    loop = folds[0][0]
+    if any(fold[0] is not loop for fold in folds):
+        return None
+    terms = [t for _loop, _slot, rest in folds for t in rest]
 
+    names: dict = {}
     order: list = []
     per_plane: dict = {}
+    wide: dict = {}
     for term in terms:
         for read in _reads_of(term):
-            name = read.plane.name
+            name = _read_name(read, names)
             if name not in per_plane:
                 order.append(name)
                 per_plane[name] = []
-            per_plane[name].append(read.index)
+            per_plane[name].append(_read_index(read))
+            if _is_component(read):
+                wide[name] = ("wide" if isinstance(read.operands[0], Leaf)
+                              else "computed", read.operands[0].ttype.shape[0])
     if not 1 <= len(order) <= 2:
         return None
 
@@ -412,22 +481,22 @@ def recognize(kernel: Any, vjp: Any = None, *, mapping: dict | None = None
     staged = _staged_names(kernel)
     operands = tuple(
         _describe(name, per_plane[name], dims.get(name, ()), name in staged,
-                  loop.index, loop.trip)
+                  loop.index, loop.trip, *wide.get(name, (None, 0)))
         for name in order
     )
     fanin = tuple((name, _fanin(per_plane[name]))
                   for name in order if name in staged)
     adjoint = tuple((s.name, False) for s in _accumulates(vjp))
     return RecognizedContraction(
-        carry=sink.name,
+        carry=sinks[0].name,
         reduce_var=loop.index.name,
         reduce_extent=loop.trip,
         reduce_start=loop.start,
         reduce_step=loop.step,
         operands=operands,
         operand_class="gemv" if len(operands) == 1 else "gemm",
-        term_form=_term_form(terms, tuple(order)),
-        outputs=((sink.name, _OUTPUT_KIND[len(sink.ttype.shape)]),),
+        term_form=_term_form(terms, tuple(order), names),
+        outputs=tuple((s.name, _OUTPUT_KIND[len(s.ttype.shape)]) for s in sinks),
         dense=all(op.dense for op in operands),
         refusals=tuple(r for op in operands for r in op.refusals),
         staged_fanin=fanin,
