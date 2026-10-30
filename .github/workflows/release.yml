@@ -261,7 +261,7 @@ jobs:
       CC: gcc-13
       CXX: g++-13
       HAWK_CXX: g++-13
-      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC: /usr/local/cuda-12.9/bin/nvcc
       HAWK_NVCC_CCBIN: /usr/bin/g++-13
     steps:
       - uses: actions/checkout@v7
@@ -294,7 +294,7 @@ jobs:
 
       - run: sudo apt-get update && sudo apt-get install -y g++-13 cppcheck
 
-      - uses: ./hawk/.github/actions/cuda-toolchain
+      - uses: ./hawk/.github/actions/cuda
 
       # aether-dsc (hawk's runtime dependency) and the test-only eagle + raptor-core: each from PyPI when
       # its checkout's version is released, else built from the checkout. The exact version matters: an
@@ -486,7 +486,7 @@ jobs:
       CC: gcc-13
       CXX: g++-13
       HAWK_CXX: g++-13
-      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC: /usr/local/cuda-12.9/bin/nvcc
       HAWK_NVCC_CCBIN: /usr/bin/g++-13
       # ccache: CMake reads the *_COMPILER_LAUNCHER variables, also under scikit-build-core
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -527,7 +527,7 @@ jobs:
             eagle/python/pyproject.toml
             hawk/docs/requirements.txt
 
-      - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache
+      - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache cppcheck
 
       # compiled objects persist across runs; one cache per job and architecture
       - uses: actions/cache@v6
@@ -538,57 +538,15 @@ jobs:
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-docs-
       - run: ccache -z
 
-      - uses: ./hawk/.github/actions/cuda-toolchain
+      - uses: ./hawk/.github/actions/cuda
 
-      - run: |
-          cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
-            -B aether/build -S aether
-          cmake --install aether/build
-          cmake -B eagle/__eagle_hdr -S eagle -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-            -DCMAKE_CUDA_ARCHITECTURES=70 \
-            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
-          cmake --install eagle/__eagle_hdr
-
-      - run: |
-          python -m pip install --quiet --upgrade pip
-          # aether-dsc's payload is sealed at build time (it is not tracked in
-          # git): seal it from the sibling checkout, as the release workflow does,
-          # in a throwaway venv so the NVRTC packages never reach the test env.
-          python -m venv "$RUNNER_TEMP/seal"
-          "$RUNNER_TEMP/seal/bin/pip" install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
-          (cd aether/dsc && "$RUNNER_TEMP/seal/bin/python" -m aether_dsc.seal)
-          python -m pip install --quiet ./aether/dsc ./raptor
-          export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install:${CMAKE_PREFIX_PATH}"
-          # build deps preinstalled + --no-build-isolation: an isolated build compiles nanobind from a
-          # random /tmp build env, so every compile line differs and ccache never hits;
-          # --only-binary=:all: still builds this local project but never a dependency from
-          # source, so no third-party sdist is ever built without its own isolated env
-          python -m pip install --quiet "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4"
-          export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: ./eagle/python
-
+      # the gate's venv carries the sibling checkouts as before; it runs every notebook on the CPU, the strict (-W) Sphinx build
+      # and the public-name page check: the commands are in the Makefile
       - env:
-          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
-          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+          GATE_JOBS: "4"
         run: |
-          cd hawk
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
-          python -m pip install --quiet -r docs/requirements.txt
-          # the companion site's raptor-docs, not main's
-          python -m pip install --quiet --force-reinstall --no-deps ../site
-
-      # nbcheck also executes every notebook on the CPU, so the notebooks' own dependencies must be present
-      - run: python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
-
-      - name: make nbcheck (every notebook filled, then run on the CPU)
-        run: cd hawk/docs && make nbcheck
-
-      - name: make strict
-        run: cd hawk/docs && make strict
-
-      - name: every public name has a page
-        run: python hawk/tools/docs_inventory_check.py hawk/docs/_build/html/objects.inv hawk
+          make -C hawk gate-docs SITE_SRC="$GITHUB_WORKSPACE/site" \
+            RAPTOR_SRC="$GITHUB_WORKSPACE/raptor" AETHER_SRC="$GITHUB_WORKSPACE/aether" EAGLE_SRC="$GITHUB_WORKSPACE/eagle"
 
       - id: tree
         run: echo "tree=$(git -C hawk rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"

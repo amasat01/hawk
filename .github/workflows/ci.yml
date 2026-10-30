@@ -65,17 +65,8 @@ jobs:
           path: site
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
           pins: hawk/.github/companions
-      - name: documented numbers and the capability map match the committed cards
-        run: |
-          python -m pip install --quiet ./site
-          cd hawk && python -m raptor_docs.fresh --check --site ../site
-      - name: manifesto copy matches raptor's
-        run: bash hawk/tools/manifesto_check.sh hawk/CONTRIBUTING.md
-      - name: ruff, pyflakes rules (repo config)
-        working-directory: hawk
-        run: |
-          python -m pip install --quiet --only-binary=:all: ruff==0.15.18
-          ruff check
+      - name: ruff, the manifesto copy, and the documented numbers and capability map against the committed cards
+        run: make -C hawk gate-lint SITE_SRC="$GITHUB_WORKSPACE/site" EAGLE_SRC="$GITHUB_WORKSPACE/eagle"
   test:
     needs: docs-fresh
     runs-on: ubuntu-latest
@@ -84,9 +75,9 @@ jobs:
       CXX: g++-13
       HAWK_CXX: g++-13
       # tests/_toolchain.py's device_compiler(): $HAWK_NVCC first, else the
-      # hardcoded /usr/local/cuda-12.6/bin/nvcc, else bare `nvcc` on PATH.
+      # hardcoded /usr/local/cuda-12.9/bin/nvcc, else bare `nvcc` on PATH.
       # Set explicitly so it does not depend on PATH ordering.
-      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC: /usr/local/cuda-12.9/bin/nvcc
       # nvcc's host compiler for the device TU (env "NVCC_PREPEND_FLAGS
       # -ccbin ..."); CUDA 12.6 rejects gcc > 13, so pin it to the g++-13
       # installed below rather than /usr/bin/g++'s default alias.
@@ -156,52 +147,15 @@ jobs:
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-test-
       - run: ccache -z
 
-      - uses: ./hawk/.github/actions/cuda-toolchain
+      - uses: ./hawk/.github/actions/cuda
 
-      # The siblings are on PyPI, but CI installs the sibling checkouts so it tests
-      # unreleased changes: aether's header package,
-      # raptor, and eagle's Python package (its _core builds against the
-      # aether + eagle headers installed into a local prefix).
-      - run: |
-          cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
-            -B aether/build -S aether
-          cmake --install aether/build
-          cmake -B eagle/__eagle_hdr -S eagle -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-            -DCMAKE_CUDA_ARCHITECTURES=70 \
-            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
-          cmake --install eagle/__eagle_hdr
-
-      - run: |
-          python -m pip install --quiet --upgrade pip
-          # aether-dsc's payload is sealed at build time (it is not tracked in
-          # git): seal it from the sibling checkout, as the release workflow does,
-          # in a throwaway venv so the NVRTC packages never reach the test env.
-          python -m venv "$RUNNER_TEMP/seal"
-          "$RUNNER_TEMP/seal/bin/pip" install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
-          (cd aether/dsc && "$RUNNER_TEMP/seal/bin/python" -m aether_dsc.seal)
-          python -m pip install --quiet ./aether/dsc ./raptor
-          export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install:${CMAKE_PREFIX_PATH}"
-          # build deps preinstalled + --no-build-isolation: an isolated build compiles nanobind from a
-          # random /tmp build env, so every compile line differs and ccache never hits;
-          # --only-binary=:all: still builds this local project but never a dependency from
-          # source, so no third-party sdist is ever built without its own isolated env
-          python -m pip install --quiet "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4"
-          export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: ./eagle/python
-
+      # the gate builds its own venv, installs the sibling checkouts as the ci.yml of old did (aether's headers and sealed
+      # payload, eagle's binding) and runs the CPU suite and the public-name coverage check: the commands are in the Makefile
       - env:
-          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
-          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+          GATE_JOBS: "4"
         run: |
-          cd hawk
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
-
-      - env:
-          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
-          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
-          RAPTOR_EAGLE_ROOT: ${{ github.workspace }}/eagle
-        run: cd hawk && python -m pytest tests -q -m "not gpu"
+          make -C hawk gate-test gate-coverage \
+            RAPTOR_SRC="$GITHUB_WORKSPACE/raptor" AETHER_SRC="$GITHUB_WORKSPACE/aether" EAGLE_SRC="$GITHUB_WORKSPACE/eagle"
       - if: always()
         run: ccache -s
 
@@ -223,9 +177,9 @@ jobs:
       CXX: g++-13
       HAWK_CXX: g++-${{ matrix.gcc }}
       # tests/_toolchain.py's device_compiler(): $HAWK_NVCC first, else the
-      # hardcoded /usr/local/cuda-12.6/bin/nvcc, else bare `nvcc` on PATH.
+      # hardcoded /usr/local/cuda-12.9/bin/nvcc, else bare `nvcc` on PATH.
       # Set explicitly so it does not depend on PATH ordering.
-      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC: /usr/local/cuda-12.9/bin/nvcc
       # nvcc's host compiler for the device TU (env "NVCC_PREPEND_FLAGS
       # -ccbin ..."); CUDA 12.6 rejects gcc > 13, so pin it to the g++-13
       # installed below rather than /usr/bin/g++'s default alias.
@@ -295,7 +249,7 @@ jobs:
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-host-gcc-${{ matrix.gcc }}-
       - run: ccache -z
 
-      - uses: ./hawk/.github/actions/cuda-toolchain
+      - uses: ./hawk/.github/actions/cuda
 
       # The siblings are on PyPI, but CI installs the sibling checkouts so it tests
       # unreleased changes: aether's header package,
@@ -376,7 +330,7 @@ jobs:
       TSAN_PY_VERSION: "3.14.8"
       # the ft rows build their fixture bundles for the device too (compile-only,
       # no GPU): the same nvcc the test/ft-stress jobs use, its host compiler g++-13
-      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC: /usr/local/cuda-12.9/bin/nvcc
       HAWK_NVCC_CCBIN: /usr/bin/g++-13
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
@@ -461,14 +415,9 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libomp-18-dev ccache
         if: steps.plan.outputs.run == 'true'
 
-      - name: Install compile-only CUDA 12.6 toolchain (nvcc; no driver/GPU)
-        run: |
-          curl -fsSL -o /tmp/cuda-keyring.deb \
-            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i /tmp/cuda-keyring.deb
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cuda-nvcc-12-6 cuda-cudart-dev-12-6 cuda-driver-dev-12-6 g++-13
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++-13
+        if: steps.plan.outputs.run == 'true'
+      - uses: ./hawk/.github/actions/cuda
         if: steps.plan.outputs.run == 'true'
 
       - run: ccache -z
@@ -521,9 +470,9 @@ jobs:
       CXX: g++-13
       HAWK_CXX: g++-13
       # tests/_toolchain.py's device_compiler(): $HAWK_NVCC first, else the
-      # hardcoded /usr/local/cuda-12.6/bin/nvcc, else bare `nvcc` on PATH.
+      # hardcoded /usr/local/cuda-12.9/bin/nvcc, else bare `nvcc` on PATH.
       # Set explicitly so it does not depend on PATH ordering.
-      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC: /usr/local/cuda-12.9/bin/nvcc
       # nvcc's host compiler for the device TU (env "NVCC_PREPEND_FLAGS
       # -ccbin ..."); CUDA 12.6 rejects gcc > 13, so pin it to the g++-13
       # installed below rather than /usr/bin/g++'s default alias.
@@ -593,7 +542,7 @@ jobs:
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-ft-stress-${{ matrix.python-version }}-
       - run: ccache -z
 
-      - uses: ./hawk/.github/actions/cuda-toolchain
+      - uses: ./hawk/.github/actions/cuda
 
       # The siblings are on PyPI, but CI installs the sibling checkouts so it tests
       # unreleased changes: aether's header package,
