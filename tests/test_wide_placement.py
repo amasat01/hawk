@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
 
 import _wide_kernels as W
 import numpy as np
@@ -118,7 +119,8 @@ def test_the_thread_form_places_nothing(tmp_path, cache_dir):
     with policy.using(wide_form="thread"):
         sinks, planes, record = wide.place(W.fill_mask.sinks, real_bytes=8)
     assert not planes and not record
-    _, bundle = _build("fill_mask", tmp_path, cache_dir, wide_form="thread")
+    with pytest.warns(UserWarning, match="local frame"):     # the thread form spills, and the build says so
+        _, bundle = _build("fill_mask", tmp_path, cache_dir, wide_form="thread")
     side = sidecar_of(bundle, "fill_mask")
     assert "wide" not in side["launch"] and "stages" not in side and "hwd" not in _unit(bundle, "fill_mask")
 
@@ -185,7 +187,10 @@ def test_the_tangent_of_a_stepping_accumulation_lives_in_planes_across_the_trips
 @pytest.mark.parametrize("entry", ["fill_mask_vjp", "fill_mask_jvp", "matvec_in_vjp", "matvec_in_jvp", "steps_acc_jvp_k8"])
 @pytest.mark.parametrize("mode", ["float32", "float64"])
 def test_a_derivative_corpus_kernel_holds_only_the_local_memory_the_register_form_wins(entry, mode, tmp_path, cache_dir):
-    _, bundle = _build(entry, tmp_path, cache_dir, mode=mode)
+    with warnings.catch_warnings():
+        if (entry, mode) in W.LOCAL_OK:   # the frame the register form keeps on purpose: the build's resource warning names it
+            warnings.filterwarnings("ignore", "hawk: kernel .* local frame", UserWarning)
+        _, bundle = _build(entry, tmp_path, cache_dir, mode=mode)
     assert sidecar_of(bundle, W.CORPUS[entry].kernel.name)["launch"]["local_bytes"] == W.LOCAL_OK.get((entry, mode), 0)
 
 
