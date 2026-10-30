@@ -445,7 +445,8 @@ def refine_entry(kernel: Any) -> Any:
 NEXT_SUFFIX = "_next"
 
 
-def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None) -> Any:
+def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None,
+             steps_reverse: str = "per_step") -> Any:
     """The vjp of ONE step of an in-place step kernel (one that updates
     ``Mutable`` planes and finishes its samples), for a reverse through a
     rollout. :func:`~hawk.diff.vjp` refuses such a kernel, because a plane
@@ -472,6 +473,15 @@ def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None) -> Any:
     publish it beside that step, or pass ``primal_unit=`` naming the unit it
     was published in.
 
+    ``steps_reverse="fused"`` on ``hawk.steps(k, K)`` (a fixed integer ``K``)
+    instead gives the reverse of ALL ``K`` steps in ONE launch: the same planes
+    (``bar_<plane>_next`` in, ``bar_<plane>`` out, the state before the block
+    read under its own name), tagged as the derivative of the fused kernel and
+    recording ``steps_reverse`` in the sidecar. It re-runs the forward from the
+    block's start, so it needs no tape row. State adjoints equal ``K`` calls of
+    the per-step form bit for bit; a ``Param`` gradient sums the ``K`` terms in
+    another order (ULP-level). ``"per_step"`` is the default.
+
     Example::
 
         @hawk.kernel(steps=1)
@@ -485,25 +495,39 @@ def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None) -> Any:
         back = hawk.Kernel("fall_step_vjp", hawk.diff.step_vjp(fall))
         # reads y, v, dt, bar_y_next, bar_v_next; writes bar_y, bar_v, bar_dt
     """
+    from ..trace.steps import fused_steps_of
     from .transform import _rederivable
 
-    return _rederivable(_step_vjp)(kernel, wrt=wrt, primal_unit=primal_unit)
+    if steps_reverse not in ("per_step", "fused"):
+        raise HawkError(
+            f"step_vjp: steps_reverse is 'per_step' or 'fused', got {steps_reverse!r}")
+    if steps_reverse == "fused" and fused_steps_of(kernel) is None:
+        raise HawkError(
+            f"step_vjp({kernel.name!r}, steps_reverse='fused'): needs hawk.steps(k, K) "
+            "with a fixed integer K > 1 (an 'auto' kernel's trip count is a launch-time word)")
+    return _rederivable(_step_vjp)(kernel, wrt=wrt, primal_unit=primal_unit,
+                                   steps_reverse=steps_reverse)
 
 
-def _step_vjp(kernel: Any, *, wrt, primal_unit) -> Any:
+def _step_vjp(kernel: Any, *, wrt, primal_unit, steps_reverse) -> Any:
     from ..trace.kernel import Kernel
+    from ..trace.steps import fused_function, fused_steps_of
     from .event import as_plain_reads
     from .transform import Derived, vjp
 
+    fused = fused_steps_of(kernel) if steps_reverse == "fused" else None
     step = (getattr(kernel, "step", None) or getattr(kernel, "one_step", None)
             or kernel)
-    twin = tape(kernel, 1)
-    single = getattr(twin, "one_step", None) or twin
-    commits = [s for s in single.sinks if isinstance(s, Assign) and s.name != APPLIED_STEPS]
-    values = as_plain_reads(tuple(s.value for s in commits))
-    function = Kernel(f"{step.name}_function",
-                      tuple(Assign(s.name + NEXT_SUFFIX, v, s.ttype)
-                            for s, v in zip(commits, values)), {})
+    if fused is not None:
+        function = fused_function(*fused)
+    else:
+        twin = tape(kernel, 1)
+        single = getattr(twin, "one_step", None) or twin
+        commits = [s for s in single.sinks if isinstance(s, Assign) and s.name != APPLIED_STEPS]
+        values = as_plain_reads(tuple(s.value for s in commits))
+        function = Kernel(f"{step.name}_function",
+                          tuple(Assign(s.name + NEXT_SUFFIX, v, s.ttype)
+                                for s, v in zip(commits, values)), {})
     function.jump = getattr(step, "jump", None)
     out = vjp(function, wrt=wrt)
     if (out.jump or {}).get("engaged"):
@@ -512,8 +536,12 @@ def _step_vjp(kernel: Any, *, wrt, primal_unit) -> Any:
             "nonlinear op is differentiated by an alternate path of ONE launch; "
             "carrying it across launches (steps=, time_step, eagle stepping) is not "
             "built. Differentiate the whole rollout in one kernel with hawk.diff.vjp")
-    return Derived(tuple(out), primal=step.name, kind="vjp", wrt=out.wrt,
-                   primal_unit=primal_unit, jump=out.jump)
+    result = Derived(tuple(out), primal=kernel.name if fused else step.name, kind="vjp",
+                     wrt=out.wrt, primal_unit=primal_unit, jump=out.jump)
+    if fused:
+        result.fused_steps = fused[1]
+        result.kernel_kind = function.kind     # the stop flag is read in the body: no second guard
+    return result
 
 
 def step_jvp(kernel: Any, *, wrt=None) -> Any:

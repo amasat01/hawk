@@ -119,5 +119,7 @@ def _per_kernel_derivative(kernels, names, derivative) -> list:
                  "primal_unit": primal_unit}
         if getattr(auto, "jump", None) is not None:
             block["jump"] = auto.jump
+        if getattr(auto, "fused_steps", None) is not None:
+            block["steps_reverse"] = {"choice": "fused", "steps": auto.fused_steps}
         out.append(block)
     return out

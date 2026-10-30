@@ -24,8 +24,9 @@ use ``K = 1``.
 Admissible shape: sinks are Mutable commits plus ONE finish; reads are any
 leaf role. Refused, naming the kernel: an out/wide_out/accum_out
 sink, a kernel without a finish, and a body loop depending on the carried
-state. A derived kernel of the result refuses through the launch-start-read
-rule: differentiate the single step instead.
+state. A ``jvp`` of the result is the fused ``step_jvp`` of the single step; its
+``vjp`` refuses through the launch-start-read rule: differentiate the single
+step, or ``step_vjp(..., steps_reverse="fused")`` for all K in one launch.
 
 ``steps="auto"`` derives ONE kernel, ``<name>_xauto``, by the same
 transform: the loop's static range is :data:`AUTO_K_MAX` trips, and its
@@ -104,6 +105,18 @@ def default_step(kernel: Any) -> Any:
     here."""
     step = getattr(kernel, "step", None)
     return step if step is not None and step.name == kernel.name else kernel
+
+
+def fused_steps_of(kernel: Any) -> tuple | None:
+    """``(single step, K)`` of a ``hawk.steps(k, K)`` kernel with a fixed integer
+    ``K``, else ``None`` (a single step, or an ``"auto"`` kernel whose trip
+    count is a launch-time word)."""
+    step = getattr(kernel, "step", None)
+    finishes = [s for s in getattr(kernel, "sinks", ()) if isinstance(s, Finish)]
+    if step is None or step is kernel or not finishes:
+        return None
+    k = finishes[0].steps
+    return (step, k) if isinstance(k, int) and k > 1 else None
 
 
 def admits_auto(kernel: Any) -> bool:
@@ -201,6 +214,54 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
                   step=step, one_step=kernel if auto else None,
                   source_digest=getattr(kernel, "source_digest", None),
                   returns=getattr(kernel, "returns", None))
+
+
+def fused_function(step: Any, K: int) -> Any:
+    """``K`` steps of ``step`` as a pure function: the launch-start state is read
+    as plain planes, ``<plane>_next`` is the K-trip loop's result. What the
+    derivatives of a fused kernel differentiate (``step_vjp(..., steps_reverse=
+    "fused")``): the reverse loop reads the forward loop's carries, so it needs
+    no recorded tape.
+
+    A sample terminated on entry keeps its state (a ``Select`` on the stop flag,
+    so its adjoint passes straight through); a sample stopping at trip ``j`` leaves the loop there, as in
+    :func:`steps`. A ``time_step=`` kernel is read in the taping twin's index
+    form, trip ``i`` taking step index ``applied_steps + i`` (a float counter,
+    since an integer carry has no adjoint)."""
+    from ..diff.event import as_plain_reads
+    from ..diff.tape import APPLIED_STEPS, NEXT_SUFFIX, _promoted
+    from ..ext import DATA_ONLY, Kind
+    from .kernel import Kernel
+
+    timed = bool(getattr(step, "time_step", None))
+    if timed:
+        step, _ = _promoted(step)
+    sinks = tuple(step.sinks)
+    finish = next(s for s in sinks if isinstance(s, Finish))
+    commits = [s for s in sinks if s is not finish]
+    carries = [LoopCarry(0, j, s.name, s.ttype) for j, s in enumerate(commits)]
+    by_name = {s.name: c for s, c in zip(commits, carries)}
+    counter = LoopCarry(0, len(commits), "trip", _FLAG)
+    if timed:
+        by_name[APPLIED_STEPS] = make("cast", (counter,), "i32")
+    mapping = {id(leaf): by_name[leaf.name] for leaf in _prior_reads(sinks)}
+    new = substitute(tuple(s.value for s in commits) + (finish.value,), mapping)
+    nexts = tuple(new[:-1])
+    inits = as_plain_reads(tuple(Leaf("prior_read", "mutable", s.name, s.ttype)
+                                 for s in commits))
+    if timed:
+        start = as_plain_reads((Leaf("prior_read", "mutable", APPLIED_STEPS, _COUNT),))[0]
+        carries.append(counter)
+        inits += (make("cast", (start,), "f64"),)
+        nexts += (make("add", (counter, Const(1.0, _FLAG))),)
+    loop = build_loop(LoopIndex(0, "step"), tuple(carries), inits, nexts,
+                      start=0, stop=K, step=1, exit_cond=new[-1], exit_values=nexts)
+    entry = Leaf("terminated", "terminated", finish.name, finish.value.ttype)
+    out = [Assign(s.name + NEXT_SUFFIX, Select(entry, inits[j], LoopValue(loop, j), s.ttype),
+                  s.ttype) for j, s in enumerate(commits)]
+    # the Select above is the skip: no guard of the kind, so a derivative neither
+    # masks nor wraps it a second time (a standalone C unit would flag the repeat)
+    return Kernel(f"{step.name}_x{K}_function", tuple(out), {}, kind=Kind("fused_steps", guard=DATA_ONLY))
 
 
 def _clamped_word() -> Node:
