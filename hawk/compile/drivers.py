@@ -114,6 +114,14 @@ _TRAMPOLINE = (
 )
 
 
+#: The POSIX trampoline: lower the SOFT ``RLIMIT_AS`` to the cap (KiB, ``$1``)
+#: with the shell's ``ulimit -S -v``, then ``exec`` the real command. A failed
+#: ``ulimit`` (a cap above the inherited hard limit, or a platform that cannot
+#: cap the address space) leaves the limit as it was and the command still runs.
+#: No second interpreter starts: ``sh`` costs about a millisecond, the Python
+#: trampoline above about 20 ms per compile.
+_SH_TRAMPOLINE = 'ulimit -S -v "$1" 2>/dev/null; shift; exec "$@"'
+
 #: The largest translation unit, in bytes, a driver compiles. A kernel whose
 #: source is bigger than this is too wide for one compile (a 3.6 MB source took
 #: 163 s on the device compiler); split it or narrow it. A machine guard like
@@ -167,9 +175,10 @@ def limited(argv: list[str]) -> list[str]:
     """``argv`` wrapped so the child runs under the address-space cap, or
     ``argv`` itself when the cap is disabled.
 
-    The cap is installed by a small exec trampoline (``python -I -c``: set
-    ``RLIMIT_AS``, then ``os.execvp`` the real command) rather than a
-    a fork-time hook, which is unsafe to run from a multi-threaded process.
+    The cap is installed by a small exec trampoline (``sh -c 'ulimit -S -v N;
+    exec ...'``; ``python -I -c`` with ``resource.setrlimit`` where there is
+    no ``/bin/sh``) rather than a fork-time hook (``preexec_fn``), which is
+    unsafe to run from a multi-threaded process.
     The limit is inherited by every process the compiler driver spawns —
     ``nvcc`` runs ``cicc`` and ``ptxas``, and ``ptxas`` is the one that ran
     the machine out of memory. The soft limit is raised no higher than the
@@ -177,6 +186,8 @@ def limited(argv: list[str]) -> list[str]:
     cap = address_space_cap()
     if not cap:
         return list(argv)
+    if os.path.exists("/bin/sh"):
+        return ["/bin/sh", "-c", _SH_TRAMPOLINE, "sh", str(-(-cap // 1024)), *argv]
     return [sys.executable, "-I", "-c", _TRAMPOLINE, str(cap), *argv]
 
 
@@ -527,7 +538,7 @@ def _compile_nvrtc_source(source: str, name: str, opts: CompileOptions,
                                         extra=extra)
     key = lookup_key(source, opts.target, opts.mode, identity,
                       (*device_opts, f"device_target:{target}",
-                       f"payload:{payload.digest}"))
+                       f"payload:{payload.digest}", "ptxas-info:v1"))
     slot = cache.slot(key)
     artifact = slot / f"{name}{art_ext}"
     src_path = slot / f"{name}{src_ext}"       # never written (no file)
@@ -540,13 +551,15 @@ def _compile_nvrtc_source(source: str, name: str, opts: CompileOptions,
         if memo is not None and _memo_still_valid(artifact, memo, payload.digest):
             cache.note(True)
             return CompileResult(artifact, src_path, key, True, argv,
-                                 closure=payload_closure)
+                                 closure=payload_closure,
+                                 ptxas=cache.record(key).get("ptxas", {}))
 
         if cache.check(key, payload_digest=payload.digest):
             cache.note(True)
             artifact_memo_put(key, payload_closure)
             return CompileResult(artifact, src_path, key, True, argv,
-                                 closure=payload_closure)
+                                 closure=payload_closure,
+                                 ptxas=cache.record(key).get("ptxas", {}))
         return None
 
     def build():
@@ -564,13 +577,16 @@ def _compile_nvrtc_source(source: str, name: str, opts: CompileOptions,
                 f"rc != NVRTC_SUCCESS).\n$ nvrtc {' '.join(argv)}\n{result.log[:4000]}"
             )
         write_atomic(artifact, result.ptx)
+        # registers and stack frame read off the CUBIN itself; spills are not knowable (None)
+        ptxas = _nvrtc_driver.cubin_resources(result.ptx) if target == "cubin" else {}
         cache.store(key, artifact=artifact, closure=(),
                     meta={"target": opts.target, "mode": opts.mode, "compiler": identity,
                           "flags": list(argv), "seconds": seconds, "name": name,
-                          "payload_digest": payload.digest, "device_target": target})
+                          "payload_digest": payload.digest, "device_target": target,
+                          "ptxas": ptxas})
         artifact_memo_put(key, payload_closure)
         return CompileResult(artifact, src_path, key, False, argv, seconds,
-                             closure=payload_closure)
+                             closure=payload_closure, ptxas=ptxas)
 
     return _single_flight(key, lookup, build)
 

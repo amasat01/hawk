@@ -423,7 +423,7 @@ def test_a_deleted_artifact_is_not_served_from_the_memo(tree):
     assert answer == "miss" and again.artifact.is_file()
 
 
-def test_the_compiler_is_identified_once_per_process(tree, monkeypatch):
+def test_the_compiler_is_identified_once_per_process(tree, monkeypatch, tmp_path):
     """``<compiler> --version`` is a SUBPROCESS, and the answer cannot change
     under a binary this process has already stat'd at the same size and mtime.
 
@@ -439,6 +439,7 @@ def test_the_compiler_is_identified_once_per_process(tree, monkeypatch):
     from hawk.compile import toolchain
     from hawk.compile.toolchain import reset_identity_memo
 
+    monkeypatch.setenv("HAWK_CACHE_DIR", str(tmp_path / "probe_cache"))   # an empty on-disk probe store
     reset_identity_memo()
     runs = []
     real = sp.run
@@ -744,6 +745,8 @@ def test_stat_many_does_not_slow_down_the_real_closure(built):
     from hawk.compile.cache import ClosureWatch, validity_digest
 
     entry = built["axpb"].artifacts[0].entries["cuda"]
+    if entry.closure and not isinstance(entry.closure[0], str):
+        pytest.skip("an NVRTC compile records a payload tag, not an on-disk header closure")
     pairs = validity_digest(entry.closure)
     assert len(pairs) > 100, (
         f"only {len(pairs)} closure entries; this row's claim is about the "

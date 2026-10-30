@@ -157,21 +157,30 @@ def digest_file(path: str | os.PathLike) -> str | None:
     return digest
 
 
-def closure_unchanged(pairs) -> bool:
+def closure_unchanged(pairs, sigs=None) -> bool:
     """Is every ``(path, content digest)`` pair still true.
 
     The same verdict :func:`digest_file` would give pair by pair —
     content, never mtime — written as one inlined loop rather than a
     comprehension, since on a warm hit this is Python-call-bound, not
     filesystem-bound. Short-circuits on the first disagreement, so a
-    changed header is reported without stat'ing the rest."""
+    changed header is reported without stat'ing the rest.
+
+    ``sigs`` (``[size, mtime_ns]`` per pair, recorded when the compile
+    stored its validity record) lets a FRESH process trust a file whose
+    stat signature is unchanged without re-reading it: the same
+    size+mtime rule :class:`ClosureWatch` applies, carried across
+    processes. A signature that disagrees falls through to the content."""
     memo = _MEMO
     stat = os.stat
-    for path, want in pairs:
+    sigs = sigs if sigs is not None and len(sigs) == len(pairs) else None
+    for i, (path, want) in enumerate(pairs):
         try:
             st = stat(path)
         except OSError:
             return False                      # missing or unreadable => a miss
+        if sigs is not None and sigs[i][0] == st.st_size and sigs[i][1] == st.st_mtime_ns:
+            continue
         got = memo.get((path, st.st_size, st.st_mtime_ns))
         if got is None:
             got = digest_file(path)
@@ -414,8 +423,8 @@ class Cache:
             # content like the source-header path's (empty for NVRTC entries).
             return (payload_digest is not None
                     and recorded_payload_digest == payload_digest
-                    and closure_unchanged(data.get("closure", ())))
-        return closure_unchanged(data.get("closure", ()))
+                    and closure_unchanged(data.get("closure", ()), data.get("sigs")))
+        return closure_unchanged(data.get("closure", ()), data.get("sigs"))
 
     def store(self, key: str, *, artifact: Path, closure, meta: dict) -> None:
         """Write the validity record for ``key`` beside the artifact,
@@ -423,9 +432,18 @@ class Cache:
         place, so a reader that finds a record finds a whole artifact."""
         slot = self.slot(key)
         slot.mkdir(parents=True, exist_ok=True)
+        pairs = validity_digest(closure)
+        sigs = []
+        for path, _ in pairs:
+            try:
+                st = os.stat(path)
+                sigs.append([st.st_size, st.st_mtime_ns])
+            except OSError:
+                sigs.append([-1, -1])
         write_atomic(slot / "validity.json", json.dumps({
             "artifact": artifact.name,
-            "closure": [list(pair) for pair in validity_digest(closure)],
+            "closure": [list(pair) for pair in pairs],
+            "sigs": sigs,
             **meta,
         }, indent=2))
 
