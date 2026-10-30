@@ -7,7 +7,10 @@
 Each row equals a numpy loop over the nets, on the host and (``gpu`` mark) the device. Nets of
 different width are padded to ``H`` and a per-net mask row zeroes the unused units: their gradient
 is exactly zero. A gradient is summed over its own net's samples only, so perturbing net i moves
-no value or gradient of net j (bitwise). The device row runs K = 16384 nets and replays bitwise."""
+no value of net j (bitwise) and no gradient of net j beyond the ULPs of its atomic commits (the
+default, compensated gradient adds its per-warp partials atomically, so their order varies from launch
+to launch once a net spans three warps). The device row runs K = 16384 nets; the ordered policy
+replays bitwise."""
 
 from __future__ import annotations
 
@@ -134,7 +137,8 @@ def test_perturbing_one_net_moves_no_other_net(bundles, target):
     moved = _both(bundles, target, w2, x2, y2, mask)
     keep = [0, 1, 3, 4]
     assert np.array_equal(moved[0][keep], base[0][keep])
-    assert np.array_equal(moved[1][keep], base[1][keep])
+    # S = 40 spans three warps: three atomic partials per weight, in any order -> at most 2 roundings apart
+    np.testing.assert_array_max_ulp(moved[1][keep], base[1][keep], maxulp=2)
     assert not np.array_equal(moved[1][2], base[1][2])
 
 
