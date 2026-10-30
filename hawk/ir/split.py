@@ -251,21 +251,22 @@ def _ordered_scatters(name: str, sinks: tuple) -> tuple:
     return tuple(out), width
 
 
-def stages(name: str, sinks, *, wide: bool = False, real_bytes: int = 8) -> tuple | None:
+def stages(name: str, sinks, *, wide: bool = False, real_bytes: int = 8, taken=()) -> tuple | None:
     """The stages of the kernel ``name`` with sink set ``sinks``, or ``None``
     when the body reads no reduction over samples (one kernel, unchanged).
 
     With ``wide`` the placement pass (:func:`hawk.ir.wide.place`) runs on the sinks of every stage that is
     not a team stage, for scalars of ``real_bytes`` bytes, and a kernel that has a wide value placed in a
     scratch plane is returned as the stages it needs, one at least: that stage names the plane in its
-    ``planes``. A caller that cannot make the planes leaves ``wide`` off and gets the kernel as it was."""
+    ``planes``. A caller that cannot make the planes leaves ``wide`` off and gets the kernel as it was.
+    ``taken`` are plane names the placement must not reuse (those of another body of the same kernel)."""
     found = _stages(name, sinks)
     if not wide:
         return found
-    return _placed(name, sinks, found, real_bytes)
+    return _placed(name, sinks, found, real_bytes, taken)
 
 
-def _placed(name: str, sinks, found, real_bytes: int) -> tuple | None:
+def _placed(name: str, sinks, found, real_bytes: int, taken_names=()) -> tuple | None:
     """``found`` with every per-lane stage's wide values placed (:func:`hawk.ir.wide.place`); the kernel as
     one stage when it had none and has a placed value, ``None`` when nothing is placed."""
     from dataclasses import replace
@@ -278,7 +279,7 @@ def _placed(name: str, sinks, found, real_bytes: int) -> tuple | None:
         whole = True
     else:
         whole = False
-    taken = {n.name for st in found for n in _post_order(st.sinks) if hasattr(n, "name") and n.name}
+    taken = {n.name for st in found for n in _post_order(st.sinks) if hasattr(n, "name") and n.name} | set(taken_names)
     out, changed = [], False
     for st in found:
         if st.team is not None:

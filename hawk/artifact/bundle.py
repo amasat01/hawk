@@ -672,7 +672,8 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         ptxas=(_resource_report(kernel, entries[lead][0].ptxas)
                if TARGETS[lead].entry == ENTRY_DEVICE else None),
         local=_local_memory(name, entries, lead),
-        wide=_wide_with_class(_wide.walk_record(kernel.walk), resolved_arch),
+        wide=_wide_with_class({**_wide.walk_record(kernel.walk), **_wide.walk_record(kernel.one_step.walk)} if getattr(kernel, "one_step", None) is not None
+                              else _wide.walk_record(kernel.walk), resolved_arch),
     )
     if split is not None:
         # the first stage of a split kernel names every stage and every cell
@@ -978,12 +979,12 @@ def _wide_with_class(record: dict, resolved_arch: str) -> dict | None:
 
 def _wide_ok(kernel, smode, device: bool):
     """Whether the placement pass may run on ``kernel`` (:func:`hawk.ir.split.stages` ``wide``): a build
-    for the device, of a kernel that is one plain launch (not a stepping, segmented or compacted one)."""
+    for the device, of a kernel that is one launch (a plain, grouped or segmented one, or an automatic one's two bodies)."""
     from ..ir.vectorise import interchanged_loops
 
     # a host-only build places too when its loops run interchanged: the wide carries then live in the lane rows
     return ((device or bool(interchanged_loops(kernel.walk))) and type(kernel).__name__ in ("Kernel", "SegmentUnit")
-            and getattr(kernel, "one_step", None) is None and getattr(kernel, "fused_body", None) is None)
+            and getattr(kernel, "fused_body", None) is None)
 
 
 def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device: bool = False) -> tuple:
@@ -993,17 +994,29 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
     sidecar block naming every stage and every cell."""
     from ..diff import Derived
     from ..trace.kernel import Kernel, TeamStage
+    from ..trace.kernel import _declared as _declared_slots
 
     out_kernels, out_names, out_kinds, blocks = [], [], [], {}
     for k, n, kd in zip(kernels, names, kinds):
-        found = _split_stages(n, k.sinks, wide=_wide_ok(k, smode, device),
-                              real_bytes=4 if smode is not None and smode.id == "float32" else 8)
-        if found is None:
+        ok, one = _wide_ok(k, smode, device), getattr(k, "one_step", None)
+        real = 4 if smode is not None and smode.id == "float32" else 8
+        if one is not None and (_split_stages(n, k.sinks) is not None or _split_stages(n, one.sinks) is not None):
+            raise HawkError(
+                f"{n!r} reads a value reduced over samples inside a stepping or "
+                "segmented kernel; a split kernel is one plain step in this release")
+        found = _split_stages(n, k.sinks, wide=ok, real_bytes=real)
+        found1 = None
+        if one is not None and ok:      # the single step is a body of its own: placed beside the fused one, in planes of its own
+            found1 = _split_stages(n, one.sinks, wide=True, real_bytes=real,
+                                   taken={p.name for st in found or () for p in st.planes})
+        if found is None and found1 is None:
             out_kernels.append(k)
             out_names.append(n)
             out_kinds.append(kd)
             continue
-        if getattr(k, "one_step", None) is not None or (
+        fused = found
+        found = found or found1
+        if (
                 getattr(k, "segment", None) is not None and _split_stages(n, k.sinks) is not None):
             raise HawkError(
                 f"{n!r} reads a value reduced over samples inside a stepping or "
@@ -1028,10 +1041,16 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
             elif getattr(k, "segment", None) is not None:       # a branch unit, its wide values placed: still the unit
                 member = _segment_rewalk(k, sinks)
             else:
-                member = Kernel(stage.name, sinks, k.planes, kind=getattr(k, "kind", None))
+                member = Kernel(stage.name, sinks if fused or one is None else k.sinks, k.planes, kind=getattr(k, "kind", None))
                 if len(found) == 1:         # the kernel itself, its wide values placed: it keeps what it declared
                     for attr in ("source_digest", "returns", "time", "time_step", "jump", "broadcast", "group"):
                         setattr(member, attr, getattr(k, attr))
+                if one is not None:         # an automatic kernel: its single step beside it, both bodies reading the planes of both
+                    member.one_step = Kernel(one.name, found1[0].sinks if found1 else one.sinks, one.planes, kind=one.kind)
+                    held = set(member.walk.arg_spec)
+                    extra = [Slot(role, name, member.one_step.walk.slot_types[role, name])
+                             for role, name in member.one_step.walk.arg_spec if (role, name) not in held]
+                    member.walk = _canonical(member.sinks, (*_declared_slots(member.planes), *extra))
             cells.update(member.walk.cells)
             out_kernels.append(member)
             out_names.append(stage.name)
@@ -1044,7 +1063,7 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
              "cells_out": list(st.cells_out), "recomputed": list(st.recomputed),
              **({} if st.team is None else {"team": _team_record(st.team)})}
             for st in found]}
-        scratch = _team_scratch(found)
+        scratch = _team_scratch((*found, *(found1 or ())))
         if scratch:
             blocks[n]["team_planes"] = scratch
         # the keyed planes the runtime owns between the stages

@@ -412,7 +412,7 @@ class _Plan:
         graph, found = self.graph, {}
         self.sunk: dict = {}
         for loop in graph.loops:
-            if loop.exit_form != "tail" or loop.body_sinks or loop.count is not None:
+            if loop.exit_form != "tail" or loop.body_sinks:
                 continue
             for j, carry in enumerate(loop.carries):
                 init, nxt = loop.inits[j], loop.nexts[j]
@@ -429,7 +429,7 @@ class _Plan:
                 if len(stores) == 1 and isinstance(stores[0], Assign) and stores[0].name == init.name \
                         and stores[0].index is None and len(graph.users(values[0])) == 1:
                     found[id(loop), j] = (loop, init.name)
-                    deps = None if reads else self._sink_deps(loop, nxt)
+                    deps = None if reads or loop.count is not None else self._sink_deps(loop, nxt)   # a run-time count may run no trip: the plane is then left as it is
                     if deps is not None:
                         self.sunk[id(loop), j] = deps
                     if reads:

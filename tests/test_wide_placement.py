@@ -194,6 +194,15 @@ def test_a_derivative_corpus_kernel_holds_only_the_local_memory_the_register_for
     assert sidecar_of(bundle, W.CORPUS[entry].kernel.name)["launch"]["local_bytes"] == W.LOCAL_OK.get((entry, mode), 0)
 
 
+@pytest.mark.parametrize("entry", ["fill_mask_seg", "matvec_in_seg"])
+def test_an_automatic_kernel_places_the_wide_values_of_its_fused_and_its_single_step_body(entry, tmp_path, cache_dir):
+    kernel, bundle = _build(entry, tmp_path, cache_dir, mode="float64")
+    side = sidecar_of(bundle, kernel.name)
+    assert side["launch"]["local_bytes"] == 0
+    planes = {p for p in side["launch"]["wide"] if p != "class"}
+    assert {p for p in side["team_planes"]} <= planes and len(side["team_planes"]) >= 2   # one set of scratch planes per body
+
+
 # -- the device feature classes -----------------------------------------------------------------
 
 def test_a_known_arch_selects_its_own_class_and_an_unknown_feature_tuple_the_nearest(monkeypatch):
