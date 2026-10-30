@@ -378,8 +378,10 @@ def closure_of(depfile: str | os.PathLike) -> tuple[str, ...]:
 
 def validity_digest(closure) -> tuple[tuple[str, str | None], ...]:
     """The validity record for ``closure``: ``(path, content digest)``
-    pairs, in closure order."""
-    return tuple((p, digest_file(p)) for p in closure)
+    pairs, in closure order. An NVRTC entry's closure is already a pair
+    (:data:`PAYLOAD_CLOSURE_TAG`, the sealed payload's digest): it is kept as
+    it is, there is no file to read."""
+    return tuple(p if isinstance(p, tuple) else (p, digest_file(p)) for p in closure)
 
 
 class Cache:
