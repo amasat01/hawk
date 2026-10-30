@@ -31,6 +31,8 @@ AETHER_SRC ?=
 EAGLE_SRC ?=
 SITE_SRC ?=
 # the device class of the eagle build: the card's, else 70 (a build with no card to run on); CUDA_ARCH overrides
+# the device compiler hawk tests by default is nvcc (CUDACXX, else CUDA_PATH/bin/nvcc); unset, hawk falls back to NVRTC
+export HAWK_NVCC ?= $(or $(CUDACXX),$(if $(CUDA_PATH),$(CUDA_PATH)/bin/nvcc))
 CUDA_ARCH ?= $(or $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n 1 | tr -d '. '),70)
 
 GATE_ABS := $(abspath $(GATE_DIR))
