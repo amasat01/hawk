@@ -79,6 +79,9 @@ def test_nvrtc_ptxas_figures_equal_nvcc_with_a_local_frame(tmp_path, monkeypatch
         monkeypatch.setenv("HAWK_DEVICE_COMPILER", comp)
         b = build_bundle([k], tmp_path / comp, targets=("cuda",), cache_dir=str(tmp_path / f"c_{comp}"),
                          device_arch=real_arch())
-        rows[comp] = sidecar_of(b, k.name)["ptxas"][k.name]
+        side = sidecar_of(b, k.name)
+        # an nvcc not newer than the driver compiles PTX, which carries no ptxas figures: this row needs a CUBIN from both
+        assert "ptxas" in side, f"{comp} compiled no CUBIN here (a PTX build has no ptxas figures): point $HAWK_NVCC at an nvcc newer than the driver"
+        rows[comp] = side["ptxas"][k.name]
     assert rows["nvrtc"]["stack_B"] == rows["nvcc"]["stack_B"] > 0
     assert rows["nvrtc"]["regs"] == rows["nvcc"]["regs"]

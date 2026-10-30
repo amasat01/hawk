@@ -39,7 +39,30 @@ def _unit(bundle, name, suffix=".cu"):
     return (pathlib.Path(bundle.directory) / f"{name}{suffix}").read_text()
 
 
+#: The arch the committed local-memory figures (``W.LOCAL_OK``, the ``sm61`` class tables) were measured on.
+MEASURED_ARCH = "sm_61"
+
+
+def _a1_arch() -> str:
+    """The arch the A1 rows compile for: the card's own when one is reachable (and then only if the committed figures are
+    its class's), else the measured one, so a GPU-less run builds a CUBIN of the arch the figures describe (a virtual arch
+    gives PTX, whose local sizes are a ceiling before ptxas)."""
+    from hawk.compile import toolchain as tc
+
+    probed = tc._probed_device_arch()
+    if probed and probed != MEASURED_ARCH:
+        pytest.skip(f"the card is {probed} (thresholds class {wide_class_of(probed)}): the committed A1 figures are for {MEASURED_ARCH}")
+    return MEASURED_ARCH
+
+
+def wide_class_of(arch: str) -> str:
+    from hawk.ir import wide_class
+
+    return wide_class.select(arch)
+
+
 def _build(entry, tmp_path, cache_dir, **options):
+    options.setdefault("device_arch", _a1_arch())
     kernel = W.CORPUS[entry].kernel
     kind = {} if W.CORPUS[entry].kind is None else {"kind": W.CORPUS[entry].kind}
     return kernel, build_bundle([kernel], tmp_path, targets=("cuda",), cache_dir=cache_dir, **kind, **options)
