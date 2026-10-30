@@ -1,6 +1,6 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
-"""Fills a row of ``hawk.ir.steps_class.ROWS``: K per-step reverse launches against one fused launch
+"""Fills a row of ``hawk.ir.steps_class._ROWS``: K per-step reverse launches against one fused launch
 (``step_vjp(hawk.steps(k, K), steps_reverse="fused")``) on the compiled host, per batch size N.
 
     python tests/_probe_steps_reverse.py [--K 4 8] [--N 1 64 1024 16384] [--reps 100]

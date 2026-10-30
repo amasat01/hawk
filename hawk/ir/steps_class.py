@@ -19,19 +19,19 @@ from .wide_class import select
 #: ``{class: ((width, K, n_max), ...)}``. ``host``: x86_64, 8 cores, compiled hawk.run, fused
 #: 8x / 4x faster at N=1, 5x / 3.3x at N=64 and level or slower from N=1024 (width 4, K 8 / 4).
 #: The device classes are empty: the card has not been measured (GPU fusion won 1.0-1.3x at most).
-ROWS = {
+_ROWS = {
     "host": ((4, 8, 64), (4, 4, 64)),
 }
 
 
-def class_of(device: bool, arch: str = "") -> str:
+def _class_of(device: bool, arch: str = "") -> str:
     """The row class of a target: ``host``, or the nearest measured device class."""
     return select(arch) if device else "host"
 
 
-def choose(device: bool, width: int, K: int, n: int, arch: str = "") -> str:
+def _choose(device: bool, width: int, K: int, n: int, arch: str = "") -> str:
     """``"fused"`` when the class's nearest measured regime won at ``n`` samples, else ``"per_step"``."""
-    rows = ROWS.get(class_of(device, arch), ())
+    rows = _ROWS.get(_class_of(device, arch), ())
     if not rows:
         return "per_step"
     w, k, n_max = min(rows, key=lambda r: (abs(math.log2(width / r[0])) + abs(math.log2(K / r[1])), r))
