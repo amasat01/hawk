@@ -339,13 +339,10 @@ def driver_cuda_version() -> tuple[int, int]:
             return _DRIVER_VERSION_MEMO[0]
         break
     try:
-        _driver = _import_driver()
+        _driver = _initialised_driver()
     except ImportError as exc:
         raise HawkError(
             "cuda-bindings is not installed; the driver version is unknown.") from exc
-    (err,) = _driver.cuInit(0)
-    if err != _driver.CUresult.CUDA_SUCCESS:
-        raise HawkError(f"cuInit failed ({err}); no CUDA driver reachable.")
     err, encoded = _driver.cuDriverGetVersion()
     if err != _driver.CUresult.CUDA_SUCCESS:
         raise HawkError(f"cuDriverGetVersion failed ({err}).")
@@ -382,11 +379,12 @@ def select_target(compiler_version: tuple[int, int] | None,
     return "cubin" if compiler_version > driver_version else "ptx"
 
 
-def _import_driver():
-    """`cuda.bindings.driver`. An ImportError propagates (the caller may probe
-    the driver by ctypes instead); a binding that imports but cannot load the
-    driver library -- no NVIDIA driver on this machine -- is a HawkError, the
-    same answer as no reachable device."""
+def _initialised_driver():
+    """`cuda.bindings.driver` after a successful ``cuInit``. An ImportError
+    propagates (the caller may probe the driver by ctypes instead); any other
+    failure -- the binding cannot load the driver library because this machine
+    has no NVIDIA driver, or ``cuInit`` fails -- is a HawkError, the same answer
+    as no reachable device."""
     try:
         from cuda.bindings import driver as _driver
     except ImportError:
@@ -394,6 +392,13 @@ def _import_driver():
     except Exception as exc:
         raise HawkError(
             f"the CUDA driver library could not be loaded ({exc}); no CUDA device reachable.") from exc
+    try:
+        (err,) = _driver.cuInit(0)
+    except Exception as exc:
+        raise HawkError(
+            f"the CUDA driver library could not be loaded ({exc}); no CUDA device reachable.") from exc
+    if err != _driver.CUresult.CUDA_SUCCESS:
+        raise HawkError(f"cuInit failed ({err}); no CUDA device reachable.")
     return _driver
 
 
@@ -401,10 +406,7 @@ def _current_device(device_index: int | None = None):
     """``(driver module, CUdevice)``: the CURRENT context's device
     (``cuCtxGetDevice``) when ``device_index`` is ``None`` and a context is
     current, else ordinal ``device_index`` (``0`` by default)."""
-    _driver = _import_driver()
-    (err,) = _driver.cuInit(0)
-    if err != _driver.CUresult.CUDA_SUCCESS:
-        raise HawkError(f"cuInit failed ({err}); no CUDA device reachable.")
+    _driver = _initialised_driver()
     if device_index is None:
         err, dev = _driver.cuCtxGetDevice()
         if err == _driver.CUresult.CUDA_SUCCESS:
