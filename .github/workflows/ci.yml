@@ -154,7 +154,7 @@ jobs:
       - env:
           GATE_JOBS: "4"
         run: |
-          make -C hawk gate-test gate-coverage \
+          make -C hawk gate-test gate-names \
             RAPTOR_SRC="$GITHUB_WORKSPACE/raptor" AETHER_SRC="$GITHUB_WORKSPACE/aether" EAGLE_SRC="$GITHUB_WORKSPACE/eagle"
       - if: always()
         run: ccache -s

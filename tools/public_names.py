@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fail when a public name of hawk has no test that mentions it.
 
-    python tools/test_coverage_check.py [--list]
+    python tools/public_names.py [--list]
 
 A public name is each entry of ``hawk.__all__`` and ``dir(hawk)``'s submodule doors that does not start with an underscore; a test
 mentions it when the identifier appears in any ``tests/*.py`` (static: nothing is run). The names that have no test today are
-in tools/test_coverage_allow.txt, one per line as ``name  # reason``: the file may only shrink, so a name that gained a test
+in ci/public_names_untested.txt, one per line as ``hawk.name  # reason``: the file may only shrink, so a name that gained a test
 (or left the API) must be removed from it, and a new untested name fails the gate.  --list prints the untested names.
 """
 import re
@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ALLOW = ROOT / "tools" / "test_coverage_allow.txt"
+ALLOW = ROOT / "ci" / "public_names_untested.txt"
 
 
 def public_names():

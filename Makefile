@@ -3,7 +3,7 @@
 
 # The gates of this repository, runnable from a clean checkout. CI calls these targets, so the commands live here only.
 #
-#   make gate            the CPU legs CI runs: gate-lint, gate-test, gate-coverage, gate-docs
+#   make gate            the CPU legs CI runs: gate-lint, gate-test, gate-names, gate-docs
 #   make gate-gpu        the legs that need a card: the tests marked gpu, then the wide-value correctness checks
 #                        (A1 zero local memory, C8 registers, A3 against NumPy and finite differences, A5 memory)
 #   make gate-all        both
@@ -63,9 +63,9 @@ export HAWK_EAGLE_INCLUDE = $(abspath $(EAGLE_SRC))
 export RAPTOR_EAGLE_ROOT = $(abspath $(EAGLE_SRC))
 endif
 
-.PHONY: gate-gpu-notebooks gate gate-coverage gate-lint gate-test gate-docs gate-gpu gate-all compare-0.7.2 gate-tools gate-venv
+.PHONY: gate-gpu-notebooks gate gate-names gate-lint gate-test gate-docs gate-gpu gate-all compare-0.7.2 gate-tools gate-venv
 
-gate: gate-lint gate-test gate-coverage gate-docs
+gate: gate-lint gate-test gate-names gate-docs
 gate-all: gate gate-gpu
 
 gate-tools:
@@ -117,8 +117,8 @@ gate-test: gate-venv
 	$(VPY) -m pytest -q -m "not gpu" -p no:cacheprovider $(PYTEST_ARGS)
 
 # coverage: every public name has a test that mentions it (static, seconds); the untested ones are in the allowlist, which only shrinks
-gate-coverage: gate-venv
-	$(VPY) tools/test_coverage_check.py
+gate-names: gate-venv
+	$(VPY) tools/public_names.py
 
 # docs: every notebook filled and run on the CPU (the card is hidden: this leg is the GPU-less one; the card pool is for gate-gpu), the strict (-W) Sphinx build, every public name has a page
 gate-docs: gate-venv
