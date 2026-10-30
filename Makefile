@@ -20,11 +20,12 @@
 #   SITE_SRC is the checkout of amasat01.github.io (the docs skin and the freshness generator): gate-lint and gate-docs need it.
 #   Toolchains come from the environment, never guessed: a C++ compiler (CXX), nvcc on PATH (or CUDACXX), cppcheck on PATH
 #   (or HAWK_CPPCHECK). A missing one stops the gate before it starts. GATE_JOBS (default 2) is the build parallelism;
-#   pytest runs in one process.
+#   PYTEST_JOBS (default GATE_JOBS) the CPU pytest workers, one test file per worker; the GPU leg runs in one process (one card).
 PYTHON ?= python3
 GATE_DIR ?= build/gate
 GATE_JOBS ?= 2
 GATE_REUSE ?=
+PYTEST_JOBS ?= $(GATE_JOBS)
 PYTEST_ARGS ?= tests
 RAPTOR_SRC ?=
 AETHER_SRC ?=
@@ -118,7 +119,7 @@ gate-lint:
 
 # test: everything not marked gpu (the GPU-less runner's selection); the cppcheck rows fail, never skip, without a cppcheck
 gate-test: gate-venv
-	$(VPY) -m pytest -q -m "not gpu" -p no:cacheprovider $(PYTEST_ARGS)
+	$(VPY) -m pytest -q -m "not gpu" -p no:cacheprovider -n $(PYTEST_JOBS) --dist loadfile $(PYTEST_ARGS)
 
 # coverage: every public name has a test that mentions it (static, seconds); the untested ones are in the allowlist, which only shrinks
 gate-names: gate-venv

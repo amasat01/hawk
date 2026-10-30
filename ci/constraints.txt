@@ -7,3 +7,4 @@ sphinx-design==0.7.0
 sphinx-copybutton==0.5.2
 sphinx-autodoc-typehints==3.5.2
 torch==2.14.1
+pytest-xdist==3.8.0
