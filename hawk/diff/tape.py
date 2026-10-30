@@ -505,6 +505,9 @@ def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None,
         raise HawkError(
             f"step_vjp({kernel.name!r}, steps_reverse='fused'): needs hawk.steps(k, K) "
             "with a fixed integer K > 1 (an 'auto' kernel's trip count is a launch-time word)")
+    if steps_reverse == "fused" and wrt is None:
+        # the same inputs as one step (the loop's stop rule reads more, none differentiable)
+        wrt = _step_vjp(kernel, wrt=None, primal_unit=None, steps_reverse="per_step").wrt
     return _rederivable(_step_vjp)(kernel, wrt=wrt, primal_unit=primal_unit,
                                    steps_reverse=steps_reverse)
 

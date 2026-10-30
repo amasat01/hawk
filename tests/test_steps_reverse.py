@@ -256,3 +256,12 @@ def test_the_fused_reverse_on_the_device_matches_the_per_step_reverse(tmp_path_f
         scale = mag[n] if n in mag else np.abs(r)
         np.testing.assert_allclose(got[n], r, rtol=1e-11, atol=1e-11 * (1 + scale.max()),
                                    err_msg=n)
+
+
+def test_auto_choice_is_the_measured_table_and_empty_classes_answer_per_step():
+    from hawk.ir import steps_class as S
+
+    assert S.choose(False, 4, 8, 16) == "fused" and S.choose(False, 4, 8, 4096) == "per_step"
+    assert S.choose(False, 3, 4, 64) == "fused"        # the nearest measured regime
+    assert S.choose(True, 4, 8, 16, "sm_61") == "per_step"    # a device class with no row
+    assert S.class_of(True, "sm_80") == "sm61" and S.class_of(False) == "host"
