@@ -70,6 +70,7 @@ def test_nvrtc_builds_the_lane_reduction_and_matches_nvcc(kern, out, fold, ref, 
     assert row["spill_store_B"] is None and row["spill_load_B"] is None
 
 
+@pytest.mark.gpu   # NVRTC comes with the cuda12 extra, which only the GPU legs install
 def test_nvrtc_ptxas_figures_equal_nvcc_with_a_local_frame(tmp_path, monkeypatch):
     """A kernel with a real stack frame (a thread-form LU): the CUBIN-read figures equal nvcc's."""
     from _linalg_kernels import lu_kernel
