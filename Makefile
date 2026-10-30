@@ -137,7 +137,7 @@ gate-docs: gate-venv
 	$(VPY) -m pip install --quiet torch -c ci/constraints.txt --index-url https://download.pytorch.org/whl/cpu
 	CUDA_VISIBLE_DEVICES= PATH=$(VENV)/bin:$$PATH $(MAKE) -C docs nbcheck
 	PATH=$(VENV)/bin:$$PATH $(MAKE) -C docs strict
-	$(VPY) tools/docs_inventory_check.py docs/_build/html/objects.inv hawk
+	$(VPY) -m raptor_docs.inventory docs/_build/html/objects.inv hawk
 
 # -- the legs that need a card ------------------------------------------------------------------------------------------------
 gate-gpu: gate-venv
