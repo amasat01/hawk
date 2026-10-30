@@ -354,7 +354,12 @@ def test_a_kernel_on_every_lane_keeps_the_64_bit_integer(tmp_path, cache_dir):
 @pytest.mark.gpu
 @pytest.mark.parametrize("entry,mode", [(e, m_) for e in W.CORPUS for m_ in W.CORPUS[e].modes])
 def test_the_corpus_is_exact_on_the_device(entry, mode, cache_dir):
-    got = W.run_device(entry, mode, 4096, cache_dir=cache_dir, repeats=1)
+    with warnings.catch_warnings():
+        if (entry, mode) in W.LOCAL_OK:   # the frame the register form keeps on purpose (the A1 row pins its size)
+            warnings.filterwarnings("ignore", "hawk: kernel .* local frame", UserWarning)
+        if W.CORPUS[entry].segmented:     # the rows rewrite their selector on purpose: eagle's advice to stay fused is expected
+            warnings.filterwarnings("ignore", "eagle.simulate: dispatch='segmented'")
+        got = W.run_device(entry, mode, 4096, cache_dir=cache_dir, repeats=1)
     assert np.array_equal(got["out"], got["want"])
 
 
