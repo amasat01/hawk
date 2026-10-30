@@ -13,19 +13,21 @@
 # Run the GPU targets on a card, e.g. <pool>/gpu_run.sh --gpu 1 taskset -c 2-7 make gate-gpu
 #
 # The environment:
-#   a venv is made under GATE_DIR (default build/gate, git-ignored) and made afresh by every run; GATE_REUSE=1 keeps it
+#   a venv and the sibling build trees are made under GATE_DIR (default build/gate, git-ignored), afresh by every run; GATE_REUSE=1 keeps them
 #   (the inner loop: GATE_REUSE=1 make gate-test PYTEST_ARGS="tests/test_foo.py").
 #   Siblings come from PyPI (the declared dependencies) unless a source directory is given:
 #   RAPTOR_SRC, AETHER_SRC (its dsc/ is sealed and installed), EAGLE_SRC (built against the headers of AETHER_SRC and its own).
 #   SITE_SRC is the checkout of amasat01.github.io (the docs skin and the freshness generator): gate-lint and gate-docs need it.
 #   Toolchains come from the environment, never guessed: a C++ compiler (CXX), nvcc on PATH (or CUDACXX), cppcheck on PATH
 #   (or HAWK_CPPCHECK). A missing one stops the gate before it starts. GATE_JOBS (default 2) is the build parallelism;
-#   PYTEST_JOBS (default GATE_JOBS) the CPU pytest workers, one test file per worker; the GPU leg runs in one process (one card).
+#   PYTEST_JOBS (default GATE_JOBS) the CPU pytest workers, one test file per worker; GPU_PYTEST_JOBS (default 3) the GPU ones.
 PYTHON ?= python3
 GATE_DIR ?= build/gate
 GATE_JOBS ?= 2
 GATE_REUSE ?=
 PYTEST_JOBS ?= $(GATE_JOBS)
+# GPU rows share the one card: their time is mostly host compiles, so a few workers overlap them with the device runs
+GPU_PYTEST_JOBS ?= 3
 PYTEST_ARGS ?= tests
 RAPTOR_SRC ?=
 AETHER_SRC ?=
@@ -82,7 +84,9 @@ gate-tools:
 # -- the throwaway environment ----------------------------------------------------------------------------------------------
 # (hawk._core and eagle._core build with --no-build-isolation, so their build requirements are installed first.)
 gate-venv: gate-tools
-	@if [ -z "$(GATE_REUSE)" ] || [ ! -x $(VPY) ]; then rm -rf $(VENV) && $(PYTHON) -m venv $(VENV); fi
+	@# a run without GATE_REUSE starts from an empty gate dir: no build tree or prefix outlives the toolchain it was made with
+	@if [ -z "$(GATE_REUSE)" ]; then rm -rf $(GATE_ABS)/venv $(GATE_ABS)/build $(GATE_ABS)/prefix $(GATE_ABS)/aether-build $(GATE_ABS)/eagle-hdr; fi
+	@if [ ! -x $(VPY) ]; then $(PYTHON) -m venv $(VENV); fi
 	$(VPY) -m pip install --quiet --upgrade pip
 	$(VPY) -m pip install --quiet "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4" cmake ninja -c ci/constraints.txt
 	if [ -n "$(RAPTOR_SRC)" ]; then $(VPY) -m pip install --quiet "$(abspath $(RAPTOR_SRC))" -c ci/constraints.txt; fi
@@ -102,7 +106,8 @@ gate-venv: gate-tools
 	  cmake --install $(GATE_ABS)/eagle-hdr >/dev/null && \
 	  CMAKE_PREFIX_PATH=$(GATE_ABS)/prefix SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(NVCC);-DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH)" \
 	    $(VPY) -m pip install --quiet --no-build-isolation --config-settings=build-dir=$(GATE_ABS)/build/eagle "$(abspath $(EAGLE_SRC))/python" -c ci/constraints.txt; fi
-	CMAKE_PREFIX_PATH=$(GATE_ABS)/prefix $(VPY) -m pip install --quiet --no-build-isolation -e ".[$(EXTRAS)]" -c ci/constraints.txt
+	CMAKE_PREFIX_PATH=$(GATE_ABS)/prefix $(VPY) -m pip install --quiet --no-build-isolation --config-settings=build-dir=$(GATE_ABS)/build/hawk \
+	    -e ".[$(EXTRAS)]" -c ci/constraints.txt
 
 # -- the CPU legs CI runs -----------------------------------------------------------------------------------------------------
 # lint: ruff (the repo's config), the manifesto copy (raptor main, or MANIFESTO_SOURCE), and the documented numbers and capability
@@ -136,7 +141,7 @@ gate-docs: gate-venv
 
 # -- the legs that need a card ------------------------------------------------------------------------------------------------
 gate-gpu: gate-venv
-	$(VPY) -m pytest -q -m gpu -p no:cacheprovider $(PYTEST_ARGS)
+	$(VPY) -m pytest -q -m gpu -p no:cacheprovider -n $(GPU_PYTEST_JOBS) --dist loadfile $(PYTEST_ARGS)
 	$(VPY) tests/test_wide_placement.py gpu
 
 # every notebook, run through raptor_docs.nb run_gate with the card visible: its CPU leg again, then its GPU leg (a notebook
