@@ -27,6 +27,9 @@ SLICE_MIN = 128
 
 WARP_LANE_KIND = "warp_lane"
 
+#: The sum of a sliced value over its whole width: each lane sums its slice, then a fixed tree over the lanes.
+WARP_SUM_KIND = "warp_sum"
+
 
 class WarpLane(Node):
     """The lane's place in its warp, ``0 .. WARP - 1`` (a terminal: it binds no slot)."""
@@ -40,8 +43,9 @@ class WarpLane(Node):
 
 
 class WarpStore(Assign):
-    """The commit of a sliced value into the Mutable ``name``: element ``j`` of the slice goes to element
-    ``j * WARP + lane`` of the plane. The sink keeps the plane's own type; its value is the slice."""
+    """The commit of a value into the Mutable ``name``. A sliced one (the value is narrower than the plane): element ``j``
+    of the slice goes to element ``j * WARP + lane``. Any other is the same in every lane: lane 0 stores it. The sink
+    keeps the plane's own type."""
 
     __slots__ = ()
 
@@ -63,11 +67,13 @@ class _Slicer:
     def __init__(self) -> None:
         self.memo: dict = {}                       # id(node) -> (node, is_sliced)
         self.lane = WarpLane()
+        self.used = False                          # whether any value ended up sliced
 
     def of(self, node: Node) -> tuple:
         got = self.memo.get(id(node))
         if got is None:
             got = self.memo[id(node)] = self._one(node)
+            self.used = self.used or got[1]
         return got
 
     def _one(self, node: Node) -> tuple:
@@ -79,7 +85,7 @@ class _Slicer:
             return node, False
         if isinstance(node, Leaf):
             if sliced(node.ttype):
-                raise _Refused(f"a wide plane {node.name!r} read whole")
+                return self._read(node), True
             return node, False
         if isinstance(node, LoopValue):
             loop, slot_sliced = self._loop(node.loop)
@@ -91,6 +97,16 @@ class _Slicer:
         if isinstance(node, (Op, Select)):
             return self._op(node)
         return self._rep(node)
+
+    def _read(self, leaf: Leaf) -> Op:
+        """A per-sample vector input read whole: lane ``l`` reads its elements ``j * WARP + l``."""
+        if leaf.role != "vec_in":
+            raise _Refused(f"a wide plane {leaf.name!r} read whole")
+        index = TensorType((), "i32")
+        scalar = TensorType((), leaf.ttype.dtype)
+        parts = [Op("component_at", (leaf, make("add", (self.lane, Const(j * WARP, index)))), scalar)
+                 for j in range(leaf.ttype.shape[0] // WARP)]
+        return Op("vec", tuple(parts), _slice_type(leaf.ttype))
 
     def _rep(self, node: Node) -> tuple:
         """A node every lane computes alike: none of its operands may be a slice."""
@@ -105,6 +121,10 @@ class _Slicer:
 
     def _op(self, node: Node) -> tuple:
         if not sliced(node.ttype):
+            if node.kind == "sum" and len(node.operands) == 1:
+                (a, s), = [self.of(o) for o in node.operands]
+                if s:
+                    return Op(WARP_SUM_KIND, (a,), node.ttype), False
             return self._rep(node)
         kind = node.kind
         out = _slice_type(node.ttype)
@@ -182,16 +202,14 @@ def slice_sinks(sinks) -> tuple | None:
     """``sinks`` in the warp form, or ``None`` when some node has no rule there. Every sink must commit a wide
     value to a Mutable."""
     sinks = tuple(sinks)
-    if not sinks or not all(type(s) is Assign and sliced(s.ttype) for s in sinks):
+    if not sinks or not all(type(s) is Assign for s in sinks):
         return None
     slicer = _Slicer()
     out = []
     try:
         for sink in sinks:
-            value, is_sliced = slicer.of(sink.value)
-            if not is_sliced:
-                return None
+            value, _ = slicer.of(sink.value)
             out.append(WarpStore(sink.name, value, sink.ttype))
     except _Refused:
         return None
-    return tuple(out)
+    return tuple(out) if slicer.used else None

@@ -209,19 +209,22 @@ def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp
     sliced = slice_sinks(wide.simplified(W.matvec_in_vjp.sinks))
     assert [type(s) for s in sliced] == [WarpStore] and sliced[0].value.ttype.shape == (W.W // WARP,)
     assert slice_sinks(W.fill_mask.sinks) is None            # a runtime-indexed write has no rule in the warp form: it keeps its form
-    kernel, bundle = _build("matvec_in_vjp", tmp_path, cache_dir, mode="float64", wide_form="team")
-    side = sidecar_of(bundle, kernel.name)
-    assert side["launch"]["local_bytes"] == 0 and side["stages"][0]["team"] == {"threads": WARP}
+    for name in ("matvec_in_vjp", "matvec_in"):         # the second folds the slices with a warp sum and commits from lane 0
+        kernel, bundle = _build(name, tmp_path / name, cache_dir, mode="float64", wide_form="team")
+        side = sidecar_of(bundle, kernel.name)
+        assert side["stages"][0]["team"] == {"threads": WARP}
+        assert side["launch"]["local_bytes"] == (0 if name == "matvec_in_vjp" else 192)    # the 24 row sums stay in the lane's local frame
 
 
 @pytest.mark.gpu
+@pytest.mark.parametrize("name", ["matvec_in", "matvec_in_vjp"])
 @pytest.mark.parametrize("mode", ["float32", "float64"])
-def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(mode, cache_dir):
+def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode, cache_dir):
     import _probe_wide as probe
     from eagle import arrays
     from eagle._alloc import synchronize
 
-    entry, real, n = W.CORPUS["matvec_in_vjp"], np.float32 if mode == "float32" else np.float64, 2048
+    entry, real, n = W.CORPUS[name], np.float32 if mode == "float32" else np.float64, 2048
     planes = entry.planes(np.random.default_rng(7), real, n, True)
     bound_args = {k: arrays.asarray(np.ascontiguousarray(v), device="cuda:0") for k, v in planes.items()}
     out = arrays.asarray(np.zeros(entry.shape(n), real), device="cuda:0")
