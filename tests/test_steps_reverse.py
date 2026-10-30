@@ -31,7 +31,7 @@ from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk import math as hm
 from hawk.diff import jvp, step_jvp, step_vjp, vjp
 from hawk.ir import HawkError
-from hawk.trace.steps import fused_function
+from hawk.trace.steps import _fused_function
 
 from _eval import evaluate
 
@@ -162,7 +162,7 @@ def test_state_adjoints_bit_equal_and_param_gradients_within_bound(built, name, 
 def test_param_gradients_match_central_differences():
     step = pend
     Kd = 4
-    fn = fused_function(step, Kd)
+    fn = _fused_function(step, Kd)
     env = dict(dt=0.05, c=0.3, t_final=9.0, terminated=False, x=0.7, v=-0.4, t=0.0)
     wa, wb, wc = 1.3, -0.6, 0.4
     grads = evaluate(vjp(fn, wrt=("x", "v", "dt", "c")),

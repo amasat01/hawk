@@ -79,7 +79,7 @@ class Kernel:
 
         self.name = name
         self.kind = (kind if kind is not None
-                     else getattr(sinks, "kernel_kind", None) or DEFAULT_KIND)
+                     else getattr(sinks, "_kernel_kind", None) or DEFAULT_KIND)
         sinks = _scattered_companion(self.kind, sinks)
         self.sinks = sinks
         self.planes = {} if planes is None else planes

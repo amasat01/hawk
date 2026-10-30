@@ -495,13 +495,13 @@ def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None,
         back = hawk.Kernel("fall_step_vjp", hawk.diff.step_vjp(fall))
         # reads y, v, dt, bar_y_next, bar_v_next; writes bar_y, bar_v, bar_dt
     """
-    from ..trace.steps import fused_steps_of
+    from ..trace.steps import _fused_steps_of
     from .transform import _rederivable
 
     if steps_reverse not in ("per_step", "fused"):
         raise HawkError(
             f"step_vjp: steps_reverse is 'per_step' or 'fused', got {steps_reverse!r}")
-    if steps_reverse == "fused" and fused_steps_of(kernel) is None:
+    if steps_reverse == "fused" and _fused_steps_of(kernel) is None:
         raise HawkError(
             f"step_vjp({kernel.name!r}, steps_reverse='fused'): needs hawk.steps(k, K) "
             "with a fixed integer K > 1 (an 'auto' kernel's trip count is a launch-time word)")
@@ -511,15 +511,15 @@ def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None,
 
 def _step_vjp(kernel: Any, *, wrt, primal_unit, steps_reverse) -> Any:
     from ..trace.kernel import Kernel
-    from ..trace.steps import fused_function, fused_steps_of
+    from ..trace.steps import _fused_function, _fused_steps_of
     from .event import as_plain_reads
     from .transform import Derived, vjp
 
-    fused = fused_steps_of(kernel) if steps_reverse == "fused" else None
+    fused = _fused_steps_of(kernel) if steps_reverse == "fused" else None
     step = (getattr(kernel, "step", None) or getattr(kernel, "one_step", None)
             or kernel)
     if fused is not None:
-        function = fused_function(*fused)
+        function = _fused_function(*fused)
     else:
         twin = tape(kernel, 1)
         single = getattr(twin, "one_step", None) or twin
@@ -539,8 +539,8 @@ def _step_vjp(kernel: Any, *, wrt, primal_unit, steps_reverse) -> Any:
     result = Derived(tuple(out), primal=kernel.name if fused else step.name, kind="vjp",
                      wrt=out.wrt, primal_unit=primal_unit, jump=out.jump)
     if fused:
-        result.fused_steps = fused[1]
-        result.kernel_kind = function.kind     # the stop flag is read in the body: no second guard
+        result._fused_steps = fused[1]
+        result._kernel_kind = function.kind     # the stop flag is read in the body: no second guard
     return result
 
 

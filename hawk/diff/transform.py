@@ -87,9 +87,9 @@ class Derived(tuple):
         #: switches (``@kernel(jump=...)``), else ``None``.
         self.jump = jump
         #: ``K`` of a fused K-step reverse (``step_vjp(..., steps_reverse="fused")``), else ``None``.
-        self.fused_steps = None
+        self._fused_steps = None
         #: The kind a kernel built from this derivative takes when it names none.
-        self.kernel_kind = None
+        self._kernel_kind = None
         self.primal = primal
         self.kind = kind
         self.wrt = wrt
@@ -471,9 +471,9 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
     A default automatic kernel is differentiated through its single step, as
     in :func:`vjp`. A ``hawk.steps(k, K)`` kernel is carried forward,
     ``hawk.steps(step_jvp(k), K)`` (``primal_unit`` does not apply to it)."""
-    from ..trace.steps import fused_steps_of
+    from ..trace.steps import _fused_steps_of
 
-    fused = fused_steps_of(primal)
+    fused = _fused_steps_of(primal)
     if fused is not None:
         from ..trace.steps import steps
         from .tape import step_jvp

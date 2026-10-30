@@ -107,7 +107,7 @@ def default_step(kernel: Any) -> Any:
     return step if step is not None and step.name == kernel.name else kernel
 
 
-def fused_steps_of(kernel: Any) -> tuple | None:
+def _fused_steps_of(kernel: Any) -> tuple | None:
     """``(single step, K)`` of a ``hawk.steps(k, K)`` kernel with a fixed integer
     ``K``, else ``None`` (a single step, or an ``"auto"`` kernel whose trip
     count is a launch-time word)."""
@@ -216,7 +216,7 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
                   returns=getattr(kernel, "returns", None))
 
 
-def fused_function(step: Any, K: int) -> Any:
+def _fused_function(step: Any, K: int) -> Any:
     """``K`` steps of ``step`` as a pure function: the launch-start state is read
     as plain planes, ``<plane>_next`` is the K-trip loop's result. What the
     derivatives of a fused kernel differentiate (``step_vjp(..., steps_reverse=

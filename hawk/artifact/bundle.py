@@ -1017,7 +1017,7 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
                 sinks = Derived(sinks, primal=k.sinks.primal, kind=k.sinks.kind,
                                 wrt=k.sinks.wrt, primal_unit=k.sinks.primal_unit,
                                 jump=k.sinks.jump)
-                sinks.fused_steps = k.sinks.fused_steps
+                sinks._fused_steps = k.sinks._fused_steps
                 for attr in ("lane_space", "group"):     # the stages launch over the derivative's lanes
                     if hasattr(k.sinks, attr):
                         setattr(sinks, attr, getattr(k.sinks, attr))
