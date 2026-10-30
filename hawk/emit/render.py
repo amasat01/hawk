@@ -24,7 +24,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..ir import HawkError, Node, Walk
 from ..ir.cost import fp64_ops
@@ -260,6 +260,9 @@ class LaneSegments:
     segments: tuple
     loops: tuple
     types: dict
+    #: ``{proxy name: (plane binding, width)}``: the scratch planes of wide values a segment reads element by element
+    #: (:mod:`hawk.ir.wide`), each a lane row of the interchanged text; the text declares the proxies itself
+    proxies: dict = field(default_factory=dict)
 
 
 def render_lane_segments(sinks: Sequence[Sink], walk: Walk, cut: Sequence[Loop], *,
@@ -409,6 +412,8 @@ class _Renderer(_DispatchMixin):
         #: :meth:`_loop_cut` recorded of each, in order.
         self.cut_loops: frozenset = frozenset()
         self.cuts: list = []
+        #: ``None`` unless :meth:`lane_segments` renders: then ``{proxy: (plane binding, width)}`` of the scratch planes read
+        self.lane_rows: dict | None = None
         #: Positions the flat top-level walk reaches without crossing a Dispatch
         #: branch edge — see :meth:`_outside_reachable`. Computed once, after
         #: :attr:`position` exists and before anything renders.
@@ -1256,6 +1261,7 @@ class _Renderer(_DispatchMixin):
         """Render the body with each loop of ``cut`` cut out
         (:class:`LaneSegments`)."""
         self.cut_loops = frozenset(id(loop) for loop in cut)
+        self.lane_rows = {}
         guard = self._guard_slot()
         self.run()
         lines = self.lines
@@ -1278,7 +1284,7 @@ class _Renderer(_DispatchMixin):
             loops.append(LaneLoop(c["step"], c["carries"], c["index"], c["start"],
                                   c["by"], c["trips"], c["exit"], c["speculative"],
                                   c["ops"], c["bounds"]))
-        return LaneSegments(guard, segments, tuple(loops), types)
+        return LaneSegments(guard, segments, tuple(loops), types, dict(self.lane_rows))
 
     def _loop_cut(self, loop: Loop) -> None:
         """:meth:`_loop` for a loop :meth:`lane_segments` cuts at: marks where
@@ -1290,6 +1296,10 @@ class _Renderer(_DispatchMixin):
         pos = self.loop_pos[id(loop)]
         names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
                       for j, c in enumerate(loop.carries))
+        self.carry_names[pos] = names
+        #: the carried slots that live in a plane (:mod:`hawk.ir.wide`): the carry IS the plane's proxy, written in place
+        planed = {j for j, init in enumerate(loop.inits) if self.placed and (is_resident(init) or is_scratch(init))}
+        names = tuple(self._ref(loop.inits[j]) if j in planed else name for j, name in enumerate(names))
         self.carry_names[pos] = names
         inits = [self._ref(init) for init in loop.inits]
         index = f"hawk_k{pos}_{_ident(loop.index.name)}"
@@ -1303,10 +1313,13 @@ class _Renderer(_DispatchMixin):
         lines, self.lines = self.lines, []
         scope = self._push_scope()
         self.local[id(loop.index)] = index
-        for carry, name in zip(loop.carries, names):
+        for j, (carry, name) in enumerate(zip(loop.carries, names)):
             self.local[id(carry)] = name
+            if j in planed and loop.exit_cond is None:
+                self.mutable_carries.add(id(carry))         # a plane's proxy is written in place
         elems = [carry_type(c.ttype) for c in loop.carries]
-        speculative = self._speculative(loop)
+        # a trip that writes a plane is skipped by a lane that is not running (a masked sample's plane is not to be written)
+        speculative = self._speculative(loop) and not planed
         form = loop.exit_form
         flag = f"hawk_x{pos}"
         nexts = [f"hawk_n{pos}_{j}" for j in range(len(names))]
@@ -1337,7 +1350,12 @@ class _Renderer(_DispatchMixin):
                     self._emit(f"const {elem} {nxt} = hawk_w{nxt[6:]};")
         else:
             self._render_scope(loop)
-            for elem, nxt, value in zip(elems, nexts, loop.nexts):
+            for j, (elem, nxt, value) in enumerate(zip(elems, nexts, loop.nexts)):
+                if j in planed:
+                    if self._ref(value) != names[j]:        # pragma: no cover - the pass admits only in-place chains
+                        raise HawkError(f"the carried slot {j} of the loop over {loop.index.name!r} lives in a plane, "
+                                        "but its end-of-iteration value is not stored in place")
+                    continue
                 self._emit(f"const {elem} {nxt} = {self._ref(value)};")
             if form == "tail":
                 self._emit(f"const bool {flag} = {self._ref(loop.exit_cond)};")
@@ -1349,8 +1367,8 @@ class _Renderer(_DispatchMixin):
             "by": loop.step, "trips": loop.trip,
             "exit": "false" if form is None else flag, "speculative": speculative,
             "ops": sum(isinstance(n, Op) for n in _flat_body(loop)), "bounds": bounds,
-            "carries": tuple((name, c.ttype, init, nxt) for name, c, init, nxt
-                             in zip(names, loop.carries, inits, nexts)),
+            "carries": tuple((name, c.ttype, init, nxt) for j, (name, c, init, nxt)
+                             in enumerate(zip(names, loop.carries, inits, nexts)) if j not in planed),
         })
 
     @staticmethod

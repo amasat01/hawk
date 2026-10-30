@@ -979,8 +979,11 @@ def _wide_with_class(record: dict, resolved_arch: str) -> dict | None:
 def _wide_ok(kernel, smode, device: bool):
     """Whether the placement pass may run on ``kernel`` (:func:`hawk.ir.split.stages` ``wide``): a build
     for the device, of a kernel that is one plain launch (not a stepping, segmented or compacted one)."""
-    return (device and type(kernel).__name__ in ("Kernel", "SegmentUnit") and getattr(kernel, "one_step", None) is None
-            and getattr(kernel, "fused_body", None) is None)
+    from ..ir.vectorise import interchanged_loops
+
+    # a host-only build places too when its loops run interchanged: the wide carries then live in the lane rows
+    return ((device or bool(interchanged_loops(kernel.walk))) and type(kernel).__name__ in ("Kernel", "SegmentUnit")
+            and getattr(kernel, "one_step", None) is None and getattr(kernel, "fused_body", None) is None)
 
 
 def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device: bool = False) -> tuple:

@@ -25,9 +25,9 @@ replaced. What is pinned:
   > 0) and the macro-off build exports 0, so the two runs above really are
   the two shapes; the interchanged TU carries the tile loop.
 * **Same source on the device.** The device TU carries none of it.
-* **Who keeps today's path, and why.** A kernel that is not
-  ``sample_local`` (its iterations are not independent, so its lanes cannot
-  advance together), a step whose head holds a second lowered ``for`` (the
+* **Who keeps today's path, and why.** A kernel with a cross-sample write
+  (its iterations are not independent, so its lanes cannot advance together;
+  one that only reads lookup planes is as independent as a sample-local one), a step whose head holds a second lowered ``for`` (the
   interchange cuts at ONE loop), and an active-set kind (its tile is a
   gathered map, not a contiguous run) emit no interchange.
 * **The tile rule.** :func:`hawk.emit.host.host_tile_rule` is a pure function
@@ -509,10 +509,9 @@ ACTIVE = Kind("interchange_active", guard=Guard(active_set=True))
 def test_what_keeps_the_plain_fused_loop_and_why():
     kernel = gathered
     assert getattr(kernel, "one_step", None) is not None, kernel.name
-    assert interchange(kernel.name, kernel.sinks, kernel.walk, kernel.kind) is None
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
-    assert "HAWK_HOST_INTERCHANGE" not in text, "not sample_local: dependent iterations"
+    # it only reads lookup planes (the same for every lane): its lanes advance together, though its class is cross_sample_read
+    assert kernel.walk.access.cls == "cross_sample_read"
+    assert interchange(kernel.name, kernel.sinks, kernel.walk, kernel.kind) is not None
     # two lowered loops: the fused-step cut is at ONE, so both loops run as the
     # loop interchange instead (hawk.emit.host.loop_interchange)
     tiled = interchange(head_loop.name, head_loop.sinks, head_loop.walk, head_loop.kind)

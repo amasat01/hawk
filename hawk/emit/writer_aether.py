@@ -307,7 +307,11 @@ class AetherWriter:
             # the plane a wide value lives in (:mod:`hawk.ir.wide`): its text is the lane's own proxy of it
             if not r.placed:
                 return ""
-            if is_tiled(leaf):
+            if is_tiled(leaf) and r.lane_rows is not None:
+                # an interchanged host lane: the plane is a row of the tile, declared by the text around the segments
+                proxy = f"{name}_i"
+                r.lane_rows[proxy] = (name, r.plane_widths[leaf.name])
+            elif is_tiled(leaf):
                 proxy = f"{name}_i"
                 r._emit(f"const auto {proxy} = hawk_abi::tiled<Real, {r.plane_widths[leaf.name]}>({name}, "
                         f"{SAMPLE_INDEX_IDENT});")

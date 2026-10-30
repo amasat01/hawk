@@ -1040,6 +1040,8 @@ def render_source(name: str, sinks, walk: Walk, target, *,
     if run_states(body.text):
         tiled = None                    # the interchanged loop holds no run state
     extra_prelude = getattr(wrapper, "extra_prelude", None)
+    #: what the headers are chosen by: the per-sample body, and the interchanged loop (which may name a library the body does not)
+    lanes_text = body.text if tiled is None else body.text + tiled.text
     loop = [wrapper.index_prologue(segment, **prologue_kw), body.text, epilogue]
     if box is not None:
         loop = [wrapper.index_prologue(box=box), body.text, wrapper.index_epilogue()]
@@ -1058,7 +1060,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
                spacing=_SPACING_CALL in body.text, mix=_MIX_CALL in body.text,
                integers=_INT_CALL in body.text, sample_sum=bool(sums),
                runs=RUN_CALL in body.text, fold=bool(walk.companions),
-               linalg=_LINALG_CALL in body.text, rt=_RT_CALL in body.text,
+               linalg=_LINALG_CALL in lanes_text, rt=_RT_CALL in lanes_text,
                rays=_RAY_CALL in body.text, team=_TEAM_CALL in body.text,
                scatter_or=_OR_CALL in body.text, tiled=_TILED_CALL in body.text,
                narrow_int=narrows_int(active, walk)),

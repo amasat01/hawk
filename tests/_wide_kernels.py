@@ -809,6 +809,9 @@ LANES = {"fill_mask": 8192, "matvec_in": 16384, "matvec_computed": 16384, "maske
          "fill_mask_grp": 8192, "matvec_in_grp": 16384, "fill_mask_seg": 32768, "matvec_in_seg": 32768}
 
 
+#: Lanes of a host row (a short run: the host tests compare two builds bit for bit, not time them).
+LANES_HOST = 301
+
 #: Timed launches per row where the default seven leave the median within the timing noise of the 0.98x line.
 REPEATS = {"fill_mask_seg": 3, "matvec_in_seg": 3, "index_set": 25, "narrow4": 15, "narrow8": 15, "narrow16": 15, "rotate16": 15}
 
