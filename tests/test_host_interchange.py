@@ -29,7 +29,7 @@ replaced. What is pinned:
   (its iterations are not independent, so its lanes cannot advance together;
   one that only reads lookup planes is as independent as a sample-local one), a step whose head holds a second lowered ``for`` (the
   interchange cuts at ONE loop), and an active-set kind (its tile is a
-  gathered map, not a contiguous run) emit no interchange.
+  gathered map, not a contiguous run) keep the per-sample loop.
 * **The tile rule.** :func:`hawk.emit.host.host_tile_rule` is a pure function
   of its recorded inputs: L1d share, the L2 fallback, whole lane blocks, the
   ``[64, 1024]`` clamp, ``k``; :func:`hawk.emit.host.machine_caches` reads a
