@@ -25,7 +25,7 @@ missing file and writes nothing; ``--without-headline`` regenerates the rest.
 
 Usage::
 
-    python tools/sync_perf_claims.py --eagle-root ../eagle
+    python tools/sync_perf_claims.py
     python tools/sync_perf_claims.py --eagle-root ../eagle --check
 """
 

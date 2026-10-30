@@ -4,7 +4,7 @@ helper_dirs = ["docs/content/_shared", "examples"]
 image_budget = 500_000
 nb_roots = ["docs/content"]
 fresh = [
-  "python tools/sync_perf_claims.py --eagle-root ../eagle",
+  "python tools/sync_perf_claims.py",
   "python -m raptor_docs.capmap -o docs/_static/capmap.svg",
   "python -m raptor_docs.themed_figure --sync docs/content/_shared/themed_figure.py",
 ]
