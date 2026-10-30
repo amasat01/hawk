@@ -129,7 +129,7 @@ LOCAL_LIMIT_B = 512 * 1024
 
 
 def _launch(lane_space, group: int, box=None, block: int | None = None,
-            index_set: dict | None = None, local: tuple | None = None) -> dict:
+            index_set: dict | None = None, local: tuple | None = None, wide: dict | None = None) -> dict:
     """The ``launch.lane_space`` block: the launch shape (row-major, the last axis
     fastest, only the first extent may be ``None``: known at run time) and the
     compaction ``group``, a lane count. With a thread ``box``
@@ -146,9 +146,14 @@ def _launch(lane_space, group: int, box=None, block: int | None = None,
     holds (``source`` ``launch.local_source``: ``"ptxas"``, the stack frame of a CUBIN, or ``"ptx"``, the
     depots the PTX declares, a ceiling), ``launch.local_limit`` the device's per-thread limit. A launch of
     ``n`` threads needs about ``n * local_bytes`` of device memory beside the planes. No threads-per-block
-    cap follows from it (hawk emits no ``__launch_bounds__``)."""
+    cap follows from it (hawk emits no ``__launch_bounds__``).
+    ``wide`` is the placement of the kernel's wide values (:mod:`hawk.ir.wide`): ``launch.wide`` =
+    ``{plane: {form, plane, layout, width}}``, one record per plane a wide value lives in, and ``class``, the device feature class whose thresholds placed them (a reader that does not know
+    the key ignores it; a scratch plane is also in the sidecar's ``team_planes``, which sizes it). Absent when no value is placed."""
     axes = [{"label": label, "extent": extent} for label, extent in lane_space]
     out = {"lane_space": {"axes": axes, "group": int(group)}}
+    if wide:
+        out["wide"] = {name: (rec if name == "class" else dict(rec)) for name, rec in wide.items()}
     if box is not None:
         out["box"] = box.sidecar()
     if index_set is not None:
@@ -343,7 +348,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
                  dispatch_override=None, step_ops: int | None = None,
                  fp64_ops_ir: int | None = None,
                  entry_counts_finished: bool = False,
-                 ptxas: dict | None = None, local: tuple | None = None) -> dict:
+                 ptxas: dict | None = None, local: tuple | None = None,
+                 wide: dict | None = None) -> dict:
     """The full v2 sidecar for one kernel.
 
     ``buffers`` is emitted present-and-empty: a HAWK ``lookup`` plane's
@@ -368,7 +374,9 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     per block of an emit that fixed one, written as ``launch.block``. ``planes`` are the kernel's
     declarations: ``sorted_inputs`` names the bound ``Sorted[Index]`` inputs, ``index_planes`` the ``Index`` inputs
     (32-bit on the wire; a wider integer array binds when every value fits) and
-    ``plane_axes`` the sinks declared with named axes, each only when present.
+    ``plane_axes`` the sinks declared with named axes, and ``unused_planes`` the
+    declared planes the body never touches (pruned from the compiled kernel), and ``param_shapes`` the natural
+    shape of each ``Param[Vector/Matrix/Table]`` plane, each only when present.
 
     ``dispatch_override`` (the per-unit split) replaces ``walk.dispatches``
     as the ``dispatch`` block's source when given, since a segmented
@@ -389,6 +397,11 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     planes = planes or {}
     sorted_in, axes = _sorted_inputs(walk, planes), _plane_axes(walk, planes)
     index_in = _index_planes(walk)
+    bound = {n for _role, n in walk.arg_spec} | set(walk.companions or ()) | set(walk.cells or ())
+    unused = [n for n, decl in planes.items()
+              if n not in bound and not getattr(decl, "grid", None)]
+    shared = {n: list(decl.shared) for n, decl in planes.items()
+              if getattr(decl, "shared", ()) and n in bound}
     meta = {
         "format": fmt,
         "schema_version": _contracts.MAX_SCHEMA_VERSION,
@@ -441,10 +454,15 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         **({"entry_counts_finished": True} if entry_counts_finished else {}),
         **({"ptxas": ptxas} if ptxas else {}),
 
-        "launch": _launch(lane_space, group, box, block, index_set, local),
+        "launch": _launch(lane_space, group, box, block, index_set, local, wide),
         **({"sorted_inputs": sorted_in} if sorted_in else {}),
         **({"index_planes": index_in} if index_in else {}),
         **({"plane_axes": axes} if axes else {}),
+        # one value shared by every lane (``Param[Vector[W]]``, ``Param[Matrix[R,C]]``,
+        # ``Param[Table[...]]``): its natural shape, bound flat and row-major
+        **({"param_shapes": shared} if shared else {}),
+        # declared but never read or written: the compiled kernel has no slot for them
+        **({"unused_planes": unused} if unused else {}),
         "digest": walk.digest,
         "quantities": {p: list(span.wires) for p, span in walk.quantities.items()},
         "aether_include": _root_or_sealed_marker(_strict_aether_include),

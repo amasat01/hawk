@@ -233,6 +233,17 @@ def _guarded(name: str, sinks: tuple, selector: Node, K: int, j: int,
     return tuple(out)
 
 
+def rewalk(unit: SegmentUnit, sinks: Sequence[Sink]) -> SegmentUnit:
+    """``unit`` over ``sinks`` (its own, rewritten by a pass that keeps what they compute): the walk is rebuilt as
+    :func:`split_segmented` built it, the offsets declared and, for a guarded unit, the access class floored."""
+    from dataclasses import replace
+
+    slot = Slot(OFFSETS_ROLE, unit.segment.offsets, TensorType((), OFFSETS_DTYPE))
+    floor = None if unit.segment.static_selector else "cross_sample_write"
+    sinks = tuple(sinks)
+    return replace(unit, sinks=sinks, walk=canonical(sinks, declared=(slot,), force_access=floor))
+
+
 def split_segmented(name: str, sinks: Sequence[Sink]) -> list | None:
     """``None`` when ``sinks`` carries no ``segmented`` dispatch; otherwise
     the K :class:`SegmentUnit` records the split produces. Refuses MORE

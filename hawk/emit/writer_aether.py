@@ -21,6 +21,7 @@ from collections.abc import Sequence
 from math import prod
 
 from ..ir import HawkError
+from ..ir.loop_nodes import Loop
 from ..ir.nodes import (
     FINISHED_PLANE,
     GATHER_ROLES,
@@ -38,6 +39,7 @@ from ..ir.nodes import (
 )
 from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, QR_OPS
 from ..ir.team import TeamRead
+from ..ir.wide import RESIDENT_KIND, element_kind, gather, is_prior, is_resident, is_scratch, is_tiled
 from ..ir.rays import RAY_OPS
 from ..ir.ops import RANDOM_OPS
 from ..types import INT_PLANE_DTYPES, TensorType
@@ -196,6 +198,9 @@ class AetherWriter:
         (``aether::rt::store``): the unrolled assignment holds a register per element."""
         if value == f"{target}[i]":
             return                  # a library result already written into the plane
+        if value in r.proxies:      # a value that lives in another plane: copied element by element
+            r._emit(f"aether::rt::store({target}[i], {value});")
+            return
         if value in r.fresh_items and prod(sink.value.ttype.shape) > policy.ROLLED_FOLD_MIN:
             r._emit(f"aether::rt::store({target}[i], {value});")
         else:
@@ -298,6 +303,18 @@ class AetherWriter:
 
     def leaf(self, r, leaf: Leaf, materialised: bool) -> str:
         name = binding_name(leaf.role, leaf.name)
+        if is_scratch(leaf):
+            # the plane a wide value lives in (:mod:`hawk.ir.wide`): its text is the lane's own proxy of it
+            if not r.placed:
+                return ""
+            if is_tiled(leaf):
+                proxy = f"{name}_i"
+                r._emit(f"const auto {proxy} = hawk_abi::tiled<Real, {r.plane_widths[leaf.name]}>({name}, "
+                        f"{SAMPLE_INDEX_IDENT});")
+            else:
+                proxy = f"{name}[i]"
+            r.proxies.add(proxy)
+            return proxy
         if leaf.role == "nsamples":
             return f"static_cast<Int>({name})"
         if leaf.role == "uniform":
@@ -371,6 +388,8 @@ class AetherWriter:
 
     def op(self, r, node: Op, args: Sequence[str], ranks: Sequence[int]) -> str:
         kind, rank = node.kind, len(node.ttype.shape)
+        if kind == RESIDENT_KIND:
+            return self._resident(r, node, args)
         if kind == RAW_KIND:
             return self._raw(r, node, args)
         if kind in LINALG_OPS:
@@ -470,6 +489,8 @@ class AetherWriter:
         held for the scope (:meth:`_held_item`)."""
         source = _through(source)
         pos = r.position.get(id(source))
+        if arg in r.proxies:
+            return arg          # a value that lives in a plane: its proxy
         if _is_plane(source):
             return arg if pos in r.lazy else f"{binding_name(source.role, source.name)}[i]"
         if isinstance(source, At) and pos in r.lazy:
@@ -512,7 +533,8 @@ class AetherWriter:
     def unrendered(self, r) -> frozenset:
         """The positions no statement renders: a value every one of whose users reads
         it through its own operand (an identity right-hand side ``luInverse``
-        replaces, a transpose a rolled product reads through)."""
+        replaces, a transpose a rolled product reads through), and, in the device text, the
+        elementwise values a placement writes into its plane element by element."""
         reads: dict = {}
         for node in r.nodes:
             if not isinstance(node, Op) or r.stores.skips(node):
@@ -522,7 +544,153 @@ class AetherWriter:
                 if _absorbs(node, k, child):
                     p = r.position[id(child)]
                     reads[p] = reads.get(p, 0) + 1
-        return frozenset(p for p, n in reads.items() if n == r.fanout.get(p, 0))
+        out = {p for p, n in reads.items() if n == r.fanout.get(p, 0)}
+        if r.placed:
+            written = self._written(r)
+            r.absorbed = frozenset(written)
+            out |= {r.position[i] for i in written if i in r.position}
+        return frozenset(out)
+
+    @staticmethod
+    def _written(r) -> set:
+        """The ids of the elementwise values (and vectors of parts), in the body or inside a loop, that a placement writes
+        element by element: its value, and the values only those read, down to a leaf or another placement."""
+        from .render import _flat_body
+
+        scanned = list(r.nodes)
+        for node in r.nodes:
+            if isinstance(node, Loop):
+                scanned.extend(_flat_body(node))
+        def key(n):             # equal values share one position: a use of either is a use of both
+            return r.position.get(id(n), id(n))
+
+        users: dict = {}
+        for node in scanned:
+            if isinstance(node, (Op, Select, Loop)):        # a loop reads its initial values too
+                for o in node.operands:
+                    users.setdefault(key(_through(o)), []).append(node)
+        seen: set = set()
+        reads, keep = [], set()
+        stack = [_through(n.operands[0]) for n in scanned if is_resident(n)]
+        while stack:
+            node = stack.pop()
+            if id(node) in seen or element_kind(node) not in ("parts", "splat", "elementwise"):
+                continue
+            if not all((is_resident(u) and key(_through(u.operands[0])) == key(node))
+                       or (id(u) in seen and element_kind(u) == "elementwise") for u in users.get(key(node), ())):
+                continue
+            seen.add(id(node))
+            run = gather(node)
+            if run is not None:                 # the reads are one expression of the element index: none is rendered
+                reads += [part for part in node.operands if len(users.get(key(part), ())) == 1]
+                keep.add(id(run.base))
+            stack.extend(_through(o) for o in node.operands if len(o.ttype.shape) == 1)
+        seen.update(id(part) for part in reads)
+        for part in reads:                      # nor are the constant indices only those reads made
+            stack = [part.operands[1]]
+            while stack:
+                node = stack.pop()
+                if (id(node) in seen or id(node) in keep or not isinstance(node, (Op, Const))
+                        or not all(id(u) in seen for u in users.get(id(node), ()))):
+                    continue
+                seen.add(id(node))
+                stack.extend(node.operands)
+        return seen
+
+    # -- wide values in planes (:mod:`hawk.ir.wide`) -----------------------------------------
+
+    def _resident(self, r, node: Op, args: Sequence[str]) -> str:
+        """A value placed in its plane (``args[1]`` is the lane's proxy of it): the statements that write the
+        value there, then the proxy as the text of the value. The host text has no planes: the value itself."""
+        if not r.placed:
+            return args[0]
+        value, proxy = _through(node.operands[0]), args[1]
+        if id(value) in r.absorbed:
+            self._fill(r, proxy, value)
+        elif args[0] != proxy and is_tiled(node.operands[1]):       # a scratch lane is written element by element
+            r._emit("AETHER_NO_UNROLL()")
+            held = self._element_of(r, value, "hawk_lk", None) if element_kind(value) in ("input", "elementwise", "parts", "splat") \
+                else f"{args[0]}(hawk_lk)"
+            r._emit(f"for (Int hawk_lk = 0; hawk_lk < {node.ttype.shape[0]}; ++hawk_lk) {proxy}.at(hawk_lk) = {held};")
+        elif args[0] != proxy:
+            r._emit(f"{proxy} = {args[0]};")
+        return proxy
+
+    def _fill(self, r, proxy: str, value: Node) -> None:
+        """Write ``value``, an elementwise value or a vector of parts, into ``proxy`` one element at a time: a rolled
+        loop over the elements when each is the same expression of its index, else one statement per element."""
+        width = value.ttype.shape[0]
+        flat = self._rolled_elements(value)
+        if flat:
+            r._emit("AETHER_NO_UNROLL()")
+            r._emit(f"for (Int hawk_lk = 0; hawk_lk < {width}; ++hawk_lk) "
+                    f"{proxy}.at(hawk_lk) = {self._cast(self._element_of(r, value, 'hawk_lk', None), value.ttype.dtype)};")
+            return
+        for k in range(width):
+            r._emit(f"{proxy}.at({k}) = {self._cast(self._element_of(r, value, str(k), k), value.ttype.dtype)};")
+
+    def _rolled_elements(self, node: Node) -> bool:
+        """Whether every element of ``node`` is one expression of the element index: no vector of distinct parts is under it."""
+        node = _through(node)
+        if len(node.ttype.shape) != 1:
+            return True
+        kind = element_kind(node)
+        if kind == "parts":
+            first = node.operands[0]
+            return gather(node) is not None or all(
+                isinstance(o, Const) and isinstance(first, Const) and o.literal == first.literal for o in node.operands)
+        if kind == "elementwise":
+            return all(self._rolled_elements(o) for o in node.operands)
+        return True
+
+    def _element_of(self, r, node: Node, k: str, static: int | None) -> str:
+        """The text of element ``k`` of ``node`` (``static`` its value when it is a compile-time index): a plane read
+        at it, a part, or the operation on the elements of its operands."""
+        node = _through(node)
+        if len(node.ttype.shape) == 0:
+            return r._ref(node)
+        if is_prior(node):                         # the Mutable's own plane, read at its element before it is written
+            return f"{binding_name(node.role, node.name)}[i].at({k})"
+        if id(node) not in r.absorbed:
+            text = r._ref(node)
+            if text in r.proxies or r.position.get(id(node)) in r.lazy:
+                return f"{text}.at({k})"
+        kind = element_kind(node)
+        if kind == "parts":
+            run = gather(node)
+            if run is not None:
+                return self._gathered(r, run, k, static)
+            if static is not None:
+                return r._ref(node.operands[static])
+            return r._ref(node.operands[0])         # every part the same literal
+        if kind == "splat":
+            return r._ref(node.operands[0])
+        if kind == "elementwise":
+            return self._operation(node.kind, [self._element_of(r, o, k, static) for o in node.operands])
+        if kind == "input":                        # a read-only vector plane of the kernel: its element, straight from the view
+            return f"{binding_name(node.role, node.name)}[i].at({k})"
+        raise HawkError(f"a value of kind {getattr(node, 'kind', type(node).__name__)!r} has no element-by-element spelling")
+
+    def _gathered(self, r, run, k: str, static: int | None) -> str:
+        """Element ``k`` of a run of reads of one plane (:class:`hawk.ir.wide.Gather`)."""
+        at = f"static_cast<Int>({run.start + run.step * static})" if static is not None else (
+            f"(static_cast<Int>({run.start}) + {k} * static_cast<Int>({run.step}))")
+        index = at if run.base is None else f"({r._ref(run.base)} + {at})"
+        plane = binding_name(run.plane.role, run.plane.name)
+        return f"{plane}[{self._sample_index(index)}].eval()"
+
+    @staticmethod
+    def _operation(kind: str, a: Sequence[str]) -> str:
+        """One element of an elementwise ``kind`` over the element texts ``a``."""
+        if kind in ("add", "sub", "mul", "div"):
+            return f"({a[0]} {_INFIX[kind]} {a[1]})"
+        if kind == "neg":
+            return f"(-{a[0]})"
+        if kind == "select":
+            return f"({a[0]} ? {a[1]} : {a[2]})"
+        if kind in ("min", "max"):
+            return f"aether::math::{_MATH2[kind]}({a[0]}, {a[1]})"
+        return f"aether::math::{_MATH1[kind]}({a[0]})"
 
     @staticmethod
     def direct_kind(node: Op) -> bool:
@@ -636,6 +804,8 @@ class AetherWriter:
 
             index = node.literal if isinstance(node.literal, tuple) else (node.literal,)
             ks = ', '.join(str(int(k)) for k in index)
+            if args[0] in r.proxies:
+                return f"{args[0]}.at({ks})"
             if r.position.get(id(_through(node.operands[0]))) in r.lazy:
                 return f"{args[0]}.eval<{ks}>()"
             return f"{args[0]}.eval<{ks}>(i)"
@@ -661,6 +831,8 @@ class AetherWriter:
         source = node.operands[0]
         if r.stores.skips(node):
             return ""               # a store of the same slot adds in place
+        if args[0] in r.proxies:
+            return f"{args[0]}.at({args[1]})"       # a value in a plane: the element, straight from it
         if _reads_in_place(source):
             # a read-only input plane: the element at the runtime index straight
             # from the view (`SampleRef::at`), no `Item` of the whole row

@@ -54,7 +54,9 @@ from ..ir import DispatchInfo, HawkError
 from ..ir.nodes import LEAF_ROLES
 from ..ir import canonical as _canonical
 from ..ir import split_segmented as _split_segmented
+from ..ir.segment import rewalk as _segment_rewalk
 from ..ir.split import internal as _split_internal
+from ..ir import wide as _wide
 from ..ir.split import stages as _split_stages
 from ..targets import DEFAULT_TARGETS, ENTRY_DEVICE, ENTRY_HOST, GPU, TARGETS
 from ..targets.cards import build_arch
@@ -336,10 +338,11 @@ def _active_spec(kind, group: int = 1) -> ActiveSpec | None:
     ``group`` is the kernel's declared compaction group."""
     if not _reads_map(kind):
         return None
+    narrow = _lane_set(kind) is not None and _map_bits(kind) == 32
     if getattr(_lane_set(kind), "prefix", False):
-        return ActiveSpec(None, _binding_name("lookup", ACTIVE_COUNT), group, 32)
+        return ActiveSpec(None, _binding_name("lookup", ACTIVE_COUNT), group, 32, narrow)
     return ActiveSpec(_binding_name("lookup", ACTIVE_MAP),
-                      _binding_name("lookup", ACTIVE_COUNT), group, _map_bits(kind))
+                      _binding_name("lookup", ACTIVE_COUNT), group, _map_bits(kind), narrow)
 
 
 def _native(targets) -> tuple:
@@ -416,12 +419,13 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
                 profile=(embedded_profile if embedded_profile is not None
                          else export.EmbeddedProfile()))
             continue
-        out[target] = render_source(
-            name, kernel.sinks, kernel.walk, row, mode=smode, kind=kind,
-            body=body, segment=segment, one_step=one_step, box=box,
-            active=None if getattr(getattr(kernel, "team", None), "grid", None) in ("keys", "chunks", "targets") else active,
-            team=None if getattr(kernel, "team", None) is None else kernel.team.threads,
-            exports=_layout.exports(target, layout_sizes_override=layout_sizes_override))
+        with policy.placing(row.compile == GPU):        # the device text keeps wide values in their planes
+            out[target] = render_source(
+                name, kernel.sinks, kernel.walk, row, mode=smode, kind=kind,
+                body=body, segment=segment, one_step=one_step, box=box,
+                active=None if getattr(getattr(kernel, "team", None), "grid", None) in ("keys", "chunks", "targets") else active,
+                team=None if getattr(kernel, "team", None) is None else kernel.team.threads,
+                exports=_layout.exports(target, layout_sizes_override=layout_sizes_override))
         if literal_table and row.compile == GPU:
             out[target] = _literal_table(out[target])
     return out
@@ -525,11 +529,11 @@ def _resource_report(kernel, ptxas: dict | None) -> dict | None:
     working = working_set_bytes(kernel.sinks)
     report = {}
     for entry, row in ptxas.items():
-        spills = row["spill_store_B"] > 0 or (working > 0 and row["stack_B"] > _FRAME_SLACK * working)
+        spills = (row["spill_store_B"] or 0) > 0 or (working > 0 and row["stack_B"] > _FRAME_SLACK * working)
         report[entry] = {**row, "working_set_B": working, "spills": spills}
         if spills:
             warnings.warn(f"hawk: kernel {entry!r} uses {row['regs']} registers and a {row['stack_B']}-byte "
-                          f"local frame ({row['spill_store_B']} bytes spilled) against an expected working set "
+                          f"local frame ({'spills unknown' if row['spill_store_B'] is None else str(row['spill_store_B']) + ' bytes spilled'}) against an expected working set "
                           f"of {working} bytes", stacklevel=2)
     return report
 
@@ -668,6 +672,7 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         ptxas=(_resource_report(kernel, entries[lead][0].ptxas)
                if TARGETS[lead].entry == ENTRY_DEVICE else None),
         local=_local_memory(name, entries, lead),
+        wide=_wide_with_class(_wide.walk_record(kernel.walk), resolved_arch),
     )
     if split is not None:
         # the first stage of a split kernel names every stage and every cell
@@ -954,6 +959,7 @@ def _team_scratch(found) -> dict:
     each lane's slice. The runtime makes each ``lanes x per_lane`` once per kernel and lane count."""
     out: dict = {}
     for st in found:
+        out.update({p.name: {"dtype": p.dtype, "per_lane": p.per_lane} for p in st.planes})
         if st.team is not None:
             out.update({p.name: {"dtype": p.dtype, "per_lane": p.per_lane,
                                  **({"keys": _keys_record(st.team.keyed)} if p.unit == "key" else
@@ -963,7 +969,21 @@ def _team_scratch(found) -> dict:
     return out
 
 
-def _expand_split(kernels: list, names: list, kinds: list) -> tuple:
+def _wide_with_class(record: dict, resolved_arch: str) -> dict | None:
+    """``launch.wide``: the placement record and, beside the planes, the device class whose thresholds placed them."""
+    from ..ir import wide_class
+
+    return {**record, "class": wide_class.select(resolved_arch)} if record else None
+
+
+def _wide_ok(kernel, smode, device: bool):
+    """Whether the placement pass may run on ``kernel`` (:func:`hawk.ir.split.stages` ``wide``): a build
+    for the device, of a kernel that is one plain launch (not a stepping, segmented or compacted one)."""
+    return (device and type(kernel).__name__ in ("Kernel", "SegmentUnit") and getattr(kernel, "one_step", None) is None
+            and getattr(kernel, "fused_body", None) is None)
+
+
+def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device: bool = False) -> tuple:
     """Replace every member that reads a value reduced over samples with its
     stages (:func:`hawk.ir.split.stages`), named ``<name>``, ``<name>_2``, ...;
     the rest pass through untouched. Also returns, per first-stage name, the
@@ -973,13 +993,15 @@ def _expand_split(kernels: list, names: list, kinds: list) -> tuple:
 
     out_kernels, out_names, out_kinds, blocks = [], [], [], {}
     for k, n, kd in zip(kernels, names, kinds):
-        found = _split_stages(n, k.sinks)
+        found = _split_stages(n, k.sinks, wide=_wide_ok(k, smode, device),
+                              real_bytes=4 if smode is not None and smode.id == "float32" else 8)
         if found is None:
             out_kernels.append(k)
             out_names.append(n)
             out_kinds.append(kd)
             continue
-        if getattr(k, "one_step", None) is not None or getattr(k, "segment", None) is not None:
+        if getattr(k, "one_step", None) is not None or (
+                getattr(k, "segment", None) is not None and _split_stages(n, k.sinks) is not None):
             raise HawkError(
                 f"{n!r} reads a value reduced over samples inside a stepping or "
                 "segmented kernel; a split kernel is one plain step in this release")
@@ -1000,14 +1022,19 @@ def _expand_split(kernels: list, names: list, kinds: list) -> tuple:
                         setattr(sinks, attr, getattr(k.sinks, attr))
             if stage.team is not None:
                 member = TeamStage(stage.name, sinks, stage.team)
+            elif getattr(k, "segment", None) is not None:       # a branch unit, its wide values placed: still the unit
+                member = _segment_rewalk(k, sinks)
             else:
                 member = Kernel(stage.name, sinks, k.planes, kind=getattr(k, "kind", None))
+                if len(found) == 1:         # the kernel itself, its wide values placed: it keeps what it declared
+                    for attr in ("source_digest", "returns", "time", "time_step", "jump", "broadcast", "group"):
+                        setattr(member, attr, getattr(k, attr))
             cells.update(member.walk.cells)
             out_kernels.append(member)
             out_names.append(stage.name)
             out_kinds.append(kd)
         # a cell only a later stage reads is the kernel's own
-        for c in _split_internal(found, k.planes):
+        for c in _split_internal(found, getattr(k, "planes", {})):
             cells[c] = {**cells[c], "internal": True}
         blocks[n] = {"cells": cells, "stages": [
             {"kernel": st.name, "cells_in": list(st.cells_in),
@@ -1072,7 +1099,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                  derivative: Mapping[str, str] | None = None,
                  host_profile: str = "", opt_level: str = "",
                  literal_table: bool = False, embedded_profile=None,
-                 emit_form: str = "auto", linalg_form: str = "auto") -> Bundle:
+                 emit_form: str = "auto", linalg_form: str = "auto", wide_form: str = "auto") -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json``
     over them. ``emit_form`` is how a product, dot, sum or norm is spelled
     (:mod:`hawk.emit.policy`): ``"auto"`` unrolls a site of at most 16 elements and
@@ -1081,7 +1108,10 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     ``linalg_form`` is how per-lane linear algebra is worked: ``"auto"`` keeps one thread per
     matrix up to ``n = 32`` and uses a team of threads per matrix above it, ``"team"`` uses a
     team at every size, ``"thread"`` refuses a matrix above 32 by name
-    (:mod:`hawk.ir.team`). Every member must agree on the execution axis (a
+    (:mod:`hawk.ir.team`). ``wide_form`` is where a per-lane value wider than a thread's
+    registers lives: ``"auto"`` places it (:mod:`hawk.ir.wide`), ``"thread"`` keeps every value
+    in the lane's registers and local memory (the text before the pass); ``"team"`` is refused
+    by name until it is built. Every member must agree on the execution axis (a
     manifest-level, not per-entry, declaration) — a set that doesn't agree is
     two bundles.
 
@@ -1154,8 +1184,18 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
         raise HawkError(f"emit_form must be one of {policy.FORMS}, got {emit_form!r}")
     if linalg_form not in policy.LINALG_FORMS:
         raise HawkError(f"linalg_form must be one of {policy.LINALG_FORMS}, got {linalg_form!r}")
-    with policy.using(emit_form, linalg_form=linalg_form):
-        kernels, names, kinds, split = _expand_split(kernels, names, kinds)
+    if wide_form not in policy.WIDE_FORMS:
+        raise HawkError(f"wide_form must be one of {policy.WIDE_FORMS}, got {wide_form!r}")
+    if wide_form == "team":
+        raise HawkError("wide_form='team' (a warp per lane) is not built in this release; use 'auto', which places "
+                        "each wide value in a plane, or 'thread', which keeps it in the lane's registers")
+    from ..ir import wide_class
+
+    emit_arch = _emit_arch(targets, device_arch)
+    cls = wide_class.select(emit_arch) if emit_arch else ""       # the thresholds of the nearest measured device class
+    with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form), policy.wide_class_scope(cls):
+        kernels, names, kinds, split = _expand_split(kernels, names, kinds, smode=smode,
+                                                     device=any(TARGETS[t].compile == GPU for t in targets if t in TARGETS))
     if exported and any(getattr(k, "team", None) is not None for k in kernels):
         raise HawkError(
             f"{names[0]!r} has linear algebra worked by a team of threads (a matrix above 32, or "
@@ -1177,7 +1217,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                     layout_sizes_override=layout_sizes_override,
                     host_profile=host_profile, opt_level=opt_level,
                     literal_table=literal_table, emit_form=emit_form, linalg_form=linalg_form,
-                    groups=tuple(getattr(k, "group", 1) for k in kernels),
+                    wide_form=wide_form, wide_class=cls, groups=tuple(getattr(k, "group", 1) for k in kernels),
                     embedded_profile=repr(embedded_profile) if exported else "",
                     source_digests=([getattr(k, "source_digest", None) for k in kernels]
                                     if exported else ()))
@@ -1213,10 +1253,9 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
 
     # Phase 2 — emit, compile and assemble the unit's content; still nothing
     # written. Each draft gets its own per_kernel_derivative[i] block.
-    emit_arch = _emit_arch(targets, device_arch)
 
     def sources_of(k, n, kd):
-        with build_arch(emit_arch), policy.using(emit_form, linalg_form=linalg_form):
+        with build_arch(emit_arch), policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form):
             return _sources(k, name=n, smode=smode, kind=kd, targets=targets,
                             layout_sizes_override=layout_sizes_override,
                             literal_table=literal_table, embedded_profile=embedded_profile)

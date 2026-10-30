@@ -28,7 +28,7 @@ from typing import Protocol
 
 from ..ir import HawkError, Walk
 from ..ir.nodes import sample_sums
-from ..types import Slot
+from ..types import INT_PLANE_DTYPES, Slot
 from .box import boxed_sinks, frame
 from .render import Body, render_body
 from .writer_aether import RUN_CALL, RUN_STATE
@@ -81,6 +81,9 @@ class ActiveSpec:
     group: int = 1
     #: The map word, 32 or 64 bits (the count is always 32).
     map_bits: int = 32
+    #: A lane set of 32-bit width (:class:`hawk.ext.IndexSet`): its lanes, and so every index the body makes of them,
+    #: fit 32 bits, and the unit's ``Int`` is a 32-bit integer (:func:`prelude`).
+    lane_set: bool = False
 
 
 def active_reads(active: ActiveSpec, position: str) -> tuple:
@@ -283,6 +286,7 @@ _RAY_INCLUDE = "#include <aether/geometry/geometry.h>\n"
 
 #: The rolled-loop twins' header (:mod:`hawk.emit.policy`), likewise.
 _RT_CALL = "aether::rt::"
+_TILED_CALL = "hawk_abi::tiled<"
 _RT_INCLUDE = "#include <aether/expr/Rt.h>\n"
 
 _RUN_SITE = re.compile(rf"\b{RUN_STATE}(\w+)\);")
@@ -386,6 +390,27 @@ template <class ViewT, class T>
 #else
     std::atomic_ref<E>(slot).fetch_or(static_cast<E>(bits), std::memory_order_relaxed);
 #endif
+}}
+"""
+
+#: One lane's elements of a scratch plane that tiles the lanes by warp (:mod:`hawk.ir.wide`): element ``k`` of lane
+#: ``i`` of a plane of width ``W`` is at ``((i / 32) * W + k) * 32 + i % 32``, so the lane's proxy is its first element
+#: and ``at(k)`` adds ``32 k`` elements. It has the shape of an aether per-sample proxy to the ``aether::rt`` twins.
+#: Spliced only into a unit whose body names it.
+_TILED = """
+template <class T, std::size_t W>
+struct TiledLane {{
+    using element_type = T;
+    using element_extents = aether::extents<W>;
+    T* base;
+    {qualifier} T& at(std::size_t k) const {{ return base[k * 32]; }}
+}};
+
+template <class T, std::size_t W, class ViewT>
+{qualifier} TiledLane<T, W> tiled(const ViewT& plane, long long lane)
+{{
+    const std::size_t i = static_cast<std::size_t>(lane);
+    return TiledLane<T, W>{{plane.data() + (i / 32 * W) * 32 + i % 32}};
 }}
 """
 
@@ -786,7 +811,7 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
                 store_compensated: bool = False, finish: bool = False,
                 spacing: bool = False, mix: bool = False,
                 integers: bool = False, sample_sum: bool = False,
-                fold: bool = False, scatter_or: bool = False) -> str:
+                fold: bool = False, scatter_or: bool = False, tiled: bool = False) -> str:
     """The view-from-mirror reconstruction helpers — byte-for-byte the same
     on both targets, only the function qualifier differs; reads the
     mirror's own stride fields so a non-contiguous plane rebuilds
@@ -821,6 +846,8 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
         helpers.append(_INT_HELPERS.format(qualifier=qualifier))
     if scatter_or:
         helpers.append(_ACCUM_OR.format(qualifier=qualifier))
+    if tiled:
+        helpers.append(_TILED.format(qualifier=qualifier))
     return f"""namespace hawk_abi {{
 
 template <class T, std::size_t N>
@@ -891,7 +918,7 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             integers: bool = False, sample_sum: bool = False,
             runs: bool = False, fold: bool = False, linalg: bool = False,
             rt: bool = False, scatter_or: bool = False, rays: bool = False,
-            team: bool = False) -> str:
+            team: bool = False, tiled: bool = False, narrow_int: bool = False) -> str:
     """Includes + the scalar-mode aliases + the reconstruction helpers.
 
     ``compensated``/``store_compensated`` reach :func:`abi_helpers`'s gate.
@@ -906,12 +933,22 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
         includes = includes.replace(_RANDOM_INCLUDE_MARKER,
                                     _RANDOM_INCLUDE_MARKER + extra, 1)
     return (includes
-            + f"\nusing Real = {mode.real_spelling};\nusing Int = long long;\n\n"
+            + f"\nusing Real = {mode.real_spelling};\nusing Int = {'int' if narrow_int else 'long long'};\n\n"
             + _CLAMP_COUNT.format(qualifier=qualifier)
             + abi_helpers(qualifier, compensated=compensated,
                          store_compensated=store_compensated, finish=finish,
                          spacing=spacing, mix=mix, integers=integers,
-                         sample_sum=sample_sum, fold=fold, scatter_or=scatter_or))
+                         sample_sum=sample_sum, fold=fold, scatter_or=scatter_or, tiled=tiled))
+
+
+def narrows_int(active: ActiveSpec | None, walk: Walk) -> bool:
+    """Whether the unit's ``Int`` is 32 bits: a lane set of 32-bit width, which holds no integer the launch
+    passes by value or binds as a plane (those keep the 64-bit word eagle packs). Every index the body makes of
+    a lane of such a set, and every integer it computes, then takes a register, not a pair: a kernel that
+    gathers through tables keeps a long chain of them live, and that chain is what its register count is."""
+    return (active is not None and active.lane_set and active.map_bits == 32
+            and not any(ttype.dtype in ("i32", "i64") or (role == "uniform" and ttype.dtype in INT_PLANE_DTYPES)
+                        for (role, _name), ttype in walk.slot_types.items()))
 
 
 def render_source(name: str, sinks, walk: Walk, target, *,
@@ -1023,7 +1060,8 @@ def render_source(name: str, sinks, walk: Walk, target, *,
                runs=RUN_CALL in body.text, fold=bool(walk.companions),
                linalg=_LINALG_CALL in body.text, rt=_RT_CALL in body.text,
                rays=_RAY_CALL in body.text, team=_TEAM_CALL in body.text,
-               scatter_or=_OR_CALL in body.text),
+               scatter_or=_OR_CALL in body.text, tiled=_TILED_CALL in body.text,
+               narrow_int=narrows_int(active, walk)),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",

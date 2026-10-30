@@ -72,6 +72,15 @@ def test_the_keyed_record_carries_the_payload_shape(tmp_path, cache_dir):
     assert keyed and keyed[0]["payload"] == [24, 24] and keyed[0]["width"] == 24 * 24
 
 
+def test_a_wide_value_placed_in_a_plane_holds_no_local_frame_and_the_thread_form_keeps_it(tmp_path, cache_dir):
+    from _wide_kernels import fill_mask
+
+    placed = build_bundle([fill_mask], tmp_path / "auto", targets=("cuda",), cache_dir=cache_dir)
+    pinned = build_bundle([fill_mask], tmp_path / "thread", targets=("cuda",), cache_dir=cache_dir, wide_form="thread")
+    assert sidecar_of(placed, "fill_mask")["launch"]["local_bytes"] == 0
+    assert sidecar_of(pinned, "fill_mask")["launch"]["local_bytes"] > 0       # the 512-wide value in one thread
+
+
 @pytest.mark.gpu
 def test_a_failed_device_call_left_pending_is_raised_by_name():
     import ctypes

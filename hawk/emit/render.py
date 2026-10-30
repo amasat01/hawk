@@ -63,6 +63,9 @@ from ..types import TensorType
 from . import rtstore
 from .box import BoxStore
 from ..ir.team import TeamStore
+from ..ir.wide import is_resident, is_scratch
+from ..ir.wide import record as _placements
+from . import policy as _policy
 from .policy import rolled
 from .writer_aether import AETHER
 from .dispatch import _DispatchMixin
@@ -321,6 +324,14 @@ class _Renderer(_DispatchMixin):
         #: this traversal emits comes from here.
         self.writer = writer if writer is not None else AETHER
         self.nodes, self.position = canonical_nodes(sinks)
+        #: ``{plane: width}`` of the planes the kernel's placements write (a scratch plane's proxy needs its tile).
+        self.plane_widths = {name: rec["width"] for name, rec in _placements(self.nodes).items()}
+        #: Whether a placement (:mod:`hawk.ir.wide`) renders as its plane (the device text) or as its value
+        #: (the host text), and the texts of the planes' per-lane proxies, which a use reads element by element.
+        self.placed = _policy.placed()
+        self.proxies: set = set()
+        #: The ids of the values a placement writes element by element (never rendered whole), in a loop body too.
+        self.absorbed: frozenset = frozenset()
         #: The stores at a runtime index, as runs of one mutable local
         #: (:mod:`hawk.emit.rtstore`), and the carried locals a plain loop lets
         #: such a run write in place.
@@ -540,9 +551,9 @@ class _Renderer(_DispatchMixin):
         call's operand, or the operand of a value no statement renders."""
         if not self.writer.rolled_forms:
             return False
-        if self.position.get(id(node)) in self.unrendered:
+        if self.position.get(id(node)) in self.unrendered or id(node) in self.absorbed:
             return True
-        if isinstance(node, TeamStore):
+        if isinstance(node, TeamStore) or (self.placed and is_resident(node)):
             return True         # the store loop reads the operand element by element
         return isinstance(node, Op) and (
             (node.kind in FACTORISATIONS and k == 0) or (node.kind in CONSUMERS and k == 1) or rolled(node))
@@ -996,6 +1007,10 @@ class _Renderer(_DispatchMixin):
         trade away."""
         if isinstance(node, Leaf) and node.role in ("uniform", "nsamples"):
             return False
+        if is_resident(node) or is_scratch(node):
+            return False        # its text is the plane's proxy: nothing to name
+        if isinstance(node, LoopValue) and self._loop_value(node) in self.proxies:
+            return False        # a slot that lives in a plane: the loop value is the plane's proxy
         if isinstance(node, Leaf) and node.role in GATHER_ROLES:
             # read BY NAME at a computed index (`_at`), never through a
             # reference to the leaf: naming it would emit a dead (and possibly
@@ -1023,8 +1038,8 @@ class _Renderer(_DispatchMixin):
         """A node that never gets a local of its own: one a store run absorbs
         (:mod:`hawk.emit.rtstore`), one no statement renders, and one the writer
         renders as the name of a fresh ``Item`` already."""
-        return (self.stores.unnamed(node) or self._proxy_read(node)
-                or self.position.get(id(node)) in self.unrendered
+        return (self.stores.unnamed(node) or self._proxy_read(node) or is_resident(node)
+                or id(node) in self.absorbed or self.position.get(id(node)) in self.unrendered
                 or (self.writer.rolled_forms and self.writer.fresh_value(node)))
 
     @staticmethod
@@ -1072,8 +1087,13 @@ class _Renderer(_DispatchMixin):
         names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
                       for j, c in enumerate(loop.carries))
         self.carry_names[pos] = names
-        for name, elem, init in zip(names, elems, loop.inits):
-            self._emit(f"{elem} {name} = {self._ref(init)};")
+        #: the carried slots that live in a plane (:mod:`hawk.ir.wide`): the carry IS the plane's proxy, written in place
+        planed = {j for j, init in enumerate(loop.inits) if self.placed and (is_resident(init) or is_scratch(init))}
+        names = tuple(self._ref(loop.inits[j]) if j in planed else name for j, name in enumerate(names))
+        self.carry_names[pos] = names
+        for j, (name, elem, init) in enumerate(zip(names, elems, loop.inits)):
+            if j not in planed:
+                self._emit(f"{elem} {name} = {self._ref(init)};")
         tapes = self.tape_names.get(pos, {})
         for slot in sorted(tapes):
             self._emit(self.writer.tape_decl(elems[slot], tapes[slot], loop.trip))
@@ -1115,14 +1135,21 @@ class _Renderer(_DispatchMixin):
         results = []
         for j, (elem, nxt) in enumerate(zip(elems, loop.nexts)):
             result = f"hawk_n{pos}_{j}"
+            if j in planed:
+                if self._ref(nxt) != names[j]:        # pragma: no cover - the pass admits only in-place chains
+                    raise HawkError(f"the carried slot {j} of the loop over {loop.index.name!r} lives in a plane, "
+                                    "but its end-of-iteration value is not stored in place")
+                results.append(result)
+                continue
             self._emit(f"const {elem} {result} = {self._ref(nxt)};")
             results.append(result)
         if form == "tail":
             # The condition reads the iteration's values, possibly inlined over
             # the carried locals, so it's evaluated BEFORE they move.
             self._emit(f"const bool hawk_x{pos} = {self._ref(loop.exit_cond)};")
-        for name, result in zip(names, results):
-            self._emit(f"{name} = {result};")
+        for j, (name, result) in enumerate(zip(names, results)):
+            if j not in planed:
+                self._emit(f"{name} = {result};")
         if counter is not None:
             self._emit(f"++{counter};")
         if form == "tail":
@@ -1599,7 +1626,7 @@ class _Renderer(_DispatchMixin):
         if isinstance(node, Dispatch):
             return self._dispatch(node)
         if isinstance(node, Op):
-            if self.position.get(id(node)) in self.unrendered:
+            if self.position.get(id(node)) in self.unrendered or id(node) in self.absorbed:
                 return ""
             args = [self._ref(o) for o in node.operands]
             ranks = [len(o.ttype.shape) for o in node.operands]
