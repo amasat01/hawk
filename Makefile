@@ -132,12 +132,13 @@ gate-docs: gate-venv
 	$(VPY) tools/docs_inventory_check.py docs/_build/html/objects.inv hawk
 
 # -- the legs that need a card ------------------------------------------------------------------------------------------------
-gate-gpu: gate-gpu-notebooks
+gate-gpu: gate-venv
 	$(VPY) -m pytest -q -m gpu -p no:cacheprovider $(PYTEST_ARGS)
 	$(VPY) tests/test_wide_placement.py gpu
 
 # every notebook, run through raptor_docs.nb run_gate with the card visible: its CPU leg again, then its GPU leg (a notebook
-# that declares gate.gpu_only runs only there). gate-docs hides the card, so the GPU pass has this one named place.
+# that declares gate.gpu_only runs only there). gate-docs hides the card, so the GPU pass has this one named place; it runs
+# at the release gate and in CI's GPU job, not in every batch gate.
 gate-gpu-notebooks: gate-venv
 	@test -n "$(SITE_SRC)" || { echo "gate-gpu: SITE_SRC (a checkout of amasat01.github.io) is unset" >&2; exit 2; }
 	$(VPY) -m pip install --quiet --force-reinstall --no-deps "$(abspath $(SITE_SRC))"
