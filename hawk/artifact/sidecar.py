@@ -178,6 +178,12 @@ def _index_planes(walk) -> list:
     return [name for role, name in walk.arg_spec if walk.slot_types[(role, name)].tag == "index"]
 
 
+def _plane_meta(walk, planes) -> dict:
+    """``{name: {key: value}}`` of the opaque notes (``Annotated[T, Meta(...)]``) on bound planes."""
+    return {name: dict(planes[name].meta) for _role, name in walk.arg_spec
+            if getattr(planes.get(name), "meta", ())}
+
+
 def _plane_axes(walk, planes) -> dict:
     """``{name: {payload, axes}}`` for each bound sink declared with named axes:
     it is bound ``(*payload, *axes)``."""
@@ -375,7 +381,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     declarations: ``sorted_inputs`` names the bound ``Sorted[Index]`` inputs, ``index_planes`` the ``Index`` inputs
     (32-bit on the wire; a wider integer array binds when every value fits) and
     ``plane_axes`` the sinks declared with named axes, and ``unused_planes`` the
-    declared planes the body never touches (pruned from the compiled kernel), and ``param_shapes`` the natural
+    declared planes the body never touches (pruned from the compiled kernel), ``plane_meta`` the opaque notes of an annotated plane, and ``param_shapes`` the natural
     shape of each ``Param[Vector/Matrix/Table]`` plane, each only when present.
 
     ``dispatch_override`` (the per-unit split) replaces ``walk.dispatches``
@@ -458,6 +464,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         **({"sorted_inputs": sorted_in} if sorted_in else {}),
         **({"index_planes": index_in} if index_in else {}),
         **({"plane_axes": axes} if axes else {}),
+        **({"plane_meta": notes} if (notes := _plane_meta(walk, planes)) else {}),
         # one value shared by every lane (``Param[Vector[W]]``, ``Param[Matrix[R,C]]``,
         # ``Param[Table[...]]``): its natural shape, bound flat and row-major
         **({"param_shapes": shared} if shared else {}),

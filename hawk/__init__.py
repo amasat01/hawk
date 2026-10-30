@@ -50,7 +50,7 @@ from . import _contracts
 _AUTHORING = (
     "kernel", "Kernel", "raw_device", "RawBlock", "Value", "Quantity",
     "Scalar", "Index", "Int32", "UInt32", "Quat", "Vector", "Matrix", "Param",
-    "Mutable", "Table", "Grid", "Sorted", "Staged", "Wide", "WideOut",
+    "Mutable", "Meta", "Table", "Grid", "Sorted", "Staged", "Wide", "WideOut",
     "Terminated", "HawkError", "steps", "resolve_dispatch",
     "sum", "max", "min", "mean", "scatter",
 )
