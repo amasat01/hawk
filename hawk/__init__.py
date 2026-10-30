@@ -88,7 +88,7 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
 #: itself (``hawk.embedded.export``), imported on first access.
 _SUBMODULE_DOORS = ("embedded", "geometry")
 
-__all__ = ["__version__", *_AUTHORING, *_TOP_LEVEL_DOORS]
+__all__ = ["__version__", *_AUTHORING, *_TOP_LEVEL_DOORS, *_SUBMODULE_DOORS]
 
 try:
     from ._version import version as __version__

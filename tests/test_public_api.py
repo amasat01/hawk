@@ -67,7 +67,7 @@ _EXPECTED_MANIFEST = {
         "Grid", "HawkError", "Index", "Int32", "Kernel", "Matrix", "Mutable",
         "Param", "Quantity", "Quat", "RawBlock", "Scalar", "Sorted",
         "Staged", "Table", "Terminated", "UInt32", "Value", "Vector", "Wide",
-        "WideOut", "__version__", "build", "kernel", "lane_position", "load", "max", "mean", "min",
+        "WideOut", "__version__", "build", "embedded", "geometry", "kernel", "lane_position", "load", "max", "mean", "min",
         "primitive", "raw_device", "resolve_dispatch", "run", "samples_first", "samples_last",
         "scatter", "steps", "sum",
     ],

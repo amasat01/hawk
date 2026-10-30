@@ -122,7 +122,7 @@ gate-test: gate-venv
 
 # coverage: every public name has a test that mentions it (static, seconds); the untested ones are in the allowlist, which only shrinks
 gate-names: gate-venv
-	$(VPY) tools/public_names.py
+	$(VPY) -m raptor.conformance.public_names --src . --tests tests --allow ci/public_names_untested.txt --module hawk
 
 # docs: every notebook filled and run on the CPU (the card is hidden: this leg is the GPU-less one; the card pool is for gate-gpu), the strict (-W) Sphinx build, every public name has a page
 gate-docs: gate-venv
