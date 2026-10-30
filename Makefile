@@ -37,6 +37,8 @@ CUDA_ARCH ?= $(or $(shell nvidia-smi --query-gpu=compute_cap --format=csv,nohead
 
 GATE_ABS := $(abspath $(GATE_DIR))
 VENV := $(GATE_ABS)/venv
+# the notebooks a gate runs write their animations here, not into docs/_static (a gate never changes tracked files)
+export DOCS_ANIM_DIR := $(GATE_ABS)/anim
 VPY := $(VENV)/bin/python
 LINT := $(GATE_ABS)/lint
 CMP := $(GATE_ABS)/cmp072
