@@ -264,4 +264,4 @@ def test_auto_choice_is_the_measured_table_and_empty_classes_answer_per_step():
     assert S._choose(False, 4, 8, 16) == "fused" and S._choose(False, 4, 8, 4096) == "per_step"
     assert S._choose(False, 3, 4, 64) == "fused"        # the nearest measured regime
     assert S._choose(True, 4, 8, 16, "sm_61") == "per_step"    # a device class with no row
-    assert S._class_of(True, "sm_80") == "sm61" and S._class_of(False) == "host"
+    assert S._class_of(True, "sm_80") == "sm61" and S._class_of(False) == "x86_64"
