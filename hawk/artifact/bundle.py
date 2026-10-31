@@ -998,10 +998,14 @@ def _warp_kernel(kernel, name: str):
     warp = WarpStage(name, sinks, TeamSpec(WARP, (), ()))
     if one is not None:             # an automatic kernel: its single step beside it, in the warp form too
         warp.one_step = Kernel(one.name, single, one.planes, kind=one.kind)
-        held = set(warp.walk.arg_spec)
-        extra = [Slot(role, slot, warp.one_step.walk.slot_types[role, slot])
-                 for role, slot in warp.one_step.walk.arg_spec if (role, slot) not in held]
+    # the planes of the kernel as written stay its planes (a slot only a dropped value read is still bound), and so do its
+    # single step's
+    held = set(warp.walk.arg_spec)
+    own = [(k.walk, key) for k in (kernel, warp.one_step) if k is not None for key in k.walk.arg_spec]
+    extra = [Slot(role, slot, walk.slot_types[role, slot]) for walk, (role, slot) in own if (role, slot) not in held]
+    if extra:
         warp.walk = canonical(warp.sinks, (*_declared(warp.planes), *extra))
+    if one is not None:
         for attr in ("source_digest", "returns", "time", "time_step", "jump", "broadcast", "group"):
             setattr(warp, attr, getattr(kernel, attr))
     return warp

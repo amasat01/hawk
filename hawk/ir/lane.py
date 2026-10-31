@@ -28,6 +28,9 @@ SLICE_MIN = 128
 
 WARP_LANE_KIND = "warp_lane"
 
+#: The longest short vector a fill loop unrolls into registers (the elements are then computed in place of a run-time indexed frame).
+NARROW_FILL_MAX = 32
+
 #: The literal of a ``component_at`` that reads a plane element in place: each lane reads only the elements it commits.
 WARP_READ = "warp_read"
 
@@ -83,10 +86,12 @@ class _Slicer:
         self.memo: dict = {}                       # id(node) -> (node, is_sliced)
         self.lane = WarpLane()
         self.used = False                          # whether any value ended up sliced
+        self.keep: list = []                       # every node memoised, alive as long as its id is a key
 
     def of(self, node: Node) -> tuple:
         got = self.memo.get(id(node))
         if got is None:
+            self.keep.append(node)
             got = self.memo[id(node)] = self._one(node)
             self.used = self.used or got[1]
         return got
@@ -105,7 +110,7 @@ class _Slicer:
         if isinstance(node, LoopValue):
             filled = self._fill(node)
             if filled is not None:
-                return filled, True
+                return filled
             loop, slot_sliced = self._loop(node.loop)
             return LoopValue(loop, node.slot), slot_sliced[node.slot]
         if isinstance(node, Loop):
@@ -162,7 +167,7 @@ class _Slicer:
             raise _Refused(f"{kind} of a wide value")
         for (_, s), o in zip(ops, node.operands):
             if not s and o.ttype.shape:
-                raise _Refused("a narrow vector beside a wide one")
+                raise _Refused(f"a narrow vector beside a wide one: {kind} flags={[s for _, s in ops]} {[(type(q).__name__, getattr(q, 'kind', ''), q.ttype.shape) for q in node.operands]}")
         new = [a for a, _ in ops]
         if isinstance(node, Select):
             return Select(new[0], new[1], new[2], out), True
@@ -190,29 +195,36 @@ class _Slicer:
             parts.append(At(g.plane, at, first.ttype))
         return Op("vec", tuple(parts), out)
 
-    def _fill(self, value: LoopValue) -> Op | None:
+    def _fill(self, value: LoopValue) -> tuple | None:
         """A loop that writes element ``j`` of a wide vector at trip ``j`` from a value of ``j`` alone (``r[j] = f(j)`` over
         the whole vector) is the vector of its values: lane ``l`` computes ``f`` at its own elements."""
         from .walk import substitute
 
         loop = value.loop
-        if (loop.carry_count != 1 or loop.exit_cond is not None or loop.count is not None or loop.body_sinks
-                or not sliced(loop.carries[0].ttype) or (loop.start, loop.step) != (0, 1) or loop.stop != loop.carries[0].ttype.shape[0]):
+        carry = loop.carries[value.slot]
+        if (loop.exit_cond is not None or loop.count is not None or loop.body_sinks
+                or len(carry.ttype.shape) != 1 or (loop.start, loop.step) != (0, 1) or loop.stop != carry.ttype.shape[0]):
             return None
-        nxt = loop.nexts[0]
-        if not (isinstance(nxt, Op) and nxt.kind == "set_component_at" and nxt.operands[0] is loop.carries[0]
+        narrow = not sliced(carry.ttype)
+        if narrow and carry.ttype.shape[0] > NARROW_FILL_MAX:
+            return None
+        nxt = loop.nexts[value.slot]
+        if not (isinstance(nxt, Op) and nxt.kind == "set_component_at" and nxt.operands[0] is carry
                 and nxt.operands[1] is loop.index):
             return None
         element = nxt.operands[2]
-        if any(n is loop.carries[0] for n in _reach(element)):
-            return None
+        if any(isinstance(n, LoopCarry) and any(n is c for c in loop.carries) for n in _reach(element)):
+            return None             # the element is a function of the index alone: it reads no carry of the loop
         index_type = loop.index.ttype
+        if narrow:      # a short vector every lane holds: its elements are unrolled, none is read or written at a run-time index
+            return Op("vec", tuple(self._plain(substitute([element], {id(loop.index): Const(r, index_type)})[0])
+                                   for r in range(loop.stop)), carry.ttype), False
         parts = []
         for j in range(loop.stop // WARP):
             at = make("add", (self.lane, Const(j * WARP, index_type)))
             part, = substitute([element], {id(loop.index): at})
             parts.append(self._plain(part))
-        return Op("vec", tuple(parts), _slice_type(loop.carries[0].ttype))
+        return Op("vec", tuple(parts), _slice_type(carry.ttype)), True
 
     def _affine(self, node: Node, out: TensorType) -> Op:
         """A ``vec`` whose parts are one expression of the element index: the parts agree node by node, and where they

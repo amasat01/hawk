@@ -215,7 +215,7 @@ def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp
         kernel, bundle = _build(name, tmp_path / name, cache_dir, mode="float64", wide_form="team")
         side = sidecar_of(bundle, kernel.name)
         assert side["stages"][0]["team"] == {"threads": WARP}
-        assert side["launch"]["local_bytes"] == (0 if name == "matvec_in_vjp" else 192)    # the 24 row sums stay in the lane's local frame
+        assert side["launch"]["local_bytes"] == 0           # the 24 row sums are unrolled: none is indexed at run time
 
 
 @pytest.mark.gpu

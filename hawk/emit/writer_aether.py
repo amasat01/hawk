@@ -142,10 +142,12 @@ class AetherWriter:
             r._emit(f"if (hawk_wl == 0) {target}[i] = {value};")
             return
         n = sink.value.ttype.shape[0]
+        r._emit("{")
         r._emit(f"const aether::Item<Real, {n}> hawk_ws = {value};")
         r._emit("#pragma unroll")
         r._emit(f"for (Int hawk_lk = 0; hawk_lk < {n}; ++hawk_lk) "
                 f"{target}[i].at(hawk_lk * 32 + hawk_wl) = hawk_ws.data()[hawk_lk];")
+        r._emit("}")
 
     def lane_position_value(self, mapped: bool) -> str:
         """A ``LanePosition`` node: ``hawk_t`` under an index map, else the
