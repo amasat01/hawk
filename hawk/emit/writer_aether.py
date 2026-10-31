@@ -413,7 +413,8 @@ class AetherWriter:
         if kind == RESIDENT_KIND:
             return self._resident(r, node, args)
         if kind == WARP_SUM_KIND:
-            return f"hawk_abi::warp_sum<Real>(static_cast<Real>({args[0]}.sum()))"
+            partial = f"{args[0]}.sum()" if node.operands[0].ttype.shape else args[0]
+            return f"hawk_abi::warp_sum<Real>(static_cast<Real>({partial}))"
         if kind == RAW_KIND:
             return self._raw(r, node, args)
         if kind in LINALG_OPS:

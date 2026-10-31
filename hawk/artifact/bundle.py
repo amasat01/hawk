@@ -977,7 +977,7 @@ def _wide_with_class(record: dict, resolved_arch: str) -> dict | None:
     return {**record, "class": wide_class.select(resolved_arch)} if record else None
 
 
-def _warp_kernel(kernel, name: str):
+def _warp_kernel(kernel, name: str, explicit: bool = True):
     """``kernel`` in the warp form (:func:`hawk.ir.lane.slice_sinks`), or ``None`` when it is not one plain launch of wide
     Mutables the form has a rule for."""
     from ..ir.lane import WARP, slice_sinks
@@ -991,8 +991,8 @@ def _warp_kernel(kernel, name: str):
     if (type(kernel).__name__ != "Kernel" or getattr(kernel, "group", 1) != 1 or _split_stages(name, kernel.sinks) is not None
             or (one is not None and _split_stages(name, one.sinks) is not None)):
         return None
-    sinks = slice_sinks(_wide.simplified(kernel.sinks))
-    single = None if one is None else slice_sinks(_wide.simplified(one.sinks))
+    sinks = slice_sinks(_wide.simplified(kernel.sinks), explicit=explicit)
+    single = None if one is None else slice_sinks(_wide.simplified(one.sinks), explicit=explicit)
     if sinks is None or (one is not None and single is None):
         return None
     warp = WarpStage(name, sinks, TeamSpec(WARP, (), ()))
@@ -1036,7 +1036,7 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
         # a warp per lane when asked, or under ``auto`` when every target is a device (a host target of the same bundle
         # shares the kernel and has no warp, so it keeps the placed form) and the kernel has a rule in the warp form
         form = policy.wide_form()
-        warp = _warp_kernel(k, n) if device and (form == "team" or (form == "auto" and device_only)) else None
+        warp = _warp_kernel(k, n, form == "team") if device and (form == "team" or (form == "auto" and device_only)) else None
         if warp is not None:        # a warp per lane: one launch, no stages, no scratch
             out_kernels.append(warp)
             out_names.append(n)

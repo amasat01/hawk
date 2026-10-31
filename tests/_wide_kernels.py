@@ -68,6 +68,24 @@ def matvec_in(x: Vector[W], w: Table["o":ROWS, "i":W], y: Mutable[Vector[ROWS]])
 
 
 @hawk.kernel
+def dot_norm(x: Vector[W], w: Table["o":ROWS, "i":W], y: Mutable[Vector[2]]):
+    """A dot product and a norm over a wide value: a warp reduces its slices."""
+    out = zeros(2)
+    out[0] = m.dot(x, row_vec(w, 1, W))
+    out[1] = m.norm(x)
+    y = out
+
+
+@hawk.kernel
+def rt_write(a: Scalar, s: Vector[8], y: Mutable[Vector[W]]):
+    """Eight elements of a wide vector written at run-time indices, the rest left zero."""
+    r = zeros(W)
+    for j in range(8):
+        r[m.index(s[j], W)] = a * (j + 1.0)
+    y = r
+
+
+@hawk.kernel
 def matvec_computed(a: Scalar, swg: Table["i":W], w: Table["o":ROWS, "i":W], y: Mutable[Vector[ROWS]]):
     bf = zeros(W)
     for j in range(W):
@@ -410,6 +428,23 @@ def _matvec_in_want(dtype, p, n):
     return (p["w"].astype(np.float64) @ p["x"].astype(np.float64)).astype(dtype)
 
 
+def _dot_norm_want(dtype, p, n):
+    x = p["x"].astype(np.float64)
+    return np.stack([p["w"][1].astype(np.float64) @ x, np.sqrt((x * x).sum(axis=0))]).astype(dtype)
+
+
+def _rt_write_planes(rng, dtype, n, exact=True):
+    where = np.stack([rng.permutation(W)[:8] for _ in range(n)], axis=1).astype(dtype)      # distinct elements: no write is overwritten
+    return {"a": _vals(rng, (n,), 8, dtype, exact), "s": where}
+
+
+def _rt_write_want(dtype, p, n):
+    out = np.zeros((W, n), dtype)
+    for j in range(8):
+        out[p["s"][j].astype(np.int64), np.arange(n)] = p["a"] * dtype(j + 1.0)
+    return out
+
+
 def _matvec_computed_planes(rng, dtype, n, exact=True):
     return {**_fill_mask_planes(rng, dtype, n, exact), "w": _vals(rng, (ROWS, W), 3, dtype, exact)}
 
@@ -606,6 +641,8 @@ def _selected(planes, want):
 CORPUS = {
     "fill_mask": Entry(fill_mask, "bf", lambda n: (W, n), _fill_mask_planes, _fill_mask_want),
     "matvec_in": Entry(matvec_in, "y", lambda n: (ROWS, n), _matvec_in_planes, _matvec_in_want),
+    "rt_write": Entry(rt_write, "y", lambda n: (W, n), _rt_write_planes, _rt_write_want),
+    "dot_norm": Entry(dot_norm, "y", lambda n: (2, n), _matvec_in_planes, _dot_norm_want),
     "matvec_computed": Entry(matvec_computed, "y", lambda n: (ROWS, n), _matvec_computed_planes, _matvec_computed_want),
     "masked_sum": Entry(masked_sum, "y", lambda n: (n,), _masked_sum_planes, _masked_sum_want),
     "wide51": Entry(wide51, "y", lambda n: (OUT, n), _wide51_planes, _wide51_want),
@@ -802,7 +839,7 @@ def run_device(name: str, dtype: str, n: int, *, cache_dir, repeats: int = 5, se
 
 # -- the same corpus in another environment (the gate runs it in the 0.7.2 wheel's, which has none of the pass) ----------
 
-LANES = {"fill_mask": 8192, "matvec_in": 16384, "matvec_computed": 16384, "masked_sum": 16384, "wide51": 16384,
+LANES = {"fill_mask": 8192, "matvec_in": 16384, "dot_norm": 16384, "rt_write": 8192, "matvec_computed": 16384, "masked_sum": 16384, "wide51": 16384,
          "steps_fill_k1": 8192, "steps_fill_k8": 8192, "steps_early_k8": 8192, "steps_matvec_k1": 16384,
          "steps_matvec_k8": 16384, "narrow4": 1048576, "narrow8": 1048576, "narrow16": 1048576, "rotate16": 1048576, "fill_mask_vjp": 8192, "fill_mask_jvp": 8192, "matvec_in_vjp": 8192, "matvec_in_jvp": 8192,
          "steps_acc_jvp_k8": 8192, "index_set": 131072,

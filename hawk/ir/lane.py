@@ -86,6 +86,8 @@ class _Slicer:
         self.memo: dict = {}                       # id(node) -> (node, is_sliced)
         self.lane = WarpLane()
         self.used = False                          # whether any value ended up sliced
+        self.writes = 0                            # run-time indexed writes into a slice
+        self.folds = 0                             # sums over the lanes
         self.keep: list = []                       # every node memoised, alive as long as its id is a key
 
     def of(self, node: Node) -> tuple:
@@ -144,10 +146,16 @@ class _Slicer:
 
     def _op(self, node: Node) -> tuple:
         if not sliced(node.ttype):
-            if node.kind == "sum" and len(node.operands) == 1:
-                (a, s), = [self.of(o) for o in node.operands]
-                if s:
-                    return Op(WARP_SUM_KIND, (a,), node.ttype), False
+            if node.kind in ("sum", "dot", "norm") and len(node.operands) == (2 if node.kind == "dot" else 1):
+                ops = [self.of(o) for o in node.operands]
+                if all(s for _, s in ops):      # each lane reduces its slice, then the lanes add up in a fixed tree
+                    self.folds += 1
+                    a = ops[0][0]
+                    if node.kind == "sum":
+                        return Op(WARP_SUM_KIND, (a,), node.ttype), False
+                    partial = Op("dot", (a, ops[-1][0]), node.ttype)
+                    total = Op(WARP_SUM_KIND, (partial,), node.ttype)
+                    return (total if node.kind == "dot" else Op("sqrt", (total,), node.ttype)), False
             return self._rep(node)
         kind = node.kind
         out = _slice_type(node.ttype)
@@ -158,6 +166,8 @@ class _Slicer:
             return Op("splat", (a,), out, node.literal), True
         if kind == "vec":
             return self._gather(node, out), True
+        if kind == "set_component_at":
+            return self._write(node, out), True
         ops = [self.of(o) for o in node.operands]
         if isinstance(node, Select) and node.operands[0].ttype.shape:
             raise _Refused("a select by a vector of conditions")
@@ -225,6 +235,27 @@ class _Slicer:
             part, = substitute([element], {id(loop.index): at})
             parts.append(self._plain(part))
         return Op("vec", tuple(parts), _slice_type(carry.ttype)), True
+
+    def _write(self, node: Op, out: TensorType) -> Op:
+        """``v[k] = x`` on a sliced vector: the lane whose element ``k`` is writes ``x``, the others keep theirs. A constant
+        ``k`` touches one slot; a run-time one is a select in every slot, so no slot is chosen at run time."""
+        (vec, was), index, value = self.of(node.operands[0]), self.of(node.operands[1]), self.of(node.operands[2])
+        if not was or index[1] or value[1]:
+            raise _Refused("a write of a slice or at a slice")
+        k, x = index[0], value[0]
+        scalar = TensorType((), node.ttype.dtype)
+        index_type = k.ttype
+        parts = []
+        known = k.literal if isinstance(k, Const) else None
+        self.writes += known is None
+        for j in range(out.shape[0]):
+            old = Op("component", (vec,), scalar, j)
+            if known is not None and int(known) // WARP != j:
+                parts.append(old)
+                continue
+            here = make("add", (self.lane, Const(j * WARP, index_type)))
+            parts.append(Select(make("eq", (k, here)), x, old, scalar))
+        return Op("vec", tuple(parts), out)
 
     def _affine(self, node: Node, out: TensorType) -> Op:
         """A ``vec`` whose parts are one expression of the element index: the parts agree node by node, and where they
@@ -305,9 +336,10 @@ class _Slicer:
         return got
 
 
-def slice_sinks(sinks) -> tuple | None:
-    """``sinks`` in the warp form, or ``None`` when some node has no rule there. Every sink must commit a wide
-    value to a Mutable."""
+def slice_sinks(sinks, *, explicit: bool = True) -> tuple | None:
+    """``sinks`` in the warp form, or ``None`` when some node has no rule there. ``explicit`` is whether the warp form was
+    asked for: otherwise (``auto``) a kernel whose only wide work is writes at run-time indices keeps the placed form, which
+    measured 4x faster there (each write is a select in every slot of the slice)."""
     sinks = tuple(sinks)
     if not sinks or not all(type(s) is Assign or isinstance(s, Finish) for s in sinks):
         return None
@@ -324,4 +356,6 @@ def slice_sinks(sinks) -> tuple | None:
             out.append(WarpStore(sink.name, value, sink.ttype))
     except _Refused:
         return None
-    return tuple(out) if slicer.used else None
+    if not slicer.used or (not explicit and slicer.writes and not slicer.folds):
+        return None
+    return tuple(out)

@@ -219,7 +219,7 @@ def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("name", ["matvec_in", "matvec_in_vjp"])
+@pytest.mark.parametrize("name", ["matvec_in", "matvec_in_vjp", "dot_norm", "rt_write"])
 @pytest.mark.parametrize("mode", ["float32", "float64"])
 def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode, cache_dir):
     import _probe_wide as probe
@@ -240,7 +240,15 @@ def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode
     assert all(np.array_equal(got[0], g) for g in got[1:])
 
 
-@pytest.mark.parametrize("entry", ["fill_mask_seg", "steps_matvec_k8", "steps_early_k8"])
+def test_auto_keeps_the_placed_form_for_run_time_writes_alone_and_the_warp_form_builds_when_asked(tmp_path, cache_dir):
+    from hawk.ir.lane import slice_sinks
+
+    sinks = wide.simplified(W.rt_write.sinks)
+    assert slice_sinks(sinks, explicit=False) is None and slice_sinks(sinks) is not None
+    assert slice_sinks(wide.simplified(W.dot_norm.sinks), explicit=False) is not None       # a fold over the lanes: the warp form
+
+
+@pytest.mark.parametrize("entry", ["fill_mask_seg", "steps_matvec_k8", "steps_early_k8", "dot_norm"])
 def test_a_stepped_or_automatic_kernel_is_a_warp_per_lane_on_a_device_bundle(entry, tmp_path, cache_dir):
     kernel, bundle = _build(entry, tmp_path, cache_dir, mode="float32")
     side = sidecar_of(bundle, kernel.name)
