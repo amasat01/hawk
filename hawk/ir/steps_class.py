@@ -14,19 +14,23 @@ from __future__ import annotations
 
 import math
 
+from ..targets import ENTRY_HOST, TARGETS
 from .wide_class import select
+
+#: The host row's id, read from the targets table.
+_HOST = next(t.id for t in TARGETS.values() if t.entry == ENTRY_HOST)
 
 #: ``{class: ((width, K, n_max), ...)}``. ``host``: x86_64, 8 cores, compiled hawk.run, fused
 #: 8x / 4x faster at N=1, 5x / 3.3x at N=64 and level or slower from N=1024 (width 4, K 8 / 4).
 #: The device classes are empty: the card has not been measured (GPU fusion won 1.0-1.3x at most).
 _ROWS = {
-    "host": ((4, 8, 64), (4, 4, 64)),
+    _HOST: ((4, 8, 64), (4, 4, 64)),
 }
 
 
 def _class_of(device: bool, arch: str = "") -> str:
     """The row class of a target: ``host``, or the nearest measured device class."""
-    return select(arch) if device else "host"
+    return select(arch) if device else _HOST
 
 
 def _choose(device: bool, width: int, K: int, n: int, arch: str = "") -> str:

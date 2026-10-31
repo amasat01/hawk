@@ -346,8 +346,9 @@ PINNED = {
     "k_param/vjp": "7975585671f2a3204398ae9ada1d43fe646c09eeb77200acb303c5e7c21b5a91",
     "k_const_cmp/jvp": "9c43f3f2e58013c327727f2fc92f6522b47149990c2e7ae7b1d6463e65f26a48",
     "k_const_cmp/vjp": "737a6bcd67816e119dc94cf5bfeb7a56b6aa1eb4f055a52064ba3d4af071d575",
-    "k_loop_carried/jvp": "a9d29b0a34fc7294c138272bec8500f9db419bc93cd1237912cc5984edb9e9d0",
-    "k_loop_carried/vjp": "ad7f3d58bf56e725776517e438fd72850d4fbb5dc8d85651cee234507726d28c",
+    # these two lost the loop's self-move of an unchanged carry (`const n = v; v = n;`): nothing else differs
+    "k_loop_carried/jvp": "426a019ec63b89b7713e83c22b965dfeee52be02a0707b6c464077c256d98cb2",
+    "k_loop_carried/vjp": "08648f566beb850acf6567c6e660bd29e59b8a6f8460e2aa05d802cc2a67c821",
     "k_loop_sum/jvp": "0b82e0d0cc553c09684703c8f069491fd936b711c16832b25133b9698d6eafde",
     "k_loop_sum/vjp": "68d5ade67210baeb910555166c4e3e576393927d4e11f22023fab4c48eb49043",
     "k_loop_param/jvp": "2e75b8f9752a8511c19e514742351585af253804a642c3ccecc68865a89e006e",
