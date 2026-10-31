@@ -294,7 +294,7 @@ jobs:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
           RAPTOR_EAGLE_ROOT: ${{ github.workspace }}/eagle
-        run: cd hawk && python -m pytest tests -q -m "not gpu"
+        run: cd hawk && python -m pytest tests -q -m "not gpu" -n auto --dist loadfile
       - if: matrix.gcc != 12
         name: Necessity (masked variants forced on must fail the early-exit rows)
         env:
@@ -608,7 +608,7 @@ jobs:
           echo "ft rows collected: $N"
           [ "$N" -gt 0 ] || { echo "ft selection collected zero tests"; exit 1; }
           python -m pytest tests -m ft -q -rs -p no:cacheprovider -W error::RuntimeWarning
-          python -m pytest tests -q -p no:cacheprovider -W error::RuntimeWarning -m "not gpu"
+          python -m pytest tests -q -p no:cacheprovider -W error::RuntimeWarning -m "not gpu" -n auto --dist loadfile
       - if: always()
         run: ccache -s
 

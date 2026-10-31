@@ -342,7 +342,7 @@ jobs:
           cp -r hawk/tests suite/tests
           cp hawk/pyproject.toml suite/pyproject.toml
           cd suite
-          python -m pytest tests -q -m "not gpu and not repo_local"
+          python -m pytest tests -q -m "not gpu and not repo_local" -n auto --dist loadfile
 
       # Free-threaded legs only (3.13t / 3.14t): the ft rows against the INSTALLED
       # wheel, then the whole suite with RuntimeWarning as an error (a re-enabled
@@ -366,7 +366,7 @@ jobs:
           echo "ft rows collected: $N"
           [ "$N" -gt 0 ] || { echo "ft selection collected zero tests"; exit 1; }
           python -m pytest tests -m "ft and not repo_local" -q -rs -p no:cacheprovider -W error::RuntimeWarning
-          python -m pytest tests -q -p no:cacheprovider -W error::RuntimeWarning -m "not gpu and not repo_local"
+          python -m pytest tests -q -p no:cacheprovider -W error::RuntimeWarning -m "not gpu and not repo_local" -n auto --dist loadfile
 
   # The aarch64 and macOS arm64 wheels, installed and run on native runners: host build and run of the README example,
   # forward and vjp. The x86_64 test-wheel above also needs the compile-only CUDA toolchain, which is x86_64 only.
