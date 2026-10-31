@@ -154,7 +154,7 @@ class _Slicer:
     def _gather(self, node: Node, out: TensorType) -> Op:
         """A ``vec`` of reads of one plane at an arithmetic run of indices: lane ``l`` reads the run's elements
         ``j * WARP + l``."""
-        from .wide import _split_index, gather
+        from .wide import gather
 
         g = gather(node)
         if g is None:
