@@ -76,6 +76,8 @@ class Plane:
     #: ``Param[Vector[W]]``/``Param[Matrix[R,C]]``/``Param[Table[...]]``: the
     #: shape of the ONE value every lane shares (empty for any other plane).
     shared: tuple = ()
+    #: ``Annotated[T, Meta(...)]``: opaque ``(key, value)`` pairs the sidecar carries for a reader.
+    meta: tuple = ()
 
     def __setitem__(self, key: object, value: object) -> None:
         from ..ir import HawkError
@@ -372,8 +374,32 @@ def spell(t: TensorType) -> str:
     return repr(t)
 
 
+class Meta:
+    """``Annotated[Vector[3], Meta(unit="km")]`` — opaque notes on a plane.
+
+    HAWK never reads them: they are written under ``plane_meta`` in the sidecar, by plane
+    name, and eagle hands them back from the loaded kernel. Values must be JSON."""
+
+    def __init__(self, **notes: object) -> None:
+        import json
+
+        try:
+            json.dumps(notes)
+        except TypeError as exc:
+            raise HawkError(f"Meta(...) values must be JSON: {exc}") from None
+        self.notes = tuple(sorted(notes.items()))
+
+
 def resolve(param: str, annotation: object) -> Plane | Quantity:
     """The declaration a parameter's annotation names."""
+    if getattr(annotation, "__metadata__", None) is not None:        # typing.Annotated
+        notes = tuple(n for m in annotation.__metadata__ if isinstance(m, Meta) for n in m.notes)
+        declared = resolve(param, annotation.__origin__)
+        if not notes:
+            return declared
+        if not isinstance(declared, Plane):
+            raise HawkError(f"parameter {param!r}: Meta(...) annotates a plane, not a Quantity")
+        return replace(declared, meta=notes)
     if isinstance(annotation, (Plane, Quantity)):
         return annotation
     if isinstance(annotation, TensorType):

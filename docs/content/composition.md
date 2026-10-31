@@ -15,3 +15,9 @@ stretched it are listed with the primitive that closed them on [Why RAPTOR is bu
 
 How to extend the vocabulary yourself: [Add a native function](contributing/add_a_native_function). Why the choice of
 spelling inside a kernel is the compiler's, not yours: [Emit form](emit_form).
+
+## Helpers and masked sums
+
+A plain `def` called from a kernel is inlined when it is given traced values, so a repeated block is written once: a right-hand side `def rhs(x, k): return m.vec(x[1], -k * x[0])` and a step `def rk4(f, x, dt, *a): ...` that calls it four times are ordinary helpers, and give the bits of the same lines written out. A helper that returns the new state is used as `x, v = step(x, v, dt)`. A helper may branch on traced values, but only in the kernel-body form (one trailing `return`, no comprehension over a traced value); the error names the helper and the fix.
+
+A sum that skips some terms (a masked sum) writes each term as `m.dispatch(live, [0.0, term], policy="predicated")`, with `live` an integer 0 or 1 per element: both branches are evaluated and one kept, with no divergent branch. See [Choosing a dispatch policy](tutorials/08_choosing_a_dispatch_policy).

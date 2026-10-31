@@ -97,3 +97,7 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
 
 `Table` (a shared read-only plane) and `Param` (one value for the run) keep their names. Calling them `Const`
 and `Uniform` was considered and not taken.
+
+## Notes on a plane
+
+`Annotated[Vector[3], hawk.Meta(unit="km")]` attaches notes to a plane. hawk never reads them: they are written to the sidecar as `plane_meta`, by plane name, and a program that loads the kernel through eagle gets them back as `plane_meta` on the loaded kernel. Values must be JSON.
