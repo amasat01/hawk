@@ -59,6 +59,7 @@ The declarations a kernel is written in, and the top-level functions. Each has i
    hawk.Vector
    hawk.Matrix
    hawk.Param
+   hawk.Meta
    hawk.Mutable
    hawk.Table
    hawk.Grid

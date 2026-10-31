@@ -52,6 +52,11 @@ class TensorType:
     dtype: str
     tag: str | None = None
 
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        """Never called: a declaration is only annotated. Defined so that ``typing.Annotated``
+        accepts it as its first argument before Python 3.11, which requires a callable."""
+        raise TypeError(f"{self!r} is a type declaration: annotate with it, do not call it")
+
     def __getitem__(self, width: object) -> TensorType:
         """``Index[int64]``: the 64-bit index plane (``Index`` alone is the 32-bit one).
         ``int32`` spells the default; any other width is refused by name."""
