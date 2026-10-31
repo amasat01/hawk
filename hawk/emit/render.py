@@ -1141,6 +1141,9 @@ class _Renderer(_DispatchMixin):
         results = []
         for j, (elem, nxt) in enumerate(zip(elems, loop.nexts)):
             result = f"hawk_n{pos}_{j}"
+            if nxt is loop.carries[j]:            # a carry the iteration leaves as it is: nothing to move
+                results.append(None)
+                continue
             if j in planed:
                 if self._ref(nxt) != names[j]:        # pragma: no cover - the pass admits only in-place chains
                     raise HawkError(f"the carried slot {j} of the loop over {loop.index.name!r} lives in a plane, "
@@ -1154,7 +1157,7 @@ class _Renderer(_DispatchMixin):
             # the carried locals, so it's evaluated BEFORE they move.
             self._emit(f"const bool hawk_x{pos} = {self._ref(loop.exit_cond)};")
         for j, (name, result) in enumerate(zip(names, results)):
-            if j not in planed:
+            if j not in planed and result is not None:
                 self._emit(f"{name} = {result};")
         if counter is not None:
             self._emit(f"++{counter};")

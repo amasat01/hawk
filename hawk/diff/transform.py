@@ -86,6 +86,10 @@ class Derived(tuple):
         #: The sidecar ``jump`` record of a derivative smoothed through its
         #: switches (``@kernel(jump=...)``), else ``None``.
         self.jump = jump
+        #: ``K`` of a fused K-step reverse (``step_vjp(..., steps_reverse="fused")``), else ``None``.
+        self._fused_steps = None
+        #: The kind a kernel built from this derivative takes when it names none.
+        self._kernel_kind = None
         self.primal = primal
         self.kind = kind
         self.wrt = wrt
@@ -458,7 +462,6 @@ class _Demoted:
         self.jump = getattr(primal, "jump", None)
 
 
-@_rederivable
 def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
         primal_unit: str | None = None) -> Derived:
     """The forward-mode derivative IR of ``primal``: one tangent plane
@@ -466,7 +469,21 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
     Returned as :class:`Derived`, tagging ``primal``'s name and the resolved
     ``wrt`` (see that class). ``primal_unit=`` is :func:`vjp`'s (see there).
     A default automatic kernel is differentiated through its single step, as
-    in :func:`vjp`."""
+    in :func:`vjp`. A ``hawk.steps(k, K)`` kernel is carried forward,
+    ``hawk.steps(step_jvp(k), K)`` (``primal_unit`` does not apply to it)."""
+    from ..trace.steps import _fused_steps_of
+
+    fused = _fused_steps_of(primal)
+    if fused is not None:
+        from ..trace.steps import steps
+        from .tape import step_jvp
+        return steps(step_jvp(fused[0], wrt=wrt), fused[1])
+    return _jvp(primal, wrt=wrt, primal_unit=primal_unit)
+
+
+@_rederivable
+def _jvp(primal: Any, *, wrt: Sequence[str] | None = None,
+         primal_unit: str | None = None) -> Derived:
     primal = _single_step(primal)
     sinks = _sinks_of(primal)
     for sink in sinks:
