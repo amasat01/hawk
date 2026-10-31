@@ -39,7 +39,7 @@ from ..ir.nodes import (
 )
 from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, QR_OPS
 from ..ir.team import TeamRead
-from ..ir.lane import WARP_READ, WARP_SUM_KIND
+from ..ir.lane import SLICE_MIN, WARP_READ, WARP_SUM_KIND
 from ..ir.wide import RESIDENT_KIND, element_kind, gather, is_prior, is_resident, is_scratch, is_tiled
 from ..ir.rays import RAY_OPS
 from ..ir.ops import RANDOM_OPS
@@ -138,6 +138,20 @@ class AetherWriter:
 
     def warp_store(self, r, sink, target: str, value: str) -> None:
         """The lane's slice of a wide value into elements ``j * 32 + lane`` of the Mutable's plane."""
+        rows = policy.staged_rows()
+        if rows > 1 and sink.ttype.shape and sink.ttype.shape[0] >= SLICE_MIN:        # the tile of the block: the copy-out after the body stores it coalesced
+            n, width = sink.value.ttype.shape[0], sink.ttype.shape[0]
+            tile = f"hawk_stg_{target}"
+            r._emit("{")
+            r._emit(f"const aether::Item<Real, {n}> hawk_ws = {value};")
+            if n == width:       # a value every lane holds: lane 0 puts it in the tile
+                r._emit(f"if (hawk_wl == 0) {{ for (Int hawk_lk = 0; hawk_lk < {n}; ++hawk_lk) {tile}[hawk_lk * {rows + 1} + hawk_wb] = hawk_ws.data()[hawk_lk]; }}")
+            else:
+                r._emit("#pragma unroll")
+                r._emit(f"for (Int hawk_lk = 0; hawk_lk < {n}; ++hawk_lk) {tile}[(hawk_lk * 32 + hawk_wl) * {rows + 1} + hawk_wb] = hawk_ws.data()[hawk_lk];")
+            r._emit("if (hawk_wl == 0) hawk_wrote[hawk_wb] = 1;")
+            r._emit("}")
+            return
         if sink.value.ttype.shape == sink.ttype.shape:      # the same in every lane
             r._emit(f"if (hawk_wl == 0) {target}[i] = {value};")
             return

@@ -123,6 +123,38 @@ class CudaWrapper:
     def index_epilogue(self) -> str:
         return "    }"
 
+    # geometry-seam: begin (the block of a warp-form kernel that serves several lanes)
+    def stage_frame(self, rows: int, stages: tuple, elem: str) -> tuple:
+        """The frame of a warp-form kernel whose block serves ``rows`` lanes, a warp each: ``(opened, closed)`` around the
+        body. The body writes a vector output into the tile of ``stages`` (``((binding, width), ...)``); ``closed`` stores
+        the tiles into the planes with the block's threads walking consecutive lanes of one element, so a store covers
+        ``rows`` neighbouring lanes where one warp alone would touch a line per element."""
+        pad = rows + 1
+        opened = "\n".join([
+            *(f"    __shared__ {elem} hawk_stg_{name}[{width * pad}];" for name, width in stages),
+            f"    __shared__ int hawk_wrote[{rows}];",
+            "    const int hawk_wb = static_cast<int>(threadIdx.x >> 5);",
+            "    const Int hawk_wl = static_cast<Int>(threadIdx.x & 31);",
+            "    (void)hawk_wl;",
+            f"    const long long hawk_flat = static_cast<long long>(blockIdx.x) * {rows} + hawk_wb;",
+            "    if (hawk_wl == 0) hawk_wrote[hawk_wb] = 0;",
+            "    if (hawk_flat < nSamples) {",
+            "        const long long hawk_i = base + hawk_flat;",
+            "        const aether::SampleIndex i =",
+            "            aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));",
+            "        (void)hawk_i;",
+            "        (void)nSamples;"])
+        copies = []
+        for name, width in stages:
+            copies += [
+                f"    for (int hawk_c = static_cast<int>(threadIdx.x); hawk_c < {width * rows}; hawk_c += {32 * rows}) {{",
+                f"        const int hawk_e = hawk_c / {rows}, hawk_s = hawk_c % {rows};",
+                "        if (hawk_wrote[hawk_s]) {name}[aether::SampleIndex::make(static_cast<std::size_t>(base + "
+                f"static_cast<long long>(blockIdx.x) * {rows} + hawk_s))].at(hawk_e) = hawk_stg_{name}[hawk_e * {pad} + hawk_s];".replace("{name}", name),
+                "    }"]
+        return opened, "\n".join(["    }", "    __syncthreads();", *copies])
+    # geometry-seam: end
+
     def sample_sum_frame(self, width: int, elem: str, store: str,
                          op: str = "sum", live: str | None = None) -> tuple:
         """The index prologue with no early return: a lane past ``count``

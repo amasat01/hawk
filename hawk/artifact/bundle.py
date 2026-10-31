@@ -399,7 +399,9 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
     :class:`~hawk.embedded.EmbeddedSource`."""
     _refuse_targets(name, targets)
     hook = getattr(kernel, "fused_body", None) if _native(targets) else None
-    body = None if hook is None else hook(kind)
+    rows = getattr(getattr(kernel, "team", None), "lanes", 1)         # lanes a block of the warp form serves
+    with policy.staging(rows):
+        body = None if hook is None else hook(kind)
     segment = _segment_spec(kernel)
     if segment is not None and kernel.walk.reads_lane_position:
         raise HawkError(f"{name!r}: hawk.lane_position() is the launch slot, and a segmented "
@@ -419,12 +421,12 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
                 profile=(embedded_profile if embedded_profile is not None
                          else export.EmbeddedProfile()))
             continue
-        with policy.placing(row.compile == GPU):        # the device text keeps wide values in their planes
+        with policy.placing(row.compile == GPU), policy.staging(rows):        # the device text keeps wide values in their planes
             out[target] = render_source(
                 name, kernel.sinks, kernel.walk, row, mode=smode, kind=kind,
                 body=body, segment=segment, one_step=one_step, box=box,
                 active=None if getattr(getattr(kernel, "team", None), "grid", None) in ("keys", "chunks", "targets") else active,
-                team=None if getattr(kernel, "team", None) is None else kernel.team.threads,
+                team=None if getattr(kernel, "team", None) is None else kernel.team.threads, rows=rows,
                 exports=_layout.exports(target, layout_sizes_override=layout_sizes_override))
         if literal_table and row.compile == GPU:
             out[target] = _literal_table(out[target])
@@ -936,6 +938,8 @@ def _team_record(spec) -> dict:
     grid is the lane count) or a key of a block sum (the grid is the key count, ``keyed``
     names the keys as a keyed plane does, and the launch's ``nSamples`` is the lane count)."""
     out = {"threads": spec.threads}
+    if spec.lanes > 1:
+        out["lanes"] = spec.lanes
     if spec.grid == "keys":
         out["grid"] = "keys"
         out["keyed"] = _keys_record(spec.keyed)
@@ -977,7 +981,25 @@ def _wide_with_class(record: dict, resolved_arch: str) -> dict | None:
     return {**record, "class": wide_class.select(resolved_arch)} if record else None
 
 
-def _warp_kernel(kernel, name: str, explicit: bool = True):
+#: The most shared memory the tiles of one warp-form block may take (a kernel with two bodies declares them twice).
+TILE_BUDGET_B = 40 * 1024
+
+
+def _tile_rows(sinks, real_bytes: int, bodies: int) -> int:
+    """The lanes a block of the warp form serves: the most of 8, 4, 2 whose output tiles fit :data:`TILE_BUDGET_B`, else 1
+    (a warp per block, stores straight to the planes). Only vector outputs are staged; a rank-2 one is not."""
+    from ..ir.lane import SLICE_MIN, WarpStore
+
+    widths = [s.ttype.shape for s in sinks if isinstance(s, WarpStore) and s.ttype.shape and s.ttype.shape[0] >= SLICE_MIN]
+    if not widths or any(len(w) != 1 for w in widths):
+        return 1
+    for rows in (8, 4, 2):
+        if bodies * sum(w[0] for w in widths) * (rows + 1) * real_bytes <= TILE_BUDGET_B:
+            return rows
+    return 1
+
+
+def _warp_kernel(kernel, name: str, explicit: bool = True, real_bytes: int = 8, plain: bool = True):
     """``kernel`` in the warp form (:func:`hawk.ir.lane.slice_sinks`), or ``None`` when it is not one plain launch of wide
     Mutables the form has a rule for."""
     from ..ir.lane import WARP, slice_sinks
@@ -995,7 +1017,8 @@ def _warp_kernel(kernel, name: str, explicit: bool = True):
     single = None if one is None else slice_sinks(_wide.simplified(one.sinks), explicit=explicit)
     if sinks is None or (one is not None and single is None):
         return None
-    warp = WarpStage(name, sinks, TeamSpec(WARP, (), ()))
+    rows = _tile_rows(sinks, real_bytes, 1 if one is None else 2) if plain else 1
+    warp = WarpStage(name, sinks, TeamSpec(WARP * rows, (), (), lanes=rows))
     if one is not None:             # an automatic kernel: its single step beside it, in the warp form too
         warp.one_step = Kernel(one.name, single, one.planes, kind=one.kind)
     # the planes of the kernel as written stay its planes (a slot only a dropped value read is still bound), and so do its
@@ -1036,7 +1059,8 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
         # a warp per lane when asked, or under ``auto`` when every target is a device (a host target of the same bundle
         # shares the kernel and has no warp, so it keeps the placed form) and the kernel has a rule in the warp form
         form = policy.wide_form()
-        warp = _warp_kernel(k, n, form == "team") if device and (form == "team" or (form == "auto" and device_only)) else None
+        real = 4 if smode is not None and smode.id == "float32" else 8
+        warp = _warp_kernel(k, n, form == "team", real, _active_spec(kd, getattr(k, "group", 1)) is None) if device and (form == "team" or (form == "auto" and device_only)) else None
         if warp is not None:        # a warp per lane: one launch, no stages, no scratch
             out_kernels.append(warp)
             out_names.append(n)
