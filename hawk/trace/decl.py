@@ -79,6 +79,11 @@ class Plane:
     #: ``Annotated[T, Meta(...)]``: opaque ``(key, value)`` pairs the sidecar carries for a reader.
     meta: tuple = ()
 
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        """Never called: a declaration is only annotated. Defined so that ``typing.Annotated``
+        accepts it as its first argument before Python 3.11, which requires a callable."""
+        raise HawkError(f"a `{self.form}` DECLARATION is annotated, not called")
+
     def __setitem__(self, key: object, value: object) -> None:
         from ..ir import HawkError
 

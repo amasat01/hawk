@@ -54,3 +54,18 @@ def test_eagles_reader_refuses_notes_for_a_plane_the_kernel_lacks():
     meta = {"arg_spec": [["per_sample", "x"]], "plane_meta": {"z": {"a": 1}}}
     with pytest.raises(ValueError, match="plane_meta must map each plane of the arg_spec"):
         read_plane_meta(meta, name="k")
+
+
+def test_a_declaration_is_a_valid_first_argument_of_annotated_on_every_python():
+    """Before Python 3.11 ``typing.Annotated`` wants a callable first argument; a declaration
+    is callable only to say it is not to be called."""
+    from hawk.ir import TensorType
+
+    for declaration in (Vector[3], hawk.Table[Scalar], Mutable[Scalar]):
+        assert callable(declaration)
+        assert Annotated[declaration, Meta(a=1)].__origin__ is declaration
+    with pytest.raises(TypeError, match="annotate with it"):
+        Vector[3]()
+    with pytest.raises(HawkError, match="annotated, not called"):
+        Mutable[Scalar]()
+    assert isinstance(Vector[3], TensorType)
