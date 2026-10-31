@@ -164,6 +164,8 @@ class TeamSpec:
     keyed: object = None
     out: str | None = None
     target: str | None = None
+    #: The lanes a block of a warp-form kernel serves: ``threads / 32`` warps, one per lane (:mod:`hawk.ir.lane`).
+    lanes: int = 1
 
 
 #: A scratch plane of the kernel's scalar type: the runtime gives it the width of the build's mode.

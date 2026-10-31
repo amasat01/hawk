@@ -134,7 +134,7 @@ def test_the_team_form_is_refused_by_name(tmp_path, cache_dir):
 # -- what the build writes -----------------------------------------------------------------------
 
 def test_the_sidecar_names_every_plane_and_the_runtime_makes_the_scratch_ones(tmp_path, cache_dir):
-    _, bundle = _build("fill_mask", tmp_path, cache_dir)
+    _, bundle = _build("fill_mask", tmp_path, cache_dir, targets=TARGETS_BOTH, host_profile="native")     # a host target keeps the placed form
     side = sidecar_of(bundle, "fill_mask")
     assert side["launch"]["wide"] == {
         "bf": {"form": "resident", "plane": "bf", "layout": "plane_major", "width": W.W},
@@ -198,7 +198,7 @@ def test_a_derivative_corpus_kernel_holds_only_the_local_memory_the_register_for
 
 @pytest.mark.parametrize("entry", ["fill_mask_seg", "matvec_in_seg"])
 def test_an_automatic_kernel_places_the_wide_values_of_its_fused_and_its_single_step_body(entry, tmp_path, cache_dir):
-    kernel, bundle = _build(entry, tmp_path, cache_dir, mode="float64")
+    kernel, bundle = _build(entry, tmp_path, cache_dir, mode="float64", targets=TARGETS_BOTH, host_profile="native")   # a host target keeps the placed form
     side = sidecar_of(bundle, kernel.name)
     assert side["launch"]["local_bytes"] == 0
     planes = {p for p in side["launch"]["wide"] if p != "class"}
@@ -210,23 +210,25 @@ def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp
 
     sliced = slice_sinks(wide.simplified(W.matvec_in_vjp.sinks))
     assert [type(s) for s in sliced] == [WarpStore] and sliced[0].value.ttype.shape == (W.W // WARP,)
-    assert slice_sinks(W.fill_mask.sinks) is None            # a runtime-indexed write has no rule in the warp form: it keeps its form
+    assert slice_sinks(W.wide51.sinks) is None               # a write at a run-time index has no rule in the warp form: it keeps its form
     for name in ("matvec_in_vjp", "matvec_in"):         # the second folds the slices with a warp sum and commits from lane 0
         kernel, bundle = _build(name, tmp_path / name, cache_dir, mode="float64", wide_form="team")
         side = sidecar_of(bundle, kernel.name)
-        assert side["stages"][0]["team"] == {"threads": WARP}
-        assert side["launch"]["local_bytes"] == (0 if name == "matvec_in_vjp" else 192)    # the 24 row sums stay in the lane's local frame
+        team = side["stages"][0]["team"]
+        assert team["threads"] == WARP * team.get("lanes", 1)
+        assert side["launch"]["local_bytes"] == 0           # the 24 row sums are unrolled: none is indexed at run time
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("name", ["matvec_in", "matvec_in_vjp"])
+@pytest.mark.parametrize("name", ["matvec_in", "matvec_in_vjp", "dot_norm", "rt_write", "fill_mask_jvp"])
 @pytest.mark.parametrize("mode", ["float32", "float64"])
-def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode, cache_dir):
+@pytest.mark.parametrize("n", [2048, 2045])         # the second leaves the last block with lanes past the end
+def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode, n, cache_dir):
     import _probe_wide as probe
     from eagle import arrays
     from eagle._alloc import synchronize
 
-    entry, real, n = W.CORPUS[name], np.float32 if mode == "float32" else np.float64, 2048
+    entry, real = W.CORPUS[name], np.float32 if mode == "float32" else np.float64
     planes = entry.planes(np.random.default_rng(7), real, n, True)
     bound_args = {k: arrays.asarray(np.ascontiguousarray(v), device="cuda:0") for k, v in planes.items()}
     out = arrays.asarray(np.zeros(entry.shape(n), real), device="cuda:0")
@@ -238,6 +240,31 @@ def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode
         got.append(np.asarray(out.get()).copy())
     assert np.array_equal(got[0], entry.want(real, planes, n))
     assert all(np.array_equal(got[0], g) for g in got[1:])
+
+
+def test_auto_keeps_the_placed_form_for_run_time_writes_alone_and_the_warp_form_builds_when_asked(tmp_path, cache_dir):
+    from hawk.ir.lane import slice_sinks
+
+    sinks = wide.simplified(W.rt_write.sinks)
+    assert slice_sinks(sinks, explicit=False) is None and slice_sinks(sinks) is not None
+    assert slice_sinks(wide.simplified(W.dot_norm.sinks), explicit=False) is not None       # a fold over the lanes: the warp form
+
+
+def test_a_wide_output_is_staged_through_a_block_that_serves_several_lanes(tmp_path, cache_dir):
+    kernel, bundle = _build("fill_mask_jvp", tmp_path, cache_dir, mode="float32")
+    team = sidecar_of(bundle, kernel.name)["stages"][0]["team"]
+    assert team["lanes"] > 1 and team["threads"] == 32 * team["lanes"]
+    kernel, bundle = _build("matvec_in", tmp_path / "narrow", cache_dir, mode="float32")      # 24 elements: a warp is its own block
+    assert sidecar_of(bundle, kernel.name)["stages"][0]["team"] == {"threads": 32}
+
+
+@pytest.mark.parametrize("entry", ["fill_mask_seg", "steps_matvec_k8", "steps_early_k8", "dot_norm"])
+def test_a_stepped_or_automatic_kernel_is_a_warp_per_lane_on_a_device_bundle(entry, tmp_path, cache_dir):
+    kernel, bundle = _build(entry, tmp_path, cache_dir, mode="float32")
+    side = sidecar_of(bundle, kernel.name)
+    team = side["stages"][0]["team"]
+    assert team["threads"] == 32 * team.get("lanes", 1) and side["launch"]["local_bytes"] == 0
+    assert "team_planes" not in side            # nothing is placed in a scratch plane: the value is sliced across the lanes
 
 
 # -- the device feature classes -----------------------------------------------------------------
@@ -274,7 +301,7 @@ def test_the_sidecar_names_the_class_and_the_unit_key_changes_with_it(tmp_path, 
     from hawk.artifact.unit_cache import _unit_key
     from hawk.emit import scalar_mode
 
-    _, bundle = _build("fill_mask", tmp_path, cache_dir, device_arch="sm_75")           # no class of its own: the nearest
+    _, bundle = _build("fill_mask", tmp_path, cache_dir, device_arch="sm_75", targets=TARGETS_BOTH, host_profile="native")   # no class of its own: the nearest
     assert sidecar_of(bundle, "fill_mask")["launch"]["wide"]["class"] == "sm61"
     _, host = _build("masked_sum", tmp_path / "plain", cache_dir)
     assert "wide" not in sidecar_of(host, "masked_sum")["launch"]

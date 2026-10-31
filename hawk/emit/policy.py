@@ -108,6 +108,24 @@ def placing(on: bool) -> Iterator[None]:
         _PLACED.reset(token)
 
 
+_STAGED: ContextVar[int] = ContextVar("hawk_staged_rows", default=1)
+
+
+@contextmanager
+def staging(rows: int) -> Iterator[None]:
+    """Render a warp kernel's vector outputs through shared memory, ``rows`` samples to a block, for the duration of the block."""
+    token = _STAGED.set(int(rows))
+    try:
+        yield
+    finally:
+        _STAGED.reset(token)
+
+
+def staged_rows() -> int:
+    """The samples a block of the warp form being rendered shares one output tile for (1: stores go straight to the planes)."""
+    return _STAGED.get()
+
+
 def placed() -> bool:
     """Whether a placement renders as its plane."""
     return _PLACED.get()

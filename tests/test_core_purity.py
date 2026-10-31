@@ -237,6 +237,12 @@ def _excise(path: Path, text: str) -> tuple:
                 assert span and span in text, f"{path}: the team prologue string is not present verbatim"
                 text = text.replace(span, "<team index_prologue excised>" + "\n" * span.count("\n"))
                 removed.append(span)
+    if path.name == "cuda.py" and path.parent.name == "emit":
+        # the warp form's block frame is the same seam: the marked region of the device wrapper
+        begin, end = text.index("    # geometry-seam: begin"), text.index("    # geometry-seam: end")
+        span = text[begin:end]
+        text = text.replace(span, "    pass  # stage_frame excised" + "\n" * span.count("\n"))
+        removed.append(span)
     if path.name == "spelling.py" and path.parent.name == "emit":
         tree = ast.parse(text, filename=str(path))
         for node in tree.body:

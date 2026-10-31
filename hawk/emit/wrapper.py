@@ -970,7 +970,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
                   body: Body | None = None,
                   segment: SegmentSpec | None = None,
                   active: ActiveSpec | None = None, one_step=None,
-                  box=None, team: int | None = None) -> Source:
+                  box=None, team: int | None = None, rows: int = 1) -> Source:
     """Assemble ONE translation unit around the ONE body string.
 
     ``target`` is the :class:`hawk.targets.Target` row: its writer spells the
@@ -1009,7 +1009,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
             and getattr(getattr(kind, "sink", None), "id", None) != "compensated"):
         return _render_two_paths(name, sinks, walk, target, mode=mode,
                                  kind=kind, exports=exports, active=active,
-                                 one_step=one_step)
+                                 one_step=one_step, team=team, rows=rows)
     own_body = body is None
     if box is not None:
         # the box's body, and the box-free one for a launch with fewer rows than T
@@ -1057,6 +1057,9 @@ def render_source(name: str, sinks, walk: Walk, target, *,
     #: what the headers are chosen by: the per-sample body, and the interchanged loop (which may name a library the body does not)
     lanes_text = body.text if tiled is None else body.text + tiled.text
     loop = [wrapper.index_prologue(segment, **prologue_kw), body.text, epilogue]
+    if rows > 1:        # a block serves ``rows`` lanes and stores their vector outputs through a shared tile
+        loop = [*_staged(wrapper, rows, sinks, mode), ]
+        loop = [loop[0], body.text, loop[1]]
     if box is not None:
         loop = [wrapper.index_prologue(box=box), body.text, wrapper.index_epilogue()]
     if sums:
@@ -1243,10 +1246,22 @@ def _tiled_or(tiled, plain: list) -> list:
     return [f"#if {INTERCHANGE_MACRO}", tiled.text, "#else", *plain, "#endif"]
 
 
-def _frame(walk: Walk, wrapper: Wrapper, active: ActiveSpec | None) -> tuple:
+def _staged(wrapper: Wrapper, rows: int, sinks, mode: ScalarMode) -> tuple:
+    """The frame of a block that serves ``rows`` lanes of a warp-form kernel (:meth:`CudaWrapper.stage_frame`): the vector
+    outputs it stages through shared memory are those of its warp stores."""
+    from ..ir.lane import SLICE_MIN, WarpStore
+
+    stages = tuple((binding_name(s.role, s.name), s.ttype.shape[0]) for s in sinks
+                   if isinstance(s, WarpStore) and s.ttype.shape and s.ttype.shape[0] >= SLICE_MIN)
+    return wrapper.stage_frame(rows, stages, "Real")
+
+
+def _frame(walk: Walk, wrapper: Wrapper, active: ActiveSpec | None, team: int | None = None) -> tuple:
     """The index prologue and epilogue :func:`render_source` wraps a body of
     ``walk`` in (the host's SIMD/lane-guard hooks asked of ``walk``)."""
     kw: dict = {} if active is None else {"active": active}
+    if team is not None and getattr(wrapper, "team_flat", None) is not None:
+        kw["team"] = team                # the device lane is the block, the team its threads
     if getattr(wrapper, "simd_safe", None) is not None:
         kw["simd"] = lane_loop_simd(wrapper, walk, active)
     lane_guards = getattr(wrapper, "lane_guards", None)
@@ -1268,7 +1283,7 @@ _PATH_MARKER = '#if defined(__CUDA_ARCH__)\n    asm volatile("// hawk: {}");\n#e
 
 def _render_two_paths(name: str, sinks, walk: Walk, target, *,
                       mode: ScalarMode, kind, exports: str,
-                      active: ActiveSpec | None, one_step) -> Source:
+                      active: ActiveSpec | None, one_step, team: int | None = None, rows: int = 1) -> Source:
     """The TU of an automatic kernel: :func:`render_source` with the entry's
     index loop and body emitted twice under one uniform branch on the
     ``fused_steps`` word — the single step's (``one_step``) when the word is
@@ -1296,22 +1311,23 @@ def _render_two_paths(name: str, sinks, walk: Walk, target, *,
                 rt=_RT_CALL in fused.text + single.text,
                 rays=_RAY_CALL in fused.text + single.text,
                 scatter_or=_OR_CALL in fused.text + single.text,
-                tiled=_TILED_CALL in fused.text + single.text),
+                tiled=_TILED_CALL in fused.text + single.text,
+                warp_sum=_WARP_SUM_CALL in fused.text + single.text),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",
         *_two_path_entry(name, walk, wrapper, fused, single, one_step, active,
-                         tiled),
+                         tiled, team, _staged(wrapper, rows, sinks, mode) if rows > 1 else None),
         "",
-        *_fast_entries(wrapper, name, sinks, walk, kind, fused, single, one_step,
-                       active),
+        *([] if team is not None else _fast_entries(wrapper, name, sinks, walk, kind, fused, single, one_step,
+                                                    active)),     # the fast entries are a lane per thread: a warp per lane has none
     ]
     return Source(_filled(parts, mode),
                   single.text + "\n" + fused.text, name, target.id, mode.id)
 
 
 def _two_path_entry(entry: str, walk: Walk, wrapper: Wrapper, fused, single,
-                    one_step, active: ActiveSpec | None, tiled) -> list:
+                    one_step, active: ActiveSpec | None, tiled, team: int | None = None, staged: tuple | None = None) -> list:
     """The two-path entry ``entry`` of an automatic kernel: its signature,
     unpack and the branch on the ``fused_steps`` word between the single
     step's index loop (``single``) and the fused loop's (``fused``), each
@@ -1320,8 +1336,8 @@ def _two_path_entry(entry: str, walk: Walk, wrapper: Wrapper, fused, single,
 
     word = (f"{binding_name('lookup', FUSED_STEPS_PLANE)}"
             "[aether::SampleIndex::make(static_cast<std::size_t>(0))].eval()")
-    one_open, one_close = _frame(one_step.walk, wrapper, active)
-    many_open, many_close = _frame(walk, wrapper, active)
+    one_open, one_close = staged or _frame(one_step.walk, wrapper, active, team)
+    many_open, many_close = staged or _frame(walk, wrapper, active, team)
     return [
         wrapper.entry_signature(walk, entry),
         "{",
