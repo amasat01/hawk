@@ -364,7 +364,9 @@ index_set_kernel = lane_set_kernel(LANE_SET)
 
 #: ``{(entry, scalar mode): local bytes}`` the register form may keep: the rows where the probe measured it faster than the
 #: resident form (USER, 10-29: speed is the proof; a small spill is healthy where it is faster). Everything else has none.
-LOCAL_OK = {("narrow4", "float64"): 32, ("matvec_in_vjp", "float32"): 1832, ("matvec_in_vjp", "float64"): 4272}
+LOCAL_OK = {("narrow4", "float64"): 32,
+            ("matvec_in", "float64"): 192,     # a warp per lane: the 24 row sums are indexed by the row loop, below the width the pass places
+            ("matvec_in_jvp", "float32"): 96, ("matvec_in_jvp", "float64"): 192}     # (the same, for the tangent's 24 sums)
 
 
 @dataclass(frozen=True)

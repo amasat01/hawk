@@ -22,7 +22,8 @@ from .ops import make
 #: Lanes of the warp that shares one sample.
 WARP = 32
 
-#: The narrowest value worth slicing (a smaller one fits a thread's registers).
+#: The narrowest value worth slicing, and so the shortest fold ``wide_form="auto"`` builds as a warp (provisional: a smaller
+#: one fits a thread's registers).
 SLICE_MIN = 128
 
 WARP_LANE_KIND = "warp_lane"

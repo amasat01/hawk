@@ -1003,7 +1003,8 @@ def _wide_ok(kernel, smode, device: bool):
             and getattr(kernel, "fused_body", None) is None)
 
 
-def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device: bool = False) -> tuple:
+def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device: bool = False,
+                  device_only: bool = False) -> tuple:
     """Replace every member that reads a value reduced over samples with its
     stages (:func:`hawk.ir.split.stages`), named ``<name>``, ``<name>_2``, ...;
     the rest pass through untouched. Also returns, per first-stage name, the
@@ -1014,7 +1015,10 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
 
     out_kernels, out_names, out_kinds, blocks = [], [], [], {}
     for k, n, kd in zip(kernels, names, kinds):
-        warp = _warp_kernel(k, n) if device and policy.wide_form() == "team" else None
+        # a warp per lane when asked, or under ``auto`` when every target is a device (a host target of the same bundle
+        # shares the kernel and has no warp, so it keeps the placed form) and the kernel has a rule in the warp form
+        form = policy.wide_form()
+        warp = _warp_kernel(k, n) if device and (form == "team" or (form == "auto" and device_only)) else None
         if warp is not None:        # a warp per lane: one launch, no stages, no scratch
             out_kernels.append(warp)
             out_names.append(n)
@@ -1155,9 +1159,11 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     matrix up to ``n = 32`` and uses a team of threads per matrix above it, ``"team"`` uses a
     team at every size, ``"thread"`` refuses a matrix above 32 by name
     (:mod:`hawk.ir.team`). ``wide_form`` is where a per-lane value wider than a thread's
-    registers lives: ``"auto"`` places it (:mod:`hawk.ir.wide`), ``"thread"`` keeps every value
-    in the lane's registers and local memory (the text before the pass); ``"team"`` is refused
-    by name until it is built. Every member must agree on the execution axis (a
+    registers lives: ``"auto"`` builds a kernel as a warp per lane when every target is a device
+    and the kernel has a rule in that form (:mod:`hawk.ir.lane`, folds of 128 elements or more), else places
+    the value (:mod:`hawk.ir.wide`) -- a bundle with a host target keeps the placed form, as the host has no
+    warp; ``"thread"`` keeps every value in the lane's registers and local memory (the text before the pass);
+    ``"team"`` asks for the warp form (device targets only). Every member must agree on the execution axis (a
     manifest-level, not per-entry, declaration) — a set that doesn't agree is
     two bundles.
 
@@ -1240,7 +1246,8 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     cls = wide_class.select(emit_arch) if emit_arch else ""       # the thresholds of the nearest measured device class
     with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form), policy.wide_class_scope(cls):
         kernels, names, kinds, split = _expand_split(kernels, names, kinds, smode=smode,
-                                                     device=any(TARGETS[t].compile == GPU for t in targets if t in TARGETS))
+                                                     device=any(TARGETS[t].compile == GPU for t in targets if t in TARGETS),
+                                                     device_only=all(TARGETS[t].compile == GPU for t in targets if t in TARGETS))
     if exported and any(getattr(k, "team", None) is not None for k in kernels):
         raise HawkError(
             f"{names[0]!r} has linear algebra worked by a team of threads (a matrix above 32, or "

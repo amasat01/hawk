@@ -64,9 +64,10 @@ def wide_class_of(arch: str) -> str:
 
 def _build(entry, tmp_path, cache_dir, **options):
     options.setdefault("device_arch", _a1_arch())
+    targets = options.pop("targets", ("cuda",))
     kernel = W.CORPUS[entry].kernel
     kind = {} if W.CORPUS[entry].kind is None else {"kind": W.CORPUS[entry].kind}
-    return kernel, build_bundle([kernel], tmp_path, targets=("cuda",), cache_dir=cache_dir, **kind, **options)
+    return kernel, build_bundle([kernel], tmp_path, targets=targets, cache_dir=cache_dir, **kind, **options)
 
 
 # -- what the pass places -----------------------------------------------------------------------
@@ -147,12 +148,13 @@ def test_the_sidecar_names_every_plane_and_the_runtime_makes_the_scratch_ones(tm
 @pytest.mark.parametrize("entry", ["fill_mask", "matvec_in", "matvec_computed", "wide51"])
 @pytest.mark.parametrize("mode", ["float32", "float64"])
 def test_a_placed_corpus_kernel_holds_no_local_memory(entry, mode, tmp_path, cache_dir):
-    _, bundle = _build(entry, tmp_path, cache_dir, mode=mode)
+    # with a host target in the bundle ``auto`` keeps the placed form (the host has no warp)
+    _, bundle = _build(entry, tmp_path, cache_dir, mode=mode, targets=TARGETS_BOTH, host_profile="native")
     assert sidecar_of(bundle, W.CORPUS[entry].kernel.name)["launch"]["local_bytes"] == 0
 
 
 def test_the_device_text_writes_the_plane_in_a_loop_and_reads_it_back_by_the_rolled_sum(tmp_path, cache_dir):
-    _, bundle = _build("matvec_in", tmp_path, cache_dir)
+    _, bundle = _build("matvec_in", tmp_path, cache_dir, targets=TARGETS_BOTH, host_profile="native")
     text = _unit(bundle, "matvec_in")
     assert "hawk_abi::tiled<Real, 512>" in text and "aether::rt::sum(win_hwd0_i)" in text
     assert "Item<Real, 512>" not in text and "AETHER_NO_UNROLL()" in text
@@ -526,6 +528,17 @@ def _gate(root: pathlib.Path) -> int:
     return 0 if ok else 1
 
 
+def _within_rounding(entry: str, mode: str, out) -> bool:
+    """Whether ``out``, a corpus row on rounding data, is within the summation bound ``2 W eps sum|terms|`` of the exact result
+    (the planes taken in float64; the terms' magnitudes from the absolute planes, which bound a multilinear row)."""
+    real = np.float32 if mode == "float32" else np.float64
+    n = W.LANES[entry]
+    planes = {k: np.asarray(v, np.float64) for k, v in W.CORPUS[entry].planes(np.random.default_rng(7), real, n, False).items()}
+    want = W.CORPUS[entry].want(np.float64, planes, n)
+    scale = W.CORPUS[entry].want(np.float64, {k: np.abs(v) for k, v in planes.items()}, n)
+    return bool(np.all(np.abs(np.asarray(out, np.float64) - want) <= 2 * W.W * np.finfo(real).eps * scale))
+
+
 def _compare(root: pathlib.Path) -> int:
     """The checks against the published 0.7.2 release (``TWIN``, its environment): A3-twin, A3-text, SPEED, and the A5 control
     (the release does reserve the memory, or the instrument of A5 is blind)."""
@@ -542,7 +555,10 @@ def _compare(root: pathlib.Path) -> int:
         for mode in W.CORPUS[entry].modes:
             for exact in (True, False):
                 got = W.run_device(entry, mode, W.LANES[entry], cache_dir=CACHE / "tree", exact=exact, repeats=W.REPEATS.get(entry, 7) if exact else 1)
-                identical.append(W.array_digest(got["out"]) == (twin / f"{entry}_{mode}_{int(exact)}.sha").read_text())
+                same = W.array_digest(got["out"]) == (twin / f"{entry}_{mode}_{int(exact)}.sha").read_text()
+                if not same and "hawk_wl" in mine[entry, mode]["text"]:        # a warp per lane sums in another order: held to the rounding bound
+                    same = _within_rounding(entry, mode, got["out"])
+                identical.append(same)
                 key = f"{entry}_{mode}_{int(exact)}"
                 if exact:
                     ratios[entry, mode] = twin_times[key] / got["ns"]
