@@ -37,8 +37,8 @@ own primal alone (so the reader can see the derivative's overhead relative to
 its own primal) -- warm-up excluded, median of ``--reps`` INTERLEAVED reps,
 at the default batch (65536). ``--sweep`` prints the same table over batch
 sizes 1, 32, 4096, 65536 and 1048576 (reps=1 per point, comfortably under two
-minutes). The measured numbers come from the committed card
-(``benchmarks/autodiff_vs_torch_card.md``); this sweep is a demo
+minutes). The measured numbers come from the ``vjp_vs_torch`` row of eagle's feature card
+(``benchmarks/perf_card/feature_card.py`` in eagle); this sweep is a demo
 measurement, not a benchmark, so run ``--sweep`` for the actual numbers on
 your own card.
 
