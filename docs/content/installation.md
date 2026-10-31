@@ -21,7 +21,7 @@ suffix); `raptor-eagle[cuda12]` / `[cuda13]` pull CuPy (`cupy-cuda12x` /
 matching the CUDA version your driver reports (`nvidia-smi`, top right).
 ```
 
-**Platforms:** the wheels are Linux x86_64 and aarch64 and macOS arm64 (CPython 3.9–3.15, including free-threaded 3.14t and 3.15t; the exact versions are in `pyproject.toml`). The GPUs and CPUs hawk + eagle are measured on are listed on [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html). There are no wheels for Windows, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. On free-threaded 3.13t and 3.14t, `hawk` runs GIL-free.
+**Platforms:** the wheels are Linux x86_64 and aarch64 and macOS arm64 (CPython 3.9–3.15, including free-threaded 3.14t and 3.15t; the exact versions are in `pyproject.toml`). The GPUs and CPUs hawk + eagle are measured on are listed on [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html). There are no wheels for Windows, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. On free-threaded 3.14t and 3.15t, `hawk` runs GIL-free.
 
 To build from source, and for the supported-version table, see [build from source](https://amasat01.github.io/build_from_source.html).
 
