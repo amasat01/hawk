@@ -28,6 +28,9 @@ SLICE_MIN = 128
 
 WARP_LANE_KIND = "warp_lane"
 
+#: The literal of a ``component_at`` that reads a plane element in place: each lane reads only the elements it commits.
+WARP_READ = "warp_read"
+
 #: The sum of a sliced value over its whole width: each lane sums its slice, then a fixed tree over the lanes.
 WARP_SUM_KIND = "warp_sum"
 
@@ -119,7 +122,7 @@ class _Slicer:
             raise _Refused(f"a wide plane {leaf.name!r} read whole")
         index = TensorType((), "i32")
         scalar = TensorType((), leaf.ttype.dtype)
-        parts = [Op("component_at", (leaf, make("add", (self.lane, Const(j * WARP, index)))), scalar)
+        parts = [Op("component_at", (leaf, make("add", (self.lane, Const(j * WARP, index)))), scalar, WARP_READ)
                  for j in range(leaf.ttype.shape[0] // WARP)]
         return Op("vec", tuple(parts), _slice_type(leaf.ttype))
 

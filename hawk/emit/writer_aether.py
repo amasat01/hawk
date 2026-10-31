@@ -39,7 +39,7 @@ from ..ir.nodes import (
 )
 from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, QR_OPS
 from ..ir.team import TeamRead
-from ..ir.lane import WARP_SUM_KIND
+from ..ir.lane import WARP_READ, WARP_SUM_KIND
 from ..ir.wide import RESIDENT_KIND, element_kind, gather, is_prior, is_resident, is_scratch, is_tiled
 from ..ir.rays import RAY_OPS
 from ..ir.ops import RANDOM_OPS
@@ -855,7 +855,7 @@ class AetherWriter:
             return ""               # a store of the same slot adds in place
         if args[0] in r.proxies:
             return f"{args[0]}.at({args[1]})"       # a value in a plane: the element, straight from it
-        if _reads_in_place(source):
+        if _reads_in_place(source) or node.literal == WARP_READ:
             # a read-only input plane: the element at the runtime index straight
             # from the view (`SampleRef::at`), no `Item` of the whole row
             return f"{binding_name(source.role, source.name)}[i].at({args[1]})"

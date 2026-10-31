@@ -1054,4 +1054,6 @@ class WarpStage(TeamStage):
     def fused_body(self, kind: Any = None) -> Any:
         from ..emit.render import render_body
 
+        if self.one_step is not None:       # an automatic kernel renders its two bodies itself
+            return None
         return render_body(self.sinks, self.walk, indent="        ", kind=kind)

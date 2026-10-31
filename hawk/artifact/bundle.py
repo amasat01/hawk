@@ -984,13 +984,27 @@ def _warp_kernel(kernel, name: str):
     from ..ir.team import TeamSpec
     from ..trace.kernel import WarpStage
 
-    if (type(kernel).__name__ != "Kernel" or getattr(kernel, "one_step", None) is not None
-            or getattr(kernel, "group", 1) != 1 or _split_stages(name, kernel.sinks) is not None):
+    from ..ir import canonical
+    from ..trace.kernel import Kernel, _declared
+
+    one = getattr(kernel, "one_step", None)
+    if (type(kernel).__name__ != "Kernel" or getattr(kernel, "group", 1) != 1 or _split_stages(name, kernel.sinks) is not None
+            or (one is not None and _split_stages(name, one.sinks) is not None)):
         return None
     sinks = slice_sinks(_wide.simplified(kernel.sinks))
-    if sinks is None:
+    single = None if one is None else slice_sinks(_wide.simplified(one.sinks))
+    if sinks is None or (one is not None and single is None):
         return None
-    return WarpStage(name, sinks, TeamSpec(WARP, (), ()))
+    warp = WarpStage(name, sinks, TeamSpec(WARP, (), ()))
+    if one is not None:             # an automatic kernel: its single step beside it, in the warp form too
+        warp.one_step = Kernel(one.name, single, one.planes, kind=one.kind)
+        held = set(warp.walk.arg_spec)
+        extra = [Slot(role, slot, warp.one_step.walk.slot_types[role, slot])
+                 for role, slot in warp.one_step.walk.arg_spec if (role, slot) not in held]
+        warp.walk = canonical(warp.sinks, (*_declared(warp.planes), *extra))
+        for attr in ("source_digest", "returns", "time", "time_step", "jump", "broadcast", "group"):
+            setattr(warp, attr, getattr(kernel, attr))
+    return warp
 
 
 def _wide_ok(kernel, smode, device: bool):

@@ -198,7 +198,7 @@ def test_a_derivative_corpus_kernel_holds_only_the_local_memory_the_register_for
 
 @pytest.mark.parametrize("entry", ["fill_mask_seg", "matvec_in_seg"])
 def test_an_automatic_kernel_places_the_wide_values_of_its_fused_and_its_single_step_body(entry, tmp_path, cache_dir):
-    kernel, bundle = _build(entry, tmp_path, cache_dir, mode="float64")
+    kernel, bundle = _build(entry, tmp_path, cache_dir, mode="float64", targets=TARGETS_BOTH, host_profile="native")   # a host target keeps the placed form
     side = sidecar_of(bundle, kernel.name)
     assert side["launch"]["local_bytes"] == 0
     planes = {p for p in side["launch"]["wide"] if p != "class"}
@@ -238,6 +238,14 @@ def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode
         got.append(np.asarray(out.get()).copy())
     assert np.array_equal(got[0], entry.want(real, planes, n))
     assert all(np.array_equal(got[0], g) for g in got[1:])
+
+
+@pytest.mark.parametrize("entry", ["fill_mask_seg", "steps_matvec_k8", "steps_early_k8"])
+def test_a_stepped_or_automatic_kernel_is_a_warp_per_lane_on_a_device_bundle(entry, tmp_path, cache_dir):
+    kernel, bundle = _build(entry, tmp_path, cache_dir, mode="float32")
+    side = sidecar_of(bundle, kernel.name)
+    assert side["stages"][0]["team"] == {"threads": 32} and side["launch"]["local_bytes"] == 0
+    assert "team_planes" not in side            # nothing is placed in a scratch plane: the value is sliced across the lanes
 
 
 # -- the device feature classes -----------------------------------------------------------------
