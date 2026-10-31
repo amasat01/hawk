@@ -64,9 +64,10 @@ def wide_class_of(arch: str) -> str:
 
 def _build(entry, tmp_path, cache_dir, **options):
     options.setdefault("device_arch", _a1_arch())
+    targets = options.pop("targets", ("cuda",))
     kernel = W.CORPUS[entry].kernel
     kind = {} if W.CORPUS[entry].kind is None else {"kind": W.CORPUS[entry].kind}
-    return kernel, build_bundle([kernel], tmp_path, targets=("cuda",), cache_dir=cache_dir, **kind, **options)
+    return kernel, build_bundle([kernel], tmp_path, targets=targets, cache_dir=cache_dir, **kind, **options)
 
 
 # -- what the pass places -----------------------------------------------------------------------
@@ -126,7 +127,7 @@ def test_the_thread_form_places_nothing(tmp_path, cache_dir):
 
 
 def test_the_team_form_is_refused_by_name(tmp_path, cache_dir):
-    with pytest.raises(HawkError, match=r"wide_form='team' \(a warp per lane\) is not built"):
+    with pytest.raises(HawkError, match=r"wide_form=.team. \(a warp per lane\) is built for device targets only"):
         build_bundle([W.fill_mask], tmp_path, targets=("host",), cache_dir=cache_dir, wide_form="team")
 
 
@@ -147,12 +148,13 @@ def test_the_sidecar_names_every_plane_and_the_runtime_makes_the_scratch_ones(tm
 @pytest.mark.parametrize("entry", ["fill_mask", "matvec_in", "matvec_computed", "wide51"])
 @pytest.mark.parametrize("mode", ["float32", "float64"])
 def test_a_placed_corpus_kernel_holds_no_local_memory(entry, mode, tmp_path, cache_dir):
-    _, bundle = _build(entry, tmp_path, cache_dir, mode=mode)
+    # with a host target in the bundle ``auto`` keeps the placed form (the host has no warp)
+    _, bundle = _build(entry, tmp_path, cache_dir, mode=mode, targets=TARGETS_BOTH, host_profile="native")
     assert sidecar_of(bundle, W.CORPUS[entry].kernel.name)["launch"]["local_bytes"] == 0
 
 
 def test_the_device_text_writes_the_plane_in_a_loop_and_reads_it_back_by_the_rolled_sum(tmp_path, cache_dir):
-    _, bundle = _build("matvec_in", tmp_path, cache_dir)
+    _, bundle = _build("matvec_in", tmp_path, cache_dir, targets=TARGETS_BOTH, host_profile="native")
     text = _unit(bundle, "matvec_in")
     assert "hawk_abi::tiled<Real, 512>" in text and "aether::rt::sum(win_hwd0_i)" in text
     assert "Item<Real, 512>" not in text and "AETHER_NO_UNROLL()" in text
@@ -192,6 +194,50 @@ def test_a_derivative_corpus_kernel_holds_only_the_local_memory_the_register_for
             warnings.filterwarnings("ignore", "hawk: kernel .* local frame", UserWarning)
         _, bundle = _build(entry, tmp_path, cache_dir, mode=mode)
     assert sidecar_of(bundle, W.CORPUS[entry].kernel.name)["launch"]["local_bytes"] == W.LOCAL_OK.get((entry, mode), 0)
+
+
+@pytest.mark.parametrize("entry", ["fill_mask_seg", "matvec_in_seg"])
+def test_an_automatic_kernel_places_the_wide_values_of_its_fused_and_its_single_step_body(entry, tmp_path, cache_dir):
+    kernel, bundle = _build(entry, tmp_path, cache_dir, mode="float64")
+    side = sidecar_of(bundle, kernel.name)
+    assert side["launch"]["local_bytes"] == 0
+    planes = {p for p in side["launch"]["wide"] if p != "class"}
+    assert {p for p in side["team_planes"]} <= planes and len(side["team_planes"]) >= 2   # one set of scratch planes per body
+
+
+def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp_path, cache_dir):
+    from hawk.ir.lane import WARP, WarpStore, slice_sinks
+
+    sliced = slice_sinks(wide.simplified(W.matvec_in_vjp.sinks))
+    assert [type(s) for s in sliced] == [WarpStore] and sliced[0].value.ttype.shape == (W.W // WARP,)
+    assert slice_sinks(W.fill_mask.sinks) is None            # a runtime-indexed write has no rule in the warp form: it keeps its form
+    for name in ("matvec_in_vjp", "matvec_in"):         # the second folds the slices with a warp sum and commits from lane 0
+        kernel, bundle = _build(name, tmp_path / name, cache_dir, mode="float64", wide_form="team")
+        side = sidecar_of(bundle, kernel.name)
+        assert side["stages"][0]["team"] == {"threads": WARP}
+        assert side["launch"]["local_bytes"] == (0 if name == "matvec_in_vjp" else 192)    # the 24 row sums stay in the lane's local frame
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("name", ["matvec_in", "matvec_in_vjp"])
+@pytest.mark.parametrize("mode", ["float32", "float64"])
+def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode, cache_dir):
+    import _probe_wide as probe
+    from eagle import arrays
+    from eagle._alloc import synchronize
+
+    entry, real, n = W.CORPUS[name], np.float32 if mode == "float32" else np.float64, 2048
+    planes = entry.planes(np.random.default_rng(7), real, n, True)
+    bound_args = {k: arrays.asarray(np.ascontiguousarray(v), device="cuda:0") for k, v in planes.items()}
+    out = arrays.asarray(np.zeros(entry.shape(n), real), device="cuda:0")
+    bound = probe._auto(entry.kernel, mode, cache_dir, "team").bind(**bound_args, **{entry.out: out})
+    got = []
+    for _ in range(3):
+        bound.launch()
+        synchronize()
+        got.append(np.asarray(out.get()).copy())
+    assert np.array_equal(got[0], entry.want(real, planes, n))
+    assert all(np.array_equal(got[0], g) for g in got[1:])
 
 
 # -- the device feature classes -----------------------------------------------------------------
@@ -482,6 +528,17 @@ def _gate(root: pathlib.Path) -> int:
     return 0 if ok else 1
 
 
+def _within_rounding(entry: str, mode: str, out) -> bool:
+    """Whether ``out``, a corpus row on rounding data, is within the summation bound ``2 W eps sum|terms|`` of the exact result
+    (the planes taken in float64; the terms' magnitudes from the absolute planes, which bound a multilinear row)."""
+    real = np.float32 if mode == "float32" else np.float64
+    n = W.LANES[entry]
+    planes = {k: np.asarray(v, np.float64) for k, v in W.CORPUS[entry].planes(np.random.default_rng(7), real, n, False).items()}
+    want = W.CORPUS[entry].want(np.float64, planes, n)
+    scale = W.CORPUS[entry].want(np.float64, {k: np.abs(v) for k, v in planes.items()}, n)
+    return bool(np.all(np.abs(np.asarray(out, np.float64) - want) <= 2 * W.W * np.finfo(real).eps * scale))
+
+
 def _compare(root: pathlib.Path) -> int:
     """The checks against the published 0.7.2 release (``TWIN``, its environment): A3-twin, A3-text, SPEED, and the A5 control
     (the release does reserve the memory, or the instrument of A5 is blind)."""
@@ -498,7 +555,10 @@ def _compare(root: pathlib.Path) -> int:
         for mode in W.CORPUS[entry].modes:
             for exact in (True, False):
                 got = W.run_device(entry, mode, W.LANES[entry], cache_dir=CACHE / "tree", exact=exact, repeats=W.REPEATS.get(entry, 7) if exact else 1)
-                identical.append(W.array_digest(got["out"]) == (twin / f"{entry}_{mode}_{int(exact)}.sha").read_text())
+                same = W.array_digest(got["out"]) == (twin / f"{entry}_{mode}_{int(exact)}.sha").read_text()
+                if not same and "hawk_wl" in mine[entry, mode]["text"]:        # a warp per lane sums in another order: held to the rounding bound
+                    same = _within_rounding(entry, mode, got["out"])
+                identical.append(same)
                 key = f"{entry}_{mode}_{int(exact)}"
                 if exact:
                     ratios[entry, mode] = twin_times[key] / got["ns"]

@@ -412,7 +412,7 @@ class _Plan:
         graph, found = self.graph, {}
         self.sunk: dict = {}
         for loop in graph.loops:
-            if loop.exit_form != "tail" or loop.body_sinks or loop.count is not None:
+            if loop.exit_form != "tail" or loop.body_sinks:
                 continue
             for j, carry in enumerate(loop.carries):
                 init, nxt = loop.inits[j], loop.nexts[j]
@@ -429,7 +429,7 @@ class _Plan:
                 if len(stores) == 1 and isinstance(stores[0], Assign) and stores[0].name == init.name \
                         and stores[0].index is None and len(graph.users(values[0])) == 1:
                     found[id(loop), j] = (loop, init.name)
-                    deps = None if reads else self._sink_deps(loop, nxt)
+                    deps = None if reads or loop.count is not None else self._sink_deps(loop, nxt)   # a run-time count may run no trip: the plane is then left as it is
                     if deps is not None:
                         self.sunk[id(loop), j] = deps
                     if reads:
@@ -694,7 +694,7 @@ def _assign_planes(graph: _Graph, plan: _Plan, taken: set) -> tuple:
 
 def _rewritten(graph: _Graph, plan, of: dict, slots: dict, scratch: dict, sinks: tuple, node_fn=None, loop_fn=None) -> tuple:
     """``sinks`` with every placed value wrapped in its :func:`place_node` and every placed slot's
-    initial value too. ``node_fn`` rewrites each rebuilt node and ``loop_fn(old, new)`` each rebuilt loop (:func:`_simplified`)."""
+    initial value too. ``node_fn`` rewrites each rebuilt node and ``loop_fn(old, new)`` each rebuilt loop (:func:`simplified`)."""
     from .loops import build_loop
 
     memo: dict = {}
@@ -791,7 +791,7 @@ def _rewritten(graph: _Graph, plan, of: dict, slots: dict, scratch: dict, sinks:
 # -- what the pass makes simpler first ---------------------------------------------------------
 
 class _NoPlan:
-    """A plan that places nothing (:func:`_simplified`)."""
+    """A plan that places nothing (:func:`simplified`)."""
 
     carried: dict = {}
     sunk: dict = {}
@@ -850,7 +850,7 @@ def _dead_take(old: Loop, new: Loop, graph: _Graph) -> Loop:
                       count=new.count, count_tail=new.count_tail, dynamic=new.dynamic)
 
 
-def _simplified(sinks: tuple) -> tuple:
+def simplified(sinks: tuple) -> tuple:
     """``sinks`` with the shapes of a derivative made plain: a vector of scaled reads is a scaled run, and a vector zeroed
     behind its own reads is left as it is."""
     graph = _Graph(sinks)
@@ -874,7 +874,7 @@ def place(sinks, *, real_bytes: int = 8, taken=()) -> tuple:
         return sinks, (), {}
     taken = set(taken)
     original = sinks
-    sinks = _simplified(sinks)
+    sinks = simplified(sinks)
     graph = _Graph(sinks)
     plan = _Plan(graph, real_bytes)
     if not plan.resident and not plan.slots:

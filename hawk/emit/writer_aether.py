@@ -39,6 +39,7 @@ from ..ir.nodes import (
 )
 from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, QR_OPS
 from ..ir.team import TeamRead
+from ..ir.lane import WARP_SUM_KIND
 from ..ir.wide import RESIDENT_KIND, element_kind, gather, is_prior, is_resident, is_scratch, is_tiled
 from ..ir.rays import RAY_OPS
 from ..ir.ops import RANDOM_OPS
@@ -130,6 +131,21 @@ class AetherWriter:
     def sample_index_value(self) -> str:
         """A ``SampleIndex`` node: the lane's own integer index as an ``Int``."""
         return f"static_cast<Int>({SAMPLE_INDEX_IDENT})"
+
+    def warp_lane_value(self) -> str:
+        """A ``WarpLane`` node: the lane's place in its warp (the team prologue binds ``hawk_wl``)."""
+        return "hawk_wl"
+
+    def warp_store(self, r, sink, target: str, value: str) -> None:
+        """The lane's slice of a wide value into elements ``j * 32 + lane`` of the Mutable's plane."""
+        if sink.value.ttype.shape == sink.ttype.shape:      # the same in every lane
+            r._emit(f"if (hawk_wl == 0) {target}[i] = {value};")
+            return
+        n = sink.value.ttype.shape[0]
+        r._emit(f"const aether::Item<Real, {n}> hawk_ws = {value};")
+        r._emit("#pragma unroll")
+        r._emit(f"for (Int hawk_lk = 0; hawk_lk < {n}; ++hawk_lk) "
+                f"{target}[i].at(hawk_lk * 32 + hawk_wl) = hawk_ws.data()[hawk_lk];")
 
     def lane_position_value(self, mapped: bool) -> str:
         """A ``LanePosition`` node: ``hawk_t`` under an index map, else the
@@ -307,7 +323,11 @@ class AetherWriter:
             # the plane a wide value lives in (:mod:`hawk.ir.wide`): its text is the lane's own proxy of it
             if not r.placed:
                 return ""
-            if is_tiled(leaf):
+            if is_tiled(leaf) and r.lane_rows is not None:
+                # an interchanged host lane: the plane is a row of the tile, declared by the text around the segments
+                proxy = f"{name}_i"
+                r.lane_rows[proxy] = (name, r.plane_widths[leaf.name])
+            elif is_tiled(leaf):
                 proxy = f"{name}_i"
                 r._emit(f"const auto {proxy} = hawk_abi::tiled<Real, {r.plane_widths[leaf.name]}>({name}, "
                         f"{SAMPLE_INDEX_IDENT});")
@@ -390,6 +410,8 @@ class AetherWriter:
         kind, rank = node.kind, len(node.ttype.shape)
         if kind == RESIDENT_KIND:
             return self._resident(r, node, args)
+        if kind == WARP_SUM_KIND:
+            return f"hawk_abi::warp_sum<Real>(static_cast<Real>({args[0]}.sum()))"
         if kind == RAW_KIND:
             return self._raw(r, node, args)
         if kind in LINALG_OPS:

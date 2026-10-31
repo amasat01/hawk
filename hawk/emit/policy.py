@@ -39,7 +39,7 @@ _LINALG_FORM: ContextVar[str] = ContextVar("hawk_linalg_form", default="auto")
 #: The forms a build may ask of a per-lane value wider than a thread's registers (``wide_form``):
 #: ``auto`` places each such value where the card keeps it (:mod:`hawk.ir.wide`), ``thread``
 #: keeps every value in the lane's own registers and local memory (the text before the pass),
-#: and ``team`` is a warp per lane, which a later release builds and this one refuses by name.
+#: and ``team`` is a warp per lane (:mod:`hawk.ir.lane`), for the kernels it has a rule for; the others build as ``auto``.
 WIDE_FORMS = ("auto", "thread", "team")
 
 _WIDE_FORM: ContextVar[str] = ContextVar("hawk_wide_form", default="auto")
@@ -74,9 +74,6 @@ def using(form: str = "auto", *, linalg_form: str = "auto", wide_form: str = "au
         raise ValueError(f"linalg_form must be one of {LINALG_FORMS}, got {linalg_form!r}")
     if wide_form not in WIDE_FORMS:
         raise ValueError(f"wide_form must be one of {WIDE_FORMS}, got {wide_form!r}")
-    if wide_form == "team":
-        raise ValueError("wide_form='team' (a warp per lane) is not built in this release; "
-                         "use 'auto' or 'thread'")
     token, linalg_token, wide_token = _FORM.set(form), _LINALG_FORM.set(linalg_form), _WIDE_FORM.set(wide_form)
     try:
         yield

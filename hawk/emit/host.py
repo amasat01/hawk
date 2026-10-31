@@ -798,9 +798,12 @@ def interchange(name: str, sinks, walk: Walk, kind=None,
     whose body :func:`~hawk.emit.render.render_lane_split` admits (one
     tail-break loop, no inner ``for``). Any other :func:`simd_safe` kernel
     with a ``Loop`` runs its loops interchanged by :func:`loop_interchange`.
-    A kernel that is not ``sample_local`` has dependent iterations, so its
-    lanes cannot run together: it keeps its per-sample loop."""
-    if not simd_safe(walk):
+    A kernel with a cross-sample write has dependent iterations, so its
+    lanes cannot run together: it keeps its per-sample loop; one that only
+    reads lookup planes may run its lanes together (``lane_form_access``)."""
+    from ..ir.vectorise import lane_form_access
+
+    if not lane_form_access(walk):
         return None
     finish = lane_finish(walk)
     split = None if finish is None else render_lane_split(sinks, walk, kind=kind)
@@ -826,6 +829,27 @@ def interchange(name: str, sinks, walk: Walk, kind=None,
 #: default (``-DHAWK_HOST_INTERCHANGE=0`` builds the per-sample loop).
 LOOP_PRELUDE = (f"#ifndef {INTERCHANGE_MACRO}\n#define {INTERCHANGE_MACRO} 1\n#endif\n"
                 "// hawk host loop interchange: tile = hawk_abi::kHostLoopTile\n")
+
+#: The proxy of a wide value that lives in a row of the tile (:mod:`hawk.ir.wide`): element ``k`` of lane ``t`` at
+#: ``rows[t * W + k]`` (a lane's elements run on, so a fold over them is one contiguous read), the shape of an aether per-sample proxy to the ``aether::rt`` twins. Added only to a TU that has one.
+LANE_ROW_HELPER = """namespace hawk_abi {
+
+template <class T, std::size_t W, aether::offset_t Tile>
+struct TileLane {
+    using element_type = T;
+    using element_extents = aether::extents<W>;
+    T* base;
+    T& at(std::size_t k) const { return base[k]; }
+};
+
+template <class T, std::size_t W, aether::offset_t Tile>
+static inline TileLane<T, W, Tile> tile_lane(T* rows, aether::offset_t t)
+{
+    return TileLane<T, W, Tile>{rows + static_cast<std::size_t>(t) * W};
+}
+
+}  // namespace hawk_abi
+"""
 
 #: The loop interchange's tile: the lanes of EIGHT vector registers of the
 #: kernel's ``Real``, so eight independent chains of a dependent loop body are
@@ -854,6 +878,7 @@ inline constexpr aether::offset_t kHostLoopTile =
 _DECLARATION = re.compile(r"^\s*(?:const\s+)?[\w:]+(?:<[^;=]*?>)?\s+(\w+)\s*(?:=|\[|;)",
                           re.M)
 _WORDS = re.compile(r"\b\w+\b")
+_VIEW_DECLARATION = re.compile(r"^\s*const auto (\w+) = \w+\[i\];$", re.M)
 
 
 def loop_interchange(sinks, walk: Walk, kind=None) -> Interchange | None:
@@ -869,10 +894,14 @@ def loop_interchange(sinks, walk: Walk, kind=None) -> Interchange | None:
     cut = interchanged_loops(walk)
     if not cut:
         return None
-    text = loop_interchange_text(render_lane_segments(sinks, walk, cut, kind=kind))
+    from . import policy as emit_policy
+
+    with emit_policy.placing(True):          # a wide value stays in its plane (a row of the tile), never a copy per trip
+        segs = render_lane_segments(sinks, walk, cut, kind=kind)
+    text = loop_interchange_text(segs)
     if text is None:
         return None
-    return Interchange(None, text, "", LOOP_PRELUDE)
+    return Interchange(None, text, "", LOOP_PRELUDE + (LANE_ROW_HELPER if segs.proxies else ""))
 
 
 def _row_put(arr: str, name: str, ttype, value: str | None = None) -> list:
@@ -915,10 +944,12 @@ def loop_interchange_text(segs: LaneSegments) -> str | None:
         if lp.bounds is not None:
             tail += [lp.bounds[1], lp.bounds[3]]
         seg_words[k] |= set(_WORDS.findall(" ".join(tail)))
+    # a plane view (`const auto x = plane[i];`) is no value to carry: a later text declares it again
+    views = {m.group(1): m.group(0).strip() for t in segs.segments for m in _VIEW_DECLARATION.finditer(t)}
     rows: dict = {}      # name -> (ttype, origin): ("seg", s) or ("loop", k)
     for s in range(n + 1):
         later = set().union(*seg_words[s + 1:], *step_words[s:])
-        for name in sorted(declared[s] & later):
+        for name in sorted(declared[s] & later - views.keys()):
             if name not in segs.types:
                 return None
             rows[name] = (segs.types[name], ("seg", s))
@@ -949,12 +980,16 @@ def loop_interchange_text(segs: LaneSegments) -> str | None:
         "    alignas(64) HAWK_LANE_T hawk_ron[hawk_tile] = {};",
         *[f"    alignas(64) {element_spelling(t.dtype)} {arr(x)}[{_width(t)} * hawk_tile] = {{}};"
           for x, (t, _) in sorted(rows.items())],
+        *[f"    alignas(64) Real hawk_row_{plane}[{width} * hawk_tile];"
+          for plane, width in sorted(set(segs.proxies.values()))],
         *[f"    alignas(64) {lp.bounds[0]} hawk_b{k}[hawk_tile] = {{}};\n"
           f"    alignas(64) {lp.bounds[0]} hawk_e{k}[hawk_tile] = {{}};"
           for k, lp in enumerate(segs.loops) if lp.bounds is not None],
         *_TILE_LOOP_HEAD,
     ]
     pad = "            "
+    proxy_lines = [f"        const auto {proxy} = hawk_abi::tile_lane<Real, {width}, hawk_tile>(hawk_row_{plane}, hawk_t);"
+                   for proxy, (plane, width) in sorted(segs.proxies.items())]
     for s in range(n + 1):
         # the segment, per sample of the tile
         lines += [
@@ -967,6 +1002,8 @@ def loop_interchange_text(segs: LaneSegments) -> str | None:
             "        (void)hawk_t;",
             "        (void)hawk_i;",
             "        (void)nSamples;",
+            *proxy_lines,
+            *[f"        {views[x]}" for x in sorted(views) if x in seg_words[s] and x not in declared[s]],
         ]
         if s == 0:
             lines.append("        HAWK_LANE_T hawk_go = 0.0;")
@@ -997,12 +1034,13 @@ def loop_interchange_text(segs: LaneSegments) -> str | None:
         if s == n:
             break
         lines += _trips(segs.loops[s], k=s, rows=rows, step_words=step_words[s],
-                        loads=loads, arr=arr)
+                        loads=loads, arr=arr, proxy_lines=[*proxy_lines, *[f"        {views[x]}" for x in sorted(views)
+                                                                           if x in step_words[s]]])
     lines.append("    }")
     return "\n".join(lines)
 
 
-def _trips(lp, *, k: int, rows: dict, step_words: set, loads, arr) -> list:
+def _trips(lp, *, k: int, rows: dict, step_words: set, loads, arr, proxy_lines=()) -> list:
     """The trips of one interchanged loop: trips outside, the tile's lanes
     inside (see :func:`loop_interchange_text`)."""
     pad = "            "
@@ -1041,6 +1079,8 @@ def _trips(lp, *, k: int, rows: dict, step_words: set, loads, arr) -> list:
         "        const aether::SampleIndex i =",
         "            aether::SampleIndex::make(static_cast<std::size_t>(hawk_tlo + hawk_t));",
         "        (void)i;",
+        # a lane past the tile's end repeats the last sample's index, but writes its own row, never the last sample's
+        *[line.replace("hawk_t)", "hawk_l)") if "tile_lane" in line else line for line in proxy_lines],
         "        const bool hawk_lane_on = hawk_ron[hawk_l] != 0.0;",
         f"        const {itype} {lp.index} = {index};",
         f"        (void){lp.index};",

@@ -287,6 +287,7 @@ _RAY_INCLUDE = "#include <aether/geometry/geometry.h>\n"
 #: The rolled-loop twins' header (:mod:`hawk.emit.policy`), likewise.
 _RT_CALL = "aether::rt::"
 _TILED_CALL = "hawk_abi::tiled<"
+_WARP_SUM_CALL = "hawk_abi::warp_sum<"
 _RT_INCLUDE = "#include <aether/expr/Rt.h>\n"
 
 _RUN_SITE = re.compile(rf"\b{RUN_STATE}(\w+)\);")
@@ -411,6 +412,17 @@ template <class T, std::size_t W, class ViewT>
 {{
     const std::size_t i = static_cast<std::size_t>(lane);
     return TiledLane<T, W>{{plane.data() + (i / 32 * W) * 32 + i % 32}};
+}}
+"""
+
+#: The sum of one value per lane over the 32 lanes of a warp (:mod:`hawk.ir.lane`): a fixed butterfly, so every lane ends
+#: with the same bits and a replay gives them again. Spliced only into a unit whose body names it.
+_WARP_SUM = """
+template <class T>
+{qualifier} T warp_sum(T v)
+{{
+    for (int m = 16; m > 0; m >>= 1) v += __shfl_xor_sync(0xffffffffu, v, m);
+    return v;
 }}
 """
 
@@ -811,7 +823,7 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
                 store_compensated: bool = False, finish: bool = False,
                 spacing: bool = False, mix: bool = False,
                 integers: bool = False, sample_sum: bool = False,
-                fold: bool = False, scatter_or: bool = False, tiled: bool = False) -> str:
+                fold: bool = False, scatter_or: bool = False, tiled: bool = False, warp_sum: bool = False) -> str:
     """The view-from-mirror reconstruction helpers — byte-for-byte the same
     on both targets, only the function qualifier differs; reads the
     mirror's own stride fields so a non-contiguous plane rebuilds
@@ -848,6 +860,8 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
         helpers.append(_ACCUM_OR.format(qualifier=qualifier))
     if tiled:
         helpers.append(_TILED.format(qualifier=qualifier))
+    if warp_sum:
+        helpers.append(_WARP_SUM.format(qualifier=qualifier))
     return f"""namespace hawk_abi {{
 
 template <class T, std::size_t N>
@@ -918,7 +932,7 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             integers: bool = False, sample_sum: bool = False,
             runs: bool = False, fold: bool = False, linalg: bool = False,
             rt: bool = False, scatter_or: bool = False, rays: bool = False,
-            team: bool = False, tiled: bool = False, narrow_int: bool = False) -> str:
+            team: bool = False, tiled: bool = False, warp_sum: bool = False, narrow_int: bool = False) -> str:
     """Includes + the scalar-mode aliases + the reconstruction helpers.
 
     ``compensated``/``store_compensated`` reach :func:`abi_helpers`'s gate.
@@ -938,7 +952,7 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             + abi_helpers(qualifier, compensated=compensated,
                          store_compensated=store_compensated, finish=finish,
                          spacing=spacing, mix=mix, integers=integers,
-                         sample_sum=sample_sum, fold=fold, scatter_or=scatter_or, tiled=tiled))
+                         sample_sum=sample_sum, fold=fold, scatter_or=scatter_or, tiled=tiled, warp_sum=warp_sum))
 
 
 def narrows_int(active: ActiveSpec | None, walk: Walk) -> bool:
@@ -1040,6 +1054,8 @@ def render_source(name: str, sinks, walk: Walk, target, *,
     if run_states(body.text):
         tiled = None                    # the interchanged loop holds no run state
     extra_prelude = getattr(wrapper, "extra_prelude", None)
+    #: what the headers are chosen by: the per-sample body, and the interchanged loop (which may name a library the body does not)
+    lanes_text = body.text if tiled is None else body.text + tiled.text
     loop = [wrapper.index_prologue(segment, **prologue_kw), body.text, epilogue]
     if box is not None:
         loop = [wrapper.index_prologue(box=box), body.text, wrapper.index_epilogue()]
@@ -1058,9 +1074,9 @@ def render_source(name: str, sinks, walk: Walk, target, *,
                spacing=_SPACING_CALL in body.text, mix=_MIX_CALL in body.text,
                integers=_INT_CALL in body.text, sample_sum=bool(sums),
                runs=RUN_CALL in body.text, fold=bool(walk.companions),
-               linalg=_LINALG_CALL in body.text, rt=_RT_CALL in body.text,
+               linalg=_LINALG_CALL in lanes_text, rt=_RT_CALL in lanes_text,
                rays=_RAY_CALL in body.text, team=_TEAM_CALL in body.text,
-               scatter_or=_OR_CALL in body.text, tiled=_TILED_CALL in body.text,
+               scatter_or=_OR_CALL in body.text, tiled=_TILED_CALL in body.text, warp_sum=_WARP_SUM_CALL in body.text,
                narrow_int=narrows_int(active, walk)),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
@@ -1279,7 +1295,8 @@ def _render_two_paths(name: str, sinks, walk: Walk, target, *,
                 linalg=_LINALG_CALL in fused.text + single.text,
                 rt=_RT_CALL in fused.text + single.text,
                 rays=_RAY_CALL in fused.text + single.text,
-                scatter_or=_OR_CALL in fused.text + single.text),
+                scatter_or=_OR_CALL in fused.text + single.text,
+                tiled=_TILED_CALL in fused.text + single.text),
         _extra_prelude(extra_prelude, walk, tiled),
         _exports(exports, tiled),
         "",

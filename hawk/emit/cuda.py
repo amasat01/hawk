@@ -85,6 +85,10 @@ class CudaWrapper:
             aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));
         (void)hawk_i;
         (void)nSamples;"""
+            if team == 32:      # a warp per lane (:mod:`hawk.ir.lane`): the lane's place in its warp
+                plain += """
+        const Int hawk_wl = static_cast<Int>(threadIdx.x & 31);
+        (void)hawk_wl;"""
         if active is not None:
             if segment is not None:
                 raise HawkError("an active-set index map and a segmented unit "

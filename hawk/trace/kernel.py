@@ -1042,3 +1042,15 @@ class TeamStage(Kernel):
         from ..emit.team import team_body
 
         return team_body(self.team, _active_spec(kind))
+
+
+class WarpStage(TeamStage):
+    """A kernel in the warp form (:mod:`hawk.ir.lane`): one block of a warp per lane, its sinks the sliced ones. Its body is
+    the ordinary render of those sinks; the launch prologue binds the lane's place in its warp."""
+
+    __slots__ = ()
+
+    def fused_body(self, kind: Any = None) -> Any:
+        from ..emit.render import render_body
+
+        return render_body(self.sinks, self.walk, indent="        ", kind=kind)

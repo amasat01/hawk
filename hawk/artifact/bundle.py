@@ -672,7 +672,8 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         ptxas=(_resource_report(kernel, entries[lead][0].ptxas)
                if TARGETS[lead].entry == ENTRY_DEVICE else None),
         local=_local_memory(name, entries, lead),
-        wide=_wide_with_class(_wide.walk_record(kernel.walk), resolved_arch),
+        wide=_wide_with_class({**_wide.walk_record(kernel.walk), **_wide.walk_record(kernel.one_step.walk)} if getattr(kernel, "one_step", None) is not None
+                              else _wide.walk_record(kernel.walk), resolved_arch),
     )
     if split is not None:
         # the first stage of a split kernel names every stage and every cell
@@ -976,31 +977,74 @@ def _wide_with_class(record: dict, resolved_arch: str) -> dict | None:
     return {**record, "class": wide_class.select(resolved_arch)} if record else None
 
 
+def _warp_kernel(kernel, name: str):
+    """``kernel`` in the warp form (:func:`hawk.ir.lane.slice_sinks`), or ``None`` when it is not one plain launch of wide
+    Mutables the form has a rule for."""
+    from ..ir.lane import WARP, slice_sinks
+    from ..ir.team import TeamSpec
+    from ..trace.kernel import WarpStage
+
+    if (type(kernel).__name__ != "Kernel" or getattr(kernel, "one_step", None) is not None
+            or getattr(kernel, "group", 1) != 1 or _split_stages(name, kernel.sinks) is not None):
+        return None
+    sinks = slice_sinks(_wide.simplified(kernel.sinks))
+    if sinks is None:
+        return None
+    return WarpStage(name, sinks, TeamSpec(WARP, (), ()))
+
+
 def _wide_ok(kernel, smode, device: bool):
     """Whether the placement pass may run on ``kernel`` (:func:`hawk.ir.split.stages` ``wide``): a build
-    for the device, of a kernel that is one plain launch (not a stepping, segmented or compacted one)."""
-    return (device and type(kernel).__name__ in ("Kernel", "SegmentUnit") and getattr(kernel, "one_step", None) is None
+    for the device, of a kernel that is one launch (a plain, grouped or segmented one, or an automatic one's two bodies)."""
+    from ..ir.vectorise import interchanged_loops
+
+    # a host-only build places too when its loops run interchanged: the wide carries then live in the lane rows
+    return ((device or bool(interchanged_loops(kernel.walk))) and type(kernel).__name__ in ("Kernel", "SegmentUnit")
             and getattr(kernel, "fused_body", None) is None)
 
 
-def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device: bool = False) -> tuple:
+def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device: bool = False,
+                  device_only: bool = False) -> tuple:
     """Replace every member that reads a value reduced over samples with its
     stages (:func:`hawk.ir.split.stages`), named ``<name>``, ``<name>_2``, ...;
     the rest pass through untouched. Also returns, per first-stage name, the
     sidecar block naming every stage and every cell."""
     from ..diff import Derived
     from ..trace.kernel import Kernel, TeamStage
+    from ..trace.kernel import _declared as _declared_slots
 
     out_kernels, out_names, out_kinds, blocks = [], [], [], {}
     for k, n, kd in zip(kernels, names, kinds):
-        found = _split_stages(n, k.sinks, wide=_wide_ok(k, smode, device),
-                              real_bytes=4 if smode is not None and smode.id == "float32" else 8)
-        if found is None:
+        # a warp per lane when asked, or under ``auto`` when every target is a device (a host target of the same bundle
+        # shares the kernel and has no warp, so it keeps the placed form) and the kernel has a rule in the warp form
+        form = policy.wide_form()
+        warp = _warp_kernel(k, n) if device and (form == "team" or (form == "auto" and device_only)) else None
+        if warp is not None:        # a warp per lane: one launch, no stages, no scratch
+            out_kernels.append(warp)
+            out_names.append(n)
+            out_kinds.append(kd)
+            blocks[n] = {"cells": warp.walk.cells, "stages": [
+                {"kernel": n, "cells_in": [], "cells_out": [], "recomputed": [], "team": _team_record(warp.team)}]}
+            continue
+        ok, one = _wide_ok(k, smode, device), getattr(k, "one_step", None)
+        real = 4 if smode is not None and smode.id == "float32" else 8
+        if one is not None and (_split_stages(n, k.sinks) is not None or _split_stages(n, one.sinks) is not None):
+            raise HawkError(
+                f"{n!r} reads a value reduced over samples inside a stepping or "
+                "segmented kernel; a split kernel is one plain step in this release")
+        found = _split_stages(n, k.sinks, wide=ok, real_bytes=real)
+        found1 = None
+        if one is not None and ok:      # the single step is a body of its own: placed beside the fused one, in planes of its own
+            found1 = _split_stages(n, one.sinks, wide=True, real_bytes=real,
+                                   taken={p.name for st in found or () for p in st.planes})
+        if found is None and found1 is None:
             out_kernels.append(k)
             out_names.append(n)
             out_kinds.append(kd)
             continue
-        if getattr(k, "one_step", None) is not None or (
+        fused = found
+        found = found or found1
+        if (
                 getattr(k, "segment", None) is not None and _split_stages(n, k.sinks) is not None):
             raise HawkError(
                 f"{n!r} reads a value reduced over samples inside a stepping or "
@@ -1025,10 +1069,16 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
             elif getattr(k, "segment", None) is not None:       # a branch unit, its wide values placed: still the unit
                 member = _segment_rewalk(k, sinks)
             else:
-                member = Kernel(stage.name, sinks, k.planes, kind=getattr(k, "kind", None))
+                member = Kernel(stage.name, sinks if fused or one is None else k.sinks, k.planes, kind=getattr(k, "kind", None))
                 if len(found) == 1:         # the kernel itself, its wide values placed: it keeps what it declared
                     for attr in ("source_digest", "returns", "time", "time_step", "jump", "broadcast", "group"):
                         setattr(member, attr, getattr(k, attr))
+                if one is not None:         # an automatic kernel: its single step beside it, both bodies reading the planes of both
+                    member.one_step = Kernel(one.name, found1[0].sinks if found1 else one.sinks, one.planes, kind=one.kind)
+                    held = set(member.walk.arg_spec)
+                    extra = [Slot(role, name, member.one_step.walk.slot_types[role, name])
+                             for role, name in member.one_step.walk.arg_spec if (role, name) not in held]
+                    member.walk = _canonical(member.sinks, (*_declared_slots(member.planes), *extra))
             cells.update(member.walk.cells)
             out_kernels.append(member)
             out_names.append(stage.name)
@@ -1041,7 +1091,7 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
              "cells_out": list(st.cells_out), "recomputed": list(st.recomputed),
              **({} if st.team is None else {"team": _team_record(st.team)})}
             for st in found]}
-        scratch = _team_scratch(found)
+        scratch = _team_scratch((*found, *(found1 or ())))
         if scratch:
             blocks[n]["team_planes"] = scratch
         # the keyed planes the runtime owns between the stages
@@ -1109,9 +1159,11 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     matrix up to ``n = 32`` and uses a team of threads per matrix above it, ``"team"`` uses a
     team at every size, ``"thread"`` refuses a matrix above 32 by name
     (:mod:`hawk.ir.team`). ``wide_form`` is where a per-lane value wider than a thread's
-    registers lives: ``"auto"`` places it (:mod:`hawk.ir.wide`), ``"thread"`` keeps every value
-    in the lane's registers and local memory (the text before the pass); ``"team"`` is refused
-    by name until it is built. Every member must agree on the execution axis (a
+    registers lives: ``"auto"`` builds a kernel as a warp per lane when every target is a device
+    and the kernel has a rule in that form (:mod:`hawk.ir.lane`, folds of 128 elements or more), else places
+    the value (:mod:`hawk.ir.wide`) -- a bundle with a host target keeps the placed form, as the host has no
+    warp; ``"thread"`` keeps every value in the lane's registers and local memory (the text before the pass);
+    ``"team"`` asks for the warp form (device targets only). Every member must agree on the execution axis (a
     manifest-level, not per-entry, declaration) — a set that doesn't agree is
     two bundles.
 
@@ -1186,16 +1238,16 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
         raise HawkError(f"linalg_form must be one of {policy.LINALG_FORMS}, got {linalg_form!r}")
     if wide_form not in policy.WIDE_FORMS:
         raise HawkError(f"wide_form must be one of {policy.WIDE_FORMS}, got {wide_form!r}")
-    if wide_form == "team":
-        raise HawkError("wide_form='team' (a warp per lane) is not built in this release; use 'auto', which places "
-                        "each wide value in a plane, or 'thread', which keeps it in the lane's registers")
+    if wide_form == "team" and any(TARGETS[t].compile != GPU for t in targets if t in TARGETS):
+        raise HawkError("wide_form='team' (a warp per lane) is built for device targets only; use 'auto' with a host target")
     from ..ir import wide_class
 
     emit_arch = _emit_arch(targets, device_arch)
     cls = wide_class.select(emit_arch) if emit_arch else ""       # the thresholds of the nearest measured device class
     with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form), policy.wide_class_scope(cls):
         kernels, names, kinds, split = _expand_split(kernels, names, kinds, smode=smode,
-                                                     device=any(TARGETS[t].compile == GPU for t in targets if t in TARGETS))
+                                                     device=any(TARGETS[t].compile == GPU for t in targets if t in TARGETS),
+                                                     device_only=all(TARGETS[t].compile == GPU for t in targets if t in TARGETS))
     if exported and any(getattr(k, "team", None) is not None for k in kernels):
         raise HawkError(
             f"{names[0]!r} has linear algebra worked by a team of threads (a matrix above 32, or "
