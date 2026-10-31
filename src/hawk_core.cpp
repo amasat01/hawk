@@ -106,7 +106,7 @@ std::atomic<std::uint64_t> g_crossings{0};
 // updates before it certifies anything else. Nothing real reads or writes it.
 // The read-modify-write is split by a short busy gap so the lost-update window is
 // wide enough to expose on every free-threaded build (a bare `++` loses ~4% on
-// 3.13t, where interpreter overhead dominates the call).
+// older free-threaded builds, where interpreter overhead dominates the call).
 volatile std::uint64_t g_unsynchronised = 0;
 
 inline void unsynchronised_bump() {

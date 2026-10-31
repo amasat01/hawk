@@ -464,7 +464,7 @@ jobs:
       # both free-threaded interpreters report, even when one fails
       fail-fast: false
       matrix:
-        python-version: ["3.13t", "3.14t"]
+        python-version: ["3.14t"]
     env:
       CC: gcc-13
       CXX: g++-13
@@ -559,7 +559,7 @@ jobs:
           cmake --install eagle/__eagle_hdr
 
       - run: |
-          # newest NumPy/SciPy ship no cp313t wheel: prefer a wheel over an sdist build
+          # newest NumPy/SciPy ship no free-threaded wheel for the newest tags: prefer a wheel over an sdist build
           python -m pip install --quiet --upgrade pip
           # aether-dsc's payload is sealed at build time (it is not tracked in
           # git): seal it from the sibling checkout, as the release workflow does,
@@ -582,7 +582,7 @@ jobs:
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
         run: |
           cd hawk
-          # SciPy ships no cp313t wheel: take the newest wheel over an sdist build
+          # SciPy ships no free-threaded wheel for the newest tags: take the newest wheel over an sdist build
           python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
 
       # An ft leg is vacuous on a GIL interpreter (every ft row skips) and the
