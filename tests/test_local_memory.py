@@ -12,6 +12,7 @@ the launch status after every launch."""
 from __future__ import annotations
 
 import types
+import warnings
 
 import pytest
 from _block_kernels import gram_kernel
@@ -76,8 +77,12 @@ def test_a_wide_value_placed_in_a_plane_holds_no_local_frame_and_the_thread_form
     from _wide_kernels import fill_mask
 
     placed = build_bundle([fill_mask], tmp_path / "auto", targets=("cuda",), cache_dir=cache_dir)
-    with pytest.warns(UserWarning, match="local frame"):     # the thread form spills on purpose, and the build says so
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         pinned = build_bundle([fill_mask], tmp_path / "thread", targets=("cuda",), cache_dir=cache_dir, wide_form="thread")
+    figures = (sidecar_of(pinned, "fill_mask").get("ptxas") or {}).values()
+    if any(row.get("spill_store_B") is not None for row in figures):    # ptxas ran: the thread form spills on purpose, and the build says so
+        assert any(issubclass(w.category, UserWarning) and "local frame" in str(w.message) for w in caught)
     assert sidecar_of(placed, "fill_mask")["launch"]["local_bytes"] == 0
     assert sidecar_of(pinned, "fill_mask")["launch"]["local_bytes"] > 0       # the 512-wide value in one thread
 
