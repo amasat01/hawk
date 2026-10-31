@@ -24,7 +24,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..ir import HawkError, Node, Walk
 from ..ir.cost import fp64_ops
@@ -62,7 +62,11 @@ from ..ir.walk import canonical_nodes
 from ..types import TensorType
 from . import rtstore
 from .box import BoxStore
+from ..ir.lane import WarpLane, WarpStore
 from ..ir.team import TeamStore
+from ..ir.wide import is_resident, is_scratch
+from ..ir.wide import record as _placements
+from . import policy as _policy
 from .policy import rolled
 from .writer_aether import AETHER
 from .dispatch import _DispatchMixin
@@ -257,6 +261,9 @@ class LaneSegments:
     segments: tuple
     loops: tuple
     types: dict
+    #: ``{proxy name: (plane binding, width)}``: the scratch planes of wide values a segment reads element by element
+    #: (:mod:`hawk.ir.wide`), each a lane row of the interchanged text; the text declares the proxies itself
+    proxies: dict = field(default_factory=dict)
 
 
 def render_lane_segments(sinks: Sequence[Sink], walk: Walk, cut: Sequence[Loop], *,
@@ -321,6 +328,14 @@ class _Renderer(_DispatchMixin):
         #: this traversal emits comes from here.
         self.writer = writer if writer is not None else AETHER
         self.nodes, self.position = canonical_nodes(sinks)
+        #: ``{plane: width}`` of the planes the kernel's placements write (a scratch plane's proxy needs its tile).
+        self.plane_widths = {name: rec["width"] for name, rec in _placements(self.nodes).items()}
+        #: Whether a placement (:mod:`hawk.ir.wide`) renders as its plane (the device text) or as its value
+        #: (the host text), and the texts of the planes' per-lane proxies, which a use reads element by element.
+        self.placed = _policy.placed()
+        self.proxies: set = set()
+        #: The ids of the values a placement writes element by element (never rendered whole), in a loop body too.
+        self.absorbed: frozenset = frozenset()
         #: The stores at a runtime index, as runs of one mutable local
         #: (:mod:`hawk.emit.rtstore`), and the carried locals a plain loop lets
         #: such a run write in place.
@@ -398,6 +413,8 @@ class _Renderer(_DispatchMixin):
         #: :meth:`_loop_cut` recorded of each, in order.
         self.cut_loops: frozenset = frozenset()
         self.cuts: list = []
+        #: ``None`` unless :meth:`lane_segments` renders: then ``{proxy: (plane binding, width)}`` of the scratch planes read
+        self.lane_rows: dict | None = None
         #: Positions the flat top-level walk reaches without crossing a Dispatch
         #: branch edge — see :meth:`_outside_reachable`. Computed once, after
         #: :attr:`position` exists and before anything renders.
@@ -540,9 +557,9 @@ class _Renderer(_DispatchMixin):
         call's operand, or the operand of a value no statement renders."""
         if not self.writer.rolled_forms:
             return False
-        if self.position.get(id(node)) in self.unrendered:
+        if self.position.get(id(node)) in self.unrendered or id(node) in self.absorbed:
             return True
-        if isinstance(node, TeamStore):
+        if isinstance(node, TeamStore) or (self.placed and is_resident(node)):
             return True         # the store loop reads the operand element by element
         return isinstance(node, Op) and (
             (node.kind in FACTORISATIONS and k == 0) or (node.kind in CONSUMERS and k == 1) or rolled(node))
@@ -996,6 +1013,10 @@ class _Renderer(_DispatchMixin):
         trade away."""
         if isinstance(node, Leaf) and node.role in ("uniform", "nsamples"):
             return False
+        if is_resident(node) or is_scratch(node):
+            return False        # its text is the plane's proxy: nothing to name
+        if isinstance(node, LoopValue) and self._loop_value(node) in self.proxies:
+            return False        # a slot that lives in a plane: the loop value is the plane's proxy
         if isinstance(node, Leaf) and node.role in GATHER_ROLES:
             # read BY NAME at a computed index (`_at`), never through a
             # reference to the leaf: naming it would emit a dead (and possibly
@@ -1023,8 +1044,8 @@ class _Renderer(_DispatchMixin):
         """A node that never gets a local of its own: one a store run absorbs
         (:mod:`hawk.emit.rtstore`), one no statement renders, and one the writer
         renders as the name of a fresh ``Item`` already."""
-        return (self.stores.unnamed(node) or self._proxy_read(node)
-                or self.position.get(id(node)) in self.unrendered
+        return (self.stores.unnamed(node) or self._proxy_read(node) or is_resident(node)
+                or id(node) in self.absorbed or self.position.get(id(node)) in self.unrendered
                 or (self.writer.rolled_forms and self.writer.fresh_value(node)))
 
     @staticmethod
@@ -1072,8 +1093,13 @@ class _Renderer(_DispatchMixin):
         names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
                       for j, c in enumerate(loop.carries))
         self.carry_names[pos] = names
-        for name, elem, init in zip(names, elems, loop.inits):
-            self._emit(f"{elem} {name} = {self._ref(init)};")
+        #: the carried slots that live in a plane (:mod:`hawk.ir.wide`): the carry IS the plane's proxy, written in place
+        planed = {j for j, init in enumerate(loop.inits) if self.placed and (is_resident(init) or is_scratch(init))}
+        names = tuple(self._ref(loop.inits[j]) if j in planed else name for j, name in enumerate(names))
+        self.carry_names[pos] = names
+        for j, (name, elem, init) in enumerate(zip(names, elems, loop.inits)):
+            if j not in planed:
+                self._emit(f"{elem} {name} = {self._ref(init)};")
         tapes = self.tape_names.get(pos, {})
         for slot in sorted(tapes):
             self._emit(self.writer.tape_decl(elems[slot], tapes[slot], loop.trip))
@@ -1115,14 +1141,24 @@ class _Renderer(_DispatchMixin):
         results = []
         for j, (elem, nxt) in enumerate(zip(elems, loop.nexts)):
             result = f"hawk_n{pos}_{j}"
+            if nxt is loop.carries[j]:            # a carry the iteration leaves as it is: nothing to move
+                results.append(None)
+                continue
+            if j in planed:
+                if self._ref(nxt) != names[j]:        # pragma: no cover - the pass admits only in-place chains
+                    raise HawkError(f"the carried slot {j} of the loop over {loop.index.name!r} lives in a plane, "
+                                    "but its end-of-iteration value is not stored in place")
+                results.append(result)
+                continue
             self._emit(f"const {elem} {result} = {self._ref(nxt)};")
             results.append(result)
         if form == "tail":
             # The condition reads the iteration's values, possibly inlined over
             # the carried locals, so it's evaluated BEFORE they move.
             self._emit(f"const bool hawk_x{pos} = {self._ref(loop.exit_cond)};")
-        for name, result in zip(names, results):
-            self._emit(f"{name} = {result};")
+        for j, (name, result) in enumerate(zip(names, results)):
+            if j not in planed and result is not None:
+                self._emit(f"{name} = {result};")
         if counter is not None:
             self._emit(f"++{counter};")
         if form == "tail":
@@ -1229,6 +1265,7 @@ class _Renderer(_DispatchMixin):
         """Render the body with each loop of ``cut`` cut out
         (:class:`LaneSegments`)."""
         self.cut_loops = frozenset(id(loop) for loop in cut)
+        self.lane_rows = {}
         guard = self._guard_slot()
         self.run()
         lines = self.lines
@@ -1251,7 +1288,7 @@ class _Renderer(_DispatchMixin):
             loops.append(LaneLoop(c["step"], c["carries"], c["index"], c["start"],
                                   c["by"], c["trips"], c["exit"], c["speculative"],
                                   c["ops"], c["bounds"]))
-        return LaneSegments(guard, segments, tuple(loops), types)
+        return LaneSegments(guard, segments, tuple(loops), types, dict(self.lane_rows))
 
     def _loop_cut(self, loop: Loop) -> None:
         """:meth:`_loop` for a loop :meth:`lane_segments` cuts at: marks where
@@ -1263,6 +1300,10 @@ class _Renderer(_DispatchMixin):
         pos = self.loop_pos[id(loop)]
         names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
                       for j, c in enumerate(loop.carries))
+        self.carry_names[pos] = names
+        #: the carried slots that live in a plane (:mod:`hawk.ir.wide`): the carry IS the plane's proxy, written in place
+        planed = {j for j, init in enumerate(loop.inits) if self.placed and (is_resident(init) or is_scratch(init))}
+        names = tuple(self._ref(loop.inits[j]) if j in planed else name for j, name in enumerate(names))
         self.carry_names[pos] = names
         inits = [self._ref(init) for init in loop.inits]
         index = f"hawk_k{pos}_{_ident(loop.index.name)}"
@@ -1276,10 +1317,13 @@ class _Renderer(_DispatchMixin):
         lines, self.lines = self.lines, []
         scope = self._push_scope()
         self.local[id(loop.index)] = index
-        for carry, name in zip(loop.carries, names):
+        for j, (carry, name) in enumerate(zip(loop.carries, names)):
             self.local[id(carry)] = name
+            if j in planed and loop.exit_cond is None:
+                self.mutable_carries.add(id(carry))         # a plane's proxy is written in place
         elems = [carry_type(c.ttype) for c in loop.carries]
-        speculative = self._speculative(loop)
+        # a trip that writes a plane is skipped by a lane that is not running (a masked sample's plane is not to be written)
+        speculative = self._speculative(loop) and not planed
         form = loop.exit_form
         flag = f"hawk_x{pos}"
         nexts = [f"hawk_n{pos}_{j}" for j in range(len(names))]
@@ -1310,7 +1354,12 @@ class _Renderer(_DispatchMixin):
                     self._emit(f"const {elem} {nxt} = hawk_w{nxt[6:]};")
         else:
             self._render_scope(loop)
-            for elem, nxt, value in zip(elems, nexts, loop.nexts):
+            for j, (elem, nxt, value) in enumerate(zip(elems, nexts, loop.nexts)):
+                if j in planed:
+                    if self._ref(value) != names[j]:        # pragma: no cover - the pass admits only in-place chains
+                        raise HawkError(f"the carried slot {j} of the loop over {loop.index.name!r} lives in a plane, "
+                                        "but its end-of-iteration value is not stored in place")
+                    continue
                 self._emit(f"const {elem} {nxt} = {self._ref(value)};")
             if form == "tail":
                 self._emit(f"const bool {flag} = {self._ref(loop.exit_cond)};")
@@ -1322,8 +1371,8 @@ class _Renderer(_DispatchMixin):
             "by": loop.step, "trips": loop.trip,
             "exit": "false" if form is None else flag, "speculative": speculative,
             "ops": sum(isinstance(n, Op) for n in _flat_body(loop)), "bounds": bounds,
-            "carries": tuple((name, c.ttype, init, nxt) for name, c, init, nxt
-                             in zip(names, loop.carries, inits, nexts)),
+            "carries": tuple((name, c.ttype, init, nxt) for j, (name, c, init, nxt)
+                             in enumerate(zip(names, loop.carries, inits, nexts)) if j not in planed),
         })
 
     @staticmethod
@@ -1448,6 +1497,9 @@ class _Renderer(_DispatchMixin):
         if isinstance(sink, TeamStore):
             self.writer.team_store(self, sink, target, self._ref(sink.value))
             return
+        if isinstance(sink, WarpStore):
+            self.writer.warp_store(self, sink, target, self._ref(sink.value))
+            return
         if isinstance(sink, TapeWrite):
             self.writer.tape_write(self, sink, target)
             return
@@ -1571,6 +1623,8 @@ class _Renderer(_DispatchMixin):
             return self.writer.leaf(self, node, materialised)
         if isinstance(node, Const):
             return self.writer.const(node)
+        if isinstance(node, WarpLane):
+            return self.writer.warp_lane_value()
         if isinstance(node, LanePosition):
             return self.writer.lane_position_value(
                 getattr(self.kind, "lanes", None) is not None or self.kind.guard.active_set)
@@ -1599,7 +1653,7 @@ class _Renderer(_DispatchMixin):
         if isinstance(node, Dispatch):
             return self._dispatch(node)
         if isinstance(node, Op):
-            if self.position.get(id(node)) in self.unrendered:
+            if self.position.get(id(node)) in self.unrendered or id(node) in self.absorbed:
                 return ""
             args = [self._ref(o) for o in node.operands]
             ranks = [len(o.ttype.shape) for o in node.operands]

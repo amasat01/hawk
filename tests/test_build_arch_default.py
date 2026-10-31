@@ -17,6 +17,8 @@ only at the resolver's own door.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import hawk
@@ -182,6 +184,8 @@ def test_host_only_build_never_probes(monkeypatch, tmp_path):
     build(_arch_probe_kernel, tmp_path / "unit", targets=("host",))
 
 
+@pytest.mark.skipif(os.environ.get("HAWK_DEVICE_COMPILER") == "nvrtc",
+                    reason="spies the nvcc argv builder (toolchain.device_flags), which a forced NVRTC build never calls")
 def test_build_cuda_target_resolves_through_the_same_chain(monkeypatch, tmp_path):
     """``build(..., targets=("cuda",))`` with no ``device_arch=`` and no
     ``$HAWK_CUDA_ARCH`` resolves through the probe -- spied at
@@ -205,6 +209,8 @@ def test_build_cuda_target_resolves_through_the_same_chain(monkeypatch, tmp_path
     assert seen and all(a == probe for a in seen), seen
 
 
+@pytest.mark.skipif(os.environ.get("HAWK_DEVICE_COMPILER") == "nvrtc",
+                    reason="spies the nvcc argv builder (toolchain.device_flags), which a forced NVRTC build never calls")
 def test_build_cuda_target_prefers_the_env_over_the_probe(monkeypatch, tmp_path):
     pin = _pins()[1]
     monkeypatch.setenv("HAWK_CUDA_ARCH", pin)
@@ -224,6 +230,8 @@ def test_build_cuda_target_prefers_the_env_over_the_probe(monkeypatch, tmp_path)
     assert seen and all(a == pin for a in seen), seen
 
 
+@pytest.mark.skipif(os.environ.get("HAWK_DEVICE_COMPILER") == "nvrtc",
+                    reason="spies the nvcc argv builder (toolchain.device_flags), which a forced NVRTC build never calls")
 def test_build_cuda_target_device_arch_beats_everything(monkeypatch, tmp_path):
     env_pin, pin, _ = _pins()
     monkeypatch.setenv("HAWK_CUDA_ARCH", env_pin)

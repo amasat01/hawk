@@ -18,11 +18,14 @@ no translation.
 """
 from __future__ import annotations
 
+import glob
 import hashlib
 import importlib.util
+import json
 import os
 import platform
 import shutil
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -146,15 +149,93 @@ def loaded_nvrtc_root() -> Path | None:
     """The CUDA root of the NVRTC library this process has loaded: the
     parent of its ``lib``/``lib64`` directory (a toolkit root, a
     ``targets/<arch>-linux`` directory or a wheel's package root). ``None``
-    when NVRTC is not importable or the mapping cannot be read."""
+    when NVRTC is not importable or the mapping cannot be read. Answered
+    from the persisted probe (:func:`_nvrtc_probe`) on a warm process."""
     try:
         nvrtc_version()                 # forces the library to load
+        probe = _nvrtc_probe()
     except Exception:
         return None
-    path = _loaded_library_path("libnvrtc.so")
-    if path is None:
-        return None
-    return Path(path).parent.parent
+    return Path(probe["root"]) if probe.get("root") else None
+
+
+#: Per-process memo of :func:`_nvrtc_probe`.
+_NVRTC_PROBE_MEMO: list = []
+
+
+def _library_fingerprint() -> str:
+    """A key for "which NVRTC would this process load", WITHOUT loading it (a load
+    imports ``cuda.bindings`` and runs the pathfinder's ``ldconfig``): the
+    path, size and mtime of every ``libnvrtc.so*`` the usual places hold (the
+    NVRTC wheel, the conda/CUDA roots, ``LD_LIBRARY_PATH``), the bindings' own
+    extension module, and the environment variables that steer the search. A new
+    or replaced library, or a different search environment, is a new key."""
+    dirs: list[str] = []
+    try:
+        spec = importlib.util.find_spec("nvidia.cuda_nvrtc")
+    except (ImportError, ValueError):
+        spec = None
+    for loc in (spec.submodule_search_locations or ()) if spec else ():
+        dirs += [os.path.join(loc, "lib"), os.path.join(loc, "bin")]
+    for var in ("CUDA_PATH", "CUDA_HOME", "CONDA_PREFIX"):
+        root = os.environ.get(var)
+        if root:
+            dirs += [os.path.join(root, d) for d in ("lib", "lib64")]
+            dirs += glob.glob(os.path.join(root, "targets", "*", "lib"))
+    dirs += [d for d in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep) if d]
+    dirs += ["/usr/local/cuda/lib64", "/usr/lib64", "/usr/lib/x86_64-linux-gnu"]
+    files: list[str] = []
+    for d in dict.fromkeys(dirs):
+        files += glob.glob(os.path.join(d, "libnvrtc.so*")) + glob.glob(os.path.join(d, "nvrtc64*.dll"))
+    try:
+        binding = importlib.util.find_spec("cuda.bindings.nvrtc")
+        if binding and binding.origin:
+            files.append(binding.origin)
+    except (ImportError, ValueError):
+        pass
+    h = hashlib.sha256()
+    for f in sorted(set(files)):
+        try:
+            st = os.stat(f)
+            h.update(f"{f}\0{st.st_size}\0{st.st_mtime_ns}\0".encode())
+        except OSError:
+            pass
+    for var in ("CUDA_PATH", "CUDA_HOME", "CONDA_PREFIX", "LD_LIBRARY_PATH"):
+        h.update(f"{var}={os.environ.get(var, '')}\0".encode())
+    return h.hexdigest()[:24]
+
+
+def _nvrtc_probe() -> dict:
+    """``{version, archs, root}`` of the NVRTC the import machinery loads. Asked
+    of the library once per library fingerprint and kept in the cache directory:
+    a fresh process answers from the file, so a cache HIT never imports
+    ``cuda.bindings``. A miss in the file loads NVRTC (raising
+    :class:`NvrtcUnavailable` when it cannot be)."""
+    if _NVRTC_PROBE_MEMO:
+        return _NVRTC_PROBE_MEMO[0]
+    from .cache import default_cache_dir
+    path = default_cache_dir() / "toolchain" / f"nvrtc-{_library_fingerprint()}.json"
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        record = None
+    if record is None:
+        _nvrtc = _import_nvrtc()
+        _, major, minor = _nvrtc.nvrtcVersion()
+        err, archs = _nvrtc.nvrtcGetSupportedArchs()
+        ok = err == _nvrtc.nvrtcResult.NVRTC_SUCCESS
+        lib = _loaded_library_path("libnvrtc.so")
+        record = {"version": [major, minor], "archs": [int(a) for a in archs] if ok else None,
+                  "root": str(Path(lib).parent.parent) if lib else None}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(record))
+            os.replace(tmp, path)
+        except OSError:
+            pass
+    _NVRTC_PROBE_MEMO.append(record)
+    return record
 
 
 def _root_include_dirs(root: Path) -> list[Path]:
@@ -190,29 +271,48 @@ def _toolkit_include_dirs() -> list[Path]:
     return dirs
 
 
+#: Per-process memo of :func:`cccl_digest`, keyed on the include root.
+_CCCL_DIGEST_MEMO: dict = {}
+
+
 def cccl_digest(cccl_include: str | None = None) -> str:
     """A cheap identity for the served CCCL headers: sha256 over the
     `cuda/std/*` file names, sizes and mtimes. Content is not read: these
     files change only when the wheel/toolkit version changes, and
-    name+size+mtime already tells one install apart from another."""
-    root = Path(cccl_include or cccl_include_dir()) / "cuda/std"
+    name+size+mtime already tells one install apart from another. One
+    ``scandir`` walk per process and root (it was a ``pathlib`` walk per
+    compile, ~0.1 s for the ~1700 files)."""
+    base = cccl_include or cccl_include_dir()
+    known = _CCCL_DIGEST_MEMO.get(base)
+    if known is not None:
+        return known
+    root = os.path.join(base, "cuda/std")
+    rows: list[str] = []
+    stack = [root]
+    while stack:
+        top = stack.pop()
+        with os.scandir(top) as it:
+            for e in it:
+                if e.is_dir(follow_symlinks=True):
+                    stack.append(e.path)
+                elif e.is_file(follow_symlinks=True):
+                    st = e.stat()
+                    rows.append(f"{os.path.relpath(e.path, root)}\0{st.st_size}\0{st.st_mtime_ns}\0")
     h = hashlib.sha256()
-    for f in sorted(root.rglob("*")):
-        if f.is_file():
-            st = f.stat()
-            h.update(str(f.relative_to(root)).encode())
-            h.update(b"\0")
-            h.update(f"{st.st_size}\0{st.st_mtime_ns}\0".encode())
-    return h.hexdigest()
+    for r in sorted(rows):
+        h.update(r.encode())
+    return _CCCL_DIGEST_MEMO.setdefault(base, h.hexdigest())
 
 
 def nvrtc_version() -> tuple[int, int]:
     """`(major, minor)` of the loaded NVRTC — a compiler subprocess never
     runs for this (the `compiler_identity` timeout/RLIMIT_AS machinery is
     for a SUBPROCESS; NVRTC is an in-process library call)."""
-    _nvrtc = _import_nvrtc()
-    _, major, minor = _nvrtc.nvrtcVersion()
+    major, minor = _nvrtc_probe()["version"]
     return major, minor
+
+
+_DRIVER_VERSION_MEMO: list = []
 
 
 def driver_cuda_version() -> tuple[int, int]:
@@ -220,15 +320,29 @@ def driver_cuda_version() -> tuple[int, int]:
     supports — the ceiling on the PTX ISA the driver's JIT will accept,
     used by the `target="ptx"` guard in :func:`device`. Distinct from
     :func:`nvrtc_version`: NVRTC's own version can outrun an older
-    driver on the same box."""
+    driver on the same box.
+
+    Asked of the driver library through :mod:`ctypes` first (no
+    ``cuda.bindings`` import, ~40 ms), memoised for the process; the
+    bindings answer only when the library cannot be loaded."""
+    if _DRIVER_VERSION_MEMO:
+        return _DRIVER_VERSION_MEMO[0]
+    import ctypes
+    for name in (("nvcuda.dll",) if sys.platform == "win32" else ("libcuda.so.1", "libcuda.so")):
+        try:
+            lib = ctypes.CDLL(name)
+        except OSError:
+            continue
+        encoded = ctypes.c_int()
+        if lib.cuInit(0) == 0 and lib.cuDriverGetVersion(ctypes.byref(encoded)) == 0:
+            _DRIVER_VERSION_MEMO.append((encoded.value // 1000, (encoded.value % 1000) // 10))
+            return _DRIVER_VERSION_MEMO[0]
+        break
     try:
-        from cuda.bindings import driver as _driver
+        _driver = _initialised_driver()
     except ImportError as exc:
         raise HawkError(
             "cuda-bindings is not installed; the driver version is unknown.") from exc
-    (err,) = _driver.cuInit(0)
-    if err != _driver.CUresult.CUDA_SUCCESS:
-        raise HawkError(f"cuInit failed ({err}); no CUDA driver reachable.")
     err, encoded = _driver.cuDriverGetVersion()
     if err != _driver.CUresult.CUDA_SUCCESS:
         raise HawkError(f"cuDriverGetVersion failed ({err}).")
@@ -265,14 +379,34 @@ def select_target(compiler_version: tuple[int, int] | None,
     return "cubin" if compiler_version > driver_version else "ptx"
 
 
+def _initialised_driver():
+    """`cuda.bindings.driver` after a successful ``cuInit``. An ImportError
+    propagates (the caller may probe the driver by ctypes instead); any other
+    failure -- the binding cannot load the driver library because this machine
+    has no NVIDIA driver, or ``cuInit`` fails -- is a HawkError, the same answer
+    as no reachable device."""
+    try:
+        from cuda.bindings import driver as _driver
+    except ImportError:
+        raise
+    except Exception as exc:
+        raise HawkError(
+            f"the CUDA driver library could not be loaded ({exc}); no CUDA device reachable.") from exc
+    try:
+        (err,) = _driver.cuInit(0)
+    except Exception as exc:
+        raise HawkError(
+            f"the CUDA driver library could not be loaded ({exc}); no CUDA device reachable.") from exc
+    if err != _driver.CUresult.CUDA_SUCCESS:
+        raise HawkError(f"cuInit failed ({err}); no CUDA device reachable.")
+    return _driver
+
+
 def _current_device(device_index: int | None = None):
     """``(driver module, CUdevice)``: the CURRENT context's device
     (``cuCtxGetDevice``) when ``device_index`` is ``None`` and a context is
     current, else ordinal ``device_index`` (``0`` by default)."""
-    from cuda.bindings import driver as _driver
-    (err,) = _driver.cuInit(0)
-    if err != _driver.CUresult.CUDA_SUCCESS:
-        raise HawkError(f"cuInit failed ({err}); no CUDA device reachable.")
+    _driver = _initialised_driver()
     if device_index is None:
         err, dev = _driver.cuCtxGetDevice()
         if err == _driver.CUresult.CUDA_SUCCESS:
@@ -287,7 +421,14 @@ def _current_device(device_index: int | None = None):
 def current_device_arch(device_index: int | None = None) -> str:
     """`"sm_XX"` of the device this process is running on: the current
     CUDA context's device, or ordinal 0 when no context is current (an
-    explicit `device_index` reads that ordinal instead)."""
+    explicit `device_index` reads that ordinal instead). Read through the
+    driver library by :mod:`ctypes` first while the bindings' driver module is not yet
+    loaded (no ``cuda.bindings`` import)."""
+    if device_index is None and "cuda.bindings.driver" not in sys.modules:
+        from .toolchain import _driver_device_arch
+        probed = _driver_device_arch()
+        if probed:
+            return probed
     _driver, dev = _current_device(device_index)
     err, major = _driver.cuDeviceGetAttribute(
         _driver.CUdevice_attribute.CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, dev)
@@ -312,11 +453,10 @@ def current_device_name(device_index: int | None = None) -> str:
 def supported_archs() -> tuple[int, ...]:
     """The compute archs the loaded NVRTC can target
     (``nvrtcGetSupportedArchs``), e.g. ``(75, 80, ..., 120)``."""
-    _nvrtc = _import_nvrtc()
-    err, archs = _nvrtc.nvrtcGetSupportedArchs()
-    if err != _nvrtc.nvrtcResult.NVRTC_SUCCESS:
-        raise HawkError(f"nvrtcGetSupportedArchs failed ({err}).")
-    return tuple(int(a) for a in archs)
+    archs = _nvrtc_probe()["archs"]
+    if archs is None:
+        raise HawkError("nvrtcGetSupportedArchs failed.")
+    return tuple(archs)
 
 
 def forced_target(arch: str) -> str | None:
@@ -360,7 +500,10 @@ def options(arch: str, *, cccl_include: str | None = None,
     build of the same request does."""
     device_arch = (arch.replace("sm_", "compute_")
                    if virtual_arch and arch.startswith("sm_") else arch)
+    # NVRTC has no __builtin_inf (the sample-sum identity spells +inf with it): a
+    # function-like macro supplies it, so the emitted TEXT is the same under both compilers
     return ["-std=c++20", f"-arch={device_arch}", "-default-device",
+            "-D__builtin_inf()=__longlong_as_double(0x7ff0000000000000LL)",
             f"-I{cccl_include or cccl_include_dir()}", *extra]
 
 
@@ -437,6 +580,50 @@ def _compile_image(source: str, name: str, arch: str, *, target: str,
         return NvrtcResult(True, image, log)
     finally:
         _nvrtc.nvrtcDestroyProgram(prog)
+
+
+_EIATTR_FRAME_SIZE, _EIATTR_REGCOUNT = 0x11, 0x2F
+
+
+def cubin_resources(image: bytes) -> dict:
+    """``{entry: {regs, stack_B, spill_store_B, spill_load_B}}`` read off a CUBIN itself: the
+    EIATTR_REGCOUNT and EIATTR_FRAME_SIZE records of its global ``.nv.info`` section, each keyed by
+    the entry's symbol index. The figures match nvcc's ``-Xptxas -v`` and need no tool and no
+    device. The spill figures are ``None``: the image does not say how much of the frame is
+    spills. (NVRTC's own ``-Xptxas -v`` log is not used: the driver's compute cache answers a
+    repeat compile without printing it.)"""
+    import struct
+    if image[:4] != b"\x7fELF":
+        return {}
+    (shoff,) = struct.unpack_from("<Q", image, 0x28)
+    shentsize, shnum, _ = struct.unpack_from("<HHH", image, 0x3A)
+    sec = {}
+    for i in range(shnum):
+        name, kind, _, _, off, size, link, _ = struct.unpack_from("<IIQQQQII", image, shoff + i * shentsize)
+        sec[i] = (name, kind, off, size, link)
+    strtab_off = lambda link: sec[link][2]                       # noqa: E731
+    shstr = struct.unpack_from("<H", image, 0x3E)[0]
+    named = {image[sec[shstr][2] + n:image.index(b"\0", sec[shstr][2] + n)].decode(): (off, size)
+             for n, _, off, size, _ in sec.values()}
+    symtab = next(v for v in sec.values() if v[1] == 2)           # SHT_SYMTAB
+    names = strtab_off(symtab[4])
+    regs: dict = {}
+    frames: dict = {}
+    info_off, info_size = named.get(".nv.info", (0, 0))
+    at = info_off
+    while at + 4 <= info_off + info_size:
+        fmt, attr, n = struct.unpack_from("<BBH", image, at)
+        if fmt == 4 and n == 8 and attr in (_EIATTR_REGCOUNT, _EIATTR_FRAME_SIZE):
+            index, value = struct.unpack_from("<II", image, at + 4)
+            (regs if attr == _EIATTR_REGCOUNT else frames)[index] = value
+        at += 4 + (n if fmt == 4 else 0)
+    out = {}
+    for index, count in regs.items():
+        (st_name,) = struct.unpack_from("<I", image, symtab[2] + index * 24)
+        entry = image[names + st_name:image.index(b"\0", names + st_name)].decode()
+        out[entry] = {"regs": count, "stack_B": frames.get(index, 0),
+                      "spill_store_B": None, "spill_load_B": None}
+    return out
 
 
 def compile_cubin(source: str, name: str, arch: str, *,

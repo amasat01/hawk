@@ -222,10 +222,16 @@ def test_the_decorator_form_refuses_what_hawk_steps_refuses():
         kernel(steps=4)(scattering)
 
 
-@pytest.mark.parametrize("transform", [vjp, jvp], ids=["vjp", "jvp"])
-def test_a_derivative_of_the_derived_kernel_refuses(transform):
+def test_a_vjp_of_the_derived_kernel_refuses():
     with pytest.raises(HawkError, match=r"is read before it is assigned"):
-        transform(hawk.steps(osc, 4), wrt=("x",))
+        vjp(hawk.steps(osc, 4), wrt=("x",))
+
+
+def test_a_jvp_of_the_derived_kernel_is_its_fused_step_jvp():
+    """The forward mode carries through the loop: ``hawk.steps(step_jvp(osc), 4)``."""
+    from hawk.diff import step_jvp
+
+    assert jvp(hawk.steps(osc, 4)).name == hawk.steps(step_jvp(osc), 4).name
 
 
 # --------------------------------------------------------------------------- #

@@ -64,10 +64,10 @@ _TYPES_PUBLIC_NAMES = frozenset({"DTYPES", "INT_PLANE_DTYPES", "LaneMeta", "PER_
 #: the SAME commit, same as any other committed manifest in this repo.
 _EXPECTED_MANIFEST = {
     "hawk": [
-        "Grid", "HawkError", "Index", "Int32", "Kernel", "Matrix", "Mutable",
+        "Grid", "HawkError", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
         "Param", "Quantity", "Quat", "RawBlock", "Scalar", "Sorted",
         "Staged", "Table", "Terminated", "UInt32", "Value", "Vector", "Wide",
-        "WideOut", "__version__", "build", "kernel", "lane_position", "load", "max", "mean", "min",
+        "WideOut", "__version__", "build", "embedded", "geometry", "kernel", "lane_position", "load", "max", "mean", "min",
         "primitive", "raw_device", "resolve_dispatch", "run", "samples_first", "samples_last",
         "scatter", "steps", "sum",
     ],

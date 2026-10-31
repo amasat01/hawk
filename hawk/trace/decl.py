@@ -20,7 +20,7 @@ producer's layout uncheckably. Layout is ROW-MAJOR, last axis innermost.
 from __future__ import annotations
 
 import keyword
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..ir import HawkError, Quantity
 from ..types import TensorType
@@ -73,6 +73,16 @@ class Plane:
     #: ``Sorted[Index]``: the values are non-decreasing along the flat lane (a
     #: promise the bind checks only under ``HAWK_CHECK_SORTED``).
     sorted: bool = False
+    #: ``Param[Vector[W]]``/``Param[Matrix[R,C]]``/``Param[Table[...]]``: the
+    #: shape of the ONE value every lane shares (empty for any other plane).
+    shared: tuple = ()
+    #: ``Annotated[T, Meta(...)]``: opaque ``(key, value)`` pairs the sidecar carries for a reader.
+    meta: tuple = ()
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        """Never called: a declaration is only annotated. Defined so that ``typing.Annotated``
+        accepts it as its first argument before Python 3.11, which requires a callable."""
+        raise HawkError(f"a `{self.form}` DECLARATION is annotated, not called")
 
     def __setitem__(self, key: object, value: object) -> None:
         from ..ir import HawkError
@@ -224,23 +234,58 @@ class WideOut:
 
 @dataclass(frozen=True)
 class _ParamPlane(Plane):
-    """``Param`` — one broadcast by-value scalar (the ``uniform``);
-    ``Param[Int32]``/``Param[UInt32]`` declare an integer one (passed as a
-    Python ``int``, narrowed modulo 2**32 to the declared type)."""
+    """``Param`` — one value shared by every lane, whatever type it wraps.
+
+    ``Param[T]`` is the one rule: the bare type ``T`` (``Scalar``, ``Vector[W]``,
+    ``Matrix[R,C]``, ``Table[...]``) is per-lane, and ``Param`` in front of it makes it
+    ONE value that all lanes read. A scalar is passed by value (``Param[Int32]``,
+    ``Param[UInt32]`` an integer one, as a Python ``int``); a vector, matrix or
+    named-axis table is passed as an array of its own shape and read in the body as
+    ``p[j]``, ``p[i, j]``, ``p.at(...)`` or whole, from memory, never copied per lane."""
 
     def __getitem__(self, t: object) -> Plane:
-        """``Param[t]``: a by-value parameter of payload ``t``.
+        """``Param[t]``: ``t`` as one value shared by all lanes.
 
-        :param t: ``Scalar``, ``Int32`` or ``UInt32``.
-        :returns: the ``uniform`` declaration.
-        :raises HawkError: for any other payload.
+        :param t: ``Scalar``, ``Int32``, ``UInt32``, ``Vector[W]``, ``Matrix[R,C]`` or a
+            ``Table`` with static named axes.
+        :returns: the shared declaration (``uniform`` for a scalar, else a ``lookup``
+            plane of the value's cells, row-major).
+        :raises HawkError: for any other payload, naming the supported ones.
 
-        Example: ``def k(x: Scalar, n: Param[Int32], y: Mutable[Scalar]): ...``"""
-        if t not in (Scalar, Int32, UInt32):
-            raise HawkError(
-                f"Param[...] takes Scalar, Int32 or UInt32, got {t!r}; a wider "
-                "shared value is a Table")
-        return Plane("uniform", t)
+        Example: ``def k(x: Scalar, n: Param[Int32], A: Param[Matrix[2, 2]], y: Mutable[Scalar]): ...``"""
+        if t in (Scalar, Int32, UInt32):
+            return Plane("uniform", t)
+        if isinstance(t, TensorType) and t.shape:
+            return _shared_value(t)
+        if isinstance(t, Plane) and t.form == "table":
+            return _shared_table(t)
+        raise HawkError(
+            f"Param[...] takes Scalar, Int32 or UInt32, a float Vector[W] or Matrix[R,C], or "
+            f"a Table with static named axes, got {t!r}")
+
+
+def _shared_value(t: TensorType) -> Plane:
+    """The shared declaration of a vector or matrix payload: its cells, row-major."""
+    if t.dtype != "f64" or t.tag is not None or len(t.shape) not in (1, 2):
+        raise HawkError(
+            f"Param[{spell(t)}]: a shared vector or matrix is a float Vector[W] or "
+            "Matrix[R,C] (rank 1 or 2); an integer or tagged value is passed as "
+            "separate Scalar/Int32 Params, or as a Table of its cells")
+    dims = (("component", t.shape[0], 1),) if len(t.shape) == 1 \
+        else _axes("Param", (slice("row", t.shape[0]), slice("col", t.shape[1])))
+    return Plane("table", t, dims=dims, shared=tuple(t.shape))
+
+
+def _shared_table(plane: Plane) -> Plane:
+    """A ``Table`` as one shared value: named axes, every extent static (the
+    caller's array is checked against them)."""
+    if plane.ttype != Scalar or plane.staged or not plane.dims \
+            or any(size is None for _label, size, _stride in plane.dims):
+        raise HawkError(
+            'Param[Table[...]] takes named axes with static extents, '
+            'Param[Table["row":R, "col":C]]; a plain Table is already one plane '
+            "shared by all lanes, with a runtime length")
+    return replace(plane, shared=tuple(size for _label, size, _stride in plane.dims))
 
 
 #: ``Param`` — one broadcast by-value scalar (the ``uniform``).
@@ -334,8 +379,32 @@ def spell(t: TensorType) -> str:
     return repr(t)
 
 
+class Meta:
+    """``Annotated[Vector[3], Meta(unit="km")]`` — opaque notes on a plane.
+
+    HAWK never reads them: they are written under ``plane_meta`` in the sidecar, by plane
+    name, and eagle hands them back from the loaded kernel. Values must be JSON."""
+
+    def __init__(self, **notes: object) -> None:
+        import json
+
+        try:
+            json.dumps(notes)
+        except TypeError as exc:
+            raise HawkError(f"Meta(...) values must be JSON: {exc}") from None
+        self.notes = tuple(sorted(notes.items()))
+
+
 def resolve(param: str, annotation: object) -> Plane | Quantity:
     """The declaration a parameter's annotation names."""
+    if getattr(annotation, "__metadata__", None) is not None:        # typing.Annotated
+        notes = tuple(n for m in annotation.__metadata__ if isinstance(m, Meta) for n in m.notes)
+        declared = resolve(param, annotation.__origin__)
+        if not notes:
+            return declared
+        if not isinstance(declared, Plane):
+            raise HawkError(f"parameter {param!r}: Meta(...) annotates a plane, not a Quantity")
+        return replace(declared, meta=notes)
     if isinstance(annotation, (Plane, Quantity)):
         return annotation
     if isinstance(annotation, TensorType):

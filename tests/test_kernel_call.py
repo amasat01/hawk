@@ -155,6 +155,7 @@ def _device():
         return False
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not _device(), reason="needs a CUDA device")
 def test_kernel_call_gpu(private_cache, compiler_calls):
     import cupy as cp
@@ -162,14 +163,16 @@ def test_kernel_call_gpu(private_cache, compiler_calls):
     k = _scale()
     x = cp.arange(8.0)
     y = k(x, 2.0, 1.0)
-    assert isinstance(y, cp.ndarray)
+    assert isinstance(y, (cp.ndarray, eagle.Array))     # eagle hands the result back as its own array unless returns= asks for cupy's
+    y = cp.asarray(y)
     cp.testing.assert_array_equal(y, 2.0 * x + 1.0)
     first = len(compiler_calls)
-    twin = eagle.deploy(k).run(x=x, a=2.0, b=1.0)
+    twin = cp.asarray(eagle.deploy(k).run(x=x, a=2.0, b=1.0))
     cp.testing.assert_array_equal(twin, y)
     assert len(compiler_calls) == first
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not _device(), reason="needs a CUDA device")
 def test_a_factory_builds_each_size_gpu(private_cache):
     import cupy as cp

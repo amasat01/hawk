@@ -43,13 +43,13 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             plat: manylinux_x86_64
           - arch: aarch64
             runner: ubuntu-24.04-arm
             plat: manylinux_aarch64
           - arch: macos-arm64
-            runner: macos-14
+            runner: macos-15
             plat: macosx_arm64
     name: wheels (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -181,7 +181,7 @@ jobs:
     needs: wheels
     outputs:
       tree: ${{ steps.tree.outputs.tree }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -247,7 +247,7 @@ jobs:
 
   test-wheel:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # every Python version reports, even when one fails
       fail-fast: false
@@ -261,7 +261,7 @@ jobs:
       CC: gcc-13
       CXX: g++-13
       HAWK_CXX: g++-13
-      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC: /usr/local/cuda-12.9/bin/nvcc
       HAWK_NVCC_CCBIN: /usr/bin/g++-13
     steps:
       - uses: actions/checkout@v7
@@ -294,7 +294,7 @@ jobs:
 
       - run: sudo apt-get update && sudo apt-get install -y g++-13 cppcheck
 
-      - uses: ./hawk/.github/actions/cuda-toolchain
+      - uses: ./hawk/.github/actions/cuda
 
       # aether-dsc (hawk's runtime dependency) and the test-only eagle + raptor-core: each from PyPI when
       # its checkout's version is released, else built from the checkout. The exact version matters: an
@@ -342,7 +342,7 @@ jobs:
           cp -r hawk/tests suite/tests
           cp hawk/pyproject.toml suite/pyproject.toml
           cd suite
-          python -m pytest tests -q -m "not gpu and not repo_local"
+          python -m pytest tests -q -m "not gpu and not repo_local" -n auto --dist loadfile
 
       # Free-threaded legs only (3.13t / 3.14t): the ft rows against the INSTALLED
       # wheel, then the whole suite with RuntimeWarning as an error (a re-enabled
@@ -366,7 +366,7 @@ jobs:
           echo "ft rows collected: $N"
           [ "$N" -gt 0 ] || { echo "ft selection collected zero tests"; exit 1; }
           python -m pytest tests -m "ft and not repo_local" -q -rs -p no:cacheprovider -W error::RuntimeWarning
-          python -m pytest tests -q -p no:cacheprovider -W error::RuntimeWarning -m "not gpu and not repo_local"
+          python -m pytest tests -q -p no:cacheprovider -W error::RuntimeWarning -m "not gpu and not repo_local" -n auto --dist loadfile
 
   # The aarch64 and macOS arm64 wheels, installed and run on native runners: host build and run of the README example,
   # forward and vjp. The x86_64 test-wheel above also needs the compile-only CUDA toolchain, which is x86_64 only.
@@ -376,13 +376,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04-arm, macos-14]
+        os: [ubuntu-24.04-arm, macos-15]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15", "3.13t", "3.14t", "3.15t"]
     env:
       # the runner's bundled pip (22.x on 3.9) nags about a newer release on every call
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       # macOS: Homebrew's LLVM clang (C++23-complete); Apple's clang 15 rejects -std=c++23 (Apple clang support: a later release)
-      HAWK_CXX: ${{ matrix.os == 'macos-14' && '/opt/homebrew/opt/llvm/bin/clang++' || 'g++-13' }}
+      HAWK_CXX: ${{ matrix.os == 'macos-15' && '/opt/homebrew/opt/llvm/bin/clang++' || 'g++-13' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -481,12 +481,12 @@ jobs:
           done
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CC: gcc-13
       CXX: g++-13
       HAWK_CXX: g++-13
-      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC: /usr/local/cuda-12.9/bin/nvcc
       HAWK_NVCC_CCBIN: /usr/bin/g++-13
       # ccache: CMake reads the *_COMPILER_LAUNCHER variables, also under scikit-build-core
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -527,7 +527,7 @@ jobs:
             eagle/python/pyproject.toml
             hawk/docs/requirements.txt
 
-      - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache
+      - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache cppcheck
 
       # compiled objects persist across runs; one cache per job and architecture
       - uses: actions/cache@v6
@@ -538,57 +538,15 @@ jobs:
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-docs-
       - run: ccache -z
 
-      - uses: ./hawk/.github/actions/cuda-toolchain
+      - uses: ./hawk/.github/actions/cuda
 
-      - run: |
-          cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
-            -B aether/build -S aether
-          cmake --install aether/build
-          cmake -B eagle/__eagle_hdr -S eagle -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-            -DCMAKE_CUDA_ARCHITECTURES=70 \
-            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
-          cmake --install eagle/__eagle_hdr
-
-      - run: |
-          python -m pip install --quiet --upgrade pip
-          # aether-dsc's payload is sealed at build time (it is not tracked in
-          # git): seal it from the sibling checkout, as the release workflow does,
-          # in a throwaway venv so the NVRTC packages never reach the test env.
-          python -m venv "$RUNNER_TEMP/seal"
-          "$RUNNER_TEMP/seal/bin/pip" install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
-          (cd aether/dsc && "$RUNNER_TEMP/seal/bin/python" -m aether_dsc.seal)
-          python -m pip install --quiet ./aether/dsc ./raptor
-          export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install:${CMAKE_PREFIX_PATH}"
-          # build deps preinstalled + --no-build-isolation: an isolated build compiles nanobind from a
-          # random /tmp build env, so every compile line differs and ccache never hits;
-          # --only-binary=:all: still builds this local project but never a dependency from
-          # source, so no third-party sdist is ever built without its own isolated env
-          python -m pip install --quiet "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4"
-          export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: ./eagle/python
-
+      # the gate's venv carries the sibling checkouts as before; it runs every notebook on the CPU, the strict (-W) Sphinx build
+      # and the public-name page check: the commands are in the Makefile
       - env:
-          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
-          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+          GATE_JOBS: "4"
         run: |
-          cd hawk
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
-          python -m pip install --quiet -r docs/requirements.txt
-          # the companion site's raptor-docs, not main's
-          python -m pip install --quiet --force-reinstall --no-deps ../site
-
-      # nbcheck also executes every notebook on the CPU, so the notebooks' own dependencies must be present
-      - run: python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
-
-      - name: make nbcheck (every notebook filled, then run on the CPU)
-        run: cd hawk/docs && make nbcheck
-
-      - name: make strict
-        run: cd hawk/docs && make strict
-
-      - name: every public name has a page
-        run: python hawk/tools/docs_inventory_check.py hawk/docs/_build/html/objects.inv hawk
+          make -C hawk gate-docs SITE_SRC="$GITHUB_WORKSPACE/site" \
+            RAPTOR_SRC="$GITHUB_WORKSPACE/raptor" AETHER_SRC="$GITHUB_WORKSPACE/aether" EAGLE_SRC="$GITHUB_WORKSPACE/eagle"
 
       - id: tree
         run: echo "tree=$(git -C hawk rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
@@ -604,7 +562,7 @@ jobs:
   # Informational: a docs-only PR carries an already published version.
   pypi-version:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v8
         with:

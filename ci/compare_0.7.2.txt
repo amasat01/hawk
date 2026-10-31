@@ -1,0 +1,16 @@
+# The published 0.7.2 release, pinned by sha256 for `make compare-0.7.2` (pip install --require-hashes -r this file).
+# cp312 and cp313 manylinux x86_64 wheels; every package the three need is listed, as --require-hashes demands.
+raptor-hawk==0.7.2 \
+    --hash=sha256:07799b7066035f1aa5aea1cebfc1dc4051fabbacc618de485f4cbadeec6d61b8 \
+    --hash=sha256:b1f0a32248e70a2ff60804baf9be456acf852fca4d59f5f50e2d5210bf66dbb7
+raptor-eagle==0.7.2 \
+    --hash=sha256:f93c1d621fdc8740aa01892cef916fcebaea3af54c1ab2e78a4642519eafd30a \
+    --hash=sha256:cf45faa4f413bbc9a1cd59008ff4d69d969e3c53715b847f4ccbbe4ccfc843b8
+aether-dsc==0.7.2 \
+    --hash=sha256:4290f209a7853936e08ed15fc31b78fa80ad62320a848bb7702420a13764aeaa \
+    --hash=sha256:9cc1a6ed85490fdfa754d670f340b29fd75d8aa931803339424e20f89ce436e0
+raptor-core==0.7.2 \
+    --hash=sha256:3efaa6c4c5620507dc625f7cc4124d3ab9da1c0c4015058a9078d793c8e880ab
+numpy==2.5.4 \
+    --hash=sha256:fbde6962867ee75b48b0ee29b2b9372ec5d617799dbaf38e82dc0596f2f7738a \
+    --hash=sha256:6ffa07666f8da0eef81d149934a626d0d95fbd6838432a33e66245423a9062c0

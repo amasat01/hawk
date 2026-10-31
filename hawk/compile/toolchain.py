@@ -124,6 +124,37 @@ def _driver_device_arch() -> str | None:
     return f"sm_{major.value}{minor.value}"
 
 
+def _probe_stdout(compiler: str, args: tuple[str, ...], *, timeout: float,
+                  persist: bool = True) -> tuple[int, str]:
+    """``(returncode, stdout)`` of ``<compiler> <args>``, answered from the cache
+    directory when this exact binary (path, size, mtime_ns) already answered the
+    same arguments in ANY process: a toolchain probe is paid once per toolchain,
+    never per process. A replaced binary (new size or mtime) is a new key, so a
+    stale toolchain never reads an old answer. Only a returncode-0 answer is kept.
+    A name resolved through ``PATH`` (no ``stat``) is not persisted."""
+    path = None
+    try:
+        st = os.stat(compiler)
+        key = hashlib.sha256("\0".join(
+            [compiler, str(st.st_size), str(st.st_mtime_ns), *args]).encode()).hexdigest()[:24]
+        path = default_cache_dir() / "toolchain" / f"{key}.txt"
+        if persist:
+            return 0, path.read_text()
+    except OSError:
+        pass
+    out = subprocess.run([compiler, *args], capture_output=True, text=True, timeout=timeout,
+                         check=False)
+    if persist and path is not None and out.returncode == 0:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(out.stdout)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+    return out.returncode, out.stdout
+
+
 #: ``nvcc --list-gpu-arch``'s entries, e.g. ``compute_75``.
 _COMPUTE_RE = re.compile(r"compute_(\d+)")
 #: An arch string's numeric part: ``sm_86``, ``compute_90``, ``sm_90a``.
@@ -145,8 +176,7 @@ def _nvcc_supported_archs() -> tuple[str, tuple[int, ...]] | None:
     if key in _TOOLKIT_ARCHS_MEMO:
         return _TOOLKIT_ARCHS_MEMO[key]
     try:
-        out = subprocess.run([nvcc, "--list-gpu-arch"], capture_output=True, text=True,
-                             timeout=IDENTITY_TIMEOUT_S).stdout
+        out = _probe_stdout(nvcc, ("--list-gpu-arch",), timeout=IDENTITY_TIMEOUT_S)[1]
     except (OSError, subprocess.SubprocessError):
         out = ""
     archs = tuple(sorted({int(m) for m in _COMPUTE_RE.findall(out)}))
@@ -611,24 +641,15 @@ _GCC_FAMILY_LOCK = threading.Lock()
 
 def compiler_is_gcc(compiler: str) -> bool:
     """Whether ``compiler`` is GCC proper (``__GNUC__`` defined and
-    ``__clang__`` not), read from its predefined macros
-    (``-dM -E -x c++``), never from ``--version`` text. Memoised per
-    compiler path for the process; a compiler that cannot be probed counts
-    as not GCC."""
+    ``__clang__`` not), read from its predefined macros (:func:`compiler_macros`),
+    never from ``--version`` text. A compiler that cannot be probed counts as
+    not GCC."""
     with _GCC_FAMILY_LOCK:
         known = _GCC_FAMILY_MEMO.get(compiler)
     if known is not None:
         return known
-    try:
-        out = subprocess.run([compiler, "-dM", "-E", "-x", "c++", os.devnull],
-                             capture_output=True, text=True, timeout=60,
-                             check=False)
-        macros = {ln.split()[1] for ln in out.stdout.splitlines()
-                  if ln.startswith("#define ") and len(ln.split()) > 1}
-        gcc = (out.returncode == 0 and "__GNUC__" in macros
-               and "__clang__" not in macros)
-    except (OSError, subprocess.SubprocessError):
-        gcc = False
+    macros = compiler_macros(compiler)
+    gcc = "__GNUC__" in macros and "__clang__" not in macros
     with _GCC_FAMILY_LOCK:
         return _GCC_FAMILY_MEMO.setdefault(compiler, gcc)
 
@@ -648,11 +669,9 @@ def compiler_macros(compiler: str) -> dict:
         return known
     macros: dict = {}
     try:
-        out = subprocess.run([compiler, "-dM", "-E", "-x", "c++", os.devnull],
-                             capture_output=True, text=True, timeout=60,
-                             check=False)
-        if out.returncode == 0:
-            for ln in out.stdout.splitlines():
+        rc, text = _probe_stdout(compiler, ("-dM", "-E", "-x", "c++", os.devnull), timeout=60)
+        if rc == 0:
+            for ln in text.splitlines():
                 parts = ln.split(None, 2)
                 if len(parts) >= 2 and parts[0] == "#define":
                     macros[parts[1]] = parts[2] if len(parts) > 2 else ""
@@ -999,8 +1018,7 @@ def nvcc_version(compiler: str) -> tuple[int, int] | None:
     if memo_key is not None and memo_key in _NVCC_VERSION_MEMO:
         return _NVCC_VERSION_MEMO[memo_key]
     try:
-        out = subprocess.run([compiler, "--version"], capture_output=True, text=True,
-                             timeout=IDENTITY_TIMEOUT_S).stdout
+        out = _probe_stdout(compiler, ("--version",), timeout=IDENTITY_TIMEOUT_S)[1]
     except (OSError, subprocess.SubprocessError):
         return None
     m = _NVCC_RELEASE_RE.search(out)
@@ -1038,8 +1056,7 @@ def compiler_identity(compiler: str) -> str:
         if hit is not None:
             return hit
     try:
-        out = subprocess.run([compiler, "--version"], capture_output=True, text=True,
-                             timeout=IDENTITY_TIMEOUT_S).stdout
+        out = _probe_stdout(compiler, ("--version",), timeout=IDENTITY_TIMEOUT_S)[1]
     except (OSError, subprocess.SubprocessError) as exc:   # pragma: no cover
         raise HawkError(f"cannot identify compiler {compiler!r}: {exc}") from exc
     first = out.splitlines()[0].strip() if out.strip() else ""

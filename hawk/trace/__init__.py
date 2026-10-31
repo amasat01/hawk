@@ -57,6 +57,7 @@ from .decl import Index as Index
 from .decl import Int32 as Int32
 from .decl import UInt32 as UInt32
 from .decl import Matrix as Matrix
+from .decl import Meta as Meta
 from .decl import Mutable as Mutable
 from .decl import Param as Param
 from .decl import Quat as Quat

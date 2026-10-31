@@ -12,6 +12,7 @@ the launch status after every launch."""
 from __future__ import annotations
 
 import types
+import warnings
 
 import pytest
 from _block_kernels import gram_kernel
@@ -70,6 +71,21 @@ def test_the_keyed_record_carries_the_payload_shape(tmp_path, cache_dir):
     stages = sidecar_of(bundle, kernel.name)["stages"]
     keyed = [st["team"]["keyed"] for st in stages if st.get("team", {}).get("keyed")]
     assert keyed and keyed[0]["payload"] == [24, 24] and keyed[0]["width"] == 24 * 24
+
+
+def test_a_wide_value_placed_in_a_plane_holds_no_local_frame_and_the_thread_form_keeps_it(tmp_path, cache_dir):
+    from _wide_kernels import fill_mask
+
+    placed = build_bundle([fill_mask], tmp_path / "auto", targets=("cuda",), cache_dir=cache_dir)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        # a cache of its own: a unit another test built is not compiled again, and a build that does not compile does not warn
+        pinned = build_bundle([fill_mask], tmp_path / "thread", targets=("cuda",), cache_dir=tmp_path / "cache", wide_form="thread")
+    figures = (sidecar_of(pinned, "fill_mask").get("ptxas") or {}).values()
+    if any(row.get("spill_store_B") is not None for row in figures):    # ptxas ran: the thread form spills on purpose, and the build says so
+        assert any(issubclass(w.category, UserWarning) and "local frame" in str(w.message) for w in caught)
+    assert sidecar_of(placed, "fill_mask")["launch"]["local_bytes"] == 0
+    assert sidecar_of(pinned, "fill_mask")["launch"]["local_bytes"] > 0       # the 512-wide value in one thread
 
 
 @pytest.mark.gpu

@@ -87,6 +87,12 @@ class Writer(Protocol):
     def sample_index_value(self) -> str:
         """A ``SampleIndex`` node's value: ``static_cast<Int>(hawk_i)``."""
 
+    def warp_lane_value(self) -> str:
+        """A ``WarpLane`` node: the lane's place in its warp."""
+
+    def warp_store(self, r, sink, target: str, value: str) -> None:
+        """A ``WarpStore``: the lane's slice of a wide value, into its own elements of the Mutable's plane."""
+
     def lane_position_value(self, mapped: bool) -> str:
         """A ``LanePosition`` node: the launch position ``t``; ``mapped`` is
         true under an index map, where the sample index is ``map[t]``."""

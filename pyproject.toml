@@ -60,7 +60,15 @@ dependencies = ["aether-dsc>=0.7.2,<0.8", "raptor-core>=0.7.0,<0.8", "numpy>=1.2
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
 # primal and its derivative IR with the scratch interpreter in tests/_eval.py.
-test = ["pytest", "numpy", "scipy", "raptor-core>=0.7.0,<0.8"]
+# The tests drive kernels through eagle, so the test environment carries it (the PyPI wheel, or a source build via EAGLE_SRC).
+test = ["pytest", "pytest-xdist", "numpy", "scipy", "raptor-core>=0.7.0,<0.8", "raptor-eagle>=0.7.0,<0.8"]
+# `make gate-gpu`: the rows marked gpu run on a card through cupy (CUDA 12 build; CUDA 13 swaps in cupy-cuda13x).
+test-gpu = ["raptor-hawk[test,cuda12]", "cupy-cuda12x>=14"]
+lint = ["ruff"]
+# `make gate` builds the docs with -W and runs every notebook (the raptor-docs skin comes from the site checkout, SITE_SRC,
+# or from its repository: a VCS URL cannot be a published extra). torch (a CPU wheel) is installed by the target.
+docs = ["Sphinx", "sphinx-book-theme", "myst-nb", "sphinx-design", "sphinx-copybutton", "sphinx-autodoc-typehints", "nbformat",
+        "nbclient", "ipykernel", "matplotlib", "warp-lang", "setuptools-scm", "sphinx-sitemap>=2.6"]
 # The GPU route: NVRTC + CCCL + cuda-bindings for one CUDA major (no nvcc needed).
 # CUDA 13's wheels carry no -cu13 suffix (those names on PyPI are empty placeholders).
 cuda12 = ["cuda-bindings>=12.6,<13", "nvidia-cuda-nvrtc-cu12>=12.6,<13", "nvidia-cuda-cccl-cu12>=12.6,<13"]
@@ -133,6 +141,11 @@ ignore = ["F841"]
 "examples/two_body_hybrid.py" = ["F821"]
 "tests/_autodiff_kernels.py" = ["F821"]
 "tests/_kan.py" = ["F821"]
+"tests/_probe_wide.py" = ["F821"]
+"tests/_wide_kernels.py" = ["F821"]
+"tests/test_contraction_multi.py" = ["F821"]
+"tests/test_param_shared.py" = ["F821"]
+"tests/test_wide_placement.py" = ["F821"]
 "tests/_block_kernels.py" = ["F821"]
 "tests/_net_axis_kernels.py" = ["F821"]
 "tests/test_across_lanes.py" = ["F821"]

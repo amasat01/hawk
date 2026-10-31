@@ -314,6 +314,9 @@ def merge(cond: Any, on_true: Any, on_false: Any, name: str, shared: bool = Fals
     if on_true is on_false:
         return on_true
     if isinstance(on_true, Value) or isinstance(on_false, Value):
+        stored = _store_under(cond, on_true, on_false)
+        if stored is not None:
+            return stored
         return _as_switch(select(cond, on_true, on_false), shared)
     if on_true == on_false:
         return on_true
@@ -326,6 +329,32 @@ def merge(cond: Any, on_true: Any, on_false: Any, name: str, shared: bool = Fals
         f"({on_true!r} vs {on_false!r}) — only traced values merge into a select "
         "node"
     )
+
+
+def _store_under(cond: Any, on_true: Any, on_false: Any) -> Any:
+    """``select(c, v, set(v, i, x))`` as ``set(v, i, select(c, v[i], x))`` (and the arms the other way round) for a
+    value written at a run-time index: the same value, but the store stays one store of one element, so the
+    vector is neither copied nor selected whole, and what lives in a plane (:mod:`hawk.ir.wide`) is written in place.
+
+    Only a vector written at a run-time index (placed from width 1: :func:`~hawk.ir.wide.runtime_min`), under a
+    build that places values; every other ``if`` keeps the select, so a kernel with no such value renders as it did."""
+    from ..emit.policy import wide_form
+    from ..ir.nodes import Op
+
+    if wide_form() == "thread" or not (isinstance(on_true, Value) and isinstance(on_false, Value)):
+        return None
+    for held, stored, taken in ((on_true, on_false, False), (on_false, on_true, True)):
+        node, base = node_of(stored), node_of(held)
+        if (isinstance(node, Op) and node.kind == "set_component_at" and node.operands[0] is base
+                and len(base.ttype.shape) == 1
+                and not isinstance(node.operands[1], Const) and not node_of(cond).ttype.shape):
+            from ..ir import make as _make
+
+            index, value = node.operands[1], Value(node.operands[2])
+            current = Value(_make("component_at", (base, index)))
+            merged = select(cond, value, current) if taken else select(cond, current, value)
+            return Value(_make("set_component_at", (base, index, node_of(merged))))
+    return None
 
 
 _I32 = TensorType((), "i32")

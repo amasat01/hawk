@@ -122,7 +122,7 @@ def test_cap_is_applied_through_the_trampoline_concurrently(monkeypatch):
     probe = [sys.executable, "-c",
              "import resource; print(resource.getrlimit(resource.RLIMIT_AS)[0])"]
     argv = drivers.limited(probe)
-    assert argv[:3] == [sys.executable, "-I", "-c"] and argv[-3:] == probe
+    assert argv[:2] == ["/bin/sh", "-c"] and argv[-3:] == probe      # no second interpreter
 
     def once():
         done = subprocess.run(drivers.limited(probe), capture_output=True, text=True)
