@@ -43,7 +43,7 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             plat: manylinux_x86_64
           - arch: aarch64
             runner: ubuntu-24.04-arm
@@ -181,7 +181,7 @@ jobs:
     needs: wheels
     outputs:
       tree: ${{ steps.tree.outputs.tree }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -247,7 +247,7 @@ jobs:
 
   test-wheel:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # every Python version reports, even when one fails
       fail-fast: false
@@ -481,7 +481,7 @@ jobs:
           done
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CC: gcc-13
       CXX: g++-13
@@ -562,7 +562,7 @@ jobs:
   # Informational: a docs-only PR carries an already published version.
   pypi-version:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v8
         with:
