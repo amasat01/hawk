@@ -17,6 +17,8 @@ name: CI
 
 # Pull requests only: main receives the tested tree, nothing re-runs there.
 on:
+  schedule:
+    - cron: "23 4 * * 1"   # weekly on main: every remembered pass runs again
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch: {}
@@ -125,6 +127,12 @@ jobs:
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
           pins: hawk/.github/companions
+      - id: memo
+        uses: ./hawk/.github/actions/memo
+        with:
+          name: ci-test
+          args: >-
+            --tree hawk --skip CHANGELOG.md --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree eagle --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree raptor --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/ci.yml
 
       - uses: actions/setup-python@v7
         with:
@@ -135,8 +143,10 @@ jobs:
             aether/dsc/pyproject.toml
             raptor/pyproject.toml
             eagle/python/pyproject.toml
+        if: steps.memo.outputs.run == 'true'
 
       - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache cppcheck
+        if: steps.memo.outputs.run == 'true'
 
       # compiled objects persist across runs; one cache per job and architecture
       - uses: actions/cache@v6
@@ -145,9 +155,12 @@ jobs:
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
           restore-keys: |
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-test-
+        if: steps.memo.outputs.run == 'true'
       - run: ccache -z
+        if: steps.memo.outputs.run == 'true'
 
       - uses: ./hawk/.github/actions/cuda
+        if: steps.memo.outputs.run == 'true'
 
       # the gate builds its own venv, installs the sibling checkouts as the ci.yml of old did (aether's headers and sealed
       # payload, eagle's binding) and runs the CPU suite and the public-name coverage check: the commands are in the Makefile
@@ -156,8 +169,14 @@ jobs:
         run: |
           make -C hawk gate-test gate-names \
             RAPTOR_SRC="$GITHUB_WORKSPACE/raptor" AETHER_SRC="$GITHUB_WORKSPACE/aether" EAGLE_SRC="$GITHUB_WORKSPACE/eagle"
-      - if: always()
+        if: steps.memo.outputs.run == 'true'
+      - if: always() && steps.memo.outputs.run == 'true'
         run: ccache -s
+      - if: success() && steps.memo.outputs.run == 'true'
+        uses: ./hawk/.github/actions/memo-save
+        with:
+          name: ci-test
+          digest: ${{ steps.memo.outputs.digest }}
 
   # host-gcc: the host-compiler matrix. 13.1-13.3 and 14.1-14.2 miscompile a
   # conditional call of a function with masked vector variants; aether-dsc drops
@@ -227,6 +246,13 @@ jobs:
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
           pins: hawk/.github/companions
+      - id: memo
+        uses: ./hawk/.github/actions/memo
+        with:
+          name: ci-host-gcc
+          args: >-
+            --tree hawk --skip docs/ --skip README.md --skip CHANGELOG.md --skip CONTRIBUTING.md --skip CITATION.cff --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip README.md --skip CHANGELOG.md --skip CONTRIBUTING.md --skip .github/ --tree eagle --skip docs/ --skip README.md --skip CHANGELOG.md --skip CONTRIBUTING.md --skip .github/ --tree raptor --skip docs/ --skip README.md --skip CHANGELOG.md --skip CONTRIBUTING.md --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/ci.yml
+          extra: ${{ toJSON(matrix) }}
 
       - uses: actions/setup-python@v7
         with:
@@ -237,8 +263,10 @@ jobs:
             aether/dsc/pyproject.toml
             raptor/pyproject.toml
             eagle/python/pyproject.toml
+        if: steps.memo.outputs.run == 'true'
 
       - run: sudo apt-get update && sudo apt-get install -y g++-13 g++-${{ matrix.gcc }} ccache cppcheck
+        if: steps.memo.outputs.run == 'true'
 
       # compiled objects persist across runs; one cache per job and architecture
       - uses: actions/cache@v6
@@ -247,9 +275,12 @@ jobs:
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-host-gcc-${{ matrix.gcc }}-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
           restore-keys: |
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-host-gcc-${{ matrix.gcc }}-
+        if: steps.memo.outputs.run == 'true'
       - run: ccache -z
+        if: steps.memo.outputs.run == 'true'
 
       - uses: ./hawk/.github/actions/cuda
+        if: steps.memo.outputs.run == 'true'
 
       # The siblings are on PyPI, but CI installs the sibling checkouts so it tests
       # unreleased changes: aether's header package,
@@ -264,6 +295,7 @@ jobs:
             -DCMAKE_CUDA_ARCHITECTURES=70 \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
           cmake --install eagle/__eagle_hdr
+        if: steps.memo.outputs.run == 'true'
 
       - run: |
           python -m pip install --quiet --upgrade pip
@@ -282,6 +314,7 @@ jobs:
           python -m pip install --quiet "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4"
           export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
           python -m pip install --quiet --no-build-isolation --only-binary=:all: ./eagle/python
+        if: steps.memo.outputs.run == 'true'
 
       - env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
@@ -289,13 +322,15 @@ jobs:
         run: |
           cd hawk
           python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
+        if: steps.memo.outputs.run == 'true'
 
       - env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
           RAPTOR_EAGLE_ROOT: ${{ github.workspace }}/eagle
         run: cd hawk && python -m pytest tests -q -m "not gpu" -n auto --dist loadfile
-      - if: matrix.gcc != 12
+        if: steps.memo.outputs.run == 'true'
+      - if: steps.memo.outputs.run == 'true' && (matrix.gcc != 12)
         name: Necessity (masked variants forced on must fail the early-exit rows)
         env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
@@ -313,8 +348,13 @@ jobs:
             echo "expected pytest exit 1 (test failures) with masked variants on, got $rc" >&2
             exit 1
           fi
-      - if: always()
+      - if: always() && steps.memo.outputs.run == 'true'
         run: ccache -s
+      - if: success() && steps.memo.outputs.run == 'true'
+        uses: ./hawk/.github/actions/memo-save
+        with:
+          name: ci-host-gcc
+          digest: ${{ steps.memo.outputs.digest }}
 
   # tsan-ft — hawk._core, eagle._core and hawk's run-time host kernels under
   # ThreadSanitizer on a free-threaded CPython built with --with-thread-sanitizer
@@ -390,7 +430,7 @@ jobs:
           HIT: ${{ steps.pass.outputs.cache-hit }}
           DIGEST: ${{ steps.memo.outputs.digest }}
         run: |
-          if [ "$HIT" = true ]; then
+          if [ "$HIT" = true ] && [ "$GITHUB_EVENT_NAME" != schedule ]; then
             echo "tsan-ft: passed earlier on digest $DIGEST" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo run=true >> "$GITHUB_OUTPUT"
@@ -520,6 +560,13 @@ jobs:
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
           pins: hawk/.github/companions
+      - id: memo
+        uses: ./hawk/.github/actions/memo
+        with:
+          name: ci-ft-stress
+          args: >-
+            --tree hawk --skip CHANGELOG.md --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree eagle --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree raptor --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/ci.yml
+          extra: ${{ toJSON(matrix) }}
 
       - uses: actions/setup-python@v7
         with:
@@ -530,8 +577,10 @@ jobs:
             aether/dsc/pyproject.toml
             raptor/pyproject.toml
             eagle/python/pyproject.toml
+        if: steps.memo.outputs.run == 'true'
 
       - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache cppcheck
+        if: steps.memo.outputs.run == 'true'
 
       # compiled objects persist across runs; one cache per job and architecture
       - uses: actions/cache@v6
@@ -540,9 +589,12 @@ jobs:
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-ft-stress-${{ matrix.python-version }}-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
           restore-keys: |
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-ft-stress-${{ matrix.python-version }}-
+        if: steps.memo.outputs.run == 'true'
       - run: ccache -z
+        if: steps.memo.outputs.run == 'true'
 
       - uses: ./hawk/.github/actions/cuda
+        if: steps.memo.outputs.run == 'true'
 
       # The siblings are on PyPI, but CI installs the sibling checkouts so it tests
       # unreleased changes: aether's header package,
@@ -557,6 +609,7 @@ jobs:
             -DCMAKE_CUDA_ARCHITECTURES=70 \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
           cmake --install eagle/__eagle_hdr
+        if: steps.memo.outputs.run == 'true'
 
       - run: |
           # newest NumPy/SciPy ship no free-threaded wheel for the newest tags: prefer a wheel over an sdist build
@@ -576,6 +629,7 @@ jobs:
           python -m pip install --quiet --prefer-binary "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4"
           export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
           python -m pip install --quiet --no-build-isolation --only-binary=:all: ./eagle/python
+        if: steps.memo.outputs.run == 'true'
 
       - env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
@@ -584,6 +638,7 @@ jobs:
           cd hawk
           # SciPy ships no free-threaded wheel for the newest tags: take the newest wheel over an sdist build
           python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
+        if: steps.memo.outputs.run == 'true'
 
       # An ft leg is vacuous on a GIL interpreter (every ft row skips) and the
       # harness refuses a forced GIL-off (-X gil=0 / PYTHON_GIL): assert the
@@ -592,6 +647,7 @@ jobs:
         run: |
           [ -z "${PYTHON_GIL:-}" ] || { echo "PYTHON_GIL is set"; exit 1; }
           python -c "import sys; assert sys._is_gil_enabled() is False, 'GIL is enabled'; print(sys.version)"
+        if: steps.memo.outputs.run == 'true'
 
       # ft rows first: zero collected rows fails the leg (never a green no-op),
       # then the full suite. -W error::RuntimeWarning turns the interpreter's
@@ -609,8 +665,14 @@ jobs:
           [ "$N" -gt 0 ] || { echo "ft selection collected zero tests"; exit 1; }
           python -m pytest tests -m ft -q -rs -p no:cacheprovider -W error::RuntimeWarning
           python -m pytest tests -q -p no:cacheprovider -W error::RuntimeWarning -m "not gpu" -n auto --dist loadfile
-      - if: always()
+        if: steps.memo.outputs.run == 'true'
+      - if: always() && steps.memo.outputs.run == 'true'
         run: ccache -s
+      - if: success() && steps.memo.outputs.run == 'true'
+        uses: ./hawk/.github/actions/memo-save
+        with:
+          name: ci-ft-stress
+          digest: ${{ steps.memo.outputs.digest }}
 
 
   # The source distributions as a user without matching wheels gets them: the
@@ -660,6 +722,13 @@ jobs:
           path: raptor
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
           pins: hawk/.github/companions
+      - id: memo
+        uses: ./hawk/.github/actions/memo
+        with:
+          name: ci-sdist-install
+          args: >-
+            --tree hawk --skip docs/ --skip CHANGELOG.md --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree eagle --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree raptor --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/ci.yml
+          extra: ${{ toJSON(matrix) }}
 
       - uses: actions/setup-python@v7
         with:
@@ -670,14 +739,17 @@ jobs:
             aether/dsc/pyproject.toml
             raptor/pyproject.toml
             eagle/python/pyproject.toml
+        if: steps.memo.outputs.run == 'true'
 
       - run: sudo apt-get update && sudo apt-get install -y g++-13
+        if: steps.memo.outputs.run == 'true'
 
       # aether-dsc and raptor-core: PyPI when the checkout's version is released, else built from it
       - id: sib
         uses: ./hawk/.github/actions/install-siblings
         with:
           siblings: aether-dsc=aether/dsc raptor-core=raptor
+        if: steps.memo.outputs.run == 'true'
 
       # The header roots are named for the SDIST step only, as publish.yml does;
       # the install below sees none of them.
@@ -690,6 +762,7 @@ jobs:
           (cd eagle/python && python -m build --sdist --outdir ../../dist)
           (cd hawk && python -m build --sdist --outdir ../dist)
           ls -l dist
+        if: steps.memo.outputs.run == 'true'
 
       - name: Clean venv, pip install eagle's sdist then hawk's (warnings are errors)
         env:
@@ -704,6 +777,7 @@ jobs:
           pip install -v -Ccmake.define.EAGLE_PYTHON_WARN_AS_ERR=ON dist/raptor_eagle-*.tar.gz
           pip install -v -Ccmake.define.HAWK_WARN_AS_ERR=ON dist/raptor_hawk-*.tar.gz
           pip check
+        if: steps.memo.outputs.run == 'true'
 
       - name: The README host example (forward + vjp) on the installed packages
         run: |
@@ -744,3 +818,9 @@ jobs:
           print(f"OK on {platform.machine()}: energy {e}")
           PY
           python readme_example.py
+        if: steps.memo.outputs.run == 'true'
+      - if: success() && steps.memo.outputs.run == 'true'
+        uses: ./hawk/.github/actions/memo-save
+        with:
+          name: ci-sdist-install
+          digest: ${{ steps.memo.outputs.digest }}

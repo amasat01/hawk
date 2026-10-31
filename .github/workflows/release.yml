@@ -23,6 +23,8 @@ name: Release
 
 # Pull requests only: main receives the tested tree, nothing re-runs there.
 on:
+  schedule:
+    - cron: "23 4 * * 1"   # weekly on main: every remembered pass runs again
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -266,10 +268,18 @@ jobs:
         with: {repo: eagle, path: eagle, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
       - uses: ./hawk/.github/actions/companion
         with: {repo: raptor, path: raptor, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+      - id: memo
+        uses: ./hawk/.github/actions/memo
+        with:
+          name: release-test-wheel
+          args: >-
+            --tree hawk --skip docs/ --skip CHANGELOG.md --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree eagle --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree raptor --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/release.yml
+          extra: ${{ toJSON(matrix) }}
       - uses: actions/download-artifact@v8
         with:
           name: dist-${{ needs.build.outputs.tree }}
           path: dist
+        if: steps.memo.outputs.run == 'true'
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -280,10 +290,13 @@ jobs:
             aether/dsc/pyproject.toml
             raptor/pyproject.toml
             eagle/python/pyproject.toml
+        if: steps.memo.outputs.run == 'true'
 
       - run: sudo apt-get update && sudo apt-get install -y g++-13 cppcheck
+        if: steps.memo.outputs.run == 'true'
 
       - uses: ./hawk/.github/actions/cuda
+        if: steps.memo.outputs.run == 'true'
 
       # aether-dsc (hawk's runtime dependency) and the test-only eagle + raptor-core: each from PyPI when
       # its checkout's version is released, else built from the checkout. The exact version matters: an
@@ -292,6 +305,7 @@ jobs:
         uses: ./hawk/.github/actions/install-siblings
         with:
           siblings: aether-dsc=aether/dsc raptor-eagle=eagle/python raptor-core=raptor
+        if: steps.memo.outputs.run == 'true'
 
       # The siblings first (PyPI or built above; eagle builds from its sdist here), then raptor-hawk from
       # THIS run's dist only (never an index copy of the same version), then the [test] extras.
@@ -309,6 +323,7 @@ jobs:
           pip install --quiet --no-index --only-binary=raptor-hawk --find-links dist raptor-hawk
           pip install --quiet --prefer-binary --find-links dist --find-links "$SIB_DIR" "raptor-hawk[test]" $SIB_PINS
           pip check
+        if: steps.memo.outputs.run == 'true'
 
       - name: Import smoke (the import-time build-digest/layout self-check runs here)
         run: |
@@ -320,6 +335,7 @@ jobs:
           assert hawk.__version__ == "$want", hawk.__version__
           assert pathlib.Path(hawk.__file__).is_relative_to(sys.prefix), hawk.__file__
           EOF
+        if: steps.memo.outputs.run == 'true'
 
       - name: The repo's own non-GPU suite (a copy outside the repo, against the installed wheel)
         env:
@@ -332,13 +348,14 @@ jobs:
           cp hawk/pyproject.toml suite/pyproject.toml
           cd suite
           python -m pytest tests -q -m "not gpu and not repo_local" -n auto --dist loadfile
+        if: steps.memo.outputs.run == 'true'
 
       # Free-threaded legs only (3.14t / 3.15t): the ft rows against the INSTALLED
       # wheel, then the whole suite with RuntimeWarning as an error (a re-enabled
       # GIL is that warning). Zero collected ft rows fails the leg, and the
       # interpreter must be GIL-off by default with no override set.
       - name: ft-stress (ft rows + full suite, -W error::RuntimeWarning)
-        if: endsWith(matrix.python-version, 't')
+        if: steps.memo.outputs.run == 'true' && (endsWith(matrix.python-version, 't'))
         env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
@@ -356,6 +373,11 @@ jobs:
           [ "$N" -gt 0 ] || { echo "ft selection collected zero tests"; exit 1; }
           python -m pytest tests -m "ft and not repo_local" -q -rs -p no:cacheprovider -W error::RuntimeWarning
           python -m pytest tests -q -p no:cacheprovider -W error::RuntimeWarning -m "not gpu and not repo_local" -n auto --dist loadfile
+      - if: success() && steps.memo.outputs.run == 'true'
+        uses: ./hawk/.github/actions/memo-save
+        with:
+          name: release-test-wheel
+          digest: ${{ steps.memo.outputs.digest }}
 
   # The aarch64 and macOS arm64 wheels, installed and run on native runners: host build and run of the README example,
   # forward and vjp. The x86_64 test-wheel above also needs the compile-only CUDA toolchain, which is x86_64 only.
@@ -386,10 +408,18 @@ jobs:
         with: {repo: eagle, path: eagle, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
       - uses: ./hawk/.github/actions/companion
         with: {repo: raptor, path: raptor, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+      - id: memo
+        uses: ./hawk/.github/actions/memo
+        with:
+          name: release-test-wheel-cpu
+          args: >-
+            --tree hawk --skip docs/ --skip CHANGELOG.md --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree eagle --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree raptor --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/release.yml
+          extra: ${{ toJSON(matrix) }}
       - uses: actions/download-artifact@v8
         with:
           name: dist-${{ needs.build.outputs.tree }}
           path: dist
+        if: steps.memo.outputs.run == 'true'
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -400,16 +430,18 @@ jobs:
             aether/dsc/pyproject.toml
             raptor/pyproject.toml
             eagle/python/pyproject.toml
+        if: steps.memo.outputs.run == 'true'
       - run: sudo apt-get update && sudo apt-get install -y g++-13
-        if: runner.os == 'Linux'
+        if: steps.memo.outputs.run == 'true' && (runner.os == 'Linux')
       # libomp: eagle builds from its sdist here until 0.6.x is on PyPI, and its host core needs OpenMP; llvm: HAWK_CXX above
       - run: brew install libomp llvm && { echo "OpenMP_ROOT=$(brew --prefix libomp)"; echo "CMAKE_PREFIX_PATH=$(brew --prefix libomp)"; } >> "$GITHUB_ENV"
-        if: runner.os == 'macOS'
+        if: steps.memo.outputs.run == 'true' && (runner.os == 'macOS')
       # eagle is the test-only sibling: PyPI when released, else built from its sdist here (CPU-only on ARM)
       - id: sib
         uses: ./hawk/.github/actions/install-siblings
         with:
           siblings: aether-dsc=aether/dsc raptor-eagle=eagle/python raptor-core=raptor
+        if: steps.memo.outputs.run == 'true'
       - name: Fresh venv, install the aarch64 wheel, pip check
         env:
           SIB_DIR: ${{ steps.sib.outputs.dir }}
@@ -422,6 +454,7 @@ jobs:
           pip install --quiet --prefer-binary --find-links "$SIB_DIR" $SIB_PINS numpy
           pip install --quiet --no-index --only-binary=raptor-hawk --find-links dist raptor-hawk
           pip check
+        if: steps.memo.outputs.run == 'true'
       - name: The README host example (forward + vjp) on the installed wheel
         run: |
           . venv/bin/activate
@@ -461,13 +494,19 @@ jobs:
           print(f"OK on {platform.machine()}: energy {e}")
           PY
           HAWK_WORK="$RUNNER_TEMP/hawk_work" python readme_example.py
+        if: steps.memo.outputs.run == 'true'
       # Reports, never fails: does the compiled host loop use NEON (fmla v.2d) or SVE (z registers)?
       - name: Probe whether the ARM host loop vectorises
-        if: runner.os == 'Linux' && matrix.python-version == '3.12'
+        if: steps.memo.outputs.run == 'true' && (runner.os == 'Linux' && matrix.python-version == '3.12')
         run: |
           for so in "$RUNNER_TEMP"/hawk_work/*.so; do
             echo "$so: fmla v.2d = $(objdump -d "$so" | grep -cE 'fmla\s+v[0-9]+\.2d'), sve z-register ops = $(objdump -d "$so" | grep -cE '\sz[0-9]+\.d')" | tee -a "$GITHUB_STEP_SUMMARY"
           done
+      - if: success() && steps.memo.outputs.run == 'true'
+        uses: ./hawk/.github/actions/memo-save
+        with:
+          name: release-test-wheel-cpu
+          digest: ${{ steps.memo.outputs.digest }}
 
   docs:
     runs-on: ubuntu-24.04
