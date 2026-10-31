@@ -79,7 +79,8 @@ def test_a_wide_value_placed_in_a_plane_holds_no_local_frame_and_the_thread_form
     placed = build_bundle([fill_mask], tmp_path / "auto", targets=("cuda",), cache_dir=cache_dir)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        pinned = build_bundle([fill_mask], tmp_path / "thread", targets=("cuda",), cache_dir=cache_dir, wide_form="thread")
+        # a cache of its own: a unit another test built is not compiled again, and a build that does not compile does not warn
+        pinned = build_bundle([fill_mask], tmp_path / "thread", targets=("cuda",), cache_dir=tmp_path / "cache", wide_form="thread")
     figures = (sidecar_of(pinned, "fill_mask").get("ptxas") or {}).values()
     if any(row.get("spill_store_B") is not None for row in figures):    # ptxas ran: the thread form spills on purpose, and the build says so
         assert any(issubclass(w.category, UserWarning) and "local frame" in str(w.message) for w in caught)

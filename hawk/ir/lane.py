@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from ..types import TensorType
 from .loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from .nodes import Assign, At, Const, Leaf, Node, Op, Select
+from .nodes import Assign, At, Const, Finish, Leaf, Node, Op, RoleConst, Select
 from .ops import make
 
 #: Lanes of the warp that shares one sample.
@@ -60,6 +60,17 @@ def _slice_type(ttype: TensorType) -> TensorType:
     return TensorType((ttype.shape[0] // WARP,), ttype.dtype, ttype.tag)
 
 
+def _reach(root: Node):
+    """Every node under ``root``."""
+    seen, stack = set(), [root]
+    while stack:
+        node = stack.pop()
+        if id(node) not in seen:
+            seen.add(id(node))
+            yield node
+            stack.extend(node.operands)
+
+
 class _Refused(Exception):
     """A node with no rule in the warp form."""
 
@@ -89,6 +100,9 @@ class _Slicer:
                 return self._read(node), True
             return node, False
         if isinstance(node, LoopValue):
+            filled = self._fill(node)
+            if filled is not None:
+                return filled, True
             loop, slot_sliced = self._loop(node.loop)
             return LoopValue(loop, node.slot), slot_sliced[node.slot]
         if isinstance(node, Loop):
@@ -101,7 +115,7 @@ class _Slicer:
 
     def _read(self, leaf: Leaf) -> Op:
         """A per-sample vector input read whole: lane ``l`` reads its elements ``j * WARP + l``."""
-        if leaf.role != "vec_in":
+        if leaf.role != "vec_in" and not (leaf.role == "mutable" and leaf.kind == "prior_read"):
             raise _Refused(f"a wide plane {leaf.name!r} read whole")
         index = TensorType((), "i32")
         scalar = TensorType((), leaf.ttype.dtype)
@@ -158,7 +172,7 @@ class _Slicer:
 
         g = gather(node)
         if g is None:
-            raise _Refused("a vector of parts that is not a run of reads")
+            return self._affine(node, out)
         first = node.operands[0]
         index_type = first.index.ttype
         base = None if g.base is None else self.of(g.base)
@@ -173,14 +187,75 @@ class _Slicer:
             parts.append(At(g.plane, at, first.ttype))
         return Op("vec", tuple(parts), out)
 
+    def _fill(self, value: LoopValue) -> Op | None:
+        """A loop that writes element ``j`` of a wide vector at trip ``j`` from a value of ``j`` alone (``r[j] = f(j)`` over
+        the whole vector) is the vector of its values: lane ``l`` computes ``f`` at its own elements."""
+        from .walk import substitute
+
+        loop = value.loop
+        if (loop.carry_count != 1 or loop.exit_cond is not None or loop.count is not None or loop.body_sinks
+                or not sliced(loop.carries[0].ttype) or (loop.start, loop.step) != (0, 1) or loop.stop != loop.carries[0].ttype.shape[0]):
+            return None
+        nxt = loop.nexts[0]
+        if not (isinstance(nxt, Op) and nxt.kind == "set_component_at" and nxt.operands[0] is loop.carries[0]
+                and nxt.operands[1] is loop.index):
+            return None
+        element = nxt.operands[2]
+        if any(n is loop.carries[0] for n in _reach(element)):
+            return None
+        index_type = loop.index.ttype
+        parts = []
+        for j in range(loop.stop // WARP):
+            at = make("add", (self.lane, Const(j * WARP, index_type)))
+            part, = substitute([element], {id(loop.index): at})
+            parts.append(self._plain(part))
+        return Op("vec", tuple(parts), _slice_type(loop.carries[0].ttype))
+
+    def _affine(self, node: Node, out: TensorType) -> Op:
+        """A ``vec`` whose parts are one expression of the element index: the parts agree node by node, and where they
+        differ they are constants in an arithmetic run. Lane ``l`` computes the parts ``j * WARP + l`` from the run."""
+        parts = node.operands
+        built = [self._aligned(parts, j) for j in range(out.shape[0])]
+        return Op("vec", tuple(built), out)
+
+    def _aligned(self, parts, j: int) -> Node:
+        """Part ``j * WARP + lane`` of the run ``parts`` (the same expression with its constants moved along)."""
+        def walk(nodes: list) -> Node:
+            first = nodes[0]
+            if all(n is first for n in nodes):
+                return self.of(first)[0] if not first.ttype.shape else self._plain(first)
+            if all(isinstance(n, Const) and not isinstance(n, RoleConst) and n.ttype == first.ttype for n in nodes):
+                lits = [n.literal for n in nodes]
+                step = lits[1] - lits[0]
+                if any(b - a != step for a, b in zip(lits, lits[1:])):
+                    raise _Refused("constants that are not an arithmetic run")
+                start = lits[0] + j * WARP * step
+                lane = make("cast", (self.lane,), literal=first.ttype.dtype) if first.ttype.dtype != "i32" else self.lane
+                return make("add", (Const(start, first.ttype), make("mul", (lane, Const(step, first.ttype)))))
+            if not all(type(n) is type(first) and n.operands and len(n.operands) == len(first.operands)
+                       and getattr(n, "kind", None) == getattr(first, "kind", None)
+                       and getattr(n, "literal", None) == getattr(first, "literal", None)
+                       and n.ttype == first.ttype for n in nodes):
+                raise _Refused("parts that differ beyond their constants")
+            from .walk import _rebuild
+
+            return _rebuild(first, [walk([n.operands[k] for n in nodes]) for k in range(len(first.operands))])
+        return walk(list(parts))
+
+    def _plain(self, node: Node) -> Node:
+        got, is_sliced = self.of(node)
+        if is_sliced:
+            raise _Refused("a slice inside a run of parts")
+        return got
+
     def _loop(self, loop: Loop) -> tuple:
         from .loops import build_loop
 
         got = self.memo.get(id(loop))
         if got is not None:
             return got
-        if loop.exit_cond is not None or loop.count is not None or loop.body_sinks:
-            raise _Refused("a loop with an exit, a run-time count or commits")
+        if loop.body_sinks:
+            raise _Refused("a loop that commits once per iteration")
         slot_sliced = [sliced(c.ttype) for c in loop.carries]
         carries = [LoopCarry(c.depth, c.slot, c.name, _slice_type(c.ttype)) if s else c
                    for c, s in zip(loop.carries, slot_sliced)]
@@ -193,7 +268,23 @@ class _Slicer:
                 raise _Refused("a carry whose initial or next value is not held like the carry")
             inits.append(i)
             nexts.append(n)
+        exit_cond, exit_values, count = None, (), None
+        if loop.exit_cond is not None:      # a flag every lane computes alike: the lanes leave together
+            exit_cond, was = self.of(loop.exit_cond)
+            if was:
+                raise _Refused("an exit that reads a slice")
+            exit_values = []
+            for j, ev in enumerate(loop.exit_values):
+                value, got = self.of(ev)
+                if got != (slot_sliced[j] if j < len(slot_sliced) else False):
+                    raise _Refused("an exit value not held like its carry")
+                exit_values.append(value)
+        if loop.count is not None:
+            count, was = self.of(loop.count)
+            if was:
+                raise _Refused("a trip count that reads a slice")
         new_loop = build_loop(loop.index, carries, inits, nexts, start=loop.start, stop=loop.stop, step=loop.step,
+                              exit_cond=exit_cond, exit_values=exit_values, count=count, count_tail=loop.count_tail,
                               dynamic=loop.dynamic)
         got = self.memo[id(loop)] = (new_loop, slot_sliced)
         return got
@@ -203,13 +294,18 @@ def slice_sinks(sinks) -> tuple | None:
     """``sinks`` in the warp form, or ``None`` when some node has no rule there. Every sink must commit a wide
     value to a Mutable."""
     sinks = tuple(sinks)
-    if not sinks or not all(type(s) is Assign for s in sinks):
+    if not sinks or not all(type(s) is Assign or isinstance(s, Finish) for s in sinks):
         return None
     slicer = _Slicer()
     out = []
     try:
         for sink in sinks:
-            value, _ = slicer.of(sink.value)
+            value, was = slicer.of(sink.value)
+            if isinstance(sink, Finish):        # the flag is the same in every lane; each writes the one bit
+                if was:
+                    return None
+                out.append(Finish(sink.name, value, sink.steps))
+                continue
             out.append(WarpStore(sink.name, value, sink.ttype))
     except _Refused:
         return None

@@ -366,7 +366,8 @@ index_set_kernel = lane_set_kernel(LANE_SET)
 #: resident form (USER, 10-29: speed is the proof; a small spill is healthy where it is faster). Everything else has none.
 LOCAL_OK = {("narrow4", "float64"): 32,
             ("matvec_in", "float64"): 192,     # a warp per lane: the 24 row sums are indexed by the row loop, below the width the pass places
-            ("matvec_in_jvp", "float32"): 96, ("matvec_in_jvp", "float64"): 192}     # (the same, for the tangent's 24 sums)
+            ("matvec_in_jvp", "float32"): 96, ("matvec_in_jvp", "float64"): 192,
+            ("steps_matvec_k1", "float64"): 192, ("steps_matvec_k8", "float64"): 192}     # (the same, for the tangent's 24 sums)
 
 
 @dataclass(frozen=True)

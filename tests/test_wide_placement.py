@@ -134,7 +134,7 @@ def test_the_team_form_is_refused_by_name(tmp_path, cache_dir):
 # -- what the build writes -----------------------------------------------------------------------
 
 def test_the_sidecar_names_every_plane_and_the_runtime_makes_the_scratch_ones(tmp_path, cache_dir):
-    _, bundle = _build("fill_mask", tmp_path, cache_dir)
+    _, bundle = _build("fill_mask", tmp_path, cache_dir, targets=TARGETS_BOTH, host_profile="native")     # a host target keeps the placed form
     side = sidecar_of(bundle, "fill_mask")
     assert side["launch"]["wide"] == {
         "bf": {"form": "resident", "plane": "bf", "layout": "plane_major", "width": W.W},
@@ -210,7 +210,7 @@ def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp
 
     sliced = slice_sinks(wide.simplified(W.matvec_in_vjp.sinks))
     assert [type(s) for s in sliced] == [WarpStore] and sliced[0].value.ttype.shape == (W.W // WARP,)
-    assert slice_sinks(W.fill_mask.sinks) is None            # a runtime-indexed write has no rule in the warp form: it keeps its form
+    assert slice_sinks(W.wide51.sinks) is None               # a write at a run-time index has no rule in the warp form: it keeps its form
     for name in ("matvec_in_vjp", "matvec_in"):         # the second folds the slices with a warp sum and commits from lane 0
         kernel, bundle = _build(name, tmp_path / name, cache_dir, mode="float64", wide_form="team")
         side = sidecar_of(bundle, kernel.name)
@@ -274,7 +274,7 @@ def test_the_sidecar_names_the_class_and_the_unit_key_changes_with_it(tmp_path, 
     from hawk.artifact.unit_cache import _unit_key
     from hawk.emit import scalar_mode
 
-    _, bundle = _build("fill_mask", tmp_path, cache_dir, device_arch="sm_75")           # no class of its own: the nearest
+    _, bundle = _build("fill_mask", tmp_path, cache_dir, device_arch="sm_75", targets=TARGETS_BOTH, host_profile="native")   # no class of its own: the nearest
     assert sidecar_of(bundle, "fill_mask")["launch"]["wide"]["class"] == "sm61"
     _, host = _build("masked_sum", tmp_path / "plain", cache_dir)
     assert "wide" not in sidecar_of(host, "masked_sum")["launch"]
