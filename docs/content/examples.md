@@ -67,6 +67,16 @@ Test a ray against a sphere, a box or a triangle, and find the nearest hit in a 
 howto_rays_and_meshes
 ```
 
+## Wide values
+
+Vectors with hundreds of components, and wide input and output planes.
+
+```{toctree}
+:maxdepth: 1
+
+howto_wide_values
+```
+
 ## Embedded C
 
 Emit a kernel as standalone C for a target without a runtime.
