@@ -57,6 +57,16 @@ Counter-based uniform, normal, lognormal, exponential, Bernoulli, integer, Poiss
 howto_random_draws
 ```
 
+## Rays and meshes
+
+Test a ray against a sphere, a box or a triangle, and find the nearest hit in a mesh.
+
+```{toctree}
+:maxdepth: 1
+
+howto_rays_and_meshes
+```
+
 ## Embedded C
 
 Emit a kernel as standalone C for a target without a runtime.
