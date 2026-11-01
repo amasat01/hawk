@@ -47,6 +47,16 @@ Run a list of lanes you built, and loops whose length is known at run time.
 howto_index_set
 ```
 
+## Random draws
+
+Counter-based uniform, normal, lognormal, exponential, Bernoulli, integer, Poisson and correlated draws, the same on every run.
+
+```{toctree}
+:maxdepth: 1
+
+howto_random_draws
+```
+
 ## Embedded C
 
 Emit a kernel as standalone C for a target without a runtime.
