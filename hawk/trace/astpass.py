@@ -1049,7 +1049,10 @@ def _rewrite_mutable_stores(stmts: list[ast.stmt], sinks: frozenset[str],
     present = sorted(m for m in mutables if _mentions(out, m))
     seeds: list[ast.stmt] = []
     for name in present:
-        if _needs_prior(out, name):
+        if _needs_prior(out, name) and not _needs_prior(_drop_scatter_marks(out, name), name):
+            # read only as a store by key's marker: no start value (a WideOut has none)
+            seeds.append(_assign(_mutable_name(name), ast.Constant(value=None)))
+        elif _needs_prior(out, name):
             spec = _cover_spec(out, name)
             if spec is not None:
                 # the body may store every element before it reads one: decided
@@ -1080,6 +1083,20 @@ def _is_stored(stmts: list[ast.stmt], name: str) -> bool:
     """Whether ``name`` is EVER a bare-Name store target in ``stmts``."""
     return any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
               for st in stmts for n in ast.walk(st))
+
+
+def _drop_scatter_marks(stmts: list[ast.stmt], name: str) -> list[ast.stmt]:
+    """A copy of ``stmts`` with the ``name`` that :func:`_rewrite_view_stores` passes
+    to each store by key as its marker replaced by ``None``: that argument is not a
+    read of the plane's value."""
+    class _Drop(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.Call:
+            self.generic_visit(node)
+            if (isinstance(node.func, ast.Name) and node.func.id == SCATTER_HELPER
+                    and isinstance(node.args[-1], ast.Name) and node.args[-1].id == name):
+                node.args[-1] = ast.Constant(value=None)
+            return node
+    return [_Drop().visit(copy.deepcopy(st)) for st in stmts]
 
 
 def _needs_prior(stmts: list[ast.stmt], name: str) -> bool:

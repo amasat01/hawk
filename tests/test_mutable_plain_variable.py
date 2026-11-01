@@ -196,3 +196,16 @@ def test_a_write_only_wideout_plane_assigned_only_inside_a_for_is_refused():
         def wo_for(v: Vector[3], y: WideOut[Scalar]):
             for c in range(3):
                 y = v[c]
+
+
+def test_a_wideout_plane_stored_only_by_key_traces():
+    """``hawk.scatter(y)[k] = v`` passes ``y`` to the store as a marker, not as a
+    read: a WideOut stored only by key mints no seed."""
+    import hawk
+    from hawk import Index
+
+    @kernel(steps=1)
+    def wo_key(x: Scalar, k: Index, y: WideOut[Scalar]):
+        hawk.scatter(y)[k] = 2.0 * x
+
+    assert wo_key.walk.prior_reads == frozenset()

@@ -69,6 +69,16 @@ def dbl(x: Scalar, w: WideOut[Scalar]):
     w = 2.0 * x
 ```
 
-Each lane writes its own element. The payload is a scalar: a vector payload is refused when the kernel is built, with the reason. For an output of several components per lane, use `Mutable[Vector[W]]`.
+Each lane writes its own element. To write an element chosen at run time instead, store it by key:
+
+```python
+from hawk import Index
+
+@hawk.kernel
+def put(x: Scalar, k: Index, w: WideOut[Scalar]):
+    hawk.scatter(w)[k] = 2.0 * x
+```
+
+Two lanes storing to the same key leave one of the two values. The payload is a scalar: a vector payload is refused when the kernel is built, with the reason. For an output of several components per lane, use `Mutable[Vector[W]]`.
 
 The names are on the [API reference](api/index).
