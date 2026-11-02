@@ -2,6 +2,46 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
+## 0.7.3 (unreleased)
+
+This section covers what changes from 0.7.2. Names that left are in the table at the end.
+
+### Added
+
+**Wide per-sample values compile spill-free.** Plain per-sample code with wide values (a `Vector[512]`, a 24 by 512 table product, a masked dot product) no longer reserves a large frame of per-thread local memory. hawk picks the form per kernel and device: one thread per sample, a warp per sample with the value sliced across the lanes, or wide outputs staged through a block that serves several lanes and stored coalesced into the unchanged planes. Plain, stepped, derivative, grouped and segmented kernels are covered, and the switch points are per-device rows in `wide.json`; a sweep measures the forms and writes candidate rows for a new device. Results agree with the one-thread form to the ULP contract. `wide_form="auto"` (the default, for bundles that target a device), `"team"` (a warp per lane for wide accumulations) and `"thread"` are build options. Dot and norm over the lanes, and writes at run-time indices, are available when you ask for the warp form. See the new wide-values page.
+
+**Fused `steps=K` kernels with derivatives.** `step_vjp(hawk.steps(k, K), steps_reverse="fused")` reverses all `K` steps in one launch, host and device, and `jvp` of a `hawk.steps(k, K)` kernel is `hawk.steps(step_jvp(k), K)`. `steps_reverse="auto"` picks per-step or fused from a measured table; see the derivatives page.
+
+**`hawk.Meta`.** `Annotated[Vector[3], hawk.Meta(unit="km")]` attaches notes (JSON values) to a plane. hawk never reads them; they are written to the sidecar as `plane_meta` and come back by plane name from the kernel loaded through eagle. It works before Python 3.11.
+
+**Wider contraction recognition.** A contraction written with component reads, several outputs or chained products is recognised.
+
+**`Param` broadcasts.** One `Param` value is shared by all lanes, and `bind` refuses an index column of the wrong width.
+
+**Compile.** NVRTC builds lane reductions and reports the ptxas figures, there is a cross-process compile index and a compile card, and a machine with `cuda-bindings` but no NVIDIA driver reports no device instead of failing every build.
+
+**Host loops.** Kernels that read lookup planes keep wide carries in rows of the tile, and `vectorise_blocker` says why a loop was not vectorised.
+
+**New how-to pages.** Wide values, casting rays against shapes and meshes, and drawing random numbers in a kernel.
+
+### Changed
+
+- The autodiff-against-torch card moved into eagle's feature card; the autodiff example points at its `vjp_vs_torch` row.
+- Kernels that already compiled without a spill build as before.
+- macOS wheels need macOS 15 or newer. CPython 3.13t is dropped: nine wheels per platform, the install page names 3.14t and 3.15t.
+- `make gate`, `make gate-gpu` and `make gate-all` are what CI runs; hawk tests with `nvcc` from `CUDACXX` or `CUDA_PATH`, NVRTC only when none is set; the CUDA toolchain in CI is NVIDIA's pinned 12.9 redist archives.
+
+### Fixed
+
+- A `WideOut` stored only by key traces.
+- A net-axis perturbation keeps untouched gradients within 2 ULP of their atomic commits.
+
+### Removed
+
+| Gone | Use instead |
+|---|---|
+| the hawk autodiff-against-torch card | the `vjp_vs_torch` row of eagle's feature card |
+
 ## 0.7.2 (2026-10-29)
 
 This section covers what changes from 0.7.1. Names that left are in the table at the end. hawk now asks for `aether-dsc>=0.7.2`.
