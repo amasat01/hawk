@@ -52,6 +52,14 @@ def test_a_lane_set_reads_the_map_prologue_without_a_mask():
     assert src["cuda"].body == _sources(hawk.kernel(_square), DEFAULT_KIND)["cuda"].body
 
 
+def test_a_32_bit_lane_set_keeps_the_sample_index_32_bit_and_a_64_bit_one_does_not():
+    wide = Kind("sq", lanes=IndexSet(width=64))
+    narrow_text = _sources(hawk.kernel(_square, kind=SET), SET)["cuda"].text
+    wide_text = _sources(hawk.kernel(_square, kind=wide), wide)["cuda"].text
+    assert "const int hawk_i = reinterpret_cast<const std::int32_t*>" in narrow_text
+    assert "const long long hawk_i = static_cast<long long>(reinterpret_cast<const std::int64_t*>" in wide_text
+
+
 def test_the_unit_key_changes_only_for_the_kinds_that_declare_a_set():
     assert repr(IndexSet()) == repr(IndexSet(width=32)) != repr(IndexSet(width=64))
     assert "lanes" not in repr(DEFAULT_KIND)
