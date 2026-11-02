@@ -26,6 +26,7 @@ from .bundle import (
     arch,
     build,
     build_bundle,
+    emit_source,
     reset_unit_memo,
     unit_stats,
 )
@@ -41,7 +42,7 @@ from .sidecar import PARAMS_SCHEMA
 
 __all__ = ["Artifact", "Bundle", "Entry", "EXEC_ACCESS_CLASSES", "EXEC_OPS",
            "EXEC_TARGETS", "LAYOUT_FIELDS", "PARAMS_SCHEMA", "STAMP_NAME",
-           "TOP_LEVEL_KEY_ORDER_V2", "arch", "build", "build_bundle", "exports",
+           "TOP_LEVEL_KEY_ORDER_V2", "arch", "build", "build_bundle", "emit_source", "exports",
            "plan_view", "plugins", "reset_unit_memo", "unit_stats",
            "write_manifest"]
 

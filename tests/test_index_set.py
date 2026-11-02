@@ -40,9 +40,7 @@ def _square(x: Scalar, y: Mutable[Scalar]):
 
 
 def _sources(k, kind, name="sq"):
-    unit = B._active_unit(k, name, kind)
-    return B._sources(unit, name=name, smode=scalar_mode("float64"), kind=kind,
-                      targets=("cuda", "host"), layout_sizes_override=None)
+    return hawk.artifact.emit_source(k, name=name, kind=kind).sources
 
 
 def test_a_lane_set_reads_the_map_prologue_without_a_mask():
@@ -50,6 +48,22 @@ def test_a_lane_set_reads_the_map_prologue_without_a_mask():
     for target in ("cuda", "host"):
         assert "lut_active_map" in src[target].text and "hawk_t" in src[target].text
     assert src["cuda"].body == _sources(hawk.kernel(_square), DEFAULT_KIND)["cuda"].body
+
+
+@pytest.mark.parametrize("kind", [SET, Kind("p", lanes=IndexSet(prefix=True)), Kind("w", lanes=IndexSet(width=64))],
+                         ids=["map", "prefix", "width64"])
+def test_emit_source_is_the_text_and_sidecar_build_publishes(kind, tmp_path, cache_dir):
+    k = hawk.kernel(_square, kind=kind)
+    emitted = hawk.artifact.emit_source(k)
+    built = hawk.artifact.build(k, tmp_path, targets=("cuda", "host"), cache_dir=cache_dir, host_profile="native")
+    for target, ext in (("cuda", "cu"), ("host", "cpp")):
+        assert emitted.sources[target].text == (tmp_path / f"{k.name}.{ext}").read_text()
+    sidecar = {key: v for key, v in built.sidecar.items() if key not in ("ptxas", "format")}
+    sidecar["launch"] = {key: v for key, v in sidecar["launch"].items() if not key.startswith("local_") and key != "wide"}
+    assert {key: v for key, v in emitted.sidecar.items() if key != "format"} == sidecar     # format: the row's, not the object's
+    assert "launch_bounds" not in emitted.sources["cuda"].text
+    with pytest.raises(HawkError, match="no compiler"):
+        hawk.artifact.emit_source(k, targets=("c",))
 
 
 def test_a_32_bit_lane_set_keeps_the_sample_index_32_bit_and_a_64_bit_one_does_not():

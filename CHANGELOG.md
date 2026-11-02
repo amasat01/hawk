@@ -16,6 +16,8 @@ This section covers what changes from 0.7.2. Names that left are in the table at
 
 **`launch_bounds=(threads, blocks_per_sm)`.** A build option and a `policy.using` keyword that compile a kernel with `__launch_bounds__`, so it fits an occupancy step; the sidecar records `launch.block`. Values do not change. `policy.using` also takes `contraction="direct"|"gemm"` for eagle's opt-in matrix-multiply route.
 
+**`hawk.artifact.emit_source`.** Emits a kernel's CUDA and host text and its sidecar without compiling or writing, the same text `build` publishes, lane-set kernels included.
+
 **Wider contraction recognition.** A contraction written with component reads, several outputs or chained products is recognised.
 
 **`Param` broadcasts.** One `Param` value is shared by all lanes, and `bind` refuses an index column of the wrong width.
