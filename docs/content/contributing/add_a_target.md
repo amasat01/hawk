@@ -98,13 +98,3 @@ A built row also reaches the other repos:
   against each other.
 - eagle runs the kernel through an execution backend for that device kind. See
   [Add an execution backend](https://amasat01.github.io/eagle/content/devguide/add_an_execution_backend.html).
-
-## Renamed
-
-| Was | Now |
-|---|---|
-| `Dialect` (`render_body(..., dialect=)`) | `Writer` (`writer=`) |
-| `Backend` | `Wrapper` |
-| `hawk.emit.BACKENDS` | `hawk.targets.TARGETS` |
-| `hawk.compile.HOST`, `hawk.compile.DEVICE` | the target ids `"host"` and `"cuda"` |
-| `CompileOptions(backend=...)` | `CompileOptions(target=...)` |
