@@ -18,6 +18,7 @@ Below are hawk's own crossings.
 This page is explicitly about the runtime/binding layer itself, so its
 examples spell out `hawk.runtime`/`rt.load`/`rt.run` rather than hawk's
 top-level `hawk.load`/`hawk.run` doors (the same functions, re-exported).
+For everyday use, call the kernel, `k(...)`; [Your first kernel](tutorials/01_your_first_kernel) teaches the build.
 
 `hawk.runtime` binds a plane by **address**, through the Python buffer
 protocol (`ctypes` over `memoryview`) — not through numpy specifically.
