@@ -14,6 +14,8 @@ This section covers what changes from 0.7.2. Names that left are in the table at
 
 **`hawk.Meta`.** `Annotated[Vector[3], hawk.Meta(unit="km")]` attaches notes (JSON values) to a plane. hawk never reads them; they are written to the sidecar as `plane_meta` and come back by plane name from the kernel loaded through eagle. It works before Python 3.11.
 
+**`launch_bounds=(threads, blocks_per_sm)`.** A build option and a `policy.using` keyword that compile a kernel with `__launch_bounds__`, so it fits an occupancy step; the sidecar records `launch.block`. Values do not change. `policy.using` also takes `contraction="direct"|"gemm"` for eagle's opt-in matrix-multiply route.
+
 **Wider contraction recognition.** A contraction written with component reads, several outputs or chained products is recognised.
 
 **`Param` broadcasts.** One `Param` value is shared by all lanes, and `bind` refuses an index column of the wrong width.

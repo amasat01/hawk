@@ -123,6 +123,46 @@ def bundles(request, tmp_path_factory, cache_dir):
     return request.param, out
 
 
+@pytest.fixture(scope="module")
+def bounded(tmp_path_factory, cache_dir):
+    """The map-form ``plain`` kernel built twice, without and with ``launch_bounds=(128, 4)``."""
+    out = {}
+    for tag, bounds in (("set", None), ("bounded", (128, 4))):
+        k = SET(_plain)
+        bundle = build_bundle([k], tmp_path_factory.mktemp(tag), mode="float64", targets=("cuda", "host"),
+                              cache_dir=cache_dir, host_profile="native", launch_bounds=bounds)
+        out[tag, "plain"] = (bundle, k)
+    return "float64", out
+
+
+def test_launch_bounds_bound_the_kernel_and_name_the_block(bounded):
+    (plain, k), (tight, _) = bounded[1]["set", "plain"], bounded[1]["bounded", "plain"]
+    text = lambda b, ext: (b.directory / f"{k.name}.{ext}").read_text()     # noqa: E731
+    assert "__launch_bounds__" not in text(plain, "cu") and "__launch_bounds__(128, 4)" in text(tight, "cu")
+    assert text(plain, "cpp") == text(tight, "cpp")
+    assert "block" not in sidecar_of(plain, k.name)["launch"] and sidecar_of(tight, k.name)["launch"]["block"] == 128
+    assert plain.digest != tight.digest
+
+
+@pytest.mark.parametrize("bad", [(100, 2), (256, 9), (0, 1)])
+def test_launch_bounds_refuse_a_block_the_compiler_would(bad, tmp_path, cache_dir):
+    with pytest.raises(ValueError, match="launch_bounds"):
+        build_bundle([SET(_plain)], tmp_path, targets=("host",), cache_dir=cache_dir, launch_bounds=bad)
+
+
+def test_the_bound_leaves_the_host_values_equal_on_the_host(bounded):
+    ins, plain = _run_host(bounded, "set", "plain", MAP)
+    _, tight = _run_host(bounded, "bounded", "plain", MAP)
+    assert np.array_equal(plain["y"], tight["y"])
+
+
+@pytest.mark.gpu
+def test_the_bound_leaves_the_device_values_equal(bounded):
+    plain = _run_device(bounded, "set", "plain", MAP)
+    tight = _run_device(bounded, "bounded", "plain", MAP)
+    assert np.array_equal(plain["y"], tight["y"])
+
+
 def _data(name, mode):
     rng = np.random.default_rng(7)
     n, _ = SPACE[name]

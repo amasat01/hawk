@@ -146,7 +146,7 @@ def _launch(lane_space, group: int, box=None, block: int | None = None,
     holds (``source`` ``launch.local_source``: ``"ptxas"``, the stack frame of a CUBIN, or ``"ptx"``, the
     depots the PTX declares, a ceiling), ``launch.local_limit`` the device's per-thread limit. A launch of
     ``n`` threads needs about ``n * local_bytes`` of device memory beside the planes. No threads-per-block
-    cap follows from it (hawk emits no ``__launch_bounds__``).
+    cap follows from it (a build asking for ``launch_bounds`` records its block in ``launch.block``).
     ``wide`` is the placement of the kernel's wide values (:mod:`hawk.ir.wide`): ``launch.wide`` =
     ``{plane: {form, plane, layout, width}}``, one record per plane a wide value lives in, and ``class``, the device feature class whose thresholds placed them (a reader that does not know
     the key ignores it; a scratch plane is also in the sidecar's ``team_planes``, which sizes it). Absent when no value is placed."""

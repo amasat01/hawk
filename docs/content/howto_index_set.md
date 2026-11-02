@@ -49,6 +49,10 @@ BATCH = Kind("batch", lanes=IndexSet(prefix=True))
   count plane and `set_count(m)` changes it between replays.
 - Writing the count plane directly, without `set_count`, is your contract: nothing then checks the count.
 
+## When a map kernel needs more registers than you have
+
+A map-form lane index is a loaded value, so it stays live for the whole kernel, one register beyond the prefix form. When registers are tight, use the prefix form. When the kernel must fit an occupancy step instead, build with `launch_bounds=(threads, blocks_per_sm)`, for example `build_bundle(..., launch_bounds=(256, 2))`. It puts `__launch_bounds__` on the kernel (the compiler fits the registers to it, the values do not change), records the block in the sidecar so a launch uses it, and needs `threads` a multiple of 32 with `threads * blocks_per_sm` at most 2048. Check the result: a bound that is too tight spills, and the sidecar reports the local memory.
+
 ## A map past 2**31 lanes
 
 A pair grid of 65 537 items has more than `2**31 - 1` pairs. The map word is then 64-bit: build with `IndexSet(width=64)`, bind an `int64` map. `IndexSet()` is 32-bit, and `hawk._lane_bind.index_width(extent)` says which one an extent needs. A `float32` kernel cannot hold such a lane id and is refused; an `int64` map over a 32-bit extent is refused rather than narrowed.

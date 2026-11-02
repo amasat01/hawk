@@ -576,7 +576,7 @@ def _local_memory(name: str, entries: dict, lead: str) -> tuple | None:
 
 def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arch,
            targets, derivative, host_profile: str = "", opt_level: str = "",
-           embedded_profile=None, split: dict | None = None) -> _Draft:
+           embedded_profile=None, split: dict | None = None, block: int | None = None) -> _Draft:
     """Compile every target and assemble the unit CONTENT for one kernel.
 
     Everything here is a pure function of the inputs plus the
@@ -661,6 +661,7 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         lane_space=getattr(kernel, "lane_space", ((None, None),)),
         group=getattr(kernel, "group", 1),
         box=getattr(sources[lead], "box", None),
+        block=block if any(TARGETS[t].compile == GPU for t in native) else None,
         index_set=(None if _lane_set(kind) is None else
                    {"width": 32, "prefix": True, "count": ACTIVE_COUNT} if _lane_set(kind).prefix
                    else {"width": _map_bits(kind)}),
@@ -1191,7 +1192,8 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                  derivative: Mapping[str, str] | None = None,
                  host_profile: str = "", opt_level: str = "",
                  literal_table: bool = False, embedded_profile=None,
-                 emit_form: str = "auto", linalg_form: str = "auto", wide_form: str = "auto") -> Bundle:
+                 emit_form: str = "auto", linalg_form: str = "auto", wide_form: str = "auto",
+                 launch_bounds: tuple[int, int] | None = None) -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json``
     over them. ``emit_form`` is how a product, dot, sum or norm is spelled
     (:mod:`hawk.emit.policy`): ``"auto"`` unrolls a site of at most 16 elements and
@@ -1205,7 +1207,10 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     and the kernel has a rule in that form (:mod:`hawk.ir.lane`, folds of 128 elements or more), else places
     the value (:mod:`hawk.ir.wide`) -- a bundle with a host target keeps the placed form, as the host has no
     warp; ``"thread"`` keeps every value in the lane's registers and local memory (the text before the pass);
-    ``"team"`` asks for the warp form (device targets only). Every member must agree on the execution axis (a
+    ``"team"`` asks for the warp form (device targets only). ``launch_bounds=(threads, blocks_per_sm)`` compiles every device kernel with
+    ``__launch_bounds__(threads, blocks_per_sm)`` and records ``launch.block = threads`` in the sidecar, so a launch runs
+    that block size (``threads`` a multiple of 32, ``threads * blocks_per_sm`` at most 2048; the values do not change).
+    Every member must agree on the execution axis (a
     manifest-level, not per-entry, declaration) — a set that doesn't agree is
     two bundles.
 
@@ -1286,7 +1291,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
 
     emit_arch = _emit_arch(targets, device_arch)
     cls = wide_class.select(emit_arch) if emit_arch else ""       # the thresholds of the nearest measured device class
-    with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form), policy.wide_class_scope(cls), \
+    with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form, launch_bounds=launch_bounds), policy.wide_class_scope(cls), \
             build_arch(emit_arch):
         kernels, names, kinds, split = _expand_split(kernels, names, kinds, smode=smode,
                                                      device=any(TARGETS[t].compile == GPU for t in targets if t in TARGETS),
@@ -1312,7 +1317,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                     layout_sizes_override=layout_sizes_override,
                     host_profile=host_profile, opt_level=opt_level,
                     literal_table=literal_table, emit_form=emit_form, linalg_form=linalg_form,
-                    wide_form=wide_form, wide_class=cls, groups=tuple(getattr(k, "group", 1) for k in kernels),
+                    wide_form=wide_form, wide_class=cls, launch_bounds=launch_bounds, groups=tuple(getattr(k, "group", 1) for k in kernels),
                     embedded_profile=repr(embedded_profile) if exported else "",
                     source_digests=([getattr(k, "source_digest", None) for k in kernels]
                                     if exported else ()))
@@ -1350,16 +1355,18 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     # written. Each draft gets its own per_kernel_derivative[i] block.
 
     def sources_of(k, n, kd):
-        with build_arch(emit_arch), policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form):
+        with build_arch(emit_arch), policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form,
+                                                 launch_bounds=launch_bounds):
             return _sources(k, name=n, smode=smode, kind=kd, targets=targets,
                             layout_sizes_override=layout_sizes_override,
                             literal_table=literal_table, embedded_profile=embedded_profile)
 
+    block = None if launch_bounds is None else launch_bounds[0]
     drafts = [_draft(k, sources_of(k, n, kd),
                      name=n, smode=smode, kind=kd, defines=defines,
                      cache_dir=cache_dir, device_arch=device_arch, targets=targets,
                      derivative=d, host_profile=host_profile, opt_level=opt_level,
-                     embedded_profile=embedded_profile, split=split.get(n))
+                     embedded_profile=embedded_profile, split=split.get(n), block=block)
               for k, n, kd, d in zip(kernels, names, kinds, per_kernel_derivative)]
     files = tuple(f for d in drafts for f in d.files)
     # The manifest describes the NATIVE targets only; a unit built for the
