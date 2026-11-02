@@ -55,6 +55,7 @@ target alone (the default is both targets; naming `"host"` is what skips
 the GPU side entirely), and `hawk.load`/`hawk.run` execute it directly
 — no `eagle` import anywhere on that path, exactly as
 [Your first kernel](tutorials/01_your_first_kernel)'s host cell shows.
+Calling the kernel, `k(...)`, builds it on first use and runs it in one step; the other notebooks do that.
 
 ```{dropdown} How the CPU route was verified
 Verified: a clean venv built from this project's own wheels
