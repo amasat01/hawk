@@ -126,6 +126,11 @@ def test_using_takes_contraction_and_launch_bounds():
             pass
 
 
+def test_launch_bounds_are_refused_on_a_warp_per_lane_kernel(tmp_path, cache_dir):
+    with pytest.raises(HawkError, match=r"launch_bounds.*fill_mask.*warp per lane"):
+        build_bundle([W.fill_mask], tmp_path, targets=("cuda",), cache_dir=cache_dir, wide_form="team", launch_bounds=(128, 4))
+
+
 def test_the_thread_form_places_nothing(tmp_path, cache_dir):
     with policy.using(wide_form="thread"):
         sinks, planes, record = wide.place(W.fill_mask.sinks, real_bytes=8)

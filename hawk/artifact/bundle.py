@@ -943,7 +943,7 @@ class EmitUnit:
     unit: object
 
 
-def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targets=("cuda", "host"), kind=None,
+def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targets=DEFAULT_TARGETS, kind=None,
                 device_arch: str = "", literal_table: bool = False) -> EmitUnit:
     """Emit ONE kernel's source text and sidecar for ``targets`` without compiling or writing anything.
 
@@ -1349,6 +1349,10 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
         kernels, names, kinds, split = _expand_split(kernels, names, kinds, smode=smode,
                                                      device=any(TARGETS[t].compile == GPU for t in targets if t in TARGETS),
                                                      device_only=all(TARGETS[t].compile == GPU for t in targets if t in TARGETS))
+    if launch_bounds is not None and any(getattr(k, "team", None) is not None for k in kernels):
+        raise HawkError(
+            f"launch_bounds={launch_bounds!r}: {[n for k, n in zip(kernels, names) if getattr(k, 'team', None) is not None][0]!r} "
+            "is built as a warp per lane (a team), whose block the emit fixes; drop launch_bounds, or build it with wide_form='thread'")
     if exported and any(getattr(k, "team", None) is not None for k in kernels):
         raise HawkError(
             f"{names[0]!r} has linear algebra worked by a team of threads (a matrix above 32, or "

@@ -128,7 +128,7 @@ _EXPECTED_MANIFEST = {
         "Artifact", "Bundle", "EXEC_ACCESS_CLASSES", "EXEC_OPS",
         "EXEC_TARGETS", "Entry", "LAYOUT_FIELDS", "PARAMS_SCHEMA",
         "STAMP_NAME", "TOP_LEVEL_KEY_ORDER_V2", "arch", "build",
-        "build_bundle", "exports", "plan_view", "plugins",
+        "build_bundle", "emit_source", "exports", "plan_view", "plugins",
         "reset_unit_memo", "unit_stats", "write_manifest",
     ],
 }
