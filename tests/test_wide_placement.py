@@ -116,6 +116,16 @@ def test_a_vector_whose_every_index_is_a_constant_keeps_its_registers():
     assert sinks == tuple(narrow.sinks) and not planes and not record
 
 
+def test_using_takes_contraction_and_launch_bounds():
+    assert policy.contraction() == "direct" and policy.launch_bounds() is None
+    with policy.using(contraction="gemm", launch_bounds=(128, 4)):
+        assert policy.contraction() == "gemm" and policy.launch_bounds() == (128, 4)
+    assert policy.contraction() == "direct" and policy.launch_bounds() is None
+    for bad in ({"contraction": "blas"}, {"launch_bounds": (100, 2)}, {"launch_bounds": (256, 9)}):
+        with pytest.raises(ValueError), policy.using(**bad):
+            pass
+
+
 def test_the_thread_form_places_nothing(tmp_path, cache_dir):
     with policy.using(wide_form="thread"):
         sinks, planes, record = wide.place(W.fill_mask.sinks, real_bytes=8)

@@ -63,21 +63,43 @@ def wide_class() -> str:
     return _WIDE_CLASS.get()
 
 
+#: How a dense contraction is run (``contraction``): ``direct`` is the kernel's own loop; ``gemm`` asks eagle for a
+#: matrix-multiply route, for the kernels that have one (opt in: its values are within a few ulp, not the same bits).
+CONTRACTION_FORMS = ("direct", "gemm")
+
+_CONTRACTION: ContextVar[str] = ContextVar("hawk_contraction", default="direct")
+
+#: ``(threads, blocks_per_sm)`` the device kernel is compiled for (``launch_bounds``), or ``None`` for no bound.
+_LAUNCH_BOUNDS: ContextVar[tuple[int, int] | None] = ContextVar("hawk_launch_bounds", default=None)
+
+
 @contextmanager
-def using(form: str = "auto", *, linalg_form: str = "auto", wide_form: str = "auto") -> Iterator[None]:
+def using(form: str = "auto", *, linalg_form: str = "auto", wide_form: str = "auto", contraction: str = "direct",
+          launch_bounds: tuple[int, int] | None = None) -> Iterator[None]:
     """Render under ``form`` (one of :data:`FORMS`), ``linalg_form`` (one of
-    :data:`LINALG_FORMS`) and ``wide_form`` (one of :data:`WIDE_FORMS`) for the duration of
-    the block."""
+    :data:`LINALG_FORMS`), ``wide_form`` (one of :data:`WIDE_FORMS`), ``contraction`` (one of
+    :data:`CONTRACTION_FORMS`) and ``launch_bounds`` (``(threads, blocks_per_sm)``: ``threads`` a multiple of
+    32, at most 2048 with the blocks) for the duration of the block."""
     if form not in FORMS:
         raise ValueError(f"emit_form must be one of {FORMS}, got {form!r}")
     if linalg_form not in LINALG_FORMS:
         raise ValueError(f"linalg_form must be one of {LINALG_FORMS}, got {linalg_form!r}")
     if wide_form not in WIDE_FORMS:
         raise ValueError(f"wide_form must be one of {WIDE_FORMS}, got {wide_form!r}")
+    if contraction not in CONTRACTION_FORMS:
+        raise ValueError(f"contraction must be one of {CONTRACTION_FORMS}, got {contraction!r}")
+    if launch_bounds is not None:
+        threads, blocks = launch_bounds
+        if threads < 32 or threads % 32 or blocks < 1 or threads * blocks > 2048:
+            raise ValueError(f"launch_bounds=(threads, blocks) needs threads a multiple of 32 and threads*blocks <= 2048, got {launch_bounds!r}")
+        launch_bounds = (int(threads), int(blocks))
     token, linalg_token, wide_token = _FORM.set(form), _LINALG_FORM.set(linalg_form), _WIDE_FORM.set(wide_form)
+    contraction_token, bounds_token = _CONTRACTION.set(contraction), _LAUNCH_BOUNDS.set(launch_bounds)
     try:
         yield
     finally:
+        _LAUNCH_BOUNDS.reset(bounds_token)
+        _CONTRACTION.reset(contraction_token)
         _WIDE_FORM.reset(wide_token)
         _LINALG_FORM.reset(linalg_token)
         _FORM.reset(token)
@@ -91,6 +113,16 @@ def linalg_form() -> str:
 def wide_form() -> str:
     """The ``wide_form`` the current build asks for."""
     return _WIDE_FORM.get()
+
+
+def contraction() -> str:
+    """The ``contraction`` the current build asks for."""
+    return _CONTRACTION.get()
+
+
+def launch_bounds() -> tuple[int, int] | None:
+    """The ``(threads, blocks_per_sm)`` the current build compiles for, or ``None``."""
+    return _LAUNCH_BOUNDS.get()
 
 
 #: Whether the text being rendered keeps wide values in their planes (:mod:`hawk.ir.wide`): the device

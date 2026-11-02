@@ -178,7 +178,8 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
               host_profile: str = "", opt_level: str = "",
               literal_table: bool = False, embedded_profile: str = "",
               source_digests=(), groups=(), emit_form: str = "auto",
-              linalg_form: str = "auto", wide_form: str = "auto", wide_class: str = "") -> str:
+              linalg_form: str = "auto", wide_form: str = "auto", wide_class: str = "",
+              launch_bounds: tuple[int, int] | None = None) -> str:
     """The per-process identity of a BUILD REQUEST: every input the
     unit's content is a function of, hashed term by term. Per kernel:
     :attr:`hawk.ir.walk.Walk.digest`, its name and its declarations
@@ -240,6 +241,7 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
                  "linalg_form:" + linalg_form if linalg_form != "auto" else "",
                  "wide_form:" + wide_form if wide_form != "auto" else "",
                  "wide_class:" + wide_class if wide_class else "",
+                 "launch_bounds:%d,%d" % launch_bounds if launch_bounds else "",
                  f"team_threads:{os.environ.get('HAWK_TEAM_THREADS')}",
                  f"box:{os.environ.get(BOX_ENV)}:{thread_box_card(smode.id)['T']}",
                  _wide_part(smode.id, arch(device_arch) if any(r.compile == GPU for r in rows) else ""),

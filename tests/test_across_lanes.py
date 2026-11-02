@@ -79,6 +79,37 @@ def mstore(x: Scalar, y: Mutable[Scalar]):
     y = m.where(x > 0.0, 2.0 * x, x)
 
 
+def _where_int(i: Index, y: Mutable[Index]):
+    y = m.where(i == 0, 3, i - 1)
+
+
+def _where_int_by_hand(i: Index, y: Mutable[Index]):
+    y = m.where(i == 0, i - i + 3, i - 1)
+
+
+def _where_int_f64(i: Index, x: Scalar, y: Mutable[Scalar]):
+    y = m.where(i == 0, 3, x)
+
+
+def _where_f64_int(i: Index, x: Scalar, y: Mutable[Scalar]):
+    y = m.where(i == 0, 1.5, i - 1)
+
+
+def _where_typed_int_f64(i: Index, x: Scalar, y: Mutable[Scalar]):
+    y = m.where(i == 0, i, x)
+
+
+def test_where_types_an_int_literal_by_company_and_refuses_the_rest():
+    lit, hand = hawk.kernel(_where_int), hawk.kernel(_where_int_by_hand)
+    for i in (0, 1, 7):
+        assert evaluate(lit.sinks, {"i": i}) == evaluate(hand.sinks, {"i": i})
+    assert evaluate(lit.sinks, {"i": 0})["y"] == 3 and evaluate(lit.sinks, {"i": 7})["y"] == 6
+    assert hawk.kernel(_where_int_f64).sinks[0].ttype.dtype == "f64"             # an int literal beside f64 was f64 already
+    for bad in (_where_f64_int, _where_typed_int_f64):
+        with pytest.raises(HawkError, match=r"branches disagree.*m\.float64"):
+            hawk.kernel(bad)
+
+
 @kernel
 def vcell(v: Vector[3], mm: Matrix[2, 3], t: Mutable[Vector[3]], u: Mutable[Vector[3]]):
     t = hawk.sum(v)

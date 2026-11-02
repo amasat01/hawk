@@ -574,9 +574,48 @@ def _local_memory(name: str, entries: dict, lead: str) -> tuple | None:
     return held, source
 
 
+def _sidecar(kernel, *, name, smode, kind, native, fmt, lead, derivative=None, box=None, block=None,
+             ptxas=None, local=None, wide=None) -> dict:
+    """The sidecar of one kernel's unit. What only a compile knows (``ptxas``, ``local``, the resolved ``wide`` record) is
+    optional: :func:`emit_source` leaves it out."""
+    segment = getattr(kernel, "segment", None)
+    dispatch_override = None if segment is None else (
+        DispatchInfo(segment.dispatch_name, segment.K, "segmented", segment.units,
+                     selector_reads=segment.selector_reads,
+                     static_selector=segment.static_selector),
+    )
+    return sidecar_meta(
+        name, kernel.walk,
+        fmt=fmt,
+        scalar_type=smode.id,
+        exec_targets=[TARGETS[t].entry for t in native],
+        host_entry=(f"{name}_host"
+                    if any(TARGETS[t].entry == ENTRY_HOST for t in native) else None),
+        derivative=derivative,
+        lanes=getattr(kernel, "lanes", None),
+        lane_space=getattr(kernel, "lane_space", ((None, None),)),
+        group=getattr(kernel, "group", 1),
+        box=box,
+        block=block,
+        index_set=(None if _lane_set(kind) is None else
+                   {"width": 32, "prefix": True, "count": ACTIVE_COUNT} if _lane_set(kind).prefix
+                   else {"width": _map_bits(kind)}),
+        planes=getattr(kernel, "planes", None) or _derived_axes(
+            kernel.walk, getattr(kernel.sinks, "source", None)),
+        broadcast=getattr(kernel, "broadcast", None),
+        dispatch_override=dispatch_override,
+        step_ops=_step_ops(kernel, kind),
+        fp64_ops_ir=_fp64_ops_ir(kernel, kind),
+        entry_counts_finished=_entry_counts_finished(kernel, kind),
+        ptxas=ptxas,
+        local=local,
+        wide=wide,
+    )
+
+
 def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arch,
            targets, derivative, host_profile: str = "", opt_level: str = "",
-           embedded_profile=None, split: dict | None = None) -> _Draft:
+           embedded_profile=None, split: dict | None = None, block: int | None = None) -> _Draft:
     """Compile every target and assemble the unit CONTENT for one kernel.
 
     Everything here is a pure function of the inputs plus the
@@ -639,38 +678,15 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
     if not native:
         return _Draft(name, report, f"{name}.embedded.json", entries, tuple(files))
 
-    segment = getattr(kernel, "segment", None)
-    dispatch_override = None if segment is None else (
-        DispatchInfo(segment.dispatch_name, segment.K, "segmented", segment.units,
-                     selector_reads=segment.selector_reads,
-                     static_selector=segment.static_selector),
-    )
     lead = _lead(entries)
-    meta = sidecar_meta(
-        name, kernel.walk,
+    meta = _sidecar(
+        kernel, name=name, smode=smode, kind=kind, native=native,
         # The real format: the detected device format when a device object
         # was built, else the first compiled one — mirrors build_bundle's
         # manifest-entry choice so the sidecar and manifest never disagree.
-        fmt=entries[lead][3],
-        scalar_type=smode.id,
-        exec_targets=[TARGETS[t].entry for t in native],
-        host_entry=(f"{name}_host"
-                    if any(TARGETS[t].entry == ENTRY_HOST for t in native) else None),
-        derivative=derivative,
-        lanes=getattr(kernel, "lanes", None),
-        lane_space=getattr(kernel, "lane_space", ((None, None),)),
-        group=getattr(kernel, "group", 1),
+        fmt=entries[lead][3], lead=lead, derivative=derivative,
         box=getattr(sources[lead], "box", None),
-        index_set=(None if _lane_set(kind) is None else
-                   {"width": 32, "prefix": True, "count": ACTIVE_COUNT} if _lane_set(kind).prefix
-                   else {"width": _map_bits(kind)}),
-        planes=getattr(kernel, "planes", None) or _derived_axes(
-            kernel.walk, getattr(kernel.sinks, "source", None)),
-        broadcast=getattr(kernel, "broadcast", None),
-        dispatch_override=dispatch_override,
-        step_ops=_step_ops(kernel, kind),
-        fp64_ops_ir=_fp64_ops_ir(kernel, kind),
-        entry_counts_finished=_entry_counts_finished(kernel, kind),
+        block=block if any(TARGETS[t].compile == GPU for t in native) else None,
         ptxas=(_resource_report(kernel, entries[lead][0].ptxas)
                if TARGETS[lead].entry == ENTRY_DEVICE else None),
         local=_local_memory(name, entries, lead),
@@ -881,25 +897,9 @@ def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
     Refuses a ``segmented`` dispatch, which needs K artifacts: call
     :func:`build_bundle` with ``[kernel]`` instead."""
     name = name or kernel.name
-    if any(d.policy == "segmented" for d in kernel.walk.dispatches):
-        raise HawkError(
-            f"{name!r} carries a segmented dispatch: build() publishes "
-            "ONE artifact, and a segmented kernel needs K — call "
-            f"build_bundle([kernel], ...) instead"
-        )
-    if _split_stages(name, kernel.sinks) is not None:
-        raise HawkError(
-            f"{name!r} reads a value reduced over samples, so it runs as several "
-            "launches: build() publishes ONE artifact — call "
-            f"build_bundle([kernel], ...) instead")
-    kind = _resolve_kind(name, getattr(kernel, "kind", None), kind)
-    kernel = _active_unit(kernel, name, kind)
-    smode = scalar_mode(mode)
+    kind, kernel, smode, sources = _emitted(kernel, name, mode, kind, targets, device_arch, layout_sizes_override,
+                                            literal_table, embedded_profile, "build() publishes", "build_bundle")
     directory = Path(directory)
-    with build_arch(_emit_arch(targets, device_arch)):
-        sources = _sources(kernel, name=name, smode=smode, kind=kind, targets=targets,
-                           layout_sizes_override=layout_sizes_override,
-                           literal_table=literal_table, embedded_profile=embedded_profile)
     draft = _draft(kernel, sources, name=name, smode=smode, kind=kind,
                    defines=defines, cache_dir=cache_dir, device_arch=device_arch,
                    targets=targets, derivative=derivative,
@@ -909,6 +909,60 @@ def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
     for f in draft.files:
         f.write(directory)
     return _artifact_of(draft, directory)
+
+
+def _emitted(kernel, name, mode, kind, targets, device_arch, layout_sizes_override, literal_table, embedded_profile,
+             does, instead) -> tuple:
+    """``(kind, unit, smode, sources)`` of ONE kernel: the emit half of :func:`build` and :func:`emit_source`. A kernel that
+    needs several launches (a segmented dispatch, a value reduced over samples) is refused: ``does`` says what the caller
+    publishes and ``instead`` what to call."""
+    if any(d.policy == "segmented" for d in kernel.walk.dispatches):
+        raise HawkError(f"{name!r} carries a segmented dispatch: {does} ONE artifact, and a segmented kernel needs K "
+                        f"— call {instead}([kernel], ...) instead")
+    if _split_stages(name, kernel.sinks) is not None:
+        raise HawkError(f"{name!r} reads a value reduced over samples, so it runs as several launches: {does} ONE "
+                        f"artifact — call {instead}([kernel], ...) instead")
+    kind = _resolve_kind(name, getattr(kernel, "kind", None), kind)
+    kernel = _active_unit(kernel, name, kind)
+    smode = scalar_mode(mode)
+    with build_arch(_emit_arch(targets, device_arch)):
+        sources = _sources(kernel, name=name, smode=smode, kind=kind, targets=targets,
+                           layout_sizes_override=layout_sizes_override,
+                           literal_table=literal_table, embedded_profile=embedded_profile)
+    return kind, kernel, smode, sources
+
+
+@dataclass(frozen=True)
+class EmitUnit:
+    """What :func:`emit_source` returns: ``sources`` (target name to its :class:`hawk.emit.Source`, the ``.text``
+    of each as :func:`build` would write it), the ``sidecar`` dict without the figures only a compile gives (``ptxas``,
+    ``launch.local_*``, ``launch.wide``, and ``format`` as the target row's default, not the compiled object's), and ``unit``, the kernel as it was emitted (with the lane-set slots appended)."""
+
+    sources: dict
+    sidecar: dict
+    unit: object
+
+
+def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targets=("cuda", "host"), kind=None,
+                device_arch: str = "", literal_table: bool = False) -> EmitUnit:
+    """Emit ONE kernel's source text and sidecar for ``targets`` without compiling or writing anything.
+
+    The text and the sidecar are what :func:`build` publishes (same lane-set lowering, same policy), so a consumer that
+    compiles the source itself gets the same translation unit and the same plane list. Honours the ambient
+    :func:`hawk.emit.policy.using` block (``launch_bounds`` included). Refuses what :func:`build` refuses, and a target
+    that has no compiler (``c``)."""
+    name = name or kernel.name
+    native = _native(targets)
+    if len(native) != len(targets):
+        raise HawkError(f"emit_source covers the compiled targets only; {_exported(targets)} has no compiler: use build()")
+    kind, unit, smode, sources = _emitted(kernel, name, mode, kind, targets, device_arch, None, literal_table, None,
+                                          "emit_source returns", "build_bundle")
+    lead = _lead(dict.fromkeys(native))
+    bounds = policy.launch_bounds()
+    sidecar = _sidecar(unit, name=name, smode=smode, kind=kind, native=native, fmt=TARGETS[lead].format, lead=lead,
+                       box=getattr(sources[lead], "box", None),
+                       block=None if bounds is None or not any(TARGETS[t].compile == GPU for t in native) else bounds[0])
+    return EmitUnit(sources, sidecar, unit)
 
 
 def _expand_segmented(kernels: list, names: list, kinds: list) -> tuple:
@@ -1191,7 +1245,8 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                  derivative: Mapping[str, str] | None = None,
                  host_profile: str = "", opt_level: str = "",
                  literal_table: bool = False, embedded_profile=None,
-                 emit_form: str = "auto", linalg_form: str = "auto", wide_form: str = "auto") -> Bundle:
+                 emit_form: str = "auto", linalg_form: str = "auto", wide_form: str = "auto",
+                 launch_bounds: tuple[int, int] | None = None) -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json``
     over them. ``emit_form`` is how a product, dot, sum or norm is spelled
     (:mod:`hawk.emit.policy`): ``"auto"`` unrolls a site of at most 16 elements and
@@ -1205,7 +1260,10 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     and the kernel has a rule in that form (:mod:`hawk.ir.lane`, folds of 128 elements or more), else places
     the value (:mod:`hawk.ir.wide`) -- a bundle with a host target keeps the placed form, as the host has no
     warp; ``"thread"`` keeps every value in the lane's registers and local memory (the text before the pass);
-    ``"team"`` asks for the warp form (device targets only). Every member must agree on the execution axis (a
+    ``"team"`` asks for the warp form (device targets only). ``launch_bounds=(threads, blocks_per_sm)`` compiles every device kernel with
+    ``__launch_bounds__(threads, blocks_per_sm)`` and records ``launch.block = threads`` in the sidecar, so a launch runs
+    that block size (``threads`` a multiple of 32, ``threads * blocks_per_sm`` at most 2048; the values do not change).
+    Every member must agree on the execution axis (a
     manifest-level, not per-entry, declaration) — a set that doesn't agree is
     two bundles.
 
@@ -1286,7 +1344,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
 
     emit_arch = _emit_arch(targets, device_arch)
     cls = wide_class.select(emit_arch) if emit_arch else ""       # the thresholds of the nearest measured device class
-    with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form), policy.wide_class_scope(cls), \
+    with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form, launch_bounds=launch_bounds), policy.wide_class_scope(cls), \
             build_arch(emit_arch):
         kernels, names, kinds, split = _expand_split(kernels, names, kinds, smode=smode,
                                                      device=any(TARGETS[t].compile == GPU for t in targets if t in TARGETS),
@@ -1312,7 +1370,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                     layout_sizes_override=layout_sizes_override,
                     host_profile=host_profile, opt_level=opt_level,
                     literal_table=literal_table, emit_form=emit_form, linalg_form=linalg_form,
-                    wide_form=wide_form, wide_class=cls, groups=tuple(getattr(k, "group", 1) for k in kernels),
+                    wide_form=wide_form, wide_class=cls, launch_bounds=launch_bounds, groups=tuple(getattr(k, "group", 1) for k in kernels),
                     embedded_profile=repr(embedded_profile) if exported else "",
                     source_digests=([getattr(k, "source_digest", None) for k in kernels]
                                     if exported else ()))
@@ -1350,16 +1408,18 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     # written. Each draft gets its own per_kernel_derivative[i] block.
 
     def sources_of(k, n, kd):
-        with build_arch(emit_arch), policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form):
+        with build_arch(emit_arch), policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form,
+                                                 launch_bounds=launch_bounds):
             return _sources(k, name=n, smode=smode, kind=kd, targets=targets,
                             layout_sizes_override=layout_sizes_override,
                             literal_table=literal_table, embedded_profile=embedded_profile)
 
+    block = None if launch_bounds is None else launch_bounds[0]
     drafts = [_draft(k, sources_of(k, n, kd),
                      name=n, smode=smode, kind=kd, defines=defines,
                      cache_dir=cache_dir, device_arch=device_arch, targets=targets,
                      derivative=d, host_profile=host_profile, opt_level=opt_level,
-                     embedded_profile=embedded_profile, split=split.get(n))
+                     embedded_profile=embedded_profile, split=split.get(n), block=block)
               for k, n, kd, d in zip(kernels, names, kinds, per_kernel_derivative)]
     files = tuple(f for d in drafts for f in d.files)
     # The manifest describes the NATIVE targets only; a unit built for the

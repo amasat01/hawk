@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import dataclasses
 
+import numpy as np
 import pytest
 
 import hawk
@@ -192,6 +193,63 @@ def test_the_dense_sum_of_products_is_recognized(kan):
     assert kan.carry == "y"
     assert kan.outputs == (("y", "scalar"),)
     assert kan.operand_names == ("w_fold", "feat")
+
+
+def _dot_staged(count):
+    """One lane per sample (the lane IS the sample), a dot over the plane axis of a staged buffer of ``count`` samples."""
+    @hawk.kernel
+    def dot_staged(w: hawk.Table["row":ROWS], feat: hawk.Staged[hawk.Vector[ROWS], count], y: hawk.Mutable[hawk.Scalar]):
+        s = m.sample_index()
+        total = 0.0
+        for r in range(ROWS):
+            total = total + w.at(r) * feat.at(plane=r, sample=s)
+        y = total
+    return dot_staged
+
+
+@hawk.kernel
+def kan_contract_n(w_fold: hawk.Table["row":ROWS, "neuron":N_OUT],
+                   feat: hawk.Staged[hawk.Vector[ROWS], m.n_samples],
+                   y: hawk.Mutable[hawk.Scalar]):
+    sample, unit = m.split_index(N_OUT)
+    total = 0.0
+    for r in range(ROWS):
+        total = total + w_fold.at(row=r, neuron=unit) * feat.at(plane=r, sample=sample)
+    y = total
+
+
+def test_a_staged_buffer_counted_by_the_launch_is_recognized_with_a_run_time_stride(kan):
+    n = recognize(kan_contract_n, vjp=vjp(kan_contract_n))
+    feat = n.operands[1]
+    assert n.dense and feat.role == "staged" and feat.dims == (("plane", ROWS, "n_samples"), ("sample", None, 1))
+    assert (feat.reduce_stride, feat.reduce_dim) == ("n_samples", "plane")
+    assert n.operands[0] == kan.operands[0] and n.staged_fanin == kan.staged_fanin and n.fanin_source == kan.fanin_source
+    assert n.adjoint_accumulates == kan.adjoint_accumulates
+
+
+def test_the_launch_counted_kernel_is_one_build_for_every_size():
+    from hawk.artifact.unit_cache import declaration_digest
+    assert declaration_digest(_dot_staged(7)) != declaration_digest(_dot_staged(64))
+    assert declaration_digest(_dot_staged(m.n_samples)) == declaration_digest(_dot_staged(m.n_samples))
+    assert "7" not in repr(_dot_staged(m.n_samples).planes["feat"])
+
+
+@pytest.mark.parametrize("n", [7, 64])
+def test_the_launch_counted_form_matches_the_int_form_bitwise(n, tmp_path, cache_dir):
+    from conftest import sidecar_of
+    from hawk import runtime as rt
+    from hawk.artifact import build_bundle
+    rng = np.random.default_rng(3)
+    w, feat = rng.uniform(-1, 1, ROWS), rng.uniform(-1, 1, ROWS * n)
+    got = {}
+    for tag, count in (("int", n), ("sentinel", m.n_samples)):
+        k = _dot_staged(count)
+        bundle = build_bundle([k], tmp_path / tag, targets=("host",), cache_dir=cache_dir, host_profile="native")
+        y = np.zeros(n)
+        rt.run(rt.load(bundle.directory, k.name, sidecar_of(bundle, k.name)), w=w, feat=feat, y=y, n_samples=n)
+        got[tag] = y
+    assert np.array_equal(got["int"], got["sentinel"])
+    np.testing.assert_allclose(got["int"], np.einsum("r,rs->s", w, feat.reshape(ROWS, n)), rtol=1e-13)
 
 
 def test_each_operand_walks_a_DECLARED_axis(kan):

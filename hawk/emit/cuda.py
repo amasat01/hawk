@@ -29,6 +29,7 @@ from .wrapper import (
     unpack_lines,
 )
 from .dispatch import render_dispatch_rank0
+from .policy import launch_bounds
 from .spelling import param_name, reconstruct_call
 
 
@@ -47,7 +48,9 @@ class CudaWrapper:
                   f"{param_name(role, name_)}" for role, name_ in walk.arg_spec]
         params += ["    long long base", "    long long count",
                    "    long long nSamples"]
-        return (f'extern "C" __global__ void {name}(\n' + ",\n".join(params) + ")")
+        bounds = launch_bounds()
+        bound = "" if bounds is None else f" __launch_bounds__({bounds[0]}, {bounds[1]})"
+        return (f'extern "C" __global__ void{bound} {name}(\n' + ",\n".join(params) + ")")
 
     def index_prologue(self, segment: SegmentSpec | None = None, *,
                        active: ActiveSpec | None = None, box=None,

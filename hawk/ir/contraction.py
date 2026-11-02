@@ -68,7 +68,7 @@ class ContractionOperand:
     dims: tuple
     bound: int
     reads: int
-    reduce_stride: int | None
+    reduce_stride: int | str | None
     reduce_dim: str | None
     stride_labels: tuple
     dense: bool
@@ -283,6 +283,7 @@ def _describe(name: str, indices: list, dims: tuple, staged: bool,
     ``"wide"`` (a vector input) or ``"computed"`` (a value built in the
     kernel) for component reads, whose single axis is ``width`` long."""
     refusals: list = []
+    symbolic = False
     strides: set = set()
     labels: tuple = ()
     anonymous = False
@@ -300,6 +301,13 @@ def _describe(name: str, indices: list, dims: tuple, staged: bool,
             refusals.append(f"{name}: the index is not affine in the reduce axis")
             continue
         value = int(form.coefficient)
+        if form.symbol:                 # a run-time stride: the sample count, once per step of the axis
+            symbolic = True
+            if value == 1:
+                strides.add(form.symbol)
+            else:
+                refusals.append(f"{name}: the reduce-axis stride is a multiple of the sample count")
+            continue
         if form.anonymous and value != 0:
             anonymous = True
             refusals.append(
@@ -312,9 +320,9 @@ def _describe(name: str, indices: list, dims: tuple, staged: bool,
     if len(strides) > 1:
         refusals.append(
             f"{name}: its reads disagree on the reduce-axis stride "
-            f"({sorted(strides)})")
+            f"({sorted(strides, key=str)})")
 
-    stride: int | None
+    stride: int | str | None
     if not strides:
         stride = 0
     elif len(strides) == 1:
@@ -323,7 +331,9 @@ def _describe(name: str, indices: list, dims: tuple, staged: bool,
         stride = None
 
     reduce_dim = None
-    if len(labels) == 1 and not anonymous:
+    if symbolic and stride is not None:
+        reduce_dim = next((d for d, _size, declared in dims if declared == stride), None)
+    elif len(labels) == 1 and not anonymous:
         reduce_dim = next(
             (d for d, _size, declared in dims
              if labels[0] == f"{name}_{d}_stride" and declared == stride),

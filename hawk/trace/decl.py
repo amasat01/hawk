@@ -183,6 +183,10 @@ class Sorted:
         return Plane("in", t, sorted=True)
 
 
+#: The stride of a ``Staged[..., m.n_samples]`` plane axis: the launch's sample count, read at run time.
+N_SAMPLES = "n_samples"
+
+
 class Staged:
     """``Staged[Vector[W], count]`` — a buffer one launch PRODUCES and the
     next CONSUMES, declared as the producer wrote it.
@@ -190,7 +194,11 @@ class Staged:
     ``Vector[W]`` is the producing ``Mutable``'s element type, ``count`` its
     sample count — a ``(W, count)`` plane-major rectangle read as
     ``feat.at(plane=p, sample=s)``, binding the SAME ``lookup`` role a table
-    does, with a DECLARED offset and a derivable reverse-pass fan-in."""
+    does, with a DECLARED offset and a derivable reverse-pass fan-in.
+
+    ``count`` is an int, or ``m.n_samples`` for a buffer of exactly the launch's samples: the kernel is then
+    built once for every launch size (an int count is part of the build, so each size is its own). An int smaller
+    than the launch is a staging window."""
 
     def __class_getitem__(cls, key: object) -> Plane:
         if not isinstance(key, tuple) or len(key) != 2:
@@ -203,6 +211,9 @@ class Staged:
         if not isinstance(elem, TensorType) or len(elem.shape) != 1:
             raise HawkError(
                 f"Staged[...]: the element type must be a Vector[W], got {elem!r}")
+        from .value import n_samples
+        if count is n_samples:      # the count is the launch count: the plane stride is read at run time
+            return Plane("table", Scalar, staged=True, dims=(("plane", elem.shape[0], N_SAMPLES), ("sample", None, 1)))
         return Plane("table", Scalar, staged=True,
                      dims=_axes("Staged", (slice("plane", elem.shape[0]),
                                            slice("sample", count))))

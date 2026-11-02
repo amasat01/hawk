@@ -354,7 +354,8 @@ def vec(*components: Any) -> Value:
 
 
 def where(cond: Any, a: Any, b: Any) -> Value:
-    """Branchless ``cond ? a: b`` — the ``np.where`` spelling of :func:`select`."""
+    """Branchless ``cond ? a: b`` — the ``np.where`` spelling of :func:`select`. A bare ``int`` branch beside an integer branch is that integer type;
+    beside a float it is a float; an integer and a float value are refused (cast one with ``m.float64``)."""
     return select(cond, a, b)
 
 

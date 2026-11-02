@@ -23,7 +23,6 @@ import hawk.math as m
 from hawk import Grid, Index, Mutable, Scalar, Table
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk.emit import scalar_mode
 from hawk.ext import DEFAULT_KIND, IndexSet, Kind
 from hawk.ir import HawkError
 from conftest import sidecar_of
@@ -40,9 +39,7 @@ def _square(x: Scalar, y: Mutable[Scalar]):
 
 
 def _sources(k, kind, name="sq"):
-    unit = B._active_unit(k, name, kind)
-    return B._sources(unit, name=name, smode=scalar_mode("float64"), kind=kind,
-                      targets=("cuda", "host"), layout_sizes_override=None)
+    return hawk.artifact.emit_source(k, name=name, kind=kind).sources
 
 
 def test_a_lane_set_reads_the_map_prologue_without_a_mask():
@@ -50,6 +47,22 @@ def test_a_lane_set_reads_the_map_prologue_without_a_mask():
     for target in ("cuda", "host"):
         assert "lut_active_map" in src[target].text and "hawk_t" in src[target].text
     assert src["cuda"].body == _sources(hawk.kernel(_square), DEFAULT_KIND)["cuda"].body
+
+
+@pytest.mark.parametrize("kind", [SET, Kind("p", lanes=IndexSet(prefix=True)), Kind("w", lanes=IndexSet(width=64))],
+                         ids=["map", "prefix", "width64"])
+def test_emit_source_is_the_text_and_sidecar_build_publishes(kind, tmp_path, cache_dir):
+    k = hawk.kernel(_square, kind=kind)
+    emitted = hawk.artifact.emit_source(k)
+    built = hawk.artifact.build(k, tmp_path, targets=("cuda", "host"), cache_dir=cache_dir, host_profile="native")
+    for target, ext in (("cuda", "cu"), ("host", "cpp")):
+        assert emitted.sources[target].text == (tmp_path / f"{k.name}.{ext}").read_text()
+    sidecar = {key: v for key, v in built.sidecar.items() if key not in ("ptxas", "format")}
+    sidecar["launch"] = {key: v for key, v in sidecar["launch"].items() if not key.startswith("local_") and key != "wide"}
+    assert {key: v for key, v in emitted.sidecar.items() if key != "format"} == sidecar     # format: the row's, not the object's
+    assert "launch_bounds" not in emitted.sources["cuda"].text
+    with pytest.raises(HawkError, match="no compiler"):
+        hawk.artifact.emit_source(k, targets=("c",))
 
 
 def test_a_32_bit_lane_set_keeps_the_sample_index_32_bit_and_a_64_bit_one_does_not():
@@ -121,6 +134,46 @@ def bundles(request, tmp_path_factory, cache_dir):
                                   host_profile="native")
             out.update({(tag, name): (bundle, k) for name, k in zip(group, ks)})
     return request.param, out
+
+
+@pytest.fixture(scope="module")
+def bounded(tmp_path_factory, cache_dir):
+    """The map-form ``plain`` kernel built twice, without and with ``launch_bounds=(128, 4)``."""
+    out = {}
+    for tag, bounds in (("set", None), ("bounded", (128, 4))):
+        k = SET(_plain)
+        bundle = build_bundle([k], tmp_path_factory.mktemp(tag), mode="float64", targets=("cuda", "host"),
+                              cache_dir=cache_dir, host_profile="native", launch_bounds=bounds)
+        out[tag, "plain"] = (bundle, k)
+    return "float64", out
+
+
+def test_launch_bounds_bound_the_kernel_and_name_the_block(bounded):
+    (plain, k), (tight, _) = bounded[1]["set", "plain"], bounded[1]["bounded", "plain"]
+    text = lambda b, ext: (b.directory / f"{k.name}.{ext}").read_text()     # noqa: E731
+    assert "__launch_bounds__" not in text(plain, "cu") and "__launch_bounds__(128, 4)" in text(tight, "cu")
+    assert text(plain, "cpp") == text(tight, "cpp")
+    assert "block" not in sidecar_of(plain, k.name)["launch"] and sidecar_of(tight, k.name)["launch"]["block"] == 128
+    assert plain.digest != tight.digest
+
+
+@pytest.mark.parametrize("bad", [(100, 2), (256, 9), (0, 1)])
+def test_launch_bounds_refuse_a_block_the_compiler_would(bad, tmp_path, cache_dir):
+    with pytest.raises(ValueError, match="launch_bounds"):
+        build_bundle([SET(_plain)], tmp_path, targets=("host",), cache_dir=cache_dir, launch_bounds=bad)
+
+
+def test_the_bound_leaves_the_host_values_equal_on_the_host(bounded):
+    ins, plain = _run_host(bounded, "set", "plain", MAP)
+    _, tight = _run_host(bounded, "bounded", "plain", MAP)
+    assert np.array_equal(plain["y"], tight["y"])
+
+
+@pytest.mark.gpu
+def test_the_bound_leaves_the_device_values_equal(bounded):
+    plain = _run_device(bounded, "set", "plain", MAP)
+    tight = _run_device(bounded, "bounded", "plain", MAP)
+    assert np.array_equal(plain["y"], tight["y"])
 
 
 def _data(name, mode):
