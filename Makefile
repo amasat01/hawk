@@ -142,7 +142,7 @@ gate-docs: gate-venv
 
 # -- the legs that need a card ------------------------------------------------------------------------------------------------
 gate-gpu: gate-venv
-	$(VPY) -m pytest -q -m gpu -p no:cacheprovider -n $(GPU_PYTEST_JOBS) --dist loadfile $(PYTEST_ARGS)
+	$(VPY) -m pytest -q -rs -m gpu -p no:cacheprovider -n $(GPU_PYTEST_JOBS) --dist loadfile $(PYTEST_ARGS)
 	$(VPY) tests/test_wide_placement.py gpu
 
 # every notebook, run through raptor_docs.nb run_gate with the card visible: its CPU leg again, then its GPU leg (a notebook
