@@ -16,7 +16,6 @@ import json
 import os
 import pathlib
 import platform
-import statistics
 import subprocess
 
 #: Schema tag every card's JSON carries (bump the suffix on a
@@ -24,21 +23,8 @@ import subprocess
 SCHEMA = "raptor-perf-card/1"
 
 # --------------------------------------------------------------------------- #
-# Statistics and small facts
+# Small facts
 # --------------------------------------------------------------------------- #
-def median_iqr(values):
-    """Median and interquartile range (inclusive quartiles), with the raw
-    per-repetition samples alongside -- a card keeps BOTH, never the
-    aggregate alone (a scalar is blind to a bimodal run)."""
-    values = list(values)
-    if len(values) < 2:
-        v = values[0] if values else None
-        return {"median": v, "iqr": 0.0, "q1": v, "q3": v, "samples": values}
-    q = statistics.quantiles(values, n=4, method="inclusive")
-    return {"median": statistics.median(values), "iqr": q[2] - q[0],
-            "q1": q[0], "q3": q[2], "samples": values}
-
-
 def md5(path):
     return hashlib.md5(pathlib.Path(path).read_bytes()).hexdigest()
 
