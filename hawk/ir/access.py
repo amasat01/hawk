@@ -34,6 +34,7 @@ from .nodes import (
     At,
     Const,
     HawkError,
+    Leaf,
     Node,
     Op,
     RoleConst,
@@ -157,12 +158,14 @@ class IndexForm(NamedTuple):
 
     ``offset`` is ``None`` when the ``s``-free part isn't a compile-time
     integer. ``labels`` are the declaration-named constants scaled by;
-    ``anonymous`` marks a bare-literal scaling factor instead."""
+    ``anonymous`` marks a bare-literal scaling factor instead. ``symbol`` is ``"n_samples"`` when the
+    coefficient is scaled by the launch's sample count (a run-time stride)."""
 
     coefficient: Fraction
     offset: Fraction | None
     labels: tuple = ()
     anonymous: bool = False
+    symbol: str = ""
 
 
 def index_form(node: Node, var: Node | None = None, *,
@@ -246,7 +249,7 @@ def _sum_form(node: Op, var: Node | None, quotients: bool) -> IndexForm | None:
                   else left.offset + sign * right.offset)
         return IndexForm(left.coefficient + sign * right.coefficient, offset,
                          left.labels + right.labels,
-                         left.anonymous or right.anonymous)
+                         left.anonymous or right.anonymous, left.symbol or right.symbol)
     # a quotient form survives only a shift by a term free of ``var``
     if left.coefficient == 0:
         quotient = right
@@ -266,6 +269,11 @@ def _product_form(node: Op, var: Node | None,
     if a_has and b_has:
         return None                     # var * var: not a strided walk
     term, factor_node = (a, b) if a_has else (b, a)
+    if isinstance(factor_node, Leaf) and factor_node.kind == "nsamples":
+        inner = index_form(term, var, quotients=quotients)
+        if inner is None or not _exact(inner) or inner.symbol:
+            return None
+        return IndexForm(inner.coefficient, None, inner.labels, inner.anonymous, "n_samples")
     factor, label = _int_factor(factor_node)
     if factor is None:
         return None                     # scaled by a runtime quantity

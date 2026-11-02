@@ -775,8 +775,8 @@ class TableRef:
                 + " — a partial address would silently read the wrong row")
         flat: Node | None = None
         for label, _size, stride in self.dims:
-            term = _make("mul", (index_node(named[label]),
-                                 RoleConst(stride, f"{self.name}_{label}_stride")))
+            factor = n_samples().node if stride == "n_samples" else RoleConst(stride, f"{self.name}_{label}_stride")
+            term = _make("mul", (index_node(named[label]), factor))
             flat = term if flat is None else _make("add", (flat, term))
         return flat
 

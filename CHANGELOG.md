@@ -20,6 +20,8 @@ This section covers what changes from 0.7.2. Names that left are in the table at
 
 **`m.where` with an integer literal.** `m.where(i == 0, 3, i - 1)` on an integer index types the literal as the other branch, as `i + 1` does; a float against an integer value is still refused, now with the cast to write.
 
+**`Staged[Vector[W], m.n_samples]`.** A staged buffer counted by the launch is one build for every launch size, where an int count is a build per size. The contraction record names its stride `"n_samples"`. An int count still works, and a count below the launch is a staging window.
+
 **Wider contraction recognition.** A contraction written with component reads, several outputs or chained products is recognised.
 
 **`Param` broadcasts.** One `Param` value is shared by all lanes, and `bind` refuses an index column of the wrong width.
