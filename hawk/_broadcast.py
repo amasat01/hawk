@@ -412,10 +412,12 @@ def compact(name: str, value, kept: tuple, head: tuple, where: str, cell: bool =
     runtime axis). A buffer that is not C-contiguous would need a copy: refused.
     A ``cell`` (the plane a reverse sums into) is a one-cell array, not a scalar."""
     if not any(kept) and not head:
-        if cell:
-            import numpy
+        if cell:                                       # an array stays on its own device; a Python number is a host cell
+            if isinstance(value, (bool, int, float)):
+                import numpy
 
-            return numpy.asarray(value).reshape(-1)[:1]
+                value = numpy.asarray(value)
+            return value.reshape(-1)[:1]
         return value if isinstance(value, (bool, int, float)) else value.item()
     if isinstance(value, (bool, int, float)):          # a Python number beside a runtime axis of one lane: the 0-d array's path
         import numpy
