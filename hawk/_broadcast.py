@@ -417,6 +417,10 @@ def compact(name: str, value, kept: tuple, head: tuple, where: str, cell: bool =
 
             return numpy.asarray(value).reshape(-1)[:1]
         return value if isinstance(value, (bool, int, float)) else value.item()
+    if isinstance(value, (bool, int, float)):          # a Python number beside a runtime axis of one lane: the 0-d array's path
+        import numpy
+
+        value = numpy.asarray(value)
     flags = getattr(value, "flags", None)
     contiguous = (flags.c_contiguous if flags is not None
                   else getattr(value, "is_contiguous", lambda: True)())

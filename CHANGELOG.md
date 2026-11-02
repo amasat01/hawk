@@ -39,6 +39,7 @@ This section covers what changes from 0.7.2. Names that left are in the table at
 
 ### Fixed
 
+- A Python float beside a `Grid` launched with one lane no longer fails with `float has no attribute reshape`.
 - A `WideOut` stored only by key traces.
 - A net-axis perturbation keeps untouched gradients within 2 ULP of their atomic commits.
 
