@@ -206,3 +206,8 @@ def test_an_undeclared_parameter_and_an_uncommitted_sink_are_refused():
         _traced("@kernel\ndef k(x, out: Mutable[Scalar]):\n    out = x\n")
     with pytest.raises(HawkError, match="never committed"):
         _traced("@kernel\ndef k(x: Scalar, out: Mutable[Scalar]):\n    y = x\n")
+
+
+def test_the_undeclared_parameter_error_says_how_to_use_a_helper():
+    with pytest.raises(HawkError, match="move it to another module, or call it with traced values"):
+        _traced("@kernel\ndef k(x, out: Mutable[Scalar]):\n    out = x\n")

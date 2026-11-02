@@ -647,7 +647,9 @@ def _resolve_planes(fn: Callable[..., None], params: list[str],
     if missing:
         raise HawkError(
             f"kernel {fn.__name__!r}: parameter(s) {missing} carry no declaration — "
-            "every parameter IS its vocabulary declaration"
+            "every parameter IS its vocabulary declaration. If it is a helper "
+            "defined in this kernel's own module, it was traced as a kernel: "
+            "move it to another module, or call it with traced values so it is inlined"
             + (f" or a member of kind {kind.slug!r}'s own vocabulary "
                f"{sorted(vocab)}" if vocab else "")
         )
