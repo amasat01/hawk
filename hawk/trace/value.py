@@ -613,8 +613,10 @@ def vec(*components: Any) -> Value:
 def select(cond: Any, on_true: Any, on_false: Any) -> Value:
     """``cond ? a: b`` — what the ast pass rewrites control flow into.
     Component-wise on a vector or matrix: the mask is rank-0 or the
-    branches' shape, and a rank-0 branch broadcasts."""
-    c, a, b = node_of(cond), node_of(on_true), node_of(on_false)
+    branches' shape, and a rank-0 branch broadcasts. A bare ``int`` branch takes the type of the other branch
+    when that is an integer (as ``x + 1`` does)."""
+    c = node_of(cond)
+    a, b = _operands((on_true, on_false))
     shape = _broadcast_shape("select", _broadcast_shape(
         "select", c.ttype.shape, a.ttype.shape), b.ttype.shape)
     if shape:
@@ -624,7 +626,8 @@ def select(cond: Any, on_true: Any, on_false: Any) -> Value:
         a, b = (_make("splat", (x,), shape) if x.ttype.shape == () else x
                 for x in (a, b))
     if a.ttype != b.ttype:
-        raise HawkError(f"select: the branches disagree — {a.ttype!r} vs {b.ttype!r}")
+        raise HawkError(f"select: the branches disagree — {a.ttype!r} vs {b.ttype!r}; "
+                        "cast one with m.float64(...) or write the literal in the other's type")
     return Value(Select(c, a, b, a.ttype))
 
 

@@ -18,6 +18,8 @@ This section covers what changes from 0.7.2. Names that left are in the table at
 
 **`hawk.artifact.emit_source`.** Emits a kernel's CUDA and host text and its sidecar without compiling or writing, the same text `build` publishes, lane-set kernels included.
 
+**`m.where` with an integer literal.** `m.where(i == 0, 3, i - 1)` on an integer index types the literal as the other branch, as `i + 1` does; a float against an integer value is still refused, now with the cast to write.
+
 **Wider contraction recognition.** A contraction written with component reads, several outputs or chained products is recognised.
 
 **`Param` broadcasts.** One `Param` value is shared by all lanes, and `bind` refuses an index column of the wrong width.
