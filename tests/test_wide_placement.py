@@ -239,7 +239,7 @@ def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp
 @pytest.mark.parametrize("mode", ["float32", "float64"])
 @pytest.mark.parametrize("n", [2048, 2045])         # the second leaves the last block with lanes past the end
 def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode, n, cache_dir):
-    import _probe_wide as probe
+    from hawk.targets.cards import _probe_wide as probe
     from eagle import arrays
     from eagle._alloc import synchronize
 

@@ -3,7 +3,7 @@
 
 """The inner-loop probe of the wide-value pass: one command, one shape (or a sweep), seconds per case.
 
-    python tests/_probe_wide.py --dtype float64 --widths 4,8 --patterns rtread,rotate --sizes 65536,262144
+    python hawk/targets/cards/_probe_wide.py --dtype float64 --widths 4,8 --patterns rtread,rotate --sizes 65536,262144
 
 A case is ``(dtype, width, pattern)``. It is built in the REGISTER form (``wide_form='thread'``: the 0.7.2 form) and the
 RESIDENT form (``'auto'``), and prints for each: regs, stack/spill/local bytes, a check of the values against NumPy, and ns/sample

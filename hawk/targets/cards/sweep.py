@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
-import sys
 import time
 import warnings
 from pathlib import Path
@@ -92,17 +91,6 @@ def box_row(cc: str, device: str, dtype: str, timed: list) -> dict:
 
 # ---- the device side ----------------------------------------------------------------------------------------------------
 
-def _corpus_helpers():
-    """The repository's corpus helpers (``tests/_probe_wide.py``, the gate's launch timing)."""
-    tests = Path(__file__).resolve().parents[3] / "tests"
-    if not (tests / "_probe_wide.py").is_file():
-        raise HawkError("the wide sweep needs a checkout of the repository (tests/_probe_wide.py): run it from one")
-    sys.path.insert(0, str(tests))
-    import _probe_wide
-
-    return _probe_wide
-
-
 _SOURCE = """import hawk
 import hawk.math as m
 from hawk import Mutable, Table, Vector
@@ -161,9 +149,8 @@ def measure(cells: list, cache: Path, repeats: int) -> list:
     from eagle._alloc import synchronize
 
     from ...artifact import build_bundle
-    from . import wide_override
+    from . import _probe_wide, wide_override
 
-    probe = _corpus_helpers()
     out = []
     warnings.filterwarnings("ignore", "hawk: kernel .* local frame", UserWarning)     # a form that spills is a result, not a defect
     for form, width, fold, dtype in cells:
@@ -176,7 +163,7 @@ def measure(cells: list, cache: Path, repeats: int) -> list:
                                   cache_dir=cache / "units", wide_form="thread" if form == "thread" else "team")
             side = next(a.sidecar for a in bundle.artifacts if a.name == kernel.name)
             row = next(iter((side.get("ptxas") or {}).values()), {})
-            plan_ = probe._auto(kernel, dtype, cache / "units", "thread" if form == "thread" else "team")
+            plan_ = _probe_wide._auto(kernel, dtype, cache / "units", "thread" if form == "thread" else "team")
             rng = np.random.default_rng(1)
             planes = {"s": rng.integers(-3, 4, (fold, LANES)).astype(real), "w": rng.integers(-3, 4, (fold, width)).astype(real),
                       "y": np.zeros((width, LANES), real)}
@@ -209,14 +196,11 @@ def measure_boxes(dtype: str, cache: Path, repeats: int) -> list:
 
     import numpy as np
 
-    from ...artifact import build_bundle
     from . import THREAD_BOX_FILE
     import hawk.targets.cards as cards
 
-    _corpus_helpers()
-    from conftest import _launch
-
     import cupy
+    import eagle.plan
 
     fk = _contraction()
     real = np.float32 if dtype == "float32" else np.float64
@@ -230,9 +214,9 @@ def measure_boxes(dtype: str, cache: Path, repeats: int) -> list:
             path = cache / f"thread_box_{dtype}_{T}.json"
             path.write_text(_json.dumps(doc))
             cards.THREAD_BOX_FILE = path
-            bundle = build_bundle([fk.contract], cache / f"box_{dtype}_{T}", mode=dtype, targets=("cuda",))
+            plan_ = eagle.plan.auto(fk.contract, targets=("cuda",), scalar_type=dtype, cache_dir=str(cache / f"box_{dtype}_{T}"))
             planes = {**{k: cupy.asarray(v) for k, v in host.items()}, "y": cupy.zeros(n, dtype=real)}
-            bound = _launch(bundle, fk.contract.name, "cuda", planes)
+            bound = plan_.bind(**planes)
             timed.append({"T": T, "ns": _time(bound, cupy.cuda.Device().synchronize, repeats) * LANES / n})   # _time divides by LANES
     finally:
         cards.THREAD_BOX_FILE = original
