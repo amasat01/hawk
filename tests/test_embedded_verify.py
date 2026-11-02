@@ -29,7 +29,6 @@ from hawk.embedded.verify import (
     index_status,
     ir_checks,
     positions,
-    site_status,
 )
 from hawk.ext import DEFAULT_KIND
 from hawk.ir import HawkError, canonical
@@ -215,9 +214,9 @@ def test_a_site_is_found_from_its_node_object():
     (at,) = [n for n in walk.order if isinstance(n, At)]
     (site,) = report["indices"]
     assert positions(sinks)[id(at)] == site["node"]
-    assert site_status(report, sinks, at) == "clamped"
+    assert index_status(report, positions(sinks)[id(at)]) == "clamped"
     with pytest.raises(HawkError, match="not an index site"):
-        site_status(report, sinks, walk.order[-1])
+        index_status(report, positions(sinks)[id(walk.order[-1])])
 
     report = _report(component_sum)
     walk, sinks = component_sum.walk, component_sum.sinks
@@ -225,7 +224,7 @@ def test_a_site_is_found_from_its_node_object():
     k, node = next((k, n) for k, n in enumerate(loop.body_nodes())
                    if n.kind == "component_at")
     assert positions(sinks)[id(node)] == f"loop{i}.{k}"
-    assert site_status(report, sinks, node) == "proven"
+    assert index_status(report, positions(sinks)[id(node)]) == "proven"
     every = positions(sinks)
     assert len(every) == len(walk.order) + len(loop.body_nodes())
 

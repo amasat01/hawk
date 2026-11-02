@@ -261,19 +261,6 @@ def index_status(report: dict, pos) -> str:
     raise HawkError(f"node {pos} is not an index site of this report")
 
 
-def site_status(report: dict, sinks, node) -> str:
-    """The ``proven``/``clamped`` status of the index site ``node`` (a node
-    reached from ``sinks``), looked up through :func:`positions`."""
-    pos = positions(sinks).get(id(node))
-    if pos is None:
-        raise HawkError(f"{node!r} is not a node of this walk")
-    try:
-        return index_status(report, pos)
-    except HawkError:
-        raise HawkError(f"node {pos} ({node.kind}) is not an index site of this "
-                        "report") from None
-
-
 # --------------------------------------------------------------------------
 # c. floating-point domain
 
