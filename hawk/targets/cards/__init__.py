@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import functools
 import json
 from pathlib import Path
 
@@ -91,3 +92,60 @@ def select_weight(scalar_type: str) -> float:
         raise HawkError(f"{THREAD_BOX_FILE.name}: select_weight must be positive for "
                         f"{scalar_type}, got {weight!r}")
     return weight
+
+
+#: The wide-value thresholds card (see its ``about`` text).
+WIDE_FILE = Path(__file__).with_name("wide.json")
+
+#: The thresholds a row may set, each a positive integer.
+WIDE_KEYS = ("SLICE_MIN", "TEAM_MIN", "TC")
+
+#: Thresholds a caller forces for the block (the sweep measures below the committed ones); ``None`` reads the card.
+_WIDE_OVERRIDE: contextvars.ContextVar = contextvars.ContextVar("hawk_wide_override", default=None)
+
+
+@contextlib.contextmanager
+def wide_override(values: dict):
+    """Within the block :func:`wide` answers ``values`` over whatever the card says."""
+    token = _WIDE_OVERRIDE.set(dict(values))
+    try:
+        yield
+    finally:
+        _WIDE_OVERRIDE.reset(token)
+
+
+@functools.cache
+def _wide_doc(path: str) -> dict:
+    doc = json.loads(Path(path).read_text())
+    for where, values in [("defaults", doc["defaults"]), *((f"row {r.get('cc')}/{r.get('device')}/{r.get('dtype')}", r)
+                                                          for r in doc["rows"])]:
+        for key in WIDE_KEYS:
+            if key in values and not (isinstance(values[key], int) and not isinstance(values[key], bool) and values[key] > 0):
+                raise HawkError(f"{WIDE_FILE.name}: {key} must be a positive integer in {where}, got {values[key]!r}")
+        if where != "defaults" and not all(isinstance(values.get(k), str) for k in ("cc", "device", "dtype")):
+            raise HawkError(f"{WIDE_FILE.name}: {where} needs cc, device and dtype as strings")
+    if any(k not in doc["defaults"] for k in WIDE_KEYS):
+        raise HawkError(f"{WIDE_FILE.name}: defaults must set {WIDE_KEYS}")
+    if doc["defaults"]["SLICE_MIN"] % 32:
+        raise HawkError(f"{WIDE_FILE.name}: SLICE_MIN must be a multiple of 32, got {doc['defaults']['SLICE_MIN']!r}")
+    return doc
+
+
+def wide(scalar_type: str) -> dict:
+    """``{"SLICE_MIN", "TEAM_MIN", "TC"}`` for ``scalar_type`` (``"float32"``/``"float64"``, or the IR's ``f32``/``f64``)
+    on the build's device arch (:func:`build_arch`): the defaults, and over them the first row of this arch (and, when a
+    device is present, its name) for the scalar type. A host-only build, or an arch with no row, gets the defaults; the
+    device is probed only when a row of the arch needs its name checked."""
+    scalar_type = {"f32": "float32", "f64": "float64"}.get(scalar_type, scalar_type)
+    doc = _wide_doc(str(WIDE_FILE))
+    card = {k: doc["defaults"][k] for k in WIDE_KEYS}
+    arch = _BUILD_ARCH.get()
+    rows = [r for r in doc["rows"] if arch and r["cc"] == arch and r["dtype"] == scalar_type]
+    if rows:
+        device = _device()
+        for r in rows:
+            if device is None or device == (r["cc"], r["device"]):
+                card.update({k: r[k] for k in WIDE_KEYS if k in r})
+                break
+    card.update({k: v for k, v in (_WIDE_OVERRIDE.get() or {}).items() if k in WIDE_KEYS})
+    return card

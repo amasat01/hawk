@@ -39,7 +39,7 @@ from ..ir.nodes import (
 )
 from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, QR_OPS
 from ..ir.team import TeamRead
-from ..ir.lane import SLICE_MIN, WARP_READ, WARP_SUM_KIND
+from ..ir.lane import WARP_READ, WARP_SUM_KIND, slice_min
 from ..ir.wide import RESIDENT_KIND, element_kind, gather, is_prior, is_resident, is_scratch, is_tiled
 from ..ir.rays import RAY_OPS
 from ..ir.ops import RANDOM_OPS
@@ -139,7 +139,7 @@ class AetherWriter:
     def warp_store(self, r, sink, target: str, value: str) -> None:
         """The lane's slice of a wide value into elements ``j * 32 + lane`` of the Mutable's plane."""
         rows = policy.staged_rows()
-        if rows > 1 and sink.ttype.shape and sink.ttype.shape[0] >= SLICE_MIN:        # the tile of the block: the copy-out after the body stores it coalesced
+        if rows > 1 and sink.ttype.shape and sink.ttype.shape[0] >= slice_min(sink.ttype.dtype):        # the tile of the block: the copy-out after the body stores it coalesced
             n, width = sink.value.ttype.shape[0], sink.ttype.shape[0]
             tile = f"hawk_stg_{target}"
             r._emit("{")

@@ -1249,10 +1249,10 @@ def _tiled_or(tiled, plain: list) -> list:
 def _staged(wrapper: Wrapper, rows: int, sinks, mode: ScalarMode) -> tuple:
     """The frame of a block that serves ``rows`` lanes of a warp-form kernel (:meth:`CudaWrapper.stage_frame`): the vector
     outputs it stages through shared memory are those of its warp stores."""
-    from ..ir.lane import SLICE_MIN, WarpStore
+    from ..ir.lane import WarpStore, slice_min
 
     stages = tuple((binding_name(s.role, s.name), s.ttype.shape[0]) for s in sinks
-                   if isinstance(s, WarpStore) and s.ttype.shape and s.ttype.shape[0] >= SLICE_MIN)
+                   if isinstance(s, WarpStore) and s.ttype.shape and s.ttype.shape[0] >= slice_min(s.ttype.dtype))
     return wrapper.stage_frame(rows, stages, "Real")
 
 

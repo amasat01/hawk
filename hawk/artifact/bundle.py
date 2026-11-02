@@ -981,20 +981,19 @@ def _wide_with_class(record: dict, resolved_arch: str) -> dict | None:
     return {**record, "class": wide_class.select(resolved_arch)} if record else None
 
 
-#: The most shared memory the tiles of one warp-form block may take (a kernel with two bodies declares them twice).
-TILE_BUDGET_B = 40 * 1024
-
-
 def _tile_rows(sinks, real_bytes: int, bodies: int) -> int:
-    """The lanes a block of the warp form serves: the most of 8, 4, 2 whose output tiles fit :data:`TILE_BUDGET_B`, else 1
-    (a warp per block, stores straight to the planes). Only vector outputs are staged; a rank-2 one is not."""
-    from ..ir.lane import SLICE_MIN, WarpStore
+    """The lanes a block of the warp form serves: the most of 8, 4, 2 whose output tiles fit the card's TC bytes (a kernel
+    with two bodies declares them twice), else 1 (a warp per block, stores straight to the planes). Only vector outputs are
+    staged; a rank-2 one is not."""
+    from ..ir.lane import WarpStore, slice_min
+    from ..targets import cards
 
-    widths = [s.ttype.shape for s in sinks if isinstance(s, WarpStore) and s.ttype.shape and s.ttype.shape[0] >= SLICE_MIN]
+    widths = [s.ttype.shape for s in sinks
+              if isinstance(s, WarpStore) and s.ttype.shape and s.ttype.shape[0] >= slice_min(s.ttype.dtype)]
     if not widths or any(len(w) != 1 for w in widths):
         return 1
     for rows in (8, 4, 2):
-        if bodies * sum(w[0] for w in widths) * (rows + 1) * real_bytes <= TILE_BUDGET_B:
+        if bodies * sum(w[0] for w in widths) * (rows + 1) * real_bytes <= cards.wide(sinks[0].ttype.dtype)["TC"]:
             return rows
     return 1
 
@@ -1287,7 +1286,8 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
 
     emit_arch = _emit_arch(targets, device_arch)
     cls = wide_class.select(emit_arch) if emit_arch else ""       # the thresholds of the nearest measured device class
-    with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form), policy.wide_class_scope(cls):
+    with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form), policy.wide_class_scope(cls), \
+            build_arch(emit_arch):
         kernels, names, kinds, split = _expand_split(kernels, names, kinds, smode=smode,
                                                      device=any(TARGETS[t].compile == GPU for t in targets if t in TARGETS),
                                                      device_only=all(TARGETS[t].compile == GPU for t in targets if t in TARGETS))

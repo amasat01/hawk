@@ -22,9 +22,12 @@ from .ops import make
 #: Lanes of the warp that shares one sample.
 WARP = 32
 
-#: The narrowest value worth slicing, and so the shortest fold ``wide_form="auto"`` builds as a warp (provisional: a smaller
-#: one fits a thread's registers).
+#: The narrowest value worth slicing (provisional: a smaller one fits a thread's registers). This is the DEFAULT only: a
+#: device's row of ``hawk/targets/cards/wide.json`` replaces it (:func:`slice_min`), as it does :data:`TEAM_MIN`.
 SLICE_MIN = 128
+
+#: The shortest sliced value from which ``wide_form="auto"`` builds a warp (the default of the card's TEAM_MIN).
+TEAM_MIN = 128
 
 WARP_LANE_KIND = "warp_lane"
 
@@ -57,9 +60,16 @@ class WarpStore(Assign):
     __slots__ = ()
 
 
+def slice_min(dtype: str) -> int:
+    """The narrowest vector held sliced for scalars of ``dtype`` on the build's device (the card's SLICE_MIN)."""
+    from ..targets import cards
+
+    return cards.wide(dtype)["SLICE_MIN"]
+
+
 def sliced(ttype: TensorType) -> bool:
     """Whether a value of ``ttype`` is held sliced: a vector of a whole number of warps, wide enough to pay."""
-    return len(ttype.shape) == 1 and ttype.shape[0] % WARP == 0 and ttype.shape[0] >= SLICE_MIN
+    return len(ttype.shape) == 1 and ttype.shape[0] % WARP == 0 and ttype.shape[0] >= slice_min(ttype.dtype)
 
 
 def _slice_type(ttype: TensorType) -> TensorType:
@@ -86,6 +96,7 @@ class _Slicer:
         self.memo: dict = {}                       # id(node) -> (node, is_sliced)
         self.lane = WarpLane()
         self.used = False                          # whether any value ended up sliced
+        self.widest = 0                            # the widest value held sliced
         self.writes = 0                            # run-time indexed writes into a slice
         self.folds = 0                             # sums over the lanes
         self.keep: list = []                       # every node memoised, alive as long as its id is a key
@@ -96,6 +107,8 @@ class _Slicer:
             self.keep.append(node)
             got = self.memo[id(node)] = self._one(node)
             self.used = self.used or got[1]
+            if got[1]:
+                self.widest = max(self.widest, node.ttype.shape[0] if len(node.ttype.shape) == 1 else 0)
         return got
 
     def _one(self, node: Node) -> tuple:
@@ -117,6 +130,12 @@ class _Slicer:
             return LoopValue(loop, node.slot), slot_sliced[node.slot]
         if isinstance(node, Loop):
             raise _Refused("a loop used as a value")
+        if isinstance(node, Op) and node.kind == "component_at" and isinstance(node.operands[0], Leaf) \
+                and sliced(node.operands[0].ttype) and node.operands[0].role in ("vec_in", "mutable"):
+            index, was = self.of(node.operands[1])      # an element at a run-time index: every lane reads it from the plane
+            if was:
+                raise _Refused("an element read at a slice")
+            return Op("component_at", (node.operands[0], index), node.ttype, WARP_READ), False
         if isinstance(node, At):
             return self._rep(node)
         if isinstance(node, (Op, Select)):
@@ -336,6 +355,13 @@ class _Slicer:
         return got
 
 
+def _team_min(sinks) -> int:
+    """The card's TEAM_MIN for the scalars the sinks commit."""
+    from ..targets import cards
+
+    return cards.wide(sinks[0].ttype.dtype)["TEAM_MIN"]
+
+
 def slice_sinks(sinks, *, explicit: bool = True) -> tuple | None:
     """``sinks`` in the warp form, or ``None`` when some node has no rule there. ``explicit`` is whether the warp form was
     asked for: otherwise (``auto``) a kernel whose only wide work is writes at run-time indices keeps the placed form, which
@@ -357,5 +383,7 @@ def slice_sinks(sinks, *, explicit: bool = True) -> tuple | None:
     except _Refused:
         return None
     if not slicer.used or (not explicit and slicer.writes and not slicer.folds):
+        return None
+    if not explicit and slicer.widest < _team_min(sinks):       # auto: the warp pays from the card's TEAM_MIN elements
         return None
     return tuple(out)
