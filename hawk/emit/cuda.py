@@ -98,11 +98,14 @@ class CudaWrapper:
             count_expr, sample_expr = active_reads(active, "hawk_t")
             own = "        const long long hawk_i = base + hawk_flat;"
             assert own in plain
+            # A 32-bit lane set's map word is a 32-bit sample, so `hawk_i` (and every index chain off it) is one register.
+            narrow = active.lane_set and active.map_bits == 32 and active.group == 1
             return plain.replace(own, (
                 "        const long long hawk_t = base + hawk_flat;\n"
                 f"        if (hawk_t >= static_cast<long long>({count_expr})) return;\n"
-                "        const long long hawk_i = "
-                f"static_cast<long long>({sample_expr});"
+                + ("        const int hawk_i = " + sample_expr + ";" if narrow else
+                   "        const long long hawk_i = "
+                   f"static_cast<long long>({sample_expr});")
                 + ("\n        if (hawk_i >= nSamples) return;" if active.group > 1 else "")))
         if box is not None:
             own = "        const long long hawk_i = base + hawk_flat;"
