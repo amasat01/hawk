@@ -5,7 +5,7 @@
 
 Where a per-lane value is cheaper in registers than in a plane depends on the card: the FP64:FP32 rate, the register file and
 the threads an SM holds (how many lanes share the L1 and the local-memory path), and whether local memory is cached. A table
-is MEASURED on one class (``tests/_probe_wide.py --dump-table``) and never written by hand; today there is one, ``sm61``.
+is MEASURED on one class (``hawk/targets/cards/_probe_wide.py --dump-table``) and never written by hand; today there is one, ``sm61``.
 
 A build's device arch maps to a feature tuple (:data:`ARCH_FEATURES`: facts of the hardware), and the build uses the table of
 the NEAREST class by feature distance: an exact match when the arch is a class of its own, else the closest measured one. The
@@ -52,7 +52,7 @@ ARCH_FEATURES = {
 }
 
 #: The measured classes: ``{name: (features, tables)}``. ``sm61``: Quadro P2000, widths 2 to 128 x read / fill-then-read / rotate / write,
-#: three problem sizes (tests/_probe_wide.py); the faster form wins and a spill-free one only on a tie.
+#: three problem sizes (hawk/targets/cards/_probe_wide.py); the faster form wins and a spill-free one only on a tie.
 CLASSES = {
     "sm61": (ARCH_FEATURES[61], Tables(
         runtime_min={
