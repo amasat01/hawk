@@ -7,8 +7,8 @@
 
 On the device it runs: a kernel that accumulates ``fold`` rows of a table into a vector of ``width`` elements, built in
 each form (``thread``: the lane's own registers; ``team``: a warp per lane; ``staged``: a warp per lane, a block serving
-several of them, outputs staged through shared memory), timed as the corpus gate times a launch; and the contraction shape
-of the thread box for T in 2..16. It writes candidate rows for ``wide.json`` and ``thread_box.json`` to ``--out`` (never in
+several of them, outputs staged through shared memory), timed as the corpus gate times a launch; and the feature card's contraction
+(64 x 64 tables) for the thread box T in 2..16. It writes candidate rows for ``wide.json`` and ``thread_box.json`` to ``--out`` (never in
 place unless ``--write``), with the timings, the registers, the local bytes and the spills that back each row. A form
 within 10 % of the best at a point is a tie (``tie: true`` on the winner's row, for the cards' second pass to decide).
 
@@ -39,7 +39,6 @@ QUICK_WIDTHS = (64, 128, 256)
 QUICK_FOLDS = (128,)
 BOXES = (2, 4, 8, 16)
 LANES = 4096
-BOX_LANES = 262144       # the box shape is small per lane: enough lanes that the launch is the work
 
 
 def plan(dtypes: tuple, quick: bool) -> list:
@@ -188,8 +187,24 @@ def measure(cells: list, cache: Path, repeats: int) -> list:
     return out
 
 
+def _contraction():
+    """The feature card's contraction (eagle ``benchmarks/perf_card/feature_kernels.py``): one definition for the card's row
+    and for this sweep. The eagle checkout is ``$EAGLE_SRC``, else the sibling ``eagle``."""
+    import importlib.util
+    import os
+
+    root = Path(os.environ.get("EAGLE_SRC") or Path(__file__).resolve().parents[3].parent / "eagle")
+    path = root / "benchmarks" / "perf_card" / "feature_kernels.py"
+    if not path.is_file():
+        raise HawkError(f"the box sweep times the feature card's contraction: {path} is not there (set EAGLE_SRC)")
+    spec = importlib.util.spec_from_file_location("feature_kernels", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def measure_boxes(dtype: str, cache: Path, repeats: int) -> list:
-    """The contraction shape of the thread box (``tests/test_ir_lanes.kg_fwd``) timed for T in :data:`BOXES`."""
+    """The feature card's contraction (64 x 64 tables, a shared-axis sum) timed for T in :data:`BOXES`."""
     import json as _json
 
     import numpy as np
@@ -198,20 +213,15 @@ def measure_boxes(dtype: str, cache: Path, repeats: int) -> list:
     from . import THREAD_BOX_FILE
     import hawk.targets.cards as cards
 
-    probe = _corpus_helpers()
-    del probe
+    _corpus_helpers()
     from conftest import _launch
-    from test_ir_lanes import BATCH, L_ALL, N_IN, S_ROW, kg_fwd
 
     import cupy
 
+    fk = _contraction()
     real = np.float32 if dtype == "float32" else np.float64
-    rows = max(1, BOX_LANES // BATCH)
-    n = rows * BATCH
-    rng = np.random.default_rng(rows)
-    feat = rng.uniform(-1, 1, 8 * L_ALL).astype(real)
-    feat[:L_ALL] = rng.integers(0, 5, L_ALL)
-    th = rng.standard_normal(rows * N_IN * S_ROW).astype(real)
+    n = fk.ROWS * fk.SAMPLES
+    host = fk.contract_planes(real)
     original, timed = THREAD_BOX_FILE, []
     doc = _json.loads(original.read_text())
     try:
@@ -220,10 +230,9 @@ def measure_boxes(dtype: str, cache: Path, repeats: int) -> list:
             path = cache / f"thread_box_{dtype}_{T}.json"
             path.write_text(_json.dumps(doc))
             cards.THREAD_BOX_FILE = path
-            bundle = build_bundle([kg_fwd], cache / f"box_{dtype}_{T}", mode=dtype, targets=("cuda",))
-            planes = {"lane": cupy.arange(n, dtype=np.int32), "feat": cupy.asarray(feat), "th": cupy.asarray(th),
-                      "y": cupy.zeros(n, dtype=real)}
-            bound = _launch(bundle, "kg_fwd", "cuda", planes)
+            bundle = build_bundle([fk.contract], cache / f"box_{dtype}_{T}", mode=dtype, targets=("cuda",))
+            planes = {**{k: cupy.asarray(v) for k, v in host.items()}, "y": cupy.zeros(n, dtype=real)}
+            bound = _launch(bundle, fk.contract.name, "cuda", planes)
             timed.append({"T": T, "ns": _time(bound, cupy.cuda.Device().synchronize, repeats) * LANES / n})   # _time divides by LANES
     finally:
         cards.THREAD_BOX_FILE = original
