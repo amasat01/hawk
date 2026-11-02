@@ -943,7 +943,7 @@ class EmitUnit:
     unit: object
 
 
-def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targets=("cuda", "host"), kind=None,
+def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targets=DEFAULT_TARGETS, kind=None,
                 device_arch: str = "", literal_table: bool = False) -> EmitUnit:
     """Emit ONE kernel's source text and sidecar for ``targets`` without compiling or writing anything.
 
