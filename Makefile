@@ -137,6 +137,7 @@ gate-docs: gate-venv
 	$(VPY) -m pip install --quiet torch -c ci/constraints.txt --index-url https://download.pytorch.org/whl/cpu
 	CUDA_VISIBLE_DEVICES= PATH=$(VENV)/bin:$$PATH $(MAKE) -C docs nbcheck
 	PATH=$(VENV)/bin:$$PATH $(MAKE) -C docs strict
+	@if [ -f "$(EAGLE_SRC)/docs/content/userguide/first_kernel.ipynb" ]; then $(VPY) -m raptor_docs.nb same docs/content/tutorials/01_your_first_kernel.ipynb "$(EAGLE_SRC)/docs/content/userguide/first_kernel.ipynb"; else echo "nb same: skipped: no sibling tree (set EAGLE_SRC)"; fi
 	$(VPY) -m raptor_docs.inventory docs/_build/html/objects.inv hawk
 
 # -- the legs that need a card ------------------------------------------------------------------------------------------------
