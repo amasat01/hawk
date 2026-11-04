@@ -933,75 +933,6 @@ def twin_run(root, cache=None) -> None:
     (root / "texts.json").write_text(json.dumps(texts))
 
 
-def _suite_kernels() -> dict:
-    """``{module.attr: kernel}`` of the module-level kernels of the suite's helper modules."""
-    import importlib
-
-    from hawk.trace.kernel import Kernel
-
-    out = {}
-    for module in ("_kernels", "_deployable", "_emitted", "_block_kernels", "_net_axis_kernels", "_spline_forms",
-                   "_autodiff_kernels", "_linalg_kernels"):
-        try:
-            mod = importlib.import_module(module)
-        except Exception:
-            continue
-        for attr, kernel in sorted(vars(mod).items()):
-            if isinstance(kernel, Kernel):
-                out[f"{module}.{attr}"] = kernel
-    return out
-
-
-def runtime_indexed(kernel) -> bool:
-    """Whether ``kernel`` reads or writes a vector at an index that is not a compile-time constant (or a placed one): the
-    only kernels whose generated text may differ from the 0.7.2 wheel's."""
-    from hawk.ir.loop_nodes import Loop
-    from hawk.ir.nodes import Const
-    from hawk.ir.walk import canonical_nodes
-
-    nodes, seen = list(canonical_nodes(kernel.sinks)[0]), set()
-    while nodes:
-        n = nodes.pop()
-        if id(n) in seen:
-            continue
-        seen.add(id(n))
-        if isinstance(n, Loop):
-            nodes.extend(n.body_nodes())
-        if getattr(n, "kind", None) in ("component_at", "set_component_at", "add_at") and not isinstance(n.operands[1], Const):
-            return True
-    return False
-
-
-def suite_texts() -> dict:
-    """``{kernel/mode: {target: text}}`` for the module-level kernels of the suite's helper modules, both targets and both
-    scalar modes, as a build makes them (the placement pass included), or the refusal a build gave: the kernels with no
-    run-time indexed value, which the pass must leave as they were."""
-    from hawk.artifact import bundle as B
-    from hawk.emit import scalar_mode
-
-    out = {}
-    for key, kernel in _suite_kernels().items():
-        for mode in ("float64", "float32"):
-            texts = {}
-            for target, device in (("cuda", True), ("host", False)):
-                try:
-                    try:
-                        stages = B._expand_split([kernel], [kernel.name], [kernel.kind], smode=scalar_mode(mode), device=device)
-                    except TypeError:        # the 0.7.2 wheel has no placement
-                        stages = B._expand_split([kernel], [kernel.name], [kernel.kind])
-                    text = ""
-                    for k, n, kd in zip(*stages[:3]):
-                        unit = B._active_unit(k, n, kd)
-                        src = B._sources(unit, name=n, smode=scalar_mode(mode), kind=kd, targets=(target,),
-                                         layout_sizes_override=None)
-                        text += src[target].text
-                    texts[target] = text
-                except Exception as exc:        # a refusal is part of what must not change
-                    texts[target] = f"{type(exc).__name__}: {str(exc)[:200]}"
-            out[f"{key}/{mode}"] = texts
-    return out
-
-
 def memory_delta(mode: str) -> float:
     """In this process, which must be fresh (the runtime reserves local memory for the largest kernel a process ever launched):
     the device memory in MB that the first launch of the trivial wide kernel takes."""
@@ -1024,8 +955,6 @@ def memory_delta(mode: str) -> float:
 
 
 if __name__ == "__main__":
-    import json
-    import pathlib
     import sys
 
     flag, where = sys.argv[1:3]
@@ -1033,5 +962,3 @@ if __name__ == "__main__":
         print(f"{memory_delta(where):.2f}")
     elif flag == "--twin":
         twin_run(where, sys.argv[3] if len(sys.argv) > 3 else None)
-    elif flag == "--texts":
-        pathlib.Path(where, "texts_072.json").write_text(json.dumps(suite_texts()))

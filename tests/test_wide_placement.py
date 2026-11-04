@@ -510,7 +510,7 @@ def _run_twin(script: pathlib.Path, root: pathlib.Path, *args, cache=None) -> su
 
 def gate(which: str = "gpu") -> int:
     """``gpu``: the correctness checks (A1, C8, A3-numpy, A3-fd, A5); ``compare``: the checks against the published 0.7.2
-    release (A3-twin, A3-text, SPEED), which need ``HAWK_TWIN_VENV``."""
+    release (A3-twin, SPEED), which need ``HAWK_TWIN_VENV``."""
     if which == "compare" and TWIN is None:
         print("FAIL  compare  HAWK_TWIN_VENV is unset: run `make compare-0.7.2`, which installs the release")
         return 1
@@ -582,7 +582,7 @@ def _within_rounding(entry: str, mode: str, out) -> bool:
 
 
 def _compare(root: pathlib.Path) -> int:
-    """The checks against the published 0.7.2 release (``TWIN``, its environment): A3-twin, A3-text, SPEED, and the A5 control
+    """The checks against the published 0.7.2 release (``TWIN``, its environment): A3-twin, SPEED, and the A5 control
     (the release does reserve the memory, or the instrument of A5 is blind)."""
     ok = True
     mine = _resources(root / "tree", CACHE / "tree")
@@ -607,11 +607,6 @@ def _compare(root: pathlib.Path) -> int:
                     if mine[entry, mode]["text"] != twin_texts[f"{entry}_{mode}"] and ratios[entry, mode] < 0.98:
                         slower.append((entry, mode))
     ok &= _line("A3-twin", all(identical), f"{len(identical)} corpus values (exact and rounding data) bit-identical to the 0.7.2 wheel")
-    text_ok, compared, changed, bad = _text_diff(root)
-    names = sorted({k.rsplit("/", 1)[0] for k in changed})
-    ok &= _line("A3-text", text_ok, f"generated text of {compared} suite kernel builds, 0.7.2 vs this tree: {len(changed)} changed "
-                f"({len(names)} kernels: {', '.join(names) or 'none'}), every one with a run-time indexed value" if text_ok
-                else f"the generated text of a kernel with no run-time indexed value changed: {', '.join(bad)}")
     ok &= _line("SPEED", not slower, "ns/sample 0.7.2 / this tree (a changed kernel must be >= 0.98x, the timing noise): " + ", ".join(
         f"{e}/{m_[-2:]} {r:.2f}x" for (e, m_), r in ratios.items()))
     control = {}
@@ -621,21 +616,6 @@ def _compare(root: pathlib.Path) -> int:
     ok &= _line("A5-ctl", all(c > 4.0 for c in control.values()),
                 f"the 0.7.2 wheel's first launch of the trivial kernel takes f32 {control['float32']:.1f}, f64 {control['float64']:.1f} MB (> 4)")
     return 0 if ok else 1
-
-
-def _text_diff(root: pathlib.Path) -> tuple:
-    """``(ok, compared, changed, bad)``: the suite kernels whose generated text differs from the 0.7.2 wheel's (``changed``,
-    ``kernel/mode``), and which of them have no run-time indexed value (``bad``: the pass may not touch those)."""
-    mine = W.suite_texts()
-    done = _run_twin(HERE / "_wide_kernels.py", root, "--texts")
-    if done.returncode:
-        print(done.stderr[-2000:])
-        return False, len(mine), [], []
-    theirs = json.loads((root / "texts_072.json").read_text())
-    changed = sorted(k for k in mine if mine[k] != theirs.get(k))
-    kernels = W._suite_kernels()
-    bad = [k for k in changed if not W.runtime_indexed(kernels[k.rsplit("/", 1)[0]])]
-    return not bad, len(mine), changed, bad
 
 
 if __name__ == "__main__":

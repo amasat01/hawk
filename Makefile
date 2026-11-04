@@ -7,7 +7,7 @@
 #   make gate-gpu        the legs that need a card: the tests marked gpu, then the wide-value correctness checks
 #                        (A1 zero local memory, C8 registers, A3 against NumPy and finite differences, A5 memory)
 #   make gate-all        both
-#   make compare-0.7.2   "did it change": the wide-value checks against the PUBLISHED 0.7.2 release (A3-twin, A3-text, SPEED),
+#   make compare-0.7.2   "did it change": the wide-value checks against the PUBLISHED 0.7.2 release (A3-twin, SPEED),
 #                        installed from PyPI by hash (ci/compare_0.7.2.txt) into a throwaway venv of its own; needs a card
 #
 # Run the GPU targets on a card, e.g. <pool>/gpu_run.sh --gpu 1 taskset -c 2-7 make gate-gpu
