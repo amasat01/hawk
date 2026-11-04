@@ -42,8 +42,11 @@ def _finite(x):
 
 
 def _two_sum_err(a, b, s):
-    bb = s - a
-    return (a - (s - bb)) + (b - bb)
+    """aether's ``twoSumErr``: the exact residual of ``s == a + b``, the larger magnitude first, a zero residual ``+0``."""
+    big_a = np.abs(a) >= np.abs(b)
+    big, small = np.where(big_a, a, b), np.where(big_a, b, a)
+    with np.errstate(invalid="ignore"):
+        return np.where(_finite(s), (small - (s - big)) + 0.0, np.nan)
 
 
 def _neumaier(h, c, x, xc):

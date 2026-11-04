@@ -801,6 +801,10 @@ PROVEN, TESTED, SORTED = "proven", "tested", "sorted"
 RUN_MAX = 32
 
 
+#: The lanes a block key-run spans: every block size divides it.
+BLOCK_RUN = 1024
+
+
 @dataclass(frozen=True)
 class KeyRun:
     """How a keyed sink's key moves over runs of consecutive lanes.
@@ -815,6 +819,8 @@ class KeyRun:
     form: str
     width: int = 1
     forms: tuple = ()
+    #: the key is also equal over every aligned run of :data:`BLOCK_RUN` lanes (one key per block of any size dividing it)
+    block: bool = False
 
 
 def _run_axes(axes: tuple, width: int) -> tuple:
@@ -837,7 +843,8 @@ def _key_run(ev: "_Eval", axes: tuple, key: Node) -> KeyRun | None:
     width = RUN_MAX
     while width >= 2:
         if all(forms[i].cls == INVARIANT for i in _run_axes(axes, width)):
-            return KeyRun(PROVEN, width, forms)
+            return KeyRun(PROVEN, width, forms, width == RUN_MAX and all(
+                forms[i].cls == INVARIANT for i in _run_axes(axes, BLOCK_RUN)))
         width //= 2
     if forms[-1].cls in (INVARIANT, QUOTIENT):
         return KeyRun(TESTED, RUN_MAX, forms)

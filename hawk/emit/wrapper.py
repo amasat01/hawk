@@ -30,6 +30,8 @@ from ..ir import HawkError, Walk
 from ..ir.nodes import sample_sums
 from ..types import INT_PLANE_DTYPES, Slot
 from .box import boxed_sinks, frame
+from . import policy
+from .policy import fold_shape
 from .render import Body, render_body
 from .writer_aether import RUN_CALL, RUN_STATE
 from .spelling import (
@@ -272,6 +274,7 @@ _RANDOM_INCLUDE_MARKER = "#include <aether/math/math.h>\n"
 #: The run commits' header, spliced after the same marker only for a body
 #: that calls one (:func:`run_states`).
 _RUN_INCLUDE = "#include <aether/accum/run.h>\n"
+_TWO_SUM_INCLUDE = "#include <aether/accum/TwoSum.h>\n"
 
 #: The linear-algebra header, spliced after the same marker only for a body
 #: that calls it.
@@ -311,36 +314,16 @@ def _with_runs(loop: list, text: str) -> list:
             *loop,
             "\n".join(f"    {RUN_CALL}close({RUN_STATE}{t});" for t in runs)]
 
-#: The Knuth two-sum residual both compensated commits below share — pure
+#: The two-sum residual (aether's) both compensated commits below share — pure
 #: arithmetic (no atomics), so one definition serves the scattered and
 #: own-column forms alike. Spliced whenever either needs it, never twice.
 _TWO_SUM_ERR = """
-#ifndef AETHER_FP_BARRIER
-// aether/macros.h's rounding pin, for an aether header set that predates it
-// (a sealed NVRTC payload): a no-op on the device, an empty asm on the host.
-#if defined(__CUDA_ARCH__) || defined(__CUDACC_RTC__)
-#define AETHER_FP_BARRIER(x) ((void)0)
-#elif defined(__x86_64__) || defined(__i386__)
-#define AETHER_FP_BARRIER(x) __asm__("" : "+x"(x))
-#elif defined(__aarch64__)
-#define AETHER_FP_BARRIER(x) __asm__("" : "+w"(x))
-#else
-#define AETHER_FP_BARRIER(x) __asm__("" : "+r"(x))
-#endif
-#endif
 template <class E>
 {qualifier} E twoSumErr_(E a, E b, E s)
 {{
-    // Knuth two-sum residual: (a + b) - s EXACTLY, any ordering/signs (no
-    // fast2Sum precondition) -- verbatim aether::accum::atomic::detail::
-    // twoSumErr_ (aether/accum/atomic.h). Exact only for the ROUNDED a, b
-    // and s: the barriers stop a host build with FMA contraction on (the
-    // fast host profile) from fusing a product into these subtractions.
-    AETHER_FP_BARRIER(a);
-    AETHER_FP_BARRIER(b);
-    AETHER_FP_BARRIER(s);
-    const E bb = s - a;
-    return (a - (s - bb)) + (b - bb);
+    // aether's ONE two-sum residual: exact for the rounded a, b and s, NaN
+    // for a non-finite s, +0 for a zero residual (aether/accum/TwoSum.h).
+    return aether::accum::twoSumErr(a, b, s);
 }}
 """
 
@@ -439,7 +422,7 @@ template <class ViewT>
     const E s = t + c;
     const E e = twoSumErr_(t, c, s);
     t = s;
-    c = s - s == E(0) ? e : E(0);
+    c = aether::accum::isFiniteBits(s) ? e : E(0);
 }}
 """
 
@@ -496,11 +479,9 @@ template <int OP = 0, class E>
     // with aether/accum/atomic.h. Symmetric: either side may hold either
     // partial. A non-finite sum drops its compensation, so Inf and NaN
     // follow IEEE through s.
-    AETHER_FP_BARRIER(s);
-    AETHER_FP_BARRIER(s2);
     const E t = s + s2;
-    const E e = twoSumErr_(s, s2, t);
-    c = (t - t == E(0)) ? (c + c2) + e : E(0);
+    const E e = aether::accum::twoSumErrFinite(s, s2, t);
+    c = aether::accum::isFiniteBits(t) ? (c + c2) + e : E(0);
     s = t;
 }}
 
@@ -941,6 +922,7 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
     ``runs`` the run commits' header."""
     includes = _INCLUDES
     extra = ((_RANDOM_INCLUDE if needs_random else "") + (_RUN_INCLUDE if runs else "")
+             + (_TWO_SUM_INCLUDE if compensated or store_compensated or sample_sum or fold else "")
              + (_LINALG_INCLUDE if linalg else "") + (_RT_INCLUDE if rt else "")
              + (_RAY_INCLUDE if rays else "") + (_TEAM_INCLUDE if team else ""))
     if extra:
@@ -1018,7 +1000,10 @@ def render_source(name: str, sinks, walk: Walk, target, *,
                             writer=target.writer)
         body = Body(frame(box, plain.text, boxed.text))
     if body is None:
-        body = render_body(sinks, walk, indent="        ", kind=kind, writer=target.writer)
+        plain_frame = (segment is None and active is None and box is None and team is None and one_step is None and not sums
+                       and rows <= 1 and not any(role == "terminated" for role, _ in walk.arg_spec))
+        with policy.block_fold(plain_frame):
+            body = render_body(sinks, walk, indent="        ", kind=kind, writer=target.writer)
     compensated = False
     wrapper = target.wrapper
     store_compensated = False
@@ -1064,7 +1049,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
         loop = [wrapper.index_prologue(box=box), body.text, wrapper.index_epilogue()]
     if sums:
         opened, closed = wrapper.sample_sum_frame(
-            len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums),
+            len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums, fold_shape(len(sums)) if target.id == "cuda" else 1),
             sums[0].op, None if active is None else active_reads(active, "0")[0])
         loop = [opened, body.text, closed]
     loop = _with_runs(loop, body.text)
@@ -1151,12 +1136,18 @@ def sample_sum_fill(op: str, width: int, array: str, elem: str) -> str:
             f"{array}[hawk_k] = hawk_abi::ssIdentity_<{SAMPLE_SUM_OP_CODE[op]}, {elem}>();\n")
 
 
-def _sample_sum_store(sums) -> str:
+def _sample_sum_store(sums, rows: int = 1) -> str:
     """The entry-local ``hawk_ss_store(column, sum, compensation)`` the row
     sum calls: column ``k`` goes to the ``k``-th sink's two planes at row
     ``hawk_row``."""
     lines = ["    auto hawk_ss_store = "
              "[&](int hawk_col, auto hawk_s, auto hawk_c) {"]
+    if rows > 1:
+        w = len(sums)
+        lines += [f"        const int hawk_rr = hawk_col / {w};",
+                  f"        if (hawk_wbase + 32 * hawk_rr >= count) return;",
+                  "        const long long hawk_row = hawk_row0 + hawk_rr;",
+                  f"        hawk_col %= {w};"]
     for k, sink in enumerate(sums):
         hi = binding_name(sink.role, sink.name)
         lines += [f"        {'else ' if k else ''}if (hawk_col == {k}) {{",

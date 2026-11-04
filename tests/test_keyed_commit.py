@@ -172,11 +172,11 @@ VREAD_C = Kernel("kread_vjp_c", vjp(kread, wrt=("th",)),
 #: kernel -> the call its keyed commit spells.
 CALLS = {kuni: "add<32>(aout_acc, ", kfb: "add<16>(aout_acc, ",
          ktst: "addTested(aout_acc, ", ksrt: "addSorted(aout_acc, ",
-         kuni_c: "addCompensated<32>(aout_acc, aout_acc_c, ",
+         kuni_c: "addCompensatedBlock(aout_acc, aout_acc_c, ",
          kfb_c: "addCompensated<16>(aout_acc, aout_acc_c, ",
          ktst_c: "addTestedCompensated(aout_acc, aout_acc_c, ",
          ksrt_c: "addSortedCompensated(aout_acc, aout_acc_c, ",
-         kuni_a: "addCompensated<32>(aout_acc, aout_acc_c, ",
+         kuni_a: "addCompensatedBlock(aout_acc, aout_acc_c, ",
          kfb_a: "addCompensated<16>(aout_acc, aout_acc_c, ",
          ktst_a: "addTestedCompensated(aout_acc, aout_acc_c, ",
          ksrt_a: "addSortedCompensated(aout_acc, aout_acc_c, ",
@@ -355,7 +355,9 @@ def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, polic
     what = f"{case} {policy} {target}"
     assert _error(got, terms, key, slots, mode, what) <= _bound(compensated, case != "sorted_mixed")
     assert lane == 0
-    if target == "cuda":
+    if target == "cuda" and compensated and case == "proven_8192":
+        assert n // 1024 <= run <= device_runs      # one commit per full block (a block spans at most 1024 lanes), not per warp
+    elif target == "cuda":
         assert run == device_runs
     else:
         assert slots <= run < n // 8

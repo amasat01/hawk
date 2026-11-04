@@ -319,8 +319,11 @@ class AetherWriter:
         c = "Compensated" if comp else ""
         name = {"proven": f"add{c}<{run.width}>", "tested": f"addTested{c}",
                 "sorted": f"addSorted{c}"}[run.form]
+        full = []
+        if comp and run.block and run.form == "proven" and r._scope_depth == 0 and policy.block_folding():
+            name, full = "addCompensatedBlock", [f"{RUN_CALL}blockFull(base, count)"]   # one commit per block
         args = [target, *([comp] if comp else []), self._sample_index(index), value,
-                *(["i"] if run.form == "proven" else []), f"{RUN_STATE}{target}"]
+                *(["i"] if run.form == "proven" else []), *full, f"{RUN_STATE}{target}"]
         r._emit(f"{RUN_CALL}{name}({', '.join(args)});")
 
     def component_commit(self, r, target: str, at: str, op: str, value: str) -> str:
