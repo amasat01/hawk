@@ -301,7 +301,7 @@ def _stages(name: str, sinks) -> tuple | None:
     cuts = [n for n in order if isinstance(n, ReduceSamples)]
     team.refuse_in_loop(order)
     team.refuse_in_dispatch(sinks, order)
-    groups = team.members_of(order)
+    groups = team.members_of(order, sinks)
     logs = {n.target: n for n in (*sinks, *(b for s in sinks if hasattr(s, "body_sinks") for b in s.body_sinks))
             if isinstance(n, team.LogStore)}
     if not cuts and not groups and not logs and not scattered:

@@ -238,6 +238,23 @@ def team_body(spec: TeamSpec, active=None) -> Body:
             lines.append("        }")
             continue
         lines += ["            " + _pointer(name, role, per_lane[name]) for role, name in step.planes]
+        if step.op == "eigh_warp":      # one warp serves the lane; the rest of the team (if any) waits at the barrier
+            lines += ["#if defined(__CUDA_ARCH__)",
+                      "            __shared__ aether::linalg::warp::EighValuesScratch<Real> hawk_scratch;",
+                      "            if (threadIdx.x < 32) {",
+                      "                const auto hawk_r = aether::linalg::warp::eighValues<32>(hawk_scratch, static_cast<const Real*>(hawk_a));",
+                      "                hawk_w[threadIdx.x] = hawk_r.w;",
+                      "                if (threadIdx.x == 0) *hawk_info = hawk_r.info;",
+                      "            }",
+                      "#else       // the host's team of one: the one-thread form, same bits",
+                      "            aether::linalg::EighValues<Real, 32> hawk_r;",
+                      "            aether::linalg::eighValues<32>(hawk_r, static_cast<const Real*>(hawk_a));",
+                      "            for (int hawk_k = 0; hawk_k < 32; ++hawk_k) hawk_w[hawk_k] = hawk_r.w[hawk_k];",
+                      "            *hawk_info = hawk_r.info;",
+                      "#endif",
+                      "            hawk_tm.sync();",
+                      "        }"]
+            continue
         lines.append(f"            const auto hawk_f = {_struct(step, step.n)};")
         lines.append(f"            {_call(step)}")
         lines.append("        }")
