@@ -1351,7 +1351,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
 
     emit_arch = _emit_arch(targets, device_arch)
     cls = wide_class.select(emit_arch) if emit_arch else ""       # the thresholds of the nearest measured device class
-    with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form, launch_bounds=launch_bounds, scalar=smode.id), policy.wide_class_scope(cls), \
+    with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form, launch_bounds=launch_bounds, scalar=smode.id, device_only=all(TARGETS[t].compile == GPU for t in targets if t in TARGETS)), policy.wide_class_scope(cls), \
             build_arch(emit_arch):
         kernels, names, kinds, split = _expand_split(kernels, names, kinds, smode=smode,
                                                      device=any(TARGETS[t].compile == GPU for t in targets if t in TARGETS),
@@ -1420,7 +1420,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
 
     def sources_of(k, n, kd):
         with build_arch(emit_arch), policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form,
-                                                 launch_bounds=launch_bounds, scalar=smode.id):
+                                                 launch_bounds=launch_bounds, scalar=smode.id, device_only=all(TARGETS[t].compile == GPU for t in targets if t in TARGETS)):
             return _sources(k, name=n, smode=smode, kind=kd, targets=targets,
                             layout_sizes_override=layout_sizes_override,
                             literal_table=literal_table, embedded_profile=embedded_profile)
