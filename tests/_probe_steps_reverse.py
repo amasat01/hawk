@@ -5,7 +5,7 @@
 
     python tests/_probe_steps_reverse.py [--K 4 8] [--N 1 64 1024 16384] [--reps 100]
 
-Prints ``(width, K, n_max)``: the widest N where fused beat per-step by 10%. A device row needs the
+Prints ``(width, K, n_min, n_max)``: the narrowest and widest N where fused beat per-step by 10%. A device row needs the
 same measurement on that card (launch it under the GPU pool); until then its class has no row."""
 
 from __future__ import annotations
@@ -90,4 +90,4 @@ if __name__ == "__main__":
         rows = measure(K, a.N, a.reps)
         won = [n for n, ratio in rows if ratio >= 1.10]
         print(f"K={K}: " + ", ".join(f"N={n} {ratio:.2f}x" for n, ratio in rows)
-              + f"  ->  row ({len(STATE)}, {K}, {max(won) if won else 0})")
+              + f"  ->  row ({len(STATE)}, {K}, {min(won) if won else 0}, {max(won) if won else 0})")
