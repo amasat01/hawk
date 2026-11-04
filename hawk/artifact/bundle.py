@@ -421,7 +421,7 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
                 profile=(embedded_profile if embedded_profile is not None
                          else export.EmbeddedProfile()))
             continue
-        with policy.placing(row.compile == GPU), policy.staging(rows):        # the device text keeps wide values in their planes
+        with policy.placing(row.compile == GPU), policy.staging(rows), policy.block_warps(getattr(getattr(kernel, "team", None), "warps", 1)):        # the device text keeps wide values in their planes
             out[target] = render_source(
                 name, kernel.sinks, kernel.walk, row, mode=smode, kind=kind,
                 body=body, segment=segment, one_step=one_step, box=box,
@@ -994,6 +994,8 @@ def _team_record(spec) -> dict:
     out = {"threads": spec.threads}
     if spec.lanes > 1:
         out["lanes"] = spec.lanes
+    if spec.warps > 1:
+        out["warps"] = spec.warps
     if spec.grid == "keys":
         out["grid"] = "keys"
         out["keyed"] = _keys_record(spec.keyed)
@@ -1057,6 +1059,7 @@ def _warp_kernel(kernel, name: str, explicit: bool = True, real_bytes: int = 8, 
     Mutables the form has a rule for."""
     from ..ir.lane import WARP, slice_sinks
     from ..ir.team import TeamSpec
+    from ..targets import cards
     from ..trace.kernel import WarpStage
 
     from ..ir import canonical
@@ -1071,7 +1074,7 @@ def _warp_kernel(kernel, name: str, explicit: bool = True, real_bytes: int = 8, 
     if sinks is None or (one is not None and single is None):
         return None
     rows = _tile_rows(sinks, real_bytes, 1 if one is None else 2) if plain else 1
-    warp = WarpStage(name, sinks, TeamSpec(WARP * rows, (), (), lanes=rows))
+    warp = WarpStage(name, sinks, TeamSpec(WARP * rows, (), (), lanes=rows, warps=cards.team_warps() if rows == 1 else 1))
     if one is not None:             # an automatic kernel: its single step beside it, in the warp form too
         warp.one_step = Kernel(one.name, single, one.planes, kind=one.kind)
     # the planes of the kernel as written stay its planes (a slot only a dropped value read is still bound), and so do its

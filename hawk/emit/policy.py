@@ -158,6 +158,24 @@ def staged_rows() -> int:
     return _STAGED.get()
 
 
+_WARPS: ContextVar[int] = ContextVar("hawk_block_warps", default=1)
+
+
+@contextmanager
+def block_warps(k: int) -> Iterator[None]:
+    """Render a warp-per-lane kernel for a block of ``k`` warps, one lane each, for the duration of the block."""
+    token = _WARPS.set(int(k))
+    try:
+        yield
+    finally:
+        _WARPS.reset(token)
+
+
+def warps_per_block() -> int:
+    """The warps a block of the warp-per-lane kernel being rendered holds (1: the block is one warp)."""
+    return _WARPS.get()
+
+
 def placed() -> bool:
     """Whether a placement renders as its plane."""
     return _PLACED.get()
