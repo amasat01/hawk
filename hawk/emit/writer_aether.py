@@ -38,7 +38,7 @@ from ..ir.nodes import (
     is_param_cell,
 )
 from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, QR_OPS
-from ..ir.team import TeamRead
+from ..ir.team import TeamCopy, TeamRead
 from ..ir.lane import WARP_READ, WARP_SUM_KIND, slice_min
 from ..ir.wide import RESIDENT_KIND, element_kind, gather, is_prior, is_resident, is_scratch, is_tiled
 from ..ir.rays import RAY_OPS
@@ -257,6 +257,11 @@ class AetherWriter:
             r._emit(f"{target}.data()[{base}] = {value};")
             return
         held = self._operand(r, sink.value, value)
+        if isinstance(sink, TeamCopy):      # a block per lane: its threads copy the slice together (a team of one on the host)
+            r._emit("{ const aether::linalg::team::Team hawk_tm = aether::linalg::team::Team::here(); "
+                    f"for (Int hawk_lk = hawk_tm.rank; hawk_lk < {size}; hawk_lk += hawk_tm.size) "
+                    f"{target}.data()[{base} + hawk_lk] = {self._element(r, held, shape)}; }}")
+            return
         r._emit(f"for (Int hawk_lk = 0; hawk_lk < {size}; ++hawk_lk) "
                 f"{target}.data()[{base} + hawk_lk] = {self._element(r, held, shape)};")
 

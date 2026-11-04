@@ -131,7 +131,7 @@ def team_grid(sidecar: dict, team: dict, n: int, arrays: dict) -> int:
         return scatter_chunks(n, target_size(arrays, team["of"]))
     if kind == "targets":
         return target_size(arrays, team["of"])
-    return n
+    return -(-n // (team.get("lanes", 1) * team.get("warps", 1)))      # a block serving ``lanes`` lanes, or ``warps`` warps of one lane each
 
 
 def team_units(sidecar: dict, spec: dict, n: int, arrays: dict) -> int:

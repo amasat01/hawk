@@ -61,6 +61,24 @@ class TeamStore(WideWrite):
         super().__init__(name, value, SampleIndex(_INDEX), TensorType((), value.ttype.dtype))
 
 
+class TeamCopy(TeamStore):
+    """A :class:`TeamStore` of a value that is a plain read of an input plane, in a stage that holds nothing else: the stage
+    launches a block per lane and the block's threads copy the slice together (:func:`copy_spec`)."""
+
+    __slots__ = ()
+
+
+#: Threads of the block of a stage that only copies operands into team scratch, and the elements per lane below which
+#: one thread per lane copies them (a block per lane would idle most of its threads).
+COPY_THREADS = 256
+COPY_MIN = 1024
+
+
+def copy_spec() -> "TeamSpec":
+    """The team record of a copy stage: a block per lane, no scratch of its own, no steps (its sinks are its body)."""
+    return TeamSpec(COPY_THREADS, (), ())
+
+
 class LogStore(TeamStore):
     """The store of one adjoint contribution of lane ``i`` into slot ``index`` of an ordered log plane
     (``lanes * width`` elements): the contribution ``value`` of the accumulate into ``target``, or
