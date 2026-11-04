@@ -42,6 +42,7 @@ This section covers what changes from 0.7.2. Names that left are in the table at
 
 - The autodiff-against-torch card moved into eagle's feature card; the autodiff example points at its `vjp_vs_torch` row.
 - Kernels that already compiled without a spill build as before.
+- A team-form matrix of 1024 or more elements reaches its scratch through a copy stage that launches a block per lane and copies with the block's threads, not one thread per lane: the 512 by 512 solve row is 1.5x faster on the P2000 and the copy is exact. A bundle's first stage of such a kernel now carries a `team` record.
 - `policy="ordered"` is one fixed grouping that depends on the number of lanes only: the same bits on every launch, device and the host, whatever the team size. A plain ordered sum adds 65536 virtual lanes (lane `l` takes rows `l`, `l + 65536`, ...) folded by a halving tree, 1.2 s to 3.4 ms on a 16.7 M sum (as fast as `auto`); an ordered scatter keeps its per-cell order and runs 2.3x faster. The ordered totals change in the last bits against 0.7.2.
 - macOS wheels need macOS 15 or newer. CPython 3.13t is dropped: nine wheels per platform, the install page names 3.14t and 3.15t.
 - `make gate`, `make gate-gpu` and `make gate-all` are what CI runs; hawk tests with `nvcc` from `CUDACXX` or `CUDA_PATH`, NVRTC only when none is set; the CUDA toolchain in CI is NVIDIA's pinned 12.9 redist archives.
