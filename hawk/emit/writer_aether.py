@@ -83,6 +83,10 @@ _RANDOM_SALT = {"random_uniform": "0x243F6A8885A308D3ULL", "random_normal": "0x1
 RUN_CALL = "aether::accum::run::"
 RUN_STATE = "hawk_run_"
 
+#: The dtypes a host select lowers to a bitwise ``hawk_abi::blend`` (a ``?:`` on a float is a branch the vectoriser refuses).
+_BLEND_DTYPES = ("f64", "f32")
+
+
 class AetherWriter:
     """The aether C++ spelling (see the module docstring)."""
 
@@ -412,9 +416,15 @@ class AetherWriter:
         rank>=1 one is ``aether::select``, which reads both branches through
         the shared working-type helper — a raw ternary can't name them, since
         two aether expressions of different C++ types have no common type."""
+        host = not r.placed
         if not node.ttype.shape:
+            if host and node.ttype.dtype in _BLEND_DTYPES:
+                return f"hawk_abi::blend({c}, {a}, {b})"
             return f"({c} ? {a} : {b})"
         cond_rank = len(node.operands[0].ttype.shape)
+        if cond_rank == 0 and host:
+            ext = ", ".join(str(e) for e in node.ttype.shape)
+            return f"hawk_abi::select_item<{element_spelling(node.ttype.dtype)}, {ext}>({c}, {a}, {b})"
         if cond_rank == 0:
             # A per-sample mask: aether::select needs an EXPRESSION, and a
             # rank-0 C++ bool isn't one, so it broadcasts through a rank-0

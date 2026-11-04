@@ -323,6 +323,40 @@ def _contiguous_close(guards: Sequence[str], finish: tuple | None = None) -> str
 #: (``build_bundle(..., defines=("HAWK_HOST_INTERCHANGE=0",))``).
 INTERCHANGE_MACRO = "HAWK_HOST_INTERCHANGE"
 
+# `?:` on a float is a branch GCC will not vectorise; a bitwise select is exact for any a, b.
+BLEND_HELPERS = """#include <bit>
+#include <type_traits>
+
+namespace hawk_abi {
+
+template <class A, class B>
+static inline std::common_type_t<A, B> blend(bool m, A a, B b)
+{
+    using T = std::common_type_t<A, B>;
+    if constexpr (std::is_floating_point_v<T>) {
+        using U = std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
+        const U k = U{0} - static_cast<U>(m);
+        return std::bit_cast<T>((std::bit_cast<U>(static_cast<T>(a)) & k) |
+                                (std::bit_cast<U>(static_cast<T>(b)) & ~k));
+    } else {
+        return m ? static_cast<T>(a) : static_cast<T>(b);
+    }
+}
+
+template <class T, std::size_t... Es, class A, class B>
+static inline aether::Item<T, Es...> select_item(bool m, const A& a, const B& b)
+{
+    const aether::Item<T, Es...> x = a;
+    const aether::Item<T, Es...> y = b;
+    aether::Item<T, Es...> r;
+    for (std::size_t c = 0; c < (std::size_t{1} * ... * Es); ++c)
+        r.data()[c] = blend(m, x.data()[c], y.data()[c]);
+    return r;
+}
+
+}  // namespace hawk_abi
+"""
+
 #: The lane-array helpers an interchanged TU adds after the mask helpers. A
 #: value of rank >= 1 (an ``aether::Item``) is stored one component per row,
 #: component ``c`` of lane ``t`` at ``lanes[c * Tile + t]``, so every row is a
@@ -347,7 +381,7 @@ static inline void lane_put(T* lanes, aether::offset_t t,
 template <aether::offset_t Tile, class T>
 static inline void lane_keep(T* lanes, aether::offset_t t, bool on, const T& v)
 {
-    lanes[t] = on ? v : lanes[t];
+    lanes[t] = blend(on, v, lanes[t]);
 }
 
 template <aether::offset_t Tile, class T, std::size_t... Es>
@@ -356,7 +390,7 @@ static inline void lane_keep(T* lanes, aether::offset_t t, bool on,
 {
     for (std::size_t c = 0; c < (std::size_t{1} * ... * Es); ++c) {
         T& slot = lanes[static_cast<aether::offset_t>(c) * Tile + t];
-        slot = on ? v.data()[c] : slot;
+        slot = blend(on, v.data()[c], slot);
     }
 }
 
@@ -1445,6 +1479,9 @@ class HostWrapper:
         :class:`Interchange`) adds the macro, the rule's record and the
         lane helpers, and builds the finish helpers whenever the macro is
         on, lane guards or not."""
+        return BLEND_HELPERS + "\n" + self._extra_prelude(walk, tiled)
+
+    def _extra_prelude(self, walk: Walk, tiled: Interchange | None) -> str:
         masks = simd_safe(walk) and any(
             role == "terminated" for role, _ in walk.arg_spec)
         if tiled is not None and tiled.prelude is not None:
