@@ -1064,7 +1064,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
         loop = [wrapper.index_prologue(box=box), body.text, wrapper.index_epilogue()]
     if sums:
         opened, closed = wrapper.sample_sum_frame(
-            len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums),
+            len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums, _sample_sum_rows(len(sums))),
             sums[0].op, None if active is None else active_reads(active, "0")[0])
         loop = [opened, body.text, closed]
     loop = _with_runs(loop, body.text)
@@ -1139,6 +1139,13 @@ def _refuse_sample_sums(sums, *, segment, active, one_step) -> None:
             "hold 32 consecutive samples; launch this kernel on its plain entry")
 
 
+def _sample_sum_rows(width: int) -> int:
+    """Rows (32 samples each) one warp serves for ``width`` sum sinks: their
+    folds ride one ``sampleSumWarp_`` call, so its shuffle rounds carry that
+    many independent columns. 1 is the one-row-per-warp frame."""
+    return 8 if width <= 4 else 1
+
+
 SAMPLE_SUM_OP_CODE = {"sum": 0, "max": 1, "min": 2}
 
 
@@ -1151,12 +1158,18 @@ def sample_sum_fill(op: str, width: int, array: str, elem: str) -> str:
             f"{array}[hawk_k] = hawk_abi::ssIdentity_<{SAMPLE_SUM_OP_CODE[op]}, {elem}>();\n")
 
 
-def _sample_sum_store(sums) -> str:
+def _sample_sum_store(sums, rows: int = 1) -> str:
     """The entry-local ``hawk_ss_store(column, sum, compensation)`` the row
     sum calls: column ``k`` goes to the ``k``-th sink's two planes at row
     ``hawk_row``."""
     lines = ["    auto hawk_ss_store = "
              "[&](int hawk_col, auto hawk_s, auto hawk_c) {"]
+    if rows > 1:
+        w = len(sums)
+        lines += [f"        const int hawk_rr = hawk_col / {w};",
+                  f"        if (hawk_wbase + 32 * hawk_rr >= count) return;",
+                  "        const long long hawk_row = hawk_row0 + hawk_rr;",
+                  f"        hawk_col %= {w};"]
     for k, sink in enumerate(sums):
         hi = binding_name(sink.role, sink.name)
         lines += [f"        {'else ' if k else ''}if (hawk_col == {k}) {{",

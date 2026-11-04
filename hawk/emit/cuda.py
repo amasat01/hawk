@@ -21,6 +21,7 @@ from .box import BOX_OWN, owned_lane
 from .render import SAMPLE_SUM_TERMS
 from .wrapper import (
     SAMPLE_SUM_OP_CODE,
+    _sample_sum_rows,
     ActiveSpec,
     SegmentSpec,
     active_reads,
@@ -172,6 +173,9 @@ class CudaWrapper:
         """The index prologue with no early return: a lane past ``count``
         skips the body (``hawk_active``) but takes part in its warp's row
         sum with zero terms; a warp wholly past ``count`` exits together."""
+        k = _sample_sum_rows(width)
+        if k > 1:
+            return self._sample_sum_frame_rows(width, elem, store, op, live, k)
         plain = self.index_prologue()
         exit_line = "    if (hawk_flat >= count) return;\n    {"
         assert exit_line in plain
@@ -187,6 +191,36 @@ class CudaWrapper:
                   f"{store}\n"
                   f"    hawk_abi::sampleSumWarp_<{width}, {SAMPLE_SUM_OP_CODE[op]}>"
                   f"({SAMPLE_SUM_TERMS}, hawk_ss_store);")
+        return opened, closed
+
+    def _sample_sum_frame_rows(self, width, elem, store, op, live, k) -> tuple:
+        """The frame of a warp that serves ``k`` consecutive rows (``32 * k``
+        consecutive samples): the ``k`` folds ride ONE ``sampleSumWarp_`` call,
+        so its shuffle rounds carry ``k * width`` independent columns."""
+        n = k * width
+        opened = (
+            "    const long long hawk_gid =\n"
+            "        static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;\n"
+            f"    const long long hawk_wbase = (hawk_gid & ~31LL) * {k};\n"
+            "    if (hawk_wbase >= count) return;\n"
+            f"    {elem} hawk_terms[{n}] = {{}};\n"
+            + sample_sum_fill(op, n, "hawk_terms", elem) +
+            "#pragma unroll\n"
+            f"    for (int hawk_r = 0; hawk_r < {k}; ++hawk_r) {{\n"
+            f"    {elem}* const {SAMPLE_SUM_TERMS} = hawk_terms + hawk_r * {width};\n"
+            "    const long long hawk_flat = hawk_wbase + 32 * hawk_r + (hawk_gid & 31);\n"
+            "    const long long hawk_i = base + hawk_flat;\n"
+            "    const aether::SampleIndex i =\n"
+            "        aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));\n"
+            "    (void)hawk_i;\n    (void)nSamples;\n"
+            + (f"    const bool hawk_active = hawk_flat < count && base + hawk_flat < static_cast<long long>({live});\n"
+               if live is not None else "    const bool hawk_active = hawk_flat < count;\n") +
+            "    if (hawk_active) {")
+        closed = ("    }\n    }\n"
+                  "    const long long hawk_row0 = (base + hawk_wbase + (hawk_gid & 31)) >> 5;\n"
+                  f"{store}\n"
+                  f"    hawk_abi::sampleSumWarp_<{n}, {SAMPLE_SUM_OP_CODE[op]}>"
+                  "(hawk_terms, hawk_ss_store);")
         return opened, closed
 
     def unpack(self, walk: Walk) -> str:
