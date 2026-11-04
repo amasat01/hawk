@@ -30,6 +30,7 @@ from ..ir import HawkError, Walk
 from ..ir.nodes import sample_sums
 from ..types import INT_PLANE_DTYPES, Slot
 from .box import boxed_sinks, frame
+from .policy import fold_shape
 from .render import Body, render_body
 from .writer_aether import RUN_CALL, RUN_STATE
 from .spelling import (
@@ -1064,7 +1065,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
         loop = [wrapper.index_prologue(box=box), body.text, wrapper.index_epilogue()]
     if sums:
         opened, closed = wrapper.sample_sum_frame(
-            len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums, _sample_sum_rows(len(sums))),
+            len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums, fold_shape(len(sums)) if target.id == "cuda" else 1),
             sums[0].op, None if active is None else active_reads(active, "0")[0])
         loop = [opened, body.text, closed]
     loop = _with_runs(loop, body.text)
@@ -1137,13 +1138,6 @@ def _refuse_sample_sums(sums, *, segment, active, one_step) -> None:
             f"sample_sum {[s.name for s in sums]}: a row is the sum over one "
             f"warp of 32 consecutive samples, and the {entry} entry's warp does not "
             "hold 32 consecutive samples; launch this kernel on its plain entry")
-
-
-def _sample_sum_rows(width: int) -> int:
-    """Rows (32 samples each) one warp serves for ``width`` sum sinks: their
-    folds ride one ``sampleSumWarp_`` call, so its shuffle rounds carry that
-    many independent columns. 1 is the one-row-per-warp frame."""
-    return 8 if width <= 4 else 1
 
 
 SAMPLE_SUM_OP_CODE = {"sum": 0, "max": 1, "min": 2}

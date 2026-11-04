@@ -192,3 +192,112 @@ def test_entries_whose_warp_is_not_32_samples_refuse_by_name(entry, kw):
     derived = Kernel("law_ss", VJP)
     with pytest.raises(HawkError, match=rf"sample_sum \['bar_k', 'bar_b'\].*{entry} entry"):
         render_source(derived.name, derived.sinks, derived.walk, TARGETS["cuda"], **kw)
+
+
+# ---- the rows a warp folds in one call (hawk.emit.policy.fold_shape) ----
+
+@kernel
+def fold1(x: Scalar, s: Mutable[Scalar]):
+    s = hawk.sum(x)
+
+
+@kernel
+def fold2(x: Scalar, s: Mutable[Scalar], c: Mutable[Scalar]):
+    s = hawk.sum(x)
+    c = hawk.sum(x * x)
+
+
+@kernel
+def foldv(v: hawk.Vector[6], t: Mutable[hawk.Vector[6]]):
+    t = hawk.sum(v)
+
+
+@kernel
+def foldmax(x: Scalar, hi: Mutable[Scalar]):
+    hi = hawk.max(x, where=x > 0.0)
+
+
+@kernel
+def foldmin(x: Scalar, lo: Mutable[Scalar]):
+    lo = hawk.min(x, where=x < 0.0)
+
+
+FOLDS = {"fold1": (fold1, ("s",)), "fold2": (fold2, ("s", "c")), "foldv": (foldv, tuple(f"t_{k}" for k in range(6))),
+         "foldmax": (foldmax, ("hi",)), "foldmin": (foldmin, ("lo",))}
+FOLD_SIZES = (1, 31, 32, 33, 127, 128, 129, 1000, 65536 + 17)
+FOLD_KS = (None, 1, 8)      # the policy, the one-row warp, the card kit's wide switch
+
+
+@pytest.fixture(scope="module")
+def folded(tmp_path_factory, cache_dir):
+    """``{k: bundle}`` of every fold kernel, built under the policy (``None``) and under the forced ``k``."""
+    from contextlib import nullcontext
+
+    from hawk.emit.policy import fold_rows
+    out = {}
+    for k in FOLD_KS:
+        with nullcontext() if k is None else fold_rows(k):
+            out[k] = build_bundle([kern for kern, _ in FOLDS.values()], tmp_path_factory.mktemp(f"fold_{k}"), mode="float64",
+                                  targets=("cuda", "host"), cache_dir=cache_dir, host_profile="native")
+    return out
+
+
+def _fold_rows_run(bundle, name, target, n):
+    xp, rng = _xp(target), np.random.default_rng(n)
+    _, cols = FOLDS[name]
+    rows = -(-n // 32)
+    planes = {c + s: xp.full(rows, np.nan) for c in cols for s in ("", "_comp") if not name.startswith(("foldm",)) or not s}
+    wide = name == "foldv"
+    planes["v" if wide else "x"] = xp.asarray(rng.uniform(-2, 2, (6, n) if wide else n))
+    _launch(bundle, name, target, planes).launch()
+    return {c: np.array(a.get() if hasattr(a, "get") else a) for c, a in planes.items() if c not in ("x", "v")}
+
+
+def test_fold_shape_keeps_a_warp_under_the_residency_line():
+    from hawk.emit.policy import fold_rows, fold_shape
+    assert [fold_shape(w) for w in (1, 2, 3, 4, 6, 10)] == [4, 2, 1, 1, 1, 1]
+    assert fold_shape(1, regs=64) == 8 and fold_shape(1, regs=0) == 1
+    with fold_rows(8):
+        assert fold_shape(10) == 8
+    assert fold_shape(1) == 4
+
+
+def test_the_rows_of_a_warp_ride_one_batched_fold():
+    from hawk.emit.policy import fold_rows
+    plain = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"]).text
+    assert "sampleSumWarp_<4," in plain and "hawk_wbase" in plain
+    with fold_rows(1):
+        one = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"]).text
+    assert "sampleSumWarp_<1," in one and "hawk_wbase" not in one
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("name", FOLDS)
+@pytest.mark.parametrize("n", FOLD_SIZES)
+def test_device_rows_are_bit_identical_for_every_k(folded, name, n):
+    ref = _fold_rows_run(folded[1], name, "cuda", n)         # k = 1: the one-row warp
+    for k in (None, 8):
+        got = _fold_rows_run(folded[k], name, "cuda", n)
+        for c, rows in got.items():
+            assert not np.isnan(rows).any(), (c, k)          # every row, the ragged last one too
+            assert rows.view(np.uint64).tobytes() == ref[c].view(np.uint64).tobytes(), (c, k)
+
+
+@pytest.mark.parametrize("name", FOLDS)
+@pytest.mark.parametrize("n", FOLD_SIZES)
+def test_the_host_twin_rows_equal_the_float64_reference(folded, name, n):
+    got = _fold_rows_run(folded[None], name, "host", n)
+    x = np.random.default_rng(n).uniform(-2, 2, (6, n) if name == "foldv" else n)
+    rows = -(-n // 32)
+
+    def per_row(t, fill=0.0):
+        return np.pad(t, (0, rows * 32 - n), constant_values=fill).reshape(rows, 32)
+    if name == "foldmax":
+        assert np.array_equal(got["hi"], per_row(np.where(x > 0, x, -np.inf), -np.inf).max(1))
+    elif name == "foldmin":
+        assert np.array_equal(got["lo"], per_row(np.where(x < 0, x, np.inf), np.inf).min(1))
+    else:
+        want = {"fold1": lambda: {"s": x}, "fold2": lambda: {"s": x, "c": x * x},
+                "foldv": lambda: {f"t_{k}": x[k] for k in range(6)}}[name]()
+        for c, t in want.items():
+            assert np.all(np.abs(got[c] + got[c + "_comp"] - per_row(t).sum(1)) <= 1e-14 * np.abs(per_row(t)).sum(1) + 1e-300), c

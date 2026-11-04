@@ -206,6 +206,38 @@ def warps_per_block() -> int:
     return _WARPS.get()
 
 
+#: The registers a one-column sample-sum warp keeps, and the cost of each further column
+#: (measured on sm_61: 22 for k=1, 28 for 4 rows, 46 for 8), against the register line below
+#: which every arch keeps full residency.
+FOLD_REGS_BASE, FOLD_REGS_COLUMN, RESIDENCY_REGS, FOLD_K_MAX = 22, 3, 32, 8
+
+_FOLD_K: ContextVar[int] = ContextVar("hawk_fold_k", default=0)
+
+
+@contextmanager
+def fold_rows(k: int) -> Iterator[None]:
+    """Force ``k`` rows per warp in every cell-sum kernel rendered in the block (the card kit's switch; 0 restores the policy)."""
+    token = _FOLD_K.set(int(k))
+    try:
+        yield
+    finally:
+        _FOLD_K.reset(token)
+
+
+def fold_shape(width: int, regs: int = RESIDENCY_REGS) -> int:
+    """The rows (32 samples each) one warp folds in ONE batched ``sampleSumWarp_`` call, for a cell sink of ``width``
+    columns: the largest power of two ``k <= 8`` whose ``k * width`` shuffle columns keep the warp under the residency
+    line (``FOLD_REGS_BASE + FOLD_REGS_COLUMN * (k * width - 1) <= regs``), 1 when none fits. Every ``k`` stores the same
+    rows with the same bits; only the shuffle latency per row changes."""
+    forced = _FOLD_K.get()
+    if forced:
+        return forced
+    k = FOLD_K_MAX
+    while k > 1 and FOLD_REGS_BASE + FOLD_REGS_COLUMN * (k * width - 1) > regs:
+        k //= 2
+    return k
+
+
 def placed() -> bool:
     """Whether a placement renders as its plane."""
     return _PLACED.get()

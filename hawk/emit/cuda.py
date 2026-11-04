@@ -21,7 +21,6 @@ from .box import BOX_OWN, owned_lane
 from .render import SAMPLE_SUM_TERMS
 from .wrapper import (
     SAMPLE_SUM_OP_CODE,
-    _sample_sum_rows,
     ActiveSpec,
     SegmentSpec,
     active_reads,
@@ -173,7 +172,7 @@ class CudaWrapper:
         """The index prologue with no early return: a lane past ``count``
         skips the body (``hawk_active``) but takes part in its warp's row
         sum with zero terms; a warp wholly past ``count`` exits together."""
-        k = _sample_sum_rows(width)
+        k = policy.fold_shape(width)
         if k > 1:
             return self._sample_sum_frame_rows(width, elem, store, op, live, k)
         plain = self.index_prologue()
