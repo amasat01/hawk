@@ -26,6 +26,8 @@ This section covers what changes from 0.7.2. Names that left are in the table at
 
 **`Param` broadcasts.** One `Param` value is shared by all lanes, and `bind` refuses an index column of the wrong width.
 
+**Derivative loops keep invariant reads out of the loop.** A table read at a compile-time or warp-lane index inside a guarded arm now leaves the loop with its invariant subtree, so `jvp` of a `hawk.steps(k, K)` kernel with a wide table product costs about 3x the primal, not 19x. Values are bit-identical. `steps_reverse="auto"` rows now carry a batch range and cover the wide matvec on the host and on the device class.
+
 **Compile.** NVRTC builds lane reductions and reports the ptxas figures, there is a cross-process compile index and a compile card, and a machine with `cuda-bindings` but no NVIDIA driver reports no device instead of failing every build.
 
 **Host loops.** Kernels that read lookup planes keep wide carries in rows of the tile, and `vectorise_blocker` says why a loop was not vectorised.
