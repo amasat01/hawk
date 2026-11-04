@@ -78,6 +78,26 @@ def test_ordered_sum_is_the_numpy_tree_bitwise_and_replays(tmp_path, cache_dir, 
     assert runs[0][0] == tree_sum(x)
 
 
+def _omp_threads(count):
+    """Set the host OpenMP team size of this process (skips where libgomp is not the runtime)."""
+    import ctypes
+
+    try:
+        ctypes.CDLL("libgomp.so.1").omp_set_num_threads(count)
+    except OSError:
+        pytest.skip("libgomp is not loadable")
+
+
+@pytest.mark.parametrize("threads", [1, 2, 6])
+@pytest.mark.parametrize("n", [70001, 1 << 24])         # 70001: a partial second stride block; 2^24: 256 rows per virtual lane
+def test_host_ordered_sum_is_the_numpy_tree_bitwise_across_thread_counts(tmp_path, cache_dir, threads, n):
+    _omp_threads(threads)
+    bundle = build_bundle([_total(n)], tmp_path, targets=("host",), cache_dir=cache_dir, host_profile="native")
+    x = np.random.default_rng(n).normal(size=n) * np.exp(np.random.default_rng(n + 1).normal(size=n))
+    got = _exec(bundle, "total", "host", {"x": x, "out": np.zeros(1)}, "out")
+    assert got[0] == tree_sum(x)
+
+
 @pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("cells", [7, 1000, 1500])      # 1500: more cells than the shared bins hold
 def test_ordered_scatter_walk_has_the_serial_bits(tmp_path, cache_dir, target, cells):
