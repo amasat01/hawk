@@ -15,6 +15,8 @@ from conftest import sidecar_of
 import hawk
 from hawk import Grid, Index, Mutable, Scalar, kernel
 from hawk.artifact import build_bundle
+from hawk.ext import IndexSet, Kind
+from hawk.ir.team import THREADS_ENV
 
 TARGETS = ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
 V, G, W = 65536, 64, 1024
@@ -88,3 +90,41 @@ def test_ordered_scatter_walk_has_the_serial_bits(tmp_path, cache_dir, target, c
     got = _exec(bundle, "add", target, {"key": key, "x": x, "acc": np.zeros(cells)}, "acc")
     host = _exec(bundle, "add", "host", {"key": key, "x": x, "acc": np.zeros(cells)}, "acc")
     assert got.tobytes() == host.tobytes()
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("threads", [32, 40, 64, 100, 128, 256])     # 40 and 100: blocks that are not whole warps
+def test_ordered_sum_bits_do_not_depend_on_the_team_size(tmp_path, cache_dir, monkeypatch, target, threads):
+    monkeypatch.setenv(THREADS_ENV, str(threads))
+    n = 2 * 65536 + 4321
+    bundle = build_bundle([_total(n)], tmp_path, targets=("cuda", "host"), cache_dir=cache_dir, host_profile="native")
+    x = np.random.default_rng(threads).normal(size=n)
+    got = _exec(bundle, "total", target, {"x": x, "out": np.zeros(1)}, "out")
+    assert got[0] == tree_sum(x)
+
+
+SET = Kind("lane_set", lanes=IndexSet())
+
+
+def _set_total(rows):
+    def total_set(lane: Grid["key", "row":rows], x: Scalar) -> Scalar:
+        return hawk.sum(x, over="row", policy="ordered")
+    return hawk.kernel(total_set, kind=SET)
+
+
+def test_an_index_set_build_keeps_the_general_block_sum(tmp_path, cache_dir):
+    """An index-set build has no virtual-lane stage: the listed rows of each key add in order (host run)."""
+    rows, keys = 300, 5
+    bundle = build_bundle([_set_total(rows)], tmp_path, targets=("host",), cache_dir=cache_dir, host_profile="native")
+    x = np.random.default_rng(3).normal(size=keys * rows)
+    live = np.sort(np.random.default_rng(4).choice(keys * rows, 700, replace=False)).astype(np.int32)
+    out = np.zeros(keys)
+    from hawk import runtime as rt
+
+    rt.run(rt.load(bundle.directory, "total_set", sidecar_of(bundle, "total_set")), x=x, out=out,
+           active_map=live, active_count=np.array([len(live)], np.uint32))
+    want = np.zeros(keys)
+    for k in range(keys):
+        for i in live[(live >= k * rows) & (live < (k + 1) * rows)]:
+            want[k] += x[i]
+    np.testing.assert_allclose(out, want, rtol=1e-12)
