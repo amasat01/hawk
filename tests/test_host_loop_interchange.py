@@ -37,7 +37,7 @@ from conftest import avx512, sidecar_of
 
 import hawk
 import hawk.math as m
-from hawk import Mutable, Param, Scalar, Terminated, Vector
+from hawk import Grid, Mutable, Param, Scalar, Terminated, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.compile import toolchain as tc
@@ -145,6 +145,17 @@ def nested_math(x: Scalar, g: Scalar, y: Mutable[Scalar]):
             c = m.tanh(c) * 0.5 + 0.125
         a = a * 0.75 + c * 0.01
     y = a + g
+
+
+@hawk.kernel
+def guarded_stencil(lane: Grid["row", "col":6], u: Scalar, h2inv: Param) -> Scalar:
+    i, j = lane.row, lane.col
+    if m.land(m.land(i > 0, i < 5), m.land(j > 0, j < 5)):
+        out = (u.at(row=i - 1, col=j) + u.at(row=i + 1, col=j)
+               + u.at(row=i, col=j - 1) + u.at(row=i, col=j + 1) - 4.0 * u) * h2inv
+    else:
+        out = 0.0
+    return out
 
 
 @hawk.kernel
@@ -342,6 +353,12 @@ def test_a_float_select_lowers_to_a_blend_and_the_default_profile_vectorises_it(
     assert "hawk_abi::blend" not in device.text            # the device text keeps ?:
     lane, wide = _lane_loop_report(tmp_path, controller, "float64", "native-vector-math", r"\d+")
     assert lane and lane <= wide, (lane, wide)
+
+
+def test_a_select_whose_arm_reads_at_a_computed_index_stays_a_ternary():
+    # a blend evaluates both arms, and the edge guard of a stencil exists so the off-grid read never runs
+    text = hawk.artifact.emit_source(guarded_stencil, targets=("host",)).sources["host"].text
+    assert "hawk_abi::blend(" not in text and "hawk_abi::select_item<" not in text
 
 
 @_VECTOR_MATH

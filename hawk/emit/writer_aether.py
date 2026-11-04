@@ -21,18 +21,21 @@ from collections.abc import Sequence
 from math import prod
 
 from ..ir import HawkError
-from ..ir.loop_nodes import Loop
+from ..ir.loop_nodes import Loop, TapeRead
 from ..ir.nodes import (
     FINISHED_PLANE,
     GATHER_ROLES,
     RAW_KIND,
     RAW_LANGUAGE,
+    SWITCH_RENDERED,
     At,
+    Dispatch,
     Const,
     Finish,
     Leaf,
     Node,
     Op,
+    ReduceSamples,
     Select,
     TapeWrite,
     is_param_cell,
@@ -85,6 +88,31 @@ RUN_STATE = "hawk_run_"
 
 #: The dtypes a host select lowers to a bitwise ``hawk_abi::blend`` (a ``?:`` on a float is a branch the vectoriser refuses).
 _BLEND_DTYPES = ("f64", "f32")
+
+
+#: Op kinds that index a value at a run-time position (out of range is a fault) or reduce across lanes.
+_GUARDED_KINDS = ("component_at", "set_component_at", "add_at")
+
+
+def _evaluates_freely(node: Select) -> bool:
+    """Whether both arms of ``node`` may run whatever the condition says. A blend evaluates both arms where ``?:`` evaluates
+    one, so an arm that can fault or must not run stays a ``?:``: a plane read at a computed index (``At``, ``TeamRead``:
+    a stencil's edge guard), a tape read or write, a raw block, a run-time component index, a ``switch``, a ``Loop``
+    (its trips) or a collective over the lanes."""
+    stack, seen = list(node.operands[1:]), set()
+    while stack:
+        n = stack.pop()
+        if id(n) in seen:
+            continue
+        seen.add(id(n))
+        if isinstance(n, (At, TapeRead, TapeWrite, Loop, ReduceSamples)):
+            return False
+        if isinstance(n, Op) and (n.kind == RAW_KIND or n.kind in _GUARDED_KINDS or n.kind == WARP_SUM_KIND):
+            return False
+        if isinstance(n, Dispatch) and n.policy in SWITCH_RENDERED:
+            return False
+        stack.extend(n.operands)
+    return True
 
 
 class AetherWriter:
@@ -424,7 +452,7 @@ class AetherWriter:
         rank>=1 one is ``aether::select``, which reads both branches through
         the shared working-type helper — a raw ternary can't name them, since
         two aether expressions of different C++ types have no common type."""
-        host = policy.blend()
+        host = policy.blend() and _evaluates_freely(node)
         if not node.ttype.shape:
             if host and node.ttype.dtype in _BLEND_DTYPES:
                 return f"hawk_abi::blend({c}, {a}, {b})"
