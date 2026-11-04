@@ -204,16 +204,15 @@ def _identity(node: Node) -> bool:
 
 
 def warp_factors(order, sinks) -> frozenset:
-    """``id`` of every ``eigh`` that is worked one warp per lane: f32, ``n = 32``, ``linalg_form="auto"``, no
+    """``id`` of every ``eigh`` that is worked one warp per lane: a float32 build (``policy.scalar()``), ``n = 32``, ``linalg_form="auto"``, no
     eigenvector read, and a stage of its own is possible (not in a loop body, not only in an arm of a dispatch).
-    The warp form is bit-identical to the thread form and faster at every lane count measured."""
+    The warp form is bit-identical to the thread form and faster at every lane count measured (P2000, f32: 256 to 131072 matrices, 1.5x to 5.7x)."""
     from ..emit import policy
     from .loop_nodes import Loop
 
-    if policy.linalg_form() != "auto":
+    if policy.linalg_form() != "auto" or policy.scalar() != "float32":
         return frozenset()
-    cand = [n for n in order if isinstance(n, Op) and n.kind == "eigh" and n.ttype.shape == (32, 32)
-            and n.operands[0].ttype.dtype == "f32"]
+    cand = [n for n in order if isinstance(n, Op) and n.kind == "eigh" and n.ttype.shape == (32, 32)]
     if not cand:
         return frozenset()
     inner: set = set()
