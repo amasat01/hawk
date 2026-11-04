@@ -72,13 +72,16 @@ _CONTRACTION: ContextVar[str] = ContextVar("hawk_contraction", default="direct")
 #: The scalar mode the build compiles for (``"float32"``, ``"float64"``; ``""`` when the build does not say).
 _SCALAR: ContextVar[str] = ContextVar("hawk_scalar", default="")
 
+#: Whether every target of the build is a device (a host target shares the kernel and has no warp to run a warp stage on).
+_DEVICE_ONLY: ContextVar[bool] = ContextVar("hawk_device_only", default=True)
+
 #: ``(threads, blocks_per_sm)`` the device kernel is compiled for (``launch_bounds``), or ``None`` for no bound.
 _LAUNCH_BOUNDS: ContextVar[tuple[int, int] | None] = ContextVar("hawk_launch_bounds", default=None)
 
 
 @contextmanager
 def using(form: str = "auto", *, linalg_form: str = "auto", wide_form: str = "auto", contraction: str = "direct",
-          launch_bounds: tuple[int, int] | None = None, scalar: str = "") -> Iterator[None]:
+          launch_bounds: tuple[int, int] | None = None, scalar: str = "", device_only: bool = True) -> Iterator[None]:
     """Render under ``form`` (one of :data:`FORMS`), ``linalg_form`` (one of
     :data:`LINALG_FORMS`), ``wide_form`` (one of :data:`WIDE_FORMS`), ``contraction`` (one of
     :data:`CONTRACTION_FORMS`) and ``launch_bounds`` (``(threads, blocks_per_sm)``: ``threads`` a multiple of
@@ -98,16 +101,22 @@ def using(form: str = "auto", *, linalg_form: str = "auto", wide_form: str = "au
         launch_bounds = (int(threads), int(blocks))
     token, linalg_token, wide_token = _FORM.set(form), _LINALG_FORM.set(linalg_form), _WIDE_FORM.set(wide_form)
     contraction_token, bounds_token = _CONTRACTION.set(contraction), _LAUNCH_BOUNDS.set(launch_bounds)
-    scalar_token = _SCALAR.set(scalar)
+    scalar_token, device_token = _SCALAR.set(scalar), _DEVICE_ONLY.set(device_only)
     try:
         yield
     finally:
+        _DEVICE_ONLY.reset(device_token)
         _SCALAR.reset(scalar_token)
         _LAUNCH_BOUNDS.reset(bounds_token)
         _CONTRACTION.reset(contraction_token)
         _WIDE_FORM.reset(wide_token)
         _LINALG_FORM.reset(linalg_token)
         _FORM.reset(token)
+
+
+def device_only() -> bool:
+    """Whether every target of the current build is a device."""
+    return _DEVICE_ONLY.get()
 
 
 def scalar() -> str:

@@ -244,7 +244,7 @@ def warp_factors(order, sinks) -> frozenset:
     from .wide_class import DEFAULT_ARCH, features_of
 
     scalar = policy.scalar()
-    if policy.linalg_form() != "auto" or (scalar != "float32" and features_of(_BUILD_ARCH.get() or DEFAULT_ARCH).fp64_ratio > FAST_FP64):
+    if policy.linalg_form() != "auto" or not policy.device_only() or (scalar != "float32" and features_of(_BUILD_ARCH.get() or DEFAULT_ARCH).fp64_ratio > FAST_FP64):
         return frozenset()
     vectors = {id(n.operands[0]) for n in order if isinstance(n, Op) and n.kind == "eigh_v"}
     cand = [n for n in order if isinstance(n, Op) and n.kind in FACTORISATIONS

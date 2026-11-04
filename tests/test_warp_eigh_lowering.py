@@ -18,8 +18,8 @@ from hawk.emit import policy
 from hawk.ir.split import stages
 
 
-def _ops(kernel, *, scalar="float32", form="auto"):
-    with policy.using(linalg_form=form, scalar=scalar):
+def _ops(kernel, *, scalar="float32", form="auto", device_only=True):
+    with policy.using(linalg_form=form, scalar=scalar, device_only=device_only):
         found = stages("k", kernel.sinks)
     return [] if found is None else [(st.team.threads, s.op) for st in found if st.team for s in st.team.steps]
 
@@ -48,3 +48,8 @@ def test_every_other_build_keeps_its_form(case):
         assert ops and ops[0][1] == "eigh"          # a team stage, never the warp one
     else:
         assert ops == []                            # the per-lane (thread) form: no team stage at all
+
+
+def test_a_build_with_a_host_target_keeps_the_thread_form():
+    """The host has no warp: its team stage runs the 32 lanes in turn (R3: 5x slower on the CPU card)."""
+    assert _ops(eigh_values_kernel(32), device_only=False) == []
