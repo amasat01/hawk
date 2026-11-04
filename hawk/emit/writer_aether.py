@@ -416,7 +416,7 @@ class AetherWriter:
         rank>=1 one is ``aether::select``, which reads both branches through
         the shared working-type helper — a raw ternary can't name them, since
         two aether expressions of different C++ types have no common type."""
-        host = not r.placed
+        host = policy.blend()
         if not node.ttype.shape:
             if host and node.ttype.dtype in _BLEND_DTYPES:
                 return f"hawk_abi::blend({c}, {a}, {b})"

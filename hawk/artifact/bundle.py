@@ -421,7 +421,7 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
                 profile=(embedded_profile if embedded_profile is not None
                          else export.EmbeddedProfile()))
             continue
-        with policy.placing(row.compile == GPU), policy.staging(rows):        # the device text keeps wide values in their planes
+        with policy.placing(row.compile == GPU), policy.blending(row.compile != GPU), policy.staging(rows):        # the device text keeps wide values in their planes
             out[target] = render_source(
                 name, kernel.sinks, kernel.walk, row, mode=smode, kind=kind,
                 body=body, segment=segment, one_step=one_step, box=box,
