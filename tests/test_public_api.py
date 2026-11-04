@@ -122,7 +122,7 @@ _EXPECTED_MANIFEST = {
     "hawk.diff": [
         "ADJOINT_PREFIX", "Derived", "TANGENT_PREFIX", "jvp", "param_planes",
         "refine_entry", "step_jvp", "step_vjp", "tape",
-        "vjp",
+        "vjp", "with_derivative",
     ],
     "hawk.artifact": [
         "Artifact", "Bundle", "EXEC_ACCESS_CLASSES", "EXEC_OPS",

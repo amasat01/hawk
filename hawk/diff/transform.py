@@ -481,6 +481,37 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
     return _jvp(primal, wrt=wrt, primal_unit=primal_unit)
 
 
+def with_derivative(primal: Any, *, wrt: Sequence[str] | None = None, name: str | None = None) -> Any:
+    """ONE kernel that computes ``primal``'s outputs and their forward-mode tangents along ``wrt``: the sinks of
+    ``primal`` followed by the sinks of :func:`jvp`. The result is a plain :class:`hawk.Kernel` (not a derivative
+    kernel), so it runs anywhere a kernel runs, as a step of an ``eagle.Graph`` builder included. Its planes are
+    ``primal``'s, plus one tangent plane per ``wrt`` input and one per output, named with :data:`TANGENT_PREFIX`.
+    Named ``<primal>_with_derivative`` unless ``name`` is given. A ``hawk.steps(k, K)`` kernel is refused: its tangent
+    is carried across the steps by :func:`jvp`."""
+    from ..trace.kernel import Kernel
+    from ..trace.steps import _fused_steps_of
+
+    if _fused_steps_of(primal) is not None:
+        raise HawkError(
+            "hawk.diff.with_derivative: this is a hawk.steps(k, K) kernel; its tangent is carried across the steps, "
+            "so take jvp(k) (one kernel) or with_derivative of the single step")
+    one = _single_step(primal)
+    tangent = _jvp(primal, wrt=wrt)
+    sinks = (*_sinks_of(one), *tangent)
+    label = name or f"{_primal_name(one) or 'kernel'}_with_derivative"
+    declared = dict(getattr(one, "planes", None) or {})
+    if declared:     # a tangent plane is declared like the plane it is the tangent of, so calls bind and size it
+        names = [nm for _role, nm in Kernel(label, sinks, kind=getattr(one, "kind", None)).arg_spec]
+        lead = TANGENT_PREFIX + "_"
+        extra = [(nm, declared[nm[len(lead):]]) for nm in names
+                 if nm not in declared and nm.startswith(lead) and nm[len(lead):] in declared]
+        # input tangents first, then output tangents, each in the primal's own order
+        order = list(declared)
+        extra.sort(key=lambda e: (getattr(e[1], "form", "") == "mutable", order.index(e[0][len(lead):])))
+        declared.update(extra)
+    return Kernel(label, sinks, declared or None, kind=getattr(one, "kind", None))
+
+
 @_rederivable
 def _jvp(primal: Any, *, wrt: Sequence[str] | None = None,
          primal_unit: str | None = None) -> Derived:
