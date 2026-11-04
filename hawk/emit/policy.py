@@ -207,9 +207,9 @@ def warps_per_block() -> int:
 
 
 #: The registers a one-column sample-sum warp keeps, and the cost of each further column
-#: (measured on sm_61: 22 for k=1, 28 for 4 rows, 46 for 8), against the register line below
+#: (ptxas, Fast2Sum combine, width 1: 20 registers for 1 row, 26 for 4, 43 for 8), against the register line below
 #: which every arch keeps full residency.
-FOLD_REGS_BASE, FOLD_REGS_COLUMN, RESIDENCY_REGS, FOLD_K_MAX = 22, 3, 32, 8
+FOLD_REGS_BASE, FOLD_REGS_COLUMN, RESIDENCY_REGS, FOLD_K_MAX = 20, 2, 32, 8
 
 _FOLD_K: ContextVar[int] = ContextVar("hawk_fold_k", default=0)
 

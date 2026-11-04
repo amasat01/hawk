@@ -229,7 +229,7 @@ FOLD_KS = (None, 1, 8)      # the policy, the one-row warp, the card kit's wide 
 
 
 @pytest.fixture(scope="module")
-def folded(tmp_path_factory, cache_dir):
+def folded(tmp_path_factory):
     """``{k: bundle}`` of every fold kernel, built under the policy (``None``) and under the forced ``k``."""
     from contextlib import nullcontext
 
@@ -238,7 +238,8 @@ def folded(tmp_path_factory, cache_dir):
     for k in FOLD_KS:
         with nullcontext() if k is None else fold_rows(k):
             out[k] = build_bundle([kern for kern, _ in FOLDS.values()], tmp_path_factory.mktemp(f"fold_{k}"), mode="float64",
-                                  targets=("cuda", "host"), cache_dir=cache_dir, host_profile="native")
+                                  targets=("cuda", "host"), cache_dir=str(tmp_path_factory.mktemp(f"fold_cache_{k}")),
+                                  host_profile="native")
     return out
 
 
@@ -255,7 +256,7 @@ def _fold_rows_run(bundle, name, target, n):
 
 def test_fold_shape_keeps_a_warp_under_the_residency_line():
     from hawk.emit.policy import fold_rows, fold_shape
-    assert [fold_shape(w) for w in (1, 2, 3, 4, 6, 10)] == [4, 2, 1, 1, 1, 1]
+    assert [fold_shape(w) for w in (1, 2, 3, 4, 6, 10)] == [4, 2, 2, 1, 1, 1]
     assert fold_shape(1, regs=64) == 8 and fold_shape(1, regs=0) == 1
     with fold_rows(8):
         assert fold_shape(10) == 8
@@ -269,6 +270,13 @@ def test_the_rows_of_a_warp_ride_one_batched_fold():
     with fold_rows(1):
         one = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"]).text
     assert "sampleSumWarp_<1," in one and "hawk_wbase" not in one
+
+
+@pytest.mark.parametrize("k, rows", [(None, 4), (1, 1), (8, 8)])
+def test_a_forced_k_reaches_the_built_text(folded, k, rows):
+    """A bundle built under ``fold_rows(k)`` carries that k (a shared compile cache would hand every k the first text)."""
+    text = (folded[k].directory / "fold1.cu").read_text()
+    assert f"sampleSumWarp_<{rows}," in text
 
 
 @pytest.mark.gpu
