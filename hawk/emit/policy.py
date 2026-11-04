@@ -238,6 +238,24 @@ def fold_shape(width: int, regs: int = RESIDENCY_REGS) -> int:
     return k
 
 
+_BLOCK_FOLD: ContextVar[bool] = ContextVar("hawk_block_fold", default=False)
+
+
+@contextmanager
+def block_fold(on: bool) -> Iterator[None]:
+    """Let a top-level keyed compensated run commit once per block (``on``: the frame being rendered is the plain index frame, which keeps every thread of a full block alive to the commit)."""
+    token = _BLOCK_FOLD.set(bool(on))
+    try:
+        yield
+    finally:
+        _BLOCK_FOLD.reset(token)
+
+
+def block_folding() -> bool:
+    """Whether the body being rendered sits in a frame that allows the block-level commit."""
+    return _BLOCK_FOLD.get()
+
+
 def placed() -> bool:
     """Whether a placement renders as its plane."""
     return _PLACED.get()
