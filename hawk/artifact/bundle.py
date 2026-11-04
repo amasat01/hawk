@@ -1252,10 +1252,11 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                  derivative: Mapping[str, str] | None = None,
                  host_profile: str = "", opt_level: str = "",
                  literal_table: bool = False, embedded_profile=None,
-                 emit_form: str = "auto", linalg_form: str = "auto", wide_form: str = "auto",
+                 emit_form: str | None = None, linalg_form: str | None = None, wide_form: str | None = None,
                  launch_bounds: tuple[int, int] | None = None) -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json``
-    over them. ``emit_form`` is how a product, dot, sum or norm is spelled
+    over them. An ``emit_form``/``linalg_form``/``wide_form``/``launch_bounds`` left unset is the ambient
+    :func:`hawk.emit.policy.using` value (the default: ``"auto"``, no bound); an explicit argument wins. ``emit_form`` is how a product, dot, sum or norm is spelled
     (:mod:`hawk.emit.policy`): ``"auto"`` unrolls a site of at most 16 elements and
     writes a longer one as a loop, ``"static"`` unrolls every site, ``"rolled"`` writes
     every site as a loop, the fast-compile mode (the compiler does no per-element work).
@@ -1339,6 +1340,11 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     kernels, names, kinds = _expand_segmented(kernels, names, kinds)
     # A member reading a value reduced over samples becomes its stages, each
     # its own compile (its own cache key: its own source and options).
+    # an argument left unset is the caller's ambient policy.using(...) value; an explicit one wins
+    emit_form = policy.form() if emit_form is None else emit_form
+    linalg_form = policy.linalg_form() if linalg_form is None else linalg_form
+    wide_form = policy.wide_form() if wide_form is None else wide_form
+    launch_bounds = policy.launch_bounds() if launch_bounds is None else launch_bounds
     if emit_form not in policy.FORMS:
         raise HawkError(f"emit_form must be one of {policy.FORMS}, got {emit_form!r}")
     if linalg_form not in policy.LINALG_FORMS:
@@ -1351,7 +1357,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
 
     emit_arch = _emit_arch(targets, device_arch)
     cls = wide_class.select(emit_arch) if emit_arch else ""       # the thresholds of the nearest measured device class
-    with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form, launch_bounds=launch_bounds, scalar=smode.id, device_only=all(TARGETS[t].compile == GPU for t in targets if t in TARGETS)), policy.wide_class_scope(cls), \
+    with policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form, launch_bounds=launch_bounds, contraction=policy.contraction(), scalar=smode.id, device_only=all(TARGETS[t].compile == GPU for t in targets if t in TARGETS)), policy.wide_class_scope(cls), \
             build_arch(emit_arch):
         kernels, names, kinds, split = _expand_split(kernels, names, kinds, smode=smode,
                                                      device=any(TARGETS[t].compile == GPU for t in targets if t in TARGETS),
@@ -1420,7 +1426,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
 
     def sources_of(k, n, kd):
         with build_arch(emit_arch), policy.using(emit_form, linalg_form=linalg_form, wide_form=wide_form,
-                                                 launch_bounds=launch_bounds, scalar=smode.id, device_only=all(TARGETS[t].compile == GPU for t in targets if t in TARGETS)):
+                                                 launch_bounds=launch_bounds, contraction=policy.contraction(), scalar=smode.id, device_only=all(TARGETS[t].compile == GPU for t in targets if t in TARGETS)):
             return _sources(k, name=n, smode=smode, kind=kd, targets=targets,
                             layout_sizes_override=layout_sizes_override,
                             literal_table=literal_table, embedded_profile=embedded_profile)

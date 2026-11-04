@@ -124,6 +124,11 @@ def scalar() -> str:
     return _SCALAR.get()
 
 
+def form() -> str:
+    """The ``emit_form`` the current build asks for."""
+    return _FORM.get()
+
+
 def linalg_form() -> str:
     """The ``linalg_form`` the current build asks for."""
     return _LINALG_FORM.get()
