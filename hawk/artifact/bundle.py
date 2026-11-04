@@ -1165,7 +1165,7 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
                 for attr in ("lane_space", "group"):     # the stages launch over the derivative's lanes
                     if hasattr(k.sinks, attr):
                         setattr(sinks, attr, getattr(k.sinks, attr))
-            if stage.team is not None:
+            if stage.team is not None and stage.team.steps:
                 member = TeamStage(stage.name, sinks, stage.team)
             elif getattr(k, "segment", None) is not None:       # a branch unit, its wide values placed: still the unit
                 member = _segment_rewalk(k, sinks)
@@ -1180,6 +1180,8 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
                     extra = [Slot(role, name, member.one_step.walk.slot_types[role, name])
                              for role, name in member.one_step.walk.arg_spec if (role, name) not in held]
                     member.walk = _canonical(member.sinks, (*_declared_slots(member.planes), *extra))
+                if stage.team is not None:      # a copy stage: the stage's own sinks, launched a block per lane
+                    member.team = stage.team
             cells.update(member.walk.cells)
             out_kernels.append(member)
             out_names.append(stage.name)

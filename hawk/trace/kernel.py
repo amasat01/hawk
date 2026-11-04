@@ -67,7 +67,7 @@ class Kernel:
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
                  "time", "time_step", "source_digest", "jump", "returns",
-                 "lane_space", "group", "broadcast", "_variants", "_plan", "_lock")
+                 "lane_space", "group", "broadcast", "team", "_variants", "_plan", "_lock")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
@@ -1034,7 +1034,7 @@ class TeamStage(Kernel):
     lane with a team of threads. Its sinks only name the scratch planes it works on; its body is
     :func:`hawk.emit.team.team_body`, handed to the entry wrappers like a fused group's."""
 
-    __slots__ = ("team",)
+    __slots__ = ()
 
     def __init__(self, name: str, sinks: tuple, team: Any) -> None:
         super().__init__(name, sinks, {})

@@ -30,6 +30,7 @@ planes the runtime makes for it, as it does for a team stage's.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import prod
 
 from .._cells import planes
 from . import team
@@ -391,8 +392,13 @@ def _stages(name: str, sinks) -> tuple | None:
                                        if is_param_cell(n) and n.plane.name in cell_plane))
         keyed_out = tuple(dict.fromkeys(keyed[s.name] for s in new
                                         if isinstance(s, AccumWrite) and s.name in keyed))
+        copy = None
+        if new and all(type(s) is team.TeamStore and isinstance(s.value, Leaf) for s in new) and sum(
+                prod(s.value.ttype.shape) for s in new) >= team.COPY_MIN:
+            # nothing but operand copies into team scratch: a block per lane, its threads copy the slice together
+            new, copy = tuple(team.TeamCopy(s.name, s.value) for s in new), team.copy_spec()
         out.append(Stage(name if not out else f"{name}_{len(out) + 1}", new, cells_in, cells_out,
-                         recomputed, keyed_out))
+                         recomputed, keyed_out, copy))
         spec = team.spec_of(groups, k, depth, factored)
         if spec is not None:
             out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
