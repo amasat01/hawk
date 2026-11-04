@@ -301,3 +301,39 @@ def test_the_host_twin_rows_equal_the_float64_reference(folded, name, n):
                 "foldv": lambda: {f"t_{k}": x[k] for k in range(6)}}[name]()
         for c, t in want.items():
             assert np.all(np.abs(got[c] + got[c + "_comp"] - per_row(t).sum(1)) <= 1e-14 * np.abs(per_row(t)).sum(1) + 1e-300), c
+
+
+def _awkward(n):
+    """Mixed magnitudes, both zeros, a NaN, +-Inf and an overflow in distinct rows of 32."""
+    rng = np.random.default_rng(n + 5)
+    x = rng.choice([-1.0, 1.0], n) * 10.0 ** rng.uniform(-300, 300, n)
+    x[::7] = rng.uniform(-1, 1, len(x[::7]))
+    if n > 200:
+        x[3], x[4] = 0.0, -0.0                     # zeros of both signs
+        x[40 + 1] = np.nan                         # a NaN row
+        x[70], x[71] = np.inf, -np.inf             # Inf - Inf is NaN
+        x[100], x[101] = np.inf, 1.0               # an Inf row
+        x[130:134] = 1.7e308                       # the sum overflows to Inf
+        x[160:164] = -1.7e308
+    return x
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("name", ("fold1", "fold2", "foldv"))
+@pytest.mark.parametrize("n", (1, 33, 1000, 4099))
+def test_the_device_combine_on_awkward_values_equals_the_host_twin(folded, name, n):
+    """Fast2Sum with an integer magnitude pick on the device, Knuth's two-sum on the host: the same rows, NaN and Inf
+    rows included (the sign of a zero residual is the one thing the forms may disagree on, so zeros compare by value)."""
+    x = _awkward(n)
+    cols = FOLDS[name][1]
+    rows = -(-n // 32)
+    got = {}
+    for target in ("host", "cuda"):
+        xp = _xp(target)
+        data = np.vstack([x] * 6) if name == "foldv" else x
+        planes = {c + s: xp.full(rows, np.nan) for c in cols for s in ("", "_comp")}
+        planes["v" if name == "foldv" else "x"] = xp.asarray(data)
+        _launch(folded[None], name, target, planes).launch()
+        got[target] = {k: np.array(a.get() if hasattr(a, "get") else a) for k, a in planes.items() if k not in ("x", "v")}
+    for k, host in got["host"].items():
+        np.testing.assert_array_equal(got["cuda"][k], host, err_msg=k)

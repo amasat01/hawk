@@ -497,6 +497,27 @@ template <int OP = 0, class E>
     // with aether/accum/atomic.h. Symmetric: either side may hold either
     // partial. A non-finite sum drops its compensation, so Inf and NaN
     // follow IEEE through s.
+#if defined(__CUDA_ARCH__)
+    if constexpr (sizeof(E) == 8) {{
+        // Fast2Sum, the larger operand picked by an integer compare of the
+        // magnitudes (integer pipe, not the 1/32-rate double pipe): the same
+        // exact residual as the Knuth two-sum below in 3 double ops, not 6;
+        // finiteness read from the exponent field, not t - t.
+        const long long ba = __double_as_longlong(s) & 0x7fffffffffffffffLL;
+        const long long bb2 = __double_as_longlong(s2) & 0x7fffffffffffffffLL;
+        const E big = ba >= bb2 ? s : s2;
+        const E small = ba >= bb2 ? s2 : s;
+        E t = s + s2;
+        asm("" : "+d"(t));
+        E z = t - big;
+        asm("" : "+d"(z));
+        const E e = small - z;
+        const bool fin = ((__double_as_longlong(t) >> 52) & 0x7ff) != 0x7ff;
+        c = fin ? (c + c2) + e : E(0);
+        s = t;
+        return;
+    }}
+#endif
     AETHER_FP_BARRIER(s);
     AETHER_FP_BARRIER(s2);
     const E t = s + s2;
