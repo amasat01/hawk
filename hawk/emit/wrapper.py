@@ -31,7 +31,6 @@ from ..ir.nodes import sample_sums
 from ..types import INT_PLANE_DTYPES, Slot
 from .box import boxed_sinks, frame
 from . import policy
-from .policy import fold_shape
 from .render import Body, render_body
 from .writer_aether import RUN_CALL, RUN_STATE
 from .spelling import (
@@ -206,6 +205,9 @@ class Wrapper(Protocol):
         """The prologue rebuilding every wire's aether view from its
         by-value mirror — ``params[]`` casts on the host, by-value binds
         on the device."""
+
+    def fold_rows(self, width: int) -> int:
+        """Rows of 32 samples one warp reduces in a batched fold of ``width`` terms per sample (1: one row at a time)."""
 
     def sample_sum_frame(self, width: int, elem: str, store: str,
                          op: str = "sum", live: str | None = None) -> tuple:
@@ -1049,7 +1051,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
         loop = [wrapper.index_prologue(box=box), body.text, wrapper.index_epilogue()]
     if sums:
         opened, closed = wrapper.sample_sum_frame(
-            len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums, fold_shape(len(sums)) if target.id == "cuda" else 1),
+            len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums, wrapper.fold_rows(len(sums))),
             sums[0].op, None if active is None else active_reads(active, "0")[0])
         loop = [opened, body.text, closed]
     loop = _with_runs(loop, body.text)
@@ -1066,7 +1068,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
                rays=_RAY_CALL in body.text, team=_TEAM_CALL in body.text,
                scatter_or=_OR_CALL in body.text, tiled=_TILED_CALL in body.text, warp_sum=_WARP_SUM_CALL in body.text,
                narrow_int=narrows_int(active, walk)),
-        _extra_prelude(extra_prelude, walk, tiled),
+        _extra_prelude(extra_prelude, walk, tiled, body.text),
         _exports(exports, tiled),
         "",
         wrapper.entry_signature(walk, name),
@@ -1214,12 +1216,13 @@ def _filled(parts, mode: ScalarMode) -> str:
         _LANE_TYPE, mode.real_spelling)
 
 
-def _extra_prelude(hook, walk: Walk, tiled) -> str | None:
+def _extra_prelude(hook, walk: Walk, tiled, body: str) -> str | None:
     """The wrapper's extra prelude, told about an interchange only when there
-    is one, so every other TU's text is unchanged."""
+    is one, so every other TU's text is unchanged; ``body`` is the text it
+    must supply helpers for."""
     if hook is None:
         return None
-    return hook(walk) if tiled is None else hook(walk, tiled=tiled)
+    return hook(walk, body=body) if tiled is None else hook(walk, tiled=tiled, body=body)
 
 
 def _exports(exports: str, tiled) -> str:
@@ -1304,7 +1307,7 @@ def _render_two_paths(name: str, sinks, walk: Walk, target, *,
                 scatter_or=_OR_CALL in fused.text + single.text,
                 tiled=_TILED_CALL in fused.text + single.text,
                 warp_sum=_WARP_SUM_CALL in fused.text + single.text),
-        _extra_prelude(extra_prelude, walk, tiled),
+        _extra_prelude(extra_prelude, walk, tiled, fused.text + single.text),
         _exports(exports, tiled),
         "",
         *_two_path_entry(name, walk, wrapper, fused, single, one_step, active,

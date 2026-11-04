@@ -1358,6 +1358,9 @@ class HostWrapper:
         (void)hawk_i;
         (void)nSamples;"""
 
+    def fold_rows(self, width: int) -> int:
+        return 1
+
     def sample_sum_frame(self, width: int, elem: str, store: str,
                          op: str = "sum", live: str | None = None) -> tuple:
         """The serial loop over the rows of 32 samples that START in
@@ -1473,13 +1476,18 @@ class HostWrapper:
         the index seam."""
         return lane_finish(walk)
 
-    def extra_prelude(self, walk: Walk, *, tiled: Interchange | None = None) -> str:
+    def extra_prelude(self, walk: Walk, *, tiled: Interchange | None = None, body: str = "") -> str:
         """Host-only namespace-scope text after the shared prelude: the mask
         helpers, when :meth:`unpack` binds through them. ``tiled`` (an
         :class:`Interchange`) adds the macro, the rule's record and the
         lane helpers, and builds the finish helpers whenever the macro is
-        on, lane guards or not."""
-        return BLEND_HELPERS + "\n" + self._extra_prelude(walk, tiled)
+        on, lane guards or not. The blend helpers come only with a text that
+        spells one (``body``) or the lane helpers that do, so a kernel with
+        no float select keeps the text it had."""
+        rest = self._extra_prelude(walk, tiled)
+        if tiled is None and "hawk_abi::blend(" not in body and "hawk_abi::select_item<" not in body:
+            return rest
+        return BLEND_HELPERS + "\n" + rest
 
     def _extra_prelude(self, walk: Walk, tiled: Interchange | None) -> str:
         masks = simd_safe(walk) and any(

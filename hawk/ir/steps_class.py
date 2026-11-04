@@ -13,14 +13,14 @@ from __future__ import annotations
 
 import math
 
-#: ``{target: ((width, K, regime_min, regime_max), ...)}``, fused measured to win for ``regime_min <= regime <= regime_max``.
-#: ``host`` (8 Xeon cores, compiled hawk.run, regime = N): the 4-scalar oscillator probe, fused 7x / 5x at N=1 / 64, 1.2x at 1024
+#: ``{device: ((width, K, regime_min, regime_max), ...)}``, fused measured to win for ``regime_min <= regime <= regime_max``.
+#: ``False``, the host (8 Xeon cores, compiled hawk.run, regime = N): the 4-scalar oscillator probe, fused 7x / 5x at N=1 / 64, 1.2x at 1024
 #: and slower from 16384 (K 8); K 4 unchanged. Width 2, K 8 is the wide matvec of the feature card (a 24 by 512 table, ``y``
-#: overwritten each step): fused 30-250x at every N from 1 to 65536. ``device`` (P2000, 5 SMs x 2048 threads, regime = N / 10240):
+#: overwritten each step): fused 30-250x at every N from 1 to 65536. ``True``, a device (P2000, 5 SMs x 2048 threads, regime = N / 10240):
 #: the same matvec, fused 0.43x at N=64, 2.2x at 1024, 2.8x at 16384 and 65536 (L4: 1.8x at 65536).
 _ROWS = {
-    "host": ((4, 8, 1, 1024), (4, 4, 1, 64), (2, 8, 1, 65536)),
-    "device": ((2, 8, 0.1, 6.4),),
+    False: ((4, 8, 1, 1024), (4, 4, 1, 64), (2, 8, 1, 65536)),
+    True: ((2, 8, 0.1, 6.4),),
 }
 
 
@@ -29,6 +29,6 @@ def _choose(device: bool, width: int, K: int, n: int, resident: int = 0) -> str:
     (``SM count x resident threads per SM``: required on a device, ignored on the host), else ``"per_step"``."""
     if device and resident <= 0:
         raise ValueError("steps_class._choose: a device target needs resident = SM count x resident threads per SM")
-    rows = _ROWS["device" if device else "host"]
+    rows = _ROWS[device]
     w, k, lo, hi = min(rows, key=lambda r: (abs(math.log2(width / r[0])) + abs(math.log2(K / r[1])), r))
     return "fused" if lo <= n / (resident if device else 1) <= hi else "per_step"

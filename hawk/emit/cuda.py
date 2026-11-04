@@ -91,9 +91,7 @@ class CudaWrapper:
         (void)nSamples;"""
             warps = policy.warps_per_block() if team == 32 else 1
             if warps > 1:       # k warps a block (card kit only): the lane is the block's warp, the lane count is nSamples
-                plain = plain.replace("static_cast<long long>(blockIdx.x);",
-                                      f"static_cast<long long>(blockIdx.x) * {warps} + (threadIdx.x >> 5);").replace(
-                                      "hawk_flat >= count", "hawk_flat >= nSamples")
+                plain = self._warp_block(plain, warps)
             if team == 32:      # a warp per lane (:mod:`hawk.ir.lane`): the lane's place in its warp
                 plain += """
         const Int hawk_wl = static_cast<Int>(threadIdx.x & 31);
@@ -136,6 +134,13 @@ class CudaWrapper:
         return "    }"
 
     # geometry-seam: begin (the block of a warp-form kernel that serves several lanes)
+    @staticmethod
+    def _warp_block(plain: str, warps: int) -> str:
+        """``plain`` (the team prologue) with the lane the block's warp: ``warps`` warps a block, the lane count ``nSamples``."""
+        return plain.replace("static_cast<long long>(blockIdx.x);",
+                             f"static_cast<long long>(blockIdx.x) * {warps} + (threadIdx.x >> 5);").replace(
+                             "hawk_flat >= count", "hawk_flat >= nSamples")
+
     def stage_frame(self, rows: int, stages: tuple, elem: str) -> tuple:
         """The frame of a warp-form kernel whose block serves ``rows`` lanes, a warp each: ``(opened, closed)`` around the
         body. The body writes a vector output into the tile of ``stages`` (``((binding, width), ...)``); ``closed`` stores
@@ -166,6 +171,9 @@ class CudaWrapper:
                 "    }"]
         return opened, "\n".join(["    }", "    __syncthreads();", *copies])
     # geometry-seam: end
+
+    def fold_rows(self, width: int) -> int:
+        return policy.fold_shape(width)
 
     def sample_sum_frame(self, width: int, elem: str, store: str,
                          op: str = "sum", live: str | None = None) -> tuple:
@@ -198,8 +206,8 @@ class CudaWrapper:
         so its shuffle rounds carry ``k * width`` independent columns."""
         n = k * width
         opened = (
-            "    const long long hawk_gid =\n"
-            "        static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;\n"
+            self.index_prologue().split("    if (hawk_flat")[0] +     # the prologue's own flat-index line: the thread
+            "    const long long hawk_gid = hawk_flat;\n"
             f"    const long long hawk_wbase = (hawk_gid & ~31LL) * {k};\n"
             "    if (hawk_wbase >= count) return;\n"
             f"    {elem} hawk_terms[{n}] = {{}};\n"

@@ -369,10 +369,10 @@ def team_body(spec: TeamSpec, active=None) -> Body:
         if step.op == "eigh_warp":      # one warp serves the lane; the rest of the team (if any) waits at the barrier
             lines += ["#if defined(__CUDA_ARCH__)",
                       "            __shared__ aether::linalg::warp::EighValuesScratch<Real> hawk_scratch;",
-                      "            if (threadIdx.x < 32) {",
+                      "            if (hawk_tm.rank < 32) {",
                       "                const auto hawk_r = aether::linalg::warp::eighValues<32>(hawk_scratch, static_cast<const Real*>(hawk_a));",
-                      "                hawk_w[threadIdx.x] = hawk_r.w;",
-                      "                if (threadIdx.x == 0) *hawk_info = hawk_r.info;",
+                      "                hawk_w[hawk_tm.rank] = hawk_r.w;",
+                      "                if (hawk_tm.rank == 0) *hawk_info = hawk_r.info;",
                       "            }",
                       "#else       // the host's team of one: the one-thread form, same bits",
                       "            aether::linalg::EighValues<Real, 32> hawk_r;",
