@@ -69,13 +69,16 @@ CONTRACTION_FORMS = ("direct", "gemm")
 
 _CONTRACTION: ContextVar[str] = ContextVar("hawk_contraction", default="direct")
 
+#: The scalar mode the build compiles for (``"float32"``, ``"float64"``; ``""`` when the build does not say).
+_SCALAR: ContextVar[str] = ContextVar("hawk_scalar", default="")
+
 #: ``(threads, blocks_per_sm)`` the device kernel is compiled for (``launch_bounds``), or ``None`` for no bound.
 _LAUNCH_BOUNDS: ContextVar[tuple[int, int] | None] = ContextVar("hawk_launch_bounds", default=None)
 
 
 @contextmanager
 def using(form: str = "auto", *, linalg_form: str = "auto", wide_form: str = "auto", contraction: str = "direct",
-          launch_bounds: tuple[int, int] | None = None) -> Iterator[None]:
+          launch_bounds: tuple[int, int] | None = None, scalar: str = "") -> Iterator[None]:
     """Render under ``form`` (one of :data:`FORMS`), ``linalg_form`` (one of
     :data:`LINALG_FORMS`), ``wide_form`` (one of :data:`WIDE_FORMS`), ``contraction`` (one of
     :data:`CONTRACTION_FORMS`) and ``launch_bounds`` (``(threads, blocks_per_sm)``: ``threads`` a multiple of
@@ -95,14 +98,21 @@ def using(form: str = "auto", *, linalg_form: str = "auto", wide_form: str = "au
         launch_bounds = (int(threads), int(blocks))
     token, linalg_token, wide_token = _FORM.set(form), _LINALG_FORM.set(linalg_form), _WIDE_FORM.set(wide_form)
     contraction_token, bounds_token = _CONTRACTION.set(contraction), _LAUNCH_BOUNDS.set(launch_bounds)
+    scalar_token = _SCALAR.set(scalar)
     try:
         yield
     finally:
+        _SCALAR.reset(scalar_token)
         _LAUNCH_BOUNDS.reset(bounds_token)
         _CONTRACTION.reset(contraction_token)
         _WIDE_FORM.reset(wide_token)
         _LINALG_FORM.reset(linalg_token)
         _FORM.reset(token)
+
+
+def scalar() -> str:
+    """The scalar mode the current build compiles for (``""``: not stated)."""
+    return _SCALAR.get()
 
 
 def linalg_form() -> str:
