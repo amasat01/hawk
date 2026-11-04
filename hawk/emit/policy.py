@@ -140,6 +140,26 @@ def placing(on: bool) -> Iterator[None]:
         _PLACED.reset(token)
 
 
+#: Whether the text being rendered is the host's, where a float select is a bitwise ``hawk_abi::blend`` (a ``?:`` is a
+#: branch the host vectoriser refuses; the device keeps ``?:``). Off unless a host row of a build turns it on.
+_BLEND: ContextVar[bool] = ContextVar("hawk_blend", default=False)
+
+
+@contextmanager
+def blending(on: bool) -> Iterator[None]:
+    """Spell host float selects as ``hawk_abi::blend`` (``on``) or as ``?:`` for the duration of the block."""
+    token = _BLEND.set(bool(on))
+    try:
+        yield
+    finally:
+        _BLEND.reset(token)
+
+
+def blend() -> bool:
+    """Whether float selects render as ``hawk_abi::blend``."""
+    return _BLEND.get()
+
+
 _STAGED: ContextVar[int] = ContextVar("hawk_staged_rows", default=1)
 
 

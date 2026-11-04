@@ -34,6 +34,10 @@ This section covers what changes from 0.7.2. Names that left are in the table at
 
 ### Changed
 
+**Host kernels on the default profile now vectorise.** A float select on the host is a bitwise blend, not a `?:`, so GCC vectorises the trip loop of an ensemble kernel (the performance card's host arm runs about 4x faster at 1e5 samples); aether's `sqrt` is inline. Results move within the FMA-contraction band (states about 1e-12 after 1e2 to 1e3 steps; the card's max error over its bound is unchanged at 6.4e-3); the exact profiles `native` and `portable` are bit-identical to before, and the device text is unchanged.
+
+**`host_profile="native-vector-math-nofma"`.** The default profile's vector code with `-ffp-contract=off`: a kernel's vector and per-sample builds agree bit for bit, for about 25 % less speed. The default stays `native-vector-math`.
+
 - The autodiff-against-torch card moved into eagle's feature card; the autodiff example points at its `vjp_vs_torch` row.
 - Kernels that already compiled without a spill build as before.
 - macOS wheels need macOS 15 or newer. CPython 3.13t is dropped: nine wheels per platform, the install page names 3.14t and 3.15t.

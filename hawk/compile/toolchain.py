@@ -618,7 +618,11 @@ def device_compiler() -> str:
 #: HostVectorMath.h``), and the error-free transformations of the
 #: ``compensated`` sink and of ``aether/accum`` pin their operands
 #: (``AETHER_FP_BARRIER``), so compensation stays exact.
-HOST_PROFILES = ("native", "portable", "native-vector-math")
+HOST_PROFILES = ("native", "portable", "native-vector-math", "native-vector-math-nofma")
+#: The profiles that route aether's math to the vector ABI (GCC, x86-64). ``native-vector-math-nofma`` is
+#: ``native-vector-math`` with ``-ffp-contract=off``: same vector code, so scalar and vector builds of one
+#: kernel agree bit for bit (the property the default gives up for speed, about 25 % on the vector kernel).
+VECTOR_MATH_PROFILES = ("native-vector-math", "native-vector-math-nofma")
 #: The profiles whose builds are bit-identical to the scalar build.
 EXACT_HOST_PROFILES = ("native", "portable")
 #: The default host profile for a GCC host compiler on an x86-64 host:
@@ -792,25 +796,6 @@ def gcc_maskcall_affected(macros: dict) -> bool:
     return (major == 13 and minor < 4) or (major == 14 and minor < 3)
 
 
-def conditional_math_scalar(profile: str | None = None, *,
-                            macros: dict | None = None) -> bool:
-    """Whether the host compiler leaves a loop with a conditional math call
-    scalar under ``profile``: ``native-vector-math`` on a GCC that miscompiles
-    masked vector variants (:func:`gcc_maskcall_affected`, where aether-dsc
-    declares none) or that predates 13 (GCC 12 never if-converts a conditional
-    call of a function with simd clones). ``macros`` overrides the host
-    compiler's probed macros (for tests)."""
-    if host_profile(profile) != "native-vector-math":
-        return False
-    macros = compiler_macros(host_compiler()) if macros is None else macros
-    if gcc_maskcall_affected(macros):
-        return True
-    try:
-        return "__clang__" not in macros and int(macros.get("__GNUC__", "99")) < 13
-    except ValueError:
-        return False
-
-
 def _is_x86_64() -> bool:
     return platform.machine().lower() in ("x86_64", "amd64")
 
@@ -828,7 +813,8 @@ def default_host_profile() -> str:
 #: the exact profiles, fast for the fast one.
 _HOST_CONTRACTION = {"native": "-ffp-contract=off",
                      "portable": "-ffp-contract=off",
-                     "native-vector-math": "-ffp-contract=fast"}
+                     "native-vector-math": "-ffp-contract=fast",
+                     "native-vector-math-nofma": "-ffp-contract=off"}
 
 
 def host_profile(requested: str | None = None) -> str:
@@ -844,11 +830,11 @@ def host_profile(requested: str | None = None) -> str:
             f"unknown host profile {name!r} (from "
             f"{'the compile options' if requested else '$HAWK_HOST_PROFILE'}); "
             f"the profiles are {HOST_PROFILES}")
-    if explicit and name == "native-vector-math" and _is_x86_64():
+    if explicit and name in VECTOR_MATH_PROFILES and _is_x86_64():
         cxx = host_compiler()
         if not compiler_is_gcc(cxx):
             raise HawkError(
-                f"host profile 'native-vector-math' needs a GCC host compiler "
+                f"host profile {name!r} needs a GCC host compiler "
                 f"(its vector function ABI is GCC-only), but {cxx!r} is not "
                 f"GCC; use the 'native' profile, or point $HAWK_CXX at a GCC "
                 f"g++")
@@ -893,16 +879,16 @@ def host_codegen_flags(profile: str | None = None, opt: str | None = None) -> li
     level = opt_level(opt)
     machine = platform.machine().lower()
     x86 = machine in ("x86_64", "amd64")
-    if name in ("native", "native-vector-math"):
+    if name != "portable":
         target = (["-march=native", "-mprefer-vector-width=512"] if x86
                   else ["-mcpu=native"] if machine in ("aarch64", "arm64", "ppc64le")
                   else ["-march=native"])
     else:
         target = ["-march=x86-64-v2"] if x86 else []
-    if name == "native-vector-math":
+    if name in VECTOR_MATH_PROFILES:
         if not x86:
             raise HawkError(
-                "host profile 'native-vector-math' needs an x86-64 host "
+                f"host profile {name!r} needs an x86-64 host "
                 "(aether's vector math follows the x86-64 vector function ABI)")
         target = [*target, "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
     return [f"-{level}", _HOST_CONTRACTION[name], *target]

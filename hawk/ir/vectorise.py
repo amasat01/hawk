@@ -8,19 +8,17 @@ writes (:func:`hawk.emit.wrapper.render_source` records it on the
 :class:`~hawk.emit.wrapper.Source`) and for the cost counts a launching runtime
 reads (:mod:`hawk.ir.cost`, per dispatch branch), so the two cannot drift apart.
 
-On a GCC that miscompiles masked vector-math calls (13.1-13.3, 14.1-14.2), where
-aether-dsc declares no masked variants, and on GCC 12, which never if-converts such a
-call, under ``native-vector-math``
-(:func:`hawk.compile.toolchain.conditional_math_scalar`), an interchanged trip loop with
-a math call in it (its result feeds a per-lane select) stays scalar.
+A host float select is a bitwise blend (:data:`hawk.emit.host.BLEND_HELPERS`), so an interchanged trip
+loop calls its math unconditionally and needs no masked vector variant of it, on any compiler. A math call
+inside a loop nested in it still stays scalar under ``native-vector-math``.
 
 It holds when the kernel is sample-local (or only reads lookup planes: a read-only table is the same
 for every lane, so an interchanged kernel may read one), no library call stays scalar under an exact
-host profile, and no ``Loop`` the lanes run as a ``for`` of their own has more trips
-than the compiler fully unrolls. A top-level ``Loop`` of a sample-local kernel is run
+host profile, and no ``Loop`` the lanes run as a ``for`` of their own has a run-time trip count or, unless it is nested in an
+interchanged loop (GCC vectorises that outer loop whatever the inner count), more trips than the compiler fully unrolls. A top-level ``Loop`` of a sample-local kernel is run
 INTERCHANGED on the host (:func:`interchanged_loops`): its trips outside, a tile of
 samples inside, so its trip count no longer matters; a ``Loop`` nested in it stays
-each lane's own ``for``. The scalar type does not matter: a float32 loop's guards and
+each lane's own ``for`` (GCC vectorises the lanes around it). The scalar type does not matter: a float32 loop's guards and
 tallies are float32 too.
 """
 
@@ -132,8 +130,7 @@ def vectorise_blocker(walk: Walk, profile: str | None = None, scalar_type: str |
     """Why the host loop over samples running ``nodes`` (default: the whole kernel) is not vectorised under
     host ``profile`` (default: the one in effect), else ``""``. ``scalar_type`` is accepted for the callers' sake;
     the verdict is the same for every type."""
-    from ..compile.toolchain import (EXACT_HOST_PROFILES, host_profile,
-                                     conditional_math_scalar)
+    from ..compile.toolchain import EXACT_HOST_PROFILES, host_profile
     from .cost import is_library_call
 
     lanes = {id(loop) for loop in interchanged_loops(walk)}
@@ -141,7 +138,8 @@ def vectorise_blocker(walk: Walk, profile: str | None = None, scalar_type: str |
     if cls != "sample_local" and not (cls == "cross_sample_read" and lanes):
         return f"the access class is {cls}" + (" and no loop runs interchanged" if cls == "cross_sample_read" else "")
     exact = host_profile(profile) in EXACT_HOST_PROFILES
-    scalar_math = bool(lanes) and conditional_math_scalar(profile)
+    # a fixed-count loop nested in an interchanged one is vectorised across the lanes whatever its length
+    inner_of_lanes = {id(n) for loop in interchanged_loops(walk) for n in _flat(loop.body_nodes()) if isinstance(n, Loop)}
     for node in _flat(walk.order if nodes is None else nodes):
         if exact and is_library_call(node):
             return f"a library call ({node.kind}) stays scalar under the exact host profile"
@@ -153,10 +151,10 @@ def vectorise_blocker(walk: Walk, profile: str | None = None, scalar_type: str |
             if id(node) in lanes:
                 if not speculative_step(node):
                     return "an interchanged loop reads at a computed index, switches, holds a raw block or divides integers"
-                inside = _flat((*node.body_nodes(), *node.nexts, node.exit_cond))
-                if scalar_math and any(is_library_call(n) for n in inside):
-                    return "no masked variant of a library call in an interchanged loop under this compiler"
-            elif node.trip > UNROLL_LIMIT or node.dynamic is not None:
+                for inner in _flat((*node.body_nodes(), *node.nexts, node.exit_cond)):
+                    if isinstance(inner, Loop) and any(is_library_call(n) for n in _flat(inner.body_nodes())):
+                        return "a library call inside a nested loop stays scalar"
+            elif node.dynamic is not None or (node.trip > UNROLL_LIMIT and id(node) not in inner_of_lanes):
                 return f"a loop of {'a run-time number of' if node.dynamic is not None else node.trip} trips stays its lane's own for"
     return ""
 

@@ -316,6 +316,10 @@ def _declarations(pre: str, names: Sequence[str]) -> tuple:
 class _Renderer(_DispatchMixin):
     """One rendering pass. Held as a class only to carry the memo tables."""
 
+    def host_blend(self, elem: str) -> bool:
+        """Whether a select of ``elem`` values is spelled ``hawk_abi::blend`` (the host text; the device keeps ``?:``)."""
+        return _policy.blend() and elem == "Real"
+
     def __init__(self, sinks: tuple, walk: Walk, indent: str, kind=None, *,
                  writer=None) -> None:
         from ..ext import DEFAULT_KIND
@@ -1338,8 +1342,9 @@ class _Renderer(_DispatchMixin):
                 self._render_scope(loop, skip=pre)
                 for j, (elem, nxt) in enumerate(zip(elems, loop.nexts)):
                     self._emit(f"const {elem} hawk_r{pos}_{j} = {self._ref(nxt)};")
-                    self._emit(f"const {elem} {nexts[j]} = "
-                               f"{flag} ? {held[j]} : hawk_r{pos}_{j};")
+                    hold = (f"hawk_abi::blend({flag}, {held[j]}, hawk_r{pos}_{j})" if self.host_blend(elem)
+                            else f"{flag} ? {held[j]} : hawk_r{pos}_{j}")
+                    self._emit(f"const {elem} {nexts[j]} = {hold};")
             else:
                 for elem, nxt, kept in zip(elems, nexts, held):
                     self._emit(f"{elem} hawk_w{nxt[6:]} = {kept};")

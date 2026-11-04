@@ -326,7 +326,7 @@ def _host_key_terms(flags, opts: CompileOptions) -> tuple:
     level = tc.opt_level(opts.opt_level or None)
     libc = "-".join(part for part in platform.libc_ver() if part) or "unknown"
     terms = (*flags, f"host_profile:{profile}", f"opt_level:{level}", f"libc:{libc}")
-    if profile in ("native", "native-vector-math"):
+    if profile != "portable":
         terms = (*terms, f"host_target:{tc.host_target_identity()}")
     return terms
 
