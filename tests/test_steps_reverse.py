@@ -263,8 +263,11 @@ def test_auto_choice_is_the_measured_table_and_empty_classes_answer_per_step():
 
     assert S._choose(False, 4, 8, 16) == "fused" and S._choose(False, 4, 8, 4096) == "per_step"
     assert S._choose(False, 2, 8, 65536) == "fused"                       # the card's wide matvec
-    assert S._choose(True, 2, 8, 65536, "sm_61") == "fused" and S._choose(True, 2, 8, 65536, "sm_89") == "fused"
-    assert S._choose(True, 2, 8, 64, "sm_61") == "per_step"               # below the measured n_min
-    assert S._choose(False, 3, 4, 64) == "fused"        # the nearest measured regime
-    assert S._choose(True, 4, 8, 16, "sm_61") == "per_step"    # outside the measured range
-    assert S._class_of(True, "sm_80") == "sm61" and S._class_of(False) == "x86_64"
+    assert S._choose(False, 3, 4, 64) == "fused"                           # the nearest measured regime
+    p2000, l4, a100 = 5 * 2048, 58 * 1536, 108 * 2048                       # SM count x resident threads
+    for resident in (p2000, l4, a100):
+        assert S._choose(True, 2, 8, 65536, resident) == "fused"
+        assert S._choose(True, 2, 8, 64, resident) == "per_step"          # below the measured regime
+    with pytest.raises(ValueError, match="resident"):
+        S._choose(True, 2, 8, 65536)                                       # a device run says what it holds
+    assert S._choose(True, 4, 8, 16, p2000) == "per_step"                   # outside the measured range

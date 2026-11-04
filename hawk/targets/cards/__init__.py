@@ -138,19 +138,22 @@ def team_warps() -> int:
 
 def wide(scalar_type: str) -> dict:
     """``{"SLICE_MIN", "TEAM_MIN", "TC"}`` for ``scalar_type`` (``"float32"``/``"float64"``, or the IR's ``f32``/``f64``)
-    on the build's device arch (:func:`build_arch`): the defaults, and over them the first row of this arch (and, when a
-    device is present, its name) for the scalar type. A host-only build, or an arch with no row, gets the defaults; the
-    device is probed only when a row of the arch needs its name checked."""
+    on the build's device arch (:func:`build_arch`): the defaults, and over them the row of the scalar type whose arch is the
+    nearest by device features (:func:`hawk.ir.wide_class.distance`: FP64 rate, registers, resident threads), so an unmeasured
+    arch takes the closest measured row; a row of the build's own arch must also match the device name when one is present.
+    A host-only build, or no row for the scalar type, gets the defaults."""
     scalar_type = {"f32": "float32", "f64": "float64"}.get(scalar_type, scalar_type)
     doc = _wide_doc(str(WIDE_FILE))
     card = {k: doc["defaults"][k] for k in WIDE_KEYS}
     arch = _BUILD_ARCH.get()
-    rows = [r for r in doc["rows"] if arch and r["cc"] == arch and r["dtype"] == scalar_type]
+    rows = [r for r in doc["rows"] if arch and r["dtype"] == scalar_type]
     if rows:
-        device = _device()
-        for r in rows:
-            if device is None or device == (r["cc"], r["device"]):
-                card.update({k: r[k] for k in WIDE_KEYS if k in r})
-                break
+        from ...ir.wide_class import distance, features_of
+
+        device = _device() if any(r["cc"] == arch for r in rows) else None
+        rows = [r for r in rows if r["cc"] != arch or device is None or device == (r["cc"], r["device"])]
+        if rows:
+            want = features_of(arch)
+            card.update({k: v for k, v in min(rows, key=lambda r: distance(want, features_of(r["cc"]))).items() if k in WIDE_KEYS})
     card.update({k: v for k, v in (_WIDE_OVERRIDE.get() or {}).items() if k in WIDE_KEYS})
     return card

@@ -47,8 +47,6 @@ def test_a_row_changes_the_decision_for_its_own_device_and_scalar_type_only(tmp_
     with cards.build_arch("sm_00"):
         assert cards.wide("float32") == {"SLICE_MIN": 64, "TEAM_MIN": 64, "TC": 8192}
         assert sliced(NARROW) and cards.wide("float64")["SLICE_MIN"] == 128
-    with cards.build_arch("sm_61"):
-        assert not sliced(NARROW)
     assert not sliced(NARROW)                           # a host-only build: no arch, no row
     monkeypatch.setattr(cards, "_device", lambda: ("sm_00", "Another Card"))
     with cards.build_arch("sm_00"):
@@ -56,6 +54,15 @@ def test_a_row_changes_the_decision_for_its_own_device_and_scalar_type_only(tmp_
     assert _wide_part("float32", "sm_00") == ""         # (and so the unit key keeps its old form)
     monkeypatch.setattr(cards, "_device", lambda: ("sm_00", "Test Card"))
     assert _wide_part("float32", "sm_00") == "wide:64:64:8192"
+
+
+def test_an_unmeasured_arch_takes_the_row_nearest_by_device_features(tmp_path, monkeypatch):
+    far = {**ROW, "cc": "sm_70", "TC": 4096}              # FP64 rate 2: far from the sm_61 / sm_89 (1:32, 1:64) rows
+    _card(tmp_path, monkeypatch, [far, {**ROW, "cc": "sm_61", "device": "P2000", "TC": 16384}])
+    monkeypatch.setattr(cards, "_device", lambda: None)  # no device probed: the rows are the build arch's to choose
+    for arch, tc in (("sm_61", 16384), ("sm_75", 16384), ("sm_89", 16384), ("sm_80", 4096), ("sm_90", 4096)):
+        with cards.build_arch(arch):
+            assert cards.wide("float32")["TC"] == tc, arch
 
 
 def test_team_min_decides_auto_and_not_a_kernel_asked_for_the_warp_form(tmp_path, monkeypatch):

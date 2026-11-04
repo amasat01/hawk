@@ -490,10 +490,8 @@ class AetherWriter:
         if kind in FACTORISATIONS:
             name = f"hawk_lf{r.hoists}"
             r.hoists += 1
-            fn, struct = _FACTORISE[kind], _STRUCT[kind]
-            if kind == "eigh" and not any(m.kind == "eigh_v" and _through(m.operands[0]) is node
-                                          for m in r.nodes if isinstance(m, Op)):
-                fn, struct = "eighValues", "EighValues"      # no eigenvector read: V is never accumulated
+            vectors = any(m.kind == "eigh_v" and _through(m.operands[0]) is node for m in r.nodes if isinstance(m, Op))
+            fn, struct = _ENTRY[kind, ("v",) if vectors else ()]
             r._emit(f"aether::linalg::{struct}<{element_spelling(node.ttype.dtype)}, {n}> {name};")
             self._linalg_call(r, fn, (n,), name,
                               self._operand(r, node.operands[0], args[0]), emit=True)
@@ -1127,9 +1125,10 @@ def _absorbs(node: Op, k: int, child: Node) -> bool:
 #: The ``aether::geometry`` function each ray kind calls.
 _RAY = {"ray_tri": "rayTriangle", "ray_aabb": "rayAabb", "ray_sphere": "raySphere"}
 
-#: The ``aether::linalg`` function each factorisation kind calls, the struct it fills, and each solve.
-_FACTORISE = {"lu": "lu", "chol": "cholesky", "eigh": "eigh", "chol_from": "choleskyFrom"}
-_STRUCT = {"lu": "Lu", "chol": "Cholesky", "eigh": "Eigh", "chol_from": "Cholesky"}
+#: The ``aether::linalg`` (function, struct) of each factorisation kind by the outputs read beyond the base (eigh: ``"v"``, the
+#: eigenvectors; without them V is never accumulated), and the function of each solve.
+_ENTRY = {("lu", ()): ("lu", "Lu"), ("chol", ()): ("cholesky", "Cholesky"), ("chol_from", ()): ("choleskyFrom", "Cholesky"),
+          ("eigh", ()): ("eighValues", "EighValues"), ("eigh", ("v",)): ("eigh", "Eigh")}
 _SOLVE = {"lu_solve": "luSolve", "lu_solve_t": "luSolveT", "cho_solve": "choSolve"}
 #: The solves against the factor's ``L`` alone (they read the struct's ``l``).
 _TRIANGULAR = {"tri_lower": "triLower", "tri_upper_t": "triUpperT"}

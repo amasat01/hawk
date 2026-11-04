@@ -6,7 +6,7 @@
     python tests/_probe_steps_reverse.py [--K 4 8] [--N 1 64 1024 16384] [--reps 100]
 
 Prints ``(width, K, n_min, n_max)``: the narrowest and widest N where fused beat per-step by 10%. A device row needs the
-same measurement on that card (launch it under the GPU pool); until then its class has no row."""
+same measurement on that card (launch it under the GPU pool), kept as N / (SMs x resident threads); until then the device rows stand."""
 
 from __future__ import annotations
 

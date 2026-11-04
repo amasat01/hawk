@@ -3,42 +3,32 @@
 
 """When a fused K-step reverse beats K step-by-step launches (``steps_reverse="auto"``).
 
-A measured table, never a constant: the rows of a feature class are what a probe
-timed (``tests/_probe_steps_reverse.py --dump-table``), and a class with no row
-answers ``per_step``. A device build takes the class of :func:`hawk.ir.wide_class.select`
-for its arch; the host has its own class. A row is ``(state width, K, narrowest N, widest N)``
-the fused launch won across: a regime is matched to the nearest measured width and K, and
-fused is chosen inside that batch range."""
+A measured table, never a constant: the rows are what a probe timed (``tests/_probe_steps_reverse.py --dump-table``), and a
+target with no row answers ``per_step``. A row is ``(state width, K, narrowest regime, widest regime)`` the fused launch won
+across, and the regime is the device-normalised batch: lanes per resident thread (``N / (SMs x resident threads per SM)``, the
+caller reads both from the device), or the plain ``N`` on the host (whose rows were measured on one 8-core machine). The nearest
+measured width and K (log2 distance) is matched and fused is chosen inside its regime."""
 
 from __future__ import annotations
 
 import math
 
-from .wide_class import select
-
-#: The host's feature class: the machine the host rows were measured on (the IR names no target).
-_HOST = "x86_64"
-
-#: ``{class: ((width, K, n_min, n_max), ...)}``, fused measured to win for ``n_min <= N <= n_max``.
-#: ``x86_64`` (8 Xeon cores, compiled hawk.run): the 4-scalar oscillator probe, fused 7x / 5x at N=1 / 64, 1.2x at 1024 and
-#: slower from 16384 (K 8); K 4 unchanged. Width 2, K 8 is the wide matvec of the feature card (a 24 by 512 table, ``y``
-#: overwritten each step): fused 30-250x at every N from 1 to 65536. ``sm61`` (P2000, the class sm_61..sm_89 share): the same
-#: matvec, fused 0.43x at N=64, 2.2x at 1024, 2.8x at 16384 and 65536 (L4 sm_89: 1.8x at 65536).
+#: ``{target: ((width, K, regime_min, regime_max), ...)}``, fused measured to win for ``regime_min <= regime <= regime_max``.
+#: ``host`` (8 Xeon cores, compiled hawk.run, regime = N): the 4-scalar oscillator probe, fused 7x / 5x at N=1 / 64, 1.2x at 1024
+#: and slower from 16384 (K 8); K 4 unchanged. Width 2, K 8 is the wide matvec of the feature card (a 24 by 512 table, ``y``
+#: overwritten each step): fused 30-250x at every N from 1 to 65536. ``device`` (P2000, 5 SMs x 2048 threads, regime = N / 10240):
+#: the same matvec, fused 0.43x at N=64, 2.2x at 1024, 2.8x at 16384 and 65536 (L4: 1.8x at 65536).
 _ROWS = {
-    _HOST: ((4, 8, 1, 1024), (4, 4, 1, 64), (2, 8, 1, 65536)),
-    "sm61": ((2, 8, 1024, 65536),),
+    "host": ((4, 8, 1, 1024), (4, 4, 1, 64), (2, 8, 1, 65536)),
+    "device": ((2, 8, 0.1, 6.4),),
 }
 
 
-def _class_of(device: bool, arch: str = "") -> str:
-    """The row class of a target: the host's, or the nearest measured device class."""
-    return select(arch) if device else _HOST
-
-
-def _choose(device: bool, width: int, K: int, n: int, arch: str = "") -> str:
-    """``"fused"`` when the class's nearest measured regime won at ``n`` samples, else ``"per_step"``."""
-    rows = _ROWS.get(_class_of(device, arch), ())
-    if not rows:
-        return "per_step"
-    w, k, n_min, n_max = min(rows, key=lambda r: (abs(math.log2(width / r[0])) + abs(math.log2(K / r[1])), r))
-    return "fused" if n_min <= n <= n_max else "per_step"
+def _choose(device: bool, width: int, K: int, n: int, resident: int = 0) -> str:
+    """``"fused"`` when the nearest measured regime won at ``n`` samples on a target holding ``resident`` threads
+    (``SM count x resident threads per SM``: required on a device, ignored on the host), else ``"per_step"``."""
+    if device and resident <= 0:
+        raise ValueError("steps_class._choose: a device target needs resident = SM count x resident threads per SM")
+    rows = _ROWS["device" if device else "host"]
+    w, k, lo, hi = min(rows, key=lambda r: (abs(math.log2(width / r[0])) + abs(math.log2(K / r[1])), r))
+    return "fused" if lo <= n / (resident if device else 1) <= hi else "per_step"

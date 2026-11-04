@@ -28,6 +28,15 @@ def test_float32_values_only_n32_is_one_warp_stage():
     assert _ops(eigh_values_kernel(32)) == [(32, "eigh_warp")]
 
 
+@pytest.mark.parametrize("arch,warp", [("sm_61", False), ("sm_89", False), ("", False), ("sm_80", True), ("sm_90", True)])
+def test_float64_takes_the_warp_form_only_where_fp64_is_fast(arch, warp):
+    from hawk.targets import cards
+
+    with cards.build_arch(arch):
+        got = _ops(eigh_values_kernel(32), scalar="float64")
+    assert (got == [(32, "eigh_warp")]) is warp
+
+
 @pytest.mark.parametrize("case", ["float64", "no_scalar", "thread", "team", "vectors", "n31", "n33"])
 def test_every_other_build_keeps_its_form(case):
     kernel = {"vectors": eigh_kernel(32), "n31": eigh_values_kernel(31), "n33": eigh_values_kernel(33)}.get(case, eigh_values_kernel(32))

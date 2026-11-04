@@ -68,10 +68,10 @@ class TeamCopy(TeamStore):
     __slots__ = ()
 
 
-#: Threads of the block of a stage that only copies operands into team scratch, and the elements per lane below which
-#: one thread per lane copies them (a block per lane would idle most of its threads).
+#: Threads of the block of a stage that only copies operands into team scratch (the launch's resolved block for it), and the
+#: elements per lane below which one thread per lane copies them: each thread of the block must move at least 4, or the block idles.
 COPY_THREADS = 256
-COPY_MIN = 1024
+COPY_MIN = 4 * COPY_THREADS
 
 
 def copy_spec() -> "TeamSpec":
@@ -225,16 +225,30 @@ def _identity(node: Node) -> bool:
                           for k, c in enumerate(node.operands))
 
 
+#: The linalg ops worked one warp per lane, ``{(kind, n, scalar, outputs read beyond the base): aether::linalg::warp function}``.
+#: A row is bit-identical to the thread form and faster at every lane count measured (P2000, f32: 256 to 131072 matrices, 1.5x to
+#: 5.7x), so a device takes it with no fill test, except that a float64 row needs a device whose FP64 rate is at least 1/8 of
+#: FP32 (:data:`FAST_FP64`): on a 1:32 or 1:64 part the f64 fold is pipe-bound and the thread form stays.
+WARP_ENTRIES = {("eigh", 32, "float32", ()): "eighValues", ("eigh", 32, "float64", ()): "eighValues"}
+FAST_FP64 = 8
+
+
 def warp_factors(order, sinks) -> frozenset:
-    """``id`` of every ``eigh`` that is worked one warp per lane: a float32 build (``policy.scalar()``), ``n = 32``, ``linalg_form="auto"``, no
-    eigenvector read, and a stage of its own is possible (not in a loop body, not only in an arm of a dispatch).
-    The warp form is bit-identical to the thread form and faster at every lane count measured (P2000, f32: 256 to 131072 matrices, 1.5x to 5.7x)."""
+    """``id`` of every factorisation that has a warp entry (:data:`WARP_ENTRIES`) for its kind, ``n``, the build's scalar
+    (``policy.scalar()``) and the outputs read, that the build's device runs at that scalar's rate, with ``linalg_form="auto"``,
+    and whose stage of its own is possible (not in a loop body, not only in an arm of a dispatch)."""
     from ..emit import policy
     from .loop_nodes import Loop
 
-    if policy.linalg_form() != "auto" or policy.scalar() != "float32":
+    from ..targets.cards import _BUILD_ARCH
+    from .wide_class import DEFAULT_ARCH, features_of
+
+    scalar = policy.scalar()
+    if policy.linalg_form() != "auto" or (scalar != "float32" and features_of(_BUILD_ARCH.get() or DEFAULT_ARCH).fp64_ratio > FAST_FP64):
         return frozenset()
-    cand = [n for n in order if isinstance(n, Op) and n.kind == "eigh" and n.ttype.shape == (32, 32)]
+    vectors = {id(n.operands[0]) for n in order if isinstance(n, Op) and n.kind == "eigh_v"}
+    cand = [n for n in order if isinstance(n, Op) and n.kind in FACTORISATIONS
+            and (n.kind, dimension(n), scalar, ("v",) if id(n) in vectors else ()) in WARP_ENTRIES]
     if not cand:
         return frozenset()
     inner: set = set()
@@ -249,8 +263,7 @@ def warp_factors(order, sinks) -> frozenset:
             continue
         seen.add(id(node))
         stack.extend(node.operands[:1] if isinstance(node, Dispatch) else node.operands)
-    vectors = {id(n.operands[0]) for n in order if isinstance(n, Op) and n.kind == "eigh_v"}
-    return frozenset(id(n) for n in cand if id(n) in seen and id(n) not in inner and id(n) not in vectors)
+    return frozenset(id(n) for n in cand if id(n) in seen and id(n) not in inner)
 
 
 def members_of(order, sinks=()) -> tuple:
