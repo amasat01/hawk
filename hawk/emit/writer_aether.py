@@ -485,8 +485,12 @@ class AetherWriter:
         if kind in FACTORISATIONS:
             name = f"hawk_lf{r.hoists}"
             r.hoists += 1
-            r._emit(f"aether::linalg::{_STRUCT[kind]}<{element_spelling(node.ttype.dtype)}, {n}> {name};")
-            self._linalg_call(r, _FACTORISE[kind], (n,), name,
+            fn, struct = _FACTORISE[kind], _STRUCT[kind]
+            if kind == "eigh" and not any(m.kind == "eigh_v" and _through(m.operands[0]) is node
+                                          for m in r.nodes if isinstance(m, Op)):
+                fn, struct = "eighValues", "EighValues"      # no eigenvector read: V is never accumulated
+            r._emit(f"aether::linalg::{struct}<{element_spelling(node.ttype.dtype)}, {n}> {name};")
+            self._linalg_call(r, fn, (n,), name,
                               self._operand(r, node.operands[0], args[0]), emit=True)
             return name
         if kind.endswith("_info"):
