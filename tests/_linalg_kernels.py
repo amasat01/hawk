@@ -72,6 +72,15 @@ def eigh_kernel(n: int) -> Kernel:
         Assign("info", make("eigh_info", (f,)), TensorType((), "int32"))))
 
 
+def eigh_values_kernel(n: int) -> Kernel:
+    """The eigenvalues and the status of ``eigh(A)``: no eigenvector is read."""
+    a, _, _ = _inputs(n)
+    f = make("eigh", (a,))
+    return Kernel(f"la_eigh_values_{n}", (
+        Assign("w", make("eigh_w", (f,)), TensorType((n,), F64)),
+        Assign("info", make("eigh_info", (f,)), TensorType((), "int32"))))
+
+
 def lstsq_kernel(m: int, n: int) -> Kernel:
     """``x, info = lstsq(J, r)`` for a tall ``m x n`` ``J`` (QR, a team stage): the solution and the status."""
     j = Leaf("vocab_read", "mat_in", "J", TensorType((m, n), F64))
