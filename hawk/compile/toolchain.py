@@ -796,25 +796,6 @@ def gcc_maskcall_affected(macros: dict) -> bool:
     return (major == 13 and minor < 4) or (major == 14 and minor < 3)
 
 
-def conditional_math_scalar(profile: str | None = None, *,
-                            macros: dict | None = None) -> bool:
-    """Whether the host compiler leaves a loop with a conditional math call
-    scalar under ``profile``: ``native-vector-math`` on a GCC that miscompiles
-    masked vector variants (:func:`gcc_maskcall_affected`, where aether-dsc
-    declares none) or that predates 13 (GCC 12 never if-converts a conditional
-    call of a function with simd clones). ``macros`` overrides the host
-    compiler's probed macros (for tests)."""
-    if host_profile(profile) not in VECTOR_MATH_PROFILES:
-        return False
-    macros = compiler_macros(host_compiler()) if macros is None else macros
-    if gcc_maskcall_affected(macros):
-        return True
-    try:
-        return "__clang__" not in macros and int(macros.get("__GNUC__", "99")) < 13
-    except ValueError:
-        return False
-
-
 def _is_x86_64() -> bool:
     return platform.machine().lower() in ("x86_64", "amd64")
 

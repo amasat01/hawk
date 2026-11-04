@@ -137,6 +137,17 @@ def controller(x: Scalar, g: Scalar, y: Mutable[Scalar]):
 
 
 @hawk.kernel
+def nested_math(x: Scalar, g: Scalar, y: Mutable[Scalar]):
+    a = x
+    for _k in range(40):
+        c = a
+        for _j in range(8):
+            c = m.tanh(c) * 0.5 + 0.125
+        a = a * 0.75 + c * 0.01
+    y = a + g
+
+
+@hawk.kernel
 def two_loops(w0: Vector[3], g: Scalar, out: Mutable[Vector[3]], y: Mutable[Scalar]):
     w = w0
     for _k in range(30):
@@ -299,7 +310,8 @@ def test_the_lane_loop_of_an_arithmetic_chain_vectorises(tmp_path, mode):
 FLAG_CASES = [(arith, "float64", EXACT), (arith, "float32", EXACT),
               (nested, "float64", EXACT), (two_loops, "float64", EXACT),
               (sin_chain, "float64", EXACT), (sin_chain, "float64", "native-vector-math"),
-              (trajectory, "float64", EXACT), (middle, "float64", "native-vector-math")]
+              (trajectory, "float64", EXACT), (middle, "float64", "native-vector-math"),
+              (nested, "float64", "native-vector-math"), (nested_math, "float64", "native-vector-math")]
 
 
 @pytest.mark.skipif(not avx512(), reason="the 64-byte vector verdict needs AVX-512")
@@ -312,11 +324,6 @@ def test_the_flag_matches_the_lane_loop(request, tmp_path, kernel, mode, profile
         request.applymarker(pytest.mark.xfail(
             strict=True, reason="GCC 12 does not vectorise this lane loop"))
     lane, wide = _lane_loop_report(tmp_path, kernel, mode, profile)
-    if kernel is nested or profile == "native-vector-math":
-        # the host blend lets GCC 14.2 vectorise a long nested trip and a math call under a select; the predicate
-        # (written for the ternary) stays conservative, and must never over-claim
-        assert not vectorises(kernel.walk, profile, mode) or lane <= wide, (lane, wide)
-        return
     assert vectorises(kernel.walk, profile, mode) is (lane <= wide), (lane, wide)
 
 
@@ -372,5 +379,5 @@ def test_the_cost_model_reads_the_same_predicate():
                 kernel.walk, profile)
     # an interchanged loop's trip count leaves the vectorised flag on
     assert kernel_cost(arith.walk, EXACT).vectorised is True
-    # a nested loop above the unroll limit stays each lane's own `for`
-    assert kernel_cost(nested.walk, EXACT).vectorised is False
+    # a fixed-count nested loop, however long, is vectorised across the lanes (the flag test pins it against GCC)
+    assert kernel_cost(nested.walk, EXACT).vectorised is True
