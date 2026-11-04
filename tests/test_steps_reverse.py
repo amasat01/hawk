@@ -268,4 +268,6 @@ def test_auto_choice_is_the_measured_table_and_empty_classes_answer_per_step():
     for resident in (p2000, l4, a100):
         assert S._choose(True, 2, 8, 65536, resident) == "fused"
         assert S._choose(True, 2, 8, 64, resident) == "per_step"          # below the measured regime
+    with pytest.raises(ValueError, match="resident"):
+        S._choose(True, 2, 8, 65536)                                       # a device run says what it holds
     assert S._choose(True, 4, 8, 16, p2000) == "per_step"                   # outside the measured range

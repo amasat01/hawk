@@ -24,9 +24,11 @@ _ROWS = {
 }
 
 
-def _choose(device: bool, width: int, K: int, n: int, resident: int = 1) -> str:
+def _choose(device: bool, width: int, K: int, n: int, resident: int = 0) -> str:
     """``"fused"`` when the nearest measured regime won at ``n`` samples on a target holding ``resident`` threads
-    (``SM count x resident threads per SM``; ignored on the host), else ``"per_step"``."""
+    (``SM count x resident threads per SM``: required on a device, ignored on the host), else ``"per_step"``."""
+    if device and resident <= 0:
+        raise ValueError("steps_class._choose: a device target needs resident = SM count x resident threads per SM")
     rows = _ROWS["device" if device else "host"]
     w, k, lo, hi = min(rows, key=lambda r: (abs(math.log2(width / r[0])) + abs(math.log2(K / r[1])), r))
     return "fused" if lo <= n / (resident if device else 1) <= hi else "per_step"
