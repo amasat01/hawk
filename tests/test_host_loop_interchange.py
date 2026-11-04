@@ -398,3 +398,14 @@ def test_the_cost_model_reads_the_same_predicate():
     assert kernel_cost(arith.walk, EXACT).vectorised is True
     # a fixed-count nested loop, however long, is vectorised across the lanes (the flag test pins it against GCC)
     assert kernel_cost(nested.walk, EXACT).vectorised is True
+
+
+def test_an_item_select_is_held_in_a_named_local():
+    # an Item is a leaf held by const& in the expression that takes it: a select_item prvalue inlined into a later
+    # expression dangles after its statement (chol_from vjp read garbage)
+    from _linalg_kernels import chol_from_kernel
+    primal = chol_from_kernel(3)
+    kernel = hawk.Kernel("la_chol_from_3_vjp", vjp(primal))
+    text = hawk.artifact.emit_source(kernel, targets=("host",)).sources["host"].text
+    calls = re.findall(r"^.*hawk_abi::select_item<.*$", text, re.M)
+    assert calls and all(re.match(r"\s*const auto \w+ = hawk_abi::select_item<", c) for c in calls), calls

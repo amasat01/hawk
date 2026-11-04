@@ -460,7 +460,8 @@ class AetherWriter:
         cond_rank = len(node.operands[0].ttype.shape)
         if cond_rank == 0 and host:
             ext = ", ".join(str(e) for e in node.ttype.shape)
-            return f"hawk_abi::select_item<{element_spelling(node.ttype.dtype)}, {ext}>({c}, {a}, {b})"
+            # An Item is a leaf, held by const& in whatever expression takes it: held once in a named local, or it dangles.
+            return self._hoist(r, f"hawk_abi::select_item<{element_spelling(node.ttype.dtype)}, {ext}>({c}, {a}, {b})")
         if cond_rank == 0:
             # A per-sample mask: aether::select needs an EXPRESSION, and a
             # rank-0 C++ bool isn't one, so it broadcasts through a rank-0
