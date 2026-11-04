@@ -131,6 +131,11 @@ def _wide_doc(path: str) -> dict:
     return doc
 
 
+def team_warps() -> int:
+    """The warps a block of the warp-per-lane kernel holds: 1 unless the card kit forces ``wide_override({"WARPS": k})``."""
+    return int((_WIDE_OVERRIDE.get() or {}).get("WARPS", 1))
+
+
 def wide(scalar_type: str) -> dict:
     """``{"SLICE_MIN", "TEAM_MIN", "TC"}`` for ``scalar_type`` (``"float32"``/``"float64"``, or the IR's ``f32``/``f64``)
     on the build's device arch (:func:`build_arch`): the defaults, and over them the first row of this arch (and, when a

@@ -29,6 +29,7 @@ from .wrapper import (
     unpack_lines,
 )
 from .dispatch import render_dispatch_rank0
+from . import policy
 from .policy import launch_bounds
 from .spelling import param_name, reconstruct_call
 
@@ -88,6 +89,11 @@ class CudaWrapper:
             aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));
         (void)hawk_i;
         (void)nSamples;"""
+            warps = policy.warps_per_block() if team == 32 else 1
+            if warps > 1:       # k warps a block (card kit only): the lane is the block's warp, the lane count is nSamples
+                plain = plain.replace("static_cast<long long>(blockIdx.x);",
+                                      f"static_cast<long long>(blockIdx.x) * {warps} + (threadIdx.x >> 5);").replace(
+                                      "hawk_flat >= count", "hawk_flat >= nSamples")
             if team == 32:      # a warp per lane (:mod:`hawk.ir.lane`): the lane's place in its warp
                 plain += """
         const Int hawk_wl = static_cast<Int>(threadIdx.x & 31);
