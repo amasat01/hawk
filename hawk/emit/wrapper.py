@@ -349,11 +349,11 @@ template <class ViewT, class T>
 #if defined(__CUDA_ARCH__)
     const E old = atomicAdd(&slot, t);
     const E s = old + t;
-    atomicAdd(&compSlot, twoSumErr_(old, t, s));
+    atomicAdd(&compSlot, aether::accum::twoSumErrAtomic(old, t, s));
 #else
     const E old = std::atomic_ref<E>(slot).fetch_add(t, std::memory_order_relaxed);
     const E s = old + t;
-    std::atomic_ref<E>(compSlot).fetch_add(twoSumErr_(old, t, s),
+    std::atomic_ref<E>(compSlot).fetch_add(aether::accum::twoSumErrAtomic(old, t, s),
                                            std::memory_order_relaxed);
 #endif
 }}
