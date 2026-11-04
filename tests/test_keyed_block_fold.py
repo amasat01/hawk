@@ -24,21 +24,35 @@ from hawk.emit.wrapper import render_source
 from hawk.targets import TARGETS
 
 
-def _sum(extent):
+def _sum(extent, policy="compensated"):
     @kernel
     def ksum(lane: Grid["key", "sample":extent], x: Scalar) -> Scalar:
-        return hawk.sum(x, over="sample", policy="compensated")
+        return hawk.sum(x, over="sample", policy=policy)
     return Kernel(f"ksum{extent}", ksum.sinks, ksum.planes)
 
 
-def _text(extent):
-    k = _sum(extent)
+def _text(extent, policy="compensated"):
+    k = _sum(extent, policy)
     return render_source(f"ksum{extent}", k.sinks, k.walk, TARGETS["cuda"]).text
 
 
 def test_a_block_uniform_key_commits_once_per_block_and_any_other_extent_per_warp():
     assert "addCompensatedBlock" in _text(2048) and "blockFull(base, count)" in _text(2048)
     assert "addCompensatedBlock" not in _text(1000) and "addCompensated<8>" in _text(1000)
+
+
+def test_the_scattered_atomic_commit_has_no_integer_magnitude_compare():
+    """The commit that waits on an atomic's returned value takes the branch-free Knuth form, not Fast2Sum by compare."""
+    text = render_source("kscat", *_scatter()).text
+    assert "twoSumErrAtomic(old, t, s)" in text and "twoSumErr_(old, t, s)" not in text
+
+
+def _scatter():
+    @kernel
+    def kscat(lane: Grid["key", "sample":4096], k: hawk.Index, v: Scalar, acc: hawk.Mutable[Scalar]):
+        hawk.scatter(acc)[k] += v
+    kern = Kernel("kscat", kscat.sinks, kscat.planes)
+    return kern.sinks, kern.walk, TARGETS["cuda"]
 
 
 @pytest.mark.gpu
@@ -54,3 +68,4 @@ def test_the_delivered_sum_is_within_the_compensated_bound(tmp_path, cache_dir, 
     got = planes["out"].get() + planes["out_c"].get()
     for k in range(keys):
         assert abs(got[k] - math.fsum(x[k])) <= 2.0 * np.finfo(np.float64).eps * np.abs(x[k]).sum()
+
