@@ -397,10 +397,10 @@ def _stages(name: str, sinks) -> tuple | None:
         if spec is not None:
             out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
         for block in (b for b in blocks if depth[id(b)] == k):
-            spec = team.block_spec(bi[id(block)], block, stored_to.get(id(block)),
-                                   Keyed(f"{team.PLANE_PREFIX}b{bi[id(block)]}_g", team.size_of(block.ttype), block.kept, block.ttype.shape),
-                                   id(block) in read_back)
-            out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
+            for spec in team.block_spec(bi[id(block)], block, stored_to.get(id(block)),
+                                        Keyed(f"{team.PLANE_PREFIX}b{bi[id(block)]}_g", team.size_of(block.ttype), block.kept, block.ttype.shape),
+                                        id(block) in read_back):
+                out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
     for target, slots in scattered.items():     # an ordered scatter: add each target's logs after the stages that fill them
         for spec in team.scatter_specs(target, slots):
             out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))

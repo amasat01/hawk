@@ -998,6 +998,8 @@ def _team_record(spec) -> dict:
         out["warps"] = spec.warps
     if spec.grid == "keys":
         out["grid"] = "keys"
+        if spec.groups > 1:
+            out["groups"] = spec.groups
         out["keyed"] = _keys_record(spec.keyed)
     elif spec.grid in ("chunks", "targets"):    # an ordered scatter: lane chunks, then the cells of ``of``
         out["grid"], out["of"] = spec.grid, spec.target

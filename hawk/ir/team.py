@@ -164,6 +164,8 @@ class TeamSpec:
     keyed: object = None
     out: str | None = None
     target: str | None = None
+    #: Blocks per key of a split block sum's first stage (``count`` is then ``keys * groups``).
+    groups: int = 1
     #: The lanes a block of a warp-form kernel serves: ``threads / 32`` warps, one per lane (:mod:`hawk.ir.lane`).
     lanes: int = 1
     #: The warps a block of a warp-per-lane kernel holds, a lane each (set only by the card kit's ``WARPS``).
@@ -596,6 +598,10 @@ def factor_stores(index: int, block: BlockSum) -> tuple:
     return (TeamStore(f"{base}_u", u),) if (u is v or v is None) else (TeamStore(f"{base}_u", u), TeamStore(f"{base}_v", v))
 
 
+#: Blocks per key of a plain ordered sum's first stage; each owns 1024 of the 65536 virtual lanes (constants, never the device).
+GROUPS = 64
+
+
 def block_spec(index: int, block: BlockSum, out: str | None, keyed, read: bool = True) -> TeamSpec:
     """The team stage of ``block``: one call that sums the rows of each key into its output plane
     ``out`` (``(*payload, *kept)``, payload first) when the sum is stored and not read back, else
@@ -608,7 +614,14 @@ def block_spec(index: int, block: BlockSum, out: str | None, keyed, read: bool =
     ones = block.factors[1] is None         # an ordered plain sum: no v, the constant 1
     roles = (("u", names["u"]), *(() if ones else (("v", names.get("v", names["u"])),)),
              *((("out", out),) if out else ()), *((("g", names["g"]),) if not direct else ()))
-    return TeamSpec(threads(max(p, q)), (Step("block_sum", p, q, roles, rows),), planes, "keys", keyed, out)
+    if direct and p * q == 1 and rows <= 1:      # a plain stored sum: GROUPS blocks per key add fixed partials, one block folds them
+        part = Plane(f"{PLANE_PREFIX}b{index}_gp", REAL, GROUPS, "key")
+        first = TeamSpec(threads(1), (Step("block_part", p, q, (*roles, ("gp", part.name)), rows),), (*planes, part),
+                         "keys", keyed, None, groups=GROUPS)
+        last = TeamSpec(threads(1), (Step("block_sum", p, q, (*roles, ("gp", part.name)), rows),), (*planes, part),
+                        "keys", keyed, out)
+        return first, last
+    return (TeamSpec(threads(max(p, q)), (Step("block_sum", p, q, roles, rows),), planes, "keys", keyed, out),)
 
 
 # -- the ordered gradient: a log of per-lane contributions, folded per key in lane order -------------
