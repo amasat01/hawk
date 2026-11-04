@@ -34,17 +34,19 @@ def test_a_runtime_index_stays_in_the_guard():
     assert _gathers(_read(make("add", (WarpLane(), runtime))), {})
 
 
-def test_the_jvp_of_a_fused_matvec_reads_its_table_before_the_step_loop():
+def test_the_jvp_of_a_fused_matvec_reads_its_table_before_the_step_loop(tmp_path):
     """The loop-weighted FP64 count, as the lowering decides it: every table gather of ``w`` and ``dot_w`` sits before
     the K-step loop (executed once), none inside (executed K times). It was 48 gathers x 8 steps inside."""
     import re
 
     import _wide_kernels as wk
+    import pytest
     from hawk.diff import step_jvp
 
-    unit = hawk.artifact.emit_source(hawk.steps(step_jvp(wk.steps_matvec_k1), 8), targets=("cuda",), device_arch="sm_61")
-    text = unit.sources["cuda"].text
+    pytest.importorskip("cuda.bindings.nvrtc")
+    kernel = hawk.steps(step_jvp(wk.steps_matvec_k1), 8)
+    hawk.build([kernel], str(tmp_path), targets=("cuda",), device_arch="sm_89")
+    text = (tmp_path / f"{kernel.name}.cu").read_text()
     head, body = text.split("_step = 0;", 1)
-    body = body.split("if (hawk_wl == 0) mut_c[i]", 1)[0]
     gather = r"lut_(?:dot_)?w\["
     assert len(re.findall(gather, head)) >= 48 and not re.findall(gather, body)
