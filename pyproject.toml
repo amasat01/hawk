@@ -55,13 +55,13 @@ classifiers = [
 # raptor-core, aether-dsc, raptor-hawk and raptor-eagle share one version from 0.7.0; aether-dsc
 # 0.7.2 brings the team linear-algebra headers, keyed block sums and the QR solve hawk emits.
 # numpy: hawk never imports it, but the host route and every example pass NumPy arrays
-dependencies = ["aether-dsc>=0.7.2,<0.8", "raptor-core>=0.7.0,<0.8", "numpy>=1.26"]
+dependencies = ["aether-dsc>=0.7.3,<0.8", "raptor-core>=0.7.3,<0.8", "numpy>=1.26"]
 
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
 # primal and its derivative IR with the scratch interpreter in tests/_eval.py.
 # The tests drive kernels through eagle, so the test environment carries it (the PyPI wheel, or a source build via EAGLE_SRC).
-test = ["pytest", "pytest-xdist", "numpy", "scipy", "raptor-core>=0.7.0,<0.8", "raptor-eagle>=0.7.0,<0.8"]
+test = ["pytest", "pytest-xdist", "numpy", "scipy", "raptor-core>=0.7.3,<0.8", "raptor-eagle>=0.7.0,<0.8"]
 # `make gate-gpu`: the rows marked gpu run on a card through cupy (CUDA 12 build; CUDA 13 swaps in cupy-cuda13x).
 test-gpu = ["raptor-hawk[test,cuda12]", "cupy-cuda12x>=14"]
 lint = ["ruff"]
