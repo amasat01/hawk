@@ -89,10 +89,11 @@ def test_a_math_kernel_emits_only_the_functions_it_calls(tmp_path):
     syms = _hvm_symbols(_host_so(root_pow_step, tmp_path))
     masked_dropped = tc.gcc_maskcall_affected(tc.compiler_macros(tc.host_compiler()))
     called = {re.sub(r"^.*aether_hvm_", "", s) for s in syms}
-    assert called == {"sqrt", "pow"}, sorted(syms)
+    # sqrt is inline on the host (aether b385084: the compiler widens it natively), so only pow leaves a symbol.
+    assert called == {"pow"}, sorted(syms)
     # Every family is whole: the scalar symbol and the SSE pair at least,
     # one masked and one unmasked variant per width the TU was built for.
-    for fn, arity in (("sqrt", "v"), ("pow", "vv")):
+    for fn, arity in (("pow", "vv"),):
         assert f"aether_hvm_{fn}" in syms
         assert f"_ZGVbN2{arity}_aether_hvm_{fn}" in syms
         if not masked_dropped:

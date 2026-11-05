@@ -1,0 +1,10 @@
+# Pins the gate installs under (`pip install -e .[test] -c ci/constraints.txt`): what the CI YAML pinned inline, and the docs toolchain.
+ruff==0.15.18
+Sphinx==8.2.3
+sphinx-book-theme==1.2.0
+myst-nb==1.4.0
+sphinx-design==0.7.0
+sphinx-copybutton==0.5.2
+sphinx-autodoc-typehints==3.5.2
+torch==2.14.1
+pytest-xdist==3.8.0

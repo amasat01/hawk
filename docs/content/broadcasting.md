@@ -8,6 +8,20 @@ A per-lane input you only read may be given broadcast, as in NumPy: a scalar, an
 
 The same holds for a deployed kernel: `eagle.deploy(k)(...)`, `.run` and `.bind` take the broadcast shape as `k(...)` does, and build the kernel for that shape once. A bound plane is rebound with the compact buffer of the same shape; a different shape is a new bind. The gradient of a broadcast input through a recorded graph is the same sum, in the input's own shape. A kernel loaded from a saved artifact has no source to rebuild, so it refuses a broadcast shape by name.
 
+## One value for every lane: `Param`
+
+`Param` in front of a type makes it one value that all lanes share; the bare type is one value per lane. `Param` alone is a number passed by value. `Param[Vector[6]]`, `Param[Matrix[2, 2]]` and `Param[Table["row":R, "col":C]]` are passed as an array of their own shape (`(6,)`, `(2, 2)`, `(R, C)`; any other shape is refused by name) and read as `p[j]`, `p[i, j]` or `t.at(row=i, col=j)`, or whole (`A @ x`). A cell is read from memory where you index it, so a `Param[Vector[512]]` indexed in a loop is never copied into registers. Integer or tagged vectors, and rank above 2, are refused: pass separate `Scalar`/`Int32` `Param`s, or a `Table`.
+
+```python
+@hawk.kernel
+def rotate(x: Vector[2], A: Param[Matrix[2, 2]], y: Mutable[Vector[2]]):
+    y = A @ x                      # one A for every lane
+
+rotate(x, np.array([[1.0, 2.0], [3.0, 4.0]]))
+```
+
+The gradient of a shared value is summed over the lanes and comes back as a flat plane of its cells (`bar_A`).
+
 ## The run-time first axis
 
 A bare label (`Grid["channel", ...]`, `Mutable["node"]`, `Table["elem", "c":3]`) is an extent given when you run, and only the first axis may be bare. Give it as `node=N` or by passing a plane of that length; one build serves every size. A label that a `Grid` axis shares takes the lane extent. `"sample":8192` fixes an axis at build time instead.

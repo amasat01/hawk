@@ -61,6 +61,24 @@ class TeamStore(WideWrite):
         super().__init__(name, value, SampleIndex(_INDEX), TensorType((), value.ttype.dtype))
 
 
+class TeamCopy(TeamStore):
+    """A :class:`TeamStore` of a value that is a plain read of an input plane, in a stage that holds nothing else: the stage
+    launches a block per lane and the block's threads copy the slice together (:func:`copy_spec`)."""
+
+    __slots__ = ()
+
+
+#: Threads of the block of a stage that only copies operands into team scratch (the launch's resolved block for it), and the
+#: elements per lane below which one thread per lane copies them: each thread of the block must move at least 4, or the block idles.
+COPY_THREADS = 256
+COPY_MIN = 4 * COPY_THREADS
+
+
+def copy_spec() -> "TeamSpec":
+    """The team record of a copy stage: a block per lane, no scratch of its own, no steps (its sinks are its body)."""
+    return TeamSpec(COPY_THREADS, (), ())
+
+
 class LogStore(TeamStore):
     """The store of one adjoint contribution of lane ``i`` into slot ``index`` of an ordered log plane
     (``lanes * width`` elements): the contribution ``value`` of the accumulate into ``target``, or
@@ -164,6 +182,12 @@ class TeamSpec:
     keyed: object = None
     out: str | None = None
     target: str | None = None
+    #: Blocks per key of a split block sum's first stage (``count`` is then ``keys * groups``).
+    groups: int = 1
+    #: The lanes a block of a warp-form kernel serves: ``threads / 32`` warps, one per lane (:mod:`hawk.ir.lane`).
+    lanes: int = 1
+    #: The warps a block of a warp-per-lane kernel holds, a lane each (set only by the card kit's ``WARPS``).
+    warps: int = 1
 
 
 #: A scratch plane of the kernel's scalar type: the runtime gives it the width of the build's mode.
@@ -183,6 +207,7 @@ class Group:
     member_planes: dict     # id(member) -> output Plane or None (a field that is a plane of the group)
     rhs_planes: dict        # id(member) -> the Plane its right-hand side is stored in (and solved in place)
     m: int = 0              # rows of the matrix a QR factors
+    warp: bool = False      # an eigenvalues-only f32 n = 32 eigh: one warp per lane (aether::linalg::warp::eighValues)
 
 
 def _plane(group: Group, role: str, dtype: str, per_lane: int) -> str:
@@ -200,12 +225,56 @@ def _identity(node: Node) -> bool:
                           for k, c in enumerate(node.operands))
 
 
-def members_of(order) -> tuple:
+#: The linalg ops worked one warp per lane, ``{(kind, n, scalar, outputs read beyond the base): aether::linalg::warp function}``.
+#: A row is bit-identical to the thread form and faster at every lane count measured (P2000, f32: 256 to 131072 matrices, 1.5x to
+#: 5.7x), so a device takes it with no fill test, except that a float64 row needs a device whose FP64 rate is at least 1/8 of
+#: FP32 (:data:`FAST_FP64`): on a 1:32 or 1:64 part the f64 fold is pipe-bound and the thread form stays.
+WARP_ENTRIES = {("eigh", 32, "float32", ()): "eighValues", ("eigh", 32, "float64", ()): "eighValues"}
+FAST_FP64 = 8
+
+
+def warp_factors(order, sinks) -> frozenset:
+    """``id`` of every factorisation that has a warp entry (:data:`WARP_ENTRIES`) for its kind, ``n``, the build's scalar
+    (``policy.scalar()``) and the outputs read, that the build's device runs at that scalar's rate, with ``linalg_form="auto"``,
+    and whose stage of its own is possible (not in a loop body, not only in an arm of a dispatch)."""
+    from ..emit import policy
+    from .loop_nodes import Loop
+
+    from ..targets.cards import _BUILD_ARCH
+    from .wide_class import DEFAULT_ARCH, features_of
+
+    scalar = policy.scalar()
+    if policy.linalg_form() != "auto" or not policy.device_only() or (scalar != "float32" and features_of(_BUILD_ARCH.get() or DEFAULT_ARCH).fp64_ratio > FAST_FP64):
+        return frozenset()
+    vectors = {id(n.operands[0]) for n in order if isinstance(n, Op) and n.kind == "eigh_v"}
+    cand = [n for n in order if isinstance(n, Op) and n.kind in FACTORISATIONS
+            and (n.kind, dimension(n), scalar, ("v",) if id(n) in vectors else ()) in WARP_ENTRIES]
+    if not cand:
+        return frozenset()
+    inner: set = set()
+    for node in order:
+        if isinstance(node, Loop):
+            inner.update(id(b) for b in node.body_nodes())
+    seen: set = set()
+    stack = list(sinks)
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        stack.extend(node.operands[:1] if isinstance(node, Dispatch) else node.operands)
+    return frozenset(id(n) for n in cand if id(n) in seen and id(n) not in inner)
+
+
+def members_of(order, sinks=()) -> tuple:
     """The groups of team-form linear algebra in ``order`` (every node under the sinks, children
     first): one per factorisation node, its members in the order they appear."""
     by_factor: dict = {}
+    warp = warp_factors(order, sinks)
     for node in order:
-        if not is_linalg(node) or form(node) != "team":
+        if not is_linalg(node):
+            continue
+        if form(node) != "team" and not (id(node if node.kind in FACTORISATIONS else node.operands[0]) in warp):
             continue
         factor = node if node.kind in FACTORISATIONS else node.operands[0]
         if factor.kind not in FACTORISATIONS:
@@ -215,6 +284,7 @@ def members_of(order) -> tuple:
             n = dimension(factor)
             group = Group(len(by_factor), factor, [], n, REAL, {}, {}, {},
                           factor.operands[0].ttype.shape[0] if factor.kind == "qr" else 0)
+            group.warp = id(factor) in warp
             by_factor[id(factor)] = group
         if node is not factor:
             group.members.append(node)
@@ -233,8 +303,9 @@ def _name_planes(group: Group) -> None:
     _plane(group, "info", "int32", 1)
     if kind == "eigh":
         _plane(group, "w", dtype, n)
-        _plane(group, "v", dtype, n * n)
-        _plane(group, "work", dtype, n * n + 4)
+        if not group.warp:
+            _plane(group, "v", dtype, n * n)
+            _plane(group, "work", dtype, n * n + 4)
     if kind == "qr":
         widest = max([n] + [_columns(mb) for mb in group.members if mb.kind in CONSUMERS])
         _plane(group, "tau", dtype, n)
@@ -306,10 +377,12 @@ def step_list(group: Group, level: int, depth: dict, first: bool) -> list:
         if kind == "lu":
             roles.append(("piv", p["piv"].name))
         if kind == "eigh":
-            roles += [("w", p["w"].name), ("v", p["v"].name), ("work", p["work"].name)]
+            roles.append(("w", p["w"].name))
+            if not group.warp:
+                roles += [("v", p["v"].name), ("work", p["work"].name)]
         if qr:
             roles += [("tau", p["tau"].name), ("work", p["work"].name)]
-        out.append(Step(kind, n, 1, tuple(roles), group.m))
+        out.append(Step("eigh_warp" if group.warp else kind, n, 1, tuple(roles), group.m))
     for member in here:
         k = member.operands[1].ttype.shape[1] if member.kind in CONSUMERS and len(
             member.operands[1].ttype.shape) == 2 else 1
@@ -396,7 +469,8 @@ def spec_of(groups, level: int, depth: dict, seen: set) -> TeamSpec | None:
         planes.update({pl.name: pl for pl in group.planes.values() if pl.name in used})
     if not steps:
         return None
-    return TeamSpec(threads(size), tuple(steps), tuple(planes.values()))
+    size = 32 if all(st.op == "eigh_warp" for st in steps) else threads(size)
+    return TeamSpec(size, tuple(steps), tuple(planes.values()))
 
 
 def markers(spec: TeamSpec) -> tuple:
@@ -555,6 +629,10 @@ def factor_stores(index: int, block: BlockSum) -> tuple:
     return (TeamStore(f"{base}_u", u),) if (u is v or v is None) else (TeamStore(f"{base}_u", u), TeamStore(f"{base}_v", v))
 
 
+#: Blocks per key of a plain ordered sum's first stage; each owns 1024 of the 65536 virtual lanes (constants, never the device).
+GROUPS = 64
+
+
 def block_spec(index: int, block: BlockSum, out: str | None, keyed, read: bool = True) -> TeamSpec:
     """The team stage of ``block``: one call that sums the rows of each key into its output plane
     ``out`` (``(*payload, *kept)``, payload first) when the sum is stored and not read back, else
@@ -567,7 +645,14 @@ def block_spec(index: int, block: BlockSum, out: str | None, keyed, read: bool =
     ones = block.factors[1] is None         # an ordered plain sum: no v, the constant 1
     roles = (("u", names["u"]), *(() if ones else (("v", names.get("v", names["u"])),)),
              *((("out", out),) if out else ()), *((("g", names["g"]),) if not direct else ()))
-    return TeamSpec(threads(max(p, q)), (Step("block_sum", p, q, roles, rows),), planes, "keys", keyed, out)
+    if direct and p * q == 1 and rows <= 1:      # a plain stored sum: GROUPS blocks per key add fixed partials, one block folds them
+        part = Plane(f"{PLANE_PREFIX}b{index}_gp", REAL, GROUPS, "key")
+        first = TeamSpec(threads(1), (Step("block_part", p, q, (*roles, ("gp", part.name)), rows),), (*planes, part),
+                         "keys", keyed, None, groups=GROUPS)
+        last = TeamSpec(threads(1), (Step("block_sum", p, q, (*roles, ("gp", part.name)), rows),), (*planes, part),
+                        "keys", keyed, out)
+        return first, last
+    return (TeamSpec(threads(max(p, q)), (Step("block_sum", p, q, roles, rows),), planes, "keys", keyed, out),)
 
 
 # -- the ordered gradient: a log of per-lane contributions, folded per key in lane order -------------

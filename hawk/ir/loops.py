@@ -89,8 +89,25 @@ def _depends(node: Node, own: frozenset, memo: dict) -> bool:
     return memo[id(node)]
 
 
+def _static(index: Node) -> bool:
+    """Whether ``index`` is built from constants only: a compile-time read position, in bounds by the plane's
+    declaration, so the read is valid in every lane whether or not a guard holds."""
+    stack = [index]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, Const):
+            continue
+        if not current.operands:        # a leaf: the warp lane (0..31, the slicer's share of a static read) is
+            if getattr(current, "kind", None) != "warp_lane":    # bounded; a plane, a lane index or a word is not
+                return False
+            continue
+        stack.extend(current.operands)
+    return True
+
+
 def _gathers(node: Node, memo: dict) -> bool:
-    """Whether ``node``'s subtree contains an :class:`At` (memoised on ``id``)."""
+    """Whether ``node``'s subtree contains an :class:`At` at a RUNTIME index (memoised on ``id``): a read at a
+    compile-time index is valid everywhere and may leave a guarded arm with the rest of the invariant subtree."""
     hit = memo.get(id(node))
     if hit is not None:
         return hit
@@ -101,7 +118,7 @@ def _gathers(node: Node, memo: dict) -> bool:
             if id(current) in memo:
                 continue
             if isinstance(current, At):
-                memo[id(current)] = True
+                memo[id(current)] = not _static(current.index)
                 continue
             stack.append((current, True))
             stack.extend((c, False) for c in current.operands)

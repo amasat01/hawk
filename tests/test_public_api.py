@@ -64,10 +64,10 @@ _TYPES_PUBLIC_NAMES = frozenset({"DTYPES", "INT_PLANE_DTYPES", "LaneMeta", "PER_
 #: the SAME commit, same as any other committed manifest in this repo.
 _EXPECTED_MANIFEST = {
     "hawk": [
-        "Grid", "HawkError", "Index", "Int32", "Kernel", "Matrix", "Mutable",
+        "Grid", "HawkError", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
         "Param", "Quantity", "Quat", "RawBlock", "Scalar", "Sorted",
         "Staged", "Table", "Terminated", "UInt32", "Value", "Vector", "Wide",
-        "WideOut", "__version__", "build", "kernel", "lane_position", "load", "max", "mean", "min",
+        "WideOut", "__version__", "build", "embedded", "geometry", "kernel", "lane_position", "load", "max", "mean", "min",
         "primitive", "raw_device", "resolve_dispatch", "run", "samples_first", "samples_last",
         "scatter", "steps", "sum",
     ],
@@ -122,13 +122,13 @@ _EXPECTED_MANIFEST = {
     "hawk.diff": [
         "ADJOINT_PREFIX", "Derived", "TANGENT_PREFIX", "jvp", "param_planes",
         "refine_entry", "step_jvp", "step_vjp", "tape",
-        "vjp",
+        "vjp", "with_derivative",
     ],
     "hawk.artifact": [
         "Artifact", "Bundle", "EXEC_ACCESS_CLASSES", "EXEC_OPS",
         "EXEC_TARGETS", "Entry", "LAYOUT_FIELDS", "PARAMS_SCHEMA",
         "STAMP_NAME", "TOP_LEVEL_KEY_ORDER_V2", "arch", "build",
-        "build_bundle", "exports", "plan_view", "plugins",
+        "build_bundle", "emit_source", "exports", "plan_view", "plugins",
         "reset_unit_memo", "unit_stats", "write_manifest",
     ],
 }

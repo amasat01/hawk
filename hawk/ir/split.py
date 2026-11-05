@@ -20,11 +20,17 @@ recomputes.
 A kernel that reads no reduction stays ONE kernel, untouched. The split runs on
 the finished IR, after any derivative is taken, so a derivative kernel is split
 like any other.
+
+A per-lane value wider than a thread's registers is placed in a plane by the same
+slot (:func:`stages` with ``wide``, :mod:`hawk.ir.wide`): the stage's sinks come back
+with the value written to its plane where it is made, and the stage names the scratch
+planes the runtime makes for it, as it does for a team stage's.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import prod
 
 from .._cells import planes
 from . import team
@@ -78,6 +84,9 @@ class Stage:
     #: A team stage (:class:`hawk.ir.team.TeamSpec`): its sinks are markers that name the scratch
     #: planes it works on, and the emitter writes its body from this record.
     team: object = None
+    #: The scratch planes a wide value of this stage lives in (:func:`hawk.ir.wide.place`): the
+    #: runtime makes each once per bind, as it does a team stage's.
+    planes: tuple = ()
 
 
 def _post_order(roots, stop=()) -> list:
@@ -243,15 +252,57 @@ def _ordered_scatters(name: str, sinks: tuple) -> tuple:
     return tuple(out), width
 
 
-def stages(name: str, sinks) -> tuple | None:
+def stages(name: str, sinks, *, wide: bool = False, real_bytes: int = 8, taken=()) -> tuple | None:
     """The stages of the kernel ``name`` with sink set ``sinks``, or ``None``
-    when the body reads no reduction over samples (one kernel, unchanged)."""
+    when the body reads no reduction over samples (one kernel, unchanged).
+
+    With ``wide`` the placement pass (:func:`hawk.ir.wide.place`) runs on the sinks of every stage that is
+    not a team stage, for scalars of ``real_bytes`` bytes, and a kernel that has a wide value placed in a
+    scratch plane is returned as the stages it needs, one at least: that stage names the plane in its
+    ``planes``. A caller that cannot make the planes leaves ``wide`` off and gets the kernel as it was.
+    ``taken`` are plane names the placement must not reuse (those of another body of the same kernel)."""
+    found = _stages(name, sinks)
+    if not wide:
+        return found
+    return _placed(name, sinks, found, real_bytes, taken)
+
+
+def _placed(name: str, sinks, found, real_bytes: int, taken_names=()) -> tuple | None:
+    """``found`` with every per-lane stage's wide values placed (:func:`hawk.ir.wide.place`); the kernel as
+    one stage when it had none and has a placed value, ``None`` when nothing is placed."""
+    from dataclasses import replace
+
+    from . import wide as _wide
+
+    if found is None:
+        sinks, _ = _ordered_scatters(name, sinks)
+        found = (Stage(name, tuple(sinks), (), (), (), ()),)
+        whole = True
+    else:
+        whole = False
+    taken = {n.name for st in found for n in _post_order(st.sinks) if hasattr(n, "name") and n.name} | set(taken_names)
+    out, changed = [], False
+    for st in found:
+        if st.team is not None:
+            out.append(st)
+            continue
+        new, planes, record = _wide.place(st.sinks, real_bytes=real_bytes, taken=taken)
+        if record:
+            changed = True
+            taken |= {p.name for p in planes}
+            st = replace(st, sinks=new, planes=planes)
+        out.append(st)
+    return tuple(out) if changed else (None if whole else found)
+
+
+def _stages(name: str, sinks) -> tuple | None:
+    """:func:`stages` without the placement."""
     sinks, scattered = _ordered_scatters(name, sinks)
     order = _post_order(sinks)
     cuts = [n for n in order if isinstance(n, ReduceSamples)]
     team.refuse_in_loop(order)
     team.refuse_in_dispatch(sinks, order)
-    groups = team.members_of(order)
+    groups = team.members_of(order, sinks)
     logs = {n.target: n for n in (*sinks, *(b for s in sinks if hasattr(s, "body_sinks") for b in s.body_sinks))
             if isinstance(n, team.LogStore)}
     if not cuts and not groups and not logs and not scattered:
@@ -341,16 +392,21 @@ def stages(name: str, sinks) -> tuple | None:
                                        if is_param_cell(n) and n.plane.name in cell_plane))
         keyed_out = tuple(dict.fromkeys(keyed[s.name] for s in new
                                         if isinstance(s, AccumWrite) and s.name in keyed))
+        copy = None
+        if new and all(type(s) is team.TeamStore and isinstance(s.value, Leaf) for s in new) and sum(
+                prod(s.value.ttype.shape) for s in new) >= team.COPY_MIN:
+            # nothing but operand copies into team scratch: a block per lane, its threads copy the slice together
+            new, copy = tuple(team.TeamCopy(s.name, s.value) for s in new), team.copy_spec()
         out.append(Stage(name if not out else f"{name}_{len(out) + 1}", new, cells_in, cells_out,
-                         recomputed, keyed_out))
+                         recomputed, keyed_out, copy))
         spec = team.spec_of(groups, k, depth, factored)
         if spec is not None:
             out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
         for block in (b for b in blocks if depth[id(b)] == k):
-            spec = team.block_spec(bi[id(block)], block, stored_to.get(id(block)),
-                                   Keyed(f"{team.PLANE_PREFIX}b{bi[id(block)]}_g", team.size_of(block.ttype), block.kept, block.ttype.shape),
-                                   id(block) in read_back)
-            out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
+            for spec in team.block_spec(bi[id(block)], block, stored_to.get(id(block)),
+                                        Keyed(f"{team.PLANE_PREFIX}b{bi[id(block)]}_g", team.size_of(block.ttype), block.kept, block.ttype.shape),
+                                        id(block) in read_back):
+                out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
     for target, slots in scattered.items():     # an ordered scatter: add each target's logs after the stages that fill them
         for spec in team.scatter_specs(target, slots):
             out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))

@@ -613,8 +613,10 @@ def vec(*components: Any) -> Value:
 def select(cond: Any, on_true: Any, on_false: Any) -> Value:
     """``cond ? a: b`` — what the ast pass rewrites control flow into.
     Component-wise on a vector or matrix: the mask is rank-0 or the
-    branches' shape, and a rank-0 branch broadcasts."""
-    c, a, b = node_of(cond), node_of(on_true), node_of(on_false)
+    branches' shape, and a rank-0 branch broadcasts. A bare ``int`` branch takes the type of the other branch
+    when that is an integer (as ``x + 1`` does)."""
+    c = node_of(cond)
+    a, b = _operands((on_true, on_false))
     shape = _broadcast_shape("select", _broadcast_shape(
         "select", c.ttype.shape, a.ttype.shape), b.ttype.shape)
     if shape:
@@ -624,7 +626,8 @@ def select(cond: Any, on_true: Any, on_false: Any) -> Value:
         a, b = (_make("splat", (x,), shape) if x.ttype.shape == () else x
                 for x in (a, b))
     if a.ttype != b.ttype:
-        raise HawkError(f"select: the branches disagree — {a.ttype!r} vs {b.ttype!r}")
+        raise HawkError(f"select: the branches disagree — {a.ttype!r} vs {b.ttype!r}; "
+                        "cast one with m.float64(...) or write the literal in the other's type")
     return Value(Select(c, a, b, a.ttype))
 
 
@@ -772,10 +775,54 @@ class TableRef:
                 + " — a partial address would silently read the wrong row")
         flat: Node | None = None
         for label, _size, stride in self.dims:
-            term = _make("mul", (index_node(named[label]),
-                                 RoleConst(stride, f"{self.name}_{label}_stride")))
+            factor = n_samples().node if stride == "n_samples" else RoleConst(stride, f"{self.name}_{label}_stride")
+            term = _make("mul", (index_node(named[label]), factor))
             flat = term if flat is None else _make("add", (flat, term))
         return flat
+
+
+class SharedValue(Value):
+    """A ``Param[Vector[W]]`` / ``Param[Matrix[R,C]]``: ONE value every lane reads.
+
+    The value lives in a ``lookup`` plane of its cells, row-major. ``p[j]`` and
+    ``p[i, j]`` (a static or traced integer) are reads of ONE cell from memory,
+    so a wide parameter indexed in a loop is never built as a register value. Any
+    other use (``p @ x``, ``p + q``, ``m.dot(p, x)``) builds the whole value from its
+    cells at that point."""
+
+    __slots__ = ("ref", "shape", "_whole")
+
+    def __init__(self, name: str, shape: tuple, dims: tuple) -> None:  # noqa: D107 - see the class
+        self.ref = TableRef(name, _F64, role="lookup", dims=dims)
+        self.shape = tuple(shape)
+        self._whole: Node | None = None
+
+    @property  # type: ignore[override]
+    def node(self) -> Node:
+        """The whole value, built from its cells on first use."""
+        if self._whole is None:
+            cells = [At(self.ref.leaf, Const(k, _I32), _F64) for k in range(math.prod(self.shape))]
+            self._whole = _make("vec", cells, self.shape if len(self.shape) == 2 else None)
+        return self._whole
+
+    def _cell(self, k: Any, extent: int, axis: str) -> Any:
+        if isinstance(k, bool):
+            raise HawkError(f"{self.ref.name!r}: a bool is a mask, not an index")
+        if isinstance(k, int):
+            if not 0 <= k < extent:
+                raise HawkError(
+                    f"{self.ref.name!r}: index {k} is outside the {axis} extent {extent}")
+        return k
+
+    def __getitem__(self, k: Any) -> Value:
+        """``p[j]`` (a vector) or ``p[i, j]`` (a matrix): one cell, read from memory."""
+        rank = len(self.shape)
+        if rank == 1 and not isinstance(k, tuple):
+            return self.ref.at(self._cell(k, self.shape[0], "component"))
+        if rank == 2 and isinstance(k, tuple) and len(k) == 2:
+            return self.ref.at(row=self._cell(k[0], self.shape[0], "row"),
+                               col=self._cell(k[1], self.shape[1], "column"))
+        return Value.__getitem__(self, k)
 
 
 def own_column_rewrite_advice(name: str) -> str:

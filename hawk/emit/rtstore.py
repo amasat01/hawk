@@ -334,9 +334,12 @@ def emit(w, r, top: Op, args) -> str:
     token = f"hawk_sv{r.hoists}"
     r.hoists += 1
     carry = (isinstance(run.base, LoopCarry) and id(run.base) in r.mutable_carries
-             and r.stores._sole(run.base, first))
+             and (r.stores._sole(run.base, first) or r.local.get(id(run.base)) in r.proxies))
+    held = r._ref(run.base) if r.placed else None
     if carry:
         name = r.local[id(run.base)]
+    elif held in r.proxies and r.stores._sole(run.base, first):     # a value placed in a plane, only these stores read it
+        name = held
     else:
         name = token
         r._emit(f"{carry_type(t)} {name} = {r._ref(run.base)};")
@@ -351,6 +354,8 @@ def emit(w, r, top: Op, args) -> str:
     pick8, pick4 = (bool(dynamic) and touched * w <= budget for w in _weights(t.dtype))
     lean = (len(dynamic) == 1 and len(dynamic[0]) == 1 and dynamic[0][0].acc
             and t.shape[0] <= LEAN_WIDTH and t.dtype in ("f64", "f32"))
+    if name in r.proxies:       # a value in a plane is written in place: one access per store
+        pick8 = pick4 = lean = False
     if lean:
         pick4 = "lean"
         if t.dtype == "f32":
@@ -384,7 +389,7 @@ def _write(w, r, top: Op, name: str, token: str, groups: list, select,
             names.append(v)
         first = group[0]
         if first.base is None:
-            r._emit(f"{name}({first.lo}) {'+=' if first.acc else '='} {names[0]};")
+            r._emit(f"{_at(r, name, first.lo)} {'+=' if first.acc else '='} {names[0]};")
         elif select == "lean":
             k = f"{tag}_k"
             old = f"{tag}_old"
@@ -397,7 +402,7 @@ def _write(w, r, top: Op, name: str, token: str, groups: list, select,
             r._emit(f"{name} = {carry_type(top.ttype)}{{{parts}}};")
         elif not select:
             for link, v in zip(group, names):
-                r._emit(f"{name}({r._ref(link.key)}) {'+=' if link.acc else '='} {v};")
+                r._emit(f"{_at(r, name, r._ref(link.key))} {'+=' if link.acc else '='} {v};")
         elif len(group) == 1:
             k = f"{tag}_k"
             r._emit(f"const auto {k} = {r._ref(first.key)};")
@@ -413,6 +418,11 @@ def _write(w, r, top: Op, name: str, token: str, groups: list, select,
                     if link.lo <= c <= link.hi:
                         pick = f"{k} == {c - link.offset} ? {v} : {pick}"
                 r._emit(f"{name}({c}) += {pick};")
+
+
+def _at(r, name: str, k) -> str:
+    """Element ``k`` of the mutable local ``name``: an ``Item``'s own subscript, or the element of a plane's proxy."""
+    return f"{name}.at({k})" if name in r.proxies else f"{name}({k})"
 
 
 def _reach(group: list) -> list:

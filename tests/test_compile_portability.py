@@ -124,6 +124,8 @@ def test_loaded_nvrtc_root_is_the_mapped_library_root():
     root = hnvrtc.loaded_nvrtc_root()
     if root is None:
         pytest.skip("NVRTC is not loadable in this process")
+    # the root may come from the persisted probe: load the library to compare (the binding maps it at its first call)
+    hnvrtc._import_nvrtc().nvrtcVersion()
     lib = hnvrtc._loaded_library_path("libnvrtc.so")
     assert lib is not None and os.path.dirname(os.path.dirname(lib)) == str(root)
     if any(hnvrtc._has_cccl(d) for d in hnvrtc._root_include_dirs(root)):

@@ -47,6 +47,36 @@ Run a list of lanes you built, and loops whose length is known at run time.
 howto_index_set
 ```
 
+## Random draws
+
+Counter-based uniform, normal, lognormal, exponential, Bernoulli, integer, Poisson and correlated draws, the same on every run.
+
+```{toctree}
+:maxdepth: 1
+
+howto_random_draws
+```
+
+## Rays and meshes
+
+Test a ray against a sphere, a box or a triangle, and find the nearest hit in a mesh.
+
+```{toctree}
+:maxdepth: 1
+
+howto_rays_and_meshes
+```
+
+## Wide values
+
+Vectors with hundreds of components, and wide input and output planes.
+
+```{toctree}
+:maxdepth: 1
+
+howto_wide_values
+```
+
 ## Embedded C
 
 Emit a kernel as standalone C for a target without a runtime.

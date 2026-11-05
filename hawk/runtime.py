@@ -62,7 +62,7 @@ from pathlib import Path
 
 from . import _cells, _core, _lane_bind
 from ._cells import ROW
-from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, narrow_index, widen_index
+from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, narrow_index, refuse_index_width, widen_index
 from ._plane_layout import (
     LayoutChoice,
     _native_extent,
@@ -282,16 +282,22 @@ class HostKernel:
         bound to ``1``, one step per launch), and so may a finishing
         kernel's ``finished_count`` counter (bound to a fresh ``0``)."""
         with self._lock:
-            self._bind_all(arrays, n_samples, layout)
+            self._bind_all(arrays, n_samples, layout, keep=True)
 
-    def _bind_all(self, arrays: dict, n_samples: int, layout) -> None:
+    def _bind_all(self, arrays: dict, n_samples: int, layout, *, keep: bool = False) -> None:
+        """``keep``: the planes stay bound after the call (``bind_all``), so an ``Index`` plane of
+        another width is refused instead of copied; ``run`` binds per call and converts."""
         arrays, axes = split_marks(arrays, layout)
         choice = LayoutChoice(layout, axes)
         arrays = self._one_step_word(arrays)
-        if self._index_inputs:
-            arrays = widen_index(self._index_inputs, arrays)
-        if self.sidecar.get("index_planes"):
-            arrays = narrow_index(self.sidecar["index_planes"], arrays, self.sidecar.get("kernel", ""))
+        if keep:
+            refuse_index_width(self._index_inputs, self.sidecar.get("index_planes") or (), arrays,
+                               self.sidecar.get("kernel", ""))
+        else:
+            if self._index_inputs:
+                arrays = widen_index(self._index_inputs, arrays)
+            if self.sidecar.get("index_planes"):
+                arrays = narrow_index(self.sidecar["index_planes"], arrays, self.sidecar.get("kernel", ""))
         _check_bind(self.sidecar, self.arg_spec, arrays, n_samples, choice)
         self._values, self._buffers = [], []
         widths = self.sidecar.get("arg_shapes", {})
@@ -549,6 +555,7 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
     (``run(k, x=x, y=y, channel=64)``) or from lane-shaped planes, and refuses
     ``n_samples=``."""
     sidecar = kernel_artifact.sidecar
+    arrays = _flat_shared(sidecar, arrays)
     arrays, lane_n = _lane_bind.bind(sidecar, kernel_artifact.arg_spec, arrays,
                                      n_samples, _PER_SAMPLE_ROLES)
     arrays, owned = _own_companions(sidecar, arrays)
@@ -597,14 +604,45 @@ def _stage_names(first: HostKernel) -> set:
     return names | set(sidecar.get("cells") or ())
 
 
+def _flat_shared(sidecar: dict, arrays: dict) -> dict:
+    """``arrays`` with each ``Param[Vector/Matrix/Table]`` plane (sidecar ``param_shapes``)
+    checked against its declared shape and bound flat, row-major."""
+    shapes = sidecar.get("param_shapes")
+    if not shapes or not any(name in arrays for name in shapes):
+        return arrays
+    import numpy as np
+
+    out = dict(arrays)
+    for name, shape in shapes.items():
+        if name not in out:
+            continue
+        value = np.asarray(out[name])
+        if value.shape != tuple(shape):
+            raise HawkError(
+                f"kernel {sidecar.get('kernel', '?')!r}: {name!r} is a shared parameter of shape "
+                f"{tuple(shape)} (one value for every lane), got shape {value.shape}")
+        out[name] = np.ascontiguousarray(value).reshape(-1)
+    return out
+
+
 def _refuse_unbound_names(kernel_artifact: HostKernel, arrays: dict, declared: set) -> None:
     """Refuse a bound name the kernel declares no slot for, as eagle's ``bind`` does: a plane passed
     under a wrong name is otherwise never written, and its zeros read as a result."""
     unknown = sorted(set(arrays) - declared - _lane_bind.free_labels(kernel_artifact.sidecar))   # ``<label>=N`` is no plane
-    if unknown:
+    if not unknown:
+        return
+    name = kernel_artifact.sidecar.get("kernel", "?")
+    pruned = [n for n in unknown if n in (kernel_artifact.sidecar.get("unused_planes") or ())]
+    stray = [n for n in unknown if n not in pruned]
+    if pruned:
         raise HawkError(
-            f"kernel {kernel_artifact.sidecar.get('kernel', '?')!r}: {unknown} are not planes it declares "
-            f"(declared: {sorted(declared)})")
+            f"kernel {name!r}: {pruned} are declared but unused (the body never reads or writes "
+            f"them, so the compiled kernel has no slot for them); do not bind them "
+            f"(declared and used: {sorted(declared)})"
+            + (f"; {stray} are not declared at all" if stray else ""))
+    raise HawkError(
+        f"kernel {name!r}: {stray} are not planes it declares "
+        f"(declared: {sorted(declared)})")
 
 
 def _keyed_planes(first: HostKernel, held: dict, n_samples: int) -> dict:

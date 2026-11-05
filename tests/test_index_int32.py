@@ -126,6 +126,21 @@ def test_an_int64_column_with_a_value_past_int32_is_refused_by_name(built):
         rt.run(_load(built, "gather"), x=x, idx=idx, y=np.zeros(N), n_samples=N)
 
 
+def test_bind_all_refuses_an_index_column_of_the_wrong_width_and_run_converts_it(built):
+    """``bind_all`` keeps the planes it is given, so a column of another width is refused by name
+    (a copy would go stale); ``run`` binds per call and converts."""
+    x, idx = _data(np.int64)
+    kernel = _load(built, "gather")
+    with pytest.raises(HawkError, match=r"'idx' is int64, but the kernel declares int32 for it; pass idx as int32"):
+        kernel.bind_all(dict(x=x, idx=idx, y=np.zeros(N)), N)
+    wide = _load(built, "gather64")
+    with pytest.raises(HawkError, match=r"'idx' is int32, but the kernel declares int64 for it; pass idx as int64"):
+        wide.bind_all(dict(x=x, idx=idx.astype(np.int32), y=np.zeros(N)), N)
+    y = np.zeros(N)
+    rt.run(kernel, x=x, idx=idx, y=y, n_samples=N)
+    np.testing.assert_array_equal(y, x[idx] * 2.0)
+
+
 def test_an_int32_column_binds_without_a_copy(built):
     from hawk._bind_checks import narrow_index
 

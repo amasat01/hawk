@@ -33,11 +33,16 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "hawk"
 #: ``raptor.flow`` (``python -c``). Nothing at import time, nowhere else.
 _LAZY_IMPORTERS = {Path("trace") / "kernel.py"}
 
+#: Named exemption: ``targets/cards/sweep.py`` and its ``_probe_wide.py`` are cards tools, run with eagle installed (they time
+#: eagle launches) and imported by nothing in the hawk runtime (only the cards tests read them). Removal condition: it moves
+#: out of hawk/hawk after the 0.7.3 cards.
+_CARDS_TOOL_EXEMPT = {Path("targets") / "cards" / "sweep.py", Path("targets") / "cards" / "_probe_wide.py"}
+
 
 def _severed_imports_under(root: Path) -> list[str]:
     hits: list[str] = []
     for path in sorted(root.rglob("*.py")):
-        if path.relative_to(root) in _LAZY_IMPORTERS:
+        if path.relative_to(root) in _LAZY_IMPORTERS | _CARDS_TOOL_EXEMPT:
             continue
         text = path.read_text()
         for m in _SEVERED_IMPORT_RE.finditer(text):

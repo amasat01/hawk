@@ -9,6 +9,9 @@ vocabulary
   The named per-sample arrays and parameters a family of kernels shares, declared once as a `Kind`; each kernel then
   reads them by name. See {doc}`hawk in your domain <vocabulary>`.
 
+shared parameter
+  A `Param` of any type: one value that every lane reads, passed as an array of its own shape. See {doc}`broadcasting`.
+
 lane
   One work item: one sample, seen through the shape the kernel declares for
   that axis. A kernel body is one lane's code. See [Across lanes](across_lanes).

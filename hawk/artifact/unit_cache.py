@@ -162,12 +162,24 @@ def _first_moved(pairs) -> str | None:
 
 
 # -- The unit key. ----------------------------------------------------------- #
+def _wide_part(scalar_type: str, resolved_arch: str) -> str:
+    """The wide-value thresholds of the build when they differ from the defaults (a card row, or an override), else nothing,
+    so a build with no row keeps the key it always had."""
+    from ..targets import cards
+
+    doc = cards._wide_doc(str(cards.WIDE_FILE))["defaults"]
+    with cards.build_arch(resolved_arch):
+        got = cards.wide(scalar_type)
+    return "" if all(got[k] == doc[k] for k in cards.WIDE_KEYS) else "wide:" + ":".join(str(got[k]) for k in cards.WIDE_KEYS)
+
+
 def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, defines, cache_dir,
               device_arch, derivative_blocks, layout_sizes_override,
               host_profile: str = "", opt_level: str = "",
               literal_table: bool = False, embedded_profile: str = "",
               source_digests=(), groups=(), emit_form: str = "auto",
-              linalg_form: str = "auto") -> str:
+              linalg_form: str = "auto", wide_form: str = "auto", wide_class: str = "",
+              launch_bounds: tuple[int, int] | None = None) -> str:
     """The per-process identity of a BUILD REQUEST: every input the
     unit's content is a function of, hashed term by term. Per kernel:
     :attr:`hawk.ir.walk.Walk.digest`, its name and its declarations
@@ -227,8 +239,12 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
                  "literal_table" if literal_table else "",
                  "emit_form:" + emit_form if emit_form != "auto" else "",
                  "linalg_form:" + linalg_form if linalg_form != "auto" else "",
+                 "wide_form:" + wide_form if wide_form != "auto" else "",
+                 "wide_class:" + wide_class if wide_class else "",
+                 "launch_bounds:%d,%d" % launch_bounds if launch_bounds else "",
                  f"team_threads:{os.environ.get('HAWK_TEAM_THREADS')}",
                  f"box:{os.environ.get(BOX_ENV)}:{thread_box_card(smode.id)['T']}",
+                 _wide_part(smode.id, arch(device_arch) if any(r.compile == GPU for r in rows) else ""),
                  ("embedded_profile:" + embedded_profile
                   if embedded_profile else ""),
                  ("source_digests:" + "\x00".join(str(d) for d in source_digests)

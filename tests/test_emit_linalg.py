@@ -18,7 +18,7 @@ import re
 import numpy as np
 import pytest
 from _linalg_kernels import K as RHS_COLUMNS
-from _linalg_kernels import chol_from_kernel, chol_kernel, eigh_kernel, lu_kernel
+from _linalg_kernels import chol_from_kernel, chol_kernel, eigh_kernel, eigh_values_kernel, lu_kernel
 from conftest import sidecar_of
 from scipy.linalg import lapack
 
@@ -255,6 +255,19 @@ def test_eigh_values_vectors_and_info_match_numpy(build, n, mode):
                 np.testing.assert_allclose(np.abs(v), np.abs(ref_v), rtol=0, atol=tol / gap * norm)
         else:
             assert v[0, 0] == 1.0
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("n", (5, 32))
+def test_eigh_without_eigenvectors_is_bit_identical_and_never_builds_them(build, n, mode):
+    mats, vecs, rhs = _inputs(n, mode, _symmetric)
+    planes, _ = _planes(mats, vecs, rhs, mode)
+    full = _run(build(eigh_kernel(n), mode), planes, {"w": n, "V": n * n, "info": 1}, mode)
+    only = _run(build(eigh_values_kernel(n), mode), planes, {"w": n, "info": 1}, mode)
+    assert np.array_equal(only["w"], full["w"]) and np.array_equal(only["info"], full["info"])
+    text = _body(eigh_values_kernel(n)).text
+    assert f"aether::linalg::EighValues<Real, {n}>" in text and "aether::linalg::Eigh<" not in text
+    assert "aether::linalg::Eigh<" in _body(eigh_kernel(n)).text
 
 
 # --- inside a dispatch -------------------------------------------------------------

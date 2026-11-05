@@ -6,7 +6,7 @@
 
 Every measured number in the README's Performance section is a claim span::
 
-    <!--c wall card=rk78 dev=p2000 arm=eagle_simulate n=1000000-->13.0 s<!--/c-->
+    <!--c wall card=ensemble dev=p2000 arm=eagle_simulate n=1000000-->13.0 s<!--/c-->
 
 whose text is written by eagle's ``tools/prose_claims.py`` (the one rounding rule
 and the span syntax are stated there) from the cards under eagle's
@@ -25,7 +25,7 @@ missing file and writes nothing; ``--without-headline`` regenerates the rest.
 
 Usage::
 
-    python tools/sync_perf_claims.py --eagle-root ../eagle
+    python tools/sync_perf_claims.py
     python tools/sync_perf_claims.py --eagle-root ../eagle --check
 """
 
@@ -95,7 +95,7 @@ def build(root: pathlib.Path, with_headline: bool) -> dict:
     if with_headline:
         hero = pcl.render_hero_sentence(pcl.headline_facts(cards), SUBJECT)
         hl = cards.headline
-        used.add(str(cards.path("rk4", hl["dev"]).relative_to(root)))
+        used.add(str(cards.path("ensemble", hl["dev"]).relative_to(root)))
     return {
         "headline": {"dev": pcl.HEADLINE["dev"], "ns": list(pcl.HEADLINE["ns"])},
         "cards": {

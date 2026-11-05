@@ -23,6 +23,8 @@ name: Release
 
 # Pull requests only: main receives the tested tree, nothing re-runs there.
 on:
+  schedule:
+    - cron: "23 4 * * 1"   # weekly on main: every remembered pass runs again
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -43,13 +45,13 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             plat: manylinux_x86_64
           - arch: aarch64
             runner: ubuntu-24.04-arm
             plat: manylinux_aarch64
           - arch: macos-arm64
-            runner: macos-14
+            runner: macos-15
             plat: macosx_arm64
     name: wheels (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -143,17 +145,6 @@ jobs:
           output-dir: dist
         env:
           CIBW_BUILD: "cp39-${{ matrix.plat }} cp310-${{ matrix.plat }} cp311-${{ matrix.plat }} cp312-${{ matrix.plat }} cp313-${{ matrix.plat }} cp314-${{ matrix.plat }} cp314t-${{ matrix.plat }}"
-      # the 4.x line dropped the CPython 3.13 free-threading build, so cp313t stays on 3.x, where it needs
-      # the cpython-freethreading enable group (deprecated for later tags, and it warns); scoped to this one build
-      - name: Build the free-threaded CPython 3.13t wheel (cibuildwheel 3.x)
-        if: steps.wh.outputs.cache-hit != 'true'
-        uses: pypa/cibuildwheel@v3.4.1
-        with:
-          package-dir: hawk
-          output-dir: dist
-        env:
-          CIBW_ENABLE: cpython-freethreading
-          CIBW_BUILD: "cp313t-${{ matrix.plat }}"
       # 3.15 needs cibuildwheel 4.x: a second pass for the 3.15 tags only
       - name: Build the CPython 3.15 and 3.15t wheels (cibuildwheel 4.x)
         if: steps.wh.outputs.cache-hit != 'true'
@@ -181,7 +172,7 @@ jobs:
     needs: wheels
     outputs:
       tree: ${{ steps.tree.outputs.tree }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -222,14 +213,14 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Ten wheels per platform (3.9-3.15 plus 3.13t, 3.14t, 3.15t), none unrepaired
+      - name: Nine wheels per platform (3.9-3.15 plus 3.14t, 3.15t), none unrepaired
         run: |
           for plat in manylinux*_x86_64 manylinux*_aarch64 macosx_*_arm64; do
             n=$(find dist -name "*-${plat}.whl" | wc -l)
-            [ "$n" -eq 10 ] || { echo "::error::$n wheels for $plat, expected 10"; exit 1; }
+            [ "$n" -eq 9 ] || { echo "::error::$n wheels for $plat, expected 9"; exit 1; }
           done
-          [ "$(find dist -name '*.whl' | wc -l)" -eq 30 ] || { echo "::error::unexpected wheel in dist"; ls dist; exit 1; }
-          echo "OK: 10 wheels each for x86_64, aarch64 and macOS arm64"
+          [ "$(find dist -name '*.whl' | wc -l)" -eq 27 ] || { echo "::error::unexpected wheel in dist"; ls dist; exit 1; }
+          echo "OK: 9 wheels each for x86_64, aarch64 and macOS arm64"
 
       - run: python -m twine check --strict dist/*
 
@@ -247,12 +238,12 @@ jobs:
 
   test-wheel:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # every Python version reports, even when one fails
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15", "3.13t", "3.14t", "3.15t"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15", "3.14t", "3.15t"]
     # The suite's toolchain, exactly as ci.yml's test job sets it: the
     # fixture kernels build for BOTH the host and the cuda target (nvcc AOT
     # compile only, never executed), so a compile-only CUDA 12.6 toolchain
@@ -261,7 +252,7 @@ jobs:
       CC: gcc-13
       CXX: g++-13
       HAWK_CXX: g++-13
-      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC: /usr/local/cuda-12.9/bin/nvcc
       HAWK_NVCC_CCBIN: /usr/bin/g++-13
     steps:
       - uses: actions/checkout@v7
@@ -277,10 +268,18 @@ jobs:
         with: {repo: eagle, path: eagle, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
       - uses: ./hawk/.github/actions/companion
         with: {repo: raptor, path: raptor, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+      - id: memo
+        uses: ./hawk/.github/actions/memo
+        with:
+          name: release-test-wheel
+          args: >-
+            --tree hawk --skip docs/ --skip CHANGELOG.md --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree eagle --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree raptor --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/release.yml
+          extra: ${{ toJSON(matrix) }}
       - uses: actions/download-artifact@v8
         with:
           name: dist-${{ needs.build.outputs.tree }}
           path: dist
+        if: steps.memo.outputs.run == 'true'
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -291,10 +290,13 @@ jobs:
             aether/dsc/pyproject.toml
             raptor/pyproject.toml
             eagle/python/pyproject.toml
+        if: steps.memo.outputs.run == 'true'
 
       - run: sudo apt-get update && sudo apt-get install -y g++-13 cppcheck
+        if: steps.memo.outputs.run == 'true'
 
-      - uses: ./hawk/.github/actions/cuda-toolchain
+      - uses: ./hawk/.github/actions/cuda
+        if: steps.memo.outputs.run == 'true'
 
       # aether-dsc (hawk's runtime dependency) and the test-only eagle + raptor-core: each from PyPI when
       # its checkout's version is released, else built from the checkout. The exact version matters: an
@@ -303,6 +305,7 @@ jobs:
         uses: ./hawk/.github/actions/install-siblings
         with:
           siblings: aether-dsc=aether/dsc raptor-eagle=eagle/python raptor-core=raptor
+        if: steps.memo.outputs.run == 'true'
 
       # The siblings first (PyPI or built above; eagle builds from its sdist here), then raptor-hawk from
       # THIS run's dist only (never an index copy of the same version), then the [test] extras.
@@ -315,11 +318,12 @@ jobs:
           python -m venv venv
           . venv/bin/activate
           export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
-          # newest NumPy/SciPy ship no cp313t wheel: prefer a wheel over an sdist build
+          # newest NumPy/SciPy ship no free-threaded wheel for the newest tags: prefer a wheel over an sdist build
           pip install --quiet --prefer-binary --find-links "$SIB_DIR" $SIB_PINS numpy
           pip install --quiet --no-index --only-binary=raptor-hawk --find-links dist raptor-hawk
           pip install --quiet --prefer-binary --find-links dist --find-links "$SIB_DIR" "raptor-hawk[test]" $SIB_PINS
           pip check
+        if: steps.memo.outputs.run == 'true'
 
       - name: Import smoke (the import-time build-digest/layout self-check runs here)
         run: |
@@ -331,6 +335,7 @@ jobs:
           assert hawk.__version__ == "$want", hawk.__version__
           assert pathlib.Path(hawk.__file__).is_relative_to(sys.prefix), hawk.__file__
           EOF
+        if: steps.memo.outputs.run == 'true'
 
       - name: The repo's own non-GPU suite (a copy outside the repo, against the installed wheel)
         env:
@@ -342,14 +347,15 @@ jobs:
           cp -r hawk/tests suite/tests
           cp hawk/pyproject.toml suite/pyproject.toml
           cd suite
-          python -m pytest tests -q -m "not gpu and not repo_local"
+          python -m pytest tests -q -m "not gpu and not repo_local" -n auto --dist loadfile
+        if: steps.memo.outputs.run == 'true'
 
-      # Free-threaded legs only (3.13t / 3.14t): the ft rows against the INSTALLED
+      # Free-threaded legs only (3.14t / 3.15t): the ft rows against the INSTALLED
       # wheel, then the whole suite with RuntimeWarning as an error (a re-enabled
       # GIL is that warning). Zero collected ft rows fails the leg, and the
       # interpreter must be GIL-off by default with no override set.
       - name: ft-stress (ft rows + full suite, -W error::RuntimeWarning)
-        if: endsWith(matrix.python-version, 't')
+        if: steps.memo.outputs.run == 'true' && (endsWith(matrix.python-version, 't'))
         env:
           HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
           HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
@@ -366,7 +372,12 @@ jobs:
           echo "ft rows collected: $N"
           [ "$N" -gt 0 ] || { echo "ft selection collected zero tests"; exit 1; }
           python -m pytest tests -m "ft and not repo_local" -q -rs -p no:cacheprovider -W error::RuntimeWarning
-          python -m pytest tests -q -p no:cacheprovider -W error::RuntimeWarning -m "not gpu and not repo_local"
+          python -m pytest tests -q -p no:cacheprovider -W error::RuntimeWarning -m "not gpu and not repo_local" -n auto --dist loadfile
+      - if: success() && steps.memo.outputs.run == 'true'
+        uses: ./hawk/.github/actions/memo-save
+        with:
+          name: release-test-wheel
+          digest: ${{ steps.memo.outputs.digest }}
 
   # The aarch64 and macOS arm64 wheels, installed and run on native runners: host build and run of the README example,
   # forward and vjp. The x86_64 test-wheel above also needs the compile-only CUDA toolchain, which is x86_64 only.
@@ -376,13 +387,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04-arm, macos-14]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15", "3.13t", "3.14t", "3.15t"]
+        os: [ubuntu-24.04-arm, macos-15]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15", "3.14t", "3.15t"]
     env:
       # the runner's bundled pip (22.x on 3.9) nags about a newer release on every call
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       # macOS: Homebrew's LLVM clang (C++23-complete); Apple's clang 15 rejects -std=c++23 (Apple clang support: a later release)
-      HAWK_CXX: ${{ matrix.os == 'macos-14' && '/opt/homebrew/opt/llvm/bin/clang++' || 'g++-13' }}
+      HAWK_CXX: ${{ matrix.os == 'macos-15' && '/opt/homebrew/opt/llvm/bin/clang++' || 'g++-13' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -397,10 +408,18 @@ jobs:
         with: {repo: eagle, path: eagle, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
       - uses: ./hawk/.github/actions/companion
         with: {repo: raptor, path: raptor, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
+      - id: memo
+        uses: ./hawk/.github/actions/memo
+        with:
+          name: release-test-wheel-cpu
+          args: >-
+            --tree hawk --skip docs/ --skip CHANGELOG.md --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree eagle --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree raptor --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/release.yml
+          extra: ${{ toJSON(matrix) }}
       - uses: actions/download-artifact@v8
         with:
           name: dist-${{ needs.build.outputs.tree }}
           path: dist
+        if: steps.memo.outputs.run == 'true'
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -411,16 +430,18 @@ jobs:
             aether/dsc/pyproject.toml
             raptor/pyproject.toml
             eagle/python/pyproject.toml
+        if: steps.memo.outputs.run == 'true'
       - run: sudo apt-get update && sudo apt-get install -y g++-13
-        if: runner.os == 'Linux'
+        if: steps.memo.outputs.run == 'true' && (runner.os == 'Linux')
       # libomp: eagle builds from its sdist here until 0.6.x is on PyPI, and its host core needs OpenMP; llvm: HAWK_CXX above
       - run: brew install libomp llvm && { echo "OpenMP_ROOT=$(brew --prefix libomp)"; echo "CMAKE_PREFIX_PATH=$(brew --prefix libomp)"; } >> "$GITHUB_ENV"
-        if: runner.os == 'macOS'
+        if: steps.memo.outputs.run == 'true' && (runner.os == 'macOS')
       # eagle is the test-only sibling: PyPI when released, else built from its sdist here (CPU-only on ARM)
       - id: sib
         uses: ./hawk/.github/actions/install-siblings
         with:
           siblings: aether-dsc=aether/dsc raptor-eagle=eagle/python raptor-core=raptor
+        if: steps.memo.outputs.run == 'true'
       - name: Fresh venv, install the aarch64 wheel, pip check
         env:
           SIB_DIR: ${{ steps.sib.outputs.dir }}
@@ -433,6 +454,7 @@ jobs:
           pip install --quiet --prefer-binary --find-links "$SIB_DIR" $SIB_PINS numpy
           pip install --quiet --no-index --only-binary=raptor-hawk --find-links dist raptor-hawk
           pip check
+        if: steps.memo.outputs.run == 'true'
       - name: The README host example (forward + vjp) on the installed wheel
         run: |
           . venv/bin/activate
@@ -472,21 +494,27 @@ jobs:
           print(f"OK on {platform.machine()}: energy {e}")
           PY
           HAWK_WORK="$RUNNER_TEMP/hawk_work" python readme_example.py
+        if: steps.memo.outputs.run == 'true'
       # Reports, never fails: does the compiled host loop use NEON (fmla v.2d) or SVE (z registers)?
       - name: Probe whether the ARM host loop vectorises
-        if: runner.os == 'Linux' && matrix.python-version == '3.12'
+        if: steps.memo.outputs.run == 'true' && (runner.os == 'Linux' && matrix.python-version == '3.12')
         run: |
           for so in "$RUNNER_TEMP"/hawk_work/*.so; do
             echo "$so: fmla v.2d = $(objdump -d "$so" | grep -cE 'fmla\s+v[0-9]+\.2d'), sve z-register ops = $(objdump -d "$so" | grep -cE '\sz[0-9]+\.d')" | tee -a "$GITHUB_STEP_SUMMARY"
           done
+      - if: success() && steps.memo.outputs.run == 'true'
+        uses: ./hawk/.github/actions/memo-save
+        with:
+          name: release-test-wheel-cpu
+          digest: ${{ steps.memo.outputs.digest }}
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CC: gcc-13
       CXX: g++-13
       HAWK_CXX: g++-13
-      HAWK_NVCC: /usr/local/cuda-12.6/bin/nvcc
+      HAWK_NVCC: /usr/local/cuda-12.9/bin/nvcc
       HAWK_NVCC_CCBIN: /usr/bin/g++-13
       # ccache: CMake reads the *_COMPILER_LAUNCHER variables, also under scikit-build-core
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -527,7 +555,7 @@ jobs:
             eagle/python/pyproject.toml
             hawk/docs/requirements.txt
 
-      - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache
+      - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache cppcheck
 
       # compiled objects persist across runs; one cache per job and architecture
       - uses: actions/cache@v6
@@ -538,57 +566,15 @@ jobs:
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-docs-
       - run: ccache -z
 
-      - uses: ./hawk/.github/actions/cuda-toolchain
+      - uses: ./hawk/.github/actions/cuda
 
-      - run: |
-          cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
-            -B aether/build -S aether
-          cmake --install aether/build
-          cmake -B eagle/__eagle_hdr -S eagle -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-            -DCMAKE_CUDA_ARCHITECTURES=70 \
-            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
-          cmake --install eagle/__eagle_hdr
-
-      - run: |
-          python -m pip install --quiet --upgrade pip
-          # aether-dsc's payload is sealed at build time (it is not tracked in
-          # git): seal it from the sibling checkout, as the release workflow does,
-          # in a throwaway venv so the NVRTC packages never reach the test env.
-          python -m venv "$RUNNER_TEMP/seal"
-          "$RUNNER_TEMP/seal/bin/pip" install --quiet "cuda-bindings" "nvidia-cuda-nvrtc-cu12" "nvidia-cuda-cccl-cu12"
-          (cd aether/dsc && "$RUNNER_TEMP/seal/bin/python" -m aether_dsc.seal)
-          python -m pip install --quiet ./aether/dsc ./raptor
-          export CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install:${CMAKE_PREFIX_PATH}"
-          # build deps preinstalled + --no-build-isolation: an isolated build compiles nanobind from a
-          # random /tmp build env, so every compile line differs and ccache never hits;
-          # --only-binary=:all: still builds this local project but never a dependency from
-          # source, so no third-party sdist is ever built without its own isolated env
-          python -m pip install --quiet "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4"
-          export SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(which nvcc);-DCMAKE_CUDA_ARCHITECTURES=70"
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: ./eagle/python
-
+      # the gate's venv carries the sibling checkouts as before; it runs every notebook on the CPU, the strict (-W) Sphinx build
+      # and the public-name page check: the commands are in the Makefile
       - env:
-          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
-          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+          GATE_JOBS: "4"
         run: |
-          cd hawk
-          python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
-          python -m pip install --quiet -r docs/requirements.txt
-          # the companion site's raptor-docs, not main's
-          python -m pip install --quiet --force-reinstall --no-deps ../site
-
-      # nbcheck also executes every notebook on the CPU, so the notebooks' own dependencies must be present
-      - run: python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
-
-      - name: make nbcheck (every notebook filled, then run on the CPU)
-        run: cd hawk/docs && make nbcheck
-
-      - name: make strict
-        run: cd hawk/docs && make strict
-
-      - name: every public name has a page
-        run: python hawk/tools/docs_inventory_check.py hawk/docs/_build/html/objects.inv hawk
+          make -C hawk gate-docs SITE_SRC="$GITHUB_WORKSPACE/site" \
+            RAPTOR_SRC="$GITHUB_WORKSPACE/raptor" AETHER_SRC="$GITHUB_WORKSPACE/aether" EAGLE_SRC="$GITHUB_WORKSPACE/eagle"
 
       - id: tree
         run: echo "tree=$(git -C hawk rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
@@ -604,7 +590,7 @@ jobs:
   # Informational: a docs-only PR carries an already published version.
   pypi-version:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v8
         with:

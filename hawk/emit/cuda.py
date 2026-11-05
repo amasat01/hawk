@@ -29,6 +29,8 @@ from .wrapper import (
     unpack_lines,
 )
 from .dispatch import render_dispatch_rank0
+from . import policy
+from .policy import launch_bounds
 from .spelling import param_name, reconstruct_call
 
 
@@ -47,7 +49,9 @@ class CudaWrapper:
                   f"{param_name(role, name_)}" for role, name_ in walk.arg_spec]
         params += ["    long long base", "    long long count",
                    "    long long nSamples"]
-        return (f'extern "C" __global__ void {name}(\n' + ",\n".join(params) + ")")
+        bounds = launch_bounds()
+        bound = "" if bounds is None else f" __launch_bounds__({bounds[0]}, {bounds[1]})"
+        return (f'extern "C" __global__ void{bound} {name}(\n' + ",\n".join(params) + ")")
 
     def index_prologue(self, segment: SegmentSpec | None = None, *,
                        active: ActiveSpec | None = None, box=None,
@@ -85,6 +89,13 @@ class CudaWrapper:
             aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));
         (void)hawk_i;
         (void)nSamples;"""
+            warps = policy.warps_per_block() if team == 32 else 1
+            if warps > 1:       # k warps a block (card kit only): the lane is the block's warp, the lane count is nSamples
+                plain = self._warp_block(plain, warps)
+            if team == 32:      # a warp per lane (:mod:`hawk.ir.lane`): the lane's place in its warp
+                plain += """
+        const Int hawk_wl = static_cast<Int>(threadIdx.x & 31);
+        (void)hawk_wl;"""
         if active is not None:
             if segment is not None:
                 raise HawkError("an active-set index map and a segmented unit "
@@ -94,11 +105,14 @@ class CudaWrapper:
             count_expr, sample_expr = active_reads(active, "hawk_t")
             own = "        const long long hawk_i = base + hawk_flat;"
             assert own in plain
+            # A 32-bit lane set's map word is a 32-bit sample, so `hawk_i` (and every index chain off it) is one register.
+            narrow = active.lane_set and active.map_bits == 32 and active.group == 1
             return plain.replace(own, (
                 "        const long long hawk_t = base + hawk_flat;\n"
                 f"        if (hawk_t >= static_cast<long long>({count_expr})) return;\n"
-                "        const long long hawk_i = "
-                f"static_cast<long long>({sample_expr});"
+                + ("        const int hawk_i = " + sample_expr + ";" if narrow else
+                   "        const long long hawk_i = "
+                   f"static_cast<long long>({sample_expr});")
                 + ("\n        if (hawk_i >= nSamples) return;" if active.group > 1 else "")))
         if box is not None:
             own = "        const long long hawk_i = base + hawk_flat;"
@@ -119,11 +133,56 @@ class CudaWrapper:
     def index_epilogue(self) -> str:
         return "    }"
 
+    # geometry-seam: begin (the block of a warp-form kernel that serves several lanes)
+    @staticmethod
+    def _warp_block(plain: str, warps: int) -> str:
+        """``plain`` (the team prologue) with the lane the block's warp: ``warps`` warps a block, the lane count ``nSamples``."""
+        return plain.replace("static_cast<long long>(blockIdx.x);",
+                             f"static_cast<long long>(blockIdx.x) * {warps} + (threadIdx.x >> 5);").replace(
+                             "hawk_flat >= count", "hawk_flat >= nSamples")
+
+    def stage_frame(self, rows: int, stages: tuple, elem: str) -> tuple:
+        """The frame of a warp-form kernel whose block serves ``rows`` lanes, a warp each: ``(opened, closed)`` around the
+        body. The body writes a vector output into the tile of ``stages`` (``((binding, width), ...)``); ``closed`` stores
+        the tiles into the planes with the block's threads walking consecutive lanes of one element, so a store covers
+        ``rows`` neighbouring lanes where one warp alone would touch a line per element."""
+        pad = rows + 1
+        opened = "\n".join([
+            *(f"    __shared__ {elem} hawk_stg_{name}[{width * pad}];" for name, width in stages),
+            f"    __shared__ int hawk_wrote[{rows}];",
+            "    const int hawk_wb = static_cast<int>(threadIdx.x >> 5);",
+            "    const Int hawk_wl = static_cast<Int>(threadIdx.x & 31);",
+            "    (void)hawk_wl;",
+            f"    const long long hawk_flat = static_cast<long long>(blockIdx.x) * {rows} + hawk_wb;",
+            "    if (hawk_wl == 0) hawk_wrote[hawk_wb] = 0;",
+            "    if (hawk_flat < nSamples) {",
+            "        const long long hawk_i = base + hawk_flat;",
+            "        const aether::SampleIndex i =",
+            "            aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));",
+            "        (void)hawk_i;",
+            "        (void)nSamples;"])
+        copies = []
+        for name, width in stages:
+            copies += [
+                f"    for (int hawk_c = static_cast<int>(threadIdx.x); hawk_c < {width * rows}; hawk_c += {32 * rows}) {{",
+                f"        const int hawk_e = hawk_c / {rows}, hawk_s = hawk_c % {rows};",
+                "        if (hawk_wrote[hawk_s]) {name}[aether::SampleIndex::make(static_cast<std::size_t>(base + "
+                f"static_cast<long long>(blockIdx.x) * {rows} + hawk_s))].at(hawk_e) = hawk_stg_{name}[hawk_e * {pad} + hawk_s];".replace("{name}", name),
+                "    }"]
+        return opened, "\n".join(["    }", "    __syncthreads();", *copies])
+    # geometry-seam: end
+
+    def fold_rows(self, width: int) -> int:
+        return policy.fold_shape(width)
+
     def sample_sum_frame(self, width: int, elem: str, store: str,
                          op: str = "sum", live: str | None = None) -> tuple:
         """The index prologue with no early return: a lane past ``count``
         skips the body (``hawk_active``) but takes part in its warp's row
         sum with zero terms; a warp wholly past ``count`` exits together."""
+        k = policy.fold_shape(width)
+        if k > 1:
+            return self._sample_sum_frame_rows(width, elem, store, op, live, k)
         plain = self.index_prologue()
         exit_line = "    if (hawk_flat >= count) return;\n    {"
         assert exit_line in plain
@@ -139,6 +198,36 @@ class CudaWrapper:
                   f"{store}\n"
                   f"    hawk_abi::sampleSumWarp_<{width}, {SAMPLE_SUM_OP_CODE[op]}>"
                   f"({SAMPLE_SUM_TERMS}, hawk_ss_store);")
+        return opened, closed
+
+    def _sample_sum_frame_rows(self, width, elem, store, op, live, k) -> tuple:
+        """The frame of a warp that serves ``k`` consecutive rows (``32 * k``
+        consecutive samples): the ``k`` folds ride ONE ``sampleSumWarp_`` call,
+        so its shuffle rounds carry ``k * width`` independent columns."""
+        n = k * width
+        opened = (
+            self.index_prologue().split("    if (hawk_flat")[0] +     # the prologue's own flat-index line: the thread
+            "    const long long hawk_gid = hawk_flat;\n"
+            f"    const long long hawk_wbase = (hawk_gid & ~31LL) * {k};\n"
+            "    if (hawk_wbase >= count) return;\n"
+            f"    {elem} hawk_terms[{n}] = {{}};\n"
+            + sample_sum_fill(op, n, "hawk_terms", elem) +
+            "#pragma unroll\n"
+            f"    for (int hawk_r = 0; hawk_r < {k}; ++hawk_r) {{\n"
+            f"    {elem}* const {SAMPLE_SUM_TERMS} = hawk_terms + hawk_r * {width};\n"
+            "    const long long hawk_flat = hawk_wbase + 32 * hawk_r + (hawk_gid & 31);\n"
+            "    const long long hawk_i = base + hawk_flat;\n"
+            "    const aether::SampleIndex i =\n"
+            "        aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));\n"
+            "    (void)hawk_i;\n    (void)nSamples;\n"
+            + (f"    const bool hawk_active = hawk_flat < count && base + hawk_flat < static_cast<long long>({live});\n"
+               if live is not None else "    const bool hawk_active = hawk_flat < count;\n") +
+            "    if (hawk_active) {")
+        closed = ("    }\n    }\n"
+                  "    const long long hawk_row0 = (base + hawk_wbase + (hawk_gid & 31)) >> 5;\n"
+                  f"{store}\n"
+                  f"    hawk_abi::sampleSumWarp_<{n}, {SAMPLE_SUM_OP_CODE[op]}>"
+                  "(hawk_terms, hawk_ss_store);")
         return opened, closed
 
     def unpack(self, walk: Walk) -> str:

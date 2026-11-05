@@ -423,7 +423,7 @@ def test_lstsq_is_a_qr_team_stage_above_32_unknowns_and_normal_equations_below()
     assert solve(80, 40).kind == "qr_solve" and solve(80, 30).kind == "cho_solve"
     assert solve(80, 40).operands[0].ttype.tag == "qr_factor"
     found = stages("ls", lstsq_kernel(80, 40).sinks)
-    assert [s.team is not None for s in found] == [False, True, False]
+    assert [s.team is not None for s in found] == [True, True, False]       # the operand copy is a team stage too
     steps = found[1].team.steps
     assert [(s.op, s.m, s.n) for s in steps] == [("qr", 80, 40), ("qr_solve", 80, 40)]
     assert {p.name: p.per_lane for p in found[1].team.planes}["tm0_work"] == 40 * 2 + 1
@@ -440,7 +440,7 @@ def test_a_qr_is_refused_under_the_thread_form_and_when_wide(cache):
 
 def test_a_team_matrix_makes_a_store_stage_a_team_stage_and_a_read_stage():
     found = stages("t", chol_kernel(40).sinks)
-    assert [s.team is not None for s in found] == [False, True, False]
+    assert [s.team is not None for s in found] == [True, True, False]       # a matrix of 1024 or more elements is copied by a team
     spec = found[1].team
     assert spec.threads == 128 and [s.op for s in spec.steps] == ["chol", "cho_solve", "cho_solve"]
     assert {p.name: p.per_lane for p in spec.planes}["tm0_a"] == 40 * 40
@@ -460,8 +460,8 @@ def test_the_sidecar_names_the_team_stage_and_its_scratch(cache):
     kernel = lu_kernel(40)
     bundle = _build(kernel, cache / "sidecar", "host", "auto")
     side = sidecar_of(bundle, kernel.name)
-    team = [s for s in side["stages"] if "team" in s]
-    assert len(team) == 1 and team[0]["team"] == {"threads": 128}
+    first, *team = [s for s in side["stages"] if "team" in s]
+    assert first["team"] == {"threads": 256} and len(team) == 1 and team[0]["team"] == {"threads": 128}
     planes = side["team_planes"]
     assert planes["tm0_a"] == {"dtype": "real", "per_lane": 1600}
     assert planes["tm0_piv"] == {"dtype": "int32", "per_lane": 40}

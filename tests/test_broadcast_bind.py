@@ -107,6 +107,26 @@ def test_scalar_binds_as_uniform(run_cache):
     np.testing.assert_array_equal(affine(0.5, a=A), np.full(LANE, 2.0))
 
 
+def test_a_float_beside_a_grid_of_one_lane_equals_the_0d_array(run_cache):
+    one = affine(0.5, a=1)
+    np.testing.assert_array_equal(one, affine(np.array(0.5), a=1))
+    np.testing.assert_array_equal(one, np.full((1, NB, NC), 2.0))
+
+
+def test_a_cell_keeps_the_array_it_is_given():
+    """The plane a reverse sums into, given as a number or a 0-d array: one cell, on the given array's own device."""
+    for given in (0.5, np.array(0.5)):
+        cell = B.compact("bar_s", given, (), (), "test", cell=True)
+        assert isinstance(cell, np.ndarray) and cell.shape == (1,) and cell[0] == 0.5
+
+
+@pytest.mark.gpu
+def test_a_device_cell_stays_on_the_device():
+    cp = pytest.importorskip("cupy")
+    cell = B.compact("bar_s", cp.asarray(0.5), (), (), "test", cell=True)
+    assert isinstance(cell, cp.ndarray) and cell.shape == (1,) and float(cell[0]) == 0.5
+
+
 # 2. a size-1 middle axis
 
 def test_size1_middle_axis_broadcasts(run_cache, rng):

@@ -390,11 +390,11 @@ def test_a_cross_sample_kernel_keeps_the_plain_loop(tmp_path):
 
 
 def test_profile_flags_keep_the_bit_identity_guard():
-    """The exact profiles keep contraction off; the fast one turns it on;
+    """The exact profiles and `-nofma` keep contraction off; the fast one turns it on;
     none of the three reassociates or enables fast-math."""
     for profile in tc.HOST_PROFILES:
         flags = host_codegen_flags(profile)
-        want = ("-ffp-contract=off" if profile in tc.EXACT_HOST_PROFILES
+        want = ("-ffp-contract=off" if profile in tc.EXACT_HOST_PROFILES or profile.endswith("-nofma")
                 else "-ffp-contract=fast")
         assert "-O3" in flags and want in flags, flags
         assert not any("fast-math" in f or "Ofast" in f or "reassoc" in f

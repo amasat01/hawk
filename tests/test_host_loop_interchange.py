@@ -27,6 +27,7 @@ tile spans eight vector registers of the kernel's ``Real``. The SAME TU built wi
 
 from __future__ import annotations
 
+import platform
 import re
 import subprocess
 
@@ -36,7 +37,7 @@ from conftest import avx512, sidecar_of
 
 import hawk
 import hawk.math as m
-from hawk import Mutable, Param, Scalar, Terminated, Vector
+from hawk import Grid, Mutable, Param, Scalar, Terminated, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.compile import toolchain as tc
@@ -124,6 +125,37 @@ def middle(x: Scalar, g: Scalar, lim: Scalar, y: Mutable[Scalar]):
             break
         t = m.tanh(t) + 0.1
     y = s + t
+
+
+@hawk.kernel
+def controller(x: Scalar, g: Scalar, y: Mutable[Scalar]):
+    h = x
+    for _k in range(24):
+        ok = h * g > 0.5
+        h = h * m.pow(h + 1.0, m.where(ok, -0.125, -0.111)) + 0.01
+    y = h
+
+
+@hawk.kernel
+def nested_math(x: Scalar, g: Scalar, y: Mutable[Scalar]):
+    a = x
+    for _k in range(40):
+        c = a
+        for _j in range(8):
+            c = m.tanh(c) * 0.5 + 0.125
+        a = a * 0.75 + c * 0.01
+    y = a + g
+
+
+@hawk.kernel
+def guarded_stencil(lane: Grid["row", "col":6], u: Scalar, h2inv: Param) -> Scalar:
+    i, j = lane.row, lane.col
+    if m.land(m.land(i > 0, i < 5), m.land(j > 0, j < 5)):
+        out = (u.at(row=i - 1, col=j) + u.at(row=i + 1, col=j)
+               + u.at(row=i, col=j - 1) + u.at(row=i, col=j + 1) - 4.0 * u) * h2inv
+    else:
+        out = 0.0
+    return out
 
 
 @hawk.kernel
@@ -255,12 +287,11 @@ def _loop_free(x: Scalar, y: Mutable[Scalar]):
 # --------------------------------------------------------------------------- #
 # The vectoriser and the flag
 # --------------------------------------------------------------------------- #
-def _lane_loop_report(tmp_path, kernel, mode, profile):
+def _lane_loop_report(tmp_path, kernel, mode, profile, width="64"):
     """(lines of the trips' lane loops, lines GCC vectorised with 64-byte vectors)."""
     src = tmp_path / f"{kernel.name}_{mode}_{profile}.cpp"
     so = src.with_suffix(".so")
-    src.write_text(render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                                 mode=scalar_mode(mode)).text)
+    src.write_text(hawk.artifact.emit_source(kernel, mode=mode, targets=("host",)).sources["host"].text)
     cc = subprocess.run(
         [tc.host_compiler(), *tc.host_flags(profile=profile,
                                             extra=["-fopt-info-vec-optimized"]),
@@ -275,7 +306,7 @@ def _lane_loop_report(tmp_path, kernel, mode, profile):
                        if "for (aether::offset_t hawk_l = 0" in lines[j])
             lane.add(nxt + 1)
     wide = {int(g) for g in re.findall(
-        rf"{re.escape(src.name)}:(\d+):\d+: optimized: loop vectorized using 64 byte vectors",
+        rf"{re.escape(src.name)}:(\d+):\d+: optimized: loop vectorized using (?:{width}) byte vectors",
         cc.stderr)}
     return lane, wide
 
@@ -290,7 +321,8 @@ def test_the_lane_loop_of_an_arithmetic_chain_vectorises(tmp_path, mode):
 FLAG_CASES = [(arith, "float64", EXACT), (arith, "float32", EXACT),
               (nested, "float64", EXACT), (two_loops, "float64", EXACT),
               (sin_chain, "float64", EXACT), (sin_chain, "float64", "native-vector-math"),
-              (trajectory, "float64", EXACT), (middle, "float64", "native-vector-math")]
+              (trajectory, "float64", EXACT), (middle, "float64", "native-vector-math"),
+              (nested, "float64", "native-vector-math"), (nested_math, "float64", "native-vector-math")]
 
 
 @pytest.mark.skipif(not avx512(), reason="the 64-byte vector verdict needs AVX-512")
@@ -300,10 +332,62 @@ def test_the_flag_matches_the_lane_loop(request, tmp_path, kernel, mode, profile
     macros = tc.compiler_macros(tc.host_compiler())
     if (kernel is trajectory and "__clang__" not in macros
             and int(macros.get("__GNUC__", "99")) < 13):
+        # GCC 12 vectorises this loop under -march=native on some AVX-512 parts and not on others
         request.applymarker(pytest.mark.xfail(
-            strict=True, reason="GCC 12 does not vectorise this lane loop"))
+            strict=False, reason="GCC 12 vectorises this lane loop on some AVX-512 CPUs only"))
     lane, wide = _lane_loop_report(tmp_path, kernel, mode, profile)
     assert vectorises(kernel.walk, profile, mode) is (lane <= wide), (lane, wide)
+
+
+_VECTOR_MATH = pytest.mark.skipif(
+    platform.machine().lower() not in ("x86_64", "amd64")
+    or "__clang__" in tc.compiler_macros(tc.host_compiler()),
+    reason="the vector-math profiles are GCC on x86-64")
+
+
+@_VECTOR_MATH
+def test_a_float_select_lowers_to_a_blend_and_the_default_profile_vectorises_it(tmp_path):
+    text = hawk.artifact.emit_source(controller, targets=("host",)).sources["host"].text
+    assert "hawk_abi::blend(" in text
+    assert "? static_cast<Real>(-0.125)" not in text          # no ?: left on a float
+    device = hawk.artifact.emit_source(controller, targets=("cuda",)).sources["cuda"]
+    assert "hawk_abi::blend" not in device.text            # the device text keeps ?:
+    lane, wide = _lane_loop_report(tmp_path, controller, "float64", "native-vector-math", r"\d+")
+    assert lane and lane <= wide, (lane, wide)
+
+
+def test_a_select_whose_arm_reads_at_a_computed_index_stays_a_ternary():
+    # a blend evaluates both arms, and the edge guard of a stencil exists so the off-grid read never runs
+    text = hawk.artifact.emit_source(guarded_stencil, targets=("host",)).sources["host"].text
+    assert "hawk_abi::blend(" not in text and "hawk_abi::select_item<" not in text
+
+
+@_VECTOR_MATH
+def test_contraction_off_makes_the_vector_and_the_per_sample_loop_bitwise_equal(tmp_path):
+    cache = str(tmp_path / "cache")
+    got = {}
+    for shape, defines in (("interchanged", INTERCHANGED), ("plain", PLAIN)):
+        b = build_bundle([controller], tmp_path / shape, targets=("host",), cache_dir=cache,
+                         defines=defines, host_profile="native-vector-math-nofma")
+        planes = {"y": np.zeros(1003)}
+        art = rt.load(b.directory, "controller", sidecar_of(b, "controller"))
+        rng = np.random.default_rng(5)
+        rt.run(art, x=rng.uniform(0.5, 1.5, 1003), g=rng.uniform(0.5, 1.5, 1003), **planes)
+        got[shape] = planes["y"]
+    assert got["interchanged"].tobytes() == got["plain"].tobytes()
+    assert np.isfinite(got["plain"]).all()
+
+
+def test_the_nofma_profile_is_the_default_with_contraction_off():
+    flags = tc.host_codegen_flags("native-vector-math-nofma") if _vm_ok() else None
+    if flags is not None:
+        fast = tc.host_codegen_flags("native-vector-math")
+        assert "-ffp-contract=off" in flags and "-ffp-contract=fast" in fast
+        assert [f for f in flags if "contract" not in f] == [f for f in fast if "contract" not in f]
+
+
+def _vm_ok():
+    return platform.machine().lower() in ("x86_64", "amd64")
 
 
 def test_the_cost_model_reads_the_same_predicate():
@@ -313,5 +397,16 @@ def test_the_cost_model_reads_the_same_predicate():
                 kernel.walk, profile)
     # an interchanged loop's trip count leaves the vectorised flag on
     assert kernel_cost(arith.walk, EXACT).vectorised is True
-    # a nested loop above the unroll limit stays each lane's own `for`
-    assert kernel_cost(nested.walk, EXACT).vectorised is False
+    # a fixed-count nested loop, however long, is vectorised across the lanes (the flag test pins it against GCC)
+    assert kernel_cost(nested.walk, EXACT).vectorised is True
+
+
+def test_an_item_select_is_held_in_a_named_local():
+    # an Item is a leaf held by const& in the expression that takes it: a select_item prvalue inlined into a later
+    # expression dangles after its statement (chol_from vjp read garbage)
+    from _linalg_kernels import chol_from_kernel
+    primal = chol_from_kernel(3)
+    kernel = hawk.Kernel("la_chol_from_3_vjp", vjp(primal))
+    text = hawk.artifact.emit_source(kernel, targets=("host",)).sources["host"].text
+    calls = re.findall(r"^.*hawk_abi::select_item<.*$", text, re.M)
+    assert calls and all(re.match(r"\s*const auto \w+ = hawk_abi::select_item<", c) for c in calls), calls

@@ -38,6 +38,7 @@ from .value import (
     INDEX32,
     FinishRefusal,
     MutableRef,
+    SharedValue,
     TableRef,
     TerminatedRef,
     Value,
@@ -66,7 +67,7 @@ class Kernel:
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
                  "time", "time_step", "source_digest", "jump", "returns",
-                 "lane_space", "group", "broadcast", "_variants", "_plan", "_lock")
+                 "lane_space", "group", "broadcast", "team", "_variants", "_plan", "_lock")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
@@ -77,7 +78,8 @@ class Kernel:
         from ..ext import DEFAULT_KIND
 
         self.name = name
-        self.kind = kind if kind is not None else DEFAULT_KIND
+        self.kind = (kind if kind is not None
+                     else getattr(sinks, "_kernel_kind", None) or DEFAULT_KIND)
         sinks = _scattered_companion(self.kind, sinks)
         self.sinks = sinks
         self.planes = {} if planes is None else planes
@@ -645,7 +647,9 @@ def _resolve_planes(fn: Callable[..., None], params: list[str],
     if missing:
         raise HawkError(
             f"kernel {fn.__name__!r}: parameter(s) {missing} carry no declaration — "
-            "every parameter IS its vocabulary declaration"
+            "every parameter IS its vocabulary declaration. If it is a helper "
+            "defined in this kernel's own module, it was traced as a kernel: "
+            "move it to another module, or call it with traced values so it is inlined"
             + (f" or a member of kind {kind.slug!r}'s own vocabulary "
                f"{sorted(vocab)}" if vocab else "")
         )
@@ -924,6 +928,9 @@ def _bind(name: str, plane: Plane | Quantity) -> Any:
         return WideOutRef(name, plane.ttype, plane.dims)
     if plane.form == "terminated":
         return TerminatedRef(Leaf("terminated", role, name, plane.ttype))
+    if plane.shared and plane.ttype.shape:
+        # Param[Vector[W]] / Param[Matrix[R,C]]: one value, read cell by cell from its plane
+        return SharedValue(name, plane.shared, plane.dims)
     if plane.form in ("table", "wide"):
         # one READ form for both roles: pins `lookup` and `wide_in` to the
         # same 32-byte ScalarHandle, so the access is the at(expr) either way.
@@ -1027,7 +1034,7 @@ class TeamStage(Kernel):
     lane with a team of threads. Its sinks only name the scratch planes it works on; its body is
     :func:`hawk.emit.team.team_body`, handed to the entry wrappers like a fused group's."""
 
-    __slots__ = ("team",)
+    __slots__ = ()
 
     def __init__(self, name: str, sinks: tuple, team: Any) -> None:
         super().__init__(name, sinks, {})
@@ -1038,3 +1045,17 @@ class TeamStage(Kernel):
         from ..emit.team import team_body
 
         return team_body(self.team, _active_spec(kind))
+
+
+class WarpStage(TeamStage):
+    """A kernel in the warp form (:mod:`hawk.ir.lane`): one block of a warp per lane, its sinks the sliced ones. Its body is
+    the ordinary render of those sinks; the launch prologue binds the lane's place in its warp."""
+
+    __slots__ = ()
+
+    def fused_body(self, kind: Any = None) -> Any:
+        from ..emit.render import render_body
+
+        if self.one_step is not None:       # an automatic kernel renders its two bodies itself
+            return None
+        return render_body(self.sinks, self.walk, indent="        ", kind=kind)

@@ -22,6 +22,10 @@ A source this large is usually a wide kernel unrolled. Roll the loop, or read a 
 runtime index with [`hawk.math.index`](tutorials/06_lookups_scatters_and_sums), which keeps the
 source small and the gradient cheap.
 
+## Wide values
+
+A wide kernel is placed by the device it is built for; see [wide values](howto_wide_values).
+
 ## Local memory
 
 A thread on the GPU can hold only so much local memory (spilled registers, arrays and matrices it indexes at run

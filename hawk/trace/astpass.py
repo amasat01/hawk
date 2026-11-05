@@ -314,6 +314,9 @@ def merge(cond: Any, on_true: Any, on_false: Any, name: str, shared: bool = Fals
     if on_true is on_false:
         return on_true
     if isinstance(on_true, Value) or isinstance(on_false, Value):
+        stored = _store_under(cond, on_true, on_false)
+        if stored is not None:
+            return stored
         return _as_switch(select(cond, on_true, on_false), shared)
     if on_true == on_false:
         return on_true
@@ -326,6 +329,32 @@ def merge(cond: Any, on_true: Any, on_false: Any, name: str, shared: bool = Fals
         f"({on_true!r} vs {on_false!r}) — only traced values merge into a select "
         "node"
     )
+
+
+def _store_under(cond: Any, on_true: Any, on_false: Any) -> Any:
+    """``select(c, v, set(v, i, x))`` as ``set(v, i, select(c, v[i], x))`` (and the arms the other way round) for a
+    value written at a run-time index: the same value, but the store stays one store of one element, so the
+    vector is neither copied nor selected whole, and what lives in a plane (:mod:`hawk.ir.wide`) is written in place.
+
+    Only a vector written at a run-time index (placed from width 1: :func:`~hawk.ir.wide.runtime_min`), under a
+    build that places values; every other ``if`` keeps the select, so a kernel with no such value renders as it did."""
+    from ..emit.policy import wide_form
+    from ..ir.nodes import Op
+
+    if wide_form() == "thread" or not (isinstance(on_true, Value) and isinstance(on_false, Value)):
+        return None
+    for held, stored, taken in ((on_true, on_false, False), (on_false, on_true, True)):
+        node, base = node_of(stored), node_of(held)
+        if (isinstance(node, Op) and node.kind == "set_component_at" and node.operands[0] is base
+                and len(base.ttype.shape) == 1
+                and not isinstance(node.operands[1], Const) and not node_of(cond).ttype.shape):
+            from ..ir import make as _make
+
+            index, value = node.operands[1], Value(node.operands[2])
+            current = Value(_make("component_at", (base, index)))
+            merged = select(cond, value, current) if taken else select(cond, current, value)
+            return Value(_make("set_component_at", (base, index, node_of(merged))))
+    return None
 
 
 _I32 = TensorType((), "i32")
@@ -1020,7 +1049,10 @@ def _rewrite_mutable_stores(stmts: list[ast.stmt], sinks: frozenset[str],
     present = sorted(m for m in mutables if _mentions(out, m))
     seeds: list[ast.stmt] = []
     for name in present:
-        if _needs_prior(out, name):
+        if _needs_prior(out, name) and not _needs_prior(_drop_scatter_marks(out, name), name):
+            # read only as a store by key's marker: no start value (a WideOut has none)
+            seeds.append(_assign(_mutable_name(name), ast.Constant(value=None)))
+        elif _needs_prior(out, name):
             spec = _cover_spec(out, name)
             if spec is not None:
                 # the body may store every element before it reads one: decided
@@ -1051,6 +1083,20 @@ def _is_stored(stmts: list[ast.stmt], name: str) -> bool:
     """Whether ``name`` is EVER a bare-Name store target in ``stmts``."""
     return any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
               for st in stmts for n in ast.walk(st))
+
+
+def _drop_scatter_marks(stmts: list[ast.stmt], name: str) -> list[ast.stmt]:
+    """A copy of ``stmts`` with the ``name`` that :func:`_rewrite_view_stores` passes
+    to each store by key as its marker replaced by ``None``: that argument is not a
+    read of the plane's value."""
+    class _Drop(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.Call:
+            self.generic_visit(node)
+            if (isinstance(node.func, ast.Name) and node.func.id == SCATTER_HELPER
+                    and isinstance(node.args[-1], ast.Name) and node.args[-1].id == name):
+                node.args[-1] = ast.Constant(value=None)
+            return node
+    return [_Drop().visit(copy.deepcopy(st)) for st in stmts]
 
 
 def _needs_prior(stmts: list[ast.stmt], name: str) -> bool:

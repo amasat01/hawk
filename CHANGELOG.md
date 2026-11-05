@@ -2,6 +2,68 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
+## 0.7.3 (2026-11-05)
+
+This section covers what changes from 0.7.2. Names that left are in the table at the end.
+
+### Added
+
+**`hawk.diff.with_derivative`.** One kernel that computes a kernel's outputs and their forward derivatives in one launch, usable as an `eagle.Graph` builder step.
+
+**Wide per-sample values compile spill-free.** Plain per-sample code with wide values (a `Vector[512]`, a 24 by 512 table product, a masked dot product) no longer reserves a large frame of per-thread local memory. hawk picks the form per kernel and device: one thread per sample, a warp per sample with the value sliced across the lanes, or wide outputs staged through a block that serves several lanes and stored coalesced into the unchanged planes. Plain, stepped, derivative, grouped and segmented kernels are covered, and the switch points are per-device rows in `wide.json`; a sweep measures the forms and writes candidate rows for a new device. Results agree with the one-thread form to the ULP contract. `wide_form="auto"` (the default, for bundles that target a device), `"team"` (a warp per lane for wide accumulations) and `"thread"` are build options. Dot and norm over the lanes, and writes at run-time indices, are available when you ask for the warp form. See the new wide-values page.
+
+**Faster whole-plane sums.** `t = hawk.sum(x)` into a `Mutable` folds several rows of 32 samples per warp in one batched fold (4 rows at one column, fewer as the width grows, chosen from the register residency line) and combines partials with a Fast2Sum on the device. The rows and the cell are bit-identical to before; a 16.7M float64 sum on a Quadro P2000 takes 6.1 ms, from 26.1. A compensated sum over a sample axis whose extent is a multiple of 1024 (`hawk.sum(x, over="sample")`) folds the warps of a full block in shared memory and commits once per block, within the compensated bound; every compensated sum now uses aether's one two-sum residual (`NaN` for a non-finite sum, `+0` for a zero residual).
+
+**Fused `steps=K` kernels with derivatives.** `step_vjp(hawk.steps(k, K), steps_reverse="fused")` reverses all `K` steps in one launch, host and device, and `jvp` of a `hawk.steps(k, K)` kernel is `hawk.steps(step_jvp(k), K)`. `steps_reverse="auto"` picks per-step or fused from a measured table; see the derivatives page.
+
+**`hawk.Meta`.** `Annotated[Vector[3], hawk.Meta(unit="km")]` attaches notes (JSON values) to a plane. hawk never reads them; they are written to the sidecar as `plane_meta` and come back by plane name from the kernel loaded through eagle. It works before Python 3.11.
+
+**`launch_bounds=(threads, blocks_per_sm)`.** A build option and a `policy.using` keyword that compile a kernel with `__launch_bounds__`, so it fits an occupancy step; the sidecar records `launch.block`. Values do not change. `policy.using` also takes `contraction="direct"|"gemm"` for eagle's opt-in matrix-multiply route.
+
+**`hawk.artifact.emit_source`.** Emits a kernel's CUDA and host text and its sidecar without compiling or writing, the same text `build` publishes, lane-set kernels included.
+
+**`m.where` with an integer literal.** `m.where(i == 0, 3, i - 1)` on an integer index types the literal as the other branch, as `i + 1` does; a float against an integer value is still refused, now with the cast to write.
+
+**`Staged[Vector[W], m.n_samples]`.** A staged buffer counted by the launch is one build for every launch size, where an int count is a build per size. The contraction record names its stride `"n_samples"`. An int count still works, and a count below the launch is a staging window.
+
+**Wider contraction recognition.** A contraction written with component reads, several outputs or chained products is recognised.
+
+**`Param` broadcasts.** One `Param` value is shared by all lanes, and `bind` refuses an index column of the wrong width.
+
+**Derivative loops keep invariant reads out of the loop.** A table read at a compile-time or warp-lane index inside a guarded arm now leaves the loop with its invariant subtree, so `jvp` of a `hawk.steps(k, K)` kernel with a wide table product costs about 3x the primal, not 19x. Values are bit-identical. `steps_reverse="auto"` rows now carry a batch range and cover the wide matvec on the host and on the device class.
+
+**Compile.** NVRTC builds lane reductions and reports the ptxas figures, there is a cross-process compile index and a compile card, and a machine with `cuda-bindings` but no NVIDIA driver reports no device instead of failing every build.
+
+**Host loops.** Kernels that read lookup planes keep wide carries in rows of the tile, and `vectorise_blocker` says why a loop was not vectorised.
+
+**New how-to pages.** Wide values, casting rays against shapes and meshes, and drawing random numbers in a kernel.
+
+### Changed
+
+**Host kernels on the default profile now vectorise.** A float select on the host is a bitwise blend, not a `?:`, so GCC vectorises the trip loop of an ensemble kernel (the performance card's host arm runs about 4x faster at 1e5 samples); aether's `sqrt` is inline. Results move within the FMA-contraction band (states about 1e-12 after 1e2 to 1e3 steps; the card's max error over its bound is unchanged at 6.4e-3); the exact profiles `native` and `portable` are bit-identical to before, and the device text is unchanged.
+
+**`host_profile="native-vector-math-nofma"`.** The default profile's vector code with `-ffp-contract=off`: a kernel's vector and per-sample builds agree bit for bit, for about 25 % less speed. The default stays `native-vector-math`.
+
+- The autodiff-against-torch card moved into eagle's feature card; the autodiff example points at its `vjp_vs_torch` row.
+- Kernels that already compiled without a spill build as before.
+- A team-form matrix of 1024 or more elements reaches its scratch through a copy stage that launches a block per lane and copies with the block's threads, not one thread per lane: the 512 by 512 solve row is 1.5x faster on the P2000 and the copy is exact. A bundle's first stage of such a kernel now carries a `team` record.
+- `policy="ordered"` is one fixed grouping that depends on the number of lanes only: the same bits on every launch, device and the host, whatever the team size. A plain ordered sum adds 65536 virtual lanes (lane `l` takes rows `l`, `l + 65536`, ...) folded by a halving tree, 1.2 s to 3.4 ms on a 16.7 M sum (as fast as `auto`); an ordered scatter keeps its per-cell order and runs 2.3x faster. The ordered totals change in the last bits against 0.7.2.
+- macOS wheels need macOS 15 or newer. CPython 3.13t is dropped: nine wheels per platform, the install page names 3.14t and 3.15t.
+- `make gate`, `make gate-gpu` and `make gate-all` are what CI runs; hawk tests with `nvcc` from `CUDACXX` or `CUDA_PATH`, NVRTC only when none is set; the CUDA toolchain in CI is NVIDIA's pinned 12.9 redist archives.
+
+### Fixed
+
+- A 0-d device array given for the plane a reverse sums into stays on its device; it raised a TypeError from NumPy.
+- A Python float beside a `Grid` launched with one lane no longer fails with `float has no attribute reshape`.
+- A `WideOut` stored only by key traces.
+- A net-axis perturbation keeps untouched gradients within 2 ULP of their atomic commits.
+
+### Removed
+
+| Gone | Use instead |
+|---|---|
+| the hawk autodiff-against-torch card | the `vjp_vs_torch` row of eagle's feature card |
+
 ## 0.7.2 (2026-10-29)
 
 This section covers what changes from 0.7.1. Names that left are in the table at the end. hawk now asks for `aether-dsc>=0.7.2`.
