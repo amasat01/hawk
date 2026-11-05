@@ -225,27 +225,27 @@ Extras, platforms, requirements and the CPU-only route: [installation](https://a
 
 ## Performance
 
-Every number in this section is generated from the performance cards committed in eagle (`benchmarks/perf_card` and `benchmarks/rk78_card`):
+Every number in this section is generated from the performance cards committed in eagle (`benchmarks/perf_card`):
 `tools/sync_perf_claims.py` rewrites them, and `tests/test_perf_claims.py` fails if this text, the snapshot `docs/perf_claims.json` or (with `RAPTOR_EAGLE_ROOT` set to an eagle checkout) the cards disagree.
 Kernels authored with hawk are what eagle's performance card times.
 
 <!-- hero:begin -->
-hawk + eagle (`eagle.simulate`) integrates 1,000,000 RK4 oscillators, each stopping at its own step, in 613 µs on an NVIDIA H100 80GB HBM3 (199 µs for 100,000), 2.5×–600× faster than NVIDIA Warp (2.5×), JAX (76×), CuPy (600×), PyTorch with torch.compile (130×) at N = 1,000,000 (1.1×–1700× at N = 100,000), in 40 MiB of GPU memory
+hawk + eagle (`eagle.simulate`) integrates 1,000,000 Kepler orbits with an adaptive RKF7(8), each stopping at its own time, in 48.9 ms on an NVIDIA H100 NVL (477 ms for 10,000,000), 2.3×–190× faster than NVIDIA Warp (2.3×), JAX (25×), CuPy (190×), PyTorch with torch.compile (16×) at N = 1,000,000 (2.3×–150× at N = 10,000,000), in 102 MiB of GPU memory
 <!-- hero:end -->
-— and, on the <!--c spec card=rk78 dev=h100 field=device.name-->NVIDIA H100 80GB HBM3<!--/c--> reference GPU, the same hawk kernel, unmodified, integrates 1,000,000 adaptive
-RK7(8) orbits in <!--c wall card=rk78 dev=h100 arm=eagle_simulate n=1000000-->43.6 ms<!--/c-->; on a CPU alone, through eagle's host team, the same batch takes <!--c wall card=rk78cpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000-->3.76 s<!--/c--> on 8 threads of an <!--c spec card=rk78cpu dev=amd-epyc-9b45 field=cpu-->AMD EPYC 9B45<!--/c--> (the no-GPU route, for machines without a GPU). This is the regime hawk + eagle's
+— and, on the <!--c spec card=ensemble dev=h100 field=device.name-->NVIDIA H100 NVL<!--/c--> reference GPU, the same hawk kernel, unmodified, integrates 1,000,000 adaptive
+RK7(8) orbits in <!--c wall card=ensemble dev=h100 arm=eagle_simulate n=1000000-->48.9 ms<!--/c-->; on a CPU alone, through eagle's host team, the same batch takes <!--c wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000-->3.69 s<!--/c--> on 8 threads of an <!--c spec card=ensemblecpu dev=amd-epyc-9b45 field=cpu-->AMD EPYC 9B45<!--/c--> (the no-GPU route, for machines without a GPU). This is the regime hawk + eagle's
 compaction targets (many samples stopping at different times); in other regimes the other tools hold their own. On a
-dense workload where nothing finishes early, NVIDIA Warp is the fastest arm on that H100 at N = 1,000,000
-(<!--c wall card=rk4 dev=h100 n=1000000 dist=uniform steps=1000 arm=warp_kernel-->1.71 ms<!--/c--> vs <!--c wall card=rk4 dev=h100 n=1000000 dist=uniform steps=1000 arm=eagle_simulate-->1.75 ms<!--/c--> for `eagle.simulate`, which takes <!--c pctgap card=rk4 dev=h100 n=1000000 dist=uniform steps=1000 arm=eagle_simulate den_arm=warp_kernel-->2.5%<!--/c--> longer), while at N = 10,000 on the same workload
-`eagle.simulate` is ahead (<!--c wall card=rk4 dev=h100 n=10000 dist=uniform steps=1000 arm=eagle_simulate-->112 µs<!--/c--> vs <!--c wall card=rk4 dev=h100 n=10000 dist=uniform steps=1000 arm=warp_kernel-->121 µs<!--/c-->). The development card the tutorials teach on is the Quadro P2000; its numbers are on the performance page next to every other device. See
+dense batch where every sample runs the same orbit, at N = 1,000,000 `eagle.simulate` takes
+<!--c wall card=ensemble dev=h100 n=1000000 dist=uniform arm=eagle_simulate-->40.8 ms<!--/c--> and NVIDIA Warp
+<!--c wall card=ensemble dev=h100 n=1000000 dist=uniform arm=warp_kernel-->55.1 ms<!--/c-->. The development card the tutorials teach on is the Quadro P2000; its numbers are on the performance page next to every other device. See
 [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html) for every number, every arm,
 including the ones where it doesn't win.
 
-<p align="center"><a href="https://amasat01.github.io/eagle/content/performance.html"><img src="https://raw.githubusercontent.com/amasat01/eagle/main/docs/_static/perf/readme_gpu.svg" alt="Wall time per tool for a million RK4 oscillators on the default GPU: eagle.simulate, NVIDIA Warp, JAX, CuPy and PyTorch; the numbers are on eagle's performance page." width="732"></a></p>
+<p align="center"><a href="https://amasat01.github.io/eagle/content/performance.html"><img src="https://raw.githubusercontent.com/amasat01/eagle/main/docs/_static/perf/readme_gpu.svg" alt="Wall time per tool for a million adaptive RK7(8) orbits on the default GPU: eagle.simulate, NVIDIA Warp, JAX, CuPy and PyTorch; the numbers are on eagle's performance page." width="732"></a></p>
 
 The chart shows one GPU; [the performance page](https://amasat01.github.io/eagle/content/performance.html) has a tab for every device and CPU measured.
 
-The same hawk kernel also runs on a CPU alone, through eagle's host team: on an <!--c spec card=rk4cpu dev=amd-epyc-9b45 field=cpu.model-->AMD EPYC 9B45<!--/c--> (<!--c spec card=rk4cpu dev=amd-epyc-9b45 field=cpu.cores-->8<!--/c--> cores, <!--c spec card=rk4cpu dev=amd-epyc-9b45 field=cpu.logical_cpus-->16<!--/c--> logical CPUs) the 8-thread spread S=1000 batch of 1,000,000 samples takes **<!--c wall card=rk4cpu dev=amd-epyc-9b45 arm=eagle_term8 n=1000000 dist=spread steps=1000-->142 ms<!--/c-->**. eagle's [performance page](https://amasat01.github.io/eagle/content/performance.html) has a tab for every CPU and GPU measured, with Numba, JAX, PyTorch, NumPy and multiprocessing on the CPU cards, each with the setting where it fits best; on some cells and CPUs another tool is ahead, and the card shows which.
+The same hawk kernel also runs on a CPU alone, through eagle's host team: on an <!--c spec card=ensemblecpu dev=amd-epyc-9b45 field=cpu-->AMD EPYC 9B45<!--/c--> (<!--c spec card=ensemblecpu dev=amd-epyc-9b45 field=logical_cpus-->16<!--/c--> logical CPUs) the 8-thread spread batch of 1,000,000 samples takes **<!--c wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000 dist=spread-->3.69 s<!--/c-->**. eagle's [performance page](https://amasat01.github.io/eagle/content/performance.html) has a tab for every CPU and GPU measured, with Numba, JAX, PyTorch, NumPy and multiprocessing on the CPU cards, each with the setting where it fits best; on some cells and CPUs another tool is ahead, and the card shows which.
 
 ## Going deeper
 

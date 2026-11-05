@@ -3,29 +3,22 @@
     "dev": "h100",
     "ns": [
       1000000,
-      100000
+      10000000
     ]
   },
   "cards": {
-    "benchmarks/perf_card/card_nvidia-h100-80gb-hbm3.json": "86570d9dd9f301b54ae3e50a40ecdfc4",
-    "benchmarks/perf_card/cpu_card_amd-epyc-9b45.json": "440352ba86c3de47db28e0e9d25fbd6b",
-    "benchmarks/rk78_card/card_nvidia-h100-80gb-hbm3.json": "4a6847fb1f7815d64d95de8c8b48a527",
-    "benchmarks/rk78_card/cpu_card_amd-epyc-9b45.json": "1ef4eda3e4f12f87d3a84585424f1c57"
+    "benchmarks/perf_card/card_nvidia-h100-nvl.json": "475f0ffc8464c6d5fb1458f9f49af18c",
+    "benchmarks/perf_card/cpu_card_amd-epyc-9b45.json": "db5950d1b58ec0b0d13a1e1d00f7a825"
   },
   "spans": {
-    "spec card=rk78 dev=h100 field=device.name": "NVIDIA H100 80GB HBM3",
-    "wall card=rk78 dev=h100 arm=eagle_simulate n=1000000": "43.6 ms",
-    "wall card=rk78cpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000": "3.76 s",
-    "spec card=rk78cpu dev=amd-epyc-9b45 field=cpu": "AMD EPYC 9B45",
-    "wall card=rk4 dev=h100 n=1000000 dist=uniform steps=1000 arm=warp_kernel": "1.71 ms",
-    "wall card=rk4 dev=h100 n=1000000 dist=uniform steps=1000 arm=eagle_simulate": "1.75 ms",
-    "pctgap card=rk4 dev=h100 n=1000000 dist=uniform steps=1000 arm=eagle_simulate den_arm=warp_kernel": "2.5%",
-    "wall card=rk4 dev=h100 n=10000 dist=uniform steps=1000 arm=eagle_simulate": "112 µs",
-    "wall card=rk4 dev=h100 n=10000 dist=uniform steps=1000 arm=warp_kernel": "121 µs",
-    "spec card=rk4cpu dev=amd-epyc-9b45 field=cpu.model": "AMD EPYC 9B45",
-    "spec card=rk4cpu dev=amd-epyc-9b45 field=cpu.cores": "8",
-    "spec card=rk4cpu dev=amd-epyc-9b45 field=cpu.logical_cpus": "16",
-    "wall card=rk4cpu dev=amd-epyc-9b45 arm=eagle_term8 n=1000000 dist=spread steps=1000": "142 ms"
+    "spec card=ensemble dev=h100 field=device.name": "NVIDIA H100 NVL",
+    "wall card=ensemble dev=h100 arm=eagle_simulate n=1000000": "48.9 ms",
+    "wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000": "3.69 s",
+    "spec card=ensemblecpu dev=amd-epyc-9b45 field=cpu": "AMD EPYC 9B45",
+    "wall card=ensemble dev=h100 n=1000000 dist=uniform arm=eagle_simulate": "40.8 ms",
+    "wall card=ensemble dev=h100 n=1000000 dist=uniform arm=warp_kernel": "55.1 ms",
+    "spec card=ensemblecpu dev=amd-epyc-9b45 field=logical_cpus": "16",
+    "wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000 dist=spread": "3.69 s"
   },
-  "hero": "hawk + eagle (`eagle.simulate`) integrates 1,000,000 RK4 oscillators, each stopping at its own step, in 613 µs on an NVIDIA H100 80GB HBM3 (199 µs for 100,000), 2.5×–600× faster than NVIDIA Warp (2.5×), JAX (76×), CuPy (600×), PyTorch with torch.compile (130×) at N = 1,000,000 (1.1×–1700× at N = 100,000), in 40 MiB of GPU memory"
+  "hero": "hawk + eagle (`eagle.simulate`) integrates 1,000,000 Kepler orbits with an adaptive RKF7(8), each stopping at its own time, in 48.9 ms on an NVIDIA H100 NVL (477 ms for 10,000,000), 2.3×–190× faster than NVIDIA Warp (2.3×), JAX (25×), CuPy (190×), PyTorch with torch.compile (16×) at N = 1,000,000 (2.3×–150× at N = 10,000,000), in 102 MiB of GPU memory"
 }
