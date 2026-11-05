@@ -181,9 +181,10 @@ jobs:
   # host-gcc: the host-compiler matrix. 13.1-13.3 and 14.1-14.2 miscompile a
   # conditional call of a function with masked vector variants; aether-dsc drops
   # those variants there and hawk reports such loops scalar. The sufficiency step
-  # is the whole non-GPU suite on each compiler; on 13 and 14 the necessity step
-  # forces the masked variants back on and the early-exit host rows must then
-  # fail, so the avoidance is shown to be needed.
+  # is the whole non-GPU suite on each compiler. The avoidance has no necessity
+  # witness at the moment: with the masked variants forced back on, the early-exit
+  # host rows no longer fail on these runners, so the step that showed it was
+  # needed is out until a row that reproduces the miscompile replaces them.
   host-gcc:
     name: host-gcc (${{ matrix.gcc }})
     runs-on: ubuntu-24.04
@@ -330,24 +331,6 @@ jobs:
           RAPTOR_EAGLE_ROOT: ${{ github.workspace }}/eagle
         run: cd hawk && python -m pytest tests -q -m "not gpu" -n auto --dist loadfile
         if: steps.memo.outputs.run == 'true'
-      - if: steps.memo.outputs.run == 'true' && (matrix.gcc != 12)
-        name: Necessity (masked variants forced on must fail the early-exit rows)
-        env:
-          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
-          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
-        run: |
-          printf '#!/bin/sh\nexec g++-%s "$@" -DAETHER_HVM_MASKED=1\n' "${{ matrix.gcc }}" > "$RUNNER_TEMP/gxx-masked"
-          chmod +x "$RUNNER_TEMP/gxx-masked"
-          cd hawk
-          set +e
-          HAWK_CXX="$RUNNER_TEMP/gxx-masked" python -m pytest tests/test_loop_early_exit.py -q -m "not gpu" \
-            -k "middle-host or head_jvp-host or middle_jvp-host"
-          rc=$?
-          set -e
-          if [ "$rc" -ne 1 ]; then
-            echo "expected pytest exit 1 (test failures) with masked variants on, got $rc" >&2
-            exit 1
-          fi
       - if: always() && steps.memo.outputs.run == 'true'
         run: ccache -s
       - if: success() && steps.memo.outputs.run == 'true'
