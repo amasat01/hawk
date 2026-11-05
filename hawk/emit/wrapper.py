@@ -1147,7 +1147,7 @@ def _sample_sum_store(sums, rows: int = 1) -> str:
     if rows > 1:
         w = len(sums)
         lines += [f"        const int hawk_rr = hawk_col / {w};",
-                  f"        if (hawk_wbase + 32 * hawk_rr >= count) return;",
+                  "        if (hawk_wbase + 32 * hawk_rr >= count) return;",
                   "        const long long hawk_row = hawk_row0 + hawk_rr;",
                   f"        hawk_col %= {w};"]
     for k, sink in enumerate(sums):
