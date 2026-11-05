@@ -332,8 +332,9 @@ def test_the_flag_matches_the_lane_loop(request, tmp_path, kernel, mode, profile
     macros = tc.compiler_macros(tc.host_compiler())
     if (kernel is trajectory and "__clang__" not in macros
             and int(macros.get("__GNUC__", "99")) < 13):
+        # GCC 12 vectorises this loop under -march=native on some AVX-512 parts and not on others
         request.applymarker(pytest.mark.xfail(
-            strict=True, reason="GCC 12 does not vectorise this lane loop"))
+            strict=False, reason="GCC 12 vectorises this lane loop on some AVX-512 CPUs only"))
     lane, wide = _lane_loop_report(tmp_path, kernel, mode, profile)
     assert vectorises(kernel.walk, profile, mode) is (lane <= wide), (lane, wide)
 
