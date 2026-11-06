@@ -10,6 +10,10 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 
 **A long dependent chain no longer overflows the recursion limit.** A kernel that writes a wide Mutable from a chain of a thousand or more ops builds for a CUDA target: warp slicing and the element-by-element writer walk the chain with an explicit stack.
 
+### Changed
+
+**Breaking: arithmetic on a bool is refused, and conditions combine with `& | ^ ~` and `and or not`.** `(a < b) * (c < d)`, `+`, unary `-`, `abs`, `min`/`max` and the `hawk.math` numeric functions on a bool raise a `HawkError` at trace time (the C++ of a bool `*` was an int, which a derivative's bool lane row refused to compile). Migration: write `(a < b) & (c < d)`, or `m.select(cond, x, 0.0)` for a number. `and`, `or` and `not` on traced conditions are accepted in a kernel body.
+
 ## 0.7.3 (2026-11-05)
 
 This section covers what changes from 0.7.2. Names that left are in the table at the end.
