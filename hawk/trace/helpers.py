@@ -199,6 +199,7 @@ def install(scope: dict) -> None:
     scope[astpass.LOOP_HELPER] = astpass.open_loop
     scope[astpass.SETITEM_HELPER] = astpass.set_component
     scope[astpass.MAXMIN_HELPER] = reduce.maxmin
+    scope[astpass.LOGIC_HELPER] = reduce.logic
     scope[astpass.SCATTER_HELPER] = reduce.scatter_store
     scope[astpass.RANGE_HELPER] = astpass.static_range
     scope[astpass.CALL_HELPER] = call

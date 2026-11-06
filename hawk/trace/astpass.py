@@ -50,6 +50,8 @@ LOOP_HELPER = "__hawk_loop__"
 SETITEM_HELPER = "__hawk_setitem__"
 #: The name the rewritten body reaches :func:`hawk.trace.reduce.maxmin` under.
 MAXMIN_HELPER = "__hawk_maxmin__"
+#: Runs a body's `and` / `or` / `not`: the logical kinds on traced conditions, Python's own otherwise.
+LOGIC_HELPER = "__hawk_logic__"
 #: The name the rewritten body reaches :func:`hawk.trace.reduce.scatter_store`
 #: under, and the name of the dict of the kernel's output refs it reads.
 SCATTER_HELPER = "__hawk_scatter__"
@@ -67,7 +69,6 @@ _BANNED_EXPR = {
     ast.GeneratorExp: "a generator expression", ast.NamedExpr: "the walrus operator",
     ast.Yield: "`yield`", ast.YieldFrom: "`yield from`", ast.Await: "`await`",
     ast.Starred: "argument unpacking (`*`)", ast.JoinedStr: "an f-string",
-    ast.BoolOp: "`and` / `or` (use land / lor — a kernel has no short circuit)",
 }
 
 #: The specific advice a comprehension refusal gives below.
@@ -552,7 +553,7 @@ def transform(fn: ast.FunctionDef, filename: str, sinks: frozenset[str],
                            ctx=ast.Load()), args=[], keywords=[]))
             for name in written if name in finishes] + body
     params = fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs
-    body = [_MaxMin().visit(st) for st in body]
+    body = [_Logic().visit(_MaxMin().visit(st)) for st in body]
     body = _Rewriter(filename).block(body, {a.arg for a in params})
     body += [_commit(name) for name in written]
     if returns_value:
@@ -805,11 +806,10 @@ def _check_expr(expr: ast.expr, filename: str) -> None:
                       if isinstance(n, _COMPREHENSION_NODES) else "")
             raise _err(n, filename,
                        f"{banned} is not a HAWK body form{advice}")
-        if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not):
-            raise _err(n, filename, "`not` is not a HAWK body form — use lnot(x)")
         if isinstance(n, ast.Compare):
             if len(n.ops) != 1:
-                raise _err(n, filename, "a chained comparison is not a HAWK body form")
+                raise _err(n, filename, "a chained comparison is not a HAWK body form; `x >= 0 & x <= 3` parses as the chain "
+                                        "`x >= (0 & x) <= 3`, so parenthesise each comparison around & and |: `(x >= 0) & (x <= 3)`")
             if isinstance(n.ops[0], (ast.Is, ast.IsNot, ast.In, ast.NotIn)):
                 raise _err(n, filename,
                            "identity / membership (`is`, `in`) is not a HAWK body form")
@@ -1350,6 +1350,24 @@ class _MaxMin(ast.NodeTransformer):
             return ast.copy_location(ast.Call(
                 func=ast.Name(id=CALL_HELPER, ctx=ast.Load()),
                 args=[node.func, *node.args], keywords=node.keywords), node)
+        return node
+
+
+class _Logic(ast.NodeTransformer):
+    """`a and b`, `a or b` and `not a` reach :func:`hawk.trace.reduce.logic`."""
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> ast.AST:
+        self.generic_visit(node)
+        return ast.copy_location(ast.Call(
+            func=ast.Name(id=LOGIC_HELPER, ctx=ast.Load()),
+            args=[ast.Constant(value="and" if isinstance(node.op, ast.And) else "or"), *node.values],
+            keywords=[]), node)
+
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> ast.AST:
+        self.generic_visit(node)
+        if isinstance(node.op, ast.Not):
+            return ast.copy_location(ast.Call(func=ast.Name(id=LOGIC_HELPER, ctx=ast.Load()),
+                                              args=[ast.Constant(value="not"), node.operand], keywords=[]), node)
         return node
 
 

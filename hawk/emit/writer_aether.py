@@ -115,6 +115,10 @@ def _evaluates_freely(node: Select) -> bool:
     return True
 
 
+#: The tensor ops that read a placed value's proxy element by element (``.at``), not as an expression.
+_READS_PROXY = frozenset({"component", "component_at", "set_component_at", "add_at"})
+
+
 class AetherWriter:
     """The aether C++ spelling (see the module docstring)."""
 
@@ -719,22 +723,43 @@ class AetherWriter:
 
     def _rolled_elements(self, node: Node) -> bool:
         """Whether every element of ``node`` is one expression of the element index: no vector of distinct parts is under it."""
-        node = _through(node)
-        if len(node.ttype.shape) != 1:
-            return True
-        kind = element_kind(node)
-        if kind == "parts":
-            first = node.operands[0]
-            return gather(node) is not None or all(
-                isinstance(o, Const) and isinstance(first, Const) and o.literal == first.literal for o in node.operands)
-        if kind == "elementwise":
-            return all(self._rolled_elements(o) for o in node.operands)
+        stack, seen = [node], set()
+        while stack:
+            node = _through(stack.pop())
+            if id(node) in seen or len(node.ttype.shape) != 1:
+                continue
+            seen.add(id(node))
+            kind = element_kind(node)
+            if kind == "parts":
+                first = node.operands[0]
+                if gather(node) is None and not all(
+                        isinstance(o, Const) and isinstance(first, Const) and o.literal == first.literal for o in node.operands):
+                    return False
+            elif kind == "elementwise":
+                stack.extend(node.operands)
         return True
 
     def _element_of(self, r, node: Node, k: str, static: int | None) -> str:
         """The text of element ``k`` of ``node`` (``static`` its value when it is a compile-time index): a plane read
         at it, a part, or the operation on the elements of its operands."""
-        node = _through(node)
+        work, vals = [(node, False)], []             # an explicit stack: a chain of any depth costs one frame
+        while work:
+            node, expanded = work.pop()
+            node = _through(node)
+            text = None if expanded else self._element_text(r, node, k, static)
+            if text is not None:
+                vals.append(text)
+            elif not expanded:
+                work.append((node, True))
+                work.extend((o, False) for o in reversed(node.operands))
+            else:
+                args = vals[len(vals) - len(node.operands):]
+                del vals[len(vals) - len(node.operands):]
+                vals.append(self._operation(node.kind, args))
+        return vals[0]
+
+    def _element_text(self, r, node: Node, k: str, static: int | None) -> str | None:
+        """The text of element ``k`` of ``node`` where it is not an operation on its operands' elements, else ``None``."""
         if len(node.ttype.shape) == 0:
             return r._ref(node)
         if is_prior(node):                         # the Mutable's own plane, read at its element before it is written
@@ -754,7 +779,7 @@ class AetherWriter:
         if kind == "splat":
             return r._ref(node.operands[0])
         if kind == "elementwise":
-            return self._operation(node.kind, [self._element_of(r, o, k, static) for o in node.operands])
+            return None
         if kind == "input":                        # a read-only vector plane of the kernel: its element, straight from the view
             return f"{binding_name(node.role, node.name)}[i].at({k})"
         raise HawkError(f"a value of kind {getattr(node, 'kind', type(node).__name__)!r} has no element-by-element spelling")
@@ -974,6 +999,8 @@ class AetherWriter:
     def _tensor_op(self, r, kind: str, args: Sequence[str], ranks: Sequence[int],
                    node: Op) -> str:
         rank = len(node.ttype.shape)
+        if kind not in _READS_PROXY and not rolled(node):
+            args = [f"{a}.expr()" if a in r.proxies else a for a in args]     # a placed value is an aether expression to the whole-value ops
         if kind == "component_at":
             return self._runtime_component(r, node, args)
         if kind == "set_component_at":

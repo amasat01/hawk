@@ -121,6 +121,18 @@ def _op(kind: str, *args: Any, literal: Any = None) -> Value:
     return Value(_make(kind, _operands(args), literal))
 
 
+def _is_condition(x: Any) -> bool:
+    return isinstance(x, bool) or (isinstance(x, (Value, Node)) and node_of(x).ttype.dtype == "bool")
+
+
+def _logic(kind: str, a: Any, b: Any) -> Value:
+    """``a & b``, ``a | b``, ``a ^ b``: on two conditions the logical ``land``/``lor``/``ne``, whose C++ is a bool; on
+    integers the bitwise kind (a bool beside an integer stays refused by it)."""
+    if _is_condition(a) and _is_condition(b):
+        return _op({"band": "land", "bor": "lor", "bxor": "ne"}[kind], a, b)
+    return _op(kind, a, b)
+
+
 class Value:
     """One traced IR value: every operator on it mints a node."""
 
@@ -198,22 +210,22 @@ class Value:
         return _op("mod", o, self)
 
     def __and__(self, o: Any) -> Value:
-        return _op("band", self, o)
+        return _logic("band", self, o)
 
     def __rand__(self, o: Any) -> Value:
-        return _op("band", o, self)
+        return _logic("band", o, self)
 
     def __or__(self, o: Any) -> Value:
-        return _op("bor", self, o)
+        return _logic("bor", self, o)
 
     def __ror__(self, o: Any) -> Value:
-        return _op("bor", o, self)
+        return _logic("bor", o, self)
 
     def __xor__(self, o: Any) -> Value:
-        return _op("bxor", self, o)
+        return _logic("bxor", self, o)
 
     def __rxor__(self, o: Any) -> Value:
-        return _op("bxor", o, self)
+        return _logic("bxor", o, self)
 
     def __lshift__(self, o: Any) -> Value:
         return _op("shl", self, o)
@@ -228,6 +240,8 @@ class Value:
         return _op("shr", o, self)
 
     def __invert__(self) -> Value:
+        if self.ttype.dtype == "bool":
+            return _op("lnot", self)
         return _op("invert", self)
 
     def __matmul__(self, o: Any) -> Value:
@@ -345,8 +359,10 @@ class Value:
         raise HawkError(
             "a traced value has no truth value: control flow is rewritten into "
             "select nodes by the ast pass. This fires when a traced value "
-            "reaches a Python branch, comprehension or `and`/`or` the pass does not "
-            "own — use select(cond, a, b), land/lor/lnot"
+            "reaches a Python branch or comprehension the pass does not own — use "
+            "select(cond, a, b). Combine conditions with `and` / `or` / `not` or with & | ~, and parenthesise "
+            "each comparison around & and |: `x >= 0 & x <= 3` parses as `x >= (0 & x) <= 3`, "
+            "so write `(x >= 0) & (x <= 3)`"
         )
 
 

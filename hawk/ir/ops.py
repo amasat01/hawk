@@ -142,6 +142,10 @@ def result_type(kind: str, operands: Sequence[Node],
         _integer_operands(kind, ts)
     elif any(t.dtype in INT_PLANE_DTYPES for t in ts):
         _int_plane_operands(kind, ts)
+    if "bool" in (t.dtype for t in ts) and (kind in ELEMENTWISE_BINARY or kind in UNARY_MATH
+                                            or kind in ELEMENTWISE_TERNARY or kind in INT_BINARY + INT_UNARY):
+        raise HawkError(f"op {kind!r} takes numbers, not a bool condition: use & | ^ ~ (or land, lor, lnot) for logic, "
+                        f"or m.select(cond, x, 0.0) for a number")
     binary_logical = kind in LOGICAL and kind != "lnot"
     if kind in ELEMENTWISE_BINARY or kind in COMPARE or binary_logical:
         shape = _broadcast(kind, ts[0], ts[1])

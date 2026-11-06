@@ -18,7 +18,7 @@ from typing import Any
 from ..ir import HawkError
 from ..ir import make as _make
 from ..ir.nodes import POLICIES, SCATTER_POLICIES, Leaf, ReduceSamples
-from .value import Value, _operands, index_node, n_samples, node_of, real, select, vec
+from .value import Value, _op, _operands, index_node, n_samples, node_of, real, select, vec
 
 
 def _axis(value: Value, axis: Any, op: str):
@@ -451,6 +451,30 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
             f"(hawk.scatter({name})[key]): one plane has one extent")
     by_key(ref, _flat_key(ref, key, where), value, op != "=", policy)
     return current if isinstance(current, _Stored) else _Stored(name)
+
+
+def logic(which: str, *args: Any) -> Any:
+    """``a and b`` / ``a or b`` / ``not a`` as the ast pass reaches them: with a traced operand, the logical
+    ``land`` / ``lor`` / ``lnot`` of conditions (every operand is evaluated: a kernel body is pure, it has no short
+    circuit); with none, Python's own result."""
+    if not any(isinstance(a, Value) for a in args):
+        if which == "not":
+            return not args[0]
+        result = args[0]
+        for a in args[1:]:
+            if bool(result) == (which == "or"):
+                break
+            result = a
+        return result
+    for a in args:
+        if node_of(a).ttype.dtype != "bool":
+            raise HawkError(f"`{which}` of a traced value needs conditions (bool); compare it first, e.g. `x != 0.0`")
+    if which == "not":
+        return _op("lnot", args[0])
+    out = args[0]
+    for a in args[1:]:
+        out = _op("land" if which == "and" else "lor", out, a)
+    return out
 
 
 def maxmin(which: str, *args: Any, **kwargs: Any) -> Any:

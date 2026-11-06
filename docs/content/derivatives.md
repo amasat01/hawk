@@ -14,7 +14,7 @@ A kernel that updates its planes in place is one step of a rollout. `hawk.diff.s
 
 ## jump=
 
-`@hawk.kernel(jump=<width>)` differentiates an `if`, a conditional expression or `where` that compares a differentiated value (`x < t`, `<=`, `>`, `>=`, combined with `land`, `lor` and `not`) as a smoothed switch. A sample within `sqrt(5) * width` of the switch passes on the jump between the two branches, weighted by an Epanechnikov kernel of standard deviation `width`; farther samples cost one comparison.
+`@hawk.kernel(jump=<width>)` differentiates an `if`, a conditional expression or `where` that compares a differentiated value (`x < t`, `<=`, `>`, `>=`, combined with `&`, `|`, `~` or `and`, `or`, `not`) as a smoothed switch. A sample within `sqrt(5) * width` of the switch passes on the jump between the two branches, weighted by an Epanechnikov kernel of standard deviation `width`; farther samples cost one comparison.
 
 - `jump="h"` reads the width from a `Param[Scalar]`, so changing it needs no rebuild.
 - `jump="auto"` picks each comparison's width from the batch.

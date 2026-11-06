@@ -124,8 +124,6 @@ REFUSALS = [
     ("assert", "    assert x\n    y = x\n", "Assert"),
     ("lambda", "    f = lambda a: a\n    y = x\n", "lambda"),
     ("comprehension", "    y = [a for a in range(3)]\n", "comprehension"),
-    ("boolop", "    if x > 0.0 and x < 1.0:\n        y = x\n    else:\n        y = x\n",
-     "land / lor"),
     ("chained", "    if 0.0 < x < 1.0:\n        y = x\n    else:\n        y = x\n",
      "chained comparison"),
     ("membership", "    if x in x:\n        y = x\n    else:\n        y = x\n",
@@ -174,14 +172,6 @@ def test_a_run_time_range_may_not_break_and_its_reverse_needs_max():
              "    s = x\n    for i in range(n):\n        s = s * x\n    out = s\n")
     with pytest.raises(HawkError, match="give `max=` so the tape has a size"):
         vjp(_traced(open_, Index=Index), wrt=("x",))
-
-
-def test_not_is_refused_with_its_own_line():
-    source = ("@kernel\ndef k(x: Scalar, out: Mutable[Scalar]):\n"
-              "    if not x:\n        y = x\n    else:\n        y = x\n"
-              "    out = y\n")
-    with pytest.raises(HawkError, match="lnot"):
-        _traced(source)
 
 
 def test_a_name_assigned_in_only_one_branch_must_be_bound_before_the_if():

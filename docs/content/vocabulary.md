@@ -101,3 +101,10 @@ and `Uniform` was considered and not taken.
 ## Notes on a plane
 
 `Annotated[Vector[3], hawk.Meta(unit="km")]` attaches notes to a plane. hawk never reads them: they are written to the sidecar as `plane_meta`, by plane name, and a program that loads the kernel through eagle gets them back as `plane_meta` on the loaded kernel. Values must be JSON.
+
+## Conditions
+
+A comparison is a bool. Combine bools with `&`, `|`, `^`, `~` or with `and`, `or`, `not` (every side is evaluated: a kernel
+body has no short circuit), and parenthesise each comparison around `&` and `|`: `x >= 0 & x <= 3` parses as
+`x >= (0 & x) <= 3`, so write `(x >= 0) & (x <= 3)`. Arithmetic on a bool (`+ - * / **`, unary `-`, `abs`, `min`, `max`) is
+refused: use `m.select(cond, x, 0.0)` for a number.

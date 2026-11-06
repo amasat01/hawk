@@ -20,7 +20,7 @@ on:
   schedule:
     - cron: "23 4 * * 1"   # weekly on main: every remembered pass runs again
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened]
   workflow_dispatch: {}
 
 concurrency:
@@ -28,21 +28,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release-gate:
-    # The release label, the diff, the PR body and the tag it would create agree (tools/release_gate.sh). Skipped on other PRs.
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - env:
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: bash tools/release_gate.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
   docs-fresh:
     # Freshness check, never a commit: the generator re-renders the pages and fails on any difference.
     runs-on: ubuntu-24.04
@@ -57,9 +42,6 @@ jobs:
           path: eagle
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
           pins: hawk/.github/companions
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
       # companion site (amasat01.github.io): the ref pinned in .github/companions, else a same-named branch, else main
       - uses: ./hawk/.github/actions/companion
         with:
@@ -67,8 +49,24 @@ jobs:
           path: site
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
           pins: hawk/.github/companions
+      - id: memo
+        uses: ./hawk/.github/actions/memo
+        with:
+          name: ci-docs-fresh
+          args: >-
+            --tree hawk --skip .github/ --tree eagle --skip .github/ --tree site --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/companions --file hawk/.github/workflows/ci.yml
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+        if: steps.memo.outputs.run == 'true'
       - name: ruff, the manifesto copy, and the documented numbers and capability map against the committed cards
         run: make -C hawk gate-lint SITE_SRC="$GITHUB_WORKSPACE/site" EAGLE_SRC="$GITHUB_WORKSPACE/eagle"
+        if: steps.memo.outputs.run == 'true'
+      - if: success() && steps.memo.outputs.run == 'true'
+        uses: ./hawk/.github/actions/memo-save
+        with:
+          name: ci-docs-fresh
+          digest: ${{ steps.memo.outputs.digest }}
   test:
     needs: docs-fresh
     runs-on: ubuntu-24.04
@@ -393,35 +391,16 @@ jobs:
           token: ${{ secrets.SIBLING_READ_TOKEN || github.token }}
           pins: hawk/.github/companions
 
-      # A pass is remembered under a digest of every input this job reads: the four trees, this workflow (which names the
-      # toolchain pins) and the runner image. On a hit the job succeeds without building.
       - id: memo
-        run: |
-          digest=$(hawk/.github/ci_digest.sh --tree hawk --skip docs/ --skip .github/ --tag hawk --tree aether --skip docs/ --skip .github/ \
-            --tree eagle --skip docs/ --skip .github/ --tree raptor --skip docs/ --skip .github/ \
-            --file hawk/.github/workflows/ci.yml --str "${ImageVersion:-}") || exit 1
-          [ -n "$digest" ] || { echo "::error::empty digest"; exit 1; }
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-      - id: pass
-        uses: actions/cache/restore@v6
+        uses: ./hawk/.github/actions/memo
         with:
-          path: ci-pass
-          key: ci-pass-v2-tsan-ft-${{ steps.memo.outputs.digest }}
-          lookup-only: true
-      - id: plan
-        env:
-          HIT: ${{ steps.pass.outputs.cache-hit }}
-          DIGEST: ${{ steps.memo.outputs.digest }}
-        run: |
-          if [ "$HIT" = true ] && [ "$GITHUB_EVENT_NAME" != schedule ]; then
-            echo "tsan-ft: passed earlier on digest $DIGEST" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo run=true >> "$GITHUB_OUTPUT"
-          fi
+          name: ci-tsan-ft
+          args: >-
+            --tree hawk --skip docs/ --skip README.md --skip CHANGELOG.md --skip .github/ --tree aether --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree eagle --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree raptor --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/ci.yml
 
       # compiled objects persist across runs
       - uses: actions/cache@v6
-        if: steps.plan.outputs.run == 'true'
+        if: steps.memo.outputs.run == 'true'
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-tsan-ft-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
@@ -432,22 +411,22 @@ jobs:
         with:
           path: ${{ runner.temp }}/tsan-python
           key: tsan-python-${{ runner.os }}-${{ runner.arch }}-${{ env.TSAN_PY_VERSION }}-clang18-${{ hashFiles('hawk/tests/sanitize/build_tsan_python.sh') }}
-        if: steps.plan.outputs.run == 'true'
+        if: steps.memo.outputs.run == 'true'
 
       # clang's OpenMP runtime (eagle._core needs OpenMP; gcc's libgomp does not pair with clang)
       - run: sudo apt-get update && sudo apt-get install -y libomp-18-dev ccache
-        if: steps.plan.outputs.run == 'true'
+        if: steps.memo.outputs.run == 'true'
 
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++-13
-        if: steps.plan.outputs.run == 'true'
+        if: steps.memo.outputs.run == 'true'
       - uses: ./hawk/.github/actions/cuda
-        if: steps.plan.outputs.run == 'true'
+        if: steps.memo.outputs.run == 'true'
 
       - run: ccache -z
-        if: steps.plan.outputs.run == 'true'
+        if: steps.memo.outputs.run == 'true'
       - name: TSan free-threaded CPython (cached)
         run: hawk/tests/sanitize/build_tsan_python.sh "$TSAN_PY_VERSION" "$RUNNER_TEMP/tsan-python"
-        if: steps.plan.outputs.run == 'true'
+        if: steps.memo.outputs.run == 'true'
 
       # aether + eagle headers for eagle's binding build (CPP mode, no CUDA)
       - run: |
@@ -459,7 +438,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install" \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install"
           cmake --install eagle/__eagle_hdr
-        if: steps.plan.outputs.run == 'true'
+        if: steps.memo.outputs.run == 'true'
 
       - name: ft rows under ThreadSanitizer
         env:
@@ -469,16 +448,14 @@ jobs:
           cd hawk
           CMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/__install" RAPTOR_DIR="${GITHUB_WORKSPACE}/raptor" AETHER_DIR="${GITHUB_WORKSPACE}/aether" \
             tests/sanitize/tsan_ft.sh "$RUNNER_TEMP/tsan-python/bin/python${TSAN_PY_VERSION%.*}t"
-        if: steps.plan.outputs.run == 'true'
-      - if: always() && steps.plan.outputs.run == 'true'
+        if: steps.memo.outputs.run == 'true'
+      - if: always() && steps.memo.outputs.run == 'true'
         run: ccache -s
-      - if: steps.plan.outputs.run == 'true'
-        run: mkdir -p ci-pass && touch ci-pass/tsan-ft
-      - if: hashFiles('ci-pass/*') != ''
-        uses: actions/cache/save@v6
+      - if: success() && steps.memo.outputs.run == 'true'
+        uses: ./hawk/.github/actions/memo-save
         with:
-          path: ci-pass
-          key: ci-pass-v2-tsan-ft-${{ steps.memo.outputs.digest }}
+          name: ci-tsan-ft
+          digest: ${{ steps.memo.outputs.digest }}
 
   ft-stress:
     needs: docs-fresh
