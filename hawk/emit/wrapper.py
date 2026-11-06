@@ -390,6 +390,13 @@ struct TiledLane {{
     using element_extents = aether::extents<W>;
     T* base;
     {qualifier} T& at(std::size_t k) const {{ return base[k * 32]; }}
+    /** the lane as an aether expression (a stride-0 sample mode: every sample reads this lane's elements) */
+    {qualifier} auto expr() const
+    {{
+        using Ext = aether::extents<W, aether::dyn>;
+        using V = aether::View<T, Ext, aether::layout_stride>;
+        return V(base, typename V::mapping_type(Ext(1), {{std::size_t{{32}}, std::size_t{{0}}}}), aether::Device{{}});
+    }}
 }};
 
 template <class T, std::size_t W, class ViewT>

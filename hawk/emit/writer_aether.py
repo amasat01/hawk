@@ -115,6 +115,10 @@ def _evaluates_freely(node: Select) -> bool:
     return True
 
 
+#: The tensor ops that read a placed value's proxy element by element (``.at``), not as an expression.
+_READS_PROXY = frozenset({"component", "component_at", "set_component_at", "add_at"})
+
+
 class AetherWriter:
     """The aether C++ spelling (see the module docstring)."""
 
@@ -974,6 +978,8 @@ class AetherWriter:
     def _tensor_op(self, r, kind: str, args: Sequence[str], ranks: Sequence[int],
                    node: Op) -> str:
         rank = len(node.ttype.shape)
+        if kind not in _READS_PROXY and not rolled(node):
+            args = [f"{a}.expr()" if a in r.proxies else a for a in args]     # a placed value is an aether expression to the whole-value ops
         if kind == "component_at":
             return self._runtime_component(r, node, args)
         if kind == "set_component_at":

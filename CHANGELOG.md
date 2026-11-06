@@ -2,6 +2,12 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
+## Unreleased
+
+### Fixed
+
+**A wide value placed in its plane reads as an aether expression on the host loop interchange.** A product, sum, function, dot or cross over a placed value no longer fails to compile (`no member named 'cwiseMul'`); the lane proxy is a real expression view of its row.
+
 ## 0.7.3 (2026-11-05)
 
 This section covers what changes from 0.7.2. Names that left are in the table at the end.
