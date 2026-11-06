@@ -85,7 +85,7 @@ def test_a_banded_literal_is_classified_by_its_exact_value_and_a_store_packs(tar
     banded, f64 = _unit(kq, target_id, BANDED), _unit(kq, target_id, FLOAT64)
     for value in (0.5, 0.25):                    # powers of two scale exactly
         assert f"static_cast<Real>({value})" in f64
-        assert f"scalePow2f(" in banded and f"{value}f)" in banded
+        assert "scalePow2f(" in banded and f"{value}f)" in banded
     assert "addRawS(psc_y_i, 1.5f)" in banded          # one limb: a float-exact literal
     assert "static_cast<Real>(" not in _body(banded)
     assert "mut_out[i] = Real((" in banded and "mut_out[i] = ((" in f64

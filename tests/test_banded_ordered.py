@@ -147,7 +147,6 @@ def test_a_banded_column_sum_is_the_same_cell_every_run_and_within_half_an_ulp_o
     from fractions import Fraction
 
     import eagle
-    from eagle import arrays
 
     x = data(n)
     cells, last = _launch_cells(_total(policy, n), target, tmp_path, {"x": x, "out": np.zeros(1)}, "out")
@@ -208,7 +207,6 @@ def test_a_banded_scatter_is_the_same_cells_every_run_and_within_half_an_ulp_per
     from fractions import Fraction
 
     import eagle
-    from eagle import arrays
 
     n = 30000
     key = (np.random.default_rng(cells).integers(0, cells, n)).astype(np.int32)
