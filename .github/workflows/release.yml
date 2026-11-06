@@ -108,7 +108,7 @@ jobs:
         env:
           PLAT: ${{ matrix.plat }}
         run: |
-          args=(--tree hawk --skip docs/ --skip .github/ --tree aether --skip docs/ --skip .github/ --tree eagle --skip docs/ --skip .github/
+          args=(--tree hawk --skip docs/ --skip .github/ --tree aether --skip docs/ --skip tests/ --skip ci/ --skip dsc/tests/ --skip CHANGELOG.md --skip README.md --skip CONTRIBUTING.md --skip CITATION.cff --skip Makefile --skip ruff.toml --skip .github/ --tree eagle --skip docs/ --skip tests/ --skip benchmarks/ --skip examples/ --skip ci/ --skip tools/ --skip python/tests/ --skip python/benchmarks/ --skip CHANGELOG.md --skip README.md --skip CONTRIBUTING.md --skip CITATION.cff --skip Makefile --skip ruff.toml --skip environment-light.yml --skip .github/
                 --version hawk --file hawk/.github/workflows/release.yml --str "$PLAT $RUNNER_OS $RUNNER_ARCH")
           if [ "$RUNNER_OS" = Linux ]; then
             args+=(--str "manylinux_2_28 $(docker buildx imagetools inspect "quay.io/pypa/manylinux_2_28_$(uname -m)" --format '{{.Manifest.Digest}}' 2>/dev/null || true)")
@@ -273,7 +273,7 @@ jobs:
         with:
           name: release-test-wheel
           args: >-
-            --tree hawk --skip docs/ --skip CHANGELOG.md --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree eagle --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree raptor --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/release.yml
+            --tree hawk --skip docs/ --skip CHANGELOG.md --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip tests/ --skip ci/ --skip dsc/tests/ --skip CHANGELOG.md --skip README.md --skip CONTRIBUTING.md --skip CITATION.cff --skip Makefile --skip ruff.toml --skip .github/ --tree eagle --skip docs/ --skip tests/ --skip benchmarks/ --skip examples/ --skip ci/ --skip tools/ --skip python/tests/ --skip python/benchmarks/ --skip CHANGELOG.md --skip README.md --skip CONTRIBUTING.md --skip CITATION.cff --skip Makefile --skip ruff.toml --skip environment-light.yml --skip .github/ --tree raptor --skip docs/ --skip tests/ --skip ci/ --skip tools/ --skip goldens/ --skip RELEASING.md --skip CHANGELOG.md --skip README.md --skip CONTRIBUTING.md --skip CITATION.cff --skip Makefile --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/release.yml
           extra: ${{ toJSON(matrix) }}
       - uses: actions/download-artifact@v8
         with:
@@ -413,7 +413,7 @@ jobs:
         with:
           name: release-test-wheel-cpu
           args: >-
-            --tree hawk --skip docs/ --skip CHANGELOG.md --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree eagle --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree raptor --skip docs/ --skip CHANGELOG.md --skip README.md --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/release.yml
+            --tree hawk --skip docs/ --skip CHANGELOG.md --skip .github/ --skip-ext .ipynb --tree aether --skip docs/ --skip tests/ --skip ci/ --skip dsc/tests/ --skip CHANGELOG.md --skip README.md --skip CONTRIBUTING.md --skip CITATION.cff --skip Makefile --skip ruff.toml --skip .github/ --tree eagle --skip docs/ --skip tests/ --skip benchmarks/ --skip examples/ --skip ci/ --skip tools/ --skip python/tests/ --skip python/benchmarks/ --skip CHANGELOG.md --skip README.md --skip CONTRIBUTING.md --skip CITATION.cff --skip Makefile --skip ruff.toml --skip environment-light.yml --skip .github/ --tree raptor --skip docs/ --skip tests/ --skip ci/ --skip tools/ --skip goldens/ --skip RELEASING.md --skip CHANGELOG.md --skip README.md --skip CONTRIBUTING.md --skip CITATION.cff --skip Makefile --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --tag hawk --file hawk/.github/workflows/release.yml
           extra: ${{ toJSON(matrix) }}
       - uses: actions/download-artifact@v8
         with:
@@ -544,6 +544,17 @@ jobs:
       - uses: ./hawk/.github/actions/companion
         with: {repo: amasat01.github.io, path: site, pins: hawk/.github/companions, token: "${{ secrets.SIBLING_READ_TOKEN || github.token }}"}
 
+      # The built site is remembered under a digest of what it is rendered from; a hit restores it and skips the build.
+      - id: dk
+        run: |
+          digest=$(hawk/.github/ci_digest.sh --tree hawk --skip .github/ --tree aether --skip docs/ --skip tests/ --skip ci/ --skip dsc/tests/ --skip CHANGELOG.md --skip README.md --skip CONTRIBUTING.md --skip CITATION.cff --skip Makefile --skip ruff.toml --skip .github/ --tree eagle --skip tests/ --skip benchmarks/reproduce/ --skip examples/ --skip ci/ --skip python/tests/ --skip python/benchmarks/ --skip CONTRIBUTING.md --skip CITATION.cff --skip Makefile --skip ruff.toml --skip .github/ --tree raptor --skip docs/ --skip tests/ --skip ci/ --skip tools/ --skip goldens/ --skip RELEASING.md --skip CHANGELOG.md --skip README.md --skip CONTRIBUTING.md --skip CITATION.cff --skip Makefile --skip .github/ --tree site --skip tests/ --skip .github/ --tree hawk --only .github/actions/ --only .github/ci_digest.sh --only .github/cuda_redist.sh --only .github/companions --version hawk --file hawk/.github/workflows/release.yml --str "$RUNNER_OS $RUNNER_ARCH ${ImageVersion:-}") || exit 1
+          [ -n "$digest" ] || { echo "::error::empty digest"; exit 1; }
+          echo "key=site-v1-$digest" >> "$GITHUB_OUTPUT"
+      - id: dh
+        uses: actions/cache@v6
+        with:
+          path: hawk/docs/_build/html
+          key: ${{ steps.dk.outputs.key }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -554,8 +565,10 @@ jobs:
             raptor/pyproject.toml
             eagle/python/pyproject.toml
             hawk/docs/requirements.txt
+        if: steps.dh.outputs.cache-hit != 'true'
 
       - run: sudo apt-get update && sudo apt-get install -y g++-13 ccache cppcheck
+        if: steps.dh.outputs.cache-hit != 'true'
 
       # compiled objects persist across runs; one cache per job and architecture
       - uses: actions/cache@v6
@@ -564,9 +577,12 @@ jobs:
           key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-docs-${{ hashFiles('**/*.h', '**/*.hpp', '**/*.cpp', '**/*.cu', '**/*.cuh', '**/CMakeLists.txt') }}
           restore-keys: |
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-docs-
+        if: steps.dh.outputs.cache-hit != 'true'
       - run: ccache -z
+        if: steps.dh.outputs.cache-hit != 'true'
 
       - uses: ./hawk/.github/actions/cuda
+        if: steps.dh.outputs.cache-hit != 'true'
 
       # the gate's venv carries the sibling checkouts as before; it runs every notebook on the CPU, the strict (-W) Sphinx build
       # and the public-name page check: the commands are in the Makefile
@@ -575,6 +591,7 @@ jobs:
         run: |
           make -C hawk gate-docs SITE_SRC="$GITHUB_WORKSPACE/site" \
             RAPTOR_SRC="$GITHUB_WORKSPACE/raptor" AETHER_SRC="$GITHUB_WORKSPACE/aether" EAGLE_SRC="$GITHUB_WORKSPACE/eagle"
+        if: steps.dh.outputs.cache-hit != 'true'
 
       - id: tree
         run: echo "tree=$(git -C hawk rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
@@ -584,7 +601,7 @@ jobs:
           name: site-${{ steps.tree.outputs.tree }}
           retention-days: 90
           path: hawk/docs/_build/html
-      - if: always()
+      - if: always() && steps.dh.outputs.cache-hit != 'true'
         run: ccache -s
 
   # Informational: a docs-only PR carries an already published version.
