@@ -140,10 +140,13 @@ def thread_box(kernel, scalar_type: str, *, kind=None, segment=None, active=None
     from ..ir import lanes
     from ..targets.cards import thread_box as card
 
+    measured = card(scalar_type)
+    if measured is None:
+        return None
     f = lanes.facts(kernel, group=getattr(kernel, "group", 1))
     if not f.uniform_control:
         return None
-    p1 = lanes.choose_mapping(f, card=card(scalar_type))["P1"]
+    p1 = lanes.choose_mapping(f, card=measured)["P1"]
     if p1 is None:
         return None
     T, axis = p1["T"], f.axes[p1["index"]]

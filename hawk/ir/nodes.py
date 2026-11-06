@@ -580,15 +580,18 @@ class AccumWrite(Sink):
     an ``index`` other than the own column is a scatter. ``policy`` is the
     sum contract (:data:`POLICIES`)."""
 
-    __slots__ = ("policy",)
+    __slots__ = ("policy", "reduced")
 
     def __init__(self, name: str, value: Node, index: Node | None = None,
-                 ttype: TensorType | None = None, policy: str = "auto") -> None:
+                 ttype: TensorType | None = None, policy: str = "auto", reduced: Node | None = None) -> None:
         super().__init__("accum_write", "accum_out", name, value, index, ttype)
         if policy not in (*SCATTER_POLICIES, KEYED_AUTO):
             raise HawkError(
                 f"accum_write {name!r}: policy {policy!r} is not one of {SCATTER_POLICIES}")
         self.policy = policy
+        #: The keyed :class:`ReduceSamples` this accumulate stores (a sum over lane axes), or ``None``: lets a build
+        #: that cannot add atomically lower the sum as a block sum instead of a scatter.
+        self.reduced = reduced
 
     @property
     def dedup_extra(self) -> Any:
@@ -597,7 +600,7 @@ class AccumWrite(Sink):
 
     def rebuilt(self, value: Node) -> AccumWrite:
         """The same accumulate over ``value``."""
-        return AccumWrite(self.name, value, self.index, self.ttype, self.policy)
+        return AccumWrite(self.name, value, self.index, self.ttype, self.policy, self.reduced)
 
 
 #: The suffix of a ``sample_sum`` plane's compensation companion.
@@ -678,7 +681,7 @@ class ReduceSamples(Node):
         shape = value.ttype.shape
         scalar = TensorType((), value.ttype.dtype)
         if not shape:
-            return (AccumWrite(name, value, self.key, scalar, self.policy),)
+            return (AccumWrite(name, value, self.key, scalar, self.policy, self),)
         index = [(r,) if len(shape) == 1 else (r, c)
                  for r in range(shape[0]) for c in range(shape[-1] if len(shape) == 2 else 1)]
         from .ops import make

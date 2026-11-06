@@ -25,6 +25,7 @@ from .fused import render_lane_body as render_lane_body
 from .host import HostWrapper as HostWrapper
 from .render import Body as Body
 from .render import render_body
+from .wrapper import BANDED as BANDED
 from .wrapper import FAST_ENTRIES_MACRO as FAST_ENTRIES_MACRO
 from .wrapper import FLOAT32 as FLOAT32
 from .wrapper import FLOAT64 as FLOAT64

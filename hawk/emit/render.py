@@ -205,7 +205,7 @@ _WORD = re.compile(r"\b\w+\b")
 
 
 def render_lane_split(sinks: Sequence[Sink], walk: Walk, *, indent: str = "        ",
-                      kind=None) -> LaneSplit | None:
+                      kind=None, writer=None) -> LaneSplit | None:
     """The :class:`LaneSplit` of a fused-step kernel's body, or ``None`` when
     the body is not that shape.
 
@@ -215,7 +215,7 @@ def render_lane_split(sinks: Sequence[Sink], walk: Walk, *, indent: str = "     
     after it reading a value named before it. Anything else answers
     ``None`` and keeps its plain body: a body with its own inner ``for`` would
     need a second interchange."""
-    return _Renderer(tuple(sinks), walk, indent, kind).lane_split()
+    return _Renderer(tuple(sinks), walk, indent, kind, writer=writer).lane_split()
 
 
 @dataclass(frozen=True)
@@ -267,10 +267,10 @@ class LaneSegments:
 
 
 def render_lane_segments(sinks: Sequence[Sink], walk: Walk, cut: Sequence[Loop], *,
-                         indent: str = "        ", kind=None) -> LaneSegments:
+                         indent: str = "        ", kind=None, writer=None) -> LaneSegments:
     """The :class:`LaneSegments` of a body whose top-level loops ``cut``
     (:func:`hawk.ir.vectorise.interchanged_loops`) run interchanged."""
-    return _Renderer(tuple(sinks), walk, indent, kind).lane_segments(cut)
+    return _Renderer(tuple(sinks), walk, indent, kind, writer=writer).lane_segments(cut)
 
 
 def _sample_free(node: Node) -> bool:
@@ -375,6 +375,11 @@ class _Renderer(_DispatchMixin):
         #: reads.
         self.count_names: dict[int, str] = {}
         self.fanout: dict[int, int] = {}
+        #: The ``(sin, cos)`` names bound once for an operand both are taken of (banded ``sincos``), by operand id.
+        self.sincos: dict[int, tuple] = {}
+        #: The op kinds that read each value (by node id); a value a sink, a loop carry or an exit reads is held
+        #: under ``None``: a consumer that is no operation (:meth:`_ordered`).
+        self.readers: dict[int, set] = {}
         #: The names of the fresh ``Item`` locals the writer declares for a value its
         #: statements fill (:meth:`~hawk.emit.writer_aether.AetherWriter.fresh_value`).
         self.fresh_items: set = set()
@@ -393,6 +398,10 @@ class _Renderer(_DispatchMixin):
             for child in node.operands:
                 p = self.position[id(_through(child))]
                 self.fanout[p] = self.fanout.get(p, 0) + 1
+                self._read_by(child, node)
+            if isinstance(node, Loop):
+                for held in (*node.nexts, node.exit_cond, *node.exit_values):
+                    self._read_by(held, None)
             if isinstance(node, Loop):
                 for child in node.operands:
                     child = _through(child)
@@ -402,6 +411,9 @@ class _Renderer(_DispatchMixin):
                         # naming it here would emit a dead `plane[i].eval()`.
                         continue
                     self.forced.add(self.position[id(child)])
+        for sink in self.sinks:
+            for held in (getattr(sink, "value", None), getattr(sink, "index", None)):
+                self._read_by(held, None)
         #: The positions no statement renders, because every user reads them through their
         #: own operand (:meth:`~hawk.emit.writer_aether.AetherWriter.unrendered`).
         self.unrendered = self.writer.unrendered(self) if self.writer.rolled_forms else frozenset()
@@ -947,7 +959,7 @@ class _Renderer(_DispatchMixin):
         """Record ``text`` as ``node``'s rendering, named when :meth:`_materialised`."""
         if self._materialised(node, pos):
             name = self._name(node, pos)
-            self._emit(self.writer.declare(name, node.ttype, text))
+            self._emit(self.writer.declare(name, node.ttype, text, ordered=self._ordered(node)))
             self.rendered[pos] = name
         else:
             self.rendered[pos] = text
@@ -1057,6 +1069,20 @@ class _Renderer(_DispatchMixin):
         if isinstance(node, (At, Leaf)):
             return bool(node.ttype.shape)
         return isinstance(node, Op) and node.kind in ("splat", "vec")
+
+    def _read_by(self, child, reader) -> None:
+        """Record that ``reader`` (``None``: no operation) reads ``child``."""
+        if child is not None:
+            self.readers.setdefault(id(_through(child)), set()).add(
+                reader.kind if isinstance(reader, Op) else None)
+
+    def _ordered(self, node: Node) -> bool:
+        """Does a reader of ``node`` need its limbs in order? Only the writer decides what that means
+        (:meth:`~hawk.emit.writer_aether.AetherWriter.reads_raw`); a value nothing was seen to read is ordered."""
+        if isinstance(node, (Leaf, At)):
+            return True                  # a plane element is decoded once, whoever reads it
+        kinds = self.readers.get(id(node))
+        return not kinds or not all(k is not None and self.writer.reads_raw(k) for k in kinds)
 
     def _name(self, node: Node, pos: int) -> str:
         if isinstance(node, Leaf):
@@ -1250,7 +1276,7 @@ class _Renderer(_DispatchMixin):
         nexts = []
         for j, (carry, nxt) in enumerate(zip(loop.carries, loop.nexts)):
             result = f"hawk_n{pos}_{j}"
-            self._emit(f"const {carry_type(carry.ttype)} {result} = {self._ref(nxt)};")
+            self._emit(f"const {self.writer.carry_type(carry.ttype)} {result} = {self._ref(nxt)};")
             nexts.append(result)
         flag = f"hawk_x{pos}"
         self._emit(f"const bool {flag} = {self._ref(loop.exit_cond)};")
@@ -1325,7 +1351,7 @@ class _Renderer(_DispatchMixin):
             self.local[id(carry)] = name
             if j in planed and loop.exit_cond is None:
                 self.mutable_carries.add(id(carry))         # a plane's proxy is written in place
-        elems = [carry_type(c.ttype) for c in loop.carries]
+        elems = [self.writer.carry_type(c.ttype) for c in loop.carries]
         # a trip that writes a plane is skipped by a lane that is not running (a masked sample's plane is not to be written)
         speculative = self._speculative(loop) and not planed
         form = loop.exit_form
@@ -1428,6 +1454,7 @@ class _Renderer(_DispatchMixin):
             for child in node.operands:
                 child = _through(child)
                 fanout[id(child)] = fanout.get(id(child), 0) + 1
+                self._read_by(child, node)
         live = _scope_live(loop)
         for node in body:
             if id(node) in skip or (only is not None and id(node) not in only):

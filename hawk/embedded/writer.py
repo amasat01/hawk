@@ -241,7 +241,12 @@ class CWriter:
 
     # -- declarations and loops ----------------------------------------
 
-    def declare(self, name: str, ttype: TensorType, text: str) -> str:
+    @staticmethod
+    def reads_raw(kind: str) -> bool:
+        """No raw chains in C."""
+        return False
+
+    def declare(self, name: str, ttype: TensorType, text: str, ordered: bool = True) -> str:
         """A named local: ``const {ctype} {name} = {text};``."""
         if text in self._gathered:
             raise HawkError(

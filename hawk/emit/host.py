@@ -601,9 +601,18 @@ def _width(ttype) -> int:
     return prod(ttype.shape) if ttype.shape else 1
 
 
+def _is_real(ttype) -> bool:
+    return not ttype.shape and ttype.dtype in ("f64", "f32")
+
+
+def _lane_elem(ttype) -> str:
+    """The element a lane array row of ``ttype`` is declared with."""
+    return "Real" if _is_real(ttype) else element_spelling(ttype.dtype)
+
+
 def _lane_type(ttype) -> str:
     """The value a lane array row holds back as: the carry's own spelling."""
-    return carry_type(ttype)
+    return "Real" if _is_real(ttype) else carry_type(ttype)
 
 
 _TILE_LOOP_HEAD = (
@@ -638,7 +647,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
     for m, (name, ttype) in enumerate(split.live_ins):
         rows.append((f"hawk_li{m}", name, ttype))
     for arr, _, ttype in rows:
-        arrays.append(f"    alignas(64) {element_spelling(ttype.dtype)} "
+        arrays.append(f"    alignas(64) {_lane_elem(ttype)} "
                       f"{arr}[{_width(ttype)} * hawk_tile] = {{}};")
     lines = [
         f"    constexpr aether::offset_t hawk_tile = {tile};",
@@ -733,7 +742,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         '                  "hawk: a tile holds whole chunks");',
         "    for (aether::offset_t hawk_cb = 0; hawk_cb < hawk_tn;",
         "         hawk_cb += hawk_w) {",
-        *[f"    alignas(64) {element_spelling(t.dtype)} {mine}[{_width(t)} * hawk_w];"
+        *[f"    alignas(64) {_lane_elem(t)} {mine}[{_width(t)} * hawk_w];"
           for mine, _, t in chunk],
         "    alignas(64) HAWK_LANE_T hawk_ron[hawk_w];",
     ]
@@ -1019,7 +1028,7 @@ def loop_interchange_text(segs: LaneSegments) -> str | None:
         "        static_cast<aether::offset_t>(base + count);",
         "    alignas(64) HAWK_LANE_T hawk_on[hawk_tile] = {};",
         "    alignas(64) HAWK_LANE_T hawk_ron[hawk_tile] = {};",
-        *[f"    alignas(64) {element_spelling(t.dtype)} {arr(x)}[{_width(t)} * hawk_tile] = {{}};"
+        *[f"    alignas(64) {_lane_elem(t)} {arr(x)}[{_width(t)} * hawk_tile] = {{}};"
           for x, (t, _) in sorted(rows.items())],
         *[f"    alignas(64) Real hawk_row_{plane}[{width} * hawk_tile];"
           for plane, width in sorted(set(segs.proxies.values()))],
@@ -1388,7 +1397,7 @@ class HostWrapper:
             "" if live is None else f"""
         if (hawk_i < static_cast<std::int64_t>({live})) {{""")
         # a sample at or past the prefix count adds the identity (its row is still stored)
-        ident = "0" if op == "sum" else f"hawk_abi::ssIdentity_<{SAMPLE_SUM_OP_CODE[op]}, {elem}>()"
+        ident = (f"{elem}{{}}" if "BandAccum" in elem else "0") if op == "sum" else f"hawk_abi::ssIdentity_<{SAMPLE_SUM_OP_CODE[op]}, {elem}>()"
         skip = "" if live is None else f"""
         }} else {{
             for (int hawk_k = 0; hawk_k < {width}; ++hawk_k) {SAMPLE_SUM_TERMS}[hawk_k] = {ident};

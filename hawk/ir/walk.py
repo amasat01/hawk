@@ -108,6 +108,11 @@ class Walk:
         return tuple(n.name for n in self.order if isinstance(n, SampleSum))
 
     @property
+    def kinds(self) -> frozenset:
+        """The ``kind`` of every node the body reaches (a build mode refuses an op by it)."""
+        return frozenset(getattr(n, "kind", None) for n in self.order)
+
+    @property
     def reads_lane_position(self) -> bool:
         """``True`` when the body reads ``hawk.lane_position()`` (:class:`~hawk.ir.nodes.LanePosition`)."""
         return any(isinstance(n, LanePosition) for n in self.order)

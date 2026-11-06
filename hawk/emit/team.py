@@ -22,6 +22,15 @@ FOLD_LANES = 1024
 
 VIRTUAL_LANES = FOLD_LANES * GROUPS
 
+#: Lanes one block of a banded plain sum folds, one accumulator each over its whole run of rows; ``GROUPS`` blocks per key.
+BAND_LANES = 128
+
+BAND_VIRTUAL_LANES = BAND_LANES * GROUPS
+
+#: A fold-only loop over a run of banded rows is unrolled by the accumulator's renormalise period, so its countdown
+#: gate is a compile-time constant. Never on a kernel's sample loop or a loop whose accumulator changes per iteration.
+_BAND_UNROLL = "#pragma unroll aether::banded::BandAccum::period"
+
 #: The text every team call carries; the wrapper includes the team headers for a body holding it.
 TEAM_CALL = "aether::linalg::team::"
 
@@ -33,11 +42,35 @@ _SOLVE = {"lu_solve": "luSolve", "lu_solve_t": "luSolveT", "cho_solve": "choSolv
           "tri_lower": "triLower", "tri_upper_t": "triUpperT"}
 _PLANE = "hawk_lane"                 # the lane the entry bound: the sample index of the lane
 
+# A banded build keeps every partial sum in aether's 16-byte BandPartial and folds with BandAccum, in the same order
+# as the float64 stages (so the bits do not depend on the run); a stored cell is encoded once, at the end.
+_ACC = "aether::banded::BandAccum"
+_PART = "aether::banded::BandPartial"
+_BAND = "aether::banded::Band"
+
+
+def _part_ptr(name: str, offset: str) -> str:
+    """A ``BandPartial`` pointer to ``offset`` elements into the scratch plane ``name``."""
+    return f"(reinterpret_cast<{_PART}*>({_binding(name)}.data()) + {offset})"
+
+
+def _combine(dst: str, src: str) -> str:
+    """``dst`` (a BandPartial) becomes the combined partial of ``dst`` and ``src``."""
+    return (f"{{ {_ACC} hawk_a = {_ACC}::fromPartial({dst}); hawk_a.combine({_ACC}::fromPartial({src})); "
+            f"{dst} = hawk_a.partial(); }}")
+
 
 def _binding(name: str) -> str:
     from ..emit.spelling import binding_name
 
     return binding_name("wide_out", name)
+
+
+def _input(name: str, reads) -> str:
+    """The binding of the plane ``name``: the input plane the stage reads in place, else its scratch."""
+    from ..emit.spelling import binding_name
+
+    return binding_name("per_sample", name) if name in reads else _binding(name)
 
 
 def _pointer(name: str, role: str, per_lane: int) -> str:
@@ -79,7 +112,7 @@ def _call(step) -> str:
     return f"{_NS}{_SOLVE[op]}<{n}>(hawk_tm, hawk_f, hawk_x, hawk_x, {step.k});"
 
 
-def _block(step, per_lane: dict, active) -> list:
+def _block(step, per_lane: dict, active, cells: bool = False) -> list:
     """The call of a block sum: the team of key ``hawk_lane`` sums that key's rows (``nSamples /
     count`` of them, contiguous: the reduced axes are the trailing ones) into its block ``hawk_g``,
     then copies it to the output plane when the sum is stored (``(*payload, *kept)``: entry ``e``
@@ -113,13 +146,30 @@ def _block(step, per_lane: dict, active) -> list:
                   "}"]
         first, rows, index = "hawk_edge[0]", "hawk_edge[1] - hawk_edge[0]", ", hawk_map"
     roles = dict(step.planes)
-    lines.append(f"const Real* const hawk_u = {_binding(step.plane('u'))}.data();")
+    if "u" in roles:            # not for a factor the first stage read in place
+        lines.append(f"const Real* const hawk_u = {_binding(step.plane('u'))}.data();")
     if "v" in roles:
         lines.append(f"const Real* const hawk_v = {_binding(step.plane('v'))}.data();")
         stride_v = str(q)
     else:                       # an ordered plain sum: v is the constant 1
-        lines += ["const Real hawk_one = Real(1);", "const Real* const hawk_v = &hawk_one;"]
+        one = f"Real({_BAND}(1.0f, 0.0f, 0.0f))" if cells else "Real(1)"
+        lines += [f"const Real hawk_one = {one};", "const Real* const hawk_v = &hawk_one;"]
         stride_v = "0"
+    if "gp" in roles and active is None and cells:
+        return lines + [
+            f"__shared__ {_PART} hawk_sh[{GROUPS}];",
+            f"for (std::size_t hawk_i = static_cast<std::size_t>(hawk_tm.rank); hawk_i < {GROUPS}; "
+            "hawk_i += static_cast<std::size_t>(hawk_tm.size))",
+            f"    hawk_sh[hawk_i] = {_part_ptr(roles['gp'], f'hawk_key * {GROUPS}')}[hawk_i];",
+            "hawk_tm.sync();",
+            f"for (std::size_t hawk_w = {GROUPS // 2}; hawk_w > 0; hawk_w >>= 1) {{",
+            "    for (std::size_t hawk_i = static_cast<std::size_t>(hawk_tm.rank); hawk_i < hawk_w; "
+            "hawk_i += static_cast<std::size_t>(hawk_tm.size))",
+            "        " + _combine("hawk_sh[hawk_i]", "hawk_sh[hawk_i + hawk_w]"),
+            "    hawk_tm.sync();",
+            "}",
+            f"if (hawk_tm.rank == 0) {_binding(roles['out'])}.data()[hawk_key] = {_ACC}::fromPartial(hawk_sh[0]).toBandedReal();",
+            "hawk_tm.sync();"]
     if "gp" in roles and active is None:
         gp = _binding(roles["gp"])
         return lines + [
@@ -155,7 +205,7 @@ def _block(step, per_lane: dict, active) -> list:
     return lines
 
 
-def _block_part(step, active) -> list:
+def _block_part(step, active, cells: bool = False, reads=frozenset()) -> list:
     """The first stage of a plain ordered sum: block ``hawk_lane`` is group ``hawk_lane % GROUPS`` of key ``hawk_lane / GROUPS``;
     virtual lane ``l`` of the 65536 adds rows ``l, l + 65536, ...`` of the key in order, each group's 1024 lanes are folded by the
     halving tree and the group's value goes to its cell of the partials plane. Constants and the row count only."""
@@ -166,12 +216,33 @@ def _block_part(step, active) -> list:
              f"const std::size_t hawk_grp = static_cast<std::size_t>(hawk_lane) % {GROUPS};",
              f"const std::size_t hawk_keys = static_cast<std::size_t>(count) / {GROUPS};",
              "const std::size_t hawk_rows = static_cast<std::size_t>(nSamples) / hawk_keys;",
-             f"const Real* const hawk_u = {_binding(roles['u'])}.data() + hawk_key * hawk_rows;"]
+             f"const Real* const hawk_u = {_input(roles['u'], reads)}.data() + hawk_key * hawk_rows;"]
     if "v" in roles:
-        lines.append(f"const Real* const hawk_v = {_binding(roles['v'])}.data() + hawk_key * hawk_rows;")
+        lines.append(f"const Real* const hawk_v = {_input(roles['v'], reads)}.data() + hawk_key * hawk_rows;")
         term = "hawk_u[hawk_r] * hawk_v[hawk_r]"
     else:
         term = "hawk_u[hawk_r]"
+    if cells:
+        band = (f"{_BAND}(hawk_u[hawk_r]) * {_BAND}(hawk_v[hawk_r])" if "v" in roles else f"{_BAND}(hawk_u[hawk_r])")
+        return lines + [
+            f"__shared__ {_PART} hawk_sh[{BAND_LANES}];",
+            f"for (std::size_t hawk_t = static_cast<std::size_t>(hawk_tm.rank); hawk_t < {BAND_LANES}; "
+            "hawk_t += static_cast<std::size_t>(hawk_tm.size)) {",
+            f"    {_ACC} hawk_s;",
+            f"    {_BAND_UNROLL}",
+            f"    for (std::size_t hawk_r = hawk_grp * {BAND_LANES} + hawk_t; hawk_r < hawk_rows; hawk_r += {BAND_VIRTUAL_LANES})",
+            f"        hawk_s.addTerm({_BAND}({band}));",
+            "    hawk_sh[hawk_t] = hawk_s.partial();",
+            "}",
+            "hawk_tm.sync();",
+            f"for (std::size_t hawk_w = {BAND_LANES // 2}; hawk_w > 0; hawk_w >>= 1) {{",
+            "    for (std::size_t hawk_i = static_cast<std::size_t>(hawk_tm.rank); hawk_i < hawk_w; "
+            "hawk_i += static_cast<std::size_t>(hawk_tm.size))",
+            "        " + _combine("hawk_sh[hawk_i]", "hawk_sh[hawk_i + hawk_w]"),
+            "    hawk_tm.sync();",
+            "}",
+            f"if (hawk_tm.rank == 0) {_part_ptr(roles['gp'], f'hawk_key * {GROUPS}')}[hawk_grp] = hawk_sh[0];",
+            "hawk_tm.sync();"]
     return lines + [
         "#if defined(__CUDA_ARCH__)",
         f"__shared__ Real hawk_sh[{FOLD_LANES}];",
@@ -207,10 +278,25 @@ def _block_part(step, active) -> list:
         "hawk_tm.sync();"]
 
 
-def _fold(step) -> list:
+def _fold(step, cells: bool = False) -> list:
     """The call of an ordered fold: the team of key ``hawk_lane`` adds the key's ``nSamples / count``
     contiguous lanes' contributions to each of the ``step.n`` slots in lane order, into the cell the
     slot names."""
+    if cells:
+        return ["const std::size_t hawk_key = static_cast<std::size_t>(hawk_lane);",
+                "const std::size_t hawk_rows = static_cast<std::size_t>(nSamples) / static_cast<std::size_t>(count);",
+                f"const Real* const hawk_v = {_binding(step.plane('v'))}.data();",
+                f"const Real* const hawk_c = {_binding(step.plane('i'))}.data();",
+                f"Real* const hawk_out = {_binding(step.plane('out'))}.data();",
+                f"for (std::size_t hawk_e = static_cast<std::size_t>(hawk_tm.rank); hawk_e < {step.n}; "
+                "hawk_e += static_cast<std::size_t>(hawk_tm.size)) {",
+                f"    {_ACC} hawk_s;",
+                f"    {_BAND_UNROLL}",
+                "    for (std::size_t hawk_r = 0; hawk_r < hawk_rows; ++hawk_r)",
+                f"        hawk_s.addTerm({_BAND}(hawk_v[(hawk_key * hawk_rows + hawk_r) * {step.n} + hawk_e]));",
+                f"    hawk_out[static_cast<std::size_t>(hawk_c[hawk_key * {step.n} + hawk_e])] = hawk_s.toBandedReal();",
+                "}",
+                "hawk_tm.sync();"]
     return ["const std::size_t hawk_key = static_cast<std::size_t>(hawk_lane);",
             "const std::size_t hawk_rows = static_cast<std::size_t>(nSamples) / static_cast<std::size_t>(count);",
             f"const Real* const hawk_v = {_binding(step.plane('v'))}.data();",
@@ -233,21 +319,25 @@ def _chunk_count() -> list:
             f"const std::size_t hawk_chunks = hawk_fit < 1 ? 1 : (hawk_fit > {SCATTER_CHUNKS} ? {SCATTER_CHUNKS} : hawk_fit);"]
 
 
-def _scatter_zero(step) -> list:
+def _scatter_zero(step, cells: bool = False) -> list:
     """An ordered scatter's first stage: block ``hawk_lane`` is cell ``t`` of the target (of ``count``
     cells); it zeroes the cell's partial sums, so a launch that stopped early leaves nothing behind.
     Block 0 also writes the cell count (the status plane is zero at the start of a run)."""
+    if cells:
+        part, zero = f"{_PART}* const hawk_p = {_part_ptr(step.plane('part'), 'static_cast<std::size_t>(hawk_lane) * hawk_chunks')};", f"{_PART}{{}}"
+    else:
+        part, zero = f"Real* const hawk_p = {_binding(step.plane('part'))}.data() + static_cast<std::size_t>(hawk_lane) * hawk_chunks;", "Real(0)"
     return [*_chunk_count(),
-            f"Real* const hawk_p = {_binding(step.plane('part'))}.data() + static_cast<std::size_t>(hawk_lane) * hawk_chunks;",
+            part,
             f"std::int32_t* const hawk_m = const_cast<std::int32_t*>({_binding(step.plane('status'))}.data());",
             "if (hawk_tm.rank == 0) {",
-            "    for (std::size_t hawk_b = 0; hawk_b < hawk_chunks; ++hawk_b) hawk_p[hawk_b] = Real(0);",
+            f"    for (std::size_t hawk_b = 0; hawk_b < hawk_chunks; ++hawk_b) hawk_p[hawk_b] = {zero};",
             "    if (hawk_lane == 0) hawk_m[0] = static_cast<std::int32_t>(hawk_cells);",
             "}",
             "hawk_tm.sync();"]
 
 
-def _scatter_chunks(step) -> list:
+def _scatter_chunks(step, cells: bool = False) -> list:
     """An ordered scatter's middle stage: block ``hawk_lane`` is lane chunk ``b`` (of ``count`` chunks
     over ``nSamples`` lanes, ``step.n`` log slots each); one thread adds the chunk's slots in order into its
     own partial sum of each key, cell ``key * count + b`` of the parts plane. The key -1 adds nothing; a key
@@ -259,13 +349,14 @@ def _scatter_chunks(step) -> list:
             "hawk_lo + hawk_span : static_cast<std::size_t>(nSamples);",
             f"std::int32_t* const hawk_k = const_cast<std::int32_t*>({_binding(step.plane('k'))}.data());",
             f"const Real* const hawk_v = {_binding(step.plane('v'))}.data();",
-            f"Real* const hawk_p = {_binding(step.plane('part'))}.data();",
+            (f"{_PART}* const hawk_p = {_part_ptr(step.plane('part'), '0')};" if cells
+             else f"Real* const hawk_p = {_binding(step.plane('part'))}.data();"),
             f"std::int32_t* const hawk_m = const_cast<std::int32_t*>({_binding(step.plane('status'))}.data());",
             "const std::int64_t hawk_cells = hawk_m[0];",
-            *_scatter_walk(step)]
+            *_scatter_walk(step, cells)]
 
 
-def _scatter_walk(step) -> list:
+def _scatter_walk(step, cells: bool = False) -> list:
     """The walk of the chunk's slots (see :func:`_scatter_chunks`). On the device (up to 1024 cells) a warp takes 32
     rows at a time, each lane owns the cells of its residue ``key % 32`` in a shared bin and adds that cell's rows in
     row order (a per-lane bitmask of the batch), so every cell's sum has the order of the serial walk: the same bits.
@@ -277,6 +368,8 @@ def _scatter_walk(step) -> list:
         "        const std::int32_t hawk_key = hawk_k[hawk_r];",
         "        if (hawk_key == -1) continue;",
         "        if (hawk_key >= 0 && hawk_key < hawk_cells)",
+        ("            { " + f"{_PART}& hawk_q = hawk_p[static_cast<std::size_t>(hawk_key) * hawk_chunks + static_cast<std::size_t>(hawk_lane)]; "
+         f"{_ACC} hawk_a = {_ACC}::fromPartial(hawk_q); hawk_a.addTerm({_BAND}(hawk_v[hawk_r])); hawk_q = hawk_a.partial(); }}") if cells else
         "            hawk_p[static_cast<std::size_t>(hawk_key) * hawk_chunks + static_cast<std::size_t>(hawk_lane)] += hawk_v[hawk_r];",
         "        else",
         "            hawk_m[1 + hawk_lane] = 1;",
@@ -291,7 +384,7 @@ def _scatter_walk(step) -> list:
         "            const std::size_t hawk_r = hawk_b + hawk_ln;",
         "            const bool hawk_in = hawk_r < hawk_end;",
         "            const std::int32_t hawk_mk = hawk_in ? hawk_k[hawk_r] : -1;",
-        "            const Real hawk_mv = hawk_in ? hawk_v[hawk_r] : Real(0);",
+        "            const Real hawk_mv = hawk_in ? hawk_v[hawk_r] : Real{};",
         "            unsigned hawk_mine = 0u, hawk_bad = 0u;",
         "            for (unsigned hawk_i = 0; hawk_i < 32; ++hawk_i) {",
         "                const std::int32_t hawk_key = __shfl_sync(0xffffffffu, hawk_mk, hawk_i);",
@@ -303,10 +396,16 @@ def _scatter_walk(step) -> list:
         "            if (hawk_bad && hawk_ln == 0) hawk_m[1 + hawk_lane] = 1;",
         "            while (__any_sync(0xffffffffu, hawk_mine != 0u)) {",
         "                const unsigned hawk_src = hawk_mine != 0u ? static_cast<unsigned>(__ffs(hawk_mine) - 1) : 0u;",
-        "                const Real hawk_x = __shfl_sync(0xffffffffu, hawk_mv, hawk_src);",
+        *(["                unsigned long long hawk_xb;",
+           "                __builtin_memcpy(&hawk_xb, &hawk_mv, sizeof hawk_xb);",
+           "                hawk_xb = __shfl_sync(0xffffffffu, hawk_xb, hawk_src);",
+           "                Real hawk_x;",
+           "                __builtin_memcpy(&hawk_x, &hawk_xb, sizeof hawk_x);"] if cells else
+          ["                const Real hawk_x = __shfl_sync(0xffffffffu, hawk_mv, hawk_src);"]),
         "                const std::int32_t hawk_key = __shfl_sync(0xffffffffu, hawk_mk, hawk_src);",
         "                if (hawk_mine != 0u) {",
-        "                    hawk_bin[hawk_key] += hawk_x;",
+        (f"                    hawk_bin[hawk_key].addTerm({_BAND}(hawk_x));" if cells else
+         "                    hawk_bin[hawk_key] += hawk_x;"),
         "                    hawk_mine &= hawk_mine - 1u;",
         "                }",
         "            }",
@@ -315,15 +414,17 @@ def _scatter_walk(step) -> list:
         "    }"]
     return [
         "#if defined(__CUDA_ARCH__)",
-        "__shared__ Real hawk_bin[1024];",
+        (f"__shared__ {_ACC} hawk_bin[1024];" if cells else "__shared__ Real hawk_bin[1024];"),
         "if (hawk_cells <= 1024) {",
         "    for (std::size_t hawk_j = static_cast<std::size_t>(hawk_tm.rank); hawk_j < static_cast<std::size_t>(hawk_cells); "
-        "hawk_j += static_cast<std::size_t>(hawk_tm.size)) hawk_bin[hawk_j] = Real(0);",
+        "hawk_j += static_cast<std::size_t>(hawk_tm.size)) hawk_bin[hawk_j] = " + (f"{_ACC}{{}};" if cells else "Real(0);"),
         "    hawk_tm.sync();",
         *walk,
         "    hawk_tm.sync();",
         "    for (std::size_t hawk_j = static_cast<std::size_t>(hawk_tm.rank); hawk_j < static_cast<std::size_t>(hawk_cells); "
         "hawk_j += static_cast<std::size_t>(hawk_tm.size))",
+        ("        { " + f"{_PART}& hawk_q = hawk_p[hawk_j * hawk_chunks + static_cast<std::size_t>(hawk_lane)]; "
+         f"{_ACC} hawk_a = {_ACC}::fromPartial(hawk_q); hawk_a.combine(hawk_bin[hawk_j]); hawk_q = hawk_a.partial(); }}") if cells else
         "        hawk_p[hawk_j * hawk_chunks + static_cast<std::size_t>(hawk_lane)] += hawk_bin[hawk_j];",
         "} else {",
         *plain,
@@ -333,10 +434,21 @@ def _scatter_walk(step) -> list:
         "#endif"]
 
 
-def _scatter_cells(step) -> list:
+def _scatter_cells(step, cells: bool = False) -> list:
     """An ordered scatter's last stage: block ``hawk_lane`` is cell ``t`` of the target (of ``count``
     cells); one thread adds its partial sums in chunk order (the same number the middle stage cut the
     lanes into) and the total to the cell."""
+    if cells:
+        return [*_chunk_count(),
+                f"const {_PART}* const hawk_p = {_part_ptr(step.plane('part'), 'static_cast<std::size_t>(hawk_lane) * hawk_chunks')};",
+                f"Real* const hawk_out = {_binding(step.plane('out'))}.data();",
+                "if (hawk_tm.rank == 0) {",
+                f"    {_ACC} hawk_s;",
+                f"    hawk_s.addTerm({_BAND}(hawk_out[hawk_lane]));",
+                f"    for (std::size_t hawk_b = 0; hawk_b < hawk_chunks; ++hawk_b) hawk_s.combine({_ACC}::fromPartial(hawk_p[hawk_b]));",
+                "    hawk_out[hawk_lane] = hawk_s.toBandedReal();",
+                "}",
+                "hawk_tm.sync();"]
     return [*_chunk_count(),
             f"const Real* const hawk_p = {_binding(step.plane('part'))}.data() + static_cast<std::size_t>(hawk_lane) * hawk_chunks;",
             f"Real* const hawk_out = {_binding(step.plane('out'))}.data();",
@@ -351,7 +463,7 @@ def _scatter_cells(step) -> list:
 _SCATTER = {"scatter_zero": _scatter_zero, "scatter_chunks": _scatter_chunks, "scatter_cells": _scatter_cells}
 
 
-def team_body(spec: TeamSpec, active=None) -> Body:
+def team_body(spec: TeamSpec, active=None, cells: bool = False) -> Body:
     """The body of the team stage ``spec``: its steps, each in a scope of its own. ``active``
     (:class:`~hawk.emit.wrapper.ActiveSpec`) is the index map of an index-set build, which a block
     sum walks."""
@@ -361,19 +473,19 @@ def team_body(spec: TeamSpec, active=None) -> Body:
     for step in spec.steps:
         lines.append(f"        {{  // {step.op}, n = {step.n}")
         if step.op == "ordered_fold":
-            lines += ["            " + line for line in _fold(step)]
+            lines += ["            " + line for line in _fold(step, cells)]
             lines.append("        }")
             continue
         if step.op in _SCATTER:
-            lines += ["            " + line for line in _SCATTER[step.op](step)]
+            lines += ["            " + line for line in _SCATTER[step.op](step, cells)]
             lines.append("        }")
             continue
         if step.op == "block_part":
-            lines += ["            " + line for line in _block_part(step, active)]
+            lines += ["            " + line for line in _block_part(step, active, cells, {leaf.name for leaf in spec.reads})]
             lines.append("        }")
             continue
         if step.op == "block_sum":
-            lines += ["            " + line for line in _block(step, per_lane, active)]
+            lines += ["            " + line for line in _block(step, per_lane, active, cells)]
             lines.append("        }")
             continue
         lines += ["            " + _pointer(name, role, per_lane[name]) for role, name in step.planes]

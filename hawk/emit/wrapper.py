@@ -7,9 +7,8 @@ Both seams are PROTOCOLS with their built implementations beside them,
 never a class hierarchy: a wrapper supplies the entry around the
 ONE body string :mod:`hawk.emit.render` renders, and a scalar mode supplies
 the ``Real`` the translation unit resolves to. Built today: the ``cuda``
-and ``host`` wrappers, the ``float64``/``float32`` modes; ``metal`` and
-``banded`` are the seams' NAMED empty slots — asking for ``banded`` raises
-and says who is expected to build it and when.
+and ``host`` wrappers, the ``float64``/``float32``/``banded`` modes; ``metal``
+is the wrapper seam's NAMED empty slot.
 
 This module also owns the shared translation-unit assembly, since it's the
 same on both targets: the mandated include order (aether first, eagle's
@@ -123,46 +122,104 @@ WRITABLE_ROLES = ("mutable", "out", "wide_out", "accum_out")
 
 @dataclass(frozen=True)
 class ScalarMode:
-    """One compiled scalar mode (seam): its id and the storage ``Real`` a
-    kernel resolves to."""
+    """One compiled scalar mode (seam): its id, the storage ``Real`` a
+    kernel resolves to and the headers that spell it. ``cells``: a ``Real``
+    in storage is an 8-byte cell and a value in registers the three-limb
+    ``Band``, so the body takes the writer's cell form
+    (:class:`~hawk.emit.writer_aether.AetherWriter`)."""
 
     id: str
     real_spelling: str
+    includes: str = ""
+    cells: bool = False
 
 
-#: The two BUILT modes.
+#: The BUILT modes.
 FLOAT64 = ScalarMode("float64", "double")
 FLOAT32 = ScalarMode("float32", "float")
+BANDED = ScalarMode("banded", "aether::banded::BandedReal",
+                    "#include <aether/banded/banded.h>\n#include <aether/banded/BandedRealOps.h>\n",
+                    cells=True)
 
-SCALAR_MODES = {m.id: m for m in (FLOAT64, FLOAT32)}
-
-#: The seam's NAMED third slot: present in the vocabulary, not built, and
-#: refusing with what builds it and who needs it — no shim is built in the
-#: meantime, since a shim would report a precision the artifact does not
-#: carry.
-_UNBUILT_MODES = {
-    "banded": ("emulated double precision",
-               "aether/banded/ (Band / BandCell8) and aether/accum/AccumPlane.h"),
-}
+SCALAR_MODES = {m.id: m for m in (FLOAT64, FLOAT32, BANDED)}
 
 
 def scalar_mode(name: str) -> ScalarMode:
-    """Resolve a scalar mode by id. ``banded`` names what it is and where it lands."""
+    """Resolve a scalar mode by id."""
     if name in SCALAR_MODES:
         return SCALAR_MODES[name]
-    if name in _UNBUILT_MODES:
-        description, headers = _UNBUILT_MODES[name]
-        raise HawkError(
-            f"scalar mode {name!r} is declared but not built yet ({description}); "
-            f"it will live in {headers} once built. HAWK ships no softdouble "
-            f"shim in the "
-            f"meantime — a shim would report a precision the artifact does not "
-            f"carry. Built modes are {tuple(SCALAR_MODES)}"
-        )
-    declared = tuple(SCALAR_MODES) + tuple(_UNBUILT_MODES)
     raise HawkError(
-        f"unknown scalar mode {name!r}; the seam declares {declared}"
+        f"unknown scalar mode {name!r}; the seam declares {tuple(SCALAR_MODES)}"
     )
+
+
+_REDUCTION_REMEDY = "until the banded reduction lands; build this kernel in float64 or float32 meanwhile"
+_ATOMIC_REMEDY = "a packed cell has no atomic add; use the default or compensated policy, which a banded build routes to the ordered stages"
+_MATH_REMEDY = "until its banded row lands in aether; build this kernel in float64 or float32 meanwhile"
+
+# The refusals below are reasoned, not pending:
+#  * accum_write (hawk.scatter, and hawk.sum(x, over=...) with its default policy). The float64 emission opens an
+#    aether::accum::run per lane and commits each run of equal keys with ONE atomicAdd into the output plane (and a second
+#    one, of the two-sum residual read off the first's return value, into the companion plane). A banded cell is one
+#    8-byte packed Band: there is no atomic add on it, and the compensated BandAccum (limbs plus residue lanes) does not
+#    fit a cell, so the residual has nowhere to live between commits. A CAS loop (decode, plain add, encode) would be
+#    built from the PLAIN fold, 94 ULP53 on the 2^-30 cancellation class against the 0.01 the banded sum promises, so it is
+#    refused rather than shipped under that name. The design that meets the contract is a two-pass one: per-warp
+#    BandAccum partials, shuffled with eagle's shflXor, in a BandAccum-shaped scratch plane (a new plane dtype in
+#    team_planes, sized in _lane_bind and allocated by the runtime and eagle), then a deterministic combine stage with
+#    BandAccum::combine into the cell. Size L: the plane dtype across hawk/runtime/eagle, a combine stage, and
+#    keyed-plane zeroing for banded cells.
+#  * the ordered team stages (policy="ordered": block_part, block_sum, ordered_fold, the scatter_* steps) already ARE that
+#    two-pass shape in float64, but their partials plane holds Real and their adds are a plain `+=` of cells, which
+#    would be the plain fold under the sum's name; they stay refused until the partials plane can hold a BandAccum.
+#  * warp_sum (a sum across the lanes of a team) needs the same BandAccum plane or a BandAccum shuffle in the team body.
+#: What a banded build refuses BY NAME, with the remedy: ``{IR kind: (what the
+#: author wrote, remedy)}``. Every reduction sink, and the math that has no
+#: certified banded row yet; the rest of the certified facade is admitted.
+_BANDED_UNCERTIFIED = {
+    "accum_write": ("an atomic accumulate into a plane (hawk.scatter with policy 'plain', accum_write)", _ATOMIC_REMEDY),
+    **{k: (f"hawk.math.{k}", _MATH_REMEDY)
+       for k in ("erf", "erfc", "rint", "remainder", "fdim",
+                 "isnan", "isinf", "isfinite", "random_uniform", "random_normal")},
+}
+
+
+def refuse_cells_off_device(name: str, mode: ScalarMode, target_id: str, target) -> None:
+    """Refuse a ``cells`` (banded) build for a target that is not a device: banded is a device feature."""
+    from ..targets import GPU
+
+    if mode.cells and target.compile != GPU:
+        raise HawkError(f"{name!r}: banded runs on device execution paths; on a CPU use float64 "
+                        f"(target {target_id!r} is not a device)")
+
+
+def refuse_team_reductions(team, mode: ScalarMode) -> None:
+    """Refuse a ``cells`` build of a block sum that is not the ordered plain sum (``team`` is its
+    :class:`~hawk.ir.team.TeamSpec`): the general block sum is an aether team call that adds cells with a plain ``+=``,
+    which would be the plain fold under the sum's name. The ordered stages fold ``BandAccum`` partials."""
+    for step in () if team is None or not mode.cells else team.steps:
+        if step.op == "block_sum" and "gp" not in dict(step.planes):
+            raise HawkError(f"a block sum over matrices ({step.op}) is not built in scalar mode {mode.id!r} yet: "
+                            f"{_REDUCTION_REMEDY}")
+
+
+def refuse_uncertified(sinks, walk: Walk, mode: ScalarMode) -> None:
+    """Refuse a ``cells`` build that reaches an op of :data:`_BANDED_UNCERTIFIED`, naming it and the remedy."""
+    if not mode.cells:
+        return
+    for kind in (*walk.kinds, *(getattr(s, "kind", None) for s in sinks)):
+        hit = _BANDED_UNCERTIFIED.get(kind)
+        if hit is not None:
+            raise HawkError(f"{hit[0]} is not built in scalar mode {mode.id!r} yet: {hit[1]}")
+
+
+def _writer(target, mode: ScalarMode):
+    """``target``'s writer in ``mode``: a ``cells`` mode takes the aether writer's cell form."""
+    if not mode.cells:
+        return target.writer
+    from .writer_aether import AETHER_CELLS
+
+    return AETHER_CELLS
 
 
 class Wrapper(Protocol):
@@ -418,6 +475,30 @@ template <class T>
 }}
 """
 
+#: The banded sum over the 32 lanes of a warp: each lane folds its value into a ``BandAccum``, the butterfly merges whole
+#: accumulators through eagle's ``shflXor`` with ``combine`` (the lower lane's accumulator first, so every lane ends
+#: with the same bits), and the total is encoded once.
+_WARP_SUM_BANDED = """
+template <class T>
+{qualifier} T warp_sum(T v)
+{{
+    aether::banded::BandAccum a;
+    a.addTerm(aether::banded::Band(v));
+    unsigned lane;
+    asm("mov.u32 %0, %%laneid;" : "=r"(lane));
+    for (int m = 16; m > 0; m >>= 1) {{
+        aether::banded::BandAccum o = eagle::cuda::shflXor(0xffffffffu, a, m);
+        if (lane & static_cast<unsigned>(m)) {{
+            o.combine(a);
+            a = o;
+        }} else {{
+            a.combine(o);
+        }}
+    }}
+    return a.toBandedReal();
+}}
+"""
+
 #: The fold of an owned companion into its target (:func:`fold_entries`):
 #: the two-sum of the pair, the rounded sum into the target and its exact
 #: residual into the companion, none for a non-finite sum. One lane per slot.
@@ -582,6 +663,87 @@ __device__ __forceinline__ void sampleSumWarp_(E (&h)[N], Store&& store)
 }}
 #endif
 """
+
+#: The banded row sum: a partial is aether's compensated ``BandAccum`` (the residue-lane fold) and two partials merge
+#: with its ``combine``; the warp tree ships whole accumulators through eagle's ``shflXor``. These overloads are
+#: declared BEFORE :data:`_SAMPLE_SUM`, whose templates pick them for the accumulator type.
+_BANDED_SUM = """
+template <int OP = 0>
+{qualifier} void pairCombine_(aether::banded::BandAccum& s, aether::banded::BandAccum&,
+                             aether::banded::BandAccum s2, aether::banded::BandAccum)
+{{
+    s.combine(s2);
+}}
+
+{qualifier} void ssPin_(aether::banded::BandAccum&) {{}}
+
+// hawk.max / hawk.min: the fold is exact, so a partial is a bare Band and two partials merge with the certified fmax / fmin.
+template <class E>
+{qualifier} E ssInf_(float sign) {{ return E(sign * __builtin_inff(), 0.0f, 0.0f); }}
+
+{qualifier} aether::banded::Band ssExtreme_(int op, aether::banded::Band a, aether::banded::Band b)
+{{
+    return op == 1 ? aether::banded::detail::fmax(a, b) : aether::banded::detail::fmin(a, b);
+}}
+
+template <int OP = 0>
+{qualifier} void pairCombine_(aether::banded::Band& s, aether::banded::Band&, aether::banded::Band s2, aether::banded::Band)
+{{
+    s = ssExtreme_(OP, s, s2);
+}}
+
+{qualifier} void ssPin_(aether::banded::Band&) {{}}
+
+{qualifier} Real ssOut_(aether::banded::Band s) {{ return Real(s); }}
+
+{qualifier} Real ssOut_(aether::banded::BandAccum s) {{ return s.toBandedReal(); }}
+
+{qualifier} Real ssComp_(aether::banded::BandAccum) {{ return Real{{}}; }}
+
+#if defined(__CUDACC__)
+__device__ __forceinline__ aether::banded::BandAccum ssShfl_(aether::banded::BandAccum v, int off)
+{{
+    return eagle::cuda::shflXor(0xffffffffu, v, off);
+}}
+
+__device__ __forceinline__ aether::banded::Band ssShfl_(aether::banded::Band v, int off)
+{{
+    return eagle::cuda::shflXor(0xffffffffu, v, off);
+}}
+#endif
+"""
+
+_BANDED_SUM_INCLUDE = "#include <aether/banded/Accum.h>\n#if defined(__CUDACC__)\n#include <eagle/cuda/WarpShuffle.h>\n#endif\n"
+
+_BANDED_SS_HELPERS = '''template <class E>
+{qualifier} E ssOut_(E s) {{ return s; }}
+
+template <class E>
+{qualifier} E ssComp_(E c) {{ return c; }}
+
+#if defined(__CUDACC__)
+template <class E>
+__device__ __forceinline__ E ssShfl_(E v, int off)
+{{
+    return __shfl_xor_sync(0xffffffffu, v, off);
+}}
+
+template <class E>
+__device__ __forceinline__ void ssPin_'''
+
+
+def _banded_sample_sum(text: str) -> str:
+    """:data:`_SAMPLE_SUM` for a ``cells`` mode: value-initialised zeros (an accumulator has no ``E(0)``), the warp
+    shuffle through ``ssShfl_`` (eagle's, for an accumulator) and the generic ``ssOut_``/``ssComp_``/``ssShfl_``."""
+    text = (text.replace("E(0)", "E{{}}")
+                .replace("-static_cast<E>(__builtin_inf())", "ssInf_<E>(-1.0f)")
+                .replace("static_cast<E>(__builtin_inf())", "ssInf_<E>(1.0f)")
+                .replace("__shfl_xor_sync(0xffffffffu, sh, off)", "ssShfl_(sh, off)")
+                .replace("__shfl_xor_sync(0xffffffffu, sc, off)", "ssShfl_(sc, off)"))
+    return text.replace("""#if defined(__CUDACC__)
+template <class E>
+__device__ __forceinline__ void ssPin_""", _BANDED_SS_HELPERS, 1)
+
 
 _STORE_COMPENSATED = """
 template <class ViewT, class CompT, class T>
@@ -813,7 +975,8 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
                 store_compensated: bool = False, finish: bool = False,
                 spacing: bool = False, mix: bool = False,
                 integers: bool = False, sample_sum: bool = False,
-                fold: bool = False, scatter_or: bool = False, tiled: bool = False, warp_sum: bool = False) -> str:
+                fold: bool = False, scatter_or: bool = False, tiled: bool = False, warp_sum: bool = False,
+                cells: bool = False) -> str:
     """The view-from-mirror reconstruction helpers — byte-for-byte the same
     on both targets, only the function qualifier differs; reads the
     mirror's own stride fields so a non-contiguous plane rebuilds
@@ -833,7 +996,9 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
     if fold:
         helpers.append(_FOLD_COMPANION.format(qualifier=qualifier))
     if sample_sum:
-        helpers.append(_SAMPLE_SUM.format(qualifier=qualifier))
+        if cells:
+            helpers.append(_BANDED_SUM.format(qualifier=qualifier))
+        helpers.append((_banded_sample_sum(_SAMPLE_SUM) if cells else _SAMPLE_SUM).format(qualifier=qualifier))
     if compensated:
         helpers.append(_ACCUM_ADD_COMPENSATED.format(qualifier=qualifier))
     if store_compensated:
@@ -851,7 +1016,7 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
     if tiled:
         helpers.append(_TILED.format(qualifier=qualifier))
     if warp_sum:
-        helpers.append(_WARP_SUM.format(qualifier=qualifier))
+        helpers.append((_WARP_SUM_BANDED if cells else _WARP_SUM).format(qualifier=qualifier))
     return f"""namespace hawk_abi {{
 
 template <class T, std::size_t N>
@@ -930,10 +1095,10 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
     a unit whose body emitted a random draw gets the extra header, and
     ``runs`` the run commits' header."""
     includes = _INCLUDES
-    extra = ((_RANDOM_INCLUDE if needs_random else "") + (_RUN_INCLUDE if runs else "")
+    extra = (mode.includes + (_RANDOM_INCLUDE if needs_random else "") + (_RUN_INCLUDE if runs else "")
              + (_TWO_SUM_INCLUDE if compensated or store_compensated or sample_sum or fold else "")
              + (_LINALG_INCLUDE if linalg else "") + (_RT_INCLUDE if rt else "")
-             + (_RAY_INCLUDE if rays else "") + (_TEAM_INCLUDE if team else ""))
+             + (_BANDED_SUM_INCLUDE if mode.cells and (sample_sum or team or warp_sum) else "") + (_RAY_INCLUDE if rays else "") + (_TEAM_INCLUDE if team else ""))
     if extra:
         includes = includes.replace(_RANDOM_INCLUDE_MARKER,
                                     _RANDOM_INCLUDE_MARKER + extra, 1)
@@ -943,7 +1108,8 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             + abi_helpers(qualifier, compensated=compensated,
                          store_compensated=store_compensated, finish=finish,
                          spacing=spacing, mix=mix, integers=integers,
-                         sample_sum=sample_sum, fold=fold, scatter_or=scatter_or, tiled=tiled, warp_sum=warp_sum))
+                         sample_sum=sample_sum, fold=fold, scatter_or=scatter_or, tiled=tiled, warp_sum=warp_sum,
+                         cells=mode.cells))
 
 
 def narrows_int(active: ActiveSpec | None, walk: Walk) -> bool:
@@ -994,6 +1160,9 @@ def render_source(name: str, sinks, walk: Walk, target, *,
     A kernel with :class:`~hawk.ir.nodes.SampleSum` sinks runs the
     wrapper's ``sample_sum_frame`` instead of the index loop, and is refused
     under the segmented, active-set and automatic (``_persist``) entries."""
+    refuse_cells_off_device(name, mode, target.id, target)
+    refuse_uncertified(sinks, walk, mode)
+    writer = _writer(target, mode)
     sums = sample_sums(sinks)
     _refuse_sample_sums(sums, segment=segment, active=active, one_step=one_step)
     if (one_step is not None and body is None and segment is None
@@ -1004,15 +1173,15 @@ def render_source(name: str, sinks, walk: Walk, target, *,
     own_body = body is None
     if box is not None:
         # the box's body, and the box-free one for a launch with fewer rows than T
-        plain = render_body(sinks, walk, indent=" " * 16, kind=kind, writer=target.writer)
+        plain = render_body(sinks, walk, indent=" " * 16, kind=kind, writer=writer)
         boxed = render_body(boxed_sinks(sinks, box), walk, indent=" " * 12, kind=kind,
-                            writer=target.writer)
+                            writer=writer)
         body = Body(frame(box, plain.text, boxed.text))
     if body is None:
         plain_frame = (segment is None and active is None and box is None and team is None and one_step is None and not sums
                        and rows <= 1 and not any(role == "terminated" for role, _ in walk.arg_spec))
         with policy.block_fold(plain_frame):
-            body = render_body(sinks, walk, indent="        ", kind=kind, writer=target.writer)
+            body = render_body(sinks, walk, indent="        ", kind=kind, writer=writer)
     compensated = False
     wrapper = target.wrapper
     store_compensated = False
@@ -1058,7 +1227,8 @@ def render_source(name: str, sinks, walk: Walk, target, *,
         loop = [wrapper.index_prologue(box=box), body.text, wrapper.index_epilogue()]
     if sums:
         opened, closed = wrapper.sample_sum_frame(
-            len(sums), element_spelling(sums[0].ttype.dtype), _sample_sum_store(sums, wrapper.fold_rows(len(sums))),
+            len(sums), ("aether::banded::BandAccum" if sums[0].op == "sum" else "aether::banded::Band") if mode.cells else element_spelling(sums[0].ttype.dtype),
+            _sample_sum_store(sums, wrapper.fold_rows(len(sums)), mode.cells),
             sums[0].op, None if active is None else active_reads(active, "0")[0])
         loop = [opened, body.text, closed]
     loop = _with_runs(loop, body.text)
@@ -1145,7 +1315,7 @@ def sample_sum_fill(op: str, width: int, array: str, elem: str) -> str:
             f"{array}[hawk_k] = hawk_abi::ssIdentity_<{SAMPLE_SUM_OP_CODE[op]}, {elem}>();\n")
 
 
-def _sample_sum_store(sums, rows: int = 1) -> str:
+def _sample_sum_store(sums, rows: int = 1, cells: bool = False) -> str:
     """The entry-local ``hawk_ss_store(column, sum, compensation)`` the row
     sum calls: column ``k`` goes to the ``k``-th sink's two planes at row
     ``hawk_row``."""
@@ -1160,10 +1330,10 @@ def _sample_sum_store(sums, rows: int = 1) -> str:
     for k, sink in enumerate(sums):
         hi = binding_name(sink.role, sink.name)
         lines += [f"        {'else ' if k else ''}if (hawk_col == {k}) {{",
-                  f"            {hi}.data()[hawk_row] = hawk_s;"]
+                  f"            {hi}.data()[hawk_row] = {'hawk_abi::ssOut_(hawk_s)' if cells else 'hawk_s'};"]
         if sink.op == "sum":
             comp = binding_name(sink.role, sink.companion.name)
-            lines.append(f"            {comp}.data()[hawk_row] = hawk_c;")
+            lines.append(f"            {comp}.data()[hawk_row] = {'hawk_abi::ssComp_(hawk_c)' if cells else 'hawk_c'};")
         lines.append("        }")
     return "\n".join(lines + ["    };"])
 
@@ -1219,8 +1389,7 @@ _LANE_TYPE = "HAWK_LANE_T"
 def _filled(parts, mode: ScalarMode) -> str:
     """The TU text of ``parts``, its guard/tally lanes spelled as the mode's
     ``Real``, so a float32 loop has one width."""
-    return "\n".join(p for p in parts if p is not None).replace(
-        _LANE_TYPE, mode.real_spelling)
+    return "\n".join(p for p in parts if p is not None).replace(_LANE_TYPE, mode.real_spelling)
 
 
 def _extra_prelude(hook, walk: Walk, tiled, body: str) -> str | None:
@@ -1293,9 +1462,10 @@ def _render_two_paths(name: str, sinks, walk: Walk, target, *,
     On a wrapper with the ``persist`` hook (the device), the TU also carries
     the kernel's fast-path entries (:func:`_fast_entries`)."""
     wrapper = target.wrapper
-    fused = render_body(sinks, walk, indent="        ", kind=kind, writer=target.writer)
+    writer = _writer(target, mode)
+    fused = render_body(sinks, walk, indent="        ", kind=kind, writer=writer)
     single = render_body(one_step.sinks, one_step.walk, indent="        ", kind=kind,
-                         writer=target.writer)
+                         writer=writer)
     tiled = None if active is not None else _interchange(wrapper, name, sinks,
                                                          walk, kind, mode)
     extra_prelude = getattr(wrapper, "extra_prelude", None)

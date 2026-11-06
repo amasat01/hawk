@@ -43,7 +43,7 @@ class _Probe(AetherWriter):
 
     id = "probe"
 
-    def declare(self, name, ttype, text):
+    def declare(self, name, ttype, text, ordered=True):
         return f"auto {name} = {text};"
 
 
