@@ -61,8 +61,11 @@ class Writer(Protocol):
     rolled_forms: bool
 
     # -- declarations and loops ----------------------------------------
-    def declare(self, name: str, ttype: Any, text: str) -> str:
+    def declare(self, name: str, ttype: Any, text: str, ordered: bool = True) -> str:
         """The named local: ``const auto {name} = {text};``."""
+
+    def reads_raw(self, kind: str) -> bool:
+        """Does the op ``kind`` take an unnormalised operand (a scalar mode with raw chains; else never)."""
 
     def carry_type(self, ttype: Any) -> str:
         """A loop-carried local's declared type (``Real``, ``aether::Item<...>``)."""

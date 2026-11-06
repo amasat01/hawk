@@ -74,6 +74,7 @@ def render(kernel, *, name=None, mode="float64", kind=None,
     from ..artifact.bundle import _resolve_kind
     from ..emit import render_body
     from ..emit.wrapper import scalar_mode
+    from ..ir import HawkError
     from . import abi, verify
     from .writer import CWriter
     from .profile import EmbeddedProfile
@@ -82,6 +83,8 @@ def render(kernel, *, name=None, mode="float64", kind=None,
     name = name if name is not None else kernel.name
     kind = _resolve_kind(name, getattr(kernel, "kind", None), kind)
     smode = scalar_mode(getattr(mode, "id", mode))
+    if smode.cells:
+        raise HawkError(f"the c target has no {smode.id} spelling; {smode.id} runs on device execution paths, on a CPU use float64")
     profile = profile if profile is not None else EmbeddedProfile()
     sinks, walk = tuple(kernel.sinks), kernel.walk
     verify.refuse_unsupported(name, kernel, kind, walk, sinks)

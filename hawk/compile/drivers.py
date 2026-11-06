@@ -631,7 +631,7 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions,
 
     defines = [f"-D{d}" for d in opts.defines]
     stable_flags = [*tc.host_codegen_flags(opts.host_profile or None,
-                                           opts.opt_level or None),
+                                           opts.opt_level or None, (*defines, *opts.extra)),
                     f"-std={tc.HOST_STD}", "-shared", "-fPIC",
                     "-DAETHER_CPP_MODE", *defines, *opts.extra]
     key_terms = (*_host_key_terms(stable_flags, opts), f"payload:{payload.digest}")

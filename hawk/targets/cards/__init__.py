@@ -38,13 +38,16 @@ def _device() -> tuple | None:
         return None
 
 
-def thread_box(scalar_type: str) -> dict:
-    """The card for ``scalar_type`` (``"float64"``/``"float32"``): ``{"T": width,
+def thread_box(scalar_type: str) -> dict | None:
+    """The card for ``scalar_type`` (``"float64"``/``"float32"``; ``None`` for a type no card measures, which
+    builds unboxed): ``{"T": width,
     "contraction": "gemm" | "direct", "itemsize": bytes}`` and, on a device whose
     row carries one, ``"tile"`` (see :func:`hawk.ir.lanes.choose_mapping`).
 
     The device is probed only when the file has a row for that scalar type."""
     doc = json.loads(THREAD_BOX_FILE.read_text())
+    if scalar_type not in doc["defaults"]:
+        return None
     card = {"T": doc["defaults"][scalar_type], "contraction": doc["contraction"][scalar_type]}
     rows = [r for r in doc["rows"] if r["dtype"] == scalar_type]
     device = _device() if rows else None

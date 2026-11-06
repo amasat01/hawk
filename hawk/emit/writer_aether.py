@@ -17,8 +17,10 @@ naming the kind, the rank and what aether would need.
 
 from __future__ import annotations
 
+import struct
 from collections.abc import Sequence
-from math import prod
+from fractions import Fraction
+from math import isfinite, prod
 
 from ..ir import HawkError
 from ..ir.loop_nodes import Loop, TapeRead
@@ -120,7 +122,15 @@ _READS_PROXY = frozenset({"component", "component_at", "set_component_at", "add_
 
 
 class AetherWriter:
-    """The aether C++ spelling (see the module docstring)."""
+    """The aether C++ spelling (see the module docstring).
+
+    ``cells`` is the form a ``cells`` scalar mode takes (``banded``): a Real
+    literal is the three-limb register value ``Band(h, l, t)``, a store into a
+    plane packs (``Real(value)``), and a named rank-0 Real local is bound as a
+    ``Band``, normalised once where it is named."""
+
+    def __init__(self, cells: bool = False) -> None:
+        self.cells = cells
 
     id = "aether"
     #: sites over the fold threshold spell as ``aether::rt`` twins
@@ -136,13 +146,30 @@ class AetherWriter:
 
     # -- declarations and loops ----------------------------------------
 
-    def declare(self, name: str, ttype: TensorType, text: str) -> str:
-        """A named local: ``const auto`` lets aether's expression type through."""
-        return f"const auto {name} = {text};"
+    def declare(self, name: str, ttype: TensorType, text: str, ordered: bool = True) -> str:
+        """A named local: ``const auto`` lets aether's expression type through. Under ``cells`` a rank-0 Real is a
+        ``Band`` when a reader needs its limbs in order, else the raw chain flows on unnormalised."""
+        return f"const {self._local_type(ttype) if ordered else 'auto'} {name} = {text};"
+
+    @staticmethod
+    def reads_raw(kind: str) -> bool:
+        """Does the op ``kind`` take an unnormalised chain operand: arithmetic and the facade doors that normalise
+        at entry. The limb-order readers (``abs``, ``min``/``max``, ``copysign``, compares, ``select``) do not."""
+        return kind in _RAW_READERS
+
+    def _local_type(self, ttype: TensorType | None) -> str:
+        """``auto``, or under ``cells`` a rank-0 Real's ``Band``: a later op that reads the limbs in order (``abs``,
+        a compare, a division, a root, a transcendental, a store) needs a normalised value, and naming the local
+        normalises it once, here (a ``Band`` already normalised copies)."""
+        if self.cells and ttype is not None and not ttype.shape and ttype.dtype in ("f64", "f32"):
+            return "aether::banded::Band"
+        return "auto"
 
     def carry_type(self, ttype: TensorType) -> str:
-        """:func:`hawk.emit.spelling.carry_type`."""
-        return carry_type(ttype)
+        """:func:`hawk.emit.spelling.carry_type`; under ``cells`` a rank-0 Real is carried as a ``Band``, so it
+        stays normalised across iterations and is encoded to a cell once, where it is stored."""
+        banded = self._local_type(ttype)
+        return carry_type(ttype) if banded == "auto" else banded
 
     def tape_decl(self, elem: str, name: str, trip: int) -> str:
         """A forward loop's per-iteration tape array."""
@@ -210,7 +237,7 @@ class AetherWriter:
         its own (a broadcast ``Constant``, a raw block's operand)."""
         name = f"hz{r.hoists}"
         r.hoists += 1
-        r._emit(f"const auto {name} = {text};")
+        r._emit(f"const {self._local_type(ttype)} {name} = {text};")
         return name
 
     def _hoist(self, r, text: str) -> str:
@@ -272,12 +299,18 @@ class AetherWriter:
         if value in r.fresh_items and prod(sink.value.ttype.shape) > policy.ROLLED_FOLD_MIN:
             r._emit(f"aether::rt::store({target}[i], {value});")
         else:
-            r._emit(f"{target}[i] = {value};")
+            r._emit(f"{target}[i] = {self._packed(sink.value.ttype, value)};")
+
+    def _packed(self, ttype: TensorType | None, value: str) -> str:
+        """``value`` as a plane stores it: under ``cells`` a rank-0 Real packs into its cell (``Real(value)``)."""
+        if self.cells and (ttype is None or (not ttype.shape and ttype.dtype in ("f64", "f32"))):
+            return f"Real({value})"
+        return value
 
     def scatter_store(self, r, sink, target: str, index: str, value: str) -> None:
         """A scattered wide_write targets a computed ROW: a store, exactly as
         the reference evaluator reads it."""
-        r._emit(f"{target}[{self._sample_index(index)}] = {value};")
+        r._emit(f"{target}[{self._sample_index(index)}] = {self._packed(sink.value.ttype, value)};")
 
     def team_store(self, r, sink, target: str, value: str) -> None:
         """A value a team stage works on, stored row-major into the lane's own slice of its scratch
@@ -320,7 +353,7 @@ class AetherWriter:
     def box_store(self, r, target: str, lane: str, value: str) -> None:
         """A thread box lane's own-column store, only for a lane the thread
         owns (:mod:`hawk.emit.box`)."""
-        r._emit(f"if ({lane} >= {BOX_OWN}) {target}[{self._sample_index(lane)}] = {value};")
+        r._emit(f"if ({lane} >= {BOX_OWN}) {target}[{self._sample_index(lane)}] = {self._packed(None, value)};")
 
     def accum_scattered(self, r, sink, target: str, index: str, value: str) -> None:
         """The scattered ``plain``/``atomic`` commit: the target's atomic add."""
@@ -373,6 +406,10 @@ class AetherWriter:
         (:data:`hawk.emit.render.SAMPLE_SUM_TERMS`)."""
         from .render import SAMPLE_SUM_TERMS
 
+        if self.cells:
+            term = f"aether::banded::Band({r._ref(sink.value)})"
+            r._emit(f"{SAMPLE_SUM_TERMS}[{column}].addTerm({term});" if sink.op == "sum" else f"{SAMPLE_SUM_TERMS}[{column}] = {term};")
+            return
         r._emit(f"{SAMPLE_SUM_TERMS}[{column}] = {r._ref(sink.value)};")
 
     # -- expressions ----------------------------------------------------
@@ -438,6 +475,8 @@ class AetherWriter:
             return f"static_cast<Int>({int(node.literal)})"
         if t.dtype in INT_PLANE_DTYPES:
             return f"static_cast<{element_spelling(t.dtype)}>({int(node.literal)}LL)"
+        if self.cells:
+            return band_literal(float(node.literal))
         return f"static_cast<Real>({_real_literal(float(node.literal))})"
 
     def at(self, r, node: At) -> str:
@@ -838,8 +877,8 @@ class AetherWriter:
         if block.language != RAW_LANGUAGE:
             raise HawkError(f"a raw block written in {block.language!r} cannot be "
                             f"spliced into aether text; write it in {RAW_LANGUAGE!r}")
-        for k, arg in enumerate(args):
-            r._emit(f"const auto hawk_raw_arg{k} = {arg};")
+        for k, (arg, source) in enumerate(zip(args, node.operands)):
+            r._emit(f"const {self._local_type(source.ttype)} hawk_raw_arg{k} = {arg};")
         return f"({block.text})"
 
     def _scalar_op(self, r, kind: str, args: Sequence[str], node: Op) -> str:
@@ -861,6 +900,12 @@ class AetherWriter:
             # aether's sign maps NaN to 0; numpy keeps the NaN.
             x = args[0] if args[0].isidentifier() else self._hoist(r, args[0])
             return f"(aether::math::isnan({x}) ? {x} : aether::math::sign({x}))"
+        if self.cells and kind in ("sin", "cos"):
+            shared = self._sincos(r, kind, args[0], node)
+            if shared is not None:
+                return shared
+        if self.cells and kind in _RAW_TWIN and r.readers.get(id(node)) and r.readers[id(node)] <= _TWIN_READERS:
+            return f"{_DETAIL}{_RAW_TWIN[kind]}(aether::banded::Band({args[0]}))"
         if kind in _MATH1:
             return f"aether::math::{_MATH1[kind]}({args[0]})"
         if kind in _MATH2:
@@ -868,6 +913,14 @@ class AetherWriter:
         if kind in _MATH3:
             return f"aether::math::{_MATH3[kind]}({', '.join(args)})"
         if kind in _INFIX and len(args) == 2:
+            if self.cells and kind in _LITERAL_KINDS:
+                folded = _banded_literal_op(kind, args, node)
+                if folded is not None:
+                    return folded
+                if kind == "add":
+                    fused = self._fused_add(r, node)
+                    if fused is not None:
+                        return fused
             return f"({args[0]} {_INFIX[kind]} {args[1]})"
         if kind == "neg":
             return f"(-{args[0]})"
@@ -876,6 +929,41 @@ class AetherWriter:
         if kind in ("dot", "norm", "sum", "component"):
             return self._reduction(r, kind, args, node)
         raise HawkError(_no_spelling(kind, 0))
+
+    def _fused_add(self, r, node: Op) -> str | None:
+        """``a*b + c`` (either order) as the fused raw intake ``fma(a, b, c)`` when ``c`` is a normalised ``Band``
+        (a plane element or the result of a door), the product is read by this add alone and neither factor is a
+        literal (those take their own raw forms). ``None``: left to the raw chain, which accepts a raw addend."""
+        for j in (0, 1):
+            prod_node, addend = (_through(o) for o in (node.operands[j], node.operands[1 - j]))
+            pos = r.position.get(id(prod_node))
+            if (not (isinstance(prod_node, Op) and prod_node.kind == "mul" and len(prod_node.operands) == 2)
+                    or r.fanout.get(pos, 0) != 1 or r._materialised(prod_node, pos)
+                    or any(_real_const(o) is not None for o in prod_node.operands)
+                    or not (isinstance(addend, (Leaf, At)) or (isinstance(addend, Op) and addend.kind in _DOORS))
+                    or addend.ttype.shape or addend.ttype.dtype not in ("f64", "f32")):
+                continue
+            a, b = (r._ref(o) for o in prod_node.operands)
+            return f"{_DETAIL}fma({a}, {b}, aether::banded::Band({r._ref(addend)}))"
+        return None
+
+    def _sincos(self, r, kind: str, arg: str, node: Op) -> str | None:
+        """Under ``cells``, the ``sin`` and ``cos`` of ONE operand node, both at the top scope, share one reduction:
+        the first reached binds ``sincos`` once, the other reads its result. ``None``: not such a pair."""
+        operand = node.operands[0]
+        partner = "cos" if kind == "sin" else "sin"
+        if r._scope_depth or not any(isinstance(o, Op) and o.kind == partner and o.operands[0] is operand
+                                     and r.position.get(id(o)) in r._outside for o in r.nodes):
+            return None
+        if r.position.get(id(node)) not in r._outside:
+            return None
+        names = r.sincos.get(id(operand))
+        if names is None:
+            k = len(r.sincos)
+            names = r.sincos[id(operand)] = (f"hawk_sin{k}", f"hawk_cos{k}")
+            r._emit(f"aether::banded::Band {names[0]}, {names[1]};")
+            r._emit(f"aether::math::sincos(aether::banded::Band({arg}), &{names[0]}, &{names[1]});")
+        return names[0] if kind == "sin" else names[1]
 
     @staticmethod
     def _cast_op(arg: str, node: Op) -> str:
@@ -1145,7 +1233,7 @@ class AetherWriter:
         into the declared local, which copies it out immediately."""
         elem = element_spelling(ttype.dtype)
         if not ttype.shape:
-            return f"static_cast<{elem}>(0)"
+            return band_literal(0.0) if self.cells and ttype.dtype in ("f64", "f32") else f"static_cast<{elem}>(0)"
         ext = ", ".join(str(e) for e in ttype.shape)
         return f"aether::constant<aether::extents<{ext}>>(static_cast<{elem}>(0))"
 
@@ -1203,5 +1291,113 @@ _INT_WRAPPING = {"add": "int_add", "sub": "int_sub", "mul": "int_mul",
                  "max": "int_max"}
 
 
+#: Op kinds whose banded result is a normalised ``Band`` (a facade door or a division).
+_DOORS = frozenset(_MATH1) | frozenset(_MATH2) | frozenset(_MATH3) | {"div"}
+#: The certified ops that have a raw-exit twin in ``aether::banded::detail`` (no exit normalise), and the readers
+#: that take the twin: an operator of the chain. Any other reader gets the facade entry, which normalises.
+_RAW_TWIN = {"sin": "sinRaw", "cos": "cosRaw", "exp": "expRaw"}
+_TWIN_READERS = frozenset(("add", "sub", "mul", "neg", "div"))
+_RAW_READERS = frozenset(("add", "sub", "mul", "div", "neg", "exp", "log", "sin", "cos", "sqrt"))
+_LITERAL_KINDS = ("add", "sub", "mul", "div")
+_DETAIL = "aether::banded::detail::"
+
+
+def _real_const(operand) -> Fraction | None:
+    """The exact value of a finite rank-0 Real literal operand, else ``None``."""
+    if isinstance(operand, Const) and not operand.ttype.shape and operand.ttype.dtype in ("f64", "f32"):
+        value = float(operand.literal)
+        return Fraction(value) if isfinite(value) else None
+    return None
+
+
+def _float_exact(value: Fraction) -> float | None:
+    """The float32 equal to ``value`` exactly, else ``None``."""
+    try:
+        f = struct.unpack("<f", struct.pack("<f", float(value)))[0]
+    except OverflowError:
+        return None
+    return f if Fraction(f) == value else None
+
+
+def _is_pow2(value: Fraction) -> bool:
+    n, d = abs(value).numerator, abs(value).denominator
+    return n > 0 and (n & (n - 1)) == 0 and (d & (d - 1)) == 0
+
+
+def _banded_literal_op(kind: str, args: Sequence[str], node: Op) -> str | None:
+    """``x <op> c`` (either side for ``+``/``*``) with a literal ``c``, spelled by its exact class: the identities
+    (``x*1``, ``x+0``, ``x-0``, ``x/1``) are ``x``, ``x*-1`` is ``-x``, a power of two scales exactly
+    (``scalePow2f``), a float-exact ``c`` takes the one-limb ``mulRawS``/``addRawS``, and ``x / c`` is ``x`` times
+    the three-limb reciprocal of ``c`` split from the exact quotient. ``None``: not a literal case, spelled as an
+    operator on a three-limb ``Band``."""
+    lc, rc = (_real_const(o) for o in node.operands)
+    if (lc is None) == (rc is None):
+        return None                      # no literal, or two: nothing to classify
+    left_lit = lc is not None
+    c = lc if left_lit else rc
+    x = args[1] if left_lit else args[0]
+    if kind in ("sub", "div") and left_lit:
+        return None
+    if kind in ("add", "sub"):
+        if c == 0:
+            return x
+        f = _float_exact(-c if kind == "sub" else c)
+        return f"{_DETAIL}addRawS({x}, {_real_literal(f)}f)" if f is not None else None
+    if kind == "div":
+        if c == 0:
+            return None
+        c = 1 / c
+    if c == 1:
+        return x
+    if c == -1:
+        return f"(-{x})"
+    f = _float_exact(c)
+    if f is not None:
+        helper = "scalePow2f" if _is_pow2(c) else "mulRawS"
+        return f"{_DETAIL}{helper}({x}, {_real_literal(f)}f)"
+    if kind == "div":
+        limbs = _split3(c)
+        if limbs is not None:
+            return f"({x} * aether::banded::Band({', '.join(_real_literal(h) + 'f' for h in limbs)}))"
+    return None
+
+
+def _split3(value: Fraction):
+    """``value`` as three floats, each the float nearest the rest; ``None`` out of the FP32 range."""
+    limbs, rest = [], value
+    try:
+        for _ in range(3):
+            limbs.append(struct.unpack("<f", struct.pack("<f", float(rest)))[0])
+            rest -= Fraction(limbs[-1])
+    except OverflowError:
+        return None
+    if abs(limbs[0]) < 2.0 ** -94 or abs(limbs[0]) >= 2.0 ** 126:
+        return None
+    return limbs
+
+
+def band_literal(value: float) -> str:
+    """``value`` as the three-limb ``Band(h, l, t)``: ``h`` the float nearest it, ``l`` the float nearest the rest,
+    ``t`` the rest after that, from the exact value (:class:`~fractions.Fraction`). Exact for every double in the
+    banded range; a literal the three limbs cannot hold exactly is refused by name."""
+    if not isfinite(value):
+        return f"aether::banded::Band({_real_literal(value)}, 0.0f, 0.0f)"
+    if value == 0:
+        return f"aether::banded::Band({_real_literal(value)}f, 0.0f, 0.0f)"     # keeps the sign of -0.0
+    limbs, rest = [], Fraction(value)
+    try:
+        for _ in range(3):
+            limbs.append(struct.unpack("<f", struct.pack("<f", float(rest)))[0])
+            rest -= Fraction(limbs[-1])
+    except OverflowError:
+        rest = 1
+    if rest != 0:
+        raise HawkError(f"the literal {value!r} is outside the banded range: a banded value lives in the FP32 "
+                        "exponent envelope [2^-94, 2^126); scale the quantity, or build in float64")
+    return "aether::banded::Band(" + ", ".join(_real_literal(h) + "f" for h in limbs) + ")"
+
+
 #: The built aether writer: what every wrapper wraps today.
 AETHER = AetherWriter()
+#: Its form under a ``cells`` scalar mode (``banded``).
+AETHER_CELLS = AetherWriter(cells=True)

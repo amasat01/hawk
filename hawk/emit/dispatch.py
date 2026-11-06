@@ -323,7 +323,7 @@ class _DispatchMixin:
         if named:
             name = f"tb{self.temps}"
             self.temps += 1
-            self._emit(self.writer.declare(name, node.ttype, text))
+            self._emit(self.writer.declare(name, node.ttype, text, ordered=self._ordered(node)))
             self.local[id(node)] = name
         else:
             self.local[id(node)] = text

@@ -29,12 +29,14 @@ through to a real publish; :func:`publish_log` names which and why.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
 import warnings
 import os
 import shutil
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -48,16 +50,17 @@ from ..trace.kernel import derived_axes as _derived_axes
 from ..emit import SegmentSpec, literal_table as _literal_table, render_source, scalar_mode
 from ..emit.box import thread_box
 from ..emit.render import binding_name as _binding_name
-from ..emit.wrapper import ActiveSpec
+from ..emit.wrapper import ActiveSpec, refuse_cells_off_device, refuse_team_reductions
 from ..ext import DEFAULT_KIND
 from ..ir import DispatchInfo, HawkError
 from ..ir.nodes import LEAF_ROLES
 from ..ir import canonical as _canonical
 from ..ir import split_segmented as _split_segmented
 from ..ir.segment import rewalk as _segment_rewalk
-from ..ir.split import internal as _split_internal
+from ..ir.split import internal as _split_internal, routing_to_ordered
 from ..ir import wide as _wide
 from ..ir.split import stages as _split_stages
+from ..ir.team import PARTIAL
 from ..targets import DEFAULT_TARGETS, ENTRY_DEVICE, ENTRY_HOST, GPU, TARGETS
 from ..targets.cards import build_arch
 from ..types import Slot, TensorType
@@ -364,6 +367,13 @@ def _lead(entries) -> str:
     return next((t for t in native if TARGETS[t].entry == ENTRY_DEVICE), native[0])
 
 
+def _refuse_cells_off_device(name: str, smode, targets) -> None:
+    """Refuse a banded build with a target that is not a device, before anything is emitted."""
+    for t in targets:
+        if t in TARGETS:
+            refuse_cells_off_device(name, smode, t, TARGETS[t])
+
+
 def _refuse_targets(name: str, targets) -> None:
     """Refuse an empty ``targets`` or an id that is no row of
     :data:`hawk.targets.TARGETS`, naming the valid ones."""
@@ -401,7 +411,7 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
     hook = getattr(kernel, "fused_body", None) if _native(targets) else None
     rows = getattr(getattr(kernel, "team", None), "lanes", 1)         # lanes a block of the warp form serves
     with policy.staging(rows):
-        body = None if hook is None else hook(kind)
+        body = None if hook is None else hook(kind, cells=smode.cells)
     segment = _segment_spec(kernel)
     if segment is not None and kernel.walk.reads_lane_position:
         raise HawkError(f"{name!r}: hawk.lane_position() is the launch slot, and a segmented "
@@ -411,6 +421,7 @@ def _sources(kernel, *, name, smode, kind, targets, layout_sizes_override,
     one_step = getattr(kernel, "one_step", None)
     box = thread_box(kernel, smode.id, kind=kind, segment=segment, active=active,
                      one_step=one_step, body=body)
+    refuse_team_reductions(getattr(kernel, "team", None), smode)
     out = {}
     for target in targets:
         row = TARGETS[target]
@@ -540,6 +551,31 @@ def _resource_report(kernel, ptxas: dict | None) -> dict | None:
     return report
 
 
+#: An FP64 instruction in SASS (``cuobjdump -sass``), and an FP64 opcode in PTX (``add.f64``, ``cvt.f64.f32``).
+_SASS_FP64 = re.compile(r"\b(DADD|DMUL|DFMA|DSETP|F2F\.F64|F2F\.F32\.F64|I2F\.F64|D2F|F2D|DMNMX)\b")
+_PTX_FP64 = re.compile(r"^\s*(?:@!?%p\d+\s+)?[a-z][a-z0-9]*(?:\.[a-z0-9]+)*\.f64\b", re.M)
+
+
+def _refuse_fp64(name: str, target: str, artifact, fmt: str) -> None:
+    """A banded build is FP32 only: refuse a unit that computes in FP64. The device object is read for FP64
+    instructions (the SASS of a CUBIN through ``cuobjdump`` when it is installed, else the opcodes of PTX)."""
+    hit = None
+    if fmt == "cubin":
+        tool = shutil.which("cuobjdump")
+        if tool is not None:
+            sass = subprocess.run([tool, "-sass", str(artifact)], capture_output=True, text=True, check=False).stdout
+            found = _SASS_FP64.search(sass)
+            hit = found and f"the FP64 instruction {found.group(1)} in its SASS"
+    else:
+        found = _PTX_FP64.search(Path(artifact).read_text())
+        hit = found and f"the FP64 PTX instruction {found.group(0).strip()!r}"
+    if hit:
+        raise HawkError(
+            f"kernel {name!r} ({target}) was built in the banded scalar mode but contains {hit}; a banded kernel "
+            "computes in FP32 only. Find the double-typed value (a literal, a cast or a host helper) and make it "
+            "float, or build this kernel in float64")
+
+
 _PTX_DEPOT = re.compile(r"^\s*\.local\s+[^\n;]*__local_depot\d+\[(\d+)\]", re.M)
 _PTX_BODY = re.compile(r"^\.(visible\s+)?\.(entry|func)\b", re.M)
 
@@ -661,6 +697,8 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
                 f"the content-closure cache says {name!r}'s {target} object is at "
                 f"{result.artifact} but it cannot be read; the unit cannot be "
                 "published from a store that lost its own artifact")
+        if smode.cells:
+            _refuse_fp64(name, target, result.artifact, fmt)
         files.append(_File(art_name, compiled, source_path=result.artifact))
         blob = _blob(source.text)
         files.append(_File(src_name, _digest_bytes(blob), blob=blob))
@@ -693,6 +731,10 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         wide=_wide_with_class({**_wide.walk_record(kernel.walk), **_wide.walk_record(kernel.one_step.walk)} if getattr(kernel, "one_step", None) is not None
                               else _wide.walk_record(kernel.walk), resolved_arch),
     )
+    if smode.cells:
+        for plane in getattr(getattr(kernel, "team", None), "planes", ()):    # a partial-sum plane is 16 bytes an element
+            if plane.dtype == PARTIAL and plane.name in meta["arg_dtypes"]:
+                meta["arg_dtypes"][plane.name] = "band_partial"
     if split is not None:
         # the first stage of a split kernel names every stage and every cell
         meta.update(split)
@@ -925,6 +967,7 @@ def _emitted(kernel, name, mode, kind, targets, device_arch, layout_sizes_overri
     kind = _resolve_kind(name, getattr(kernel, "kind", None), kind)
     kernel = _active_unit(kernel, name, kind)
     smode = scalar_mode(mode)
+    _refuse_cells_off_device(name, smode, targets)
     with build_arch(_emit_arch(targets, device_arch)):
         sources = _sources(kernel, name=name, smode=smode, kind=kind, targets=targets,
                            layout_sizes_override=layout_sizes_override,
@@ -943,6 +986,16 @@ class EmitUnit:
     unit: object
 
 
+def _routed(fn):
+    """``fn`` run with a ``cells`` mode's accumulates routed to the ordered stages (:mod:`hawk.ir.split`)."""
+    @functools.wraps(fn)
+    def run(*args, **kw):
+        with routing_to_ordered(scalar_mode(kw.get("mode", "float64")).cells):
+            return fn(*args, **kw)
+    return run
+
+
+@_routed
 def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targets=DEFAULT_TARGETS, kind=None,
                 device_arch: str = "", literal_table: bool = False) -> EmitUnit:
     """Emit ONE kernel's source text and sidecar for ``targets`` without compiling or writing anything.
@@ -1016,15 +1069,19 @@ def _keys_record(keyed) -> dict:
     return {"width": keyed.width, "axes": [list(a) for a in keyed.kept], "payload": list(keyed.payload)}
 
 
-def _team_scratch(found) -> dict:
+def _team_scratch(found, cells: bool = False) -> dict:
     """The scratch planes the team stages of ``found`` work on, ``{name: {"dtype", "per_lane"}}``:
-    ``dtype`` is ``"real"`` (the bundle's scalar type) or ``"int32"``, ``per_lane`` the elements of
-    each lane's slice. The runtime makes each ``lanes x per_lane`` once per kernel and lane count."""
+    ``dtype`` is ``"real"`` (the bundle's scalar type), ``"int32"`` or, for a partial sum of a ``cells``
+    mode, ``"band_partial"`` (16 bytes); ``per_lane`` the elements of each lane's slice. The runtime makes each ``lanes x per_lane`` once per kernel and lane count."""
     out: dict = {}
+
+    def dtype(p):
+        return ("band_partial" if cells else "real") if p.dtype == PARTIAL else p.dtype
+
     for st in found:
-        out.update({p.name: {"dtype": p.dtype, "per_lane": p.per_lane} for p in st.planes})
+        out.update({p.name: {"dtype": dtype(p), "per_lane": p.per_lane} for p in st.planes})
         if st.team is not None:
-            out.update({p.name: {"dtype": p.dtype, "per_lane": p.per_lane,
+            out.update({p.name: {"dtype": dtype(p), "per_lane": p.per_lane,
                                  **({"keys": _keys_record(st.team.keyed)} if p.unit == "key" else
                                    {"per_target": st.team.target} if p.unit == "target" else {"once": True} if p.unit == "once" else {}),
                                  **({} if p.fill is None else {"fill": p.fill})}
@@ -1132,7 +1189,7 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
             raise HawkError(
                 f"{n!r} reads a value reduced over samples inside a stepping or "
                 "segmented kernel; a split kernel is one plain step in this release")
-        found = _split_stages(n, k.sinks, wide=ok, real_bytes=real)
+        found = _split_stages(n, k.sinks, wide=ok, real_bytes=real, inplace=_active_spec(kd, getattr(k, "group", 1)) is None)
         found1 = None
         if one is not None and ok:      # the single step is a body of its own: placed beside the fused one, in planes of its own
             found1 = _split_stages(n, one.sinks, wide=True, real_bytes=real,
@@ -1166,7 +1223,7 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
                     if hasattr(k.sinks, attr):
                         setattr(sinks, attr, getattr(k.sinks, attr))
             if stage.team is not None and stage.team.steps:
-                member = TeamStage(stage.name, sinks, stage.team)
+                member = TeamStage(stage.name, sinks, stage.team, k.planes if stage is found[0] else None)
             elif getattr(k, "segment", None) is not None:       # a branch unit, its wide values placed: still the unit
                 member = _segment_rewalk(k, sinks)
             else:
@@ -1194,7 +1251,7 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
              "cells_out": list(st.cells_out), "recomputed": list(st.recomputed),
              **({} if st.team is None else {"team": _team_record(st.team)})}
             for st in found]}
-        scratch = _team_scratch((*found, *(found1 or ())))
+        scratch = _team_scratch((*found, *(found1 or ())), bool(smode and smode.cells))
         if scratch:
             blocks[n]["team_planes"] = scratch
         # the keyed planes the runtime owns between the stages
@@ -1245,6 +1302,7 @@ def _manifest_of(drafts) -> dict:
                                   exec_access=access, exec_op=op)
 
 
+@_routed
 def build_bundle(kernels, directory, *, mode: str = "float64",
                  targets=DEFAULT_TARGETS, kind=None, layout_sizes_override=None,
                  defines=(), cache_dir=None, device_arch: str = "",
@@ -1327,6 +1385,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     targets = tuple(targets)
     names = [name or k.name for k in kernels]
     _refuse_targets(names[0] if names else "", targets)
+    _refuse_cells_off_device(names[0] if names else "", smode, targets)
     native = _native(targets)
     exported = _exported(targets)
     if exported and embedded_profile is None:

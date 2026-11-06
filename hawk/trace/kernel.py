@@ -1036,15 +1036,17 @@ class TeamStage(Kernel):
 
     __slots__ = ()
 
-    def __init__(self, name: str, sinks: tuple, team: Any) -> None:
-        super().__init__(name, sinks, {})
+    def __init__(self, name: str, sinks: tuple, team: Any, planes: dict[str, Any] | None = None) -> None:
+        super().__init__(name, sinks, planes)
         self.team = team
+        if team.reads:          # input planes the stage reads in place are slots of its own
+            self.walk = canonical(self.sinks, (*_declared(self.planes), *(Slot(leaf.role, leaf.name, leaf.ttype) for leaf in team.reads)))
 
-    def fused_body(self, kind: Any = None) -> Any:
+    def fused_body(self, kind: Any = None, cells: bool = False) -> Any:
         from ..artifact.bundle import _active_spec
         from ..emit.team import team_body
 
-        return team_body(self.team, _active_spec(kind))
+        return team_body(self.team, _active_spec(kind), cells)
 
 
 class WarpStage(TeamStage):
@@ -1053,7 +1055,7 @@ class WarpStage(TeamStage):
 
     __slots__ = ()
 
-    def fused_body(self, kind: Any = None) -> Any:
+    def fused_body(self, kind: Any = None, cells: bool = False) -> Any:
         from ..emit.render import render_body
 
         if self.one_step is not None:       # an automatic kernel renders its two bodies itself

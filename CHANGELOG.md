@@ -2,6 +2,12 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
+## Unreleased
+
+### Added
+
+**Masked vector variants on a GCC that carries the backport.** On GCC 13.0-13.3 and 14.0-14.2 under `native-vector-math`, hawk runs a witness of aether's masked-call miscompile once per compiler and CPU (verdict kept in the compile cache directory) and adds `-DAETHER_HVM_MASKED=1` when the compiler runs it correctly; your own `-DAETHER_HVM_MASKED` skips the check.
+
 ## 0.7.4 (2026-11-06)
 
 A patch on 0.7.3: three code-generation fixes found by an application, and a change to how conditions combine.

@@ -106,7 +106,7 @@ def kind_for(role: str, ttype: TensorType, *, scalar_type: str = "float64") -> s
             return "nsamples"
         if ttype.dtype in _INT_DTYPES:
             return "int"
-        return "f32" if scalar_type == "float32" else "f64"
+        return {"float32": "f32", "banded": "banded"}.get(scalar_type, "f64")
     kind = _KIND_OF_MIRROR[shape]
     if kind == "handle" and ttype.dtype in _INT_DTYPES:
         return "int_handle"
@@ -467,6 +467,9 @@ def _box(kind: str, value):
         return ctypes.c_longlong(int(value))
     if kind == "nsamples":
         return _index_ctype()(int(value))
+    if kind == "banded":
+        raise HawkError("a banded uniform crosses as its cell word: run a banded kernel through eagle.plan, "
+                        "which packs it (eagle.banded_pack)")
     raise HawkError(f"slot kind {kind!r} is not a by-value slot")
 
 
