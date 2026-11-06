@@ -473,6 +473,7 @@ def test_the_vector_math_profile_is_the_x86_default(monkeypatch):
     if platform.machine().lower() in ("x86_64", "amd64"):
         vm = tc.host_codegen_flags("native-vector-math")
         assert default[:2] == ["-O3", "-ffp-contract=off"]
+        vm = [f for f in vm if f != "-DAETHER_HVM_MASKED=1"]   # added on a compiler that carries the masked-call fix
         assert vm == ["-O3", "-ffp-contract=fast", *default[2:],
                       "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
         monkeypatch.setenv("HAWK_HOST_PROFILE", "native-vector-math")

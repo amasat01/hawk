@@ -182,7 +182,7 @@ jobs:
   # conditional call of a function with masked vector variants (GCC commit
   # abbfe1e2616d, fixed in 13.4 and 14.3); aether-dsc drops those variants there
   # and hawk reports such loops scalar. The sufficiency step is the whole non-GPU
-  # suite on each compiler. The necessity witness is ci/gcc_masked_call_witness.cpp,
+  # suite on each compiler. The necessity witness is hawk/compile/witness/gcc_masked_call.cpp,
   # a standalone lane-tile early-exit loop calling a SIMD function: it must give
   # wrong results on exactly the affected compilers and right ones elsewhere.
   host-gcc:
@@ -329,7 +329,7 @@ jobs:
         run: |
           cxx=g++-${{ matrix.gcc }}; v=$("$cxx" -dumpfullversion)
           "$cxx" -std=c++17 -O3 -ffp-contract=fast -fno-trapping-math -march=native -mprefer-vector-width=512 \
-            hawk/ci/gcc_masked_call_witness.cpp -o "$RUNNER_TEMP/witness"
+            hawk/hawk/compile/witness/gcc_masked_call.cpp -o "$RUNNER_TEMP/witness"
           rc=0; "$RUNNER_TEMP/witness" || rc=$?
           case "$v" in 13.[0-3].*|14.[0-2].*) want=1 ;; *) want=0 ;; esac
           echo "g++ $v: witness exit $rc, expected $want ($([ $want = 1 ] && echo 'affected: wrong results' || echo 'not affected'))" | tee -a "$GITHUB_STEP_SUMMARY"

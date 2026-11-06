@@ -179,7 +179,7 @@ because GCC cannot vectorise a call into libm. Under this profile aether
 declares those functions with the x86-64 vector function ABI and supplies
 vector versions (its own packet math), so the loop vectorises; `fmax`/`fmin`
 become inline selects with libm's results (up to the sign of a +0/-0 tie,
-which C leaves unspecified). The accuracy trade:
+which C leaves unspecified). On GCC 13.0-13.3 and 14.0-14.2 aether keeps a loop with a conditional call scalar (those releases if-convert it wrongly); hawk runs a small witness of the miscompile once per compiler, and where a distribution compiler carries the fix it enables the vector variants with `-DAETHER_HVM_MASKED=1` (setting that macro yourself skips the check). The accuracy trade:
 the transcendental functions are aether's, faithfully rounded (error < 1 ULP,
 verified against a 128-bit reference; the per-function accuracy table is in aether's
 `aether/backend/cpu/simd/math/PacketMath.h`), but not glibc's, so results are

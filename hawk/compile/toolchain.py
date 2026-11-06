@@ -796,6 +796,69 @@ def gcc_maskcall_affected(macros: dict) -> bool:
     return (major == 13 and minor < 4) or (major == 14 and minor < 3)
 
 
+#: The witness for the GCC masked-call miscompile (see :func:`gcc_maskcall_affected`): exit 0 on correct
+#: code, 1 on wrong code. Ships with the package (and is the one the CI host-gcc job runs).
+MASKED_CALL_WITNESS = Path(__file__).with_name("witness") / "gcc_masked_call.cpp"
+_WITNESS_MEMO: dict = {}
+_WITNESS_LOCK = threading.Lock()
+
+
+def _witness_run(compiler: str, flags: list[str]) -> tuple[str, str]:
+    """``(verdict, why)``: ``fixed`` (the witness ran correctly), ``miscompile``
+    (it ran and gave wrong results) or ``unrun`` (it could not be built or run)."""
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="hawk-witness-") as tmp:
+        exe = os.path.join(tmp, "witness")
+        try:
+            built = subprocess.run([compiler, *flags, "-std=c++17", str(MASKED_CALL_WITNESS), "-o", exe],
+                                   capture_output=True, text=True, timeout=120)
+            if built.returncode != 0:
+                return "unrun", "the witness does not compile with the host flags"
+            ran = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return "unrun", f"{type(exc).__name__}: cannot build or run the witness"
+    return {0: ("fixed", ""), 1: ("miscompile", "")}.get(ran.returncode, ("unrun", f"the witness exited {ran.returncode}"))
+
+
+def masked_call_flag(flags: list[str], extra=()) -> list[str]:
+    """``["-DAETHER_HVM_MASKED=1"]`` when the host compiler is a GCC whose version aether flags
+    (:func:`gcc_maskcall_affected`) but which runs the witness correctly (a distribution compiler carrying the
+    backport of the fix), else ``[]``: aether keeps its workaround. The witness is built with the host build's own
+    ``flags`` and run once per compiler identity, CPU and flags: the verdict is kept in the process and in the
+    compile cache directory. A macro the caller sets in ``extra`` wins without a probe; a compiler aether does
+    not flag, clang, a compiler that cannot be probed, or a witness that cannot run costs nothing and changes nothing."""
+    if any(str(f).startswith("-DAETHER_HVM_MASKED") for f in extra):
+        return []
+    try:
+        compiler = host_compiler()
+        if not gcc_maskcall_affected(compiler_macros(compiler)):
+            return []
+        key = hashlib.sha256("\n".join([compiler_identity(compiler), host_target_identity(), *flags]).encode()).hexdigest()[:16]
+    except (HawkError, OSError, subprocess.SubprocessError):
+        return []
+    with _WITNESS_LOCK:
+        verdict = _WITNESS_MEMO.get(key)
+    if verdict is None:
+        stored = default_cache_dir() / "toolchain" / f"masked_call_{key}.json"
+        try:
+            verdict = json.loads(stored.read_text())["verdict"]
+        except (OSError, ValueError, KeyError):
+            verdict, why = _witness_run(compiler, flags)
+            if verdict == "unrun":
+                logging.getLogger("hawk").warning("hawk: the masked-call witness did not run (%s): aether's workaround stays", why)
+            else:   # an unrun witness is not stored: the cause may be passing
+                try:
+                    stored.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = stored.with_suffix(f".{os.getpid()}.tmp")
+                    tmp.write_text(json.dumps({"verdict": verdict}))
+                    os.replace(tmp, stored)
+                except OSError:
+                    pass
+        with _WITNESS_LOCK:
+            verdict = _WITNESS_MEMO.setdefault(key, verdict)
+    return ["-DAETHER_HVM_MASKED=1"] if verdict == "fixed" else []
+
+
 def _is_x86_64() -> bool:
     return platform.machine().lower() in ("x86_64", "amd64")
 
@@ -870,11 +933,13 @@ def opt_level(requested: str | None = None) -> str:
     return name
 
 
-def host_codegen_flags(profile: str | None = None, opt: str | None = None) -> list[str]:
+def host_codegen_flags(profile: str | None = None, opt: str | None = None, extra=()) -> list[str]:
     """The code-generation half of the host recipe for ``profile``
     (resolved through :func:`host_profile`): optimisation level (resolved
     through :func:`opt_level`), target CPU, vector width and the
-    FMA-contraction setting. See :data:`HOST_PROFILES`."""
+    FMA-contraction setting. On a vector-math profile it also carries
+    :func:`masked_call_flag`'s answer for the host compiler (``extra`` is the
+    caller's own flags, which can pin the macro). See :data:`HOST_PROFILES`."""
     name = host_profile(profile)
     level = opt_level(opt)
     machine = platform.machine().lower()
@@ -891,7 +956,10 @@ def host_codegen_flags(profile: str | None = None, opt: str | None = None) -> li
                 f"host profile {name!r} needs an x86-64 host "
                 "(aether's vector math follows the x86-64 vector function ABI)")
         target = [*target, "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
-    return [f"-{level}", _HOST_CONTRACTION[name], *target]
+    flags = [f"-{level}", _HOST_CONTRACTION[name], *target]
+    if name in VECTOR_MATH_PROFILES:
+        flags += masked_call_flag(flags, extra)
+    return flags
 
 
 #: Per-process memo for :func:`host_target_identity` (the CPU does not change
@@ -934,7 +1002,7 @@ def host_flags(*, extra=(), profile: str | None = None, opt: str | None = None) 
     PIC, shared, C++23, and the standalone-artifact build mode (one
     self-contained TU, ``dlopen``-ed by eagle, never linked against a
     CUDA-language aether TU)."""
-    return [*host_codegen_flags(profile, opt), f"-std={HOST_STD}", "-shared", "-fPIC",
+    return [*host_codegen_flags(profile, opt, extra), f"-std={HOST_STD}", "-shared", "-fPIC",
             "-DAETHER_CPP_MODE", *include_flags(), *extra]
 
 
@@ -1061,6 +1129,7 @@ def reset_identity_memo() -> None:
     binary swapped mid-process should invalidate both alike."""
     _IDENTITY_MEMO.clear()
     _NVCC_VERSION_MEMO.clear()
+    _WITNESS_MEMO.clear()
 
 
 def _ccbin_from_flags(flags: str) -> str | None:

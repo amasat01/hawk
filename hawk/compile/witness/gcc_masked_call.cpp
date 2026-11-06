@@ -5,7 +5,7 @@
 // function calls"): GCC 13.1-13.3 and 14.1-14.2 mask a call under a condition with the wrong (un-inverted) predicate
 // when the callee has masked (inbranch) SIMD clones. The loop is a lane-tile early-exit iteration with a select on the
 // call's result, the shape hawk emits. Prints OK or MISMATCH; exit 1 on wrong results.
-// Build: g++ -O3 -ffp-contract=fast -fno-trapping-math -march=native -mprefer-vector-width=512 ci/gcc_masked_call_witness.cpp
+// Build: g++ -O3 -ffp-contract=fast -fno-trapping-math -march=native -mprefer-vector-width=512 hawk/compile/witness/gcc_masked_call.cpp
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
