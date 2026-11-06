@@ -104,12 +104,33 @@ class _Slicer:
     def of(self, node: Node) -> tuple:
         got = self.memo.get(id(node))
         if got is None:
+            self._operands_first(node)
+            got = self.memo.get(id(node))
+        if got is None:
             self.keep.append(node)
             got = self.memo[id(node)] = self._one(node)
             self.used = self.used or got[1]
             if got[1]:
                 self.widest = max(self.widest, node.ttype.shape[0] if len(node.ttype.shape) == 1 else 0)
         return got
+
+    def _operands_first(self, root: Node) -> None:
+        """Memoise the operands under ``root`` in post-order with an explicit stack, so ``_one`` finds them done and a
+        dependent chain of any depth costs one frame, not one per node."""
+        stack = [root]
+        while stack:
+            node = stack[-1]
+            if id(node) in self.memo:
+                stack.pop()
+                continue
+            if type(node) in (Op, Select) and node.kind != "vec":
+                pending = next((o for o in node.operands if type(o) in (Op, Select) and id(o) not in self.memo), None)
+                if pending is not None:
+                    stack.append(pending)
+                    continue
+            stack.pop()
+            if node is not root:
+                self.of(node)
 
     def _one(self, node: Node) -> tuple:
         if isinstance(node, (Const, LoopIndex, WarpLane)):
