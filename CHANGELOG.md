@@ -2,7 +2,9 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
-## Unreleased
+## 0.7.4 (2026-11-06)
+
+A patch on 0.7.3: three code-generation fixes found by an application, and a change to how conditions combine.
 
 ### Fixed
 
