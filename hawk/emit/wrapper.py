@@ -904,7 +904,13 @@ template <class T> {qualifier} T int_abs(T a)
 }}
 template <class T> {qualifier} T int_min(T a, T b) {{ return b < a ? b : a; }}
 template <class T> {qualifier} T int_max(T a, T b) {{ return a < b ? b : a; }}
-template <class T> {qualifier} T int_clamp_index(T i, T n) {{ return i < T(0) ? T(0) : (i < n ? i : n - T(1)); }}
+// One unsigned compare is the whole in-range test (a negative index wraps past n), so an in-range read pays one
+// predictable branch: a min/max or nested-compare spelling costs more per read on the host gather loop.
+template <class T> {qualifier} T int_clamp_index(T i, T n)
+{{
+    using U = typename int_traits<T>::U;
+    return U(i) < U(n) ? i : (i < T(0) ? T(0) : n - T(1));
+}}
 template <class T> {qualifier} T int_floordiv(T a, T b)
 {{
     if (b == T(0))
