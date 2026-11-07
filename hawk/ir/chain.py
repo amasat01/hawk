@@ -136,3 +136,60 @@ def bind(members: Sequence, keep: Sequence[str] = ()) -> ChainIR:
         later = set().union(*reads[b:])
         crossing.append(sum(_elements(t) for n, t in produced.items() if n in later))
     return ChainIR(tuple(latest[n][1] for n in outputs), planes, outputs, tuple(crossing))
+
+
+#: The prefix of the plane a cut chain passes a value through from one segment to the next.
+CROSS_PREFIX = "hwc_"
+
+
+def _cross_names(name: str, ttype) -> list:
+    """The scalar planes one crossing value of ``ttype`` travels in: one per element."""
+    return [f"{CROSS_PREFIX}{name}"] if not ttype.shape else [f"{CROSS_PREFIX}{name}_{k}" for k in range(ttype.shape[0])]
+
+
+def segments(members: Sequence, cuts: Sequence[int]) -> list:
+    """``[(sinks, planes)]``, one per segment of ``members`` cut before each member index in ``cuts``. A value one
+    segment computes and a later one reads crosses in scalar planes the runtime makes per lane (``planes``:
+    ``(name, dtype)`` of those a segment writes): the writer stores each element, the reader assembles them back."""
+    from ..types import TensorType
+    from .nodes import Assign, Op
+
+    bounds = [0, *cuts, len(members)]
+    crossed: dict = {}                      # name -> ttype of a value an earlier segment stored
+    out = []
+    for a, b in zip(bounds, bounds[1:]):
+        later = set().union(*({lf.name for lf in _walk_sinks(k.sinks)[0]} for k in members[b:]))
+        sinks = bind(members[a:b], keep=tuple(later)).sinks
+        mapping = {}
+        for lf in _walk_sinks(sinks)[0]:
+            if lf.name in crossed:
+                scalar = TensorType((), lf.ttype.dtype)
+                parts = [Leaf("vocab_read", "per_sample", nm, scalar) for nm in _cross_names(lf.name, lf.ttype)]
+                mapping[id(lf)] = parts[0] if not lf.ttype.shape else Op("vec", tuple(parts), lf.ttype)
+        if mapping:
+            flat = [o for s in sinks for o in s.operands]
+            new = list(substitute(flat, mapping))
+            rebuilt = []
+            for s in sinks:
+                twin = copy.copy(s)
+                twin.operands = tuple(new[:len(s.operands)])
+                del new[:len(s.operands)]
+                rebuilt.append(twin)
+            sinks = rebuilt
+        kept, planes = [], []
+        for s in sinks:
+            if s.name not in later:
+                kept.append(s)
+                continue
+            if len(s.ttype.shape) > 1 or s.ttype.dtype not in ("f64", "f32", "i32"):
+                raise HawkError(f"chain: {s.name!r} would cross a cut as {s.ttype!r}; only scalars and vectors of "
+                                "reals or Index cross")
+            scalar = TensorType((), s.ttype.dtype)
+            names = _cross_names(s.name, s.ttype)
+            for k, nm in enumerate(names):
+                part = s.value if not s.ttype.shape else Op("component", (s.value,), scalar, k)
+                kept.append(Assign(nm, part, scalar))
+                planes.append((nm, "int32" if s.ttype.dtype == "i32" else "real"))
+            crossed[s.name] = s.ttype
+        out.append((tuple(kept), tuple(planes)))
+    return out

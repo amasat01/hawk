@@ -7,7 +7,7 @@ A segment's registers are estimated from its IR: ``est = R0 + r x maxlive``, ``m
 at one point of the composed body's canonical order (a plane read is live from the kernel start, as the compiler hoists
 the loads; a value the placement pass puts in a scratch plane counts nothing) and ``r`` the registers one element takes
 (2 for f64 and 1 for f32 on a device; 1 vector register on a host). A boundary stays fused while fusing costs no more than
-the cut: ``N x c_local x 2 x frame`` (the frame is ``4 x max(0, est - R_file)`` bytes) against ``L + N x c_plane x (2 x
+the cut: ``N x c_local x 2 x frame`` (the frame is ``4 x max(0, est - R_file)`` bytes, past what its parts hold alone) against ``L + N x c_plane x (2 x
 crossing + reloaded)`` bytes. On a CUDA device the frame is cached and every boundary fuses; on a host the rule fuses up to
 the register line. After compile the estimate fences the kernel (:func:`fence`): a chain never ships past it.
 """
@@ -100,8 +100,15 @@ def cuts(members: Sequence, card: dict, scalar_type: str, samples: int) -> list[
     real = 4 if scalar_type in ("float32", "f32", "banded") else 8
     crossing = bind(members).crossing
     out, a = [], 0
+    shapes = {s.name: s.ttype for k in members for s in k.sinks}
     for b in range(1, len(members)):
-        frame = 4 * max(0, estimate(_segment_walk(members, a, b + 1), card, scalar_type) - card["R_file"])
+        reads = {lf.name for k in members[b:] for lf in _leaves(k)}
+        if any(len(shapes[n].shape) > 1 for k in members[:b] for n in (s.name for s in k.sinks) if n in reads):
+            continue                            # a matrix does not cross a cut
+        # the frame fusing adds: a part already past the file costs the same in every arrangement
+        alone = max(estimate(_segment_walk(members, a, b), card, scalar_type),
+                    estimate(_segment_walk(members, b, b + 1), card, scalar_type))
+        frame = 4 * max(0, estimate(_segment_walk(members, a, b + 1), card, scalar_type) - max(card["R_file"], alone))
         if card["c_local_over_plane"] is None:
             fused = frame == 0
         else:

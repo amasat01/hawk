@@ -60,6 +60,7 @@ from ..ir.segment import rewalk as _segment_rewalk
 from ..ir.split import internal as _split_internal, routing_to_ordered
 from ..ir import wide as _wide
 from ..ir.split import stages as _split_stages
+from ..ir import split as _split
 from ..ir.team import PARTIAL
 from ..targets import DEFAULT_TARGETS, ENTRY_DEVICE, ENTRY_HOST, GPU, TARGETS
 from ..targets.cards import build_arch
@@ -1202,7 +1203,8 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
             raise HawkError(
                 f"{n!r} reads a value reduced over samples inside a stepping or "
                 "segmented kernel; a split kernel is one plain step in this release")
-        found = _split_stages(n, k.sinks, wide=ok, real_bytes=real, inplace=_active_spec(kd, getattr(k, "group", 1)) is None)
+        found = (_split_stages(n, k.sinks, wide=ok, real_bytes=real, inplace=_active_spec(kd, getattr(k, "group", 1)) is None)
+                 or _chain_stages(k, n, smode, device))
         found1 = None
         if one is not None and ok:      # the single step is a body of its own: placed beside the fused one, in planes of its own
             found1 = _split_stages(n, one.sinks, wide=True, real_bytes=real,
@@ -1273,6 +1275,31 @@ def _expand_split(kernels: list, names: list, kinds: list, *, smode=None, device
         if keyed:
             blocks[n]["keyed"] = keyed
     return out_kernels, out_names, out_kinds, blocks
+
+
+#: The lanes the chain rule weighs a cut at: the extent is not known when the kernel is built.
+CHAIN_SAMPLES = 1 << 16
+
+
+def _chain_stages(kernel, name: str, smode, device: bool) -> tuple | None:
+    """The stages of a chain (:func:`hawk.chain`) the fusion rule cuts (:func:`hawk.ir.fusion.cuts`, on the device's
+    row when the bundle has a device target, else on this host's), named ``<name>``, ``<name>_2``, ...; ``None`` when
+    it runs as one kernel. A value crossing a cut travels in scalar planes the runtime makes per lane (one per
+    element: a runtime plane is one value per lane)."""
+    from ..ir import chain as _chain
+    from ..ir import fusion
+    from ..ir.team import Plane
+
+    members = getattr(kernel, "members", None)
+    if members is None or len(members) < 2 or getattr(kernel, "group", 1) != 1:
+        return None                 # a compaction group runs as one kernel: the stages run every lane
+    scalar = smode.id if smode is not None else "float64"
+    cut = fusion.cuts(members, fusion.row(scalar, host=not device), scalar, CHAIN_SAMPLES)
+    if not cut:
+        return None
+    return tuple(_split.Stage(name if j == 0 else f"{name}_{j + 1}", sinks, (), (), (),
+                              planes=tuple(Plane(nm, dtype, 1) for nm, dtype in planes))
+                 for j, (sinks, planes) in enumerate(_chain.segments(members, cut)))
 
 
 def _member_kind(kernel, kind, explicit: bool):
