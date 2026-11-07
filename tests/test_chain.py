@@ -391,3 +391,141 @@ def test_a_host_with_another_register_file_never_reuses_a_cut_decision(private_c
     whole = build_bundle([fan], tmp_path / "b", targets=("host",), mode="float64")
     assert [st["kernel"] for st in sidecar_of(cut, "fan")["stages"]] == ["fan", "fan_2"]
     assert "stages" not in sidecar_of(whole, "fan") and cut.digest != whole.digest
+
+
+# ---- derivatives of chains (A5) ------------------------------------------------------------------------------
+
+@hawk.kernel
+def d1(x: Scalar, a: Mutable[Vector[3]]):
+    a = m.vec(m.sin(x), m.cos(x), x * 0.5)
+
+
+@hawk.kernel
+def d2(a: Vector[3], x: Scalar, b: Mutable[Scalar]):
+    b = m.exp(-m.dot(a, a)) + x
+
+
+@hawk.kernel
+def d3(a: Vector[3], b: Scalar, y: Mutable[Vector[3]]):
+    y = a * b
+
+
+def _small_tangent(x):
+    """d y / d x of d1, d2, d3 in long double (``y`` is (3, n))."""
+    x = x.astype(LD)
+    a, da = np.stack([np.sin(x), np.cos(x), x * LD("0.5")]), np.stack([np.cos(x), -np.sin(x), np.full_like(x, LD("0.5"))])
+    e = np.exp(-(a * a).sum(axis=0))
+    b, db = e + x, e * (-2 * (a * da).sum(axis=0)) + 1
+    return da * b + a * db
+
+
+def _fan_in_tangent(x, n_members: int, w: int):
+    """d out / d x of :func:`fan_in` in long double (``out`` is (w, n))."""
+    x, rs = x.astype(LD), []
+    for j in range(1, n_members):
+        src, dsrc = (x, np.ones_like(x)) if j == 1 else rs[-1]
+        u, du = src * x + LD(f"{0.25 + 0.01 * j:.2f}"), dsrc * x + src
+        e = np.exp(-x * x * LD(f"{0.01 + 0.001 * j:.3f}"))
+        de = e * (-2 * x * LD(f"{0.01 + 0.001 * j:.3f}"))
+        rs.append((np.sin(u) * e, np.cos(u) * du * e + np.sin(u) * de))
+    acc, dacc = np.zeros_like(x), np.zeros_like(x)
+    for i, (r, dr) in enumerate(reversed(rs)):
+        k = LD(f"{0.25 + 0.001 * i:.4f}")
+        acc, dacc = np.sin(acc + r * k), np.cos(acc + r * k) * (dacc + dr * k)
+    return np.broadcast_to(dacc, (w, x.size))
+
+
+def _back(a):
+    if isinstance(a, np.ndarray):
+        return a
+    a = a.get()
+    return np.asarray(a.to("numpy") if hasattr(a, "to") else a)
+
+
+def _call(kernel, planes, where, dtype):
+    names = [nm for _, nm in kernel.arg_spec]
+    held = {nm: planes[nm].astype(dtype) for nm in names}
+    if where == "cuda":
+        held = {k: eagle.arrays.asarray(v, device="cuda:0") for k, v in held.items()}
+    eagle.deploy(kernel, scalar_type=dtype, targets=(where,))(**held)
+    return {nm: _back(a) for nm, a in held.items()}
+
+
+def _chain_derivative(case, direction, where, dtype):
+    """The derivative of a chain at ``x`` along ``x`` (jvp: ``dot_x = 1``; vjp: a random seed), the derivative of its
+    composed DAG, the long-double oracle and the central differences of the chain's value."""
+    from hawk.diff import jvp, vjp
+    from hawk.trace.kernel import Kernel
+
+    members, out, w, tangent = case
+    chained = hawk.chain(*members, name="dchain")
+    dag = Kernel("ddag", chained.sinks, kind=chained.kind)       # the composed DAG: one kernel, no members
+    rng = np.random.default_rng(11)
+    n = 300
+    x = rng.uniform(0.2, 1.5, n).astype(dtype)
+    seed = rng.uniform(0.5, 1.5, (w, n))
+    planes = {"x": x, "dot_x": np.ones(n), f"bar_{out}": seed, f"dot_{out}": np.zeros((w, n)), "bar_x": np.zeros(n),
+              out: np.zeros((w, n))}
+    derive, got_name = (jvp, f"dot_{out}") if direction == "jvp" else (vjp, "bar_x")
+    derived = derive(chained, wrt=("x",), primal_unit="0" * 64)
+    mine, theirs = Kernel("dchain_d", derived), Kernel("ddag_d", derive(dag, wrt=("x",), primal_unit="0" * 64))
+    got, want = _call(mine, planes, where, dtype)[got_name], _call(theirs, planes, where, dtype)[got_name]
+    ref = tangent(x) if direction == "jvp" else (seed.astype(LD) * tangent(x)).sum(axis=0)
+    def value(shift):
+        run = _call(chained, {**planes, "x": x.astype(np.float64) + shift}, "host", "float64")
+        return run[out].astype(LD)
+    h = 1e-6
+    fd = (value(h) - value(-h)) / (2 * LD(h))
+    fd = fd if direction == "jvp" else (seed.astype(LD) * fd).sum(axis=0)
+    return derived, mine, got, want, ref, fd
+
+
+SMALL = ((d1, d2, d3), "y", 3, _small_tangent)
+ON_DEVICE = pytest.param("cuda", marks=[pytest.mark.gpu, pytest.mark.skipif(not _device(), reason="needs a CUDA device")])
+
+
+def _check_derivative(case, direction, where, dtype):
+    derived, mine, got, want, ref, fd = _chain_derivative(case, direction, where, dtype)
+    assert [k.name for k in derived.members]
+    to_oracle, to_dag = _oracle_ulps(got, ref, dtype), _oracle_ulps(want, ref, dtype)
+    print(f"chain {direction} {where} {dtype}: {to_oracle:.1f} ulp vs oracle (dag {to_dag:.1f}), "
+          f"{_ulps(got, want, dtype):.1f} ulp vs dag, {float(np.max(np.abs(got - fd)) / np.max(np.abs(fd))):.1e} vs central")
+    assert to_oracle <= ORACLE_ULPS and to_dag <= ORACLE_ULPS
+    assert float(np.max(np.abs(got.astype(LD) - fd) / np.max(np.abs(fd)))) < (1e-4 if dtype == "float32" else 1e-8)
+    return derived, mine
+
+
+@pytest.mark.parametrize("where", ["host", ON_DEVICE])
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_chain_jvp_equals_dag_jvp(where, dtype, private_cache):
+    _check_derivative(SMALL, "jvp", where, dtype)
+
+
+@pytest.mark.parametrize("where", ["host", ON_DEVICE])
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_chain_vjp_equals_dag_vjp(where, dtype, private_cache):
+    _check_derivative(SMALL, "vjp", where, dtype)
+
+
+def _cut_case(n_members: int = 10, w: int = 16):
+    return fan_in(n_members, w), "out", w, lambda x: _fan_in_tangent(x, n_members, w)
+
+
+@pytest.mark.parametrize("direction", ["jvp", "vjp"])
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_a_cut_chain_derivative_equals_dag_on_the_host(direction, dtype, avx512, private_cache, tmp_path):
+    case = _cut_case()
+    derived, mine = _check_derivative(case, direction, "host", dtype)
+    print(f"cut chain {direction} host stages: {_stages(mine, dtype, 'host', tmp_path)} "
+          f"(primal {_stages(hawk.chain(*case[0], name='dchain'), dtype, 'host', tmp_path)})")
+    assert len(_stages(mine, dtype, "host", tmp_path)) >= 2
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not _device(), reason="needs a CUDA device")
+@pytest.mark.parametrize("direction", ["jvp", "vjp"])
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_a_cut_chain_derivative_equals_dag_on_the_device(direction, dtype, private_cache, tmp_path, monkeypatch):
+    monkeypatch.setattr(fusion, "row", _device_row_at_its_register_line)
+    _, mine = _check_derivative(_cut_case(), direction, "cuda", dtype)
+    assert len(_stages(mine, dtype, "cuda", tmp_path)) >= 2

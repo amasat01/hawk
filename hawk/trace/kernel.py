@@ -67,7 +67,7 @@ class Kernel:
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
                  "time", "time_step", "source_digest", "jump", "returns",
-                 "lane_space", "group", "broadcast", "team", "_variants", "_plan", "_lock")
+                 "lane_space", "group", "members", "broadcast", "team", "_variants", "_plan", "_lock")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
@@ -93,6 +93,8 @@ class Kernel:
             self.lane_space = getattr(sinks, "lane_space", self.lane_space)
         #: The compaction group, a lane count (``@hawk.kernel(group=...)``): 1.
         self.group = getattr(sinks, "group", 1)
+        #: The kernels a chain (:func:`hawk.chain`) or the derivative of one runs in sequence; ``None`` otherwise.
+        self.members = getattr(sinks, "members", None)
         #: The planes this kernel reads broadcast, with their patterns (a variant, see
         #: :mod:`hawk._broadcast`), and the variants made of it by pattern.
         self.broadcast: dict[str, tuple] = {}

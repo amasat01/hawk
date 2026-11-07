@@ -13,7 +13,7 @@ from .kernel import Kernel
 class Chain(Kernel):
     """A kernel composed of ``members`` in order (:func:`chain`)."""
 
-    __slots__ = ("members",)
+    __slots__ = ()
 
 
 def chain(*kernels: Kernel, name: str) -> Chain:
