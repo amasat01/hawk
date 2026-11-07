@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from .loop_nodes import Loop
 from .nodes import (
+    peel_clamp,
     FUSED_STEPS_PLANE,
     RAW_KIND,
     AccumWrite,
@@ -193,6 +194,7 @@ def index_form(node: Node, var: Node | None = None, *,
     ``var``-carrying terms, a runtime factor/divisor, the periodic minor
     half, a nested quotient, a bad division, any other op). Conservative:
     ``None`` claims nothing."""
+    node = peel_clamp(node)      # a table read's clamp holds the index in the plane; its shape is the index's
     if not _carries(node, var):
         value, _label = _int_factor(node)
         return IndexForm(Fraction(0), None if value is None else Fraction(value))

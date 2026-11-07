@@ -273,6 +273,29 @@ class SampleIndex(Node):
 
 
 LANE_POSITION_KIND = "lane_position"
+PLANE_EXTENT_KIND = "plane_extent"
+
+
+class PlaneExtent(Node):
+    """The element count of the plane its one operand (the plane's leaf) reads, as an integer VALUE: the bound a
+    read at a computed index is clamped to (:meth:`hawk.trace.value.TableRef.at`). The leaf binds the plane, so a
+    derivative that keeps the clamp keeps the plane. A TERMINAL for both transforms, like :class:`SampleIndex`: an
+    extent is not differentiable."""
+
+    __slots__ = ()
+
+    kind = PLANE_EXTENT_KIND
+
+    def __init__(self, plane: Leaf, ttype: TensorType | None = None) -> None:
+        super().__init__(ttype or TensorType((), "i32"), (plane,))
+
+    @property
+    def role(self) -> str:
+        return self.operands[0].role
+
+    @property
+    def name(self) -> str:
+        return self.operands[0].name
 
 
 class LanePosition(SampleIndex):
@@ -331,6 +354,17 @@ class At(Op):
     @property
     def index(self) -> Node:
         return self.operands[1]
+
+    @property
+    def raw_index(self) -> Node:
+        """The index before its clamp (:func:`peel_clamp`): what a pass reads for the index's SHAPE. A pass that
+        rewrites the read keeps :attr:`index`, so the read stays clamped."""
+        return peel_clamp(self.operands[1])
+
+
+def peel_clamp(node: Node) -> Node:
+    """``node`` without the ``clamp_index`` a table read holds its index in, else ``node`` itself."""
+    return node.operands[0] if isinstance(node, Op) and node.kind == "clamp_index" else node
 
 
 #: The label of the index a PARAMETER CELL carries: a ``uniform`` promoted to

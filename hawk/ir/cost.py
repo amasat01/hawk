@@ -232,7 +232,7 @@ def _paths(roots, zero: frozenset, carried: bool = False) -> tuple:
         if key in zero or isinstance(node, (Leaf, Const, LoopIndex, LoopCarry)):
             memo[key] = None if carried else none
             continue
-        deps = (node.index,) if isinstance(node, At) else node.operands
+        deps = (node.raw_index,) if isinstance(node, At) else node.operands
         if not expanded:
             stack.append((node, True))
             stack.extend((d, False) for d in deps if id(d) not in memo)
@@ -281,7 +281,7 @@ def _closure(root: Node, skip: set[int]) -> list[Node]:
             continue
         seen.add(id(node))
         out.append(node)
-        stack.extend((node.index,) if isinstance(node, At) else node.operands)
+        stack.extend((node.raw_index,) if isinstance(node, At) else node.operands)
     return out
 
 

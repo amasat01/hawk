@@ -193,7 +193,7 @@ def _read_name(read: Node, names: dict) -> str:
 
 def _read_index(read: Node) -> Node:
     """The flat index a read walks: ``at``'s index, or a component's."""
-    return read.index if isinstance(read, At) else read.operands[1]
+    return read.raw_index if isinstance(read, At) else read.operands[1]
 
 
 def _term_form(terms: Sequence[Node], operands: tuple, names: dict) -> str:

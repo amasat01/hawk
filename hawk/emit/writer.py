@@ -28,7 +28,7 @@ from typing import Any, Protocol
 #: reaches them: declarations and loops, dispatch, expressions, sinks.
 WRITER_MEMBERS: tuple[str, ...] = (
     "declare", "carry_type", "tape_decl", "counter_decl", "for_header",
-    "tail_break", "sample_index_value", "hoist",
+    "tail_break", "sample_index_value", "plane_extent_value", "hoist",
     "selector_decl", "mix_count", "predicated_rank0", "predicated_tensor",
     "switch_default_tail", "typed_zero",
     "leaf", "const", "at", "select", "op",
@@ -89,6 +89,9 @@ class Writer(Protocol):
 
     def sample_index_value(self) -> str:
         """A ``SampleIndex`` node's value: ``static_cast<Int>(hawk_i)``."""
+
+    def plane_extent_value(self, node: Any) -> str:
+        """A ``PlaneExtent`` node: the element count of its plane, as an integer."""
 
     def warp_lane_value(self) -> str:
         """A ``WarpLane`` node: the lane's place in its warp."""

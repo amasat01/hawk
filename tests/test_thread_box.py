@@ -38,11 +38,13 @@ def _text(kernel, target="cuda", mode="float64"):
 
 
 def _boxed_branch(text):
-    return text[text.index("} else {"):]
+    body = text.index("for (Int hawk_k")          # the kernel's own text, past the helpers above it
+    return text[text.index("} else {", body):]
 
 
 def _plain_body(text):
-    return text[text.index("for (Int hawk_k"):text.index("} else {")]
+    body = text.index("for (Int hawk_k")
+    return text[body:text.index("} else {", body)]
 
 
 def _data(rows, mode):

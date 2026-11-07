@@ -200,6 +200,10 @@ class AetherWriter:
         """A ``SampleIndex`` node: the lane's own integer index as an ``Int``."""
         return f"static_cast<Int>({SAMPLE_INDEX_IDENT})"
 
+    def plane_extent_value(self, node) -> str:
+        """A ``PlaneExtent`` node: the element count of the plane's view."""
+        return f"static_cast<Int>({binding_name(node.role, node.name)}.samples())"
+
     def warp_lane_value(self) -> str:
         """A ``WarpLane`` node: the lane's place in its warp (the team prologue binds ``hawk_wl``)."""
         return "hawk_wl"
@@ -834,6 +838,8 @@ class AetherWriter:
             f"(static_cast<Int>({run.start}) + {k} * static_cast<Int>({run.step}))")
         index = at if run.base is None else f"({r._ref(run.base)} + {at})"
         plane = binding_name(run.plane.role, run.plane.name)
+        if run.clamped:     # each read of the run is held in the plane, as the reads it replaces were
+            index = f"hawk_abi::int_clamp_index<Int>({index}, static_cast<Int>({plane}.samples()))"
         return f"{plane}[{self._sample_index(index)}].eval()"
 
     @staticmethod
@@ -895,6 +901,11 @@ class AetherWriter:
             # or differently defined at the edges numpy pins.
             name = _INT_CALLS.get(kind) or _INT_WRAPPING[kind]
             return f"hawk_abi::{name}({', '.join(args)})"
+        if kind in ("min", "max") and node.ttype.dtype in ("i32", "i64"):
+            # an index: integer throughout, never through the floating-point fmin/fmax
+            return f"hawk_abi::int_{kind}<Int>({', '.join(args)})"
+        if kind == "clamp_index":
+            return f"hawk_abi::int_clamp_index<Int>({', '.join(args)})"
         if kind == "cast":
             return self._cast_op(args[0], node)
         if kind in RANDOM_OPS:

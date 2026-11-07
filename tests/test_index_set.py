@@ -567,7 +567,8 @@ def _pattern_want(name, ins):
         want[ins["slot"], np.arange(len(ins["v"]))] = ins["v"]
         return want
     if name == "segment":
-        return np.array([ins["t"][lo:lo + min(hi - lo, KMAX)].sum()
+        last = len(ins["t"]) - 1      # Table.at clamps its index: a run past the end reads the last entry
+        return np.array([ins["t"][np.minimum(np.arange(lo, lo + max(min(hi - lo, KMAX), 0)), last)].sum()
                          for lo, hi in zip(ins["lo"], ins["hi"])])
     return ins["t"][ins["inv"]] * 2.0
 

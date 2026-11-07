@@ -225,6 +225,9 @@ def _int_helper(prefix: str, op: str, mode) -> str:
         sig, body = f"{t} {fn}({two})", ["return (b < a) ? b : a;"]
     elif op == "max":
         sig, body = f"{t} {fn}({two})", ["return (a < b) ? b : a;"]
+    elif op == "clamp_index":           # a table read's index held to [0, b)
+        low = f"(a < {z}) ? {z} : " if signed else ""
+        sig, body = f"{t} {fn}({two})", [f"return {low}((a < b) ? a : ({t})(b - {one}));"]
     elif op == "div":
         sig = f"{t} {fn}({two})"
         body = [f"{t} result;", f"if (b == {z}) {{", f"    result = {z};", "}"]

@@ -904,6 +904,7 @@ template <class T> {qualifier} T int_abs(T a)
 }}
 template <class T> {qualifier} T int_min(T a, T b) {{ return b < a ? b : a; }}
 template <class T> {qualifier} T int_max(T a, T b) {{ return a < b ? b : a; }}
+template <class T> {qualifier} T int_clamp_index(T i, T n) {{ return i < T(0) ? T(0) : (i < n ? i : n - T(1)); }}
 template <class T> {qualifier} T int_floordiv(T a, T b)
 {{
     if (b == T(0))

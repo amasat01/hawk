@@ -83,11 +83,11 @@ def test_vjp_scatter_adds_nothing_from_a_terminated_sample():
     derived = vjp(_gather_masked, wrt=("table",))
     lanes = 4
 
-    live = evaluate(derived, {"table": 0.0, "where": 2, "terminated": False,
+    live = evaluate(derived, {"table": np.zeros(4), "where": 2, "terminated": False,
                               "bar_y": 5.0}, lanes=lanes)
     assert live["bar_table"][2] == pytest.approx(5.0)
 
-    gone = evaluate(derived, {"table": 0.0, "where": 2, "terminated": True,
+    gone = evaluate(derived, {"table": np.zeros(4), "where": 2, "terminated": True,
                               "bar_y": 5.0}, lanes=lanes)
     assert gone["bar_table"][2] == 0.0, (
         f"a terminated sample must scatter-add nothing; got {gone['bar_table'][2]}")

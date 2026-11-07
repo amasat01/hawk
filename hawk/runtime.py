@@ -319,6 +319,8 @@ class HostKernel:
                     width = int(widths.get(name) or 1)
                     samples = (mv.shape[-1] if name in (self.sidecar.get("gather_mats") or {})
                                else _native_extent(mv, width, choice.of(name, mv, width)))
+                elif role == "lookup" and name in arrays:
+                    samples = memoryview(arrays[name]).nbytes // memoryview(arrays[name]).itemsize  # its own count: a read clamps to it
                 self.block.bind(slot,
                                 self._buffer_address(arrays, name, role, choice),
                                 samples, 1, DEVICE_CPU, 0)

@@ -35,7 +35,7 @@ from typing import Any, NamedTuple
 from ..ir import Const, HawkError, Leaf, Node
 from ..ir import make as _mk
 from ..ir.loop_nodes import LoopIndex
-from ..ir.nodes import Assign, Dispatch, Finish, SampleIndex, Select
+from ..ir.nodes import Assign, Dispatch, Finish, PlaneExtent, SampleIndex, Select
 from ..ir.ops import COMPARE, LOGICAL, PREDICATE
 from ..ir.walk import substitute
 from .tape import _reachable
@@ -112,7 +112,7 @@ def _smooth(node: Node, memo: dict) -> bool:
         return got
     if isinstance(node, Leaf):
         out = node.ttype.dtype in _FLOAT
-    elif isinstance(node, (Const, SampleIndex, LoopIndex)):
+    elif isinstance(node, (Const, SampleIndex, PlaneExtent, LoopIndex)):
         out = False
     elif node.ttype.dtype not in _FLOAT:
         out = False

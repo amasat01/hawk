@@ -78,7 +78,7 @@ MAKE_ARGS_MAX = 64
 _INTS = ("i32", "i64") + INT_PLANE_DTYPES
 #: Kinds an integer value always spells through the wrapping helpers.
 _INT_KINDS = ("add", "sub", "mul", "neg", "abs", "min", "max", "div", "floordiv",
-              "mod", "band", "bor", "bxor", "shl", "shr", "invert")
+              "mod", "band", "bor", "bxor", "shl", "shr", "invert", "clamp_index")
 #: Rank-0 kinds that are aether CORE scalar functions, not libm.
 _CORE_SCALARS = ("rsqrt", "clip", "remainder")
 #: Rank-0 floating-point class tests: C99 macros, no width suffix.
@@ -315,6 +315,10 @@ class CWriter:
     def sample_index_value(self) -> str:
         """A ``SampleIndex`` node: the loop's own ``int64_t`` sample index."""
         return SAMPLE_INDEX_IDENT
+
+    def plane_extent_value(self, node) -> str:
+        """A ``PlaneExtent`` node: the plane's length argument."""
+        return f"((hawk_int_t){binding_name(node.role, node.name)}_len)"
 
     def lane_position_value(self, mapped: bool) -> str:
         """A ``LanePosition`` node: the loop's own index (a C unit has no map)."""

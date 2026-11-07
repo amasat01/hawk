@@ -35,7 +35,7 @@ from typing import Any
 from ..ir import Const, Dispatch, HawkError, Leaf, Node, Select
 from ..ir import make as _mk
 from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from ..ir.nodes import AccumWrite, ReduceSamples, SampleIndex, WideWrite
+from ..ir.nodes import AccumWrite, PlaneExtent, ReduceSamples, SampleIndex, WideWrite
 from ..types import TensorType
 from .tape import _reachable
 
@@ -604,7 +604,7 @@ def _reach_of(node: Node, get, leaf) -> int:
     through a piecewise-constant op (a rounding, a sign, an integer cast)."""
     if isinstance(node, Leaf):
         return leaf(node)
-    if isinstance(node, (Const, SampleIndex, LoopIndex, LoopCarry)):
+    if isinstance(node, (Const, SampleIndex, PlaneExtent, LoopIndex, LoopCarry)):
         return 0
     kind = getattr(node, "kind", "")
     if kind in ("lt", "le", "gt", "ge", "eq", "ne", "land", "lor", "lnot",

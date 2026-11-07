@@ -236,7 +236,7 @@ class _Copy:
 
     def _operands(self, node: Node) -> tuple:
         if isinstance(node, At):
-            return (node.index,)        # the plane is read, never copied
+            return (node.raw_index,)    # the plane is read, never copied
         if isinstance(node, (Leaf, Const, SampleIndex, LoopIndex, LoopCarry)) \
                 or self._fusing(node):
             return ()
@@ -259,7 +259,12 @@ class _Copy:
             return _component(LoopValue(self._fuse(node.loop), node.slot), k)
         kids = [self.memo[(id(c), k)] for c in self._operands(node)]
         if isinstance(node, At):
-            kids = [node.plane, *kids]
+            index = kids[0]
+            if index is node.raw_index:
+                index = node.index                    # unmoved along the box: the one read, clamp and all
+            elif node.index is not node.raw_index:    # a rewritten read keeps its clamp
+                index = Op("clamp_index", (index, node.index.operands[1]), node.index.ttype)
+            kids = [node.plane, index]
         if all(a is b for a, b in zip(kids, node.operands)):
             return node
         return _rebuild(node, kids)

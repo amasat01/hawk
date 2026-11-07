@@ -36,6 +36,7 @@ from ..ir import (
     LoopValue,
     Node,
     Primitive,
+    PlaneExtent,
     SampleIndex,
     Select,
     Sink,
@@ -209,7 +210,7 @@ def _primal_name(primal: Any) -> str | None:
 #: Node families a transform never pushes through: a bound plane, a literal,
 #: a sink (seeded, not traversed), and the lane index (an address, not a
 #: differentiable quantity).
-_TERMINALS = (Sink, Leaf, Const, SampleIndex, LoopIndex, LoopCarry)
+_TERMINALS = (Sink, Leaf, Const, SampleIndex, PlaneExtent, LoopIndex, LoopCarry)
 
 #: dtypes a derivative flows through; everything else is a structural constant.
 _DIFFERENTIABLE = ("f64", "f32")

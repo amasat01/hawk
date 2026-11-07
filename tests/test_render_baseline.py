@@ -15,7 +15,8 @@ Re-pinned for 0.7.2: ``gather``, ``scatter`` and ``scatter_c`` read an ``Index``
 ``int32`` and is widened where the body reads it; no other kernel's text changed.
 
 Re-pinned for 0.7.5: a vector value read more than once is declared as an ``aether::Item``, and an output is
-stored right after its value is complete instead of at the end of the body; the values are unchanged.
+stored right after its value is complete instead of at the end of the body; the values are unchanged. Then
+``gather``: a ``Table.at`` index is clamped to the table's length.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ PINNED = {
     "drag": "78878d712b6ffba3f86110302da5dd2a921f6e83c7360ecb4849416c298871ae",
     "energy": "9a0ae2abf5056e9cb2fe1103c9037854b4482e3a9d76fb42722c168129ecfd1d",
     "fraction": "cb6e48abaec0f8d6fab4c956f0258db0e53eaea4910d614a3d0ba79610dbdd11",
-    "gather": "9b491966f78841ed8683232585468f351adfb4eeccd1acc12f07d1d2961c6719",
+    "gather": "00aaf66e0cc98254209a082319d6994b09b76bdb3a0df1fd2e2a1d03fce1fe41",
     "mat_apply": "bdee5c50cc7733067602760a0c4a0b6a55d3d6965a141caa8969a93f8f882007",
     "rotate_quat": "a4a01777b7ec5e36a7e78637bf62841f1ba5c668a1e9502df3e3125c65bc442a",
     "scale": "558b0831a64a7c6ba792610694c7e92eedec6da5a54ae2ea115b4ae20f970389",

@@ -19,13 +19,13 @@ from hawk.emit.writer import WRITER_MEMBERS, Writer
 
 def test_the_writer_protocol_names_every_spelling_seam():
     expected = {"declare", "carry_type", "tape_decl", "counter_decl", "for_header",
-                "tail_break", "sample_index_value", "hoist", "selector_decl", "mix_count",
+                "tail_break", "sample_index_value", "plane_extent_value", "hoist", "selector_decl", "mix_count",
                 "predicated_rank0", "predicated_tensor", "switch_default_tail", "typed_zero",
                 "leaf", "const", "at", "select", "op", "guard", "store", "scatter_store",
                 "accum_scattered", "or_scattered", "store_compensated", "sample_sum", "tape_write",
                 "finish", "exit_if", "component_commit", "in_place_accumulate", "zero_row"}
     assert set(WRITER_MEMBERS) == expected
-    assert len(WRITER_MEMBERS) == 32
+    assert len(WRITER_MEMBERS) == 33
     assert all(callable(getattr(Writer, m)) for m in WRITER_MEMBERS)
     assert "id" in Writer.__annotations__
     assert "names_every_tensor" in Writer.__annotations__

@@ -37,6 +37,7 @@ from .nodes import (
     Finish,
     HawkError,
     LanePosition,
+    PlaneExtent,
     Leaf,
     Node,
     SampleSum,
@@ -626,6 +627,8 @@ def _rebuild(node: Node, operands: Sequence[Node]) -> Node:
         return LoopValue(operands[0], node.slot)
     if isinstance(node, LoopCount):
         return LoopCount(operands[0])
+    if isinstance(node, PlaneExtent):
+        return PlaneExtent(operands[0], node.ttype)
     if isinstance(node, Primitive):
         return Primitive(node.name, node.rules, operands[0], operands[1:],
                          node.ttype)

@@ -54,7 +54,7 @@ class LoopIndex(Node):
     object counter, so the kernel's digest stays byte-identical across
     processes."""
 
-    __slots__ = ("depth", "name")
+    __slots__ = ("depth", "name", "bounds")
 
     kind = LOOP_INDEX_KIND
 
@@ -62,6 +62,8 @@ class LoopIndex(Node):
         super().__init__(ttype or TensorType((), "i32"))
         self.depth = int(depth)
         self.name = name
+        #: ``(first, last)`` value of a compile-time ``range``, else ``None``: lets a table read prove its index in range
+        self.bounds: tuple | None = None
 
     @property
     def dedup_extra(self) -> Any:

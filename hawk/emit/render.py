@@ -44,6 +44,7 @@ from ..ir.nodes import (
     Op,
     Primitive,
     LanePosition,
+    PlaneExtent,
     SampleIndex,
     SampleSum,
     Select,
@@ -282,6 +283,8 @@ def _sample_free(node: Node) -> bool:
         if id(n) in seen:
             continue
         seen.add(id(n))
+        if isinstance(n, PlaneExtent):
+            continue                    # a table's length: the same for every sample
         if isinstance(n, Leaf):
             if n.role not in ("uniform", "nsamples"):
                 return False
@@ -1693,6 +1696,8 @@ class _Renderer(_DispatchMixin):
                 getattr(self.kind, "lanes", None) is not None or self.kind.guard.active_set)
         if isinstance(node, SampleIndex):
             return self.writer.sample_index_value()
+        if isinstance(node, PlaneExtent):
+            return self.writer.plane_extent_value(node)
         if isinstance(node, (LoopIndex, LoopCarry)):
             # Bound by the enclosing loop's header/carried local, seeded into
             # `self.local` before the body renders.

@@ -746,7 +746,9 @@ class TableRef:
         self.dims = tuple(dims)
 
     def at(self, *positional: Any, **named: Any) -> Value:
-        """The ``at(expr)``: an absolute-index read of this plane."""
+        """The ``at(expr)``: an absolute-index read of this plane. Every index is CLAMPED to its axis, ``[0,
+        extent)``, per axis (the flat index to the plane's length), so a read outside the plane reads its edge
+        element; a literal index a static extent already bounds is read as it is."""
         read = At(self.leaf, self._index(positional, named), self.leaf.ttype)
         return Value(widened(read) if self.widen else read)
 
@@ -773,7 +775,7 @@ class TableRef:
                     f"{self.name!r}: at() takes ONE flat index, got "
                     f"{len(positional)} — a named-axis plane is read "
                     "at(<axis>=…, …)")
-            return index_node(positional[0])
+            return self._clamped(index_node(positional[0]), None)
         if not self.dims:
             raise HawkError(
                 f"{self.name!r} declares no named axes, so it is read at a flat "
@@ -790,11 +792,41 @@ class TableRef:
                 + (f"; unknown {unknown}" if unknown else "")
                 + " — a partial address would silently read the wrong row")
         flat: Node | None = None
-        for label, _size, stride in self.dims:
+        for label, size, stride in self.dims:
+            static = size if isinstance(size, int) and not isinstance(size, bool) else None
             factor = n_samples().node if stride == "n_samples" else RoleConst(stride, f"{self.name}_{label}_stride")
-            term = _make("mul", (index_node(named[label]), factor))
+            term = _make("mul", (self._clamped(index_node(named[label]), static, None if stride == "n_samples" else stride),
+                                 factor))
             flat = term if flat is None else _make("add", (flat, term))
         return flat
+
+    def _clamped(self, index: Node, extent: int | None, stride: int | None = 1) -> Node:
+        """``index`` held to ``[0, extent)`` in its own integer type by ONE ``clamp_index``: a static extent, else the
+        plane's length over the axis stride read at run time (``stride`` ``None``: an axis over the lanes, held to
+        the lane count). An index provably in range (a literal, or a compile-time loop's range, inside a static
+        extent) is not clamped."""
+        from ..ir.loop_nodes import LoopIndex
+        from ..ir.nodes import Op, PlaneExtent
+
+        if index.ttype.dtype not in ("i32", "i64"):
+            index = _make("cast", (index,), "i32")      # a real index truncates, as the read always did, then clamps
+        t = index.ttype
+        if isinstance(index, Const) and isinstance(index.literal, int):
+            lo = hi = int(index.literal)
+        elif isinstance(index, LoopIndex) and index.bounds is not None:
+            lo, hi = index.bounds
+        else:
+            lo = hi = None
+        if extent is not None:
+            if lo is not None and lo >= 0 and hi < extent:
+                return index
+            bound = Const(extent, t)
+        elif stride is None:
+            bound = n_samples().node
+        else:
+            length = PlaneExtent(self.leaf, t)
+            bound = length if stride == 1 else Op("floordiv", (length, Const(int(stride), t)), t)
+        return Op("clamp_index", (index, bound), t)
 
 
 class SharedValue(Value):

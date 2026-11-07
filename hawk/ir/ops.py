@@ -64,7 +64,8 @@ RANDOM_OPS = ("random_uniform", "random_normal")
 #: (floor division; the remainder takes the divisor's sign) and give 0 for a
 #: zero divisor, as numpy does; shifts are numpy's (a count outside
 #: ``[0, 32)`` gives 0, or -1 for a negative ``int32`` shifted right).
-INT_BINARY = ("floordiv", "mod", "band", "bor", "bxor", "shl", "shr")
+INT_BINARY = ("floordiv", "mod", "band", "bor", "bxor", "shl", "shr", "clamp_index")
+#: ``clamp_index(i, n)``: the index ``i`` held to ``[0, n)`` (a table read's bound, :meth:`hawk.trace.value.TableRef.at`).
 #: Integer-only unaries.
 INT_UNARY = ("invert",)
 #: The explicit conversion; its ``literal`` is the target dtype. float ->
