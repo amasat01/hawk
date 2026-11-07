@@ -905,7 +905,15 @@ class AetherWriter:
             # an index: integer throughout, never through the floating-point fmin/fmax
             return f"hawk_abi::int_{kind}<Int>({', '.join(args)})"
         if kind == "clamp_index":
-            return f"hawk_abi::int_clamp_index<Int>({', '.join(args)})"
+            clamp = f"hawk_abi::int_clamp_index<Int>({', '.join(args)})"
+            span = getattr(r, "clamp_spans", {}).get(id(node))
+            if span is None:
+                return clamp
+            base, lo, hi = span         # one range test for every read of the group: in range, the read as it is
+            b = f"static_cast<Int>({r._ref(base)})"
+            held = clamp
+            return (f"(__builtin_expect(({b} >= static_cast<Int>({-lo})) & ({b} < {args[1]} - static_cast<Int>({hi})), 1) "
+                    f"? {args[0]} : {held})")
         if kind == "cast":
             return self._cast_op(args[0], node)
         if kind in RANDOM_OPS:

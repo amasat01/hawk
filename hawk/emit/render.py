@@ -316,6 +316,35 @@ def _declarations(pre: str, names: Sequence[str]) -> tuple:
     return tuple(line.strip() for name, line in lines.items() if name in want)
 
 
+def _clamp_spans(nodes, position: dict) -> dict:
+    """The ``clamp_index`` reads at ``base + c`` (``c`` a static integer) that share ``base`` and the bound, two or more
+    per group (``position``: the canonical walk's, so equal nodes are one): each maps to ``(base, min c, max c)``. ONE test of the span (``base + lo >= 0`` and ``base + hi < n``)
+    proves every read of the group in range, so an in-range lane pays one test, not one per read; the compiler
+    threads the shared test into one in-range path. The emitted text is not duplicated, so the body stays one body."""
+    groups: dict = {}
+    for node in nodes:
+        if not (isinstance(node, Op) and node.kind == "clamp_index"):
+            continue
+        index, bound = node.operands
+        base, offset = index, 0
+        if isinstance(index, Op) and index.kind in ("add", "sub"):
+            a, b = index.operands
+            if isinstance(b, Const) and isinstance(b.literal, int) and not isinstance(b.literal, bool):
+                base, offset = a, (b.literal if index.kind == "add" else -b.literal)
+            elif index.kind == "add" and isinstance(a, Const) and isinstance(a.literal, int) \
+                    and not isinstance(a.literal, bool):
+                base, offset = b, a.literal
+        groups.setdefault((position.get(id(base), id(base)), position.get(id(bound), id(bound))), []).append((node, base, offset))
+    spans: dict = {}
+    for reads in groups.values():
+        if len(reads) < 2:
+            continue
+        lo, hi = min(o for _, _, o in reads), max(o for _, _, o in reads)
+        for node, base, _ in reads:
+            spans[id(node)] = (base, lo, hi)
+    return spans
+
+
 class _Renderer(_DispatchMixin):
     """One rendering pass. Held as a class only to carry the memo tables."""
 
@@ -335,6 +364,8 @@ class _Renderer(_DispatchMixin):
         #: this traversal emits comes from here.
         self.writer = writer if writer is not None else AETHER
         self.nodes, self.position = canonical_nodes(sinks)
+        #: ``{id(clamp): (base, lo, hi)}``: the table reads that share a runtime base at static offsets (one range test).
+        self.clamp_spans = _clamp_spans(self.nodes, self.position)
         #: ``{plane: width}`` of the planes the kernel's placements write (a scratch plane's proxy needs its tile).
         self.plane_widths = {name: rec["width"] for name, rec in _placements(self.nodes).items()}
         #: Whether a placement (:mod:`hawk.ir.wide`) renders as its plane (the device text) or as its value

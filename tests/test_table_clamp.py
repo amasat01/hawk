@@ -31,6 +31,12 @@ def pick(table: Table[Scalar], where: Index, flag: Scalar, y: Mutable[Scalar]):
         y = table.at(where - 1000) + table.at(where * 1024 * 1024 * 1024 * 1024)
 
 
+
+@hawk.kernel
+def window(table: Table[Scalar], where: Index, y: Mutable[Scalar]):
+    y = (table.at(where - 4) + table.at(where - 3) + table.at(where - 2) + table.at(where - 1) + table.at(where)
+         + table.at(where + 1))
+
 def _device() -> bool:
     try:
         import cupy
@@ -83,6 +89,40 @@ def test_reads_outside_a_table_in_a_branch_not_taken_read_its_edge_on_the_host(d
 def test_reads_outside_a_table_in_a_branch_not_taken_read_its_edge_on_the_device(dtype, private_cache):
     _rows("cuda", dtype)
 
+
+
+def _window(target: str) -> None:
+    """Reads at one runtime base and static offsets: ONE range test picks the plain reads, a lane near or past an
+    edge takes the clamped reads. Both give exactly the clipped sum, in the same order."""
+    length = 40
+    table = np.random.default_rng(3).uniform(-1.0, 1.0, length)
+    where = np.arange(-8, length + 8).astype(np.int32)           # in-range lanes and lanes past both edges
+    planes = {"table": table, "where": where, "y": np.zeros(where.size)}
+    if target == "cuda":
+        planes = {k: eagle.arrays.asarray(v, device="cuda:0") for k, v in planes.items()}
+    eagle.deploy(window, scalar_type="float64", targets=(target,))(**planes)
+    held = planes["y"]
+    held = held if isinstance(held, np.ndarray) else np.asarray(held.get())
+    reads = [table[np.clip(where + k, 0, length - 1)] for k in (-4, -3, -2, -1, 0, 1)]
+    want = reads[0]
+    for r in reads[1:]:
+        want = want + r
+    np.testing.assert_array_equal(held, want)
+
+
+def test_reads_at_one_base_and_static_offsets_share_one_range_test_on_the_host(private_cache):
+    from hawk.emit.render import render_body
+
+    text = render_body(window.sinks, window.walk).text
+    assert text.count(">= static_cast<Int>(4)) & (") == 6 == text.count("- static_cast<Int>(1)), 1)")    # one span: -4 .. 1
+    assert text.count("int_clamp_index<Int>") == 6                               # the out-of-range reads keep it
+    _window("host")
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not _device(), reason="needs a CUDA device")
+def test_reads_at_one_base_and_static_offsets_share_one_range_test_on_the_device(private_cache):
+    _window("cuda")
 
 def test_the_clamp_is_integer_and_a_bounded_literal_is_read_as_it_is():
     from hawk.emit.render import render_body
