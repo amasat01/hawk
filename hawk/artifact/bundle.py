@@ -1288,11 +1288,14 @@ def _chain_stages(kernel, name: str, smode, device: bool) -> tuple | None:
     it runs as one kernel. A value crossing a cut travels in a plane the runtime makes per lane."""
     from ..ir import chain as _chain
     from ..ir import fusion
+    from ..trace.kernel import Kernel
     from ..ir.team import Plane
 
     members = getattr(kernel, "members", None)
     if members is None or len(members) < 2 or getattr(kernel, "group", 1) != 1:
         return None                 # a compaction group runs as one kernel: the stages run every lane
+    if not all(isinstance(m, Kernel) for m in members):
+        return None                 # a fused lane group (hawk.emit.fused) lists lanes, not kernels: one kernel
     scalar = smode.id if smode is not None else "float64"
     cut = fusion.cuts(members, fusion.row(scalar, host=not device), scalar, CHAIN_SAMPLES)
     if not cut:
