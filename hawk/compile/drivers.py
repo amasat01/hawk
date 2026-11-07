@@ -359,6 +359,21 @@ def _device_target(compiler: str, arch: str) -> str:
         _nvrtc_driver._probed(_nvrtc_driver.driver_cuda_version))
 
 
+def _compiler_not_runnable(argv0: str, returncode: int) -> bool:
+    """True when ``argv0`` was never a running compiler: the shell's 127
+    (not found) or 126 (not executable), or an argv[0] that is no executable
+    file on PATH."""
+    return returncode in (126, 127) or shutil.which(argv0) is None
+
+
+def _allocation_failure(stderr: str) -> bool:
+    """True when the compiler's stderr reads like an out-of-memory failure."""
+    text = stderr.lower()
+    return any(m in text for m in ("bad_alloc", "cannot allocate memory",
+                                   "out of memory", "unable to allocate",
+                                   "memory exhausted", "failed to map segment"))
+
+
 def _run_and_publish(argv, label, failed_tail, tmp_artifact, artifact, tmp_dep, dep,
                      cache_root):
     """Run the compiler into the private temporaries and move the artifact and
@@ -375,13 +390,21 @@ def _run_and_publish(argv, label, failed_tail, tmp_artifact, artifact, tmp_dep, 
         tmp_dep.unlink(missing_ok=True)
     seconds = time.perf_counter() - start
     if done.returncode != 0:
+        missing = _compiler_not_runnable(argv[0], done.returncode)
         cap = address_space_cap()
+        if cap and _allocation_failure(done.stderr):
+            reason = (f"; the compiler ran under a {cap}-byte address-space cap "
+                      "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
+                      "this translation unit is too large for one compile and not that "
+                      "the machine is out of memory")
+        elif missing:
+            reason = (f"; compiler not found or not executable: {argv[0]} "
+                      f"(exit {done.returncode}); point $HAWK_CXX at a working "
+                      "C++ compiler, e.g. HAWK_CXX=/path/to/c++")
+        else:
+            reason = ""
         raise HawkError(
-            f"{label} failed{failed_tail} (rc={done.returncode})"
-            + (f"; the compiler ran under a {cap}-byte address-space cap "
-               "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
-               "this translation unit is too large for one compile and not that "
-               "the machine is out of memory" if cap else "")
+            f"{label} failed{failed_tail} (rc={done.returncode}){reason}"
             + f".\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
             + tc.compile_hint(cache_root)
         )
