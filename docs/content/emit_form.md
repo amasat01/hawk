@@ -38,5 +38,6 @@ compiler does no per-element work, and a fold or result of any size builds.
 For a CUDA target the sidecar's `ptxas` rows carry two more fields beside the
 register and local-frame figures: `working_set_B`, the working set the kernel
 is expected to need, and `spills`. `spills` is true when registers were spilled
-or the local frame is more than 1.25 times the working set. A kernel flagged
+or the local frame is more than 1.25 times the working set plus 128 bytes (the
+math library's scratch), so a kernel with no working set is checked too. A kernel flagged
 this way also warns when it is built; if it does, try `emit_form="rolled"`.

@@ -716,10 +716,13 @@ class _Renderer(_DispatchMixin):
             # iteration (`bar[i].at(k) += e`, constraint 7): zeroed whole, once,
             # before the walk; the loop's links are the only other writes
             self._emit(self.writer.zero_row(self, target, width))
+        early = self._early_stores()
         for node in self.nodes:
             if isinstance(node, Sink):
                 continue
             self._emit_outside(node)
+            for sink in early.pop(self.position[id(node)], ()):
+                self._sink(sink)
         if self._due:                                  # pragma: no cover
             raise HawkError("a per-component commit was planned for a value the "
                             "walk never rendered")
@@ -738,6 +741,33 @@ class _Renderer(_DispatchMixin):
             self.indent = self.indent[:-4]
             self._emit("}")
         return Body("\n".join(self.lines), self.uses_random)
+
+    def _early_stores(self) -> dict:
+        """``{position: [sink]}``: the own-column ``Assign`` sinks stored right after their value renders, so a
+        kernel with several outputs holds none of them live to its end. Not when the body reads the plane (its
+        prior value would see the early store), under the compensated kind, or when a lane split or segment cut
+        moves statements between texts; those keep the store at the end. Each one is marked held."""
+        if self.split_loop is not None or self.cut_loops or self.kind.sink.id == "compensated":
+            return {}
+        read, pending = set(), list(self.nodes)
+        while pending:
+            n = pending.pop()
+            if isinstance(n, Leaf):
+                read.add((n.role, n.name))
+            elif isinstance(n, Loop):
+                pending.extend(n.body_nodes())
+        companions = _companions(self.sinks)
+        early: dict = {}
+        for sink in self.sinks:
+            if (type(sink) is not Assign or sink.index is not None or id(sink) in self._held
+                    or (sink.role, sink.name) in read or sink.name in companions):
+                continue
+            pos = self.position.get(id(sink.value))
+            if pos is None or pos not in self._outside or pos in self._skip:
+                continue
+            early.setdefault(pos, []).append(sink)
+            self._held.add(id(sink))
+        return early
 
     def _accumulated_planes(self) -> list:
         """``(target, width)`` of every plane some lowered loop in the walk
@@ -959,7 +989,8 @@ class _Renderer(_DispatchMixin):
         """Record ``text`` as ``node``'s rendering, named when :meth:`_materialised`."""
         if self._materialised(node, pos):
             name = self._name(node, pos)
-            self._emit(self.writer.declare(name, node.ttype, text, ordered=self._ordered(node)))
+            self._emit(self.writer.declare(name, node.ttype, text, ordered=self._ordered(node),
+                                           held=self.fanout.get(pos, 0) >= 2 and not self._leaf_valued(node)))
             self.rendered[pos] = name
         else:
             self.rendered[pos] = text
@@ -1470,7 +1501,7 @@ class _Renderer(_DispatchMixin):
                 continue
             named = ((fanout.get(id(node), 0) >= 2 or self._leaf_valued(node))
                      and not self._unnamed(node))
-            self._render_one(node, named)
+            self._render_one(node, named, held=fanout.get(id(node), 0) >= 2)
         if not loop.body_sinks or not sinks:
             return
         # Inside the body-wide guard :meth:`run` opened, the loop's commits are

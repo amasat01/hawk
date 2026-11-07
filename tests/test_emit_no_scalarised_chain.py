@@ -56,8 +56,8 @@ from _emitted import cases
 from hawk.emit import render_body
 from hawk.emit.render import binding_name
 
-#: A named temporary the renderer binds: ``const auto <name> = <rhs>;``
-_BINDING = re.compile(r"^\s*const auto (\w+) = (.*);$")
+#: A named temporary the renderer binds: ``const auto <name> = <rhs>;`` (``const aether::Item<...>`` when read twice)
+_BINDING = re.compile(r"^\s*const (?:auto|aether::Item<[^>]*>) (\w+) = (.*);$")
 #: A sink: ``<target>[<index>] = <rhs>;``, or — since sink seam — the
 #: call ``hawk_abi::accum_add(<target>, <index>, <rhs>);`` a scattered
 #: accumulate commits through (the target's own atomic add, one subscript

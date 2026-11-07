@@ -61,8 +61,8 @@ class Writer(Protocol):
     rolled_forms: bool
 
     # -- declarations and loops ----------------------------------------
-    def declare(self, name: str, ttype: Any, text: str, ordered: bool = True) -> str:
-        """The named local: ``const auto {name} = {text};``."""
+    def declare(self, name: str, ttype: Any, text: str, ordered: bool = True, held: bool = False) -> str:
+        """The named local: ``const auto {name} = {text};``. ``held``: more than one reader takes the value."""
 
     def reads_raw(self, kind: str) -> bool:
         """Does the op ``kind`` take an unnormalised operand (a scalar mode with raw chains; else never)."""

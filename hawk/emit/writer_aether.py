@@ -146,9 +146,14 @@ class AetherWriter:
 
     # -- declarations and loops ----------------------------------------
 
-    def declare(self, name: str, ttype: TensorType, text: str, ordered: bool = True) -> str:
+    def declare(self, name: str, ttype: TensorType, text: str, ordered: bool = True, held: bool = False) -> str:
         """A named local: ``const auto`` lets aether's expression type through. Under ``cells`` a rank-0 Real is a
-        ``Band`` when a reader needs its limbs in order, else the raw chain flows on unnormalised."""
+        ``Band`` when a reader needs its limbs in order, else the raw chain flows on unnormalised.
+
+        A vector ``held`` by more than one reader is an ``aether::Item``, evaluated once: as a lazy expression
+        every reader would nest and re-evaluate it, so the text (and the compile) would grow with each reuse."""
+        if held and not self.cells and ttype is not None and len(ttype.shape) == 1:
+            return f"const aether::Item<{element_spelling(ttype.dtype)}, {ttype.shape[0]}> {name} = {text};"
         return f"const {self._local_type(ttype) if ordered else 'auto'} {name} = {text};"
 
     @staticmethod

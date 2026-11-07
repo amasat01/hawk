@@ -531,18 +531,21 @@ def _emit_arch(targets, device_arch: str) -> str:
 
 #: A frame this many times the declared working set is reported as a spill.
 _FRAME_SLACK = 1.25
+#: Bytes of frame any kernel may hold beyond its working set: the math library's argument-reduction scratch
+#: (40 bytes per inlined double ``sin``/``cos`` slow path). A kernel with no working set is read against it alone.
+_FRAME_FLOOR = 128
 
 
 def _resource_report(kernel, ptxas: dict | None) -> dict | None:
     """The sidecar's ptxas figures with the kernel's expected working set beside them
     (:func:`hawk.ir.cost.working_set_bytes`) and a ``spills`` flag: registers spilled, or a
-    local frame past :data:`_FRAME_SLACK` times that working set. A flagged kernel warns."""
+    local frame past :data:`_FRAME_SLACK` times that working set plus :data:`_FRAME_FLOOR`. A flagged kernel warns."""
     if not ptxas:
         return ptxas
     working = working_set_bytes(kernel.sinks)
     report = {}
     for entry, row in ptxas.items():
-        spills = (row["spill_store_B"] or 0) > 0 or (working > 0 and row["stack_B"] > _FRAME_SLACK * working)
+        spills = (row["spill_store_B"] or 0) > 0 or row["stack_B"] > _FRAME_SLACK * working + _FRAME_FLOOR
         report[entry] = {**row, "working_set_B": working, "spills": spills}
         if spills:
             warnings.warn(f"hawk: kernel {entry!r} uses {row['regs']} registers and a {row['stack_B']}-byte "

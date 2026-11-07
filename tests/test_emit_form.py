@@ -159,3 +159,14 @@ def test_a_frame_past_the_working_set_is_reported_and_warned():
         with pytest.warns(UserWarning, match="local frame"):
             report = _resource_report(k, {"k": {"regs": 255, "spill_load_B": 0, **row}})
         assert report["k"]["spills"] is True and report["k"]["working_set_B"] == ws
+
+
+def test_a_kernel_with_no_working_set_still_has_its_frame_read():
+    k = reductions(20)
+    assert working_set_bytes(k.sinks) == 0
+    row = {"regs": 48, "spill_store_B": 0, "spill_load_B": 0}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert _resource_report(k, {"k": {**row, "stack_B": 40}})["k"]["spills"] is False
+    with pytest.warns(UserWarning, match="local frame"):
+        assert _resource_report(k, {"k": {**row, "stack_B": 1832}})["k"]["spills"] is True
