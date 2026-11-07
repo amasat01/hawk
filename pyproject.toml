@@ -116,6 +116,8 @@ testpaths = ["tests"]
 # this repo root, prepended to sys.path before collection (mirrors raptor
 # and the family's own pyproject convention).
 pythonpath = ["."]
+# a test stuck for 10 minutes prints every thread's stack (it keeps running): a hang names itself
+faulthandler_timeout = 600
 markers = [
     "gpu: needs a CUDA GPU and cupy; CI on a GPU-less runner deselects it with -m \"not gpu\"",
     "ft: free-threading rows (need a free-threaded interpreter; skip on a GIL build)",

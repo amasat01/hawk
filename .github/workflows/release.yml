@@ -239,6 +239,7 @@ jobs:
   test-wheel:
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 90   # a green leg takes ~35; a hang stops here, after its stacks are printed
     strategy:
       # every Python version reports, even when one fails
       fail-fast: false
