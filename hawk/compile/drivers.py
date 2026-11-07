@@ -312,6 +312,18 @@ def _argv(compiler: str, opts: CompileOptions, src: Path, out: Path,
     return [compiler, *flags, "-MD", "-MF", str(dep), str(src), "-o", str(out)]
 
 
+def _stable_served(flags) -> tuple[tuple, tuple]:
+    """``flags`` with the pip-only served ``-I`` root replaced by the sealed
+    payload's digest, and that root's path prefixes (empty when this process
+    serves none)."""
+    root = tc.pip_only_root()
+    if root is None:
+        return tuple(flags), ()
+    prefixes = tuple({os.path.abspath(root) + os.sep, os.path.realpath(root) + os.sep})
+    term = f"payload:{_payload.current_payload().digest}"
+    return tuple(term if f == root else f for f in flags), prefixes
+
+
 def _host_key_terms(flags, opts: CompileOptions) -> tuple:
     """The host key's flag terms plus, for the two ``-march=native``
     profiles, the CPU it targets
@@ -420,8 +432,12 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
                   cpu=cpu, device_target=device_target)
     # A device key also carries nvcc's host compiler (-ccbin): it compiles
     # the TU's host side and its version gates what nvcc accepts.
-    key_terms = (_host_key_terms(probe[1:-4], opts) if cpu
-                else (*probe[1:-4], f"device_target:{device_target}",
+    # A pip-only compile serves the sealed payload into a per-process
+    # directory (tc.pip_only_root): its path differs in every process, so the
+    # key names the payload by digest and the closure leaves those headers out.
+    flags, served = _stable_served(probe[1:-4])
+    key_terms = (_host_key_terms(flags, opts) if cpu
+                else (*flags, f"device_target:{device_target}",
                       tc.device_host_compiler_identity()))
     key = lookup_key(source, opts.target, opts.mode, identity, key_terms)
     slot = cache.slot(key)
@@ -464,7 +480,7 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
         done, seconds = _run_and_publish(
             argv, f"{opts.target} compile of {name!r}", "",
             tmp_artifact, artifact, tmp_dep, dep, cache.root)
-        closure = closure_of(dep)
+        closure = tuple(p for p in closure_of(dep) if not p.startswith(served))
         ptxas = parse_ptxas_info(done.stderr) if gpu else {}
         cache.store(key, artifact=artifact, closure=closure,
                     meta={"target": opts.target, "mode": opts.mode,
