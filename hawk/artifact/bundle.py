@@ -1093,7 +1093,8 @@ def _team_scratch(found, cells: bool = False) -> dict:
         return ("band_partial" if cells else "real") if p.dtype == PARTIAL else p.dtype
 
     for st in found:
-        out.update({p.name: {"dtype": dtype(p), "per_lane": p.per_lane} for p in st.planes})
+        out.update({p.name: {"dtype": dtype(p), "per_lane": p.per_lane, **({"layout": p.layout} if p.layout else {})}
+                    for p in st.planes})
         if st.team is not None:
             out.update({p.name: {"dtype": dtype(p), "per_lane": p.per_lane,
                                  **({"keys": _keys_record(st.team.keyed)} if p.unit == "key" else
@@ -1284,8 +1285,7 @@ CHAIN_SAMPLES = 1 << 16
 def _chain_stages(kernel, name: str, smode, device: bool) -> tuple | None:
     """The stages of a chain (:func:`hawk.chain`) the fusion rule cuts (:func:`hawk.ir.fusion.cuts`, on the device's
     row when the bundle has a device target, else on this host's), named ``<name>``, ``<name>_2``, ...; ``None`` when
-    it runs as one kernel. A value crossing a cut travels in scalar planes the runtime makes per lane (one per
-    element: a runtime plane is one value per lane)."""
+    it runs as one kernel. A value crossing a cut travels in a plane the runtime makes per lane."""
     from ..ir import chain as _chain
     from ..ir import fusion
     from ..ir.team import Plane
@@ -1298,7 +1298,7 @@ def _chain_stages(kernel, name: str, smode, device: bool) -> tuple | None:
     if not cut:
         return None
     return tuple(_split.Stage(name if j == 0 else f"{name}_{j + 1}", sinks, (), (), (),
-                              planes=tuple(Plane(nm, dtype, 1) for nm, dtype in planes))
+                              planes=tuple(Plane(nm, dtype, per_lane, layout="plane_major") for nm, dtype, per_lane in planes))
                  for j, (sinks, planes) in enumerate(_chain.segments(members, cut)))
 
 

@@ -142,17 +142,14 @@ def bind(members: Sequence, keep: Sequence[str] = ()) -> ChainIR:
 CROSS_PREFIX = "hwc_"
 
 
-def _cross_names(name: str, ttype) -> list:
-    """The scalar planes one crossing value of ``ttype`` travels in: one per element."""
-    return [f"{CROSS_PREFIX}{name}"] if not ttype.shape else [f"{CROSS_PREFIX}{name}_{k}" for k in range(ttype.shape[0])]
 
 
 def segments(members: Sequence, cuts: Sequence[int]) -> list:
     """``[(sinks, planes)]``, one per segment of ``members`` cut before each member index in ``cuts``. A value one
-    segment computes and a later one reads crosses in scalar planes the runtime makes per lane (``planes``:
-    ``(name, dtype)`` of those a segment writes): the writer stores each element, the reader assembles them back."""
-    from ..types import TensorType
-    from .nodes import Assign, Op
+    segment computes and a later one reads crosses in a plane the runtime makes per lane, shaped as a caller's plane of
+    its width (``planes``: ``(name, dtype, elements)`` of those a segment writes): the writer commits the value there and
+    the reader reads its own lane's, as any per-lane input."""
+    from .nodes import Assign
 
     bounds = [0, *cuts, len(members)]
     crossed: dict = {}                      # name -> ttype of a value an earlier segment stored
@@ -163,9 +160,8 @@ def segments(members: Sequence, cuts: Sequence[int]) -> list:
         mapping = {}
         for lf in _walk_sinks(sinks)[0]:
             if lf.name in crossed:
-                scalar = TensorType((), lf.ttype.dtype)
-                parts = [Leaf("vocab_read", "per_sample", nm, scalar) for nm in _cross_names(lf.name, lf.ttype)]
-                mapping[id(lf)] = parts[0] if not lf.ttype.shape else Op("vec", tuple(parts), lf.ttype)
+                mapping[id(lf)] = Leaf("vocab_read", "vec_in" if lf.ttype.shape else "per_sample",
+                                       CROSS_PREFIX + lf.name, lf.ttype)
         if mapping:
             flat = [o for s in sinks for o in s.operands]
             new = list(substitute(flat, mapping))
@@ -184,12 +180,8 @@ def segments(members: Sequence, cuts: Sequence[int]) -> list:
             if len(s.ttype.shape) > 1 or s.ttype.dtype not in ("f64", "f32", "i32"):
                 raise HawkError(f"chain: {s.name!r} would cross a cut as {s.ttype!r}; only scalars and vectors of "
                                 "reals or Index cross")
-            scalar = TensorType((), s.ttype.dtype)
-            names = _cross_names(s.name, s.ttype)
-            for k, nm in enumerate(names):
-                part = s.value if not s.ttype.shape else Op("component", (s.value,), scalar, k)
-                kept.append(Assign(nm, part, scalar))
-                planes.append((nm, "int32" if s.ttype.dtype == "i32" else "real"))
+            kept.append(Assign(CROSS_PREFIX + s.name, s.value, s.ttype))
+            planes.append((CROSS_PREFIX + s.name, "int32" if s.ttype.dtype == "i32" else "real", _elements(s.ttype)))
             crossed[s.name] = s.ttype
         out.append((tuple(kept), tuple(planes)))
     return out

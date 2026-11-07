@@ -304,8 +304,8 @@ def test_a_cut_chain_equals_its_launches_on_the_host(dtype, avx512, private_cach
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
 def test_a_cut_chain_equals_its_launches_on_the_device(dtype, private_cache, monkeypatch):
     monkeypatch.setattr(fusion, "row", _device_row_at_its_register_line)
-    assert fusion.cuts(fan_in(6, 8), fusion.row(dtype), dtype, 400_000) == [5]
-    _cut_values("cuda", dtype, 6, 8)        # every crossing element is one launch parameter: 40 of them
+    assert fusion.cuts(fan_in(10, 16), fusion.row(dtype), dtype, 400_000) == [9]
+    _cut_values("cuda", dtype)              # nine Vector[16] values cross: one plane each
 
 
 def _guarded_run(kernel, target, dead, group_live=None):

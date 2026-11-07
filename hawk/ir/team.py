@@ -150,6 +150,7 @@ class Plane:
     per_lane: int
     unit: str = "lane"  # "lane" | "key" | "target" (chunks x the cells of the stage's ``target`` plane) | "once"
     fill: int | None = None     # what the plane holds at the start of every run (None: nothing is promised)
+    layout: str | None = None   # "plane_major": made (per_lane, lanes), bound as a caller's plane of that width; None: flat
 
 
 @dataclass(frozen=True)
