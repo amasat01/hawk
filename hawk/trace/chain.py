@@ -24,6 +24,14 @@ def chain(*kernels: Kernel, name: str) -> Chain:
     value. The values passed between members stay in the kernel: they are neither inputs nor outputs of the chain.
     A chain of chains is the chain of their members. The members must agree on their kind, launch grid, compaction
     group and jump width, and none may be stepped (chain the single step, then run :func:`hawk.steps` over the chain).
+
+    Best practices.
+    Chain kernels that run one after another on the same lanes. Keep independent branches (a fork of species, say) as
+    a graph, where they run side by side. The build decides how far a chain fuses: on the host it may cut a long chain
+    into a few launches to keep each body in registers, on the GPU it fuses further. The values still agree with
+    running the members one by one. The derivative of a chain is a chain: ``hawk.diff.jvp(chain)`` runs the members'
+    tangents in order and ``hawk.diff.vjp(chain)`` the members, then their adjoints in reverse, and each is cut by the
+    same rule.
     """
     members = tuple(m for k in kernels for m in (k.members if isinstance(k, Chain) else (k,)))
     if not members:

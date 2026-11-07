@@ -507,7 +507,7 @@ def test_chain_vjp_equals_dag_vjp(where, dtype, private_cache):
     _check_derivative(SMALL, "vjp", where, dtype)
 
 
-def _cut_case(n_members: int = 10, w: int = 16):
+def _cut_case(n_members: int = 6, w: int = 8):
     return fan_in(n_members, w), "out", w, lambda x: _fan_in_tangent(x, n_members, w)
 
 

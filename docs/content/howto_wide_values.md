@@ -81,4 +81,6 @@ def put(x: Scalar, k: Index, w: WideOut[Scalar]):
 
 Two lanes storing to the same key leave one of the two values. The payload is a scalar: a vector payload is refused when the kernel is built, with the reason. For an output of several components per lane, use `Mutable[Vector[W]]`.
 
+Which form a wide per-lane value takes on a device is chosen from a table of measured rows, `wide.json`; where a chain of kernels is cut is chosen from `fusion.json`, beside it. Both are plain JSON, with a row per device.
+
 The names are on the [API reference](api/index).

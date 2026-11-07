@@ -43,6 +43,7 @@ The declarations a kernel is written in, and the top-level functions. Each has i
    hawk.raw_device
    hawk.RawBlock
    hawk.steps
+   hawk.chain
    hawk.scatter
    hawk.lane_position
    hawk.primitive

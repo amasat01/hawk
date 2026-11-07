@@ -23,3 +23,23 @@ A plain `def` called from a kernel is inlined when it is given traced values, so
 A helper defined in the kernel's own module and traced as a kernel has no parameter declarations, and the error says so: move the helper to another module, or call it with traced values so it is inlined.
 
 A sum that skips some terms (a masked sum) writes each term as `m.dispatch(live, [0.0, term], policy="predicated")`, with `live` an integer 0 or 1 per element: both branches are evaluated and one kept, with no divergent branch. See [Choosing a dispatch policy](tutorials/08_choosing_a_dispatch_policy).
+
+## Kernels in sequence: `hawk.chain`
+
+Several kernels that run one after another on the same lanes can be one kernel:
+
+```python
+step = hawk.chain(predict, correct, finish, name="step")
+```
+
+A member reads a value an earlier member wrote by using the same name; any other input is the chain's. A name no later
+member reads is an output. The values passed between members are not planes of yours: they stay in the kernel.
+
+Fusing saves the launches and the plane traffic between members. Fusing everything is not always faster, so the build
+decides from a per-device row (`fusion.json`): it cuts where a body would spill registers. A cut is an ordinary launch
+with the crossing values in planes the runtime makes; you see no difference in the answer. Members must agree on
+kind, launch grid, compaction group and jump width. A member that reads another lane's element of a chained value is
+refused, with the name of the member and the value.
+
+Keep branches that do not depend on each other as a graph, not a chain. `hawk.diff.jvp` and `hawk.diff.vjp` of a
+chain are chains of the members' derivatives, cut by the same rule.
