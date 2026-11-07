@@ -75,6 +75,7 @@ Vectors with hundreds of components, and wide input and output planes.
 :maxdepth: 1
 
 howto_wide_values
+best_practices
 ```
 
 ## Embedded C

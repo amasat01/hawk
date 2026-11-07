@@ -31,6 +31,8 @@ A vector used in a loop (`bf[j]`) is read from memory where it is indexed, not b
 
 `hawk.ir.recognize(kernel)` reads a sum of products over one loop (a matrix-vector product, a masked sum, several outputs sharing an operand, with `bf[j]` or table reads as operands) as a plain record of operands, reduce axis and outputs, for tools that route such a sum elsewhere. It only reads: it never changes the code a kernel generates.
 
+Keep constants and lookup tables in a `Table` read with `.at()` (it clamps the index to the table), never in a `Vector` plane that repeats the same numbers for every sample. See [best practices](best_practices).
+
 A very large source is usually a wide kernel unrolled; see [the compile guard](compiling).
 
 ## A wide input: `Wide[W]`
