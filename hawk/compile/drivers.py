@@ -367,11 +367,14 @@ def _compiler_not_runnable(argv0: str, returncode: int) -> bool:
 
 
 def _allocation_failure(stderr: str) -> bool:
-    """True when the compiler's stderr reads like an out-of-memory failure."""
+    """True when the compiler's stderr reads like an out-of-memory failure. Asked
+    only under a cap, where a compiler killed by a signal is the cap too: g++
+    may crash in cc1plus rather than report the failed allocation."""
     text = stderr.lower()
     return any(m in text for m in ("bad_alloc", "cannot allocate memory",
                                    "out of memory", "unable to allocate",
-                                   "memory exhausted", "failed to map segment"))
+                                   "memory exhausted", "failed to map segment",
+                                   "signal terminated program"))
 
 
 def _run_and_publish(argv, label, failed_tail, tmp_artifact, artifact, tmp_dep, dep,

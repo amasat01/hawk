@@ -186,3 +186,9 @@ def test_the_cap_text_is_for_allocation_failures_only(tmp_path, monkeypatch):
     with pytest.raises(HawkError, match="address-space cap"):
         compile_source('extern "C" int hawk_cap_text2() { return 1; }\n', "cap_text2",
                        CompileOptions(target="host", cache_dir=str(tmp_path / "d")))
+    # g++ under the cap may crash in cc1plus instead of reporting the allocation
+    script.write_text("#!/bin/sh\necho 'g++: internal compiler error: Segmentation fault "
+                      "signal terminated program cc1plus' >&2\nexit 4\n")
+    with pytest.raises(HawkError, match="address-space cap"):
+        compile_source('extern "C" int hawk_cap_text3() { return 1; }\n', "cap_text3",
+                       CompileOptions(target="host", cache_dir=str(tmp_path / "e")))
