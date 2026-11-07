@@ -1,0 +1,17 @@
+{
+  "about": "Per-device constants of the chain fusion rule (hawk.ir.fusion). R0: the registers an empty kernel holds. R_file: the registers one lane may hold before the compiler spills (255 on a CUDA device; on a host the vector registers: 16 ymm, 32 zmm, 32 NEON). L_us: the cost of one more launch, in microseconds. c_plane_us_per_B: the cost of one plane byte per sample, in microseconds. c_local_over_plane: the cost of a local-frame byte over a plane byte (below 1 where local memory is cached); null means not measured yet, and the rule then fuses only up to R_file. A row {cc, device, dtype, ...} may set any of them; a build takes the row of its scalar type whose arch is nearest by device features, as wide.json does. The defaults are the values measured on a Quadro P2000 (sm_61). The host rows are keyed by vector ISA and hold the register line only; their costs are measured per host by the CPU profile sweep.",
+  "defaults": {
+    "R0": 20,
+    "R_file": 255,
+    "L_us": 2.7,
+    "c_plane_us_per_B": 7.1e-06,
+    "c_local_over_plane": 1.0
+  },
+  "host": {
+    "sse2": {"R0": 0, "R_file": 16, "L_us": null, "c_plane_us_per_B": null, "c_local_over_plane": null},
+    "avx2": {"R0": 0, "R_file": 16, "L_us": null, "c_plane_us_per_B": null, "c_local_over_plane": null},
+    "avx512": {"R0": 0, "R_file": 32, "L_us": null, "c_plane_us_per_B": null, "c_local_over_plane": null},
+    "neon": {"R0": 0, "R_file": 32, "L_us": null, "c_plane_us_per_B": null, "c_local_over_plane": null}
+  },
+  "rows": []
+}

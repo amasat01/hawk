@@ -529,28 +529,38 @@ def _emit_arch(targets, device_arch: str) -> str:
     return arch(device_arch) if gpu else ""
 
 
-#: A frame this many times the declared working set is reported as a spill.
-_FRAME_SLACK = 1.25
-#: Bytes of frame any kernel may hold beyond its working set: the math library's argument-reduction scratch
-#: (40 bytes per inlined double ``sin``/``cos`` slow path). A kernel with no working set is read against it alone.
-_FRAME_FLOOR = 128
-
-
-def _resource_report(kernel, ptxas: dict | None) -> dict | None:
-    """The sidecar's ptxas figures with the kernel's expected working set beside them
-    (:func:`hawk.ir.cost.working_set_bytes`) and a ``spills`` flag: registers spilled, or a
-    local frame past :data:`_FRAME_SLACK` times that working set plus :data:`_FRAME_FLOOR`. A flagged kernel warns."""
+def _resource_report(kernel, ptxas: dict | None, scalar_type: str = "float64", arch: str = "") -> dict | None:
+    """The sidecar's ptxas figures with the kernel's estimated registers beside them (:func:`hawk.ir.fusion.estimate`,
+    plus a quarter of the declared working set, :func:`hawk.ir.cost.working_set_bytes`, as words) and a ``spills`` flag:
+    registers spilled, or registers and frame words past the fence (:func:`hawk.ir.fusion.fence`). A flagged kernel
+    warns; a flagged chain (:func:`hawk.chain`) is refused, naming its members and the boundary where to cut it."""
     if not ptxas:
         return ptxas
+    from ..ir import fusion
+    from ..ir.wide_class import select, tables
+
     working = working_set_bytes(kernel.sinks)
+    real = 4 if scalar_type in ("float32", "banded") else 8
+    est = fusion.estimate(kernel.walk, fusion.row(scalar_type), scalar_type,
+                          tables(select(arch)).wide_min.get(real)) + working // 4
     report = {}
     for entry, row in ptxas.items():
-        spills = (row["spill_store_B"] or 0) > 0 or row["stack_B"] > _FRAME_SLACK * working + _FRAME_FLOOR
-        report[entry] = {**row, "working_set_B": working, "spills": spills}
-        if spills:
-            warnings.warn(f"hawk: kernel {entry!r} uses {row['regs']} registers and a {row['stack_B']}-byte "
-                          f"local frame ({'spills unknown' if row['spill_store_B'] is None else str(row['spill_store_B']) + ' bytes spilled'}) against an expected working set "
-                          f"of {working} bytes", stacklevel=2)
+        inside = fusion.fence(row["regs"], row["stack_B"], est)
+        spills = (row["spill_store_B"] or 0) > 0 or (row["stack_B"] > 0 and not inside)
+        report[entry] = {**row, "working_set_B": working, "est_regs": est, "spills": spills}
+        members = getattr(kernel, "members", None)
+        if not spills and (members is None or inside):
+            continue
+        said = (f"kernel {entry!r} uses {row['regs']} registers and a {row['stack_B']}-byte local frame "
+                f"({'spills unknown' if row['spill_store_B'] is None else str(row['spill_store_B']) + ' bytes spilled'}) "
+                f"against an estimate of {est} registers")
+        if members is not None:
+            crossing = fusion.bind(members).crossing
+            widest = max(range(len(crossing)), key=crossing.__getitem__) + 1 if crossing else 0
+            raise HawkError(f"hawk: chain {kernel.name!r} of {[k.name for k in members]}: {said}; cut it where the most "
+                            f"values cross, before {members[widest].name!r}: chain the members before it and the members "
+                            "from it as two chains")
+        warnings.warn(f"hawk: {said}", stacklevel=2)
     return report
 
 
@@ -728,7 +738,7 @@ def _draft(kernel, sources, *, name, smode, kind, defines, cache_dir, device_arc
         fmt=entries[lead][3], lead=lead, derivative=derivative,
         box=getattr(sources[lead], "box", None),
         block=block if any(TARGETS[t].compile == GPU for t in native) else None,
-        ptxas=(_resource_report(kernel, entries[lead][0].ptxas)
+        ptxas=(_resource_report(kernel, entries[lead][0].ptxas, smode.id, resolved_arch)
                if TARGETS[lead].entry == ENTRY_DEVICE else None),
         local=_local_memory(name, entries, lead),
         wide=_wide_with_class({**_wide.walk_record(kernel.walk), **_wide.walk_record(kernel.one_step.walk)} if getattr(kernel, "one_step", None) is not None

@@ -82,7 +82,8 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "samples_first": ("_plane_layout", "samples_first"),
                     "samples_last": ("_plane_layout", "samples_last"),
                     "lane_position": ("trace.value", "lane_position"),
-                    "primitive": ("ext.primitive", "primitive")}
+                    "primitive": ("ext.primitive", "primitive"),
+                    "chain": ("trace.chain", "chain")}
 
 #: Submodules ``import hawk`` resolves lazily: the door returns the module
 #: itself (``hawk.embedded.export``), imported on first access.
