@@ -50,12 +50,38 @@ def k4(a: Vector[3], b: Scalar, y: Mutable[Vector[3]]):
 
 
 MEMBERS = (k1, k2, k3, k4)
-#: The fixture's bound: the chain against its launches, and the host against the device (sin, cos, exp, a dot;
-#: x > 0 keeps exp(-a.a) + x away from cancellation, which would amplify the libraries' last-place differences).
-ULPS = 4
-#: The fan-in fixture's bound on a device: the compiler contracts across the members a segment fuses and the consumer's
-#: nested sines compound each choice (measured 73 in f64 on sm_61; the host, built without contraction, is bitwise).
-FAN_IN_DEVICE_ULPS = 128
+#: The bound against the long-double oracle, in units of the scalar type's eps times the output's largest magnitude:
+#: the chain and its launches each answer within it, on the host and on the device (measured at most 8.3, the
+#: launches and the chain alike). x > 0 keeps exp(-a.a) + x away from cancellation.
+ORACLE_ULPS = 16
+LD = np.longdouble
+
+
+def _oracle_ulps(got, ref, dtype) -> float:
+    return float(np.max(np.abs(got.astype(LD) - ref)) / (np.max(np.abs(ref)) * LD(np.finfo(dtype).eps)))
+
+
+def _fixture_oracle(dtype: str, n: int = 257) -> dict:
+    """``acc`` and ``y`` of :data:`MEMBERS` in long double on :func:`_run`'s inputs."""
+    rng = np.random.default_rng(5)
+    x = rng.uniform(0.1, 2.0, n).astype(dtype).astype(LD)
+    acc = rng.uniform(0.0, 1.0, n).astype(dtype).astype(LD)
+    a = np.stack([np.sin(x), np.cos(x), x * LD("0.5")])
+    b = np.exp(-(a * a).sum(axis=0)) + x
+    return {"acc": acc + b * b, "y": a * b}
+
+
+def _fan_in_oracle(x, n_members: int, w: int):
+    """``out`` of :func:`fan_in` in long double."""
+    x, rs = x.astype(LD), []
+    for j in range(1, n_members):
+        src = x if j == 1 else rs[-1]
+        rs.append(np.zeros((w, x.size), LD) + np.sin(src * x + LD(f"{0.25 + 0.01 * j:.2f}"))
+                  * np.exp(-x * x * LD(f"{0.01 + 0.001 * j:.3f}")))
+    acc = np.zeros((w, x.size), LD)
+    for i, r in enumerate(reversed(rs)):
+        acc = np.sin(acc + r * LD(f"{0.25 + 0.001 * i:.4f}"))
+    return acc
 
 
 def _generated(text: str, tag: str) -> dict:
@@ -123,9 +149,11 @@ def _ulps(got, want, dtype) -> float:
 
 def _equals_launches(where: str, dtype: str, private_cache) -> dict:
     chained = hawk.chain(*MEMBERS, name="fixture")
-    got, want = _run([chained], where, dtype), _run(MEMBERS, where, dtype)
+    got, want, ref = _run([chained], where, dtype), _run(MEMBERS, where, dtype), _fixture_oracle(dtype)
     for name in got:
-        assert _ulps(got[name], want[name], dtype) <= ULPS, name
+        assert _oracle_ulps(got[name], ref[name], dtype) <= ORACLE_ULPS, name
+        assert _oracle_ulps(want[name], ref[name], dtype) <= ORACLE_ULPS, name
+        print(f"chain vs launches {where} {dtype} {name}: {_ulps(got[name], want[name], dtype):.1f} ulp")
     again = _run([chained], where, dtype)
     for name in got:
         np.testing.assert_array_equal(again[name], got[name])
@@ -146,10 +174,7 @@ def test_chain_equals_launches_host(dtype, private_cache):
 @pytest.mark.skipif(not _device(), reason="needs a CUDA device")
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
 def test_chain_equals_launches_cuda_and_host(dtype, private_cache):
-    device = _equals_launches("cuda", dtype, private_cache)
-    host = _run([hawk.chain(*MEMBERS, name="fixture")], "host", dtype)
-    for name in device:
-        assert _ulps(device[name], host[name], dtype) <= ULPS, name
+    _equals_launches("cuda", dtype, private_cache)     # the host row is the CPU test's: both within the oracle
 
 
 def test_chain_structure():
@@ -263,8 +288,9 @@ def _cut_values(target: str, dtype: str, n_members: int = 10, w: int = 16):
     held = planes({nm for _, nm in chained.arg_spec})
     plan = eagle.deploy(chained, scalar_type=dtype, targets=(target,))
     plan(**held)
-    got, want = back(held["out"]), back(launched["out"])
-    assert _ulps(got, want, dtype) <= (ULPS if target == "host" else FAN_IN_DEVICE_ULPS)
+    got, want, ref = back(held["out"]), back(launched["out"]), _fan_in_oracle(x, n_members, w)
+    assert _oracle_ulps(got, ref, dtype) <= ORACLE_ULPS and _oracle_ulps(want, ref, dtype) <= ORACLE_ULPS
+    print(f"cut chain vs launches {target} {dtype}: {_ulps(got, want, dtype):.1f} ulp")
     return plan
 
 
@@ -353,3 +379,15 @@ def test_chain_fence(dtype, tmp_path, private_cache, monkeypatch):
     monkeypatch.setattr(fusion, "estimate", lambda *a, **k: 0)
     with pytest.raises(HawkError, match=r"chain 'blind' of \['k1', .*'k10'\].* before 'k10'"):
         _ptxas(hawk.chain(*fan_in(10), name="blind"), dtype, tmp_path)
+
+
+def test_a_host_with_another_register_file_never_reuses_a_cut_decision(private_cache, tmp_path, monkeypatch):
+    """The unit key covers each stage's walk, so the cut a host row decides is part of the key: a host with a wider
+    register file builds its own unit from the same cache rather than reusing another host's stages."""
+    fan = hawk.chain(*fan_in(10), name="fan")
+    monkeypatch.setattr(fusion, "host_isa", lambda: "avx512")
+    cut = build_bundle([fan], tmp_path / "a", targets=("host",), mode="float64")
+    monkeypatch.setattr(fusion, "row", lambda st, host=False: {**fusion_card(st, "avx512"), "R_file": 4096})
+    whole = build_bundle([fan], tmp_path / "b", targets=("host",), mode="float64")
+    assert [st["kernel"] for st in sidecar_of(cut, "fan")["stages"]] == ["fan", "fan_2"]
+    assert "stages" not in sidecar_of(whole, "fan") and cut.digest != whole.digest
