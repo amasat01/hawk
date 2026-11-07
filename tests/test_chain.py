@@ -309,10 +309,7 @@ def test_a_cut_chain_equals_its_launches_on_the_device(dtype, private_cache, mon
 
 
 def _guarded_run(kernel, target, dead, group_live=None):
-    import _deploy as L
-    import eagle.exec as eexec
     from eagle import ActiveSet
-    from eagle import plan as eplan
 
     xp = np
     if target == "cuda":
@@ -327,9 +324,9 @@ def _guarded_run(kernel, target, dead, group_live=None):
         side = sidecar_of(bundle, kernel.name)
         live = ActiveSet(terminated, group=side["launch"]["lane_space"]["group"])
         live.compact()
-        plugin, structure = ((L.host_plugin(bundle.directory, kernel.name, side), eexec.HostTeam) if target == "host"
-                             else (L.device_plugin(bundle.directory, kernel.name, side), eexec.DeviceKernel))
-        eplan.plan(plugin, structure=structure).bind(**planes, active_map=live.map, active_count=live.count).launch()
+        # deploy, not one plugin: a host whose rule cuts the chain (avx2, sse2) runs it as stages
+        eagle.deploy(kernel, scalar_type="float64", targets=(target,))(**planes, active_map=live.map,
+                                                                        active_count=live.count)
     else:
         eagle.deploy(kernel, scalar_type="float64", targets=(target,))(**planes)
     out = planes["out"]
@@ -351,8 +348,10 @@ def test_chain_terminated_keeps_outputs(avx512, private_cache, tmp_path):
     np.testing.assert_array_equal(got, planes["out"])
 
 
-@pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
-def test_chain_compaction_twin(target, private_cache, tmp_path):
+@pytest.mark.parametrize("target,isa", [("host", None), ("host", "avx2"), pytest.param("cuda", None, marks=pytest.mark.gpu)])
+def test_chain_compaction_twin(target, isa, private_cache, tmp_path, monkeypatch):
+    if isa:                                         # the avx2 host row cuts this chain into stages
+        monkeypatch.setattr(fusion, "host_isa", lambda: isa)
     dead = np.ones(100, dtype=bool)
     for g in (0, 2):
         dead[g * 32:(g + 1) * 32] = False
