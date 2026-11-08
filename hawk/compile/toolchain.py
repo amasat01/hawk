@@ -956,7 +956,8 @@ def host_codegen_flags(profile: str | None = None, opt: str | None = None, extra
                 f"host profile {name!r} needs an x86-64 host "
                 "(aether's vector math follows the x86-64 vector function ABI)")
         target = [*target, "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
-    flags = [f"-{level}", _HOST_CONTRACTION[name], *target]
+    # no kernel reads errno: without it a sqrt is one instruction, not a call that keeps a loop scalar
+    flags = [f"-{level}", _HOST_CONTRACTION[name], "-fno-math-errno", *target]
     if name in VECTOR_MATH_PROFILES:
         flags += masked_call_flag(flags, extra)
     return flags

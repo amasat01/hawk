@@ -72,8 +72,7 @@ from hawk.targets import TARGETS
 
 #: The macro-off build: the plain per-sample fused loop of the SAME TU.
 PLAIN = ("HAWK_HOST_INTERCHANGE=0",)
-#: Pinned on: the default for a long step depends on the host compiler
-#: (off below GCC 14), and these rows compare the two shapes themselves.
+#: Pinned on (the default for every step): these rows compare the two shapes themselves.
 INTERCHANGED = ("HAWK_HOST_INTERCHANGE=1",)
 #: The bit-identical host profile every build here pins (module docstring).
 EXACT = "native"
@@ -275,6 +274,7 @@ WORDS = (64, 64, 1, 3, 64, 7, 0, -5, 100, 2, 33) + (64,) * 6
 @pytest.mark.parametrize("n,case", [(1, "spread"), (37, "spread"), (200, "spread"),
                                     (1001, "spread"), (300, "all_finished"),
                                     (300, "never")])
+
 def test_interchanged_and_plain_are_byte_identical(shapes, name, n, case):
     planes = _planes(name, n, case, seed=20261004)
     words = WORDS if name != "oscillator_x16" else (1,) * 20
@@ -592,3 +592,22 @@ def test_machine_caches_reads_sysfs_and_falls_back(tmp_path):
     assert machine_caches(str(tmp_path / "missing")) == FALLBACK_CACHES
     here = machine_caches()
     assert here.l1d > 0 and here.l2 >= here.l1d
+
+
+def test_every_compiler_takes_the_lane_loop():
+    # the live test runs after the lane loop (a reduction in it keeps GCC < 14's loop scalar), the TU
+    # defaults to the lane loop whatever the step's length, and no host profile keeps math errno
+    long_step = next(k for k in KERNELS.values() if k.name == "rkf78_attempt")
+    src = render_source(long_step.name, long_step.sinks, long_step.walk, TARGETS["host"],
+                        kind=long_step.kind, one_step=getattr(long_step, "one_step", None)).text
+    assert "hawk_live |= hawk_more" not in src and "hawk_live += " not in src
+    assert "hawk_live |= static_cast<std::int64_t>(hawk_ron[hawk_l] != 0.0);" in src
+    assert "__GNUC__ < 14" not in src
+    from hawk.compile import toolchain as tc
+    from hawk.ir.nodes import HawkError
+    for profile in ("native", "portable", "native-vector-math", "native-vector-math-nofma"):
+        try:
+            flags = tc.host_flags(profile=profile)
+        except HawkError:       # a vector-math profile off x86-64
+            continue
+        assert "-fno-math-errno" in flags, profile

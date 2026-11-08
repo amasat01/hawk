@@ -575,6 +575,11 @@ class Interchange:
 #: A step of at most this many operations is short: one dependent chain per
 #: lane, too few independent operations to fill the FMA pipes from one
 #: vector of lanes.
+# Whether any lane of a trip is still live, read off the lane flags AFTER the lane loop: a reduction
+# inside it (an or through a select) keeps GCC < 14 from vectorising the loop, and a sum slows GCC 14's.
+def _live_lanes(width: str) -> tuple:
+    return (f"    for (aether::offset_t hawk_l = 0; hawk_l < {width}; ++hawk_l)",
+            "        hawk_live |= static_cast<std::int64_t>(hawk_ron[hawk_l] != 0.0);")
 SHORT_STEP_OPS = 256
 
 
@@ -799,8 +804,8 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         lines += [f"{pad}hawk_more = {more};", "        }"]
     lines += [
         "        hawk_ron[hawk_l] = hawk_more ? 1.0 : 0.0;",
-        "        hawk_live |= hawk_more ? std::int64_t{1} : std::int64_t{0};",
         "    }",
+        *_live_lanes("hawk_w"),
         "    if (hawk_live == 0) break;",
         "    }",
         _INDEPENDENT_ITERATIONS,
@@ -1155,11 +1160,10 @@ def _trips(lp, *, k: int, rows: dict, step_words: set, loads, arr, proxy_lines=(
             lines.append(f"{pad}hawk_more = !{lp.exit}{more};")
         lines.append("        }")
     if stops:
-        lines += ["        hawk_ron[hawk_l] = hawk_more ? 1.0 : 0.0;",
-                  "        hawk_live |= hawk_more ? std::int64_t{1} : std::int64_t{0};"]
+        lines.append("        hawk_ron[hawk_l] = hawk_more ? 1.0 : 0.0;")
     lines.append("    }")
     if stops:
-        lines.append("    if (hawk_live == 0) break;")
+        lines += [*_live_lanes("hawk_tile"), "    if (hawk_live == 0) break;"]
     lines += ["    }", "    }"]
     return lines
 
@@ -1239,16 +1243,9 @@ extern "C" void {name}_host_run(void* const* params,
 def interchange_prelude(rule: TileRule) -> str:
     """The text an interchanged TU puts ahead of the mask helpers: the
     macro's default and the tile rule's record."""
-    if rule.op_count <= SHORT_STEP_OPS:
-        default = f"#define {INTERCHANGE_MACRO} 1\n"
-    else:
-        # A long step vectorises across lanes only from GCC 14 on (measured:
-        # GCC 11 leaves the chunk's lane loop scalar, and a scalar chunk pays
-        # every finished lane's trips); below it the per-sample loop wins.
-        default = (f"#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 14\n"
-                   f"#define {INTERCHANGE_MACRO} 0\n#else\n"
-                   f"#define {INTERCHANGE_MACRO} 1\n#endif\n")
-    return f"#ifndef {INTERCHANGE_MACRO}\n{default}#endif\n{rule.comment()}\n"
+    # every compiler takes the lane loop: its live test runs after it (`_live_lanes`), and the host
+    # flags drop math errno, so GCC before 14 vectorises a long step too
+    return f"#ifndef {INTERCHANGE_MACRO}\n#define {INTERCHANGE_MACRO} 1\n#endif\n{rule.comment()}\n"
 
 
 class HostWrapper:
