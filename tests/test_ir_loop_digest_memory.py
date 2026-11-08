@@ -341,3 +341,24 @@ def test_two_structurally_equal_bodies_still_dedup_to_one_loop():
     assert len(loops) == 1, (
         "two structurally equal loop bodies must dedup to one node; got "
         f"{len(loops)}")
+
+
+def test_a_loop_kernel_traces_where_blake2_is_refused(monkeypatch):
+    """A FIPS-mode Python refuses blake2 ("not available in FIPS mode"): the body keys use sha256,
+    so a loop kernel still traces there."""
+    import hashlib
+
+    def refused(*a, **k):
+        raise ValueError("blake2 is not available in FIPS mode")
+
+    monkeypatch.setattr(hashlib, "blake2b", refused)
+
+    @hawk.kernel
+    def fips(t: hawk.Table["row":4], g: hawk.Param, y: hawk.Mutable[hawk.Scalar]):  # noqa: F821
+        acc = 0.0
+        for r in range(4):
+            acc = acc + g * t.at(row=r)
+        y = acc
+
+    assert len(fips.walk.digest) > 0
+    assert set(body_key_widths(next(n for n in fips.walk.order if isinstance(n, Loop)))) == {BODY_KEY_HEX}
