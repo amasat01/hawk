@@ -20,8 +20,9 @@ import hawk.math as m
 from hawk import Index, Kernel, Mutable, Scalar, Vector
 from hawk.diff import vjp
 from hawk.emit import render_body
-from hawk.ir import Assign, Leaf, canonical
+from hawk.ir import Assign, Leaf, Op, canonical
 from hawk.ir import make as mk
+from hawk.ir.walk import canonical_nodes
 from hawk.types import TensorType
 
 
@@ -421,3 +422,31 @@ def test_an_int32_value_indexes_a_vector(host):
     hawk.run(kernel, **declared(kernel, {"theta": theta, "x": x}), y=y)
     for s in range(n):
         assert y[s] == theta[int(x[s] * 3.0), s], s
+
+
+def _read_of_the_accumulated_plane():
+    """``vjp(_double_hit)`` plus a runtime-index read of the accumulated ``bar_theta`` value."""
+    sinks = vjp(_double_hit, wrt=("theta",))
+    read = next(n for n in canonical_nodes(tuple(_double_hit.sinks))[0] if isinstance(n, Op) and n.kind == "component_at")
+    return (*sinks, Assign("z", mk("component_at", (sinks[0].value, read.operands[1])), TensorType((), "f64")))
+
+
+def test_a_runtime_read_of_an_accumulated_plane_renders_the_chain_it_reads():
+    sinks = _read_of_the_accumulated_plane()
+    text = _body(sinks)
+    assert not re.search(r"=\s*;", text), text
+    assert "mut_bar_theta[i].at(static_cast<Int>(psc_j" not in text, text      # never read in place
+
+
+def test_a_runtime_read_of_an_accumulated_plane_equals_the_interpreter(host):
+    sinks = _read_of_the_accumulated_plane()
+    n = 6
+    rng = np.random.default_rng(3)
+    theta, seed = rng.normal(size=(4, n)), rng.normal(size=n)
+    j = np.array([2, 2, 0, 1, 3, 2], dtype=np.int32)
+    kernel = host("double_hit_read", _double_hit, sinks)
+    bar, z = np.zeros((4, n)), np.zeros(n)
+    hawk.run(kernel, **declared(kernel, {"theta": theta, "j": j, "bar_y": seed}), bar_theta=bar, z=z)
+    for s in range(n):
+        want = evaluate(sinks, {"theta": theta[:, s], "j": int(j[s]), "bar_y": seed[s]})
+        assert z[s] == want["z"] and np.array_equal(bar[:, s], want["bar_theta"]), s

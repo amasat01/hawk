@@ -906,7 +906,18 @@ class _Renderer(_DispatchMixin):
                 node = node.operands[0]
             pos = self.position[id(base)]
             users[pos] = users.get(pos, 0) + 1
-        self._skip = {pos for pos, n in users.items() if self.fanout.get(pos, 0) == n}
+        skip = {pos for pos, n in users.items() if self.fanout.get(pos, 0) == n}
+        for sink, base, _l, _p in planned:      # a node read whole needs every node under it rendered
+            node, whole = sink.value, False
+            while True:
+                pos = self.position[id(node)]
+                whole = whole or pos not in skip
+                if whole:
+                    skip.discard(pos)
+                if node is base:
+                    break
+                node = node.operands[0]
+        self._skip = skip
 
     def _link_in_case(self, target: str, index: Node, value: Node) -> bool:
         """Whether an accumulate renders inside the cases of the one fused
