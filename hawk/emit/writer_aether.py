@@ -1070,6 +1070,8 @@ class AetherWriter:
         """The name of ``source``'s value materialised once per scope as a
         const ``aether::Item`` (``arg`` is its expression)."""
         held = r.items.get(id(source))
+        if held is None and arg in r.item_names and not r.writer.cells:
+            return arg                  # already a named Item: read it in place
         if held is None:
             t = source.ttype
             extents = ", ".join(str(e) for e in t.shape)

@@ -398,6 +398,9 @@ class _Renderer(_DispatchMixin):
         #: value, for a runtime component read (``component_at``). Scoped like
         #: :attr:`local`: an Item declared inside a loop dies with that scope.
         self.items: dict[int, str] = {}
+        #: the names of locals declared as an ``aether::Item`` (a ``.get()`` row or a held value): a runtime
+        #: component read of one reads it in place, with no second copy.
+        self.item_names: set[str] = set()
         #: The loop-carried C++ locals a lowered loop declares, by loop suffix.
         self.carry_names: dict[int, tuple] = {}
         #: Per-iteration TAPE arrays a forward loop keeps, by loop position ->
@@ -1023,8 +1026,10 @@ class _Renderer(_DispatchMixin):
         """Record ``text`` as ``node``'s rendering, named when :meth:`_materialised`."""
         if self._materialised(node, pos):
             name = self._name(node, pos)
-            self._emit(self.writer.declare(name, node.ttype, text, ordered=self._ordered(node),
-                                           held=self.fanout.get(pos, 0) >= 2 and not self._leaf_valued(node)))
+            held = self.fanout.get(pos, 0) >= 2 and not self._leaf_valued(node)
+            self._emit(self.writer.declare(name, node.ttype, text, ordered=self._ordered(node), held=held))
+            if node.ttype.shape and (text.endswith("[i].get()") or (held and len(node.ttype.shape) == 1)):
+                self.item_names.add(name)
             self.rendered[pos] = name
         else:
             self.rendered[pos] = text
