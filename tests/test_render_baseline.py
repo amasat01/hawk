@@ -16,7 +16,8 @@ Re-pinned for 0.7.2: ``gather``, ``scatter`` and ``scatter_c`` read an ``Index``
 
 Re-pinned for 0.7.5: a vector value read more than once is declared as an ``aether::Item``, and an output is
 stored right after its value is complete instead of at the end of the body; the values are unchanged. Then
-``gather``: a ``Table.at`` index is clamped to the table's length.
+``gather``: a ``Table.at`` index is clamped to the table's length. Then ``two_fin``: a lane loop tests whether
+any lane is still live after the loop, not inside it, and the host flags drop math errno.
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ PINNED = {
     "scatter_c": "fd8ff1fdec21b3596de808ff3f2c088e9a3d5c127f333d4384c318f8c667e6ba",
     "speed": "2f52cb7fd79d54f4db17c357278f2b099dd1cd3c219f19d44beb81a579f72e87",
     "spin": "62b0d8722d8e1298b687c6397a13887785b37f1c9c645aeb4f588c2c752e81fc",
-    "two_fin": "2b13282e1033d6dedec510e6145bf8ce6c72e38e7aac16177aa47c860c96477f",
+    "two_fin": "8bd4ac6aef78b917449ce8ed0538d1e7fd242b064ea1d0122c09fea7c690b1bc",
     "two_outputs": "3b9fdbeb5478dcf534cae87ee3321cf864ff5f98492958706ace6810a5a72419",
     "two_wire": "e20d62075ff489262a1a814fd7eacd78d3d3961cb1d4bc624a44627ebbf0749f",
     "vec3_scale": "0d204277907cbf3c9f261060f84f1e8ff79fc115751a0018002c295fa3769ee8",
