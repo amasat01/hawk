@@ -447,6 +447,8 @@ class AetherWriter:
             if leaf.ttype.dtype in INT_PLANE_DTYPES:
                 return f"static_cast<{element_spelling(leaf.ttype.dtype)}>({name})"
             return name
+        if leaf.ttype.shape and r.position.get(id(leaf)) in r.lazy:
+            return f"{name}[i]"     # proxy, element reads only (LAZY_LEAF_WIDTH, or a mutable plane read in place)
         if leaf.role == "mutable":
             # `.prior` — the only way a `mutable`-role LEAF (as opposed to its
             # SINK) reaches here. The plane's local is a WRITABLE view, so `[i]`
@@ -459,8 +461,6 @@ class AetherWriter:
             if leaf.ttype.shape:
                 return f"{name}[i].get()"
             return f"{name}[i].get()()"
-        if leaf.ttype.shape and r.position.get(id(leaf)) in r.lazy:
-            return f"{name}[i]"     # proxy, element reads only (LAZY_LEAF_WIDTH)
         if leaf.ttype.shape:
             # Rank >= 1: always the body's own sample, never the whole plane.
             # `view[i].get()` materialises the row into an `Item`, which is what
@@ -1031,8 +1031,9 @@ class AetherWriter:
             ks = ', '.join(str(int(k)) for k in index)
             if args[0] in r.proxies:
                 return f"{args[0]}.at({ks})"
-            if r.position.get(id(_through(node.operands[0]))) in r.lazy:
-                return f"{args[0]}.eval<{ks}>()"
+            source = _through(node.operands[0])
+            if r.position.get(id(source)) in r.lazy:
+                return f"{args[0]}.at({ks})" if source.role == "mutable" else f"{args[0]}.eval<{ks}>()"
             return f"{args[0]}.eval<{ks}>(i)"
         if kind == "sum" and len(node.operands[0].ttype.shape) == 2:
             return self._matrix_sum(r, args[0], node.operands[0].ttype)
@@ -1058,7 +1059,7 @@ class AetherWriter:
             return ""               # a store of the same slot adds in place
         if args[0] in r.proxies:
             return f"{args[0]}.at({args[1]})"       # a value in a plane: the element, straight from it
-        if _reads_in_place(source) or node.literal == WARP_READ:
+        if _reads_in_place(source, r.inplace) or node.literal == WARP_READ:
             # a read-only input plane: the element at the runtime index straight
             # from the view (`SampleRef::at`), no `Item` of the whole row
             return f"{binding_name(source.role, source.name)}[i].at({args[1]})"

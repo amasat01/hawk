@@ -454,6 +454,7 @@ class _Renderer(_DispatchMixin):
         #: The positions no statement renders, because every user reads them through their
         #: own operand (:meth:`~hawk.emit.writer_aether.AetherWriter.unrendered`).
         self.unrendered = self.writer.unrendered(self) if self.writer.rolled_forms else frozenset()
+        self.inplace = self._inplace_planes()
         self.lazy = self._lazy_leaves()
         #: the leaves only an ``At`` reads (by name, at its own index): no local of their own
         self.crossed = self._crossed_leaves()
@@ -497,6 +498,22 @@ class _Renderer(_DispatchMixin):
         if self._uniform is None:
             self._uniform = warp_uniform(self.sinks)
         return self._uniform(node)
+
+    def _inplace_planes(self) -> dict:
+        """``{plane: stored}`` for the mutable planes the walk reads at the top level whose runtime-index read
+        may come straight from the plane (``mut_m[i].at(k)``): every store to it is a plain own-column
+        ``Assign``/``WideWrite`` of the body, committed after every node (an early or per-component store is
+        refused to a plane some leaf reads; an indexed store, an accumulate and a lowered loop's own
+        stores are not plain)."""
+        loops = [n for n in (*self.nodes, *self.sinks) if isinstance(n, Loop)]
+        for node in list(loops):
+            loops.extend(n for n in _flat_body(node) if isinstance(n, Loop))
+        sinks = [s for s in self.sinks if isinstance(s, Sink) and s.role == "mutable"]
+        inside = {s.name for loop in loops for s in loop.body_sinks if s.role == "mutable"}
+        stored = {s.name for s in sinks}
+        other = {s.name for s in sinks if not (type(s) in (Assign, WideWrite) and s.index is None)}
+        return {n.name: n.name in stored for n in self.nodes
+                if isinstance(n, Leaf) and n.role == "mutable" and not {n.name} & (inside | other)}
 
     def _lazy_leaves(self) -> frozenset:
         """Positions of the wide read-only leaves bound as the ``[i]`` proxy.
@@ -542,7 +559,10 @@ class _Renderer(_DispatchMixin):
             if isinstance(leaf, At):
                 if ok and p in proxied:
                     out.add(p)      # a plane read at another lane, every use a library operand
-            elif (ok and leaf.ttype.shape and leaf.role not in ("mutable", "uniform", "nsamples")
+            elif leaf.role == "mutable":
+                if ok and p not in proxied and _reads_in_place(leaf, self.inplace):
+                    out.add(p)      # every use an element read: the row is dead, the plane serves each
+            elif (ok and leaf.ttype.shape and leaf.role not in ("uniform", "nsamples")
                     and not is_param_cell(leaf)
                     and (p in proxied or math.prod(leaf.ttype.shape) > LAZY_LEAF_WIDTH
                          or (p in runtime and _reads_in_place(leaf)))):
@@ -1099,6 +1119,8 @@ class _Renderer(_DispatchMixin):
         trade away."""
         if isinstance(node, Leaf) and node.role in ("uniform", "nsamples"):
             return False
+        if self._plane_read_before_store(node):
+            return True         # the element is read here, before the final phase stores the plane
         if is_resident(node) or is_scratch(node):
             return False        # its text is the plane's proxy: nothing to name
         if isinstance(node, LoopValue) and self._loop_value(node) in self.proxies:
@@ -1125,6 +1147,16 @@ class _Renderer(_DispatchMixin):
         if pos in self.forced:
             return True
         return self.fanout.get(pos, 0) >= 2 or self._leaf_valued(node)
+
+    def _plane_read_before_store(self, node: Node) -> bool:
+        """An element read of a stored mutable plane that the plane serves in place: named at its own
+        position, because its consumer may be a sink ordered after the plane's own store."""
+        if not (isinstance(node, Op) and node.kind in ("component", "component_at")):
+            return False
+        leaf = _through(node.operands[0])
+        return (isinstance(leaf, Leaf) and leaf.role == "mutable" and _reads_in_place(leaf, self.inplace)
+                and self.inplace[leaf.name] and (node.kind == "component_at"
+                                                 or self.position[id(leaf)] in self.lazy))
 
     def _unnamed(self, node: Node) -> bool:
         """A node that never gets a local of its own: one a store run absorbs
@@ -1883,11 +1915,13 @@ def _push_reads(sinks: tuple) -> tuple:
     return tuple(out)
 
 
-def _reads_in_place(node: Node) -> bool:
+def _reads_in_place(node: Node, planes=()) -> bool:
     """Whether a runtime component read of ``node`` goes through the plane's own
-    view (``name[i].at(k)``): a read-only rank-1 input leaf. A mutable plane,
-    a parameter cell and every computed vector keep the ``Item`` copy."""
-    return (isinstance(node, Leaf) and node.role in ("vec_in", "per_sample")
+    view (``name[i].at(k)``): a read-only rank-1 input leaf, or a mutable one in
+    ``planes`` (:meth:`Render._inplace_planes`). A parameter cell and every
+    computed vector keep the ``Item`` copy."""
+    return (isinstance(node, Leaf) and (node.role in ("vec_in", "per_sample")
+                                        or (node.role == "mutable" and node.name in planes))
             and len(node.ttype.shape) == 1 and not is_param_cell(node))
 
 
