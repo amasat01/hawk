@@ -56,7 +56,7 @@ from ..ir.nodes import (
     sample_sums,
 )
 from ..ir.linalg import CONSUMERS, FACTORISATIONS
-from ..ir.ops import RANDOM_OPS
+from ..ir.ops import ELEMENTWISE_BINARY, ELEMENTWISE_TERNARY, RANDOM_OPS, UNARY_MATH
 from ..ir.lanes import warp_uniform
 from ..ir.slotwise import chain, is_structural_zero
 from ..ir.walk import canonical_nodes
@@ -356,7 +356,7 @@ class _Renderer(_DispatchMixin):
                  writer=None) -> None:
         from ..ext import DEFAULT_KIND
 
-        self.sinks = sinks
+        self.sinks = sinks = _push_reads(sinks)
         self.walk = walk
         self.indent = indent
         self.kind = kind if kind is not None else DEFAULT_KIND
@@ -1838,6 +1838,49 @@ def _parts(node: Node) -> list | None:
     if node.kind == "splat":
         return [node.operands[0]] * math.prod(node.ttype.shape)
     return None
+
+
+_ELEMENTWISE = frozenset(ELEMENTWISE_BINARY + UNARY_MATH + ELEMENTWISE_TERNARY)
+
+
+def _push_reads(sinks: tuple) -> tuple:
+    """``sinks`` with each runtime-index read of an element-wise vector value pushed to its operands:
+    ``component_at(op(a, b), k)`` becomes ``op(component_at(a, k), b')`` (a rank-0 operand stays), so one element
+    is computed and the whole vector is neither built nor copied into an ``Item``. Other values are untouched."""
+    from ..diff.tape import _resink
+    from ..ir import make
+    from ..ir.walk import substitute
+
+    def pushable(n):
+        return (isinstance(n, Op) and n.kind == "component_at" and n.literal is None and isinstance(n.operands[0], Op)
+                and n.operands[0].kind in _ELEMENTWISE and len(n.operands[0].ttype.shape) == 1)
+
+    nodes, _ = canonical_nodes(sinks)
+    reads = [n for n in nodes if pushable(n)]
+    if not reads or not all(type(s) in (Finish, SampleSum, AccumWrite, Assign, TeamStore)
+                            and (len(s.operands) == 1 or isinstance(s, AccumWrite)) for s in sinks):
+        return sinks
+    memo: dict = {}
+
+    def element(value, k):
+        if not value.ttype.shape:
+            return value
+        if (id(value), id(k)) not in memo:
+            if isinstance(value, Op) and value.kind in _ELEMENTWISE and len(value.ttype.shape) == 1:
+                memo[(id(value), id(k))] = make(value.kind, [element(a, k) for a in value.operands], value.literal)
+            else:
+                memo[(id(value), id(k))] = make("component_at", (value, k))
+        return memo[(id(value), id(k))]
+
+    roots = substitute(tuple(o for s in sinks for o in s.operands),
+                       {id(n): element(n.operands[0], n.operands[1]) for n in reads})
+    out, at = [], 0
+    for s in sinks:
+        part = roots[at:at + len(s.operands)]
+        at += len(s.operands)
+        out.append(AccumWrite(s.name, part[0], part[1] if len(part) > 1 else None, s.ttype, s.policy)
+                   if isinstance(s, AccumWrite) else _resink(s, part[0]))
+    return tuple(out)
 
 
 def _reads_in_place(node: Node) -> bool:
