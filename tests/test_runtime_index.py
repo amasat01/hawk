@@ -402,3 +402,22 @@ def test_independent_clamped_stores_host_run_equals_the_interpreter(host):
     for s in range(n):
         want = evaluate(_clamped.sinks, {"u": u[s], "e": e[s]})
         assert np.array_equal(out[:, s], np.asarray(want["o"])), s
+
+
+@hawk.kernel
+def _int32_pick(theta: Vector[4], x: Scalar, y: Mutable[Scalar]):
+    """A Vector read at an index computed as a 32-bit integer value (m.int32)."""
+    y = theta[m.int32(x * 3.0)]
+
+
+def test_an_int32_value_indexes_a_vector(host):
+    """``m.int32`` makes an int plane value; it addresses a Vector component as an ``i32`` index does."""
+    n = 5
+    rng = np.random.default_rng(7)
+    theta = rng.normal(size=(4, n))
+    x = np.array([0.0, 0.4, 0.7, 1.0, 0.2])
+    y = np.zeros(n)
+    kernel = host("int32_pick", _int32_pick, _int32_pick.sinks)
+    hawk.run(kernel, **declared(kernel, {"theta": theta, "x": x}), y=y)
+    for s in range(n):
+        assert y[s] == theta[int(x[s] * 3.0), s], s

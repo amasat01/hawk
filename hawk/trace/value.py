@@ -293,7 +293,9 @@ class Value:
                 "lane's input is read with x.at(key)")
         node = k.node if isinstance(k, Value) else k
         if isinstance(node, Node) and node.ttype.shape == ()\
-                and node.ttype.dtype in ("i32", "i64"):
+                and node.ttype.dtype in _INDEX_DTYPES:
+            if node.ttype.dtype not in ("i32", "i64"):     # an int plane value (hm.int32) indexes as i32
+                node = _make("cast", (node,), "i32")
             return Value(_make("component_at", (self.node, node)))
         raise HawkError(
             f"a traced value is indexed by a STATIC integer component or by a "
