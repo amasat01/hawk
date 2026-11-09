@@ -653,7 +653,10 @@ def test_arm_branches_are_inactive_on_x86(tmp_path):
     unit = builds(render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
                                 kind=kernel.kind, one_step=kernel.one_step).text)["interchanged"]
     unit = _preprocessed("x86_64-unknown-linux-gnu", unit.replace("#include", "//#include"), tmp_path)
-    assert "hawk_perm" not in unit and "hawk_nlive" not in unit
+    # compaction runs everywhere, in tile order; the arm-only effects stay off
+    assert "hawk_perm" in unit and "hawk_nlive" in unit
+    assert "std::sort" not in unit and "interleave_count" not in unit
+    assert "kHostChunkVectors = 4" not in unit
     assert "kHostChunkVectors = 1;" in out and "kHostChunkVectors = 4" not in out
     assert "interleave_count" not in out
     assert "kGuards = 0;" in out
@@ -693,13 +696,12 @@ def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
     cpp = out / f"{name}.cpp"
     marker = "    std::int64_t hawk_live = 0;"
     assert source.count(marker) == 1
-    cpp.write_text(_COUNTED + source.replace(marker, "    hawk_lane_trips += hawk_w;\n" + marker))
+    cpp.write_text(_COUNTED + source.replace(marker, "    __atomic_fetch_add(&hawk_lane_trips, (long long)hawk_w, __ATOMIC_RELAXED);\n" + marker))
     subprocess.run([tc.host_compiler(), *flags, *tc.include_flags(), str(cpp), "-o",
                     str(out / f"{name}.so")], check=True)
     return SimpleNamespace(directory=out, artifacts=bundle.artifacts)
 
 
-@pytest.mark.skipif(platform.machine() not in ("arm64", "aarch64"), reason="aarch64 emit")
 @pytest.mark.parametrize("profile", ["native", None])
 def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile):
     """Live-lane compaction against the same TU with the identity permutation:
@@ -796,7 +798,7 @@ def test_no_sort_survives_preprocessing_for_x86(tmp_path):
     text = _host_text(hawk.steps(ramp, 16))
     assert "std::sort" in text
     out = _preprocessed("x86_64-unknown-linux-gnu", text.replace("#include", "//#include"), tmp_path)
-    assert "std::sort" not in out and "hawk_perm" not in out
+    assert "std::sort" not in out and "<algorithm>" not in out
 
 
 @pytest.mark.skipif(platform.machine() not in ("arm64", "aarch64"), reason="aarch64 emit")

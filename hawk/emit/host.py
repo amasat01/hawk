@@ -219,50 +219,42 @@ _INDEPENDENT_ITERATIONS = """#if defined(__clang__)
 
 #: The tile's live lanes first, in tile order (``hawk_perm``), so the chunk loop
 #: runs only the ``hawk_nlive`` live ones: a chunk is then no longer held open by
-#: one long lane among dead ones. A lane's own arithmetic is untouched; aarch64
-#: only, where the chunk is wide enough for it to pay.
+#: one long lane among dead ones. A lane's own arithmetic is untouched.
 def _compact_live(split: LaneSplit) -> tuple:
     """:data:`_COMPACT_LIVE`, then the live lanes sorted soonest-to-exit first by
     the exit-bound carry's value when :attr:`LaneSplit.exit_order` names one:
-    packed that way, a chunk's lanes finish close together (a NaN carry, a diverged
+    packed that way (aarch64 only), a chunk's lanes finish close together (a NaN carry, a diverged
     lane, sorts last as every other NaN's equal). No such carry, no sort."""
     if split.exit_order is None:
         return _COMPACT_LIVE
     carry, descending = split.exit_order
-    return (*_COMPACT_LIVE[:-1],
+    return (*_COMPACT_LIVE,
+            "#if defined(__aarch64__)",
             "    std::sort(hawk_perm, hawk_perm + hawk_nlive,",
             "              [&](aether::offset_t a, aether::offset_t b) {",
             f"                  const auto x = hawk_lc{carry}[a], y = hawk_lc{carry}[b];",
             "                  if (x != x) return false;",
             "                  if (y != y) return true;",
             f"                  return x {'>' if descending else '<'} y; }});",
-            _COMPACT_LIVE[-1])
+            "#endif")
 
 
 _COMPACT_LIVE = (
-    "#if defined(__aarch64__)",
     "    alignas(64) aether::offset_t hawk_perm[hawk_tile];",
     "    aether::offset_t hawk_nlive = 0;",
     "    for (aether::offset_t hawk_t = 0; hawk_t < hawk_tn; ++hawk_t)",
     "        if (hawk_on[hawk_t] != 0.0) hawk_perm[hawk_nlive++] = hawk_t;",
     "    for (aether::offset_t hawk_t = 0, hawk_o = hawk_nlive; hawk_t < hawk_tn; ++hawk_t)",
     "        if (hawk_on[hawk_t] == 0.0) hawk_perm[hawk_o++] = hawk_t;",
-    "#endif",
 )
 
 
-def _chunk_sample(slot: str, clamped: bool = False) -> tuple:
+def _chunk_sample(clamped: bool = False) -> tuple:
     """The lines declaring ``hawk_t``, the tile sample of chunk slot ``slot``:
-    through ``hawk_perm`` on aarch64 for slots inside the tile."""
-    inside = "hawk_cb + hawk_l < hawk_tn"
-    return ("#if defined(__aarch64__)",
-            "        const aether::offset_t hawk_t =",
-            f"            {inside} ? hawk_perm[hawk_cb + hawk_l] : "
-            f"{'hawk_tn - 1' if clamped else 'hawk_cb + hawk_l'};",
-            "#else",
-            "        const aether::offset_t hawk_t =",
-            f"            {slot};",
-            "#endif")
+    through ``hawk_perm`` for slots inside the tile."""
+    return ("        const aether::offset_t hawk_t =",
+            "            hawk_cb + hawk_l < hawk_tn ? hawk_perm[hawk_cb + hawk_l] : "
+            f"{'hawk_tn - 1' if clamped else 'hawk_cb + hawk_l'};")
 
 
 #: The trip loop's annotation: on clang for aarch64 it also asks for four
@@ -839,13 +831,8 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         "    static_assert(hawk_tile % hawk_w == 0,",
         '                  "hawk: a tile holds whole chunks");',
         *_compact_live(split),
-        "#if defined(__aarch64__)",
         "    for (aether::offset_t hawk_cb = 0; hawk_cb < hawk_nlive;",
         "         hawk_cb += hawk_w) {",
-        "#else",
-        "    for (aether::offset_t hawk_cb = 0; hawk_cb < hawk_tn;",
-        "         hawk_cb += hawk_w) {",
-        "#endif",
         *[f"    alignas(64) {_lane_elem(t)} {mine}[{_width(t)} * hawk_w];"
           for mine, _, t in chunk],
         "    alignas(64) HAWK_LANE_T hawk_ron[hawk_w];",
@@ -856,7 +843,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         "    std::int64_t hawk_any = 0;",
         _INDEPENDENT_ITERATIONS,
         "    for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {",
-        *_chunk_sample("hawk_cb + hawk_l"),
+        *_chunk_sample(),
     ]
     for mine, arr, t in chunk:
         lines.append(f"        for (aether::offset_t hawk_c = 0; hawk_c < {_width(t)}; "
@@ -877,7 +864,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         "    std::int64_t hawk_live = 0;",
         _TRIP_ITERATIONS,
         "    for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {",
-        *_chunk_sample("hawk_cb + hawk_l < hawk_tn ? hawk_cb + hawk_l : hawk_tn - 1", True),
+        *_chunk_sample(True),
         "        const aether::SampleIndex i =",
         "            aether::SampleIndex::make(",
         "                static_cast<std::size_t>(hawk_tlo + hawk_t));",
@@ -908,7 +895,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         "    }",
         _INDEPENDENT_ITERATIONS,
         "    for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {",
-        *_chunk_sample("hawk_cb + hawk_l"),
+        *_chunk_sample(),
     ]
     for mine, arr, t in chunk[:len(split.carries)]:
         lines.append(f"        for (aether::offset_t hawk_c = 0; hawk_c < {_width(t)}; "
