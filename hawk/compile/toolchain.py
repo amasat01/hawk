@@ -601,7 +601,9 @@ def device_compiler() -> str:
 #: bit for bit (a reference, a regression baseline, host against host).
 #:
 #: ``native-vector-math`` (fast) — the default on x86-64 with a GCC host
-#: compiler only: ``native`` plus three trades. (1) ``-DAETHER_HOST_VECTOR_MATH`` and
+#: compiler and on arm64 with any host compiler. On arm64 it is ``native``
+#: plus (2) below only: no vector math define, no ``-fno-trapping-math``, and a
+#: library call stays scalar. On x86-64 it is ``native`` plus three trades. (1) ``-DAETHER_HOST_VECTOR_MATH`` and
 #: ``-fno-trapping-math`` route aether's transcendental math to vector-ABI
 #: functions, so a calling loop is no longer kept scalar by the libm call;
 #: those functions are aether's packet math, faithfully rounded (1-3 ULP of
@@ -626,14 +628,14 @@ VECTOR_MATH_PROFILES = ("native-vector-math", "native-vector-math-nofma")
 #: The profiles whose builds are bit-identical to the scalar build.
 EXACT_HOST_PROFILES = ("native", "portable")
 #: The default host profile for a GCC host compiler on an x86-64 host:
-#: ``native-vector-math`` there, ``native`` on any other architecture (where
-#: ``native-vector-math`` is refused). With a non-GCC host compiler (clang,
-#: the ``zig c++`` fallback) the default is ``native`` on every architecture,
-#: because the vector profile rides on GCC's vector function ABI; use
+#: ``native-vector-math`` there and on arm64 (any compiler), ``native`` on any
+#: other architecture (where ``native-vector-math`` is refused). With a non-GCC
+#: host compiler (clang, the ``zig c++`` fallback) the default on x86-64 is
+#: ``native``, because the vector profile rides on GCC's vector function ABI; use
 #: :func:`default_host_profile` for the default that applies to the compiler
 #: actually in use.
 DEFAULT_HOST_PROFILE = ("native-vector-math"
-                        if platform.machine().lower() in ("x86_64", "amd64")
+                        if platform.machine().lower() in ("x86_64", "amd64", "aarch64", "arm64")
                         else "native")
 
 #: Per-process memo of :func:`compiler_is_gcc`, keyed on the resolved compiler
@@ -863,11 +865,16 @@ def _is_x86_64() -> bool:
     return platform.machine().lower() in ("x86_64", "amd64")
 
 
+def _is_arm64() -> bool:
+    return platform.machine().lower() in ("aarch64", "arm64")
+
+
 def default_host_profile() -> str:
     """The profile used when neither the compile options nor
     ``$HAWK_HOST_PROFILE`` name one: ``native-vector-math`` when the host is
-    x86-64 AND the resolved host compiler is GCC, else ``native``."""
-    if _is_x86_64() and compiler_is_gcc(host_compiler()):
+    x86-64 AND the resolved host compiler is GCC, or the host is arm64, else
+    ``native``."""
+    if _is_arm64() or (_is_x86_64() and compiler_is_gcc(host_compiler())):
         return "native-vector-math"
     return "native"
 
@@ -951,14 +958,15 @@ def host_codegen_flags(profile: str | None = None, opt: str | None = None, extra
     else:
         target = ["-march=x86-64-v2"] if x86 else []
     if name in VECTOR_MATH_PROFILES:
-        if not x86:
+        if x86:
+            target = [*target, "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
+        elif name == "native-vector-math-nofma" or not _is_arm64():
             raise HawkError(
                 f"host profile {name!r} needs an x86-64 host "
                 "(aether's vector math follows the x86-64 vector function ABI)")
-        target = [*target, "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
     # no kernel reads errno: without it a sqrt is one instruction, not a call that keeps a loop scalar
     flags = [f"-{level}", _HOST_CONTRACTION[name], "-fno-math-errno", *target]
-    if name in VECTOR_MATH_PROFILES:
+    if name in VECTOR_MATH_PROFILES and x86:
         flags += masked_call_flag(flags, extra)
     return flags
 

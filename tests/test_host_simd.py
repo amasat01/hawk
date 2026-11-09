@@ -389,10 +389,16 @@ def test_a_cross_sample_kernel_keeps_the_plain_loop(tmp_path):
     assert "ivdep" not in cpp and "for (std::int64_t hawk_i = base;" in cpp
 
 
+def _profiles_here():
+    """The profiles this host accepts: `-nofma` is x86-64 only."""
+    return [p for p in tc.HOST_PROFILES
+            if p != "native-vector-math-nofma" or platform.machine().lower() in ("x86_64", "amd64")]
+
+
 def test_profile_flags_keep_the_bit_identity_guard():
     """The exact profiles and `-nofma` keep contraction off; the fast one turns it on;
     none of the three reassociates or enables fast-math."""
-    for profile in tc.HOST_PROFILES:
+    for profile in _profiles_here():
         flags = host_codegen_flags(profile)
         want = ("-ffp-contract=off" if profile in tc.EXACT_HOST_PROFILES or profile.endswith("-nofma")
                 else "-ffp-contract=fast")
@@ -420,7 +426,7 @@ SOURCE = 'extern "C" int hawk_simd_probe(int a) { return a + 1; }\n'
 def test_the_two_profiles_never_share_a_slot(tmp_path):
     keys = {p: compile_source(SOURCE, "probe", CompileOptions(
         target="host", cache_dir=str(tmp_path), host_profile=p)).key
-        for p in tc.HOST_PROFILES}
+        for p in _profiles_here()}
     assert len(set(keys.values())) == len(keys), keys
 
 
@@ -462,11 +468,14 @@ def test_the_native_key_names_the_target_cpu(tmp_path, monkeypatch, profile):
 
 def test_the_vector_math_profile_is_the_x86_default(monkeypatch):
     """`native-vector-math` adds aether's vector math (and lets GCC
-    if-convert) and is the default on x86-64; `native` keeps libm's flags and
-    stays the default on every other architecture."""
+    if-convert) and is the default on x86-64 with GCC; on arm64 it is the
+    default and only contracts (flags pinned in
+    test_the_arm64_vector_math_profile_is_contraction_only); `native` stays
+    the default on every other architecture."""
     monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
     x86 = platform.machine().lower() in ("x86_64", "amd64")
-    assert host_profile() == ("native-vector-math" if x86 else "native")
+    arm = platform.machine().lower() in ("aarch64", "arm64")
+    assert host_profile() == ("native-vector-math" if x86 or arm else "native")
     default = tc.host_codegen_flags("native")
     assert "-DAETHER_HOST_VECTOR_MATH" not in default
     assert "-fno-trapping-math" not in default
@@ -573,6 +582,7 @@ def test_a_clang_family_compiler_defaults_to_native(monkeypatch):
         monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/clang++")
         monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
     monkeypatch.setattr(tc, "_is_x86_64", lambda: True)
+    monkeypatch.setattr(tc, "_is_arm64", lambda: False)
     assert tc.default_host_profile() == "native"
     assert host_profile() == "native"
 
@@ -589,7 +599,7 @@ def test_explicit_vector_math_with_clang_raises_before_any_compile(monkeypatch, 
     with pytest.raises(hawk.HawkError, match="GCC-only"):
         host_profile()
     clang = shutil.which("clang++")
-    if clang:
+    if clang and platform.machine().lower() in ("x86_64", "amd64"):   # arm64 accepts it under clang
         monkeypatch.undo()
         monkeypatch.setattr(tc, "_GCC_FAMILY_MEMO", {})
         monkeypatch.setenv("HAWK_CXX", clang)
@@ -619,3 +629,63 @@ def test_the_family_memo_agrees_across_threads(monkeypatch):
         t.join()
     assert seen == [want] * 8
     assert tc._GCC_FAMILY_MEMO == {cxx: want}
+
+
+def _flags_as(machine, profile, monkeypatch):
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    monkeypatch.setattr(tc, "masked_call_flag", lambda flags, extra=(): ["-DAETHER_HVM_MASKED=1"])
+    return host_codegen_flags(profile)
+
+
+def test_the_x86_flag_lists_are_frozen(monkeypatch):
+    monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
+    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/g++")
+    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: True)
+    base = ["-O3", "-ffp-contract=off", "-fno-math-errno"]
+    wide = ["-march=native", "-mprefer-vector-width=512"]
+    vm = ["-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH", "-DAETHER_HVM_MASKED=1"]
+    assert _flags_as("x86_64", "native", monkeypatch) == [*base, *wide]
+    assert _flags_as("x86_64", "portable", monkeypatch) == [*base, "-march=x86-64-v2"]
+    assert _flags_as("x86_64", "native-vector-math", monkeypatch) == [
+        "-O3", "-ffp-contract=fast", "-fno-math-errno", *wide, *vm]
+    assert _flags_as("x86_64", "native-vector-math-nofma", monkeypatch) == [*base, *wide, *vm]
+
+
+def test_the_arm64_vector_math_profile_is_contraction_only(monkeypatch):
+    monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
+    for machine in ("arm64", "aarch64"):
+        assert _flags_as(machine, "native-vector-math", monkeypatch) == [
+            "-O3", "-ffp-contract=fast", "-fno-math-errno", "-mcpu=native"]
+        with pytest.raises(hawk.HawkError, match="x86-64 host"):
+            _flags_as(machine, "native-vector-math-nofma", monkeypatch)
+    with pytest.raises(hawk.HawkError, match="x86-64 host"):
+        _flags_as("ppc64le", "native-vector-math", monkeypatch)
+
+
+def test_the_default_profile_per_architecture(monkeypatch):
+    monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
+    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/cc")
+    for machine, gcc, want in (("arm64", False, "native-vector-math"), ("aarch64", True, "native-vector-math"),
+                               ("x86_64", True, "native-vector-math"), ("x86_64", False, "native"),
+                               ("ppc64le", True, "native")):
+        monkeypatch.setattr(platform, "machine", lambda m=machine: m)
+        monkeypatch.setattr(tc, "compiler_is_gcc", lambda c, g=gcc: g)
+        assert tc.default_host_profile() == want, (machine, gcc)
+
+
+def test_a_library_call_is_scalar_under_native_and_the_fast_profile_on_arm64(monkeypatch):
+    from hawk.ir.vectorise import vectorises
+    from test_host_loop_interchange import sin_chain
+    monkeypatch.setattr(platform, "machine", lambda: "arm64")
+    assert vectorises(sin_chain.walk, "native") is vectorises(sin_chain.walk, "native-vector-math") is False
+
+
+def test_the_emitted_kernel_text_is_the_same_under_both_profiles_on_arm64(tmp_path):
+    from hawk.artifact import build_bundle
+    from test_host_loop_interchange import sin_chain
+    if platform.machine().lower() not in ("aarch64", "arm64"):
+        pytest.skip("arm64 only")
+    cpp = {p: (build_bundle([sin_chain], tmp_path / p, targets=("host",), cache_dir=str(tmp_path / "c"),
+                            host_profile=p).directory / "sin_chain.cpp").read_text()
+           for p in ("native", "native-vector-math")}
+    assert cpp["native"] == cpp["native-vector-math"]

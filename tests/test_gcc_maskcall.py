@@ -8,6 +8,8 @@ are injected."""
 
 from __future__ import annotations
 
+import platform
+
 import pytest
 from test_host_loop_interchange import arith, sin_chain
 
@@ -16,6 +18,7 @@ from hawk.ir.cost import kernel_cost
 from hawk.ir.vectorise import vectorises
 
 VM = "native-vector-math"
+X86 = platform.machine().lower() in ("x86_64", "amd64")
 
 
 def gcc(major, minor=0, patch=0):
@@ -52,8 +55,8 @@ def test_predicate_does_not_depend_on_the_compiler_release(monkeypatch):
     # the host blend leaves no conditional math call, so no release needs a masked variant
     for macros in (gcc(12, 3, 0), gcc(13, 2, 0), gcc(14, 2, 0), gcc(14, 4, 0)):
         _inject(monkeypatch, macros)
-        assert vectorises(sin_chain.walk, VM) is True
-        assert kernel_cost(sin_chain.walk, VM).vectorised is True
+        assert vectorises(sin_chain.walk, VM) is X86     # the vector math is x86-64 only
+        assert kernel_cost(sin_chain.walk, VM).vectorised is X86
         assert vectorises(arith.walk, VM) is True
     # the exact profiles run library math scalar, whatever the compiler
     assert vectorises(sin_chain.walk, "native") is False
