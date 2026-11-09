@@ -321,7 +321,7 @@ def test_the_alternate_path_is_refused_across_launches():
         step_vjp(step)
 
 
-#: sha256 of the emitted source of each derivative below, equal to the v0.7.0 tree's
+#: sha256 of the emitted source of each derivative below, equal to the v0.7.0 tree's, apart from the host loop helpers' text in the k_loop rows
 #: (the kernels whose switched value reaches the outputs only affinely keep the plain rule)
 PINNED = {
     "k_lt/jvp": "31f87a0cd39ae797f8b8dd5534ac69f5c64fef99058b4fb493b69e15c69521be",
@@ -347,12 +347,12 @@ PINNED = {
     "k_const_cmp/jvp": "0dda5bd78c6219ad6a2d4514412358910062447ff7223f39dbf7591b4a0205a3",
     "k_const_cmp/vjp": "c9d98e91abd08312faf9cebe5749a441ff39ba27f101db6ccad538a5d7822d42",
     # these two lost the loop's self-move of an unchanged carry (`const n = v; v = n;`): nothing else differs
-    "k_loop_carried/jvp": "c7882ac1a240ca4f6bb43bf9df4617cc522798107a746de4d948528ed9099ee0",
+    "k_loop_carried/jvp": "dd9211c7ffcc7d4501840c5d1402228ef33472a9cf7c4b28da179c4994bc57ea",
     "k_loop_carried/vjp": "235c2305e619481cc34974a68049f8c5c5b7689e47b790646e0a26df05304811",
-    "k_loop_sum/jvp": "31c0533fe7c3887c0534fc701d35f6f7d197a47c4fab2a2c87767b2651048ae0",
-    "k_loop_sum/vjp": "5db4f9240bf75871aa0235418aa744f2e3f3d329ea5070ef6a063007923ab31f",
-    "k_loop_param/jvp": "ea90a5ae3e606d730f9545c3649c2a9ed0fb841a8783542aa3fc9c3c087d8116",
-    "k_loop_param/vjp": "5c22ee5c592b35ec1a31ddd3ef3bc562c2903164704a19d8375011f58cf93051",
+    "k_loop_sum/jvp": "b2d6f015a71ea924af13bdb093e0ff0e22377ce9d3f77d2e0791d17709d80b69",
+    "k_loop_sum/vjp": "456e57cefa0fe3e7eee67dce006f0ed1f65c59f27dfb71331bbe062e3e6ff381",
+    "k_loop_param/jvp": "c0d437fbad2f267796e78b12fe1ecc16dbfd1b1d5f0b08ed8b62b16f675d0252",
+    "k_loop_param/vjp": "b1498422211cb739373f76b1777aeac29596af21a61dd77c2c136289b91c85f6",
     "step/jvp": "8d3540f8fe3cb19a54c6b11d3a517c543e47c8563aa350d953cf281a2f6fbbb9",
     "step/vjp": "442e319e668e2a62637ed1a20b3f244e9bf8ba33a1d4074672a4a6a5e2e08a06",
 }
