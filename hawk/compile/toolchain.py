@@ -978,7 +978,8 @@ def host_codegen_flags(profile: str | None = None, opt: str | None = None, extra
                 f"host profile {name!r} needs an x86-64 host "
                 "(aether's vector math follows the x86-64 vector function ABI)")
         elif _arm64_gcc():
-            target = [*target, "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
+            # jump threading copies the pow call onto conditional paths, which GCC on aarch64 cannot vectorise
+            target = [*target, "-fno-trapping-math", "-fno-thread-jumps", "-DAETHER_HOST_VECTOR_MATH"]
     # no kernel reads errno: without it a sqrt is one instruction, not a call that keeps a loop scalar
     flags = [f"-{level}", _HOST_CONTRACTION[name], "-fno-math-errno", *target]
     if name in VECTOR_MATH_PROFILES and x86:

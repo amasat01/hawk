@@ -671,7 +671,7 @@ def test_the_arm64_gcc_vector_math_profile_routes_pow(monkeypatch):
     for machine in ("arm64", "aarch64"):
         assert _flags_as(machine, "native-vector-math", monkeypatch) == [
             "-O3", "-ffp-contract=fast", "-fno-math-errno", "-mcpu=native",
-            "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
+            "-fno-trapping-math", "-fno-thread-jumps", "-DAETHER_HOST_VECTOR_MATH"]
         with pytest.raises(hawk.HawkError, match="x86-64 host"):
             _flags_as(machine, "native-vector-math-nofma", monkeypatch)
     # an exact profile on arm64 gets no route
