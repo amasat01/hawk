@@ -8,6 +8,8 @@ This section covers what changes from 0.7.4. New in this release: `hawk.chain` j
 
 ### Changed
 
+**AVX2 hosts: host kernels now vectorise.** Results change in the last bits and match AVX-512.
+
 **`Table.at` clamps every index to the table.** An index outside the table reads the nearest end element instead of whatever memory lay beyond it; an index already inside reads the same value, and a literal index a static extent bounds is not clamped. The clamp is one unsigned compare, so an in-range read pays one predictable branch. No migration is needed unless a kernel relied on reading past the end.
 
 ### Added

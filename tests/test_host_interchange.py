@@ -681,6 +681,16 @@ def test_the_emitted_trip_loop_carries_the_arm_pragma():
     assert "hawk_abi::kHostChunk * hawk_abi::kHostChunkVectors * " in text
 
 
+def test_the_chunk_copy_in_loop_is_not_unrolled_under_gcc():
+    kernel = next(iter(KERNELS.values()))
+    host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
+                         kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
+    text = builds(host.text)["interchanged"]
+    loop = text.index("for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {")
+    head = text[text.rindex("std::int64_t hawk_any = 0;", 0, loop):loop]
+    assert "#if defined(__GNUC__) && !defined(__clang__)\n#pragma GCC unroll 1\n#endif" in head
+
+
 _COUNTED = 'extern "C" long long hawk_lane_trips = 0;\n'
 
 

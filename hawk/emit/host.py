@@ -216,6 +216,13 @@ _INDEPENDENT_ITERATIONS = """#if defined(__clang__)
 #pragma GCC ivdep
 #endif"""
 
+#: On a chunk's copy-in loop: GCC would unroll it at a small chunk width (AVX2's 4)
+#: and hoist the next lane's loads into the trip loop's latch, which keeps that
+#: loop scalar.
+_COPY_IN_NO_UNROLL = """#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC unroll 1
+#endif"""
+
 
 #: The tile's live lanes first, in tile order (``hawk_perm``), so the chunk loop
 #: runs only the ``hawk_nlive`` live ones: a chunk is then no longer held open by
@@ -842,6 +849,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
     lines += [
         "    std::int64_t hawk_any = 0;",
         _INDEPENDENT_ITERATIONS,
+        _COPY_IN_NO_UNROLL,
         "    for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {",
         *_chunk_sample(),
     ]
