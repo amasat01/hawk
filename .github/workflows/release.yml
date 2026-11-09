@@ -512,7 +512,7 @@ jobs:
           N="$(python -m pytest tests/test_host_interchange.py -m "not gpu and not repo_local" --collect-only -q -p no:cacheprovider | grep -cE 'test_(compaction|packing)_runs_fewer' || true)"
           echo "Arm host loop rows collected: $N"
           [ "$N" -gt 0 ] || { echo "the Arm host loop rows were not collected"; exit 1; }
-          python -m pytest tests/test_host_interchange.py -q -rs -p no:cacheprovider -m "not gpu and not repo_local"
+          python -m pytest tests/test_host_interchange.py tests/test_host_simd.py::test_the_emitted_kernel_text_is_the_same_under_both_profiles_on_arm64 -q -rs -p no:cacheprovider -m "not gpu and not repo_local"
       # Reports, never fails: does the compiled host loop use NEON (fmla v.2d) or SVE (z registers)?
       - name: Probe whether the ARM host loop vectorises
         if: steps.memo.outputs.run == 'true' && (runner.os == 'Linux' && matrix.python-version == '3.12')
