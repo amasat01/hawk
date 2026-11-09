@@ -11,6 +11,7 @@ runs the real local compilers when present."""
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 
 import pytest
@@ -80,7 +81,10 @@ def test_an_unrun_witness_is_not_stored(probe):
 
 
 def test_host_codegen_flags_carry_the_define_on_the_vector_math_profile(probe):
-    assert DEFINE in tc.host_codegen_flags("native-vector-math")
+    if platform.machine().lower() in ("x86_64", "amd64"):   # the vector math is x86-64 only
+        assert DEFINE in tc.host_codegen_flags("native-vector-math")
+    else:
+        assert DEFINE not in tc.host_codegen_flags("native-vector-math")
     assert DEFINE not in tc.host_codegen_flags("native")
     assert DEFINE not in tc.host_codegen_flags("native-vector-math", extra=("-DAETHER_HVM_MASKED=0",))
 
