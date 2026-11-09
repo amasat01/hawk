@@ -45,6 +45,7 @@ fuse each shape.
 from __future__ import annotations
 
 import ctypes
+import platform
 import re
 import shutil
 import subprocess
@@ -648,6 +649,11 @@ def _helper_text() -> str:
 
 def test_arm_branches_are_inactive_on_x86(tmp_path):
     out = _preprocessed("x86_64-unknown-linux-gnu", _helper_text(), tmp_path)
+    kernel = KERNELS["rkf78_attempt"]
+    unit = builds(render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
+                                kind=kernel.kind, one_step=kernel.one_step).text)["interchanged"]
+    unit = _preprocessed("x86_64-unknown-linux-gnu", unit.replace("#include", "//#include"), tmp_path)
+    assert "hawk_perm" not in unit and "hawk_nlive" not in unit
     assert "kHostChunkVectors = 1;" in out and "kHostChunkVectors = 4" not in out
     assert "interleave_count" not in out
     assert "kGuards = 0;" in out
@@ -670,6 +676,62 @@ def test_the_emitted_trip_loop_carries_the_arm_pragma():
     assert "#if defined(__clang__) && defined(__aarch64__)" in pragma
     assert "vectorize(assume_safety) interleave_count(4)" in pragma
     assert "hawk_abi::kHostChunk * hawk_abi::kHostChunkVectors * " in text
+
+
+_COUNTED = 'extern "C" long long hawk_lane_trips = 0;\n'
+
+
+def _counting_build(tmp_path, tag, source, bundle, flags):
+    """The bundle's directory with its ``rkf78_attempt.so`` rebuilt from
+    ``source``, which counts one lane-trip per lane per trip."""
+    from types import SimpleNamespace
+
+    from hawk.compile import toolchain as tc
+
+    out = tmp_path / tag
+    shutil.copytree(bundle.directory, out)
+    cpp = out / "rkf78_attempt.cpp"
+    marker = "    std::int64_t hawk_live = 0;"
+    assert source.count(marker) == 1
+    cpp.write_text(_COUNTED + source.replace(marker, "    hawk_lane_trips += hawk_w;\n" + marker))
+    subprocess.run([tc.host_compiler(), *flags, *tc.include_flags(), str(cpp), "-o",
+                    str(out / "rkf78_attempt.so")], check=True)
+    return SimpleNamespace(directory=out, artifacts=bundle.artifacts)
+
+
+@pytest.mark.skipif(platform.machine() not in ("arm64", "aarch64"), reason="aarch64 emit")
+@pytest.mark.parametrize("profile", ["native", None])
+def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile):
+    """Live-lane compaction against the same TU with the identity permutation:
+    lanes of very different lengths, a few trips per launch, give the same planes,
+    bit for bit, in fewer lane-trips (a counter the TU bumps per chunk trip, no timing)."""
+    from hawk.compile import toolchain as tc
+
+    kernel = KERNELS["rkf78_attempt"]
+    bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
+                          cache_dir=str(tmp_path / "cache"), defines=INTERCHANGED,
+                          host_profile=profile)
+    source = (bundle.directory / "rkf78_attempt.cpp").read_text()
+    live = "if (hawk_on[hawk_t] != 0.0) hawk_perm[hawk_nlive++] = hawk_t;"
+    dead = "if (hawk_on[hawk_t] == 0.0) hawk_perm[hawk_o++] = hawk_t;"
+    assert source.count(live) == source.count(dead) == 1
+    plain = source.replace(live, "hawk_perm[hawk_nlive++] = hawk_t;").replace(dead, "{}")
+    flags = tc.host_flags(profile=profile)
+    planes = _planes("rkf78_attempt", 200, "spread", seed=20261004)
+    # lanes of very different lengths: every 7th sample ends at once, a few run long
+    planes["t_final"][::7] = 1e-3
+    planes["t_final"][3::50] = 4.0
+    runs = {}
+    for tag, text in (("compact", source), ("identity", plain)):
+        built = _counting_build(tmp_path, tag, text, bundle, flags)
+        lib = ctypes.CDLL(str(built.directory / "rkf78_attempt.so"))
+        runs[tag] = (_launches(built, "rkf78_attempt", planes, (4,) * 40),
+                     ctypes.c_longlong.in_dll(lib, "hawk_lane_trips"))
+    for launch, (a, b) in enumerate(zip(runs["compact"][0], runs["identity"][0])):
+        for key in b:
+            assert a[key].tobytes() == b[key].tobytes(), (key, launch)
+    assert runs["compact"][0][-1]["terminated"].all()
+    assert 0 < runs["compact"][1].value < runs["identity"][1].value
 
 
 def test_every_compiler_takes_the_lane_loop():

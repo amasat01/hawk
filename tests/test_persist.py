@@ -547,10 +547,10 @@ def test_the_persist_loop_reports_its_cells_once_at_exit(kernel):
 _FROZEN = {
     ("oscillator", ""): "c18c3f46b3d30faa40849a4847be5dea5a14e33540fd60ec71ba51a36cd0dc35",
     ("oscillator", "_range"): "97944ac29526e49ff59cc64a13c40d68be07597e505bc5bb402289454d00912e",
-    ("oscillator", "host"): "3232cbda3370e2c35c9fd162f820048f19acdf4d734637a0a5b13f09f6e03335",
+    ("oscillator", "host"): "1a1537fa435b3e521a05fd1bb59398b4f36fbcab53003733c3d51a68a2fb3282",
     ("rkf78_attempt", ""): "f7663ab3a0401183de32192038abcaf32453b5f5a18c2b209ac84bf60f296bf2",
     ("rkf78_attempt", "_range"): "b6c7c041d665d592eac195e543d53d727a00f494261c6769b94160db987027a4",
-    ("rkf78_attempt", "host"): "57c497908abc071d3039c5ce6e3fb70dc2a7d5c05c172f9af7490a82983276c2",
+    ("rkf78_attempt", "host"): "ab0bb8e2e9e009b1b11b5238ca509f27a1e1a0b82234de0af877a16aa5daded4",
 }
 
 
