@@ -46,6 +46,9 @@ from __future__ import annotations
 
 import ctypes
 import re
+import shutil
+import subprocess
+import sys
 
 import _deploy as L
 import numpy as np
@@ -438,7 +441,7 @@ def test_the_trip_loop_runs_on_the_chunk_alone():
         assert "hawk_abi::lane_keep<hawk_w>(hawk_rc0, hawk_l, hawk_lane_on," in trips
         assert "for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {" in trips
         assert (f"constexpr aether::offset_t hawk_w = hawk_abi::kHostChunk * "
-                f"{vectors[kernel.name]};") in text, kernel.name
+                f"hawk_abi::kHostChunkVectors * {vectors[kernel.name]};") in text, kernel.name
         assert text.count("for (Int hawk_trip = 0;") == 1, kernel.name
 
 
@@ -592,6 +595,81 @@ def test_machine_caches_reads_sysfs_and_falls_back(tmp_path):
     assert machine_caches(str(tmp_path / "missing")) == FALLBACK_CACHES
     here = machine_caches()
     assert here.l1d > 0 and here.l2 >= here.l1d
+
+
+def test_machine_caches_reads_sysctl_on_macos(monkeypatch):
+    import hawk.emit.host as host
+
+    def fake(cmd, **_):
+        if cmd[-1].startswith("hw.perflevel0."):
+            return subprocess.CompletedProcess(cmd, 0, stdout="65536\n")
+        raise OSError(cmd[-1])
+
+    monkeypatch.setattr(host.sys, "platform", "darwin")
+    monkeypatch.setattr(host.subprocess, "run", fake)
+    host.machine_caches.cache_clear()
+    try:
+        got = host.machine_caches()
+        assert (got.l1d, got.l2) == (65536, 65536) and got.source.startswith("sysctl hw.perflevel0.")
+        monkeypatch.setattr(host.subprocess, "run",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("no sysctl")))
+        host.machine_caches.cache_clear()
+        assert host.machine_caches() == FALLBACK_CACHES
+    finally:
+        host.machine_caches.cache_clear()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="reads this machine's sysctl")
+def test_machine_caches_on_this_mac_names_its_sysctl_source():
+    here = machine_caches()
+    assert here.source.startswith("sysctl hw.") and here.l1d > 0 and here.l2 >= here.l1d
+
+
+def _preprocessed(target: str, text: str, tmp_path) -> str:
+    cxx = shutil.which("clang++")
+    if cxx is None:
+        pytest.skip("no clang++")
+    src = tmp_path / "helpers.cpp"
+    src.write_text(text)
+    done = subprocess.run([cxx, "-E", "-P", "-target", target, "-x", "c++", str(src)],
+                          capture_output=True, text=True)
+    if done.returncode:
+        pytest.skip("clang++ cannot preprocess for " + target)
+    return done.stdout
+
+
+def _helper_text() -> str:
+    from hawk.emit.host import _TRIP_ITERATIONS, HOST_MASK_HELPERS, INTERCHANGE_HELPERS
+
+    return (HOST_MASK_HELPERS.split("namespace hawk_abi")[0] + INTERCHANGE_HELPERS
+            + "\nnamespace hawk_abi { inline constexpr bool kGuards = HAWK_HOST_LANE_GUARDS; }\n"
+            + _TRIP_ITERATIONS + "\nvoid f();\n")
+
+
+def test_arm_branches_are_inactive_on_x86(tmp_path):
+    out = _preprocessed("x86_64-unknown-linux-gnu", _helper_text(), tmp_path)
+    assert "kHostChunkVectors = 1;" in out and "kHostChunkVectors = 4" not in out
+    assert "interleave_count" not in out
+    assert "kGuards = 0;" in out
+    assert "#pragma clang loop vectorize(assume_safety)" in out
+
+
+def test_arm_branches_are_active_on_aarch64(tmp_path):
+    out = _preprocessed("arm64-apple-macos", _helper_text(), tmp_path)
+    assert "kHostChunkVectors = 4;" in out and "kGuards = 1;" in out
+    assert "vectorize(assume_safety) interleave_count(4)" in out
+
+
+def test_the_emitted_trip_loop_carries_the_arm_pragma():
+    kernel = next(iter(KERNELS.values()))
+    host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
+                         kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
+    text = builds(host.text)["interchanged"]
+    trips = text[text.index("for (Int hawk_trip = 0;"):]
+    pragma = trips[:trips.index("for (aether::offset_t hawk_l")]
+    assert "#if defined(__clang__) && defined(__aarch64__)" in pragma
+    assert "vectorize(assume_safety) interleave_count(4)" in pragma
+    assert "hawk_abi::kHostChunk * hawk_abi::kHostChunkVectors * " in text
 
 
 def test_every_compiler_takes_the_lane_loop():

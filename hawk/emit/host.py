@@ -57,6 +57,8 @@ from __future__ import annotations
 import functools
 import os
 import re
+import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import prod
@@ -97,7 +99,7 @@ from .spelling import (
 #: as the device's ``aether::View<bool>`` (module docstring, "the MASK"),
 #: widened per block into ``HostLaneMask`` where the loop runs in blocks
 #: ("the MASK'S WIDTH"). Same answer either way: ``byte != 0``.
-HOST_MASK_HELPERS = """#if defined(__AVX512F__) && defined(__GNUC__) && !defined(__clang__)
+HOST_MASK_HELPERS = """#if (defined(__AVX512F__) && defined(__GNUC__) && !defined(__clang__)) || defined(__aarch64__)
 #define HAWK_HOST_LANE_GUARDS 1
 #else
 #define HAWK_HOST_LANE_GUARDS 0
@@ -209,6 +211,17 @@ static inline void finish_lanes(const HostMask& m, const HAWK_LANE_T* lanes,
 #: carry no memory dependence (each touches only its own sample). Spelled for
 #: both host compilers HAWK drives (``g++`` and the ``zig c++`` / clang tier).
 _INDEPENDENT_ITERATIONS = """#if defined(__clang__)
+#pragma clang loop vectorize(assume_safety)
+#elif defined(__GNUC__)
+#pragma GCC ivdep
+#endif"""
+
+
+#: The trip loop's annotation: on clang for aarch64 it also asks for four
+#: interleaved vector bodies, else it is :data:`_INDEPENDENT_ITERATIONS`.
+_TRIP_ITERATIONS = """#if defined(__clang__) && defined(__aarch64__)
+#pragma clang loop vectorize(assume_safety) interleave_count(4)
+#elif defined(__clang__)
 #pragma clang loop vectorize(assume_safety)
 #elif defined(__GNUC__)
 #pragma GCC ivdep
@@ -432,6 +445,13 @@ inline constexpr aether::offset_t kHostChunk = 4;
 #else
 inline constexpr aether::offset_t kHostChunk = 2;
 #endif
+// Chunks' worth of vector registers the target wants on top of the step's own
+// (chunk_vectors): four on aarch64, whose cores issue four NEON FMAs a cycle.
+#if defined(__aarch64__)
+inline constexpr aether::offset_t kHostChunkVectors = 4;
+#else
+inline constexpr aether::offset_t kHostChunkVectors = 1;
+#endif
 
 }  // namespace hawk_abi
 """
@@ -468,11 +488,33 @@ def _cache_bytes(text: str) -> int:
     return int(text.rstrip("KMG")) * scale
 
 
+_SYSFS_CACHES = "/sys/devices/system/cpu/cpu0/cache"
+
+
+def _sysctl_caches() -> CacheSizes | None:
+    """L1d and L2 off macOS ``sysctl``: the performance cores' (``perflevel0``)
+    where the machine has them, else the plain ``hw`` keys; ``None`` if neither
+    pair reads."""
+    for prefix in ("hw.perflevel0.", "hw."):
+        try:
+            sizes = [int(subprocess.run(["sysctl", "-n", prefix + key], capture_output=True,
+                                        text=True, timeout=5, check=True).stdout)
+                     for key in ("l1dcachesize", "l2cachesize")]
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+        if all(n > 0 for n in sizes):
+            return CacheSizes(sizes[0], sizes[1], f"sysctl {prefix}l1dcachesize/l2cachesize")
+    return None
+
+
 @functools.cache
-def machine_caches(root: str = "/sys/devices/system/cpu/cpu0/cache") -> CacheSizes:
-    """CPU 0's L1d and L2 sizes off ``root`` (Linux sysfs), read once per
-    process; :data:`FALLBACK_CACHES` for any size it cannot read."""
+def machine_caches(root: str = _SYSFS_CACHES) -> CacheSizes:
+    """CPU 0's L1d and L2 sizes off ``root`` (Linux sysfs; on macOS the default
+    root reads ``sysctl`` instead), read once per process;
+    :data:`FALLBACK_CACHES` for any size it cannot read."""
     found: dict = {}
+    if sys.platform == "darwin" and root == _SYSFS_CACHES:
+        return _sysctl_caches() or FALLBACK_CACHES
     try:
         for entry in sorted(os.listdir(root)):
             if not entry.startswith("index"):
@@ -742,7 +784,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         more += " && hawk_trip + 1 < hawk_rcnt[hawk_l]"
     lines += [
         f"    constexpr aether::offset_t hawk_w = hawk_abi::kHostChunk * "
-        f"{chunk_vectors(split.op_count)};",
+        f"hawk_abi::kHostChunkVectors * {chunk_vectors(split.op_count)};",
         "    static_assert(hawk_tile % hawk_w == 0,",
         '                  "hawk: a tile holds whole chunks");',
         "    for (aether::offset_t hawk_cb = 0; hawk_cb < hawk_tn;",
@@ -776,7 +818,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         (f"    for (Int hawk_trip = 0; hawk_trip < {split.stop}; ++hawk_trip) {{"
          if split.count is None else "    for (Int hawk_trip = 0;; ++hawk_trip) {"),
         "    std::int64_t hawk_live = 0;",
-        _INDEPENDENT_ITERATIONS,
+        _TRIP_ITERATIONS,
         "    for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {",
         "        const aether::offset_t hawk_t =",
         "            hawk_cb + hawk_l < hawk_tn ? hawk_cb + hawk_l : hawk_tn - 1;",
