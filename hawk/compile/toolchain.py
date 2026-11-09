@@ -601,9 +601,11 @@ def device_compiler() -> str:
 #: bit for bit (a reference, a regression baseline, host against host).
 #:
 #: ``native-vector-math`` (fast) — the default on x86-64 with a GCC host
-#: compiler and on arm64 with any host compiler. On arm64 it is ``native``
-#: plus (2) below only: no vector math define, no ``-fno-trapping-math``, and a
-#: library call stays scalar. On x86-64 it is ``native`` plus three trades. (1) ``-DAETHER_HOST_VECTOR_MATH`` and
+#: compiler and on arm64 with any host compiler. On arm64 with clang it is
+#: ``native`` plus (2) below only: no vector math define, no
+#: ``-fno-trapping-math``, and a library call stays scalar. On arm64 with GCC
+#: it is that plus (1) for ``pow`` alone: every other library call stays
+#: scalar. On x86-64 it is ``native`` plus three trades. (1) ``-DAETHER_HOST_VECTOR_MATH`` and
 #: ``-fno-trapping-math`` route aether's transcendental math to vector-ABI
 #: functions, so a calling loop is no longer kept scalar by the libm call;
 #: those functions are aether's packet math, faithfully rounded (1-3 ULP of
@@ -621,7 +623,7 @@ def device_compiler() -> str:
 #: ``compensated`` sink and of ``aether/accum`` pin their operands
 #: (``AETHER_FP_BARRIER``), so compensation stays exact.
 HOST_PROFILES = ("native", "portable", "native-vector-math", "native-vector-math-nofma")
-#: The profiles that route aether's math to the vector ABI (GCC, x86-64). ``native-vector-math-nofma`` is
+#: The profiles that route aether's math to the vector ABI (GCC: all of it on x86-64, ``pow`` on arm64). ``native-vector-math-nofma`` is
 #: ``native-vector-math`` with ``-ffp-contract=off``: same vector code, so scalar and vector builds of one
 #: kernel agree bit for bit (the property the default gives up for speed, about 25 % on the vector kernel).
 VECTOR_MATH_PROFILES = ("native-vector-math", "native-vector-math-nofma")
@@ -869,6 +871,17 @@ def _is_arm64() -> bool:
     return platform.machine().lower() in ("aarch64", "arm64")
 
 
+def _arm64_gcc() -> bool:
+    """Whether the host is arm64 and the host compiler is GCC proper: the one place aether routes ``pow``
+    (alone) to a vector variant on arm64. A compiler that cannot be resolved or probed counts as not GCC."""
+    if not _is_arm64():
+        return False
+    try:
+        return compiler_is_gcc(host_compiler())
+    except (HawkError, OSError, subprocess.SubprocessError):
+        return False
+
+
 def default_host_profile() -> str:
     """The profile used when neither the compile options nor
     ``$HAWK_HOST_PROFILE`` name one: ``native-vector-math`` when the host is
@@ -964,6 +977,8 @@ def host_codegen_flags(profile: str | None = None, opt: str | None = None, extra
             raise HawkError(
                 f"host profile {name!r} needs an x86-64 host "
                 "(aether's vector math follows the x86-64 vector function ABI)")
+        elif _arm64_gcc():
+            target = [*target, "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
     # no kernel reads errno: without it a sqrt is one instruction, not a call that keeps a loop scalar
     flags = [f"-{level}", _HOST_CONTRACTION[name], "-fno-math-errno", *target]
     if name in VECTOR_MATH_PROFILES and x86:

@@ -130,18 +130,21 @@ def vectorise_blocker(walk: Walk, profile: str | None = None, scalar_type: str |
     """Why the host loop over samples running ``nodes`` (default: the whole kernel) is not vectorised under
     host ``profile`` (default: the one in effect), else ``""``. ``scalar_type`` is accepted for the callers' sake;
     the verdict is the same for every type."""
-    from ..compile.toolchain import EXACT_HOST_PROFILES, _is_x86_64, host_profile
+    from ..compile.toolchain import EXACT_HOST_PROFILES, _arm64_gcc, _is_x86_64, host_profile
     from .cost import is_library_call
 
     lanes = {id(loop) for loop in interchanged_loops(walk)}
     cls = walk.access.cls
     if cls != "sample_local" and not (cls == "cross_sample_read" and lanes):
         return f"the access class is {cls}" + (" and no loop runs interchanged" if cls == "cross_sample_read" else "")
-    exact = host_profile(profile) in EXACT_HOST_PROFILES or not _is_x86_64()
+    name = host_profile(profile)
+    exact = name in EXACT_HOST_PROFILES or not _is_x86_64()
+    # GCC on arm64 widens pow alone (aether's vector variant); every other library call stays scalar there
+    routed = ("pow",) if name not in EXACT_HOST_PROFILES and _arm64_gcc() else ()
     # a fixed-count loop nested in an interchanged one is vectorised across the lanes whatever its length
     inner_of_lanes = {id(n) for loop in interchanged_loops(walk) for n in _flat(loop.body_nodes()) if isinstance(n, Loop)}
     for node in _flat(walk.order if nodes is None else nodes):
-        if exact and is_library_call(node):
+        if exact and is_library_call(node) and node.kind not in routed:
             return f"a library call ({node.kind}) stays scalar under the exact host profile"
         if linalg.is_linalg(node) and node.kind in linalg.FACTORISATIONS + linalg.CONSUMERS:
             return f"{node.kind} branches per lane (a pivot search or a convergence skip)"

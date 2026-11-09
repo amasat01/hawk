@@ -653,6 +653,8 @@ def test_the_x86_flag_lists_are_frozen(monkeypatch):
 
 def test_the_arm64_vector_math_profile_is_contraction_only(monkeypatch):
     monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
+    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/clang++")
+    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
     for machine in ("arm64", "aarch64"):
         assert _flags_as(machine, "native-vector-math", monkeypatch) == [
             "-O3", "-ffp-contract=fast", "-fno-math-errno", "-mcpu=native"]
@@ -660,6 +662,20 @@ def test_the_arm64_vector_math_profile_is_contraction_only(monkeypatch):
             _flags_as(machine, "native-vector-math-nofma", monkeypatch)
     with pytest.raises(hawk.HawkError, match="x86-64 host"):
         _flags_as("ppc64le", "native-vector-math", monkeypatch)
+
+
+def test_the_arm64_gcc_vector_math_profile_routes_pow(monkeypatch):
+    monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
+    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/g++")
+    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: True)
+    for machine in ("arm64", "aarch64"):
+        assert _flags_as(machine, "native-vector-math", monkeypatch) == [
+            "-O3", "-ffp-contract=fast", "-fno-math-errno", "-mcpu=native",
+            "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
+        with pytest.raises(hawk.HawkError, match="x86-64 host"):
+            _flags_as(machine, "native-vector-math-nofma", monkeypatch)
+    # an exact profile on arm64 gets no route
+    assert "-DAETHER_HOST_VECTOR_MATH" not in _flags_as("aarch64", "native", monkeypatch)
 
 
 def test_the_default_profile_per_architecture(monkeypatch):
@@ -677,7 +693,30 @@ def test_a_library_call_is_scalar_under_native_and_the_fast_profile_on_arm64(mon
     from hawk.ir.vectorise import vectorises
     from test_host_loop_interchange import sin_chain
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/clang++")
+    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
     assert vectorises(sin_chain.walk, "native") is vectorises(sin_chain.walk, "native-vector-math") is False
+
+
+@hawk.kernel
+def _pow_chain(x: hawk.Scalar, g: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+    a = x
+    for _k in range(16):
+        a = hawk.math.pow(a * g, g) + 0.5
+    y = a + x
+
+
+def test_only_pow_counts_as_routed_on_arm64_gcc(monkeypatch):
+    from hawk.ir.vectorise import vectorises
+    from test_host_loop_interchange import sin_chain
+    monkeypatch.setattr(platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/g++")
+    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: True)
+    assert vectorises(_pow_chain.walk, "native-vector-math") is True
+    assert vectorises(_pow_chain.walk, "native") is False
+    assert vectorises(sin_chain.walk, "native-vector-math") is False
+    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
+    assert vectorises(_pow_chain.walk, "native-vector-math") is False
 
 
 def test_the_emitted_kernel_text_is_the_same_under_both_profiles_on_arm64(tmp_path):
