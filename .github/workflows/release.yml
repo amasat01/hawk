@@ -496,6 +496,23 @@ jobs:
           PY
           HAWK_WORK="$RUNNER_TEMP/hawk_work" python readme_example.py
         if: steps.memo.outputs.run == 'true'
+      # The Arm-only host loop rows run nowhere else; the installed wheel answers, from a copy of the tests outside the checkout
+      - name: Arm host loop tests on the installed wheel
+        if: steps.memo.outputs.run == 'true' && matrix.python-version == '3.12'
+        env:
+          HAWK_AETHER_INCLUDE: ${{ github.workspace }}/aether
+          HAWK_EAGLE_INCLUDE: ${{ github.workspace }}/eagle
+        run: |
+          . venv/bin/activate
+          pip install --quiet pytest scipy
+          mkdir -p suite-arm
+          cp -r hawk/tests suite-arm/tests
+          cp hawk/pyproject.toml suite-arm/pyproject.toml
+          cd suite-arm
+          N="$(python -m pytest tests/test_host_interchange.py -m "not gpu and not repo_local" --collect-only -q -p no:cacheprovider | grep -cE 'test_(compaction|packing)_runs_fewer' || true)"
+          echo "Arm host loop rows collected: $N"
+          [ "$N" -gt 0 ] || { echo "the Arm host loop rows were not collected"; exit 1; }
+          python -m pytest tests/test_host_interchange.py -q -rs -p no:cacheprovider -m "not gpu and not repo_local"
       # Reports, never fails: does the compiled host loop use NEON (fmla v.2d) or SVE (z registers)?
       - name: Probe whether the ARM host loop vectorises
         if: steps.memo.outputs.run == 'true' && (runner.os == 'Linux' && matrix.python-version == '3.12')
