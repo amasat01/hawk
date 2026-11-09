@@ -256,7 +256,7 @@ def _launches(bundle, name, planes, words):
     if auto:
         extra["fused_steps"] = np.zeros(1, dtype=np.int64)
     names = {n for _, n in sidecar["arg_spec"]}
-    kw = {p: v for p, v in (("dt", DT), ("g", 0.3)) if p in names}
+    kw = {p: v for p, v in (("dt", DT), ("g", 0.3), ("goal", 100.0)) if p in names}
     bound = eplan.plan(plugin, structure=eexec.HostTeam).bind(
         finished_count=counter, **kw, **planes, **extra)
     snaps = []
@@ -359,7 +359,7 @@ def _bound(bundle, name, planes):
     counter[0] = np.count_nonzero(planes["terminated"])
     word = np.zeros(1, dtype=np.int64)
     names = {n for _, n in sidecar["arg_spec"]}
-    kw = {p: v for p, v in (("dt", DT), ("g", 0.3)) if p in names}
+    kw = {p: v for p, v in (("dt", DT), ("g", 0.3), ("goal", 100.0)) if p in names}
     bound = eplan.plan(plugin, structure=eexec.HostTeam).bind(
         finished_count=counter, fused_steps=word, **kw, **planes)
     return bound, planes, counter, word
@@ -681,7 +681,7 @@ def test_the_emitted_trip_loop_carries_the_arm_pragma():
 _COUNTED = 'extern "C" long long hawk_lane_trips = 0;\n'
 
 
-def _counting_build(tmp_path, tag, source, bundle, flags):
+def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
     """The bundle's directory with its ``rkf78_attempt.so`` rebuilt from
     ``source``, which counts one lane-trip per lane per trip."""
     from types import SimpleNamespace
@@ -690,12 +690,12 @@ def _counting_build(tmp_path, tag, source, bundle, flags):
 
     out = tmp_path / tag
     shutil.copytree(bundle.directory, out)
-    cpp = out / "rkf78_attempt.cpp"
+    cpp = out / f"{name}.cpp"
     marker = "    std::int64_t hawk_live = 0;"
     assert source.count(marker) == 1
     cpp.write_text(_COUNTED + source.replace(marker, "    hawk_lane_trips += hawk_w;\n" + marker))
     subprocess.run([tc.host_compiler(), *flags, *tc.include_flags(), str(cpp), "-o",
-                    str(out / "rkf78_attempt.so")], check=True)
+                    str(out / f"{name}.so")], check=True)
     return SimpleNamespace(directory=out, artifacts=bundle.artifacts)
 
 
@@ -732,6 +732,104 @@ def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile)
             assert a[key].tobytes() == b[key].tobytes(), (key, launch)
     assert runs["compact"][0][-1]["terminated"].all()
     assert 0 < runs["compact"][1].value < runs["identity"][1].value
+
+
+@hawk.kernel
+def ramp(rate: Scalar, goal: Param, terminated: Terminated, x: Mutable[Scalar]):
+    """Rises by its own rate each step; finishes once it reaches the shared goal."""
+    xn = x + rate
+    x = xn
+    terminated = xn >= goal
+
+
+@hawk.kernel
+def fall(rate: Scalar, goal: Param, terminated: Terminated, x: Mutable[Scalar]):
+    """The same, falling to the shared goal: the reversed bound."""
+    xn = x - rate
+    x = xn
+    terminated = xn <= goal
+
+
+@hawk.kernel
+def ramp_or_cap(rate: Scalar, goal: Param, terminated: Terminated, x: Mutable[Scalar]):
+    """An exit that is not one comparison of a carry against a bound."""
+    xn = x + rate
+    x = xn
+    terminated = (xn >= goal) | (rate < 0.0)
+
+
+@hawk.kernel
+def ramp_to_plane(rate: Scalar, lim: Scalar, terminated: Terminated, x: Mutable[Scalar]):
+    """The bound differs per sample: no single order of lanes follows from it."""
+    xn = x + rate
+    x = xn
+    terminated = xn >= lim
+
+
+def _exit_order(kernel):
+    from hawk.emit.render import render_lane_split
+
+    return render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind).exit_order
+
+
+def _host_text(kernel):
+    return builds(render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
+                                kind=kernel.kind, one_step=getattr(kernel, "one_step", None)
+                                ).text)["interchanged"]
+
+
+def test_the_lane_order_follows_the_exit_bound_and_never_guesses():
+    assert _exit_order(hawk.steps(ramp, 16)) == (0, True)
+    assert _exit_order(hawk.steps(fall, 16)) == (0, False)
+    assert _exit_order(hawk.steps(ramp_or_cap, 16)) is None
+    assert _exit_order(hawk.steps(ramp_to_plane, 16)) is None
+    assert _exit_order(rkf78_attempt) is None
+    sorts = {}
+    for kern in (ramp, fall, ramp_or_cap, ramp_to_plane):
+        text = _host_text(hawk.steps(kern, 16))
+        sorts[kern.name] = re.findall(r"return hawk_lc0\[a\] ([<>]) hawk_lc0\[b\]", text)
+        assert text.count("std::sort") == len(sorts[kern.name])
+    assert sorts == {"ramp": [">"], "fall": ["<"], "ramp_or_cap": [], "ramp_to_plane": []}
+
+
+def test_no_sort_survives_preprocessing_for_x86(tmp_path):
+    text = _host_text(hawk.steps(ramp, 16))
+    assert "std::sort" in text
+    out = _preprocessed("x86_64-unknown-linux-gnu", text.replace("#include", "//#include"), tmp_path)
+    assert "std::sort" not in out and "hawk_perm" not in out
+
+
+@pytest.mark.skipif(platform.machine() not in ("arm64", "aarch64"), reason="aarch64 emit")
+@pytest.mark.parametrize("profile", ["native", None])
+def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile):
+    """The sorted lanes against the same TU in plain compacted order: lanes of
+    very different lengths give the same planes, bit for bit, in fewer lane-trips."""
+    from hawk.compile import toolchain as tc
+
+    kernel = hawk.steps(ramp, 16)
+    bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
+                          cache_dir=str(tmp_path / "cache"), defines=INTERCHANGED,
+                          host_profile=profile)
+    source = (bundle.directory / f"{kernel.name}.cpp").read_text()
+    sort = re.search(r"    std::sort\(hawk_perm.*?\}\);\n", source, re.S)
+    assert sort is not None
+    plain = source.replace(sort.group(0), "")
+    rng = np.random.default_rng(20261109)
+    n = 300
+    planes = {"rate": rng.choice([1.0, 2.0, 10.0, 50.0], n), "x": np.zeros(n),
+              "terminated": np.zeros(n, dtype=bool)}
+    flags = tc.host_flags(profile=profile)
+    runs = {}
+    for tag, text in (("sorted", source), ("plain", plain)):
+        built = _counting_build(tmp_path, tag, text, bundle, flags, kernel.name)
+        lib = ctypes.CDLL(str(built.directory / f"{kernel.name}.so"))
+        runs[tag] = (_launches(built, kernel.name, planes, (1,) * 8),
+                     ctypes.c_longlong.in_dll(lib, "hawk_lane_trips"))
+    for launch, (a, b) in enumerate(zip(runs["sorted"][0], runs["plain"][0])):
+        for key in b:
+            assert a[key].tobytes() == b[key].tobytes(), (key, launch)
+    assert runs["sorted"][0][-1]["terminated"].all()
+    assert 0 < runs["sorted"][1].value < runs["plain"][1].value
 
 
 def test_every_compiler_takes_the_lane_loop():

@@ -190,6 +190,39 @@ class LaneSplit:
     needs_random: bool = False
     sample_free: tuple = ()
     fp64_ops: int = 0
+    #: ``(carry index, descending)`` when the exit condition is a comparison of
+    #: one carried real's next value against a sample-free bound, which fixes
+    #: the order in which the lanes approach their exit (soonest first); else
+    #: ``None``. A hint for the host's lane order only.
+    exit_order: tuple | None = None
+
+
+#: The comparison an exit condition makes of ``(next, bound)`` to whether the
+#: carry rises towards the bound (``True``) or falls towards it, and the same
+#: comparison with its operands swapped.
+_EXIT_RISES = {"ge": True, "gt": True, "le": False, "lt": False}
+_SWAPPED = {"ge": "le", "gt": "lt", "le": "ge", "lt": "gt"}
+
+
+def _exit_order(loop: Loop) -> tuple | None:
+    """``(j, descending)`` when ``loop.exit_cond`` is ``next_j  OP  bound`` (or
+    the bound first) with ``next_j`` the next value of exactly one scalar real
+    carry ``j`` and ``bound`` free of per-sample values; ``None`` for any other
+    form. ``descending``: the carry rises towards the bound (``>=``, ``>``), so
+    the largest value is the soonest to exit."""
+    cond = loop.exit_cond
+    if not (isinstance(cond, Op) and cond.kind in _EXIT_RISES) or len(cond.operands) != 2:
+        return None
+    for first in (0, 1):
+        value, bound = cond.operands[first], cond.operands[1 - first]
+        kind = cond.kind if first == 0 else _SWAPPED[cond.kind]
+        hits = [j for j, nxt in enumerate(loop.nexts) if nxt is value]
+        if len(hits) != 1 or not _sample_free(bound):
+            continue
+        ttype = loop.carries[hits[0]].ttype
+        if not ttype.shape and ttype.dtype in ("f64", "f32"):
+            return hits[0], _EXIT_RISES[kind]
+    return None
 
 
 #: A declaration the renderer emits (``const auto t5 = ...``, ``const
@@ -1366,7 +1399,7 @@ class _Renderer(_DispatchMixin):
                          info["exit"], self._speculative(loop), ops,
                          body.needs_random,
                          _declarations(pre, [n for n, _ in live_ins if n in free]),
-                         fp64_ops(loop.body_nodes()))
+                         fp64_ops(loop.body_nodes()), _exit_order(loop))
 
     def _loop_split(self, loop: Loop) -> None:
         """:meth:`_loop` for the loop :meth:`lane_split` cuts at: marks where

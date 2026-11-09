@@ -347,12 +347,12 @@ PINNED = {
     "k_const_cmp/jvp": "0dda5bd78c6219ad6a2d4514412358910062447ff7223f39dbf7591b4a0205a3",
     "k_const_cmp/vjp": "c9d98e91abd08312faf9cebe5749a441ff39ba27f101db6ccad538a5d7822d42",
     # these two lost the loop's self-move of an unchanged carry (`const n = v; v = n;`): nothing else differs
-    "k_loop_carried/jvp": "dd9211c7ffcc7d4501840c5d1402228ef33472a9cf7c4b28da179c4994bc57ea",
+    "k_loop_carried/jvp": "91b07b4f0f807cff0a07222b8c18fe8853694d495a473565a44422718bc19795",
     "k_loop_carried/vjp": "235c2305e619481cc34974a68049f8c5c5b7689e47b790646e0a26df05304811",
-    "k_loop_sum/jvp": "b2d6f015a71ea924af13bdb093e0ff0e22377ce9d3f77d2e0791d17709d80b69",
-    "k_loop_sum/vjp": "456e57cefa0fe3e7eee67dce006f0ed1f65c59f27dfb71331bbe062e3e6ff381",
-    "k_loop_param/jvp": "c0d437fbad2f267796e78b12fe1ecc16dbfd1b1d5f0b08ed8b62b16f675d0252",
-    "k_loop_param/vjp": "b1498422211cb739373f76b1777aeac29596af21a61dd77c2c136289b91c85f6",
+    "k_loop_sum/jvp": "34177a303c36e3484fb1f11f1ef02ab2505a7ccb50250c2b38df3763eda84ad2",
+    "k_loop_sum/vjp": "199ee9e6e3a16af72667811176c81c7e160846b08b6b89970056c98f62ceac98",
+    "k_loop_param/jvp": "98454610b74fff3fd7f8235641b6d077dfe2cd6fde0f415609153ff45bfc6c5d",
+    "k_loop_param/vjp": "b0d031393575313a06030e37fc45ca14e2f1e69d55d44c314052c83cb93b1820",
     "step/jvp": "8d3540f8fe3cb19a54c6b11d3a517c543e47c8563aa350d953cf281a2f6fbbb9",
     "step/vjp": "442e319e668e2a62637ed1a20b3f244e9bf8ba33a1d4074672a4a6a5e2e08a06",
 }

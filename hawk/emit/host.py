@@ -221,6 +221,20 @@ _INDEPENDENT_ITERATIONS = """#if defined(__clang__)
 #: runs only the ``hawk_nlive`` live ones: a chunk is then no longer held open by
 #: one long lane among dead ones. A lane's own arithmetic is untouched; aarch64
 #: only, where the chunk is wide enough for it to pay.
+def _compact_live(split: LaneSplit) -> tuple:
+    """:data:`_COMPACT_LIVE`, then the live lanes sorted soonest-to-exit first by
+    the exit-bound carry's value when :attr:`LaneSplit.exit_order` names one:
+    packed that way, a chunk's lanes finish close together. No such carry, no sort."""
+    if split.exit_order is None:
+        return _COMPACT_LIVE
+    carry, descending = split.exit_order
+    return (*_COMPACT_LIVE[:-1],
+            "    std::sort(hawk_perm, hawk_perm + hawk_nlive,",
+            "              [&](aether::offset_t a, aether::offset_t b) {",
+            f"                  return hawk_lc{carry}[a] {'>' if descending else '<'} hawk_lc{carry}[b]; }});",
+            _COMPACT_LIVE[-1])
+
+
 _COMPACT_LIVE = (
     "#if defined(__aarch64__)",
     "    alignas(64) aether::offset_t hawk_perm[hawk_tile];",
@@ -404,7 +418,10 @@ static inline aether::Item<T, Es...> select_item(bool m, const A& a, const B& b)
 #: value of rank >= 1 (an ``aether::Item``) is stored one component per row,
 #: component ``c`` of lane ``t`` at ``lanes[c * Tile + t]``, so every row is a
 #: unit-stride run the vectoriser loads whole.
-INTERCHANGE_HELPERS = """namespace hawk_abi {
+INTERCHANGE_HELPERS = """#if defined(__aarch64__)
+#include <algorithm>
+#endif
+namespace hawk_abi {
 
 template <aether::offset_t Tile, class T>
 static inline void lane_put(T* lanes, aether::offset_t t, const T& v)
@@ -817,7 +834,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         f"hawk_abi::kHostChunkVectors * {chunk_vectors(split.op_count)};",
         "    static_assert(hawk_tile % hawk_w == 0,",
         '                  "hawk: a tile holds whole chunks");',
-        *_COMPACT_LIVE,
+        *_compact_live(split),
         "#if defined(__aarch64__)",
         "    for (aether::offset_t hawk_cb = 0; hawk_cb < hawk_nlive;",
         "         hawk_cb += hawk_w) {",
