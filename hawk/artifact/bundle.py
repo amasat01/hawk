@@ -1392,7 +1392,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
 
     ``host_profile`` picks the host code-gen profile
     (:data:`hawk.compile.toolchain.HOST_PROFILES`): ``"native-vector-math"``
-    (default on x86-64 with a GCC host compiler) or ``"native"`` (libm
+    (default on x86-64 with a GCC host compiler, and on arm64) or ``"native"`` (libm
     bit-identity) for a bundle built on the machine that runs it,
     ``"portable"`` for one that's prebuilt and shipped. Empty means
     ``$HAWK_HOST_PROFILE``, else
