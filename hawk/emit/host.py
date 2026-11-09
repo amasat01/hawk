@@ -224,14 +224,18 @@ _INDEPENDENT_ITERATIONS = """#if defined(__clang__)
 def _compact_live(split: LaneSplit) -> tuple:
     """:data:`_COMPACT_LIVE`, then the live lanes sorted soonest-to-exit first by
     the exit-bound carry's value when :attr:`LaneSplit.exit_order` names one:
-    packed that way, a chunk's lanes finish close together. No such carry, no sort."""
+    packed that way, a chunk's lanes finish close together (a NaN carry, a diverged
+    lane, sorts last as every other NaN's equal). No such carry, no sort."""
     if split.exit_order is None:
         return _COMPACT_LIVE
     carry, descending = split.exit_order
     return (*_COMPACT_LIVE[:-1],
             "    std::sort(hawk_perm, hawk_perm + hawk_nlive,",
             "              [&](aether::offset_t a, aether::offset_t b) {",
-            f"                  return hawk_lc{carry}[a] {'>' if descending else '<'} hawk_lc{carry}[b]; }});",
+            f"                  const auto x = hawk_lc{carry}[a], y = hawk_lc{carry}[b];",
+            "                  if (x != x) return false;",
+            "                  if (y != y) return true;",
+            f"                  return x {'>' if descending else '<'} y; }});",
             _COMPACT_LIVE[-1])
 
 

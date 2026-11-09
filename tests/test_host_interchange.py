@@ -787,7 +787,7 @@ def test_the_lane_order_follows_the_exit_bound_and_never_guesses():
     sorts = {}
     for kern in (ramp, fall, ramp_or_cap, ramp_to_plane):
         text = _host_text(hawk.steps(kern, 16))
-        sorts[kern.name] = re.findall(r"return hawk_lc0\[a\] ([<>]) hawk_lc0\[b\]", text)
+        sorts[kern.name] = re.findall(r"return x ([<>]) y; \}\);", text)
         assert text.count("std::sort") == len(sorts[kern.name])
     assert sorts == {"ramp": [">"], "fall": ["<"], "ramp_or_cap": [], "ramp_to_plane": []}
 
@@ -800,8 +800,8 @@ def test_no_sort_survives_preprocessing_for_x86(tmp_path):
 
 
 @pytest.mark.skipif(platform.machine() not in ("arm64", "aarch64"), reason="aarch64 emit")
-@pytest.mark.parametrize("profile", ["native", None])
-def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile):
+@pytest.mark.parametrize("profile,nan", [("native", False), (None, False), ("native", True)])
+def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, nan):
     """The sorted lanes against the same TU in plain compacted order: lanes of
     very different lengths give the same planes, bit for bit, in fewer lane-trips."""
     from hawk.compile import toolchain as tc
@@ -818,6 +818,8 @@ def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile):
     n = 300
     planes = {"rate": rng.choice([1.0, 2.0, 10.0, 50.0], n), "x": np.zeros(n),
               "terminated": np.zeros(n, dtype=bool)}
+    if nan:     # diverged lanes: a NaN carry must sort last without faulting, the planes unchanged
+        planes["x"][::5] = np.nan
     flags = tc.host_flags(profile=profile)
     runs = {}
     for tag, text in (("sorted", source), ("plain", plain)):
@@ -828,8 +830,11 @@ def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile):
     for launch, (a, b) in enumerate(zip(runs["sorted"][0], runs["plain"][0])):
         for key in b:
             assert a[key].tobytes() == b[key].tobytes(), (key, launch)
-    assert runs["sorted"][0][-1]["terminated"].all()
-    assert 0 < runs["sorted"][1].value < runs["plain"][1].value
+    last = runs["sorted"][0][-1]
+    assert nan or last["terminated"].all()
+    assert not nan or np.isnan(last["x"][::5]).all()
+    assert 0 < runs["sorted"][1].value <= runs["plain"][1].value
+    assert nan or runs["sorted"][1].value < runs["plain"][1].value
 
 
 def test_every_compiler_takes_the_lane_loop():
