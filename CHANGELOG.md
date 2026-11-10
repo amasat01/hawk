@@ -2,6 +2,14 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
+## 0.7.6 (2026-11-10)
+
+0.7.5 was tagged but never reached PyPI: 0.7.6 is the release of everything in 0.7.5 below, with one fix to how it is published.
+
+### Fixed
+
+- The release no longer waits for packages that only an optional extra needs. hawk's `test` extra and eagle's `torch` and `jax` extras name each other, so each release waited for the other and neither was published.
+
 ## 0.7.5 (2026-11-10)
 
 This section covers what changes from 0.7.4. New in this release: `hawk.chain` joins kernels into one, a banded scalar mode for GPUs with weak or no FP64, and cheaper runtime-index reads.
