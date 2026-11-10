@@ -319,8 +319,10 @@ class HostKernel:
                     width = int(widths.get(name) or 1)
                     samples = (mv.shape[-1] if name in (self.sidecar.get("gather_mats") or {})
                                else _native_extent(mv, width, choice.of(name, mv, width)))
-                elif role == "lookup" and name in arrays:
-                    samples = memoryview(arrays[name]).nbytes // memoryview(arrays[name]).itemsize  # its own count: a read clamps to it
+                elif role in ("lookup", "wide_in") and name in arrays:
+                    # its own element count: a read at a computed index clamps to it (a Wide[W] plane holds
+                    # W elements per sample, so the sample count would hold every member past n / W at the edge)
+                    samples = memoryview(arrays[name]).nbytes // memoryview(arrays[name]).itemsize
                 self.block.bind(slot,
                                 self._buffer_address(arrays, name, role, choice),
                                 samples, 1, DEVICE_CPU, 0)

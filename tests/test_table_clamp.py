@@ -14,6 +14,7 @@ import pytest
 
 import hawk
 from hawk import Index, Mutable, Scalar, Table
+from hawk import math as hm
 from hawk.diff import jvp
 from hawk.ir import PlaneExtent
 from hawk.trace.kernel import Kernel
@@ -158,3 +159,50 @@ def test_the_hawk_runtime_binds_a_lookup_with_its_own_length(tmp_path, private_c
     y = np.zeros(4)
     rt.run(art, table=table, where=np.array([1, 2, 3, 299], np.int32), flag=-np.ones(4), y=y)
     np.testing.assert_array_equal(y, np.full(4, table[0] + table[-1]))
+
+
+@hawk.kernel
+def member_lane(x: Scalar, theta: hawk.Wide[3], y: Mutable[Scalar]):
+    y = x + theta.at(edge=hm.sample_index(), component=2)
+
+
+def _member_lane(target: str, n: int) -> tuple:
+    x = np.arange(n, dtype="float64") * 0.25
+    theta = np.arange(3 * n, dtype="float64") + 0.5      # member m's lanes at theta[3m : 3m + 3]
+    planes = {"x": x, "theta": theta, "y": np.zeros(n)}
+    if target == "cuda":
+        planes = {k: eagle.arrays.asarray(v, device="cuda:0") for k, v in planes.items()}
+    eagle.deploy(member_lane, scalar_type="float64", targets=(target,))(**planes)
+    got = planes["y"]
+    return (got.get() if hasattr(got, "get") else np.asarray(got)), x + theta.reshape(n, 3)[:, 2]
+
+
+def test_a_wide_plane_read_at_the_member_index_reaches_every_member_on_the_host(private_cache):
+    # the clamp's bound is the plane's element count (n * W), not its sample count: every member past n / W read
+    # its own lanes, not the clamped edge
+    got, want = _member_lane("host", 512)
+    np.testing.assert_array_equal(got, want)
+
+
+@pytest.mark.skipif(not _device(), reason="needs a CUDA device")
+def test_a_wide_plane_read_at_the_member_index_reaches_every_member_on_the_device(private_cache):
+    got, want = _member_lane("cuda", 512)
+    np.testing.assert_array_equal(got, want)
+
+
+def test_the_hawk_runtime_reads_a_wide_plane_at_the_member_index_for_every_member(tmp_path, private_cache):
+    """A ``Wide[W]`` plane read at ``(edge=sample_index(), component=c)`` through ``hawk.run``: the clamp's bound is
+    the plane's element count, so every member reads its own lanes (members past ``n / W`` once read the edge)."""
+    from conftest import sidecar_of
+
+    from hawk import runtime as rt
+    from hawk.artifact import build_bundle
+
+    bundle = build_bundle([member_lane], tmp_path / "b", targets=("host",))
+    art = rt.load(bundle.directory, member_lane.name, sidecar_of(bundle, member_lane.name))
+    n = 512
+    x = np.arange(n, dtype="float64") * 0.25
+    theta = np.arange(3 * n, dtype="float64") + 0.5
+    y = np.zeros(n)
+    rt.run(art, x=x, theta=theta, y=y)
+    np.testing.assert_array_equal(y, x + theta.reshape(n, 3)[:, 2])
