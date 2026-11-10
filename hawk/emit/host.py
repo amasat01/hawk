@@ -911,6 +911,8 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         "    }",
         # the refill: scalar, outside the vector body, only when a lane finished
         "    if (hawk_idle != 0 && hawk_next < hawk_nlive) {",
+        # unrolled, GCC leaves the trip loop's latch non-empty and keeps it scalar (as the copy-in)
+        _COPY_IN_NO_UNROLL,
         "    for (aether::offset_t hawk_l = 0; hawk_l < hawk_w && hawk_next < hawk_nlive; ++hawk_l) {",
         "        if (hawk_ron[hawk_l] != 0.0) continue;",
         "        {",

@@ -699,7 +699,11 @@ def test_the_chunk_copy_in_loop_is_not_unrolled_under_gcc():
     text = builds(host.text)["interchanged"]
     loop = text.index("for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {")
     head = text[text.rindex("alignas(64) Int hawk_rk0[hawk_w];", 0, loop):loop]
-    assert "#if defined(__GNUC__) && !defined(__clang__)\n#pragma GCC unroll 1\n#endif" in head
+    pragma = "#if defined(__GNUC__) && !defined(__clang__)\n#pragma GCC unroll 1\n#endif"
+    assert pragma in head
+    # the refill loop too: unrolled, it keeps GCC from vectorising the trip loop
+    refill = text.index("if (hawk_idle != 0 && hawk_next < hawk_nlive) {")
+    assert text[refill:].split("for (aether::offset_t hawk_l", 1)[0].strip().endswith(pragma.split("\n", 1)[1])
 
 
 _COUNTED = 'extern "C" long long hawk_lane_trips = 0;\n'
