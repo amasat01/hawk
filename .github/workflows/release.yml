@@ -73,10 +73,11 @@ jobs:
       # macOS builds on the runner itself: the header trees are read in place
       CIBW_ENVIRONMENT_MACOS: "HAWK_AETHER_INCLUDE=${{ github.workspace }}/aether HAWK_EAGLE_INCLUDE=${{ github.workspace }}/eagle CCACHE_DIR=${{ github.workspace }}/.ccache-cibw CCACHE_MAXSIZE=500M CCACHE_COMPILERCHECK=content CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache"
       # ccache from EPEL (AlmaLinux 8); stats zeroed per run, printed before each repair
-      # EPEL mirrors fail often on aarch64: retry, then run uncached through a pass-through ccache stand-in
+      # EPEL mirrors fail often on aarch64: retry, then run uncached through a pass-through ccache stand-in;
+      # a stalled mirror never fails by itself, so each dnf call has a time limit
       CIBW_BEFORE_ALL_LINUX: >-
         git config --global --add safe.directory '*';
-        for i in 1 2 3; do dnf install -y epel-release && dnf install -y ccache && break; dnf clean all; done;
+        for i in 1 2 3; do timeout 120 dnf install -y epel-release && timeout 120 dnf install -y ccache && break; dnf clean all; done;
         command -v ccache >/dev/null || { printf '%s\n' '#!/bin/sh' 'case $1 in -*) exit 0;; esac' 'exec "$@"' > /usr/local/bin/ccache;
         chmod +x /usr/local/bin/ccache; };
         CCACHE_DIR=/ccache ccache -z
