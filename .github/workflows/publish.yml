@@ -77,7 +77,10 @@ jobs:
               with zipfile.ZipFile(whl) as z:
                   meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
                   for line in z.read(meta).decode().splitlines():
-                      if line.startswith("Requires-Dist:") and fam.match(line.split(":", 1)[1].strip()):
+                      # an optional extra's requirement does not gate the release: the family's extras name
+                      # each other (eagle[jax] -> hawk, hawk[test] -> eagle), and waiting on them never ends
+                      if (line.startswith("Requires-Dist:") and "extra ==" not in line
+                              and fam.match(line.split(":", 1)[1].strip())):
                           print(line.split(":", 1)[1].split(";")[0].strip())
           PY
           sort -u reqs.txt -o reqs.txt
