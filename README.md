@@ -233,7 +233,7 @@ Kernels authored with hawk are what eagle's performance card times.
 hawk + eagle (`eagle.simulate`) integrates 1,000,000 Kepler orbits with an adaptive RKF7(8), each stopping at its own time, in 48.9 ms on an NVIDIA H100 NVL (477 ms for 10,000,000), 2.3×–190× faster than NVIDIA Warp (2.3×), JAX (25×), CuPy (190×), PyTorch with torch.compile (16×) at N = 1,000,000 (2.3×–150× at N = 10,000,000), in 102 MiB of GPU memory
 <!-- hero:end -->
 — and, on the <!--c spec card=ensemble dev=h100 field=device.name-->NVIDIA H100 NVL<!--/c--> reference GPU, the same hawk kernel, unmodified, integrates 1,000,000 adaptive
-RK7(8) orbits in <!--c wall card=ensemble dev=h100 arm=eagle_simulate n=1000000-->48.9 ms<!--/c-->; on a CPU alone, through eagle's host team, the same batch takes <!--c wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000-->3.69 s<!--/c--> on 8 threads of an <!--c spec card=ensemblecpu dev=amd-epyc-9b45 field=cpu-->AMD EPYC 9B45<!--/c--> (the no-GPU route, for machines without a GPU). This is the regime hawk + eagle's
+RK7(8) orbits in <!--c wall card=ensemble dev=h100 arm=eagle_simulate n=1000000-->48.9 ms<!--/c-->; on a CPU alone, through eagle's host team, the same batch takes <!--c wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000-->2.49 s<!--/c--> on 8 threads of an <!--c spec card=ensemblecpu dev=amd-epyc-9b45 field=cpu-->AMD EPYC 9B45<!--/c--> (the no-GPU route, for machines without a GPU). This is the regime hawk + eagle's
 compaction targets (many samples stopping at different times); in other regimes the other tools hold their own. On a
 dense batch where every sample runs the same orbit, at N = 1,000,000 `eagle.simulate` takes
 <!--c wall card=ensemble dev=h100 n=1000000 dist=uniform arm=eagle_simulate-->40.8 ms<!--/c--> and NVIDIA Warp
@@ -245,7 +245,7 @@ including the ones where it doesn't win.
 
 The chart shows one GPU; [the performance page](https://amasat01.github.io/eagle/content/performance.html) has a tab for every device and CPU measured.
 
-The same hawk kernel also runs on a CPU alone, through eagle's host team: on an <!--c spec card=ensemblecpu dev=amd-epyc-9b45 field=cpu-->AMD EPYC 9B45<!--/c--> (<!--c spec card=ensemblecpu dev=amd-epyc-9b45 field=logical_cpus-->16<!--/c--> logical CPUs) the 8-thread spread batch of 1,000,000 samples takes **<!--c wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000 dist=spread-->3.69 s<!--/c-->**. eagle's [performance page](https://amasat01.github.io/eagle/content/performance.html) has a tab for every CPU and GPU measured, with Numba, JAX, PyTorch, NumPy and multiprocessing on the CPU cards, each with the setting where it fits best; on some cells and CPUs another tool is ahead, and the card shows which.
+The same hawk kernel also runs on a CPU alone, through eagle's host team: on an <!--c spec card=ensemblecpu dev=amd-epyc-9b45 field=cpu-->AMD EPYC 9B45<!--/c--> (<!--c spec card=ensemblecpu dev=amd-epyc-9b45 field=logical_cpus-->16<!--/c--> logical CPUs) the 8-thread spread batch of 1,000,000 samples takes **<!--c wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000 dist=spread-->2.49 s<!--/c-->**. eagle's [performance page](https://amasat01.github.io/eagle/content/performance.html) has a tab for every CPU and GPU measured, with Numba, JAX, PyTorch, NumPy and multiprocessing on the CPU cards, each with the setting where it fits best; on some cells and CPUs another tool is ahead, and the card shows which.
 
 ## Going deeper
 

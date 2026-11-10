@@ -8,17 +8,17 @@
   },
   "cards": {
     "benchmarks/perf_card/card_nvidia-h100-nvl.json": "475f0ffc8464c6d5fb1458f9f49af18c",
-    "benchmarks/perf_card/cpu_card_amd-epyc-9b45.json": "db5950d1b58ec0b0d13a1e1d00f7a825"
+    "benchmarks/perf_card/cpu_card_amd-epyc-9b45.json": "c64d1a5e4eee4923e73e309efce50709"
   },
   "spans": {
     "spec card=ensemble dev=h100 field=device.name": "NVIDIA H100 NVL",
     "wall card=ensemble dev=h100 arm=eagle_simulate n=1000000": "48.9 ms",
-    "wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000": "3.69 s",
+    "wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000": "2.49 s",
     "spec card=ensemblecpu dev=amd-epyc-9b45 field=cpu": "AMD EPYC 9B45",
     "wall card=ensemble dev=h100 n=1000000 dist=uniform arm=eagle_simulate": "40.8 ms",
     "wall card=ensemble dev=h100 n=1000000 dist=uniform arm=warp_kernel": "55.1 ms",
     "spec card=ensemblecpu dev=amd-epyc-9b45 field=logical_cpus": "16",
-    "wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000 dist=spread": "3.69 s"
+    "wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000 dist=spread": "2.49 s"
   },
   "hero": "hawk + eagle (`eagle.simulate`) integrates 1,000,000 Kepler orbits with an adaptive RKF7(8), each stopping at its own time, in 48.9 ms on an NVIDIA H100 NVL (477 ms for 10,000,000), 2.3×–190× faster than NVIDIA Warp (2.3×), JAX (25×), CuPy (190×), PyTorch with torch.compile (16×) at N = 1,000,000 (2.3×–150× at N = 10,000,000), in 102 MiB of GPU memory"
 }
