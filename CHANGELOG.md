@@ -2,7 +2,7 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
-## Unreleased
+## 0.7.5 (2026-11-10)
 
 This section covers what changes from 0.7.4. New in this release: `hawk.chain` joins kernels into one, a banded scalar mode for GPUs with weak or no FP64, and cheaper runtime-index reads.
 
