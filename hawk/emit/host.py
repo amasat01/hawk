@@ -820,7 +820,10 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
     # innermost, and between trips a finished lane writes its sample back
     # and takes the next live one (hawk_next over hawk_perm), so no lane idles
     # while the tile has work. A lane counts its own trips from the one it
-    # started at (hawk_rk0), so a sample runs exactly its plain loop's trips.
+    # started at (hawk_rk0), so a sample runs exactly its plain loop's trips;
+    # its bound is kept as the absolute trip it ends at (hawk_rcnt), so the
+    # live test is the plain loop's one compare against hawk_trip and the
+    # lane's own trip index is only computed where the step reads it.
     # A lane past the tile's end is never live; it reads the tile's last
     # sample, so no index leaves the tile.
     chunk = [(f"hawk_rc{j}", arr, ttype)
@@ -833,14 +836,12 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
     trip_loads = [f"        const {_lane_type(t)} {name} = "
                   f"hawk_abi::lane_get<{_lane_type(t)}, hawk_w>({mine}, hawk_l);"
                   for (mine, _, _), (_, name, t) in zip(chunk, rows)]
-    bound = "hawk_rcnt[hawk_l]" if split.count is not None else f"{split.stop}"
-    more = f"!{split.exit} && {split.index} + 1 < {bound}"
+    lane_count = "hawk_cnt[hawk_t]" if split.count is not None else f"static_cast<Int>({split.stop})"
+    more = f"!{split.exit} && hawk_trip + 1 < hawk_rcnt[hawk_l]"
     copy_in = []
     for mine, arr, t in chunk:
         copy_in += [f"        for (aether::offset_t hawk_c = 0; hawk_c < {_width(t)}; ++hawk_c)",
                     f"            {mine}[hawk_c * hawk_w + hawk_l] = {arr}[hawk_c * hawk_tile + hawk_t];"]
-    if split.count is not None:
-        copy_in.append("        hawk_rcnt[hawk_l] = hawk_cnt[hawk_t];")
     copy_out = []
     for mine, arr, t in chunk[:len(split.carries)]:
         copy_out += [f"        for (aether::offset_t hawk_c = 0; hawk_c < {_width(t)}; ++hawk_c)",
@@ -856,9 +857,8 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
           for mine, _, t in chunk],
         "    alignas(64) HAWK_LANE_T hawk_ron[hawk_w];",
     ]
-    if split.count is not None:
-        lines.append("    alignas(64) Int hawk_rcnt[hawk_w];")
     lines += [
+        "    alignas(64) Int hawk_rcnt[hawk_w];",
         "    alignas(64) aether::offset_t hawk_rt[hawk_w];",
         "    alignas(64) Int hawk_rk0[hawk_w];",
         _INDEPENDENT_ITERATIONS,
@@ -868,6 +868,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         *copy_in,
         "        hawk_rt[hawk_l] = hawk_t;",
         "        hawk_rk0[hawk_l] = 0;",
+        f"        hawk_rcnt[hawk_l] = {lane_count};",
         "        const bool hawk_in = hawk_t < hawk_tn && hawk_on[hawk_t] != 0.0"
         + ("" if split.count is not None else f" && 0 < {split.stop}") + ";",
         "        hawk_ron[hawk_l] = hawk_in ? 1.0 : 0.0;",
@@ -922,6 +923,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         *copy_in,
         "        hawk_rt[hawk_l] = hawk_t;",
         "        hawk_rk0[hawk_l] = hawk_trip + 1;",
+        f"        hawk_rcnt[hawk_l] = hawk_trip + 1 + {lane_count};",
         "        hawk_ron[hawk_l] = 1.0;",
         "    }",
         "    hawk_live = 1;",
