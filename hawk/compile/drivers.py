@@ -312,6 +312,18 @@ def _argv(compiler: str, opts: CompileOptions, src: Path, out: Path,
     return [compiler, *flags, "-MD", "-MF", str(dep), str(src), "-o", str(out)]
 
 
+def _stable_served(flags) -> tuple[tuple, tuple]:
+    """``flags`` with the pip-only served ``-I`` root replaced by the sealed
+    payload's digest, and that root's path prefixes (empty when this process
+    serves none)."""
+    root = tc.pip_only_root()
+    if root is None:
+        return tuple(flags), ()
+    prefixes = tuple({os.path.abspath(root) + os.sep, os.path.realpath(root) + os.sep})
+    term = f"payload:{_payload.current_payload().digest}"
+    return tuple(term if f == root else f for f in flags), prefixes
+
+
 def _host_key_terms(flags, opts: CompileOptions) -> tuple:
     """The host key's flag terms plus, for the two ``-march=native``
     profiles, the CPU it targets
@@ -347,6 +359,24 @@ def _device_target(compiler: str, arch: str) -> str:
         _nvrtc_driver._probed(_nvrtc_driver.driver_cuda_version))
 
 
+def _compiler_not_runnable(argv0: str, returncode: int) -> bool:
+    """True when ``argv0`` was never a running compiler: the shell's 127
+    (not found) or 126 (not executable), or an argv[0] that is no executable
+    file on PATH."""
+    return returncode in (126, 127) or shutil.which(argv0) is None
+
+
+def _allocation_failure(stderr: str) -> bool:
+    """True when the compiler's stderr reads like an out-of-memory failure. Asked
+    only under a cap, where a compiler killed by a signal is the cap too: g++
+    may crash in cc1plus rather than report the failed allocation."""
+    text = stderr.lower()
+    return any(m in text for m in ("bad_alloc", "cannot allocate memory",
+                                   "out of memory", "unable to allocate",
+                                   "memory exhausted", "failed to map segment",
+                                   "signal terminated program"))
+
+
 def _run_and_publish(argv, label, failed_tail, tmp_artifact, artifact, tmp_dep, dep,
                      cache_root):
     """Run the compiler into the private temporaries and move the artifact and
@@ -363,13 +393,21 @@ def _run_and_publish(argv, label, failed_tail, tmp_artifact, artifact, tmp_dep, 
         tmp_dep.unlink(missing_ok=True)
     seconds = time.perf_counter() - start
     if done.returncode != 0:
+        missing = _compiler_not_runnable(argv[0], done.returncode)
         cap = address_space_cap()
+        if cap and _allocation_failure(done.stderr):
+            reason = (f"; the compiler ran under a {cap}-byte address-space cap "
+                      "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
+                      "this translation unit is too large for one compile and not that "
+                      "the machine is out of memory")
+        elif missing:
+            reason = (f"; compiler not found or not executable: {argv[0]} "
+                      f"(exit {done.returncode}); point $HAWK_CXX at a working "
+                      "C++ compiler, e.g. HAWK_CXX=/path/to/c++")
+        else:
+            reason = ""
         raise HawkError(
-            f"{label} failed{failed_tail} (rc={done.returncode})"
-            + (f"; the compiler ran under a {cap}-byte address-space cap "
-               "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
-               "this translation unit is too large for one compile and not that "
-               "the machine is out of memory" if cap else "")
+            f"{label} failed{failed_tail} (rc={done.returncode}){reason}"
             + f".\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
             + tc.compile_hint(cache_root)
         )
@@ -420,8 +458,12 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
                   cpu=cpu, device_target=device_target)
     # A device key also carries nvcc's host compiler (-ccbin): it compiles
     # the TU's host side and its version gates what nvcc accepts.
-    key_terms = (_host_key_terms(probe[1:-4], opts) if cpu
-                else (*probe[1:-4], f"device_target:{device_target}",
+    # A pip-only compile serves the sealed payload into a per-process
+    # directory (tc.pip_only_root): its path differs in every process, so the
+    # key names the payload by digest and the closure leaves those headers out.
+    flags, served = _stable_served(probe[1:-4])
+    key_terms = (_host_key_terms(flags, opts) if cpu
+                else (*flags, f"device_target:{device_target}",
                       tc.device_host_compiler_identity()))
     key = lookup_key(source, opts.target, opts.mode, identity, key_terms)
     slot = cache.slot(key)
@@ -464,7 +506,7 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
         done, seconds = _run_and_publish(
             argv, f"{opts.target} compile of {name!r}", "",
             tmp_artifact, artifact, tmp_dep, dep, cache.root)
-        closure = closure_of(dep)
+        closure = tuple(p for p in closure_of(dep) if not p.startswith(served))
         ptxas = parse_ptxas_info(done.stderr) if gpu else {}
         cache.store(key, artifact=artifact, closure=closure,
                     meta={"target": opts.target, "mode": opts.mode,
@@ -631,7 +673,7 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions,
 
     defines = [f"-D{d}" for d in opts.defines]
     stable_flags = [*tc.host_codegen_flags(opts.host_profile or None,
-                                           opts.opt_level or None),
+                                           opts.opt_level or None, (*defines, *opts.extra)),
                     f"-std={tc.HOST_STD}", "-shared", "-fPIC",
                     "-DAETHER_CPP_MODE", *defines, *opts.extra]
     key_terms = (*_host_key_terms(stable_flags, opts), f"payload:{payload.digest}")

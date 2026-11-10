@@ -169,3 +169,26 @@ def test_the_cap_hint_reaches_the_sealed_payload_path(tmp_path, monkeypatch):
                           "cap_probe_sealed", CompileOptions(
                               target="host", cache_dir=str(tmp_path / "free"))
                           ).artifact.is_file()
+
+
+def test_the_cap_text_is_for_allocation_failures_only(tmp_path, monkeypatch):
+    """A compiler that fails for any other reason must not blame the cap."""
+    script = tmp_path / "fail-c++"
+    script.write_text("#!/bin/sh\necho 'error: expected ;' >&2\nexit 1\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("HAWK_CXX", str(script))
+    monkeypatch.setenv("HAWK_COMPILE_ADDRESS_CAP", str(12 * 1024**3))
+    with pytest.raises(HawkError) as excinfo:
+        compile_source('extern "C" int hawk_cap_text() { return 1; }\n', "cap_text",
+                       CompileOptions(target="host", cache_dir=str(tmp_path / "c")))
+    assert "address-space cap" not in str(excinfo.value)
+    script.write_text("#!/bin/sh\necho 'terminate: std::bad_alloc' >&2\nexit 1\n")
+    with pytest.raises(HawkError, match="address-space cap"):
+        compile_source('extern "C" int hawk_cap_text2() { return 1; }\n', "cap_text2",
+                       CompileOptions(target="host", cache_dir=str(tmp_path / "d")))
+    # g++ under the cap may crash in cc1plus instead of reporting the allocation
+    script.write_text("#!/bin/sh\necho 'g++: internal compiler error: Segmentation fault "
+                      "signal terminated program cc1plus' >&2\nexit 4\n")
+    with pytest.raises(HawkError, match="address-space cap"):
+        compile_source('extern "C" int hawk_cap_text3() { return 1; }\n', "cap_text3",
+                       CompileOptions(target="host", cache_dir=str(tmp_path / "e")))

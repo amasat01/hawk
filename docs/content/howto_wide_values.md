@@ -31,6 +31,8 @@ A vector used in a loop (`bf[j]`) is read from memory where it is indexed, not b
 
 `hawk.ir.recognize(kernel)` reads a sum of products over one loop (a matrix-vector product, a masked sum, several outputs sharing an operand, with `bf[j]` or table reads as operands) as a plain record of operands, reduce axis and outputs, for tools that route such a sum elsewhere. It only reads: it never changes the code a kernel generates.
 
+Keep constants and lookup tables in a `Table` read with `.at()` (it clamps the index to the table), never in a `Vector` plane that repeats the same numbers for every sample. See [best practices](best_practices).
+
 A very large source is usually a wide kernel unrolled; see [the compile guard](compiling).
 
 ## A wide input: `Wide[W]`
@@ -80,5 +82,7 @@ def put(x: Scalar, k: Index, w: WideOut[Scalar]):
 ```
 
 Two lanes storing to the same key leave one of the two values. The payload is a scalar: a vector payload is refused when the kernel is built, with the reason. For an output of several components per lane, use `Mutable[Vector[W]]`.
+
+Which form a wide per-lane value takes on a device is chosen from a table of measured rows, `wide.json`; where a chain of kernels is cut is chosen from `fusion.json`, beside it. Both are plain JSON, with a row per device.
 
 The names are on the [API reference](api/index).

@@ -36,6 +36,7 @@ from ..ir import (
     LoopValue,
     Node,
     Primitive,
+    PlaneExtent,
     SampleIndex,
     Select,
     Sink,
@@ -209,7 +210,7 @@ def _primal_name(primal: Any) -> str | None:
 #: Node families a transform never pushes through: a bound plane, a literal,
 #: a sink (seeded, not traversed), and the lane index (an address, not a
 #: differentiable quantity).
-_TERMINALS = (Sink, Leaf, Const, SampleIndex, LoopIndex, LoopCarry)
+_TERMINALS = (Sink, Leaf, Const, SampleIndex, PlaneExtent, LoopIndex, LoopCarry)
 
 #: dtypes a derivative flows through; everything else is a structural constant.
 _DIFFERENTIABLE = ("f64", "f32")
@@ -259,6 +260,9 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
     reverse takes its own structure. Any of
     :data:`~hawk.ir.nodes.DISPATCH_POLICIES` is accepted; an unknown group
     or policy refuses by name."""
+    if getattr(primal, "members", None):
+        from .chain import vjp_chain
+        return vjp_chain(primal, wrt, primal_unit, policy)
     primal = _single_step(primal)
     sinks = _sinks_of(primal)
     cells = param_cell_names(canonical_nodes(sinks)[0])
@@ -515,6 +519,9 @@ def with_derivative(primal: Any, *, wrt: Sequence[str] | None = None, name: str 
 @_rederivable
 def _jvp(primal: Any, *, wrt: Sequence[str] | None = None,
          primal_unit: str | None = None) -> Derived:
+    if getattr(primal, "members", None):
+        from .chain import jvp_chain
+        return jvp_chain(primal, wrt, primal_unit)
     primal = _single_step(primal)
     sinks = _sinks_of(primal)
     for sink in sinks:

@@ -176,6 +176,9 @@ class _LoopBuilder:
         self.names = tuple(names)
         self.depth = int(depth)
         self.index = Value(LoopIndex(depth, index_name))
+        if self.trip and isinstance(self.stop, int):
+            first, last = self.start, self.start + (self.trip - 1) * self.step
+            self.index.node.bounds = (first, last) if first <= last else (last, first)
         self._inits: tuple = ()
         self._originals: tuple = ()
         self._carries: tuple = ()

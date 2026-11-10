@@ -146,10 +146,11 @@ class Plane:
     a :class:`BlockSum`)."""
 
     name: str
-    dtype: str          # "real" (the kernel's scalar type) | "int32"
+    dtype: str          # "real" (the kernel's scalar type) | "int32" | "partial" (a partial sum: "real", or in a cells mode "band_partial")
     per_lane: int
     unit: str = "lane"  # "lane" | "key" | "target" (chunks x the cells of the stage's ``target`` plane) | "once"
     fill: int | None = None     # what the plane holds at the start of every run (None: nothing is promised)
+    layout: str | None = None   # "plane_major": made (per_lane, lanes), bound as a caller's plane of that width; None: flat
 
 
 @dataclass(frozen=True)
@@ -188,10 +189,13 @@ class TeamSpec:
     lanes: int = 1
     #: The warps a block of a warp-per-lane kernel holds, a lane each (set only by the card kit's ``WARPS``).
     warps: int = 1
+    #: The input planes (read leaves) the stage reads in place, a factor that is a bare plane read needing no scratch copy.
+    reads: tuple = ()
 
 
 #: A scratch plane of the kernel's scalar type: the runtime gives it the width of the build's mode.
 REAL = "real"
+PARTIAL = "partial"
 
 
 @dataclass
@@ -601,15 +605,26 @@ def widths(block: BlockSum) -> tuple:
         len(v.ttype.shape) == 1 and rows == 1) else 1), rows
 
 
-def block_planes(index: int, block: BlockSum, with_g: bool = True) -> tuple:
+def plane_reads(block: BlockSum, out: str | None, read: bool) -> dict:
+    """``{role: leaf}`` of the factors of ``block`` that are a bare scalar read of an input plane, which its team stage reads
+    in place instead of from a copy in scratch: only the stored ordered sum of scalars, whose lane slice is one element."""
+    p, q, rows = widths(block)
+    if out is None or read or p * q != 1 or rows > 1:
+        return {}
+    u, v, _ = block.factors
+    bare = lambda f: isinstance(f, Leaf) and f.role == "per_sample" and not f.ttype.shape
+    return {role: f for role, f in (("u", u), ("v", v)) if f is not None and bare(f)}
+
+
+def block_planes(index: int, block: BlockSum, with_g: bool = True, inplace: tuple = ()) -> tuple:
     """The scratch of block sum ``index``: the factors ``u`` (``rows * p`` per lane), ``v`` (``rows * q``
     per lane, absent when it is ``u``) and, when the body reads the sum back, the block ``g``
     (``p * q`` per key). A sum that is only stored goes straight into its output plane."""
     p, q, rows = widths(block)
     u, v, _ = block.factors
     base = f"{PLANE_PREFIX}b{index}"
-    out = [Plane(f"{base}_u", REAL, rows * p)]
-    if v is not None and u is not v:
+    out = [] if "u" in inplace else [Plane(f"{base}_u", REAL, rows * p)]
+    if v is not None and u is not v and "v" not in inplace:
         out.append(Plane(f"{base}_v", REAL, rows * q))
     if with_g:
         out.append(Plane(f"{base}_g", REAL, p * q, "key"))
@@ -622,34 +637,38 @@ def block_read(block: BlockSum, index: int) -> Node:
     return TeamRead(f"{PLANE_PREFIX}b{index}_g", block.ttype, block.key)
 
 
-def factor_stores(index: int, block: BlockSum) -> tuple:
-    """The stores of the factors of ``block`` into their scratch planes, by the per-lane stage."""
+def factor_stores(index: int, block: BlockSum, inplace: tuple = ()) -> tuple:
+    """The stores of the factors of ``block`` into their scratch planes, by the per-lane stage (none for a factor read in place)."""
     u, v, _ = block.factors
     base = f"{PLANE_PREFIX}b{index}"
-    return (TeamStore(f"{base}_u", u),) if (u is v or v is None) else (TeamStore(f"{base}_u", u), TeamStore(f"{base}_v", v))
+    stores = [("u", u)] if (u is v or v is None) else [("u", u), ("v", v)]
+    return tuple(TeamStore(f"{base}_{role}", f) for role, f in stores if role not in inplace)
 
 
 #: Blocks per key of a plain ordered sum's first stage; each owns 1024 of the 65536 virtual lanes (constants, never the device).
 GROUPS = 64
 
 
-def block_spec(index: int, block: BlockSum, out: str | None, keyed, read: bool = True) -> TeamSpec:
+def block_spec(index: int, block: BlockSum, out: str | None, keyed, read: bool = True, inplace: bool = False) -> TeamSpec:
     """The team stage of ``block``: one call that sums the rows of each key into its output plane
     ``out`` (``(*payload, *kept)``, payload first) when the sum is stored and not read back, else
     into the block ``g``, which is then copied to ``out`` when there is one. ``keyed`` is the plane's :class:`~hawk.ir.split.Keyed`: its key count is the
     stage's grid. The step's ``m`` is the rows a lane holds."""
     p, q, rows = widths(block)
     direct = out is not None and not read
-    planes = block_planes(index, block, not direct)
+    inplace = plane_reads(block, out, read) if inplace else {}
+    planes = block_planes(index, block, not direct, tuple(inplace))
     names = {pl.name.rsplit("_", 1)[1]: pl.name for pl in planes}
+    names.update({role: leaf.name for role, leaf in inplace.items()})
     ones = block.factors[1] is None         # an ordered plain sum: no v, the constant 1
     roles = (("u", names["u"]), *(() if ones else (("v", names.get("v", names["u"])),)),
              *((("out", out),) if out else ()), *((("g", names["g"]),) if not direct else ()))
     if direct and p * q == 1 and rows <= 1:      # a plain stored sum: GROUPS blocks per key add fixed partials, one block folds them
-        part = Plane(f"{PLANE_PREFIX}b{index}_gp", REAL, GROUPS, "key")
+        part = Plane(f"{PLANE_PREFIX}b{index}_gp", PARTIAL, GROUPS, "key")
         first = TeamSpec(threads(1), (Step("block_part", p, q, (*roles, ("gp", part.name)), rows),), (*planes, part),
-                         "keys", keyed, None, groups=GROUPS)
-        last = TeamSpec(threads(1), (Step("block_sum", p, q, (*roles, ("gp", part.name)), rows),), (*planes, part),
+                         "keys", keyed, None, groups=GROUPS, reads=tuple(inplace.values()))
+        kept = tuple(r for r in roles if r[0] not in inplace)       # the last stage folds partials, it reads no factor in place
+        last = TeamSpec(threads(1), (Step("block_sum", p, q, (*kept, ("gp", part.name)), rows),), (*planes, part),
                         "keys", keyed, out)
         return first, last
     return (TeamSpec(threads(max(p, q)), (Step("block_sum", p, q, roles, rows),), planes, "keys", keyed, out),)
@@ -705,7 +724,7 @@ def scatter_specs(target: str, width: int) -> tuple:
     ``target``. No atomics and no sort: the same bits on every launch."""
     keys, values, parts, status = scatter_names(target)
     logs = (Plane(keys, "int32", width, fill=NO_KEY), Plane(values, REAL, width))
-    part = Plane(parts, REAL, 1, "target")
+    part = Plane(parts, PARTIAL, 1, "target")
     flags = Plane(status, "int32", 1 + STATUS_FLAGS, "once", fill=0)    # [cells, flag of chunk 0, flag of chunk 1, ...]
 
     def stage(op, roles, grid, planes, out=None):

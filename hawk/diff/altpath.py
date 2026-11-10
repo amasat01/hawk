@@ -44,6 +44,7 @@ from ..ir import (
     LoopIndex,
     LoopValue,
     Node,
+    PlaneExtent,
     SampleIndex,
     Select,
     Sink,
@@ -67,7 +68,7 @@ _BOOL = TensorType((), "bool")
 _AFFINE = ("add", "sub", "neg", "vec", "component", "component_at", "splat",
            "sum", "set_component_at", "add_at")
 _BILINEAR = ("mul", "dot")
-_SIGHT = (Leaf, Const, SampleIndex, LoopIndex, LoopCarry)
+_SIGHT = (Leaf, Const, SampleIndex, PlaneExtent, LoopIndex, LoopCarry)
 
 
 # --------------------------------------------------------------------------

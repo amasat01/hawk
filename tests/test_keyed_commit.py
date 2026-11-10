@@ -607,8 +607,8 @@ def test_the_reverse_of_a_sorted_read_commits_once_per_run(target, compensated, 
     key = _mixed_runs(N)
     slots = int(key.max()) + 1
     x, by = rng.uniform(0.5, 1.5, N), rng.uniform(0.5, 1.5, N)   # positive terms: no cancellation
-    planes = {"x": xp.asarray(x), "seg": xp.asarray(key), "bar_y": xp.asarray(by),
-              "bar_th": xp.zeros(slots), "bar_th_c": xp.zeros(slots)}
+    planes = {"x": xp.asarray(x), "seg": xp.asarray(key), "bar_y": xp.asarray(by), "th": xp.zeros(slots),
+              "bar_th": xp.zeros(slots), "bar_th_c": xp.zeros(slots)}     # th: the clamp of the read reads its length
     names = [nm for _, nm in kernel.walk.arg_spec]
     run, lane = _launch(bundle, kernel.name, target, {k: planes[k] for k in names})
     if target == "cuda":

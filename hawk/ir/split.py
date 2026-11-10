@@ -29,6 +29,8 @@ planes the runtime makes for it, as it does for a team stage's.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from math import prod
 
@@ -213,6 +215,51 @@ def internal(found, declared) -> frozenset:
     return frozenset(c for st in found for c in st.cells_in if c not in declared)
 
 
+#: Whether a keyed accumulate with the default or compensated policy takes the ordered stages. A ``cells`` scalar mode
+#: has no atomic add on a packed cell and wants the compensated fold in a fixed order, so it sets this for its build:
+#: ONE rule, and the ordered stages are then the only path an accumulate takes there.
+_ROUTE_TO_ORDERED = ContextVar("route_to_ordered", default=False)
+
+
+@contextmanager
+def routing_to_ordered(on: bool):
+    """Within the block, :func:`_ordered_scatters` treats every keyed accumulate of policy ``auto`` or ``compensated``
+    as ``policy="ordered"``."""
+    token = _ROUTE_TO_ORDERED.set(on)
+    try:
+        yield
+    finally:
+        _ROUTE_TO_ORDERED.reset(token)
+
+
+def takes_ordered_stages(sink) -> bool:
+    """Whether the keyed accumulate ``sink`` is lowered to the ordered scatter stages."""
+    return (isinstance(sink, AccumWrite) and sink.index is not None
+            and (sink.policy == "ordered" or _ROUTE_TO_ORDERED.get() and sink.policy in ("auto", "compensated", "keyed_auto")))
+
+
+def _lane_sums_as_block_sums(sinks: tuple) -> tuple:
+    """Under :func:`routing_to_ordered`, each sum over lane axes that a sink stores as a keyed accumulate becomes the
+    block sum of the same payload (the ordered block stages: no scatter log), and the residual sink of a compensated
+    policy is dropped (the accumulator carries its own compensation). Every other sink is returned as it was."""
+    if not _ROUTE_TO_ORDERED.get():
+        return sinks
+    residual = {s.name + "_c" for s in sinks if isinstance(s, AccumWrite) and s.policy in ("compensated", "keyed_auto")}
+    out = []
+    for sink in sinks:
+        if isinstance(sink, AccumWrite) and sink.name in residual:
+            continue
+        reduced = getattr(sink, "reduced", None)
+        if (isinstance(sink, AccumWrite) and reduced is not None and sink.policy in ("auto", "compensated", "keyed_auto")
+                and team.wanted(reduced.operands[0], "auto", "ordered")):
+            block = team.BlockSum("sum", reduced.operands[0], key=reduced.key, count=reduced.count, policy="ordered",
+                                  kept=reduced.kept)
+            out.extend(block.stored(sink.name))
+        else:
+            out.append(sink)
+    return tuple(out)
+
+
 def _ordered_scatters(name: str, sinks: tuple) -> tuple:
     """``(sinks, {target: slots per lane})``: each ``hawk.scatter(t, policy="ordered")[key] += v``
     replaced by the stores of its key and value into the lane's next log slots, one slot per add
@@ -223,10 +270,12 @@ def _ordered_scatters(name: str, sinks: tuple) -> tuple:
     from .nodes import SampleIndex
     from .ops import make
 
-    def ordered(s):
-        return isinstance(s, AccumWrite) and s.policy == "ordered" and s.index is not None
+    ordered = takes_ordered_stages
 
     sinks = tuple(sinks)
+    if _ROUTE_TO_ORDERED.get():             # the accumulator carries its own compensation: no residual plane
+        residual = {s.name + "_c" for s in sinks if isinstance(s, AccumWrite) and s.policy in ("compensated", "keyed_auto")}
+        sinks = tuple(s for s in sinks if not (isinstance(s, AccumWrite) and s.name in residual))
     if any(isinstance(s, Loop) and any(ordered(b) or isinstance(b, Loop) for b in s.body_sinks) for s in sinks):
         raise HawkError(f"{name!r}: hawk.scatter(policy='ordered') inside a lowered loop is not built "
                         "(a `for` that scatters is unrolled by the trace, so this needs a loop node made by hand)")
@@ -252,7 +301,7 @@ def _ordered_scatters(name: str, sinks: tuple) -> tuple:
     return tuple(out), width
 
 
-def stages(name: str, sinks, *, wide: bool = False, real_bytes: int = 8, taken=()) -> tuple | None:
+def stages(name: str, sinks, *, wide: bool = False, real_bytes: int = 8, taken=(), inplace: bool = False) -> tuple | None:
     """The stages of the kernel ``name`` with sink set ``sinks``, or ``None``
     when the body reads no reduction over samples (one kernel, unchanged).
 
@@ -260,8 +309,10 @@ def stages(name: str, sinks, *, wide: bool = False, real_bytes: int = 8, taken=(
     not a team stage, for scalars of ``real_bytes`` bytes, and a kernel that has a wide value placed in a
     scratch plane is returned as the stages it needs, one at least: that stage names the plane in its
     ``planes``. A caller that cannot make the planes leaves ``wide`` off and gets the kernel as it was.
-    ``taken`` are plane names the placement must not reuse (those of another body of the same kernel)."""
-    found = _stages(name, sinks)
+    ``taken`` are plane names the placement must not reuse (those of another body of the same kernel). With ``inplace`` a
+    reduction input that is a bare read of an input plane is read by its team stage in place, not copied to scratch (an index-set
+    build compacts its inputs, so it copies)."""
+    found = _stages(name, sinks, inplace)
     if not wide:
         return found
     return _placed(name, sinks, found, real_bytes, taken)
@@ -295,9 +346,9 @@ def _placed(name: str, sinks, found, real_bytes: int, taken_names=()) -> tuple |
     return tuple(out) if changed else (None if whole else found)
 
 
-def _stages(name: str, sinks) -> tuple | None:
+def _stages(name: str, sinks, inplace: bool = False) -> tuple | None:
     """:func:`stages` without the placement."""
-    sinks, scattered = _ordered_scatters(name, sinks)
+    sinks, scattered = _ordered_scatters(name, _lane_sums_as_block_sums(tuple(sinks)))
     order = _post_order(sinks)
     cuts = [n for n in order if isinstance(n, ReduceSamples)]
     team.refuse_in_loop(order)
@@ -325,7 +376,9 @@ def _stages(name: str, sinks) -> tuple | None:
     bi = {id(b): i for i, b in enumerate(blocks)}
     read_back = {id(o) for n in order if not isinstance(n, team.BlockSumWrite) for o in n.operands
                  if isinstance(o, team.BlockSum)}
-    sinks = (*sinks, *(s for s, _ in stores), *(s for b in blocks for s in team.factor_stores(bi[id(b)], b)))
+    sinks = (*sinks, *(s for s, _ in stores),
+             *(s for b in blocks for s in team.factor_stores(
+                 bi[id(b)], b, tuple(team.plane_reads(b, stored_to.get(id(b)), id(b) in read_back)) if inplace else ())))
 
     # a cut stored to a Mutable already has a cell: read that one
     # (a vector's columns are components of the reduced value)
@@ -349,7 +402,7 @@ def _stages(name: str, sinks) -> tuple | None:
     # the stage each sink lands in: after every reduction it reads
     place = {id(s): (depth[id(s.value)] if isinstance(s, team.TeamStore) else depth[id(s)]) + 1
              for s in sinks}
-    count = max([max(place.values()), *(depth[id(c)] for c in cuts), *(depth[i] for i in member_group)])
+    count = max([max(place.values(), default=0), *(depth[id(c)] for c in cuts), *(depth[i] for i in member_group)])
     # a Mutable's earlier value read by a later stage: its store waits for it
     read_by = [(id(s), _reads((s,))) for s in sinks]
     read_by += [(id(c), _reads(c.operands)) for c in cuts if id(c) in made]
@@ -397,16 +450,17 @@ def _stages(name: str, sinks) -> tuple | None:
                 prod(s.value.ttype.shape) for s in new) >= team.COPY_MIN:
             # nothing but operand copies into team scratch: a block per lane, its threads copy the slice together
             new, copy = tuple(team.TeamCopy(s.name, s.value) for s in new), team.copy_spec()
-        out.append(Stage(name if not out else f"{name}_{len(out) + 1}", new, cells_in, cells_out,
-                         recomputed, keyed_out, copy))
+        if new or cells_in or cells_out:        # a stage whose stores were all read in place is not launched
+            out.append(Stage(name if not out else f"{name}_{len(out) + 1}", new, cells_in, cells_out,
+                             recomputed, keyed_out, copy))
         spec = team.spec_of(groups, k, depth, factored)
         if spec is not None:
-            out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
+            out.append(Stage(name if not out else f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
         for block in (b for b in blocks if depth[id(b)] == k):
             for spec in team.block_spec(bi[id(block)], block, stored_to.get(id(block)),
                                         Keyed(f"{team.PLANE_PREFIX}b{bi[id(block)]}_g", team.size_of(block.ttype), block.kept, block.ttype.shape),
-                                        id(block) in read_back):
-                out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
+                                        id(block) in read_back, inplace):
+                out.append(Stage(name if not out else f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
     for target, slots in scattered.items():     # an ordered scatter: add each target's logs after the stages that fill them
         for spec in team.scatter_specs(target, slots):
             out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))

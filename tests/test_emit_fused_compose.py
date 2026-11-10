@@ -258,15 +258,15 @@ def test_two_lanes_committing_to_one_plane_are_refused_naming_both():
     assert "write it twice" in message
 
 
-def test_an_empty_or_ambiguous_group_and_an_unbuilt_scalar_mode_are_refused():
+def test_an_empty_or_ambiguous_group_and_an_unknown_scalar_mode_are_refused():
     with pytest.raises(HawkError, match="empty lane group"):
         compose([], "nothing")
     with pytest.raises(HawkError, match="two lanes share a name"):
         compose([lane_energy, lane_energy], "twice")
     with pytest.raises(HawkError, match="neither a Lane nor a traced kernel"):
         compose([object()], "not_a_lane")
-    with pytest.raises(HawkError, match="declared but not built yet"):
-        compose(GROUP, "banded_group", "banded")
+    with pytest.raises(HawkError, match="unknown scalar mode 'posit8'"):
+        compose(GROUP, "posit8_group", "posit8")
 
 
 def test_a_lane_carries_its_declared_but_unread_slots_into_the_merged_spec():

@@ -170,7 +170,7 @@ def test_explicit_n_samples_always_wins_over_the_bound_planes(gather_vjp_unit):
     bar_y = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])   # 8 samples
     where = np.array([0, 1, 2, 0, 1, 2, 3, 4], dtype=np.int32)
     bar_table = np.zeros(5)
-    R.run(kernel, bar_y=bar_y, where=where, bar_table=bar_table, n_samples=3)
+    R.run(kernel, bar_y=bar_y, where=where, bar_table=bar_table, table=np.zeros_like(bar_table), n_samples=3)
     want = np.zeros(5)
     np.add.at(want, where[:3], bar_y[:3])                        # only 3 scattered
     np.testing.assert_allclose(bar_table, want)
@@ -200,7 +200,7 @@ def test_an_accum_led_kernel_is_silently_wrong_before_the_fix(gather_vjp_unit):
     bar_y = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
     where = np.array([0, 1, 2, 0, 1, 2, 3, 4], dtype=np.int32)
     bar_table = np.zeros(5)
-    R.run(kernel, bar_y=bar_y, where=where, bar_table=bar_table)  # NO n_samples=
+    R.run(kernel, bar_y=bar_y, where=where, bar_table=bar_table, table=np.zeros_like(bar_table))  # NO n_samples=
     want = np.zeros(5)
     np.add.at(want, where, bar_y)   # scatter-add over ALL 8 samples
     np.testing.assert_allclose(bar_table, want)

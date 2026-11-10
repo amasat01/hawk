@@ -257,7 +257,8 @@ UNSPELLED = {"lu_solve_t": "the transposed solve a derivative of lu_solve/lu_det
              "qr_gram_solve": "the solve with J^T J a derivative of lstsq mints (two triangular solves on R)",
              "splat": "the broadcast a derivative mints; an author's rank-0 "
                       "operand broadcasts through the elementwise type rule",
-             "add_at": "the adjoint of component_at, minted by the derivative rule"}
+             "add_at": "the adjoint of component_at, minted by the derivative rule",
+             "clamp_index": "the bound Table.at holds its index in, minted by the read itself"}
 
 
 def _mint(spell):

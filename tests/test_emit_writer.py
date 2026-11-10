@@ -12,18 +12,20 @@ changes the body), while the aether writer's own text stays what it was.
 
 from __future__ import annotations
 
+import re
+
 from hawk.emit.writer import WRITER_MEMBERS, Writer
 
 
 def test_the_writer_protocol_names_every_spelling_seam():
     expected = {"declare", "carry_type", "tape_decl", "counter_decl", "for_header",
-                "tail_break", "sample_index_value", "hoist", "selector_decl", "mix_count",
+                "tail_break", "sample_index_value", "plane_extent_value", "hoist", "selector_decl", "mix_count",
                 "predicated_rank0", "predicated_tensor", "switch_default_tail", "typed_zero",
                 "leaf", "const", "at", "select", "op", "guard", "store", "scatter_store",
                 "accum_scattered", "or_scattered", "store_compensated", "sample_sum", "tape_write",
                 "finish", "exit_if", "component_commit", "in_place_accumulate", "zero_row"}
     assert set(WRITER_MEMBERS) == expected
-    assert len(WRITER_MEMBERS) == 32
+    assert len(WRITER_MEMBERS) == 33
     assert all(callable(getattr(Writer, m)) for m in WRITER_MEMBERS)
     assert "id" in Writer.__annotations__
     assert "names_every_tensor" in Writer.__annotations__
@@ -43,7 +45,7 @@ class _Probe(AetherWriter):
 
     id = "probe"
 
-    def declare(self, name, ttype, text):
+    def declare(self, name, ttype, text, ordered=True, held=False):
         return f"auto {name} = {text};"
 
 
@@ -59,7 +61,7 @@ def test_a_writer_that_spells_declarations_differently_changes_the_body():
     probed = render_body(k.sinks, k.walk, writer=_Probe()).text
     assert plain != probed
     assert "const auto " in plain and "const auto " not in probed
-    assert plain.replace("const auto ", "auto ") == probed
+    assert re.sub(r"const (auto|aether::Item<[^>]*>) ", "auto ", plain) == probed
 
 
 def test_the_aether_writer_implements_every_member_and_for_header_takes_the_renderer():

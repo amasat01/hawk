@@ -87,7 +87,8 @@ def test_a_math_free_kernel_emits_no_vector_math(tmp_path):
 @needs_x86
 def test_a_math_kernel_emits_only_the_functions_it_calls(tmp_path):
     syms = _hvm_symbols(_host_so(root_pow_step, tmp_path))
-    masked_dropped = tc.gcc_maskcall_affected(tc.compiler_macros(tc.host_compiler()))
+    masked_dropped = (tc.gcc_maskcall_affected(tc.compiler_macros(tc.host_compiler()))
+                      and "-DAETHER_HVM_MASKED=1" not in tc.host_codegen_flags())
     called = {re.sub(r"^.*aether_hvm_", "", s) for s in syms}
     # sqrt is inline on the host (aether b385084: the compiler widens it natively), so only pow leaves a symbol.
     assert called == {"pow"}, sorted(syms)

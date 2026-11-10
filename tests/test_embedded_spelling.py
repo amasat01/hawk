@@ -56,7 +56,7 @@ def test_int_literals_and_helpers():
     assert S.INT_HELPER[("add", "i64")] == "hawk_i64_add"
     assert S.INT_HELPER[("band", "int32")] == "hawk_i32_and"
     assert S.INT_HELPER[("from_real", "uint32")] == "hawk_u32_from_real"
-    assert len(S.INT_HELPER) == 17 * 4
+    assert len(S.INT_HELPER) == 18 * 4
 
 
 def test_clamps():

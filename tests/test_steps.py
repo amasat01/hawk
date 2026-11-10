@@ -385,9 +385,13 @@ def test_the_auto_loop_reads_the_word_once_and_the_fixed_loop_does_not():
     for source in _sources(hawk.steps(osc, 16)):
         for shape, text in builds(source.text).items():
             assert "fused_steps" not in text
-            plain = shape == "plain" or source.target != "host"
-            assert re.search(r"hawk_k\d+_step < 16;" if plain
-                             else r"hawk_trip < 16;", text), shape
+            if shape == "plain" or source.target != "host":
+                assert re.search(r"hawk_k\d+_step < 16;", text), shape
+            else:
+                # the interchanged loop: the literal bound is each lane's end trip
+                assert "hawk_rcnt[hawk_l] = static_cast<Int>(16);" in text
+                assert "hawk_rcnt[hawk_l] = hawk_trip + 1 + static_cast<Int>(16);" in text
+                assert "hawk_trip + 1 < hawk_rcnt[hawk_l]" in text
 
 
 def test_auto_refuses_what_hawk_steps_refuses():

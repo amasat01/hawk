@@ -316,14 +316,15 @@ class _DispatchMixin:
                     tally[id(r)] = tally.get(id(r), 0) + 1
         self._render_nodes(hoisted, tally)
 
-    def _render_one(self, node: Node, named: bool) -> None:
+    def _render_one(self, node: Node, named: bool, held: bool = False) -> None:
         """Render ``node``'s expression: declared as a ``tb`` temporary when
-        ``named``, else bound inline."""
+        ``named`` (``held``: read more than once), else bound inline."""
         text = self._expr(node, materialised=named)
         if named:
             name = f"tb{self.temps}"
             self.temps += 1
-            self._emit(self.writer.declare(name, node.ttype, text))
+            self._emit(self.writer.declare(name, node.ttype, text, ordered=self._ordered(node),
+                                           held=held and not self._leaf_valued(node)))
             self.local[id(node)] = name
         else:
             self.local[id(node)] = text
@@ -447,4 +448,4 @@ class _DispatchMixin:
                 self.local[id(node)] = self._ref(node.forward)
                 continue
             named = self._should_name(node, tally.get(id(node), 0))
-            self._render_one(node, named)
+            self._render_one(node, named, held=tally.get(id(node), 0) >= 2)

@@ -54,7 +54,7 @@ class LoopIndex(Node):
     object counter, so the kernel's digest stays byte-identical across
     processes."""
 
-    __slots__ = ("depth", "name")
+    __slots__ = ("depth", "name", "bounds")
 
     kind = LOOP_INDEX_KIND
 
@@ -62,6 +62,8 @@ class LoopIndex(Node):
         super().__init__(ttype or TensorType((), "i32"))
         self.depth = int(depth)
         self.name = name
+        #: ``(first, last)`` value of a compile-time ``range``, else ``None``: lets a table read prove its index in range
+        self.bounds: tuple | None = None
 
     @property
     def dedup_extra(self) -> Any:
@@ -351,8 +353,8 @@ def _body_keys(loop: Loop) -> tuple[dict, tuple]:
         t = node.ttype
         raw = repr((node.kind, t.dtype, t.shape, t.tag, tuple(parts),
                     node.dedup_extra))
-        key_of[id(node)] = hashlib.blake2b(
-            raw.encode(), digest_size=BODY_KEY_HEX // 2).hexdigest()
+        # sha256, not blake2: a FIPS-mode Python refuses blake2 outright
+        key_of[id(node)] = hashlib.sha256(raw.encode()).hexdigest()[:BODY_KEY_HEX]
     return key_of, body
 
 

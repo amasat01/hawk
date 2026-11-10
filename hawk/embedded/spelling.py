@@ -34,7 +34,7 @@ LIBM_NAMES = (
 
 #: Integer helper kinds, in the order the helpers are declared.
 _INT_KINDS = (
-    "add sub mul neg abs min max div floordiv mod band bor bxor shl shr invert "
+    "add sub mul neg abs min max div floordiv mod band bor bxor shl shr invert clamp_index "
     "from_real"
 ).split()
 

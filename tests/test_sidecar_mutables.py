@@ -141,3 +141,32 @@ def test_the_declared_kernel_computes_the_right_answer_through_the_mirror(built)
     np.testing.assert_allclose(
         eplan.plan(plugin, structure=eexec.HostTeam).run(x=x, a=3.0),
         D.ref_vec3_scale(x, 3.0))
+
+
+@pytest.mark.parametrize("cxx", ["g++", "clang++"])
+def test_a_512_wide_vector_assign_compiles_and_runs_under_each_host_compiler(
+        cxx, tmp_path, cache_dir, monkeypatch):
+    """clang caps a fold expression at 256 operands; the whole-value assign
+    must not grow a fold with the extent."""
+    import shutil
+
+    import eagle.exec as eexec
+    from eagle import plan as eplan
+
+    from hawk import Mutable, Param, Vector, kernel
+    from hawk.artifact import build_bundle
+
+    if shutil.which(cxx) is None:
+        pytest.fail(f"no {cxx} on PATH; a skipped compile row is not a pass")
+    monkeypatch.setenv("HAWK_CXX", cxx)
+
+    @kernel
+    def scale512(x: Vector[512], a: Param, y: Mutable[Vector[512]]):
+        y = a * x
+
+    bundle = build_bundle([scale512], tmp_path / cxx, targets=("host",),
+                          cache_dir=str(tmp_path / ("cache_" + cxx)), host_profile="native")
+    plugin = L.host_plugin(bundle.directory, "scale512", sidecar_of(bundle, "scale512"))
+    x = np.arange(512 * 8, dtype=float).reshape(512, 8)
+    np.testing.assert_array_equal(
+        eplan.plan(plugin, structure=eexec.HostTeam).run(x=x, a=3.0), 3.0 * x)

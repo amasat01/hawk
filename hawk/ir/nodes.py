@@ -273,6 +273,29 @@ class SampleIndex(Node):
 
 
 LANE_POSITION_KIND = "lane_position"
+PLANE_EXTENT_KIND = "plane_extent"
+
+
+class PlaneExtent(Node):
+    """The element count of the plane its one operand (the plane's leaf) reads, as an integer VALUE: the bound a
+    read at a computed index is clamped to (:meth:`hawk.trace.value.TableRef.at`). The leaf binds the plane, so a
+    derivative that keeps the clamp keeps the plane. A TERMINAL for both transforms, like :class:`SampleIndex`: an
+    extent is not differentiable."""
+
+    __slots__ = ()
+
+    kind = PLANE_EXTENT_KIND
+
+    def __init__(self, plane: Leaf, ttype: TensorType | None = None) -> None:
+        super().__init__(ttype or TensorType((), "i32"), (plane,))
+
+    @property
+    def role(self) -> str:
+        return self.operands[0].role
+
+    @property
+    def name(self) -> str:
+        return self.operands[0].name
 
 
 class LanePosition(SampleIndex):
@@ -331,6 +354,17 @@ class At(Op):
     @property
     def index(self) -> Node:
         return self.operands[1]
+
+    @property
+    def raw_index(self) -> Node:
+        """The index before its clamp (:func:`peel_clamp`): what a pass reads for the index's SHAPE. A pass that
+        rewrites the read keeps :attr:`index`, so the read stays clamped."""
+        return peel_clamp(self.operands[1])
+
+
+def peel_clamp(node: Node) -> Node:
+    """``node`` without the ``clamp_index`` a table read holds its index in, else ``node`` itself."""
+    return node.operands[0] if isinstance(node, Op) and node.kind == "clamp_index" else node
 
 
 #: The label of the index a PARAMETER CELL carries: a ``uniform`` promoted to
@@ -580,15 +614,18 @@ class AccumWrite(Sink):
     an ``index`` other than the own column is a scatter. ``policy`` is the
     sum contract (:data:`POLICIES`)."""
 
-    __slots__ = ("policy",)
+    __slots__ = ("policy", "reduced")
 
     def __init__(self, name: str, value: Node, index: Node | None = None,
-                 ttype: TensorType | None = None, policy: str = "auto") -> None:
+                 ttype: TensorType | None = None, policy: str = "auto", reduced: Node | None = None) -> None:
         super().__init__("accum_write", "accum_out", name, value, index, ttype)
         if policy not in (*SCATTER_POLICIES, KEYED_AUTO):
             raise HawkError(
                 f"accum_write {name!r}: policy {policy!r} is not one of {SCATTER_POLICIES}")
         self.policy = policy
+        #: The keyed :class:`ReduceSamples` this accumulate stores (a sum over lane axes), or ``None``: lets a build
+        #: that cannot add atomically lower the sum as a block sum instead of a scatter.
+        self.reduced = reduced
 
     @property
     def dedup_extra(self) -> Any:
@@ -597,7 +634,7 @@ class AccumWrite(Sink):
 
     def rebuilt(self, value: Node) -> AccumWrite:
         """The same accumulate over ``value``."""
-        return AccumWrite(self.name, value, self.index, self.ttype, self.policy)
+        return AccumWrite(self.name, value, self.index, self.ttype, self.policy, self.reduced)
 
 
 #: The suffix of a ``sample_sum`` plane's compensation companion.
@@ -678,7 +715,7 @@ class ReduceSamples(Node):
         shape = value.ttype.shape
         scalar = TensorType((), value.ttype.dtype)
         if not shape:
-            return (AccumWrite(name, value, self.key, scalar, self.policy),)
+            return (AccumWrite(name, value, self.key, scalar, self.policy, self),)
         index = [(r,) if len(shape) == 1 else (r, c)
                  for r in range(shape[0]) for c in range(shape[-1] if len(shape) == 2 else 1)]
         from .ops import make

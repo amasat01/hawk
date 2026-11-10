@@ -67,7 +67,7 @@ class Kernel:
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
                  "time", "time_step", "source_digest", "jump", "returns",
-                 "lane_space", "group", "broadcast", "team", "_variants", "_plan", "_lock")
+                 "lane_space", "group", "members", "broadcast", "team", "_variants", "_plan", "_lock")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
@@ -93,6 +93,8 @@ class Kernel:
             self.lane_space = getattr(sinks, "lane_space", self.lane_space)
         #: The compaction group, a lane count (``@hawk.kernel(group=...)``): 1.
         self.group = getattr(sinks, "group", 1)
+        #: The kernels a chain (:func:`hawk.chain`) or the derivative of one runs in sequence; ``None`` otherwise.
+        self.members = getattr(sinks, "members", None)
         #: The planes this kernel reads broadcast, with their patterns (a variant, see
         #: :mod:`hawk._broadcast`), and the variants made of it by pattern.
         self.broadcast: dict[str, tuple] = {}
@@ -1036,15 +1038,17 @@ class TeamStage(Kernel):
 
     __slots__ = ()
 
-    def __init__(self, name: str, sinks: tuple, team: Any) -> None:
-        super().__init__(name, sinks, {})
+    def __init__(self, name: str, sinks: tuple, team: Any, planes: dict[str, Any] | None = None) -> None:
+        super().__init__(name, sinks, planes)
         self.team = team
+        if team.reads:          # input planes the stage reads in place are slots of its own
+            self.walk = canonical(self.sinks, (*_declared(self.planes), *(Slot(leaf.role, leaf.name, leaf.ttype) for leaf in team.reads)))
 
-    def fused_body(self, kind: Any = None) -> Any:
+    def fused_body(self, kind: Any = None, cells: bool = False) -> Any:
         from ..artifact.bundle import _active_spec
         from ..emit.team import team_body
 
-        return team_body(self.team, _active_spec(kind))
+        return team_body(self.team, _active_spec(kind), cells)
 
 
 class WarpStage(TeamStage):
@@ -1053,7 +1057,7 @@ class WarpStage(TeamStage):
 
     __slots__ = ()
 
-    def fused_body(self, kind: Any = None) -> Any:
+    def fused_body(self, kind: Any = None, cells: bool = False) -> Any:
         from ..emit.render import render_body
 
         if self.one_step is not None:       # an automatic kernel renders its two bodies itself

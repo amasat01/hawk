@@ -162,8 +162,8 @@ def test_a_read_at_the_loop_index_of_an_input_plane_reads_the_view_in_place():
 
 
 def test_a_runtime_read_of_a_computed_vector_keeps_the_item():
-    """What ``at()`` does not apply to keeps aether's ``Item::operator()``: a
-    computed vector has no plane to read from."""
+    """What ``at()`` does not apply to keeps aether's ``Item::operator()``: a vector that is not element-wise
+    (a cross product) has no plane to read from and no per-element form."""
     text = render_body(*_computed_runtime_read()).text
     assert "const aether::Item<Real, 3> hawk_it" in text, text
     assert ".at(" not in text, text
@@ -177,7 +177,7 @@ def _computed_runtime_read():
     s, v = TensorType((), "f64"), TensorType((3,), "f64")
     x = Leaf("vocab_read", "vec_in", "x", v)
     k = Leaf("vocab_read", "per_sample", "k", TensorType((), "i32"))
-    sinks = (Assign("y", mk("component_at", (mk("mul", (x, x)), k)), s),)
+    sinks = (Assign("y", mk("component_at", (mk("cross", (x, x)), k)), s),)
     return sinks, canonical(sinks)
 
 

@@ -44,6 +44,7 @@ from ..ir.nodes import (
     Op,
     Primitive,
     LanePosition,
+    PlaneExtent,
     SampleIndex,
     SampleSum,
     Select,
@@ -55,7 +56,7 @@ from ..ir.nodes import (
     sample_sums,
 )
 from ..ir.linalg import CONSUMERS, FACTORISATIONS
-from ..ir.ops import RANDOM_OPS
+from ..ir.ops import ELEMENTWISE_BINARY, ELEMENTWISE_TERNARY, RANDOM_OPS, UNARY_MATH
 from ..ir.lanes import warp_uniform
 from ..ir.slotwise import chain, is_structural_zero
 from ..ir.walk import canonical_nodes
@@ -189,6 +190,39 @@ class LaneSplit:
     needs_random: bool = False
     sample_free: tuple = ()
     fp64_ops: int = 0
+    #: ``(carry index, descending)`` when the exit condition is a comparison of
+    #: one carried real's next value against a sample-free bound, which fixes
+    #: the order in which the lanes approach their exit (soonest first); else
+    #: ``None``. A hint for the host's lane order only.
+    exit_order: tuple | None = None
+
+
+#: The comparison an exit condition makes of ``(next, bound)`` to whether the
+#: carry rises towards the bound (``True``) or falls towards it, and the same
+#: comparison with its operands swapped.
+_EXIT_RISES = {"ge": True, "gt": True, "le": False, "lt": False}
+_SWAPPED = {"ge": "le", "gt": "lt", "le": "ge", "lt": "gt"}
+
+
+def _exit_order(loop: Loop) -> tuple | None:
+    """``(j, descending)`` when ``loop.exit_cond`` is ``next_j  OP  bound`` (or
+    the bound first) with ``next_j`` the next value of exactly one scalar real
+    carry ``j`` and ``bound`` free of per-sample values; ``None`` for any other
+    form. ``descending``: the carry rises towards the bound (``>=``, ``>``), so
+    the largest value is the soonest to exit."""
+    cond = loop.exit_cond
+    if not (isinstance(cond, Op) and cond.kind in _EXIT_RISES) or len(cond.operands) != 2:
+        return None
+    for first in (0, 1):
+        value, bound = cond.operands[first], cond.operands[1 - first]
+        kind = cond.kind if first == 0 else _SWAPPED[cond.kind]
+        hits = [j for j, nxt in enumerate(loop.nexts) if nxt is value]
+        if len(hits) != 1 or not _sample_free(bound):
+            continue
+        ttype = loop.carries[hits[0]].ttype
+        if not ttype.shape and ttype.dtype in ("f64", "f32"):
+            return hits[0], _EXIT_RISES[kind]
+    return None
 
 
 #: A declaration the renderer emits (``const auto t5 = ...``, ``const
@@ -205,7 +239,7 @@ _WORD = re.compile(r"\b\w+\b")
 
 
 def render_lane_split(sinks: Sequence[Sink], walk: Walk, *, indent: str = "        ",
-                      kind=None) -> LaneSplit | None:
+                      kind=None, writer=None) -> LaneSplit | None:
     """The :class:`LaneSplit` of a fused-step kernel's body, or ``None`` when
     the body is not that shape.
 
@@ -215,7 +249,7 @@ def render_lane_split(sinks: Sequence[Sink], walk: Walk, *, indent: str = "     
     after it reading a value named before it. Anything else answers
     ``None`` and keeps its plain body: a body with its own inner ``for`` would
     need a second interchange."""
-    return _Renderer(tuple(sinks), walk, indent, kind).lane_split()
+    return _Renderer(tuple(sinks), walk, indent, kind, writer=writer).lane_split()
 
 
 @dataclass(frozen=True)
@@ -267,10 +301,10 @@ class LaneSegments:
 
 
 def render_lane_segments(sinks: Sequence[Sink], walk: Walk, cut: Sequence[Loop], *,
-                         indent: str = "        ", kind=None) -> LaneSegments:
+                         indent: str = "        ", kind=None, writer=None) -> LaneSegments:
     """The :class:`LaneSegments` of a body whose top-level loops ``cut``
     (:func:`hawk.ir.vectorise.interchanged_loops`) run interchanged."""
-    return _Renderer(tuple(sinks), walk, indent, kind).lane_segments(cut)
+    return _Renderer(tuple(sinks), walk, indent, kind, writer=writer).lane_segments(cut)
 
 
 def _sample_free(node: Node) -> bool:
@@ -282,6 +316,8 @@ def _sample_free(node: Node) -> bool:
         if id(n) in seen:
             continue
         seen.add(id(n))
+        if isinstance(n, PlaneExtent):
+            continue                    # a table's length: the same for every sample
         if isinstance(n, Leaf):
             if n.role not in ("uniform", "nsamples"):
                 return False
@@ -313,6 +349,35 @@ def _declarations(pre: str, names: Sequence[str]) -> tuple:
     return tuple(line.strip() for name, line in lines.items() if name in want)
 
 
+def _clamp_spans(nodes, position: dict) -> dict:
+    """The ``clamp_index`` reads at ``base + c`` (``c`` a static integer) that share ``base`` and the bound, two or more
+    per group (``position``: the canonical walk's, so equal nodes are one): each maps to ``(base, min c, max c)``. ONE test of the span (``base + lo >= 0`` and ``base + hi < n``)
+    proves every read of the group in range, so an in-range lane pays one test, not one per read; the compiler
+    threads the shared test into one in-range path. The emitted text is not duplicated, so the body stays one body."""
+    groups: dict = {}
+    for node in nodes:
+        if not (isinstance(node, Op) and node.kind == "clamp_index"):
+            continue
+        index, bound = node.operands
+        base, offset = index, 0
+        if isinstance(index, Op) and index.kind in ("add", "sub"):
+            a, b = index.operands
+            if isinstance(b, Const) and isinstance(b.literal, int) and not isinstance(b.literal, bool):
+                base, offset = a, (b.literal if index.kind == "add" else -b.literal)
+            elif index.kind == "add" and isinstance(a, Const) and isinstance(a.literal, int) \
+                    and not isinstance(a.literal, bool):
+                base, offset = b, a.literal
+        groups.setdefault((position.get(id(base), id(base)), position.get(id(bound), id(bound))), []).append((node, base, offset))
+    spans: dict = {}
+    for reads in groups.values():
+        if len(reads) < 2:
+            continue
+        lo, hi = min(o for _, _, o in reads), max(o for _, _, o in reads)
+        for node, base, _ in reads:
+            spans[id(node)] = (base, lo, hi)
+    return spans
+
+
 class _Renderer(_DispatchMixin):
     """One rendering pass. Held as a class only to carry the memo tables."""
 
@@ -324,7 +389,7 @@ class _Renderer(_DispatchMixin):
                  writer=None) -> None:
         from ..ext import DEFAULT_KIND
 
-        self.sinks = sinks
+        self.sinks = sinks = _push_reads(sinks)
         self.walk = walk
         self.indent = indent
         self.kind = kind if kind is not None else DEFAULT_KIND
@@ -332,6 +397,8 @@ class _Renderer(_DispatchMixin):
         #: this traversal emits comes from here.
         self.writer = writer if writer is not None else AETHER
         self.nodes, self.position = canonical_nodes(sinks)
+        #: ``{id(clamp): (base, lo, hi)}``: the table reads that share a runtime base at static offsets (one range test).
+        self.clamp_spans = _clamp_spans(self.nodes, self.position)
         #: ``{plane: width}`` of the planes the kernel's placements write (a scratch plane's proxy needs its tile).
         self.plane_widths = {name: rec["width"] for name, rec in _placements(self.nodes).items()}
         #: Whether a placement (:mod:`hawk.ir.wide`) renders as its plane (the device text) or as its value
@@ -364,6 +431,9 @@ class _Renderer(_DispatchMixin):
         #: value, for a runtime component read (``component_at``). Scoped like
         #: :attr:`local`: an Item declared inside a loop dies with that scope.
         self.items: dict[int, str] = {}
+        #: the names of locals declared as an ``aether::Item`` (a ``.get()`` row or a held value): a runtime
+        #: component read of one reads it in place, with no second copy.
+        self.item_names: set[str] = set()
         #: The loop-carried C++ locals a lowered loop declares, by loop suffix.
         self.carry_names: dict[int, tuple] = {}
         #: Per-iteration TAPE arrays a forward loop keeps, by loop position ->
@@ -375,6 +445,11 @@ class _Renderer(_DispatchMixin):
         #: reads.
         self.count_names: dict[int, str] = {}
         self.fanout: dict[int, int] = {}
+        #: The ``(sin, cos)`` names bound once for an operand both are taken of (banded ``sincos``), by operand id.
+        self.sincos: dict[int, tuple] = {}
+        #: The op kinds that read each value (by node id); a value a sink, a loop carry or an exit reads is held
+        #: under ``None``: a consumer that is no operation (:meth:`_ordered`).
+        self.readers: dict[int, set] = {}
         #: The names of the fresh ``Item`` locals the writer declares for a value its
         #: statements fill (:meth:`~hawk.emit.writer_aether.AetherWriter.fresh_value`).
         self.fresh_items: set = set()
@@ -393,6 +468,10 @@ class _Renderer(_DispatchMixin):
             for child in node.operands:
                 p = self.position[id(_through(child))]
                 self.fanout[p] = self.fanout.get(p, 0) + 1
+                self._read_by(child, node)
+            if isinstance(node, Loop):
+                for held in (*node.nexts, node.exit_cond, *node.exit_values):
+                    self._read_by(held, None)
             if isinstance(node, Loop):
                 for child in node.operands:
                     child = _through(child)
@@ -402,9 +481,13 @@ class _Renderer(_DispatchMixin):
                         # naming it here would emit a dead `plane[i].eval()`.
                         continue
                     self.forced.add(self.position[id(child)])
+        for sink in self.sinks:
+            for held in (getattr(sink, "value", None), getattr(sink, "index", None)):
+                self._read_by(held, None)
         #: The positions no statement renders, because every user reads them through their
         #: own operand (:meth:`~hawk.emit.writer_aether.AetherWriter.unrendered`).
         self.unrendered = self.writer.unrendered(self) if self.writer.rolled_forms else frozenset()
+        self.inplace = self._inplace_planes()
         self.lazy = self._lazy_leaves()
         #: the leaves only an ``At`` reads (by name, at its own index): no local of their own
         self.crossed = self._crossed_leaves()
@@ -448,6 +531,22 @@ class _Renderer(_DispatchMixin):
         if self._uniform is None:
             self._uniform = warp_uniform(self.sinks)
         return self._uniform(node)
+
+    def _inplace_planes(self) -> dict:
+        """``{plane: stored}`` for the mutable planes the walk reads at the top level whose runtime-index read
+        may come straight from the plane (``mut_m[i].at(k)``): every store to it is a plain own-column
+        ``Assign``/``WideWrite`` of the body, committed after every node (an early or per-component store is
+        refused to a plane some leaf reads; an indexed store, an accumulate and a lowered loop's own
+        stores are not plain)."""
+        loops = [n for n in (*self.nodes, *self.sinks) if isinstance(n, Loop)]
+        for node in list(loops):
+            loops.extend(n for n in _flat_body(node) if isinstance(n, Loop))
+        sinks = [s for s in self.sinks if isinstance(s, Sink) and s.role == "mutable"]
+        inside = {s.name for loop in loops for s in loop.body_sinks if s.role == "mutable"}
+        stored = {s.name for s in sinks}
+        other = {s.name for s in sinks if not (type(s) in (Assign, WideWrite) and s.index is None)}
+        return {n.name: n.name in stored for n in self.nodes
+                if isinstance(n, Leaf) and n.role == "mutable" and not {n.name} & (inside | other)}
 
     def _lazy_leaves(self) -> frozenset:
         """Positions of the wide read-only leaves bound as the ``[i]`` proxy.
@@ -493,7 +592,10 @@ class _Renderer(_DispatchMixin):
             if isinstance(leaf, At):
                 if ok and p in proxied:
                     out.add(p)      # a plane read at another lane, every use a library operand
-            elif (ok and leaf.ttype.shape and leaf.role not in ("mutable", "uniform", "nsamples")
+            elif leaf.role == "mutable":
+                if ok and p not in proxied and _reads_in_place(leaf, self.inplace):
+                    out.add(p)      # every use an element read: the row is dead, the plane serves each
+            elif (ok and leaf.ttype.shape and leaf.role not in ("uniform", "nsamples")
                     and not is_param_cell(leaf)
                     and (p in proxied or math.prod(leaf.ttype.shape) > LAZY_LEAF_WIDTH
                          or (p in runtime and _reads_in_place(leaf)))):
@@ -704,10 +806,13 @@ class _Renderer(_DispatchMixin):
             # iteration (`bar[i].at(k) += e`, constraint 7): zeroed whole, once,
             # before the walk; the loop's links are the only other writes
             self._emit(self.writer.zero_row(self, target, width))
+        early = self._early_stores()
         for node in self.nodes:
             if isinstance(node, Sink):
                 continue
             self._emit_outside(node)
+            for sink in early.pop(self.position[id(node)], ()):
+                self._sink(sink)
         if self._due:                                  # pragma: no cover
             raise HawkError("a per-component commit was planned for a value the "
                             "walk never rendered")
@@ -726,6 +831,33 @@ class _Renderer(_DispatchMixin):
             self.indent = self.indent[:-4]
             self._emit("}")
         return Body("\n".join(self.lines), self.uses_random)
+
+    def _early_stores(self) -> dict:
+        """``{position: [sink]}``: the own-column ``Assign`` sinks stored right after their value renders, so a
+        kernel with several outputs holds none of them live to its end. Not when the body reads the plane (its
+        prior value would see the early store), under the compensated kind, or when a lane split or segment cut
+        moves statements between texts; those keep the store at the end. Each one is marked held."""
+        if self.split_loop is not None or self.cut_loops or self.kind.sink.id == "compensated":
+            return {}
+        read, pending = set(), list(self.nodes)
+        while pending:
+            n = pending.pop()
+            if isinstance(n, Leaf):
+                read.add((n.role, n.name))
+            elif isinstance(n, Loop):
+                pending.extend(n.body_nodes())
+        companions = _companions(self.sinks)
+        early: dict = {}
+        for sink in self.sinks:
+            if (type(sink) is not Assign or sink.index is not None or id(sink) in self._held
+                    or (sink.role, sink.name) in read or sink.name in companions):
+                continue
+            pos = self.position.get(id(sink.value))
+            if pos is None or pos not in self._outside or pos in self._skip:
+                continue
+            early.setdefault(pos, []).append(sink)
+            self._held.add(id(sink))
+        return early
 
     def _accumulated_planes(self) -> list:
         """``(target, width)`` of every plane some lowered loop in the walk
@@ -807,7 +939,18 @@ class _Renderer(_DispatchMixin):
                 node = node.operands[0]
             pos = self.position[id(base)]
             users[pos] = users.get(pos, 0) + 1
-        self._skip = {pos for pos, n in users.items() if self.fanout.get(pos, 0) == n}
+        skip = {pos for pos, n in users.items() if self.fanout.get(pos, 0) == n}
+        for sink, base, _l, _p in planned:      # a node read whole needs every node under it rendered
+            node, whole = sink.value, False
+            while True:
+                pos = self.position[id(node)]
+                whole = whole or pos not in skip
+                if whole:
+                    skip.discard(pos)
+                if node is base:
+                    break
+                node = node.operands[0]
+        self._skip = skip
 
     def _link_in_case(self, target: str, index: Node, value: Node) -> bool:
         """Whether an accumulate renders inside the cases of the one fused
@@ -947,7 +1090,10 @@ class _Renderer(_DispatchMixin):
         """Record ``text`` as ``node``'s rendering, named when :meth:`_materialised`."""
         if self._materialised(node, pos):
             name = self._name(node, pos)
-            self._emit(self.writer.declare(name, node.ttype, text))
+            held = self.fanout.get(pos, 0) >= 2 and not self._leaf_valued(node)
+            self._emit(self.writer.declare(name, node.ttype, text, ordered=self._ordered(node), held=held))
+            if node.ttype.shape and (text.endswith("[i].get()") or (held and len(node.ttype.shape) == 1)):
+                self.item_names.add(name)
             self.rendered[pos] = name
         else:
             self.rendered[pos] = text
@@ -1017,6 +1163,8 @@ class _Renderer(_DispatchMixin):
         trade away."""
         if isinstance(node, Leaf) and node.role in ("uniform", "nsamples"):
             return False
+        if self._plane_read_before_store(node):
+            return True         # the element is read here, before the final phase stores the plane
         if is_resident(node) or is_scratch(node):
             return False        # its text is the plane's proxy: nothing to name
         if isinstance(node, LoopValue) and self._loop_value(node) in self.proxies:
@@ -1044,6 +1192,16 @@ class _Renderer(_DispatchMixin):
             return True
         return self.fanout.get(pos, 0) >= 2 or self._leaf_valued(node)
 
+    def _plane_read_before_store(self, node: Node) -> bool:
+        """An element read of a stored mutable plane that the plane serves in place: named at its own
+        position, because its consumer may be a sink ordered after the plane's own store."""
+        if not (isinstance(node, Op) and node.kind in ("component", "component_at")):
+            return False
+        leaf = _through(node.operands[0])
+        return (isinstance(leaf, Leaf) and leaf.role == "mutable" and _reads_in_place(leaf, self.inplace)
+                and self.inplace[leaf.name] and (node.kind == "component_at"
+                                                 or self.position[id(leaf)] in self.lazy))
+
     def _unnamed(self, node: Node) -> bool:
         """A node that never gets a local of its own: one a store run absorbs
         (:mod:`hawk.emit.rtstore`), one no statement renders, and one the writer
@@ -1057,6 +1215,20 @@ class _Renderer(_DispatchMixin):
         if isinstance(node, (At, Leaf)):
             return bool(node.ttype.shape)
         return isinstance(node, Op) and node.kind in ("splat", "vec")
+
+    def _read_by(self, child, reader) -> None:
+        """Record that ``reader`` (``None``: no operation) reads ``child``."""
+        if child is not None:
+            self.readers.setdefault(id(_through(child)), set()).add(
+                reader.kind if isinstance(reader, Op) else None)
+
+    def _ordered(self, node: Node) -> bool:
+        """Does a reader of ``node`` need its limbs in order? Only the writer decides what that means
+        (:meth:`~hawk.emit.writer_aether.AetherWriter.reads_raw`); a value nothing was seen to read is ordered."""
+        if isinstance(node, (Leaf, At)):
+            return True                  # a plane element is decoded once, whoever reads it
+        kinds = self.readers.get(id(node))
+        return not kinds or not all(k is not None and self.writer.reads_raw(k) for k in kinds)
 
     def _name(self, node: Node, pos: int) -> str:
         if isinstance(node, Leaf):
@@ -1227,7 +1399,7 @@ class _Renderer(_DispatchMixin):
                          info["exit"], self._speculative(loop), ops,
                          body.needs_random,
                          _declarations(pre, [n for n, _ in live_ins if n in free]),
-                         fp64_ops(loop.body_nodes()))
+                         fp64_ops(loop.body_nodes()), _exit_order(loop))
 
     def _loop_split(self, loop: Loop) -> None:
         """:meth:`_loop` for the loop :meth:`lane_split` cuts at: marks where
@@ -1250,7 +1422,7 @@ class _Renderer(_DispatchMixin):
         nexts = []
         for j, (carry, nxt) in enumerate(zip(loop.carries, loop.nexts)):
             result = f"hawk_n{pos}_{j}"
-            self._emit(f"const {carry_type(carry.ttype)} {result} = {self._ref(nxt)};")
+            self._emit(f"const {self.writer.carry_type(carry.ttype)} {result} = {self._ref(nxt)};")
             nexts.append(result)
         flag = f"hawk_x{pos}"
         self._emit(f"const bool {flag} = {self._ref(loop.exit_cond)};")
@@ -1325,7 +1497,7 @@ class _Renderer(_DispatchMixin):
             self.local[id(carry)] = name
             if j in planed and loop.exit_cond is None:
                 self.mutable_carries.add(id(carry))         # a plane's proxy is written in place
-        elems = [carry_type(c.ttype) for c in loop.carries]
+        elems = [self.writer.carry_type(c.ttype) for c in loop.carries]
         # a trip that writes a plane is skipped by a lane that is not running (a masked sample's plane is not to be written)
         speculative = self._speculative(loop) and not planed
         form = loop.exit_form
@@ -1428,6 +1600,7 @@ class _Renderer(_DispatchMixin):
             for child in node.operands:
                 child = _through(child)
                 fanout[id(child)] = fanout.get(id(child), 0) + 1
+                self._read_by(child, node)
         live = _scope_live(loop)
         for node in body:
             if id(node) in skip or (only is not None and id(node) not in only):
@@ -1443,7 +1616,7 @@ class _Renderer(_DispatchMixin):
                 continue
             named = ((fanout.get(id(node), 0) >= 2 or self._leaf_valued(node))
                      and not self._unnamed(node))
-            self._render_one(node, named)
+            self._render_one(node, named, held=fanout.get(id(node), 0) >= 2)
         if not loop.body_sinks or not sinks:
             return
         # Inside the body-wide guard :meth:`run` opened, the loop's commits are
@@ -1635,6 +1808,8 @@ class _Renderer(_DispatchMixin):
                 getattr(self.kind, "lanes", None) is not None or self.kind.guard.active_set)
         if isinstance(node, SampleIndex):
             return self.writer.sample_index_value()
+        if isinstance(node, PlaneExtent):
+            return self.writer.plane_extent_value(node)
         if isinstance(node, (LoopIndex, LoopCarry)):
             # Bound by the enclosing loop's header/carried local, seeded into
             # `self.local` before the body renders.
@@ -1741,11 +1916,56 @@ def _parts(node: Node) -> list | None:
     return None
 
 
-def _reads_in_place(node: Node) -> bool:
+_ELEMENTWISE = frozenset(ELEMENTWISE_BINARY + UNARY_MATH + ELEMENTWISE_TERNARY)
+
+
+def _push_reads(sinks: tuple) -> tuple:
+    """``sinks`` with each runtime-index read of an element-wise vector value pushed to its operands:
+    ``component_at(op(a, b), k)`` becomes ``op(component_at(a, k), b')`` (a rank-0 operand stays), so one element
+    is computed and the whole vector is neither built nor copied into an ``Item``. Other values are untouched."""
+    from ..diff.tape import _resink
+    from ..ir import make
+    from ..ir.walk import substitute
+
+    def pushable(n):
+        return (isinstance(n, Op) and n.kind == "component_at" and n.literal is None and isinstance(n.operands[0], Op)
+                and n.operands[0].kind in _ELEMENTWISE and len(n.operands[0].ttype.shape) == 1)
+
+    nodes, _ = canonical_nodes(sinks)
+    reads = [n for n in nodes if pushable(n)]
+    if not reads or not all(type(s) in (Finish, SampleSum, AccumWrite, Assign, TeamStore)
+                            and (len(s.operands) == 1 or isinstance(s, AccumWrite)) for s in sinks):
+        return sinks
+    memo: dict = {}
+
+    def element(value, k):
+        if not value.ttype.shape:
+            return value
+        if (id(value), id(k)) not in memo:
+            if isinstance(value, Op) and value.kind in _ELEMENTWISE and len(value.ttype.shape) == 1:
+                memo[(id(value), id(k))] = make(value.kind, [element(a, k) for a in value.operands], value.literal)
+            else:
+                memo[(id(value), id(k))] = make("component_at", (value, k))
+        return memo[(id(value), id(k))]
+
+    roots = substitute(tuple(o for s in sinks for o in s.operands),
+                       {id(n): element(n.operands[0], n.operands[1]) for n in reads})
+    out, at = [], 0
+    for s in sinks:
+        part = roots[at:at + len(s.operands)]
+        at += len(s.operands)
+        out.append(AccumWrite(s.name, part[0], part[1] if len(part) > 1 else None, s.ttype, s.policy)
+                   if isinstance(s, AccumWrite) else _resink(s, part[0]))
+    return tuple(out)
+
+
+def _reads_in_place(node: Node, planes=()) -> bool:
     """Whether a runtime component read of ``node`` goes through the plane's own
-    view (``name[i].at(k)``): a read-only rank-1 input leaf. A mutable plane,
-    a parameter cell and every computed vector keep the ``Item`` copy."""
-    return (isinstance(node, Leaf) and node.role in ("vec_in", "per_sample")
+    view (``name[i].at(k)``): a read-only rank-1 input leaf, or a mutable one in
+    ``planes`` (:meth:`Render._inplace_planes`). A parameter cell and every
+    computed vector keep the ``Item`` copy."""
+    return (isinstance(node, Leaf) and (node.role in ("vec_in", "per_sample")
+                                        or (node.role == "mutable" and node.name in planes))
             and len(node.ttype.shape) == 1 and not is_param_cell(node))
 
 

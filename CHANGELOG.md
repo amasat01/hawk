@@ -2,6 +2,48 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
+## 0.7.5 (2026-11-10)
+
+This section covers what changes from 0.7.4. New in this release: `hawk.chain` joins kernels into one, a banded scalar mode for GPUs with weak or no FP64, and cheaper runtime-index reads.
+
+### Changed
+
+**AVX2 hosts: host kernels now vectorise.** Results change in the last bits and match AVX-512.
+
+**Arm hosts compile with fused multiply-add by default.** `native-vector-math` is now the default host profile on arm64, with any host compiler: results change in the last bits. `host_profile="native"` keeps the exact build.
+
+**`Table.at` clamps every index to the table.** An index outside the table reads the nearest end element instead of whatever memory lay beyond it; an index already inside reads the same value, and a literal index a static extent bounds is not clamped. The clamp is one unsigned compare, so an in-range read pays one predictable branch. No migration is needed unless a kernel relied on reading past the end.
+
+### Added
+
+**`hawk.chain`: kernels in sequence, built as one.** `hawk.chain(predict, correct, finish, name="step")` saves the launches and the plane traffic between members. A member reads an earlier member's value by name; the build cuts the chain where one body would spill registers, from a per-device row (`fusion.json`), and a cut is an ordinary launch with the crossing values in planes the runtime makes. `hawk.diff.jvp` and `vjp` of a chain are chains of the members' derivatives. See the composition guide.
+
+**Banded scalar mode.** `mode="banded"` builds a kernel whose real values carry about double precision on a GPU with weak or no FP64. Pack float64 planes with `eagle.banded_pack` and read results back with `eagle.banded_unpack`. Sums run through aether's compensated accumulator and give the same bits on every run; host and GPU results agree bit for bit. A build with a CPU target is refused, and so are the functions whose banded versions have not landed (`erf`, `erfc`, `rint`, `remainder`, `fdim`, `isnan`/`isinf`/`isfinite` inside a kernel, the random draws) and `hawk.scatter(..., policy="plain")`. See the banded section of the compiling guide.
+
+**A Best practices page:** `Table` and `.at()`, both sides of an `if` run, wide values, `hawk.chain`, precompiling with the build's targets, letting hawk pick the host compiler.
+
+**Masked vector variants on a GCC that carries the backport.** On GCC 13.0-13.3 and 14.0-14.2 under `native-vector-math`, hawk runs a witness of aether's masked-call miscompile once per compiler and CPU (verdict kept in the compile cache directory) and adds `-DAETHER_HVM_MASKED=1` when the compiler runs it correctly; your own `-DAETHER_HVM_MASKED` skips the check.
+
+**A `Vector` component reads at an index computed with `m.int32`.**
+
+### Performance
+
+- A runtime-index read of a held `Item` is read in place; of an element-wise value, only that one element is computed; of a mutable plane with no store before it, read in place.
+- Table reads at one runtime base and static offsets share one range test.
+- Host kernels vectorise their lane loop under GCC before 14 too, and host code is built with `-fno-math-errno`, so a `sqrt` is one instruction and no longer keeps a loop scalar. Math functions no longer set `errno`.
+- Reused vector temporaries are `Item`s and outputs are stored at their producer, so fewer copies are made.
+- Host kernels no longer hold a vector lane for a finished sample, on every host: finished samples leave the tile between launches, and a lane whose sample finishes takes the tile's next live sample between trips. Runs whose samples finish at different times gain most; results are unchanged.
+- Arm hosts: the trip loop runs four interleaved vector bodies under clang, lanes start farthest from their exit first, and macOS takes the cache sizes from `sysctl`.
+- Arm hosts with GCC: `pow` runs inside the vectorised loop through aether's vector variant, and the host flags add `-fno-thread-jumps`, which keeps GCC from copying the call onto paths it cannot vectorise.
+
+### Fixed
+
+- A runtime read of an accumulated plane renders the chain it reads.
+- A loop kernel traces on a FIPS-mode Python: loop bodies are keyed with sha256.
+- A compile failure names a missing compiler, and the address-cap text appears only for allocation failures; a compiler killed by a signal under the cap names the cap.
+- A pip-only nvcc compile keys the served headers by digest, so a fresh process hits the cache.
+- CI takes the release version from the top heading of `CHANGELOG.md`, and a test stuck for ten minutes prints its stacks.
+
 ## 0.7.4 (2026-11-06)
 
 A patch on 0.7.3: three code-generation fixes found by an application, and a change to how conditions combine.

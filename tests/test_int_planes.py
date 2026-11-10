@@ -419,11 +419,11 @@ def test_eagle_reads_the_label_and_allocates_to_match(host_plans):
 #: ``Index`` plane, re-taken when it moved to a 4-byte wire.
 FLOAT_ONLY_DIGESTS = {
     "as_body": "fabe9da159f0ff3e84534bd5e4f4e31fdfcc22138975fe51f0ff90d5a24e9aa8",
-    "chain6": "8cc8a3e4e744156565c17777033e206c007e1df7bd6a0e51aafa08fddba77a77",
+    "chain6": "2c3720128553a75a8588aef04c963a9b1c0da47666e288134aaac4eed526cf38",
     "drag": "daee7a70d11748ebd82c1d03ffe2ab829a2bb507da18f8dceb01f3c256e8fc8c",
-    "drag_vjp": "4ab402649410df495823357e4d01d248110fc24ee9b02d5691def5b8c44dcdd7",
+    "drag_vjp": "599bf31c5a9c6e6d6d65f4168fb7a59a4e16013f6fcf8826b12cc19aa90948f8",
     "energy": "60ca15da257422f263a8e5b87e55d28e7f73033bef636581d4c444e01af62f0f",
-    "gather": "589dd76e0bbb46c41076b86d3d133da99fd40127fe6b5a2ee25abcc3d8bc05b2",
+    "gather": "2c15ebee3694d786f8685f7e70ae8d0b902d30d7f38cedaad4fdcf5d2d8211b7",
     "rotate_quat": "fe1634aba3c69d61177c1b321c588a0972f4052c98667361321a88ac4072e63d",
     "scale": "1e37d343cea724f7480e82378d805e622336414a68250a6d2447db80ce367328",
     "scatter": "9ff35810c6910e24acd750b39b260e8a1bcf10acbeab94814b57b7f1a8d01aa2",

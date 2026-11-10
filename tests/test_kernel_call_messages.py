@@ -49,3 +49,39 @@ def test_a_first_build_logs_once_and_a_second_logs_nothing(tmp_path, caplog):
                 target="host", cache_dir=str(tmp_path)))
     lines = [r.getMessage() for r in caplog.records if "building probe_once" in r.getMessage()]
     assert len(lines) == 1 and lines[0].startswith("building probe_once (host) in ")
+
+
+def _compile_with(cxx, tmp_path, monkeypatch):
+    from hawk.compile import drivers
+    from hawk.compile.drivers import CompileOptions
+
+    monkeypatch.setenv("HAWK_CXX", str(cxx))
+    return pytest.raises(HawkError), lambda: drivers.compile_source(
+        'extern "C" int hawk_probe_cc() { return 1; }\n', "probe_cc",
+        CompileOptions(target="host", cache_dir=str(tmp_path / "c")))
+
+
+def test_a_missing_compiler_says_not_found_not_the_address_cap(monkeypatch, tmp_path):
+    from hawk.compile import drivers
+
+    monkeypatch.setenv("HAWK_COMPILE_ADDRESS_CAP", str(12 * 1024**3))
+    with pytest.raises(HawkError) as excinfo:
+        drivers._run_and_publish(["/no/such/dir/c++", "-c", "x.cpp"], "host compile", "",
+                                 tmp_path / "a", tmp_path / "b", tmp_path / "c",
+                                 tmp_path / "d", tmp_path)
+    msg = str(excinfo.value)
+    assert "compiler not found or not executable: /no/such/dir/c++" in msg, msg
+    assert "$HAWK_CXX" in msg and "address-space cap" not in msg, msg
+
+
+def test_a_compiler_script_exiting_127_says_not_found_not_the_address_cap(monkeypatch, tmp_path):
+    script = tmp_path / "wrapper-c++"
+    script.write_text("#!/bin/sh\nexec /no/such/clang++ \"$@\"\n")
+    script.chmod(0o755)
+    ctx, run = _compile_with(script, tmp_path, monkeypatch)
+    monkeypatch.setenv("HAWK_COMPILE_ADDRESS_CAP", str(12 * 1024**3))
+    with ctx as excinfo:
+        run()
+    msg = str(excinfo.value)
+    assert f"compiler not found or not executable: {script}" in msg, msg
+    assert "address-space cap" not in msg, msg

@@ -41,7 +41,7 @@ from math import lcm
 from typing import Any
 
 from .loop_nodes import Loop, LoopCarry, LoopCount, LoopIndex
-from .nodes import KEYED_AUTO, At, Const, Dispatch, Finish, Leaf, Node, Op, SampleIndex, Sink
+from .nodes import KEYED_AUTO, At, Const, Dispatch, Finish, Leaf, Node, Op, SampleIndex, Sink, peel_clamp
 
 INVARIANT, AFFINE, QUOTIENT = "invariant", "affine", "quotient"
 DATA_DEPENDENT, NON_AFFINE = "data_dependent", "non_affine"
@@ -310,7 +310,7 @@ class _Eval:
     @staticmethod
     def _children(node: Node):
         if isinstance(node, At):
-            return (node.index,)        # the plane leaf is not a lane quantity
+            return (node.raw_index,)    # the plane leaf is not a lane quantity
         if isinstance(node, (LoopIndex, LoopCarry, Leaf)):
             return ()
         return node.operands
@@ -331,9 +331,11 @@ class _Eval:
                 return _mk({}, None)                   # the same for every lane
             return _mk({}, None, frozenset(), True, self.all)   # a per-lane input value
         if isinstance(node, At):
-            idx = self.memo[id(node.index)]
+            idx = self.memo[id(node.raw_index)]
             return _mk({}, None, frozenset(), True, idx.varies())   # a read value
         if isinstance(node, Op):
+            if node.kind == "clamp_index":           # a table read's clamp: the index's own form, held in the plane
+                return self.memo[id(node.operands[0])]
             ops = [self.memo[id(o)] for o in node.operands]
             if node.kind in ("add", "sub") and len(ops) == 2:
                 return self._addsub(node.kind, *ops)
@@ -456,7 +458,7 @@ def _index_plane_read(node: Node, ev: "_Eval") -> bool:
     if isinstance(stored, Leaf):
         return stored.role == "per_sample" and stored.ttype.dtype in dtypes
     return (isinstance(stored, At) and stored.plane.ttype.dtype in dtypes
-            and stored.plane.role == "lookup" and not ev.value(stored.index).data)
+            and stored.plane.role == "lookup" and not ev.value(stored.raw_index).data)
 
 
 def _split_terms(ev: "_Eval", key: Node) -> tuple:
@@ -468,6 +470,7 @@ def _split_terms(ev: "_Eval", key: Node) -> tuple:
     stack = [(key, 1)]
     while stack:
         node, sign = stack.pop()
+        node = peel_clamp(node)
         if isinstance(node, Op) and node.kind == "add" and len(node.operands) == 2:
             stack += [(node.operands[1], sign), (node.operands[0], sign)]
             continue
@@ -516,7 +519,7 @@ def _key_facts(ev: "_Eval", key: Node, axes: tuple) -> tuple:
     ``base``), a ``hawk.math.index`` clamp (a SLOT of static bound G), a read of
     an Index plane (``Leaf`` per-sample at the lane's own index, or a ``Table[Index]``
     read at a data-free index), or other plane data. Unknown = no."""
-    free, slots, planes, other = _split_terms(ev, key)
+    free, slots, planes, other = _split_terms(ev, peel_clamp(key))   # a table read's clamp: its shape is the key's
     base = _mk({}, Fraction(0))
     for _, v, sign in free:
         base = ev._addsub("add" if sign > 0 else "sub", base, v)
@@ -607,14 +610,14 @@ def facts(obj: Any, labels: tuple | None = None, group: int = 1) -> LaneFacts:
 
     for node in nodes:
         if isinstance(node, At):
-            v = ev.value(node.index)
+            v = ev.value(node.raw_index)
             plane = node.plane
             base = _forms(_mk(v.coefs(), v.const, v.bad), n)       # the data-free part
             lane_off = None
             if not v.dbad and not v.bad and v.const is not None and v.lin == ev.lane().lin:
                 lane_off = int(v.const) if v.const.denominator == 1 else None
             reads.append(ReadFact(plane.name, plane.role, _forms(v, n), base, bool(v.dbad),
-                                  v.const, lane_off, _tile_site(ev, node.index, axes)))
+                                  v.const, lane_off, _tile_site(ev, node.raw_index, axes)))
         elif isinstance(node, Sink):
             add_sink(node)
         elif isinstance(node, Loop):
@@ -915,7 +918,7 @@ def warp_uniform(sinks: Any):
         elif isinstance(node, Leaf):
             out = node.role in ("uniform", "nsamples")
         elif isinstance(node, At):
-            out = uniform(node.index)
+            out = uniform(node.raw_index)
         elif isinstance(node, Op):
             if node.kind == "div" and len(node.operands) == 2 \
                     and run_quotient(node.operands[0], node.operands[1]):

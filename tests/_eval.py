@@ -22,6 +22,7 @@ from scipy import linalg as sla
 from scipy.linalg import lapack
 
 from hawk.ir import (
+    PlaneExtent,
     AccumWrite,
     At,
     Const,
@@ -416,6 +417,8 @@ def _compute(node: Node, env: dict, memo: dict):
         if node.name not in env:
             raise KeyError(f"no value bound for leaf {node.name!r} ({node.role})")
         return env[node.name]
+    if isinstance(node, PlaneExtent):
+        return int(np.asarray(env[node.name]).size)
     if isinstance(node, At):
         plane = _value(node.plane, env, memo)
         return np.asarray(plane)[int(_value(node.index, env, memo))]
@@ -484,6 +487,8 @@ def _compute(node: Node, env: dict, memo: dict):
         # numpy's `/` would give a float and the split-index identity
         # `lane - (lane / m) * m` would stop being the remainder.
         return int(args[0]) // int(args[1])
+    if kind == "clamp_index":
+        return min(max(int(args[0]), 0), int(args[1]) - 1)
     if kind in _BINARY:
         return _BINARY[kind](*args)
     if kind in _TERNARY:

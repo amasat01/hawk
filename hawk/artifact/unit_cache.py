@@ -243,7 +243,7 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
                  "wide_class:" + wide_class if wide_class else "",
                  "launch_bounds:%d,%d" % launch_bounds if launch_bounds else "",
                  f"team_threads:{os.environ.get('HAWK_TEAM_THREADS')}",
-                 f"box:{os.environ.get(BOX_ENV)}:{thread_box_card(smode.id)['T']}",
+                 f"box:{os.environ.get(BOX_ENV)}:{(thread_box_card(smode.id) or {}).get('T')}",
                  _wide_part(smode.id, arch(device_arch) if any(r.compile == GPU for r in rows) else ""),
                  ("embedded_profile:" + embedded_profile
                   if embedded_profile else ""),

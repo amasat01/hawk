@@ -10,6 +10,8 @@ gathers)`` per branch.
 
 from __future__ import annotations
 
+import platform
+
 import hawk
 import hawk.math as M
 from hawk.ir import Assign, Dispatch, Leaf, canonical, dispatch_costs
@@ -126,7 +128,8 @@ def test_a_library_call_vectorises_the_fused_loop_only_under_the_vector_math_pro
     lib = lambda profile: dispatch_costs(walk, profile)["dispatch0"].branches   # noqa: E731
     assert not all(b.vectorised for b in lib("native"))
     assert not all(b.vectorised for b in lib("portable"))
-    assert all(b.vectorised for b in lib("native-vector-math"))
+    # the vector math is x86-64 only: elsewhere a library call stays scalar under every profile
+    assert all(b.vectorised for b in lib("native-vector-math")) is (platform.machine().lower() in ("x86_64", "amd64"))
     # the fused loop renders the dispatch as a C++ switch, which stays scalar under every profile
     assert not dispatch_costs(walk, "native-vector-math")["dispatch0"].fused_vectorised
 

@@ -38,13 +38,16 @@ def _device() -> tuple | None:
         return None
 
 
-def thread_box(scalar_type: str) -> dict:
-    """The card for ``scalar_type`` (``"float64"``/``"float32"``): ``{"T": width,
+def thread_box(scalar_type: str) -> dict | None:
+    """The card for ``scalar_type`` (``"float64"``/``"float32"``; ``None`` for a type no card measures, which
+    builds unboxed): ``{"T": width,
     "contraction": "gemm" | "direct", "itemsize": bytes}`` and, on a device whose
     row carries one, ``"tile"`` (see :func:`hawk.ir.lanes.choose_mapping`).
 
     The device is probed only when the file has a row for that scalar type."""
     doc = json.loads(THREAD_BOX_FILE.read_text())
+    if scalar_type not in doc["defaults"]:
+        return None
     card = {"T": doc["defaults"][scalar_type], "contraction": doc["contraction"][scalar_type]}
     rows = [r for r in doc["rows"] if r["dtype"] == scalar_type]
     device = _device() if rows else None
@@ -145,15 +148,40 @@ def wide(scalar_type: str) -> dict:
     scalar_type = {"f32": "float32", "f64": "float64"}.get(scalar_type, scalar_type)
     doc = _wide_doc(str(WIDE_FILE))
     card = {k: doc["defaults"][k] for k in WIDE_KEYS}
-    arch = _BUILD_ARCH.get()
-    rows = [r for r in doc["rows"] if arch and r["dtype"] == scalar_type]
-    if rows:
-        from ...ir.wide_class import distance, features_of
-
-        device = _device() if any(r["cc"] == arch for r in rows) else None
-        rows = [r for r in rows if r["cc"] != arch or device is None or device == (r["cc"], r["device"])]
-        if rows:
-            want = features_of(arch)
-            card.update({k: v for k, v in min(rows, key=lambda r: distance(want, features_of(r["cc"]))).items() if k in WIDE_KEYS})
+    card.update(_nearest_row(doc["rows"], scalar_type, WIDE_KEYS))
     card.update({k: v for k, v in (_WIDE_OVERRIDE.get() or {}).items() if k in WIDE_KEYS})
     return card
+
+
+def _nearest_row(rows: list, scalar_type: str, keys: tuple) -> dict:
+    """The ``keys`` of the row of ``scalar_type`` whose arch is nearest the build's by device features (a row of the build's
+    own arch must also match the device name when one is present); ``{}`` for a host-only build or no such row."""
+    arch = _BUILD_ARCH.get()
+    rows = [r for r in rows if arch and r["dtype"] == scalar_type]
+    if not rows:
+        return {}
+    from ...ir.wide_class import distance, features_of
+
+    device = _device() if any(r["cc"] == arch for r in rows) else None
+    rows = [r for r in rows if r["cc"] != arch or device is None or device == (r["cc"], r["device"])]
+    if not rows:
+        return {}
+    want = features_of(arch)
+    return {k: v for k, v in min(rows, key=lambda r: distance(want, features_of(r["cc"]))).items() if k in keys}
+
+
+#: The chain fusion card (see its ``about`` text) and the constants a row sets.
+FUSION_FILE = Path(__file__).with_name("fusion.json")
+FUSION_KEYS = ("R0", "R_file", "L_us", "c_plane_us_per_B", "c_local_over_plane")
+
+
+def fusion(scalar_type: str, host: str | None = None) -> dict:
+    """The constants of :mod:`hawk.ir.fusion` for ``scalar_type``: the device defaults and over them the nearest row, as
+    :func:`wide` reads its card; with ``host`` (a vector ISA: ``sse2``, ``avx2``, ``avx512``, ``neon``), that host's row."""
+    scalar_type = {"f32": "float32", "f64": "float64"}.get(scalar_type, scalar_type)
+    doc = json.loads(FUSION_FILE.read_text())
+    if host is not None:
+        if host not in doc["host"]:
+            raise HawkError(f"{FUSION_FILE.name}: no host row {host!r}; the rows are {sorted(doc['host'])}")
+        return dict(doc["host"][host])
+    return {**doc["defaults"], **_nearest_row(doc["rows"], scalar_type, FUSION_KEYS)}

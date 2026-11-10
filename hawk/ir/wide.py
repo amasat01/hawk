@@ -162,6 +162,8 @@ class Gather:
     base: Node | None
     start: int
     step: int
+    #: the reads hold their index in the plane (``clamp_index``): the run's reads keep that clamp
+    clamped: bool = False
 
 
 def const_int(node: Node) -> int | None:
@@ -200,20 +202,20 @@ def gather(node: Node) -> Gather | None:
     first = node.operands[0]
     if not (isinstance(first, At) and not first.ttype.shape):
         return None
-    base0, start = _split_index(first.index)
+    base0, start = _split_index(first.raw_index)
     step = None
     for k, part in enumerate(node.operands):
         if not (isinstance(part, At) and not part.ttype.shape
                 and (part.plane.role, part.plane.name) == (first.plane.role, first.plane.name)):
             return None
-        base, off = _split_index(part.index)
+        base, off = _split_index(part.raw_index)
         if (base is None) != (base0 is None) or (base is not None and not _same(base, base0)):
             return None
         if k == 1:
             step = off - start
         if k and off != start + k * step:
             return None
-    return Gather(first.plane, base0, start, step)
+    return Gather(first.plane, base0, start, step, first.index is not first.raw_index)
 
 
 # -- the analysis ------------------------------------------------------------------------------

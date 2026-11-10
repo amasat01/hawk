@@ -17,6 +17,7 @@ DEVICE kernel (eagle's `DeviceKernel`).
 
 from __future__ import annotations
 
+import platform
 import re
 
 import numpy as np
@@ -1103,9 +1104,13 @@ def test_a_library_call_holds_only_its_own_branch_scalar_under_an_exact_profile(
     d = Dispatch(k, [mk("sin", (x,)), mk("mul", (x, x))], "switch", S)
     walk = canonical((Assign("out", d, S),))
     assert [b.vectorised for b in dispatch_costs(walk, "native")["dispatch0"].branches] == [False, True]
-    assert all(b.vectorised for b in dispatch_costs(walk, "native-vector-math")["dispatch0"].branches)
+    # the vector math is x86-64 only: elsewhere a library call stays scalar under every profile
+    vm = [b.vectorised for b in dispatch_costs(walk, "native-vector-math")["dispatch0"].branches]
+    assert vm == ([True, True] if platform.machine().lower() in ("x86_64", "amd64") else [False, True])
 
 
+@pytest.mark.skipif(platform.machine().lower() not in ("x86_64", "amd64"),
+                    reason="a library call vectorises only through the x86-64 vector math")
 @pytest.mark.parametrize("policy, fused", [("switch", False), ("auto", False), ("predicated", True)])
 def test_a_rendered_switch_keeps_the_fused_loop_scalar_while_each_branch_vectorises(policy, fused):
     from hawk.ir import dispatch_costs

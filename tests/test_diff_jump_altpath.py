@@ -321,7 +321,7 @@ def test_the_alternate_path_is_refused_across_launches():
         step_vjp(step)
 
 
-#: sha256 of the emitted source of each derivative below, equal to the v0.7.0 tree's
+#: sha256 of the emitted source of each derivative below, equal to the v0.7.0 tree's, apart from the host loop helpers' text in the k_loop rows
 #: (the kernels whose switched value reaches the outputs only affinely keep the plain rule)
 PINNED = {
     "k_lt/jvp": "31f87a0cd39ae797f8b8dd5534ac69f5c64fef99058b4fb493b69e15c69521be",
@@ -345,14 +345,14 @@ PINNED = {
     "k_param/jvp": "bf17dec66c542dd6c93b9021609fb58847ded3643b7bfa221deffce4cc07e96d",
     "k_param/vjp": "b04bc111a05d0c3c395f961ce4b0c792425bd42934c39aeb8ad2c24b36cde2e8",
     "k_const_cmp/jvp": "0dda5bd78c6219ad6a2d4514412358910062447ff7223f39dbf7591b4a0205a3",
-    "k_const_cmp/vjp": "2b62624a3500fab077250d71051b64f91611a6e522d362ab1b5f79802309bed7",
+    "k_const_cmp/vjp": "c9d98e91abd08312faf9cebe5749a441ff39ba27f101db6ccad538a5d7822d42",
     # these two lost the loop's self-move of an unchanged carry (`const n = v; v = n;`): nothing else differs
-    "k_loop_carried/jvp": "c7882ac1a240ca4f6bb43bf9df4617cc522798107a746de4d948528ed9099ee0",
+    "k_loop_carried/jvp": "91b07b4f0f807cff0a07222b8c18fe8853694d495a473565a44422718bc19795",
     "k_loop_carried/vjp": "235c2305e619481cc34974a68049f8c5c5b7689e47b790646e0a26df05304811",
-    "k_loop_sum/jvp": "31c0533fe7c3887c0534fc701d35f6f7d197a47c4fab2a2c87767b2651048ae0",
-    "k_loop_sum/vjp": "5db4f9240bf75871aa0235418aa744f2e3f3d329ea5070ef6a063007923ab31f",
-    "k_loop_param/jvp": "ea90a5ae3e606d730f9545c3649c2a9ed0fb841a8783542aa3fc9c3c087d8116",
-    "k_loop_param/vjp": "5c22ee5c592b35ec1a31ddd3ef3bc562c2903164704a19d8375011f58cf93051",
+    "k_loop_sum/jvp": "34177a303c36e3484fb1f11f1ef02ab2505a7ccb50250c2b38df3763eda84ad2",
+    "k_loop_sum/vjp": "199ee9e6e3a16af72667811176c81c7e160846b08b6b89970056c98f62ceac98",
+    "k_loop_param/jvp": "98454610b74fff3fd7f8235641b6d077dfe2cd6fde0f415609153ff45bfc6c5d",
+    "k_loop_param/vjp": "b0d031393575313a06030e37fc45ca14e2f1e69d55d44c314052c83cb93b1820",
     "step/jvp": "8d3540f8fe3cb19a54c6b11d3a517c543e47c8563aa350d953cf281a2f6fbbb9",
     "step/vjp": "442e319e668e2a62637ed1a20b3f244e9bf8ba33a1d4074672a4a6a5e2e08a06",
 }

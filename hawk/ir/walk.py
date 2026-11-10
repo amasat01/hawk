@@ -37,6 +37,7 @@ from .nodes import (
     Finish,
     HawkError,
     LanePosition,
+    PlaneExtent,
     Leaf,
     Node,
     SampleSum,
@@ -106,6 +107,11 @@ class Walk:
         """The ``accum_out`` planes written one row per 32 samples
         (:class:`~hawk.ir.nodes.SampleSum`), in sink order."""
         return tuple(n.name for n in self.order if isinstance(n, SampleSum))
+
+    @property
+    def kinds(self) -> frozenset:
+        """The ``kind`` of every node the body reaches (a build mode refuses an op by it)."""
+        return frozenset(getattr(n, "kind", None) for n in self.order)
 
     @property
     def reads_lane_position(self) -> bool:
@@ -621,6 +627,8 @@ def _rebuild(node: Node, operands: Sequence[Node]) -> Node:
         return LoopValue(operands[0], node.slot)
     if isinstance(node, LoopCount):
         return LoopCount(operands[0])
+    if isinstance(node, PlaneExtent):
+        return PlaneExtent(operands[0], node.ttype)
     if isinstance(node, Primitive):
         return Primitive(node.name, node.rules, operands[0], operands[1:],
                          node.ttype)

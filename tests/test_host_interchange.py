@@ -45,7 +45,11 @@ fuse each shape.
 from __future__ import annotations
 
 import ctypes
+import platform
 import re
+import shutil
+import subprocess
+import sys
 
 import _deploy as L
 import numpy as np
@@ -72,8 +76,7 @@ from hawk.targets import TARGETS
 
 #: The macro-off build: the plain per-sample fused loop of the SAME TU.
 PLAIN = ("HAWK_HOST_INTERCHANGE=0",)
-#: Pinned on: the default for a long step depends on the host compiler
-#: (off below GCC 14), and these rows compare the two shapes themselves.
+#: Pinned on (the default for every step): these rows compare the two shapes themselves.
 INTERCHANGED = ("HAWK_HOST_INTERCHANGE=1",)
 #: The bit-identical host profile every build here pins (module docstring).
 EXACT = "native"
@@ -253,7 +256,7 @@ def _launches(bundle, name, planes, words):
     if auto:
         extra["fused_steps"] = np.zeros(1, dtype=np.int64)
     names = {n for _, n in sidecar["arg_spec"]}
-    kw = {p: v for p, v in (("dt", DT), ("g", 0.3)) if p in names}
+    kw = {p: v for p, v in (("dt", DT), ("g", 0.3), ("goal", 100.0)) if p in names}
     bound = eplan.plan(plugin, structure=eexec.HostTeam).bind(
         finished_count=counter, **kw, **planes, **extra)
     snaps = []
@@ -275,6 +278,7 @@ WORDS = (64, 64, 1, 3, 64, 7, 0, -5, 100, 2, 33) + (64,) * 6
 @pytest.mark.parametrize("n,case", [(1, "spread"), (37, "spread"), (200, "spread"),
                                     (1001, "spread"), (300, "all_finished"),
                                     (300, "never")])
+
 def test_interchanged_and_plain_are_byte_identical(shapes, name, n, case):
     planes = _planes(name, n, case, seed=20261004)
     words = WORDS if name != "oscillator_x16" else (1,) * 20
@@ -355,7 +359,7 @@ def _bound(bundle, name, planes):
     counter[0] = np.count_nonzero(planes["terminated"])
     word = np.zeros(1, dtype=np.int64)
     names = {n for _, n in sidecar["arg_spec"]}
-    kw = {p: v for p, v in (("dt", DT), ("g", 0.3)) if p in names}
+    kw = {p: v for p, v in (("dt", DT), ("g", 0.3), ("goal", 100.0)) if p in names}
     bound = eplan.plan(plugin, structure=eexec.HostTeam).bind(
         finished_count=counter, fused_steps=word, **kw, **planes)
     return bound, planes, counter, word
@@ -411,16 +415,24 @@ def test_only_an_automatic_tu_has_a_run_entry(shapes):
 
 
 def _trip_loop(text: str) -> str:
-    """The interchanged build's trip loop: from its ``for`` to its exit."""
+    """The interchanged build's trip loop: from its ``for`` to the end of its lane
+    loop, where the refill (:func:`_refill`) begins."""
     start = text.index("for (Int hawk_trip = 0;")
+    return text[start:text.index("std::int64_t hawk_idle = 0;", start)]
+
+
+def _refill(text: str) -> str:
+    """The interchanged build's refill block: between the trip's live reduction and its exit."""
+    start = text.index("if (hawk_idle != 0 && hawk_next < hawk_nlive) {")
     return text[start:text.index("if (hawk_live == 0) break;", start)]
 
 
 def test_the_trip_loop_runs_on_the_chunk_alone():
     """The hot loop reads and writes only the chunk's own arrays: no lane
     array of the tile (``hawk_lc*``/``hawk_li*``), no tile-strided index, no
-    tile live flag; the tile's lane arrays are touched once before the trips
-    and once after. A short step's chunk is two vectors, a long one's one."""
+    tile live flag; the tile's lane arrays are touched before the trips, after
+    them, and in the refill between trips, which writes a finished lane's sample
+    back and takes the next live one. A short step's chunk is two vectors, a long one's one."""
     from hawk.emit.host import SHORT_STEP_OPS, chunk_vectors
 
     assert (chunk_vectors(1), chunk_vectors(SHORT_STEP_OPS),
@@ -438,8 +450,11 @@ def test_the_trip_loop_runs_on_the_chunk_alone():
         assert "hawk_abi::lane_keep<hawk_w>(hawk_rc0, hawk_l, hawk_lane_on," in trips
         assert "for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {" in trips
         assert (f"constexpr aether::offset_t hawk_w = hawk_abi::kHostChunk * "
-                f"{vectors[kernel.name]};") in text, kernel.name
+                f"hawk_abi::kHostChunkVectors * {vectors[kernel.name]};") in text, kernel.name
         assert text.count("for (Int hawk_trip = 0;") == 1, kernel.name
+        refill = _refill(text)
+        assert re.search(r"\bhawk_lc0\[", refill) and "hawk_perm[hawk_next++]" in refill, kernel.name
+        assert "hawk_rk0[hawk_l] = hawk_trip + 1;" in refill, kernel.name
 
 
 def test_the_two_builds_are_the_two_shapes(shapes):
@@ -592,3 +607,278 @@ def test_machine_caches_reads_sysfs_and_falls_back(tmp_path):
     assert machine_caches(str(tmp_path / "missing")) == FALLBACK_CACHES
     here = machine_caches()
     assert here.l1d > 0 and here.l2 >= here.l1d
+
+
+def test_machine_caches_reads_sysctl_on_macos(monkeypatch):
+    import hawk.emit.host as host
+
+    def fake(cmd, **_):
+        if cmd[-1].startswith("hw.perflevel0."):
+            return subprocess.CompletedProcess(cmd, 0, stdout="65536\n")
+        raise OSError(cmd[-1])
+
+    monkeypatch.setattr(host.sys, "platform", "darwin")
+    monkeypatch.setattr(host.subprocess, "run", fake)
+    host.machine_caches.cache_clear()
+    try:
+        got = host.machine_caches()
+        assert (got.l1d, got.l2) == (65536, 65536) and got.source.startswith("sysctl hw.perflevel0.")
+        monkeypatch.setattr(host.subprocess, "run",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("no sysctl")))
+        host.machine_caches.cache_clear()
+        assert host.machine_caches() == FALLBACK_CACHES
+    finally:
+        host.machine_caches.cache_clear()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="reads this machine's sysctl")
+def test_machine_caches_on_this_mac_names_its_sysctl_source():
+    here = machine_caches()
+    assert here.source.startswith("sysctl hw.") and here.l1d > 0 and here.l2 >= here.l1d
+
+
+def _preprocessed(target: str, text: str, tmp_path) -> str:
+    cxx = shutil.which("clang++")
+    if cxx is None:
+        pytest.skip("no clang++")
+    src = tmp_path / "helpers.cpp"
+    src.write_text(text)
+    done = subprocess.run([cxx, "-E", "-P", "-target", target, "-x", "c++", str(src)],
+                          capture_output=True, text=True)
+    if done.returncode:
+        pytest.skip("clang++ cannot preprocess for " + target)
+    return done.stdout
+
+
+def _helper_text() -> str:
+    from hawk.emit.host import _TRIP_ITERATIONS, HOST_MASK_HELPERS, INTERCHANGE_HELPERS
+
+    return (HOST_MASK_HELPERS.split("namespace hawk_abi")[0] + INTERCHANGE_HELPERS
+            + "\nnamespace hawk_abi { inline constexpr bool kGuards = HAWK_HOST_LANE_GUARDS; }\n"
+            + _TRIP_ITERATIONS + "\nvoid f();\n")
+
+
+def test_arm_branches_are_inactive_on_x86(tmp_path):
+    out = _preprocessed("x86_64-unknown-linux-gnu", _helper_text(), tmp_path)
+    kernel = KERNELS["rkf78_attempt"]
+    unit = builds(render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
+                                kind=kernel.kind, one_step=kernel.one_step).text)["interchanged"]
+    unit = _preprocessed("x86_64-unknown-linux-gnu", unit.replace("#include", "//#include"), tmp_path)
+    # compaction runs everywhere, in tile order; the arm-only effects stay off
+    assert "hawk_perm" in unit and "hawk_nlive" in unit
+    assert "std::sort" not in unit and "interleave_count" not in unit
+    assert "kHostChunkVectors = 4" not in unit
+    assert "kHostChunkVectors = 1;" in out and "kHostChunkVectors = 4" not in out
+    assert "interleave_count" not in out
+    assert "kGuards = 0;" in out
+    assert "#pragma clang loop vectorize(assume_safety)" in out
+
+
+def test_arm_branches_are_active_on_aarch64(tmp_path):
+    out = _preprocessed("arm64-apple-macos", _helper_text(), tmp_path)
+    assert "kHostChunkVectors = 4;" in out and "kGuards = 1;" in out
+    assert "vectorize(assume_safety) interleave_count(4)" in out
+
+
+def test_the_emitted_trip_loop_carries_the_arm_pragma():
+    kernel = next(iter(KERNELS.values()))
+    host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
+                         kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
+    text = builds(host.text)["interchanged"]
+    trips = text[text.index("for (Int hawk_trip = 0;"):]
+    pragma = trips[:trips.index("for (aether::offset_t hawk_l")]
+    assert "#if defined(__clang__) && defined(__aarch64__)" in pragma
+    assert "vectorize(assume_safety) interleave_count(4)" in pragma
+    assert "hawk_abi::kHostChunk * hawk_abi::kHostChunkVectors * " in text
+
+
+def test_the_chunk_copy_in_loop_is_not_unrolled_under_gcc():
+    kernel = next(iter(KERNELS.values()))
+    host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
+                         kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
+    text = builds(host.text)["interchanged"]
+    loop = text.index("for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {")
+    head = text[text.rindex("alignas(64) Int hawk_rk0[hawk_w];", 0, loop):loop]
+    pragma = "#if defined(__GNUC__) && !defined(__clang__)\n#pragma GCC unroll 1\n#endif"
+    assert pragma in head
+    # the refill loop too: unrolled, it keeps GCC from vectorising the trip loop
+    refill = text.index("if (hawk_idle != 0 && hawk_next < hawk_nlive) {")
+    assert text[refill:].split("for (aether::offset_t hawk_l", 1)[0].strip().endswith(pragma.split("\n", 1)[1])
+
+
+_COUNTED = 'extern "C" long long hawk_lane_trips = 0;\n'
+
+
+def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
+    """The bundle's directory with its ``rkf78_attempt.so`` rebuilt from
+    ``source``, which counts one lane-trip per lane per trip."""
+    from types import SimpleNamespace
+
+    from hawk.compile import toolchain as tc
+
+    out = tmp_path / tag
+    shutil.copytree(bundle.directory, out)
+    cpp = out / f"{name}.cpp"
+    marker = "    std::int64_t hawk_live = 0;"
+    assert source.count(marker) == 1
+    cpp.write_text(_COUNTED + source.replace(marker, "    __atomic_fetch_add(&hawk_lane_trips, (long long)hawk_w, __ATOMIC_RELAXED);\n" + marker))
+    subprocess.run([tc.host_compiler(), *flags, *tc.include_flags(), str(cpp), "-o",
+                    str(out / f"{name}.so")], check=True)
+    return SimpleNamespace(directory=out, artifacts=bundle.artifacts)
+
+
+@pytest.mark.parametrize("profile", ["native", None])
+def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile):
+    """Live-lane compaction against the same TU with the identity permutation:
+    lanes of very different lengths, a few trips per launch, give the same planes,
+    bit for bit, in fewer lane-trips (a counter the TU bumps per chunk trip, no timing)."""
+    from hawk.compile import toolchain as tc
+
+    kernel = KERNELS["rkf78_attempt"]
+    bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
+                          cache_dir=str(tmp_path / "cache"), defines=INTERCHANGED,
+                          host_profile=profile)
+    source = (bundle.directory / "rkf78_attempt.cpp").read_text()
+    live = "if (hawk_on[hawk_t] != 0.0) hawk_perm[hawk_nlive++] = hawk_t;"
+    dead = "if (hawk_on[hawk_t] == 0.0) hawk_perm[hawk_o++] = hawk_t;"
+    assert source.count(live) == source.count(dead) == 1
+    plain = source.replace(live, "hawk_perm[hawk_nlive++] = hawk_t;").replace(dead, "{}")
+    flags = tc.host_flags(profile=profile)
+    planes = _planes("rkf78_attempt", 200, "spread", seed=20261004)
+    # lanes of very different lengths: every 7th sample ends at once, a few run long
+    planes["t_final"][::7] = 1e-3
+    planes["t_final"][3::50] = 4.0
+    runs = {}
+    for tag, text in (("compact", source), ("identity", plain)):
+        built = _counting_build(tmp_path, tag, text, bundle, flags)
+        lib = ctypes.CDLL(str(built.directory / "rkf78_attempt.so"))
+        runs[tag] = (_launches(built, "rkf78_attempt", planes, (4,) * 40),
+                     ctypes.c_longlong.in_dll(lib, "hawk_lane_trips"))
+    for launch, (a, b) in enumerate(zip(runs["compact"][0], runs["identity"][0])):
+        for key in b:
+            assert a[key].tobytes() == b[key].tobytes(), (key, launch)
+    assert runs["compact"][0][-1]["terminated"].all()
+    assert 0 < runs["compact"][1].value < runs["identity"][1].value
+
+
+@hawk.kernel
+def ramp(rate: Scalar, goal: Param, terminated: Terminated, x: Mutable[Scalar]):
+    """Rises by its own rate each step; finishes once it reaches the shared goal."""
+    xn = x + rate
+    x = xn
+    terminated = xn >= goal
+
+
+@hawk.kernel
+def fall(rate: Scalar, goal: Param, terminated: Terminated, x: Mutable[Scalar]):
+    """The same, falling to the shared goal: the reversed bound."""
+    xn = x - rate
+    x = xn
+    terminated = xn <= goal
+
+
+@hawk.kernel
+def ramp_or_cap(rate: Scalar, goal: Param, terminated: Terminated, x: Mutable[Scalar]):
+    """An exit that is not one comparison of a carry against a bound."""
+    xn = x + rate
+    x = xn
+    terminated = (xn >= goal) | (rate < 0.0)
+
+
+@hawk.kernel
+def ramp_to_plane(rate: Scalar, lim: Scalar, terminated: Terminated, x: Mutable[Scalar]):
+    """The bound differs per sample: no single order of lanes follows from it."""
+    xn = x + rate
+    x = xn
+    terminated = xn >= lim
+
+
+def _exit_order(kernel):
+    from hawk.emit.render import render_lane_split
+
+    return render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind).exit_order
+
+
+def _host_text(kernel):
+    return builds(render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
+                                kind=kernel.kind, one_step=getattr(kernel, "one_step", None)
+                                ).text)["interchanged"]
+
+
+def test_the_lane_order_follows_the_exit_bound_and_never_guesses():
+    assert _exit_order(hawk.steps(ramp, 16)) == (0, True)
+    assert _exit_order(hawk.steps(fall, 16)) == (0, False)
+    assert _exit_order(hawk.steps(ramp_or_cap, 16)) is None
+    assert _exit_order(hawk.steps(ramp_to_plane, 16)) is None
+    assert _exit_order(rkf78_attempt) is None
+    sorts = {}
+    for kern in (ramp, fall, ramp_or_cap, ramp_to_plane):
+        text = _host_text(hawk.steps(kern, 16))
+        sorts[kern.name] = re.findall(r"return x ([<>]) y; \}\);", text)
+        assert text.count("std::sort") == len(sorts[kern.name])
+    # farthest from the exit first: the lanes refill in this order, so the tile drains on its short samples
+    assert sorts == {"ramp": ["<"], "fall": [">"], "ramp_or_cap": [], "ramp_to_plane": []}
+
+
+def test_no_sort_survives_preprocessing_for_x86(tmp_path):
+    text = _host_text(hawk.steps(ramp, 16))
+    assert "std::sort" in text
+    out = _preprocessed("x86_64-unknown-linux-gnu", text.replace("#include", "//#include"), tmp_path)
+    assert "std::sort" not in out and "<algorithm>" not in out
+
+
+@pytest.mark.skipif(platform.machine() not in ("arm64", "aarch64"), reason="aarch64 emit")
+@pytest.mark.parametrize("profile,nan", [("native", False), (None, False), ("native", True)])
+def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, nan):
+    """The sorted lanes against the same TU in plain compacted order: lanes of
+    very different lengths give the same planes, bit for bit, in fewer lane-trips."""
+    from hawk.compile import toolchain as tc
+
+    kernel = hawk.steps(ramp, 16)
+    bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
+                          cache_dir=str(tmp_path / "cache"), defines=INTERCHANGED,
+                          host_profile=profile)
+    source = (bundle.directory / f"{kernel.name}.cpp").read_text()
+    sort = re.search(r"    std::sort\(hawk_perm.*?\}\);\n", source, re.S)
+    assert sort is not None
+    plain = source.replace(sort.group(0), "")
+    rng = np.random.default_rng(20261109)
+    n = 300
+    planes = {"rate": rng.choice([1.0, 2.0, 10.0, 50.0], n), "x": np.zeros(n),
+              "terminated": np.zeros(n, dtype=bool)}
+    if nan:     # diverged lanes: a NaN carry must sort last without faulting, the planes unchanged
+        planes["x"][::5] = np.nan
+    flags = tc.host_flags(profile=profile)
+    runs = {}
+    for tag, text in (("sorted", source), ("plain", plain)):
+        built = _counting_build(tmp_path, tag, text, bundle, flags, kernel.name)
+        lib = ctypes.CDLL(str(built.directory / f"{kernel.name}.so"))
+        runs[tag] = (_launches(built, kernel.name, planes, (1,) * 8),
+                     ctypes.c_longlong.in_dll(lib, "hawk_lane_trips"))
+    for launch, (a, b) in enumerate(zip(runs["sorted"][0], runs["plain"][0])):
+        for key in b:
+            assert a[key].tobytes() == b[key].tobytes(), (key, launch)
+    last = runs["sorted"][0][-1]
+    assert nan or last["terminated"].all()
+    assert not nan or np.isnan(last["x"][::5]).all()
+    assert 0 < runs["sorted"][1].value <= runs["plain"][1].value
+    assert nan or runs["sorted"][1].value < runs["plain"][1].value
+
+
+def test_every_compiler_takes_the_lane_loop():
+    # the live test runs after the lane loop (a reduction in it keeps GCC < 14's loop scalar), the TU
+    # defaults to the lane loop whatever the step's length, and no host profile keeps math errno
+    long_step = next(k for k in KERNELS.values() if k.name == "rkf78_attempt")
+    src = render_source(long_step.name, long_step.sinks, long_step.walk, TARGETS["host"],
+                        kind=long_step.kind, one_step=getattr(long_step, "one_step", None)).text
+    assert "hawk_live |= hawk_more" not in src and "hawk_live += " not in src
+    assert "hawk_live |= static_cast<std::int64_t>(hawk_ron[hawk_l] != 0.0);" in src
+    assert "__GNUC__ < 14" not in src
+    from hawk.compile import toolchain as tc
+    from hawk.ir.nodes import HawkError
+    for profile in ("native", "portable", "native-vector-math", "native-vector-math-nofma"):
+        try:
+            flags = tc.host_flags(profile=profile)
+        except HawkError:       # a vector-math profile off x86-64
+            continue
+        assert "-fno-math-errno" in flags, profile

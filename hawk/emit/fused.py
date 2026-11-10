@@ -130,7 +130,7 @@ class FusedKernel:
         """The MERGED slot order — one entry per distinct ``(role, name)``."""
         return self.walk.arg_spec
 
-    def fused_body(self, kind=None) -> Body:
+    def fused_body(self, kind=None, cells: bool = False) -> Body:
         """This group's body: one lane scope per member, one renderer."""
         return render_lane_body(self.members, kind=kind).as_body()
 

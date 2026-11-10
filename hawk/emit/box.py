@@ -140,10 +140,13 @@ def thread_box(kernel, scalar_type: str, *, kind=None, segment=None, active=None
     from ..ir import lanes
     from ..targets.cards import thread_box as card
 
+    measured = card(scalar_type)
+    if measured is None:
+        return None
     f = lanes.facts(kernel, group=getattr(kernel, "group", 1))
     if not f.uniform_control:
         return None
-    p1 = lanes.choose_mapping(f, card=card(scalar_type))["P1"]
+    p1 = lanes.choose_mapping(f, card=measured)["P1"]
     if p1 is None:
         return None
     T, axis = p1["T"], f.axes[p1["index"]]
@@ -233,7 +236,7 @@ class _Copy:
 
     def _operands(self, node: Node) -> tuple:
         if isinstance(node, At):
-            return (node.index,)        # the plane is read, never copied
+            return (node.raw_index,)    # the plane is read, never copied
         if isinstance(node, (Leaf, Const, SampleIndex, LoopIndex, LoopCarry)) \
                 or self._fusing(node):
             return ()
@@ -256,7 +259,12 @@ class _Copy:
             return _component(LoopValue(self._fuse(node.loop), node.slot), k)
         kids = [self.memo[(id(c), k)] for c in self._operands(node)]
         if isinstance(node, At):
-            kids = [node.plane, *kids]
+            index = kids[0]
+            if index is node.raw_index:
+                index = node.index                    # unmoved along the box: the one read, clamp and all
+            elif node.index is not node.raw_index:    # a rewritten read keeps its clamp
+                index = Op("clamp_index", (index, node.index.operands[1]), node.index.ttype)
+            kids = [node.plane, index]
         if all(a is b for a, b in zip(kids, node.operands)):
             return node
         return _rebuild(node, kids)

@@ -601,7 +601,11 @@ def device_compiler() -> str:
 #: bit for bit (a reference, a regression baseline, host against host).
 #:
 #: ``native-vector-math`` (fast) — the default on x86-64 with a GCC host
-#: compiler only: ``native`` plus three trades. (1) ``-DAETHER_HOST_VECTOR_MATH`` and
+#: compiler and on arm64 with any host compiler. On arm64 with clang it is
+#: ``native`` plus (2) below only: no vector math define, no
+#: ``-fno-trapping-math``, and a library call stays scalar. On arm64 with GCC
+#: it is that plus (1) for ``pow`` alone: every other library call stays
+#: scalar. On x86-64 it is ``native`` plus three trades. (1) ``-DAETHER_HOST_VECTOR_MATH`` and
 #: ``-fno-trapping-math`` route aether's transcendental math to vector-ABI
 #: functions, so a calling loop is no longer kept scalar by the libm call;
 #: those functions are aether's packet math, faithfully rounded (1-3 ULP of
@@ -619,21 +623,21 @@ def device_compiler() -> str:
 #: ``compensated`` sink and of ``aether/accum`` pin their operands
 #: (``AETHER_FP_BARRIER``), so compensation stays exact.
 HOST_PROFILES = ("native", "portable", "native-vector-math", "native-vector-math-nofma")
-#: The profiles that route aether's math to the vector ABI (GCC, x86-64). ``native-vector-math-nofma`` is
+#: The profiles that route aether's math to the vector ABI (GCC: all of it on x86-64, ``pow`` on arm64). ``native-vector-math-nofma`` is
 #: ``native-vector-math`` with ``-ffp-contract=off``: same vector code, so scalar and vector builds of one
 #: kernel agree bit for bit (the property the default gives up for speed, about 25 % on the vector kernel).
 VECTOR_MATH_PROFILES = ("native-vector-math", "native-vector-math-nofma")
 #: The profiles whose builds are bit-identical to the scalar build.
 EXACT_HOST_PROFILES = ("native", "portable")
 #: The default host profile for a GCC host compiler on an x86-64 host:
-#: ``native-vector-math`` there, ``native`` on any other architecture (where
-#: ``native-vector-math`` is refused). With a non-GCC host compiler (clang,
-#: the ``zig c++`` fallback) the default is ``native`` on every architecture,
-#: because the vector profile rides on GCC's vector function ABI; use
+#: ``native-vector-math`` there and on arm64 (any compiler), ``native`` on any
+#: other architecture (where ``native-vector-math`` is refused). With a non-GCC
+#: host compiler (clang, the ``zig c++`` fallback) the default on x86-64 is
+#: ``native``, because the vector profile rides on GCC's vector function ABI; use
 #: :func:`default_host_profile` for the default that applies to the compiler
 #: actually in use.
 DEFAULT_HOST_PROFILE = ("native-vector-math"
-                        if platform.machine().lower() in ("x86_64", "amd64")
+                        if platform.machine().lower() in ("x86_64", "amd64", "aarch64", "arm64")
                         else "native")
 
 #: Per-process memo of :func:`compiler_is_gcc`, keyed on the resolved compiler
@@ -796,15 +800,94 @@ def gcc_maskcall_affected(macros: dict) -> bool:
     return (major == 13 and minor < 4) or (major == 14 and minor < 3)
 
 
+#: The witness for the GCC masked-call miscompile (see :func:`gcc_maskcall_affected`): exit 0 on correct
+#: code, 1 on wrong code. Ships with the package (and is the one the CI host-gcc job runs).
+MASKED_CALL_WITNESS = Path(__file__).with_name("witness") / "gcc_masked_call.cpp"
+_WITNESS_MEMO: dict = {}
+_WITNESS_LOCK = threading.Lock()
+
+
+def _witness_run(compiler: str, flags: list[str]) -> tuple[str, str]:
+    """``(verdict, why)``: ``fixed`` (the witness ran correctly), ``miscompile``
+    (it ran and gave wrong results) or ``unrun`` (it could not be built or run)."""
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="hawk-witness-") as tmp:
+        exe = os.path.join(tmp, "witness")
+        try:
+            built = subprocess.run([compiler, *flags, "-std=c++17", str(MASKED_CALL_WITNESS), "-o", exe],
+                                   capture_output=True, text=True, timeout=120)
+            if built.returncode != 0:
+                return "unrun", "the witness does not compile with the host flags"
+            ran = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return "unrun", f"{type(exc).__name__}: cannot build or run the witness"
+    return {0: ("fixed", ""), 1: ("miscompile", "")}.get(ran.returncode, ("unrun", f"the witness exited {ran.returncode}"))
+
+
+def masked_call_flag(flags: list[str], extra=()) -> list[str]:
+    """``["-DAETHER_HVM_MASKED=1"]`` when the host compiler is a GCC whose version aether flags
+    (:func:`gcc_maskcall_affected`) but which runs the witness correctly (a distribution compiler carrying the
+    backport of the fix), else ``[]``: aether keeps its workaround. The witness is built with the host build's own
+    ``flags`` and run once per compiler identity, CPU and flags: the verdict is kept in the process and in the
+    compile cache directory. A macro the caller sets in ``extra`` wins without a probe; a compiler aether does
+    not flag, clang, a compiler that cannot be probed, or a witness that cannot run costs nothing and changes nothing."""
+    if any(str(f).startswith("-DAETHER_HVM_MASKED") for f in extra):
+        return []
+    try:
+        compiler = host_compiler()
+        if not gcc_maskcall_affected(compiler_macros(compiler)):
+            return []
+        key = hashlib.sha256("\n".join([compiler_identity(compiler), host_target_identity(), *flags]).encode()).hexdigest()[:16]
+    except (HawkError, OSError, subprocess.SubprocessError):
+        return []
+    with _WITNESS_LOCK:
+        verdict = _WITNESS_MEMO.get(key)
+    if verdict is None:
+        stored = default_cache_dir() / "toolchain" / f"masked_call_{key}.json"
+        try:
+            verdict = json.loads(stored.read_text())["verdict"]
+        except (OSError, ValueError, KeyError):
+            verdict, why = _witness_run(compiler, flags)
+            if verdict == "unrun":
+                logging.getLogger("hawk").warning("hawk: the masked-call witness did not run (%s): aether's workaround stays", why)
+            else:   # an unrun witness is not stored: the cause may be passing
+                try:
+                    stored.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = stored.with_suffix(f".{os.getpid()}.tmp")
+                    tmp.write_text(json.dumps({"verdict": verdict}))
+                    os.replace(tmp, stored)
+                except OSError:
+                    pass
+        with _WITNESS_LOCK:
+            verdict = _WITNESS_MEMO.setdefault(key, verdict)
+    return ["-DAETHER_HVM_MASKED=1"] if verdict == "fixed" else []
+
+
 def _is_x86_64() -> bool:
     return platform.machine().lower() in ("x86_64", "amd64")
+
+
+def _is_arm64() -> bool:
+    return platform.machine().lower() in ("aarch64", "arm64")
+
+
+def _arm64_gcc() -> bool:
+    """Whether the host is arm64 and the host compiler is GCC proper: the one place aether routes ``pow``
+    (alone) to a vector variant on arm64. A compiler that cannot be resolved or probed counts as not GCC."""
+    if not _is_arm64():
+        return False
+    try:
+        return compiler_is_gcc(host_compiler())
+    except (HawkError, OSError, subprocess.SubprocessError):
+        return False
 
 
 def default_host_profile() -> str:
     """The profile used when neither the compile options nor
     ``$HAWK_HOST_PROFILE`` name one: ``native-vector-math`` when the host is
-    x86-64 AND the resolved host compiler is GCC, else ``native``."""
-    if _is_x86_64() and compiler_is_gcc(host_compiler()):
+    x86-64 AND the resolved host compiler is GCC, or the host is arm64, else
+    ``native``."""
+    if _is_arm64() or (_is_x86_64() and compiler_is_gcc(host_compiler())):
         return "native-vector-math"
     return "native"
 
@@ -870,11 +953,13 @@ def opt_level(requested: str | None = None) -> str:
     return name
 
 
-def host_codegen_flags(profile: str | None = None, opt: str | None = None) -> list[str]:
+def host_codegen_flags(profile: str | None = None, opt: str | None = None, extra=()) -> list[str]:
     """The code-generation half of the host recipe for ``profile``
     (resolved through :func:`host_profile`): optimisation level (resolved
     through :func:`opt_level`), target CPU, vector width and the
-    FMA-contraction setting. See :data:`HOST_PROFILES`."""
+    FMA-contraction setting. On a vector-math profile it also carries
+    :func:`masked_call_flag`'s answer for the host compiler (``extra`` is the
+    caller's own flags, which can pin the macro). See :data:`HOST_PROFILES`."""
     name = host_profile(profile)
     level = opt_level(opt)
     machine = platform.machine().lower()
@@ -886,12 +971,20 @@ def host_codegen_flags(profile: str | None = None, opt: str | None = None) -> li
     else:
         target = ["-march=x86-64-v2"] if x86 else []
     if name in VECTOR_MATH_PROFILES:
-        if not x86:
+        if x86:
+            target = [*target, "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
+        elif name == "native-vector-math-nofma" or not _is_arm64():
             raise HawkError(
                 f"host profile {name!r} needs an x86-64 host "
                 "(aether's vector math follows the x86-64 vector function ABI)")
-        target = [*target, "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
-    return [f"-{level}", _HOST_CONTRACTION[name], *target]
+        elif _arm64_gcc():
+            # jump threading copies the pow call onto conditional paths, which GCC on aarch64 cannot vectorise
+            target = [*target, "-fno-trapping-math", "-fno-thread-jumps", "-DAETHER_HOST_VECTOR_MATH"]
+    # no kernel reads errno: without it a sqrt is one instruction, not a call that keeps a loop scalar
+    flags = [f"-{level}", _HOST_CONTRACTION[name], "-fno-math-errno", *target]
+    if name in VECTOR_MATH_PROFILES and x86:
+        flags += masked_call_flag(flags, extra)
+    return flags
 
 
 #: Per-process memo for :func:`host_target_identity` (the CPU does not change
@@ -934,7 +1027,7 @@ def host_flags(*, extra=(), profile: str | None = None, opt: str | None = None) 
     PIC, shared, C++23, and the standalone-artifact build mode (one
     self-contained TU, ``dlopen``-ed by eagle, never linked against a
     CUDA-language aether TU)."""
-    return [*host_codegen_flags(profile, opt), f"-std={HOST_STD}", "-shared", "-fPIC",
+    return [*host_codegen_flags(profile, opt, extra), f"-std={HOST_STD}", "-shared", "-fPIC",
             "-DAETHER_CPP_MODE", *include_flags(), *extra]
 
 
@@ -1061,6 +1154,7 @@ def reset_identity_memo() -> None:
     binary swapped mid-process should invalidate both alike."""
     _IDENTITY_MEMO.clear()
     _NVCC_VERSION_MEMO.clear()
+    _WITNESS_MEMO.clear()
 
 
 def _ccbin_from_flags(flags: str) -> str | None:
