@@ -852,7 +852,10 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
         "    static_assert(hawk_tile % hawk_w == 0,",
         '                  "hawk: a tile holds whole chunks");',
         *_compact_live(split),
-        "    if (hawk_nlive != 0) {",
+        # a one-pass loop, not an `if`: GCC allocates the trip loop's vector body with
+        # far fewer spills when the trip loop sits inside an outer loop (aarch64 GCC 14)
+        "    for (aether::offset_t hawk_cb = 0; hawk_cb < 1; ++hawk_cb) {",
+        "    if (hawk_nlive == 0) continue;",
         *[f"    alignas(64) {_lane_elem(t)} {mine}[{_width(t)} * hawk_w];"
           for mine, _, t in chunk],
         "    alignas(64) HAWK_LANE_T hawk_ron[hawk_w];",
