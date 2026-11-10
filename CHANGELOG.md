@@ -10,6 +10,8 @@ This section covers what changes from 0.7.4. New in this release: `hawk.chain` j
 
 **AVX2 hosts: host kernels now vectorise.** Results change in the last bits and match AVX-512.
 
+**Arm hosts compile with fused multiply-add by default.** `native-vector-math` is now the default host profile on arm64, with any host compiler: results change in the last bits. `host_profile="native"` keeps the exact build.
+
 **`Table.at` clamps every index to the table.** An index outside the table reads the nearest end element instead of whatever memory lay beyond it; an index already inside reads the same value, and a literal index a static extent bounds is not clamped. The clamp is one unsigned compare, so an in-range read pays one predictable branch. No migration is needed unless a kernel relied on reading past the end.
 
 ### Added
@@ -30,6 +32,9 @@ This section covers what changes from 0.7.4. New in this release: `hawk.chain` j
 - Table reads at one runtime base and static offsets share one range test.
 - Host kernels vectorise their lane loop under GCC before 14 too, and host code is built with `-fno-math-errno`, so a `sqrt` is one instruction and no longer keeps a loop scalar. Math functions no longer set `errno`.
 - Reused vector temporaries are `Item`s and outputs are stored at their producer, so fewer copies are made.
+- Host kernels no longer hold a vector lane for a finished sample, on every host: finished samples leave the tile between launches, and a lane whose sample finishes takes the tile's next live sample between trips. Runs whose samples finish at different times gain most; results are unchanged.
+- Arm hosts: the trip loop runs four interleaved vector bodies under clang, lanes start farthest from their exit first, and macOS takes the cache sizes from `sysctl`.
+- Arm hosts with GCC: `pow` runs inside the vectorised loop through aether's vector variant, and the host flags add `-fno-thread-jumps`, which keeps GCC from copying the call onto paths it cannot vectorise.
 
 ### Fixed
 

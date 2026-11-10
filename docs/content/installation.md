@@ -170,7 +170,7 @@ Neither of these two profiles changes a result: FMA contraction is off and
 nothing enables fast-math or reassociation, so host results are
 bit-identical to a scalar build that calls libm.
 
-**`native-vector-math`** (the default on x86-64 with a GCC host compiler; x86-64 with GCC only): `native` plus
+**`native-vector-math`** (the default on x86-64 with a GCC host compiler, and on arm64; arm64 is described below): `native` plus
 `-DAETHER_HOST_VECTOR_MATH -fno-trapping-math`, and `-ffp-contract=fast` in
 place of `-ffp-contract=off`. A per-sample loop that calls a
 transcendental function (`exp`, `log`, `pow`, `sin`, `cos`, `tan`, `tanh`,
@@ -212,6 +212,16 @@ profile, including those cached when `native` was the default, are not
 served for it. For results bit-identical to libm, request `native`:
 `build_bundle(..., host_profile="native")`,
 `CompileOptions(host_profile="native")` or `HAWK_HOST_PROFILE=native`.
+
+**On arm64** `native-vector-math` is the default with any host compiler. It is
+`native` with `-ffp-contract=fast` in place of `-ffp-contract=off`, so the
+FMA trade above applies. With GCC it also adds `-DAETHER_HOST_VECTOR_MATH
+-fno-trapping-math -fno-thread-jumps`, which routes `pow` alone to aether's
+vector variant (faithfully rounded, checked by aether's `make faithful-gate`
+on aarch64); every other math function stays libm's, and with clang `pow`
+does too. `-fno-thread-jumps` keeps GCC from copying the call onto
+conditional paths, which would keep the loop scalar. For results
+bit-identical to libm, request `native`, as on x86-64.
 
 **What is vectorised.** Threading is eagle's (its OpenMP host team splits the
 samples into tiles). Within a tile, a `sample_local` kernel's per-sample loop is
