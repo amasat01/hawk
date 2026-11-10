@@ -415,16 +415,24 @@ def test_only_an_automatic_tu_has_a_run_entry(shapes):
 
 
 def _trip_loop(text: str) -> str:
-    """The interchanged build's trip loop: from its ``for`` to its exit."""
+    """The interchanged build's trip loop: from its ``for`` to the end of its lane
+    loop, where the refill (:func:`_refill`) begins."""
     start = text.index("for (Int hawk_trip = 0;")
+    return text[start:text.index("std::int64_t hawk_idle = 0;", start)]
+
+
+def _refill(text: str) -> str:
+    """The interchanged build's refill block: between the trip's live reduction and its exit."""
+    start = text.index("if (hawk_idle != 0 && hawk_next < hawk_nlive) {")
     return text[start:text.index("if (hawk_live == 0) break;", start)]
 
 
 def test_the_trip_loop_runs_on_the_chunk_alone():
     """The hot loop reads and writes only the chunk's own arrays: no lane
     array of the tile (``hawk_lc*``/``hawk_li*``), no tile-strided index, no
-    tile live flag; the tile's lane arrays are touched once before the trips
-    and once after. A short step's chunk is two vectors, a long one's one."""
+    tile live flag; the tile's lane arrays are touched before the trips, after
+    them, and in the refill between trips, which writes a finished lane's sample
+    back and takes the next live one. A short step's chunk is two vectors, a long one's one."""
     from hawk.emit.host import SHORT_STEP_OPS, chunk_vectors
 
     assert (chunk_vectors(1), chunk_vectors(SHORT_STEP_OPS),
@@ -444,6 +452,9 @@ def test_the_trip_loop_runs_on_the_chunk_alone():
         assert (f"constexpr aether::offset_t hawk_w = hawk_abi::kHostChunk * "
                 f"hawk_abi::kHostChunkVectors * {vectors[kernel.name]};") in text, kernel.name
         assert text.count("for (Int hawk_trip = 0;") == 1, kernel.name
+        refill = _refill(text)
+        assert re.search(r"\bhawk_lc0\[", refill) and "hawk_perm[hawk_next++]" in refill, kernel.name
+        assert "hawk_rk0[hawk_l] = hawk_trip + 1;" in refill, kernel.name
 
 
 def test_the_two_builds_are_the_two_shapes(shapes):
@@ -687,7 +698,7 @@ def test_the_chunk_copy_in_loop_is_not_unrolled_under_gcc():
                          kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
     text = builds(host.text)["interchanged"]
     loop = text.index("for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {")
-    head = text[text.rindex("std::int64_t hawk_any = 0;", 0, loop):loop]
+    head = text[text.rindex("alignas(64) Int hawk_rk0[hawk_w];", 0, loop):loop]
     assert "#if defined(__GNUC__) && !defined(__clang__)\n#pragma GCC unroll 1\n#endif" in head
 
 
@@ -801,7 +812,8 @@ def test_the_lane_order_follows_the_exit_bound_and_never_guesses():
         text = _host_text(hawk.steps(kern, 16))
         sorts[kern.name] = re.findall(r"return x ([<>]) y; \}\);", text)
         assert text.count("std::sort") == len(sorts[kern.name])
-    assert sorts == {"ramp": [">"], "fall": ["<"], "ramp_or_cap": [], "ramp_to_plane": []}
+    # farthest from the exit first: the lanes refill in this order, so the tile drains on its short samples
+    assert sorts == {"ramp": ["<"], "fall": [">"], "ramp_or_cap": [], "ramp_to_plane": []}
 
 
 def test_no_sort_survives_preprocessing_for_x86(tmp_path):
