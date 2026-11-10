@@ -44,6 +44,8 @@ def test_clang_and_unprobed_are_never_affected():
 
 def _inject(monkeypatch, macros):
     monkeypatch.setattr(tc, "compiler_macros", lambda _compiler: macros)
+    # the GCC-family answer is memoised per compiler: keep the faked one out of later tests
+    monkeypatch.setattr(tc, "_GCC_FAMILY_MEMO", {})
 
 
 def test_no_compile_flag_is_added(monkeypatch):
