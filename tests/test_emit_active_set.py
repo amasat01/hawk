@@ -27,6 +27,7 @@ fail; render the map read into the body and the body-identity row fails.
 """
 
 from __future__ import annotations
+from _specs import HOST, for_targets
 
 import importlib
 
@@ -54,8 +55,8 @@ def _step(omega: Scalar, dt: Param, terminated: Terminated, x: Mutable[Scalar]):
 def _sources(k, kind, name=None):
     name = name or k.name
     unit = B._active_unit(k, name, kind)
-    return B._sources(unit, name=name, smode=scalar_mode("float64"), kind=kind,
-                      targets=("cuda", "host"), layout_sizes_override=None)
+    targets = ("cuda", "host")
+    return B._emit(B.lower(unit, name, scalar_mode("float64"), kind, targets, for_targets(targets)), targets, B._options(device_arch=""))
 
 
 # --------------------------------------------------------------------------- #

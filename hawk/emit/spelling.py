@@ -7,13 +7,17 @@ text, and the op-to-aether spelling tables."""
 
 from __future__ import annotations
 
+from raptor.protocols.binding import IDENT_PREFIX, binding_name
+
 import re
 
-from ..ir import HawkError, Node
+from ..ir import Node
+from .._errors import HawkError
 from ..ir.nodes import (
     Const,
     Op,
     Primitive,
+    _through,
 )
 from ..types import INT_PLANE_DTYPES, TensorType
 
@@ -46,15 +50,6 @@ def geometry_hits(text: str) -> list:
 #: that agreement rather than assuming it. Deliberately NOT a
 #: launch-geometry token — the geometry stays inside the prologue.
 SAMPLE_INDEX_IDENT = "hawk_i"
-
-
-#: Role -> the identifier prefix its binding carries. A prefix, not the
-#: bare name, since ``(role, name)`` is the slot identity.
-IDENT_PREFIX = {
-    "mutable": "mut", "out": "out", "wide_out": "wout", "accum_out": "aout",
-    "vec_in": "vin", "mat_in": "mtx", "wide_in": "win", "per_sample": "psc",
-    "lookup": "lut", "terminated": "trm", "uniform": "uni", "nsamples": "nsm",
-}
 
 
 #: The pinned role -> by-value ABI shape map, matching eagle's
@@ -157,11 +152,6 @@ def _is_literal_zero(node: Node) -> bool:
     return False
 
 
-def binding_name(role: str, name: str) -> str:
-    """The identifier the body reads a slot through (a view, or a by-value scalar)."""
-    return f"{IDENT_PREFIX[role]}_{name}"
-
-
 def param_cell_binding(name: str) -> str:
     """The loop-invariant local a parameter cell is read through: the
     promoted plane's one value, loaded once before the sample index."""
@@ -247,14 +237,6 @@ def reconstruct_call(role: str, ttype: TensorType, source: str) -> str:
     if len(shape) == 1:
         return f"hawk_abi::vec_view<{elem}, {shape[0]}>({source})"
     return f"hawk_abi::mat_view<{elem}, {shape[0]}, {shape[1]}>({source})"
-
-
-def _through(node: Node) -> Node:
-    """The node a reference to ``node`` is a reference TO: a Primitive
-    stands for its forward and is never rendered itself."""
-    while isinstance(node, Primitive):
-        node = node.forward
-    return node
 
 
 _IDENT_OK = re.compile(r"[^A-Za-z0-9_]")

@@ -6,32 +6,37 @@
 from __future__ import annotations
 
 import hawk
-from hawk.ir.lane import WarpLane
-from hawk.ir.loop_nodes import LoopIndex
-from hawk.ir.loops import _gathers
-from hawk.ir.nodes import At, Const, Leaf, TensorType
+from simt import WarpLane
+from hawk.ir.loops import boundary
+from hawk.ir.nodes import At, Const, Leaf, LoopIndex, Select, TensorType
 from hawk.ir.ops import make
 
 _I32, _F64 = TensorType((), "i32"), TensorType((), "f64")
 _TABLE = Leaf("table_read", "lookup", "w", TensorType((64,), "f64"))
+_INDEX = LoopIndex(0, "r")
 
 
-def _read(index):
-    return At(_TABLE, index, _F64)
+def _arm_boundary(index):
+    """The boundary of a loop body whose ``select`` arm reads the table at ``index``; returns the arm and the boundary."""
+    arm = make("add", (At(_TABLE, index, _F64), Const(1.0, _F64)))
+    body = Select(make("lt", (_INDEX, Const(3, _I32))), arm, Const(2.0, _F64), _F64)
+    return arm, boundary((body,), frozenset({id(_INDEX)}))
+
+
+def _leaves_the_guard(index):
+    arm, edge = _arm_boundary(index)
+    return any(node is arm for node in edge)
 
 
 def test_a_compile_time_or_warp_lane_index_is_not_a_guarded_gather():
-    assert not _gathers(_read(Const(5, _I32)), {})
-    lane = make("add", (Const(8, _I32), WarpLane()))
-    assert not _gathers(_read(lane), {})
-    assert not _gathers(make("add", (_read(lane), Const(1.0, _F64))), {})
+    assert _leaves_the_guard(Const(5, _I32))
+    assert _leaves_the_guard(make("add", (Const(8, _I32), WarpLane())))
 
 
 def test_a_runtime_index_stays_in_the_guard():
-    loop_index = LoopIndex(0, "r")
-    assert _gathers(_read(loop_index), {})
+    assert not _leaves_the_guard(_INDEX)
     runtime = Leaf("uniform", "uniform", "row", _I32)
-    assert _gathers(_read(make("add", (WarpLane(), runtime))), {})
+    assert not _leaves_the_guard(make("add", (WarpLane(), runtime)))
 
 
 def test_the_jvp_of_a_fused_matvec_reads_its_table_before_the_step_loop(tmp_path):

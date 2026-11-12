@@ -4,18 +4,20 @@
 """The per-branch cost vector of a ``dispatch`` group, counted from the IR.
 
 Every expected vector below is worked out by hand from the counting rules in
-``hawk/ir/cost.py``: ``(arith32, arith64, special32, special64, loads,
+``hawk/passes/cost.py``: ``(arith32, arith64, special32, special64, loads,
 gathers)`` per branch.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import platform
 
 import hawk
 import hawk.math as M
-from hawk.ir import Assign, Dispatch, Leaf, canonical, dispatch_costs
-from hawk.ir.cost import kernel_cost
+from hawk.ir import Assign, Dispatch, Leaf, canonical
+from hawk.passes.cost import dispatch_costs
+from hawk.passes.cost import kernel_cost
 from hawk.ir import make as mk
 from hawk.types import TensorType
 
@@ -24,7 +26,7 @@ I32 = TensorType((), "i32")
 
 
 def _costs(kernel):
-    return dispatch_costs(canonical(kernel.sinks))["dispatch0"]
+    return dispatch_costs(canonical(kernel.sinks), HOST)["dispatch0"]
 
 
 @hawk.kernel
@@ -108,7 +110,7 @@ def test_32_bit_work_lands_in_the_32_bit_fields():
     a = Leaf("vocab_read", "per_sample", "a", F32)
     k = Leaf("vocab_read", "per_sample", "k", I32)
     d = Dispatch(k, [mk("mul", (a, a)), mk("sin", (a,))], "switch", F32)
-    cost = dispatch_costs(canonical((Assign("out", d, F32),)))["dispatch0"]
+    cost = dispatch_costs(canonical((Assign("out", d, F32),)), HOST)["dispatch0"]
     assert [b.as_tuple() for b in cost.branches] == [(1, 0, 0, 0, 1, 0), (0, 0, 1, 0, 1, 0)]
 
 
@@ -120,24 +122,24 @@ def test_the_sidecar_facts_ride_along():
 
 def test_every_group_of_a_kernel_is_costed_under_its_published_name():
     walk = canonical(_mixed.sinks)
-    assert set(dispatch_costs(walk)) == {d.name for d in walk.dispatches}
+    assert set(dispatch_costs(walk, HOST)) == {d.name for d in walk.dispatches}
 
 
 def test_a_library_call_vectorises_the_fused_loop_only_under_the_vector_math_profile():
     walk = canonical(_mixed.sinks)
-    lib = lambda profile: dispatch_costs(walk, profile)["dispatch0"].branches   # noqa: E731
+    lib = lambda profile: dispatch_costs(walk, HOST, profile)["dispatch0"].branches   # noqa: E731
     assert not all(b.vectorised for b in lib("native"))
     assert not all(b.vectorised for b in lib("portable"))
     # the vector math is x86-64 only: elsewhere a library call stays scalar under every profile
     assert all(b.vectorised for b in lib("native-vector-math")) is (platform.machine().lower() in ("x86_64", "amd64"))
     # the fused loop renders the dispatch as a C++ switch, which stays scalar under every profile
-    assert not dispatch_costs(walk, "native-vector-math")["dispatch0"].fused_vectorised
+    assert not dispatch_costs(walk, HOST, "native-vector-math")["dispatch0"].fused_vectorised
 
 
 def test_branches_without_a_library_call_vectorise_under_every_profile():
     walk = canonical(_shared.sinks)
     for profile in ("native", "portable", "native-vector-math"):
-        cost = dispatch_costs(walk, profile)["dispatch0"]
+        cost = dispatch_costs(walk, HOST, profile)["dispatch0"]
         assert all(b.vectorised for b in cost.branches)
         assert not cost.fused_vectorised          # a rendered switch keeps the fused loop scalar
 
@@ -177,7 +179,7 @@ def test_kernel_cost_covers_a_kernel_without_a_dispatch():
     def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
         y = x * x + 1.0
 
-    cost = kernel_cost(canonical(plain.sinks), "native")
+    cost = kernel_cost(canonical(plain.sinks), HOST, "native")
     assert (cost.arith64, cost.chain64, cost.vectorised) == (2, 2, True)
 
 
@@ -199,7 +201,7 @@ def test_a_whole_kernel_counts_the_plane_elements_it_writes():
     def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
         y = x * x + 1.0
 
-    cost = kernel_cost(canonical(plain.sinks), "native")
+    cost = kernel_cost(canonical(plain.sinks), HOST, "native")
     assert cost.stores == 1
     assert cost.row_tuple() == cost.chain_tuple() + (1,)
 
@@ -211,7 +213,7 @@ def test_a_dispatch_branch_stores_the_value_it_hands_to_the_sink():
 
 
 def test_a_cost_without_a_store_count_has_no_store_entry():
-    from hawk.ir.cost import BranchCost
+    from hawk.passes.cost import BranchCost
 
     bare = BranchCost(loads=2)
     assert bare.stores is None

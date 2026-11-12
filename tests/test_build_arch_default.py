@@ -26,13 +26,14 @@ from hawk.artifact import arch as hawk_arch
 from hawk.artifact import build
 from hawk.compile import nvrtc as hnvrtc
 from hawk.compile import toolchain as tc
+from hawk_cuda import toolchain as dtc
 from hawk.ir import HawkError
 
 
 def _pins() -> tuple[str, str, str]:
     """Three distinct real archs the device toolkit supports (its newest
     three), so the precedence rows name no box-specific arch."""
-    toolkit = tc.toolkit_archs()
+    toolkit = dtc.toolkit_archs()
     if toolkit is None or len(toolkit[1]) < 3:
         return ("sm_70", "sm_75", "sm_80")
     a, b, c = toolkit[1][-3:]
@@ -43,10 +44,10 @@ def _no_gpu_answer() -> str:
     """What the resolver answers with no GPU reachable: PTX (a virtual
     ``compute_<N>`` arch) at the toolkit's minimum compute arch, never below
     ``PORTABLE_MIN_ARCH``."""
-    toolkit = tc.toolkit_archs()
+    toolkit = dtc.toolkit_archs()
     if not toolkit:
-        return tc.FALLBACK_ARCH
-    portable = [a for a in toolkit[1] if a >= tc.PORTABLE_MIN_ARCH]
+        return dtc.FALLBACK_ARCH
+    portable = [a for a in toolkit[1] if a >= dtc.PORTABLE_MIN_ARCH]
     return f"compute_{portable[0] if portable else toolkit[1][-1]}"
 
 
@@ -54,9 +55,9 @@ def _no_gpu_answer() -> str:
 def _fresh_probe_memo():
     """Every row starts and ends with the per-process probe memo clear, so
     one row's monkeypatched probe never leaks its answer into the next."""
-    tc.reset_device_arch_memo()
+    dtc.reset_device_arch_memo()
     yield
-    tc.reset_device_arch_memo()
+    dtc.reset_device_arch_memo()
 
 
 @hawk.kernel
@@ -92,7 +93,7 @@ def test_probes_the_running_device_when_unpinned(monkeypatch):
         calls.append(1)
         return "sm_80"
 
-    monkeypatch.setattr(tc, "toolkit_archs", lambda kind=None: ("stub", (50, 90)))
+    monkeypatch.setattr(dtc, "toolkit_archs", lambda kind=None: ("stub", (50, 90)))
     monkeypatch.setattr(hnvrtc, "current_device_arch", _fake_probe)
     assert hawk_arch("") == "sm_80"
     assert hawk_arch("") == "sm_80"
@@ -116,7 +117,7 @@ def _no_binding():
 def test_falls_back_when_cuda_bindings_and_the_driver_are_missing(monkeypatch):
     monkeypatch.delenv("HAWK_CUDA_ARCH", raising=False)
     monkeypatch.setattr(hnvrtc, "current_device_arch", _no_binding)
-    monkeypatch.setattr(tc, "_driver_device_arch", lambda: None)
+    monkeypatch.setattr(dtc, "_driver_device_arch", lambda: None)
     assert hawk_arch("") == _no_gpu_answer()
 
 
@@ -125,8 +126,8 @@ def test_asks_the_driver_when_cuda_bindings_are_missing(monkeypatch):
     arch, read through the driver library alone."""
     monkeypatch.delenv("HAWK_CUDA_ARCH", raising=False)
     monkeypatch.setattr(hnvrtc, "current_device_arch", _no_binding)
-    monkeypatch.setattr(tc, "toolkit_archs", lambda kind=None: ("stub", (50, 90)))
-    monkeypatch.setattr(tc, "_driver_device_arch", lambda: "sm_75")
+    monkeypatch.setattr(dtc, "toolkit_archs", lambda kind=None: ("stub", (50, 90)))
+    monkeypatch.setattr(dtc, "_driver_device_arch", lambda: "sm_75")
     assert hawk_arch("") == "sm_75"
 
 
@@ -137,7 +138,7 @@ def test_driver_probe_reads_the_running_device():
         expected = hnvrtc.current_device_arch()
     except (ImportError, HawkError):
         expected = None
-    assert tc._driver_device_arch() == expected
+    assert dtc._driver_device_arch() == expected
 
 
 def test_driver_probe_answers_without_cuda_bindings_or_the_fallback(monkeypatch):
@@ -152,8 +153,8 @@ def test_driver_probe_answers_without_cuda_bindings_or_the_fallback(monkeypatch)
     monkeypatch.delenv("HAWK_CUDA_ARCH", raising=False)
     for name in ("cuda.bindings", "cuda.bindings.driver"):
         monkeypatch.setitem(sys.modules, name, None)
-    monkeypatch.setattr(tc, "FALLBACK_ARCH", "compute_00")
-    monkeypatch.setattr(tc, "toolkit_archs", lambda kind=None: ("stub", (1, 999)))
+    monkeypatch.setattr(dtc, "FALLBACK_ARCH", "compute_00")
+    monkeypatch.setattr(dtc, "toolkit_archs", lambda kind=None: ("stub", (1, 999)))
     assert hawk_arch("") == expected
 
 
@@ -166,8 +167,8 @@ def test_falls_back_for_real_with_no_gpu_visible(monkeypatch):
     own arch."""
     monkeypatch.delenv("HAWK_CUDA_ARCH", raising=False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-    real = tc._probed_device_arch()
-    tc.reset_device_arch_memo()
+    real = dtc._probed_device_arch()
+    dtc.reset_device_arch_memo()
     assert hawk_arch("") == (real if real is not None else _no_gpu_answer())
 
 
@@ -185,24 +186,24 @@ def test_host_only_build_never_probes(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(os.environ.get("HAWK_DEVICE_COMPILER") == "nvrtc",
-                    reason="spies the nvcc argv builder (toolchain.device_flags), which a forced NVRTC build never calls")
+                    reason="spies the nvcc argv builder (dtc.device_flags), which a forced NVRTC build never calls")
 def test_build_cuda_target_resolves_through_the_same_chain(monkeypatch, tmp_path):
     """``build(..., targets=("cuda",))`` with no ``device_arch=`` and no
     ``$HAWK_CUDA_ARCH`` resolves through the probe -- spied at
-    ``toolchain.device_flags``, the real function underneath
+    ``dtc.device_flags``, the real function underneath
     :func:`hawk.compile.drivers`'s AOT nvcc compile -- and the compiled
     ``-arch=`` flag carries the probed value."""
     monkeypatch.delenv("HAWK_CUDA_ARCH", raising=False)
     probe = _pins()[2]
     monkeypatch.setattr(hnvrtc, "current_device_arch", lambda: probe)
-    real_device_flags = tc.device_flags
+    real_device_flags = dtc.device_flags
     seen = []
 
     def _spy(*, arch="", **kw):
         seen.append(arch)
         return real_device_flags(arch=arch, **kw)
 
-    monkeypatch.setattr(tc, "device_flags", _spy)
+    monkeypatch.setattr(dtc, "device_flags", _spy)
 
     build(_arch_probe_kernel, tmp_path / "unit", targets=("cuda",))
 
@@ -210,20 +211,20 @@ def test_build_cuda_target_resolves_through_the_same_chain(monkeypatch, tmp_path
 
 
 @pytest.mark.skipif(os.environ.get("HAWK_DEVICE_COMPILER") == "nvrtc",
-                    reason="spies the nvcc argv builder (toolchain.device_flags), which a forced NVRTC build never calls")
+                    reason="spies the nvcc argv builder (dtc.device_flags), which a forced NVRTC build never calls")
 def test_build_cuda_target_prefers_the_env_over_the_probe(monkeypatch, tmp_path):
     pin = _pins()[1]
     monkeypatch.setenv("HAWK_CUDA_ARCH", pin)
     monkeypatch.setattr(hnvrtc, "current_device_arch", lambda: (_ for _ in ()).throw(
         AssertionError("the probe must not run when $HAWK_CUDA_ARCH is set")))
-    real_device_flags = tc.device_flags
+    real_device_flags = dtc.device_flags
     seen = []
 
     def _spy(*, arch="", **kw):
         seen.append(arch)
         return real_device_flags(arch=arch, **kw)
 
-    monkeypatch.setattr(tc, "device_flags", _spy)
+    monkeypatch.setattr(dtc, "device_flags", _spy)
 
     build(_arch_probe_kernel, tmp_path / "unit", targets=("cuda",))
 
@@ -231,20 +232,20 @@ def test_build_cuda_target_prefers_the_env_over_the_probe(monkeypatch, tmp_path)
 
 
 @pytest.mark.skipif(os.environ.get("HAWK_DEVICE_COMPILER") == "nvrtc",
-                    reason="spies the nvcc argv builder (toolchain.device_flags), which a forced NVRTC build never calls")
+                    reason="spies the nvcc argv builder (dtc.device_flags), which a forced NVRTC build never calls")
 def test_build_cuda_target_device_arch_beats_everything(monkeypatch, tmp_path):
     env_pin, pin, _ = _pins()
     monkeypatch.setenv("HAWK_CUDA_ARCH", env_pin)
     monkeypatch.setattr(hnvrtc, "current_device_arch", lambda: (_ for _ in ()).throw(
         AssertionError("device_arch= must beat the env and the probe both")))
-    real_device_flags = tc.device_flags
+    real_device_flags = dtc.device_flags
     seen = []
 
     def _spy(*, arch="", **kw):
         seen.append(arch)
         return real_device_flags(arch=arch, **kw)
 
-    monkeypatch.setattr(tc, "device_flags", _spy)
+    monkeypatch.setattr(dtc, "device_flags", _spy)
 
     build(_arch_probe_kernel, tmp_path / "unit", targets=("cuda",), device_arch=pin)
 

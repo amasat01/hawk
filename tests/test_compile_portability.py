@@ -6,7 +6,7 @@
 * CCCL lookup: the CUDA 13 layouts (``include/cccl``,
   ``targets/*/include/cccl``, the cu13 wheel), and the loaded NVRTC's own
   root preferred over ``$CUDA_PATH``.
-* The arch policy (:func:`hawk.compile.toolchain.resolve_device_arch`): no
+* The arch policy (:func:`hawk.compile.dtc.resolve_device_arch`): no
   GPU -> PTX at the toolkit minimum; above the toolkit -> PTX at its
   maximum; below it -> a refusal naming device, arch and toolkit.
 * The device probe reads the CURRENT context's device.
@@ -29,6 +29,7 @@ from hawk.compile import cache as hcache
 from hawk.compile import drivers as hdrivers
 from hawk.compile import nvrtc as hnvrtc
 from hawk.compile import toolchain as tc
+from hawk_cuda import toolchain as dtc
 from hawk.ir import HawkError
 
 KERNEL_SRC = 'extern "C" __global__ void hawk_probe_kernel(int* out) { *out = 42; }\n'
@@ -139,11 +140,11 @@ def test_loaded_nvrtc_root_is_the_mapped_library_root():
 def stub_device(monkeypatch):
     """Set the probed device's arch (``None``: no GPU) and the toolkit's
     supported archs, with nothing real asked."""
-    tc.reset_device_arch_memo()
+    dtc.reset_device_arch_memo()
     monkeypatch.delenv("HAWK_CUDA_ARCH", raising=False)
 
     def _set(probed, archs=(50, 90)):
-        tc.reset_device_arch_memo()
+        dtc.reset_device_arch_memo()
 
         def _probe():
             if probed is None:
@@ -152,12 +153,12 @@ def stub_device(monkeypatch):
 
         monkeypatch.setattr(hnvrtc, "current_device_arch", _probe)
         monkeypatch.setattr(hnvrtc, "current_device_name", lambda: "Stub GPU")
-        monkeypatch.setattr(tc, "toolkit_archs",
+        monkeypatch.setattr(dtc, "toolkit_archs",
                             lambda kind=None: None if archs is None
                             else ("stub toolkit 1.0", tuple(archs)))
 
     yield _set
-    tc.reset_device_arch_memo()
+    dtc.reset_device_arch_memo()
 
 
 @pytest.mark.parametrize("probed, archs, want", [
@@ -166,18 +167,18 @@ def stub_device(monkeypatch):
     ("sm_120", (50, 61, 90), "compute_90"),   # above the toolkit: PTX at max
     ("sm_61", (50, 61, 90), "sm_61"),         # supported: the device itself
     ("sm_90", (50, 61, 90), "sm_90"),         # the maximum itself: unchanged
-    (None, None, tc.FALLBACK_ARCH),           # nothing readable: virtual
+    (None, None, dtc.FALLBACK_ARCH),           # nothing readable: virtual
 ])
 def test_arch_policy_table(stub_device, probed, archs, want):
     stub_device(probed, archs)
-    assert tc.resolve_arch("") == want
+    assert dtc.resolve_arch("") == want
     assert want.startswith("compute_") == (hnvrtc.forced_target(want) == "ptx")
 
 
 def test_arch_policy_refuses_a_device_below_the_toolkit(stub_device):
     stub_device("sm_35", (50, 90))
     with pytest.raises(HawkError) as err:
-        tc.resolve_arch("")
+        dtc.resolve_arch("")
     message = str(err.value)
     assert "Stub GPU" in message and "sm_35" in message
     assert "stub toolkit 1.0" in message
@@ -185,14 +186,14 @@ def test_arch_policy_refuses_a_device_below_the_toolkit(stub_device):
 
 def test_arch_policy_checks_explicit_pins_the_same_way(stub_device, monkeypatch):
     stub_device("sm_61", (50, 90))
-    assert tc.resolve_arch("sm_100") == "compute_90"
+    assert dtc.resolve_arch("sm_100") == "compute_90"
     with pytest.raises(HawkError, match="device_arch='sm_35'"):
-        tc.resolve_arch("sm_35")
+        dtc.resolve_arch("sm_35")
     monkeypatch.setenv("HAWK_CUDA_ARCH", "sm_30")
     with pytest.raises(HawkError, match=r"\$HAWK_CUDA_ARCH='sm_30'"):
-        tc.resolve_arch("")
+        dtc.resolve_arch("")
     monkeypatch.setenv("HAWK_CUDA_ARCH", "sm_75")
-    assert tc.resolve_arch("") == "sm_75"
+    assert dtc.resolve_arch("") == "sm_75"
 
 
 def test_no_gpu_device_compile_is_ptx_at_the_nvrtc_minimum(monkeypatch):
@@ -204,7 +205,7 @@ def test_no_gpu_device_compile_is_ptx_at_the_nvrtc_minimum(monkeypatch):
     except HawkError:
         pytest.skip("NVRTC or CCCL not available in this process")
     monkeypatch.delenv("HAWK_CUDA_ARCH", raising=False)
-    tc.reset_device_arch_memo()
+    dtc.reset_device_arch_memo()
 
     def _no_device():
         raise HawkError("no CUDA device reachable (stub)")
@@ -214,14 +215,14 @@ def test_no_gpu_device_compile_is_ptx_at_the_nvrtc_minimum(monkeypatch):
     try:
         image = hnvrtc.device(KERNEL_SRC)
     finally:
-        tc.reset_device_arch_memo()
-    low = min(a for a in archs if a >= tc.PORTABLE_MIN_ARCH)
+        dtc.reset_device_arch_memo()
+    low = min(a for a in archs if a >= dtc.PORTABLE_MIN_ARCH)
     assert image.target == "ptx" and image.arch == f"compute_{low}"
     assert f".target sm_{low}".encode() in image.image
     with pytest.raises(HawkError, match="virtual"):
-        tc.reset_device_arch_memo()
+        dtc.reset_device_arch_memo()
         hnvrtc.cubin(KERNEL_SRC)
-    tc.reset_device_arch_memo()
+    dtc.reset_device_arch_memo()
 
 
 # --------------------------------------------------------------------------- #
@@ -328,16 +329,16 @@ def test_compile_writes_through_a_temporary_and_keys_libc(monkeypatch, tmp_path)
 def test_ccbin_default_leaves_nvcc_prepend_flags_alone(monkeypatch):
     monkeypatch.delenv("HAWK_NVCC_CCBIN", raising=False)
     monkeypatch.setenv("NVCC_PREPEND_FLAGS", "-ccbin /opt/some/g++ -Xfoo")
-    assert tc.subprocess_env()["NVCC_PREPEND_FLAGS"] == "-ccbin /opt/some/g++ -Xfoo"
+    assert tc.subprocess_env(("cuda",))["NVCC_PREPEND_FLAGS"] == "-ccbin /opt/some/g++ -Xfoo"
     monkeypatch.delenv("NVCC_PREPEND_FLAGS")
-    assert "NVCC_PREPEND_FLAGS" not in tc.subprocess_env(), (
+    assert "NVCC_PREPEND_FLAGS" not in tc.subprocess_env(("cuda",)), (
         "with nothing set, nvcc's own default (the g++ on PATH) must stand")
 
 
 def test_hawk_nvcc_ccbin_replaces_only_the_ccbin(monkeypatch):
     monkeypatch.setenv("HAWK_NVCC_CCBIN", "/opt/other/g++")
     monkeypatch.setenv("NVCC_PREPEND_FLAGS", "-ccbin /opt/some/g++ -Xfoo")
-    assert tc.subprocess_env()["NVCC_PREPEND_FLAGS"] == "-ccbin /opt/other/g++ -Xfoo"
+    assert tc.subprocess_env(("cuda",))["NVCC_PREPEND_FLAGS"] == "-ccbin /opt/other/g++ -Xfoo"
 
 
 def test_device_host_compiler_follows_the_environment(tmp_path):
@@ -345,23 +346,23 @@ def test_device_host_compiler_follows_the_environment(tmp_path):
     fake.write_text("#!/bin/sh\n")
     fake.chmod(0o755)
     env = {"PATH": "/nonexistent", "NVCC_PREPEND_FLAGS": f"-ccbin {fake}"}
-    assert tc.device_host_compiler(env) == str(fake.resolve())
+    assert dtc.device_host_compiler(env) == str(fake.resolve())
     env = {"PATH": "/nonexistent", "NVCC_CCBIN": str(tmp_path)}
-    assert tc.device_host_compiler(env) == str(fake.resolve())
+    assert dtc.device_host_compiler(env) == str(fake.resolve())
     env = {"PATH": str(tmp_path)}
-    assert tc.device_host_compiler(env) == str(fake)
+    assert dtc.device_host_compiler(env) == str(fake)
 
 
 def test_device_key_carries_the_host_compiler(monkeypatch, tmp_path):
     try:
-        tc.device_compiler()
+        dtc.device_compiler()
     except HawkError:
         pytest.skip("no nvcc on this box")
-    if tc.device_compiler_kind() != "nvcc":
+    if dtc.device_compiler_kind() != "nvcc":
         pytest.skip("$HAWK_DEVICE_COMPILER forces nvrtc on this box")
     result = compile_source(KERNEL_SRC, "hawk_probe_kernel",
                             CompileOptions(target="cuda",
                                            cache_dir=str(tmp_path / "cache")))
     record = hcache.Cache(str(tmp_path / "cache")).record(result.key)
-    assert tc.device_host_compiler_identity() in record["key_terms"]
+    assert dtc.device_host_compiler_identity() in record["key_terms"]
     assert any(t.startswith("ccbin:") for t in record["key_terms"])

@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from hawk.compile import nvrtc, toolchain
+from hawk_cuda import nvrtc, toolchain
 from hawk.ir import HawkError
 
 

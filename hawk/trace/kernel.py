@@ -27,7 +27,8 @@ from collections.abc import Callable
 from typing import Any
 
 from .._broadcast import route
-from ..ir import Const, HawkError, Leaf, Node, Quantity, Walk, canonical, make
+from ..ir import Const, Leaf, Node, Quantity, Walk, canonical, make
+from .._errors import HawkError
 from ..ir.nodes import COMPANION_SUFFIX, AccumWrite, Assign, compensates
 from ..types import Slot, TensorType
 from . import astpass, helpers, reduce
@@ -160,6 +161,19 @@ class Kernel:
                     self.sinks.primal_unit = eagle.deploy(source).plugin._hawk_source[1]
                 self._plan = eagle.deploy(self)
         return self._plan
+
+    def steps_reverse_table(self, device: bool) -> dict:
+        """The measured rows of ``steps_reverse="auto"`` for the host or a device, as plain data (what eagle hands to
+        :func:`raptor.ir.steps_class.choose`)."""
+        from ..targets.steps_reverse import table_for
+
+        return table_for(device)
+
+    def host_spec(self):
+        """The build spec of the host rows, for a door that takes it explicitly (eagle's dispatch costs and stage split)."""
+        from ..targets.steps_reverse import host_spec
+
+        return host_spec()
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
         return f"<Kernel {self.name} slots={len(self.arg_spec)}>"
@@ -400,12 +414,6 @@ def _declarations(fn: Callable[..., Any], kind: Any) -> tuple:
     defining = _defining_frame(fn)
     scope = _scope(fn, defining.f_locals if defining is not None else {})
     own, params = _own_declarations(fn, scope)
-    from ..compile.toolchain import libc_symbols
-
-    if fn.__name__ in libc_symbols():
-        raise HawkError(
-            f"kernel {fn.__name__!r}: the name is a C library function, and the kernel's "
-            "entry would redeclare it; rename the kernel")
     if "buffer" in params:
         raise HawkError(
             f"kernel {fn.__name__!r}: `buffer` is a reserved parameter name — "
@@ -1029,37 +1037,3 @@ def _collect(name: str, params: list[str], args: dict[str, Any],
             "Mutable / WideOut parameter"
         )
     return tuple(sinks)
-
-
-class TeamStage(Kernel):
-    """A team stage of a split kernel (:mod:`hawk.ir.team`): the launch that works one matrix per
-    lane with a team of threads. Its sinks only name the scratch planes it works on; its body is
-    :func:`hawk.emit.team.team_body`, handed to the entry wrappers like a fused group's."""
-
-    __slots__ = ()
-
-    def __init__(self, name: str, sinks: tuple, team: Any, planes: dict[str, Any] | None = None) -> None:
-        super().__init__(name, sinks, planes)
-        self.team = team
-        if team.reads:          # input planes the stage reads in place are slots of its own
-            self.walk = canonical(self.sinks, (*_declared(self.planes), *(Slot(leaf.role, leaf.name, leaf.ttype) for leaf in team.reads)))
-
-    def fused_body(self, kind: Any = None, cells: bool = False) -> Any:
-        from ..artifact.bundle import _active_spec
-        from ..emit.team import team_body
-
-        return team_body(self.team, _active_spec(kind), cells)
-
-
-class WarpStage(TeamStage):
-    """A kernel in the warp form (:mod:`hawk.ir.lane`): one block of a warp per lane, its sinks the sliced ones. Its body is
-    the ordinary render of those sinks; the launch prologue binds the lane's place in its warp."""
-
-    __slots__ = ()
-
-    def fused_body(self, kind: Any = None, cells: bool = False) -> Any:
-        from ..emit.render import render_body
-
-        if self.one_step is not None:       # an automatic kernel renders its two bodies itself
-            return None
-        return render_body(self.sinks, self.walk, indent="        ", kind=kind)

@@ -3,7 +3,7 @@
 
 """A keyed accumulate whose key moves in runs of lanes commits once per run.
 
-The lane facts (:func:`hawk.ir.lanes.key_run`) name the run: ``proven`` (the
+The lane facts (:func:`lowering.lanes.key_run`) name the run: ``proven`` (the
 key is equal over every aligned run of W lanes), ``tested`` (no static
 proof; a warp vote decides) or ``sorted`` (a ``Sorted[Index]`` key, runs
 found at run time). The emitter spells ``aether::accum::run``'s call for it
@@ -264,7 +264,9 @@ CASES = {
 @pytest.fixture(scope="module", params=["float32", "float64"])
 def bundles(request, tmp_path_factory, cache_dir):
     root = tmp_path_factory.mktemp(f"keyed_{request.param}")
-    kernels = {k for c in CASES.values() for k in c[:2]} | set(AUTO.values())
+    #: built in name order: a set of kernels iterates by object hash, and a unit that two kernels share is emitted under the name of
+    #: the first one built
+    kernels = sorted({k for c in CASES.values() for k in c[:2]} | set(AUTO.values()), key=lambda k: k.name)
     out = {k.name: build_bundle([k], root / k.name, mode=request.param,
                                 targets=("cuda", "host"), cache_dir=cache_dir,
                                 defines=COUNT)

@@ -20,14 +20,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir import Const, HawkError, Node
+from ..ir import Const, Node
+from .._errors import HawkError
 from ..ir import make as _make
-from ..ir.linalg import MAX_DIM
 from ..types import TensorType
 from .value import Value, node_of, random_normal, vec
 
 _F64 = TensorType((), "f64")
-
 
 def _square(name: str, a: Any) -> Node:
     node = node_of(a)
@@ -225,15 +224,12 @@ def lstsq(j: Any, r: Any) -> tuple[Value, Value]:
     equations, ``J^T J x = J^T r``, by Cholesky. ``info > 0`` when ``J`` is
     rank deficient; the conditioning is squared, as in any normal-equations solve.
 
-    With more than 32 unknowns (``J`` is ``m x n``, ``m >= n``, ``n > 32``) the solve is by
-    Householder QR on a team of threads per lane, which does not square the conditioning:
-    ``info`` is then the first column whose ``R`` diagonal is exactly zero."""
-    jn = node_of(j)
-    if len(jn.ttype.shape) == 2 and jn.ttype.shape[1] > MAX_DIM:
-        f = _make("qr", (jn,))
-        return Value(_make("qr_solve", (f, node_of(r)))), Value(_make("qr_info", (f,)))
-    (factor, info), rhs = _normal_equations("lstsq", j, r)
-    return cho_solve(factor, rhs), info
+    Tracing records the MATH only: one ``lstsq`` node and its ``lstsq_info``. How it is solved is the backend's lowering
+    (:mod:`hawk.passes.lstsq`): the normal equations up to the target variant's ``linalg.max_dim`` unknowns, above it Householder
+    QR on a team of threads per lane, which does not square the conditioning (``info`` is then the first column whose ``R``
+    diagonal is exactly zero)."""
+    jn, rn = node_of(j), node_of(r)
+    return Value(_make("lstsq", (jn, rn))), Value(_make("lstsq_info", (jn,)))
 
 
 def lm_step(j: Any, r: Any, mu: Any) -> Value:

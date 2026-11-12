@@ -11,6 +11,7 @@
 * **Complex pairs.** ``cmul``, ``conj``, ``abs2`` and ``arg`` on ``Vector[2]``."""
 
 from __future__ import annotations
+from _specs import HOST
 
 import math
 import textwrap
@@ -87,7 +88,7 @@ def uses_library(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
 
 
 def _text(kernel) -> str:
-    return render_body(kernel.sinks, canonical(kernel.sinks)).text
+    return render_body(kernel.sinks, canonical(kernel.sinks), spec=HOST).text
 
 
 def _ref_nested(x):

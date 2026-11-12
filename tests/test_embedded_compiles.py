@@ -19,13 +19,14 @@ from __future__ import annotations
 import _kernels as K
 import pytest
 
-from hawk.embedded import EmbeddedProfile, check, render, toolchain
+from hawk_c import EmbeddedProfile, check, render, toolchain
 
 MODES = ("float64", "float32")
 CORPUS = [n for n in K.CORPUS if n != "energy"]
 STRICT = EmbeddedProfile(require_cppcheck=True)
 
 
+@pytest.mark.needs_toolchain("cppcheck")
 def test_cppcheck_is_installed():
     assert toolchain.cppcheck() is not None, "install cppcheck or set $HAWK_CPPCHECK"
 

@@ -17,11 +17,12 @@ import pytest
 import hawk
 import hawk.math as hm
 from hawk import Index, Mutable, Param, Scalar, Terminated, Vector
-from hawk.embedded.verify import UNSUPPORTED, refuse_unsupported
+from hawk_c.verify import UNSUPPORTED, refuse_unsupported
 from hawk.emit import compose
 from hawk.ext import DEFAULT_KIND, Guard, Kind
-from hawk.ir import Assign, HawkError, Leaf, canonical
-from hawk.ir.loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from hawk.ir import Assign, Leaf, canonical
+from hawk import HawkError
+from hawk.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
 from hawk.ir.nodes import AccumWrite, Const
 from hawk.ir.ops import make
 from hawk.trace.kernel import Kernel

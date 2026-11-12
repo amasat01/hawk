@@ -667,7 +667,7 @@ CORPUS = {
     "matvec_in_seg": Entry(matvec_in_seg, "y", lambda n: (ROWS, n), *_selected(_matvec_in_planes, _matvec_in_want), segmented=True, modes=("float64",)),
 }
 
-#: The trivial wide kernel of the memory check (:func:`hawk.ir.wide`): a 512-wide plane scaled.
+#: The trivial wide kernel of the memory check (:func:`lowering.wide`): a 512-wide plane scaled.
 @hawk.kernel
 def trivial(x: Vector[W], y: Mutable[Vector[W]]):
     y = x * 2.0

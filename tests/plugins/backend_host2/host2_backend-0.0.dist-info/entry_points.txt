@@ -1,0 +1,2 @@
+[raptor.extensions]
+host2-backend = host2_plugin:extension.json

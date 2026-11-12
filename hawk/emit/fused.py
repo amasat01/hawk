@@ -37,7 +37,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from ..ir import HawkError, Walk, canonical
+from ..ir import Walk, canonical
+from .._errors import HawkError
 from ..ir.nodes import LEAF_ROLES, SINK_ROLES
 from ..types import LaneMeta, Slot
 from .render import Body, render_body
@@ -73,7 +74,15 @@ class FusedBody:
         return Body(self.text, self.needs_random)
 
 
-def render_lane_body(lanes: Sequence[Lane], *, indent: str = "        ",
+def _validation_spec():
+    """The spec of the compose-time render that only checks the lanes agree: every default target's variant, the device's first."""
+    from .. import registry
+    from ..targets import TARGETS, build_spec
+
+    return build_spec(tuple(t for t in TARGETS if not registry.traits(t).get("device", False)))      # host rows only: no device module is imported
+
+
+def render_lane_body(lanes: Sequence[Lane], *, spec, indent: str = "        ",
                      kind=None) -> FusedBody:
     """Render ONE body for a fused lane group (the body path).
 
@@ -97,7 +106,7 @@ def render_lane_body(lanes: Sequence[Lane], *, indent: str = "        ",
                 "name identifies its scope and its LaneMeta record"
             )
         seen.add(lane.name)
-        body = render_body(lane.sinks, lane.walk, indent=indent + "    ", kind=kind)
+        body = render_body(lane.sinks, lane.walk, indent=indent + "    ", kind=kind, spec=spec)
         needs_random = needs_random or body.needs_random
         chunks.append(f"{indent}{{  // lane {lane.name}")
         if lane.prologue:
@@ -130,9 +139,9 @@ class FusedKernel:
         """The MERGED slot order — one entry per distinct ``(role, name)``."""
         return self.walk.arg_spec
 
-    def fused_body(self, kind=None, cells: bool = False) -> Body:
+    def fused_body(self, kind=None, cells: bool = False, *, spec) -> Body:
         """This group's body: one lane scope per member, one renderer."""
-        return render_lane_body(self.members, kind=kind).as_body()
+        return render_lane_body(self.members, kind=kind, spec=spec).as_body()
 
 
 def _lane_of(member) -> Lane:
@@ -215,5 +224,5 @@ def compose(group: Sequence, name: str, scalar_type: str = "float64",
     fused = FusedKernel(name, lanes, sinks, walk, meta, mode.id)
     # Rendered once, here, so lanes that disagree on the sink/mask seams
     # fail at compose time rather than inside the artifact builder.
-    fused.fused_body(kind)
+    fused.fused_body(kind, spec=_validation_spec())
     return fused

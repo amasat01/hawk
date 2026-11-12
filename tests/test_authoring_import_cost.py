@@ -13,8 +13,14 @@ equality, checked in a fresh subprocess, and allows only ``hawk``,
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+from pathlib import Path
+
+import pytest
+
+_REPO = Path(__file__).resolve().parent.parent
 
 _BARE = ("import sys, json; import hawk; "
          "print(json.dumps(sorted(m for m in sys.modules if m.startswith('hawk'))))")
@@ -78,8 +84,35 @@ def test_touching_an_authoring_name_binds_the_tracer():
     )
 
 
-def test_every_authoring_name_resolves():
-    probe = ("import hawk, json; "
-             "print(json.dumps([n for n in hawk.__all__ "
-             "if n != '__version__' and getattr(hawk, n, None) is None]))")
-    assert _modules(probe) == [], "every name in hawk.__all__ must resolve"
+def _run(probe: str, *, extension_path: bool) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    if extension_path:
+        env["PYTHONPATH"] = os.pathsep.join([str(_REPO / "extensions" / "hawk_c"), env.get("PYTHONPATH", "")])
+    else:       # the optional C extension is not importable here (it may be installed: hide it by name)
+        probe = "import sys; sys.modules['hawk_c'] = None; " + probe
+    return subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, env=env)
+
+
+_ALL_PROBE = ("import hawk, json; "
+              "print(json.dumps([n for n in hawk.__all__ if n != '__version__' and getattr(hawk, n, None) is None]))")
+
+
+@pytest.mark.parametrize("extension_path", [False, True], ids=["without-hawk_c", "with-hawk_c"])
+def test_every_authoring_name_resolves(extension_path):
+    r = _run(_ALL_PROBE, extension_path=extension_path)
+    assert r.returncode == 0, r.stderr[-800:]
+    assert json.loads(r.stdout.strip().splitlines()[-1]) == [], "every name in hawk.__all__ must resolve"
+
+
+@pytest.mark.parametrize("extension_path", [False, True], ids=["without-hawk_c", "with-hawk_c"])
+def test_star_import_never_needs_an_optional_backend(extension_path):
+    r = _run("from hawk import *", extension_path=extension_path)
+    assert r.returncode == 0, r.stderr[-800:]
+
+
+def test_the_embedded_door_serves_the_extension_and_refuses_by_name_without_it():
+    present = _run("import hawk; print(hasattr(hawk.embedded, 'export'))", extension_path=True)
+    assert present.returncode == 0 and present.stdout.strip() == "True", present.stderr[-800:]
+    absent = _run("import hawk; hawk.embedded", extension_path=False)
+    assert absent.returncode != 0 and "'c'" in absent.stderr and "install" in absent.stderr, absent.stderr[-800:]
+    assert "embedded" not in _run("import hawk; print(hawk.__all__)", extension_path=False).stdout

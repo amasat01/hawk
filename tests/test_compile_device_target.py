@@ -22,8 +22,10 @@ from _toolchain import real_arch
 
 from hawk.compile import CompileOptions, compile_source
 from hawk.compile import drivers as hdrivers
+from hawk_cuda import driver as hdriver
 from hawk.compile import nvrtc as hnvrtc
 from hawk.compile import toolchain as tc
+from hawk_cuda import toolchain as dtc
 from hawk.ir import HawkError
 
 KERNEL_SRC = 'extern "C" __global__ void hawk_probe_kernel(int* out) { *out = 42; }\n'
@@ -31,16 +33,16 @@ KERNEL_SRC = 'extern "C" __global__ void hawk_probe_kernel(int* out) { *out = 42
 
 def _skip_without_nvcc():
     try:
-        tc.device_compiler()
+        dtc.device_compiler()
     except HawkError:
         pytest.skip("no nvcc on this box")
-    if tc.device_compiler_kind() != "nvcc":
+    if dtc.device_compiler_kind() != "nvcc":
         pytest.skip("$HAWK_DEVICE_COMPILER forces nvrtc on this box")
 
 
 def test_device_flags_swaps_ptx_for_cubin():
-    ptx = tc.device_flags(arch=real_arch())
-    cubin = tc.device_flags(arch=real_arch(), target="cubin")
+    ptx = dtc.device_flags(arch=real_arch())
+    cubin = dtc.device_flags(arch=real_arch(), target="cubin")
     assert "-ptx" in ptx and "-cubin" not in ptx
     assert "-cubin" in cubin and "-ptx" not in cubin
     # every other flag is unchanged -- only the target flag itself differs, and
@@ -53,7 +55,7 @@ def test_device_flags_swaps_ptx_for_cubin():
 
 def test_device_flags_rejects_an_unknown_target():
     with pytest.raises(HawkError, match="target"):
-        tc.device_flags(arch=real_arch(), target="fatbin")
+        dtc.device_flags(arch=real_arch(), target="fatbin")
 
 
 def test_device_flags_carries_an_explicit_opt_level():
@@ -61,10 +63,10 @@ def test_device_flags_carries_an_explicit_opt_level():
     the default is now spelled out as O3, on both halves of the nvcc
     compile -- its own host-side flag and the ``-Xptxas`` passthrough to the
     device-side optimiser."""
-    default = tc.device_flags(arch=real_arch())
+    default = dtc.device_flags(arch=real_arch())
     assert "-O3" in default
     assert default[default.index("-Xptxas") + 1] == "-O3"
-    o0 = tc.device_flags(arch=real_arch(), opt="O0")
+    o0 = dtc.device_flags(arch=real_arch(), opt="O0")
     assert "-O3" not in o0
     assert "-O0" in o0 and o0[o0.index("-Xptxas") + 1] == "-O0"
     # every other flag is unchanged -- only the two -O terms differ.
@@ -74,12 +76,12 @@ def test_device_flags_carries_an_explicit_opt_level():
 
 def test_device_flags_rejects_an_unknown_opt_level():
     with pytest.raises(HawkError, match="unknown opt level"):
-        tc.device_flags(arch=real_arch(), opt="Ofast")
+        dtc.device_flags(arch=real_arch(), opt="Ofast")
 
 
 def test_nvcc_version_parses_the_release_line():
     _skip_without_nvcc()
-    major, minor = tc.nvcc_version(tc.device_compiler())
+    major, minor = tc.nvcc_version(dtc.device_compiler())
     assert (major, minor) >= (11, 0), "sanity: a real nvcc reports a real version"
 
 
@@ -94,11 +96,11 @@ def test_device_target_follows_select_target(monkeypatch):
     states, compared against the installed driver."""
     monkeypatch.setattr(tc, "nvcc_version", lambda compiler: (99, 9))
     monkeypatch.setattr(hnvrtc, "driver_cuda_version", lambda: (1, 0))
-    assert hdrivers._device_target("nvcc", "sm_75") == "cubin"
+    assert hdriver._device_target("nvcc", "sm_75") == "cubin"
 
     monkeypatch.setattr(tc, "nvcc_version", lambda compiler: (1, 0))
     monkeypatch.setattr(hnvrtc, "driver_cuda_version", lambda: (99, 9))
-    assert hdrivers._device_target("nvcc", "sm_75") == "ptx"
+    assert hdriver._device_target("nvcc", "sm_75") == "ptx"
 
 
 def test_device_target_is_cubin_when_the_driver_is_unreachable(monkeypatch):
@@ -111,7 +113,7 @@ def test_device_target_is_cubin_when_the_driver_is_unreachable(monkeypatch):
 
     monkeypatch.setattr(tc, "nvcc_version", lambda compiler: (12, 9))
     monkeypatch.setattr(hnvrtc, "driver_cuda_version", _no_driver)
-    assert hdrivers._device_target("nvcc", "sm_75") == "cubin"
+    assert hdriver._device_target("nvcc", "sm_75") == "cubin"
 
 
 def test_compile_source_emits_cubin_when_nvcc_outruns_the_driver(monkeypatch, tmp_path):
@@ -181,6 +183,6 @@ def test_device_target_is_ptx_for_a_virtual_arch(monkeypatch):
     CUBIN for a virtual arch."""
     monkeypatch.setattr(tc, "nvcc_version", lambda compiler: (99, 9))
     monkeypatch.setattr(hnvrtc, "driver_cuda_version", lambda: (1, 0))
-    assert hdrivers._device_target("nvcc", "compute_75") == "ptx"
+    assert hdriver._device_target("nvcc", "compute_75") == "ptx"
     with pytest.raises(HawkError, match="virtual"):
-        tc.device_flags(arch="compute_75", target="cubin")
+        dtc.device_flags(arch="compute_75", target="cubin")

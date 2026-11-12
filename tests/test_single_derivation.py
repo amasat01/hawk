@@ -1,13 +1,13 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Nothing outside ``hawk/ir/`` enumerates the walk.
+"""Nothing outside ``hawk/ir/`` and the passes over it (``hawk/passes/``) enumerates the walk.
 
 ``Walk`` owns the ONE traversal: every consumer derives from
 ``Walk.arg_spec`` / ``Walk.slot_of``, and a module that re-enumerates
 ``Walk.leaves`` or ``Walk.order`` is a second, redundant derivation. The
 detector is an AST scan over the installable package
-``hawk/hawk/`` excluding ``hawk/hawk/ir/``; the test suite itself is out of
+``hawk/hawk/`` excluding ``hawk/hawk/ir/`` and ``hawk/hawk/passes/``; the test suite itself is out of
 scope, since a test asserting on ``walk.order`` is an observer, not a consumer
 that ships.
 
@@ -39,11 +39,11 @@ _ITERATING_BUILTINS = {
 }
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "hawk"
-_IR_ROOT = _PACKAGE_ROOT / "ir"
+_IR_ROOTS = (_PACKAGE_ROOT / "ir", _PACKAGE_ROOT / "passes")
 
 
 def _scanned_files() -> list[Path]:
-    return [p for p in sorted(_PACKAGE_ROOT.rglob("*.py")) if _IR_ROOT not in p.parents]
+    return [p for p in sorted(_PACKAGE_ROOT.rglob("*.py")) if not any(r in p.parents for r in _IR_ROOTS)]
 
 
 def _is_walk_field(node: ast.AST) -> bool:
@@ -77,7 +77,7 @@ def _hits(iteration_only: bool) -> list[str]:
 def test_scan_covers_the_package_and_excludes_ir():
     scanned = _scanned_files()
     assert scanned, f"the AST scan found no modules under {_PACKAGE_ROOT}"
-    assert not any(_IR_ROOT in p.parents for p in scanned)
+    assert not any(r in p.parents for p in scanned for r in _IR_ROOTS)
 
 
 def test_no_module_outside_hawk_ir_iterates_walk_leaves_or_order():

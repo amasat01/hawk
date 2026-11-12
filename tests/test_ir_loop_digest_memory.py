@@ -5,13 +5,13 @@
 linear in body size — the memory row, the key-width row, and the two properties
 the fix was not allowed to cost.
 
-WHAT WAS WRONG AND HOW IT WAS MEASURED. Before the fix, ``hawk/ir/loop_nodes.py``'s
+WHAT WAS WRONG AND HOW IT WAS MEASURED. Before the fix, ``hawk/ir/nodes.py``'s
 ``_body_digest`` keyed each loop-body node with the ``repr`` of a tuple that
 embedded its CHILDREN'S KEY STRINGS verbatim. One key was therefore the entire
 sub-expression beneath it written out, and a body whose dependency chain has
 depth ``d`` cost O(2**d) BYTES to key — all of it spent inside the tracer,
 before any compiler ran. Every RED number below was produced by putting that one
-line back into ``hawk/ir/loop_nodes.py::_body_keys`` and running THESE rows against
+line back into ``hawk/ir/nodes.py::_body_keys`` and running THESE rows against
 it, so both arms measured the same subject through the same path; the plant is
 not kept in the tree, because a keying nothing calls is a keying nothing keeps
 honest.
@@ -66,12 +66,12 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from _kan import kan_edge_cell, shallow_kan_cell
+from _spline import spline_edge_cell, shallow_spline_cell
 
 import hawk
 import hawk.math as m
 from hawk.ir import Loop
-from hawk.ir.loop_nodes import BODY_KEY_HEX, body_key_widths
+from hawk.ir.nodes import BODY_KEY_HEX, body_key_widths
 
 #: The repo root a child process has to put on ``sys.path`` to import hawk.
 HAWK_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -81,9 +81,9 @@ HAWK_ROOT = str(Path(__file__).resolve().parent.parent)
 #: a cap so generous that both arms fit.
 CHAIN_CAP_KIB = 2_000_000
 
-#: The cap the KAN-scale rows use (6 GB): the legacy keying exhausts it at
+#: The cap the spline-scale rows use (6 GB): the legacy keying exhausts it at
 #: (n_in=64, G=20, k=3), which is the point was ruled over.
-KAN_CAP_KIB = 6_000_000
+SPLINE_CAP_KIB = 6_000_000
 
 #: The width, in hex characters, one body key is allowed to be. The row asserts
 #: against 128 BYTES rather than against this constant so that widening the
@@ -92,7 +92,7 @@ MAX_KEY_BYTES = 128
 
 
 # --------------------------------------------------------------------------- #
-# The subjects live in ``tests/_kan.py`` — ONE definition, shared with the
+# The subjects live in ``tests/_spline.py`` — ONE definition, shared with the
 # compile card (``tests/test_loop_lowering_card.py``), so the memory row and the
 # compile row can never drift into measuring different bodies under one name.
 # --------------------------------------------------------------------------- #
@@ -173,6 +173,7 @@ _CHAIN_PROBE = '''
 # row 1: the memory row.
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("depth", [12, 14])
+@pytest.mark.needs_toolchain("linux")
 def test_a_deep_loop_body_canonicalises_inside_two_gigabytes(depth, tmp_path):
     """THE row. A 4-trip ``for`` whose body is a ``depth``-long multiply
     chain — 20-odd nodes — must trace AND canonicalise in a fraction of a second
@@ -198,7 +199,7 @@ def test_a_deep_loop_body_canonicalises_inside_two_gigabytes(depth, tmp_path):
 def _all_body_widths(loop: Loop) -> tuple:
     """Every key width in ``loop``'s body, nested loops included — the widths
     the digest itself built, read back through
-    :func:`hawk.ir.loop_nodes.body_key_widths` rather than recomputed here."""
+    :func:`hawk.ir.nodes.body_key_widths` rather than recomputed here."""
     widths = list(body_key_widths(loop))
     for node in loop.body_nodes():
         if isinstance(node, Loop):
@@ -207,9 +208,9 @@ def _all_body_widths(loop: Loop) -> tuple:
 
 
 KEY_WIDTH_CASES = [
-    ("kan_edge_cell_64x20x3", lambda: kan_edge_cell(64, 20, 3)),
-    ("kan_edge_cell_8x5x2", lambda: kan_edge_cell(8, 5, 2)),
-    ("card_shallow_cell_64x23", lambda: shallow_kan_cell(64, 23)),
+    ("spline_edge_cell_64x20x3", lambda: spline_edge_cell(64, 20, 3)),
+    ("spline_edge_cell_8x5x2", lambda: spline_edge_cell(8, 5, 2)),
+    ("card_shallow_cell_64x23", lambda: shallow_spline_cell(64, 23)),
 ]
 
 
@@ -226,7 +227,7 @@ def test_no_body_key_is_wider_than_a_fixed_hash(case):
     bytes for the largest key of the 8x5x2 cell, and the 64x20x3 cell could not
     be keyed inside 6 GB at all.
 
-    The three cases are the deep KAN cell at the size was ruled over, the
+    The three cases are the deep spline cell at the size was ruled over, the
     same cell at the size that fits in memory both ways (so the row still has a
     subject if the largest one is ever removed), and the card's own shallow
     two-loop family."""
@@ -249,8 +250,8 @@ def test_the_body_key_cost_does_not_track_the_body_size():
     total keying cost must be about four times as large — LINEAR. Under the
     legacy keying the same pair differed by more than the memory of the machine
     (213 083 226 bytes against a total that never completed)."""
-    small = kan_edge_cell(8, 5, 2)
-    large = kan_edge_cell(64, 20, 3)
+    small = spline_edge_cell(8, 5, 2)
+    large = spline_edge_cell(64, 20, 3)
 
     def total(kernel):
         loops = [n for n in kernel.walk.order if isinstance(n, Loop)]
@@ -284,6 +285,7 @@ _DIGEST_PROBE = '''
 '''
 
 
+@pytest.mark.needs_toolchain("linux")
 def test_the_digest_is_byte_identical_in_a_SECOND_process(tmp_path):
     """The one way a "fixed-width key" can be quietly wrong: a key
     hashed with Python's own ``hash()`` would be short, structural, positional

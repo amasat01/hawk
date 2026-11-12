@@ -10,16 +10,22 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import threading
+from types import MappingProxyType
 from pathlib import Path
 
 from .. import _contracts
+from .._errors import HawkError
+from .. import options as _options_mod
+from .. import registry as _registry
 from ..compile import digest_file
 from ..compile.cache import ClosureWatch, artifact_memo_get, validity_digest, write_atomic
 from ..compile.toolchain import host_profile as _host_profile
 from ..compile.toolchain import opt_level as _opt_level
-from ..emit.box import BOX_ENV
-from ..targets import CPU, GPU, TARGETS
+#: ``HAWK_BOX=0`` builds every kernel without a box (an A/B switch, not an API).
+BOX_ENV = "HAWK_BOX"
+from ..targets import TARGETS
 from ..targets.cards import thread_box as thread_box_card
 from ..trace.decl import Plane
 
@@ -112,7 +118,7 @@ def _note(kind: str, message: str) -> None:
 
 def arch(device_arch: str = "") -> str:
     """The CUDA arch HAWK compiles a device artifact for -- the public name
-    for the ONE resolver (:func:`hawk.compile.toolchain.resolve_arch`):
+    for the ONE resolver (:meth:`hawk.backends.Backend.resolve_arch`):
     ``device_arch=`` > ``$HAWK_CUDA_ARCH`` > the running GPU (probed once
     per process) > PTX for the toolkit's oldest architecture, each checked
     against what the toolkit compiles. Kept here, under the door callers already
@@ -122,9 +128,9 @@ def arch(device_arch: str = "") -> str:
     Call only where a target compiles with the device toolchain: every call may
     reach the device probe, so a host-only build must never call this at
     all."""
-    from ..compile.toolchain import resolve_arch
+    from ..backends import need_device
 
-    return resolve_arch(device_arch)
+    return need_device().resolve_arch(device_arch)
 
 
 
@@ -162,24 +168,100 @@ def _first_moved(pairs) -> str | None:
 
 
 # -- The unit key. ----------------------------------------------------------- #
-def _wide_part(scalar_type: str, resolved_arch: str) -> str:
+def _wide_part(scalar_type: str, spec) -> str:
     """The wide-value thresholds of the build when they differ from the defaults (a card row, or an override), else nothing,
     so a build with no row keeps the key it always had."""
     from ..targets import cards
 
-    doc = cards._wide_doc(str(cards.WIDE_FILE))["defaults"]
-    with cards.build_arch(resolved_arch):
-        got = cards.wide(scalar_type)
+    if spec.device is None:         # a host build has no wide card: it places by the host variant's own table
+        return ""
+    doc = cards.wide_card(spec)["defaults"]
+    got = cards.wide(scalar_type, spec)
     return "" if all(got[k] == doc[k] for k in cards.WIDE_KEYS) else "wide:" + ":".join(str(got[k]) for k in cards.WIDE_KEYS)
+
+
+def _backend_key(row, options, source_digests, spec, smode, wide_class: str) -> str:
+    """The key of ONE built backend: its terms (:func:`_row_terms`) and the facts of ITS OWN variant only: the digest of that variant's
+    data and, for a device row, the class its thresholds come from and the card row of its arch; for a host row, nothing of a device."""
+    own = spec.by_target.get(row.id)
+    terms = [*_row_terms(row, options, source_digests),
+             "variant:" + (hashlib.sha256(json.dumps(own, sort_keys=True, default=str).encode("utf-8")).hexdigest() if own else "")]
+    if row.device:
+        terms += ["wide_class:" + wide_class if wide_class else "", _wide_part(smode.id, spec)]
+    h = hashlib.sha256()
+    for term in terms:
+        h.update(term.encode("utf-8") + b"\0")
+    return h.hexdigest()
+
+
+def _row_terms(row, options, source_digests) -> tuple:
+    """One built backend's key terms: its distribution version (which covers its defaults), each option given under its
+    prefix, then its own."""
+    own = row.own_options(options)
+    return ("version:" + row.id + "=" + _registry.version(row.id), *(f"{row.id}.{k}={_options_mod.canon(row.id + '.' + k, own[k])}" for k in sorted(own)),
+            *row.key_terms(source_digests, own))
+
+
+def _plain(v):
+    """``v`` as text when it is plain data (numbers, text, and tuples, lists, sets, mappings of them), else ``None``."""
+    if v is None or isinstance(v, (str, bytes, int, float, bool)):
+        return repr(v)
+    if isinstance(v, (tuple, list)):
+        parts = [_plain(x) for x in v]
+        return None if None in parts else "(" + ",".join(parts) + ")"
+    if isinstance(v, (set, frozenset)):
+        parts = [_plain(x) for x in v]
+        return None if None in parts else "{" + ",".join(sorted(parts)) + "}"
+    if isinstance(v, (dict, MappingProxyType)):
+        parts = [(_plain(k), _plain(x)) for k, x in v.items()]
+        return None if any(None in kv for kv in parts) else "{" + ",".join(f"{k}:{x}" for k, x in sorted(parts)) + "}"
+    return None
+
+
+def _emission_modules(targets) -> list:
+    """The modules whose tables ``targets`` emit with, as the manifests DECLARE them (``emission_modules``): hawk's own, each target's
+    extension's, and the component's of every component a target's manifest names (``components``). The list is the declaration alone:
+    loaded or not, a declared module is in it (:func:`emission_digest` imports it)."""
+    from .. import components as _components
+
+    names = set(_registry.shared_emission_modules())
+    for t in targets:
+        names.update(_registry.emission_lists(t)[0])
+        for c in _registry.traits(t).get("components", ()):
+            names.update(_components.component(c).MANIFEST.get("emission_modules", ()))
+    return sorted(names)
+
+
+def emission_digest(targets) -> str:
+    """The sha256 of the plain module-level tables of the emission modules ``targets`` use (:func:`_emission_modules`): what the unit
+    is emitted WITH besides its inputs, so an import-time edit of a shared spelling table or text constant moves the key, and an edit
+    of a table only another target emits with does not (sideways identity)."""
+    import importlib
+
+    h = hashlib.sha256()
+    for name in _emission_modules(targets):
+        try:
+            mod = importlib.import_module(name)
+        except ImportError as exc:
+            raise HawkError(f"the emission module {name!r}, declared by the manifest of a target of this build {tuple(targets)}, cannot be "
+                            f"imported ({exc}): its tables are part of the unit key, so the build is refused rather than keyed without it") from exc
+        h.update(name.encode() + b"\0")
+        for key in sorted(vars(mod)):
+            if key.startswith("__"):
+                continue
+            text = _plain(vars(mod)[key])
+            if text is not None:
+                h.update(f"{key}={text}\0".encode("utf-8"))
+    return h.hexdigest()
 
 
 def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, defines, cache_dir,
               device_arch, derivative_blocks, layout_sizes_override,
               host_profile: str = "", opt_level: str = "",
-              literal_table: bool = False, embedded_profile: str = "",
+              options=None,
               source_digests=(), groups=(), emit_form: str = "auto",
               linalg_form: str = "auto", wide_form: str = "auto", wide_class: str = "",
-              launch_bounds: tuple[int, int] | None = None) -> str:
+              launch_bounds: tuple[int, int] | None = None, spec) -> str:
     """The per-process identity of a BUILD REQUEST: every input the
     unit's content is a function of, hashed term by term. Per kernel:
     :attr:`hawk.ir.walk.Walk.digest`, its name and its declarations
@@ -203,53 +285,41 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
     profile, it changes the AOT nvcc device compile too (``-O<n>`` /
     ``-Xptxas -O<n>``), so an ``"O0"`` request must never be served an
     ``"O3"`` unit regardless of which targets this bundle builds; and
-    ``literal_table``, which changes the device source; and
+    the distribution version of each built backend, then every user option of it (``<id>.<key>=<canonical text>``, :mod:`hawk.options`) before that backend's own terms; and
     the thread-box inputs (``$HAWK_BOX`` and the card's ``T`` for the scalar
-    mode, :mod:`hawk.emit.box`), which change the emitted entry; and
-    ``embedded_profile``, the ``repr`` of the
-    :class:`hawk.embedded.EmbeddedProfile` an exported target renders under
-    (its caps and policies reach the C text and its report; empty when
-    none is a target); and, only when one is, each
-    kernel's ``source_digest`` (``source_digests``, in kernel order: the C
-    report and header stamp it, and two kernels sharing a walk can differ
-    in source text) and ``aether_dsc.c_core.CORE_VERSION`` (the inlined
-    core functions the C unit carries); and each kernel's compaction
+    mode, :mod:`simt.box`), which change the emitted entry; and
+    the terms a backend adds itself (:meth:`hawk.backends.Backend.key_terms`); and each kernel's compaction
     ``group`` (``groups``, hashed only when one exceeds 1: a grouped
     active-set map reads its index prologue differently).
 
+    and the plain tables the emission modules hold (:func:`emission_digest`: spellings, text constants, name maps).
+
     STATED EXPOSURE, accepted rather than closed: the key names the
-    render's INPUTS, not its output, so an emitter monkeypatched between
+    render's INPUTS and its tables, not its code, so an emitter FUNCTION monkeypatched between
     two builds of the same kernel is invisible to it and would be served
     the first build's unit. :func:`reset_unit_memo` is the door out."""
     h = hashlib.sha256()
-    h.update(b"hawk.artifact.unit-key/9\n")
+    h.update(b"hawk.artifact.unit-key/10\n")
     rows = [TARGETS[t] for t in targets]
-    exported = any(row.compile is None for row in rows)
     for part in (_contracts.AETHER_ABI_VERSION, smode.id, repr(kind),
                  "\x00".join(targets), "\x00".join(str(d) for d in defines),
-                 arch(device_arch) if any(r.compile == GPU for r in rows) else "",
+                 arch(device_arch) if any(r.device for r in rows) else "",
                  str(cache_dir),
                  json.dumps(derivative_blocks, sort_keys=True, default=str),
                  repr(layout_sizes_override),
                  str(os.environ.get("HAWK_AETHER_INCLUDE")),
                  str(os.environ.get("HAWK_EAGLE_INCLUDE")),
                  ("host_profile:" + _host_profile(host_profile or None)
-                  if any(r.compile == CPU for r in rows) else ""),
+                  if any(r.host_compiled for r in rows) else ""),
                  "opt_level:" + _opt_level(opt_level or None),
-                 "literal_table" if literal_table else "",
                  "emit_form:" + emit_form if emit_form != "auto" else "",
                  "linalg_form:" + linalg_form if linalg_form != "auto" else "",
                  "wide_form:" + wide_form if wide_form != "auto" else "",
-                 "wide_class:" + wide_class if wide_class else "",
                  "launch_bounds:%d,%d" % launch_bounds if launch_bounds else "",
                  f"team_threads:{os.environ.get('HAWK_TEAM_THREADS')}",
-                 f"box:{os.environ.get(BOX_ENV)}:{(thread_box_card(smode.id) or {}).get('T')}",
-                 _wide_part(smode.id, arch(device_arch) if any(r.compile == GPU for r in rows) else ""),
-                 ("embedded_profile:" + embedded_profile
-                  if embedded_profile else ""),
-                 ("source_digests:" + "\x00".join(str(d) for d in source_digests)
-                  if exported else ""),
-                 ("c_core:" + _c_core_version() if exported else "")):
+                 "emission_tables:" + emission_digest(targets),
+                 f"box:{os.environ.get(BOX_ENV)}:{(thread_box_card(smode.id, spec) or {}).get('T')}",
+                 *(f"backend:{row.id}:{_backend_key(row, options or {}, source_digests, spec, smode, wide_class)}" for row in rows)):
         h.update(part.encode("utf-8"))
         h.update(b"\0")
     if any(g > 1 for g in groups):
@@ -268,14 +338,6 @@ def declaration_digest(kernel) -> str:
     return hashlib.sha256(repr(sorted(
         (name, p) for name, p in planes.items()
         if isinstance(p, Plane))).encode("utf-8")).hexdigest()
-
-
-def _c_core_version() -> str:
-    """``aether_dsc.c_core.CORE_VERSION``, read at call time: the core
-    functions a ``"c"`` unit inlines, a term of its unit key."""
-    from aether_dsc import c_core
-
-    return c_core.CORE_VERSION
 
 
 def _closure_watch(drafts) -> ClosureWatch:

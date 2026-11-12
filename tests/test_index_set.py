@@ -619,7 +619,7 @@ def test_the_design_pattern_matches_numpy_on_the_device(pattern_bundles, name):
 # -- the C target, and lane_position in other units.
 # --------------------------------------------------------------------------- #
 def test_the_c_target_refuses_a_lane_set_and_spells_lane_position_as_the_loop_index():
-    from hawk.embedded import render as render_c
+    from hawk_c import render as render_c
 
     with pytest.raises(HawkError, match="index map"):
         render_c(SET(_square), mode="float64")

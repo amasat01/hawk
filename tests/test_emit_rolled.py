@@ -12,6 +12,7 @@ factors in place, with no ``n x n`` identity literal for an inverse.
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 import re
 
@@ -26,7 +27,8 @@ from hawk import Matrix, Mutable, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.artifact.layout import exports
-from hawk.emit import policy, render_source
+from hawk.emit import render_source
+from hawk.passes import policy
 from hawk.emit.wrapper import scalar_mode
 from hawk.targets import TARGETS
 
@@ -70,8 +72,8 @@ def inv_kernel(n):
     return k_inv
 
 
-def _text(kernel, target="cuda"):
-    return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
+def _text(kernel, target="cuda", spec=None):
+    return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target], spec=spec,
                          mode=scalar_mode("float64"), exports=exports(target)).text
 
 
@@ -139,8 +141,12 @@ def test_a_transposed_operand_is_read_through_not_built():
 
 
 def test_the_threshold_is_one_constant(monkeypatch):
-    monkeypatch.setattr(policy, "ROLLED_FOLD_MIN", 2)
-    assert "aether::rt::matVecItems(" in _text(mv_kernel(3, 3))
+    from hawk.targets import build_spec
+    from hawk.variants import derive
+
+    base = build_spec(("cuda",))
+    low = build_spec(("cuda",), device=derive(base.device, {"form": {"rolled_fold_min": 2}}))
+    assert "aether::rt::matVecItems(" in _text(mv_kernel(3, 3), spec=low)
 
 
 def test_a_factorisation_reads_the_plane_through_its_proxy_and_an_inverse_builds_no_identity():

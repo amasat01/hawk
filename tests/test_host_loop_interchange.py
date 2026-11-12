@@ -26,6 +26,7 @@ tile spans eight vector registers of the kernel's ``Real``. The SAME TU built wi
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import platform
 import re
@@ -44,8 +45,8 @@ from hawk.compile import toolchain as tc
 from hawk.diff import vjp
 from hawk.emit import render_source, scalar_mode
 from hawk.emit.host import INTERCHANGE_MACRO, loop_interchange
-from hawk.ir.cost import kernel_cost
-from hawk.ir.vectorise import interchanged_loops, vectorises
+from hawk.passes.cost import kernel_cost
+from hawk.passes.vectorise import interchanged_loops, vectorises
 from hawk.targets import TARGETS
 
 PLAIN = ("HAWK_HOST_INTERCHANGE=0",)
@@ -274,7 +275,7 @@ def test_who_keeps_the_per_sample_loop():
     # a derived loop pair: the reverse loop reads the primal's per-sample count
     derived = hawk.Kernel("gated_sum_vjp", vjp(gated_sum, wrt=("x", "g")))
     assert interchanged_loops(derived.walk) == ()
-    assert loop_interchange(derived.sinks, derived.walk) is None
+    assert loop_interchange(derived.sinks, derived.walk, spec=HOST) is None
     # a loop-free kernel has nothing to interchange
     assert interchanged_loops(_loop_free.walk) == ()
 
@@ -336,7 +337,7 @@ def test_the_flag_matches_the_lane_loop(request, tmp_path, kernel, mode, profile
         request.applymarker(pytest.mark.xfail(
             strict=False, reason="GCC 12 vectorises this lane loop on some AVX-512 CPUs only"))
     lane, wide = _lane_loop_report(tmp_path, kernel, mode, profile)
-    assert vectorises(kernel.walk, profile, mode) is (lane <= wide), (lane, wide)
+    assert vectorises(kernel.walk, HOST, profile, mode) is (lane <= wide), (lane, wide)
 
 
 _VECTOR_MATH = pytest.mark.skipif(
@@ -393,12 +394,12 @@ def _vm_ok():
 def test_the_cost_model_reads_the_same_predicate():
     for kernel in (arith, nested, sin_chain, trajectory):
         for profile in (EXACT, "native-vector-math"):
-            assert kernel_cost(kernel.walk, profile).vectorised is vectorises(
-                kernel.walk, profile)
+            assert kernel_cost(kernel.walk, HOST, profile).vectorised is vectorises(
+                kernel.walk, HOST, profile)
     # an interchanged loop's trip count leaves the vectorised flag on
-    assert kernel_cost(arith.walk, EXACT).vectorised is True
+    assert kernel_cost(arith.walk, HOST, EXACT).vectorised is True
     # a fixed-count nested loop, however long, is vectorised across the lanes (the flag test pins it against GCC)
-    assert kernel_cost(nested.walk, EXACT).vectorised is True
+    assert kernel_cost(nested.walk, HOST, EXACT).vectorised is True
 
 
 def test_an_item_select_is_held_in_a_named_local():

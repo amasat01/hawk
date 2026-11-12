@@ -20,6 +20,7 @@ A switch ``if x < t`` passes ``K(x - t) * ybar * (a - b)`` to ``t`` (Epanechniko
 """
 
 from __future__ import annotations
+from _specs import DEVICE
 
 import json
 import math
@@ -172,7 +173,7 @@ def k_loop_sum(x: Scalar, t: Param, y: Mutable[Scalar]):
     y = total
 
 
-#: a KAN edge cell as a downstream package writes it: per-sample inputs, a
+#: a spline edge cell as a downstream package writes it: per-sample inputs, a
 #: lowered loop over edges, the level-0 basis an indicator of the knot span
 N_IN, GK, KO = 3, 5, 3
 KN = tuple(-1.0 + (j - KO) * 2.0 / GK for j in range(GK + 2 * KO + 1))
@@ -195,7 +196,7 @@ def _spline(xe, theta, e):
 
 
 @kernel(jump=0.02)
-def k_kan(x: Vector[N_IN], theta: THETA, g: Param,
+def k_spline(x: Vector[N_IN], theta: THETA, g: Param,
           y: Mutable[Scalar]):
     total = 0.0
     for e in range(N_IN):
@@ -203,7 +204,7 @@ def k_kan(x: Vector[N_IN], theta: THETA, g: Param,
     y = total
 
 
-def kan_dual(x, theta, g, h=0.02):
+def spline_dual(x, theta, g, h=0.02):
     """``(y, dy/dg)`` in numpy forward mode: the piecewise derivative, every
     indicator's tangent zero."""
     tot, dtot = 0.0, 0.0
@@ -226,12 +227,12 @@ def kan_dual(x, theta, g, h=0.02):
     return tot, dtot
 
 
-def kan_flips(x, theta, g, h=0.02):
+def spline_flips(x, theta, g, h=0.02):
     """The per-lane EXPECTATION of the alternate-path derivative: the piecewise
     derivative plus, for each of an edge's comparisons, ``K(d) sigma d' (L(c=1)
     - L(c=0))`` with the loss ``tanh`` of the spline recomputed with that one
     comparison forced (the other indicator comparisons keep their outcome)."""
-    _, total = kan_dual(x, theta, g, h)
+    _, total = spline_dual(x, theta, g, h)
     for e in range(N_IN):
         xe, th = x[e] * g, theta[e * NB:(e + 1) * NB]
         ge = [xe >= KN[i] for i in range(len(KN) - 1)]
@@ -492,7 +493,7 @@ def _agrees_on_average(got, want):
 
 
 @pytest.mark.parametrize("seed", range(3))
-def test_kan_edges_get_their_jump(rig, seed):
+def test_spline_edges_get_their_jump(rig, seed):
     """A switched value that meets ``tanh`` is differentiated by the alternate
     path: the lane mean is the sum of the single-comparison flips."""
     n = 4096
@@ -500,15 +501,15 @@ def test_kan_edges_get_their_jump(rig, seed):
     x = rng.uniform(-1.0, 1.0, (N_IN, n))
     theta = rng.normal(size=N_IN * NB)
     gval = 0.9
-    want = kan_flips(x, theta, gval)
+    want = spline_flips(x, theta, gval)
     ybar = rng.normal(size=n)
-    got = rig.grad(k_kan, ("g",), {"bar_y": ybar}, x=x, theta=theta, g=gval)["g"]
+    got = rig.grad(k_spline, ("g",), {"bar_y": ybar}, x=x, theta=theta, g=gval)["g"]
     _agrees_on_average(got, ybar * want)
-    d = rig.unit(k_kan, "jvp", ("g",))
+    d = rig.unit(k_spline, "jvp", ("g",))
     dot_y = np.zeros(n)
     hawk.run(hawk.load(d, "g"), dot_g=1.0, dot_y=dot_y, x=x, theta=theta, g=gval)
     _agrees_on_average(dot_y, want)
-    side = rig.sidecar(k_kan, "vjp", ("g",))["derivative"]["jump"]
+    side = rig.sidecar(k_spline, "vjp", ("g",))["derivative"]["jump"]
     assert side["rule"] == "altpath_v1" and side["seed_param"] == "jump_seed"
     assert len(side["sites"]) == 2 * (len(KN) - 1)
     assert {s["loop"] for s in side["sites"]} == {"e"}
@@ -606,8 +607,8 @@ def test_auto_digest_is_batch_independent(rig):
     assert json.loads((d / "g.json").read_text())["digest"] == digest
     again = rig.unit(k_auto, "vjp", ("t",))           # the same unit, whatever the batch
     assert json.loads((again / "g.json").read_text())["digest"] == digest
-    from hawk.ir.split import stages
-    first = stages("g", vjp(k_auto, wrt=("t",)))[0]
+    from lowering.split import stages
+    first = stages("g", vjp(k_auto, wrt=("t",)), spec=DEVICE)[0]
     assert Kernel("g", first.sinks).walk.digest == digest
 
 

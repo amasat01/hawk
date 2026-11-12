@@ -30,7 +30,7 @@ import pytest
 
 from hawk import Mutable, Param, Scalar, Terminated, Vector, WideOut, kernel
 from hawk.diff import jvp, vjp
-from hawk.ir import HawkError
+from hawk import HawkError
 from hawk.math import dot
 
 

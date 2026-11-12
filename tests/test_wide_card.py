@@ -6,6 +6,7 @@ the decision on its own device and nowhere else, no row is today's behaviour, a 
 sweep's row assembly (winners, ties, thresholds) is plain logic."""
 
 from __future__ import annotations
+from _specs import DEVICE, HOST, device
 
 import json
 
@@ -14,77 +15,77 @@ import _wide_kernels as W
 
 from hawk import HawkError
 from hawk.artifact.unit_cache import _wide_part
-from hawk.ir import wide
-from hawk.ir.lane import slice_min, slice_sinks, sliced
+from lowering import wide
+from simt.lane import slice_min, slice_sinks, sliced
 from hawk.targets import cards
-from hawk.targets.cards import sweep
+from hawk_cuda import sweep
 from hawk.types import TensorType
 
 NARROW = TensorType((64,), "f32")
 
 
-def _card(tmp_path, monkeypatch, rows=None, defaults=None):
-    doc = json.loads(cards.WIDE_FILE.read_text())
-    doc["rows"] = rows or []
-    doc["defaults"].update(defaults or {})
-    path = tmp_path / "wide.json"
-    path.write_text(json.dumps(doc))
-    monkeypatch.setattr(cards, "WIDE_FILE", path)
-    monkeypatch.setattr(cards, "_device", lambda: ("sm_00", "Test Card"))
+def _wide_spec(arch, rows=None, defaults=None):
+    """A host and device build for ``arch`` whose device variant carries a wide card with these rows and defaults (variant data passed in)."""
+    from hawk.targets import build_spec
+    from hawk.variants import derive, load
+
+    cuda = load("cuda")
+    card = {"defaults": {**cuda["cards"]["wide"]["defaults"], **(defaults or {})}, "rows": rows or []}
+    return build_spec(("host", "cuda"), arch, device=derive(cuda, {"cards": {"wide": card}}))
 
 
 ROW = {"cc": "sm_00", "device": "Test Card", "dtype": "float32", "SLICE_MIN": 64, "TEAM_MIN": 64, "TC": 8192}
 
 
 def test_the_defaults_are_the_constants_the_warp_form_was_built_with():
-    assert cards.wide("float32") == cards.wide("f64") == {"SLICE_MIN": 128, "TEAM_MIN": 128, "TC": 40960}
-    assert slice_min("f32") == 128 and not sliced(NARROW)
-    assert _wide_part("float32", "sm_61") == ""        # no row: the unit key is the one it always was
+    assert cards.wide("float32", DEVICE) == cards.wide("f64", DEVICE) == {"SLICE_MIN": 128, "TEAM_MIN": 128, "TC": 40960}
+    assert slice_min("f32", DEVICE) == 128 and not sliced(NARROW, HOST)
+    with pytest.raises(HawkError, match="no device variant"):
+        cards.wide("float32", HOST)                          # a host build has no wide card: it places by its own host_wide table
+    assert _wide_part("float32", device("sm_61")) == ""        # no row: the unit key is the one it always was
 
 
 def test_a_row_changes_the_decision_for_its_own_device_and_scalar_type_only(tmp_path, monkeypatch):
-    _card(tmp_path, monkeypatch, [ROW])
-    with cards.build_arch("sm_00"):
-        assert cards.wide("float32") == {"SLICE_MIN": 64, "TEAM_MIN": 64, "TC": 8192}
-        assert sliced(NARROW) and cards.wide("float64")["SLICE_MIN"] == 128
-    assert not sliced(NARROW)                           # a host-only build: no arch, no row
-    monkeypatch.setattr(cards, "_device", lambda: ("sm_00", "Another Card"))
-    with cards.build_arch("sm_00"):
-        assert not sliced(NARROW)                       # the arch matches, the device name does not
-    assert _wide_part("float32", "sm_00") == ""         # (and so the unit key keeps its old form)
     monkeypatch.setattr(cards, "_device", lambda: ("sm_00", "Test Card"))
-    assert _wide_part("float32", "sm_00") == "wide:64:64:8192"
+    spec = _wide_spec("sm_00", [ROW])
+    assert cards.wide("float32", spec) == {"SLICE_MIN": 64, "TEAM_MIN": 64, "TC": 8192}
+    assert sliced(NARROW, spec) and cards.wide("float64", spec)["SLICE_MIN"] == 128
+    assert not sliced(NARROW, HOST)                           # a host-only build: no arch, no row
+    monkeypatch.setattr(cards, "_device", lambda: ("sm_00", "Another Card"))
+    spec = _wide_spec("sm_00", [ROW])
+    assert not sliced(NARROW, spec)                       # the arch matches, the device name does not
+    assert _wide_part("float32", spec) == ""         # (and so the unit key keeps its old form)
+    monkeypatch.setattr(cards, "_device", lambda: ("sm_00", "Test Card"))
+    assert _wide_part("float32", _wide_spec("sm_00", [ROW])) == "wide:64:64:8192"
 
 
 def test_an_unmeasured_arch_takes_the_row_nearest_by_device_features(tmp_path, monkeypatch):
     far = {**ROW, "cc": "sm_70", "TC": 4096}              # FP64 rate 2: far from the sm_61 / sm_89 (1:32, 1:64) rows
-    _card(tmp_path, monkeypatch, [far, {**ROW, "cc": "sm_61", "device": "P2000", "TC": 16384}])
+    rows = [far, {**ROW, "cc": "sm_61", "device": "P2000", "TC": 16384}]
     monkeypatch.setattr(cards, "_device", lambda: None)  # no device probed: the rows are the build arch's to choose
     for arch, tc in (("sm_61", 16384), ("sm_75", 16384), ("sm_89", 16384), ("sm_80", 4096), ("sm_90", 4096)):
-        with cards.build_arch(arch):
-            assert cards.wide("float32")["TC"] == tc, arch
+        spec = _wide_spec(arch, rows)
+        assert cards.wide("float32", spec)["TC"] == tc, arch
 
 
 def test_team_min_decides_auto_and_not_a_kernel_asked_for_the_warp_form(tmp_path, monkeypatch):
     sinks = wide.simplified(W.matvec_in_vjp.sinks)
-    assert slice_sinks(sinks, explicit=False) is not None
-    _card(tmp_path, monkeypatch, [{**ROW, "dtype": "float64", "SLICE_MIN": 128, "TEAM_MIN": 1024}])
-    with cards.build_arch("sm_00"):
-        assert slice_sinks(sinks, explicit=False) is None
-        assert slice_sinks(sinks) is not None
+    assert slice_sinks(sinks, DEVICE, explicit=False) is not None
+    monkeypatch.setattr(cards, "_device", lambda: ("sm_00", "Test Card"))
+    spec = _wide_spec("sm_00", [{**ROW, "dtype": "float64", "SLICE_MIN": 128, "TEAM_MIN": 1024}])
+    assert slice_sinks(sinks, spec, explicit=False) is None
+    assert slice_sinks(sinks, spec) is not None
 
 
 @pytest.mark.parametrize("bad", [{"SLICE_MIN": "64"}, {"TEAM_MIN": 0}, {"TC": -1}, {"SLICE_MIN": True}, {"cc": 61}])
 def test_a_malformed_row_is_refused_by_name(bad, tmp_path, monkeypatch):
-    _card(tmp_path, monkeypatch, [{**ROW, **bad}])
-    with pytest.raises(HawkError, match=r"wide\.json"):
-        cards.wide("float32")
+    with pytest.raises(HawkError, match="wide card"):
+        cards.wide("float32", _wide_spec("sm_00", [{**ROW, **bad}]))
 
 
 def test_a_default_that_is_not_a_whole_number_of_warps_is_refused(tmp_path, monkeypatch):
-    _card(tmp_path, monkeypatch, defaults={"SLICE_MIN": 100})
     with pytest.raises(HawkError, match="multiple of 32"):
-        cards.wide("float32")
+        cards.wide("float32", _wide_spec("sm_00", defaults={"SLICE_MIN": 100}))
 
 
 # -- the sweep's logic, without a device ----------------------------------------------------------------------------
@@ -131,4 +132,6 @@ def test_the_quick_sweep_runs_on_the_device_and_writes_candidate_rows(tmp_path):
     got = json.loads(out.read_text())
     assert got["wide"]["rows"][0]["dtype"] == "float32" and got["thread_box"]["rows"] and len(got["cells"]) == 9
     assert all(c["local_B"] is not None for c in got["cells"])
-    assert json.loads(cards.WIDE_FILE.read_text())["rows"] == []        # never in place without --write
+    from hawk.variants import load
+
+    assert load("cuda")["cards"]["wide"]["rows"] == []        # never in place without --write

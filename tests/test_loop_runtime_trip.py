@@ -12,6 +12,7 @@ tape) and reverse mode refuses by name; with ``max=K`` the tape is ``K`` long an
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import numpy as np
 import pytest
@@ -67,7 +68,7 @@ def test_the_loop_says_how_it_is_bounded_and_is_never_unrolled():
     assert _loop(powers).dynamic == "max" and _loop(powers).trip == K
     assert _loop(powers_open).dynamic == "open"
     for kernel in (powers, powers_open):
-        text = render_body(kernel.sinks, kernel.walk).text
+        text = render_body(kernel.sinks, kernel.walk, spec=HOST).text
         assert "for (int hawk_k" in text and "hawk_clamp_count(" in text
 
 
@@ -146,7 +147,7 @@ def _header_lines(text):
 
 def test_the_header_is_the_count_form_on_cuda_host_and_c():
     from hawk.emit import FLOAT64, render_source
-    from hawk.embedded import render as render_c
+    from hawk_c import render as render_c
     from hawk.targets import TARGETS
 
     for target in ("cuda", "host"):

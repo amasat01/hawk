@@ -18,7 +18,7 @@ from ._plane_layout import (
     mixed_refusal,
     number_refusal,
 )
-from .ir import HawkError
+from ._errors import HawkError
 from .ir import nodes as _ir_nodes
 from .types import PER_SAMPLE_ROLES
 
@@ -50,7 +50,7 @@ def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None,
 
     An earlier version read the trailing extent of the FIRST plane in
     ``arg_spec`` order, full stop — silently wrong whenever that plane
-    wasn't per-sample. A KAN fold's reverse pass leads its ``arg_spec``
+    wasn't per-sample. A spline fold's reverse pass leads its ``arg_spec``
     with a scattered ``accum_out`` plane whose own length has nothing to
     do with the sample count; reading its length as ``n_samples`` over-ran
     the correctly-sized cotangent plane and returned garbage with no error

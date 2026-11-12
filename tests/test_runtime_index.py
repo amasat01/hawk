@@ -6,6 +6,7 @@ accumulate on the own column, and the compiled HOST kernel against the scratch
 interpreter."""
 
 from __future__ import annotations
+from _specs import HOST, device
 
 import re
 
@@ -31,17 +32,17 @@ def _card_free_select_weight(monkeypatch):
     """The emitted text must not depend on the device the tests run on."""
     from hawk.emit import rtstore
 
-    monkeypatch.setattr(rtstore, "_select_weight", lambda dtype: 1.0)
+    monkeypatch.setattr(rtstore, "_select_weight", lambda dtype, spec: 1.0)
 
 
 def _body(sinks):
-    return render_body(tuple(sinks), canonical(tuple(sinks))).text
+    return render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST).text
 
 
 def test_a_link_of_a_switch_is_a_statement_of_its_case():
     """Each edge's accumulates sit inside the case that owns them: a case that
     does not take the link writes nothing (no ``at(0) += 0`` after the switch)."""
-    lines = _body(vjp(S.kan_switch(3), wrt=("x", "theta"))).splitlines()
+    lines = _body(vjp(S.spline_switch(3), wrt=("x", "theta"))).splitlines()
     depth = lambda ln: len(ln) - len(ln.lstrip())          # noqa: E731
     switches = [n for n, ln in enumerate(lines) if "switch (" in ln]
     links = [n for n, ln in enumerate(lines) if "bar_theta[i].at(" in ln]
@@ -55,7 +56,7 @@ def test_a_link_of_a_switch_is_a_statement_of_its_case():
 def test_the_links_of_an_edge_precede_the_next_edges_reads():
     """Each link is committed where its index and value are ready, not at the
     end of the body (which keeps every edge's values live to the end)."""
-    lines = _body(vjp(S.kan_layer("local", 3), wrt=("x", "theta"))).splitlines()
+    lines = _body(vjp(S.spline_layer("local", 3), wrt=("x", "theta"))).splitlines()
     links = [n for n, ln in enumerate(lines) if "bar_theta[i].at(" in ln]
     reads = [n for n, ln in enumerate(lines) if "vin_theta[i].at(" in ln]
     assert len(links) == len(reads) == 12, (len(links), len(reads))
@@ -63,7 +64,7 @@ def test_the_links_of_an_edge_precede_the_next_edges_reads():
 
 
 def test_only_a_slot_an_accumulate_may_reach_first_is_zeroed_up_front():
-    lines = _body(vjp(S.kan_layer("local", 2), wrt=("x", "theta"))).splitlines()
+    lines = _body(vjp(S.spline_layer("local", 2), wrt=("x", "theta"))).splitlines()
     zeroed = {ln.split("(")[1].split(",")[0] for ln in lines
               if "mut_bar_theta(" in ln and ln.strip().endswith("= static_cast<Real>(0);")}
     added = {ln.split("(")[1].split(",")[0] for ln in lines
@@ -131,11 +132,11 @@ def test_a_lane_hit_by_a_constant_and_a_runtime_index_sums_both(host):
 
 
 @pytest.mark.parametrize("n_in", [8])
-def test_the_local_kan_vjp_host_kernel_equals_the_interpreter(host, n_in):
+def test_the_local_spline_vjp_host_kernel_equals_the_interpreter(host, n_in):
     """Every lane of the compiled local-spline vjp against the interpreter. The
     host profile contracts multiply-adds (the interpreter does not), so the lanes
     agree to rounding of the largest term of the sample, not bit for bit."""
-    cell = S.kan_layer("local", n_in)
+    cell = S.spline_layer("local", n_in)
     sinks = vjp(cell, wrt=("x", "theta"))
     n = 5
     rng = np.random.default_rng(8)
@@ -145,7 +146,7 @@ def test_the_local_kan_vjp_host_kernel_equals_the_interpreter(host, n_in):
     theta[S.W - 1::S.W] = 1.0
     seed = rng.normal(size=(2, n))
     bar_x, bar_theta = np.zeros_like(x), np.zeros_like(theta)
-    hawk.run(host(f"kan_local_vjp_{n_in}", cell, sinks), x=x, theta=theta,
+    hawk.run(host(f"spline_local_vjp_{n_in}", cell, sinks), x=x, theta=theta,
              terminated=np.zeros(n, dtype=bool), bar_y=seed, bar_x=bar_x,
              bar_theta=bar_theta)
     for s in range(n):
@@ -233,9 +234,9 @@ def test_one_accumulate_on_a_four_wide_vector_keeps_the_lean_form_for_float():
     """Width <= 4, one store per trip: with a four-byte ``Real`` the vector is
     read back through selects and rebuilt whole; with eight bytes it is selected
     per component."""
-    text = render_body(_one_store4.sinks, _one_store4.walk).text
+    text = render_body(_one_store4.sinks, _one_store4.walk, spec=HOST).text
     assert "if constexpr (sizeof(Real) == 8) {" in text and "_old" in text, text
-    wide = render_body(_one_store5.sinks, _one_store5.walk).text
+    wide = render_body(_one_store5.sinks, _one_store5.walk, spec=HOST).text
     assert "_old" not in wide and "constexpr" not in wide, wide
 
 
@@ -260,7 +261,7 @@ def test_a_runtime_store_never_copies_the_vector_inside_the_loop(width):
     """The carried vector is written where it lives; only the store after the
     loop copies its operand (once)."""
     k = _stores(width)
-    text = render_body(k.sinks, k.walk).text
+    text = render_body(k.sinks, k.walk, spec=HOST).text
     loop = text.index("for (Int")
     assert "hawk_sv" not in text[loop:text.index("}", loop)] or "hawk_sv0_0" in text, text
     assert len(_copies(text, width)) == 1, text
@@ -269,8 +270,8 @@ def test_a_runtime_store_never_copies_the_vector_inside_the_loop(width):
 
 def test_a_wide_vector_is_written_in_place_and_a_narrow_one_by_selects():
     scatter, wide = _scatter(6), _stores(256)
-    narrow = render_body(scatter.sinks, scatter.walk).text
-    wide = render_body(wide.sinks, wide.walk).text
+    narrow = render_body(scatter.sinks, scatter.walk, spec=HOST).text
+    wide = render_body(wide.sinks, wide.walk, spec=HOST).text
     assert "hawk_sv0_1_k == 0 ?" in narrow and "hawk_sv0_0_k ==" not in wide, (narrow, wide)
     assert "hawk_v2_0_acc(hawk_k2_c) += " in wide, wide
 
@@ -279,7 +280,7 @@ def test_a_key_proven_uniform_over_the_warp_is_written_in_place():
     """The same four accumulates, with the base read at the lane's group of 64
     (``split_index``): every lane of a warp shares the index, so the indexed
     access is one address and the in-place write wins at any width."""
-    text = render_body(_uniform_scatter.sinks, _uniform_scatter.walk).text
+    text = render_body(_uniform_scatter.sinks, _uniform_scatter.walk, spec=HOST).text
     assert "== " not in text.split("for (Int")[1] and "+= " in text, text
 
 
@@ -287,20 +288,20 @@ def test_the_select_weight_follows_the_arch_the_build_resolved(monkeypatch):
     from hawk.targets import cards
 
     monkeypatch.undo()                      # the card, not the pinned weight
-    assert cards.select_weight("float64") == 1.0            # no device arch: the default
-    with cards.build_arch("sm_61"):
-        assert cards.select_weight("float64") == 4.0
-        assert cards.select_weight("float32") == 1.0
-    with cards.build_arch("sm_80"):
-        assert cards.select_weight("float64") == 1.0
+    assert cards.select_weight("float64", HOST) == 1.0            # no device arch: the default
+    spec = device("sm_61")
+    assert cards.select_weight("float64", spec) == 4.0
+    assert cards.select_weight("float32", spec) == 1.0
+    spec = device("sm_80")
+    assert cards.select_weight("float64", spec) == 1.0
 
 
 def test_the_select_weight_of_a_card_moves_the_pick(monkeypatch):
     from hawk.emit import rtstore
 
     k = _scatter(6)
-    monkeypatch.setattr(rtstore, "_select_weight", lambda dtype: 100.0)
-    assert "hawk_sv0_1_k ==" not in render_body(k.sinks, k.walk).text
+    monkeypatch.setattr(rtstore, "_select_weight", lambda dtype, spec: 100.0)
+    assert "hawk_sv0_1_k ==" not in render_body(k.sinks, k.walk, spec=HOST).text
 
 
 def test_stores_at_one_base_fuse_over_the_reachable_components():
@@ -308,7 +309,7 @@ def test_stores_at_one_base_fuse_over_the_reachable_components():
     are ONE pass: one add per reachable component (slots 2..14), none of slots
     1, and no dynamic read of the vector."""
     k = _scatter(6)
-    text = render_body(k.sinks, k.walk).text
+    text = render_body(k.sinks, k.walk, spec=HOST).text
     assert not _copies(text, 15) and "hawk_it" not in text, text
     adds = re.findall(r"^\s*hawk_v\d+_0_acc\((\d+)\) \+= ", text, re.M)
     assert adds == ["0", *map(str, range(2, 15))], adds
@@ -390,7 +391,7 @@ def test_stores_with_independent_clamped_indices_copy_nothing():
     """Each store clamps its own index, so no base is shared and nothing fuses;
     every store is still written in place or by selects, never through a copy
     of the vector or a dynamic read of a copy."""
-    text = render_body(_clamped.sinks, _clamped.walk).text
+    text = render_body(_clamped.sinks, _clamped.walk, spec=HOST).text
     assert not _copies(text, 15) and "hawk_it" not in text, text
 
 

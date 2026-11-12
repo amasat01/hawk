@@ -7,6 +7,7 @@ differentiated in reverse: the branches' contributions merge into ONE scatter
 with an untaken branch's row never committed out of range."""
 
 from __future__ import annotations
+from _specs import HOST
 
 import numpy as np
 import pytest
@@ -80,7 +81,7 @@ def test_an_untaken_branchs_row_is_never_committed_out_of_range():
     ok = evaluate(d, {"x": 0.04, "kind": 0.0, "tab": tab, "terminated": False,
                       "bar_out": 1.0}, lanes=N)
     assert ok["bar_tab"][4] != 0.0 and not np.any(ok["bar_tab"][:4])
-    text = render_body(tuple(d), canonical(tuple(d))).text
+    text = render_body(tuple(d), canonical(tuple(d)), spec=HOST).text
     assert "bar_tab" in text
 
 

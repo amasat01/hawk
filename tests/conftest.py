@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 from hawk.artifact import build_bundle
+from raptor.protocols.refusal import ToolchainAbsent
 from hawk.targets import TARGETS
 
 BOTH = ("cuda", "host")
@@ -59,6 +60,22 @@ _UNITS = (
 #: directly — pytest's own rule for initial arguments, which this hook does not
 #: apply to.
 collect_ignore = ["mpi"]
+
+
+@pytest.fixture
+def spec():
+    """The build spec of a host and device build on this machine (device arch ``sm_61``): what a test that calls a pass outside a build passes."""
+    from hawk.targets import build_spec
+
+    return build_spec(("host", "cuda"), "sm_61")
+
+
+@pytest.fixture
+def host_spec():
+    """The build spec of a host-only build on this machine."""
+    from hawk.targets import build_spec
+
+    return build_spec(("host",))
 
 
 @pytest.fixture(scope="session")
@@ -158,3 +175,103 @@ def avx512() -> bool:
             return "avx512f" in f.read()
     except OSError:
         return False
+
+
+# --------------------------------------------------------------------------------------------------------------------------
+# The gate's outcome for an absent toolchain.
+#
+# A row whose failure is the product's own refusal for a toolchain this machine lacks is reported `toolchain-absent` (letter T):
+# its own count, not passed, failed, error or skipped. It exits early (the refusal is raised by the first thing that needs the
+# toolchain, in the test or in the fixture that builds for it); a session with only passed and toolchain-absent rows exits 0, and
+# "N toolchain-absent" is always printed. Every other failure, including one in a row that needs an absent toolchain but fails
+# for another reason, stays failed.
+# --------------------------------------------------------------------------------------------------------------------------
+import functools
+import shutil
+import sys
+
+_ABSENT = "toolchain-absent"
+
+
+def _on_path(name_or_path: str | None) -> bool:
+    return bool(name_or_path) and (os.path.isfile(name_or_path) or shutil.which(name_or_path) is not None)
+
+
+@functools.lru_cache(maxsize=None)
+def toolchains() -> dict:
+    """The probes, once per session, cheap (no compile): ``name -> (present, what)``."""
+    x86 = platform.machine().lower() in ("x86_64", "amd64")
+    linux = sys.platform.startswith("linux")
+    try:
+        from cuda.bindings import nvrtc as _nvrtc        # noqa: F401
+        nvrtc = True
+    except Exception:                                    # noqa: BLE001 - any failure to load means absent
+        nvrtc = False
+    nvcc = any(_on_path(c) for c in (os.environ.get("HAWK_NVCC"), "nvcc"))
+    cppcheck = _on_path(os.environ.get("HAWK_CPPCHECK") or "cppcheck")
+    device = linux and (os.path.exists("/dev/nvidiactl") or shutil.which("nvidia-smi") is not None)
+    return {
+        "cuda-nvrtc": (nvrtc, "cuda python bindings with NVRTC are not loadable"),
+        "nvcc": (nvcc, "nvcc is not on PATH ($HAWK_NVCC)"),
+        "cppcheck": (cppcheck, "cppcheck is not on PATH ($HAWK_CPPCHECK)"),
+        "cuda-device": (device, "no CUDA device"),
+        "x86-64": (x86, f"host is {platform.machine()}, not x86-64"),
+        "linux": (linux and os.path.isdir("/proc"), f"host is {sys.platform}: no /proc, ulimit -v address cap, ldd or dynamic symbol table"),
+        "linux-tools": (linux and shutil.which("ldd") is not None, "ldd is not on PATH"),
+        "avx512": (avx512(), "no AVX-512"),
+        "aether-src": (os.path.isdir(os.environ.get("W25_AETHER_SRC") or ""), "$W25_AETHER_SRC is unset or not a directory (the aether source tree)"),
+    }
+
+
+def absent_toolchain(exc: BaseException) -> str | None:
+    """The absent toolchain this failure is the typed refusal for, else ``None``.
+
+    Only by type: the product's :class:`~raptor.protocols.refusal.ToolchainAbsent` (its ``toolchain`` attribute names which)
+    anywhere in the cause chain. A row that asserts on a tool the product does not itself refuse for declares it with
+    ``@pytest.mark.needs_toolchain("<name>")``, which raises the same type from setup when the probe says it is absent.
+    """
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, ToolchainAbsent):
+            return exc.toolchain or "unknown"
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+def pytest_runtest_setup(item):
+    for mark in item.iter_markers("needs_toolchain"):
+        name = mark.args[0]
+        ok, what = toolchains()[name]
+        if not ok:
+            raise ToolchainAbsent(f"{item.name} needs {name}: {what}", toolchain=name)
+
+
+def pytest_report_header(config):
+    return [f"toolchain absent: {name}: {what}" for name, (ok, what) in toolchains().items() if not ok]
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    rep = outcome.get_result()
+    if rep.outcome == "failed" and call.excinfo is not None and not hasattr(rep, "wasxfail"):
+        name = absent_toolchain(call.excinfo.value)
+        if name:
+            rep.outcome = _ABSENT
+            rep.toolchain = name
+
+
+def pytest_report_teststatus(report):
+    if report.outcome == _ABSENT:
+        return _ABSENT, "T", "TOOLCHAIN-ABSENT"
+    return None
+
+
+def pytest_terminal_summary(terminalreporter):
+    rows = terminalreporter.stats.get(_ABSENT, [])
+    by: dict = {}
+    for r in rows:
+        terminalreporter.write_line(f"TOOLCHAIN-ABSENT {r.nodeid} - {r.toolchain}")
+        by[r.toolchain] = by.get(r.toolchain, 0) + 1
+    terminalreporter.write_line(f"{len(rows)} {_ABSENT}" + (" (" + ", ".join(f"{k}={v}" for k, v in sorted(by.items())) + ")" if by else ""))

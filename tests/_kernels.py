@@ -43,8 +43,7 @@ def drag(state: Vector[3], rho: Param, out: Mutable[Vector[3]]):
 #: per-sample scalar wire, namespaced by the DECLARATION (``earth__orientation__q``).
 ORIENTATION = Quantity(
     slug="earth", name="orientation",
-    wires=[Wire("q", "vec_in", (4,), tag="quaternion"), Wire("w", "per_sample", ())],
-    reconstruct=lambda q, w: (q, w),
+    wires=[Wire("q", "vec_in", (4,), tag="quaternion"), Wire("w", "per_sample", ())]
 )
 
 

@@ -3,7 +3,7 @@
 
 """Team-form linear algebra: one matrix per lane worked by a team of threads.
 
-A matrix above ``MAX_DIM`` (32) is lowered as stages (:mod:`hawk.ir.team`): the per-lane stage
+A matrix above ``MAX_DIM`` (32) is lowered as stages (:mod:`lowering.team`): the per-lane stage
 stores the operand into scratch, a team stage factors it in place and runs the solves, and the
 per-lane stage after it reads the results. These rows run every factorisation and its readers
 on the host (the team of one) and on the device, against numpy and LAPACK, at sizes below and above
@@ -13,6 +13,7 @@ the refusals name what they refuse.
 """
 
 from __future__ import annotations
+from _specs import DEVICE as DEVICE_SPEC
 
 import math
 import os
@@ -29,9 +30,10 @@ from hawk import HawkError
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.ir import Assign, Leaf, make
-from hawk.ir.linalg import MAX_DIM
-from hawk.ir.team import BlockSumWrite
-from hawk.ir.split import stages
+from hawk.variants import load as _load_variant
+MAX_DIM = _load_variant("cpu")["linalg"]["max_dim"]
+from lowering.team import BlockSumWrite, plain_blocks
+from lowering.split import stages
 from hawk.trace.kernel import Kernel
 from hawk.types import TensorType
 
@@ -420,9 +422,17 @@ def test_lstsq_is_a_qr_team_stage_above_32_unknowns_and_normal_equations_below()
         r = hawk.Value(L("vocab_read", "vec_in", "r", T((m,), "f64")))
         return node_of(hm.lstsq(j, r)[0])
 
-    assert solve(80, 40).kind == "qr_solve" and solve(80, 30).kind == "cho_solve"
-    assert solve(80, 40).operands[0].ttype.tag == "qr_factor"
-    found = stages("ls", lstsq_kernel(80, 40).sinks)
+    from hawk.ir.nodes import Assign
+    from hawk.passes.lstsq import lowered_sinks
+
+    def lowered(m, n, max_dim):
+        return lowered_sinks((Assign("x", solve(m, n)),), max_dim)[0].value
+
+    assert solve(80, 40).kind == "lstsq" == solve(80, 30).kind          # tracing records the math: no machine number in the IR
+    big = DEVICE_SPEC.primary["linalg"]["max_dim"]
+    assert lowered(80, big + 8, big).kind == "qr_solve" and lowered(80, big, big).kind == "cho_solve"
+    assert lowered(80, 40, 100).kind == "cho_solve" and lowered(80, 40, 30).operands[0].ttype.tag == "qr_factor"   # the target's own choice
+    found = stages("ls", lstsq_kernel(80, 40).sinks, spec=DEVICE_SPEC)
     assert [s.team is not None for s in found] == [True, True, False]       # the operand copy is a team stage too
     steps = found[1].team.steps
     assert [(s.op, s.m, s.n) for s in steps] == [("qr", 80, 40), ("qr_solve", 80, 40)]
@@ -439,21 +449,18 @@ def test_a_qr_is_refused_under_the_thread_form_and_when_wide(cache):
 # --- the split, the policy and the refusals ------------------------------------------
 
 def test_a_team_matrix_makes_a_store_stage_a_team_stage_and_a_read_stage():
-    found = stages("t", chol_kernel(40).sinks)
+    found = stages("t", chol_kernel(40).sinks, spec=DEVICE_SPEC)
     assert [s.team is not None for s in found] == [True, True, False]       # a matrix of 1024 or more elements is copied by a team
     spec = found[1].team
     assert spec.threads == 128 and [s.op for s in spec.steps] == ["chol", "cho_solve", "cho_solve"]
     assert {p.name: p.per_lane for p in spec.planes}["tm0_a"] == 40 * 40
-    assert stages("t", chol_kernel(40).sinks)[1].team.threads == 128
-    assert stages("t", chol_kernel(200).sinks)[1].team.threads == 256
+    assert stages("t", chol_kernel(40).sinks, spec=DEVICE_SPEC)[1].team.threads == 128
+    assert stages("t", chol_kernel(200).sinks, spec=DEVICE_SPEC)[1].team.threads == 256
 
 
 def test_a_matrix_in_one_lane_is_not_split_unless_the_build_asks_for_a_team():
-    from hawk.emit import policy
-
-    assert stages("t", chol_kernel(MAX_DIM).sinks) is None
-    with policy.using(linalg_form="team"):
-        assert stages("t", chol_kernel(MAX_DIM).sinks) is not None
+    assert stages("t", chol_kernel(MAX_DIM).sinks, spec=DEVICE_SPEC) is None
+    assert stages("t", chol_kernel(MAX_DIM).sinks, spec=DEVICE_SPEC.with_settings(linalg_form="team")) is not None
 
 
 def test_the_sidecar_names_the_team_stage_and_its_scratch(cache):
@@ -491,7 +498,7 @@ def test_a_team_matrix_in_a_loop_body_is_refused_by_name():
         y = s
 
     with pytest.raises(HawkError, match="launch of its own and cannot sit inside a loop"):
-        stages("iterate", iterate.sinks)
+        stages("iterate", iterate.sinks, spec=DEVICE_SPEC)
 
 
 def test_a_team_op_in_an_arm_of_a_dispatch_is_refused_by_name_unless_the_body_also_reads_it_outside():
@@ -505,9 +512,9 @@ def test_a_team_op_in_an_arm_of_a_dispatch_is_refused_by_name_unless_the_body_al
     plain = make("mul", (b, b))
     arm = Dispatch(k, [solve, plain], "switch", solve.ttype)
     with pytest.raises(HawkError, match=r"op 'chol' at n=40.*inside an arm of a dispatch"):
-        stages("arm", (Assign("x", arm, solve.ttype),))
+        stages("arm", (Assign("x", arm, solve.ttype),), spec=DEVICE_SPEC)
     both = (Assign("x", arm, solve.ttype), Assign("y", solve, solve.ttype))
-    assert any(s.team for s in stages("arm", both))                  # read outside too: every lane's
+    assert any(s.team for s in stages("arm", both, spec=DEVICE_SPEC))                  # read outside too: every lane's
 
 
 def test_a_block_sum_in_an_arm_of_a_dispatch_is_refused_by_name():
@@ -519,7 +526,7 @@ def test_a_block_sum_in_an_arm_of_a_dispatch_is_refused_by_name():
         return hm.dispatch(k, [hawk.sum(hm.outer(j, j)), hm.outer(j, j)])
 
     with pytest.raises(HawkError, match="sum.*dense block.*inside an arm of a dispatch"):
-        stages("armed", armed.sinks)
+        stages("armed", armed.sinks, spec=DEVICE_SPEC)
 
 
 def test_the_standalone_c_target_refuses_a_team_matrix(cache):
@@ -539,9 +546,18 @@ def test_the_per_lane_writer_refuses_a_matrix_above_the_cap():
                       mode=scalar_mode("float64"), exports=exports("host"))
 
 
-def test_the_dimension_bound_is_4096():
-    with pytest.raises(HawkError, match=r"1 <= n <= 4096, got n=4097"):
-        make("lu", (Leaf("vocab_read", "mat_in", "A", TensorType((4097, 4097), "f64")),))
+def test_the_dimension_bound_is_the_variants_team_max_dim():
+    from types import SimpleNamespace
+    from hawk.variants import load
+    from lowering import team
+
+    data = load("cuda")
+    assert data["linalg"]["team_max_dim"] == 4096
+    node = make("lu", (Leaf("vocab_read", "mat_in", "A", TensorType((4097, 4097), "f64")),))     # the IR types it: n >= 1 is the math rule
+    spec = SimpleNamespace(primary=data, device=None, settings=SimpleNamespace(linalg_form="auto", device_only=False, scalar="float64"),
+                           need=lambda section, key=None: data[section][key])
+    with pytest.raises(HawkError, match=r"linalg.team_max_dim\), got n=4097"):
+        team.members_of([node], (), spec)
 
 
 # --- the bits -----------------------------------------------------------------------
@@ -659,7 +675,7 @@ def test_block_sums_match_the_exact_sum_and_the_per_entry_path(cache, p, form, t
         assert np.all(np.abs(got - ref) <= SUM_BOUND * EPS * scale + 1e-300), build.__name__
         if p == 8:
             per_entry = build(p, ROWS, "thread")
-            assert not any(isinstance(s, BlockSumWrite) for s in per_entry.sinks)
+            assert not any(isinstance(s, BlockSumWrite) for s in plain_blocks(per_entry.sinks, "thread", DEVICE_SPEC))
             other = _sums_of(per_entry, cache, f"ent_{build.__name__}_{p}_{target}", target, "thread", j, r, p)
             assert np.all(np.abs(got - other) <= 2 * SUM_BOUND * EPS * scale + 1e-300)
 
@@ -716,7 +732,7 @@ def test_the_vjp_through_a_block_sum_matches_finite_differences(cache, make, tar
 def test_a_keyed_product_sum_at_p71_lowers_to_one_block_sum(make):
     kernel = make(71, ROWS)
     assert [type(s) for s in kernel.sinks] == [BlockSumWrite]
-    found = stages(kernel.name, kernel.sinks)
+    found = stages(kernel.name, kernel.sinks, spec=DEVICE_SPEC)
     assert [s.team is not None for s in found] == [False, True]
     (step,) = found[1].team.steps
     assert (step.op, found[1].team.grid) == ("block_sum", "keys")
@@ -725,8 +741,9 @@ def test_a_keyed_product_sum_at_p71_lowers_to_one_block_sum(make):
 
 def test_a_payload_that_is_not_a_product_keeps_the_per_entry_path():
     scaled, small = scaled_kernel(20, ROWS), gram_kernel(4, ROWS)
-    assert not any(isinstance(s, BlockSumWrite) for s in scaled.sinks + small.sinks)
-    assert len(small.sinks) == 16 and stages("gram", small.sinks) is None
+    plain = plain_blocks(scaled.sinks, "auto", DEVICE_SPEC) + plain_blocks(small.sinks, "auto", DEVICE_SPEC)
+    assert not any(isinstance(s, BlockSumWrite) for s in plain)
+    assert len(plain_blocks(small.sinks, "auto", DEVICE_SPEC)) == 16 and stages("gram", plain_blocks(small.sinks, "auto", DEVICE_SPEC), spec=DEVICE_SPEC) is None
 
 
 def test_the_sidecar_names_the_block_sum_stage_its_keys_and_its_scratch(cache):
@@ -741,9 +758,11 @@ def test_the_sidecar_names_the_block_sum_stage_its_keys_and_its_scratch(cache):
     assert both["tmb0_g"] == {"dtype": "real", "per_lane": 1600, "keys": keys}
 
 
-def test_a_block_sum_is_refused_under_the_thread_form_by_name(cache):
-    with pytest.raises(HawkError, match=r"linalg_form='thread' keeps every sum in per-entry form"):
-        _build_sum(gram_kernel(40, ROWS), cache / "blk_thread", "host", "thread")
+def test_a_block_sum_is_built_per_entry_under_the_thread_form(cache):
+    kernel = gram_kernel(40, ROWS)
+    assert any(isinstance(s, BlockSumWrite) for s in kernel.sinks)
+    assert not any(isinstance(s, BlockSumWrite) for s in plain_blocks(kernel.sinks, "thread", DEVICE_SPEC))
+    _build_sum(kernel, cache / "blk_thread", "host", "thread")
 
 
 @pytest.mark.parametrize("target", [pytest.param("host", id="host"), pytest.param("cuda", marks=DEVICE, id="cuda")])
@@ -867,7 +886,7 @@ def _total_run(cache, tag, spelling, p, target, form="auto"):
 def test_a_product_sum_over_every_lane_at_p71_lowers_to_one_block_sum_of_one_key(spelling):
     kernel = total_kernel(spelling, 71, TOTAL_ROWS)
     assert [type(s) for s in kernel.sinks] == [BlockSumWrite]
-    found = stages(kernel.name, kernel.sinks)
+    found = stages(kernel.name, kernel.sinks, spec=DEVICE_SPEC)
     assert [s.team is not None for s in found] == [False, True]
     (step,) = found[1].team.steps
     assert (step.op, step.n, step.k, step.m) == (
@@ -876,8 +895,8 @@ def test_a_product_sum_over_every_lane_at_p71_lowers_to_one_block_sum_of_one_key
 
 
 def test_a_small_or_thread_form_sum_over_every_lane_keeps_the_per_entry_path():
-    assert not any(isinstance(s, BlockSumWrite) for s in total_kernel("outer", 4).sinks)
-    assert not any(isinstance(s, BlockSumWrite) for s in total_kernel("gram", 71, TOTAL_ROWS, "thread").sinks)
+    assert not any(isinstance(s, BlockSumWrite) for s in plain_blocks(total_kernel("outer", 4).sinks, "auto", DEVICE_SPEC))
+    assert not any(isinstance(s, BlockSumWrite) for s in plain_blocks(total_kernel("gram", 71, TOTAL_ROWS, "thread").sinks, "thread", DEVICE_SPEC))
 
 
 @pytest.mark.parametrize("spelling", SPELLINGS)

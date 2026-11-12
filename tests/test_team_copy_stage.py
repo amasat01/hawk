@@ -15,7 +15,7 @@ import hawk
 import hawk.math as m
 from hawk import Int32, Matrix, Mutable, Vector
 from hawk.artifact import build_bundle
-from hawk.ir.team import COPY_THREADS
+from lowering.team import COPY_THREADS
 
 N, LANES = 40, 5
 

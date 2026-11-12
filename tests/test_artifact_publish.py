@@ -203,13 +203,14 @@ def test_a_repeat_build_into_a_DIFFERENT_directory_is_materialised_there(
     the one fact a hit/miss flag could get wrong and a call count cannot."""
     B = _module()
     calls: list = []
-    real_compile = B.compile_source
+    import hawk.compile
+    real_compile = hawk.compile.compile_source
 
     def counting_compile(*a, **kw):
         calls.append(1)
         return real_compile(*a, **kw)
 
-    monkeypatch.setattr(B, "compile_source", counting_compile)
+    monkeypatch.setattr(hawk.compile, "compile_source", counting_compile)
 
     first = _build(tmp_path / "a", cache_dir)
     assert calls, (
@@ -597,13 +598,14 @@ def test_a_renderer_patched_INSIDE_a_process_is_the_documented_exposure(
 # --------------------------------------------------------------------------- #
 def _skip_without_nvcc():
     from hawk.compile import toolchain as tc
+    from hawk_cuda import toolchain as dtc
     from hawk.ir import HawkError
 
     try:
-        tc.device_compiler()
+        dtc.device_compiler()
     except HawkError:
         pytest.skip("no nvcc on this box")
-    if tc.device_compiler_kind() != "nvcc":
+    if dtc.device_compiler_kind() != "nvcc":
         pytest.skip("$HAWK_DEVICE_COMPILER forces nvrtc on this box")
 
 

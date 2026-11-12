@@ -25,6 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import ft_gate as gate
 import pytest
 from conftest import sidecar_of
 
@@ -83,14 +84,14 @@ def test_rows_declared_and_collected():
 
 @register_ft_row("FT-1-GIL-FREE-HAWK-CORE")
 def test_core_is_gil_free():
-    ft.require_free_threaded()
+    gate.require_free_threaded()
     ft.assert_gil_free("hawk._core")
 
 
 @register_ft_row("FT-2-CANARY-HAWK-CORE")
 def test_core_canary_loses_updates():
-    ft.require_free_threaded()
-    res = ft.require_not_vacuous(
+    gate.require_free_threaded()
+    res = gate.require_not_vacuous(
         ft.measure_loss(_core._unsynchronised_bump, _core._unsynchronised_count)
     )
     print(f"hawk._core canary lost {res.lost_fraction:.1%} of {res.expected}")
@@ -98,7 +99,7 @@ def test_core_canary_loses_updates():
 
 @register_ft_row("FT-3-HAWK-CROSSINGS-EXACT")
 def test_crossings_exact_under_threads():
-    ft.require_free_threaded()
+    gate.require_free_threaded()
     threads, iterations = ft.CANARY_THREADS, ft.CANARY_ITERATIONS
     before = _core.crossings()
     ft.hammer(_core.crossings, threads, iterations)
@@ -162,7 +163,7 @@ print(json.dumps({"torn": torn, "runs": runs, "errors": errors}))
 
 @register_ft_row("FT-5-HAWK-ARGBLOCK-SHARED")
 def test_shared_argblock_is_never_torn(built):
-    ft.require_free_threaded()
+    gate.require_free_threaded()
     bundle = built["vec3"]
     proc = subprocess.run(
         [sys.executable, "-c", _ARGBLOCK_CHILD, str(bundle.directory),
@@ -212,7 +213,7 @@ print(json.dumps({"bad": bad, "errors": errors}))
 # each: the library's `entry()` caches by name and never calls what it finds.
 @register_ft_row("FT-5-HAWK-HOSTLIBRARY-SHARED")
 def test_shared_hostlibrary_entries_stay_intact(built, tmp_path):
-    ft.require_free_threaded()
+    gate.require_free_threaded()
     from hawk.compile import host_compiler, host_flags
     from hawk.compile.toolchain import subprocess_env
 

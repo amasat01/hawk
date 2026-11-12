@@ -29,29 +29,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir import HawkError, Leaf
+from ..ir import Leaf
+from .._errors import HawkError
 from ..ir.nodes import PARAM_CELL, At, RoleConst, SampleSum, is_param_cell
 from ..ir.walk import substitute
 from ..types import TensorType
-from .tape import TAPE_ON, _reachable, _resink
+from raptor.ir.cells import CELL_PLANE, param_cell, swap
+from .tape import TAPE_ON, _reachable
 
 #: The promoted kernel's name suffix, and the one a per-cell kernel adds to it.
 SUFFIX = "_params"
 CELLS_SUFFIX = "_cells"
 
-#: The per-sample ``i32`` plane that holds each sample's parameter cell.
-CELL_PLANE = "param_cell"
-
 _INDEX = TensorType((), "i32")
-
-
-def param_cell(name: str, ttype: TensorType, per_cell: bool = False) -> At:
-    """The read of parameter ``name``: cell 0 of a one-cell ``lookup`` plane,
-    or, with ``per_cell``, the cell the sample's ``param_cell`` plane names."""
-    plane = Leaf("table_read", "lookup", name, ttype)
-    if per_cell:
-        return At(plane, Leaf("vocab_read", "per_sample", CELL_PLANE, _INDEX), ttype)
-    return At(plane, RoleConst(0, PARAM_CELL, _INDEX), ttype)
 
 
 def param_planes(kernel: Any, names: Any = None, per_cell: bool = False) -> Any:
@@ -139,18 +129,3 @@ def promote(sinks: Any, names: Any) -> tuple:
     mapping = {id(n): param_cell(n.name, n.ttype) for n in nodes
                if isinstance(n, Leaf) and n.role == "per_sample" and n.name in names}
     return swap(sinks, mapping)
-
-
-def swap(sinks: Any, mapping: dict) -> tuple:
-    """``sinks`` with the nodes in ``mapping`` (by ``id``) replaced."""
-    if mapping and any(not hasattr(s, "value") for s in sinks):
-        raise HawkError(
-            "a kernel that reads a parameter cell cannot also be differentiated "
-            "through a `for` that commits a gradient per iteration (a plane "
-            "read at a runtime index inside the loop): the per-sample "
-            "accumulate that feeds the per-32-sample sum of the parameter is "
-            "not built. Differentiate the kernel with the parameter passed as a "
-            "plain `Param` (not through param_planes), or read the plane outside "
-            "the loop")
-    values = substitute(tuple(s.value for s in sinks), mapping)
-    return tuple(_resink(s, v) for s, v in zip(sinks, values))

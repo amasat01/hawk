@@ -1,69 +1,80 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Runtime severance: no module under
-``hawk/hawk/`` (the installable package) imports ``raptor`` or
-``eagle`` at runtime.
+"""The import directions (design section 2a), each test as strong as its line, no exemption list, no counted debt.
 
-This is a pure intra-repo, regex-over-source check: HAWK never imports the
-packages it is severed from merely to prove it doesn't import them. Mirrors
-the shape of ``eagle/python/tests/test_roles_raptor_repoint.py``'s structural
-AST scan, but a plain source grep is enough here: ``grep`` finds no
-``raptor``/``eagle`` import under ``hawk/hawk/``.
+All four share one ast scanner (``_w25_scan``): ``import`` / ``from`` at module level and inside functions, classes and try
+blocks, relative imports resolved, and string literals given to ``importlib.import_module`` / ``__import__`` / ``find_spec``.
+
+1. no module of raptor imports anything but the standard library and raptor;
+2. hawk imports no runtime (eagle) at import time;
+3. nothing in raptor, a variant, a component, an extension or eagle imports hawk, at any level (one test per piece);
+4. a writer (a component, the emission modules of an extension) imports the standard library, raptor and its own package,
+   plus the components its manifest names; its variant comes as an argument (one test per piece).
 """
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 import pytest
-
-#: matches a top-level or indented ``import X`` / ``from X import ...`` for
-#: any of the three severed packages, as either the leaf module or a dotted
-#: submodule (``import raptor.schema`` counts; ``import raptorish`` must not).
-_SEVERED_IMPORT_RE = re.compile(
-    r"^\s*(?:import|from)\s+(raptor|eagle)(?:\.\S*)?\b", re.MULTILINE
-)
-
-_PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "hawk"
-
-#: The one module that may import them, lazily inside a function: a kernel is
-#: called through eagle (``Kernel.__call__``) and its source is lifted by
-#: ``raptor.flow`` (``python -c``). Nothing at import time, nowhere else.
-_LAZY_IMPORTERS = {Path("trace") / "kernel.py"}
-
-#: Named exemption: ``targets/cards/sweep.py`` and its ``_probe_wide.py`` are cards tools, run with eagle installed (they time
-#: eagle launches) and imported by nothing in the hawk runtime (only the cards tests read them). Removal condition: it moves
-#: out of hawk/hawk after the 0.7.3 cards.
-_CARDS_TOOL_EXEMPT = {Path("targets") / "cards" / "sweep.py", Path("targets") / "cards" / "_probe_wide.py"}
+import _w25_scan as S
 
 
-def _severed_imports_under(root: Path) -> list[str]:
-    hits: list[str] = []
-    for path in sorted(root.rglob("*.py")):
-        if path.relative_to(root) in _LAZY_IMPORTERS | _CARDS_TOOL_EXEMPT:
-            continue
-        text = path.read_text()
-        for m in _SEVERED_IMPORT_RE.finditer(text):
-            hits.append(f"{path}:{text.count(chr(10), 0, m.start()) + 1}: {m.group(0).strip()}")
-    return hits
+def _scan_counts(pred) -> dict[str, int]:
+    return {p: sum(1 for e in S.piece_edges(p) if pred(p, e)) for p in S.piece_ids()}
 
 
-@pytest.mark.repo_local
-def test_the_lazy_importer_imports_only_inside_functions():
-    text = (_PACKAGE_ROOT / "trace" / "kernel.py").read_text()
-    assert not re.search(r"^(?:import|from)[ \t]+(raptor|eagle)\b", text, re.MULTILINE)
+# ---- 2a.1 ------------------------------------------------------------------------------------------------------------
+
+def test_raptor_imports_only_the_standard_library_and_raptor():
+    root, pkg = S.pieces()["raptor"]
+    bad = [e for e in S.piece_edges("raptor") if e.top != "raptor" and not S.is_stdlib(e.top)]
+    assert not bad, S.report("raptor", "2a.1 raptor imports only the standard library and raptor", bad, {"raptor": len(bad)})
 
 
-@pytest.mark.repo_local
-def test_package_root_exists():
-    assert _PACKAGE_ROOT.is_dir(), f"expected the installable package at {_PACKAGE_ROOT}"
+# ---- 2a.2 ------------------------------------------------------------------------------------------------------------
+
+def test_hawk_imports_no_runtime_at_import_time():
+    root = S.REPO / "hawk"
+    assert root.is_dir(), f"expected the installable package at {root}"
+    edges = S.scan_tree(root, "hawk", include_type_checking=False)
+    bad = [e for e in edges if e.at_import and e.top == "eagle"]
+    assert not bad, "2a.2 hawk imports eagle at import time:\n" + "\n".join(f"  {e.where(S.REPO)}: {e.how} {e.target}" for e in bad)
 
 
-def test_no_raptor_eagle_import_under_hawk_hawk():
-    hits = _severed_imports_under(_PACKAGE_ROOT)
-    assert not hits, (
-        "runtime severance broken — hawk/hawk/ must import zero "
-        "raptor/eagle at runtime, found:\n" + "\n".join(hits)
-    )
+def test_hawk_has_one_lazy_importer_of_the_runtime():
+    """``(one lazy importer, inside a function)``: at most one module of hawk names eagle at any level."""
+    files = sorted({e.path for e in S.scan_tree(S.REPO / "hawk", "hawk") if e.top == "eagle"})
+    assert len(files) <= 1, "2a.2 hawk imports eagle from several modules, one lazy door allowed:\n" + "\n".join(
+        f"  {f.relative_to(S.REPO)}" for f in files)
+
+
+# ---- 2a.3 ------------------------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("piece", S.piece_ids())
+def test_piece_imports_no_hawk_at_any_level(piece):
+    def pred(p, e):
+        return e.top == "hawk"
+
+    bad = [e for e in S.piece_edges(piece) if pred(piece, e)]
+    assert not bad, S.report(piece, "2a.3 nothing below hawk imports hawk", bad, _scan_counts(pred))
+
+
+# ---- 2a.4 ------------------------------------------------------------------------------------------------------------
+
+def _writer_edges(piece):
+    files = S.writer_files(piece)
+    return [e for e in S.piece_edges(piece) if files is None or e.path in files]
+
+
+def _writer_ok(piece, e) -> bool:
+    _, pkg = S.pieces()[piece]
+    allowed = {"raptor", pkg} | S.named_components().get(piece, set())
+    return S.is_stdlib(e.top) or e.top in allowed
+
+
+@pytest.mark.parametrize("piece", [p for p in S.piece_ids() if p.startswith(("component:", "extension:"))])
+def test_writer_imports_only_the_standard_library_raptor_and_its_named_components(piece):
+    bad = [e for e in _writer_edges(piece) if not _writer_ok(piece, e)]
+    counts = {p: sum(1 for e in _writer_edges(p) if not _writer_ok(p, e))
+              for p in S.piece_ids() if p.startswith(("component:", "extension:"))}
+    assert not bad, S.report(piece, "2a.4 a writer imports the standard library, raptor and its named components only", bad, counts)

@@ -180,7 +180,7 @@ def test_the_f32_traversal_at_depth_32_has_no_spills(world, tmp_path):
 
     from hawk.artifact.layout import exports
     from hawk.compile import device_compiler
-    from hawk.compile.drivers import parse_ptxas_info
+    from hawk_cuda.driver import parse_ptxas_info
     from hawk.compile.toolchain import device_flags, resolve_arch
     from hawk.emit import FLOAT32, render_source
     from hawk.targets import TARGETS

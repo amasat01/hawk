@@ -23,9 +23,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from ..ir.loop_nodes import Loop, LoopCarry
-from ..ir.nodes import At, Const, Node, Op
-from .spelling import _through, carry_type, element_spelling
+from ..ir.nodes import Loop, LoopCarry
+from ..ir.nodes import At, Const, Node, Op, same_index, _through
+from .spelling import carry_type, element_spelling
 
 #: The kinds of node this module writes.
 STORE_KINDS = ("set_component_at", "add_at")
@@ -52,21 +52,21 @@ UNIFORM_ACCESS = 1 / 16
 LEAN_WIDTH = 4
 
 
-def _select_weight(scalar: str) -> float:
+def _select_weight(scalar: str, spec) -> float:
     """The card's weight of a select add for ``scalar`` (``float64``/``float32``)
     on the arch of the build being emitted."""
     from ..targets.cards import select_weight
 
-    return select_weight(scalar)
+    return select_weight(scalar, spec)
 
 
-def _weights(dtype: str) -> tuple:
+def _weights(dtype: str, spec) -> tuple:
     """The select weight when ``Real`` is eight bytes wide, and when four: the
     scalar type is chosen when the unit is compiled, so a ``Real`` vector may
     have both."""
     if dtype == "f64":
-        return _select_weight("float64"), _select_weight("float32")
-    w = _select_weight("float32") if dtype == "f32" else 1.0
+        return _select_weight("float64", spec), _select_weight("float32", spec)
+    w = _select_weight("float32", spec) if dtype == "f32" else 1.0
     return w, w
 
 
@@ -115,29 +115,6 @@ def _interval(node: Node) -> tuple:
         return (math.trunc(lo) if math.isfinite(lo) else lo,
                 math.trunc(hi) if math.isfinite(hi) else hi)
     return -math.inf, math.inf
-
-
-def _same(a: Node, b: Node, seen: dict | None = None) -> bool:
-    """Whether two index expressions are the same value: one node, or equal
-    kind, literal and operands (a key written twice is traced twice). ``seen``
-    keeps a shared subexpression from being compared once per path."""
-    if a is b:
-        return True
-    seen = {} if seen is None else seen
-    pair = (id(a), id(b))
-    if pair in seen:
-        return seen[pair]
-    out = (type(a) is type(b) and a.ttype == b.ttype
-           and len(a.operands) == len(b.operands))
-    if out and isinstance(a, Const):
-        out = a.literal == b.literal
-    elif out:
-        out = (isinstance(a, (Op, At)) and getattr(a, "kind", None) == getattr(b, "kind", None)
-               and getattr(a, "literal", None) == getattr(b, "literal", None)
-               and all(_same(_through(x), _through(y), seen)
-                       for x, y in zip(a.operands, b.operands)))
-    seen[pair] = out
-    return out
 
 
 def _split_key(key: Node) -> tuple:
@@ -260,7 +237,7 @@ class StorePlan:
                 if (isinstance(read, Op) and self.uses.get(id(read)) == [value]
                         and _through(read.operands[0]) is base):
                     same = (read.kind == "component_at"
-                            and _same(_through(read.operands[1]), key)
+                            and same_index(_through(read.operands[1]), key)
                             or read.kind == "component" and isinstance(key, Const)
                             and tuple(read.literal if isinstance(read.literal, tuple)
                                       else (read.literal,)) == (key.literal,))
@@ -351,7 +328,7 @@ def emit(w, r, top: Op, args) -> str:
     touched = sum(len(_reach(g)) for g in dynamic)
     uniform = bool(dynamic) and all(r.uniform(link.key) for g in dynamic for link in g)
     budget = SELECT_COST_RATIO * accesses * (UNIFORM_ACCESS if uniform else 1.0)
-    pick8, pick4 = (bool(dynamic) and touched * w <= budget for w in _weights(t.dtype))
+    pick8, pick4 = (bool(dynamic) and touched * w <= budget for w in _weights(t.dtype, r.spec))
     lean = (len(dynamic) == 1 and len(dynamic[0]) == 1 and dynamic[0][0].acc
             and t.shape[0] <= LEAN_WIDTH and t.dtype in ("f64", "f32"))
     if name in r.proxies:       # a value in a plane is written in place: one access per store
@@ -437,7 +414,7 @@ def _groups(links: list) -> list:
     for link in links:
         last = groups[-1] if groups else None
         if (last and link.acc and link.base is not None and last[0].acc
-                and _same(last[0].base, link.base)
+                and same_index(last[0].base, link.base)
                 and all(link.offset != other.offset for other in last)):
             last.append(link)
         else:

@@ -31,6 +31,7 @@ per row.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import _oracle as O
 import numpy as np
@@ -243,7 +244,7 @@ def test_every_name_traces_and_emits(name):
     assert not isinstance(node, Exception), (
         f"the recorded spelling for hawk.math.{name} does not run: {node!r}")
     sinks = (Assign("out", node, node.ttype),)
-    text = render_body(sinks, canonical(sinks)).text
+    text = render_body(sinks, canonical(sinks), spec=HOST).text
     assert text.strip(), f"hawk.math.{name} emitted an empty body"
 
 
@@ -311,7 +312,7 @@ def test_both_backends_bind_the_name_a_sample_index_renders_as():
             f"the {target.id} prologue binds no {SAMPLE_INDEX_IDENT!r}:\n{prologue}")
     lane = M.sample_index()
     sinks = (Assign("out", node_of(lane * 1.0), S),)
-    assert SAMPLE_INDEX_IDENT in render_body(sinks, canonical(sinks)).text
+    assert SAMPLE_INDEX_IDENT in render_body(sinks, canonical(sinks), spec=HOST).text
 
 
 def test_random_namespace_is_the_same_object_as_the_flat_names():

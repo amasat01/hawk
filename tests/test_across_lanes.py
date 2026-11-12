@@ -29,7 +29,8 @@ from hawk import (Grid, HawkError, Index, Kernel, Matrix, Mutable, Param, Scalar
 from hawk import _lane_bind as LB
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from hawk.ir.lanes import key_run
+from lowering.lanes import key_run
+from _specs import DEVICE
 from hawk.ir.nodes import AccumWrite, ReduceSamples, SampleSum
 
 SIZES = (1, 31, 32, 33, 1000)
@@ -375,7 +376,7 @@ def test_contraction_backward_key_runs_along_the_sample_axis():
     per warp."""
     for s in contract_bwd_static.sinks:
         assert isinstance(s, AccumWrite)
-        run = key_run(contract_bwd_static.sinks, s)
+        run = key_run(contract_bwd_static.sinks, s, DEVICE)
         assert run is not None and (run.form, run.width) == ("proven", 32)
 
 
@@ -487,7 +488,7 @@ def test_scatter_by_the_kept_coordinates_is_the_sum_over_the_rest():
     assert summed.walk.digest == scattered.walk.digest
     (sink,) = summed.sinks
     assert isinstance(sink, AccumWrite) and sink.policy == "auto"
-    assert key_run(summed.sinks, sink).form == "proven"
+    assert key_run(summed.sinks, sink, DEVICE).form == "proven"
 
 
 @pytest.mark.parametrize("over", ("sample", -1, 2, ("sample",)))

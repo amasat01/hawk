@@ -258,6 +258,11 @@ _LINALG = {
     "lu_det": _lu_det,
     "chol_factor": lambda f: np.zeros_like(f.l) if f.info else f.l,
     "eigh_w": lambda f: f.w, "eigh_v": lambda f: f.v,
+    "lstsq_info": lambda j: _qr(j).info,
+    "lstsq": lambda j, b: (np.zeros((np.shape(j)[1], *np.shape(b)[1:])) if _qr(j).info
+                           else np.linalg.lstsq(j, np.asarray(b, dtype=float), rcond=None)[0]),
+    "lstsq_gram_solve": lambda j, b: (np.zeros_like(np.asarray(b, dtype=float)) if _qr(j).info
+                                      else np.linalg.solve(np.asarray(j).T @ np.asarray(j), np.asarray(b, dtype=float))),
 }
 
 
@@ -380,7 +385,7 @@ def _loop_state(loop, env: dict, memo: dict):
 
     The TAPE is the value each slot held at the START of every iteration — the
     same array the emitted forward loop writes when a reverse loop reads it
-    through a :class:`~hawk.ir.loop_nodes.TapeRead`."""
+    through a :class:`~hawk.ir.nodes.TapeRead`."""
     hit = memo.get(("loop", id(loop)))
     if hit is not None:
         return hit

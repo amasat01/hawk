@@ -36,13 +36,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from ..ext.primitive import jvp_tangent, vjp_contributions
 from ..ir import (
     AccumWrite,
     Assign,
     At,
     Const,
     Dispatch,
-    HawkError,
     Leaf,
     Loop,
     LoopCarry,
@@ -56,13 +56,14 @@ from ..ir import (
     Sink,
     TapeRead,
 )
+from .._errors import HawkError
 from ..ir import make as _mk
 from ..ir.loops import (ACCUMULATOR, RECURRENCE, LoopClass, build_loop, classify_loop,
                         refuse_unsupported_nesting)
 from ..ir.slotwise import chain as _chain
 from ..ir.slotwise import is_structural_zero, slotwise
 from ..ir.walk import substitute as _substitute
-from .rules import rule_for, zero_like
+from raptor.rules.core import rule_for, zero_like
 
 #: Node families neither direction pushes through inside a body (the
 #: straight-line transform's terminals, plus the two loop placeholders).
@@ -204,7 +205,7 @@ def _pullback(roots: Sequence[Node], seeds: Sequence[tuple], stop: set,
                 "second-order object: write jvp(vjp(kernel)), whose tangent of "
                 "a tape read is the same row of the AUGMENTED forward loop")
         if isinstance(node, Primitive):
-            for child, contribution in node.rules.vjp_contributions(node, g):
+            for child, contribution in vjp_contributions(node, g):
                 _accumulate(store, child, _reduce_to(contribution, child.ttype))
             continue
         if jump is not None and jump.apply_vjp(
@@ -487,7 +488,7 @@ def _reverse_recurrence(loop, seeds, targets, inputs, name,
                         nexts=None, alt=None) -> LoopReverse:
     """The general case: the carry's adjoint evolves, so the derived loop
     runs backwards over the forward loop's own per-iteration carried
-    values, reached through :class:`~hawk.ir.loop_nodes.TapeRead` — why it
+    values, reached through :class:`~hawk.ir.nodes.TapeRead` — why it
     declares one bounded local array per carried slot."""
     m = loop.carry_count
     tapes = tuple(TapeRead(loop, i, loop.index) for i in range(m))
@@ -588,7 +589,7 @@ def _bar_name(target: Node, j: int) -> str:
 
 
 def _tape_tangent(node: TapeRead, augmented_of) -> Node | None:
-    """The tangent of one :class:`~hawk.ir.loop_nodes.TapeRead` — the rule
+    """The tangent of one :class:`~hawk.ir.nodes.TapeRead` — the rule
     that makes forward-over-reverse work through a recurrence.
 
     A reverse loop over a recurrence reads the forward loop's carried value
@@ -627,7 +628,7 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
     Also called on a VJP-derived IR's loops (forward over reverse): those
     are ordinary accumulator/recurrence loops needing no new mode, except
     for one node with no tangent rule,
-    :class:`~hawk.ir.loop_nodes.TapeRead` (:func:`_tape_tangent`). The
+    :class:`~hawk.ir.nodes.TapeRead` (:func:`_tape_tangent`). The
     remaining refusals are structural: a loop committing once per
     iteration is a derived loop's scatter, and reverse-over-reverse still
     has no tape rule. ``jump`` is the kernel's
@@ -721,7 +722,7 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
         if isinstance(node, Primitive):
             supplied = [tangent.get(id(c)) for c in node.inputs]
             if any(t is not None for t in supplied):
-                got = node.rules.jvp_tangent(node, supplied)
+                got = jvp_tangent(node, supplied)
                 if got is not None:
                     tangent[id(node)] = got
             continue

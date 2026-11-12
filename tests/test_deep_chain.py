@@ -1,3 +1,4 @@
+from _specs import HOST, for_targets
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
@@ -56,9 +57,9 @@ def _derived(kernel, kind):
 def _emit(kernel, target):
     device = target == "cuda"
     out = []
-    for kk, n, kd in zip(*B._expand_split([kernel], [kernel.name], [kernel.kind], smode=scalar_mode("float64"), device=device)[:3]):
-        src = B._sources(B._active_unit(kk, n, kd), name=n, smode=scalar_mode("float64"), kind=kd, targets=(target,),
-                         layout_sizes_override=None)
+    for kk, n, kd in zip(*B._expand_split([kernel], [kernel.name], [kernel.kind], spec=for_targets((target,)), smode=scalar_mode("float64"), device=device)[:3]):
+        src = B._emit(B.lower(B._active_unit(kk, n, kd), n, scalar_mode("float64"), kd, (target,), for_targets((target,))), (target,),
+                      B._options(device_arch=""))
         out.append(src[target].text)
     return "".join(out)
 

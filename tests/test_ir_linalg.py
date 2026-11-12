@@ -15,9 +15,11 @@ import pytest
 
 from hawk import runtime
 from hawk.ir import Const, Dispatch, HawkError, Leaf, Select, make
-from hawk.ir.cost import linalg_bytes
-from hawk.ir.cost import _op_count, _own_cost, _wide
-from hawk.ir.linalg import (CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, PROJECTIONS, TEAM_MAX_DIM,
+from hawk.passes.cost import linalg_bytes
+from hawk.passes.cost import _op_count, _own_cost, _wide
+from hawk.variants import load as _load_variant
+MAX_DIM = _load_variant("cpu")["linalg"]["max_dim"]
+from hawk.ir.linalg import (CONSUMERS, FACTORISATIONS, LINALG_OPS, PROJECTIONS,
                             as_matrix, op_bytes, op_count, sweeps)
 from hawk.ir.ops import OP_KINDS
 from hawk.types import TensorType
@@ -91,14 +93,13 @@ def test_only_a_square_float_matrix_is_factored(bad):
         make("lu", (Leaf("vocab_read", "mat_in", "A", bad),))
 
 
-def test_the_dimension_is_static_and_at_most_the_limit():
-    assert MAX_DIM == 32 and TEAM_MAX_DIM == 4096
+def test_the_dimension_is_static_and_positive():
+    assert MAX_DIM == 32
     assert make("eigh", (_mat(1),)).ttype.shape == (1, 1)
     assert make("eigh", (_mat(32),)).ttype.shape == (32, 32)
     assert make("chol", (_mat(33),)).ttype.shape == (33, 33)         # a team lowers it
     assert make("chol", (_mat(4096),)).ttype.shape == (4096, 4096)
-    with pytest.raises(HawkError, match=r"1 <= n <= 4096, got n=4097"):
-        make("chol", (_mat(4097),))
+    assert make("chol", (_mat(4097),)).ttype.shape == (4097, 4097)   # the IR has no upper bound: a backend states its own
 
 
 def test_a_solve_names_what_it_reads():

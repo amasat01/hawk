@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from ..ir import HawkError
+from .._errors import HawkError
 from ..ir.chain import bind
 from .kernel import Kernel
 

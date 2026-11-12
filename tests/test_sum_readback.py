@@ -18,6 +18,7 @@ at its own lane's key.
 """
 
 from __future__ import annotations
+from _specs import DEVICE
 
 import math
 
@@ -30,7 +31,8 @@ import hawk.math as m
 from hawk import Grid, HawkError, Index, Kernel, Mutable, Scalar, Terminated, Vector, kernel, runtime
 from hawk.artifact import build_bundle
 from hawk.ir.nodes import ReduceSamples
-from hawk.ir.split import _post_order, stages
+from lowering.split import stages
+from raptor.ir.walk import post_order as _post_order
 
 R, COL = 4, 64
 N = R * COL
@@ -140,7 +142,7 @@ def test_the_row_sum_is_within_the_fsum_contract(tmp_path, cache_dir, mode, whic
 def test_the_vjp_has_three_stages_and_matches_central_differences(tmp_path, cache_dir):
     fwd = _bundle([share], tmp_path / "f", "float64", cache_dir)
     grad = Kernel("share_vjp", hawk.diff.vjp(share, primal_unit=fwd.digest))
-    assert len(stages(grad.name, grad.sinks)) == 3
+    assert len(stages(grad.name, grad.sinks, spec=DEVICE)) == 3
     bundle = _bundle([grad], tmp_path / "g", "float64", cache_dir)
     x = _x("float64")
     w = np.random.default_rng(5).uniform(-1, 1, N)
@@ -168,7 +170,7 @@ def test_the_jvp_matches_central_differences(tmp_path, cache_dir):
     dx = np.random.default_rng(5).uniform(-1, 1, N)
     dz = np.zeros(N)
     planes = dict(runtime.load(bundle.directory, "share_jvp").arg_spec)
-    assert len(stages(tan.name, tan.sinks)) == 2, planes
+    assert len(stages(tan.name, tan.sinks, spec=DEVICE)) == 2, planes
     _run(bundle, "share_jvp", x=x, dot_x=dx, dot_out=dz)
     h = 1e-6
     lo, hi = np.zeros(N), np.zeros(N)

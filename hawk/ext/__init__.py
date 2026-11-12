@@ -47,7 +47,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-from ..ir import HawkError
+from .._errors import HawkError
 from ..types import TensorType
 from .primitive import PrimitiveDef, primitive, primitives
 

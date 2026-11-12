@@ -28,7 +28,7 @@ import _kernels as K
 import pytest
 
 from hawk.diff import vjp
-from hawk.embedded import audit, render
+from hawk_c import audit, render
 from hawk.emit.spelling import GEOMETRY_TOKENS
 from hawk.ir import HawkError, canonical
 
@@ -83,7 +83,7 @@ def test_loop_dispatch_and_finish_units_audit_clean(mode):
 # planted
 # --------------------------------------------------------------------------- #
 def test_a_helper_calling_malloc_is_a_banned_token(monkeypatch):
-    from hawk.embedded import abi
+    from hawk_c import abi
 
     real = abi.helper_closure
 
@@ -234,7 +234,7 @@ def test_header_identifiers_must_differ_in_their_first_31_characters():
 # --------------------------------------------------------------------------- #
 def test_export_refuses_an_audit_hit_by_rule_and_line(monkeypatch, tmp_path):
     from hawk import embedded
-    from hawk.embedded import abi
+    from hawk_c import abi
 
     real = abi.helper_closure
 

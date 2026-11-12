@@ -10,6 +10,7 @@ escapes one row is still in front of the others.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import _kernels as K
 
@@ -42,4 +43,4 @@ def sources():
 def bodies():
     """Every emitted BODY string (wrapper-independent by construction)."""
     for name, sinks, walk in cases():
-        yield name, render_body(sinks, walk)
+        yield name, render_body(sinks, walk, spec=HOST)

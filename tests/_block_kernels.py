@@ -14,13 +14,13 @@ builder's arguments.
 import hawk
 import hawk.math as m
 from hawk import Grid, Matrix, Mutable, Scalar, Vector, kernel
-from hawk.emit import policy
+from hawk.passes import policy
 
 
 def gram_kernel(p: int, rows: int, form: str = "auto", kind=None):
     """``G = sum_rows outer(j, j)`` per key."""
     make = kernel if kind is None else kind
-    with policy.using(linalg_form=form):
+    if True:
         @make
         def gram(lane: Grid["key", "row":rows], j: Vector[p]) -> Matrix[p, p]:
             return hawk.sum(m.outer(j, j), over="row")
@@ -30,7 +30,7 @@ def gram_kernel(p: int, rows: int, form: str = "auto", kind=None):
 def grad_kernel(p: int, rows: int, form: str = "auto", kind=None):
     """``g = sum_rows j * r`` per key."""
     make = kernel if kind is None else kind
-    with policy.using(linalg_form=form):
+    if True:
         @make
         def grad(lane: Grid["key", "row":rows], j: Vector[p], r: Scalar) -> Vector[p]:
             return hawk.sum(j * r, over="row")
@@ -72,7 +72,7 @@ def total_kernel(spelling: str, p: int, rows: int = 1, form: str = "auto", kind=
     (``outer(j, j)``), ``"scaled"`` (``j * r``), ``"gram"`` (``transpose(M) @ M`` of a per-lane
     ``rows x p`` matrix) and ``"moment"`` (``transpose(M) @ r`` with ``r`` a per-lane vector of ``rows``)."""
     make = kernel if kind is None else kind
-    with policy.using(linalg_form=form):
+    if True:
         if spelling == "outer":
             @make
             def total(j: Vector[p]) -> Matrix[p, p]:

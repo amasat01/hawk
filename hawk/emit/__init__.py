@@ -10,14 +10,12 @@ Importing it is not free, and :mod:`hawk` itself never does.
 (:mod:`hawk.emit.writer`; :mod:`hawk.emit.writer_aether` is the aether C++
 writer every built wrapper wraps); :mod:`hawk.emit.wrapper`
 carries the two seams and the shared translation-unit assembly;
-:mod:`hawk.emit.cuda`/:mod:`hawk.emit.host` are the two built wrappers
+:mod:`hawk.emit.host` is the built wrapper (the GPU one is :mod:`hawk_cuda.emit`)
 and :mod:`hawk.emit.fused` the fused-lane emitter's body path. The targets
 that pair them are :data:`hawk.targets.TARGETS`.
 """
 
 # Internal names (`X as X` marks a deliberate re-export not on `__all__`).
-from .cuda import CUDA as CUDA
-from .cuda import CudaWrapper as CudaWrapper
 from .fused import FusedKernel as FusedKernel
 from .fused import Lane as Lane
 from .fused import compose

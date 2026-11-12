@@ -4,7 +4,7 @@
 """``hawk.steps(kernel, K)`` — K steps of a finishing step kernel per launch.
 
 An IR transform, no build option and no new user code: the step body
-becomes ONE lowered :class:`~hawk.ir.loop_nodes.Loop` of ``K`` trips
+becomes ONE lowered :class:`~hawk.ir.nodes.Loop` of ``K`` trips
 (:func:`build_loop`) whose carries are the kernel's Mutable planes — every
 read of a plane's launch-start value becomes the carry, every commit the
 carry's next value — and whose ``break`` is the finish condition, evaluated
@@ -50,7 +50,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from ..ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
 from ..ir.loops import build_loop
 from ..ir.nodes import (
     FUSED_STEPS_PLANE,
@@ -58,11 +58,11 @@ from ..ir.nodes import (
     At,
     Const,
     Finish,
-    HawkError,
     Leaf,
     Node,
     Select,
 )
+from .._errors import HawkError
 from ..ir.ops import make
 from ..ir.walk import substitute
 from ..types import TensorType

@@ -1,33 +1,38 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""A new export-only target is one row: registered in ``TARGETS`` (a plain
-dict), it builds through ``hawk.build(targets=...)`` with no change to the
+"""A new export-only target is one extension: declared in a manifest and found through ``TARGETS`` (a view
+of the backend registry), it builds through ``hawk.build(targets=...)`` with no change to the
 build, and is refused by name once the row is gone."""
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import _kernels as K
 import pytest
+from _extensions import backend, copy_of, make
 
 import hawk
+from hawk import registry
 from hawk.artifact import reset_unit_memo
 from hawk.ir import HawkError
 from hawk.targets import TARGETS
 
+TOY = copy_of("hawk_c.backend", "toy", "BACKEND.about, BACKEND.artifact, BACKEND.source = 'a toy export', '.toyh', '.toy'\n")
 
-def test_an_export_row_builds_and_leaves_its_file(tmp_path, cache_dir):
-    assert type(TARGETS) is dict
+
+def test_an_export_row_builds_and_leaves_its_file(tmp_path, cache_dir, monkeypatch):
+    assert not hasattr(TARGETS, "__setitem__")           # a read-only view, not the dict it once was
     reset_unit_memo()
-    TARGETS["toy"] = replace(TARGETS["c"], id="toy", about="a toy export",
-                             artifact=".toyh", source=".toy")
+    make(tmp_path, "toy-ext", {"backends": [backend("toy", "toy_backend:BACKEND", builds=False)]},
+         modules={"toy_backend": TOY})
+    monkeypatch.syspath_prepend(str(tmp_path))
+    registry.reset()
     try:
         bundle = hawk.build([K.drag], tmp_path / "u", targets=("toy",),
                             cache_dir=cache_dir)
     finally:
-        del TARGETS["toy"]
+        monkeypatch.undo()
+        registry.reset()
         reset_unit_memo()
     (art,) = bundle.artifacts
     entry = art.entries["toy"]

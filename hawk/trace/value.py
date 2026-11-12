@@ -17,7 +17,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from ..ir import At, Const, HawkError, Leaf, Node, Select
+from ..ir import At, Const, Leaf, Node, Select
+from .._errors import HawkError
 from ..ir import make as _make
 from ..ir.linalg import as_matrix
 from ..ir.nodes import (
@@ -273,7 +274,7 @@ class Value:
 
         A STATIC integer is ``component``, checked at trace time; a TRACED
         integer is ``component_at`` — needed inside a lowered ``for``, where
-        ``k`` is a symbolic :class:`~hawk.ir.loop_nodes.LoopIndex`, not a
+        ``k`` is a symbolic :class:`~hawk.ir.nodes.LoopIndex`, not a
         Python int (it materialises into an ``Item`` first, since aether's
         EXPRESSION only carries compile-time ``eval<Is...>``). A float is
         refused rather than truncated: rounding would silently read the
@@ -807,7 +808,7 @@ class TableRef:
         plane's length over the axis stride read at run time (``stride`` ``None``: an axis over the lanes, held to
         the lane count). An index provably in range (a literal, or a compile-time loop's range, inside a static
         extent) is not clamped."""
-        from ..ir.loop_nodes import LoopIndex
+        from ..ir.nodes import LoopIndex
         from ..ir.nodes import Op, PlaneExtent
 
         if index.ttype.dtype not in ("i32", "i64"):

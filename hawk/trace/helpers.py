@@ -24,7 +24,7 @@ import threading
 import types
 from typing import Any
 
-from ..ir import HawkError
+from .._errors import HawkError
 from .value import Value
 
 #: The rewritten form of each helper, by code object.
@@ -75,6 +75,19 @@ def call(fn: Any, *args: Any, **kwargs: Any) -> Any:
         return rewritten(*args, **kwargs)
     finally:
         stack.pop()
+
+
+def call_lowered(fn: Any, *args: Any) -> Any:
+    """``fn(*args)`` with a user function inlined like a kernel body (a bounded ``for`` LOWERS to a loop instead of unrolling);
+    anything else (a lambda, a library function, one with no control flow) runs as written."""
+    if type(fn) is not types.FunctionType or not _traced(args, {}):
+        return fn(*args)
+    rewritten = _rewrite(fn)
+    if rewritten is None:
+        return fn(*args)
+    if isinstance(rewritten, _Refused):
+        rewritten(fn.__name__)
+    return rewritten(*args)
 
 
 class _Refused:

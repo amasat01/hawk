@@ -23,6 +23,7 @@ exit and the run reads and writes past the planes.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import importlib
 
@@ -60,8 +61,8 @@ def _kernel(group):
 def _sources(group):
     k = _kernel(group)
     unit = B._active_unit(k, "step", MAP)
-    return B._sources(unit, name="step", smode=scalar_mode("float64"), kind=MAP,
-                      targets=("cuda", "host"), layout_sizes_override=None)
+    targets = ("cuda", "host")
+    return B._emit(B.lower(unit, "step", scalar_mode("float64"), MAP, targets, HOST), targets, B._options(device_arch=""))
 
 
 @pytest.mark.parametrize("target", ["cuda", "host"])
@@ -91,13 +92,13 @@ def test_the_group_is_part_of_the_unit_key_only_above_one():
         return _unit_key(["step"], [k.walk.digest], [""], targets=("host",),
                          smode=scalar_mode("float64"), kind=MAP, defines=(), cache_dir="",
                          device_arch="", derivative_blocks=[{}], layout_sizes_override=None,
-                         groups=(group,))
+                         groups=(group,), spec=HOST)
 
     assert key(32) != key(64) != key(1)
     assert key(1) == _unit_key(["step"], [_kernel(1).walk.digest], [""], targets=("host",),
                                smode=scalar_mode("float64"), kind=MAP, defines=(),
                                cache_dir="", device_arch="", derivative_blocks=[{}],
-                               layout_sizes_override=None)
+                               layout_sizes_override=None, spec=HOST)
 
 
 @pytest.fixture(scope="module")

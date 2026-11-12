@@ -23,7 +23,7 @@ from hawk.artifact import build_bundle
 from hawk.diff import vjp
 from hawk.emit import render_source, scalar_mode
 from hawk.ext import sink_policy
-from hawk.ir import HawkError
+from hawk import HawkError
 
 ROWS = 4
 
@@ -180,7 +180,7 @@ def test_the_banded_mode_with_a_host_target_is_refused_as_a_whole_by_name(door, 
 
 
 def test_the_c_target_refuses_the_banded_mode_by_name():
-    from hawk.embedded import render
+    from hawk_c import render
 
     with pytest.raises(HawkError, match="the c target has no banded spelling"):
         render(plain, mode="banded")

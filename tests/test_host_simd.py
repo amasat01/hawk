@@ -46,6 +46,7 @@ Three more, for the lane-wide guard and the active-set loops:
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import platform
 import re
@@ -690,12 +691,12 @@ def test_the_default_profile_per_architecture(monkeypatch):
 
 
 def test_a_library_call_is_scalar_under_native_and_the_fast_profile_on_arm64(monkeypatch):
-    from hawk.ir.vectorise import vectorises
+    from hawk.passes.vectorise import vectorises
     from test_host_loop_interchange import sin_chain
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
     monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/clang++")
     monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
-    assert vectorises(sin_chain.walk, "native") is vectorises(sin_chain.walk, "native-vector-math") is False
+    assert vectorises(sin_chain.walk, HOST, "native") is vectorises(sin_chain.walk, HOST, "native-vector-math") is False
 
 
 @hawk.kernel
@@ -706,17 +707,23 @@ def _pow_chain(x: hawk.Scalar, g: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
     y = a + x
 
 
+def _spec():
+    from hawk.targets import build_spec
+
+    return build_spec(("host",))
+
+
 def test_only_pow_counts_as_routed_on_arm64_gcc(monkeypatch):
-    from hawk.ir.vectorise import vectorises
+    from hawk.passes.vectorise import vectorises
     from test_host_loop_interchange import sin_chain
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
     monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/g++")
     monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: True)
-    assert vectorises(_pow_chain.walk, "native-vector-math") is True
-    assert vectorises(_pow_chain.walk, "native") is False
-    assert vectorises(sin_chain.walk, "native-vector-math") is False
+    assert vectorises(_pow_chain.walk, _spec(), "native-vector-math") is True
+    assert vectorises(_pow_chain.walk, _spec(), "native") is False
+    assert vectorises(sin_chain.walk, _spec(), "native-vector-math") is False
     monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
-    assert vectorises(_pow_chain.walk, "native-vector-math") is False
+    assert vectorises(_pow_chain.walk, _spec(), "native-vector-math") is False
 
 
 def test_the_emitted_kernel_text_is_the_same_under_both_profiles_on_arm64(tmp_path):

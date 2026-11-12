@@ -22,7 +22,7 @@ a branch or a loop — it would commit unconditionally, or once instead of once
 per iteration.
 
 A ``for`` is lowered to a real C++/CUDA ``for`` rather than unrolled at trace
-time: unrolling blew ptxas's memory past 25 GB on one KAN-sized kernel, so the
+time: unrolling blew ptxas's memory past 25 GB on one spline-sized kernel, so the
 loop stays intact and the compiler decides whether to unroll it.
 """
 
@@ -33,9 +33,10 @@ import builtins
 import copy
 from typing import Any
 
-from ..ir import Const, Dispatch, HawkError, Node, Select
-from ..ir.cost import SPECIAL_KINDS
-from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from ..ir import Const, Dispatch, Node, Select
+from .._errors import HawkError
+from hawk.passes.cost import SPECIAL_KINDS
+from ..ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
 from ..types import TensorType
 from ..ir.loops import build_loop
 from .value import Value, index_node, node_of, own_column_rewrite_advice, select
@@ -134,8 +135,8 @@ class _LoopBuilder:
     """The object the rewritten body drives ONE bounded ``for`` through.
 
     Three calls, in order: :attr:`index` binds the loop variable to a symbolic
-    :class:`~hawk.ir.loop_nodes.LoopIndex`, :meth:`carries` swaps each
-    loop-carried name for its :class:`~hawk.ir.loop_nodes.LoopCarry`
+    :class:`~hawk.ir.nodes.LoopIndex`, :meth:`carries` swaps each
+    loop-carried name for its :class:`~hawk.ir.nodes.LoopCarry`
     placeholder, and :meth:`close` reads the body's final values and mints the
     :class:`~hawk.ir.Loop`. The body runs exactly once, under Python's own
     evaluator, like an ``if`` branch."""
@@ -175,10 +176,11 @@ class _LoopBuilder:
         self.where = where
         self.names = tuple(names)
         self.depth = int(depth)
-        self.index = Value(LoopIndex(depth, index_name))
+        bounds = None
         if self.trip and isinstance(self.stop, int):
             first, last = self.start, self.start + (self.trip - 1) * self.step
-            self.index.node.bounds = (first, last) if first <= last else (last, first)
+            bounds = (first, last) if first <= last else (last, first)
+        self.index = Value(LoopIndex(depth, index_name, bounds=bounds))
         self._inits: tuple = ()
         self._originals: tuple = ()
         self._carries: tuple = ()
@@ -338,14 +340,14 @@ def merge(cond: Any, on_true: Any, on_false: Any, name: str, shared: bool = Fals
 def _store_under(cond: Any, on_true: Any, on_false: Any) -> Any:
     """``select(c, v, set(v, i, x))`` as ``set(v, i, select(c, v[i], x))`` (and the arms the other way round) for a
     value written at a run-time index: the same value, but the store stays one store of one element, so the
-    vector is neither copied nor selected whole, and what lives in a plane (:mod:`hawk.ir.wide`) is written in place.
+    vector is neither copied nor selected whole, and what lives in a plane (:mod:`simt.wide`) is written in place.
 
-    Only a vector written at a run-time index (placed from width 1: :func:`~hawk.ir.wide.runtime_min`), under a
-    build that places values; every other ``if`` keeps the select, so a kernel with no such value renders as it did."""
-    from ..emit.policy import wide_form
+    Only a vector written at a run-time index (placed from width 1: :func:`~simt.wide.runtime_min`); every other
+    ``if`` keeps the select, so a kernel with no such value renders as it did. A build with ``wide_form="thread"``
+    puts the select back (:func:`simt.wide.unstored`)."""
     from ..ir.nodes import Op
 
-    if wide_form() == "thread" or not (isinstance(on_true, Value) and isinstance(on_false, Value)):
+    if not (isinstance(on_true, Value) and isinstance(on_false, Value)):
         return None
     for held, stored, taken in ((on_true, on_false, False), (on_false, on_true, True)):
         node, base = node_of(stored), node_of(held)
@@ -403,7 +405,7 @@ def _as_switch(value: Value, shared: bool = False) -> Value:
 def _one_node_per_value(arms: list) -> list:
     """``arms`` with equal-structure nodes merged to one, so a value written twice
     in a case is named once there (a case renders by node, not by structure)."""
-    from ..ir.split import _keys, _post_order
+    from ..ir.walk import post_order as _post_order, structural_keys as _keys
     from ..ir.walk import substitute
 
     while True:
@@ -440,7 +442,7 @@ def _costly_arm(arms: list, conds: list, shared: bool) -> bool:
     only while nothing else reads that work, so a named transcendental runs in every lane). Alone, a
     transcendental or division counts when its arm reads it twice, by structure: a value written
     twice is read twice."""
-    from ..ir.split import _keys, _post_order
+    from ..ir.walk import post_order as _post_order, structural_keys as _keys
 
     key: dict = {}
     _keys(_post_order([*arms, *conds]), key)

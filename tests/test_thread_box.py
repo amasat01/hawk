@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The thread box (:mod:`hawk.emit.box`): one thread computes ``T`` lanes along
+"""The thread box (:mod:`lowering.box`): one thread computes ``T`` lanes along
 a non-fastest axis, reading what does not move along it once.
 
 On the contraction forward shape the emitted entry carries an ``Item<Real, T>`` and the
@@ -12,6 +12,7 @@ candidate keep today's text; a card row sets ``T``.
 """
 
 from __future__ import annotations
+from _specs import DEVICE, HOST, for_targets
 
 import hashlib
 import json
@@ -24,17 +25,26 @@ from test_ir_lanes import BATCH, L_ALL, N_IN, S_ROW, k_clamp, k_fem, kg_fwd
 import hawk
 import hawk.math as m
 from hawk.artifact import build_bundle
-from hawk.artifact.bundle import _sources
+from hawk.artifact.bundle import _emit, _options, lower
 from hawk.emit import scalar_mode
-from hawk.emit.box import BOX_ENV, Box, thread_box, threads
+from lowering.box import Box, threads
+from lowering.box import thread_box as _thread_box
+from hawk.artifact.unit_cache import BOX_ENV
+from hawk.targets.cards import thread_box as _card
+import os
+
+
+def thread_box(kernel, scalar, *, spec, **kw):
+    """The component's box with the card and the switch hawk resolves for a build."""
+    return _thread_box(kernel, scalar, spec=spec, card=_card(scalar, spec), enabled=os.environ.get(BOX_ENV) != "0", **kw)
 from hawk.targets import cards
 
 T64 = 16
 
 
-def _text(kernel, target="cuda", mode="float64"):
-    return _sources(kernel, name=kernel.name, smode=scalar_mode(mode), kind=None,
-                    targets=(target,), layout_sizes_override=None)[target].text
+def _text(kernel, target="cuda", mode="float64", spec=None):
+    return _emit(lower(kernel, kernel.name, scalar_mode(mode), None, (target,), spec or for_targets((target,))), (target,),
+                 _options(device_arch=""))[target].text
 
 
 def _boxed_branch(text):
@@ -77,8 +87,8 @@ def _run(bundle, target, rows, mode):
 
 # ---- the decision and the text ---------------------------------------------
 def test_the_contraction_forward_gets_the_card_default_box():
-    assert thread_box(kg_fwd, "float64") == Box(0, T64, BATCH)
-    assert thread_box(kg_fwd, "float32") == Box(0, 8, BATCH)
+    assert thread_box(kg_fwd, "float64", spec=DEVICE) == Box(0, T64, BATCH)
+    assert thread_box(kg_fwd, "float32", spec=DEVICE) == Box(0, 8, BATCH)
 
 
 @pytest.mark.parametrize("target", ["cuda", "host"])
@@ -96,37 +106,41 @@ def test_the_box_holds_the_lanes_in_an_item_and_reads_feat_once(target):
 def test_hawk_box_0_and_a_kernel_without_a_candidate_keep_the_box_free_text(monkeypatch):
     boxed = {k.name: _text(k) for k in (kg_fwd, k_fem, k_clamp)}
     monkeypatch.setenv(BOX_ENV, "0")
-    assert thread_box(kg_fwd, "float64") is None
+    assert thread_box(kg_fwd, "float64", spec=DEVICE) is None
     free = {k.name: _text(k) for k in (kg_fwd, k_fem, k_clamp)}
     assert "hawk_box_own" not in free["kg_fwd"] and "hawk_box_own" in boxed["kg_fwd"]
     monkeypatch.delenv(BOX_ENV)
     for k in (k_fem, k_clamp):
-        assert thread_box(k, "float64") is None
+        assert thread_box(k, "float64", spec=DEVICE) is None
         assert hashlib.md5(boxed[k.name].encode()).hexdigest() \
             == hashlib.md5(free[k.name].encode()).hexdigest()
 
 
-def test_a_card_row_sets_T(tmp_path, monkeypatch):
-    card = json.loads(cards.THREAD_BOX_FILE.read_text())
-    card["rows"] = [{"cc": "sm_00", "device": "Test Card", "dtype": "float64", "T": 4}]
-    path = tmp_path / "thread_box.json"
-    path.write_text(json.dumps(card))
-    monkeypatch.setattr(cards, "THREAD_BOX_FILE", path)
+def _box_spec(**changes):
+    """The host and device build of ``sm_61`` whose device variant carries a thread card with ``changes`` laid over the committed one."""
+    from hawk.targets import build_spec
+    from hawk.variants import derive, load
+
+    cuda = load("cuda")
+    card = {**cuda["cards"]["thread_box"], **changes}
+    return build_spec(("host", "cuda"), "sm_61", device=derive(cuda, {"cards": {"thread_box": card}}))
+
+
+def test_a_card_row_sets_T(monkeypatch):
+    spec = _box_spec(rows=[{"cc": "sm_00", "device": "Test Card", "dtype": "float64", "T": 4}])
     monkeypatch.setattr(cards, "_device", lambda: ("sm_00", "Test Card"))
-    assert thread_box(kg_fwd, "float64") == Box(0, 4, BATCH)
-    assert "aether::Item<Real, 4> hawk_v" in _text(kg_fwd)
+    assert thread_box(kg_fwd, "float64", spec=spec) == Box(0, 4, BATCH)
+    assert "aether::Item<Real, 4> hawk_v" in _text(kg_fwd, spec=spec)
     monkeypatch.setattr(cards, "_device", lambda: ("sm_61", "Another Card"))
-    assert thread_box(kg_fwd, "float64").T == T64
+    assert thread_box(kg_fwd, "float64", spec=spec).T == T64
 
 
-def test_a_card_T_outside_the_register_budget_is_refused(tmp_path, monkeypatch):
-    card = json.loads(cards.THREAD_BOX_FILE.read_text())
-    card["defaults"]["float64"] = 32
-    path = tmp_path / "thread_box.json"
-    path.write_text(json.dumps(card))
-    monkeypatch.setattr(cards, "THREAD_BOX_FILE", path)
+def test_a_card_T_outside_the_register_budget_is_refused():
+    from hawk.variants import load
+
+    spec = _box_spec(defaults={**load("cuda")["cards"]["thread_box"]["defaults"], "float64": 32})
     with pytest.raises(hawk.HawkError, match="2..16"):
-        thread_box(kg_fwd, "float64")
+        thread_box(kg_fwd, "float64", spec=spec)
 
 
 @hawk.kernel
@@ -144,8 +158,8 @@ def k_row_grouped(lane: hawk.Index, feat: hawk.Table[hawk.Scalar], th: hawk.Tabl
 
 
 def test_a_box_that_would_straddle_a_compaction_group_is_not_emitted():
-    assert thread_box(k_row, "float64") == Box(0, T64, BATCH)
-    assert thread_box(k_row_grouped, "float64") is None
+    assert thread_box(k_row, "float64", spec=DEVICE) == Box(0, T64, BATCH)
+    assert thread_box(k_row_grouped, "float64", spec=DEVICE) is None
 
 
 def test_the_sidecar_carries_the_box_and_the_thread_rule(tmp_path, monkeypatch):

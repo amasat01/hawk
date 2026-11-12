@@ -32,9 +32,10 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple
 
-from ..ir import Const, HawkError, Leaf, Node
+from ..ir import Const, Leaf, Node
+from .._errors import HawkError
 from ..ir import make as _mk
-from ..ir.loop_nodes import LoopIndex
+from ..ir.nodes import LoopIndex
 from ..ir.nodes import Assign, Dispatch, Finish, PlaneExtent, SampleIndex, Select
 from ..ir.ops import COMPARE, LOGICAL, PREDICATE
 from ..ir.walk import substitute

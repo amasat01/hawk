@@ -73,8 +73,8 @@ import pytest
 
 import hawk
 from hawk import Index, Mutable, Param, Scalar, Terminated, Vector
-from hawk.embedded import export
-from hawk.ir import HawkError
+from hawk_c import export
+from hawk import HawkError
 from hawk.ir.nodes import AccumWrite, Leaf
 from hawk.ir.ops import make
 from hawk.trace.kernel import Kernel

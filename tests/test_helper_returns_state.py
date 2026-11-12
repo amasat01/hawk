@@ -6,6 +6,7 @@ Mutable and Terminated state: the kernel it builds emits the same body, and
 the same digest, as the one with the update written inline."""
 
 from __future__ import annotations
+from _specs import HOST
 
 import numpy as np
 
@@ -47,8 +48,8 @@ def by_helper_mutable(dt: Param, x: Mutable[Scalar], v: Mutable[Scalar]):
 
 
 def test_the_tuple_returning_helper_emits_the_inline_body():
-    a = render_body(by_helper.sinks, by_helper.walk).text
-    b = render_body(inline.sinks, inline.walk).text
+    a = render_body(by_helper.sinks, by_helper.walk, spec=HOST).text
+    b = render_body(inline.sinks, inline.walk, spec=HOST).text
     assert a == b
 
 

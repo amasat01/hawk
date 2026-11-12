@@ -22,14 +22,20 @@ the rank and what aether would need — never a silent approximation.
 from __future__ import annotations
 
 import math
+from types import MappingProxyType
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from ..ir import HawkError, Node, Walk
-from ..ir.cost import fp64_ops
-from ..ir.loop_nodes import Loop, LoopCarry, LoopCount, LoopIndex, LoopValue, TapeRead
+from ..dialects import spell_node
+from raptor.ir.linalg import LSTSQ_OPS
+from ..passes.lstsq import lowered_sinks, max_dim_of
+from ..ir import Node, Walk
+from .._errors import HawkError
+from hawk.passes.cost import fp64_ops
+from ..ir.nodes import Loop, LoopCarry, LoopCount, LoopIndex, LoopValue, TapeRead
 from ..ir.nodes import (
+    _through,
     COMPANION_SUFFIX,
     GATHER_ROLES,
     RAW_KIND,
@@ -57,18 +63,16 @@ from ..ir.nodes import (
 )
 from ..ir.linalg import CONSUMERS, FACTORISATIONS
 from ..ir.ops import ELEMENTWISE_BINARY, ELEMENTWISE_TERNARY, RANDOM_OPS, UNARY_MATH
-from ..ir.lanes import warp_uniform
+from .. import components as _components
+_lanes = _components.view("lowering", "lanes")
 from ..ir.slotwise import chain, is_structural_zero
-from ..ir.walk import canonical_nodes
+from ..ir.walk import canonical, canonical_nodes
 from ..types import TensorType
 from . import rtstore
-from .box import BoxStore
-from ..ir.lane import WarpLane, WarpStore
-from ..ir.team import TeamStore
-from ..ir.wide import is_resident, is_scratch
-from ..ir.wide import record as _placements
-from . import policy as _policy
-from .policy import rolled
+from .. import components as _components
+_wide = _components.view("lowering", "wide")
+from ..passes import policy as _policy
+from raptor.ir.fold import rolled
 from .writer_aether import AETHER
 from .dispatch import _DispatchMixin
 from .dispatch import render_dispatch_rank0 as render_dispatch_rank0
@@ -89,7 +93,6 @@ from .spelling import (
     _for_header,
     _ident,
     _ordinal,
-    _through,
 )
 from .spelling import (
     binding_name as binding_name,
@@ -137,7 +140,7 @@ class Body:
     needs_random: bool = False
 
 
-def render_body(sinks: Sequence[Sink], walk: Walk, *, indent: str = "    ",
+def render_body(sinks: Sequence[Sink], walk: Walk, *, spec, indent: str = "    ",
                 kind=None, writer=None) -> Body:
     """Render one kernel's body STRING from its sink set and its walk.
 
@@ -146,7 +149,10 @@ def render_body(sinks: Sequence[Sink], walk: Walk, *, indent: str = "    ",
     :class:`hawk.ext.Kind` the commits render under; omitted, the default applies.
     ``writer`` is the :class:`hawk.emit.writer.Writer` that spells the text;
     omitted, the aether C++ writer."""
-    return _Renderer(tuple(sinks), walk, indent, kind, writer=writer).run()
+    if walk.kinds.intersection(LSTSQ_OPS):     # a caller that did not come through lowering: this target's lowering
+        sinks = lowered_sinks(tuple(sinks), max_dim_of(spec.primary))
+        walk = canonical(sinks)
+    return _Renderer(tuple(sinks), walk, indent, kind, writer=writer, spec=spec).run()
 
 
 @dataclass(frozen=True)
@@ -173,7 +179,7 @@ class LaneSplit:
     may run on a finished sample and its result be discarded: the step reads
     no plane at a computed index and divides no integer. ``op_count`` is
     the step's operation count, ``fp64_ops`` its 64-bit floating-point
-    operations (:func:`hawk.ir.cost.fp64_ops`)."""
+    operations (:func:`hawk.passes.cost.fp64_ops`)."""
 
     guard: str | None
     pre: str
@@ -200,8 +206,8 @@ class LaneSplit:
 #: The comparison an exit condition makes of ``(next, bound)`` to whether the
 #: carry rises towards the bound (``True``) or falls towards it, and the same
 #: comparison with its operands swapped.
-_EXIT_RISES = {"ge": True, "gt": True, "le": False, "lt": False}
-_SWAPPED = {"ge": "le", "gt": "lt", "le": "ge", "lt": "gt"}
+_EXIT_RISES = MappingProxyType({"ge": True, "gt": True, "le": False, "lt": False})
+_SWAPPED = MappingProxyType({"ge": "le", "gt": "lt", "le": "ge", "lt": "gt"})
 
 
 def _exit_order(loop: Loop) -> tuple | None:
@@ -238,7 +244,17 @@ _HEADER = re.compile(r"^for \((\w+) \w+ = (.*); \w+ ([<>]) (.*); [^;]*\) \{$")
 _WORD = re.compile(r"\b\w+\b")
 
 
-def render_lane_split(sinks: Sequence[Sink], walk: Walk, *, indent: str = "        ",
+def entry_counts_finished(walk: Walk, split) -> bool:
+    """Whether the fast entries count a sample finished ON ENTRY into the
+    finish counter (as the step's own finish epilogue counts a sample that
+    finishes during the run): a self-finishing kernel whose body is guarded
+    by its mask. Then, the counter zeroed before the launch, it holds the
+    batch's finished count after it, and the caller needs no separate count
+    of the mask."""
+    return getattr(walk, "finish", None) is not None and split is not None and split.guard is not None
+
+
+def render_lane_split(sinks: Sequence[Sink], walk: Walk, *, spec, indent: str = "        ",
                       kind=None, writer=None) -> LaneSplit | None:
     """The :class:`LaneSplit` of a fused-step kernel's body, or ``None`` when
     the body is not that shape.
@@ -249,7 +265,7 @@ def render_lane_split(sinks: Sequence[Sink], walk: Walk, *, indent: str = "     
     after it reading a value named before it. Anything else answers
     ``None`` and keeps its plain body: a body with its own inner ``for`` would
     need a second interchange."""
-    return _Renderer(tuple(sinks), walk, indent, kind, writer=writer).lane_split()
+    return _Renderer(tuple(sinks), walk, indent, kind, writer=writer, spec=spec).lane_split()
 
 
 @dataclass(frozen=True)
@@ -296,15 +312,15 @@ class LaneSegments:
     loops: tuple
     types: dict
     #: ``{proxy name: (plane binding, width)}``: the scratch planes of wide values a segment reads element by element
-    #: (:mod:`hawk.ir.wide`), each a lane row of the interchanged text; the text declares the proxies itself
+    #: (:mod:`simt.wide`), each a lane row of the interchanged text; the text declares the proxies itself
     proxies: dict = field(default_factory=dict)
 
 
-def render_lane_segments(sinks: Sequence[Sink], walk: Walk, cut: Sequence[Loop], *,
+def render_lane_segments(sinks: Sequence[Sink], walk: Walk, cut: Sequence[Loop], *, spec,
                          indent: str = "        ", kind=None, writer=None) -> LaneSegments:
     """The :class:`LaneSegments` of a body whose top-level loops ``cut``
-    (:func:`hawk.ir.vectorise.interchanged_loops`) run interchanged."""
-    return _Renderer(tuple(sinks), walk, indent, kind, writer=writer).lane_segments(cut)
+    (:func:`hawk.passes.vectorise.interchanged_loops`) run interchanged."""
+    return _Renderer(tuple(sinks), walk, indent, kind, writer=writer, spec=spec).lane_segments(cut)
 
 
 def _sample_free(node: Node) -> bool:
@@ -383,11 +399,24 @@ class _Renderer(_DispatchMixin):
 
     def host_blend(self, elem: str) -> bool:
         """Whether a select of ``elem`` values is spelled ``hawk_abi::blend`` (the host text; the device keeps ``?:``)."""
-        return _policy.blend() and elem == "Real"
+        return self.spec.settings.blend and elem == "Real"
+
+    @property
+    def rolled_min(self) -> int | None:
+        """The fold threshold of this text's variant (``form.rolled_fold_min``; ``None``: it names none, and a site that needs it is refused)."""
+        return self.spec.primary.get("form", {}).get("rolled_fold_min")
+
+    @property
+    def max_dim(self) -> int | None:
+        """The largest dimension one lane factors alone in this text's variant (``linalg.max_dim``; ``None``: it names none)."""
+        return self.spec.primary.get("linalg", {}).get("max_dim")
 
     def __init__(self, sinks: tuple, walk: Walk, indent: str, kind=None, *,
-                 writer=None) -> None:
+                 writer=None, spec) -> None:
         from ..ext import DEFAULT_KIND
+
+        #: The build's :class:`~hawk.targets.BuildSpec` seen by this text: the variant numbers every site reads come from it.
+        self.spec = spec
 
         self.sinks = sinks = _push_reads(sinks)
         self.walk = walk
@@ -400,10 +429,10 @@ class _Renderer(_DispatchMixin):
         #: ``{id(clamp): (base, lo, hi)}``: the table reads that share a runtime base at static offsets (one range test).
         self.clamp_spans = _clamp_spans(self.nodes, self.position)
         #: ``{plane: width}`` of the planes the kernel's placements write (a scratch plane's proxy needs its tile).
-        self.plane_widths = {name: rec["width"] for name, rec in _placements(self.nodes).items()}
-        #: Whether a placement (:mod:`hawk.ir.wide`) renders as its plane (the device text) or as its value
+        self.plane_widths = {name: rec["width"] for name, rec in _wide.record(self.nodes).items()}
+        #: Whether a placement (:mod:`simt.wide`) renders as its plane (the device text) or as its value
         #: (the host text), and the texts of the planes' per-lane proxies, which a use reads element by element.
-        self.placed = _policy.placed()
+        self.placed = spec.settings.placed
         self.proxies: set = set()
         #: The ids of the values a placement writes element by element (never rendered whole), in a loop body too.
         self.absorbed: frozenset = frozenset()
@@ -441,7 +470,7 @@ class _Renderer(_DispatchMixin):
         #: reads through a TapeRead.
         self.tape_names: dict[int, dict] = {}
         #: Per-sample iteration COUNTERS, by loop position -> identifier. Only set
-        #: for a loop whose count a derived :class:`~hawk.ir.loop_nodes.LoopCount`
+        #: for a loop whose count a derived :class:`~hawk.ir.nodes.LoopCount`
         #: reads.
         self.count_names: dict[int, str] = {}
         self.fanout: dict[int, int] = {}
@@ -529,7 +558,7 @@ class _Renderer(_DispatchMixin):
     def uniform(self, node: Node) -> bool:
         """Whether ``node`` is proven equal over every warp of lanes."""
         if self._uniform is None:
-            self._uniform = warp_uniform(self.sinks)
+            self._uniform = _lanes.warp_uniform(self.sinks, self.spec.uniform_run)
         return self._uniform(node)
 
     def _inplace_planes(self) -> dict:
@@ -665,10 +694,10 @@ class _Renderer(_DispatchMixin):
             return False
         if self.position.get(id(node)) in self.unrendered or id(node) in self.absorbed:
             return True
-        if isinstance(node, TeamStore) or (self.placed and is_resident(node)):
+        if getattr(node, "reads_by_element", False) or (self.placed and _wide.is_resident(node)):
             return True         # the store loop reads the operand element by element
         return isinstance(node, Op) and (
-            (node.kind in FACTORISATIONS and k == 0) or (node.kind in CONSUMERS and k == 1) or rolled(node))
+            (node.kind in FACTORISATIONS and k == 0) or (node.kind in CONSUMERS and k == 1) or rolled(node, self.rolled_min, self.spec.settings.form))
 
     def _outside_reachable(self) -> frozenset:
         """Positions some path from a root reaches WITHOUT following a
@@ -741,7 +770,7 @@ class _Renderer(_DispatchMixin):
     def _index_loops(self) -> None:
         """Give every lowered loop a STABLE identifier suffix, then record which
         ones a reverse loop reads through a
-        :class:`~hawk.ir.loop_nodes.TapeRead`.
+        :class:`~hawk.ir.nodes.TapeRead`.
 
         A top-level loop is suffixed by its canonical position (keeps a body
         byte-identical between renders); a nested loop has no position of its own
@@ -1165,7 +1194,7 @@ class _Renderer(_DispatchMixin):
             return False
         if self._plane_read_before_store(node):
             return True         # the element is read here, before the final phase stores the plane
-        if is_resident(node) or is_scratch(node):
+        if _wide.is_resident(node) or _wide.is_scratch(node):
             return False        # its text is the plane's proxy: nothing to name
         if isinstance(node, LoopValue) and self._loop_value(node) in self.proxies:
             return False        # a slot that lives in a plane: the loop value is the plane's proxy
@@ -1206,9 +1235,9 @@ class _Renderer(_DispatchMixin):
         """A node that never gets a local of its own: one a store run absorbs
         (:mod:`hawk.emit.rtstore`), one no statement renders, and one the writer
         renders as the name of a fresh ``Item`` already."""
-        return (self.stores.unnamed(node) or self._proxy_read(node) or is_resident(node)
+        return (self.stores.unnamed(node) or self._proxy_read(node) or _wide.is_resident(node)
                 or id(node) in self.absorbed or self.position.get(id(node)) in self.unrendered
-                or (self.writer.rolled_forms and self.writer.fresh_value(node)))
+                or (self.writer.rolled_forms and self.writer.fresh_value(self, node)))
 
     @staticmethod
     def _leaf_valued(node: Node) -> bool:
@@ -1269,8 +1298,8 @@ class _Renderer(_DispatchMixin):
         names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
                       for j, c in enumerate(loop.carries))
         self.carry_names[pos] = names
-        #: the carried slots that live in a plane (:mod:`hawk.ir.wide`): the carry IS the plane's proxy, written in place
-        planed = {j for j, init in enumerate(loop.inits) if self.placed and (is_resident(init) or is_scratch(init))}
+        #: the carried slots that live in a plane (:mod:`simt.wide`): the carry IS the plane's proxy, written in place
+        planed = {j for j, init in enumerate(loop.inits) if self.placed and (_wide.is_resident(init) or _wide.is_scratch(init))}
         names = tuple(self._ref(loop.inits[j]) if j in planed else name for j, name in enumerate(names))
         self.carry_names[pos] = names
         for j, (name, elem, init) in enumerate(zip(names, elems, loop.inits)):
@@ -1362,8 +1391,8 @@ class _Renderer(_DispatchMixin):
     @staticmethod
     def _speculative(loop: Loop) -> bool:
         """Whether one trip of ``loop`` is safe to run and discard on a
-        finished sample (:func:`hawk.ir.vectorise.speculative_step`)."""
-        from ..ir.vectorise import speculative_step
+        finished sample (:func:`hawk.passes.vectorise.speculative_step`)."""
+        from hawk.passes.vectorise import speculative_step
 
         return speculative_step(loop)
 
@@ -1477,8 +1506,8 @@ class _Renderer(_DispatchMixin):
         names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
                       for j, c in enumerate(loop.carries))
         self.carry_names[pos] = names
-        #: the carried slots that live in a plane (:mod:`hawk.ir.wide`): the carry IS the plane's proxy, written in place
-        planed = {j for j, init in enumerate(loop.inits) if self.placed and (is_resident(init) or is_scratch(init))}
+        #: the carried slots that live in a plane (:mod:`simt.wide`): the carry IS the plane's proxy, written in place
+        planed = {j for j, init in enumerate(loop.inits) if self.placed and (_wide.is_resident(init) or _wide.is_scratch(init))}
         names = tuple(self._ref(loop.inits[j]) if j in planed else name for j, name in enumerate(names))
         self.carry_names[pos] = names
         inits = [self._ref(init) for init in loop.inits]
@@ -1672,20 +1701,14 @@ class _Renderer(_DispatchMixin):
         if sink.name in _companions(self.sinks):
             return      # a ``policy="compensated"`` add's correction plane: same rule
         target = binding_name(sink.role, sink.name)
-        if isinstance(sink, TeamStore):
-            self.writer.team_store(self, sink, target, self._ref(sink.value))
-            return
-        if isinstance(sink, WarpStore):
-            self.writer.warp_store(self, sink, target, self._ref(sink.value))
+        if getattr(sink, "decl", None) is not None:      # a declared kind: spelled by the name its declaration gives
+            spell_node(self, sink, target)
             return
         if isinstance(sink, TapeWrite):
             self.writer.tape_write(self, sink, target)
             return
         if isinstance(sink, SampleSum):
             self._sample_sum(sink)
-            return
-        if isinstance(sink, BoxStore):
-            self.writer.box_store(self, target, self._ref(sink.index), self._ref(sink.value))
             return
         links = _accumulate_sink(sink) if self._scope_depth else None
         if links is not None:
@@ -1697,7 +1720,7 @@ class _Renderer(_DispatchMixin):
             return
         value = self._ref(sink.value)
         if not isinstance(sink, (Assign, WideWrite, AccumWrite)):
-            raise HawkError(f"no lowering for sink kind {sink.kind!r}")
+            raise HawkError(f"no lowering for sink kind {sink.kind!r}: {type(sink).__name__} is no registered handler")
         if sink.index is None:
             # The own column: one elementwise contribution, one store (eagle
             # folds the partials, the body never reduces) — unless this is the
@@ -1781,7 +1804,7 @@ class _Renderer(_DispatchMixin):
             self.writer.accum_scattered(self, sink, target, index, value)
 
     def _key_run(self, sink: Sink):
-        """The run its key moves in (:func:`hawk.ir.lanes.key_run`: proven,
+        """The run its key moves in (:func:`simt.lanes.key_run`: proven,
         tested or sorted), or ``None`` for the per-lane commit. Asked only of
         a writer that spells the run commit, so every other writer's text is
         unchanged."""
@@ -1789,9 +1812,10 @@ class _Renderer(_DispatchMixin):
             return None
         if getattr(self.kind, "lanes", None) is not None:
             return None                 # the lane facts read a dense lane id; a map breaks it
-        from ..ir.lanes import key_run
+        from .. import components as _components
+        _lanes_local = _components.view("lowering", "lanes")
 
-        return key_run(self.sinks, sink)
+        return _lanes_local.key_run(self.sinks, sink, self.spec)
 
 
     # -- expressions (spelled by the writer) -----------------------------
@@ -1801,8 +1825,6 @@ class _Renderer(_DispatchMixin):
             return self.writer.leaf(self, node, materialised)
         if isinstance(node, Const):
             return self.writer.const(node)
-        if isinstance(node, WarpLane):
-            return self.writer.warp_lane_value()
         if isinstance(node, LanePosition):
             return self.writer.lane_position_value(
                 getattr(self.kind, "lanes", None) is not None or self.kind.guard.active_set)
@@ -1826,7 +1848,7 @@ class _Renderer(_DispatchMixin):
             # forward subgraph it stands in front of.
             return self._ref(node.forward)
         if isinstance(node, At):
-            return self.writer.at(self, node)
+            return self.writer.at(self, node) if getattr(node, "decl", None) is None else spell_node(self, node)
         if isinstance(node, Select):
             c, a, b = (self._ref(o) for o in node.operands)
             return self.writer.select(self, node, c, a, b)
@@ -1838,7 +1860,9 @@ class _Renderer(_DispatchMixin):
             args = [self._ref(o) for o in node.operands]
             ranks = [len(o.ttype.shape) for o in node.operands]
             return self.writer.op(self, node, args, ranks)
-        raise HawkError(f"no aether rendering for node {node!r}")
+        if getattr(node, "decl", None) is not None:     # a declared kind's expression: spelled by name
+            return spell_node(self, node)
+        raise HawkError(f"no aether rendering for node {node!r}: {type(node).__name__} is no registered handler")
 
 
 def _companions(sinks) -> frozenset:
@@ -1923,7 +1947,7 @@ def _push_reads(sinks: tuple) -> tuple:
     """``sinks`` with each runtime-index read of an element-wise vector value pushed to its operands:
     ``component_at(op(a, b), k)`` becomes ``op(component_at(a, k), b')`` (a rank-0 operand stays), so one element
     is computed and the whole vector is neither built nor copied into an ``Item``. Other values are untouched."""
-    from ..diff.tape import _resink
+    from raptor.ir.cells import with_value
     from ..ir import make
     from ..ir.walk import substitute
 
@@ -1933,7 +1957,7 @@ def _push_reads(sinks: tuple) -> tuple:
 
     nodes, _ = canonical_nodes(sinks)
     reads = [n for n in nodes if pushable(n)]
-    if not reads or not all(type(s) in (Finish, SampleSum, AccumWrite, Assign, TeamStore)
+    if not reads or not all((type(s) in (Finish, SampleSum, AccumWrite, Assign) or getattr(s, "elementwise_sink", False))
                             and (len(s.operands) == 1 or isinstance(s, AccumWrite)) for s in sinks):
         return sinks
     memo: dict = {}
@@ -1955,7 +1979,7 @@ def _push_reads(sinks: tuple) -> tuple:
         part = roots[at:at + len(s.operands)]
         at += len(s.operands)
         out.append(AccumWrite(s.name, part[0], part[1] if len(part) > 1 else None, s.ttype, s.policy)
-                   if isinstance(s, AccumWrite) else _resink(s, part[0]))
+                   if isinstance(s, AccumWrite) else with_value(s, part[0]))
     return tuple(out)
 
 

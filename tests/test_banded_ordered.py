@@ -7,6 +7,7 @@ float64 stages add in, and a stored cell is encoded once: the bits do not depend
 compensated one the banded sum promises. A float build keeps its ``real`` partials plane."""
 
 from __future__ import annotations
+from _specs import DEVICE
 
 import pytest
 from conftest import sidecar_of
@@ -240,12 +241,16 @@ def test_the_banded_fold_only_loops_are_unrolled_by_the_accumulator_period_and_a
     unroll that makes the renormalise gate a constant; the keyed bin fold does not, and a float rendering has none."""
     from types import SimpleNamespace
 
-    from hawk.emit.team import team_body
-    from hawk.ir.split import stages
-    from hawk.ir.team import fold_spec
+    from lowering.team_emit import team_body as _team_body
+    from hawk.emit.render import Body
+
+    def team_body(spec, active, cells):
+        return _team_body(spec, active, cells, body=Body)
+    from lowering.split import stages
+    from lowering.team import fold_spec
 
     pragma = "#pragma unroll aether::banded::BandAccum::period"
-    part = stages("total", _total("ordered", 100000).sinks, wide=True, real_bytes=8, inplace=True)[0].team
+    part = stages("total", _total("ordered", 100000).sinks, wide=True, real_bytes=8, inplace=True, spec=DEVICE)[0].team
     fold = fold_spec(SimpleNamespace(target="g", width=3), None)
     for spec, loop in ((part, "hawk_s.addTerm"), (fold, "hawk_s.addTerm")):
         text = team_body(spec, None, True).text.splitlines()

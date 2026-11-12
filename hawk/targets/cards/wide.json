@@ -1,9 +1,0 @@
-{
-  "about": "Per-device thresholds for wide per-lane values, by scalar type. SLICE_MIN: the narrowest vector a warp-form kernel holds sliced across the lanes of a warp (a multiple of 32; a narrower one stays in the lane's registers). TEAM_MIN: the shortest sliced value (a fold, or a wide output) from which wide_form \"auto\" builds a kernel as a warp per lane; a kernel asked for with wide_form=\"team\" ignores it. TC: the bytes of shared memory the output tiles of one block may take, which sets how many lanes a block serves (8, 4 or 2; below that a warp is its own block). A row {cc, device, dtype, ...} may set any of the three; a build takes the row of its scalar type whose arch is nearest by device features (FP64 rate, registers, resident threads; hawk.ir.wide_class), read through the arch the build resolved for its device targets, and a row of the build's own arch must also match the device name; a host-only build, and a scalar type with no row, use the defaults. The defaults are the values measured on a Quadro P2000 (sm_61) when the warp form was built. The rows are written by the wide sweep (python -m hawk.targets.cards.sweep) and committed with the cards of a session.",
-  "defaults": {
-    "SLICE_MIN": 128,
-    "TEAM_MIN": 128,
-    "TC": 40960
-  },
-  "rows": []
-}

@@ -25,7 +25,7 @@ compiler and flags produce the same key and slot.
 
 Every compiler subprocess runs under an address-space cap — a machine
 guard, not a codegen policy, so a pathological compile fails loudly instead
-of taking the box down (a 64x23 KAN cell once reached ptxas as one function
+of taking the box down (a 64x23 spline cell once reached ptxas as one function
 and took 25-27 GB of RSS on a 31 GB machine, with nothing bounding it).
 :data:`ADDRESS_SPACE_CAP_BYTES` is that bound, applied with ``RLIMIT_AS`` in
 the child before the compiler ``exec``s; ``$HAWK_COMPILE_ADDRESS_CAP`` overrides it
@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -52,8 +51,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..ir import HawkError
-from . import nvrtc as _nvrtc_driver
+from .._errors import HawkError
 from . import payload as _payload
 from . import toolchain as tc
 from .cache import (
@@ -158,13 +156,13 @@ def check_source_budget(name: str, source: str) -> None:
             "the budget for one build")
 
 
-def run_compiler(argv: list[str], what: str) -> subprocess.CompletedProcess:
+def run_compiler(argv: list[str], what: str, target: str = "host") -> subprocess.CompletedProcess:
     """Run one compiler command under the address-space cap and the wall-clock
     timeout; a timeout raises a :class:`HawkError` that names the limit."""
     limit = _env_number("HAWK_COMPILE_TIMEOUT", COMPILE_TIMEOUT_SECONDS) or None
     try:
         return subprocess.run(limited(argv), capture_output=True, text=True,
-                              env=tc.subprocess_env(), timeout=limit)
+                              env=tc.subprocess_env((target,)), timeout=limit)
     except subprocess.TimeoutExpired:
         raise HawkError(
             f"{what} did not finish within {limit} s ($HAWK_COMPILE_TIMEOUT, "
@@ -270,52 +268,27 @@ def _single_flight(key: str, lookup, build) -> CompileResult:
             event.set()
 
 
-_PTXAS_ENTRY = re.compile(r"Compiling entry function '([^']+)'")
-_PTXAS_FRAME = re.compile(
-    r"(\d+) bytes stack frame, (\d+) bytes spill stores, (\d+) bytes spill loads")
-_PTXAS_REGS = re.compile(r"Used (\d+) registers")
+def define_args(opts: CompileOptions) -> list[str]:
+    """``-D`` arguments of ``opts.defines``."""
+    return [f"-D{d}" for d in opts.defines]
 
 
-def parse_ptxas_info(stderr: str) -> dict:
-    """``{kernel: {regs, spill_store_B, spill_load_B, stack_B}}`` from the
-    ``ptxas info`` lines of an nvcc ``-Xptxas -v`` stderr; ``{}`` when it carries
-    none. A kernel compiled for several archs keeps the largest figures."""
-    found: dict = {}
-    entry = None
-    for line in stderr.splitlines():
-        if (m := _PTXAS_ENTRY.search(line)):
-            entry = found.setdefault(m.group(1), {})
-        elif entry is not None and (m := _PTXAS_FRAME.search(line)):
-            _grow(entry, stack_B=m.group(1), spill_store_B=m.group(2),
-                  spill_load_B=m.group(3))
-        elif entry is not None and (m := _PTXAS_REGS.search(line)):
-            _grow(entry, regs=m.group(1))
-    return found
-
-
-def _grow(entry: dict, **values: str) -> None:
-    for key, value in values.items():
-        entry[key] = max(entry.get(key, 0), int(value))
-
-
-def _argv(compiler: str, opts: CompileOptions, src: Path, out: Path,
-          dep: Path, *, cpu: bool, device_target: str = "ptx") -> list[str]:
-    defines = [f"-D{d}" for d in opts.defines]
-    if cpu:
-        flags = tc.host_flags(extra=(*defines, *opts.extra),
-                              profile=opts.host_profile or None,
-                              opt=opts.opt_level or None)
-    else:
-        flags = tc.device_flags(arch=opts.arch, target=device_target,
-                                extra=(*defines, *opts.extra),
-                                opt=opts.opt_level or None)
+def _argv(compiler: str, flags, src: Path, out: Path, dep: Path) -> list[str]:
     return [compiler, *flags, "-MD", "-MF", str(dep), str(src), "-o", str(out)]
+
+
+def key_flags(flags) -> tuple:
+    """``flags`` as the compile key reads them: a flag that carries a ``key_term`` (the variant's include directory:
+    :class:`hawk.variants.IncludeFlag`) stands for it, so the key does not depend on where that directory is. The compile
+    line itself keeps the flag."""
+    return tuple(getattr(f, "key_term", "") or f for f in flags)
 
 
 def _stable_served(flags) -> tuple[tuple, tuple]:
     """``flags`` with the pip-only served ``-I`` root replaced by the sealed
     payload's digest, and that root's path prefixes (empty when this process
     serves none)."""
+    flags = key_flags(flags)
     root = tc.pip_only_root()
     if root is None:
         return tuple(flags), ()
@@ -337,26 +310,10 @@ def _host_key_terms(flags, opts: CompileOptions) -> tuple:
     profile = tc.host_profile(opts.host_profile or None)
     level = tc.opt_level(opts.opt_level or None)
     libc = "-".join(part for part in platform.libc_ver() if part) or "unknown"
-    terms = (*flags, f"host_profile:{profile}", f"opt_level:{level}", f"libc:{libc}")
+    terms = (*key_flags(flags), f"host_profile:{profile}", f"opt_level:{level}", f"libc:{libc}")
     if profile != "portable":
         terms = (*terms, f"host_target:{tc.host_target_identity()}")
     return terms
-
-
-def _device_target(compiler: str, arch: str) -> str:
-    """``"cubin"`` or ``"ptx"`` for an AOT nvcc device compile at the
-    resolved ``arch``. A virtual ``compute_<N>`` arch (the arch policy's
-    no-GPU and above-the-toolkit answers) is always PTX
-    (:func:`hawk.compile.nvrtc.forced_target`); otherwise the device
-    artifact that loads on the driver present
-    (:func:`hawk.compile.nvrtc.select_target`), compared against nvcc's own
-    parsed version rather than NVRTC's."""
-    forced = _nvrtc_driver.forced_target(arch)
-    if forced is not None:
-        return forced
-    return _nvrtc_driver.select_target(
-        tc.nvcc_version(compiler),
-        _nvrtc_driver._probed(_nvrtc_driver.driver_cuda_version))
 
 
 def _compiler_not_runnable(argv0: str, returncode: int) -> bool:
@@ -378,13 +335,13 @@ def _allocation_failure(stderr: str) -> bool:
 
 
 def _run_and_publish(argv, label, failed_tail, tmp_artifact, artifact, tmp_dep, dep,
-                     cache_root):
+                     cache_root, target="host"):
     """Run the compiler into the private temporaries and move the artifact and
     its dependency file into place; ``(done, seconds)``, or a :class:`HawkError`
     carrying the compiler's stderr when it failed."""
     start = time.perf_counter()
     try:
-        done = run_compiler(argv, label)
+        done = run_compiler(argv, label) if target == "host" else run_compiler(argv, label, target)
         if done.returncode == 0:
             publish_atomic(tmp_artifact, artifact)
             publish_atomic(tmp_dep, dep)
@@ -420,51 +377,46 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
     miss that compiles into the key's own slot and rewrites its validity
     record from the compiler-reported closure.
 
-    Two forks: a device-compiled row forks on
-    :func:`~hawk.compile.toolchain.device_compiler_kind` — ``"nvrtc"`` goes
-    to :func:`_compile_nvrtc_source`. A host-compiled row forks on
-    :func:`_host_uses_sealed_payload` — a host compile against the shipped
-    sealed payload goes to :func:`_compile_host_sealed`, serving the payload
-    into a private directory for the compile's lifetime instead of pointing
-    ``-I`` at a real include root.
+    The row's backend does the compile (:meth:`hawk.backends.Backend.compile`):
+    it picks its toolchain and calls :func:`compile_cached`, or one of the
+    sealed-payload and NVRTC drivers below.
     """
-    from ..targets import CPU, GPU, TARGETS
+    from ..registry import backend_ids, traits
+    from ..targets import TARGETS
 
     row = TARGETS.get(opts.target)
-    if row is None or row.compile is None:
-        built = tuple(t for t, r in TARGETS.items() if r.compile is not None)
+    if row is None or not row.builds:
+        built = tuple(t for t in backend_ids(default=True) if traits(t).get("builds", True))
         raise HawkError(f"unknown target {opts.target!r}; built are {built}")
-    cpu, gpu = row.compile == CPU, row.compile == GPU
-    if cpu and _host_uses_sealed_payload():
-        return _compile_host_sealed(source, name, opts, row)
-    if gpu and tc.device_compiler_kind() == "nvrtc":
-        return _compile_nvrtc_source(source, name, opts, row)
-    compiler = tc.host_compiler() if cpu else tc.device_compiler()
+    return row.compile(source, name, opts)
+
+
+def compile_cached(source: str, name: str, opts: CompileOptions, row, *, compiler: str,
+                   argv_flags, pick_target, terms, parse) -> CompileResult:
+    """The cached compile of ``source`` with ``compiler`` for ``row``: ``pick_target(compiler)`` names the
+    artifact kind, ``argv_flags(opts, device_target)`` the compiler's flags, ``terms(flags, device_target)`` the key's flag terms, ``parse(stderr)`` the resource
+    figures the compiler reports."""
     identity = tc.compiler_identity(compiler)
     art_ext, src_ext = row.artifact, row.source
     cache = Cache(opts.cache_dir)
 
     # The device artifact that actually loads on the driver present; "ptx"
     # for every host compile, which carries no such choice.
-    device_target = (_device_target(compiler, tc.resolve_arch(opts.arch))
-                     if gpu else "ptx")
+    device_target = pick_target(compiler)
 
     # The key is computed from a nominal compile's flags; -o/-MF are
     # excluded (they say where output goes, not what it is). The chosen
     # target is folded in explicitly, beside the flags it already changes
     # (-ptx vs -cubin): the same source to two targets must never share a
     # slot.
-    probe = _argv(compiler, opts, Path("<src>"), Path("<out>"), Path("<dep>"),
-                  cpu=cpu, device_target=device_target)
+    probe = _argv(compiler, argv_flags(opts, device_target), Path("<src>"), Path("<out>"), Path("<dep>"))
     # A device key also carries nvcc's host compiler (-ccbin): it compiles
     # the TU's host side and its version gates what nvcc accepts.
     # A pip-only compile serves the sealed payload into a per-process
     # directory (tc.pip_only_root): its path differs in every process, so the
     # key names the payload by digest and the closure leaves those headers out.
     flags, served = _stable_served(probe[1:-4])
-    key_terms = (_host_key_terms(flags, opts) if cpu
-                else (*flags, f"device_target:{device_target}",
-                      tc.device_host_compiler_identity()))
+    key_terms = terms(flags, device_target)
     key = lookup_key(source, opts.target, opts.mode, identity, key_terms)
     slot = cache.slot(key)
     artifact, src_path, dep = (slot / f"{name}{art_ext}", slot / f"{name}{src_ext}",
@@ -501,13 +453,12 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
         # reader of this slot sees the old artifact or the new one, never a
         # partial write.
         tmp_artifact, tmp_dep = tmp_sibling(artifact), tmp_sibling(dep)
-        argv = _argv(compiler, opts, src_path, tmp_artifact, tmp_dep,
-                     cpu=cpu, device_target=device_target)
+        argv = _argv(compiler, argv_flags(opts, device_target), src_path, tmp_artifact, tmp_dep)
         done, seconds = _run_and_publish(
             argv, f"{opts.target} compile of {name!r}", "",
-            tmp_artifact, artifact, tmp_dep, dep, cache.root)
+            tmp_artifact, artifact, tmp_dep, dep, cache.root, opts.target)
         closure = tuple(p for p in closure_of(dep) if not p.startswith(served))
-        ptxas = parse_ptxas_info(done.stderr) if gpu else {}
+        ptxas = parse(done.stderr)
         cache.store(key, artifact=artifact, closure=closure,
                     meta={"target": opts.target, "mode": opts.mode,
                           "compiler": identity, "flags": argv[1:-4],
@@ -541,96 +492,6 @@ def _memo_still_valid(artifact: Path, closure,
                 and closure[0][1] == current_payload_digest
                 and closure_unchanged(closure[1:]))
     return closure_unchanged(closure)
-
-
-def _compile_nvrtc_source(source: str, name: str, opts: CompileOptions,
-                          row) -> CompileResult:
-    """The NVRTC device compile, parallel to :func:`compile_source`'s body
-    but with an NVRTC-shaped key and validity record: the compiler term is
-    :func:`hawk.compile.nvrtc.identity`, the flags term is
-    :func:`hawk.compile.nvrtc.options` (no ``-I <aether root>``), and the
-    closure is the sealed payload's own digest rather than a
-    compiler-reported file list — the payload is immutable and known before
-    the compile runs, so a changed header is already subsumed by "a
-    different payload is a different key". The target is picked the same
-    way :func:`hawk.compile.nvrtc.device` does
-    (:func:`~hawk.compile.nvrtc.select_target`), and is also folded into the
-    key, for the same never-share-a-slot reason. ``opts.defines`` and
-    ``opts.extra`` are passed to NVRTC and are terms of the key, as they are
-    for nvcc: a build with a define and one without never share a slot.
-
-    ``opts.opt_level`` is NOT read here: NVRTC always optimises and takes no
-    ``-O`` option at all (:func:`hawk.compile.nvrtc.options` carries none),
-    so the level has nothing to change and folding it into this key would
-    only fragment the cache for free.
-    """
-    arch = tc.resolve_arch(opts.arch)
-    art_ext, src_ext = row.artifact, row.source
-    cache = Cache(opts.cache_dir)
-
-    payload = _payload.current_payload()
-    identity = _nvrtc_driver.identity()
-    target = _nvrtc_driver.forced_target(arch) or _nvrtc_driver.select_target(
-        _nvrtc_driver._probed(_nvrtc_driver.nvrtc_version),
-        _nvrtc_driver._probed(_nvrtc_driver.driver_cuda_version))
-    # the build's defines and extra flags reach NVRTC exactly as they reach
-    # nvcc (:func:`_argv`), and through ``device_opts`` the key as well
-    extra = (*(f"-D{d}" for d in opts.defines), *opts.extra)
-    device_opts = _nvrtc_driver.options(arch, virtual_arch=(target == "ptx"),
-                                        extra=extra)
-    key = lookup_key(source, opts.target, opts.mode, identity,
-                      (*device_opts, f"device_target:{target}",
-                       f"payload:{payload.digest}", "ptxas-info:v1"))
-    slot = cache.slot(key)
-    artifact = slot / f"{name}{art_ext}"
-    src_path = slot / f"{name}{src_ext}"       # never written (no file)
-    argv = tuple(device_opts)                  # no compiler subprocess argv exists
-
-    payload_closure = ((_PAYLOAD_MEMO_TAG, payload.digest),)
-
-    def lookup():
-        memo = artifact_memo_get(key)
-        if memo is not None and _memo_still_valid(artifact, memo, payload.digest):
-            cache.note(True)
-            return CompileResult(artifact, src_path, key, True, argv,
-                                 closure=payload_closure,
-                                 ptxas=cache.record(key).get("ptxas", {}))
-
-        if cache.check(key, payload_digest=payload.digest):
-            cache.note(True)
-            artifact_memo_put(key, payload_closure)
-            return CompileResult(artifact, src_path, key, True, argv,
-                                 closure=payload_closure,
-                                 ptxas=cache.record(key).get("ptxas", {}))
-        return None
-
-    def build():
-        cache.note(False)
-        slot.mkdir(parents=True, exist_ok=True)
-        start = time.perf_counter()
-        compile_fn = (_nvrtc_driver.compile_cubin if target == "cubin"
-                     else _nvrtc_driver.compile_ptx)
-        result = compile_fn(source, name, arch, headers=payload.device_headers,
-                            extra=extra)
-        seconds = time.perf_counter() - start
-        if not result.ok:
-            raise HawkError(
-                f"cuda compile of {name!r} failed under NVRTC (target={target}, "
-                f"rc != NVRTC_SUCCESS).\n$ nvrtc {' '.join(argv)}\n{result.log[:4000]}"
-            )
-        write_atomic(artifact, result.ptx)
-        # registers and stack frame read off the CUBIN itself; spills are not knowable (None)
-        ptxas = _nvrtc_driver.cubin_resources(result.ptx) if target == "cubin" else {}
-        cache.store(key, artifact=artifact, closure=(),
-                    meta={"target": opts.target, "mode": opts.mode, "compiler": identity,
-                          "flags": list(argv), "seconds": seconds, "name": name,
-                          "payload_digest": payload.digest, "device_target": target,
-                          "ptxas": ptxas})
-        artifact_memo_put(key, payload_closure)
-        return CompileResult(artifact, src_path, key, False, argv, seconds,
-                             closure=payload_closure, ptxas=ptxas)
-
-    return _single_flight(key, lookup, build)
 
 
 def _host_uses_sealed_payload() -> bool:

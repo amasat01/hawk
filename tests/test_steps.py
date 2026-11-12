@@ -30,6 +30,7 @@ Rows:
 """
 
 from __future__ import annotations
+from _specs import HOST, for_targets
 
 import math
 
@@ -631,12 +632,12 @@ def test_the_auto_entry_branches_once_on_the_word_between_the_step_and_the_loop(
     word-1 side is the single step's own body text (no loop), the other side
     holds the fused loop, each side opening with its own device marker; a
     fixed-K TU and the single step's TU carry no branch."""
-    from hawk.artifact.bundle import _sources as built_sources
+    from hawk.artifact.bundle import _emit, _options, lower
     from hawk.emit import FLOAT64
 
     auto = hawk.steps(osc, "auto")
-    texts = built_sources(auto, name=auto.name, smode=FLOAT64, kind=auto.kind,
-                          targets=("host", "cuda"), layout_sizes_override=None)
+    targets = ("host", "cuda")
+    texts = _emit(lower(auto, auto.name, FLOAT64, auto.kind, targets, for_targets(targets)), targets, _options(device_arch=""))
     plain = {s.target: s for s in _sources(osc)}
     for target, src in texts.items():
         head, _, rest = src.text.partition("== 1) {")

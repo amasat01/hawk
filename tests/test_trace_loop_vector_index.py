@@ -4,7 +4,7 @@
 """``v[k]`` and ``v[k] = …`` at a lowered loop's own index.
 
 Lowering a bounded ``for`` to a real loop makes the author's ``k`` a
-symbolic :class:`~hawk.ir.loop_nodes.LoopIndex` instead of a Python integer, so
+symbolic :class:`~hawk.ir.nodes.LoopIndex` instead of a Python integer, so
 every way of touching a rank-1 value one component at a time needs its own
 spelling: ``v[k]`` (a static-integer-component read only), ``v[k] = …`` (not
 a form on its own), and a comprehension over a symbolic index (banned
@@ -50,6 +50,7 @@ Three mechanisms, each with its own refusal:
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import pathlib
 
@@ -63,7 +64,8 @@ import hawk.math as m
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
 from hawk.emit import FLOAT64, render_body, render_source
-from hawk.ir import HawkError, canonical
+from hawk.ir import canonical
+from hawk import HawkError
 from hawk.targets import TARGETS
 
 #: Classical RK4 (Kutta 1901), the stage and combine weights
@@ -142,7 +144,7 @@ def _card_free_select_weight(monkeypatch):
     """The emitted text must not depend on the device the tests run on."""
     from hawk.emit import rtstore
 
-    monkeypatch.setattr(rtstore, "_select_weight", lambda dtype: 1.0)
+    monkeypatch.setattr(rtstore, "_select_weight", lambda dtype, spec: 1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -152,7 +154,7 @@ def test_a_read_at_the_loop_index_of_an_input_plane_reads_the_view_in_place():
     """A runtime read of a read-only INPUT plane is aether's ``at()`` on the
     plane's own sample proxy, at the loop's own index: no ``Item`` of the row
     is built for it (a wide row would be one register per element)."""
-    text = render_body(rollout_read.sinks, rollout_read.walk).text
+    text = render_body(rollout_read.sinks, rollout_read.walk, spec=HOST).text
     index = [ln for ln in text.splitlines() if "for (Int hawk_k" in ln]
     assert len(index) == 1, text
     variable = index[0].split("Int ")[1].split(" ")[0]
@@ -164,7 +166,7 @@ def test_a_read_at_the_loop_index_of_an_input_plane_reads_the_view_in_place():
 def test_a_runtime_read_of_a_computed_vector_keeps_the_item():
     """What ``at()`` does not apply to keeps aether's ``Item::operator()``: a vector that is not element-wise
     (a cross product) has no plane to read from and no per-element form."""
-    text = render_body(*_computed_runtime_read()).text
+    text = render_body(*_computed_runtime_read(), spec=HOST).text
     assert "const aether::Item<Real, 3> hawk_it" in text, text
     assert ".at(" not in text, text
 
@@ -185,7 +187,7 @@ def test_a_write_at_the_loop_index_is_a_carried_Item_the_body_reassigns():
     """The WRITE half's emission. The carried vector is an ``aether::Item``
     declared before the loop; each iteration writes the next value into it
     (the loop's own index is uniform over the warp, so the indexed write is cheap). The node produces a new value and leaves its operand alone."""
-    text = render_body(rollout_write.sinks, rollout_write.walk).text
+    text = render_body(rollout_write.sinks, rollout_write.walk, spec=HOST).text
     assert "aether::Item<Real, 3> hawk_v" in text, text
     # the index is the loop's own, the same for every lane of a warp: one indexed
     # write into the carried local

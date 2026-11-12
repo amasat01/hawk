@@ -116,6 +116,7 @@ def test_failed_compile_releases_every_waiter(tmp_path, compiles):
 
 
 @ft.register_ft_row("FT-3-HAWK-CAP-TRAMPOLINE")
+@pytest.mark.needs_toolchain("linux")
 def test_cap_is_applied_through_the_trampoline_concurrently(monkeypatch):
     cap = 3 * 1024 ** 3
     monkeypatch.setenv("HAWK_COMPILE_ADDRESS_CAP", str(cap))

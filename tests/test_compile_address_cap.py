@@ -4,7 +4,7 @@
 """Every compiler subprocess runs under an address-space cap — a MACHINE
 guard, checked by making a child actually hit it.
 
-WHY THE GUARD EXISTS AND WHAT IT IS NOT. A real KAN cell with 64 edges and
+WHY THE GUARD EXISTS AND WHAT IT IS NOT. A real spline cell with 64 edges and
 23 basis functions reached ptxas as ONE function and took 25-27 GB of RSS on
 a 31 GB box. The answer to that SIZE problem is loop lowering; this file is
 about the other half: whatever HAWK emits, a pathological compile must fail
@@ -76,6 +76,7 @@ def _child(cap: str | None) -> int:
             os.environ["HAWK_COMPILE_ADDRESS_CAP"] = held
 
 
+@pytest.mark.needs_toolchain("linux")
 def test_a_child_under_the_cap_cannot_allocate_past_it():
     """The mechanism, with its own negative control beside it. The SAME child,
     the SAME allocation: it fails under the cap and succeeds without one, so a
@@ -113,6 +114,7 @@ def test_the_cap_is_read_from_the_environment_and_validated():
             os.environ["HAWK_COMPILE_ADDRESS_CAP"] = held
 
 
+@pytest.mark.needs_toolchain("linux")
 def test_the_cap_reaches_the_real_driver(tmp_path):
     """The INJECTION half: not that a flag is set, but that a real
     :func:`hawk.compile.drivers.compile_source` inherits it. Under a cap no
@@ -146,6 +148,7 @@ def test_the_cap_reaches_the_real_driver(tmp_path):
             os.environ["HAWK_COMPILE_ADDRESS_CAP"] = held
 
 
+@pytest.mark.needs_toolchain("linux")
 def test_the_cap_hint_reaches_the_sealed_payload_path(tmp_path, monkeypatch):
     """The sealed-payload path (what a wheel install uses: aether-dsc, no
     source headers) carries the SAME address-space-cap hint in its failure

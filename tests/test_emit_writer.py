@@ -11,6 +11,7 @@ changes the body), while the aether writer's own text stays what it was.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import re
 
@@ -51,14 +52,14 @@ class _Probe(AetherWriter):
 
 def test_render_body_defaults_to_the_aether_writer():
     k = K.chain6
-    assert render_body(k.sinks, k.walk).text == render_body(
-        k.sinks, k.walk, writer=AETHER).text
+    assert render_body(k.sinks, k.walk, spec=HOST).text == render_body(
+        k.sinks, k.walk, writer=AETHER, spec=HOST).text
 
 
 def test_a_writer_that_spells_declarations_differently_changes_the_body():
     k = K.chain6
-    plain = render_body(k.sinks, k.walk).text
-    probed = render_body(k.sinks, k.walk, writer=_Probe()).text
+    plain = render_body(k.sinks, k.walk, spec=HOST).text
+    probed = render_body(k.sinks, k.walk, writer=_Probe(), spec=HOST).text
     assert plain != probed
     assert "const auto " in plain and "const auto " not in probed
     assert re.sub(r"const (auto|aether::Item<[^>]*>) ", "auto ", plain) == probed
@@ -94,7 +95,7 @@ def test_a_table_read_twice_is_not_loaded_at_the_sample_index():
     """A ``lookup`` plane is read BY NAME at computed indices (``_at``); naming
     the leaf for its fan-out would emit a dead ``lut_table[i].eval()`` at the
     sample index, an out-of-bounds read on a table shorter than the batch."""
-    text = render_body(_two_reads.sinks, _two_reads.walk).text
+    text = render_body(_two_reads.sinks, _two_reads.walk, spec=HOST).text
     assert "lut_table_i" not in text
     assert text.count("lut_table[aether::SampleIndex::make(") == 2
 
@@ -108,7 +109,7 @@ def test_a_rank1_table_read_once_is_not_loaded_at_the_sample_index():
     """A rank>=1 leaf is named for correctness, but a ``lookup`` plane is read
     by name at its computed index (``_at``), so even ONE read of a
     ``Table[Vector[3]]`` emits no dead ``lut_table_i = lut_table[i].get()``."""
-    text = render_body(_vector_read_once.sinks, _vector_read_once.walk).text
+    text = render_body(_vector_read_once.sinks, _vector_read_once.walk, spec=HOST).text
     assert "lut_table_i" not in text
     assert "lut_table[i]" not in text
     assert text.count("lut_table[aether::SampleIndex::make(") == 1

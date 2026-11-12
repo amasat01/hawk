@@ -37,7 +37,6 @@ from dataclasses import dataclass
 from ..ir import (
     Const,
     Dispatch,
-    HawkError,
     Leaf,
     Loop,
     LoopCarry,
@@ -51,14 +50,15 @@ from ..ir import (
     TapeRead,
     build_loop,
 )
+from .._errors import HawkError
 from ..ir import make as _mk
 from ..ir.nodes import AccumWrite, At, ReduceSamples, WideWrite
 from ..ir.slotwise import slotwise
-from ..ir.walk import _rebuild
+from ..ir.walk import rebuild
 from ..types import INT_PLANE_DTYPES, TensorType
 from .jump import _F64, _I32, _ORDERED, SEED, JumpPlan
 from .loops import _TERMINALS, _post_order
-from .rules import zero_like
+from raptor.rules.core import zero_like
 
 #: The counter of that draw: a stream a kernel's own ``random_uniform`` calls
 #: do not use.
@@ -178,7 +178,7 @@ def _alt_pass(order: Sequence[Node], mapping: dict, wrap: dict) -> dict:
             continue
         new = [memo.get(id(c), c) for c in node.operands]
         out = (node if all(a is b for a, b in zip(new, node.operands))
-               else _rebuild(node, new))
+               else rebuild(node, new))
         if id(node) in wrap:
             out = wrap[id(node)](out)
         if out is not node:
@@ -399,7 +399,7 @@ class AltPath:
                 f"jump= in kernel {self.plan.kernel!r}: a read across samples "
                 "downstream of a switching comparison cannot run on the "
                 "alternate path of one sample")
-        out = _rebuild(node, new) if changed else node
+        out = rebuild(node, new) if changed else node
         if any(node is s for s in self.sites):
             hit, self.cum = self._fork_here(self.cum, self.rate(node))
             g = self.weight(node, t)

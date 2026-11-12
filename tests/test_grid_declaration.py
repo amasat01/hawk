@@ -11,6 +11,7 @@ or shadowing label, a ``group`` that names nothing) saying what to write instead
 ``@hawk.kernel(group=...)`` stores the compaction group, a lane count."""
 
 from __future__ import annotations
+from _specs import HOST
 
 import hashlib
 
@@ -280,7 +281,7 @@ def test_reading_an_input_keeps_a_comparison_in_the_order_it_was_written():
     def k(a: Scalar, b: Scalar) -> Scalar:
         return hawk.math.where(a >= b, a, b)
 
-    text = render_body(k.sinks, k.walk).text
+    text = render_body(k.sinks, k.walk, spec=HOST).text
     assert ">=" in text and "<=" not in text
 
 

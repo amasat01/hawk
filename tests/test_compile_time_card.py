@@ -34,7 +34,8 @@ from hawk.compile import (
     host_compiler,
     host_flags,
 )
-from hawk.compile.toolchain import resolve_arch, device_flags, subprocess_env
+from hawk.compile.toolchain import subprocess_env
+from hawk_cuda.toolchain import resolve_arch, device_flags
 from hawk.emit import FLOAT64, render_source
 from hawk.targets import TARGETS
 
@@ -140,6 +141,7 @@ def test_the_compile_time_card_is_written(tmp_path):
 
 
 @pytest.mark.repo_local  # compiles the eagle repository's fixture TU
+@pytest.mark.needs_toolchain("nvcc")
 def test_the_card_reports_a_phase_split_for_every_row():
     """A card whose rows carry only a wall time cannot answer either deferred
     question, so the split is part of what the row observes."""

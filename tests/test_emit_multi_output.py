@@ -10,6 +10,7 @@ live to its end.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import linecache
 import re
@@ -49,7 +50,7 @@ def three_outputs():
 
 
 def _body(kernel) -> str:
-    return render_body(kernel.sinks, kernel.walk).text
+    return render_body(kernel.sinks, kernel.walk, spec=HOST).text
 
 
 def test_item_temps_linear_compile():

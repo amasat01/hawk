@@ -5,7 +5,7 @@
 
 import pytest
 
-from hawk.embedded import spelling as S
+from hawk_c import spelling as S
 from hawk.emit import FLOAT32, FLOAT64
 from hawk.ir import HawkError
 from hawk.types import TensorType

@@ -28,6 +28,7 @@ Rows:
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import _deploy as L
 import numpy as np
@@ -116,7 +117,7 @@ def test_a_derived_kernel_drops_the_finish(transform):
     assert ("lookup", "finished_count") not in walk.arg_spec
     meta = sidecar_meta("d", walk, fmt="ptx", scalar_type="float64")
     assert "finish" not in meta and meta["terminated_readonly"] is True
-    assert "finish_count" not in render_body(sinks, walk).text
+    assert "finish_count" not in render_body(sinks, walk, spec=HOST).text
 
 
 def test_a_non_finishing_kernel_keeps_its_readonly_sidecar():
@@ -193,7 +194,7 @@ def test_a_finish_inside_a_for_refuses():
 # -- structure.
 # --------------------------------------------------------------------------- #
 def test_the_epilogue_is_the_last_text_of_the_guarded_scope():
-    lines = render_body(osc_finish.sinks, osc_finish.walk).text.splitlines()
+    lines = render_body(osc_finish.sinks, osc_finish.walk, spec=HOST).text.splitlines()
     assert lines[0].strip() == "if (!trm_terminated[i].eval()) {"
     assert lines[-1].strip() == "}"
     assert lines[-2].strip() == EPILOGUE
@@ -203,7 +204,7 @@ def test_the_epilogue_is_the_last_text_of_the_guarded_scope():
 
 
 def test_a_one_sided_finish_folds_to_a_select():
-    text = render_body(branch_finish.sinks, branch_finish.walk).text
+    text = render_body(branch_finish.sinks, branch_finish.walk, spec=HOST).text
     assert "? " in text and ": false)" in text, text
 
 

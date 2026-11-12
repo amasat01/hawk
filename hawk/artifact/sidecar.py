@@ -63,7 +63,7 @@ from __future__ import annotations
 
 from .. import _contracts
 from ..compile.toolchain import _strict_aether_include, _strict_eagle_include
-from ..ir import HawkError
+from .._errors import HawkError
 from ..ir.segment import class_name, mix_name, stale_name
 from ..targets import ENTRY_KINDS
 from ..types import INT_PLANE_DTYPES
@@ -133,9 +133,9 @@ def _launch(lane_space, group: int, box=None, block: int | None = None,
     """The ``launch.lane_space`` block: the launch shape (row-major, the last axis
     fastest, only the first extent may be ``None``: known at run time) and the
     compaction ``group``, a lane count. With a thread ``box``
-    (:class:`hawk.emit.box.Box`), ``launch.box`` = ``{axis, T, stride}``: a
+    (:class:`simt.box.Box`), ``launch.box`` = ``{axis, T, stride}``: a
     launch of ``n`` lanes runs ``ceil(n / (T * stride)) * stride`` threads
-    (:func:`hawk.emit.box.threads`), and ``base``/``count`` count threads.
+    (:func:`simt.box.threads`), and ``base``/``count`` count threads.
     ``block`` is the exact threads per block an emit that fixed one (a staged
     tile) needs; a launch uses it verbatim. ``index_set`` is the record of a kernel
     declaring ``lanes=IndexSet()``: ``launch.index_set`` = ``{"width": bits}`` (the map word, the host
@@ -147,7 +147,7 @@ def _launch(lane_space, group: int, box=None, block: int | None = None,
     depots the PTX declares, a ceiling), ``launch.local_limit`` the device's per-thread limit. A launch of
     ``n`` threads needs about ``n * local_bytes`` of device memory beside the planes. No threads-per-block
     cap follows from it (a build asking for ``launch_bounds`` records its block in ``launch.block``).
-    ``wide`` is the placement of the kernel's wide values (:mod:`hawk.ir.wide`): ``launch.wide`` =
+    ``wide`` is the placement of the kernel's wide values (:mod:`simt.wide`): ``launch.wide`` =
     ``{plane: {form, plane, layout, width}}``, one record per plane a wide value lives in, and ``class``, the device feature class whose thresholds placed them (a reader that does not know
     the key ignores it; a scratch plane is also in the sidecar's ``team_planes``, which sizes it). Absent when no value is placed."""
     axes = [{"label": label, "extent": extent} for label, extent in lane_space]

@@ -8,6 +8,7 @@ interpreter twin against the unrolled layer and against finite differences, the
 emitted text, and the compiled host kernel."""
 
 from __future__ import annotations
+from _specs import HOST
 
 import _spline_forms as S
 import numpy as np
@@ -38,8 +39,8 @@ def _env(n, form, rng):
 
 
 def _layers(n, form):
-    rolled = S.kan_rolled(form, n)
-    unrolled = S.kan_layer("local", n) if form == "plain" else S.kan_switch(n)
+    rolled = S.spline_rolled(form, n)
+    unrolled = S.spline_layer("local", n) if form == "plain" else S.spline_switch(n)
     return rolled, unrolled
 
 
@@ -130,8 +131,8 @@ def test_a_recurrence_whose_dispatch_reads_the_carry_matches_finite_differences(
 
 @pytest.mark.parametrize("form", ["plain", "switch"])
 def test_the_rolled_vjp_commits_inside_the_loop_and_holds_no_row(form):
-    sinks = vjp(S.kan_rolled(form, 8), wrt=WRT)
-    lines = render_body(tuple(sinks), canonical(tuple(sinks))).text.splitlines()
+    sinks = vjp(S.spline_rolled(form, 8), wrt=WRT)
+    lines = render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST).text.splitlines()
     text = "\n".join(lines)
     # no carried or copied row (the dead zero base the loop boundary names is
     # dropped by the compiler: an open item)
@@ -169,7 +170,7 @@ def test_the_rolled_switch_vjp_host_kernel_equals_the_twin(host):
     lane agrees with the interpreter to host contraction, a terminated sample's
     planes are untouched, and a slot no edge reads is zeroed by the prologue."""
     n, count = 8, 64
-    rolled = S.kan_rolled("switch", n)
+    rolled = S.spline_rolled("switch", n)
     sinks = vjp(rolled, wrt=WRT)
     art = host("rolled_switch_vjp", rolled, sinks)
     rng = np.random.default_rng(5)
@@ -227,7 +228,7 @@ def test_two_iterations_hitting_one_slot_accumulate(host):
 
 def test_second_order_through_a_rolled_vjp_refuses_by_name():
     with pytest.raises(HawkError, match="once per iteration"):
-        jvp(vjp(S.kan_rolled("plain", 4), wrt=WRT), wrt=WRT)
+        jvp(vjp(S.spline_rolled("plain", 4), wrt=WRT), wrt=WRT)
 
 
 # --------------------------------------------------------------------------

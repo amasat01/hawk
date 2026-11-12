@@ -10,6 +10,7 @@
   without floating-point contraction), and it passes the strict C checks."""
 
 from __future__ import annotations
+from _specs import HOST
 
 import pathlib
 
@@ -20,7 +21,7 @@ import pytest
 from conftest import sidecar_of
 from test_ir_rays import ball, box, tri
 
-import hawk.embedded as embedded
+import hawk_c as embedded
 from hawk.artifact import build_bundle
 from hawk.emit import FLOAT64, render_body, render_source
 from hawk.ir import canonical
@@ -34,7 +35,7 @@ N = 64                                  # the scene helper's size
 @pytest.mark.parametrize("name", list(KERNELS))
 def test_one_geometry_call_per_node_held_once(name):
     k = KERNELS[name]
-    text = render_body(k.sinks, canonical(k.sinks)).text
+    text = render_body(k.sinks, canonical(k.sinks), spec=HOST).text
     assert text.count(f"aether::geometry::{CALLS[name]}<Real>(") == 1
     assert text.count(".v[") == 4
 

@@ -391,7 +391,7 @@ def test_a_switch_that_only_reaches_the_outputs_affinely_keeps_its_rule():
             wrt = ("t",) if "t" in k.planes else None
             side = derive(k, wrt=wrt).jump
             assert side["rule"] != "altpath_v1" and "engaged" not in side, k.name
-    assert jvp(t.k_kan, wrt=("g",)).jump["rule"] == "altpath_v1"
+    assert jvp(t.k_spline, wrt=("g",)).jump["rule"] == "altpath_v1"
 
 
 @kernel(jump=H)

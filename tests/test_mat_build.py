@@ -24,7 +24,7 @@ import hawk.math as m
 from hawk import Matrix, Mutable, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk.embedded import export
+from hawk_c import export
 from hawk.ir import HawkError
 
 LANES = 6
@@ -171,6 +171,7 @@ def test_a_22_by_22_newton_matches_numpy(build):
 
 # --- the C unit and the device source ----------------------------------------------
 
+@pytest.mark.needs_toolchain("cppcheck")
 @pytest.mark.parametrize("n", [3, 22])
 def test_the_c_unit_computes_the_hosts_bits_and_passes_the_checks(tmp_path, build, n):
     kernel = assembled_solve(n)

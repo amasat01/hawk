@@ -22,6 +22,7 @@ by hand (``m.where`` on the condition, then the bare break). Rows:
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import linecache
 import math
@@ -39,7 +40,7 @@ from hawk import Mutable, Scalar, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.embedded import EmbeddedProfile, check, export, refuse_audit_hits, render
+from hawk_c import EmbeddedProfile, check, export, refuse_audit_hits, render
 from hawk.emit import FLOAT64, render_body, render_source
 from hawk.ir import HawkError
 from hawk.targets import TARGETS
@@ -407,7 +408,7 @@ def test_a_kernel_with_only_bare_exits_is_unchanged_by_the_lowering():
                 break
         y = s
 
-    assert "brk" not in render_body(bare.sinks, bare.walk).text
+    assert "brk" not in render_body(bare.sinks, bare.walk, spec=HOST).text
 
 
 # B6 ------------------------------------------------------------------------ #

@@ -263,9 +263,9 @@ def test_a_kernel_like_object_with_no_kind_is_treated_as_guard_free():
 # --------------------------------------------------------------------------- #
 # -- regression (post-#30): a reverse loop's OWN scatter commit (the
 # -- gather/scatter transpose of a `.at()` read inside a lowered `for`) is a
-# -- Loop, not a value-bearing Sink -- a downstream package's KAN edge
-# -- kernels are built on exactly this shape (_kan.py's own docstring:
-# -- copied from a downstream package's KAN edge cell). 609 AttributeErrors
+# -- Loop, not a value-bearing Sink -- a downstream package's spline edge
+# -- kernels are built on exactly this shape (_spline.py's own docstring:
+# -- copied from a downstream package's spline edge cell). 609 AttributeErrors
 # -- on 'Loop' object has no attribute 'value' is what an un-recursing
 # -- masker does to it.
 # --------------------------------------------------------------------------- #

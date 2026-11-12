@@ -24,7 +24,8 @@ import pytest
 
 from hawk import Scalar, raw_device
 from hawk.diff import vjp
-from hawk.ir import Assign, HawkError, Leaf, Op, canonical
+from hawk.ir import Assign, Leaf, Op, canonical
+from hawk import HawkError
 from hawk.ir.nodes import RAW_KIND
 from hawk.types import TensorType
 

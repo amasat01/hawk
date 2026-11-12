@@ -30,7 +30,7 @@ import pytest
 
 import hawk
 from hawk import Mutable, Scalar
-from hawk.embedded import render
+from hawk_c import render
 from hawk.emit import FLOAT32, FLOAT64
 from hawk.ir import HawkError, canonical
 
@@ -236,7 +236,7 @@ def test_the_branch_mix_plane_is_k_cells():
 def test_a_clamped_tape_read_is_refused_by_name(monkeypatch):
     """No fixture produces one today: the renderer spells a tape subscript
     itself, so a clamped tape read could only render raw."""
-    from hawk.embedded import verify
+    from hawk_c import verify
 
     real = verify.ir_checks
 
@@ -263,7 +263,7 @@ def test_per_component_commits_stay_in_the_aether_writer(tmp_path):
     unit passes every check (render, audit, strict cc, cppcheck)."""
     import test_math_parity as MP
 
-    from hawk.embedded import export
+    from hawk_c import export
 
     for mode in (FLOAT64, FLOAT32):
         body = render(MP.unary_all, mode=mode.id).body
@@ -280,8 +280,8 @@ def test_a_runtime_index_accumulate_in_a_loop_is_refused_by_name():
 
     from hawk.diff import vjp
 
-    k = _derived("kan_vjp", vjp(SF.kan_rolled("plain", 8), wrt=RR.WRT))
+    k = _derived("spline_vjp", vjp(SF.spline_rolled("plain", 8), wrt=RR.WRT))
     with pytest.raises(HawkError) as err:
         render(k)
     text = str(err.value)
-    assert "'kan_vjp'" in text and "the C target" in text and "in place" in text
+    assert "'spline_vjp'" in text and "the C target" in text and "in place" in text

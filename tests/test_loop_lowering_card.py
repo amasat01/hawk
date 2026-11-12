@@ -4,7 +4,7 @@
 """CARD_LOOP_LOWERING — what lowering a bounded ``for`` costs to COMPILE,
 written by the run.
 
-THE NUMBER THIS CARD EXISTS FOR. A 64-edge x 23-basis KAN cell, fully
+THE NUMBER THIS CARD EXISTS FOR. A 64-edge x 23-basis spline cell, fully
 unrolled by executing the loop at trace time, reached ptxas as ONE function
 and took 25-27 GB of RSS on a 31 GB box — it did not assemble at all under a
 22 GiB cap. Lowering that body to a real ``for`` instead means the SAME
@@ -51,7 +51,7 @@ import numpy as np
 import pytest
 from _cards import card_path
 from _eval import evaluate
-from _kan import shallow_kan_cell as kan_cell
+from _spline import shallow_spline_cell as spline_cell
 
 import hawk
 import hawk.math as m
@@ -65,7 +65,8 @@ from hawk.compile import (
     host_flags,
 )
 from hawk.compile.drivers import ADDRESS_SPACE_CAP_BYTES
-from hawk.compile.toolchain import resolve_arch, device_flags, subprocess_env
+from hawk.compile.toolchain import subprocess_env
+from hawk_cuda.toolchain import resolve_arch, device_flags
 from hawk.emit import FLOAT64, render_source
 from hawk.ir import Loop
 from hawk.targets import TARGETS
@@ -82,16 +83,16 @@ A2_BOUNDS = (4, 16, 64)
 #: 12 GiB ``hawk.compile.drivers`` installs with ``RLIMIT_AS``.
 ULIMIT_KIB = 12_000_000
 
-#: The KAN-scale end-to-end point: a ``kan_edge_kernel_loop`` shape, with
+#: The spline-scale end-to-end point: a ``spline_edge_kernel_loop`` shape, with
 #: the DEEP Cox-de Boor body the ``GRID`` family above deliberately does
 #: not have.
-KAN_SCALE = (64, 20, 3)
+SPLINE_SCALE = (64, 20, 3)
 
-#: The cap the KAN-scale child runs under, in KiB (6 GB). Tighter than
+#: The cap the spline-scale child runs under, in KiB (6 GB). Tighter than
 #: ``ULIMIT_KIB`` on purpose: it caps the TRACER as well as the compilers, and
 #: the pre-keying of this exact body exhausted it — so the row is a real
 #: gate on canonicalisation's memory, not only on ptxas's.
-KAN_SCALE_ULIMIT_KIB = 6_000_000
+SPLINE_SCALE_ULIMIT_KIB = 6_000_000
 
 _RSS = re.compile(r"Maximum resident set size \(kbytes\):\s*(\d+)")
 
@@ -137,7 +138,7 @@ def _capped(argv: list) -> tuple:
 
 
 def _grid_row(n_in: int, basis: int, tmp: Path) -> dict:
-    kernel = kan_cell(n_in, basis)
+    kernel = spline_cell(n_in, basis)
     loops = [n for n in kernel.walk.order if isinstance(n, Loop)]
     device = _source(kernel, "cuda", tmp)
     host = _source(kernel, "host", tmp)
@@ -171,14 +172,14 @@ def _numerics_row(n_in: int, basis: int, tmp_path, cache_dir) -> dict:
 
     from hawk.artifact import build
 
-    kernel = kan_cell(n_in, basis)
+    kernel = spline_cell(n_in, basis)
     rng = np.random.default_rng(20260906)
     x = rng.normal(size=n_in)
     theta = rng.normal(size=n_in * basis)
     g = 0.9
-    build(kernel, tmp_path / f"kan{n_in}x{basis}", targets=("host",),
+    build(kernel, tmp_path / f"spline{n_in}x{basis}", targets=("host",),
           cache_dir=cache_dir)
-    loaded = O.load(tmp_path / f"kan{n_in}x{basis}", kernel.name)
+    loaded = O.load(tmp_path / f"spline{n_in}x{basis}", kernel.name)
     start = time.perf_counter()
     got = O.run_kernel(loaded, N, x=x, theta=theta, g=g)
     run_wall = time.perf_counter() - start
@@ -278,7 +279,7 @@ def _twin_row() -> dict:
     x = rng.normal(size=n_in)
     theta = rng.normal(size=n_in * basis)
     env = {"x": x, "theta": theta, "g": 0.9}
-    looped = float(evaluate(kan_cell(n_in, basis).sinks, env)["y"])
+    looped = float(evaluate(spline_cell(n_in, basis).sinks, env)["y"])
     straight = float(evaluate(twin.sinks, env)["y"])
     return {
         "edges": n_in,
@@ -294,8 +295,8 @@ def _twin_row() -> dict:
     }
 
 
-def _kan_scale_row() -> dict:
-    """The KAN-scale cell, END TO END, inside ONE child under a 6 GB cap.
+def _spline_scale_row() -> dict:
+    """The spline-scale cell, END TO END, inside ONE child under a 6 GB cap.
 
     Trace, canonicalise, emit, compile BOTH targets, build the host artifact,
     run it and evaluate the same IR with ``tests/_eval.py`` — all in the child,
@@ -312,19 +313,19 @@ def _kan_scale_row() -> dict:
     A child that dies FAILS the row. The alternative — reporting the point as
     absent — is exactly the shape of evidence this test exists to stop."""
     tests = str(Path(__file__).resolve().parent)
-    n_in, G, k = KAN_SCALE
-    line = (f"ulimit -v {KAN_SCALE_ULIMIT_KIB}; "
-            f"exec {sys.executable} {tests}/_kan.py {n_in} {G} {k}")
+    n_in, G, k = SPLINE_SCALE
+    line = (f"ulimit -v {SPLINE_SCALE_ULIMIT_KIB}; "
+            f"exec {sys.executable} {tests}/_spline.py {n_in} {G} {k}")
     done = subprocess.run(["/bin/sh", "-c", line], capture_output=True, text=True,
                           env=subprocess_env())
     assert done.returncode == 0, (
-        f"the KAN-scale child died (rc={done.returncode}) under "
-        f"ulimit -v {KAN_SCALE_ULIMIT_KIB}\n{done.stdout[-2000:]}\n"
+        f"the spline-scale child died (rc={done.returncode}) under "
+        f"ulimit -v {SPLINE_SCALE_ULIMIT_KIB}\n{done.stdout[-2000:]}\n"
         f"{done.stderr[-4000:]}")
     payload = [ln for ln in done.stdout.splitlines() if ln.startswith("{")]
     assert payload, f"the child printed no json:\n{done.stdout}\n{done.stderr}"
     row = json.loads(payload[-1])
-    row["ulimit_v_kib"] = KAN_SCALE_ULIMIT_KIB
+    row["ulimit_v_kib"] = SPLINE_SCALE_ULIMIT_KIB
     return row
 
 
@@ -348,8 +349,8 @@ def test_the_loop_lowering_card_is_written(tmp_path, cache_dir):
                  "was measured with `/usr/bin/time -v`; the 64x23 point is the "
                  "one HW7d could not assemble at all when the same body was "
                  "unrolled by trace-time execution (25-27 GB of ptxas RSS). "
-                 "`kan_scale_cell` is the point: a downstream package's own "
-                 "`kan_edge_kernel_loop` shape (a DEEP Cox-de Boor body, not "
+                 "`spline_scale_cell` is the point: a downstream package's own "
+                 "`spline_edge_kernel_loop` shape (a DEEP Cox-de Boor body, not "
                  "the shallow `grid` family) at (n_in=64, G=20, k=3), taken "
                  "trace -> canonicalise -> emit -> compile both targets -> run, "
                  "all inside ONE child under `ulimit -v 6000000`, which caps "
@@ -362,7 +363,7 @@ def test_the_loop_lowering_card_is_written(tmp_path, cache_dir):
         "numerics": numerics,
         "a2_additive_loops": [_a2_row(b) for b in A2_BOUNDS],
         "straight_line_twin": _twin_row(),
-        "kan_scale_cell": _kan_scale_row(),
+        "spline_scale_cell": _spline_scale_row(),
     }
     body = json.dumps(payload, indent=2, sort_keys=True)
     fence = hashlib.md5(body.encode()).hexdigest()
@@ -376,8 +377,8 @@ def test_the_loop_lowering_card_is_written(tmp_path, cache_dir):
         "HAWK hands it a translation unit it can make that decision about.\n\n"
         "Every compile in `grid` ran under `ulimit -v 12000000` (the same 12 "
         "GiB `hawk.compile.drivers` installs with `RLIMIT_AS`) and was "
-        "measured with `/usr/bin/time -v`. `kan_scale_cell` — the point, "
-        "a downstream package's own KAN edge shape at (n_in=64, G=20, k=3) — went trace to run "
+        "measured with `/usr/bin/time -v`. `spline_scale_cell` — the point, "
+        "a downstream package's own spline edge shape at (n_in=64, G=20, k=3) — went trace to run "
         "inside ONE child under `ulimit -v 6000000`, a cap that binds the "
         "TRACER too.\n\n"
         f"md5: `{fence}`\n\n```json\n{body}\n```\n"
@@ -388,6 +389,7 @@ def test_the_loop_lowering_card_is_written(tmp_path, cache_dir):
                        .encode()).hexdigest() == fence
 
 
+@pytest.mark.needs_toolchain("nvcc")
 def test_the_largest_point_assembles_under_the_cap():
     """The claim the card exists to carry, asserted rather than eyeballed: the
     64x23 cell — the exact point that took 25-27 GB and failed under a 22 GiB
@@ -407,11 +409,12 @@ def test_the_ir_does_not_grow_with_the_grid():
     track its trip count, so the 64x23 cell has the same node count as the 8x5
     one. Under the old unroll-by-execution the largest point's chain was ~37x
     the smallest's, which is what reached ptxas as one function."""
-    counts = {(n, b): len(kan_cell(n, b).walk.order) for n, b in GRID}
+    counts = {(n, b): len(spline_cell(n, b).walk.order) for n, b in GRID}
     assert len(set(counts.values())) == 1, counts
 
 
 @pytest.mark.parametrize("point", GRID, ids=[f"{n}x{b}" for n, b in GRID])
+@pytest.mark.needs_toolchain("nvcc")
 def test_the_compiled_answer_matches_the_interpreter(point):
     """The numerics arm, read off the card the run just wrote: the compiled
     kernel and the scratch interpreter must agree to the band allows, and
@@ -425,11 +428,12 @@ def test_the_compiled_answer_matches_the_interpreter(point):
     assert row["compiled_minus_interpreted_abs"] < 1e-12, row
 
 
-def test_the_kan_scale_cell_goes_end_to_end_inside_six_gigabytes():
+@pytest.mark.needs_toolchain("nvcc")
+def test_the_spline_scale_cell_goes_end_to_end_inside_six_gigabytes():
     """The card's claim, asserted rather than eyeballed, off the card the run wrote.
 
-    The (n_in=64, G=20, k=3) Cox-de Boor edge cell — the KAN-scale
-    ``kan_edge_kernel_loop`` shape — traces, canonicalises, emits, compiles
+    The (n_in=64, G=20, k=3) Cox-de Boor edge cell — the spline-scale
+    ``spline_edge_kernel_loop`` shape — traces, canonicalises, emits, compiles
     for BOTH targets and RUNS, all inside one 6 GB address space, and the
     compiled answer agrees with the scratch interpreter. A prior body-keying
     scheme let the same child get stuck in canonicalisation: the tracer
@@ -443,8 +447,8 @@ def test_the_kan_scale_cell_goes_end_to_end_inside_six_gigabytes():
     body)."""
     assert CARD.is_file(), "run test_the_loop_lowering_card_is_written first"
     payload = json.loads(CARD.read_text().split("```json\n")[1].split("\n```")[0])
-    row = payload["kan_scale_cell"]
-    assert (row["n_in"], row["G"], row["k"]) == KAN_SCALE
+    row = payload["spline_scale_cell"]
+    assert (row["n_in"], row["G"], row["k"]) == SPLINE_SCALE
     cap = row["ulimit_v_kib"]
     assert row["trace_canonicalise_peak_rss_kib"] < cap // 10, row
     assert 0 < row["device_peak_rss_kib"] < cap, row

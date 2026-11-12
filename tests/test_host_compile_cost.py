@@ -11,7 +11,7 @@ Two observations, each with a known answer:
   families, every width the CPU has, scalar symbol included. Before the
   anchors every TU carried every function at every width (288 symbols on
   an AVX-512 host), the bulk of a math-free kernel's host compile time.
-* **Host and device compile side by side.** ``_compile_targets`` runs one
+* **Host and device compile side by side.** ``_build_targets`` runs one
   kernel's target compiles concurrently (at most ``$HAWK_COMPILE_JOBS``,
   default 2), returns them keyed by target whatever order they finish in,
   and on failure raises the FIRST failing target in ``targets`` order — the
@@ -25,7 +25,7 @@ Plants, each turning a row red, then removed:
 * the anchor odr-use dropped from ``hostvec``'s ``double`` legs --
   ``test_a_math_kernel_emits_only_the_functions_it_calls`` fails (no symbol
   emitted, the loop's vector calls left undefined);
-* ``max_workers=1`` forced in ``_compile_targets`` --
+* ``max_workers=1`` forced in ``_build_targets`` --
   ``test_the_target_compiles_overlap`` times out waiting for the second
   compile to start.
 """
@@ -112,6 +112,18 @@ class _Src:
         self.text = text
 
 
+def _rows(monkeypatch, fake):
+    """``bundle_mod.TARGETS`` with rows whose ``build`` is ``fake(text, name, opts)``."""
+    class Row:
+        def __init__(self, target):
+            self.target = target
+
+        def build(self, lowered, source, options):
+            return fake(source.text, "k", None)
+
+    monkeypatch.setattr(bundle_mod, "TARGETS", {t: Row(t) for t in ("host", "cuda")})
+
+
 def test_the_target_compiles_overlap(monkeypatch):
     started = {"host": threading.Event(), "cuda": threading.Event()}
 
@@ -122,10 +134,9 @@ def test_the_target_compiles_overlap(monkeypatch):
         assert started[other].wait(timeout=20), "the compiles ran one after the other"
         return f"result:{text}"
 
-    monkeypatch.setattr(bundle_mod, "compile_source", fake)
+    _rows(monkeypatch, fake)
     monkeypatch.delenv("HAWK_COMPILE_JOBS", raising=False)
-    out = bundle_mod._compile_targets({"host": _Src("host"), "cuda": _Src("cuda")}, "k",
-                                      {"host": None, "cuda": None})
+    out = bundle_mod._build_targets(None, {"host": _Src("host"), "cuda": _Src("cuda")}, {}, ("host", "cuda"))
     assert list(out) == ["host", "cuda"]
     assert out == {"host": "result:host", "cuda": "result:cuda"}
 
@@ -137,10 +148,9 @@ def test_one_job_is_the_sequential_build(monkeypatch):
         order.append((threading.current_thread().name, text))
         return text
 
-    monkeypatch.setattr(bundle_mod, "compile_source", fake)
+    _rows(monkeypatch, fake)
     monkeypatch.setenv("HAWK_COMPILE_JOBS", "1")
-    out = bundle_mod._compile_targets({"host": _Src("host"), "cuda": _Src("cuda")}, "k",
-                                      {"host": None, "cuda": None})
+    out = bundle_mod._build_targets(None, {"host": _Src("host"), "cuda": _Src("cuda")}, {}, ("host", "cuda"))
     main = threading.current_thread().name
     assert order == [(main, "host"), (main, "cuda")] and out == {"host": "host", "cuda": "cuda"}
 
@@ -155,11 +165,10 @@ def test_the_first_failing_target_is_reported_after_both_finish(monkeypatch, fai
             raise HawkError(f"{text} compile failed")
         return text
 
-    monkeypatch.setattr(bundle_mod, "compile_source", fake)
+    _rows(monkeypatch, fake)
     monkeypatch.delenv("HAWK_COMPILE_JOBS", raising=False)
     with pytest.raises(HawkError, match=f"^{failing[0]} compile failed"):
-        bundle_mod._compile_targets({"host": _Src("host"), "cuda": _Src("cuda")}, "k",
-                                    {"host": None, "cuda": None})
+        bundle_mod._build_targets(None, {"host": _Src("host"), "cuda": _Src("cuda")}, {}, ("host", "cuda"))
     assert sorted(finished) == ["cuda", "host"]
 
 

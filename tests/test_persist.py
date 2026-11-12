@@ -32,6 +32,7 @@ is pinned:
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import ctypes
 import os
@@ -56,7 +57,7 @@ from test_host_interchange import (
 from hawk.artifact import build_bundle
 from hawk.emit import render_source
 from hawk.emit.render import render_lane_split
-from hawk.emit.cuda import SHORT_DEVICE_STEP_OPS
+from hawk_cuda.emit import SHORT_DEVICE_STEP_OPS
 from hawk.targets import TARGETS
 
 DT = 0.01
@@ -345,7 +346,7 @@ def test_a_sample_is_written_back_at_the_next_head(kernel):
     text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
     head, chunk, _ = _loop_parts(text, kernel.name)
-    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
+    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind, spec=HOST)
     stores = re.findall(r"^\s*(\w+)\[i\] = ", split.post, re.M)
     assert stores
     for plane in stores:
@@ -389,7 +390,7 @@ def test_only_a_light_step_unrolls_its_device_loops(kernel, light):
     """A step at or under ``SHORT_DEVICE_STEP_OPS`` operations unrolls the
     ``_persist`` chunk loop and the ``_range`` step loop by 4; a heavier step
     unrolls neither."""
-    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
+    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind, spec=HOST)
     assert (split.op_count <= SHORT_DEVICE_STEP_OPS) == light, split.op_count
     text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
@@ -406,7 +407,7 @@ def test_a_stepping_kernels_sidecar_carries_its_step_op_count(bundle):
     from hawk.artifact.bundle import _step_ops
 
     for name, kernel in KERNELS.items():
-        split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
+        split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind, spec=HOST)
         assert sidecar_of(bundle, name)["step_ops"] == split.op_count > 0, name
         assert sidecar_of(bundle, name)["fp64_ops_ir"] == split.fp64_ops > 0, name
         assert sidecar_of(bundle, name)["entry_counts_finished"] is True, name
@@ -507,7 +508,7 @@ def test_the_fast_entries_count_samples_finished_on_entry():
     """Both fast entries add a sample finished on entry to the finish counter,
     as the step adds one finishing in the run, so the counter -- zeroed before
     the launch -- holds the batch's finished count, and the sidecar says so."""
-    from hawk.emit.cuda import entry_counts_finished
+    from hawk_cuda.emit import entry_counts_finished
     from hawk.emit.render import render_lane_split
 
     k = KERNELS["oscillator"]
@@ -518,7 +519,7 @@ def test_the_fast_entries_count_samples_finished_on_entry():
         on_entry = "} else { ++hawk_fin; }" if entry == "_persist" else \
             "} else { hawk_abi::finish_count("
         assert on_entry in body, entry
-    assert entry_counts_finished(k.walk, render_lane_split(k.sinks, k.walk, kind=k.kind))
+    assert entry_counts_finished(k.walk, render_lane_split(k.sinks, k.walk, kind=k.kind, spec=HOST))
 
 
 @pytest.mark.parametrize("kernel", [oscillator, rkf78_attempt], ids=lambda k: k.name)
@@ -615,7 +616,7 @@ def test_the_persist_entry_holds_only_what_a_step_needs(kernel):
     text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                          kind=kernel.kind, one_step=kernel.one_step).text
     body = _entry_body(text, kernel.name, "_persist")
-    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
+    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind, spec=HOST)
     stores = [line.split("{}")[0].split()[-1] for line in body.splitlines()
               if line.startswith("    ") and line.endswith("{};")]
     read = [c for c in split.carries if c[0] in split.step]

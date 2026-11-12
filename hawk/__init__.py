@@ -86,8 +86,13 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "chain": ("trace.chain", "chain")}
 
 #: Submodules ``import hawk`` resolves lazily: the door returns the module
-#: itself (``hawk.embedded.export``), imported on first access.
-_SUBMODULE_DOORS = ("embedded", "geometry")
+#: itself, imported on first access.
+_SUBMODULE_DOORS = ("geometry",)
+
+#: Doors that hand out the user API of a backend an extension registers: ``hawk.<door>`` is that backend's
+#: ``api`` module, or a refusal by name when no extension registers it.
+#: They are not in ``__all__``: an optional backend that is absent must not break ``from hawk import *``.
+_BACKEND_DOORS = {"embedded": "c"}
 
 __all__ = ["__version__", *_AUTHORING, *_TOP_LEVEL_DOORS, *_SUBMODULE_DOORS]
 
@@ -237,6 +242,12 @@ def __getattr__(name: str) -> Any:
         value = getattr(importlib.import_module(f".{module_name}", __name__), attr)
         globals()[name] = value
         return value
+    if name in _BACKEND_DOORS:
+        from .backends import need
+
+        value = need(_BACKEND_DOORS[name]).api
+        globals()[name] = value
+        return value
     if name in _SUBMODULE_DOORS:
         import importlib
 
@@ -256,7 +267,7 @@ def __getattr__(name: str) -> Any:
         globals()[name] = value
         return value
     if name in _RETIRED:
-        from .ir import HawkError
+        from ._errors import HawkError
         raise HawkError(_RETIRED[name])
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

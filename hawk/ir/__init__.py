@@ -1,75 +1,34 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""HAWK's tensor-typed IR: nodes, compound quantities, THE canonical
-walk and access-class inference.
+"""The IR's old home. The definition (nodes, ops, walk, loops, types, ...) is :mod:`raptor.ir`; every name and every
+``hawk.ir.<module>`` path here is the SAME object, so old imports keep working. The lowering passes that used to sit in
+this package (``chain``, ``slotwise``, ``contraction``, ``lanes``, ``segment``) are in :mod:`hawk.passes` and are
+reached lazily through the same old names. The importers are not rewritten yet."""
 
-An INTERNAL package: ``__all__`` is the small "IR access" surface a
-downstream package may read; everything else may change between
-releases. :mod:`hawk` itself must never import it — consumers read
-``Walk.arg_spec``/``Walk.slot_of``, never enumerate ``leaves``/``order``."""
+import importlib
+import pkgutil
+import sys
 
-# Internal names for hawk's own modules/tests (`X as X` = not on `__all__`).
-from ..types import TensorType as TensorType
-from ..types import Wire as Wire
-from .access import Access as Access
-from .access import infer
-from .compound import Quantity as Quantity
-from .compound import QuantitySpan as QuantitySpan
-from .contraction import ContractionOperand as ContractionOperand
-from .contraction import RecognizedContraction as RecognizedContraction
-from .contraction import recognize
-from .lanes import KeyRun as KeyRun
-from .lanes import LaneFacts as LaneFacts
-from .lanes import key_run as key_run
-from .loop_nodes import Loop as Loop
-from .loop_nodes import LoopCarry as LoopCarry
-from .loop_nodes import LoopCount as LoopCount
-from .loop_nodes import LoopIndex as LoopIndex
-from .loop_nodes import LoopValue as LoopValue
-from .loop_nodes import TapeRead as TapeRead
-from .loops import ACCUMULATOR as ACCUMULATOR
-from .loops import RECURRENCE as RECURRENCE
-from .loops import LoopClass as LoopClass
-from .loops import build_loop as build_loop
-from .loops import classify_loop as classify_loop
-from .nodes import DISPATCH_KIND as DISPATCH_KIND
-from .nodes import DISPATCH_POLICIES as DISPATCH_POLICIES
-from .nodes import AccumWrite, Assign, At, Const, Op
-from .nodes import Dispatch as Dispatch
-from .nodes import HawkError as HawkError
-from .nodes import LanePosition as LanePosition
-from .nodes import PlaneExtent as PlaneExtent
-from .nodes import Leaf as Leaf
-from .nodes import Node as Node
-from .nodes import Primitive as Primitive
-from .nodes import RoleConst as RoleConst
-from .nodes import SampleIndex as SampleIndex
-from .nodes import SampleSum as SampleSum
-from .nodes import Select as Select
-from .nodes import Sink as Sink
-from .nodes import TapeWrite as TapeWrite
-from .nodes import WideWrite as WideWrite
-from .ops import OP_KINDS as OP_KINDS
-from .ops import make
-from .ops import result_type as result_type
-from .segment import OFFSETS_DTYPE as OFFSETS_DTYPE
-from .segment import OFFSETS_ROLE as OFFSETS_ROLE
-from .segment import SegmentInfo as SegmentInfo
-from .segment import ClassifyUnit as ClassifyUnit
-from .segment import SegmentUnit as SegmentUnit
-from .segment import classify_name as classify_name
-from .segment import split_segmented as split_segmented
-from .cost import BranchCost as BranchCost
-from .cost import DispatchCost as DispatchCost
-from .cost import dispatch_costs as dispatch_costs
-from .walk import DispatchInfo as DispatchInfo
-from .walk import Walk as Walk
-from .walk import canonical
-from .walk import canonical_nodes as canonical_nodes
-from .walk import static_selectors as static_selectors
+import raptor.ir as _ir
+from raptor.errors import RaptorError as HawkError  # noqa: F401  (the public name, kept as a module attribute; not in __all__)
 
-__all__ = [
-    "AccumWrite", "Assign", "At", "Const", "Op", "canonical", "infer", "make",
-    "recognize",
-]
+#: ``segment`` is split: its names are raptor's, its rewrite is a pass; the old path is the pass module.
+_SPLIT = ("segment",)
+globals().update({k: v for k, v in vars(_ir).items() if not k.startswith("__") and k not in _SPLIT})
+__all__ = [*_ir.__all__, "recognize"]
+for _m in pkgutil.iter_modules(_ir.__path__):
+    if _m.name in _SPLIT:
+        continue
+    sys.modules[f"{__name__}.{_m.name}"] = importlib.import_module(f"raptor.ir.{_m.name}")
+importlib.import_module("hawk.types")        # the same module as raptor.ir.types
+
+#: Pass-like names the package used to carry: module, resolved on first use.
+_MOVED = {"recognize": "contraction", "ContractionOperand": "contraction", "RecognizedContraction": "contraction",
+          "split_segmented": "segment"}
+
+
+def __getattr__(name):
+    if name in _MOVED:
+        return getattr(importlib.import_module(f"hawk.passes.{_MOVED[name]}"), name)
+    raise AttributeError(name)

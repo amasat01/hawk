@@ -194,7 +194,7 @@ def test_entries_whose_warp_is_not_32_samples_refuse_by_name(entry, kw):
         render_source(derived.name, derived.sinks, derived.walk, TARGETS["cuda"], **kw)
 
 
-# ---- the rows a warp folds in one call (hawk.emit.policy.fold_shape) ----
+# ---- the rows a warp folds in one call (hawk.passes.policy.fold_shape) ----
 
 @kernel
 def fold1(x: Scalar, s: Mutable[Scalar]):
@@ -231,15 +231,12 @@ FOLD_KS = (None, 1, 8)      # the policy, the one-row warp, the card kit's wide 
 @pytest.fixture(scope="module")
 def folded(tmp_path_factory):
     """``{k: bundle}`` of every fold kernel, built under the policy (``None``) and under the forced ``k``."""
-    from contextlib import nullcontext
-
-    from hawk.emit.policy import fold_rows
+    from hawk.build_policy import BuildPolicy
     out = {}
     for k in FOLD_KS:
-        with nullcontext() if k is None else fold_rows(k):
-            out[k] = build_bundle([kern for kern, _ in FOLDS.values()], tmp_path_factory.mktemp(f"fold_{k}"), mode="float64",
-                                  targets=("cuda", "host"), cache_dir=str(tmp_path_factory.mktemp(f"fold_cache_{k}")),
-                                  host_profile="native")
+        out[k] = build_bundle([kern for kern, _ in FOLDS.values()], tmp_path_factory.mktemp(f"fold_{k}"), mode="float64",
+                              targets=("cuda", "host"), cache_dir=str(tmp_path_factory.mktemp(f"fold_cache_{k}")),
+                              host_profile="native", build_policy=None if k is None else BuildPolicy(fold_rows=k))
     return out
 
 
@@ -255,20 +252,21 @@ def _fold_rows_run(bundle, name, target, n):
 
 
 def test_fold_shape_keeps_a_warp_under_the_residency_line():
-    from hawk.emit.policy import fold_rows, fold_shape
-    assert [fold_shape(w) for w in (1, 2, 3, 4, 6, 10)] == [4, 2, 2, 1, 1, 1]
-    assert fold_shape(1, regs=64) == 8 and fold_shape(1, regs=0) == 1
-    with fold_rows(8):
-        assert fold_shape(10) == 8
-    assert fold_shape(1) == 4
+    from hawk.passes.policy import fold_shape
+    from hawk.variants import load
+
+    fold = load("cuda")["fold"]
+    assert [fold_shape(w, fold) for w in (1, 2, 3, 4, 6, 10)] == [4, 2, 2, 1, 1, 1]
+    assert fold_shape(1, fold, regs=64) == 8 and fold_shape(1, fold, regs=0) == 1
+    assert fold_shape(10, fold, forced=8) == 8
+    assert fold_shape(1, fold) == 4
 
 
 def test_the_rows_of_a_warp_ride_one_batched_fold():
-    from hawk.emit.policy import fold_rows
+    from hawk.build_policy import BuildPolicy
     plain = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"]).text
     assert "sampleSumWarp_<4," in plain and "hawk_wbase" in plain
-    with fold_rows(1):
-        one = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"]).text
+    one = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"], build_policy=BuildPolicy(fold_rows=1)).text
     assert "sampleSumWarp_<1," in one and "hawk_wbase" not in one
 
 

@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from raptor.protocols.refusal import ToolchainAbsent
+
 WORKSPACE = Path(__file__).resolve().parents[2]
 
 #: Flags every emitted host TU is checked with. ``AETHER_CPP_MODE`` is the
@@ -38,17 +40,18 @@ def real_arch(kind: str | None = None) -> str:
     GPU's own arch when the toolkit supports it, else the toolkit's minimum
     at or above ``PORTABLE_MIN_ARCH``. Never a hard-coded box arch."""
     from hawk.compile import toolchain as tc
+    from hawk_cuda import toolchain as dtc
 
-    probed = tc._probed_device_arch()
-    toolkit = tc.toolkit_archs(kind)
+    probed = dtc._probed_device_arch()
+    toolkit = dtc.toolkit_archs(kind)
     if toolkit is None:
-        return probed or tc.FALLBACK_ARCH.replace("compute_", "sm_")
+        return probed or dtc.FALLBACK_ARCH.replace("compute_", "sm_")
     archs = toolkit[1]
     if probed:
         number = int("".join(ch for ch in probed[3:] if ch.isdigit()))
         if archs[0] <= number <= archs[-1]:
             return probed
-    portable = [a for a in archs if a >= tc.PORTABLE_MIN_ARCH]
+    portable = [a for a in archs if a >= dtc.PORTABLE_MIN_ARCH]
     return f"sm_{portable[0] if portable else archs[-1]}"
 
 
@@ -56,8 +59,9 @@ def toolkit_supports(arch: str, kind: str | None = None) -> bool:
     """Whether the device toolkit lists ``arch`` (``sm_61``) at all --
     ``True`` when its list cannot be read (the compile then decides)."""
     from hawk.compile import toolchain as tc
+    from hawk_cuda import toolchain as dtc
 
-    toolkit = tc.toolkit_archs(kind)
+    toolkit = dtc.toolkit_archs(kind)
     return toolkit is None or int(arch.split("_", 1)[1]) in toolkit[1]
 
 
@@ -111,8 +115,8 @@ def device_compiler() -> str:
     for candidate in (os.environ.get("HAWK_NVCC"), "nvcc"):
         if candidate and (Path(candidate).is_file() or shutil.which(candidate)):
             return candidate
-    raise AssertionError("no nvcc found; set $HAWK_NVCC. A skipped compile row "
-                         "certifies nothing.")
+    raise ToolchainAbsent("no nvcc found; set $HAWK_NVCC. A skipped compile row "
+                          "certifies nothing.", toolchain="nvcc")
 
 
 def _env() -> dict:

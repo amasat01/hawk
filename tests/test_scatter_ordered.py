@@ -20,6 +20,7 @@ import hawk.math as m
 from hawk import HawkError, Index, Mutable, Scalar, Terminated, Vector, kernel
 from hawk.ext import IndexSet, Kind
 from hawk._lane_bind import scatter_chunks
+from hawk.variants import load as _variant
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
 
@@ -117,7 +118,8 @@ def test_ordered_scatter_equals_add_at_and_replays_bitwise(bundles, target, n, c
 
 
 def test_chunks_are_chosen_from_lanes_and_targets():
-    assert [scatter_chunks(n, t) for n, t in ((20000, 7), (50, 200), (1000, 1000), (10**6, 10**4),
+    CAP = _variant("cpu")["scatter"]["max_chunks"]
+    assert [scatter_chunks(n, t, CAP) for n, t in ((20000, 7), (50, 200), (1000, 1000), (10**6, 10**4),
                                               (10**6, 1), (10, 0))] == [256, 1, 1, 100, 256, 10]
 
 

@@ -11,6 +11,7 @@ through its proxy; the resource report puts a kernel's frame beside its working 
 """
 
 from __future__ import annotations
+from _specs import DEVICE
 
 import pathlib
 import warnings
@@ -24,13 +25,13 @@ import hawk.math as m
 from hawk import Matrix, Mutable, Scalar, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk.artifact.bundle import _resource_report
+from hawk_cuda.backend import _resource_report
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
 from hawk.emit import render_source
-from hawk.emit import policy
+from hawk.passes import policy
 from hawk.emit.wrapper import scalar_mode
-from hawk.ir.cost import working_set_bytes
+from hawk.passes.cost import working_set_bytes
 from hawk.ir import HawkError
 from hawk.targets import TARGETS
 from hawk.trace.kernel import Kernel
@@ -76,9 +77,10 @@ def eigen(n):
 
 
 def _text(kernel, form="auto", target="cuda"):
-    with policy.using(form):
-        return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                             mode=scalar_mode("float64"), exports=exports(target)).text
+    from hawk.build_policy import BuildPolicy
+
+    return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target], build_policy=BuildPolicy(emit_form=form),
+                         mode=scalar_mode("float64"), exports=exports(target)).text
 
 
 def test_the_three_forms_spell_a_reduction_three_ways():
@@ -144,29 +146,29 @@ def test_a_plane_read_as_prior_keeps_the_result_in_a_local():
 
 
 def test_the_working_set_counts_the_factor_and_the_result_of_a_library_call():
-    assert working_set_bytes(solve(8).sinks) == (8 * 8 * 8 + 4 * 8 + 4) + 8 * 8
-    assert working_set_bytes(reductions(20).sinks) == 0
+    assert working_set_bytes(solve(8).sinks, DEVICE.device["form"]["rolled_fold_min"]) == (8 * 8 * 8 + 4 * 8 + 4) + 8 * 8
+    assert working_set_bytes(reductions(20).sinks, DEVICE.device["form"]["rolled_fold_min"]) == 0
 
 
 def test_a_frame_past_the_working_set_is_reported_and_warned():
     k = solve(8)
-    ws = working_set_bytes(k.sinks)
+    ws = working_set_bytes(k.sinks, DEVICE.device["form"]["rolled_fold_min"])
     fine = {"k": {"regs": 32, "stack_B": ws, "spill_store_B": 0, "spill_load_B": 0}}
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        assert _resource_report(k, fine)["k"]["spills"] is False
+        assert _resource_report(k, fine, DEVICE)["k"]["spills"] is False
     for row in ({"stack_B": ws, "spill_store_B": 16}, {"stack_B": 2 * ws, "spill_store_B": 0}):
         with pytest.warns(UserWarning, match="local frame"):
-            report = _resource_report(k, {"k": {"regs": 255, "spill_load_B": 0, **row}})
+            report = _resource_report(k, {"k": {"regs": 255, "spill_load_B": 0, **row}}, DEVICE)
         assert report["k"]["spills"] is True and report["k"]["working_set_B"] == ws
 
 
 def test_a_kernel_with_no_working_set_still_has_its_frame_read():
     k = reductions(20)
-    assert working_set_bytes(k.sinks) == 0
+    assert working_set_bytes(k.sinks, DEVICE.device["form"]["rolled_fold_min"]) == 0
     row = {"regs": 48, "spill_store_B": 0, "spill_load_B": 0}
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        assert _resource_report(k, {"k": {**row, "stack_B": 40}})["k"]["spills"] is False
+        assert _resource_report(k, {"k": {**row, "stack_B": 40}}, DEVICE)["k"]["spills"] is False
     with pytest.warns(UserWarning, match="local frame"):
-        assert _resource_report(k, {"k": {**row, "stack_B": 1832}})["k"]["spills"] is True
+        assert _resource_report(k, {"k": {**row, "stack_B": 1832}}, DEVICE)["k"]["spills"] is True

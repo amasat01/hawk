@@ -11,6 +11,7 @@ through; ``ir_checks`` itself never refuses.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import re
 
@@ -22,8 +23,8 @@ import hawk
 import hawk.math as hm
 from hawk import Index, Mutable, Param, Scalar, Terminated, Vector, WideOut
 from hawk.diff import vjp
-from hawk.embedded.profile import EmbeddedProfile
-from hawk.embedded.verify import (
+from hawk_c.profile import EmbeddedProfile
+from hawk_c.verify import (
     UNSUPPORTED,
     apply_caps,
     index_status,
@@ -31,8 +32,9 @@ from hawk.embedded.verify import (
     positions,
 )
 from hawk.ext import DEFAULT_KIND
-from hawk.ir import HawkError, canonical
-from hawk.ir.loop_nodes import Loop
+from hawk.ir import canonical
+from hawk import HawkError
+from hawk.ir.nodes import Loop
 from hawk.ir.nodes import AccumWrite, At, Leaf
 from hawk.ir.ops import make
 from hawk.trace.kernel import Kernel
@@ -41,7 +43,7 @@ from hawk.types import TensorType
 
 def _report(kernel, profile=None):
     return ir_checks(kernel.name, kernel.sinks, kernel.walk, kernel.kind,
-                     profile or EmbeddedProfile())
+                     profile or EmbeddedProfile(), HOST)
 
 
 # --------------------------------------------------------------------------- #
@@ -147,7 +149,7 @@ def recurrence(x: Scalar, g: Param, y: Mutable[Scalar]):
 def test_tape_bytes_feed_the_memory_estimate():
     sinks = vjp(recurrence)
     walk = canonical(sinks)
-    report = ir_checks("recurrence_vjp", sinks, walk, DEFAULT_KIND, EmbeddedProfile())
+    report = ir_checks("recurrence_vjp", sinks, walk, DEFAULT_KIND, EmbeddedProfile(), HOST)
     static = report["budgets"]["static_bytes"]
     (site,) = report["indices"]
     assert (site["kind"], site["status"], site["length"]) == ("tape_read", "proven", 64)
@@ -501,7 +503,7 @@ def guarded_wide(x: Scalar, terminated: Terminated, w: WideOut[Scalar]):
 
 def _guarded_rows(kernel, kind=None):
     report = ir_checks(kernel.name, kernel.sinks, kernel.walk,
-                       kind or kernel.kind, EmbeddedProfile())
+                       kind or kernel.kind, EmbeddedProfile(), HOST)
     return {row["field"]: row for row in report["interface"]}
 
 
@@ -572,7 +574,7 @@ def test_every_row_carries_the_bound_guard_masks():
 def test_the_header_selects_the_guard_lines_from_the_guard_field():
     """The header's per-field guard line and the guarded partials line are
     chosen by ``row["guard"]``, never by the reason text."""
-    from hawk.embedded import abi, render
+    from hawk_c import abi, render
     from hawk.emit import FLOAT64
 
     for kernel, field in [(D.diagnostic, "mut_y"), (guarded_partials, "aout_acc")]:
@@ -588,7 +590,7 @@ def test_the_header_selects_the_guard_lines_from_the_guard_field():
 
 
 def test_the_header_contract_says_a_guarded_plane_is_initialised():
-    from hawk.embedded import render
+    from hawk_c import render
 
     header = render(guarded_partials).header
     assert re.search(r"\*   aout_acc +accum_out +inout +f64 +\(\) +yes\n", header)

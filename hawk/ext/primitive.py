@@ -34,13 +34,15 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ..diff.rules import zero_like
-from ..ir import HawkError, Node, Primitive
-from ..trace.helpers import call
+from raptor.rules import primitive as rules
+from ..dialects import KINDS
+from ..ir import Node, Primitive
+from .._errors import HawkError
+from ..trace.helpers import call, call_lowered
 from ..trace.value import Value, node_of
 
-#: Every registered primitive, by name: the name is the node's dedup
-#: identity and therefore part of ``Walk.digest``.
+#: Every registered primitive's FRONT END, by name: the Python callables live here, in hawk, only so a rule can be TRACED once
+#: per input signature into a template. What raptor keeps (in :data:`hawk.dialects.KINDS`) is data: the name and the templates.
 _REGISTRY: dict = {}
 
 #: Makes the check-and-claim of a name one step: of N threads registering one
@@ -56,12 +58,9 @@ def primitives() -> dict:
 
 @dataclass(frozen=True)
 class PrimitiveDef:
-    """One registered primitive: its forward and the rules that replace
-    the table. ``vjp`` is a traced function of ``(inputs..., bar_out)``
-    returning one gradient per input; ``jvp`` is a traced function of
-    ``(inputs..., dot_inputs...)`` returning the output's tangent. Both
-    build ordinary HAWK IR, so a derived kernel goes through the same
-    walk, emitter and cache as any primal."""
+    """One registered primitive's front end: its forward and the functions that are TRACED into the rule templates raptor
+    stores. ``vjp`` is a traced function of ``(inputs..., bar_out)`` returning one gradient per input; ``jvp`` a traced
+    function of ``(inputs..., dot_inputs...)`` returning the output's tangent. Both build ordinary IR."""
 
     name: str
     forward: Callable
@@ -74,58 +73,34 @@ class PrimitiveDef:
         traced = call(self.forward, *(Value(x) for x in inputs))
         if self.vjp is None and self.jvp is None:
             return traced                # no rule to attach: the table differentiates it
-        return Value(Primitive(self.name, self, node_of(traced), inputs))
+        return Value(Primitive(self.name, node_of(traced), inputs))
 
-    def vjp_contributions(self, node: Primitive, g: Node) -> tuple:
-        """``((input, adjoint), …)`` for one boundary node, from the supplied rule."""
-        rule = self._rule("vjp", "reverse (vjp)")
-        inputs = node.inputs
-        got = rule(*(Value(x) for x in inputs), Value(g))
-        got = tuple(got) if isinstance(got, (tuple, list)) else (got,)
-        if len(got) != len(inputs):
-            raise HawkError(
-                f"primitive {self.name!r}: its vjp returned {len(got)} gradient(s) "
-                f"for {len(inputs)} input(s). A reverse rule returns ONE adjoint per "
-                "declared input, in call order — a short tuple would silently leave "
-                "an input's gradient at zero"
-            )
-        return tuple((child, self._typed(child, node_of(value), "vjp"))
-                     for child, value in zip(inputs, got))
+    def ensure(self, node: Primitive, direction: str) -> None:
+        """Trace the rule of ``direction`` for ``node``'s signature into a template, once, and register it as data."""
+        fn = getattr(self, direction)
+        if fn is None or rules.has_rule(KINDS, node, direction):
+            return                       # a missing direction is refused by raptor, by name
+        ins = [rules.placeholder(f"in{i}", x.ttype) for i, x in enumerate(node.inputs)]
+        if direction == "vjp":
+            got = call_lowered(fn, *(Value(x) for x in ins), Value(rules.placeholder("cot", node.ttype)))
+            got = tuple(got) if isinstance(got, (tuple, list)) else (got,)
+            templates = tuple(node_of(v) for v in got)
+        else:
+            dots = [rules.placeholder(f"dot{i}", x.ttype) for i, x in enumerate(node.inputs)]
+            templates = node_of(call_lowered(fn, *(Value(x) for x in ins), *(Value(d) for d in dots)))
+        rules.register_rule(KINDS, self.name, rules.signature_of(node), direction, templates)
 
-    def jvp_tangent(self, node: Primitive, supplied: Sequence) -> Node:
-        """The output's tangent for one boundary node, from the supplied
-        rule. An input with no incoming tangent is passed a structural
-        zero: the rule is a function of a fixed argument list."""
-        rule = self._rule("jvp", "forward (jvp)")
-        inputs = node.inputs
-        dots = [t if t is not None else zero_like(x.ttype)
-                for t, x in zip(supplied, inputs)]
-        got = rule(*(Value(x) for x in inputs), *(Value(d) for d in dots))
-        return self._typed(node, node_of(got), "jvp")
 
-    def _rule(self, which: str, direction: str) -> Callable:
-        rule = getattr(self, which)
-        if rule is None:
-            raise HawkError(
-                f"primitive {self.name!r} supplies no {direction} rule, so this "
-                f"direction cannot be taken. HAWK does not fall "
-                "back to differentiating THROUGH a primitive's forward: the forward "
-                "is inlined and the table would happily produce a number, which is "
-                f"exactly the number {self.name!r} was declared to replace. Register "
-                f"it as primitive({self.name!r}, {which}=...)"
-            )
-        return rule
+def vjp_contributions(node: Primitive, g: Node) -> tuple:
+    """``((input, adjoint), …)`` for one boundary node, from the registered rule."""
+    _REGISTRY[node.name].ensure(node, "vjp") if node.name in _REGISTRY else None
+    return rules.vjp_contributions(KINDS, node, g)
 
-    def _typed(self, target: Node, value: Node, which: str) -> Node:
-        if value.ttype != target.ttype:
-            raise HawkError(
-                f"primitive {self.name!r}: its {which} produced a value typed "
-                f"{value.ttype!r} where {target.ttype!r} was owed. A supplied rule "
-                "is checked against the type it stands in for, because a rank or "
-                "dtype mismatch here reaches the emitter as a shape error far from "
-                "the declaration that caused it"
-            )
-        return value
+
+def jvp_tangent(node: Primitive, supplied: Sequence) -> Node:
+    """The output's tangent for one boundary node, from the registered rule."""
+    _REGISTRY[node.name].ensure(node, "jvp") if node.name in _REGISTRY else None
+    return rules.jvp_tangent(KINDS, node, supplied)
 
 
 def primitive(name: Callable | str | None = None, *, vjp: Callable | None = None,
@@ -156,6 +131,13 @@ def primitive(name: Callable | str | None = None, *, vjp: Callable | None = None
         definition = PrimitiveDef(label, fn, vjp, jvp)
         with _REGISTRY_LOCK:
             held = _REGISTRY.setdefault(label, definition)
+            if held is definition:
+                try:
+                    rules.declare_primitive(KINDS, label, ext="user", directions=tuple(
+                        d for d, f in (("vjp", vjp), ("jvp", jvp)) if f is not None))
+                except HawkError:
+                    del _REGISTRY[label]
+                    raise
         if held is not definition and not _same_function(held.forward, fn):
             raise HawkError(
                 f"primitive {label!r} is already registered (its forward is "

@@ -22,13 +22,13 @@ import functools
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from ..ext.primitive import jvp_tangent, vjp_contributions
 from ..ir import (
     AccumWrite,
     Assign,
     At,
     Const,
     Dispatch,
-    HawkError,
     Leaf,
     Loop,
     LoopCarry,
@@ -45,19 +45,20 @@ from ..ir import (
     canonical,
     canonical_nodes,
 )
+from .._errors import HawkError
 from ..ir import make as _mk
 from ..ir.loops import exit_kwargs
 from ..ir.nodes import (ADJOINT_PREFIX, COMPANION_SUFFIX, DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish,
                         Op, ReduceSamples, SampleSum, param_cell_names)
 from ..ir.slotwise import slotwise
-from ..ir.team import expand_stores
+from raptor.ir.block import expand_stores
 from ..ir.walk import dispatch_groups
 from ..types import INT_PLANE_DTYPES, TensorType
 from .altpath import AltPath
 from .ordered import kept_of, order
 from .jump import JumpPlan, drop_width, jump_of
 from .loops import _taken_row, forward_loop, guarded_select, reverse_loop
-from .rules import rule_for, zero_like
+from raptor.rules.core import rule_for, zero_like
 
 #: Prefixes of the planes a derivative declares (never a wire namespace).
 TANGENT_PREFIX = "dot"
@@ -131,11 +132,11 @@ def _termination_mask(primal: Any) -> Node | None:
 
 def _masked_sink(sink: Node, mask: Node) -> Node:
     """``sink``, its value replaced by ``terminated ? 0 : value`` — the
-    structural zero :func:`~hawk.diff.rules.zero_like` gives any missing
+    structural zero :func:`~raptor.rules.core.zero_like` gives any missing
     contribution, so every sink shape alike stores or accumulates nothing for
     a terminated sample.
 
-    A ``sink`` may be a :class:`~hawk.ir.loop_nodes.Loop` (a reverse-mode
+    A ``sink`` may be a :class:`~hawk.ir.nodes.Loop` (a reverse-mode
     loop's own scatter commit): only its per-iteration commits are masked,
     not its header/carries/``nexts``. Rebuilt through
     :func:`~hawk.ir.build_loop` rather than :class:`Loop` directly so the
@@ -147,13 +148,7 @@ def _masked_sink(sink: Node, mask: Node) -> Node:
                           start=sink.start, stop=sink.stop, step=sink.step,
                           body_sinks=masked_body, **exit_kwargs(sink))
     value = Select(mask, zero_like(sink.value.ttype), sink.value, sink.value.ttype)
-    if isinstance(sink, AccumWrite):
-        return AccumWrite(sink.name, value, sink.index, sink.ttype, sink.policy)
-    if isinstance(sink, WideWrite):
-        return WideWrite(sink.name, value, sink.index, sink.ttype)
-    if isinstance(sink, SampleSum):
-        return sink.rebuilt(value)
-    return Assign(sink.name, value, sink.ttype)
+    return sink.rebuilt((value, *sink.operands[1:]), {})
 
 
 def _mask_termination(sinks: Sequence[Node], primal: Any) -> tuple[Node, ...]:
@@ -578,7 +573,7 @@ def _jvp(primal: Any, *, wrt: Sequence[str] | None = None,
         if isinstance(node, Primitive):
             supplied = [tangent.get(key(c)) for c in node.inputs]
             if any(t is not None for t in supplied):
-                got = node.rules.jvp_tangent(node, supplied)
+                got = jvp_tangent(node, supplied)
                 if got is not None:
                     tangent[key(node)] = got
             continue
@@ -706,7 +701,7 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
         if isinstance(node, Primitive):
             # Operand 0 (the forward subgraph) is deliberately skipped: the
             # supplied rule already is this primitive's derivative.
-            for child, contribution in node.rules.vjp_contributions(node, g):
+            for child, contribution in vjp_contributions(node, g):
                 _accumulate(adjoint, key, child,
                             _reduce_to(contribution, child.ttype))
             continue

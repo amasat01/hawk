@@ -20,6 +20,7 @@ unconditionally makes the scattered-diagnostic row refuse (or silently
 compensate the wrong plane). Every plant was then removed."""
 
 from __future__ import annotations
+from _specs import HOST
 
 import _deploy as L
 import numpy as np
@@ -110,9 +111,9 @@ def test_returned_output_matches_the_named_twin_with_a_diagnostic_sink():
     assert returned_with_diagnostic.arg_spec == named_with_diagnostic.arg_spec
     assert returned_with_diagnostic.walk.digest == named_with_diagnostic.walk.digest
     a = render_body(returned_with_diagnostic.sinks, returned_with_diagnostic.walk,
-                    kind=returned_with_diagnostic.kind).text
+                    kind=returned_with_diagnostic.kind, spec=HOST).text
     b = render_body(named_with_diagnostic.sinks, named_with_diagnostic.walk,
-                    kind=named_with_diagnostic.kind).text
+                    kind=named_with_diagnostic.kind, spec=HOST).text
     assert a == b
 
 
@@ -218,5 +219,5 @@ def test_a_derivative_of_returned_plus_named_sinks_differentiates_every_sink():
 
     d = jvp(returned_with_diagnostic, wrt=("term",))
     assert [s.name for s in d] == ["dot_speed", "dot_acc", "dot_acc_c"]
-    text = render_body(tuple(d), Kernel("d", tuple(d)).walk).text
+    text = render_body(tuple(d), Kernel("d", tuple(d)).walk, spec=HOST).text
     assert "store_compensated" not in text

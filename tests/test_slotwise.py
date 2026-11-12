@@ -12,11 +12,12 @@ idempotence, a non-finite seed). The EMIT row pins where the own-column stores
 land."""
 
 from __future__ import annotations
+from _specs import HOST
 
 import numpy as np
 import pytest
 from _eval import evaluate
-from _kan import kan_edge_cell
+from _spline import spline_edge_cell
 from _kernels import drag_vjp
 
 import hawk.diff.loops as diff_loops
@@ -51,7 +52,7 @@ def _comp(v, k):
 
 
 def _wide_dispatch():
-    """A KAN-shaped read: three cases each reading some components of ONE wide
+    """A spline-shaped read: three cases each reading some components of ONE wide
     leaf, so the cotangent of ``theta`` is a rank-1 dispatch of one-hot sums."""
     theta, kd, x = _leaf("theta", VW), _leaf("kd", I32), _leaf("x", S)
     b0 = mk("mul", (_comp(theta, 0), x))
@@ -85,7 +86,7 @@ def _select_in_select():
 
 
 def _loop_derived():
-    return vjp(kan_edge_cell(3, 4, 2), wrt=("theta", "g"))
+    return vjp(spline_edge_cell(3, 4, 2), wrt=("theta", "g"))
 
 
 def _component_fold():
@@ -179,8 +180,8 @@ def test_a_non_finite_factor_leaves_an_untouched_slot_zero_not_nan():
 def test_no_vec_combination_is_a_no_op_and_the_pass_is_idempotent():
     plain = tuple(drag_vjp())
     assert all(a is b for a, b in zip(slotwise(plain), plain))
-    assert (render_body(slotwise(plain), canonical(slotwise(plain))).text
-            == render_body(plain, canonical(plain)).text)
+    assert (render_body(slotwise(plain), canonical(slotwise(plain)), spec=HOST).text
+            == render_body(plain, canonical(plain), spec=HOST).text)
     once = slotwise(_dense(_wide_dispatch))
     again = slotwise(once)
     assert all(a is b for a, b in zip(once, again))
@@ -198,7 +199,7 @@ def test_a_loop_is_not_entered():
 
 
 def _body(sinks):
-    return render_body(tuple(sinks), canonical(tuple(sinks))).text
+    return render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST).text
 
 
 def test_a_wide_cotangent_is_committed_per_component():
@@ -212,7 +213,7 @@ def test_a_wide_cotangent_is_committed_per_component():
 
 def _two_edges():
     """Two independent switches, each owning a different pair of slots of one
-    wide leaf: the KAN shape at two edges."""
+    wide leaf: the spline shape at two edges."""
     theta, x = _leaf("theta", VW), _leaf("x", S)
     k1, k2 = _leaf("k1", I32), _leaf("k2", I32)
     one = Dispatch(k1, [mk("mul", (_comp(theta, 0), x)),
@@ -232,7 +233,7 @@ def test_each_store_follows_its_part_not_the_end_of_the_body():
 
 
 @kernel
-def _kan_pair(theta: Vector[6], x: Vector[3], k0: Index, k1: Index, k2: Index,
+def _spline_pair(theta: Vector[6], x: Vector[3], k0: Index, k1: Index, k2: Index,
               terminated: Terminated, y: Mutable[Scalar]):
     """Three edges, each a two-case switch over its own slots of ``theta`` and
     its own ``x``: the cotangents of ``theta`` and ``x`` read the same switches,
@@ -248,7 +249,7 @@ def test_a_store_whose_part_is_ready_early_is_not_left_to_its_turn():
     after the whole subtree of ``bar_theta``; it is ready as soon as its
     switch has run, and its store follows that switch (as ``bar_theta``'s do)
     rather than waiting for the end of the body."""
-    lines = _body(vjp(_kan_pair, wrt=("theta", "x"))).splitlines()
+    lines = _body(vjp(_spline_pair, wrt=("theta", "x"))).splitlines()
     switches = [n for n, ln in enumerate(lines) if "switch (" in ln]
     store = next(n for n, ln in enumerate(lines) if "mut_bar_x(0," in ln)
     assert len(switches) == 3 and store < switches[1], (switches, store)

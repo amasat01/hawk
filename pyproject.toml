@@ -55,7 +55,14 @@ classifiers = [
 # raptor-core, aether-dsc, raptor-hawk and raptor-eagle share one version from 0.7.0; aether-dsc
 # 0.7.2 brings the team linear-algebra headers, keyed block sums and the QR solve hawk emits.
 # numpy: hawk never imports it, but the host route and every example pass NumPy arrays
-dependencies = ["aether-dsc>=0.7.5,<0.8", "raptor-core>=0.7.5,<0.8", "numpy>=1.26"]
+dependencies = ["aether-dsc>=0.7.5,<0.8", "raptor-core>=0.7.5,<0.8", "raptor-variants", "raptor-lowering", "numpy>=1.26"]
+
+# The pieces hawk finds as installed distributions: each declares its entry point in its own pyproject (variants/, components/*).
+# The two first-party extensions ship in this wheel and declare theirs here: hawk reads them from this distribution's metadata,
+# the way it reads a third party's.
+[project.entry-points."raptor.extensions"]
+hawk-cuda = "hawk_cuda:extension.json"
+hawk-c = "hawk_c:extension.json"
 
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
@@ -71,8 +78,8 @@ docs = ["Sphinx", "sphinx-book-theme", "myst-nb", "sphinx-design", "sphinx-copyb
         "nbclient", "ipykernel", "matplotlib", "warp-lang", "setuptools-scm", "sphinx-sitemap>=2.6"]
 # The GPU route: NVRTC + CCCL + cuda-bindings for one CUDA major (no nvcc needed).
 # CUDA 13's wheels carry no -cu13 suffix (those names on PyPI are empty placeholders).
-cuda12 = ["cuda-bindings>=12.6,<13", "nvidia-cuda-nvrtc-cu12>=12.6,<13", "nvidia-cuda-cccl-cu12>=12.6,<13"]
-cuda13 = ["cuda-bindings>=13,<14", "nvidia-cuda-nvrtc>=13,<14", "nvidia-cuda-cccl>=13,<14"]
+cuda12 = ["raptor-simt", "cuda-bindings>=12.6,<13", "nvidia-cuda-nvrtc-cu12>=12.6,<13", "nvidia-cuda-cccl-cu12>=12.6,<13"]
+cuda13 = ["raptor-simt", "cuda-bindings>=13,<14", "nvidia-cuda-nvrtc>=13,<14", "nvidia-cuda-cccl>=13,<14"]
 
 # The compiled `hawk._core` is a nanobind extension, so a wheel is per-Python/ABI
 # (never py3-none-any). It is HOST-ONLY — no device kernels, no arch list, no nvcc
@@ -81,7 +88,7 @@ cuda13 = ["cuda-bindings>=13,<14", "nvidia-cuda-nvrtc>=13,<14", "nvidia-cuda-ccc
 [tool.scikit-build]
 minimum-version = "build-system.requires"
 build-dir = "build/{wheel_tag}"
-wheel.packages = ["hawk"]
+wheel.packages = ["hawk", "extensions/hawk_cuda/hawk_cuda", "extensions/hawk_c/hawk_c"]
 cmake.version = ">=3.20"
 # Keep a dev build's in-tree extension out of the pure-python source collection;
 # the wheel's copy comes from the CMake install. .git_archival.txt stays out of the sdist: its
@@ -115,13 +122,14 @@ testpaths = ["tests"]
 # Makes `import hawk` work against the checked-out tree without an install --
 # this repo root, prepended to sys.path before collection (mirrors raptor
 # and the family's own pyproject convention).
-pythonpath = ["."]
+pythonpath = ["extensions/hawk_cuda", ".", "extensions/hawk_c"]
 # a test stuck for 10 minutes prints every thread's stack (it keeps running): a hang names itself
 faulthandler_timeout = 600
 markers = [
     "gpu: needs a CUDA GPU and cupy; CI on a GPU-less runner deselects it with -m \"not gpu\"",
     "ft: free-threading rows (need a free-threaded interpreter; skip on a GIL build)",
     "repo_local: reads the repository's source tree, which a wheel install does not carry; only the wheel test (release.yml) deselects it",
+    "needs_toolchain(name): the row asserts on a tool or host feature the product does not itself refuse for; absent here (tests/conftest.py probes) it is reported toolchain-absent for that name",
     "wall_clock: compares measured run times, which flip with machine load; skipped unless HAWK_WALL_CLOCK_ROWS=1 is set (run on a quiet machine)",
 ]
 
@@ -142,7 +150,7 @@ ignore = ["F841"]
 # undefined name anywhere else still fails.
 "examples/two_body_hybrid.py" = ["F821"]
 "tests/_autodiff_kernels.py" = ["F821"]
-"tests/_kan.py" = ["F821"]
+"tests/_spline.py" = ["F821"]
 "hawk/targets/cards/_probe_wide.py" = ["F821"]
 "tests/_wide_kernels.py" = ["F821"]
 "tests/test_contraction_multi.py" = ["F821"]

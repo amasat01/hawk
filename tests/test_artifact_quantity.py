@@ -29,6 +29,7 @@ removed.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import ast
 import pathlib
@@ -60,7 +61,7 @@ def test_zero_text_surgery():
     """The body both wrappers compile is the SAME string, and it
     carries no spliced raw text — so there is nothing for a lowering pass to
     edit and no anchor for one to find."""
-    body = render_body(D.spin.sinks, D.spin.walk).text
+    body = render_body(D.spin.sinks, D.spin.walk, spec=HOST).text
     sources = [render_source("spin", D.spin.sinks, D.spin.walk, b)
                for b in TARGETS.values() if b.wrapper]
     assert len({s.body for s in sources}) == 1

@@ -25,11 +25,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from ..ir import HawkError, Walk
+from raptor.ir.linalg import LSTSQ_OPS
+from ..ir.walk import canonical
+from ..passes.lstsq import lowered_sinks, max_dim_of
+from ..ir import Walk
+from .._errors import HawkError
 from ..ir.nodes import sample_sums
 from ..types import INT_PLANE_DTYPES, Slot
-from .box import boxed_sinks, frame
-from . import policy
+from .. import components as _components
+_box = _components.view("lowering", "box")
+from ..passes import policy
+from ..targets import build_spec
 from .render import Body, render_body
 from .writer_aether import RUN_CALL, RUN_STATE
 from .spelling import (
@@ -153,7 +159,6 @@ def scalar_mode(name: str) -> ScalarMode:
     )
 
 
-_REDUCTION_REMEDY = "until the banded reduction lands; build this kernel in float64 or float32 meanwhile"
 _ATOMIC_REMEDY = "a packed cell has no atomic add; use the default or compensated policy, which a banded build routes to the ordered stages"
 _MATH_REMEDY = "until its banded row lands in aether; build this kernel in float64 or float32 meanwhile"
 
@@ -184,23 +189,8 @@ _BANDED_UNCERTIFIED = {
 }
 
 
-def refuse_cells_off_device(name: str, mode: ScalarMode, target_id: str, target) -> None:
-    """Refuse a ``cells`` (banded) build for a target that is not a device: banded is a device feature."""
-    from ..targets import GPU
-
-    if mode.cells and target.compile != GPU:
-        raise HawkError(f"{name!r}: banded runs on device execution paths; on a CPU use float64 "
-                        f"(target {target_id!r} is not a device)")
 
 
-def refuse_team_reductions(team, mode: ScalarMode) -> None:
-    """Refuse a ``cells`` build of a block sum that is not the ordered plain sum (``team`` is its
-    :class:`~hawk.ir.team.TeamSpec`): the general block sum is an aether team call that adds cells with a plain ``+=``,
-    which would be the plain fold under the sum's name. The ordered stages fold ``BandAccum`` partials."""
-    for step in () if team is None or not mode.cells else team.steps:
-        if step.op == "block_sum" and "gp" not in dict(step.planes):
-            raise HawkError(f"a block sum over matrices ({step.op}) is not built in scalar mode {mode.id!r} yet: "
-                            f"{_REDUCTION_REMEDY}")
 
 
 def refuse_uncertified(sinks, walk: Walk, mode: ScalarMode) -> None:
@@ -248,7 +238,7 @@ class Wrapper(Protocol):
         ``segmented`` unit's column is ``offsets[j] + tid``, so the
         prologue reads its run's bounds off the offsets plane and exits a
         lane past the device-read run length. ``box``
-        (:class:`hawk.emit.box.Box`): ``base + flat`` is a thread and ``i``
+        (:class:`simt.box.Box`): ``base + flat`` is a thread and ``i``
         its first lane. Omitted, this is the ordinary partition-relative
         prologue."""
 
@@ -263,11 +253,11 @@ class Wrapper(Protocol):
         by-value mirror — ``params[]`` casts on the host, by-value binds
         on the device."""
 
-    def fold_rows(self, width: int) -> int:
+    def fold_rows(self, width: int, spec) -> int:
         """Rows of 32 samples one warp reduces in a batched fold of ``width`` terms per sample (1: one row at a time)."""
 
     def sample_sum_frame(self, width: int, elem: str, store: str,
-                         op: str = "sum", live: str | None = None) -> tuple:
+                         op: str = "sum", live: str | None = None, *, spec) -> tuple:
         """``(open, close)`` around the body of a kernel with ``sample_sum``
         sinks: the body writes ``width`` terms of type ``elem`` per sample
         into ``hawk_ss``; each row of 32 samples is reduced by ``op`` (sum,
@@ -293,9 +283,9 @@ class Source:
     entry: str
     target: str
     mode: str
-    #: The host loop over samples is vectorised (see :func:`hawk.ir.vectorise.vectorises`).
+    #: The host loop over samples is vectorised (see :func:`hawk.passes.vectorise.vectorises`).
     vectorised: bool = False
-    #: The thread box the entry was emitted with (:class:`hawk.emit.box.Box`), or ``None``.
+    #: The thread box the entry was emitted with (:class:`simt.box.Box`), or ``None``.
     box: object = None
 
 
@@ -339,14 +329,19 @@ _TWO_SUM_INCLUDE = "#include <aether/accum/TwoSum.h>\n"
 #: that calls it.
 _LINALG_CALL = "aether::linalg::"
 _LINALG_INCLUDE = "#include <aether/linalg/linalg.h>\n"
+#: The variant's generated header (``variants/<name>/raptor_variant.h``, its directory on the compile line): linalg and the ray
+#: primitives read ``RAPTOR_LINALG_MAX_DIM`` from it, so it comes first in a unit that includes either.
+_VARIANT_INCLUDE = '#include "raptor_variant.h"\n'
 _TEAM_INCLUDE = "#include <aether/linalg/team.h>\n"
 
 #: The ray primitives' header, likewise.
 _RAY_CALL = "aether::geometry::"
-from .team import TEAM_CALL as _TEAM_CALL  # noqa: E402
+from .. import components as _components
+_wt = _components.view("lowering", "wrapper_text")
+_team_emit = _components.view("lowering", "team_emit")
 _RAY_INCLUDE = "#include <aether/geometry/geometry.h>\n"
 
-#: The rolled-loop twins' header (:mod:`hawk.emit.policy`), likewise.
+#: The rolled-loop twins' header (:mod:`hawk.passes.policy`), likewise.
 _RT_CALL = "aether::rt::"
 _TILED_CALL = "hawk_abi::tiled<"
 _WARP_SUM_CALL = "hawk_abi::warp_sum<"
@@ -436,7 +431,7 @@ template <class ViewT, class T>
 }}
 """
 
-#: One lane's elements of a scratch plane that tiles the lanes by warp (:mod:`hawk.ir.wide`): element ``k`` of lane
+#: One lane's elements of a scratch plane that tiles the lanes by warp (:mod:`simt.wide`): element ``k`` of lane
 #: ``i`` of a plane of width ``W`` is at ``((i / 32) * W + k) * 32 + i % 32``, so the lane's proxy is its first element
 #: and ``at(k)`` adds ``32 k`` elements. It has the shape of an aether per-sample proxy to the ``aether::rt`` twins.
 #: Spliced only into a unit whose body names it.
@@ -464,40 +459,7 @@ template <class T, std::size_t W, class ViewT>
 }}
 """
 
-#: The sum of one value per lane over the 32 lanes of a warp (:mod:`hawk.ir.lane`): a fixed butterfly, so every lane ends
-#: with the same bits and a replay gives them again. Spliced only into a unit whose body names it.
-_WARP_SUM = """
-template <class T>
-{qualifier} T warp_sum(T v)
-{{
-    for (int m = 16; m > 0; m >>= 1) v += __shfl_xor_sync(0xffffffffu, v, m);
-    return v;
-}}
-"""
 
-#: The banded sum over the 32 lanes of a warp: each lane folds its value into a ``BandAccum``, the butterfly merges whole
-#: accumulators through eagle's ``shflXor`` with ``combine`` (the lower lane's accumulator first, so every lane ends
-#: with the same bits), and the total is encoded once.
-_WARP_SUM_BANDED = """
-template <class T>
-{qualifier} T warp_sum(T v)
-{{
-    aether::banded::BandAccum a;
-    a.addTerm(aether::banded::Band(v));
-    unsigned lane;
-    asm("mov.u32 %0, %%laneid;" : "=r"(lane));
-    for (int m = 16; m > 0; m >>= 1) {{
-        aether::banded::BandAccum o = eagle::cuda::shflXor(0xffffffffu, a, m);
-        if (lane & static_cast<unsigned>(m)) {{
-            o.combine(a);
-            a = o;
-        }} else {{
-            a.combine(o);
-        }}
-    }}
-    return a.toBandedReal();
-}}
-"""
 
 #: The fold of an owned companion into its target (:func:`fold_entries`):
 #: the two-sum of the pair, the rounded sum into the target and its exact
@@ -516,233 +478,12 @@ template <class ViewT>
 }}
 """
 
-#: Compensated OWN-COLUMN commit: a Neumaier accumulate into the host's
-#: prior value, one writer per sample, never atomic. The total is
-#: ``target + companion``, so the host must zero both before the first term.
-_FINISH_COUNT = """
-template <class ViewT>
-{qualifier} void finish_count(const ViewT& counter)
-{{
-    // The finish epilogue's count (hawk.ir.nodes.FINISHED_PLANE): ONE
-    // relaxed increment of a uint32 cell per NEWLY finished sample, at most N
-    // over a whole run. Read only after the launch, in stream / team order.
-    auto* cell = const_cast<std::uint32_t*>(
-        reinterpret_cast<const std::uint32_t*>(counter.data()));
-#if defined(__CUDA_ARCH__)
-    atomicAdd(reinterpret_cast<unsigned int*>(cell), 1u);
-#else
-    std::atomic_ref<std::uint32_t>(*cell).fetch_add(1u, std::memory_order_relaxed);
-#endif
-}}
-"""
-
-#: The ``sample_sum`` row sum (:class:`hawk.ir.nodes.SampleSum`): the pair
-#: combine, its host twin over one row of 32 slots, and the device's warp
-#: butterfly over the same pairs. Needs ``twoSumErr_`` above.
-_SAMPLE_SUM = """
-template <class E>
-{qualifier} E ssExtreme_(int op, E a, E b)
-{{
-    // max (op 1) or min (op 2) that ignores a NaN operand, as hawk.math.max/min.
-    if (a != a) return b;
-    if (b != b) return a;
-    return op == 1 ? (b > a ? b : a) : (b < a ? b : a);
-}}
-
-template <int OP, class E>
-{qualifier} E ssIdentity_()
-{{
-    // What a slot past the last sample holds: 0, -inf, +inf.
-    if constexpr (OP == 0) return E(0);
-    else if constexpr (OP == 1) return -static_cast<E>(__builtin_inf());
-    else return static_cast<E>(__builtin_inf());
-}}
-
-template <int OP = 0, class E>
-{qualifier} void pairCombine_(E& s, E& c, E s2, E c2)
-{{
-    if constexpr (OP != 0) {{
-        s = ssExtreme_(OP, s, s2);
-        return;
-    }}
-    // Compensated combine of two partials (s, c) and (s2, c2), kept verbatim
-    // with aether/accum/atomic.h. Symmetric: either side may hold either
-    // partial. A non-finite sum drops its compensation, so Inf and NaN
-    // follow IEEE through s.
-    const E t = s + s2;
-    const E e = aether::accum::twoSumErrFinite(s, s2, t);
-    c = aether::accum::isFiniteBits(t) ? (c + c2) + e : E(0);
-    s = t;
-}}
-
-template <int N, int OP = 0, class E, class Store>
-{qualifier} void sampleSumRow_(E* terms, Store&& store)
-{{
-    // One row: 32 slots of N terms (row-major), slot l combined with slot
-    // l + off for off = 16, 8, 4, 2, 1 -- the pairs of sampleSumWarp_ --
-    // then store(column, sum, compensation). Leaves the slots zeroed.
-    E comp[32 * N] = {{}};
-    for (int off = 16; off >= 1; off >>= 1)
-        for (int l = 0; l < off; ++l)
-            for (int k = 0; k < N; ++k)
-                pairCombine_<OP>(terms[l * N + k], comp[l * N + k],
-                             terms[(l + off) * N + k], comp[(l + off) * N + k]);
-    for (int k = 0; k < N; ++k) store(k, terms[k], comp[k]);
-    for (int k = 0; k < 32 * N; ++k) terms[k] = ssIdentity_<OP, E>();
-}}
-
-#if defined(__CUDACC__)
-template <class E>
-__device__ __forceinline__ void ssPin_(E& x)
-{{
-    // A rounded term: a product in the body is never fused into a combine.
-    if constexpr (sizeof(E) == 4) asm("" : "+f"(x));
-    else asm("" : "+d"(x));
-}}
-
-template <int M, int OP, class E>
-__device__ __forceinline__ void ssRound_(E* h, E* c, int off, bool up)
-{{
-    // One butterfly round over a lane's M columns: it keeps one contiguous
-    // half (the upper one when `up`), adds its partner's (lane ^ off) copy
-    // of that half, and ships the other half to the partner.
-    constexpr int LO = M / 2, UP = M - LO;
-#pragma unroll
-    for (int j = 0; j < UP; ++j) {{
-        const E sh = up ? (j < LO ? h[j] : ssIdentity_<OP, E>()) : h[LO + j];
-        const E sc = up ? (j < LO ? c[j] : E(0)) : c[LO + j];
-        const E rh = __shfl_xor_sync(0xffffffffu, sh, off);
-        const E rc = __shfl_xor_sync(0xffffffffu, sc, off);
-        if (up) pairCombine_<OP>(h[LO + j], c[LO + j], rh, rc);
-        else if (j < LO) pairCombine_<OP>(h[j], c[j], rh, rc);
-    }}
-#pragma unroll
-    for (int j = 0; j < UP; ++j) {{
-        h[j] = up ? h[LO + j] : (j < LO ? h[j] : ssIdentity_<OP, E>());
-        c[j] = up ? c[LO + j] : (j < LO ? c[j] : E(0));
-    }}
-}}
-
-template <int N, int OP = 0, class E, class Store>
-__device__ __forceinline__ void sampleSumWarp_(E (&h)[N], Store&& store)
-{{
-    // The warp's 32 lanes' terms summed column by column in five rounds
-    // (lane ^ 16, 8, 4, 2, 1); each lane then stores the sums of the
-    // contiguous run of columns it holds. Every lane of the warp calls it.
-    E c[N];
-#pragma unroll
-    for (int k = 0; k < N; ++k) {{
-        ssPin_(h[k]);
-        c[k] = E(0);
-    }}
-    unsigned lane;
-    asm("mov.u32 %0, %%laneid;" : "=r"(lane));
-    constexpr int M2 = N - N / 2, M3 = M2 - M2 / 2, M4 = M3 - M3 / 2;
-    constexpr int M5 = M4 - M4 / 2, M6 = M5 - M5 / 2;
-    ssRound_<N, OP>(h, c, 16, (lane & 16u) != 0u);
-    ssRound_<M2, OP>(h, c, 8, (lane & 8u) != 0u);
-    ssRound_<M3, OP>(h, c, 4, (lane & 4u) != 0u);
-    ssRound_<M4, OP>(h, c, 2, (lane & 2u) != 0u);
-    ssRound_<M5, OP>(h, c, 1, (lane & 1u) != 0u);
-    // the columns a lane holds: the rounds' split points are M / 2 of the
-    // padded counts above, so a lane may hold fewer than M (or none)
-    const int halves[5] = {{N / 2, M2 / 2, M3 / 2, M4 / 2, M5 / 2}};
-    int lo = 0, m = N;
-#pragma unroll
-    for (int r = 0; r < 5; ++r) {{
-        if (lane & (16u >> r)) {{
-            lo += halves[r];
-            m -= halves[r];
-        }} else if (m > halves[r]) {{
-            m = halves[r];
-        }}
-    }}
-#pragma unroll
-    for (int j = 0; j < M6; ++j)
-        if (j < m) store(lo + j, h[j], c[j]);
-}}
-#endif
-"""
-
-#: The banded row sum: a partial is aether's compensated ``BandAccum`` (the residue-lane fold) and two partials merge
-#: with its ``combine``; the warp tree ships whole accumulators through eagle's ``shflXor``. These overloads are
-#: declared BEFORE :data:`_SAMPLE_SUM`, whose templates pick them for the accumulator type.
-_BANDED_SUM = """
-template <int OP = 0>
-{qualifier} void pairCombine_(aether::banded::BandAccum& s, aether::banded::BandAccum&,
-                             aether::banded::BandAccum s2, aether::banded::BandAccum)
-{{
-    s.combine(s2);
-}}
-
-{qualifier} void ssPin_(aether::banded::BandAccum&) {{}}
-
-// hawk.max / hawk.min: the fold is exact, so a partial is a bare Band and two partials merge with the certified fmax / fmin.
-template <class E>
-{qualifier} E ssInf_(float sign) {{ return E(sign * __builtin_inff(), 0.0f, 0.0f); }}
-
-{qualifier} aether::banded::Band ssExtreme_(int op, aether::banded::Band a, aether::banded::Band b)
-{{
-    return op == 1 ? aether::banded::detail::fmax(a, b) : aether::banded::detail::fmin(a, b);
-}}
-
-template <int OP = 0>
-{qualifier} void pairCombine_(aether::banded::Band& s, aether::banded::Band&, aether::banded::Band s2, aether::banded::Band)
-{{
-    s = ssExtreme_(OP, s, s2);
-}}
-
-{qualifier} void ssPin_(aether::banded::Band&) {{}}
-
-{qualifier} Real ssOut_(aether::banded::Band s) {{ return Real(s); }}
-
-{qualifier} Real ssOut_(aether::banded::BandAccum s) {{ return s.toBandedReal(); }}
-
-{qualifier} Real ssComp_(aether::banded::BandAccum) {{ return Real{{}}; }}
-
-#if defined(__CUDACC__)
-__device__ __forceinline__ aether::banded::BandAccum ssShfl_(aether::banded::BandAccum v, int off)
-{{
-    return eagle::cuda::shflXor(0xffffffffu, v, off);
-}}
-
-__device__ __forceinline__ aether::banded::Band ssShfl_(aether::banded::Band v, int off)
-{{
-    return eagle::cuda::shflXor(0xffffffffu, v, off);
-}}
-#endif
-"""
-
-_BANDED_SUM_INCLUDE = "#include <aether/banded/Accum.h>\n#if defined(__CUDACC__)\n#include <eagle/cuda/WarpShuffle.h>\n#endif\n"
-
-_BANDED_SS_HELPERS = '''template <class E>
-{qualifier} E ssOut_(E s) {{ return s; }}
-
-template <class E>
-{qualifier} E ssComp_(E c) {{ return c; }}
-
-#if defined(__CUDACC__)
-template <class E>
-__device__ __forceinline__ E ssShfl_(E v, int off)
-{{
-    return __shfl_xor_sync(0xffffffffu, v, off);
-}}
-
-template <class E>
-__device__ __forceinline__ void ssPin_'''
 
 
-def _banded_sample_sum(text: str) -> str:
-    """:data:`_SAMPLE_SUM` for a ``cells`` mode: value-initialised zeros (an accumulator has no ``E(0)``), the warp
-    shuffle through ``ssShfl_`` (eagle's, for an accumulator) and the generic ``ssOut_``/``ssComp_``/``ssShfl_``."""
-    text = (text.replace("E(0)", "E{{}}")
-                .replace("-static_cast<E>(__builtin_inf())", "ssInf_<E>(-1.0f)")
-                .replace("static_cast<E>(__builtin_inf())", "ssInf_<E>(1.0f)")
-                .replace("__shfl_xor_sync(0xffffffffu, sh, off)", "ssShfl_(sh, off)")
-                .replace("__shfl_xor_sync(0xffffffffu, sc, off)", "ssShfl_(sc, off)"))
-    return text.replace("""#if defined(__CUDACC__)
-template <class E>
-__device__ __forceinline__ void ssPin_""", _BANDED_SS_HELPERS, 1)
+
+
+
+
 
 
 _STORE_COMPENSATED = """
@@ -983,7 +724,7 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
                 spacing: bool = False, mix: bool = False,
                 integers: bool = False, sample_sum: bool = False,
                 fold: bool = False, scatter_or: bool = False, tiled: bool = False, warp_sum: bool = False,
-                cells: bool = False) -> str:
+                cells: bool = False, row: int | None = None) -> str:
     """The view-from-mirror reconstruction helpers — byte-for-byte the same
     on both targets, only the function qualifier differs; reads the
     mirror's own stride fields so a non-contiguous plane rebuilds
@@ -1004,14 +745,18 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
         helpers.append(_FOLD_COMPANION.format(qualifier=qualifier))
     if sample_sum:
         if cells:
-            helpers.append(_BANDED_SUM.format(qualifier=qualifier))
-        helpers.append((_banded_sample_sum(_SAMPLE_SUM) if cells else _SAMPLE_SUM).format(qualifier=qualifier))
+            helpers.append(_components.device_view("wrapper_text").BANDED_SUM.format(qualifier=qualifier))
+        if row is None:
+            raise HawkError("the sample-sum row helper is emitted with the variant's cells.row, and none was given")
+        halves = [row >> k for k in range(1, row.bit_length())]       # the pairs of one row: row/2, ..., 2, 1
+        helpers.append((_components.device_view("wrapper_text").banded_sample_sum(_wt.SAMPLE_SUM) if cells else _wt.SAMPLE_SUM).format(
+            qualifier=qualifier, row=row, half=row // 2, offsets=", ".join(map(str, halves))))
     if compensated:
         helpers.append(_ACCUM_ADD_COMPENSATED.format(qualifier=qualifier))
     if store_compensated:
         helpers.append(_STORE_COMPENSATED.format(qualifier=qualifier))
     if finish:
-        helpers.append(_FINISH_COUNT.format(qualifier=qualifier))
+        helpers.append(_wt.FINISH_COUNT.format(qualifier=qualifier))
     if spacing:
         helpers.append(_SPACING.format(qualifier=qualifier))
     if mix:
@@ -1023,7 +768,7 @@ def abi_helpers(qualifier: str, *, compensated: bool = False,
     if tiled:
         helpers.append(_TILED.format(qualifier=qualifier))
     if warp_sum:
-        helpers.append((_WARP_SUM_BANDED if cells else _WARP_SUM).format(qualifier=qualifier))
+        helpers.append((_components.device_view("wrapper_text").WARP_SUM_BANDED if cells else _components.device_view("wrapper_text").WARP_SUM).format(qualifier=qualifier))
     return f"""namespace hawk_abi {{
 
 template <class T, std::size_t N>
@@ -1094,7 +839,8 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
             integers: bool = False, sample_sum: bool = False,
             runs: bool = False, fold: bool = False, linalg: bool = False,
             rt: bool = False, scatter_or: bool = False, rays: bool = False,
-            team: bool = False, tiled: bool = False, warp_sum: bool = False, narrow_int: bool = False) -> str:
+            team: bool = False, tiled: bool = False, warp_sum: bool = False, narrow_int: bool = False,
+            row: int | None = None) -> str:
     """Includes + the scalar-mode aliases + the reconstruction helpers.
 
     ``compensated``/``store_compensated`` reach :func:`abi_helpers`'s gate.
@@ -1102,10 +848,10 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
     a unit whose body emitted a random draw gets the extra header, and
     ``runs`` the run commits' header."""
     includes = _INCLUDES
-    extra = (mode.includes + (_RANDOM_INCLUDE if needs_random else "") + (_RUN_INCLUDE if runs else "")
+    extra = ((_VARIANT_INCLUDE if linalg or rays or team else "") + mode.includes + (_RANDOM_INCLUDE if needs_random else "") + (_RUN_INCLUDE if runs else "")
              + (_TWO_SUM_INCLUDE if compensated or store_compensated or sample_sum or fold else "")
              + (_LINALG_INCLUDE if linalg else "") + (_RT_INCLUDE if rt else "")
-             + (_BANDED_SUM_INCLUDE if mode.cells and (sample_sum or team or warp_sum) else "") + (_RAY_INCLUDE if rays else "") + (_TEAM_INCLUDE if team else ""))
+             + (_components.device_view("wrapper_text").BANDED_SUM_INCLUDE if mode.cells and (sample_sum or team or warp_sum) else "") + (_RAY_INCLUDE if rays else "") + (_TEAM_INCLUDE if team else ""))
     if extra:
         includes = includes.replace(_RANDOM_INCLUDE_MARKER,
                                     _RANDOM_INCLUDE_MARKER + extra, 1)
@@ -1116,7 +862,7 @@ def prelude(mode: ScalarMode, qualifier: str, *, compensated: bool = False,
                          store_compensated=store_compensated, finish=finish,
                          spacing=spacing, mix=mix, integers=integers,
                          sample_sum=sample_sum, fold=fold, scatter_or=scatter_or, tiled=tiled, warp_sum=warp_sum,
-                         cells=mode.cells))
+                         cells=mode.cells, row=row))
 
 
 def narrows_int(active: ActiveSpec | None, walk: Walk) -> bool:
@@ -1129,7 +875,19 @@ def narrows_int(active: ActiveSpec | None, walk: Walk) -> bool:
                         for (role, _name), ttype in walk.slot_types.items()))
 
 
-def render_source(name: str, sinks, walk: Walk, target, *,
+def _for_build(wrapper, spec):
+    """``wrapper`` as this build uses it: a wrapper that declares ``launch_bounds`` gets its own copy holding the build's
+    (``spec.settings.launch_bounds``); the shared instance is never written."""
+    if not hasattr(wrapper, "launch_bounds"):
+        return wrapper
+    import copy
+
+    own = copy.copy(wrapper)
+    own.launch_bounds = spec.settings.launch_bounds
+    return own
+
+
+def render_source(name: str, sinks, walk: Walk, target, *, spec=None, build_policy=None,
                   mode: ScalarMode = FLOAT64, kind=None, exports: str = "",
                   body: Body | None = None,
                   segment: SegmentSpec | None = None,
@@ -1137,7 +895,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
                   box=None, team: int | None = None, rows: int = 1) -> Source:
     """Assemble ONE translation unit around the ONE body string.
 
-    ``target`` is the :class:`hawk.targets.Target` row: its writer spells the
+    ``target`` is the :class:`hawk.backends.Backend` row: its writer spells the
     body and its wrapper wraps it. Both wrappers are handed the SAME :class:`~hawk.emit.render.Body`; the
     row that observes it compares :attr:`Source.body`, not the files.
     ``kind`` is the :class:`hawk.ext.Kind` the body's commits render under;
@@ -1157,40 +915,45 @@ def render_source(name: str, sinks, walk: Walk, target, *,
     ``asm`` marker so the compiler can't fold the two together. Omitted,
     the TU is unchanged.
 
-    ``team`` (the threads per team of a team stage, :mod:`hawk.emit.team`) makes the lane the
+    ``team`` (the threads per team of a team stage, :mod:`simt.team_emit`) makes the lane the
     block on the device; the host entry is the plain lane loop, a team of one.
 
-    ``box`` (:class:`hawk.emit.box.Box`, from :func:`hawk.emit.box.thread_box`)
+    ``box`` (:class:`simt.box.Box`, from :func:`simt.box.thread_box`)
     emits the plain entry with a thread box: each thread computes ``box.T``
-    lanes (:func:`hawk.emit.box.boxed_sinks`).
+    lanes (:func:`simt.box.boxed_sinks`).
 
     A kernel with :class:`~hawk.ir.nodes.SampleSum` sinks runs the
     wrapper's ``sample_sum_frame`` instead of the index loop, and is refused
     under the segmented, active-set and automatic (``_persist``) entries."""
-    refuse_cells_off_device(name, mode, target.id, target)
+    from ..build_policy import apply
+
+    spec = apply(build_spec((target.id,)) if spec is None else spec, build_policy, (target.id,)).for_target(target)
+    _wt.refuse_cells_off_device(name, mode, target.id, target)
+    if walk.kinds.intersection(LSTSQ_OPS):          # a caller that did not come through lowering: this target's lowering
+        sinks = lowered_sinks(sinks, max_dim_of(spec.primary))
+        walk = canonical(sinks)
     refuse_uncertified(sinks, walk, mode)
     writer = _writer(target, mode)
     sums = sample_sums(sinks)
-    _refuse_sample_sums(sums, segment=segment, active=active, one_step=one_step)
+    _wt.refuse_sample_sums(sums, segment=segment, active=active, one_step=one_step)
     if (one_step is not None and body is None and segment is None
             and getattr(getattr(kind, "sink", None), "id", None) != "compensated"):
-        return _render_two_paths(name, sinks, walk, target, mode=mode,
+        return _render_two_paths(name, sinks, walk, target, spec=spec, mode=mode,
                                  kind=kind, exports=exports, active=active,
                                  one_step=one_step, team=team, rows=rows)
     own_body = body is None
     if box is not None:
         # the box's body, and the box-free one for a launch with fewer rows than T
-        plain = render_body(sinks, walk, indent=" " * 16, kind=kind, writer=writer)
-        boxed = render_body(boxed_sinks(sinks, box), walk, indent=" " * 12, kind=kind,
-                            writer=writer)
-        body = Body(frame(box, plain.text, boxed.text))
+        plain = render_body(sinks, walk, indent=" " * 16, kind=kind, writer=writer, spec=spec)
+        boxed = render_body(_box.boxed_sinks(sinks, box), walk, indent=" " * 12, kind=kind,
+                            writer=writer, spec=spec)
+        body = Body(_box.frame(box, plain.text, boxed.text))
     if body is None:
         plain_frame = (segment is None and active is None and box is None and team is None and one_step is None and not sums
                        and rows <= 1 and not any(role == "terminated" for role, _ in walk.arg_spec))
-        with policy.block_fold(plain_frame):
-            body = render_body(sinks, walk, indent="        ", kind=kind, writer=writer)
+        body = render_body(sinks, walk, indent="        ", kind=kind, writer=writer, spec=spec.with_settings(block_fold=plain_frame))
     compensated = False
-    wrapper = target.wrapper
+    wrapper = _for_build(target.wrapper, spec)
     store_compensated = False
     if kind is not None and getattr(kind.sink, "id", None) == "compensated":
         from ..ext import compensated_target
@@ -1208,6 +971,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
     prologue_kw: dict = {} if active is None else {"active": active}
     if team is not None and getattr(wrapper, "team_flat", None) is not None:
         prologue_kw["team"] = team      # the device lane is the block, the team its threads
+        prologue_kw["warps"] = spec.settings.warps
     if getattr(wrapper, "simd_safe", None) is not None:
         prologue_kw["simd"] = team is None and lane_loop_simd(wrapper, walk, active)
     lane_guards = getattr(wrapper, "lane_guards", None)
@@ -1218,7 +982,7 @@ def render_source(name: str, sinks, walk: Walk, target, *,
         prologue_kw["finish"] = lane_finish(walk)
     epilogue = (wrapper.index_epilogue(segment, **prologue_kw)
                 if lane_guards is not None else wrapper.index_epilogue())
-    tiled = (_interchange(wrapper, name, sinks, walk, kind, mode)
+    tiled = (_interchange(wrapper, name, sinks, walk, kind, mode, spec)
              if own_body and segment is None and active is None and box is None
              and not compensated and not store_compensated and not sums else None)
     if run_states(body.text):
@@ -1228,15 +992,15 @@ def render_source(name: str, sinks, walk: Walk, target, *,
     lanes_text = body.text if tiled is None else body.text + tiled.text
     loop = [wrapper.index_prologue(segment, **prologue_kw), body.text, epilogue]
     if rows > 1:        # a block serves ``rows`` lanes and stores their vector outputs through a shared tile
-        loop = [*_staged(wrapper, rows, sinks, mode), ]
+        loop = [*_components.device_view("wrapper_text").staged(wrapper, rows, sinks, mode, spec), ]
         loop = [loop[0], body.text, loop[1]]
     if box is not None:
         loop = [wrapper.index_prologue(box=box), body.text, wrapper.index_epilogue()]
     if sums:
         opened, closed = wrapper.sample_sum_frame(
             len(sums), ("aether::banded::BandAccum" if sums[0].op == "sum" else "aether::banded::Band") if mode.cells else element_spelling(sums[0].ttype.dtype),
-            _sample_sum_store(sums, wrapper.fold_rows(len(sums)), mode.cells),
-            sums[0].op, None if active is None else active_reads(active, "0")[0])
+            _sample_sum_store(sums, wrapper.fold_rows(len(sums), spec), mode.cells, spec),
+            sums[0].op, None if active is None else active_reads(active, "0")[0], spec=spec)
         loop = [opened, body.text, closed]
     loop = _with_runs(loop, body.text)
     parts = [
@@ -1246,10 +1010,10 @@ def render_source(name: str, sinks, walk: Walk, target, *,
                store_compensated=store_compensated, needs_random=body.needs_random,
                finish=getattr(walk, "finish", None) is not None,
                spacing=_SPACING_CALL in body.text, mix=_MIX_CALL in body.text,
-               integers=_INT_CALL in body.text, sample_sum=bool(sums),
+               integers=_INT_CALL in body.text, sample_sum=bool(sums), row=spec.need("cells", "row") if sums else None,
                runs=RUN_CALL in body.text, fold=bool(walk.companions),
                linalg=_LINALG_CALL in lanes_text, rt=_RT_CALL in lanes_text,
-               rays=_RAY_CALL in body.text, team=_TEAM_CALL in body.text,
+               rays=_RAY_CALL in body.text, team=_team_emit.TEAM_CALL in body.text,
                scatter_or=_OR_CALL in body.text, tiled=_TILED_CALL in body.text, warp_sum=_WARP_SUM_CALL in body.text,
                narrow_int=narrows_int(active, walk)),
         _extra_prelude(extra_prelude, walk, tiled, body.text),
@@ -1263,12 +1027,12 @@ def render_source(name: str, sinks, walk: Walk, target, *,
         "",
         *fold_entries(name, walk, wrapper),
     ]
-    from ..ir.vectorise import vectorises
+    from hawk.passes.vectorise import vectorises
 
     return Source(_filled(parts, mode), body.text, name,
                   target.id, mode.id,
-                  "vectorise" in target.features and box is None
-                  and vectorises(walk, scalar_type=mode.id), box)
+                  target.vectorise and box is None
+                  and vectorises(walk, spec, scalar_type=mode.id), box)
 
 
 def fold_entry_name(kernel: str, target: str) -> str:
@@ -1293,21 +1057,6 @@ def fold_entries(name: str, walk: Walk, wrapper) -> list:
     return out
 
 
-def _refuse_sample_sums(sums, *, segment, active, one_step) -> None:
-    """A row sums 32 consecutive samples of ONE warp; the segmented,
-    active-set and ``_persist`` entries map a warp onto other samples."""
-    entry = ("segmented" if segment is not None
-             else "active-set" if active is not None and active.map_binding is not None
-             else "_persist" if one_step is not None else None)
-    if len({s.op for s in sums}) > 1:
-        raise HawkError(
-            f"sample_sum {[s.name for s in sums]}: one kernel reduces over samples "
-            "with one op (sum, max or min) in this release; split the kernel")
-    if sums and entry is not None:
-        raise HawkError(
-            f"sample_sum {[s.name for s in sums]}: a row is the sum over one "
-            f"warp of 32 consecutive samples, and the {entry} entry's warp does not "
-            "hold 32 consecutive samples; launch this kernel on its plain entry")
 
 
 SAMPLE_SUM_OP_CODE = {"sum": 0, "max": 1, "min": 2}
@@ -1322,7 +1071,7 @@ def sample_sum_fill(op: str, width: int, array: str, elem: str) -> str:
             f"{array}[hawk_k] = hawk_abi::ssIdentity_<{SAMPLE_SUM_OP_CODE[op]}, {elem}>();\n")
 
 
-def _sample_sum_store(sums, rows: int = 1, cells: bool = False) -> str:
+def _sample_sum_store(sums, rows: int = 1, cells: bool = False, spec=None) -> str:
     """The entry-local ``hawk_ss_store(column, sum, compensation)`` the row
     sum calls: column ``k`` goes to the ``k``-th sink's two planes at row
     ``hawk_row``."""
@@ -1331,7 +1080,7 @@ def _sample_sum_store(sums, rows: int = 1, cells: bool = False) -> str:
     if rows > 1:
         w = len(sums)
         lines += [f"        const int hawk_rr = hawk_col / {w};",
-                  "        if (hawk_wbase + 32 * hawk_rr >= count) return;",
+                  f"        if (hawk_wbase + {spec.need('cells', 'row')} * hawk_rr >= count) return;",
                   "        const long long hawk_row = hawk_row0 + hawk_rr;",
                   f"        hawk_col %= {w};"]
     for k, sink in enumerate(sums):
@@ -1378,7 +1127,7 @@ def literal_table(source: Source) -> Source:
 
 
 def _interchange(wrapper: Wrapper, name: str, sinks, walk: Walk, kind,
-                 mode: ScalarMode = FLOAT64):
+                 mode: ScalarMode, spec):
     """The wrapper's interchanged fused-step loop for this TU (the host's
     optional ``interchange`` hook, :mod:`hawk.emit.host`), or ``None``: a
     wrapper without the hook, or a kernel the hook declines, keeps its text
@@ -1386,7 +1135,7 @@ def _interchange(wrapper: Wrapper, name: str, sinks, walk: Walk, kind,
     hook = getattr(wrapper, "interchange", None)
     if hook is None:
         return None
-    return hook(name, sinks, walk, kind, 4 if mode is FLOAT32 else 8)
+    return hook(name, sinks, walk, kind, 4 if mode is FLOAT32 else 8, spec)
 
 
 #: The host lane-guard ABI's lane type until the TU's scalar mode fills it in.
@@ -1423,14 +1172,6 @@ def _tiled_or(tiled, plain: list) -> list:
     return [f"#if {INTERCHANGE_MACRO}", tiled.text, "#else", *plain, "#endif"]
 
 
-def _staged(wrapper: Wrapper, rows: int, sinks, mode: ScalarMode) -> tuple:
-    """The frame of a block that serves ``rows`` lanes of a warp-form kernel (:meth:`CudaWrapper.stage_frame`): the vector
-    outputs it stages through shared memory are those of its warp stores."""
-    from ..ir.lane import WarpStore, slice_min
-
-    stages = tuple((binding_name(s.role, s.name), s.ttype.shape[0]) for s in sinks
-                   if isinstance(s, WarpStore) and s.ttype.shape and s.ttype.shape[0] >= slice_min(s.ttype.dtype))
-    return wrapper.stage_frame(rows, stages, "Real")
 
 
 def _frame(walk: Walk, wrapper: Wrapper, active: ActiveSpec | None, team: int | None = None) -> tuple:
@@ -1458,7 +1199,7 @@ def _frame(walk: Walk, wrapper: Wrapper, active: ActiveSpec | None, team: int | 
 _PATH_MARKER = '#if defined(__CUDA_ARCH__)\n    asm volatile("// hawk: {}");\n#endif'
 
 
-def _render_two_paths(name: str, sinks, walk: Walk, target, *,
+def _render_two_paths(name: str, sinks, walk: Walk, target, *, spec,
                       mode: ScalarMode, kind, exports: str,
                       active: ActiveSpec | None, one_step, team: int | None = None, rows: int = 1) -> Source:
     """The TU of an automatic kernel: :func:`render_source` with the entry's
@@ -1468,13 +1209,13 @@ def _render_two_paths(name: str, sinks, walk: Walk, target, *,
 
     On a wrapper with the ``persist`` hook (the device), the TU also carries
     the kernel's fast-path entries (:func:`_fast_entries`)."""
-    wrapper = target.wrapper
+    wrapper = _for_build(target.wrapper, spec)
     writer = _writer(target, mode)
-    fused = render_body(sinks, walk, indent="        ", kind=kind, writer=writer)
+    fused = render_body(sinks, walk, indent="        ", kind=kind, writer=writer, spec=spec)
     single = render_body(one_step.sinks, one_step.walk, indent="        ", kind=kind,
-                         writer=writer)
+                         writer=writer, spec=spec)
     tiled = None if active is not None else _interchange(wrapper, name, sinks,
-                                                         walk, kind, mode)
+                                                         walk, kind, mode, spec)
     extra_prelude = getattr(wrapper, "extra_prelude", None)
     parts = [
         f"// HAWK-emitted {target.id} translation unit (scalar mode: {mode.id}).\n"
@@ -1495,10 +1236,10 @@ def _render_two_paths(name: str, sinks, walk: Walk, target, *,
         _exports(exports, tiled),
         "",
         *_two_path_entry(name, walk, wrapper, fused, single, one_step, active,
-                         tiled, team, _staged(wrapper, rows, sinks, mode) if rows > 1 else None),
+                         tiled, team, _components.device_view("wrapper_text").staged(wrapper, rows, sinks, mode, spec) if rows > 1 else None),
         "",
         *([] if team is not None else _fast_entries(wrapper, name, sinks, walk, kind, fused, single, one_step,
-                                                    active)),     # the fast entries are a lane per thread: a warp per lane has none
+                                                    active, spec)),     # the fast entries are a lane per thread: a warp per lane has none
     ]
     return Source(_filled(parts, mode),
                   single.text + "\n" + fused.text, name, target.id, mode.id)
@@ -1546,7 +1287,7 @@ FAST_ENTRIES_MACRO = "HAWK_FAST_ENTRIES"
 
 
 def _fast_entries(wrapper: Wrapper, name: str, sinks, walk: Walk, kind, fused,
-                  single, one_step, active: ActiveSpec | None) -> list:
+                  single, one_step, active: ActiveSpec | None, spec) -> list:
     """The fast-path entries an automatic kernel's TU carries beside its own
     entry, on a wrapper with the ``persist`` hook (the device); ``[]`` on
     any other.
@@ -1562,8 +1303,8 @@ def _fast_entries(wrapper: Wrapper, name: str, sinks, walk: Walk, kind, fused,
     hook = getattr(wrapper, "persist", None)
     if hook is None:
         return []
-    persist = hook(name, sinks, walk, kind)
-    ranged = wrapper.range(name, sinks, walk, kind, single.text)
+    persist = hook(name, sinks, walk, kind, spec)
+    ranged = wrapper.range(name, sinks, walk, kind, single.text, spec)
     always = [] if persist is None or active is not None else [persist, ""]
     gated = [] if ranged is None else [ranged, ""]
     if persist is not None and active is not None:

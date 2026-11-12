@@ -16,7 +16,7 @@ import hawk
 from hawk import Grid, Index, Mutable, Scalar, kernel
 from hawk.artifact import build_bundle
 from hawk.ext import IndexSet, Kind
-from hawk.ir.team import THREADS_ENV
+THREADS_ENV = "HAWK_TEAM_THREADS"
 
 TARGETS = ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
 V, G, W = 65536, 64, 1024

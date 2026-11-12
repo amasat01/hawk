@@ -7,7 +7,7 @@ The record :func:`hawk.ir.recognize` produces is the ENTIRE seam between HAWK an
 ``eagle.gemm.plan.lower_dense_gemm``: HAWK imports no eagle and
 eagle imports no producer, so nothing else crosses. The rows here therefore split
 in two. Most of them mirror the previous code generator's contraction tests on the four shapes
-that matter — the dense KAN ``contract``, the MoE dense block, softmax's
+that matter — the dense spline ``contract``, the MoE dense block, softmax's
 recognised-but-not-lowerable sum, and the index structures that refuse — and one
 of them, :func:`test_the_record_carries_exactly_the_fields_eagles_lowering_reads`,
 pins the record's FIELD SET, because a field renamed on this side is a
@@ -15,7 +15,7 @@ pins the record's FIELD SET, because a field renamed on this side is a
 
 WHAT IT MATCHES. HAWK matches a ``ForLoopStmt`` with one additive carry, the
 same way the previous code generator did: a bounded ``for`` LOWERS to a
-:class:`~hawk.ir.loop_nodes.Loop` rather than being unrolled by trace-time execution,
+:class:`~hawk.ir.nodes.Loop` rather than being unrolled by trace-time execution,
 so the reduce variable is a real symbolic index and each operand's stride is the
 COEFFICIENT of that index, rather than a difference between
 unrolled terms. This includes the rule that matters most: a stride built from a bare literal is
@@ -25,6 +25,7 @@ is that rule, and it is the reason ``Table["row":r, "col":c]`` exists at all).
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import dataclasses
 
@@ -59,7 +60,7 @@ _OPERAND_FIELDS = (
 # The subjects.
 # --------------------------------------------------------------------------- #
 @hawk.kernel
-def kan_contract(w_fold: hawk.Table["row":ROWS, "neuron":N_OUT],
+def spline_contract(w_fold: hawk.Table["row":ROWS, "neuron":N_OUT],
                  feat: hawk.Staged[hawk.Vector[ROWS], BATCH],
                  y: hawk.Mutable[hawk.Scalar]):
     """``dense_slot.py``'s own ``dense_contract``, in HAWK's spelling: one lane
@@ -173,26 +174,26 @@ def max_fold(t: hawk.Table["row":ROWS], y: hawk.Mutable[hawk.Scalar]):
 # The dense, lowerable case.
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
-def kan():
-    return recognize(kan_contract, vjp=vjp(kan_contract))
+def spline():
+    return recognize(spline_contract, vjp=vjp(spline_contract))
 
 
-def test_the_dense_sum_of_products_is_recognized(kan):
+def test_the_dense_sum_of_products_is_recognized(spline):
     """Needs ``_const_factor``'s ``RoleConst`` arm, or a stride a declaration
     minted is not recognized as a compile-time factor and every operand's
     walk stops being affine::
 
-        assert kan.dense and not kan.refusals
+        assert spline.dense and not spline.refusals
         AssertionError: assert (False)
     """
-    assert kan is not None
-    assert kan.dense and not kan.refusals
-    assert kan.operand_class == "gemm"
-    assert kan.term_form == "product_of_reads"
-    assert (kan.reduce_start, kan.reduce_step, kan.reduce_extent) == (0, 1, ROWS)
-    assert kan.carry == "y"
-    assert kan.outputs == (("y", "scalar"),)
-    assert kan.operand_names == ("w_fold", "feat")
+    assert spline is not None
+    assert spline.dense and not spline.refusals
+    assert spline.operand_class == "gemm"
+    assert spline.term_form == "product_of_reads"
+    assert (spline.reduce_start, spline.reduce_step, spline.reduce_extent) == (0, 1, ROWS)
+    assert spline.carry == "y"
+    assert spline.outputs == (("y", "scalar"),)
+    assert spline.operand_names == ("w_fold", "feat")
 
 
 def _dot_staged(count):
@@ -208,7 +209,7 @@ def _dot_staged(count):
 
 
 @hawk.kernel
-def kan_contract_n(w_fold: hawk.Table["row":ROWS, "neuron":N_OUT],
+def spline_contract_n(w_fold: hawk.Table["row":ROWS, "neuron":N_OUT],
                    feat: hawk.Staged[hawk.Vector[ROWS], m.n_samples],
                    y: hawk.Mutable[hawk.Scalar]):
     sample, unit = m.split_index(N_OUT)
@@ -218,13 +219,13 @@ def kan_contract_n(w_fold: hawk.Table["row":ROWS, "neuron":N_OUT],
     y = total
 
 
-def test_a_staged_buffer_counted_by_the_launch_is_recognized_with_a_run_time_stride(kan):
-    n = recognize(kan_contract_n, vjp=vjp(kan_contract_n))
+def test_a_staged_buffer_counted_by_the_launch_is_recognized_with_a_run_time_stride(spline):
+    n = recognize(spline_contract_n, vjp=vjp(spline_contract_n))
     feat = n.operands[1]
     assert n.dense and feat.role == "staged" and feat.dims == (("plane", ROWS, "n_samples"), ("sample", None, 1))
     assert (feat.reduce_stride, feat.reduce_dim) == ("n_samples", "plane")
-    assert n.operands[0] == kan.operands[0] and n.staged_fanin == kan.staged_fanin and n.fanin_source == kan.fanin_source
-    assert n.adjoint_accumulates == kan.adjoint_accumulates
+    assert n.operands[0] == spline.operands[0] and n.staged_fanin == spline.staged_fanin and n.fanin_source == spline.fanin_source
+    assert n.adjoint_accumulates == spline.adjoint_accumulates
 
 
 def test_the_launch_counted_kernel_is_one_build_for_every_size():
@@ -252,12 +253,12 @@ def test_the_launch_counted_form_matches_the_int_form_bitwise(n, tmp_path, cache
     np.testing.assert_allclose(got["int"], np.einsum("r,rs->s", w, feat.reshape(ROWS, n)), rtol=1e-13)
 
 
-def test_each_operand_walks_a_DECLARED_axis(kan):
+def test_each_operand_walks_a_DECLARED_axis(spline):
     """The stride is not merely a number that fits: it must BE the axis's own
     declared constant, or the lowering has no way to say which axis to contract
     (``eagle.gemm.plan._resolve_operand`` refuses by name when ``reduce_dim`` is
     ``None``)."""
-    w_fold, feat = kan.operands
+    w_fold, feat = spline.operands
     assert w_fold.role == "named" and feat.role == "staged"
     assert w_fold.dims == (("row", ROWS, N_OUT), ("neuron", N_OUT, 1))
     assert feat.dims == (("plane", ROWS, BATCH), ("sample", BATCH, 1))
@@ -268,31 +269,31 @@ def test_each_operand_walks_a_DECLARED_axis(kan):
     assert w_fold.dense and feat.dense
     # every gate `_check_lowerable` applies, checked here so the record's
     # lowerability is a property of the record and not of eagle being present.
-    assert kan.reduce_extent == w_fold.dims[0][1] == feat.dims[0][1]
+    assert spline.reduce_extent == w_fold.dims[0][1] == feat.dims[0][1]
 
 
-def test_the_staged_fan_in_is_derived_from_the_major_half_of_the_split(kan):
+def test_the_staged_fan_in_is_derived_from_the_major_half_of_the_split(spline):
     """The staged plane is addressed by the MAJOR half of ``split_index(N_OUT)``,
     so ``N_OUT`` lanes share each slot and the reverse pass accumulates exactly
     that many contributions into it. ``eagle.gemm.plan.verify_staged_fanin``
     checks this against the adjoint GEMM's contracted extent — the OTHER
     operand's free extent, which is ``w_fold``'s ``neuron`` axis, ``N_OUT``."""
-    assert kan.staged_fanin == (("feat", N_OUT),)
-    assert kan.fanin_source == "primal_walk"
-    free_extent_of_the_other_operand = kan.operands[0].dims[1][1]
+    assert spline.staged_fanin == (("feat", N_OUT),)
+    assert spline.fanin_source == "primal_walk"
+    free_extent_of_the_other_operand = spline.operands[0].dims[1][1]
     assert free_extent_of_the_other_operand == N_OUT
 
 
-def test_the_adjoint_record_comes_from_the_vjp_walk(kan):
+def test_the_adjoint_record_comes_from_the_vjp_walk(spline):
     """``adjoint_accumulates`` is what tells a consumer the reverse direction
     lands in SHARED slots. Empty is not the same as absent, which is why the
     record carries it only when a derived IR was supplied."""
-    names = {name for name, _atomic in kan.adjoint_accumulates}
-    assert names == {"bar_w_fold", "bar_feat"}, kan.adjoint_accumulates
-    assert all(atomic is False for _n, atomic in kan.adjoint_accumulates), (
+    names = {name for name, _atomic in spline.adjoint_accumulates}
+    assert names == {"bar_w_fold", "bar_feat"}, spline.adjoint_accumulates
+    assert all(atomic is False for _n, atomic in spline.adjoint_accumulates), (
         "hawk.ext names an `atomic` sink policy but does not build it, so no "
         "derived kernel of HAWK's accumulates atomically")
-    without = recognize(kan_contract)
+    without = recognize(spline_contract)
     assert without.adjoint_accumulates == ()
     assert without.dense and without.staged_fanin == (("feat", N_OUT),)
 
@@ -380,14 +381,14 @@ def test_a_derivative_ir_and_a_non_kernel_are_not_recognized():
     """``recognize`` reads a PRIMAL; handed a reverse IR (many sinks, gradients
     and scatters) or something that is not a kernel at all, it says ``None``
     rather than describing whatever it found."""
-    assert recognize(vjp(kan_contract)) is None
+    assert recognize(vjp(spline_contract)) is None
     assert recognize(object()) is None
 
 
 # --------------------------------------------------------------------------- #
 # The record's shape — the whole seam.
 # --------------------------------------------------------------------------- #
-def test_the_record_carries_exactly_the_fields_eagles_lowering_reads(kan):
+def test_the_record_carries_exactly_the_fields_eagles_lowering_reads(spline):
     """A field renamed here is an ``AttributeError`` inside eagle's lowering,
     which nothing on this side of the line would otherwise catch (HAWK
     cannot import eagle to compare)."""
@@ -396,13 +397,13 @@ def test_the_record_carries_exactly_the_fields_eagles_lowering_reads(kan):
     assert tuple(f.name for f in dataclasses.fields(ContractionOperand))\
         == _OPERAND_FIELDS
     for field in _RECORD_FIELDS:
-        assert hasattr(kan, field), field
-    for operand in kan.operands:
+        assert hasattr(spline, field), field
+    for operand in spline.operands:
         for field in _OPERAND_FIELDS:
             assert hasattr(operand, field), field
-    assert kan.operand_count == 2
-    assert isinstance(kan.reduce_extent, int)
-    assert all(isinstance(part, (str, int)) for dim in kan.operands[0].dims
+    assert spline.operand_count == 2
+    assert isinstance(spline.reduce_extent, int)
+    assert all(isinstance(part, (str, int)) for dim in spline.operands[0].dims
                for part in dim)
 
 
@@ -411,11 +412,11 @@ def test_recognition_mutates_nothing():
     calling it leaves the kernel's emitted body byte-identical."""
     from hawk.emit import render_body
 
-    before = render_body(kan_contract.sinks, kan_contract.walk).text
-    digest = kan_contract.walk.digest
-    recognize(kan_contract, vjp=vjp(kan_contract))
-    assert render_body(kan_contract.sinks, kan_contract.walk).text == before
-    assert kan_contract.walk.digest == digest
+    before = render_body(spline_contract.sinks, spline_contract.walk, spec=HOST).text
+    digest = spline_contract.walk.digest
+    recognize(spline_contract, vjp=vjp(spline_contract))
+    assert render_body(spline_contract.sinks, spline_contract.walk, spec=HOST).text == before
+    assert spline_contract.walk.digest == digest
 
 
 # --------------------------------------------------------------------------- #
@@ -423,7 +424,7 @@ def test_recognition_mutates_nothing():
 # --------------------------------------------------------------------------- #
 @hawk.kernel
 def vec_committed(t: hawk.Table["row":ROWS], y: hawk.Mutable[hawk.Vector[2]]):
-    """A banded KAN stage commits ``y = vec(total, 0.0)``: the same
+    """A banded spline stage commits ``y = vec(total, 0.0)``: the same
     fold, padded to the declared width with literal zeros."""
     acc = 0.0
     for r in range(ROWS):

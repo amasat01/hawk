@@ -17,8 +17,8 @@ artifact can exist whose refusal a row observes.
 from __future__ import annotations
 
 from .. import _contracts
-from ..ir import HawkError
-from ..targets import ENTRY_DEVICE, TARGETS
+from .._errors import HawkError
+from ..targets import TARGETS
 
 #: The array's positional field order, fixed by the mirror PODs'
 #: ``static_assert`` layout pins; authoritative over any prose list.
@@ -48,7 +48,7 @@ def exports(target: str, *, layout_sizes_override=None) -> str:
             )
         values = tuple(f"{int(v)}ull" for v in got)
     tag = _contracts.AETHER_ABI_VERSION
-    if TARGETS[target].entry == ENTRY_DEVICE:
+    if TARGETS[target].device:
         head = ('extern "C" __device__ const char eagle_abi_tag[] = '
                 f'"{tag}";\n'
                 'extern "C" __device__ unsigned long long eagle_layout_sizes[5] = {')

@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Where a per-lane value wider than a thread's registers lives (:mod:`hawk.ir.wide`).
+"""Where a per-lane value wider than a thread's registers lives (:mod:`lowering.wide`).
 
 Rows: what the pass places and what it leaves (the corpus of :mod:`_wide_kernels`), the sidecar record and
 its scratch planes, the build option ``wide_form``, the host text that places nothing, the identity that keeps
@@ -11,6 +11,7 @@ and, on a device, the corpus values against NumPy.
 Run as a script, this file is the wide gate (``make gate-wide``): it builds and runs the corpus here and in the
 0.7.2 wheel's environment and prints one PASS or FAIL line per check."""
 
+from _specs import DEVICE
 import json
 import os
 import pathlib
@@ -28,9 +29,9 @@ from conftest import sidecar_of
 import hawk
 from hawk import HawkError, Mutable, Scalar, Table, Vector
 from hawk.artifact import build_bundle
-from hawk.emit import policy
+from hawk.passes import policy
 from hawk.ext import IndexSet, Kind
-from hawk.ir import wide
+from lowering import wide
 from hawk.ir.nodes import Select
 
 TARGETS_BOTH = ("cuda", "host")
@@ -49,17 +50,18 @@ def _a1_arch() -> str:
     its class's), else the measured one, so a GPU-less run builds a CUBIN of the arch the figures describe (a virtual arch
     gives PTX, whose local sizes are a ceiling before ptxas)."""
     from hawk.compile import toolchain as tc
+    from hawk_cuda import toolchain as dtc
 
-    probed = tc._probed_device_arch()
+    probed = dtc._probed_device_arch()
     if probed and probed != MEASURED_ARCH:
         pytest.skip(f"the card is {probed} (thresholds class {wide_class_of(probed)}): the committed A1 figures are for {MEASURED_ARCH}")
     return MEASURED_ARCH
 
 
 def wide_class_of(arch: str) -> str:
-    from hawk.ir import wide_class
+    from simt import wide_class
 
-    return wide_class.select(arch)
+    return wide_class.select(arch, DEVICE.device)
 
 
 def _build(entry, tmp_path, cache_dir, **options):
@@ -73,37 +75,37 @@ def _build(entry, tmp_path, cache_dir, **options):
 # -- what the pass places -----------------------------------------------------------------------
 
 def test_a_runtime_index_over_a_wide_value_places_it_in_a_scratch_plane_and_the_mask_lands_in_the_output_plane():
-    _, planes, record = wide.place(W.fill_mask.sinks, real_bytes=4)
+    _, planes, record = wide.place(W.fill_mask.sinks, DEVICE, real_bytes=4)
     assert [p.name for p in planes] == ["hwd0"] and planes[0].per_lane == W.W and planes[0].dtype == "real"
     assert record["hwd0"] == {"form": "resident", "plane": "hwd0", "layout": "warp_tiled", "width": W.W}
     assert record["bf"] == {"form": "resident", "plane": "bf", "layout": "plane_major", "width": W.W}   # a Mutable is its own plane
 
 
 def test_a_row_of_products_read_by_a_rolled_sum_is_placed_and_the_accumulator_is_the_output_plane():
-    _, planes, record = wide.place(W.matvec_in.sinks, real_bytes=8)
+    _, planes, record = wide.place(W.matvec_in.sinks, DEVICE, real_bytes=8)
     assert [p.name for p in planes] == ["hwd0"] and "y" not in record       # the accumulator is written in a loop and read once: registers
 
 
 def test_a_value_computed_once_is_placed_in_place_over_the_plane_it_was_filled_in():
-    _, planes, record = wide.place(W.matvec_computed.sinks, real_bytes=8)
+    _, planes, record = wide.place(W.matvec_computed.sinks, DEVICE, real_bytes=8)
     assert sorted(record) == ["hwd0", "hwd1"]          # the fill and its mask share one plane, the products another
 
 
 def test_a_dispatched_sum_over_a_vector_input_has_nothing_to_place():
-    sinks, planes, record = wide.place(W.masked_sum.sinks, real_bytes=8)
+    sinks, planes, record = wide.place(W.masked_sum.sinks, DEVICE, real_bytes=8)
     assert sinks is not None and not planes and not record
 
 
 def test_a_narrow_vector_read_at_a_runtime_index_is_placed_where_the_resident_form_is_faster():
     for name in ("narrow8", "narrow16", "rotate16"):
-        _, planes, record = wide.place(getattr(W, name).sinks, real_bytes=8)
+        _, planes, record = wide.place(getattr(W, name).sinks, DEVICE, real_bytes=8)
         assert record and all(p.name.startswith("hwd") for p in planes), name
         assert any(v["layout"] == "plane_major" for v in record.values()), name      # the Mutable output is its own plane
 
 
 def test_the_widths_registers_win_at_stay_in_registers():
     for name, real_bytes in (("narrow4", 8), ("narrow16", 4), ("rotate16", 4)):
-        sinks, planes, record = wide.place(getattr(W, name).sinks, real_bytes=real_bytes)
+        sinks, planes, record = wide.place(getattr(W, name).sinks, DEVICE, real_bytes=real_bytes)
         assert not planes and not record, name
 
 
@@ -112,18 +114,22 @@ def test_a_vector_whose_every_index_is_a_constant_keeps_its_registers():
     def narrow(tbl: Table["i":16], y: Mutable[Vector[16]]):
         y = W.mask_vec(tbl, 16) * 2.0
 
-    sinks, planes, record = wide.place(narrow.sinks, real_bytes=8)
+    sinks, planes, record = wide.place(narrow.sinks, DEVICE, real_bytes=8)
     assert sinks == tuple(narrow.sinks) and not planes and not record
 
 
 def test_using_takes_contraction_and_launch_bounds():
-    assert policy.contraction() == "direct" and policy.launch_bounds() is None
-    with policy.using(contraction="gemm", launch_bounds=(128, 4)):
-        assert policy.contraction() == "gemm" and policy.launch_bounds() == (128, 4)
-    assert policy.contraction() == "direct" and policy.launch_bounds() is None
-    for bad in ({"contraction": "blas"}, {"launch_bounds": (100, 2)}, {"launch_bounds": (256, 9)}):
-        with pytest.raises(ValueError), policy.using(**bad):
-            pass
+    from hawk.build_policy import BuildPolicy, settings_of
+
+    base = policy.Settings()
+    assert base.contraction == "direct" and base.launch_bounds is None
+    got = settings_of(BuildPolicy(contraction="gemm", launch_bounds=(128, 4)), base)
+    assert got.contraction == "gemm" and got.launch_bounds == (128, 4) == policy.check(got, DEVICE.device["launch"]).launch_bounds
+    with pytest.raises(ValueError):
+        BuildPolicy(contraction="blas")
+    for bad in ((100, 2), (256, 9)):
+        with pytest.raises(ValueError):
+            policy.check(policy.Settings(launch_bounds=bad), DEVICE.device["launch"])
 
 
 def test_launch_bounds_are_refused_on_a_warp_per_lane_kernel(tmp_path, cache_dir):
@@ -132,8 +138,7 @@ def test_launch_bounds_are_refused_on_a_warp_per_lane_kernel(tmp_path, cache_dir
 
 
 def test_the_thread_form_places_nothing(tmp_path, cache_dir):
-    with policy.using(wide_form="thread"):
-        sinks, planes, record = wide.place(W.fill_mask.sinks, real_bytes=8)
+    sinks, planes, record = wide.place(W.fill_mask.sinks, DEVICE.with_settings(wide_form="thread"), real_bytes=8)
     assert not planes and not record
     with pytest.warns(UserWarning, match="local frame"):     # the thread form spills, and the build says so
         _, bundle = _build("fill_mask", tmp_path, cache_dir, wide_form="thread")
@@ -192,12 +197,12 @@ def test_a_kernel_with_nothing_wide_is_one_kernel_as_it_was(tmp_path, cache_dir)
 
 def test_the_derivatives_of_a_wide_kernel_place_what_the_primal_places_and_the_scaled_reverse_reads():
     for name in ("fill_mask_jvp", "fill_mask_vjp", "matvec_in_jvp"):
-        _, planes, record = wide.place(W.CORPUS[name].kernel.sinks, real_bytes=8)
+        _, planes, record = wide.place(W.CORPUS[name].kernel.sinks, DEVICE, real_bytes=8)
         assert planes and record, name
 
 
 def test_the_tangent_of_a_stepping_accumulation_lives_in_planes_across_the_trips():
-    _, planes, record = wide.place(W.steps_acc_jvp_k8.sinks, real_bytes=8)
+    _, planes, record = wide.place(W.steps_acc_jvp_k8.sinks, DEVICE, real_bytes=8)
     assert {"bf", "dot_bf"} <= set(record)
 
 
@@ -221,11 +226,13 @@ def test_an_automatic_kernel_places_the_wide_values_of_its_fused_and_its_single_
 
 
 def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp_path, cache_dir):
-    from hawk.ir.lane import WARP, WarpStore, slice_sinks
+    from hawk.dialects import kind_name
+    from simt.lane import slice_sinks
+    WARP = DEVICE.device["launch"]["warp_size"]
 
-    sliced = slice_sinks(wide.simplified(W.matvec_in_vjp.sinks))
-    assert [type(s) for s in sliced] == [WarpStore] and sliced[0].value.ttype.shape == (W.W // WARP,)
-    assert slice_sinks(W.wide51.sinks) is None               # a write at a run-time index has no rule in the warp form: it keeps its form
+    sliced = slice_sinks(wide.simplified(W.matvec_in_vjp.sinks), DEVICE)
+    assert [kind_name(s) for s in sliced] == ["warp_store"] and sliced[0].value.ttype.shape == (W.W // WARP,)
+    assert slice_sinks(W.wide51.sinks, DEVICE) is None               # a write at a run-time index has no rule in the warp form: it keeps its form
     for name in ("matvec_in_vjp", "matvec_in"):         # the second folds the slices with a warp sum and commits from lane 0
         kernel, bundle = _build(name, tmp_path / name, cache_dir, mode="float64", wide_form="team")
         side = sidecar_of(bundle, kernel.name)
@@ -258,11 +265,11 @@ def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode
 
 
 def test_auto_keeps_the_placed_form_for_run_time_writes_alone_and_the_warp_form_builds_when_asked(tmp_path, cache_dir):
-    from hawk.ir.lane import slice_sinks
+    from simt.lane import slice_sinks
 
     sinks = wide.simplified(W.rt_write.sinks)
-    assert slice_sinks(sinks, explicit=False) is None and slice_sinks(sinks) is not None
-    assert slice_sinks(wide.simplified(W.dot_norm.sinks), explicit=False) is not None       # a fold over the lanes: the warp form
+    assert slice_sinks(sinks, DEVICE, explicit=False) is None and slice_sinks(sinks, DEVICE) is not None
+    assert slice_sinks(wide.simplified(W.dot_norm.sinks), DEVICE, explicit=False) is not None       # a fold over the lanes: the warp form
 
 
 def test_a_wide_output_is_staged_through_a_block_that_serves_several_lanes(tmp_path, cache_dir):
@@ -284,31 +291,39 @@ def test_a_stepped_or_automatic_kernel_is_a_warp_per_lane_on_a_device_bundle(ent
 
 # -- the device feature classes -----------------------------------------------------------------
 
-def test_a_known_arch_selects_its_own_class_and_an_unknown_feature_tuple_the_nearest(monkeypatch):
-    from hawk.ir import wide_class as C
+def test_a_known_arch_selects_its_own_class_and_an_unknown_feature_tuple_the_nearest():
+    from simt import wide_class as C
+    from hawk.variants import derive
 
-    assert C.select("sm_61") == "sm61" and C.select() == "sm61"
-    volta = C.Tables(runtime_min={p: {4: 1, 8: 1} for p in C.CLASSES["sm61"][1].runtime_min}, wide_min={4: 64, 8: 32})
-    ampere = C.Tables(runtime_min={p: {4: 2, 8: 2} for p in C.CLASSES["sm61"][1].runtime_min}, wide_min={4: 64, 8: 32})
-    monkeypatch.setitem(C.CLASSES, "fake70", (C.ARCH_FEATURES[70], volta))
-    monkeypatch.setitem(C.CLASSES, "fake90", (C.ARCH_FEATURES[90], ampere))
-    assert C.select("sm_61") == "sm61" and C.select("sm_70") == "fake70"
-    assert C.select("sm_75") == "sm61"                 # 1:32 and 1024 threads: one step from Pascal, a long way from Volta
-    assert C.select("sm_80") == "fake70"               # 1:2 and 2048 threads, as Volta (a tie with Hopper goes to the lower name)
-    assert C.select("sm_99") == "fake70"               # an arch nobody listed: the features of the nearest capability (90)
-    assert C.select(features=C.Features(2, 65536, 2048, True)) == "fake70"
+    cuda = DEVICE.device
+    assert C.select("sm_61", cuda) == "sm61" and C.select("", cuda) == "sm61"
+    feats = C.arch_features(cuda)
+    classes = C.classes_of(cuda)
+    base = classes["sm61"][1]
+    volta = {"capability": 70, "runtime_min": {p: {4: 1, 8: 1} for p in base.runtime_min}, "wide_min": {4: 64, 8: 32}}
+    ampere = {"capability": 90, "runtime_min": {p: {4: 2, 8: 2} for p in base.runtime_min}, "wide_min": {4: 64, 8: 32}}
+    variant = derive(cuda, {"wide_classes": {"fake70": volta, "fake90": ampere}})
+    C_select = lambda arch="", features=None: C.select(arch, variant, features)
+    assert C_select("sm_61") == "sm61" and C_select("sm_70") == "fake70"
+    assert C_select("sm_75") == "sm61"                 # 1:32 and 1024 threads: one step from Pascal, a long way from Volta
+    assert C_select("sm_80") == "fake70"               # 1:2 and 2048 threads, as Volta (a tie with Hopper goes to the lower name)
+    assert C_select("sm_99") == "fake70"               # an arch nobody listed: the features of the nearest capability (90)
+    assert C_select(features=C.Features(2, 65536, 2048, True)) == "fake70"
 
 
-def test_the_tables_of_the_selected_class_decide_the_placement(monkeypatch):
-    from hawk.emit import policy
-    from hawk.ir import wide_class as C
+def test_the_tables_of_the_selected_class_decide_the_placement():
+    import dataclasses
 
-    never = C.Tables(runtime_min={p: {4: 10 ** 6, 8: 10 ** 6} for p in C.CLASSES["sm61"][1].runtime_min}, wide_min={4: 10 ** 6, 8: 10 ** 6})
-    monkeypatch.setitem(C.CLASSES, "keeps", (C.ARCH_FEATURES[80], never))
-    with policy.wide_class_scope("keeps"):
-        _, planes, record = wide.place(W.rotate16.sinks, real_bytes=8)
+    from simt import wide_class as C
+    from hawk.variants import derive
+
+    cuda = DEVICE.device
+    base = C.classes_of(cuda)["sm61"][1]
+    never = {"capability": 80, "runtime_min": {p: {4: 10 ** 6, 8: 10 ** 6} for p in base.runtime_min}, "wide_min": {4: 10 ** 6, 8: 10 ** 6}}
+    keeps = dataclasses.replace(DEVICE, device=derive(cuda, {"wide_classes": {"keeps": never}}), wide_class="keeps")
+    _, planes, record = wide.place(W.rotate16.sinks, keeps, real_bytes=8)
     assert not planes and not record
-    _, planes, record = wide.place(W.rotate16.sinks, real_bytes=8)
+    _, planes, record = wide.place(W.rotate16.sinks, DEVICE, real_bytes=8)
     assert record
 
 
@@ -323,7 +338,7 @@ def test_the_sidecar_names_the_class_and_the_unit_key_changes_with_it(tmp_path, 
 
     def key(cls):
         return _unit_key(["k"], ["d"], ["e"], targets=("cuda",), smode=scalar_mode("float64"), kind=None, defines=(), cache_dir=None,
-                         device_arch="sm_61", derivative_blocks=(), layout_sizes_override=None, wide_class=cls)
+                         device_arch="sm_61", derivative_blocks=(), layout_sizes_override=None, wide_class=cls, spec=DEVICE)
 
     assert key("sm61") != key("sm75") and key("sm61") == key("sm61")
 
@@ -337,15 +352,15 @@ def test_the_text_of_the_one_measured_class_does_not_depend_on_the_arch(tmp_path
 # -- a stepping kernel ---------------------------------------------------------------------------
 
 def test_a_step_loop_carries_a_wide_mutable_in_its_own_plane_and_places_what_it_reads():
-    _, planes, record = wide.place(W.steps_fill_k8.sinks, real_bytes=8)
+    _, planes, record = wide.place(W.steps_fill_k8.sinks, DEVICE, real_bytes=8)
     assert [p.name for p in planes] == ["hwd0"]
     assert record["bf"] == {"form": "resident", "plane": "bf", "layout": "plane_major", "width": W.W}
 
 
 def test_a_step_loop_writes_the_carried_plane_once_after_the_loop_from_a_shadow_of_the_last_trip():
-    from hawk.ir.loop_nodes import Loop, LoopValue
+    from hawk.ir.nodes import Loop, LoopValue
 
-    sinks, _, _ = wide.place(W.steps_fill_k8.sinks, real_bytes=8)
+    sinks, _, _ = wide.place(W.steps_fill_k8.sinks, DEVICE, real_bytes=8)
     step = next(l for l in wide._Graph(sinks).loops if l.exit_cond is not None)
     assert [c.name for c in step.carries].count("c_last") == 1               # the counter's value at the start of a trip
     assert not any(isinstance(n, Loop) or wide.is_resident(n) and n.ttype.shape for n in step.body_nodes())   # nothing wide in the body
@@ -354,9 +369,9 @@ def test_a_step_loop_writes_the_carried_plane_once_after_the_loop_from_a_shadow_
 
 
 def test_a_step_loop_runs_one_loop_the_finish_follows():
-    from hawk.ir.loop_nodes import Loop
+    from hawk.ir.nodes import Loop
 
-    sinks, _, _ = wide.place(W.steps_matvec_k8.sinks, real_bytes=8)
+    sinks, _, _ = wide.place(W.steps_matvec_k8.sinks, DEVICE, real_bytes=8)
     loops = [n for n in wide._Graph(sinks).loops if isinstance(n, Loop) and n.exit_cond is not None]
     assert len(loops) == 1                          # the finish reads the placed loop's flag, not a second copy of the loop
 
@@ -372,7 +387,7 @@ def test_a_stepping_or_narrow_corpus_kernel_holds_no_local_memory(entry, mode, t
 # -- the identity ------------------------------------------------------------------------------
 
 def _vector_selects(kernel):
-    from hawk.ir.loop_nodes import Loop
+    from hawk.ir.nodes import Loop
     from hawk.ir.walk import canonical_nodes
 
     found, nodes = [], list(canonical_nodes(kernel.sinks)[0])
@@ -402,16 +417,17 @@ def test_a_narrow_vector_stored_under_a_condition_is_one_store_too():
 
 
 def test_the_thread_form_keeps_the_select_over_the_store_at_any_width():
-    with policy.using(wide_form="thread"):
-        @hawk.kernel
-        def pinned(c: Vector[40], y: Mutable[Vector[40]]):
-            r = W.zeros(40)
-            for j in range(40):
-                if c[j] > 0.5:
-                    r[j] = 1.0
-            y = r
+    @hawk.kernel
+    def pinned(c: Vector[40], y: Mutable[Vector[40]]):
+        r = W.zeros(40)
+        for j in range(40):
+            if c[j] > 0.5:
+                r[j] = 1.0
+        y = r
 
-    assert len(_vector_selects(pinned)) == 1
+    from hawk.artifact.bundle import _plain_block_sums
+
+    assert len(_vector_selects(_plain_block_sums(pinned, DEVICE.with_settings(wide_form="thread")))) == 1
 
 
 # -- the integers of a lane set ---------------------------------------------------------------

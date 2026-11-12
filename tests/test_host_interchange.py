@@ -43,6 +43,7 @@ fuse each shape.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import ctypes
 import platform
@@ -526,10 +527,10 @@ def test_what_keeps_the_plain_fused_loop_and_why():
     assert getattr(kernel, "one_step", None) is not None, kernel.name
     # it only reads lookup planes (the same for every lane): its lanes advance together, though its class is cross_sample_read
     assert kernel.walk.access.cls == "cross_sample_read"
-    assert interchange(kernel.name, kernel.sinks, kernel.walk, kernel.kind) is not None
+    assert interchange(kernel.name, kernel.sinks, kernel.walk, kernel.kind, spec=HOST) is not None
     # two lowered loops: the fused-step cut is at ONE, so both loops run as the
     # loop interchange instead (hawk.emit.host.loop_interchange)
-    tiled = interchange(head_loop.name, head_loop.sinks, head_loop.walk, head_loop.kind)
+    tiled = interchange(head_loop.name, head_loop.sinks, head_loop.walk, head_loop.kind, spec=HOST)
     assert tiled is not None and tiled.rule is None and tiled.prelude is not None
     text = render_source(head_loop.name, head_loop.sinks, head_loop.walk, TARGETS["host"],
                          kind=head_loop.kind, one_step=head_loop.one_step).text
@@ -796,7 +797,7 @@ def ramp_to_plane(rate: Scalar, lim: Scalar, terminated: Terminated, x: Mutable[
 def _exit_order(kernel):
     from hawk.emit.render import render_lane_split
 
-    return render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind).exit_order
+    return render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind, spec=HOST).exit_order
 
 
 def _host_text(kernel):
@@ -875,7 +876,7 @@ def test_every_compiler_takes_the_lane_loop():
     assert "hawk_live |= static_cast<std::int64_t>(hawk_ron[hawk_l] != 0.0);" in src
     assert "__GNUC__ < 14" not in src
     from hawk.compile import toolchain as tc
-    from hawk.ir.nodes import HawkError
+    from hawk import HawkError
     for profile in ("native", "portable", "native-vector-math", "native-vector-math-nofma"):
         try:
             flags = tc.host_flags(profile=profile)

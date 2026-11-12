@@ -44,8 +44,7 @@ from hawk.types import Wire
 
 ORIENTATION = Quantity(
     slug="earth", name="orientation",
-    wires=[Wire("q", "vec_in", (4,), tag="quaternion"), Wire("w", "per_sample", ())],
-    reconstruct=lambda q, w: (q, w),
+    wires=[Wire("q", "vec_in", (4,), tag="quaternion"), Wire("w", "per_sample", ())]
 )
 
 

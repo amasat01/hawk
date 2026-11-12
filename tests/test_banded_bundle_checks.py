@@ -19,7 +19,7 @@ from conftest import sidecar_of
 import hawk
 import hawk.math as m
 from hawk.artifact import build_bundle
-from hawk.artifact.bundle import _refuse_fp64
+from hawk_cuda.backend import _refuse_fp64
 from hawk.ir import HawkError
 
 

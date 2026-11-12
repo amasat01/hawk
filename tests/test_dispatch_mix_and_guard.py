@@ -28,6 +28,7 @@ Rows:
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import json
 import pathlib
@@ -108,8 +109,8 @@ def test_auto_counts_the_mix_and_a_forced_policy_counts_nothing(built):
     forced = _sidecar(built["local"], "mix_switch")
     assert "mix" not in forced["dispatch"][0]
     assert all(n != "dispatch0_mix" for _, n in forced["arg_spec"])
-    auto_text = render_body(mix_auto.sinks, mix_auto.walk).text
-    switch_text = render_body(mix_switch.sinks, mix_switch.walk).text
+    auto_text = render_body(mix_auto.sinks, mix_auto.walk, spec=HOST).text
+    switch_text = render_body(mix_switch.sinks, mix_switch.walk, spec=HOST).text
     lines = [ln for ln in auto_text.split("\n") if "hawk_abi::mix_count(" not in ln]
     assert "\n".join(lines) == switch_text
 
@@ -206,8 +207,8 @@ def test_resolve_dispatch_lowers_an_auto_group_and_refuses_the_rest():
     resolved = hawk.resolve_dispatch(mix_auto, {"dispatch0": "switch"})
     assert resolved.name == "mix_auto"
     assert [d.policy for d in resolved.walk.dispatches] == ["switch"]
-    assert render_body(resolved.sinks, resolved.walk).text == render_body(
-        mix_switch.sinks, mix_switch.walk).text
+    assert render_body(resolved.sinks, resolved.walk, spec=HOST).text == render_body(
+        mix_switch.sinks, mix_switch.walk, spec=HOST).text
     seg = hawk.resolve_dispatch(mix_auto, {"dispatch0": "segmented"})
     assert [d.policy for d in seg.walk.dispatches] == ["segmented"]
     with pytest.raises(HawkError, match=r"declared policy='switch'; only an 'auto'"):

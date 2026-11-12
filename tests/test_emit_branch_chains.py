@@ -11,6 +11,7 @@ Each row compares with a numpy reference, on the host and on GPU 1.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import numpy as np
 import pytest
@@ -151,7 +152,7 @@ def test_a_scalar_chain_evaluates_each_arms_transcendental_only_under_its_arm():
     from hawk.ir import canonical
 
     kernel = _two_names()
-    text = render_body(kernel.sinks, canonical(kernel.sinks)).text
+    text = render_body(kernel.sinks, canonical(kernel.sinks), spec=HOST).text
     assert text.count("switch (") == 2
     outside = text.split("switch (")[0]
     assert not any(f"math::{fn}(" in outside for fn in ("exp", "sin", "cos"))

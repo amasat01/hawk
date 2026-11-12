@@ -63,7 +63,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from math import prod
 
-from ..ir import HawkError, Walk
+from ..ir import Walk
+from .._errors import HawkError
 from ..ir.nodes import FINISHED_PLANE
 from ..types import Slot
 from .render import (
@@ -82,7 +83,8 @@ from .wrapper import (
     segment_reads,
     unpack_lines,
 )
-from .box import BOX_OWN, owned_lane
+from .. import components as _components
+_box = _components.view("lowering", "box")
 from .dispatch import render_dispatch_rank0
 from .spelling import (
     binding_name,
@@ -958,8 +960,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
     return "\n".join(line for line in lines if line is not None)
 
 
-def interchange(name: str, sinks, walk: Walk, kind=None,
-                real_bytes: int = 8) -> Interchange | None:
+def interchange(name: str, sinks, walk: Walk, kind=None, real_bytes: int = 8, *, spec) -> Interchange | None:
     """The interchanged fused-step loop of ``walk``'s host TU, or ``None``
     where the TU keeps its plain per-sample fused loop.
 
@@ -971,14 +972,14 @@ def interchange(name: str, sinks, walk: Walk, kind=None,
     A kernel with a cross-sample write has dependent iterations, so its
     lanes cannot run together: it keeps its per-sample loop; one that only
     reads lookup planes may run its lanes together (``lane_form_access``)."""
-    from ..ir.vectorise import lane_form_access
+    from hawk.passes.vectorise import lane_form_access
 
     if not lane_form_access(walk):
         return None
     finish = lane_finish(walk)
-    split = None if finish is None else render_lane_split(sinks, walk, kind=kind)
+    split = None if finish is None else render_lane_split(sinks, walk, kind=kind, spec=spec)
     if split is None:
-        return loop_interchange(sinks, walk, kind)
+        return loop_interchange(sinks, walk, kind, spec=spec)
     guards = lane_guards(walk)
     lane_bytes = real_bytes * (1 + len(guards)) + 8 * (split.count is not None)
     for _, ttype, _, _ in split.carries:
@@ -1000,7 +1001,7 @@ def interchange(name: str, sinks, walk: Walk, kind=None,
 LOOP_PRELUDE = (f"#ifndef {INTERCHANGE_MACRO}\n#define {INTERCHANGE_MACRO} 1\n#endif\n"
                 "// hawk host loop interchange: tile = hawk_abi::kHostLoopTile\n")
 
-#: The proxy of a wide value that lives in a row of the tile (:mod:`hawk.ir.wide`): element ``k`` of lane ``t`` at
+#: The proxy of a wide value that lives in a row of the tile (:mod:`simt.wide`): element ``k`` of lane ``t`` at
 #: ``rows[t * W + k]`` (a lane's elements run on, so a fold over them is one contiguous read), the shape of an aether per-sample proxy to the ``aether::rt`` twins. Added only to a TU that has one.
 LANE_ROW_HELPER = """namespace hawk_abi {
 
@@ -1058,23 +1059,21 @@ _WORDS = re.compile(r"\b\w+\b")
 _VIEW_DECLARATION = re.compile(r"^\s*const auto (\w+) = \w+\[i\];$", re.M)
 
 
-def loop_interchange(sinks, walk: Walk, kind=None) -> Interchange | None:
+def loop_interchange(sinks, walk: Walk, kind=None, *, spec) -> Interchange | None:
     """The loop interchange of ``walk``'s host TU, or ``None`` where the TU
     keeps its per-sample loop.
 
-    Every loop :func:`hawk.ir.vectorise.interchanged_loops` names runs as
+    Every loop :func:`hawk.passes.vectorise.interchanged_loops` names runs as
     ``for trip { for lane in tile { body } }`` (:func:`loop_interchange_text`);
     ``-DHAWK_HOST_INTERCHANGE=0`` builds the same TU's per-sample loop. No
     trip-count threshold and no kernel name: the decision is the IR's."""
-    from ..ir.vectorise import interchanged_loops
+    from hawk.passes.vectorise import interchanged_loops
 
     cut = interchanged_loops(walk)
     if not cut:
         return None
-    from . import policy as emit_policy
-
-    with emit_policy.placing(True):          # a wide value stays in its plane (a row of the tile), never a copy per trip
-        segs = render_lane_segments(sinks, walk, cut, kind=kind)
+    # a wide value stays in its plane (a row of the tile), never a copy per trip
+    segs = render_lane_segments(sinks, walk, cut, kind=kind, spec=spec.with_settings(placed=True))
     text = loop_interchange_text(segs)
     if text is None:
         return None
@@ -1406,14 +1405,14 @@ class HostWrapper:
         ``tid`` passes the device-read run length, since the run is contiguous
         and sorted: a team may split a run across threads.
 
-        ``box`` (:class:`hawk.emit.box.Box`) visits threads ``[base, base +
+        ``box`` (:class:`simt.box.Box`) visits threads ``[base, base +
         count)``, each ending at its first owned lane (the device's thread
-        box, serially; :func:`hawk.emit.box.frame` binds ``i``)."""
+        box, serially; :func:`simt.box.frame` binds ``i``)."""
         if box is not None:
             return f"""    const std::int64_t hawk_end = base + count;
     for (std::int64_t hawk_t = base; hawk_t < hawk_end; ++hawk_t) {{
-{owned_lane("long long", "hawk_t", box)}
-        if ({BOX_OWN} >= nSamples) break;"""
+{_box.owned_lane("long long", "hawk_t", box)}
+        if ({_box.BOX_OWN} >= nSamples) break;"""
         guards = tuple(guards) if simd else ()
         finish = finish if finish is not None and finish[0] in guards else None
         if active is not None:
@@ -1493,24 +1492,27 @@ class HostWrapper:
         (void)hawk_i;
         (void)nSamples;"""
 
-    def fold_rows(self, width: int) -> int:
+    def fold_rows(self, width: int, spec) -> int:
         return 1
 
     def sample_sum_frame(self, width: int, elem: str, store: str,
-                         op: str = "sum", live: str | None = None) -> tuple:
-        """The serial loop over the rows of 32 samples that START in
+                         op: str = "sum", live: str | None = None, *, spec) -> tuple:
+        """The serial loop over the rows (``cells.row`` samples each) that START in
         ``[base, base + count)``, the last one cut at ``nSamples``: a row
         belongs to exactly one call however the team tiles the run. Each
         row's terms are summed by the device's pairs once its last sample
         ran."""
-        opened = f"""    const std::int64_t hawk_lo = (base + 31) / 32 * 32;
-    std::int64_t hawk_hi = (base + count + 31) / 32 * 32;
+        row = spec.need("cells", "row")
+        if row < 1 or row & (row - 1):
+            raise HawkError(f"the host variant's cells.row must be a power of two (the text masks with row - 1); it is {row}")
+        opened = f"""    const std::int64_t hawk_lo = (base + {row - 1}) / {row} * {row};
+    std::int64_t hawk_hi = (base + count + {row - 1}) / {row} * {row};
     if (hawk_hi > nSamples) hawk_hi = nSamples;
-    {elem} hawk_ss_rows[32 * {width}] = {{}};
-{sample_sum_fill(op, 32 * width, "hawk_ss_rows", elem)}    std::int64_t hawk_row = 0;
+    {elem} hawk_ss_rows[{row} * {width}] = {{}};
+{sample_sum_fill(op, row * width, "hawk_ss_rows", elem)}    std::int64_t hawk_row = 0;
 {store}
     for (std::int64_t hawk_i = hawk_lo; hawk_i < hawk_hi; ++hawk_i) {{
-        {elem}* const {SAMPLE_SUM_TERMS} = hawk_ss_rows + (hawk_i & 31) * {width};
+        {elem}* const {SAMPLE_SUM_TERMS} = hawk_ss_rows + (hawk_i & {row - 1}) * {width};
         const aether::SampleIndex i =
             aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));""" + (
             "" if live is None else f"""
@@ -1642,10 +1644,10 @@ class HostWrapper:
         return ""
 
     def interchange(self, name: str, sinks, walk: Walk,
-                    kind=None, real_bytes: int = 8) -> Interchange | None:
+                    kind, real_bytes: int, spec) -> Interchange | None:
         """:func:`interchange`, as the hook
         :func:`~hawk.emit.wrapper.render_source` asks a wrapper for."""
-        return interchange(name, sinks, walk, kind, real_bytes)
+        return interchange(name, sinks, walk, kind, real_bytes, spec=spec)
 
     def dispatch(self, kind_spelling: str, branch_spellings: Sequence[str],
                  policy: str, **kw: object) -> str:

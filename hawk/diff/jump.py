@@ -32,9 +32,10 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
-from ..ir import Const, Dispatch, HawkError, Leaf, Node, Select
+from ..ir import Const, Dispatch, Leaf, Node, Select
+from .._errors import HawkError
 from ..ir import make as _mk
-from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from ..ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
 from ..ir.nodes import AccumWrite, PlaneExtent, ReduceSamples, SampleIndex, WideWrite
 from ..types import TensorType
 from .tape import _reachable
@@ -631,7 +632,7 @@ def spell(node: Node) -> str:
 
 
 def _zero(t: TensorType) -> Node:
-    from .rules import zero_like
+    from raptor.rules.core import zero_like
 
     return zero_like(TensorType(t.shape, "f64" if t.dtype not in _FLOAT else t.dtype))
 

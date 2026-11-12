@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ..ir import HawkError, Node
-from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex
+from ..ir import Node
+from .._errors import HawkError
+from ..ir.nodes import Loop, LoopCarry, LoopIndex
 from ..ir.nodes import (
     SWITCH_RENDERED,
     is_param_cell,

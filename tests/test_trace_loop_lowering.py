@@ -7,7 +7,7 @@ classes, and every refusal, enumerated.
 WHY THIS FILE EXISTS AT ALL. HAWK used to lower a bounded ``for`` by
 EXECUTING it at trace time: the tracer ran the Python loop and the IR carried
 the unrolled chain. That is a transpiler's answer, and it has a hard failure
-mode measured in — a 64-edge x 23-basis KAN cell reached ptxas as ONE
+mode measured in — a 64-edge x 23-basis spline cell reached ptxas as ONE
 function and took 25-27 GB of RSS on a 31 GB box. The fix is deliberately
 minimal and goes no further: the code is only lowered to a
 CUDA/C++ loop — the compiler then does the next step. This is not a
@@ -33,6 +33,7 @@ those too.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import linecache
 
@@ -213,7 +214,7 @@ def test_the_body_is_a_plain_for_with_a_literal_bound_and_no_pragma():
     the TU as a LITERAL — the bound, the declared stride — so the compiler can
     see the trip count; and there is no ``#pragma unroll``, no threshold and no
     policy, because whether to unroll is the compiler's decision."""
-    text = render_body(gathering.sinks, gathering.walk).text
+    text = render_body(gathering.sinks, gathering.walk, spec=HOST).text
     assert text.count("for (") == 1, text
     assert f"< {ROWS};" in text, text
     assert "pragma" not in text.lower(), text
@@ -238,7 +239,7 @@ def test_the_carried_locals_are_updated_simultaneously():
     expression would read the FIRST's new value — a different recurrence and a
     silently wrong number. The generated code must name both results before
     assigning either."""
-    text = render_body(chebyshev.sinks, chebyshev.walk).text
+    text = render_body(chebyshev.sinks, chebyshev.walk, spec=HOST).text
     lines = [ln.strip() for ln in text.splitlines()]
     results = [i for i, ln in enumerate(lines) if ln.startswith("const Real hawk_n")]
     stores = [i for i, ln in enumerate(lines)
@@ -275,7 +276,7 @@ def test_a_nested_for_emits_a_nested_scope():
             total = total + row * row
         y = total
 
-    text = render_body(grid.sinks, grid.walk).text
+    text = render_body(grid.sinks, grid.walk, spec=HOST).text
     assert text.count("for (") == 2, text
     table = np.arange(ROWS * COLS, dtype=float) * 0.25 + 1.0
     got = float(evaluate(grid.sinks, {"t": table})["y"])
@@ -307,8 +308,8 @@ def test_an_accumulator_reverse_stores_nothing_and_a_recurrence_taped_body_does(
     a device kernel's local memory: the accumulator's adjoint never reads the
     carried value, so its emitted reverse declares no array; the recurrence's
     does, sized by the (compile-time) trip count."""
-    acc_text = render_body(*_derived(additive))
-    rec_text = render_body(*_derived(saturating))
+    acc_text = render_body(*_derived(additive), spec=HOST)
+    rec_text = render_body(*_derived(saturating), spec=HOST)
     assert "hawk_tp" not in acc_text.text, acc_text.text
     assert "hawk_tp" in rec_text.text, rec_text.text
     assert "[6];" in rec_text.text, rec_text.text
@@ -372,7 +373,7 @@ def test_a_gather_loops_reverse_scatters_once_per_iteration_in_the_same_scope():
     for r in range(ROWS):
         want[r * COLS + 2] += 1.5
     np.testing.assert_allclose(got, want, rtol=1e-14, atol=1e-14)
-    text = render_body(derived, walk).text
+    text = render_body(derived, walk, spec=HOST).text
     commits = (text.count("hawk_abi::accum_add(aout_bar_t, ")
                + text.count("aether::accum::run::add<32>(aout_bar_t, "))
     assert text.count("for (") == 1 and commits == 1, text
@@ -473,7 +474,7 @@ def test_a_rank_one_carry_is_declared_as_an_aether_Item():
             acc = acc + v
         out = acc
 
-    text = render_body(carried.sinks, carried.walk).text
+    text = render_body(carried.sinks, carried.walk, spec=HOST).text
     assert "aether::Item<Real, 3> hawk_v" in text, text
     got = evaluate(carried.sinks, {"v": np.array([1.0, 2.0, 3.0])})["out"]
     np.testing.assert_allclose(got, np.array([4.0, 8.0, 12.0]))
@@ -495,7 +496,7 @@ def test_a_nested_loop_differentiates_where_it_used_to_be_refused():
             total = total + inner
         out = total
 
-    render_body(grid.sinks, grid.walk)          # emission is fine
+    render_body(grid.sinks, grid.walk, spec=HOST)          # emission is fine
     got = evaluate(vjp(grid), {"x": 0.5, "terminated": False, "bar_out": 1.0})
     np.testing.assert_allclose(got["bar_x"], 6.0)          # d/dx sum_r 2 r x = 2 (0+1+2)
 

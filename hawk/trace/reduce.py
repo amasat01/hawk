@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir import HawkError
+from .._errors import HawkError
 from ..ir import make as _make
 from ..ir.nodes import POLICIES, SCATTER_POLICIES, Leaf, ReduceSamples
 from .value import Value, _op, _operands, index_node, n_samples, node_of, real, select, vec
@@ -257,10 +257,9 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, policy: Any) -> Any:
         value = select(mask, value, _identity(base))
     if not kept:
         term = value / real(n_samples()) if op == "mean" else value
-        from ..emit.policy import linalg_form
-        from ..ir.team import BlockSum, wanted
+        from raptor.ir.block import BlockSum, block_shaped
 
-        if base == "sum" and wanted(node_of(term), linalg_form()):       # one key, every lane
+        if base == "sum" and block_shaped(node_of(term)):       # one key, every lane
             return Value(BlockSum("sum", node_of(term), key=index_node(0), count=index_node(1),
                                   policy=policy))
         return Value(ReduceSamples(base, node_of(term), policy=policy))
@@ -274,10 +273,9 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, policy: Any) -> Any:
         stride *= axes[i][1] or 1
     count = _product([_extent(axes, i) for i in kept])
     count = Value(index_node(count)) if isinstance(count, int) else count
-    from ..emit.policy import linalg_form
-    from ..ir.team import BlockSum, wanted
+    from raptor.ir.block import BlockSum, block_shaped
 
-    cls = BlockSum if wanted(node_of(value), linalg_form(), policy) else ReduceSamples
+    cls = BlockSum if block_shaped(node_of(value), policy) else ReduceSamples
     return Reduced(cls("sum", node_of(value), key=node_of(key),
                        count=node_of(count), policy=policy,
                        kept=tuple(axes[i] for i in kept)),

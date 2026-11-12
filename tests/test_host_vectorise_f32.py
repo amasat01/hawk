@@ -20,6 +20,7 @@ Three observations, each with a known answer:
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import re
 import subprocess
@@ -31,7 +32,7 @@ import hawk
 from hawk import Mutable, Scalar, Terminated
 from hawk.compile import toolchain as tc
 from hawk.emit import render_source, scalar_mode
-from hawk.ir.vectorise import vectorises
+from hawk.passes.vectorise import vectorises
 from hawk.targets import TARGETS
 
 
@@ -112,5 +113,5 @@ def test_the_float32_sample_loop_vectorises_with_packed_zmm_arithmetic(tmp_path)
 @pytest.mark.parametrize("kernel", [short_loop, long_loop])
 def test_the_flag_matches_the_vectoriser(tmp_path, kernel, mode):
     _, sample, wide = _compile(tmp_path, kernel, mode, interchanged=True)
-    assert vectorises(kernel.walk, "native", mode) is (sample in wide)
-    assert _source(kernel, mode).vectorised is vectorises(kernel.walk, scalar_type=mode)
+    assert vectorises(kernel.walk, HOST, "native", mode) is (sample in wide)
+    assert _source(kernel, mode).vectorised is vectorises(kernel.walk, HOST, scalar_type=mode)

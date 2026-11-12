@@ -41,6 +41,7 @@ Every plant was then removed.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import _deploy as L
 import _deployable as D
@@ -155,8 +156,8 @@ def test_sink_policy_atomic_is_built_and_names_the_commit_plain_already_makes():
 
     atomic = sink_policy("atomic")
     assert atomic.id == "atomic"
-    plain = render_body(D.scatter.sinks, D.scatter.walk, kind=Kind("p", sink=PLAIN)).text
-    loud = render_body(D.scatter.sinks, D.scatter.walk, kind=Kind("a", sink=atomic)).text
+    plain = render_body(D.scatter.sinks, D.scatter.walk, kind=Kind("p", sink=PLAIN), spec=HOST).text
+    loud = render_body(D.scatter.sinks, D.scatter.walk, kind=Kind("a", sink=atomic), spec=HOST).text
     assert plain == loud
     assert "hawk_abi::accum_add(" in plain and "+=" not in plain
 
@@ -743,13 +744,13 @@ def test_a_derivative_of_an_own_column_compensated_kernel_commits_plain():
     names = [name for _role, name in vjp_kernel.arg_spec]
     assert "c" not in names, (
         f"the reverse-mode derivative must bind NO companion slot: {names}")
-    vjp_text = render_body(vjp_kernel.sinks, vjp_kernel.walk).text
+    vjp_text = render_body(vjp_kernel.sinks, vjp_kernel.walk, spec=HOST).text
     assert "store_compensated" not in vjp_text
     assert "accum_add_compensated" not in vjp_text
 
     jvp_kernel = Kernel("own_column_compensated_solo_jvp",
                         jvp(own_column_compensated_solo, wrt=("x",)), {})
-    jvp_text = render_body(jvp_kernel.sinks, jvp_kernel.walk).text
+    jvp_text = render_body(jvp_kernel.sinks, jvp_kernel.walk, spec=HOST).text
     assert "store_compensated" not in jvp_text, (
         "a derivative must never re-run the compensated commit -- "
         "d(target)/d(term) = 1 makes every derived commit a plain store:\n"

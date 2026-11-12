@@ -1,7 +1,7 @@
 """The warp-per-lane kernel's block of k warps is a card-kit switch: k = 1 emits the one-warp block's text, k > 1 reads the
 lane off its warp and the lane count off nSamples."""
-from hawk.emit import policy
-from hawk.emit.cuda import CudaWrapper
+from hawk.passes import policy
+from hawk_cuda.emit import CudaWrapper
 
 PLAIN = """    const long long hawk_flat =
         static_cast<long long>(blockIdx.x);
@@ -14,8 +14,7 @@ def test_one_warp_block_text_unchanged():
 
 
 def test_k_warps_block_reads_lane_and_count():
-    with policy.block_warps(8):
-        text = CudaWrapper().index_prologue(team=32)
-        assert "static_cast<long long>(blockIdx.x) * 8 + (threadIdx.x >> 5);" in text
-        assert "hawk_flat >= nSamples" in text
-        assert "blockIdx.x) * 8" not in CudaWrapper().index_prologue(team=128)
+    text = CudaWrapper().index_prologue(team=32, warps=8)
+    assert "static_cast<long long>(blockIdx.x) * 8 + (threadIdx.x >> 5);" in text
+    assert "hawk_flat >= nSamples" in text
+    assert "blockIdx.x) * 8" not in CudaWrapper().index_prologue(team=128, warps=8)

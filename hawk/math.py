@@ -88,7 +88,7 @@ import math as _stdmath
 from types import SimpleNamespace
 from typing import Any
 
-from .ir import HawkError
+from ._errors import HawkError
 from .trace.value import (
     Value,
     absolute,

@@ -22,9 +22,10 @@ from collections.abc import Sequence
 from fractions import Fraction
 from math import isfinite, prod
 
-from ..ir import HawkError
-from ..ir.loop_nodes import Loop, TapeRead
+from .._errors import HawkError
+from ..ir.nodes import Loop, TapeRead
 from ..ir.nodes import (
+    _through,
     FINISHED_PLANE,
     GATHER_ROLES,
     RAW_KIND,
@@ -42,17 +43,17 @@ from ..ir.nodes import (
     TapeWrite,
     is_param_cell,
 )
-from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, QR_OPS
-from ..ir.team import TeamCopy, TeamRead
-from ..ir.lane import WARP_READ, WARP_SUM_KIND, slice_min
-from ..ir.wide import RESIDENT_KIND, element_kind, gather, is_prior, is_resident, is_scratch, is_tiled
+from ..ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, QR_OPS
+from .. import components as _components
+_lane = _components.view("lowering", "kinds")
+from .. import components as _components
+_wide = _components.view("lowering", "wide")
 from ..ir.rays import RAY_OPS
 from ..ir.ops import RANDOM_OPS
 from ..types import INT_PLANE_DTYPES, TensorType
-from .box import BOX_OWN
 from . import rtstore
-from . import policy
-from .policy import rolled
+from ..passes import policy
+from raptor.ir.fold import exceeds, rolled
 from .dispatch import _clamp_expr, render_dispatch_rank0
 from .spelling import (
     _CWISE,
@@ -69,7 +70,6 @@ from .spelling import (
     _for_header,
     _no_spelling,
     _real_literal,
-    _through,
     binding_name,
     carry_type,
     element_spelling,
@@ -98,7 +98,7 @@ _GUARDED_KINDS = ("component_at", "set_component_at", "add_at")
 
 def _evaluates_freely(node: Select) -> bool:
     """Whether both arms of ``node`` may run whatever the condition says. A blend evaluates both arms where ``?:`` evaluates
-    one, so an arm that can fault or must not run stays a ``?:``: a plane read at a computed index (``At``, ``TeamRead``:
+    one, so an arm that can fault or must not run stays a ``?:``: a plane read at a computed index (``At``, a team-stage read:
     a stencil's edge guard), a tape read or write, a raw block, a run-time component index, a ``switch``, a ``Loop``
     (its trips) or a collective over the lanes."""
     stack, seen = list(node.operands[1:]), set()
@@ -109,7 +109,7 @@ def _evaluates_freely(node: Select) -> bool:
         seen.add(id(n))
         if isinstance(n, (At, TapeRead, TapeWrite, Loop, ReduceSamples)):
             return False
-        if isinstance(n, Op) and (n.kind == RAW_KIND or n.kind in _GUARDED_KINDS or n.kind == WARP_SUM_KIND):
+        if isinstance(n, Op) and (n.kind == RAW_KIND or n.kind in _GUARDED_KINDS or n.kind == _lane.WARP_SUM_KIND):
             return False
         if isinstance(n, Dispatch) and n.policy in SWITCH_RENDERED:
             return False
@@ -134,7 +134,7 @@ class AetherWriter:
 
     id = "aether"
     #: sites over the fold threshold spell as ``aether::rt`` twins
-    #: (:mod:`hawk.emit.policy`), which the renderer prepares for through
+    #: (:mod:`hawk.passes.policy`), which the renderer prepares for through
     #: :meth:`unrendered` and :meth:`fresh_value`
     rolled_forms = True
     #: aether's lazy expressions inline until the renderer's fan-out rule
@@ -204,37 +204,6 @@ class AetherWriter:
         """A ``PlaneExtent`` node: the element count of the plane's view."""
         return f"static_cast<Int>({binding_name(node.role, node.name)}.samples())"
 
-    def warp_lane_value(self) -> str:
-        """A ``WarpLane`` node: the lane's place in its warp (the team prologue binds ``hawk_wl``)."""
-        return "hawk_wl"
-
-    def warp_store(self, r, sink, target: str, value: str) -> None:
-        """The lane's slice of a wide value into elements ``j * 32 + lane`` of the Mutable's plane."""
-        rows = policy.staged_rows()
-        if rows > 1 and sink.ttype.shape and sink.ttype.shape[0] >= slice_min(sink.ttype.dtype):        # the tile of the block: the copy-out after the body stores it coalesced
-            n, width = sink.value.ttype.shape[0], sink.ttype.shape[0]
-            tile = f"hawk_stg_{target}"
-            r._emit("{")
-            r._emit(f"const aether::Item<Real, {n}> hawk_ws = {value};")
-            if n == width:       # a value every lane holds: lane 0 puts it in the tile
-                r._emit(f"if (hawk_wl == 0) {{ for (Int hawk_lk = 0; hawk_lk < {n}; ++hawk_lk) {tile}[hawk_lk * {rows + 1} + hawk_wb] = hawk_ws.data()[hawk_lk]; }}")
-            else:
-                r._emit("#pragma unroll")
-                r._emit(f"for (Int hawk_lk = 0; hawk_lk < {n}; ++hawk_lk) {tile}[(hawk_lk * 32 + hawk_wl) * {rows + 1} + hawk_wb] = hawk_ws.data()[hawk_lk];")
-            r._emit("if (hawk_wl == 0) hawk_wrote[hawk_wb] = 1;")
-            r._emit("}")
-            return
-        if sink.value.ttype.shape == sink.ttype.shape:      # the same in every lane
-            r._emit(f"if (hawk_wl == 0) {target}[i] = {value};")
-            return
-        n = sink.value.ttype.shape[0]
-        r._emit("{")
-        r._emit(f"const aether::Item<Real, {n}> hawk_ws = {value};")
-        r._emit("#pragma unroll")
-        r._emit(f"for (Int hawk_lk = 0; hawk_lk < {n}; ++hawk_lk) "
-                f"{target}[i].at(hawk_lk * 32 + hawk_wl) = hawk_ws.data()[hawk_lk];")
-        r._emit("}")
-
     def lane_position_value(self, mapped: bool) -> str:
         """A ``LanePosition`` node: ``hawk_t`` under an index map, else the
         lane's own index (the launch position is the sample index there)."""
@@ -298,14 +267,14 @@ class AetherWriter:
 
     def store(self, r, sink, target: str, value: str) -> None:
         """The own column: one elementwise contribution, one store. A fresh ``Item`` of
-        more than :data:`~hawk.emit.policy.ROLLED_FOLD_MIN` elements is copied by a loop
+        more than the variant's ``rolled_fold_min`` elements is copied by a loop
         (``aether::rt::store``): the unrolled assignment holds a register per element."""
         if value == f"{target}[i]":
             return                  # a library result already written into the plane
         if value in r.proxies:      # a value that lives in another plane: copied element by element
             r._emit(f"aether::rt::store({target}[i], {value});")
             return
-        if value in r.fresh_items and prod(sink.value.ttype.shape) > policy.ROLLED_FOLD_MIN:
+        if value in r.fresh_items and exceeds(prod(sink.value.ttype.shape), r.rolled_min):
             r._emit(f"aether::rt::store({target}[i], {value});")
         else:
             r._emit(f"{target}[i] = {self._packed(sink.value.ttype, value)};")
@@ -320,49 +289,6 @@ class AetherWriter:
         """A scattered wide_write targets a computed ROW: a store, exactly as
         the reference evaluator reads it."""
         r._emit(f"{target}[{self._sample_index(index)}] = {self._packed(sink.value.ttype, value)};")
-
-    def team_store(self, r, sink, target: str, value: str) -> None:
-        """A value a team stage works on, stored row-major into the lane's own slice of its scratch
-        plane (:class:`~hawk.ir.team.TeamStore`): one loop over the elements."""
-        shape = sink.value.ttype.shape
-        size = prod(shape)
-        base = f"static_cast<std::size_t>({r._ref(sink.index)}) * {size}"
-        if not shape:
-            r._emit(f"{target}.data()[{base}] = {value};")
-            return
-        held = self._operand(r, sink.value, value)
-        if isinstance(sink, TeamCopy):      # a block per lane: its threads copy the slice together (a team of one on the host)
-            r._emit("{ const aether::linalg::team::Team hawk_tm = aether::linalg::team::Team::here(); "
-                    f"for (Int hawk_lk = hawk_tm.rank; hawk_lk < {size}; hawk_lk += hawk_tm.size) "
-                    f"{target}.data()[{base} + hawk_lk] = {self._element(r, held, shape)}; }}")
-            return
-        r._emit(f"for (Int hawk_lk = 0; hawk_lk < {size}; ++hawk_lk) "
-                f"{target}.data()[{base} + hawk_lk] = {self._element(r, held, shape)};")
-
-    def _team_read(self, r, node, plane: str) -> str:
-        """A vector or matrix a team stage left in the lane's own slice of its scratch plane, copied
-        row-major into a fresh ``Item`` by a loop ahead of the line that uses it."""
-        shape = node.ttype.shape
-        size = prod(shape)
-        out = self._fresh_item(r, node.ttype)
-        base = f"static_cast<std::size_t>({r._ref(node.index)}) * {size}"
-        r._emit(f"for (Int hawk_lk = 0; hawk_lk < {size}; ++hawk_lk) "
-                f"{out}.data()[hawk_lk] = {plane}.data()[{base} + hawk_lk];")
-        return out
-
-    @staticmethod
-    def _element(r, held: str, shape: tuple) -> str:
-        """Element ``hawk_lk`` (row-major) of the vector or matrix ``held``."""
-        if held in r.fresh_items or held in r.items.values():
-            return f"{held}.data()[hawk_lk]"
-        if len(shape) == 1:
-            return f"{held}.at(hawk_lk)"
-        return f"{held}.at(hawk_lk / {shape[1]}, hawk_lk % {shape[1]})"
-
-    def box_store(self, r, target: str, lane: str, value: str) -> None:
-        """A thread box lane's own-column store, only for a lane the thread
-        owns (:mod:`hawk.emit.box`)."""
-        r._emit(f"if ({lane} >= {BOX_OWN}) {target}[{self._sample_index(lane)}] = {self._packed(None, value)};")
 
     def accum_scattered(self, r, sink, target: str, index: str, value: str) -> None:
         """The scattered ``plain``/``atomic`` commit: the target's atomic add."""
@@ -385,7 +311,7 @@ class AetherWriter:
     def accum_run(self, r, sink, target: str, comp: str | None, index: str, value: str,
                   run) -> None:
         """A scattered commit whose key moves in runs of lanes
-        (:func:`hawk.ir.lanes.key_run`): ``aether::accum::run``'s call for the
+        (:func:`simt.lanes.key_run`): ``aether::accum::run``'s call for the
         run's form, compensated when ``comp`` names the companion. ``i`` is
         the lane's own sample (the alignment vote reads it); the run state
         ``hawk_run_<target>`` is declared and closed by the entry
@@ -394,7 +320,7 @@ class AetherWriter:
         name = {"proven": f"add{c}<{run.width}>", "tested": f"addTested{c}",
                 "sorted": f"addSorted{c}"}[run.form]
         full = []
-        if comp and run.block and run.form == "proven" and r._scope_depth == 0 and policy.block_folding():
+        if comp and run.block and run.form == "proven" and r._scope_depth == 0 and r.spec.settings.block_fold:
             name, full = "addCompensatedBlock", [f"{RUN_CALL}blockFull(base, count)"]   # one commit per block
         args = [target, *([comp] if comp else []), self._sample_index(index), value,
                 *(["i"] if run.form == "proven" else []), *full, f"{RUN_STATE}{target}"]
@@ -425,15 +351,15 @@ class AetherWriter:
 
     def leaf(self, r, leaf: Leaf, materialised: bool) -> str:
         name = binding_name(leaf.role, leaf.name)
-        if is_scratch(leaf):
-            # the plane a wide value lives in (:mod:`hawk.ir.wide`): its text is the lane's own proxy of it
+        if _wide.is_scratch(leaf):
+            # the plane a wide value lives in (:mod:`simt.wide`): its text is the lane's own proxy of it
             if not r.placed:
                 return ""
-            if is_tiled(leaf) and r.lane_rows is not None:
+            if _wide.is_tiled(leaf) and r.lane_rows is not None:
                 # an interchanged host lane: the plane is a row of the tile, declared by the text around the segments
                 proxy = f"{name}_i"
                 r.lane_rows[proxy] = (name, r.plane_widths[leaf.name])
-            elif is_tiled(leaf):
+            elif _wide.is_tiled(leaf):
                 proxy = f"{name}_i"
                 r._emit(f"const auto {proxy} = hawk_abi::tiled<Real, {r.plane_widths[leaf.name]}>({name}, "
                         f"{SAMPLE_INDEX_IDENT});")
@@ -492,8 +418,6 @@ class AetherWriter:
         if is_param_cell(node):
             return param_cell_binding(node.plane.name)
         plane = binding_name(node.plane.role, node.plane.name)
-        if isinstance(node, TeamRead):
-            return self._team_read(r, node, plane)
         idx = self._sample_index(r._ref(node.index))
         if r.position.get(id(node)) in r.lazy:
             return f"{plane}[{idx}]"        # proxy, handed to a library call as it stands
@@ -504,7 +428,7 @@ class AetherWriter:
         rank>=1 one is ``aether::select``, which reads both branches through
         the shared working-type helper — a raw ternary can't name them, since
         two aether expressions of different C++ types have no common type."""
-        host = policy.blend() and _evaluates_freely(node)
+        host = r.spec.settings.blend and _evaluates_freely(node)
         if not node.ttype.shape:
             if host and node.ttype.dtype in _BLEND_DTYPES:
                 return f"hawk_abi::blend({c}, {a}, {b})"
@@ -523,9 +447,9 @@ class AetherWriter:
 
     def op(self, r, node: Op, args: Sequence[str], ranks: Sequence[int]) -> str:
         kind, rank = node.kind, len(node.ttype.shape)
-        if kind == RESIDENT_KIND:
+        if kind == _wide.RESIDENT_KIND:
             return self._resident(r, node, args)
-        if kind == WARP_SUM_KIND:
+        if kind == _lane.WARP_SUM_KIND:
             partial = f"{args[0]}.sum()" if node.operands[0].ttype.shape else args[0]
             return f"hawk_abi::warp_sum<Real>(static_cast<Real>({partial}))"
         if kind == RAW_KIND:
@@ -565,10 +489,12 @@ class AetherWriter:
         ``det`` and the factor itself are plain expressions."""
         kind = node.kind
         n = node.operands[0].ttype.shape[0]
-        if n > MAX_DIM or kind in QR_OPS:
+        if r.max_dim is None:
+            raise HawkError(f"op {kind!r}: the variant of the target being built has no linalg.max_dim: a backend whose manifest names no variant cannot factor per lane")
+        if n > r.max_dim or kind in QR_OPS:
             raise HawkError(
                 f"op {kind!r} at n={n} reached the per-lane writer, which holds the matrix in one "
-                f"lane (n <= {MAX_DIM}): above that a team of threads works on it, which is a stage "
+                f"lane (n <= {r.max_dim}): above that a team of threads works on it, which is a stage "
                 "of its own the build splits out (a team stage inside a loop body, a thread box or "
                 "the embedded c target has none)")
         if kind in FACTORISATIONS:
@@ -661,7 +587,7 @@ class AetherWriter:
         return out
 
     def _rolled_product(self, r, node: Op) -> str:
-        """A product over the fold threshold (:func:`hawk.emit.policy.rolled`) as its
+        """A product over the fold threshold (:func:`hawk.passes.policy.rolled`) as its
         ``aether::rt`` twin, written into a fresh ``Item`` ahead of the line that uses it.
         The static text multiplies register ``Item``s, so the twin is the one that
         contracts as they do (``matVecItems``)."""
@@ -681,7 +607,7 @@ class AetherWriter:
                 continue
             for k, child in enumerate(node.operands):
                 child = _through(child)
-                if _absorbs(node, k, child):
+                if _absorbs(node, k, child, r.rolled_min, r.spec.settings.form):
                     p = r.position[id(child)]
                     reads[p] = reads.get(p, 0) + 1
         out = {p for p, n in reads.items() if n == r.fanout.get(p, 0)}
@@ -711,16 +637,16 @@ class AetherWriter:
                     users.setdefault(key(_through(o)), []).append(node)
         seen: set = set()
         reads, keep = [], set()
-        stack = [_through(n.operands[0]) for n in scanned if is_resident(n)]
+        stack = [_through(n.operands[0]) for n in scanned if _wide.is_resident(n)]
         while stack:
             node = stack.pop()
-            if id(node) in seen or element_kind(node) not in ("parts", "splat", "elementwise"):
+            if id(node) in seen or _wide.element_kind(node) not in ("parts", "splat", "elementwise"):
                 continue
-            if not all((is_resident(u) and key(_through(u.operands[0])) == key(node))
-                       or (id(u) in seen and element_kind(u) == "elementwise") for u in users.get(key(node), ())):
+            if not all((_wide.is_resident(u) and key(_through(u.operands[0])) == key(node))
+                       or (id(u) in seen and _wide.element_kind(u) == "elementwise") for u in users.get(key(node), ())):
                 continue
             seen.add(id(node))
-            run = gather(node)
+            run = _wide.gather(node)
             if run is not None:                 # the reads are one expression of the element index: none is rendered
                 reads += [part for part in node.operands if len(users.get(key(part), ())) == 1]
                 keep.add(id(run.base))
@@ -737,7 +663,7 @@ class AetherWriter:
                 stack.extend(node.operands)
         return seen
 
-    # -- wide values in planes (:mod:`hawk.ir.wide`) -----------------------------------------
+    # -- wide values in planes (:mod:`simt.wide`) -----------------------------------------
 
     def _resident(self, r, node: Op, args: Sequence[str]) -> str:
         """A value placed in its plane (``args[1]`` is the lane's proxy of it): the statements that write the
@@ -747,9 +673,9 @@ class AetherWriter:
         value, proxy = _through(node.operands[0]), args[1]
         if id(value) in r.absorbed:
             self._fill(r, proxy, value)
-        elif args[0] != proxy and is_tiled(node.operands[1]):       # a scratch lane is written element by element
+        elif args[0] != proxy and _wide.is_tiled(node.operands[1]):       # a scratch lane is written element by element
             r._emit("AETHER_NO_UNROLL()")
-            held = self._element_of(r, value, "hawk_lk", None) if element_kind(value) in ("input", "elementwise", "parts", "splat") \
+            held = self._element_of(r, value, "hawk_lk", None) if _wide.element_kind(value) in ("input", "elementwise", "parts", "splat") \
                 else f"{args[0]}(hawk_lk)"
             r._emit(f"for (Int hawk_lk = 0; hawk_lk < {node.ttype.shape[0]}; ++hawk_lk) {proxy}.at(hawk_lk) = {held};")
         elif args[0] != proxy:
@@ -777,10 +703,10 @@ class AetherWriter:
             if id(node) in seen or len(node.ttype.shape) != 1:
                 continue
             seen.add(id(node))
-            kind = element_kind(node)
+            kind = _wide.element_kind(node)
             if kind == "parts":
                 first = node.operands[0]
-                if gather(node) is None and not all(
+                if _wide.gather(node) is None and not all(
                         isinstance(o, Const) and isinstance(first, Const) and o.literal == first.literal for o in node.operands):
                     return False
             elif kind == "elementwise":
@@ -810,15 +736,15 @@ class AetherWriter:
         """The text of element ``k`` of ``node`` where it is not an operation on its operands' elements, else ``None``."""
         if len(node.ttype.shape) == 0:
             return r._ref(node)
-        if is_prior(node):                         # the Mutable's own plane, read at its element before it is written
+        if _wide.is_prior(node):                         # the Mutable's own plane, read at its element before it is written
             return f"{binding_name(node.role, node.name)}[i].at({k})"
         if id(node) not in r.absorbed:
             text = r._ref(node)
             if text in r.proxies or r.position.get(id(node)) in r.lazy:
                 return f"{text}.at({k})"
-        kind = element_kind(node)
+        kind = _wide.element_kind(node)
         if kind == "parts":
-            run = gather(node)
+            run = _wide.gather(node)
             if run is not None:
                 return self._gathered(r, run, k, static)
             if static is not None:
@@ -833,7 +759,7 @@ class AetherWriter:
         raise HawkError(f"a value of kind {getattr(node, 'kind', type(node).__name__)!r} has no element-by-element spelling")
 
     def _gathered(self, r, run, k: str, static: int | None) -> str:
-        """Element ``k`` of a run of reads of one plane (:class:`hawk.ir.wide.Gather`)."""
+        """Element ``k`` of a run of reads of one plane (:class:`simt.wide.Gather`)."""
         at = f"static_cast<Int>({run.start + run.step * static})" if static is not None else (
             f"(static_cast<Int>({run.start}) + {k} * static_cast<Int>({run.step}))")
         index = at if run.base is None else f"({r._ref(run.base)} + {at})"
@@ -864,14 +790,14 @@ class AetherWriter:
     def own_shape(node: Op) -> tuple:
         return node.ttype.shape
 
-    def fresh_value(self, node: Node) -> bool:
+    def fresh_value(self, r, node: Node) -> bool:
         """Whether ``node`` renders as the name of a fresh local its statements
         fill (a factor, a library result, a rolled product, a team result read back): it is never
         copied."""
-        if isinstance(node, TeamRead):
+        if getattr(node, "fresh_read", False):
             return True
         return isinstance(node, Op) and bool(node.ttype.shape) and (
-            node.kind in LINALG_OPS or rolled(node) or _assembled(node))
+            node.kind in LINALG_OPS or rolled(node, r.rolled_min, r.spec.settings.form) or _assembled(node, r.rolled_min))
 
     @staticmethod
     def _fresh_item(r, ttype: TensorType) -> str:
@@ -888,9 +814,19 @@ class AetherWriter:
         if block.language != RAW_LANGUAGE:
             raise HawkError(f"a raw block written in {block.language!r} cannot be "
                             f"spliced into aether text; write it in {RAW_LANGUAGE!r}")
-        for k, (arg, source) in enumerate(zip(args, node.operands)):
-            r._emit(f"const {self._local_type(source.ttype)} hawk_raw_arg{k} = {arg};")
-        return f"({block.text})"
+        decls = [f"const {self._local_type(source.ttype)} hawk_raw_arg{k} = {arg};"
+                 for k, (arg, source) in enumerate(zip(args, node.operands))]
+        seen = getattr(r, "raw_blocks_with_operands", 0)
+        if not decls:
+            return f"({block.text})"
+        r.raw_blocks_with_operands = seen + 1
+        if seen == 0:
+            # the first block with operands declares the names the block's text reads, in the kernel's own scope
+            for d in decls:
+                r._emit(d)
+            return f"({block.text})"
+        # a later block reads the same names: its own scope, so two blocks never redefine them
+        return f"[&] {{ {' '.join(decls)} return ({block.text}); }}()"
 
     def _scalar_op(self, r, kind: str, args: Sequence[str], node: Op) -> str:
         if kind in _INT_CALLS or (kind in _INT_WRAPPING
@@ -1021,12 +957,10 @@ class AetherWriter:
 
     def _reduction(self, r, kind: str, args: Sequence[str], node: Op) -> str:
         """The rank>=1 -> rank-0 forms: they READ a tensor and RETURN a scalar."""
-        if kind != "component" and rolled(node):
+        if kind != "component" and rolled(node, r.rolled_min, r.spec.settings.form):
             operands = ", ".join(self._operand(r, o, a) for o, a in zip(node.operands, args))
             return f"aether::rt::{kind}({operands})"
         if kind == "component":
-            from .render import _through
-
             index = node.literal if isinstance(node.literal, tuple) else (node.literal,)
             ks = ', '.join(str(int(k)) for k in index)
             if args[0] in r.proxies:
@@ -1059,7 +993,7 @@ class AetherWriter:
             return ""               # a store of the same slot adds in place
         if args[0] in r.proxies:
             return f"{args[0]}.at({args[1]})"       # a value in a plane: the element, straight from it
-        if _reads_in_place(source, r.inplace) or node.literal == WARP_READ:
+        if _reads_in_place(source, r.inplace) or node.literal == _lane.WARP_READ:
             # a read-only input plane: the element at the runtime index straight
             # from the view (`SampleRef::at`), no `Item` of the whole row
             return f"{binding_name(source.role, source.name)}[i].at({args[1]})"
@@ -1114,7 +1048,7 @@ class AetherWriter:
     def _tensor_op(self, r, kind: str, args: Sequence[str], ranks: Sequence[int],
                    node: Op) -> str:
         rank = len(node.ttype.shape)
-        if kind not in _READS_PROXY and not rolled(node):
+        if kind not in _READS_PROXY and not rolled(node, r.rolled_min, r.spec.settings.form):
             args = [f"{a}.expr()" if a in r.proxies else a for a in args]     # a placed value is an aether expression to the whole-value ops
         if kind == "component_at":
             return self._runtime_component(r, node, args)
@@ -1128,7 +1062,7 @@ class AetherWriter:
             ext = ", ".join(str(e) for e in node.ttype.shape)
             return (f"aether::constant<aether::extents<{ext}>>("
                     f"{self._cast(args[0], node.ttype.dtype)})")
-        if kind == "vec" and _assembled(node):
+        if kind == "vec" and _assembled(node, r.rolled_min):
             return self._assemble(r, node, args)
         if kind == "vec":
             if not args:
@@ -1158,7 +1092,7 @@ class AetherWriter:
         if kind in _CWISE1:
             return f"aether::{_CWISE1[kind]}({args[0]})"
         if kind in ("mv", "mm"):
-            if rolled(node):
+            if rolled(node, r.rolled_min, r.spec.settings.form):
                 return self._rolled_product(r, node)
             return f"({args[0]} * {args[1]})"
         if kind == "outer":
@@ -1265,10 +1199,10 @@ class AetherWriter:
         return f"aether::constant<aether::extents<{ext}>>(static_cast<{elem}>(0))"
 
 
-def _assembled(node: Node) -> bool:
-    """A matrix built from more entries than the static threshold (:mod:`hawk.emit.policy`)."""
+def _assembled(node: Node, rolled_min: int) -> bool:
+    """A matrix built from more entries than the static threshold (:mod:`hawk.passes.policy`)."""
     return (isinstance(node, Op) and node.kind == "vec" and len(node.ttype.shape) == 2
-            and prod(node.ttype.shape) > policy.ROLLED_FOLD_MIN)
+            and exceeds(prod(node.ttype.shape), rolled_min))
 
 
 def _is_identity(node: Node) -> bool:
@@ -1288,12 +1222,12 @@ def _is_plane(node: Node) -> bool:
             and not is_param_cell(node))
 
 
-def _absorbs(node: Op, k: int, child: Node) -> bool:
+def _absorbs(node: Op, k: int, child: Node, rolled_min: int, form: str = "auto") -> bool:
     """Whether ``node`` reads operand ``k`` through ``child``'s own operand instead of
     its text: an identity right-hand side of ``lu_solve``, a transpose under a rolled product."""
     if node.kind == "lu_solve":
         return k == 1 and _is_identity(child)
-    return rolled(node) and isinstance(child, Op) and child.kind == "transpose"
+    return rolled(node, rolled_min, form) and isinstance(child, Op) and child.kind == "transpose"
 
 
 #: The ``aether::geometry`` function each ray kind calls.

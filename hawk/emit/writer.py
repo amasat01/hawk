@@ -56,7 +56,7 @@ class Writer(Protocol):
     #: live whole; otherwise it keeps the single store at the end.
     commits_per_component: bool
     #: Whether sites over the fold threshold spell as library twins
-    #: (:mod:`hawk.emit.policy`). A writer that does gives the renderer
+    #: (:mod:`hawk.passes.policy`). A writer that does gives the renderer
     #: ``unrendered(r)`` and ``fresh_value(node)``.
     rolled_forms: bool
 
@@ -92,12 +92,6 @@ class Writer(Protocol):
 
     def plane_extent_value(self, node: Any) -> str:
         """A ``PlaneExtent`` node: the element count of its plane, as an integer."""
-
-    def warp_lane_value(self) -> str:
-        """A ``WarpLane`` node: the lane's place in its warp."""
-
-    def warp_store(self, r, sink, target: str, value: str) -> None:
-        """A ``WarpStore``: the lane's slice of a wide value, into its own elements of the Mutable's plane."""
 
     def lane_position_value(self, mapped: bool) -> str:
         """A ``LanePosition`` node: the launch position ``t``; ``mapped`` is

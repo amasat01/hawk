@@ -8,6 +8,7 @@ an untaken arm's out-of-range row is never read). A read guarded by a
 per-iteration condition stays in the body."""
 
 from __future__ import annotations
+from _specs import HOST
 
 import numpy as np
 from _eval import evaluate
@@ -44,7 +45,7 @@ def per_iteration_guard(x: hawk.Scalar, n: hawk.Scalar, a: hawk.Table["k":T],
 
 
 def _text(kernel) -> str:
-    return render_body(kernel.sinks, kernel.walk).text
+    return render_body(kernel.sinks, kernel.walk, spec=HOST).text
 
 
 def _loop(kernel):

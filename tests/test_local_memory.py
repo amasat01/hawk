@@ -20,7 +20,7 @@ from _linalg_kernels import chol_kernel, eigh_kernel, lu_kernel
 from conftest import sidecar_of
 
 from hawk import HawkError
-from hawk.artifact import bundle as B
+from hawk_cuda import backend as B
 from hawk.artifact import build_bundle
 from hawk.artifact.sidecar import LOCAL_LIMIT_B
 from hawk.trace.kernel import Kernel

@@ -32,7 +32,7 @@ import pytest
 
 import hawk
 from hawk import Index, Int32, Mutable, Param, Scalar, Vector
-from hawk.embedded import EmbeddedArtifact, export, render, toolchain
+from hawk_c import EmbeddedArtifact, export, render, toolchain
 from hawk.math import norm, where
 from hawk.trace.kernel import Kernel
 
@@ -196,6 +196,7 @@ def test_a_re_export_is_byte_identical(tmp_path):
     assert text.endswith("}\n") and json.loads(text)
 
 
+@pytest.mark.needs_toolchain("cppcheck")
 def test_a_failed_check_leaves_no_stale_report(tmp_path, monkeypatch):
     """A re-export whose checks fail leaves its C for inspection and NO
     report: never an older clean ``.embedded.json`` beside failing C."""
@@ -218,6 +219,7 @@ def test_a_failed_check_leaves_no_stale_report(tmp_path, monkeypatch):
     assert (tmp_path / "u.c").read_text() == render(I.casts, name="u").text
 
 
+@pytest.mark.needs_toolchain("cppcheck")
 def test_check_true_runs_cppcheck_clean_and_stays_byte_identical(tmp_path):
     assert toolchain.cppcheck() is not None, "install cppcheck or set $HAWK_CPPCHECK"
     a, b = tmp_path / "a", tmp_path / "b"
@@ -235,11 +237,13 @@ def test_a_bare_import_hawk_resolves_the_embedded_submodule():
     """``import hawk; hawk.embedded.export`` works with no explicit submodule
     import (a subprocess: in-process the attribute is set once any test
     imported ``hawk.embedded``)."""
+    import os
     import subprocess
     import sys
 
     done = subprocess.run(
         [sys.executable, "-c", "import hawk; hawk.embedded.export"],
-        capture_output=True, text=True)
+        capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)})
     assert done.returncode == 0, done.stderr
     assert "AttributeError" not in done.stderr

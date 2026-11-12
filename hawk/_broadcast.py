@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from math import prod
 
-from .ir import HawkError
+from ._errors import HawkError
 
 #: The roles of a read-only per-lane input; the ones that broadcast.
 READ_ROLES = ("per_sample", "vec_in", "mat_in")
@@ -289,7 +289,7 @@ def _read(name: str, ttype, kept: tuple, axes, cell: bool) -> tuple:
 
 def _swap(sinks, mapping: dict) -> tuple:
     """``sinks`` with the nodes in ``mapping`` (by ``id``) replaced, in value and key."""
-    from .diff.tape import _resink
+    from raptor.ir.cells import with_value
     from .ir import AccumWrite
     from .ir.walk import substitute
 
@@ -298,8 +298,7 @@ def _swap(sinks, mapping: dict) -> tuple:
     for s in sinks:
         part = roots[at:at + len(s.operands)]
         at += len(s.operands)
-        out.append(AccumWrite(s.name, part[0], part[1] if len(part) > 1 else None, s.ttype, s.policy)
-                   if isinstance(s, AccumWrite) else _resink(s, part[0]))
+        out.append(s.rebuilt(part, {}) if isinstance(s, AccumWrite) else with_value(s, part[0]))
     return tuple(out)
 
 

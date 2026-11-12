@@ -68,7 +68,7 @@ def cc_shared(c_path, tmp) -> Path:
     """Compile the exported ``c_path`` into a shared library in ``tmp``
     (:func:`hawk.embedded.toolchain.compile_shared`: c99, -O2, no FP
     contraction)."""
-    from hawk.embedded.toolchain import compile_shared
+    from hawk_c.toolchain import compile_shared
 
     c_path = Path(c_path)
     return compile_shared(c_path, Path(tmp) / f"{c_path.stem}{_SHARED_SUFFIX}")

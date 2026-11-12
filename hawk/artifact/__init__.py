@@ -16,8 +16,8 @@ from __future__ import annotations
 import ctypes
 from types import SimpleNamespace
 
-from ..ir import HawkError
-from ..targets import ENTRY_DEVICE, ENTRY_HOST, TARGETS
+from .._errors import HawkError
+from ..targets import TARGETS
 from .bundle import (
     STAMP_NAME,
     Artifact,
@@ -162,12 +162,12 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
     as :func:`hawk.load` refuses its directory."""
     from .. import _core
 
-    def entry_of(art, kind):
+    def entry_of(art, host):
         return next((e for t, e in art.entries.items()
-                     if TARGETS[t].entry == kind), None)
+                     if TARGETS[t].host_entry == host and TARGETS[t].entry), None)
 
     registry = None
-    if device_loader is not None and any(entry_of(a, ENTRY_DEVICE)
+    if device_loader is not None and any(entry_of(a, False)
                                          for a in bundle.artifacts):
         registry = device_loader(bundle.manifest_path)
     out = {}
@@ -175,15 +175,14 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
         if not any(TARGETS[t].entry for t in art.entries):
             built = ", ".join(repr(t) for t in art.entries)
             raise HawkError(
-                f"{art.name!r} was built for the {built} target only: it is a "
-                "standalone C unit (<name>.c, <name>.h, <name>.embedded.json, "
-                "see hawk.embedded) for an embedded build, with no host or "
-                "device entry point to plan; build it with targets=('host',) "
-                "or ('cuda',) for plugins")
+                f"{art.name!r} was built for the {built} target only: it is "
+                f"{next(TARGETS[t].unit_note for t in art.entries if TARGETS[t].unit_note)}, "
+                "with no host or device entry point to plan; build it with "
+                "targets=('host',) or ('cuda',) for plugins")
         view = plan_view(art.sidecar)
         symbol = view.pop("host_entry", None)
         entries, keep = {}, []
-        host = entry_of(art, ENTRY_HOST)
+        host = entry_of(art, True)
         if host is not None and symbol:
             library = _core.HostLibrary(str(host.artifact))   # refuses a mismatch
             cdll = ctypes.CDLL(str(host.artifact))
@@ -191,10 +190,10 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
                                                 ctypes.c_void_p).value
             entries.update(fold_entries(cdll, art.sidecar))
             keep += [library, cdll]
-        if registry is not None and entry_of(art, ENTRY_DEVICE):
+        if registry is not None and entry_of(art, False):
             loaded = registry[art.name]
             entries["device_function"] = loaded.fn.kernel.ptr
             keep += [registry, loaded]
-        out[art.name] = SimpleNamespace(name=art.name, _keepalive=tuple(keep),
+        out[art.name] = SimpleNamespace(name=art.name, sidecar=art.sidecar, _keepalive=tuple(keep),
                                         **entries, **view)
     return out

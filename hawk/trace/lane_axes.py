@@ -14,7 +14,7 @@ from __future__ import annotations
 import threading
 from contextlib import contextmanager
 
-from ..ir import HawkError
+from .._errors import HawkError
 from ..ir import make as _make
 from ..ir.nodes import At, Leaf, RoleConst
 from .value import Value, index_node, sample_index, widened

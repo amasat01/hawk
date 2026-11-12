@@ -78,8 +78,7 @@ def test_the_derived_ir_of_a_quantity_kernel_keeps_the_whole_span():
     from hawk.types import Wire
 
     state = Quantity(slug="sc", name="state",
-                     wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))],
-                     reconstruct=lambda p, v: (p, v))
+                     wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))])
 
     @kernel
     def energy(sc: state, out: Mutable[Scalar]):

@@ -22,7 +22,8 @@ from __future__ import annotations
 import keyword
 from dataclasses import dataclass, replace
 
-from ..ir import HawkError, Quantity
+from ..ir import Quantity
+from .._errors import HawkError
 from ..types import TensorType
 
 #: Payload types. ``Vector``/``Matrix`` are subscripted with static extents —
@@ -85,7 +86,7 @@ class Plane:
         raise HawkError(f"a `{self.form}` DECLARATION is annotated, not called")
 
     def __setitem__(self, key: object, value: object) -> None:
-        from ..ir import HawkError
+        from .._errors import HawkError
 
         if self.form == "terminated":
             from .value import FinishRefusal

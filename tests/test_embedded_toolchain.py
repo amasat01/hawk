@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-from hawk.embedded import toolchain as tc
+from hawk_c import toolchain as tc
 from hawk.ir import HawkError
 
 VALID_C = """\
@@ -182,6 +182,7 @@ STDINT_H = ("#ifndef T_H\n#define T_H\n#include <stdint.h>\n\n"
             "int64_t t_pick(int64_t a, uint32_t b);\n\n#endif\n")
 
 
+@pytest.mark.needs_toolchain("cppcheck")
 def test_cppcheck_knows_the_stdint_constant_macros():
     """The run never reads <stdint.h> (``missingIncludeSystem``), and an older
     cppcheck's standard library does not declare ``INT64_C`` and the rest, so

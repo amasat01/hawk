@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""A KAN edge function in two spellings, at HAWK's own authoring surface — TEST
+"""A spline edge function in two spellings, at HAWK's own authoring surface — TEST
 SCAFFOLD for ``tests/test_spline_local.py`` and the register probe.
 
 The edge is ``phi(x) = w_b * silu(u) + w_s * sum_g c_g B_g(u)`` with
@@ -109,24 +109,24 @@ def _sum_edges(fn, x, theta, n_in):
     return total
 
 
-def kan_layer(form: str, n_in: int):
-    """``n_in`` spline edges summed, in nowl's ``kan_routed`` shape: ``x`` carries
+def spline_layer(form: str, n_in: int):
+    """``n_in`` spline edges summed, in a downstream package's ``spline_routed`` shape: ``x`` carries
     ``ROWS`` rows per input, ``theta`` the lanes of every edge, ``y`` row 0 the sum."""
     fn = dense_edge if form == "dense" else local_edge
 
     @hawk.kernel
-    def kan_routed(x: hawk.Vector[n_in * ROWS],
+    def spline_routed(x: hawk.Vector[n_in * ROWS],
                    theta: hawk.Vector[n_in * W],
                    terminated: hawk.Terminated,
                    y: hawk.Mutable[hawk.Vector[2]]):
         y = m.vec(_sum_edges(fn, x, theta, n_in), 0.0)
 
-    return kan_routed
+    return spline_routed
 
 
 def _switch_edges(x, theta, kinds, n_in):
     """Each edge a three-way switch on its kind: the local spline, a polynomial,
-    a power; the kind is data (nowl's shape)."""
+    a power; the kind is data (a downstream package's shape)."""
     total = None
     for e in range(n_in):
         xe = x[e * ROWS]
@@ -139,35 +139,35 @@ def _switch_edges(x, theta, kinds, n_in):
     return total
 
 
-def kan_switch(n_in: int):
-    """:func:`kan_layer` with a kind switch per edge."""
+def spline_switch(n_in: int):
+    """:func:`spline_layer` with a kind switch per edge."""
     @hawk.kernel
-    def kan_routed(x: hawk.Vector[n_in * ROWS],
+    def spline_routed(x: hawk.Vector[n_in * ROWS],
                    theta: hawk.Vector[n_in * W],
                    kinds: hawk.Vector[n_in],
                    terminated: hawk.Terminated,
                    y: hawk.Mutable[hawk.Vector[2]]):
         y = m.vec(_switch_edges(x, theta, kinds, n_in), 0.0)
 
-    return kan_routed
+    return spline_routed
 
 
-def kan_rolled(form: str, n_in: int):
+def spline_rolled(form: str, n_in: int):
     """The same layer with the edges as ONE lowered ``for`` (``plain``: the local
     spline; ``switch``: a kind switch per edge), so its reverse is a derived loop
     that commits the runtime-indexed gradient once per iteration."""
     if form == "plain":
         @hawk.kernel
-        def kan_loop(x: hawk.Vector[n_in * ROWS], theta: hawk.Vector[n_in * W],
+        def spline_loop(x: hawk.Vector[n_in * ROWS], theta: hawk.Vector[n_in * W],
                      terminated: hawk.Terminated, y: hawk.Mutable[hawk.Vector[2]]):
             total = 0.0
             for e in range(n_in):
                 total = total + local_edge(x[e * ROWS], theta, e * W)
             y = m.vec(total, 0.0)
-        return kan_loop
+        return spline_loop
 
     @hawk.kernel
-    def kan_loop(x: hawk.Vector[n_in * ROWS], theta: hawk.Vector[n_in * W],
+    def spline_loop(x: hawk.Vector[n_in * ROWS], theta: hawk.Vector[n_in * W],
                  kinds: hawk.Vector[n_in], terminated: hawk.Terminated,
                  y: hawk.Mutable[hawk.Vector[2]]):
         total = 0.0
@@ -179,4 +179,4 @@ def kan_rolled(form: str, n_in: int):
                      theta[base] * m.exp(theta[base + 2] * m.log(m.sqrt(xe * xe) + 1e-6))]
             total = total + m.dispatch(m.int32(kinds[e]), cases, policy="switch")
         y = m.vec(total, 0.0)
-    return kan_loop
+    return spline_loop

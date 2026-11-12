@@ -261,7 +261,7 @@ def _bands(n: int):
     with ``true_var=1/12``: ``sqrt(2/n)/12 = sqrt(1/(180n))`` less a factor);
     ``normal`` mean band ``3/sqrt(n)``, var band ``3*sqrt(2/n)`` (the same
     3-sigma rule at ``true_var=1``); both KS bands are the same asymptotic
-    Kolmogorov bound ``1.63/sqrt(n)``."""
+    KS bound ``1.63/sqrt(n)``."""
     ks = 1.63 / np.sqrt(n)
     return (3.0 / np.sqrt(12 * n), 3.0 * np.sqrt(1.0 / (180 * n)), ks,
            3.0 / np.sqrt(n), 3.0 * np.sqrt(2.0 / n), ks)

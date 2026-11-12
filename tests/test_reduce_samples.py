@@ -19,6 +19,7 @@ Rows (the ``cuda`` arm is marked ``gpu``):
 """
 
 from __future__ import annotations
+from _specs import DEVICE
 
 import numpy as np
 import pytest
@@ -244,13 +245,13 @@ def test_max_of_an_iterable_refuses():
 
 
 def test_a_reduced_value_read_later_is_a_launch_boundary():
-    from hawk.ir.split import stages
+    from lowering.split import stages
 
     @kernel
     def k(x: Scalar, t: Mutable[Scalar], u: Mutable[Scalar]):
         t = hawk.sum(x)
         u = t + 1.0
-    first, second = stages("k", k.sinks)
+    first, second = stages("k", k.sinks, spec=DEVICE)
     assert first.cells_out == ("t",) and second.cells_in == ("t",)
 
 

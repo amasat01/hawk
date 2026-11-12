@@ -18,7 +18,7 @@ backward loop that reads the forward loop's tape ((b)). Forward mode carries
 tangents through either of those exactly as it carries them through a primal —
 so the refusal that used to sit in ``hawk/diff/loops.forward_loop`` was never a
 statement about the mathematics, only about the ONE node with no tangent rule:
-:class:`~hawk.ir.loop_nodes.TapeRead`. Its rule is that the tangent of
+:class:`~hawk.ir.nodes.TapeRead`. Its rule is that the tangent of
 ``TapeRead(F, j, k)`` is ``TapeRead(F', m + j, k)`` — the same iteration of the
 AUGMENTED forward loop, whose slot ``m + j`` already carries the tangent of slot
 ``j``. In the emitted code the tape becomes a tape of PAIRS, which
@@ -50,6 +50,7 @@ value.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import pathlib
 
@@ -62,7 +63,8 @@ import hawk.math as m
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
 from hawk.emit import FLOAT64, render_body, render_source
-from hawk.ir import HawkError, Loop, canonical
+from hawk.ir import Loop, canonical
+from hawk import HawkError
 from hawk.targets import TARGETS
 
 #: The central-difference step for the SECOND derivative row. It differences the
@@ -245,7 +247,7 @@ def test_the_tape_becomes_a_tape_of_pairs():
     holds the tangent, at the same iteration, in the twin slot."""
     derived = jvp(vjp(chebyshev, wrt=("z",)), wrt=("z",))
     walk = canonical(derived)
-    text = render_body(derived, walk).text
+    text = render_body(derived, walk, spec=HOST).text
     assert text.count("for (") == 3, text
     tapes = sorted({ln.strip().split()[1].split("[")[0]
                     for ln in text.splitlines() if "hawk_tp" in ln
@@ -307,7 +309,7 @@ def test_an_unseeded_carry_still_gets_its_adjoint_recurrence():
     two carried locals written every iteration and consulted by nothing, which
     is what a dropped adjoint recurrence looks like in generated code."""
     derived = vjp(jvp(chebyshev, wrt=("z",)))
-    text = render_body(derived, canonical(derived)).text
+    text = render_body(derived, canonical(derived), spec=HOST).text
     reverse = text.split("for (")[-1]
     results = [ln.strip() for ln in reverse.splitlines()
                if ln.strip().startswith("const Real hawk_n")]

@@ -4,11 +4,11 @@
 """A kernel that only reads lookup planes runs its loops interchanged on the host, its wide carries in place.
 
 A table read is a ``cross_sample_read`` of the walk, but a lookup plane is read-only and the same for every lane, so a tile of
-lanes may run a loop trip by trip beside it (:func:`hawk.ir.vectorise.lane_form_access`); the access class itself is
+lanes may run a loop trip by trip beside it (:func:`hawk.passes.vectorise.lane_form_access`); the access class itself is
 unchanged, which is what a rank partition reads. What is pinned:
 
 * **The predicate.** The wide-value corpus kernels that read a table interchange, with the reason string
-  (:func:`hawk.ir.vectorise.vectorise_blocker`) saying why a kernel that does not does not; a loop that folds a long vector
+  (:func:`hawk.passes.vectorise.vectorise_blocker`) saying why a kernel that does not does not; a loop that folds a long vector
   stays its lane's own (the fold is the vector work already).
 * **The wide carry stays in its plane.** Between the tile loop's head and its tail the text holds no ``Item`` of more than
   the placement threshold: a carry is a row of the tile, written element by element, never loaded and stored whole per trip.
@@ -19,6 +19,7 @@ Every build pins the EXACT ``native`` host profile.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import re
 
@@ -29,7 +30,7 @@ import pytest
 from conftest import sidecar_of
 
 from hawk.artifact import build_bundle
-from hawk.ir.vectorise import interchanged_loops, vectorise_blocker, vectorises
+from hawk.passes.vectorise import interchanged_loops, vectorise_blocker, vectorises
 
 ROWS = ["fill_mask", "matvec_computed", "masked_sum", "wide51"]
 PLAIN = ("HAWK_HOST_INTERCHANGE=0",)
@@ -41,9 +42,9 @@ def _host_text(name):
 
     k = W.CORPUS[name].kernel
     out = []
-    for kk, n, kd in zip(*B._expand_split([k], [k.name], [k.kind], smode=scalar_mode("float64"), device=False)[:3]):
-        src = B._sources(B._active_unit(kk, n, kd), name=n, smode=scalar_mode("float64"), kind=kd, targets=("host",),
-                         layout_sizes_override=None)
+    for kk, n, kd in zip(*B._expand_split([k], [k.name], [k.kind], spec=HOST, smode=scalar_mode("float64"), device=False)[:3]):
+        src = B._emit(B.lower(B._active_unit(kk, n, kd), n, scalar_mode("float64"), kd, ("host",), HOST), ("host",),
+                      B._options(device_arch=""))
         out.append(src["host"].text)
     return "".join(out)
 
@@ -58,8 +59,8 @@ def test_a_kernel_that_only_reads_a_table_interchanges(name):
 def test_a_loop_that_folds_a_long_vector_stays_its_lanes_own_and_the_gate_says_why():
     walk = W.matvec_in.walk
     assert walk.access.cls == "cross_sample_read" and interchanged_loops(walk) == ()
-    assert not vectorises(walk)
-    assert "no loop runs interchanged" in vectorise_blocker(walk)
+    assert not vectorises(walk, HOST)
+    assert "no loop runs interchanged" in vectorise_blocker(walk, HOST)
 
 
 @pytest.mark.parametrize("name", ROWS)

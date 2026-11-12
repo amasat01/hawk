@@ -89,6 +89,7 @@ earlier state under this row gave **77 failed, 42 passed**.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import itertools
 import zlib
@@ -102,7 +103,8 @@ from hawk.artifact import build
 from hawk.diff import vjp
 from hawk.emit import render_body
 from hawk.emit.render import mirror_of
-from hawk.ir import Assign, HawkError, Leaf, canonical
+from hawk.ir import Assign, Leaf, canonical
+from hawk import HawkError
 from hawk.ir import make as mk
 from hawk.ir.ops import OP_KINDS
 from hawk.types import TensorType
@@ -172,7 +174,8 @@ def collapsing_kinds() -> frozenset:
 #: ``(kind, rank)`` groups, one emitted kernel each. The rank axis carries the
 #: ranks the kind's own type rule admits for the operand under test.
 GROUPS = (("norm", 1), ("dot", 1), ("sum", 1), ("sum", 2),
-          ("component", 1), ("mv", 1), ("mv", 2))
+          ("component", 1), ("mv", 1), ("mv", 2),
+          ("lstsq", 2), ("lstsq_gram_solve", 2), ("lstsq_info", 2))
 
 
 def _ttype(kind: str, rank: int) -> TensorType:
@@ -181,7 +184,7 @@ def _ttype(kind: str, rank: int) -> TensorType:
     square extent so both 2x2 and 3x3 are emitted somewhere in the corpus."""
     if rank == 1:
         return V3
-    return M33 if kind == "mv" else M22
+    return M33 if kind in ("mv", "lstsq", "lstsq_gram_solve", "lstsq_info") else M22
 
 
 def _operand(form: str, tag: str, t: TensorType) -> tuple:
@@ -210,6 +213,11 @@ def _collapse(kind: str, operand, tag: str) -> tuple:
     if kind == "dot":
         other = Leaf("vocab_read", "vec_in", f"{tag}_c", V3)
         return mk("dot", (operand, other)), (other,)
+    if kind in ("lstsq", "lstsq_gram_solve"):         # the matrix J is under test; the right-hand side is a vector leaf
+        other = Leaf("vocab_read", "vec_in", f"{tag}_c", V3)
+        return mk(kind, (operand, other)), (other,)
+    if kind == "lstsq_info":
+        return mk("cast", (mk("lstsq_info", (operand,)),), "f64"), ()      # the harness compares floating outputs
     # mv: the operand under test is the MATRIX on the rank-2 arm and the VECTOR
     # on the rank-1 arm, so both of a rank-changing binary's sides are covered.
     if len(operand.ttype.shape) == 2:
@@ -348,7 +356,7 @@ class _Built:
         #: the BODY string, not the whole TU: the wrapper's ``params[]`` unpack
         #: names every binding too, and a failure that pasted it would bury the
         #: one line that is wrong.
-        self.body = render_body(sinks, kernel.walk).text
+        self.body = render_body(sinks, kernel.walk, spec=HOST).text
 
 
 class _Builder:
@@ -398,7 +406,8 @@ def test_every_sample_gets_its_own_reduction(built, group, case):
     for i in range(N):
         want = np.asarray(b.expected[i][case["out"]], dtype=float)
         mine = got[i] if got.ndim == 1 else got[:, i].reshape(want.shape)
-        assert np.allclose(mine, want, rtol=1e-12, atol=1e-12), (
+        tol = 1e-6 if case["id"].startswith("lstsq") else 1e-12      # a solve on a random 3x3 loses digits; a whole-plane fold is O(1) off
+        assert np.allclose(mine, want, rtol=tol, atol=tol), (
             f"{case['id']} sample {i}: the host path gave {mine!r}, the "
             f"interpreter gives {want!r}. A rank>=1 operand folded at aether's "
             "sample-free SampleIndex::make(0) answers with sample 0's value in "
@@ -468,7 +477,7 @@ def test_the_corpus_enumerates_both_fanouts_and_all_four_forms():
 
 
 def _wide_kernel(width: int, *, whole_use: bool = False) -> tuple:
-    """A per-sample parameter row read element-wise under branches (a KAN block's shape)."""
+    """A per-sample parameter row read element-wise under branches (a spline block's shape)."""
     from hawk.ir import Select
 
     p = Leaf("vocab_read", "vec_in", "p", TensorType((width,), "f64"))
@@ -497,7 +506,7 @@ def _host_run(width, directory, cache, **kw):
                        x=rng.standard_normal(32))
     names = [nm for role, nm in loaded.arg_spec if role in O.OUTPUT_ROLES]
     got = dict(zip(names, got))
-    return np.stack([got["out_a"], got["out_b"]]), render_body(sinks, kernel.walk).text
+    return np.stack([got["out_a"], got["out_b"]]), render_body(sinks, kernel.walk, spec=HOST).text
 
 
 def test_wide_readonly_leaf_is_read_through_the_proxy(tmp_path, monkeypatch):

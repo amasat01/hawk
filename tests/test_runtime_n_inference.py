@@ -10,13 +10,13 @@ whose `arg_spec` leads with a `mutable`/`out` sink (the canonical role
 order), silently wrong for a kernel whose FIRST bound plane is a
 `lookup`/`wide_in`/`wide_out`/`accum_out` plane, because those four roles'
 own length is a runtime quantity UNRELATED to the sample count. This was hit
-for real by a KAN fold's reverse pass -- whose `arg_spec` leads with a
+for real by a spline fold's reverse pass -- whose `arg_spec` leads with a
 SCATTERED `accum_out` plane -- reading that plane's length as n_samples,
 over-running the correctly-sized cotangent plane the launch then read, and
 returning `6.94e-310` (a pointer's bytes, read back as a double) in the first
 two output slots, with no error anywhere.
 
-**The exact real shape, reproduced here without a KAN layer.** `_deployable.gather`'s own VJP (`hawk.diff.vjp(D.gather, wrt=("table"))`) is the SAME
+**The exact real shape, reproduced here without a spline layer.** `_deployable.gather`'s own VJP (`hawk.diff.vjp(D.gather, wrt=("table"))`) is the SAME
 transpose-of-a-gather-is-a-scatter shape: its `arg_spec` is
 `[(accum_out, "bar_table"), (per_sample, "bar_y"), (per_sample, "where")]` --
 `bar_table` (the scatter target, sized to the ORIGINAL table's row count) is

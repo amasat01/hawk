@@ -51,8 +51,8 @@ def _sym(m):
     return (m + m.T) / 2
 
 
-def _spd(n, eigs):
-    q, _ = np.linalg.qr(RNG.standard_normal((n, n)))
+def _spd(n, eigs, rng=RNG):
+    q, _ = np.linalg.qr(rng.standard_normal((n, n)))
     return q @ np.diag(eigs) @ q.T
 
 
@@ -148,23 +148,47 @@ def _steps(eigs, e):
     return min(1e-6, 1e-3 * eigs.min() / np.abs(e).max())
 
 
+SPECTRA = [("well", lambda n: np.linspace(1, 10, n)),
+           ("cond1e8", lambda n: np.logspace(0, -8, n)),
+           ("near_semidefinite", lambda n: np.r_[np.ones(n - 1), 1e-10])]
+
+
+def _cholesky_jvp_closed_form(a, e):
+    """``dL = L Phi(L^-1 E L^-T)`` with ``E = (e + e^T) / 2`` (the factor reads a symmetric input) and ``Phi`` the lower
+    triangle with half its diagonal: the textbook tangent of ``A = L L^T``, computed in NumPy, independent of HAWK."""
+    lower = np.linalg.cholesky(a)
+    inner = np.linalg.solve(lower, np.linalg.solve(lower, _sym(e).T).T)
+    return lower @ (np.tril(inner, -1) + 0.5 * np.diag(np.diag(inner)))
+
+
 @pytest.mark.parametrize("n", [3, 8])
-@pytest.mark.parametrize("name,eigs,tol", [
-    ("well", lambda n: np.linspace(1, 10, n), 1e-8),
-    ("cond1e8", lambda n: np.logspace(0, -8, n), 1e-5),
-    ("near_semidefinite", lambda n: np.r_[np.ones(n - 1), 1e-10], 1e-2)])
-def test_the_cholesky_factor_jvp_matches_fd_with_h_from_lambda_min(n, name, eigs, tol):
-    spectrum = eigs(n)
-    a = _spd(n, spectrum)
-    e = RNG.standard_normal((n, n))
+@pytest.mark.parametrize("name,eigs", SPECTRA)
+def test_the_cholesky_factor_jvp_matches_the_closed_form_where_it_is_hard(n, name, eigs):
+    """The closed form is the oracle on every spectrum: a central difference on a condition-1e8 or near-semidefinite
+    matrix is limited by its own step, so its verdict would depend on the draw, never on the rule."""
+    rng = np.random.default_rng(20261027 + n)           # this row's own draw, whatever ran before
+    a = _spd(n, eigs(n), rng)
+    e = rng.standard_normal((n, n))
+    got = evaluate(jvp(_factor_kernel(n)), {"A": a, "dot_A": e})["dot_L"]
+    expect = _cholesky_jvp_closed_form(a, e)
+    assert np.isfinite(got).all()
+    assert np.abs(got - expect).max() <= 1e-9 * np.abs(expect).max()
+
+
+@pytest.mark.parametrize("n", [3, 8])
+def test_the_cholesky_factor_jvp_matches_fd_on_a_well_conditioned_matrix(n):
+    """A second, independent oracle where a central difference is accurate: lambda_min 1, step 1e-3 lambda_min capped at 1e-6."""
+    rng = np.random.default_rng(20261028 + n)
+    spectrum = np.linspace(1, 10, n)
+    a = _spd(n, spectrum, rng)
+    e = rng.standard_normal((n, n))
     h = _steps(spectrum, e)
     kernel = _factor_kernel(n)
     sides = [evaluate(kernel.sinks, {"A": a + s * h * e}) for s in (1, -1)]
     assert all(np.any(side["L"]) for side in sides), "a side left the cone"
     expect = (sides[0]["L"] - sides[1]["L"]) / (2 * h)
     got = evaluate(jvp(kernel), {"A": a, "dot_A": e})["dot_L"]
-    assert np.abs(got - expect).max() <= tol * np.abs(expect).max()
-    assert np.isfinite(got).all()
+    assert np.abs(got - expect).max() <= 1e-8 * np.abs(expect).max()
 
 
 @pytest.mark.parametrize("n", [1, 3, 8, 32])

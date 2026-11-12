@@ -26,6 +26,7 @@ Rows:
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import json
 
@@ -43,7 +44,7 @@ from hawk.artifact import (
 )
 from hawk.artifact import manifest as _manifest
 from hawk.artifact.unit_cache import _unit_key
-from hawk.embedded import EmbeddedProfile, export
+from hawk_c import EmbeddedProfile, export
 from hawk.emit import scalar_mode
 from hawk.ext import DEFAULT_KIND
 from hawk.ir import HawkError
@@ -124,7 +125,7 @@ def test_host_and_c_together_keep_the_manifest_host_only(tmp_path, cache_dir, fr
 
 def test_exec_targets_table_never_learns_c():
     row = TARGETS["c"]
-    assert row.entry is None and row.wrapper is None and row.compile is None
+    assert row.entry is None and row.wrapper is None and not row.builds
     assert _manifest.EXEC_TARGETS == ("device", "host")
     assert (row.artifact, row.source, row.format) == (".h", ".c", "c")
 
@@ -135,17 +136,17 @@ def test_c_only_directory_refuses_cleanly_to_load(tmp_path, cache_dir, fresh):
     with pytest.raises(HawkError) as err:
         hawk.load(d, "drag")
     text = str(err.value)
-    assert "'c'" in text and "hawk.embedded" in text
+    assert "'c'" in text and "hawk_c" in text
 
 
 def test_unit_key_differs_by_profile(tmp_path, cache_dir, fresh):
-    def key(profile: str) -> str:
+    def key(profile) -> str:
         return _unit_key(["drag"], [K.drag.walk.digest], [""], targets=("c",),
                          smode=scalar_mode("float64"), kind=DEFAULT_KIND, defines=(),
                          cache_dir=cache_dir, device_arch="", derivative_blocks=[None],
-                         layout_sizes_override=None, embedded_profile=profile)
+                         layout_sizes_override=None, options={"c.profile": profile}, spec=HOST)
 
-    assert key(repr(EmbeddedProfile())) != key(repr(EmbeddedProfile(max_trips=10**6)))
+    assert key(EmbeddedProfile()) != key(EmbeddedProfile(max_trips=10**6))
     # and through the door: a second profile is a real publish, not a memo hit
     _c_only(tmp_path / "u", cache_dir)
     other = _c_only(tmp_path / "u", cache_dir,
@@ -179,7 +180,7 @@ def test_plugins_refuses_a_c_only_bundle(tmp_path, cache_dir, fresh):
     with pytest.raises(HawkError) as err:
         plugins(bundle)
     text = str(err.value)
-    assert "'c'" in text and "hawk.embedded" in text
+    assert "'c'" in text and "hawk_c" in text
 
 
 def _kernel_from(path, text: str):
@@ -213,15 +214,14 @@ def _key_for(targets, cache_dir, **kw) -> str:
     return _unit_key(["drag"], [K.drag.walk.digest], [""], targets=targets,
                      smode=scalar_mode("float64"), kind=DEFAULT_KIND, defines=(),
                      cache_dir=cache_dir, device_arch="", derivative_blocks=[None],
-                     layout_sizes_override=None, host_profile="native", **kw)
+                     layout_sizes_override=None, host_profile="native", **kw, spec=HOST)
 
 
 def test_unit_key_names_the_c_core_version_for_c_only(cache_dir, monkeypatch):
     from aether_dsc import c_core
 
-    c_before = _key_for(("c",), cache_dir, embedded_profile=repr(EmbeddedProfile()))
+    c_before = _key_for(("c",), cache_dir)
     host_before = _key_for(("host",), cache_dir)
     monkeypatch.setattr(c_core, "CORE_VERSION", c_core.CORE_VERSION + "-other")
-    assert _key_for(("c",), cache_dir,
-                    embedded_profile=repr(EmbeddedProfile())) != c_before
+    assert _key_for(("c",), cache_dir) != c_before
     assert _key_for(("host",), cache_dir) == host_before

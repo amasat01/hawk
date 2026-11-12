@@ -27,6 +27,7 @@ sound, and the emitted-body row says the forward paid nothing for it.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import _oracle as O
 import numpy as np
@@ -39,7 +40,8 @@ from hawk.artifact import build
 from hawk.diff import jvp, vjp
 from hawk.emit import render_body
 from hawk.ext import primitive, primitives
-from hawk.ir import HawkError, Primitive
+from hawk.ir import Primitive
+from hawk import HawkError
 from hawk.math import dot, exp, log, vec, vsum
 
 RNG = np.random.default_rng(20260905)
@@ -50,7 +52,7 @@ H = 1e-5
 # --------------------------------------------------------------------------- #
 # The subject: softplus, whose derivative HAS a closed form the table would
 # otherwise reach through log/exp/div — the shape a real primitive is declared
-# for (a downstream KAN B-spline basis is the same shape at a larger size).
+# for (a downstream spline B-spline basis is the same shape at a larger size).
 # --------------------------------------------------------------------------- #
 @primitive("hw7a_softplus",
            vjp=lambda x, bar: bar / (1.0 + exp(-x)),
@@ -116,8 +118,8 @@ def test_the_emitted_body_is_byte_identical_to_the_longhand_body():
 
         hawk.ir.nodes.HawkError: op 'primitive' has no aether spelling at rank 0
     """
-    mine = render_body(primitive_kernel.sinks, primitive_kernel.walk).text
-    theirs = render_body(longhand_kernel.sinks, longhand_kernel.walk).text
+    mine = render_body(primitive_kernel.sinks, primitive_kernel.walk, spec=HOST).text
+    theirs = render_body(longhand_kernel.sinks, longhand_kernel.walk, spec=HOST).text
     assert mine == theirs, (
         "a primitive is INLINED: the emitted body must be the body "
         f"the same arithmetic written longhand emits.\n--- primitive ---\n{mine}\n"
@@ -301,8 +303,8 @@ def test_a_reused_primitive_result_emits_no_alias_of_its_forward():
     byte-identical. A primitive is not a node the emitter renders: every
     reference to it is a reference to its forward, and its fan-out is the
     forward's."""
-    mine = render_body(reused_primitive_kernel.sinks, reused_primitive_kernel.walk).text
-    theirs = render_body(reused_longhand_kernel.sinks, reused_longhand_kernel.walk).text
+    mine = render_body(reused_primitive_kernel.sinks, reused_primitive_kernel.walk, spec=HOST).text
+    theirs = render_body(reused_longhand_kernel.sinks, reused_longhand_kernel.walk, spec=HOST).text
     assert mine == theirs, (
         "a reused primitive result must not alias its forward.\n"
         f"--- primitive ---\n{mine}\n--- longhand ---\n{theirs}")

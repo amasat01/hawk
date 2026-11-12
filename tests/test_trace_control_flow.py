@@ -22,7 +22,8 @@ import pytest
 from _eval import evaluate
 
 from hawk import Index, Mutable, Param, Scalar, Value, Vector, kernel
-from hawk.ir import HawkError, Select
+from hawk.ir import Select
+from hawk import HawkError
 from hawk.math import norm, select
 
 
@@ -62,7 +63,7 @@ def test_if_else_merges_both_branches_into_select_and_computes_both_sides():
 
 def test_a_bounded_for_lowers_to_a_loop_that_computes_the_same_number():
     """The body is traced ONCE against a symbolic index and the IR carries
-    a :class:`~hawk.ir.loop_nodes.Loop`, not the unrolled chain the pass used to
+    a :class:`~hawk.ir.nodes.Loop`, not the unrolled chain the pass used to
     build by executing the Python loop. The NUMBER is the gate — a lowering that
     dropped an iteration, or ran the body once, would pass a node-count check
     and fail here."""

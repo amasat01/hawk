@@ -38,6 +38,7 @@ outputs are the same before and after, which is the point.
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import _deploy as L
 import _deployable as D
@@ -126,8 +127,8 @@ def _unindent(lines):
 @pytest.mark.parametrize("name", sorted(_subjects()))
 def test_the_guard_wraps_the_whole_body_before_the_first_load(name):
     sinks, walk = _subjects()[name]
-    guarded = render_body(sinks, walk).text.splitlines()
-    free = render_body(sinks, walk, kind=D.MASK_FREE).text.splitlines()
+    guarded = render_body(sinks, walk, spec=HOST).text.splitlines()
+    free = render_body(sinks, walk, kind=D.MASK_FREE, spec=HOST).text.splitlines()
     assert guarded[0].strip() == GUARD, (
         f"{name}: the mask test must be the body's FIRST line, ahead of every "
         "load:\n" + "\n".join(guarded))
@@ -142,7 +143,7 @@ def test_a_reverse_loop_scatter_is_not_re_guarded_per_iteration():
     """The shape that used to re-test the mask on EVERY iteration: a reverse
     loop's own scatter commit (``hawk.diff.transform._masked_sink``'s Loop)."""
     sinks, walk = _subjects()["loop_gather_vjp"]
-    text = render_body(sinks, walk).text
+    text = render_body(sinks, walk, spec=HOST).text
     assert "for (" in text, "the fixture must lower a loop or the row tests nothing"
     assert text.count("trm_terminated[i].eval()") >= 1
     loop_at = text.index("for (")
@@ -152,8 +153,8 @@ def test_a_reverse_loop_scatter_is_not_re_guarded_per_iteration():
 def test_a_two_mask_guard_wraps_the_whole_body():
     two = Kind("two_mask", guard=Guard(masks=("terminated", "rejected")))
     walk = D.diagnostic_two.walk
-    lines = render_body(D.diagnostic_two.sinks, walk, kind=two).text.splitlines()
-    free = render_body(D.diagnostic_two.sinks, walk, kind=D.MASK_FREE).text
+    lines = render_body(D.diagnostic_two.sinks, walk, kind=two, spec=HOST).text.splitlines()
+    free = render_body(D.diagnostic_two.sinks, walk, kind=D.MASK_FREE, spec=HOST).text
     assert lines[0].strip() == (
         "if (!(trm_terminated[i].eval() || trm_rejected[i].eval())) {")
     assert _unindent(lines[1:-1]) == free.splitlines()
@@ -165,8 +166,8 @@ def test_a_guard_free_kernel_renders_exactly_as_the_mask_free_kind():
     for name, k in K.CORPUS.items():
         if any(role == "terminated" for role, _ in k.walk.arg_spec):
             continue
-        assert render_body(k.sinks, k.walk).text == render_body(
-            k.sinks, k.walk, kind=D.MASK_FREE).text, name
+        assert render_body(k.sinks, k.walk, spec=HOST).text == render_body(
+            k.sinks, k.walk, kind=D.MASK_FREE, spec=HOST).text, name
         checked += 1
     assert checked, "the corpus must hold guard-free kernels or the row is empty"
 

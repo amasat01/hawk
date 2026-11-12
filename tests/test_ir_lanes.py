@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The lane-space facts record: :mod:`hawk.ir.lanes`.
+"""The lane-space facts record: :mod:`raptor.ir.lanes`.
 
 Kernels are written with ``split_index`` and flat forms; the axes come from
 the divisors the body uses and ``labels=`` names them. Every row states a fact
@@ -11,17 +11,26 @@ declaration itself is the tracer's.
 """
 
 from __future__ import annotations
+from _specs import DEVICE
 
 import pytest
 
 import hawk
 import hawk.math as m
 from hawk import Index, Mutable, Scalar, Table, Vector
-from hawk.ir import lanes
-from hawk.ir.lanes import (AFFINE, DATA_DEPENDENT, INVARIANT, NON_AFFINE, ORIGIN_AXIS,
-                           ORIGIN_DATA, ORIGIN_SORTED, ORIGIN_UNSORTED, PROVEN, QUOTIENT,
-                           SORTED, TESTED)
+from raptor.ir import lanes
+from lowering import lanes as _simt_lanes
+from functools import partial
+from raptor.ir.lanes import (AFFINE, DATA_DEPENDENT, INVARIANT, NON_AFFINE, ORIGIN_AXIS,
+                           ORIGIN_DATA, ORIGIN_SORTED, ORIGIN_UNSORTED, QUOTIENT)
+from lowering.lanes import PROVEN, SORTED, TESTED
 from hawk.ir.nodes import Leaf
+
+#: the simt lane queries, with the device variant's numbers (the tile width 32 is the box these rows are written for)
+_facts = partial(_simt_lanes.facts, spec=DEVICE)
+_block_box_eligible = partial(_simt_lanes.block_box_eligible, tile=32)
+_gather_tile_eligible = partial(_simt_lanes.gather_tile_eligible, tile=32, bank_words=DEVICE.need("lanes", "bank_words"))
+_choose_mapping = partial(_simt_lanes.choose_mapping, bank_words=DEVICE.need("lanes", "bank_words"))
 
 NS = 8192          # the fastest axis of the keyed-accumulate kernels
 TILE = {"kind": "BF", "SB": 32, "T": 16, "R": 1, "EB": 1, "smem": 48 * 1024}
@@ -33,7 +42,7 @@ def f(x, s):
 
 
 def keyed(kernel, **kw):
-    return [s for s in lanes.facts(kernel, **kw).sinks
+    return [s for s in _facts(kernel, **kw).sinks
             if s.keyed and s.name not in kernel.walk.companions]
 
 
@@ -45,21 +54,23 @@ def one(kernel, **kw):
 def run_of(kernel):
     (s,) = [n for n in kernel.sinks if getattr(n, "index", None) is not None
             and n.name not in kernel.walk.companions]
-    return lanes.key_run(kernel.sinks, s)
+    return _simt_lanes.key_run(kernel.sinks, s, DEVICE)
 
 
 def declare_sorted(kernel, plane):
-    marked = [n for n in lanes._nodes_of(kernel) if isinstance(n, Leaf) and n.name == plane]
+    """A copy of ``kernel`` whose ``plane`` leaves carry the DECLARED ``sorted`` fact, passed through the Leaf constructor (a node is not
+    changed after it is built): the leaves are rebuilt and substituted into the sink set."""
+    import copy
+
+    from raptor.ir.walk import canonical, substitute
+
+    marked = {id(n): Leaf(n.kind, n.role, n.name, n.ttype, quantity=n.quantity, wire_index=n.wire_index, sorted=True)
+              for n in lanes.nodes_of(kernel) if isinstance(n, Leaf) and n.name == plane}
     assert marked
-    for n in marked:
-        n.sorted = True
-    return kernel
-
-
-def undeclare_sorted(kernel):
-    for n in lanes._nodes_of(kernel):
-        if isinstance(n, Leaf):
-            n.sorted = False
+    out = copy.copy(kernel)
+    out.sinks = substitute(kernel.sinks, marked)
+    out.walk = canonical(out.sinks, kernel.walk.leaves)
+    return out
 
 
 # ---- keyed accumulates over a (channel, sample) lane space ----------------
@@ -273,24 +284,24 @@ def k_break(x: Table[Scalar], y: Mutable[Scalar]):
 # axes, reads, sink keys
 # ---------------------------------------------------------------------------
 def test_an_undeclared_kernel_has_one_unlabeled_runtime_axis():
-    fa = lanes.facts(k_stencil)
+    fa = _facts(k_stencil)
     assert [(a.label, a.extent, a.stride) for a in fa.axes] == [(None, None, 1)]
     assert (fa.group, fa.required_group) == (1, 1)
 
 
 def test_labels_name_the_axes_in_numpy_order_and_none_stays_unlabeled():
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"))
+    fa = _facts(kg_fwd, labels=("channel", "sample"))
     assert [(a.label, a.extent, a.stride) for a in fa.axes] == [("channel", None, BATCH),
                                                               ("sample", BATCH, 1)]
-    assert [a.label for a in lanes.facts(kg_fwd, labels=(None, "sample")).axes] == [None, "sample"]
+    assert [a.label for a in _facts(kg_fwd, labels=(None, "sample")).axes] == [None, "sample"]
     with pytest.raises(ValueError, match="do not match"):
-        lanes.facts(kg_fwd, labels=("a", "b", "c"))
+        _facts(kg_fwd, labels=("a", "b", "c"))
     with pytest.raises(ValueError, match="group"):
-        lanes.facts(kg_fwd, group=0)
+        _facts(kg_fwd, group=0)
 
 
 def test_contraction_forward_read_forms():
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"))
+    fa = _facts(kg_fwd, labels=("channel", "sample"))
     assert fa.read_classes("feat", 0) == (INVARIANT,)
     assert fa.read_classes("feat", "sample") == (AFFINE,)
     assert {(r.forms[1].cls, r.gather) for r in fa.reads if r.plane == "th"} >= {(INVARIANT, False)}
@@ -303,7 +314,7 @@ def test_contraction_forward_read_forms():
 
 
 def test_contraction_partial_read_forms():
-    ft = lanes.facts(kg_tpart, labels=("chunk", "edge"))
+    ft = _facts(kg_tpart, labels=("chunk", "edge"))
     assert all(r.forms[0].cls == INVARIANT for r in ft.reads if r.plane == "th")
     assert all(r.forms[0].cls == AFFINE for r in ft.reads if r.plane in ("feat", "yb"))
     assert all(r.forms[1].cls == NON_AFFINE for r in ft.reads)
@@ -313,7 +324,7 @@ def test_contraction_partial_read_forms():
 
 
 def test_stencil_offsets_and_gather():
-    fa = lanes.facts(k_stencil)
+    fa = _facts(k_stencil)
     seen = {(r.forms[0].cls, r.gather, r.lane_offset) for r in fa.reads}
     assert (DATA_DEPENDENT, True, None) in seen
     assert (AFFINE, False, 1) in seen and (AFFINE, False, -1) in seen
@@ -321,30 +332,30 @@ def test_stencil_offsets_and_gather():
 
 
 def test_a_lone_divisor_is_a_two_axis_lane_space():
-    fa = lanes.facts(k_quarter)
+    fa = _facts(k_quarter)
     assert [a.extent for a in fa.axes] == [None, 4]
     assert [x.cls for x in fa.reads[0].forms] == [AFFINE, INVARIANT]
 
 
 def test_divisors_that_are_not_a_chain_fall_back_to_one_flat_axis():
-    fa = lanes.facts(k_two_quotients)
+    fa = _facts(k_two_quotients)
     assert len(fa.axes) == 1 and fa.notes
     assert sorted(str(r.forms[0].coefficient) for r in fa.reads) == ["1/4", "1/6"]
     assert all(r.forms[0].cls == QUOTIENT for r in fa.reads)
 
 
 def test_a_product_of_lane_terms_is_non_affine():
-    assert lanes.facts(k_square).reads[0].forms[0].cls == NON_AFFINE
+    assert _facts(k_square).reads[0].forms[0].cls == NON_AFFINE
 
 
 def test_keyed_sink_invariant_axes():
-    fa = lanes.facts(k_uni, labels=("channel", "sample"))
+    fa = _facts(k_uni, labels=("channel", "sample"))
     (s,) = [x for x in fa.sinks if x.keyed and x.name not in k_uni.walk.companions]
     assert s.invariant_axes(fa) == ("sample",)
-    fb = lanes.facts(k_key_by_fastest, labels=("c", "q"))
+    fb = _facts(k_key_by_fastest, labels=("c", "q"))
     (s,) = [x for x in fb.sinks if x.keyed and x.name not in k_key_by_fastest.walk.companions]
     assert s.invariant_axes(fb) == ("c",)
-    fp = lanes.facts(k_plane)
+    fp = _facts(k_plane)
     (s,) = [x for x in fp.sinks if x.keyed and x.name not in k_plane.walk.companions]
     assert s.gather and s.invariant_axes(fp) == ()
 
@@ -366,12 +377,8 @@ def test_key_origin_without_a_declaration(kernel, origin):
     (k_plane_negated, ORIGIN_DATA),           # order reversed
     (k_plane_plus_lane, ORIGIN_UNSORTED)])    # the added part moves with a lane axis
 def test_key_origin_of_a_sorted_plane(kernel, origin):
-    declare_sorted(kernel, "key")
-    try:
-        s = one(kernel)
-        assert s.key_origin == origin and s.key_extent is None
-    finally:
-        undeclare_sorted(kernel)
+    s = one(declare_sorted(kernel, "key"))
+    assert s.key_origin == origin and s.key_extent is None
 
 
 def test_the_sorted_flag_defaults_false_and_is_outside_the_digest():
@@ -379,11 +386,7 @@ def test_the_sorted_flag_defaults_false_and_is_outside_the_digest():
     assert leaf.sorted is False
     assert Leaf("table_read", "lookup", "seg", leaf.ttype, sorted=True).sorted is True
     before = k_plane.walk.digest
-    declare_sorted(k_plane, "key")
-    try:
-        assert k_plane.walk.digest == before
-    finally:
-        undeclare_sorted(k_plane)
+    assert declare_sorted(k_plane, "key").walk.digest == before
 
 
 def test_static_key_extents():
@@ -399,7 +402,7 @@ def test_static_key_extents():
 
 
 def test_policy_is_compensated_when_a_companion_plane_is_carried():
-    assert {s.name: s.policy for s in lanes.facts(k_uni).sinks} == {"acc": "compensated",
+    assert {s.name: s.policy for s in _facts(k_uni).sinks} == {"acc": "compensated",
                                                                     "acc_c": "auto"}
     comp = hawk.ext.Kind("lanes_comp", sink=hawk.ext.sink_policy("compensated", into="acc_c"))
 
@@ -409,7 +412,7 @@ def test_policy_is_compensated_when_a_companion_plane_is_carried():
         hawk.scatter(acc, policy="plain")[j] += f(x, s)
         hawk.scatter(acc_c, policy="plain")[j] += 0.0
 
-    assert {s.name: s.policy for s in lanes.facts(k_comp).sinks} == {"acc": "compensated",
+    assert {s.name: s.policy for s in _facts(k_comp).sinks} == {"acc": "compensated",
                                                                    "acc_c": "auto"}
 
 
@@ -419,7 +422,7 @@ def test_policy_reads_the_scatter_policy():
         j, s = m.split_index(NS)
         hawk.scatter(acc, policy="compensated")[j] += f(x, s)
 
-    assert {s.name: s.policy for s in lanes.facts(k_policy).sinks} == {"acc": "compensated",
+    assert {s.name: s.policy for s in _facts(k_policy).sinks} == {"acc": "compensated",
                                                                      "acc_c": "auto"}
 
 
@@ -445,116 +448,112 @@ def test_a_runtime_stride_does_not_move_with_the_lane():
 
 def test_key_run_of_an_own_column_sink_is_none():
     (sink,) = kg_fwd.sinks
-    assert lanes.key_run(kg_fwd.sinks, sink) is None
+    assert _simt_lanes.key_run(kg_fwd.sinks, sink, DEVICE) is None
 
 
 def test_key_run_of_a_sorted_plane_is_runtime_found():
-    declare_sorted(k_plane, "key")
-    try:
-        r = run_of(k_plane)
-        assert (r.form, r.width) == (SORTED, 32)
-    finally:
-        undeclare_sorted(k_plane)
+    r = run_of(declare_sorted(k_plane, "key"))
+    assert (r.form, r.width) == (SORTED, 32)
 
 
 @pytest.mark.parametrize("kernel, declared, required", [
     (k_uni, 1, 32), (k_straddle, 48, 48), (k_uni, 8, 32), (k_straddle, 1, 16),
     (k_tested, 1, 1), (k_plane, 1, 1), (kg_fwd, 1, 1), (kg_fwd, 12, 12)])
 def test_required_group(kernel, declared, required):
-    fa = lanes.facts(kernel, group=declared)
+    fa = _facts(kernel, group=declared)
     assert (fa.group, fa.required_group) == (declared, required)
 
 
 # ---- thread-box candidates and the block box --------------------------------
 def test_box_candidates_of_the_contraction_forms():
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"))
+    fa = _facts(kg_fwd, labels=("channel", "sample"))
     (c,) = fa.box_candidates
     assert (c.axis, c.planes, c.fastest_extent) == ("channel", ("feat",), BATCH)
     assert c.reuse is None and not c.static             # the first axis is a runtime extent
-    ft = lanes.facts(kg_tpart, labels=("chunk", "edge"))
+    ft = _facts(kg_tpart, labels=("chunk", "edge"))
     assert [c.planes for c in ft.box_candidates] == [("th",)]
 
 
 @pytest.mark.parametrize("kernel", [k_fem, k_clamp, k_const, k_uni, k_tested])
 def test_no_box_candidate_for_scatter_and_histogram(kernel):
-    fa = lanes.facts(kernel)
+    fa = _facts(kernel)
     assert fa.box_candidates == ()
-    assert lanes.block_box_eligible(fa, reuse=64) == (False, "no invariant-axis read")
+    assert _block_box_eligible(fa, reuse=64) == (False, "no invariant-axis read")
 
 
 def test_block_box_eligible_reasons():
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"))
-    assert lanes.block_box_eligible(fa) == (False, "reuse extent is runtime")
+    fa = _facts(kg_fwd, labels=("channel", "sample"))
+    assert _block_box_eligible(fa) == (False, "reuse extent is runtime")
     for g in (None, 1, 32, BATCH):
-        ok, _ = lanes.block_box_eligible(fa, required_group=g, reuse=N_OUT)
+        ok, _ = _block_box_eligible(fa, required_group=g, reuse=N_OUT)
         assert ok
-    assert lanes.block_box_eligible(fa, required_group=8, reuse=N_OUT) == (False, "group 8 < box 32")
-    ok, why = lanes.block_box_eligible(fa, required_group=48, reuse=N_OUT)
+    assert _block_box_eligible(fa, required_group=8, reuse=N_OUT) == (False, "group 8 < box 32")
+    ok, why = _block_box_eligible(fa, required_group=48, reuse=N_OUT)
     assert not ok and why == "group 48 not a multiple of box 32"
-    assert lanes.block_box_eligible(fa, reuse=N_OUT, uniform_control=False) \
+    assert _block_box_eligible(fa, reuse=N_OUT, uniform_control=False) \
         == (False, "control diverges: masked-alive path")
-    assert lanes.block_box_eligible(fa, reuse=1) == (False, "reuse 1 < 2")
+    assert _block_box_eligible(fa, reuse=1) == (False, "reuse 1 < 2")
     import dataclasses
     (c,) = fa.box_candidates
     runtime = dataclasses.replace(fa, box_candidates=(dataclasses.replace(
         c, fastest_extent=None, static=False),))
-    assert lanes.block_box_eligible(runtime, reuse=N_OUT) == (False, "fastest extent is runtime")
+    assert _block_box_eligible(runtime, reuse=N_OUT) == (False, "fastest extent is runtime")
 
 
 def test_block_box_reads_the_records_own_group():
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"), group=8)
-    assert lanes.block_box_eligible(fa, reuse=N_OUT) == (False, "group 8 < box 32")
+    fa = _facts(kg_fwd, labels=("channel", "sample"), group=8)
+    assert _block_box_eligible(fa, reuse=N_OUT) == (False, "group 8 < box 32")
 
 
 def test_uniform_control():
-    assert lanes.facts(kg_fwd).uniform_control
-    assert lanes.facts(k_clamp).uniform_control
-    assert not lanes.facts(k_break).uniform_control
+    assert _facts(kg_fwd).uniform_control
+    assert _facts(k_clamp).uniform_control
+    assert not _facts(k_break).uniform_control
 
 
 def test_choose_mapping_records_the_decision_from_the_card():
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"))
-    got = lanes.choose_mapping(fa, card=CARD, reuse=N_OUT)
+    fa = _facts(kg_fwd, labels=("channel", "sample"))
+    got = _choose_mapping(fa, card=CARD, reuse=N_OUT)
     assert got is fa.mapping
     assert got["P1"] == {"axis": "channel", "index": 0, "T": 16}
     assert got["block_box"]["planes"] == ("feat",)
-    small = lanes.choose_mapping(fa, card=dict(CARD, tile=dict(TILE, smem=64)), reuse=N_OUT)
+    small = _choose_mapping(fa, card=dict(CARD, tile=dict(TILE, smem=64)), reuse=N_OUT)
     assert small["block_box"] is None and "smem" in small["block_box_reason"]
-    unknown = lanes.choose_mapping(fa, card=CARD)
+    unknown = _choose_mapping(fa, card=CARD)
     assert unknown["P1"] and unknown["block_box"] is None
 
 
 def test_facts_are_deterministic():
-    assert lanes.facts(kg_fwd) == lanes.facts(kg_fwd)
+    assert _facts(kg_fwd) == _facts(kg_fwd)
 
 
 # ---- the gather tile ---------------------------------------------------------
 def test_the_contraction_forward_has_one_gather_tile():
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"))
+    fa = _facts(kg_fwd, labels=("channel", "sample"))
     (g,) = fa.gather_tiles
     assert (g.plane, g.slot_extent, g.row_words) == ("th", G, G + K + 2)
-    assert g.fits_warp_row
-    assert lanes.gather_tile_eligible(fa, tile=64) == (True, f"plane th: row {S_ROW} words, slot {G}")
-    assert lanes.facts(kg_wide).gather_tiles[0].row_words == 40
+    assert g.row_words <= DEVICE.need("lanes", "bank_words")
+    assert _gather_tile_eligible(fa, tile=64) == (True, f"plane th: row {S_ROW} words, slot {G}")
+    assert _facts(kg_wide).gather_tiles[0].row_words == 40
 
 
 @pytest.mark.parametrize("kernel", [k_fem, k_clamp, k_const, k_uni, k_tested, k_stencil, kg_tpart])
 def test_no_gather_tile_for_scatter_histogram_and_stencil(kernel):
-    fa = lanes.facts(kernel)
+    fa = _facts(kernel)
     assert fa.gather_tiles == ()
-    assert lanes.gather_tile_eligible(fa) == (False, "no gather-tile read")
+    assert _gather_tile_eligible(fa) == (False, "no gather-tile read")
 
 
 def test_gather_tile_eligible_reasons():
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"))
-    assert lanes.gather_tile_eligible(fa, required_group=8) == (False, "group 8 < box 32")
-    assert lanes.gather_tile_eligible(fa, required_group=48) \
+    fa = _facts(kg_fwd, labels=("channel", "sample"))
+    assert _gather_tile_eligible(fa, required_group=8) == (False, "group 8 < box 32")
+    assert _gather_tile_eligible(fa, required_group=48) \
         == (False, "group 48 not a multiple of box 32")
-    assert lanes.gather_tile_eligible(fa, tile=48) == (False, f"fastest extent {BATCH} not a multiple of tile 48")
-    assert lanes.gather_tile_eligible(fa, uniform_control=False) \
+    assert _gather_tile_eligible(fa, tile=48) == (False, f"fastest extent {BATCH} not a multiple of tile 48")
+    assert _gather_tile_eligible(fa, uniform_control=False) \
         == (False, "control diverges: masked-alive path")
-    assert lanes.gather_tile_eligible(lanes.facts(kg_flat)) == (False, "fastest extent is runtime")
-    assert lanes.gather_tile_eligible(lanes.facts(kg_wide)) \
+    assert _gather_tile_eligible(_facts(kg_flat)) == (False, "fastest extent is runtime")
+    assert _gather_tile_eligible(_facts(kg_wide)) \
         == (False, "row 40 words exceeds 32-word bank width")
 
 
@@ -563,74 +562,77 @@ BT = dict(TILE, kind="BT", SB=128, T=16, R=1, EB=4)
 
 
 def test_no_card_or_no_tile_fields_choose_no_block_lowering():
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"))
+    fa = _facts(kg_fwd, labels=("channel", "sample"))
     for card in (None, {"T": 8}, {"T": 8, "itemsize": 4}):
-        got = lanes.choose_mapping(fa, card=card, reuse=N_OUT)
+        got = _choose_mapping(fa, card=card, reuse=N_OUT)
         assert got["block_box"] is None and got["gather_tile"] is None
         assert got["contraction"] == "gemm"
-    assert lanes.choose_mapping(fa, card=None)["P1"] is None
-    assert lanes.choose_mapping(fa, card={"T": 8})["P1"]["T"] == 8
+    assert _choose_mapping(fa, card=None)["P1"] is None
+    assert _choose_mapping(fa, card={"T": 8})["P1"]["T"] == 8
 
 
 def test_a_tile_kind_selects_one_lowering():
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"))
-    gt = lanes.choose_mapping(fa, card={"T": 8, "itemsize": 4, "tile": BT}, reuse=N_OUT)
+    fa = _facts(kg_fwd, labels=("channel", "sample"))
+    gt = _choose_mapping(fa, card={"T": 8, "itemsize": 4, "tile": BT}, reuse=N_OUT)
     assert gt["block_box"] is None and gt["block_box_reason"] == "tile kind is BT"
     assert gt["gather_tile"] == {"plane": "th", "row_words": S_ROW, "slot_extent": G,
                                  "SB": 128, "T": 16, "R": 1, "EB": 4}
-    bf = lanes.choose_mapping(fa, card=CARD, reuse=N_OUT)
+    bf = _choose_mapping(fa, card=CARD, reuse=N_OUT)
     assert bf["gather_tile"] is None and bf["gather_tile_reason"] == "tile kind is BF"
     assert bf["block_box"]["planes"] == ("feat",)
 
 
 def test_a_gather_tile_must_fit_the_card_and_the_kernel():
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"))
-    small = lanes.choose_mapping(fa, card={"T": 8, "itemsize": 4, "tile": dict(BT, smem=64)})
+    fa = _facts(kg_fwd, labels=("channel", "sample"))
+    small = _choose_mapping(fa, card={"T": 8, "itemsize": 4, "tile": dict(BT, smem=64)})
     assert small["gather_tile"] is None and "smem" in small["gather_tile_reason"]
-    wide = lanes.choose_mapping(lanes.facts(kg_wide), card={"T": 8, "tile": BT})
+    wide = _choose_mapping(_facts(kg_wide), card={"T": 8, "tile": BT})
     assert wide["gather_tile"] is None and "bank width" in wide["gather_tile_reason"]
 
 
 @pytest.mark.parametrize("tile", [{"kind": "BT", "SB": 128}, dict(TILE, kind="XX")])
 def test_a_malformed_tile_is_refused(tile):
-    fa = lanes.facts(kg_fwd, labels=("channel", "sample"))
+    fa = _facts(kg_fwd, labels=("channel", "sample"))
     with pytest.raises(ValueError, match="card tile needs"):
-        lanes.choose_mapping(fa, card={"T": 8, "tile": tile})
+        _choose_mapping(fa, card={"T": 8, "tile": tile})
 
 
-def test_the_contraction_choice_is_the_cards_per_dtype(tmp_path, monkeypatch):
-    import json
-
+def test_the_contraction_choice_is_the_cards_per_dtype(monkeypatch):
+    from _specs import DEVICE
     from hawk.ir import recognize
-    from hawk.targets import cards
-    from test_ir_contraction import kan_contract as shared_contract
+    from hawk.targets import build_spec, cards
+    from hawk.variants import derive, load
+    from test_ir_contraction import spline_contract as shared_contract
 
-    fa = lanes.facts(kg_fwd)
-    assert [lanes.choose_mapping(fa, card=cards.thread_box(t))["contraction"]
+    def spec_with(**changes):
+        cuda = load("cuda")
+        card = {**cuda["cards"]["thread_box"], **changes}
+        return build_spec(("host", "cuda"), "sm_61", device=derive(cuda, {"cards": {"thread_box": card}}))
+
+    fa = _facts(kg_fwd)
+    assert [_choose_mapping(fa, card=cards.thread_box(t, DEVICE))["contraction"]
             for t in ("float32", "float64")] == ["gemm", "gemm"]
-    doc = json.loads(cards.THREAD_BOX_FILE.read_text())
-    doc["rows"] = [{"cc": "sm_00", "device": "Test Card", "dtype": "float64", "contraction": "direct"}]
-    path = tmp_path / "thread_box.json"
-    path.write_text(json.dumps(doc))
-    monkeypatch.setattr(cards, "THREAD_BOX_FILE", path)
+    spec = spec_with(rows=[{"cc": "sm_00", "device": "Test Card", "dtype": "float64", "contraction": "direct"}])
     monkeypatch.setattr(cards, "_device", lambda: ("sm_00", "Test Card"))
-    direct = dict(lanes.choose_mapping(fa, card=cards.thread_box("float64")))
+    direct = dict(_choose_mapping(fa, card=cards.thread_box("float64", spec)))
     assert direct["contraction"] == "direct"
-    assert lanes.choose_mapping(fa, card=cards.thread_box("float32"))["contraction"] == "gemm"
+    assert _choose_mapping(fa, card=cards.thread_box("float32", spec))["contraction"] == "gemm"
     assert recognize(shared_contract) is not None
     assert recognize(shared_contract, mapping=direct) is None
     assert recognize(shared_contract, mapping={"contraction": "gemm"}) is not None
-    doc["contraction"]["float32"] = "blas"
-    path.write_text(json.dumps(doc))
+    bad = spec_with(contraction={**load("cuda")["cards"]["thread_box"]["contraction"], "float32": "blas"})
     with pytest.raises(hawk.HawkError, match="contraction"):
-        cards.thread_box("float32")
+        cards.thread_box("float32", bad)
 
 
 def test_the_committed_card_names_its_tile_examples_only_as_examples():
+    from _specs import DEVICE
     from hawk.targets import cards
-    doc = __import__("json").loads(cards.THREAD_BOX_FILE.read_text())
+    from hawk.variants import load
+
+    doc = load("cuda")["cards"]["thread_box"]
     assert doc["rows"] == [] and len(doc["examples"]) == 2
-    assert "tile" not in cards.thread_box("float32")
+    assert "tile" not in cards.thread_box("float32", DEVICE)
 
 
 # --------------------------------------------------------------------------
@@ -639,9 +641,9 @@ def test_the_committed_card_names_its_tile_examples_only_as_examples():
 
 def _keys(kernel):
     from hawk.ir import canonical_nodes
-    from hawk.ir.loop_nodes import Loop
+    from hawk.ir.nodes import Loop
 
-    uniform = lanes.warp_uniform(kernel.sinks)
+    uniform = _simt_lanes.warp_uniform(kernel.sinks, DEVICE.device["launch"]["warp_size"])
     loop = next(n for n in canonical_nodes(kernel.sinks)[0] if isinstance(n, Loop))
     return [uniform(n.operands[1]) for n in loop.body_nodes() if n.kind == "set_component_at"]
 

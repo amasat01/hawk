@@ -1,0 +1,90 @@
+{
+ "name": "simt",
+ "version": "0",
+ "contract": "1",
+ "reads": ["launch.warp_size"],
+ "dialect": "simt",
+ "kinds": [
+  {
+   "name": "warp_lane",
+   "family": "terminal",
+   "traits": {
+    "static_index": true
+   },
+   "operands": {
+    "min": 0,
+    "max": 0
+   },
+   "result": [
+    "fixed",
+    "i32",
+    []
+   ],
+   "spelling": {
+    "dialect": "simt",
+    "name": "warp_lane_value",
+    "args": []
+   }
+  },
+  {
+   "name": "warp_store",
+   "family": "sink",
+   "refines": "assign",
+   "operands": {
+    "min": 1,
+    "max": 1
+   },
+   "result": [
+    "carried"
+   ],
+   "spelling": {
+    "dialect": "simt",
+    "name": "warp_store",
+    "args": [
+     "node",
+     "target",
+     "ref0"
+    ]
+   }
+  }
+ ],
+ "entries": {
+  "lane": [
+   "slice_min",
+   "slice_sinks",
+   "warp_of"
+  ],
+  "wide_class": [
+   "distance",
+   "features_of",
+   "select",
+   "tables"
+  ],
+  "wrapper_text": [
+   "BANDED_SS_HELPERS",
+   "BANDED_SUM",
+   "BANDED_SUM_INCLUDE",
+   "WARP_SUM",
+   "WARP_SUM_BANDED",
+   "banded_sample_sum",
+   "staged"
+  ]
+ },
+ "spellings": [
+  {
+   "writer": "aether",
+   "dialect": "simt",
+   "ref": "simt.aether"
+  }
+ ],
+ "emission_modules": [
+  "simt.aether",
+  "simt.lane",
+  "simt.wide_class",
+  "simt.wrapper_text"
+ ],
+ "runtime_modules": [],
+ "components": [
+  "lowering"
+ ]
+}

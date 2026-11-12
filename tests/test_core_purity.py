@@ -109,9 +109,13 @@ _AUDIT_RE = re.compile("|".join(rf"\b{re.escape(t)}" for t in AUDIT_TOKENS))
 #: src/ beside the package; the tests that read this list are repo_local.
 _SHIPPED = (
     [p for p in sorted(PACKAGE.rglob("*.py"))]
+    + [p for p in sorted((REPO / "extensions").glob("*/*/*.py"))]       # the shipped extensions: the device emitter lives there
     + [p for p in (sorted(SOURCES.iterdir()) if SOURCES.is_dir() else []) if p.is_file()]
     + [REPO / "CMakeLists.txt"]
 )
+
+#: The two wrapper emitters whose index prologue is a named exception, pinned by path (the device emitter moved to its extension).
+_EMITTERS = {"cuda": REPO / "extensions" / "hawk_cuda" / "hawk_cuda" / "emit.py", "host": PACKAGE / "emit" / "host.py"}
 
 #: The source-side vocabulary: what a threading `_core` would have to name.
 _THREAD_TOKENS = ("#pragma omp", "<omp.h>", "omp_set_num_threads", "<thread>",
@@ -215,8 +219,9 @@ def _excise(path: Path, text: str) -> tuple:
     """Remove the NAMED exceptions from one file's text; returns
     ``(text, [what was removed])`` so each removal can be asserted real."""
     removed = []
-    if path.name in ("cuda.py", "host.py") and path.parent.name == "emit":
-        span = TARGETS[path.stem].wrapper.index_prologue()
+    if path in _EMITTERS.values():
+        key = next(k for k, v in _EMITTERS.items() if v == path)
+        span = TARGETS[key].wrapper.index_prologue()
         assert span and span in text, (
             f"{path}: the wrapper's index_prologue() string is not present verbatim "
             "in its own source, so the named exception cannot be located — the "
@@ -229,21 +234,21 @@ def _excise(path: Path, text: str) -> tuple:
         text = text.replace(span, "<index_prologue excised>"
                             + "\n" * span.count("\n"))
         removed.append(span)
-        if getattr(TARGETS[path.stem].wrapper, "team_flat", None):
+        if getattr(TARGETS[key].wrapper, "team_flat", None):
             # the team stage's prologue is the same seam: one block per lane
-            team = TARGETS[path.stem].wrapper.index_prologue(team=1)
-            warp = TARGETS[path.stem].wrapper.index_prologue(team=32)[len(team):]      # the warp form's lane-in-warp line
+            team = TARGETS[key].wrapper.index_prologue(team=1)
+            warp = TARGETS[key].wrapper.index_prologue(team=32)[len(team):]      # the warp form's lane-in-warp line
             for span in (team, warp):
                 assert span and span in text, f"{path}: the team prologue string is not present verbatim"
                 text = text.replace(span, "<team index_prologue excised>" + "\n" * span.count("\n"))
                 removed.append(span)
-    if path.name == "cuda.py" and path.parent.name == "emit":
+    if path == _EMITTERS["cuda"]:
         # the warp form's block frame is the same seam: the marked region of the device wrapper
         begin, end = text.index("    # geometry-seam: begin"), text.index("    # geometry-seam: end")
         span = text[begin:end]
         text = text.replace(span, "    pass  # stage_frame excised" + "\n" * span.count("\n"))
         removed.append(span)
-    if path.name == "spelling.py" and path.parent.name == "emit":
+    if path == PACKAGE / "emit" / "spelling.py":
         tree = ast.parse(text, filename=str(path))
         for node in tree.body:
             if (isinstance(node, ast.Assign) and len(node.targets) == 1
@@ -336,18 +341,18 @@ def test_the_two_named_exceptions_are_real_and_narrow():
         original = path.read_text()
         text, removed = _excise(path, original)
         if removed:
-            excised[path.name] = removed
+            excised[path.relative_to(REPO).as_posix()] = removed
             assert len(text) > 0.5 * len(original), (
                 f"the audit excised a file it was supposed to scan: {path}"
             )
-    assert set(excised) == {"cuda.py", "host.py", "spelling.py"}, sorted(excised)
+    assert set(excised) == {"extensions/hawk_cuda/hawk_cuda/emit.py", "hawk/emit/host.py", "hawk/emit/spelling.py"}, sorted(excised)
     # the geometry token table is the excision that actually HIDES tokens; the
     # prologue exception is plain wording and is asserted only to be real.
-    assert _AUDIT_RE.search(excised["spelling.py"][0]), (
+    assert _AUDIT_RE.search(excised["hawk/emit/spelling.py"][0]), (
         "the GEOMETRY_TOKENS excision removes no audited token, so it is not the "
         "exception it claims to be"
     )
-    assert "blockIdx" in excised["cuda.py"][0]
+    assert "blockIdx" in excised["extensions/hawk_cuda/hawk_cuda/emit.py"][0]
 
 
 # --------------------------------------------------------------------------- #
@@ -382,6 +387,7 @@ def _nm(*flags) -> list:
     return done.stdout.splitlines()
 
 
+@pytest.mark.needs_toolchain("linux")
 def test_the_built_core_references_no_openmp_runtime():
     lines = _nm("-D")
     hits = [ln for ln in lines
@@ -394,6 +400,7 @@ def test_the_built_core_references_no_openmp_runtime():
 
 # reads the repository build's toolchain markers (glibc 2.32+); a manylinux_2_28 wheel is built against glibc 2.28
 @pytest.mark.repo_local
+@pytest.mark.needs_toolchain("linux")
 def test_the_built_core_spawns_no_thread():
     """``pthread_create`` at all is the bright line, and so is any other symbol
     that starts, joins or detaches a thread. References to the pthread LOCKING
@@ -457,6 +464,7 @@ print(before, after)
 """
 
 
+@pytest.mark.needs_toolchain("linux")
 def test_the_core_starts_no_thread_when_used():
     """Behavioural twin of the symbol rows: a fresh process exercises the core
     and its thread count must not change."""
@@ -467,6 +475,7 @@ def test_the_core_starts_no_thread_when_used():
     assert after == before, f"hawk._core started threads: {before} -> {after}"
 
 
+@pytest.mark.needs_toolchain("linux-tools")
 def test_the_built_core_links_no_threading_library():
     tool = shutil.which("ldd")
     assert tool, "the link arm needs `ldd`"

@@ -34,7 +34,7 @@ from typing import Any
 import numpy as np
 
 from . import math as m
-from .ir import HawkError
+from ._errors import HawkError
 from .trace.helpers import call, traced
 
 __all__ = ["BVH", "BVHTables", "PLANES", "build_bvh", "closest_hit"]

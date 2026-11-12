@@ -9,7 +9,7 @@ import subprocess
 
 import pytest
 
-from hawk.embedded import spelling as S
+from hawk_c import spelling as S
 from hawk.emit import FLOAT32, FLOAT64
 from hawk.ir import HawkError
 
@@ -28,7 +28,7 @@ class _Lazy:
 
 
 c_core = _Lazy("aether_dsc.c_core")
-H = _Lazy("hawk.embedded.helpers")
+H = _Lazy("hawk_c.helpers")
 
 SHAPES = ((1,), (3,), (2, 2), (2, 3))
 MODES = (FLOAT64, FLOAT32)

@@ -1,0 +1,208 @@
+{
+ "name": "lowering",
+ "version": "0",
+ "contract": "1",
+ "reads": ["lanes.block_run", "lanes.run_max", "linalg.fast_fp64", "linalg.team_max_dim", "linalg.warp_entries", "scatter.max_chunks"],
+ "dialect": "lowering",
+ "kinds": [
+  {
+   "name": "team_store",
+   "family": "sink",
+   "refines": "wide_write",
+   "operands": {
+    "min": 2,
+    "max": 2
+   },
+   "result": [
+    "scalar_of",
+    0
+   ],
+   "traits": {
+    "elementwise_sink": true,
+    "reads_by_element": true
+   },
+   "spelling": {
+    "dialect": "lowering",
+    "name": "team_store",
+    "args": [
+     "node",
+     "target",
+     "ref0"
+    ]
+   }
+  },
+  {
+   "name": "team_copy",
+   "family": "sink",
+   "refines": "team_store"
+  },
+  {
+   "name": "log_store",
+   "family": "sink",
+   "refines": "team_store",
+   "fields": [
+    {
+     "name": "target",
+     "type": "str"
+    },
+    {
+     "name": "width",
+     "type": "int"
+    },
+    {
+     "name": "kept",
+     "type": "tuple"
+    }
+   ],
+   "identity": [
+    "role",
+    "name",
+    "target",
+    "width"
+   ]
+  },
+  {
+   "name": "scatter_log",
+   "family": "sink",
+   "refines": "team_store",
+   "fields": [
+    {
+     "name": "target",
+     "type": "str"
+    }
+   ],
+   "identity": [
+    "role",
+    "name",
+    "target"
+   ]
+  },
+  {
+   "name": "team_read",
+   "family": "expr",
+   "refines": "at",
+   "operands": {
+    "min": 2,
+    "max": 2,
+    "families": [
+     "plane-leaf",
+     "any"
+    ]
+   },
+   "result": [
+    "carried"
+   ],
+   "traits": {
+    "fresh_read": true
+   },
+   "spelling": {
+    "dialect": "lowering",
+    "name": "team_read",
+    "args": [
+     "node"
+    ]
+   }
+  },
+  {
+   "name": "box_store",
+   "family": "sink",
+   "refines": "sink",
+   "wire": "box_store",
+   "operands": {
+    "min": 2,
+    "max": 2
+   },
+   "result": [
+    "carried"
+   ],
+   "spelling": {
+    "dialect": "lowering",
+    "name": "box_store",
+    "args": [
+     "target",
+     "ref1",
+     "ref0"
+    ]
+   }
+  }
+ ],
+ "entries": {
+  "box": [
+   "BOX_OWN",
+   "boxed_sinks",
+   "frame",
+   "owned_lane",
+   "thread_box",
+   "threads"
+  ],
+  "kinds": [
+   "WARP_READ",
+   "WARP_SUM_KIND"
+  ],
+  "lanes": [
+   "CONTRACTIONS",
+   "choose_mapping",
+   "facts",
+   "key_run",
+   "warp_uniform"
+  ],
+  "split": [
+   "Stage",
+   "internal",
+   "stages"
+  ],
+  "team": [
+   "PARTIAL",
+   "Plane",
+   "TeamSpec",
+   "plain_blocks",
+   "scatter_names"
+  ],
+  "team_emit": [
+   "TEAM_CALL",
+   "team_body"
+  ],
+  "wide": [
+   "ELEMENTWISE",
+   "REDUCTIONS",
+   "RESIDENT_KIND",
+   "element_kind",
+   "gather",
+   "is_prior",
+   "is_resident",
+   "is_scratch",
+   "is_tiled",
+   "record",
+   "simplified",
+   "unstored",
+   "walk_record"
+  ],
+  "wrapper_text": [
+   "FINISH_COUNT",
+   "SAMPLE_SUM",
+   "refuse_cells_off_device",
+   "refuse_sample_sums",
+   "refuse_team_reductions"
+  ]
+ },
+ "spellings": [
+  {
+   "writer": "aether",
+   "dialect": "lowering",
+   "ref": "lowering.aether"
+  }
+ ],
+ "emission_modules": [
+  "lowering.aether",
+  "lowering.box",
+  "lowering.kinds",
+  "lowering.lanes",
+  "lowering.logs",
+  "lowering.split",
+  "lowering.team",
+  "lowering.team_emit",
+  "lowering.wide",
+  "lowering.wrapper_text"
+ ],
+ "runtime_modules": []
+}

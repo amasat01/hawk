@@ -14,12 +14,14 @@ in ``Walk.arg_spec`` ORDER. That is the ONE contractual ordering property; eagle
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import re
 
 from _emitted import MODES, cases
 
-from hawk.emit import CUDA, FLOAT64, render_body, render_source
+from hawk.emit import FLOAT64, render_body, render_source
+from hawk_cuda.emit import CUDA
 from hawk.emit.render import binding_name, param_name
 from hawk.ir import Assign, Leaf, canonical
 from hawk.ir import make as mk
@@ -36,7 +38,7 @@ def test_both_backends_consume_the_same_body_string():
                 f"the two wrappers did not consume the SAME body string "
                 f"for {name!r} ({mode.id}).\nhost:\n{host.body}\ncuda:\n{cuda.body}"
             )
-            reference = render_body(sinks, walk, indent="        ").text
+            reference = render_body(sinks, walk, indent="        ", spec=HOST).text
             assert host.body == reference, (
                 f"{name!r}: a wrapper's body diverged from the renderer's own output"
             )

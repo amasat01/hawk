@@ -10,17 +10,17 @@ thread vs warp), so no run-time fill test decides it.
 """
 
 from __future__ import annotations
+from _specs import DEVICE, HOST, device
 
 import pytest
 from _linalg_kernels import eigh_kernel, eigh_values_kernel
 
-from hawk.emit import policy
-from hawk.ir.split import stages
+from hawk.passes import policy
+from lowering.split import stages
 
 
-def _ops(kernel, *, scalar="float32", form="auto", device_only=True):
-    with policy.using(linalg_form=form, scalar=scalar, device_only=device_only):
-        found = stages("k", kernel.sinks)
+def _ops(kernel, *, scalar="float32", form="auto", device_only=True, spec=DEVICE):
+    found = stages("k", kernel.sinks, spec=spec.with_settings(linalg_form=form, scalar=scalar, device_only=device_only))
     return [] if found is None else [(st.team.threads, s.op) for st in found if st.team for s in st.team.steps]
 
 
@@ -32,8 +32,8 @@ def test_float32_values_only_n32_is_one_warp_stage():
 def test_float64_takes_the_warp_form_only_where_fp64_is_fast(arch, warp):
     from hawk.targets import cards
 
-    with cards.build_arch(arch):
-        got = _ops(eigh_values_kernel(32), scalar="float64")
+    spec = device(arch)
+    got = _ops(eigh_values_kernel(32), scalar="float64", spec=spec)
     assert (got == [(32, "eigh_warp")]) is warp
 
 

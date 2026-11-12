@@ -31,7 +31,7 @@ from hawk import Matrix, Mutable, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.embedded import EmbeddedProfile, export, render
+from hawk_c import EmbeddedProfile, export, render
 from hawk.ir import HawkError
 from hawk.ir.linalg import factor_bytes
 from hawk.trace.kernel import Kernel
@@ -177,6 +177,7 @@ def test_a_derivative_kernel_computes_the_hosts_bits(host, clib, which, derive, 
 @pytest.mark.parametrize("n,mode", [(n, m) for n in (1, 2, 5) for m in MODES]
                          + [(22, "float64")])
 @pytest.mark.parametrize("which", sorted(KERNELS))
+@pytest.mark.needs_toolchain("cppcheck")
 def test_the_unit_passes_the_compiler_cppcheck_and_the_audit(tmp_path, which, n, mode):
     art = export(KERNELS[which](n), tmp_path, mode=mode)
     cppcheck = art.report["checks"]["cppcheck"]
@@ -187,6 +188,7 @@ def test_the_unit_passes_the_compiler_cppcheck_and_the_audit(tmp_path, which, n,
 @pytest.mark.parametrize("derive", [vjp, jvp], ids=["vjp", "jvp"])
 @pytest.mark.parametrize("n", [1, 3])
 @pytest.mark.parametrize("which", sorted(KERNELS))
+@pytest.mark.needs_toolchain("cppcheck")
 def test_a_derivative_passes_the_compiler_cppcheck_and_the_audit(tmp_path, which, n, derive):
     primal = KERNELS[which](n)
     art = export(Kernel(f"{primal.name}_{derive.__name__}", derive(primal)), tmp_path)
@@ -197,7 +199,7 @@ def test_a_derivative_passes_the_compiler_cppcheck_and_the_audit(tmp_path, which
 # --- the report ----------------------------------------------------------------
 
 def test_the_unit_names_its_helpers_and_the_singular_test():
-    from hawk.embedded import finish_report
+    from hawk_c import finish_report
 
     source = render(lu_kernel(5))
     assert {"hawk_lu_n5_f64", "hawk_lu_solve_n5_v_f64", "hawk_lu_solve_n5_k2_f64",

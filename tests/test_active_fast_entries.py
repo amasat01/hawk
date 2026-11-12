@@ -36,6 +36,7 @@ pinned:
 """
 
 from __future__ import annotations
+from _specs import HOST, for_targets
 
 import ctypes
 import importlib
@@ -62,8 +63,8 @@ FAST = (f"{FAST_ENTRIES_MACRO}=1",)
 
 def _sources(kernel, kind):
     unit = B._active_unit(kernel, kernel.name, kind)
-    return B._sources(unit, name=kernel.name, smode=scalar_mode("float64"), kind=kind,
-                      targets=("cuda", "host"), layout_sizes_override=None)
+    targets = ("cuda", "host")
+    return B._emit(B.lower(unit, kernel.name, scalar_mode("float64"), kind, targets, for_targets(targets)), targets, B._options(device_arch=""))
 
 
 def _entries(text):

@@ -29,6 +29,7 @@ This test previously failed via two plants, both observed and both removed; reco
 """
 
 from __future__ import annotations
+from _specs import HOST
 
 import _deploy as L
 import _oracle as O
@@ -288,6 +289,6 @@ def test_a_lane_record_may_carry_its_own_prologue_hook():
     lane = Lane("hooked", lane_energy.sinks, lane_energy.walk,
                 prologue="// lane guard goes here")
     fused_hooked = compose([lane], "hooked_group")
-    text = fused_hooked.fused_body().text
+    text = fused_hooked.fused_body(spec=HOST).text
     assert "// lane guard goes here" in text
     assert text.index("// lane guard") < text.index("mut_sq[i]")
