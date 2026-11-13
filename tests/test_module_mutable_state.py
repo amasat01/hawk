@@ -64,6 +64,8 @@ ALLOWED = {
     ("compile/payload.py", "_PAYLOAD_MEMO"): "memo of the sealed payload; hawk.compile.payload.reset_payload_memo() forgets it",
     ("compile/toolchain.py", "_PIP_ONLY_ROOT"): "process-lifetime served directory, made once under _PIP_ONLY_LOCK and removed at exit; no reset function exists, tests put it back with monkeypatch",
     ("options.py", "LEGACY"): "read-only table, never mutated after import",
+    ("base/wrapper_text.py", "HOST_ARMS"): "a table read once at emission, never written after import",
+    ("simt/wrapper_text.py", "ARMS"): "a table read once at emission, never written after import",
     **{("cpu/host.py", n): "predates the guard, moved with its module from hawk/emit" for n in ("_ELEM_BYTES",)},
     **{("base/spelling.py", n): "predates the guard, moved with its module from hawk/emit" for n in
        ('_CWISE', 'CWISE_UNARY', 'INFIX_OPS', 'MATH_UNARY', 'MATH_BINARY', 'MATH_TERNARY', '_METHOD0', '_METHOD1', '_RANDOM_FN', 'IDENT_PREFIX')},

@@ -645,8 +645,9 @@ def test_the_auto_entry_branches_once_on_the_word_between_the_step_and_the_loop(
         head, _, rest = src.text.partition("== 1) {")
         assert "lut_fused_steps[" in head.splitlines()[-1]
         one, _, many = rest.partition("} else {")
-        assert 'asm volatile("// hawk: one step")' in one
-        assert 'asm volatile("// hawk: fused steps")' in many
+        # the path markers are device-only text: a host unit carries none
+        assert ('asm volatile("// hawk: one step")' in one) == (target == "cuda")
+        assert ('asm volatile("// hawk: fused steps")' in many) == (target == "cuda")
         assert "_step < " not in one and "_step < " in many
         assert plain[target].body in one
     for k in (osc, hawk.steps(osc, 16)):

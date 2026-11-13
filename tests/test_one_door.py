@@ -32,6 +32,8 @@ def test_no_module_takes_the_canonical_form_but_through_the_door():
     for root in ROOTS:
         for path in sorted((REPO / root).rglob("*.py")):
             rel = path.relative_to(REPO).as_posix()
+            if "build" in path.relative_to(REPO).parts:     # a copy an install leaves in the tree is not the source
+                continue
             if rel not in ALLOWED:
                 bad += [f"{rel}:{line}" for line in _direct_calls(path)]
     assert not bad, "raptor's canonical called directly, use lowering.cells.walk:\n  " + "\n  ".join(bad)

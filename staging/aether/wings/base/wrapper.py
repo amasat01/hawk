@@ -593,10 +593,10 @@ def _frame(walk: Walk, wrapper: Wrapper, active: ActiveSpec | None, team: int | 
     return wrapper.index_prologue(None, **kw), epilogue
 
 
-#: The marker each side of an automatic kernel's branch opens with (device
-#: only): two different side-effecting statements, so the compiler can't
-#: hoist the sides' common code above the branch and fold them into one.
-_PATH_MARKER = '#if defined(__CUDA_ARCH__)\n    asm volatile("// hawk: {}");\n#endif'
+def _path_marker(wrapper: Wrapper, label: str) -> list:
+    """The marker each side of an automatic kernel's branch opens with: two different side-effecting statements, so the compiler can't
+    hoist the sides' common code above the branch and fold them into one. A device wrapper's only (``[]`` on the host)."""
+    return [] if wrapper.device_text is None else [wrapper.device_text.PATH_MARKER.format(label)]
 
 
 def _render_two_paths(name: str, sinks, walk: Walk, target, *, spec,
@@ -661,12 +661,12 @@ def _two_path_entry(entry: str, walk: Walk, wrapper: Wrapper, fused, single,
         "{",
         wrapper.unpack(walk),
         f"    if ({word} == 1) {{",
-        _PATH_MARKER.format("one step"),
+        *_path_marker(wrapper, "one step"),
         one_open,
         single.text,
         one_close,
         "    } else {",
-        _PATH_MARKER.format("fused steps"),
+        *_path_marker(wrapper, "fused steps"),
         *_tiled_or(tiled, [many_open, fused.text, many_close]),
         "    }",
         "}",

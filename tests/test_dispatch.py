@@ -588,6 +588,7 @@ def test_segmented_sidecar_carries_the_group_and_its_offsets_plane(segmented_bun
         "name": "dispatch0", "K": 5, "strategy": "segmented",
         "static_selector": True, "selector_reads": [["per_sample", "k"]],
         "class": "dispatch0_class", "stale": "dispatch0_stale",
+        "offsets": "dispatch0_offsets", "classify": "disp_r0_k5_seg__cls",
         "units": [f"disp_r0_k5_seg__k{j}" for j in range(5)],
     }]
     assert ("lookup", "dispatch0_offsets") in [tuple(p) for p in sidecar["arg_spec"]]

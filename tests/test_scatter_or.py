@@ -106,7 +106,8 @@ def test_a_repeated_launch_is_idempotent(bundle):
 def test_the_emitted_sources_commit_through_the_atomic_or_and_compile(tmp_path, target, k):
     src = render_source(k.name, k.sinks, k.walk, TARGETS[target], mode=FLOAT64, kind=k.kind, spec=spec_for(TARGETS[target]))
     assert "hawk_abi::accum_or(" in src.text
-    assert ("atomicOr" in src.text) and ("fetch_or" in src.text)
+    # each unit carries its own arm only: ``atomicOr`` on the device, ``fetch_or`` on the host
+    assert ("atomicOr" in src.text) == (target == "cuda") and ("fetch_or" in src.text) == (target == "host")
     path = tmp_path / f"{k.name}.{'cu' if target == 'cuda' else 'cpp'}"
     path.write_text(src.text)
     rc, stderr, argv = compile_check(path, target)

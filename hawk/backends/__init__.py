@@ -131,9 +131,12 @@ class Backend:
         spec = lowered.spec.for_target(self).with_settings(placed=self.device, blend=not self.device, staged_rows=lowered.rows,
                                                            warps=getattr(team, "warps", 1))
         sinks, walk = components.view("lowering", "lstsq").lowered(kernel.sinks, kernel.walk, spec)
+        body = lowered.body
+        if getattr(kernel, "per_target_body", False):         # a team stage: this row's text, device arms for a device row
+            body = kernel.fused_body(lowered.kind, cells=lowered.smode.cells, spec=spec, writer=self.writer, device_text=getattr(self.wrapper, "device_text", None))
         source = render_source(
             lowered.name, sinks, walk, self, mode=lowered.smode, kind=lowered.kind,
-            body=lowered.body, segment=lowered.segment, one_step=lowered.one_step, box=lowered.box,
+            body=body, segment=lowered.segment, one_step=lowered.one_step, box=lowered.box,
             active=None if getattr(team, "grid", None) in ("keys", "chunks", "targets") else lowered.active,
             team=None if team is None else team.threads, rows=lowered.rows,
             exports=layout.exports(self.id, layout_sizes_override=options.get("layout_sizes_override")),

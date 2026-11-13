@@ -22,6 +22,12 @@ any lane is still live after the loop, not inside it, and the host flags drop ma
 Re-pinned for the digest domain ``raptor.ir.walk/1``: the C header and the manifest carry the walk digest, which changed with it, and a
 refusal is named by its class, ``RaptorError``; the generator is :func:`digests` below, the values are its output.
 
+Re-pinned for the host-only arms: a host unit no longer carries the device arms of its helpers (``#if defined(__CUDA_ARCH__)`` blocks and the
+warp row sum); all 21 values moved with the host text, and the CUDA text is unchanged.
+
+Re-pinned for the device-only arms: a device unit no longer carries the host arms of its helpers (the ``#if defined(__CUDA_ARCH__)`` and
+``__CUDACC__`` guards and their host halves); all 21 values moved with the CUDA text, the host text is unchanged.
+
 Re-pinned for the keyword rename: ``scatter`` and ``scatter_c`` spell ``contract=`` in their source, and the C header carries the digest of that source.
 """
 
@@ -47,27 +53,27 @@ MODES = ("float64", "float32")
 
 #: kernel name -> sha256 of its renders (see the module docstring)
 PINNED = {
-    "as_body": "9b8938d9b7c0a40b6d79da4cc28fe7895f696c115f8b015017cbcab4268ad3a9",
-    "axpb": "629f377d9abe48719b973b1c32b12f7f9582ecc6940418b153f7a393532e096b",
-    "chain6": "6b348aab62741e1b9eb195742f28c3b812c37e22e61824a7804501801f93a767",
-    "diagnostic": "9da78309a43469340324e39b0f0ad6aa8555fde511ea0ed7e15fefdf8fbd9214",
-    "diagnostic_two": "9313491642b2f863c8d2370eb028f974838401217e243215d8d99e44405240c6",
-    "drag": "780b3085739cc49c3e866a1697c1fd500dcbec240d8146795038dd7e8cd7a180",
-    "energy": "87fd780baacd5f6a779f3de000575df2f7e6604fe394f5eb589676d009a52cd9",
-    "fraction": "41b1137bcefca8863b5084bd96312533bc7d134c7bdcd193efb0afc21904e7c6",
-    "gather": "89fbf4a3d70b194d4688ced1c5597484901386d400fee6c399d9482b7dea2755",
-    "mat_apply": "a02f7dd35e83ed8413f608a519ae0b3f8bc89dd6e7f77d15dfbe80731b070a41",
-    "rotate_quat": "eee541fe7701d8634497078e234dd4211568a69e122f12583fdafab14c46b9b0",
-    "scale": "92e29055be8d7ad98ada24bdda6e6e5795f67939f2b8871b623c110911f3f681",
-    "scatter": "0edca3a0dbd3c6b0219b9bf28375178b285bffc6565b3b8919a27cc46a82d449",
-    "scatter_c": "028784403142de29ffa896fdf5157aeb890e1ca5200a1327df6b6552b82c85c1",
-    "speed": "5e2cd9118073ecbf84a2a72c40a384ad8499c7f847025f639c42313a71830e16",
-    "spin": "1690627137889b8b8d652d7832da8454f3b714488928664426577cd7b3da4f00",
-    "two_fin": "9ebff54786c51d5f382dc2b29e206bfd2762040eb68724e0ead21faead1d618b",
-    "two_outputs": "8c41b1c9783c3167a0de1eded1ad1dc4f0ab4fb1548b30f78b27a069bcfbccd0",
-    "two_wire": "dc815f652a353e93c39147cf4fa4cf486f4cc6ff732b902b02087dcd224db517",
-    "vec3_scale": "c5453555825cb9efba9cb1fd90807001ffc76908cc758cbd89202f754b848485",
-    "vocab": "a47b0b4915aedaa718d5d3bef8329672851dde69ff6f4930a43bc1f4916e6d9d",
+    "as_body": "887e691ce7b236a74c3f4d74b583542489be3f06f2e7119e57abcf7bed3b5f75",
+    "axpb": "787d1e2c1bd9a44e8d3d9133c12d3c1336ee6b62950751fac06b60d307c90e2c",
+    "chain6": "21f757f9886c34e4c6f901441231ac6b86561a9ba5ea20ed2960a63e1b9b43b5",
+    "diagnostic": "5037aa87f00513dce36b61a8b7edd6f0a7d407f13190d37a17bc36d1044aa0ee",
+    "diagnostic_two": "0e11070b7ab9de2a07e56c92bcd13ef8249c35fbd9bc009e327a3b57766263cc",
+    "drag": "a033948b11df46ca81f38c8ea8b3ede7d148ffc059913d45b7c9b0715b149037",
+    "energy": "d0fe4498ecbab95dcd2e0b80ac8a29ed2431e1e4fb3c2ae210f28d31c1167454",
+    "fraction": "5237c1c345f86dfbb8c6b29212a172e7f0e685e004a3769940b1e699d4f25d70",
+    "gather": "500018226bca128da905bab1ba5503132db566d1667f66dd18c95b981242eea1",
+    "mat_apply": "0a2a36e3b3b40e757f29aa40c0a63e477221c5683ecc0ee0b40a2da42e94e185",
+    "rotate_quat": "44f441134140afd0ac5ea49a2bba642c5615f77e00bdeb9593e06affc6f6985a",
+    "scale": "44d595b4c2cd66e47b7bf6ee163a650354de889a77900c59256cf15b27e0b4a6",
+    "scatter": "e270f1f59b59ceaa821f58eee56dd0a093ac75803b7497e9ca2b4f4ab974aa25",
+    "scatter_c": "f054b2e777c47ac38c6c6051bdc3571e1382373b23f19fe06c7d9fcf4155efd7",
+    "speed": "5f38284fcde6faa45b815a270ce288027987a64780bf04dba6e47e06141a4e92",
+    "spin": "938518fcb32ab9b7bec857dd30e6bd87cbdb73af40ad5540ab0c909e37454e5c",
+    "two_fin": "b610d57445e75cf4eefef1a722de118a66ecc3221e700b51356e40029a7c7ce9",
+    "two_outputs": "9fc732f193da0aacf658e5c237732b30781ae7df5c2dfe8d58c6d87ace72de71",
+    "two_wire": "ab37200d6f3475b4f2ee9c9d02b3009cf61c082253fa3f74758b150dbc79e146",
+    "vec3_scale": "52d0535bb992eff2e137943e3fcad861fb7daf88e4f76a6d5279ea5ae952170c",
+    "vocab": "9c2a8873261b8109df004bff578d68bfdb1645b1c49bf59bbb91f4b459ac5797",
 }
 
 

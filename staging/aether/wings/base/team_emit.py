@@ -92,7 +92,7 @@ def _call(step) -> str:
     return f"{_NS}{_SOLVE[op]}<{n}>(hawk_tm, hawk_f, hawk_x, hawk_x, {step.k});"
 
 
-def _block(step, per_lane: dict, active, cells=None, active_reads=None) -> list:
+def _block(step, per_lane: dict, active, cells=None, active_reads=None, device_text=None) -> list:
     """The call of a block sum: the team of key ``hawk_lane`` sums that key's rows (``nSamples /
     count`` of them, contiguous: the reduced axes are the trailing ones) into its block ``hawk_g``,
     then copies it to the output plane when the sum is stored (``(*payload, *kept)``: entry ``e``
@@ -138,11 +138,9 @@ def _block(step, per_lane: dict, active, cells=None, active_reads=None) -> list:
     if "gp" in roles and active is None:
         gp = _binding(roles["gp"])
         return lines + [
-            "#if defined(__CUDA_ARCH__)",
-            f"__shared__ Real hawk_sh[{GROUPS}];",
-            "#else",
-            f"Real hawk_sh[{GROUPS}];",
-            "#endif",
+            *([
+                f"Real hawk_sh[{GROUPS}];",
+            ] if device_text is None else device_text.team_sh_decl(GROUPS)),
             f"for (std::size_t hawk_i = static_cast<std::size_t>(hawk_tm.rank); hawk_i < {GROUPS}; "
             "hawk_i += static_cast<std::size_t>(hawk_tm.size))",
             f"    hawk_sh[hawk_i] = {gp}.data()[hawk_key * {GROUPS} + hawk_i];",
@@ -170,7 +168,7 @@ def _block(step, per_lane: dict, active, cells=None, active_reads=None) -> list:
     return lines
 
 
-def _block_part(step, active, cells=None, reads=frozenset()) -> list:
+def _block_part(step, active, cells=None, reads=frozenset(), device_text=None) -> list:
     """The first stage of a plain ordered sum: block ``hawk_lane`` is group ``hawk_lane % GROUPS`` of key ``hawk_lane / GROUPS``;
     virtual lane ``l`` of the 65536 adds rows ``l, l + 65536, ...`` of the key in order, each group's 1024 lanes are folded by the
     halving tree and the group's value goes to its cell of the partials plane. Constants and the row count only."""
@@ -190,29 +188,19 @@ def _block_part(step, active, cells=None, reads=frozenset()) -> list:
     if cells:
         return lines + cells.block_part(roles, BAND_LANES, BAND_VIRTUAL_LANES)
     return lines + [
-        "#if defined(__CUDA_ARCH__)",
-        f"__shared__ Real hawk_sh[{FOLD_LANES}];",
-        "#else",
-        f"Real hawk_sh[{FOLD_LANES}];",
-        "#endif",
-        "#if defined(__CUDA_ARCH__)",
-        f"for (std::size_t hawk_t = static_cast<std::size_t>(hawk_tm.rank); hawk_t < {FOLD_LANES}; "
-        "hawk_t += static_cast<std::size_t>(hawk_tm.size)) {",
-        "    Real hawk_s = Real(0);",
-        f"    for (std::size_t hawk_r = hawk_grp * {FOLD_LANES} + hawk_t; hawk_r < hawk_rows; hawk_r += {VIRTUAL_LANES})",
-        f"        hawk_s += {term};",
-        "    hawk_sh[hawk_t] = hawk_s;",
-        "}",
-        "#else",
-        f"for (std::size_t hawk_t = 0; hawk_t < {FOLD_LANES}; ++hawk_t) hawk_sh[hawk_t] = Real(0);",
-        f"for (std::size_t hawk_b = hawk_grp * {FOLD_LANES}; hawk_b < hawk_rows; hawk_b += {VIRTUAL_LANES}) {{",
-        f"    const std::size_t hawk_m = hawk_rows - hawk_b < {FOLD_LANES} ? hawk_rows - hawk_b : {FOLD_LANES};",
-        "    for (std::size_t hawk_t = 0; hawk_t < hawk_m; ++hawk_t) {",
-        "        const std::size_t hawk_r = hawk_b + hawk_t;",
-        f"        hawk_sh[hawk_t] += {term};",
-        "    }",
-        "}",
-        "#endif",
+        *([
+            f"Real hawk_sh[{FOLD_LANES}];",
+        ] if device_text is None else device_text.team_sh_decl(FOLD_LANES)),
+        *([
+            f"for (std::size_t hawk_t = 0; hawk_t < {FOLD_LANES}; ++hawk_t) hawk_sh[hawk_t] = Real(0);",
+            f"for (std::size_t hawk_b = hawk_grp * {FOLD_LANES}; hawk_b < hawk_rows; hawk_b += {VIRTUAL_LANES}) {{",
+            f"    const std::size_t hawk_m = hawk_rows - hawk_b < {FOLD_LANES} ? hawk_rows - hawk_b : {FOLD_LANES};",
+            "    for (std::size_t hawk_t = 0; hawk_t < hawk_m; ++hawk_t) {",
+            "        const std::size_t hawk_r = hawk_b + hawk_t;",
+            f"        hawk_sh[hawk_t] += {term};",
+            "    }",
+            "}",
+        ] if device_text is None else device_text.fold_loop(FOLD_LANES, VIRTUAL_LANES, term)),
         "hawk_tm.sync();",
         f"for (std::size_t hawk_w = {FOLD_LANES // 2}; hawk_w > 0; hawk_w >>= 1) {{",
         "    for (std::size_t hawk_i = static_cast<std::size_t>(hawk_tm.rank); hawk_i < hawk_w; "
@@ -273,7 +261,7 @@ def _scatter_zero(step, cells=None) -> list:
             "hawk_tm.sync();"]
 
 
-def _scatter_chunks(step, cells=None) -> list:
+def _scatter_chunks(step, cells=None, device_text=None) -> list:
     """An ordered scatter's middle stage: block ``hawk_lane`` is lane chunk ``b`` (of ``count`` chunks
     over ``nSamples`` lanes, ``step.n`` log slots each); one thread adds the chunk's slots in order into its
     own partial sum of each key, cell ``key * count + b`` of the parts plane. The key -1 adds nothing; a key
@@ -289,10 +277,10 @@ def _scatter_chunks(step, cells=None) -> list:
              else f"Real* const hawk_p = {_binding(step.plane('part'))}.data();"),
             f"std::int32_t* const hawk_m = const_cast<std::int32_t*>({_binding(step.plane('status'))}.data());",
             "const std::int64_t hawk_cells = hawk_m[0];",
-            *_scatter_walk(step, cells)]
+            *_scatter_walk(step, cells, device_text)]
 
 
-def _scatter_walk(step, cells=None) -> list:
+def _scatter_walk(step, cells=None, device_text=None) -> list:
     """The walk of the chunk's slots (see :func:`_scatter_chunks`). On the device (up to 1024 cells) a warp takes 32
     rows at a time, each lane owns the cells of its residue ``key % 32`` in a shared bin and adds that cell's rows in
     row order (a per-lane bitmask of the batch), so every cell's sum has the order of the serial walk: the same bits.
@@ -311,57 +299,7 @@ def _scatter_walk(step, cells=None) -> list:
         "        hawk_k[hawk_r] = -1;",
         "    }",
         "hawk_tm.sync();"]
-    walk = [
-        "    if (hawk_tm.rank < 32) {",
-        "        const unsigned hawk_ln = static_cast<unsigned>(hawk_tm.rank);",
-        f"        const std::size_t hawk_end = hawk_hi * {n};",
-        f"        for (std::size_t hawk_b = hawk_lo * {n}; hawk_b < hawk_end; hawk_b += 32) {{",
-        "            const std::size_t hawk_r = hawk_b + hawk_ln;",
-        "            const bool hawk_in = hawk_r < hawk_end;",
-        "            const std::int32_t hawk_mk = hawk_in ? hawk_k[hawk_r] : -1;",
-        "            const Real hawk_mv = hawk_in ? hawk_v[hawk_r] : Real{};",
-        "            unsigned hawk_mine = 0u, hawk_bad = 0u;",
-        "            for (unsigned hawk_i = 0; hawk_i < 32; ++hawk_i) {",
-        "                const std::int32_t hawk_key = __shfl_sync(0xffffffffu, hawk_mk, hawk_i);",
-        "                if (hawk_key == -1) continue;",
-        "                if (hawk_key >= 0 && hawk_key < hawk_cells) {",
-        "                    if ((static_cast<unsigned>(hawk_key) & 31u) == hawk_ln) hawk_mine |= 1u << hawk_i;",
-        "                } else hawk_bad = 1u;",
-        "            }",
-        "            if (hawk_bad && hawk_ln == 0) hawk_m[1 + hawk_lane] = 1;",
-        "            while (__any_sync(0xffffffffu, hawk_mine != 0u)) {",
-        "                const unsigned hawk_src = hawk_mine != 0u ? static_cast<unsigned>(__ffs(hawk_mine) - 1) : 0u;",
-        *(cells.SHUFFLED_VALUE if cells else
-          ["                const Real hawk_x = __shfl_sync(0xffffffffu, hawk_mv, hawk_src);"]),
-        "                const std::int32_t hawk_key = __shfl_sync(0xffffffffu, hawk_mk, hawk_src);",
-        "                if (hawk_mine != 0u) {",
-        (cells.BIN_ADD if cells else
-         "                    hawk_bin[hawk_key] += hawk_x;"),
-        "                    hawk_mine &= hawk_mine - 1u;",
-        "                }",
-        "            }",
-        "            if (hawk_in && hawk_mk != -1) hawk_k[hawk_r] = -1;",
-        "        }",
-        "    }"]
-    return [
-        "#if defined(__CUDA_ARCH__)",
-        (cells.BIN_DECL if cells else "__shared__ Real hawk_bin[1024];"),
-        "if (hawk_cells <= 1024) {",
-        "    for (std::size_t hawk_j = static_cast<std::size_t>(hawk_tm.rank); hawk_j < static_cast<std::size_t>(hawk_cells); "
-        "hawk_j += static_cast<std::size_t>(hawk_tm.size)) hawk_bin[hawk_j] = " + (cells.BIN_ZERO if cells else "Real(0);"),
-        "    hawk_tm.sync();",
-        *walk,
-        "    hawk_tm.sync();",
-        "    for (std::size_t hawk_j = static_cast<std::size_t>(hawk_tm.rank); hawk_j < static_cast<std::size_t>(hawk_cells); "
-        "hawk_j += static_cast<std::size_t>(hawk_tm.size))",
-        cells.BIN_COMBINE if cells else
-        "        hawk_p[hawk_j * hawk_chunks + static_cast<std::size_t>(hawk_lane)] += hawk_bin[hawk_j];",
-        "} else {",
-        *plain,
-        "}",
-        "#else",
-        *plain,
-        "#endif"]
+    return plain if device_text is None else device_text.scatter_bins(n, cells, plain)
 
 
 def _scatter_cells(step, cells=None) -> list:
@@ -384,7 +322,7 @@ def _scatter_cells(step, cells=None) -> list:
 _SCATTER = {"scatter_zero": _scatter_zero, "scatter_chunks": _scatter_chunks, "scatter_cells": _scatter_cells}
 
 
-def team_body(spec: TeamSpec, active=None, cells=None, *, body, active_reads=None):
+def team_body(spec: TeamSpec, active=None, cells=None, *, body, active_reads=None, device_text=None):
     """The body of the team stage ``spec``: its steps, each in a scope of its own. ``cells`` is the banded forms' module of the SIMT wing
     (:mod:`aether.wings.simt.team_cells`; ``None``: the float stages). ``active``
     (:class:`~aether.wings.base.wrapper.ActiveSpec`) is the index map of an index-set build, which a block
@@ -399,32 +337,25 @@ def team_body(spec: TeamSpec, active=None, cells=None, *, body, active_reads=Non
             lines.append("        }")
             continue
         if step.op in _SCATTER:
-            lines += ["            " + line for line in _SCATTER[step.op](step, cells)]
+            lines += ["            " + line for line in (_scatter_chunks(step, cells, device_text) if step.op == "scatter_chunks" else _SCATTER[step.op](step, cells))]
             lines.append("        }")
             continue
         if step.op == "block_part":
-            lines += ["            " + line for line in _block_part(step, active, cells, {leaf.name for leaf in spec.reads})]
+            lines += ["            " + line for line in _block_part(step, active, cells, {leaf.name for leaf in spec.reads}, device_text)]
             lines.append("        }")
             continue
         if step.op == "block_sum":
-            lines += ["            " + line for line in _block(step, per_lane, active, cells, active_reads)]
+            lines += ["            " + line for line in _block(step, per_lane, active, cells, active_reads, device_text)]
             lines.append("        }")
             continue
         lines += ["            " + _pointer(name, role, per_lane[name]) for role, name in step.planes]
         if step.op == "eigh_warp":      # one warp serves the lane; the rest of the team (if any) waits at the barrier
-            lines += ["#if defined(__CUDA_ARCH__)",
-                      "            __shared__ aether::linalg::warp::EighValuesScratch<Real> hawk_scratch;",
-                      "            if (hawk_tm.rank < 32) {",
-                      "                const auto hawk_r = aether::linalg::warp::eighValues<32>(hawk_scratch, static_cast<const Real*>(hawk_a));",
-                      "                hawk_w[hawk_tm.rank] = hawk_r.w;",
-                      "                if (hawk_tm.rank == 0) *hawk_info = hawk_r.info;",
-                      "            }",
-                      "#else       // the host's team of one: the one-thread form, same bits",
-                      "            aether::linalg::EighValues<Real, 32> hawk_r;",
-                      "            aether::linalg::eighValues<32>(hawk_r, static_cast<const Real*>(hawk_a));",
-                      "            for (int hawk_k = 0; hawk_k < 32; ++hawk_k) hawk_w[hawk_k] = hawk_r.w[hawk_k];",
-                      "            *hawk_info = hawk_r.info;",
-                      "#endif",
+            lines += [*([
+                          "            aether::linalg::EighValues<Real, 32> hawk_r;",
+                          "            aether::linalg::eighValues<32>(hawk_r, static_cast<const Real*>(hawk_a));",
+                          "            for (int hawk_k = 0; hawk_k < 32; ++hawk_k) hawk_w[hawk_k] = hawk_r.w[hawk_k];",
+                          "            *hawk_info = hawk_r.info;",
+            ] if device_text is None else device_text.EIGH_WARP),
                       "            hawk_tm.sync();",
                       "        }"]
             continue
@@ -434,11 +365,11 @@ def team_body(spec: TeamSpec, active=None, cells=None, *, body, active_reads=Non
     return body("\n".join(lines))
 
 
-def stage_body(spec: TeamSpec, active, cells):
+def stage_body(spec: TeamSpec, active, cells, device_text=None):
     """The body of the team stage ``spec`` as the entry wrappers take it: rendered into a :class:`~aether.wings.base.render.Body`; ``active``
     (an :class:`~aether.wings.base.wrapper.ActiveSpec` or ``None``) is the index map of an index-set build, read through
     :func:`aether.wings.base.wrapper.active_reads`."""
     from .render import Body
     from .wrapper import active_reads
 
-    return team_body(spec, active, cells, body=Body, active_reads=active_reads)
+    return team_body(spec, active, cells, body=Body, active_reads=active_reads, device_text=device_text)

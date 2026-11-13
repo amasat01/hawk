@@ -419,17 +419,18 @@ def test_eagle_reads_the_label_and_allocates_to_match(host_plans):
 #: sha256 over every corpus kernel's emitted translation units (both backends,
 #: both scalar modes), taken before integer planes existed; ``gather`` and ``scatter`` read an
 #: ``Index`` plane, re-taken when it moved to a 4-byte wire.
+# Re-pinned twice: a host unit carries the host arms only, and a device unit the device arms only; every digest moved each time.
 FLOAT_ONLY_DIGESTS = {
-    "as_body": "fabe9da159f0ff3e84534bd5e4f4e31fdfcc22138975fe51f0ff90d5a24e9aa8",
-    "chain6": "2c3720128553a75a8588aef04c963a9b1c0da47666e288134aaac4eed526cf38",
-    "drag": "daee7a70d11748ebd82c1d03ffe2ab829a2bb507da18f8dceb01f3c256e8fc8c",
-    "drag_vjp": "599bf31c5a9c6e6d6d65f4168fb7a59a4e16013f6fcf8826b12cc19aa90948f8",
-    "energy": "60ca15da257422f263a8e5b87e55d28e7f73033bef636581d4c444e01af62f0f",
-    "gather": "2c15ebee3694d786f8685f7e70ae8d0b902d30d7f38cedaad4fdcf5d2d8211b7",
-    "rotate_quat": "fe1634aba3c69d61177c1b321c588a0972f4052c98667361321a88ac4072e63d",
-    "scale": "1e37d343cea724f7480e82378d805e622336414a68250a6d2447db80ce367328",
-    "scatter": "9ff35810c6910e24acd750b39b260e8a1bcf10acbeab94814b57b7f1a8d01aa2",
-    "spin": "1c0ccc4d2025307ab2d5c7a78f54295028d5d2ef277ba7c00816629d32ffce24",
+    "as_body": "c7cad7d62f4707770d6d88161813aea688184d691d408e5be479d5e8d703b22a",
+    "chain6": "b8df13358508975323e17b28a4e57a25c4d468babf5618b531b42d613a7f75d6",
+    "drag": "5a1918388524169c27d262dbe4605c0e4dac8fb2327c4167d54d5cc7205d4b04",
+    "drag_vjp": "af93f85d042241b9456f1dc13166d74a62974345261f0ab2950e349e52da4076",
+    "energy": "aa24070342d3c55ecf5dad21f915f3eb91ac8d8bff72c2d41c92dfe1ae0a82ac",
+    "gather": "64c60f4126254eba0e379c3de3e98ca58228cdf95c19d72fe1da4fdae826f722",
+    "rotate_quat": "d5e9382af25572e582f043d9695b0375d096cb3c49354130300adfa9afc291fb",
+    "scale": "ea5944dd991883519eb127b740758babd1ebc4052644b0d1be427f3922b595ba",
+    "scatter": "a20dc15e5bbeebb36f4f8941638653813c9db2a2e0e581e7832a6a36f113f638",
+    "spin": "9dae35e5c801ca4318b65a98f2f244a9e99d0138c94c936a2e77c8f8b4e740a4",
 }
 
 

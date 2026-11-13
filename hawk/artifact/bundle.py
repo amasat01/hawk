@@ -1058,7 +1058,7 @@ def _warp_kernel(kernel, name: str, spec, explicit: bool = True, real_bytes: int
     extra = [Slot(role, slot, walk.slot_types[role, slot]) for walk, (role, slot) in own if (role, slot) not in held]
     if extra:
         warp.walk = _cells.walk(warp.sinks, (*_declared(warp.planes), *extra))
-    warp.steps = kernel.steps
+    warp.steps = getattr(kernel, "steps", 1)       # a branch unit carries no record: one step
     if one is not None:
         for attr in ("source_digest", "returns", "time", "time_step", "jump", "broadcast", "group"):
             setattr(warp, attr, getattr(kernel, attr))
@@ -1158,7 +1158,8 @@ def _expand_split(kernels: list, names: list, kinds: list, *, spec, smode=None, 
                     member.walk = _cells.walk(member.sinks, (*_declared_slots(member.planes), *extra))
                 if stage.team is not None:      # a copy stage: the stage's own sinks, launched a block per lane
                     member.team = stage.team
-            member.steps = k.steps
+            if hasattr(k, "steps"):         # a branch unit carries no record (one step) and stays the unit it was
+                member.steps = k.steps
             cells.update(member.walk.cells)
             out_kernels.append(member)
             out_names.append(stage.name)

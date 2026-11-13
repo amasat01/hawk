@@ -185,14 +185,17 @@ def test_the_f32_traversal_at_depth_32_has_no_spills(world, tmp_path):
     from hawk_cuda.toolchain import device_flags
     from hawk_cuda.toolchain import resolve_arch
     from aether.wings.base.wrapper import FLOAT32, render_source
+    from hawk import variants
     from hawk.targets import TARGETS
 
     _t, _o, _d, bvh, _ = world
     k = _kernel(bvh, depth=32)
     src = tmp_path / "nearest.cu"
+    spec = spec_for(TARGETS["cuda"])
     src.write_text(render_source(k.name, k.sinks, k.walk, TARGETS["cuda"], mode=FLOAT32,
-                                 exports=exports("cuda"), spec=spec_for(TARGETS["cuda"]), kind=default_kind()).text)
-    done = subprocess.run([device_compiler(), *device_flags(arch=resolve_arch(), target="cubin"),
+                                 exports=exports("cuda"), spec=spec, kind=default_kind()).text)
+    variant = variants.include_flags(spec.for_target(TARGETS["cuda"]).primary)     # the text includes its variant's header
+    done = subprocess.run([device_compiler(), *device_flags(arch=resolve_arch(), target="cubin", extra=variant),
                            str(src), "-o", str(tmp_path / "nearest.cubin")],
                           capture_output=True, text=True, check=False)
     assert done.returncode == 0, done.stderr[-2000:]

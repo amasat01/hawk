@@ -108,7 +108,8 @@ def test_sink_policy_produces_a_different_artifact_from_the_default(built):
     assert "hawk_abi::accum_add_compensated(" in comp, (
         "the compensated commit must be ONE call to the target-atomic helper:\n"
         + comp)
-    assert "twoSumErr_" in comp and "atomicAdd" in comp, (
+    # a host unit carries the host arm only: ``fetch_add``, not the device's ``atomicAdd``
+    assert "twoSumErr_" in comp and "fetch_add" in comp, (
         "the compensated commit must carry the Knuth two-sum residual, target-"
         "atomic on both lanes:\n" + comp)
 

@@ -225,6 +225,22 @@ def test_an_automatic_kernel_places_the_wide_values_of_its_fused_and_its_single_
     assert {p for p in side["team_planes"]} <= planes and len(side["team_planes"]) >= 2   # one set of scratch planes per body
 
 
+@pytest.mark.parametrize("entry", ["fill_mask_seg", "matvec_in_seg"])
+@pytest.mark.parametrize("form", ["auto", "team"])
+def test_the_branch_units_of_a_segmented_kernel_are_placed_for_a_device(entry, form, tmp_path, cache_dir):
+    """A branch unit carries no steps record: placing its wide values reads none. The test passes where the device
+    compiler is absent too: the placement ran when the build reached the compile."""
+    from lowering.exchange import ToolchainAbsent
+
+    seg, units = W.segmented_units(W.CORPUS[entry].kernel)
+    kind = {} if W.CORPUS[entry].kind is None else {"kind": W.CORPUS[entry].kind}
+    try:
+        bundle = build_bundle([seg], tmp_path, targets=("cuda",), cache_dir=cache_dir, wide_form=form, **kind)
+    except ToolchainAbsent:
+        return
+    assert all(sidecar_of(bundle, u) for u in units)
+
+
 def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp_path, cache_dir):
     from hawk.dialects import kind_name
     from simt.lane import slice_sinks

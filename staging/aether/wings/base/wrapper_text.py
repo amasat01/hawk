@@ -3,6 +3,24 @@
 
 """The helper texts of an entry wrapper: the compensated own-column commit and the sample-sum row text."""
 
+#: The host arm of each helper that has a device arm (:data:`aether.wings.simt.wrapper_text.ARMS`): the text a host unit carries.
+HOST_ARMS = {
+    "accum_add": "    std::atomic_ref<E>(slot).fetch_add(static_cast<E>(term), std::memory_order_relaxed);",
+    "accum_add_compensated": "\n".join((
+            "    const E old = std::atomic_ref<E>(slot).fetch_add(t, std::memory_order_relaxed);",
+            "    const E s = old + t;",
+            "    std::atomic_ref<E>(compSlot).fetch_add(aether::accum::twoSumErrAtomic(old, t, s),",
+            "                                           std::memory_order_relaxed);",
+        )),
+    "accum_or": "    std::atomic_ref<E>(slot).fetch_or(static_cast<E>(bits), std::memory_order_relaxed);",
+    "finish_count": "    std::atomic_ref<std::uint32_t>(*cell).fetch_add(1u, std::memory_order_relaxed);",
+    "mix_count": "\n".join((
+            "    (void)K;",
+            "    std::atomic_ref<std::uint32_t>(cells[k]).fetch_add(1u, std::memory_order_relaxed);",
+        )),
+    "spacing": "    const T up = std::nextafter(a, a * T(2) + T(1)) - a;",
+}
+
 #: Compensated OWN-COLUMN commit: a Neumaier accumulate into the host's
 #: prior value, one writer per sample, never atomic. The total is
 #: ``target + companion``, so the host must zero both before the first term.
@@ -15,11 +33,7 @@ template <class ViewT>
     // over a whole run. Read only after the launch, in stream / team order.
     auto* cell = const_cast<std::uint32_t*>(
         reinterpret_cast<const std::uint32_t*>(counter.data()));
-#if defined(__CUDA_ARCH__)
-    atomicAdd(reinterpret_cast<unsigned int*>(cell), 1u);
-#else
-    std::atomic_ref<std::uint32_t>(*cell).fetch_add(1u, std::memory_order_relaxed);
-#endif
+{arm}
 }}
 """
 
@@ -79,75 +93,4 @@ template <int N, int OP = 0, class E, class Store>
     for (int k = 0; k < {row} * N; ++k) terms[k] = ssIdentity_<OP, E>();
 }}
 
-#if defined(__CUDACC__)
-template <class E>
-__device__ __forceinline__ void ssPin_(E& x)
-{{
-    // A rounded term: a product in the body is never fused into a combine.
-    if constexpr (sizeof(E) == 4) asm("" : "+f"(x));
-    else asm("" : "+d"(x));
-}}
-
-template <int M, int OP, class E>
-__device__ __forceinline__ void ssRound_(E* h, E* c, int off, bool up)
-{{
-    // One butterfly round over a lane's M columns: it keeps one contiguous
-    // half (the upper one when `up`), adds its partner's (lane ^ off) copy
-    // of that half, and ships the other half to the partner.
-    constexpr int LO = M / 2, UP = M - LO;
-#pragma unroll
-    for (int j = 0; j < UP; ++j) {{
-        const E sh = up ? (j < LO ? h[j] : ssIdentity_<OP, E>()) : h[LO + j];
-        const E sc = up ? (j < LO ? c[j] : E(0)) : c[LO + j];
-        const E rh = __shfl_xor_sync(0xffffffffu, sh, off);
-        const E rc = __shfl_xor_sync(0xffffffffu, sc, off);
-        if (up) pairCombine_<OP>(h[LO + j], c[LO + j], rh, rc);
-        else if (j < LO) pairCombine_<OP>(h[j], c[j], rh, rc);
-    }}
-#pragma unroll
-    for (int j = 0; j < UP; ++j) {{
-        h[j] = up ? h[LO + j] : (j < LO ? h[j] : ssIdentity_<OP, E>());
-        c[j] = up ? c[LO + j] : (j < LO ? c[j] : E(0));
-    }}
-}}
-
-template <int N, int OP = 0, class E, class Store>
-__device__ __forceinline__ void sampleSumWarp_(E (&h)[N], Store&& store)
-{{
-    // The warp's 32 lanes' terms summed column by column in five rounds
-    // (lane ^ 16, 8, 4, 2, 1); each lane then stores the sums of the
-    // contiguous run of columns it holds. Every lane of the warp calls it.
-    E c[N];
-#pragma unroll
-    for (int k = 0; k < N; ++k) {{
-        ssPin_(h[k]);
-        c[k] = E(0);
-    }}
-    unsigned lane;
-    asm("mov.u32 %0, %%laneid;" : "=r"(lane));
-    constexpr int M2 = N - N / 2, M3 = M2 - M2 / 2, M4 = M3 - M3 / 2;
-    constexpr int M5 = M4 - M4 / 2, M6 = M5 - M5 / 2;
-    ssRound_<N, OP>(h, c, 16, (lane & 16u) != 0u);
-    ssRound_<M2, OP>(h, c, 8, (lane & 8u) != 0u);
-    ssRound_<M3, OP>(h, c, 4, (lane & 4u) != 0u);
-    ssRound_<M4, OP>(h, c, 2, (lane & 2u) != 0u);
-    ssRound_<M5, OP>(h, c, 1, (lane & 1u) != 0u);
-    // the columns a lane holds: the rounds' split points are M / 2 of the
-    // padded counts above, so a lane may hold fewer than M (or none)
-    const int halves[5] = {{N / 2, M2 / 2, M3 / 2, M4 / 2, M5 / 2}};
-    int lo = 0, m = N;
-#pragma unroll
-    for (int r = 0; r < 5; ++r) {{
-        if (lane & (16u >> r)) {{
-            lo += halves[r];
-            m -= halves[r];
-        }} else if (m > halves[r]) {{
-            m = halves[r];
-        }}
-    }}
-#pragma unroll
-    for (int j = 0; j < M6; ++j)
-        if (j < m) store(lo + j, h[j], c[j]);
-}}
-#endif
 """

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from raptor.errors import RaptorError
-from .wrapper_text import FINISH_COUNT, SAMPLE_SUM
+from .wrapper_text import FINISH_COUNT, HOST_ARMS, SAMPLE_SUM
 
 if TYPE_CHECKING:
     from .wrapper import ScalarMode
@@ -98,16 +98,7 @@ template <class ViewT, class T>
                   "only a floating accumulate plane has one");
     E t = static_cast<E>(term);
     AETHER_FP_BARRIER(t);  // rounded once: never fused into `old + t`
-#if defined(__CUDA_ARCH__)
-    const E old = atomicAdd(&slot, t);
-    const E s = old + t;
-    atomicAdd(&compSlot, aether::accum::twoSumErrAtomic(old, t, s));
-#else
-    const E old = std::atomic_ref<E>(slot).fetch_add(t, std::memory_order_relaxed);
-    const E s = old + t;
-    std::atomic_ref<E>(compSlot).fetch_add(aether::accum::twoSumErrAtomic(old, t, s),
-                                           std::memory_order_relaxed);
-#endif
+{arm}
 }}
 """
 
@@ -123,11 +114,7 @@ template <class ViewT, class T>
     static_assert(std::is_integral_v<E> && sizeof(E) == 4,
                   "hawk_abi::accum_or: a scattered OR commits through the "
                   "target's atomic OR, on a 32-bit integer plane");
-#if defined(__CUDA_ARCH__)
-    atomicOr(reinterpret_cast<unsigned int*>(&slot), static_cast<unsigned int>(bits));
-#else
-    std::atomic_ref<E>(slot).fetch_or(static_cast<E>(bits), std::memory_order_relaxed);
-#endif
+{arm}
 }}
 """
 
@@ -215,11 +202,7 @@ template <class T>
 {qualifier} T spacing(T x)
 {{
     const T a = x < T(0) ? -x : x;
-#if defined(__CUDA_ARCH__)
-    const T up = ::nextafter(a, a * T(2) + T(1)) - a;
-#else
-    const T up = std::nextafter(a, a * T(2) + T(1)) - a;
-#endif
+{arm}
     return x < T(0) ? -up : up;
 }}
 """
@@ -236,21 +219,7 @@ template <class ViewT>
 {{
     auto* cells = const_cast<std::uint32_t*>(
         reinterpret_cast<const std::uint32_t*>(mix.data()));
-#if defined(__CUDA_ARCH__)
-    const unsigned active = __activemask();
-    unsigned below;
-    asm("mov.u32 %0, %%lanemask_lt;" : "=r"(below));
-    const bool leader = (active & below) == 0u;
-    for (int j = 0; j < K; ++j) {{
-        const unsigned picked = __ballot_sync(active, k == j);
-        if (leader && picked != 0u)
-            atomicAdd(reinterpret_cast<unsigned int*>(cells + j),
-                      static_cast<unsigned int>(__popc(picked)));
-    }}
-#else
-    (void)K;
-    std::atomic_ref<std::uint32_t>(cells[k]).fetch_add(1u, std::memory_order_relaxed);
-#endif
+{arm}
 }}
 """
 
@@ -389,6 +358,11 @@ _CLAMP_COUNT = """{qualifier} int hawk_clamp_count(long long n)
 """
 
 
+def _arm(name: str, device_text) -> str:
+    """The arm of the helper ``name`` this unit carries: the host's alone, or the device's alone."""
+    return HOST_ARMS[name] if device_text is None else device_text.arm(name)
+
+
 def abi_helpers(qualifier: str, *, device_text=None, compensated: bool = False,
                 store_compensated: bool = False, finish: bool = False,
                 spacing: bool = False, mix: bool = False,
@@ -419,26 +393,28 @@ def abi_helpers(qualifier: str, *, device_text=None, compensated: bool = False,
         if row is None:
             raise RaptorError("the sample-sum row helper is emitted with the variant's cells.row, and none was given")
         halves = [row >> k for k in range(1, row.bit_length())]       # the pairs of one row: row/2, ..., 2, 1
-        helpers.append((device_text.banded_sample_sum(SAMPLE_SUM) if cells else SAMPLE_SUM).format(
+        sums = SAMPLE_SUM if device_text is None else SAMPLE_SUM + device_text.SAMPLE_SUM_WARP
+        helpers.append((device_text.banded_sample_sum(sums) if cells else sums).format(
             qualifier=qualifier, row=row, half=row // 2, offsets=", ".join(map(str, halves))))
     if compensated:
-        helpers.append(_ACCUM_ADD_COMPENSATED.format(qualifier=qualifier))
+        helpers.append(_ACCUM_ADD_COMPENSATED.format(qualifier=qualifier, arm=_arm("accum_add_compensated", device_text)))
     if store_compensated:
         helpers.append(_STORE_COMPENSATED.format(qualifier=qualifier))
     if finish:
-        helpers.append(FINISH_COUNT.format(qualifier=qualifier))
+        helpers.append(FINISH_COUNT.format(qualifier=qualifier, arm=_arm("finish_count", device_text)))
     if spacing:
-        helpers.append(_SPACING.format(qualifier=qualifier))
+        helpers.append(_SPACING.format(qualifier=qualifier, arm=_arm("spacing", device_text)))
     if mix:
-        helpers.append(_MIX_COUNT.format(qualifier=qualifier))
+        helpers.append(_MIX_COUNT.format(qualifier=qualifier, arm=_arm("mix_count", device_text)))
     if integers:
         helpers.append(_INT_HELPERS.format(qualifier=qualifier))
     if scatter_or:
-        helpers.append(_ACCUM_OR.format(qualifier=qualifier))
+        helpers.append(_ACCUM_OR.format(qualifier=qualifier, arm=_arm("accum_or", device_text)))
     if tiled:
         helpers.append(device_text.TILED.format(qualifier=qualifier))
     if warp_sum:
         helpers.append((device_text.WARP_SUM_BANDED if cells else device_text.WARP_SUM).format(qualifier=qualifier))
+    accum_add_arm = _arm("accum_add", device_text)
     return f"""namespace hawk_abi {{
 
 template <class T, std::size_t N>
@@ -492,11 +468,7 @@ template <class ViewT, class T>
     static_assert(std::is_floating_point_v<E>,
                   "hawk_abi::accum_add: a scattered accumulate commits through the "
                   "target's atomic add, and only a floating accumulate plane has one");
-#if defined(__CUDA_ARCH__)
-    atomicAdd(&slot, static_cast<E>(term));
-#else
-    std::atomic_ref<E>(slot).fetch_add(static_cast<E>(term), std::memory_order_relaxed);
-#endif
+{accum_add_arm}
 }}
 {"".join(helpers)}
 }}  // namespace hawk_abi

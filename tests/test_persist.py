@@ -547,13 +547,14 @@ def test_the_persist_loop_reports_its_cells_once_at_exit(kernel):
 
 #: sha256 of the text the persist entry's change must leave alone: each
 #: kernel's own (fused) entry and ``_range`` entry, and its whole host TU.
+# The host digests moved when a host unit lost the device arms of its helpers; the CUDA entry digests moved when a device unit lost its path-marker guard.
 _FROZEN = {
-    ("oscillator", ""): "c18c3f46b3d30faa40849a4847be5dea5a14e33540fd60ec71ba51a36cd0dc35",
+    ("oscillator", ""): "1114cb4bf6b517d5cafb8f3891ffbb56f4a3d9ced1634e0e77364d87264e3633",
     ("oscillator", "_range"): "97944ac29526e49ff59cc64a13c40d68be07597e505bc5bb402289454d00912e",
-    ("oscillator", "host"): "6b7729fd63c6cdac9338e71adafc28c3fc8c03d486286c13f04fc7cfe68337dc",
-    ("rkf78_attempt", ""): "f7663ab3a0401183de32192038abcaf32453b5f5a18c2b209ac84bf60f296bf2",
+    ("oscillator", "host"): "8eb5f01f7c10b35be6f5452c7d90c9a5b2e781bc1a7d2f614680b253f74ee648",
+    ("rkf78_attempt", ""): "c2f52ee4f0ccc2033802da27ee954e34efd1bf54b3490c23e117c6c0d48e86bb",
     ("rkf78_attempt", "_range"): "b6c7c041d665d592eac195e543d53d727a00f494261c6769b94160db987027a4",
-    ("rkf78_attempt", "host"): "64a703741174ad22d8c17043afcd894e92985daeb2849035f8cf288d77f846bc",
+    ("rkf78_attempt", "host"): "0f8bf1629800333d48258a2d7caeb90bfa3f809e9a1f487dbd3faff4a800d1d4",
 }
 
 
