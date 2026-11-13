@@ -17,7 +17,7 @@ a launching runtime binds each to a one-element array.
 :func:`hawk.diff.vjp` of the promoted kernel gives the gradient with respect
 to each floating-point promoted parameter as one sum per 32 samples
 (``bar_<name>`` plus its compensation ``bar_<name>_comp``, ``ceil(n/32)``
-values each, :class:`hawk.ir.nodes.SampleSum`), never a scatter into the cell,
+values each, :class:`raptor.ir.nodes.SampleSum`), never a scatter into the cell,
 so the gradient is the same bits on every launch. The plain kernel is never
 changed.
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import _kernels as K
 import pytest
-from _extensions import backend, copy_of, make
+from _extensions import backend, copy_of, host_reads, make
 
 import hawk
 from hawk import registry
@@ -39,7 +39,7 @@ def ext(tmp_path, monkeypatch):
 
 
 def _fast(root, name="fast-ext", module="fast_backend", backend_id="fast", variant=None, **manifest):
-    make(root, name, {"backends": [backend(backend_id, f"{module}:BACKEND", **({"variant": variant} if variant else {}))], **manifest},
+    make(root, name, {"backends": [backend(backend_id, f"{module}:BACKEND", **({"variant": variant, "reads": host_reads()} if variant else {}))], **manifest},
          modules={module: copy_of("osprey_cpu.backend", backend_id)})
 
 

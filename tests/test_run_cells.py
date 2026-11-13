@@ -112,19 +112,21 @@ def test_a_cell_equals_numpy(built, op, n):
         np.testing.assert_allclose(float(got[0]), want, rtol=tol, atol=tol * np.abs(t).sum() / max(n, 1))
 
 
-def test_the_rows_are_made_once_per_kernel_and_sample_count(built):
+def test_the_rows_are_made_once_per_kernel_and_sample_count(built, monkeypatch):
     bundles, mode = built
     kernel_ = runtime.load(bundles["cell_sum"].directory, "cell_sum")
     t = np.zeros(1, dtype=mode)
-    before = _cells.made
+    made = []
+    scratch = _cells.Scratch
+    monkeypatch.setattr(_cells, "Scratch", lambda *a, **k: made.append(1) or scratch(*a, **k))
     for _ in range(3):
         runtime.run(kernel_, x=_x(100, mode), t=t)
-    assert _cells.made == before + 1
+    assert len(made) == 1
     first = kernel_._cell_scratches[100]
     runtime.run(kernel_, x=_x(100, mode), t=t)
     assert kernel_._cell_scratches[100] is first
     runtime.run(kernel_, x=_x(101, mode), t=t)
-    assert _cells.made == before + 2
+    assert len(made) == 2
 
 
 def test_binding_the_rows_instead_of_the_cell_names_the_cell(built):

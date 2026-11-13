@@ -36,7 +36,7 @@ NON-VACUITY, TWICE OVER, because neither promise is self-evidencing:
   divides by the partition's own ``count`` instead of the ``nsamples`` role
   (the failure verbatim), and which agrees whole-view and diverges split.
 
-This test previously failed. ``hawk/ir/access.py``'s ``cross_sample_write`` branch
+This test previously failed. ``raptor/ir/access.py``'s ``cross_sample_write`` branch
 disabled — an indexed accumulate sink no longer folded into the inferred class,
 so the scatter fixture declared itself elementwise. Two rows went red, the
 soundness one and the coverage one::
@@ -82,7 +82,7 @@ _IDS = [c[0] for c in _CASES]
 def _forms_present(walk) -> set:
     """The access FORMS the walk actually carries, re-derived from its nodes.
 
-    Deliberately NOT ``hawk.ir.access.infer`` — asking the classifier under test
+    Deliberately NOT ``raptor.ir.access.infer`` — asking the classifier under test
     what to expect is how a soundness row ends up comparing a function to
     itself. This reads the node kinds defines the forms as."""
     forms = set()

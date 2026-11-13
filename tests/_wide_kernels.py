@@ -105,7 +105,7 @@ def masked_sum(f1: Scalar, f2: Scalar, f3: Scalar, gf: Vector[TERMS], sfx: Table
         mi = m.int32(sfx.at(j))
         g = gf[j]
         b = beta.at(j)
-        total = total + m.dispatch(mi, [0.0, b * g * f1, b * g * f2, b * g * f3], policy="predicated")
+        total = total + m.dispatch(mi, [0.0, b * g * f1, b * g * f2, b * g * f3], strategy="predicated")
     y = total
 
 
@@ -278,7 +278,7 @@ steps_acc_jvp_k8 = steps_acc_jvp_k8_kernel()
 # -- compaction groups and segmented dispatches --------------------------------------------------------------------
 # A grouped kernel runs over an active map of groups of GROUP lanes (a lane's slot is its sample's, wherever the map sends it);
 # a segmented one is split by hawk into one kernel per branch (here a selector the step rewrites, so each unit guards its
-# commit; no lane changes branch, so no sweep runs), launched over runs of samples sorted by branch. The segmented rows are written ``policy='auto'`` and driven by
+# commit; no lane changes branch, so no sweep runs), launched over runs of samples sorted by branch. The segmented rows are written ``strategy='auto'`` and driven by
 # ``eagle.simulate(..., dispatch='segmented')``; the build checks (A1, text) read the units that run builds.
 
 GROUP = 32
@@ -306,7 +306,7 @@ def fill_mask_seg(k: Mutable[Index], a: Scalar, swg: Table["i":W], terminated: T
     r = zeros(W)
     for j in range(W):
         r[j] = a * (j + 1.5)
-    bf = r * mask_vec(swg, W) + m.dispatch(k, [0.0, 1.0, 2.0], policy="auto")
+    bf = r * mask_vec(swg, W) + m.dispatch(k, [0.0, 1.0, 2.0], strategy="auto")
     k = m.select(k > 99, k - 1, k)
     cn = c + 1.0
     c = cn
@@ -318,7 +318,7 @@ def matvec_in_seg(k: Mutable[Index], x: Vector[W], w: Table["o":ROWS, "i":W], te
     acc = zeros(ROWS)
     for r in range(ROWS):
         acc[r] = m.sum(x * row_vec(w, r, W))
-    y = acc + m.dispatch(k, [0.0, 1.0, 2.0], policy="auto")
+    y = acc + m.dispatch(k, [0.0, 1.0, 2.0], strategy="auto")
     k = m.select(k > 99, k - 1, k)
     cn = c + 1.0
     c = cn

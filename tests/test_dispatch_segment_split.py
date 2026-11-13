@@ -29,7 +29,7 @@ def _branches(bs):
 
 @hawk.kernel(steps=1)
 def accumulate(k: Index, bs: Vector[K], y: Mutable[Scalar]):
-    y = y + M.dispatch(k, _branches(bs), policy="segmented")
+    y = y + M.dispatch(k, _branches(bs), strategy="segmented")
 
 
 @pytest.fixture(scope="module")

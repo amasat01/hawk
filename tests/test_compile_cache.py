@@ -70,7 +70,7 @@ artifact-level unit memo actually watches, ``hawk/artifact/
 build.py``'s ``_closure_watch``) now does its whole warm stat pass through ONE
 ``hawk._core.stat_many`` call instead of one Python ``os.stat`` per row --
 ``closure_unchanged`` itself is UNCHANGED and stays the Python loop, because it
-is a different call site (``drivers.py``'s per-TU ``_memo_still_valid``) with
+is a different call site (``drivers.py``'s per-TU ``memo_still_valid``) with
 its own row above pinning its shape. The two rows at the end of this file are
 ``ClosureWatch``'s: one pins the crossing count ("no per-path Python
 work" made a number, not a claim), one is a microbench comparing the same
@@ -391,7 +391,7 @@ def test_the_memo_cannot_serve_a_stale_answer(tree):
     memo — and the memo re-verifies the recorded closure BY CONTENT, which is
     what makes this the same answer the disk record would give.
 
-    Needs ``_memo_still_valid`` to actually check::
+    Needs ``memo_still_valid`` to actually check::
 
         AssertionError: a memoised answer survived a content change in a reached
         header — the memo replaced the validity check instead of the record read

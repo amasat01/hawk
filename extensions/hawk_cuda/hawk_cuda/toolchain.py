@@ -15,14 +15,14 @@ from pathlib import Path
 
 from hawk.compile.toolchain import (
     IDENTITY_TIMEOUT_S,
-    _probe_stdout,
+    probe_stdout,
     compiler_identity,
     include_flags,
     nvcc_version,
     opt_level,
     subprocess_env,
 )
-from raptor.protocols.refusal import ToolchainAbsent
+from lowering.exchange import ToolchainAbsent
 from raptor.errors import RaptorError
 
 #: ``CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR`` / ``_MINOR`` (cuda.h).
@@ -136,7 +136,7 @@ def _nvcc_supported_archs() -> tuple[str, tuple[int, ...]] | None:
     if key in _TOOLKIT_ARCHS_MEMO:
         return _TOOLKIT_ARCHS_MEMO[key]
     try:
-        out = _probe_stdout(nvcc, ("--list-gpu-arch",), timeout=IDENTITY_TIMEOUT_S)[1]
+        out = probe_stdout(nvcc, ("--list-gpu-arch",), timeout=IDENTITY_TIMEOUT_S)[1]
     except (OSError, subprocess.SubprocessError):
         out = ""
     archs = tuple(sorted({int(m) for m in _COMPUTE_RE.findall(out)}))

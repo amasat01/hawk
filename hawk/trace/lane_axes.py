@@ -156,14 +156,14 @@ _trace = threading.local()
 
 
 @contextmanager
-def tracing(axes: tuple):
-    """While a body is traced, ``axes`` is the Grid ``u.at(...)`` names its axes by."""
-    before = getattr(_trace, "axes", ((None, None),))
-    _trace.axes = axes
+def tracing(axes: tuple, name: str | None = None):
+    """While a body is traced, ``axes`` is the Grid ``u.at(...)`` names its axes by and ``name`` the kernel."""
+    before = getattr(_trace, "axes", ((None, None),)), getattr(_trace, "name", None)
+    _trace.axes, _trace.name = axes, name
     try:
         yield
     finally:
-        _trace.axes = before
+        _trace.axes, _trace.name = before
 
 
 def read_at(value: Value, positional: tuple, named: dict) -> Value:

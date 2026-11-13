@@ -53,7 +53,6 @@ from ..ext import DEFAULT_KIND
 from raptor.ir import DispatchInfo
 from .._errors import HawkError
 from raptor.ir.nodes import LEAF_ROLES
-from raptor.ir import canonical as _canonical
 from ..passes.segment import split_segmented as _split_segmented
 from ..passes.segment import rewalk as _segment_rewalk
 from .. import components as _components
@@ -62,8 +61,9 @@ _wide = _components.view("lowering", "wide")
 _split = _components.view("lowering", "split")
 _team = _components.view("lowering", "team")
 _wt = _components.view("lowering", "wrapper_text")
+_cells = _components.view("lowering", "cells")
 from .. import options as _options_mod
-from ..build_policy import BuildPolicy, apply as _apply_policy, check as _check_settings, default_settings, refuse_choice, settings_of as _settings_of
+from ..build_settings import BuildSettings, apply as _apply_settings, check as _check_settings, default_settings, refuse_choice, settings_of as _settings_of
 from ..backends import BuiltLowered, Lowered
 from ..registry import KNOWN, check, denial, missing, traits
 from ..targets import DEFAULT_TARGETS, TARGETS, build_spec
@@ -153,7 +153,7 @@ class Bundle:
 
 # -- The unit's CONTENT, computed before anything is written. -------------- #
 @dataclass(frozen=True)
-class _File:
+class UnitFile:
     """One file of a unit: its name, its bytes, and their digest.
 
     ``blob`` is carried inline (HAWK-made text) or fetched from the
@@ -192,7 +192,7 @@ class _Draft:
     sidecar: dict
     sidecar_name: str
     entries: dict                      # target -> (result, art name, src name, fmt)
-    files: tuple                       # the _File records this kernel contributes
+    files: tuple                       # the UnitFile records this kernel contributes
     report_files: dict                 # target -> its report's file name, or None
 
 
@@ -208,13 +208,13 @@ class _Unit:
     kind: object                       # kept ALIVE: the key names it by identity
 
 
-def _blob(text: str) -> bytes:
+def text_blob(text: str) -> bytes:
     """The bytes a text file is published as, hashed as bytes so the digest
     reflects what's on disk, not an encoding assumption."""
     return text.encode("utf-8")
 
 
-def _digest_bytes(blob: bytes) -> str:
+def digest_bytes(blob: bytes) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
@@ -294,7 +294,7 @@ def _active_unit(kernel, name: str, kind):
     what = "lanes=IndexSet()" if _lane_set(kind) is not None else "Guard(active_set=True)"
     walk = kernel.walk
     if (getattr(kernel, "segment", None) is not None
-            or any(d.policy == "segmented" for d in walk.dispatches)):
+            or any(d.strategy == "segmented" for d in walk.dispatches)):
         raise HawkError(
             f"{name!r}: {what} cannot read an index map in a "
             "segmented unit — the segmented prologue already addresses the run"
@@ -323,7 +323,7 @@ def _active_unit(kernel, name: str, kind):
     declared += (() if prefix else (Slot("lookup", ACTIVE_MAP,
                                          _MAP64_TTYPE if _map_bits(kind) == 64 else _MAP_TTYPE),))
     declared += (Slot("lookup", ACTIVE_COUNT, _COUNT_TTYPE),)
-    return _ActiveUnit(kernel, _canonical(kernel.sinks, declared=declared))
+    return _ActiveUnit(kernel, _cells.walk(kernel.sinks, declared=declared))
 
 
 def _active_spec(kind, group: int = 1) -> ActiveSpec | None:
@@ -431,13 +431,14 @@ def lower(kernel, name, smode, kind, targets, spec) -> Lowered:
     A kernel with its own ``fused_body`` hook (a composed lane group) renders it ONCE, so every target wraps the same
     string."""
     _refuse_targets(name, targets)
-    kind = _resolve_kind(name, getattr(kernel, "kind", None), kind)
-    hook = getattr(kernel, "fused_body", None) if _native(targets) else None
+    kind = resolve_kind(name, getattr(kernel, "kind", None), kind)
+    native = _native(targets)
+    hook = getattr(kernel, "fused_body", None) if native else None
     rows = getattr(getattr(kernel, "team", None), "lanes", 1)         # lanes a block of the warp form serves
-    body = None if hook is None else hook(kind, cells=smode.cells, spec=spec.with_settings(staged_rows=rows))
+    body = None if hook is None else hook(kind, cells=smode.cells, spec=spec.with_settings(staged_rows=rows), writer=TARGETS[native[0]].writer)
     segment = _segment_spec(kernel)
-    if segment is not None and kernel.walk.reads_lane_position:
-        raise HawkError(f"{name!r}: hawk.lane_position() is the launch slot, and a segmented "
+    if segment is not None and kernel.walk.reads_sample_position:
+        raise HawkError(f"{name!r}: hawk.sample_position() is the launch slot, and a segmented "
                         "unit addresses its lanes through the run's offsets; use "
                         "sample_index() there")
     active = _active_spec(kind, getattr(kernel, "group", 1))
@@ -462,7 +463,7 @@ def _emit(lowered, targets, options) -> dict:
     return {target: TARGETS[target].emit(lowered, options) for target in targets}
 
 
-def _step_ops(kernel, kind, spec) -> int | None:
+def _step_ops(kernel, kind, spec, writer) -> int | None:
     """The operation count of one step of a kernel that finishes its own
     samples by stepping (its body cuts into head, one step and tail), else
     ``None``. A fact for the launching runtime: the emitted code does not
@@ -471,11 +472,11 @@ def _step_ops(kernel, kind, spec) -> int | None:
 
     if getattr(kernel.walk, "finish", None) is None:
         return None
-    split = render_lane_split(kernel.sinks, kernel.walk, kind=kind, spec=spec)
+    split = render_lane_split(kernel.sinks, kernel.walk, kind=kind, spec=spec, writer=writer)
     return None if split is None else int(split.op_count)
 
 
-def _fp64_ops_ir(kernel, kind, spec) -> int | None:
+def _fp64_ops_ir(kernel, kind, spec, writer) -> int | None:
     """The 64-bit floating-point operations one step of a stepping kernel
     runs, counted in the IR (as :func:`_step_ops`, ``None`` for any other
     kernel): the step cost the launching runtime's chunk length reads."""
@@ -483,11 +484,11 @@ def _fp64_ops_ir(kernel, kind, spec) -> int | None:
 
     if getattr(kernel.walk, "finish", None) is None:
         return None
-    split = render_lane_split(kernel.sinks, kernel.walk, kind=kind, spec=spec)
+    split = render_lane_split(kernel.sinks, kernel.walk, kind=kind, spec=spec, writer=writer)
     return None if split is None else int(split.fp64_ops)
 
 
-def _entry_counts_finished(kernel, kind, spec) -> bool:
+def _entry_counts_finished(kernel, kind, spec, writer) -> bool:
     """Whether the kernel's fast entries count a sample finished on entry into
     the finish counter (:func:`aether.wings.base.render.entry_counts_finished`), so the
     launching runtime need not count the mask before a run."""
@@ -495,11 +496,11 @@ def _entry_counts_finished(kernel, kind, spec) -> bool:
 
     if getattr(kernel.walk, "finish", None) is None:
         return False
-    return entry_counts_finished(kernel.walk, render_lane_split(kernel.sinks, kernel.walk, kind=kind, spec=spec))
+    return entry_counts_finished(kernel.walk, render_lane_split(kernel.sinks, kernel.walk, kind=kind, spec=spec, writer=writer))
 
 
 @dataclass(frozen=True)
-class _ExportResult:
+class ExportResult:
     """An exported target's stand-in for a compile result: the fields
     :func:`_artifact_of`, :func:`_served` and :func:`_closure_watch` read.
     ``key`` is the sha256 of the ``.c`` and ``.h`` texts (no compile cache
@@ -530,7 +531,7 @@ def _sidecar(kernel, *, spec, name, smode, kind, native, fmt, lead, derivative=N
                      static_selector=segment.static_selector),
     )
     return sidecar_meta(
-        name, kernel.walk,
+        name, kernel.walk, steps=getattr(kernel, "steps", 1),     # a unit of a split kernel carries no record: one step
         fmt=fmt,
         scalar_type=smode.id,
         exec_targets=[TARGETS[t].entry for t in native],
@@ -549,9 +550,9 @@ def _sidecar(kernel, *, spec, name, smode, kind, native, fmt, lead, derivative=N
             kernel.walk, getattr(kernel.sinks, "source", None)),
         broadcast=getattr(kernel, "broadcast", None),
         dispatch_override=dispatch_override,
-        step_ops=_step_ops(kernel, kind, spec),
-        fp64_ops_ir=_fp64_ops_ir(kernel, kind, spec),
-        entry_counts_finished=_entry_counts_finished(kernel, kind, spec),
+        step_ops=_step_ops(kernel, kind, spec, TARGETS[lead].writer),
+        fp64_ops_ir=_fp64_ops_ir(kernel, kind, spec, TARGETS[lead].writer),
+        entry_counts_finished=_entry_counts_finished(kernel, kind, spec, TARGETS[lead].writer),
         ptxas=ptxas,
         local=local,
         wide=wide,
@@ -627,8 +628,8 @@ def _draft(kernel, lowered, sources, options, *, targets, derivative, split: dic
         # the first stage of a split kernel names every stage and every cell
         meta.update(split)
     meta.update(_run_facts(kernel, meta, lowered.spec))
-    sidecar_blob = _blob(json.dumps(meta, indent=2) + "\n")
-    files.append(_File(f"{name}.json", _digest_bytes(sidecar_blob),
+    sidecar_blob = text_blob(json.dumps(meta, indent=2) + "\n")
+    files.append(UnitFile(f"{name}.json", digest_bytes(sidecar_blob),
                        blob=sidecar_blob))
     return _Draft(name, meta, f"{name}.json", entries, tuple(files), report_files)
 
@@ -742,14 +743,14 @@ def _materialize(bundle: Bundle, files, digest: str, directory: Path) -> Bundle:
             [(str(directory / n), d) for n, _p, d in pairs]) is None):
         return _rehome_bundle(bundle, directory)
     directory.mkdir(parents=True, exist_ok=True)
-    copied = tuple(_File(n, d, source_path=Path(p)) for n, p, d in pairs)
+    copied = tuple(UnitFile(n, d, source_path=Path(p)) for n, p, d in pairs)
     for f in copied:
         f.write(directory)
     _write_stamp(directory, digest, copied)
     return _rehome_bundle(bundle, directory)
 
 
-def _resolve_kind(name: str, kernel_kind, explicit_kind):
+def resolve_kind(name: str, kernel_kind, explicit_kind):
     """The ``build(kernel, kind=None)`` rule: ``None`` takes ``kernel.kind``;
     an explicit ``kind`` differing from a non-default ``kernel.kind``
     refuses. A bare-``@kernel`` :data:`DEFAULT_KIND` accepts any explicit
@@ -768,7 +769,7 @@ def _resolve_kind(name: str, kernel_kind, explicit_kind):
 
 
 def _resolve_bundle_kind(names: list, kernels: list, explicit_kind):
-    """The same rule as :func:`_resolve_kind`, for a whole bundle: every
+    """The same rule as :func:`resolve_kind`, for a whole bundle: every
     member's own (non-default) kind must agree with the resolved one, and
     with no explicit ``kind`` the members may not disagree among
     themselves either — a bundle renders under one kind."""
@@ -805,7 +806,7 @@ def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
           derivative: dict | None = None, host_profile: str = "",
           opt_level: str = "", literal_table: bool = False,
           embedded_profile=None, options: Mapping | None = None, spec=None,
-          build_policy: BuildPolicy | None = None) -> Artifact:
+          settings: BuildSettings | None = None) -> Artifact:
     """Emit, compile and publish ONE kernel into ``directory``.
 
     ``kernel`` is anything carrying ``.name``/``.sinks``/``.walk`` (a
@@ -831,7 +832,7 @@ def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
     options = _user_options(options, literal_table, embedded_profile, device_arch, host_profile)
     device_arch, host_profile = _options_mod.shared(options)
     kernel, lowered, sources, options = _emitted(
-        kernel, name, mode, kind, targets, device_arch, "build() publishes", "build_bundle", spec, build_policy=build_policy,
+        kernel, name, mode, kind, targets, device_arch, "build() publishes", "build_bundle", spec, settings=settings,
         layout_sizes_override=layout_sizes_override, options=options,
         defines=defines, cache_dir=cache_dir, host_profile=host_profile, opt_level=opt_level)
     directory = Path(directory)
@@ -847,7 +848,7 @@ def _plain_block_sums(kernel, spec):
     keeps every block-shaped sum as one :class:`~simt.team.BlockSum`) and, under ``wide_form="thread"``, each store
     under a condition put back as a select over the store (:func:`simt.wide.unstored`); else ``kernel`` itself. A compensated sum gets
     the companion plane the tracer binds for a plain one."""
-    from ..trace.kernel import Kernel, _policy_companions
+    from ..trace.kernel import Kernel, _contract_companions
 
     if type(kernel) is not Kernel:
         return kernel
@@ -860,10 +861,10 @@ def _plain_block_sums(kernel, spec):
     planes = dict(kernel.planes)
     old = {id(s) for s in kernel.sinks}
     added = tuple(s for s in sinks if id(s) not in old)
-    sinks = tuple.__new__(type(kernel.sinks), (*sinks, *_policy_companions(kernel.name, planes, added)))
+    sinks = tuple.__new__(type(kernel.sinks), (*sinks, *_contract_companions(kernel.name, planes, added)))
     if hasattr(kernel.sinks, "__dict__"):
         sinks.__dict__.update(vars(kernel.sinks))
-    out = Kernel(kernel.name, sinks, planes, kind=kernel.kind, step=kernel.step, one_step=one,
+    out = Kernel(kernel.name, sinks, planes, kind=kernel.kind, step=kernel.step, one_step=one, steps=kernel.steps,
                  source_digest=kernel.source_digest, returns=kernel.returns)
     out.time, out.time_step, out.jump, out.broadcast = kernel.time, kernel.time_step, kernel.jump, dict(kernel.broadcast)
     return out
@@ -877,22 +878,22 @@ def _user_options(options, literal_table, embedded_profile, device_arch, host_pr
     return merged
 
 
-def _emitted(kernel, name, mode, kind, targets, device_arch, does, instead, spec, build_policy=None, **inputs) -> tuple:
+def _emitted(kernel, name, mode, kind, targets, device_arch, does, instead, spec, settings=None, **inputs) -> tuple:
     """``(unit, lowered, sources, options)`` of ONE kernel (``inputs`` are the :func:`_options` keywords but the arch): the emit half of :func:`build` and :func:`emit_source`. A kernel that
     needs several launches (a segmented dispatch, a value reduced over samples) is refused: ``does`` says what the caller
     publishes and ``instead`` what to call."""
     _refuse_targets(name, targets)
     emit_arch = _emit_arch(targets, device_arch)
     spec = build_spec(tuple(targets), emit_arch) if spec is None else spec
-    spec = _apply_policy(spec, build_policy, targets).with_settings(route_to_ordered=scalar_mode(mode).cells)
+    spec = _apply_settings(spec, settings, targets).with_settings(route_to_ordered=scalar_mode(mode).cells)
     kernel = _plain_block_sums(kernel, spec)
-    if any(d.policy == "segmented" for d in kernel.walk.dispatches):
+    if any(d.strategy == "segmented" for d in kernel.walk.dispatches):
         raise HawkError(f"{name!r} carries a segmented dispatch: {does} ONE artifact, and a segmented kernel needs K "
                         f"— call {instead}([kernel], ...) instead")
     if _split.stages(name, kernel.sinks, spec=spec) is not None:
         raise HawkError(f"{name!r} reads a value reduced over samples, so it runs as several launches: {does} ONE "
                         f"artifact — call {instead}([kernel], ...) instead")
-    kind = _resolve_kind(name, getattr(kernel, "kind", None), kind)
+    kind = resolve_kind(name, getattr(kernel, "kind", None), kind)
     kernel = _active_unit(kernel, name, kind)
     smode = scalar_mode(mode)
     _refuse_libc_names((kernel,), targets)
@@ -916,12 +917,12 @@ class EmitUnit:
 
 def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targets=DEFAULT_TARGETS, kind=None,
                 device_arch: str = "", literal_table: bool = False, options: Mapping | None = None, spec=None,
-                build_policy: BuildPolicy | None = None) -> EmitUnit:
+                settings: BuildSettings | None = None) -> EmitUnit:
     """Emit ONE kernel's source text and sidecar for ``targets`` without compiling or writing anything.
 
-    The text and the sidecar are what :func:`build` publishes (same lane-set lowering, same policy), so a consumer that
-    compiles the source itself gets the same translation unit and the same plane list. Honours ``build_policy``
-    (:class:`hawk.build_policy.BuildPolicy`, ``launch_bounds`` included). Refuses what :func:`build` refuses, and a target
+    The text and the sidecar are what :func:`build` publishes (same lane-set lowering, same settings), so a consumer that
+    compiles the source itself gets the same translation unit and the same plane list. Honours ``settings``
+    (:class:`hawk.build_settings.BuildSettings`, ``launch_bounds`` included). Refuses what :func:`build` refuses, and a target
     that has no compiler (``c``)."""
     name = name or kernel.name
     native = _native(targets)
@@ -929,7 +930,7 @@ def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targe
         raise HawkError(f"emit_source covers the compiled targets only; {_exported(targets)} has no compiler: use build()")
     options = _user_options(options, literal_table, None, device_arch, "")
     unit, lowered, sources, _ = _emitted(kernel, name, mode, kind, targets, _options_mod.shared(options)[0],
-                                         "emit_source returns", "build_bundle", spec, build_policy=build_policy, options=options)
+                                         "emit_source returns", "build_bundle", spec, settings=settings, options=options)
     lead = _lead(dict.fromkeys(native))
     bounds = lowered.spec.settings.launch_bounds
     sidecar = _sidecar(unit, spec=lowered.spec, name=name, smode=lowered.smode, kind=lowered.kind, native=native, fmt=TARGETS[lead].format,
@@ -1036,7 +1037,6 @@ def _warp_kernel(kernel, name: str, spec, explicit: bool = True, real_bytes: int
     from ..targets import cards
     from .stages import WarpStage
 
-    from raptor.ir import canonical
     from ..trace.kernel import Kernel, _declared
 
     one = getattr(kernel, "one_step", None)
@@ -1057,7 +1057,8 @@ def _warp_kernel(kernel, name: str, spec, explicit: bool = True, real_bytes: int
     own = [(k.walk, key) for k in (kernel, warp.one_step) if k is not None for key in k.walk.arg_spec]
     extra = [Slot(role, slot, walk.slot_types[role, slot]) for walk, (role, slot) in own if (role, slot) not in held]
     if extra:
-        warp.walk = canonical(warp.sinks, (*_declared(warp.planes), *extra))
+        warp.walk = _cells.walk(warp.sinks, (*_declared(warp.planes), *extra))
+    warp.steps = kernel.steps
     if one is not None:
         for attr in ("source_digest", "returns", "time", "time_step", "jump", "broadcast", "group"):
             setattr(warp, attr, getattr(kernel, attr))
@@ -1154,9 +1155,10 @@ def _expand_split(kernels: list, names: list, kinds: list, *, spec, smode=None, 
                     held = set(member.walk.arg_spec)
                     extra = [Slot(role, name, member.one_step.walk.slot_types[role, name])
                              for role, name in member.one_step.walk.arg_spec if (role, name) not in held]
-                    member.walk = _canonical(member.sinks, (*_declared_slots(member.planes), *extra))
+                    member.walk = _cells.walk(member.sinks, (*_declared_slots(member.planes), *extra))
                 if stage.team is not None:      # a copy stage: the stage's own sinks, launched a block per lane
                     member.team = stage.team
+            member.steps = k.steps
             cells.update(member.walk.cells)
             out_kernels.append(member)
             out_names.append(stage.name)
@@ -1255,10 +1257,10 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                  literal_table: bool = False, embedded_profile=None, options: Mapping | None = None,
                  emit_form: str | None = None, linalg_form: str | None = None, wide_form: str | None = None,
                  launch_bounds: tuple[int, int] | None = None, spec=None,
-                 build_policy: BuildPolicy | None = None) -> Bundle:
+                 settings: BuildSettings | None = None) -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json``
-    over them. An ``emit_form``/``linalg_form``/``wide_form``/``launch_bounds`` left unset is the value of ``build_policy``
-    (a :class:`hawk.build_policy.BuildPolicy`; the default: ``"auto"``, no bound); an explicit argument wins. ``emit_form`` is how a product, dot, sum or norm is spelled
+    over them. An ``emit_form``/``linalg_form``/``wide_form``/``launch_bounds`` left unset is the value of ``settings``
+    (a :class:`hawk.build_settings.BuildSettings`; the default: ``"auto"``, no bound); an explicit argument wins. ``emit_form`` is how a product, dot, sum or norm is spelled
     (:mod:`raptor.ir.fold`): ``"auto"`` unrolls a site of at most 16 elements and
     writes a longer one as a loop, ``"static"`` unrolls every site, ``"rolled"`` writes
     every site as a loop, the fast-compile mode (the compiler does no per-element work).
@@ -1346,14 +1348,14 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     kernels, names, kinds = _expand_segmented(kernels, names, kinds)
     # A member reading a value reduced over samples becomes its stages, each
     # its own compile (its own cache key: its own source and options).
-    # an argument left unset is ``build_policy``'s value (over the settings of a spec the caller passes); an explicit one wins
-    given = _settings_of(build_policy, default_settings() if spec is None else spec.settings)
-    # ONE door: build_policy= (each legacy keyword still works alone; one that disagrees with the policy is refused by name)
+    # an argument left unset is ``settings``' value (over the settings of a spec the caller passes); an explicit one wins
+    given = _settings_of(settings, default_settings() if spec is None else spec.settings)
+    # ONE door: settings= (each legacy keyword still works alone; one that disagrees with it is refused by name)
     for key, value in (("emit_form", emit_form), ("linalg_form", linalg_form), ("wide_form", wide_form), ("launch_bounds", launch_bounds)):
-        held = None if build_policy is None else getattr(build_policy, key)
+        held = None if settings is None else getattr(settings, key)
         if value is not None and held is not None and _comparable(value) != _comparable(held):
-            raise HawkError(f"{key}={value!r} disagrees with build_policy.{key}={held!r}: build settings have one door, "
-                            "build_policy=; pass the setting once")
+            raise HawkError(f"{key}={value!r} disagrees with settings.{key}={held!r}: build settings have one door, "
+                            "settings=; pass the setting once")
     emit_form = given.form if emit_form is None else emit_form
     linalg_form = given.linalg_form if linalg_form is None else linalg_form
     wide_form = given.wide_form if wide_form is None else wide_form
@@ -1366,7 +1368,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     spec = build_spec(tuple(targets), emit_arch) if spec is None else spec
     if launch_bounds is not None and spec.device is None:
         raise ValueError(f"launch_bounds={launch_bounds!r}: launch bounds are a device setting, refused on a build with no device target")
-    _apply_policy(spec, build_policy, targets)            # refuses a key no target declares
+    _apply_settings(spec, settings, targets)            # refuses a key no target declares
     limits = None if spec.device is None else spec.device["launch"]      # what launch_bounds is checked against
     spec = spec.with_settings(form=emit_form, linalg_form=linalg_form, wide_form=wide_form, launch_bounds=launch_bounds,
                               contraction=given.contraction, fold_k=given.fold_k, scalar=smode.id, device_only=_device_only(targets),
@@ -1448,8 +1450,8 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     # standalone C target alone has nothing for eagle to load and writes none.
     doc = _manifest_of(drafts) if native else None
     if doc is not None:
-        manifest_blob = _blob(json.dumps(doc, indent=2) + "\n")
-        files += (_File("manifest.json", _digest_bytes(manifest_blob),
+        manifest_blob = text_blob(json.dumps(doc, indent=2) + "\n")
+        files += (UnitFile("manifest.json", digest_bytes(manifest_blob),
                         blob=manifest_blob),)
     digest = _unit_digest(files)
 

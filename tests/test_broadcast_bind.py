@@ -69,7 +69,7 @@ def vmix(lane: Grid["a", "b":4, "c":6], v: Vector[3]) -> Scalar:
 @hawk.kernel
 def switched(lane: Grid["a", "b":4, "c":6], x: Scalar) -> Scalar:
     k = hm.int32(x * 3.0)
-    return hm.dispatch(k, [x * x, 3.0 * x + 1.0, hm.sin(x)], policy="switch")
+    return hm.dispatch(k, [x * x, 3.0 * x + 1.0, hm.sin(x)], strategy="switch")
 
 
 @hawk.kernel
@@ -244,7 +244,7 @@ def test_vjp_broadcast_input_sums_broadcast_axes(tmp_path_factory, cache_dir, rn
     kept = B.kept_axes((A, 1, NC), (), axes, A)
     var = B.variant(square, {"x": kept})
     d = Kernel("square_vjp", vjp(var, wrt=("x",)))
-    assert [s.policy for s in d.sinks if isinstance(s, AccumWrite) and s.name == "bar_x"] == ["compensated"]
+    assert [s.contract for s in d.sinks if isinstance(s, AccumWrite) and s.name == "bar_x"] == ["compensated"]
     root = tmp_path_factory.mktemp("bc_vjp")
     art = _derived(var, vjp, "x", root, cache_dir)
     assert art.sidecar["companions"] == {"bar_x_c": "bar_x"}
@@ -429,7 +429,7 @@ def test_a_compensated_scatter_stays_compensated_under_a_terminated_mask():
     value = Leaf("vocab_read", "per_sample", "v", TensorType((), "f64"))
     index = Leaf("vocab_read", "per_sample", "k", TensorType((), "i32"))
     masked = _masked_sink(AccumWrite("acc", value, index, value.ttype, "compensated"), mask)
-    assert masked.policy == "compensated"
+    assert masked.contract == "compensated"
     assert isinstance(_masked_sink(Assign("y", value, value.ttype), mask), Assign)
 
 

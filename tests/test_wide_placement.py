@@ -119,14 +119,14 @@ def test_a_vector_whose_every_index_is_a_constant_keeps_its_registers():
 
 
 def test_using_takes_contraction_and_launch_bounds():
-    from hawk.build_policy import BuildPolicy, check, settings_of
+    from hawk.build_settings import BuildSettings, check, settings_of
 
     base = Settings()
     assert base.contraction == "direct" and base.launch_bounds is None
-    got = settings_of(BuildPolicy(contraction="gemm", launch_bounds=(128, 4)), base)
+    got = settings_of(BuildSettings(contraction="gemm", launch_bounds=(128, 4)), base)
     assert got.contraction == "gemm" and got.launch_bounds == (128, 4) == check(got, DEVICE.device["launch"]).launch_bounds
     with pytest.raises(ValueError):
-        BuildPolicy(contraction="blas")
+        BuildSettings(contraction="blas")
     for bad in ((100, 2), (256, 9)):
         with pytest.raises(ValueError):
             check(Settings(launch_bounds=bad), DEVICE.device["launch"])
@@ -254,7 +254,7 @@ def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode
     planes = entry.planes(np.random.default_rng(7), real, n, True)
     bound_args = {k: arrays.asarray(np.ascontiguousarray(v), device="cuda:0") for k, v in planes.items()}
     out = arrays.asarray(np.zeros(entry.shape(n), real), device="cuda:0")
-    bound = probe._auto(entry.kernel, mode, cache_dir, "team").bind(**bound_args, **{entry.out: out})
+    bound = probe._auto(entry.kernel, mode, cache_dir, "team", DEVICE).bind(**bound_args, **{entry.out: out})
     got = []
     for _ in range(3):
         bound.launch()

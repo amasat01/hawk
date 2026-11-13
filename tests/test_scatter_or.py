@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""``hawk.scatter(mask, policy="or")[word] |= bits``: a bit mask written by key.
+"""``hawk.scatter(mask)[word] |= bits``: a bit mask written by key.
 
 An ``Int32`` / ``UInt32`` plane is the mask (a word per key, 32 bits each; there
 is no 64-bit integer plane), and every lane ORs its bits into the word its key
@@ -36,12 +36,12 @@ WORDS = 7
 
 @kernel
 def mark(word: Index, bit: UInt32, mask: Mutable[UInt32]):
-    hawk.scatter(mask, policy="or")[word] |= bit
+    hawk.scatter(mask)[word] |= bit
 
 
 @kernel
 def mark_signed(word: Index, bit: Int32, mask: Mutable[Int32]):
-    hawk.scatter(mask, policy="or")[word] |= bit
+    hawk.scatter(mask)[word] |= bit
 
 
 def _inputs(dtype):
@@ -148,19 +148,19 @@ def test_a_derivative_of_a_bit_mask_is_refused_by_name(derive):
 
 
 def test_refuses_what_is_not_a_bit_mask_store():
-    with pytest.raises(HawkError, match=r"\|= sets bits, written hawk\.scatter\(m, policy=\"or\"\)"):
+    with pytest.raises(HawkError, match=r"contract='or' is gone: write hawk\.scatter\(m\)\[key\] \|= bits"):
         @kernel
         def k(w: Index, b: UInt32, m: Mutable[UInt32]):
-            hawk.scatter(m)[w] |= b
-    with pytest.raises(HawkError, match=r"policy='or' is for \|= only"):
+            hawk.scatter(m, contract="or")[w] |= b
+    with pytest.raises(HawkError, match=r"a bit-or has no sum contract"):
         @kernel
         def k2(w: Index, b: UInt32, m: Mutable[UInt32]):
-            hawk.scatter(m, policy="or")[w] += b
+            hawk.scatter(m, contract="ordered")[w] |= b
     with pytest.raises(HawkError, match=r"sets bits of an Int32 or UInt32 plane"):
         @kernel
         def k3(w: Index, x: Scalar, m: Mutable[Scalar]):
-            hawk.scatter(m, policy="or")[w] |= x
+            hawk.scatter(m)[w] |= x
     with pytest.raises(HawkError, match=r"only `hawk.scatter\(y\)\[key\] \+= t` accumulates"):
         @kernel
         def k4(w: Index, b: UInt32, m: Mutable[UInt32]):
-            hawk.scatter(m, policy="or")[w] &= b
+            hawk.scatter(m)[w] &= b

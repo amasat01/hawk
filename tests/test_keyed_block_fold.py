@@ -25,15 +25,15 @@ from aether.wings.base.wrapper import render_source
 from hawk.targets import TARGETS
 
 
-def _sum(extent, policy="compensated"):
+def _sum(extent, contract="compensated"):
     @kernel
     def ksum(lane: Grid["key", "sample":extent], x: Scalar) -> Scalar:
-        return hawk.sum(x, over="sample", policy=policy)
+        return hawk.sum(x, over="sample", contract=contract)
     return Kernel(f"ksum{extent}", ksum.sinks, ksum.planes)
 
 
-def _text(extent, policy="compensated"):
-    k = _sum(extent, policy)
+def _text(extent, contract="compensated"):
+    k = _sum(extent, contract)
     return render_source(f"ksum{extent}", k.sinks, k.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"]), kind=default_kind()).text
 
 

@@ -24,7 +24,7 @@ template <class ViewT>
 """
 
 
-#: The ``sample_sum`` row sum (:class:`hawk.ir.nodes.SampleSum`): the pair
+#: The ``sample_sum`` row sum (:class:`raptor.ir.nodes.SampleSum`): the pair
 #: combine, its host twin over one row of ``row`` slots (the variant's ``cells.row``; the template's holes ``{row}``, ``{half}``, ``{offsets}``), and the device's warp
 #: butterfly over the same pairs. Needs ``twoSumErr_`` above.
 SAMPLE_SUM = """

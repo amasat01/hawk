@@ -12,6 +12,7 @@ orbit scale."""
 
 from __future__ import annotations
 from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import pathlib
 
@@ -95,10 +96,10 @@ def test_each_op_is_one_node_typed_four():
         (sink,) = k.sinks
         node = sink.value
         assert node.kind.startswith("ray_") and node.ttype == TensorType((4,), "f64")
-    text = render_body(tri.sinks, canonical(tri.sinks), spec=HOST, kind=default_kind()).text
+    text = render_body(tri.sinks, canonical(tri.sinks), spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert text.count("aether::geometry::rayTriangle<Real>(") == 1
-    assert "aether::geometry::rayAabb<Real>(" in render_body(box.sinks, canonical(box.sinks), spec=HOST, kind=default_kind()).text
-    assert "aether::geometry::raySphere<Real>(" in render_body(ball.sinks, canonical(ball.sinks), spec=HOST, kind=default_kind()).text
+    assert "aether::geometry::rayAabb<Real>(" in render_body(box.sinks, canonical(box.sinks), spec=HOST, kind=default_kind(), writer=aether_writer()).text
+    assert "aether::geometry::raySphere<Real>(" in render_body(ball.sinks, canonical(ball.sinks), spec=HOST, kind=default_kind(), writer=aether_writer()).text
 
 
 def test_the_type_rule_refuses_the_wrong_shapes():

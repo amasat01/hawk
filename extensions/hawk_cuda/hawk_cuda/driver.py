@@ -18,7 +18,7 @@ from hawk.compile.cache import (
     lookup_key,
     write_atomic,
 )
-from hawk.compile.drivers import CompileOptions, CompileResult, _memo_still_valid, _single_flight
+from hawk.compile.drivers import CompileOptions, CompileResult, memo_still_valid, single_flight
 from raptor.errors import RaptorError
 
 from . import nvrtc as _nvrtc_driver
@@ -119,7 +119,7 @@ def _compile_nvrtc_source(source: str, name: str, opts: CompileOptions,
 
     def lookup():
         memo = artifact_memo_get(key)
-        if memo is not None and _memo_still_valid(artifact, memo, payload.digest):
+        if memo is not None and memo_still_valid(artifact, memo, payload.digest):
             cache.note(True)
             return CompileResult(artifact, src_path, key, True, argv,
                                  closure=payload_closure,
@@ -159,4 +159,4 @@ def _compile_nvrtc_source(source: str, name: str, opts: CompileOptions,
         return CompileResult(artifact, src_path, key, False, argv, seconds,
                              closure=payload_closure, ptxas=ptxas)
 
-    return _single_flight(key, lookup, build)
+    return single_flight(key, lookup, build)

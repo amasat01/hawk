@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from _extensions import backend, copy_of, make
+from _extensions import backend, copy_of, host_reads, make
 
 import hawk
 from hawk import registry
@@ -354,7 +354,7 @@ DAMAGED = {"no metadata": dict(entry="[raptor.extensions]\nbrk = brkpkg:extensio
 def test_a_damaged_distribution_refuses_itself_and_blocks_nothing_else(tmp_path, kind):
     site = tmp_path / "site"
     site.mkdir()
-    make(site, "good-ext", {"backends": [backend("p", "good_mod:BACKEND")]}, modules={"good_mod": copy_of("osprey_cpu.backend", "p")})
+    make(site, "good-ext", {"backends": [backend("p", "good_mod:BACKEND", variant="cpu", reads=host_reads())]}, modules={"good_mod": copy_of("osprey_cpu.backend", "p")})
     _dist(site, "damaged", **DAMAGED[kind])
     out = _run(tmp_path, ATTEMPT + """
 def build(t):

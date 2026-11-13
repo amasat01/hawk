@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from aether.wings.base.spelling import _MATH1, _MATH2, _MATH3
+from aether.wings.base.spelling import MATH_UNARY, MATH_BINARY, MATH_TERNARY
 from raptor.ir.linalg import LINALG_OPS
 from raptor.ir.nodes import Loop
-from raptor.ir.nodes import GATHER_ROLES, RAW_KIND, AccumWrite, At, Dispatch, Op, ReduceSamples, SampleSum, Select
+from raptor.ir.nodes import GATHER_ROLES, RAW_KIND, AccumWrite, At, Dispatch, Op, SampleSum, Select, has_feather
 from raptor.ir.ops import RANDOM_OPS
 
 #: The dtypes of an index Int.
@@ -30,19 +30,19 @@ def _first(nodes, test) -> tuple | None:
 
 def _int_libm(node) -> bool:
     return (isinstance(node, Op) and node.kind not in _INT_LIBM_OK
-            and (node.kind in _MATH1 or node.kind in _MATH2 or node.kind in _MATH3)
+            and (node.kind in MATH_UNARY or node.kind in MATH_BINARY or node.kind in MATH_TERNARY)
             and any(o.ttype.dtype in INDEX_INTS for o in node.operands))
 
 
 def _segmented(kernel, nodes):
-    found = _first(nodes, lambda n: isinstance(n, Dispatch) and n.policy == "segmented")
+    found = _first(nodes, lambda n: isinstance(n, Dispatch) and has_feather(n, "splits_by_branch"))
     if found is None and getattr(kernel, "segment", None) is not None:
         return "kernel", "segment"
     return found
 
 
 def _sample_reduction(walk, nodes):
-    found = _first(nodes, lambda n: isinstance(n, (SampleSum, ReduceSamples)))
+    found = _first(nodes, lambda n: isinstance(n, SampleSum) or has_feather(n, "reduces_samples"))
     if found is None and walk.access.cls == "mapreduce":
         return "kernel", "mapreduce"
     return found

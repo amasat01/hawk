@@ -11,6 +11,7 @@ n^3/6, ``eigh`` S(n) n(n-1)/2 (6n+10), a solve n^2 k.
 
 from __future__ import annotations
 
+from lowering.dispatch import dispatch as _dispatch
 import pytest
 
 from hawk import runtime
@@ -269,7 +270,7 @@ def test_select_and_dispatch_refuse_factorisation_arms(kind):
     with pytest.raises(HawkError, match="factorisations, which are read through"):
         Select(flag, one, other, one.ttype)
     with pytest.raises(HawkError, match="factorisations, which are read through"):
-        Dispatch(index, (one, other), "switch", one.ttype)
+        _dispatch(index, (one, other), "switch", one.ttype)
     # the fields they read are values like any other
     field = {"lu": "lu_det", "chol": "chol_info", "eigh": "eigh_info", "chol_from": "chol_info",
              "qr": "qr_info"}[kind]

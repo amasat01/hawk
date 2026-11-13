@@ -264,6 +264,7 @@ def test_pip_only_roots_unresolvable_device_and_host_compile_still_succeed(
     # either compile below (the host one bypasses roots via the sealed
     # payload, the device one via NVRTC's in-memory headers), so this is its
     # only coverage.
+    monkeypatch.setattr(tc, "_PIP_ONLY_ROOT", None)     # an earlier test of this process may have asked already
     assert tc.pip_only_root() is None, (
         "nothing has asked for the pip-only fallback yet")
     flags = tc.include_flags()

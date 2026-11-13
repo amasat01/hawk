@@ -8,14 +8,13 @@ fan-out naming, loop scopes and carries, the per-case ``switch`` scopes, the
 mask guard and the finish epilogue. Every piece of TARGET TEXT it produces
 comes from a :class:`Writer`: the aether C++ spelling
 (:mod:`aether.wings.base.writer_aether`, the default, and what both built wrappers
-wrap) or a plain-C spelling (:mod:`hawk.embedded`). The traversal is written
+wrap) or a plain-C spelling (:mod:`hawk_c.writer`). The traversal is written
 once; a writer never re-walks the IR.
 
 Every member takes already-rendered operand TEXT and returns text (or, for
 the sink members, emits statements through the renderer's ``_emit``). ``r``
 is the renderer: a writer reads ``r.walk``, ``r.kind``, ``r.sinks``,
-``r.items``, ``r.hoists`` and calls ``r._emit``/``r._ref`` exactly as the
-moved aether code did through ``self``. Nothing here imports the renderer,
+``r.items``, ``r.hoists`` and calls ``r._emit``/``r._ref``. Nothing here imports the renderer,
 so a writer module never cycles through :mod:`aether.wings.base.render`.
 """
 
@@ -42,7 +41,7 @@ class Writer(Protocol):
     """One target's spelling of every text the renderer produces.
 
     The docstring of each member states the aether writer's text, which is
-    the renderer's output today; a second writer answers the same question
+    the renderer's output; a second writer answers the same question
     in its own language."""
 
     #: The writer's id (``"aether"``, ``"c"``).
@@ -93,8 +92,8 @@ class Writer(Protocol):
     def plane_extent_value(self, node: Any) -> str:
         """A ``PlaneExtent`` node: the element count of its plane, as an integer."""
 
-    def lane_position_value(self, mapped: bool) -> str:
-        """A ``LanePosition`` node: the launch position ``t``; ``mapped`` is
+    def sample_position_value(self, mapped: bool) -> str:
+        """A ``SamplePosition`` node: the launch position ``t``; ``mapped`` is
         true under an index map, where the sample index is ``map[t]``."""
 
     def hoist(self, r: Any, text: str, ttype: Any) -> str:
@@ -155,7 +154,7 @@ class Writer(Protocol):
 
     def or_scattered(self, r: Any, sink: Any, target: str, index: str,
                      value: str) -> None:
-        """A scattered ``policy="or"`` commit: the bits OR-ed into the word at
+        """A scattered ``contract="or"`` commit: the bits OR-ed into the word at
         the computed index."""
 
     def store_compensated(self, r: Any, sink: Any, target: str, comp: str,

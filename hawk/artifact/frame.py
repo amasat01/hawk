@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fills :class:`raptor.ir.unit.LoweredUnit` from what lowering produced (:class:`~hawk.backends.Lowered`)."""
+"""Fills :class:`raptor.protocols.unit.LoweredUnit` from what lowering produced (:class:`~hawk.backends.Lowered`)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from raptor.ir import IR_VERSION
 from .._errors import HawkError
 from raptor.ir.nodes import Node
 from raptor.ir.types import TensorType
-from raptor.ir.unit import LoweredUnit, PlaneDecl
+from raptor.protocols.unit import LoweredUnit, PlaneDecl
 from raptor.ir.walk import canonical_nodes
 
 
@@ -31,7 +31,7 @@ def _plain(value, where: str):
 
 def frame_of(lowered) -> LoweredUnit:
     """The unit of ``lowered``: filled from the kernel, the scalar mode, the kind and the specs lowering made, and from the
-    emit policy in force (call it inside the build's policy block). Builds no text and imports no backend."""
+    build settings in force. Builds no text and imports no backend."""
     from . import unit_cache
     from aether.wings.base.writer_aether import working_set_bytes
     from ..components import view
@@ -69,5 +69,5 @@ def frame_of(lowered) -> LoweredUnit:
               "active": _plain(lowered.active, "active"), "box": _plain(lowered.box, "box"),
               "team": _plain(getattr(kernel, "team", None), "team"), "fused": lowered.body is not None,
               "members": None if members is None else tuple(m.name for m in members), "one_step": sub},
-        policy={**values, "wide_class": spec.wide_class, "staged_rows": cfg.staged_rows},
+        settings={**values, "wide_class": spec.wide_class, "staged_rows": cfg.staged_rows},
         cost=costs)

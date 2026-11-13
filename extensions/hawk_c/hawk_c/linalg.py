@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The C helpers of the per-lane linear-algebra kinds (:mod:`hawk.ir.linalg`).
+"""The C helpers of the per-lane linear-algebra kinds (:mod:`raptor.ir.linalg`).
 
 Each helper is the looped C spelling of one ``aether::linalg`` function
 (``aether/linalg/``), in the SAME order of floating-point operations, so a lane

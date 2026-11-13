@@ -41,17 +41,6 @@ def test_every_first_party_name_the_backends_import_resolves():
     _names("backends", *(("--src", d) for d in sorted((ROOT / "extensions").glob("*"))))
 
 
-def test_the_steps_reverse_choice_is_plain_data_applied_by_raptor():
-    from raptor.ir.steps_class import choose
-
-    from hawk.targets.steps_reverse import table_for
-
-    rows = table_for(False)["rows"]
-    assert choose(rows, 4, 4, 8 / 1) == "fused"       # inside the measured batch range
-    assert choose(rows, 4, 4, 4096) == "per_step"     # beyond it
-    assert table_for(True)["regime"] == "per_resident"
-
-
 def test_eagle_refuses_a_missing_build_spec_by_name():
     import eagle._dispatch_door as door
 

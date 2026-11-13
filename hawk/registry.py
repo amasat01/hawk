@@ -406,8 +406,12 @@ def _variant_names(entry) -> list:
 
 
 def _check_reads(item: dict, path) -> None:
-    """The variant names of a backend item are one identifier segment each; when the item states ``reads`` (the dotted keys of the
-    variant its policy reads), every variant it names must hold them: refused when the manifest is loaded, not where a build reads."""
+    """A backend item states ``reads`` (the dotted keys of the variant its text and its units read; an empty list is a valid statement),
+    or is refused by name. The variant names of the item are one identifier segment each, and every variant it names must hold the keys it
+    reads: refused when the manifest is loaded, not where a build reads."""
+    if "reads" not in item:
+        raise ValueError(f"{path}: backend {item.get('name')!r} does not state `reads`: write the list of variant keys its text and its units "
+                         "read, for example [\"lanes.run_max\", \"scatter.max_chunks\"] (an empty list states that it reads none)")
     if item.get("variant") is None:
         return
     names = _variant_names(item["variant"])
@@ -432,7 +436,7 @@ def _read(identity: str, where) -> dict:
     import json
 
     fields = {"backends": {"name": (str,), "ref": (str,), "about": (str,), "device": (bool,), "builds": (bool,),
-                           "priority": (int, float), "options": (list,), "policy": (list,), "variant": (str, dict), "components": (list,),
+                           "priority": (int, float), "options": (list,), "settings": (list,), "variant": (str, dict), "components": (list,),
                            "entry": (str, type(None)), "process_env": (bool,), "reads": (list,)},
               "spellings": {"writer": (str,), "dialect": (str,), "ref": (str,)}}
     needed = {"backends": ("name", "ref"), "spellings": ("writer", "dialect", "ref")}
@@ -479,22 +483,23 @@ def _read(identity: str, where) -> dict:
                 for key in ("name", "writer", "dialect"):
                     if key in item and not _ID.match(item[key]):
                         raise ValueError(f"{path}: the {arm[:-1]} {key} {item[key]!r} is not a lowercase identifier [a-z][a-z0-9_]*")
-                for key in ("options", "policy", "components", "reads"):
+                for key in ("options", "settings", "components", "reads"):
                     if any(type(o) is not str for o in item.get(key, ())):
                         raise TypeError(f"{key} is not a list of names")
                 if arm == "backends":
                     import dataclasses
-                    from .build_policy import BuildPolicy
+                    from .build_settings import BuildSettings
 
-                    known = {f.name for f in dataclasses.fields(BuildPolicy)}
-                    for key in item.get("policy", ()):
+                    known = {f.name for f in dataclasses.fields(BuildSettings)}
+                    for key in item.get("settings", ()):
                         if key not in known:
-                            raise ValueError(f"{path}: backend {item.get('name')!r} declares the policy key {key!r}, which hawk's build policy "
+                            raise ValueError(f"{path}: backend {item.get('name')!r} declares the settings key {key!r}, which hawk's build settings "
                                              f"does not know (the keys are {sorted(known)})")
                     for key in item.get("options", ()):
                         if not _ID.match(key):
                             raise ValueError(f"{path}: backend {item.get('name')!r} declares the option {key!r}, which is not a lowercase identifier")
-                _check_reads(item, path)
+                if arm == "backends":
+                    _check_reads(item, path)
         if not isinstance(raw.get("kinds", []), list):
             raise TypeError("kinds is not a list")
         return ext

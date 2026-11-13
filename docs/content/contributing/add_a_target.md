@@ -15,7 +15,7 @@ Three jobs, smallest first:
 ## The row
 
 ```python
-Target(id="cuda", about="builds for the GPU", writer=AETHER, wrapper=CUDA, compile=GPU,
+Target(id="cuda", about="builds for the GPU", writer=AetherWriter(), wrapper=CUDA, compile=GPU,
        entry=ENTRY_DEVICE, format="ptx", artifact=".ptx", source=".cu", features=frozenset(FEATURES))
 ```
 
@@ -78,7 +78,7 @@ a Wrapper names no stream and no occupancy.
 Then add the row. A HIP target that reuses the aether C++ Writer would be (a sketch; hawk builds no HIP today):
 
 ```python
-Target("hip", "builds for AMD GPUs", AETHER, HipWrapper(), HIP, ENTRY_DEVICE, "hsaco",
+Target("hip", "builds for AMD GPUs", AetherWriter(), HipWrapper(), HIP, ENTRY_DEVICE, "hsaco",
        ".hsaco", ".hip.cpp", frozenset(FEATURES))
 ```
 

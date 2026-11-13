@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from raptor.errors import RaptorError
 from raptor.ir.nodes import Loop, LoopCarry
-from raptor.ir.nodes import At, Const, Node, Op, same_index, _through
+from raptor.ir.nodes import At, Const, Node, Op, same_index, through
 from .spelling import carry_type, element_spelling
 
 #: The kinds of node this module writes.
@@ -42,15 +42,6 @@ SELECT_COST_RATIO = 32.0
 #: (the whole warp reads one address): on the same card float32 selects win up to
 #: a ratio of about 2 against 32 for a divergent key.
 UNIFORM_ACCESS = 1 / 16
-
-#: The widest vector whose single indexed accumulate keeps the form that reads the
-#: slot back through selects and rebuilds the whole vector (the select-chain spelling)
-#: when ``Real`` is four bytes. At width 4 with one store per trip ptxas allocates
-#: 32 registers for it against 38 for per-component selects (no local memory in
-#: either), the lower count keeps a full 2048 threads resident per SM on sm_61 and
-#: the kernel runs 5-8 % faster (float, 60 and 2048 trips). With eight-byte ``Real``
-#: the per-component form is faster (0.58x), so it stays.
-LEAN_WIDTH = 4
 
 
 def select_weight(scalar_type: str, spec) -> float:
@@ -110,7 +101,7 @@ class _Run:
 def _interval(node: Node) -> tuple:
     """``(lo, hi)`` bounds of an index-valued node, from its clamps and
     constant offsets alone; unknown is ``(-inf, inf)``."""
-    node = _through(node)
+    node = through(node)
     if isinstance(node, Const):
         v = float(node.literal)
         return v, v
@@ -131,9 +122,9 @@ def _interval(node: Node) -> tuple:
 def _split_key(key: Node) -> tuple:
     """``(base, offset)`` of ``key = base + constants``; ``base`` None when
     the key is all constant."""
-    key, offset = _through(key), 0
+    key, offset = through(key), 0
     while isinstance(key, Op) and key.kind == "add":
-        a, b = (_through(o) for o in key.operands)
+        a, b = (through(o) for o in key.operands)
         if isinstance(b, Const):
             key, offset = a, offset + int(b.literal)
         elif isinstance(a, Const):
@@ -177,7 +168,7 @@ class StorePlan:
     # -- the use graph ----------------------------------------------------
 
     def _use(self, child: Node, by) -> None:
-        self.uses.setdefault(id(_through(child)), []).append(by)
+        self.uses.setdefault(id(through(child)), []).append(by)
 
     def _walk(self, r) -> None:
         seen: set = set()
@@ -213,7 +204,7 @@ class StorePlan:
             chain, base = [], node
             while isinstance(base, Op) and base.kind == "add_at":
                 chain.append(id(base))
-                base = _through(base.operands[0])
+                base = through(base.operands[0])
             if chain and isinstance(base, Op) and base.kind in ("vec", "splat"):
                 gone.update(chain)
         return gone
@@ -221,7 +212,7 @@ class StorePlan:
     # -- one store ----------------------------------------------------------
 
     def _link(self, node: Op) -> None:
-        base, key, value = (_through(o) for o in node.operands)
+        base, key, value = (through(o) for o in node.operands)
         acc, read, add = node.kind == "add_at", None, None
         if node.kind == "set_component_at":
             acc, value, read, add = self._accumulate(node, base, key, value)
@@ -244,16 +235,16 @@ class StorePlan:
         if (isinstance(value, Op) and value.kind == "add"
                 and self.uses.get(id(value)) == [node]):
             for read, x in (value.operands, value.operands[::-1]):
-                read = _through(read)
+                read = through(read)
                 if (isinstance(read, Op) and self.uses.get(id(read)) == [value]
-                        and _through(read.operands[0]) is base):
+                        and through(read.operands[0]) is base):
                     same = (read.kind == "component_at"
-                            and same_index(_through(read.operands[1]), key)
+                            and same_index(through(read.operands[1]), key)
                             or read.kind == "component" and isinstance(key, Const)
                             and tuple(read.literal if isinstance(read.literal, tuple)
                                       else (read.literal,)) == (key.literal,))
                     if same:
-                        return True, _through(x), read, value
+                        return True, through(x), read, value
         return False, value, None, None
 
     # -- the chains ------------------------------------------------------
@@ -269,7 +260,7 @@ class StorePlan:
     def _chain(self) -> None:
         below: dict = {}            # id(store) -> the store that consumes it
         for link in self.links.values():
-            base = _through(link.node.operands[0])
+            base = through(link.node.operands[0])
             prev = self.links.get(id(base))
             if (prev is not None and self._sole(base, link)
                     and self.scope[id(base)] == self.scope[id(link.node)]):
@@ -287,12 +278,12 @@ class StorePlan:
                 continue
             chain = [link]
             while True:
-                base = _through(chain[0].node.operands[0])
+                base = through(chain[0].node.operands[0])
                 prev = self.links.get(id(base))
                 if prev is None or below.get(id(base)) is not chain[0]:
                     break
                 chain.insert(0, prev)
-            self.runs[id(link.node)] = _Run(chain, _through(chain[0].node.operands[0]))
+            self.runs[id(link.node)] = _Run(chain, through(chain[0].node.operands[0]))
 
 
 def plan(r) -> StorePlan:
@@ -341,7 +332,7 @@ def emit(w, r, top: Op, args) -> str:
     budget = SELECT_COST_RATIO * accesses * (UNIFORM_ACCESS if uniform else 1.0)
     pick8, pick4 = (bool(dynamic) and touched * w <= budget for w in _weights(t.dtype, r.spec))
     lean = (len(dynamic) == 1 and len(dynamic[0]) == 1 and dynamic[0][0].acc
-            and t.shape[0] <= LEAN_WIDTH and t.dtype in ("f64", "f32"))
+            and t.shape[0] <= r.spec.need("form", "lean_width") and t.dtype in ("f64", "f32"))
     if name in r.proxies:       # a value in a plane is written in place: one access per store
         pick8 = pick4 = lean = False
     if lean:

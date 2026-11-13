@@ -40,7 +40,7 @@ of merely citing the original pointer-bytes number.
 
 **Why the lookup-led and disagreement rows call `hawk.runtime._n_from`
 directly, with a HAND-BUILT `arg_spec`.** The canonical role order
-(`ROLE_ORDER` in `hawk/ir/nodes.py`) puts every sink
+(`ROLE_ORDER` in `raptor/ir/nodes.py`) puts every sink
 (`mutable`/`out`/`wide_out`/`accum_out`) BEFORE `lookup` -- no real
 single-sink kernel's OWN `arg_spec` can ever put a `lookup` slot first, so
 proving the role-based filter is POSITION-independent (not merely "the

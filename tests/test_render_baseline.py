@@ -21,6 +21,8 @@ any lane is still live after the loop, not inside it, and the host flags drop ma
 
 Re-pinned for the digest domain ``raptor.ir.walk/1``: the C header and the manifest carry the walk digest, which changed with it, and a
 refusal is named by its class, ``RaptorError``; the generator is :func:`digests` below, the values are its output.
+
+Re-pinned for the keyword rename: ``scatter`` and ``scatter_c`` spell ``contract=`` in their source, and the C header carries the digest of that source.
 """
 
 from __future__ import annotations
@@ -57,8 +59,8 @@ PINNED = {
     "mat_apply": "a02f7dd35e83ed8413f608a519ae0b3f8bc89dd6e7f77d15dfbe80731b070a41",
     "rotate_quat": "eee541fe7701d8634497078e234dd4211568a69e122f12583fdafab14c46b9b0",
     "scale": "92e29055be8d7ad98ada24bdda6e6e5795f67939f2b8871b623c110911f3f681",
-    "scatter": "d470991a1140eaadce46913cf11327609c46702a30e20c1bb7dd5beb005b828b",
-    "scatter_c": "34d12d50cc6669524af1d4a061a1e3c013438a84a093c16e9bffebacfc36e019",
+    "scatter": "0edca3a0dbd3c6b0219b9bf28375178b285bffc6565b3b8919a27cc46a82d449",
+    "scatter_c": "028784403142de29ffa896fdf5157aeb890e1ca5200a1327df6b6552b82c85c1",
     "speed": "5e2cd9118073ecbf84a2a72c40a384ad8499c7f847025f639c42313a71830e16",
     "spin": "1690627137889b8b8d652d7832da8454f3b714488928664426577cd7b3da4f00",
     "two_fin": "9ebff54786c51d5f382dc2b29e206bfd2762040eb68724e0ead21faead1d618b",
@@ -108,11 +110,10 @@ def digests() -> dict:
 
 
 def test_kernels_without_linear_algebra_render_the_text_they_always_did(monkeypatch):
-    import aether.wings.cpu.host as host_emit
+    from _specs import pin_caches
 
-    # The host tile rule is sized from (and names) the machine's caches: render as on the pinning machine.
-    pinning_machine = host_emit.CacheSizes(32 * 1024, 1024 * 1024, "/sys/devices/system/cpu/cpu0/cache")
-    monkeypatch.setattr(host_emit, "machine_caches", lambda *a, **k: pinning_machine)
+    # The host TU's tile is sized to (and names) the machine's caches: pin the ones the digests were frozen with.
+    pin_caches(monkeypatch)
     got = digests()
     assert got.keys() == PINNED.keys()
     changed = sorted(name for name in got if got[name] != PINNED[name])

@@ -14,7 +14,7 @@ only one case writes is one scalar, not a column of an aggregate.
 Rewritten: ``component`` of a ``vec``; ``sum`` of a rank-1 ``vec`` (left-nested
 ``add``, the language's own fold order); ``add``/``sub``/``neg``/``mul``/``div``;
 ``select``; ``dispatch`` (one dispatch per slot, same selector, ``K`` and
-policy, so the renderer still fuses them into ONE ``switch``). Everything else
+strategy, so the renderer still fuses them into ONE ``switch``). Everything else
 over a ``vec`` keeps its node. Structural zero: a ``Const`` of value 0.
 
 Per slot the value equals the dense form's, with the same summation order
@@ -22,7 +22,7 @@ minus the zeros. Admitted differences: the sign of an exact zero, and a
 non-finite factor times a structural zero is 0 (the dense form gave NaN).
 
 Pure, idempotent, and position-free. A node with nothing to rewrite comes back
-as the SAME object. An existing :class:`~hawk.ir.nodes.Loop` is a scope
+as the SAME object. An existing :class:`~raptor.ir.nodes.Loop` is a scope
 and is never entered.
 """
 
@@ -35,6 +35,7 @@ from raptor.ir.types import TensorType
 from raptor.ir.nodes import Loop
 from raptor.ir.nodes import AccumWrite, Assign, Const, Dispatch, Node, Op, SampleSum, Select, Sink, WideWrite
 from raptor.errors import RaptorError
+from .dispatch import dispatch as _make_dispatch, strategy
 from raptor.ir.ops import make
 from raptor.ir.walk import rebuild, resink
 
@@ -174,7 +175,7 @@ def _dispatch(node: Dispatch, ops: tuple) -> Node | None:
     def build(*parts):
         if all(p is parts[0] for p in parts) or all(_is_zero(p) for p in parts):
             return parts[0]
-        return Dispatch(selector, parts, node.policy, parts[0].ttype)
+        return _make_dispatch(selector, parts, strategy(node), parts[0].ttype)
 
     return _per_slot(node, branches, build) if all(
         b.ttype.shape == node.ttype.shape for b in branches) else None
@@ -364,9 +365,9 @@ def _gate(cond: Node, on_true: Node, on_false: Node, value: Node) -> Node:
     if not isinstance(value, Dispatch):
         return Select(cond, on_true, on_false, value.ttype)
     zero = on_false if value is on_true else on_true
-    return Dispatch(value.selector,
+    return _make_dispatch(value.selector,
                     [_where(cond, b, zero) if value is on_true else _where(cond, zero, b)
-                     for b in value.branches], value.policy, value.ttype)
+                     for b in value.branches], strategy(value), value.ttype)
 
 
 def _lowered(node: Node, ops: tuple) -> Node | None:
@@ -395,9 +396,9 @@ def _runtime_dispatch(node: Dispatch, ops: tuple) -> Node | None:
             zk = Const(0, k.ttype)
             ze = Const(0.0, e.ttype)
             links.append((
-                Dispatch(selector, [k if j == i else zk for j in range(len(branches))],
-                         node.policy, k.ttype),
-                Dispatch(selector, [e if j == i else ze for j in range(len(branches))],
-                         node.policy, e.ttype)))
-    inner = _dispatch(node, (selector, *bases)) or Dispatch(selector, bases, node.policy, node.ttype)
+                _make_dispatch(selector, [k if j == i else zk for j in range(len(branches))],
+                         strategy(node), k.ttype),
+                _make_dispatch(selector, [e if j == i else ze for j in range(len(branches))],
+                         strategy(node), e.ttype)))
+    inner = _dispatch(node, (selector, *bases)) or _make_dispatch(selector, bases, strategy(node), node.ttype)
     return _rechain(inner, links)

@@ -22,7 +22,7 @@ is a leaf that was already being hoisted for a completely different reason
 ( address-computation argument).
 
 THE CORPUS ENUMERATES, IT DOES NOT SAMPLE. The set of rank-collapsing kinds is
-COMPUTED from ``hawk.ir.ops`` itself (:func:`collapsing_kinds` probes every kind
+COMPUTED from ``raptor.ir.ops`` itself (:func:`collapsing_kinds` probes every kind
 in ``OP_KINDS`` over every operand-type combination it accepts and keeps the
 ones whose RESULT rank is below their widest operand's), and
 :func:`test_the_corpus_covers_every_rank_collapsing_kind` fails if the table
@@ -44,7 +44,7 @@ interpreter on inputs that DIFFER IN EVERY COLUMN. That last property is not
 decoration: a plane that is constant across samples makes sample 0's reduction
 the right answer everywhere, which is precisely how this defect survived.
 
-THE SECOND HALF — the rank-2 reduction's SPELLING. ``hawk.ir.ops`` admits
+THE SECOND HALF — the rank-2 reduction's SPELLING. ``raptor.ir.ops`` admits
 ``sum`` over a rank-2 operand and the reverse rule of a scalar uniform times a
 rank-2 expression MINTS one (``hawk/diff/transform._reduce_to`` un-broadcasts
 the rank-0 operand's adjoint with a ``sum``), but aether's ``Expression::sum()``
@@ -75,7 +75,7 @@ earlier state under this row gave **77 failed, 42 passed**.
   * the rank-2 arms did not get as far as a wrong answer — they did not
     COMPILE::
 
-        hawk.ir.nodes.HawkError: host compile of 'vjp_scalar_rank2' failed
+        hawk.HawkError: host compile of 'vjp_scalar_rank2' failed
         (rc=1). aether/expr/Expression.h:246:54: error: static assertion
         failed: sum: only rank-1 expressions are supported
 
@@ -90,7 +90,9 @@ earlier state under this row gave **77 failed, 42 passed**.
 
 from __future__ import annotations
 from _specs import HOST, default_kind
+from _specs import aether_writer
 
+import dataclasses
 import itertools
 import zlib
 
@@ -103,7 +105,7 @@ from hawk.artifact import build
 from hawk.diff import vjp
 from aether.wings.base.render import render_body
 from lowering.lstsq import lowered
-from raptor.protocols.naming import mirror_of
+from lowering.exchange import mirror_of
 from raptor.ir import Assign, Leaf, canonical
 from hawk import HawkError
 from raptor.ir import make as mk
@@ -149,7 +151,7 @@ _INDEX_TAKING = frozenset({"at"})
 def collapsing_kinds() -> frozenset:
     """Every op kind whose RESULT rank is below its widest operand's rank.
 
-    Derived by probing :func:`hawk.ir.ops.make` over a small closed set of
+    Derived by probing :func:`raptor.ir.ops.make` over a small closed set of
     operand types rather than by transcribing a list: the vocabulary lives in
     ``ops.py`` and a kind added there must not be able to slip past this row
     just because nobody remembered to extend a constant here."""
@@ -357,7 +359,7 @@ class _Built:
         #: the BODY string, not the whole TU: the wrapper's ``params[]`` unpack
         #: names every binding too, and a failure that pasted it would bury the
         #: one line that is wrong.
-        self.body = render_body(*lowered(sinks, kernel.walk, HOST), spec=HOST, kind=default_kind()).text
+        self.body = render_body(*lowered(sinks, kernel.walk, HOST), spec=HOST, kind=default_kind(), writer=aether_writer()).text
 
 
 class _Builder:
@@ -495,7 +497,7 @@ def _wide_kernel(width: int, *, whole_use: bool = False) -> tuple:
     return tuple(sinks)
 
 
-def _host_run(width, directory, cache, **kw):
+def _host_run(width, directory, cache, spec=HOST, **kw):
     sinks = _wide_kernel(width, **kw)
     from types import SimpleNamespace
 
@@ -507,14 +509,14 @@ def _host_run(width, directory, cache, **kw):
                        x=rng.standard_normal(32))
     names = [nm for role, nm in loaded.arg_spec if role in O.OUTPUT_ROLES]
     got = dict(zip(names, got))
-    return np.stack([got["out_a"], got["out_b"]]), render_body(*lowered(sinks, kernel.walk, HOST), spec=HOST, kind=default_kind()).text
+    return np.stack([got["out_a"], got["out_b"]]), render_body(*lowered(sinks, kernel.walk, spec), spec=spec, kind=default_kind(), writer=aether_writer()).text
 
 
 def test_wide_readonly_leaf_is_read_through_the_proxy(tmp_path, monkeypatch):
-    """INTERIM wide-leaf rule: > LAZY_LEAF_WIDTH elements, read only by static
+    """INTERIM wide-leaf rule: > the variant's form.lazy_leaf_width elements, read only by static
     ``component`` => no ``.get()``, proxy reads, bits equal to the whole-leaf emit;
     a narrow leaf, or a wide one also used whole, keeps today's text."""
-    import aether.wings.base.render as A
+    from hawk import variants
 
     wide, wide_text = _host_run(144, tmp_path / "w", tmp_path / "c1")
     assert ".get()" not in wide_text and "vin_p_i = vin_p[i];" in wide_text
@@ -526,7 +528,9 @@ def test_wide_readonly_leaf_is_read_through_the_proxy(tmp_path, monkeypatch):
     _, narrow_text = _host_run(16, tmp_path / "n", tmp_path / "c3")
     assert "vin_p[i].get()" in narrow_text and ".eval<15>(i)" in narrow_text
 
-    monkeypatch.setattr(A, "LAZY_LEAF_WIDTH", 10**9)
-    old, old_text = _host_run(144, tmp_path / "o", tmp_path / "c4")
+    real = variants.load
+    monkeypatch.setattr(variants, "load", lambda name: (lambda d: {**d, "form": {**d["form"], "lazy_leaf_width": 10**9}})(real(name)))
+    old, old_text = _host_run(144, tmp_path / "o", tmp_path / "c4", spec=dataclasses.replace(
+        HOST, focus={**HOST.primary, "form": {**HOST.primary["form"], "lazy_leaf_width": 10**9}}))
     assert "vin_p[i].get()" in old_text
     assert (wide == old).all()

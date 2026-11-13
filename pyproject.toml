@@ -47,7 +47,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
-# Runtime dependencies beyond the binding itself: `raptor-core` (`raptor.flow`, which the
+# Runtime dependencies beyond the binding itself: `raptor-core` (the IR the
 # frontend imports) and `aether-dsc`: the sealed
 # AETHER payload every NVRTC device compile serves headers from
 # (`hawk.compile.payload.current_payload()`), added the day the code that

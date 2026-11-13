@@ -127,10 +127,13 @@ class BuildSpec:
     settings: "Settings" = None
     #: ``{(writer, dialect): module name}`` from the manifests: where a writer finds its spellings of a dialect (data; the module loads when used)
     spellings: dict = field(default_factory=dict)
+    #: The variant keys the backend rows of the build state under ``reads`` (``None``: a spec made by hand, nothing is checked): :meth:`need`
+    #: refuses a key no row states.
+    reads: frozenset | None = None
 
     def __post_init__(self):
         if self.settings is None:
-            from ..build_policy import default_settings
+            from ..build_settings import default_settings
 
             object.__setattr__(self, "settings", default_settings())
 
@@ -151,6 +154,9 @@ class BuildSpec:
 
     def need(self, section: str, key: str | None = None):
         """``primary[section][key]`` (the section when ``key`` is ``None``), refused by name when the variant has no such data."""
+        dotted = section if key is None else f"{section}.{key}"
+        if self.reads is not None and dotted not in self.reads and section not in self.reads:
+            raise HawkError(f"the build reads the variant key {dotted!r}, which no backend row of the build states under `reads` in its manifest")
         data = self.primary.get(section)
         if data is None or (key is not None and key not in data):
             raise HawkError(f"the variant of the target being built has no {section}{'.' + key if key else ''}: a backend whose manifest "
@@ -195,7 +201,7 @@ class BuildSpec:
         """This spec as seen by the text of backend ``row``: its own variant (empty when it names none) is the one :attr:`primary` answers."""
         from dataclasses import replace
 
-        return replace(self, focus=self.by_target.get(row.id) or {})
+        return replace(self, focus=self.by_target.get(row.id) or {}, reads=frozenset(registry.traits(row.id).get("reads", ())))
 
     def wide(self, scalar_type: str) -> dict:
         """The wide-value thresholds card for ``scalar_type`` on this spec's device arch."""
@@ -211,10 +217,10 @@ class BuildSpec:
 
 
 def build_spec(targets, arch: str = "", *, machine: Machine | None = None, device: dict | None = None,
-               wide_override: dict | None = None, settings=None, build_policy=None) -> BuildSpec:
+               wide_override: dict | None = None, settings=None, build_settings=None) -> BuildSpec:
     """The spec of a build of ``targets`` (ids) for device ``arch``: each row's manifest names its variant (a map from the host's
     isa for a host row). ``device`` replaces the device variant's data (a test or a kit passes other numbers), ``wide_override``
-    forces card thresholds. ``settings`` are the per-build settings (default: all unset); ``build_policy`` (:class:`hawk.build_policy.BuildPolicy`) is laid over them after its keys
+    forces card thresholds. ``settings`` are the per-build settings (default: all unset); ``build_settings`` (:class:`hawk.build_settings.BuildSettings`) is laid over them after its keys
     are checked against the targets' manifests."""
     from .. import components as _components
     from ..variants import load, named
@@ -238,7 +244,8 @@ def build_spec(targets, arch: str = "", *, machine: Machine | None = None, devic
             host = host or data
     dev = device if device is not None else dev
     return BuildSpec(host, dev, machine, _components.device_view("wide_class").select(arch, dev) if arch and dev else "", dict(wide_override or {}), by_target,
-                     settings=_laid(build_policy, settings, targets), spellings=_spellings(targets))
+                     settings=_laid(build_settings, settings, targets), spellings=_spellings(targets),
+                     reads=frozenset(k for t in targets if t in TARGETS for k in registry.traits(t).get("reads", ())))
 
 
 def _spellings(targets) -> dict:
@@ -260,10 +267,10 @@ def _spellings(targets) -> dict:
     return found
 
 
-def _laid(build_policy, settings, targets):
-    """``settings`` (default: all unset) with ``build_policy`` laid over it."""
-    from ..build_policy import default_settings, refuse_undeclared, settings_of
+def _laid(build_settings, settings, targets):
+    """``settings`` (default: all unset) with ``build_settings`` laid over it."""
+    from ..build_settings import default_settings, refuse_undeclared, settings_of
 
-    if build_policy is not None:
-        refuse_undeclared(build_policy, targets)
-    return settings_of(build_policy, default_settings() if settings is None else settings)
+    if build_settings is not None:
+        refuse_undeclared(build_settings, targets)
+    return settings_of(build_settings, default_settings() if settings is None else settings)

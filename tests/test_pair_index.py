@@ -57,8 +57,8 @@ def window(lane: Grid["pair"], si: Mutable["w"], sj: Mutable["w"]):
     i, j = m.pair_index()
     k = m.sample_index()
     cell = k - ((k >> 6) << 6)
-    hawk.scatter(si, policy="plain")[cell] += m.real(i)
-    hawk.scatter(sj, policy="plain")[cell] += m.real(j)
+    hawk.scatter(si, contract="plain")[cell] += m.real(i)
+    hawk.scatter(sj, contract="plain")[cell] += m.real(j)
 
 
 @kernel
@@ -82,7 +82,7 @@ def near(lane: Grid["pair"], x: Table["node"], mask: Mutable[UInt32]):
     """Bit ``j`` of row ``i`` of a symmetric-free adjacency mask: ``x_i * x_j > 0.5``."""
     i, j = m.pair_index()
     bit = m.select(x.at(i) * x.at(j) > 0.5, m.uint32(1) << m.uint32(j & 31), m.uint32(0))
-    hawk.scatter(mask, policy="or")[i * WORDS + (j >> 5)] |= bit
+    hawk.scatter(mask)[i * WORDS + (j >> 5)] |= bit
 
 
 def _pairs(n_items):

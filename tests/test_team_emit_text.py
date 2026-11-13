@@ -7,7 +7,7 @@ def test_team_emit_writes_a_body_through_the_given_constructor():
     from aether.wings.base import team_emit
     from lowering import team
 
-    text = team_emit.team_body(team.scatter_specs("t", 2, 256)[0], None, False, body=lambda t: t)
+    text = team_emit.team_body(team.scatter_specs("t", 2, 256, 32)[0], None, False, body=lambda t: t)
     assert isinstance(text, str) and team_emit.TEAM_CALL in text
 
 

@@ -13,6 +13,7 @@ tape) and reverse mode refuses by name; with ``max=K`` the tape is ``K`` long an
 
 from __future__ import annotations
 from _specs import spec_for, default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import numpy as np
@@ -70,7 +71,7 @@ def test_the_loop_says_how_it_is_bounded_and_is_never_unrolled():
     assert _loop(powers).dynamic == "max" and _loop(powers).trip == K
     assert _loop(powers_open).dynamic == "open"
     for kernel in (powers, powers_open):
-        text = render_body(kernel.sinks, kernel.walk, spec=HOST, kind=default_kind()).text
+        text = render_body(kernel.sinks, kernel.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
         assert "for (int hawk_k" in text and "hawk_clamp_count(" in text
 
 

@@ -159,7 +159,8 @@ def piece_ids() -> list[str]:
 @lru_cache(maxsize=None)
 def piece_edges(piece: str) -> tuple[Edge, ...]:
     root, pkg = pieces()[piece]
-    return tuple(scan_tree(root, pkg))
+    wings = root / "wings"      # a wing installed inside its family's package folder is a unit of its own, scanned under its wing id
+    return tuple(e for e in scan_tree(root, pkg) if wings not in e.path.parents)
 
 
 def manifest(piece: str) -> dict:

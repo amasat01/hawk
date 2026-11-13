@@ -12,6 +12,7 @@ or shadowing label, a ``group`` that names nothing) saying what to write instead
 
 from __future__ import annotations
 from _specs import spec_for, default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import hashlib
@@ -184,7 +185,7 @@ def test_a_bad_positional_read_is_refused(index, why):
 
 
 def _exec(src: str):
-    from raptor import flow
+    from hawk.trace import flow
 
     ns: dict = {}
     flow.exec_source(src, ns)
@@ -282,7 +283,7 @@ def test_reading_an_input_keeps_a_comparison_in_the_order_it_was_written():
     def k(a: Scalar, b: Scalar) -> Scalar:
         return hawk.math.where(a >= b, a, b)
 
-    text = render_body(k.sinks, k.walk, spec=HOST, kind=default_kind()).text
+    text = render_body(k.sinks, k.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert ">=" in text and "<=" not in text
 
 

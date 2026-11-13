@@ -11,9 +11,9 @@ from pathlib import Path
 from raptor.errors import RaptorError
 from hawk.backends import Backend
 from hawk.compile import toolchain as _shared
-from aether.wings.cpu.host import HOST
-from aether.wings.base.wrapper import _INCLUDES
-from aether.wings.base.writer_aether import AETHER
+from aether.wings.cpu.host import HostWrapper
+from aether.wings.base.prelude import UNIT_INCLUDES
+from aether.wings.base.writer_aether import AetherWriter
 from . import toolchain as tc
 
 
@@ -32,8 +32,8 @@ def _vector_isa() -> str:
 class Host(Backend):
     id = "host"
     about = "for the CPU"
-    writer = AETHER
-    wrapper = HOST
+    writer = AetherWriter()
+    wrapper = HostWrapper()
     entry = "host"
     format = "host"
     artifact = ".so"
@@ -43,14 +43,16 @@ class Host(Backend):
     host_entry = True
 
     def machine_facts(self):
+        caches = tc.host_caches()
         try:
             in_effect = tc.host_profile()
         except RaptorError:                  # a refusal (unknown name, no GCC): key_terms and the compile raise it by name, later
             in_effect = tc.default_host_profile()
-        return {"isa": "x86_64" if tc._is_x86_64() else "arm64", "arm64_gcc": bool(tc._arm64_gcc()),
+        cache_facts = {} if caches is None else {"l1d_cache_bytes": caches[0], "l2_cache_bytes": caches[1], "cache_source": caches[2]}
+        return {**cache_facts, "isa": "x86_64" if tc._is_x86_64() else "arm64", "arm64_gcc": bool(tc._arm64_gcc()),
                 "exact_host_profiles": tuple(tc.EXACT_HOST_PROFILES), "host_profile": in_effect,
                 "vector_isa": _vector_isa(), "reserved_names": {name: "the name is a C library function, and the kernel's entry would redeclare it"
-                                   for name in tc.libc_symbols(_INCLUDES)}}
+                                   for name in tc.libc_symbols(UNIT_INCLUDES)}}
 
     def key_terms(self, source_digests, own):
         # the profile in effect (asked, else $HAWK_HOST_PROFILE, else this machine's): the unit's text is a function of it

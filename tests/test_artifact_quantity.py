@@ -16,7 +16,7 @@ reconstructs the access from the declaration.
 The two counters names are asserted directly: ZERO text surgeries (the
 emitted body is the ONE renderer's, byte-identical on both targets, and carries
 no spliced raw block) and ZERO raw-IR constructions (the fixture module
-constructs no ``hawk.ir`` node at all — an AST scan, the same detector shape
+constructs no ``raptor.ir`` node at all — an AST scan, the same detector shape
  uses).
 
 This test previously failed: the wire namespacing stripped
@@ -30,6 +30,7 @@ removed.
 
 from __future__ import annotations
 from _specs import default_kind
+from _specs import aether_writer
 from _specs import spec_for
 from _specs import HOST
 
@@ -64,7 +65,7 @@ def test_zero_text_surgery():
     """The body both wrappers compile is the SAME string, and it
     carries no spliced raw text — so there is nothing for a lowering pass to
     edit and no anchor for one to find."""
-    body = render_body(D.spin.sinks, D.spin.walk, spec=HOST, kind=default_kind()).text
+    body = render_body(D.spin.sinks, D.spin.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     sources = [render_source("spin", D.spin.sinks, D.spin.walk, b, spec=spec_for(b), kind=default_kind())
                for b in TARGETS.values() if b.wrapper]
     assert len({s.body for s in sources}) == 1

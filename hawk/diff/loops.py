@@ -5,12 +5,12 @@
 
 The straight-line transform (:mod:`hawk.diff.transform`) folds a flat DAG
 into one derivative expression per input. A body carrying a
-:class:`~hawk.ir.Loop` cannot be folded that way: a loop is a scope
+:class:`~raptor.ir.Loop` cannot be folded that way: a loop is a scope
 evaluated ``trip`` times, and unrolling it would reintroduce the emission
 that was deleted. So a loop's derivative mirrors it — another loop, over
 the same range.
 
-:func:`hawk.ir.loops.classify_loop` picks between two classes, by whether a
+:func:`raptor.ir.loops.classify_loop` picks between two classes, by whether a
 carried value's adjoint depends on the carry itself:
 
 * **accumulator** (``c = c + a``, ``a`` free of every carry): the carry's
@@ -26,7 +26,7 @@ carried value's adjoint depends on the carry itself:
 Forward mode needs no such split: one loop carries both the primal slots
 and their tangents side by side.
 
-A loop neither class fits refuses by name — a :class:`~hawk.ir.HawkError`
+A loop neither class fits refuses by name — a :class:`~hawk.HawkError`
 naming the index variable and the reason — never a silent zero or a
 derivative taken as if the carry did not exist.
 """
@@ -64,6 +64,7 @@ from .. import components as _components
 _slotwise = _components.view("lowering", "slotwise")
 from raptor.ir.walk import substitute as _substitute
 from raptor.rules.core import rule_for, zero_like
+_dispatch_kind = _components.view("lowering", "dispatch")
 
 #: Node families neither direction pushes through inside a body (the
 #: straight-line transform's terminals, plus the two loop placeholders).
@@ -294,7 +295,7 @@ def _dispatch_pullback(node: Dispatch, g: Node, store: dict, stop: set,
     for target, per_branch in reached.values():
         terms = [per_branch.get(j) if per_branch.get(j) is not None
                  else zero_like(target.ttype) for j in range(node.K)]
-        combined = Dispatch(node.selector, terms, node.policy, target.ttype)
+        combined = _dispatch_kind.dispatch(node.selector, terms, _dispatch_kind.strategy(node), target.ttype)
         if isinstance(target, At):
             if local_pass:
                 raise HawkError(
@@ -341,7 +342,7 @@ def guarded_select(node: Node) -> Dispatch | None:
 
     one, zero = TensorType((), "i32"), TensorType((), "i32")
     sel = Select(node.operands[0], Const(1, one), Const(0, zero), one)
-    return Dispatch(sel, [node.operands[2], node.operands[1]], "switch", node.ttype)
+    return _dispatch_kind.dispatch(sel, [node.operands[2], node.operands[1]], "switch", node.ttype)
 
 
 def _taken_row(node: Dispatch, target: At, per_branch: dict) -> Node:
@@ -357,7 +358,7 @@ def _taken_row(node: Dispatch, target: At, per_branch: dict) -> Node:
         return target.index
     zero = Const(0, target.index.ttype)
     rows = [target.index if j in per_branch else zero for j in range(node.K)]
-    return Dispatch(node.selector, rows, node.policy, target.index.ttype)
+    return _dispatch_kind.dispatch(node.selector, rows, _dispatch_kind.strategy(node), target.index.ttype)
 
 
 # --------------------------------------------------------------------------
@@ -488,7 +489,7 @@ def _reverse_recurrence(loop, seeds, targets, inputs, name,
                         nexts=None, alt=None) -> LoopReverse:
     """The general case: the carry's adjoint evolves, so the derived loop
     runs backwards over the forward loop's own per-iteration carried
-    values, reached through :class:`~hawk.ir.nodes.TapeRead` — why it
+    values, reached through :class:`~raptor.ir.nodes.TapeRead` — why it
     declares one bounded local array per carried slot."""
     m = loop.carry_count
     tapes = tuple(TapeRead(loop, i, loop.index) for i in range(m))
@@ -589,7 +590,7 @@ def _bar_name(target: Node, j: int) -> str:
 
 
 def _tape_tangent(node: TapeRead, augmented_of) -> Node | None:
-    """The tangent of one :class:`~hawk.ir.nodes.TapeRead` — the rule
+    """The tangent of one :class:`~raptor.ir.nodes.TapeRead` — the rule
     that makes forward-over-reverse work through a recurrence.
 
     A reverse loop over a recurrence reads the forward loop's carried value
@@ -628,7 +629,7 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
     Also called on a VJP-derived IR's loops (forward over reverse): those
     are ordinary accumulator/recurrence loops needing no new mode, except
     for one node with no tangent rule,
-    :class:`~hawk.ir.nodes.TapeRead` (:func:`_tape_tangent`). The
+    :class:`~raptor.ir.nodes.TapeRead` (:func:`_tape_tangent`). The
     remaining refusals are structural: a loop committing once per
     iteration is a derived loop's scatter, and reverse-over-reverse still
     has no tape rule. ``jump`` is the kernel's
@@ -713,7 +714,7 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
             continue
         if isinstance(node, LoopValue):     # pragma: no cover - structurally dead
             # Loop-invariant projections are cut from the body by
-            # `hawk.ir.loops.boundary`; reaching one here means that
+            # `raptor.ir.loops.boundary`; reaching one here means that
             # computation and this traversal disagree.
             raise HawkError(
                 f"the loop over {loop.index.name!r} reads another loop's result "
@@ -734,7 +735,7 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
             if any(t is not None for t in branch_tangents):
                 filled = [t if t is not None else zero_like(b.ttype)
                           for t, b in zip(branch_tangents, node.branches)]
-                tangent[id(node)] = Dispatch(node.selector, filled, node.policy,
+                tangent[id(node)] = _dispatch_kind.dispatch(node.selector, filled, _dispatch_kind.strategy(node),
                                              node.ttype)
             continue
         if any(tangent.get(id(c)) is not None for c in node.operands):

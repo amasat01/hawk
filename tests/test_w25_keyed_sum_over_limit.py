@@ -50,7 +50,7 @@ def test_an_ordered_vector_payload_above_the_limit_is_the_left_to_right_sum(cach
 
     @kernel
     def ordered_sum(lane: Grid["key", "row":ROWS], j: Vector[n], r: hawk.Scalar) -> Vector[n]:
-        return hawk.sum(j * r, over="row", policy="ordered")
+        return hawk.sum(j * r, over="row", contract="ordered")
 
     rng = np.random.default_rng(4100)
     lanes = KEYS * ROWS
@@ -65,29 +65,29 @@ def test_an_ordered_vector_payload_above_the_limit_is_the_left_to_right_sum(cach
     assert np.array_equal(got, want.T), float(np.max(np.abs(got - want.T)))
 
 
-def _vector_sum(n, policy):
+def _vector_sum(n, contract):
     @kernel
     def vec_sum(lane: Grid["key", "row":ROWS], j: Vector[n], r: hawk.Scalar) -> Vector[n]:
-        return hawk.sum(j * r, over="row", policy=policy)
+        return hawk.sum(j * r, over="row", contract=contract)
 
     return vec_sum
 
 
-@pytest.mark.parametrize("policy", ["ordered", "auto"])
+@pytest.mark.parametrize("contract", ["ordered", "auto"])
 @pytest.mark.parametrize("n", [4096, 4097])
-def test_the_boundary_of_the_limit_is_the_numpy_value_under_both_policies(cache, n, policy):
-    k = _vector_sum(n, policy)
+def test_the_boundary_of_the_limit_is_the_numpy_value_under_both_contracts(cache, n, contract):
+    k = _vector_sum(n, contract)
     rng = np.random.default_rng(n)
     lanes = KEYS * ROWS
     j, r = rng.standard_normal((lanes, n)), rng.standard_normal(lanes)
-    bundle = _build_sum(k, cache / f"b{n}{policy}", "host")
+    bundle = _build_sum(k, cache / f"b{n}{contract}", "host")
     out = {"out": np.zeros((n, KEYS))}
     got = _run_sum(bundle, k, {"j": np.ascontiguousarray(j.T), "r": r}, out, "host")["out"]
     terms = (j * r[:, None]).reshape(KEYS, ROWS, n)
     want = np.zeros((KEYS, n))
     for row in range(ROWS):
         want = want + terms[:, row, :]
-    if policy == "ordered":
+    if contract == "ordered":
         assert np.array_equal(got, want.T)
     else:
         scale = np.abs(terms).sum(axis=1)
@@ -96,11 +96,12 @@ def test_the_boundary_of_the_limit_is_the_numpy_value_under_both_policies(cache,
 
 def _blocks_under(spec, k):
     from lowering import team
+    from lowering.block import is_block
 
     from raptor.ir.walk import canonical_nodes
 
     sinks = team.plain_blocks(k.sinks, "auto", spec)
-    return sum(isinstance(n, team.BlockSum) for n in canonical_nodes(tuple(sinks))[0])
+    return sum(is_block(n) for n in canonical_nodes(tuple(sinks))[0])
 
 
 def test_the_fallback_point_is_the_variants(cache):

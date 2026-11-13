@@ -28,7 +28,7 @@ import re
 
 from aether_dsc import c_core
 
-from raptor.ir.nodes import FINISHED_PLANE
+from lowering.cells import FINISHED_PLANE
 from . import linalg
 from .helpers import helper
 from .spelling import WIDTH
@@ -61,11 +61,11 @@ def _shape_word(shape) -> str:
 
 def mix_planes(walk) -> dict[str, int]:
     """``{plane name: K}`` for every ``auto`` dispatch group's branch-mix
-    plane (:func:`hawk.ir.segment.mix_name`): K ``uint32`` counters."""
-    from raptor.ir.segment import mix_name
+    plane (:func:`lowering.cells.mix_name`): K ``uint32`` counters."""
+    from lowering.cells import mix_name
 
     return {mix_name(info.name): int(info.K) for info in walk.dispatches
-            if info.policy == "auto"}
+            if info.strategy == "auto"}
 
 
 def size_mix_rows(rows: list, walk) -> list:

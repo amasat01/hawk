@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Across lanes: ``hawk.sum/max/min/mean(x, over=, where=, policy=)``,
+"""Across lanes: ``hawk.sum/max/min/mean(x, over=, where=, contract=)``,
 ``hawk.scatter(sink)[key] += / = v`` and ``u.at(i)``.
 
 Each form equals the numpy oracle written on the whole arrays, on the host and
@@ -29,6 +29,7 @@ from hawk import (Grid, HawkError, Index, Kernel, Matrix, Mutable, Param, Scalar
 from hawk import _lane_bind as LB
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
+from lowering.cells import stored as _stored
 from lowering.lanes import key_run
 from _specs import DEVICE
 from raptor.ir.nodes import AccumWrite, ReduceSamples, SampleSum
@@ -191,10 +192,10 @@ def kmean(lane: Grid["row":2, "col":4], x: Scalar) -> Scalar:
 KP = 64
 
 
-def _sum_over(policy):
+def _sum_over(contract):
     @kernel
     def ksum(lane: Grid["key", "sample":8192], x: Scalar) -> Scalar:
-        return hawk.sum(x, over="sample", policy=policy)
+        return hawk.sum(x, over="sample", contract=contract)
     return ksum
 
 
@@ -435,26 +436,26 @@ def test_the_mean_over_an_axis_divides_by_its_extent(built, target):
     np.testing.assert_allclose(got["out"], x.reshape(2, 4).mean(axis=1), rtol=TOL[mode])
 
 
-@pytest.mark.parametrize("policy", ("auto", "compensated"))
+@pytest.mark.parametrize("contract", ("auto", "compensated"))
 @pytest.mark.parametrize("target", TARGETS)
-def test_a_sum_over_8192_lanes_is_within_the_contract(built, target, policy):
+def test_a_sum_over_8192_lanes_is_within_the_contract(built, target, contract):
     """Against ``math.fsum`` per key, scaled by ``eps * sum|t_i|``: at most 8
     plain, 1 compensated (the compensated value is the plane plus its companion
     ``out_c``). The error in ULP is printed as a card line."""
     bundle, mode = built
-    name = "ksum_a" if policy == "auto" else "ksum_c"
+    name = "ksum_a" if contract == "auto" else "ksum_c"
     x = np.random.default_rng(8).uniform(-1, 1, (KP, 8192)).astype(mode)
     outs = {"out": np.zeros(KP, mode)}
-    if policy == "compensated":
+    if contract == "compensated":
         outs["out_c"] = np.zeros(KP, mode)
     got, *_ = _run(bundle, name, target, {"x": x.ravel()}, outs, key=KP)
     total = got["out"].astype(np.float64) + got.get("out_c", 0.0)
     terms = x.astype(np.float64)
     exact = [math.fsum(r) for r in terms]
     scaled = _scaled(total, exact, np.abs(terms).sum(axis=1), mode)
-    print(f"card {target} {mode} {policy}: scaled {scaled:.3g}, "
+    print(f"card {target} {mode} {contract}: scaled {scaled:.3g}, "
           f"ulp {_ulp(total, exact, mode):.3g}")
-    assert scaled <= CONTRACT[policy]
+    assert scaled <= CONTRACT[contract]
 
 
 # ---- the IR: one record for both doors ----------------------------------------
@@ -469,7 +470,7 @@ def test_a_full_sum_is_the_cell_it_always_was():
 
     x = k.sinks[0].value
     assert [type(s) for s in k.sinks] == [SampleSum]
-    assert Kernel("k", ReduceSamples("sum", x).stored("t")).walk.digest == k.walk.digest
+    assert Kernel("k", _stored(ReduceSamples("sum", x), "t")).walk.digest == k.walk.digest
 
 
 def test_scatter_by_the_kept_coordinates_is_the_sum_over_the_rest():
@@ -483,11 +484,11 @@ def test_scatter_by_the_kept_coordinates_is_the_sum_over_the_rest():
     @kernel
     def scattered(lane: Grid["channel":4, "input":8, "sample":32], x: Scalar,
                   tb: Mutable["channel":4, "input":8]):
-        hawk.scatter(tb, policy="plain")[lane.channel, lane.input] += x * x
+        hawk.scatter(tb, contract="plain")[lane.channel, lane.input] += x * x
 
     assert summed.walk.digest == scattered.walk.digest
     (sink,) = summed.sinks
-    assert isinstance(sink, AccumWrite) and sink.policy == "auto"
+    assert isinstance(sink, AccumWrite) and sink.contract == "auto"
     assert key_run(summed.sinks, sink, DEVICE).form == "proven"
 
 
@@ -518,62 +519,62 @@ def test_over_two_axes_keeps_one_and_over_every_axis_is_the_cell():
     assert [type(s) for s in every.sinks] == [SampleSum]
 
 
-@pytest.mark.parametrize("policy", ("auto", "compensated", "ordered"))
-def test_every_policy_is_accepted_on_a_full_sum(policy):
+@pytest.mark.parametrize("contract", ("auto", "compensated", "ordered"))
+def test_every_contract_is_accepted_on_a_full_sum(contract):
     @kernel
     def k(x: Scalar, t: Mutable[Scalar]):
-        t = hawk.sum(x, policy=policy)
+        t = hawk.sum(x, contract=contract)
 
     assert [type(s) for s in k.sinks] == [SampleSum]
 
 
 def test_compensated_marks_the_sink_and_binds_its_companion():
-    assert [s.policy for s in COMP.sinks if s.name == "out"] == ["compensated"]
+    assert [s.contract for s in COMP.sinks if s.name == "out"] == ["compensated"]
     assert ("accum_out", "out_c") in COMP.arg_spec
     assert ("accum_out", "out_c") not in AUTO.arg_spec
 
     @kernel
     def k(x: Scalar, key: Index, acc: Mutable[Scalar]):
-        hawk.scatter(acc, policy="compensated")[key] += x
+        hawk.scatter(acc, contract="compensated")[key] += x
 
-    assert [(s.name, s.policy) for s in k.sinks] == [("acc", "compensated"), ("acc_c", "auto")]
+    assert [(s.name, s.contract) for s in k.sinks] == [("acc", "compensated"), ("acc_c", "auto")]
 
 
 # ---- refusals: one named test each, the text that migrates the author ------
 
 
-def test_refuses_an_unknown_policy():
-    with pytest.raises(HawkError, match=r"policy='fast' is not one of \('auto', "
+def test_refuses_an_unknown_contract():
+    with pytest.raises(HawkError, match=r"contract='fast' is not one of \('auto', "
                                         r"'compensated', 'ordered'\)"):
         @kernel
         def k(x: Scalar, t: Mutable[Scalar]):
-            t = hawk.sum(x, policy="fast")
+            t = hawk.sum(x, contract="fast")
 
 
 def test_ordered_over_some_axes_is_a_block_sum_and_an_ordered_scatter_is_a_keyed_add():
     @kernel
     def ok(lane: Grid["a", "b":4], x: Scalar) -> Scalar:
-        return hawk.sum(x, over="b", policy="ordered")
+        return hawk.sum(x, over="b", contract="ordered")
 
     assert type(ok.sinks[0]).__name__ == "BlockSumWrite"
 
     @kernel
     def k2(x: Scalar, key: Index, acc: Mutable[Scalar]):
-        hawk.scatter(acc, policy="ordered")[key] += x
+        hawk.scatter(acc, contract="ordered")[key] += x
 
-    assert [(s.name, s.policy) for s in k2.sinks] == [("acc", "ordered")]
+    assert [(s.name, s.contract) for s in k2.sinks] == [("acc", "ordered")]
     @kernel
     def k3(x: Vector[3], key: Index, acc: Mutable[Vector[3], "bin":4]):
-        hawk.scatter(acc, policy="ordered")[key] += x
+        hawk.scatter(acc, contract="ordered")[key] += x
 
-    assert {s.policy for s in k3.sinks} == {"ordered"} and len(k3.sinks) == 3
+    assert {s.contract for s in k3.sinks} == {"ordered"} and len(k3.sinks) == 3
 
 
-def test_refuses_a_policy_on_a_store():
+def test_refuses_a_contract_on_a_store():
     with pytest.raises(HawkError, match="a store has no sum contract"):
         @kernel
         def k(x: Scalar, key: Index, acc: Mutable[Scalar]):
-            hawk.scatter(acc, policy="compensated")[key] = x
+            hawk.scatter(acc, contract="compensated")[key] = x
 
 
 @pytest.mark.parametrize("op", ("max", "min"))
@@ -677,13 +678,13 @@ def test_a_scatter_in_a_for_is_one_commit_per_iteration():
     @kernel
     def looped(x: Scalar, lane: Index, y: Mutable[Scalar]):
         for a in range(3):
-            hawk.scatter(y, policy="plain")[lane + a] += x * a
+            hawk.scatter(y, contract="plain")[lane + a] += x * a
 
     @kernel
     def written(x: Scalar, lane: Index, y: Mutable[Scalar]):
-        hawk.scatter(y, policy="plain")[lane + 0] += x * 0
-        hawk.scatter(y, policy="plain")[lane + 1] += x * 1
-        hawk.scatter(y, policy="plain")[lane + 2] += x * 2
+        hawk.scatter(y, contract="plain")[lane + 0] += x * 0
+        hawk.scatter(y, contract="plain")[lane + 1] += x * 1
+        hawk.scatter(y, contract="plain")[lane + 2] += x * 2
 
     assert len(looped.sinks) == 3
     assert looped.walk.digest == written.walk.digest

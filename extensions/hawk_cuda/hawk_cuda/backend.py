@@ -15,7 +15,8 @@ from hawk.artifact.sidecar import LOCAL_LIMIT_B
 from hawk.backends import Backend
 from hawk.compile import drivers
 from aether.wings.base.wrapper import literal_table
-from aether.wings.base.writer_aether import AETHER, working_set_bytes
+from aether.wings.base.writer_aether import AetherWriter, working_set_bytes
+from aether.wings.simt.writer_cells import CellsWriter
 from raptor.errors import RaptorError
 
 import hawk_cuda
@@ -58,7 +59,7 @@ def _resource_report(kernel, ptxas: dict | None, spec, scalar_type: str = "float
     from hawk.passes import fusion
     from simt.wide_class import select, tables
 
-    working = working_set_bytes(kernel.sinks, spec.primary["form"]["rolled_fold_min"], spec.settings.form)
+    working = working_set_bytes(kernel.sinks, spec.need("form", "rolled_fold_min"), spec.settings.form)
     real = 4 if scalar_type in ("float32", "banded") else 8
     card = fusion.row(scalar_type, spec)
     est = fusion.estimate(kernel.walk, card, scalar_type,
@@ -142,7 +143,8 @@ def _local_memory(name: str, entries: dict, lead: str) -> tuple | None:
 class Cuda(Backend):
     id = "cuda"
     about = "builds for the GPU"
-    writer = AETHER
+    writer = AetherWriter()
+    cells_writer = CellsWriter()
     wrapper = CUDA
     entry = "device"
     format = "ptx"

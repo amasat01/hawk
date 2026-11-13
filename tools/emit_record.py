@@ -47,13 +47,14 @@ def pytest_configure(config):
         _note("src", self.text, f"{self.target}/{self.mode}/{self.entry}")
 
     wrapper.Source.__init__ = source_init
-    blob = bundle._blob
+    blob_name = "text_blob" if hasattr(bundle, "text_blob") else "_blob"     # the name before and after it became public
+    blob = getattr(bundle, blob_name)
 
     def blob_rec(text):
         _note("blob", text, "")
         return blob(text)
 
-    bundle._blob = blob_rec
+    setattr(bundle, blob_name, blob_rec)
 
     # Every compiler command hawk runs, with machine- and run-specific paths replaced, so a change of flags or of
     # what gets compiled is visible even when the emitted text is the same.

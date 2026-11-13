@@ -3,8 +3,8 @@
 
 """Every public entry that can reach a lowering pass sets the machine descriptor itself.
 
-The surface (hawk, hawk_c): ``hawk.artifact.emit_source``, ``hawk.artifact.build_bundle``, ``hawk.emit.render_source``,
-``hawk.emit.render_body``, ``hawk_c.render`` and ``hawk_c.export``. Each runs on a tiny kernel in a fresh process, so no
+The surface (hawk, hawk_c): ``hawk.artifact.emit_source``, ``hawk.artifact.build_bundle``, ``aether.wings.base.wrapper.render_source``,
+``aether.wings.base.render.render_body``, ``hawk_c.render`` and ``hawk_c.export``. Each runs on a tiny kernel in a fresh process, so no
 test fixture and no earlier ``policy.using`` block supplies a machine."""
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import hawk
 from hawk import Mutable, Param, Scalar
 from hawk.artifact import build_bundle, emit_source
 from aether.wings.base.render import render_body
+from aether.wings.base.writer_aether import AetherWriter
 from aether.wings.base.wrapper import render_source
 from hawk.ext import DEFAULT_KIND
 from hawk.targets import build_spec
@@ -35,7 +36,7 @@ calls = {
     "hawk.artifact.emit_source": lambda: emit_source(k, targets=("host",)),
     "hawk.artifact.build_bundle": lambda: build_bundle([k], work + "/bundle", targets=("host",), cache_dir=work + "/cache"),
     "hawk.emit.render_source": lambda: render_source(k.name, tuple(k.sinks), k.walk, TARGETS["host"], spec=build_spec(("host",)), kind=DEFAULT_KIND),
-    "hawk.emit.render_body": lambda: render_body(tuple(k.sinks), k.walk, spec=build_spec(("host",)), kind=DEFAULT_KIND),
+    "hawk.emit.render_body": lambda: render_body(tuple(k.sinks), k.walk, spec=build_spec(("host",)), kind=DEFAULT_KIND, writer=AetherWriter()),
     "hawk_c.render": lambda: hawk_c.render(k),
     "hawk_c.export": lambda: hawk_c.export(k, work + "/c", check=False),
 }

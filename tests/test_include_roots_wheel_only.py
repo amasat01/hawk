@@ -29,6 +29,7 @@ def wheel_only(monkeypatch, tmp_path):
     monkeypatch.setattr(_roots, "_prefixes", lambda: [])
     monkeypatch.setattr(_roots, "WORKSPACE", tmp_path)
     monkeypatch.setattr(_roots, "SDIST_INCLUDE", tmp_path / "no_sdist")
+    monkeypatch.setattr(tc, "_PIP_ONLY_ROOT", None)     # the fallback this test triggers is put back at teardown
 
 
 def test_public_roots_fall_back_to_the_sealed_root(wheel_only):

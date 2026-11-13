@@ -10,7 +10,7 @@ rows into the cell the caller bound. The finish replays the ``ordered`` tree
 of ``eagle/reduce/canonical.h`` operation for operation (leaves of 256 slots of
 16 terms, the in-leaf halving tree, then pairwise levels; a sum's partial is a
 compensated (hi, comp) pair), so the cell is bitwise the one eagle's
-``ordered`` policy gives.
+``ordered`` contract gives.
 """
 
 from __future__ import annotations
@@ -19,16 +19,16 @@ from raptor.ir.cells import planes
 
 import numpy as np
 
+from lowering.cells import SAMPLE_SUM_COMP
+
 from ._errors import HawkError
 
 SLOTS, TERMS = 256, 16
 LEAF = SLOTS * TERMS
-#: row scratch sets made so far (one per kernel and sample count)
-made = 0
 
 
 def comp_name(name: str) -> str:
-    return f"{name}_comp"
+    return f"{name}{SAMPLE_SUM_COMP}"
 
 
 def _finite(x):
@@ -126,8 +126,6 @@ class Scratch:
     cell plane and its ``_comp`` companion."""
 
     def __init__(self, cells: dict, n: int, dtype, row: int) -> None:
-        global made
-        made += 1
         count = -(-int(n) // int(row))
         self.cells = cells
         self.rows = {}

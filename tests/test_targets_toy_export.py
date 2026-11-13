@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import _kernels as K
 import pytest
-from _extensions import backend, copy_of, make
+from _extensions import backend, copy_of, host_reads, make
 
 import hawk
 from hawk import registry
@@ -23,7 +23,7 @@ TOY = copy_of("hawk_c.backend", "toy", "BACKEND.about, BACKEND.artifact, BACKEND
 def test_an_export_row_builds_and_leaves_its_file(tmp_path, cache_dir, monkeypatch):
     assert not hasattr(TARGETS, "__setitem__")           # a read-only view, not the dict it once was
     reset_unit_memo()
-    make(tmp_path, "toy-ext", {"backends": [backend("toy", "toy_backend:BACKEND", builds=False)]},
+    make(tmp_path, "toy-ext", {"backends": [backend("toy", "toy_backend:BACKEND", builds=False, variant="cpu", reads=host_reads())]},
          modules={"toy_backend": TOY})
     monkeypatch.syspath_prepend(str(tmp_path))
     registry.reset()

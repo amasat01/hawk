@@ -26,10 +26,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass, fields
 
 from raptor.ir import linalg
-from raptor.ir.nodes import SWITCH_RENDERED, Dispatch, Loop, Node
+from raptor.ir.nodes import Dispatch, Loop, Node
 from raptor.ir.walk import Walk, dispatch_groups
 
 from lowering import cost, loops as _loops
+from lowering.dispatch import switch_form
 BranchCost, DispatchCost, is_library_call = cost.BranchCost, cost.DispatchCost, cost.is_library_call
 from raptor.wings.cpu.vectorise import UNROLL_LIMIT, interchanged_loops, kernel_nodes
 
@@ -70,7 +71,7 @@ def vectorise_blocker(walk: Walk, spec, profile: str | None = None, scalar_type:
             return f"a library call ({node.kind}) stays scalar under the exact host profile"
         if linalg.is_linalg(node) and node.kind in linalg.FACTORISATIONS + linalg.CONSUMERS:
             return f"{node.kind} branches per lane (a pivot search or a convergence skip)"
-        if isinstance(node, Dispatch) and node.policy in SWITCH_RENDERED:
+        if isinstance(node, Dispatch) and switch_form(node):
             return "a rendered switch is control flow the compiler does not vectorise"
         if isinstance(node, Loop):
             if id(node) in lanes:
@@ -115,6 +116,6 @@ def dispatch_costs(walk: Walk, spec, host_profile: str | None = None) -> dict[st
                          for b, nodes in zip(counted.branches, closures))
         out[name] = HostDispatchCost(
             branches, counted.selector_reads, counted.static_selector,
-            sample_local and groups[name].policy not in SWITCH_RENDERED   # a rendered switch keeps the loop scalar
+            sample_local and not switch_form(groups[name])   # a rendered switch keeps the loop scalar
             and all(b.vectorised for b in branches))
     return out

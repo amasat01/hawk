@@ -182,7 +182,7 @@ class Guard:
 class IndexSet:
     """A caller-built set of lanes: launch lane ``t < count`` runs lane
     ``map[t]`` of the kernel's own space (a flat grid, a ``Grid`` or a pair
-    grid), and ``hawk.lane_position()`` reads ``t``.
+    grid), and ``hawk.sample_position()`` reads ``t``.
 
     The build binds two ``lookup`` planes, ``active_map`` (ascending or not,
     in range, each lane at most once) and ``active_count`` (``uint32``), the

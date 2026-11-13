@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The lowered-unit frame (raptor.ir.unit) filled from real kernels on the host target: raptor objects and plain data only,
+"""The lowered-unit frame (raptor.protocols.unit) filled from real kernels on the host target: raptor objects and plain data only,
 no backend imported to build it, and the emitted text unchanged by it."""
 
 import contextlib
@@ -16,7 +16,7 @@ import pytest
 from hawk.artifact import bundle
 from hawk.artifact.frame import frame_of
 from raptor.ir import IR_VERSION
-from raptor.ir.unit import LoweredUnit
+from raptor.protocols.unit import LoweredUnit
 
 _CASES = [(k, None) for k in (D.axpb, D.vec3_scale, D.mat_apply, D.two_outputs, D.gather, D.energy, D.speed, D.scatter,
                               D.fraction, D.spin, D.two_wire, D.vocab, D.diagnostic, D.diagnostic_two)]
@@ -87,7 +87,7 @@ def test_cost_is_a_plain_dict_worked_out_at_frame_build():
         assert type(unit.cost) is dict and unit.cost is unit.cost
 
 
-def test_cost_read_outside_the_build_policy_block_gives_the_same_value():
+def test_cost_read_outside_the_settings_block_gives_the_same_value():
     _, lowered, _, _ = _lowered(D.energy, None)
     with contextlib.nullcontext():
         unit = frame_of(lowered)

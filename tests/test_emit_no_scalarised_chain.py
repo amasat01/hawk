@@ -49,6 +49,7 @@ This test previously failed via both plants in ``_Renderer._materialised``
 
 from __future__ import annotations
 from _specs import default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import re
@@ -76,7 +77,7 @@ def _statements(text: str):
 
 def test_every_sink_is_exactly_one_assignment():
     for name, sinks, walk in cases():
-        body = render_body(sinks, walk, spec=HOST, kind=default_kind()).text
+        body = render_body(sinks, walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
         assignments = [s for s in _statements(body) if _SINK.match(s)]
         committed = [s for s in sinks if s.name not in walk.companions]   # a companion is no commit
         assert len(assignments) == len(committed), (
@@ -87,7 +88,7 @@ def test_every_sink_is_exactly_one_assignment():
 
 def test_no_named_temporary_performs_a_per_element_read():
     for name, sinks, walk in cases():
-        body = render_body(sinks, walk, spec=HOST, kind=default_kind()).text
+        body = render_body(sinks, walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
         bad = [s for s in _statements(body)
                if _BINDING.match(s) and _ELEMENT_READ.search(s)]
         assert not bad, (
@@ -114,7 +115,7 @@ def test_a_fanout_one_chain_binds_no_interior_name():
     from raptor.ir import Leaf
 
     for name, sinks, walk in cases():
-        body = render_body(sinks, walk, spec=HOST, kind=default_kind()).text
+        body = render_body(sinks, walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
         nodes, position, counts = _fanout(walk, sinks)
         expected = {f"t{position[id(n)]}" for n in nodes
                     if not isinstance(n, Leaf) and counts.get(position[id(n)], 0) >= 2}
@@ -130,7 +131,7 @@ def test_a_fanout_one_chain_binds_no_interior_name():
 
 def test_no_leaf_is_subscripted_more_than_once():
     for name, sinks, walk in cases():
-        body = render_body(sinks, walk, spec=HOST, kind=default_kind()).text
+        body = render_body(sinks, walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
         for role, slot in walk.arg_spec:
             ident = binding_name(role, slot)
             hits = len(re.findall(rf"\b{ident}\[", body))
@@ -143,7 +144,7 @@ def test_no_leaf_is_subscripted_more_than_once():
 
 def test_a_fanout_two_node_is_materialised_and_read_twice():
     """(e) The positive half: rule must actually fire."""
-    body = render_body(*_chain6(), spec=HOST, kind=default_kind()).text
+    body = render_body(*_chain6(), spec=HOST, kind=default_kind(), writer=aether_writer()).text
     named = [m.group(1) for m in map(_BINDING.match, _statements(body)) if m]
     interior = [n for n in named if n.startswith("t")]
     assert len(interior) == 1, (

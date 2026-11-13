@@ -73,22 +73,22 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
   run as `pair=N * (N - 1) // 2`. Lane `k` is the pair with `k = j * (j - 1) / 2 + i`, so `j` is the slow index and
   neighbouring lanes read neighbouring `i`. The index is exact in 64-bit integers on every target (`float32` builds: every
   `k < 2**31`; `float64`: every `k < 2**53`). Items live in a `Table["node"]` read as `x.at(i)` and `x.at(j)`; the outputs
-  are one value per pair, a keyed `+=` gives a row sum (`hawk.scatter(rs)[j] += t`) and `policy="or"` an adjacency bit mask:
+  are one value per pair, a keyed `+=` gives a row sum (`hawk.scatter(rs)[j] += t`) and `|=` an adjacency bit mask:
 
   ```python
   @hawk.kernel
   def near(lane: Grid["pair"], x: Table["node"], mask: Mutable[UInt32]):
       i, j = hawk.math.pair_index()
       bit = hawk.math.select(x.at(i) * x.at(j) > 0.5, hawk.math.uint32(1) << hawk.math.uint32(j & 31), hawk.math.uint32(0))
-      hawk.scatter(mask, policy="or")[i * 4 + (j >> 5)] |= bit      # 4 words of 32 bits per row: up to 128 items
+      hawk.scatter(mask)[i * 4 + (j >> 5)] |= bit      # 4 words of 32 bits per row: up to 128 items
   ```
 - An **index set** (`Kind("screen", lanes=IndexSet())`) runs a list of lanes you built: launch lane `t` runs lane
-  `map[t]`, with the map and its count bound as `active_map` and `active_count`. `hawk.lane_position()` is `t`
+  `map[t]`, with the map and its count bound as `active_map` and `active_count`. `hawk.sample_position()` is `t`
   where `hawk.math.sample_index()` is `map[t]`. See [Run only the lanes you list](howto_index_set).
 - A **run-time trip count** is `for k in range(n, max=K)` with `n` an `Index` per lane: `n` iterations, held to
   `[0, K]`, never unrolled. Without `max=` `jvp` works and `vjp` is refused.
 - A **group** is the lane count in which finished lanes are compacted away (`@hawk.kernel(group=32)`).
-- A **policy** says how a sum over lanes is added up: `"auto"`, `"compensated"` or `"ordered"`.
+- A **contract** says how a sum over lanes is added up: `"auto"`, `"compensated"` or `"ordered"`.
   See [Across lanes](across_lanes).
 - `Sorted[Index]` is an index plane whose values never decrease. It lets hawk add each run of equal keys once.
 - A **target** is a Writer and a Wrapper with their compile facts, one thing `hawk.build(targets=...)` builds

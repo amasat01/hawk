@@ -11,7 +11,7 @@ at its own lane's key.
 * **forward** — matches numpy, f64 and f32; a mean; a vector payload read per
   component; ``auto`` and ``compensated`` within the per-key ``math.fsum`` contract;
 * **derivative** — the vjp has three stages and, like the jvp, matches central
-  differences; the derivative of a sum keeps its key, count and policy;
+  differences; the derivative of a sum keeps its key, count and contract;
 * **runs** — two runs are identical (the plane is zeroed each run);
 * **refused by name** — ``ordered`` and a keyed max/min read back, a stepping
   kernel, ``group=``.
@@ -45,7 +45,7 @@ def share(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:
 
 @kernel
 def share_c(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:
-    return x / hawk.sum(x, over="col", policy="compensated")
+    return x / hawk.sum(x, over="col", contract="compensated")
 
 
 @kernel
@@ -61,7 +61,7 @@ def pair(lane: Grid["row", "col":COL], x: Scalar) -> Vector[2]:
 
 @kernel
 def whole(x: Scalar) -> Scalar:
-    return x / hawk.sum(x, policy="ordered")
+    return x / hawk.sum(x, contract="ordered")
 
 
 def _bundle(kernels, tmp, mode, cache_dir):
@@ -183,12 +183,12 @@ def _reductions(sinks):
     return [n for n in _post_order(tuple(s.value for s in sinks)) if isinstance(n, ReduceSamples)]
 
 
-def test_the_derivative_of_a_sum_keeps_its_key_count_and_policy():
+def test_the_derivative_of_a_sum_keeps_its_key_count_and_contract():
     keyed = [n for n in _reductions(hawk.diff.vjp(share_c)) if n.key is not None]
-    assert keyed and all(n.count is not None and n.policy == "compensated" for n in keyed)
+    assert keyed and all(n.count is not None and n.contract == "compensated" for n in keyed)
     for derive in (hawk.diff.vjp, hawk.diff.jvp):
         found = _reductions(derive(whole))
-        assert found and {n.policy for n in found} == {"ordered"}
+        assert found and {n.contract for n in found} == {"ordered"}
 
 
 # -- runs -------------------------------------------------------------------
@@ -208,7 +208,7 @@ def test_two_runs_are_identical(tmp_path, cache_dir):
 def test_a_keyed_max_is_refused_by_name_and_an_ordered_sum_reads_back():
     @kernel
     def ordered(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:
-        return x / hawk.sum(x, over="col", policy="ordered")
+        return x / hawk.sum(x, over="col", contract="ordered")
     with pytest.raises(HawkError, match="a max over some of the lane axes"):
         @kernel
         def peak(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:
@@ -234,6 +234,6 @@ def test_a_stepping_kernel_and_group_are_refused_by_name(tmp_path, cache_dir):
 def test_a_segmented_kernel_is_refused_by_name(tmp_path, cache_dir):
     @hawk.kernel(steps=1)
     def segmented(lane: Grid["row", "col":COL], k: Index, bs: Vector[2], y: Mutable[Scalar]):
-        y = y + m.dispatch(k, [bs[0], bs[1]], policy="segmented") / hawk.sum(bs[0], over="col")
+        y = y + m.dispatch(k, [bs[0], bs[1]], strategy="segmented") / hawk.sum(bs[0], over="col")
     with pytest.raises(HawkError, match="stepping or segmented"):
         _bundle([segmented], tmp_path, "float64", cache_dir)

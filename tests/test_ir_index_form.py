@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The index-form classifier: :func:`hawk.ir.access.index_form`.
+"""The index-form classifier: :func:`raptor.ir.access.index_form`.
 
 One analysis answers "how does this index expression move with the sample (or a
 loop) index?" for every rule that asks it — the contraction recogniser's

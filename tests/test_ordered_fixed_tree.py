@@ -43,13 +43,13 @@ def tree_sum(x):
 def _total(samples):
     @kernel
     def total(lane: Grid["key", "sample":samples], x: Scalar) -> Scalar:
-        return hawk.sum(x, over="sample", policy="ordered")
+        return hawk.sum(x, over="sample", contract="ordered")
     return total
 
 
 @kernel
 def add(key: Index, x: Scalar, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="ordered")[key] += x
+    hawk.scatter(acc, contract="ordered")[key] += x
 
 
 def _exec(bundle, name, target, planes, out):
@@ -128,7 +128,7 @@ SET = Kind("lane_set", lanes=IndexSet())
 
 def _set_total(rows):
     def total_set(lane: Grid["key", "row":rows], x: Scalar) -> Scalar:
-        return hawk.sum(x, over="row", policy="ordered")
+        return hawk.sum(x, over="row", contract="ordered")
     return hawk.kernel(total_set, kind=SET)
 
 

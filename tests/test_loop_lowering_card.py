@@ -32,7 +32,7 @@ Earlier on, the whole capability was absent — a bounded ``for`` was refused
 outright by ``hawk/trace/astpass.py`` after the deletion, so this module
 could not build a single subject::
 
-    hawk.ir.nodes.HawkError: …: a bounded `for` is NOT unrolled by executing
+    hawk.HawkError: …: a bounded `for` is NOT unrolled by executing
     it any more; loop lowering lands elsewhere.
 """
 

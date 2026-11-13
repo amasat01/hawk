@@ -11,6 +11,7 @@ live to its end.
 
 from __future__ import annotations
 from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import linecache
 import re
@@ -50,7 +51,7 @@ def three_outputs():
 
 
 def _body(kernel) -> str:
-    return render_body(kernel.sinks, kernel.walk, spec=HOST, kind=default_kind()).text
+    return render_body(kernel.sinks, kernel.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
 
 
 def test_item_temps_linear_compile():

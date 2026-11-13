@@ -9,14 +9,14 @@ DUCK-TYPED attribute access — the seam between HAWK and eagle, neither of
 which imports the other.
 
 WHAT IT MATCHES: a bounded ``for`` lowers to a
-:class:`~hawk.ir.nodes.Loop`; the matched shape is ONE loop, one
+:class:`~raptor.ir.nodes.Loop`; the matched shape is ONE loop, one
 additive carry, and a reduce VARIABLE that is a real symbolic index, its
 header giving ``reduce_start``/``reduce_step``/``reduce_extent`` directly
 rather than by counting emitted terms. Each operand's reduce-axis stride is
 the loop index's COEFFICIENT in its flat index — ANONYMOUS and not
 derivable when built from a bare literal (``t.at(r * cols + c)`` folds
 ``cols`` into Python) rather than a declared
-:class:`~hawk.ir.nodes.RoleConst` (``t.at(row=r, col=c)``). An index that
+:class:`~raptor.ir.nodes.RoleConst` (``t.at(row=r, col=c)``). An index that
 READS data (``t.at(other.at(k))``) walks a runtime-chosen row — a banded
 gather, not a matrix. ``term_form`` is eagle's VALUE vocabulary
 (``bare_read``/``product_of_reads``/``transformed``), matched against
@@ -105,7 +105,7 @@ def _stride_form(index: Node, loop_index: LoopIndex) -> IndexForm | None:
     """The loop index's coefficient in one flat index expression, or
     ``None`` when the expression is not affine in it.
 
-    Read through :func:`hawk.ir.access.index_form` with quotient forms OFF:
+    Read through :func:`raptor.ir.access.index_form` with quotient forms OFF:
     a reduce-axis stride is an exact affine walk, and a dividing index walks
     no matrix axis. An index free of the loop index has coefficient ``0``."""
     return index_form(index, loop_index, quotients=False)
@@ -212,7 +212,7 @@ def _term_form(terms: Sequence[Node], operands: tuple, names: dict) -> str:
 # --------------------------------------------------------------------------- #
 def _declarations(kernel: Any) -> dict:
     """``{plane name: ((label, size, stride), …)}`` off the kernel's own
-    declarations, read by ATTRIBUTE (``hawk/ir/`` imports nothing from
+    declarations, read by ATTRIBUTE (``raptor/ir/`` imports nothing from
     ``hawk/trace/``): anything carrying ``planes`` whose values carry
     ``dims`` drives this identically."""
     out = {}

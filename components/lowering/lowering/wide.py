@@ -6,7 +6,7 @@
 A lane's vector is a value of ``W`` elements. In registers it costs ``W`` of them, and a read
 or a write at a runtime index puts all of it in the thread's local memory, a pool the runtime
 reserves for every thread of the launch whether it is used or not. The pass runs on the finished
-IR, after any derivative is taken (:func:`hawk.passes.split.stages` calls it), and writes one record
+IR, after any derivative is taken (:func:`lowering.split.stages` calls it), and writes one record
 per wide value, ``{form, plane, layout}``, which the emitters and the sidecar read. It changes no
 type: the type is the declaration; where the value lives is a property of its uses.
 
@@ -54,12 +54,11 @@ PLANE_PREFIX = "hwd"
 #: lane ``i`` is at ``k * lanes + i`` (``plane_major``). A scratch plane is the runtime's own and tiles the lanes by
 #: warp: element ``k`` of lane ``i`` is at ``((i // 32) * width + k) * 32 + i % 32``, so a warp's reads and writes of
 #: one element are one 128-byte line and an element's address is its lane's base plus ``128 k`` bytes, however
-#: wide the value (a team layout, a lane's slice contiguous, is the other: :mod:`hawk.passes.team`).
+#: wide the value (a team layout, a lane's slice contiguous, is the other: :mod:`lowering.team`).
 PLANE_MAJOR = "plane_major"
 WARP_TILED = "warp_tiled"
-TILE = 32
 
-#: The thresholds are measured data, one table per device feature class (:mod:`hawk.passes.wide_class`): the widest vector kept in
+#: The thresholds are measured data, one table per device feature class (:mod:`simt.wide_class`): the widest vector kept in
 #: registers when accessed at a run-time index, by access pattern and then by the scalar's bytes (``read``: a built value read at a
 #: runtime index; ``slot_read``: a loop-written value read by another loop; ``rotate``: a loop-carried value read in its own loop;
 #: ``write``: a chain of stores at a runtime index outside a loop), and the widest value with only compile-time indices that
@@ -876,7 +875,7 @@ def simplified(sinks: tuple) -> tuple:
 
 def place(sinks, spec, *, real_bytes: int = 8, taken=()) -> tuple:
     """``(sinks, planes, record)``: ``sinks`` with each wide value that needs a plane placed in one;
-    ``planes`` the scratch planes to make (:class:`hawk.passes.team.Plane`, one lane's width each) and ``record``
+    ``planes`` the scratch planes to make (:class:`lowering.team.Plane`, one lane's width each) and ``record``
     ``{plane: {form, plane, layout, width}}`` of every placement, for the sidecar. A kernel the pass
     leaves alone comes back as it went in, with no planes."""
     sinks = tuple(sinks)

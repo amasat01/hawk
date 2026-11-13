@@ -42,6 +42,7 @@ Every plant was then removed.
 
 from __future__ import annotations
 from _specs import default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import _deploy as L
@@ -157,8 +158,8 @@ def test_sink_policy_atomic_is_built_and_names_the_commit_plain_already_makes():
 
     atomic = sink_policy("atomic")
     assert atomic.id == "atomic"
-    plain = render_body(D.scatter.sinks, D.scatter.walk, kind=Kind("p", sink=PLAIN), spec=HOST).text
-    loud = render_body(D.scatter.sinks, D.scatter.walk, kind=Kind("a", sink=atomic), spec=HOST).text
+    plain = render_body(D.scatter.sinks, D.scatter.walk, kind=Kind("p", sink=PLAIN), spec=HOST, writer=aether_writer()).text
+    loud = render_body(D.scatter.sinks, D.scatter.walk, kind=Kind("a", sink=atomic), spec=HOST, writer=aether_writer()).text
     assert plain == loud
     assert "hawk_abi::accum_add(" in plain and "+=" not in plain
 
@@ -745,13 +746,13 @@ def test_a_derivative_of_an_own_column_compensated_kernel_commits_plain():
     names = [name for _role, name in vjp_kernel.arg_spec]
     assert "c" not in names, (
         f"the reverse-mode derivative must bind NO companion slot: {names}")
-    vjp_text = render_body(vjp_kernel.sinks, vjp_kernel.walk, spec=HOST, kind=default_kind()).text
+    vjp_text = render_body(vjp_kernel.sinks, vjp_kernel.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert "store_compensated" not in vjp_text
     assert "accum_add_compensated" not in vjp_text
 
     jvp_kernel = Kernel("own_column_compensated_solo_jvp",
                         jvp(own_column_compensated_solo, wrt=("x",)), {})
-    jvp_text = render_body(jvp_kernel.sinks, jvp_kernel.walk, spec=HOST, kind=default_kind()).text
+    jvp_text = render_body(jvp_kernel.sinks, jvp_kernel.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert "store_compensated" not in jvp_text, (
         "a derivative must never re-run the compensated commit -- "
         "d(target)/d(term) = 1 makes every derived commit a plain store:\n"
@@ -764,7 +765,7 @@ def test_a_unit_using_no_compensated_helper_renders_the_plain_prelude():
     must render the prelude exactly as a plain unit always has: one blank line
     before the namespace closes, never one per unused helper. Downstream render
     goldens pin this text byte for byte."""
-    from aether.wings.base.wrapper import abi_helpers
+    from aether.wings.base.prelude import abi_helpers
 
     for qualifier in ("__host__ __device__", "inline"):
         plain = abi_helpers(qualifier)

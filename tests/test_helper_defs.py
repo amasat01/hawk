@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 from _specs import spec_for, default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import math
@@ -89,7 +90,7 @@ def uses_library(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
 
 
 def _text(kernel) -> str:
-    return render_body(kernel.sinks, canonical(kernel.sinks), spec=HOST, kind=default_kind()).text
+    return render_body(kernel.sinks, canonical(kernel.sinks), spec=HOST, kind=default_kind(), writer=aether_writer()).text
 
 
 def _ref_nested(x):

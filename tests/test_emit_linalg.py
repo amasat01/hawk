@@ -12,6 +12,7 @@ not feel it. The tolerances are ``K n eps cond`` for solves and determinants,
 
 from __future__ import annotations
 
+from lowering.dispatch import dispatch as _dispatch
 from _specs import spec_for, default_kind
 import pathlib
 import re
@@ -273,8 +274,8 @@ def test_eigh_without_eigenvectors_is_bit_identical_and_never_builds_them(build,
 
 # --- inside a dispatch -------------------------------------------------------------
 
-@pytest.mark.parametrize("policy", ["switch", "predicated"])
-def test_factorisations_inside_the_arms_of_a_dispatch_run_per_case(build, policy):
+@pytest.mark.parametrize("strategy", ["switch", "predicated"])
+def test_factorisations_inside_the_arms_of_a_dispatch_run_per_case(build, strategy):
     n = 4
     f64 = "f64"
     a = Leaf("vocab_read", "mat_in", "A", TensorType((n, n), f64))
@@ -283,8 +284,8 @@ def test_factorisations_inside_the_arms_of_a_dispatch_run_per_case(build, policy
     lu, chol = make("lu", (a,)), make("chol", (a,))
     arms = (make("lu_solve", (lu, b)), make("cho_solve", (chol, b)),
             make("mul", (b, make("lu_det", (lu,)))))
-    kernel = Kernel(f"la_dispatch_{policy}", (
-        Assign("x", Dispatch(k, arms, policy, TensorType((n,), f64)), TensorType((n,), f64)),))
+    kernel = Kernel(f"la_dispatch_{strategy}", (
+        Assign("x", _dispatch(k, arms, strategy, TensorType((n,), f64)), TensorType((n,), f64)),))
     rng = np.random.default_rng(7)
     g = rng.standard_normal((LANES, n, n))
     mats = np.einsum("lij,lkj->lik", g, g) + n * np.eye(n)

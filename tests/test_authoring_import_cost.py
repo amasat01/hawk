@@ -3,8 +3,8 @@
 
 """``import hawk`` still imports no heavy tier: ``hawk/__init__.py`` binds
 authoring names lazily (PEP 562 ``__getattr__``), so importing the package
-alone does not import ``hawk.ir``, ``hawk.trace``, ``hawk.diff``,
-``hawk.emit`` or ``hawk.compile``. The pinned module set is an exact
+alone does not import ``raptor.ir``, ``hawk.trace``, ``hawk.diff``,
+``aether.wings.base`` or ``hawk.compile``. The pinned module set is an exact
 equality, checked in a fresh subprocess, and allows only ``hawk``,
 ``hawk._core`` (the binding the import-time self-check reads) and
 ``hawk._contracts`` (the layout it compares against).

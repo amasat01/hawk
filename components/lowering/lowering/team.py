@@ -4,10 +4,10 @@
 """Team-form linear algebra: what the split cuts at, and the planes between its stages.
 
 A factorisation of a matrix too large for one lane (``n`` above
-:data:`~hawk.ir.linalg.MAX_DIM`, or any size under ``linalg_form="team"``) is worked by a
+:data:`~raptor.ir.linalg.MAX_DIM`, or any size under ``linalg_form="team"``) is worked by a
 team of threads, one team per lane, on a matrix that lives in scratch the runtime owns
 (``aether::linalg::team``). That makes it a launch boundary, like a reduction over samples
-that a later stage reads (:mod:`hawk.passes.split`):
+that a later stage reads (:mod:`lowering.split`):
 
 * the per-lane stage before it stores the operands (the matrix, each right-hand side) into
   planes of ``lanes x size`` elements, a lane's slice contiguous (:class:`TeamStore`);
@@ -29,7 +29,9 @@ from dataclasses import dataclass
 from raptor.ir.types import TensorType
 from raptor.ir.fold import exceeds
 from raptor.ir.linalg import CONSUMERS, FACTORISATIONS, QR_OPS, dimension, is_linalg
-from raptor.ir.block import BlockSum, BlockSumWrite, block_shaped, factors, ordered_case
+from .block import BlockSum, block_of, block_shaped, factors_of, is_block, is_block_write, key_of, ordered_case
+from .block import plain as plain_sum
+from .cells import stored
 from raptor.ir.nodes import At, Const, Dispatch, Leaf, Node, Op, SampleIndex, WideWrite
 from raptor.errors import RaptorError
 
@@ -70,15 +72,15 @@ def threads(n: int, forced: int = 0) -> int:
 
 # -- the nodes a stage boundary leaves behind --------------------------------------
 
-#: Threads of the block of a stage that only copies operands into team scratch (the launch's resolved block for it), and the
-#: elements per lane below which one thread per lane copies them: each thread of the block must move at least 4, or the block idles.
-COPY_THREADS = 256
-COPY_MIN = 4 * COPY_THREADS
+def copy_min(spec) -> int:
+    """The elements per lane below which one thread per lane copies operands into team scratch: each thread of the copy block
+    (the variant's ``lanes.copy_threads``) must move at least 4, or the block idles."""
+    return 4 * spec.need("lanes", "copy_threads")
 
 
-def copy_spec() -> "TeamSpec":
-    """The team record of a copy stage: a block per lane, no scratch of its own, no steps (its sinks are its body)."""
-    return TeamSpec(COPY_THREADS, (), ())
+def copy_spec(spec) -> "TeamSpec":
+    """The team record of a copy stage: a block per lane (``lanes.copy_threads`` threads), no scratch of its own, no steps (its sinks are its body)."""
+    return TeamSpec(spec.need("lanes", "copy_threads"), (), ())
 
 
 def size_of(ttype: TensorType) -> int:
@@ -134,7 +136,7 @@ class Step:
 class TeamSpec:
     """A team stage: its size, the calls in order and the scratch planes they touch. ``grid`` is
     what a block of the launch is: a lane (``"lanes"``), a key of a block sum (``"keys"``, then
-    ``keyed`` is the plane's :class:`~hawk.passes.split.Keyed` record and ``out`` the plane the stage
+    ``keyed`` is the plane's :class:`~lowering.split.Keyed` record and ``out`` the plane the stage
     commits to, which is not scratch of its own), or, in an ordered scatter into the plane ``target``, a
     chunk of lanes (``"chunks"``) or a cell of ``target`` (``"targets"``)."""
 
@@ -147,7 +149,7 @@ class TeamSpec:
     target: str | None = None
     #: Blocks per key of a split block sum's first stage (``count`` is then ``keys * groups``).
     groups: int = 1
-    #: The lanes a block of a warp-form kernel serves: ``threads / 32`` warps, one per lane (:mod:`hawk.passes.lane`).
+    #: The lanes a block of a warp-form kernel serves: ``threads / 32`` warps, one per lane (:mod:`lowering.lanes`).
     lanes: int = 1
     #: The warps a block of a warp-per-lane kernel holds, a lane each (set only by the card kit's ``WARPS``).
     warps: int = 1
@@ -402,7 +404,7 @@ def refuse_in_dispatch(sinks, order, max_dim: int, asked: str) -> None:
     for node in order:
         if id(node) in seen:
             continue
-        if isinstance(node, BlockSum):
+        if is_block(node):
             raise RaptorError(
                 "a sum over the lanes of a key of per-row products into a dense block is a team "
                 "stage, which every lane takes part in, so it cannot be inside an arm of a dispatch; "
@@ -436,7 +438,7 @@ def spec_of(groups, level: int, depth: dict, seen: set, forced: int = 0) -> Team
 def markers(spec: TeamSpec) -> tuple:
     """The sinks of a team stage: one ``wide_out`` marker per plane it works on (the scratch and a
     block sum's ``out``), which bind the plane as an argument; the stage's body is
-    :mod:`hawk.emit.team`'s."""
+    :mod:`aether.wings.base.team_emit`'s."""
     names = [(p.name, p.dtype) for p in spec.planes] + ([(spec.out, REAL)] if spec.out else [])
     return tuple(WideWrite(name, Const(0, TensorType((), "int32")) if dtype == "int32"
                            else Const(0.0, TensorType((), "f64")))
@@ -452,16 +454,16 @@ def block_size(payload: Node) -> int:
     return size_of(payload.ttype)
 
 
-def block_chosen(payload: Node, build_form: str, spec, policy: str = "auto") -> bool:
+def block_chosen(payload: Node, build_form: str, spec, contract: str = "auto") -> bool:
     """Whether a block-shaped sum of ``payload`` is kept one :class:`BlockSum` under ``build_form`` (the build's
     ``linalg_form``): a block larger than ``rolled_fold_min`` (the variant's ``form.rolled_fold_min``) under ``"auto"``, of any size under
     ``"team"``, never under ``"thread"``; the ordered scalar or vector case always. A block with an extent above the variant's
     ``linalg.team_max_dim`` (the ordered vector's length, or either extent of a rank-1 product) is never kept: the sum is
     worked per entry (per sample), as it was before the limit left the trace."""
     limit = None if spec is None else team_max_dim_of(spec)
-    if limit is not None and block_shaped(payload, policy) and not block_shaped(payload, policy, limit):
+    if limit is not None and block_shaped(payload, contract) and not block_shaped(payload, contract, limit):
         return False
-    return ordered_case(payload, policy, None if spec is None else team_max_dim_of(spec)) or (
+    return ordered_case(payload, contract, None if spec is None else team_max_dim_of(spec)) or (
         build_form != "thread" and (build_form == "team" or exceeds(block_size(payload), spec.primary.get("form", {}).get("rolled_fold_min"))))
 
 
@@ -474,20 +476,20 @@ def ordered_wanted(payload: Node, spec=None) -> bool:
 def plain_blocks(sinks, build_form: str, spec) -> tuple:
     """``sinks`` with every :class:`BlockSum` that ``build_form`` does not keep (:func:`block_chosen`) made its plain
     sum: a stored one as the cell or per-entry sinks of that sum, one read back in the body as a plain
-    :class:`~hawk.ir.nodes.ReduceSamples`."""
+    :class:`~raptor.ir.nodes.ReduceSamples`."""
     from raptor.ir.walk import resink as _resink
     from raptor.ir.walk import canonical_nodes, substitute
 
     sinks = tuple(sinks)
-    mapping = {id(n): n.plain() for n in canonical_nodes(sinks)[0]
-               if isinstance(n, BlockSum) and not block_chosen(n.operands[0], build_form, spec, n.policy if n.kept else "auto")}
+    mapping = {id(n): plain_sum(n) for n in canonical_nodes(sinks)[0]
+               if is_block(n) and not block_chosen(n.operands[0], build_form, spec, n.contract if n.kept else "auto")}
     if not mapping:
         return sinks
     out: list = []
     for sink in sinks:
-        if isinstance(sink, BlockSumWrite) and id(sink.block) in mapping:
-            out.extend(mapping[id(sink.block)].stored(sink.name))
-        elif isinstance(sink, BlockSumWrite) or not hasattr(sink, "value"):
+        if is_block_write(sink) and id(block_of(sink)) in mapping:
+            out.extend(stored(mapping[id(block_of(sink))], sink.name))
+        elif is_block_write(sink) or not hasattr(sink, "value"):
             out.append(sink)
         else:
             new = substitute(tuple(sink.operands), mapping)
@@ -512,7 +514,7 @@ def max_dim_of(spec, required: bool = False) -> int | None:
 
 def widths(block: BlockSum) -> tuple:
     """``(p, q, rows)`` of ``block``: the width of ``u``, of ``v`` and the rows a lane holds."""
-    u, v, rows = block.factors
+    u, v, rows = factors_of(block)
     if v is None:
         return (u.ttype.shape[-1] if u.ttype.shape else 1), 1, rows
     return u.ttype.shape[-1], (v.ttype.shape[-1] if len(v.ttype.shape) == 2 or (
@@ -525,7 +527,7 @@ def plane_reads(block: BlockSum, out: str | None, read: bool) -> dict:
     p, q, rows = widths(block)
     if out is None or read or p * q != 1 or rows > 1:
         return {}
-    u, v, _ = block.factors
+    u, v, _ = factors_of(block)
     bare = lambda f: isinstance(f, Leaf) and f.role == "per_sample" and not f.ttype.shape
     return {role: f for role, f in (("u", u), ("v", v)) if f is not None and bare(f)}
 
@@ -535,7 +537,7 @@ def block_planes(index: int, block: BlockSum, with_g: bool = True, inplace: tupl
     per lane, absent when it is ``u``) and, when the body reads the sum back, the block ``g``
     (``p * q`` per key). A sum that is only stored goes straight into its output plane."""
     p, q, rows = widths(block)
-    u, v, _ = block.factors
+    u, v, _ = factors_of(block)
     base = f"{PLANE_PREFIX}b{index}"
     out = [] if "u" in inplace else [Plane(f"{base}_u", REAL, rows * p)]
     if v is not None and u is not v and "v" not in inplace:
@@ -550,14 +552,14 @@ def block_read(block: BlockSum, index: int) -> Node:
     plane ``g`` (a stage that follows the one that computes the factors reads it)."""
     from . import TeamRead
 
-    return TeamRead(f"{PLANE_PREFIX}b{index}_g", block.ttype, block.key)
+    return TeamRead(f"{PLANE_PREFIX}b{index}_g", block.ttype, key_of(block))
 
 
 def factor_stores(index: int, block: BlockSum, inplace: tuple = ()) -> tuple:
     """The stores of the factors of ``block`` into their scratch planes, by the per-lane stage (none for a factor read in place)."""
     from . import TeamStore
 
-    u, v, _ = block.factors
+    u, v, _ = factors_of(block)
     base = f"{PLANE_PREFIX}b{index}"
     stores = [("u", u)] if (u is v or v is None) else [("u", u), ("v", v)]
     return tuple(TeamStore(f"{base}_{role}", f) for role, f in stores if role not in inplace)
@@ -570,7 +572,7 @@ GROUPS = 64
 def block_spec(index: int, block: BlockSum, out: str | None, keyed, read: bool = True, inplace: bool = False, forced: int = 0) -> TeamSpec:
     """The team stage of ``block``: one call that sums the rows of each key into its output plane
     ``out`` (``(*payload, *kept)``, payload first) when the sum is stored and not read back, else
-    into the block ``g``, which is then copied to ``out`` when there is one. ``keyed`` is the plane's :class:`~hawk.passes.split.Keyed`: its key count is the
+    into the block ``g``, which is then copied to ``out`` when there is one. ``keyed`` is the plane's :class:`~lowering.split.Keyed`: its key count is the
     stage's grid. The step's ``m`` is the rows a lane holds."""
     p, q, rows = widths(block)
     direct = out is not None and not read
@@ -578,7 +580,7 @@ def block_spec(index: int, block: BlockSum, out: str | None, keyed, read: bool =
     planes = block_planes(index, block, not direct, tuple(inplace))
     names = {pl.name.rsplit("_", 1)[1]: pl.name for pl in planes}
     names.update({role: leaf.name for role, leaf in inplace.items()})
-    ones = block.factors[1] is None         # an ordered plain sum: no v, the constant 1
+    ones = factors_of(block)[1] is None         # an ordered plain sum: no v, the constant 1
     roles = (("u", names["u"]), *(() if ones else (("v", names.get("v", names["u"])),)),
              *((("out", out),) if out else ()), *((("g", names["g"]),) if not direct else ()))
     if direct and p * q == 1 and rows <= 1:      # a plain stored sum: GROUPS blocks per key add fixed partials, one block folds them
@@ -618,9 +620,6 @@ def scatter_names(target: str) -> tuple:
     return tuple(f"{PLANE_PREFIX}s_{target}_{role}" for role in ("k", "v", "p", "m"))
 
 
-#: Threads of the team of an ordered scatter's stages: one does the adds, the rest of a warp idles.
-SCATTER_THREADS = 32
-
 #: The key a lane's log slot holds when the lane added nothing there; a chunk pass skips a negative key.
 NO_KEY = -1
 
@@ -629,7 +628,7 @@ NO_KEY = -1
 STATUS_FLAGS = 256
 
 
-def scatter_specs(target: str, width: int, max_chunks: int) -> tuple:
+def scatter_specs(target: str, width: int, max_chunks: int, threads: int) -> tuple:
     """The three team stages that add the logs of the ordered scatter into ``target``; a lane holds
     ``width`` log slots (one per add of its body, in program order), a slot a lane did not write
     holds :data:`NO_KEY`. Lanes are cut into ``chunks`` runs of consecutive lanes
@@ -639,14 +638,15 @@ def scatter_specs(target: str, width: int, max_chunks: int) -> tuple:
     plane), and puts :data:`NO_KEY` back in each slot it read; a key outside the cells that is not
     :data:`NO_KEY` adds nothing and sets the chunk's flag in the status plane, which the runtime
     reads after the run; one block per cell adds the cell's partial sums in chunk order into
-    ``target``. No atomics and no sort: the same bits on every launch. ``max_chunks`` is the variant's ``scatter.max_chunks``."""
+    ``target``. No atomics and no sort: the same bits on every launch. ``max_chunks`` is the variant's ``scatter.max_chunks``; ``threads`` its ``scatter.threads``, the team of each stage (one
+    does the adds, the rest of a warp idles)."""
     keys, values, parts, status = scatter_names(target)
     logs = (Plane(keys, "int32", width, fill=NO_KEY), Plane(values, REAL, width))
     part = Plane(parts, PARTIAL, 1, "target")
     flags = Plane(status, "int32", 1 + STATUS_FLAGS, "once", fill=0)    # [cells, flag of chunk 0, flag of chunk 1, ...]
 
     def stage(op, roles, grid, planes, out=None):
-        return TeamSpec(SCATTER_THREADS, (Step(op, width, 0, roles, max_chunks=max_chunks),), planes, grid, out=out, target=target)
+        return TeamSpec(threads, (Step(op, width, 0, roles, max_chunks=max_chunks),), planes, grid, out=out, target=target)
 
     return (stage("scatter_zero", (("part", parts), ("status", status)), "targets", (part, flags)),
             stage("scatter_chunks", (("k", keys), ("v", values), ("part", parts), ("status", status)), "chunks",

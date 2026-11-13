@@ -42,7 +42,6 @@ from raptor.ir import (
     Sink,
     WideWrite,
     build_loop,
-    canonical,
     canonical_nodes,
 )
 from .._errors import HawkError
@@ -51,7 +50,6 @@ from raptor.ir.loops import exit_kwargs
 from raptor.ir.nodes import (
     ADJOINT_PREFIX,
     COMPANION_SUFFIX,
-    DISPATCH_POLICIES,
     NAMESPACE_SEP,
     RAW_KIND,
     Finish,
@@ -63,7 +61,6 @@ from raptor.ir.nodes import (
 from .. import components as _components
 
 _slotwise = _components.view("lowering", "slotwise")
-from raptor.ir.block import expand_stores
 from raptor.ir.walk import dispatch_groups
 from raptor.ir.types import INT_PLANE_DTYPES, TensorType
 from .altpath import AltPath
@@ -71,6 +68,10 @@ from .ordered import kept_of, order
 from .jump import JumpPlan, drop_width, jump_of
 from .loops import _taken_row, forward_loop, guarded_select, reverse_loop
 from raptor.rules.core import rule_for, zero_like
+_dispatch_kind = _components.view("lowering", "dispatch")
+
+_block = _components.view("lowering", "block")
+_cells = _components.view("lowering", "cells")
 
 #: Prefixes of the planes a derivative declares (never a wire namespace).
 TANGENT_PREFIX = "dot"
@@ -148,10 +149,10 @@ def _masked_sink(sink: Node, mask: Node) -> Node:
     contribution, so every sink shape alike stores or accumulates nothing for
     a terminated sample.
 
-    A ``sink`` may be a :class:`~hawk.ir.nodes.Loop` (a reverse-mode
+    A ``sink`` may be a :class:`~raptor.ir.nodes.Loop` (a reverse-mode
     loop's own scatter commit): only its per-iteration commits are masked,
     not its header/carries/``nexts``. Rebuilt through
-    :func:`~hawk.ir.build_loop` rather than :class:`Loop` directly so the
+    :func:`~raptor.ir.build_loop` rather than :class:`Loop` directly so the
     loop's boundary is recomputed by the same code every other loop producer
     uses."""
     if isinstance(sink, Loop):
@@ -247,7 +248,7 @@ def _rederivable(derive):
 @_rederivable
 def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
         primal_unit: str | None = None,
-        policy: Mapping[str, str] | None = None) -> Derived:
+        strategy: Mapping[str, str] | None = None) -> Derived:
     """The reverse-mode derivative IR of ``primal``: one adjoint plane per
     primal sink in, one gradient plane per ``wrt`` input out. Returned as
     :class:`Derived`, tagging ``primal``'s name and the resolved ``wrt``.
@@ -261,30 +262,30 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
     A default automatic kernel is differentiated through its single step:
     the derivative of one step, as for the plain kernel.
 
-    ``policy={group: policy}`` sets the lowering of the derived dispatches
+    ``strategy={group: strategy}`` sets the lowering of the derived dispatches
     of the primal's dispatch GROUP ``group`` (the sidecar's positional
-    ``dispatch<i>`` name), which otherwise inherit the primal's policy: the
+    ``dispatch<i>`` name), which otherwise inherit the primal's strategy: the
     reverse takes its own structure. Any of
-    :data:`~hawk.ir.nodes.DISPATCH_POLICIES` is accepted; an unknown group
-    or policy refuses by name."""
+    :data:`lowering.dispatch.DISPATCH_STRATEGIES` is accepted; an unknown group
+    or strategy refuses by name."""
     if getattr(primal, "members", None):
         from .chain import vjp_chain
-        return vjp_chain(primal, wrt, primal_unit, policy)
+        return vjp_chain(primal, wrt, primal_unit, strategy)
     primal = _single_step(primal)
     sinks = _sinks_of(primal)
     cells = param_cell_names(canonical_nodes(sinks)[0])
     if cells:
-        return _vjp_param_cells(primal, cells, wrt, primal_unit, policy)
-    return _vjp(primal, sinks, wrt, primal_unit, policy, summed=(), kept=kept_of(tuple(getattr(primal, "sinks", primal))))
+        return _vjp_param_cells(primal, cells, wrt, primal_unit, strategy)
+    return _vjp(primal, sinks, wrt, primal_unit, strategy, summed=(), kept=kept_of(tuple(getattr(primal, "sinks", primal))))
 
 
 def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
-         primal_unit: str | None, policy: Mapping[str, str] | None,
+         primal_unit: str | None, strategy: Mapping[str, str] | None,
          summed: tuple, kept: tuple | None = None) -> Derived:
     """:func:`vjp` proper; the gradient of each input named in ``summed``
-    is summed over samples (:class:`~hawk.ir.nodes.SampleSum`). ``kept`` is set when the primal
+    is summed over samples (:class:`~raptor.ir.nodes.SampleSum`). ``kept`` is set when the primal
     stores an ordered keyed sum: its scatters become an ordered log (:mod:`hawk.diff.ordered`)."""
-    overrides = _policy_overrides(primal, policy)
+    overrides = _strategy_overrides(primal, strategy)
     jump = jump_of(primal)
     drop_width((), wrt, jump)
     seq, position = canonical_nodes(sinks)
@@ -443,22 +444,22 @@ def _gradient_sink(leaf: Node, name: str, summed: tuple, value: Node) -> Node:
         if leaf.ttype.shape:
             raise HawkError(f"the gradient of {leaf.name!r} cannot be summed over samples: "
                             f"only a scalar leaf is, and it has shape {leaf.ttype.shape}")
-        return ReduceSamples("sum", value).stored(name, leaf.ttype)[0]
+        return _cells.stored(ReduceSamples("sum", value), name, leaf.ttype)[0]
     return Assign(name, value, leaf.ttype)
 
 
 def _vjp_param_cells(primal: Any, cells: tuple, wrt: Sequence[str] | None,
                      primal_unit: str | None,
-                     policy: Mapping[str, str] | None) -> Derived:
+                     strategy: Mapping[str, str] | None) -> Derived:
     """The reverse of a kernel reading parameter cells (see
     :func:`hawk.diff.param_planes`): differentiate the form that reads each
     cell as a per-sample plane, sum each cell's gradient over every 32
-    samples (``bar_<name>`` rows, :class:`~hawk.ir.nodes.SampleSum`), then
+    samples (``bar_<name>`` rows, :class:`~raptor.ir.nodes.SampleSum`), then
     read the cells again in the derived kernel."""
     from .params import demote, promote
 
     per_sample = _Demoted(primal, demote(_sinks_of(primal)))
-    d = _vjp(per_sample, per_sample.sinks, wrt, primal_unit, policy, summed=cells)
+    d = _vjp(per_sample, per_sample.sinks, wrt, primal_unit, strategy, summed=cells)
     return Derived(promote(d, cells), primal=_primal_name(primal), kind="vjp",
                    wrt=d.wrt, primal_unit=primal_unit, jump=d.jump)
 
@@ -595,7 +596,7 @@ def _jvp(primal: Any, *, wrt: Sequence[str] | None = None,
                 tangent[key(node)] = At(plane, node.index, node.ttype)
             continue
         if isinstance(node, Dispatch):
-            # `t_out = dispatch(kind, [t_e0, ..., t_eK])`, same policy and
+            # `t_out = dispatch(kind, [t_e0, ..., t_eK])`, same strategy and
             # selector (`kind` carries no tangent of its own). A branch with
             # no tangent contributes the structural zero — select's own
             # missing-tangent rule — and branch tangents are used only
@@ -605,7 +606,7 @@ def _jvp(primal: Any, *, wrt: Sequence[str] | None = None,
             if any(t is not None for t in branch_tangents):
                 filled = [t if t is not None else zero_like(b.ttype)
                          for t, b in zip(branch_tangents, node.branches)]
-                tangent[key(node)] = Dispatch(node.selector, filled, node.policy,
+                tangent[key(node)] = _dispatch_kind.dispatch(node.selector, filled, _dispatch_kind.strategy(node),
                                               node.ttype)
             continue
         if any(tangent.get(key(c)) is not None for c in node.operands):
@@ -657,14 +658,14 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
     seeded at every primal sink.
 
     :func:`_dispatch_vjp` reuses this in isolation over one
-    :class:`~hawk.ir.nodes.Dispatch` branch's exclusive sub-DAG, with
+    :class:`~raptor.ir.nodes.Dispatch` branch's exclusive sub-DAG, with
     ``local_pass=True``: a fresh ``adjoint`` seeded at only that branch's
     root. A node reachable from branch j alone keeps exactly that seed's
     contribution; one also reachable elsewhere accumulates a second
     contribution the ordinary way, via the same ``_accumulate`` fan-in any
     shared subexpression uses.
 
-    ``local_pass`` changes one thing: an :class:`~hawk.ir.nodes.At`'s reverse
+    ``local_pass`` changes one thing: an :class:`~raptor.ir.nodes.At`'s reverse
     (gather -> scatter) is a real sink, not a value, so it cannot be masked
     in place. A local pass records its contribution into ``adjoint`` instead
     and leaves the scatter itself to :func:`_dispatch_vjp`'s merge step,
@@ -746,12 +747,12 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
     still run every branch's arithmetic under a zero factor.
 
     Every node any branch's pass reached gets one combined adjoint term,
-    ``dispatch(kind, [c_0 or 0, ..., c_K or 0])`` (same policy as the primal,
+    ``dispatch(kind, [c_0 or 0, ..., c_K or 0])`` (same strategy as the primal,
     so the emitter elides branches that stayed structurally zero),
     accumulated into the enclosing pass like any other contribution (under
-    ``overrides``' policy for this node when :func:`vjp` was given one), so a
+    ``overrides``' strategy for this node when :func:`vjp` was given one), so a
     node reached through multiple paths sums correctly. A reached
-    :class:`~hawk.ir.nodes.At` is the one exception: its combined value
+    :class:`~raptor.ir.nodes.At` is the one exception: its combined value
     becomes one scattered ``AccumWrite`` here, since a scatter is a sink, not
     something a downstream node could read further. ``kind`` itself is never
     seeded and receives no adjoint.
@@ -762,7 +763,7 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
     seeds its own reverse ONCE in the enclosing pass (the adjoint is linear in
     the seed). Every case contributes a real term, so no chain ever runs on a
     zero seed; a node only some branches read keeps the per-branch path."""
-    policy = (overrides or {}).get(id(node), node.policy)
+    strategy = (overrides or {}).get(id(node), _dispatch_kind.strategy(node))
     shared = _shared_by_all(node, key)
     reached: dict[int, dict[int, Node]] = {}
     for j, branch in enumerate(node.branches):
@@ -787,7 +788,7 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
         target = seq[slot]
         branch_terms = [per_branch.get(j) if per_branch.get(j) is not None
                         else zero_like(target.ttype) for j in range(node.K)]
-        combined = Dispatch(node.selector, branch_terms, policy, target.ttype)
+        combined = _dispatch_kind.dispatch(node.selector, branch_terms, strategy, target.ttype)
         if isinstance(target, At):
             if target.plane in inputs:
                 scattered.add(target.plane.name)
@@ -818,28 +819,28 @@ def _shared_by_all(node: Dispatch, key) -> frozenset:
     return frozenset(common)
 
 
-def _policy_overrides(primal: Any, policy: Mapping[str, str] | None
+def _strategy_overrides(primal: Any, strategy: Mapping[str, str] | None
                       ) -> dict[int, str]:
-    """``{id(dispatch node): policy}`` for :func:`vjp`'s ``policy=``,
+    """``{id(dispatch node): strategy}`` for :func:`vjp`'s ``strategy=``,
     resolving each group name through the primal's own walk (the numbering
-    its sidecar publishes). Refuses an unknown group or policy by name."""
-    if not policy:
+    its sidecar publishes). Refuses an unknown group or strategy by name."""
+    if not strategy:
         return {}
     walk = getattr(primal, "walk", None)
     if walk is None:
-        walk = canonical(tuple(getattr(primal, "sinks", primal)))
+        walk = _cells.walk(tuple(getattr(primal, "sinks", primal)))
     groups = dispatch_groups(walk)
     out: dict[int, str] = {}
-    for group, chosen in policy.items():
+    for group, chosen in strategy.items():
         if group not in groups:
             raise HawkError(
-                f"vjp(policy=...): {group!r} is not a dispatch group of "
+                f"vjp(strategy=...): {group!r} is not a dispatch group of "
                 f"{_primal_name(primal) or 'this IR'}; its groups are "
                 f"{sorted(groups)}")
-        if chosen not in DISPATCH_POLICIES:
+        if chosen not in _dispatch_kind.DISPATCH_STRATEGIES:
             raise HawkError(
-                f"vjp(policy=...): unknown policy {chosen!r} for {group!r}; "
-                f"declared are {DISPATCH_POLICIES}")
+                f"vjp(strategy=...): unknown strategy {chosen!r} for {group!r}; "
+                f"declared are {_dispatch_kind.DISPATCH_STRATEGIES}")
         out[id(groups[group])] = chosen
     return out
 
@@ -850,7 +851,7 @@ def _policy_overrides(primal: Any, policy: Mapping[str, str] | None
 
 def _sets_bits(node: Node) -> bool:
     """Whether ``node`` is an OR-scatter, or a loop whose body holds one."""
-    return (isinstance(node, AccumWrite) and node.policy == "or") or any(
+    return (isinstance(node, AccumWrite) and node.contract == "or") or any(
         _sets_bits(s) for s in getattr(node, "body_sinks", ()))
 
 
@@ -864,10 +865,10 @@ def _sinks_of(primal: Any) -> tuple[Sink, ...]:
     # Termination is DISCRETE: a primal's finish statement has no derivative,
     # so the derived kernel binds no counter, writes no mask and carries no
     # sidecar ``finish``; it keeps the primal's mask READ (``_mask_termination``).
-    kept = expand_stores(s for s in sinks if not isinstance(s, Finish))
+    kept = _block.expand_stores(s for s in sinks if not isinstance(s, Finish))
     if any(_sets_bits(s) for s in kept):
         raise HawkError(
-            f"{primal!r} sets bits by key (hawk.scatter(y, policy=\"or\")): a bit mask is "
+            f"{primal!r} sets bits by key (`|=`): a bit mask is "
             "discrete and has no derivative; differentiate a kernel that does not "
             "write it")
     if not kept:
@@ -1015,7 +1016,7 @@ def _tangent_sink(sink: Sink, tangent: Node | None, name: _Namer,
     derived = name(sink.name)
     index = sink.index if index is None else index
     if isinstance(sink, AccumWrite):
-        return AccumWrite(derived, value, index, sink.ttype, sink.policy)
+        return AccumWrite(derived, value, index, sink.ttype, sink.contract)
     if isinstance(sink, WideWrite):
         return WideWrite(derived, value, index, sink.ttype)
     if isinstance(sink, SampleSum):

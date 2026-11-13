@@ -14,7 +14,7 @@ same DAG the author would have built by hand, since HAWK's codegen
 contract is one body string per kernel.
 
 **The boundary is recorded anyway.** The inlined subgraph is wrapped in
-a :class:`hawk.ir.nodes.Primitive` node whose operands are that subgraph
+a :class:`raptor.ir.nodes.Primitive` node whose operands are that subgraph
 plus the declared inputs. Reverse and forward mode apply the supplied
 rule to those inputs and never push into the subgraph, so the author's
 derivative replaces the table's. A shared subexpression still earns its

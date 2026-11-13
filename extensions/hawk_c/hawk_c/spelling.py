@@ -7,7 +7,7 @@ tables and small string functions; nothing here renders a kernel."""
 
 from __future__ import annotations
 
-from aether.wings.base.spelling import _real_literal
+from aether.wings.base import spelling as _base
 from raptor.errors import RaptorError
 
 #: ScalarMode id to the aether C width word used in vector and matrix type names.
@@ -97,7 +97,7 @@ def libm_name(fn: str, mode) -> str:
 
 def real_literal(value: float, mode) -> str:
     """A real constant as a cast double literal; the mode does not change it."""
-    return f"((hawk_real_t){_real_literal(value)})"
+    return f"((hawk_real_t){_base.real_literal(value)})"
 
 
 def int_literal(value: int, dtype: str) -> str:

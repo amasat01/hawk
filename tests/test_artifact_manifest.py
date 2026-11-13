@@ -24,9 +24,10 @@ from hawk.artifact import TOP_LEVEL_KEY_ORDER_V2
 
 def test_the_manifest_passes_raptors_own_shape_validator(built):
     from raptor.schema import validate_manifest
+    from simt import MANIFEST
 
     for name, bundle in built.items():
-        validate_manifest(json.loads(bundle.manifest_path.read_text())), name
+        validate_manifest(json.loads(bundle.manifest_path.read_text()), MANIFEST["vocabulary"]), name
 
 
 def test_top_level_key_order_is_the_contractual_one(built):

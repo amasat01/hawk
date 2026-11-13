@@ -9,6 +9,7 @@ intermediate; every refusal names both members and the name; the estimate fences
 
 from __future__ import annotations
 from _specs import DEVICE, HOST
+from _toolchain import real_arch
 
 import linecache
 import pathlib
@@ -240,7 +241,7 @@ def _stages(kernel, dtype: str, target: str, tmp_path) -> list:
     return [st["kernel"] for st in side.get("stages", ())] or [kernel.name]
 
 
-def _device_row_at_its_register_line(scalar_type, host=False):
+def _device_row_at_its_register_line(scalar_type, spec, host=False):
     return {**fusion_card(scalar_type, DEVICE), "R_file": 64, "c_local_over_plane": None}     # a frame byte as dear as a host's
 
 
@@ -382,7 +383,7 @@ def test_chain_compaction_twin(target, isa, private_cache, tmp_path, monkeypatch
 
 
 def _ptxas(kernel, dtype, tmp_path):
-    art = B.build(kernel, tmp_path / kernel.name, targets=("cuda",), device_arch="sm_61", mode=dtype)
+    art = B.build(kernel, tmp_path / kernel.name, targets=("cuda",), device_arch=real_arch(), mode=dtype)
     return art.sidecar["ptxas"]
 
 

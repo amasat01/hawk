@@ -27,6 +27,7 @@ tile spans eight vector registers of the kernel's ``Real``. The SAME TU built wi
 
 from __future__ import annotations
 from _specs import default_kind
+from _specs import aether_writer
 from _specs import spec_for
 from _specs import HOST
 
@@ -278,7 +279,7 @@ def test_who_keeps_the_per_sample_loop():
     # a derived loop pair: the reverse loop reads the primal's per-sample count
     derived = hawk.Kernel("gated_sum_vjp", vjp(gated_sum, wrt=("x", "g")))
     assert interchanged_loops(derived.walk) == ()
-    assert loop_interchange(derived.sinks, derived.walk, default_kind(), spec=HOST) is None
+    assert loop_interchange(derived.sinks, derived.walk, default_kind(), spec=HOST, writer=aether_writer()) is None
     # a loop-free kernel has nothing to interchange
     assert interchanged_loops(_loop_free.walk) == ()
 

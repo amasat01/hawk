@@ -30,7 +30,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-from raptor.protocols.refusal import ToolchainAbsent
+from lowering.exchange import ToolchainAbsent
 from raptor.errors import RaptorError
 from hawk.compile import payload as _payload
 

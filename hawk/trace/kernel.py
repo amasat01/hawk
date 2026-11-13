@@ -10,7 +10,7 @@ so the DAG builds through :class:`~hawk.trace.value.Value`'s operator
 overloads. The sinks a body commits, in PARAMETER order, are handed to
 ``canonical()``, whose products (``arg_spec``, ``slot_of``, ``access``,
 ``digest``) are the only thing any consumer reads. A ``Quantity`` parameter
-binds through :meth:`~hawk.ir.compound.Quantity.read_with`, binding every
+binds through :meth:`~raptor.ir.compound.Quantity.read_with`, binding every
 wire of that quantity at once.
 """
 
@@ -27,7 +27,8 @@ from collections.abc import Callable
 from typing import Any
 
 from .._broadcast import route
-from raptor.ir import Const, Leaf, Node, Quantity, Walk, canonical, make
+from .. import components as _components
+from raptor.ir import Const, Leaf, Node, Quantity, Walk, make
 from .._errors import HawkError
 from raptor.ir.nodes import COMPANION_SUFFIX, AccumWrite, Assign, compensates
 from raptor.ir.types import Slot, TensorType
@@ -68,12 +69,13 @@ class Kernel:
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
                  "time", "time_step", "source_digest", "jump", "returns",
-                 "lane_space", "group", "members", "broadcast", "team", "_variants", "_plan", "_lock")
+                 "lane_space", "group", "members", "steps", "broadcast", "team", "_variants", "_plan", "_lock")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
                  step: Kernel | None = None,
                  one_step: Kernel | None = None,
+                 steps: int | str = 1,
                  source_digest: str | None = None,
                  returns: Any = None) -> None:
         from ..ext import DEFAULT_KIND
@@ -84,7 +86,7 @@ class Kernel:
         sinks = _scattered_companion(self.kind, sinks)
         self.sinks = sinks
         self.planes = {} if planes is None else planes
-        self.walk: Walk = canonical(sinks, _declared(self.planes))
+        self.walk: Walk = _components.view("lowering", "cells").walk(sinks, _declared(self.planes))
         #: The launch shape, ``((label|None, extent|None), ...)`` row-major with the
         #: fastest axis last: the ``Grid[...]`` declared, else one unlabelled
         #: runtime axis. Read by the sidecar and the bind doors.
@@ -107,6 +109,9 @@ class Kernel:
         #: ``1`` (entry branches once per launch between this body and the
         #: fused loop); ``None`` otherwise. Emission only.
         self.one_step = one_step
+        #: The steps one launch takes, an int or ``"auto"``: ``1`` unless :func:`hawk.steps` fused the kernel. Read by the
+        #: sidecar of a kernel that finishes its sample.
+        self.steps = steps
         #: The time plane and step-size parameter the author named
         #: (``@hawk.kernel(time="t", time_step="dt")``), else ``None``: read
         #: by the taping twin, never by the plain kernel's emission.
@@ -163,8 +168,8 @@ class Kernel:
         return self._plan
 
     def steps_reverse_table(self, device: bool) -> dict:
-        """The measured rows of ``steps_reverse="auto"`` for the host or a device, as plain data (what eagle hands to
-        :func:`raptor.ir.steps_class.choose`)."""
+        """The measured rows of ``steps_reverse="auto"`` for the host or a device, as plain data (what the runtime's
+        ``steps_reverse="auto"`` rule is applied to)."""
         from ..targets.steps_reverse import table_for
 
         return table_for(device)
@@ -257,17 +262,18 @@ def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
     return built
 
 
-def resolve_dispatch(kernel: Kernel, policies: dict[str, str]) -> Kernel:
+def resolve_dispatch(kernel: Kernel, strategies: dict[str, str]) -> Kernel:
     """``kernel`` with each ``"auto"`` dispatch group lowered as
-    ``policies[group]`` (``"switch"``, ``"segmented"`` or ``"predicated"``):
-    how a launching runtime applies the policy it chose. A group the author
-    declared a policy for is refused — the author's choice is never
-    overridden — as is an unknown group or policy. An automatic kernel is
+    ``strategies[group]`` (``"switch"``, ``"segmented"`` or ``"predicated"``):
+    how a launching runtime applies the strategy it chose. A group the author
+    declared a strategy for is refused — the author's choice is never
+    overridden — as is an unknown group or strategy. An automatic kernel is
     resolved on its single step and re-derived, under the same name — except
     to ``"segmented"``, which splits the step into one kernel per branch and
     so returns the single step itself: its units run one step per launch."""
-    from raptor.ir.nodes import DISPATCH_POLICIES
-    from ..passes.segment import with_policies
+    from raptor.ir.nodes import has_feather
+    dispatch = _components.view("lowering", "dispatch")
+    from ..passes.segment import with_strategies
     from raptor.ir.walk import dispatch_groups, loop_body_groups
     from .steps import default_steps
 
@@ -275,28 +281,28 @@ def resolve_dispatch(kernel: Kernel, policies: dict[str, str]) -> Kernel:
     groups = dispatch_groups(step.walk)
     in_loops = loop_body_groups(step.walk)
     chosen = {}
-    for group, policy in policies.items():
+    for group, strategy in strategies.items():
         node = groups.get(group)
         if node is None:
             raise HawkError(
                 f"resolve_dispatch({kernel.name!r}): {group!r} is not a dispatch "
                 f"group of this kernel; its groups are {sorted(groups)}")
-        if node.policy != "auto":
+        if not has_feather(node, "counts_branch_mix"):
             raise HawkError(
                 f"resolve_dispatch({kernel.name!r}): {group!r} was declared "
-                f"policy={node.policy!r}; only an 'auto' group is resolved — the "
-                "author's policy is kept")
+                f"strategy={dispatch.strategy(node)!r}; only an 'auto' group is resolved — the "
+                "author's strategy is kept")
         if group in in_loops:
             raise HawkError(
                 f"resolve_dispatch({kernel.name!r}): {group!r} sits inside a loop "
-                "body, where a policy cannot be swapped yet; declare its policy "
+                "body, where a strategy cannot be swapped yet; declare its strategy "
                 "in the kernel instead")
-        if policy == "auto" or policy not in DISPATCH_POLICIES:
+        if strategy == "auto" or strategy not in dispatch.DISPATCH_STRATEGIES:
             raise HawkError(
                 f"resolve_dispatch({kernel.name!r}): {group!r} resolves to one of "
-                f"'switch', 'segmented', 'predicated', got {policy!r}")
-        chosen[id(node)] = policy
-    resolved = Kernel(step.name, with_policies(step.sinks, chosen), step.planes,
+                f"'switch', 'segmented', 'predicated', got {strategy!r}")
+        chosen[id(node)] = strategy
+    resolved = Kernel(step.name, with_strategies(step.sinks, chosen), step.planes,
                       kind=step.kind, source_digest=step.source_digest,
                       returns=step.returns)
     resolved.time, resolved.time_step = step.time, step.time_step
@@ -350,7 +356,7 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
     traced, returning, shape = _retrace(
         fn, scope, sink_names, mutables, finishes=finishes,
         returns_value=True if forced is not None else None)
-    with tracing(lane_space(planes)):
+    with tracing(lane_space(planes), fn.__name__):
         out = _call_finishing(traced, fn, args)
     _retag_by_key(planes, args)
     _check_axis_sinks(fn.__name__, planes, args)
@@ -367,7 +373,7 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
     extra = _compensated_companion(resolved_kind, planes, vocab, sinks)
     if extra is not None:
         sinks = sinks + (extra,)
-    sinks = sinks + _policy_companions(fn.__name__, planes, sinks)
+    sinks = sinks + _contract_companions(fn.__name__, planes, sinks)
     return Kernel(fn.__name__, sinks, planes, kind=resolved_kind,
                   source_digest=source_digest(fn), returns=returns)
 
@@ -725,18 +731,18 @@ def _scattered_companion(kind: Any, sinks: tuple[Node, ...]) -> tuple[Node, ...]
     return out
 
 
-def _policy_companions(name: str, planes: dict[str, Any], sinks: tuple[Node, ...]) -> tuple:
-    """The companion plane ``<plane>_c`` of each ``policy="compensated"``
+def _contract_companions(name: str, planes: dict[str, Any], sinks: tuple[Node, ...]) -> tuple:
+    """The companion plane ``<plane>_c`` of each ``contract="compensated"``
     accumulate, bound by a zero commit at the same key (the commit's correction
     lands there; the target writes it, not this sink). Declared like its plane."""
     out: dict = {}
     for s in sinks:
-        if isinstance(s, AccumWrite) and compensates(s.policy):
+        if isinstance(s, AccumWrite) and compensates(s.contract):
             comp = s.name + COMPANION_SUFFIX
             if comp in planes and comp not in out and not any(
                     isinstance(c, AccumWrite) and c.name == comp for c in sinks):
                 raise HawkError(
-                    f"kernel {name!r}: {s.name!r} is added under policy='compensated', "
+                    f"kernel {name!r}: {s.name!r} is added under contract='compensated', "
                     f"whose correction lands in {comp!r}, which names a parameter; "
                     "rename the parameter")
             zero = Const(0.0, TensorType((), s.ttype.dtype))
@@ -814,7 +820,7 @@ def _finish_names(params: list[str], planes: dict[str, Any]) -> frozenset[str]:
 
 def _finished(name: str, params: list[str], args: dict[str, Any],
               finishes: frozenset[str], kind: Any) -> tuple[Node, ...]:
-    """The kernel's :class:`~hawk.ir.nodes.Finish` sinks, refusing a mask its
+    """The kernel's :class:`~raptor.ir.nodes.Finish` sinks, refusing a mask its
     kind's guard does not gate on (a finished sample the guard never skips
     would run again on the next launch and count twice) and a second finished
     mask (the counter and the sidecar's ``finish`` name ONE)."""
@@ -995,12 +1001,12 @@ def _retrace(fn: Callable[..., None], scope: dict[str, Any],
 
 def _source_lines(fn: Callable[..., None]) -> tuple[list[str], int]:
     """``inspect.getsourcelines(fn)``; the text of a kernel defined under
-    ``python -c`` is lifted through :mod:`raptor.flow`, and any other source
+    ``python -c`` is lifted through :mod:`hawk.trace.flow`, and any other source
     that is not on disk is refused with the way out."""
     try:
         return inspect.getsourcelines(fn)
     except (OSError, TypeError):
-        from raptor import flow
+        from . import flow
 
         if flow.lift_dash_c(fn):
             return inspect.getsourcelines(fn)
@@ -1009,7 +1015,7 @@ def _source_lines(fn: Callable[..., None]) -> tuple[list[str], int]:
             "other code, exec, the REPL before Python 3.13) — hawk traces the "
             "source text. Put the kernel in a .py file, or use IPython / Jupyter, "
             "which keep cell sources; to define it from a string, run it with "
-            "`raptor.flow.exec_source(text, namespace)`, or register the text "
+            "`hawk.trace.flow.exec_source(text, namespace)`, or register the text "
             "yourself: `linecache.cache[filename] = (len(text), None, "
             "text.splitlines(True), filename)` and compile under that filename"
         ) from None

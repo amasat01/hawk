@@ -5,13 +5,13 @@
 linear in body size — the memory row, the key-width row, and the two properties
 the fix was not allowed to cost.
 
-WHAT WAS WRONG AND HOW IT WAS MEASURED. Before the fix, ``hawk/ir/nodes.py``'s
+WHAT WAS WRONG AND HOW IT WAS MEASURED. Before the fix, ``raptor/ir/nodes.py``'s
 ``_body_digest`` keyed each loop-body node with the ``repr`` of a tuple that
 embedded its CHILDREN'S KEY STRINGS verbatim. One key was therefore the entire
 sub-expression beneath it written out, and a body whose dependency chain has
 depth ``d`` cost O(2**d) BYTES to key — all of it spent inside the tracer,
 before any compiler ran. Every RED number below was produced by putting that one
-line back into ``hawk/ir/nodes.py::_body_keys`` and running THESE rows against
+line back into ``raptor/ir/nodes.py::_body_keys`` and running THESE rows against
 it, so both arms measured the same subject through the same path; the plant is
 not kept in the tree, because a keying nothing calls is a keying nothing keeps
 honest.
@@ -199,7 +199,7 @@ def test_a_deep_loop_body_canonicalises_inside_two_gigabytes(depth, tmp_path):
 def _all_body_widths(loop: Loop) -> tuple:
     """Every key width in ``loop``'s body, nested loops included — the widths
     the digest itself built, read back through
-    :func:`hawk.ir.nodes.body_key_widths` rather than recomputed here."""
+    :func:`raptor.ir.nodes.body_key_widths` rather than recomputed here."""
     widths = list(body_key_widths(loop))
     for node in loop.body_nodes():
         if isinstance(node, Loop):

@@ -64,7 +64,9 @@ from __future__ import annotations
 from .. import _contracts
 from ..compile.toolchain import _strict_aether_include, _strict_eagle_include
 from .._errors import HawkError
-from raptor.ir.segment import class_name, mix_name, stale_name
+from raptor.ir.cells import CELL_PLANE
+from lowering.cells import FUSED_STEPS_PLANE
+from lowering.cells import class_name, classify_name, mix_name, offsets_name, stale_name
 from ..targets import ENTRY_KINDS
 from raptor.ir.types import INT_PLANE_DTYPES
 
@@ -286,7 +288,7 @@ def _arg_dtypes(walk, scalar_type: str) -> dict:
 
 
 def _dispatches(infos) -> list:
-    """The per-kernel dispatch listing: ``{name, K, policy,
+    """The per-kernel dispatch listing: ``{name, K, strategy,
     static_selector, selector_reads}`` (the kernel-scoped classification and
     the selector's read slots a launching runtime re-scopes to a whole
     step), straight off
@@ -297,20 +299,23 @@ def _dispatches(infos) -> list:
     original group's record instead, K ``units`` names included."""
     out = []
     for d in infos:
-        entry = {"name": d.name, "K": d.K, "policy": d.policy,
+        entry = {"name": d.name, "K": d.K, "strategy": d.strategy,
                  "static_selector": d.static_selector,
                  "selector_reads": [list(pair) for pair in d.selector_reads]}
-        if d.policy == "auto":
+        if d.strategy == "auto":
             entry["mix"] = mix_name(d.name)
-        if d.policy == "segmented":
+        if d.strategy == "segmented":
             entry["class"], entry["stale"] = class_name(d.name), stale_name(d.name)
+            entry["offsets"] = offsets_name(d.name)
+            if d.units and d.static_selector:
+                entry["classify"] = classify_name(d.units[0].rpartition("__k")[0])
         if d.units:
             entry["units"] = list(d.units)
         out.append(entry)
     return out
 
 
-def _finish(walk) -> dict:
+def _finish(walk, steps) -> dict:
     """The optional ``finish`` key of a kernel that finishes its own
     sample: the mask it marks, the reserved counter plane it counts newly
     finished samples into, and the steps one launch takes. Absent means
@@ -319,10 +324,9 @@ def _finish(walk) -> dict:
     finish = getattr(walk, "finish", None)
     if finish is None:
         return {}
-    from raptor.ir.nodes import FINISHED_PLANE
+    from lowering.cells import FINISHED_PLANE
 
-    mask, steps = finish
-    out = {"mask": mask, "counter": FINISHED_PLANE, "steps": steps}
+    out = {"mask": finish, "counter": FINISHED_PLANE, "steps": steps}
     if steps == "auto":
         from ..trace.steps import AUTO_K_MAX
 
@@ -345,7 +349,7 @@ def _gather_mats(walk, broadcast: dict | None) -> dict:
     return out
 
 
-def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
+def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | str = 1,
                  exec_targets=ENTRY_KINDS, host_entry: str | None = None,
                  derivative: dict | None = None, lanes=None,
                  lane_space=((None, None),), group: int = 1, box=None, block: int | None = None,
@@ -365,7 +369,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     ``arg_spec``, role ``lookup``.
 
     ``lanes`` is present only for a fused entry: one
-    :class:`~hawk.types.LaneMeta` record per lane, so a consumer that
+    :class:`aether.wings.base.fused.LaneMeta` record per lane, so a consumer that
     composed the group can tell, from the deployed artifact alone, which
     lanes are inside it and whether any moved since.
 
@@ -440,8 +444,11 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         "buffers": [],
         "arg_spec": [list(pair) for pair in walk.arg_spec],
         "terminated_readonly": getattr(walk, "finish", None) is None,
-        **_finish(walk),
+        **_finish(walk, steps),
         **({"param_planes": list(walk.param_planes)} if walk.param_planes else {}),
+        # the reserved planes of the kernel's own, by name: the runtime binds them and the caller never passes them
+        **({"steps_plane": FUSED_STEPS_PLANE} if ("lookup", FUSED_STEPS_PLANE) in walk.arg_spec else {}),
+        **({"cell_plane": CELL_PLANE} if ("per_sample", CELL_PLANE) in walk.arg_spec else {}),
         # every reduction over samples, with its op: the rows it writes (one
         # per 32 samples) are the runtime's scratch, finished into the cell
         **({"cells": walk.cells} if walk.cells else {}),

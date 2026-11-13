@@ -170,7 +170,7 @@ def test_refuses_a_segmented_unit(tmp_path):
 
     def seg(k: hawk.Index, bs: hawk.Vector[2], terminated: Terminated,
             y: Mutable[Scalar]):
-        y = M.dispatch(k, [bs[0], bs[1]], policy="segmented")
+        y = M.dispatch(k, [bs[0], bs[1]], strategy="segmented")
 
     kern = hawk.kernel(seg, kind=MAP)
     with pytest.raises(HawkError, match="index map in a segmented"):

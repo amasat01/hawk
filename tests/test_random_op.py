@@ -109,7 +109,7 @@ def draw_poisson1(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], y: 
 #: role=uniform (a by-value scalar), dtype=i32 -- the ONE way to declare
 #: an integer "uniform" wire (``hawk.Param`` is fixed to f64 ``Scalar``). One
 #: by-value row binds the seed through it; the other kernels bind seed/counter
-#: as per-sample PLANES (a bare ``hawk.Index``/``hawk.ir.TensorType((), "i32")``
+#: as per-sample PLANES (a bare ``hawk.Index``/``raptor.ir.TensorType((), "i32")``
 #: annotation) because per-lane counters are the bootstrap's own shape.
 _UniformIndex = _decl.Plane("uniform", hawk.Index)
 

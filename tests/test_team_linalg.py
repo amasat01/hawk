@@ -13,6 +13,7 @@ the refusals name what they refuse.
 """
 
 from __future__ import annotations
+from lowering.dispatch import dispatch as _dispatch
 from _specs import spec_for, default_kind
 from _specs import DEVICE as DEVICE_SPEC
 
@@ -33,7 +34,8 @@ from hawk.artifact import build_bundle
 from raptor.ir import Assign, Leaf, make
 from hawk.variants import load as _load_variant
 MAX_DIM = _load_variant("cpu")["linalg"]["max_dim"]
-from lowering.team import BlockSumWrite, plain_blocks
+from lowering.block import is_block_write
+from lowering.team import plain_blocks
 from lowering.split import stages
 from hawk.trace.kernel import Kernel
 from raptor.ir.types import TensorType
@@ -513,7 +515,7 @@ def test_a_team_op_in_an_arm_of_a_dispatch_is_refused_by_name_unless_the_body_al
     k = Leaf("vocab_read", "per_sample", "k", TensorType((), "i32"))
     solve = make("cho_solve", (make("chol", (a,)), b))
     plain = make("mul", (b, b))
-    arm = Dispatch(k, [solve, plain], "switch", solve.ttype)
+    arm = _dispatch(k, [solve, plain], "switch", solve.ttype)
     with pytest.raises(HawkError, match=r"op 'chol' at n=40.*inside an arm of a dispatch"):
         stages("arm", (Assign("x", arm, solve.ttype),), spec=DEVICE_SPEC)
     both = (Assign("x", arm, solve.ttype), Assign("y", solve, solve.ttype))
@@ -678,7 +680,7 @@ def test_block_sums_match_the_exact_sum_and_the_per_entry_path(cache, p, form, t
         assert np.all(np.abs(got - ref) <= SUM_BOUND * EPS * scale + 1e-300), build.__name__
         if p == 8:
             per_entry = build(p, ROWS, "thread")
-            assert not any(isinstance(s, BlockSumWrite) for s in plain_blocks(per_entry.sinks, "thread", DEVICE_SPEC))
+            assert not any(is_block_write(s) for s in plain_blocks(per_entry.sinks, "thread", DEVICE_SPEC))
             other = _sums_of(per_entry, cache, f"ent_{build.__name__}_{p}_{target}", target, "thread", j, r, p)
             assert np.all(np.abs(got - other) <= 2 * SUM_BOUND * EPS * scale + 1e-300)
 
@@ -734,7 +736,7 @@ def test_the_vjp_through_a_block_sum_matches_finite_differences(cache, make, tar
 @pytest.mark.parametrize("make", (gram_kernel, grad_kernel))
 def test_a_keyed_product_sum_at_p71_lowers_to_one_block_sum(make):
     kernel = make(71, ROWS)
-    assert [type(s) for s in kernel.sinks] == [BlockSumWrite]
+    assert [is_block_write(s) for s in kernel.sinks] == [True]
     found = stages(kernel.name, kernel.sinks, spec=DEVICE_SPEC)
     assert [s.team is not None for s in found] == [False, True]
     (step,) = found[1].team.steps
@@ -745,7 +747,7 @@ def test_a_keyed_product_sum_at_p71_lowers_to_one_block_sum(make):
 def test_a_payload_that_is_not_a_product_keeps_the_per_entry_path():
     scaled, small = scaled_kernel(20, ROWS), gram_kernel(4, ROWS)
     plain = plain_blocks(scaled.sinks, "auto", DEVICE_SPEC) + plain_blocks(small.sinks, "auto", DEVICE_SPEC)
-    assert not any(isinstance(s, BlockSumWrite) for s in plain)
+    assert not any(is_block_write(s) for s in plain)
     assert len(plain_blocks(small.sinks, "auto", DEVICE_SPEC)) == 16 and stages("gram", plain_blocks(small.sinks, "auto", DEVICE_SPEC), spec=DEVICE_SPEC) is None
 
 
@@ -763,8 +765,8 @@ def test_the_sidecar_names_the_block_sum_stage_its_keys_and_its_scratch(cache):
 
 def test_a_block_sum_is_built_per_entry_under_the_thread_form(cache):
     kernel = gram_kernel(40, ROWS)
-    assert any(isinstance(s, BlockSumWrite) for s in kernel.sinks)
-    assert not any(isinstance(s, BlockSumWrite) for s in plain_blocks(kernel.sinks, "thread", DEVICE_SPEC))
+    assert any(is_block_write(s) for s in kernel.sinks)
+    assert not any(is_block_write(s) for s in plain_blocks(kernel.sinks, "thread", DEVICE_SPEC))
     _build_sum(kernel, cache / "blk_thread", "host", "thread")
 
 
@@ -888,7 +890,7 @@ def _total_run(cache, tag, spelling, p, target, form="auto"):
 @pytest.mark.parametrize("spelling", SPELLINGS)
 def test_a_product_sum_over_every_lane_at_p71_lowers_to_one_block_sum_of_one_key(spelling):
     kernel = total_kernel(spelling, 71, TOTAL_ROWS)
-    assert [type(s) for s in kernel.sinks] == [BlockSumWrite]
+    assert [is_block_write(s) for s in kernel.sinks] == [True]
     found = stages(kernel.name, kernel.sinks, spec=DEVICE_SPEC)
     assert [s.team is not None for s in found] == [False, True]
     (step,) = found[1].team.steps
@@ -898,8 +900,8 @@ def test_a_product_sum_over_every_lane_at_p71_lowers_to_one_block_sum_of_one_key
 
 
 def test_a_small_or_thread_form_sum_over_every_lane_keeps_the_per_entry_path():
-    assert not any(isinstance(s, BlockSumWrite) for s in plain_blocks(total_kernel("outer", 4).sinks, "auto", DEVICE_SPEC))
-    assert not any(isinstance(s, BlockSumWrite) for s in plain_blocks(total_kernel("gram", 71, TOTAL_ROWS, "thread").sinks, "thread", DEVICE_SPEC))
+    assert not any(is_block_write(s) for s in plain_blocks(total_kernel("outer", 4).sinks, "auto", DEVICE_SPEC))
+    assert not any(is_block_write(s) for s in plain_blocks(total_kernel("gram", 71, TOTAL_ROWS, "thread").sinks, "thread", DEVICE_SPEC))
 
 
 @pytest.mark.parametrize("spelling", SPELLINGS)

@@ -10,6 +10,7 @@ SAME body as the kernel an author would have written with the expression inline.
 
 from __future__ import annotations
 from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import pytest
 
@@ -49,8 +50,8 @@ def _host_kernel(value) -> Kernel:
 def test_a_traced_value_commits_to_the_same_body_as_the_inline_kernel():
     host = _host_kernel(trace_value(_branchy, {"x": Scalar, "v": Scalar}))
     assert host.arg_spec == _inline.arg_spec
-    assert render_body(host.sinks, host.walk, spec=HOST, kind=default_kind()).text == \
-        render_body(_inline.sinks, _inline.walk, spec=HOST, kind=default_kind()).text
+    assert render_body(host.sinks, host.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text == \
+        render_body(_inline.sinks, _inline.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
 
 
 def test_the_bindings_are_the_declarations_and_annotations_are_not_read():

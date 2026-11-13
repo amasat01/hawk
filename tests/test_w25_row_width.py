@@ -58,10 +58,10 @@ def test_the_text_chunk_cap_is_the_variants_and_a_missing_one_is_refused():
     cap = load("cpu")["scatter"]["max_chunks"]
     assert cap == load("simt")["scatter"]["max_chunks"] and not hasattr(team_emit, "_MAX_CHUNKS")
     for n in (cap, 7):
-        text = "\n".join(team_emit._chunk_count(team.scatter_specs("t", 2, n)[0].steps[0]))
+        text = "\n".join(team_emit._chunk_count(team.scatter_specs("t", 2, n, 32)[0].steps[0]))
         assert f"hawk_fit > {n} ? {n} : hawk_fit" in text
     with pytest.raises(RaptorError, match="max_chunks"):
-        team_emit._chunk_count(team.scatter_specs("t", 2, 0)[0].steps[0])
+        team_emit._chunk_count(team.scatter_specs("t", 2, 0, 32)[0].steps[0])
 
 
 def test_a_variant_without_cells_row_is_refused_by_name_at_the_reader():

@@ -96,7 +96,7 @@ def speed(v: Vector[3], y: Mutable[Scalar]):
 
 @kernel
 def scatter(x: Scalar, lane: Index, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="plain")[lane] += x
+    hawk.scatter(acc, contract="plain")[lane] += x
 
 
 @kernel
@@ -105,8 +105,8 @@ def scatter_c(x: Scalar, lane: Index, acc: Mutable[Scalar], acc_c: Mutable[Scala
     compensated kind, which commits its Neumaier correction to ``acc_c``. The
     second plane is the kernel's own declaration; the SEAM decides the
     arithmetic."""
-    hawk.scatter(acc, policy="plain")[lane] += x
-    hawk.scatter(acc_c, policy="plain")[lane] += 0.0
+    hawk.scatter(acc, contract="plain")[lane] += x
+    hawk.scatter(acc_c, contract="plain")[lane] += 0.0
 
 
 @kernel

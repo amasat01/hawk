@@ -373,7 +373,7 @@ def finishing(dt: Param, t_final: Scalar, terminated: Terminated, t: Mutable[Sca
 
 @hawk.kernel(steps=1)
 def mixing(k: Index, terminated: Terminated, y: Mutable[Scalar]):
-    y = m.dispatch(k, [1.0, 2.0], policy="auto")
+    y = m.dispatch(k, [1.0, 2.0], strategy="auto")
 
 
 def _sidecar(kernel):
@@ -436,10 +436,10 @@ FLOAT_ONLY_DIGESTS = {
 def test_a_float_only_kernel_emits_the_same_bytes(monkeypatch):
     import _emitted
 
-    import aether.wings.cpu.host as host_emit
+    from _specs import pin_caches
 
-    pinned = host_emit.CacheSizes(32 * 1024, 1024 * 1024, "/sys/devices/system/cpu/cpu0/cache")
-    monkeypatch.setattr(host_emit, "machine_caches", lambda: pinned)
+    # The host TU's tile is sized to (and names) the machine's caches: pin the ones the digests were frozen with.
+    pin_caches(monkeypatch)
     got = {}
     for name, _backend, _mode, src in _emitted.sources():
         got.setdefault(name, hashlib.sha256()).update(src.text.encode())

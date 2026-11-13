@@ -6,7 +6,7 @@
 ``@kernel`` traces a decorated function whose PARAMETERS are its declared
 vocabulary and whose body is rewritten by the ``ast`` pass into ``select``
 nodes; ``@raw_device`` is the bounded escape hatch for opaque text.
-Importing this package imports :mod:`hawk.ir`, so :mod:`hawk` itself binds
+Importing this package imports :mod:`raptor.ir`, so :mod:`hawk` itself binds
 these names LAZILY and a light consumer keeps paying only for
 :mod:`hawk.types`.
 

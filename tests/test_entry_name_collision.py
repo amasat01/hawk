@@ -14,15 +14,15 @@ import pytest
 import hawk
 from hawk import Scalar
 from hawk.artifact import build_bundle
-from aether.wings.base.wrapper import _INCLUDES
+from aether.wings.base.prelude import UNIT_INCLUDES
 from osprey_cpu.toolchain import libc_symbols
 from raptor.errors import RaptorError as HawkError
 
-pytestmark = pytest.mark.skipif(not libc_symbols(_INCLUDES), reason="no host compiler to read the C headers")
+pytestmark = pytest.mark.skipif(not libc_symbols(UNIT_INCLUDES), reason="no host compiler to read the C headers")
 
 
 def test_the_derived_list_holds_the_library_functions():
-    assert libc_symbols(_INCLUDES) and "read" in libc_symbols(_INCLUDES)
+    assert libc_symbols(UNIT_INCLUDES) and "read" in libc_symbols(UNIT_INCLUDES)
 
 
 def test_a_kernel_named_after_a_library_function_is_refused(tmp_path):

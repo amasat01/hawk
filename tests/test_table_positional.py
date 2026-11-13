@@ -102,7 +102,7 @@ def test_a_flat_table_refuses_a_bracket_of_two():
 
 
 def _exec(src: str):
-    from raptor import flow
+    from hawk.trace import flow
 
     ns: dict = {}
     flow.exec_source(src, ns)

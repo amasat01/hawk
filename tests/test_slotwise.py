@@ -12,7 +12,9 @@ idempotence, a non-finite seed). The EMIT row pins where the own-column stores
 land."""
 
 from __future__ import annotations
+from lowering.dispatch import dispatch as _dispatch
 from _specs import HOST, default_kind
+from _specs import aether_writer
 
 from types import SimpleNamespace
 
@@ -61,7 +63,7 @@ def _wide_dispatch():
     b1 = mk("add", (mk("mul", (_comp(theta, 1), x)),
                     mk("mul", (_comp(theta, 2), mk("mul", (x, x))))))
     b2 = mk("add", (mk("sin", (mk("mul", (_comp(theta, 3), x)),)), _comp(theta, 0)))
-    y = Dispatch(kd, [b0, b1, b2], "switch", S)
+    y = _dispatch(kd, [b0, b1, b2], "switch", S)
     return vjp((Assign("y", y, S),), wrt=("theta", "x"))
 
 
@@ -98,7 +100,7 @@ def _component_fold():
     s, kd = _leaf("s", S), _leaf("kd", I32)
     one, two = mk("vec", (a, b, c)), mk("vec", (d, e, f))
     both = mk("add", (mk("mul", (one, s)), mk("sub", (two, one))))
-    pick = Dispatch(kd, [both, mk("neg", (two,)), one], "switch", V3)
+    pick = _dispatch(kd, [both, mk("neg", (two,)), one], "switch", V3)
     chosen = Select(mk("gt", (s, Const(0.0, S))), pick, two, V3)
     return (Assign("c0", _comp(chosen, 0), S), Assign("c2", _comp(chosen, 2), S),
             Assign("t", mk("sum", (chosen,)), S))
@@ -184,8 +186,8 @@ def test_a_non_finite_factor_leaves_an_untouched_slot_zero_not_nan():
 def test_no_vec_combination_is_a_no_op_and_the_pass_is_idempotent():
     plain = tuple(drag_vjp())
     assert all(a is b for a, b in zip(slotwise(plain), plain))
-    assert (render_body(slotwise(plain), canonical(slotwise(plain)), spec=HOST, kind=default_kind()).text
-            == render_body(plain, canonical(plain), spec=HOST, kind=default_kind()).text)
+    assert (render_body(slotwise(plain), canonical(slotwise(plain)), spec=HOST, kind=default_kind(), writer=aether_writer()).text
+            == render_body(plain, canonical(plain), spec=HOST, kind=default_kind(), writer=aether_writer()).text)
     once = slotwise(_dense(_wide_dispatch))
     again = slotwise(once)
     assert all(a is b for a, b in zip(once, again))
@@ -203,7 +205,7 @@ def test_a_loop_is_not_entered():
 
 
 def _body(sinks):
-    return render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST, kind=default_kind()).text
+    return render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST, kind=default_kind(), writer=aether_writer()).text
 
 
 def test_a_wide_cotangent_is_committed_per_component():
@@ -220,9 +222,9 @@ def _two_edges():
     wide leaf: the spline shape at two edges."""
     theta, x = _leaf("theta", VW), _leaf("x", S)
     k1, k2 = _leaf("k1", I32), _leaf("k2", I32)
-    one = Dispatch(k1, [mk("mul", (_comp(theta, 0), x)),
+    one = _dispatch(k1, [mk("mul", (_comp(theta, 0), x)),
                         mk("mul", (_comp(theta, 1), x))], "switch", S)
-    two = Dispatch(k2, [mk("mul", (_comp(theta, 2), x)),
+    two = _dispatch(k2, [mk("mul", (_comp(theta, 2), x)),
                         mk("mul", (_comp(theta, 3), x))], "switch", S)
     return vjp((Assign("y", mk("add", (one, two)), S),), wrt=("theta",))
 
@@ -304,7 +306,7 @@ def _chains():
         "add": mk("add", (a, b)), "sub": mk("sub", (a, b)), "neg": mk("neg", (b,)),
         "mul": mk("mul", (a, s)), "mul_left": mk("mul", (s, a)),
         "div": mk("div", (a, s)), "select": Select(cond, a, b, V3),
-        "dispatch": Dispatch(kd, [a, b, mk("vec", (p, q, r))], "switch", V3),
+        "dispatch": _dispatch(kd, [a, b, mk("vec", (p, q, r))], "switch", V3),
         "mask": Select(mk("lt", (s, Const(1.0, S))), zero3, b, V3),
     }
     sinks = [Assign(f"o_{n}", v, V3) for n, v in out.items()]

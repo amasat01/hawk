@@ -9,7 +9,7 @@ from math import prod
 from types import MappingProxyType
 
 from .box import BOX_OWN
-from raptor.protocols.binding import binding_name
+from .spelling import binding_name
 from raptor.ir.kinds import is_a
 
 def _element(r, held: str, shape: tuple) -> str:
@@ -23,7 +23,7 @@ def _element(r, held: str, shape: tuple) -> str:
 
 def team_store(w, r, sink, target: str, value: str) -> None:
     """A value a team stage works on, stored row-major into the lane's own slice of its scratch
-    plane (:class:`~hawk.dialects.simt.TeamStore`): one loop over the elements."""
+    plane (:class:`~lowering.TeamStore`): one loop over the elements."""
     shape = sink.value.ttype.shape
     size = prod(shape)
     base = f"static_cast<std::size_t>({r._ref(sink.index)}) * {size}"

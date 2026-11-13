@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from raptor.ir import canonical
 from ..trace.kernel import Kernel, _declared
 from raptor.ir.types import Slot
+from .. import components as _components
 
 
 class TeamStage(Kernel):
@@ -23,14 +23,15 @@ class TeamStage(Kernel):
         super().__init__(name, sinks, planes)
         self.team = team
         if team.reads:          # input planes the stage reads in place are slots of its own
-            self.walk = canonical(self.sinks, (*_declared(self.planes), *(Slot(leaf.role, leaf.name, leaf.ttype) for leaf in team.reads)))
+            self.walk = _components.view("lowering", "cells").walk(self.sinks, (*_declared(self.planes), *(Slot(leaf.role, leaf.name, leaf.ttype) for leaf in team.reads)))
 
-    def fused_body(self, kind: Any = None, cells: bool = False, *, spec) -> Any:
+    def fused_body(self, kind: Any = None, cells: bool = False, *, spec, writer) -> Any:
         from aether.wings.base.team_emit import stage_body
 
+        from ..backends import need_device
         from .bundle import _active_spec
 
-        return stage_body(self.team, _active_spec(kind), cells)
+        return stage_body(self.team, _active_spec(kind), need_device().wrapper.device_text.team_cells if cells else None)
 
 
 class WarpStage(TeamStage):
@@ -39,9 +40,9 @@ class WarpStage(TeamStage):
 
     __slots__ = ()
 
-    def fused_body(self, kind: Any = None, cells: bool = False, *, spec) -> Any:
+    def fused_body(self, kind: Any = None, cells: bool = False, *, spec, writer) -> Any:
         from aether.wings.base.render import render_body
 
         if self.one_step is not None:       # an automatic kernel renders its two bodies itself
             return None
-        return render_body(self.sinks, self.walk, indent="        ", kind=kind, spec=spec)
+        return render_body(self.sinks, self.walk, indent="        ", kind=kind, writer=writer, spec=spec)

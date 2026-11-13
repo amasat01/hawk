@@ -28,7 +28,8 @@ from raptor.errors import RaptorError
 from lowering.cost import fp64_ops, kernel_cost
 from raptor.ir.linalg import FACTORISATIONS
 from raptor.ir.nodes import Loop, LoopIndex, TapeRead
-from raptor.ir.nodes import FINISHED_PLANE, AccumWrite, At, Const, Dispatch, Op, Sink, TapeWrite, WideWrite, is_param_cell
+from raptor.ir.nodes import AccumWrite, At, Const, Dispatch, Op, Sink, TapeWrite, WideWrite, is_param_cell
+from lowering.cells import FINISHED_PLANE
 from raptor.ir.walk import canonical_nodes
 from .features import FEATURES, INDEX_INTS
 from raptor.ir.types import INT_PLANE_DTYPES
@@ -44,7 +45,7 @@ _ARITH = ("arith32", "arith64", "special32", "special64")
 #: overflow, and a division by zero or ``MIN / -1``, is undefined), the C
 #: defines them through ``hawk_i64_*``. An Int32/UInt32 operation and every
 #: Index ``//``, ``%`` and shift go through the host's own helper too
-#: (``staging/aether/wings/base/wrapper.py`` ``_INT_HELPERS``), so they are no site.
+#: (``staging/aether/wings/base/prelude.py`` ``_INT_HELPERS``), so they are no site.
 _INT_UB = ("add", "sub", "mul", "neg", "div")
 _INPUT_ROLES = ("per_sample", "vec_in", "mat_in", "lookup", "wide_in", "uniform",
                 "nsamples")
@@ -58,7 +59,7 @@ def _refusal(name, pos, kind, rule, why, fix) -> RaptorError:
 
 def _top(sinks) -> tuple:
     """THE traversal's top-level node sequence for ``sinks``: the renderer's
-    own (:func:`hawk.ir.walk.canonical_nodes`), so a position here is the
+    own (:func:`raptor.ir.walk.canonical_nodes`), so a position here is the
     position the C text names. Nothing here re-enumerates the walk."""
     return canonical_nodes(tuple(sinks))[0]
 
@@ -378,9 +379,9 @@ def _interface(walk, nodes, kind) -> list:
     scattered = {(n.role, n.name) for _, n, _ in nodes
                  if isinstance(n, Sink) and n.index is not None}
     counters = {FINISHED_PLANE} | {f"{d.name}_mix" for d in walk.dispatches
-                                   if d.policy == "auto"}
+                                   if d.strategy == "auto"}
     single = set(walk.param_planes) | counters
-    mask = walk.finish[0] if walk.finish else None
+    mask = walk.finish
     # a masked sample never reaches its own-column store and keeps the prior
     # value (the host's design), so a guarded own column is caller-initialised
     bound = _guard_masks(walk, kind)

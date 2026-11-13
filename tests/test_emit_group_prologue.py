@@ -23,7 +23,7 @@ exit and the run reads and writes past the planes.
 """
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import DEVICE, HOST
 
 import importlib
 
@@ -62,7 +62,7 @@ def _sources(group):
     k = _kernel(group)
     unit = B._active_unit(k, "step", MAP)
     targets = ("cuda", "host")
-    return B._emit(B.lower(unit, "step", scalar_mode("float64"), MAP, targets, HOST), targets, B._options(device_arch=""))
+    return B._emit(B.lower(unit, "step", scalar_mode("float64"), MAP, targets, DEVICE), targets, B._options(device_arch=""))
 
 
 @pytest.mark.parametrize("target", ["cuda", "host"])

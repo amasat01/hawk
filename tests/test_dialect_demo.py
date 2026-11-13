@@ -1,5 +1,6 @@
 """A throwaway lowered sink class and expression class, written as a dialect author would: each carries its render entry."""
 from _specs import spec_for, default_kind
+from _specs import aether_writer
 from _specs import HOST
 import _kernels as K
 from aether.wings.base.wrapper import FLOAT64, render_source
@@ -123,4 +124,4 @@ def test_a_writer_without_a_spelling_refuses_by_name():
 def test_a_dialect_the_build_names_no_spelling_module_for_is_refused_by_name():
     sinks, walk = _with(Spelled)
     with pytest.raises(HawkError, match="kind 'demo.spelled': the 'aether' writer has no spelling for demo.spelled"):
-        render_body(sinks, walk, spec=HOST, kind=default_kind())
+        render_body(sinks, walk, spec=HOST, kind=default_kind(), writer=aether_writer())

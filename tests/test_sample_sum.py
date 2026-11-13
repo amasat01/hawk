@@ -227,18 +227,18 @@ def foldmin(x: Scalar, lo: Mutable[Scalar]):
 FOLDS = {"fold1": (fold1, ("s",)), "fold2": (fold2, ("s", "c")), "foldv": (foldv, tuple(f"t_{k}" for k in range(6))),
          "foldmax": (foldmax, ("hi",)), "foldmin": (foldmin, ("lo",))}
 FOLD_SIZES = (1, 31, 32, 33, 127, 128, 129, 1000, 65536 + 17)
-FOLD_KS = (None, 1, 8)      # the policy, the one-row warp, the card kit's wide switch
+FOLD_KS = (None, 1, 8)      # the settings, the one-row warp, the card kit's wide switch
 
 
 @pytest.fixture(scope="module")
 def folded(tmp_path_factory):
-    """``{k: bundle}`` of every fold kernel, built under the policy (``None``) and under the forced ``k``."""
-    from hawk.build_policy import BuildPolicy
+    """``{k: bundle}`` of every fold kernel, built under the settings (``None``) and under the forced ``k``."""
+    from hawk.build_settings import BuildSettings
     out = {}
     for k in FOLD_KS:
         out[k] = build_bundle([kern for kern, _ in FOLDS.values()], tmp_path_factory.mktemp(f"fold_{k}"), mode="float64",
                               targets=("cuda", "host"), cache_dir=str(tmp_path_factory.mktemp(f"fold_cache_{k}")),
-                              host_profile="native", build_policy=None if k is None else BuildPolicy(fold_rows=k))
+                              host_profile="native", settings=None if k is None else BuildSettings(fold_rows=k))
     return out
 
 
@@ -265,10 +265,10 @@ def test_fold_shape_keeps_a_warp_under_the_residency_line():
 
 
 def test_the_rows_of_a_warp_ride_one_batched_fold():
-    from hawk.build_policy import BuildPolicy
+    from hawk.build_settings import BuildSettings
     plain = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"]), kind=default_kind()).text
     assert "sampleSumWarp_<4," in plain and "hawk_wbase" in plain
-    one = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"], build_policy=BuildPolicy(fold_rows=1)), kind=default_kind()).text
+    one = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"], settings=BuildSettings(fold_rows=1)), kind=default_kind()).text
     assert "sampleSumWarp_<1," in one and "hawk_wbase" not in one
 
 
@@ -345,3 +345,20 @@ def test_the_device_combine_on_awkward_values_equals_the_host_twin(folded, name,
         got[target] = {k: np.array(a.get() if hasattr(a, "get") else a) for k, a in planes.items() if k not in ("x", "v")}
     for k, host in got["host"].items():
         np.testing.assert_array_equal(got["cuda"][k], host, err_msg=k)
+
+
+def test_a_sum_and_a_plane_named_like_its_companion_collide_by_name():
+    """The compensation plane ``<name>_comp`` of a summing ``sample_sum`` may not be the name of another sink of the same role:
+    refused when the kernel is declared, before any text."""
+    with pytest.raises(HawkError, match="sample_sum 't': its compensation plane 't_comp' collides with a plane of the same name"):
+        @hawk.kernel
+        def clash(x: Scalar, t: Mutable[Scalar], t_comp: Mutable[Scalar]):
+            t = hawk.sum(x * x)
+            t_comp = hawk.sum(x)
+
+
+def test_the_companion_plane_is_a_slot_of_the_walk():
+    @hawk.kernel
+    def one(x: Scalar, t: Mutable[Scalar]):
+        t = hawk.sum(x * x)
+    assert ("accum_out", "t_comp") in one.walk.arg_spec

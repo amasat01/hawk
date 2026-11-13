@@ -1,14 +1,14 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""``vjp(..., policy={group: ...})``, ``"auto"`` and the selector classification.
+"""``vjp(..., strategy={group: ...})``, ``"auto"`` and the selector classification.
 
 Rows:
 
-* **override** — a derived dispatch inherits the primal's policy unless
-  ``policy=`` names its group; overridden, every derived dispatch carries the
-  new policy, and the gradient equals central differences EITHER way (and the
-  two gradients are equal); an unknown group or policy refuses by name.
+* **override** — a derived dispatch inherits the primal's strategy unless
+  ``strategy=`` names its group; overridden, every derived dispatch carries the
+  new strategy, and the gradient equals central differences EITHER way (and the
+  two gradients are equal); an unknown group or strategy refuses by name.
 * **auto** — accepted by the node, a distinct digest, rendered as ``switch``
   plus one branch-mix count line until a chooser resolves it.
 * **static_selector** — a selector reading only inputs is static; one reading
@@ -19,7 +19,9 @@ Rows:
 """
 
 from __future__ import annotations
+from lowering.dispatch import dispatch as _dispatch
 from _specs import default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import numpy as np
@@ -34,7 +36,7 @@ from aether.wings.base.render import render_body
 from raptor.ir import Assign, Dispatch, Leaf, canonical
 from hawk import HawkError
 from raptor.ir import make as mk
-from raptor.ir.nodes import DISPATCH_POLICIES
+from lowering.dispatch import DISPATCH_STRATEGIES, strategy
 from hawk.passes.segment import split_segmented
 from raptor.ir.walk import static_selectors
 from raptor.ir.types import TensorType
@@ -44,27 +46,27 @@ I32 = TensorType((), "i32")
 _H = 1e-6
 
 
-def _primal(policy: str, K: int = 3):
+def _primal(strategy: str, K: int = 3):
     k = Leaf("vocab_read", "per_sample", "k", I32)
     xs = [Leaf("vocab_read", "per_sample", f"x{i}", S) for i in range(K)]
     branches = [mk("mul", (xs[i], mk("sin", (xs[(i + 1) % K],)))) for i in range(K)]
-    return (Assign("out", Dispatch(k, branches, policy, S), S),)
+    return (Assign("out", _dispatch(k, branches, strategy, S), S),)
 
 
-def _policies(sinks) -> set:
-    return {n.policy for n in canonical(tuple(sinks)).order if isinstance(n, Dispatch)}
+def _strategies(sinks) -> set:
+    return {strategy(n) for n in canonical(tuple(sinks)).order if isinstance(n, Dispatch)}
 
 
-@pytest.mark.parametrize("primal_policy,override", [
+@pytest.mark.parametrize("primal_strategy,override", [
     ("switch", "predicated"), ("predicated", "switch"), ("segmented", "switch"),
     ("switch", "segmented"), ("auto", "predicated"),
 ])
-def test_an_overridden_reverse_policy_differs_and_both_match_fd(primal_policy, override):
-    sinks = _primal(primal_policy)
+def test_an_overridden_reverse_strategy_differs_and_both_match_fd(primal_strategy, override):
+    sinks = _primal(primal_strategy)
     inherited = vjp(sinks)
-    overridden = vjp(sinks, policy={"dispatch0": override})
-    assert _policies(inherited) == {primal_policy}
-    assert _policies(overridden) == {override}
+    overridden = vjp(sinks, strategy={"dispatch0": override})
+    assert _strategies(inherited) == {primal_strategy}
+    assert _strategies(overridden) == {override}
     rng = np.random.default_rng(31)
     for kind in range(3):
         env = {"k": kind, **{f"x{i}": float(rng.uniform(0.5, 2.0)) for i in range(3)}}
@@ -80,33 +82,33 @@ def test_an_overridden_reverse_policy_differs_and_both_match_fd(primal_policy, o
             assert b[f"bar_x{i}"] == pytest.approx(fd * seed, rel=1e-6, abs=1e-8)
 
 
-def test_an_unknown_group_or_policy_refuses_by_name():
+def test_an_unknown_group_or_strategy_refuses_by_name():
     sinks = _primal("switch")
     with pytest.raises(HawkError, match=r"'dispatch7' is not a dispatch group"):
-        vjp(sinks, policy={"dispatch7": "switch"})
-    with pytest.raises(HawkError, match=r"unknown policy 'fused'"):
-        vjp(sinks, policy={"dispatch0": "fused"})
+        vjp(sinks, strategy={"dispatch7": "switch"})
+    with pytest.raises(HawkError, match=r"unknown strategy 'fused'"):
+        vjp(sinks, strategy={"dispatch0": "fused"})
 
 
 def test_auto_is_accepted_distinct_and_renders_as_switch():
-    assert "auto" in DISPATCH_POLICIES
+    assert "auto" in DISPATCH_STRATEGIES
     auto, switch = _primal("auto"), _primal("switch")
     assert canonical(auto).digest != canonical(switch).digest
-    auto_text = render_body(auto, canonical(auto), spec=HOST, kind=default_kind()).text
+    auto_text = render_body(auto, canonical(auto), spec=HOST, kind=default_kind(), writer=aether_writer()).text
     counted = [ln for ln in auto_text.split("\n") if "hawk_abi::mix_count(" not in ln]
     assert len(counted) == len(auto_text.split("\n")) - 1      # one count line
-    assert "\n".join(counted) == render_body(switch, canonical(switch), spec=HOST, kind=default_kind()).text
+    assert "\n".join(counted) == render_body(switch, canonical(switch), spec=HOST, kind=default_kind(), writer=aether_writer()).text
 
 
 # -- the selector classification --------------------------------------------- #
 @kernel(steps=1)
 def by_input(dt: Param, kind: Index, x: Mutable[Scalar]):
-    x = x + dt * M.dispatch(kind, [x, -x], policy="auto")
+    x = x + dt * M.dispatch(kind, [x, -x], strategy="auto")
 
 
 @kernel(steps=1)
 def by_state(dt: Param, kind: Index, x: Mutable[Scalar], c: Mutable[Index]):
-    x = x + dt * M.dispatch(c, [x, -x], policy="auto")
+    x = x + dt * M.dispatch(c, [x, -x], strategy="auto")
     c = M.select(x > 0.0, kind, kind + 1)
 
 

@@ -23,7 +23,7 @@ from _emitted import cases
 import hawk
 import hawk.math as m
 from aether.wings.base.wrapper import BANDED, FLOAT32, FLOAT64, SCALAR_MODES, literal_table, render_source, scalar_mode
-from aether.wings.base.writer_aether import band_literal
+from aether.wings.simt.writer_cells import band_literal
 from raptor.errors import RaptorError as HawkError
 from hawk.targets import TARGETS
 

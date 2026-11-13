@@ -31,7 +31,7 @@ def pick(i: Index, tab: Table["j": 8], y: Mutable[Scalar]):
     y = tab.at(i + 3) if i < 5 else 0.0
 ```
 
-See [gradients through branches](tutorials/07_gradients_through_branches_and_stops) and [dispatch policies](tutorials/08_choosing_a_dispatch_policy).
+See [gradients through branches](tutorials/07_gradients_through_branches_and_stops) and [dispatch strategies](tutorials/08_choosing_a_dispatch_strategy).
 
 ## Wide values: placed, or per lane
 

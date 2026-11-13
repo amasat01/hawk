@@ -381,7 +381,7 @@ def slice_sinks(sinks, spec, *, explicit: bool = True) -> tuple | None:
             if isinstance(sink, Finish):        # the flag is the same in every lane; each writes the one bit
                 if was:
                     return None
-                out.append(Finish(sink.name, value, sink.steps))
+                out.append(Finish(sink.name, value))
                 continue
             out.append(WarpStore(sink.name, value, sink.ttype))
     except _Refused:

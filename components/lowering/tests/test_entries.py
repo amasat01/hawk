@@ -26,7 +26,7 @@ def test_team_names_and_stages():
 
     assert len(team.scatter_names("t")) == 4 and team.threads(10) == 128 and team.threads(10, 7) == 7
     assert isinstance(team.PARTIAL, str)
-    stages = team.scatter_specs("t", 2, 256)
+    stages = team.scatter_specs("t", 2, 256, 32)
     assert len(stages) == 3 and all(isinstance(s, team.TeamSpec) for s in stages)
     assert team.Plane("p", "f64", 1).name == "p"
 

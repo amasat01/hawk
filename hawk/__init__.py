@@ -9,7 +9,7 @@ host execution path — emitting ``aether-abi/2`` artifacts eagle deploys
 under the heterogeneous execution contract eagle enforces.
 
 This module is the authoring surface. Importing it never imports
-:mod:`hawk.ir`, :mod:`hawk.emit` or :mod:`hawk.compile`.
+:mod:`raptor.ir`, :mod:`aether.wings.base` or :mod:`hawk.compile`.
 
 Runtime dependencies: ``raptor-core`` (source lifts for ``python -c``).
 ``eagle`` is imported lazily, by calling a kernel (``k(...)``) only, and
@@ -19,7 +19,7 @@ nothing else under ``hawk/hawk/`` imports ``raptor`` or ``eagle``;
 This module also adds the authoring names (``kernel``, the declaration
 vocabulary, ``raw_device``, ``Quantity``), bound lazily through
 :pep:`562`'s module ``__getattr__`` because :mod:`hawk.trace` imports
-:mod:`hawk.ir` and forbids ``import hawk`` from pulling that in —
+:mod:`raptor.ir` and forbids ``import hawk`` from pulling that in —
 touching one authoring name imports the tracer, but importing the
 package alone costs nothing beyond this module.
 
@@ -46,7 +46,7 @@ from . import _contracts
 #: (and, for :data:`_FROM_IR`, from :mod:`hawk._errors`). Math functions
 #: (``dot``, ``norm``, ``sqrt``, ...) live at ``hawk.math`` only.
 #: ``TensorType``/``Wire`` stay out on purpose: their canonical path is
-#: :mod:`hawk.ir`, not the top level.
+#: :mod:`raptor.ir`, not the top level.
 _AUTHORING = (
     "kernel", "Kernel", "raw_device", "RawBlock", "Value", "Quantity",
     "Scalar", "Index", "Int32", "UInt32", "Quat", "Vector", "Matrix", "Param",
@@ -81,7 +81,7 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "run": ("runtime", "run"),
                     "samples_first": ("_plane_layout", "samples_first"),
                     "samples_last": ("_plane_layout", "samples_last"),
-                    "lane_position": ("trace.value", "lane_position"),
+                    "sample_position": ("trace.value", "sample_position"),
                     "primitive": ("ext.primitive", "primitive"),
                     "chain": ("trace.chain", "chain")}
 

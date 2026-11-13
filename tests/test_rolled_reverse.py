@@ -9,6 +9,7 @@ emitted text, and the compiled host kernel."""
 
 from __future__ import annotations
 from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import _spline_forms as S
 import numpy as np
@@ -107,7 +108,7 @@ def _recurrence(x: hawk.Vector[4], kinds: hawk.Vector[4], g: hawk.Scalar,
     for e in range(4):
         acc = m.dispatch(m.int32(kinds[e]),
                          [m.tanh(g * acc + x[e]), acc * 0.5 + x[e] * x[e]],
-                         policy="switch")
+                         strategy="switch")
     y = acc
 
 
@@ -133,7 +134,7 @@ def test_a_recurrence_whose_dispatch_reads_the_carry_matches_finite_differences(
 @pytest.mark.parametrize("form", ["plain", "switch"])
 def test_the_rolled_vjp_commits_inside_the_loop_and_holds_no_row(form):
     sinks = vjp(S.spline_rolled(form, 8), wrt=WRT)
-    lines = render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST, kind=default_kind()).text.splitlines()
+    lines = render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST, kind=default_kind(), writer=aether_writer()).text.splitlines()
     text = "\n".join(lines)
     # no carried or copied row (the dead zero base the loop boundary names is
     # dropped by the compiler: an open item)
@@ -243,7 +244,7 @@ def _gather_in_a_case(x: hawk.Vector[4], kinds: hawk.Vector[4],
     for e in range(4):
         t = m.dispatch(m.int32(kinds[e]),
                        [theta[m.index(t + 0.5 * m.real(e), 6)] * x[e], t * 0.5 + x[e] * x[e]],
-                       policy="switch")
+                       strategy="switch")
     y = t
 
 
@@ -273,7 +274,7 @@ def _jump_with_a_case(x: hawk.Vector[4], kinds: hawk.Vector[4], s: hawk.Scalar,
                       y: hawk.Mutable[hawk.Scalar]):
     t = 0.0
     for e in range(4):
-        t = m.dispatch(m.int32(kinds[e]), [m.tanh(t + x[e]), x[e] * x[e]], policy="switch")
+        t = m.dispatch(m.int32(kinds[e]), [m.tanh(t + x[e]), x[e] * x[e]], strategy="switch")
         if t < s:
             t = t * 2.0
     y = t

@@ -164,7 +164,7 @@ def _skip_ws(text: str, i: int) -> int:
 # the rules
 
 
-class _File:
+class UnitFile:
     def __init__(self, label: str, text: str) -> None:
         self.label = label
         self.text = text
@@ -180,12 +180,12 @@ class _File:
         return (line, rule, f"{self.label} `{source}` ({why})")
 
 
-def _tokens(f: _File) -> list:
+def _tokens(f: UnitFile) -> list:
     return [f.hit(m.start(), "audit.token", f"banned token {m.group(0)!r}")
             for m in _BANNED.finditer(f.code)]
 
 
-def _includes(f: _File, own: str) -> list:
+def _includes(f: UnitFile, own: str) -> list:
     out = []
     for m in _INCLUDE.finditer(f.code):
         target = _INCLUDE_TARGET.fullmatch(m.group(1))
@@ -227,7 +227,7 @@ def _own_breaks(s: str, start: int, end: int) -> list[int]:
             i = body[1] + 1 if body else m.end()
 
 
-def _breaks(f: _File) -> list:
+def _breaks(f: UnitFile) -> list:
     s, out = f.structure, []
     for m in _FOR.finditer(s):
         body = _body(s, m.end() - 1)
@@ -275,7 +275,7 @@ def _unwrap(s: str, a: int, b: int) -> str:
         return s[a:b]
 
 
-def _switches(f: _File) -> list:
+def _switches(f: UnitFile) -> list:
     s, out = f.structure, []
     for m in _SWITCH.finditer(s):
         body = _body(s, m.end() - 1)
@@ -293,7 +293,7 @@ def _switches(f: _File) -> list:
     return out
 
 
-def _unused(f: _File) -> list:
+def _unused(f: UnitFile) -> list:
     out = []
     for m in _STATIC_FN.finditer(f.structure):
         name = m.group(1)
@@ -304,7 +304,7 @@ def _unused(f: _File) -> list:
     return out
 
 
-def _idents(f: _File) -> list:
+def _idents(f: UnitFile) -> list:
     s = f.structure
     found: dict[str, int] = {}
     for pattern in (_TYPEDEF_NAME, _STRUCT_TYPEDEF, _PROTOTYPE):
@@ -325,13 +325,13 @@ def _idents(f: _File) -> list:
     return out
 
 
-def _inits(f: _File) -> list:
+def _inits(f: UnitFile) -> list:
     return [f.hit(m.start(), "audit.init",
                   "an aggregate initialiser `= {`; the C target emits none")
             for m in _BRACE_INIT.finditer(f.structure)]
 
 
-def _comments(f: _File) -> list:
+def _comments(f: UnitFile) -> list:
     return [f.hit(i, "audit.comment",
                   "`//` outside a string literal; block comments only")
             for i in f.slashes]
@@ -340,7 +340,7 @@ def _comments(f: _File) -> list:
 def audit(c_text: str, h_text: str, name: str) -> list[tuple[int, str, str]]:
     """Every rule hit in the ``<name>.c``/``<name>.h`` pair, ``.c`` first,
     each as ``(line, rule, text)``; an empty list is a clean unit."""
-    c, h = _File(f"{name}.c", c_text), _File(f"{name}.h", h_text)
+    c, h = UnitFile(f"{name}.c", c_text), UnitFile(f"{name}.h", h_text)
     own = f'"{name}.h"'
     hits = []
     for f in (c, h):

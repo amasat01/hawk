@@ -73,7 +73,7 @@ def render(kernel, *, name=None, mode="float64", kind=None,
     floating-point equality sites, special literals, static bytes) before
     the profile's caps apply. Deterministic: the same call gives the same
     bytes."""
-    from hawk.artifact.bundle import _resolve_kind
+    from hawk.artifact.bundle import resolve_kind
     from aether.wings.base.render import render_body
     from aether.wings.base.wrapper import scalar_mode
     from lowering.lstsq import lowered
@@ -84,7 +84,7 @@ def render(kernel, *, name=None, mode="float64", kind=None,
 
     kernel = _without_companions(kernel)
     name = name if name is not None else kernel.name
-    kind = _resolve_kind(name, getattr(kernel, "kind", None), kind)
+    kind = resolve_kind(name, getattr(kernel, "kind", None), kind)
     smode = scalar_mode(getattr(mode, "id", mode))
     if smode.cells:
         raise RaptorError(f"the c target has no {smode.id} spelling; {smode.id} runs on device execution paths, on a CPU use float64")
@@ -133,14 +133,14 @@ def _without_companions(kernel):
     from hawk.trace.kernel import Kernel
 
     auto = {s.name for s in kernel.sinks
-            if isinstance(s, AccumWrite) and s.policy == KEYED_AUTO}
+            if isinstance(s, AccumWrite) and s.contract == KEYED_AUTO}
     gone = {c for c, t in kernel.walk.companions.items() if t in auto}
     if not auto:
         return kernel
     sinks = tuple(AccumWrite(s.name, s.value, s.index, s.ttype) if s.name in auto else s
                   for s in kernel.sinks if s.name not in gone)
     planes = {n: p for n, p in kernel.planes.items() if n not in gone}
-    return Kernel(kernel.name, sinks, planes, kind=kernel.kind,
+    return Kernel(kernel.name, sinks, planes, kind=kernel.kind, steps=kernel.steps,
                   source_digest=kernel.source_digest, returns=kernel.returns)
 
 

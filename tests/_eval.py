@@ -255,7 +255,7 @@ def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0) -> dict:
     """Evaluate ``sinks`` at ``env`` (leaf name -> value); returns sink values.
 
     ``lane`` is the sample this evaluation stands at, and it is what a
-    :class:`~hawk.ir.nodes.SampleIndex` node reads: the interpreter walks ONE
+    :class:`~raptor.ir.nodes.SampleIndex` node reads: the interpreter walks ONE
     sample, so the lane index is a parameter of the walk rather than a plane in
     ``env``."""
     memo: dict[int, object] = {}
@@ -370,7 +370,7 @@ def _loop_state(loop, env: dict, memo: dict):
 
     The TAPE is the value each slot held at the START of every iteration — the
     same array the emitted forward loop writes when a reverse loop reads it
-    through a :class:`~hawk.ir.nodes.TapeRead`."""
+    through a :class:`~raptor.ir.nodes.TapeRead`."""
     hit = memo.get(("loop", id(loop)))
     if hit is not None:
         return hit
@@ -421,10 +421,10 @@ def _compute(node: Node, env: dict, memo: dict):
         a, b = (_value(c, env, memo) for c in node.operands[1:])
         return np.where(cond, a, b)
     if isinstance(node, Dispatch):
-        # The serial oracle: the SAME clamp every emitted policy shares —
+        # The serial oracle: the SAME clamp every emitted strategy shares —
         # this interpreter does not model predicated/switch/segmented at all,
         # exactly as it models neither of `select`'s two aether spellings, so
-        # a policy that lowers the clamp differently is a defect the RENDERED
+        # a strategy that lowers the clamp differently is a defect the RENDERED
         # artifact must be compared against, not this scratch evaluator.
         k = int(_value(node.selector, env, memo))
         k = min(max(k, 0), node.K - 1)

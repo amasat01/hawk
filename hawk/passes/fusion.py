@@ -70,10 +70,12 @@ def estimate(walk, card: dict, scalar_type: str, wide_min: int | None = None) ->
 
 
 def _segment_walk(members: Sequence, a: int, b: int):
-    from raptor.ir.walk import canonical
+
+    from .. import components
 
     later = set().union(*({lf.name for lf in _leaves(k)} for k in members[b:]))
-    return canonical(bind(members[a:b], keep=tuple(later)).sinks)
+    sinks = bind(members[a:b], keep=tuple(later)).sinks
+    return components.view("lowering", "cells").walk(sinks)
 
 
 def _leaves(kernel) -> list:

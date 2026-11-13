@@ -232,7 +232,7 @@ def test_a_site_is_found_from_its_node_object():
 
 @hawk.kernel
 def switched(k: Index, b0: Scalar, b1: Scalar, y: Mutable[Scalar]):
-    y = hm.dispatch(k, [b0, b1], policy="switch")
+    y = hm.dispatch(k, [b0, b1], strategy="switch")
 
 
 def test_a_scattered_sink_and_a_dispatch_selector_are_clamped():

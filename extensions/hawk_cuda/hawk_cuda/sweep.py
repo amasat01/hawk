@@ -197,13 +197,13 @@ def _variant_at(name: str, directory):
     """Inside the block the loader reads variant ``name`` from ``directory`` (a working copy); the installed package is never written."""
     from hawk import variants
 
-    installed = variants._home
-    variants._home = lambda n: Path(directory) if n == name else installed(n)
+    installed = variants.variant_home
+    variants.variant_home = lambda n: Path(directory) if n == name else installed(n)
     variants.load.cache_clear()
     try:
         yield
     finally:
-        variants._home = installed
+        variants.variant_home = installed
         variants.load.cache_clear()
 
 

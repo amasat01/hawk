@@ -4,7 +4,7 @@
 """The thread box: one thread computes ``T`` lanes along a non-fastest axis.
 
 Lanes that differ only in that axis read the same values from every plane read
-the lane facts show invariant along it (:func:`hawk.ir.lanes.facts`, its box
+the lane facts show invariant along it (:func:`lowering.lanes.facts`, its box
 candidates). Boxed, a thread reads those once and keeps the ``T`` lanes' own
 values in registers: a loop's carried values become one ``aether::Item<Real, T>``
 each. The fastest axis stays consecutive threads, and every lane is written to
@@ -88,12 +88,11 @@ def thread_box(kernel, scalar_type: str, *, spec, card, enabled: bool = True, ki
     sinks = tuple(kernel.sinks)
     if not _boxable(sinks) or any(role == "terminated" for role, _ in kernel.walk.arg_spec):
         return None
-    from raptor.ir import lanes as _facts
     from . import lanes
     measured = card
     if measured is None:
         return None
-    f = _facts.facts(kernel, group=getattr(kernel, "group", 1))      # the box reads axes and group only: no run widths
+    f = lanes.facts(kernel, group=getattr(kernel, "group", 1))      # the box reads axes and group only: no run widths
     if not f.uniform_control:
         return None
     p1 = lanes.choose_mapping(f, card=measured, bank_words=spec.primary.get("lanes", {}).get("bank_words"))["P1"]

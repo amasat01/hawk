@@ -13,15 +13,20 @@
                # the largest dimension a team of threads works on in a host text (the host's own limit, at the value it has always had)
                "team_max_dim": 4096},
     # Lane-run numbers the host text's keyed commit reads (the host's own, at the values it has always used).
-    "lanes": {"run_max": 32, "block_run": 1024},
+    # copy_threads: threads of the block of a stage that only copies operands into team scratch (a block per lane).
+    # tile_min, tile_max: the bounds of an interchanged loop's tile, in samples (at least one lane block, at most what one launch's tile holds).
+    "lanes": {"run_max": 32, "block_run": 1024, "copy_threads": 256, "tile_min": 64, "tile_max": 1024},
     # Samples one row of a reduction over samples stands for: the host's own choice, a power of two (the host text masks with row - 1);
     # the runtime partitions and sizes its scratch by it.
     "cells": {"row": 32},
     # The most lane chunks an ordered scatter adds in (a chunk is one thread's run of lanes): the host's own threading choice.
-    "scatter": {"max_chunks": 256},
+    # `threads`: the team of each of its stages (one does the adds, the rest of a warp idles).
+    "scatter": {"max_chunks": 256, "threads": 32},
     # A site is spelled static while its fold length and its result size are both at most rolled_fold_min elements,
     # rolled above it (also the element count above which a TeamCopy sink copies by a loop and a block is a team stage).
-    "form": {"rolled_fold_min": 16},
+    # lazy_leaf_width: the element count above which a read-only leaf read only by static component reads is bound as a proxy, not copied
+    # whole; lean_width: the widest vector whose single indexed accumulate keeps the select-chain spelling when Real is four bytes.
+    "form": {"rolled_fold_min": 16, "lazy_leaf_width": 32, "lean_width": 4},
     # The aligned run of lanes a uniform access is proven equal over, in the host text (the host's own decision, kept at the value it has
     # always used).
     "uniform_run": 32,

@@ -7,7 +7,7 @@ table's LOC -- WRITTEN BY THE RUN, and RED when a kind has no rule.
 The measurable claim is "a rule-table LOC count in the card, not an
 assertion here", so the number lands in a card the run regenerates
 (``tests/cards/CARD_DIFF_RULES.md``) and prose only cites it. The gate is the
-enumeration around it: every kind in ``hawk.ir.ops.OP_KINDS`` must carry a table
+enumeration around it: every kind in ``raptor.ir.ops.OP_KINDS`` must carry a table
 entry -- an explicit zero rule for the undifferentiable ones, or the transform's
 own cross-sample handling -- and every SINK family must survive both transforms,
 checked by deriving one, not by reading the source. Absence is the failure
@@ -21,6 +21,7 @@ kind as unruled.
 
 from __future__ import annotations
 
+from lowering.dispatch import dispatch as _dispatch
 import hashlib
 from pathlib import Path
 
@@ -67,8 +68,8 @@ _FAMILIES = {
                  "thing a reverse recurrence needs and the only reason a "
                  "bounded local array is declared at all",
     "dispatch": ": K INDEPENDENT per-branch reverse passes combined into "
-                "ONE adjoint dispatch per leaf reached, SAME policy as the "
-                "primal; forward mirrors the branches under that same policy; "
+                "ONE adjoint dispatch per leaf reached, SAME strategy as the "
+                "primal; forward mirrors the branches under that same strategy; "
                 "`kind` itself is an address, not a differentiable quantity, "
                 "and receives no adjoint",
 }
@@ -182,7 +183,7 @@ def test_every_sink_family_survives_both_transforms(family):
         "wide_write": (WideWrite("wide", value, None, F64),),
         "accum_write": (AccumWrite("acc", value, idx, F64),),
         "at": (Assign("out", mk("mul", (At(tab, idx, F64), x)), F64),),
-        "dispatch": (Assign("out", Dispatch(idx, [x, mk("mul", (x, x))], "switch",
+        "dispatch": (Assign("out", _dispatch(idx, [x, mk("mul", (x, x))], "switch",
                                             F64), F64),),
         "leaf": (Assign("out", x, F64),),
         "constant": (Assign("out", mk("add", (x, Const(3.0, F64))), F64),),

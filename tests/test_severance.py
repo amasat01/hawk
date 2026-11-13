@@ -59,6 +59,23 @@ def test_piece_imports_no_hawk_at_any_level(piece):
     assert not bad, S.report(piece, "2a.3 nothing below hawk imports hawk", bad, _scan_counts(pred))
 
 
+# ---- eagle imports: the standard library, itself, run-time libraries, raptor and raptor wings only ------------------------
+
+_EAGLE_FORBIDDEN = {
+    "eagle->backend": lambda t: t.split(".")[0] in ("hawk_c", "hawk_cuda") or t.startswith("osprey_"),
+    "eagle->aether-wing": lambda t: t == "aether.wings" or t.startswith("aether.wings."),
+    "eagle->aether": lambda t: (t == "aether" or t.startswith("aether.")) and not (t == "aether.wings" or t.startswith("aether.wings.")),
+}
+
+
+@pytest.mark.parametrize("family", list(_EAGLE_FORBIDDEN))
+def test_eagle_imports_no_backend_or_aether(family):
+    match = _EAGLE_FORBIDDEN[family]
+    bad = [e for e in S.piece_edges("eagle") if match(e.target)]
+    base = S.pieces()["eagle"][0].parent
+    assert not bad, f"{family}: {len(bad)} import(s) NOT HELD:\n" + "\n".join(f"  {e.where(base)}: {e.how} {e.target}" for e in bad)
+
+
 # ---- 2a.4 ------------------------------------------------------------------------------------------------------------
 
 def _writer_edges(piece):
@@ -69,7 +86,11 @@ def _writer_edges(piece):
 def _writer_ok(piece, e) -> bool:
     _, pkg = S.pieces()[piece]
     named = S.named_components().get(piece, set())
-    return (S.is_stdlib(e.top) or e.top in ("raptor", pkg) or any(e.target == m or e.target.startswith(m + ".") for m in named)
+    named_unit = any(e.target == m or e.target.startswith(m + ".") for m in named)
+    # a wing of the family package reaches another wing only through a unit its manifest names (the base wing names none: it holds what every backend needs)
+    own = S.unit_module(piece.split(":", 1)[1]) if piece.startswith("wing:") else None
+    other_wing = own is not None and e.target.startswith(f"{pkg}.wings.") and not (e.target == own or e.target.startswith(own + "."))
+    return (S.is_stdlib(e.top) or (e.top in ("raptor", pkg) and not (other_wing and not named_unit)) or named_unit
             or e.target == "<non-literal>")      # a module named by manifest data (the spelling arm)
 
 
@@ -79,3 +100,14 @@ def test_writer_imports_only_the_standard_library_raptor_and_its_named_component
     counts = {p: sum(1 for e in _writer_edges(p) if not _writer_ok(p, e))
               for p in S.piece_ids() if p.startswith(("component:", "extension:", "wing:"))}
     assert not bad, S.report(piece, "2a.4 a writer imports the standard library, raptor and its named components only", bad, counts)
+
+
+def test_the_host_and_c_rows_name_nothing_of_the_cells_mode():
+    """The cells (banded) writer and team forms are the SIMT wing's: the host row (its backend and its wing) and the C row never name them."""
+    import re
+
+    names = re.compile(r"cells_writer|CellsWriter|team_cells|writer_cells|aether\.wings\.simt")
+    roots = [S.pieces()[p][0] for p in ("wing:aether_cpu", "extension:osprey_cpu", "extension:hawk_c")]
+    hits = [f"{f.relative_to(S.REPO)}:{n}" for root in roots for f in sorted(root.rglob("*.py")) if "tests" not in f.parts
+            for n, line in enumerate(f.read_text().splitlines(), 1) if names.search(line)]
+    assert not hits, hits

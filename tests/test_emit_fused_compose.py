@@ -7,7 +7,7 @@ The body path (``tests/test_emit_fused_lanes.py``) ships one body string per
 group, each lane through the same renderer, into its own C++ scope. What it
 deliberately does not ship is composition, because composition is the
 CONSUMER's decision (a downstream package's own group planner) and HAWK must
-not invent one. :func:`hawk.emit.compose` is the other half: given the
+not invent one. :func:`aether.wings.base.fused.compose` is the other half: given the
 membership, it produces a deployable kernel — the merged slot order, one
 index prologue, one body, one artifact through the ordinary publish path, and
 a ``LaneMeta`` record per lane in the sidecar.
@@ -30,6 +30,7 @@ This test previously failed via two plants, both observed and both removed; reco
 
 from __future__ import annotations
 from _specs import default_kind
+from _specs import aether_writer
 from _specs import validation_spec
 from _specs import HOST
 
@@ -45,7 +46,7 @@ import hawk.math as hm
 from hawk.artifact import build_bundle
 from aether.wings.base.fused import FusedKernel, Lane, compose
 from raptor.errors import RaptorError as HawkError
-from raptor.ir.types import LaneMeta
+from aether.wings.base.fused import LaneMeta
 
 N = 16
 
@@ -73,7 +74,7 @@ GROUP = (lane_scale, lane_energy, lane_speed)
 
 @pytest.fixture(scope="module")
 def fused():
-    return compose(GROUP, "fused_group", spec=validation_spec(), kind=default_kind())
+    return compose(GROUP, "fused_group", spec=validation_spec(), kind=default_kind(), writer=aether_writer())
 
 
 @pytest.fixture(scope="module")
@@ -239,7 +240,7 @@ def test_one_name_meaning_two_things_is_refused_naming_both_lanes():
         b = theta * 2.0
 
     with pytest.raises(HawkError) as excinfo:
-        compose([wide_theta, scalar_theta], "conflict", spec=validation_spec(), kind=default_kind())
+        compose([wide_theta, scalar_theta], "conflict", spec=validation_spec(), kind=default_kind(), writer=aether_writer())
     message = str(excinfo.value)
     assert "wide_theta" in message and "scalar_theta" in message, message
     assert "theta" in message and "arg_spec" in message
@@ -255,7 +256,7 @@ def test_two_lanes_committing_to_one_plane_are_refused_naming_both():
         y = x + 2.0
 
     with pytest.raises(HawkError) as excinfo:
-        compose([writes_y_a, writes_y_b], "double_write", spec=validation_spec(), kind=default_kind())
+        compose([writes_y_a, writes_y_b], "double_write", spec=validation_spec(), kind=default_kind(), writer=aether_writer())
     message = str(excinfo.value)
     assert "writes_y_a" in message and "writes_y_b" in message, message
     assert "write it twice" in message
@@ -263,13 +264,13 @@ def test_two_lanes_committing_to_one_plane_are_refused_naming_both():
 
 def test_an_empty_or_ambiguous_group_and_an_unknown_scalar_mode_are_refused():
     with pytest.raises(HawkError, match="empty lane group"):
-        compose([], "nothing", spec=validation_spec(), kind=default_kind())
+        compose([], "nothing", spec=validation_spec(), kind=default_kind(), writer=aether_writer())
     with pytest.raises(HawkError, match="two lanes share a name"):
-        compose([lane_energy, lane_energy], "twice", spec=validation_spec(), kind=default_kind())
+        compose([lane_energy, lane_energy], "twice", spec=validation_spec(), kind=default_kind(), writer=aether_writer())
     with pytest.raises(HawkError, match="neither a Lane nor a traced kernel"):
-        compose([object()], "not_a_lane", spec=validation_spec(), kind=default_kind())
+        compose([object()], "not_a_lane", spec=validation_spec(), kind=default_kind(), writer=aether_writer())
     with pytest.raises(HawkError, match="unknown scalar mode 'posit8'"):
-        compose(GROUP, "posit8_group", "posit8", spec=validation_spec(), kind=default_kind())
+        compose(GROUP, "posit8_group", "posit8", spec=validation_spec(), kind=default_kind(), writer=aether_writer())
 
 
 def test_a_lane_carries_its_declared_but_unread_slots_into_the_merged_spec():
@@ -281,7 +282,7 @@ def test_a_lane_carries_its_declared_but_unread_slots_into_the_merged_spec():
     def guarded(s: hawk.Scalar, terminated: hawk.Terminated, g: hawk.Mutable[hawk.Scalar]):
         g = s + 1.0
 
-    fused_guarded = compose([guarded, lane_energy], "guarded_group", spec=validation_spec(), kind=default_kind())
+    fused_guarded = compose([guarded, lane_energy], "guarded_group", spec=validation_spec(), kind=default_kind(), writer=aether_writer())
     assert ("terminated", "terminated") in fused_guarded.arg_spec
     assert ("terminated", "terminated") in guarded.arg_spec
 
@@ -290,7 +291,7 @@ def test_a_lane_record_may_carry_its_own_prologue_hook():
     """The lane-local hook leaves open survives composition."""
     lane = Lane("hooked", lane_energy.sinks, lane_energy.walk,
                 prologue="// lane guard goes here")
-    fused_hooked = compose([lane], "hooked_group", spec=validation_spec(), kind=default_kind())
-    text = fused_hooked.fused_body(default_kind(), spec=HOST).text
+    fused_hooked = compose([lane], "hooked_group", spec=validation_spec(), kind=default_kind(), writer=aether_writer())
+    text = fused_hooked.fused_body(default_kind(), spec=HOST, writer=aether_writer()).text
     assert "// lane guard goes here" in text
     assert text.index("// lane guard") < text.index("mut_sq[i]")

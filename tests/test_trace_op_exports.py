@@ -3,7 +3,7 @@
 
 """The authoring surface spells EVERY op the IR carries.
 
-WHY THIS ROW EXISTS. ``hawk.ir.ops.OP_KINDS`` is the vocabulary, the rule
+WHY THIS ROW EXISTS. ``raptor.ir.ops.OP_KINDS`` is the vocabulary, the rule
 table is keyed on it and ``staging/aether/wings/base/render.py`` renders it — three consumers
 that a row already checks against each other. Nobody was checking the FOURTH:
 the surface an author writes a kernel through. ``outer`` was in ``MATRIX_OPS``,
@@ -43,7 +43,7 @@ traced at import::
 and with that one term removed so the module could collect, the two enumeration
 rows failed on their own::
 
-    AssertionError: these op kinds are in hawk.ir.ops.OP_KINDS but no name
+    AssertionError: these op kinds are in raptor.ir.ops.OP_KINDS but no name
     re-exported by hawk.trace mints them: ['outer']. An op the IR types, the
     rule table differentiates and the emitter renders, that an author cannot
     write, is a hole in the language
@@ -57,7 +57,7 @@ name behind the key did not exist.
 (b) the rank-2 reduction spelled ``.sum()`` again (``_Renderer._matrix_sum``
 bypassed). The VJP half stopped compiling, on ``bar_k`` exactly::
 
-    hawk.ir.nodes.HawkError: host compile of 'matvocab_vjp' failed (rc=1).
+    hawk.HawkError: host compile of 'matvocab_vjp' failed (rc=1).
     matvocab_vjp.cpp:126:64:
       126 | mut_bar_k[i] = mtx_bar_W_i.cwiseMul((t1 * mtx_A_i)).sum();
     aether/expr/Expression.h:246:54: error: static assertion failed:

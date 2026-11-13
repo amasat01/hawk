@@ -9,6 +9,7 @@ branch (not just as a branch's own value, which
 
 from __future__ import annotations
 
+from lowering.dispatch import dispatch as _dispatch
 import numpy as np
 import pytest
 from _eval import evaluate
@@ -38,7 +39,7 @@ def _table_dispatch_primal():
     idx = _leaf("idx", I32, "per_sample")
     branch0 = mk("mul", (x0, x0))
     branch1 = mk("mul", (x1, At(tab, idx, S)))
-    d = Dispatch(k, [branch0, branch1], "switch", S)
+    d = _dispatch(k, [branch0, branch1], "switch", S)
     return (Assign("out", d, S),)
 
 

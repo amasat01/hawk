@@ -8,7 +8,7 @@ core renderer. A node class carries its own render entry: ``render_sink(self, r,
 a sink, ``render_expr(self, r, materialised)`` for an expression, each calling the writer
 through the member it names."""
 
-from raptor.ir.kinds import Registry, declare, is_a as is_a, kind_name as kind_name, make_kind, trait as trait, load_manifest   # noqa: F401
+from raptor.ir.kinds import Registry, declare, is_a as is_a, kind_name as kind_name, make_kind, has_feather as has_feather, load_manifest   # noqa: F401
 from .._errors import HawkError
 from .. import variants
 

@@ -13,7 +13,7 @@ tutorials/01_your_first_kernel
 tutorials/02_arguments_and_shapes
 tutorials/03_stop_when_youre_done
 tutorials/09_per_sample_control
-tutorials/08_choosing_a_dispatch_policy
+tutorials/08_choosing_a_dispatch_strategy
 ```
 
 ## Derivatives

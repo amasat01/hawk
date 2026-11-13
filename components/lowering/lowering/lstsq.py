@@ -13,9 +13,9 @@ from raptor.ir.linalg import LSTSQ_OPS
 
 from raptor.ir import make as _make
 from raptor.ir.nodes import Loop
-from raptor.ir.walk import canonical
 
 from . import team as _team
+from .cells import walk as _walk
 
 
 def _lower_node(node, qr: bool):
@@ -96,4 +96,4 @@ def lowered(sinks, walk, spec):
     if not walk.kinds.intersection(LSTSQ_OPS):
         return sinks, walk
     sinks = lowered_sinks(tuple(sinks), spec)
-    return sinks, canonical(sinks)
+    return sinks, _walk(sinks)

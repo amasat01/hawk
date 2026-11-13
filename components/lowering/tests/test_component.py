@@ -6,7 +6,7 @@ import sys
 
 import pytest
 from raptor.ir.kinds import is_a, kind_name
-from raptor.ir.nodes import AccumWrite, Const, Leaf, OrderedAccumWrite
+from raptor.ir.nodes import AccumWrite, Const, Leaf
 from raptor.ir.types import TensorType
 from raptor.ir import make
 
@@ -21,8 +21,8 @@ def test_hawk_is_absent():
     assert not [m for m in sys.modules if m == "hawk" or m.startswith("hawk.")]
 
 
-def test_the_six_kinds_are_declared_and_built_by_the_constructors():
-    assert {k["name"] for k in lowering.MANIFEST["kinds"]} == {"team_store", "team_copy", "log_store", "scatter_log", "team_read", "box_store"}
+def test_the_twelve_kinds_are_declared_and_built_by_the_constructors():
+    assert {k["name"] for k in lowering.MANIFEST["kinds"]} == {"team_store", "team_copy", "log_store", "scatter_log", "team_read", "box_store", "block_sum", "block_sum_write", "ordered_accum_write", "predicated_dispatch", "segmented_dispatch", "auto_dispatch"}
     x = Leaf("vocab_read", "per_sample", "x", F64)
     assert is_a(lowering.TeamStore("s", x), "team_store") and is_a(lowering.TeamCopy("s", x), "team_copy")
 
@@ -31,7 +31,7 @@ def test_every_declared_entry_resolves_and_every_module_imports_without_hawk():
     for part, names in lowering.MANIFEST["entries"].items():
         mod = importlib.import_module(f"lowering.{part}")
         assert all(hasattr(mod, n) for n in names), part
-    for part in ("box", "kinds", "lanes", "logs", "split", "team", "wide", "wrapper_text"):
+    for part in ("block", "box", "kinds", "lanes", "logs", "split", "team", "wide", "wrapper_text"):
         importlib.import_module(f"lowering.{part}")
 
 
@@ -40,6 +40,8 @@ def test_an_ordered_accumulate_lowers_to_the_pair_of_log_stores():
 
     x, cell, key = (Leaf("vocab_read", "per_sample", n, t) for n, t in (("x", F64), ("cell", I32), ("key", I32)))
     plain = AccumWrite("g", make("mul", (x, x)), cell, F64)
+    from lowering.logs import OrderedAccumWrite
+
     stated = OrderedAccumWrite("g", plain.value, plain.index, key, ((("key", None),)))
     out = log_ordered((stated, plain))
     assert [kind_name(s) for s in out] == ["log_store", "log_store", None] and out[2] is plain

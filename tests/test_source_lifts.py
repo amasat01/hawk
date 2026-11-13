@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """A kernel whose source is not in a file: ``python -c`` is lifted, ``exec`` through
-``raptor.flow.exec_source``; anything else is refused with the way out."""
+``hawk.trace.flow.exec_source``; anything else is refused with the way out."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def test_python_dash_c_source_is_lifted():
 
 
 def test_exec_source_is_traced():
-    from raptor import flow
+    from hawk.trace import flow
 
     ns = flow.exec_source("import hawk\nfrom hawk import Scalar\n" + textwrap.dedent("""
         @hawk.kernel
@@ -50,7 +50,7 @@ def test_exec_without_the_lift_names_the_way_out():
     message = str(exc.value)
     assert "its source is not on disk" in message
     assert ".py file" in message and "IPython" in message
-    assert "raptor.flow.exec_source" in message and "linecache.cache" in message
+    assert "hawk.trace.flow.exec_source" in message and "linecache.cache" in message
 
 
 def test_dash_c_lift_refuses_a_kernel_exec_defined_inside_it():

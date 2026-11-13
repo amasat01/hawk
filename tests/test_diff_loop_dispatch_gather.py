@@ -8,6 +8,7 @@ with an untaken branch's row never committed out of range."""
 
 from __future__ import annotations
 from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import numpy as np
 import pytest
@@ -29,7 +30,7 @@ def switch_gather(x: hawk.Scalar, kind: hawk.Scalar,
     s = x
     for k in range(N):
         cases = [s * tab.at(row=k, col=0), tab.at(row=k, col=1) * m.sin(s), s + 0.5]
-        s = m.dispatch(m.int32(kind), cases, policy="switch") * 0.9 + 0.1
+        s = m.dispatch(m.int32(kind), cases, strategy="switch") * 0.9 + 0.1
     out = s
 
 
@@ -66,7 +67,7 @@ def far_row(x: hawk.Scalar, kind: hawk.Scalar,
     for k in range(2):
         # branch 0 reads a row only valid when x is small; branch 1 never reads tab
         cases = [s * tab.at(m.int32(x * 100.0 * (1.0 + 0.0 * k))), s * 2.0]
-        s = m.dispatch(m.int32(kind), cases, policy="switch") + 0.1
+        s = m.dispatch(m.int32(kind), cases, strategy="switch") + 0.1
     out = s
 
 
@@ -82,7 +83,7 @@ def test_an_untaken_branchs_row_is_never_committed_out_of_range():
     ok = evaluate(d, {"x": 0.04, "kind": 0.0, "tab": tab, "terminated": False,
                       "bar_out": 1.0}, lanes=N)
     assert ok["bar_tab"][4] != 0.0 and not np.any(ok["bar_tab"][:4])
-    text = render_body(tuple(d), canonical(tuple(d)), spec=HOST, kind=default_kind()).text
+    text = render_body(tuple(d), canonical(tuple(d)), spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert "bar_tab" in text
 
 
@@ -92,8 +93,8 @@ def test_a_dispatch_inside_a_dispatch_branch_with_a_gather_is_refused_by_name():
                tab: hawk.Table["row":N], out: hawk.Mutable[hawk.Scalar]):
         s = x
         for k in range(2):
-            inner = m.dispatch(m.int32(kind), [tab.at(row=k), s], policy="switch")
-            s = m.dispatch(m.int32(kind), [inner * s, s + 1.0], policy="switch")
+            inner = m.dispatch(m.int32(kind), [tab.at(row=k), s], strategy="switch")
+            s = m.dispatch(m.int32(kind), [inner * s, s + 1.0], strategy="switch")
         out = s
 
     with pytest.raises(HawkError, match="inside a `dispatch` inside a `dispatch` branch|dispatch"):
@@ -106,7 +107,7 @@ def test_a_dispatch_inside_a_dispatch_branch_with_a_gather_is_refused_by_name():
 def straight_far(x: hawk.Scalar, kind: hawk.Scalar, tab: hawk.Table["row":N],
                  out: hawk.Mutable[hawk.Scalar]):
     cases = [x * tab.at(m.int32(x * 100.0)), x * 2.0]
-    out = m.dispatch(m.int32(kind), cases, policy="switch")
+    out = m.dispatch(m.int32(kind), cases, strategy="switch")
 
 
 @hawk.kernel
@@ -121,7 +122,7 @@ def invariant_far(x: hawk.Scalar, kind: hawk.Scalar, tab: hawk.Table["row":N],
     s = x
     for _k in range(2):
         cases = [s * tab.at(m.int32(x * 100.0)), s * 2.0]
-        s = m.dispatch(m.int32(kind), cases, policy="switch") + 0.1
+        s = m.dispatch(m.int32(kind), cases, strategy="switch") + 0.1
     out = s
 
 

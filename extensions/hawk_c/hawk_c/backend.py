@@ -64,7 +64,7 @@ class C(Backend):
     def package(self, source, result, *, name, smode, profile):
         """The audit and the toolchain checks (any finding refuses, before anything is written), then the report
         :func:`hawk_c.export` writes, built by the same code."""
-        from hawk.artifact.bundle import _ExportResult, _File, _blob, _digest_bytes
+        from hawk.artifact.bundle import ExportResult, UnitFile, text_blob, digest_bytes
 
         profile = profile if profile is not None else self.default_profile()
         embedded.refuse_audit_hits(source)
@@ -72,15 +72,15 @@ class C(Backend):
         report = embedded.finish_report(source, checks)
         h = hashlib.sha256()
         for text in (source.text, source.header):
-            h.update(_blob(text))
+            h.update(text_blob(text))
             h.update(b"\0")
         files = []
         for fname, text in ((f"{name}{self.source}", source.text),
                             (f"{name}{self.artifact}", source.header),
                             (self.report_file(name), embedded.report_text(report))):
-            blob = _blob(text)
-            files.append(_File(fname, _digest_bytes(blob), blob=blob))
-        entry = (_ExportResult(h.hexdigest(), False, float(checks.get("seconds", 0.0))),
+            blob = text_blob(text)
+            files.append(UnitFile(fname, digest_bytes(blob), blob=blob))
+        entry = (ExportResult(h.hexdigest(), False, float(checks.get("seconds", 0.0))),
                  f"{name}{self.artifact}", f"{name}{self.source}", self.format)
         return entry, files, report
 

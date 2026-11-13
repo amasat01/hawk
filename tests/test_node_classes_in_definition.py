@@ -54,6 +54,6 @@ def test_no_node_class_is_defined_in_a_pass_at_run_time():
                 importlib.import_module(m.name)
             except ImportError:      # a backend whose toolchain is absent
                 pass
-    assert raptor.ir.BlockSum in _all_subclasses(Node)
+    assert any(c.__name__ == "BlockSum" for c in _all_subclasses(Node))      # a kind of the lowering wing, declared when it loads
     stray = sorted(f"{c.__module__}.{c.__qualname__}" for c in _all_subclasses(Node) if c.__module__.startswith("hawk.passes"))
     assert not stray, stray

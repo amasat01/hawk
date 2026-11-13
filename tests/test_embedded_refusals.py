@@ -11,6 +11,7 @@ feature (``unsupported.<key>``) and the alternative an author can take.
 from __future__ import annotations
 
 from _specs import validation_spec, default_kind
+from _specs import aether_writer
 import _deployable as D
 import _kernels as K
 import pytest
@@ -55,7 +56,7 @@ def active(omega: Scalar, dt: Param, terminated: Terminated, x: Mutable[Scalar])
 
 @hawk.kernel
 def segmented(k: Index, b0: Scalar, b1: Scalar, y: Mutable[Scalar]):
-    y = hm.dispatch(k, [b0, b1], policy="segmented")
+    y = hm.dispatch(k, [b0, b1], strategy="segmented")
 
 
 @hawk.kernel
@@ -136,7 +137,7 @@ CASES = {
     "segmented": (lambda: _case(segmented), "export each branch as its own kernel"),
     "compensated": (lambda: _case(D.scatter_c, D.COMPENSATED),
                     "use the plain sink policy"),
-    "fused_lanes": (lambda: _case(compose([lane_a, lane_b], "fused", spec=validation_spec(), kind=default_kind()), DEFAULT_KIND),
+    "fused_lanes": (lambda: _case(compose([lane_a, lane_b], "fused", spec=validation_spec(), kind=default_kind(), writer=aether_writer()), DEFAULT_KIND),
                     "export each lane as its own kernel"),
     "two_path": (lambda: _case(hawk.steps(advance, "auto")),
                  "export `kernel.step` (the single step) or `hawk.steps(step, K)` "

@@ -5,7 +5,7 @@ import simt.lane  # noqa: F401
 import lowering.team  # noqa: F401
 import pytest
 from raptor.ir.nodes import Node
-from raptor.ir.walk import canonical
+from lowering.cells import walk as canonical
 from hawk.trace.kernel import _declared
 
 

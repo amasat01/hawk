@@ -28,6 +28,7 @@ sound, and the emitted-body row says the forward paid nothing for it.
 
 from __future__ import annotations
 from _specs import default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import _oracle as O
@@ -117,10 +118,10 @@ def test_the_emitted_body_is_byte_identical_to_the_longhand_body():
     """Needs the ``Primitive`` branch in ``staging/aether/wings/base/render._Renderer._expr``,
     or the boundary falls through to the op dispatch::
 
-        hawk.ir.nodes.HawkError: op 'primitive' has no aether spelling at rank 0
+        hawk.HawkError: op 'primitive' has no aether spelling at rank 0
     """
-    mine = render_body(primitive_kernel.sinks, primitive_kernel.walk, spec=HOST, kind=default_kind()).text
-    theirs = render_body(longhand_kernel.sinks, longhand_kernel.walk, spec=HOST, kind=default_kind()).text
+    mine = render_body(primitive_kernel.sinks, primitive_kernel.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
+    theirs = render_body(longhand_kernel.sinks, longhand_kernel.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert mine == theirs, (
         "a primitive is INLINED: the emitted body must be the body "
         f"the same arithmetic written longhand emits.\n--- primitive ---\n{mine}\n"
@@ -159,7 +160,7 @@ def test_the_supplied_vjp_matches_finite_differences(x0):
     """Needs the ``Primitive`` branch in ``hawk/diff/transform``'s reverse
     loop, or the boundary reaches the closed-world table::
 
-        hawk.ir.nodes.HawkError: no derivative rule for node kind 'primitive'
+        hawk.HawkError: no derivative rule for node kind 'primitive'
         (rank 0): HAWK's rule table is closed-world ...
     """
     sinks = primitive_kernel.sinks
@@ -304,8 +305,8 @@ def test_a_reused_primitive_result_emits_no_alias_of_its_forward():
     byte-identical. A primitive is not a node the emitter renders: every
     reference to it is a reference to its forward, and its fan-out is the
     forward's."""
-    mine = render_body(reused_primitive_kernel.sinks, reused_primitive_kernel.walk, spec=HOST, kind=default_kind()).text
-    theirs = render_body(reused_longhand_kernel.sinks, reused_longhand_kernel.walk, spec=HOST, kind=default_kind()).text
+    mine = render_body(reused_primitive_kernel.sinks, reused_primitive_kernel.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
+    theirs = render_body(reused_longhand_kernel.sinks, reused_longhand_kernel.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert mine == theirs, (
         "a reused primitive result must not alias its forward.\n"
         f"--- primitive ---\n{mine}\n--- longhand ---\n{theirs}")

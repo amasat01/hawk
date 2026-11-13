@@ -60,14 +60,19 @@ ALLOWED = {
        ('_GCC_FAMILY_MEMO', '_HOST_CONTRACTION', '_LIBC_MEMO', '_MACRO_MEMO', '_TARGET_MEMO', '_WITNESS_MEMO')},
     ("osprey_cpu/backend.py", "BACKEND"): "the backend object, a stateless row never written after import",
     ("registry.py", "KNOWN"): "read-only table, never mutated after import",
+    ("registry.py", "_STATE"): "the registry scan, rebuilt under _LOCK; hawk.registry.reset() forgets it",
+    ("compile/payload.py", "_PAYLOAD_MEMO"): "memo of the sealed payload; hawk.compile.payload.reset_payload_memo() forgets it",
+    ("compile/toolchain.py", "_PIP_ONLY_ROOT"): "process-lifetime served directory, made once under _PIP_ONLY_LOCK and removed at exit; no reset function exists, tests put it back with monkeypatch",
     ("options.py", "LEGACY"): "read-only table, never mutated after import",
-    **{("cpu/host.py", n): "predates the guard, moved with its module from hawk/emit" for n in ("_ELEM_BYTES", "HOST")},
-    **{("base/writer_aether.py", n): "a stateless writer object, never written after import" for n in ("AETHER", "AETHER_CELLS")},
+    **{("cpu/host.py", n): "predates the guard, moved with its module from hawk/emit" for n in ("_ELEM_BYTES",)},
     **{("base/spelling.py", n): "predates the guard, moved with its module from hawk/emit" for n in
-       ('_CWISE', '_CWISE1', '_INFIX', '_MATH1', '_MATH2', '_MATH3', '_METHOD0', '_METHOD1', '_RANDOM_FN')},
-    **{("base/wrapper.py", n): "predates the guard, moved with its module from hawk/emit" for n in ('SAMPLE_SUM_OP_CODE', 'SCALAR_MODES', '_BANDED_UNCERTIFIED')},
+       ('_CWISE', 'CWISE_UNARY', 'INFIX_OPS', 'MATH_UNARY', 'MATH_BINARY', 'MATH_TERNARY', '_METHOD0', '_METHOD1', '_RANDOM_FN', 'IDENT_PREFIX')},
+    ("lowering/exchange.py", "MIRROR_OF"): TABLE,
+    **{("base/wrapper.py", n): "predates the guard, moved with its module from hawk/emit" for n in ('SAMPLE_SUM_OP_CODE', 'SCALAR_MODES')},
+    ("simt/wrapper_text.py", "_BANDED_UNCERTIFIED"): "read-only table, never mutated after import",
+    ("simt/writer_cells.py", "_RAW_TWIN"): "read-only table, never mutated after import",
     **{("base/writer_aether.py", n): "predates the guard, moved with its module from hawk/emit" for n in
-       ('_ENTRY', '_INT_CALLS', '_INT_WRAPPING', '_RANDOM_SALT', '_RAW_TWIN', '_RAY', '_SOLVE', '_TRIANGULAR')},
+       ('_ENTRY', '_INT_CALLS', '_INT_WRAPPING', '_RANDOM_SALT', '_RAY', '_SOLVE', '_TRIANGULAR')},
     **{("base/team_emit.py", n): "predates the guard, moved with its module from emit/team.py" for n in ("_FACTORISE", "_SCATTER", "_SOLVE", "_STRUCT")},
     **{(file, name): "predates the guard, not reviewed" for file, names in BASELINE.items() for name in names},
 }
@@ -90,6 +95,17 @@ def pieces() -> dict:
     return out
 
 
+def global_rebound(tree: ast.Module) -> set:
+    """The module-level names some function of the module rebinds through ``global``: process-wide state like a mutable literal."""
+    named = set()
+    for node in _module_level(tree.body):
+        if isinstance(node, ast.Assign):
+            named |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            named.add(node.target.id)
+    return {name for node in ast.walk(tree) if isinstance(node, ast.Global) for name in node.names if name in named}
+
+
 def found_mutables(piece: str | None = None) -> set:
     found = set()
     every = pieces()
@@ -99,6 +115,7 @@ def found_mutables(piece: str | None = None) -> set:
     # a class made in one piece and instantiated in another is state too: its definition is looked up in every piece
     classes = _nonfrozen_classes([ast.parse(p.read_text()) for prs in every.values() for p, _ in prs])
     for path, rel in paths:
+        found |= {(rel, name) for name in global_rebound(trees[path])}
         for node in _module_level(trees[path].body):
             if isinstance(node, ast.Assign):
                 targets, value = node.targets, node.value
@@ -136,6 +153,11 @@ def test_the_scan_sees_a_planted_mutable():
              for t in (n.targets if isinstance(n, ast.Assign) else [n.target])
              if _is_mutable(n.value)]
     assert names == ["_cache", "_more"]
+
+
+def test_the_scan_sees_a_name_a_function_rebinds_through_global():
+    tree = ast.parse("_memo = None\n_other = None\ndef set_it():\n    global _memo\n    _memo = 1\ndef local():\n    _other = 2\n")
+    assert global_rebound(tree) == {"_memo"}
 
 
 def test_the_scan_sees_state_held_by_an_instance_a_context_variable_or_a_thread_local():

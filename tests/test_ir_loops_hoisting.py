@@ -9,6 +9,7 @@ per-iteration condition stays in the body."""
 
 from __future__ import annotations
 from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import numpy as np
 from _eval import evaluate
@@ -31,7 +32,7 @@ def shared_row(x: hawk.Scalar, kind: hawk.Scalar, perm: hawk.Table["i":4],
     for t in range(T):
         arms = [s * th.at(r=q, c=1), s + th.at(r=q, c=2) * 0.5,
                 m.sin(s) * th.at(r=q, c=0)]
-        s = m.dispatch(m.int32(kind), arms, policy="switch") * 0.9 + 0.1 + xs.at(q + t) * 0.01
+        s = m.dispatch(m.int32(kind), arms, strategy="switch") * 0.9 + 0.1 + xs.at(q + t) * 0.01
     y = s
 
 
@@ -45,7 +46,7 @@ def per_iteration_guard(x: hawk.Scalar, n: hawk.Scalar, a: hawk.Table["k":T],
 
 
 def _text(kernel) -> str:
-    return render_body(kernel.sinks, kernel.walk, spec=HOST, kind=default_kind()).text
+    return render_body(kernel.sinks, kernel.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
 
 
 def _loop(kernel):
@@ -58,7 +59,7 @@ def far_arm(x: hawk.Scalar, kind: hawk.Scalar, tab: hawk.Table[hawk.Scalar],
     s = x
     for t in range(T):
         arms = [s * tab.at(m.int32(x * 100.0)), s * 2.0]
-        s = m.dispatch(m.int32(kind), arms, policy="switch") + 0.1
+        s = m.dispatch(m.int32(kind), arms, strategy="switch") + 0.1
     y = s
 
 

@@ -7,6 +7,7 @@ optimisation level, the cache directory) are read from hawk."""
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -20,7 +21,7 @@ import threading
 from pathlib import Path
 
 from raptor.errors import RaptorError
-from raptor.protocols.refusal import ToolchainAbsent
+from lowering.exchange import ToolchainAbsent
 
 from hawk.compile import toolchain as _shared
 from hawk.compile.cache import default_cache_dir
@@ -221,7 +222,7 @@ def compiler_macros(compiler: str) -> dict:
         return known
     macros: dict = {}
     try:
-        rc, text = _shared._probe_stdout(compiler, ("-dM", "-E", "-x", "c++", os.devnull), timeout=60)
+        rc, text = _shared.probe_stdout(compiler, ("-dM", "-E", "-x", "c++", os.devnull), timeout=60)
         if rc == 0:
             for ln in text.splitlines():
                 parts = ln.split(None, 2)
@@ -557,3 +558,57 @@ def host_flags(*, extra=(), profile: str | None = None, opt: str | None = None) 
 def reset_witness_memo() -> None:
     """Forget the memoised masked-call witness verdicts (:data:`_WITNESS_MEMO`), as a new process would."""
     _WITNESS_MEMO.clear()
+
+
+# -- the machine's cache sizes: a fact of the machine the build runs on, stated through ``machine_facts`` ------------------------------------
+
+_SYSFS_CACHES = "/sys/devices/system/cpu/cpu0/cache"
+
+
+def _cache_bytes(text: str) -> int:
+    """A sysfs ``size`` field (``32K``, ``1024K``, ``2M``) in bytes."""
+    text = text.strip().upper()
+    scale = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}.get(text[-1:], 1)
+    return int(text.rstrip("KMG")) * scale
+
+
+def _sysctl_caches():
+    """``(l1d, l2, source)`` off macOS ``sysctl``: the performance cores' (``perflevel0``) where the machine has them, else the plain ``hw``
+    keys; ``None`` if neither pair reads."""
+    for prefix in ("hw.perflevel0.", "hw."):
+        try:
+            sizes = [int(subprocess.run(["sysctl", "-n", prefix + key], capture_output=True, text=True, timeout=5, check=True).stdout)
+                     for key in ("l1dcachesize", "l2cachesize")]
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+        if all(n > 0 for n in sizes):
+            return sizes[0], sizes[1], f"sysctl {prefix}l1dcachesize/l2cachesize"
+    return None
+
+
+@functools.cache
+def host_caches(root: str = _SYSFS_CACHES):
+    """CPU 0's ``(l1d, l2, source)`` in bytes off ``root`` (Linux sysfs; on macOS the default root reads ``sysctl`` instead), read once per
+    process; ``None`` when a size cannot be read."""
+    if platform.system() == "Darwin" and root == _SYSFS_CACHES:
+        return _sysctl_caches()
+    found: dict = {}
+    try:
+        for entry in sorted(os.listdir(root)):
+            if not entry.startswith("index"):
+                continue
+            here = os.path.join(root, entry)
+
+            def field(name, here=here):
+                with open(os.path.join(here, name)) as fh:
+                    return fh.read().strip()
+
+            level, kind = int(field("level")), field("type")
+            data = kind == "Data" if level == 1 else kind != "Instruction"
+            if level in (1, 2) and data:
+                found.setdefault(level, _cache_bytes(field("size")))
+    except (OSError, ValueError):
+        return None
+    if not found.get(1) or not found.get(2):
+        return None
+    return found[1], found[2], root

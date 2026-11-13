@@ -54,31 +54,31 @@ every case.
 
 from __future__ import annotations
 
-import functools
-import os
 import re
-import subprocess
-import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import prod
 
 from raptor.ir import Walk
 from raptor.errors import RaptorError
-from raptor.ir.nodes import FINISHED_PLANE
+from lowering.cells import FINISHED_PLANE
 from raptor.ir.types import Slot
 from aether.wings.base.render import SAMPLE_SUM_TERMS, LaneSegments, LaneSplit, render_lane_segments, render_lane_split
 from aether.wings.base.wrapper import INTERCHANGE_MACRO, SAMPLE_SUM_OP_CODE, ActiveSpec, SegmentSpec, active_reads, sample_sum_fill, segment_reads, unpack_lines
 from aether.wings.base.box import BOX_OWN, owned_lane
 from aether.wings.base.dispatch import render_dispatch_rank0
 from aether.wings.base.spelling import binding_name, carry_type, element_spelling, finish_binding, reconstruct_call, view_type
-from raptor.protocols.naming import mirror_of
+from lowering.exchange import mirror_of
 
 #: Host-only helpers spliced after the shared prelude: the ``terminated``
 #: plane binding the host reads its masks through, same mirror and bytes
 #: as the device's ``aether::View<bool>`` (module docstring, "the MASK"),
 #: widened per block into ``HostLaneMask`` where the loop runs in blocks
 #: ("the MASK'S WIDTH"). Same answer either way: ``byte != 0``.
+#: Samples per block of the lane-guarded loop (one zmm of guard bytes): the width of the emitted ABI's ``kHostLaneBlock``, one definition,
+#: written into the text below and the tile's granule. A format constant of the text, the same on every machine.
+GUARD_BLOCK = 64
+
 HOST_MASK_HELPERS = """#if (defined(__AVX512F__) && defined(__GNUC__) && !defined(__clang__)) || defined(__aarch64__)
 #define HAWK_HOST_LANE_GUARDS 1
 #else
@@ -88,7 +88,7 @@ HOST_MASK_HELPERS = """#if (defined(__AVX512F__) && defined(__GNUC__) && !define
 namespace hawk_abi {
 
 // Samples per block of the lane-guarded loop (one zmm of guard bytes).
-inline constexpr aether::offset_t kHostLaneBlock = 64;
+inline constexpr aether::offset_t kHostLaneBlock = @GUARD_BLOCK@;
 
 static inline aether::offset_t lane_block_end(aether::offset_t lo, aether::offset_t hi)
 {
@@ -185,7 +185,7 @@ static inline void finish_lanes(const HostMask& m, const HAWK_LANE_T* lanes,
 #endif
 
 }  // namespace hawk_abi
-"""
+""".replace("@GUARD_BLOCK@", str(GUARD_BLOCK))
 
 #: The loop annotation a ``sample_local`` kernel's loop carries: iterations
 #: carry no memory dependence (each touches only its own sample). Spelled for
@@ -288,10 +288,10 @@ def lane_finish(walk: Walk) -> tuple | None:
     finish = getattr(walk, "finish", None)
     if finish is None:
         return None
-    mask = binding_name("terminated", finish[0])
+    mask = binding_name("terminated", finish)
     if mask not in lane_guards(walk):
         return None
-    return mask, finish_binding(finish[0]), binding_name("lookup", FINISHED_PLANE)
+    return mask, finish_binding(finish), binding_name("lookup", FINISHED_PLANE)
 
 
 def _contiguous_loop(guards: Sequence[str], finish: tuple | None = None) -> str:
@@ -361,7 +361,7 @@ def _contiguous_close(guards: Sequence[str], finish: tuple | None = None) -> str
 # --------------------------------------------------------------------------- #
 #: The macro an interchanged TU defines (to 1 unless the build already
 #: defined it): ``-DHAWK_HOST_INTERCHANGE=0`` builds the SAME TU's plain
-#: per-sample fused loop instead, which is how the old shape stays reachable
+#: per-sample fused loop instead, which keeps the per-sample shape reachable
 #: (``build_bundle(..., defines=("HAWK_HOST_INTERCHANGE=0",))``).
 
 # `?:` on a float is a branch GCC will not vectorise; a bitwise select is exact for any a, b.
@@ -487,12 +487,6 @@ inline constexpr aether::offset_t kHostChunkVectors = 1;
 }  // namespace hawk_abi
 """
 
-#: A tile's size bounds, in samples: at least one lane block
-#: (``kHostLaneBlock``), at most what one launch's tile of eagle's team
-#: plausibly holds.
-TILE_MIN, TILE_MAX = 64, 1024
-#: The samples per lane block, the tile's granule (``kHostLaneBlock``).
-LANE_BLOCK = 64
 #: The share of a cache level a tile's lane arrays may fill; the rest holds
 #: the step's temporaries, the planes' lines in flight and the stack.
 L1_SHARE, L2_SHARE = 0.5, 0.5
@@ -507,64 +501,17 @@ class CacheSizes:
     source: str
 
 
-#: What :func:`machine_caches` answers when sysfs cannot be read: a common
-#: x86-64 core (32 KiB L1d, 1 MiB L2).
+#: What :func:`machine_caches` answers for a build whose machine states no cache sizes: a common x86-64 core (32 KiB L1d, 1 MiB L2).
 FALLBACK_CACHES = CacheSizes(32 * 1024, 1024 * 1024, "fallback")
 
 
-def _cache_bytes(text: str) -> int:
-    """A sysfs ``size`` field (``32K``, ``1024K``, ``2M``) in bytes."""
-    text = text.strip().upper()
-    scale = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}.get(text[-1:], 1)
-    return int(text.rstrip("KMG")) * scale
-
-
-_SYSFS_CACHES = "/sys/devices/system/cpu/cpu0/cache"
-
-
-def _sysctl_caches() -> CacheSizes | None:
-    """L1d and L2 off macOS ``sysctl``: the performance cores' (``perflevel0``)
-    where the machine has them, else the plain ``hw`` keys; ``None`` if neither
-    pair reads."""
-    for prefix in ("hw.perflevel0.", "hw."):
-        try:
-            sizes = [int(subprocess.run(["sysctl", "-n", prefix + key], capture_output=True,
-                                        text=True, timeout=5, check=True).stdout)
-                     for key in ("l1dcachesize", "l2cachesize")]
-        except (OSError, ValueError, subprocess.SubprocessError):
-            continue
-        if all(n > 0 for n in sizes):
-            return CacheSizes(sizes[0], sizes[1], f"sysctl {prefix}l1dcachesize/l2cachesize")
-    return None
-
-
-@functools.cache
-def machine_caches(root: str = _SYSFS_CACHES) -> CacheSizes:
-    """CPU 0's L1d and L2 sizes off ``root`` (Linux sysfs; on macOS the default
-    root reads ``sysctl`` instead), read once per process;
-    :data:`FALLBACK_CACHES` for any size it cannot read."""
-    found: dict = {}
-    if sys.platform == "darwin" and root == _SYSFS_CACHES:
-        return _sysctl_caches() or FALLBACK_CACHES
-    try:
-        for entry in sorted(os.listdir(root)):
-            if not entry.startswith("index"):
-                continue
-            here = os.path.join(root, entry)
-
-            def field(name, here=here):
-                with open(os.path.join(here, name)) as fh:
-                    return fh.read().strip()
-
-            level, kind = int(field("level")), field("type")
-            data = kind == "Data" if level == 1 else kind != "Instruction"
-            if level in (1, 2) and data:
-                found.setdefault(level, _cache_bytes(field("size")))
-    except (OSError, ValueError):
+def machine_caches(spec) -> CacheSizes:
+    """The core's L1d and L2 sizes from the machine facts of ``spec`` (``l1d_cache_bytes``, ``l2_cache_bytes``, ``cache_source``, stated
+    by the backend that probes the machine); :data:`FALLBACK_CACHES` when it states none."""
+    facts = spec.machine.facts
+    if not facts.get("l1d_cache_bytes") or not facts.get("l2_cache_bytes"):
         return FALLBACK_CACHES
-    if not found.get(1) or not found.get(2):
-        return FALLBACK_CACHES
-    return CacheSizes(found[1], found[2], root)
+    return CacheSizes(facts["l1d_cache_bytes"], facts["l2_cache_bytes"], facts.get("cache_source", ""))
 
 
 @dataclass(frozen=True)
@@ -595,8 +542,7 @@ class TileRule:
                 f" l2={self.l2} caches={self.cache_source})")
 
 
-def host_tile_rule(lane_bytes: int, op_count: int, finishes: bool, stop: int,
-                   caches: CacheSizes | None = None) -> TileRule:
+def host_tile_rule(lane_bytes: int, op_count: int, finishes: bool, stop: int, spec) -> TileRule:
     """The interchanged loop's tile size and steps per launch, from what
     HAWK knows at IR time and the machine's cache sizes.
 
@@ -604,26 +550,27 @@ def host_tile_rule(lane_bytes: int, op_count: int, finishes: bool, stop: int,
     carried values, the step's inputs computed once before the loop, the
     trip count, the live flag and the guards), ``op_count`` the step's
     operation count, ``finishes`` whether the kernel finishes its own
-    samples, ``stop`` the loop's static bound; ``caches`` defaults to
-    :func:`machine_caches`.
+    samples, ``stop`` the loop's static bound; ``spec`` is the build's: its cache-size facts
+    (:func:`machine_caches`) and tile bounds.
 
     The rule: a tile's lane arrays fill at most :data:`L1_SHARE` of L1d,
     or :data:`L2_SHARE` of L2 when not even one lane block (``64``
     samples) fits that; the tile is the most samples that fit, rounded
-    down to whole lane blocks and clamped to ``[TILE_MIN, TILE_MAX]``.
+    down to whole lane blocks and clamped to the variant's ``[lanes.tile_min, lanes.tile_max]`` (at least one lane block, at most what
+    one launch's tile of eagle's team plausibly holds).
     ``k`` is ``stop`` when the kernel finishes its own samples (a tile stops
     once its last sample finished, so a larger ``k`` only saves launches),
     else 1. ``op_count`` is recorded for the cost model that will replace
     this rule; no measurement ties it to the tile yet."""
-    caches = caches if caches is not None else machine_caches()
+    caches = machine_caches(spec)
     lane_bytes = max(int(lane_bytes), 1)
     l1 = int(caches.l1d * L1_SHARE)
-    if lane_bytes * LANE_BLOCK <= l1:
+    if lane_bytes * GUARD_BLOCK <= l1:
         budget, level = l1, "L1d"
     else:
         budget, level = int(caches.l2 * L2_SHARE), "L2"
     tile = budget // lane_bytes
-    tile = min(max(tile - tile % LANE_BLOCK, TILE_MIN), TILE_MAX)
+    tile = min(max(tile - tile % GUARD_BLOCK, spec.need("lanes", "tile_min")), spec.need("lanes", "tile_max"))
     return TileRule(tile, int(stop) if finishes else 1, level, lane_bytes,
                     int(op_count), bool(finishes), int(stop), caches.l1d, caches.l2,
                     caches.source)
@@ -937,7 +884,7 @@ def interchange_text(split: LaneSplit, guards: Sequence[str], finish: tuple,
     return "\n".join(line for line in lines if line is not None)
 
 
-def interchange(name: str, sinks, walk: Walk, kind, real_bytes: int = 8, *, spec) -> Interchange | None:
+def interchange(name: str, sinks, walk: Walk, kind, real_bytes: int = 8, *, spec, writer) -> Interchange | None:
     """The interchanged fused-step loop of ``walk``'s host TU, or ``None``
     where the TU keeps its plain per-sample fused loop.
 
@@ -954,20 +901,20 @@ def interchange(name: str, sinks, walk: Walk, kind, real_bytes: int = 8, *, spec
     if not lane_form_access(walk):
         return None
     finish = lane_finish(walk)
-    split = None if finish is None else render_lane_split(sinks, walk, kind=kind, spec=spec)
+    split = None if finish is None else render_lane_split(sinks, walk, kind=kind, spec=spec, writer=writer)
     if split is None:
-        return loop_interchange(sinks, walk, kind, spec=spec)
+        return loop_interchange(sinks, walk, kind, spec=spec, writer=writer)
     guards = lane_guards(walk)
     lane_bytes = real_bytes * (1 + len(guards)) + 8 * (split.count is not None)
     for _, ttype, _, _ in split.carries:
         lane_bytes += _width(ttype) * _bytes_of(ttype.dtype, real_bytes)
     for _, ttype in split.live_ins:
         lane_bytes += _width(ttype) * _bytes_of(ttype.dtype, real_bytes)
-    rule = host_tile_rule(lane_bytes, split.op_count, True, split.stop)
+    rule = host_tile_rule(lane_bytes, split.op_count, True, split.stop, spec)
     text = interchange_text(split, guards, finish, rule.tile)
     export = (f'extern "C" const std::int64_t {name}_host_tile = '
               f"{INTERCHANGE_MACRO} ? {rule.tile} : 0;")
-    run = run_entry(name, walk, walk.finish[0], split.stop)
+    run = run_entry(name, walk, walk.finish, split.stop)
     if run is not None:
         export = f"{export}\n{run}"
     return Interchange(rule, text, export)
@@ -978,7 +925,7 @@ def interchange(name: str, sinks, walk: Walk, kind, real_bytes: int = 8, *, spec
 LOOP_PRELUDE = (f"#ifndef {INTERCHANGE_MACRO}\n#define {INTERCHANGE_MACRO} 1\n#endif\n"
                 "// hawk host loop interchange: tile = hawk_abi::kHostLoopTile\n")
 
-#: The proxy of a wide value that lives in a row of the tile (:mod:`simt.wide`): element ``k`` of lane ``t`` at
+#: The proxy of a wide value that lives in a row of the tile (:mod:`lowering.wide`): element ``k`` of lane ``t`` at
 #: ``rows[t * W + k]`` (a lane's elements run on, so a fold over them is one contiguous read), the shape of an aether per-sample proxy to the ``aether::rt`` twins. Added only to a TU that has one.
 LANE_ROW_HELPER = """namespace hawk_abi {
 
@@ -1036,7 +983,7 @@ _WORDS = re.compile(r"\b\w+\b")
 _VIEW_DECLARATION = re.compile(r"^\s*const auto (\w+) = \w+\[i\];$", re.M)
 
 
-def loop_interchange(sinks, walk: Walk, kind, *, spec) -> Interchange | None:
+def loop_interchange(sinks, walk: Walk, kind, *, spec, writer) -> Interchange | None:
     """The loop interchange of ``walk``'s host TU, or ``None`` where the TU
     keeps its per-sample loop.
 
@@ -1050,7 +997,7 @@ def loop_interchange(sinks, walk: Walk, kind, *, spec) -> Interchange | None:
     if not cut:
         return None
     # a wide value stays in its plane (a row of the tile), never a copy per trip
-    segs = render_lane_segments(sinks, walk, cut, kind=kind, spec=spec.with_settings(placed=True))
+    segs = render_lane_segments(sinks, walk, cut, kind=kind, spec=spec.with_settings(placed=True), writer=writer)
     text = loop_interchange_text(segs)
     if text is None:
         return None
@@ -1277,13 +1224,13 @@ def run_entry(name: str, walk: Walk, mask: str, stop: int) -> str | None:
     the whole batch would pass), until every sample of the range is
     finished or no step is left. A caller's team then makes ONE pass over
     the batch per run instead of one per launch; each sample runs the same
-    calls as before, so its results are the same bits. The rounds the
+    calls as with one launch per round, so its results are the same bits. The rounds the
     busiest range ran are max-folded into ``<name>_host_run_rounds`` (the
     caller zeroes it before a run and reads it after; one run per artifact
     at a time), and ``<name>_host_run_k`` is ``stop``, the largest word a
     round passes. There is no threading here: the caller's team runs the
     ranges."""
-    from raptor.ir.nodes import FUSED_STEPS_PLANE
+    from lowering.cells import FUSED_STEPS_PLANE
 
     spec = list(walk.arg_spec)
     try:
@@ -1391,9 +1338,9 @@ class HostWrapper:
         ``tid`` passes the device-read run length, since the run is contiguous
         and sorted: a team may split a run across threads.
 
-        ``box`` (:class:`simt.box.Box`) visits threads ``[base, base +
+        ``box`` (:class:`lowering.box.Box`) visits threads ``[base, base +
         count)``, each ending at its first owned lane (the device's thread
-        box, serially; :func:`simt.box.frame` binds ``i``)."""
+        box, serially; :func:`aether.wings.base.box.frame` binds ``i``)."""
         if box is not None:
             return f"""    const std::int64_t hawk_end = base + count;
     for (std::int64_t hawk_t = base; hawk_t < hawk_end; ++hawk_t) {{
@@ -1630,16 +1577,16 @@ class HostWrapper:
         return ""
 
     def interchange(self, name: str, sinks, walk: Walk,
-                    kind, real_bytes: int, spec) -> Interchange | None:
+                    kind, real_bytes: int, spec, writer) -> Interchange | None:
         """:func:`interchange`, as the hook
         :func:`~aether.wings.base.wrapper.render_source` asks a wrapper for."""
-        return interchange(name, sinks, walk, kind, real_bytes, spec=spec)
+        return interchange(name, sinks, walk, kind, real_bytes, spec=spec, writer=writer)
 
     def dispatch(self, kind_spelling: str, branch_spellings: Sequence[str],
-                 policy: str, **kw: object) -> str:
+                 strategy: str, **kw: object) -> str:
         """The per-node text — identical C++ on both targets (the bodies
         are identical C++), so this is a one-line delegate."""
-        return render_dispatch_rank0(kind_spelling, branch_spellings, policy, **kw)
+        return render_dispatch_rank0(kind_spelling, branch_spellings, strategy, **kw)
 
 
 def _deref(slot: Slot, k: int) -> str:
@@ -1649,6 +1596,3 @@ def _deref(slot: Slot, k: int) -> str:
         return f"*static_cast<const {view_type(slot.role, slot.ttype)}*>(params[{k}])"
     return f"*static_cast<const eagle::plugin::{shape}*>(params[{k}])"
 
-
-#: The built host wrapper.
-HOST = HostWrapper()

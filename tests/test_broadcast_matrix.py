@@ -132,8 +132,8 @@ def test_runtime_first_axis_two_sizes_one_build(run_cache, rng):
     got = {}
     for a in (3, 5):
         m, x = rng.standard_normal((R, R, a, 1, NC)), rng.random((a, NB, NC))
-        got[a] = len(mscal._variants)
         np.testing.assert_allclose(np.asarray(mscal(m, x, a=a)), _scal_a(m, x, a), rtol=1e-13)
+        got[a] = len(mscal._variants)       # counted after the call: the first size may be the one that builds
     assert got[3] == got[5] and got[3] - before <= 1
 
 

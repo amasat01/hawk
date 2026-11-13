@@ -3,7 +3,7 @@
 
 """Recognising a sum of products as a CONTRACTION, on HAWK's own IR.
 
-The record :func:`hawk.ir.recognize` produces is the ENTIRE seam between HAWK and
+The record :func:`hawk.passes.contraction.recognize` produces is the ENTIRE seam between HAWK and
 ``eagle.gemm.plan.lower_dense_gemm``: HAWK imports no eagle and
 eagle imports no producer, so nothing else crosses. The rows here therefore split
 in two. Most of them mirror the previous code generator's contraction tests on the four shapes
@@ -15,7 +15,7 @@ pins the record's FIELD SET, because a field renamed on this side is a
 
 WHAT IT MATCHES. HAWK matches a ``ForLoopStmt`` with one additive carry, the
 same way the previous code generator did: a bounded ``for`` LOWERS to a
-:class:`~hawk.ir.nodes.Loop` rather than being unrolled by trace-time execution,
+:class:`~raptor.ir.nodes.Loop` rather than being unrolled by trace-time execution,
 so the reduce variable is a real symbolic index and each operand's stride is the
 COEFFICIENT of that index, rather than a difference between
 unrolled terms. This includes the rule that matters most: a stride built from a bare literal is
@@ -26,6 +26,7 @@ is that rule, and it is the reason ``Table["row":r, "col":c]`` exists at all).
 
 from __future__ import annotations
 from _specs import default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import dataclasses
@@ -413,10 +414,10 @@ def test_recognition_mutates_nothing():
     calling it leaves the kernel's emitted body byte-identical."""
     from aether.wings.base.render import render_body
 
-    before = render_body(spline_contract.sinks, spline_contract.walk, spec=HOST, kind=default_kind()).text
+    before = render_body(spline_contract.sinks, spline_contract.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     digest = spline_contract.walk.digest
     recognize(spline_contract, vjp=vjp(spline_contract))
-    assert render_body(spline_contract.sinks, spline_contract.walk, spec=HOST, kind=default_kind()).text == before
+    assert render_body(spline_contract.sinks, spline_contract.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text == before
     assert spline_contract.walk.digest == digest
 
 

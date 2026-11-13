@@ -11,6 +11,7 @@ escapes one row is still in front of the others.
 
 from __future__ import annotations
 from _specs import spec_for, default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import _kernels as K
@@ -45,4 +46,4 @@ def sources():
 def bodies():
     """Every emitted BODY string (wrapper-independent by construction)."""
     for name, sinks, walk in cases():
-        yield name, render_body(sinks, walk, spec=HOST, kind=default_kind())
+        yield name, render_body(sinks, walk, spec=HOST, kind=default_kind(), writer=aether_writer())

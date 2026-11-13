@@ -7,15 +7,16 @@ here (bank width, run widths) is the variant's ``lanes`` data, passed in and ref
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from math import lcm
 from typing import Any
 
 from raptor.ir import lanes as _facts
 from raptor.errors import RaptorError
-from raptor.ir.lanes import (INVARIANT, ORIGIN_SORTED, QUOTIENT, Eval, LaneFacts, axes_from, axis_forms, divisors, key_facts,
+from raptor.ir.lanes import (INVARIANT, ORIGIN_SORTED, QUOTIENT, Eval, axes_from, axis_forms, divisors, key_facts,
                              nodes_of)
 from raptor.ir.nodes import Loop, LoopCarry, LoopCount, LoopIndex
-from raptor.ir.nodes import KEYED_AUTO, At, Const, Dispatch, Finish, Leaf, Node, Op, SampleIndex, Sink, peel_clamp
+from raptor.ir.nodes import KEYED_AUTO, At, Const, Dispatch, Finish, Leaf, Node, Op, SampleIndex, Sink, has_feather, peel_clamp
 from raptor.ir.ops import RANDOM_OPS
 
 
@@ -23,15 +24,106 @@ def _run_numbers(spec) -> tuple:
     return spec.need("lanes", "run_max"), spec.need("lanes", "block_run")
 
 
-def facts(obj: Any, labels: tuple | None = None, group: int = 1, *, spec) -> LaneFacts:
-    """:func:`raptor.ir.lanes.facts` with the proven key runs of the variant (``spec``) folded into ``required_group``."""
-    run_max, block_run = _run_numbers(spec)
+@dataclass(frozen=True)
+class BoxCandidate:
+    """A non-fastest axis ``axis`` along which every site of each of ``planes``
+    is invariant: lanes that differ only in that axis read the same values, so
+    one staged copy serves ``reuse`` of them (``None`` = the runtime first
+    axis). ``fastest_extent`` is the static width the staged run spans."""
 
-    def width(ev, axes, key):
-        run = find_key_run(ev, axes, key, run_max=run_max, block_run=block_run)
-        return run.width if run is not None and run.form == PROVEN else None
+    axis: str
+    planes: tuple
+    reuse: int | None
+    fastest_extent: int | None
+    static: bool
+    #: the axis's position in :attr:`LaneFacts.axes` (a label may be ``None``).
+    index: int = 0
 
-    return _facts.facts(obj, labels, group, run_width=width)
+
+@dataclass(frozen=True)
+class GatherTile:
+    """A plane read as ``base + slot`` (a clamped data-dependent slot of static
+    bound ``slot_extent``) whose ``base`` does not move along the fastest axis:
+    every lane of a fastest-axis run reads the same row of ``row_words`` words
+    of ``plane``, so a block can stage that row once."""
+
+    plane: str
+    slot_extent: int
+    row_words: int
+
+
+@dataclass(frozen=True)
+class LaneFacts(_facts.LaneFacts):
+    """The lane-space facts of :mod:`raptor.ir.lanes` and the candidates for staging one copy per block."""
+
+    #: thread/block box candidates, one per non-fastest axis with an invariant read.
+    box_candidates: tuple = ()
+    #: True only when the walk holds no per-lane loop exit, count, finish,
+    #: terminated read or lane-varying dispatch; unknown = False. It does NOT
+    #: see the launch's own tail guard or an external active set.
+    uniform_control: bool = False
+    #: the least lane count every proven key run and the declared ``group`` divide.
+    required_group: int = 1
+    #: planes a block could stage as a gather tile, one per plane.
+    gather_tiles: tuple = ()
+    #: the chosen lowering per pattern, recorded by the consumer that chooses it.
+    mapping: dict = field(default_factory=dict, compare=False)
+
+
+def facts(obj: Any, labels: tuple | None = None, group: int = 1, *, spec=None) -> LaneFacts:
+    """:func:`raptor.ir.lanes.facts` with the candidates for staging one copy per block. The proven key runs of the variant
+    (``spec``) are folded into ``required_group``; without ``spec`` only ``group`` fixes it."""
+    base = _facts.facts(obj, labels, group)
+    nodes = nodes_of(obj)
+    ev = Eval(base.axes)
+    widths = [group]
+    if spec is not None:
+        run_max, block_run = _run_numbers(spec)
+        keys = [s.index for n in nodes for s in ((n,) if isinstance(n, Sink) else n.body_sinks if isinstance(n, Loop) else ())
+                if isinstance(s, Sink) and s.index is not None]
+        for key in keys:
+            run = find_key_run(ev, base.axes, key, run_max=run_max, block_run=block_run)
+            if run is not None and run.form == PROVEN:
+                widths.append(run.width)
+    return LaneFacts(base.axes, base.reads, base.sinks, base.notes, group, _box_candidates(base), _uniform_control(nodes, ev),
+                     lcm(*widths), _gather_tiles(base.reads))
+
+
+def _box_candidates(f: _facts.LaneFacts) -> tuple:
+    last = f.axes[-1].extent
+    return tuple(BoxCandidate(a.label, planes, a.extent, last, a.extent is not None and last is not None, i)
+                 for i, a in enumerate(f.axes[:-1]) if (planes := f.invariant_reads(i)))
+
+
+def _gather_tiles(reads: tuple) -> tuple:
+    """One :class:`GatherTile` per plane with a slot read: its rows are the sites
+    sharing one ``row`` term, and a row's words span its lowest to its highest
+    offset (a slot adds its bound)."""
+    out = []
+    for plane in sorted({r.plane for r in reads if r.tile_site and r.tile_site[2] is not None}):
+        rows: dict = {}
+        for r in reads:
+            if r.plane == plane and r.tile_site:
+                row, off, slot = r.tile_site
+                lo, hi = rows.get(row, (off, off))
+                rows[row] = (min(lo, off), max(hi, off + (slot or 1) - 1))
+        slot = max(r.tile_site[2] for r in reads if r.plane == plane and r.tile_site
+                   and r.tile_site[2] is not None)
+        out.append(GatherTile(plane, slot, max(hi - lo + 1 for lo, hi in rows.values())))
+    return tuple(out)
+
+
+def _uniform_control(nodes: list, ev: "Eval") -> bool:
+    """No node a lane can leave, skip or finish on its own (conservative)."""
+    for n in nodes:
+        if isinstance(n, (LoopCount, Finish)) or (isinstance(n, Loop) and (n.exit_cond is not None
+                                                                           or n.count is not None)):
+            return False
+        if isinstance(n, Leaf) and n.role == "terminated":
+            return False
+        if isinstance(n, Dispatch) and not has_feather(n, "evaluates_all_branches") and ev.value(n.operands[0]).varies():
+            return False
+    return True
 
 
 def key_run(sinks: Any, sink: Any, spec) -> KeyRun | None:
@@ -283,7 +375,7 @@ def find_key_run(ev: "Eval", axes: tuple, key: Node, *, run_max: int, block_run:
         # promises speed: an unsorted plane still sums right.
         return KeyRun(SORTED, run_max, forms)
     if v.dbad or v.data and v.varies():
-        return None                                 # a gather key: per lane, by policy
+        return None                                 # a gather key: per lane
     width = run_max
     while width >= 2:
         if all(forms[i].cls == INVARIANT for i in _run_axes(axes, width)):

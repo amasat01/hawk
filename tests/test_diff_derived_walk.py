@@ -9,7 +9,7 @@ transforms synthesise, because a derivative that depended on how the primal
 happened to be CONSTRUCTED (a shared subexpression versus the same expression
 written twice) would hash differently on every re-trace and defeat the content
 cache the whole pipeline is keyed on. Both transforms therefore traverse the
-walk's own node sequence (``hawk.ir.walk.canonical_nodes``), so structurally
+walk's own node sequence (``raptor.ir.walk.canonical_nodes``), so structurally
 equal primals -- ``tests/_dags.drag_dag()`` and its permuted twin, which 
  already pins to one primal digest -- derive to ONE digest and ONE
 ``arg_spec``. The last two tests add own reading of "the derived IR goes

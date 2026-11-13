@@ -22,7 +22,9 @@
  ],
  "emission_modules": [
   "aether.wings.simt.aether",
-  "aether.wings.simt.wrapper_text"
+  "aether.wings.simt.team_cells",
+  "aether.wings.simt.wrapper_text",
+  "aether.wings.simt.writer_cells"
  ],
  "runtime_modules": [],
  "components": [

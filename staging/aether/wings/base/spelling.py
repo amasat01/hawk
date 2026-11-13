@@ -7,15 +7,27 @@ text, and the op-to-aether spelling tables."""
 
 from __future__ import annotations
 
-from raptor.protocols.binding import IDENT_PREFIX, binding_name
-from raptor.protocols.naming import mirror_of
+from lowering.exchange import mirror_of
 
 import re
 
 from raptor.ir import Node
 from raptor.errors import RaptorError
-from raptor.ir.nodes import Const, Op, Primitive, _through
+from raptor.ir.nodes import Const, Op, Primitive, through
 from raptor.ir.types import INT_PLANE_DTYPES, TensorType
+
+#: The identifier prefix of each argument role: how a body names the slot a plane or a scalar is read through.
+IDENT_PREFIX = {
+    "mutable": "mut", "out": "out", "wide_out": "wout", "accum_out": "aout",
+    "vec_in": "vin", "mat_in": "mtx", "wide_in": "win", "per_sample": "psc",
+    "lookup": "lut", "terminated": "trm", "uniform": "uni", "nsamples": "nsm",
+}
+
+
+def binding_name(role: str, name: str) -> str:
+    """The identifier the body reads a slot through (a view, or a by-value scalar)."""
+    return f"{IDENT_PREFIX[role]}_{name}"
+
 
 #: The launch-geometry tokens forbidden anywhere in a body; the one place
 #: they may appear is the wrapper's index prologue. Warp-level spelling
@@ -41,7 +53,7 @@ def geometry_hits(text: str) -> list:
 
 #: The identifier both wrappers' index prologues bind the lane's own
 #: integer index to, and so the one name a
-#: :class:`~hawk.ir.nodes.SampleIndex` node renders as. Spelled here
+#: :class:`~raptor.ir.nodes.SampleIndex` node renders as. Spelled here
 #: because the body and both wrappers must agree on it, and a row checks
 #: that agreement rather than assuming it. Deliberately NOT a
 #: launch-geometry token — the geometry stays inside the prologue.
@@ -51,7 +63,7 @@ SAMPLE_INDEX_IDENT = "hawk_i"
 #: The one-argument ``aether::math`` names a rank-0 unary lowers to.
 #: Kinds with no ``cwise*`` companion are rank-0 ONLY here: ``hawk.math``
 #: maps a vector or matrix operand entry by entry before the IR sees it.
-_MATH1 = {"abs": "abs", "sqrt": "sqrt", "rsqrt": "rsqrt", "exp": "exp",
+MATH_UNARY = {"abs": "abs", "sqrt": "sqrt", "rsqrt": "rsqrt", "exp": "exp",
           "log": "log", "sin": "sin", "cos": "cos", "tan": "tan", "tanh": "tanh",
           "asin": "asin", "acos": "acos", "atan": "atan", "floor": "floor",
           "exp2": "exp2", "expm1": "expm1", "log2": "log2", "log10": "log10",
@@ -63,13 +75,13 @@ _MATH1 = {"abs": "abs", "sqrt": "sqrt", "rsqrt": "rsqrt", "exp": "exp",
 
 
 #: The two-argument ``aether::math`` names a rank-0 binary lowers to.
-_MATH2 = {"pow": "pow", "min": "fmin", "max": "fmax", "atan2": "atan2",
+MATH_BINARY = {"pow": "pow", "min": "fmin", "max": "fmax", "atan2": "atan2",
           "hypot": "hypot", "copysign": "copysign", "fmod": "fmod",
           "remainder": "remainder", "fdim": "fdim"}
 
 
 #: The three-argument ``aether::math`` names a rank-0 ternary lowers to.
-_MATH3 = {"fma": "fma", "clip": "clip"}
+MATH_TERNARY = {"fma": "fma", "clip": "clip"}
 
 
 #: The two draws -> aether's stateless ``aether::random::detail`` free
@@ -78,17 +90,17 @@ _MATH3 = {"fma": "fma", "clip": "clip"}
 _RANDOM_FN = {"random_uniform": "uniform01", "random_normal": "standardNormal"}
 
 
-#: The rank>=1 component-wise UNARY free functions, one per :data:`_MATH1`
+#: The rank>=1 component-wise UNARY free functions, one per :data:`MATH_UNARY`
 #: entry, so a rank-1 chain never has to scalarise to reach a
 #: transcendental.
-_CWISE1 = {"sqrt": "cwiseSqrt", "rsqrt": "cwiseRsqrt", "exp": "cwiseExp",
+CWISE_UNARY = {"sqrt": "cwiseSqrt", "rsqrt": "cwiseRsqrt", "exp": "cwiseExp",
            "log": "cwiseLog", "sin": "cwiseSin", "cos": "cwiseCos",
            "asin": "cwiseAsin", "acos": "cwiseAcos", "atan": "cwiseAtan",
            "tan": "cwiseTan", "tanh": "cwiseTanh"}
 
 
 #: Rank-0 infix spellings.
-_INFIX = {"add": "+", "sub": "-", "mul": "*", "div": "/", "lt": "<", "le": "<=",
+INFIX_OPS = {"add": "+", "sub": "-", "mul": "*", "div": "/", "lt": "<", "le": "<=",
           "gt": ">", "ge": ">=", "eq": "==", "ne": "!=", "land": "&&", "lor": "||"}
 
 
@@ -119,10 +131,10 @@ def _flat_indices(shape: tuple) -> list:
 
 
 def _is_literal_zero(node: Node) -> bool:
-    """HAWK's elision predicate: ``node`` (after :func:`_through`'s
-    unwrap) is the literal zero — a bare :class:`~hawk.ir.nodes.Const` of
+    """HAWK's elision predicate: ``node`` (after :func:`through`'s
+    unwrap) is the literal zero — a bare :class:`~raptor.ir.nodes.Const` of
     value 0, or a rank>=1 ``splat`` of one."""
-    node = _through(node)
+    node = through(node)
     if isinstance(node, Const):
         return node.literal == 0
     if isinstance(node, Op) and node.kind == "splat" and len(node.operands) == 1:
@@ -261,7 +273,7 @@ def _no_spelling(kind: str, rank: int) -> str:
     return f"op {kind!r} has no aether spelling at rank {rank}"
 
 
-def _real_literal(value: float) -> str:
+def real_literal(value: float) -> str:
     """Shortest round-tripping C++ literal for a baked constant."""
     import math
 

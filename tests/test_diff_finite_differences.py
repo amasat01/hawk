@@ -6,7 +6,7 @@
 A derivative rule table is the one place where a wrong sign or a swapped
 cofactor produces a graph that walks, hashes and emits perfectly and computes
 the wrong number, so this row does not inspect the rules — it EVALUATES them.
-For every op kind in ``hawk.ir.ops.OP_KINDS`` a small primal DAG is built, run
+For every op kind in ``raptor.ir.ops.OP_KINDS`` a small primal DAG is built, run
 through :func:`hawk.diff.vjp` and :func:`hawk.diff.jvp`, and both derivative IRs
 are evaluated by the scratch numpy interpreter (``tests/_eval.py``) against a
 CENTRAL DIFFERENCE of the primal at the same point, to 1e-6 relative. The

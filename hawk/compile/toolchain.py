@@ -25,8 +25,6 @@ import subprocess
 import threading
 from pathlib import Path
 
-from raptor.protocols.refusal import ToolchainAbsent  # noqa: F401  (raptor's; kept here under its historical path)
-
 from .. import _roots
 from .._errors import HawkError
 from .cache import default_cache_dir
@@ -36,7 +34,7 @@ from .cache import default_cache_dir
 WORKSPACE = _roots.WORKSPACE
 
 
-def _probe_stdout(compiler: str, args: tuple[str, ...], *, timeout: float,
+def probe_stdout(compiler: str, args: tuple[str, ...], *, timeout: float,
                   persist: bool = True) -> tuple[int, str]:
     """``(returncode, stdout)`` of ``<compiler> <args>``, answered from the cache
     directory when this exact binary (path, size, mtime_ns) already answered the
@@ -87,13 +85,13 @@ IDENTITY_TIMEOUT_S = 180
 
 
 def _strict_aether_include() -> str:
-    """The aether header root, or a :class:`~hawk.ir.HawkError` when no real
+    """The aether header root, or a :class:`~hawk.HawkError` when no real
     tree resolves (:func:`hawk._roots.aether_include`)."""
     return _resolve(_roots.aether_include)
 
 
 def _strict_eagle_include() -> str:
-    """The eagle header root, or a :class:`~hawk.ir.HawkError` when no real
+    """The eagle header root, or a :class:`~hawk.HawkError` when no real
     tree resolves (:func:`hawk._roots.eagle_include`)."""
     return _resolve(_roots.eagle_include)
 
@@ -267,7 +265,7 @@ def nvcc_version(compiler: str) -> tuple[int, int] | None:
     if memo_key is not None and memo_key in _NVCC_VERSION_MEMO:
         return _NVCC_VERSION_MEMO[memo_key]
     try:
-        out = _probe_stdout(compiler, ("--version",), timeout=IDENTITY_TIMEOUT_S)[1]
+        out = probe_stdout(compiler, ("--version",), timeout=IDENTITY_TIMEOUT_S)[1]
     except (OSError, subprocess.SubprocessError):
         return None
     m = _NVCC_RELEASE_RE.search(out)
@@ -305,7 +303,7 @@ def compiler_identity(compiler: str) -> str:
         if hit is not None:
             return hit
     try:
-        out = _probe_stdout(compiler, ("--version",), timeout=IDENTITY_TIMEOUT_S)[1]
+        out = probe_stdout(compiler, ("--version",), timeout=IDENTITY_TIMEOUT_S)[1]
     except (OSError, subprocess.SubprocessError) as exc:   # pragma: no cover
         raise HawkError(f"cannot identify compiler {compiler!r}: {exc}") from exc
     first = out.splitlines()[0].strip() if out.strip() else ""

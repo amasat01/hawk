@@ -25,6 +25,7 @@ at the break (Python's semantics). Rows:
 
 from __future__ import annotations
 from _specs import default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import linecache
@@ -267,7 +268,7 @@ def test_the_interpreter_matches_python(name, point):
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("name", ["head", "middle"])
 def test_a_head_or_middle_break_is_tested_before_the_rest_of_the_body(name):
-    text = render_body(SUBJECTS[name][0].sinks, SUBJECTS[name][0].walk, spec=HOST, kind=default_kind()).text
+    text = render_body(SUBJECTS[name][0].sinks, SUBJECTS[name][0].walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     body = text[text.index("for ("):]
     assert "break;" in body, text
     # the rest of the iteration follows the test: the update is after it
@@ -275,7 +276,7 @@ def test_a_head_or_middle_break_is_tested_before_the_rest_of_the_body(name):
 
 
 def test_a_tail_break_tests_the_condition_before_the_carries_move():
-    text = render_body(tail.sinks, tail.walk, spec=HOST, kind=default_kind()).text
+    text = render_body(tail.sinks, tail.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     lines = [ln.strip() for ln in text.splitlines()]
     x_at = next(i for i, ln in enumerate(lines) if ln.startswith("const bool hawk_x"))
     move_at = next(i for i, ln in enumerate(lines)
@@ -295,7 +296,7 @@ def test_a_loop_without_a_break_renders_as_before():
 
     loop = _loop(plain)
     assert loop.exit_cond is None and loop.count is None and loop.exit_form is None
-    text = render_body(plain.sinks, plain.walk, spec=HOST, kind=default_kind()).text
+    text = render_body(plain.sinks, plain.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     for token in ("break", "hawk_c", "hawk_x", "hawk_e"):
         assert token not in text, text
     # the header is the literal-bound header, untouched
@@ -316,10 +317,10 @@ def test_the_digest_tells_a_break_apart():
 def test_a_vjp_keeps_the_count_only_where_a_derived_loop_reads_it():
     for k in (head, middle, tail, gated_sum):
         d = vjp(k, wrt=("x",))
-        text = render_body(d, canonical(d), spec=HOST, kind=default_kind()).text
+        text = render_body(d, canonical(d), spec=HOST, kind=default_kind(), writer=aether_writer()).text
         assert "Int hawk_c" in text and "++hawk_c" in text, text
         assert any(isinstance(n, LoopCount) for n in canonical_nodes(d)[0])
-    text = render_body(head.sinks, head.walk, spec=HOST, kind=default_kind()).text
+    text = render_body(head.sinks, head.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert "hawk_c" not in text, "a primal loop keeps no counter"
 
 

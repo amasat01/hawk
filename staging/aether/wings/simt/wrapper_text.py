@@ -6,10 +6,46 @@ body names them, the refusals of a banded build of a team reduction, and the fra
 
 from __future__ import annotations
 
+from raptor.errors import RaptorError
 from raptor.ir.kinds import is_a
-from raptor.protocols.binding import binding_name
+from aether.wings.base.spelling import binding_name
 
 from simt.lane import slice_min
+
+from . import team_cells as team_cells      # the banded team stage forms ``team_body`` takes as its ``cells`` argument
+
+
+#: The calls a unit's body spells that make the wrapper splice a device-only helper in (:data:`TILED`, :data:`WARP_SUM`).
+TILED_CALL = "hawk_abi::tiled<"
+WARP_SUM_CALL = "hawk_abi::warp_sum<"
+
+#: One lane's elements of a scratch plane that tiles the lanes by warp (:mod:`lowering.wide`): element ``k`` of lane
+#: ``i`` of a plane of width ``W`` is at ``((i / 32) * W + k) * 32 + i % 32``, so the lane's proxy is its first element
+#: and ``at(k)`` adds ``32 k`` elements. It has the shape of an aether per-sample proxy to the ``aether::rt`` twins.
+#: Spliced only into a unit whose body names it.
+TILED = """
+template <class T, std::size_t W>
+struct TiledLane {{
+    using element_type = T;
+    using element_extents = aether::extents<W>;
+    T* base;
+    {qualifier} T& at(std::size_t k) const {{ return base[k * 32]; }}
+    /** the lane as an aether expression (a stride-0 sample mode: every sample reads this lane's elements) */
+    {qualifier} auto expr() const
+    {{
+        using Ext = aether::extents<W, aether::dyn>;
+        using V = aether::View<T, Ext, aether::layout_stride>;
+        return V(base, typename V::mapping_type(Ext(1), {{std::size_t{{32}}, std::size_t{{0}}}}), aether::Device{{}});
+    }}
+}};
+
+template <class T, std::size_t W, class ViewT>
+{qualifier} TiledLane<T, W> tiled(const ViewT& plane, long long lane)
+{{
+    const std::size_t i = static_cast<std::size_t>(lane);
+    return TiledLane<T, W>{{plane.data() + (i / 32 * W) * 32 + i % 32}};
+}}
+"""
 
 
 #: The sum of one value per lane over the 32 lanes of a warp (:mod:`simt.lane`): a fixed butterfly, so every lane ends
@@ -140,3 +176,46 @@ def staged(wrapper, rows: int, sinks, mode, spec) -> tuple:
     stages = tuple((binding_name(s.role, s.name), s.ttype.shape[0]) for s in sinks
                    if is_a(s, "warp_store") and s.ttype.shape and s.ttype.shape[0] >= slice_min(s.ttype.dtype, spec))
     return wrapper.stage_frame(rows, stages, "Real")
+
+
+_ATOMIC_REMEDY = "a packed cell has no atomic add; use the default or compensated contract, which a banded build routes to the ordered stages"
+_MATH_REMEDY = "until its banded row lands in aether; build this kernel in float64 or float32 meanwhile"
+
+# The refusals below are reasoned, not pending:
+#  * accum_write (hawk.scatter, and hawk.sum(x, over=...) with its default contract). The float64 emission opens an
+#    aether::accum::run per lane and commits each run of equal keys with ONE atomicAdd into the output plane (and a second
+#    one, of the two-sum residual read off the first's return value, into the companion plane). A banded cell is one
+#    8-byte packed Band: there is no atomic add on it, and the compensated BandAccum (limbs plus residue lanes) does not
+#    fit a cell, so the residual has nowhere to live between commits. A CAS loop (decode, plain add, encode) would be
+#    built from the PLAIN fold, 94 ULP53 on the 2^-30 cancellation class against the 0.01 the banded sum promises, so it is
+#    refused rather than shipped under that name. The design that meets the contract is a two-pass one: per-warp
+#    BandAccum partials, shuffled with eagle's shflXor, in a BandAccum-shaped scratch plane (a new plane dtype in
+#    team_planes, sized in _lane_bind and allocated by the runtime and eagle), then a deterministic combine stage with
+#    BandAccum::combine into the cell.
+#  * the ordered team stages (contract="ordered": block_part, block_sum, ordered_fold, the scatter_* steps) already ARE that
+#    two-pass shape in float64, but their partials plane holds Real and their adds are a plain `+=` of cells, which
+#    would be the plain fold under the sum's name; they stay refused until the partials plane can hold a BandAccum.
+#  * warp_sum (a sum across the lanes of a team) needs the same BandAccum plane or a BandAccum shuffle in the team body.
+#: What a banded build refuses BY NAME, with the remedy: ``{IR kind: (what the
+#: author wrote, remedy)}``. Every reduction sink, and the math that has no
+#: certified banded row yet; the rest of the certified facade is admitted.
+_BANDED_UNCERTIFIED = {
+    "accum_write": ("an atomic accumulate into a plane (hawk.scatter with contract 'plain', accum_write)", _ATOMIC_REMEDY),
+    **{k: (f"hawk.math.{k}", _MATH_REMEDY)
+       for k in ("erf", "erfc", "rint", "remainder", "fdim",
+                 "isnan", "isinf", "isfinite", "random_uniform", "random_normal")},
+}
+
+
+
+
+
+
+def refuse_uncertified(sinks, walk, mode) -> None:
+    """Refuse a ``cells`` build that reaches an op of :data:`_BANDED_UNCERTIFIED`, naming it and the remedy."""
+    if not mode.cells:
+        return
+    for kind in (*walk.kinds, *(getattr(s, "kind", None) for s in sinks)):
+        hit = _BANDED_UNCERTIFIED.get(kind)
+        if hit is not None:
+            raise RaptorError(f"{hit[0]} is not built in scalar mode {mode.id!r} yet: {hit[1]}")

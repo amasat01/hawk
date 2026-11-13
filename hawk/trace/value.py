@@ -4,7 +4,7 @@
 """The traced VALUE — operator overloading from Python expressions to IR nodes.
 
 A :class:`Value` wraps one IR node; every operator mints an
-:func:`hawk.ir.ops.make` call, building the DAG as the body runs once. Free
+:func:`raptor.ir.ops.make` call, building the DAG as the body runs once. Free
 functions below cover what operators can't spell (``norm``, ``dot``,
 ``cross``, ``select``); three REF objects cover the write side (a mutable
 plane, a wide plane) plus a :class:`TableRef` read
@@ -18,11 +18,16 @@ import math
 from typing import Any
 
 from raptor.ir import At, Const, Leaf, Node, Select
+from .. import components as _components
 from .._errors import HawkError
 from raptor.ir import make as _make
 from raptor.ir.linalg import as_matrix
-from raptor.ir.nodes import KEYED_AUTO, AccumWrite, Assign, Dispatch, Finish, ReduceSamples, RoleConst, LanePosition, SampleIndex, WideWrite
+from raptor.ir.nodes import KEYED_AUTO, AccumWrite, Assign, Dispatch, Finish, ReduceSamples, RoleConst, SamplePosition, SampleIndex, WideWrite
 from raptor.ir.types import INT_PLANE_DTYPES, TensorType
+_dispatch_kind = _components.view("lowering", "dispatch")
+
+_block = _components.view("lowering", "block")
+_cells = _components.view("lowering", "cells")
 
 _F64 = TensorType((), "f64")
 _BOOL = TensorType((), "bool")
@@ -67,7 +72,7 @@ def index_node(x: Any) -> Node:
     separate from :func:`node_of`, which types a bare ``int`` as ``f64``. An
     index is an address: as ``f64`` it would cast to ``std::size_t`` and
     promote any stride multiplied with it, so it is typed ``i32`` instead
-    (:mod:`hawk.ir.contraction`)."""
+    (:mod:`hawk.passes.contraction`)."""
     if isinstance(x, bool):
         raise HawkError(f"{x!r} is not an index — a bool is a mask, not an address")
     if isinstance(x, int):
@@ -80,7 +85,7 @@ def _operands(args: tuple) -> tuple:
     bare ``int`` is ``f64`` alone, but when every traced operand is integral
     it types as an integer instead — otherwise an index like
     ``entry * cols + row`` would promote to ``Real`` and lose its stride
-    derivation (:mod:`hawk.ir.contraction`)."""
+    derivation (:mod:`hawk.passes.contraction`)."""
     traced = [a for a in args if isinstance(a, (Value, Node))]
     dtypes = {(a.node if isinstance(a, Value) else a).ttype.dtype for a in traced}
     plane = next((d for d in INT_PLANE_DTYPES if d in dtypes), None)
@@ -263,7 +268,7 @@ class Value:
 
         A STATIC integer is ``component``, checked at trace time; a TRACED
         integer is ``component_at`` — needed inside a lowered ``for``, where
-        ``k`` is a symbolic :class:`~hawk.ir.nodes.LoopIndex`, not a
+        ``k`` is a symbolic :class:`~raptor.ir.nodes.LoopIndex`, not a
         Python int (it materialises into an ``Item`` first, since aether's
         EXPRESSION only carries compile-time ``eval<Is...>``). A float is
         refused rather than truncated: rounding would silently read the
@@ -505,7 +510,7 @@ def _elementwise(kind: str, *args: Any) -> Value:
 
 def _broadcast_shape(kind: str, a: tuple, b: tuple) -> tuple:
     """The shape two elementwise operands combine to — the arithmetic
-    operators' rule (:func:`hawk.ir.ops.result_type`), with its refusal."""
+    operators' rule (:func:`raptor.ir.ops.result_type`), with its refusal."""
     if a == b or b == ():
         return a
     if a == ():
@@ -639,24 +644,24 @@ def select(cond: Any, on_true: Any, on_false: Any) -> Value:
     return Value(Select(c, a, b, a.ttype))
 
 
-def dispatch(kind: Any, branches: Any, policy: str = "switch") -> Value:
+def dispatch(kind: Any, branches: Any, strategy: str = "switch") -> Value:
     """``branches[clamp(kind, 0)]`` — the finite per-element dispatch.
 
     ``kind`` is a per-element integer VALUE, never a Python literal — a body
     that knows the branch at TRACE time is writing ordinary control flow, not
-    a dispatch. ``policy`` names one of three lowerings
+    a dispatch. ``strategy`` names one of three lowerings
     (``predicated``/``switch``/``segmented``), or ``auto`` — the one value a
     launching runtime's chooser resolves (:func:`hawk.resolve_dispatch`;
     until then it renders as ``switch`` and counts the branch mix); the
     default ``switch`` is what a compiler already picks for a branch-heavy
     chain.
-    :class:`~hawk.ir.nodes.Dispatch` does the type/arity checking."""
+    :class:`~raptor.ir.nodes.Dispatch` does the type/arity checking."""
     bs = [node_of(b) for b in branches]
     ttype = bs[0].ttype if bs else TensorType((), "f64")
     selector = node_of(kind)
     if selector.ttype.dtype in INT_PLANE_DTYPES:
         selector = _make("cast", (selector,), "i32")
-    return Value(Dispatch(selector, bs, policy, ttype))
+    return Value(_dispatch_kind.dispatch(selector, bs, strategy, ttype))
 
 
 def n_samples() -> Value:
@@ -673,14 +678,14 @@ def sample_index() -> Value:
     return Value(SampleIndex())
 
 
-def lane_position() -> Value:
-    """This lane's position ``t`` in the launch, as a value: ``base + flat``.
+def sample_position() -> Value:
+    """This sample's position ``t`` in the launch, as a value: ``base + flat``.
 
     Equal to :func:`sample_index` in a plain launch. Under a lane set
     (``Kind(..., lanes=IndexSet())``) :func:`sample_index` is the lane the map
     names, ``map[t]``, and this is ``t`` itself, the slot a compacted output
-    ``out[lane_position()]`` is written at."""
-    return Value(LanePosition())
+    ``out[sample_position()]`` is written at."""
+    return Value(SamplePosition())
 
 
 def _random(kind: str, seed: Any, counter: Any) -> Value:
@@ -723,7 +728,7 @@ class TableRef:
     Two read spellings, one form. ``t.at(expr)`` is the positional read of a
     flat plane; ``t.at(row=…, col=…)`` is the NAMED-AXIS read, folding to
     ``sum(index_d * stride_d)`` over the DECLARED order, each stride minted
-    as a :class:`~hawk.ir.nodes.RoleConst` carrying its axis — recoverable as
+    as a :class:`~raptor.ir.nodes.RoleConst` carrying its axis — recoverable as
     the declaration's, unlike the flat form."""
 
     __slots__ = ("leaf", "name", "dims", "widen")
@@ -937,7 +942,7 @@ def _is_stored(value: Any) -> bool:
     return isinstance(value, _Stored)
 
 
-def by_key(ref: Any, index: Node, value: Any, accumulate: bool, policy: str = "auto") -> None:
+def by_key(ref: Any, index: Node, value: Any, accumulate: bool, contract: str = "auto") -> None:
     """One store by key into ``ref`` at the flat ``index``: an accumulate
     (``AccumWrite``) or a store (``WideWrite``). A vector or matrix payload into
     a sink declared with named axes adds entry ``k`` at ``index + k * extent``,
@@ -949,7 +954,7 @@ def by_key(ref: Any, index: Node, value: Any, accumulate: bool, policy: str = "a
             "plane has one extent")
     if index.ttype.shape != () or index.ttype.dtype not in _INDEX_DTYPES:
         raise HawkError(f"{where}: key is an Index or an integer value, got {index.ttype!r}")
-    if policy == "or" and (ref.ttype.shape or ref.ttype.dtype not in INT_PLANE_DTYPES):
+    if contract == "or" and (ref.ttype.shape or ref.ttype.dtype not in INT_PLANE_DTYPES):
         raise HawkError(
             f"{where}: |= sets bits of an Int32 or UInt32 plane (a word per key), "
             f"{ref.name!r} is declared {ref.ttype!r}")
@@ -972,11 +977,11 @@ def by_key(ref: Any, index: Node, value: Any, accumulate: bool, policy: str = "a
             extent *= size
         reduced = ReduceSamples("sum", ref._typed(value), key=index,
                                 count=Const(extent, index.ttype),
-                                policy="auto" if policy == "plain" else policy)
-        ref.sinks.extend(reduced.stored(ref.name))
+                                contract="auto" if contract == "plain" else contract)
+        ref.sinks.extend(_cells.stored(reduced, ref.name))
     else:
-        policy = KEYED_AUTO if policy == "auto" else policy
-        ref.sinks.append(AccumWrite(ref.name, ref._typed(value), index, ref.ttype, policy))
+        contract = KEYED_AUTO if contract == "auto" else contract
+        ref.sinks.append(AccumWrite(ref.name, ref._typed(value), index, ref.ttype, contract))
     ref.by_key_kind = kind
 
 
@@ -1102,7 +1107,9 @@ class MutableRef(_SinkRef):
             return
         node = self._typed(value)
         if isinstance(node, ReduceSamples):
-            self.sinks = list(node.stored(self.name, self.ttype))
+            self.sinks = list(_cells.stored(node, self.name, self.ttype))
+        elif _block.is_block(node):
+            self.sinks = [_block.BlockSumWrite(self.name, node)]
         else:
             self.sinks = [Assign(self.name, node, self.ttype)]
 
@@ -1126,8 +1133,9 @@ class MutableRef(_SinkRef):
             extent = 1
             for _label, size in kept:
                 extent *= size
-            node = node.recount(Const(extent, node.key.ttype))
-        self.sinks = list(node.stored(self.name))
+            node = (_block.recount(node, Const(extent, _block.key_of(node).ttype)) if _block.is_block(node)
+                    else node.recount(Const(extent, node.key.ttype)))
+        self.sinks = [_block.BlockSumWrite(self.name, node)] if _block.is_block(node) else list(_cells.stored(node, self.name))
         self.by_key_kind = "accum"
 
 

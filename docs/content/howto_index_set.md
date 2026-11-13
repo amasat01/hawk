@@ -28,7 +28,7 @@ hawk.run(hawk.load(directory, "miss"), pos=pos, d=d, rs=rs, pair=n_pairs,
 
 ## What changes
 
-- `hawk.math.sample_index()` is the lane id, `map[t]`. `hawk.lane_position()` is `t`, so `hawk.scatter(out)[hawk.lane_position()] += v` writes a compacted output in launch order.
+- `hawk.math.sample_index()` is the lane id, `map[t]`. `hawk.sample_position()` is `t`, so `hawk.scatter(out)[hawk.sample_position()] += v` writes a compacted output in launch order.
 - Keyed sums and scatters are allowed. They are added in the order the lanes arrive, so they match a dense launch to the ULP contract, not bit for bit. `vjp` and `jvp` carry the map.
 - A kernel with `sample_sum`, a segmented dispatch and the `c` target refuse an index set by name.
 

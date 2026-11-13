@@ -78,10 +78,9 @@ def tape(kernel: Any, window: int, *, events: str = "step") -> Any:
             or kernel)
     fused = step is not kernel
     name = step.name
-    finish = getattr(step.walk, "finish", None)
-    if finish is not None and finish[1] != 1:
+    if step.walk.finish is not None and step.steps != 1:
         raise HawkError(
-            f"hawk.diff.tape({name!r}): the kernel takes {finish[1]} steps per "
+            f"hawk.diff.tape({name!r}): the kernel takes {step.steps} steps per "
             "launch; tape the single step (steps=1) or the automatic kernel")
     if isinstance(window, bool) or not isinstance(window, int) or window < 1:
         raise HawkError(
@@ -205,9 +204,9 @@ def _fused_twin(step: Any, single: Any, planes: tuple, window: int) -> Any:
     out += [Assign(s.name, LoopValue(loop, j), s.ttype) for j, s in enumerate(commits)]
     out.append(Assign(APPLIED_STEPS, LoopValue(loop, m), _I32))
     done = _mk("gt", (LoopValue(loop, m + 1), Const(0.5, _FLAG)))
-    out.append(Finish(finish.name, done, steps="auto"))
+    out.append(Finish(finish.name, done))
     return Kernel(step.name + SUFFIX, tuple(out), step.planes, kind=step.kind,
-                  step=single, one_step=single)
+                  step=single, one_step=single, steps="auto")
 
 
 # --------------------------------------------------------------------------
@@ -345,7 +344,7 @@ def _closed_stop(step: Any, t_value: Node) -> Any:
                           _mk("mul", (spacing, _mk("abs", (_d_dt(g, t_value),))))))
         test = _mk("le", (g, tol))
         cond = test if cond is None else _mk("lor", (cond, test))
-    sinks = tuple(Finish(s.name, cond, steps=s.steps) if s is finish else s
+    sinks = tuple(Finish(s.name, cond) if s is finish else s
                   for s in step.sinks)
     out = Kernel(step.name, sinks, step.planes, kind=step.kind)
     out.time, out.time_step = step.time, step.time_step

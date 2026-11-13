@@ -23,7 +23,7 @@ _REPO = Path(__file__).resolve().parent.parent
 _SUITE = '''
 import pytest
 from hawk_cuda.nvrtc import NvrtcUnavailable
-from raptor.protocols.refusal import ToolchainAbsent
+from lowering.exchange import ToolchainAbsent
 from raptor.errors import RaptorError
 
 def test_ok(): pass

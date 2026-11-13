@@ -77,10 +77,10 @@ def eigen(n):
 
 
 def _text(kernel, form="auto", target="cuda"):
-    from hawk.build_policy import BuildPolicy
+    from hawk.build_settings import BuildSettings
 
     return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                         mode=scalar_mode("float64"), exports=exports(target), spec=spec_for(TARGETS[target], build_policy=BuildPolicy(emit_form=form)), kind=default_kind()).text
+                         mode=scalar_mode("float64"), exports=exports(target), spec=spec_for(TARGETS[target], settings=BuildSettings(emit_form=form)), kind=default_kind()).text
 
 
 def test_the_three_forms_spell_a_reduction_three_ways():
@@ -102,7 +102,7 @@ def test_an_unknown_form_is_refused_by_name(tmp_path):
 
 
 @pytest.mark.parametrize("derive", [vjp, jvp], ids=["vjp", "jvp"])
-def test_a_derivative_kernel_goes_through_the_same_policy(derive):
+def test_a_derivative_kernel_goes_through_the_same_settings(derive):
     k = product(20, 20)
     d = Kernel(f"{k.name}_d", derive(k))
     text = _text(d)

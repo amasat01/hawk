@@ -67,6 +67,8 @@ class Backend:
     id: str
     about: str
     writer: object = None
+    #: the writer of a ``cells`` scalar mode (``banded``), on a device row; ``None``: the row builds none
+    cells_writer: object = None
     wrapper: object = None
     entry: str | None = None
     format: str
@@ -97,7 +99,7 @@ class Backend:
         return {k[len(prefix):]: v for k, v in options.items() if k.startswith(prefix)}
 
     def emit(self, lowered: Lowered, options) -> object:
-        """The unit's source (:class:`hawk.emit.Source`) for ``lowered``: pure, no compiler, no disk."""
+        """The unit's source (:class:`aether.wings.base.wrapper.Source`) for ``lowered``: pure, no compiler, no disk."""
         return self.render(lowered, options)
 
     def build(self, lowered: Lowered, source, options) -> Part:
@@ -169,7 +171,7 @@ class Backend:
     def package(self, source, result, *, name: str, smode, profile):
         """This backend's share of a draft: ``((result, artifact name, source name, format), files, report)``.
         ``result`` is its compile (:class:`hawk.compile.CompileResult`); ``report`` is ``None`` for a compiled backend."""
-        from ..artifact.bundle import _File, _blob, _digest_bytes
+        from ..artifact.bundle import UnitFile, text_blob, digest_bytes
         from ..compile import digest_file
         from .._errors import HawkError
 
@@ -182,9 +184,9 @@ class Backend:
                 f"{result.artifact} but it cannot be read; the unit cannot be "
                 "published from a store that lost its own artifact")
         self.check(name, smode, result.artifact, fmt)
-        blob = _blob(source.text)
-        files = [_File(art_name, compiled, source_path=result.artifact),
-                 _File(src_name, _digest_bytes(blob), blob=blob)]
+        blob = text_blob(source.text)
+        files = [UnitFile(art_name, compiled, source_path=result.artifact),
+                 UnitFile(src_name, digest_bytes(blob), blob=blob)]
         return (result, art_name, src_name, fmt), files, None
 
     def key_terms(self, source_digests, own) -> tuple:

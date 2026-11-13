@@ -15,8 +15,9 @@ from collections.abc import Iterable
 
 from raptor.ir import linalg
 from raptor.ir.nodes import Loop, LoopCount, TapeRead
-from raptor.ir.nodes import RAW_KIND, SWITCH_RENDERED, Dispatch, Node, Op
+from raptor.ir.nodes import RAW_KIND, Dispatch, Node, Op
 from lowering import loops as _loops, wide as _wide
+from lowering.dispatch import switch_form
 from raptor.ir.ops import RANDOM_OPS
 from raptor.ir.walk import Walk
 
@@ -75,7 +76,7 @@ def interchanged_loops(walk: Walk) -> tuple:
         if id(n) in seen:
             continue
         seen.add(id(n))
-        if isinstance(n, Dispatch) and n.policy in SWITCH_RENDERED:
+        if isinstance(n, Dispatch) and switch_form(n):
             stack.append(n.selector)
         else:
             stack.extend(n.operands)

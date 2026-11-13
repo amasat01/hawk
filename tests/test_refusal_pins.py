@@ -53,7 +53,7 @@ def test_the_reverse_of_a_max_reduction_is_refused_naming_the_rule():
     """Needs the ``sink.op != "sum"`` guard in ``hawk/diff/transform._seed``,
     or a ``max`` is seeded with a broadcast adjoint exactly like a ``sum``::
 
-        Failed: DID NOT RAISE <class 'hawk.ir.nodes.HawkError'>
+        Failed: DID NOT RAISE <class 'hawk.HawkError'>
 
     and ``vjp(row_max)`` returned a gradient — a number, for a max whose
     subgradient is ambiguous at every tie."""
@@ -117,7 +117,7 @@ def test_every_row_of_the_banded_table_refuses_naming_the_op_and_its_remedy():
     from types import SimpleNamespace
 
     from aether.wings.base.wrapper import BANDED, FLOAT64
-    from aether.wings.base.wrapper import _BANDED_UNCERTIFIED, refuse_uncertified
+    from aether.wings.simt.wrapper_text import _BANDED_UNCERTIFIED, refuse_uncertified
 
     assert {"accum_write", "erf", "rint", "remainder"} <= set(_BANDED_UNCERTIFIED)
     for kind, (name, remedy) in _BANDED_UNCERTIFIED.items():
@@ -130,7 +130,7 @@ def test_every_row_of_the_banded_table_refuses_naming_the_op_and_its_remedy():
 
 @hawk.kernel
 def scattered(x: hawk.Scalar, lane: hawk.Index, acc: hawk.Mutable[hawk.Scalar]):
-    hawk.scatter(acc, policy="plain")[lane] += x * x
+    hawk.scatter(acc, contract="plain")[lane] += x * x
 
 
 @pytest.mark.parametrize("door", ("build_bundle", "render_source"))

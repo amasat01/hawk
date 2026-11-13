@@ -552,7 +552,7 @@ def test_a_renderer_patched_INSIDE_a_process_is_the_documented_exposure(
     ``render_source`` between two builds of one kernel and the second is served
     the first's unit. The realistic way an emitter changes is an EDIT to a
     source file, which is a new interpreter and therefore a cold memo, and no
-    row in this suite patches ``hawk.emit`` at runtime — so the exposure is
+    row in this suite patches ``aether.wings.base`` at runtime — so the exposure is
     accepted rather than paid for on every warm build.
 
     :func:`reset_unit_memo` is the door out of it, and the second half of this

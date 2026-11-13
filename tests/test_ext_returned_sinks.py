@@ -21,6 +21,7 @@ compensate the wrong plane). Every plant was then removed."""
 
 from __future__ import annotations
 from _specs import default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import _deploy as L
@@ -75,7 +76,7 @@ def returned_with_diagnostic_guarded(term: Vector[3], terminated: Terminated,
 def returned_with_scatter_diagnostic(term: Vector[3], hits: Mutable[Scalar]):
     """a SCATTERED diagnostic by-key store beside the returned compensated
     target — the scatter is not the target, so it commits plain."""
-    hawk.scatter(hits, policy="plain")[0] += 1.0
+    hawk.scatter(hits, contract="plain")[0] += 1.0
     return term
 
 
@@ -112,9 +113,9 @@ def test_returned_output_matches_the_named_twin_with_a_diagnostic_sink():
     assert returned_with_diagnostic.arg_spec == named_with_diagnostic.arg_spec
     assert returned_with_diagnostic.walk.digest == named_with_diagnostic.walk.digest
     a = render_body(returned_with_diagnostic.sinks, returned_with_diagnostic.walk,
-                    kind=returned_with_diagnostic.kind, spec=HOST).text
+                    kind=returned_with_diagnostic.kind, spec=HOST, writer=aether_writer()).text
     b = render_body(named_with_diagnostic.sinks, named_with_diagnostic.walk,
-                    kind=named_with_diagnostic.kind, spec=HOST).text
+                    kind=named_with_diagnostic.kind, spec=HOST, writer=aether_writer()).text
     assert a == b
 
 
@@ -220,5 +221,5 @@ def test_a_derivative_of_returned_plus_named_sinks_differentiates_every_sink():
 
     d = jvp(returned_with_diagnostic, wrt=("term",))
     assert [s.name for s in d] == ["dot_speed", "dot_acc", "dot_acc_c"]
-    text = render_body(tuple(d), Kernel("d", tuple(d)).walk, spec=HOST, kind=default_kind()).text
+    text = render_body(tuple(d), Kernel("d", tuple(d)).walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert "store_compensated" not in text

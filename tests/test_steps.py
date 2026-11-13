@@ -92,9 +92,9 @@ def test_the_derived_kernel_is_named_and_records_its_steps():
     for k in KS:
         derived = hawk.steps(osc, k)
         assert derived.name == f"osc_x{k}"
-        assert derived.walk.finish == ("terminated", k)
+        assert (derived.walk.finish, derived.steps) == ("terminated", k)
         assert derived.arg_spec == osc.arg_spec
-        meta = sidecar_meta(derived.name, derived.walk, fmt="ptx",
+        meta = sidecar_meta(derived.name, derived.walk, steps=derived.steps, fmt="ptx",
                             scalar_type="float64")
         assert meta["finish"] == {"mask": "terminated",
                                   "counter": "finished_count", "steps": k}
@@ -159,7 +159,7 @@ def test_the_decorator_form_is_hawk_steps(k):
     decorated = kernel(steps=k)(_osc_body)
     derived = hawk.steps(kernel(_osc_body), k)
     assert decorated.name == derived.name == f"_osc_body_x{k}"
-    assert decorated.walk.finish == ("terminated", k)
+    assert (decorated.walk.finish, decorated.steps) == ("terminated", k)
     assert decorated.walk.digest == derived.walk.digest
     assert decorated.arg_spec == derived.arg_spec
     assert _sources(decorated) == _sources(derived)
@@ -175,7 +175,7 @@ def test_the_decorator_form_reaches_a_defining_scope_local():
         t = tn
         terminated = tn >= t_final
     assert local_osc.name == "local_osc_x4"
-    assert local_osc.walk.finish == ("terminated", 4)
+    assert (local_osc.walk.finish, local_osc.steps) == ("terminated", 4)
 
 
 def test_steps_one_is_the_plain_kernel():
@@ -184,7 +184,7 @@ def test_steps_one_is_the_plain_kernel():
                 kernel()(_osc_body).step, kernel(_osc_body).step):
         assert one.name == plain.name == "_osc_body"
         assert one.walk.digest == plain.walk.digest
-        assert one.walk.finish == ("terminated", 1)
+        assert (one.walk.finish, one.steps) == ("terminated", 1)
         assert _sources(one) == _sources(plain)
 
 
@@ -334,19 +334,19 @@ def test_the_auto_kernel_is_named_and_records_auto_steps():
     for base in (osc, spin3):
         auto = hawk.steps(base, "auto")
         assert auto.name == f"{base.name}_xauto"
-        assert auto.walk.finish == ("terminated", "auto")
+        assert (auto.walk.finish, auto.steps) == ("terminated", "auto")
         spec = set(auto.arg_spec)
         assert {("lookup", "fused_steps"), ("lookup", "finished_count")} <= spec
         assert spec - set(base.arg_spec) == {("lookup", "fused_steps")}
         assert auto.walk.slot_types[("lookup", "fused_steps")].dtype == "i32"
-        meta = sidecar_meta(auto.name, auto.walk, fmt="ptx", scalar_type="float64")
+        meta = sidecar_meta(auto.name, auto.walk, steps=auto.steps, fmt="ptx", scalar_type="float64")
         assert meta["finish"] == {"mask": "terminated", "counter": "finished_count",
                                   "steps": "auto", "steps_max": AUTO_K_MAX}
         # the word is the runner's seam, not a cross-sample read of the body
-        plain = sidecar_meta(base.name, base.walk, fmt="ptx", scalar_type="float64")
+        plain = sidecar_meta(base.name, base.walk, steps=base.steps, fmt="ptx", scalar_type="float64")
         assert meta["exec_access"] == plain["exec_access"] == "sample_local"
         assert meta["arg_dtypes"]["fused_steps"] == "int64"
-    fixed = sidecar_meta("osc_x16", hawk.steps(osc, 16).walk, fmt="ptx",
+    fixed = sidecar_meta("osc_x16", hawk.steps(osc, 16).walk, steps=16, fmt="ptx",
                          scalar_type="float64")
     assert "steps_max" not in fixed["finish"]
 
@@ -674,14 +674,14 @@ def test_the_default_is_the_auto_kernel_under_the_author_s_name():
     plain = kernel(_osc_body, steps=1)
     for default in (kernel(_osc_body), kernel()(_osc_body)):
         assert default.name == "_osc_body"
-        assert default.walk.finish == ("terminated", "auto")
+        assert (default.walk.finish, default.steps) == ("terminated", "auto")
         assert default.step is not None and default.step.walk.digest == plain.walk.digest
         assert set(default.arg_spec) - set(plain.arg_spec) == {("lookup", "fused_steps")}
         explicit = hawk.steps(plain, "auto")
         assert default.walk.digest == explicit.walk.digest
         assert _renamed(default) == _renamed(explicit)
         assert _renamed(default) != _renamed(plain)
-        meta = sidecar_meta(default.name, default.walk, fmt="ptx",
+        meta = sidecar_meta(default.name, default.walk, steps=default.steps, fmt="ptx",
                             scalar_type="float64")
         assert meta["kernel"] == "_osc_body"
         assert meta["finish"]["steps"] == "auto"
@@ -731,9 +731,9 @@ def test_the_default_leaves_every_kernel_auto_does_not_admit_plain():
         assert default.step is None and default.name == fn.__name__
         assert default.walk.digest == plain.walk.digest
         assert _sources(default) == _sources(plain)
-        assert (sidecar_meta(default.name, default.walk, fmt="ptx",
+        assert (sidecar_meta(default.name, default.walk, steps=default.steps, fmt="ptx",
                              scalar_type="float64")
-                == sidecar_meta(plain.name, plain.walk, fmt="ptx",
+                == sidecar_meta(plain.name, plain.walk, steps=plain.steps, fmt="ptx",
                                 scalar_type="float64"))
     derived = hawk.steps(osc, 4)
     assert not admits_auto(derived)

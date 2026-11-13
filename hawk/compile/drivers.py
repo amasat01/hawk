@@ -239,7 +239,7 @@ _LOCK = threading.Lock()
 _INFLIGHT: dict[str, threading.Event] = {}
 
 
-def _single_flight(key: str, lookup, build) -> CompileResult:
+def single_flight(key: str, lookup, build) -> CompileResult:
     """In-process single-flight per lookup key: ``lookup()`` returns a hit's
     :class:`CompileResult` or ``None``; ``build()`` compiles. The first
     thread to miss a key builds; a second thread asking for the same key
@@ -412,7 +412,7 @@ def compile_cached(source: str, name: str, opts: CompileOptions, row, *, compile
 
     def lookup():
         memo = artifact_memo_get(key)
-        if memo is not None and _memo_still_valid(artifact, memo):
+        if memo is not None and memo_still_valid(artifact, memo):
             # Per-process memo hit: same key, same recorded closure, still valid
             # by content — counted as a cache hit; it only skips re-reading the
             # on-disk record.
@@ -457,10 +457,10 @@ def compile_cached(source: str, name: str, opts: CompileOptions, row, *, compile
         return CompileResult(artifact, src_path, key, False, tuple(argv), seconds,
                              closure, ptxas)
 
-    return _single_flight(key, lookup, build)
+    return single_flight(key, lookup, build)
 
 
-def _memo_still_valid(artifact: Path, closure,
+def memo_still_valid(artifact: Path, closure,
                        current_payload_digest: str | None = None) -> bool:
     """Whether a memoised answer is still the right one: the memo remembers
     WHAT the last compile at this key opened and what those files hashed
@@ -556,7 +556,7 @@ def _drive(source: str, name: str, opts: CompileOptions, row, plan: dict) -> Com
 
     def lookup():
         memo = artifact_memo_get(key)
-        if memo is not None and _memo_still_valid(artifact, memo, digest):
+        if memo is not None and memo_still_valid(artifact, memo, digest):
             # per-process memo hit: same key, same recorded closure, still valid by content
             cache.note(True)
             return CompileResult(artifact, src_path, key, True, hit_argv, closure=tagged or tuple(p for p, _ in memo),
@@ -608,7 +608,7 @@ def _drive(source: str, name: str, opts: CompileOptions, row, plan: dict) -> Com
         artifact_memo_put(key, validity_digest(closure))
         return CompileResult(artifact, src_path, key, False, tuple(out["argv"]), seconds, tagged or closure, out["figures"])
 
-    return _single_flight(key, lookup, build)
+    return single_flight(key, lookup, build)
 
 
 def publish(result: CompileResult, destination: Path) -> Path:

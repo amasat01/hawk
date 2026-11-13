@@ -14,7 +14,7 @@ from hawk.artifact import build_bundle
 H, P = 8, 24                       # padded hidden width; weights per net: (a, b, c) per unit
 
 
-def net_loss_for(S, policy="compensated"):
+def net_loss_for(S, contract="compensated"):
     @kernel
     def net_loss(lane: Grid["net", "sample":S], W: Table["net", "p":P], mask: Table["net", "h":H],
                  x: Scalar, y: Scalar) -> Scalar:
@@ -24,8 +24,8 @@ def net_loss_for(S, policy="compensated"):
             b = W.at(net=lane.net, p=3 * h + 1)
             c = W.at(net=lane.net, p=3 * h + 2)
             pred = pred + mask.at(net=lane.net, h=h) * c * m.tanh(a * x + b)
-        return hawk.sum((pred - y) * (pred - y), over="sample", policy=policy)
-    return Kernel(f"net_loss_{S}_{policy}", net_loss.sinks, net_loss.planes)
+        return hawk.sum((pred - y) * (pred - y), over="sample", contract=contract)
+    return Kernel(f"net_loss_{S}_{contract}", net_loss.sinks, net_loss.planes)
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@ _SDIST_PROBES = {"aether/aether.h": "aether/typedefs.h"}
 class RootError(Exception):
     """An include root that cannot be resolved.
 
-    Its own type, not :class:`hawk.ir.HawkError`: this module is loadable
+    Its own type, not :class:`hawk.HawkError`: this module is loadable
     without the hawk package, so it cannot import HAWK's exception.
     :mod:`hawk.compile.toolchain` re-raises it as ``HawkError`` for every
     in-package caller."""

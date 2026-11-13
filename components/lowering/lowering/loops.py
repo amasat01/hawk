@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from raptor.ir.nodes import RAW_KIND, SWITCH_RENDERED, At, Dispatch, Loop, Node, Op, TapeRead
+from raptor.ir.nodes import RAW_KIND, At, Dispatch, Loop, Node, Op, TapeRead
+
+from .dispatch import switch_form
 
 
 def flat(nodes: Iterable[Node]):
@@ -27,7 +29,7 @@ def speculative_step(loop: Loop) -> bool:
     for node in (*flat(loop.body_nodes()), *loop.nexts, loop.exit_cond):
         if isinstance(node, (At, TapeRead)):
             return False
-        if isinstance(node, Dispatch) and node.policy in SWITCH_RENDERED:
+        if isinstance(node, Dispatch) and switch_form(node):
             return False
         if isinstance(node, Op) and (node.kind == RAW_KIND or (
                 node.kind in ("div", "fmod", "remainder", "floordiv", "mod")

@@ -8,7 +8,7 @@ The authoring vocabulary (``kernel``, ``Param``, ``Mutable``, ``Table``,
 ``HawkError``, …) lives at the top level; math functions live at
 ``hawk.math``; the dependency-free types (``TensorType``, ``Wire``,
 ``PER_SAMPLE_ROLES``, …) at ``raptor.ir.types``. ``hawk.trace`` exports nothing,
-and ``hawk.emit`` is internal: their ``__all__`` is the small
+and ``aether.wings.base`` is internal: their ``__all__`` is the small
 "IR access" surface a downstream package reads.
 
 TWO rows pin this:
@@ -54,8 +54,8 @@ _EXPECTED_MANIFEST = {
         "Grid", "HawkError", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
         "Param", "Quantity", "Quat", "RawBlock", "Scalar", "Sorted",
         "Staged", "Table", "Terminated", "UInt32", "Value", "Vector", "Wide",
-        "WideOut", "__version__", "build", "chain", "geometry", "kernel", "lane_position", "load", "max", "mean", "min",
-        "primitive", "raw_device", "resolve_dispatch", "run", "samples_first", "samples_last",
+        "WideOut", "__version__", "build", "chain", "geometry", "kernel", "load", "max", "mean", "min",
+        "primitive", "raw_device", "resolve_dispatch", "run", "sample_position", "samples_first", "samples_last",
         "scatter", "steps", "sum",
     ],
     "hawk.trace": [],

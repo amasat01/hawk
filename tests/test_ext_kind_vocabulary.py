@@ -14,6 +14,7 @@ resolve a string annotation correctly."""
 
 from __future__ import annotations
 from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import linecache
 
@@ -42,8 +43,8 @@ def test_vocabulary_kernel_matches_its_fully_annotated_twin():
     assert _vocab_kernel.arg_spec == _annotated_twin.arg_spec
     assert _vocab_kernel.walk.digest == _annotated_twin.walk.digest
     a = render_body(_vocab_kernel.sinks, _vocab_kernel.walk,
-                    kind=_vocab_kernel.kind, spec=HOST).text
-    b = render_body(_annotated_twin.sinks, _annotated_twin.walk, spec=HOST, kind=default_kind()).text
+                    kind=_vocab_kernel.kind, spec=HOST, writer=aether_writer()).text
+    b = render_body(_annotated_twin.sinks, _annotated_twin.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert a == b
 
 
@@ -60,7 +61,7 @@ def _omits_terminated(x: Scalar, y: Mutable[Scalar]):
 def test_unconditional_terminated_binds_even_when_the_signature_omits_it():
     assert ("terminated", "terminated") in _omits_terminated.arg_spec
     text = render_body(_omits_terminated.sinks, _omits_terminated.walk,
-                       kind=_omits_terminated.kind, spec=HOST).text
+                       kind=_omits_terminated.kind, spec=HOST, writer=aether_writer()).text
     assert "if (!trm_terminated[i].eval())" in text
 
 
@@ -108,8 +109,8 @@ def test_a_keyword_only_vocabulary_parameter_binds_like_the_positional_form(posi
     K = _scale_kind()
     a, b = K(positional), K(keyword_only)
     assert a.arg_spec == b.arg_spec
-    assert (render_body(a.sinks, a.walk, kind=a.kind, spec=HOST).text
-            == render_body(b.sinks, b.walk, kind=b.kind, spec=HOST).text)
+    assert (render_body(a.sinks, a.walk, kind=a.kind, spec=HOST, writer=aether_writer()).text
+            == render_body(b.sinks, b.walk, kind=b.kind, spec=HOST, writer=aether_writer()).text)
 
 
 def test_a_keyword_only_vocabulary_parameter_with_a_disagreeing_annotation_refuses():
@@ -213,8 +214,8 @@ def test_returned_output_matches_the_named_twin_byte_for_byte():
 
     assert body_returns.arg_spec == body_named.arg_spec
     assert body_returns.walk.digest == body_named.walk.digest
-    a = render_body(body_returns.sinks, body_returns.walk, kind=RETURNED, spec=HOST).text
-    b = render_body(body_named.sinks, body_named.walk, kind=NAMED, spec=HOST).text
+    a = render_body(body_returns.sinks, body_returns.walk, kind=RETURNED, spec=HOST, writer=aether_writer()).text
+    b = render_body(body_named.sinks, body_named.walk, kind=NAMED, spec=HOST, writer=aether_writer()).text
     assert a == b
 
 
@@ -261,8 +262,8 @@ def test_the_class_form_builds_the_same_kind_the_instance_form_does():
     assert instance_spelled.arg_spec == class_spelled.arg_spec
     assert instance_spelled.walk.digest == class_spelled.walk.digest
     a = render_body(instance_spelled.sinks, instance_spelled.walk,
-                    kind=instance_spelled.kind, spec=HOST).text
-    b = render_body(class_spelled.sinks, class_spelled.walk, kind=class_spelled.kind, spec=HOST).text
+                    kind=instance_spelled.kind, spec=HOST, writer=aether_writer()).text
+    b = render_body(class_spelled.sinks, class_spelled.walk, kind=class_spelled.kind, spec=HOST, writer=aether_writer()).text
     assert a == b
 
 
@@ -278,7 +279,7 @@ def test_the_class_form_sets_kind_fields_by_plain_assignment():
     def solo(x: Scalar, y: Mutable[Scalar]):
         y = x
 
-    text = render_body(solo.sinks, solo.walk, kind=solo.kind, spec=HOST).text
+    text = render_body(solo.sinks, solo.walk, kind=solo.kind, spec=HOST, writer=aether_writer()).text
     assert "hawk_abi::store_compensated(" in text
 
 

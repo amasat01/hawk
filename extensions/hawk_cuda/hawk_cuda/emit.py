@@ -25,6 +25,13 @@ from aether.wings.base.dispatch import render_dispatch_rank0
 from aether.wings.base.spelling import param_name, reconstruct_call
 
 
+#: The macro an automatic kernel's device TU compiles its gated fast-path entries under (:meth:`CudaWrapper.fast_entries`): ``0`` unless the
+#: build defines it (``build_bundle(..., defines=("HAWK_FAST_ENTRIES=1",))``). The one name the unit's text and eagle's build agree on.
+FAST_ENTRIES_MACRO = "HAWK_FAST_ENTRIES"
+
+#: The suffix of an automatic kernel's contiguous-range entry: ``<name>_range`` (:meth:`CudaWrapper.fast_entries`).
+RANGE_SUFFIX = "_range"
+
 class CudaWrapper:
     """The device half of the seam."""
 
@@ -173,14 +180,14 @@ class CudaWrapper:
     # geometry-seam: end
 
     def fold_rows(self, width: int, spec) -> int:
-        return _fold_shape(width, spec.primary["fold"], forced=spec.settings.fold_k)
+        return _fold_shape(width, spec.need("fold"), forced=spec.settings.fold_k)
 
     def sample_sum_frame(self, width: int, elem: str, store: str,
                          op: str = "sum", live: str | None = None, *, spec) -> tuple:
         """The index prologue with no early return: a lane past ``count``
         skips the body (``hawk_active``) but takes part in its warp's row
         sum with zero terms; a warp wholly past ``count`` exits together."""
-        k = _fold_shape(width, spec.primary["fold"], forced=spec.settings.fold_k)
+        k = _fold_shape(width, spec.need("fold"), forced=spec.settings.fold_k)
         if k > 1:
             return self._sample_sum_frame_rows(width, elem, store, op, live, k)
         plain = self.index_prologue()
@@ -235,25 +242,47 @@ class CudaWrapper:
         return unpack_lines(walk, lambda slot: reconstruct_call(
             slot.role, slot.ttype, param_name(slot.role, slot.name)))
 
-    def persist(self, name: str, sinks, walk: Walk, kind, spec) -> str | None:
+    def persist(self, name: str, sinks, walk: Walk, kind, spec, writer) -> str | None:
         """The ``<name>_persist`` entry of an automatic kernel, or ``None``
         (see :func:`persist_entry`)."""
-        return persist_entry(self, name, sinks, walk, kind, spec)
+        return persist_entry(self, name, sinks, walk, kind, spec, writer)
 
     def range(self, name: str, sinks, walk: Walk, kind,
-              single: str, spec) -> str | None:
+              single: str, spec, writer) -> str | None:
         """The ``<name>_range`` entry of an automatic kernel, or ``None``
         (see :func:`range_entry`)."""
-        return range_entry(self, name, sinks, walk, kind, single, spec)
+        return range_entry(self, name, sinks, walk, kind, single, spec, writer)
+
+    def fast_entries(self, name: str, sinks, walk: Walk, kind, fused, single, one_step, active, spec, writer) -> list:
+        """The fast-path entries an automatic kernel's TU carries beside its own entry (``[]``: none).
+
+        ``<name>_persist`` and ``<name>_range`` (the kernel's own two-path entry over a contiguous range, ``base + flat``), both
+        reporting the run's longest per-sample step count. Both take the kernel's own entry parameters (an active-set kernel's map
+        and count among them, unread), so a caller binds every entry alike. The range entry, and an active-set kernel's persist
+        entry, compile only under :data:`FAST_ENTRIES_MACRO`; a map-free kernel's persist entry always."""
+        persist = self.persist(name, sinks, walk, kind, spec, writer=writer)
+        ranged = self.range(name, sinks, walk, kind, single.text, spec, writer=writer)
+        always = [] if persist is None or active is not None else [persist, ""]
+        gated = [] if ranged is None else [ranged, ""]
+        if persist is not None and active is not None:
+            gated += [persist, ""]
+        if not always and not gated:
+            return []
+        out = [self.fast_prelude(), "", *always]
+        if gated:
+            out += [f"#ifndef {FAST_ENTRIES_MACRO}\n#define {FAST_ENTRIES_MACRO} 0\n#endif",
+                    f"#if {FAST_ENTRIES_MACRO}", *gated, f"#endif  // {FAST_ENTRIES_MACRO}",
+                    ""]
+        return out
 
     def fast_prelude(self) -> str:
         """The device helper the fast-path entries share (:data:`STEPS_MAX`)."""
         return STEPS_MAX + "\n\n" + STEPS_SUM + "\n\n" + FINISH_SUM + "\n\n" + PERSIST_REPORT
 
     def dispatch(self, kind_spelling: str, branch_spellings: Sequence[str],
-                 policy: str, **kw: object) -> str:
+                 strategy: str, **kw: object) -> str:
         """The per-node text — identical C++ on both targets."""
-        return render_dispatch_rank0(kind_spelling, branch_spellings, policy, **kw)
+        return render_dispatch_rank0(kind_spelling, branch_spellings, strategy, **kw)
 
 
 #: The extra parameters a ``_persist`` entry takes after the partition
@@ -371,8 +400,8 @@ static __device__ __noinline__ void hawk_persist_slots(unsigned long long* util,
 
 
 def _finish_counter() -> str:
-    """The finish counter's binding (``hawk.ir.nodes.FINISHED_PLANE``)."""
-    from raptor.ir.nodes import FINISHED_PLANE
+    """The finish counter's binding (:data:`lowering.cells.FINISHED_PLANE`)."""
+    from lowering.cells import FINISHED_PLANE
     from aether.wings.base.spelling import binding_name
 
     return binding_name("lookup", FINISHED_PLANE)
@@ -392,13 +421,13 @@ def _launch_budget(pre: str, count: str | None) -> tuple:
     """The declarations in ``pre`` of the step budget ``count`` when it reads
     the launch's fused_steps word alone (no per-sample value), so the
     persistent entry evaluates them once, at entry; ``()`` otherwise."""
-    from raptor.ir.nodes import FUSED_STEPS_PLANE
-    from aether.wings.base.render import _declarations
+    from lowering.cells import FUSED_STEPS_PLANE
+    from aether.wings.base.render import one_line_declarations
     from aether.wings.base.spelling import binding_name
 
     if count is None or not re.fullmatch(r"\w+", count):
         return ()
-    decls = _declarations(pre or "", [count])
+    decls = one_line_declarations(pre or "", [count])
     word = binding_name("lookup", FUSED_STEPS_PLANE)
     for d in decls:
         reads = re.findall(r"\b(\w+)\[", d)
@@ -435,25 +464,25 @@ def _exit_rebuilt(step: str, exit_flag: str, fresh) -> list | None:
     return out
 
 
-def _fused_split(sinks, walk: Walk, kind, spec):
+def _fused_split(sinks, walk: Walk, kind, spec, writer):
     """The lane split of a ``sample_local`` kernel with the ``fused_steps``
     word and a finish, or ``None`` where the persist and range entries don't
     apply."""
-    from raptor.ir.nodes import FUSED_STEPS_PLANE
+    from lowering.cells import FUSED_STEPS_PLANE
     from aether.wings.base.render import render_lane_split
 
     if getattr(walk, "finish", None) is None or walk.access.cls != "sample_local":
         return None
     if not any(n == FUSED_STEPS_PLANE for _, n in walk.arg_spec):
         return None
-    split = render_lane_split(sinks, walk, kind=kind, spec=spec)
+    split = render_lane_split(sinks, walk, kind=kind, spec=spec, writer=writer)
     if split is None or split.count is None:
         return None
     return split
 
 
 def persist_entry(wrapper: CudaWrapper, name: str, sinks, walk: Walk,
-                  kind, spec) -> str | None:
+                  kind, spec, writer) -> str | None:
     """The persistent entry of an automatic (``steps="auto"``) kernel, or
     ``None`` for any other kernel.
 
@@ -510,7 +539,7 @@ def persist_entry(wrapper: CudaWrapper, name: str, sinks, walk: Walk,
     (:func:`~aether.wings.base.render.render_lane_split`)."""
     from aether.wings.base.spelling import carry_type
 
-    split = _fused_split(sinks, walk, kind, spec)
+    split = _fused_split(sinks, walk, kind, spec, writer)
     if split is None:
         return None
     # The finish epilogue's per-sample count becomes a register count here.
@@ -697,7 +726,7 @@ def persist_entry(wrapper: CudaWrapper, name: str, sinks, walk: Walk,
 
 
 def range_entry(wrapper: CudaWrapper, name: str, sinks, walk: Walk, kind,
-                single: str, spec) -> str | None:
+                single: str, spec, writer) -> str | None:
     """The contiguous-range entry of an automatic kernel, or ``None`` where
     :func:`persist_entry` is.
 
@@ -711,10 +740,10 @@ def range_entry(wrapper: CudaWrapper, name: str, sinks, walk: Walk, kind,
     steps this launch (``1`` or the trips for a sample not finished on
     entry, else ``0``) are maxed into ``hawk_steps`` after every lane is
     done, one atomic per warp."""
-    from raptor.ir.nodes import FUSED_STEPS_PLANE
+    from lowering.cells import FUSED_STEPS_PLANE
     from aether.wings.base.spelling import binding_name, carry_type
 
-    split = _fused_split(sinks, walk, kind, spec)
+    split = _fused_split(sinks, walk, kind, spec, writer)
     if split is None:
         return None
     # DERIVED from the one geometry seam: the lane past ``count`` skips its
@@ -777,7 +806,7 @@ def range_entry(wrapper: CudaWrapper, name: str, sinks, walk: Walk, kind,
 def _param_type(role: str, ttype) -> str:
     """The by-value ABI shape one role crosses the launch boundary as."""
     from aether.wings.base.spelling import view_type
-    from raptor.protocols.naming import mirror_of
+    from lowering.exchange import mirror_of
 
     shape = mirror_of(role, ttype)
     if shape == "value":

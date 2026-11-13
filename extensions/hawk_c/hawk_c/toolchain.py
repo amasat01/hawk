@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 
 from hawk.compile.cache import default_cache_dir
-from raptor.protocols.refusal import ToolchainAbsent
+from lowering.exchange import ToolchainAbsent
 from raptor.errors import RaptorError
 
 _STDS = ("c99", "c11")

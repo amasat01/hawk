@@ -4,7 +4,7 @@
 """``hawk.steps(kernel, K)`` — K steps of a finishing step kernel per launch.
 
 An IR transform, no build option and no new user code: the step body
-becomes ONE lowered :class:`~hawk.ir.nodes.Loop` of ``K`` trips
+becomes ONE lowered :class:`~raptor.ir.nodes.Loop` of ``K`` trips
 (:func:`build_loop`) whose carries are the kernel's Mutable planes — every
 read of a plane's launch-start value becomes the carry, every commit the
 carry's next value — and whose ``break`` is the finish condition, evaluated
@@ -31,10 +31,10 @@ step, or ``step_vjp(..., steps_reverse="fused")`` for all K in one launch.
 ``steps="auto"`` derives ONE kernel, ``<name>_xauto``, by the same
 transform: the loop's static range is :data:`AUTO_K_MAX` trips, and its
 runtime trip count is read once per launch from the reserved ``lookup``
-word :data:`~hawk.ir.nodes.FUSED_STEPS_PLANE` (set by the runner, never
+word :data:`~lowering.cells.FUSED_STEPS_PLANE` (set by the runner, never
 bound by the host, clamped below at 0, any word above ``AUTO_K_MAX``
 running that many steps). The sidecar records
-``finish.steps == "auto"`` and ``finish.steps_max == AUTO_K_MAX``. The
+the sidecar's ``finish.steps == "auto"`` and ``finish.steps_max == AUTO_K_MAX``. The
 derived kernel carries the single step as ``.one_step``: its entry
 branches once per launch on the word, a word of ``1`` running that step's
 straight-line body and any other word the fused loop.
@@ -52,7 +52,8 @@ from typing import Any
 
 from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
 from raptor.ir.loops import build_loop
-from raptor.ir.nodes import FUSED_STEPS_PLANE, Assign, At, Const, Finish, Leaf, Node, Select
+from raptor.ir.nodes import Assign, At, Const, Finish, Leaf, Node, Select
+from lowering.cells import FUSED_STEPS_PLANE
 from .._errors import HawkError
 from raptor.ir.ops import make
 from raptor.ir.walk import substitute
@@ -106,7 +107,7 @@ def _fused_steps_of(kernel: Any) -> tuple | None:
     finishes = [s for s in getattr(kernel, "sinks", ()) if isinstance(s, Finish)]
     if step is None or step is kernel or not finishes:
         return None
-    k = finishes[0].steps
+    k = getattr(kernel, "steps", 1)
     return (step, k) if isinstance(k, int) and k > 1 else None
 
 
@@ -116,7 +117,7 @@ def admits_auto(kernel: Any) -> bool:
     plane and nothing else, with no plane named ``fused_steps``."""
     sinks = tuple(kernel.sinks)
     finishes = [s for s in sinks if isinstance(s, Finish)]
-    if len(finishes) != 1 or finishes[0].steps != 1:
+    if len(finishes) != 1 or kernel.steps != 1:
         return False
     commits = [s for s in sinks if s is not finishes[0]]
     if not commits or not all(isinstance(s, Assign) for s in commits):
@@ -147,9 +148,9 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
             "steps with no exit is a plain `for` the author can write; finish "
             "with `terminated = cond`")
     finish = finishes[0]
-    if finish.steps != 1:
+    if kernel.steps != 1:
         raise HawkError(
-            f"hawk.steps({name!r}): the kernel already takes {finish.steps} "
+            f"hawk.steps({name!r}): the kernel already takes {kernel.steps} "
             "steps per launch; derive from the single step")
     commits = [s for s in sinks if s is not finish]
     for sink in commits:
@@ -200,9 +201,9 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
     out: list[Node] = [Assign(s.name, LoopValue(loop, j), s.ttype)
                        for j, s in enumerate(commits)]
     done = make("gt", (LoopValue(loop, len(commits)), Const(0.5, _FLAG)))
-    out.append(Finish(finish.name, done, steps=K))
+    out.append(Finish(finish.name, done))
     return Kernel(out_name, tuple(out), kernel.planes, kind=kernel.kind,
-                  step=step, one_step=kernel if auto else None,
+                  step=step, steps=K, one_step=kernel if auto else None,
                   source_digest=getattr(kernel, "source_digest", None),
                   returns=getattr(kernel, "returns", None))
 

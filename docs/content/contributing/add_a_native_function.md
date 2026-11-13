@@ -21,7 +21,7 @@ AETHER_MATH_UNARY(foo, foof, ::foo, std::foo(x))
 ```
 
 Add a `cwiseFoo` alongside it if a rank &ge; 1 value should vectorise
-without scalarising first (see `_CWISE1` in step 3).
+without scalarising first (see `CWISE_UNARY` in step 3).
 
 ## 2. hawk: declare the op kind
 
@@ -31,8 +31,8 @@ on).
 
 ## 3. hawk: the aether spelling
 
-`staging/aether/wings/base/spelling.py` — add a `"foo": "foo"` entry to `_MATH1` (the
-rank-0 `aether::math::foo` spelling), and to `_CWISE1` too if step 1 added
+`staging/aether/wings/base/spelling.py` — add a `"foo": "foo"` entry to `MATH_UNARY` (the
+rank-0 `aether::math::foo` spelling), and to `CWISE_UNARY` too if step 1 added
 a `cwiseFoo`.
 
 ## 4. hawk: the derivative rule

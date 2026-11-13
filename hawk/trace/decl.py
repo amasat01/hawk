@@ -6,13 +6,13 @@
 A parameter's annotation IS its vocabulary declaration: a payload type
 declares a per-sample input plane whose ROLE follows its rank; a wrapper
 (``Mutable[...]``, ``Table[...]``, ``Param``) declares the
-output/lookup/uniform forms; a :class:`~hawk.ir.compound.Quantity` declares a compound access,
+output/lookup/uniform forms; a :class:`~raptor.ir.compound.Quantity` declares a compound access,
 namespaced and all-or-nothing. Nothing here builds IR; it resolves an
 annotation to the ``(form, ttype)`` pair :mod:`hawk.trace.kernel` binds.
 
 NAMED AXES: ``Table["row":rows, "col":cols]`` and
 ``Staged[Vector[W], count]`` declare a plane's axis LAYOUT as a fact, not a
-convention, with each stride minted as a :class:`~hawk.ir.nodes.RoleConst`
+convention, with each stride minted as a :class:`~raptor.ir.nodes.RoleConst`
 naming its axis, rather than a hand-written index that re-derives the
 producer's layout uncheckably. Layout is ROW-MAJOR, last axis innermost.
 """

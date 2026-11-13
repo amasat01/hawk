@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 from hawk.artifact import build_bundle
-from raptor.protocols.refusal import ToolchainAbsent
+from lowering.exchange import ToolchainAbsent
 from hawk.targets import TARGETS
 
 BOTH = ("cuda", "host")
@@ -226,7 +226,7 @@ def toolchains() -> dict:
 def absent_toolchain(exc: BaseException) -> str | None:
     """The absent toolchain this failure is the typed refusal for, else ``None``.
 
-    Only by type: the product's :class:`~raptor.protocols.refusal.ToolchainAbsent` (its ``toolchain`` attribute names which)
+    Only by type: the product's :class:`~lowering.exchange.ToolchainAbsent` (its ``toolchain`` attribute names which)
     anywhere in the cause chain. A row that asserts on a tool the product does not itself refuse for declares it with
     ``@pytest.mark.needs_toolchain("<name>")``, which raises the same type from setup when the probe says it is absent.
     """

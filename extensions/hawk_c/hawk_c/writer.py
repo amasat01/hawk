@@ -30,10 +30,11 @@ from collections.abc import Sequence
 
 from aether_dsc import c_core
 
-from aether.wings.base.spelling import _CWISE1, _INFIX, _MATH1, _MATH2, SAMPLE_INDEX_IDENT, binding_name, finish_binding, param_cell_binding
+from aether.wings.base.spelling import CWISE_UNARY, INFIX_OPS, MATH_UNARY, MATH_BINARY, SAMPLE_INDEX_IDENT, binding_name, finish_binding, param_cell_binding
 from raptor.errors import RaptorError
 from raptor.ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, factor_bytes
-from raptor.ir.nodes import FACTOR_TAGS, FINISHED_PLANE, GATHER_ROLES, RAW_KIND, At, Const, Finish, Leaf, Op, Select, TapeWrite, is_param_cell
+from raptor.ir.nodes import FACTOR_TAGS, GATHER_ROLES, RAW_KIND, At, Const, Finish, Leaf, Op, Select, TapeWrite, is_param_cell
+from lowering.cells import FINISHED_PLANE
 from raptor.ir.ops import RANDOM_OPS
 from raptor.ir.types import INT_PLANE_DTYPES, TensorType
 from .helpers import helper
@@ -300,8 +301,8 @@ class CWriter:
         """A ``PlaneExtent`` node: the plane's length argument."""
         return f"((hawk_int_t){binding_name(node.role, node.name)}_len)"
 
-    def lane_position_value(self, mapped: bool) -> str:
-        """A ``LanePosition`` node: the loop's own index (a C unit has no map)."""
+    def sample_position_value(self, mapped: bool) -> str:
+        """A ``SamplePosition`` node: the loop's own index (a C unit has no map)."""
         return SAMPLE_INDEX_IDENT
 
     def hoist(self, r, text: str, ttype: TensorType | None = None) -> str:
@@ -346,7 +347,7 @@ class CWriter:
         if ttype is None or not ttype.shape:
             raise RaptorError(
                 f"a rank>=1 predicated dispatch in {self.name!r} reached the C "
-                f"writer with an unnamed branch ({texts[-1]!r}); use policy='switch'")
+                f"writer with an unnamed branch ({texts[-1]!r}); use strategy='switch'")
         select = self._helper("select", ttype.shape)
         expr = texts[-1]
         for j in range(len(texts) - 2, -1, -1):
@@ -551,14 +552,14 @@ class CWriter:
             return f"{self._core(kind)}({', '.join(reals)})"
         if kind == "abs":
             return f"{self._libm('fabs')}({reals[0]})"
-        if kind in _MATH1:
-            return f"{self._libm(_MATH1[kind])}({reals[0]})"
-        if kind in _MATH2:
-            return f"{self._libm(_MATH2[kind])}({reals[0]}, {reals[1]})"
+        if kind in MATH_UNARY:
+            return f"{self._libm(MATH_UNARY[kind])}({reals[0]})"
+        if kind in MATH_BINARY:
+            return f"{self._libm(MATH_BINARY[kind])}({reals[0]}, {reals[1]})"
         if kind == "fma":
             return f"{self._libm('fma')}({', '.join(reals)})"
-        if kind in _INFIX and len(args) == 2:
-            return f"({reals[0]} {_INFIX[kind]} {reals[1]})"
+        if kind in INFIX_OPS and len(args) == 2:
+            return f"({reals[0]} {INFIX_OPS[kind]} {reals[1]})"
         if kind == "neg":
             return f"(-{reals[0]})"
         if kind == "lnot":
@@ -658,7 +659,7 @@ class CWriter:
             a, b = (self._splat(r, x, s, t.shape) if rk == 0 else x
                     for x, s, rk in zip(args, srcs, ranks))
             return f"{self._core(f'{word}_{core}', t.shape)}({a}, {b})"
-        if kind in ("neg", "abs") or kind in _CWISE1:
+        if kind in ("neg", "abs") or kind in CWISE_UNARY:
             return f"{self._core(f'{word}_{kind}', t.shape)}({args[0]})"
         src = node.operands[0].ttype
         if kind == "mv":

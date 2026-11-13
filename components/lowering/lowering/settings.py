@@ -20,8 +20,8 @@ class Settings:
     (the device text; the host renders a placement as its value); ``blend`` whether float selects render as ``hawk_abi::blend``
     (a host row); ``staged_rows`` the samples a block of the warp form shares one output tile for (1: stores go straight to the
     planes); ``warps`` the warps of a block of the warp-per-lane kernel; ``fold_k`` the rows per warp forced in every cell-sum
-    kernel (0: the variant's policy); ``block_fold`` whether the body sits in a frame that allows the block-level commit;
-    ``route_to_ordered`` whether a keyed accumulate of policy ``auto`` or ``compensated`` takes the ordered stages (a ``cells``
+    kernel (0: the variant's own value); ``block_fold`` whether the body sits in a frame that allows the block-level commit;
+    ``route_to_ordered`` whether a keyed accumulate of contract ``auto`` or ``compensated`` takes the ordered stages (a ``cells``
     scalar mode has no atomic add on a packed cell)."""
 
     form: str = "auto"

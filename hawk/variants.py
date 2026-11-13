@@ -122,7 +122,7 @@ def _segment(name, what: str = "variant name") -> str:
 
 
 @functools.lru_cache(maxsize=None)
-def _home(name: str) -> Path:
+def variant_home(name: str) -> Path:
     """The installed package directory of variant ``name``: its entry point's value is ``<top package>[.<sub package>]``; the top
     package is located without importing it."""
     from importlib import util
@@ -149,7 +149,7 @@ def _literal(path: Path):
 
 
 def _read(name: str) -> dict:
-    home = _home(name)
+    home = variant_home(name)
     path = home / "data.py"
     data = _literal(path)
     if not isinstance(data, dict):
@@ -192,17 +192,17 @@ def load(name: str) -> dict:
 def reset() -> None:
     """Forget what was loaded (the installed distributions changed)."""
     load.cache_clear()
-    _home.cache_clear()
+    variant_home.cache_clear()
 
 
 def location(name: str) -> Path:
     """The installed package directory of variant ``name`` (the one that holds its header)."""
-    return _home(name)
+    return variant_home(name)
 
 
 def header_digest(name: str) -> str:
     """The sha256 of the CONTENT of variant ``name``'s generated header: what a compile key holds instead of the header's path."""
-    path = _home(name) / "raptor_variant.h"
+    path = variant_home(name) / "raptor_variant.h"
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
 
 
@@ -221,7 +221,7 @@ def include_flags(variant: dict) -> tuple:
     name = variant.get("name") if variant else None
     if not name:
         return ()
-    flag = IncludeFlag(f"-I{_home(name)}")
+    flag = IncludeFlag(f"-I{variant_home(name)}")
     flag.key_term = f"variant:{name}:{header_digest(name)}"
     return (flag,)
 

@@ -401,28 +401,28 @@ def test_static_key_extents():
     assert s.key_origin == ORIGIN_AXIS and s.key_extent == 32
 
 
-def test_policy_is_compensated_when_a_companion_plane_is_carried():
-    assert {s.name: s.policy for s in _facts(k_uni).sinks} == {"acc": "compensated",
+def test_contract_is_compensated_when_a_companion_plane_is_carried():
+    assert {s.name: s.contract for s in _facts(k_uni).sinks} == {"acc": "compensated",
                                                                     "acc_c": "auto"}
     comp = hawk.ext.Kind("lanes_comp", sink=hawk.ext.sink_policy("compensated", into="acc_c"))
 
     @hawk.kernel(kind=comp)
     def k_comp(x: Scalar, acc: Mutable[Scalar], acc_c: Mutable[Scalar]):
         j, s = m.split_index(NS)
-        hawk.scatter(acc, policy="plain")[j] += f(x, s)
-        hawk.scatter(acc_c, policy="plain")[j] += 0.0
+        hawk.scatter(acc, contract="plain")[j] += f(x, s)
+        hawk.scatter(acc_c, contract="plain")[j] += 0.0
 
-    assert {s.name: s.policy for s in _facts(k_comp).sinks} == {"acc": "compensated",
+    assert {s.name: s.contract for s in _facts(k_comp).sinks} == {"acc": "compensated",
                                                                    "acc_c": "auto"}
 
 
-def test_policy_reads_the_scatter_policy():
+def test_contract_reads_the_scatter_policy():
     @hawk.kernel
-    def k_policy(x: Scalar, acc: Mutable[Scalar]):
+    def k_contract(x: Scalar, acc: Mutable[Scalar]):
         j, s = m.split_index(NS)
-        hawk.scatter(acc, policy="compensated")[j] += f(x, s)
+        hawk.scatter(acc, contract="compensated")[j] += f(x, s)
 
-    assert {s.name: s.policy for s in _facts(k_policy).sinks} == {"acc": "compensated",
+    assert {s.name: s.contract for s in _facts(k_contract).sinks} == {"acc": "compensated",
                                                                      "acc_c": "auto"}
 
 

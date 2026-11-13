@@ -12,9 +12,9 @@ into its own scope, opened by a lane-local prologue hook the composing
 consumer supplies. :func:`compose` closes the other half: it takes a
 group whose membership the consumer decided and turns it into a
 deployable kernel — the merged ``arg_spec``, one index prologue, one
-body, and a :class:`~hawk.types.LaneMeta` record per lane in the sidecar.
+body, and a :class:`LaneMeta` record per lane in the sidecar.
 
-Composition is still the consumer's; :func:`compose` only refuses, naming
+Composition is the consumer's; :func:`compose` only refuses, naming
 both lanes, the disagreements a fused entry cannot survive: one NAME
 meaning two different things across lanes (a binding hazard invisible at
 the call site, since a consumer binds by name), and two lanes committing
@@ -37,11 +37,21 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from raptor.ir import Walk, canonical
+from raptor.ir import Walk
 from raptor.errors import RaptorError
 from raptor.ir.nodes import LEAF_ROLES, SINK_ROLES
-from raptor.ir.types import LaneMeta, Slot
+from raptor.ir.types import Slot
+from lowering import cells as _cells
 from .render import Body, render_body
+
+
+@dataclass(frozen=True)
+class LaneMeta:
+    """What the sidecar records of one lane: its ``name``, its argument ``slots`` and the ``digest`` of its walk."""
+
+    name: str
+    slots: tuple
+    digest: str
 
 
 @dataclass(frozen=True)
@@ -74,7 +84,7 @@ class FusedBody:
         return Body(self.text, self.needs_random)
 
 
-def render_lane_body(lanes: Sequence[Lane], *, spec, kind, indent: str = "        ") -> FusedBody:
+def render_lane_body(lanes: Sequence[Lane], *, spec, kind, writer, indent: str = "        ") -> FusedBody:
     """Render ONE body for a fused lane group (the body path).
 
     Every lane goes through :func:`aether.wings.base.render.render_body` — the
@@ -97,7 +107,7 @@ def render_lane_body(lanes: Sequence[Lane], *, spec, kind, indent: str = "      
                 "name identifies its scope and its LaneMeta record"
             )
         seen.add(lane.name)
-        body = render_body(lane.sinks, lane.walk, indent=indent + "    ", kind=kind, spec=spec)
+        body = render_body(lane.sinks, lane.walk, indent=indent + "    ", kind=kind, writer=writer, spec=spec)
         needs_random = needs_random or body.needs_random
         chunks.append(f"{indent}{{  // lane {lane.name}")
         if lane.prologue:
@@ -130,9 +140,9 @@ class FusedKernel:
         """The MERGED slot order — one entry per distinct ``(role, name)``."""
         return self.walk.arg_spec
 
-    def fused_body(self, kind, cells: bool = False, *, spec) -> Body:
+    def fused_body(self, kind, cells: bool = False, *, spec, writer) -> Body:
         """This group's body: one lane scope per member, one renderer."""
-        return render_lane_body(self.members, kind=kind, spec=spec).as_body()
+        return render_lane_body(self.members, kind=kind, spec=spec, writer=writer).as_body()
 
 
 def _lane_of(member) -> Lane:
@@ -167,7 +177,7 @@ def _check_slots(lanes: Sequence[Lane]) -> None:
                     "one plane")
             if role not in SINK_ROLES:
                 # A read-only role can never double-commit. Not `role in
-                # LEAF_ROLES`: `mutable` is now BOTH, and this is about WRITES.
+                # LEAF_ROLES`: `mutable` is BOTH, and this is about WRITES.
                 continue
             owner = committed.setdefault((role, name), lane.name)
             if owner != lane.name:
@@ -179,7 +189,7 @@ def _check_slots(lanes: Sequence[Lane]) -> None:
 
 
 def compose(group: Sequence, name: str, scalar_type: str = "float64",
-            *, spec, kind) -> FusedKernel:
+            *, spec, kind, writer) -> FusedKernel:
     """Compose a lane GROUP into one deployable fused kernel (the open half).
 
     ``group`` is the membership the consumer decided, as :class:`Lane`
@@ -209,11 +219,11 @@ def compose(group: Sequence, name: str, scalar_type: str = "float64",
         for lane in lanes for role, slot_name in lane.walk.arg_spec
         if role in LEAF_ROLES
     )
-    walk = canonical(sinks, declared)
+    walk = _cells.walk(sinks, declared)
     meta = tuple(LaneMeta(lane.name, lane.walk.arg_spec, lane.walk.digest)
                  for lane in lanes)
     fused = FusedKernel(name, lanes, sinks, walk, meta, mode.id)
     # Rendered once, here, so lanes that disagree on the sink/mask seams
     # fail at compose time rather than inside the artifact builder.
-    fused.fused_body(kind, spec=spec)
+    fused.fused_body(kind, spec=spec, writer=writer)
     return fused

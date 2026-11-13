@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""How a :class:`~hawk.ir.nodes.Dispatch` node renders: the rank-0
+"""How a :class:`~raptor.ir.nodes.Dispatch` node renders: the rank-0
 ``predicated``/``switch`` text both wrappers share, and the renderer's
 dispatch methods as a :class:`aether.wings.base.render._Renderer` mixin."""
 
@@ -12,7 +12,8 @@ from collections.abc import Sequence
 from raptor.ir import Node
 from raptor.errors import RaptorError
 from raptor.ir.nodes import Loop, LoopCarry, LoopIndex
-from raptor.ir.nodes import SWITCH_RENDERED, is_param_cell, At, Const, Dispatch, Leaf, Primitive, SampleIndex
+from raptor.ir.nodes import has_feather, is_param_cell, At, Const, Dispatch, Leaf, Primitive, SampleIndex
+from lowering.dispatch import strategy, switch_form
 from .spelling import _is_literal_zero, binding_name
 
 
@@ -39,7 +40,7 @@ def _speculable(node: Node) -> bool:
 
 
 def _clamp_expr(kind_spelling: str, k: int) -> str:
-    """ONE clamp, identical under every policy. Spelled as a ternary
+    """ONE clamp, identical under every strategy. Spelled as a ternary
     rather than ``min(max(...))``: the host TU includes no
     ``<algorithm>``, so an unqualified ``min``/``max`` has no overload
     there, while CUDA's device compiler carries ambient builtins — a
@@ -60,7 +61,7 @@ def _in_range(selector: Node, k: int) -> bool:
 
 
 def render_dispatch_rank0(kind_spelling: str, branch_spellings: Sequence[str],
-                          policy: str, *, elided: frozenset = frozenset(),
+                          strategy: str, *, elided: frozenset = frozenset(),
                           cpp_type: str = "", name: str = "",
                           zero_spelling: str = "") -> str:
     """The per-node dispatch text for ``predicated``/``switch`` — identical
@@ -87,16 +88,16 @@ def render_dispatch_rank0(kind_spelling: str, branch_spellings: Sequence[str],
     local per nesting level, which needs a SCOPE this bare string
     function has none of. ``_Renderer._dispatch`` builds that case
     directly instead."""
-    if policy == "predicated":
+    if strategy == "predicated":
         expr = branch_spellings[-1]
         for j in range(len(branch_spellings) - 2, -1, -1):
             expr = f"({kind_spelling} == {j} ? {branch_spellings[j]} : {expr})"
         return expr
-    if policy == "auto":
-        policy = "switch"
-    if policy != "switch":
+    if strategy == "auto":
+        strategy = "switch"
+    if strategy != "switch":
         raise RaptorError(
-            f"dispatch: policy {policy!r} has no per-node text — 'segmented' "
+            f"dispatch: strategy {strategy!r} has no per-node text — 'segmented' "
             "replaces the node with its own branch inside a per-unit walk "
             "before the renderer ever sees it"
         )
@@ -120,17 +121,17 @@ class _DispatchMixin:
     """The renderer's dispatch methods."""
 
     def _dispatch(self, node: Dispatch) -> str:
-        """Finite dispatch: one clamp (the contract every policy shares),
-        then the policy's own control shape.
+        """Finite dispatch: one clamp (the contract every strategy shares),
+        then the strategy's own control shape.
 
         ``switch`` is built by :meth:`_dispatch_switches`: each case renders
         its own branch fresh, scoped to that ``case j: { ... }`` block,
         rather than through :func:`render_dispatch_rank0`'s pure-string
         assembly — a plain string function has no scope to hoist a
         branch's own temporaries into, so without this every temporary
-        used to land before the switch regardless of which case needed it.
+        would land before the switch regardless of which case needed it.
 
-        ``predicated`` is untouched: it's the evaluate-all policy, so
+        ``predicated`` is untouched: it's the evaluate-all strategy, so
         every branch is always live and there's no per-branch scope to
         gain. At rank 0 it's pure text through :func:`render_dispatch_rank0`.
         A rank>=1 ``predicated`` dispatch is the one shape that function
@@ -141,11 +142,11 @@ class _DispatchMixin:
         ``segmented`` never reaches a renderer: by the time a segmented
         unit is built, the dispatch node has already been replaced by its
         own branch."""
-        if node.policy in SWITCH_RENDERED:
+        if switch_form(node):
             return self._dispatch_switches((node,))[0]
-        if node.policy != "predicated":
+        if not has_feather(node, "evaluates_all_branches"):
             raise RaptorError(
-                f"dispatch: policy {node.policy!r} reached the renderer — "
+                f"dispatch: strategy {strategy(node)!r} reached the renderer — "
                 "'segmented' replaces the node with its own branch inside a "
                 "per-unit walk before this point")
         kname = f"hawk_disp{self._disp_pos(node)}_k"
@@ -173,10 +174,10 @@ class _DispatchMixin:
 
     def _mix_plane(self, node: Dispatch) -> str | None:
         """The binding an ``auto`` group counts its picks into, else ``None``
-        (a declared policy counts nothing: its body stays the same text)."""
-        if node.policy != "auto":
+        (a declared strategy counts nothing: its body stays the same text)."""
+        if not has_feather(node, "counts_branch_mix"):
             return None
-        from raptor.ir.segment import mix_name
+        from lowering.cells import mix_name
         from raptor.ir.walk import dispatch_groups
 
         for group, held in dispatch_groups(self.walk).items():
@@ -383,7 +384,7 @@ class _DispatchMixin:
                 continue
             if not expanded:
                 stack.append((n, True))
-                if isinstance(n, Dispatch) and n.policy in SWITCH_RENDERED:
+                if isinstance(n, Dispatch) and switch_form(n):
                     children = (n.selector,)
                 else:
                     children = n.operands

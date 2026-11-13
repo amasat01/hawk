@@ -34,7 +34,7 @@ import pytest
 from conftest import sidecar_of
 
 from hawk import runtime
-from raptor.protocols.naming import MIRROR_OF, mirror_of
+from lowering.exchange import MIRROR_OF, mirror_of
 from raptor.errors import RaptorError as HawkError
 from raptor.ir.types import TensorType
 

@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from raptor.protocols.refusal import ToolchainAbsent
+from lowering.exchange import ToolchainAbsent
 
 WORKSPACE = Path(__file__).resolve().parents[2]
 

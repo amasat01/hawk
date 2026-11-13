@@ -20,12 +20,12 @@ TARGETS = [pytest.param("cuda", marks=pytest.mark.gpu)]
 
 @hawk.kernel
 def ordered(lane: hawk.Grid["key", "col":64], x: hawk.Scalar) -> hawk.Scalar:
-    return hawk.sum(x, over="col", policy="ordered")
+    return hawk.sum(x, over="col", contract="ordered")
 
 
 @hawk.kernel
 def add(key: hawk.Index, x: hawk.Scalar, acc: hawk.Mutable[hawk.Scalar]):
-    hawk.scatter(acc, policy="ordered")[key] += x
+    hawk.scatter(acc, contract="ordered")[key] += x
 
 
 @hawk.kernel
@@ -40,7 +40,7 @@ def colsum(lane: hawk.Grid["key", "col":64], x: hawk.Scalar, y: hawk.Mutable["ke
 
 @hawk.kernel
 def colsum_compensated(lane: hawk.Grid["key", "col":64], x: hawk.Scalar, y: hawk.Mutable["key"]):
-    y = hawk.sum(x, over="col", policy="compensated")
+    y = hawk.sum(x, over="col", contract="compensated")
 
 
 def _partial_dtypes(bundle, name):
@@ -49,7 +49,7 @@ def _partial_dtypes(bundle, name):
 
 @pytest.mark.parametrize("target", ["cuda"])
 @pytest.mark.parametrize("kernel", (ordered, add, scattered, colsum, colsum_compensated), ids=lambda k: k.name)
-def test_an_ordered_or_default_policy_reduction_builds_banded_on_the_ordered_stages_with_16_byte_partials(kernel, target, tmp_path):
+def test_an_ordered_or_default_contract_reduction_builds_banded_on_the_ordered_stages_with_16_byte_partials(kernel, target, tmp_path):
     banded = build_bundle([kernel], tmp_path / "banded", mode="banded", targets=(target,), host_profile="native")
     assert "band_partial" in _partial_dtypes(banded, kernel.name)
     f64 = build_bundle([kernel], tmp_path / "f64", mode="float64", targets=(target,), host_profile="native")
@@ -58,12 +58,12 @@ def test_an_ordered_or_default_policy_reduction_builds_banded_on_the_ordered_sta
 
 @hawk.kernel
 def colsum_plane(lane: hawk.Grid["key", "col":64], x: hawk.Scalar, y: hawk.Mutable["key"]):
-    y = hawk.sum(x, over="col", policy="ordered")
+    y = hawk.sum(x, over="col", contract="ordered")
 
 
 @hawk.kernel
 def colsum_squares(lane: hawk.Grid["key", "col":64], x: hawk.Scalar, y: hawk.Mutable["key"]):
-    y = hawk.sum(x * x, over="col", policy="ordered")
+    y = hawk.sum(x * x, over="col", contract="ordered")
 
 
 @pytest.mark.parametrize("target", ["cuda"])
@@ -98,10 +98,10 @@ def _uniform(n):
     return np.random.default_rng(n).uniform(-2.0, 2.0, n).astype(np.float32).astype(np.float64)
 
 
-def _total(policy, n):
+def _total(contract, n):
     @hawk.kernel
     def total(lane: hawk.Grid["key", "sample":n], x: hawk.Scalar) -> hawk.Scalar:
-        return hawk.sum(x, over="sample", policy=policy)
+        return hawk.sum(x, over="sample", contract=contract)
     return total
 
 
@@ -138,11 +138,11 @@ def _launch_cells(kernel, target, tmp_path, planes, out, runs=3):
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("policy", ("auto", "compensated", "ordered"))
+@pytest.mark.parametrize("contract", ("auto", "compensated", "ordered"))
 @pytest.mark.parametrize("data", (_cancelling, _uniform), ids=("cancelling", "uniform"))
 @pytest.mark.parametrize("n", (1000, 3 * 65536 + 777))
 def test_a_banded_column_sum_is_the_same_cell_every_run_and_within_half_an_ulp_of_the_exact_sum(
-        n, data, policy, target, tmp_path):
+        n, data, contract, target, tmp_path):
     """The delivered cell (the carrier's figure is pinned in aether) on the cancel-2^-30 and the uniform class."""
     import numpy as np
     from fractions import Fraction
@@ -150,7 +150,7 @@ def test_a_banded_column_sum_is_the_same_cell_every_run_and_within_half_an_ulp_o
     import eagle
 
     x = data(n)
-    cells, last = _launch_cells(_total(policy, n), target, tmp_path, {"x": x, "out": np.zeros(1)}, "out")
+    cells, last = _launch_cells(_total(contract, n), target, tmp_path, {"x": x, "out": np.zeros(1)}, "out")
     assert cells[0].tobytes() == cells[1].tobytes() == cells[2].tobytes()
     got = float(np.asarray(eagle.banded_unpack(last))[0])
     want = _exact(x)
@@ -175,7 +175,7 @@ def test_a_banded_warp_sum_is_the_same_cells_every_run_and_close_to_the_exact_do
     rng = np.random.default_rng(11)
     f32 = lambda a: a.astype(np.float32).astype(np.float64)       # noqa: E731
     x, w = f32(rng.uniform(0.5, 2.0, (W.W, n))), f32(rng.uniform(0.5, 2.0, (W.ROWS, W.W)))
-    plan = probe._auto(W.matvec_in, "banded", cache_dir, "team")
+    plan = probe._auto(W.matvec_in, "banded", cache_dir, "team", DEVICE)
     runs = []
     for _ in range(3):
         planes = {k: arrays.asarray(eagle.banded_pack(arrays.asarray(v)), device="cuda:0")
@@ -202,7 +202,7 @@ def test_a_banded_warp_sum_is_the_same_cells_every_run_and_close_to_the_exact_do
 @pytest.mark.parametrize("data", (_cancelling, _uniform), ids=("cancelling", "uniform"))
 @pytest.mark.parametrize("cells", (7, 1000))
 def test_a_banded_scatter_is_the_same_cells_every_run_and_within_half_an_ulp_per_cell(cells, data, kernel, target, tmp_path):
-    """A keyed accumulate (default policy, routed to the ordered stages, and ``policy="ordered"``) over the
+    """A keyed accumulate (default contract, routed to the ordered stages, and ``contract="ordered"``) over the
     cancel-2^-30 and the uniform class: each cell within 0.5 ULP53 of its exact sum, three runs the same cells."""
     import numpy as np
     from fractions import Fraction
@@ -228,7 +228,7 @@ def test_a_banded_scatter_is_the_same_cells_every_run_and_within_half_an_ulp_per
 
 @pytest.mark.parametrize("kernel", (colsum, colsum_compensated), ids=lambda k: k.name)
 def test_a_banded_default_column_sum_builds_the_block_stages_and_not_the_scatter_log(kernel, tmp_path):
-    """A sum over lane axes is a block sum in a banded build, whatever its policy; a keyed scatter keeps the log."""
+    """A sum over lane axes is a block sum in a banded build, whatever its contract; a keyed scatter keeps the log."""
     steps = lambda k: {st["team"]["grid"] for st in sidecar_of(  # noqa: E731
         build_bundle([k], tmp_path / f"{k.name}", mode="banded", targets=("cuda",), host_profile="native"), k.name)["stages"]
         if st.get("team")}
@@ -243,6 +243,7 @@ def test_the_banded_fold_only_loops_are_unrolled_by_the_accumulator_period_and_a
 
     from aether.wings.base.team_emit import team_body as _team_body
     from aether.wings.base.render import Body
+    from aether.wings.simt import team_cells
 
     def team_body(spec, active, cells):
         return _team_body(spec, active, cells, body=Body)
@@ -253,7 +254,7 @@ def test_the_banded_fold_only_loops_are_unrolled_by_the_accumulator_period_and_a
     part = stages("total", _total("ordered", 100000).sinks, wide=True, real_bytes=8, inplace=True, spec=DEVICE)[0].team
     fold = fold_spec(SimpleNamespace(target="g", width=3), None)
     for spec, loop in ((part, "hawk_s.addTerm"), (fold, "hawk_s.addTerm")):
-        text = team_body(spec, None, True).text.splitlines()
+        text = team_body(spec, None, team_cells).text.splitlines()
         at = [i for i, line in enumerate(text) if pragma in line]
         assert len(at) == 1 and text[at[0] + 1].lstrip().startswith("for (") and loop in text[at[0] + 2]
         assert "#pragma unroll" not in team_body(spec, None, False).text

@@ -23,6 +23,7 @@ by hand (``m.where`` on the condition, then the bare break). Rows:
 
 from __future__ import annotations
 from _specs import default_kind
+from _specs import aether_writer
 from _specs import spec_for
 from _specs import HOST
 
@@ -411,7 +412,7 @@ def test_a_kernel_with_only_bare_exits_is_unchanged_by_the_lowering():
                 break
         y = s
 
-    assert "brk" not in render_body(bare.sinks, bare.walk, spec=HOST, kind=default_kind()).text
+    assert "brk" not in render_body(bare.sinks, bare.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
 
 
 # B6 ------------------------------------------------------------------------ #

@@ -128,7 +128,10 @@ def test_the_box_row_is_the_fastest_T_and_a_close_second_is_a_tie():
 @pytest.mark.gpu
 def test_the_quick_sweep_runs_on_the_device_and_writes_candidate_rows(tmp_path):
     out = tmp_path / "rows.json"
-    assert sweep.main(["--quick", "--dtype", "f32", "--out", str(out), "--cache", str(tmp_path / "cache")]) == 0
+    from hawk.variants import variant_home
+
+    assert sweep.main(["--quick", "--dtype", "f32", "--out", str(out), "--cache", str(tmp_path / "cache"),
+                       "--cuda-dir", str(variant_home("cuda"))]) == 0
     got = json.loads(out.read_text())
     assert got["wide"]["rows"][0]["dtype"] == "float32" and got["thread_box"]["rows"] and len(got["cells"]) == 9
     assert all(c["local_B"] is not None for c in got["cells"])

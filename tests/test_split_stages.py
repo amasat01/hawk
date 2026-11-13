@@ -264,6 +264,29 @@ def test_a_cut_inside_a_for_is_still_refused():
             z = x / acc
 
 
+def test_a_cut_read_inside_a_for_is_refused_by_the_split():
+    """A cut taken outside a ``for`` and read inside it traces; the split that would lower it refuses, before any text."""
+    @kernel
+    def with_index(x: Scalar, z: Mutable[Scalar]):
+        s = hawk.sum(x)
+        acc = x
+        for i in range(3):
+            acc = acc + s * i
+        z = acc
+
+    @kernel
+    def alone(x: Scalar, z: Mutable[Scalar]):
+        s = hawk.sum(x)
+        acc = x
+        for _ in range(3):
+            acc = acc + s
+        z = acc
+
+    for looped in (with_index, alone):
+        with pytest.raises(HawkError, match="a cut inside a `for` is not in this release.*one launch per iteration"):
+            stages("looped", looped.sinks, spec=DEVICE)
+
+
 def test_a_max_over_samples_read_in_the_body_has_no_derivative():
     @kernel
     def peak(x: Scalar, z: Mutable[Scalar]):

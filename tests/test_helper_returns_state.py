@@ -7,6 +7,7 @@ the same digest, as the one with the update written inline."""
 
 from __future__ import annotations
 from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import numpy as np
 
@@ -48,8 +49,8 @@ def by_helper_mutable(dt: Param, x: Mutable[Scalar], v: Mutable[Scalar]):
 
 
 def test_the_tuple_returning_helper_emits_the_inline_body():
-    a = render_body(by_helper.sinks, by_helper.walk, spec=HOST, kind=default_kind()).text
-    b = render_body(inline.sinks, inline.walk, spec=HOST, kind=default_kind()).text
+    a = render_body(by_helper.sinks, by_helper.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
+    b = render_body(inline.sinks, inline.walk, spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert a == b
 
 

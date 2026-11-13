@@ -281,7 +281,7 @@ def fp64_ops(nodes) -> int:
 def linalg_bytes(nodes) -> int:
     """Bytes of storage the linear-algebra nodes of ``nodes`` hold, each counted
     once (a loop body once, however many trips): what a factorisation, a solve
-    and the fields read from it occupy (:func:`hawk.ir.linalg.op_bytes`)."""
+    and the fields read from it occupy (:func:`raptor.ir.linalg.op_bytes`)."""
     total = 0
     for node in nodes:
         if isinstance(node, Loop):

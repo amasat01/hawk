@@ -13,6 +13,7 @@ reverse, ``jump=``."""
 
 from __future__ import annotations
 from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import numpy as np
 from conftest import declared
@@ -179,7 +180,7 @@ def test_an_outer_break_around_a_nested_loop_is_exact():
 
 def test_the_emitted_inner_tape_is_local_to_the_reversed_iteration():
     d = vjp(carried_into_inner, wrt=("x", "g"))
-    text = render_body(tuple(d), canonical(tuple(d)), spec=HOST, kind=default_kind()).text
+    text = render_body(tuple(d), canonical(tuple(d)), spec=HOST, kind=default_kind(), writer=aether_writer()).text
     # the inner forward loop, its local tape and the inner reverse sit INSIDE the
     # reversed outer loop (the outer tape is declared before it)
     outer_reverse = text.index("--hawk_k")

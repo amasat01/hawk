@@ -82,14 +82,14 @@ def test_a_first_party_variant_that_lacks_a_key_its_backend_reads_is_refused_at_
 
 def _manifest_with(tmp_path, **item):
     (tmp_path / "extension.json").write_text(json.dumps({"name": "toy", "version": "0", "contract": "1",
-                                                          "backends": [{"name": "toy", "ref": "toy:B", **item}]}))
+                                                          "backends": [{"name": "toy", "ref": "toy:B", "reads": [], **item}]}))
     return registry._read("toy", tmp_path)
 
 
-def test_a_manifest_that_declares_an_unknown_policy_key_or_a_malformed_option_is_refused_by_name(tmp_path):
-    assert "no_such_policy" in _manifest_with(tmp_path, policy=["no_such_policy"])["refusal"]
+def test_a_manifest_that_declares_an_unknown_settings_key_or_a_malformed_option_is_refused_by_name(tmp_path):
+    assert "no_such_setting" in _manifest_with(tmp_path, settings=["no_such_setting"])["refusal"]
     assert "'Bad-Option'" in _manifest_with(tmp_path, options=["Bad-Option"])["refusal"]
-    ok = _manifest_with(tmp_path, policy=["emit_form", "fold_rows"], options=["arch"])
+    ok = _manifest_with(tmp_path, settings=["emit_form", "fold_rows"], options=["arch"])
     assert "refusal" not in ok
 
 
@@ -104,3 +104,33 @@ def test_a_third_party_cannot_declare_kinds_under_a_first_party_name_or_another_
             declare_kinds({"name": name, "dialect": "simt", "kinds": [row]})
     with pytest.raises(HawkError, match="with the name of the manifest that declares it"):
         declare_kinds({"name": "toy", "dialect": "toy", "kinds": [{**row, "name": "other.mine"}]})
+
+
+def test_a_backend_row_that_states_no_reads_is_refused_by_name(tmp_path):
+    (tmp_path / "extension.json").write_text(json.dumps({"name": "toy", "version": "0", "contract": "1",
+                                                          "backends": [{"name": "toy", "ref": "toy:B"}]}))
+    refusal = registry._read("toy", tmp_path)["refusal"]
+    assert "backend 'toy' does not state `reads`" in refusal and "extension.json" in refusal
+    (tmp_path / "extension.json").write_text(json.dumps({"name": "toy", "version": "0", "contract": "1",
+                                                          "backends": [{"name": "toy", "ref": "toy:B", "reads": []}]}))
+    assert "refusal" not in registry._read("toy", tmp_path)
+
+
+def test_the_first_party_rows_state_their_reads_and_load():
+    assert not registry.refused()
+    for row in ("host", "c", "cuda"):
+        assert registry.traits(row).get("reads"), row
+
+
+def test_a_read_that_no_row_of_the_build_states_is_refused_by_name():
+    import dataclasses
+
+    from hawk import HawkError
+    from hawk.targets import build_spec
+
+    spec = build_spec(("host",))
+    assert spec.need("lanes", "run_max") == 32
+    with pytest.raises(HawkError, match="variant key 'uniform_run', which no backend row of the build states under `reads`"):
+        spec.need("uniform_run")
+    with pytest.raises(HawkError, match="'lanes.run_max'"):
+        dataclasses.replace(spec, reads=frozenset()).need("lanes", "run_max")

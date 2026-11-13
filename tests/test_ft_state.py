@@ -120,11 +120,11 @@ def test_publish_log_is_a_bounded_ring_under_contention():
 @register_ft_row("FT-3-HAWK-UNIT-FILE-ATOMIC")
 def test_unit_files_are_never_observed_partial(tmp_path):
     blob = bytes(range(256)) * (2 * 1024 * 1024 // 256)          # 2 MiB
-    digest = bundle_mod._digest_bytes(blob)
-    inline = bundle_mod._File("payload.bin", digest, blob=blob)
+    digest = bundle_mod.digest_bytes(blob)
+    inline = bundle_mod.UnitFile("payload.bin", digest, blob=blob)
     src = tmp_path / "src.bin"
     src.write_bytes(blob)
-    copied = bundle_mod._File("copied.bin", digest, source_path=src)
+    copied = bundle_mod.UnitFile("copied.bin", digest, source_path=src)
     out = tmp_path / "unit"
     out.mkdir()
     stop = threading.Event()
@@ -138,7 +138,7 @@ def test_unit_files_are_never_observed_partial(tmp_path):
                     data = p.read_bytes()
                 except FileNotFoundError:
                     continue
-                if bundle_mod._digest_bytes(data) != digest:
+                if bundle_mod.digest_bytes(data) != digest:
                     seen_bad.append((name, len(data)))
             try:
                 doc = json.loads((out / unit_cache.STAMP_NAME).read_text())

@@ -157,9 +157,9 @@ def event_guard(kernel: Any) -> EventGuard:
             f'events="refine": {name!r} never finishes its sample; there is no '
             "stop rule to refine — finish with `terminated = cond`")
     finish = finishes[0]
-    if finish.steps != 1:
+    if kernel.steps != 1:
         raise HawkError(
-            f'events="refine": {name!r} takes {finish.steps} steps per launch; '
+            f'events="refine": {name!r} takes {kernel.steps} steps per launch; '
             "the guard is read from the single step")
     guards, rules = _read(name, finish.value)
     return EventGuard(name, finish.name, guards, rules)

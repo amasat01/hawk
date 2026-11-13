@@ -32,8 +32,8 @@ replaced. What is pinned:
   gathered map, not a contiguous run) keep the per-sample loop.
 * **The tile rule.** :func:`aether.wings.cpu.host.host_tile_rule` is a pure function
   of its recorded inputs: L1d share, the L2 fallback, whole lane blocks, the
-  ``[64, 1024]`` clamp, ``k``; :func:`aether.wings.cpu.host.machine_caches` reads a
-  sysfs tree and falls back when it cannot.
+  ``[64, 1024]`` clamp, ``k``; :func:`aether.wings.cpu.host.machine_caches` reads the
+  cache facts of the spec and falls back when it has none (the probe itself is the cpu backend's ``host_caches``).
 
 Every build here pins the EXACT ``native`` host profile (FMA contraction
 off): the two loop shapes are compared bit for bit, and the default fast
@@ -44,11 +44,13 @@ fuse each shape.
 
 from __future__ import annotations
 from _specs import spec_for
-from _specs import HOST
+from _specs import aether_writer
+from _specs import HOST, with_caches
 
 import ctypes
 import platform
 import re
+import dataclasses
 import shutil
 import subprocess
 import sys
@@ -64,7 +66,7 @@ from hawk import Index, Mutable, Param, Scalar, Table, Terminated, Vector
 from hawk import math as m
 from hawk.artifact import build_bundle
 from aether.wings.base.wrapper import render_source
-from aether.wings.cpu.host import FALLBACK_CACHES, TILE_MAX, TILE_MIN, CacheSizes, host_tile_rule, interchange, machine_caches
+from aether.wings.cpu.host import FALLBACK_CACHES, host_tile_rule, interchange, machine_caches
 from hawk.ext import Guard, Kind
 from hawk.targets import TARGETS
 
@@ -456,7 +458,7 @@ def test_the_two_builds_are_the_two_shapes(shapes):
     macro-off build does not."""
     for name in KERNELS:
         tile = _exported_tile(shapes["interchanged"], name)
-        assert TILE_MIN <= tile <= TILE_MAX and tile % 64 == 0, (name, tile)
+        assert HOST.need("lanes", "tile_min") <= tile <= HOST.need("lanes", "tile_max") and tile % 64 == 0, (name, tile)
         assert _exported_tile(shapes["plain"], name) == 0, name
         text = (shapes["interchanged"].directory / f"{name}.cpp").read_text()
         assert "#if HAWK_HOST_INTERCHANGE" in text
@@ -520,10 +522,10 @@ def test_what_keeps_the_plain_fused_loop_and_why():
     assert getattr(kernel, "one_step", None) is not None, kernel.name
     # it only reads lookup planes (the same for every lane): its lanes advance together, though its class is cross_sample_read
     assert kernel.walk.access.cls == "cross_sample_read"
-    assert interchange(kernel.name, kernel.sinks, kernel.walk, kernel.kind, spec=HOST) is not None
+    assert interchange(kernel.name, kernel.sinks, kernel.walk, kernel.kind, spec=HOST, writer=aether_writer()) is not None
     # two lowered loops: the fused-step cut is at ONE, so both loops run as the
     # loop interchange instead (aether.wings.cpu.host.loop_interchange)
-    tiled = interchange(head_loop.name, head_loop.sinks, head_loop.walk, head_loop.kind, spec=HOST)
+    tiled = interchange(head_loop.name, head_loop.sinks, head_loop.walk, head_loop.kind, spec=HOST, writer=aether_writer())
     assert tiled is not None and tiled.rule is None and tiled.prelude is not None
     text = render_source(head_loop.name, head_loop.sinks, head_loop.walk, TARGETS["host"],
                          kind=head_loop.kind, one_step=head_loop.one_step, spec=spec_for(TARGETS["host"])).text
@@ -565,11 +567,11 @@ def test_a_loop_beside_the_fused_loop_interchanges_both_byte_identically(
 # --------------------------------------------------------------------------- #
 # The tile rule
 # --------------------------------------------------------------------------- #
-CACHES = CacheSizes(32 * 1024, 1024 * 1024, "test")
+CACHED = with_caches(HOST, 32 * 1024, 1024 * 1024)
 
 
 def test_the_tile_rule_fills_half_of_l1d_in_whole_lane_blocks():
-    rule = host_tile_rule(96, 30, True, 64, caches=CACHES)
+    rule = host_tile_rule(96, 30, True, 64, CACHED)
     assert (rule.tile, rule.level, rule.k) == (128, "L1d", 64)   # 16384 // 96 = 170
     assert (rule.lane_bytes, rule.op_count, rule.finishes, rule.stop) == (96, 30, True, 64)
     assert (rule.l1d, rule.l2, rule.cache_source) == (32768, 1048576, "test")
@@ -577,17 +579,31 @@ def test_the_tile_rule_fills_half_of_l1d_in_whole_lane_blocks():
 
 
 def test_the_tile_rule_clamps_and_falls_back_to_l2():
-    assert host_tile_rule(8, 5, True, 16, caches=CACHES).tile == TILE_MAX
-    big = host_tile_rule(1000, 900, True, 64, caches=CACHES)   # 64 * 1000 > 16384
+    assert host_tile_rule(8, 5, True, 16, CACHED).tile == CACHED.need("lanes", "tile_max")
+    big = host_tile_rule(1000, 900, True, 64, CACHED)   # 64 * 1000 > 16384
     assert (big.level, big.tile) == ("L2", 512)                 # 524288 // 1000 = 524
-    assert host_tile_rule(40000, 5, True, 64, caches=CACHES).tile == TILE_MIN
-    assert host_tile_rule(96, 30, False, 64, caches=CACHES).k == 1
+    assert host_tile_rule(40000, 5, True, 64, CACHED).tile == CACHED.need("lanes", "tile_min")
+    assert host_tile_rule(96, 30, False, 64, CACHED).k == 1
     # op count is recorded, not (yet) a term
-    assert (host_tile_rule(96, 1, True, 64, caches=CACHES).tile
-            == host_tile_rule(96, 10_000, True, 64, caches=CACHES).tile)
+    assert (host_tile_rule(96, 1, True, 64, CACHED).tile
+            == host_tile_rule(96, 10_000, True, 64, CACHED).tile)
 
 
-def test_machine_caches_reads_sysfs_and_falls_back(tmp_path):
+def test_the_wing_reads_the_caches_from_the_facts_and_falls_back_without_them():
+    got = machine_caches(with_caches(HOST, 48 * 1024, 2048 * 1024, "stated"))
+    assert (got.l1d, got.l2, got.source) == (48 * 1024, 2048 * 1024, "stated")
+    bare = dataclasses.replace(HOST, machine=dataclasses.replace(HOST.machine, facts={}))
+    assert machine_caches(bare) == FALLBACK_CACHES
+
+
+def test_the_host_row_states_the_caches_of_this_machine():
+    facts = HOST.machine.facts
+    assert facts["l1d_cache_bytes"] > 0 and facts["l2_cache_bytes"] >= facts["l1d_cache_bytes"] and facts["cache_source"]
+
+
+def test_host_caches_reads_sysfs_and_falls_back(tmp_path):
+    from osprey_cpu.toolchain import host_caches
+
     for index, (level, kind, size) in enumerate(
             [(1, "Data", "48K"), (1, "Instruction", "32K"), (2, "Unified", "2048K"),
              (3, "Unified", "16M")]):
@@ -596,39 +612,29 @@ def test_machine_caches_reads_sysfs_and_falls_back(tmp_path):
         (d / "level").write_text(f"{level}\n")
         (d / "type").write_text(f"{kind}\n")
         (d / "size").write_text(f"{size}\n")
-    got = machine_caches(str(tmp_path))
-    assert (got.l1d, got.l2) == (48 * 1024, 2048 * 1024)
-    assert machine_caches(str(tmp_path / "missing")) == FALLBACK_CACHES
-    here = machine_caches()
-    assert here.l1d > 0 and here.l2 >= here.l1d
+    assert host_caches(str(tmp_path)) == (48 * 1024, 2048 * 1024, str(tmp_path))
+    assert host_caches(str(tmp_path / "missing")) is None
 
 
-def test_machine_caches_reads_sysctl_on_macos(monkeypatch):
-    import aether.wings.cpu.host as host
+def test_host_caches_reads_sysctl_on_macos(monkeypatch):
+    import osprey_cpu.toolchain as cpu_toolchain
 
     def fake(cmd, **_):
         if cmd[-1].startswith("hw.perflevel0."):
             return subprocess.CompletedProcess(cmd, 0, stdout="65536\n")
         raise OSError(cmd[-1])
 
-    monkeypatch.setattr(host.sys, "platform", "darwin")
-    monkeypatch.setattr(host.subprocess, "run", fake)
-    host.machine_caches.cache_clear()
+    monkeypatch.setattr(cpu_toolchain.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cpu_toolchain.subprocess, "run", fake)
+    cpu_toolchain.host_caches.cache_clear()
     try:
-        got = host.machine_caches()
-        assert (got.l1d, got.l2) == (65536, 65536) and got.source.startswith("sysctl hw.perflevel0.")
-        monkeypatch.setattr(host.subprocess, "run",
-                            lambda *a, **k: (_ for _ in ()).throw(OSError("no sysctl")))
-        host.machine_caches.cache_clear()
-        assert host.machine_caches() == FALLBACK_CACHES
+        l1d, l2, source = cpu_toolchain.host_caches()
+        assert (l1d, l2) == (65536, 65536) and source.startswith("sysctl hw.perflevel0.")
+        monkeypatch.setattr(cpu_toolchain.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("no sysctl")))
+        cpu_toolchain.host_caches.cache_clear()
+        assert cpu_toolchain.host_caches() is None
     finally:
-        host.machine_caches.cache_clear()
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="reads this machine's sysctl")
-def test_machine_caches_on_this_mac_names_its_sysctl_source():
-    here = machine_caches()
-    assert here.source.startswith("sysctl hw.") and here.l1d > 0 and here.l2 >= here.l1d
+        cpu_toolchain.host_caches.cache_clear()
 
 
 def _preprocessed(target: str, text: str, tmp_path) -> str:
@@ -792,7 +798,7 @@ def ramp_to_plane(rate: Scalar, lim: Scalar, terminated: Terminated, x: Mutable[
 def _exit_order(kernel):
     from aether.wings.base.render import render_lane_split
 
-    return render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind, spec=HOST).exit_order
+    return render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind, spec=HOST, writer=aether_writer()).exit_order
 
 
 def _host_text(kernel):

@@ -39,9 +39,9 @@ the envelope. −0 is stored as +0. Each operation keeps the accuracy aether sta
 stays within the sum of those bounds. Host and GPU results are bit-identical.
 
 Every sum in a banded build runs through aether's compensated accumulator: `hawk.sum` over the samples of a warp row,
-over lane axes (both policies), the ordered stages, a keyed `hawk.scatter` with the default or compensated policy, and
+over lane axes (both contracts), the ordered stages, a keyed `hawk.scatter` with the default or compensated contract, and
 the sum across the lanes of a warp. The accumulate always takes the ordered stages, so it gives the same bits on every
-run; a packed cell has no atomic add, so `hawk.scatter(..., policy="plain")` is refused. The accumulator's own figure,
+run; a packed cell has no atomic add, so `hawk.scatter(..., contract="plain")` is refused. The accumulator's own figure,
 within 0.01 ULP of the exact sum on a series that cancels by 2^30, is a figure for the carrier. The cell a sum delivers
 adds one rounding of at most 0.5 ULP to it. `hawk.max` and `hawk.min` over a warp row are built too (the fold is exact,
 so they match NumPy's bit for bit). A banded build refuses, by name, a block sum over matrices and the functions

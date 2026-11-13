@@ -5,7 +5,7 @@
 
 A namespace, not a layer: every name here either is one of
 :mod:`hawk.trace`'s free functions, re-exported unchanged, or a
-two-line composition of them, so ``hawk.math`` and ``hawk.ir.ops``
+two-line composition of them, so ``hawk.math`` and ``raptor.ir.ops``
 declare the same vocabulary by construction
 (``tests/test_math_namespace.py`` traces and emits every name in
 :data:`__all__`).

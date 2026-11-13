@@ -153,7 +153,7 @@ def check_scatter_status(kernel: str, team: dict, status, cells: int) -> None:
     was not the skip key -1 (``status`` is the plane ``team["status"]`` after the run: flags from element 1)."""
     if any(int(f) for f in status[1:]):
         raise HawkError(
-            f"{kernel}: hawk.scatter({team['of']}, policy='ordered') got a key outside [0, {cells}) "
+            f"{kernel}: hawk.scatter({team['of']}, contract='ordered') got a key outside [0, {cells}) "
             f"that is not the skip key -1; those adds were dropped, the rest are in {team['of']}")
 
 

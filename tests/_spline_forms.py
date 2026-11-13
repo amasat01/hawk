@@ -134,7 +134,7 @@ def _switch_edges(x, theta, kinds, n_in):
         cases = [local_edge(xe, theta, base),
                  theta[base] * xe * xe + theta[base + 1],
                  theta[base] * m.exp(theta[base + 2] * m.log(m.sqrt(xe * xe) + 1e-6))]
-        v = m.dispatch(m.int32(kinds[e]), cases, policy="switch")
+        v = m.dispatch(m.int32(kinds[e]), cases, strategy="switch")
         total = v if total is None else total + v
     return total
 
@@ -177,6 +177,6 @@ def spline_rolled(form: str, n_in: int):
             cases = [local_edge(xe, theta, base),
                      theta[base] * xe * xe + theta[base + 1],
                      theta[base] * m.exp(theta[base + 2] * m.log(m.sqrt(xe * xe) + 1e-6))]
-            total = total + m.dispatch(m.int32(kinds[e]), cases, policy="switch")
+            total = total + m.dispatch(m.int32(kinds[e]), cases, strategy="switch")
         y = m.vec(total, 0.0)
     return spline_loop

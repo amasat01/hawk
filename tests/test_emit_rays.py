@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 from _specs import spec_for, default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import pathlib
@@ -37,7 +38,7 @@ N = 64                                  # the scene helper's size
 @pytest.mark.parametrize("name", list(KERNELS))
 def test_one_geometry_call_per_node_held_once(name):
     k = KERNELS[name]
-    text = render_body(k.sinks, canonical(k.sinks), spec=HOST, kind=default_kind()).text
+    text = render_body(k.sinks, canonical(k.sinks), spec=HOST, kind=default_kind(), writer=aether_writer()).text
     assert text.count(f"aether::geometry::{CALLS[name]}<Real>(") == 1
     assert text.count(".v[") == 4
 

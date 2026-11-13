@@ -20,7 +20,7 @@ the compensated target); any other key keeps the per-lane atomic. Pinned:
   run of 48 (n/16), one per uniform warp for the tested form, one per run
   inside each warp for the sorted form; on the host no lane commits.
 * **The sum contract** against ``math.fsum`` per slot: the error over
-  ``eps * sum|t|`` within 1 compensated, the default policy included, whose
+  ``eps * sum|t|`` within 1 compensated, the default contract included, whose
   companion the runtime owns (a plain bound grows with the terms per slot; 8 at
   these run lengths; 8 for runs shorter than
   a warp, whose in-warp tree is plain), float32 and float64, host and device. The error in ULP of the exact sum is printed as a card
@@ -62,25 +62,25 @@ def g(x):
 @hawk.kernel
 def kuni(x: Scalar, acc: Mutable[Scalar]):
     j, _ = m.split_index(NS)
-    hawk.scatter(acc, policy="plain")[j] += x
+    hawk.scatter(acc, contract="plain")[j] += x
 
 
 @hawk.kernel
 def kuni_c(x: Scalar, acc: Mutable[Scalar]):
     j, _ = m.split_index(NS)
-    hawk.scatter(acc, policy="compensated")[j] += x
+    hawk.scatter(acc, contract="compensated")[j] += x
 
 
 @hawk.kernel
 def kfb(x: Scalar, acc: Mutable[Scalar]):
     j, _ = m.split_index(48)
-    hawk.scatter(acc, policy="plain")[j] += x
+    hawk.scatter(acc, contract="plain")[j] += x
 
 
 @hawk.kernel
 def kfb_c(x: Scalar, acc: Mutable[Scalar]):
     j, _ = m.split_index(48)
-    hawk.scatter(acc, policy="compensated")[j] += x
+    hawk.scatter(acc, contract="compensated")[j] += x
 
 
 # The second divisor (6) makes the lane axes a non-chain, so no run is proven:
@@ -88,31 +88,31 @@ def kfb_c(x: Scalar, acc: Mutable[Scalar]):
 @hawk.kernel
 def ktst(x: Scalar, acc: Mutable[Scalar]):
     lane = m.sample_index()
-    hawk.scatter(acc, policy="plain")[lane / 64] += x + 0.0 * (lane - (lane / 6) * 6)
+    hawk.scatter(acc, contract="plain")[lane / 64] += x + 0.0 * (lane - (lane / 6) * 6)
 
 
 @hawk.kernel
 def ktst_c(x: Scalar, acc: Mutable[Scalar]):
     lane = m.sample_index()
-    hawk.scatter(acc, policy="compensated")[lane / 64] += x + 0.0 * (lane - (lane / 6) * 6)
+    hawk.scatter(acc, contract="compensated")[lane / 64] += x + 0.0 * (lane - (lane / 6) * 6)
 
 
 @hawk.kernel
 def ksrt(x: Scalar, seg: Sorted[Index], acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="plain")[seg] += x
+    hawk.scatter(acc, contract="plain")[seg] += x
 
 
 @hawk.kernel
 def ksrt_c(x: Scalar, seg: Sorted[Index], acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="compensated")[seg] += x
+    hawk.scatter(acc, contract="compensated")[seg] += x
 
 
 @hawk.kernel
 def knon(x: Scalar, key: Index, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="plain")[key] += x
+    hawk.scatter(acc, contract="plain")[key] += x
 
 
-# The default policy: compensated, with the companion owned by the runtime.
+# The default contract: compensated, with the companion owned by the runtime.
 @hawk.kernel
 def kuni_a(x: Scalar, acc: Mutable[Scalar]):
     j, _ = m.split_index(NS)
@@ -247,7 +247,7 @@ def _warp_runs(key):
     return int(w.shape[0] + np.count_nonzero(w[:, 1:] != w[:, :-1]))
 
 
-#: The default-policy twin of each plain kernel.
+#: The default-contract twin of each plain kernel.
 AUTO = {kuni: kuni_a, kfb: kfb_a, ktst: ktst_a, ksrt: ksrt_a}
 
 #: case -> (plain kernel, compensated kernel, n, key(l), the device's run commits)
@@ -329,23 +329,23 @@ def _error(got, terms, key, slots, mode, what):
     return scaled
 
 
-@pytest.mark.parametrize("policy", ["plain", "compensated", "auto"])
+@pytest.mark.parametrize("contract", ["plain", "compensated", "auto"])
 @pytest.mark.parametrize("case", list(CASES))
 @pytest.mark.parametrize("target", TARGET_ARMS)
-def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, policy):
+def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, contract):
     """``auto`` binds no companion: the runtime owns it, and the target alone
     holds the compensated sum."""
     built, mode = bundles
     plain, comp, n, key, device_runs = CASES[case]
-    kernel = {"plain": plain, "compensated": comp, "auto": AUTO.get(plain)}[policy]
+    kernel = {"plain": plain, "compensated": comp, "auto": AUTO.get(plain)}[contract]
     if kernel is None:
-        pytest.skip("no default-policy twin for this case")
-    compensated = policy != "plain"
+        pytest.skip("no default-contract twin for this case")
+    compensated = contract != "plain"
     xp = np if target == "host" else __import__("cupy")
     x = np.random.default_rng(1234).uniform(-1, 1, n).astype(mode)
     slots = int(key.max()) + 1
     planes = {"x": xp.asarray(x), "acc": xp.zeros(slots, mode)}
-    if policy == "compensated":
+    if contract == "compensated":
         planes["acc_c"] = xp.zeros(slots, mode)
     if any(name == "seg" for _, name in kernel.walk.arg_spec):
         planes["seg"] = xp.asarray(key)
@@ -353,9 +353,9 @@ def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, polic
     if target == "cuda":
         xp.cuda.Device().synchronize()
     got = sum(np.asarray(planes[p].get() if target == "cuda" else planes[p]).astype(np.float64)
-              for p in (("acc", "acc_c") if policy == "compensated" else ("acc",)))
+              for p in (("acc", "acc_c") if contract == "compensated" else ("acc",)))
     terms = x.astype(np.float64)        # the plane's values: exact terms on every arm
-    what = f"{case} {policy} {target}"
+    what = f"{case} {contract} {target}"
     assert _error(got, terms, key, slots, mode, what) <= _bound(compensated, case != "sorted_mixed")
     assert lane == 0
     if target == "cuda" and compensated and case == "proven_8192":
@@ -368,12 +368,12 @@ def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, polic
 
 @hawk.kernel
 def knon_c(x: Scalar, key: Index, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="compensated")[key] += x
+    hawk.scatter(acc, contract="compensated")[key] += x
 
 
 @hawk.kernel
 def kone_c(x: Scalar, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="compensated")[0] += x
+    hawk.scatter(acc, contract="compensated")[0] += x
 
 
 @hawk.kernel
@@ -397,7 +397,7 @@ def test_a_compensated_commit_is_one_two_sum_without_a_fence():
     """The hot path: the compensated commit is the atomic two-sum into the
     target and its companion, nothing more; the unit's second entry
     ``<kernel>__fold_<target>`` folds the pair after the launch. The plain
-    commit has neither; the default policy spells the compensated one."""
+    commit has neither; the default contract spells the compensated one."""
     for target in ("cuda", "host"):
         plain = _text(knon, target).text
         assert "accum_add_compensated" not in plain and "__fold_" not in plain

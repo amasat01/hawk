@@ -3,7 +3,7 @@
 
 """The authoring surface of per-lane linear algebra, as ``hawk.math`` names it.
 
-Each name is a composition of the IR kinds of :mod:`hawk.ir.linalg` (one
+Each name is a composition of the IR kinds of :mod:`raptor.ir.linalg` (one
 factorisation node, its consumers and its projections) and of the matrix ops, so
 nothing here is a new op. The numpy-style tuples carry the status beside the
 result: ``info`` is a rank-0 ``Int32`` that is 0 when the factorisation held,

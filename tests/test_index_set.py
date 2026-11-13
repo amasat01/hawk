@@ -7,7 +7,7 @@ Launch lane ``t < count`` runs lane ``map[t]`` of the kernel's own space, with n
 mask. Rows: the source (reserved planes, the prologue, the unit key), runs against a
 dense launch on the host and the device for a flat, a two-axis and a pair grid and
 a plain kernel, in float32 and float64; keyed sums under the map (the ULP
-contract, not bit identity); ``lane_position()``; the map word; the checks at bind.
+contract, not bit identity); ``sample_position()``; the map word; the checks at bind.
 """
 
 from __future__ import annotations
@@ -277,14 +277,14 @@ def test_a_lane_set_equals_the_dense_launch_on_the_listed_lanes_on_the_device(bu
 
 
 # --------------------------------------------------------------------------- #
-# -- lane_position(): the launch slot, for a compacted output.
+# -- sample_position(): the launch slot, for a compacted output.
 # --------------------------------------------------------------------------- #
 def _compact(x: Scalar, out: Mutable[Scalar], slot: Mutable[Index]):
     out = x * 2.0
-    slot = hawk.lane_position()
+    slot = hawk.sample_position()
 
 
-def test_lane_position_is_the_map_slot_under_a_set_and_the_lane_id_without_one(tmp_path, cache_dir):
+def test_sample_position_is_the_map_slot_under_a_set_and_the_lane_id_without_one(tmp_path, cache_dir):
     plain = hawk.kernel(_compact)
     mapped = SET(_compact)
     src = _sources(mapped, SET, name="compact")
@@ -304,7 +304,7 @@ def test_lane_position_is_the_map_slot_under_a_set_and_the_lane_id_without_one(t
 
 
 def _pack(x: Scalar, packed: Mutable["slot"]):
-    hawk.scatter(packed, policy="plain")[hawk.lane_position()] += x * 2.0
+    hawk.scatter(packed, contract="plain")[hawk.sample_position()] += x * 2.0
 
 
 @pytest.fixture(scope="module")
@@ -449,7 +449,7 @@ def test_a_lane_set_in_a_segmented_unit_is_refused():
 
     @SET
     def seg(x: Scalar, kind: Scalar, y: Mutable[Scalar]):
-        y = m.dispatch(m.int32(kind), [x, x * 2.0], policy="segmented")
+        y = m.dispatch(m.int32(kind), [x, x * 2.0], strategy="segmented")
 
     with pytest.raises(HawkError, match="segmented"):
         B._active_unit(seg, "seg", SET)
@@ -616,9 +616,9 @@ def test_the_design_pattern_matches_numpy_on_the_device(pattern_bundles, name):
 
 
 # --------------------------------------------------------------------------- #
-# -- the C target, and lane_position in other units.
+# -- the C target, and sample_position in other units.
 # --------------------------------------------------------------------------- #
-def test_the_c_target_refuses_a_lane_set_and_spells_lane_position_as_the_loop_index():
+def test_the_c_target_refuses_a_lane_set_and_spells_sample_position_as_the_loop_index():
     from hawk_c import render as render_c
 
     with pytest.raises(HawkError, match="index map"):
@@ -627,11 +627,11 @@ def test_the_c_target_refuses_a_lane_set_and_spells_lane_position_as_the_loop_in
     assert "= hawk_i;" in text or "hawk_i)" in text
 
 
-def test_lane_position_in_a_segmented_unit_is_refused(tmp_path, cache_dir):
+def test_sample_position_in_a_segmented_unit_is_refused(tmp_path, cache_dir):
     @hawk.kernel
     def seg(x: Scalar, kind: Scalar, slot: Mutable[Index], y: Mutable[Scalar]):
-        y = m.dispatch(m.int32(kind), [x, x * 2.0], policy="segmented")
-        slot = hawk.lane_position()
+        y = m.dispatch(m.int32(kind), [x, x * 2.0], strategy="segmented")
+        slot = hawk.sample_position()
 
     with pytest.raises(HawkError, match="launch slot.*segmented"):
         build_bundle([seg], tmp_path, targets=("host",), cache_dir=cache_dir)

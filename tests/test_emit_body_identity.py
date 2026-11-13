@@ -15,6 +15,7 @@ in ``Walk.arg_spec`` ORDER. That is the ONE contractual ordering property; eagle
 
 from __future__ import annotations
 from _specs import spec_for, default_kind
+from _specs import aether_writer
 from _specs import HOST
 
 import re
@@ -40,7 +41,7 @@ def test_both_backends_consume_the_same_body_string():
                 f"the two wrappers did not consume the SAME body string "
                 f"for {name!r} ({mode.id}).\nhost:\n{host.body}\ncuda:\n{cuda.body}"
             )
-            reference = render_body(sinks, walk, indent="        ", spec=HOST, kind=default_kind()).text
+            reference = render_body(sinks, walk, indent="        ", spec=HOST, kind=default_kind(), writer=aether_writer()).text
             assert host.body == reference, (
                 f"{name!r}: a wrapper's body diverged from the renderer's own output"
             )
@@ -95,7 +96,7 @@ def test_a_unit_without_a_random_op_renders_no_random_include():
     ``cases()`` `_emitted.py` builds -- 26 kernels + one derivative IR)
     must still render byte-identically to before it:
     none of them use ``hawk.math.random.{uniform,normal}``, so none may carry
-    the ``aether/random`` include :func:`aether.wings.base.wrapper.prelude` adds only
+    the ``aether/random`` include :func:`aether.wings.base.prelude.prelude` adds only
     when a body actually used one (:attr:`aether.wings.base.render.Body.
     needs_random`)."""
     for name, sinks, walk in cases():

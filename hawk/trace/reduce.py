@@ -5,7 +5,7 @@
 
 A value is ONE lane's, so ``x.sum(axis=...)`` folds the value's own axes:
 the components of a vector, the rows or columns of a matrix. Across lanes there
-are two doors: ``hawk.sum/max/min/mean(x, over=, where=, policy=)`` reduces over
+are two doors: ``hawk.sum/max/min/mean(x, over=, where=, contract=)`` reduces over
 lane axes, and ``hawk.scatter(sink)[key] += v`` adds into a sink by key (another
 lane's input is read with ``u.at(i)``). The labelled views ``.components``,
 ``.rows`` and ``.columns`` read a component, a row or a column by name.
@@ -15,10 +15,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from .. import components as _components
 from .._errors import HawkError
 from raptor.ir import make as _make
-from raptor.ir.nodes import POLICIES, SCATTER_POLICIES, Leaf, ReduceSamples
+from raptor.ir.nodes import CONTRACTS, SCATTER_CONTRACTS, Leaf, ReduceSamples
 from .value import Value, _op, _operands, index_node, n_samples, node_of, real, select, vec
+
+_block = _components.view("lowering", "block")      # the block-shaped keyed sum is a kind of the lowering component
 
 
 def _axis(value: Value, axis: Any, op: str):
@@ -165,10 +168,10 @@ def _own_view(value: Value, axis: str, k: Any) -> Value:
     return vec(*out)
 
 
-def _policy(policy: Any, where: str, allowed: tuple = POLICIES) -> str:
-    if policy not in allowed:
-        raise HawkError(f"{where}: policy={policy!r} is not one of {allowed}")
-    return policy
+def _contract(contract: Any, where: str, allowed: tuple = CONTRACTS) -> str:
+    if contract not in allowed:
+        raise HawkError(f"{where}: contract={contract!r} is not one of {allowed}")
+    return contract
 
 
 def _term(value: Any, where: str) -> Value:
@@ -231,15 +234,22 @@ def _product(items: list) -> Any:
     return out
 
 
-def _reduce(op: str, x: Any, over: Any, where_mask: Any, policy: Any) -> Any:
+def _reduce(op: str, x: Any, over: Any, where_mask: Any, contract: Any) -> Any:
     from .lane_axes import LaneAxes, _trace
 
     call = f"hawk.{op}(x, over={over!r})" if over is not None else f"hawk.{op}(x)"
-    policy = _policy(policy, call)
+    contract = _contract(contract, call)
     value = _term(x, call)
     axes = getattr(_trace, "axes", ((None, None),))
     gone = _reduced_axes(over, axes, call)
     kept = tuple(i for i in range(len(axes)) if i not in gone)
+    if kept and contract == "ordered" and gone != tuple(range(len(axes) - len(gone), len(axes))):
+        labels = [label if label is not None else i for i, (label, _) in enumerate(axes)]
+        raise HawkError(
+            f"kernel {getattr(_trace, 'name', None)!r}: {call} with contract=\"ordered\" sums over {[labels[i] for i in gone]}, "
+            f"but an ordered sum over some lane axes is built only over the trailing axes of the Grid "
+            f"({[labels[i] for i in range(len(axes) - len(gone), len(axes))]} for {len(gone)} summed axis(es); "
+            f"over every axis is built too): use contract=\"auto\", or order the Grid so the summed axes come last")
     base = "sum" if op == "mean" else op
     if kept and base != "sum":
         raise HawkError(
@@ -257,12 +267,9 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, policy: Any) -> Any:
         value = select(mask, value, _identity(base))
     if not kept:
         term = value / real(n_samples()) if op == "mean" else value
-        from raptor.ir.block import BlockSum, block_shaped
-
-        if base == "sum" and block_shaped(node_of(term)):       # one key, every lane
-            return Value(BlockSum("sum", node_of(term), key=index_node(0), count=index_node(1),
-                                  policy=policy))
-        return Value(ReduceSamples(base, node_of(term), policy=policy))
+        if base == "sum" and _block.block_shaped(node_of(term)):       # one key, every lane
+            return Value(_block.BlockSum(node_of(term), key=index_node(0), count=index_node(1), contract=contract))
+        return Value(ReduceSamples(base, node_of(term), contract=contract))
     if op == "mean":
         value = value / real(_product([_extent(axes, i) for i in gone]))
     lane = LaneAxes(axes)
@@ -273,41 +280,40 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, policy: Any) -> Any:
         stride *= axes[i][1] or 1
     count = _product([_extent(axes, i) for i in kept])
     count = Value(index_node(count)) if isinstance(count, int) else count
-    from raptor.ir.block import BlockSum, block_shaped
+    kept_axes = tuple(axes[i] for i in kept)
+    if _block.block_shaped(node_of(value), contract):
+        reduced = _block.BlockSum(node_of(value), key=node_of(key), count=node_of(count), contract=contract, kept=kept_axes)
+    else:
+        reduced = ReduceSamples("sum", node_of(value), key=node_of(key), count=node_of(count), contract=contract, kept=kept_axes)
+    return Reduced(reduced, kept_axes)
 
-    cls = BlockSum if block_shaped(node_of(value), policy) else ReduceSamples
-    return Reduced(cls("sum", node_of(value), key=node_of(key),
-                       count=node_of(count), policy=policy,
-                       kept=tuple(axes[i] for i in kept)),
-                   tuple(axes[i] for i in kept))
 
-
-def sum(x: Any, over: Any = None, where: Any = None, policy: str = "auto") -> Any:  # noqa: A001
+def sum(x: Any, over: Any = None, where: Any = None, contract: str = "auto") -> Any:  # noqa: A001
     """The sum of ``x`` over the lane axes ``over`` names (a label, a position
     or a tuple of them; ``None``: every axis, one value for the run). Masked
-    lanes (``where=`` false) add nothing; ``policy`` is the sum contract
+    lanes (``where=`` false) add nothing; ``contract`` is the sum contract
     (``"auto"``, ``"compensated"``, ``"ordered"``). Over every axis the result
     may be read back later in the body (a stage boundary); over some axes it is
     an output, one value per kept coordinate, bound ``(*payload, *kept)``. Over some axes,
-    ``policy="ordered"`` adds each key's lanes in lane order in a stage of its own (no atomics: the
-    same bits on every launch, for any lane count); the default policies commit atomically."""
-    return _reduce("sum", x, over, where, policy)
+    ``contract="ordered"`` adds each key's lanes in lane order in a stage of its own (no atomics: the
+    same bits on every launch, for any lane count); the default contracts commit atomically."""
+    return _reduce("sum", x, over, where, contract)
 
 
-def max(x: Any, over: Any = None, where: Any = None, policy: str = "auto") -> Any:  # noqa: A001
+def max(x: Any, over: Any = None, where: Any = None, contract: str = "auto") -> Any:  # noqa: A001
     """The maximum of ``x`` over every lane (NaN-ignoring, exact)."""
-    return _reduce("max", x, over, where, policy)
+    return _reduce("max", x, over, where, contract)
 
 
-def min(x: Any, over: Any = None, where: Any = None, policy: str = "auto") -> Any:  # noqa: A001
+def min(x: Any, over: Any = None, where: Any = None, contract: str = "auto") -> Any:  # noqa: A001
     """The minimum of ``x`` over every lane (NaN-ignoring, exact)."""
-    return _reduce("min", x, over, where, policy)
+    return _reduce("min", x, over, where, contract)
 
 
-def mean(x: Any, over: Any = None, where: Any = None, policy: str = "auto") -> Any:
+def mean(x: Any, over: Any = None, where: Any = None, contract: str = "auto") -> Any:
     """The mean of ``x`` over the lane axes ``over`` names: the sum over the
     count of reduced lanes."""
-    return _reduce("mean", x, over, where, policy)
+    return _reduce("mean", x, over, where, contract)
 
 
 class Reduced:
@@ -373,21 +379,21 @@ class _Stored:
     __truediv__ = __rtruediv__ = __neg__ = __pow__ = __getitem__ = _hawk_refuse
 
 
-def scatter(sink: Any, policy: str = "auto") -> Any:
+def scatter(sink: Any, contract: str = "auto") -> Any:
     """``hawk.scatter(sink)[key] += v`` adds ``v`` into ``sink`` at ``key``,
     ``= v`` stores it there. Many lanes may share a key; the adds are combined
     (atomics or a segmented sum), never a race; the order is not fixed unless
-    ``policy="ordered"``: then each key's adds are made in lane order within fixed lane chunks and the
+    ``contract="ordered"``: then each key's adds are made in lane order within fixed lane chunks and the
     chunks are added in order (no atomics: the same bits on every launch for one lane count and one
     target size, ULP of ``np.add.at`` otherwise). A scalar or vector payload; any number of such
     statements, and in a ``for`` of static trip; a lane that skips it (a masked or index-set lane)
-    adds nothing, and a negative key adds nothing (under ``policy="ordered"`` only -1 is the skip key: any
+    adds nothing, and a negative key adds nothing (under ``contract="ordered"`` only -1 is the skip key: any
     other key outside the target is reported by name). ``"auto"`` and ``"compensated"`` add with a
     correction kept in a companion plane ``<sink>_c`` that the runtime owns
     (the caller never passes it); ``"plain"`` is the atomic add alone. ``key``
     is an index, one coordinate per axis of a sink declared with named axes, an
     ``Index`` plane or a ``Sorted[Index]`` one.
-    ``hawk.scatter(mask, policy="or")[word] |= bits`` sets bits of an ``Int32``
+    ``hawk.scatter(mask)[word] |= bits`` sets bits of an ``Int32``
     or ``UInt32`` plane (a bit mask: the word index is the key): the commit is
     the target's atomic OR, so any number of lanes may hit one word and the
     result is the exact ``np.bitwise_or.at``; the C target ORs serially. A bit
@@ -419,8 +425,8 @@ def _flat_key(ref: Any, key: Any, where: str) -> Any:
 
 
 def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current: Any,
-                  policy: str = "auto") -> Any:
-    """``hawk.scatter(name, policy=...)[key] (op)= value``, as the ast pass
+                  contract: str = "auto") -> Any:
+    """``hawk.scatter(name, contract=...)[key] (op)= value``, as the ast pass
     reaches it: ``+=`` accumulates (``accum_write``), ``=`` stores
     (``wide_write``)."""
     from .value import MutableRef, _SinkRef, by_key
@@ -430,24 +436,23 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
     if not isinstance(ref, _SinkRef):
         raise HawkError(f"{where}: {name!r} is not an output plane (declare it "
                         "Mutable[...])")
-    policy = _policy(policy, where, SCATTER_POLICIES)
+    if contract == "or":
+        raise HawkError(f"{where}: contract='or' is gone: write hawk.scatter({name})[key] |= bits")
+    contract = _contract(contract, where, SCATTER_CONTRACTS)
     if isinstance(key, Value) and key.ttype.dtype == "bool":
         raise HawkError(f"{where}: {_MASK_STORE}")
-    if op == "|=" and policy != "or":
-        raise HawkError(f"{where}: |= sets bits, written hawk.scatter({name}, "
-                        f"policy=\"or\")[key] |= bits")
-    if policy == "or" and op != "|=":
-        raise HawkError(f"{where}: policy='or' is for |= only")
-    if op == "=" and policy != "auto":
-        raise HawkError(f"{where}: a store has no sum contract; policy= is for += only")
-    if policy == "ordered" and op == "+=" and len(ref.ttype.shape) > 1:
-        raise HawkError(f"{where}: policy='ordered' adds a scalar or a vector payload")
+    if op != "+=" and contract != "auto":
+        raise HawkError(f"{where}: a {'store' if op == '=' else 'bit-or'} has no sum contract; contract= is for += only")
+    if op == "|=":
+        contract = "or"
+    if contract == "ordered" and op == "+=" and len(ref.ttype.shape) > 1:
+        raise HawkError(f"{where}: contract='ordered' adds a scalar or a vector payload")
     if isinstance(ref, MutableRef) and isinstance(current, Value) and not (
             isinstance(current.node, Leaf) and current.node.kind == "prior_read"):
         raise HawkError(
             f"{name!r} is written per lane (locked) and by key "
             f"(hawk.scatter({name})[key]): one plane has one extent")
-    by_key(ref, _flat_key(ref, key, where), value, op != "=", policy)
+    by_key(ref, _flat_key(ref, key, where), value, op != "=", contract)
     return current if isinstance(current, _Stored) else _Stored(name)
 
 

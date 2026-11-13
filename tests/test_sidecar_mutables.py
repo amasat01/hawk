@@ -36,7 +36,7 @@ import pytest
 from conftest import sidecar_of
 
 from hawk.artifact import plan_view
-from raptor.protocols.naming import MIRROR_OF, mirror_of
+from lowering.exchange import MIRROR_OF, mirror_of
 from raptor.ir.types import TensorType
 
 _V3 = TensorType((3,), "f64")
