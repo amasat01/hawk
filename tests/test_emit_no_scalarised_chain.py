@@ -26,7 +26,7 @@ THE DETECTOR, stated so it can fail. Over an emitted body:
   e. POSITIVE half -- a fan-out-2 node IS named once and READ twice.
 
 This test previously failed via both plants in ``_Renderer._materialised``
-(``hawk/emit/render.py``):
+(``staging/aether/wings/base/render.py``):
   * ``return True`` -- the "materialise everything" scalarising emitter. It
     fired (c) AND (d):
       AssertionError: (c): 'scale' has a fan-out-1 interior node bound to a
@@ -48,14 +48,15 @@ This test previously failed via both plants in ``_Renderer._materialised``
 """
 
 from __future__ import annotations
+from _specs import default_kind
 from _specs import HOST
 
 import re
 
 from _emitted import cases
 
-from hawk.emit import render_body
-from hawk.emit.render import binding_name
+from aether.wings.base.render import render_body
+from aether.wings.base.render import binding_name
 
 #: A named temporary the renderer binds: ``const auto <name> = <rhs>;`` (``const aether::Item<...>`` when read twice)
 _BINDING = re.compile(r"^\s*const (?:auto|aether::Item<[^>]*>) (\w+) = (.*);$")
@@ -75,7 +76,7 @@ def _statements(text: str):
 
 def test_every_sink_is_exactly_one_assignment():
     for name, sinks, walk in cases():
-        body = render_body(sinks, walk, spec=HOST).text
+        body = render_body(sinks, walk, spec=HOST, kind=default_kind()).text
         assignments = [s for s in _statements(body) if _SINK.match(s)]
         committed = [s for s in sinks if s.name not in walk.companions]   # a companion is no commit
         assert len(assignments) == len(committed), (
@@ -86,7 +87,7 @@ def test_every_sink_is_exactly_one_assignment():
 
 def test_no_named_temporary_performs_a_per_element_read():
     for name, sinks, walk in cases():
-        body = render_body(sinks, walk, spec=HOST).text
+        body = render_body(sinks, walk, spec=HOST, kind=default_kind()).text
         bad = [s for s in _statements(body)
                if _BINDING.match(s) and _ELEMENT_READ.search(s)]
         assert not bad, (
@@ -97,7 +98,7 @@ def test_no_named_temporary_performs_a_per_element_read():
 
 
 def _fanout(walk, sinks):
-    from hawk.ir.walk import canonical_nodes
+    from raptor.ir.walk import canonical_nodes
 
     nodes, position = canonical_nodes(sinks)
     counts: dict = {}
@@ -110,10 +111,10 @@ def _fanout(walk, sinks):
 
 def test_a_fanout_one_chain_binds_no_interior_name():
     """(c) The six-op chain: only the fan-out-2 node and the leaf are named."""
-    from hawk.ir import Leaf
+    from raptor.ir import Leaf
 
     for name, sinks, walk in cases():
-        body = render_body(sinks, walk, spec=HOST).text
+        body = render_body(sinks, walk, spec=HOST, kind=default_kind()).text
         nodes, position, counts = _fanout(walk, sinks)
         expected = {f"t{position[id(n)]}" for n in nodes
                     if not isinstance(n, Leaf) and counts.get(position[id(n)], 0) >= 2}
@@ -129,7 +130,7 @@ def test_a_fanout_one_chain_binds_no_interior_name():
 
 def test_no_leaf_is_subscripted_more_than_once():
     for name, sinks, walk in cases():
-        body = render_body(sinks, walk, spec=HOST).text
+        body = render_body(sinks, walk, spec=HOST, kind=default_kind()).text
         for role, slot in walk.arg_spec:
             ident = binding_name(role, slot)
             hits = len(re.findall(rf"\b{ident}\[", body))
@@ -142,7 +143,7 @@ def test_no_leaf_is_subscripted_more_than_once():
 
 def test_a_fanout_two_node_is_materialised_and_read_twice():
     """(e) The positive half: rule must actually fire."""
-    body = render_body(*_chain6(), spec=HOST).text
+    body = render_body(*_chain6(), spec=HOST, kind=default_kind()).text
     named = [m.group(1) for m in map(_BINDING.match, _statements(body)) if m]
     interior = [n for n in named if n.startswith("t")]
     assert len(interior) == 1, (

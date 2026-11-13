@@ -14,14 +14,6 @@ def spec(**settings):
     return SimpleNamespace(settings=s, primary={}, device=None, need=lambda *k: 32, wide=lambda dtype: {"SLICE_MIN": 4})
 
 
-def test_wrapper_text_helpers():
-    from simt import wrapper_text as w
-    from lowering.wrapper_text import SAMPLE_SUM
-
-    assert w.banded_sample_sum(SAMPLE_SUM) != SAMPLE_SUM
-    assert w.WARP_SUM_BANDED != w.WARP_SUM and w.BANDED_SUM_INCLUDE.startswith("#include")
-
-
 def test_lane_entries():
     from simt import lane
 

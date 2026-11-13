@@ -12,7 +12,8 @@ extension manifests and imports one on its first lookup.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import MappingProxyType
 
 from .. import registry
 from ..backends import need
@@ -77,65 +78,35 @@ DEFAULT_TARGETS = _Default()
 
 @dataclass(frozen=True)
 class Machine:
-    """The host and its device as plain data: the INPUT of a build, read once (:func:`detect_machine`). ``isa`` is ``"x86_64"`` or
-    ``"arm64"``; ``host_profile`` the host profile in effect when none is asked and ``env_profile`` the one ``$HAWK_HOST_PROFILE``
-    asks; ``compiler`` / ``gcc`` the host compiler and whether it is GCC; ``vector_isa`` the key of the fusion card's host row;
-    ``arch`` the device arch the build resolved (``""``: a host-only build)."""
+    """The host and its device as plain data: the INPUT of a build, read once (:func:`detect_machine`) from the facts the rows of
+    the build supply. ``isa`` is ``"x86_64"`` or ``"arm64"``; ``arch`` the device arch the build resolved (``""``: a host-only
+    build); ``reserved_names`` the names a kernel of the build may not take, each with the reason its row gives (a mapping name -> reason);
+    ``facts`` every other fact the rows supply, merged by name and read by name (empty where no row knows one)."""
 
-    isa: str
-    arm64_gcc: bool
-    exact_host_profiles: tuple
-    host_profile: str
-    env_profile: str
-    compiler: str
-    gcc: bool
-    vector_isa: str
-    arch: str
-
-    def profile(self, requested: str | None = None) -> str:
-        """The host profile ``requested`` (else the environment's, else this machine's), refused by name when unknown, and refused when
-        an explicit vector-math profile meets a non-GCC host compiler on x86-64 (its vector function ABI is GCC-only)."""
-        from ..compile.toolchain import HOST_PROFILES, VECTOR_MATH_PROFILES
-
-        explicit = requested or self.env_profile
-        name = explicit or self.host_profile
-        if name not in HOST_PROFILES:
-            raise HawkError(f"unknown host profile {name!r} (from {'the compile options' if requested else '$HAWK_HOST_PROFILE'}); "
-                            f"the profiles are {HOST_PROFILES}")
-        if explicit and name in VECTOR_MATH_PROFILES and self.isa == "x86_64" and not self.gcc:
-            raise HawkError(f"host profile {name!r} needs a GCC host compiler (its vector function ABI is GCC-only), but "
-                            f"{self.compiler!r} is not GCC; use the 'native' profile, or point $HAWK_CXX at a GCC g++")
-        return name
+    isa: str = ""
+    arch: str = ""
+    reserved_names: Mapping = field(default_factory=lambda: MappingProxyType({}))
+    facts: Mapping = field(default_factory=lambda: MappingProxyType({}))
 
 
-def _vector_isa() -> str:
-    """The vector ISA of this host, the key of the fusion card's host row."""
-    import platform
-    from pathlib import Path
-
-    if platform.machine().lower() in ("arm64", "aarch64"):
-        return "neon"
-    try:
-        flags = next((line for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("flags")), "")
-    except OSError:
-        flags = ""
-    words = set(flags.split())
-    return "avx512" if "avx512f" in words else "avx2" if "avx2" in words else "sse2"
-
-
-def detect_machine(arch: str = "") -> Machine:
-    """The machine this process runs on, with the device ``arch`` the build resolved. The only reader of the host."""
-    import os
-
-    from ..compile.toolchain import EXACT_HOST_PROFILES, _arm64_gcc, _is_x86_64, compiler_is_gcc, default_host_profile, host_compiler
-
-    try:
-        compiler = host_compiler()
-        gcc = bool(compiler_is_gcc(compiler))
-    except Exception:                    # no compiler: a compile refuses it by name, later
-        compiler, gcc = "", False
-    return Machine("x86_64" if _is_x86_64() else "arm64", bool(_arm64_gcc()), tuple(EXACT_HOST_PROFILES), default_host_profile(),
-                   os.environ.get("HAWK_HOST_PROFILE") or "", str(compiler), gcc, _vector_isa(), arch)
+def detect_machine(arch: str = "", targets=()) -> Machine:
+    """The machine of a build of ``targets``, with the device ``arch`` it resolved: the facts each row supplies
+    (:meth:`hawk.backends.Backend.machine_facts`); hawk reads no host itself. A set-valued fact is the union of the rows' sets, a mapping-valued one the union of the rows' mappings (the first row's value for a key two rows give);
+    two rows that disagree on any other fact are refused."""
+    facts: dict = {}
+    for target in targets:
+        row = TARGETS.get(target)
+        for name, value in ({} if row is None else row.machine_facts()).items():
+            known = facts.setdefault(name, value)
+            if isinstance(value, frozenset) and isinstance(known, frozenset):
+                facts[name] = known | value
+            elif isinstance(value, Mapping) and isinstance(known, Mapping):
+                facts[name] = {**value, **known}
+            elif known != value:
+                raise HawkError(f"the backends of this build disagree on the machine's {name}: {facts[name]!r}, and "
+                                f"{value!r} from {target!r}")
+    return Machine(isa=facts.pop("isa", ""), arch=arch, reserved_names=facts.pop("reserved_names", MappingProxyType({})),
+                   facts=MappingProxyType(facts))
 
 
 @dataclass(frozen=True)
@@ -144,7 +115,7 @@ class BuildSpec:
     host row and of the device row (``None``: no such target; a backend whose manifest names no variant has none: its own text
     gets an EMPTY variant, never another target's), the machine as data, the class the device's thresholds come from, the
     thresholds a kit forces. Holds no callable, no backend and no
-    per-build setting of its own: those are :attr:`settings`, a frozen :class:`hawk.passes.policy.Settings` set by the entry."""
+    per-build setting of its own: those are :attr:`settings`, a frozen :class:`lowering.settings.Settings` set by the entry."""
 
     host: dict | None
     device: dict | None
@@ -154,15 +125,17 @@ class BuildSpec:
     by_target: dict
     focus: dict | None = None
     settings: "Settings" = None
+    #: ``{(writer, dialect): module name}`` from the manifests: where a writer finds its spellings of a dialect (data; the module loads when used)
+    spellings: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.settings is None:
-            from ..passes.policy import Settings
+            from ..build_policy import default_settings
 
-            object.__setattr__(self, "settings", Settings())
+            object.__setattr__(self, "settings", default_settings())
 
     def with_settings(self, **changes) -> "BuildSpec":
-        """A new spec with these per-build settings changed (:class:`hawk.passes.policy.Settings`); this one is unchanged."""
+        """A new spec with these per-build settings changed (:class:`lowering.settings.Settings`); this one is unchanged."""
         from dataclasses import replace
 
         return replace(self, settings=replace(self.settings, **changes))
@@ -246,7 +219,7 @@ def build_spec(targets, arch: str = "", *, machine: Machine | None = None, devic
     from .. import components as _components
     from ..variants import load, named
 
-    machine = machine or detect_machine(arch)
+    machine = machine or detect_machine(arch, targets)
     host = dev = None
     by_target = {}
     for target in targets:
@@ -265,14 +238,32 @@ def build_spec(targets, arch: str = "", *, machine: Machine | None = None, devic
             host = host or data
     dev = device if device is not None else dev
     return BuildSpec(host, dev, machine, _components.device_view("wide_class").select(arch, dev) if arch and dev else "", dict(wide_override or {}), by_target,
-                     settings=_laid(build_policy, settings, targets))
+                     settings=_laid(build_policy, settings, targets), spellings=_spellings(targets))
+
+
+def _spellings(targets) -> dict:
+    """``{(writer, dialect): module name}`` the build names: the spellings arms of its backends' extensions and of the components
+    those backends (and the components in turn) name."""
+    from .. import components as _components
+
+    found = registry.spelling_refs(tuple(targets))
+    pending = [n for t in targets if t in TARGETS for n in TARGETS[t].components]
+    seen = set()
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        manifest = _components.component(name).MANIFEST
+        found.update({(arm["writer"], arm["dialect"]): arm["ref"] for arm in manifest.get("spellings", ())})
+        pending.extend(manifest.get("components", ()))
+    return found
 
 
 def _laid(build_policy, settings, targets):
     """``settings`` (default: all unset) with ``build_policy`` laid over it."""
-    from ..build_policy import refuse_undeclared, settings_of
-    from ..passes.policy import Settings
+    from ..build_policy import default_settings, refuse_undeclared, settings_of
 
     if build_policy is not None:
         refuse_undeclared(build_policy, targets)
-    return settings_of(build_policy, Settings() if settings is None else settings)
+    return settings_of(build_policy, default_settings() if settings is None else settings)

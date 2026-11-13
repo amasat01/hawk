@@ -50,7 +50,7 @@ from test_host_interchange import _mixed, _planes, oscillator, rkf78_attempt
 from test_persist import _close
 
 from hawk.artifact import build_bundle
-from hawk.emit import FAST_ENTRIES_MACRO, RANGE_SUFFIX, scalar_mode
+from aether.wings.base.wrapper import FAST_ENTRIES_MACRO, RANGE_SUFFIX, scalar_mode
 from hawk.ext import Guard, Kind
 
 B = importlib.import_module("hawk.artifact.bundle")

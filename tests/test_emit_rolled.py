@@ -12,6 +12,7 @@ factors in place, with no ``n x n`` identity literal for an inverse.
 
 from __future__ import annotations
 
+from _specs import default_kind, spec_for
 import dataclasses
 import pathlib
 import re
@@ -27,9 +28,8 @@ from hawk import Matrix, Mutable, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.artifact.layout import exports
-from hawk.emit import render_source
-from hawk.passes import policy
-from hawk.emit.wrapper import scalar_mode
+from aether.wings.base.wrapper import render_source
+from aether.wings.base.wrapper import scalar_mode
 from hawk.targets import TARGETS
 
 LANES = 8
@@ -73,8 +73,8 @@ def inv_kernel(n):
 
 
 def _text(kernel, target="cuda", spec=None):
-    return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target], spec=spec,
-                         mode=scalar_mode("float64"), exports=exports(target)).text
+    return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target], spec=spec_for(TARGETS[target], spec=spec),
+                         mode=scalar_mode("float64"), exports=exports(target), kind=default_kind()).text
 
 
 def _plane(a):

@@ -30,19 +30,10 @@ from _cards import card_path
 from hawk.diff import jvp, vjp
 import raptor.rules.core as _rules_core
 from raptor.rules.core import RULES, _zero_jvp, _zero_vjp
-from hawk.ir import (
-    AccumWrite,
-    Assign,
-    At,
-    Const,
-    Dispatch,
-    Leaf,
-    SampleIndex,
-    WideWrite,
-)
-from hawk.ir import make as mk
-from hawk.ir.ops import OP_KINDS
-from hawk.types import TensorType
+from raptor.ir import AccumWrite, Assign, At, Const, Dispatch, Leaf, SampleIndex, WideWrite
+from raptor.ir import make as mk
+from raptor.ir.ops import OP_KINDS
+from raptor.ir.types import TensorType
 
 F64 = TensorType((), "f64")
 I32 = TensorType((), "i32")

@@ -13,7 +13,7 @@ import textwrap
 import pytest
 
 import hawk
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 _KERNEL = textwrap.dedent("""
     import hawk

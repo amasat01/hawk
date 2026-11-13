@@ -16,6 +16,7 @@ DEVICE kernel (eagle's `DeviceKernel`).
 """
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
 from _specs import HOST
 
 import platform
@@ -32,14 +33,14 @@ import hawk.math as M
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from raptor.rules.core import zero_like
-from hawk.emit import render_body
-from hawk.ir import AccumWrite, Assign, At, Dispatch, Leaf, canonical
+from aether.wings.base.render import render_body
+from raptor.ir import AccumWrite, Assign, At, Dispatch, Leaf, canonical
 from hawk import HawkError
-from hawk.ir import make as mk
-from hawk.ir.nodes import DISPATCH_POLICIES
-from hawk.ir.ops import OP_KINDS
-from hawk.ir.segment import split_segmented
-from hawk.types import TensorType
+from raptor.ir import make as mk
+from raptor.ir.nodes import DISPATCH_POLICIES
+from raptor.ir.ops import OP_KINDS
+from hawk.passes.segment import split_segmented
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 I32 = TensorType((), "i32")
@@ -152,7 +153,7 @@ def test_eval_harness_clamps_exactly_like_H97(kind_value):
 
 
 def test_eval_harness_is_exact_for_an_integer_branch_set():
-    from hawk.ir.nodes import Dispatch as _D
+    from raptor.ir.nodes import Dispatch as _D
     ik = _leaf("k", I32)
     ib0, ib1 = _leaf("b0", I32), _leaf("b1", I32)
     d = _D(ik, [ib0, ib1], "switch", I32)
@@ -167,14 +168,14 @@ def test_eval_harness_is_exact_for_an_integer_branch_set():
 # --------------------------------------------------------------------------- #
 def test_every_dispatch_materialises_the_shared_clamp():
     sinks = _dispatch_sinks("switch", K=3)
-    text = render_body(sinks, canonical(sinks), spec=HOST).text
+    text = render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text
     assert "std::int32_t" in text
     assert "< 0 ?" in text and "2" in text       # K - 1 == 2 appears in the clamp
 
 
 def test_switch_emits_a_declared_local_and_a_switch_statement():
     sinks = _dispatch_sinks("switch", K=3)
-    text = render_body(sinks, canonical(sinks), spec=HOST).text
+    text = render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text
     assert "switch (" in text
     assert "case 0:" in text and "case 1:" in text
     assert "default:" in text
@@ -182,14 +183,14 @@ def test_switch_emits_a_declared_local_and_a_switch_statement():
 
 def test_predicated_rank0_emits_a_ternary_chain_and_no_switch():
     sinks = _dispatch_sinks("predicated", K=3)
-    text = render_body(sinks, canonical(sinks), spec=HOST).text
+    text = render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text
     assert " ? " in text
     assert "switch (" not in text
 
 
 def test_predicated_rank1_reaches_aether_select():
     sinks = _dispatch_sinks("predicated", K=3, rank=1)
-    text = render_body(sinks, canonical(sinks), spec=HOST).text
+    text = render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text
     assert "aether::select(" in text
 
 
@@ -203,7 +204,7 @@ def test_a_literal_zero_branch_is_elided_under_switch():
     z = zero_like(S)
     d = Dispatch(k, [b0, z, b2], "switch", S)
     sinks = (Assign("out", d, S),)
-    text = render_body(sinks, canonical(sinks), spec=HOST).text
+    text = render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text
     assert "case 1:" not in text
     assert "case 0:" in text
     assert "default:" in text
@@ -215,7 +216,7 @@ def test_segmented_has_no_per_node_emission_yet():
     time a renderer sees a body, the node must already be gone."""
     sinks = _dispatch_sinks("segmented", K=2)
     with pytest.raises(HawkError, match="segmented"):
-        render_body(sinks, canonical(sinks), spec=HOST)
+        render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind())
 
 
 def test_both_backends_share_one_dispatch_helper():
@@ -695,7 +696,7 @@ def test_no_accum_add_for_an_elided_branch_in_the_derived_source():
     d = Dispatch(k, [branch0, branch1], "switch", S)
     sinks = (AccumWrite("acc", d, lane, S),)
     derived = vjp(sinks)
-    text = render_body(derived, canonical(derived), spec=HOST).text
+    text = render_body(derived, canonical(derived), spec=HOST, kind=default_kind()).text
 
     assert text.count("hawk_abi::accum_add(") == 1, (
         "the scattered commit must fire ONCE, with a masked value -- not once "
@@ -941,7 +942,7 @@ def test_segmented_units_are_divergence_free_by_construction():
         for j, unit in enumerate(units[:K]):
             assert not any(isinstance(n, Dispatch) for n in unit.walk.order), (
                 f"unit {unit.name} (K={K}, j={j}) still carries a Dispatch node")
-            text = render_body(unit.sinks, unit.walk, spec=HOST).text
+            text = render_body(unit.sinks, unit.walk, spec=HOST, kind=default_kind()).text
             assert "switch (" not in text and "switch(" not in text, (
                 f"unit {unit.name} emits a switch:\n{text}")
             others = [i for i in range(K) if i != j]
@@ -1072,7 +1073,7 @@ def test_a_kernel_written_kind_plane_is_consumed_in_the_same_captured_graph(
 # The truthful per-branch `vectorised` flag of the cost counts.
 
 def _loop_branch_flags(trips: int, profile: str = "native-vector-math"):
-    from hawk.passes.cost import dispatch_costs
+    from aether.wings.cpu.host_vector import dispatch_costs
 
     @hawk.kernel
     def looped(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
@@ -1091,7 +1092,7 @@ def test_a_loop_the_compiler_will_not_unroll_is_not_vectorised():
 
 
 def test_a_float32_branch_vectorises_like_a_float64_one():
-    from hawk.passes.cost import dispatch_costs
+    from aether.wings.cpu.host_vector import dispatch_costs
     a = Leaf("vocab_read", "per_sample", "a", TensorType((), "f32"))
     k = _leaf("k", I32)
     d = Dispatch(k, [mk("mul", (a, a)), a], "switch", TensorType((), "f32"))
@@ -1100,7 +1101,7 @@ def test_a_float32_branch_vectorises_like_a_float64_one():
 
 
 def test_a_library_call_holds_only_its_own_branch_scalar_under_an_exact_profile():
-    from hawk.passes.cost import dispatch_costs
+    from aether.wings.cpu.host_vector import dispatch_costs
     x = _leaf("x", S)
     k = _leaf("k", I32)
     d = Dispatch(k, [mk("sin", (x,)), mk("mul", (x, x))], "switch", S)
@@ -1115,7 +1116,7 @@ def test_a_library_call_holds_only_its_own_branch_scalar_under_an_exact_profile(
                     reason="a library call vectorises only through the x86-64 vector math")
 @pytest.mark.parametrize("policy, fused", [("switch", False), ("auto", False), ("predicated", True)])
 def test_a_rendered_switch_keeps_the_fused_loop_scalar_while_each_branch_vectorises(policy, fused):
-    from hawk.passes.cost import dispatch_costs
+    from aether.wings.cpu.host_vector import dispatch_costs
     x = _leaf("x", S)
     k = _leaf("k", I32)
     d = Dispatch(k, [mk("exp", (x,)), mk("mul", (x, x))], policy, S)
@@ -1126,9 +1127,9 @@ def test_a_rendered_switch_keeps_the_fused_loop_scalar_while_each_branch_vectori
 
 
 def test_the_emitter_and_the_cost_counts_share_one_vectorisation_predicate():
-    from hawk.emit import render_source, scalar_mode
+    from aether.wings.base.wrapper import render_source, scalar_mode
     from hawk.targets import TARGETS
-    from hawk.passes.cost import kernel_cost
+    from aether.wings.cpu.host_vector import kernel_cost
 
     @hawk.kernel
     def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
@@ -1144,8 +1145,8 @@ def test_the_emitter_and_the_cost_counts_share_one_vectorisation_predicate():
     # a 32-trip loop runs interchanged on the host (trips outside, samples'
     # lanes inside), so its trip count does not keep the loop scalar
     for kernel, expected in ((plain, True), (short, True)):
-        source = render_source("k", kernel.sinks, kernel.walk, TARGETS["host"], mode=scalar_mode("float64"))
+        source = render_source("k", kernel.sinks, kernel.walk, TARGETS["host"], mode=scalar_mode("float64"), spec=spec_for(TARGETS["host"]), kind=default_kind())
         assert source.vectorised is expected
         assert kernel_cost(kernel.walk, HOST).vectorised is expected
-    f32 = render_source("k", short.sinks, short.walk, TARGETS["host"], mode=scalar_mode("float32"))
+    f32 = render_source("k", short.sinks, short.walk, TARGETS["host"], mode=scalar_mode("float32"), spec=spec_for(TARGETS["host"]), kind=default_kind())
     assert f32.vectorised

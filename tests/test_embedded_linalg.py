@@ -32,8 +32,8 @@ from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk_c import EmbeddedProfile, export, render
-from hawk.ir import HawkError
-from hawk.ir.linalg import factor_bytes
+from raptor.errors import RaptorError as HawkError
+from raptor.ir.linalg import factor_bytes
 from hawk.trace.kernel import Kernel
 
 LANES = 8

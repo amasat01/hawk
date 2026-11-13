@@ -15,7 +15,7 @@ _EXT = Path(__file__).resolve().parent.parent / "extensions"
 
 def test_the_public_name_is_the_raptor_class():
     assert hawk.HawkError is raptor.errors.RaptorError
-    from hawk.ir import HawkError
+    from raptor.errors import RaptorError as HawkError
     assert HawkError is raptor.errors.RaptorError
 
 

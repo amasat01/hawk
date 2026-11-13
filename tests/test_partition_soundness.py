@@ -67,7 +67,7 @@ import pytest
 from conftest import sidecar_of
 from test_serial_oracle import band
 
-from hawk.ir.nodes import AccumWrite, At, WideWrite
+from raptor.ir.nodes import AccumWrite, At, WideWrite
 
 N = 96
 K = 3

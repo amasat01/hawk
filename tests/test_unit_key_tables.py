@@ -14,7 +14,7 @@ import sys
 import hawk
 from _specs import HOST
 from hawk.artifact.unit_cache import _unit_key
-from hawk.emit import scalar_mode
+from aether.wings.base.wrapper import scalar_mode
 from hawk.ext import Kind
 from hawk import Mutable, Scalar
 
@@ -39,9 +39,9 @@ def _key(plant: str) -> str:
 def test_a_planted_edit_of_a_shared_spelling_table_moves_the_unit_key():
     base = _key("")
     assert base == _key("")
-    edited = _key("import hawk.emit.spelling as s; s._INFIX['add'] = '+ 0 +'")
+    edited = _key("import aether.wings.base.spelling as s; s._INFIX['add'] = '+ 0 +'")
     assert edited != base
-    text = _key("import hawk.emit.wrapper as w; w._INCLUDES = w._INCLUDES + '// planted\\n'")
+    text = _key("import aether.wings.base.wrapper as w; w._INCLUDES = w._INCLUDES + '// planted\\n'")
     assert text != base
 
 
@@ -60,5 +60,5 @@ def test_a_planted_edit_of_a_sidecar_or_manifest_or_pass_table_moves_the_unit_ke
                   "import hawk.artifact.sidecar as m; m.MUTABLE_DTYPES = tuple(m.MUTABLE_DTYPES) + ('planted',)",
                   "import hawk.artifact.manifest as m; m.ENTRY_KINDS = tuple(m.ENTRY_KINDS) + ('planted',)",
                   "import hawk._plane_layout as m; m.MARK_ATTR = m.MARK_ATTR + 'x'",
-                  "import hawk.passes.vectorise as m; m.UNROLL_LIMIT = m.UNROLL_LIMIT + 1"):
+                  "import raptor.wings.cpu.vectorise as m; m.UNROLL_LIMIT = m.UNROLL_LIMIT + 1"):
         assert _key(plant) != base, plant

@@ -48,7 +48,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 from .._errors import HawkError
-from ..types import TensorType
+from raptor.ir.types import TensorType
 from .primitive import PrimitiveDef, primitive, primitives
 
 __all__ = ["Guard", "IndexSet", "Kind", "Output", "PLAIN", "ATOMIC", "DEFAULT_GUARD",
@@ -543,42 +543,7 @@ __all__.append("KernelKind")
 
 
 def compensated_target(kind: Kind, sinks: Sequence[Any]) -> tuple[str, bool] | None:
-    """The compensated sink's resolved target, out of ``kind.output`` and
-    the kernel's own committed ``sinks`` — shared by the tracer and the
-    renderer so the two never resolve a different target for the same
-    kernel.
+    """The compensated sink's resolved target (the lowering component's rule, :func:`lowering.split.compensated_target`)."""
+    from .. import components
 
-    ``None`` when this kind's sink policy is not ``compensated``.
-    Otherwise ``(name, own_column)``: ``own_column`` is ``True`` for an
-    ``Assign`` or an ``AccumWrite`` with ``index=None``, ``False`` for a
-    scattered ``AccumWrite``. The companion (``kind.sink.compensation``)
-    is excluded from the candidate pool before counting."""
-    if getattr(kind.sink, "id", None) != "compensated":
-        return None
-    from ..ir.nodes import AccumWrite, Assign, WideWrite
-
-    comp = kind.sink.compensation
-    all_names = tuple(dict.fromkeys(s.name for s in sinks))
-    pool = (
-        (kind.output.slot,) if kind.output.returned_ttype is not None
-        else kind.output.names if kind.output.names else all_names
-    )
-    candidates = [n for n in pool if n != comp]
-    if len(candidates) != 1:
-        source = ("Output.named" + repr(tuple(pool)) if kind.output.names
-                 else "the committed sinks " + repr(pool))
-        raise HawkError(
-            f"Kind({kind.slug!r}): a compensated sink needs exactly ONE output "
-            f"target (excluding the companion {comp!r}); resolved {candidates} "
-            f"from {source}"
-        )
-    name = candidates[0]
-    matches = [s for s in sinks if s.name == name]
-    if any(isinstance(s, WideWrite) for s in matches):
-        raise HawkError(
-            f"Kind({kind.slug!r}): compensated target {name!r} is a WideOut "
-            "sink; a compensated commit targets a Mutable only"
-        )
-    own_column = any(isinstance(s, Assign) for s in matches) or any(
-        isinstance(s, AccumWrite) and s.index is None for s in matches)
-    return name, own_column
+    return components.view("lowering", "split").compensated_target(kind, sinks)

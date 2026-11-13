@@ -28,6 +28,7 @@ Rows:
 """
 
 from __future__ import annotations
+from _specs import default_kind
 from _specs import HOST
 
 import _deploy as L
@@ -39,8 +40,9 @@ from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk.artifact import build_bundle
 from hawk.artifact.sidecar import sidecar_meta
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
-from hawk.ir import HawkError, canonical
+from aether.wings.base.render import render_body
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import canonical
 
 N = 40
 DT = 0.125
@@ -117,7 +119,7 @@ def test_a_derived_kernel_drops_the_finish(transform):
     assert ("lookup", "finished_count") not in walk.arg_spec
     meta = sidecar_meta("d", walk, fmt="ptx", scalar_type="float64")
     assert "finish" not in meta and meta["terminated_readonly"] is True
-    assert "finish_count" not in render_body(sinks, walk, spec=HOST).text
+    assert "finish_count" not in render_body(sinks, walk, spec=HOST, kind=default_kind()).text
 
 
 def test_a_non_finishing_kernel_keeps_its_readonly_sidecar():
@@ -194,7 +196,7 @@ def test_a_finish_inside_a_for_refuses():
 # -- structure.
 # --------------------------------------------------------------------------- #
 def test_the_epilogue_is_the_last_text_of_the_guarded_scope():
-    lines = render_body(osc_finish.sinks, osc_finish.walk, spec=HOST).text.splitlines()
+    lines = render_body(osc_finish.sinks, osc_finish.walk, spec=HOST, kind=default_kind()).text.splitlines()
     assert lines[0].strip() == "if (!trm_terminated[i].eval()) {"
     assert lines[-1].strip() == "}"
     assert lines[-2].strip() == EPILOGUE
@@ -204,7 +206,7 @@ def test_the_epilogue_is_the_last_text_of_the_guarded_scope():
 
 
 def test_a_one_sided_finish_folds_to_a_select():
-    text = render_body(branch_finish.sinks, branch_finish.walk, spec=HOST).text
+    text = render_body(branch_finish.sinks, branch_finish.walk, spec=HOST, kind=default_kind()).text
     assert "? " in text and ": false)" in text, text
 
 
@@ -332,7 +334,7 @@ def test_a_stop_only_kernel_finishes_and_counts(bundles, target):
 @pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
 def test_dropping_the_count_from_the_epilogue_is_caught(tmp_path, cache_dir,
                                                         monkeypatch, target):
-    from hawk.emit import render as aether
+    from aether.wings.base import render as aether
 
     original = aether._Renderer._emit
 

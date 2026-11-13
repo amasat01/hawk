@@ -27,7 +27,7 @@ from hawk.artifact import build
 from hawk.compile import nvrtc as hnvrtc
 from hawk.compile import toolchain as tc
 from hawk_cuda import toolchain as dtc
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 
 def _pins() -> tuple[str, str, str]:

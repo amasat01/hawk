@@ -19,12 +19,11 @@ from _extensions import backend, copy_of, make
 import hawk
 from hawk import registry
 from hawk.backends import need
-from hawk.dialects import spells
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.targets import DEFAULT_TARGETS, TARGETS
 
 REPO = str(Path(hawk.__file__).resolve().parent.parent)
-EXTENSIONS = [str(Path(REPO) / "extensions" / name) for name in ("hawk_cuda", "hawk_c")]
+EXTENSIONS = [str(Path(REPO) / "extensions" / name) for name in ("hawk_cuda", "hawk_c")] + [str(Path(REPO) / "staging")]
 
 
 @pytest.fixture
@@ -41,7 +40,7 @@ def ext(tmp_path, monkeypatch):
 
 def _fast(root, name="fast-ext", module="fast_backend", backend_id="fast", variant=None, **manifest):
     make(root, name, {"backends": [backend(backend_id, f"{module}:BACKEND", **({"variant": variant} if variant else {}))], **manifest},
-         modules={module: copy_of("hawk.backends.host", backend_id)})
+         modules={module: copy_of("osprey_cpu.backend", backend_id)})
 
 
 #: A state in which hawk's own distribution metadata is absent: no first-party extension is declared (a package-only install).
@@ -68,7 +67,7 @@ def _run(code: str, paths, env=None, own: bool = True) -> str:
 def test_a_dist_info_cannot_shadow_a_built_in(ext):
     host = need("host")
     make(ext, "evil", {"backends": [backend("host", "evil_host:BACKEND")]},
-         modules={"evil_host": copy_of("hawk.backends.host", "host", "BACKEND.about = 'SHADOW'\n")})
+         modules={"evil_host": copy_of("osprey_cpu.backend", "host", "BACKEND.about = 'SHADOW'\n")})
     registry.reset()
     assert need("host").about == "for the CPU" and type(need("host")) is type(host)
     assert any("belongs to the built-in set" in why for key, why in registry.refused().items() if key.startswith("evil/"))
@@ -83,10 +82,13 @@ def test_a_package_only_install_builds_a_host_kernel(tmp_path):
                       "@hawk.kernel\n"
                       "def only(a: Scalar, y: Mutable[Scalar]):\n"
                       "    y = a + 1.0\n"
-                      "assert registry.backend_ids() == ('host',), registry.backend_ids()\n"
-                      f"b = hawk.build([only], {str(tmp_path / 'out')!r}, cache_dir={str(tmp_path / 'cache')!r})\n"
-                      "print(sorted(b.artifacts[0].entries))\n")
-    assert _run(f"import runpy; runpy.run_path({str(script)!r}, run_name='__main__')", [REPO], own=False).strip() == "['host']"
+                      "assert registry.backend_ids() == (), registry.backend_ids()\n"
+                      "try:\n"
+                      f"    hawk.build([only], {str(tmp_path / 'out')!r}, cache_dir={str(tmp_path / 'cache')!r})\n"
+                      "except hawk.HawkError as e:\n"
+                      "    print('refused:', e)\n")
+    out = _run(f"import runpy; runpy.run_path({str(script)!r}, run_name='__main__')", [REPO], own=False)
+    assert out.startswith("refused:") and "osprey-cpu" in out, out      # the host backend is the cpu OSPREY: absent, refused by name
 
 
 def test_a_malformed_manifest_is_isolated(ext):
@@ -145,7 +147,7 @@ def test_an_extension_listed_in_the_environment_joins_the_default_set(ext, monke
     assert "fast" in DEFAULT_TARGETS
     monkeypatch.setenv("HAWK_EXTENSIONS", "off")
     registry.reset()
-    assert tuple(DEFAULT_TARGETS) == ("host",)
+    assert tuple(DEFAULT_TARGETS) == ()
 
 
 def test_a_third_party_without_a_variant_is_refused_by_name_where_a_threshold_is_read(ext, tmp_path, cache_dir):
@@ -189,11 +191,11 @@ def test_first_party_extensions_are_found_through_hawks_own_distribution():
     out = _run("from hawk import registry\n"
                "print(registry.backend_ids(default=True), registry.refused(), sorted(registry.extensions()))\n"
                "print([m for m in sys.modules if m.split('.')[0] in ('hawk_c', 'hawk_cuda')])\n", [REPO, *EXTENSIONS])
-    assert out.splitlines() == ["('cuda', 'host', 'c') {} ['hawk-c', 'hawk-cuda']", "[]"]
+    assert out.splitlines() == ["('cuda', 'host', 'c') {} ['hawk-c', 'hawk-cuda', 'osprey-cpu']", "[]"]
     # no raptor-hawk metadata, no first-party extension: there is no search beside hawk's folder
-    assert _run("from hawk import registry\nprint(registry.backend_ids())", [REPO, *EXTENSIONS], own=False).strip() == "('host',)"
+    assert _run("from hawk import registry\nprint(registry.backend_ids())", [REPO, *EXTENSIONS], own=False).strip() == "()"
     assert _run("from hawk import registry\nprint(registry.backend_ids())", [REPO, *EXTENSIONS],
-                {"HAWK_EXTENSIONS": "off"}).strip() == "('host',)"
+                {"HAWK_EXTENSIONS": "off"}).strip() == "()"
 
 
 def test_a_third_party_cannot_claim_a_first_party_id(ext, monkeypatch):
@@ -221,7 +223,7 @@ def test_a_third_party_manifest_is_read_without_importing_its_package(tmp_path):
     (tmp_path / "lazy_ext" / "__init__.py").write_text("raise RuntimeError('imported')\n")
     out = _run("from hawk import registry\n"
                "print(registry.backend_ids(), registry.refused(), 'lazy_ext' in sys.modules)\n", [REPO, str(tmp_path)], own=False)
-    assert out.strip() == "('lazy', 'host') {} False"
+    assert out.strip() == "('lazy',) {} False"
 
 
 def test_the_order_does_not_depend_on_sys_path(tmp_path, monkeypatch):
@@ -240,32 +242,25 @@ def test_the_order_does_not_depend_on_sys_path(tmp_path, monkeypatch):
     assert orders[0] == orders[1] and "cc" in orders[0][0] and "aa" not in orders[0][0]
 
 
-def test_a_second_definition_of_a_spelling_is_an_error(monkeypatch):
-    monkeypatch.setattr(registry, "_SPELLS", {})
+def test_a_builds_spellings_are_those_its_backends_name_not_what_else_is_installed(ext):
+    from hawk.targets import build_spec
 
-    @spells("w_dup", "d_dup", "x")
-    def first(w, r):
-        return "first"
-
-    with pytest.raises(HawkError, match="already spells d_dup.x"):
-        spells("w_dup", "d_dup", "x")(lambda w, r: "second")
-    assert registry._SPELLS["w_dup", "d_dup", "x"] is first
-
-
-def test_an_outside_writers_spellings_load_lazily_through_the_manifest(ext, monkeypatch):
-    monkeypatch.setattr(registry, "_SPELLS", {})
-    make(ext, "writer-ext", {"spellings": [{"writer": "w_out", "dialect": "d_out", "ref": "w_out_spells"}]},
-         modules={"w_out_spells": "from hawk.dialects import spells\n\n@spells('w_out', 'd_out', 'x')\ndef x(w, r):\n    return 1\n"})
+    before = build_spec(("host",)).spellings
+    assert before and registry.spelling_refs(["host"]).items() <= before.items()
+    arm = {"spellings": [{"writer": "w_out", "dialect": "d_out", "ref": "w_out_spells"}]}
+    make(ext, "writer-ext", arm, modules={"w_out_spells": "SPELLINGS = {('d_out', 'x'): lambda w, r: 1}\n"})
     registry.reset()
-    assert "w_out_spells" not in sys.modules
-    assert registry.spelling_of("w_out", "d_out", "x")(None, None) == 1 and "w_out_spells" in sys.modules
-    assert registry.spelling_of("w_out", "d_out", "missing") is None
+    assert build_spec(("host",)).spellings == before and "w_out_spells" not in sys.modules      # an unrelated extension adds nothing
+    _fast(ext, spellings=[{"writer": "w_out", "dialect": "d_own", "ref": "w_own_spells"}])
+    registry.reset()
+    assert build_spec(("host", "fast")).spellings == {**before, ("w_out", "d_own"): "w_own_spells"}     # its own backend's arm does
+    assert "w_own_spells" not in sys.modules
 
 
 def test_eight_threads_load_an_item_once(ext):
     make(ext, "once-ext", {"backends": [backend("once", "once_backend:BACKEND")]},
          modules={"once_backend": "import builtins, time\nbuiltins._once_loads = getattr(builtins, '_once_loads', 0) + 1\n"
-                  "time.sleep(0.1)\n" + copy_of("hawk.backends.host", "once")})
+                  "time.sleep(0.1)\n" + copy_of("osprey_cpu.backend", "once")})
     registry.reset()
     import builtins
 
@@ -286,7 +281,7 @@ def test_eight_threads_load_an_item_once(ext):
 def test_an_extension_is_its_distribution_not_the_name_its_manifest_declares(ext):
     for dist, module, backend_id in (("one-ext", "one_backend", "aa"), ("two-ext", "two_backend", "bb")):
         make(ext, dist, {"name": "label", "backends": [backend(backend_id, f"{module}:BACKEND")]},
-             modules={module: copy_of("hawk.backends.host", backend_id)})
+             modules={module: copy_of("osprey_cpu.backend", backend_id)})
     registry.reset()
     assert {"aa", "bb"} <= set(registry.backend_ids()) and not registry.refused()
     assert {"one-ext", "two-ext"} <= set(registry.extensions())
@@ -299,12 +294,44 @@ def test_an_extension_is_its_distribution_not_the_name_its_manifest_declares(ext
     assert "aa" not in registry.backend_ids() and "more than one entry point" in registry.refused()["one-ext"]
 
 
-def test_reset_forgets_the_spellings_an_extension_registered(ext, monkeypatch):
-    monkeypatch.setattr(registry, "_SPELLS", {})
-    make(ext, "writer-ext", {"spellings": [{"writer": "w_out", "dialect": "d_out", "ref": "w_out_spells"}]},
-         modules={"w_out_spells": "from hawk.dialects import spells\n\n@spells('w_out', 'd_out', 'x')\ndef x(w, r):\n    return 1\n"})
-    registry.reset()
-    assert registry.spelling_of("w_out", "d_out", "x") is not None
-    registry.reset()
-    assert registry._SPELLS == {} and "w_out_spells" not in sys.modules
-    assert registry.spelling_of("w_out", "d_out", "x")(None, None) == 1        # read again, registered again
+def _own(root, package, editable):
+    """A distribution of the first-party kind under ``root/site``; ``editable``: its package lives in ``root/project`` and
+    ``direct_url.json`` records that folder, else beside the metadata."""
+    import json
+    from importlib import metadata
+
+    site = root / "site"
+    info = site / "own_dist-0.0.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: own-dist\nVersion: 0.0\n")
+    base = root / "project" if editable else site
+    (base / package).mkdir(parents=True)
+    (base / package / "__init__.py").write_text("")
+    if editable:
+        (info / "direct_url.json").write_text(json.dumps({"url": (root / "project").as_uri(), "dir_info": {"editable": True}}))
+    return metadata.PathDistribution(info)
+
+
+def test_an_editable_distribution_may_keep_its_package_in_its_project_folder(tmp_path, monkeypatch):
+    dist = _own(tmp_path, "pc_editable_a", editable=True)
+    monkeypatch.syspath_prepend(str(tmp_path / "project"))
+    home, problem = registry._locate("pc_editable_a", dist)
+    assert problem is None and home == (tmp_path / "project" / "pc_editable_a").resolve()
+
+
+def test_a_same_named_package_earlier_on_the_path_is_refused_by_name_for_an_editable_distribution(tmp_path, monkeypatch):
+    dist = _own(tmp_path, "pc_editable_b", editable=True)
+    (tmp_path / "stray" / "pc_editable_b").mkdir(parents=True)
+    (tmp_path / "stray" / "pc_editable_b" / "__init__.py").write_text("")
+    monkeypatch.syspath_prepend(str(tmp_path / "project"))
+    monkeypatch.syspath_prepend(str(tmp_path / "stray"))
+    home, problem = registry._locate("pc_editable_b", dist)
+    assert home is None and "'pc_editable_b'" in problem
+    assert str(tmp_path / "project" / "pc_editable_b") in problem and str(tmp_path / "stray" / "pc_editable_b") in problem
+
+
+def test_a_normally_installed_distribution_is_accepted_beside_its_metadata(tmp_path, monkeypatch):
+    dist = _own(tmp_path, "pc_normal", editable=False)
+    monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    home, problem = registry._locate("pc_normal", dist)
+    assert problem is None and home == (tmp_path / "site" / "pc_normal").resolve()

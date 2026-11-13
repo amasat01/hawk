@@ -13,16 +13,16 @@ fixed stack position, so a wrapper decorator or a kernel-factory closure both
 resolve a string annotation correctly."""
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, default_kind
 
 import linecache
 
 import pytest
 
 from hawk import Mutable, Scalar, Terminated, Vector, kernel
-from hawk.emit import render_body
+from aether.wings.base.render import render_body
 from hawk.ext import DEFAULT_KIND, KernelKind, Kind, Output
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 VOCAB = {"terminated": Terminated, "scale": Scalar}
 
@@ -43,7 +43,7 @@ def test_vocabulary_kernel_matches_its_fully_annotated_twin():
     assert _vocab_kernel.walk.digest == _annotated_twin.walk.digest
     a = render_body(_vocab_kernel.sinks, _vocab_kernel.walk,
                     kind=_vocab_kernel.kind, spec=HOST).text
-    b = render_body(_annotated_twin.sinks, _annotated_twin.walk, spec=HOST).text
+    b = render_body(_annotated_twin.sinks, _annotated_twin.walk, spec=HOST, kind=default_kind()).text
     assert a == b
 
 

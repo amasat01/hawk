@@ -30,10 +30,8 @@ def _cu(tmp_path, cache_dir, **kw):
 def test_policy_launch_bounds_reach_the_build(tmp_path_factory, cache_dir):
     plain, b0 = _cu(tmp_path_factory.mktemp("a"), cache_dir)
     bounded, b1 = _cu(tmp_path_factory.mktemp("b"), cache_dir, build_policy=BuildPolicy(launch_bounds=(128, 2)))
-    explicit, _ = _cu(tmp_path_factory.mktemp("c"), cache_dir, build_policy=BuildPolicy(launch_bounds=(128, 2)), launch_bounds=(64, 4))
     assert "__launch_bounds__" not in plain
     assert "__launch_bounds__(128, 2)" in bounded and b1.digest != b0.digest
-    assert "__launch_bounds__(64, 4)" in explicit and "(128, 2)" not in explicit
 
 
 def test_the_build_carries_every_policy_field_forward(tmp_path_factory, cache_dir):

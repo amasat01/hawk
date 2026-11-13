@@ -25,7 +25,7 @@ from _eval import evaluate
 import hawk
 from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk import math as hm
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.diff import step_vjp, vjp
 
 

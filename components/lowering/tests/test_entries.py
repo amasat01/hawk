@@ -41,17 +41,9 @@ def test_split_turns_an_ordered_scatter_into_stages():
     assert callable(split.internal)
 
 
-def test_team_emit_writes_a_body_through_the_given_constructor():
-    from lowering import team, team_emit
-
-    text = team_emit.team_body(team.scatter_specs("t", 2, 256)[0], None, False, body=lambda t: t)
-    assert isinstance(text, str) and team_emit.TEAM_CALL in text
-
-
 def test_wrapper_text_helpers_and_refusals():
     from lowering import wrapper_text as w
 
-    assert "{qualifier}" in w.SAMPLE_SUM and "finish_count" in w.FINISH_COUNT
     mode = SimpleNamespace(cells=True, id="banded")
     with pytest.raises(RaptorError, match="banded runs on device"):
         w.refuse_cells_off_device("k", mode, "host", SimpleNamespace(device=False))
@@ -87,7 +79,6 @@ def test_box_text_and_declines():
     from lowering import box
 
     b = box.Box(0, 4, 1)
-    assert box.BOX_OWN in box.owned_lane("long long", "t", b) and "x" in box.frame(b, "plain", "x")
     assert box.threads(None, 10) >= 1
     assert box.thread_box(SimpleNamespace(sinks=(), walk=SimpleNamespace(arg_spec=())), "float64", spec=spec(), card=None, enabled=False) is None
     assert callable(box.boxed_sinks)

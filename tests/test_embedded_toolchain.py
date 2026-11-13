@@ -13,7 +13,7 @@ import sys
 import pytest
 
 from hawk_c import toolchain as tc
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 VALID_C = """\
 #include "t.h"

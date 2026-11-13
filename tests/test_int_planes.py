@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+from _specs import default_kind
+from _specs import spec_for
 import hashlib
 import threading
 
@@ -265,8 +267,8 @@ def test_concurrent_runs_of_one_integer_plan_are_independent(host_plans):
 # Refusals.
 # --------------------------------------------------------------------------- #
 def _leaf(dtype, name="a"):
-    from hawk.ir import Leaf
-    from hawk.types import TensorType
+    from raptor.ir import Leaf
+    from raptor.ir.types import TensorType
 
     return hawk.Value(Leaf("vocab_read", "per_sample", name, TensorType((), dtype)))
 
@@ -434,7 +436,7 @@ FLOAT_ONLY_DIGESTS = {
 def test_a_float_only_kernel_emits_the_same_bytes(monkeypatch):
     import _emitted
 
-    import hawk.emit.host as host_emit
+    import aether.wings.cpu.host as host_emit
 
     pinned = host_emit.CacheSizes(32 * 1024, 1024 * 1024, "/sys/devices/system/cpu/cpu0/cache")
     monkeypatch.setattr(host_emit, "machine_caches", lambda: pinned)
@@ -445,13 +447,13 @@ def test_a_float_only_kernel_emits_the_same_bytes(monkeypatch):
 
 
 def test_an_integer_body_carries_the_integer_helpers_and_a_float_one_does_not():
-    from hawk.emit import render_source
+    from aether.wings.base.wrapper import render_source
     from hawk.targets import TARGETS
 
-    text = render_source("ops_i32", ops_i32.sinks, ops_i32.walk, TARGETS["host"]).text
+    text = render_source("ops_i32", ops_i32.sinks, ops_i32.walk, TARGETS["host"], spec=spec_for(TARGETS["host"]), kind=default_kind()).text
     assert "int_floordiv" in text and "std::int32_t" in text
     from _kernels import CORPUS
 
     drag = CORPUS["drag"]
     assert "int_traits" not in render_source("drag", drag.sinks, drag.walk,
-                                             TARGETS["host"]).text
+                                             TARGETS["host"], spec=spec_for(TARGETS["host"]), kind=default_kind()).text

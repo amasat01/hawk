@@ -24,7 +24,7 @@ from hawk import Grid, Index, Mutable, Scalar, Table
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.ext import DEFAULT_KIND, IndexSet, Kind
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from conftest import sidecar_of
 
 B = importlib.import_module("hawk.artifact.bundle")

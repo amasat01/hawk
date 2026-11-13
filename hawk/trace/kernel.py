@@ -27,10 +27,10 @@ from collections.abc import Callable
 from typing import Any
 
 from .._broadcast import route
-from ..ir import Const, Leaf, Node, Quantity, Walk, canonical, make
+from raptor.ir import Const, Leaf, Node, Quantity, Walk, canonical, make
 from .._errors import HawkError
-from ..ir.nodes import COMPANION_SUFFIX, AccumWrite, Assign, compensates
-from ..types import Slot, TensorType
+from raptor.ir.nodes import COMPANION_SUFFIX, AccumWrite, Assign, compensates
+from raptor.ir.types import Slot, TensorType
 from . import astpass, helpers, reduce
 from .decl import Plane, resolve, role_of, spell
 from .lane_axes import LaneAxes, check_group, lane_space, tracing
@@ -266,9 +266,9 @@ def resolve_dispatch(kernel: Kernel, policies: dict[str, str]) -> Kernel:
     resolved on its single step and re-derived, under the same name — except
     to ``"segmented"``, which splits the step into one kernel per branch and
     so returns the single step itself: its units run one step per launch."""
-    from ..ir.nodes import DISPATCH_POLICIES
-    from ..ir.segment import with_policies
-    from ..ir.walk import dispatch_groups, loop_body_groups
+    from raptor.ir.nodes import DISPATCH_POLICIES
+    from ..passes.segment import with_policies
+    from raptor.ir.walk import dispatch_groups, loop_body_groups
     from .steps import default_steps
 
     step = kernel.step if kernel.step is not None else kernel
@@ -693,7 +693,7 @@ def _compensated_companion(kind: Any, planes: dict[str, Any],
         )
     target_sink = next(s for s in sinks if s.name == name)
     # A real Assign sink, shaped like an author's own Mutable commit (never
-    # rendered: `_sink` in hawk/emit/render.py skips `kind.sink.compensation`).
+    # rendered: `_sink` in staging/aether/wings/base/render.py skips `kind.sink.compensation`).
     # The dummy value is a structural zero of the target's rank — a bare
     # rank>=1 `Const` has no aether spelling, so it is splatted instead.
     ttype = target_sink.ttype
@@ -705,11 +705,11 @@ def _compensated_companion(kind: Any, planes: dict[str, Any],
 def _scattered_companion(kind: Any, sinks: tuple[Node, ...]) -> tuple[Node, ...]:
     """``sinks`` plus the companion of a compensated SCATTERED target when no
     sink commits it yet: ``kind.sink.compensation`` accumulated at the target's
-    own key, a zero never rendered (`_sink` in hawk/emit/render.py skips it), so
+    own key, a zero never rendered (`_sink` in staging/aether/wings/base/render.py skips it), so
     the kernel declares and binds the plane. How a ``vjp``'s ``bar_<p>`` scatter
     gets its ``bar_<p>_c``. A tagged sink tuple (``Derived``) keeps its tags."""
     from ..ext import compensated_target
-    from ..ir.nodes import AccumWrite
+    from raptor.ir.nodes import AccumWrite
 
     resolved = compensated_target(kind, sinks)
     if resolved is None or resolved[1] or any(

@@ -40,7 +40,7 @@ import pytest
 
 from hawk.compile import drivers
 from hawk.compile.drivers import CompileOptions, compile_source
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 #: A cap small enough that one modest allocation crosses it, and an allocation
 #: comfortably past it. Both are far below the real default, so the row costs
@@ -153,9 +153,9 @@ def test_the_cap_hint_reaches_the_sealed_payload_path(tmp_path, monkeypatch):
     """The sealed-payload path (what a wheel install uses: aether-dsc, no
     source headers) carries the SAME address-space-cap hint in its failure
     as the source-header path does."""
-    from hawk.compile.drivers import _host_uses_sealed_payload
+    from hawk.compile.drivers import _Inputs
 
-    if not _host_uses_sealed_payload():
+    if not _Inputs().sealed:
         pytest.skip("source-header path ($HAWK_AETHER_INCLUDE is set): the sealed "
                     "payload path is not the one in use, unset it to run this row")
     monkeypatch.setenv("HAWK_COMPILE_ADDRESS_CAP", str(4 * 1024 * 1024))

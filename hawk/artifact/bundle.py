@@ -43,21 +43,19 @@ from pathlib import Path
 
 from ..compile import digest_file
 from ..compile.cache import ClosureWatch, publish_atomic, tmp_sibling
-from ..passes import policy
-from ..passes.policy import Settings
 from ..trace.kernel import derived_axes as _derived_axes
-from ..emit import SegmentSpec, scalar_mode
+from aether.wings.base.wrapper import SegmentSpec, scalar_mode
 from ..targets.cards import thread_box as _thread_box_card
 from .unit_cache import BOX_ENV
-from ..emit.render import binding_name as _binding_name
-from ..emit.wrapper import ActiveSpec
+from aether.wings.base.render import binding_name as _binding_name
+from aether.wings.base.wrapper import ActiveSpec
 from ..ext import DEFAULT_KIND
-from ..ir import DispatchInfo
+from raptor.ir import DispatchInfo
 from .._errors import HawkError
-from ..ir.nodes import LEAF_ROLES
-from ..ir import canonical as _canonical
-from ..ir import split_segmented as _split_segmented
-from ..ir.segment import rewalk as _segment_rewalk
+from raptor.ir.nodes import LEAF_ROLES
+from raptor.ir import canonical as _canonical
+from ..passes.segment import split_segmented as _split_segmented
+from ..passes.segment import rewalk as _segment_rewalk
 from .. import components as _components
 _box = _components.view("lowering", "box")
 _wide = _components.view("lowering", "wide")
@@ -65,11 +63,11 @@ _split = _components.view("lowering", "split")
 _team = _components.view("lowering", "team")
 _wt = _components.view("lowering", "wrapper_text")
 from .. import options as _options_mod
-from ..build_policy import BuildPolicy, apply as _apply_policy, settings_of as _settings_of
+from ..build_policy import BuildPolicy, apply as _apply_policy, check as _check_settings, default_settings, refuse_choice, settings_of as _settings_of
 from ..backends import BuiltLowered, Lowered
 from ..registry import KNOWN, check, denial, missing, traits
 from ..targets import DEFAULT_TARGETS, TARGETS, build_spec
-from ..types import Slot, TensorType
+from raptor.ir.types import Slot, TensorType
 from . import manifest as _manifest
 from .derivative import _per_kernel_derivative
 from .sidecar import sidecar_meta
@@ -234,7 +232,7 @@ def _unit_digest(files) -> str:
 
 
 def _segment_spec(kernel) -> SegmentSpec | None:
-    """Build the :class:`~hawk.emit.wrapper.SegmentSpec` a segmented unit's
+    """Build the :class:`~aether.wings.base.wrapper.SegmentSpec` a segmented unit's
     source render needs, or ``None`` for an ordinary kernel. Resolves
     ``kernel.segment`` (:class:`hawk.ir.segment.SegmentInfo`) to a C++
     binding name here, once, since ``hawk/emit/`` itself knows nothing of
@@ -386,15 +384,17 @@ def _refuse_cells_off_device(name: str, smode, targets) -> None:
             _wt.refuse_cells_off_device(name, smode, t, SimpleNamespace(device=_trait(t, "device", False)))
 
 
-def _refuse_libc_names(kernels) -> None:
-    """Refuse an authored kernel named after a C library function: its ``extern "C"`` entry would redeclare it (a
-    chain or a derivative carries no source digest and is named by its builder)."""
-    from ..compile.toolchain import libc_symbols
+def _refuse_libc_names(kernels, targets) -> None:
+    """Refuse an authored kernel that takes a name a row of the build reserves, with the reason that row gives. The names are a
+    machine fact of the build's rows (``reserved_names``: name -> reason); a chain or a derivative carries no source digest and
+    is named by its builder."""
+    from ..targets import detect_machine
 
-    for k in kernels:
-        if getattr(k, "source_digest", None) is not None and k.name in libc_symbols():
-            raise HawkError(f"kernel {k.name!r}: the name is a C library function, and the kernel's "
-                            "entry would redeclare it; rename the kernel")
+    authored = [k for k in kernels if getattr(k, "source_digest", None) is not None]
+    reserved = detect_machine("", tuple(targets)).reserved_names if authored else {}
+    for k in authored:
+        if k.name in reserved:
+            raise HawkError(f"kernel {k.name!r}: {reserved[k.name]}; rename the kernel")
 
 
 def _refuse_targets(name: str, targets) -> None:
@@ -404,6 +404,10 @@ def _refuse_targets(name: str, targets) -> None:
 
     def hint() -> str:
         each = [f"targets=({t!r},)" for t in TARGETS]
+        if not each:
+            from .. import registry
+
+            return f"no backend is installed; install one of {', '.join(sorted(set(registry.KNOWN.values())))}"
         return f"pass {', '.join(each[:-1])} or {each[-1]}"
 
     if not targets:
@@ -427,6 +431,7 @@ def lower(kernel, name, smode, kind, targets, spec) -> Lowered:
     A kernel with its own ``fused_body`` hook (a composed lane group) renders it ONCE, so every target wraps the same
     string."""
     _refuse_targets(name, targets)
+    kind = _resolve_kind(name, getattr(kernel, "kind", None), kind)
     hook = getattr(kernel, "fused_body", None) if _native(targets) else None
     rows = getattr(getattr(kernel, "team", None), "lanes", 1)         # lanes a block of the warp form serves
     body = None if hook is None else hook(kind, cells=smode.cells, spec=spec.with_settings(staged_rows=rows))
@@ -462,7 +467,7 @@ def _step_ops(kernel, kind, spec) -> int | None:
     samples by stepping (its body cuts into head, one step and tail), else
     ``None``. A fact for the launching runtime: the emitted code does not
     read it."""
-    from ..emit.render import render_lane_split
+    from aether.wings.base.render import render_lane_split
 
     if getattr(kernel.walk, "finish", None) is None:
         return None
@@ -474,7 +479,7 @@ def _fp64_ops_ir(kernel, kind, spec) -> int | None:
     """The 64-bit floating-point operations one step of a stepping kernel
     runs, counted in the IR (as :func:`_step_ops`, ``None`` for any other
     kernel): the step cost the launching runtime's chunk length reads."""
-    from ..emit.render import render_lane_split
+    from aether.wings.base.render import render_lane_split
 
     if getattr(kernel.walk, "finish", None) is None:
         return None
@@ -484,9 +489,9 @@ def _fp64_ops_ir(kernel, kind, spec) -> int | None:
 
 def _entry_counts_finished(kernel, kind, spec) -> bool:
     """Whether the kernel's fast entries count a sample finished on entry into
-    the finish counter (:func:`hawk.emit.render.entry_counts_finished`), so the
+    the finish counter (:func:`aether.wings.base.render.entry_counts_finished`), so the
     launching runtime need not count the mask before a run."""
-    from ..emit.render import entry_counts_finished, render_lane_split
+    from aether.wings.base.render import entry_counts_finished, render_lane_split
 
     if getattr(kernel.walk, "finish", None) is None:
         return False
@@ -890,7 +895,7 @@ def _emitted(kernel, name, mode, kind, targets, device_arch, does, instead, spec
     kind = _resolve_kind(name, getattr(kernel, "kind", None), kind)
     kernel = _active_unit(kernel, name, kind)
     smode = scalar_mode(mode)
-    _refuse_libc_names((kernel,))
+    _refuse_libc_names((kernel,), targets)
     _refuse_cells_off_device(name, smode, targets)
     lowered = lower(kernel, name, smode, kind, targets, spec)
     options = _options(device_arch=emit_arch, **inputs)
@@ -1031,7 +1036,7 @@ def _warp_kernel(kernel, name: str, spec, explicit: bool = True, real_bytes: int
     from ..targets import cards
     from .stages import WarpStage
 
-    from ..ir import canonical
+    from raptor.ir import canonical
     from ..trace.kernel import Kernel, _declared
 
     one = getattr(kernel, "one_step", None)
@@ -1062,7 +1067,7 @@ def _warp_kernel(kernel, name: str, spec, explicit: bool = True, real_bytes: int
 def _wide_ok(kernel, smode, device: bool):
     """Whether the placement pass may run on ``kernel`` (:func:`simt.split.stages` ``wide``): a build
     for the device, of a kernel that is one launch (a plain, grouped or segmented one, or an automatic one's two bodies)."""
-    from hawk.passes.vectorise import interchanged_loops
+    from raptor.wings.cpu.vectorise import interchanged_loops
 
     # a host-only build places too when its loops run interchanged: the wide carries then live in the lane rows
     return ((device or bool(interchanged_loops(kernel.walk))) and type(kernel).__name__ in ("Kernel", "SegmentUnit")
@@ -1183,7 +1188,7 @@ def _chain_stages(kernel, name: str, smode, device: bool, spec) -> tuple | None:
     """The stages of a chain (:func:`hawk.chain`) the fusion rule cuts (:func:`hawk.passes.fusion.cuts`, on the device's
     row when the bundle has a device target, else on this host's), named ``<name>``, ``<name>_2``, ...; ``None`` when
     it runs as one kernel. A value crossing a cut travels in a plane the runtime makes per lane."""
-    from ..ir import chain as _chain
+    from ..passes import chain as _chain
     from ..passes import fusion
     from ..trace.kernel import Kernel
 
@@ -1191,7 +1196,7 @@ def _chain_stages(kernel, name: str, smode, device: bool, spec) -> tuple | None:
     if members is None or len(members) < 2 or getattr(kernel, "group", 1) != 1:
         return None                 # a compaction group runs as one kernel: the stages run every lane
     if not all(isinstance(m, Kernel) for m in members):
-        return None                 # a fused lane group (hawk.emit.fused) lists lanes, not kernels: one kernel
+        return None                 # a fused lane group (aether.wings.base.fused) lists lanes, not kernels: one kernel
     scalar = smode.id if smode is not None else "float64"
     cut = fusion.cuts(members, fusion.row(scalar, spec, host=not device), scalar, CHAIN_SAMPLES)
     if not cut:
@@ -1254,7 +1259,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     """Build every kernel into ``directory`` and write ONE ``manifest.json``
     over them. An ``emit_form``/``linalg_form``/``wide_form``/``launch_bounds`` left unset is the value of ``build_policy``
     (a :class:`hawk.build_policy.BuildPolicy`; the default: ``"auto"``, no bound); an explicit argument wins. ``emit_form`` is how a product, dot, sum or norm is spelled
-    (:mod:`hawk.passes.policy`): ``"auto"`` unrolls a site of at most 16 elements and
+    (:mod:`raptor.ir.fold`): ``"auto"`` unrolls a site of at most 16 elements and
     writes a longer one as a loop, ``"static"`` unrolls every site, ``"rolled"`` writes
     every site as a loop, the fast-compile mode (the compiler does no per-element work).
     ``linalg_form`` is how per-lane linear algebra is worked: ``"auto"`` keeps one thread per
@@ -1287,12 +1292,12 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     can't share one manifest.
 
     ``host_profile`` picks the host code-gen profile
-    (:data:`hawk.compile.toolchain.HOST_PROFILES`): ``"native-vector-math"``
+    (:data:`osprey_cpu.toolchain.HOST_PROFILES`): ``"native-vector-math"``
     (default on x86-64 with a GCC host compiler, and on arm64) or ``"native"`` (libm
     bit-identity) for a bundle built on the machine that runs it,
     ``"portable"`` for one that's prebuilt and shipped. Empty means
     ``$HAWK_HOST_PROFILE``, else
-    :func:`hawk.compile.toolchain.default_host_profile`.
+    :func:`osprey_cpu.toolchain.default_host_profile`.
 
     ``opt_level`` picks the optimisation level
     (:data:`hawk.compile.toolchain.OPT_LEVELS`: ``"O0"``..``"O3"``), the
@@ -1326,9 +1331,11 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     targets = tuple(targets)
     names = [name or k.name for k in kernels]
     _refuse_targets(names[0] if names else "", targets)
-    _refuse_libc_names(kernels)
+    _refuse_libc_names(kernels, targets)
     _refuse_cells_off_device(names[0] if names else "", smode, targets)
     native = _native(targets)
+    if native and not kernels:
+        raise HawkError("no kernel to build: a bundle holds at least one")
     exported = _exported(targets)
     explicit = kind is not None
     kind = _resolve_bundle_kind(names, kernels, kind)
@@ -1340,7 +1347,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     # A member reading a value reduced over samples becomes its stages, each
     # its own compile (its own cache key: its own source and options).
     # an argument left unset is ``build_policy``'s value (over the settings of a spec the caller passes); an explicit one wins
-    given = _settings_of(build_policy, Settings() if spec is None else spec.settings)
+    given = _settings_of(build_policy, default_settings() if spec is None else spec.settings)
     # ONE door: build_policy= (each legacy keyword still works alone; one that disagrees with the policy is refused by name)
     for key, value in (("emit_form", emit_form), ("linalg_form", linalg_form), ("wide_form", wide_form), ("launch_bounds", launch_bounds)):
         held = None if build_policy is None else getattr(build_policy, key)
@@ -1352,7 +1359,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     wide_form = given.wide_form if wide_form is None else wide_form
     launch_bounds = given.launch_bounds if launch_bounds is None else launch_bounds
     for key, value in (("emit_form", emit_form), ("linalg_form", linalg_form), ("wide_form", wide_form)):
-        policy.refuse_choice(key, value)
+        refuse_choice(key, value)
     if wide_form == "team" and not _device_only(targets):
         raise HawkError("wide_form='team' (a warp per lane) is built for device targets only; use 'auto' with a host target")
     emit_arch = _emit_arch(targets, device_arch)
@@ -1364,7 +1371,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     spec = spec.with_settings(form=emit_form, linalg_form=linalg_form, wide_form=wide_form, launch_bounds=launch_bounds,
                               contraction=given.contraction, fold_k=given.fold_k, scalar=smode.id, device_only=_device_only(targets),
                               route_to_ordered=smode.cells)
-    spec = spec.with_settings(launch_bounds=policy.check(spec.settings, limits).launch_bounds)
+    spec = spec.with_settings(launch_bounds=_check_settings(spec.settings, limits).launch_bounds)
     kernels, names, kinds, split = _expand_split(kernels, names, kinds, spec=spec, smode=smode,
                                                  device=_has_device(targets),
                                                  device_only=_device_only(targets))
@@ -1388,7 +1395,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                     smode=smode, kind=key_kind, defines=defines, cache_dir=cache_dir,
                     device_arch=device_arch, derivative_blocks=per_kernel_derivative,
                     layout_sizes_override=layout_sizes_override,
-                    host_profile=host_profile, opt_level=opt_level,
+                    opt_level=opt_level,
                     options=options, emit_form=emit_form, linalg_form=linalg_form,
                     wide_form=wide_form, wide_class=spec.wide_class, launch_bounds=launch_bounds, spec=spec, groups=tuple(getattr(k, "group", 1) for k in kernels),
                     source_digests=[getattr(k, "source_digest", None) for k in kernels])

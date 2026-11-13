@@ -128,12 +128,20 @@
  ],
  "entries": {
   "box": [
-   "BOX_OWN",
    "boxed_sinks",
-   "frame",
-   "owned_lane",
    "thread_box",
    "threads"
+  ],
+  "cost": [
+   "BranchCost",
+   "DispatchCost",
+   "SPECIAL_KINDS",
+   "branch_closures",
+   "dispatch_costs",
+   "fp64_ops",
+   "is_library_call",
+   "kernel_cost",
+   "linalg_bytes"
   ],
   "kinds": [
    "WARP_READ",
@@ -146,8 +154,25 @@
    "key_run",
    "warp_uniform"
   ],
+  "lstsq": [
+   "lowered",
+   "lowered_sinks"
+  ],
+  "settings": [
+   "Settings"
+  ],
+  "slotwise": [
+   "chain",
+   "is_structural_zero",
+   "slotwise"
+  ],
+  "loops": [
+   "flat",
+   "speculative_step"
+  ],
   "split": [
    "Stage",
+   "compensated_target",
    "internal",
    "stages"
   ],
@@ -155,12 +180,9 @@
    "PARTIAL",
    "Plane",
    "TeamSpec",
+   "max_dim_of",
    "plain_blocks",
    "scatter_names"
-  ],
-  "team_emit": [
-   "TEAM_CALL",
-   "team_body"
   ],
   "wide": [
    "ELEMENTWISE",
@@ -178,29 +200,23 @@
    "walk_record"
   ],
   "wrapper_text": [
-   "FINISH_COUNT",
-   "SAMPLE_SUM",
    "refuse_cells_off_device",
    "refuse_sample_sums",
    "refuse_team_reductions"
   ]
  },
- "spellings": [
-  {
-   "writer": "aether",
-   "dialect": "lowering",
-   "ref": "lowering.aether"
-  }
- ],
  "emission_modules": [
-  "lowering.aether",
   "lowering.box",
+  "lowering.cost",
   "lowering.kinds",
   "lowering.lanes",
   "lowering.logs",
+  "lowering.loops",
+  "lowering.lstsq",
+  "lowering.settings",
+  "lowering.slotwise",
   "lowering.split",
   "lowering.team",
-  "lowering.team_emit",
   "lowering.wide",
   "lowering.wrapper_text"
  ],

@@ -7,10 +7,10 @@ import hawk
 from hawk.diff import jvp, vjp
 from hawk.dialects import KINDS
 from hawk.ext import primitive
-from hawk.ir import Loop
+from raptor.ir import Loop
 from hawk import HawkError
-from hawk.ir.nodes import Leaf
-from hawk.types import TensorType
+from raptor.ir.nodes import Leaf
+from raptor.ir.types import TensorType
 from raptor.rules import primitive as rules
 from raptor.rules.primitive import placeholder, substitute
 

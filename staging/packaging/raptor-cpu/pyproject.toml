@@ -1,0 +1,28 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+
+# Packaging of the cpu wing of raptor (the package raptor.wings.cpu) as its own distribution. The wing's folder holds only the
+# package; this folder holds only the packaging, so a build leaves nothing inside the wing.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "raptor-cpu"
+version = "0.0.0"
+description = "The CPU loop analyses of the family"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+dependencies = ["raptor-core"]
+
+[project.entry-points."raptor.components"]
+raptor_cpu = "raptor.wings.cpu"
+
+[tool.setuptools]
+packages = ["raptor.wings.cpu"]
+
+[tool.setuptools.package-dir]
+"raptor.wings.cpu" = "../../raptor/wings/cpu"
+
+[tool.setuptools.package-data]
+"raptor.wings.cpu" = ["component.json"]

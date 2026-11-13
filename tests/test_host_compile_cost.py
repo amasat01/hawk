@@ -45,7 +45,8 @@ from hawk import Mutable, Param, Scalar, Terminated
 from hawk import math as m
 from hawk.artifact import build_bundle
 from hawk.compile import toolchain as tc
-from hawk.ir import HawkError
+import osprey_cpu.toolchain as ctc
+from raptor.errors import RaptorError as HawkError
 
 _X86 = platform.machine().lower() in ("x86_64", "amd64")
 needs_x86 = pytest.mark.skipif(not _X86, reason="the vector-math hook is x86-64 only")
@@ -87,8 +88,8 @@ def test_a_math_free_kernel_emits_no_vector_math(tmp_path):
 @needs_x86
 def test_a_math_kernel_emits_only_the_functions_it_calls(tmp_path):
     syms = _hvm_symbols(_host_so(root_pow_step, tmp_path))
-    masked_dropped = (tc.gcc_maskcall_affected(tc.compiler_macros(tc.host_compiler()))
-                      and "-DAETHER_HVM_MASKED=1" not in tc.host_codegen_flags())
+    masked_dropped = (ctc.gcc_maskcall_affected(ctc.compiler_macros(ctc.host_compiler()))
+                      and "-DAETHER_HVM_MASKED=1" not in ctc.host_codegen_flags())
     called = {re.sub(r"^.*aether_hvm_", "", s) for s in syms}
     # sqrt is inline on the host (aether b385084: the compiler widens it natively), so only pow leaves a symbol.
     assert called == {"pow"}, sorted(syms)

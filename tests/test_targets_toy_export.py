@@ -14,7 +14,7 @@ from _extensions import backend, copy_of, make
 import hawk
 from hawk import registry
 from hawk.artifact import reset_unit_memo
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.targets import TARGETS
 
 TOY = copy_of("hawk_c.backend", "toy", "BACKEND.about, BACKEND.artifact, BACKEND.source = 'a toy export', '.toyh', '.toy'\n")

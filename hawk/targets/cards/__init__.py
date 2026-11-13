@@ -61,24 +61,6 @@ def thread_box(scalar_type: str, spec) -> dict | None:
     return card
 
 
-def select_weight(scalar_type: str, spec) -> float:
-    """What one add of a runtime-index store written as selects costs against an
-    indexed access, for ``scalar_type`` on the device arch of ``spec``. A variant with no such table (a backend that names none)
-    weighs a select as an indexed access (1.0); the default applies without an arch (a host-only build) or a row; this never probes."""
-    doc = (spec.primary.get("thread_box") or spec.primary.get("cards", {}).get("thread_box") or {}).get("select_weight")
-    if doc is None:
-        return 1.0
-    weight = doc["defaults"][scalar_type]
-    arch = spec.machine.arch
-    for r in doc.get("rows", ()):
-        if r["dtype"] == scalar_type and r["cc"] == arch:
-            weight = r["select_weight"]
-    if not weight > 0:
-        raise HawkError(f"thread_box card: select_weight must be positive for "
-                        f"{scalar_type}, got {weight!r}")
-    return weight
-
-
 #: The thresholds a wide card row may set, each a positive integer.
 WIDE_KEYS = ("SLICE_MIN", "TEAM_MIN", "TC")
 
@@ -146,10 +128,10 @@ FUSION_KEYS = ("R0", "R_file", "L_us", "c_plane_us_per_B", "c_local_over_plane")
 
 def fusion(scalar_type: str, spec, host: bool = False) -> dict:
     """The constants of :mod:`hawk.passes.fusion` for ``scalar_type``: the device defaults and over them the nearest row, as
-    :func:`wide` reads its card; with ``host``, the row of the host's vector ISA (``spec.machine.vector_isa``: ``sse2``, ``avx2``, ``avx512``, ``neon``)."""
+    :func:`wide` reads its card; with ``host``, the row of the host's vector ISA (the ``vector_isa`` fact: ``sse2``, ``avx2``, ``avx512``, ``neon``)."""
     scalar_type = {"f32": "float32", "f64": "float64"}.get(scalar_type, scalar_type)
     if host:
-        isa = spec.machine.vector_isa
+        isa = spec.machine.facts.get("vector_isa", "")
         rows = (spec.host or {}).get("fusion_host", {})
         if isa not in rows:
             raise HawkError(f"the host variant has no fusion row {isa!r}; the rows are {sorted(rows)}")

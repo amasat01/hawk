@@ -72,7 +72,7 @@ A Wrapper is the part of the unit that depends on how the kernel runs. It has on
 | `dispatch(...)` | a per-lane branch between formulas |
 
 A Wrapper may also supply optional hooks (`simd_safe`, `lane_guards`, `interchange`), which the renderer reads with
-`getattr`. See `hawk/emit/cuda.py` and `hawk/emit/host.py` for the two that exist. The launch geometry is eagle's:
+`getattr`. See `hawk/emit/cuda.py` and `staging/aether/wings/cpu/host.py` for the two that exist. The launch geometry is eagle's:
 a Wrapper names no stream and no occupancy.
 
 Then add the row. A HIP target that reuses the aether C++ Writer would be (a sketch; hawk builds no HIP today):
@@ -91,7 +91,7 @@ A row that uses one of them needs nothing more. A new compiler (hiprtc) is a new
 ## A new language: the Writer
 
 A Writer answers the renderer's questions in one language: declare a local, write an operator, store to a sink,
-write a sum over lanes. `hawk.emit.writer.WRITER_MEMBERS` lists them, and each member's docstring gives the aether
+write a sum over lanes. `aether.wings.base.writer.WRITER_MEMBERS` lists them, and each member's docstring gives the aether
 writer's text. `hawk.embedded.writer.CWriter` is the second one. A language that cannot compile aether's C++ templates
 also needs its own core for the numerics contract: see [the numerics contract](https://amasat01.github.io/aether/content/numerics_contract.html).
 

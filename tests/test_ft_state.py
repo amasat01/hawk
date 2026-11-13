@@ -33,7 +33,7 @@ import hawk.ext.primitive  # noqa: F401  (the name on hawk.ext is the function)
 from hawk.artifact import build_bundle, unit_cache
 from hawk.artifact import bundle as bundle_mod
 from hawk.compile import toolchain as tc
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 pytestmark = pytest.mark.ft
 

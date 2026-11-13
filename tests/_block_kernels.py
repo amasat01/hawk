@@ -14,7 +14,6 @@ builder's arguments.
 import hawk
 import hawk.math as m
 from hawk import Grid, Matrix, Mutable, Scalar, Vector, kernel
-from hawk.passes import policy
 
 
 def gram_kernel(p: int, rows: int, form: str = "auto", kind=None):

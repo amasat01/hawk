@@ -31,7 +31,7 @@ on).
 
 ## 3. hawk: the aether spelling
 
-`hawk/emit/spelling.py` — add a `"foo": "foo"` entry to `_MATH1` (the
+`staging/aether/wings/base/spelling.py` — add a `"foo": "foo"` entry to `_MATH1` (the
 rank-0 `aether::math::foo` spelling), and to `_CWISE1` too if step 1 added
 a `cwiseFoo`.
 

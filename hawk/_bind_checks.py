@@ -19,8 +19,8 @@ from ._plane_layout import (
     number_refusal,
 )
 from ._errors import HawkError
-from .ir import nodes as _ir_nodes
-from .types import PER_SAMPLE_ROLES
+from raptor.ir import nodes as _ir_nodes
+from raptor.ir.types import PER_SAMPLE_ROLES
 
 #: The roles whose plane's trailing extent is n_samples by construction
 #: (:data:`hawk.types.PER_SAMPLE_ROLES`).

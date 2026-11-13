@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The plain-C writer: the standalone C target's spelling of every text the
-body renderer produces, behind the :class:`hawk.emit.writer.Writer` seam.
+body renderer produces, behind the :class:`aether.wings.base.writer.Writer` seam.
 
-Mirrors :mod:`hawk.emit.writer_aether` member for member. ``r`` is the
+Mirrors :mod:`aether.wings.base.writer_aether` member for member. ``r`` is the
 renderer (``r._emit``, ``r._ref``, ``r.hoists``, ``r.indent``, ``r.loop_pos``).
 Every rank>=1 value is a named C struct value (``aether_c_<w>_vecN_t``,
 ``aether_c_<w>_matRxC_t``); every fold, product and component-wise function
@@ -30,34 +30,12 @@ from collections.abc import Sequence
 
 from aether_dsc import c_core
 
-from hawk.emit.spelling import (
-    _CWISE1,
-    _INFIX,
-    _MATH1,
-    _MATH2,
-    SAMPLE_INDEX_IDENT,
-    binding_name,
-    finish_binding,
-    param_cell_binding,
-)
+from aether.wings.base.spelling import _CWISE1, _INFIX, _MATH1, _MATH2, SAMPLE_INDEX_IDENT, binding_name, finish_binding, param_cell_binding
 from raptor.errors import RaptorError
-from hawk.ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, factor_bytes
-from hawk.ir.nodes import (
-    FACTOR_TAGS,
-    FINISHED_PLANE,
-    GATHER_ROLES,
-    RAW_KIND,
-    At,
-    Const,
-    Finish,
-    Leaf,
-    Op,
-    Select,
-    TapeWrite,
-    is_param_cell,
-)
-from hawk.ir.ops import RANDOM_OPS
-from hawk.types import INT_PLANE_DTYPES, TensorType
+from raptor.ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, factor_bytes
+from raptor.ir.nodes import FACTOR_TAGS, FINISHED_PLANE, GATHER_ROLES, RAW_KIND, At, Const, Finish, Leaf, Op, Select, TapeWrite, is_param_cell
+from raptor.ir.ops import RANDOM_OPS
+from raptor.ir.types import INT_PLANE_DTYPES, TensorType
 from .helpers import helper
 from .spelling import (
     INT_HELPER,
@@ -275,7 +253,7 @@ class CWriter:
         a RUNTIME count is first clamped into ``[0, trip]`` by its own
         statement, then the loop runs the first (head form) or the last
         (``count_tail``) ``cnt`` iterations of the static range, as
-        :func:`hawk.emit.spelling._for_header` does, over an ``int32_t``."""
+        :func:`aether.wings.base.spelling._for_header` does, over an ``int32_t``."""
         cmp_ = "<" if loop.step > 0 else ">"
         if count is None:
             lit = lambda v: int_literal(v, "i64")  # noqa: E731

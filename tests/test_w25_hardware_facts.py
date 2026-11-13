@@ -23,6 +23,7 @@ import _hardware_facts as facts  # noqa: E402
 PIECES = {"hawk": Path(importlib.util.find_spec("hawk").origin).resolve().parent}
 PIECES |= {f"component:{p.name}": p / p.name for p in sorted((REPO / "components").glob("*")) if (p / p.name / "__init__.py").is_file()}
 PIECES |= {f"extension:{p.name}": p for d in sorted((REPO / "extensions").glob("*")) for p in sorted(d.iterdir()) if (p / "__init__.py").is_file()}
+PIECES |= {f"wing:{f.name}_{p.name}": p for f in sorted((REPO / "staging").glob("*")) for p in sorted((f / "wings").glob("*")) if (p / "__init__.py").is_file()}
 
 
 def test_the_pieces_are_found_by_discovery():

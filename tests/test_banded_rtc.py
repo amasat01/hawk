@@ -18,7 +18,7 @@ import pytest
 
 from _toolchain import real_arch
 from hawk.compile import cubin_available, device
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 def _skip_without_nvrtc_and_gpu():
     if not cubin_available():

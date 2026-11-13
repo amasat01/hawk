@@ -11,6 +11,7 @@ through its proxy; the resource report puts a kernel's frame beside its working 
 """
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
 from _specs import DEVICE
 
 import pathlib
@@ -28,11 +29,10 @@ from hawk.artifact import build_bundle
 from hawk_cuda.backend import _resource_report
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
-from hawk.emit import render_source
-from hawk.passes import policy
-from hawk.emit.wrapper import scalar_mode
-from hawk.passes.cost import working_set_bytes
-from hawk.ir import HawkError
+from aether.wings.base.wrapper import render_source
+from aether.wings.base.wrapper import scalar_mode
+from aether.wings.base.writer_aether import working_set_bytes
+from raptor.errors import RaptorError as HawkError
 from hawk.targets import TARGETS
 from hawk.trace.kernel import Kernel
 
@@ -79,8 +79,8 @@ def eigen(n):
 def _text(kernel, form="auto", target="cuda"):
     from hawk.build_policy import BuildPolicy
 
-    return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target], build_policy=BuildPolicy(emit_form=form),
-                         mode=scalar_mode("float64"), exports=exports(target)).text
+    return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
+                         mode=scalar_mode("float64"), exports=exports(target), spec=spec_for(TARGETS[target], build_policy=BuildPolicy(emit_form=form)), kind=default_kind()).text
 
 
 def test_the_three_forms_spell_a_reduction_three_ways():

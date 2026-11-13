@@ -31,7 +31,7 @@ This test previously failed via three plants, all then removed:
   fails on x/v;
 * ``HostWrapper.unpack``'s mask rebinding skipped -- the loop stays scalar
   (``packed float64 ops: 0``);
-* ``_host_key_terms`` without the ``host_target`` term --
+* ``Host._terms`` without the ``host_target`` term --
   ``test_the_native_key_names_the_target_cpu`` fails.
 
 Three more, for the lane-wide guard and the active-set loops:
@@ -60,16 +60,10 @@ from conftest import sidecar_of
 import hawk
 from hawk import Mutable, Param, Scalar, Terminated
 from hawk.artifact import build_bundle
-from hawk.compile import (
-    OPT_LEVELS,
-    Cache,
-    CompileOptions,
-    compile_source,
-    host_codegen_flags,
-    host_profile,
-    opt_level,
-)
+from hawk.compile import OPT_LEVELS, Cache, CompileOptions, compile_source, opt_level
+from osprey_cpu.toolchain import host_codegen_flags, host_profile
 from hawk.compile import toolchain as tc
+import osprey_cpu.toolchain as ctc
 from hawk.ext import Guard, Kind
 
 N = 1003
@@ -133,7 +127,7 @@ def bundles(tmp_path_factory):
     cache = str(tmp_path_factory.mktemp("simd_cache"))
     return {p: build_bundle([osc_step], tmp_path_factory.mktemp(f"simd_{p}"),
                             targets=("host",), cache_dir=cache, host_profile=p)
-            for p in tc.HOST_PROFILES}
+            for p in ctc.HOST_PROFILES}
 
 
 def _run(bundle):
@@ -166,7 +160,7 @@ def test_the_exact_profiles_are_bit_identical_to_numpy(bundles):
     for _ in range(STEPS):
         nx, nv = _numpy_step(inp["omega"], inp["zeta"], DT, x, v)
         x, v = np.where(live, nx, x), np.where(live, nv, v)
-    for profile in tc.EXACT_HOST_PROFILES:
+    for profile in ctc.EXACT_HOST_PROFILES:
         hx, hv, hk = _run(bundles[profile])
         assert hx.tobytes() == x.tobytes(), f"{profile}: x is not bit-identical"
         assert hv.tobytes() == v.tobytes(), f"{profile}: v is not bit-identical"
@@ -261,7 +255,7 @@ def test_the_fast_profile_is_within_its_derived_bound(bundles):
     assert np.array_equal(hk, np.where(live, float(STEPS), 0.0))
     cpu = open("/proc/cpuinfo").read() if __import__("os").path.exists(
         "/proc/cpuinfo") else ""
-    if re.search(r"fma", cpu) and tc.host_compiler().endswith("g++"):
+    if re.search(r"fma", cpu) and ctc.host_compiler().endswith("g++"):
         # Non-vacuity: with hardware FMA the fast build really contracts.
         assert hx.tobytes() != x.tobytes() or hv.tobytes() != v.tobytes(), (
             "the fast profile is bit-identical: contraction did not happen")
@@ -276,7 +270,7 @@ def test_the_native_build_is_simd(bundles):
         "/proc/cpuinfo") else ""
     packed = _packed_double_ops(bundles["native"].directory / "osc_step.so",
                                 "osc_step_host")
-    if re.search(r"\bavx512f\b", flags) and tc.host_compiler().endswith("g++"):
+    if re.search(r"\bavx512f\b", flags) and ctc.host_compiler().endswith("g++"):
         assert packed > 0, f"packed float64 ops: {packed}"
 
 
@@ -299,7 +293,7 @@ def test_the_guard_is_lane_wide_and_nothing_spills(bundles):
     assert "const hawk_abi::HostLaneMask trm_terminated = hawk_lane0;" in cpp
     flags = open("/proc/cpuinfo").read() if __import__("os").path.exists(
         "/proc/cpuinfo") else ""
-    if re.search(r"\bavx512f\b", flags) and tc.host_compiler().endswith("g++"):
+    if re.search(r"\bavx512f\b", flags) and ctc.host_compiler().endswith("g++"):
         frame = _stack_frame(bundles["native"].directory / "osc_step.so",
                              "osc_step_host")
         assert frame < 1024, f"stack frame {frame} B: the loop spills"
@@ -314,7 +308,7 @@ def mapped(tmp_path_factory):
     return {p: build_bundle([osc_step], tmp_path_factory.mktemp(f"simd_map_{p}"),
                             targets=("host",), cache_dir=cache, host_profile=p,
                             kind=ACTIVE)
-            for p in tc.EXACT_HOST_PROFILES}
+            for p in ctc.EXACT_HOST_PROFILES}
 
 
 def _maps():
@@ -362,7 +356,7 @@ def test_an_active_set_build_is_bit_identical_on_every_map(mapped):
         for _ in range(STEPS):
             nx, nv = _numpy_step(inp["omega"], inp["zeta"], DT, x, v)
             x, v = np.where(stepped, nx, x), np.where(stepped, nv, v)
-        for profile in tc.EXACT_HOST_PROFILES:
+        for profile in ctc.EXACT_HOST_PROFILES:
             hx, hv, hk = _run_mapped(mapped[profile], positions, live)
             where = f"{profile}/{label}"
             assert hx.tobytes() == x.tobytes(), f"{where}: x is not bit-identical"
@@ -377,7 +371,7 @@ def test_the_identity_map_takes_the_vector_loop(mapped):
         "/proc/cpuinfo") else ""
     packed = _packed_double_ops(mapped["native"].directory / "osc_step.so",
                                 "osc_step_host")
-    if re.search(r"\bavx512f\b", flags) and tc.host_compiler().endswith("g++"):
+    if re.search(r"\bavx512f\b", flags) and ctc.host_compiler().endswith("g++"):
         assert packed > 0, f"packed float64 ops: {packed}"
 
 
@@ -392,7 +386,7 @@ def test_a_cross_sample_kernel_keeps_the_plain_loop(tmp_path):
 
 def _profiles_here():
     """The profiles this host accepts: `-nofma` is x86-64 only."""
-    return [p for p in tc.HOST_PROFILES
+    return [p for p in ctc.HOST_PROFILES
             if p != "native-vector-math-nofma" or platform.machine().lower() in ("x86_64", "amd64")]
 
 
@@ -401,18 +395,18 @@ def test_profile_flags_keep_the_bit_identity_guard():
     none of the three reassociates or enables fast-math."""
     for profile in _profiles_here():
         flags = host_codegen_flags(profile)
-        want = ("-ffp-contract=off" if profile in tc.EXACT_HOST_PROFILES or profile.endswith("-nofma")
+        want = ("-ffp-contract=off" if profile in ctc.EXACT_HOST_PROFILES or profile.endswith("-nofma")
                 else "-ffp-contract=fast")
         assert "-O3" in flags and want in flags, flags
         assert not any("fast-math" in f or "Ofast" in f or "reassoc" in f
                        for f in flags), flags
-    assert set(tc.EXACT_HOST_PROFILES) == {"native", "portable"}
+    assert set(ctc.EXACT_HOST_PROFILES) == {"native", "portable"}
     assert "-march=native" not in host_codegen_flags("portable")
 
 
 def test_the_profile_comes_from_the_options_then_the_environment(monkeypatch):
     monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
-    assert host_profile() == tc.default_host_profile()
+    assert host_profile() == ctc.default_host_profile()
     monkeypatch.setenv("HAWK_HOST_PROFILE", "portable")
     assert host_profile() == "portable"
     assert host_profile("native") == "native"
@@ -442,7 +436,7 @@ def test_a_cache_filled_under_the_old_default_is_not_served(tmp_path, monkeypatc
     reset_artifact_memo()
     new = compile_source(SOURCE, "probe", CompileOptions(
         target="host", cache_dir=str(tmp_path)))
-    if tc.default_host_profile() == "native":
+    if ctc.default_host_profile() == "native":
         pytest.skip("the default is native here (architecture or compiler)")
     assert new.key != old.key and not new.hit
     reset_artifact_memo()
@@ -458,9 +452,9 @@ def test_the_native_key_names_the_target_cpu(tmp_path, monkeypatch, profile):
     opts = CompileOptions(target="host", cache_dir=str(tmp_path), host_profile=profile)
     first = compile_source(SOURCE, "probe", opts)
     record = Cache(str(tmp_path)).record(first.key)
-    assert f"host_target:{tc.host_target_identity()}" in record["key_terms"]
+    assert f"host_target:{ctc.host_target_identity()}" in record["key_terms"]
     # Another CPU (a different identity) must miss, not hit.
-    monkeypatch.setattr(tc, "host_target_identity", lambda: "another-cpu")
+    monkeypatch.setattr(ctc, "host_target_identity", lambda: "another-cpu")
     from hawk.compile import _reset_artifact_memo as reset_artifact_memo
     reset_artifact_memo()
     second = compile_source(SOURCE, "probe", opts)
@@ -477,11 +471,11 @@ def test_the_vector_math_profile_is_the_x86_default(monkeypatch):
     x86 = platform.machine().lower() in ("x86_64", "amd64")
     arm = platform.machine().lower() in ("aarch64", "arm64")
     assert host_profile() == ("native-vector-math" if x86 or arm else "native")
-    default = tc.host_codegen_flags("native")
+    default = ctc.host_codegen_flags("native")
     assert "-DAETHER_HOST_VECTOR_MATH" not in default
     assert "-fno-trapping-math" not in default
     if platform.machine().lower() in ("x86_64", "amd64"):
-        vm = tc.host_codegen_flags("native-vector-math")
+        vm = ctc.host_codegen_flags("native-vector-math")
         assert default[:2] == ["-O3", "-ffp-contract=off"]
         vm = [f for f in vm if f != "-DAETHER_HVM_MASKED=1"]   # added on a compiler that carries the masked-call fix
         assert vm == ["-O3", "-ffp-contract=fast", *default[2:],
@@ -559,17 +553,17 @@ import threading
 
 
 def _fresh_family_memo(monkeypatch):
-    monkeypatch.setattr(tc, "_GCC_FAMILY_MEMO", {})
+    monkeypatch.setattr(ctc, "_GCC_FAMILY_MEMO", {})
 
 
 def test_gcc_on_x86_defaults_to_vector_math(monkeypatch):
     _fresh_family_memo(monkeypatch)
     monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
-    monkeypatch.setattr(tc, "_is_x86_64", lambda: True)
-    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/g++")
-    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: True)
+    monkeypatch.setattr(ctc, "_is_x86_64", lambda: True)
+    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/g++")
+    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: True)
     assert host_profile() == "native-vector-math"
-    assert tc.default_host_profile() == "native-vector-math"
+    assert ctc.default_host_profile() == "native-vector-math"
 
 
 def test_a_clang_family_compiler_defaults_to_native(monkeypatch):
@@ -578,21 +572,21 @@ def test_a_clang_family_compiler_defaults_to_native(monkeypatch):
     clang = shutil.which("clang++")
     if clang:
         monkeypatch.setenv("HAWK_CXX", clang)
-        assert not tc.compiler_is_gcc(clang)
+        assert not ctc.compiler_is_gcc(clang)
     else:
-        monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/clang++")
-        monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
-    monkeypatch.setattr(tc, "_is_x86_64", lambda: True)
-    monkeypatch.setattr(tc, "_is_arm64", lambda: False)
-    assert tc.default_host_profile() == "native"
+        monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/clang++")
+        monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: False)
+    monkeypatch.setattr(ctc, "_is_x86_64", lambda: True)
+    monkeypatch.setattr(ctc, "_is_arm64", lambda: False)
+    assert ctc.default_host_profile() == "native"
     assert host_profile() == "native"
 
 
 def test_explicit_vector_math_with_clang_raises_before_any_compile(monkeypatch, tmp_path):
     _fresh_family_memo(monkeypatch)
-    monkeypatch.setattr(tc, "_is_x86_64", lambda: True)
-    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/clang++")
-    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
+    monkeypatch.setattr(ctc, "_is_x86_64", lambda: True)
+    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/clang++")
+    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: False)
     monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
     with pytest.raises(hawk.HawkError, match=r"GCC.*clang\+\+.*native"):
         host_profile("native-vector-math")
@@ -602,7 +596,7 @@ def test_explicit_vector_math_with_clang_raises_before_any_compile(monkeypatch, 
     clang = shutil.which("clang++")
     if clang and platform.machine().lower() in ("x86_64", "amd64"):   # arm64 accepts it under clang
         monkeypatch.undo()
-        monkeypatch.setattr(tc, "_GCC_FAMILY_MEMO", {})
+        monkeypatch.setattr(ctc, "_GCC_FAMILY_MEMO", {})
         monkeypatch.setenv("HAWK_CXX", clang)
         monkeypatch.setenv("HAWK_HOST_PROFILE", "native-vector-math")
         with pytest.raises(hawk.HawkError, match="GCC-only"):
@@ -613,15 +607,15 @@ def test_explicit_vector_math_with_clang_raises_before_any_compile(monkeypatch, 
 
 def test_the_family_memo_agrees_across_threads(monkeypatch):
     _fresh_family_memo(monkeypatch)
-    cxx = tc.host_compiler()
-    want = tc.compiler_is_gcc(cxx)
-    monkeypatch.setattr(tc, "_GCC_FAMILY_MEMO", {})
+    cxx = ctc.host_compiler()
+    want = ctc.compiler_is_gcc(cxx)
+    monkeypatch.setattr(ctc, "_GCC_FAMILY_MEMO", {})
     barrier = threading.Barrier(8)
     seen = []
 
     def work():
         barrier.wait()
-        seen.append(tc.compiler_is_gcc(cxx))
+        seen.append(ctc.compiler_is_gcc(cxx))
 
     threads = [threading.Thread(target=work) for _ in range(8)]
     for t in threads:
@@ -629,19 +623,19 @@ def test_the_family_memo_agrees_across_threads(monkeypatch):
     for t in threads:
         t.join()
     assert seen == [want] * 8
-    assert tc._GCC_FAMILY_MEMO == {cxx: want}
+    assert ctc._GCC_FAMILY_MEMO == {cxx: want}
 
 
 def _flags_as(machine, profile, monkeypatch):
     monkeypatch.setattr(platform, "machine", lambda: machine)
-    monkeypatch.setattr(tc, "masked_call_flag", lambda flags, extra=(): ["-DAETHER_HVM_MASKED=1"])
+    monkeypatch.setattr(ctc, "masked_call_flag", lambda flags, extra=(): ["-DAETHER_HVM_MASKED=1"])
     return host_codegen_flags(profile)
 
 
 def test_the_x86_flag_lists_are_frozen(monkeypatch):
     monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
-    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/g++")
-    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: True)
+    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/g++")
+    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: True)
     base = ["-O3", "-ffp-contract=off", "-fno-math-errno"]
     wide = ["-march=native", "-mprefer-vector-width=512"]
     vm = ["-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH", "-DAETHER_HVM_MASKED=1"]
@@ -654,8 +648,8 @@ def test_the_x86_flag_lists_are_frozen(monkeypatch):
 
 def test_the_arm64_vector_math_profile_is_contraction_only(monkeypatch):
     monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
-    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/clang++")
-    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
+    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/clang++")
+    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: False)
     for machine in ("arm64", "aarch64"):
         assert _flags_as(machine, "native-vector-math", monkeypatch) == [
             "-O3", "-ffp-contract=fast", "-fno-math-errno", "-mcpu=native"]
@@ -667,8 +661,8 @@ def test_the_arm64_vector_math_profile_is_contraction_only(monkeypatch):
 
 def test_the_arm64_gcc_vector_math_profile_routes_pow(monkeypatch):
     monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
-    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/g++")
-    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: True)
+    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/g++")
+    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: True)
     for machine in ("arm64", "aarch64"):
         assert _flags_as(machine, "native-vector-math", monkeypatch) == [
             "-O3", "-ffp-contract=fast", "-fno-math-errno", "-mcpu=native",
@@ -681,22 +675,24 @@ def test_the_arm64_gcc_vector_math_profile_routes_pow(monkeypatch):
 
 def test_the_default_profile_per_architecture(monkeypatch):
     monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
-    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/cc")
+    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/cc")
     for machine, gcc, want in (("arm64", False, "native-vector-math"), ("aarch64", True, "native-vector-math"),
                                ("x86_64", True, "native-vector-math"), ("x86_64", False, "native"),
                                ("ppc64le", True, "native")):
         monkeypatch.setattr(platform, "machine", lambda m=machine: m)
-        monkeypatch.setattr(tc, "compiler_is_gcc", lambda c, g=gcc: g)
-        assert tc.default_host_profile() == want, (machine, gcc)
+        monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c, g=gcc: g)
+        assert ctc.default_host_profile() == want, (machine, gcc)
 
 
 def test_a_library_call_is_scalar_under_native_and_the_fast_profile_on_arm64(monkeypatch):
-    from hawk.passes.vectorise import vectorises
+    from aether.wings.cpu.host_vector import vectorises
     from test_host_loop_interchange import sin_chain
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
-    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/clang++")
-    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
-    assert vectorises(sin_chain.walk, HOST, "native") is vectorises(sin_chain.walk, HOST, "native-vector-math") is False
+    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/clang++")
+    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: False)
+    from hawk.targets import build_spec
+    arm64 = build_spec(("host",))        # the machine is data of the spec: read it under the patch, not at import
+    assert vectorises(sin_chain.walk, arm64, "native") is vectorises(sin_chain.walk, arm64, "native-vector-math") is False
 
 
 @hawk.kernel
@@ -714,15 +710,15 @@ def _spec():
 
 
 def test_only_pow_counts_as_routed_on_arm64_gcc(monkeypatch):
-    from hawk.passes.vectorise import vectorises
+    from aether.wings.cpu.host_vector import vectorises
     from test_host_loop_interchange import sin_chain
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
-    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/g++")
-    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: True)
+    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/g++")
+    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: True)
     assert vectorises(_pow_chain.walk, _spec(), "native-vector-math") is True
     assert vectorises(_pow_chain.walk, _spec(), "native") is False
     assert vectorises(sin_chain.walk, _spec(), "native-vector-math") is False
-    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: False)
+    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: False)
     assert vectorises(_pow_chain.walk, _spec(), "native-vector-math") is False
 
 

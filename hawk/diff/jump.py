@@ -32,12 +32,12 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
-from ..ir import Const, Dispatch, Leaf, Node, Select
+from raptor.ir import Const, Dispatch, Leaf, Node, Select
 from .._errors import HawkError
-from ..ir import make as _mk
-from ..ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from ..ir.nodes import AccumWrite, PlaneExtent, ReduceSamples, SampleIndex, WideWrite
-from ..types import TensorType
+from raptor.ir import make as _mk
+from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from raptor.ir.nodes import AccumWrite, PlaneExtent, ReduceSamples, SampleIndex, WideWrite
+from raptor.ir.types import TensorType
 from .tape import _reachable
 
 #: The derivative kernel's uniform input keying the alternate path's draw

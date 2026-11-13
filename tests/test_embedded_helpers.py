@@ -10,8 +10,8 @@ import subprocess
 import pytest
 
 from hawk_c import spelling as S
-from hawk.emit import FLOAT32, FLOAT64
-from hawk.ir import HawkError
+from aether.wings.base.wrapper import FLOAT32, FLOAT64
+from raptor.errors import RaptorError as HawkError
 
 
 class _Lazy:

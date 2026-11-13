@@ -11,7 +11,7 @@ Two tiers: an IR-level check (:mod:`_eval`, the same scratch interpreter
 scattered-accumulate shape cheaply, then a COMPILED host+device run of a
 published bundle (``_deployable.diagnostic``'s vjp/jvp, the kind every other
 terminated-mask row in ``test_ext_seams.py`` already exercises) — the body
-text is shared between HAWK's two wrappers (``hawk/emit/host.py``'s own
+text is shared between HAWK's two wrappers (``staging/aether/wings/cpu/host.py``'s own
 docstring), so one compiled check pinned on both targets is what "host and
 device emitters both" means in practice.
 """
@@ -29,7 +29,7 @@ from conftest import sidecar_of
 
 from hawk import Index, Kernel, Mutable, Scalar, Table, Terminated, kernel
 from hawk.diff import jvp, vjp
-from hawk.ir import Leaf, Loop, canonical_nodes
+from raptor.ir import Leaf, Loop, canonical_nodes
 
 H = 1e-5
 N = 8
@@ -290,7 +290,7 @@ def test_vjp_of_a_scatter_inside_a_loop_does_not_crash_and_masks_it():
         "read the terminated plane -- inside the loop's own boundary")
     # canonical() (the same walk a build goes through) must succeed and bind
     # the terminated slot -- the ACTUAL crash site this message reports.
-    from hawk.ir import canonical
+    from raptor.ir import canonical
 
     walk = canonical(derived)
     assert ("terminated", "terminated") in walk.slot_of

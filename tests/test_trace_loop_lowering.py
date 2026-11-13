@@ -33,6 +33,8 @@ those too.
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import spec_for
 from _specs import HOST
 
 import linecache
@@ -44,9 +46,11 @@ from _eval import evaluate
 import hawk
 import hawk.math as m
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body, render_source
-from hawk.ir import HawkError, Loop, LoopValue, canonical
-from hawk.ir.loops import ACCUMULATOR, LOOP_CLASSES, RECURRENCE, classify_loop
+from aether.wings.base.render import render_body
+from aether.wings.base.wrapper import render_source
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import Loop, LoopValue, canonical
+from raptor.ir.loops import ACCUMULATOR, LOOP_CLASSES, RECURRENCE, classify_loop
 from hawk.targets import TARGETS
 
 H = 1e-5
@@ -214,7 +218,7 @@ def test_the_body_is_a_plain_for_with_a_literal_bound_and_no_pragma():
     the TU as a LITERAL — the bound, the declared stride — so the compiler can
     see the trip count; and there is no ``#pragma unroll``, no threshold and no
     policy, because whether to unroll is the compiler's decision."""
-    text = render_body(gathering.sinks, gathering.walk, spec=HOST).text
+    text = render_body(gathering.sinks, gathering.walk, spec=HOST, kind=default_kind()).text
     assert text.count("for (") == 1, text
     assert f"< {ROWS};" in text, text
     assert "pragma" not in text.lower(), text
@@ -227,8 +231,8 @@ def test_both_backends_wrap_the_same_body_string():
     """ for a lowered loop: ONE renderer produces the body and a
     BACKEND supplies only the wrapper, so the loop is not a host construct that
     the device path re-derives."""
-    host = render_source("g", gathering.sinks, gathering.walk, TARGETS["host"])
-    device = render_source("g", gathering.sinks, gathering.walk, TARGETS["cuda"])
+    host = render_source("g", gathering.sinks, gathering.walk, TARGETS["host"], spec=spec_for(TARGETS["host"]), kind=default_kind())
+    device = render_source("g", gathering.sinks, gathering.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"]), kind=default_kind())
     assert host.body == device.body
     assert "for (" in host.body
 
@@ -239,7 +243,7 @@ def test_the_carried_locals_are_updated_simultaneously():
     expression would read the FIRST's new value — a different recurrence and a
     silently wrong number. The generated code must name both results before
     assigning either."""
-    text = render_body(chebyshev.sinks, chebyshev.walk, spec=HOST).text
+    text = render_body(chebyshev.sinks, chebyshev.walk, spec=HOST, kind=default_kind()).text
     lines = [ln.strip() for ln in text.splitlines()]
     results = [i for i, ln in enumerate(lines) if ln.startswith("const Real hawk_n")]
     stores = [i for i, ln in enumerate(lines)
@@ -276,7 +280,7 @@ def test_a_nested_for_emits_a_nested_scope():
             total = total + row * row
         y = total
 
-    text = render_body(grid.sinks, grid.walk, spec=HOST).text
+    text = render_body(grid.sinks, grid.walk, spec=HOST, kind=default_kind()).text
     assert text.count("for (") == 2, text
     table = np.arange(ROWS * COLS, dtype=float) * 0.25 + 1.0
     got = float(evaluate(grid.sinks, {"t": table})["y"])
@@ -308,8 +312,8 @@ def test_an_accumulator_reverse_stores_nothing_and_a_recurrence_taped_body_does(
     a device kernel's local memory: the accumulator's adjoint never reads the
     carried value, so its emitted reverse declares no array; the recurrence's
     does, sized by the (compile-time) trip count."""
-    acc_text = render_body(*_derived(additive), spec=HOST)
-    rec_text = render_body(*_derived(saturating), spec=HOST)
+    acc_text = render_body(*_derived(additive), spec=HOST, kind=default_kind())
+    rec_text = render_body(*_derived(saturating), spec=HOST, kind=default_kind())
     assert "hawk_tp" not in acc_text.text, acc_text.text
     assert "hawk_tp" in rec_text.text, rec_text.text
     assert "[6];" in rec_text.text, rec_text.text
@@ -373,7 +377,7 @@ def test_a_gather_loops_reverse_scatters_once_per_iteration_in_the_same_scope():
     for r in range(ROWS):
         want[r * COLS + 2] += 1.5
     np.testing.assert_allclose(got, want, rtol=1e-14, atol=1e-14)
-    text = render_body(derived, walk, spec=HOST).text
+    text = render_body(derived, walk, spec=HOST, kind=default_kind()).text
     commits = (text.count("hawk_abi::accum_add(aout_bar_t, ")
                + text.count("aether::accum::run::add<32>(aout_bar_t, "))
     assert text.count("for (") == 1 and commits == 1, text
@@ -474,7 +478,7 @@ def test_a_rank_one_carry_is_declared_as_an_aether_Item():
             acc = acc + v
         out = acc
 
-    text = render_body(carried.sinks, carried.walk, spec=HOST).text
+    text = render_body(carried.sinks, carried.walk, spec=HOST, kind=default_kind()).text
     assert "aether::Item<Real, 3> hawk_v" in text, text
     got = evaluate(carried.sinks, {"v": np.array([1.0, 2.0, 3.0])})["out"]
     np.testing.assert_allclose(got, np.array([4.0, 8.0, 12.0]))
@@ -496,7 +500,7 @@ def test_a_nested_loop_differentiates_where_it_used_to_be_refused():
             total = total + inner
         out = total
 
-    render_body(grid.sinks, grid.walk, spec=HOST)          # emission is fine
+    render_body(grid.sinks, grid.walk, spec=HOST, kind=default_kind())          # emission is fine
     got = evaluate(vjp(grid), {"x": 0.5, "terminated": False, "bar_out": 1.0})
     np.testing.assert_allclose(got["bar_x"], 6.0)          # d/dx sum_r 2 r x = 2 (0+1+2)
 

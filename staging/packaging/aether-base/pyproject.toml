@@ -1,0 +1,28 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+
+# Packaging of the base wing of aether (the package aether.wings.base) as its own distribution. The wing's folder holds only the
+# package; this folder holds only the packaging, so a build leaves nothing inside the wing.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aether-base"
+version = "0.0.0"
+description = "The shared source writer of the family"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+dependencies = ["raptor-core"]
+
+[project.entry-points."raptor.components"]
+aether_base = "aether.wings.base"
+
+[tool.setuptools]
+packages = ["aether.wings.base"]
+
+[tool.setuptools.package-dir]
+"aether.wings.base" = "../../aether/wings/base"
+
+[tool.setuptools.package-data]
+"aether.wings.base" = ["component.json"]

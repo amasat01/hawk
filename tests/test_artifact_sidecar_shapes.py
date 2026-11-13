@@ -123,7 +123,7 @@ def _expected_width(ttype) -> int:
 def _expected_dtype(ttype, scalar_type: str) -> str:
     """The wire dtype string INDEPENDENTLY re-derived from the role→mirror
     map's own vocabulary (``tests/test_emit_role_mirror_map.py``,
-    ``hawk/emit/render.element_spelling``): an ``f64``/``f32`` leaf always
+    ``staging/aether/wings/base/render.element_spelling``): an ``f64``/``f32`` leaf always
     resolves through the compiled ``Real`` (so it tracks ``scalar_type``, never
     its own IR literal); an ``i32``/``i64`` leaf always resolves through the
     emitted ``Int`` (``long long``, unconditionally 64-bit); ``bool`` passes

@@ -14,6 +14,7 @@ no derivative: ``vjp`` and ``jvp`` refuse by name.
 
 from __future__ import annotations
 
+from _specs import spec_for
 import _deploy as L
 import _embedded as E
 import numpy as np
@@ -26,7 +27,7 @@ from hawk import HawkError, Index, Int32, Mutable, Scalar, UInt32, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk_c import EmbeddedProfile, check, export, render
-from hawk.emit import FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT64, render_source
 from hawk.targets import TARGETS
 
 N = 1000
@@ -103,7 +104,7 @@ def test_a_repeated_launch_is_idempotent(bundle):
 @pytest.mark.parametrize("target", ["cuda", "host"])
 @pytest.mark.parametrize("k", [mark, mark_signed], ids=lambda k: k.name)
 def test_the_emitted_sources_commit_through_the_atomic_or_and_compile(tmp_path, target, k):
-    src = render_source(k.name, k.sinks, k.walk, TARGETS[target], mode=FLOAT64, kind=k.kind)
+    src = render_source(k.name, k.sinks, k.walk, TARGETS[target], mode=FLOAT64, kind=k.kind, spec=spec_for(TARGETS[target]))
     assert "hawk_abi::accum_or(" in src.text
     assert ("atomicOr" in src.text) and ("fetch_or" in src.text)
     path = tmp_path / f"{k.name}.{'cu' if target == 'cuda' else 'cpp'}"

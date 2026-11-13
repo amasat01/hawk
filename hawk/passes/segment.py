@@ -34,18 +34,8 @@ import copy
 from raptor.ir.nodes import replace
 from collections.abc import Sequence
 
-from ..ir.nodes import Loop
-from ..ir.nodes import (
-    AccumWrite,
-    Assign,
-    Const,
-    Dispatch,
-    Finish,
-    Leaf,
-    Node,
-    Select,
-    Sink,
-)
+from raptor.ir.nodes import Loop
+from raptor.ir.nodes import AccumWrite, Assign, Const, Dispatch, Finish, Leaf, Node, Select, Sink
 from .._errors import HawkError
 from raptor.ir.segment import (
     OFFSETS_DTYPE,
@@ -58,8 +48,8 @@ from raptor.ir.segment import (
     offsets_name,
     stale_name,
 )
-from ..types import Slot, TensorType
-from ..ir.walk import canonical
+from raptor.ir.types import Slot, TensorType
+from raptor.ir.walk import canonical
 
 _I32 = TensorType((), "i32")
 _BOOL = TensorType((), "bool")
@@ -123,7 +113,7 @@ def with_policies(sinks: Sequence[Sink], chosen: dict) -> tuple:
 
 def clamped(selector: Node, K: int) -> Node:
     """``selector`` clamped to ``[0, K-1]`` — the branch every lowering picks."""
-    from ..ir.ops import make
+    from raptor.ir.ops import make
 
     zero, last = Const(0, _I32), Const(K - 1, _I32)
     upper = Select(make("gt", (selector, last)), last, selector, _I32)
@@ -137,7 +127,7 @@ def _guarded(name: str, sinks: tuple, selector: Node, K: int, j: int,
     picks branch ``j`` — the sample is marked stale instead — plus the class
     and stale planes. A stale sample left by a sort that has gone out of date
     is then never committed with another branch's arithmetic."""
-    from ..ir.ops import make
+    from raptor.ir.ops import make
 
     sel = clamped(selector, K)
     mine = make("eq", (sel, Const(j, _I32)))

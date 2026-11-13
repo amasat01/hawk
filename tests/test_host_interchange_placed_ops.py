@@ -20,7 +20,7 @@ import hawk
 import hawk.math as m
 from hawk import Mutable, Scalar, Vector
 from hawk.artifact import build_bundle
-from hawk.passes.vectorise import interchanged_loops
+from raptor.wings.cpu.vectorise import interchanged_loops
 
 W = 512
 N = 70

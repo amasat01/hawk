@@ -28,7 +28,7 @@ import re
 
 from aether_dsc import c_core
 
-from hawk.ir.nodes import FINISHED_PLANE
+from raptor.ir.nodes import FINISHED_PLANE
 from . import linalg
 from .helpers import helper
 from .spelling import WIDTH
@@ -62,7 +62,7 @@ def _shape_word(shape) -> str:
 def mix_planes(walk) -> dict[str, int]:
     """``{plane name: K}`` for every ``auto`` dispatch group's branch-mix
     plane (:func:`hawk.ir.segment.mix_name`): K ``uint32`` counters."""
-    from hawk.ir.segment import mix_name
+    from raptor.ir.segment import mix_name
 
     return {mix_name(info.name): int(info.K) for info in walk.dispatches
             if info.policy == "auto"}
@@ -423,7 +423,7 @@ def _bindings(fields: list[dict], body: str, walk) -> list[str]:
     """Every slot the body reads, bound once to a ``const`` local (a pointer
     is ``T* const``); a parameter cell loaded once; the finish mask's
     writable twin."""
-    from hawk.emit.spelling import finish_binding, param_cell_binding
+    from aether.wings.base.spelling import finish_binding, param_cell_binding
 
     lines = []
     for f in fields:

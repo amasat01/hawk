@@ -15,8 +15,8 @@ import threading
 from contextlib import contextmanager
 
 from .._errors import HawkError
-from ..ir import make as _make
-from ..ir.nodes import At, Leaf, RoleConst
+from raptor.ir import make as _make
+from raptor.ir.nodes import At, Leaf, RoleConst
 from .value import Value, index_node, sample_index, widened
 
 

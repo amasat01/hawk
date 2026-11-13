@@ -1,13 +1,13 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Nothing outside ``hawk/ir/`` and the passes over it (``hawk/passes/``) enumerates the walk.
+"""Nothing outside the IR (``raptor.ir``) and the passes over it (``hawk/passes/``) enumerates the walk.
 
 ``Walk`` owns the ONE traversal: every consumer derives from
 ``Walk.arg_spec`` / ``Walk.slot_of``, and a module that re-enumerates
 ``Walk.leaves`` or ``Walk.order`` is a second, redundant derivation. The
 detector is an AST scan over the installable package
-``hawk/hawk/`` excluding ``hawk/hawk/ir/`` and ``hawk/hawk/passes/``; the test suite itself is out of
+``hawk/hawk/`` excluding ``hawk/hawk/passes/``; the test suite itself is out of
 scope, since a test asserting on ``walk.order`` is an observer, not a consumer
 that ships.
 
@@ -39,7 +39,7 @@ _ITERATING_BUILTINS = {
 }
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "hawk"
-_IR_ROOTS = (_PACKAGE_ROOT / "ir", _PACKAGE_ROOT / "passes")
+_IR_ROOTS = (_PACKAGE_ROOT / "passes",)
 
 
 def _scanned_files() -> list[Path]:
@@ -83,7 +83,7 @@ def test_scan_covers_the_package_and_excludes_ir():
 def test_no_module_outside_hawk_ir_iterates_walk_leaves_or_order():
     hits = _hits(iteration_only=True)
     assert not hits, (
-        "only hawk/ir/ may enumerate Walk.leaves / Walk.order; every other "
+        "only hawk/passes/ (and raptor.ir) may enumerate Walk.leaves / Walk.order; every other "
         "consumer derives from Walk.arg_spec / Walk.slot_of. Found:\n" + "\n".join(hits)
     )
 
@@ -91,6 +91,6 @@ def test_no_module_outside_hawk_ir_iterates_walk_leaves_or_order():
 def test_no_module_outside_hawk_ir_even_names_walk_leaves_or_order():
     hits = _hits(iteration_only=False)
     assert not hits, (
-        "(strict form, closing the aliasing hole): outside hawk/ir/ nothing may "
+        "(strict form, closing the aliasing hole): outside hawk/passes/ nothing may "
         "read Walk.leaves / Walk.order at all. Found:\n" + "\n".join(hits)
     )

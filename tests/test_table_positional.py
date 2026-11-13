@@ -10,18 +10,19 @@ at another lane with ``.at`` only."""
 
 from __future__ import annotations
 
+from _specs import spec_for, default_kind
 import hashlib
 
 import pytest
 
 import hawk
 from hawk import Grid, HawkError, Scalar, Staged, Table, Wide
-from hawk.emit import FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT64, render_source
 from hawk.targets import TARGETS
 
 
 def _md5(kernel, row: str) -> str:
-    source = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[row], mode=FLOAT64)
+    source = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[row], mode=FLOAT64, spec=spec_for(TARGETS[row]), kind=default_kind())
     return hashlib.md5(source.text.encode()).hexdigest()
 
 

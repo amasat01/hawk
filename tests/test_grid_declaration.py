@@ -11,6 +11,7 @@ or shadowing label, a ``group`` that names nothing) saying what to write instead
 ``@hawk.kernel(group=...)`` stores the compaction group, a lane count."""
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
 from _specs import HOST
 
 import hashlib
@@ -19,7 +20,7 @@ import pytest
 
 import hawk
 from hawk import Grid, HawkError, Mutable, Scalar
-from hawk.emit import FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT64, render_source
 from hawk.math import split_index
 from hawk.targets import TARGETS
 
@@ -27,7 +28,7 @@ ROWS = ("cuda", "host")
 
 
 def _md5(kernel, row: str) -> str:
-    source = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[row], mode=FLOAT64)
+    source = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[row], mode=FLOAT64, spec=spec_for(TARGETS[row]), kind=default_kind())
     return hashlib.md5(source.text.encode()).hexdigest()
 
 
@@ -275,13 +276,13 @@ def test_the_axis_read_is_the_flat_read_of_its_index():
 
 
 def test_reading_an_input_keeps_a_comparison_in_the_order_it_was_written():
-    from hawk.emit import render_body
+    from aether.wings.base.render import render_body
 
     @hawk.kernel
     def k(a: Scalar, b: Scalar) -> Scalar:
         return hawk.math.where(a >= b, a, b)
 
-    text = render_body(k.sinks, k.walk, spec=HOST).text
+    text = render_body(k.sinks, k.walk, spec=HOST, kind=default_kind()).text
     assert ">=" in text and "<=" not in text
 
 

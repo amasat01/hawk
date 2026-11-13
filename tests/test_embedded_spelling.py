@@ -6,9 +6,9 @@
 import pytest
 
 from hawk_c import spelling as S
-from hawk.emit import FLOAT32, FLOAT64
-from hawk.ir import HawkError
-from hawk.types import TensorType
+from aether.wings.base.wrapper import FLOAT32, FLOAT64
+from raptor.errors import RaptorError as HawkError
+from raptor.ir.types import TensorType
 
 
 def test_ctype_by_rank_and_mode():

@@ -50,6 +50,8 @@ value.
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import spec_for
 from _specs import HOST
 
 import pathlib
@@ -62,8 +64,9 @@ import hawk
 import hawk.math as m
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
-from hawk.emit import FLOAT64, render_body, render_source
-from hawk.ir import Loop, canonical
+from aether.wings.base.wrapper import FLOAT64, render_source
+from aether.wings.base.render import render_body
+from raptor.ir import Loop, canonical
 from hawk import HawkError
 from hawk.targets import TARGETS
 
@@ -247,7 +250,7 @@ def test_the_tape_becomes_a_tape_of_pairs():
     holds the tangent, at the same iteration, in the twin slot."""
     derived = jvp(vjp(chebyshev, wrt=("z",)), wrt=("z",))
     walk = canonical(derived)
-    text = render_body(derived, walk, spec=HOST).text
+    text = render_body(derived, walk, spec=HOST, kind=default_kind()).text
     assert text.count("for (") == 3, text
     tapes = sorted({ln.strip().split()[1].split("[")[0]
                     for ln in text.splitlines() if "hawk_tp" in ln
@@ -266,8 +269,8 @@ def test_both_backends_wrap_the_same_second_order_body():
     construct the device path re-derives."""
     derived = jvp(vjp(saturating, wrt=("x", "g")), wrt=("x", "g"))
     walk = canonical(derived)
-    host = render_source("hvp", derived, walk, TARGETS["host"])
-    device = render_source("hvp", derived, walk, TARGETS["cuda"])
+    host = render_source("hvp", derived, walk, TARGETS["host"], spec=spec_for(TARGETS["host"]), kind=default_kind())
+    device = render_source("hvp", derived, walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"]), kind=default_kind())
     assert host.body == device.body
     assert host.body.count("for (") == 3
 
@@ -281,7 +284,7 @@ def test_a_second_order_loop_kernel_compiles(target, tmp_path):
     derived = jvp(vjp(saturating, wrt=("x", "g")), wrt=("x", "g"))
     walk = canonical(derived)
     src = render_source("hvp", derived, walk, TARGETS[target], mode=FLOAT64,
-                        exports=exports(target))
+                        exports=exports(target), spec=spec_for(TARGETS[target]), kind=default_kind())
     path = pathlib.Path(tmp_path) / ("hvp.cpp" if target == "host" else "hvp.cu")
     path.write_text(src.text)
     rc, err, argv = TC.compile_check(path, target)
@@ -309,7 +312,7 @@ def test_an_unseeded_carry_still_gets_its_adjoint_recurrence():
     two carried locals written every iteration and consulted by nothing, which
     is what a dropped adjoint recurrence looks like in generated code."""
     derived = vjp(jvp(chebyshev, wrt=("z",)))
-    text = render_body(derived, canonical(derived), spec=HOST).text
+    text = render_body(derived, canonical(derived), spec=HOST, kind=default_kind()).text
     reverse = text.split("for (")[-1]
     results = [ln.strip() for ln in reverse.splitlines()
                if ln.strip().startswith("const Real hawk_n")]

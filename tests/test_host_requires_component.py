@@ -1,6 +1,6 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
-"""The host backend's manifest declares the lowering component; without it a host build is refused by name."""
+"""The host backend's manifest declares the cpu aether wing, which builds on the lowering component; without it a host build is refused by name."""
 import subprocess
 import sys
 
@@ -25,13 +25,13 @@ except Exception as e:
 def test_the_host_row_declares_the_component():
     from hawk.targets import TARGETS
 
-    assert TARGETS["host"].components == ("lowering",)
+    assert TARGETS["host"].components == ("aether_cpu",)
 
 
 def test_a_host_build_without_the_component_is_refused_by_name():
     out = subprocess.run([sys.executable, "-c", _BLOCK], capture_output=True, text=True, check=True).stdout
-    assert out.startswith("RaptorError") and "'host' backend requires the 'lowering' component" in out, out
+    assert out.startswith("RaptorError") and "lowering component is absent" in out, out
 
 
 def test_the_manifest_key_is_checked():
-    assert "components" in registry._builtin()["backends"][0]
+    assert "components" in registry.traits("host")

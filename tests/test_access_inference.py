@@ -20,18 +20,8 @@ from __future__ import annotations
 
 from _dags import F64, IDX, V3, drag_dag
 
-from hawk.ir import (
-    AccumWrite,
-    Assign,
-    At,
-    Const,
-    Leaf,
-    Op,
-    WideWrite,
-    canonical,
-    infer,
-)
-from hawk.ir.nodes import ROLE_ORDER
+from raptor.ir import AccumWrite, Assign, At, Const, Leaf, Op, WideWrite, canonical, infer
+from raptor.ir.nodes import ROLE_ORDER
 
 _X = Leaf("vocab_read", "vec_in", "x", V3)
 _TABLE = Leaf("table_read", "lookup", "grav", V3)

@@ -33,26 +33,19 @@ from .drivers import (
 )
 from .payload import current_payload
 from .toolchain import (
-    HOST_PROFILES,
     OPT_LEVELS,
     aether_include,
     compiler_identity,
     eagle_include,
-    host_codegen_flags,
-    host_compiler,
-    host_flags,
-    host_profile,
     opt_level,
 )
 
 #: Doors that are a device backend's names: ``hawk.compile.<door>`` is that backend's ``api`` attribute.
 _CUDA_DOORS = ("nvrtc", "DeviceImage", "cubin", "cubin_available", "device", "device_compiler", "device_compiler_kind")
 
-__all__ = ["Cache", "CompileOptions", "HOST_PROFILES",
-           "OPT_LEVELS", "aether_include", "cache_stats",
+__all__ = ["Cache", "CompileOptions", "OPT_LEVELS", "aether_include", "cache_stats",
            "compile_source", "compiler_identity",
            "current_payload", "default_cache_dir", "digest_file", "eagle_include",
-           "host_codegen_flags", "host_compiler", "host_flags", "host_profile",
            "lookup_key", "opt_level", "publish", "reset_cache_stats", *_CUDA_DOORS]
 
 

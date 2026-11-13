@@ -11,8 +11,8 @@ as a stride; a constant divided BY a value, and a value divided by a value, are
 not folds at all."""
 import hawk
 import hawk.math as hm
-from hawk.ir import Leaf
-from hawk.types import TensorType
+from raptor.ir import Leaf
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 V3 = TensorType((3,), "f64")

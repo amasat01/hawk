@@ -160,9 +160,9 @@ def test_a_touch_of_a_reached_header_is_a_hit(tree):
 def sealed_path():
     """Only meaningful on the sealed-payload path (aether-dsc, no
     ``$HAWK_AETHER_INCLUDE``)."""
-    from hawk.compile.drivers import _host_uses_sealed_payload
+    from hawk.compile.drivers import _Inputs
 
-    if not _host_uses_sealed_payload():
+    if not _Inputs().sealed:
         pytest.skip("source-header path ($HAWK_AETHER_INCLUDE is set): this row "
                     "covers the sealed-payload path")
 
@@ -299,7 +299,8 @@ def test_two_such_compilers_give_different_cache_lookup_keys(tree, tmp_path):
     """End to end: the SAME source/backend/mode/flags, through two fake
     compilers differing only past the first ``--version`` line, must land on
     two DIFFERENT cache keys — never share a slot."""
-    from hawk.compile import compiler_identity, host_flags, lookup_key
+    from hawk.compile import compiler_identity, lookup_key
+    from osprey_cpu.toolchain import host_flags
 
     a = _fake_compiler(tmp_path, "fake_cc_a", "release 12.6, V12.6.77")
     b = _fake_compiler(tmp_path, "fake_cc_b", "release 12.9, V12.9.10")
@@ -437,6 +438,7 @@ def test_the_compiler_is_identified_once_per_process(tree, monkeypatch, tmp_path
     import subprocess as sp
 
     from hawk.compile import toolchain
+    import osprey_cpu.toolchain as ctc
     from hawk.compile.toolchain import reset_identity_memo
 
     monkeypatch.setenv("HAWK_CACHE_DIR", str(tmp_path / "probe_cache"))   # an empty on-disk probe store
@@ -445,7 +447,7 @@ def test_the_compiler_is_identified_once_per_process(tree, monkeypatch, tmp_path
     real = sp.run
     monkeypatch.setattr(toolchain.subprocess, "run",
                         lambda argv, **kw: runs.append(tuple(argv)) or real(argv, **kw))
-    compiler = toolchain.host_compiler()
+    compiler = ctc.host_compiler()
     for _ in range(3):
         toolchain.compiler_identity(compiler)
     versions = [a for a in runs if a[1:] == ("--version",)]

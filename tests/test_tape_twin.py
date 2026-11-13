@@ -37,7 +37,7 @@ import hawk
 from hawk import Index, Mutable, Param, Scalar, Terminated, Vector, kernel
 from hawk.artifact import build_bundle
 from hawk.diff.tape import tape, tape_width, taped_planes
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 N = 37
 DT = 0.0625

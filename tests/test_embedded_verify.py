@@ -11,7 +11,6 @@ through; ``ir_checks`` itself never refuses.
 """
 
 from __future__ import annotations
-from _specs import HOST
 
 import re
 
@@ -32,18 +31,18 @@ from hawk_c.verify import (
     positions,
 )
 from hawk.ext import DEFAULT_KIND
-from hawk.ir import canonical
+from raptor.ir import canonical
 from hawk import HawkError
-from hawk.ir.nodes import Loop
-from hawk.ir.nodes import AccumWrite, At, Leaf
-from hawk.ir.ops import make
+from raptor.ir.nodes import Loop
+from raptor.ir.nodes import AccumWrite, At, Leaf
+from raptor.ir.ops import make
 from hawk.trace.kernel import Kernel
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 
 def _report(kernel, profile=None):
     return ir_checks(kernel.name, kernel.sinks, kernel.walk, kernel.kind,
-                     profile or EmbeddedProfile(), HOST)
+                     profile or EmbeddedProfile())
 
 
 # --------------------------------------------------------------------------- #
@@ -149,7 +148,7 @@ def recurrence(x: Scalar, g: Param, y: Mutable[Scalar]):
 def test_tape_bytes_feed_the_memory_estimate():
     sinks = vjp(recurrence)
     walk = canonical(sinks)
-    report = ir_checks("recurrence_vjp", sinks, walk, DEFAULT_KIND, EmbeddedProfile(), HOST)
+    report = ir_checks("recurrence_vjp", sinks, walk, DEFAULT_KIND, EmbeddedProfile())
     static = report["budgets"]["static_bytes"]
     (site,) = report["indices"]
     assert (site["kind"], site["status"], site["length"]) == ("tape_read", "proven", 64)
@@ -503,7 +502,7 @@ def guarded_wide(x: Scalar, terminated: Terminated, w: WideOut[Scalar]):
 
 def _guarded_rows(kernel, kind=None):
     report = ir_checks(kernel.name, kernel.sinks, kernel.walk,
-                       kind or kernel.kind, EmbeddedProfile(), HOST)
+                       kind or kernel.kind, EmbeddedProfile())
     return {row["field"]: row for row in report["interface"]}
 
 
@@ -575,7 +574,7 @@ def test_the_header_selects_the_guard_lines_from_the_guard_field():
     """The header's per-field guard line and the guarded partials line are
     chosen by ``row["guard"]``, never by the reason text."""
     from hawk_c import abi, render
-    from hawk.emit import FLOAT64
+    from aether.wings.base.wrapper import FLOAT64
 
     for kernel, field in [(D.diagnostic, "mut_y"), (guarded_partials, "aout_acc")]:
         report = render(kernel).report

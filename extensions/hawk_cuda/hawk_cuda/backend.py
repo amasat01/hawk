@@ -14,10 +14,9 @@ from pathlib import Path
 from hawk.artifact.sidecar import LOCAL_LIMIT_B
 from hawk.backends import Backend
 from hawk.compile import drivers
-from hawk.emit import literal_table
-from hawk.emit.writer_aether import AETHER
+from aether.wings.base.wrapper import literal_table
+from aether.wings.base.writer_aether import AETHER, working_set_bytes
 from raptor.errors import RaptorError
-from hawk.passes.cost import working_set_bytes
 
 import hawk_cuda
 
@@ -51,7 +50,7 @@ def _sniff_device_format(path: Path) -> str:
 
 def _resource_report(kernel, ptxas: dict | None, spec, scalar_type: str = "float64", arch: str = "") -> dict | None:
     """The sidecar's ptxas figures with the kernel's estimated registers beside them (:func:`hawk.passes.fusion.estimate`,
-    plus a quarter of the declared working set, :func:`hawk.passes.cost.working_set_bytes`, as words) and a ``spills`` flag:
+    plus a quarter of the declared working set, :func:`aether.wings.base.writer_aether.working_set_bytes`, as words) and a ``spills`` flag:
     registers spilled, or registers and frame words past the fence (:func:`hawk.passes.fusion.fence`). A flagged kernel
     warns; a flagged chain (:func:`hawk.chain`) is refused, naming its members and the boundary where to cut it."""
     if not ptxas:

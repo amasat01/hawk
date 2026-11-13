@@ -31,6 +31,8 @@ per row.
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import spec_for
 from _specs import HOST
 
 import _oracle as O
@@ -42,10 +44,12 @@ import hawk.math as M
 import hawk.math as hm
 import hawk.trace.value as T
 from hawk.artifact import build
-from hawk.emit import render_body
-from hawk.ir import Assign, HawkError, canonical
+from aether.wings.base.render import render_body
+from lowering.lstsq import lowered
+from raptor.ir import Assign, canonical
+from raptor.errors import RaptorError as HawkError
 from hawk.trace.value import TableRef, node_of
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 B = TensorType((), "bool")
@@ -60,7 +64,7 @@ MINOR = 4
 
 def _v(t: TensorType, name: str = "a"):
     """A traced value over a fresh leaf of type ``t``."""
-    from hawk.ir import Leaf
+    from raptor.ir import Leaf
 
     if t.dtype == "bool":
         return hawk.Value(Leaf("terminated", "terminated", name, t))
@@ -244,7 +248,7 @@ def test_every_name_traces_and_emits(name):
     assert not isinstance(node, Exception), (
         f"the recorded spelling for hawk.math.{name} does not run: {node!r}")
     sinks = (Assign("out", node, node.ttype),)
-    text = render_body(sinks, canonical(sinks), spec=HOST).text
+    text = render_body(*lowered(sinks, canonical(sinks), HOST), spec=HOST, kind=default_kind()).text
     assert text.strip(), f"hawk.math.{name} emitted an empty body"
 
 
@@ -299,10 +303,10 @@ def test_both_backends_bind_the_name_a_sample_index_renders_as():
     """The body knows exactly ONE thing about its wrapper: the identifier the
     index prologue binds the lane's integer index to ( lets it know no more).
     Both wrappers must bind that name, and the name has one spelling
-    (:data:`hawk.emit.render.SAMPLE_INDEX_IDENT`) — otherwise a body that reads
+    (:data:`aether.wings.base.render.SAMPLE_INDEX_IDENT`) — otherwise a body that reads
     the lane index compiles on one target and not the other."""
     from hawk.targets import TARGETS
-    from hawk.emit.render import SAMPLE_INDEX_IDENT
+    from aether.wings.base.render import SAMPLE_INDEX_IDENT
 
     for target in TARGETS.values():
         if target.wrapper is None:
@@ -312,7 +316,7 @@ def test_both_backends_bind_the_name_a_sample_index_renders_as():
             f"the {target.id} prologue binds no {SAMPLE_INDEX_IDENT!r}:\n{prologue}")
     lane = M.sample_index()
     sinks = (Assign("out", node_of(lane * 1.0), S),)
-    assert SAMPLE_INDEX_IDENT in render_body(sinks, canonical(sinks), spec=HOST).text
+    assert SAMPLE_INDEX_IDENT in render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text
 
 
 def test_random_namespace_is_the_same_object_as_the_flat_names():
@@ -433,3 +437,13 @@ def test_nan_and_inf_are_the_float_constants(tmp_path, monkeypatch):
 
     got = np.asarray(miss(np.array([2.0, -1.0])))
     assert got[0] == 2.0 and np.isnan(got[1])
+
+
+def test_the_writer_refuses_an_unlowered_least_squares_node_by_name():
+    from aether.wings.base.wrapper import render_source
+    from raptor.errors import RaptorError as HawkError
+    from hawk.targets import TARGETS
+
+    from test_w25_soundness import gn_loop as k
+    with pytest.raises(HawkError, match="unlowered least-squares node.*lstsq"):
+        render_source(k.name, k.sinks, k.walk, TARGETS["host"], spec=spec_for(TARGETS["host"]), kind=default_kind())

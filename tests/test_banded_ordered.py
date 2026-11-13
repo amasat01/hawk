@@ -169,7 +169,7 @@ def test_a_banded_warp_sum_is_the_same_cells_every_run_and_close_to_the_exact_do
     import eagle
     from eagle import arrays
     from eagle._alloc import synchronize
-    from hawk.targets.cards import _probe_wide as probe
+    from hawk_cuda import _probe_wide as probe
 
     n = 64
     rng = np.random.default_rng(11)
@@ -241,8 +241,8 @@ def test_the_banded_fold_only_loops_are_unrolled_by_the_accumulator_period_and_a
     unroll that makes the renormalise gate a constant; the keyed bin fold does not, and a float rendering has none."""
     from types import SimpleNamespace
 
-    from lowering.team_emit import team_body as _team_body
-    from hawk.emit.render import Body
+    from aether.wings.base.team_emit import team_body as _team_body
+    from aether.wings.base.render import Body
 
     def team_body(spec, active, cells):
         return _team_body(spec, active, cells, body=Body)

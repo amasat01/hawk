@@ -38,7 +38,7 @@ from raptor.ir.walk import post_order, structural_keys
 from .logs import log_ordered
 from raptor.ir.kinds import is_a, kind_name
 from . import LogStore, ScatterLog, TeamCopy, TeamStore
-from raptor.ir.nodes import COMPANION_SUFFIX, AccumWrite, At, Const, Leaf, Node, ReduceSamples, RoleConst, SampleSum, compensates, extent_of, is_param_cell
+from raptor.ir.nodes import COMPANION_SUFFIX, AccumWrite, Assign, At, Const, Leaf, Node, ReduceSamples, RoleConst, SampleSum, WideWrite, compensates, extent_of, is_param_cell
 from raptor.errors import RaptorError
 
 #: The prefix of a cell the split makes for a reduction the body reads but
@@ -417,3 +417,43 @@ def _stages(name: str, sinks, spec, inplace: bool = False) -> tuple | None:
         spec = team.fold_spec(log, Keyed(log.target, 1, log.kept), forced)
         out.append(Stage(f"{name}_{len(out) + 1}", team.markers(spec), (), (), (), (), spec))
     return tuple(out)
+
+
+def compensated_target(kind, sinks) -> tuple[str, bool] | None:
+    """The compensated sink's resolved target, out of ``kind.output`` and
+    the kernel's own committed ``sinks`` — shared by the tracer and the
+    writer so the two never resolve a different target for the same
+    kernel.
+
+    ``None`` when this kind's sink policy is not ``compensated``.
+    Otherwise ``(name, own_column)``: ``own_column`` is ``True`` for an
+    ``Assign`` or an ``AccumWrite`` with ``index=None``, ``False`` for a
+    scattered ``AccumWrite``. The companion (``kind.sink.compensation``)
+    is excluded from the candidate pool before counting."""
+    if getattr(kind.sink, "id", None) != "compensated":
+        return None
+    comp = kind.sink.compensation
+    all_names = tuple(dict.fromkeys(s.name for s in sinks))
+    pool = (
+        (kind.output.slot,) if kind.output.returned_ttype is not None
+        else kind.output.names if kind.output.names else all_names
+    )
+    candidates = [n for n in pool if n != comp]
+    if len(candidates) != 1:
+        source = ("Output.named" + repr(tuple(pool)) if kind.output.names
+                 else "the committed sinks " + repr(pool))
+        raise RaptorError(
+            f"Kind({kind.slug!r}): a compensated sink needs exactly ONE output "
+            f"target (excluding the companion {comp!r}); resolved {candidates} "
+            f"from {source}"
+        )
+    name = candidates[0]
+    matches = [s for s in sinks if s.name == name]
+    if any(isinstance(s, WideWrite) for s in matches):
+        raise RaptorError(
+            f"Kind({kind.slug!r}): compensated target {name!r} is a WideOut "
+            "sink; a compensated commit targets a Mutable only"
+        )
+    own_column = any(isinstance(s, Assign) for s in matches) or any(
+        isinstance(s, AccumWrite) and s.index is None for s in matches)
+    return name, own_column

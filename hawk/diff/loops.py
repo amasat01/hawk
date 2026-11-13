@@ -37,7 +37,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..ext.primitive import jvp_tangent, vjp_contributions
-from ..ir import (
+from raptor.ir import (
     AccumWrite,
     Assign,
     At,
@@ -57,12 +57,12 @@ from ..ir import (
     TapeRead,
 )
 from .._errors import HawkError
-from ..ir import make as _mk
-from ..ir.loops import (ACCUMULATOR, RECURRENCE, LoopClass, build_loop, classify_loop,
-                        refuse_unsupported_nesting)
-from ..ir.slotwise import chain as _chain
-from ..ir.slotwise import is_structural_zero, slotwise
-from ..ir.walk import substitute as _substitute
+from raptor.ir import make as _mk
+from raptor.ir.loops import ACCUMULATOR, RECURRENCE, LoopClass, build_loop, classify_loop, refuse_unsupported_nesting
+from .. import components as _components
+
+_slotwise = _components.view("lowering", "slotwise")
+from raptor.ir.walk import substitute as _substitute
 from raptor.rules.core import rule_for, zero_like
 
 #: Node families neither direction pushes through inside a body (the
@@ -337,7 +337,7 @@ def guarded_select(node: Node) -> Dispatch | None:
     both arms' gathers for every lane). ``None`` for any other node."""
     if not (isinstance(node, Select) and any(has_gather(a) for a in node.operands[1:])):
         return None
-    from ..types import TensorType
+    from raptor.ir.types import TensorType
 
     one, zero = TensorType((), "i32"), TensorType((), "i32")
     sel = Select(node.operands[0], Const(1, one), Const(0, zero), one)
@@ -372,7 +372,7 @@ def _readable(loop: Loop) -> tuple:
     loop and a non-differentiable dtype are excluded too. This is only the
     pre-filter; whether an operand is actually reached is decided
     afterwards, by the pullback's own store."""
-    from ..ir.nodes import GATHER_ROLES
+    from raptor.ir.nodes import GATHER_ROLES
 
     return tuple(
         operand for operand in loop.operands
@@ -556,9 +556,9 @@ def _runtime_sinks(carried: list, store: dict, inputs, name,
         if not (isinstance(t, Leaf) and id(t) in exclusive and t.ttype.shape):
             kept.append(t)
             continue
-        (value,) = slotwise((store[id(t)],))
-        base, links = _chain(value)
-        if not links or not is_structural_zero(base):
+        (value,) = _slotwise.slotwise((store[id(t)],))
+        base, links = _slotwise.chain(value)
+        if not links or not _slotwise.is_structural_zero(base):
             kept.append(t)
             continue
         plane = name(t.name)
@@ -568,8 +568,8 @@ def _runtime_sinks(carried: list, store: dict, inputs, name,
 
 
 def _slotwise_body(nexts: Sequence, scatters: Sequence) -> tuple:
-    """A derived loop's body roots in slotwise form (:mod:`hawk.ir.slotwise`)."""
-    both = slotwise((*nexts, *scatters))
+    """A derived loop's body roots in slotwise form (:mod:`lowering.slotwise`)."""
+    both = _slotwise.slotwise((*nexts, *scatters))
     return both[:len(nexts)], both[len(nexts):]
 
 
@@ -768,7 +768,7 @@ def forward_loop(loop: Loop, tangent_of, name, augmented_of=None,
             extra.get("exit_values", ())[m:], t))
     n_next, n_exit = len(nexts), len(extra.get("exit_values", ()))
     exits_now = tuple(extra.get("exit_values", ()))
-    rooted = slotwise((*nexts, *exits_now, *([loop.exit_cond] if n_exit else [])))
+    rooted = _slotwise.slotwise((*nexts, *exits_now, *([loop.exit_cond] if n_exit else [])))
     nexts = rooted[:n_next]
     if n_exit:
         extra.update(exit_values=rooted[n_next:n_next + n_exit], exit_cond=rooted[-1])

@@ -75,10 +75,10 @@ import hawk
 from hawk import Index, Mutable, Param, Scalar, Terminated, Vector
 from hawk_c import export
 from hawk import HawkError
-from hawk.ir.nodes import AccumWrite, Leaf
-from hawk.ir.ops import make
+from raptor.ir.nodes import AccumWrite, Leaf
+from raptor.ir.ops import make
 from hawk.trace.kernel import Kernel
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 N = 96
 SEED = 20261016

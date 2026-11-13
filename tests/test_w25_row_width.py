@@ -50,7 +50,8 @@ def test_the_simt_row_is_one_warp_and_the_cpu_row_a_power_of_two():
 
 
 def test_the_text_chunk_cap_is_the_variants_and_a_missing_one_is_refused():
-    from lowering import team, team_emit
+    from aether.wings.base import team_emit
+    from lowering import team
 
     from raptor.errors import RaptorError
 

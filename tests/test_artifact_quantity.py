@@ -29,6 +29,8 @@ removed.
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import spec_for
 from _specs import HOST
 
 import ast
@@ -37,8 +39,9 @@ import pathlib
 import _deployable as D
 from conftest import sidecar_of
 
-from hawk.emit import render_body, render_source
-from hawk.emit.render import RAW_KIND
+from aether.wings.base.render import render_body
+from aether.wings.base.wrapper import render_source
+from aether.wings.base.render import RAW_KIND
 from hawk.targets import TARGETS
 
 #: The IR node constructors a raw-IR workaround would have to name.
@@ -61,8 +64,8 @@ def test_zero_text_surgery():
     """The body both wrappers compile is the SAME string, and it
     carries no spliced raw text — so there is nothing for a lowering pass to
     edit and no anchor for one to find."""
-    body = render_body(D.spin.sinks, D.spin.walk, spec=HOST).text
-    sources = [render_source("spin", D.spin.sinks, D.spin.walk, b)
+    body = render_body(D.spin.sinks, D.spin.walk, spec=HOST, kind=default_kind()).text
+    sources = [render_source("spin", D.spin.sinks, D.spin.walk, b, spec=spec_for(b), kind=default_kind())
                for b in TARGETS.values() if b.wrapper]
     assert len({s.body for s in sources}) == 1
     assert "hawk_raw_arg" not in body and RAW_KIND not in body

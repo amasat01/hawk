@@ -49,7 +49,7 @@ def _without_wheel_digest(mods: list[str]) -> list[str]:
 
 def test_importing_hawk_imports_no_heavy_module():
     assert _without_wheel_digest(_modules(_BARE)) == _ALLOWED_BARE, (
-        "importing hawk must not import hawk.ir / hawk.trace / hawk.diff "
+        "importing hawk must not import raptor.ir / hawk.trace / hawk.diff "
         "/ hawk.emit / hawk.compile — the authoring names are bound lazily, and the "
         "only modules the self-check may add are the binding it reads and the "
         "constants it compares against"
@@ -79,7 +79,7 @@ def test_hawk_imports_with_a_version_when_the_generated_module_is_absent():
 
 def test_touching_an_authoring_name_binds_the_tracer():
     modules = _modules(_TOUCHED)
-    assert "hawk.trace" in modules and "hawk.ir" in modules, (
+    assert "hawk.trace" in modules, (
         f"touching hawk.kernel must resolve through hawk.trace; got {modules}"
     )
 

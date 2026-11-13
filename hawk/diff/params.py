@@ -29,11 +29,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir import Leaf
+from raptor.ir import Leaf
 from .._errors import HawkError
-from ..ir.nodes import PARAM_CELL, At, RoleConst, SampleSum, is_param_cell
-from ..ir.walk import substitute
-from ..types import TensorType
+from raptor.ir.nodes import PARAM_CELL, At, RoleConst, SampleSum, is_param_cell
+from raptor.ir.walk import substitute
+from raptor.ir.types import TensorType
 from raptor.ir.cells import CELL_PLANE, param_cell, swap
 from .tape import TAPE_ON, _reachable
 

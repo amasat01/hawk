@@ -37,9 +37,9 @@ from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 import eagle
 from hawk.diff.transform import _masked_sink
-from hawk.ir import AccumWrite, Leaf
-from hawk.ir.nodes import Assign
-from hawk.types import TensorType
+from raptor.ir import AccumWrite, Leaf
+from raptor.ir.nodes import Assign
+from raptor.ir.types import TensorType
 from hawk.trace.kernel import Kernel
 
 A, NB, NC = 3, 4, 6

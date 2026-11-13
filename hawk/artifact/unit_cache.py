@@ -21,7 +21,6 @@ from .. import options as _options_mod
 from .. import registry as _registry
 from ..compile import digest_file
 from ..compile.cache import ClosureWatch, artifact_memo_get, validity_digest, write_atomic
-from ..compile.toolchain import host_profile as _host_profile
 from ..compile.toolchain import opt_level as _opt_level
 #: ``HAWK_BOX=0`` builds every kernel without a box (an A/B switch, not an API).
 BOX_ENV = "HAWK_BOX"
@@ -93,6 +92,7 @@ def reset_unit_memo() -> None:
     """Forget every memoised unit, the counters and the log — the door
     back to the disk path, for a row that wants a cold publisher."""
     _UNIT_MEMO.clear()
+    _registry.forget_digests()
     with _STATE_LOCK:
         _PUBLISH_LOG.clear()
         for k in _UNIT_STATS:
@@ -220,14 +220,14 @@ def _plain(v):
 
 def _emission_modules(targets) -> list:
     """The modules whose tables ``targets`` emit with, as the manifests DECLARE them (``emission_modules``): hawk's own, each target's
-    extension's, and the component's of every component a target's manifest names (``components``). The list is the declaration alone:
+    extension's, and the manifest's of every component a target names (``components``) and of the components those build on. The list is the declaration alone:
     loaded or not, a declared module is in it (:func:`emission_digest` imports it)."""
     from .. import components as _components
 
     names = set(_registry.shared_emission_modules())
     for t in targets:
         names.update(_registry.emission_lists(t)[0])
-        for c in _registry.traits(t).get("components", ()):
+        for c in _components.chain(_registry.traits(t).get("components", ())):
             names.update(_components.component(c).MANIFEST.get("emission_modules", ()))
     return sorted(names)
 
@@ -235,11 +235,17 @@ def _emission_modules(targets) -> list:
 def emission_digest(targets) -> str:
     """The sha256 of the plain module-level tables of the emission modules ``targets`` use (:func:`_emission_modules`): what the unit
     is emitted WITH besides its inputs, so an import-time edit of a shared spelling table or text constant moves the key, and an edit
-    of a table only another target emits with does not (sideways identity)."""
+    of a table only another target emits with does not (sideways identity). Computed once per set of modules and process;
+    :func:`reset_unit_memo` and :func:`hawk.registry.reset` forget it (the memo lives on the registry state)."""
     import importlib
 
+    names = tuple(_emission_modules(targets))
+    memo = _registry.digest_memo()
+    held = memo.get(names)
+    if held is not None:
+        return held
     h = hashlib.sha256()
-    for name in _emission_modules(targets):
+    for name in names:
         try:
             mod = importlib.import_module(name)
         except ImportError as exc:
@@ -252,12 +258,14 @@ def emission_digest(targets) -> str:
             text = _plain(vars(mod)[key])
             if text is not None:
                 h.update(f"{key}={text}\0".encode("utf-8"))
-    return h.hexdigest()
+    digest = h.hexdigest()
+    memo[names] = digest
+    return digest
 
 
 def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, defines, cache_dir,
               device_arch, derivative_blocks, layout_sizes_override,
-              host_profile: str = "", opt_level: str = "",
+              opt_level: str = "",
               options=None,
               source_digests=(), groups=(), emit_form: str = "auto",
               linalg_form: str = "auto", wide_form: str = "auto", wide_class: str = "",
@@ -299,7 +307,7 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
     two builds of the same kernel is invisible to it and would be served
     the first build's unit. :func:`reset_unit_memo` is the door out."""
     h = hashlib.sha256()
-    h.update(b"hawk.artifact.unit-key/10\n")
+    h.update(b"hawk.artifact.unit-key/11\n")
     rows = [TARGETS[t] for t in targets]
     for part in (_contracts.AETHER_ABI_VERSION, smode.id, repr(kind),
                  "\x00".join(targets), "\x00".join(str(d) for d in defines),
@@ -309,8 +317,6 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
                  repr(layout_sizes_override),
                  str(os.environ.get("HAWK_AETHER_INCLUDE")),
                  str(os.environ.get("HAWK_EAGLE_INCLUDE")),
-                 ("host_profile:" + _host_profile(host_profile or None)
-                  if any(r.host_compiled for r in rows) else ""),
                  "opt_level:" + _opt_level(opt_level or None),
                  "emit_form:" + emit_form if emit_form != "auto" else "",
                  "linalg_form:" + linalg_form if linalg_form != "auto" else "",

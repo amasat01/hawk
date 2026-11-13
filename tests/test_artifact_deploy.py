@@ -127,18 +127,18 @@ def test_every_gap_row_of_h51_is_closed(built):
     assert "EAGLE_ABI_INDEX_T p_nsm_n_samples" in cu
 
 
-def test_a_v1_loader_refuses_a_v2_artifact(built, monkeypatch):
-    """The cross-generation ruling's first direction. A v1-era loader's ceiling is
-    ``MAX_SCHEMA_VERSION == 1``; against that ceiling HAWK's document is
-    refused by VERSION, and even taken as v1 it is refused for carrying the
+def test_a_v1_loader_refuses_a_v2_artifact(built):
+    """The cross-generation ruling's first direction. A loader refuses a document
+    above its ceiling by VERSION (the ceiling lives in raptor's core, so the
+    document is raised above it here), and even taken as v1 it is refused for carrying the
     execution keys (the legacy bridge is whole-view by the axis's
     ABSENCE, never a silent upgrade)."""
     from raptor.schema import manifest as rmanifest
 
     doc = built["vec3"].manifest
-    monkeypatch.setattr(rmanifest, "MAX_SCHEMA_VERSION", 1)
+    newer = {**doc, "schema_version": rmanifest.MAX_SCHEMA_VERSION + 1}
     with pytest.raises(ValueError, match="upgrade eagle"):
-        rmanifest.check_schema_version(doc, name="manifest.json")
+        rmanifest.check_schema_version(newer, name="manifest.json")
     # taken AS v1 it is refused twice over: by the tag it carries, and -- with
     # the tag downgraded -- by the execution keys themselves.
     with pytest.raises(ValueError, match="aether-abi/1"):

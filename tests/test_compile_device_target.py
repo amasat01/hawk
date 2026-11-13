@@ -26,7 +26,7 @@ from hawk_cuda import driver as hdriver
 from hawk.compile import nvrtc as hnvrtc
 from hawk.compile import toolchain as tc
 from hawk_cuda import toolchain as dtc
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 KERNEL_SRC = 'extern "C" __global__ void hawk_probe_kernel(int* out) { *out = 42; }\n'
 

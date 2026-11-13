@@ -36,7 +36,7 @@ import hawk
 from hawk import Mutable, Param, Scalar, Terminated
 from hawk.artifact import build_bundle
 from hawk.artifact.unit_cache import _unit_key
-from hawk.emit import scalar_mode
+from aether.wings.base.wrapper import scalar_mode
 from hawk.ext import Guard, Kind
 
 B = importlib.import_module("hawk.artifact.bundle")

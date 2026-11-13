@@ -202,7 +202,7 @@ def test_a_failed_check_leaves_no_stale_report(tmp_path, monkeypatch):
     report: never an older clean ``.embedded.json`` beside failing C."""
     import test_int_planes as I
 
-    from hawk.ir import HawkError
+    from raptor.errors import RaptorError as HawkError
 
     assert toolchain.cppcheck() is not None, "install cppcheck or set $HAWK_CPPCHECK"
     export(K.drag, tmp_path, name="u", check=True)

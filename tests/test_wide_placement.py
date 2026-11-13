@@ -29,10 +29,10 @@ from conftest import sidecar_of
 import hawk
 from hawk import HawkError, Mutable, Scalar, Table, Vector
 from hawk.artifact import build_bundle
-from hawk.passes import policy
+from lowering.settings import Settings
 from hawk.ext import IndexSet, Kind
 from lowering import wide
-from hawk.ir.nodes import Select
+from raptor.ir.nodes import Select
 
 TARGETS_BOTH = ("cuda", "host")
 
@@ -119,17 +119,17 @@ def test_a_vector_whose_every_index_is_a_constant_keeps_its_registers():
 
 
 def test_using_takes_contraction_and_launch_bounds():
-    from hawk.build_policy import BuildPolicy, settings_of
+    from hawk.build_policy import BuildPolicy, check, settings_of
 
-    base = policy.Settings()
+    base = Settings()
     assert base.contraction == "direct" and base.launch_bounds is None
     got = settings_of(BuildPolicy(contraction="gemm", launch_bounds=(128, 4)), base)
-    assert got.contraction == "gemm" and got.launch_bounds == (128, 4) == policy.check(got, DEVICE.device["launch"]).launch_bounds
+    assert got.contraction == "gemm" and got.launch_bounds == (128, 4) == check(got, DEVICE.device["launch"]).launch_bounds
     with pytest.raises(ValueError):
         BuildPolicy(contraction="blas")
     for bad in ((100, 2), (256, 9)):
         with pytest.raises(ValueError):
-            policy.check(policy.Settings(launch_bounds=bad), DEVICE.device["launch"])
+            check(Settings(launch_bounds=bad), DEVICE.device["launch"])
 
 
 def test_launch_bounds_are_refused_on_a_warp_per_lane_kernel(tmp_path, cache_dir):
@@ -246,7 +246,7 @@ def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp
 @pytest.mark.parametrize("mode", ["float32", "float64"])
 @pytest.mark.parametrize("n", [2048, 2045])         # the second leaves the last block with lanes past the end
 def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode, n, cache_dir):
-    from hawk.targets.cards import _probe_wide as probe
+    from hawk_cuda import _probe_wide as probe
     from eagle import arrays
     from eagle._alloc import synchronize
 
@@ -329,7 +329,7 @@ def test_the_tables_of_the_selected_class_decide_the_placement():
 
 def test_the_sidecar_names_the_class_and_the_unit_key_changes_with_it(tmp_path, cache_dir):
     from hawk.artifact.unit_cache import _unit_key
-    from hawk.emit import scalar_mode
+    from aether.wings.base.wrapper import scalar_mode
 
     _, bundle = _build("fill_mask", tmp_path, cache_dir, device_arch="sm_75", targets=TARGETS_BOTH, host_profile="native")   # no class of its own: the nearest
     assert sidecar_of(bundle, "fill_mask")["launch"]["wide"]["class"] == "sm61"
@@ -358,7 +358,7 @@ def test_a_step_loop_carries_a_wide_mutable_in_its_own_plane_and_places_what_it_
 
 
 def test_a_step_loop_writes_the_carried_plane_once_after_the_loop_from_a_shadow_of_the_last_trip():
-    from hawk.ir.nodes import Loop, LoopValue
+    from raptor.ir.nodes import Loop, LoopValue
 
     sinks, _, _ = wide.place(W.steps_fill_k8.sinks, DEVICE, real_bytes=8)
     step = next(l for l in wide._Graph(sinks).loops if l.exit_cond is not None)
@@ -369,7 +369,7 @@ def test_a_step_loop_writes_the_carried_plane_once_after_the_loop_from_a_shadow_
 
 
 def test_a_step_loop_runs_one_loop_the_finish_follows():
-    from hawk.ir.nodes import Loop
+    from raptor.ir.nodes import Loop
 
     sinks, _, _ = wide.place(W.steps_matvec_k8.sinks, DEVICE, real_bytes=8)
     loops = [n for n in wide._Graph(sinks).loops if isinstance(n, Loop) and n.exit_cond is not None]
@@ -387,8 +387,8 @@ def test_a_stepping_or_narrow_corpus_kernel_holds_no_local_memory(entry, mode, t
 # -- the identity ------------------------------------------------------------------------------
 
 def _vector_selects(kernel):
-    from hawk.ir.nodes import Loop
-    from hawk.ir.walk import canonical_nodes
+    from raptor.ir.nodes import Loop
+    from raptor.ir.walk import canonical_nodes
 
     found, nodes = [], list(canonical_nodes(kernel.sinks)[0])
     while nodes:

@@ -26,7 +26,7 @@ import hawk
 import hawk.math as m
 from hawk.artifact import build_bundle
 from hawk.artifact.bundle import _emit, _options, lower
-from hawk.emit import scalar_mode
+from aether.wings.base.wrapper import scalar_mode
 from lowering.box import Box, threads
 from lowering.box import thread_box as _thread_box
 from hawk.artifact.unit_cache import BOX_ENV

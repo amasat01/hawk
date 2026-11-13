@@ -23,9 +23,10 @@ import pytest
 
 from hawk import Mutable, Param, Quantity, Scalar, kernel
 from hawk.diff import vjp
-from hawk.ir import Assign, HawkError, Leaf, Node, canonical
+from raptor.ir import Assign, Leaf, Node, canonical
+from raptor.errors import RaptorError as HawkError
 from hawk.math import norm
-from hawk.types import Wire
+from raptor.ir.types import Wire
 
 STATE = Quantity(slug="sc", name="state",
                  wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))])

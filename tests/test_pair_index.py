@@ -22,6 +22,7 @@ target; the rows pin it
 
 from __future__ import annotations
 
+from _specs import spec_for
 import _deploy as L
 import _embedded as E
 import numpy as np
@@ -36,7 +37,7 @@ from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk_c import EmbeddedProfile, check, export, render
-from hawk.emit import FLOAT32, FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT32, FLOAT64, render_source
 from hawk.targets import TARGETS
 
 MODES = ("float64", "float32")
@@ -250,7 +251,7 @@ def test_vjp_of_a_per_pair_kernel_matches_central_differences(n_items):
 @pytest.mark.parametrize("mode", [FLOAT64, FLOAT32], ids=["f64", "f32"])
 def test_the_emitted_sources_compile(tmp_path, target, mode):
     for k in (pairs, energy, near):
-        src = render_source(k.name, k.sinks, k.walk, TARGETS[target], mode=mode, kind=k.kind)
+        src = render_source(k.name, k.sinks, k.walk, TARGETS[target], mode=mode, kind=k.kind, spec=spec_for(TARGETS[target]))
         path = tmp_path / f"{k.name}.{'cu' if target == 'cuda' else 'cpp'}"
         path.write_text(src.text)
         rc, stderr, argv = compile_check(path, target)

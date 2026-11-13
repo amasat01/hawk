@@ -10,7 +10,7 @@ blocks, relative imports resolved, and string literals given to ``importlib.impo
 2. hawk imports no runtime (eagle) at import time;
 3. nothing in raptor, a variant, a component, an extension or eagle imports hawk, at any level (one test per piece);
 4. a writer (a component, the emission modules of an extension) imports the standard library, raptor and its own package,
-   plus the components its manifest names; its variant comes as an argument (one test per piece).
+   plus the units its manifest names, directly or through the chain of the units they name; its variant comes as an argument (one test per piece).
 """
 
 from __future__ import annotations
@@ -68,13 +68,14 @@ def _writer_edges(piece):
 
 def _writer_ok(piece, e) -> bool:
     _, pkg = S.pieces()[piece]
-    allowed = {"raptor", pkg} | S.named_components().get(piece, set())
-    return S.is_stdlib(e.top) or e.top in allowed
+    named = S.named_components().get(piece, set())
+    return (S.is_stdlib(e.top) or e.top in ("raptor", pkg) or any(e.target == m or e.target.startswith(m + ".") for m in named)
+            or e.target == "<non-literal>")      # a module named by manifest data (the spelling arm)
 
 
-@pytest.mark.parametrize("piece", [p for p in S.piece_ids() if p.startswith(("component:", "extension:"))])
+@pytest.mark.parametrize("piece", [p for p in S.piece_ids() if p.startswith(("component:", "extension:", "wing:"))])
 def test_writer_imports_only_the_standard_library_raptor_and_its_named_components(piece):
     bad = [e for e in _writer_edges(piece) if not _writer_ok(piece, e)]
     counts = {p: sum(1 for e in _writer_edges(p) if not _writer_ok(p, e))
-              for p in S.piece_ids() if p.startswith(("component:", "extension:"))}
+              for p in S.piece_ids() if p.startswith(("component:", "extension:", "wing:"))}
     assert not bad, S.report(piece, "2a.4 a writer imports the standard library, raptor and its named components only", bad, counts)

@@ -13,6 +13,7 @@ the refusals name what they refuse.
 """
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
 from _specs import DEVICE as DEVICE_SPEC
 
 import math
@@ -29,13 +30,13 @@ import hawk
 from hawk import HawkError
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk.ir import Assign, Leaf, make
+from raptor.ir import Assign, Leaf, make
 from hawk.variants import load as _load_variant
 MAX_DIM = _load_variant("cpu")["linalg"]["max_dim"]
 from lowering.team import BlockSumWrite, plain_blocks
 from lowering.split import stages
 from hawk.trace.kernel import Kernel
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 LANES = 5
 K = 2                                    # right-hand side columns of the kernels
@@ -413,20 +414,22 @@ def test_lstsq_by_qr_derivative_keeps_the_conditioning_of_the_matrix(cache):
 
 def test_lstsq_is_a_qr_team_stage_above_32_unknowns_and_normal_equations_below():
     import hawk.math as hm
-    from hawk.ir import Leaf as L
+    from raptor.ir import Leaf as L
     from hawk.trace.value import node_of
-    from hawk.types import TensorType as T
+    from raptor.ir.types import TensorType as T
 
     def solve(m, n):
         j = hawk.Value(L("vocab_read", "mat_in", "J", T((m, n), "f64")))
         r = hawk.Value(L("vocab_read", "vec_in", "r", T((m,), "f64")))
         return node_of(hm.lstsq(j, r)[0])
 
-    from hawk.ir.nodes import Assign
-    from hawk.passes.lstsq import lowered_sinks
+    from raptor.ir.nodes import Assign
+    from types import SimpleNamespace
+
+    from lowering.lstsq import lowered_sinks
 
     def lowered(m, n, max_dim):
-        return lowered_sinks((Assign("x", solve(m, n)),), max_dim)[0].value
+        return lowered_sinks((Assign("x", solve(m, n)),), SimpleNamespace(primary={"linalg": {"max_dim": max_dim}}))[0].value
 
     assert solve(80, 40).kind == "lstsq" == solve(80, 30).kind          # tracing records the math: no machine number in the IR
     big = DEVICE_SPEC.primary["linalg"]["max_dim"]
@@ -502,7 +505,7 @@ def test_a_team_matrix_in_a_loop_body_is_refused_by_name():
 
 
 def test_a_team_op_in_an_arm_of_a_dispatch_is_refused_by_name_unless_the_body_also_reads_it_outside():
-    from hawk.ir import Dispatch
+    from raptor.ir import Dispatch
 
     n = 40
     a = Leaf("vocab_read", "mat_in", "A", TensorType((n, n), "f64"))
@@ -535,15 +538,15 @@ def test_the_standalone_c_target_refuses_a_team_matrix(cache):
 
 
 def test_the_per_lane_writer_refuses_a_matrix_above_the_cap():
-    from hawk.emit import render_source
-    from hawk.emit.wrapper import scalar_mode
+    from aether.wings.base.wrapper import render_source
+    from aether.wings.base.wrapper import scalar_mode
     from hawk.artifact.layout import exports
     from hawk.targets import TARGETS
 
     kernel = chol_kernel(40)
     with pytest.raises(HawkError, match="reached the per-lane writer"):
         render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                      mode=scalar_mode("float64"), exports=exports("host"))
+                      mode=scalar_mode("float64"), exports=exports("host"), spec=spec_for(TARGETS["host"]), kind=default_kind())
 
 
 def test_the_dimension_bound_is_the_variants_team_max_dim():

@@ -17,23 +17,12 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from ..ir import At, Const, Leaf, Node, Select
+from raptor.ir import At, Const, Leaf, Node, Select
 from .._errors import HawkError
-from ..ir import make as _make
-from ..ir.linalg import as_matrix
-from ..ir.nodes import (
-    KEYED_AUTO,
-    AccumWrite,
-    Assign,
-    Dispatch,
-    Finish,
-    ReduceSamples,
-    RoleConst,
-    LanePosition,
-    SampleIndex,
-    WideWrite,
-)
-from ..types import INT_PLANE_DTYPES, TensorType
+from raptor.ir import make as _make
+from raptor.ir.linalg import as_matrix
+from raptor.ir.nodes import KEYED_AUTO, AccumWrite, Assign, Dispatch, Finish, ReduceSamples, RoleConst, LanePosition, SampleIndex, WideWrite
+from raptor.ir.types import INT_PLANE_DTYPES, TensorType
 
 _F64 = TensorType((), "f64")
 _BOOL = TensorType((), "bool")
@@ -808,8 +797,8 @@ class TableRef:
         plane's length over the axis stride read at run time (``stride`` ``None``: an axis over the lanes, held to
         the lane count). An index provably in range (a literal, or a compile-time loop's range, inside a static
         extent) is not clamped."""
-        from ..ir.nodes import LoopIndex
-        from ..ir.nodes import Op, PlaneExtent
+        from raptor.ir.nodes import LoopIndex
+        from raptor.ir.nodes import Op, PlaneExtent
 
         if index.ttype.dtype not in ("i32", "i64"):
             index = _make("cast", (index,), "i32")      # a real index truncates, as the read always did, then clamps

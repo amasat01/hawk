@@ -14,6 +14,7 @@ literals from one ``__constant__`` table, the same bits as the immediates.
 
 from __future__ import annotations
 
+from _specs import spec_for
 import json
 import re
 
@@ -24,7 +25,7 @@ from _toolchain import real_arch
 import hawk
 import hawk.math as M
 from hawk import Mutable, Scalar, kernel
-from hawk.emit import literal_table, render_source, scalar_mode
+from aether.wings.base.wrapper import literal_table, render_source, scalar_mode
 from hawk.targets import TARGETS
 
 
@@ -35,7 +36,7 @@ def poly(x: Scalar, y: Mutable[Scalar]):
 
 def _source(mode="float64"):
     return render_source(poly.name, poly.sinks, poly.walk, TARGETS["cuda"],
-                         mode=scalar_mode(mode), kind=poly.kind)
+                         mode=scalar_mode(mode), kind=poly.kind, spec=spec_for(TARGETS["cuda"]))
 
 
 def test_the_option_is_off_by_default_and_changes_no_byte(tmp_path, cache_dir):

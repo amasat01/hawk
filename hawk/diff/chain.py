@@ -11,10 +11,10 @@ result keeps its ``members``, so the fusion rule cuts the derivative chain as it
 
 from __future__ import annotations
 
-from ..ir import canonical_nodes
-from ..ir import make as _mk
-from ..ir.chain import _walk_sinks, bind
-from ..ir.nodes import Assign, Leaf
+from raptor.ir import canonical_nodes
+from raptor.ir import make as _mk
+from ..passes.chain import _walk_sinks, bind
+from raptor.ir.nodes import Assign, Leaf
 from .transform import _DIFFERENTIABLE, Derived, _jvp, _sinks_of, _wrt, vjp
 
 

@@ -32,10 +32,10 @@ from hawk.compile import (
     cubin_available,
     device,
 )
-from hawk.compile import nvrtc as hnvrtc
+from hawk_cuda import nvrtc as hnvrtc
 from hawk_cuda.nvrtc import NvrtcUnavailable
 from _toolchain import real_arch
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 #: A minimal `__global__` TU: no aether/eagle `#include` at all, so these
 #: rows exercise `device`/`cubin`'s own plumbing (header serving, arch

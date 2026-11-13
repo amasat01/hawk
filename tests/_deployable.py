@@ -40,7 +40,7 @@ from hawk import (
 )
 from hawk.ext import DATA_ONLY, Guard, Kind, sink_policy
 from hawk.math import dot, maximum, minimum, n_samples, norm, quat_rotate, tanh
-from hawk.types import Wire
+from raptor.ir.types import Wire
 
 ORIENTATION = Quantity(
     slug="earth", name="orientation",
@@ -273,7 +273,7 @@ def cases(n: int) -> list:
     m = np.arange(9 * n, dtype=float).reshape(3, 3, n) * 0.1
     table = np.arange(n, dtype=float) * 3.0
     # An INDEX plane binds at the emitted wire width: HAWK spells every integer
-    # element `Int` (`long long`, hawk/emit/render.element_spelling), and eagle's
+    # element `Int` (`long long`, staging/aether/wings/base/render.element_spelling), and eagle's
     # packer passes an integer array through AT ITS OWN dtype rather than
     # re-casting it -- so an int32 array would be decoded 8 bytes at a time.
     where = ((np.arange(n) * 7 + 3) % n).astype(np.int32)

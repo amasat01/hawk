@@ -28,6 +28,7 @@ Rows:
 """
 
 from __future__ import annotations
+from _specs import default_kind
 from _specs import HOST
 
 import json
@@ -41,8 +42,8 @@ import hawk
 import hawk.math as M
 from hawk import Index, Mutable, Scalar, Terminated, Vector
 from hawk.artifact import build_bundle
-from hawk.emit import render_body
-from hawk.ir import HawkError
+from aether.wings.base.render import render_body
+from raptor.errors import RaptorError as HawkError
 
 N = 61
 K = 3
@@ -109,8 +110,8 @@ def test_auto_counts_the_mix_and_a_forced_policy_counts_nothing(built):
     forced = _sidecar(built["local"], "mix_switch")
     assert "mix" not in forced["dispatch"][0]
     assert all(n != "dispatch0_mix" for _, n in forced["arg_spec"])
-    auto_text = render_body(mix_auto.sinks, mix_auto.walk, spec=HOST).text
-    switch_text = render_body(mix_switch.sinks, mix_switch.walk, spec=HOST).text
+    auto_text = render_body(mix_auto.sinks, mix_auto.walk, spec=HOST, kind=default_kind()).text
+    switch_text = render_body(mix_switch.sinks, mix_switch.walk, spec=HOST, kind=default_kind()).text
     lines = [ln for ln in auto_text.split("\n") if "hawk_abi::mix_count(" not in ln]
     assert "\n".join(lines) == switch_text
 
@@ -186,7 +187,7 @@ def test_a_stale_sort_is_guarded_and_a_switch_sweep_completes_it(built):
 
 
 def test_static_units_write_no_class_and_a_classify_kernel_does(built):
-    from hawk.ir import split_segmented
+    from hawk.passes.segment import split_segmented
 
     static = built["static"]
     for j in range(K):
@@ -207,8 +208,8 @@ def test_resolve_dispatch_lowers_an_auto_group_and_refuses_the_rest():
     resolved = hawk.resolve_dispatch(mix_auto, {"dispatch0": "switch"})
     assert resolved.name == "mix_auto"
     assert [d.policy for d in resolved.walk.dispatches] == ["switch"]
-    assert render_body(resolved.sinks, resolved.walk, spec=HOST).text == render_body(
-        mix_switch.sinks, mix_switch.walk, spec=HOST).text
+    assert render_body(resolved.sinks, resolved.walk, spec=HOST, kind=default_kind()).text == render_body(
+        mix_switch.sinks, mix_switch.walk, spec=HOST, kind=default_kind()).text
     seg = hawk.resolve_dispatch(mix_auto, {"dispatch0": "segmented"})
     assert [d.policy for d in seg.walk.dispatches] == ["segmented"]
     with pytest.raises(HawkError, match=r"declared policy='switch'; only an 'auto'"):

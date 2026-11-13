@@ -36,8 +36,8 @@ import pytest
 from conftest import sidecar_of
 
 from hawk.artifact import plan_view
-from hawk.emit.render import MIRROR_OF, mirror_of
-from hawk.types import TensorType
+from raptor.protocols.naming import MIRROR_OF, mirror_of
+from raptor.ir.types import TensorType
 
 _V3 = TensorType((3,), "f64")
 _M33 = TensorType((3, 3), "f64")
@@ -122,7 +122,7 @@ def test_a_scalar_and_a_matrix_mutable_declare_their_own_dtypes(built):
 def test_a_handle_only_role_refuses_a_rank1_plane():
     """The one shape the map CANNOT express, refused loudly rather than packed
     at the wrong size."""
-    from hawk.ir import HawkError
+    from raptor.errors import RaptorError as HawkError
 
     for role in ("per_sample", "lookup", "terminated", "wide_in", "wide_out",
                  "accum_out"):

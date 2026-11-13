@@ -13,7 +13,7 @@ one numeric row at the bottom, which builds and runs the host artifact only
 (no GPU)."""
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, default_kind
 
 import re
 
@@ -22,9 +22,9 @@ import pytest
 
 import hawk
 import hawk.math as M
-from hawk.emit import render_body
-from hawk.ir import Assign, Dispatch, Leaf, canonical
-from hawk.types import TensorType
+from aether.wings.base.render import render_body
+from raptor.ir import Assign, Dispatch, Leaf, canonical
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 
@@ -50,12 +50,12 @@ def _dk_predicated(k: hawk.Index, a: hawk.Scalar, x: hawk.Scalar, b: hawk.Scalar
 
 def _switch_text() -> str:
     sinks = _dk_switch.sinks
-    return render_body(sinks, canonical(sinks), spec=HOST).text
+    return render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text
 
 
 def _predicated_text() -> str:
     sinks = _dk_predicated.sinks
-    return render_body(sinks, canonical(sinks), spec=HOST).text
+    return render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text
 
 
 def _split_before_after_switch(text: str) -> tuple[list[str], list[str]]:
@@ -134,7 +134,7 @@ def _dk_shared_by_two_of_three(k: hawk.Index, x: hawk.Scalar, w: hawk.Scalar,
 
 def test_a_value_every_branch_shares_is_hoisted_once_above_the_switch():
     sinks = _dk_shared_across_branches.sinks
-    text = render_body(sinks, canonical(sinks), spec=HOST).text
+    text = render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text
     before, after = _split_before_after_switch(text)
     assert "\n".join(before).count("psc_x[i].eval()") == 1
     assert "psc_x[i].eval()" not in "\n".join(after)
@@ -152,7 +152,7 @@ def test_a_value_all_but_one_branch_reads_is_hoisted():
     """With three or more cases, what all but one read is computed once above
     the switch (the extra case computes it unused)."""
     sinks = _dk_shared_by_two_of_three.sinks
-    before, after = _split_before_after_switch(render_body(sinks, canonical(sinks), spec=HOST).text)
+    before, after = _split_before_after_switch(render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text)
     assert "\n".join(before).count("psc_x[i].eval()") == 1
     assert "psc_x[i].eval()" not in "\n".join(after)
 
@@ -160,7 +160,7 @@ def test_a_value_all_but_one_branch_reads_is_hoisted():
 def test_a_value_fewer_branches_read_is_not_hoisted():
     """``x * x`` is read by two of four cases: the other two must not pay for it."""
     sinks = _dk_shared_by_two_of_four.sinks
-    before, after = _split_before_after_switch(render_body(sinks, canonical(sinks), spec=HOST).text)
+    before, after = _split_before_after_switch(render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text)
     assert "psc_x" not in "\n".join(before)
     assert "psc_x[i].eval()" in "\n".join(after)
 
@@ -176,7 +176,7 @@ def test_elision_still_works_under_the_scoped_renderer():
     z = zero_like(S)
     d = Dispatch(k, [b0, z, b2], "switch", S)
     sinks = (Assign("out", d, S),)
-    text = render_body(sinks, canonical(sinks), spec=HOST).text
+    text = render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text
     assert "case 1:" not in text
     assert "case 0: {" in text
     # an ELIDED branch's default writes the typed zero DIRECTLY (no
@@ -230,7 +230,7 @@ def _dk_siblings(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar],
 
 def test_sibling_switches_on_one_selector_fuse_into_one():
     sinks = _dk_siblings.sinks
-    text = render_body(sinks, canonical(sinks), spec=HOST).text
+    text = render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text
     assert text.count("switch (") == 1
     assert text.count("const std::int32_t hawk_disp") == 1       # one clamp
     assert text.count("aether::math::log(") == 1                  # shared by both members
@@ -251,7 +251,7 @@ def test_vjp_runs_a_shared_operands_chain_once_with_a_combined_seed():
     from hawk.diff import vjp
 
     derived = vjp(_dk_shared_operand.sinks)
-    text = render_body(derived, canonical(derived), spec=HOST).text
+    text = render_body(derived, canonical(derived), spec=HOST, kind=default_kind()).text
     assert text.count("aether::math::cos(") == 1          # d sin(x), once, not per case
 
 
@@ -267,7 +267,7 @@ def _dk_unsafe_shared(k: hawk.Index, m: hawk.Index, x: hawk.Scalar,
 
 def test_the_all_but_one_hoist_refuses_an_integer_division():
     sinks = _dk_unsafe_shared.sinks
-    before, after = _split_before_after_switch(render_body(sinks, canonical(sinks), spec=HOST).text)
+    before, after = _split_before_after_switch(render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text)
     assert "int_floordiv" not in "\n".join(before)
     assert "int_floordiv" in "\n".join(after)
 
@@ -296,7 +296,7 @@ def _loop_body(text: str) -> str:
 
 def test_a_switch_in_a_loop_body_keeps_its_math_in_its_cases():
     sinks = _dk_switch_in_loop.sinks
-    body = _loop_body(render_body(sinks, canonical(sinks), spec=HOST).text)
+    body = _loop_body(render_body(sinks, canonical(sinks), spec=HOST, kind=default_kind()).text)
     before, after = body.split("switch (", 1)
     assert "aether::math::exp(" not in before and "aether::math::log(" not in before
     assert "aether::math::exp(" in after and "aether::math::log(" in after
@@ -388,7 +388,7 @@ def _dk_ladder_lazy(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar])
 
 
 def _text(kernel) -> str:
-    return render_body(kernel.sinks, canonical(kernel.sinks), spec=HOST).text
+    return render_body(kernel.sinks, canonical(kernel.sinks), spec=HOST, kind=default_kind()).text
 
 
 def test_a_costly_ladder_renders_one_switch_per_chain():
@@ -520,7 +520,7 @@ def test_the_reverse_of_a_ladder_is_scoped_and_matches_a_finite_difference():
         y = v
 
     derived = vjp(ladder.sinks)
-    text = render_body(derived, canonical(derived), spec=HOST).text
+    text = render_body(derived, canonical(derived), spec=HOST, kind=default_kind()).text
     assert "aether::math::" not in text[:text.index("switch (")]
     h = 1e-6
     for kind in range(3):

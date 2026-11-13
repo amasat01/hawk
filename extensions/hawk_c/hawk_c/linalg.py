@@ -29,7 +29,7 @@ from aether_dsc import c_core
 from aether_dsc.c_core import CFunction
 
 from raptor.errors import RaptorError
-from hawk.ir.linalg import sweeps
+from raptor.ir.linalg import sweeps
 from .spelling import WIDTH, int_literal, libm_name, real_literal
 
 #: The type helpers, by factor kind.

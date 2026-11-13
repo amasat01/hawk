@@ -11,6 +11,7 @@
 * **Complex pairs.** ``cmul``, ``conj``, ``abs2`` and ``arg`` on ``Vector[2]``."""
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
 from _specs import HOST
 
 import math
@@ -24,8 +25,8 @@ import hawk
 import hawk.math as m
 from hawk import HawkError
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
-from hawk.ir import canonical
+from aether.wings.base.render import render_body
+from raptor.ir import canonical
 
 SCALE = 3.0
 
@@ -88,7 +89,7 @@ def uses_library(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
 
 
 def _text(kernel) -> str:
-    return render_body(kernel.sinks, canonical(kernel.sinks), spec=HOST).text
+    return render_body(kernel.sinks, canonical(kernel.sinks), spec=HOST, kind=default_kind()).text
 
 
 def _ref_nested(x):
@@ -277,11 +278,11 @@ def test_a_pair_helper_refuses_a_non_pair():
 
 
 def test_the_pair_helpers_render_in_both_precisions():
-    from hawk.emit import FLOAT32, FLOAT64, render_source
+    from aether.wings.base.wrapper import FLOAT32, FLOAT64, render_source
     from hawk.targets import TARGETS
 
     k = _pairs("both")
     host = TARGETS["host"]
     for mode in (FLOAT32, FLOAT64):
-        text = render_source("pairs", k.sinks, canonical(k.sinks), host, mode=mode).text
+        text = render_source("pairs", k.sinks, canonical(k.sinks), host, mode=mode, spec=spec_for(host), kind=default_kind()).text
         assert "atan2" in text

@@ -1,0 +1,32 @@
+{
+ "name": "aether_simt",
+ "version": "0",
+ "contract": "1",
+ "entries": {
+  "wrapper_text": [
+   "BANDED_SS_HELPERS",
+   "BANDED_SUM",
+   "BANDED_SUM_INCLUDE",
+   "WARP_SUM",
+   "WARP_SUM_BANDED",
+   "banded_sample_sum",
+   "staged"
+  ]
+ },
+ "spellings": [
+  {
+   "writer": "aether",
+   "dialect": "simt",
+   "ref": "aether.wings.simt.aether"
+  }
+ ],
+ "emission_modules": [
+  "aether.wings.simt.aether",
+  "aether.wings.simt.wrapper_text"
+ ],
+ "runtime_modules": [],
+ "components": [
+  "simt",
+  "aether_base"
+ ]
+}

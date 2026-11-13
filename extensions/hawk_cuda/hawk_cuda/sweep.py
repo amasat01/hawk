@@ -18,6 +18,7 @@ It needs a repository checkout (the corpus helpers live in ``tests/``) and a CUD
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import statistics
 import time
@@ -191,13 +192,27 @@ def _contraction():
     return module
 
 
-def measure_boxes(dtype: str, cache: Path, repeats: int) -> list:
-    """The feature card's contraction (64 x 64 tables, a shared-axis sum) timed for T in :data:`BOXES`."""
+@contextlib.contextmanager
+def _variant_at(name: str, directory):
+    """Inside the block the loader reads variant ``name`` from ``directory`` (a working copy); the installed package is never written."""
+    from hawk import variants
+
+    installed = variants._home
+    variants._home = lambda n: Path(directory) if n == name else installed(n)
+    variants.load.cache_clear()
+    try:
+        yield
+    finally:
+        variants._home = installed
+        variants.load.cache_clear()
+
+
+def measure_boxes(dtype: str, cache: Path, repeats: int, cuda_dir: Path) -> list:
+    """The feature card's contraction (64 x 64 tables, a shared-axis sum) timed for T in :data:`BOXES`; ``cuda_dir`` is the cuda
+    variant's data directory, of which each T gets a working copy under ``cache``."""
     import shutil
 
     import numpy as np
-
-    from hawk import variants
 
     import cupy
     import eagle.plan
@@ -206,26 +221,21 @@ def measure_boxes(dtype: str, cache: Path, repeats: int) -> list:
     real = np.float32 if dtype == "float32" else np.float64
     n = fk.ROWS * fk.SAMPLES
     host = fk.contract_planes(real)
-    original, timed = variants.ROOT, []
-    try:
-        for T in BOXES:
-            # the variant data with this T as the card's default: a copy of variants/ under the cache, which the loader reads in turn
-            root = cache / f"variants_{dtype}_{T}"
-            if root.exists():
-                shutil.rmtree(root)
-            shutil.copytree(original, root)
-            doc = read_cards(root)
-            doc["thread_box"]["defaults"][dtype] = T
-            write_cards(doc, root)
-            variants.ROOT = root
-            variants.load.cache_clear()
+    timed = []
+    for T in BOXES:
+        # the variant data with this T as the card's default: a copy of the variant's directory under the cache, which the loader reads in turn
+        copy = cache / f"cuda_{dtype}_{T}"
+        if copy.exists():
+            shutil.rmtree(copy)
+        shutil.copytree(cuda_dir, copy)
+        doc = read_cards(copy)
+        doc["thread_box"]["defaults"][dtype] = T
+        write_cards(doc, copy)
+        with _variant_at("cuda", copy):
             plan_ = eagle.plan.auto(fk.contract, targets=("cuda",), scalar_type=dtype, cache_dir=str(cache / f"box_{dtype}_{T}"))
             planes = {**{k: cupy.asarray(v) for k, v in host.items()}, "y": cupy.zeros(n, dtype=real)}
             bound = plan_.bind(**planes)
             timed.append({"T": T, "ns": _time(bound, cupy.cuda.Device().synchronize, repeats) * LANES / n})   # _time divides by LANES
-    finally:
-        variants.ROOT = original
-        variants.load.cache_clear()
     return timed
 
 
@@ -234,22 +244,18 @@ _CARDS_HEAD = ("# Variant data: ONE literal, no code. The per-device cards of th
                "# select_weight, tile rows); a row {cc, device, dtype, ...} replaces the defaults on the nearest arch by device features.\n")
 
 
-def read_cards(root=None) -> dict:
-    """The cuda variant's cards (``variants/cuda/cards.py``, one literal) under ``root`` (default: the loader's)."""
+def read_cards(cuda_dir) -> dict:
+    """The cuda variant's cards (``cards.py``, one literal) in ``cuda_dir``, the variant's data directory the caller names."""
     import ast
 
-    from hawk import variants
-
-    return ast.literal_eval((Path(root or variants.ROOT) / "cuda" / "cards.py").read_text(encoding="utf-8"))
+    return ast.literal_eval((Path(cuda_dir) / "cards.py").read_text(encoding="utf-8"))
 
 
-def write_cards(doc: dict, root=None) -> None:
-    """Write ``doc`` as ``variants/cuda/cards.py``: the card data as a Python literal behind a header comment."""
+def write_cards(doc: dict, cuda_dir) -> None:
+    """Write ``doc`` as ``cards.py`` in ``cuda_dir``: the card data as a Python literal behind a header comment."""
     import pprint
 
-    from hawk import variants
-
-    (Path(root or variants.ROOT) / "cuda" / "cards.py").write_text(
+    (Path(cuda_dir) / "cards.py").write_text(
         _CARDS_HEAD + pprint.pformat(doc, width=110, sort_dicts=False) + "\n", encoding="utf-8")
 
 
@@ -258,11 +264,12 @@ def main(argv=None) -> int:
     ap.add_argument("--dtype", nargs="+", default=["f32", "f64"], choices=["f32", "f64"])
     ap.add_argument("--out", type=Path, default=Path("wide_sweep.json"), help="where the candidate rows go")
     ap.add_argument("--quick", action="store_true", help="a small grid (about two minutes)")
-    ap.add_argument("--write", action="store_true", help="also write the rows into variants/cuda/cards.py")
+    ap.add_argument("--cuda-dir", type=Path, required=True,
+                    help="the cuda variant's data directory (holds cards.py): read for the defaults, and the one --write writes")
+    ap.add_argument("--write", action="store_true", help="also write the rows into cards.py of --cuda-dir")
     ap.add_argument("--cache", type=Path, default=Path("wide_sweep_cache"))
     args = ap.parse_args(argv)
     from . import nvrtc
-    from hawk import variants
 
     dtypes = tuple({"f32": "float32", "f64": "float64"}[d] for d in args.dtype)
     cc, device = nvrtc.current_device_arch(), nvrtc.current_device_name()
@@ -270,19 +277,19 @@ def main(argv=None) -> int:
     started = time.perf_counter()
     cells = measure(plan(dtypes, args.quick), args.cache, 5 if args.quick else 9)
     won = winners(cells)
-    defaults = read_cards()["wide"]["defaults"]
+    defaults = read_cards(args.cuda_dir)["wide"]["defaults"]
     wide_rows = [wide_row(cc, device, d, won, defaults) for d in dtypes]
-    boxes = {d: measure_boxes(d, args.cache, 5 if args.quick else 9) for d in dtypes}
+    boxes = {d: measure_boxes(d, args.cache, 5 if args.quick else 9, args.cuda_dir) for d in dtypes}
     box_rows = [box_row(cc, device, d, t) for d, t in boxes.items()]
     result = {"cc": cc, "device": device, "wall_s": round(time.perf_counter() - started, 1), "quick": args.quick,
               "wide": {"rows": wide_rows}, "thread_box": {"rows": box_rows}, "cells": cells, "winners": won, "boxes": boxes}
     args.out.write_text(json.dumps(result, indent=2) + "\n")
     if args.write:
-        doc = read_cards()
+        doc = read_cards(args.cuda_dir)
         for card, rows in (("wide", wide_rows), ("thread_box", box_rows)):
             keep = [r for r in doc[card]["rows"] if (r["cc"], r["device"]) != (cc, device) or r["dtype"] not in dtypes]
             doc[card]["rows"] = keep + [{k: v for k, v in r.items() if k != "tie"} for r in rows]
-        write_cards(doc)
+        write_cards(doc, args.cuda_dir)
     print(f"wide sweep on {device} ({cc}): {len(cells)} cells in {result['wall_s']} s -> {args.out}")
     return 0
 

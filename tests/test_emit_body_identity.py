@@ -14,31 +14,33 @@ in ``Walk.arg_spec`` ORDER. That is the ONE contractual ordering property; eagle
 """
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
 from _specs import HOST
 
 import re
 
 from _emitted import MODES, cases
 
-from hawk.emit import FLOAT64, render_body, render_source
+from aether.wings.base.wrapper import FLOAT64, render_source
+from aether.wings.base.render import render_body
 from hawk_cuda.emit import CUDA
-from hawk.emit.render import binding_name, param_name
-from hawk.ir import Assign, Leaf, canonical
-from hawk.ir import make as mk
+from aether.wings.base.render import binding_name, param_name
+from raptor.ir import Assign, Leaf, canonical
+from raptor.ir import make as mk
 from hawk.targets import TARGETS
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 
 def test_both_backends_consume_the_same_body_string():
     for name, sinks, walk in cases():
         for mode in MODES:
-            host = render_source(name, sinks, walk, TARGETS["host"], mode=mode)
-            cuda = render_source(name, sinks, walk, TARGETS["cuda"], mode=mode)
+            host = render_source(name, sinks, walk, TARGETS["host"], mode=mode, spec=spec_for(TARGETS["host"]), kind=default_kind())
+            cuda = render_source(name, sinks, walk, TARGETS["cuda"], mode=mode, spec=spec_for(TARGETS["cuda"]), kind=default_kind())
             assert host.body == cuda.body, (
                 f"the two wrappers did not consume the SAME body string "
                 f"for {name!r} ({mode.id}).\nhost:\n{host.body}\ncuda:\n{cuda.body}"
             )
-            reference = render_body(sinks, walk, indent="        ", spec=HOST).text
+            reference = render_body(sinks, walk, indent="        ", spec=HOST, kind=default_kind()).text
             assert host.body == reference, (
                 f"{name!r}: a wrapper's body diverged from the renderer's own output"
             )
@@ -93,13 +95,13 @@ def test_a_unit_without_a_random_op_renders_no_random_include():
     ``cases()`` `_emitted.py` builds -- 26 kernels + one derivative IR)
     must still render byte-identically to before it:
     none of them use ``hawk.math.random.{uniform,normal}``, so none may carry
-    the ``aether/random`` include :func:`hawk.emit.wrapper.prelude` adds only
-    when a body actually used one (:attr:`hawk.emit.render.Body.
+    the ``aether/random`` include :func:`aether.wings.base.wrapper.prelude` adds only
+    when a body actually used one (:attr:`aether.wings.base.render.Body.
     needs_random`)."""
     for name, sinks, walk in cases():
         for mode in MODES:
             for target in (TARGETS["host"], TARGETS["cuda"]):
-                source = render_source(name, sinks, walk, target, mode=mode)
+                source = render_source(name, sinks, walk, target, mode=mode, spec=spec_for(target), kind=default_kind())
                 assert "aether/random" not in source.text, (
                     f"{name!r} ({target.id}, {mode.id}) uses no random op but "
                     "its emitted TU carries the aether/random include")
@@ -116,8 +118,8 @@ def test_a_unit_with_a_random_op_does_carry_the_include():
     draw = mk("random_uniform", (seed, counter))
     sinks = (Assign("y", draw, TensorType((), "f64")),)
     walk = canonical(sinks)
-    host = render_source("rnd", sinks, walk, TARGETS["host"], mode=FLOAT64)
-    cuda = render_source("rnd", sinks, walk, TARGETS["cuda"], mode=FLOAT64)
+    host = render_source("rnd", sinks, walk, TARGETS["host"], mode=FLOAT64, spec=spec_for(TARGETS["host"]), kind=default_kind())
+    cuda = render_source("rnd", sinks, walk, TARGETS["cuda"], mode=FLOAT64, spec=spec_for(TARGETS["cuda"]), kind=default_kind())
     assert host.body == cuda.body
     for source in (host, cuda):
         assert source.text.count('#include "aether/random/detail/Backend.h"') == 1

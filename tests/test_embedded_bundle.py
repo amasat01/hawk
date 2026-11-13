@@ -45,9 +45,9 @@ from hawk.artifact import (
 from hawk.artifact import manifest as _manifest
 from hawk.artifact.unit_cache import _unit_key
 from hawk_c import EmbeddedProfile, export
-from hawk.emit import scalar_mode
+from aether.wings.base.wrapper import scalar_mode
 from hawk.ext import DEFAULT_KIND
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.targets import TARGETS
 
 C_FILES = ["drag.c", "drag.embedded.json", "drag.h"]
@@ -214,7 +214,7 @@ def _key_for(targets, cache_dir, **kw) -> str:
     return _unit_key(["drag"], [K.drag.walk.digest], [""], targets=targets,
                      smode=scalar_mode("float64"), kind=DEFAULT_KIND, defines=(),
                      cache_dir=cache_dir, device_arch="", derivative_blocks=[None],
-                     layout_sizes_override=None, host_profile="native", **kw, spec=HOST)
+                     layout_sizes_override=None, **kw, spec=HOST)
 
 
 def test_unit_key_names_the_c_core_version_for_c_only(cache_dir, monkeypatch):

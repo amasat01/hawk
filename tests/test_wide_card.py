@@ -19,7 +19,7 @@ from lowering import wide
 from simt.lane import slice_min, slice_sinks, sliced
 from hawk.targets import cards
 from hawk_cuda import sweep
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 NARROW = TensorType((64,), "f32")
 

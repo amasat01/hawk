@@ -57,7 +57,7 @@ def test_a_keyword_alone_and_the_policy_alone_make_the_same_unit(tmp_path, cache
 
 
 def test_the_form_sets_are_validated_in_one_place():
-    from hawk.passes import policy
+    from hawk import build_policy as policy
 
     for key in SETTINGS:
         with pytest.raises(HawkError, match=f"{key} must be one of"):

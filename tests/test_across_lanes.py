@@ -31,7 +31,7 @@ from hawk.artifact import build_bundle
 from hawk.diff import vjp
 from lowering.lanes import key_run
 from _specs import DEVICE
-from hawk.ir.nodes import AccumWrite, ReduceSamples, SampleSum
+from raptor.ir.nodes import AccumWrite, ReduceSamples, SampleSum
 
 SIZES = (1, 31, 32, 33, 1000)
 TOL = {"float32": 1e-6, "float64": 1e-13}

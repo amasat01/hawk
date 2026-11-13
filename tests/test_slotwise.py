@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Slotwise form (:mod:`hawk.ir.slotwise`): a wide cotangent as a ``vec`` of
+"""Slotwise form (:mod:`lowering.slotwise`): a wide cotangent as a ``vec`` of
 scalar parts, committed where each part is ready.
 
 Three rows. The VALUE row evaluates a derived IR in its dense form and in its
@@ -12,7 +12,9 @@ idempotence, a non-finite seed). The EMIT row pins where the own-column stores
 land."""
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, default_kind
+
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -24,12 +26,12 @@ import hawk.diff.loops as diff_loops
 import hawk.diff.transform as diff_transform
 from hawk import Index, Mutable, Scalar, Terminated, Vector, kernel
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
-from hawk.ir import Assign, Const, Dispatch, Leaf, Loop, Select, WideWrite, canonical
-from hawk.ir import make as mk
-from hawk.ir.slotwise import slotwise
+from aether.wings.base.render import render_body
+from raptor.ir import Assign, Const, Dispatch, Leaf, Loop, Select, WideWrite, canonical
+from raptor.ir import make as mk
+from lowering.slotwise import slotwise
 from hawk.math import dispatch, sin
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 I32 = TensorType((), "i32")
@@ -116,8 +118,10 @@ def _dense(build):
     """``build()`` with the pass switched off at both call sites."""
     mp = pytest.MonkeyPatch()
     try:
-        mp.setattr(diff_transform, "slotwise", lambda roots: tuple(roots))
-        mp.setattr(diff_loops, "slotwise", lambda roots: tuple(roots))
+        real = diff_loops._slotwise
+        dense = SimpleNamespace(chain=real.chain, is_structural_zero=real.is_structural_zero, slotwise=lambda roots: tuple(roots))
+        mp.setattr(diff_transform, "_slotwise", dense)
+        mp.setattr(diff_loops, "_slotwise", dense)
         return tuple(build())
     finally:
         mp.undo()
@@ -180,8 +184,8 @@ def test_a_non_finite_factor_leaves_an_untouched_slot_zero_not_nan():
 def test_no_vec_combination_is_a_no_op_and_the_pass_is_idempotent():
     plain = tuple(drag_vjp())
     assert all(a is b for a, b in zip(slotwise(plain), plain))
-    assert (render_body(slotwise(plain), canonical(slotwise(plain)), spec=HOST).text
-            == render_body(plain, canonical(plain), spec=HOST).text)
+    assert (render_body(slotwise(plain), canonical(slotwise(plain)), spec=HOST, kind=default_kind()).text
+            == render_body(plain, canonical(plain), spec=HOST, kind=default_kind()).text)
     once = slotwise(_dense(_wide_dispatch))
     again = slotwise(once)
     assert all(a is b for a, b in zip(once, again))
@@ -199,7 +203,7 @@ def test_a_loop_is_not_entered():
 
 
 def _body(sinks):
-    return render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST).text
+    return render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST, kind=default_kind()).text
 
 
 def test_a_wide_cotangent_is_committed_per_component():
@@ -337,7 +341,7 @@ def test_a_chain_is_kept_where_a_commit_can_take_it_and_lowered_where_not():
 
 
 def _nodes(sinks):
-    from hawk.ir.walk import canonical_nodes
+    from raptor.ir.walk import canonical_nodes
 
     return canonical_nodes(tuple(sinks))[0]
 

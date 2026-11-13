@@ -59,29 +59,11 @@
    "features_of",
    "select",
    "tables"
-  ],
-  "wrapper_text": [
-   "BANDED_SS_HELPERS",
-   "BANDED_SUM",
-   "BANDED_SUM_INCLUDE",
-   "WARP_SUM",
-   "WARP_SUM_BANDED",
-   "banded_sample_sum",
-   "staged"
   ]
  },
- "spellings": [
-  {
-   "writer": "aether",
-   "dialect": "simt",
-   "ref": "simt.aether"
-  }
- ],
  "emission_modules": [
-  "simt.aether",
   "simt.lane",
-  "simt.wide_class",
-  "simt.wrapper_text"
+  "simt.wide_class"
  ],
  "runtime_modules": [],
  "components": [

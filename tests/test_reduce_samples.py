@@ -19,6 +19,8 @@ Rows (the ``cuda`` arm is marked ``gpu``):
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import spec_for
 from _specs import DEVICE
 
 import numpy as np
@@ -268,7 +270,7 @@ def test_one_kernel_reduces_with_one_op():
         a = hawk.sum(x)
         b = hawk.max(x)
 
-    from hawk.emit.wrapper import render_source
+    from aether.wings.base.wrapper import render_source
     from hawk.targets import TARGETS
     with pytest.raises(HawkError, match="one op"):
-        render_source(k.name, k.sinks, k.walk, TARGETS["cuda"])
+        render_source(k.name, k.sinks, k.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"]), kind=default_kind())

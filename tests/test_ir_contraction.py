@@ -25,6 +25,7 @@ is that rule, and it is the reason ``Table["row":r, "col":c]`` exists at all).
 """
 
 from __future__ import annotations
+from _specs import default_kind
 from _specs import HOST
 
 import dataclasses
@@ -35,7 +36,7 @@ import pytest
 import hawk
 import hawk.math as m
 from hawk.diff import vjp
-from hawk.ir import ContractionOperand, RecognizedContraction, recognize
+from hawk.passes.contraction import ContractionOperand, RecognizedContraction, recognize
 
 ROWS, N_OUT, BATCH = 4, 3, 5
 COLS = 6
@@ -410,12 +411,12 @@ def test_the_record_carries_exactly_the_fields_eagles_lowering_reads(spline):
 def test_recognition_mutates_nothing():
     """Reads only: it compiles nothing, launches nothing and rewrites no IR, so
     calling it leaves the kernel's emitted body byte-identical."""
-    from hawk.emit import render_body
+    from aether.wings.base.render import render_body
 
-    before = render_body(spline_contract.sinks, spline_contract.walk, spec=HOST).text
+    before = render_body(spline_contract.sinks, spline_contract.walk, spec=HOST, kind=default_kind()).text
     digest = spline_contract.walk.digest
     recognize(spline_contract, vjp=vjp(spline_contract))
-    assert render_body(spline_contract.sinks, spline_contract.walk, spec=HOST).text == before
+    assert render_body(spline_contract.sinks, spline_contract.walk, spec=HOST, kind=default_kind()).text == before
     assert spline_contract.walk.digest == digest
 
 

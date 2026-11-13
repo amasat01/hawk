@@ -33,12 +33,12 @@ import builtins
 import copy
 from typing import Any
 
-from ..ir import Const, Dispatch, Node, Select
+from raptor.ir import Const, Dispatch, Node, Select
 from .._errors import HawkError
-from hawk.passes.cost import SPECIAL_KINDS
-from ..ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from ..types import TensorType
-from ..ir.loops import build_loop
+from hawk import components as _components
+from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from raptor.ir.types import TensorType
+from raptor.ir.loops import build_loop
 from .value import Value, index_node, node_of, own_column_rewrite_advice, select
 
 #: The reserved prefix of every name this pass synthesises.
@@ -190,7 +190,7 @@ class _LoopBuilder:
         """The static ``(stop,)`` of ``range(n)`` with a traced ``n``, and the loop's
         clamped run-time count: ``n`` held to ``[0, cap]`` (``cap`` the author's
         ``max=``, else the int range, and then the loop has no tape size)."""
-        from ..ir import make as _make
+        from raptor.ir import make as _make
 
         if len(bounds) != 1:
             raise HawkError(
@@ -297,7 +297,7 @@ def set_component(vector: Any, index: Any, value: Any, name: str) -> Any:
 
     The index may be static or symbolic; folding a static one is the C++
     compiler's decision, not the tracer's."""
-    from ..ir import make as _make
+    from raptor.ir import make as _make
     from .decl import Plane
 
     if isinstance(vector, Plane):
@@ -345,7 +345,7 @@ def _store_under(cond: Any, on_true: Any, on_false: Any) -> Any:
     Only a vector written at a run-time index (placed from width 1: :func:`~simt.wide.runtime_min`); every other
     ``if`` keeps the select, so a kernel with no such value renders as it did. A build with ``wide_form="thread"``
     puts the select back (:func:`simt.wide.unstored`)."""
-    from ..ir.nodes import Op
+    from raptor.ir.nodes import Op
 
     if not (isinstance(on_true, Value) and isinstance(on_false, Value)):
         return None
@@ -354,7 +354,7 @@ def _store_under(cond: Any, on_true: Any, on_false: Any) -> Any:
         if (isinstance(node, Op) and node.kind == "set_component_at" and node.operands[0] is base
                 and len(base.ttype.shape) == 1
                 and not isinstance(node.operands[1], Const) and not node_of(cond).ttype.shape):
-            from ..ir import make as _make
+            from raptor.ir import make as _make
 
             index, value = node.operands[1], Value(node.operands[2])
             current = Value(_make("component_at", (base, index)))
@@ -405,8 +405,8 @@ def _as_switch(value: Value, shared: bool = False) -> Value:
 def _one_node_per_value(arms: list) -> list:
     """``arms`` with equal-structure nodes merged to one, so a value written twice
     in a case is named once there (a case renders by node, not by structure)."""
-    from ..ir.walk import post_order as _post_order, structural_keys as _keys
-    from ..ir.walk import substitute
+    from raptor.ir.walk import post_order as _post_order, structural_keys as _keys
+    from raptor.ir.walk import substitute
 
     while True:
         order, key, first, swaps = _post_order(arms), {}, {}, {}
@@ -442,7 +442,7 @@ def _costly_arm(arms: list, conds: list, shared: bool) -> bool:
     only while nothing else reads that work, so a named transcendental runs in every lane). Alone, a
     transcendental or division counts when its arm reads it twice, by structure: a value written
     twice is read twice."""
-    from ..ir.walk import post_order as _post_order, structural_keys as _keys
+    from raptor.ir.walk import post_order as _post_order, structural_keys as _keys
 
     key: dict = {}
     _keys(_post_order([*arms, *conds]), key)
@@ -458,7 +458,7 @@ def _costly_arm(arms: list, conds: list, shared: bool) -> bool:
         for k, n in own.items():
             if isinstance(n, (Loop, Dispatch)):
                 return True
-            if (n.kind in SPECIAL_KINDS or n.kind == "div") and (shared or reads.get(key[k], 0) >= 2):
+            if (n.kind in _components.view("lowering", "cost").SPECIAL_KINDS or n.kind == "div") and (shared or reads.get(key[k], 0) >= 2):
                 return True
     return False
 

@@ -26,7 +26,7 @@ from hawk import (
 )
 from hawk.diff import vjp
 from hawk.math import as_vec3, dot, exp, norm, quat_rotate, sqrt
-from hawk.types import Wire
+from raptor.ir.types import Wire
 
 
 @kernel

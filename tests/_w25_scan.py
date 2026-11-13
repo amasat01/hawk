@@ -137,6 +137,12 @@ def pieces() -> dict[str, tuple[Path, str | None]]:
         for sub in sorted(d.iterdir()):
             if (sub / "__init__.py").is_file():
                 out[f"extension:{d.name}"] = (sub, sub.name)
+    for d in sorted((REPO / "staging").glob("*/wings/*/")):
+        if (d / "__init__.py").is_file():
+            out[f"wing:{d.parent.parent.name}_{d.name}"] = (d, d.parent.parent.name)
+    for d in sorted((REPO / "staging").glob("osprey_*/")):
+        if (d / "__init__.py").is_file():
+            out[f"extension:{d.name}"] = (d, d.name)
     return out
 
 
@@ -145,6 +151,8 @@ def piece_ids() -> list[str]:
     ids = ["raptor", "eagle", "variants"]
     ids += [f"component:{d.name}" for d in sorted((REPO / "components").glob("*/")) if any(d.glob("*/__init__.py"))]
     ids += [f"extension:{d.name}" for d in sorted((REPO / "extensions").glob("*/")) if any(d.glob("*/__init__.py"))]
+    ids += [f"wing:{d.parent.parent.name}_{d.name}" for d in sorted((REPO / "staging").glob("*/wings/*/")) if (d / "__init__.py").is_file()]
+    ids += [f"extension:{d.name}" for d in sorted((REPO / "staging").glob("osprey_*/")) if (d / "__init__.py").is_file()]
     return ids
 
 
@@ -157,26 +165,48 @@ def piece_edges(piece: str) -> tuple[Edge, ...]:
 def manifest(piece: str) -> dict:
     """An extension's extension.json (empty for a piece without one)."""
     root, _ = pieces()[piece]
-    f = root / ("component.json" if piece.startswith("component:") else "extension.json")
+    f = root / ("component.json" if piece.startswith(("component:", "wing:")) else "extension.json")
     return json.loads(f.read_text()) if f.is_file() else {}
 
 
+def unit_module(name: str) -> str:
+    """The import path a unit name stands for: a wing is ``<family>.wings.<name>``; a component is its own package."""
+    return name.replace("_", ".wings.", 1) if name.startswith(("aether_", "raptor_")) else name
+
+
+def _direct(piece_id: str) -> list[str]:
+    """The unit names a manifest names: an extension's (backends[].components), a component's or a wing's (components)."""
+    m = manifest(piece_id)
+    if piece_id.startswith("extension:"):
+        return [c for b in m.get("backends", []) for c in b.get("components", [])]
+    return list(m.get("components", []))
+
+
 def named_components() -> dict[str, set[str]]:
-    """piece -> the components its manifest names: an extension's (backends[].components), a component's (components)."""
+    """piece -> the import paths of the units its manifest names, directly or through the chain of the units they name in turn
+    (the manifests are read as data, as :func:`hawk.components.chain` reads them)."""
+    ids = piece_ids()
+    by_name = {pid.split(":", 1)[1]: pid for pid in ids if pid.startswith(("component:", "wing:"))}
     out = {}
-    for pid in piece_ids():
-        if pid.startswith("extension:"):
-            m = manifest(pid)
-            out[pid] = {c for b in m.get("backends", []) for c in b.get("components", [])}
-        elif pid.startswith("component:"):
-            out[pid] = set(manifest(pid).get("components", []))
+    for pid in ids:
+        if not pid.startswith(("extension:", "component:", "wing:")):
+            continue
+        seen: list[str] = []
+        pending = _direct(pid)
+        while pending:
+            name = pending.pop()
+            if name not in seen:
+                seen.append(name)
+                if name in by_name:
+                    pending.extend(_direct(by_name[name]))
+        out[pid] = {unit_module(n) for n in seen}
     return out
 
 
 def writer_files(piece: str) -> set[Path] | None:
     """The writer side of a piece: every file of a component; the ``emission_modules`` of an extension."""
     root, pkg = pieces()[piece]
-    if piece.startswith("component:"):
+    if piece.startswith(("component:", "wing:")):
         return None
     mods = manifest(piece).get("emission_modules", [])
     files = set()

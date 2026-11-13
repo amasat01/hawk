@@ -15,13 +15,14 @@ answer, so those ops are refused by name.
 
 from __future__ import annotations
 
+from _specs import spec_for, default_kind
 import pytest
 
 import hawk
 import hawk.math as m
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from hawk.emit import render_source, scalar_mode
+from aether.wings.base.wrapper import render_source, scalar_mode
 from hawk.ext import sink_policy
 from hawk import HawkError
 
@@ -115,8 +116,8 @@ def test_every_row_of_the_banded_table_refuses_naming_the_op_and_its_remedy():
     author wrote and the remedy. With the lookup removed every row fails with ``DID NOT RAISE``."""
     from types import SimpleNamespace
 
-    from hawk.emit import BANDED, FLOAT64
-    from hawk.emit.wrapper import _BANDED_UNCERTIFIED, refuse_uncertified
+    from aether.wings.base.wrapper import BANDED, FLOAT64
+    from aether.wings.base.wrapper import _BANDED_UNCERTIFIED, refuse_uncertified
 
     assert {"accum_write", "erf", "rint", "remainder"} <= set(_BANDED_UNCERTIFIED)
     for kind, (name, remedy) in _BANDED_UNCERTIFIED.items():
@@ -142,7 +143,7 @@ def test_every_door_into_the_banded_mode_refuses_an_atomic_scatter_by_name(tmp_p
         if door == "build_bundle":
             build_bundle([scattered], tmp_path / "banded", mode="banded", targets=("cuda",))
         else:
-            render_source("scattered", scattered.sinks, scattered.walk, TARGETS["cuda"], mode=scalar_mode("banded"))
+            render_source("scattered", scattered.sinks, scattered.walk, TARGETS["cuda"], mode=scalar_mode("banded"), spec=spec_for(TARGETS["cuda"]), kind=default_kind())
 
 
 def test_the_banded_mode_admits_the_certified_facade_and_refuses_the_missing_math():
@@ -161,9 +162,9 @@ def test_the_banded_mode_admits_the_certified_facade_and_refuses_the_missing_mat
 
     banded = scalar_mode("banded")
     assert "aether::math::atan2(" in render_source("facade", facade.sinks, facade.walk, TARGETS["cuda"],
-                                                   mode=banded).text
+                                                   mode=banded, spec=spec_for(TARGETS["cuda"]), kind=default_kind()).text
     with pytest.raises(HawkError, match=r"hawk\.math\.erf .*until its banded row lands"):
-        render_source("special", special.sinks, special.walk, TARGETS["cuda"], mode=banded)
+        render_source("special", special.sinks, special.walk, TARGETS["cuda"], mode=banded, spec=spec_for(TARGETS["cuda"]), kind=default_kind())
 
 
 @pytest.mark.parametrize("door", ("build_bundle", "render_source"))
@@ -176,7 +177,7 @@ def test_the_banded_mode_with_a_host_target_is_refused_as_a_whole_by_name(door, 
         if door == "build_bundle":
             build_bundle([plain], tmp_path / "banded", mode="banded", targets=targets)
         else:
-            render_source("plain", plain.sinks, plain.walk, TARGETS["host"], mode=scalar_mode("banded"))
+            render_source("plain", plain.sinks, plain.walk, TARGETS["host"], mode=scalar_mode("banded"), spec=spec_for(TARGETS["host"]), kind=default_kind())
 
 
 def test_the_c_target_refuses_the_banded_mode_by_name():

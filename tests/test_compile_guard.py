@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from hawk.compile import drivers
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 
 def test_a_source_over_the_budget_is_refused_naming_the_budget(monkeypatch):
@@ -28,7 +28,7 @@ def test_a_zero_budget_disables_the_check(monkeypatch):
 def test_a_compiler_that_outlives_the_timeout_is_stopped(monkeypatch):
     monkeypatch.setenv("HAWK_COMPILE_TIMEOUT", "1")
     with pytest.raises(HawkError, match=r"HAWK_COMPILE_TIMEOUT"):
-        drivers.run_compiler(["sleep", "30"], "device compile of 'spline'")
+        drivers.run_compiler(["sleep", "30"], "device compile of 'spline'", "host")
 
 
 def test_a_bad_budget_is_refused(monkeypatch):

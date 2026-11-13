@@ -7,8 +7,8 @@ The authoring vocabulary (``kernel``, ``Param``, ``Mutable``, ``Table``,
 ``Vector``, ``Scalar``, ``Quantity``, ``Terminated``,
 ``HawkError``, …) lives at the top level; math functions live at
 ``hawk.math``; the dependency-free types (``TensorType``, ``Wire``,
-``PER_SAMPLE_ROLES``, …) at ``hawk.types``. ``hawk.trace`` exports nothing,
-and ``hawk.ir`` / ``hawk.emit`` are internal: their ``__all__`` is the small
+``PER_SAMPLE_ROLES``, …) at ``raptor.ir.types``. ``hawk.trace`` exports nothing,
+and ``hawk.emit`` is internal: their ``__all__`` is the small
 "IR access" surface a downstream package reads.
 
 TWO rows pin this:
@@ -28,35 +28,22 @@ import hawk
 import hawk.artifact
 import hawk.compile
 import hawk.diff
-import hawk.emit
 import hawk.ext
-import hawk.ir
 import hawk.math
 import hawk.runtime
 import hawk.trace
-import hawk.types
 
 #: Every public SURFACE this row accounts for, by its import spelling.
-#: ``hawk.types`` is the one surface with no ``__all__`` (its own module
-#: docstring: "importable at near-zero cost" — adding one costs nothing at
-#: runtime, but this row does not require it to pin the light tier's
-#: public set; :data:`_TYPES_PUBLIC_NAMES` below is pinned by hand instead).
 _SURFACES = {
     "hawk": hawk,
     "hawk.trace": hawk.trace,
     "hawk.math": hawk.math,
     "hawk.runtime": hawk.runtime,
-    "hawk.ir": hawk.ir,
-    "hawk.emit": hawk.emit,
     "hawk.ext": hawk.ext,
     "hawk.compile": hawk.compile,
     "hawk.diff": hawk.diff,
     "hawk.artifact": hawk.artifact,
 }
-
-#: ``hawk.types`` carries no ``__all__``; its public names are pinned here.
-_TYPES_PUBLIC_NAMES = frozenset({"DTYPES", "INT_PLANE_DTYPES", "LaneMeta", "PER_SAMPLE_ROLES", "Slot",
-                                 "TensorType", "Wire"})
 
 #: The exact, sorted public name set per surface — the MANIFEST. Any name
 #: added to or removed from a surface's ``__all__`` moves this row off its
@@ -96,27 +83,17 @@ _EXPECTED_MANIFEST = {
         "ArgBlock", "DEVICE_CPU", "HostKernel",
         "descriptor_for_sidecar", "kind_for", "load", "run",
     ],
-    "hawk.ir": [
-        "AccumWrite", "Assign", "At", "Const", "Op", "canonical",
-        "infer", "make", "recognize",
-    ],
-    "hawk.emit": [
-        "compose", "literal_table", "render_body", "render_source",
-        "scalar_mode",
-    ],
     "hawk.ext": [
         "ATOMIC", "DEFAULT_GUARD", "DEFAULT_KIND", "Guard", "IndexSet",
         "KernelKind", "Kind", "Output", "PLAIN", "PrimitiveDef",
         "compensated", "primitive", "primitives", "sink_policy",
     ],
     "hawk.compile": [
-        "Cache", "CompileOptions", "DeviceImage", "HOST_PROFILES",
-        "OPT_LEVELS", "aether_include", "cache_stats",
+        "Cache", "CompileOptions", "DeviceImage", "OPT_LEVELS", "aether_include", "cache_stats",
         "compile_source", "compiler_identity", "cubin",
         "cubin_available", "current_payload", "default_cache_dir",
         "device", "device_compiler", "device_compiler_kind",
-        "digest_file", "eagle_include", "host_codegen_flags",
-        "host_compiler", "host_flags", "host_profile", "lookup_key",
+        "digest_file", "eagle_include", "lookup_key",
         "nvrtc", "opt_level", "publish", "reset_cache_stats",
     ],
     "hawk.diff": [
@@ -145,12 +122,6 @@ def test_the_public_manifest_is_exactly_this():
             f"  missing (pinned, not exported): {sorted(set(want) - set(got))}\n"
             f"  extra (exported, not pinned):    {sorted(set(got) - set(want))}"
         )
-    got_types = sorted(n for n in dir(hawk.types) if not n.startswith("_")
-                       and n not in ("dataclass", "annotations"))
-    assert got_types == sorted(_TYPES_PUBLIC_NAMES), (
-        f"hawk.types's public names drifted: got {got_types}, "
-        f"pinned {sorted(_TYPES_PUBLIC_NAMES)}"
-    )
 
 
 #: The top-level convenience doors (``hawk.__init__``'s ``_TOP_LEVEL_DOORS``)
@@ -179,8 +150,6 @@ def test_no_public_name_answers_to_two_paths():
     for surface, mod in _SURFACES.items():
         for name in mod.__all__:
             owners[name].add(surface)
-    for name in _TYPES_PUBLIC_NAMES:
-        owners[name].add("hawk.types")
     duplicates = {name: paths for name, paths in owners.items() if len(paths) > 1}
     unexpected = {name: paths for name, paths in duplicates.items()
                  if not (name in _TOP_LEVEL_DOOR_NAMES and "hawk" in paths

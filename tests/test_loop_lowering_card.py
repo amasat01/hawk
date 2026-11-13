@@ -38,6 +38,8 @@ could not build a single subject::
 
 from __future__ import annotations
 
+from _specs import default_kind
+from _specs import spec_for
 import hashlib
 import json
 import platform
@@ -56,19 +58,13 @@ from _spline import shallow_spline_cell as spline_cell
 import hawk
 import hawk.math as m
 from hawk.artifact.layout import exports
-from hawk.compile import (
-    aether_include,
-    compiler_identity,
-    device_compiler,
-    eagle_include,
-    host_compiler,
-    host_flags,
-)
+from hawk.compile import aether_include, compiler_identity, device_compiler, eagle_include
+from osprey_cpu.toolchain import host_compiler, host_flags
 from hawk.compile.drivers import ADDRESS_SPACE_CAP_BYTES
 from hawk.compile.toolchain import subprocess_env
 from hawk_cuda.toolchain import resolve_arch, device_flags
-from hawk.emit import FLOAT64, render_source
-from hawk.ir import Loop
+from aether.wings.base.wrapper import FLOAT64, render_source
+from raptor.ir import Loop
 from hawk.targets import TARGETS
 
 CARD = card_path("CARD_LOOP_LOWERING.md")
@@ -113,7 +109,7 @@ def _reference(x, theta, g, n_in, basis):
 
 def _source(kernel, target: str, tmp: Path) -> Path:
     src = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                        mode=FLOAT64, exports=exports(target))
+                        mode=FLOAT64, exports=exports(target), spec=spec_for(TARGETS[target]), kind=default_kind())
     path = tmp / f"{kernel.name}.{'cu' if target == 'cuda' else 'cpp'}"
     path.write_text(src.text)
     return path

@@ -501,9 +501,13 @@ def team_max_dim_of(spec) -> int:
     return spec.need("linalg", "team_max_dim")
 
 
-def max_dim_of(spec) -> int | None:
-    """The largest dimension one lane factors alone, from the variant the build lowers for (``linalg.max_dim``)."""
-    return spec.primary.get("linalg", {}).get("max_dim")
+def max_dim_of(spec, required: bool = False) -> int | None:
+    """The largest dimension one lane factors alone, from the variant the build lowers for (``linalg.max_dim``); ``None`` when it
+    states none, or refused by name under ``required``."""
+    value = spec.primary.get("linalg", {}).get("max_dim")
+    if value is None and required:
+        raise RaptorError("a least-squares solve needs the target variant's linalg.max_dim, and this target's variant has none")
+    return value
 
 
 def widths(block: BlockSum) -> tuple:

@@ -130,10 +130,10 @@ def gn_loop(J: Matrix[4, 3], r: Vector[4], x: Mutable[Vector[3]]):
 
 @pytest.mark.parametrize("k,rows,cols,trips", [(gn_loop, 4, 3, 3)])
 def test_lstsq_in_a_loop_body_runs_against_numpy(tmp_path, cache_dir, k, rows, cols, trips):
-    from hawk.passes.lstsq import max_dim_of
+    from lowering import team as _team
     from hawk.targets import build_spec
 
-    assert cols <= max_dim_of(build_spec(("host",)).primary)          # the normal equations: one lane factors it
+    assert cols <= _team.max_dim_of(build_spec(("host",)))          # the normal equations: one lane factors it
     assert k.walk.kinds & {"lstsq"}                      # one lstsq node in the traced IR
     rng = np.random.default_rng(5)
     J = rng.standard_normal((LANES, rows, cols)) + 3 * np.eye(rows, cols)
@@ -152,7 +152,7 @@ def test_lstsq_in_a_loop_body_runs_against_numpy(tmp_path, cache_dir, k, rows, c
 def test_lstsq_above_max_dim_in_a_loop_body_is_lowered_to_qr_and_the_per_lane_writer_refuses_it_by_name(tmp_path, cache_dir):
     """Above ``linalg.max_dim`` the lowering gives Householder QR inside the body (it is built); one lane cannot hold it, and a team
     stage has no place inside a loop body: that refusal is the writer's, by name, not a missing lowering."""
-    from hawk.ir import HawkError
+    from raptor.errors import RaptorError as HawkError
 
     @kernel
     def wide(J: Matrix[36, 34], r: Vector[36], x: Mutable[Vector[34]]):
@@ -193,8 +193,10 @@ def test_the_host_text_of_a_device_and_host_build_does_not_depend_on_the_device_
 
 
 def test_a_variant_without_the_number_is_refused_by_name():
-    from hawk.ir import HawkError
-    from hawk.passes.lstsq import max_dim_of
+    from raptor.errors import RaptorError as HawkError
+    from types import SimpleNamespace
+
+    from lowering import team as _team
 
     with pytest.raises(HawkError, match="linalg.max_dim"):
-        max_dim_of({"form": {}})
+        _team.max_dim_of(SimpleNamespace(primary={"form": {}}), required=True)

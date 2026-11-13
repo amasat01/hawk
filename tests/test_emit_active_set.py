@@ -36,10 +36,10 @@ import pytest
 import hawk
 from hawk import Index, Kernel, Mutable, Param, Scalar, Terminated
 from hawk.diff import jvp
-from hawk.emit import scalar_mode
-from hawk.emit.render import geometry_hits
+from aether.wings.base.wrapper import scalar_mode
+from aether.wings.base.render import geometry_hits
 from hawk.ext import DEFAULT_KIND, Guard, Kind
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 B = importlib.import_module("hawk.artifact.bundle")
 

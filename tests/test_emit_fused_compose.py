@@ -29,6 +29,8 @@ This test previously failed via two plants, both observed and both removed; reco
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import validation_spec
 from _specs import HOST
 
 import _deploy as L
@@ -41,9 +43,9 @@ from test_math_parity import _ulps
 import hawk
 import hawk.math as hm
 from hawk.artifact import build_bundle
-from hawk.emit import FusedKernel, Lane, compose
-from hawk.ir import HawkError
-from hawk.types import LaneMeta
+from aether.wings.base.fused import FusedKernel, Lane, compose
+from raptor.errors import RaptorError as HawkError
+from raptor.ir.types import LaneMeta
 
 N = 16
 
@@ -71,7 +73,7 @@ GROUP = (lane_scale, lane_energy, lane_speed)
 
 @pytest.fixture(scope="module")
 def fused():
-    return compose(GROUP, "fused_group")
+    return compose(GROUP, "fused_group", spec=validation_spec(), kind=default_kind())
 
 
 @pytest.fixture(scope="module")
@@ -237,7 +239,7 @@ def test_one_name_meaning_two_things_is_refused_naming_both_lanes():
         b = theta * 2.0
 
     with pytest.raises(HawkError) as excinfo:
-        compose([wide_theta, scalar_theta], "conflict")
+        compose([wide_theta, scalar_theta], "conflict", spec=validation_spec(), kind=default_kind())
     message = str(excinfo.value)
     assert "wide_theta" in message and "scalar_theta" in message, message
     assert "theta" in message and "arg_spec" in message
@@ -253,7 +255,7 @@ def test_two_lanes_committing_to_one_plane_are_refused_naming_both():
         y = x + 2.0
 
     with pytest.raises(HawkError) as excinfo:
-        compose([writes_y_a, writes_y_b], "double_write")
+        compose([writes_y_a, writes_y_b], "double_write", spec=validation_spec(), kind=default_kind())
     message = str(excinfo.value)
     assert "writes_y_a" in message and "writes_y_b" in message, message
     assert "write it twice" in message
@@ -261,13 +263,13 @@ def test_two_lanes_committing_to_one_plane_are_refused_naming_both():
 
 def test_an_empty_or_ambiguous_group_and_an_unknown_scalar_mode_are_refused():
     with pytest.raises(HawkError, match="empty lane group"):
-        compose([], "nothing")
+        compose([], "nothing", spec=validation_spec(), kind=default_kind())
     with pytest.raises(HawkError, match="two lanes share a name"):
-        compose([lane_energy, lane_energy], "twice")
+        compose([lane_energy, lane_energy], "twice", spec=validation_spec(), kind=default_kind())
     with pytest.raises(HawkError, match="neither a Lane nor a traced kernel"):
-        compose([object()], "not_a_lane")
+        compose([object()], "not_a_lane", spec=validation_spec(), kind=default_kind())
     with pytest.raises(HawkError, match="unknown scalar mode 'posit8'"):
-        compose(GROUP, "posit8_group", "posit8")
+        compose(GROUP, "posit8_group", "posit8", spec=validation_spec(), kind=default_kind())
 
 
 def test_a_lane_carries_its_declared_but_unread_slots_into_the_merged_spec():
@@ -279,7 +281,7 @@ def test_a_lane_carries_its_declared_but_unread_slots_into_the_merged_spec():
     def guarded(s: hawk.Scalar, terminated: hawk.Terminated, g: hawk.Mutable[hawk.Scalar]):
         g = s + 1.0
 
-    fused_guarded = compose([guarded, lane_energy], "guarded_group")
+    fused_guarded = compose([guarded, lane_energy], "guarded_group", spec=validation_spec(), kind=default_kind())
     assert ("terminated", "terminated") in fused_guarded.arg_spec
     assert ("terminated", "terminated") in guarded.arg_spec
 
@@ -288,7 +290,7 @@ def test_a_lane_record_may_carry_its_own_prologue_hook():
     """The lane-local hook leaves open survives composition."""
     lane = Lane("hooked", lane_energy.sinks, lane_energy.walk,
                 prologue="// lane guard goes here")
-    fused_hooked = compose([lane], "hooked_group")
-    text = fused_hooked.fused_body(spec=HOST).text
+    fused_hooked = compose([lane], "hooked_group", spec=validation_spec(), kind=default_kind())
+    text = fused_hooked.fused_body(default_kind(), spec=HOST).text
     assert "// lane guard goes here" in text
     assert text.index("// lane guard") < text.index("mut_sq[i]")

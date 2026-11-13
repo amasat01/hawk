@@ -11,7 +11,7 @@ Each row compares with a numpy reference, on the host and on GPU 1.
 """
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, default_kind
 
 import numpy as np
 import pytest
@@ -148,11 +148,11 @@ def _two_names():
 def test_a_scalar_chain_evaluates_each_arms_transcendental_only_under_its_arm():
     """Both names read each arm's transcendental, which a ``?:`` would name ahead of the chain and
     evaluate on every path: every call sits in a case of a switch."""
-    from hawk.emit import render_body
-    from hawk.ir import canonical
+    from aether.wings.base.render import render_body
+    from raptor.ir import canonical
 
     kernel = _two_names()
-    text = render_body(kernel.sinks, canonical(kernel.sinks), spec=HOST).text
+    text = render_body(kernel.sinks, canonical(kernel.sinks), spec=HOST, kind=default_kind()).text
     assert text.count("switch (") == 2
     outside = text.split("switch (")[0]
     assert not any(f"math::{fn}(" in outside for fn in ("exp", "sin", "cos"))

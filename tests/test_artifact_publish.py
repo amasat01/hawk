@@ -599,7 +599,7 @@ def test_a_renderer_patched_INSIDE_a_process_is_the_documented_exposure(
 def _skip_without_nvcc():
     from hawk.compile import toolchain as tc
     from hawk_cuda import toolchain as dtc
-    from hawk.ir import HawkError
+    from raptor.errors import RaptorError as HawkError
 
     try:
         dtc.device_compiler()

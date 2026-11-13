@@ -8,7 +8,7 @@ interpreter twin against the unrolled layer and against finite differences, the
 emitted text, and the compiled host kernel."""
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, default_kind
 
 import _spline_forms as S
 import numpy as np
@@ -22,8 +22,9 @@ from hawk import Kernel
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
-from hawk.ir import HawkError, canonical
+from aether.wings.base.render import render_body
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import canonical
 
 WRT = ("x", "theta")
 
@@ -132,7 +133,7 @@ def test_a_recurrence_whose_dispatch_reads_the_carry_matches_finite_differences(
 @pytest.mark.parametrize("form", ["plain", "switch"])
 def test_the_rolled_vjp_commits_inside_the_loop_and_holds_no_row(form):
     sinks = vjp(S.spline_rolled(form, 8), wrt=WRT)
-    lines = render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST).text.splitlines()
+    lines = render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST, kind=default_kind()).text.splitlines()
     text = "\n".join(lines)
     # no carried or copied row (the dead zero base the loop boundary names is
     # dropped by the compiler: an open item)

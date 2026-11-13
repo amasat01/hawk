@@ -54,7 +54,7 @@ nobody could emit. It is checked here beside the first half because it is the
 same question (how does a rank>=1 value reach a rank-0 aether result) and the
 same fix site.
 
-This test previously failed: restoring ``hawk/emit/render.py`` to an
+This test previously failed: restoring ``staging/aether/wings/base/render.py`` to an
 earlier state under this row gave **77 failed, 42 passed**.
 
   * the NUMERIC row failed on 28 cases — every fan-out-1 case of ``norm``,
@@ -89,7 +89,7 @@ earlier state under this row gave **77 failed, 42 passed**.
 """
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, default_kind
 
 import itertools
 import zlib
@@ -101,13 +101,14 @@ from _eval import evaluate
 
 from hawk.artifact import build
 from hawk.diff import vjp
-from hawk.emit import render_body
-from hawk.emit.render import mirror_of
-from hawk.ir import Assign, Leaf, canonical
+from aether.wings.base.render import render_body
+from lowering.lstsq import lowered
+from raptor.protocols.naming import mirror_of
+from raptor.ir import Assign, Leaf, canonical
 from hawk import HawkError
-from hawk.ir import make as mk
-from hawk.ir.ops import OP_KINDS
-from hawk.types import TensorType
+from raptor.ir import make as mk
+from raptor.ir.ops import OP_KINDS
+from raptor.ir.types import TensorType
 
 #: Samples per case. Small because every case is also evaluated sample by sample
 #: by the scratch interpreter; seven is enough that a body reading a fixed column
@@ -356,7 +357,7 @@ class _Built:
         #: the BODY string, not the whole TU: the wrapper's ``params[]`` unpack
         #: names every binding too, and a failure that pasted it would bury the
         #: one line that is wrong.
-        self.body = render_body(sinks, kernel.walk, spec=HOST).text
+        self.body = render_body(*lowered(sinks, kernel.walk, HOST), spec=HOST, kind=default_kind()).text
 
 
 class _Builder:
@@ -478,7 +479,7 @@ def test_the_corpus_enumerates_both_fanouts_and_all_four_forms():
 
 def _wide_kernel(width: int, *, whole_use: bool = False) -> tuple:
     """A per-sample parameter row read element-wise under branches (a spline block's shape)."""
-    from hawk.ir import Select
+    from raptor.ir import Select
 
     p = Leaf("vocab_read", "vec_in", "p", TensorType((width,), "f64"))
     x = Leaf("vocab_read", "per_sample", "x", S)
@@ -506,14 +507,14 @@ def _host_run(width, directory, cache, **kw):
                        x=rng.standard_normal(32))
     names = [nm for role, nm in loaded.arg_spec if role in O.OUTPUT_ROLES]
     got = dict(zip(names, got))
-    return np.stack([got["out_a"], got["out_b"]]), render_body(sinks, kernel.walk, spec=HOST).text
+    return np.stack([got["out_a"], got["out_b"]]), render_body(*lowered(sinks, kernel.walk, HOST), spec=HOST, kind=default_kind()).text
 
 
 def test_wide_readonly_leaf_is_read_through_the_proxy(tmp_path, monkeypatch):
     """INTERIM wide-leaf rule: > LAZY_LEAF_WIDTH elements, read only by static
     ``component`` => no ``.get()``, proxy reads, bits equal to the whole-leaf emit;
     a narrow leaf, or a wide one also used whole, keeps today's text."""
-    import hawk.emit.render as A
+    import aether.wings.base.render as A
 
     wide, wide_text = _host_run(144, tmp_path / "w", tmp_path / "c1")
     assert ".get()" not in wide_text and "vin_p_i = vin_p[i];" in wide_text

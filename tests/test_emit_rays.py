@@ -10,6 +10,7 @@
   without floating-point contraction), and it passes the strict C checks."""
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
 from _specs import HOST
 
 import pathlib
@@ -23,8 +24,9 @@ from test_ir_rays import ball, box, tri
 
 import hawk_c as embedded
 from hawk.artifact import build_bundle
-from hawk.emit import FLOAT64, render_body, render_source
-from hawk.ir import canonical
+from aether.wings.base.wrapper import FLOAT64, render_source
+from aether.wings.base.render import render_body
+from raptor.ir import canonical
 from hawk.targets import TARGETS
 
 KERNELS = {"tri": tri, "box": box, "ball": ball}
@@ -35,7 +37,7 @@ N = 64                                  # the scene helper's size
 @pytest.mark.parametrize("name", list(KERNELS))
 def test_one_geometry_call_per_node_held_once(name):
     k = KERNELS[name]
-    text = render_body(k.sinks, canonical(k.sinks), spec=HOST).text
+    text = render_body(k.sinks, canonical(k.sinks), spec=HOST, kind=default_kind()).text
     assert text.count(f"aether::geometry::{CALLS[name]}<Real>(") == 1
     assert text.count(".v[") == 4
 
@@ -43,11 +45,11 @@ def test_one_geometry_call_per_node_held_once(name):
 @pytest.mark.parametrize("name", list(KERNELS))
 def test_the_unit_includes_the_geometry_header_only_when_it_calls_it(name):
     k = KERNELS[name]
-    src = render_source(name, k.sinks, canonical(k.sinks), TARGETS["host"], mode=FLOAT64).text
+    src = render_source(name, k.sinks, canonical(k.sinks), TARGETS["host"], mode=FLOAT64, spec=spec_for(TARGETS["host"]), kind=default_kind()).text
     assert "#include <aether/geometry/geometry.h>" in src
     from test_dispatch_scoped_hoist import _dk_ladder_lazy as plain
     assert "geometry/geometry.h" not in render_source(
-        "plain", plain.sinks, canonical(plain.sinks), TARGETS["host"], mode=FLOAT64).text
+        "plain", plain.sinks, canonical(plain.sinks), TARGETS["host"], mode=FLOAT64, spec=spec_for(TARGETS["host"]), kind=default_kind()).text
 
 
 @pytest.fixture(scope="module")

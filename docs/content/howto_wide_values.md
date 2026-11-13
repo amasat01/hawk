@@ -29,7 +29,7 @@ def fill_mask(a: Scalar, mask: Table["i": W], bf: Mutable[Vector[W]]):
 
 A vector used in a loop (`bf[j]`) is read from memory where it is indexed, not built in registers. A value used whole is placed by its size against the device's registers and local memory, so a wide kernel no longer spills because it was written naturally. There is nothing to set: the placement follows the device a kernel is built for, and the [spill report](emit_form) shows the result.
 
-`hawk.ir.recognize(kernel)` reads a sum of products over one loop (a matrix-vector product, a masked sum, several outputs sharing an operand, with `bf[j]` or table reads as operands) as a plain record of operands, reduce axis and outputs, for tools that route such a sum elsewhere. It only reads: it never changes the code a kernel generates.
+`hawk.passes.contraction.recognize(kernel)` reads a sum of products over one loop (a matrix-vector product, a masked sum, several outputs sharing an operand, with `bf[j]` or table reads as operands) as a plain record of operands, reduce axis and outputs, for tools that route such a sum elsewhere. It only reads: it never changes the code a kernel generates.
 
 Keep constants and lookup tables in a `Table` read with `.at()` (it clamps the index to the table), never in a `Vector` plane that repeats the same numbers for every sample. See [best practices](best_practices).
 

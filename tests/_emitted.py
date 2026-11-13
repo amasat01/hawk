@@ -10,12 +10,14 @@ escapes one row is still in front of the others.
 """
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
 from _specs import HOST
 
 import _kernels as K
 
-from hawk.emit import FLOAT32, FLOAT64, render_body, render_source
-from hawk.ir import canonical
+from aether.wings.base.wrapper import FLOAT32, FLOAT64, render_source
+from aether.wings.base.render import render_body
+from raptor.ir import canonical
 from hawk.targets import TARGETS
 
 MODES = (FLOAT64, FLOAT32)
@@ -37,10 +39,10 @@ def sources():
                 continue
             for mode in MODES:
                 yield name, target, mode, render_source(name, sinks, walk, target,
-                                                        mode=mode)
+                                                        mode=mode, spec=spec_for(target), kind=default_kind())
 
 
 def bodies():
     """Every emitted BODY string (wrapper-independent by construction)."""
     for name, sinks, walk in cases():
-        yield name, render_body(sinks, walk, spec=HOST)
+        yield name, render_body(sinks, walk, spec=HOST, kind=default_kind())

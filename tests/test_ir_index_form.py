@@ -20,11 +20,11 @@ import pytest
 
 import hawk
 import hawk.math as m
-from hawk.ir import access
-from hawk.ir.access import IndexForm, index_form
-from hawk.ir.nodes import LoopIndex
-from hawk.ir.nodes import At, Const, Op, RoleConst, SampleIndex
-from hawk.ir.ops import TensorType
+from raptor.ir import access
+from raptor.ir.access import IndexForm, index_form
+from raptor.ir.nodes import LoopIndex
+from raptor.ir.nodes import At, Const, Op, RoleConst, SampleIndex
+from raptor.ir.ops import TensorType
 
 I32 = TensorType((), "i32")
 F64 = TensorType((), "f64")

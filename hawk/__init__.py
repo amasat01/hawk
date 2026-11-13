@@ -43,7 +43,7 @@ from . import _contracts
 
 #: The authoring names put in front of a kernel author — the one
 #: canonical top-level surface, resolved lazily from :mod:`hawk.trace`
-#: (and, for :data:`_FROM_IR`, from :mod:`hawk.ir`). Math functions
+#: (and, for :data:`_FROM_IR`, from :mod:`hawk._errors`). Math functions
 #: (``dot``, ``norm``, ``sqrt``, ...) live at ``hawk.math`` only.
 #: ``TensorType``/``Wire`` stay out on purpose: their canonical path is
 #: :mod:`hawk.ir`, not the top level.
@@ -55,7 +55,7 @@ _AUTHORING = (
     "sum", "max", "min", "mean", "scatter",
 )
 
-#: The subset of :data:`_AUTHORING` resolved from :mod:`hawk.ir` rather
+#: The subset of :data:`_AUTHORING` resolved from :mod:`hawk._errors` rather
 #: than :mod:`hawk.trace` — today just ``HawkError``, an IR-tier name
 #: :mod:`hawk.trace` never re-exports.
 _FROM_IR = ("HawkError",)
@@ -256,8 +256,8 @@ def __getattr__(name: str) -> Any:
         return value
     if name in _AUTHORING:
         if name in _FROM_IR:
-            from . import ir
-            value = getattr(ir, name)
+            from . import _errors
+            value = getattr(_errors, name)
         elif name in _FROM_STEPS:
             from .trace import steps as _steps_module
             value = getattr(_steps_module, name)

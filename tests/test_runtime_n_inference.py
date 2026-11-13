@@ -67,7 +67,7 @@ import hawk.runtime as R
 from hawk import Kernel
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 #: The exact bug shape (this module's docstring): `gather`'s own reverse pass.
 #: Built ONCE per test process (host-only -- no row here needs the device leg)

@@ -30,8 +30,8 @@ PIECES = _piece_roots()
 
 
 def _declared(piece: str, root: Path) -> set:
-    if piece == "hawk":
-        return {r for b in registry._builtin()["backends"] for r in b.get("reads", ())}
+    if piece == "hawk":      # hawk's front end reads the variant of the host row it builds: that row's reads (the cpu OSPREY's manifest)
+        return set(registry.traits("host").get("reads", ()))
     if piece.startswith("component:"):
         return set(json.loads((root / "component.json").read_text()).get("reads", ()))
     return {r for b in json.loads((root / "extension.json").read_text()).get("backends", ()) for r in b.get("reads", ())}
@@ -67,9 +67,8 @@ def test_the_scan_sees_an_uncovered_read(tmp_path):
     assert [k for _, k in need_sites(tmp_path)] == ["lanes.block_run", "host_wide"]
 
 
-def test_the_builtin_host_variants_hold_what_its_manifest_reads():
-    for item in registry._builtin()["backends"]:
-        registry._check_reads(item, "builtin")
+def test_the_host_variants_hold_what_its_manifest_reads():
+    registry._check_reads(registry.traits("host"), "osprey-cpu")
 
 
 def test_a_first_party_variant_that_lacks_a_key_its_backend_reads_is_refused_at_load(monkeypatch):

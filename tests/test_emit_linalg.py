@@ -12,6 +12,7 @@ not feel it. The tolerances are ``K n eps cond`` for solves and determinants,
 
 from __future__ import annotations
 
+from _specs import spec_for, default_kind
 import pathlib
 import re
 
@@ -24,11 +25,11 @@ from scipy.linalg import lapack
 
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk.ir import Assign, Dispatch, Leaf, make
+from raptor.ir import Assign, Dispatch, Leaf, make
 from hawk.trace.kernel import Kernel
-from hawk.types import TensorType
-from hawk.emit import render_source
-from hawk.emit.wrapper import scalar_mode
+from raptor.ir.types import TensorType
+from aether.wings.base.wrapper import render_source
+from aether.wings.base.wrapper import scalar_mode
 from hawk.artifact.layout import exports
 from hawk.targets import TARGETS
 
@@ -301,7 +302,7 @@ def test_factorisations_inside_the_arms_of_a_dispatch_run_per_case(build, policy
 
 def _body(kernel, target="host", mode="float64"):
     return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                         mode=scalar_mode(mode), exports=exports(target))
+                         mode=scalar_mode(mode), exports=exports(target), spec=spec_for(TARGETS[target]), kind=default_kind())
 
 
 @pytest.mark.parametrize("target", ["host", "cuda"])

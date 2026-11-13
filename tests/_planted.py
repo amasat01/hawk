@@ -27,13 +27,15 @@ wrong-layout artifact to be refused). Nothing outside the tests imports it.
 
 from __future__ import annotations
 
+from _specs import default_kind
+from _specs import spec_for
 import json
 import shutil
 from pathlib import Path
 
 from hawk.artifact.layout import exports
 from hawk.compile import CompileOptions, compile_source
-from hawk.emit import FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT64, render_source
 from hawk.targets import TARGETS
 
 #: What the emitted ``fraction`` body reads, and what the plant makes it read.
@@ -53,7 +55,7 @@ def count_reading_bundle(kernel, directory, *, name: str = "fraction",
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     source = render_source(name, kernel.sinks, kernel.walk, TARGETS["host"],
-                           mode=FLOAT64, exports=exports("host"))
+                           mode=FLOAT64, exports=exports("host"), spec=spec_for(TARGETS["host"]), kind=default_kind())
     if TRUE_TOTAL not in source.text:
         raise AssertionError(
             f"the planted surgery cannot find {TRUE_TOTAL!r} in the emitted "

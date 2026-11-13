@@ -25,10 +25,10 @@ import pytest
 from _eval import evaluate
 
 from hawk.diff import jvp, vjp
-from hawk.ir import Assign, Const, Leaf, Node, Op, Select
-from hawk.ir import make as mk
-from hawk.ir.ops import CAST, INT_BINARY, INT_UNARY, OP_KINDS
-from hawk.types import TensorType
+from raptor.ir import Assign, Const, Leaf, Node, Op, Select
+from raptor.ir import make as mk
+from raptor.ir.ops import CAST, INT_BINARY, INT_UNARY, OP_KINDS
+from raptor.ir.types import TensorType
 
 RNG = np.random.default_rng(20260904)
 H = 1e-5
@@ -180,7 +180,7 @@ CASES = [
     # produced, and the RANK of that sum is the rank it broadcast INTO. Rank 1
     # is the pair above; rank 2 is these two, and they are here because the
     # rank-2 `sum` they mint is the node aether has no `Expression::sum()` for
-    # (`hawk/emit/render._matrix_sum` spells it `matDot` against a ones matrix).
+    # (`staging/aether/wings/base/render._matrix_sum` spells it `matDot` against a ones matrix).
     # The rank axis of a broadcast is not a detail of one op: it decides which
     # aether reduction the emitter must reach for.
     ("mul_broadcast_rank2", ("s", "m33"), _b("mul")),

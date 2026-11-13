@@ -89,7 +89,7 @@ def test_a_one_sided_if_keeps_the_launch_start_value_on_the_other_path():
             x = c
 
     assert sorted(clamp_up.walk.prior_reads) == ["x"]
-    from hawk.ir import Select
+    from raptor.ir import Select
     assert any(isinstance(n, Select) for n in clamp_up.walk.order), (
         "a one-sided `if` on a Mutable's own name must still fold to a select "
         "against its launch-start value on the path that does not store it")
@@ -123,7 +123,7 @@ def test_a_component_store_on_the_plane_s_own_name_updates_one_entry():
         x[2] = x[2] + dt
 
     assert sorted(bump_z.walk.prior_reads) == ["x"]
-    from hawk.ir.nodes import Assign
+    from raptor.ir.nodes import Assign
     sinks = [s for s in bump_z.sinks if isinstance(s, Assign) and s.name == "x"]
     assert len(sinks) == 1 and sinks[0].value.kind == "set_component_at"
 

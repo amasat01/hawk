@@ -15,7 +15,6 @@ from _specs import DEVICE, HOST, device
 import pytest
 from _linalg_kernels import eigh_kernel, eigh_values_kernel
 
-from hawk.passes import policy
 from lowering.split import stages
 
 

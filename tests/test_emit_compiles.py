@@ -28,7 +28,7 @@ This test previously failed. Two observations, one of which changed the emitter:
       types are 'aether::ConstSampleRef<const aether::View<double,
       aether::extents<...>, aether::layout_stride, false, false> >' and 'Real'
       {aka 'double'})
-    ``hawk/emit/wrapper.WRITABLE_ROLES`` (binding a write target NON-const) is
+    ``staging/aether/wings/base/wrapper.WRITABLE_ROLES`` (binding a write target NON-const) is
     the fix that observation bought; the plant was then removed.
   * a second, environmental red worth recording because it makes this row
     non-vacuous: a conda activation exports ``NVCC_PREPEND_FLAGS`` pointing at
@@ -40,6 +40,7 @@ This test previously failed. Two observations, one of which changed the emitter:
 
 from __future__ import annotations
 
+from _specs import spec_for
 from pathlib import Path
 
 import pytest
@@ -87,14 +88,14 @@ def test_every_run_commit_form_compiles(tmp_path):
     run) with the entry's run state: real C++ on both targets."""
     from test_keyed_commit import kfb_c, ksrt_c, ktst, kuni
 
-    from hawk.emit import FLOAT64, render_source
+    from aether.wings.base.wrapper import FLOAT64, render_source
     from hawk.targets import TARGETS
 
     failures = []
     for kernel in (kuni, kfb_c, ktst, ksrt_c):
         for target in ("cuda", "host"):
             src = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                                mode=FLOAT64, kind=kernel.kind)
+                                mode=FLOAT64, kind=kernel.kind, spec=spec_for(TARGETS[target]))
             path = tmp_path / f"{kernel.name}_{target}.{'cu' if target == 'cuda' else 'cpp'}"
             path.write_text(src.text)
             rc, stderr, argv = compile_check(path, target)

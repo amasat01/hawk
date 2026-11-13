@@ -19,3 +19,25 @@ def device(arch: str):
 def for_targets(targets, arch: str = ""):
     """The spec of a build of ``targets`` (ids) on this machine."""
     return build_spec(tuple(targets), arch)
+
+
+def spec_for(target, build_policy=None, spec=None):
+    """The spec a render of ``target`` (a backend row) is given: ``spec`` (default: a build of that target alone) with ``build_policy`` laid over it."""
+    from hawk.build_policy import apply
+
+    return apply(build_spec((target.id,)) if spec is None else spec, build_policy, (target.id,))
+
+
+def validation_spec():
+    """The spec of a ``compose`` call: a build of every host row."""
+    from hawk import registry
+    from hawk.targets import TARGETS
+
+    return build_spec(tuple(t for t in TARGETS if not registry.traits(t).get("device", False)))
+
+
+def default_kind():
+    """The kind a build resolves when neither the kernel nor the caller names one."""
+    from hawk.ext import DEFAULT_KIND
+
+    return DEFAULT_KIND

@@ -31,8 +31,9 @@ import pytest
 import hawk
 from hawk import Mutable, Scalar
 from hawk_c import render
-from hawk.emit import FLOAT32, FLOAT64
-from hawk.ir import HawkError, canonical
+from aether.wings.base.wrapper import FLOAT32, FLOAT64
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import canonical
 
 DRAG_H_STRUCT = ("typedef struct {\n    hawk_real_t*       mut_out;\n    const hawk_real_t* vin_state;\n"
                  "    hawk_real_t        uni_rho;\n} drag_args_t;\n")  # exact comment columns per abi.py's formatter

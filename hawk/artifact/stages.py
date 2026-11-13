@@ -7,15 +7,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir import canonical
+from raptor.ir import canonical
 from ..trace.kernel import Kernel, _declared
-from ..types import Slot
+from raptor.ir.types import Slot
 
 
 class TeamStage(Kernel):
     """A team stage of a split kernel (:mod:`simt.team`): the launch that works one matrix per
     lane with a team of threads. Its sinks only name the scratch planes it works on; its body is
-    :func:`simt.team_emit.team_body`, handed to the entry wrappers like a fused group's."""
+    :func:`aether.wings.base.team_emit.team_body`, handed to the entry wrappers like a fused group's."""
 
     __slots__ = ()
 
@@ -26,12 +26,11 @@ class TeamStage(Kernel):
             self.walk = canonical(self.sinks, (*_declared(self.planes), *(Slot(leaf.role, leaf.name, leaf.ttype) for leaf in team.reads)))
 
     def fused_body(self, kind: Any = None, cells: bool = False, *, spec) -> Any:
-        from .bundle import _active_spec
-        from ..emit.render import Body
-        from ..emit.wrapper import active_reads
-        from .. import components as _components
+        from aether.wings.base.team_emit import stage_body
 
-        return _components.view("lowering", "team_emit").team_body(self.team, _active_spec(kind), cells, body=Body, active_reads=active_reads)
+        from .bundle import _active_spec
+
+        return stage_body(self.team, _active_spec(kind), cells)
 
 
 class WarpStage(TeamStage):
@@ -41,7 +40,7 @@ class WarpStage(TeamStage):
     __slots__ = ()
 
     def fused_body(self, kind: Any = None, cells: bool = False, *, spec) -> Any:
-        from ..emit.render import render_body
+        from aether.wings.base.render import render_body
 
         if self.one_step is not None:       # an automatic kernel renders its two bodies itself
             return None

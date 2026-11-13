@@ -21,6 +21,8 @@ Rows (host; the ``cuda`` arm is marked ``gpu``):
 
 from __future__ import annotations
 
+from _specs import default_kind
+from _specs import spec_for
 import numpy as np
 import pytest
 from conftest import _launch, _xp, sidecar_of
@@ -29,8 +31,8 @@ import hawk
 from hawk import Kernel, Mutable, Param, Scalar, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import param_planes, vjp
-from hawk.emit.wrapper import ActiveSpec, SegmentSpec, render_source
-from hawk.ir import HawkError
+from aether.wings.base.wrapper import ActiveSpec, SegmentSpec, render_source
+from raptor.errors import RaptorError as HawkError
 from hawk.targets import TARGETS
 
 SIZES = (1, 31, 32, 33, 1000, 65536)
@@ -191,10 +193,10 @@ def test_sidecar_lists_the_cells(built):
 def test_entries_whose_warp_is_not_32_samples_refuse_by_name(entry, kw):
     derived = Kernel("law_ss", VJP)
     with pytest.raises(HawkError, match=rf"sample_sum \['bar_k', 'bar_b'\].*{entry} entry"):
-        render_source(derived.name, derived.sinks, derived.walk, TARGETS["cuda"], **kw)
+        render_source(derived.name, derived.sinks, derived.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"]), kind=default_kind(), **kw)
 
 
-# ---- the rows a warp folds in one call (hawk.passes.policy.fold_shape) ----
+# ---- the rows a warp folds in one call (hawk_cuda.emit._fold_shape) ----
 
 @kernel
 def fold1(x: Scalar, s: Mutable[Scalar]):
@@ -252,7 +254,7 @@ def _fold_rows_run(bundle, name, target, n):
 
 
 def test_fold_shape_keeps_a_warp_under_the_residency_line():
-    from hawk.passes.policy import fold_shape
+    from hawk_cuda.emit import _fold_shape as fold_shape
     from hawk.variants import load
 
     fold = load("cuda")["fold"]
@@ -264,9 +266,9 @@ def test_fold_shape_keeps_a_warp_under_the_residency_line():
 
 def test_the_rows_of_a_warp_ride_one_batched_fold():
     from hawk.build_policy import BuildPolicy
-    plain = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"]).text
+    plain = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"]), kind=default_kind()).text
     assert "sampleSumWarp_<4," in plain and "hawk_wbase" in plain
-    one = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"], build_policy=BuildPolicy(fold_rows=1)).text
+    one = render_source("f", fold1.sinks, fold1.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"], build_policy=BuildPolicy(fold_rows=1)), kind=default_kind()).text
     assert "sampleSumWarp_<1," in one and "hawk_wbase" not in one
 
 

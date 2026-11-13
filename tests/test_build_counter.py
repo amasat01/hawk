@@ -17,7 +17,7 @@ import pytest
 import hawk
 from hawk.artifact import build_bundle
 from hawk.artifact.bundle import COUNTERS, counters_snapshot
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 #: Host-only builds: the device arch is never resolved, so no box arch is
 #: named here.
@@ -91,3 +91,31 @@ def test_builds_is_monotonic_never_reset(tmp_path):
         device_arch=DEVICE_ARCH,
     )
     assert COUNTERS["builds"] >= 2
+
+
+def test_the_emission_digest_is_computed_once_per_process_and_never_for_a_refused_call(tmp_path, monkeypatch):
+    """Counted, not timed: refused calls read no table; M builds of the same rows read them once; a reset reads them again."""
+    from hawk.artifact import unit_cache
+
+    reads = []
+    real = unit_cache._plain
+    monkeypatch.setattr(unit_cache, "_plain", lambda v: reads.append(1) or real(v))
+    unit_cache.reset_unit_memo()
+    for _ in range(5):
+        with pytest.raises(HawkError):
+            build_bundle([], tmp_path / "none", targets=("host",))
+        with pytest.raises(HawkError):
+            build_bundle([_n20i_h1_identity], tmp_path / "none", targets=("no-such-target",))
+    assert reads == []
+    for _ in range(3):
+        build_bundle([_n20i_h1_identity], tmp_path / "ok", targets=("host",), device_arch=DEVICE_ARCH)
+    once = len(reads)
+    assert once > 0
+    assert unit_cache.emission_digest(("host",)) != unit_cache.emission_digest(("c",))
+    assert len(reads) > once                          # a different set of modules is its own digest
+    twice = len(reads)
+    unit_cache.emission_digest(("host",))
+    assert len(reads) == twice
+    unit_cache.reset_unit_memo()
+    unit_cache.emission_digest(("host",))
+    assert len(reads) > twice

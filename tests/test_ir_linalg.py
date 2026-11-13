@@ -14,15 +14,14 @@ from __future__ import annotations
 import pytest
 
 from hawk import runtime
-from hawk.ir import Const, Dispatch, HawkError, Leaf, Select, make
-from hawk.passes.cost import linalg_bytes
-from hawk.passes.cost import _op_count, _own_cost, _wide
+from raptor.ir import Const, Dispatch, Leaf, Select, make
+from raptor.errors import RaptorError as HawkError
+from lowering.cost import _op_count, _own_cost, _wide, linalg_bytes
 from hawk.variants import load as _load_variant
 MAX_DIM = _load_variant("cpu")["linalg"]["max_dim"]
-from hawk.ir.linalg import (CONSUMERS, FACTORISATIONS, LINALG_OPS, PROJECTIONS,
-                            as_matrix, op_bytes, op_count, sweeps)
-from hawk.ir.ops import OP_KINDS
-from hawk.types import TensorType
+from raptor.ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, PROJECTIONS, as_matrix, op_bytes, op_count, sweeps
+from raptor.ir.ops import OP_KINDS
+from raptor.ir.types import TensorType
 
 
 def _mat(n, dtype="f64", name="A"):

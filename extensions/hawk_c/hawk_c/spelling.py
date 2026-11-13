@@ -7,7 +7,7 @@ tables and small string functions; nothing here renders a kernel."""
 
 from __future__ import annotations
 
-from hawk.emit.spelling import _real_literal
+from aether.wings.base.spelling import _real_literal
 from raptor.errors import RaptorError
 
 #: ScalarMode id to the aether C width word used in vector and matrix type names.

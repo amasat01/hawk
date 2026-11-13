@@ -3,19 +3,20 @@
 
 """The spelling seam: one renderer, N writers.
 
-``hawk.emit.writer.Writer`` names every text the body renderer produces;
-``hawk.emit.writer_aether.AETHER`` is today's aether C++ spelling moved
+``aether.wings.base.writer.Writer`` names every text the body renderer produces;
+``aether.wings.base.writer_aether.AETHER`` is today's aether C++ spelling moved
 behind it. These rows pin that the protocol is complete and that the
 renderer really delegates (a writer that spells declarations differently
 changes the body), while the aether writer's own text stays what it was.
 """
 
 from __future__ import annotations
-from _specs import HOST
+import pytest
+from _specs import HOST, default_kind
 
 import re
 
-from hawk.emit.writer import WRITER_MEMBERS, Writer
+from aether.wings.base.writer import WRITER_MEMBERS, Writer
 
 
 def test_the_writer_protocol_names_every_spelling_seam():
@@ -37,8 +38,8 @@ def test_the_writer_protocol_names_every_spelling_seam():
 
 import _kernels as K  # noqa: E402
 
-from hawk.emit import render_body  # noqa: E402
-from hawk.emit.writer_aether import AETHER, AetherWriter  # noqa: E402
+from aether.wings.base.render import render_body  # noqa: E402
+from aether.wings.base.writer_aether import AETHER, AetherWriter  # noqa: E402
 
 
 class _Probe(AetherWriter):
@@ -52,14 +53,14 @@ class _Probe(AetherWriter):
 
 def test_render_body_defaults_to_the_aether_writer():
     k = K.chain6
-    assert render_body(k.sinks, k.walk, spec=HOST).text == render_body(
-        k.sinks, k.walk, writer=AETHER, spec=HOST).text
+    assert render_body(k.sinks, k.walk, spec=HOST, kind=default_kind()).text == render_body(
+        k.sinks, k.walk, writer=AETHER, spec=HOST, kind=default_kind()).text
 
 
 def test_a_writer_that_spells_declarations_differently_changes_the_body():
     k = K.chain6
-    plain = render_body(k.sinks, k.walk, spec=HOST).text
-    probed = render_body(k.sinks, k.walk, writer=_Probe(), spec=HOST).text
+    plain = render_body(k.sinks, k.walk, spec=HOST, kind=default_kind()).text
+    probed = render_body(k.sinks, k.walk, writer=_Probe(), spec=HOST, kind=default_kind()).text
     assert plain != probed
     assert "const auto " in plain and "const auto " not in probed
     assert re.sub(r"const (auto|aether::Item<[^>]*>) ", "auto ", plain) == probed
@@ -75,7 +76,7 @@ def test_the_aether_writer_implements_every_member_and_for_header_takes_the_rend
 
 
 def test_param_cell_binding_still_re_exports_from_hawk_emit_render():
-    from hawk.emit.render import param_cell_binding
+    from aether.wings.base.render import param_cell_binding
 
     assert param_cell_binding("k") == "lut_k_cell"
 
@@ -95,7 +96,7 @@ def test_a_table_read_twice_is_not_loaded_at_the_sample_index():
     """A ``lookup`` plane is read BY NAME at computed indices (``_at``); naming
     the leaf for its fan-out would emit a dead ``lut_table[i].eval()`` at the
     sample index, an out-of-bounds read on a table shorter than the batch."""
-    text = render_body(_two_reads.sinks, _two_reads.walk, spec=HOST).text
+    text = render_body(_two_reads.sinks, _two_reads.walk, spec=HOST, kind=default_kind()).text
     assert "lut_table_i" not in text
     assert text.count("lut_table[aether::SampleIndex::make(") == 2
 
@@ -109,7 +110,7 @@ def test_a_rank1_table_read_once_is_not_loaded_at_the_sample_index():
     """A rank>=1 leaf is named for correctness, but a ``lookup`` plane is read
     by name at its computed index (``_at``), so even ONE read of a
     ``Table[Vector[3]]`` emits no dead ``lut_table_i = lut_table[i].get()``."""
-    text = render_body(_vector_read_once.sinks, _vector_read_once.walk, spec=HOST).text
+    text = render_body(_vector_read_once.sinks, _vector_read_once.walk, spec=HOST, kind=default_kind()).text
     assert "lut_table_i" not in text
     assert "lut_table[i]" not in text
     assert text.count("lut_table[aether::SampleIndex::make(") == 1
@@ -123,3 +124,12 @@ def test_a_head_break_test_is_spelled_by_the_writer():
 
     assert list(inspect.signature(AETHER.exit_if).parameters) == ["cond"]
     assert AETHER.exit_if("(a == b)") == "if ((a == b)) {"
+
+
+def test_the_writer_refuses_a_missing_kind_by_name():
+    from aether.wings.base.render import render_body
+    from raptor.errors import RaptorError as HawkError
+
+    k = K.chain6
+    with pytest.raises(HawkError, match="needs the kernel kind"):
+        render_body(k.sinks, k.walk, spec=HOST, kind=None)

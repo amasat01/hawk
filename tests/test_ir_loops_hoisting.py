@@ -8,15 +8,15 @@ an untaken arm's out-of-range row is never read). A read guarded by a
 per-iteration condition stays in the body."""
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, default_kind
 
 import numpy as np
 from _eval import evaluate
 
 import hawk
 import hawk.math as m
-from hawk.emit import render_body
-from hawk.ir import Loop
+from aether.wings.base.render import render_body
+from raptor.ir import Loop
 
 T = 6
 W = 3
@@ -45,7 +45,7 @@ def per_iteration_guard(x: hawk.Scalar, n: hawk.Scalar, a: hawk.Table["k":T],
 
 
 def _text(kernel) -> str:
-    return render_body(kernel.sinks, kernel.walk, spec=HOST).text
+    return render_body(kernel.sinks, kernel.walk, spec=HOST, kind=default_kind()).text
 
 
 def _loop(kernel):

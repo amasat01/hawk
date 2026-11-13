@@ -29,18 +29,18 @@ def _plain(value, where: str):
     raise HawkError(f"lowered unit: {where} holds a {type(value).__name__}, which is neither plain data nor a raptor object")
 
 
-def frame_of(lowered, host_profile: str | None = None) -> LoweredUnit:
+def frame_of(lowered) -> LoweredUnit:
     """The unit of ``lowered``: filled from the kernel, the scalar mode, the kind and the specs lowering made, and from the
     emit policy in force (call it inside the build's policy block). Builds no text and imports no backend."""
     from . import unit_cache
-    from ..passes import cost
+    from aether.wings.base.writer_aether import working_set_bytes
+    from ..components import view
     from ..trace.decl import Plane
 
     kernel, name, smode, kind = lowered.kernel, lowered.name, lowered.smode, lowered.kind
     members = getattr(kernel, "members", None)
     one_step = getattr(lowered, "one_step", None)
-    sub = None if one_step is None else frame_of(type(lowered)(one_step, name, smode, kind, None, None, None, None, None, 1, lowered.spec),
-                                                 host_profile)
+    sub = None if one_step is None else frame_of(type(lowered)(one_step, name, smode, kind, None, None, None, None, None, 1, lowered.spec))
     planes = tuple(PlaneDecl(n, p.form, p.ttype, *(_plain(getattr(p, f), f"planes.{n}.{f}") for f in
                    ("dims", "staged", "grid", "sorted", "shared", "meta")))
                    for n, p in kernel.planes.items() if isinstance(p, Plane))
@@ -53,9 +53,10 @@ def frame_of(lowered, host_profile: str | None = None) -> LoweredUnit:
               "device_only": cfg.device_only}
 
     # the cost is plain data, worked out here under the settings the build's spec holds
-    branch = cost.kernel_cost(walk, spec, host_profile)
+    cost = view("lowering", "cost")
+    branch = cost.kernel_cost(walk)
     costs = {"ops": branch.arith32 + branch.arith64 + branch.special32 + branch.special64,
-             "fp64_ops": cost.fp64_ops(canonical_nodes(tuple(kernel.sinks))[0]), "working_set_bytes": cost.working_set_bytes(kernel.sinks, spec.primary.get("form", {}).get("rolled_fold_min"), cfg.form)}
+             "fp64_ops": cost.fp64_ops(canonical_nodes(tuple(kernel.sinks))[0]), "working_set_bytes": working_set_bytes(kernel.sinks, spec.primary.get("form", {}).get("rolled_fold_min"), cfg.form)}
 
     return LoweredUnit(
         ir_version=IR_VERSION, name=name, walk_digest=walk.digest,

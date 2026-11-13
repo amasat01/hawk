@@ -14,6 +14,7 @@ driven by ``stale_stack_harness.cpp`` with ``LD_BIND_NOW=1``.
 
 from __future__ import annotations
 
+from _specs import spec_for, default_kind
 import os
 import subprocess
 from pathlib import Path
@@ -23,9 +24,10 @@ import pytest
 import hawk
 from hawk import Mutable, Param, Terminated, Vector
 from hawk.compile import toolchain as tc
+import osprey_cpu.toolchain as ctc
 from hawk.diff import jvp
-from hawk.emit import FLOAT64, render_source
-from hawk.ir import canonical
+from aether.wings.base.wrapper import FLOAT64, render_source
+from raptor.ir import canonical
 from hawk.math import dot, sqrt
 from hawk.targets import TARGETS
 from hawk.trace import Kernel
@@ -43,11 +45,11 @@ def kernel_so(tmp_path_factory):
     # a derived level is a kernel in its own right (its guard is applied again): two nested selects
     first = Kernel("drag_jvp", jvp(drag_guarded))
     sinks = jvp(first)
-    text = render_source("drag_jj", sinks, canonical(sinks), TARGETS["host"], mode=FLOAT64).text
+    text = render_source("drag_jj", sinks, canonical(sinks), TARGETS["host"], mode=FLOAT64, spec=spec_for(TARGETS["host"]), kind=default_kind()).text
     work = tmp_path_factory.mktemp("stale_stack")
     (work / "k.cpp").write_text(text)
-    cxx = tc.host_compiler()
-    subprocess.run([cxx, *tc.host_flags(), "-o", str(work / "k.so"), str(work / "k.cpp")],
+    cxx = ctc.host_compiler()
+    subprocess.run([cxx, *ctc.host_flags(), "-o", str(work / "k.so"), str(work / "k.cpp")],
                    check=True)
     subprocess.run([cxx, "-O1", "-std=c++17", "-o", str(work / "harness"), str(HARNESS), "-ldl"],
                    check=True)

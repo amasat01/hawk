@@ -64,7 +64,7 @@ def test_a_bundle_whose_members_disagree_on_the_axis_is_refused(tmp_path, cache_
     import _deployable as D
 
     from hawk.artifact import build_bundle
-    from hawk.ir import HawkError
+    from raptor.errors import RaptorError as HawkError
 
     with pytest.raises(HawkError, match="ONE execution axis"):
         build_bundle([D.axpb, D.scatter], tmp_path / "mixed", targets=("host",),

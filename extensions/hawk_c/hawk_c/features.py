@@ -12,21 +12,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from hawk.emit.spelling import _MATH1, _MATH2, _MATH3
-from hawk.ir.linalg import LINALG_OPS
-from hawk.ir.nodes import Loop
-from hawk.ir.nodes import (
-    GATHER_ROLES,
-    RAW_KIND,
-    AccumWrite,
-    At,
-    Dispatch,
-    Op,
-    ReduceSamples,
-    SampleSum,
-    Select,
-)
-from hawk.ir.ops import RANDOM_OPS
+from aether.wings.base.spelling import _MATH1, _MATH2, _MATH3
+from raptor.ir.linalg import LINALG_OPS
+from raptor.ir.nodes import Loop
+from raptor.ir.nodes import GATHER_ROLES, RAW_KIND, AccumWrite, At, Dispatch, Op, ReduceSamples, SampleSum, Select
+from raptor.ir.ops import RANDOM_OPS
 
 #: The dtypes of an index Int.
 INDEX_INTS = ("i32", "i64")

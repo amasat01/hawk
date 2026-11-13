@@ -20,6 +20,7 @@ unconditionally makes the scattered-diagnostic row refuse (or silently
 compensate the wrong plane). Every plant was then removed."""
 
 from __future__ import annotations
+from _specs import default_kind
 from _specs import HOST
 
 import _deploy as L
@@ -30,9 +31,9 @@ from conftest import sidecar_of
 import hawk
 from hawk import Mutable, Scalar, Terminated, Vector
 from hawk.artifact import build_bundle as _build_bundle
-from hawk.emit import render_body
+from aether.wings.base.render import render_body
 from hawk.ext import Kind, Output, compensated
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.math import norm
 
 N = 8
@@ -219,5 +220,5 @@ def test_a_derivative_of_returned_plus_named_sinks_differentiates_every_sink():
 
     d = jvp(returned_with_diagnostic, wrt=("term",))
     assert [s.name for s in d] == ["dot_speed", "dot_acc", "dot_acc_c"]
-    text = render_body(tuple(d), Kernel("d", tuple(d)).walk, spec=HOST).text
+    text = render_body(tuple(d), Kernel("d", tuple(d)).walk, spec=HOST, kind=default_kind()).text
     assert "store_compensated" not in text

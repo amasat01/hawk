@@ -16,32 +16,29 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
-from hawk.ir import Walk
+from raptor.ir import Walk
 from raptor.errors import RaptorError
-from lowering.box import BOX_OWN, owned_lane
-from hawk.emit.render import SAMPLE_SUM_TERMS, entry_counts_finished as entry_counts_finished
-from hawk.emit.wrapper import (
-    SAMPLE_SUM_OP_CODE,
-    ActiveSpec,
-    SegmentSpec,
-    active_reads,
-    sample_sum_fill,
-    segment_reads,
-    unpack_lines,
-)
-from hawk.emit.dispatch import render_dispatch_rank0
-from hawk.passes import policy
-from hawk.emit.spelling import param_name, reconstruct_call
+from aether.wings.base.box import BOX_OWN, owned_lane
+from aether.wings.base.render import SAMPLE_SUM_TERMS, entry_counts_finished as entry_counts_finished
+from aether.wings.base.wrapper import SAMPLE_SUM_OP_CODE, ActiveSpec, SegmentSpec, active_reads, sample_sum_fill, segment_reads, unpack_lines
+from aether.wings.base.dispatch import render_dispatch_rank0
+from aether.wings.base.spelling import param_name, reconstruct_call
 
 
 class CudaWrapper:
     """The device half of the seam."""
 
-    #: ``(threads, blocks_per_sm)`` of the build being rendered, or ``None`` (set on the render's own copy: :func:`hawk.emit.wrapper.render_source`).
+    #: ``(threads, blocks_per_sm)`` of the build being rendered, or ``None`` (set on the render's own copy: :func:`aether.wings.base.wrapper.render_source`).
     launch_bounds = None
 
     #: Force-inlined: a real call would add an ABI-shim frame for nothing.
     qualifier = "__device__ __forceinline__"
+
+    @property
+    def device_text(self):
+        """The device's wrapper text (the SIMT aether wing's)."""
+        import aether.wings.simt.wrapper_text
+        return aether.wings.simt.wrapper_text
 
     #: Set: this wrapper writes a team stage's prologue (``index_prologue(team=...)``).
     team_flat = True
@@ -67,7 +64,7 @@ class CudaWrapper:
         lane past the device-read run length rather than the launch's
         own cap; ``base`` is unused in that case. ``box``
         (:class:`lowering.box.Box`) makes ``base + flat`` a thread and ends
-        at its first owned lane (:func:`lowering.box.frame` binds ``i``). ``team`` (the
+        at its first owned lane (:func:`aether.wings.base.box.frame` binds ``i``). ``team`` (the
         threads of the team, :mod:`lowering.team_emit`) makes the lane the BLOCK: ``flat`` is
         ``blockIdx.x``, and a lane past ``count`` leaves with its whole block."""
         # The launch-geometry builtins are spelled ONCE in this file; the
@@ -176,14 +173,14 @@ class CudaWrapper:
     # geometry-seam: end
 
     def fold_rows(self, width: int, spec) -> int:
-        return policy.fold_shape(width, spec.primary["fold"], forced=spec.settings.fold_k)
+        return _fold_shape(width, spec.primary["fold"], forced=spec.settings.fold_k)
 
     def sample_sum_frame(self, width: int, elem: str, store: str,
                          op: str = "sum", live: str | None = None, *, spec) -> tuple:
         """The index prologue with no early return: a lane past ``count``
         skips the body (``hawk_active``) but takes part in its warp's row
         sum with zero terms; a warp wholly past ``count`` exits together."""
-        k = policy.fold_shape(width, spec.primary["fold"], forced=spec.settings.fold_k)
+        k = _fold_shape(width, spec.primary["fold"], forced=spec.settings.fold_k)
         if k > 1:
             return self._sample_sum_frame_rows(width, elem, store, op, live, k)
         plain = self.index_prologue()
@@ -375,8 +372,8 @@ static __device__ __noinline__ void hawk_persist_slots(unsigned long long* util,
 
 def _finish_counter() -> str:
     """The finish counter's binding (``hawk.ir.nodes.FINISHED_PLANE``)."""
-    from hawk.ir.nodes import FINISHED_PLANE
-    from hawk.emit.spelling import binding_name
+    from raptor.ir.nodes import FINISHED_PLANE
+    from aether.wings.base.spelling import binding_name
 
     return binding_name("lookup", FINISHED_PLANE)
 
@@ -395,9 +392,9 @@ def _launch_budget(pre: str, count: str | None) -> tuple:
     """The declarations in ``pre`` of the step budget ``count`` when it reads
     the launch's fused_steps word alone (no per-sample value), so the
     persistent entry evaluates them once, at entry; ``()`` otherwise."""
-    from hawk.ir.nodes import FUSED_STEPS_PLANE
-    from hawk.emit.render import _declarations
-    from hawk.emit.spelling import binding_name
+    from raptor.ir.nodes import FUSED_STEPS_PLANE
+    from aether.wings.base.render import _declarations
+    from aether.wings.base.spelling import binding_name
 
     if count is None or not re.fullmatch(r"\w+", count):
         return ()
@@ -442,8 +439,8 @@ def _fused_split(sinks, walk: Walk, kind, spec):
     """The lane split of a ``sample_local`` kernel with the ``fused_steps``
     word and a finish, or ``None`` where the persist and range entries don't
     apply."""
-    from hawk.ir.nodes import FUSED_STEPS_PLANE
-    from hawk.emit.render import render_lane_split
+    from raptor.ir.nodes import FUSED_STEPS_PLANE
+    from aether.wings.base.render import render_lane_split
 
     if getattr(walk, "finish", None) is None or walk.access.cls != "sample_local":
         return None
@@ -510,8 +507,8 @@ def persist_entry(wrapper: CudaWrapper, name: str, sinks, walk: Walk,
 
     Admitted: a ``sample_local`` kernel with the ``fused_steps`` word whose
     fused body cuts into head, one trip and tail
-    (:func:`~hawk.emit.render.render_lane_split`)."""
-    from hawk.emit.spelling import carry_type
+    (:func:`~aether.wings.base.render.render_lane_split`)."""
+    from aether.wings.base.spelling import carry_type
 
     split = _fused_split(sinks, walk, kind, spec)
     if split is None:
@@ -714,8 +711,8 @@ def range_entry(wrapper: CudaWrapper, name: str, sinks, walk: Walk, kind,
     steps this launch (``1`` or the trips for a sample not finished on
     entry, else ``0``) are maxed into ``hawk_steps`` after every lane is
     done, one atomic per warp."""
-    from hawk.ir.nodes import FUSED_STEPS_PLANE
-    from hawk.emit.spelling import binding_name, carry_type
+    from raptor.ir.nodes import FUSED_STEPS_PLANE
+    from aether.wings.base.spelling import binding_name, carry_type
 
     split = _fused_split(sinks, walk, kind, spec)
     if split is None:
@@ -779,7 +776,8 @@ def range_entry(wrapper: CudaWrapper, name: str, sinks, walk: Walk, kind,
 
 def _param_type(role: str, ttype) -> str:
     """The by-value ABI shape one role crosses the launch boundary as."""
-    from hawk.emit.spelling import mirror_of, view_type
+    from aether.wings.base.spelling import view_type
+    from raptor.protocols.naming import mirror_of
 
     shape = mirror_of(role, ttype)
     if shape == "value":
@@ -789,3 +787,18 @@ def _param_type(role: str, ttype) -> str:
 
 #: The built device wrapper.
 CUDA = CudaWrapper()
+
+
+def _fold_shape(width: int, fold: dict, regs: int | None = None, forced: int = 0) -> int:
+    """The rows (32 samples each) one warp folds in ONE batched ``sampleSumWarp_`` call, for a cell sink of ``width``
+    columns: the largest power of two ``k <= fold["k_max"]`` whose ``k * width`` shuffle columns keep the warp under the residency
+    line (``regs_base + regs_column * (k * width - 1) <= regs``; ``regs`` defaults to the line ``residency_regs``), 1 when none
+    fits. ``fold`` is the device variant's ``fold`` data (ptxas: 20 registers for 1 row, 26 for 4, 43 for 8). Every ``k`` stores
+    the same rows with the same bits; only the shuffle latency per row changes. ``forced`` (the build's ``Settings.fold_k``) wins when set."""
+    if forced:
+        return forced
+    line = fold["residency_regs"] if regs is None else regs
+    k = fold["k_max"]
+    while k > 1 and fold["regs_base"] + fold["regs_column"] * (k * width - 1) > line:
+        k //= 2
+    return k

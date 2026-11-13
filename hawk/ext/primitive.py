@@ -36,7 +36,7 @@ from typing import Any
 
 from raptor.rules import primitive as rules
 from ..dialects import KINDS
-from ..ir import Node, Primitive
+from raptor.ir import Node, Primitive
 from .._errors import HawkError
 from ..trace.helpers import call, call_lowered
 from ..trace.value import Value, node_of

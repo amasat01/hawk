@@ -41,15 +41,15 @@ _DIST = re.compile(r"[a-z][a-z0-9_-]*\Z")
 
 #: The top packages of the first-party extensions (each with ``extension.json`` beside its ``__init__``): a third party may not
 #: claim them. They are found through the entry points of the distribution :data:`OWN_DIST`, like any other.
-FIRST_PARTY = ("hawk_cuda", "hawk_c")
+FIRST_PARTY = ("hawk_cuda", "hawk_c", "osprey_cpu")
 OWN_DIST = "raptor-hawk"
 #: The distribution that provides a first-party backend id, for the sentences that say what to install.
-KNOWN = {"c": "hawk-c", "cuda": "hawk-cuda"}
-#: Backend ids only the built-in and the first-party extensions may use, installed or not.
-RESERVED = ("host", *KNOWN)
+KNOWN = {"c": "hawk-c", "cuda": "hawk-cuda", "host": "osprey-cpu"}
+#: Backend ids only the first-party extensions may use, installed or not.
+RESERVED = tuple(KNOWN)
 #: Writer ids of the spellings arm that belong to the built-in and first-party backends.
 RESERVED_WRITERS = ("aether", *RESERVED)
-_OWN = ("hawk", "hawk-cuda", "hawk-c")
+_OWN = ("hawk", "hawk-cuda", "hawk-c", "osprey-cpu")
 
 _LOCK = threading.RLock()
 
@@ -72,24 +72,16 @@ def missing_device() -> str:
     return f"no device backend is installed; install the {KNOWN['cuda']} extension"
 
 
-#: hawk's own emission modules (``hawk.emit``), declared here as its manifest's data.
-_EMIT_MODULES = ("dispatch", "fused", "host", "policy", "render", "rtstore", "spelling", "wrapper", "writer", "writer_aether")
-
-
-#: hawk's emission tables outside ``hawk.emit``: what an emitted artifact (its text, its sidecar, its manifest) is written with.
+#: hawk's emission tables: what an emitted artifact (its text, its sidecar, its manifest) is written with.
 _EMIT_ALSO = ("hawk._contracts", "hawk._plane_layout", "hawk.artifact.frame", "hawk.artifact.layout", "hawk.artifact.manifest",
-              "hawk.artifact.sidecar", "hawk.passes.chain", "hawk.passes.contraction", "hawk.passes.cost", "hawk.passes.fusion",
-              "hawk.passes.lstsq", "hawk.passes.policy", "hawk.passes.segment", "hawk.passes.slotwise", "hawk.passes.vectorise")
+              "hawk.artifact.sidecar", "hawk.passes.chain", "hawk.passes.contraction", "hawk.passes.fusion",
+              "hawk.passes.segment")
 
 
 def _builtin() -> dict:
     return {"identity": "hawk", "version": "0", "contract": CONTRACT, "requires": (),
-            "emission_modules": (*(f"hawk.emit.{m}" for m in _EMIT_MODULES), *_EMIT_ALSO), "runtime_modules": (),
-            "backends": [{"name": "host", "ref": "hawk.backends.host:BACKEND", "about": "for the CPU", "entry": "host", "priority": 1, "options": ["profile"],
-                          "policy": ["emit_form", "linalg_form", "wide_form", "contraction"],
-                          "reads": ["cells.row", "form.rolled_fold_min", "host_wide", "lanes.block_run", "lanes.run_max", "linalg.max_dim", "linalg.team_max_dim", "scatter.max_chunks"],
-                          "variant": {"x86_64": "x86", "arm64": "arm"}, "components": ["lowering"]}],
-            "spellings": [{"writer": "aether", "dialect": "lowering", "ref": "lowering.aether"}]}
+            "emission_modules": _EMIT_ALSO, "runtime_modules": (),
+            "backends": []}
 
 
 def _key(arm: str, item: dict):
@@ -124,7 +116,6 @@ class _State:
         self.broken: dict = {}         # identity -> sentence, for a first-party extension that is refused
         self.loaded: dict = {}         # (arm, key) -> imported object (spellings: True)
         self.failed: dict = {}         # (arm, key) -> sentence
-        self.spelled: dict = {}        # (writer, dialect, name) -> module, for the spellings a third party's module registered
         self.homes: dict = {}          # identity -> directory, for each first-party package installed at its trusted place
         self.dists: dict = {}          # identity -> the distribution that declares it (raptor-hawk)
         self.unreadable: dict = {}     # identity -> sentence, for a manifest too damaged to say what it declared
@@ -132,6 +123,7 @@ class _State:
         self.checked = False           # the first-party packages were checked for shadowing at the first default build
         self.named_bad: dict = {}      # name -> sentence, for a HAWK_EXTENSIONS name that is unknown or refused
         self.third = False             # the installed third-party extensions were read
+        self.digests: dict = {}        # tuple of emission module names -> their table digest (hawk.artifact.unit_cache)
 
     def add(self, ext: dict, refusal: str | None = None, builtin: bool = False) -> None:
         name = ext["identity"]
@@ -281,18 +273,27 @@ _STATE: _State | None = None
 
 
 def reset() -> None:
-    """Forget what was scanned and loaded, and the spellings that extensions registered; the next use scans again
+    """Forget what was scanned and loaded; the next use scans again
     (the path or the environment changed)."""
     global _STATE
     with _LOCK:
-        if _STATE is not None:
-            for key, module in _STATE.spelled.items():
-                _SPELLS.pop(key, None)
-                sys.modules.pop(module, None)                # imported again, it registers again
         _STATE = None
     from . import variants
 
     variants.reset()
+
+
+def digest_memo() -> dict:
+    """The memo of emission digests held by the current state: a reset or :func:`forget_digests` starts a new one, so a digest
+    computed against the old tables is stored only into the old memo."""
+    with _LOCK:
+        return _scan().digests
+
+
+def forget_digests() -> None:
+    with _LOCK:
+        if _STATE is not None:
+            _STATE.digests = {}
 
 
 def _spec(package: str):
@@ -305,13 +306,37 @@ def _spec(package: str):
         return None
 
 
+def _homes(package: str, dist) -> list:
+    """Where ``dist``'s own metadata puts ``package``: beside its metadata (a normal install), and for an editable install the
+    project folder it records (PEP 610 ``direct_url.json``: a ``file:`` URL with ``dir_info.editable``) and the folders its
+    ``.pth`` files add to the import path."""
+    import json
+    from urllib.parse import unquote, urlparse
+
+    homes = [Path(dist.locate_file(package))]
+    try:
+        direct = json.loads(dist.read_text("direct_url.json") or "null") or {}
+        url = urlparse(direct.get("url", ""))
+        if url.scheme == "file" and (direct.get("dir_info") or {}).get("editable"):
+            homes.append(Path(unquote(url.path)) / package)
+    except ValueError:
+        pass
+    for f in dist.files or ():
+        if f.name.endswith(".pth"):
+            for line in f.read_text().splitlines():
+                if line.strip() and not line.startswith(("#", "import ")):
+                    homes.append(Path(dist.locate_file(line.strip())) / package)
+    return [h.resolve() for h in homes]
+
+
 def _locate(package: str, dist) -> tuple:
     """``(home, problem)`` for the first-party ``package`` that the distribution ``dist`` (``raptor-hawk``) declares: ``home`` is
-    where that distribution's metadata puts the package, when the import path resolves the name to exactly that directory;
-    ``problem`` is an error sentence when it resolves elsewhere (a copy shadows it) or the declared package is not there."""
-    home = Path(dist.locate_file(package)).resolve()
-    if not (home / "__init__.py").is_file():
-        return None, f"the distribution {OWN_DIST!r} declares the package {package!r}, which is not installed at {home}"
+    where that distribution's metadata puts the package (:func:`_homes`), when the import path resolves the name to exactly that
+    directory; ``problem`` is an error sentence when it resolves elsewhere (a copy shadows it) or the declared package is not there."""
+    homes = [h for h in _homes(package, dist) if (h / "__init__.py").is_file()]
+    if not homes:
+        return None, (f"the distribution {OWN_DIST!r} declares the package {package!r}, which is not installed at "
+                      f"{Path(dist.locate_file(package)).resolve()}")
     spec = _spec(package)
     try:
         regular = spec is not None and bool(spec.origin) and spec.origin.endswith("__init__.py")
@@ -319,10 +344,10 @@ def _locate(package: str, dist) -> tuple:
                                            Path(spec.origin or next(iter(spec.submodule_search_locations or ("?",)))).resolve())
     except (OSError, TypeError):
         where = None
-    if where is not None and where != home:
-        return None, (f"the first-party package {package!r} is installed at {home}, but the import path resolves "
+    if where is not None and where not in homes:
+        return None, (f"the first-party package {package!r} is installed at {homes[0]}, but the import path resolves "
                       f"that name to {where}: remove or rename it")
-    return home, None
+    return where or homes[0], None
 
 
 def _own_entries() -> list:
@@ -633,14 +658,7 @@ def load(arm: str, key):
             try:
                 if ext in s.homes and (problem := _locate(s.homes[ext].name, s.dists[ext])[1]):
                     raise ValueError(problem)
-                before = set(_SPELLS)
                 obj = _import(item["ref"])
-                if arm == "spellings":         # a module that publishes its spellings as data: SPELLINGS[(dialect, name)] = fn
-                    for (dialect, name), fn in getattr(obj, "SPELLINGS", {}).items():
-                        if (key[0], dialect, name) not in _SPELLS:
-                            register_spelling(key[0], dialect, name, fn)
-                if arm == "spellings" and ext not in _OWN:
-                    s.spelled.update({k: item["ref"] for k in set(_SPELLS) - before})
                 if arm == "backends" and (getattr(obj, "id", None) != key or obj.device != item.get("device", False)
                                           or obj.builds != item.get("builds", True)):
                     raise ValueError("the object's id, device or builds disagree with the manifest")
@@ -658,25 +676,11 @@ def load(arm: str, key):
         return s.loaded[arm, key]
 
 
-_SPELLS: dict = {}
-
-
-def register_spelling(writer: str, dialect: str, name: str, fn) -> None:
-    """Record ``fn`` as ``writer``'s spelling of ``dialect``'s ``name``; a second definition is an error."""
+def spelling_refs(backend_ids) -> dict:
+    """``{(writer, dialect): module name}`` of the spellings arms of the extensions that provide the backends ``backend_ids`` (data
+    only: no module is imported; the writer reads the module when a node of that dialect is spelled). An unrelated installed
+    extension never adds to it."""
     with _LOCK:
-        if (writer, dialect, name) in _SPELLS:
-            raise _error(f"the {writer!r} writer already spells {dialect}.{name}: a second definition is refused")
-        _SPELLS[writer, dialect, name] = fn
-
-
-def spelling_of(writer: str, dialect: str, name: str):
-    """The writer's spelling, loading the module that registers that (writer, dialect) on the first miss; ``None`` if none."""
-    fn = _SPELLS.get((writer, dialect, name))
-    if fn is None:
-        with _LOCK:
-            key = ("spellings", (writer, dialect))
-            # a first-party writer's spellings are its own: a miss is final; any other writer's are read from the installed extensions
-            if key in _scan().items or (writer not in RESERVED_WRITERS and has(*key)):
-                load("spellings", (writer, dialect))
-            fn = _SPELLS.get((writer, dialect, name))
-    return fn
+        s = _scan(third=any(b not in RESERVED for b in backend_ids))
+        owners = {s.items["backends", b][0] for b in backend_ids if ("backends", b) in s.items}
+        return {key: item["ref"] for (arm, key), (ext, item, _) in s.items.items() if arm == "spellings" and ext in owners}

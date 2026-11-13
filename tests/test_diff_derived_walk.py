@@ -30,7 +30,7 @@ from _dags import drag_dag
 
 from hawk import Mutable, Param, Scalar, Vector, kernel
 from hawk.diff import jvp, vjp
-from hawk.ir import canonical
+from raptor.ir import canonical
 from hawk.math import dot, norm
 
 TRANSFORMS = [("vjp", vjp), ("jvp", jvp)]
@@ -75,7 +75,7 @@ def test_the_derived_arg_spec_is_a_superset_of_the_primal_read_side(name, transf
 
 def test_the_derived_ir_of_a_quantity_kernel_keeps_the_whole_span():
     from hawk import Quantity
-    from hawk.types import Wire
+    from raptor.ir.types import Wire
 
     state = Quantity(slug="sc", name="state",
                      wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))])

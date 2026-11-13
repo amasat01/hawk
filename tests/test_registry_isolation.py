@@ -19,13 +19,13 @@ from _extensions import backend, copy_of, make
 import hawk
 from hawk import registry
 from hawk.backends import need
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 #: The first-party packages sit in the source tree's extensions folder; a wheel carries them beside hawk.
 pytestmark = pytest.mark.repo_local
 
 REPO = str(Path(hawk.__file__).resolve().parent.parent)
-EXTENSIONS = [str(Path(REPO) / "extensions" / name) for name in ("hawk_cuda", "hawk_c")]
+EXTENSIONS = [str(Path(REPO) / "extensions" / name) for name in ("hawk_cuda", "hawk_c")] + [str(Path(REPO) / "staging")]
 
 HEAD = """
 import json, os, sys
@@ -167,10 +167,10 @@ def test_a_stray_folder_named_like_a_first_party_package_never_runs(tmp_path):
          "backends": [backend("cuda", "hawk_cuda.backend:BACKEND", device=True)]}))
     (stray / "backend.py").write_text(f"open({str(tmp_path / 'RAN')!r}, 'w').write('x')\nraise SystemExit('ran')\n")
     out = _run(tmp_path, """
-print(json.dumps({"state": state(), "entries": host_build("a"), "refused": registry.refused(),
+print(json.dumps({"state": state(), "refused": registry.refused(),
                   "mods": [m for m in sys.modules if m.startswith("hawk_cuda")]}))
 """, [REPO], NO_OWN)
-    assert out["state"] == {"ids": ["host"], "default": ["host"]} and out["entries"] == ["host"] and out["mods"] == []
+    assert out["state"] == {"ids": [], "default": []} and out["mods"] == []
     assert not (tmp_path / "RAN").exists() and out["refused"] == {}      # no distribution declares it: the folder is never read
 
 
@@ -188,7 +188,7 @@ except hawk.HawkError as e:
 print(json.dumps({"said": said, "mods": [m for m in sys.modules if m.startswith("fakecuda")], "ids": registry.backend_ids()}))
 """, [REPO, site], NO_OWN)
     assert out["said"] and "'cuda'" in out["said"] and "fakecuda" in out["said"] and "refused" in out["said"]
-    assert out["mods"] == [] and out["ids"] == ["host"] and not (tmp_path / "RAN").exists()
+    assert out["mods"] == [] and out["ids"] == [] and not (tmp_path / "RAN").exists()
 
 
 
@@ -234,19 +234,21 @@ print(json.dumps({"ids": [t for t, _ in rows], "walked": walked, "deployed": dep
 
 
 def _home(tmp_path, monkeypatch):
-    """A folder that plays an install: copies of both first-party packages and the dist-info of ``raptor-hawk`` that declares them."""
+    """A folder that plays an install: copies of the first-party packages and the dist-info of ``raptor-hawk`` that declares them."""
     root = tmp_path.resolve() / "wheel"
     root.mkdir()
     dist = root / "raptor_hawk-0.0.dist-info"
     dist.mkdir()
     (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: raptor-hawk\nVersion: 0.0\n")
-    (dist / "entry_points.txt").write_text("[raptor.extensions]\nhawk-cuda = hawk_cuda:extension.json\nhawk-c = hawk_c:extension.json\n")
+    (dist / "entry_points.txt").write_text("[raptor.extensions]\nhawk-cuda = hawk_cuda:extension.json\nhawk-c = hawk_c:extension.json\n"
+                                            "osprey-cpu = osprey_cpu:extension.json\n")
     for name in ("hawk_c", "hawk_cuda"):
         shutil.copytree(Path(REPO) / "extensions" / name / name, root / name, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(Path(REPO) / "staging" / "osprey_cpu", root / "osprey_cpu", ignore=shutil.ignore_patterns("__pycache__"))
     monkeypatch.syspath_prepend(str(root))       # first: this is what makes monkeypatch restore the ORIGINAL path
     sys.path[:] = [p for p in sys.path if "extensions" not in p]
     for name in list(sys.modules):
-        if name.split(".")[0] in ("hawk_c", "hawk_cuda"):
+        if name.split(".")[0] in ("hawk_c", "hawk_cuda", "osprey_cpu"):
             monkeypatch.delitem(sys.modules, name)
     registry.reset()
     return root
@@ -352,7 +354,7 @@ DAMAGED = {"no metadata": dict(entry="[raptor.extensions]\nbrk = brkpkg:extensio
 def test_a_damaged_distribution_refuses_itself_and_blocks_nothing_else(tmp_path, kind):
     site = tmp_path / "site"
     site.mkdir()
-    make(site, "good-ext", {"backends": [backend("p", "good_mod:BACKEND")]}, modules={"good_mod": copy_of("hawk.backends.host", "p")})
+    make(site, "good-ext", {"backends": [backend("p", "good_mod:BACKEND")]}, modules={"good_mod": copy_of("osprey_cpu.backend", "p")})
     _dist(site, "damaged", **DAMAGED[kind])
     out = _run(tmp_path, ATTEMPT + """
 def build(t):
@@ -384,7 +386,7 @@ def test_a_third_party_cannot_supply_a_first_party_writers_spellings(tmp_path):
     make(site, "helpful-ext", {"spellings": [{"writer": "c", "dialect": "simt", "ref": "helpful_sp"}]},
          modules={"helpful_sp": f"open({str(tmp_path / 'RAN')!r}, 'w').write('x')\n"})
     out = _run(tmp_path, """
-print(json.dumps({"miss": registry.spelling_of("c", "simt", "team_read") is None, "scans": len(calls),
+print(json.dumps({"miss": ("c", "simt") not in registry.spelling_refs(["host"]), "scans": len(calls),
                   "refused": registry.refused()}))
 """, [REPO, *EXTENSIONS, site], SCAN)
     assert out["miss"] and out["scans"] == 0 and not (tmp_path / "RAN").exists()
@@ -395,9 +397,9 @@ def test_a_distribution_named_like_a_first_party_identity_is_refused_under_its_o
     site = tmp_path / "site"
     site.mkdir()
     make(site, "Hawk_CUDA", raw="{ not json")
-    make(site, "hawk", {"backends": [backend("zz", "zz_mod:BACKEND")]}, modules={"zz_mod": copy_of("hawk.backends.host", "zz")})
+    make(site, "hawk", {"backends": [backend("zz", "zz_mod:BACKEND")]}, modules={"zz_mod": copy_of("osprey_cpu.backend", "zz")})
     make(site, "needs-cuda", {"requires": ["hawk-cuda"], "backends": [backend("nc", "nc_mod:BACKEND")]},
-         modules={"nc_mod": copy_of("hawk.backends.host", "nc")})
+         modules={"nc_mod": copy_of("osprey_cpu.backend", "nc")})
     out = _run(tmp_path, ATTEMPT + """
 print(json.dumps({"refused": registry.refused(), "ext": sorted(registry.extensions()), "nc": attempt(lambda: need("nc").id),
                   "zz": attempt(lambda: need("zz").id), "ids": registry.backend_ids(default=True)}))

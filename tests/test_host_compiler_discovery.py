@@ -9,7 +9,8 @@ import sys
 import pytest
 
 from hawk.compile import toolchain as tc
-from hawk.ir import HawkError
+import osprey_cpu.toolchain as ctc
+from raptor.errors import RaptorError as HawkError
 
 
 def _exe(directory, name):
@@ -35,13 +36,13 @@ def test_cxx_honoured_without_gxx_on_path(clean_env, monkeypatch):
     exe = _exe(bindir, "x86_64-conda-linux-gnu-g++")
     monkeypatch.setenv("PATH", str(bindir))
     monkeypatch.setenv("CXX", "x86_64-conda-linux-gnu-g++ -O2")
-    assert tc.host_compiler() == exe
+    assert ctc.host_compiler() == exe
 
 
 def test_cxx_absolute_path(clean_env, monkeypatch):
     exe = _exe(clean_env, "mycxx")
     monkeypatch.setenv("CXX", exe)
-    assert tc.host_compiler() == exe
+    assert ctc.host_compiler() == exe
 
 
 def test_hawk_cxx_beats_cxx_and_path_gxx(clean_env, monkeypatch):
@@ -53,11 +54,11 @@ def test_hawk_cxx_beats_cxx_and_path_gxx(clean_env, monkeypatch):
     monkeypatch.setenv("PATH", str(bindir))
     monkeypatch.setenv("CXX", other)
     monkeypatch.setenv("HAWK_CXX", hawk)
-    assert tc.host_compiler() == hawk
+    assert ctc.host_compiler() == hawk
     monkeypatch.delenv("HAWK_CXX")
-    assert tc.host_compiler() == other      # CXX beats g++ on PATH
+    assert ctc.host_compiler() == other      # CXX beats g++ on PATH
     monkeypatch.delenv("CXX")
-    assert tc.host_compiler() == gxx
+    assert ctc.host_compiler() == gxx
 
 
 def test_unresolvable_cxx_falls_through(clean_env, monkeypatch):
@@ -66,14 +67,14 @@ def test_unresolvable_cxx_falls_through(clean_env, monkeypatch):
     gxx = _exe(bindir, "g++")
     monkeypatch.setenv("PATH", str(bindir))
     monkeypatch.setenv("CXX", "no-such-compiler-xyz --flag")
-    assert tc.host_compiler() == gxx
+    assert ctc.host_compiler() == gxx
 
 
 def test_not_found_message_lists_every_candidate(clean_env, monkeypatch):
     monkeypatch.setenv("CXX", "no-such-compiler-xyz --flag")
     monkeypatch.setitem(sys.modules, "ziglang", None)   # import raises ImportError
     with pytest.raises(HawkError) as err:
-        tc.host_compiler()
+        ctc.host_compiler()
     msg = str(err.value)
     for needle in ("HAWK_CXX", "CXX", "no-such-compiler-xyz --flag", "g++", "ziglang"):
         assert needle in msg

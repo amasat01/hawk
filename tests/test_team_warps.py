@@ -1,6 +1,5 @@
 """The warp-per-lane kernel's block of k warps is a card-kit switch: k = 1 emits the one-warp block's text, k > 1 reads the
 lane off its warp and the lane count off nSamples."""
-from hawk.passes import policy
 from hawk_cuda.emit import CudaWrapper
 
 PLAIN = """    const long long hawk_flat =

@@ -17,11 +17,11 @@ from collections.abc import Sequence
 from typing import Any
 
 from raptor.ir import key_text
-from ..ir import Op
+from raptor.ir import Op
 from .._errors import HawkError
-from ..ir.access import ACCESS_CLASSES
-from ..ir.nodes import RAW_KIND, RAW_LANGUAGE
-from ..types import TensorType
+from raptor.ir.access import ACCESS_CLASSES
+from raptor.ir.nodes import RAW_KIND, RAW_LANGUAGE
+from raptor.ir.types import TensorType
 from .decl import Scalar
 from .value import Value, node_of
 

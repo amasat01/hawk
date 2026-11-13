@@ -30,7 +30,7 @@ from conftest import run_threads
 from hawk.compile import cache as cache_mod
 from hawk.compile import drivers
 from hawk.compile.drivers import CompileOptions, compile_source
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 ft = pytest.importorskip("raptor.conformance.freethreading")
 ft.declare_ft_row("FT-3-HAWK-COMPILE-SINGLE-FLIGHT", "hawk",

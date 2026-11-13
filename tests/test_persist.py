@@ -32,6 +32,7 @@ is pinned:
 """
 
 from __future__ import annotations
+from _specs import spec_for
 from _specs import HOST
 
 import ctypes
@@ -55,8 +56,8 @@ from test_host_interchange import (
 )
 
 from hawk.artifact import build_bundle
-from hawk.emit import render_source
-from hawk.emit.render import render_lane_split
+from aether.wings.base.wrapper import render_source
+from aether.wings.base.render import render_lane_split
 from hawk_cuda.emit import SHORT_DEVICE_STEP_OPS
 from hawk.targets import TARGETS
 
@@ -317,7 +318,7 @@ def test_the_persist_loop_is_warp_converged(kernel):
     commits is masked until the next head. The chunk length is the launch's
     ``hawk_chunk``, never a constant in the code."""
     text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
+                         kind=kernel.kind, one_step=kernel.one_step, spec=spec_for(TARGETS["cuda"])).text
     body = _entry_body(text, kernel.name, "_persist")
     head, chunk, tail = _loop_parts(text, kernel.name)
     assert body.count("atomicAdd(hawk_next") == head.count("atomicAdd(hawk_next") == 1
@@ -344,7 +345,7 @@ def test_a_sample_is_written_back_at_the_next_head(kernel):
     import re
 
     text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
+                         kind=kernel.kind, one_step=kernel.one_step, spec=spec_for(TARGETS["cuda"])).text
     head, chunk, _ = _loop_parts(text, kernel.name)
     split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind, spec=HOST)
     stores = re.findall(r"^\s*(\w+)\[i\] = ", split.post, re.M)
@@ -377,7 +378,7 @@ def test_a_value_the_trip_count_cannot_rebuild_keeps_the_commit_in_the_chunk():
         terminated = kn >= nstop
 
     text = render_source(decay.name, decay.sinks, decay.walk, TARGETS["cuda"],
-                         kind=decay.kind, one_step=decay.one_step).text
+                         kind=decay.kind, one_step=decay.one_step, spec=spec_for(TARGETS["cuda"])).text
     head, chunk, _ = _loop_parts(text, decay.name)
     assert "mut_energy[i] = " in chunk and "mut_energy[i] = " not in head
     assert "hawk_maxtrip = max(hawk_maxtrip, hawk_trip);" in chunk
@@ -393,7 +394,7 @@ def test_only_a_light_step_unrolls_its_device_loops(kernel, light):
     split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind, spec=HOST)
     assert (split.op_count <= SHORT_DEVICE_STEP_OPS) == light, split.op_count
     text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
+                         kind=kernel.kind, one_step=kernel.one_step, spec=spec_for(TARGETS["cuda"])).text
     for suffix in ("_persist", "_range"):
         body = _entry_body(text, kernel.name, suffix)
         assert body.count("#pragma unroll 4") == (1 if light else 0), (kernel.name, suffix)
@@ -412,7 +413,7 @@ def test_a_stepping_kernels_sidecar_carries_its_step_op_count(bundle):
         assert sidecar_of(bundle, name)["fp64_ops_ir"] == split.fp64_ops > 0, name
         assert sidecar_of(bundle, name)["entry_counts_finished"] is True, name
         assert "ops_per_step" not in sidecar_of(bundle, name), name
-    assert _step_ops(oscillator.step, oscillator.step.kind) is None
+    assert _step_ops(oscillator.step, oscillator.step.kind, HOST) is None
 
 
 def test_the_plan_view_reads_the_fp64_op_count_under_either_key(bundle):
@@ -435,7 +436,7 @@ def test_only_an_automatic_kernel_has_a_persist_entry():
         for target in ("cuda", "host"):
             text = render_source(kernel.name, kernel.sinks, kernel.walk,
                                  TARGETS[target], kind=kernel.kind,
-                                 one_step=getattr(kernel, "one_step", None)).text
+                                 one_step=getattr(kernel, "one_step", None), spec=spec_for(TARGETS[target])).text
             has = f"void {kernel.name}_persist(" in text
             assert has == (want and target == "cuda"), (kernel.name, target)
 
@@ -452,7 +453,7 @@ def test_fast_entries_count_trips_in_32_bits(kernel):
     import re
 
     text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
+                         kind=kernel.kind, one_step=kernel.one_step, spec=spec_for(TARGETS["cuda"])).text
     # the persist entry's trip budget is hawk_budget (the launch's one word),
     # the range entry's hawk_cnt
     for suffix, count in (("_persist", "hawk_budget"), ("_range", "hawk_cnt")):
@@ -509,11 +510,11 @@ def test_the_fast_entries_count_samples_finished_on_entry():
     as the step adds one finishing in the run, so the counter -- zeroed before
     the launch -- holds the batch's finished count, and the sidecar says so."""
     from hawk_cuda.emit import entry_counts_finished
-    from hawk.emit.render import render_lane_split
+    from aether.wings.base.render import render_lane_split
 
     k = KERNELS["oscillator"]
     text = render_source(k.name, k.sinks, k.walk, TARGETS["cuda"],
-                         kind=k.kind, one_step=k.one_step).text
+                         kind=k.kind, one_step=k.one_step, spec=spec_for(TARGETS["cuda"])).text
     for entry in ("_persist", "_range"):
         body = text.split(f"void {k.name}{entry}(", 1)[1].split("\n}\n", 1)[0]
         on_entry = "} else { ++hawk_fin; }" if entry == "_persist" else \
@@ -530,7 +531,7 @@ def test_the_persist_loop_reports_its_cells_once_at_exit(kernel):
     each ONCE after the loop, warp-reduced. Nothing 64-bit is held across
     a step: the sample is a 32-bit offset from ``base``."""
     text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
+                         kind=kernel.kind, one_step=kernel.one_step, spec=spec_for(TARGETS["cuda"])).text
     body = _entry_body(text, kernel.name, "_persist")
     loop, exit_ = body.rsplit("    hawk_persist_util(hawk_util, hawk_ran);", 1)
     _, chunk, _ = _loop_parts(text, kernel.name)
@@ -559,7 +560,7 @@ _FROZEN = {
 def test_the_other_entries_are_unchanged_by_the_persist_report(kernel, monkeypatch):
     import hashlib
 
-    import hawk.emit.host as host_emit
+    import aether.wings.cpu.host as host_emit
 
     # The host TU's tile is sized to (and names) the machine's caches; pin the
     # ones the digests were frozen with, so they describe the emitter, not the
@@ -571,9 +572,9 @@ def test_the_other_entries_are_unchanged_by_the_persist_report(kernel, monkeypat
         return hashlib.sha256(text.encode()).hexdigest()
 
     cuda = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
+                         kind=kernel.kind, one_step=kernel.one_step, spec=spec_for(TARGETS["cuda"])).text
     host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
+                         kind=kernel.kind, one_step=kernel.one_step, spec=spec_for(TARGETS["host"])).text
     for suffix in ("", "_range"):
         assert digest(_entry_body(cuda, kernel.name, suffix)) == \
             _FROZEN[(kernel.name, suffix)], (kernel.name, suffix)
@@ -614,7 +615,7 @@ def test_the_persist_entry_holds_only_what_a_step_needs(kernel):
     step budget left says whether the lane holds a sample (no flag). The same
     rules hold for any kernel; these two are witnesses."""
     text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
+                         kind=kernel.kind, one_step=kernel.one_step, spec=spec_for(TARGETS["cuda"])).text
     body = _entry_body(text, kernel.name, "_persist")
     split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind, spec=HOST)
     stores = [line.split("{}")[0].split()[-1] for line in body.splitlines()

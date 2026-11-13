@@ -32,7 +32,7 @@ from hawk import Mutable, Scalar, Terminated, Vector
 from hawk.artifact import build_bundle as _build_bundle
 from hawk.diff import jvp, vjp
 from hawk.ext import DATA_ONLY, DEFAULT_GUARD, Guard, Kind, KernelKind
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 H = 1e-5
 

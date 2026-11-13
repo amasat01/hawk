@@ -24,7 +24,7 @@ from hawk import Mutable, Scalar, Vector
 from conftest import sidecar_of
 from hawk.artifact import build_bundle
 from hawk.artifact import bundle as B
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.passes import fusion
 from hawk.targets.cards import fusion as fusion_card
 
@@ -244,15 +244,20 @@ def _device_row_at_its_register_line(scalar_type, host=False):
     return {**fusion_card(scalar_type, DEVICE), "R_file": 64, "c_local_over_plane": None}     # a frame byte as dear as a host's
 
 
+def _with_isa(machine, isa, vector_isa):
+    import dataclasses
+    from types import MappingProxyType
+
+    return dataclasses.replace(machine, isa=isa, facts=MappingProxyType({**machine.facts, "vector_isa": vector_isa}))
+
+
 def _host_isa(monkeypatch, vector_isa):
     """The build sees a host of another vector ISA: its machine says so, so the manifest's isa map picks the x86 or the arm variant
     (the host's own variant data is never mutated)."""
-    import dataclasses
-
     real = hawk_targets.detect_machine
     isa = "arm64" if vector_isa == "neon" else "x86_64"
     monkeypatch.setattr(hawk_targets, "detect_machine",
-                        lambda arch="": dataclasses.replace(real(arch), isa=isa, vector_isa=vector_isa))
+                        lambda arch="", targets=(): _with_isa(real(arch, targets), isa, vector_isa))
 
 
 @pytest.fixture

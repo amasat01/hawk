@@ -6,13 +6,13 @@ Mutable and Terminated state: the kernel it builds emits the same body, and
 the same digest, as the one with the update written inline."""
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, default_kind
 
 import numpy as np
 
 import hawk
 from hawk import Mutable, Param, Scalar, Terminated
-from hawk.emit import render_body
+from aether.wings.base.render import render_body
 
 
 def step(x, v, dt):
@@ -48,8 +48,8 @@ def by_helper_mutable(dt: Param, x: Mutable[Scalar], v: Mutable[Scalar]):
 
 
 def test_the_tuple_returning_helper_emits_the_inline_body():
-    a = render_body(by_helper.sinks, by_helper.walk, spec=HOST).text
-    b = render_body(inline.sinks, inline.walk, spec=HOST).text
+    a = render_body(by_helper.sinks, by_helper.walk, spec=HOST, kind=default_kind()).text
+    b = render_body(inline.sinks, inline.walk, spec=HOST, kind=default_kind()).text
     assert a == b
 
 

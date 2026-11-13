@@ -10,8 +10,8 @@ node constructors directly, which is how tracer will build it later.
 from __future__ import annotations
 
 from hawk import Quantity
-from hawk.ir import AccumWrite, Assign, At, Const, Leaf, Op
-from hawk.types import TensorType, Wire
+from raptor.ir import AccumWrite, Assign, At, Const, Leaf, Op
+from raptor.ir.types import TensorType, Wire
 
 F64 = TensorType((), "f64")
 V3 = TensorType((3,), "f64")

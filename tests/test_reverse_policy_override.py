@@ -19,6 +19,7 @@ Rows:
 """
 
 from __future__ import annotations
+from _specs import default_kind
 from _specs import HOST
 
 import numpy as np
@@ -29,14 +30,14 @@ import hawk.math as M
 from hawk import Index, Mutable, Param, Scalar, Terminated, kernel
 from hawk.artifact.sidecar import _dispatches
 from hawk.diff import vjp
-from hawk.emit import render_body
-from hawk.ir import Assign, Dispatch, Leaf, canonical
+from aether.wings.base.render import render_body
+from raptor.ir import Assign, Dispatch, Leaf, canonical
 from hawk import HawkError
-from hawk.ir import make as mk
-from hawk.ir.nodes import DISPATCH_POLICIES
-from hawk.ir.segment import split_segmented
-from hawk.ir.walk import static_selectors
-from hawk.types import TensorType
+from raptor.ir import make as mk
+from raptor.ir.nodes import DISPATCH_POLICIES
+from hawk.passes.segment import split_segmented
+from raptor.ir.walk import static_selectors
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 I32 = TensorType((), "i32")
@@ -91,10 +92,10 @@ def test_auto_is_accepted_distinct_and_renders_as_switch():
     assert "auto" in DISPATCH_POLICIES
     auto, switch = _primal("auto"), _primal("switch")
     assert canonical(auto).digest != canonical(switch).digest
-    auto_text = render_body(auto, canonical(auto), spec=HOST).text
+    auto_text = render_body(auto, canonical(auto), spec=HOST, kind=default_kind()).text
     counted = [ln for ln in auto_text.split("\n") if "hawk_abi::mix_count(" not in ln]
     assert len(counted) == len(auto_text.split("\n")) - 1      # one count line
-    assert "\n".join(counted) == render_body(switch, canonical(switch), spec=HOST).text
+    assert "\n".join(counted) == render_body(switch, canonical(switch), spec=HOST, kind=default_kind()).text
 
 
 # -- the selector classification --------------------------------------------- #

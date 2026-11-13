@@ -22,7 +22,7 @@ from unittest.mock import patch
 import pytest
 
 from hawk import Mutable, Param, Scalar, kernel
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.trace import astpass
 
 

@@ -19,7 +19,9 @@ import contextvars, json, sys
 import hawk
 from hawk import Mutable, Param, Scalar
 from hawk.artifact import build_bundle, emit_source
-from hawk.emit import render_body, render_source
+from aether.wings.base.render import render_body
+from aether.wings.base.wrapper import render_source
+from hawk.ext import DEFAULT_KIND
 from hawk.targets import build_spec
 from hawk.targets import TARGETS
 import hawk_c
@@ -32,8 +34,8 @@ k, work = entry_affine, sys.argv[1]
 calls = {
     "hawk.artifact.emit_source": lambda: emit_source(k, targets=("host",)),
     "hawk.artifact.build_bundle": lambda: build_bundle([k], work + "/bundle", targets=("host",), cache_dir=work + "/cache"),
-    "hawk.emit.render_source": lambda: render_source(k.name, tuple(k.sinks), k.walk, TARGETS["host"]),
-    "hawk.emit.render_body": lambda: render_body(tuple(k.sinks), k.walk, spec=build_spec(("host",))),
+    "hawk.emit.render_source": lambda: render_source(k.name, tuple(k.sinks), k.walk, TARGETS["host"], spec=build_spec(("host",)), kind=DEFAULT_KIND),
+    "hawk.emit.render_body": lambda: render_body(tuple(k.sinks), k.walk, spec=build_spec(("host",)), kind=DEFAULT_KIND),
     "hawk_c.render": lambda: hawk_c.render(k),
     "hawk_c.export": lambda: hawk_c.export(k, work + "/c", check=False),
 }

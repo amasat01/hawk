@@ -63,6 +63,7 @@ dependencies = ["aether-dsc>=0.7.5,<0.8", "raptor-core>=0.7.5,<0.8", "raptor-var
 [project.entry-points."raptor.extensions"]
 hawk-cuda = "hawk_cuda:extension.json"
 hawk-c = "hawk_c:extension.json"
+osprey-cpu = "osprey_cpu:extension.json"
 
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
@@ -88,7 +89,7 @@ cuda13 = ["raptor-simt", "cuda-bindings>=13,<14", "nvidia-cuda-nvrtc>=13,<14", "
 [tool.scikit-build]
 minimum-version = "build-system.requires"
 build-dir = "build/{wheel_tag}"
-wheel.packages = ["hawk", "extensions/hawk_cuda/hawk_cuda", "extensions/hawk_c/hawk_c"]
+wheel.packages = ["hawk", "extensions/hawk_cuda/hawk_cuda", "extensions/hawk_c/hawk_c", "staging/osprey_cpu"]
 cmake.version = ">=3.20"
 # Keep a dev build's in-tree extension out of the pure-python source collection;
 # the wheel's copy comes from the CMake install. .git_archival.txt stays out of the sdist: its
@@ -122,7 +123,7 @@ testpaths = ["tests"]
 # Makes `import hawk` work against the checked-out tree without an install --
 # this repo root, prepended to sys.path before collection (mirrors raptor
 # and the family's own pyproject convention).
-pythonpath = ["extensions/hawk_cuda", ".", "extensions/hawk_c"]
+pythonpath = ["extensions/hawk_cuda", ".", "extensions/hawk_c", "staging"]
 # a test stuck for 10 minutes prints every thread's stack (it keeps running): a hang names itself
 faulthandler_timeout = 600
 markers = [

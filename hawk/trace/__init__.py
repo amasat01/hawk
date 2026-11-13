@@ -51,7 +51,7 @@ launch — see :mod:`hawk.trace.steps` for the loop, bit-identity and
 # path is the top level, never `hawk.trace.<name>` (hence absent from
 # `__all__`). The self-alias is the standard "yes, this is unused by this
 # file, on purpose" static-analysis idiom.
-from ..ir import Quantity as Quantity
+from raptor.ir import Quantity as Quantity
 from .decl import Grid as Grid
 from .decl import Index as Index
 from .decl import Int32 as Int32

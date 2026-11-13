@@ -32,6 +32,17 @@ class C(Backend):
     def report_file(self, name):
         return f"{name}.embedded.json"
 
+    def machine_facts(self):
+        import platform
+
+        # the isa its manifest's variant map is keyed by, and the names a kernel may not take: the unit writes <name>.h, so
+        # the stem of a standard header (ISO C11 7.1.2) would name a header of its own after one; no compiler is asked
+        stems = ("assert complex ctype errno fenv float inttypes iso646 limits locale math setjmp signal stdalign stdarg stdatomic "
+                 "stdbool stddef stdint stdio stdlib stdnoreturn string tgmath threads time uchar wchar wctype")
+        return {"isa": "x86_64" if platform.machine().lower() in ("x86_64", "amd64") else "arm64",
+                "reserved_names": {stem: "the generated header <name>.h would take the name of a standard C header"
+                                   for stem in stems.split()}}
+
     def key_terms(self, source_digests, own):
         from aether_dsc import c_core
 

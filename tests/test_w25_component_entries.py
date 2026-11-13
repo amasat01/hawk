@@ -33,7 +33,7 @@ def test_an_extension_reaches_only_the_declared_entries_of_a_component(root, pkg
 
 def test_the_entries_scan_sees_an_undeclared_name_and_module(tmp_path):
     (tmp_path / "leaf").mkdir()
-    (tmp_path / "leaf" / "__init__.py").write_text("from lowering.box import BOX_OWN, not_an_entry\nfrom lowering.nosuch import x\n")
+    (tmp_path / "leaf" / "__init__.py").write_text("from lowering.box import boxed_sinks, not_an_entry\nfrom lowering.nosuch import x\n")
     bad = kit.entries_violations(scan.scan_tree(tmp_path / "leaf", "leaf"), kit.component_entries(), "leaf")
     assert [why for _, why in bad] == ["lowering.box: 'not_an_entry' is not an entry of lowering.box",
                                        "lowering.nosuch: module 'nosuch' is not an entry of the 'lowering' component"]
@@ -67,11 +67,11 @@ def _rules(out):
 
 
 def test_the_kit_fails_the_plugin_fixture_on_the_leaf_rule_only():
-    """tests/plugins/backend_host2 subclasses hawk's Host: rule 1 (2a.3) fails, honestly; every other checked rule passes."""
+    """tests/plugins/backend_host2 subclasses the cpu OSPREY's Host: rule 1 (another leaf) fails, honestly; every other checked rule passes."""
     out = _kit(TESTS / "plugins" / "backend_host2" / "host2_plugin")
     rules = _rules(out)
     assert out.returncode == 1 and [n for n, st in rules.items() if st == "FAIL"] == [1], out.stdout
-    assert "host2_plugin/__init__.py:8 imports hawk.backends.host" in out.stdout and "[2a.3]" in out.stdout
+    assert "host2_plugin/__init__.py:8 imports the leaf osprey_cpu.backend" in out.stdout and "[leaf]" in out.stdout
     assert [n for n, st in rules.items() if st == "NOT CHECKABLE HERE"] == [3, 5, 6]
 
 

@@ -74,8 +74,9 @@ def render(kernel, *, name=None, mode="float64", kind=None,
     the profile's caps apply. Deterministic: the same call gives the same
     bytes."""
     from hawk.artifact.bundle import _resolve_kind
-    from hawk.emit import render_body
-    from hawk.emit.wrapper import scalar_mode
+    from aether.wings.base.render import render_body
+    from aether.wings.base.wrapper import scalar_mode
+    from lowering.lstsq import lowered
     from raptor.errors import RaptorError
     from . import abi, verify
     from .writer import CWriter
@@ -92,7 +93,7 @@ def render(kernel, *, name=None, mode="float64", kind=None,
     sinks, walk = tuple(kernel.sinks), kernel.walk
     verify.refuse_unsupported(name, kernel, kind, walk, sinks)
     report = {**_traceability(kernel, name, walk, smode, profile),
-              **verify.ir_checks(name, sinks, walk, kind, profile, spec)}
+              **verify.ir_checks(name, sinks, walk, kind, profile)}
     # verify's rows are the one interface source; a branch-mix plane is K cells
     abi.size_mix_rows(report["interface"], walk)
     refuse_unclampable(name, report)
@@ -101,7 +102,7 @@ def render(kernel, *, name=None, mode="float64", kind=None,
     sites = {nid: by_pos[p]["status"] for nid, p in where.items() if p in by_pos}
     lengths = {nid: by_pos[p]["length"] for nid, p in where.items() if p in by_pos}
     writer = CWriter(smode, name, sites, lengths=lengths, positions=where, max_dim=spec.primary.get("linalg", {}).get("max_dim"))
-    body = render_body(sinks, walk, indent="        ", kind=kind, writer=writer, spec=spec).text
+    body = render_body(*lowered(sinks, walk, spec), indent="        ", kind=kind, writer=writer, spec=spec).text
     core_text, core_names = abi.core_closure(writer)
     helper_text, helper_names, helper_libm = abi.helper_closure(writer)
     core_libm = {m for n in core_names for m in _core_libm(writer, n)}
@@ -128,7 +129,7 @@ def _without_companions(kernel):
     ``auto`` is the serial add into its target, so its companion plane and the
     commits to it are left out. An explicit ``compensated`` keeps its companion
     and is refused by the writer."""
-    from hawk.ir.nodes import KEYED_AUTO, AccumWrite
+    from raptor.ir.nodes import KEYED_AUTO, AccumWrite
     from hawk.trace.kernel import Kernel
 
     auto = {s.name for s in kernel.sinks

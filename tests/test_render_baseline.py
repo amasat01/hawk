@@ -25,6 +25,8 @@ refusal is named by its class, ``RaptorError``; the generator is :func:`digests`
 
 from __future__ import annotations
 
+from _specs import default_kind
+from _specs import spec_for
 import hashlib
 
 import _deployable as D
@@ -34,8 +36,8 @@ import hawk
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
 from hawk_c import render
-from hawk.emit import render_source
-from hawk.emit.wrapper import scalar_mode
+from aether.wings.base.wrapper import render_source
+from aether.wings.base.wrapper import scalar_mode
 from hawk.targets import TARGETS
 from hawk.trace.kernel import Kernel
 
@@ -73,7 +75,7 @@ def _text(kernel) -> bytes:
         for mode in MODES:
             try:
                 text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                                     mode=scalar_mode(mode), exports=exports(target)).text
+                                     mode=scalar_mode(mode), exports=exports(target), spec=spec_for(TARGETS[target]), kind=default_kind()).text
             except Exception as exc:                        # noqa: BLE001 - a refusal is pinned too
                 text = f"refused {type(exc).__name__}"
             out.append(f"{target}|{mode}|{text}")
@@ -106,9 +108,11 @@ def digests() -> dict:
 
 
 def test_kernels_without_linear_algebra_render_the_text_they_always_did(monkeypatch):
+    import aether.wings.cpu.host as host_emit
+
     # The host tile rule is sized from (and names) the machine's caches: render as on the pinning machine.
-    pinning_machine = hawk.emit.host.CacheSizes(32 * 1024, 1024 * 1024, "/sys/devices/system/cpu/cpu0/cache")
-    monkeypatch.setattr(hawk.emit.host, "machine_caches", lambda *a, **k: pinning_machine)
+    pinning_machine = host_emit.CacheSizes(32 * 1024, 1024 * 1024, "/sys/devices/system/cpu/cpu0/cache")
+    monkeypatch.setattr(host_emit, "machine_caches", lambda *a, **k: pinning_machine)
     got = digests()
     assert got.keys() == PINNED.keys()
     changed = sorted(name for name in got if got[name] != PINNED[name])

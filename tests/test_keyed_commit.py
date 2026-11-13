@@ -32,6 +32,7 @@ the compensated target); any other key keeps the per-lane atomic. Pinned:
 
 from __future__ import annotations
 
+from _specs import spec_for
 import ctypes
 import math
 
@@ -45,7 +46,7 @@ import hawk.math as m
 from hawk import HawkError, Index, Mutable, Scalar, Sorted, Table, Terminated
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from hawk.emit import FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT64, render_source
 from hawk.ext import Kind, sink_policy
 from hawk.targets import TARGETS
 from hawk.trace.kernel import Kernel
@@ -186,7 +187,7 @@ CALLS = {kuni: "add<32>(aout_acc, ", kfb: "add<16>(aout_acc, ",
 
 def _text(kernel, target):
     return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                         mode=FLOAT64, kind=kernel.kind)
+                         mode=FLOAT64, kind=kernel.kind, spec=spec_for(TARGETS[target]))
 
 
 @pytest.mark.parametrize("kernel", list(CALLS), ids=lambda k: k.name)
@@ -639,7 +640,7 @@ def test_a_run_commit_compiles_through_the_sealed_payload(monkeypatch, tmp_path)
     reset_payload_memo()
     assert "aether/accum/run.h" in current_payload().device_headers
     src = render_source(ksrt_c.name, ksrt_c.sinks, ksrt_c.walk, TARGETS["cuda"],
-                        mode=FLOAT64, kind=ksrt_c.kind)
+                        mode=FLOAT64, kind=ksrt_c.kind, spec=spec_for(TARGETS["cuda"]))
     result = compile_source(src.text, ksrt_c.name,
                             CompileOptions(target="cuda", cache_dir=str(tmp_path / "cache")))
     assert result.artifact.is_file()

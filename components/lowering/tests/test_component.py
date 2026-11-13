@@ -31,15 +31,8 @@ def test_every_declared_entry_resolves_and_every_module_imports_without_hawk():
     for part, names in lowering.MANIFEST["entries"].items():
         mod = importlib.import_module(f"lowering.{part}")
         assert all(hasattr(mod, n) for n in names), part
-    for part in ("aether", "box", "kinds", "lanes", "logs", "split", "team", "team_emit", "wide", "wrapper_text"):
+    for part in ("box", "kinds", "lanes", "logs", "split", "team", "wide", "wrapper_text"):
         importlib.import_module(f"lowering.{part}")
-
-
-def test_the_aether_spellings_are_published_as_data():
-    from lowering import aether
-
-    assert {n for _, n in aether.SPELLINGS} == {"team_store", "team_read", "box_store"}
-    assert lowering.MANIFEST["spellings"] == [{"writer": "aether", "dialect": "lowering", "ref": "lowering.aether"}]
 
 
 def test_an_ordered_accumulate_lowers_to_the_pair_of_log_stores():

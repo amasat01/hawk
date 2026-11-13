@@ -11,6 +11,7 @@ partial last block and a launch that is not block-aligned included (they take th
 
 from __future__ import annotations
 
+from _specs import spec_for, default_kind
 import math
 
 import numpy as np
@@ -20,7 +21,7 @@ from conftest import _launch, _xp
 import hawk
 from hawk import Grid, Kernel, Scalar, kernel
 from hawk.artifact import build_bundle
-from hawk.emit.wrapper import render_source
+from aether.wings.base.wrapper import render_source
 from hawk.targets import TARGETS
 
 
@@ -33,7 +34,7 @@ def _sum(extent, policy="compensated"):
 
 def _text(extent, policy="compensated"):
     k = _sum(extent, policy)
-    return render_source(f"ksum{extent}", k.sinks, k.walk, TARGETS["cuda"]).text
+    return render_source(f"ksum{extent}", k.sinks, k.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"]), kind=default_kind()).text
 
 
 def test_a_block_uniform_key_commits_once_per_block_and_any_other_extent_per_warp():
@@ -43,7 +44,7 @@ def test_a_block_uniform_key_commits_once_per_block_and_any_other_extent_per_war
 
 def test_the_scattered_atomic_commit_has_no_integer_magnitude_compare():
     """The commit that waits on an atomic's returned value takes the branch-free Knuth form, not Fast2Sum by compare."""
-    text = render_source("kscat", *_scatter()).text
+    text = render_source("kscat", *_scatter(), spec=spec_for(TARGETS["cuda"]), kind=default_kind()).text
     assert "twoSumErrAtomic(old, t, s)" in text and "twoSumErr_(old, t, s)" not in text
 
 

@@ -131,7 +131,7 @@ def c_compiler() -> str:
 def _zig_cc_wrapper(tried: list[str]) -> str:
     """A stable ``exec <zig> cc "$@"`` script for the ``ziglang`` fallback,
     written under the compile cache dir (see
-    :func:`hawk.compile.toolchain._zig_cxx_wrapper`)."""
+    :func:`osprey_cpu.toolchain._zig_cxx_wrapper`)."""
     try:
         import ziglang
     except ImportError:

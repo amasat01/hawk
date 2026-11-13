@@ -14,6 +14,7 @@ so a rule that stopped firing shows up as the float64 spelling."""
 
 from __future__ import annotations
 
+from _specs import spec_for, default_kind
 from fractions import Fraction
 
 import pytest
@@ -21,9 +22,9 @@ from _emitted import cases
 
 import hawk
 import hawk.math as m
-from hawk.emit import BANDED, FLOAT32, FLOAT64, SCALAR_MODES, literal_table, render_source, scalar_mode
-from hawk.emit.writer_aether import band_literal
-from hawk.ir import HawkError
+from aether.wings.base.wrapper import BANDED, FLOAT32, FLOAT64, SCALAR_MODES, literal_table, render_source, scalar_mode
+from aether.wings.base.writer_aether import band_literal
+from raptor.errors import RaptorError as HawkError
 from hawk.targets import TARGETS
 
 
@@ -37,8 +38,8 @@ def test_the_seam_declares_exactly_the_three_built_modes():
 def test_both_float_modes_emit_and_differ():
     for name, sinks, walk in cases():
         for target_id, target in _targets():
-            f64 = render_source(name, sinks, walk, target, mode=FLOAT64).text
-            f32 = render_source(name, sinks, walk, target, mode=FLOAT32).text
+            f64 = render_source(name, sinks, walk, target, mode=FLOAT64, spec=spec_for(target), kind=default_kind()).text
+            f32 = render_source(name, sinks, walk, target, mode=FLOAT32, spec=spec_for(target), kind=default_kind()).text
             assert _substance(f64) != _substance(f32), (
                 f"float64 and float32 emitted IDENTICAL text for {name!r} on "
                 f"{target_id} -- a built scalar mode that changes nothing is "
@@ -221,14 +222,14 @@ def test_a_banded_literal_splits_exactly_and_refuses_what_three_limbs_cannot_hol
 def test_the_literal_table_leaves_a_banded_unit_as_the_writer_spelled_it():
     """The device literal table is a float64 rewrite; a banded unit's literals are already the writer's
     three-limb spelling and go through unchanged."""
-    banded = render_source("kq", kq.sinks, kq.walk, TARGETS["cuda"], mode=BANDED)
+    banded = render_source("kq", kq.sinks, kq.walk, TARGETS["cuda"], mode=BANDED, spec=spec_for(TARGETS["cuda"]), kind=default_kind())
     assert literal_table(banded) is banded
-    f64 = render_source("kq", kq.sinks, kq.walk, TARGETS["cuda"], mode=FLOAT64)
+    f64 = render_source("kq", kq.sinks, kq.walk, TARGETS["cuda"], mode=FLOAT64, spec=spec_for(TARGETS["cuda"]), kind=default_kind())
     assert literal_table(f64).text != f64.text
 
 
 def _unit(kernel, target_id: str, mode) -> str:
-    return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target_id], mode=mode).text
+    return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target_id], mode=mode, spec=spec_for(TARGETS[target_id]), kind=default_kind()).text
 
 
 def _body(text: str) -> str:

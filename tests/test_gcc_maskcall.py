@@ -15,8 +15,8 @@ import pytest
 from test_host_loop_interchange import arith, sin_chain
 
 from hawk.compile import toolchain as tc
-from hawk.passes.cost import kernel_cost
-from hawk.passes.vectorise import vectorises
+import osprey_cpu.toolchain as ctc
+from aether.wings.cpu.host_vector import kernel_cost, vectorises
 
 VM = "native-vector-math"
 X86 = platform.machine().lower() in ("x86_64", "amd64")
@@ -35,23 +35,23 @@ TRUTH = ([(gcc(13, m, p), m < 4) for m in range(0, 6) for p in (0, 1)]
 
 @pytest.mark.parametrize("macros,affected", TRUTH)
 def test_truth_table(macros, affected):
-    assert tc.gcc_maskcall_affected(macros) is affected
+    assert ctc.gcc_maskcall_affected(macros) is affected
 
 
 def test_clang_and_unprobed_are_never_affected():
-    assert tc.gcc_maskcall_affected({**gcc(13, 2, 0), "__clang__": "1"}) is False
-    assert tc.gcc_maskcall_affected({}) is False
+    assert ctc.gcc_maskcall_affected({**gcc(13, 2, 0), "__clang__": "1"}) is False
+    assert ctc.gcc_maskcall_affected({}) is False
 
 
 def _inject(monkeypatch, macros):
-    monkeypatch.setattr(tc, "compiler_macros", lambda _compiler: macros)
+    monkeypatch.setattr(ctc, "compiler_macros", lambda _compiler: macros)
     # the GCC-family answer is memoised per compiler: keep the faked one out of later tests
-    monkeypatch.setattr(tc, "_GCC_FAMILY_MEMO", {})
+    monkeypatch.setattr(ctc, "_GCC_FAMILY_MEMO", {})
 
 
 def test_no_compile_flag_is_added(monkeypatch):
     _inject(monkeypatch, gcc(13, 2, 0))
-    assert "-fno-tree-loop-if-convert" not in tc.host_flags(profile=VM)
+    assert "-fno-tree-loop-if-convert" not in ctc.host_flags(profile=VM)
 
 
 def test_predicate_does_not_depend_on_the_compiler_release(monkeypatch):

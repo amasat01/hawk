@@ -17,7 +17,7 @@ contract being kept, not broken — and a scanner that scanned its own token tab
 would report itself (the proxy-measures-itself failure).
 
 The token rule is the repo's SINGLE spelling of it
-(``hawk.emit.spelling.GEOMETRY_TOKENS`` / ``geometry_hits``), extended with the two
+(``aether.wings.base.spelling.GEOMETRY_TOKENS`` / ``geometry_hits``), extended with the two
 launch entry points this audit adds. It matches at a WORD BOUNDARY and not as a bare
 substring, for the reason that module already documents: ``omp`` is a substring
 of the ABI mirror's own ``compStride_`` field and of the word ``comp``, so a
@@ -28,7 +28,7 @@ The audit reads CODE, not prose: comments and docstrings are stripped first.
 That is not a softening, it is what makes the instrument mean anything in this
 repo — every file here explains WHY it does not thread, and it explains it by
 NAMING the thing it does not do ("there is no ``#pragma omp`` anywhere and there
-never will be", ``hawk/emit/host.py``). A comment cannot launch a kernel; a
+never will be", ``staging/aether/wings/cpu/host.py``). A comment cannot launch a kernel; a
 ``#pragma`` is not a comment and survives the strip; a string literal survives
 it too, so an ``os.system("mpirun ...")`` is still caught.
 :func:`test_the_auditor_catches_a_planted_launch` calibrates exactly that, by
@@ -42,7 +42,7 @@ actually been removed, so neither exception can silently become a hole:
   token may appear as plain wording, not real code (warp-level spelling is a
   second, separate seam: the CUDA wrapper's persistent and fast entries use
   ``%laneid``/``__activemask``/shuffle reductions, which this list does not audit);
-* the ``GEOMETRY_TOKENS`` assignment in ``hawk/emit/spelling.py`` — the audit's own
+* the ``GEOMETRY_TOKENS`` assignment in ``staging/aether/wings/base/spelling.py`` — the audit's own
   vocabulary, which contains ``MPI_`` and ``nccl`` because it is what looks for
   them.
 
@@ -73,7 +73,7 @@ This test previously failed via three plants, all then removed.
     spawns a thread
 
 (c) the excision of ``GEOMETRY_TOKENS`` widened to excise the whole of
-``hawk/emit/spelling.py`` — ``AssertionError: the audit excised a file it was
+``staging/aether/wings/base/spelling.py`` — ``AssertionError: the audit excised a file it was
 supposed to scan``, i.e. the exception cannot be widened into a hole.
 """
 
@@ -93,7 +93,7 @@ import pytest
 
 import hawk
 from hawk import _core
-from hawk.emit.render import GEOMETRY_TOKENS
+from aether.wings.base.render import GEOMETRY_TOKENS
 from hawk.targets import TARGETS
 
 REPO = Path(hawk.__file__).resolve().parent.parent
@@ -110,12 +110,13 @@ _AUDIT_RE = re.compile("|".join(rf"\b{re.escape(t)}" for t in AUDIT_TOKENS))
 _SHIPPED = (
     [p for p in sorted(PACKAGE.rglob("*.py"))]
     + [p for p in sorted((REPO / "extensions").glob("*/*/*.py"))]       # the shipped extensions: the device emitter lives there
+    + [p for p in sorted((REPO / "staging").glob("aether/wings/*/*.py"))]   # the aether wings: the shared writer's text lives there
     + [p for p in (sorted(SOURCES.iterdir()) if SOURCES.is_dir() else []) if p.is_file()]
     + [REPO / "CMakeLists.txt"]
 )
 
 #: The two wrapper emitters whose index prologue is a named exception, pinned by path (the device emitter moved to its extension).
-_EMITTERS = {"cuda": REPO / "extensions" / "hawk_cuda" / "hawk_cuda" / "emit.py", "host": PACKAGE / "emit" / "host.py"}
+_EMITTERS = {"cuda": REPO / "extensions" / "hawk_cuda" / "hawk_cuda" / "emit.py", "host": REPO / "staging" / "aether" / "wings" / "cpu" / "host.py"}
 
 #: The source-side vocabulary: what a threading `_core` would have to name.
 _THREAD_TOKENS = ("#pragma omp", "<omp.h>", "omp_set_num_threads", "<thread>",
@@ -248,7 +249,7 @@ def _excise(path: Path, text: str) -> tuple:
         span = text[begin:end]
         text = text.replace(span, "    pass  # stage_frame excised" + "\n" * span.count("\n"))
         removed.append(span)
-    if path == PACKAGE / "emit" / "spelling.py":
+    if path == REPO / "staging" / "aether" / "wings" / "base" / "spelling.py":
         tree = ast.parse(text, filename=str(path))
         for node in tree.body:
             if (isinstance(node, ast.Assign) and len(node.targets) == 1
@@ -345,10 +346,10 @@ def test_the_two_named_exceptions_are_real_and_narrow():
             assert len(text) > 0.5 * len(original), (
                 f"the audit excised a file it was supposed to scan: {path}"
             )
-    assert set(excised) == {"extensions/hawk_cuda/hawk_cuda/emit.py", "hawk/emit/host.py", "hawk/emit/spelling.py"}, sorted(excised)
+    assert set(excised) == {"extensions/hawk_cuda/hawk_cuda/emit.py", "staging/aether/wings/cpu/host.py", "staging/aether/wings/base/spelling.py"}, sorted(excised)
     # the geometry token table is the excision that actually HIDES tokens; the
     # prologue exception is plain wording and is asserted only to be real.
-    assert _AUDIT_RE.search(excised["hawk/emit/spelling.py"][0]), (
+    assert _AUDIT_RE.search(excised["staging/aether/wings/base/spelling.py"][0]), (
         "the GEOMETRY_TOKENS excision removes no audited token, so it is not the "
         "exception it claims to be"
     )

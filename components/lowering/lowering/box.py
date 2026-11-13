@@ -49,10 +49,6 @@ from raptor.ir.types import TensorType
 
 #: ``HAWK_BOX=0`` builds every kernel without a box (an A/B switch, not an API).
 
-#: The prologue's name for the first lane a thread owns.
-BOX_OWN = "hawk_box_own"
-
-
 @dataclass(frozen=True)
 class Box:
     """A thread box: ``T`` lanes along lane axis ``axis`` (by position), whose
@@ -73,39 +69,6 @@ def threads(box: dict | None, n: int) -> int:
         return n
     span = box["T"] * box["stride"]
     return -(-n // span) * box["stride"]
-
-
-def owned_lane(ctype: str, thread: str, box: Box) -> str:
-    """The prologue line binding thread ``thread``'s first owned lane."""
-    return (f"        const {ctype} {BOX_OWN} = {thread} + {thread} / {box.stride} * "
-            f"{(box.T - 1) * box.stride};")
-
-
-def frame(box: Box, plain: str, boxed: str) -> str:
-    """What follows :func:`owned_lane` in the entry: the ``boxed`` body over the
-    thread's box, or, when the launch has fewer than ``T`` rows, the box-free
-    ``plain`` body over each owned lane in turn. Both bodies bind ``hawk_i`` and
-    ``i``, so both read exactly as the box-free entry's."""
-    T, S = box.T, box.stride
-    bind = ("const aether::SampleIndex i =\n"
-            "{pad}    aether::SampleIndex::make(static_cast<std::size_t>(hawk_i));\n"
-            "{pad}(void)hawk_i;\n{pad}(void)nSamples;")
-    pad8, pad12, pad16 = " " * 8, " " * 12, " " * 16
-    return "\n".join([
-        f"{pad8}if (nSamples < {T * S}) {{",
-        f"{pad12}for (long long hawk_k = 0; hawk_k < {T}; ++hawk_k) {{",
-        f"{pad16}const long long hawk_i = {BOX_OWN} + hawk_k * {S};",
-        f"{pad16}if (hawk_i >= nSamples) break;",
-        pad16 + bind.format(pad=pad16),
-        plain,
-        f"{pad12}}}",
-        f"{pad8}}} else {{",
-        f"{pad12}const long long hawk_i = {BOX_OWN} + {(T - 1) * S} < nSamples",
-        f"{pad12}    ? {BOX_OWN} : nSamples - {T * S} + {BOX_OWN} % {S};",
-        pad12 + bind.format(pad=pad12),
-        boxed,
-        f"{pad8}}}",
-    ])
 
 
 def thread_box(kernel, scalar_type: str, *, spec, card, enabled: bool = True, kind=None, segment=None, active=None,

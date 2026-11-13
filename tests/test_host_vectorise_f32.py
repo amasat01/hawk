@@ -20,6 +20,8 @@ Three observations, each with a known answer:
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import spec_for
 from _specs import HOST
 
 import re
@@ -31,8 +33,9 @@ from conftest import avx512
 import hawk
 from hawk import Mutable, Scalar, Terminated
 from hawk.compile import toolchain as tc
-from hawk.emit import render_source, scalar_mode
-from hawk.passes.vectorise import vectorises
+import osprey_cpu.toolchain as ctc
+from aether.wings.base.wrapper import render_source, scalar_mode
+from aether.wings.cpu.host_vector import vectorises
 from hawk.targets import TARGETS
 
 
@@ -57,7 +60,7 @@ def long_loop(x: Mutable[Scalar], t: Mutable[Scalar], terminated: Terminated):
 
 
 def _source(kernel, mode):
-    return render_source("k", kernel.sinks, kernel.walk, TARGETS["host"], mode=scalar_mode(mode))
+    return render_source("k", kernel.sinks, kernel.walk, TARGETS["host"], mode=scalar_mode(mode), spec=spec_for(TARGETS["host"]), kind=default_kind())
 
 
 def _compile(tmp_path, kernel, mode, interchanged=False):
@@ -70,7 +73,7 @@ def _compile(tmp_path, kernel, mode, interchanged=False):
     src.write_text(_source(kernel, mode).text)
     shape = [] if interchanged else ["-DHAWK_HOST_INTERCHANGE=0"]
     cc = subprocess.run(
-        [tc.host_compiler(), *tc.host_flags(profile="native",
+        [ctc.host_compiler(), *ctc.host_flags(profile="native",
                                             extra=["-fopt-info-vec-optimized", *shape]),
          "-o", str(so), str(src)], capture_output=True, text=True)
     assert cc.returncode == 0, cc.stderr

@@ -26,8 +26,8 @@ from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk.ext import Guard, Kind
-from hawk.ir import HawkError
-from hawk.types import TensorType
+from raptor.errors import RaptorError as HawkError
+from raptor.ir.types import TensorType
 
 LANES = 8
 BAD = 3

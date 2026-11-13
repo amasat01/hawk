@@ -23,7 +23,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from ..ext.primitive import jvp_tangent, vjp_contributions
-from ..ir import (
+from raptor.ir import (
     AccumWrite,
     Assign,
     At,
@@ -46,14 +46,26 @@ from ..ir import (
     canonical_nodes,
 )
 from .._errors import HawkError
-from ..ir import make as _mk
-from ..ir.loops import exit_kwargs
-from ..ir.nodes import (ADJOINT_PREFIX, COMPANION_SUFFIX, DISPATCH_POLICIES, NAMESPACE_SEP, RAW_KIND, Finish,
-                        Op, ReduceSamples, SampleSum, param_cell_names)
-from ..ir.slotwise import slotwise
+from raptor.ir import make as _mk
+from raptor.ir.loops import exit_kwargs
+from raptor.ir.nodes import (
+    ADJOINT_PREFIX,
+    COMPANION_SUFFIX,
+    DISPATCH_POLICIES,
+    NAMESPACE_SEP,
+    RAW_KIND,
+    Finish,
+    Op,
+    ReduceSamples,
+    SampleSum,
+    param_cell_names,
+)
+from .. import components as _components
+
+_slotwise = _components.view("lowering", "slotwise")
 from raptor.ir.block import expand_stores
-from ..ir.walk import dispatch_groups
-from ..types import INT_PLANE_DTYPES, TensorType
+from raptor.ir.walk import dispatch_groups
+from raptor.ir.types import INT_PLANE_DTYPES, TensorType
 from .altpath import AltPath
 from .ordered import kept_of, order
 from .jump import JumpPlan, drop_width, jump_of
@@ -143,7 +155,7 @@ def _masked_sink(sink: Node, mask: Node) -> Node:
     loop's boundary is recomputed by the same code every other loop producer
     uses."""
     if isinstance(sink, Loop):
-        masked_body = slotwise(tuple(_masked_sink(s, mask) for s in sink.body_sinks))
+        masked_body = _slotwise.slotwise(tuple(_masked_sink(s, mask) for s in sink.body_sinks))
         return build_loop(sink.index, sink.carries, sink.inits, sink.nexts,
                           start=sink.start, stop=sink.stop, step=sink.step,
                           body_sinks=masked_body, **exit_kwargs(sink))
@@ -328,7 +340,7 @@ def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
     ]
     held = getattr(primal, "broadcast", ())
     scatters = _compensated(scatters, {name(leaf.name) for leaf in inputs if leaf.name in held})
-    out = slotwise(_mask_termination(gradients + list(scatters), primal))
+    out = _slotwise.slotwise(_mask_termination(gradients + list(scatters), primal))
     if kept is not None:
         out = order(out, kept)
     names = tuple(leaf.name for leaf in inputs)
@@ -606,7 +618,7 @@ def _jvp(primal: Any, *, wrt: Sequence[str] | None = None,
     else:
         made = tuple(_tangent_sink(s, tangent.get(key(s.value)), name) for s in sinks
                      if s.ttype.dtype not in INT_PLANE_DTYPES)
-    out = slotwise(_mask_termination(made, primal))
+    out = _slotwise.slotwise(_mask_termination(made, primal))
     names = tuple(leaf.name for leaf in inputs)
     if plan is not None:
         out += plan.spread_cells()

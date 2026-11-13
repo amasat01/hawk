@@ -6,7 +6,7 @@ accumulate on the own column, and the compiled HOST kernel against the scratch
 interpreter."""
 
 from __future__ import annotations
-from _specs import HOST, device
+from _specs import HOST, device, default_kind
 
 import re
 
@@ -20,23 +20,23 @@ import hawk
 import hawk.math as m
 from hawk import Index, Kernel, Mutable, Scalar, Vector
 from hawk.diff import vjp
-from hawk.emit import render_body
-from hawk.ir import Assign, Leaf, Op, canonical
-from hawk.ir import make as mk
-from hawk.ir.walk import canonical_nodes
-from hawk.types import TensorType
+from aether.wings.base.render import render_body
+from raptor.ir import Assign, Leaf, Op, canonical
+from raptor.ir import make as mk
+from raptor.ir.walk import canonical_nodes
+from raptor.ir.types import TensorType
 
 
 @pytest.fixture(autouse=True)
 def _card_free_select_weight(monkeypatch):
     """The emitted text must not depend on the device the tests run on."""
-    from hawk.emit import rtstore
+    from aether.wings.base import rtstore
 
-    monkeypatch.setattr(rtstore, "_select_weight", lambda dtype, spec: 1.0)
+    monkeypatch.setattr(rtstore, "select_weight", lambda dtype, spec: 1.0)
 
 
 def _body(sinks):
-    return render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST).text
+    return render_body(tuple(sinks), canonical(tuple(sinks)), spec=HOST, kind=default_kind()).text
 
 
 def test_a_link_of_a_switch_is_a_statement_of_its_case():
@@ -234,9 +234,9 @@ def test_one_accumulate_on_a_four_wide_vector_keeps_the_lean_form_for_float():
     """Width <= 4, one store per trip: with a four-byte ``Real`` the vector is
     read back through selects and rebuilt whole; with eight bytes it is selected
     per component."""
-    text = render_body(_one_store4.sinks, _one_store4.walk, spec=HOST).text
+    text = render_body(_one_store4.sinks, _one_store4.walk, spec=HOST, kind=default_kind()).text
     assert "if constexpr (sizeof(Real) == 8) {" in text and "_old" in text, text
-    wide = render_body(_one_store5.sinks, _one_store5.walk, spec=HOST).text
+    wide = render_body(_one_store5.sinks, _one_store5.walk, spec=HOST, kind=default_kind()).text
     assert "_old" not in wide and "constexpr" not in wide, wide
 
 
@@ -261,7 +261,7 @@ def test_a_runtime_store_never_copies_the_vector_inside_the_loop(width):
     """The carried vector is written where it lives; only the store after the
     loop copies its operand (once)."""
     k = _stores(width)
-    text = render_body(k.sinks, k.walk, spec=HOST).text
+    text = render_body(k.sinks, k.walk, spec=HOST, kind=default_kind()).text
     loop = text.index("for (Int")
     assert "hawk_sv" not in text[loop:text.index("}", loop)] or "hawk_sv0_0" in text, text
     assert len(_copies(text, width)) == 1, text
@@ -270,8 +270,8 @@ def test_a_runtime_store_never_copies_the_vector_inside_the_loop(width):
 
 def test_a_wide_vector_is_written_in_place_and_a_narrow_one_by_selects():
     scatter, wide = _scatter(6), _stores(256)
-    narrow = render_body(scatter.sinks, scatter.walk, spec=HOST).text
-    wide = render_body(wide.sinks, wide.walk, spec=HOST).text
+    narrow = render_body(scatter.sinks, scatter.walk, spec=HOST, kind=default_kind()).text
+    wide = render_body(wide.sinks, wide.walk, spec=HOST, kind=default_kind()).text
     assert "hawk_sv0_1_k == 0 ?" in narrow and "hawk_sv0_0_k ==" not in wide, (narrow, wide)
     assert "hawk_v2_0_acc(hawk_k2_c) += " in wide, wide
 
@@ -280,28 +280,28 @@ def test_a_key_proven_uniform_over_the_warp_is_written_in_place():
     """The same four accumulates, with the base read at the lane's group of 64
     (``split_index``): every lane of a warp shares the index, so the indexed
     access is one address and the in-place write wins at any width."""
-    text = render_body(_uniform_scatter.sinks, _uniform_scatter.walk, spec=HOST).text
+    text = render_body(_uniform_scatter.sinks, _uniform_scatter.walk, spec=HOST, kind=default_kind()).text
     assert "== " not in text.split("for (Int")[1] and "+= " in text, text
 
 
 def test_the_select_weight_follows_the_arch_the_build_resolved(monkeypatch):
-    from hawk.targets import cards
+    from aether.wings.base import rtstore
 
     monkeypatch.undo()                      # the card, not the pinned weight
-    assert cards.select_weight("float64", HOST) == 1.0            # no device arch: the default
+    assert rtstore.select_weight("float64", HOST) == 1.0            # no device arch: the default
     spec = device("sm_61")
-    assert cards.select_weight("float64", spec) == 4.0
-    assert cards.select_weight("float32", spec) == 1.0
+    assert rtstore.select_weight("float64", spec) == 4.0
+    assert rtstore.select_weight("float32", spec) == 1.0
     spec = device("sm_80")
-    assert cards.select_weight("float64", spec) == 1.0
+    assert rtstore.select_weight("float64", spec) == 1.0
 
 
 def test_the_select_weight_of_a_card_moves_the_pick(monkeypatch):
-    from hawk.emit import rtstore
+    from aether.wings.base import rtstore
 
     k = _scatter(6)
-    monkeypatch.setattr(rtstore, "_select_weight", lambda dtype, spec: 100.0)
-    assert "hawk_sv0_1_k ==" not in render_body(k.sinks, k.walk, spec=HOST).text
+    monkeypatch.setattr(rtstore, "select_weight", lambda dtype, spec: 100.0)
+    assert "hawk_sv0_1_k ==" not in render_body(k.sinks, k.walk, spec=HOST, kind=default_kind()).text
 
 
 def test_stores_at_one_base_fuse_over_the_reachable_components():
@@ -309,7 +309,7 @@ def test_stores_at_one_base_fuse_over_the_reachable_components():
     are ONE pass: one add per reachable component (slots 2..14), none of slots
     1, and no dynamic read of the vector."""
     k = _scatter(6)
-    text = render_body(k.sinks, k.walk, spec=HOST).text
+    text = render_body(k.sinks, k.walk, spec=HOST, kind=default_kind()).text
     assert not _copies(text, 15) and "hawk_it" not in text, text
     adds = re.findall(r"^\s*hawk_v\d+_0_acc\((\d+)\) \+= ", text, re.M)
     assert adds == ["0", *map(str, range(2, 15))], adds
@@ -391,7 +391,7 @@ def test_stores_with_independent_clamped_indices_copy_nothing():
     """Each store clamps its own index, so no base is shared and nothing fuses;
     every store is still written in place or by selects, never through a copy
     of the vector or a dynamic read of a copy."""
-    text = render_body(_clamped.sinks, _clamped.walk, spec=HOST).text
+    text = render_body(_clamped.sinks, _clamped.walk, spec=HOST, kind=default_kind()).text
     assert not _copies(text, 15) and "hawk_it" not in text, text
 
 

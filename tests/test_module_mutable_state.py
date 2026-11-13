@@ -33,20 +33,16 @@ BASELINE = {
     'artifact/unit_cache.py': ('COUNTERS', '_PUBLISH_LOG', '_UNIT_MEMO', '_UNIT_STATS'),
     'compile/cache.py': ('_ARTIFACT_MEMO', '_CLOSURE_VERDICT_MEMO', '_MEMO', '_STATS'),
     'compile/drivers.py': ('_INFLIGHT',),
-    'compile/toolchain.py': ('_GCC_FAMILY_MEMO', '_HOST_CONTRACTION', '_IDENTITY_MEMO', '_LIBC_MEMO', '_MACRO_MEMO', '_NVCC_VERSION_MEMO', '_TARGET_MEMO', '_WITNESS_MEMO'),
+    'compile/toolchain.py': ('_IDENTITY_MEMO', '_NVCC_VERSION_MEMO'),
     'diff/event.py': ('_OPS', '_SIGN'),
     'diff/jump.py': ('_ORDERED',),
     'diff/transform.py': ('_READ_ROLE',),
-    'emit/host.py': ('_ELEM_BYTES',),
-    'emit/spelling.py': ('MIRROR_OF', '_CWISE', '_CWISE1', '_INFIX', '_MATH1', '_MATH2', '_MATH3', '_METHOD0', '_METHOD1', '_RANDOM_FN'),
-    'emit/wrapper.py': ('SAMPLE_SUM_OP_CODE', 'SCALAR_MODES', '_BANDED_UNCERTIFIED'),
-    'emit/writer_aether.py': ('_ENTRY', '_INT_CALLS', '_INT_WRAPPING', '_RANDOM_SALT', '_RAW_TWIN', '_RAY', '_SOLVE', '_TRIANGULAR'),
     'ext/__init__.py': ('SINK_POLICIES', '_UNBUILT_SINKS'),
     'ext/primitive.py': ('_REGISTRY',),
     'ir/access.py': ('_RANK',),
     'ir/compound.py': ('_KIND_OF_ROLE',),
     'passes/contraction.py': ('_OUTPUT_KIND',),
-    'passes/cost.py': ('_QUAT_OPS',),
+    'lowering/cost.py': ('_QUAT_OPS',),
     'ir/linalg.py': ('FACTOR_TAG', '_FACTOR_BYTES', '_WIDTH'),
     
     'ir/rays.py': ('_COUNT',),
@@ -60,11 +56,19 @@ BASELINE = {
 }
 
 ALLOWED = {
+    **{("osprey_cpu/toolchain.py", n): "predates the guard, moved with its module from hawk/compile/toolchain.py" for n in
+       ('_GCC_FAMILY_MEMO', '_HOST_CONTRACTION', '_LIBC_MEMO', '_MACRO_MEMO', '_TARGET_MEMO', '_WITNESS_MEMO')},
+    ("osprey_cpu/backend.py", "BACKEND"): "the backend object, a stateless row never written after import",
     ("registry.py", "KNOWN"): "read-only table, never mutated after import",
     ("options.py", "LEGACY"): "read-only table, never mutated after import",
-    ("registry.py", "_SPELLS"): "every write and the load that fills it run under _LOCK; a read is one atomic dict call",
-    ("ir/__init__.py", "_MOVED"): TABLE,
-    **{("lowering/team_emit.py", n): "predates the guard, moved with its module from emit/team.py" for n in ("_FACTORISE", "_SCATTER", "_SOLVE", "_STRUCT")},
+    **{("cpu/host.py", n): "predates the guard, moved with its module from hawk/emit" for n in ("_ELEM_BYTES", "HOST")},
+    **{("base/writer_aether.py", n): "a stateless writer object, never written after import" for n in ("AETHER", "AETHER_CELLS")},
+    **{("base/spelling.py", n): "predates the guard, moved with its module from hawk/emit" for n in
+       ('_CWISE', '_CWISE1', '_INFIX', '_MATH1', '_MATH2', '_MATH3', '_METHOD0', '_METHOD1', '_RANDOM_FN')},
+    **{("base/wrapper.py", n): "predates the guard, moved with its module from hawk/emit" for n in ('SAMPLE_SUM_OP_CODE', 'SCALAR_MODES', '_BANDED_UNCERTIFIED')},
+    **{("base/writer_aether.py", n): "predates the guard, moved with its module from hawk/emit" for n in
+       ('_ENTRY', '_INT_CALLS', '_INT_WRAPPING', '_RANDOM_SALT', '_RAW_TWIN', '_RAY', '_SOLVE', '_TRIANGULAR')},
+    **{("base/team_emit.py", n): "predates the guard, moved with its module from emit/team.py" for n in ("_FACTORISE", "_SCATTER", "_SOLVE", "_STRUCT")},
     **{(file, name): "predates the guard, not reviewed" for file, names in BASELINE.items() for name in names},
 }
 
@@ -78,7 +82,9 @@ def pieces() -> dict:
     out = {"hawk": [(p, p.relative_to(ROOT).as_posix()) for p in sorted(ROOT.rglob("*.py"))],
            "raptor.ir": [(p, "ir/" + p.relative_to(IR_ROOT).as_posix()) for p in sorted(IR_ROOT.rglob("*.py"))]}
     roots = [(f"component:{c.name}", c / c.name) for c in sorted((REPO / "components").glob("*")) if (c / c.name / "__init__.py").is_file()]
+    roots += [(f"wing:{d.parent.parent.name}_{d.name}", d) for d in sorted((REPO / "staging").glob("*/wings/*")) if (d / "__init__.py").is_file()]
     roots += [(f"extension:{e.name}", e) for d in sorted((REPO / "extensions").glob("*")) for e in sorted(d.iterdir()) if (e / "__init__.py").is_file()]
+    roots += [(f"extension:{d.name}", d) for d in sorted((REPO / "staging").glob("osprey_*")) if (d / "__init__.py").is_file()]
     for piece, root in roots:
         out[piece] = [(p, f"{root.name}/" + p.relative_to(root).as_posix()) for p in sorted(root.rglob("*.py")) if "tests" not in p.parts]
     return out

@@ -15,7 +15,6 @@ import pytest
 
 from hawk.artifact import bundle
 from hawk.artifact.frame import frame_of
-from hawk.passes import policy
 from raptor.ir import IR_VERSION
 from raptor.ir.unit import LoweredUnit
 

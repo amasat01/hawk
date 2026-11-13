@@ -22,27 +22,16 @@ from __future__ import annotations
 from collections.abc import Iterator
 from math import prod
 
-from hawk.emit.spelling import binding_name
+from aether.wings.base.spelling import binding_name
 from hawk.ext import DEFAULT_KIND
 from raptor.errors import RaptorError
-from hawk.passes.cost import fp64_ops, kernel_cost
-from hawk.ir.linalg import FACTORISATIONS
-from hawk.ir.nodes import Loop, LoopIndex, TapeRead
-from hawk.ir.nodes import (
-    FINISHED_PLANE,
-    AccumWrite,
-    At,
-    Const,
-    Dispatch,
-    Op,
-    Sink,
-    TapeWrite,
-    WideWrite,
-    is_param_cell,
-)
-from hawk.ir.walk import canonical_nodes
+from lowering.cost import fp64_ops, kernel_cost
+from raptor.ir.linalg import FACTORISATIONS
+from raptor.ir.nodes import Loop, LoopIndex, TapeRead
+from raptor.ir.nodes import FINISHED_PLANE, AccumWrite, At, Const, Dispatch, Op, Sink, TapeWrite, WideWrite, is_param_cell
+from raptor.ir.walk import canonical_nodes
 from .features import FEATURES, INDEX_INTS
-from hawk.types import INT_PLANE_DTYPES
+from raptor.ir.types import INT_PLANE_DTYPES
 
 _FLOATS = ("f64", "f32")
 #: Bytes one element of a dtype occupies in the C build (an index Int is 64-bit).
@@ -55,7 +44,7 @@ _ARITH = ("arith32", "arith64", "special32", "special64")
 #: overflow, and a division by zero or ``MIN / -1``, is undefined), the C
 #: defines them through ``hawk_i64_*``. An Int32/UInt32 operation and every
 #: Index ``//``, ``%`` and shift go through the host's own helper too
-#: (``hawk/emit/wrapper.py`` ``_INT_HELPERS``), so they are no site.
+#: (``staging/aether/wings/base/wrapper.py`` ``_INT_HELPERS``), so they are no site.
 _INT_UB = ("add", "sub", "mul", "neg", "div")
 _INPUT_ROLES = ("per_sample", "vec_in", "mat_in", "lookup", "wide_in", "uniform",
                 "nsamples")
@@ -377,7 +366,7 @@ def _fp_domain(nodes) -> list:
 
 def _guard_masks(walk, kind) -> list[str]:
     """The fields of the masks that guard every store, exactly as the renderer
-    computes them (:meth:`hawk.emit.render._Renderer._guard_slot`): each mask
+    computes them (:meth:`aether.wings.base.render._Renderer._guard_slot`): each mask
     the kind's guard names counts only if bound in the ``terminated`` role. A
     finishing kernel binds its mask there too, so it is guarded the same way."""
     kind = DEFAULT_KIND if kind is None else kind
@@ -456,12 +445,12 @@ def _status_dropped(nodes, where) -> list:
             if isinstance(n, Op) and n.kind in FACTORISATIONS and key(n) not in read]
 
 
-def ir_checks(name: str, sinks, walk, kind, profile, spec) -> dict:
+def ir_checks(name: str, sinks, walk, kind, profile) -> dict:
     """The verify report of one kernel (never refuses; see :func:`apply_caps`)."""
     top = _top(sinks)
     nodes = list(_every_node(top))
     max_trips, loops = _max_trips(top)
-    cost = kernel_cost(walk, spec)
+    cost = kernel_cost(walk)
     ints = INDEX_INTS + INT_PLANE_DTYPES
     linalg = {}
     if any(isinstance(n, Op) and n.kind in FACTORISATIONS for _, n, _ in nodes):

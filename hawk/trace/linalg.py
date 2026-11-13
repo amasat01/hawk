@@ -20,10 +20,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir import Const, Node
+from raptor.ir import Const, Node
 from .._errors import HawkError
-from ..ir import make as _make
-from ..types import TensorType
+from raptor.ir import make as _make
+from raptor.ir.types import TensorType
 from .value import Value, node_of, random_normal, vec
 
 _F64 = TensorType((), "f64")
@@ -225,7 +225,7 @@ def lstsq(j: Any, r: Any) -> tuple[Value, Value]:
     rank deficient; the conditioning is squared, as in any normal-equations solve.
 
     Tracing records the MATH only: one ``lstsq`` node and its ``lstsq_info``. How it is solved is the backend's lowering
-    (:mod:`hawk.passes.lstsq`): the normal equations up to the target variant's ``linalg.max_dim`` unknowns, above it Householder
+    (:mod:`lowering.lstsq`): the normal equations up to the target variant's ``linalg.max_dim`` unknowns, above it Householder
     QR on a team of threads per lane, which does not square the conditioning (``info`` is then the first column whose ``R``
     diagonal is exactly zero)."""
     jn, rn = node_of(j), node_of(r)

@@ -34,12 +34,5 @@ def test_every_declared_entry_resolves_and_every_module_imports_without_hawk():
         importlib.import_module(part)
 
 
-def test_the_aether_spellings_are_published_as_data():
-    from simt import aether
-
-    assert {n for _, n in aether.SPELLINGS} == {"warp_lane_value", "warp_store"}
-    assert simt.MANIFEST["spellings"] == [{"writer": "aether", "dialect": "simt", "ref": "simt.aether"}]
-
-
 def test_the_component_names_the_one_it_builds_on():
     assert simt.MANIFEST["components"] == ["lowering"]

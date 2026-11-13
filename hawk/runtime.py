@@ -12,7 +12,7 @@ runtime; it is the last mile of the DEFINITION.
 
 The descriptor is derived, never re-tabulated: a slot's kind comes from
 the same role -> mirror map the emitter generated the entry signature
-from (:data:`hawk.emit.render.MIRROR_OF`), so a slot cannot be described
+from (:data:`raptor.protocols.naming.MIRROR_OF`), so a slot cannot be described
 one way to the compiler and another to the marshal — the failure mode
 being a 32-byte handle where the kernel reads a 40-byte mirror, which
 is deterministic garbage, not a crash.
@@ -71,10 +71,9 @@ from ._plane_layout import (
 )
 from . import components as _components
 _simt_box = _components.view("lowering", "box")
-from .emit.render import MIRROR_OF, mirror_of
-from .emit.wrapper import fold_entry_name
+from raptor.protocols.naming import MIRROR_OF, fold_entry_name, mirror_of
 from ._errors import HawkError
-from .types import TensorType
+from raptor.ir.types import TensorType
 
 __all__ = ["ArgBlock", "HostKernel", "descriptor_for_sidecar", "DEVICE_CPU",
            "kind_for", "load", "run"]
@@ -88,7 +87,7 @@ DEVICE_CPU = 1
 ArgBlock = _core.ArgBlock
 
 #: The by-value ABI shape -> ``_core`` descriptor-kind vocabulary
-#: (:data:`hawk.emit.render.MIRROR_OF` on the left).
+#: (:data:`raptor.protocols.naming.MIRROR_OF` on the left).
 _KIND_OF_MIRROR = {"GRefMirror": "gref", "ScalarHandle": "handle"}
 
 _INT_DTYPES = ("i32", "i64", "int32", "uint32")
@@ -214,7 +213,7 @@ class HostKernel:
         self.library = _core.HostLibrary(str(self.path))
         self.entry = self.library.entry(entry_name)
         #: ``{target: entry}``: the fold of each owned companion
-        #: (:func:`hawk.emit.wrapper.fold_entries`), run after the kernel.
+        #: (the writer's ``fold_entries``), run after the kernel.
         self.folds = {target: self.library.entry(fold_entry_name(sidecar["kernel"], target)
                                                  + "_host")
                       for target in (sidecar.get("companions") or {}).values()}
@@ -244,7 +243,7 @@ class HostKernel:
         ``<group>_mix`` plane per ``"auto"`` dispatch (its branch counts), and
         a ``jump_seed`` of ``0`` for an alternate-path ``jump=`` derivative."""
         from .diff.jump import SEED
-        from .ir.nodes import FINISHED_PLANE, FUSED_STEPS_PLANE
+        from raptor.ir.nodes import FINISHED_PLANE, FUSED_STEPS_PLANE
 
         extra = {}
         if SEED not in arrays and any(n == SEED for _, n in self.slot_of):

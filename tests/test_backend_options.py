@@ -15,14 +15,14 @@ import pytest
 import hawk
 from hawk import Mutable, Param, Scalar
 from hawk.artifact import bundle as B
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 from _extensions import backend, make
 
 STUB = '''
 from dataclasses import replace
 
-from hawk.backends.host import Host
+from osprey_cpu.backend import Host
 
 EMITS = []
 

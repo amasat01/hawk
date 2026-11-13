@@ -14,9 +14,9 @@ import pytest
 from _eval import evaluate
 
 from hawk.diff import vjp
-from hawk.ir import Assign, At, Dispatch, Leaf
-from hawk.ir import make as mk
-from hawk.types import TensorType
+from raptor.ir import Assign, At, Dispatch, Leaf
+from raptor.ir import make as mk
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 I32 = TensorType((), "i32")

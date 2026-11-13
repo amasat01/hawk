@@ -30,6 +30,8 @@ Rows:
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import spec_for
 from _specs import HOST, for_targets
 
 import math
@@ -52,7 +54,7 @@ from hawk import (
 from hawk.artifact import build_bundle
 from hawk.artifact.sidecar import sidecar_meta
 from hawk.diff import jvp, vjp
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 N = 48
 DT = 0.0625
@@ -146,10 +148,10 @@ def _osc_body(dt: Param, t_final: Scalar, terminated: Terminated,
 
 
 def _sources(k):
-    from hawk.emit import render_source
+    from aether.wings.base.wrapper import render_source
     from hawk.targets import TARGETS
 
-    return [render_source(k.name, k.sinks, k.walk, b) for b in TARGETS.values() if b.wrapper]
+    return [render_source(k.name, k.sinks, k.walk, b, spec=spec_for(b), kind=default_kind()) for b in TARGETS.values() if b.wrapper]
 
 
 @pytest.mark.parametrize("k", [4, 16])
@@ -633,7 +635,7 @@ def test_the_auto_entry_branches_once_on_the_word_between_the_step_and_the_loop(
     holds the fused loop, each side opening with its own device marker; a
     fixed-K TU and the single step's TU carry no branch."""
     from hawk.artifact.bundle import _emit, _options, lower
-    from hawk.emit import FLOAT64
+    from aether.wings.base.wrapper import FLOAT64
 
     auto = hawk.steps(osc, "auto")
     targets = ("host", "cuda")
@@ -656,10 +658,10 @@ def test_the_auto_entry_branches_once_on_the_word_between_the_step_and_the_loop(
 # -- admits it, under the author's name; everything else stays plain.
 # --------------------------------------------------------------------------- #
 def _renamed(k, name="k"):
-    from hawk.emit import render_source
+    from aether.wings.base.wrapper import render_source
     from hawk.targets import TARGETS
 
-    return [render_source(name, k.sinks, k.walk, b).text for b in TARGETS.values() if b.wrapper]
+    return [render_source(name, k.sinks, k.walk, b, spec=spec_for(b), kind=default_kind()).text for b in TARGETS.values() if b.wrapper]
 
 
 def test_the_default_is_the_auto_kernel_under_the_author_s_name():
@@ -750,7 +752,7 @@ def test_a_derivative_of_the_default_kernel_is_its_single_step_s(transform):
     the plain kernel's derivative, tagged with the same primal name. The
     explicit ``steps="auto"`` kernel (``<name>_xauto``) keeps refusing — the
     non-vacuity: without the delegation the default kernel would refuse too."""
-    from hawk.ir.walk import canonical
+    from raptor.ir.walk import canonical
 
     default = kernel(_finish_on_input)
     plain = kernel(_finish_on_input, steps=1)

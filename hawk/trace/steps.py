@@ -50,22 +50,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from ..ir.loops import build_loop
-from ..ir.nodes import (
-    FUSED_STEPS_PLANE,
-    Assign,
-    At,
-    Const,
-    Finish,
-    Leaf,
-    Node,
-    Select,
-)
+from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from raptor.ir.loops import build_loop
+from raptor.ir.nodes import FUSED_STEPS_PLANE, Assign, At, Const, Finish, Leaf, Node, Select
 from .._errors import HawkError
-from ..ir.ops import make
-from ..ir.walk import substitute
-from ..types import TensorType
+from raptor.ir.ops import make
+from raptor.ir.walk import substitute
+from raptor.ir.types import TensorType
 
 #: The static bound of a ``steps="auto"`` loop: the most steps any launch
 #: can take (the sidecar's ``finish.steps_max``).

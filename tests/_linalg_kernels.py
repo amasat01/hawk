@@ -11,10 +11,10 @@ whose planes are named ``A`` (the matrix), ``b`` (a vector right-hand side) and
 
 from __future__ import annotations
 
-from hawk.ir import Assign, Leaf, make
-from hawk.ir.linalg import as_matrix
+from raptor.ir import Assign, Leaf, make
+from raptor.ir.linalg import as_matrix
 from hawk.trace.kernel import Kernel
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 #: Columns of the matrix right-hand side.
 K = 2

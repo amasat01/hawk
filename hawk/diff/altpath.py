@@ -34,28 +34,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ..ir import (
-    Const,
-    Dispatch,
-    Leaf,
-    Loop,
-    LoopCarry,
-    LoopIndex,
-    LoopValue,
-    Node,
-    PlaneExtent,
-    SampleIndex,
-    Select,
-    Sink,
-    TapeRead,
-    build_loop,
-)
+from raptor.ir import Const, Dispatch, Leaf, Loop, LoopCarry, LoopIndex, LoopValue, Node, PlaneExtent, SampleIndex, Select, Sink, TapeRead, build_loop
 from .._errors import HawkError
-from ..ir import make as _mk
-from ..ir.nodes import AccumWrite, At, ReduceSamples, WideWrite
-from ..ir.slotwise import slotwise
-from ..ir.walk import rebuild
-from ..types import INT_PLANE_DTYPES, TensorType
+from raptor.ir import make as _mk
+from raptor.ir.nodes import AccumWrite, At, ReduceSamples, WideWrite
+from .. import components as _components
+
+_slotwise = _components.view("lowering", "slotwise")
+from raptor.ir.walk import rebuild
+from raptor.ir.types import INT_PLANE_DTYPES, TensorType
 from .jump import _F64, _I32, _ORDERED, SEED, JumpPlan
 from .loops import _TERMINALS, _post_order
 from raptor.rules.core import zero_like
@@ -494,7 +481,7 @@ class AltPath:
         inits = (*parts.inits, *(self.amap.get(id(i), i) for i in loop.inits),
                  self.cum0.get(id(loop), _zero()), *(_zero() for _ in gain),
                  *(_zero() for _ in flags))
-        rooted = slotwise((*nexts, *extra.get("exit_values", ()),
+        rooted = _slotwise.slotwise((*nexts, *extra.get("exit_values", ()),
                            *([extra["exit_cond"]] if brk else [])))
         n = len(nexts)
         if brk:

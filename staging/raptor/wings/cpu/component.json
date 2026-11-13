@@ -1,0 +1,12 @@
+{
+ "name": "raptor_cpu",
+ "version": "0",
+ "contract": "1",
+ "emission_modules": [
+  "raptor.wings.cpu.vectorise"
+ ],
+ "runtime_modules": [],
+ "components": [
+  "lowering"
+ ]
+}

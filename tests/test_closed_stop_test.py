@@ -35,7 +35,7 @@ import hawk
 import hawk.math as M
 from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk.diff import jvp, tape
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 
 @kernel(steps=1)

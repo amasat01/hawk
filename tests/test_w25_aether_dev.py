@@ -35,7 +35,7 @@ def test_a_cholesky_unit_built_against_the_aether_source_tree_matches_numpy(tmp_
     src = os.environ["W25_AETHER_SRC"]
     assert (pathlib.Path(src) / "aether" / "linalg" / "detail" / "Common.h").is_file(), src
     monkeypatch.setenv("HAWK_AETHER_INCLUDE", src)
-    assert not drivers._host_uses_sealed_payload()
+    assert not drivers._Inputs().sealed
 
     seen = []
     real = drivers.lookup_key

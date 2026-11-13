@@ -50,6 +50,8 @@ Three mechanisms, each with its own refusal:
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import spec_for
 from _specs import HOST
 
 import pathlib
@@ -63,8 +65,9 @@ import hawk
 import hawk.math as m
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
-from hawk.emit import FLOAT64, render_body, render_source
-from hawk.ir import canonical
+from aether.wings.base.wrapper import FLOAT64, render_source
+from aether.wings.base.render import render_body
+from raptor.ir import canonical
 from hawk import HawkError
 from hawk.targets import TARGETS
 
@@ -142,9 +145,9 @@ ENV = {"v": np.array([0.3, -0.7, 1.1]), "k1": np.array([0.5, 0.25, -0.4]),
 @pytest.fixture(autouse=True)
 def _card_free_select_weight(monkeypatch):
     """The emitted text must not depend on the device the tests run on."""
-    from hawk.emit import rtstore
+    from aether.wings.base import rtstore
 
-    monkeypatch.setattr(rtstore, "_select_weight", lambda dtype, spec: 1.0)
+    monkeypatch.setattr(rtstore, "select_weight", lambda dtype, spec: 1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -154,7 +157,7 @@ def test_a_read_at_the_loop_index_of_an_input_plane_reads_the_view_in_place():
     """A runtime read of a read-only INPUT plane is aether's ``at()`` on the
     plane's own sample proxy, at the loop's own index: no ``Item`` of the row
     is built for it (a wide row would be one register per element)."""
-    text = render_body(rollout_read.sinks, rollout_read.walk, spec=HOST).text
+    text = render_body(rollout_read.sinks, rollout_read.walk, spec=HOST, kind=default_kind()).text
     index = [ln for ln in text.splitlines() if "for (Int hawk_k" in ln]
     assert len(index) == 1, text
     variable = index[0].split("Int ")[1].split(" ")[0]
@@ -166,15 +169,15 @@ def test_a_read_at_the_loop_index_of_an_input_plane_reads_the_view_in_place():
 def test_a_runtime_read_of_a_computed_vector_keeps_the_item():
     """What ``at()`` does not apply to keeps aether's ``Item::operator()``: a vector that is not element-wise
     (a cross product) has no plane to read from and no per-element form."""
-    text = render_body(*_computed_runtime_read(), spec=HOST).text
+    text = render_body(*_computed_runtime_read(), spec=HOST, kind=default_kind()).text
     assert "const aether::Item<Real, 3> hawk_it" in text, text
     assert ".at(" not in text, text
 
 
 def _computed_runtime_read():
-    from hawk.ir import Assign, Leaf
-    from hawk.ir import make as mk
-    from hawk.types import TensorType
+    from raptor.ir import Assign, Leaf
+    from raptor.ir import make as mk
+    from raptor.ir.types import TensorType
 
     s, v = TensorType((), "f64"), TensorType((3,), "f64")
     x = Leaf("vocab_read", "vec_in", "x", v)
@@ -187,7 +190,7 @@ def test_a_write_at_the_loop_index_is_a_carried_Item_the_body_reassigns():
     """The WRITE half's emission. The carried vector is an ``aether::Item``
     declared before the loop; each iteration writes the next value into it
     (the loop's own index is uniform over the warp, so the indexed write is cheap). The node produces a new value and leaves its operand alone."""
-    text = render_body(rollout_write.sinks, rollout_write.walk, spec=HOST).text
+    text = render_body(rollout_write.sinks, rollout_write.walk, spec=HOST, kind=default_kind()).text
     assert "aether::Item<Real, 3> hawk_v" in text, text
     # the index is the loop's own, the same for every lane of a warp: one indexed
     # write into the carried local
@@ -200,8 +203,8 @@ def test_both_backends_wrap_the_same_body():
     """ONE renderer, and a runtime component access is not a host
     construct the device path re-derives."""
     for kernel in (rollout_read, rollout_write):
-        host = render_source("k", kernel.sinks, kernel.walk, TARGETS["host"])
-        device = render_source("k", kernel.sinks, kernel.walk, TARGETS["cuda"])
+        host = render_source("k", kernel.sinks, kernel.walk, TARGETS["host"], spec=spec_for(TARGETS["host"]), kind=default_kind())
+        device = render_source("k", kernel.sinks, kernel.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"]), kind=default_kind())
         assert host.body == device.body
         assert "for (" in host.body
 
@@ -221,7 +224,7 @@ def test_the_emitted_translation_unit_compiles(target, case, tmp_path):
     else:
         sinks, walk = primal.sinks, primal.walk
     src = render_source("k", sinks, walk, TARGETS[target], mode=FLOAT64,
-                        exports=exports(target))
+                        exports=exports(target), spec=spec_for(TARGETS[target]), kind=default_kind())
     path = pathlib.Path(tmp_path) / ("k.cpp" if target == "host" else "k.cu")
     path.write_text(src.text)
     rc, err, argv = TC.compile_check(path, target)

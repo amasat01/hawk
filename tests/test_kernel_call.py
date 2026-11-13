@@ -30,7 +30,7 @@ def compiler_calls(monkeypatch):
     calls = []
     real = drivers.run_compiler
     monkeypatch.setattr(drivers, "run_compiler",
-                        lambda argv, what: calls.append(what) or real(argv, what))
+                        lambda argv, what, *target: calls.append(what) or real(argv, what, *target))
     return calls
 
 

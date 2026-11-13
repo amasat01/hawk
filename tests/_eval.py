@@ -21,22 +21,7 @@ import numpy as np
 from scipy import linalg as sla
 from scipy.linalg import lapack
 
-from hawk.ir import (
-    PlaneExtent,
-    AccumWrite,
-    At,
-    Const,
-    Dispatch,
-    Leaf,
-    Loop,
-    LoopCount,
-    LoopValue,
-    Node,
-    Primitive,
-    SampleIndex,
-    Select,
-    TapeRead,
-)
+from raptor.ir import PlaneExtent, AccumWrite, At, Const, Dispatch, Leaf, Loop, LoopCount, LoopValue, Node, Primitive, SampleIndex, Select, TapeRead
 
 _BINARY = {
     "add": lambda a, b: a + b, "sub": lambda a, b: a - b,

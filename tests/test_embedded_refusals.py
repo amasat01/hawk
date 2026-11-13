@@ -10,6 +10,7 @@ feature (``unsupported.<key>``) and the alternative an author can take.
 
 from __future__ import annotations
 
+from _specs import validation_spec, default_kind
 import _deployable as D
 import _kernels as K
 import pytest
@@ -18,15 +19,15 @@ import hawk
 import hawk.math as hm
 from hawk import Index, Mutable, Param, Scalar, Terminated, Vector
 from hawk_c.verify import UNSUPPORTED, refuse_unsupported
-from hawk.emit import compose
+from aether.wings.base.fused import compose
 from hawk.ext import DEFAULT_KIND, Guard, Kind
-from hawk.ir import Assign, Leaf, canonical
+from raptor.ir import Assign, Leaf, canonical
 from hawk import HawkError
-from hawk.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from hawk.ir.nodes import AccumWrite, Const
-from hawk.ir.ops import make
+from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from raptor.ir.nodes import AccumWrite, Const
+from raptor.ir.ops import make
 from hawk.trace.kernel import Kernel
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 F64 = TensorType((), "f64")
 
@@ -135,7 +136,7 @@ CASES = {
     "segmented": (lambda: _case(segmented), "export each branch as its own kernel"),
     "compensated": (lambda: _case(D.scatter_c, D.COMPENSATED),
                     "use the plain sink policy"),
-    "fused_lanes": (lambda: _case(compose([lane_a, lane_b], "fused"), DEFAULT_KIND),
+    "fused_lanes": (lambda: _case(compose([lane_a, lane_b], "fused", spec=validation_spec(), kind=default_kind()), DEFAULT_KIND),
                     "export each lane as its own kernel"),
     "two_path": (lambda: _case(hawk.steps(advance, "auto")),
                  "export `kernel.step` (the single step) or `hawk.steps(step, K)` "

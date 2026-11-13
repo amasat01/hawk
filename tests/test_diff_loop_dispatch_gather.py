@@ -7,7 +7,7 @@ differentiated in reverse: the branches' contributions merge into ONE scatter
 with an untaken branch's row never committed out of range."""
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, default_kind
 
 import numpy as np
 import pytest
@@ -16,8 +16,9 @@ from _eval import evaluate
 import hawk
 import hawk.math as m
 from hawk.diff import vjp
-from hawk.emit import render_body
-from hawk.ir import HawkError, canonical
+from aether.wings.base.render import render_body
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import canonical
 
 N = 5
 
@@ -81,7 +82,7 @@ def test_an_untaken_branchs_row_is_never_committed_out_of_range():
     ok = evaluate(d, {"x": 0.04, "kind": 0.0, "tab": tab, "terminated": False,
                       "bar_out": 1.0}, lanes=N)
     assert ok["bar_tab"][4] != 0.0 and not np.any(ok["bar_tab"][:4])
-    text = render_body(tuple(d), canonical(tuple(d)), spec=HOST).text
+    text = render_body(tuple(d), canonical(tuple(d)), spec=HOST, kind=default_kind()).text
     assert "bar_tab" in text
 
 

@@ -22,9 +22,9 @@ from __future__ import annotations
 import keyword
 from dataclasses import dataclass, replace
 
-from ..ir import Quantity
+from raptor.ir import Quantity
 from .._errors import HawkError
-from ..types import TensorType
+from raptor.ir.types import TensorType
 
 #: Payload types. ``Vector``/``Matrix`` are subscripted with static extents —
 #: an extent is a TYPE, never a runtime value.

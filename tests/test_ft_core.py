@@ -214,7 +214,7 @@ print(json.dumps({"bad": bad, "errors": errors}))
 @register_ft_row("FT-5-HAWK-HOSTLIBRARY-SHARED")
 def test_shared_hostlibrary_entries_stay_intact(built, tmp_path):
     gate.require_free_threaded()
-    from hawk.compile import host_compiler, host_flags
+    from osprey_cpu.toolchain import host_compiler, host_flags
     from hawk.compile.toolchain import subprocess_env
 
     # A real hawk artifact (its ABI tag and layout table) with many exported

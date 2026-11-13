@@ -15,7 +15,7 @@ import pytest
 import hawk
 from hawk import Mutable, Scalar, Vector
 from hawk.artifact import bundle as B
-from hawk.emit import scalar_mode
+from aether.wings.base.wrapper import scalar_mode
 
 DEPTH = 1200
 

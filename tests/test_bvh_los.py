@@ -15,6 +15,7 @@ Correctness only: no speed is claimed."""
 
 from __future__ import annotations
 
+from _specs import spec_for, default_kind
 import pathlib
 
 import _eval as E
@@ -181,15 +182,16 @@ def test_the_f32_traversal_at_depth_32_has_no_spills(world, tmp_path):
     from hawk.artifact.layout import exports
     from hawk.compile import device_compiler
     from hawk_cuda.driver import parse_ptxas_info
-    from hawk.compile.toolchain import device_flags, resolve_arch
-    from hawk.emit import FLOAT32, render_source
+    from hawk_cuda.toolchain import device_flags
+    from hawk_cuda.toolchain import resolve_arch
+    from aether.wings.base.wrapper import FLOAT32, render_source
     from hawk.targets import TARGETS
 
     _t, _o, _d, bvh, _ = world
     k = _kernel(bvh, depth=32)
     src = tmp_path / "nearest.cu"
     src.write_text(render_source(k.name, k.sinks, k.walk, TARGETS["cuda"], mode=FLOAT32,
-                                 exports=exports("cuda")).text)
+                                 exports=exports("cuda"), spec=spec_for(TARGETS["cuda"]), kind=default_kind()).text)
     done = subprocess.run([device_compiler(), *device_flags(arch=resolve_arch(), target="cubin"),
                            str(src), "-o", str(tmp_path / "nearest.cubin")],
                           capture_output=True, text=True, check=False)

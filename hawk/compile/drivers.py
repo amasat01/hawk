@@ -4,7 +4,7 @@
 """The compile drivers, both through the content-closure cache.
 
 ``g++`` builds the host ``.so`` (flags from one host profile, see
-:data:`hawk.compile.toolchain.HOST_PROFILES`). The device toolchain has two
+:data:`osprey_cpu.toolchain.HOST_PROFILES`). The device toolchain has two
 compilers, chosen by :func:`hawk.compile.toolchain.device_compiler_kind`:
 ``nvcc`` ahead of time on the developer/CI tree (the only path for
 LTO/relocatable fatbins), or an in-memory NVRTC compile
@@ -42,12 +42,12 @@ compiler subprocess gets a wall-clock timeout, :data:`COMPILE_TIMEOUT_SECONDS`
 from __future__ import annotations
 
 import os
-import platform
 import shutil
 import subprocess
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -156,9 +156,9 @@ def check_source_budget(name: str, source: str) -> None:
             "the budget for one build")
 
 
-def run_compiler(argv: list[str], what: str, target: str = "host") -> subprocess.CompletedProcess:
-    """Run one compiler command under the address-space cap and the wall-clock
-    timeout; a timeout raises a :class:`HawkError` that names the limit."""
+def run_compiler(argv: list[str], what: str, target: str) -> subprocess.CompletedProcess:
+    """Run one compiler command for the ``target`` row (its :meth:`~hawk.backends.Backend.process_env` applies) under the
+    address-space cap and the wall-clock timeout; a timeout raises a :class:`HawkError` that names the limit."""
     limit = _env_number("HAWK_COMPILE_TIMEOUT", COMPILE_TIMEOUT_SECONDS) or None
     try:
         return subprocess.run(limited(argv), capture_output=True, text=True,
@@ -202,9 +202,9 @@ class CompileOptions:
     cache_dir: str | None = None
     extra: tuple[str, ...] = ()
     #: The host code-generation profile
-    #: (:data:`hawk.compile.toolchain.HOST_PROFILES`). Empty means
+    #: (:data:`osprey_cpu.toolchain.HOST_PROFILES`). Empty means
     #: ``$HAWK_HOST_PROFILE``, else
-    #: :func:`~hawk.compile.toolchain.default_host_profile`. Ignored by the
+    #: :func:`~osprey_cpu.toolchain.default_host_profile`. Ignored by the
     #: device compile.
     host_profile: str = ""
     #: The optimisation level (:data:`hawk.compile.toolchain.OPT_LEVELS`).
@@ -297,25 +297,6 @@ def _stable_served(flags) -> tuple[tuple, tuple]:
     return tuple(term if f == root else f for f in flags), prefixes
 
 
-def _host_key_terms(flags, opts: CompileOptions) -> tuple:
-    """The host key's flag terms plus, for the two ``-march=native``
-    profiles, the CPU it targets
-    (:func:`~hawk.compile.toolchain.host_target_identity`): ``-march=native``
-    reads the same on every machine, so without this term a shared cache
-    directory would serve one CPU's binary to another's. The profile name
-    and the resolved opt level are folded in too, so two profiles — or two
-    opt levels — never share a slot even where their flag strings coincide.
-    The C library (``platform.libc_ver()``) is folded in as well: a host
-    ``.so`` links against the libc it was built on."""
-    profile = tc.host_profile(opts.host_profile or None)
-    level = tc.opt_level(opts.opt_level or None)
-    libc = "-".join(part for part in platform.libc_ver() if part) or "unknown"
-    terms = (*key_flags(flags), f"host_profile:{profile}", f"opt_level:{level}", f"libc:{libc}")
-    if profile != "portable":
-        terms = (*terms, f"host_target:{tc.host_target_identity()}")
-    return terms
-
-
 def _compiler_not_runnable(argv0: str, returncode: int) -> bool:
     """True when ``argv0`` was never a running compiler: the shell's 127
     (not found) or 126 (not executable), or an argv[0] that is no executable
@@ -335,13 +316,13 @@ def _allocation_failure(stderr: str) -> bool:
 
 
 def _run_and_publish(argv, label, failed_tail, tmp_artifact, artifact, tmp_dep, dep,
-                     cache_root, target="host"):
+                     cache_root, target):
     """Run the compiler into the private temporaries and move the artifact and
     its dependency file into place; ``(done, seconds)``, or a :class:`HawkError`
     carrying the compiler's stderr when it failed."""
     start = time.perf_counter()
     try:
-        done = run_compiler(argv, label) if target == "host" else run_compiler(argv, label, target)
+        done = run_compiler(argv, label, target)
         if done.returncode == 0:
             publish_atomic(tmp_artifact, artifact)
             publish_atomic(tmp_dep, dep)
@@ -350,25 +331,30 @@ def _run_and_publish(argv, label, failed_tail, tmp_artifact, artifact, tmp_dep, 
         tmp_dep.unlink(missing_ok=True)
     seconds = time.perf_counter() - start
     if done.returncode != 0:
-        missing = _compiler_not_runnable(argv[0], done.returncode)
-        cap = address_space_cap()
-        if cap and _allocation_failure(done.stderr):
-            reason = (f"; the compiler ran under a {cap}-byte address-space cap "
-                      "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
-                      "this translation unit is too large for one compile and not that "
-                      "the machine is out of memory")
-        elif missing:
-            reason = (f"; compiler not found or not executable: {argv[0]} "
-                      f"(exit {done.returncode}); point $HAWK_CXX at a working "
-                      "C++ compiler, e.g. HAWK_CXX=/path/to/c++")
-        else:
-            reason = ""
-        raise HawkError(
-            f"{label} failed{failed_tail} (rc={done.returncode}){reason}"
-            + f".\n$ {' '.join(argv)}\n{done.stderr[:4000]}"
-            + tc.compile_hint(cache_root)
-        )
+        _refuse(done, argv, label, failed_tail, cache_root)
     return done, seconds
+
+
+def _refuse(done, argv, label: str, failed_tail: str, cache_root) -> None:
+    """Raise the refusal of a failed compiler command: its stderr, the reason (the cap, a missing compiler) and the hint."""
+    missing = _compiler_not_runnable(argv[0], done.returncode)
+    cap = address_space_cap()
+    if cap and _allocation_failure(done.stderr):
+        reason = (f"; the compiler ran under a {cap}-byte address-space cap "
+                  "($HAWK_COMPILE_ADDRESS_CAP), so an allocation failure here means "
+                  "this translation unit is too large for one compile and not that "
+                  "the machine is out of memory")
+    elif missing:
+        reason = (f"; compiler not found or not executable: {argv[0]} "
+                  f"(exit {done.returncode}); point $HAWK_CXX at a working "
+                  "C++ compiler, e.g. HAWK_CXX=/path/to/c++")
+    else:
+        reason = ""
+    raise HawkError(
+        f"{label} failed{failed_tail} (rc={done.returncode}){reason}"
+        + f".\n$ {' '.join(map(str, argv))}\n{done.stderr[:4000]}"
+        + tc.compile_hint(cache_root)
+    )
 
 
 def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResult:
@@ -377,9 +363,8 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
     miss that compiles into the key's own slot and rewrites its validity
     record from the compiler-reported closure.
 
-    The row's backend does the compile (:meth:`hawk.backends.Backend.compile`):
-    it picks its toolchain and calls :func:`compile_cached`, or one of the
-    sealed-payload and NVRTC drivers below.
+    A backend with a plan (:meth:`hawk.backends.Backend.compile_plan`) is compiled by :func:`_drive`;
+    one without still compiles itself (:meth:`hawk.backends.Backend.compile`, through :func:`compile_cached`).
     """
     from ..registry import backend_ids, traits
     from ..targets import TARGETS
@@ -388,7 +373,10 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
     if row is None or not row.builds:
         built = tuple(t for t in backend_ids(default=True) if traits(t).get("builds", True))
         raise HawkError(f"unknown target {opts.target!r}; built are {built}")
-    return row.compile(source, name, opts)
+    plan = row.compile_plan(opts, _Inputs())
+    if plan is None:
+        return row.compile(source, name, opts)
+    return _drive(source, name, opts, row, plan)
 
 
 def compile_cached(source: str, name: str, opts: CompileOptions, row, *, compiler: str,
@@ -494,71 +482,92 @@ def _memo_still_valid(artifact: Path, closure,
     return closure_unchanged(closure)
 
 
-def _host_uses_sealed_payload() -> bool:
-    """Whether a host compile should build against the shipped sealed
-    payload rather than a real include root on disk — the same condition
-    :func:`hawk.compile.payload.current_payload` uses to prefer
-    ``aether_dsc.payload()`` over a live re-seal: no
-    ``$HAWK_AETHER_INCLUDE`` override, and a blob actually exists."""
-    if "HAWK_AETHER_INCLUDE" in os.environ:
-        return False
-    import aether_dsc
-    try:
-        aether_dsc.payload()
-        return True
-    except FileNotFoundError:
-        return False
+class _KeyedFlag(str):
+    """A flag the compile line keeps and the key reads as its ``key_term`` (the per-process served root)."""
+
+    key_term: str = ""
 
 
-def _compile_host_sealed(source: str, name: str, opts: CompileOptions,
-                         row) -> CompileResult:
-    """The host ``g++`` compile against the sealed payload: ``-I`` points at
-    a private directory :meth:`~aether_dsc.Payload.serve` materialises for
-    exactly this compile's lifetime, removed afterwards on success or
-    failure (`serve()`'s own ``finally``).
+class _Inputs:
+    """What hawk knows of the headers a compile reads, handed to :meth:`hawk.backends.Backend.compile_plan`. Each
+    field is resolved when read: resolving a root or the payload has a cost or a side effect."""
 
-    The lookup key cannot include the served directory's own path (a fresh
-    ``tempfile.mkdtemp`` every compile, never repeating) — the payload's
-    digest is the stable substitute, the same one the NVRTC device path
-    uses, and it covers the payload's own headers (never re-hashed per
-    compile). Everything else the compiler opened (``-MD``: user ``-I``
-    headers, the kernel's own includes) is a recorded closure validated by
-    content exactly as on the source-header path, so a changed user header
-    is a miss.
-    """
-    art_ext, src_ext = row.artifact, row.source
+    @property
+    def sealed(self) -> bool:
+        """Whether a compile builds against the shipped sealed payload rather than a real include root: the condition
+        :func:`hawk.compile.payload.current_payload` uses to prefer ``aether_dsc.payload()`` over a live re-seal (no
+        ``$HAWK_AETHER_INCLUDE`` override, and a blob exists)."""
+        if "HAWK_AETHER_INCLUDE" in os.environ:
+            return False
+        import aether_dsc
+        try:
+            aether_dsc.payload()
+            return True
+        except FileNotFoundError:
+            return False
+
+    @property
+    def payload(self):
+        """The sealed payload of this process (:func:`hawk.compile.payload.current_payload`)."""
+        return _payload.current_payload()
+
+    def include_flags(self) -> tuple:
+        """The aether and eagle ``-I`` flags; a per-process served root carries the payload digest as its key term."""
+        flags = tc.include_flags()
+        root = tc.pip_only_root()
+        if root is None:
+            return tuple(flags)
+        keyed = _KeyedFlag(root)
+        keyed.key_term = f"payload:{_payload.current_payload().digest}"
+        return tuple(keyed if f == root else f for f in flags)
+
+
+@dataclass(frozen=True)
+class _Job:
+    """One compile as hawk hands it to :meth:`hawk.backends.Backend.compile_hook`: the source hawk wrote, the
+    temporaries the artifact and the dependency file go to (hawk publishes them), the served payload root (``None``: none)."""
+
+    name: str
+    src: Path
+    out: Path
+    dep: Path
+    served: object
+
+
+def _served_prefixes(*roots) -> tuple:
+    return tuple({p for r in roots if r for p in (os.path.abspath(str(r)) + os.sep, os.path.realpath(str(r)) + os.sep)})
+
+
+def _drive(source: str, name: str, opts: CompileOptions, row, plan: dict) -> CompileResult:
+    """The cached compile of ``source`` for ``row`` from its ``plan`` (data) and its
+    :meth:`~hawk.backends.Backend.compile_hook` (code). hawk owns the key, the slot, the memo and its validity, the
+    single flight, the payload serving, the machine guards, the closure and the record.
+
+    A ``plan["payload"]`` digest makes the entry valid by that digest: the payload's headers are keyed by it (the
+    backend puts it in ``key_terms``), and only what the compiler opened outside every root hawk served is a recorded
+    closure, validated by content."""
     cache = Cache(opts.cache_dir)
-    compiler = tc.host_compiler()
-    identity = tc.compiler_identity(compiler)
-    payload = _payload.current_payload()
-
-    defines = [f"-D{d}" for d in opts.defines]
-    stable_flags = [*tc.host_codegen_flags(opts.host_profile or None,
-                                           opts.opt_level or None, (*defines, *opts.extra)),
-                    f"-std={tc.HOST_STD}", "-shared", "-fPIC",
-                    "-DAETHER_CPP_MODE", *defines, *opts.extra]
-    key_terms = (*_host_key_terms(stable_flags, opts), f"payload:{payload.digest}")
+    identity, key_terms, digest = plan["identity"], tuple(plan["key_terms"]), plan["payload"]
     key = lookup_key(source, opts.target, opts.mode, identity, key_terms)
     slot = cache.slot(key)
-    artifact, src_path, dep = (slot / f"{name}{art_ext}", slot / f"{name}{src_ext}",
-                               slot / f"{name}.d")
-    payload_closure = ((_PAYLOAD_MEMO_TAG, payload.digest),)
+    artifact, src_path, dep = (slot / f"{name}{row.artifact}", slot / f"{name}{row.source}", slot / f"{name}.d")
+    tagged = () if digest is None else ((_PAYLOAD_MEMO_TAG, digest),)
+    hit_argv = tuple(plan["hit_argv"])
 
     def lookup():
         memo = artifact_memo_get(key)
-        if memo is not None and _memo_still_valid(artifact, memo, payload.digest):
+        if memo is not None and _memo_still_valid(artifact, memo, digest):
+            # per-process memo hit: same key, same recorded closure, still valid by content
             cache.note(True)
-            return CompileResult(artifact, src_path, key, True, tuple(stable_flags),
-                                 closure=payload_closure)
-
-        if cache.check(key, payload_digest=payload.digest):
+            return CompileResult(artifact, src_path, key, True, hit_argv, closure=tagged or tuple(p for p, _ in memo),
+                                 ptxas=cache.record(key).get("ptxas", {}))
+        if cache.check(key, payload_digest=digest):
             cache.note(True)
-            # The memo holds the USER closure only (the payload is part of the
-            # key already), the same shape the source-header path memoises.
-            user = tuple((p, d) for p, d in cache.record(key).get("closure", ()))
-            artifact_memo_put(key, user)
-            return CompileResult(artifact, src_path, key, True, tuple(stable_flags),
-                                 closure=payload_closure)
+            record = cache.record(key)
+            closure = tuple(record.get("closure", ()))
+            artifact_memo_put(key, tuple((p, d) for p, d in closure))
+            return CompileResult(artifact, src_path, key, True, hit_argv, closure=tagged or tuple(p for p, _ in closure),
+                                 ptxas=record.get("ptxas", {}))
         return None
 
     def build():
@@ -567,31 +576,37 @@ def _compile_host_sealed(source: str, name: str, opts: CompileOptions,
         check_source_budget(name, source)
         slot.mkdir(parents=True, exist_ok=True)
         write_atomic(src_path, source)
+        # compile into private temporaries, then move into place: a reader of this slot never sees a partial write
         tmp_artifact, tmp_dep = tmp_sibling(artifact), tmp_sibling(dep)
-        with payload.serve() as served_root:
-            argv = [compiler, *stable_flags, f"-I{served_root}", "-MD", "-MF", str(tmp_dep),
-                    str(src_path), "-o", str(tmp_artifact)]
-            done, seconds = _run_and_publish(
-                argv, f"host compile of {name!r}", " against the sealed payload",
-                tmp_artifact, artifact, tmp_dep, dep, cache.root)
-            reached = closure_of(dep)
-            # The served payload directory is private to this compile and
-            # vanishes with it: its headers are keyed by the payload digest.
-            # Everything ELSE the compiler opened (user -I headers, the
-            # kernel's own includes, system headers) is a real closure,
-            # validated by content exactly as on the source-header path.
-            prefixes = tuple({os.path.abspath(str(served_root)) + os.sep,
-                              os.path.realpath(str(served_root)) + os.sep})
-            user_closure = tuple(p for p in reached if not p.startswith(prefixes))
-        cache.store(key, artifact=artifact, closure=user_closure,
-                    meta={"target": opts.target, "mode": opts.mode, "compiler": identity,
-                          "flags": stable_flags, "seconds": seconds, "name": name,
-                          "key_terms": list(key_terms),
-                          "payload_digest": payload.digest,
-                          "served_closure_card": list(reached)})
-        artifact_memo_put(key, validity_digest(user_closure))
-        return CompileResult(artifact, src_path, key, False, tuple(argv), seconds,
-                             closure=payload_closure)
+        label = f"{opts.target} compile of {name!r}"
+
+        def run(argv):
+            done = run_compiler(argv, label, opts.target)
+            if done.returncode != 0:
+                _refuse(done, argv, label, plan["tail"], cache.root)
+            return done
+
+        start = time.perf_counter()
+        try:
+            with (_payload.current_payload().serve() if plan["serve"] else nullcontext()) as served_root:
+                out = row.compile_hook(plan, _Job(name, src_path, tmp_artifact, tmp_dep, served_root), run)
+                publish_atomic(tmp_artifact, artifact)
+                if plan["deps"]:
+                    publish_atomic(tmp_dep, dep)
+                seconds = time.perf_counter() - start
+                reached = closure_of(dep) if plan["deps"] else ()
+                prefixes = _served_prefixes(served_root, tc.pip_only_root())
+                closure = tuple(p for p in reached if not p.startswith(prefixes))
+        finally:
+            tmp_artifact.unlink(missing_ok=True)
+            tmp_dep.unlink(missing_ok=True)
+        meta = {"target": opts.target, "mode": opts.mode, "compiler": identity, "key_terms": list(key_terms),
+                "seconds": seconds, "name": name, **plan["meta"], "ptxas": out["figures"]}
+        if digest is not None:
+            meta.update(payload_digest=digest, served_closure_card=list(reached))
+        cache.store(key, artifact=artifact, closure=closure, meta=meta)
+        artifact_memo_put(key, validity_digest(closure))
+        return CompileResult(artifact, src_path, key, False, tuple(out["argv"]), seconds, tagged or closure, out["figures"])
 
     return _single_flight(key, lookup, build)
 

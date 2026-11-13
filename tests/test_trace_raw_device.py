@@ -20,14 +20,16 @@ block traced, walked and classified ``sample_local``.
 
 from __future__ import annotations
 
+from _specs import default_kind
+from _specs import spec_for
 import pytest
 
 from hawk import Scalar, raw_device
 from hawk.diff import vjp
-from hawk.ir import Assign, Leaf, Op, canonical
+from raptor.ir import Assign, Leaf, Op, canonical
 from hawk import HawkError
-from hawk.ir.nodes import RAW_KIND
-from hawk.types import TensorType
+from raptor.ir.nodes import RAW_KIND
+from raptor.ir.types import TensorType
 
 TEXT = "acc[i] += rho * pos[i];"
 F64 = TensorType((), "f64")
@@ -92,14 +94,14 @@ def test_a_raw_block_is_written_in_aether_unless_it_says_otherwise():
 
 
 def test_a_writer_refuses_a_block_in_a_language_it_cannot_write():
-    from hawk.emit.wrapper import render_source
+    from aether.wings.base.wrapper import render_source
     from hawk.targets import TARGETS
 
     for language, spliced in (("aether", True), ("c", False)):
         block = raw_device("psc_x", access="sample_local", returns=Scalar, language=language)
         sinks = (Assign("out", block(Leaf("vocab_read", "per_sample", "x", F64)).node, F64),)
         if spliced:
-            render_source("raw", sinks, canonical(sinks), TARGETS["host"])
+            render_source("raw", sinks, canonical(sinks), TARGETS["host"], spec=spec_for(TARGETS["host"]), kind=default_kind())
         else:
             with pytest.raises(HawkError, match="'c'"):
-                render_source("raw", sinks, canonical(sinks), TARGETS["host"])
+                render_source("raw", sinks, canonical(sinks), TARGETS["host"], spec=spec_for(TARGETS["host"]), kind=default_kind())

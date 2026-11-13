@@ -37,25 +37,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir import Const, Leaf, Node
+from raptor.ir import Const, Leaf, Node
 from .._errors import HawkError
-from ..ir import make as _mk
-from ..ir.nodes import LoopCarry, LoopIndex, LoopValue
-from ..ir.loops import build_loop
-from ..ir.nodes import (
-    AccumWrite,
-    Assign,
-    Finish,
-    SampleSum,
-    Select,
-    TapeWrite,
-    element_count,
-    is_param_cell,
-)
+from raptor.ir import make as _mk
+from raptor.ir.nodes import LoopCarry, LoopIndex, LoopValue
+from raptor.ir.loops import build_loop
+from raptor.ir.nodes import AccumWrite, Assign, Finish, SampleSum, Select, TapeWrite, element_count, is_param_cell
 from raptor.ir.cells import with_value
 from ..dialects import is_a
-from ..ir.walk import substitute
-from ..types import TensorType
+from raptor.ir.walk import substitute
+from raptor.ir.types import TensorType
 
 #: The reserved plane names the twin adds (refused as a kernel's own).
 TAPE_PLANE = "tape"

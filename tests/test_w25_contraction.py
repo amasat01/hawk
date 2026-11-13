@@ -17,21 +17,22 @@ import platform
 import pytest
 
 from hawk.compile import toolchain as tc
+import osprey_cpu.toolchain as ctc
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXACT = ("native", "portable", "native-vector-math-nofma")
 DEFAULT = "native-vector-math"
 #: The one place a HOST profile's contraction is spelled, and the embedded reference build line (not a host profile).
-HOST_SITE = "hawk/compile/toolchain.py"
+HOST_SITE = "staging/osprey_cpu/toolchain.py"
 REFERENCE_SITES = {"extensions/hawk_c/hawk_c/toolchain.py": "-ffp-contract=off"}
 
 
 def _flags(profile, monkeypatch):
     monkeypatch.setattr(platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(tc, "host_compiler", lambda: "/fake/g++")
-    monkeypatch.setattr(tc, "compiler_is_gcc", lambda c: True)
-    monkeypatch.setattr(tc, "masked_call_flag", lambda flags, extra=(): ["-DAETHER_HVM_MASKED=1"])
-    return tc.host_codegen_flags(profile)
+    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/g++")
+    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: True)
+    monkeypatch.setattr(ctc, "masked_call_flag", lambda flags, extra=(): ["-DAETHER_HVM_MASKED=1"])
+    return ctc.host_codegen_flags(profile)
 
 
 @pytest.mark.parametrize("profile", EXACT)
@@ -57,18 +58,18 @@ def _spellings(path: pathlib.Path) -> list:
 
 def test_the_host_table_is_the_only_place_a_host_contraction_flag_is_spelled():
     found = {}
-    for sub in ("hawk", "extensions"):
+    for sub in ("hawk", "extensions", "staging"):
         for path in sorted((ROOT / sub).rglob("*.py")):
             if "__pycache__" in path.parts:
                 continue
             if spelled := _spellings(path):
                 found[str(path.relative_to(ROOT))] = spelled
     assert set(found) == {HOST_SITE, *REFERENCE_SITES}, f"a contraction flag is spelled in a new place: {sorted(found)}"
-    assert sorted(found[HOST_SITE]) == sorted(tc._HOST_CONTRACTION.values())
+    assert sorted(found[HOST_SITE]) == sorted(ctc._HOST_CONTRACTION.values())
     for site, flag in REFERENCE_SITES.items():        # the embedded reference build line
         assert found[site] == [flag], (site, found[site])
 
 
 def test_the_table_names_exactly_the_profiles_and_only_the_default_fuses():
-    assert set(tc._HOST_CONTRACTION) == {*EXACT, DEFAULT}
-    assert {p for p, f in tc._HOST_CONTRACTION.items() if f != "-ffp-contract=off"} == {DEFAULT}
+    assert set(ctc._HOST_CONTRACTION) == {*EXACT, DEFAULT}
+    assert {p for p, f in ctc._HOST_CONTRACTION.items() if f != "-ffp-contract=off"} == {DEFAULT}

@@ -1,12 +1,11 @@
 """Every node class has a state/edges/from_state recipe, and rebuilding every node reproduces the Walk."""
 import _kernels as K
 import lowering.box  # noqa: F401  (BoxStore)
-import hawk.ir  # noqa: F401
 import simt.lane  # noqa: F401
 import lowering.team  # noqa: F401
 import pytest
-from hawk.ir.nodes import Node
-from hawk.ir.walk import canonical
+from raptor.ir.nodes import Node
+from raptor.ir.walk import canonical
 from hawk.trace.kernel import _declared
 
 
@@ -56,16 +55,17 @@ def test_rebuilt_reproduces_the_walk(name):
 
 
 def test_core_imports_no_dialect():
-    """The core IR and the core renderer do not import the simt dialect; the split pass that builds them does."""
+    """``import hawk`` loads no wing; the writer loads only raptor and the wings its manifest names (``lowering``), nothing of hawk;
+    the lowering component names no writer."""
     import subprocess
     import sys
 
-    def loaded(*mods):
-        code = "import sys; " + "; ".join(f"import {m}" for m in mods) + "; print('lowering' in sys.modules)"
-        return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.strip()
+    def run(code):
+        return subprocess.run([sys.executable, "-c", "import sys\n" + code], capture_output=True, text=True, check=True).stdout.strip()
 
-    assert loaded("hawk.ir", "hawk.emit.render") == "False"
-    assert loaded("lowering.split") == "True"
-    code = "import sys, lowering.split; print([m for m in sys.modules if m.startswith('hawk.emit')])"
-    assert subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.strip() == "[]"
-    assert loaded("hawk.emit.render", "hawk.artifact.bundle", "hawk.runtime") == "False"      # hawk reaches the component through its entry list, on first use
+    wings = "print(sorted(m for m in sys.modules if m.startswith('aether.wings') or m == 'lowering' or m.startswith('lowering.')))"
+    assert run("import hawk\n" + wings) == "[]"
+    assert run("import raptor.ir\n" + wings) == "[]"
+    every = "import json, importlib\nfrom aether.wings.base import MANIFEST\nfor m in MANIFEST['emission_modules']: importlib.import_module(m)\n"
+    assert run(every + "print([m for m in sys.modules if m == 'hawk' or m.startswith('hawk.')])") == "[]"
+    assert run("import lowering.split\nprint([m for m in sys.modules if m.startswith('aether.wings')])") == "[]"

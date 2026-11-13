@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from .._errors import HawkError
-from ..ir.chain import bind
+from ..passes.chain import bind
 from .kernel import Kernel
 
 

@@ -1,0 +1,31 @@
+{
+ "name": "aether_base",
+ "version": "0",
+ "contract": "1",
+ "entries": {},
+ "spellings": [
+  {
+   "writer": "aether",
+   "dialect": "lowering",
+   "ref": "aether.wings.base.aether"
+  }
+ ],
+ "emission_modules": [
+  "aether.wings.base.aether",
+  "aether.wings.base.box",
+  "aether.wings.base.dispatch",
+  "aether.wings.base.fused",
+  "aether.wings.base.render",
+  "aether.wings.base.rtstore",
+  "aether.wings.base.spelling",
+  "aether.wings.base.team_emit",
+  "aether.wings.base.wrapper",
+  "aether.wings.base.wrapper_text",
+  "aether.wings.base.writer",
+  "aether.wings.base.writer_aether"
+ ],
+ "runtime_modules": [],
+ "components": [
+  "lowering"
+ ]
+}

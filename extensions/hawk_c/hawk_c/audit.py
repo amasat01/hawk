@@ -12,7 +12,7 @@ core closure, the ABI blocks) still answers to the rules. Each hit is
   read): allocation, ``goto``, stdio, inline assembly, ``union``,
   ``setjmp``/``longjmp``, ``volatile``, C++ casts and namespaces, ``eagle``,
   ``#pragma``, ``tgmath``, ``extern "C"`` and every launch-geometry token of
-  :data:`hawk.emit.spelling.GEOMETRY_TOKENS` (imported, never respelled).
+  :data:`aether.wings.base.spelling.GEOMETRY_TOKENS` (imported, never respelled).
   The bare word ``aether`` is allowed: the inlined core functions are named
   ``aether_c_*``;
 * ``audit.include`` — an ``#include`` outside :data:`INCLUDE_WHITELIST` and
@@ -44,12 +44,12 @@ from __future__ import annotations
 
 import re
 
-from hawk.emit.spelling import GEOMETRY_TOKENS
+from aether.wings.base.spelling import GEOMETRY_TOKENS
 
 #: Tokens no emitted unit may spell in code. Word tokens match at word
 #: boundaries; the ``::`` namespaces, ``#pragma`` and ``extern "C"`` match as
 #: literal text; the launch-geometry tokens match as a word PREFIX, as
-#: :func:`hawk.emit.spelling.geometry_hits` matches them.
+#: :func:`aether.wings.base.spelling.geometry_hits` matches them.
 BANNED_TOKENS: tuple[str, ...] = (
     "malloc", "calloc", "realloc", "free", "goto", "printf", "sprintf",
     "fprintf", "asm", "__asm__", "union", "setjmp", "longjmp", "volatile",

@@ -121,14 +121,16 @@ class Backend:
     def render(self, lowered: Lowered, options):
         """The emitted unit of ``lowered.kernel``: the writer and wrapper around the shared body, under this backend's policy scopes."""
         from ..artifact import layout
-        from ..emit import render_source
+        from aether.wings.base.wrapper import render_source
+        from .. import components
         kernel = lowered.kernel
         team = getattr(kernel, "team", None)
         # the device text keeps wide values in their planes; a host row renders float selects as blends
         spec = lowered.spec.for_target(self).with_settings(placed=self.device, blend=not self.device, staged_rows=lowered.rows,
                                                            warps=getattr(team, "warps", 1))
+        sinks, walk = components.view("lowering", "lstsq").lowered(kernel.sinks, kernel.walk, spec)
         source = render_source(
-            lowered.name, kernel.sinks, kernel.walk, self, mode=lowered.smode, kind=lowered.kind,
+            lowered.name, sinks, walk, self, mode=lowered.smode, kind=lowered.kind,
             body=lowered.body, segment=lowered.segment, one_step=lowered.one_step, box=lowered.box,
             active=None if getattr(team, "grid", None) in ("keys", "chunks", "targets") else lowered.active,
             team=None if team is None else team.threads, rows=lowered.rows,
@@ -138,7 +140,26 @@ class Backend:
 
     def compile(self, source: str, name: str, opts):
         """Compile ``source`` into this backend's artifact, through the content-closure cache
-        (:class:`hawk.compile.CompileResult`). Only a backend with ``builds`` is asked."""
+        (:class:`hawk.compile.CompileResult`). Only a backend with ``builds`` and no :meth:`compile_plan` is asked."""
+        raise NotImplementedError
+
+    def machine_facts(self) -> dict:
+        """The facts this backend knows of the machine of a build it is in, as plain data (:class:`hawk.targets.Machine`
+        field names: its compiler and profiles, the isa); the default knows none."""
+        return {}
+
+    def compile_plan(self, opts, inputs):
+        """The DATA of one compile, or ``None`` (this backend compiles itself, :meth:`compile`): a dict with ``compiler``,
+        ``identity`` (the key's compiler term), ``key_terms`` (the key's terms after the source, target, mode and identity),
+        ``payload`` (the sealed-payload digest the entry is valid by, else ``None``), ``deps`` (the hook writes a dependency
+        file), ``serve`` (hawk serves the payload for the compile), ``flags``, ``hit_argv`` (what a hit reports), ``tail``
+        (said after "failed" in a refusal) and ``meta`` (fields of the record). ``inputs`` is what hawk knows of the header
+        roots: ``sealed``, ``payload``, ``include_flags()``."""
+        return None
+
+    def compile_hook(self, plan, job, run) -> dict:
+        """Compile ``job.src`` into ``job.out`` (and ``job.dep`` when ``plan["deps"]``), running every command through
+        ``run(argv)``: ``{"argv": what ran, "figures": the resource figures the compiler reported}``."""
         raise NotImplementedError
 
     def object_format(self, path) -> tuple[str, str]:

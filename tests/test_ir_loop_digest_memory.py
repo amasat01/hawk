@@ -70,8 +70,8 @@ from _spline import spline_edge_cell, shallow_spline_cell
 
 import hawk
 import hawk.math as m
-from hawk.ir import Loop
-from hawk.ir.nodes import BODY_KEY_HEX, body_key_widths
+from raptor.ir import Loop
+from raptor.ir.nodes import BODY_KEY_HEX, body_key_widths
 
 #: The repo root a child process has to put on ``sys.path`` to import hawk.
 HAWK_ROOT = str(Path(__file__).resolve().parent.parent)

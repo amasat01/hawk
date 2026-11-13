@@ -27,10 +27,10 @@ import pytest
 from hawk.compile import CompileOptions, compile_source
 from hawk.compile import cache as hcache
 from hawk.compile import drivers as hdrivers
-from hawk.compile import nvrtc as hnvrtc
+from hawk_cuda import nvrtc as hnvrtc
 from hawk.compile import toolchain as tc
 from hawk_cuda import toolchain as dtc
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 KERNEL_SRC = 'extern "C" __global__ void hawk_probe_kernel(int* out) { *out = 42; }\n'
 HOST_SRC = 'extern "C" int hawk_probe_host() { return 42; }\n'

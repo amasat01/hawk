@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import hawk
 from simt import WarpLane
-from hawk.ir.loops import boundary
-from hawk.ir.nodes import At, Const, Leaf, LoopIndex, Select, TensorType
-from hawk.ir.ops import make
+from raptor.ir.loops import boundary
+from raptor.ir.nodes import At, Const, Leaf, LoopIndex, Select, TensorType
+from raptor.ir.ops import make
 
 _I32, _F64 = TensorType((), "i32"), TensorType((), "f64")
 _TABLE = Leaf("table_read", "lookup", "w", TensorType((64,), "f64"))

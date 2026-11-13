@@ -33,21 +33,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ..ir.access import IndexForm, index_form
-from ..ir.nodes import Loop, LoopIndex, LoopValue
-from ..ir.loops import addends as _addends
-from ..ir.nodes import (
-    AccumWrite,
-    Assign,
-    At,
-    Const,
-    Leaf,
-    Node,
-    Op,
-    SampleIndex,
-    Sink,
-    WideWrite,
-)
+from raptor.ir.access import IndexForm, index_form
+from raptor.ir.nodes import Loop, LoopIndex, LoopValue
+from raptor.ir.loops import addends as _addends
+from raptor.ir.nodes import AccumWrite, Assign, At, Const, Leaf, Node, Op, SampleIndex, Sink, WideWrite
 
 #: The rank -> declared-element spelling a committed output reports.
 _OUTPUT_KIND = {0: "scalar", 1: "vector", 2: "matrix"}

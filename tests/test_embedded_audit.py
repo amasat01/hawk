@@ -29,8 +29,9 @@ import pytest
 
 from hawk.diff import vjp
 from hawk_c import audit, render
-from hawk.emit.spelling import GEOMETRY_TOKENS
-from hawk.ir import HawkError, canonical
+from aether.wings.base.spelling import GEOMETRY_TOKENS
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import canonical
 
 MODES = ("float64", "float32")
 CORPUS = [n for n in K.CORPUS if n != "energy"]

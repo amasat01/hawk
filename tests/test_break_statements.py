@@ -22,6 +22,8 @@ by hand (``m.where`` on the condition, then the bare break). Rows:
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import spec_for
 from _specs import HOST
 
 import linecache
@@ -41,8 +43,9 @@ from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk_c import EmbeddedProfile, check, export, refuse_audit_hits, render
-from hawk.emit import FLOAT64, render_body, render_source
-from hawk.ir import HawkError
+from aether.wings.base.wrapper import FLOAT64, render_source
+from aether.wings.base.render import render_body
+from raptor.errors import RaptorError as HawkError
 from hawk.targets import TARGETS
 
 CAP = 12
@@ -408,7 +411,7 @@ def test_a_kernel_with_only_bare_exits_is_unchanged_by_the_lowering():
                 break
         y = s
 
-    assert "brk" not in render_body(bare.sinks, bare.walk, spec=HOST).text
+    assert "brk" not in render_body(bare.sinks, bare.walk, spec=HOST, kind=default_kind()).text
 
 
 # B6 ------------------------------------------------------------------------ #
@@ -480,7 +483,7 @@ def test_the_emitted_sources_compile(tmp_path, kernel):
     failures = []
     for target in ("cuda", "host"):
         src = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                            mode=FLOAT64, kind=kernel.kind)
+                            mode=FLOAT64, kind=kernel.kind, spec=spec_for(TARGETS[target]))
         path = tmp_path / f"{kernel.name}_{target}.{'cu' if target == 'cuda' else 'cpp'}"
         path.write_text(src.text)
         rc, stderr, argv = compile_check(path, target)

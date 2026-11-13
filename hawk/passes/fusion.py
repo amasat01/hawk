@@ -18,8 +18,8 @@ import platform
 from collections.abc import Sequence
 from pathlib import Path
 
-from ..ir.chain import bind
-from ..ir.nodes import Const, Leaf, Sink
+from .chain import bind
+from raptor.ir.nodes import Const, Leaf, Sink
 
 #: The fence: registers plus frame words may pass the estimate by this factor plus :data:`FENCE_SLACK` registers.
 FENCE_RATIO = 1.6
@@ -70,7 +70,7 @@ def estimate(walk, card: dict, scalar_type: str, wide_min: int | None = None) ->
 
 
 def _segment_walk(members: Sequence, a: int, b: int):
-    from ..ir.walk import canonical
+    from raptor.ir.walk import canonical
 
     later = set().union(*({lf.name for lf in _leaves(k)} for k in members[b:]))
     return canonical(bind(members[a:b], keep=tuple(later)).sinks)

@@ -17,6 +17,7 @@ import pytest
 
 from hawk.compile import cache as cc
 from hawk.compile import toolchain as tc
+import osprey_cpu.toolchain as ctc
 
 
 def _fake(path, version: str, log):
@@ -38,14 +39,14 @@ def test_a_probe_answers_from_disk_in_a_fresh_process(cache_dir):
     log, cc_ = cache_dir / "log", cache_dir / "fakecc"
     _fake(cc_, "1.0", log)
     first = tc.compiler_identity(str(cc_))
-    macros = tc.compiler_macros(str(cc_))
+    macros = ctc.compiler_macros(str(cc_))
     assert _spawns(log) == 2 and "__GNUC__" in macros
     # a new process: every per-process memo is empty
     tc.reset_identity_memo()
-    tc._MACRO_MEMO.clear()
-    tc._GCC_FAMILY_MEMO.clear()
+    ctc._MACRO_MEMO.clear()
+    ctc._GCC_FAMILY_MEMO.clear()
     assert tc.compiler_identity(str(cc_)) == first
-    assert tc.compiler_is_gcc(str(cc_)) is True
+    assert ctc.compiler_is_gcc(str(cc_)) is True
     assert _spawns(log) == 2, "a persisted probe must not respawn the compiler"
 
 

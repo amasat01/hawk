@@ -19,10 +19,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir import Const, Node
+from raptor.ir import Const, Node
 from .._errors import HawkError
-from ..ir import make as _make
-from ..types import TensorType
+from raptor.ir import make as _make
+from raptor.ir.types import TensorType
 from .value import Value, node_of, vec
 
 _INF = Const(float("inf"), TensorType((), "f64"))

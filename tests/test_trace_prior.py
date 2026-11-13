@@ -21,6 +21,7 @@ derivative. Every plant was then removed."""
 
 from __future__ import annotations
 
+from _specs import spec_for
 import _deploy as L
 import numpy as np
 import pytest
@@ -32,7 +33,7 @@ from hawk import Terminated as _Terminated
 from hawk import Vector as _Vector
 from hawk import kernel as _hkernel
 from hawk.artifact import build_bundle as _build_bundle
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.math import cross as _cross
 from hawk.math import maximum as _maximum
 from hawk.math import norm as _norm
@@ -101,16 +102,16 @@ def test_running_max_recovers_the_max_across_launches(prior_bundle):
 # a `prior_read` leaf).
 # --------------------------------------------------------------------------- #
 def test_prior_recurrence_renders_byte_identical_host_and_cuda_bodies():
-    from hawk.emit.wrapper import render_source
+    from aether.wings.base.wrapper import render_source
     from hawk.targets import TARGETS
 
     for k in (running_apogee, spin_prior):
-        h = render_source(k.name, k.sinks, k.walk, TARGETS["host"], kind=k.kind)
-        c = render_source(k.name, k.sinks, k.walk, TARGETS["cuda"], kind=k.kind)
+        h = render_source(k.name, k.sinks, k.walk, TARGETS["host"], kind=k.kind, spec=spec_for(TARGETS["host"]))
+        c = render_source(k.name, k.sinks, k.walk, TARGETS["cuda"], kind=k.kind, spec=spec_for(TARGETS["cuda"]))
         assert h.body == c.body, k.name
 
     spin_body = render_source(spin_prior.name, spin_prior.sinks, spin_prior.walk,
-                              TARGETS["host"], kind=spin_prior.kind).body
+                              TARGETS["host"], kind=spin_prior.kind, spec=spec_for(TARGETS["host"])).body
     assert "mut_v_i = mut_v[i].get()" in spin_body, (
         "a rank>=1 launch-start read must be materialised BEFORE the store:\n" + spin_body)
 

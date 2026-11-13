@@ -38,6 +38,7 @@ outputs are the same before and after, which is the point.
 """
 
 from __future__ import annotations
+from _specs import default_kind
 from _specs import HOST
 
 import _deploy as L
@@ -51,9 +52,9 @@ import hawk
 from hawk import Index, Kernel, Mutable, Scalar, Table, Terminated, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
+from aether.wings.base.render import render_body
 from hawk.ext import Guard, Kind
-from hawk.ir import canonical
+from raptor.ir import canonical
 
 N = 16
 GUARD = "if (!trm_terminated[i].eval()) {"
@@ -127,7 +128,7 @@ def _unindent(lines):
 @pytest.mark.parametrize("name", sorted(_subjects()))
 def test_the_guard_wraps_the_whole_body_before_the_first_load(name):
     sinks, walk = _subjects()[name]
-    guarded = render_body(sinks, walk, spec=HOST).text.splitlines()
+    guarded = render_body(sinks, walk, spec=HOST, kind=default_kind()).text.splitlines()
     free = render_body(sinks, walk, kind=D.MASK_FREE, spec=HOST).text.splitlines()
     assert guarded[0].strip() == GUARD, (
         f"{name}: the mask test must be the body's FIRST line, ahead of every "
@@ -143,7 +144,7 @@ def test_a_reverse_loop_scatter_is_not_re_guarded_per_iteration():
     """The shape that used to re-test the mask on EVERY iteration: a reverse
     loop's own scatter commit (``hawk.diff.transform._masked_sink``'s Loop)."""
     sinks, walk = _subjects()["loop_gather_vjp"]
-    text = render_body(sinks, walk, spec=HOST).text
+    text = render_body(sinks, walk, spec=HOST, kind=default_kind()).text
     assert "for (" in text, "the fixture must lower a loop or the row tests nothing"
     assert text.count("trm_terminated[i].eval()") >= 1
     loop_at = text.index("for (")
@@ -166,7 +167,7 @@ def test_a_guard_free_kernel_renders_exactly_as_the_mask_free_kind():
     for name, k in K.CORPUS.items():
         if any(role == "terminated" for role, _ in k.walk.arg_spec):
             continue
-        assert render_body(k.sinks, k.walk, spec=HOST).text == render_body(
+        assert render_body(k.sinks, k.walk, spec=HOST, kind=default_kind()).text == render_body(
             k.sinks, k.walk, kind=D.MASK_FREE, spec=HOST).text, name
         checked += 1
     assert checked, "the corpus must hold guard-free kernels or the row is empty"

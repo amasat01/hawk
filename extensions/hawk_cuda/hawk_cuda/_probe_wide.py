@@ -143,8 +143,6 @@ def _auto(kernel, dtype, cache, form, spec):
 
 def _load(path, tag, form):
     """The kernels of the generated module ``path``, traced under ``form``."""
-    from hawk.passes import policy
-
     spec = importlib.util.spec_from_file_location(f"_probe_{tag}_{form}", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod

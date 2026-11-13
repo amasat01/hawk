@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import hawk
 import hawk.math as m
-from hawk.ir import recognize
+from hawk.passes.contraction import recognize
 
 NF, NC, NM = 512, 24, 384
 

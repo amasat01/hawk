@@ -4,7 +4,7 @@
 """The authoring surface spells EVERY op the IR carries.
 
 WHY THIS ROW EXISTS. ``hawk.ir.ops.OP_KINDS`` is the vocabulary, the rule
-table is keyed on it and ``hawk/emit/render.py`` renders it — three consumers
+table is keyed on it and ``staging/aether/wings/base/render.py`` renders it — three consumers
 that a row already checks against each other. Nobody was checking the FOURTH:
 the surface an author writes a kernel through. ``outer`` was in ``MATRIX_OPS``,
 carried a derivative rule, and rendered as ``aether::outer(...)``, but
@@ -77,10 +77,10 @@ import hawk
 import hawk.math as hm
 from hawk.artifact import build
 from hawk.diff import vjp
-from hawk.ir import Leaf, canonical
-from hawk.ir.ops import MINTED_OPS, OP_KINDS
+from raptor.ir import Leaf, canonical
+from raptor.ir.ops import MINTED_OPS, OP_KINDS
 from hawk.trace.value import TableRef, node_of
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 B = TensorType((), "bool")

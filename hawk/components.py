@@ -32,15 +32,30 @@ def component(name: str):
     mod = found[0].load()
     from .dialects import KINDS
 
-    KINDS.kinds.update(mod.KINDS.kinds)
-    KINDS.classes.update(mod.KINDS.classes)
+    declared = getattr(mod, "KINDS", None)          # a wing that declares no node kinds has none
+    if declared is not None:
+        KINDS.kinds.update(declared.kinds)
+        KINDS.classes.update(declared.classes)
     return mod
 
 
+def chain(names) -> list:
+    """``names`` and every component they name in turn (``components`` of a manifest), each once, in the order found."""
+    out: list = []
+    pending = list(names)[::-1]
+    while pending:
+        name = pending.pop()
+        if name not in out:
+            out.append(name)
+            pending.extend(component(name).MANIFEST.get("components", ())[::-1])
+    return out
+
+
 def require(name: str, backend: str) -> None:
-    """Refuse by name a build of ``backend`` when the component ``name`` it needs is not installed or cannot be imported."""
+    """Refuse by name a build of ``backend`` when the component ``name`` it needs, or one that component builds on, is not installed or
+    cannot be imported."""
     try:
-        component(name)
+        chain([name])
     except (HawkError, ImportError) as e:
         raise HawkError(f"the {backend!r} backend requires the {name!r} component, which is not available ({e}); "
                         f"install the distribution raptor-{name}") from e
@@ -71,14 +86,16 @@ def view(name: str, part: str) -> _View:
 
 
 def device_view(part: str) -> _View:
-    """The declared entries of module ``part`` of the component a device backend names beyond the ones the host backends name (the
+    """The declared entries of module ``part`` of the component a device backend names, or those it builds on, beyond the ones the host backends use (the
     form only a device lowering leaves behind); refused by name when no installed default backend names one."""
     from . import registry
 
     rows = [registry.traits(b) for b in registry.backend_ids(default=True)]
-    shared = {c for t in rows if not t.get("device") for c in t.get("components", ())}
-    names = sorted({c for t in rows if t.get("device") for c in t.get("components", ())} - shared)
+    shared = set(chain(c for t in rows if not t.get("device") for c in t.get("components", ())))
+    named = [c for t in rows if t.get("device") for c in t.get("components", ())]
+    if not set(named) - shared:
+        raise HawkError("no device backend is installed that names a component of its own")
+    names = sorted(n for n in set(chain(named)) - shared if part in component(n).MANIFEST.get("entries", {}))
     if len(names) != 1:
-        raise HawkError("no device backend is installed that names a component of its own"
-                        if not names else f"the device backends name several components of their own: {names}")
+        raise HawkError(f"the device backends' own components hold the module {part!r} in {len(names)} places: {names}")
     return view(names[0], part)

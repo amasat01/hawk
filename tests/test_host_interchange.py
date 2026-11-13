@@ -5,7 +5,7 @@
 
 A fused-step kernel's host TU (``steps=K`` or ``"auto"``) runs its fused
 side as tiles of samples advanced together, trip by trip, with the carried
-values in lane arrays (:func:`hawk.emit.host.interchange`); the SAME TU built
+values in lane arrays (:func:`aether.wings.cpu.host.interchange`); the SAME TU built
 with ``-DHAWK_HOST_INTERCHANGE=0`` runs the plain per-sample fused loop it
 replaced. What is pinned:
 
@@ -30,9 +30,9 @@ replaced. What is pinned:
   one that only reads lookup planes is as independent as a sample-local one), a step whose head holds a second lowered ``for`` (the
   interchange cuts at ONE loop), and an active-set kind (its tile is a
   gathered map, not a contiguous run) keep the per-sample loop.
-* **The tile rule.** :func:`hawk.emit.host.host_tile_rule` is a pure function
+* **The tile rule.** :func:`aether.wings.cpu.host.host_tile_rule` is a pure function
   of its recorded inputs: L1d share, the L2 fallback, whole lane blocks, the
-  ``[64, 1024]`` clamp, ``k``; :func:`hawk.emit.host.machine_caches` reads a
+  ``[64, 1024]`` clamp, ``k``; :func:`aether.wings.cpu.host.machine_caches` reads a
   sysfs tree and falls back when it cannot.
 
 Every build here pins the EXACT ``native`` host profile (FMA contraction
@@ -43,6 +43,7 @@ fuse each shape.
 """
 
 from __future__ import annotations
+from _specs import spec_for
 from _specs import HOST
 
 import ctypes
@@ -62,16 +63,8 @@ import hawk
 from hawk import Index, Mutable, Param, Scalar, Table, Terminated, Vector
 from hawk import math as m
 from hawk.artifact import build_bundle
-from hawk.emit import render_source
-from hawk.emit.host import (
-    FALLBACK_CACHES,
-    TILE_MAX,
-    TILE_MIN,
-    CacheSizes,
-    host_tile_rule,
-    interchange,
-    machine_caches,
-)
+from aether.wings.base.wrapper import render_source
+from aether.wings.cpu.host import FALLBACK_CACHES, TILE_MAX, TILE_MIN, CacheSizes, host_tile_rule, interchange, machine_caches
 from hawk.ext import Guard, Kind
 from hawk.targets import TARGETS
 
@@ -434,14 +427,14 @@ def test_the_trip_loop_runs_on_the_chunk_alone():
     tile live flag; the tile's lane arrays are touched before the trips, after
     them, and in the refill between trips, which writes a finished lane's sample
     back and takes the next live one. A short step's chunk is two vectors, a long one's one."""
-    from hawk.emit.host import SHORT_STEP_OPS, chunk_vectors
+    from aether.wings.cpu.host import SHORT_STEP_OPS, chunk_vectors
 
     assert (chunk_vectors(1), chunk_vectors(SHORT_STEP_OPS),
             chunk_vectors(SHORT_STEP_OPS + 1)) == (2, 2, 1)
     vectors = {"oscillator": 2, "oscillator_x16": 2, "rkf78_attempt": 1}
     for kernel in KERNELS.values():
         host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                             kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
+                             kind=kernel.kind, one_step=getattr(kernel, "one_step", None), spec=spec_for(TARGETS["host"]))
         text = builds(host.text)["interchanged"]
         trips = _trip_loop(text)
         for token in (r"\bhawk_lc\d", r"\bhawk_li\d", r"\bhawk_tile\b", r"\bhawk_on\[",
@@ -475,7 +468,7 @@ def test_the_device_source_carries_no_interchange():
     for kernel in KERNELS.values():
         cuda = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
                              kind=kernel.kind,
-                             one_step=getattr(kernel, "one_step", None)).text
+                             one_step=getattr(kernel, "one_step", None), spec=spec_for(TARGETS["cuda"])).text
         for token in ("HAWK_HOST_INTERCHANGE", "hawk_tile", "lane_put", "_host_tile"):
             assert token not in cuda, (kernel.name, token)
 
@@ -484,9 +477,9 @@ def test_both_shapes_wrap_the_one_body_string():
     """The plain build of the host TU is the fused body string verbatim."""
     for kernel in KERNELS.values():
         host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                             kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
+                             kind=kernel.kind, one_step=getattr(kernel, "one_step", None), spec=spec_for(TARGETS["host"]))
         cuda = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                             kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
+                             kind=kernel.kind, one_step=getattr(kernel, "one_step", None), spec=spec_for(TARGETS["cuda"]))
         assert host.body == cuda.body
         fused = host.body.split("\n")[-1]
         assert fused in builds(host.text)["plain"]
@@ -529,21 +522,21 @@ def test_what_keeps_the_plain_fused_loop_and_why():
     assert kernel.walk.access.cls == "cross_sample_read"
     assert interchange(kernel.name, kernel.sinks, kernel.walk, kernel.kind, spec=HOST) is not None
     # two lowered loops: the fused-step cut is at ONE, so both loops run as the
-    # loop interchange instead (hawk.emit.host.loop_interchange)
+    # loop interchange instead (aether.wings.cpu.host.loop_interchange)
     tiled = interchange(head_loop.name, head_loop.sinks, head_loop.walk, head_loop.kind, spec=HOST)
     assert tiled is not None and tiled.rule is None and tiled.prelude is not None
     text = render_source(head_loop.name, head_loop.sinks, head_loop.walk, TARGETS["host"],
-                         kind=head_loop.kind, one_step=head_loop.one_step).text
+                         kind=head_loop.kind, one_step=head_loop.one_step, spec=spec_for(TARGETS["host"])).text
     assert "hawk_abi::kHostLoopTile" in text and "_host_tile" not in text
     # an active-set kind: the tile is a gathered map, not a contiguous run
-    from hawk.emit.wrapper import ActiveSpec
-    from hawk.emit.spelling import binding_name
+    from aether.wings.base.wrapper import ActiveSpec
+    from aether.wings.base.spelling import binding_name
 
     active = ActiveSpec(binding_name("lookup", "active_map"),
                         binding_name("lookup", "active_count"))
     text = render_source(oscillator.name, oscillator.sinks, oscillator.walk,
                          TARGETS["host"], kind=ACTIVE, active=active,
-                         one_step=oscillator.one_step).text
+                         one_step=oscillator.one_step, spec=spec_for(TARGETS["host"])).text
     assert "HAWK_HOST_INTERCHANGE" not in text
 
 
@@ -611,7 +604,7 @@ def test_machine_caches_reads_sysfs_and_falls_back(tmp_path):
 
 
 def test_machine_caches_reads_sysctl_on_macos(monkeypatch):
-    import hawk.emit.host as host
+    import aether.wings.cpu.host as host
 
     def fake(cmd, **_):
         if cmd[-1].startswith("hw.perflevel0."):
@@ -652,7 +645,7 @@ def _preprocessed(target: str, text: str, tmp_path) -> str:
 
 
 def _helper_text() -> str:
-    from hawk.emit.host import _TRIP_ITERATIONS, HOST_MASK_HELPERS, INTERCHANGE_HELPERS
+    from aether.wings.cpu.host import _TRIP_ITERATIONS, HOST_MASK_HELPERS, INTERCHANGE_HELPERS
 
     return (HOST_MASK_HELPERS.split("namespace hawk_abi")[0] + INTERCHANGE_HELPERS
             + "\nnamespace hawk_abi { inline constexpr bool kGuards = HAWK_HOST_LANE_GUARDS; }\n"
@@ -663,7 +656,7 @@ def test_arm_branches_are_inactive_on_x86(tmp_path):
     out = _preprocessed("x86_64-unknown-linux-gnu", _helper_text(), tmp_path)
     kernel = KERNELS["rkf78_attempt"]
     unit = builds(render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                                kind=kernel.kind, one_step=kernel.one_step).text)["interchanged"]
+                                kind=kernel.kind, one_step=kernel.one_step, spec=spec_for(TARGETS["host"])).text)["interchanged"]
     unit = _preprocessed("x86_64-unknown-linux-gnu", unit.replace("#include", "//#include"), tmp_path)
     # compaction runs everywhere, in tile order; the arm-only effects stay off
     assert "hawk_perm" in unit and "hawk_nlive" in unit
@@ -684,7 +677,7 @@ def test_arm_branches_are_active_on_aarch64(tmp_path):
 def test_the_emitted_trip_loop_carries_the_arm_pragma():
     kernel = next(iter(KERNELS.values()))
     host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                         kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
+                         kind=kernel.kind, one_step=getattr(kernel, "one_step", None), spec=spec_for(TARGETS["host"]))
     text = builds(host.text)["interchanged"]
     trips = text[text.index("for (Int hawk_trip = 0;"):]
     pragma = trips[:trips.index("for (aether::offset_t hawk_l")]
@@ -696,7 +689,7 @@ def test_the_emitted_trip_loop_carries_the_arm_pragma():
 def test_the_chunk_copy_in_loop_is_not_unrolled_under_gcc():
     kernel = next(iter(KERNELS.values()))
     host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                         kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
+                         kind=kernel.kind, one_step=getattr(kernel, "one_step", None), spec=spec_for(TARGETS["host"]))
     text = builds(host.text)["interchanged"]
     loop = text.index("for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {")
     head = text[text.rindex("alignas(64) Int hawk_rk0[hawk_w];", 0, loop):loop]
@@ -716,6 +709,7 @@ def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
     from types import SimpleNamespace
 
     from hawk.compile import toolchain as tc
+    import osprey_cpu.toolchain as ctc
 
     out = tmp_path / tag
     shutil.copytree(bundle.directory, out)
@@ -723,7 +717,7 @@ def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
     marker = "    std::int64_t hawk_live = 0;"
     assert source.count(marker) == 1
     cpp.write_text(_COUNTED + source.replace(marker, "    __atomic_fetch_add(&hawk_lane_trips, (long long)hawk_w, __ATOMIC_RELAXED);\n" + marker))
-    subprocess.run([tc.host_compiler(), *flags, *tc.include_flags(), str(cpp), "-o",
+    subprocess.run([ctc.host_compiler(), *flags, *tc.include_flags(), str(cpp), "-o",
                     str(out / f"{name}.so")], check=True)
     return SimpleNamespace(directory=out, artifacts=bundle.artifacts)
 
@@ -734,6 +728,7 @@ def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile)
     lanes of very different lengths, a few trips per launch, give the same planes,
     bit for bit, in fewer lane-trips (a counter the TU bumps per chunk trip, no timing)."""
     from hawk.compile import toolchain as tc
+    import osprey_cpu.toolchain as ctc
 
     kernel = KERNELS["rkf78_attempt"]
     bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
@@ -744,7 +739,7 @@ def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile)
     dead = "if (hawk_on[hawk_t] == 0.0) hawk_perm[hawk_o++] = hawk_t;"
     assert source.count(live) == source.count(dead) == 1
     plain = source.replace(live, "hawk_perm[hawk_nlive++] = hawk_t;").replace(dead, "{}")
-    flags = tc.host_flags(profile=profile)
+    flags = ctc.host_flags(profile=profile)
     planes = _planes("rkf78_attempt", 200, "spread", seed=20261004)
     # lanes of very different lengths: every 7th sample ends at once, a few run long
     planes["t_final"][::7] = 1e-3
@@ -795,7 +790,7 @@ def ramp_to_plane(rate: Scalar, lim: Scalar, terminated: Terminated, x: Mutable[
 
 
 def _exit_order(kernel):
-    from hawk.emit.render import render_lane_split
+    from aether.wings.base.render import render_lane_split
 
     return render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind, spec=HOST).exit_order
 
@@ -803,7 +798,7 @@ def _exit_order(kernel):
 def _host_text(kernel):
     return builds(render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
                                 kind=kernel.kind, one_step=getattr(kernel, "one_step", None)
-                                ).text)["interchanged"]
+                                , spec=spec_for(TARGETS["host"])).text)["interchanged"]
 
 
 def test_the_lane_order_follows_the_exit_bound_and_never_guesses():
@@ -834,6 +829,7 @@ def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, na
     """The sorted lanes against the same TU in plain compacted order: lanes of
     very different lengths give the same planes, bit for bit, in fewer lane-trips."""
     from hawk.compile import toolchain as tc
+    import osprey_cpu.toolchain as ctc
 
     kernel = hawk.steps(ramp, 16)
     bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
@@ -849,7 +845,7 @@ def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, na
               "terminated": np.zeros(n, dtype=bool)}
     if nan:     # diverged lanes: a NaN carry must sort last without faulting, the planes unchanged
         planes["x"][::5] = np.nan
-    flags = tc.host_flags(profile=profile)
+    flags = ctc.host_flags(profile=profile)
     runs = {}
     for tag, text in (("sorted", source), ("plain", plain)):
         built = _counting_build(tmp_path, tag, text, bundle, flags, kernel.name)
@@ -871,15 +867,16 @@ def test_every_compiler_takes_the_lane_loop():
     # defaults to the lane loop whatever the step's length, and no host profile keeps math errno
     long_step = next(k for k in KERNELS.values() if k.name == "rkf78_attempt")
     src = render_source(long_step.name, long_step.sinks, long_step.walk, TARGETS["host"],
-                        kind=long_step.kind, one_step=getattr(long_step, "one_step", None)).text
+                        kind=long_step.kind, one_step=getattr(long_step, "one_step", None), spec=spec_for(TARGETS["host"])).text
     assert "hawk_live |= hawk_more" not in src and "hawk_live += " not in src
     assert "hawk_live |= static_cast<std::int64_t>(hawk_ron[hawk_l] != 0.0);" in src
     assert "__GNUC__ < 14" not in src
     from hawk.compile import toolchain as tc
+    import osprey_cpu.toolchain as ctc
     from hawk import HawkError
     for profile in ("native", "portable", "native-vector-math", "native-vector-math-nofma"):
         try:
-            flags = tc.host_flags(profile=profile)
+            flags = ctc.host_flags(profile=profile)
         except HawkError:       # a vector-math profile off x86-64
             continue
         assert "-fno-math-errno" in flags, profile

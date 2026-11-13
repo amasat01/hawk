@@ -55,7 +55,7 @@ def main(python: str, work: Path) -> int:
     (src / "acme_toy_variants" / "acme" / "raptor_variant.h").write_text(header.replace("ARM", "ACME").replace('"arm"', '"acme"').replace("/arm/", "/acme/"))
     (src / "acme_toy" / "__init__.py").write_text("")
     (src / "acme_toy" / "backend.py").write_text(
-        "from hawk.backends.host import Host\n\n\nclass Toy(Host):\n    id = 'acme_toy'\n    about = 'a third-party CPU backend'\n\n\nBACKEND = Toy()\n")
+        "from osprey_cpu.backend import Host\n\n\nclass Toy(Host):\n    id = 'acme_toy'\n    about = 'a third-party CPU backend'\n\n\nBACKEND = Toy()\n")
     (src / "acme_toy" / "extension.json").write_text(json.dumps({
         "name": "acme-toy", "version": "0.0", "contract": "1", "requires": [],
         "backends": [{"name": "acme_toy", "ref": "acme_toy.backend:BACKEND", "about": "a third-party CPU backend", "device": False,

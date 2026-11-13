@@ -14,7 +14,7 @@ from _extensions import backend, copy_of, make
 
 from hawk import registry, variants
 from hawk.backends import need
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 
 @pytest.fixture
@@ -49,7 +49,7 @@ def refusal_of(ident: str) -> str:
 
 def test_an_unknown_key_in_a_backend_item_is_refused_naming_the_key_and_the_manifest(site):
     item = backend("toy", "toy_mod:BACKEND", varaint="cpu")
-    make(site, "toy-ext", {"backends": [item]}, modules={"toy_mod": copy_of("hawk.backends.host", "toy")})
+    make(site, "toy-ext", {"backends": [item]}, modules={"toy_mod": copy_of("osprey_cpu.backend", "toy")})
     registry.reset()
     why = refusal_of("toy-ext")
     assert "varaint" in why and "extension.json" in why and "unknown key" in why

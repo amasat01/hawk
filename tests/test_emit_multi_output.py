@@ -10,7 +10,7 @@ live to its end.
 """
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, default_kind
 
 import linecache
 import re
@@ -20,7 +20,7 @@ from conftest import sidecar_of
 
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk.emit.render import render_body
+from aether.wings.base.render import render_body
 
 
 def _source(text: str, tag: str):
@@ -50,7 +50,7 @@ def three_outputs():
 
 
 def _body(kernel) -> str:
-    return render_body(kernel.sinks, kernel.walk, spec=HOST).text
+    return render_body(kernel.sinks, kernel.walk, spec=HOST, kind=default_kind()).text
 
 
 def test_item_temps_linear_compile():

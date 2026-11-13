@@ -8,7 +8,7 @@ evaluated) never reads outside the plane. An in-range read is the plain read it 
 """
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, default_kind
 
 import numpy as np
 import pytest
@@ -17,7 +17,7 @@ import hawk
 from hawk import Index, Mutable, Scalar, Table
 from hawk import math as hm
 from hawk.diff import jvp
-from hawk.ir import PlaneExtent
+from raptor.ir import PlaneExtent
 from hawk.trace.kernel import Kernel
 
 eagle = pytest.importorskip("eagle")
@@ -113,9 +113,9 @@ def _window(target: str) -> None:
 
 
 def test_reads_at_one_base_and_static_offsets_share_one_range_test_on_the_host(private_cache):
-    from hawk.emit.render import render_body
+    from aether.wings.base.render import render_body
 
-    text = render_body(window.sinks, window.walk, spec=HOST).text
+    text = render_body(window.sinks, window.walk, spec=HOST, kind=default_kind()).text
     assert text.count(">= static_cast<Int>(4)) & (") == 6 == text.count("- static_cast<Int>(1)), 1)")    # one span: -4 .. 1
     assert text.count("int_clamp_index<Int>") == 6                               # the out-of-range reads keep it
     _window("host")
@@ -127,17 +127,17 @@ def test_reads_at_one_base_and_static_offsets_share_one_range_test_on_the_device
     _window("cuda")
 
 def test_the_clamp_is_integer_and_a_bounded_literal_is_read_as_it_is():
-    from hawk.emit.render import render_body
+    from aether.wings.base.render import render_body
     from hawk.ext import Kind  # noqa: F401 - the default kind renders the body
 
-    text = render_body(pick.sinks, pick.walk, spec=HOST).text
+    text = render_body(pick.sinks, pick.walk, spec=HOST, kind=default_kind()).text
     assert "hawk_abi::int_clamp_index<Int>" in text and "fmin" not in text and "fmax" not in text
 
     @hawk.kernel
     def grid(t: Table["row":5, "col":2147483651], r: Index, y: Mutable[Scalar]):     # noqa: F821
         y = t.at(row=3, col=r)
 
-    body = render_body(grid.sinks, grid.walk, spec=HOST).text
+    body = render_body(grid.sinks, grid.walk, spec=HOST, kind=default_kind()).text
     assert "2147483651" in body                 # the static extent past 2**31, exact in the index type
     assert "static_cast<Int>(3)" in body and body.count("int_clamp_index") == 1     # row 3 < 5: no clamp there
 

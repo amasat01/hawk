@@ -24,12 +24,12 @@ from conftest import sidecar_of
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.ir import Assign, Leaf
-from hawk.ir import make as mk
-from hawk.ir.linalg import FACTORISATIONS, as_matrix
-from hawk.ir.walk import canonical_nodes
+from raptor.ir import Assign, Leaf
+from raptor.ir import make as mk
+from raptor.ir.linalg import FACTORISATIONS, as_matrix
+from raptor.ir.walk import canonical_nodes
 from hawk.trace.kernel import Kernel
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 # A failed or degenerate lane still evaluates the branch its mask discards.
 pytestmark = pytest.mark.filterwarnings("ignore::RuntimeWarning")

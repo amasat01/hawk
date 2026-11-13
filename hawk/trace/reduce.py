@@ -16,8 +16,8 @@ from __future__ import annotations
 from typing import Any
 
 from .._errors import HawkError
-from ..ir import make as _make
-from ..ir.nodes import POLICIES, SCATTER_POLICIES, Leaf, ReduceSamples
+from raptor.ir import make as _make
+from raptor.ir.nodes import POLICIES, SCATTER_POLICIES, Leaf, ReduceSamples
 from .value import Value, _op, _operands, index_node, n_samples, node_of, real, select, vec
 
 

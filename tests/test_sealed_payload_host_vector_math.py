@@ -4,12 +4,12 @@
 """Regression: a HOST compile against the SHIPPED aether-dsc sealed payload,
 with `$HAWK_AETHER_INCLUDE`/`$HAWK_EAGLE_INCLUDE` BOTH unset -- the exact
 shape a `pip install raptor-hawk` consumer is in, with no dev-tree override
-to bypass the sealed payload (`_host_uses_sealed_payload()` only ever takes
+to bypass the sealed payload (`_Inputs().sealed` only ever takes
 the real-root branch when `$HAWK_AETHER_INCLUDE` is set; a dev env sources
 one, so this path is otherwise never exercised).
 
 Found failing before the fix: the default host profile
-(`native-vector-math` on x86-64, `hawk.compile.toolchain.host_codegen_flags`)
+(`native-vector-math` on x86-64, `osprey_cpu.toolchain.host_codegen_flags`)
 always adds `-DAETHER_HOST_VECTOR_MATH` to every host compile, regardless of
 whether the kernel itself calls a transcendental function -- the macro makes
 `aether/math/detail/HostVectorMathRoute.h` (already payload-manifested)
@@ -36,6 +36,7 @@ NVRTC-clean subset only).
 """
 from __future__ import annotations
 
+import osprey_cpu.toolchain
 import _deploy as L
 import numpy as np
 import pytest

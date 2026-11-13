@@ -25,7 +25,7 @@ from hawk import Matrix, Mutable, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk_c import export
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 LANES = 6
 

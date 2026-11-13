@@ -26,11 +26,14 @@ def _hawk():
 
 
 PACKAGES = {
-    "hawk.emit": _hawk,
     "hawk_c": lambda: _manifest("extensions/hawk_c/hawk_c/extension.json"),
     "hawk_cuda": lambda: _manifest("extensions/hawk_cuda/hawk_cuda/extension.json"),
     "lowering": lambda: _manifest("components/lowering/lowering/component.json"),
     "simt": lambda: _manifest("components/simt/simt/component.json"),
+    "aether.wings.simt": lambda: _manifest("staging/aether/wings/simt/component.json"),
+    "aether.wings.base": lambda: _manifest("staging/aether/wings/base/component.json"),
+    "aether.wings.cpu": lambda: _manifest("staging/aether/wings/cpu/component.json"),
+    "raptor.wings.cpu": lambda: _manifest("staging/raptor/wings/cpu/component.json"),
 }
 
 
@@ -59,4 +62,4 @@ def test_every_module_with_plain_tables_is_classified(package):
 def test_a_table_outside_hawk_emit_that_an_artifact_is_written_with_is_declared():
     """The sidecar and manifest tables, the plane layouts and the pass constants reach an emitted artifact: they are declared too."""
     emission, _ = _hawk()
-    assert {"hawk.artifact.sidecar", "hawk.artifact.manifest", "hawk._plane_layout", "hawk.passes.vectorise"} <= emission
+    assert {"hawk.artifact.sidecar", "hawk.artifact.manifest", "hawk._plane_layout"} <= emission

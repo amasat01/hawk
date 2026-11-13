@@ -22,7 +22,7 @@ import pytest
 from _eval import evaluate
 
 from hawk import Index, Mutable, Param, Scalar, Value, Vector, kernel
-from hawk.ir import Select
+from raptor.ir import Select
 from hawk import HawkError
 from hawk.math import norm, select
 
@@ -74,7 +74,7 @@ def test_a_bounded_for_lowers_to_a_loop_that_computes_the_same_number():
             acc = acc * x
         out = acc
 
-    from hawk.ir import Loop
+    from raptor.ir import Loop
     assert sum(1 for n in rolled.walk.order if isinstance(n, Loop)) == 1
     assert float(evaluate(rolled.sinks, {"x": 2.0})["out"]) == pytest.approx(2.0 ** 4)
 

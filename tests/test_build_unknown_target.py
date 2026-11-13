@@ -10,7 +10,7 @@ import pytest
 
 import hawk
 from hawk.artifact import build
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 
 @hawk.kernel

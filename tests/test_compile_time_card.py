@@ -11,6 +11,7 @@ every measured compile is a genuine cold one.
 
 from __future__ import annotations
 
+from _specs import spec_for, default_kind
 import csv
 import hashlib
 import json
@@ -26,17 +27,11 @@ import _deployable as D
 from _cards import card_path
 
 from hawk.artifact.layout import exports
-from hawk.compile import (
-    aether_include,
-    compiler_identity,
-    device_compiler,
-    eagle_include,
-    host_compiler,
-    host_flags,
-)
+from hawk.compile import aether_include, compiler_identity, device_compiler, eagle_include
+from osprey_cpu.toolchain import host_compiler, host_flags
 from hawk.compile.toolchain import subprocess_env
 from hawk_cuda.toolchain import resolve_arch, device_flags
-from hawk.emit import FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT64, render_source
 from hawk.targets import TARGETS
 
 CARD = card_path("CARD_COMPILE_TIME.md")
@@ -51,7 +46,7 @@ _GPP_PHASE = re.compile(r"^\s*(phase [a-z. ]+|TOTAL)\s*:\s+([\d.]+)")
 def _emit(name: str, target: str, tmp: Path) -> Path:
     kernel = getattr(D, name)
     src = render_source(name, kernel.sinks, kernel.walk, TARGETS[target],
-                        mode=FLOAT64, exports=exports(target))
+                        mode=FLOAT64, exports=exports(target), spec=spec_for(TARGETS[target]), kind=default_kind())
     path = tmp / f"{name}.{'cu' if target == 'cuda' else 'cpp'}"
     path.write_text(src.text)
     return path

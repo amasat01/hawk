@@ -17,9 +17,9 @@ from raptor.ir.nodes import replace
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ..ir.nodes import At, Leaf
+from raptor.ir.nodes import At, Leaf
 from .._errors import HawkError
-from ..ir.walk import substitute
+from raptor.ir.walk import substitute
 
 #: The roles a member may read an intermediate as: its own lane's element.
 BOUND_LEAF_ROLES = ("per_sample", "vec_in", "mat_in", "mutable")
@@ -151,7 +151,7 @@ def segments(members: Sequence, cuts: Sequence[int]) -> list:
     segment computes and a later one reads crosses in a plane the runtime makes per lane, shaped as a caller's plane of
     its width (``planes``: ``(name, dtype, elements)`` of those a segment writes): the writer commits the value there and
     the reader reads its own lane's, as any per-lane input."""
-    from ..ir.nodes import Assign
+    from raptor.ir.nodes import Assign
 
     bounds = [0, *cuts, len(members)]
     crossed: dict = {}                      # name -> ttype of a value an earlier segment stored

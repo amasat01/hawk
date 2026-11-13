@@ -12,9 +12,9 @@ import numpy as np
 from _eval import evaluate
 
 from hawk.diff import jvp, vjp
-from hawk.ir import Assign, At, Const, Leaf
-from hawk.ir import make as mk
-from hawk.types import TensorType
+from raptor.ir import Assign, At, Const, Leaf
+from raptor.ir import make as mk
+from raptor.ir.types import TensorType
 
 F64 = TensorType((), "f64")
 LANES = 5

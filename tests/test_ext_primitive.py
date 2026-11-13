@@ -27,6 +27,7 @@ sound, and the emitted-body row says the forward paid nothing for it.
 """
 
 from __future__ import annotations
+from _specs import default_kind
 from _specs import HOST
 
 import _oracle as O
@@ -38,9 +39,9 @@ import hawk
 import hawk.math as hm
 from hawk.artifact import build
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
+from aether.wings.base.render import render_body
 from hawk.ext import primitive, primitives
-from hawk.ir import Primitive
+from raptor.ir import Primitive
 from hawk import HawkError
 from hawk.math import dot, exp, log, vec, vsum
 
@@ -113,13 +114,13 @@ def test_the_boundary_node_is_recorded_in_the_dag():
 
 
 def test_the_emitted_body_is_byte_identical_to_the_longhand_body():
-    """Needs the ``Primitive`` branch in ``hawk/emit/render._Renderer._expr``,
+    """Needs the ``Primitive`` branch in ``staging/aether/wings/base/render._Renderer._expr``,
     or the boundary falls through to the op dispatch::
 
         hawk.ir.nodes.HawkError: op 'primitive' has no aether spelling at rank 0
     """
-    mine = render_body(primitive_kernel.sinks, primitive_kernel.walk, spec=HOST).text
-    theirs = render_body(longhand_kernel.sinks, longhand_kernel.walk, spec=HOST).text
+    mine = render_body(primitive_kernel.sinks, primitive_kernel.walk, spec=HOST, kind=default_kind()).text
+    theirs = render_body(longhand_kernel.sinks, longhand_kernel.walk, spec=HOST, kind=default_kind()).text
     assert mine == theirs, (
         "a primitive is INLINED: the emitted body must be the body "
         f"the same arithmetic written longhand emits.\n--- primitive ---\n{mine}\n"
@@ -186,7 +187,7 @@ def test_the_derived_reverse_ir_deploys_and_runs(tmp_path, cache_dir):
     toolchain — walk, emitter, compiler — not merely the interpreter."""
     from types import SimpleNamespace
 
-    from hawk.ir import canonical
+    from raptor.ir import canonical
 
     sinks = vjp(primitive_kernel)
     derived = SimpleNamespace(name="primitive_kernel_vjp", sinks=sinks,
@@ -303,8 +304,8 @@ def test_a_reused_primitive_result_emits_no_alias_of_its_forward():
     byte-identical. A primitive is not a node the emitter renders: every
     reference to it is a reference to its forward, and its fan-out is the
     forward's."""
-    mine = render_body(reused_primitive_kernel.sinks, reused_primitive_kernel.walk, spec=HOST).text
-    theirs = render_body(reused_longhand_kernel.sinks, reused_longhand_kernel.walk, spec=HOST).text
+    mine = render_body(reused_primitive_kernel.sinks, reused_primitive_kernel.walk, spec=HOST, kind=default_kind()).text
+    theirs = render_body(reused_longhand_kernel.sinks, reused_longhand_kernel.walk, spec=HOST, kind=default_kind()).text
     assert mine == theirs, (
         "a reused primitive result must not alias its forward.\n"
         f"--- primitive ---\n{mine}\n--- longhand ---\n{theirs}")

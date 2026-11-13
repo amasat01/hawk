@@ -184,10 +184,10 @@ def variant(kernel, patterns: dict, reverse: tuple = ()):
 
 def _build(kernel, patterns: dict, reverse: tuple):
     from .diff.tape import _reachable
-    from .ir.nodes import At
+    from raptor.ir.nodes import At
     from .trace.kernel import Kernel
     from .trace.steps import default_step, default_steps
-    from .ir import Leaf
+    from raptor.ir import Leaf
 
     step = default_step(kernel)
     if step is not kernel and step.name != kernel.name:
@@ -228,9 +228,9 @@ def _index(kept: tuple, axes):
     """The flat index of a lane in the compact plane of pattern ``kept``: row-major
     over the kept axes, the last fastest (a runtime axis is never in the C), ``0``
     when it varies along none."""
-    from .ir import Const
+    from raptor.ir import Const
     from .trace.lane_axes import LaneAxes
-    from .types import TensorType
+    from raptor.ir.types import TensorType
 
     held = [i for i, k in enumerate(kept) if k]
     if not held:
@@ -248,11 +248,11 @@ def _read(name: str, ttype, kept: tuple, axes, cell: bool) -> tuple:
     caller's compact buffer: a uniform when it varies along no lane axis (a
     one-cell table when ``cell``), else a lookup. A flat table when it varies along the runtime axis (a runtime
     extent is never in the C), else a table named by its kept axes."""
-    from .ir import Leaf, make
+    from raptor.ir import Leaf, make
     from .trace.decl import Plane, _axes
     from .trace.lane_axes import LaneAxes
     from .trace.value import TableRef
-    from .types import TensorType
+    from raptor.ir.types import TensorType
 
     width = ttype.shape[0] if ttype.shape else 0
     element = TensorType((), ttype.dtype)
@@ -290,8 +290,8 @@ def _read(name: str, ttype, kept: tuple, axes, cell: bool) -> tuple:
 def _swap(sinks, mapping: dict) -> tuple:
     """``sinks`` with the nodes in ``mapping`` (by ``id``) replaced, in value and key."""
     from raptor.ir.cells import with_value
-    from .ir import AccumWrite
-    from .ir.walk import substitute
+    from raptor.ir import AccumWrite
+    from raptor.ir.walk import substitute
 
     roots = substitute(tuple(o for s in sinks for o in s.operands), mapping)
     out, at = [], 0

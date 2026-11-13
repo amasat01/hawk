@@ -12,6 +12,7 @@ tape) and reverse mode refuses by name; with ``max=K`` the tape is ``K`` long an
 """
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
 from _specs import HOST
 
 import numpy as np
@@ -24,8 +25,9 @@ from hawk import Index, Mutable, Scalar
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
-from hawk.ir import HawkError, Loop
+from aether.wings.base.render import render_body
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import Loop
 from hawk.trace.kernel import Kernel
 
 K = 6
@@ -68,7 +70,7 @@ def test_the_loop_says_how_it_is_bounded_and_is_never_unrolled():
     assert _loop(powers).dynamic == "max" and _loop(powers).trip == K
     assert _loop(powers_open).dynamic == "open"
     for kernel in (powers, powers_open):
-        text = render_body(kernel.sinks, kernel.walk, spec=HOST).text
+        text = render_body(kernel.sinks, kernel.walk, spec=HOST, kind=default_kind()).text
         assert "for (int hawk_k" in text and "hawk_clamp_count(" in text
 
 
@@ -146,13 +148,13 @@ def _header_lines(text):
 
 
 def test_the_header_is_the_count_form_on_cuda_host_and_c():
-    from hawk.emit import FLOAT64, render_source
+    from aether.wings.base.wrapper import FLOAT64, render_source
     from hawk_c import render as render_c
     from hawk.targets import TARGETS
 
     for target in ("cuda", "host"):
         src = render_source("powers", powers.sinks, powers.walk, TARGETS[target], mode=FLOAT64,
-                            kind=powers.kind)
+                            kind=powers.kind, spec=spec_for(TARGETS[target]))
         heads = _header_lines(src.body)
         assert len(heads) == 1 and "hawk_clamp_count(" in heads[0], heads
         assert str(K) not in heads[0] or "hawk_clamp_count" in heads[0]

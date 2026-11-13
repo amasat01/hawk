@@ -29,6 +29,8 @@ nodes and the walk is 89.
 
 from __future__ import annotations
 
+from _specs import default_kind
+from _specs import spec_for
 import hawk
 import hawk.math as m
 
@@ -217,11 +219,13 @@ def main(argv=None) -> int:
 
     from hawk.artifact import build
     from hawk.artifact.layout import exports
-    from hawk.compile import device_compiler, host_compiler, host_flags
-    from hawk.compile.toolchain import resolve_arch, device_flags
-    from hawk.emit import FLOAT64, render_source
+    from hawk.compile import device_compiler
+    from osprey_cpu.toolchain import host_compiler, host_flags
+    from hawk_cuda.toolchain import device_flags
+    from hawk_cuda.toolchain import resolve_arch
+    from aether.wings.base.wrapper import FLOAT64, render_source
     from hawk.targets import TARGETS
-    from hawk.ir import Loop
+    from raptor.ir import Loop
 
     args = sys.argv[1:] if argv is None else list(argv)
     n_in, G, k = int(args[0]), int(args[1]), int(args[2])
@@ -245,7 +249,7 @@ def main(argv=None) -> int:
     sources = {}
     for target in ("cuda", "host"):
         text = render_source(cell.name, cell.sinks, cell.walk, TARGETS[target],
-                             mode=FLOAT64, exports=exports(target)).text
+                             mode=FLOAT64, exports=exports(target), spec=spec_for(TARGETS[target]), kind=default_kind()).text
         path = tmp / f"{cell.name}.{'cu' if target == 'cuda' else 'cpp'}"
         path.write_text(text)
         sources[target] = path

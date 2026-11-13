@@ -64,9 +64,9 @@ from __future__ import annotations
 from .. import _contracts
 from ..compile.toolchain import _strict_aether_include, _strict_eagle_include
 from .._errors import HawkError
-from ..ir.segment import class_name, mix_name, stale_name
+from raptor.ir.segment import class_name, mix_name, stale_name
 from ..targets import ENTRY_KINDS
-from ..types import INT_PLANE_DTYPES
+from raptor.ir.types import INT_PLANE_DTYPES
 
 
 def _root_or_sealed_marker(resolver) -> str:
@@ -319,7 +319,7 @@ def _finish(walk) -> dict:
     finish = getattr(walk, "finish", None)
     if finish is None:
         return {}
-    from ..ir.nodes import FINISHED_PLANE
+    from raptor.ir.nodes import FINISHED_PLANE
 
     mask, steps = finish
     out = {"mask": mask, "counter": FINISHED_PLANE, "steps": steps}
