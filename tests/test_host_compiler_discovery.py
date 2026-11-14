@@ -9,7 +9,7 @@ import sys
 import pytest
 
 from hawk.compile import toolchain as tc
-import osprey_cpu.toolchain as ctc
+import ospreys.cpu.toolchain as ctc
 from raptor.errors import RaptorError as HawkError
 
 

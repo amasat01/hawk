@@ -23,7 +23,7 @@ from raptor.errors import RaptorError as HawkError
 from hawk.targets import DEFAULT_TARGETS, TARGETS
 
 REPO = str(Path(hawk.__file__).resolve().parent.parent)
-EXTENSIONS = [str(Path(REPO) / "extensions" / name) for name in ("hawk_cuda", "hawk_c")] + [str(Path(REPO) / "staging")]
+EXTENSIONS = [str(Path(REPO) / "staging")]
 
 
 @pytest.fixture
@@ -38,9 +38,9 @@ def ext(tmp_path, monkeypatch):
             del sys.modules[name]
 
 
-def _fast(root, name="fast-ext", module="fast_backend", backend_id="fast", variant=None, **manifest):
-    make(root, name, {"backends": [backend(backend_id, f"{module}:BACKEND", **({"wings": {"raptor": variant}, "reads": host_reads()} if variant else {}))], **manifest},
-         modules={module: copy_of("osprey_cpu.backend", backend_id)})
+def _fast(root, name="fast-ext", module="fast_backend", backend_id="fast", facts=None, **manifest):
+    make(root, name, {"backends": [backend(backend_id, f"{module}:BACKEND", **({"wings": {"raptor": facts}, "reads": host_reads()} if facts else {}))], **manifest},
+         modules={module: copy_of("ospreys.cpu.backend", backend_id)})
 
 
 #: A state in which hawk's own distribution metadata is absent: no first-party OSPREY is declared (a package-only install).
@@ -67,7 +67,7 @@ def _run(code: str, paths, env=None, own: bool = True) -> str:
 def test_a_dist_info_cannot_shadow_a_built_in(ext):
     host = need("host")
     make(ext, "evil", {"backends": [backend("host", "evil_host:BACKEND")]},
-         modules={"evil_host": copy_of("osprey_cpu.backend", "host", "BACKEND.about = 'SHADOW'\n")})
+         modules={"evil_host": copy_of("ospreys.cpu.backend", "host", "BACKEND.about = 'SHADOW'\n")})
     registry.reset()
     assert need("host").about == "for the CPU" and type(need("host")) is type(host)
     assert any("belongs to the built-in set" in why for key, why in registry.refused().items() if key.startswith("evil/"))
@@ -150,7 +150,7 @@ def test_an_osprey_listed_in_the_environment_joins_the_default_set(ext, monkeypa
     assert tuple(DEFAULT_TARGETS) == ()
 
 
-def test_a_third_party_without_a_variant_is_refused_by_name_where_a_threshold_is_read(ext, tmp_path, cache_dir):
+def test_a_third_party_without_a_facts_is_refused_by_name_where_a_threshold_is_read(ext, tmp_path, cache_dir):
     _fast(ext)
     registry.reset()
     with pytest.raises(HawkError, match="form.rolled_fold_min"):
@@ -158,7 +158,7 @@ def test_a_third_party_without_a_variant_is_refused_by_name_where_a_threshold_is
 
 
 def test_a_named_third_party_is_used(ext, tmp_path, cache_dir):
-    _fast(ext, variant={"x86_64": "x86", "arm64": "arm"})
+    _fast(ext, facts={"x86_64": "x86", "arm64": "arm"})
     registry.reset()
     bundle = hawk.build([K.drag], tmp_path / "u", targets=("fast",), cache_dir=cache_dir)
     assert set(bundle.artifacts[0].entries) == {"fast"} and need("fast").id == "fast"
@@ -180,17 +180,17 @@ def test_listing_and_need_host_import_no_osprey_module():
                "from hawk.backends import need\n"
                "registry.backend_ids(); registry.traits('cuda'); registry.refused()\n"
                "need('host')\n"
-               "print(sorted(m for m in sys.modules if m.split('.')[0] in ('hawk_c', 'hawk_cuda')))\n"
+               "print(sorted(m for m in sys.modules if m == 'ospreys.c' or m.startswith('ospreys.c.') or m == 'ospreys.cuda' or m.startswith('ospreys.cuda.')))\n"
                "need('c')\n"
-               "print(sorted(m for m in sys.modules if m.split('.')[0] == 'hawk_c')[:1])\n", [REPO, *EXTENSIONS])
-    assert out.splitlines() == ["[]", "['hawk_c']"]
+               "print(sorted(m for m in sys.modules if m == 'ospreys.c' or m.startswith('ospreys.c.'))[:1])\n", [REPO, *EXTENSIONS])
+    assert out.splitlines() == ["[]", "['ospreys.c']"]
 
 
 @pytest.mark.repo_local  # builds the state without the extension packages from the source tree's layout; a wheel carries them beside hawk
 def test_first_party_ospreys_are_found_through_hawks_own_distribution():
     out = _run("from hawk import registry\n"
                "print(registry.backend_ids(default=True), registry.refused(), sorted(registry.ospreys()))\n"
-               "print([m for m in sys.modules if m.split('.')[0] in ('hawk_c', 'hawk_cuda')])\n", [REPO, *EXTENSIONS])
+               "print([m for m in sys.modules if m == 'ospreys.c' or m.startswith('ospreys.c.') or m == 'ospreys.cuda' or m.startswith('ospreys.cuda.')])\n", [REPO, *EXTENSIONS])
     assert out.splitlines() == ["('cuda', 'host', 'c') {} ['c', 'cpu', 'cuda']", "[]"]
     # no raptor-hawk metadata, no first-party OSPREY: there is no search beside hawk's folder
     assert _run("from hawk import registry\nprint(registry.backend_ids())", [REPO, *EXTENSIONS], own=False).strip() == "()"
@@ -260,7 +260,7 @@ def test_a_builds_spellings_are_those_its_backends_name_not_what_else_is_install
 def test_eight_threads_load_an_item_once(ext):
     make(ext, "once-ext", {"backends": [backend("once", "once_backend:BACKEND")]},
          modules={"once_backend": "import builtins, time\nbuiltins._once_loads = getattr(builtins, '_once_loads', 0) + 1\n"
-                  "time.sleep(0.1)\n" + copy_of("osprey_cpu.backend", "once")})
+                  "time.sleep(0.1)\n" + copy_of("ospreys.cpu.backend", "once")})
     registry.reset()
     import builtins
 
@@ -281,7 +281,7 @@ def test_eight_threads_load_an_item_once(ext):
 def test_an_osprey_is_its_distribution_not_the_name_its_manifest_declares(ext):
     for dist, module, backend_id in (("one-ext", "one_backend", "aa"), ("two-ext", "two_backend", "bb")):
         make(ext, dist, {"name": "label", "backends": [backend(backend_id, f"{module}:BACKEND")]},
-             modules={module: copy_of("osprey_cpu.backend", backend_id)})
+             modules={module: copy_of("ospreys.cpu.backend", backend_id)})
     registry.reset()
     assert {"aa", "bb"} <= set(registry.backend_ids()) and not registry.refused()
     assert {"one-ext", "two-ext"} <= set(registry.ospreys())

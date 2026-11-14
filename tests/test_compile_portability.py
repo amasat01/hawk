@@ -27,9 +27,9 @@ import pytest
 from hawk.compile import CompileOptions, compile_source
 from hawk.compile import cache as hcache
 from hawk.compile import drivers as hdrivers
-from hawk_cuda import nvrtc as hnvrtc
+from ospreys.cuda import nvrtc as hnvrtc
 from hawk.compile import toolchain as tc
-from hawk_cuda import toolchain as dtc
+from ospreys.cuda import toolchain as dtc
 from raptor.errors import RaptorError as HawkError
 
 KERNEL_SRC = 'extern "C" __global__ void hawk_probe_kernel(int* out) { *out = 42; }\n'

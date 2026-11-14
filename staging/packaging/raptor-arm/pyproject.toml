@@ -25,4 +25,4 @@ packages = ["raptor.wings.arm"]
 "raptor.wings.arm" = "../../raptor/wings/arm"
 
 [tool.setuptools.package-data]
-"raptor.wings.arm" = ["wing.json"]
+"raptor.wings.arm" = ["wing.json", "facts.py", "raptor_facts.h"]

@@ -5,16 +5,16 @@
 
 Its shape is any that broadcasts, right-aligned, against ``(head, *lane shape)``
 (NumPy's rule) and it binds as the caller's own buffer, compact. The pattern (the
-lane axes it varies along) picks a variant of the kernel, built once per pattern;
+lane axes it varies along) picks a twin of the kernel, built once per pattern;
 the exact shape runs the kernel untouched. Both hawk doors classify with the one
-module (:mod:`hawk._broadcast`): ``k(...)`` runs the variant; a loaded artifact is
+module (:mod:`hawk._broadcast`): ``k(...)`` runs the twin; a loaded artifact is
 one kernel's and refuses a broadcast shape in the same words.
 
 * **Values** against NumPy's broadcast, through ``k(...)`` (eagle's host plan) and
-  through ``hawk.runtime.run`` on the variant's own artifact.
+  through ``hawk.runtime.run`` on the twin's own artifact.
 * **Refusals** name the given shape and the ``(head, *lane shape)`` it was checked
   against; written, masked and matrix planes take the exact shape.
-* **No copy**: the variant binds the caller's memory, asserted by address.
+* **No copy**: the twin binds the caller's memory, asserted by address.
 * **The reverse** of a broadcast input is the sum over the axes it does not vary
   along, in its own compact shape, compensated.
 """
@@ -202,7 +202,7 @@ def test_mutable_and_output_refuse_broadcast(run_cache, rng, tmp_path_factory, c
         rt.run(art, x=x, out=np.zeros((A, 1, NC)), a=A)
 
 
-# 9. the variant binds the caller's memory
+# 9. the twin binds the caller's memory
 
 def test_broadcast_binds_caller_buffer(run_cache, rng):
     x = rng.random((A, 1, NC))
@@ -214,17 +214,17 @@ def test_broadcast_binds_caller_buffer(run_cache, rng):
         B.route(affine, (strided,), {"a": A})
 
 
-# 10. one variant per pattern; the exact shape is the kernel itself
+# 10. one twin per pattern; the exact shape is the kernel itself
 
-def test_one_variant_per_pattern(run_cache, rng):
-    before = len(affine._variants)
+def test_one_twin_per_pattern(run_cache, rng):
+    before = len(affine._twins)
     first, _a, _k = B.route(affine, (rng.random((A, 1, NC)),), {"a": A})
     again, _a, _k = B.route(affine, (rng.random((A, 1, NC)),), {"a": A})
     other, _a, _k = B.route(affine, (rng.random(NC),), {"a": A})
     assert first is again and first is not other and first is not affine
     exact, _a, _k = B.route(affine, (rng.random(LANE),), {"a": A})
     assert exact is affine
-    assert len(affine._variants) - before <= 2
+    assert len(affine._twins) - before <= 2
 
 
 # 11. a plan bound to one pattern is not rebound to another
@@ -242,7 +242,7 @@ def test_rebind_new_pattern_refused(rng):
 def test_vjp_broadcast_input_sums_broadcast_axes(tmp_path_factory, cache_dir, rng):
     axes = square.lane_space
     kept = B.kept_axes((A, 1, NC), (), axes, A)
-    var = B.variant(square, {"x": kept})
+    var = B.twin(square, {"x": kept})
     d = Kernel("square_vjp", vjp(var, wrt=("x",)))
     assert [s.contract for s in d.sinks if isinstance(s, AccumWrite) and s.name == "bar_x"] == ["compensated"]
     root = tmp_path_factory.mktemp("bc_vjp")
@@ -277,9 +277,9 @@ def _derived(primal, make, wrt, root, cache_dir):
 
 
 def _bound(kernel, name, value, head=(), cell=False):
-    """``(variant, kept, the buffer it binds)`` for ``value`` given to ``name``."""
+    """``(twin, kept, the buffer it binds)`` for ``value`` given to ``name``."""
     kept = B.kept_axes(np.shape(value), head, kernel.lane_space, A)
-    var = B.variant(kernel, {name: kept}, reverse=(name,) if cell else ())
+    var = B.twin(kernel, {name: kept}, reverse=(name,) if cell else ())
     if cell and not any(kept) and not head:
         return var, kept, np.ravel(value)[:1].copy()
     return var, kept, B.compact(name, np.asarray(value), kept, head, "test")
@@ -434,7 +434,7 @@ def test_a_compensated_scatter_stays_compensated_under_a_terminated_mask():
 
 
 def test_rebinding_a_plan_to_another_pattern_is_refused(run_cache, rng):
-    var = B.variant(affine, {"x": B.kept_axes((A, 1, NC), (), affine.lane_space, A)})
+    var = B.twin(affine, {"x": B.kept_axes((A, 1, NC), (), affine.lane_space, A)})
     bound = eagle.deploy(var).bind(x=rng.random(A * NC), out=np.zeros(LANE), a=A)
     bound.rebind(x=rng.random(A * NC))
     with pytest.raises(HawkError, match=r"varying along \[a, c\].*rebound varying along \[c\]"):

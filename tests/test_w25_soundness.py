@@ -46,7 +46,7 @@ print(keys[0] == keys[1], unit_stats()["memo_hits"] - before)
 
 def test_one_request_has_one_unit_key_and_the_repeat_build_hits_the_memo(tmp_path):
     env = {**os.environ, "HAWK_CACHE_DIR": str(tmp_path / "cache"),
-           "PYTHONPATH": os.pathsep.join([str(HERE.parent), str(HERE), str(HERE.parent / "extensions" / "hawk_c"), os.environ.get("PYTHONPATH", "")])}
+           "PYTHONPATH": os.pathsep.join([str(HERE.parent), str(HERE), str(HERE.parent / "staging"), os.environ.get("PYTHONPATH", "")])}
     out = subprocess.run([sys.executable, "-c", _TWICE, str(tmp_path / "out")], capture_output=True, text=True, env=env)
     assert out.returncode == 0, out.stderr[-800:]
     assert out.stdout.split()[-2:] == ["True", "1"]
@@ -130,7 +130,7 @@ def gn_loop(J: Matrix[4, 3], r: Vector[4], x: Mutable[Vector[3]]):
 
 @pytest.mark.parametrize("k,rows,cols,trips", [(gn_loop, 4, 3, 3)])
 def test_lstsq_in_a_loop_body_runs_against_numpy(tmp_path, cache_dir, k, rows, cols, trips):
-    from lowering import team as _team
+    from raptor.wings.base import team as _team
     from hawk.targets import build_spec
 
     assert cols <= _team.max_dim_of(build_spec(("host",)))          # the normal equations: one lane factors it
@@ -169,7 +169,7 @@ def test_lstsq_above_max_dim_in_a_loop_body_is_lowered_to_qr_and_the_per_lane_wr
 def test_the_host_text_of_a_device_and_host_build_does_not_depend_on_the_device_max_dim():
     from hawk.artifact import bundle as B
     from hawk.targets import TARGETS, build_spec
-    from hawk.variants import derive, load
+    from hawk.facts import derive, load
 
     @kernel
     def ls(J: Matrix[4, 3], r: Vector[4], x: Mutable[Vector[3]]):
@@ -192,11 +192,11 @@ def test_the_host_text_of_a_device_and_host_build_does_not_depend_on_the_device_
     assert host_only == shipped
 
 
-def test_a_variant_without_the_number_is_refused_by_name():
+def test_a_facts_without_the_number_is_refused_by_name():
     from raptor.errors import RaptorError as HawkError
     from types import SimpleNamespace
 
-    from lowering import team as _team
+    from raptor.wings.base import team as _team
 
     with pytest.raises(HawkError, match="linalg.max_dim"):
         _team.max_dim_of(SimpleNamespace(primary={"form": {}}), required=True)

@@ -32,7 +32,7 @@ import pytest
 
 import hawk
 from hawk import Index, Int32, Mutable, Param, Scalar, Vector
-from hawk_c import EmbeddedArtifact, export, render, toolchain
+from ospreys.c import EmbeddedArtifact, export, render, toolchain
 from hawk.math import norm, where
 from hawk.trace.kernel import Kernel
 

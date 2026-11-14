@@ -46,7 +46,7 @@ UNIFORM_ACCESS = 1 / 16
 
 def select_weight(scalar_type: str, spec) -> float:
     """What one add of a runtime-index store written as selects costs against an
-    indexed access, for ``scalar_type`` on the device arch of ``spec``. A variant with no such table (a backend that names none)
+    indexed access, for ``scalar_type`` on the device arch of ``spec``. A wing with no such table (a backend that names none)
     weighs a select as an indexed access (1.0); the default applies without an arch (a host-only build) or a row; this never probes."""
     doc = (spec.primary.get("thread_box") or spec.primary.get("cards", {}).get("thread_box") or {}).get("select_weight")
     if doc is None:

@@ -3,7 +3,7 @@
 
 """The aether wing for the SIMT form: the source text and the spellings of the warp-form nodes (``aether.wings.simt``).
 
-It holds text and no graph rewrite: the node kinds are the raptor SIMT wing's (:mod:`simt`), which it imports with raptor. The
+It holds text and no graph rewrite: the node kinds are the raptor SIMT wing's (:mod:`raptor.wings.simt`), which it imports with raptor. The
 front end reads it through the manifest (``wing.json``, in this package) and the device wrapper argument."""
 
 from __future__ import annotations

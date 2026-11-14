@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from aether.wings.base.spelling import binding_name
 
-from lowering.team import GROUPS
+from raptor.wings.base.team import GROUPS
 
 _ACC = "aether::banded::BandAccum"
 _PART = "aether::banded::BandPartial"

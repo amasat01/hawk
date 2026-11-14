@@ -4,7 +4,7 @@
 """The persistent device entry of an automatic kernel agrees with the fused one within rounding.
 
 An automatic (``steps="auto"``) kernel's device unit carries, beside its
-fused entry, ``<name>_persist`` (:func:`hawk_cuda.emit.persist_entry`):
+fused entry, ``<name>_persist`` (:func:`ospreys.cuda.emit.persist_entry`):
 lanes fetch samples off a counter, run each to its finish or to the step
 budget the ``fused_steps`` word holds, commit it and fetch the next. What
 is pinned:
@@ -59,7 +59,7 @@ from test_host_interchange import (
 from hawk.artifact import build_bundle
 from aether.wings.base.wrapper import render_source
 from aether.wings.base.render import render_lane_split
-from hawk_cuda.emit import SHORT_DEVICE_STEP_OPS
+from ospreys.cuda.emit import SHORT_DEVICE_STEP_OPS
 from hawk.targets import TARGETS
 
 DT = 0.01
@@ -510,7 +510,7 @@ def test_the_fast_entries_count_samples_finished_on_entry():
     """Both fast entries add a sample finished on entry to the finish counter,
     as the step adds one finishing in the run, so the counter -- zeroed before
     the launch -- holds the batch's finished count, and the sidecar says so."""
-    from hawk_cuda.emit import entry_counts_finished
+    from ospreys.cuda.emit import entry_counts_finished
     from aether.wings.base.render import render_lane_split
 
     k = KERNELS["oscillator"]

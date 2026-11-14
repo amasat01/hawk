@@ -27,9 +27,9 @@ Target(id="cuda", about="builds for the GPU", writer=AetherWriter(), wrapper=CUD
 `hawk/targets/features.py` that the row builds; a kernel that uses one the row lacks is refused by name before
 anything renders.
 
-## What the variant must state
+## What the wing must state
 
-A number the shared passes or your Writer read comes from your row's variant, and a missing one is refused by name where it is read: the fold
+A number the shared passes or your Writer read comes from your row's wing, and a missing one is refused by name where it is read: the fold
 threshold (`form.rolled_fold_min`), `linalg.max_dim`, `launch.warp_size`, the host placement table. Nothing defaults to "no limit", and another
 target's number is never borrowed. A target that has no such number builds with `emit_form="static"` or `"rolled"`, which read none.
 

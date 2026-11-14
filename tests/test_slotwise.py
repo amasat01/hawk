@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Slotwise form (:mod:`lowering.slotwise`): a wide cotangent as a ``vec`` of
+"""Slotwise form (:mod:`raptor.wings.base.slotwise`): a wide cotangent as a ``vec`` of
 scalar parts, committed where each part is ready.
 
 Three rows. The VALUE row evaluates a derived IR in its dense form and in its
@@ -12,7 +12,7 @@ idempotence, a non-finite seed). The EMIT row pins where the own-column stores
 land."""
 
 from __future__ import annotations
-from lowering.dispatch import dispatch as _dispatch
+from raptor.wings.base.dispatch import dispatch as _dispatch
 from _specs import HOST, default_kind
 from _specs import aether_writer
 
@@ -31,7 +31,7 @@ from hawk.diff import jvp, vjp
 from aether.wings.base.render import render_body
 from raptor.ir import Assign, Const, Dispatch, Leaf, Loop, Select, WideWrite, canonical
 from raptor.ir import make as mk
-from lowering.slotwise import slotwise
+from raptor.wings.base.slotwise import slotwise
 from hawk.math import dispatch, sin
 from raptor.ir.types import TensorType
 

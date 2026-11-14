@@ -247,7 +247,7 @@ def test_max_of_an_iterable_refuses():
 
 
 def test_a_reduced_value_read_later_is_a_launch_boundary():
-    from lowering.split import stages
+    from raptor.wings.base.split import stages
 
     @kernel
     def k(x: Scalar, t: Mutable[Scalar], u: Mutable[Scalar]):

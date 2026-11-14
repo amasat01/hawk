@@ -1,6 +1,6 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
-"""A missing fold threshold is refused by name (the variant contract), never read as "nothing exceeds it"."""
+"""A missing fold threshold is refused by name (the wing contract), never read as "nothing exceeds it"."""
 import pytest
 from raptor.ir.fold import exceeds, rolled
 from raptor.ir.nodes import Leaf, Op

@@ -3,7 +3,7 @@
 
 """The cpu aether wing (``aether.wings.cpu``): the host wrapper and its vector form, the text of a host translation unit around the body
 the base wing renders. It imports the standard library, raptor and the wings its manifest names (:mod:`aether.wings.base`,
-:mod:`raptor.wings.cpu`, :mod:`lowering`)."""
+:mod:`raptor.wings.cpu`, :mod:`raptor.wings.base`)."""
 
 from __future__ import annotations
 

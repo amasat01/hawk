@@ -220,10 +220,10 @@ def main(argv=None) -> int:
     from hawk.artifact import build
     from hawk.artifact.layout import exports
     from hawk.compile import device_compiler
-    from osprey_cpu.toolchain import host_compiler, host_flags
-    from hawk_cuda.toolchain import device_flags
+    from ospreys.cpu.toolchain import host_compiler, host_flags
+    from ospreys.cuda.toolchain import device_flags
     from hawk.compile import toolchain as _tc
-    from hawk_cuda.toolchain import resolve_arch
+    from ospreys.cuda.toolchain import resolve_arch
     from aether.wings.base.wrapper import FLOAT64, render_source
     from hawk.targets import TARGETS
     from raptor.ir import Loop

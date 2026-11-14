@@ -11,15 +11,15 @@ from __future__ import annotations
 
 
 def table_for(device: bool) -> dict:
-    """The ``steps_reverse`` data (``{"regime": ..., "rows": ...}``) of the host variant, or of the device variant: plain data the
+    """The ``steps_reverse`` data (``{"regime": ..., "rows": ...}``) of the host wing, or of the device wing: plain data the
     runtime's ``steps_reverse="auto"`` rule is applied to."""
-    from ..variants import load
+    from ..facts import load
 
     return dict(load("cuda" if device else "cpu").get("steps_reverse", {}))
 
 
 def host_spec():
-    """The build spec of the host rows (no device module is imported): what the cost and stage functions read their variant from."""
+    """The build spec of the host rows (no device module is imported): what the cost and stage functions read their wing from."""
     from .. import registry
     from . import TARGETS, build_spec
 

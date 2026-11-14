@@ -5,11 +5,11 @@
 
 ONE predicate, :func:`vectorises`, answers it for the translation unit the emitter writes
 (:func:`aether.wings.base.wrapper.render_source` records it on the :class:`~aether.wings.base.wrapper.Source`) and for the cost counts a
-launching runtime reads (:func:`dispatch_costs`, :func:`kernel_cost`: the counts of :mod:`lowering.cost` with the verdict
+launching runtime reads (:func:`dispatch_costs`, :func:`kernel_cost`: the counts of :mod:`raptor.wings.base.cost` with the verdict
 added per dispatch branch), so the two cannot drift apart.
 
 A host float select is a bitwise blend (:data:`aether.wings.cpu.host.BLEND_HELPERS`), so an interchanged trip
-loop calls its math unconditionally and needs no masked vector variant of it, on any compiler. A math call
+loop calls its math unconditionally and needs no masked vector form of it, on any compiler. A math call
 inside a loop nested in it still stays scalar under ``native-vector-math``.
 
 It holds when the kernel is sample-local (or only reads lookup planes: a read-only table is the same
@@ -29,8 +29,8 @@ from raptor.ir import linalg
 from raptor.ir.nodes import Dispatch, Loop, Node
 from raptor.ir.walk import Walk, dispatch_groups
 
-from lowering import cost, loops as _loops
-from lowering.dispatch import switch_form
+from raptor.wings.base import cost, loops as _loops
+from raptor.wings.base.dispatch import switch_form
 BranchCost, DispatchCost, is_library_call = cost.BranchCost, cost.DispatchCost, cost.is_library_call
 from raptor.wings.cpu.vectorise import UNROLL_LIMIT, interchanged_loops, kernel_nodes
 
@@ -62,7 +62,7 @@ def vectorise_blocker(walk: Walk, spec, profile: str | None = None, scalar_type:
     facts = spec.machine.facts
     name = profile or facts["host_profile"]        # a resolved profile name, else the one in effect (a fact)
     exact = name in facts["exact_host_profiles"] or spec.machine.isa != "x86_64"
-    # GCC on arm64 widens pow alone (aether's vector variant); every other library call stays scalar there
+    # GCC on arm64 widens pow alone (aether's vector form); every other library call stays scalar there
     routed = ("pow",) if name not in facts["exact_host_profiles"] and facts["arm64_gcc"] else ()
     # a fixed-count loop nested in an interchanged one is vectorised across the lanes whatever its length
     inner_of_lanes = {id(n) for loop in interchanged_loops(walk) for n in _loops.flat(loop.body_nodes()) if isinstance(n, Loop)}
@@ -97,12 +97,12 @@ def _host(branch: BranchCost, vectorised: bool) -> HostBranchCost:
 
 
 def kernel_cost(walk: Walk, spec, host_profile: str | None = None) -> HostBranchCost:
-    """:func:`lowering.cost.kernel_cost` with ``vectorised`` filled under host ``host_profile``."""
+    """:func:`raptor.wings.base.cost.kernel_cost` with ``vectorised`` filled under host ``host_profile``."""
     return _host(cost.kernel_cost(walk), vectorises(walk, spec, host_profile))
 
 
 def dispatch_costs(walk: Walk, spec, host_profile: str | None = None) -> dict[str, HostDispatchCost]:
-    """:func:`lowering.cost.dispatch_costs` with every branch's ``vectorised`` filled under host ``host_profile``
+    """:func:`raptor.wings.base.cost.dispatch_costs` with every branch's ``vectorised`` filled under host ``host_profile``
     (default: the one in effect, see ``host_profile`` of the cpu backend's toolchain): true for a sample-local branch that calls
     no library math or whose host profile vectorises it (``native-vector-math``), and whose every ``Loop`` the host runs
     interchanged or has at most :data:`raptor.wings.cpu.vectorise.UNROLL_LIMIT` trips. ``fused_vectorised`` is the group's flag:

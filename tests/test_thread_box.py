@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The thread box (:mod:`lowering.box`): one thread computes ``T`` lanes along
+"""The thread box (:mod:`raptor.wings.base.box`): one thread computes ``T`` lanes along
 a non-fastest axis, reading what does not move along it once.
 
 On the contraction forward shape the emitted entry carries an ``Item<Real, T>`` and the
@@ -27,8 +27,8 @@ import hawk.math as m
 from hawk.artifact import build_bundle
 from hawk.artifact.bundle import _emit, _options, lower
 from aether.wings.base.wrapper import scalar_mode
-from lowering.box import Box, threads
-from lowering.box import thread_box as _thread_box
+from raptor.wings.base.box import Box, threads
+from raptor.wings.base.box import thread_box as _thread_box
 from hawk.artifact.unit_cache import BOX_ENV
 from hawk.targets.cards import thread_box as _card
 import os
@@ -117,9 +117,9 @@ def test_hawk_box_0_and_a_kernel_without_a_candidate_keep_the_box_free_text(monk
 
 
 def _box_spec(**changes):
-    """The host and device build of ``sm_61`` whose device variant carries a thread card with ``changes`` laid over the committed one."""
+    """The host and device build of ``sm_61`` whose device wing carries a thread card with ``changes`` laid over the committed one."""
     from hawk.targets import build_spec
-    from hawk.variants import derive, load
+    from hawk.facts import derive, load
 
     cuda = load("cuda")
     card = {**cuda["cards"]["thread_box"], **changes}
@@ -136,7 +136,7 @@ def test_a_card_row_sets_T(monkeypatch):
 
 
 def test_a_card_T_outside_the_register_budget_is_refused():
-    from hawk.variants import load
+    from hawk.facts import load
 
     spec = _box_spec(defaults={**load("cuda")["cards"]["thread_box"]["defaults"], "float64": 32})
     with pytest.raises(hawk.HawkError, match="2..16"):

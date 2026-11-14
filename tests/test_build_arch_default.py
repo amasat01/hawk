@@ -26,7 +26,7 @@ from hawk.artifact import arch as hawk_arch
 from hawk.artifact import build
 from hawk.compile import nvrtc as hnvrtc
 from hawk.compile import toolchain as tc
-from hawk_cuda import toolchain as dtc
+from ospreys.cuda import toolchain as dtc
 from raptor.errors import RaptorError as HawkError
 
 

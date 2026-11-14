@@ -7,7 +7,7 @@
 Runs, on a backend or wing package that is not in this repository, the scans this repository holds its own pieces to, and prints
 one line per rule of the contributor contract (DESIGN 2c): PASS, FAIL (file:line, ...) or NOT CHECKABLE HERE (why). The exit code is
 non-zero on a FAIL. The package is read as source (nothing of it is imported); hawk must be importable (the names of the installed
-variants and backends come from it, through the entry points, not from a list).
+wings and backends come from it, through the entry points, not from a list).
 
 The module-level-mutable scan lives here and is imported by ``tests/test_module_mutable_state.py``: one scanner, two users."""
 
@@ -85,6 +85,9 @@ def mutables_of(trees: dict, classes=None) -> list:
 
 # ---- the checks ----------------------------------------------------------------------------------------------------
 
+#: The data files of a raptor wing (one literal each, never imported): :mod:`hawk.facts` reads them.
+FACTS_FILES = ("facts.py", "cards.py")
+
 def _files(root: Path) -> list:
     return [p for p in sorted(root.rglob("*.py")) if "__pycache__" not in p.parts and "tests" not in p.relative_to(root).parts]
 
@@ -100,11 +103,11 @@ def wing_entries() -> dict:
     """``{package: {module: set(names)}}`` of every installed wing (its entry point's package, its ``wing.json``), found without importing it."""
     from importlib import util
 
-    from hawk import variants
+    from hawk import wings
 
     out = {}
-    for ep in [e for family in ("raptor", "aether", "eagle") for e in variants.entry_points(f"{family}.wings")]:
-        spec = util.find_spec(ep.value.partition(":")[0].split(".")[0])
+    for ep in wings.entry_points("raptor.wings"):      # the raptor wings only: an OSPREY may name the writer wings of aether freely (its 2a.4 line)
+        spec = util.find_spec(ep.value.partition(":")[0])
         home = Path(next(iter(spec.submodule_search_locations))) if spec and spec.submodule_search_locations else None
         if home and (home / "wing.json").is_file():
             out[ep.value.partition(":")[0]] = {m: set(n) for m, n in json.loads((home / "wing.json").read_text()).get("entries", {}).items()}
@@ -135,25 +138,26 @@ def entries_violations(edges, entries: dict, own: str = "") -> list:
     The wing's own files (``own``) reach their own modules freely."""
     bad = []
     for e in edges:
-        parts = e.target.split(".")
-        if parts[0] not in entries or parts[0] == own:
+        key = next((k for k in entries if e.target == k or e.target.startswith(k + ".")), None)
+        if key is None or key == own:
             continue
-        declared = entries[parts[0]]
-        if len(parts) == 1:
+        declared = entries[key]
+        rest = e.target[len(key) + 1:].split(".") if e.target != key else []
+        if not rest:
             continue
-        if parts[1] not in declared:
-            bad.append((e, f"{e.target}: module {parts[1]!r} is not an entry of the {parts[0]!r} wing"))
-        elif len(parts) == 2 and e.how == "from":
+        if rest[0] not in declared:
+            bad.append((e, f"{e.target}: module {rest[0]!r} is not an entry of the {key!r} wing"))
+        elif len(rest) == 1 and e.how == "from":
             for name in _names_at(e.path).get(e.line, ()):
-                if name not in declared[parts[1]]:
-                    bad.append((e, f"{e.target}: {name!r} is not an entry of {parts[0]}.{parts[1]}"))
+                if name not in declared[rest[0]]:
+                    bad.append((e, f"{e.target}: {name!r} is not an entry of {key}.{rest[0]}"))
     return bad
 
 
 def run(root: Path, manifest_path=None, allow=()) -> list:
     """``[(rule number, title, status, detail)]``; status is PASS, FAIL or NOT CHECKABLE HERE."""
     import _w25_scan as scan
-    from hawk import registry, variants
+    from hawk import registry, wings
 
     root = root.resolve()
     pkg = root.name
@@ -161,7 +165,7 @@ def run(root: Path, manifest_path=None, allow=()) -> list:
     edges = scan.scan_tree(root, pkg)
     entries = wing_entries()
     named = _named_packages(man)
-    own_leaves = {ep.value.partition(":")[0].split(".")[0] for ep in variants.entry_points("ospreys")} - {pkg}
+    own_leaves = {ep.value.partition(":")[0].split(".")[0] for ep in wings.entry_points("ospreys")} - {pkg}
     where = lambda e: f"{e.path.relative_to(root.parent)}:{e.line}"      # noqa: E731
     rows = []
 
@@ -180,12 +184,13 @@ def run(root: Path, manifest_path=None, allow=()) -> list:
         [f"{k.relative_to(root.parent)}:{ln} {name}" for k, name, ln in mutables_of(trees)
          if name not in exported and name not in allow and f"{k.name}:{name}" not in allow])
     rows.append((3, "sideways identity", "NOT CHECKABLE HERE", "needs two targets built and compared at run time; a source scan cannot see it"))
-    names = {ep.name for ep in variants.entry_points("raptor.variants")} | set(registry.backend_ids()) | {"host", "cuda", "c"}
+    names = {ep.name for ep in wings.entry_points("raptor.wings")} - {"base"} | set(registry.backend_ids()) | {"host", "cuda", "c"}
     names -= {b.get("name") for b in man.get("backends", [])}
-    names -= {man.get("name"), man.get("dialect")}                # a piece names itself: its own dialect or wing name is not a variant choice
-    lit = [f"{p.relative_to(root.parent)}:{n.lineno} {n.value!r}" for p, t in trees.items() for n in ast.walk(t)
+    names -= {man.get("name"), man.get("dialect")}                # a piece names itself: its own dialect or wing name is not a wing choice
+    # a wing's facts (facts.py, cards.py) are its DATA, read as a literal: the names they state are the row's own; the rule reads code
+    lit = [f"{p.relative_to(root.parent)}:{n.lineno} {n.value!r}" for p, t in trees.items() if p.name not in FACTS_FILES for n in ast.walk(t)
            if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in names]
-    row(4, "the variant is an argument: no literal variant or target names", lit)
+    row(4, "the wing is an argument: no literal wing or target names", lit)
     rows.append((5, "declared override points only", "NOT CHECKABLE HERE", "the class a backend subclasses is hawk's; the check needs it imported, and a kit reads source only"))
     rows.append((6, "the frozen subset passes unmodified", "NOT CHECKABLE HERE", "it is a run of hawk's frozen test subset against the backend, not a scan"))
     bad = []

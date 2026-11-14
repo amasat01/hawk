@@ -3,7 +3,7 @@
 
 """A keyed accumulate whose key moves in runs of lanes commits once per run.
 
-The lane facts (:func:`lowering.lanes.key_run`) name the run: ``proven`` (the
+The lane facts (:func:`raptor.wings.base.lanes.key_run`) name the run: ``proven`` (the
 key is equal over every aligned run of W lanes), ``tested`` (no static
 proof; a warp vote decides) or ``sorted`` (a ``Sorted[Index]`` key, runs
 found at run time). The emitter spells ``aether::accum::run``'s call for it

@@ -22,8 +22,8 @@ import pytest
 _REPO = Path(__file__).resolve().parent.parent
 _SUITE = '''
 import pytest
-from hawk_cuda.nvrtc import NvrtcUnavailable
-from lowering.exchange import ToolchainAbsent
+from ospreys.cuda.nvrtc import NvrtcUnavailable
+from raptor.wings.base.exchange import ToolchainAbsent
 from raptor.errors import RaptorError
 
 def test_ok(): pass
@@ -51,7 +51,7 @@ def test_setup_unrelated(broken): pass
 
 
 def _env(**extra) -> dict:
-    path = [str(_REPO / "tests"), str(_REPO), str(_REPO / "extensions" / "hawk_cuda"), os.environ.get("PYTHONPATH", "")]
+    path = [str(_REPO / "tests"), str(_REPO), str(_REPO / "staging"), os.environ.get("PYTHONPATH", "")]
     return dict(os.environ, PYTHONPATH=os.pathsep.join(path), PYTHONDONTWRITEBYTECODE="1", **extra)
 
 
@@ -84,7 +84,7 @@ def test_the_outcomes_are_told_apart(tmp_path):
 
 def test_a_session_of_passed_and_toolchain_absent_exits_zero_and_counts_them(tmp_path):
     r, s = _run(tmp_path, '''
-        from hawk_cuda.nvrtc import NvrtcUnavailable
+        from ospreys.cuda.nvrtc import NvrtcUnavailable
         def test_a(): pass
         def test_b(): raise NvrtcUnavailable("NVRTC could not be loaded")
     ''')

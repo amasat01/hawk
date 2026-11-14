@@ -130,7 +130,7 @@ def fold_entries(cdll, sidecar: dict) -> dict:
     """``{"fold_entries": {target: address}}``: the host entry that folds each
     owned companion into its target (:func:`aether.wings.base.wrapper.fold_entries`),
     for a kernel that has any; else ``{}``."""
-    from lowering.exchange import fold_entry_name
+    from raptor.wings.base.exchange import fold_entry_name
 
     found = {target: ctypes.cast(getattr(cdll, fold_entry_name(sidecar["kernel"], target)
                                          + "_host"), ctypes.c_void_p).value

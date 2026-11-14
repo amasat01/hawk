@@ -43,7 +43,7 @@ from hawk import Mutable, Scalar, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk_c import EmbeddedProfile, check, export, refuse_audit_hits, render
+from ospreys.c import EmbeddedProfile, check, export, refuse_audit_hits, render
 from aether.wings.base.wrapper import FLOAT64, render_source
 from aether.wings.base.render import render_body
 from raptor.errors import RaptorError as HawkError

@@ -4,7 +4,7 @@
 """The host finish of a kernel's cells: rows to the cell, in eagle's ``ordered`` tree.
 
 A kernel that stores ``hawk.sum(x)`` (or ``hawk.mean``, ``hawk.max``,
-``hawk.min``) writes one row per ``cell_row`` samples (the sidecar's number, from the variant). :func:`hawk.runtime.run` owns that
+``hawk.min``) writes one row per ``cell_row`` samples (the sidecar's number, from the wing). :func:`hawk.runtime.run` owns that
 row scratch (made once per kernel and sample count), launches, and finishes the
 rows into the cell the caller bound. The finish replays the ``ordered`` tree
 of ``eagle/reduce/canonical.h`` operation for operation (leaves of 256 slots of
@@ -19,7 +19,7 @@ from raptor.ir.cells import planes
 
 import numpy as np
 
-from lowering.cells import SAMPLE_SUM_COMP
+from raptor.wings.base.cells import SAMPLE_SUM_COMP
 
 from ._errors import HawkError
 
@@ -117,7 +117,7 @@ def finish(hi, comp, op: str):
 def row_of(sidecar: dict) -> int:
     """The samples per row of the unit ``sidecar`` describes (``cell_row``); a sidecar without it is refused by name."""
     if "cell_row" not in sidecar:
-        raise HawkError("the sidecar states no cell_row (a unit built before the row width became a variant fact): rebuild the unit")
+        raise HawkError("the sidecar states no cell_row (a unit built before the row width became a fact): rebuild the unit")
     return int(sidecar["cell_row"])
 
 

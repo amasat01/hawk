@@ -150,7 +150,7 @@ def _header_lines(text):
 
 def test_the_header_is_the_count_form_on_cuda_host_and_c():
     from aether.wings.base.wrapper import FLOAT64, render_source
-    from hawk_c import render as render_c
+    from ospreys.c import render as render_c
     from hawk.targets import TARGETS
 
     for target in ("cuda", "host"):

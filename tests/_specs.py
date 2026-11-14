@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build specs for tests that call a pass, a renderer or a cost outside a build: variant data passed in, never a module table patched."""
+"""Build specs for tests that call a pass, a renderer or a cost outside a build: facts passed in, never a module table patched."""
 
 import dataclasses
 from types import MappingProxyType
@@ -58,7 +58,7 @@ def with_caches(spec, l1d: int, l2: int, source: str = "test"):
 
 def pin_caches(monkeypatch):
     """Builds made after this call state the pinned caches, whatever machine runs the test (the cpu row's probe answers them)."""
-    import osprey_cpu.toolchain as toolchain
+    import ospreys.cpu.toolchain as toolchain
 
     monkeypatch.setattr(toolchain, "host_caches", lambda *a, **k: PINNED_CACHES)
 

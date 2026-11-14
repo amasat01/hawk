@@ -4,8 +4,8 @@
 """Per-device cards: tuning data, read when a kernel is built.
 
 A card picks among lowerings the IR facts already allow
-(:func:`simt.lanes.choose_mapping`); it never changes what a kernel computes.
-The cards are VARIANT DATA (``variants/cuda`` ``cards``; the host's own tables in ``variants/cpu``, ``x86``, ``arm``), read through
+(:func:`raptor.wings.simt.lanes.choose_mapping`); it never changes what a kernel computes.
+The cards are WING DATA (``wings/cuda`` ``cards``; the host's own tables in ``wings/cpu``, ``x86``, ``arm``), read through
 the build spec. The thread card holds, per (compute capability, device name, scalar type), the thread-box width ``T``, the
 contraction choice and an optional block tile; the defaults (a thread box, ``gemm``, no tile) apply without a row.
 """
@@ -36,7 +36,7 @@ def thread_box(scalar_type: str, spec) -> dict | None:
     """The card for ``scalar_type`` (``"float64"``/``"float32"``; ``None`` for a type no card measures, which
     builds unboxed): ``{"T": width,
     "contraction": "gemm" | "direct", "itemsize": bytes}`` and, on a device whose
-    row carries one, ``"tile"`` (see :func:`simt.lanes.choose_mapping`). The table is ``spec.primary["thread_box"]`` (the host's own)
+    row carries one, ``"tile"`` (see :func:`raptor.wings.simt.lanes.choose_mapping`). The table is ``spec.primary["thread_box"]`` (the host's own)
     or ``spec.primary["cards"]["thread_box"]`` (a device's).
 
     The device is probed only when the table has a row for that scalar type."""
@@ -66,10 +66,10 @@ WIDE_KEYS = ("SLICE_MIN", "TEAM_MIN", "TC")
 
 
 def wide_card(spec) -> dict:
-    """The device variant's wide card (``cards.wide``: ``defaults`` and ``rows``), validated; refused by name for a build with no
-    device variant (the host places by its own ``host_wide`` table)."""
+    """The device wing's wide card (``cards.wide``: ``defaults`` and ``rows``), validated; refused by name for a build with no
+    device wing (the host places by its own ``host_wide`` table)."""
     if spec.device is None or "wide" not in spec.device.get("cards", {}):
-        raise HawkError("the build has no device variant with a wide card: a host build places by the host variant's own host_wide table")
+        raise HawkError("the build has no device wing with a wide card: a host build places by the host wing's own host_wide table")
     doc = spec.device["cards"]["wide"]
     for where, values in [("defaults", doc["defaults"]), *((f"row {r.get('cc')}/{r.get('device')}/{r.get('dtype')}", r)
                                                           for r in doc["rows"])]:
@@ -95,7 +95,7 @@ def wide(scalar_type: str, spec) -> dict:
     on the device arch of ``spec``: the defaults, and over them the row of the scalar type whose arch is the
     nearest by device features (the SIMT wing's ``wide_class.distance``: FP64 rate, registers, resident threads), so an unmeasured
     arch takes the closest measured row; a row of the build's own arch must also match the device name when one is present.
-    No row for the scalar type gets the defaults. A build with no device variant is refused by name (:func:`wide_card`)."""
+    No row for the scalar type gets the defaults. A build with no device wing is refused by name (:func:`wide_card`)."""
     scalar_type = {"f32": "float32", "f64": "float64"}.get(scalar_type, scalar_type)
     doc = wide_card(spec)
     card = {k: doc["defaults"][k] for k in WIDE_KEYS}
@@ -134,9 +134,9 @@ def fusion(scalar_type: str, spec, host: bool = False) -> dict:
         isa = spec.machine.facts.get("vector_isa", "")
         rows = (spec.host or {}).get("fusion_host", {})
         if isa not in rows:
-            raise HawkError(f"the host variant has no fusion row {isa!r}; the rows are {sorted(rows)}")
+            raise HawkError(f"the host wing has no fusion row {isa!r}; the rows are {sorted(rows)}")
         return dict(rows[isa])
     if spec.device is None or "fusion" not in spec.device.get("cards", {}):
-        raise HawkError("the build has no device variant with a fusion card: a host build reads the host's own row (host=True)")
+        raise HawkError("the build has no device wing with a fusion card: a host build reads the host's own row (host=True)")
     doc = spec.device["cards"]["fusion"]
     return {**doc["defaults"], **_nearest_row(doc["rows"], scalar_type, FUSION_KEYS, spec)}

@@ -7,6 +7,7 @@ it is declared under, a cycle, and two distributions that declare one name in a 
 from __future__ import annotations
 
 import importlib
+import json
 
 import pytest
 
@@ -23,6 +24,7 @@ def _wing(root, monkeypatch, name, *, family="raptor", parent=None, stated=None,
     (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: 0.0\n")
     (info / "entry_points.txt").write_text(f"[{group or family + '.wings'}]\n{name} = {package}\n")
     (root / package).mkdir()
+    (root / package / "wing.json").write_text(json.dumps({"family": stated or family, "name": name, "parent": parent}))
     text = f"MANIFEST = {{'family': {stated or family!r}, 'name': {name!r}, 'parent': {parent!r}}}\n"
     if kinds:
         text += f"from types import SimpleNamespace\nKINDS = SimpleNamespace(kinds={dict.fromkeys(kinds, 1)!r}, classes={{}})\n"
@@ -72,8 +74,9 @@ def test_a_kind_defined_twice_in_a_chain_is_refused_by_name(tmp_path, monkeypatc
 def test_a_host_build_on_arm64_does_not_require_the_x86_wing(monkeypatch):
     from types import MappingProxyType
 
-    from hawk.targets import Machine, build_spec
+    from hawk.targets import TARGETS, Machine, build_spec
 
+    assert "host" in TARGETS       # the registry is scanned with every wing installed: a rescan under the patch would refuse the row at load
     real = wings.entry_points
     monkeypatch.setattr(wings, "entry_points", lambda group: [e for e in real(group) if not (group == "raptor.wings" and e.name == "x86")])
     wings.wing.cache_clear()

@@ -26,7 +26,7 @@ import hawk.math as m
 from hawk import Matrix, Mutable, Scalar, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk_cuda.backend import _resource_report
+from ospreys.cuda.backend import _resource_report
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
 from aether.wings.base.wrapper import render_source

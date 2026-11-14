@@ -8,7 +8,7 @@ blocks, relative imports resolved, and string literals given to ``importlib.impo
 
 1. no module of raptor imports anything but the standard library and raptor;
 2. hawk imports no runtime (eagle) at import time;
-3. nothing in raptor, a variant, a wing, an OSPREY or eagle imports hawk, at any level (one test per piece);
+3. nothing in raptor, a wing, an OSPREY or eagle imports hawk, at any level (one test per piece);
 4. the emission modules of an OSPREY import the standard library, raptor and its own package, plus the wings its rows name, through the
    chains of their leaves (one test per OSPREY); a wing is held to the chain rule (R2) by the test of its own, by manifests.
 """
@@ -62,7 +62,7 @@ def test_piece_imports_no_hawk_at_any_level(piece):
 # ---- eagle imports: the standard library, itself, run-time libraries, raptor and raptor wings only ------------------------
 
 _EAGLE_FORBIDDEN = {
-    "eagle->backend": lambda t: t.split(".")[0] in ("hawk_c", "hawk_cuda") or t.startswith("osprey_"),
+    "eagle->backend": lambda t: t.split(".")[0] == "ospreys",
     "eagle->aether-wing": lambda t: t == "aether.wings" or t.startswith("aether.wings."),
     "eagle->aether": lambda t: (t == "aether" or t.startswith("aether.")) and not (t == "aether.wings" or t.startswith("aether.wings.")),
 }
@@ -87,7 +87,9 @@ def _writer_ok(piece, e) -> bool:
     _, pkg = S.pieces()[piece]
     named = S.named_wings().get(piece, set())
     named_unit = any(e.target == m or e.target.startswith(m + ".") for m in named)
-    return (S.is_stdlib(e.top) or e.top in ("raptor", pkg) or named_unit
+    own = e.target == pkg or e.target.startswith(pkg + ".")       # its own package, by its full dotted name (never a sibling OSPREY)
+    core = e.top == "raptor" and not (e.target == "raptor.wings" or e.target.startswith("raptor.wings."))    # raptor's core; a wing only if named
+    return (S.is_stdlib(e.top) or core or own or named_unit
             or e.target == "<non-literal>")      # a module named by manifest data (the spelling arm)
 
 

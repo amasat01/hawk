@@ -15,19 +15,19 @@ import _wide_kernels as W
 
 from hawk import HawkError
 from hawk.artifact.unit_cache import _wide_part
-from lowering import wide
-from simt.lane import slice_min, slice_sinks, sliced
+from raptor.wings.base import wide
+from raptor.wings.simt.lane import slice_min, slice_sinks, sliced
 from hawk.targets import cards
-from hawk_cuda import sweep
+from ospreys.cuda import sweep
 from raptor.ir.types import TensorType
 
 NARROW = TensorType((64,), "f32")
 
 
 def _wide_spec(arch, rows=None, defaults=None):
-    """A host and device build for ``arch`` whose device variant carries a wide card with these rows and defaults (variant data passed in)."""
+    """A host and device build for ``arch`` whose device wing carries a wide card with these rows and defaults (facts passed in)."""
     from hawk.targets import build_spec
-    from hawk.variants import derive, load
+    from hawk.facts import derive, load
 
     cuda = load("cuda")
     card = {"defaults": {**cuda["cards"]["wide"]["defaults"], **(defaults or {})}, "rows": rows or []}
@@ -40,7 +40,7 @@ ROW = {"cc": "sm_00", "device": "Test Card", "dtype": "float32", "SLICE_MIN": 64
 def test_the_defaults_are_the_constants_the_warp_form_was_built_with():
     assert cards.wide("float32", DEVICE) == cards.wide("f64", DEVICE) == {"SLICE_MIN": 128, "TEAM_MIN": 128, "TC": 40960}
     assert slice_min("f32", DEVICE) == 128 and not sliced(NARROW, HOST)
-    with pytest.raises(HawkError, match="no device variant"):
+    with pytest.raises(HawkError, match="no device wing"):
         cards.wide("float32", HOST)                          # a host build has no wide card: it places by its own host_wide table
     assert _wide_part("float32", device("sm_61")) == ""        # no row: the unit key is the one it always was
 
@@ -128,13 +128,13 @@ def test_the_box_row_is_the_fastest_T_and_a_close_second_is_a_tie():
 @pytest.mark.gpu
 def test_the_quick_sweep_runs_on_the_device_and_writes_candidate_rows(tmp_path):
     out = tmp_path / "rows.json"
-    from hawk.variants import variant_home
+    from hawk.facts import home
 
     assert sweep.main(["--quick", "--dtype", "f32", "--out", str(out), "--cache", str(tmp_path / "cache"),
-                       "--cuda-dir", str(variant_home("cuda"))]) == 0
+                       "--cuda-dir", str(home("cuda"))]) == 0
     got = json.loads(out.read_text())
     assert got["wide"]["rows"][0]["dtype"] == "float32" and got["thread_box"]["rows"] and len(got["cells"]) == 9
     assert all(c["local_B"] is not None for c in got["cells"])
-    from hawk.variants import load
+    from hawk.facts import load
 
     assert load("cuda")["cards"]["wide"]["rows"] == []        # never in place without --write

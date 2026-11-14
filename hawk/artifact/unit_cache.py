@@ -173,7 +173,7 @@ def _wide_part(scalar_type: str, spec) -> str:
     so a build with no row keeps the key it always had."""
     from ..targets import cards
 
-    if spec.device is None:         # a host build has no wide card: it places by the host variant's own table
+    if spec.device is None:         # a host build has no wide card: it places by the host wing's own table
         return ""
     doc = cards.wide_card(spec)["defaults"]
     got = cards.wide(scalar_type, spec)
@@ -181,11 +181,11 @@ def _wide_part(scalar_type: str, spec) -> str:
 
 
 def _backend_key(row, options, source_digests, spec, smode, wide_class: str) -> str:
-    """The key of ONE built backend: its terms (:func:`_row_terms`) and the facts of ITS OWN variant only: the digest of that variant's
+    """The key of ONE built backend: its terms (:func:`_row_terms`) and the facts of ITS OWN wing only: the digest of that wing's
     data and, for a device row, the class its thresholds come from and the card row of its arch; for a host row, nothing of a device."""
     own = spec.by_target.get(row.id)
     terms = [*_row_terms(row, options, source_digests),
-             "variant:" + (hashlib.sha256(json.dumps(own, sort_keys=True, default=str).encode("utf-8")).hexdigest() if own else "")]
+             "facts:" + (hashlib.sha256(json.dumps(own, sort_keys=True, default=str).encode("utf-8")).hexdigest() if own else "")]
     if row.device:
         terms += ["wide_class:" + wide_class if wide_class else "", _wide_part(smode.id, spec)]
     h = hashlib.sha256()
@@ -295,7 +295,7 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
     ``"O3"`` unit regardless of which targets this bundle builds; and
     the distribution version of each built backend, then every user option of it (``<id>.<key>=<canonical text>``, :mod:`hawk.options`) before that backend's own terms; and
     the thread-box inputs (``$HAWK_BOX`` and the card's ``T`` for the scalar
-    mode, :mod:`simt.box`), which change the emitted entry; and
+    mode, :mod:`raptor.wings.simt.box`), which change the emitted entry; and
     the terms a backend adds itself (:meth:`hawk.backends.Backend.key_terms`); and each kernel's compaction
     ``group`` (``groups``, hashed only when one exceeds 1: a grouped
     active-set map reads its index prologue differently).

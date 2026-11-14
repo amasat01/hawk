@@ -43,7 +43,7 @@ import _kernels as K
 import hawk
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
-from hawk_c import render
+from ospreys.c import render
 from aether.wings.base.wrapper import render_source
 from aether.wings.base.wrapper import scalar_mode
 from hawk.targets import TARGETS

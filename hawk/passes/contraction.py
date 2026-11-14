@@ -441,7 +441,7 @@ def recognize(kernel: Any, vjp: Any = None, *, mapping: dict | None = None
     A recognised-but-not-dense contraction still returns, ``dense=False``
     and the reasons named.
 
-    ``mapping`` is :func:`simt.lanes.choose_mapping`'s record: when the
+    ``mapping`` is :func:`raptor.wings.simt.lanes.choose_mapping`'s record: when the
     device card chose ``"direct"`` for the scalar type, the fold stays the
     kernel's own loop and nothing is recognised (``None``)."""
     if mapping is not None and mapping.get("contraction") == "direct":

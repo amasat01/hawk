@@ -109,14 +109,15 @@ _AUDIT_RE = re.compile("|".join(rf"\b{re.escape(t)}" for t in AUDIT_TOKENS))
 #: src/ beside the package; the tests that read this list are repo_local.
 _SHIPPED = (
     [p for p in sorted(PACKAGE.rglob("*.py"))]
-    + [p for p in sorted((REPO / "extensions").glob("*/*/*.py"))]       # the shipped extensions: the device emitter lives there
+    + [p for p in sorted((REPO / "staging" / "ospreys").glob("*/*.py"))]       # every shipped OSPREY: the device emitter lives there
+    + [p for p in sorted((REPO / "staging").glob("raptor/wings/*/*.py"))]   # the raptor wings
     + [p for p in sorted((REPO / "staging").glob("aether/wings/*/*.py"))]   # the aether wings: the shared writer's text lives there
     + [p for p in (sorted(SOURCES.iterdir()) if SOURCES.is_dir() else []) if p.is_file()]
     + [REPO / "CMakeLists.txt"]
 )
 
 #: The two wrapper emitters whose index prologue is a named exception, pinned by path (the device emitter moved to its extension).
-_EMITTERS = {"cuda": REPO / "extensions" / "hawk_cuda" / "hawk_cuda" / "emit.py", "host": REPO / "staging" / "aether" / "wings" / "cpu" / "host.py"}
+_EMITTERS = {"cuda": REPO / "staging" / "ospreys" / "cuda" / "emit.py", "host": REPO / "staging" / "aether" / "wings" / "cpu" / "host.py"}
 
 #: The source-side vocabulary: what a threading `_core` would have to name.
 _THREAD_TOKENS = ("#pragma omp", "<omp.h>", "omp_set_num_threads", "<thread>",
@@ -346,14 +347,14 @@ def test_the_two_named_exceptions_are_real_and_narrow():
             assert len(text) > 0.5 * len(original), (
                 f"the audit excised a file it was supposed to scan: {path}"
             )
-    assert set(excised) == {"extensions/hawk_cuda/hawk_cuda/emit.py", "staging/aether/wings/cpu/host.py", "staging/aether/wings/base/spelling.py"}, sorted(excised)
+    assert set(excised) == {"staging/ospreys/cuda/emit.py", "staging/aether/wings/cpu/host.py", "staging/aether/wings/base/spelling.py"}, sorted(excised)
     # the geometry token table is the excision that actually HIDES tokens; the
     # prologue exception is plain wording and is asserted only to be real.
     assert _AUDIT_RE.search(excised["staging/aether/wings/base/spelling.py"][0]), (
         "the GEOMETRY_TOKENS excision removes no audited token, so it is not the "
         "exception it claims to be"
     )
-    assert "blockIdx" in excised["extensions/hawk_cuda/hawk_cuda/emit.py"][0]
+    assert "blockIdx" in excised["staging/ospreys/cuda/emit.py"][0]
 
 
 # --------------------------------------------------------------------------- #

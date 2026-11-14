@@ -19,7 +19,7 @@ import pytest
 import hawk
 import hawk.math as hm
 from hawk import Index, Mutable, Param, Scalar, Terminated, Vector
-from hawk_c.verify import UNSUPPORTED, refuse_unsupported
+from ospreys.c.verify import UNSUPPORTED, refuse_unsupported
 from aether.wings.base.fused import compose
 from hawk.ext import DEFAULT_KIND, Guard, Kind
 from raptor.ir import Assign, Leaf, canonical

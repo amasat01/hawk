@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The entry text of a thread box (:class:`lowering.box.Box`): the prologue line that binds a thread's first owned lane, and the
+"""The entry text of a thread box (:class:`raptor.wings.base.box.Box`): the prologue line that binds a thread's first owned lane, and the
 frame that runs the box body or, for a launch of fewer rows than the box holds, the plain body lane by lane."""
 
 from __future__ import annotations

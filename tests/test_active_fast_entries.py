@@ -7,7 +7,7 @@ An automatic kernel traced under an active-set kind (``Guard(active_set=True)``)
 reads its samples through the index map. Its device unit also carries the two
 entries the map-free automatic kernel of the same body has, indexing samples
 directly (``base + flat``): ``<name>_range`` (the two-path fused entry over a
-contiguous range) and ``<name>_persist`` (:func:`hawk_cuda.emit.persist_entry`).
+contiguous range) and ``<name>_persist`` (:func:`ospreys.cuda.emit.persist_entry`).
 Both take the map entry's parameters (the map and count planes among them,
 unread) and compile only under ``HAWK_FAST_ENTRIES`` (a build's
 ``defines``), so the default build compiles the map entry alone. A map-free
@@ -51,7 +51,7 @@ from test_persist import _close
 
 from hawk.artifact import build_bundle
 from aether.wings.base.wrapper import scalar_mode
-from hawk_cuda.emit import FAST_ENTRIES_MACRO, RANGE_SUFFIX
+from ospreys.cuda.emit import FAST_ENTRIES_MACRO, RANGE_SUFFIX
 from hawk.ext import Guard, Kind
 
 B = importlib.import_module("hawk.artifact.bundle")

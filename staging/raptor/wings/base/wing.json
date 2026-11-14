@@ -1,0 +1,395 @@
+{
+ "family": "raptor",
+ "name": "base",
+ "parent": null,
+ "version": "0",
+ "contract": "1",
+ "reads": ["lanes.bank_words", "lanes.block_run", "lanes.copy_threads", "lanes.run_max", "linalg.fast_fp64", "linalg.team_max_dim", "linalg.warp_entries", "scatter.max_chunks", "scatter.threads"],
+ "dialect": "base",
+ "kinds": [
+  {
+   "name": "team_store",
+   "family": "sink",
+   "refines": "wide_write",
+   "operands": {
+    "min": 2,
+    "max": 2
+   },
+   "result": [
+    "scalar_of",
+    0
+   ],
+   "feathers": [
+    "commits_value",
+    "elementwise_sink",
+    "reads_by_element"
+   ],
+   "spelling": {
+    "dialect": "base",
+    "name": "team_store",
+    "args": [
+     "node",
+     "target",
+     "ref0"
+    ]
+   }
+  },
+  {
+   "name": "team_copy",
+   "family": "sink",
+   "refines": "team_store"
+  },
+  {
+   "name": "log_store",
+   "family": "sink",
+   "refines": "team_store",
+   "fields": [
+    {
+     "name": "target",
+     "type": "str"
+    },
+    {
+     "name": "width",
+     "type": "int"
+    },
+    {
+     "name": "kept",
+     "type": "tuple"
+    }
+   ],
+   "identity": [
+    "role",
+    "name",
+    "target",
+    "width"
+   ]
+  },
+  {
+   "name": "scatter_log",
+   "family": "sink",
+   "refines": "team_store",
+   "fields": [
+    {
+     "name": "target",
+     "type": "str"
+    }
+   ],
+   "identity": [
+    "role",
+    "name",
+    "target"
+   ]
+  },
+  {
+   "name": "team_read",
+   "family": "expr",
+   "refines": "at",
+   "operands": {
+    "min": 2,
+    "max": 2,
+    "families": [
+     "plane-leaf",
+     "any"
+    ]
+   },
+   "result": [
+    "carried"
+   ],
+   "feathers": [
+    "fresh_read"
+   ],
+   "spelling": {
+    "dialect": "base",
+    "name": "team_read",
+    "args": [
+     "node"
+    ]
+   }
+  },
+  {
+   "name": "box_store",
+   "family": "sink",
+   "refines": "sink",
+   "wire": "box_store",
+   "operands": {
+    "min": 2,
+    "max": 2
+   },
+   "result": [
+    "carried"
+   ],
+   "spelling": {
+    "dialect": "base",
+    "name": "box_store",
+    "args": [
+     "target",
+     "ref1",
+     "ref0"
+    ]
+   }
+  },
+  {
+   "name": "block_sum",
+   "family": "expr",
+   "refines": null,
+   "operands": {
+    "min": 3,
+    "max": 3
+   },
+   "result": [
+    "same_as",
+    0
+   ],
+   "fields": [
+    {
+     "name": "contract",
+     "type": "str"
+    },
+    {
+     "name": "kept",
+     "type": "tuple"
+    }
+   ],
+   "identity": [
+    "contract"
+   ],
+   "feathers": [
+    "reduces_samples"
+   ]
+  },
+  {
+   "name": "ordered_accum_write",
+   "family": "sink",
+   "refines": "wide_write",
+   "wire": "ordered_accum_write",
+   "operands": {
+    "min": 3,
+    "max": 3
+   },
+   "result": [
+    "same_as",
+    0
+   ],
+   "fields": [
+    {
+     "name": "kept",
+     "type": "tuple"
+    }
+   ],
+   "identity": [
+    "role",
+    "name",
+    "kept"
+   ],
+   "feathers": [
+    "commits_value"
+   ]
+  },
+  {
+   "name": "block_sum_write",
+   "family": "sink",
+   "refines": "wide_write",
+   "operands": {
+    "min": 1,
+    "max": 1
+   },
+   "result": [
+    "scalar_of",
+    0
+   ]
+  },
+  {
+   "name": "predicated_dispatch",
+   "family": "expr",
+   "refines": "dispatch",
+   "operands": {
+    "min": 3,
+    "max": "many"
+   },
+   "result": [
+    "same_as",
+    1
+   ],
+   "feathers": [
+    "evaluates_all_branches"
+   ]
+  },
+  {
+   "name": "segmented_dispatch",
+   "family": "expr",
+   "refines": "dispatch",
+   "operands": {
+    "min": 3,
+    "max": "many"
+   },
+   "result": [
+    "same_as",
+    1
+   ],
+   "feathers": [
+    "splits_by_branch"
+   ]
+  },
+  {
+   "name": "auto_dispatch",
+   "family": "expr",
+   "refines": "dispatch",
+   "operands": {
+    "min": 3,
+    "max": "many"
+   },
+   "result": [
+    "same_as",
+    1
+   ],
+   "feathers": [
+    "counts_branch_mix"
+   ]
+  }
+
+ ],
+ "entries": {
+  "block": [
+   "BlockSum",
+   "BlockSumWrite",
+   "block_of",
+   "block_shaped",
+   "count_of",
+   "expand_stores",
+   "factors",
+   "factors_of",
+   "is_block",
+   "is_block_write",
+   "key_of",
+   "ordered_case",
+   "plain",
+   "recount"
+  ],
+  "box": [
+   "boxed_sinks",
+   "thread_box",
+   "threads"
+  ],
+  "cells": [
+   "FINISHED_PLANE",
+   "FUSED_STEPS_PLANE",
+   "OFFSETS_DTYPE",
+   "OFFSETS_ROLE",
+   "SAMPLE_SUM_COMP",
+   "class_name",
+   "classify_name",
+   "mix_name",
+   "offsets_name",
+   "stale_name",
+   "stored",
+   "walk"
+  ],
+  "dispatch": [
+   "DISPATCH_STRATEGIES",
+   "dispatch",
+   "strategy",
+   "switch_form"
+  ],
+  "cost": [
+   "BranchCost",
+   "DispatchCost",
+   "SPECIAL_KINDS",
+   "branch_closures",
+   "dispatch_costs",
+   "fp64_ops",
+   "is_library_call",
+   "kernel_cost",
+   "linalg_bytes"
+  ],
+  "exchange": [
+   "MIRROR_OF",
+   "ToolchainAbsent",
+   "fold_entry_name",
+   "mirror_of"
+  ],
+  "kinds": [
+   "WARP_READ",
+   "WARP_SUM_KIND"
+  ],
+  "logs": [
+   "OrderedAccumWrite"
+  ],
+  "lanes": [
+   "CONTRACTIONS",
+   "choose_mapping",
+   "facts",
+   "key_run",
+   "warp_uniform"
+  ],
+  "lstsq": [
+   "lowered",
+   "lowered_sinks"
+  ],
+  "settings": [
+   "Settings"
+  ],
+  "slotwise": [
+   "chain",
+   "is_structural_zero",
+   "slotwise"
+  ],
+  "loops": [
+   "flat",
+   "speculative_step"
+  ],
+  "split": [
+   "Stage",
+   "compensated_target",
+   "internal",
+   "stages"
+  ],
+  "team": [
+   "PARTIAL",
+   "Plane",
+   "TeamSpec",
+   "max_dim_of",
+   "plain_blocks",
+   "scatter_names"
+  ],
+  "wide": [
+   "ELEMENTWISE",
+   "REDUCTIONS",
+   "RESIDENT_KIND",
+   "element_kind",
+   "gather",
+   "is_prior",
+   "is_resident",
+   "is_scratch",
+   "is_tiled",
+   "record",
+   "simplified",
+   "unstored",
+   "walk_record"
+  ],
+  "wrapper_text": [
+   "refuse_cells_off_device",
+   "refuse_sample_sums",
+   "refuse_team_reductions"
+  ]
+ },
+ "emission_modules": [
+  "raptor.wings.base.block",
+  "raptor.wings.base.box",
+  "raptor.wings.base.cells",
+  "raptor.wings.base.cost",
+  "raptor.wings.base.exchange",
+  "raptor.wings.base.dispatch",
+  "raptor.wings.base.kinds",
+  "raptor.wings.base.lanes",
+  "raptor.wings.base.logs",
+  "raptor.wings.base.loops",
+  "raptor.wings.base.lstsq",
+  "raptor.wings.base.settings",
+  "raptor.wings.base.slotwise",
+  "raptor.wings.base.split",
+  "raptor.wings.base.team",
+  "raptor.wings.base.wide",
+  "raptor.wings.base.wrapper_text"
+ ],
+ "runtime_modules": []
+}

@@ -6,7 +6,7 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 
 ### Removed
 
-- **Breaking:** the ambient `with policy.using(...)` and `policy.fold_rows(k)` blocks are gone. Build settings are one explicit value, `hawk.build_policy.BuildPolicy(emit_form=, linalg_form=, wide_form=, contraction=, launch_bounds=, fold_rows=)`, passed as `build_policy=` to `build`, `emit_source`, `build_bundle`, `render_source` and `hawk_c.render`; a key that no target of the build declares in its manifest is refused by name.
+- **Breaking:** the ambient `with policy.using(...)` and `policy.fold_rows(k)` blocks are gone. Build settings are one explicit value, `hawk.build_policy.BuildPolicy(emit_form=, linalg_form=, wide_form=, contraction=, launch_bounds=, fold_rows=)`, passed as `build_policy=` to `build`, `emit_source`, `build_bundle`, `render_source` and `ospreys.c.render`; a key that no target of the build declares in its manifest is refused by name.
 
 ## 0.7.6 (2026-11-10)
 

@@ -1,0 +1,393 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+
+"""The warp form of a wide kernel (``wide_form="team"``): one warp per sample, every wide value sliced across its lanes.
+
+A value of ``W`` elements (``W`` a multiple of the warp width, the wing's ``launch.warp_size``) is held as ``W / warp`` elements per lane: element ``j`` of
+lane ``l`` is element ``j * warp + l`` of the value. An elementwise operation, a splat, a read of a plane at an
+arithmetic run of indices and a loop carrying such values all act on the slice alone, so the 32 lanes share the work and
+each keeps 1/32 of the value in registers. A narrow value (a scalar, a short vector) is computed by every lane alike.
+
+:func:`slice_sinks` rewrites the sinks of a kernel into that form, or returns ``None`` when a node has no rule here
+(then the kernel keeps its thread form). The stores come back as :class:`WarpStore`, which writes the slice back into the
+Mutable's plane at the lane's own elements."""
+
+from __future__ import annotations
+
+from raptor.ir.types import TensorType
+from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from raptor.ir.nodes import Assign, At, Const, Finish, Leaf, Node, Op, RoleConst, Select
+from raptor.ir.ops import make
+
+from raptor.wings.base.kinds import WARP_READ, WARP_SUM_KIND
+
+#: Lanes of the warp that shares one sample.
+
+#: The narrowest value worth slicing (provisional: a smaller one fits a thread's registers). This is the DEFAULT only: a
+#: device's row of ``hawk/targets/cards/wide.json`` replaces it (:func:`slice_min`), as it does :data:`TEAM_MIN`.
+SLICE_MIN = 128
+
+#: The shortest sliced value from which ``wide_form="auto"`` builds a warp (the default of the card's TEAM_MIN).
+TEAM_MIN = 128
+
+#: The longest short vector a fill loop unrolls into registers (the elements are then computed in place of a run-time indexed frame).
+NARROW_FILL_MAX = 32
+
+
+def slice_min(dtype: str, spec) -> int:
+    """The narrowest vector held sliced for scalars of ``dtype`` on the device of ``spec`` (the card's SLICE_MIN)."""
+    return spec.wide(dtype)["SLICE_MIN"]
+
+
+def warp_of(spec) -> int:
+    """The lanes a warp spans on the device of ``spec`` (its wing's ``launch.warp_size``)."""
+    return spec.need("launch", "warp_size")
+
+
+def sliced(ttype: TensorType, spec) -> bool:
+    """Whether a value of ``ttype`` is held sliced: a vector of a whole number of warps, wide enough to pay."""
+    warp = spec.primary.get("launch", {}).get("warp_size")        # a wing with no warp width (a host) holds nothing sliced
+    return (warp is not None and len(ttype.shape) == 1 and ttype.shape[0] % warp == 0
+            and ttype.shape[0] >= slice_min(ttype.dtype, spec))
+
+
+def _slice_type(ttype: TensorType, warp: int) -> TensorType:
+    return TensorType((ttype.shape[0] // warp,), ttype.dtype, ttype.tag)
+
+
+def _reach(root: Node):
+    """Every node under ``root``."""
+    seen, stack = set(), [root]
+    while stack:
+        node = stack.pop()
+        if id(node) not in seen:
+            seen.add(id(node))
+            yield node
+            stack.extend(node.operands)
+
+
+class _Refused(Exception):
+    """A node with no rule in the warp form."""
+
+
+class _Slicer:
+    def __init__(self, spec) -> None:
+        self.spec = spec
+        self.warp = warp_of(spec)
+        self.memo: dict = {}                       # id(node) -> (node, is_sliced)
+        from . import WarpLane    # a pass that builds the form's nodes imports its dialect (the core never does)
+
+        self.lane = WarpLane()
+        self.used = False                          # whether any value ended up sliced
+        self.widest = 0                            # the widest value held sliced
+        self.writes = 0                            # run-time indexed writes into a slice
+        self.folds = 0                             # sums over the lanes
+        self.keep: list = []                       # every node memoised, alive as long as its id is a key
+
+    def of(self, node: Node) -> tuple:
+        got = self.memo.get(id(node))
+        if got is None:
+            self._operands_first(node)
+            got = self.memo.get(id(node))
+        if got is None:
+            self.keep.append(node)
+            got = self.memo[id(node)] = self._one(node)
+            self.used = self.used or got[1]
+            if got[1]:
+                self.widest = max(self.widest, node.ttype.shape[0] if len(node.ttype.shape) == 1 else 0)
+        return got
+
+    def _operands_first(self, root: Node) -> None:
+        """Memoise the operands under ``root`` in post-order with an explicit stack, so ``_one`` finds them done and a
+        dependent chain of any depth costs one frame, not one per node."""
+        stack = [root]
+        while stack:
+            node = stack[-1]
+            if id(node) in self.memo:
+                stack.pop()
+                continue
+            if type(node) in (Op, Select) and node.kind != "vec":
+                pending = next((o for o in node.operands if type(o) in (Op, Select) and id(o) not in self.memo), None)
+                if pending is not None:
+                    stack.append(pending)
+                    continue
+            stack.pop()
+            if node is not root:
+                self.of(node)
+
+    def _one(self, node: Node) -> tuple:
+        if isinstance(node, (Const, LoopIndex)) or node is self.lane:
+            return node, False
+        if isinstance(node, LoopCarry):
+            if sliced(node.ttype, self.spec):
+                raise _Refused("a sliced carry outside its loop")
+            return node, False
+        if isinstance(node, Leaf):
+            if sliced(node.ttype, self.spec):
+                return self._read(node), True
+            return node, False
+        if isinstance(node, LoopValue):
+            filled = self._fill(node)
+            if filled is not None:
+                return filled
+            loop, slot_sliced = self._loop(node.loop)
+            return LoopValue(loop, node.slot), slot_sliced[node.slot]
+        if isinstance(node, Loop):
+            raise _Refused("a loop used as a value")
+        if isinstance(node, Op) and node.kind == "component_at" and isinstance(node.operands[0], Leaf) \
+                and sliced(node.operands[0].ttype, self.spec) and node.operands[0].role in ("vec_in", "mutable"):
+            index, was = self.of(node.operands[1])      # an element at a run-time index: every lane reads it from the plane
+            if was:
+                raise _Refused("an element read at a slice")
+            return Op("component_at", (node.operands[0], index), node.ttype, WARP_READ), False
+        if isinstance(node, At):
+            return self._rep(node)
+        if isinstance(node, (Op, Select)):
+            return self._op(node)
+        return self._rep(node)
+
+    def _read(self, leaf: Leaf) -> Op:
+        """A per-sample vector input read whole: lane ``l`` reads its elements ``j * warp + l``."""
+        if leaf.role != "vec_in" and not (leaf.role == "mutable" and leaf.kind == "prior_read"):
+            raise _Refused(f"a wide plane {leaf.name!r} read whole")
+        index = TensorType((), "i32")
+        scalar = TensorType((), leaf.ttype.dtype)
+        parts = [Op("component_at", (leaf, make("add", (self.lane, Const(j * self.warp, index)))), scalar, WARP_READ)
+                 for j in range(leaf.ttype.shape[0] // self.warp)]
+        return Op("vec", tuple(parts), _slice_type(leaf.ttype, self.warp))
+
+    def _rep(self, node: Node) -> tuple:
+        """A node every lane computes alike: none of its operands may be a slice."""
+        ops = [self.of(o) for o in node.operands]
+        if any(s for _, s in ops):
+            raise _Refused(f"{type(node).__name__} {getattr(node, 'kind', '')} reads a slice")
+        if all(a is b for (a, _), b in zip(ops, node.operands)):
+            return node, False
+        from raptor.ir.walk import rebuild as _rebuild
+
+        return _rebuild(node, [a for a, _ in ops]), False
+
+    def _op(self, node: Node) -> tuple:
+        if not sliced(node.ttype, self.spec):
+            if node.kind in ("sum", "dot", "norm") and len(node.operands) == (2 if node.kind == "dot" else 1):
+                ops = [self.of(o) for o in node.operands]
+                if all(s for _, s in ops):      # each lane reduces its slice, then the lanes add up in a fixed tree
+                    self.folds += 1
+                    a = ops[0][0]
+                    if node.kind == "sum":
+                        return Op(WARP_SUM_KIND, (a,), node.ttype), False
+                    partial = Op("dot", (a, ops[-1][0]), node.ttype)
+                    total = Op(WARP_SUM_KIND, (partial,), node.ttype)
+                    return (total if node.kind == "dot" else Op("sqrt", (total,), node.ttype)), False
+            return self._rep(node)
+        kind = node.kind
+        out = _slice_type(node.ttype, self.warp)
+        if kind == "splat":
+            (a, s), = [self.of(o) for o in node.operands]
+            if s:
+                raise _Refused("a splat of a slice")
+            return Op("splat", (a,), out, node.literal), True
+        if kind == "vec":
+            return self._gather(node, out), True
+        if kind == "set_component_at":
+            return self._write(node, out), True
+        ops = [self.of(o) for o in node.operands]
+        if isinstance(node, Select) and node.operands[0].ttype.shape:
+            raise _Refused("a select by a vector of conditions")
+        from raptor.wings.base.wide import ELEMENTWISE
+
+        if kind not in ELEMENTWISE:
+            raise _Refused(f"{kind} of a wide value")
+        for (_, s), o in zip(ops, node.operands):
+            if not s and o.ttype.shape:
+                raise _Refused(f"a narrow vector beside a wide one: {kind} flags={[s for _, s in ops]} {[(type(q).__name__, getattr(q, 'kind', ''), q.ttype.shape) for q in node.operands]}")
+        new = [a for a, _ in ops]
+        if isinstance(node, Select):
+            return Select(new[0], new[1], new[2], out), True
+        return Op(kind, tuple(new), out, node.literal), True
+
+    def _gather(self, node: Node, out: TensorType) -> Op:
+        """A ``vec`` of reads of one plane at an arithmetic run of indices: lane ``l`` reads the run's elements
+        ``j * warp + l``."""
+        from raptor.wings.base.wide import gather
+
+        g = gather(node)
+        if g is None:
+            return self._affine(node, out)
+        first = node.operands[0]
+        index_type = first.index.ttype
+        base = None if g.base is None else self.of(g.base)
+        if base is not None and base[1]:
+            raise _Refused("a gather based on a slice")
+        parts = []
+        for j in range(out.shape[0]):
+            offset = g.start + j * self.warp * g.step
+            at = make("add", (make("mul", (self.lane, Const(g.step, index_type))), Const(offset, index_type)))
+            if base is not None:
+                at = make("add", (base[0], at))
+            parts.append(At(g.plane, at, first.ttype))
+        return Op("vec", tuple(parts), out)
+
+    def _fill(self, value: LoopValue) -> tuple | None:
+        """A loop that writes element ``j`` of a wide vector at trip ``j`` from a value of ``j`` alone (``r[j] = f(j)`` over
+        the whole vector) is the vector of its values: lane ``l`` computes ``f`` at its own elements."""
+        from raptor.ir.walk import substitute
+
+        loop = value.loop
+        carry = loop.carries[value.slot]
+        if (loop.exit_cond is not None or loop.count is not None or loop.body_sinks
+                or len(carry.ttype.shape) != 1 or (loop.start, loop.step) != (0, 1) or loop.stop != carry.ttype.shape[0]):
+            return None
+        narrow = not sliced(carry.ttype, self.spec)
+        if narrow and carry.ttype.shape[0] > NARROW_FILL_MAX:
+            return None
+        nxt = loop.nexts[value.slot]
+        if not (isinstance(nxt, Op) and nxt.kind == "set_component_at" and nxt.operands[0] is carry
+                and nxt.operands[1] is loop.index):
+            return None
+        element = nxt.operands[2]
+        if any(isinstance(n, LoopCarry) and any(n is c for c in loop.carries) for n in _reach(element)):
+            return None             # the element is a function of the index alone: it reads no carry of the loop
+        index_type = loop.index.ttype
+        if narrow:      # a short vector every lane holds: its elements are unrolled, none is read or written at a run-time index
+            return Op("vec", tuple(self._plain(substitute([element], {id(loop.index): Const(r, index_type)})[0])
+                                   for r in range(loop.stop)), carry.ttype), False
+        parts = []
+        for j in range(loop.stop // self.warp):
+            at = make("add", (self.lane, Const(j * self.warp, index_type)))
+            part, = substitute([element], {id(loop.index): at})
+            parts.append(self._plain(part))
+        return Op("vec", tuple(parts), _slice_type(carry.ttype, self.warp)), True
+
+    def _write(self, node: Op, out: TensorType) -> Op:
+        """``v[k] = x`` on a sliced vector: the lane whose element ``k`` is writes ``x``, the others keep theirs. A constant
+        ``k`` touches one slot; a run-time one is a select in every slot, so no slot is chosen at run time."""
+        (vec, was), index, value = self.of(node.operands[0]), self.of(node.operands[1]), self.of(node.operands[2])
+        if not was or index[1] or value[1]:
+            raise _Refused("a write of a slice or at a slice")
+        k, x = index[0], value[0]
+        scalar = TensorType((), node.ttype.dtype)
+        index_type = k.ttype
+        parts = []
+        known = k.literal if isinstance(k, Const) else None
+        self.writes += known is None
+        for j in range(out.shape[0]):
+            old = Op("component", (vec,), scalar, j)
+            if known is not None and int(known) // self.warp != j:
+                parts.append(old)
+                continue
+            here = make("add", (self.lane, Const(j * self.warp, index_type)))
+            parts.append(Select(make("eq", (k, here)), x, old, scalar))
+        return Op("vec", tuple(parts), out)
+
+    def _affine(self, node: Node, out: TensorType) -> Op:
+        """A ``vec`` whose parts are one expression of the element index: the parts agree node by node, and where they
+        differ they are constants in an arithmetic run. Lane ``l`` computes the parts ``j * warp + l`` from the run."""
+        parts = node.operands
+        built = [self._aligned(parts, j) for j in range(out.shape[0])]
+        return Op("vec", tuple(built), out)
+
+    def _aligned(self, parts, j: int) -> Node:
+        """Part ``j * warp + lane`` of the run ``parts`` (the same expression with its constants moved along)."""
+        def walk(nodes: list) -> Node:
+            first = nodes[0]
+            if all(n is first for n in nodes):
+                return self.of(first)[0] if not first.ttype.shape else self._plain(first)
+            if all(isinstance(n, Const) and not isinstance(n, RoleConst) and n.ttype == first.ttype for n in nodes):
+                lits = [n.literal for n in nodes]
+                step = lits[1] - lits[0]
+                if any(b - a != step for a, b in zip(lits, lits[1:])):
+                    raise _Refused("constants that are not an arithmetic run")
+                start = lits[0] + j * self.warp * step
+                lane = make("cast", (self.lane,), literal=first.ttype.dtype) if first.ttype.dtype != "i32" else self.lane
+                return make("add", (Const(start, first.ttype), make("mul", (lane, Const(step, first.ttype)))))
+            if not all(type(n) is type(first) and n.operands and len(n.operands) == len(first.operands)
+                       and getattr(n, "kind", None) == getattr(first, "kind", None)
+                       and getattr(n, "literal", None) == getattr(first, "literal", None)
+                       and n.ttype == first.ttype for n in nodes):
+                raise _Refused("parts that differ beyond their constants")
+            from raptor.ir.walk import rebuild as _rebuild
+
+            return _rebuild(first, [walk([n.operands[k] for n in nodes]) for k in range(len(first.operands))])
+        return walk(list(parts))
+
+    def _plain(self, node: Node) -> Node:
+        got, is_sliced = self.of(node)
+        if is_sliced:
+            raise _Refused("a slice inside a run of parts")
+        return got
+
+    def _loop(self, loop: Loop) -> tuple:
+        from raptor.ir.loops import build_loop
+
+        got = self.memo.get(id(loop))
+        if got is not None:
+            return got
+        if loop.body_sinks:
+            raise _Refused("a loop that commits once per iteration")
+        slot_sliced = [sliced(c.ttype, self.spec) for c in loop.carries]
+        carries = [LoopCarry(c.depth, c.slot, c.name, _slice_type(c.ttype, self.warp)) if s else c
+                   for c, s in zip(loop.carries, slot_sliced)]
+        for old, new in zip(loop.carries, carries):
+            self.memo[id(old)] = (new, new is not old)
+        inits, nexts = [], []
+        for j, (init, nxt) in enumerate(zip(loop.inits, loop.nexts)):
+            (i, si), (n, sn) = self.of(init), self.of(nxt)
+            if si != slot_sliced[j] or sn != slot_sliced[j]:
+                raise _Refused("a carry whose initial or next value is not held like the carry")
+            inits.append(i)
+            nexts.append(n)
+        exit_cond, exit_values, count = None, (), None
+        if loop.exit_cond is not None:      # a flag every lane computes alike: the lanes leave together
+            exit_cond, was = self.of(loop.exit_cond)
+            if was:
+                raise _Refused("an exit that reads a slice")
+            exit_values = []
+            for j, ev in enumerate(loop.exit_values):
+                value, got = self.of(ev)
+                if got != (slot_sliced[j] if j < len(slot_sliced) else False):
+                    raise _Refused("an exit value not held like its carry")
+                exit_values.append(value)
+        if loop.count is not None:
+            count, was = self.of(loop.count)
+            if was:
+                raise _Refused("a trip count that reads a slice")
+        new_loop = build_loop(loop.index, carries, inits, nexts, start=loop.start, stop=loop.stop, step=loop.step,
+                              exit_cond=exit_cond, exit_values=exit_values, count=count, count_tail=loop.count_tail,
+                              dynamic=loop.dynamic)
+        got = self.memo[id(loop)] = (new_loop, slot_sliced)
+        return got
+
+
+def _team_min(sinks, spec) -> int:
+    """The card's TEAM_MIN for the scalars the sinks commit, on the device of ``spec``."""
+    return spec.wide(sinks[0].ttype.dtype)["TEAM_MIN"]
+
+
+def slice_sinks(sinks, spec, *, explicit: bool = True) -> tuple | None:
+    """``sinks`` in the warp form, or ``None`` when some node has no rule there. ``explicit`` is whether the warp form was
+    asked for: otherwise (``auto``) a kernel whose only wide work is writes at run-time indices keeps the placed form, which
+    measured 4x faster there (each write is a select in every slot of the slice)."""
+    sinks = tuple(sinks)
+    if not sinks or not all(type(s) is Assign or isinstance(s, Finish) for s in sinks):
+        return None
+    slicer = _Slicer(spec)
+    out = []
+    from . import WarpStore
+
+    try:
+        for sink in sinks:
+            value, was = slicer.of(sink.value)
+            if isinstance(sink, Finish):        # the flag is the same in every lane; each writes the one bit
+                if was:
+                    return None
+                out.append(Finish(sink.name, value))
+                continue
+            out.append(WarpStore(sink.name, value, sink.ttype))
+    except _Refused:
+        return None
+    if not slicer.used or (not explicit and slicer.writes and not slicer.folds):
+        return None
+    if not explicit and slicer.widest < _team_min(sinks, spec):       # auto: the warp pays from the card's TEAM_MIN elements
+        return None
+    return tuple(out)

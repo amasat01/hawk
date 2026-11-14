@@ -225,7 +225,7 @@ def lstsq(j: Any, r: Any) -> tuple[Value, Value]:
     rank deficient; the conditioning is squared, as in any normal-equations solve.
 
     Tracing records the MATH only: one ``lstsq`` node and its ``lstsq_info``. How it is solved is the backend's lowering
-    (:mod:`lowering.lstsq`): the normal equations up to the target variant's ``linalg.max_dim`` unknowns, above it Householder
+    (:mod:`raptor.wings.base.lstsq`): the normal equations up to the target wing's ``linalg.max_dim`` unknowns, above it Householder
     QR on a team of threads per lane, which does not square the conditioning (``info`` is then the first column whose ``R``
     diagonal is exactly zero)."""
     jn, rn = node_of(j), node_of(r)

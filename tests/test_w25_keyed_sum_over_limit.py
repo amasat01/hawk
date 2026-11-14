@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""A keyed sum whose payload exceeds the variant's ``linalg.team_max_dim`` (4096 elements) is a block sum at trace time; the host build
+"""A keyed sum whose payload exceeds the wing's ``linalg.team_max_dim`` (4096 elements) is a block sum at trace time; the host build
 of it delivers the NumPy value. Independent oracle: NumPy sums per key (outer products; a left-to-right ordered sum)."""
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from test_team_linalg import KEYS, ROWS, _build_sum, _run_sum
 import hawk
 import hawk.math as m
 from hawk import Grid, Matrix, Vector, kernel
-from hawk.variants import load
+from hawk.facts import load
 
 
 @pytest.fixture(scope="module")
@@ -22,7 +22,7 @@ def cache(tmp_path_factory):
     return tmp_path_factory.mktemp("w25_keyed_over_limit")
 
 
-def test_the_limit_is_the_variants_number():
+def test_the_limit_is_the_facts_number():
     assert load("cpu")["linalg"]["team_max_dim"] == 4096
 
 
@@ -95,8 +95,8 @@ def test_the_boundary_of_the_limit_is_the_numpy_value_under_both_contracts(cache
 
 
 def _blocks_under(spec, k):
-    from lowering import team
-    from lowering.block import is_block
+    from raptor.wings.base import team
+    from raptor.wings.base.block import is_block
 
     from raptor.ir.walk import canonical_nodes
 
@@ -104,11 +104,11 @@ def _blocks_under(spec, k):
     return sum(is_block(n) for n in canonical_nodes(tuple(sinks))[0])
 
 
-def test_the_fallback_point_is_the_variants(cache):
+def test_the_fallback_point_is_the_facts(cache):
     import dataclasses
 
     from hawk.targets import build_spec
-    from hawk.variants import derive
+    from hawk.facts import derive
 
     spec = build_spec(("host",))
     small = dataclasses.replace(spec, host=derive(spec.host, {"linalg": {"team_max_dim": 64}}))

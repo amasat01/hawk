@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from hawk_cuda import nvrtc, toolchain
+from ospreys.cuda import nvrtc, toolchain
 from raptor.errors import RaptorError as HawkError
 
 

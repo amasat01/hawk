@@ -15,7 +15,7 @@ from _specs import DEVICE, HOST, device
 import pytest
 from _linalg_kernels import eigh_kernel, eigh_values_kernel
 
-from lowering.split import stages
+from raptor.wings.base.split import stages
 
 
 def _ops(kernel, *, scalar="float32", form="auto", device_only=True, spec=DEVICE):

@@ -9,7 +9,7 @@ branch (not just as a branch's own value, which
 
 from __future__ import annotations
 
-from lowering.dispatch import dispatch as _dispatch
+from raptor.wings.base.dispatch import dispatch as _dispatch
 import numpy as np
 import pytest
 from _eval import evaluate

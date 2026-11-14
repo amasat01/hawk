@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import hawk
-from simt import WarpLane
+from raptor.wings.simt import WarpLane
 from raptor.ir.loops import boundary
 from raptor.ir.nodes import At, Const, Leaf, LoopIndex, Select, TensorType
 from raptor.ir.ops import make

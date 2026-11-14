@@ -560,15 +560,15 @@ def _sidecar(kernel, *, spec, name, smode, kind, native, fmt, lead, derivative=N
 
 
 def _run_facts(kernel, meta: dict, spec) -> dict:
-    """The variant numbers a run reads from the unit's sidecar: ``cell_row`` (samples per row of a reduction over samples; a unit with
+    """The facts a run reads from the unit's sidecar: ``cell_row`` (samples per row of a reduction over samples; a unit with
     cells) and ``scatter_chunks`` (the most chunks of an ordered scatter; a unit with a team stage). A build whose host and device
-    variants state different row widths is refused by name: one unit has one row width."""
+    wings state different row widths is refused by name: one unit has one row width."""
     out = {}
     stages = meta.get("stages") or ()
     if meta.get("cells"):
         widths = {side: v["cells"]["row"] for side, v in (("host", spec.host), ("device", spec.device)) if v and "row" in v.get("cells", {})}
         if len(set(widths.values())) > 1:
-            raise HawkError(f"one unit has one row width: the host variant has cells.row {widths['host']}, the device variant {widths['device']}")
+            raise HawkError(f"one unit has one row width: the host wing has cells.row {widths['host']}, the device wing {widths['device']}")
         out["cell_row"] = int(spec.need("cells", "row"))
     if getattr(kernel, "team", None) is not None or meta.get("team_planes") or any("team" in st for st in stages):
         out["scatter_chunks"] = int(spec.need("scatter", "max_chunks"))
@@ -845,8 +845,8 @@ def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
 
 def _plain_block_sums(kernel, spec):
     """``kernel`` as the build's forms ask: every block sum the ``linalg_form`` does not keep made its plain sum (the tracer
-    keeps every block-shaped sum as one :class:`~simt.team.BlockSum`) and, under ``wide_form="thread"``, each store
-    under a condition put back as a select over the store (:func:`simt.wide.unstored`); else ``kernel`` itself. A compensated sum gets
+    keeps every block-shaped sum as one :class:`~raptor.wings.simt.team.BlockSum`) and, under ``wide_form="thread"``, each store
+    under a condition put back as a select over the store (:func:`raptor.wings.simt.wide.unstored`); else ``kernel`` itself. A compensated sum gets
     the companion plane the tracer binds for a plain one."""
     from ..trace.kernel import Kernel, _contract_companions
 
@@ -1032,7 +1032,7 @@ def _tile_rows(sinks, real_bytes: int, bodies: int, spec) -> int:
 
 
 def _warp_kernel(kernel, name: str, spec, explicit: bool = True, real_bytes: int = 8, plain: bool = True):
-    """``kernel`` in the warp form (:func:`simt.lane.slice_sinks`), or ``None`` when it is not one plain launch of wide
+    """``kernel`` in the warp form (:func:`raptor.wings.simt.lane.slice_sinks`), or ``None`` when it is not one plain launch of wide
     Mutables the form has a rule for."""
     from ..targets import cards
     from .stages import WarpStage
@@ -1066,7 +1066,7 @@ def _warp_kernel(kernel, name: str, spec, explicit: bool = True, real_bytes: int
 
 
 def _wide_ok(kernel, smode, device: bool):
-    """Whether the placement pass may run on ``kernel`` (:func:`simt.split.stages` ``wide``): a build
+    """Whether the placement pass may run on ``kernel`` (:func:`raptor.wings.simt.split.stages` ``wide``): a build
     for the device, of a kernel that is one launch (a plain, grouped or segmented one, or an automatic one's two bodies)."""
     from raptor.wings.cpu.vectorise import interchanged_loops
 
@@ -1078,7 +1078,7 @@ def _wide_ok(kernel, smode, device: bool):
 def _expand_split(kernels: list, names: list, kinds: list, *, spec, smode=None, device: bool = False,
                   device_only: bool = False) -> tuple:
     """Replace every member that reads a value reduced over samples with its
-    stages (:func:`simt.split.stages`), named ``<name>``, ``<name>_2``, ...;
+    stages (:func:`raptor.wings.simt.split.stages`), named ``<name>``, ``<name>_2``, ...;
     the rest pass through untouched. Also returns, per first-stage name, the
     sidecar block naming every stage and every cell."""
     from ..diff import Derived
@@ -1268,10 +1268,10 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     ``linalg_form`` is how per-lane linear algebra is worked: ``"auto"`` keeps one thread per
     matrix up to ``n = 32`` and uses a team of threads per matrix above it, ``"team"`` uses a
     team at every size, ``"thread"`` refuses a matrix above 32 by name
-    (:mod:`simt.team`). ``wide_form`` is where a per-lane value wider than a thread's
+    (:mod:`raptor.wings.simt.team`). ``wide_form`` is where a per-lane value wider than a thread's
     registers lives: ``"auto"`` builds a kernel as a warp per lane when every target is a device
-    and the kernel has a rule in that form (:mod:`simt.lane`, folds of 128 elements or more), else places
-    the value (:mod:`simt.wide`) -- a bundle with a host target keeps the placed form, as the host has no
+    and the kernel has a rule in that form (:mod:`raptor.wings.simt.lane`, folds of 128 elements or more), else places
+    the value (:mod:`raptor.wings.simt.wide`) -- a bundle with a host target keeps the placed form, as the host has no
     warp; ``"thread"`` keeps every value in the lane's registers and local memory (the text before the pass);
     ``"team"`` asks for the warp form (device targets only). ``launch_bounds=(threads, blocks_per_sm)`` compiles every device kernel with
     ``__launch_bounds__(threads, blocks_per_sm)`` and records ``launch.block = threads`` in the sidecar, so a launch runs
@@ -1295,12 +1295,12 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     can't share one manifest.
 
     ``host_profile`` picks the host code-gen profile
-    (:data:`osprey_cpu.toolchain.HOST_PROFILES`): ``"native-vector-math"``
+    (:data:`ospreys.cpu.toolchain.HOST_PROFILES`): ``"native-vector-math"``
     (default on x86-64 with a GCC host compiler, and on arm64) or ``"native"`` (libm
     bit-identity) for a bundle built on the machine that runs it,
     ``"portable"`` for one that's prebuilt and shipped. Empty means
     ``$HAWK_HOST_PROFILE``, else
-    :func:`osprey_cpu.toolchain.default_host_profile`.
+    :func:`ospreys.cpu.toolchain.default_host_profile`.
 
     ``opt_level`` picks the optimisation level
     (:data:`hawk.compile.toolchain.OPT_LEVELS`: ``"O0"``..``"O3"``), the

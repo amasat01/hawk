@@ -12,7 +12,7 @@ not feel it. The tolerances are ``K n eps cond`` for solves and determinants,
 
 from __future__ import annotations
 
-from lowering.dispatch import dispatch as _dispatch
+from raptor.wings.base.dispatch import dispatch as _dispatch
 from _specs import spec_for, default_kind
 import pathlib
 import re

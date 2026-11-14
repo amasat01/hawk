@@ -169,7 +169,7 @@ def test_a_banded_warp_sum_is_the_same_cells_every_run_and_close_to_the_exact_do
     import eagle
     from eagle import arrays
     from eagle._alloc import synchronize
-    from hawk_cuda import _probe_wide as probe
+    from ospreys.cuda import _probe_wide as probe
 
     n = 64
     rng = np.random.default_rng(11)
@@ -247,8 +247,8 @@ def test_the_banded_fold_only_loops_are_unrolled_by_the_accumulator_period_and_a
 
     def team_body(spec, active, cells):
         return _team_body(spec, active, cells, body=Body)
-    from lowering.split import stages
-    from lowering.team import fold_spec
+    from raptor.wings.base.split import stages
+    from raptor.wings.base.team import fold_spec
 
     pragma = "#pragma unroll aether::banded::BandAccum::period"
     part = stages("total", _total("ordered", 100000).sinks, wide=True, real_bytes=8, inplace=True, spec=DEVICE)[0].team

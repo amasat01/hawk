@@ -4,9 +4,9 @@
 """BUILD SETTINGS: the knobs that steer code generation and compilation, as ONE explicit value (never ambient).
 
 A :class:`BuildSettings` is passed as ``settings=`` to a public build entry (``build``, ``emit_source``, ``build_bundle``,
-``hawk_c.render``). The entry validates it here, checks that every key it sets is DECLARED by a backend of
+``ospreys.c.render``). The entry validates it here, checks that every key it sets is DECLARED by a backend of
 the build (a backend's manifest lists the setting keys it accepts under ``"settings"``; an undeclared key is refused by name), and
-turns it into the plain named values of the build spec's :class:`lowering.settings.Settings`. This type, its validation and its
+turns it into the plain named values of the build spec's :class:`raptor.wings.base.settings.Settings`. This type, its validation and its
 defaults live in hawk only: below hawk only the plain values travel."""
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from ._errors import HawkError
 from . import wings as _wings
 
 if TYPE_CHECKING:
-    from lowering.settings import Settings
+    from raptor.wings.base.settings import Settings
 
 
 #: The forms a build may ask for: ``auto`` picks per site by the threshold below, ``static``
@@ -31,15 +31,15 @@ if TYPE_CHECKING:
 FORMS = ("auto", "static", "rolled")
 
 #: The forms a build may ask of per-lane linear algebra (``linalg_form``): ``auto`` picks by size
-#: (one thread per matrix up to the variant's ``linalg.max_dim``, a team above it), ``thread`` keeps
+#: (one thread per matrix up to the wing's ``linalg.max_dim``, a team above it), ``thread`` keeps
 #: every matrix in one lane (refused above that size, by name) and ``team`` runs every
 #: factorisation as a team stage whatever its size.
 LINALG_FORMS = ("auto", "thread", "team")
 
 #: The forms a build may ask of a per-lane value wider than a thread's registers (``wide_form``):
-#: ``auto`` places each such value where the card keeps it (:mod:`simt.wide`), ``thread``
+#: ``auto`` places each such value where the card keeps it (:mod:`raptor.wings.simt.wide`), ``thread``
 #: keeps every value in the lane's own registers and local memory (the text before the pass),
-#: and ``team`` is a warp per lane (:mod:`simt.lane`), for the kernels it has a rule for; the others build as ``auto``.
+#: and ``team`` is a warp per lane (:mod:`raptor.wings.simt.lane`), for the kernels it has a rule for; the others build as ``auto``.
 WIDE_FORMS = ("auto", "thread", "team")
 
 #: How a dense contraction is run (``contraction``): ``direct`` is the kernel's own loop; ``gemm`` asks eagle for a
@@ -48,7 +48,7 @@ CONTRACTION_FORMS = ("direct", "gemm")
 
 
 def checked_bounds(launch_bounds: tuple[int, int], limits: dict) -> tuple[int, int]:
-    """``launch_bounds`` as ints, refused by name when it breaks ``limits`` (the variant's ``launch`` data: ``warp_size``,
+    """``launch_bounds`` as ints, refused by name when it breaks ``limits`` (the wing's ``launch`` data: ``warp_size``,
     ``max_threads_per_sm``)."""
     threads, blocks = launch_bounds
     warp, cap = limits["warp_size"], limits["max_threads_per_sm"]
@@ -73,7 +73,7 @@ def refuse_choice(key: str, value) -> None:
 
 
 def check(settings: Settings, limits: dict | None = None) -> Settings:
-    """``settings`` with its choices validated (and ``launch_bounds`` checked against ``limits``, the device variant's ``launch``
+    """``settings`` with its choices validated (and ``launch_bounds`` checked against ``limits``, the device wing's ``launch``
     data, when given), refused by name."""
     for key, value in (("emit_form", settings.form), ("linalg_form", settings.linalg_form), ("wide_form", settings.wide_form),
                        ("contraction", settings.contraction)):
@@ -119,14 +119,14 @@ class BuildSettings:
         return tuple(f.name for f in fields(self) if getattr(self, f.name) is not None)
 
 
-#: field -> the :class:`~lowering.settings.Settings` field it becomes.
+#: field -> the :class:`~raptor.wings.base.settings.Settings` field it becomes.
 _SETTING = MappingProxyType({"emit_form": "form", "linalg_form": "linalg_form", "wide_form": "wide_form", "contraction": "contraction",
                              "launch_bounds": "launch_bounds", "fold_rows": "fold_k",
                              "fast_entries": "fast_entries"})
 
 
 def settings_of(build_settings: BuildSettings | None, base):
-    """``base`` (a :class:`~lowering.settings.Settings`) with the fields ``build_settings`` sets laid over it: plain values only."""
+    """``base`` (a :class:`~raptor.wings.base.settings.Settings`) with the fields ``build_settings`` sets laid over it: plain values only."""
     if build_settings is None:
         return base
     if not isinstance(build_settings, BuildSettings):

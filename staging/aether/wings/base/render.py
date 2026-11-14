@@ -61,12 +61,12 @@ from raptor.ir.nodes import (
 )
 from raptor.ir.linalg import CONSUMERS, FACTORISATIONS
 from raptor.ir.ops import ELEMENTWISE_BINARY, ELEMENTWISE_TERNARY, RANDOM_OPS, UNARY_MATH
-from lowering import cost as _cost, lanes as _lanes, loops as _loops, slotwise as _slotwise, split as _split
+from raptor.wings.base import cost as _cost, lanes as _lanes, loops as _loops, slotwise as _slotwise, split as _split
 from raptor.ir.walk import canonical_nodes
 from raptor.ir.types import TensorType
 from . import rtstore
-from lowering import wide as _wide
-from lowering.dispatch import switch_form
+from raptor.wings.base import wide as _wide
+from raptor.wings.base.dispatch import switch_form
 from raptor.ir.fold import rolled
 from .dispatch import _DispatchMixin
 from .dispatch import render_dispatch_rank0 as render_dispatch_rank0
@@ -124,9 +124,9 @@ def render_body(sinks: Sequence[Sink], walk: Walk, *, spec, kind, writer, indent
     :class:`hawk.ext.Kind` the commits render under (the caller resolves it).
     ``writer`` is the :class:`aether.wings.base.writer.Writer` that spells the text
     (the building backend row's; required)."""
-    if walk.kinds.intersection(LSTSQ_OPS):     # the writer takes lowered sinks (lowering.lstsq.lowered), never lowers
+    if walk.kinds.intersection(LSTSQ_OPS):     # the writer takes lowered sinks (raptor.wings.base.lstsq.lowered), never lowers
         raise RaptorError(f"the writer was given an unlowered least-squares node ({', '.join(sorted(walk.kinds.intersection(LSTSQ_OPS)))}); "
-                        "the caller lowers the kernel first (lowering.lstsq.lowered)")
+                        "the caller lowers the kernel first (raptor.wings.base.lstsq.lowered)")
     return _Renderer(tuple(sinks), walk, indent, kind, writer=writer, spec=spec).run()
 
 
@@ -154,7 +154,7 @@ class LaneSplit:
     may run on a finished sample and its result be discarded: the step reads
     no plane at a computed index and divides no integer. ``op_count`` is
     the step's operation count, ``fp64_ops`` its 64-bit floating-point
-    operations (:func:`lowering.cost.fp64_ops`)."""
+    operations (:func:`raptor.wings.base.cost.fp64_ops`)."""
 
     guard: str | None
     pre: str
@@ -281,7 +281,7 @@ class LaneSegments:
     loops: tuple
     types: dict
     #: ``{proxy name: (plane binding, width)}``: the scratch planes of wide values a segment reads element by element
-    #: (:mod:`lowering.wide`), each a lane row of the interchanged text; the text declares the proxies itself
+    #: (:mod:`raptor.wings.base.wide`), each a lane row of the interchanged text; the text declares the proxies itself
     proxies: dict = field(default_factory=dict)
 
 
@@ -372,17 +372,17 @@ class _Renderer(_DispatchMixin):
 
     @property
     def rolled_min(self) -> int | None:
-        """The fold threshold of this text's variant (``form.rolled_fold_min``; ``None``: it names none, and a site that needs it is refused)."""
+        """The fold threshold of this text's wing (``form.rolled_fold_min``; ``None``: it names none, and a site that needs it is refused)."""
         return self.spec.primary.get("form", {}).get("rolled_fold_min")
 
     @property
     def max_dim(self) -> int | None:
-        """The largest dimension one lane factors alone in this text's variant (``linalg.max_dim``; ``None``: it names none)."""
+        """The largest dimension one lane factors alone in this text's wing (``linalg.max_dim``; ``None``: it names none)."""
         return self.spec.primary.get("linalg", {}).get("max_dim")
 
     def __init__(self, sinks: tuple, walk: Walk, indent: str, kind, *,
                  writer, spec) -> None:
-        #: The build's :class:`~hawk.targets.BuildSpec` seen by this text: the variant numbers every site reads come from it.
+        #: The build's :class:`~hawk.targets.BuildSpec` seen by this text: the facts every site reads come from it.
         self.spec = spec
         if kind is None:
             raise RaptorError("the writer needs the kernel kind from its caller (hawk.ext.Kind); none was given")
@@ -401,7 +401,7 @@ class _Renderer(_DispatchMixin):
         self.clamp_spans = _clamp_spans(self.nodes, self.position)
         #: ``{plane: width}`` of the planes the kernel's placements write (a scratch plane's proxy needs its tile).
         self.plane_widths = {name: rec["width"] for name, rec in _wide.record(self.nodes).items()}
-        #: Whether a placement (:mod:`lowering.wide`) renders as its plane (the device text) or as its value
+        #: Whether a placement (:mod:`raptor.wings.base.wide`) renders as its plane (the device text) or as its value
         #: (the host text), and the texts of the planes' per-lane proxies, which a use reads element by element.
         self.placed = spec.settings.placed
         self.proxies: set = set()
@@ -552,7 +552,7 @@ class _Renderer(_DispatchMixin):
         """Positions of the wide read-only leaves bound as the ``[i]`` proxy.
 
         A fixed width threshold stands in for a register-pressure model: a non-mutable
-        rank>=1 leaf of more than the variant's ``form.lazy_leaf_width`` elements whose every
+        rank>=1 leaf of more than the wing's ``form.lazy_leaf_width`` elements whose every
         use is a ``component`` read at a static index is not copied whole
         (``.get()`` is one register per element); each read goes through the
         proxy. A leaf some library call takes as an operand is a proxy at any
@@ -1269,7 +1269,7 @@ class _Renderer(_DispatchMixin):
         names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
                       for j, c in enumerate(loop.carries))
         self.carry_names[pos] = names
-        #: the carried slots that live in a plane (:mod:`lowering.wide`): the carry IS the plane's proxy, written in place
+        #: the carried slots that live in a plane (:mod:`raptor.wings.base.wide`): the carry IS the plane's proxy, written in place
         planed = {j for j, init in enumerate(loop.inits) if self.placed and (_wide.is_resident(init) or _wide.is_scratch(init))}
         names = tuple(self._ref(loop.inits[j]) if j in planed else name for j, name in enumerate(names))
         self.carry_names[pos] = names
@@ -1362,7 +1362,7 @@ class _Renderer(_DispatchMixin):
     @staticmethod
     def _speculative(loop: Loop) -> bool:
         """Whether one trip of ``loop`` is safe to run and discard on a
-        finished sample (:func:`lowering.loops.speculative_step`)."""
+        finished sample (:func:`raptor.wings.base.loops.speculative_step`)."""
         return _loops.speculative_step(loop)
 
     def lane_split(self) -> LaneSplit | None:
@@ -1475,7 +1475,7 @@ class _Renderer(_DispatchMixin):
         names = tuple(f"hawk_v{pos}_{j}_{_ident(c.name)}"
                       for j, c in enumerate(loop.carries))
         self.carry_names[pos] = names
-        #: the carried slots that live in a plane (:mod:`lowering.wide`): the carry IS the plane's proxy, written in place
+        #: the carried slots that live in a plane (:mod:`raptor.wings.base.wide`): the carry IS the plane's proxy, written in place
         planed = {j for j, init in enumerate(loop.inits) if self.placed and (_wide.is_resident(init) or _wide.is_scratch(init))}
         names = tuple(self._ref(loop.inits[j]) if j in planed else name for j, name in enumerate(names))
         self.carry_names[pos] = names
@@ -1769,7 +1769,7 @@ class _Renderer(_DispatchMixin):
             self.writer.accum_scattered(self, sink, target, index, value)
 
     def _key_run(self, sink: Sink):
-        """The run its key moves in (:func:`lowering.lanes.key_run`: proven,
+        """The run its key moves in (:func:`raptor.wings.base.lanes.key_run`: proven,
         tested or sorted), or ``None`` for the per-lane commit. Asked only of
         a writer that spells the run commit, so every other writer's text is
         unchanged."""

@@ -5,7 +5,7 @@
 
 import pytest
 
-from hawk_c import spelling as S
+from ospreys.c import spelling as S
 from aether.wings.base.wrapper import FLOAT32, FLOAT64
 from raptor.errors import RaptorError as HawkError
 from raptor.ir.types import TensorType

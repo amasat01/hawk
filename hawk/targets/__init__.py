@@ -111,11 +111,11 @@ def detect_machine(arch: str = "", targets=()) -> Machine:
 
 @dataclass(frozen=True)
 class BuildSpec:
-    """The one object that carries the variant of the target being built through a build: the merged variant data of the
-    host row and of the device row (``None``: no such target; a backend whose manifest names no variant has none: its own text
-    gets an EMPTY variant, never another target's), the machine as data, the class the device's thresholds come from, the
+    """The one object that carries the wing of the target being built through a build: the merged facts of the
+    host row and of the device row (``None``: no such target; a backend whose manifest names no wing has none: its own text
+    gets an EMPTY wing, never another target's), the machine as data, the class the device's thresholds come from, the
     thresholds a kit forces. Holds no callable, no backend and no
-    per-build setting of its own: those are :attr:`settings`, a frozen :class:`lowering.settings.Settings` set by the entry."""
+    per-build setting of its own: those are :attr:`settings`, a frozen :class:`raptor.wings.base.settings.Settings` set by the entry."""
 
     host: dict | None
     device: dict | None
@@ -127,7 +127,7 @@ class BuildSpec:
     settings: "Settings" = None
     #: ``{(writer, dialect): module name}`` from the manifests: where a writer finds its spellings of a dialect (data; the module loads when used)
     spellings: dict = field(default_factory=dict)
-    #: The variant keys the backend rows of the build state under ``reads`` (``None``: a spec made by hand, nothing is checked): :meth:`need`
+    #: The fact keys the backend rows of the build state under ``reads`` (``None``: a spec made by hand, nothing is checked): :meth:`need`
     #: refuses a key no row states.
     reads: frozenset | None = None
 
@@ -138,14 +138,14 @@ class BuildSpec:
             object.__setattr__(self, "settings", default_settings())
 
     def with_settings(self, **changes) -> "BuildSpec":
-        """A new spec with these per-build settings changed (:class:`lowering.settings.Settings`); this one is unchanged."""
+        """A new spec with these per-build settings changed (:class:`raptor.wings.base.settings.Settings`); this one is unchanged."""
         from dataclasses import replace
 
         return replace(self, settings=replace(self.settings, **changes))
 
     @property
     def primary(self) -> dict:
-        """The variant the code in hand reads: that of the text being rendered (:meth:`for_target`; empty when its backend names
+        """The wing the code in hand reads: that of the text being rendered (:meth:`for_target`; empty when its backend names
         none), else, for what is common to every target of the build, the device's when there is one, else the host's."""
         if self.focus is not None:
             return self.focus
@@ -153,26 +153,26 @@ class BuildSpec:
         return {} if data is None else data
 
     def need(self, section: str, key: str | None = None):
-        """``primary[section][key]`` (the section when ``key`` is ``None``), refused by name when the variant has no such data."""
+        """``primary[section][key]`` (the section when ``key`` is ``None``), refused by name when the wing has no such data."""
         dotted = section if key is None else f"{section}.{key}"
         if self.reads is not None and dotted not in self.reads and section not in self.reads:
-            raise HawkError(f"the build reads the variant key {dotted!r}, which no backend row of the build states under `reads` in its manifest")
+            raise HawkError(f"the build reads the fact key {dotted!r}, which no backend row of the build states under `reads` in its manifest")
         data = self.primary.get(section)
         if data is None or (key is not None and key not in data):
-            raise HawkError(f"the variant of the target being built has no {section}{'.' + key if key else ''}: a backend whose manifest "
-                            "names no variant cannot use a pass that reads it")
+            raise HawkError(f"the wing of the target being built has no {section}{'.' + key if key else ''}: a backend whose manifest "
+                            "names no wing cannot use a pass that reads it")
         return data if key is None else data[key]
 
     @property
     def uniform_run(self) -> int | None:
         """The lanes an aligned run a uniform access is proven over spans in the text being rendered: the device's warp width, else the
-        host's own run (``None``: the variant names none, so nothing is proven uniform)."""
+        host's own run (``None``: the wing names none, so nothing is proven uniform)."""
         data = self.primary
         return data.get("launch", {}).get("warp_size") or data.get("uniform_run")
 
     @property
     def placement_class(self) -> str:
-        """The name of the wide-value class the placement reads: the device class of the build, else the host variant's own."""
+        """The name of the wide-value class the placement reads: the device class of the build, else the host wing's own."""
         if self.wide_class:
             return self.wide_class
         from .. import wings as _wings
@@ -181,7 +181,7 @@ class BuildSpec:
         return wide_class.select("", self.device) if self.device is not None else self.need("host_wide")["name"]
 
     def wide_tables(self) -> dict:
-        """The wide-value thresholds the placement reads, ``{"runtime_min", "wide_min"}``: the host variant's own table, else the table of
+        """The wide-value thresholds the placement reads, ``{"runtime_min", "wide_min"}``: the host wing's own table, else the table of
         the device class of the build."""
         if self.device is None:
             return {k: v for k, v in self.need("host_wide").items() if k != "name"}
@@ -191,14 +191,14 @@ class BuildSpec:
         return {"runtime_min": found.runtime_min, "wide_min": found.wide_min}
 
     def device_fp64_ratio(self) -> int:
-        """FP32 lanes per FP64 lane of the device the build runs on (a build with a device variant only)."""
+        """FP32 lanes per FP64 lane of the device the build runs on (a build with a device wing only)."""
         from .. import wings as _wings
 
         arch = self.machine.arch or self.device["default_arch"]
         return _wings.device_view("wide_class").features_of(arch, self.device).fp64_ratio
 
     def for_target(self, row) -> "BuildSpec":
-        """This spec as seen by the text of backend ``row``: its own variant (empty when it names none) is the one :attr:`primary` answers."""
+        """This spec as seen by the text of backend ``row``: its own wing (empty when it names none) is the one :attr:`primary` answers."""
         from dataclasses import replace
 
         return replace(self, focus=self.by_target.get(row.id) or {}, reads=frozenset(registry.traits(row.id).get("reads", ())))
@@ -219,11 +219,11 @@ class BuildSpec:
 def build_spec(targets, arch: str = "", *, machine: Machine | None = None, device: dict | None = None,
                wide_override: dict | None = None, settings=None, build_settings=None) -> BuildSpec:
     """The spec of a build of ``targets`` (ids) for device ``arch``: each row's manifest names its wings (the raptor leaf, a map from the host's
-    isa for a host row, gives its facts). ``device`` replaces the device variant's data (a test or a kit passes other numbers), ``wide_override``
+    isa for a host row, gives its facts). ``device`` replaces the device wing's data (a test or a kit passes other numbers), ``wide_override``
     forces card thresholds. ``settings`` are the per-build settings (default: all unset); ``build_settings`` (:class:`hawk.build_settings.BuildSettings`) is laid over them after its keys
     are checked against the targets' manifests."""
     from .. import wings as _wings
-    from ..variants import load, named
+    from ..facts import load, named
 
     machine = machine or detect_machine(arch, targets)
     host = dev = None
@@ -233,9 +233,9 @@ def build_spec(targets, arch: str = "", *, machine: Machine | None = None, devic
             continue                    # lowering refuses it by name
         row = TARGETS[target]
         _wings.require(_wings.row_wings(row.wings, machine.isa), target)
-        if row.variant is None:
+        if row.facts_name is None:
             continue
-        data = load(named(row.variant, machine.isa))
+        data = load(named(row.facts_name, machine.isa))
         by_target[target] = device if (row.device and device is not None) else data
         if row.device:
             dev = dev or data

@@ -5,7 +5,7 @@
 
 A team stage is launched with one team per lane (device: ``blockIdx.x`` is the lane and the
 block is the team; host: the lane loop of the entry, a team of one). Its body is the calls of
-:class:`lowering.team.Step`, in order, each on the lane's slice of the scratch planes the
+:class:`raptor.wings.base.team.Step`, in order, each on the lane's slice of the scratch planes the
 per-lane stages stored the operands in. Every call is collective: all the threads of the team
 make it with the same arguments, which the entry guarantees by leaving a lane past ``count``
 for the whole block at once.
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from raptor.errors import RaptorError
 
-from lowering.team import GROUPS, TeamSpec
+from raptor.wings.base.team import GROUPS, TeamSpec
 
 from .wrapper import TEAM_CALL
 
@@ -235,9 +235,9 @@ def _fold(step, cells=None) -> list:
 
 def _chunk_count(step) -> list:
     """The chunks of an ordered scatter, ``min(max_chunks, max(1, nSamples / cells))``: ``count`` is the cells; ``max_chunks`` is
-    the step's, from the variant's ``scatter.max_chunks``."""
+    the step's, from the wing's ``scatter.max_chunks``."""
     if not step.max_chunks:
-        raise RaptorError("an ordered scatter step carries no max_chunks: the variant's scatter.max_chunks is not stated")
+        raise RaptorError("an ordered scatter step carries no max_chunks: the wing's scatter.max_chunks is not stated")
     return ["const std::size_t hawk_cells = static_cast<std::size_t>(count);",
             "const std::size_t hawk_fit = static_cast<std::size_t>(nSamples) / hawk_cells;",
             f"const std::size_t hawk_chunks = hawk_fit < 1 ? 1 : (hawk_fit > {step.max_chunks} ? {step.max_chunks} : hawk_fit);"]

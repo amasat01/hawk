@@ -61,14 +61,14 @@ from math import prod
 
 from raptor.ir import Walk
 from raptor.errors import RaptorError
-from lowering.cells import FINISHED_PLANE
+from raptor.wings.base.cells import FINISHED_PLANE
 from raptor.ir.types import Slot
 from aether.wings.base.render import SAMPLE_SUM_TERMS, LaneSegments, LaneSplit, render_lane_segments, render_lane_split
 from aether.wings.base.wrapper import INTERCHANGE_MACRO, SAMPLE_SUM_OP_CODE, ActiveSpec, SegmentSpec, active_reads, sample_sum_fill, segment_reads, unpack_lines
 from aether.wings.base.box import BOX_OWN, owned_lane
 from aether.wings.base.dispatch import render_dispatch_rank0
 from aether.wings.base.spelling import binding_name, carry_type, element_spelling, finish_binding, reconstruct_call, view_type
-from lowering.exchange import mirror_of
+from raptor.wings.base.exchange import mirror_of
 
 #: Host-only helpers spliced after the shared prelude: the ``terminated``
 #: plane binding the host reads its masks through, same mirror and bytes
@@ -556,7 +556,7 @@ def host_tile_rule(lane_bytes: int, op_count: int, finishes: bool, stop: int, sp
     The rule: a tile's lane arrays fill at most :data:`L1_SHARE` of L1d,
     or :data:`L2_SHARE` of L2 when not even one lane block (``64``
     samples) fits that; the tile is the most samples that fit, rounded
-    down to whole lane blocks and clamped to the variant's ``[lanes.tile_min, lanes.tile_max]`` (at least one lane block, at most what
+    down to whole lane blocks and clamped to the wing's ``[lanes.tile_min, lanes.tile_max]`` (at least one lane block, at most what
     one launch's tile of eagle's team plausibly holds).
     ``k`` is ``stop`` when the kernel finishes its own samples (a tile stops
     once its last sample finished, so a larger ``k`` only saves launches),
@@ -925,7 +925,7 @@ def interchange(name: str, sinks, walk: Walk, kind, real_bytes: int = 8, *, spec
 LOOP_PRELUDE = (f"#ifndef {INTERCHANGE_MACRO}\n#define {INTERCHANGE_MACRO} 1\n#endif\n"
                 "// hawk host loop interchange: tile = hawk_abi::kHostLoopTile\n")
 
-#: The proxy of a wide value that lives in a row of the tile (:mod:`lowering.wide`): element ``k`` of lane ``t`` at
+#: The proxy of a wide value that lives in a row of the tile (:mod:`raptor.wings.base.wide`): element ``k`` of lane ``t`` at
 #: ``rows[t * W + k]`` (a lane's elements run on, so a fold over them is one contiguous read), the shape of an aether per-sample proxy to the ``aether::rt`` twins. Added only to a TU that has one.
 LANE_ROW_HELPER = """namespace hawk_abi {
 
@@ -1230,7 +1230,7 @@ def run_entry(name: str, walk: Walk, mask: str, stop: int) -> str | None:
     at a time), and ``<name>_host_run_k`` is ``stop``, the largest word a
     round passes. There is no threading here: the caller's team runs the
     ranges."""
-    from lowering.cells import FUSED_STEPS_PLANE
+    from raptor.wings.base.cells import FUSED_STEPS_PLANE
 
     spec = list(walk.arg_spec)
     try:
@@ -1338,7 +1338,7 @@ class HostWrapper:
         ``tid`` passes the device-read run length, since the run is contiguous
         and sorted: a team may split a run across threads.
 
-        ``box`` (:class:`lowering.box.Box`) visits threads ``[base, base +
+        ``box`` (:class:`raptor.wings.base.box.Box`) visits threads ``[base, base +
         count)``, each ending at its first owned lane (the device's thread
         box, serially; :func:`aether.wings.base.box.frame` binds ``i``)."""
         if box is not None:
@@ -1437,7 +1437,7 @@ class HostWrapper:
         ran."""
         row = spec.need("cells", "row")
         if row < 1 or row & (row - 1):
-            raise RaptorError(f"the host variant's cells.row must be a power of two (the text masks with row - 1); it is {row}")
+            raise RaptorError(f"the host wing's cells.row must be a power of two (the text masks with row - 1); it is {row}")
         opened = f"""    const std::int64_t hawk_lo = (base + {row - 1}) / {row} * {row};
     std::int64_t hawk_hi = (base + count + {row - 1}) / {row} * {row};
     if (hawk_hi > nSamples) hawk_hi = nSamples;

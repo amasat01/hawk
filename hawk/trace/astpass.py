@@ -341,11 +341,11 @@ def merge(cond: Any, on_true: Any, on_false: Any, name: str, shared: bool = Fals
 def _store_under(cond: Any, on_true: Any, on_false: Any) -> Any:
     """``select(c, v, set(v, i, x))`` as ``set(v, i, select(c, v[i], x))`` (and the arms the other way round) for a
     value written at a run-time index: the same value, but the store stays one store of one element, so the
-    vector is neither copied nor selected whole, and what lives in a plane (:mod:`simt.wide`) is written in place.
+    vector is neither copied nor selected whole, and what lives in a plane (:mod:`raptor.wings.simt.wide`) is written in place.
 
-    Only a vector written at a run-time index (placed from width 1: :func:`~simt.wide.runtime_min`); every other
+    Only a vector written at a run-time index (placed from width 1: :func:`~raptor.wings.simt.wide.runtime_min`); every other
     ``if`` keeps the select, so a kernel with no such value renders as it did. A build with ``wide_form="thread"``
-    puts the select back (:func:`simt.wide.unstored`)."""
+    puts the select back (:func:`raptor.wings.simt.wide.unstored`)."""
     from raptor.ir.nodes import Op
 
     if not (isinstance(on_true, Value) and isinstance(on_false, Value)):

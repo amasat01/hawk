@@ -10,7 +10,7 @@ from dataclasses import replace
 from types import ModuleType
 
 from hawk.dialects import declare_kinds, make_node
-from hawk_c.writer import CWriter
+from ospreys.c.writer import CWriter
 from aether.wings.base.render import render_body
 from aether.wings.base.wrapper import scalar_mode
 from raptor.ir import canonical

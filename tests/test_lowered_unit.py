@@ -22,7 +22,7 @@ _CASES = [(k, None) for k in (D.axpb, D.vec3_scale, D.mat_apply, D.two_outputs, 
                               D.fraction, D.spin, D.two_wire, D.vocab, D.diagnostic, D.diagnostic_two)]
 _CASES += [(D.scatter_c, D.COMPENSATED), (D.diagnostic, D.MASK_FREE), (D.diagnostic_two, D.TWO_MASKS)]
 _IDS = [f"{k.name}-{getattr(kind, 'slug', 'default')}" for k, kind in _CASES]
-_OWN = ("hawk", "eagle", "aether", "hawk_c", "hawk_cuda")
+_OWN = ("hawk", "eagle", "aether", "ospreys")
 
 
 def _lowered(kernel, kind):
@@ -75,7 +75,7 @@ def test_building_the_frame_imports_no_backend_and_leaves_the_text_alone(case):
         unit = frame_of(lowered)
         unit.cost
     new = {m for m in sys.modules if m not in before}
-    assert not [m for m in new if m.startswith(("hawk.backends", "hawk_c", "hawk_cuda", "hawk.compile"))], new
+    assert not [m for m in new if m == "ospreys.c" or m.startswith(("hawk.backends", "ospreys.c.", "ospreys.cuda", "hawk.compile"))], new
     again = bundle._emit(lowered, ("host",), options)
     assert again["host"].text == sources["host"].text
 

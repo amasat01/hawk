@@ -15,19 +15,20 @@ from pathlib import Path
 import pytest
 
 _REPO = Path(__file__).resolve().parent.parent
-_WINGS = sorted(p.parent.name for p in (_REPO / "components").glob("*/pyproject.toml"))
+#: every folder of a wing's own tests under staging/*/tests (a folder that holds test files), relative to the repository root
+_SUITES = sorted({p.parent.relative_to(_REPO).as_posix() for p in (_REPO / "staging").glob("*/tests/**/test_*.py")})
 
 
 def test_there_is_a_wing_to_run():
-    assert _WINGS, "no wing under components/: the gate would wire nothing"
+    assert {"staging/aether/tests", "staging/raptor/tests", "staging/raptor/tests/base", "staging/raptor/tests/simt"} <= set(_SUITES), _SUITES
 
 
-@pytest.mark.parametrize("wing", _WINGS)
-def test_the_wings_own_suite_is_green_and_not_empty(wing):
-    suite = _REPO / "components" / wing / "tests"
-    assert suite.is_dir() and any(suite.glob("test_*.py")), f"components/{wing} has no tests: {suite}"
-    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"], cwd=_REPO / "components" / wing,
+@pytest.mark.parametrize("suite", _SUITES)
+def test_the_wings_own_suite_is_green_and_not_empty(suite):
+    folder = _REPO / suite
+    own = [f"--ignore={s}" for s in _SUITES if s != suite and s.startswith(suite + "/")]     # a nested folder is a suite of its own
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", suite, *own], cwd=_REPO,
                        capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
     summary = next((l for l in reversed(r.stdout.strip().splitlines()) if re.search(r"\b(passed|failed|error|no tests ran)\b", l)), "(no summary line)")
     ran = re.search(r"(\d+) passed", summary)
-    assert r.returncode == 0 and ran and int(ran.group(1)) > 0, f"components/{wing}/tests: rc={r.returncode}: {summary}"
+    assert folder.is_dir() and r.returncode == 0 and ran and int(ran.group(1)) > 0, f"{suite}: rc={r.returncode}: {summary}"

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
-from simt.lane import slice_min
+from raptor.wings.simt.lane import slice_min
 
 
 def warp_lane_value(w, r) -> str:

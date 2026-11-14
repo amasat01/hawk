@@ -25,16 +25,16 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from lowering.cells import SAMPLE_SUM_COMP
-from lowering.exchange import fold_entry_name
+from raptor.wings.base.cells import SAMPLE_SUM_COMP
+from raptor.wings.base.exchange import fold_entry_name
 from raptor.ir.linalg import LSTSQ_OPS
 from raptor.ir import Walk
 from raptor.errors import RaptorError
 from raptor.ir.nodes import sample_sums
 from raptor.ir.types import INT_PLANE_DTYPES, Slot
-from lowering import box as _box
-from lowering import split as _split
-from lowering import wrapper_text as _wt
+from raptor.wings.base import box as _box
+from raptor.wings.base import split as _split
+from raptor.wings.base import wrapper_text as _wt
 from .box import frame as _box_frame
 from .render import Body, render_body
 from .prelude import _INT_CALL, _LINALG_CALL, _MIX_CALL, _OR_CALL, _RAY_CALL, _RT_CALL, _SPACING_CALL, prelude
@@ -198,7 +198,7 @@ class Wrapper(Protocol):
         ``segmented`` unit's column is ``offsets[j] + tid``, so the
         prologue reads its run's bounds off the offsets plane and exits a
         lane past the device-read run length. ``box``
-        (:class:`lowering.box.Box`): ``base + flat`` is a thread and ``i``
+        (:class:`raptor.wings.base.box.Box`): ``base + flat`` is a thread and ``i``
         its first lane. Omitted, this is the ordinary partition-relative
         prologue."""
 
@@ -245,7 +245,7 @@ class Source:
     mode: str
     #: The host loop over samples is vectorised (see :func:`aether.wings.cpu.host_vector.vectorises`).
     vectorised: bool = False
-    #: The thread box the entry was emitted with (:class:`lowering.box.Box`), or ``None``.
+    #: The thread box the entry was emitted with (:class:`raptor.wings.base.box.Box`), or ``None``.
     box: object = None
 
 
@@ -329,9 +329,9 @@ def render_source(name: str, sinks, walk: Walk, target, *, spec, kind,
     ``team`` (the threads per team of a team stage, :mod:`aether.wings.base.team_emit`) makes the lane the
     block on the device; the host entry is the plain lane loop, a team of one.
 
-    ``box`` (:class:`lowering.box.Box`, from :func:`lowering.box.thread_box`)
+    ``box`` (:class:`raptor.wings.base.box.Box`, from :func:`raptor.wings.base.box.thread_box`)
     emits the plain entry with a thread box: each thread computes ``box.T``
-    lanes (:func:`lowering.box.boxed_sinks`).
+    lanes (:func:`raptor.wings.base.box.boxed_sinks`).
 
     A kernel with :class:`~raptor.ir.nodes.SampleSum` sinks runs the
     wrapper's ``sample_sum_frame`` instead of the index loop, and is refused
@@ -340,9 +340,9 @@ def render_source(name: str, sinks, walk: Walk, target, *, spec, kind,
         raise RaptorError("the writer needs the kernel kind from its caller (hawk.ext.Kind); none was given")
     spec = spec.for_target(target)
     _wt.refuse_cells_off_device(name, mode, target.id, target)
-    if walk.kinds.intersection(LSTSQ_OPS):     # the writer takes lowered sinks (lowering.lstsq.lowered), never lowers
+    if walk.kinds.intersection(LSTSQ_OPS):     # the writer takes lowered sinks (raptor.wings.base.lstsq.lowered), never lowers
         raise RaptorError(f"the writer was given an unlowered least-squares node ({', '.join(sorted(walk.kinds.intersection(LSTSQ_OPS)))}); "
-                        "the caller lowers the kernel first (lowering.lstsq.lowered)")
+                        "the caller lowers the kernel first (raptor.wings.base.lstsq.lowered)")
     if mode.cells:
         target.wrapper.device_text.refuse_uncertified(sinks, walk, mode)
     writer = _writer(target, mode)
@@ -650,7 +650,7 @@ def _two_path_entry(entry: str, walk: Walk, wrapper: Wrapper, fused, single,
     unpack and the branch on the ``fused_steps`` word between the single
     step's index loop (``single``) and the fused loop's (``fused``), each
     under ``active``'s prologue (``None``: the contiguous range)."""
-    from lowering.cells import FUSED_STEPS_PLANE
+    from raptor.wings.base.cells import FUSED_STEPS_PLANE
 
     word = (f"{binding_name('lookup', FUSED_STEPS_PLANE)}"
             "[aether::SampleIndex::make(static_cast<std::size_t>(0))].eval()")

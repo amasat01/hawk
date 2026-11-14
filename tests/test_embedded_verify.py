@@ -22,8 +22,8 @@ import hawk
 import hawk.math as hm
 from hawk import Index, Mutable, Param, Scalar, Terminated, Vector, WideOut
 from hawk.diff import vjp
-from hawk_c.profile import EmbeddedProfile
-from hawk_c.verify import (
+from ospreys.c.profile import EmbeddedProfile
+from ospreys.c.verify import (
     UNSUPPORTED,
     apply_caps,
     index_status,
@@ -573,7 +573,7 @@ def test_every_row_carries_the_bound_guard_masks():
 def test_the_header_selects_the_guard_lines_from_the_guard_field():
     """The header's per-field guard line and the guarded partials line are
     chosen by ``row["guard"]``, never by the reason text."""
-    from hawk_c import abi, render
+    from ospreys.c import abi, render
     from aether.wings.base.wrapper import FLOAT64
 
     for kernel, field in [(D.diagnostic, "mut_y"), (guarded_partials, "aout_acc")]:
@@ -589,7 +589,7 @@ def test_the_header_selects_the_guard_lines_from_the_guard_field():
 
 
 def test_the_header_contract_says_a_guarded_plane_is_initialised():
-    from hawk_c import render
+    from ospreys.c import render
 
     header = render(guarded_partials).header
     assert re.search(r"\*   aout_acc +accum_out +inout +f64 +\(\) +yes\n", header)

@@ -61,9 +61,9 @@ import hawk
 from hawk import Mutable, Param, Scalar, Terminated
 from hawk.artifact import build_bundle
 from hawk.compile import OPT_LEVELS, Cache, CompileOptions, compile_source, opt_level
-from osprey_cpu.toolchain import host_codegen_flags, host_profile
+from ospreys.cpu.toolchain import host_codegen_flags, host_profile
 from hawk.compile import toolchain as tc
-import osprey_cpu.toolchain as ctc
+import ospreys.cpu.toolchain as ctc
 from hawk.ext import Guard, Kind
 
 N = 1003

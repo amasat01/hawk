@@ -29,8 +29,8 @@ from hawk import (Grid, HawkError, Index, Kernel, Matrix, Mutable, Param, Scalar
 from hawk import _lane_bind as LB
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from lowering.cells import stored as _stored
-from lowering.lanes import key_run
+from raptor.wings.base.cells import stored as _stored
+from raptor.wings.base.lanes import key_run
 from _specs import DEVICE
 from raptor.ir.nodes import AccumWrite, ReduceSamples, SampleSum
 

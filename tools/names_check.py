@@ -5,7 +5,7 @@ usage: python tools/names_check.py --label NAME (--src DIR | --package NAME)... 
   --src DIR       a directory of sources to read (repeatable)
   --package NAME  an importable package whose directory is read (repeatable); it must resolve to a real package directory
   --tree DIR      the hawk tree whose packages resolve the names (default: the tree this file is in)
-  --first-party   the packages whose names are resolved (default: hawk,raptor,lowering,simt,hawk_c,hawk_cuda)
+  --first-party   the packages whose names are resolved (default: hawk,raptor,ospreys)
 Prints ``<label>: statements S; names N; unresolved U; toolchain-blocked T`` and every unresolved and blocked name.
 Exit status: the number of unresolved names; 1000 when no statement was found, a package is not a real directory, or the resolver failed.
 A name in a module that cannot be imported for want of a non-first-party library (a toolchain) is reported as blocked, never as resolved."""
@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
-FIRST_PARTY = ("hawk", "raptor", "lowering", "simt", "hawk_c", "hawk_cuda")
+FIRST_PARTY = ("hawk", "raptor", "ospreys")
 
 
 def collect(sources, first_party=FIRST_PARTY):
@@ -141,7 +141,7 @@ def check(label, sources, tree=HERE, first_party=FIRST_PARTY, out=print):
         return 1000, [], []
     uniq = sorted({tuple(n) for n in names}, key=lambda t: (t[0], t[1] or "", t[2]))
     tree = Path(tree)
-    paths = [str(tree), *(str(p) for p in sorted((tree / "extensions").glob("*"))), *(str(p) for p in sorted((tree / "components").glob("*")))]
+    paths = [str(tree), str(tree / "staging")]
     paths += [os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else []
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join(paths))
     flags = ["-P"] if sys.version_info >= (3, 11) else []

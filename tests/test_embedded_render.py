@@ -30,7 +30,7 @@ import pytest
 
 import hawk
 from hawk import Mutable, Scalar
-from hawk_c import render
+from ospreys.c import render
 from aether.wings.base.wrapper import FLOAT32, FLOAT64
 from raptor.errors import RaptorError as HawkError
 from raptor.ir import canonical
@@ -237,7 +237,7 @@ def test_the_branch_mix_plane_is_k_cells():
 def test_a_clamped_tape_read_is_refused_by_name(monkeypatch):
     """No fixture produces one today: the renderer spells a tape subscript
     itself, so a clamped tape read could only render raw."""
-    from hawk_c import verify
+    from ospreys.c import verify
 
     real = verify.ir_checks
 
@@ -264,7 +264,7 @@ def test_per_component_commits_stay_in_the_aether_writer(tmp_path):
     unit passes every check (render, audit, strict cc, cppcheck)."""
     import test_math_parity as MP
 
-    from hawk_c import export
+    from ospreys.c import export
 
     for mode in (FLOAT64, FLOAT32):
         body = render(MP.unary_all, mode=mode.id).body

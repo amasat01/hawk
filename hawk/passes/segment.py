@@ -37,7 +37,7 @@ from collections.abc import Sequence
 from raptor.ir.nodes import Loop
 from raptor.ir.nodes import AccumWrite, Assign, Const, Dispatch, Finish, Leaf, Node, Select, Sink
 from .._errors import HawkError
-from lowering.cells import OFFSETS_DTYPE, OFFSETS_ROLE, class_name, classify_name, offsets_name, stale_name
+from raptor.wings.base.cells import OFFSETS_DTYPE, OFFSETS_ROLE, class_name, classify_name, offsets_name, stale_name
 from raptor.ir.segment import ClassifyUnit, SegmentInfo, SegmentUnit
 from raptor.ir.types import Slot, TensorType
 from .. import wings as _wings

@@ -19,7 +19,7 @@ Rows:
 """
 
 from __future__ import annotations
-from lowering.dispatch import dispatch as _dispatch
+from raptor.wings.base.dispatch import dispatch as _dispatch
 from _specs import default_kind
 from _specs import aether_writer
 from _specs import HOST
@@ -36,7 +36,7 @@ from aether.wings.base.render import render_body
 from raptor.ir import Assign, Dispatch, Leaf, canonical
 from hawk import HawkError
 from raptor.ir import make as mk
-from lowering.dispatch import DISPATCH_STRATEGIES, strategy
+from raptor.wings.base.dispatch import DISPATCH_STRATEGIES, strategy
 from hawk.passes.segment import split_segmented
 from raptor.ir.walk import static_selectors
 from raptor.ir.types import TensorType

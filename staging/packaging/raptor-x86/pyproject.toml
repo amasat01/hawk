@@ -25,4 +25,4 @@ packages = ["raptor.wings.x86"]
 "raptor.wings.x86" = "../../raptor/wings/x86"
 
 [tool.setuptools.package-data]
-"raptor.wings.x86" = ["wing.json"]
+"raptor.wings.x86" = ["wing.json", "facts.py", "raptor_facts.h"]

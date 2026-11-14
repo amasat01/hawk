@@ -44,7 +44,7 @@ from hawk.artifact import (
 )
 from hawk.artifact import manifest as _manifest
 from hawk.artifact.unit_cache import _unit_key
-from hawk_c import EmbeddedProfile, export
+from ospreys.c import EmbeddedProfile, export
 from aether.wings.base.wrapper import scalar_mode
 from hawk.ext import DEFAULT_KIND
 from raptor.errors import RaptorError as HawkError
@@ -136,7 +136,7 @@ def test_c_only_directory_refuses_cleanly_to_load(tmp_path, cache_dir, fresh):
     with pytest.raises(HawkError) as err:
         hawk.load(d, "drag")
     text = str(err.value)
-    assert "'c'" in text and "hawk_c" in text
+    assert "'c'" in text and "ospreys.c" in text
 
 
 def test_unit_key_differs_by_profile(tmp_path, cache_dir, fresh):
@@ -180,7 +180,7 @@ def test_plugins_refuses_a_c_only_bundle(tmp_path, cache_dir, fresh):
     with pytest.raises(HawkError) as err:
         plugins(bundle)
     text = str(err.value)
-    assert "'c'" in text and "hawk_c" in text
+    assert "'c'" in text and "ospreys.c" in text
 
 
 def _kernel_from(path, text: str):

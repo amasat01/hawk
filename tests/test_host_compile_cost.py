@@ -5,7 +5,7 @@ Two observations, each with a known answer:
 * **Vector math only where it is called.** Under the default
   ``native-vector-math`` profile the host TU reaches aether's vector-math
   hook, whose symbols (``aether_hvm_<f>`` and its ``_ZGV...`` vector
-  variants) are each kept alive by a per-function anchor instantiated only
+  wings) are each kept alive by a per-function anchor instantiated only
   by a call of that function. A kernel that calls no math function emits
   none of them; a kernel calling ``sqrt`` and ``pow`` emits exactly those two
   families, every width the CPU has, scalar symbol included. Before the
@@ -45,7 +45,7 @@ from hawk import Mutable, Param, Scalar, Terminated
 from hawk import math as m
 from hawk.artifact import build_bundle
 from hawk.compile import toolchain as tc
-import osprey_cpu.toolchain as ctc
+import ospreys.cpu.toolchain as ctc
 from raptor.errors import RaptorError as HawkError
 
 _X86 = platform.machine().lower() in ("x86_64", "amd64")
@@ -94,18 +94,18 @@ def test_a_math_kernel_emits_only_the_functions_it_calls(tmp_path):
     # sqrt is inline on the host (aether b385084: the compiler widens it natively), so only pow leaves a symbol.
     assert called == {"pow"}, sorted(syms)
     # Every family is whole: the scalar symbol and the SSE pair at least,
-    # one masked and one unmasked variant per width the TU was built for.
+    # one masked and one unmasked form per width the TU was built for.
     for fn, arity in (("pow", "vv"),):
         assert f"aether_hvm_{fn}" in syms
         assert f"_ZGVbN2{arity}_aether_hvm_{fn}" in syms
         if not masked_dropped:
             assert f"_ZGVbM2{arity}_aether_hvm_{fn}" in syms
         # _ZGV<isa><mask><lanes>: every ISA built for has both mask kinds, except
-        # on a GCC that miscompiles masked variants, where aether declares none.
-        variants = {s[4:6] for s in syms if s.startswith("_ZGV") and s.endswith(f"_{fn}")}
-        isas = {v[0] for v in variants}
+        # on a GCC that miscompiles masked forms, where aether declares none.
+        facts = {s[4:6] for s in syms if s.startswith("_ZGV") and s.endswith(f"_{fn}")}
+        isas = {v[0] for v in facts}
         kinds = "N" if masked_dropped else "NM"
-        assert variants == {i + k for i in isas for k in kinds}, sorted(variants)
+        assert facts == {i + k for i in isas for k in kinds}, sorted(facts)
 
 
 class _Src:

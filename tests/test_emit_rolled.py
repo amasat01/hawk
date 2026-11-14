@@ -142,7 +142,7 @@ def test_a_transposed_operand_is_read_through_not_built():
 
 def test_the_threshold_is_one_constant(monkeypatch):
     from hawk.targets import build_spec
-    from hawk.variants import derive
+    from hawk.facts import derive
 
     base = build_spec(("cuda",))
     low = build_spec(("cuda",), device=derive(base.device, {"form": {"rolled_fold_min": 2}}))

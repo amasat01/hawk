@@ -45,7 +45,7 @@ from hawk import Grid, Mutable, Param, Scalar, Terminated, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.compile import toolchain as tc
-import osprey_cpu.toolchain as ctc
+import ospreys.cpu.toolchain as ctc
 from hawk.diff import vjp
 from aether.wings.base.wrapper import render_source, scalar_mode
 from aether.wings.cpu.host import INTERCHANGE_MACRO, loop_interchange

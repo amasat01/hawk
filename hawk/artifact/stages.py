@@ -13,7 +13,7 @@ from .. import wings as _wings
 
 
 class TeamStage(Kernel):
-    """A team stage of a split kernel (:mod:`simt.team`): the launch that works one matrix per
+    """A team stage of a split kernel (:mod:`raptor.wings.simt.team`): the launch that works one matrix per
     lane with a team of threads. Its sinks only name the scratch planes it works on; its body is
     :func:`aether.wings.base.team_emit.team_body`, handed to the entry wrappers like a fused group's."""
 
@@ -39,7 +39,7 @@ class TeamStage(Kernel):
 
 
 class WarpStage(TeamStage):
-    """A kernel in the warp form (:mod:`simt.lane`): one block of a warp per lane, its sinks the sliced ones. Its body is
+    """A kernel in the warp form (:mod:`raptor.wings.simt.lane`): one block of a warp per lane, its sinks the sliced ones. Its body is
     the ordinary render of those sinks; the launch prologue binds the lane's place in its warp."""
 
     __slots__ = ()

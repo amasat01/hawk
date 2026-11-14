@@ -3,7 +3,7 @@
 
 """The third-party leg of the install smoke: ``python tools/w25_third_party_leg.py <python of an install venv> <work dir>``.
 
-Builds a tiny distribution ``acme-toy`` (a variant ``acme`` that extends ``cpu`` with ONE different number, and a backend ``acme_toy`` that
+Builds a tiny distribution ``acme-toy`` (a raptor wing ``acme`` whose parent is ``cpu`` and that states ONE different number, and a backend ``acme_toy`` that
 names it), installs its wheel into that environment and, with ``python -I`` from an empty folder, builds one kernel for ``host`` and for
 ``acme_toy``: the emitted texts must differ, and only where the number says (the fold threshold: a 12-term sum is unrolled on one and
 rolled on the other). Exit code 0 only on success."""
@@ -21,7 +21,7 @@ import hashlib, os, sys, tempfile
 work = tempfile.mkdtemp()
 os.environ["HAWK_CACHE_DIR"] = os.path.join(work, "cache")
 import hawk
-from hawk import Mutable, Vector, Scalar, registry, variants
+from hawk import Mutable, Vector, Scalar, registry, facts
 from hawk.math import dot
 
 @hawk.kernel
@@ -34,7 +34,7 @@ for target in ("host", "acme_toy"):          # two host-entered rows are not one
     (art,) = b.artifacts
     (entry,) = art.entries.values()
     text[target] = entry.source.read_text()
-print("variant acme at", variants.location("acme"), "fold", variants.load("acme")["form"], "cpu fold", variants.load("cpu")["form"])
+print("wing acme at", facts.location("acme"), "fold", facts.load("acme")["form"], "cpu fold", facts.load("cpu")["form"])
 print("registry:", registry.backend_ids(), registry.refused())
 open(sys.argv[1], "w").write(__import__("json").dumps(text))
 '''
@@ -43,30 +43,32 @@ open(sys.argv[1], "w").write(__import__("json").dumps(text))
 def main(python: str, work: Path) -> int:
     work.mkdir(parents=True, exist_ok=True)
     src = work / "src"
-    base = json.loads(subprocess.run([python, "-I", "-c", "import json, hawk.variants as v; print(json.dumps({'arm': dict(v.load('arm')), 'header': (v.location('arm') / 'raptor_variant.h').read_text()}, default=dict))"],
+    base = json.loads(subprocess.run([python, "-I", "-c", "import json, hawk.facts as v; print(json.dumps({'arm': dict(v.load('arm')), 'header': (v.location('arm') / 'raptor_facts.h').read_text()}, default=dict))"],
                                      capture_output=True, text=True, check=True, cwd=work).stdout)
     arm, header = base["arm"], base["header"]
-    (src / "acme_toy_variants" / "acme").mkdir(parents=True, exist_ok=True)
+    (src / "acme_toy_wings" / "acme").mkdir(parents=True, exist_ok=True)
     (src / "acme_toy").mkdir(exist_ok=True)
-    (src / "acme_toy_variants" / "__init__.py").write_text("")
-    (src / "acme_toy_variants" / "acme" / "__init__.py").write_text("")
-    data = {"name": "acme", "extends": "cpu", "isa": arm["isa"], "fusion_host": arm["fusion_host"], "form": {"rolled_fold_min": 8}}
-    (src / "acme_toy_variants" / "acme" / "data.py").write_text(repr(data) + "\n")
-    (src / "acme_toy_variants" / "acme" / "raptor_variant.h").write_text(header.replace("ARM", "ACME").replace('"arm"', '"acme"').replace("/arm/", "/acme/"))
+    (src / "acme_toy_wings" / "__init__.py").write_text("")
+    wing = src / "acme_toy_wings" / "acme"
+    (wing / "__init__.py").write_text('import json\nfrom importlib import resources\n\nMANIFEST = json.loads(resources.files(__name__).joinpath("wing.json").read_text(encoding="utf-8"))\n')
+    (wing / "wing.json").write_text(json.dumps({"family": "raptor", "name": "acme", "parent": "cpu"}))
+    facts = {"isa": arm["isa"], "fusion_host": arm["fusion_host"], "form": {"rolled_fold_min": 8}}
+    (wing / "facts.py").write_text(repr(facts) + "\n")
+    (wing / "raptor_facts.h").write_text(header.replace("ARM", "ACME").replace('"arm"', '"acme"').replace("wing arm", "wing acme"))
     (src / "acme_toy" / "__init__.py").write_text("")
     (src / "acme_toy" / "backend.py").write_text(
-        "from osprey_cpu.backend import Host\n\n\nclass Toy(Host):\n    id = 'acme_toy'\n    about = 'a third-party CPU backend'\n\n\nBACKEND = Toy()\n")
+        "from ospreys.cpu.backend import Host\n\n\nclass Toy(Host):\n    id = 'acme_toy'\n    about = 'a third-party CPU backend'\n\n\nBACKEND = Toy()\n")
     (src / "acme_toy" / "osprey.json").write_text(json.dumps({
         "name": "acme-toy", "version": "0.0", "contract": "1", "requires": [],
         "backends": [{"name": "acme_toy", "ref": "acme_toy.backend:BACKEND", "about": "a third-party CPU backend", "device": False,
-                      "builds": True, "wings": {"raptor": "cpu", "aether": "base"}, "priority": 7, "options": ["profile"],
+                      "builds": True, "wings": {"raptor": "acme", "aether": "base"}, "priority": 7, "options": ["profile"],
                       "policy": ["emit_form"], "reads": ["form.rolled_fold_min"]}]}))
     (src / "pyproject.toml").write_text(
         '[build-system]\nrequires = ["setuptools>=64"]\nbuild-backend = "setuptools.build_meta"\n\n[project]\nname = "acme-toy"\nversion = "0.0"\n\n'
         '[project.entry-points."ospreys"]\nacme-toy = "acme_toy:osprey.json"\n\n'
-        '[project.entry-points."raptor.variants"]\nacme = "acme_toy_variants.acme"\n\n'
-        '[tool.setuptools]\npackages = ["acme_toy", "acme_toy_variants", "acme_toy_variants.acme"]\n\n'
-        '[tool.setuptools.package-data]\nacme_toy = ["osprey.json"]\n"acme_toy_variants.acme" = ["raptor_variant.h"]\n')
+        '[project.entry-points."raptor.wings"]\nacme = "acme_toy_wings.acme"\n\n'
+        '[tool.setuptools]\npackages = ["acme_toy", "acme_toy_wings", "acme_toy_wings.acme"]\n\n'
+        '[tool.setuptools.package-data]\nacme_toy = ["osprey.json"]\n"acme_toy_wings.acme" = ["wing.json", "facts.py", "raptor_facts.h"]\n')
     wheels = work / "wheels"
     subprocess.run([python, "-m", "pip", "wheel", "--no-deps", "-q", "-w", str(wheels), str(src)], check=True, cwd=work)
     wheel = next(wheels.glob("acme_toy-*.whl"))

@@ -17,7 +17,7 @@ from hawk.artifact import reset_unit_memo
 from raptor.errors import RaptorError as HawkError
 from hawk.targets import TARGETS
 
-TOY = copy_of("hawk_c.backend", "toy", "BACKEND.about, BACKEND.artifact, BACKEND.source = 'a toy export', '.toyh', '.toy'\n")
+TOY = copy_of("ospreys.c.backend", "toy", "BACKEND.about, BACKEND.artifact, BACKEND.source = 'a toy export', '.toyh', '.toy'\n")
 
 
 def test_an_export_row_builds_and_leaves_its_file(tmp_path, cache_dir, monkeypatch):

@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Classify the paths a change touches against the confinement rule of a backend's own work: a backend's optimization touches only
-its leaf and its variant data; a shared wing changes only for a feature every backend using it gains; anything else is a
+its leaf and its own wings; a shared wing changes only for a feature every backend using it gains; anything else is a
 violation to be explained.
 
     python tools/confined_diff.py <backend> [<base> [<head>]]        (reads `git diff --name-only <base>..<head>`; default main..HEAD)
     git diff --name-only A..B | python tools/confined_diff.py <backend> -
 
-Rules are data (RULES below): per backend, the path prefixes that are its leaf and its variant, and the shared wings it names.
+Rules are data (RULES below): per backend, the path prefixes that are its leaf and its own wings, and the shared wings it names.
 Exit status: 0 when every path is CONFINED, 1 when a path is SHARED (needs the wing-wide reason in the change's description),
 2 when a path is a VIOLATION."""
 
@@ -19,9 +19,9 @@ import sys
 
 #: backend -> (its own prefixes, the shared wings it may change with a stated reason)
 RULES = {
-    "cuda": (("extensions/hawk_cuda/", "variants/cuda/"), ("components/simt/", "variants/simt/")),
-    "c": (("extensions/hawk_c/",), ()),
-    "host": (("variants/cpu/", "variants/x86/", "variants/arm/"), ()),
+    "cuda": (("staging/ospreys/cuda/", "staging/raptor/wings/cuda/"), ("staging/raptor/wings/simt/",)),
+    "c": (("staging/ospreys/c/",), ()),
+    "host": (("staging/raptor/wings/cpu/", "staging/raptor/wings/x86/", "staging/raptor/wings/arm/"), ()),
 }
 #: paths any change may carry with it
 NEUTRAL = ("CHANGELOG.md", "docs/")

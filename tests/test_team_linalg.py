@@ -3,7 +3,7 @@
 
 """Team-form linear algebra: one matrix per lane worked by a team of threads.
 
-A matrix above ``MAX_DIM`` (32) is lowered as stages (:mod:`lowering.team`): the per-lane stage
+A matrix above ``MAX_DIM`` (32) is lowered as stages (:mod:`raptor.wings.base.team`): the per-lane stage
 stores the operand into scratch, a team stage factors it in place and runs the solves, and the
 per-lane stage after it reads the results. These rows run every factorisation and its readers
 on the host (the team of one) and on the device, against numpy and LAPACK, at sizes below and above
@@ -13,7 +13,7 @@ the refusals name what they refuse.
 """
 
 from __future__ import annotations
-from lowering.dispatch import dispatch as _dispatch
+from raptor.wings.base.dispatch import dispatch as _dispatch
 from _specs import spec_for, default_kind
 from _specs import DEVICE as DEVICE_SPEC
 
@@ -32,11 +32,11 @@ from hawk import HawkError
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from raptor.ir import Assign, Leaf, make
-from hawk.variants import load as _load_variant
-MAX_DIM = _load_variant("cpu")["linalg"]["max_dim"]
-from lowering.block import is_block_write
-from lowering.team import plain_blocks
-from lowering.split import stages
+from hawk.facts import load as _load_facts
+MAX_DIM = _load_facts("cpu")["linalg"]["max_dim"]
+from raptor.wings.base.block import is_block_write
+from raptor.wings.base.team import plain_blocks
+from raptor.wings.base.split import stages
 from hawk.trace.kernel import Kernel
 from raptor.ir.types import TensorType
 
@@ -428,7 +428,7 @@ def test_lstsq_is_a_qr_team_stage_above_32_unknowns_and_normal_equations_below()
     from raptor.ir.nodes import Assign
     from types import SimpleNamespace
 
-    from lowering.lstsq import lowered_sinks
+    from raptor.wings.base.lstsq import lowered_sinks
 
     def lowered(m, n, max_dim):
         return lowered_sinks((Assign("x", solve(m, n)),), SimpleNamespace(primary={"linalg": {"max_dim": max_dim}}))[0].value
@@ -551,10 +551,10 @@ def test_the_per_lane_writer_refuses_a_matrix_above_the_cap():
                       mode=scalar_mode("float64"), exports=exports("host"), spec=spec_for(TARGETS["host"]), kind=default_kind())
 
 
-def test_the_dimension_bound_is_the_variants_team_max_dim():
+def test_the_dimension_bound_is_the_facts_team_max_dim():
     from types import SimpleNamespace
-    from hawk.variants import load
-    from lowering import team
+    from hawk.facts import load
+    from raptor.wings.base import team
 
     data = load("cuda")
     assert data["linalg"]["team_max_dim"] == 4096

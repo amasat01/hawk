@@ -3,7 +3,7 @@
 
 """Install smoke: hawk found from INSTALLED distributions only. Run ``python -I tools/w25_install_smoke.py`` from a folder that holds
 no source tree, with no ``PYTHONPATH``, in an environment where the wheels are installed. It prints where hawk was imported from,
-resolves every first-party variant and wing through its entry point, builds a host kernel, runs it (when eagle is importable) and
+resolves every first-party wing through its entry point, reads the facts of each raptor wing, builds a host kernel, runs it (when eagle is importable) and
 checks the value against NumPy. Exit code 0 only on success."""
 
 from __future__ import annotations
@@ -20,15 +20,15 @@ def main() -> int:
     import numpy as np
 
     import hawk
-    from hawk import Param, Scalar, registry, variants, wings
+    from hawk import Param, Scalar, registry, facts, wings
 
     print("hawk.__file__", hawk.__file__)
     if os.path.sep + "site-packages" + os.path.sep not in hawk.__file__:
         print("INSTALL SMOKE FAILED: hawk is not imported from an installed distribution")
         return 1
     for name in ("arm", "cpu", "cuda", "simt", "x86"):
-        data = variants.load(name)
-        print(f"variant {name}: {variants.location(name)} (max_dim {data['linalg']['max_dim']})")
+        data = facts.load(name)
+        print(f"wing {name}: {facts.location(name)} (max_dim {data['linalg']['max_dim']})")
     for family, name in (("raptor", "base"), ("raptor", "simt"), ("aether", "base")):
         print(f"{family} wing {name}: {wings.wing(family, name).__file__}")
     print("backends (default set):", registry.backend_ids(default=True), "refused:", registry.refused())

@@ -3,7 +3,7 @@
 
 """A per-lane ``Matrix`` input of a ``Grid`` kernel may be given broadcast.
 
-The variant of its pattern reads the caller's compact ``(rows*cols, m)`` plane with
+The twin of its pattern reads the caller's compact ``(rows*cols, m)`` plane with
 ``At`` at the flat index over the axes the matrix varies along; eagle binds that
 plane by its own column count (sidecar ``gather_mats``), not the lane count.
 
@@ -14,7 +14,7 @@ plane by its own column count (sidecar ``gather_mats``), not the lane count.
 * **vjp** wrt the matrix is the sum over the axes it does not vary along, equal to the
   per-entry ``fsum`` of the dense adjoints and to central differences, in the input's
   own shape and layout; no lane writes outside its kept index.
-* **Recorded reverse** over a variant plan with a broadcast matrix.
+* **Recorded reverse** over a twin plan with a broadcast matrix.
 """
 
 from __future__ import annotations
@@ -128,12 +128,12 @@ def test_rolled_matvec_reads_the_compact_plane(run_cache, rng, kernel, rows):
 
 
 def test_runtime_first_axis_two_sizes_one_build(run_cache, rng):
-    before = len(mscal._variants)
+    before = len(mscal._twins)
     got = {}
     for a in (3, 5):
         m, x = rng.standard_normal((R, R, a, 1, NC)), rng.random((a, NB, NC))
         np.testing.assert_allclose(np.asarray(mscal(m, x, a=a)), _scal_a(m, x, a), rtol=1e-13)
-        got[a] = len(mscal._variants)       # counted after the call: the first size may be the one that builds
+        got[a] = len(mscal._twins)       # counted after the call: the first size may be the one that builds
     assert got[3] == got[5] and got[3] - before <= 1
 
 
@@ -151,7 +151,7 @@ def test_a_shape_that_does_not_broadcast_names_both_shapes(run_cache, rng):
 
 def test_a_compact_plane_of_the_wrong_row_count_is_refused_at_bind(run_cache, cache_dir, rng):
     kept = B.kept_axes((R, R, A, 1, NC), (R, R), mscal.lane_space, A)
-    var = B.variant(mscal, {"M": kept})
+    var = B.twin(mscal, {"M": kept})
     plan = eagle.deploy(var, targets=("host",), cache_dir=cache_dir)
     with pytest.raises(ValueError, match=r"binds compact as \(4, 18\) at n=72; got shape \(3, 18\)"):
         plan.bind(M=np.zeros((3, A * NC)), x=rng.random(LANE), out=np.zeros(LANE), a=A)
@@ -171,7 +171,7 @@ def test_a_loaded_compact_matrix_artifact_binds_and_checks_its_columns(tmp_path_
 
     shape = SHAPES[0]
     kept = B.kept_axes(shape, (R, R), mscal.lane_space, A)
-    var = B.variant(mscal, {"M": kept})
+    var = B.twin(mscal, {"M": kept})
     bundle = build_bundle([var], pathlib.Path(tmp_path_factory.mktemp("bm_art")) / "k",
                           targets=("host",), cache_dir=cache_dir, host_profile="native")
     sidecar = sidecar_of(bundle, "mscal")
@@ -249,13 +249,13 @@ def test_no_lane_writes_outside_its_kept_index(run_cache, rng):
     np.testing.assert_allclose(column[:, own], _adjoint(m, x, g)[:, :, 1, 2, 4].reshape(-1), rtol=1e-14)
 
 
-# 5. recorded reverse over a variant plan
+# 5. recorded reverse over a twin plan
 
 def test_recorded_reverse_with_a_broadcast_matrix(run_cache, cache_dir, rng):
     shape = SHAPES[0]
     m, x, g = rng.standard_normal(shape), rng.random(LANE), rng.standard_normal(LANE)
     kept = B.kept_axes(shape, (R, R), mscal.lane_space, A)
-    plan = eagle.deploy(B.variant(mscal, {"M": kept}), targets=("host",), cache_dir=cache_dir)
+    plan = eagle.deploy(B.twin(mscal, {"M": kept}), targets=("host",), cache_dir=cache_dir)
     bound = plan.bind(M=B.compact("M", m, kept, (R, R), "test"), x=x, out=np.zeros(LANE), a=A)
     graph = eagle.Graph(record=True).add(bound).build()
     graph.launch().synchronize()

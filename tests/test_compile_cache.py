@@ -300,7 +300,7 @@ def test_two_such_compilers_give_different_cache_lookup_keys(tree, tmp_path):
     compilers differing only past the first ``--version`` line, must land on
     two DIFFERENT cache keys — never share a slot."""
     from hawk.compile import compiler_identity, lookup_key
-    from osprey_cpu.toolchain import host_flags
+    from ospreys.cpu.toolchain import host_flags
 
     a = _fake_compiler(tmp_path, "fake_cc_a", "release 12.6, V12.6.77")
     b = _fake_compiler(tmp_path, "fake_cc_b", "release 12.9, V12.9.10")
@@ -438,7 +438,7 @@ def test_the_compiler_is_identified_once_per_process(tree, monkeypatch, tmp_path
     import subprocess as sp
 
     from hawk.compile import toolchain
-    import osprey_cpu.toolchain as ctc
+    import ospreys.cpu.toolchain as ctc
     from hawk.compile.toolchain import reset_identity_memo
 
     monkeypatch.setenv("HAWK_CACHE_DIR", str(tmp_path / "probe_cache"))   # an empty on-disk probe store

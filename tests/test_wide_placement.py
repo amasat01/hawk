@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Where a per-lane value wider than a thread's registers lives (:mod:`lowering.wide`).
+"""Where a per-lane value wider than a thread's registers lives (:mod:`raptor.wings.base.wide`).
 
 Rows: what the pass places and what it leaves (the corpus of :mod:`_wide_kernels`), the sidecar record and
 its scratch planes, the build option ``wide_form``, the host text that places nothing, the identity that keeps
@@ -29,9 +29,9 @@ from conftest import sidecar_of
 import hawk
 from hawk import HawkError, Mutable, Scalar, Table, Vector
 from hawk.artifact import build_bundle
-from lowering.settings import Settings
+from raptor.wings.base.settings import Settings
 from hawk.ext import IndexSet, Kind
-from lowering import wide
+from raptor.wings.base import wide
 from raptor.ir.nodes import Select
 
 TARGETS_BOTH = ("cuda", "host")
@@ -50,7 +50,7 @@ def _a1_arch() -> str:
     its class's), else the measured one, so a GPU-less run builds a CUBIN of the arch the figures describe (a virtual arch
     gives PTX, whose local sizes are a ceiling before ptxas)."""
     from hawk.compile import toolchain as tc
-    from hawk_cuda import toolchain as dtc
+    from ospreys.cuda import toolchain as dtc
 
     probed = dtc._probed_device_arch()
     if probed and probed != MEASURED_ARCH:
@@ -59,7 +59,7 @@ def _a1_arch() -> str:
 
 
 def wide_class_of(arch: str) -> str:
-    from simt import wide_class
+    from raptor.wings.simt import wide_class
 
     return wide_class.select(arch, DEVICE.device)
 
@@ -230,7 +230,7 @@ def test_an_automatic_kernel_places_the_wide_values_of_its_fused_and_its_single_
 def test_the_branch_units_of_a_segmented_kernel_are_placed_for_a_device(entry, form, tmp_path, cache_dir):
     """A branch unit carries no steps record: placing its wide values reads none. The test passes where the device
     compiler is absent too: the placement ran when the build reached the compile."""
-    from lowering.exchange import ToolchainAbsent
+    from raptor.wings.base.exchange import ToolchainAbsent
 
     seg, units = W.segmented_units(W.CORPUS[entry].kernel)
     kind = {} if W.CORPUS[entry].kind is None else {"kind": W.CORPUS[entry].kind}
@@ -243,7 +243,7 @@ def test_the_branch_units_of_a_segmented_kernel_are_placed_for_a_device(entry, f
 
 def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp_path, cache_dir):
     from hawk.dialects import kind_name
-    from simt.lane import slice_sinks
+    from raptor.wings.simt.lane import slice_sinks
     WARP = DEVICE.device["launch"]["warp_size"]
 
     sliced = slice_sinks(wide.simplified(W.matvec_in_vjp.sinks), DEVICE)
@@ -262,7 +262,7 @@ def test_the_warp_form_slices_a_wide_accumulation_across_the_lanes_of_a_warp(tmp
 @pytest.mark.parametrize("mode", ["float32", "float64"])
 @pytest.mark.parametrize("n", [2048, 2045])         # the second leaves the last block with lanes past the end
 def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode, n, cache_dir):
-    from hawk_cuda import _probe_wide as probe
+    from ospreys.cuda import _probe_wide as probe
     from eagle import arrays
     from eagle._alloc import synchronize
 
@@ -281,7 +281,7 @@ def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode
 
 
 def test_auto_keeps_the_placed_form_for_run_time_writes_alone_and_the_warp_form_builds_when_asked(tmp_path, cache_dir):
-    from simt.lane import slice_sinks
+    from raptor.wings.simt.lane import slice_sinks
 
     sinks = wide.simplified(W.rt_write.sinks)
     assert slice_sinks(sinks, DEVICE, explicit=False) is None and slice_sinks(sinks, DEVICE) is not None
@@ -308,8 +308,8 @@ def test_a_stepped_or_automatic_kernel_is_a_warp_per_lane_on_a_device_bundle(ent
 # -- the device feature classes -----------------------------------------------------------------
 
 def test_a_known_arch_selects_its_own_class_and_an_unknown_feature_tuple_the_nearest():
-    from simt import wide_class as C
-    from hawk.variants import derive
+    from raptor.wings.simt import wide_class as C
+    from hawk.facts import derive
 
     cuda = DEVICE.device
     assert C.select("sm_61", cuda) == "sm61" and C.select("", cuda) == "sm61"
@@ -318,8 +318,8 @@ def test_a_known_arch_selects_its_own_class_and_an_unknown_feature_tuple_the_nea
     base = classes["sm61"][1]
     volta = {"capability": 70, "runtime_min": {p: {4: 1, 8: 1} for p in base.runtime_min}, "wide_min": {4: 64, 8: 32}}
     ampere = {"capability": 90, "runtime_min": {p: {4: 2, 8: 2} for p in base.runtime_min}, "wide_min": {4: 64, 8: 32}}
-    variant = derive(cuda, {"wide_classes": {"fake70": volta, "fake90": ampere}})
-    C_select = lambda arch="", features=None: C.select(arch, variant, features)
+    facts = derive(cuda, {"wide_classes": {"fake70": volta, "fake90": ampere}})
+    C_select = lambda arch="", features=None: C.select(arch, facts, features)
     assert C_select("sm_61") == "sm61" and C_select("sm_70") == "fake70"
     assert C_select("sm_75") == "sm61"                 # 1:32 and 1024 threads: one step from Pascal, a long way from Volta
     assert C_select("sm_80") == "fake70"               # 1:2 and 2048 threads, as Volta (a tie with Hopper goes to the lower name)
@@ -330,8 +330,8 @@ def test_a_known_arch_selects_its_own_class_and_an_unknown_feature_tuple_the_nea
 def test_the_tables_of_the_selected_class_decide_the_placement():
     import dataclasses
 
-    from simt import wide_class as C
-    from hawk.variants import derive
+    from raptor.wings.simt import wide_class as C
+    from hawk.facts import derive
 
     cuda = DEVICE.device
     base = C.classes_of(cuda)["sm61"][1]

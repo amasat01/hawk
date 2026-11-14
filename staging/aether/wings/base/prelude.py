@@ -56,9 +56,9 @@ _TWO_SUM_INCLUDE = "#include <aether/accum/TwoSum.h>\n"
 #: that calls it.
 _LINALG_CALL = "aether::linalg::"
 _LINALG_INCLUDE = "#include <aether/linalg/linalg.h>\n"
-#: The variant's generated header (``variants/<name>/raptor_variant.h``, its directory on the compile line): linalg and the ray
+#: The wing's generated header (``wings/<name>/raptor_facts.h``, its directory on the compile line): linalg and the ray
 #: primitives read ``RAPTOR_LINALG_MAX_DIM`` from it, so it comes first in a unit that includes either.
-_VARIANT_INCLUDE = '#include "raptor_variant.h"\n'
+_FACTS_INCLUDE = '#include "raptor_facts.h"\n'
 _TEAM_INCLUDE = "#include <aether/linalg/team.h>\n"
 
 #: The ray primitives' header, likewise.
@@ -391,7 +391,7 @@ def abi_helpers(qualifier: str, *, device_text=None, compensated: bool = False,
         if cells:
             helpers.append(device_text.BANDED_SUM.format(qualifier=qualifier))
         if row is None:
-            raise RaptorError("the sample-sum row helper is emitted with the variant's cells.row, and none was given")
+            raise RaptorError("the sample-sum row helper is emitted with the wing's cells.row, and none was given")
         halves = [row >> k for k in range(1, row.bit_length())]       # the pairs of one row: row/2, ..., 2, 1
         sums = SAMPLE_SUM if device_text is None else SAMPLE_SUM + device_text.SAMPLE_SUM_WARP
         helpers.append((device_text.banded_sample_sum(sums) if cells else sums).format(
@@ -490,7 +490,7 @@ def prelude(mode: ScalarMode, qualifier: str, *, device_text=None, compensated: 
     a unit whose body emitted a random draw gets the extra header, and
     ``runs`` the run commits' header."""
     includes = UNIT_INCLUDES
-    extra = ((_VARIANT_INCLUDE if linalg or rays or team else "") + mode.includes + (_RANDOM_INCLUDE if needs_random else "") + (_RUN_INCLUDE if runs else "")
+    extra = ((_FACTS_INCLUDE if linalg or rays or team else "") + mode.includes + (_RANDOM_INCLUDE if needs_random else "") + (_RUN_INCLUDE if runs else "")
              + (_TWO_SUM_INCLUDE if compensated or store_compensated or sample_sum or fold else "")
              + (_LINALG_INCLUDE if linalg else "") + (_RT_INCLUDE if rt else "")
              + (device_text.BANDED_SUM_INCLUDE if mode.cells and (sample_sum or team or warp_sum) else "") + (_RAY_INCLUDE if rays else "") + (_TEAM_INCLUDE if team else ""))

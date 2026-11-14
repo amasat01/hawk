@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from _emitted import bodies, sources
 
-from hawk_cuda.emit import CUDA
+from ospreys.cuda.emit import CUDA
 from aether.wings.base.render import geometry_hits
 from hawk.targets import TARGETS
 

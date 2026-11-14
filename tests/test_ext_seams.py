@@ -442,7 +442,7 @@ def test_compensation_stays_exact_under_fma_contraction(tmp_path, cache_dir):
     import eagle.exec as eexec
     from eagle import plan as eplan
 
-    from osprey_cpu.toolchain import host_codegen_flags
+    from ospreys.cpu.toolchain import host_codegen_flags
 
     if platform.machine().lower() not in ("x86_64", "amd64"):
         pytest.skip("the fast host profile is x86-64 only")

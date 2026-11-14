@@ -69,7 +69,7 @@ class Kernel:
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
                  "time", "time_step", "source_digest", "jump", "returns",
-                 "lane_space", "group", "members", "steps", "broadcast", "team", "_variants", "_plan", "_lock")
+                 "lane_space", "group", "members", "steps", "broadcast", "team", "_twins", "_plan", "_lock")
 
     def __init__(self, name: str, sinks: tuple[Node, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
@@ -98,10 +98,10 @@ class Kernel:
         self.group = getattr(sinks, "group", 1)
         #: The kernels a chain (:func:`hawk.chain`) or the derivative of one runs in sequence; ``None`` otherwise.
         self.members = getattr(sinks, "members", None)
-        #: The planes this kernel reads broadcast, with their patterns (a variant, see
-        #: :mod:`hawk._broadcast`), and the variants made of it by pattern.
+        #: The planes this kernel reads broadcast, with their patterns (a twin, see
+        #: :mod:`hawk._broadcast`), and the twins made of it by pattern.
         self.broadcast: dict[str, tuple] = {}
-        self._variants: dict = {}
+        self._twins: dict = {}
         #: The single step a default automatic kernel was derived from (see
         #: :func:`kernel`); ``None`` otherwise, used by ``vjp``/``jvp``.
         self.step = step
@@ -143,7 +143,7 @@ class Kernel:
         """Run one launch where the arrays live, through the plan eagle
         deploys for this kernel (built on the first call, cached on disk). A
         per-lane input of a ``Grid`` kernel may be given broadcast
-        (:mod:`hawk._broadcast`): the call then runs that pattern's variant."""
+        (:mod:`hawk._broadcast`): the call then runs that pattern's twin."""
         run, args, kwargs = route(self, args, kwargs)
         plan = run._plan
         if plan is None:

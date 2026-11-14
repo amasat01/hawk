@@ -13,7 +13,7 @@ from raptor.ir import Node
 from raptor.errors import RaptorError
 from raptor.ir.nodes import Loop, LoopCarry, LoopIndex
 from raptor.ir.nodes import has_feather, is_param_cell, At, Const, Dispatch, Leaf, Primitive, SampleIndex
-from lowering.dispatch import strategy, switch_form
+from raptor.wings.base.dispatch import strategy, switch_form
 from .spelling import _is_literal_zero, binding_name
 
 
@@ -177,7 +177,7 @@ class _DispatchMixin:
         (a declared strategy counts nothing: its body stays the same text)."""
         if not has_feather(node, "counts_branch_mix"):
             return None
-        from lowering.cells import mix_name
+        from raptor.wings.base.cells import mix_name
         from raptor.ir.walk import dispatch_groups
 
         for group, held in dispatch_groups(self.walk).items():

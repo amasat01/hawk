@@ -231,7 +231,7 @@ def _device(kernel, name, arrays, n, cache_dir, tmp, mode="float64"):
     import eagle.exec as eexec
     from _deploy import device_plugin
     from eagle import plan as eplan
-    from hawk_cuda.toolchain import resolve_arch
+    from ospreys.cuda.toolchain import resolve_arch
 
     bundle = build_bundle([kernel], tmp, targets=("cuda",), cache_dir=cache_dir,
                           device_arch=resolve_arch(), mode=mode)

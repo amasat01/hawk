@@ -33,7 +33,7 @@ from conftest import avx512
 import hawk
 from hawk import Mutable, Scalar, Terminated
 from hawk.compile import toolchain as tc
-import osprey_cpu.toolchain as ctc
+import ospreys.cpu.toolchain as ctc
 from aether.wings.base.wrapper import render_source, scalar_mode
 from aether.wings.cpu.host_vector import vectorises
 from hawk.targets import TARGETS

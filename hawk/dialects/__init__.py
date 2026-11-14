@@ -10,7 +10,6 @@ through the member it names."""
 
 from raptor.ir.kinds import Registry, declare, is_a as is_a, kind_name as kind_name, make_kind, has_feather as has_feather, load_manifest   # noqa: F401
 from .._errors import HawkError
-from .. import variants
 
 #: The ONE default registry of declared kinds (and primitives) a hawk process uses; raptor holds none.
 KINDS = Registry()
@@ -26,7 +25,7 @@ def declare_kinds(group: dict) -> tuple:
     from .. import wings
 
     name = group.get("name")
-    owned = {*_first_party(), *(ep.name for family in ("raptor", "aether", "eagle") for ep in variants.entry_points(f"{family}.wings"))}
+    owned = {*_first_party(), *(ep.name for family in ("raptor", "aether", "eagle") for ep in wings.entry_points(f"{family}.wings"))}
     if name in owned:
         raise HawkError(f"the name {name!r} belongs to a first-party piece: its kinds are declared by its own distribution, not through this door")
     for row in group.get("kinds", ()):

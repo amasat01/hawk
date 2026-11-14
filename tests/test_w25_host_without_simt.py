@@ -21,7 +21,7 @@ BLOCK = textwrap.dedent('''
 
     class _Block(importlib.abc.MetaPathFinder):
         def find_spec(self, name, path=None, target=None):
-            if name.split(".")[0] in ("simt", "hawk_cuda"):
+            if name.startswith("raptor.wings.simt") or name == "ospreys.cuda" or name.startswith("ospreys.cuda."):
                 raise ImportError("blocked for this test: " + name)
 
     sys.meta_path.insert(0, _Block())
@@ -60,7 +60,7 @@ def test_a_host_kernel_builds_and_runs_with_the_device_pieces_unimportable(tmp_p
         assert np.array_equal(y, 2.0 * x), y
         hawk.build([scale], r"{tmp_path / 'b'}", targets=("host",))
         from hawk import *
-        print("OK", sorted(m for m in sys.modules if m.split(".")[0] in ("simt", "hawk_cuda")))
+        print("OK", sorted(m for m in sys.modules if (m.startswith("raptor.wings.simt") or m == "ospreys.cuda" or m.startswith("ospreys.cuda."))))
     ''')
     done = run(code, tmp_path)
     assert done.returncode == 0 and done.stdout.startswith("OK []"), done.stderr[-1500:] + done.stdout
@@ -79,7 +79,7 @@ def test_a_c_export_works_with_the_device_pieces_unimportable(tmp_path):
 def test_a_host_only_build_loads_no_device_piece(tmp_path):
     code = KERNEL + textwrap.dedent(f'''
         hawk.build([scale], r"{tmp_path / 'b'}", targets=("host",))
-        print(json.dumps(sorted(m for m in sys.modules if m.split(".")[0] in ("simt", "hawk_c", "hawk_cuda"))))
+        print(json.dumps(sorted(m for m in sys.modules if (m.startswith("raptor.wings.simt") or m == "ospreys.c" or m.startswith("ospreys.c.") or m == "ospreys.cuda" or m.startswith("ospreys.cuda.")))))
     ''').replace("json.dumps", "__import__('json').dumps").replace("sys.modules", "__import__('sys').modules")
     done = run(code, tmp_path)
     assert done.returncode == 0 and json.loads(done.stdout.strip().splitlines()[-1]) == [], done.stderr[-1500:] + done.stdout
@@ -153,7 +153,7 @@ def test_an_implicit_call_on_a_machine_without_a_device_imports_no_device_backen
         import sys
         from hawk.targets import entry_ids
         ids = entry_ids("device")
-        assert not [m for m in sys.modules if m.split(".")[0] in ("simt", "hawk_cuda")], "listing imported a device piece"
+        assert not [m for m in sys.modules if (m.startswith("raptor.wings.simt") or m == "ospreys.cuda" or m.startswith("ospreys.cuda."))], "listing imported a device piece"
         from eagle import _core
         try:
             devices = _core.device_count()
@@ -166,7 +166,7 @@ def test_an_implicit_call_on_a_machine_without_a_device_imports_no_device_backen
         y = np.zeros(5)
         scale(x, 2.0, y)
         assert np.array_equal(y, 2.0 * x), y
-        loaded = sorted(m for m in sys.modules if m.split(".")[0] in ("simt", "hawk_cuda"))
+        loaded = sorted(m for m in sys.modules if (m.startswith("raptor.wings.simt") or m == "ospreys.cuda" or m.startswith("ospreys.cuda.")))
         assert loaded == [], loaded
         print("OK", ids)
     ''')

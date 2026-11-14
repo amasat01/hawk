@@ -31,7 +31,7 @@ from hawk import Matrix, Mutable, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk_c import EmbeddedProfile, export, render
+from ospreys.c import EmbeddedProfile, export, render
 from raptor.errors import RaptorError as HawkError
 from raptor.ir.linalg import factor_bytes
 from hawk.trace.kernel import Kernel
@@ -199,7 +199,7 @@ def test_a_derivative_passes_the_compiler_cppcheck_and_the_audit(tmp_path, which
 # --- the report ----------------------------------------------------------------
 
 def test_the_unit_names_its_helpers_and_the_singular_test():
-    from hawk_c import finish_report
+    from ospreys.c import finish_report
 
     source = render(lu_kernel(5))
     assert {"hawk_lu_n5_f64", "hawk_lu_solve_n5_v_f64", "hawk_lu_solve_n5_k2_f64",

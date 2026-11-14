@@ -181,7 +181,7 @@ def test_the_banded_mode_with_a_host_target_is_refused_as_a_whole_by_name(door, 
 
 
 def test_the_c_target_refuses_the_banded_mode_by_name():
-    from hawk_c import render
+    from ospreys.c import render
 
     with pytest.raises(HawkError, match="the c target has no banded spelling"):
         render(plain, mode="banded")

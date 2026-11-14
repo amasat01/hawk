@@ -26,7 +26,7 @@ import hawk
 from hawk import HawkError, Index, Int32, Mutable, Scalar, UInt32, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk_c import EmbeddedProfile, check, export, render
+from ospreys.c import EmbeddedProfile, check, export, render
 from aether.wings.base.wrapper import FLOAT64, render_source
 from hawk.targets import TARGETS
 

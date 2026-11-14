@@ -4,7 +4,7 @@
 """The compile drivers, both through the content-closure cache.
 
 ``g++`` builds the host ``.so`` (flags from one host profile, see
-:data:`osprey_cpu.toolchain.HOST_PROFILES`). The device toolchain has two
+:data:`ospreys.cpu.toolchain.HOST_PROFILES`). The device toolchain has two
 compilers, chosen by :func:`hawk.compile.toolchain.device_compiler_kind`:
 ``nvcc`` ahead of time on the developer/CI tree (the only path for
 LTO/relocatable fatbins), or an in-memory NVRTC compile
@@ -203,9 +203,9 @@ class CompileOptions:
     cache_dir: str | None = None
     extra: tuple[str, ...] = ()
     #: The host code-generation profile
-    #: (:data:`osprey_cpu.toolchain.HOST_PROFILES`). Empty means
+    #: (:data:`ospreys.cpu.toolchain.HOST_PROFILES`). Empty means
     #: ``$HAWK_HOST_PROFILE``, else
-    #: :func:`~osprey_cpu.toolchain.default_host_profile`. Ignored by the
+    #: :func:`~ospreys.cpu.toolchain.default_host_profile`. Ignored by the
     #: device compile.
     host_profile: str = ""
     #: The optimisation level (:data:`hawk.compile.toolchain.OPT_LEVELS`).
@@ -215,7 +215,7 @@ class CompileOptions:
     #: (``-O<n>`` / ``-Xptxas -O<n>``); ignored by the NVRTC device compile,
     #: which always optimises and takes no ``-O`` option.
     opt_level: str = ""
-    #: The unit's :class:`~lowering.settings.Settings`, for a backend whose compile reads one (``None``: none).
+    #: The unit's :class:`~raptor.wings.base.settings.Settings`, for a backend whose compile reads one (``None``: none).
     settings: object = None
 
 

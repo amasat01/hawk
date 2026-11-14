@@ -106,14 +106,14 @@ def key_count(sidecar: dict, spec: dict, n: int) -> int:
 
 def scatter_chunks(n: int, targets: int, max_chunks: int) -> int:
     """The chunks an ordered scatter of ``n`` lanes into ``targets`` cells adds in:
-    ``clamp(n // targets, 1, max_chunks)`` (the variant's ``scatter.max_chunks``), so the partial sums (``chunks * targets`` cells) stay O(n)."""
+    ``clamp(n // targets, 1, max_chunks)`` (the wing's ``scatter.max_chunks``), so the partial sums (``chunks * targets`` cells) stay O(n)."""
     return min(max_chunks, max(1, n // max(targets, 1)))
 
 
 def chunk_cap(sidecar: dict) -> int:
-    """The unit's ``scatter_chunks`` (the variant's ``scatter.max_chunks``); a sidecar without it is refused by name."""
+    """The unit's ``scatter_chunks`` (the wing's ``scatter.max_chunks``); a sidecar without it is refused by name."""
     if "scatter_chunks" not in sidecar:
-        raise HawkError("the sidecar states no scatter_chunks (a unit built before the chunk cap became a variant fact): rebuild the unit")
+        raise HawkError("the sidecar states no scatter_chunks (a unit built before the chunk cap became a fact): rebuild the unit")
     return int(sidecar["scatter_chunks"])
 
 

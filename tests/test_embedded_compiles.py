@@ -19,7 +19,7 @@ from __future__ import annotations
 import _kernels as K
 import pytest
 
-from hawk_c import EmbeddedProfile, check, render, toolchain
+from ospreys.c import EmbeddedProfile, check, render, toolchain
 
 MODES = ("float64", "float32")
 CORPUS = [n for n in K.CORPUS if n != "energy"]

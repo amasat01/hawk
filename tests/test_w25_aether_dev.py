@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """A host unit compiled against the aether SOURCE tree reads its linalg
-dimension cap from the variant's generated header.
+dimension cap from the wing's generated header.
 
 The default host build compiles against the sealed payload of the installed
-aether, so a change in the aether sources (the cap read from the variant's
+aether, so a change in the aether sources (the cap read from the wing's
 header) is only exercised when ``$HAWK_AETHER_INCLUDE`` names that source
 tree. ``$W25_AETHER_SRC`` names it for this row; it is one probe of the
 gate's toolchain registry (tests/conftest.py): unset, the row is reported
@@ -56,12 +56,12 @@ def test_a_cholesky_unit_built_against_the_aether_source_tree_matches_numpy(tmp_
     bundle = build_bundle([kernel], tmp_path / "b", targets=("host",), cache_dir=str(tmp_path / "cache"),
                           host_profile="native")
     assert seen, "no host compile happened"
-    # the key names the variant by name and header content, never by where it is installed ...
-    assert any(f.startswith("variant:") for f in seen[0]), seen[0]
-    # ... and the compile line hands the unit that variant's generated header
+    # the key names the wing by name and header content, never by where it is installed ...
+    assert any(f.startswith("facts:") for f in seen[0]), seen[0]
+    # ... and the compile line hands the unit that wing's generated header
     assert lines, "no compiler ran"
     inc = [a[2:] for a in lines[0] if a.startswith("-I")]
-    assert any((pathlib.Path(d) / "raptor_variant.h").is_file() for d in inc), lines[0]
+    assert any((pathlib.Path(d) / "raptor_facts.h").is_file() for d in inc), lines[0]
 
     rng = np.random.default_rng(11)
     g = rng.standard_normal((LANES, 3, 3))

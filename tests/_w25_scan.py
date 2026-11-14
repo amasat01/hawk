@@ -123,10 +123,8 @@ def is_stdlib(top: str) -> bool:
 # ---- the pieces ----------------------------------------------------------------------------------------------------
 
 def wing_homes() -> list[tuple[Path, str]]:
-    """``[(folder, import name)]`` of every wing folder of the tree (today's layout: ``components/*/<package>`` and
-    ``staging/<family>/wings/<name>``); the manifest beside it, not the folder, says the wing's family, name and parent."""
-    out = [(d, d.name) for d in sorted((REPO / "components").glob("*/*/")) if (d / "__init__.py").is_file()]
-    out += [(d, f"{d.parent.parent.name}.wings.{d.name}") for d in sorted((REPO / "staging").glob("*/wings/*/")) if (d / "__init__.py").is_file()]
+    """``[(folder, import name)]`` of every wing folder of the tree (``staging/<family>/wings/<name>``); the manifest beside it, not the folder, says the wing's family, name and parent."""
+    out = [(d, f"{d.parent.parent.name}.wings.{d.name}") for d in sorted((REPO / "staging").glob("*/wings/*/")) if (d / "__init__.py").is_file()]
     return out
 
 
@@ -137,8 +135,7 @@ def wing_manifest(folder: Path) -> dict:
 
 def osprey_homes() -> list[tuple[Path, str]]:
     """``[(folder, import name)]`` of every first-party OSPREY package of the tree."""
-    out = [(sub, sub.name) for d in sorted((REPO / "extensions").glob("*/")) for sub in sorted(d.iterdir()) if (sub / "__init__.py").is_file()]
-    out += [(d, d.name) for d in sorted((REPO / "staging").glob("osprey_*/")) if (d / "__init__.py").is_file()]
+    out = [(d, f"ospreys.{d.name}") for d in sorted((REPO / "staging" / "ospreys").glob("*/")) if (d / "__init__.py").is_file()]
     return out
 
 
@@ -148,12 +145,11 @@ def _osprey_manifest(folder: Path) -> dict:
 
 
 def pieces() -> dict[str, tuple[Path, str | None]]:
-    """piece id -> (source root, import name of the root or None): raptor, eagle, the variants, every wing (``wing:<family>.<name>``,
+    """piece id -> (source root, import name of the root or None): raptor, eagle, every wing (``wing:<family>.<name>``,
     from its manifest) and every OSPREY (``osprey:<name>``, from its manifest)."""
     out: dict[str, tuple[Path, str | None]] = {
         "raptor": (package_dir("raptor"), "raptor"),
         "eagle": (package_dir("eagle"), "eagle"),
-        "variants": (REPO / "variants", None),
     }
     for folder, module in wing_homes():
         m = wing_manifest(folder)
@@ -165,7 +161,7 @@ def pieces() -> dict[str, tuple[Path, str | None]]:
 
 def piece_ids() -> list[str]:
     """The ids known without importing raptor or eagle (collection-time parametrisation)."""
-    return ["raptor", "eagle", "variants",
+    return ["raptor", "eagle",
             *(f"wing:{(m := wing_manifest(f))['family']}.{m['name']}" for f, _ in wing_homes()),
             *(f"osprey:{_osprey_manifest(f)['name']}" for f, _ in osprey_homes())]
 
@@ -224,10 +220,10 @@ def writer_files(piece: str) -> set[Path] | None:
     mods = manifest(piece).get("emission_modules", [])
     files = set()
     for m in mods:
-        rel = Path(*m.split(".")[1:]) if m.split(".")[0] == pkg else Path(*m.split("."))
-        for cand in (root / rel.with_suffix(".py"), root / rel / "__init__.py"):
-            if cand.is_file():
-                files.add(cand)
+        rel = Path(*m[len(pkg) + 1:].split(".")) if m.startswith(pkg + ".") else Path(*m.split("."))
+        found = [cand for cand in (root / rel.with_suffix(".py"), root / rel / "__init__.py") if cand.is_file()]
+        assert found, f"{piece}: the emission module {m!r} of its manifest is no file under {root}: the writer guard would see nothing"
+        files.update(found)
     return files
 
 

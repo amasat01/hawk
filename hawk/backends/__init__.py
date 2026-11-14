@@ -36,7 +36,7 @@ class Lowered:
 
 @dataclass(frozen=True)
 class BuiltLowered(Lowered):
-    """:class:`Lowered` with the build's :class:`hawk.targets.BuildSpec`: the variant data every pass and writer of the build reads."""
+    """:class:`Lowered` with the build's :class:`hawk.targets.BuildSpec`: the facts every pass and writer of the build reads."""
 
     spec: object
 
@@ -88,8 +88,8 @@ class Backend:
     api: object = None
     #: its loop over samples may be vectorised
     vectorise: bool = False
-    #: the facts it reads, as its manifest's raptor wing names them: a name, or a map from the host's isa to a name (:func:`hawk.variants.named`)
-    variant: object = None
+    #: the facts it reads, as its manifest's raptor wing names them: a name, or a map from the host's isa to a name (:func:`hawk.facts.named`)
+    facts_name: object = None
     #: the wing each family contributes (manifest ``wings``); a build without one installed is refused by name (:func:`hawk.wings.require`)
     wings: object = None
 
@@ -105,14 +105,14 @@ class Backend:
     def build(self, lowered: Lowered, source, options) -> Part:
         """Compile ``source`` through the cache (a backend with ``builds``) and package it: the :class:`Part` of this backend.
         Never asked on a memo hit."""
-        from .. import variants
+        from ..facts import include_flags
         from ..compile import CompileOptions, compile_source
 
         own = self.own_options(options)
         arch = options.get("device_arch", "")
         result = None if not self.builds else compile_source(source.text, lowered.name, lowered.kind.apply(CompileOptions(
             target=self.id, mode=lowered.smode.id, arch=arch, defines=tuple(options.get("defines", ())),
-            extra=variants.include_flags(lowered.spec.for_target(self).primary),
+            extra=include_flags(lowered.spec.for_target(self).primary),
             cache_dir=options.get("cache_dir"), host_profile=options.get("host_profile") or "",
             opt_level=options.get("opt_level") or "", settings=lowered.spec.for_target(self).settings)))
         entry, files, report = self.package(source, result, name=lowered.name, smode=lowered.smode, profile=own.get("profile"))

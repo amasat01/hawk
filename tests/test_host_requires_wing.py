@@ -10,7 +10,7 @@ _BLOCK = """
 import importlib.abc, sys
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, name, path=None, target=None):
-        if name == "lowering" or name.startswith("lowering."):
+        if name == "raptor.wings.base" or name.startswith("raptor.wings.base."):
             raise ImportError("the raptor base wing is absent")
 sys.meta_path.insert(0, Block())
 from hawk.targets import build_spec
@@ -34,4 +34,4 @@ def test_a_host_build_without_the_base_wing_is_refused_by_name():
 
 
 def test_the_manifest_key_is_checked():
-    assert "wings" in registry.traits("host") and "variant" not in registry.traits("host")
+    assert "wings" in registry.traits("host") and "facts" not in registry.traits("host")

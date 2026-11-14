@@ -196,7 +196,7 @@ def test_entries_whose_warp_is_not_32_samples_refuse_by_name(entry, kw):
         render_source(derived.name, derived.sinks, derived.walk, TARGETS["cuda"], spec=spec_for(TARGETS["cuda"]), kind=default_kind(), **kw)
 
 
-# ---- the rows a warp folds in one call (hawk_cuda.emit._fold_shape) ----
+# ---- the rows a warp folds in one call (ospreys.cuda.emit._fold_shape) ----
 
 @kernel
 def fold1(x: Scalar, s: Mutable[Scalar]):
@@ -254,8 +254,8 @@ def _fold_rows_run(bundle, name, target, n):
 
 
 def test_fold_shape_keeps_a_warp_under_the_residency_line():
-    from hawk_cuda.emit import _fold_shape as fold_shape
-    from hawk.variants import load
+    from ospreys.cuda.emit import _fold_shape as fold_shape
+    from hawk.facts import load
 
     fold = load("cuda")["fold"]
     assert [fold_shape(w, fold) for w in (1, 2, 3, 4, 6, 10)] == [4, 2, 2, 1, 1, 1]

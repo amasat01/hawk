@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Which GCC releases miscompile a conditional call of a function with masked
-vector variants (aether-dsc drops those variants there), and what the
+vector forms (aether-dsc drops those forms there), and what the
 vectorisation predicate reports on them. No compiler is run: the macro dicts
 are injected."""
 
@@ -15,7 +15,7 @@ import pytest
 from test_host_loop_interchange import arith, sin_chain
 
 from hawk.compile import toolchain as tc
-import osprey_cpu.toolchain as ctc
+import ospreys.cpu.toolchain as ctc
 from aether.wings.cpu.host_vector import kernel_cost, vectorises
 
 VM = "native-vector-math"
@@ -55,7 +55,7 @@ def test_no_compile_flag_is_added(monkeypatch):
 
 
 def test_predicate_does_not_depend_on_the_compiler_release(monkeypatch):
-    # the host blend leaves no conditional math call, so no release needs a masked variant
+    # the host blend leaves no conditional math call, so no release needs a masked form
     for macros in (gcc(12, 3, 0), gcc(13, 2, 0), gcc(14, 2, 0), gcc(14, 4, 0)):
         _inject(monkeypatch, macros)
         assert vectorises(sin_chain.walk, HOST, VM) is X86     # the vector math is x86-64 only

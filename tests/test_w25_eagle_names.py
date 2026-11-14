@@ -34,11 +34,11 @@ def test_every_first_party_name_eagle_imports_resolves():
 
 
 def test_every_first_party_name_the_test_files_import_resolves():
-    _names("hawk tests", ("--src", ROOT / "tests"), *(("--src", d) for d in sorted((ROOT / "components").glob("*/tests"))))
+    _names("hawk tests", ("--src", ROOT / "tests"), *(("--src", d) for d in sorted(d for d in (ROOT / "staging").glob("*/tests/**") if d.is_dir() and any(d.glob("test_*.py")))))
 
 
 def test_every_first_party_name_the_backends_import_resolves():
-    _names("backends", *(("--src", d) for d in sorted((ROOT / "extensions").glob("*"))))
+    _names("backends", *(("--src", d) for d in sorted((ROOT / "staging" / "ospreys").glob("*"))))
 
 
 def test_eagle_refuses_a_missing_build_spec_by_name():

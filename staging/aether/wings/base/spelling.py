@@ -7,7 +7,7 @@ text, and the op-to-aether spelling tables."""
 
 from __future__ import annotations
 
-from lowering.exchange import mirror_of
+from raptor.wings.base.exchange import mirror_of
 
 import re
 

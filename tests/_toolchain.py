@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from lowering.exchange import ToolchainAbsent
+from raptor.wings.base.exchange import ToolchainAbsent
 
 WORKSPACE = Path(__file__).resolve().parents[2]
 
@@ -40,7 +40,7 @@ def real_arch(kind: str | None = None) -> str:
     GPU's own arch when the toolkit supports it, else the toolkit's minimum
     at or above ``PORTABLE_MIN_ARCH``. Never a hard-coded box arch."""
     from hawk.compile import toolchain as tc
-    from hawk_cuda import toolchain as dtc
+    from ospreys.cuda import toolchain as dtc
 
     probed = dtc._probed_device_arch()
     toolkit = dtc.toolkit_archs(kind)
@@ -59,7 +59,7 @@ def toolkit_supports(arch: str, kind: str | None = None) -> bool:
     """Whether the device toolkit lists ``arch`` (``sm_61``) at all --
     ``True`` when its list cannot be read (the compile then decides)."""
     from hawk.compile import toolchain as tc
-    from hawk_cuda import toolchain as dtc
+    from ospreys.cuda import toolchain as dtc
 
     toolkit = dtc.toolkit_archs(kind)
     return toolkit is None or int(arch.split("_", 1)[1]) in toolkit[1]

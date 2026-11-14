@@ -46,7 +46,7 @@ import hawk.math as hm
 import hawk.trace.value as T
 from hawk.artifact import build
 from aether.wings.base.render import render_body
-from lowering.lstsq import lowered
+from raptor.wings.base.lstsq import lowered
 from raptor.ir import Assign, canonical
 from raptor.errors import RaptorError as HawkError
 from hawk.trace.value import TableRef, node_of

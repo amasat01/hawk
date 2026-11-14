@@ -65,8 +65,8 @@ from .. import _contracts
 from ..compile.toolchain import _strict_aether_include, _strict_eagle_include
 from .._errors import HawkError
 from raptor.ir.cells import CELL_PLANE
-from lowering.cells import FUSED_STEPS_PLANE
-from lowering.cells import class_name, classify_name, mix_name, offsets_name, stale_name
+from raptor.wings.base.cells import FUSED_STEPS_PLANE
+from raptor.wings.base.cells import class_name, classify_name, mix_name, offsets_name, stale_name
 from ..targets import ENTRY_KINDS
 from raptor.ir.types import INT_PLANE_DTYPES
 
@@ -135,9 +135,9 @@ def _launch(lane_space, group: int, box=None, block: int | None = None,
     """The ``launch.lane_space`` block: the launch shape (row-major, the last axis
     fastest, only the first extent may be ``None``: known at run time) and the
     compaction ``group``, a lane count. With a thread ``box``
-    (:class:`simt.box.Box`), ``launch.box`` = ``{axis, T, stride}``: a
+    (:class:`raptor.wings.simt.box.Box`), ``launch.box`` = ``{axis, T, stride}``: a
     launch of ``n`` lanes runs ``ceil(n / (T * stride)) * stride`` threads
-    (:func:`simt.box.threads`), and ``base``/``count`` count threads.
+    (:func:`raptor.wings.simt.box.threads`), and ``base``/``count`` count threads.
     ``block`` is the exact threads per block an emit that fixed one (a staged
     tile) needs; a launch uses it verbatim. ``index_set`` is the record of a kernel
     declaring ``lanes=IndexSet()``: ``launch.index_set`` = ``{"width": bits}`` (the map word, the host
@@ -149,7 +149,7 @@ def _launch(lane_space, group: int, box=None, block: int | None = None,
     depots the PTX declares, a ceiling), ``launch.local_limit`` the device's per-thread limit. A launch of
     ``n`` threads needs about ``n * local_bytes`` of device memory beside the planes. No threads-per-block
     cap follows from it (a build asking for ``launch_bounds`` records its block in ``launch.block``).
-    ``wide`` is the placement of the kernel's wide values (:mod:`simt.wide`): ``launch.wide`` =
+    ``wide`` is the placement of the kernel's wide values (:mod:`raptor.wings.simt.wide`): ``launch.wide`` =
     ``{plane: {form, plane, layout, width}}``, one record per plane a wide value lives in, and ``class``, the device feature class whose thresholds placed them (a reader that does not know
     the key ignores it; a scratch plane is also in the sidecar's ``team_planes``, which sizes it). Absent when no value is placed."""
     axes = [{"label": label, "extent": extent} for label, extent in lane_space]
@@ -324,7 +324,7 @@ def _finish(walk, steps) -> dict:
     finish = getattr(walk, "finish", None)
     if finish is None:
         return {}
-    from lowering.cells import FINISHED_PLANE
+    from raptor.wings.base.cells import FINISHED_PLANE
 
     out = {"mask": finish, "counter": FINISHED_PLANE, "steps": steps}
     if steps == "auto":
@@ -336,7 +336,7 @@ def _finish(walk, steps) -> dict:
 
 def _gather_mats(walk, broadcast: dict | None) -> dict:
     """``{compact Matrix plane: the lane axes it varies along (one bool per axis of
-    the lane space), or None when the kernel is not a broadcast variant}``: what the
+    the lane space), or None when the kernel is not a broadcast twin}``: what the
     binder checks its column count against. A tangent plane takes its input's pattern."""
     from ..diff.transform import TANGENT_PREFIX
 

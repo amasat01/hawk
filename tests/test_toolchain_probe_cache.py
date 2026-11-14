@@ -17,7 +17,7 @@ import pytest
 
 from hawk.compile import cache as cc
 from hawk.compile import toolchain as tc
-import osprey_cpu.toolchain as ctc
+import ospreys.cpu.toolchain as ctc
 
 
 def _fake(path, version: str, log):

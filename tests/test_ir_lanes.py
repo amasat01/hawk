@@ -19,14 +19,14 @@ import hawk
 import hawk.math as m
 from hawk import Index, Mutable, Scalar, Table, Vector
 from raptor.ir import lanes
-from lowering import lanes as _simt_lanes
+from raptor.wings.base import lanes as _simt_lanes
 from functools import partial
 from raptor.ir.lanes import (AFFINE, DATA_DEPENDENT, INVARIANT, NON_AFFINE, ORIGIN_AXIS,
                            ORIGIN_DATA, ORIGIN_SORTED, ORIGIN_UNSORTED, QUOTIENT)
-from lowering.lanes import PROVEN, SORTED, TESTED
+from raptor.wings.base.lanes import PROVEN, SORTED, TESTED
 from raptor.ir.nodes import Leaf
 
-#: the simt lane queries, with the device variant's numbers (the tile width 32 is the box these rows are written for)
+#: the simt lane queries, with the device wing's numbers (the tile width 32 is the box these rows are written for)
 _facts = partial(_simt_lanes.facts, spec=DEVICE)
 _block_box_eligible = partial(_simt_lanes.block_box_eligible, tile=32)
 _gather_tile_eligible = partial(_simt_lanes.gather_tile_eligible, tile=32, bank_words=DEVICE.need("lanes", "bank_words"))
@@ -601,7 +601,7 @@ def test_the_contraction_choice_is_the_cards_per_dtype(monkeypatch):
     from _specs import DEVICE
     from hawk.passes.contraction import recognize
     from hawk.targets import build_spec, cards
-    from hawk.variants import derive, load
+    from hawk.facts import derive, load
     from test_ir_contraction import spline_contract as shared_contract
 
     def spec_with(**changes):
@@ -628,7 +628,7 @@ def test_the_contraction_choice_is_the_cards_per_dtype(monkeypatch):
 def test_the_committed_card_names_its_tile_examples_only_as_examples():
     from _specs import DEVICE
     from hawk.targets import cards
-    from hawk.variants import load
+    from hawk.facts import load
 
     doc = load("cuda")["cards"]["thread_box"]
     assert doc["rows"] == [] and len(doc["examples"]) == 2

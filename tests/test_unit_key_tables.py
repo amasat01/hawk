@@ -30,7 +30,7 @@ print(_unit_key(["step"], [k.walk.digest], [""], targets=("host",), smode=scalar
 
 def _key(plant: str) -> str:
     code = _KEY.format(plant=plant)
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(HERE.parent), str(HERE), str(HERE.parent / "extensions" / "hawk_cuda"), os.environ.get("PYTHONPATH", "")])}
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(HERE.parent), str(HERE), str(HERE.parent / "staging"), os.environ.get("PYTHONPATH", "")])}
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
     assert out.returncode == 0, out.stderr[-600:]
     return out.stdout.strip().splitlines()[-1]
@@ -47,9 +47,9 @@ def test_a_planted_edit_of_a_shared_spelling_table_moves_the_unit_key():
 
 def test_a_device_only_table_edit_leaves_a_host_only_unit_key_unchanged():
     base = _key("")
-    device_edit = _key("import hawk_cuda.emit as e; e.PLANTED_TABLE = {'add': 'planted'}")
+    device_edit = _key("import ospreys.cuda.emit as e; e.PLANTED_TABLE = {'add': 'planted'}")
     assert device_edit == base
-    lowering_edit = _key("import lowering.wrapper_text as w; w.PLANTED_TABLE = {'add': 'planted'}")
+    lowering_edit = _key("import raptor.wings.base.wrapper_text as w; w.PLANTED_TABLE = {'add': 'planted'}")
     assert lowering_edit != base          # the host row uses the component: its tables belong to the host unit
 
 

@@ -1,4 +1,4 @@
-"""The row width and the scatter chunk cap are variant facts (``cells.row``, ``scatter.max_chunks``), read where they are used."""
+"""The row width and the scatter chunk cap are facts (``cells.row``, ``scatter.max_chunks``), read where they are used."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 import hawk
 from hawk import HawkError, Kernel, Mutable, Scalar, kernel, runtime
 from hawk.artifact import build_bundle
-from hawk.variants import derive, load
+from hawk.facts import derive, load
 
 SIZES = (1, 31, 32, 33, 1000)
 
@@ -28,7 +28,7 @@ def built(tmp_path_factory, cache_dir):
 
 
 @pytest.mark.parametrize("n", SIZES)
-def test_a_host_reduction_equals_numpy_with_the_row_width_from_the_variant(built, n):
+def test_a_host_reduction_equals_numpy_with_the_row_width_from_the_facts(built, n):
     kernel_ = runtime.load(built.directory, "total")
     row = load("cpu")["cells"]["row"]
     assert kernel_.sidecar["cell_row"] == row
@@ -49,9 +49,9 @@ def test_the_simt_row_is_one_warp_and_the_cpu_row_a_power_of_two():
     assert row >= 1 and row & (row - 1) == 0 and load("cpu")["scatter"]["max_chunks"] >= 1
 
 
-def test_the_text_chunk_cap_is_the_variants_and_a_missing_one_is_refused():
+def test_the_text_chunk_cap_is_the_facts_and_a_missing_one_is_refused():
     from aether.wings.base import team_emit
-    from lowering import team
+    from raptor.wings.base import team
 
     from raptor.errors import RaptorError
 
@@ -64,7 +64,7 @@ def test_the_text_chunk_cap_is_the_variants_and_a_missing_one_is_refused():
         team_emit._chunk_count(team.scatter_specs("t", 2, 0, 32)[0].steps[0])
 
 
-def test_a_variant_without_cells_row_is_refused_by_name_at_the_reader():
+def test_a_facts_without_cells_row_is_refused_by_name_at_the_reader():
     from hawk.targets import build_spec
 
     spec = build_spec(("host",))

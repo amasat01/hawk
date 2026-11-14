@@ -20,41 +20,41 @@ sys.path.insert(0, str(REPO / "tools"))
 import _w25_scan as scan  # noqa: E402
 import contract_kit as kit  # noqa: E402
 
-EXTENSIONS = [(p, p.name) for d in sorted((REPO / "extensions").glob("*/")) for p in sorted(d.iterdir()) if (p / "__init__.py").is_file()]
+EXTENSIONS = [(REPO / "staging" / "ospreys" / "c", "ospreys.c"), (REPO / "staging" / "ospreys" / "cuda", "ospreys.cuda")]
 
 
 @pytest.mark.parametrize("root, pkg", EXTENSIONS, ids=[n for _, n in EXTENSIONS])
 def test_an_osprey_reaches_only_the_declared_entries_of_a_wing(root, pkg):
     entries = kit.wing_entries()
-    assert {"lowering", "simt"} <= set(entries), f"the wings are found through their entry points: {sorted(entries)}"
+    assert {"raptor.wings.base", "raptor.wings.simt"} <= set(entries), f"the wings are found through their entry points: {sorted(entries)}"
     bad = [f"{e.where(root.parent)}: {why}" for e, why in kit.entries_violations(scan.scan_tree(root, pkg), entries, pkg)]
     assert not bad, "\n".join(bad)
 
 
 def test_the_entries_scan_sees_an_undeclared_name_and_module(tmp_path):
     (tmp_path / "leaf").mkdir()
-    (tmp_path / "leaf" / "__init__.py").write_text("from lowering.box import boxed_sinks, not_an_entry\nfrom lowering.nosuch import x\n")
+    (tmp_path / "leaf" / "__init__.py").write_text("from raptor.wings.base.box import boxed_sinks, not_an_entry\nfrom raptor.wings.base.nosuch import x\n")
     bad = kit.entries_violations(scan.scan_tree(tmp_path / "leaf", "leaf"), kit.wing_entries(), "leaf")
-    assert [why for _, why in bad] == ["lowering.box: 'not_an_entry' is not an entry of lowering.box",
-                                       "lowering.nosuch: module 'nosuch' is not an entry of the 'lowering' wing"]
+    assert [why for _, why in bad] == ["raptor.wings.base.box: 'not_an_entry' is not an entry of raptor.wings.base.box",
+                                       "raptor.wings.base.nosuch: module 'nosuch' is not an entry of the 'raptor.wings.base' wing"]
 
 
 def test_no_leaf_imports_another_leaf():
     """The leaves are the packages that distributions declare in the ``ospreys`` group (hawk's own wheel declares the first-party ones)."""
-    from hawk import variants
+    from hawk import wings
 
-    leaves = {ep.value.partition(":")[0].split(".")[0] for ep in variants.entry_points("ospreys")}
-    assert {"hawk_c", "hawk_cuda"} <= leaves
+    leaves = {ep.value.partition(":")[0] for ep in wings.entry_points("ospreys")}
+    assert {"ospreys.c", "ospreys.cuda"} <= leaves
     bad = [f"{e.where(root.parent)}: imports {e.target}" for root, pkg in EXTENSIONS for e in scan.scan_tree(root, pkg)
-           if e.top in leaves and e.top != pkg]
+           if any(e.target == leaf or e.target.startswith(leaf + ".") for leaf in leaves if leaf != pkg)]
     assert not bad, "\n".join(bad)
 
 
 def test_a_leaf_that_imports_another_leaf_is_seen(tmp_path):
     (tmp_path / "third").mkdir()
-    (tmp_path / "third" / "__init__.py").write_text("import hawk_cuda.emit\n")
+    (tmp_path / "third" / "__init__.py").write_text("import ospreys.cuda.emit\n")
     out = _kit(tmp_path / "third")
-    assert out.returncode == 1 and "[leaf]" in out.stdout and "hawk_cuda.emit" in out.stdout
+    assert out.returncode == 1 and "[leaf]" in out.stdout and "ospreys.cuda.emit" in out.stdout
 
 
 def _kit(path, *more):
@@ -71,20 +71,23 @@ def test_the_kit_fails_the_plugin_fixture_on_the_leaf_rule_only():
     out = _kit(TESTS / "plugins" / "backend_host2" / "host2_plugin")
     rules = _rules(out)
     assert out.returncode == 1 and [n for n, st in rules.items() if st == "FAIL"] == [1], out.stdout
-    assert "host2_plugin/__init__.py:8 imports the leaf osprey_cpu.backend" in out.stdout and "[leaf]" in out.stdout
+    assert "host2_plugin/__init__.py:8 imports the leaf ospreys.cpu.backend" in out.stdout and "[leaf]" in out.stdout
     assert [n for n, st in rules.items() if st == "NOT CHECKABLE HERE"] == [3, 5, 6]
 
 
-COMPONENTS = [p for p in sorted((REPO / "components").glob("*")) if (p / p.name / "__init__.py").is_file()]
+#: every raptor wing that holds code beside its manifest and facts (a facts-only wing has nothing for the kit to read)
+WINGS = [p for p in sorted((REPO / "staging" / "raptor" / "wings").glob("*"))
+         if (p / "__init__.py").is_file() and any(f.name not in ("__init__.py", "facts.py", "cards.py") for f in p.glob("*.py"))]
+assert WINGS, "no raptor wing with code found: the kit test would have no case"
 
 
-@pytest.mark.parametrize("comp", COMPONENTS, ids=[p.name for p in COMPONENTS])
+@pytest.mark.parametrize("comp", WINGS, ids=[p.name for p in WINGS])
 def test_the_kit_passes_a_wing(comp):
-    """Every wing found under components/*, not a named one."""
+    """Every raptor wing with code found under staging/raptor/wings, not a named one."""
     from test_module_mutable_state import ALLOWED
 
     allow = ",".join(name for (file, name) in ALLOWED if file.startswith(comp.name + "/"))
-    out = _kit(comp / comp.name, "--allow", allow)
+    out = _kit(comp, "--allow", allow)
     rules = _rules(out)
     assert out.returncode == 0 and [n for n, st in rules.items() if st == "FAIL"] == [], out.stdout
     assert [n for n, st in rules.items() if st == "PASS"] == [1, 2, 4, 7, 8], out.stdout

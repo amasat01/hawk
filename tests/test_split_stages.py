@@ -30,7 +30,7 @@ import hawk.math
 from hawk import HawkError, Kernel, Mutable, Param, Scalar, Vector, kernel, runtime
 from hawk.artifact import build, build_bundle
 from hawk.compile import cache as compile_cache
-from lowering.split import stages
+from raptor.wings.base.split import stages
 
 SIZES = (1, 31, 33, 1000, 65536)
 RUN = 4096

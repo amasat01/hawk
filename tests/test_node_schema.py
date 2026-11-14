@@ -1,11 +1,11 @@
 """Every node class has a state/edges/from_state recipe, and rebuilding every node reproduces the Walk."""
 import _kernels as K
-import lowering.box  # noqa: F401  (BoxStore)
-import simt.lane  # noqa: F401
-import lowering.team  # noqa: F401
+import raptor.wings.base.box  # noqa: F401  (BoxStore)
+import raptor.wings.simt.lane  # noqa: F401
+import raptor.wings.base.team  # noqa: F401
 import pytest
 from raptor.ir.nodes import Node
-from lowering.cells import walk as canonical
+from raptor.wings.base.cells import walk as canonical
 from hawk.trace.kernel import _declared
 
 
@@ -55,7 +55,7 @@ def test_rebuilt_reproduces_the_walk(name):
 
 
 def test_core_imports_no_dialect():
-    """``import hawk`` loads no wing; the writer loads only raptor and the wings its manifest names (``lowering``), nothing of hawk;
+    """``import hawk`` loads no wing; the writer loads only raptor and the wings its manifest names (``raptor.wings.base``), nothing of hawk;
     the base wing names no writer."""
     import subprocess
     import sys
@@ -63,9 +63,9 @@ def test_core_imports_no_dialect():
     def run(code):
         return subprocess.run([sys.executable, "-c", "import sys\n" + code], capture_output=True, text=True, check=True).stdout.strip()
 
-    wings = "print(sorted(m for m in sys.modules if m.startswith('aether.wings') or m == 'lowering' or m.startswith('lowering.')))"
+    wings = "print(sorted(m for m in sys.modules if m.startswith('aether.wings') or m == 'raptor.wings.base' or m.startswith('raptor.wings.base.')))"
     assert run("import hawk\n" + wings) == "[]"
     assert run("import raptor.ir\n" + wings) == "[]"
     every = "import json, importlib\nfrom aether.wings.base import MANIFEST\nfor m in MANIFEST['emission_modules']: importlib.import_module(m)\n"
     assert run(every + "print([m for m in sys.modules if m == 'hawk' or m.startswith('hawk.')])") == "[]"
-    assert run("import lowering.split\nprint([m for m in sys.modules if m.startswith('aether.wings')])") == "[]"
+    assert run("import raptor.wings.base.split\nprint([m for m in sys.modules if m.startswith('aether.wings')])") == "[]"

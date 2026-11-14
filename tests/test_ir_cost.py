@@ -4,12 +4,12 @@
 """The per-branch cost vector of a ``dispatch`` group, counted from the IR.
 
 Every expected vector below is worked out by hand from the counting rules in
-``components/lowering/lowering/cost.py``: ``(arith32, arith64, special32, special64, loads,
+``staging/raptor/wings/base/cost.py``: ``(arith32, arith64, special32, special64, loads,
 gathers)`` per branch.
 """
 
 from __future__ import annotations
-from lowering.dispatch import dispatch as _dispatch
+from raptor.wings.base.dispatch import dispatch as _dispatch
 from _specs import HOST
 
 import platform
@@ -213,7 +213,7 @@ def test_a_dispatch_branch_stores_the_value_it_hands_to_the_sink():
 
 
 def test_a_cost_without_a_store_count_has_no_store_entry():
-    from lowering.cost import BranchCost
+    from raptor.wings.base.cost import BranchCost
 
     bare = BranchCost(loads=2)
     assert bare.stores is None

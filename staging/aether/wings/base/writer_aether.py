@@ -24,10 +24,10 @@ from math import prod
 from raptor.errors import RaptorError
 from raptor.ir.nodes import Loop, TapeRead
 from raptor.ir.nodes import through, GATHER_ROLES, RAW_KIND, RAW_LANGUAGE, At, Dispatch, Const, Finish, Leaf, Node, Op, Select, TapeWrite, has_feather, is_param_cell
-from lowering.cells import FINISHED_PLANE
+from raptor.wings.base.cells import FINISHED_PLANE
 from raptor.ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, QR_OPS, op_bytes
-from lowering import kinds as _lane, wide as _wide
-from lowering.dispatch import switch_form
+from raptor.wings.base import kinds as _lane, wide as _wide
+from raptor.wings.base.dispatch import switch_form
 from raptor.ir.rays import RAY_OPS
 from raptor.ir.ops import RANDOM_OPS
 from raptor.ir.types import INT_PLANE_DTYPES, TensorType
@@ -239,7 +239,7 @@ class AetherWriter:
 
     def store(self, r, sink, target: str, value: str) -> None:
         """The own column: one elementwise contribution, one store. A fresh ``Item`` of
-        more than the variant's ``rolled_fold_min`` elements is copied by a loop
+        more than the wing's ``rolled_fold_min`` elements is copied by a loop
         (``aether::rt::store``): the unrolled assignment holds a register per element."""
         if value == f"{target}[i]":
             return                  # a library result already written into the plane
@@ -281,7 +281,7 @@ class AetherWriter:
     def accum_run(self, r, sink, target: str, comp: str | None, index: str, value: str,
                   run) -> None:
         """A scattered commit whose key moves in runs of lanes
-        (:func:`lowering.lanes.key_run`): ``aether::accum::run``'s call for the
+        (:func:`raptor.wings.base.lanes.key_run`): ``aether::accum::run``'s call for the
         run's form, compensated when ``comp`` names the companion. ``i`` is
         the lane's own sample (the alignment vote reads it); the run state
         ``hawk_run_<target>`` is declared and closed by the entry
@@ -318,7 +318,7 @@ class AetherWriter:
     def leaf(self, r, leaf: Leaf, materialised: bool) -> str:
         name = binding_name(leaf.role, leaf.name)
         if _wide.is_scratch(leaf):
-            # the plane a wide value lives in (:mod:`lowering.wide`): its text is the lane's own proxy of it
+            # the plane a wide value lives in (:mod:`raptor.wings.base.wide`): its text is the lane's own proxy of it
             if not r.placed:
                 return ""
             if _wide.is_tiled(leaf) and r.lane_rows is not None:
@@ -462,7 +462,7 @@ class AetherWriter:
         kind = node.kind
         n = node.operands[0].ttype.shape[0]
         if r.max_dim is None:
-            raise RaptorError(f"op {kind!r}: the variant of the target being built has no linalg.max_dim: a backend whose manifest names no variant cannot factor per lane")
+            raise RaptorError(f"op {kind!r}: the wing of the target being built has no linalg.max_dim: a backend whose manifest names no wing cannot factor per lane")
         if n > r.max_dim or kind in QR_OPS:
             raise RaptorError(
                 f"op {kind!r} at n={n} reached the per-lane writer, which holds the matrix in one "
@@ -635,7 +635,7 @@ class AetherWriter:
                 stack.extend(node.operands)
         return seen
 
-    # -- wide values in planes (:mod:`lowering.wide`) -----------------------------------------
+    # -- wide values in planes (:mod:`raptor.wings.base.wide`) -----------------------------------------
 
     def _resident(self, r, node: Op, args: Sequence[str]) -> str:
         """A value placed in its plane (``args[1]`` is the lane's proxy of it): the statements that write the
@@ -731,7 +731,7 @@ class AetherWriter:
         raise RaptorError(f"a value of kind {getattr(node, 'kind', type(node).__name__)!r} has no element-by-element spelling")
 
     def _gathered(self, r, run, k: str, static: int | None) -> str:
-        """Element ``k`` of a run of reads of one plane (:class:`lowering.wide.Gather`)."""
+        """Element ``k`` of a run of reads of one plane (:class:`raptor.wings.base.wide.Gather`)."""
         at = f"static_cast<Int>({run.start + run.step * static})" if static is not None else (
             f"(static_cast<Int>({run.start}) + {k} * static_cast<Int>({run.step}))")
         index = at if run.base is None else f"({r._ref(run.base)} + {at})"

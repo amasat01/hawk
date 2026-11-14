@@ -25,4 +25,4 @@ packages = ["raptor.wings.cpu"]
 "raptor.wings.cpu" = "../../raptor/wings/cpu"
 
 [tool.setuptools.package-data]
-"raptor.wings.cpu" = ["wing.json"]
+"raptor.wings.cpu" = ["wing.json", "facts.py", "raptor_facts.h"]

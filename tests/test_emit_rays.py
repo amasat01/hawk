@@ -23,7 +23,7 @@ import pytest
 from conftest import sidecar_of
 from test_ir_rays import ball, box, tri
 
-import hawk_c as embedded
+import ospreys.c as embedded
 from hawk.artifact import build_bundle
 from aether.wings.base.wrapper import FLOAT64, render_source
 from aether.wings.base.render import render_body

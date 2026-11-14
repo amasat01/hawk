@@ -41,7 +41,7 @@ from raptor.ir import Walk
 from raptor.errors import RaptorError
 from raptor.ir.nodes import LEAF_ROLES, SINK_ROLES
 from raptor.ir.types import Slot
-from lowering import cells as _cells
+from raptor.wings.base import cells as _cells
 from .render import Body, render_body
 
 

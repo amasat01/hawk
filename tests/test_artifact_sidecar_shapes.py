@@ -344,7 +344,7 @@ def test_a_fixed_block_and_a_thread_box_are_written_to_launch():
 
     import hawk
     from hawk.artifact.sidecar import sidecar_meta
-    from lowering.box import Box
+    from raptor.wings.base.box import Box
 
     @hawk.kernel
     def k(a: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):

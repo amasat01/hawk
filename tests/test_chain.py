@@ -253,8 +253,8 @@ def _with_isa(machine, isa, vector_isa):
 
 
 def _host_isa(monkeypatch, vector_isa):
-    """The build sees a host of another vector ISA: its machine says so, so the manifest's isa map picks the x86 or the arm variant
-    (the host's own variant data is never mutated)."""
+    """The build sees a host of another vector ISA: its machine says so, so the manifest's isa map picks the x86 or the arm wing
+    (the host's own facts is never mutated)."""
     real = hawk_targets.detect_machine
     isa = "arm64" if vector_isa == "neon" else "x86_64"
     monkeypatch.setattr(hawk_targets, "detect_machine",

@@ -569,7 +569,7 @@ def _runtime_sinks(carried: list, store: dict, inputs, name,
 
 
 def _slotwise_body(nexts: Sequence, scatters: Sequence) -> tuple:
-    """A derived loop's body roots in slotwise form (:mod:`lowering.slotwise`)."""
+    """A derived loop's body roots in slotwise form (:mod:`raptor.wings.base.slotwise`)."""
     both = _slotwise.slotwise((*nexts, *scatters))
     return both[:len(nexts)], both[len(nexts):]
 

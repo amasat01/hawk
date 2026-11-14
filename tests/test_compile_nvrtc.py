@@ -32,8 +32,8 @@ from hawk.compile import (
     cubin_available,
     device,
 )
-from hawk_cuda import nvrtc as hnvrtc
-from hawk_cuda.nvrtc import NvrtcUnavailable
+from ospreys.cuda import nvrtc as hnvrtc
+from ospreys.cuda.nvrtc import NvrtcUnavailable
 from _toolchain import real_arch
 from raptor.errors import RaptorError as HawkError
 
@@ -246,7 +246,7 @@ def test_pip_only_roots_unresolvable_device_and_host_compile_still_succeed(
     not, by itself, a reason either one should fail."""
     import hawk._roots as _roots
     import hawk.compile.toolchain as tc
-    from hawk_cuda import toolchain as dtc
+    from ospreys.cuda import toolchain as dtc
 
     for var in ("HAWK_AETHER_INCLUDE", "HAWK_EAGLE_INCLUDE"):
         monkeypatch.delenv(var, raising=False)
@@ -299,7 +299,7 @@ def test_pip_only_device_compile_hits_the_cache_in_a_fresh_process(monkeypatch, 
     headers: a later process serving the payload elsewhere is a cache hit."""
     import hawk._roots as _roots
     import hawk.compile.toolchain as tc
-    from hawk_cuda import toolchain as dtc
+    from ospreys.cuda import toolchain as dtc
     from hawk.compile import _reset_artifact_memo, current_payload
 
     monkeypatch.setenv("HAWK_DEVICE_COMPILER", "nvcc")

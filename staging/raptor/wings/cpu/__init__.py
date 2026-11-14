@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The cpu raptor wing (``raptor.wings.cpu``): the graph analysis of the host's loop over samples (which loops run interchanged, whether
-the lanes of a tile may run side by side). It holds no text. It imports the standard library, raptor and the lowering wing its manifest names."""
+the lanes of a tile may run side by side). It holds no text. It imports the standard library, raptor and the base wing its manifest names."""
 
 from __future__ import annotations
 

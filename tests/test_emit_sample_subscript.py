@@ -104,8 +104,8 @@ from _eval import evaluate
 from hawk.artifact import build
 from hawk.diff import vjp
 from aether.wings.base.render import render_body
-from lowering.lstsq import lowered
-from lowering.exchange import mirror_of
+from raptor.wings.base.lstsq import lowered
+from raptor.wings.base.exchange import mirror_of
 from raptor.ir import Assign, Leaf, canonical
 from hawk import HawkError
 from raptor.ir import make as mk
@@ -513,10 +513,10 @@ def _host_run(width, directory, cache, spec=HOST, **kw):
 
 
 def test_wide_readonly_leaf_is_read_through_the_proxy(tmp_path, monkeypatch):
-    """INTERIM wide-leaf rule: > the variant's form.lazy_leaf_width elements, read only by static
+    """INTERIM wide-leaf rule: > the wing's form.lazy_leaf_width elements, read only by static
     ``component`` => no ``.get()``, proxy reads, bits equal to the whole-leaf emit;
     a narrow leaf, or a wide one also used whole, keeps today's text."""
-    from hawk import variants
+    from hawk import facts
 
     wide, wide_text = _host_run(144, tmp_path / "w", tmp_path / "c1")
     assert ".get()" not in wide_text and "vin_p_i = vin_p[i];" in wide_text
@@ -528,8 +528,8 @@ def test_wide_readonly_leaf_is_read_through_the_proxy(tmp_path, monkeypatch):
     _, narrow_text = _host_run(16, tmp_path / "n", tmp_path / "c3")
     assert "vin_p[i].get()" in narrow_text and ".eval<15>(i)" in narrow_text
 
-    real = variants.load
-    monkeypatch.setattr(variants, "load", lambda name: (lambda d: {**d, "form": {**d["form"], "lazy_leaf_width": 10**9}})(real(name)))
+    real = facts.load
+    monkeypatch.setattr(facts, "load", lambda name: (lambda d: {**d, "form": {**d["form"], "lazy_leaf_width": 10**9}})(real(name)))
     old, old_text = _host_run(144, tmp_path / "o", tmp_path / "c4", spec=dataclasses.replace(
         HOST, focus={**HOST.primary, "form": {**HOST.primary["form"], "lazy_leaf_width": 10**9}}))
     assert "vin_p[i].get()" in old_text

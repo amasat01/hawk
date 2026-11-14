@@ -607,7 +607,7 @@ def test_auto_digest_is_batch_independent(rig):
     assert json.loads((d / "g.json").read_text())["digest"] == digest
     again = rig.unit(k_auto, "vjp", ("t",))           # the same unit, whatever the batch
     assert json.loads((again / "g.json").read_text())["digest"] == digest
-    from lowering.split import stages
+    from raptor.wings.base.split import stages
     first = stages("g", vjp(k_auto, wrt=("t",)), spec=DEVICE)[0]
     assert Kernel("g", first.sinks).walk.digest == digest
 

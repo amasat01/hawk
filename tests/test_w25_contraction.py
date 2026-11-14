@@ -17,14 +17,14 @@ import platform
 import pytest
 
 from hawk.compile import toolchain as tc
-import osprey_cpu.toolchain as ctc
+import ospreys.cpu.toolchain as ctc
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXACT = ("native", "portable", "native-vector-math-nofma")
 DEFAULT = "native-vector-math"
 #: The one place a HOST profile's contraction is spelled, and the embedded reference build line (not a host profile).
-HOST_SITE = "staging/osprey_cpu/toolchain.py"
-REFERENCE_SITES = {"extensions/hawk_c/hawk_c/toolchain.py": "-ffp-contract=off"}
+HOST_SITE = "staging/ospreys/cpu/toolchain.py"
+REFERENCE_SITES = {"staging/ospreys/c/toolchain.py": "-ffp-contract=off"}
 
 
 def _flags(profile, monkeypatch):
@@ -58,7 +58,7 @@ def _spellings(path: pathlib.Path) -> list:
 
 def test_the_host_table_is_the_only_place_a_host_contraction_flag_is_spelled():
     found = {}
-    for sub in ("hawk", "extensions", "staging"):
+    for sub in ("hawk", "staging"):
         for path in sorted((ROOT / sub).rglob("*.py")):
             if "__pycache__" in path.parts:
                 continue

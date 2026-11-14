@@ -34,12 +34,12 @@ def make(root, name: str, manifest: dict | None = None, *, modules: dict | None 
 
 
 def backend(name: str, ref: str, **traits) -> dict:
-    """A backends item of a manifest; it reads no variant key unless ``reads`` says otherwise (the manifest must state it)."""
+    """A backends item of a manifest; it reads no fact key unless ``reads`` says otherwise (the manifest must state it)."""
     return {"name": name, "ref": ref, "about": "a test backend", "reads": [], **traits}
 
 
 def host_reads() -> list:
-    """The variant keys the first-party host row states under ``reads``: a planted row that renders as the host does states the same."""
+    """The fact keys the first-party host row states under ``reads``: a planted row that renders as the host does states the same."""
     from hawk import registry
 
     return list(registry.traits("host")["reads"])

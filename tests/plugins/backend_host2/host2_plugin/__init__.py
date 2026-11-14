@@ -5,7 +5,7 @@
 
 from dataclasses import replace
 
-from osprey_cpu.backend import Host
+from ospreys.cpu.backend import Host
 
 
 class Host2(Host):

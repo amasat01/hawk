@@ -24,7 +24,7 @@ from _emitted import MODES, cases
 
 from aether.wings.base.wrapper import FLOAT64, render_source
 from aether.wings.base.render import render_body
-from hawk_cuda.emit import CUDA
+from ospreys.cuda.emit import CUDA
 from aether.wings.base.render import binding_name, param_name
 from raptor.ir import Assign, Leaf, canonical
 from raptor.ir import make as mk

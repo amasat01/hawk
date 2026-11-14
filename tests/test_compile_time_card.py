@@ -28,9 +28,9 @@ from _cards import card_path
 
 from hawk.artifact.layout import exports
 from hawk.compile import aether_include, compiler_identity, device_compiler, eagle_include
-from osprey_cpu.toolchain import host_compiler, host_flags
+from ospreys.cpu.toolchain import host_compiler, host_flags
 from hawk.compile.toolchain import subprocess_env
-from hawk_cuda.toolchain import resolve_arch, device_flags
+from ospreys.cuda.toolchain import resolve_arch, device_flags
 from hawk.compile import toolchain as _tc
 from aether.wings.base.wrapper import FLOAT64, render_source
 from hawk.targets import TARGETS

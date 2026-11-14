@@ -31,7 +31,7 @@ import hawk.math as m
 from hawk import Grid, HawkError, Index, Kernel, Mutable, Scalar, Terminated, Vector, kernel, runtime
 from hawk.artifact import build_bundle
 from raptor.ir.nodes import ReduceSamples
-from lowering.split import stages
+from raptor.wings.base.split import stages
 from raptor.ir.walk import post_order as _post_order
 
 R, COL = 4, 64

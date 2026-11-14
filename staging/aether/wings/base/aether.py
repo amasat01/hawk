@@ -23,7 +23,7 @@ def _element(r, held: str, shape: tuple) -> str:
 
 def team_store(w, r, sink, target: str, value: str) -> None:
     """A value a team stage works on, stored row-major into the lane's own slice of its scratch
-    plane (:class:`~lowering.TeamStore`): one loop over the elements."""
+    plane (:class:`~raptor.wings.base.TeamStore`): one loop over the elements."""
     shape = sink.value.ttype.shape
     size = prod(shape)
     base = f"static_cast<std::size_t>({r._ref(sink.index)}) * {size}"
@@ -62,7 +62,7 @@ def box_store(w, r, target: str, lane: str, value: str) -> None:
 #: The writer's spellings by (dialect, name): ``fn(w, r, *args)``, a read-only table written after the functions it names. The front
 #: end reads them through the manifest's spellings arm.
 SPELLINGS = MappingProxyType({
-    ("lowering", "team_store"): team_store,
-    ("lowering", "team_read"): team_read,
-    ("lowering", "box_store"): box_store,
+    ("base", "team_store"): team_store,
+    ("base", "team_read"): team_read,
+    ("base", "box_store"): box_store,
 })

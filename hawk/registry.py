@@ -4,7 +4,7 @@
 """The one registry: what hawk can build with and spell with, found once and loaded on demand.
 
 An OSPREY is a distribution with one entry point in the group :data:`GROUP`, whose value is
-``<top package>:osprey.json``: a static file shipped as package data, located with ``find_spec`` so that reading
+``<package>:osprey.json``: a static file shipped as package data, located with ``find_spec`` so that reading
 a manifest imports no OSPREY code. The first-party OSPREYs (:data:`FIRST_PARTY`) ship in hawk's own wheel and declare their
 entry points in hawk's pyproject: they are read from the metadata of the distribution ``raptor-hawk`` (:data:`OWN_DIST`), the same
 way (in a source tree, ``tools/dev_dists.py`` writes that metadata; there is no search beside hawk's folder). An item's ``ref`` is imported on the first
@@ -41,7 +41,7 @@ _DIST = re.compile(r"[a-z][a-z0-9_-]*\Z")
 
 #: The top packages of the first-party OSPREYs (each with ``osprey.json`` beside its ``__init__``): a third party may not
 #: claim them. They are found through the entry points of the distribution :data:`OWN_DIST`, like any other.
-FIRST_PARTY = ("hawk_cuda", "hawk_c", "osprey_cpu")
+FIRST_PARTY = ("ospreys.c", "ospreys.cpu", "ospreys.cuda")
 OWN_DIST = "raptor-hawk"
 #: The distribution that provides a first-party backend id, for the sentences that say what to install.
 KNOWN = {"c": "osprey-c", "cuda": "osprey-cuda", "host": "osprey-cpu"}
@@ -117,6 +117,7 @@ class _State:
         self.loaded: dict = {}         # (arm, key) -> imported object (spellings: True)
         self.failed: dict = {}         # (arm, key) -> sentence
         self.homes: dict = {}          # identity -> directory, for each first-party package installed at its trusted place
+        self.packages: dict = {}       # identity -> the dotted package name that home holds
         self.dists: dict = {}          # identity -> the distribution that declares it (raptor-hawk)
         self.unreadable: dict = {}     # identity -> sentence, for a manifest too damaged to say what it declared
         self.skipped: set = set()      # backend ids an implicit call skipped, each warned once
@@ -197,6 +198,7 @@ class _State:
                 self.broken[identity] = problem
             else:
                 self.homes[identity] = home
+                self.packages[identity] = package
                 self.dists[identity] = dist
                 found.append(_read(identity, home))
         self.take(found, builtin=True)
@@ -278,9 +280,9 @@ def reset() -> None:
     global _STATE
     with _LOCK:
         _STATE = None
-    from . import variants
+    from . import facts
 
-    variants.reset()
+    facts.reset()
 
 
 def digest_memo() -> dict:
@@ -313,19 +315,20 @@ def _homes(package: str, dist) -> list:
     import json
     from urllib.parse import unquote, urlparse
 
-    homes = [Path(dist.locate_file(package))]
+    rel = Path(*package.split("."))
+    homes = [Path(dist.locate_file(rel))]
     try:
         direct = json.loads(dist.read_text("direct_url.json") or "null") or {}
         url = urlparse(direct.get("url", ""))
         if url.scheme == "file" and (direct.get("dir_info") or {}).get("editable"):
-            homes.append(Path(unquote(url.path)) / package)
+            homes.append(Path(unquote(url.path)) / rel)
     except ValueError:
         pass
     for f in dist.files or ():
         if f.name.endswith(".pth"):
             for line in f.read_text().splitlines():
                 if line.strip() and not line.startswith(("#", "import ")):
-                    homes.append(Path(dist.locate_file(line.strip())) / package)
+                    homes.append(Path(dist.locate_file(line.strip())) / rel)
     return [h.resolve() for h in homes]
 
 
@@ -336,7 +339,7 @@ def _locate(package: str, dist) -> tuple:
     homes = [h for h in _homes(package, dist) if (h / "__init__.py").is_file()]
     if not homes:
         return None, (f"the distribution {OWN_DIST!r} declares the package {package!r}, which is not installed at "
-                      f"{Path(dist.locate_file(package)).resolve()}")
+                      f"{Path(dist.locate_file(Path(*package.split('.')))).resolve()}")
     spec = _spec(package)
     try:
         regular = spec is not None and bool(spec.origin) and spec.origin.endswith("__init__.py")
@@ -402,7 +405,7 @@ def facts_name(wings):
 
 def _check_wings(wings, path) -> None:
     """A row's ``wings`` names at most one wing per family (``raptor``, ``aether``, ``eagle``): a name, a map from the host's isa to a name, or ``None``."""
-    from . import variants
+    from . import wings as _wings
 
     if set(wings) - {"raptor", "aether", "eagle"}:
         raise ValueError(f"{path}: wings names the families {sorted(set(wings) - {'raptor', 'aether', 'eagle'})}, which are not raptor, aether or eagle")
@@ -410,7 +413,7 @@ def _check_wings(wings, path) -> None:
         if leaf is not None and not isinstance(leaf, (str, dict)):
             raise TypeError(f"wings.{family} is not a wing name, a map from isa to a wing name, or null")
         for name in [] if leaf is None else [leaf] if isinstance(leaf, str) else list(leaf.values()):
-            variants._segment(name, "wing name")
+            _wings.segment(name, "wing name")
 
 
 def _facts_names(entry) -> list:
@@ -419,11 +422,11 @@ def _facts_names(entry) -> list:
 
 
 def _check_reads(item: dict, path) -> None:
-    """A backend item states ``reads`` (the dotted keys of the variant its text and its units read; an empty list is a valid statement),
-    or is refused by name. The variant names of the item are one identifier segment each, and every variant it names must hold the keys it
-    reads: refused when the manifest is loaded, not where a build reads."""
+    """A backend item states ``reads`` (the dotted keys of the facts its text and its units read; an empty list is a valid statement),
+    or is refused by name. The wing names of the item are one identifier segment each, and the chain of every raptor wing it names must
+    state the keys it reads (R5): refused when the manifest is loaded, not where a build reads."""
     if "reads" not in item:
-        raise ValueError(f"{path}: backend {item.get('name')!r} does not state `reads`: write the list of variant keys its text and its units "
+        raise ValueError(f"{path}: backend {item.get('name')!r} does not state `reads`: write the list of fact keys its text and its units "
                          "read, for example [\"lanes.run_max\", \"scatter.max_chunks\"] (an empty list states that it reads none)")
     if facts_name(item.get("wings")) is None:
         return
@@ -431,15 +434,16 @@ def _check_reads(item: dict, path) -> None:
     reads = item.get("reads")
     if not reads:
         return
-    from . import variants
+    from . import facts
 
     for name in names:
-        data = variants.load(name)
+        data = facts.load(name)
         for dotted in reads:
             node = data
             for part in dotted.split("."):
                 if not isinstance(node, dict) or part not in node:
-                    raise ValueError(f"{path}: backend {item.get('name')!r} reads {dotted!r}, which its variant {name!r} does not state")
+                    raise ValueError(f"{path}: backend {item.get('name')!r} reads {dotted!r}, which no wing of the raptor chain "
+                                     f"{' -> '.join(facts.chain(name))} states")
                 node = node[part]
 
 
@@ -456,7 +460,7 @@ def _read(identity: str, where) -> dict:
     try:
         if isinstance(where, str):
             package, colon, file = where.partition(":")
-            if not (package.isidentifier() and colon and file):
+            if not (all(part.isidentifier() for part in package.split(".")) and colon and file):
                 raise ValueError("the value is not '<top package>:<file>'")
             spec = _spec(package)
             if spec is None or not spec.submodule_search_locations:
@@ -593,7 +597,7 @@ def check(default: bool = False) -> None:
         if default and not s.checked:
             s.checked = True
             for identity, home in s.homes.items():
-                if problem := _locate(home.name, s.dists[identity])[1]:
+                if problem := _locate(s.packages[identity], s.dists[identity])[1]:
                     s.broken[identity] = problem
         for name, why in (s.broken.items() if default else ()):
             raise _error(f"the first-party OSPREY {name!r} is installed but refused: {why}")
@@ -675,7 +679,7 @@ def load(arm: str, key):
         if (arm, key) not in s.loaded:
             ext, item, _ = s.items[arm, key]
             try:
-                if ext in s.homes and (problem := _locate(s.homes[ext].name, s.dists[ext])[1]):
+                if ext in s.homes and (problem := _locate(s.packages[ext], s.dists[ext])[1]):
                     raise ValueError(problem)
                 obj = _import(item["ref"])
                 if arm == "backends" and (getattr(obj, "id", None) != key or obj.device != item.get("device", False)
@@ -685,7 +689,7 @@ def load(arm: str, key):
                     raise ValueError(f"the object enters as {obj.entry!r}, the manifest says {item['entry']!r}")
                 if arm == "backends":
                     obj.wings = item.get("wings")              # data: the wing each family contributes (its leaf), the chains say what is installed
-                    obj.variant = facts_name(item.get("wings"))   # data: the name of the facts it reads, or a map from host isa to name
+                    obj.facts_name = facts_name(item.get("wings"))   # data: the name of the facts it reads, or a map from host isa to name
             except (Exception, SystemExit) as e:
                 s.failed[arm, key] = (f"OSPREY {ext!r}: {arm[:-1]} {_label(arm, key)} cannot be loaded "
                                       f"({type(e).__name__}: {e})")

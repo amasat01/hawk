@@ -24,7 +24,7 @@ import pytest
 import hawk
 from hawk import Mutable, Param, Terminated, Vector
 from hawk.compile import toolchain as tc
-import osprey_cpu.toolchain as ctc
+import ospreys.cpu.toolchain as ctc
 from hawk.diff import jvp
 from aether.wings.base.wrapper import FLOAT64, render_source
 from raptor.ir import canonical

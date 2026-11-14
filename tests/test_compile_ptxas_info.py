@@ -11,8 +11,8 @@ import hawk
 import hawk.math as M
 from hawk.artifact.sidecar import sidecar_meta
 from hawk.compile import toolchain as tc
-from hawk_cuda import toolchain as dtc
-from hawk_cuda.driver import parse_ptxas_info
+from ospreys.cuda import toolchain as dtc
+from ospreys.cuda.driver import parse_ptxas_info
 
 _STDERR = """\
 ptxas info    : 213 bytes gmem, 24 bytes cmem[4]

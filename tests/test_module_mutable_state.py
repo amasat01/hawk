@@ -44,7 +44,7 @@ BASELINE = {
     'ir/access.py': ('_RANK',),
     'ir/compound.py': ('_KIND_OF_ROLE',),
     'passes/contraction.py': ('_OUTPUT_KIND',),
-    'lowering/cost.py': ('_QUAT_OPS',),
+    'base/cost.py': ('_QUAT_OPS',),
     'ir/linalg.py': ('FACTOR_TAG', '_FACTOR_BYTES', '_WIDTH'),
     
     'ir/rays.py': ('_COUNT',),
@@ -58,9 +58,9 @@ BASELINE = {
 }
 
 ALLOWED = {
-    **{("osprey_cpu/toolchain.py", n): "predates the guard, moved with its module from hawk/compile/toolchain.py" for n in
+    **{("cpu/toolchain.py", n): "predates the guard, moved with its module from hawk/compile/toolchain.py" for n in
        ('_GCC_FAMILY_MEMO', '_HOST_CONTRACTION', '_LIBC_MEMO', '_MACRO_MEMO', '_TARGET_MEMO', '_WITNESS_MEMO')},
-    ("osprey_cpu/backend.py", "BACKEND"): "the backend object, a stateless row never written after import",
+    ("cpu/backend.py", "BACKEND"): "the backend object, a stateless row never written after import",
     ("registry.py", "KNOWN"): "read-only table, never mutated after import",
     ("registry.py", "_STATE"): "the registry scan, rebuilt under _LOCK; hawk.registry.reset() forgets it",
     ("compile/payload.py", "_PAYLOAD_MEMO"): "memo of the sealed payload; hawk.compile.payload.reset_payload_memo() forgets it",
@@ -71,7 +71,7 @@ ALLOWED = {
     **{("cpu/host.py", n): "predates the guard, moved with its module from hawk/emit" for n in ("_ELEM_BYTES",)},
     **{("base/spelling.py", n): "predates the guard, moved with its module from hawk/emit" for n in
        ('_CWISE', 'CWISE_UNARY', 'INFIX_OPS', 'MATH_UNARY', 'MATH_BINARY', 'MATH_TERNARY', '_METHOD0', '_METHOD1', '_RANDOM_FN', 'IDENT_PREFIX')},
-    ("lowering/exchange.py", "MIRROR_OF"): TABLE,
+    ("base/exchange.py", "MIRROR_OF"): TABLE,
     **{("base/wrapper.py", n): "predates the guard, moved with its module from hawk/emit" for n in ('SAMPLE_SUM_OP_CODE', 'SCALAR_MODES')},
     ("simt/wrapper_text.py", "_BANDED_UNCERTIFIED"): "read-only table, never mutated after import",
     ("simt/writer_cells.py", "_RAW_TWIN"): "read-only table, never mutated after import",

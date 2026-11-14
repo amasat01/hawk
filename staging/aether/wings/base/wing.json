@@ -8,7 +8,7 @@
  "spellings": [
   {
    "writer": "aether",
-   "dialect": "lowering",
+   "dialect": "base",
    "ref": "aether.wings.base.aether"
   }
  ],

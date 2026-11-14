@@ -231,7 +231,7 @@ def _rederivable(derive):
     it differentiated, a ``rebuild(primal)`` that differentiates another one the
     same way (with the resolved ``wrt``), and the primal's launch shape and
     group, so a kernel built from it launches over the same lanes and the
-    broadcast door can differentiate a broadcast variant of the primal instead
+    broadcast door can differentiate a broadcast twin of the primal instead
     (:mod:`hawk._broadcast`)."""
     @functools.wraps(derive)
     def wrapped(primal, **kw):
@@ -266,7 +266,7 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
     of the primal's dispatch GROUP ``group`` (the sidecar's positional
     ``dispatch<i>`` name), which otherwise inherit the primal's strategy: the
     reverse takes its own structure. Any of
-    :data:`lowering.dispatch.DISPATCH_STRATEGIES` is accepted; an unknown group
+    :data:`raptor.wings.base.dispatch.DISPATCH_STRATEGIES` is accepted; an unknown group
     or strategy refuses by name."""
     if getattr(primal, "members", None):
         from .chain import vjp_chain
@@ -355,7 +355,7 @@ def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
 
 def _compact_counts(primal: Any) -> dict:
     """``{plane: the column count of its compact plane}`` (an ``i32`` node) for each
-    plane a broadcast variant reads at the axes it varies along: the product of the
+    plane a broadcast twin reads at the axes it varies along: the product of the
     kept axes' extents, a kept runtime first axis through the lane count."""
     held = getattr(primal, "broadcast", None) or {}
     axes = getattr(primal, "lane_space", None)
@@ -383,13 +383,13 @@ def _scatter_payload(name: _Namer, plane: str, g: Node, index: Node) -> list:
     a rank-0 value as it is; a vector or matrix one scalar accumulate per entry
     ``k`` (row-major) at ``index + k * count`` of ONE component-major plane, so the
     gradient has the layout of the compact plane it is the gradient of. Only a
-    broadcast variant knows its column count (:func:`_compact_counts`); any other
+    broadcast twin knows its column count (:func:`_compact_counts`); any other
     rank >= 1 scatter is left whole, which the emitter refuses by name."""
     shape = g.ttype.shape
     if not shape:
         return [AccumWrite(name(plane), g, index, g.ttype)]
     count = name.counts.get(plane)
-    if count is None:       # not a broadcast variant: the emitter refuses a rank >= 1 scatter by name
+    if count is None:       # not a broadcast twin: the emitter refuses a rank >= 1 scatter by name
         return [AccumWrite(name(plane), g, index, g.ttype)]
     t, scalar = index.ttype, TensorType((), g.ttype.dtype)
     out = []

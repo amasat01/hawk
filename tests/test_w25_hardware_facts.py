@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """One home per fact: a machine number (warp size, lane block, bank count, cache size, tile, SIMD width, thread count) is data of a
-variant, never an UPPER_CASE constant in code. One test per piece; no list of names, no allow-list, no expected count: a piece that holds
+wing, never an UPPER_CASE constant in code. One test per piece; no list of names, no allow-list, no expected count: a piece that holds
 such a constant is red and the message lists each ``file:line``. The scan reads the source and judges names only; arithmetic inside a
 function (``32 * 1024``) cannot be judged statically and is NOT CHECKABLE here. The extensions are backends: a leaf may name its hardware,
 so they are scanned for the number constants only. The scanner is tools/_hardware_facts.py (raptor's tests/test_hardware_free.py holds the same rule)."""
@@ -33,7 +33,7 @@ def test_the_pieces_are_found_by_discovery():
 def test_no_machine_number_constant(piece):
     root = PIECES[piece]
     hits = facts.piece_constants(root, root.parent)
-    assert not hits, f"{piece}: {len(hits)} machine number constant(s) outside a variant:\n" + "\n".join(hits)
+    assert not hits, f"{piece}: {len(hits)} machine number constant(s) outside a wing:\n" + "\n".join(hits)
 
 
 def test_the_scan_sees_a_module_and_a_class_constant_and_not_function_arithmetic(tmp_path):

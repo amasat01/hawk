@@ -87,9 +87,9 @@ def test_touching_an_authoring_name_binds_the_tracer():
 def _run(probe: str, *, extension_path: bool) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     if extension_path:
-        env["PYTHONPATH"] = os.pathsep.join([str(_REPO / "extensions" / "hawk_c"), env.get("PYTHONPATH", "")])
+        env["PYTHONPATH"] = os.pathsep.join([str(_REPO / "staging"), env.get("PYTHONPATH", "")])
     else:       # the optional C extension is not importable here (it may be installed: hide it by name)
-        probe = "import sys; sys.modules['hawk_c'] = None; " + probe
+        probe = "import sys; sys.modules['ospreys'] = None; " + probe
     return subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, env=env)
 
 
@@ -97,14 +97,14 @@ _ALL_PROBE = ("import hawk, json; "
               "print(json.dumps([n for n in hawk.__all__ if n != '__version__' and getattr(hawk, n, None) is None]))")
 
 
-@pytest.mark.parametrize("extension_path", [False, True], ids=["without-hawk_c", "with-hawk_c"])
+@pytest.mark.parametrize("extension_path", [False, True], ids=["without-ospreys.c", "with-ospreys.c"])
 def test_every_authoring_name_resolves(extension_path):
     r = _run(_ALL_PROBE, extension_path=extension_path)
     assert r.returncode == 0, r.stderr[-800:]
     assert json.loads(r.stdout.strip().splitlines()[-1]) == [], "every name in hawk.__all__ must resolve"
 
 
-@pytest.mark.parametrize("extension_path", [False, True], ids=["without-hawk_c", "with-hawk_c"])
+@pytest.mark.parametrize("extension_path", [False, True], ids=["without-ospreys.c", "with-ospreys.c"])
 def test_star_import_never_needs_an_optional_backend(extension_path):
     r = _run("from hawk import *", extension_path=extension_path)
     assert r.returncode == 0, r.stderr[-800:]

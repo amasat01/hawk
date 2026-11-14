@@ -55,15 +55,15 @@ classifiers = [
 # raptor-core, aether-dsc, raptor-hawk and raptor-eagle share one version from 0.7.0; aether-dsc
 # 0.7.2 brings the team linear-algebra headers, keyed block sums and the QR solve hawk emits.
 # numpy: hawk never imports it, but the host route and every example pass NumPy arrays
-dependencies = ["aether-dsc>=0.7.5,<0.8", "raptor-core>=0.7.5,<0.8", "raptor-variants", "raptor-base", "numpy>=1.26"]
+dependencies = ["aether-dsc>=0.7.5,<0.8", "raptor-core>=0.7.5,<0.8", "raptor-base", "raptor-x86", "raptor-arm", "raptor-cuda", "numpy>=1.26"]
 
-# The pieces hawk finds as installed distributions: each declares its entry point in its own pyproject (variants/, components/*).
+# The pieces hawk finds as installed distributions: each declares its entry point in its own pyproject (staging/packaging/*).
 # The first-party OSPREYs ship in this wheel and declare theirs here: hawk reads them from this distribution's metadata,
 # the way it reads a third party's.
 [project.entry-points."ospreys"]
-cuda = "hawk_cuda:osprey.json"
-c = "hawk_c:osprey.json"
-cpu = "osprey_cpu:osprey.json"
+cuda = "ospreys.cuda:osprey.json"
+c = "ospreys.c:osprey.json"
+cpu = "ospreys.cpu:osprey.json"
 
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
@@ -89,7 +89,7 @@ cuda13 = ["raptor-simt", "cuda-bindings>=13,<14", "nvidia-cuda-nvrtc>=13,<14", "
 [tool.scikit-build]
 minimum-version = "build-system.requires"
 build-dir = "build/{wheel_tag}"
-wheel.packages = ["hawk", "extensions/hawk_cuda/hawk_cuda", "extensions/hawk_c/hawk_c", "staging/osprey_cpu"]
+wheel.packages = ["hawk", "staging/ospreys"]
 cmake.version = ">=3.20"
 # Keep a dev build's in-tree extension out of the pure-python source collection;
 # the wheel's copy comes from the CMake install. .git_archival.txt stays out of the sdist: its
@@ -123,7 +123,7 @@ testpaths = ["tests"]
 # Makes `import hawk` work against the checked-out tree without an install --
 # this repo root, prepended to sys.path before collection (mirrors raptor
 # and the family's own pyproject convention).
-pythonpath = ["extensions/hawk_cuda", ".", "extensions/hawk_c", "staging"]
+pythonpath = [".", "staging"]
 # a test stuck for 10 minutes prints every thread's stack (it keeps running): a hang names itself
 faulthandler_timeout = 600
 markers = [

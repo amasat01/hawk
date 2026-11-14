@@ -8,9 +8,9 @@ from pathlib import Path
 
 import hawk
 import raptor.errors
-import lowering.exchange
+import raptor.wings.base.exchange
 
-_EXT = Path(__file__).resolve().parent.parent / "extensions"
+_REPO = Path(__file__).resolve().parent.parent
 
 
 def test_the_public_name_is_the_raptor_class():
@@ -33,12 +33,13 @@ def test_a_refusal_raised_inside_raptor_is_caught_by_the_public_name():
 def test_the_toolchain_refusal_is_the_base_wings():
     from hawk.compile import toolchain
     assert not hasattr(toolchain, "ToolchainAbsent")
-    assert issubclass(lowering.exchange.ToolchainAbsent, raptor.errors.RaptorError)
-    assert lowering.exchange.ToolchainAbsent("m", toolchain="x").toolchain == "x"
+    assert issubclass(raptor.wings.base.exchange.ToolchainAbsent, raptor.errors.RaptorError)
+    assert raptor.wings.base.exchange.ToolchainAbsent("m", toolchain="x").toolchain == "x"
 
 
 def test_the_extensions_do_not_import_the_toolchain_refusal_from_hawk():
-    for rel in ("hawk_c/hawk_c/toolchain.py", "hawk_cuda/hawk_cuda/nvrtc.py"):
-        for node in ast.walk(ast.parse((_EXT / rel).read_text())):
+    for path in (_REPO / "staging/ospreys/c/toolchain.py", _REPO / "staging/ospreys/cuda/nvrtc.py"):
+        rel = path.name
+        for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.ImportFrom):
                 assert node.module != "hawk.compile.toolchain", rel

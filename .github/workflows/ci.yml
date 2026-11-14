@@ -179,8 +179,8 @@ jobs:
           digest: ${{ steps.memo.outputs.digest }}
 
   # host-gcc: the host-compiler matrix. 13.1-13.3 and 14.1-14.2 miscompile a
-  # conditional call of a function with masked vector variants (GCC commit
-  # abbfe1e2616d, fixed in 13.4 and 14.3); aether-dsc drops those variants there
+  # conditional call of a function with masked vector forms (GCC commit
+  # abbfe1e2616d, fixed in 13.4 and 14.3); aether-dsc drops those forms there
   # and hawk reports such loops scalar. The sufficiency step is the whole non-GPU
   # suite on each compiler. The necessity witness is hawk/compile/witness/gcc_masked_call.cpp,
   # a standalone lane-tile early-exit loop calling a SIMD function: it must give

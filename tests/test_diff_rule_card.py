@@ -21,7 +21,7 @@ kind as unruled.
 
 from __future__ import annotations
 
-from lowering.dispatch import dispatch as _dispatch
+from raptor.wings.base.dispatch import dispatch as _dispatch
 import hashlib
 from pathlib import Path
 

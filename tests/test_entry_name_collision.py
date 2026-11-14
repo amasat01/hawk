@@ -15,7 +15,7 @@ import hawk
 from hawk import Scalar
 from hawk.artifact import build_bundle
 from aether.wings.base.prelude import UNIT_INCLUDES
-from osprey_cpu.toolchain import libc_symbols
+from ospreys.cpu.toolchain import libc_symbols
 from raptor.errors import RaptorError as HawkError
 
 pytestmark = pytest.mark.skipif(not libc_symbols(UNIT_INCLUDES), reason="no host compiler to read the C headers")

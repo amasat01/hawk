@@ -22,7 +22,7 @@ from _ospreys import backend, host_reads, make
 STUB = '''
 from dataclasses import replace
 
-from osprey_cpu.backend import Host
+from ospreys.cpu.backend import Host
 
 EMITS = []
 
@@ -157,7 +157,7 @@ def test_an_old_keyword_warns_and_is_its_option(keys, old, value, new, nvalue, t
     if targets[0] not in TARGETS:
         pytest.skip(f"{targets[0]} is not installed")
     if old == "embedded_profile":
-        from hawk_c.profile import EmbeddedProfile
+        from ospreys.c.profile import EmbeddedProfile
 
         value = nvalue = EmbeddedProfile(max_trips=7)
     with pytest.warns(DeprecationWarning, match=new.replace(".", r"\.")):

@@ -4,9 +4,9 @@
 """Source-tree mode: make the in-tree distributions visible to ``importlib.metadata`` without installing anything.
 
 ``python tools/dev_dists.py <directory>`` writes, into ``<directory>`` (put it on ``PYTHONPATH``), for every in-tree distribution
-(hawk's own pyproject, ``variants/``, ``components/*``, ``staging/packaging/*``): a ``<name>-<version>.dist-info`` folder (METADATA, entry_points.txt, RECORD)
+(hawk's own pyproject, ``staging/packaging/*``): a ``<name>-<version>.dist-info`` folder (METADATA, entry_points.txt, RECORD)
 generated FROM the distribution's pyproject, so an entry point is declared once, there; and a link per package that makes it
-importable from that directory. hawk finds variants, wings and OSPREYs through these dist-info folders exactly as it
+importable from that directory. hawk finds wings and OSPREYs through these dist-info folders exactly as it
 does through an installed wheel: there is no second discovery path. Standard library only (Python 3.11+ for ``tomllib``)."""
 
 from __future__ import annotations
@@ -21,8 +21,7 @@ TREE = Path(__file__).resolve().parent.parent
 
 
 def pyprojects(tree: Path = TREE) -> list:
-    return [p for p in [tree / "pyproject.toml", tree / "variants" / "pyproject.toml", *sorted((tree / "components").glob("*/pyproject.toml")),
-                                   *sorted((tree / "staging" / "packaging").glob("*/pyproject.toml"))]
+    return [p for p in [tree / "pyproject.toml", *sorted((tree / "staging" / "packaging").glob("*/pyproject.toml"))]
             if p.is_file()]
 
 

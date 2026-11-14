@@ -11,15 +11,15 @@ n^3/6, ``eigh`` S(n) n(n-1)/2 (6n+10), a solve n^2 k.
 
 from __future__ import annotations
 
-from lowering.dispatch import dispatch as _dispatch
+from raptor.wings.base.dispatch import dispatch as _dispatch
 import pytest
 
 from hawk import runtime
 from raptor.ir import Const, Dispatch, Leaf, Select, make
 from raptor.errors import RaptorError as HawkError
-from lowering.cost import _op_count, _own_cost, _wide, linalg_bytes
-from hawk.variants import load as _load_variant
-MAX_DIM = _load_variant("cpu")["linalg"]["max_dim"]
+from raptor.wings.base.cost import _op_count, _own_cost, _wide, linalg_bytes
+from hawk.facts import load as _load_facts
+MAX_DIM = _load_facts("cpu")["linalg"]["max_dim"]
 from raptor.ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, PROJECTIONS, as_matrix, op_bytes, op_count, sweeps
 from raptor.ir.ops import OP_KINDS
 from raptor.ir.types import TensorType

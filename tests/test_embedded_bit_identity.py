@@ -73,7 +73,7 @@ import pytest
 
 import hawk
 from hawk import Index, Mutable, Param, Scalar, Terminated, Vector
-from hawk_c import export
+from ospreys.c import export
 from hawk import HawkError
 from raptor.ir.nodes import AccumWrite, Leaf
 from raptor.ir.ops import make

@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-from hawk_c import toolchain as tc
+from ospreys.c import toolchain as tc
 from raptor.errors import RaptorError as HawkError
 
 VALID_C = """\

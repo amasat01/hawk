@@ -26,10 +26,10 @@ def _hawk():
 
 
 PACKAGES = {
-    "hawk_c": lambda: _manifest("extensions/hawk_c/hawk_c/osprey.json"),
-    "hawk_cuda": lambda: _manifest("extensions/hawk_cuda/hawk_cuda/osprey.json"),
-    "lowering": lambda: _manifest("components/lowering/lowering/wing.json"),
-    "simt": lambda: _manifest("components/simt/simt/wing.json"),
+    "ospreys.c": lambda: _manifest("staging/ospreys/c/osprey.json"),
+    "ospreys.cuda": lambda: _manifest("staging/ospreys/cuda/osprey.json"),
+    "raptor.wings.base": lambda: _manifest("staging/raptor/wings/base/wing.json"),
+    "raptor.wings.simt": lambda: _manifest("staging/raptor/wings/simt/wing.json"),
     "aether.wings.simt": lambda: _manifest("staging/aether/wings/simt/wing.json"),
     "aether.wings.base": lambda: _manifest("staging/aether/wings/base/wing.json"),
     "aether.wings.cpu": lambda: _manifest("staging/aether/wings/cpu/wing.json"),

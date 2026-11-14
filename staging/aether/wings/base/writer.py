@@ -8,7 +8,7 @@ fan-out naming, loop scopes and carries, the per-case ``switch`` scopes, the
 mask guard and the finish epilogue. Every piece of TARGET TEXT it produces
 comes from a :class:`Writer`: the aether C++ spelling
 (:mod:`aether.wings.base.writer_aether`, the default, and what both built wrappers
-wrap) or a plain-C spelling (:mod:`hawk_c.writer`). The traversal is written
+wrap) or a plain-C spelling (:mod:`ospreys.c.writer`). The traversal is written
 once; a writer never re-walks the IR.
 
 Every member takes already-rendered operand TEXT and returns text (or, for

@@ -9,17 +9,43 @@ its manifest (``MANIFEST["entries"]``, module -> names) what hawk calls; :func:`
 wing through its declared entry list and nothing else.
 
 Refused by name at load: a parent that is not installed, a manifest that states another family than the group it is declared under, a
-cycle, and two distributions that declare one name in a family."""
+cycle, and two distributions that declare one name in a family. The chain is walked once, by :func:`lineage`, from the manifests."""
 
 from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import json
+import re
 from functools import cache
+from pathlib import Path
 from types import SimpleNamespace
 
 from ._errors import HawkError
-from .variants import entry_points  # noqa: F401  (the one door: variants.py holds it, stdlib only)
+
+_NAME = re.compile(r"[a-z][a-z0-9_]*\Z")
+
+
+def entry_points(group: str) -> list:
+    """The entry points of ``group`` over every installed distribution: the one door every piece (a wing, an OSPREY) is found through."""
+    try:
+        found = importlib.metadata.entry_points()
+        return list(found.select(group=group)) if hasattr(found, "select") else list(found.get(group, ()))
+    except Exception:             # a damaged distribution: read each one alone and skip the ones that cannot be read
+        out = []
+        for dist in importlib.metadata.distributions():
+            try:
+                out += [ep for ep in dist.entry_points if ep.group == group]
+            except Exception:     # noqa: BLE001 - the registry refuses that distribution by name for its own group
+                continue
+        return out
+
+
+def segment(name, what: str = "wing name") -> str:
+    """``name`` when it is ONE identifier segment; a path, a separator, ``..`` or any other spelling is refused by name."""
+    if not isinstance(name, str) or not _NAME.match(name):
+        raise ValueError(f"{what} {name!r} is refused: a wing is named by ONE identifier segment [a-z][a-z0-9_]* (no path, no separator, no '..')")
+    return name
 
 
 def address(family: str, name: str) -> str:
@@ -48,8 +74,25 @@ def _find(family: str, name: str):
     return found[0]
 
 
-def _up(family: str, name: str) -> list:
-    """``[(name, package)]`` of the wing ``name`` and its parents, leaf first; each manifest is checked against the group it is declared under."""
+def home(family: str, name: str) -> Path:
+    """The folder of the wing package ``name`` of ``family``: its entry point's value is ``<top package>[.<sub package>]``; the top
+    package is located without importing it."""
+    from importlib import util
+
+    ep = _find(family, segment(name))
+    parts = ep.value.partition(":")[0].strip().split(".")
+    if ":" in ep.value or not all(p.isidentifier() for p in parts):
+        raise HawkError(f"the {_label(family, name)}: its entry point value {ep.value!r} is not a package name")
+    spec = util.find_spec(parts[0])
+    if spec is None or not spec.submodule_search_locations:
+        raise HawkError(f"the {_label(family, name)}: the package {parts[0]!r} its entry point names is not importable")
+    return Path(next(iter(spec.submodule_search_locations))).joinpath(*parts[1:])
+
+
+def lineage(family: str, name: str) -> list:
+    """``[(name, entry point, folder, manifest)]`` of the wing ``name`` and its parents, leaf first, read from each wing's ``wing.json``
+    without importing the wing. THE one walk of a chain: the refusals of a missing parent, of a manifest that states another family than
+    the group it is declared under, and of a cycle are made here (the facts of a chain are read along it too: :mod:`hawk.facts`)."""
     out, seen = [], []
     while name is not None:
         if name in seen:
@@ -57,18 +100,24 @@ def _up(family: str, name: str) -> list:
         seen.append(name)
         try:
             ep = _find(family, name)
+            folder = home(family, name)
         except HawkError as e:
             if not out:
                 raise
             raise HawkError(f"the {_label(family, out[-1][0])} builds on the {_label(family, name)}: {e}") from e
-        mod = ep.load()
-        stated = mod.MANIFEST.get("family")
+        manifest = json.loads((folder / "wing.json").read_text(encoding="utf-8"))
+        stated = manifest.get("family")
         if stated != family:
             raise HawkError(f"the {_label(family, name)} is declared by {_dist(ep)} under the group {family}.wings, but its manifest states "
                             f"the family {stated!r}: refused")
-        out.append((name, mod))
-        name = mod.MANIFEST.get("parent")
+        out.append((name, ep, folder, manifest))
+        name = manifest.get("parent")
     return out
+
+
+def _up(family: str, name: str) -> list:
+    """``[(name, package)]`` of the wing ``name`` and its parents, leaf first (the packages are imported)."""
+    return [(each, ep.load()) for each, ep, _, _ in lineage(family, name)]
 
 
 @cache

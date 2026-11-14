@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """One door to the canonical form: hawk, the wings and the backends obtain the walk of a set of sinks through
-``lowering.cells.walk``, which declares the compensation planes of the summing sample sums. A direct call of raptor's
+``raptor.wings.base.cells.walk``, which declares the compensation planes of the summing sample sums. A direct call of raptor's
 ``canonical`` there would silently lose a plane and move a digest."""
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 ROOTS = ("hawk", "components", "staging", "extensions")
 #: the door itself; every other module is refused
-ALLOWED = {"components/lowering/lowering/cells.py": "the door"}
+ALLOWED = {"staging/raptor/wings/base/cells.py": "the door"}
 
 
 def _direct_calls(path: Path) -> list:
@@ -36,4 +36,4 @@ def test_no_module_takes_the_canonical_form_but_through_the_door():
                 continue
             if rel not in ALLOWED:
                 bad += [f"{rel}:{line}" for line in _direct_calls(path)]
-    assert not bad, "raptor's canonical called directly, use lowering.cells.walk:\n  " + "\n  ".join(bad)
+    assert not bad, "raptor's canonical called directly, use raptor.wings.base.cells.walk:\n  " + "\n  ".join(bad)

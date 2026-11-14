@@ -72,7 +72,7 @@ def host_only(tmp_path_factory):
     pytest.importorskip("eagle.exec")
     root = tmp_path_factory.mktemp("host_only")
     (root / "probe.py").write_text(SCRIPT)
-    path = os.pathsep.join(p for p in sys.path if p and "hawk_cuda" not in p)    # an explicit path: no cuda OSPREY
+    path = os.pathsep.join(p for p in sys.path if p)    # an explicit path; the cuda OSPREY is hidden by the metadata above
     done = subprocess.run([sys.executable, str(root / "probe.py"), str(root / "out"), str(root / "cache")],
                           capture_output=True, text=True, env={**os.environ, "PYTHONPATH": path}, check=False)
     assert done.returncode == 0, done.stderr[-2000:]

@@ -10,7 +10,7 @@ from raptor.errors import RaptorError
 from raptor.ir.kinds import is_a
 from aether.wings.base.spelling import binding_name
 
-from simt.lane import slice_min
+from raptor.wings.simt.lane import slice_min
 
 from . import team_cells as team_cells      # the banded team stage forms ``team_body`` takes as its ``cells`` argument
 
@@ -54,7 +54,7 @@ PATH_MARKER = '    asm volatile("// hawk: {}");'
 TILED_CALL = "hawk_abi::tiled<"
 WARP_SUM_CALL = "hawk_abi::warp_sum<"
 
-#: One lane's elements of a scratch plane that tiles the lanes by warp (:mod:`lowering.wide`): element ``k`` of lane
+#: One lane's elements of a scratch plane that tiles the lanes by warp (:mod:`raptor.wings.base.wide`): element ``k`` of lane
 #: ``i`` of a plane of width ``W`` is at ``((i / 32) * W + k) * 32 + i % 32``, so the lane's proxy is its first element
 #: and ``at(k)`` adds ``32 k`` elements. It has the shape of an aether per-sample proxy to the ``aether::rt`` twins.
 #: Spliced only into a unit whose body names it.
@@ -83,7 +83,7 @@ template <class T, std::size_t W, class ViewT>
 """
 
 
-#: The sum of one value per lane over the 32 lanes of a warp (:mod:`simt.lane`): a fixed butterfly, so every lane ends
+#: The sum of one value per lane over the 32 lanes of a warp (:mod:`raptor.wings.simt.lane`): a fixed butterfly, so every lane ends
 #: with the same bits and a replay gives them again. Spliced only into a unit whose body names it.
 WARP_SUM = """
 template <class T>

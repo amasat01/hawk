@@ -602,7 +602,7 @@ def test_the_host_row_states_the_caches_of_this_machine():
 
 
 def test_host_caches_reads_sysfs_and_falls_back(tmp_path):
-    from osprey_cpu.toolchain import host_caches
+    from ospreys.cpu.toolchain import host_caches
 
     for index, (level, kind, size) in enumerate(
             [(1, "Data", "48K"), (1, "Instruction", "32K"), (2, "Unified", "2048K"),
@@ -617,7 +617,7 @@ def test_host_caches_reads_sysfs_and_falls_back(tmp_path):
 
 
 def test_host_caches_reads_sysctl_on_macos(monkeypatch):
-    import osprey_cpu.toolchain as cpu_toolchain
+    import ospreys.cpu.toolchain as cpu_toolchain
 
     def fake(cmd, **_):
         if cmd[-1].startswith("hw.perflevel0."):
@@ -715,7 +715,7 @@ def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
     from types import SimpleNamespace
 
     from hawk.compile import toolchain as tc
-    import osprey_cpu.toolchain as ctc
+    import ospreys.cpu.toolchain as ctc
 
     out = tmp_path / tag
     shutil.copytree(bundle.directory, out)
@@ -734,7 +734,7 @@ def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile)
     lanes of very different lengths, a few trips per launch, give the same planes,
     bit for bit, in fewer lane-trips (a counter the TU bumps per chunk trip, no timing)."""
     from hawk.compile import toolchain as tc
-    import osprey_cpu.toolchain as ctc
+    import ospreys.cpu.toolchain as ctc
 
     kernel = KERNELS["rkf78_attempt"]
     bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
@@ -835,7 +835,7 @@ def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, na
     """The sorted lanes against the same TU in plain compacted order: lanes of
     very different lengths give the same planes, bit for bit, in fewer lane-trips."""
     from hawk.compile import toolchain as tc
-    import osprey_cpu.toolchain as ctc
+    import ospreys.cpu.toolchain as ctc
 
     kernel = hawk.steps(ramp, 16)
     bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
@@ -878,7 +878,7 @@ def test_every_compiler_takes_the_lane_loop():
     assert "hawk_live |= static_cast<std::int64_t>(hawk_ron[hawk_l] != 0.0);" in src
     assert "__GNUC__ < 14" not in src
     from hawk.compile import toolchain as tc
-    import osprey_cpu.toolchain as ctc
+    import ospreys.cpu.toolchain as ctc
     from hawk import HawkError
     for profile in ("native", "portable", "native-vector-math", "native-vector-math-nofma"):
         try:

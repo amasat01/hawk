@@ -31,7 +31,7 @@ step, or ``step_vjp(..., steps_reverse="fused")`` for all K in one launch.
 ``steps="auto"`` derives ONE kernel, ``<name>_xauto``, by the same
 transform: the loop's static range is :data:`AUTO_K_MAX` trips, and its
 runtime trip count is read once per launch from the reserved ``lookup``
-word :data:`~lowering.cells.FUSED_STEPS_PLANE` (set by the runner, never
+word :data:`~raptor.wings.base.cells.FUSED_STEPS_PLANE` (set by the runner, never
 bound by the host, clamped below at 0, any word above ``AUTO_K_MAX``
 running that many steps). The sidecar records
 the sidecar's ``finish.steps == "auto"`` and ``finish.steps_max == AUTO_K_MAX``. The
@@ -53,7 +53,7 @@ from typing import Any
 from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
 from raptor.ir.loops import build_loop
 from raptor.ir.nodes import Assign, At, Const, Finish, Leaf, Node, Select
-from lowering.cells import FUSED_STEPS_PLANE
+from raptor.wings.base.cells import FUSED_STEPS_PLANE
 from .._errors import HawkError
 from raptor.ir.ops import make
 from raptor.ir.walk import substitute
