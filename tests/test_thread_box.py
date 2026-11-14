@@ -35,7 +35,7 @@ import os
 
 
 def thread_box(kernel, scalar, *, spec, **kw):
-    """The component's box with the card and the switch hawk resolves for a build."""
+    """The wing's box with the card and the switch hawk resolves for a build."""
     return _thread_box(kernel, scalar, spec=spec, card=_card(scalar, spec), enabled=os.environ.get(BOX_ENV) != "0", **kw)
 from hawk.targets import cards
 

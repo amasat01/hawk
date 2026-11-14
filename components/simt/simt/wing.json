@@ -1,5 +1,7 @@
 {
+ "family": "raptor",
  "name": "simt",
+ "parent": "base",
  "version": "0",
  "contract": "1",
  "reads": ["launch.warp_size"],
@@ -66,9 +68,6 @@
   "simt.wide_class"
  ],
  "runtime_modules": [],
- "components": [
-  "lowering"
- ],
  "vocabulary": {
   "team_grids": {
    "chunks": {"of": "plane", "status": "plane"},

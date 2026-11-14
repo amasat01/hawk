@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Discovery from INSTALLED distributions only (no source tree on the path). The install environment is built by hand from wheels (the
-hawk wheel, raptor-variants, raptor-lowering, raptor-simt, raptor, and the family's other pieces); name its python in
+hawk wheel, raptor-variants, raptor-base, raptor-simt, raptor, and the family's other pieces); name its python in
 ``HAWK_INSTALL_PYTHON`` and these rows run the install smoke and the third-party leg in it. Without it they are skipped."""
 
 from __future__ import annotations

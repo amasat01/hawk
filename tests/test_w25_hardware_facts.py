@@ -19,15 +19,14 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "tools"))
 import _hardware_facts as facts  # noqa: E402
+import _w25_scan as S  # noqa: E402
 
 PIECES = {"hawk": Path(importlib.util.find_spec("hawk").origin).resolve().parent}
-PIECES |= {f"component:{p.name}": p / p.name for p in sorted((REPO / "components").glob("*")) if (p / p.name / "__init__.py").is_file()}
-PIECES |= {f"extension:{p.name}": p for d in sorted((REPO / "extensions").glob("*")) for p in sorted(d.iterdir()) if (p / "__init__.py").is_file()}
-PIECES |= {f"wing:{f.name}_{p.name}": p for f in sorted((REPO / "staging").glob("*")) for p in sorted((f / "wings").glob("*")) if (p / "__init__.py").is_file()}
+PIECES |= {pid: root for pid, (root, _) in S.pieces().items() if pid.startswith(("wing:", "osprey:"))}
 
 
 def test_the_pieces_are_found_by_discovery():
-    assert {"hawk", "component:lowering", "component:simt", "extension:hawk_c", "extension:hawk_cuda"} <= set(PIECES)
+    assert {"hawk", "wing:raptor.base", "wing:raptor.simt", "osprey:c", "osprey:cuda"} <= set(PIECES)
 
 
 @pytest.mark.parametrize("piece", sorted(PIECES))

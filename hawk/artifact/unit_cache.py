@@ -218,28 +218,28 @@ def _plain(v):
     return None
 
 
-def _emission_modules(targets) -> list:
+def _emission_modules(targets, isa: str | None = None) -> list:
     """The modules whose tables ``targets`` emit with, as the manifests DECLARE them (``emission_modules``): hawk's own, each target's
-    extension's, and the manifest's of every component a target names (``components``) and of the components those build on. The list is the declaration alone:
+    OSPREY's, and the manifest's of every wing a target names (``wings``) and of the wings those build on. The list is the declaration alone:
     loaded or not, a declared module is in it (:func:`emission_digest` imports it)."""
-    from .. import components as _components
+    from .. import wings as _wings
 
     names = set(_registry.shared_emission_modules())
     for t in targets:
         names.update(_registry.emission_lists(t)[0])
-        for c in _components.chain(_registry.traits(t).get("components", ())):
-            names.update(_components.component(c).MANIFEST.get("emission_modules", ()))
+        for key in _wings.chain(_wings.row_wings(_registry.traits(t).get("wings"), isa)):
+            names.update(_wings.wing(*key).MANIFEST.get("emission_modules", ()))
     return sorted(names)
 
 
-def emission_digest(targets) -> str:
+def emission_digest(targets, isa: str | None = None) -> str:
     """The sha256 of the plain module-level tables of the emission modules ``targets`` use (:func:`_emission_modules`): what the unit
     is emitted WITH besides its inputs, so an import-time edit of a shared spelling table or text constant moves the key, and an edit
     of a table only another target emits with does not (sideways identity). Computed once per set of modules and process;
     :func:`reset_unit_memo` and :func:`hawk.registry.reset` forget it (the memo lives on the registry state)."""
     import importlib
 
-    names = tuple(_emission_modules(targets))
+    names = tuple(_emission_modules(targets, isa))
     memo = _registry.digest_memo()
     held = memo.get(names)
     if held is not None:
@@ -323,7 +323,7 @@ def _unit_key(names, walk_digests, declarations, *, targets, smode, kind, define
                  "wide_form:" + wide_form if wide_form != "auto" else "",
                  "launch_bounds:%d,%d" % launch_bounds if launch_bounds else "",
                  f"team_threads:{os.environ.get('HAWK_TEAM_THREADS')}",
-                 "emission_tables:" + emission_digest(targets),
+                 "emission_tables:" + emission_digest(targets, spec.machine.isa),
                  f"box:{os.environ.get(BOX_ENV)}:{(thread_box_card(smode.id, spec) or {}).get('T')}",
                  *(f"backend:{row.id}:{_backend_key(row, options or {}, source_digests, spec, smode, wide_class)}" for row in rows)):
         h.update(part.encode("utf-8"))

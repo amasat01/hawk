@@ -12,13 +12,13 @@ from __future__ import annotations
 
 from raptor.ir import build_loop
 from .._errors import HawkError
-from .. import components as _components
+from .. import wings as _wings
 from raptor.ir.loops import exit_kwargs
 from raptor.ir.nodes import Loop
 from raptor.ir.nodes import AccumWrite
 
-_block = _components.view("lowering", "block")
-_logs = _components.view("lowering", "logs")
+_block = _wings.view("raptor", "base", "block")
+_logs = _wings.view("raptor", "base", "logs")
 
 
 def kept_of(primal_sinks) -> tuple | None:

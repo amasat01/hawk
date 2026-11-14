@@ -27,7 +27,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .._broadcast import route
-from .. import components as _components
+from .. import wings as _wings
 from raptor.ir import Const, Leaf, Node, Quantity, Walk, make
 from .._errors import HawkError
 from raptor.ir.nodes import COMPANION_SUFFIX, AccumWrite, Assign, compensates
@@ -86,7 +86,7 @@ class Kernel:
         sinks = _scattered_companion(self.kind, sinks)
         self.sinks = sinks
         self.planes = {} if planes is None else planes
-        self.walk: Walk = _components.view("lowering", "cells").walk(sinks, _declared(self.planes))
+        self.walk: Walk = _wings.view("raptor", "base", "cells").walk(sinks, _declared(self.planes))
         #: The launch shape, ``((label|None, extent|None), ...)`` row-major with the
         #: fastest axis last: the ``Grid[...]`` declared, else one unlabelled
         #: runtime axis. Read by the sidecar and the bind doors.
@@ -272,7 +272,7 @@ def resolve_dispatch(kernel: Kernel, strategies: dict[str, str]) -> Kernel:
     to ``"segmented"``, which splits the step into one kernel per branch and
     so returns the single step itself: its units run one step per launch."""
     from raptor.ir.nodes import has_feather
-    dispatch = _components.view("lowering", "dispatch")
+    dispatch = _wings.view("raptor", "base", "dispatch")
     from ..passes.segment import with_strategies
     from raptor.ir.walk import dispatch_groups, loop_body_groups
     from .steps import default_steps

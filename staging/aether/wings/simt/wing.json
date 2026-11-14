@@ -1,5 +1,7 @@
 {
- "name": "aether_simt",
+ "family": "aether",
+ "name": "simt",
+ "parent": "base",
  "version": "0",
  "contract": "1",
  "entries": {
@@ -26,9 +28,5 @@
   "aether.wings.simt.wrapper_text",
   "aether.wings.simt.writer_cells"
  ],
- "runtime_modules": [],
- "components": [
-  "simt",
-  "aether_base"
- ]
+ "runtime_modules": []
 }

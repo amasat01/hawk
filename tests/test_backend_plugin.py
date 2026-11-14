@@ -1,8 +1,8 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""A backend shipped outside hawk registers through its extension manifest
-(entry point group ``raptor.extensions``) and, named in ``targets=``, builds with ``hawk.build(targets=...)``, with no change to hawk."""
+"""A backend shipped outside hawk registers through its OSPREY manifest
+(entry point group ``ospreys``) and, named in ``targets=``, builds with ``hawk.build(targets=...)``, with no change to hawk."""
 
 from __future__ import annotations
 

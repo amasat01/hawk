@@ -34,7 +34,7 @@ def frame_of(lowered) -> LoweredUnit:
     build settings in force. Builds no text and imports no backend."""
     from . import unit_cache
     from aether.wings.base.writer_aether import working_set_bytes
-    from ..components import view
+    from ..wings import view
     from ..trace.decl import Plane
 
     kernel, name, smode, kind = lowered.kernel, lowered.name, lowered.smode, lowered.kind
@@ -53,7 +53,7 @@ def frame_of(lowered) -> LoweredUnit:
               "device_only": cfg.device_only}
 
     # the cost is plain data, worked out here under the settings the build's spec holds
-    cost = view("lowering", "cost")
+    cost = view("raptor", "base", "cost")
     branch = cost.kernel_cost(walk)
     costs = {"ops": branch.arith32 + branch.arith64 + branch.special32 + branch.special64,
              "fp64_ops": cost.fp64_ops(canonical_nodes(tuple(kernel.sinks))[0]), "working_set_bytes": working_set_bytes(kernel.sinks, spec.primary.get("form", {}).get("rolled_fold_min"), cfg.form)}

@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Throwaway extensions for the registry rows: a dist-info, a package with a manifest, and the modules it names, under one folder."""
+"""Throwaway OSPREYs for the registry rows: a dist-info, a package with a manifest, and the modules it names, under one folder."""
 
 from __future__ import annotations
 
@@ -17,17 +17,17 @@ def copy_of(base: str, backend_id: str, extra: str = "") -> str:
 
 def make(root, name: str, manifest: dict | None = None, *, modules: dict | None = None, raw: str | None = None,
          value: str | None = None) -> None:
-    """Write the extension ``name`` under ``root``: a dist-info (METADATA and an entry point whose value is ``value``,
-    default ``<package>:extension.json``), the package ``name`` with ``-`` read as ``_`` holding the manifest
+    """Write the OSPREY ``name`` under ``root``: a dist-info (METADATA and an entry point whose value is ``value``,
+    default ``<package>:osprey.json``), the package ``name`` with ``-`` read as ``_`` holding the manifest
     ``{name, version, contract}`` plus ``manifest`` (or the text ``raw``), and ``modules`` (module name -> source)."""
     package = name.replace("-", "_")
     dist = root / f"{package}-0.0.dist-info"
     dist.mkdir(parents=True)
     (dist / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 0.0\n")
-    (dist / "entry_points.txt").write_text(f"[raptor.extensions]\n{name} = {value or package + ':extension.json'}\n")
+    (dist / "entry_points.txt").write_text(f"[ospreys]\n{name} = {value or package + ':osprey.json'}\n")
     (root / package).mkdir()
     (root / package / "__init__.py").write_text("")
-    (root / package / "extension.json").write_text(
+    (root / package / "osprey.json").write_text(
         raw if raw is not None else json.dumps({"name": name, "version": "0.0", "contract": "1", **(manifest or {})}))
     for module, text in (modules or {}).items():
         (root / f"{module}.py").write_text(text)

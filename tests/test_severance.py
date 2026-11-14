@@ -8,9 +8,9 @@ blocks, relative imports resolved, and string literals given to ``importlib.impo
 
 1. no module of raptor imports anything but the standard library and raptor;
 2. hawk imports no runtime (eagle) at import time;
-3. nothing in raptor, a variant, a component, an extension or eagle imports hawk, at any level (one test per piece);
-4. a writer (a component, the emission modules of an extension) imports the standard library, raptor and its own package,
-   plus the units its manifest names, directly or through the chain of the units they name; its variant comes as an argument (one test per piece).
+3. nothing in raptor, a variant, a wing, an OSPREY or eagle imports hawk, at any level (one test per piece);
+4. the emission modules of an OSPREY import the standard library, raptor and its own package, plus the wings its rows name, through the
+   chains of their leaves (one test per OSPREY); a wing is held to the chain rule (R2) by the test of its own, by manifests.
 """
 
 from __future__ import annotations
@@ -85,21 +85,71 @@ def _writer_edges(piece):
 
 def _writer_ok(piece, e) -> bool:
     _, pkg = S.pieces()[piece]
-    named = S.named_components().get(piece, set())
+    named = S.named_wings().get(piece, set())
     named_unit = any(e.target == m or e.target.startswith(m + ".") for m in named)
-    # a wing of the family package reaches another wing only through a unit its manifest names (the base wing names none: it holds what every backend needs)
-    own = S.unit_module(piece.split(":", 1)[1]) if piece.startswith("wing:") else None
-    other_wing = own is not None and e.target.startswith(f"{pkg}.wings.") and not (e.target == own or e.target.startswith(own + "."))
-    return (S.is_stdlib(e.top) or (e.top in ("raptor", pkg) and not (other_wing and not named_unit)) or named_unit
+    return (S.is_stdlib(e.top) or e.top in ("raptor", pkg) or named_unit
             or e.target == "<non-literal>")      # a module named by manifest data (the spelling arm)
 
 
-@pytest.mark.parametrize("piece", [p for p in S.piece_ids() if p.startswith(("component:", "extension:", "wing:"))])
-def test_writer_imports_only_the_standard_library_raptor_and_its_named_components(piece):
+@pytest.mark.parametrize("piece", [p for p in S.piece_ids() if p.startswith("osprey:")])
+def test_osprey_writer_imports_only_the_standard_library_raptor_and_its_named_wings(piece):
     bad = [e for e in _writer_edges(piece) if not _writer_ok(piece, e)]
-    counts = {p: sum(1 for e in _writer_edges(p) if not _writer_ok(p, e))
-              for p in S.piece_ids() if p.startswith(("component:", "extension:", "wing:"))}
-    assert not bad, S.report(piece, "2a.4 a writer imports the standard library, raptor and its named components only", bad, counts)
+    counts = {p: sum(1 for e in _writer_edges(p) if not _writer_ok(p, e)) for p in S.piece_ids() if p.startswith("osprey:")}
+    assert not bad, S.report(piece, "2a.4 an OSPREY's writer imports the standard library, raptor and its named wings only", bad, counts)
+
+
+def _wing_table():
+    """``{(family, name): (folder, module, manifest)}`` of every wing found by its manifest, and the problems of the manifests themselves."""
+    table, problems = {}, []
+    for folder, module in S.wing_homes():
+        m = S.wing_manifest(folder)
+        if list(m)[:3] != ["family", "name", "parent"]:
+            problems.append(f"{module}: its wing.json does not start with family, name, parent")
+            continue
+        if (m["family"], m["name"]) in table:
+            problems.append(f"{module}: the wing {m['family']}.{m['name']} is found twice")
+        table[m["family"], m["name"]] = (folder, module, m)
+    return table, problems
+
+
+def _chain(table, key):
+    """The wings of ``key`` from itself up to the root, as keys; stops (and says so) at a missing parent or a cycle."""
+    out, seen = [], set()
+    while key and key not in seen:
+        seen.add(key)
+        out.append(key)
+        parent = table[key][2]["parent"] if key in table else None
+        key = (key[0], parent) if parent else None
+    return out
+
+
+def _under(target: str, module: str) -> bool:
+    return target == module or target.startswith(module + ".")
+
+
+def test_a_wing_imports_the_standard_library_its_family_core_its_parent_chain_and_its_raptor_chain():
+    """R2: a wing imports the standard library, its family's core (the family package outside ``wings``), raptor's core (the contract every
+    wing of every family shares), its own parent chain, and
+    (an aether or eagle wing) the raptor wings of the chain of the SAME name; never a sibling, a child, a wing off its chain, hawk."""
+    table, problems = _wing_table()
+    report, counts = [], {}
+    for (family, name), (folder, module, _) in table.items():
+        chain = _chain(table, (family, name))
+        allowed = [table[k][1] for k in chain if k in table]
+        if family != "raptor":
+            allowed += [table[k][1] for k in _chain(table, ("raptor", name)) if k in table]
+        bad = []
+        for e in S.scan_tree(folder, module):
+            core = any(e.top == f and not _under(e.target, f"{f}.wings") for f in {family, "raptor"})
+            if not (S.is_stdlib(e.top) or core or e.target == "<non-literal>" or any(_under(e.target, m) for m in allowed)):
+                bad.append(e)
+        counts[f"{family}.{name}"] = len(bad)
+        if bad:
+            report.append(f"{family}.{name} (chain {' -> '.join(f'{f}.{n}' for f, n in reversed(chain))}): {len(bad)}\n"
+                          + "\n".join(f"    {e.where(S.REPO)}: {e.how} {e.target}" for e in bad))
+    total = len(problems) + sum(counts.values())
+    assert not total, (f"R2 (stdlib, family core, raptor core, parent chain, same-name raptor chain): {total} NOT HELD ({len(problems)} manifest problems; edges per wing: {counts})\n" + "\n".join(problems)
+                       + "\n" + "\n".join(report))
 
 
 def test_the_host_and_c_rows_name_nothing_of_the_cells_mode():
@@ -107,7 +157,7 @@ def test_the_host_and_c_rows_name_nothing_of_the_cells_mode():
     import re
 
     names = re.compile(r"cells_writer|CellsWriter|team_cells|writer_cells|aether\.wings\.simt")
-    roots = [S.pieces()[p][0] for p in ("wing:aether_cpu", "extension:osprey_cpu", "extension:hawk_c")]
+    roots = [S.pieces()[p][0] for p in ("wing:aether.cpu", "osprey:cpu", "osprey:c")]
     hits = [f"{f.relative_to(S.REPO)}:{n}" for root in roots for f in sorted(root.rglob("*.py")) if "tests" not in f.parts
             for n, line in enumerate(f.read_text().splitlines(), 1) if names.search(line)]
     assert not hits, hits

@@ -1,6 +1,6 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
-"""The host backend's manifest declares the cpu aether wing, which builds on the lowering component; without it a host build is refused by name."""
+"""The host backend's manifest names its wings; without the raptor base wing that its chain reaches, a host build is refused by name."""
 import subprocess
 import sys
 
@@ -11,7 +11,7 @@ import importlib.abc, sys
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, name, path=None, target=None):
         if name == "lowering" or name.startswith("lowering."):
-            raise ImportError("the lowering component is absent")
+            raise ImportError("the raptor base wing is absent")
 sys.meta_path.insert(0, Block())
 from hawk.targets import build_spec
 try:
@@ -22,16 +22,16 @@ except Exception as e:
 """
 
 
-def test_the_host_row_declares_the_component():
+def test_the_host_row_names_its_wings():
     from hawk.targets import TARGETS
 
-    assert TARGETS["host"].components == ("aether_cpu",)
+    assert TARGETS["host"].wings == {"raptor": {"x86_64": "x86", "arm64": "arm"}, "aether": "cpu", "eagle": None}
 
 
-def test_a_host_build_without_the_component_is_refused_by_name():
+def test_a_host_build_without_the_base_wing_is_refused_by_name():
     out = subprocess.run([sys.executable, "-c", _BLOCK], capture_output=True, text=True, check=True).stdout
-    assert out.startswith("RaptorError") and "lowering component is absent" in out, out
+    assert out.startswith("RaptorError") and "the raptor base wing is absent" in out, out
 
 
 def test_the_manifest_key_is_checked():
-    assert "components" in registry.traits("host")
+    assert "wings" in registry.traits("host") and "variant" not in registry.traits("host")

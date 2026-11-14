@@ -1,5 +1,7 @@
 {
- "name": "lowering",
+ "family": "raptor",
+ "name": "base",
+ "parent": null,
  "version": "0",
  "contract": "1",
  "reads": ["lanes.bank_words", "lanes.block_run", "lanes.copy_threads", "lanes.run_max", "linalg.fast_fp64", "linalg.team_max_dim", "linalg.warp_entries", "scatter.max_chunks", "scatter.threads"],

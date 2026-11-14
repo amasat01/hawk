@@ -1,15 +1,12 @@
 {
- "name": "aether_cpu",
+ "family": "aether",
+ "name": "cpu",
+ "parent": "base",
  "version": "0",
  "contract": "1",
  "emission_modules": [
   "aether.wings.cpu.host",
   "aether.wings.cpu.host_vector"
  ],
- "runtime_modules": [],
- "components": [
-  "aether_base",
-  "raptor_cpu",
-  "lowering"
- ]
+ "runtime_modules": []
 }

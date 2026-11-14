@@ -1,8 +1,8 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The registry rules, one row each, against throwaway extensions (a dist-info, a package with its manifest and modules under ``tmp_path``, put on
-``sys.path``): built-ins cannot be shadowed, a faulty extension is isolated, an installed third party changes no build
+"""The registry rules, one row each, against throwaway OSPREYs (a dist-info, a package with its manifest and modules under ``tmp_path``, put on
+``sys.path``): built-ins cannot be shadowed, a faulty OSPREY is isolated, an installed third party changes no build
 it was not asked for, items load lazily and once."""
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import _kernels as K
 import pytest
-from _extensions import backend, copy_of, host_reads, make
+from _ospreys import backend, copy_of, host_reads, make
 
 import hawk
 from hawk import registry
@@ -39,11 +39,11 @@ def ext(tmp_path, monkeypatch):
 
 
 def _fast(root, name="fast-ext", module="fast_backend", backend_id="fast", variant=None, **manifest):
-    make(root, name, {"backends": [backend(backend_id, f"{module}:BACKEND", **({"variant": variant, "reads": host_reads()} if variant else {}))], **manifest},
+    make(root, name, {"backends": [backend(backend_id, f"{module}:BACKEND", **({"wings": {"raptor": variant}, "reads": host_reads()} if variant else {}))], **manifest},
          modules={module: copy_of("osprey_cpu.backend", backend_id)})
 
 
-#: A state in which hawk's own distribution metadata is absent: no first-party extension is declared (a package-only install).
+#: A state in which hawk's own distribution metadata is absent: no first-party OSPREY is declared (a package-only install).
 NO_OWN_DIST = ("import importlib.metadata as _md\n_orig = _md.distribution\n"
                "def _dist(name):\n    if name == 'raptor-hawk':\n        raise _md.PackageNotFoundError(name)\n    return _orig(name)\n"
                "_md.distribution = _dist\n")
@@ -116,7 +116,7 @@ def test_a_missing_requirement_is_refused(ext):
 def test_a_ref_that_fails_to_import_is_refused_when_named(ext):
     make(ext, "dangling", {"backends": [backend("dangling", "no_such_module_xyz:BACKEND")]})
     assert "dangling" in registry.backend_ids() and not registry.refused()
-    with pytest.raises(HawkError, match=r"extension 'dangling'.*cannot be loaded"):
+    with pytest.raises(HawkError, match=r"OSPREY 'dangling'.*cannot be loaded"):
         need("dangling")
     assert "dangling/backends/'dangling'" in registry.refused() and need("host").id == "host"
 
@@ -140,12 +140,12 @@ def test_an_unnamed_build_ignores_an_installed_third_party(ext):
     assert tuple(DEFAULT_TARGETS) == before
 
 
-def test_an_extension_listed_in_the_environment_joins_the_default_set(ext, monkeypatch):
+def test_an_osprey_listed_in_the_environment_joins_the_default_set(ext, monkeypatch):
     _fast(ext)
-    monkeypatch.setenv("HAWK_EXTENSIONS", "fast-ext")
+    monkeypatch.setenv("HAWK_OSPREYS", "fast-ext")
     registry.reset()
     assert "fast" in DEFAULT_TARGETS
-    monkeypatch.setenv("HAWK_EXTENSIONS", "off")
+    monkeypatch.setenv("HAWK_OSPREYS", "off")
     registry.reset()
     assert tuple(DEFAULT_TARGETS) == ()
 
@@ -175,7 +175,7 @@ def test_an_unknown_or_refused_target_is_a_hawk_error_naming_it(ext, tmp_path, c
         need("nope")
 
 
-def test_listing_and_need_host_import_no_extension_module():
+def test_listing_and_need_host_import_no_osprey_module():
     out = _run("from hawk import registry\n"
                "from hawk.backends import need\n"
                "registry.backend_ids(); registry.traits('cuda'); registry.refused()\n"
@@ -187,15 +187,15 @@ def test_listing_and_need_host_import_no_extension_module():
 
 
 @pytest.mark.repo_local  # builds the state without the extension packages from the source tree's layout; a wheel carries them beside hawk
-def test_first_party_extensions_are_found_through_hawks_own_distribution():
+def test_first_party_ospreys_are_found_through_hawks_own_distribution():
     out = _run("from hawk import registry\n"
-               "print(registry.backend_ids(default=True), registry.refused(), sorted(registry.extensions()))\n"
+               "print(registry.backend_ids(default=True), registry.refused(), sorted(registry.ospreys()))\n"
                "print([m for m in sys.modules if m.split('.')[0] in ('hawk_c', 'hawk_cuda')])\n", [REPO, *EXTENSIONS])
-    assert out.splitlines() == ["('cuda', 'host', 'c') {} ['hawk-c', 'hawk-cuda', 'osprey-cpu']", "[]"]
-    # no raptor-hawk metadata, no first-party extension: there is no search beside hawk's folder
+    assert out.splitlines() == ["('cuda', 'host', 'c') {} ['c', 'cpu', 'cuda']", "[]"]
+    # no raptor-hawk metadata, no first-party OSPREY: there is no search beside hawk's folder
     assert _run("from hawk import registry\nprint(registry.backend_ids())", [REPO, *EXTENSIONS], own=False).strip() == "()"
     assert _run("from hawk import registry\nprint(registry.backend_ids())", [REPO, *EXTENSIONS],
-                {"HAWK_EXTENSIONS": "off"}).strip() == "()"
+                {"HAWK_OSPREYS": "off"}).strip() == "()"
 
 
 def test_a_third_party_cannot_claim_a_first_party_id(ext, monkeypatch):
@@ -207,8 +207,8 @@ def test_a_third_party_cannot_claim_a_first_party_id(ext, monkeypatch):
     assert registry.traits("cuda")["about"] == "builds for the GPU" and "cuda" in registry.backend_ids(default=True)
 
 
-@pytest.mark.parametrize("value, word", [("extension.json", "not '<top package>:<file>'"),
-                                         ("no_such_pkg_xyz:extension.json", "no package"),
+@pytest.mark.parametrize("value, word", [("osprey.json", "not '<top package>:<file>'"),
+                                         ("no_such_pkg_xyz:osprey.json", "no package"),
                                          ("odd_ext:nothing.json", "nothing.json")])
 def test_a_bad_entry_point_value_is_refused_with_a_sentence(ext, value, word):
     make(ext, "odd-ext", {"backends": [backend("odd", "odd_mod:BACKEND")]}, value=value)
@@ -250,7 +250,7 @@ def test_a_builds_spellings_are_those_its_backends_name_not_what_else_is_install
     arm = {"spellings": [{"writer": "w_out", "dialect": "d_out", "ref": "w_out_spells"}]}
     make(ext, "writer-ext", arm, modules={"w_out_spells": "SPELLINGS = {('d_out', 'x'): lambda w, r: 1}\n"})
     registry.reset()
-    assert build_spec(("host",)).spellings == before and "w_out_spells" not in sys.modules      # an unrelated extension adds nothing
+    assert build_spec(("host",)).spellings == before and "w_out_spells" not in sys.modules      # an unrelated OSPREY adds nothing
     _fast(ext, spellings=[{"writer": "w_out", "dialect": "d_own", "ref": "w_own_spells"}])
     registry.reset()
     assert build_spec(("host", "fast")).spellings == {**before, ("w_out", "d_own"): "w_own_spells"}     # its own backend's arm does
@@ -278,18 +278,18 @@ def test_eight_threads_load_an_item_once(ext):
     del builtins._once_loads
 
 
-def test_an_extension_is_its_distribution_not_the_name_its_manifest_declares(ext):
+def test_an_osprey_is_its_distribution_not_the_name_its_manifest_declares(ext):
     for dist, module, backend_id in (("one-ext", "one_backend", "aa"), ("two-ext", "two_backend", "bb")):
         make(ext, dist, {"name": "label", "backends": [backend(backend_id, f"{module}:BACKEND")]},
              modules={module: copy_of("osprey_cpu.backend", backend_id)})
     registry.reset()
     assert {"aa", "bb"} <= set(registry.backend_ids()) and not registry.refused()
-    assert {"one-ext", "two-ext"} <= set(registry.extensions())
+    assert {"one-ext", "two-ext"} <= set(registry.ospreys())
     dist = ext / "one_ext-0.0.dist-info" / "entry_points.txt"
-    dist.write_text(dist.read_text() + "again = one_ext:extension.json\n")
+    dist.write_text(dist.read_text() + "again = one_ext:osprey.json\n")
     registry.reset()
-    assert "aa" in registry.backend_ids() and not registry.refused()          # two entry points, one package: one extension
-    dist.write_text(dist.read_text() + "other = two_ext:extension.json\n")
+    assert "aa" in registry.backend_ids() and not registry.refused()          # two entry points, one package: one OSPREY
+    dist.write_text(dist.read_text() + "other = two_ext:osprey.json\n")
     registry.reset()
     assert "aa" not in registry.backend_ids() and "more than one entry point" in registry.refused()["one-ext"]
 

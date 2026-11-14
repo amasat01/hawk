@@ -3,18 +3,18 @@
 
 """The one registry: what hawk can build with and spell with, found once and loaded on demand.
 
-An extension is a distribution with one entry point in the group :data:`GROUP`, whose value is
-``<top package>:extension.json``: a static file shipped as package data, located with ``find_spec`` so that reading
-a manifest imports no extension code. The first-party extensions (:data:`FIRST_PARTY`) ship in hawk's own wheel and declare their
+An OSPREY is a distribution with one entry point in the group :data:`GROUP`, whose value is
+``<top package>:osprey.json``: a static file shipped as package data, located with ``find_spec`` so that reading
+a manifest imports no OSPREY code. The first-party OSPREYs (:data:`FIRST_PARTY`) ship in hawk's own wheel and declare their
 entry points in hawk's pyproject: they are read from the metadata of the distribution ``raptor-hawk`` (:data:`OWN_DIST`), the same
 way (in a source tree, ``tools/dev_dists.py`` writes that metadata; there is no search beside hawk's folder). An item's ``ref`` is imported on the first
-:func:`load` of that item. The built-in backend and spellings, and the first-party extensions, are added through
-the same :func:`_State.add` path and cannot be shadowed. A faulty extension is refused with a sentence
+:func:`load` of that item. The built-in backend and spellings, and the first-party OSPREYs, are added through
+the same :func:`_State.add` path and cannot be shadowed. A faulty OSPREY is refused with a sentence
 (:func:`refused`) and is an error only when one of its items is asked for by name.
 
 Arms: ``backends`` (``{name, ref, about, device, builds, priority, options}``, ``options`` the keys it reads under ``options={"<name>.<key>": ...}``) and ``spellings`` (``{writer, dialect, ref}``,
 ``ref`` the module that registers that writer's spellings of that dialect). Other arms in a manifest are ignored and
-listed by :func:`extensions`.
+listed by :func:`ospreys`.
 
 One lock guards the scan, every load and every write to the registry state."""
 
@@ -26,7 +26,7 @@ import sys
 import threading
 from pathlib import Path
 
-GROUP = "raptor.extensions"
+GROUP = "ospreys"
 CONTRACT = "1"
 ARMS = ("backends", "spellings")
 #: ``emission_modules``: the modules whose plain tables the package emits with (they enter a unit key); ``runtime_modules``: the ones holding
@@ -34,22 +34,22 @@ ARMS = ("backends", "spellings")
 _META = ("name", "version", "contract", "requires", "emission_modules", "runtime_modules", *ARMS)
 #: A manifest key that is read by another loader (the declared kinds); every other key outside :data:`_META` is refused by name.
 _FOREIGN = ("kinds",)
-#: Backend ids and writer / dialect names are lowercase identifiers (decision E58); an extension's manifest ``name`` is a
+#: Backend ids and writer / dialect names are lowercase identifiers (decision E58); an OSPREY's manifest ``name`` is a
 #: distribution name: the same with ``-`` allowed.
 _ID = re.compile(r"[a-z][a-z0-9_]*\Z")
 _DIST = re.compile(r"[a-z][a-z0-9_-]*\Z")
 
-#: The top packages of the first-party extensions (each with ``extension.json`` beside its ``__init__``): a third party may not
+#: The top packages of the first-party OSPREYs (each with ``osprey.json`` beside its ``__init__``): a third party may not
 #: claim them. They are found through the entry points of the distribution :data:`OWN_DIST`, like any other.
 FIRST_PARTY = ("hawk_cuda", "hawk_c", "osprey_cpu")
 OWN_DIST = "raptor-hawk"
 #: The distribution that provides a first-party backend id, for the sentences that say what to install.
-KNOWN = {"c": "hawk-c", "cuda": "hawk-cuda", "host": "osprey-cpu"}
-#: Backend ids only the first-party extensions may use, installed or not.
+KNOWN = {"c": "osprey-c", "cuda": "osprey-cuda", "host": "osprey-cpu"}
+#: Backend ids only the first-party OSPREYs may use, installed or not.
 RESERVED = tuple(KNOWN)
 #: Writer ids of the spellings arm that belong to the built-in and first-party backends.
 RESERVED_WRITERS = ("aether", *RESERVED)
-_OWN = ("hawk", "hawk-cuda", "hawk-c", "osprey-cpu")
+_OWN = ("hawk", *KNOWN.values())
 
 _LOCK = threading.RLock()
 
@@ -61,15 +61,15 @@ def _error(message: str):
 
 
 def missing(backend_id: str) -> str:
-    """The sentence that refuses a backend ``backend_id`` that no installed extension provides."""
+    """The sentence that refuses a backend ``backend_id`` that no installed OSPREY provides."""
     dist = KNOWN.get(backend_id)
-    return (f"the {backend_id!r} backend is not installed; install the {dist} extension"
+    return (f"the {backend_id!r} backend is not installed; install the distribution {dist}"
             if dist else f"no backend {backend_id!r} is installed")
 
 
 def missing_device() -> str:
     """The sentence that refuses a need for a device backend when none is installed."""
-    return f"no device backend is installed; install the {KNOWN['cuda']} extension"
+    return f"no device backend is installed; install the distribution {KNOWN["cuda"]}"
 
 
 #: hawk's emission tables: what an emitted artifact (its text, its sidecar, its manifest) is written with.
@@ -102,18 +102,18 @@ def _norm(name: str) -> str:
 
 
 class _State:
-    """What the scans found. The narrow scan reads the built-in and first-party extensions; :meth:`widen` adds the
+    """What the scans found. The narrow scan reads the built-in and first-party OSPREYs; :meth:`widen` adds the
     installed third-party ones to the same state, so nothing already answered (an item, an object imported, a
     failure) can change."""
 
     def __init__(self) -> None:
-        self.extensions: dict = {}     # identity -> manifest
+        self.ospreys: dict = {}     # identity -> manifest
         self.claims: dict = {}         # (arm, key) -> [(identity, item, built-in)]
         self.items: dict = {}          # (arm, key) -> (identity, item, in the default set)
-        self.denied: dict = {}         # (arm, key) -> [sentence], from a refused extension
+        self.denied: dict = {}         # (arm, key) -> [sentence], from a refused OSPREY
         self.shadowed: dict = {}       # (arm, key) -> [sentence], from the settled claims
         self.refused: dict = {}        # identity or "<identity>/<arm>/<id>" -> sentence
-        self.broken: dict = {}         # identity -> sentence, for a first-party extension that is refused
+        self.broken: dict = {}         # identity -> sentence, for a first-party OSPREY that is refused
         self.loaded: dict = {}         # (arm, key) -> imported object (spellings: True)
         self.failed: dict = {}         # (arm, key) -> sentence
         self.homes: dict = {}          # identity -> directory, for each first-party package installed at its trusted place
@@ -121,8 +121,8 @@ class _State:
         self.unreadable: dict = {}     # identity -> sentence, for a manifest too damaged to say what it declared
         self.skipped: set = set()      # backend ids an implicit call skipped, each warned once
         self.checked = False           # the first-party packages were checked for shadowing at the first default build
-        self.named_bad: dict = {}      # name -> sentence, for a HAWK_EXTENSIONS name that is unknown or refused
-        self.third = False             # the installed third-party extensions were read
+        self.named_bad: dict = {}      # name -> sentence, for a HAWK_OSPREYS name that is unknown or refused
+        self.third = False             # the installed third-party OSPREYs were read
         self.digests: dict = {}        # tuple of emission module names -> their table digest (hawk.artifact.unit_cache)
 
     def add(self, ext: dict, refusal: str | None = None, builtin: bool = False) -> None:
@@ -132,14 +132,14 @@ class _State:
             if "declared" in ext and ext["declared"] is None:
                 self.unreadable[name] = refusal
             for declared in ext.get("declared") or ():
-                self.denied.setdefault(("backends", declared), []).append(f"extension {name!r} is refused: {refusal}")
+                self.denied.setdefault(("backends", declared), []).append(f"OSPREY {name!r} is refused: {refusal}")
         else:
-            self.extensions[name] = ext
+            self.ospreys[name] = ext
         for arm in ARMS:
             for item in ext.get(arm, ()):
                 key = (arm, _key(arm, item))
                 if refusal:
-                    self.denied.setdefault(key, []).append(f"extension {name!r} is refused: {refusal}")
+                    self.denied.setdefault(key, []).append(f"OSPREY {name!r} is refused: {refusal}")
                 else:
                     self.claims.setdefault(key, []).append((name, item, builtin))
 
@@ -156,26 +156,26 @@ class _State:
                    f"{', '.join(repr(c[0]) for c in claims)}: all refused")
             for name, _, _ in [c for c in claims if c is not keep]:
                 self.refused[f"{name}/{arm}/{_label(arm, k)}"] = why
-                self.shadowed.setdefault(key, []).append(f"extension {name!r}: {why}")
+                self.shadowed.setdefault(key, []).append(f"OSPREY {name!r}: {why}")
             if keep:
                 name, item, is_builtin = keep
                 self.items[key] = (name, item, is_builtin or name in allow)
 
     def judge(self, found: list) -> dict:
-        """The refusal of each of the extensions ``found`` that cannot be accepted, by identity."""
+        """The refusal of each of the OSPREYs ``found`` that cannot be accepted, by identity."""
         out = {e["identity"]: e["refusal"] for e in found if e.get("refusal")}
         for e in found:
             if e["identity"] not in out and e["contract"] != CONTRACT:
-                out[e["identity"]] = (f"extension {e['identity']!r} targets contract {e['contract']!r}, "
+                out[e["identity"]] = (f"OSPREY {e['identity']!r} targets contract {e['contract']!r}, "
                                       f"hawk is contract {CONTRACT!r}")
-        have = set(self.extensions) | {e["identity"] for e in found}
+        have = set(self.ospreys) | {e["identity"] for e in found}
         changed = True
         while changed:
             changed = False
             for e in found:
                 for need in e.get("requires", ()):
                     if e["identity"] not in out and (need not in have or need in out or need in self.refused):
-                        out[e["identity"]] = (f"extension {e['identity']!r} requires {need!r}, which is "
+                        out[e["identity"]] = (f"OSPREY {e['identity']!r} requires {need!r}, which is "
                                               + ("refused" if need in out or need in self.refused else "not installed"))
                         changed = True
         return out
@@ -190,7 +190,7 @@ class _State:
     def narrow(self) -> None:
         self.add(_builtin(), builtin=True)
         found = []
-        for ep, dist in () if os.environ.get("HAWK_EXTENSIONS") == "off" else _own_entries():
+        for ep, dist in () if os.environ.get("HAWK_OSPREYS") == "off" else _own_entries():
             identity, package = _norm(ep.name), ep.value.partition(":")[0]
             home, problem = _locate(package, dist)
             if problem:
@@ -205,7 +205,7 @@ class _State:
     def widen(self) -> None:
         names, found = _names(), []
         try:
-            values, bad = _entries() if os.environ.get("HAWK_EXTENSIONS") != "off" else ({}, {})
+            values, bad = _entries() if os.environ.get("HAWK_OSPREYS") != "off" else ({}, {})
             self.refused.update(bad)
             for identity, each in sorted(values.items()):
                 package = min(each).partition(":")[0]
@@ -213,9 +213,9 @@ class _State:
                     continue                                    # read by the narrow scan
                 if identity in _OWN:
                     found.append({"identity": f"{identity} (third-party distribution)",
-                                  "refusal": f"a distribution named {identity!r} cannot be an extension: the name is hawk's own"})
+                                  "refusal": f"a distribution named {identity!r} cannot be an OSPREY: the name is hawk's own"})
                 elif len(each) > 1:
-                    found.append({"identity": identity, "refusal": f"extension {identity!r} declares more than one "
+                    found.append({"identity": identity, "refusal": f"OSPREY {identity!r} declares more than one "
                                   f"entry point: {', '.join(sorted(each))}"})
                 elif package in FIRST_PARTY:
                     found.append({"identity": identity, "refusal": f"its entry point names the first-party package {package!r}"})
@@ -226,17 +226,17 @@ class _State:
         self.take(found, builtin=False)
         self.settle(set(names))
         for name in names:
-            if name not in self.extensions:
-                self.named_bad[name] = (f"HAWK_EXTENSIONS names {name!r}, which is refused: {self.refused[name]}"
+            if name not in self.ospreys:
+                self.named_bad[name] = (f"HAWK_OSPREYS names {name!r}, which is refused: {self.refused[name]}"
                                         if name in self.refused else
-                                        f"HAWK_EXTENSIONS names {name!r}, which is not an installed extension")
+                                        f"HAWK_OSPREYS names {name!r}, which is not an installed OSPREY")
                 self.refused.setdefault(name, self.named_bad[name])
         self.third = True
 
 
 def _names() -> list:
-    """The extensions ``HAWK_EXTENSIONS`` names (``off`` alone: none; empty entries are ignored)."""
-    selected = os.environ.get("HAWK_EXTENSIONS", "")
+    """The OSPREYs ``HAWK_OSPREYS`` names (``off`` alone: none; empty entries are ignored)."""
+    selected = os.environ.get("HAWK_OSPREYS", "")
     return [] if selected == "off" else [_norm(x.strip()) for x in selected.split(",") if x.strip()]
 
 
@@ -395,14 +395,27 @@ def _module_exists(dotted: str) -> bool:
     return False
 
 
-def _variant_names(entry) -> list:
-    """The variant names a manifest ``variant`` entry gives (a name, or a map from isa to name), each one identifier segment."""
+def facts_name(wings):
+    """The name of the facts a row reads: its raptor leaf, a wing name or a map from the host's isa to one (``None``: it reads none)."""
+    return (wings or {}).get("raptor")
+
+
+def _check_wings(wings, path) -> None:
+    """A row's ``wings`` names at most one wing per family (``raptor``, ``aether``, ``eagle``): a name, a map from the host's isa to a name, or ``None``."""
     from . import variants
 
-    names = [entry] if isinstance(entry, str) else list(entry.values())
-    for name in names:
-        variants._segment(name)
-    return names
+    if set(wings) - {"raptor", "aether", "eagle"}:
+        raise ValueError(f"{path}: wings names the families {sorted(set(wings) - {'raptor', 'aether', 'eagle'})}, which are not raptor, aether or eagle")
+    for family, leaf in wings.items():
+        if leaf is not None and not isinstance(leaf, (str, dict)):
+            raise TypeError(f"wings.{family} is not a wing name, a map from isa to a wing name, or null")
+        for name in [] if leaf is None else [leaf] if isinstance(leaf, str) else list(leaf.values()):
+            variants._segment(name, "wing name")
+
+
+def _facts_names(entry) -> list:
+    """The names of the facts a row's raptor leaf gives (a name, or a map from isa to name)."""
+    return [entry] if isinstance(entry, str) else list(entry.values())
 
 
 def _check_reads(item: dict, path) -> None:
@@ -412,9 +425,9 @@ def _check_reads(item: dict, path) -> None:
     if "reads" not in item:
         raise ValueError(f"{path}: backend {item.get('name')!r} does not state `reads`: write the list of variant keys its text and its units "
                          "read, for example [\"lanes.run_max\", \"scatter.max_chunks\"] (an empty list states that it reads none)")
-    if item.get("variant") is None:
+    if facts_name(item.get("wings")) is None:
         return
-    names = _variant_names(item["variant"])
+    names = _facts_names(facts_name(item["wings"]))
     reads = item.get("reads")
     if not reads:
         return
@@ -431,12 +444,12 @@ def _check_reads(item: dict, path) -> None:
 
 
 def _read(identity: str, where) -> dict:
-    """The manifest of extension ``identity``: ``where`` is the package directory, or the entry point's value
+    """The manifest of OSPREY ``identity``: ``where`` is the package directory, or the entry point's value
     ``<top package>:<file>``. A manifest that cannot be read has a ``refusal`` sentence instead of its content."""
     import json
 
     fields = {"backends": {"name": (str,), "ref": (str,), "about": (str,), "device": (bool,), "builds": (bool,),
-                           "priority": (int, float), "options": (list,), "settings": (list,), "variant": (str, dict), "components": (list,),
+                           "priority": (int, float), "options": (list,), "settings": (list,), "wings": (dict,),
                            "entry": (str, type(None)), "process_env": (bool,), "reads": (list,)},
               "spellings": {"writer": (str,), "dialect": (str,), "ref": (str,)}}
     needed = {"backends": ("name", "ref"), "spellings": ("writer", "dialect", "ref")}
@@ -450,7 +463,7 @@ def _read(identity: str, where) -> dict:
                 raise ModuleNotFoundError(f"no package {package!r}")
             home = Path(next(iter(spec.submodule_search_locations)))
         else:
-            home, file = where, "extension.json"
+            home, file = where, "osprey.json"
         path = home / file
         if not path.is_file() or path.stat().st_size > 1 << 20:
             raise ValueError(f"{path} is not a regular file of at most 1 MiB")
@@ -459,7 +472,7 @@ def _read(identity: str, where) -> dict:
         for key in sorted(set(raw) - set(_META) - set(_FOREIGN)):
             raise ValueError(f"{path}: unknown manifest key {key!r} (the keys are {sorted(_META)}); a misspelt key is refused, never ignored")
         if "name" in raw and not _DIST.match(raw["name"]):
-            raise ValueError(f"{path}: the extension name {raw['name']!r} is not a lowercase name [a-z][a-z0-9_-]*")
+            raise ValueError(f"{path}: the OSPREY name {raw['name']!r} is not a lowercase name [a-z][a-z0-9_-]*")
         requires = raw.get("requires", [])
         if not isinstance(requires, list) or any(type(r) is not str for r in requires):
             raise TypeError("requires is not a list of names")
@@ -483,7 +496,7 @@ def _read(identity: str, where) -> dict:
                 for key in ("name", "writer", "dialect"):
                     if key in item and not _ID.match(item[key]):
                         raise ValueError(f"{path}: the {arm[:-1]} {key} {item[key]!r} is not a lowercase identifier [a-z][a-z0-9_]*")
-                for key in ("options", "settings", "components", "reads"):
+                for key in ("options", "settings", "reads"):
                     if any(type(o) is not str for o in item.get(key, ())):
                         raise TypeError(f"{key} is not a list of names")
                 if arm == "backends":
@@ -499,6 +512,7 @@ def _read(identity: str, where) -> dict:
                         if not _ID.match(key):
                             raise ValueError(f"{path}: backend {item.get('name')!r} declares the option {key!r}, which is not a lowercase identifier")
                 if arm == "backends":
+                    _check_wings(item.get("wings", {}), path)
                     _check_reads(item, path)
         if not isinstance(raw.get("kinds", []), list):
             raise TypeError("kinds is not a list")
@@ -515,8 +529,8 @@ def _read(identity: str, where) -> dict:
 
 
 def _scan(third: bool = False) -> _State:
-    """The registry state. Third-party extensions are read only when asked for (``third``) or named in
-    ``HAWK_EXTENSIONS``: a build that names none never pays the scan of the installed distributions."""
+    """The registry state. Third-party OSPREYs are read only when asked for (``third``) or named in
+    ``HAWK_OSPREYS``: a build that names none never pays the scan of the installed distributions."""
     global _STATE
     with _LOCK:
         if _STATE is None:
@@ -529,21 +543,21 @@ def _scan(third: bool = False) -> _State:
 
 
 def refused() -> dict:
-    """Every refusal, one sentence each: by extension (its distribution), or ``<extension>/<arm>/<id>`` for one item."""
+    """Every refusal, one sentence each: by OSPREY (its distribution), or ``<OSPREY>/<arm>/<id>`` for one item."""
     with _LOCK:
         return dict(_scan(third=True).refused)
 
 
-def extensions() -> dict:
-    """The extensions that were read and accepted: distribution -> {version, contract, ignored arms}."""
+def ospreys() -> dict:
+    """The OSPREYs that were read and accepted: distribution -> {version, contract, ignored arms}."""
     with _LOCK:
         return {n: {"version": e["version"], "contract": e["contract"], "ignored": e["ignored"]}
-                for n, e in _scan(third=True).extensions.items() if n != "hawk"}
+                for n, e in _scan(third=True).ospreys.items() if n != "hawk"}
 
 
 def backend_ids(default: bool = False) -> tuple:
     """Backend ids without importing any, sorted by (priority, id); ``default``: only the default set
-    (built-in, first-party, and the extensions named in ``HAWK_EXTENSIONS``)."""
+    (built-in, first-party, and the OSPREYs named in ``HAWK_OSPREYS``)."""
     with _LOCK:
         items = _scan(third=not default).items
         ids = [k[1] for k, (_, _, dflt) in items.items() if k[0] == "backends" and (dflt or not default)]
@@ -572,7 +586,7 @@ def loadable_backend_ids(ids) -> tuple:
 
 
 def check(default: bool = False) -> None:
-    """A HawkError when ``HAWK_EXTENSIONS`` names an extension that is unknown or refused; with ``default``, also when a
+    """A HawkError when ``HAWK_OSPREYS`` names an OSPREY that is unknown or refused; with ``default``, also when a
     first-party package is installed but refused, found only outside hawk's folders, or shadowed on the import path."""
     with _LOCK:
         s = _scan()
@@ -582,13 +596,13 @@ def check(default: bool = False) -> None:
                 if problem := _locate(home.name, s.dists[identity])[1]:
                     s.broken[identity] = problem
         for name, why in (s.broken.items() if default else ()):
-            raise _error(f"the first-party extension {name!r} is installed but refused: {why}")
+            raise _error(f"the first-party OSPREY {name!r} is installed but refused: {why}")
         for why in s.named_bad.values():
             raise _error(why)
 
 
 def has(arm: str, key) -> bool:
-    """Whether the item is available; the installed third-party extensions are read only when it is not built in."""
+    """Whether the item is available; the installed third-party OSPREYs are read only when it is not built in."""
     with _LOCK:
         return (arm, key) in _scan().items or (arm, key) in _scan(third=True).items
 
@@ -606,11 +620,11 @@ def shared_emission_modules() -> tuple:
 
 
 def emission_lists(backend_id: str) -> tuple:
-    """``(emission modules, runtime modules)`` that the manifest of the extension providing ``backend_id`` declares (no import)."""
+    """``(emission modules, runtime modules)`` that the manifest of the OSPREY providing ``backend_id`` declares (no import)."""
     with _LOCK:
         has("backends", backend_id)
         s = _scan()
-        e = s.extensions[s.items["backends", backend_id][0]]
+        e = s.ospreys[s.items["backends", backend_id][0]]
         return tuple(e.get("emission_modules", ())), tuple(e.get("runtime_modules", ()))
 
 
@@ -624,15 +638,15 @@ def version(backend_id: str) -> str:
             from . import __version__
 
             return __version__
-        return s.extensions[owner]["version"]
+        return s.ospreys[owner]["version"]
 
 
 def denial(arm: str, key) -> str | None:
-    """Why an item that some extension declared is not available, or ``None``."""
+    """Why an item that some OSPREY declared is not available, or ``None``."""
     with _LOCK:
         s = _scan(third=True)
-        why = s.broken.get(_norm(KNOWN.get(key, ""))) if arm == "backends" and (arm, key) not in s.denied else None
-        maybe = ([f"extension {n!r} could not be read and may have declared it: {w}" for n, w in s.unreadable.items()]
+        why = s.broken.get(KNOWN.get(key, "").removeprefix("osprey-")) if arm == "backends" and (arm, key) not in s.denied else None
+        maybe = ([f"OSPREY {n!r} could not be read and may have declared it: {w}" for n, w in s.unreadable.items()]
                  if (arm, key) not in s.items else [])
         found = (s.denied.get((arm, key), []) + s.shadowed.get((arm, key), []) + maybe + ([why] if why else [])
                  + ([s.failed[arm, key]] if (arm, key) in s.failed else []))
@@ -651,7 +665,7 @@ def load(arm: str, key):
     """The imported item (a spellings item: its module), imported once; a HawkError that says what to install
     or why it is refused when there is none."""
     with _LOCK:
-        has(arm, key)                          # not built in: it may be an installed extension, named here
+        has(arm, key)                          # not built in: it may be an installed OSPREY, named here
         s = _scan()
         if (arm, key) not in s.items:
             raise _error(f"{arm[:-1]} {_label(arm, key)} is refused: {denial(arm, key)}" if denial(arm, key)
@@ -670,10 +684,10 @@ def load(arm: str, key):
                 if arm == "backends" and "entry" in item and obj.entry != item["entry"]:
                     raise ValueError(f"the object enters as {obj.entry!r}, the manifest says {item['entry']!r}")
                 if arm == "backends":
-                    obj.components = tuple(item.get("components", ()))      # the components its builds need installed
-                    obj.variant = item.get("variant")           # data: a variant name, or a map from host isa to name
+                    obj.wings = item.get("wings")              # data: the wing each family contributes (its leaf), the chains say what is installed
+                    obj.variant = facts_name(item.get("wings"))   # data: the name of the facts it reads, or a map from host isa to name
             except (Exception, SystemExit) as e:
-                s.failed[arm, key] = (f"extension {ext!r}: {arm[:-1]} {_label(arm, key)} cannot be loaded "
+                s.failed[arm, key] = (f"OSPREY {ext!r}: {arm[:-1]} {_label(arm, key)} cannot be loaded "
                                       f"({type(e).__name__}: {e})")
                 s.refused[f"{ext}/{arm}/{_label(arm, key)}"] = s.failed[arm, key]
                 raise _error(s.failed[arm, key]) from e
@@ -682,9 +696,9 @@ def load(arm: str, key):
 
 
 def spelling_refs(backend_ids) -> dict:
-    """``{(writer, dialect): module name}`` of the spellings arms of the extensions that provide the backends ``backend_ids`` (data
+    """``{(writer, dialect): module name}`` of the spellings arms of the OSPREYs that provide the backends ``backend_ids`` (data
     only: no module is imported; the writer reads the module when a node of that dialect is spelled). An unrelated installed
-    extension never adds to it."""
+    OSPREY never adds to it."""
     with _LOCK:
         s = _scan(third=any(b not in RESERVED for b in backend_ids))
         owners = {s.items["backends", b][0] for b in backend_ids if ("backends", b) in s.items}

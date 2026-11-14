@@ -48,7 +48,7 @@ def _module_parts(path: Path, root: Path, pkg: str | None) -> list[str]:
     parts = list(rel.parts)
     if parts[-1] == "__init__":
         parts = parts[:-1]
-    return [pkg, *parts] if pkg else parts
+    return [*pkg.split('.'), *parts] if pkg else parts
 
 
 def scan_file(path: Path, root: Path, pkg: str | None, *, include_type_checking: bool = True) -> list[Edge]:
@@ -122,38 +122,52 @@ def is_stdlib(top: str) -> bool:
 
 # ---- the pieces ----------------------------------------------------------------------------------------------------
 
+def wing_homes() -> list[tuple[Path, str]]:
+    """``[(folder, import name)]`` of every wing folder of the tree (today's layout: ``components/*/<package>`` and
+    ``staging/<family>/wings/<name>``); the manifest beside it, not the folder, says the wing's family, name and parent."""
+    out = [(d, d.name) for d in sorted((REPO / "components").glob("*/*/")) if (d / "__init__.py").is_file()]
+    out += [(d, f"{d.parent.parent.name}.wings.{d.name}") for d in sorted((REPO / "staging").glob("*/wings/*/")) if (d / "__init__.py").is_file()]
+    return out
+
+
+def wing_manifest(folder: Path) -> dict:
+    f = folder / "wing.json"
+    return json.loads(f.read_text()) if f.is_file() else {}
+
+
+def osprey_homes() -> list[tuple[Path, str]]:
+    """``[(folder, import name)]`` of every first-party OSPREY package of the tree."""
+    out = [(sub, sub.name) for d in sorted((REPO / "extensions").glob("*/")) for sub in sorted(d.iterdir()) if (sub / "__init__.py").is_file()]
+    out += [(d, d.name) for d in sorted((REPO / "staging").glob("osprey_*/")) if (d / "__init__.py").is_file()]
+    return out
+
+
+def _osprey_manifest(folder: Path) -> dict:
+    f = folder / "osprey.json"
+    return json.loads(f.read_text()) if f.is_file() else {}
+
+
 def pieces() -> dict[str, tuple[Path, str | None]]:
-    """piece id -> (source root, import name of the root or None): raptor, eagle, the variants, every component, every extension."""
+    """piece id -> (source root, import name of the root or None): raptor, eagle, the variants, every wing (``wing:<family>.<name>``,
+    from its manifest) and every OSPREY (``osprey:<name>``, from its manifest)."""
     out: dict[str, tuple[Path, str | None]] = {
         "raptor": (package_dir("raptor"), "raptor"),
         "eagle": (package_dir("eagle"), "eagle"),
         "variants": (REPO / "variants", None),
     }
-    for d in sorted((REPO / "components").glob("*/")):
-        for sub in sorted(d.iterdir()):
-            if (sub / "__init__.py").is_file():
-                out[f"component:{d.name}"] = (sub, sub.name)
-    for d in sorted((REPO / "extensions").glob("*/")):
-        for sub in sorted(d.iterdir()):
-            if (sub / "__init__.py").is_file():
-                out[f"extension:{d.name}"] = (sub, sub.name)
-    for d in sorted((REPO / "staging").glob("*/wings/*/")):
-        if (d / "__init__.py").is_file():
-            out[f"wing:{d.parent.parent.name}_{d.name}"] = (d, d.parent.parent.name)
-    for d in sorted((REPO / "staging").glob("osprey_*/")):
-        if (d / "__init__.py").is_file():
-            out[f"extension:{d.name}"] = (d, d.name)
+    for folder, module in wing_homes():
+        m = wing_manifest(folder)
+        out[f"wing:{m['family']}.{m['name']}"] = (folder, module)
+    for folder, module in osprey_homes():
+        out[f"osprey:{_osprey_manifest(folder)['name']}"] = (folder, module)
     return out
 
 
 def piece_ids() -> list[str]:
     """The ids known without importing raptor or eagle (collection-time parametrisation)."""
-    ids = ["raptor", "eagle", "variants"]
-    ids += [f"component:{d.name}" for d in sorted((REPO / "components").glob("*/")) if any(d.glob("*/__init__.py"))]
-    ids += [f"extension:{d.name}" for d in sorted((REPO / "extensions").glob("*/")) if any(d.glob("*/__init__.py"))]
-    ids += [f"wing:{d.parent.parent.name}_{d.name}" for d in sorted((REPO / "staging").glob("*/wings/*/")) if (d / "__init__.py").is_file()]
-    ids += [f"extension:{d.name}" for d in sorted((REPO / "staging").glob("osprey_*/")) if (d / "__init__.py").is_file()]
-    return ids
+    return ["raptor", "eagle", "variants",
+            *(f"wing:{(m := wing_manifest(f))['family']}.{m['name']}" for f, _ in wing_homes()),
+            *(f"osprey:{_osprey_manifest(f)['name']}" for f, _ in osprey_homes())]
 
 
 @lru_cache(maxsize=None)
@@ -164,50 +178,48 @@ def piece_edges(piece: str) -> tuple[Edge, ...]:
 
 
 def manifest(piece: str) -> dict:
-    """An extension's extension.json (empty for a piece without one)."""
+    """The wing.json of a wing or the osprey.json of an OSPREY (empty for a piece without one)."""
     root, _ = pieces()[piece]
-    f = root / ("component.json" if piece.startswith(("component:", "wing:")) else "extension.json")
-    return json.loads(f.read_text()) if f.is_file() else {}
+    return wing_manifest(root) if piece.startswith("wing:") else _osprey_manifest(root)
 
 
-def unit_module(name: str) -> str:
-    """The import path a unit name stands for: a wing is ``<family>.wings.<name>``; a component is its own package."""
-    return name.replace("_", ".wings.", 1) if name.startswith(("aether_", "raptor_")) else name
+def unit_module(family: str, name: str) -> str:
+    """The import path of the wing ``name`` of ``family``, through the manifests' homes (never by spelling)."""
+    for folder, module in wing_homes():
+        m = wing_manifest(folder)
+        if (m.get("family"), m.get("name")) == (family, name):
+            return module
+    raise KeyError(f"no wing {family}.{name} in this tree")
 
 
-def _direct(piece_id: str) -> list[str]:
-    """The unit names a manifest names: an extension's (backends[].components), a component's or a wing's (components)."""
-    m = manifest(piece_id)
-    if piece_id.startswith("extension:"):
-        return [c for b in m.get("backends", []) for c in b.get("components", [])]
-    return list(m.get("components", []))
+def wing_chain(family: str, name: str) -> list[str]:
+    """``[name, parent, ...]`` of the wing and its parents, by the manifests."""
+    out = []
+    while name and name not in out:
+        out.append(name)
+        name = next((wing_manifest(f).get("parent") for f, _ in wing_homes()
+                     if (wing_manifest(f).get("family"), wing_manifest(f).get("name")) == (family, name)), None)
+    return out
 
 
-def named_components() -> dict[str, set[str]]:
-    """piece -> the import paths of the units its manifest names, directly or through the chain of the units they name in turn
-    (the manifests are read as data, as :func:`hawk.components.chain` reads them)."""
-    ids = piece_ids()
-    by_name = {pid.split(":", 1)[1]: pid for pid in ids if pid.startswith(("component:", "wing:"))}
+def named_wings() -> dict[str, set[str]]:
+    """OSPREY piece -> the import paths of the wings its rows name, through the chains of the leaves (the manifests are read as data)."""
     out = {}
-    for pid in ids:
-        if not pid.startswith(("extension:", "component:", "wing:")):
-            continue
-        seen: list[str] = []
-        pending = _direct(pid)
-        while pending:
-            name = pending.pop()
-            if name not in seen:
-                seen.append(name)
-                if name in by_name:
-                    pending.extend(_direct(by_name[name]))
-        out[pid] = {unit_module(n) for n in seen}
+    for pid in piece_ids():
+        if pid.startswith("osprey:"):
+            mods = set()
+            for row in manifest(pid).get("backends", []):
+                for family, leaf in (row.get("wings") or {}).items():
+                    for leaf_name in ([] if leaf is None else [leaf] if isinstance(leaf, str) else list(leaf.values())):
+                        mods |= {unit_module(family, n) for n in wing_chain(family, leaf_name)}
+            out[pid] = mods
     return out
 
 
 def writer_files(piece: str) -> set[Path] | None:
-    """The writer side of a piece: every file of a component; the ``emission_modules`` of an extension."""
+    """The writer side of a piece: every file of a wing; the ``emission_modules`` of an OSPREY."""
     root, pkg = pieces()[piece]
-    if piece.startswith(("component:", "wing:")):
+    if piece.startswith("wing:"):
         return None
     mods = manifest(piece).get("emission_modules", [])
     files = set()

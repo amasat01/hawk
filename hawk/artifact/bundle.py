@@ -55,13 +55,13 @@ from .._errors import HawkError
 from raptor.ir.nodes import LEAF_ROLES
 from ..passes.segment import split_segmented as _split_segmented
 from ..passes.segment import rewalk as _segment_rewalk
-from .. import components as _components
-_box = _components.view("lowering", "box")
-_wide = _components.view("lowering", "wide")
-_split = _components.view("lowering", "split")
-_team = _components.view("lowering", "team")
-_wt = _components.view("lowering", "wrapper_text")
-_cells = _components.view("lowering", "cells")
+from .. import wings as _wings
+_box = _wings.view("raptor", "base", "box")
+_wide = _wings.view("raptor", "base", "wide")
+_split = _wings.view("raptor", "base", "split")
+_team = _wings.view("raptor", "base", "team")
+_wt = _wings.view("raptor", "base", "wrapper_text")
+_cells = _wings.view("raptor", "base", "cells")
 from .. import options as _options_mod
 from ..build_settings import BuildSettings, apply as _apply_settings, check as _check_settings, default_settings, refuse_choice, settings_of as _settings_of
 from ..backends import BuiltLowered, Lowered
@@ -1022,7 +1022,7 @@ def _tile_rows(sinks, real_bytes: int, bodies: int, spec) -> int:
     from ..targets import cards
 
     widths = [s.ttype.shape for s in sinks
-              if is_a(s, "warp_store") and s.ttype.shape and s.ttype.shape[0] >= _components.device_view("lane").slice_min(s.ttype.dtype, spec)]
+              if is_a(s, "warp_store") and s.ttype.shape and s.ttype.shape[0] >= _wings.device_view("lane").slice_min(s.ttype.dtype, spec)]
     if not widths or any(len(w) != 1 for w in widths):
         return 1
     for rows in (8, 4, 2):
@@ -1043,12 +1043,12 @@ def _warp_kernel(kernel, name: str, spec, explicit: bool = True, real_bytes: int
     if (type(kernel).__name__ != "Kernel" or getattr(kernel, "group", 1) != 1 or _split.stages(name, kernel.sinks, spec=spec) is not None
             or (one is not None and _split.stages(name, one.sinks, spec=spec) is not None)):
         return None
-    sinks = _components.device_view("lane").slice_sinks(_wide.simplified(kernel.sinks), spec, explicit=explicit)
-    single = None if one is None else _components.device_view("lane").slice_sinks(_wide.simplified(one.sinks), spec, explicit=explicit)
+    sinks = _wings.device_view("lane").slice_sinks(_wide.simplified(kernel.sinks), spec, explicit=explicit)
+    single = None if one is None else _wings.device_view("lane").slice_sinks(_wide.simplified(one.sinks), spec, explicit=explicit)
     if sinks is None or (one is not None and single is None):
         return None
     rows = _tile_rows(sinks, real_bytes, 1 if one is None else 2, spec) if plain else 1
-    warp = WarpStage(name, sinks, _team.TeamSpec(_components.device_view("lane").warp_of(spec) * rows, (), (), lanes=rows, warps=cards.team_warps(spec) if rows == 1 else 1))
+    warp = WarpStage(name, sinks, _team.TeamSpec(_wings.device_view("lane").warp_of(spec) * rows, (), (), lanes=rows, warps=cards.team_warps(spec) if rows == 1 else 1))
     if one is not None:             # an automatic kernel: its single step beside it, in the warp form too
         warp.one_step = Kernel(one.name, single, one.planes, kind=one.kind)
     # the planes of the kernel as written stay its planes (a slot only a dropped value read is still bound), and so do its

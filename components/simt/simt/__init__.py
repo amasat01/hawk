@@ -1,11 +1,11 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The SIMT component: the warp form of a lowering, as a package of its own (its own tests, its own distribution).
+"""The SIMT wing: the warp form of a lowering, as a package of its own (its own tests, its own distribution).
 
-It declares the node kinds a lowering to that form leaves behind, by DATA (``component.json``, in this package): :class:`WarpLane` and
+It declares the node kinds a lowering to that form leaves behind, by DATA (``wing.json``, in this package): :class:`WarpLane` and
 :class:`WarpStore` (:mod:`simt.lane`). It imports the standard library,
-raptor and the lowering component only; the variant a build runs on arrives as an argument."""
+raptor and the base wing only; the variant a build runs on arrives as an argument."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from importlib import resources
 from raptor.ir.kinds import Registry, declare, make_kind
 from raptor.ir.types import TensorType
 
-#: The component's manifest (data): its kinds, its spelling modules and the entry list its user calls.
-MANIFEST = json.loads(resources.files(__name__).joinpath("component.json").read_text(encoding="utf-8"))
+#: The wing's manifest (data): its kinds, its spelling modules and the entry list its user calls.
+MANIFEST = json.loads(resources.files(__name__).joinpath("wing.json").read_text(encoding="utf-8"))
 
-#: The registry of the component's own kinds (a value; the front end merges it into the one it holds).
+#: The registry of the wing's own kinds (a value; the front end merges it into the one it holds).
 KINDS = Registry()
 for _kind in MANIFEST["kinds"]:
     declare(KINDS, {"ext": MANIFEST["name"], "dialect": MANIFEST.get("dialect", ""), **_kind}, first_party=(MANIFEST["name"],))

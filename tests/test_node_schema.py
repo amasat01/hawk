@@ -56,7 +56,7 @@ def test_rebuilt_reproduces_the_walk(name):
 
 def test_core_imports_no_dialect():
     """``import hawk`` loads no wing; the writer loads only raptor and the wings its manifest names (``lowering``), nothing of hawk;
-    the lowering component names no writer."""
+    the base wing names no writer."""
     import subprocess
     import sys
 

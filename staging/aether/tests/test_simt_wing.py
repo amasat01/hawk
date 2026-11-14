@@ -25,4 +25,4 @@ def test_wrapper_text_helpers():
 
 
 def test_the_wing_builds_on_the_simt_raptor_wing():
-    assert wing.MANIFEST["components"] == ["simt", "aether_base"]
+    assert wing.MANIFEST["parent"] == "base"

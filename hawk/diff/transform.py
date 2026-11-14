@@ -58,9 +58,9 @@ from raptor.ir.nodes import (
     SampleSum,
     param_cell_names,
 )
-from .. import components as _components
+from .. import wings as _wings
 
-_slotwise = _components.view("lowering", "slotwise")
+_slotwise = _wings.view("raptor", "base", "slotwise")
 from raptor.ir.walk import dispatch_groups
 from raptor.ir.types import INT_PLANE_DTYPES, TensorType
 from .altpath import AltPath
@@ -68,10 +68,10 @@ from .ordered import kept_of, order
 from .jump import JumpPlan, drop_width, jump_of
 from .loops import _taken_row, forward_loop, guarded_select, reverse_loop
 from raptor.rules.core import rule_for, zero_like
-_dispatch_kind = _components.view("lowering", "dispatch")
+_dispatch_kind = _wings.view("raptor", "base", "dispatch")
 
-_block = _components.view("lowering", "block")
-_cells = _components.view("lowering", "cells")
+_block = _wings.view("raptor", "base", "block")
+_cells = _wings.view("raptor", "base", "cells")
 
 #: Prefixes of the planes a derivative declares (never a wire namespace).
 TANGENT_PREFIX = "dot"

@@ -1,9 +1,9 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The lowering component: the neutral lowering of a kernel (thread box, team stages, placement of wide values, ordered logs) as a package of its own.
+"""The base wing of raptor (its package is lowering until its rename): the neutral lowering of a kernel (thread box, team stages, placement of wide values, ordered logs) as a package of its own.
 
-It declares the node kinds a lowering to that form leaves behind, by DATA (``component.json``, in this package):
+It declares the node kinds a lowering to that form leaves behind, by DATA (``wing.json``, in this package):
 :class:`TeamStore` and its kin are the stage
 boundary of a team (:mod:`lowering.team`); :class:`BoxStore` is the thread box (:mod:`lowering.box`). It imports the standard library
 and raptor only; the variant a build runs on arrives as an argument."""
@@ -20,10 +20,10 @@ from raptor.ir.types import TensorType
 #: The index type of a scratch plane: ``lanes x n^2`` passes 2^31.
 INDEX = TensorType((), "i64")
 
-#: The component's manifest (data): its kinds, its spelling modules and the entry list its user calls.
-MANIFEST = json.loads(resources.files(__name__).joinpath("component.json").read_text(encoding="utf-8"))
+#: The wing's manifest (data): its kinds, its spelling modules and the entry list its user calls.
+MANIFEST = json.loads(resources.files(__name__).joinpath("wing.json").read_text(encoding="utf-8"))
 
-#: The registry of the component's own kinds (a value; the front end merges it into the one it holds).
+#: The registry of the wing's own kinds (a value; the front end merges it into the one it holds).
 KINDS = Registry()
 for _kind in MANIFEST["kinds"]:
     declare(KINDS, {"ext": MANIFEST["name"], "dialect": MANIFEST.get("dialect", ""), **_kind}, first_party=(MANIFEST["name"],))

@@ -89,8 +89,8 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
 #: itself, imported on first access.
 _SUBMODULE_DOORS = ("geometry",)
 
-#: Doors that hand out the user API of a backend an extension registers: ``hawk.<door>`` is that backend's
-#: ``api`` module, or a refusal by name when no extension registers it.
+#: Doors that hand out the user API of a backend an OSPREY registers: ``hawk.<door>`` is that backend's
+#: ``api`` module, or a refusal by name when no OSPREY registers it.
 #: They are not in ``__all__``: an optional backend that is absent must not break ``from hawk import *``.
 _BACKEND_DOORS = {"embedded": "c"}
 

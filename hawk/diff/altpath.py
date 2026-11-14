@@ -38,15 +38,15 @@ from raptor.ir import Const, Dispatch, Leaf, Loop, LoopCarry, LoopIndex, LoopVal
 from .._errors import HawkError
 from raptor.ir import make as _mk
 from raptor.ir.nodes import AccumWrite, At, WideWrite, has_feather
-from .. import components as _components
+from .. import wings as _wings
 
-_slotwise = _components.view("lowering", "slotwise")
+_slotwise = _wings.view("raptor", "base", "slotwise")
 from raptor.ir.walk import rebuild
 from raptor.ir.types import INT_PLANE_DTYPES, TensorType
 from .jump import _F64, _I32, _ORDERED, SEED, JumpPlan
 from .loops import _TERMINALS, _post_order
 from raptor.rules.core import zero_like
-_dispatch_kind = _components.view("lowering", "dispatch")
+_dispatch_kind = _wings.view("raptor", "base", "dispatch")
 
 #: The counter of that draw: a stream a kernel's own ``random_uniform`` calls
 #: do not use.

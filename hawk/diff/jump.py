@@ -39,10 +39,10 @@ from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
 from raptor.ir.nodes import AccumWrite, PlaneExtent, ReduceSamples, SampleIndex, WideWrite
 from raptor.ir.types import TensorType
 from .tape import _reachable
-from .. import components as _components
-_dispatch_kind = _components.view("lowering", "dispatch")
+from .. import wings as _wings
+_dispatch_kind = _wings.view("raptor", "base", "dispatch")
 
-_cells = _components.view("lowering", "cells")
+_cells = _wings.view("raptor", "base", "cells")
 
 #: The derivative kernel's uniform input keying the alternate path's draw
 #: (:mod:`hawk.diff.altpath`).

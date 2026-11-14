@@ -13,10 +13,10 @@ version = "0.0.0"
 description = "The SIMT source texts of the family"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
-dependencies = ["raptor-core"]
+dependencies = ["raptor-core", "aether-base", "raptor-simt"]
 
-[project.entry-points."raptor.components"]
-aether_simt = "aether.wings.simt"
+[project.entry-points."aether.wings"]
+simt = "aether.wings.simt"
 
 [tool.setuptools]
 packages = ["aether.wings.simt"]
@@ -25,4 +25,4 @@ packages = ["aether.wings.simt"]
 "aether.wings.simt" = "../../aether/wings/simt"
 
 [tool.setuptools.package-data]
-"aether.wings.simt" = ["component.json"]
+"aether.wings.simt" = ["wing.json"]

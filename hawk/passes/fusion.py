@@ -71,11 +71,10 @@ def estimate(walk, card: dict, scalar_type: str, wide_min: int | None = None) ->
 
 def _segment_walk(members: Sequence, a: int, b: int):
 
-    from .. import components
-
+    from .. import wings
     later = set().union(*({lf.name for lf in _leaves(k)} for k in members[b:]))
     sinks = bind(members[a:b], keep=tuple(later)).sinks
-    return components.view("lowering", "cells").walk(sinks)
+    return wings.view("raptor", "base", "cells").walk(sinks)
 
 
 def _leaves(kernel) -> list:

@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""hawk with the GPU extension (hawk-cuda) off the path is a working host-only hawk: it imports, builds
+"""hawk with the GPU OSPREY (osprey-cuda) off the path is a working host-only hawk: it imports, builds
 with default targets, runs, and refuses the device target by name."""
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ _orig = _md.distribution
 
 
 class _NoCuda:
-    '''hawk's own distribution as installed without the GPU extension: its metadata does not declare hawk-cuda.'''
+    '''hawk's own distribution as installed without the GPU OSPREY: its metadata does not declare osprey-cuda.'''
 
     def __init__(self, dist):
         self._dist = dist
@@ -29,7 +29,7 @@ class _NoCuda:
 
     @property
     def entry_points(self):
-        return [e for e in self._dist.entry_points if e.name != "hawk-cuda"]
+        return [e for e in self._dist.entry_points if e.name != "cuda"]
 
 
 _md.distribution = lambda name: _NoCuda(_orig(name)) if name == "raptor-hawk" else _orig(name)
@@ -72,14 +72,14 @@ def host_only(tmp_path_factory):
     pytest.importorskip("eagle.exec")
     root = tmp_path_factory.mktemp("host_only")
     (root / "probe.py").write_text(SCRIPT)
-    path = os.pathsep.join(p for p in sys.path if p and "hawk_cuda" not in p)    # an explicit path: no cuda extension
+    path = os.pathsep.join(p for p in sys.path if p and "hawk_cuda" not in p)    # an explicit path: no cuda OSPREY
     done = subprocess.run([sys.executable, str(root / "probe.py"), str(root / "out"), str(root / "cache")],
                           capture_output=True, text=True, env={**os.environ, "PYTHONPATH": path}, check=False)
     assert done.returncode == 0, done.stderr[-2000:]
     return json.loads(done.stdout.strip().splitlines()[-1])
 
 
-def test_without_the_gpu_extension_no_device_backend_is_registered(host_only):
+def test_without_the_gpu_osprey_no_device_backend_is_registered(host_only):
     assert "cuda" not in host_only["targets"] and "host" in host_only["targets"]
 
 
@@ -93,4 +93,4 @@ def test_the_host_only_build_runs_through_eagle_and_matches_numpy(host_only):
 
 def test_the_device_target_and_the_arch_refuse_by_name(host_only):
     for said in host_only["refusals"]:
-        assert said is not None and "install the hawk-cuda extension" in said
+        assert said is not None and "install the distribution osprey-cuda" in said

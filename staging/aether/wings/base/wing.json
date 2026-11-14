@@ -1,5 +1,7 @@
 {
- "name": "aether_base",
+ "family": "aether",
+ "name": "base",
+ "parent": null,
  "version": "0",
  "contract": "1",
  "entries": {},
@@ -25,8 +27,5 @@
   "aether.wings.base.writer",
   "aether.wings.base.writer_aether"
  ],
- "runtime_modules": [],
- "components": [
-  "lowering"
- ]
+ "runtime_modules": []
 }

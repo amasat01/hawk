@@ -13,10 +13,10 @@ version = "0.0.0"
 description = "The CPU loop analyses of the family"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
-dependencies = ["raptor-core"]
+dependencies = ["raptor-core", "raptor-base"]
 
-[project.entry-points."raptor.components"]
-raptor_cpu = "raptor.wings.cpu"
+[project.entry-points."raptor.wings"]
+cpu = "raptor.wings.cpu"
 
 [tool.setuptools]
 packages = ["raptor.wings.cpu"]
@@ -25,4 +25,4 @@ packages = ["raptor.wings.cpu"]
 "raptor.wings.cpu" = "../../raptor/wings/cpu"
 
 [tool.setuptools.package-data]
-"raptor.wings.cpu" = ["component.json"]
+"raptor.wings.cpu" = ["wing.json"]

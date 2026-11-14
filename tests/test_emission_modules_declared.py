@@ -26,14 +26,14 @@ def _hawk():
 
 
 PACKAGES = {
-    "hawk_c": lambda: _manifest("extensions/hawk_c/hawk_c/extension.json"),
-    "hawk_cuda": lambda: _manifest("extensions/hawk_cuda/hawk_cuda/extension.json"),
-    "lowering": lambda: _manifest("components/lowering/lowering/component.json"),
-    "simt": lambda: _manifest("components/simt/simt/component.json"),
-    "aether.wings.simt": lambda: _manifest("staging/aether/wings/simt/component.json"),
-    "aether.wings.base": lambda: _manifest("staging/aether/wings/base/component.json"),
-    "aether.wings.cpu": lambda: _manifest("staging/aether/wings/cpu/component.json"),
-    "raptor.wings.cpu": lambda: _manifest("staging/raptor/wings/cpu/component.json"),
+    "hawk_c": lambda: _manifest("extensions/hawk_c/hawk_c/osprey.json"),
+    "hawk_cuda": lambda: _manifest("extensions/hawk_cuda/hawk_cuda/osprey.json"),
+    "lowering": lambda: _manifest("components/lowering/lowering/wing.json"),
+    "simt": lambda: _manifest("components/simt/simt/wing.json"),
+    "aether.wings.simt": lambda: _manifest("staging/aether/wings/simt/wing.json"),
+    "aether.wings.base": lambda: _manifest("staging/aether/wings/base/wing.json"),
+    "aether.wings.cpu": lambda: _manifest("staging/aether/wings/cpu/wing.json"),
+    "raptor.wings.cpu": lambda: _manifest("staging/raptor/wings/cpu/wing.json"),
 }
 
 

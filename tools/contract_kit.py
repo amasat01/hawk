@@ -4,7 +4,7 @@
 """The contribution kit: ``python tools/contract_kit.py <package dir> [--manifest path] [--allow NAME,file.py:NAME]``
 (``--allow``: module-level tables the package states are read-only).
 
-Runs, on a backend or component package that is not in this repository, the scans this repository holds its own pieces to, and prints
+Runs, on a backend or wing package that is not in this repository, the scans this repository holds its own pieces to, and prints
 one line per rule of the contributor contract (DESIGN 2c): PASS, FAIL (file:line, ...) or NOT CHECKABLE HERE (why). The exit code is
 non-zero on a FAIL. The package is read as source (nothing of it is imported); hawk must be importable (the names of the installed
 variants and backends come from it, through the entry points, not from a list).
@@ -90,25 +90,39 @@ def _files(root: Path) -> list:
 
 
 def _manifest(root: Path, given) -> tuple:
-    for path in ([Path(given)] if given else [root / "extension.json", root / "component.json"]):
+    for path in ([Path(given)] if given else [root / "osprey.json", root / "wing.json"]):
         if path.is_file():
             return path, json.loads(path.read_text())
     return None, {}
 
 
-def component_entries() -> dict:
-    """``{component: {module: set(names)}}`` of every installed component (its entry point, its ``component.json``), found without importing it."""
+def wing_entries() -> dict:
+    """``{package: {module: set(names)}}`` of every installed wing (its entry point's package, its ``wing.json``), found without importing it."""
     from importlib import util
 
     from hawk import variants
 
     out = {}
-    for ep in variants.entry_points("raptor.components"):
+    for ep in [e for family in ("raptor", "aether", "eagle") for e in variants.entry_points(f"{family}.wings")]:
         spec = util.find_spec(ep.value.partition(":")[0].split(".")[0])
         home = Path(next(iter(spec.submodule_search_locations))) if spec and spec.submodule_search_locations else None
-        if home and (home / "component.json").is_file():
-            out[ep.name] = {m: set(n) for m, n in json.loads((home / "component.json").read_text()).get("entries", {}).items()}
+        if home and (home / "wing.json").is_file():
+            out[ep.value.partition(":")[0]] = {m: set(n) for m, n in json.loads((home / "wing.json").read_text()).get("entries", {}).items()}
     return out
+
+
+def _named_packages(man: dict) -> set:
+    """The packages of the wings a manifest names: the chains of its backend rows' ``wings``, or the parent chain of a wing manifest."""
+    from hawk import wings
+    from hawk._errors import HawkError
+
+    keys = [k for b in man.get("backends", []) for k in wings.row_wings(b.get("wings"))]
+    keys += [(man["family"], man["parent"])] if man.get("parent") else []
+    try:
+        chain = wings.chain(keys)
+    except (HawkError, ImportError):
+        return set()
+    return {wings.wing(*k).__name__.split(".")[0] for k in chain}
 
 
 def _names_at(path: Path) -> dict:
@@ -117,8 +131,8 @@ def _names_at(path: Path) -> dict:
 
 
 def entries_violations(edges, entries: dict, own: str = "") -> list:
-    """The edges that reach a component's module or name that its manifest does not declare as an entry: ``[(edge, sentence)]``.
-    The component's own files (``own``) reach their own modules freely."""
+    """The edges that reach a wing's module or name that its manifest does not declare as an entry: ``[(edge, sentence)]``.
+    The wing's own files (``own``) reach their own modules freely."""
     bad = []
     for e in edges:
         parts = e.target.split(".")
@@ -128,7 +142,7 @@ def entries_violations(edges, entries: dict, own: str = "") -> list:
         if len(parts) == 1:
             continue
         if parts[1] not in declared:
-            bad.append((e, f"{e.target}: module {parts[1]!r} is not an entry of the {parts[0]!r} component"))
+            bad.append((e, f"{e.target}: module {parts[1]!r} is not an entry of the {parts[0]!r} wing"))
         elif len(parts) == 2 and e.how == "from":
             for name in _names_at(e.path).get(e.line, ()):
                 if name not in declared[parts[1]]:
@@ -145,9 +159,9 @@ def run(root: Path, manifest_path=None, allow=()) -> list:
     pkg = root.name
     path, man = _manifest(root, manifest_path)
     edges = scan.scan_tree(root, pkg)
-    entries = component_entries()
-    named = {c for b in man.get("backends", []) for c in b.get("components", [])} | set(man.get("components", []))
-    own_leaves = {ep.value.partition(":")[0].split(".")[0] for ep in variants.entry_points("raptor.extensions")} - {pkg}
+    entries = wing_entries()
+    named = _named_packages(man)
+    own_leaves = {ep.value.partition(":")[0].split(".")[0] for ep in variants.entry_points("ospreys")} - {pkg}
     where = lambda e: f"{e.path.relative_to(root.parent)}:{e.line}"      # noqa: E731
     rows = []
 
@@ -158,7 +172,7 @@ def run(root: Path, manifest_path=None, allow=()) -> list:
     outside = [f"{where(e)} imports {e.target}" for e in edges if e.top not in ("hawk", pkg, "raptor", "<non-literal>") and e.top not in named
                and not scan.is_stdlib(e.top) and e.top not in own_leaves]
     sideways = [f"{where(e)} imports the leaf {e.target}" for e in edges if e.top in own_leaves]
-    row(1, "leaf: 2a.3 no hawk; 2a.4 stdlib + raptor + named components; no other leaf",
+    row(1, "leaf: 2a.3 no hawk; 2a.4 stdlib + raptor + named wings; no other leaf",
         [f"[2a.3] {x}" for x in hawk_edges] + [f"[2a.4] {x}" for x in outside] + [f"[leaf] {x}" for x in sideways])
     trees = {p: ast.parse(p.read_text()) for p in _files(root)}
     exported = {b["ref"].partition(":")[2] for b in man.get("backends", []) if ":" in b.get("ref", "")}       # the object the manifest names
@@ -168,7 +182,7 @@ def run(root: Path, manifest_path=None, allow=()) -> list:
     rows.append((3, "sideways identity", "NOT CHECKABLE HERE", "needs two targets built and compared at run time; a source scan cannot see it"))
     names = {ep.name for ep in variants.entry_points("raptor.variants")} | set(registry.backend_ids()) | {"host", "cuda", "c"}
     names -= {b.get("name") for b in man.get("backends", [])}
-    names -= {man.get("name"), man.get("dialect")}                # a piece names itself: its own dialect or component name is not a variant choice
+    names -= {man.get("name"), man.get("dialect")}                # a piece names itself: its own dialect or wing name is not a variant choice
     lit = [f"{p.relative_to(root.parent)}:{n.lineno} {n.value!r}" for p, t in trees.items() for n in ast.walk(t)
            if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in names]
     row(4, "the variant is an argument: no literal variant or target names", lit)
@@ -176,18 +190,18 @@ def run(root: Path, manifest_path=None, allow=()) -> list:
     rows.append((6, "the frozen subset passes unmodified", "NOT CHECKABLE HERE", "it is a run of hawk's frozen test subset against the backend, not a scan"))
     bad = []
     if path is None:
-        bad.append("no extension.json or component.json: pass --manifest")
+        bad.append("no osprey.json or wing.json: pass --manifest")
     else:
         if man.get("contract") != registry.CONTRACT:
             bad.append(f"{path.name}: contract {man.get('contract')!r}, hawk is {registry.CONTRACT!r}")
         bad += [f"{where(e)} {why}" for e, why in entries_violations(edges, entries, pkg)]
-        if path.name == "extension.json":
+        if path.name == "osprey.json":
             from hawk.registry import _read
 
             got = _read(man.get("name", pkg), root)
             if got.get("refusal"):
                 bad.append(got["refusal"])
-    row(7, "one home per fact: the manifest is valid and every component name used is a declared entry", bad)
+    row(7, "one home per fact: the manifest is valid and every wing name used is a declared entry", bad)
     row(8, "pinned and guarded: the manifest states the contract it was written for", [] if man.get("contract") == registry.CONTRACT else [f"contract {man.get('contract')!r}"])
     return rows
 

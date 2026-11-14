@@ -35,12 +35,12 @@ from typing import Any
 
 from raptor.ir import Const, Dispatch, Node, Select
 from .._errors import HawkError
-from hawk import components as _components
+from hawk import wings as _wings
 from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
 from raptor.ir.types import TensorType
 from raptor.ir.loops import build_loop
 from .value import Value, index_node, node_of, own_column_rewrite_advice, select
-_dispatch_kind = _components.view("lowering", "dispatch")
+_dispatch_kind = _wings.view("raptor", "base", "dispatch")
 
 #: The reserved prefix of every name this pass synthesises.
 PREFIX = "__hawk_"
@@ -459,7 +459,7 @@ def _costly_arm(arms: list, conds: list, shared: bool) -> bool:
         for k, n in own.items():
             if isinstance(n, (Loop, Dispatch)):
                 return True
-            if (n.kind in _components.view("lowering", "cost").SPECIAL_KINDS or n.kind == "div") and (shared or reads.get(key[k], 0) >= 2):
+            if (n.kind in _wings.view("raptor", "base", "cost").SPECIAL_KINDS or n.kind == "div") and (shared or reads.get(key[k], 0) >= 2):
                 return True
     return False
 

@@ -59,12 +59,12 @@ from raptor.ir import (
 from .._errors import HawkError
 from raptor.ir import make as _mk
 from raptor.ir.loops import ACCUMULATOR, RECURRENCE, LoopClass, build_loop, classify_loop, refuse_unsupported_nesting
-from .. import components as _components
+from .. import wings as _wings
 
-_slotwise = _components.view("lowering", "slotwise")
+_slotwise = _wings.view("raptor", "base", "slotwise")
 from raptor.ir.walk import substitute as _substitute
 from raptor.rules.core import rule_for, zero_like
-_dispatch_kind = _components.view("lowering", "dispatch")
+_dispatch_kind = _wings.view("raptor", "base", "dispatch")
 
 #: Node families neither direction pushes through inside a body (the
 #: straight-line transform's terminals, plus the two loop placeholders).

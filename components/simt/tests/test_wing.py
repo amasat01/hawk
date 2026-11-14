@@ -1,6 +1,6 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
-"""What the component owns, tested without its front end: kinds, constructors, spellings, the entry list."""
+"""What the wing owns, tested without its front end: kinds, constructors, spellings, the entry list."""
 import importlib
 import sys
 
@@ -34,5 +34,5 @@ def test_every_declared_entry_resolves_and_every_module_imports_without_hawk():
         importlib.import_module(part)
 
 
-def test_the_component_names_the_one_it_builds_on():
-    assert simt.MANIFEST["components"] == ["lowering"]
+def test_the_wing_names_the_one_it_builds_on():
+    assert list(simt.MANIFEST)[:3] == ["family", "name", "parent"] and simt.MANIFEST["parent"] == "base"

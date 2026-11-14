@@ -15,6 +15,8 @@ import sys
 
 import pytest
 
+import _w25_scan as S
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 from contract_kit import is_mutable as _is_mutable, module_level as _module_level, nonfrozen_classes as _nonfrozen_classes  # noqa: E402,F401  (the one scanner)
 
@@ -84,14 +86,11 @@ REPO = ROOT.parent
 
 
 def pieces() -> dict:
-    """piece id -> [(path, key)]: hawk, the IR in raptor, EVERY component root and EVERY extension package, found by their folders.
-    Component files keep ``<name>/`` keys, the IR keeps ``ir/``, an extension keeps its package name."""
+    """piece id -> [(path, key)]: hawk, the IR in raptor, EVERY wing and EVERY OSPREY, found by their manifests.
+    Wing files keep ``<name>/`` keys, the IR keeps ``ir/``, an OSPREY keeps its package name."""
     out = {"hawk": [(p, p.relative_to(ROOT).as_posix()) for p in sorted(ROOT.rglob("*.py"))],
            "raptor.ir": [(p, "ir/" + p.relative_to(IR_ROOT).as_posix()) for p in sorted(IR_ROOT.rglob("*.py"))]}
-    roots = [(f"component:{c.name}", c / c.name) for c in sorted((REPO / "components").glob("*")) if (c / c.name / "__init__.py").is_file()]
-    roots += [(f"wing:{d.parent.parent.name}_{d.name}", d) for d in sorted((REPO / "staging").glob("*/wings/*")) if (d / "__init__.py").is_file()]
-    roots += [(f"extension:{e.name}", e) for d in sorted((REPO / "extensions").glob("*")) for e in sorted(d.iterdir()) if (e / "__init__.py").is_file()]
-    roots += [(f"extension:{d.name}", d) for d in sorted((REPO / "staging").glob("osprey_*")) if (d / "__init__.py").is_file()]
+    roots = [(pid, root) for pid, (root, _) in S.pieces().items() if pid.startswith(("wing:", "osprey:"))]
     for piece, root in roots:
         out[piece] = [(p, f"{root.name}/" + p.relative_to(root).as_posix()) for p in sorted(root.rglob("*.py")) if "tests" not in p.parts]
     return out
@@ -131,8 +130,8 @@ def found_mutables(piece: str | None = None) -> set:
     return found
 
 
-def test_the_pieces_cover_every_component_and_extension():
-    assert {"hawk", "raptor.ir", "component:lowering", "component:simt", "extension:hawk_c", "extension:hawk_cuda"} <= set(pieces())
+def test_the_pieces_cover_every_wing_and_osprey():
+    assert {"hawk", "raptor.ir", "wing:raptor.base", "wing:raptor.simt", "osprey:c", "osprey:cuda"} <= set(pieces())
 
 
 @pytest.mark.parametrize("piece", sorted(pieces()))

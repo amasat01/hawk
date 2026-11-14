@@ -9,7 +9,7 @@ from typing import Any
 
 from ..trace.kernel import Kernel, _declared
 from raptor.ir.types import Slot
-from .. import components as _components
+from .. import wings as _wings
 
 
 class TeamStage(Kernel):
@@ -26,7 +26,7 @@ class TeamStage(Kernel):
         super().__init__(name, sinks, planes)
         self.team = team
         if team.reads:          # input planes the stage reads in place are slots of its own
-            self.walk = _components.view("lowering", "cells").walk(self.sinks, (*_declared(self.planes), *(Slot(leaf.role, leaf.name, leaf.ttype) for leaf in team.reads)))
+            self.walk = _wings.view("raptor", "base", "cells").walk(self.sinks, (*_declared(self.planes), *(Slot(leaf.role, leaf.name, leaf.ttype) for leaf in team.reads)))
 
     def fused_body(self, kind: Any = None, cells: bool = False, *, spec, writer, device_text: Any = None) -> Any:
         from aether.wings.base.team_emit import stage_body

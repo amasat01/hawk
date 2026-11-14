@@ -13,8 +13,8 @@ contraction choice and an optional block tile; the defaults (a thread box, ``gem
 from __future__ import annotations
 
 from ..._errors import HawkError
-from ... import components as _components
-_lanes = _components.view("lowering", "lanes")
+from ... import wings as _wings
+_lanes = _wings.view("raptor", "base", "lanes")
 
 #: The widest thread box: T lanes held in registers per thread.
 T_MAX = 16
@@ -93,7 +93,7 @@ def team_warps(spec) -> int:
 def wide(scalar_type: str, spec) -> dict:
     """``{"SLICE_MIN", "TEAM_MIN", "TC"}`` for ``scalar_type`` (``"float32"``/``"float64"``, or the IR's ``f32``/``f64``)
     on the device arch of ``spec``: the defaults, and over them the row of the scalar type whose arch is the
-    nearest by device features (the SIMT component's ``wide_class.distance``: FP64 rate, registers, resident threads), so an unmeasured
+    nearest by device features (the SIMT wing's ``wide_class.distance``: FP64 rate, registers, resident threads), so an unmeasured
     arch takes the closest measured row; a row of the build's own arch must also match the device name when one is present.
     No row for the scalar type gets the defaults. A build with no device variant is refused by name (:func:`wide_card`)."""
     scalar_type = {"f32": "float32", "f64": "float64"}.get(scalar_type, scalar_type)
@@ -111,8 +111,8 @@ def _nearest_row(rows: list, scalar_type: str, keys: tuple, spec) -> dict:
     rows = [r for r in rows if arch and r["dtype"] == scalar_type]
     if not rows:
         return {}
-    from ... import components as _components
-    _wide_class = _components.device_view("wide_class")
+    from ... import wings as _wings
+    _wide_class = _wings.device_view("wide_class")
 
     device = _device() if any(r["cc"] == arch for r in rows) else None
     rows = [r for r in rows if r["cc"] != arch or device is None or device == (r["cc"], r["device"])]

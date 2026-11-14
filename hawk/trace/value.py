@@ -18,16 +18,16 @@ import math
 from typing import Any
 
 from raptor.ir import At, Const, Leaf, Node, Select
-from .. import components as _components
+from .. import wings as _wings
 from .._errors import HawkError
 from raptor.ir import make as _make
 from raptor.ir.linalg import as_matrix
 from raptor.ir.nodes import KEYED_AUTO, AccumWrite, Assign, Dispatch, Finish, ReduceSamples, RoleConst, SamplePosition, SampleIndex, WideWrite
 from raptor.ir.types import INT_PLANE_DTYPES, TensorType
-_dispatch_kind = _components.view("lowering", "dispatch")
+_dispatch_kind = _wings.view("raptor", "base", "dispatch")
 
-_block = _components.view("lowering", "block")
-_cells = _components.view("lowering", "cells")
+_block = _wings.view("raptor", "base", "block")
+_cells = _wings.view("raptor", "base", "cells")
 
 _F64 = TensorType((), "f64")
 _BOOL = TensorType((), "bool")

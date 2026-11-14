@@ -55,15 +55,15 @@ classifiers = [
 # raptor-core, aether-dsc, raptor-hawk and raptor-eagle share one version from 0.7.0; aether-dsc
 # 0.7.2 brings the team linear-algebra headers, keyed block sums and the QR solve hawk emits.
 # numpy: hawk never imports it, but the host route and every example pass NumPy arrays
-dependencies = ["aether-dsc>=0.7.5,<0.8", "raptor-core>=0.7.5,<0.8", "raptor-variants", "raptor-lowering", "numpy>=1.26"]
+dependencies = ["aether-dsc>=0.7.5,<0.8", "raptor-core>=0.7.5,<0.8", "raptor-variants", "raptor-base", "numpy>=1.26"]
 
 # The pieces hawk finds as installed distributions: each declares its entry point in its own pyproject (variants/, components/*).
-# The two first-party extensions ship in this wheel and declare theirs here: hawk reads them from this distribution's metadata,
+# The first-party OSPREYs ship in this wheel and declare theirs here: hawk reads them from this distribution's metadata,
 # the way it reads a third party's.
-[project.entry-points."raptor.extensions"]
-hawk-cuda = "hawk_cuda:extension.json"
-hawk-c = "hawk_c:extension.json"
-osprey-cpu = "osprey_cpu:extension.json"
+[project.entry-points."ospreys"]
+cuda = "hawk_cuda:osprey.json"
+c = "hawk_c:osprey.json"
+cpu = "osprey_cpu:osprey.json"
 
 [project.optional-dependencies]
 # numpy is a TEST dependency only: the finite-difference row evaluates a

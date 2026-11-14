@@ -1,0 +1,28 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+
+# Packaging of the arm wing of raptor (the package raptor.wings.arm) as its own distribution. The wing's folder holds only the
+# package; this folder holds only the packaging, so a build leaves nothing inside the wing.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "raptor-arm"
+version = "0.0.0"
+description = "The Arm facts wing of the family"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+dependencies = ["raptor-core", "raptor-cpu"]
+
+[project.entry-points."raptor.wings"]
+arm = "raptor.wings.arm"
+
+[tool.setuptools]
+packages = ["raptor.wings.arm"]
+
+[tool.setuptools.package-dir]
+"raptor.wings.arm" = "../../raptor/wings/arm"
+
+[tool.setuptools.package-data]
+"raptor.wings.arm" = ["wing.json"]

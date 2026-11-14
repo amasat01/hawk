@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""A host build and a C export work with the device component and the device extension unimportable, and a broken extension never
+"""A host build and a C export work with the device wing and the device OSPREY unimportable, and a broken OSPREY never
 breaks a CPU call. Each check runs in a fresh interpreter, so ``sys.modules`` starts clean."""
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import textwrap
 
 import pytest
 
-from _extensions import backend, make
+from _ospreys import backend, make
 
 BLOCK = textwrap.dedent('''
     import importlib.abc, sys
@@ -90,11 +90,11 @@ def broken(tmp_path):
     root = tmp_path / "ext"
     root.mkdir()
     make(root, "broken-ext", {"backends": [backend("broken", "broken_mod:BACKEND", entry="host")]},
-         modules={"broken_mod": "raise RuntimeError('this extension is broken')\n"})
+         modules={"broken_mod": "raise RuntimeError('this OSPREY is broken')\n"})
     return str(root)
 
 
-def test_a_broken_extension_does_not_break_a_host_call(tmp_path, broken):
+def test_a_broken_osprey_does_not_break_a_host_call(tmp_path, broken):
     code = KERNEL + textwrap.dedent('''
         x = np.arange(1.0, 4.0)
         y = np.zeros(3)
@@ -106,7 +106,7 @@ def test_a_broken_extension_does_not_break_a_host_call(tmp_path, broken):
     assert done.returncode == 0 and done.stdout.strip().endswith("OK"), done.stderr[-1500:]
 
 
-def test_a_broken_extension_is_reported_by_name_when_it_is_the_target(tmp_path, broken):
+def test_a_broken_osprey_is_reported_by_name_when_it_is_the_target(tmp_path, broken):
     code = KERNEL + textwrap.dedent(f'''
         try:
             hawk.build([scale], r"{tmp_path / 'b'}", targets=("broken",))
@@ -114,10 +114,10 @@ def test_a_broken_extension_is_reported_by_name_when_it_is_the_target(tmp_path, 
             print("REFUSED", e)
     ''')
     done = run(code, tmp_path, extra_path=(broken,))
-    assert "REFUSED" in done.stdout and "broken" in done.stdout and "this extension is broken" in done.stdout, done.stderr[-1500:] + done.stdout
+    assert "REFUSED" in done.stdout and "broken" in done.stdout and "this OSPREY is broken" in done.stdout, done.stderr[-1500:] + done.stdout
 
 
-def test_a_broken_default_set_extension_is_skipped_by_an_implicit_call_with_one_warning(tmp_path, broken):
+def test_a_broken_default_set_osprey_is_skipped_by_an_implicit_call_with_one_warning(tmp_path, broken):
     code = KERNEL + textwrap.dedent('''
         import warnings
         x = np.arange(1.0, 4.0)
@@ -128,27 +128,27 @@ def test_a_broken_default_set_extension_is_skipped_by_an_implicit_call_with_one_
             scale(x, 3.0, y)
         assert np.array_equal(y, 3.0 * x), y
         said = [str(w.message) for w in caught if "broken" in str(w.message)]
-        assert len(said) == 1 and "this extension is broken" in said[0], said
+        assert len(said) == 1 and "this OSPREY is broken" in said[0], said
         print("OK")
     ''')
-    done = run(code, tmp_path, extra_path=(broken,), HAWK_EXTENSIONS="broken-ext")     # named: it is in the default set
+    done = run(code, tmp_path, extra_path=(broken,), HAWK_OSPREYS="broken-ext")     # named: it is in the default set
     assert done.returncode == 0 and done.stdout.strip().endswith("OK"), done.stderr[-1800:] + done.stdout
 
 
-def test_a_broken_default_set_extension_is_refused_by_name_when_requested(tmp_path, broken):
+def test_a_broken_default_set_osprey_is_refused_by_name_when_requested(tmp_path, broken):
     code = KERNEL + textwrap.dedent(f'''
         try:
             hawk.build([scale], r"{tmp_path / 'b'}", targets=("broken",))
         except hawk.HawkError as e:
             print("REFUSED", e)
     ''')
-    done = run(code, tmp_path, extra_path=(broken,), HAWK_EXTENSIONS="broken-ext")
-    assert "REFUSED" in done.stdout and "broken" in done.stdout and "this extension is broken" in done.stdout, done.stderr[-1500:] + done.stdout
+    done = run(code, tmp_path, extra_path=(broken,), HAWK_OSPREYS="broken-ext")
+    assert "REFUSED" in done.stdout and "broken" in done.stdout and "this OSPREY is broken" in done.stdout, done.stderr[-1500:] + done.stdout
 
 
 def test_an_implicit_call_on_a_machine_without_a_device_imports_no_device_backend(tmp_path):
     """Listing a default-set row costs no import, and eagle asks for device rows only where a device is present: ``scale(...)`` on a
-    machine with no device never imports the device extension or the device component."""
+    machine with no device never imports the device OSPREY or the device wing."""
     code = KERNEL + textwrap.dedent('''
         import sys
         from hawk.targets import entry_ids

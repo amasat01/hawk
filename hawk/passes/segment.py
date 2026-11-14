@@ -40,8 +40,8 @@ from .._errors import HawkError
 from lowering.cells import OFFSETS_DTYPE, OFFSETS_ROLE, class_name, classify_name, offsets_name, stale_name
 from raptor.ir.segment import ClassifyUnit, SegmentInfo, SegmentUnit
 from raptor.ir.types import Slot, TensorType
-from .. import components as _components
-_dispatch_kind = _components.view("lowering", "dispatch")
+from .. import wings as _wings
+_dispatch_kind = _wings.view("raptor", "base", "dispatch")
 
 _I32 = TensorType((), "i32")
 _BOOL = TensorType((), "bool")
@@ -150,7 +150,7 @@ def _guarded(name: str, sinks: tuple, selector: Node, K: int, j: int,
 
 def _walk(sinks, declared=(), **kw):
     """The canonical form of ``sinks`` through the lowering wing's door."""
-    return _components.view("lowering", "cells").walk(sinks, declared, **kw)
+    return _wings.view("raptor", "base", "cells").walk(sinks, declared, **kw)
 
 
 def rewalk(unit: SegmentUnit, sinks: Sequence[Sink]) -> SegmentUnit:

@@ -1,9 +1,9 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The direction family, for what a leaf may reach: an extension that imports a component's module reaches only what the component's
+"""The direction family, for what a leaf may reach: an OSPREY that imports a wing's module reaches only what the wing's
 manifest declares as an ENTRY (module and names); a leaf never imports another leaf; and the contribution kit runs on a package that is
-not hawk's own. No list of names: the components and the leaves are the ones the installed distributions declare."""
+not hawk's own. No list of names: the wings and the leaves are the ones the installed distributions declare."""
 
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ EXTENSIONS = [(p, p.name) for d in sorted((REPO / "extensions").glob("*/")) for 
 
 
 @pytest.mark.parametrize("root, pkg", EXTENSIONS, ids=[n for _, n in EXTENSIONS])
-def test_an_extension_reaches_only_the_declared_entries_of_a_component(root, pkg):
-    entries = kit.component_entries()
-    assert {"lowering", "simt"} <= set(entries), f"the components are found through their entry points: {sorted(entries)}"
+def test_an_osprey_reaches_only_the_declared_entries_of_a_wing(root, pkg):
+    entries = kit.wing_entries()
+    assert {"lowering", "simt"} <= set(entries), f"the wings are found through their entry points: {sorted(entries)}"
     bad = [f"{e.where(root.parent)}: {why}" for e, why in kit.entries_violations(scan.scan_tree(root, pkg), entries, pkg)]
     assert not bad, "\n".join(bad)
 
@@ -34,16 +34,16 @@ def test_an_extension_reaches_only_the_declared_entries_of_a_component(root, pkg
 def test_the_entries_scan_sees_an_undeclared_name_and_module(tmp_path):
     (tmp_path / "leaf").mkdir()
     (tmp_path / "leaf" / "__init__.py").write_text("from lowering.box import boxed_sinks, not_an_entry\nfrom lowering.nosuch import x\n")
-    bad = kit.entries_violations(scan.scan_tree(tmp_path / "leaf", "leaf"), kit.component_entries(), "leaf")
+    bad = kit.entries_violations(scan.scan_tree(tmp_path / "leaf", "leaf"), kit.wing_entries(), "leaf")
     assert [why for _, why in bad] == ["lowering.box: 'not_an_entry' is not an entry of lowering.box",
-                                       "lowering.nosuch: module 'nosuch' is not an entry of the 'lowering' component"]
+                                       "lowering.nosuch: module 'nosuch' is not an entry of the 'lowering' wing"]
 
 
 def test_no_leaf_imports_another_leaf():
-    """The leaves are the packages that distributions declare in the ``raptor.extensions`` group (hawk's own wheel declares the first-party ones)."""
+    """The leaves are the packages that distributions declare in the ``ospreys`` group (hawk's own wheel declares the first-party ones)."""
     from hawk import variants
 
-    leaves = {ep.value.partition(":")[0].split(".")[0] for ep in variants.entry_points("raptor.extensions")}
+    leaves = {ep.value.partition(":")[0].split(".")[0] for ep in variants.entry_points("ospreys")}
     assert {"hawk_c", "hawk_cuda"} <= leaves
     bad = [f"{e.where(root.parent)}: imports {e.target}" for root, pkg in EXTENSIONS for e in scan.scan_tree(root, pkg)
            if e.top in leaves and e.top != pkg]
@@ -79,8 +79,8 @@ COMPONENTS = [p for p in sorted((REPO / "components").glob("*")) if (p / p.name 
 
 
 @pytest.mark.parametrize("comp", COMPONENTS, ids=[p.name for p in COMPONENTS])
-def test_the_kit_passes_a_component(comp):
-    """Every component found under components/*, not a named one."""
+def test_the_kit_passes_a_wing(comp):
+    """Every wing found under components/*, not a named one."""
     from test_module_mutable_state import ALLOWED
 
     allow = ",".join(name for (file, name) in ALLOWED if file.startswith(comp.name + "/"))

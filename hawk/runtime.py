@@ -69,8 +69,8 @@ from ._plane_layout import (
     plane_layout,
     split_marks,
 )
-from . import components as _components
-_simt_box = _components.view("lowering", "box")
+from . import wings as _wings
+_simt_box = _wings.view("raptor", "base", "box")
 from lowering.exchange import MIRROR_OF, fold_entry_name, mirror_of
 from ._errors import HawkError
 from raptor.ir.types import TensorType

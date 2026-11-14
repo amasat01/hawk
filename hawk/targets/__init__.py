@@ -6,7 +6,7 @@
 Each row is a :class:`hawk.backends.Backend`: a writer paired with a wrapper,
 plus the data and traits the build and the package step read. Nothing here
 imports a backend: the registry (:mod:`hawk.registry`) finds them through the
-extension manifests and imports one on its first lookup.
+OSPREY manifests and imports one on its first lookup.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ class _Targets(Mapping):
     """The backends by id, in (priority, id) order; a row is imported when read, never when listed.
 
     LISTING (iteration, ``len``, ``items``) gives the default set: the built-in and first-party backends and the
-    extensions named in ``HAWK_EXTENSIONS``. An installed extension that was not named is reached only by its
+    OSPREYs named in ``HAWK_OSPREYS``. An installed OSPREY that was not named is reached only by its
     id (``TARGETS["x"]``, ``"x" in TARGETS``): a caller that walks every row (a runtime asking which rows it can
     enter, on every deploy) must neither read the installed distributions nor import a backend nobody named."""
 
@@ -37,7 +37,7 @@ class _Targets(Mapping):
         return need(key)
 
     def __contains__(self, key):
-        return registry.has("backends", key)       # the installed extensions are read only for an id that is not built in
+        return registry.has("backends", key)       # the installed OSPREYs are read only for an id that is not built in
 
     def __iter__(self):
         return iter(registry.backend_ids(default=True))
@@ -175,8 +175,8 @@ class BuildSpec:
         """The name of the wide-value class the placement reads: the device class of the build, else the host variant's own."""
         if self.wide_class:
             return self.wide_class
-        from .. import components as _components
-        wide_class = _components.device_view("wide_class")
+        from .. import wings as _wings
+        wide_class = _wings.device_view("wide_class")
 
         return wide_class.select("", self.device) if self.device is not None else self.need("host_wide")["name"]
 
@@ -185,17 +185,17 @@ class BuildSpec:
         the device class of the build."""
         if self.device is None:
             return {k: v for k, v in self.need("host_wide").items() if k != "name"}
-        from .. import components as _components
+        from .. import wings as _wings
 
-        found = _components.device_view("wide_class").tables(self.placement_class, self.device)
+        found = _wings.device_view("wide_class").tables(self.placement_class, self.device)
         return {"runtime_min": found.runtime_min, "wide_min": found.wide_min}
 
     def device_fp64_ratio(self) -> int:
         """FP32 lanes per FP64 lane of the device the build runs on (a build with a device variant only)."""
-        from .. import components as _components
+        from .. import wings as _wings
 
         arch = self.machine.arch or self.device["default_arch"]
-        return _components.device_view("wide_class").features_of(arch, self.device).fp64_ratio
+        return _wings.device_view("wide_class").features_of(arch, self.device).fp64_ratio
 
     def for_target(self, row) -> "BuildSpec":
         """This spec as seen by the text of backend ``row``: its own variant (empty when it names none) is the one :attr:`primary` answers."""
@@ -218,11 +218,11 @@ class BuildSpec:
 
 def build_spec(targets, arch: str = "", *, machine: Machine | None = None, device: dict | None = None,
                wide_override: dict | None = None, settings=None, build_settings=None) -> BuildSpec:
-    """The spec of a build of ``targets`` (ids) for device ``arch``: each row's manifest names its variant (a map from the host's
-    isa for a host row). ``device`` replaces the device variant's data (a test or a kit passes other numbers), ``wide_override``
+    """The spec of a build of ``targets`` (ids) for device ``arch``: each row's manifest names its wings (the raptor leaf, a map from the host's
+    isa for a host row, gives its facts). ``device`` replaces the device variant's data (a test or a kit passes other numbers), ``wide_override``
     forces card thresholds. ``settings`` are the per-build settings (default: all unset); ``build_settings`` (:class:`hawk.build_settings.BuildSettings`) is laid over them after its keys
     are checked against the targets' manifests."""
-    from .. import components as _components
+    from .. import wings as _wings
     from ..variants import load, named
 
     machine = machine or detect_machine(arch, targets)
@@ -232,8 +232,7 @@ def build_spec(targets, arch: str = "", *, machine: Machine | None = None, devic
         if target not in TARGETS:
             continue                    # lowering refuses it by name
         row = TARGETS[target]
-        for need in row.components:
-            _components.require(need, target)
+        _wings.require(_wings.row_wings(row.wings, machine.isa), target)
         if row.variant is None:
             continue
         data = load(named(row.variant, machine.isa))
@@ -243,27 +242,20 @@ def build_spec(targets, arch: str = "", *, machine: Machine | None = None, devic
         else:
             host = host or data
     dev = device if device is not None else dev
-    return BuildSpec(host, dev, machine, _components.device_view("wide_class").select(arch, dev) if arch and dev else "", dict(wide_override or {}), by_target,
-                     settings=_laid(build_settings, settings, targets), spellings=_spellings(targets),
+    return BuildSpec(host, dev, machine, _wings.device_view("wide_class").select(arch, dev) if arch and dev else "", dict(wide_override or {}), by_target,
+                     settings=_laid(build_settings, settings, targets), spellings=_spellings(targets, machine.isa),
                      reads=frozenset(k for t in targets if t in TARGETS for k in registry.traits(t).get("reads", ())))
 
 
-def _spellings(targets) -> dict:
-    """``{(writer, dialect): module name}`` the build names: the spellings arms of its backends' extensions and of the components
-    those backends (and the components in turn) name."""
-    from .. import components as _components
+def _spellings(targets, isa: str) -> dict:
+    """``{(writer, dialect): module name}`` the build names: the spellings arms of its backends' OSPREYs and of the wings
+    those backends (and the wings in turn) name."""
+    from .. import wings as _wings
 
     found = registry.spelling_refs(tuple(targets))
-    pending = [n for t in targets if t in TARGETS for n in TARGETS[t].components]
-    seen = set()
-    while pending:
-        name = pending.pop()
-        if name in seen:
-            continue
-        seen.add(name)
-        manifest = _components.component(name).MANIFEST
+    for key in _wings.chain([k for t in targets if t in TARGETS for k in _wings.row_wings(TARGETS[t].wings, isa)]):
+        manifest = _wings.wing(*key).MANIFEST
         found.update({(arm["writer"], arm["dialect"]): arm["ref"] for arm in manifest.get("spellings", ())})
-        pending.extend(manifest.get("components", ()))
     return found
 
 

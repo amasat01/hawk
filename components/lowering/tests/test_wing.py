@@ -1,6 +1,6 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
-"""What the component owns, tested without its front end: kinds, constructors, spellings, the log lowering, the entry list."""
+"""What the wing owns, tested without its front end: kinds, constructors, spellings, the log lowering, the entry list."""
 import importlib
 import sys
 

@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from _extensions import backend, copy_of, host_reads, make
+from _ospreys import backend, copy_of, host_reads, make
 
 import hawk
 from hawk import registry
@@ -54,10 +54,10 @@ SCAN = """
 from importlib import metadata
 calls = []
 real = metadata.entry_points
-metadata.entry_points = lambda **k: (calls.append(k) if k.get("group") == "raptor.extensions" else None) or real(**k)
+metadata.entry_points = lambda **k: (calls.append(k) if k.get("group") == "ospreys" else None) or real(**k)
 """
 
-#: A state in which hawk's own distribution metadata is absent: no first-party extension is declared.
+#: A state in which hawk's own distribution metadata is absent: no first-party OSPREY is declared.
 NO_OWN = """
 import importlib.metadata as _md
 _orig = _md.distribution
@@ -110,7 +110,7 @@ def _explode(root, package: str) -> None:
 def test_a_distribution_that_reuses_a_first_party_manifest_name_changes_nothing(tmp_path):
     site = tmp_path / "site"
     site.mkdir()
-    make(site, "innocent-tool", {"name": "hawk-cuda", "version": "9"})
+    make(site, "innocent-tool", {"name": "cuda", "version": "9"})
     _explode(site, "innocent_tool")
     out = _run(tmp_path, """
 before = state()
@@ -130,7 +130,7 @@ print(json.dumps({"before": before, "after": state(), "cuda": cuda, "same": firs
 def test_an_entry_point_at_a_first_party_manifest_is_refused_and_c_is_unchanged(tmp_path):
     site = tmp_path / "site"
     site.mkdir()
-    make(site, "innocent-tool", value="hawk_c:extension.json")
+    make(site, "innocent-tool", value="hawk_c:osprey.json")
     out = _run(tmp_path, """
 before = state()
 host_build("a")
@@ -162,8 +162,8 @@ print(json.dumps({"entries": host_build("a"), "state": state(), "refused": regis
 def test_a_stray_folder_named_like_a_first_party_package_never_runs(tmp_path):
     stray = tmp_path / "hawk_cuda"
     stray.mkdir()
-    (stray / "extension.json").write_text(json.dumps(
-        {"name": "hawk-cuda", "version": "1", "contract": "1",
+    (stray / "osprey.json").write_text(json.dumps(
+        {"name": "cuda", "version": "1", "contract": "1",
          "backends": [backend("cuda", "hawk_cuda.backend:BACKEND", device=True)]}))
     (stray / "backend.py").write_text(f"open({str(tmp_path / 'RAN')!r}, 'w').write('x')\nraise SystemExit('ran')\n")
     out = _run(tmp_path, """
@@ -207,10 +207,10 @@ print(json.dumps({"cold": cold, "warm": warm, "unknown": len(calls), "said": sai
     assert (out["cold"], out["warm"], out["unknown"]) == (0, 0, 1) and "unknown target 'nonesuch'" in out["said"]
 
 
-def test_walking_every_target_row_neither_scans_nor_imports_an_unnamed_extension(tmp_path):
+def test_walking_every_target_row_neither_scans_nor_imports_an_unnamed_osprey(tmp_path):
     """A runtime walks ``TARGETS.items()`` on every deploy to learn which rows it can enter (eagle does): that
     walk lists the default set only, so it reads no installed distribution and imports no backend nobody named;
-    the unnamed extension is still reached by its id."""
+    the unnamed OSPREY is still reached by its id."""
     site = tmp_path / "site"
     site.mkdir()
     make(site, "walk-ext", {"backends": [backend("walked", "walked_mod:BACKEND")]},
@@ -240,8 +240,8 @@ def _home(tmp_path, monkeypatch):
     dist = root / "raptor_hawk-0.0.dist-info"
     dist.mkdir()
     (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: raptor-hawk\nVersion: 0.0\n")
-    (dist / "entry_points.txt").write_text("[raptor.extensions]\nhawk-cuda = hawk_cuda:extension.json\nhawk-c = hawk_c:extension.json\n"
-                                            "osprey-cpu = osprey_cpu:extension.json\n")
+    (dist / "entry_points.txt").write_text("[ospreys]\ncuda = hawk_cuda:osprey.json\nc = hawk_c:osprey.json\n"
+                                            "cpu = osprey_cpu:osprey.json\n")
     for name in ("hawk_c", "hawk_cuda"):
         shutil.copytree(Path(REPO) / "extensions" / name / name, root / name, ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(Path(REPO) / "staging" / "osprey_cpu", root / "osprey_cpu", ignore=shutil.ignore_patterns("__pycache__"))
@@ -256,11 +256,11 @@ def _home(tmp_path, monkeypatch):
 
 def test_a_first_party_package_that_cannot_be_read_is_an_error_at_the_default_build(tmp_path, monkeypatch):
     root = _home(tmp_path, monkeypatch)
-    (root / "hawk_c" / "extension.json").write_text('{"name": "hawk-c", "contract": "1", "backends": [{"name": ["c"]}]}')
+    (root / "hawk_c" / "osprey.json").write_text('{"name": "c", "contract": "1", "backends": [{"name": ["c"]}]}')
     try:
-        assert "malformed" in registry.refused()["hawk-c"]
+        assert "malformed" in registry.refused()["c"]
         for _ in range(2):
-            with pytest.raises(HawkError, match="first-party extension 'hawk-c' is installed but refused"):
+            with pytest.raises(HawkError, match="first-party OSPREY 'c' is installed but refused"):
                 list(hawk.targets.DEFAULT_TARGETS)
     finally:
         registry.reset()
@@ -270,7 +270,7 @@ def test_the_wider_scan_keeps_what_the_narrow_one_answered(tmp_path, monkeypatch
     _home(tmp_path, monkeypatch)
     site = tmp_path / "site"
     site.mkdir()
-    make(site, "other-ext", {"name": "hawk-cuda", "backends": [backend("cuda", "other_mod:BACKEND")]},
+    make(site, "other-ext", {"name": "cuda", "backends": [backend("cuda", "other_mod:BACKEND")]},
          modules={"other_mod": "raise SystemExit('ran')\n"})
     monkeypatch.syspath_prepend(str(site))
     registry.reset()
@@ -344,24 +344,24 @@ def test_a_genuine_first_party_copy_beside_nothing_is_a_named_error(tmp_path):
     assert out["host"] == {"ok": ["host"]}
 
 
-DAMAGED = {"no metadata": dict(entry="[raptor.extensions]\nbrk = brkpkg:extension.json\n", metadata=False),
-           "bad bytes": dict(entry=b"\xff\xfe[raptor.extensions]\n\xff = x:y\n"),
-           "a line without equals": dict(entry="[raptor.extensions]\njust a line\n"),
-           "no name": dict(entry="[raptor.extensions]\nnn = nnpkg:extension.json\n", meta="Metadata-Version: 2.1\nVersion: 1\n")}
+DAMAGED = {"no metadata": dict(entry="[ospreys]\nbrk = brkpkg:osprey.json\n", metadata=False),
+           "bad bytes": dict(entry=b"\xff\xfe[ospreys]\n\xff = x:y\n"),
+           "a line without equals": dict(entry="[ospreys]\njust a line\n"),
+           "no name": dict(entry="[ospreys]\nnn = nnpkg:osprey.json\n", meta="Metadata-Version: 2.1\nVersion: 1\n")}
 
 
 @pytest.mark.parametrize("kind", DAMAGED)
 def test_a_damaged_distribution_refuses_itself_and_blocks_nothing_else(tmp_path, kind):
     site = tmp_path / "site"
     site.mkdir()
-    make(site, "good-ext", {"backends": [backend("p", "good_mod:BACKEND", variant="cpu", reads=host_reads())]}, modules={"good_mod": copy_of("osprey_cpu.backend", "p")})
+    make(site, "good-ext", {"backends": [backend("p", "good_mod:BACKEND", wings={"raptor": "cpu"}, reads=host_reads())]}, modules={"good_mod": copy_of("osprey_cpu.backend", "p")})
     _dist(site, "damaged", **DAMAGED[kind])
     out = _run(tmp_path, ATTEMPT + """
 def build(t):
     return sorted(hawk.build([only], os.path.join(here, "o" + t), targets=(t,), cache_dir=os.path.join(here, "cache")).artifacts[0].entries)
 print(json.dumps({"p": attempt(lambda: build("p")), "typo": attempt(lambda: build("hots")), "refused": registry.refused(),
                   "again": attempt(lambda: registry.refused() and "ok")}))
-""", [REPO, site], env={"HAWK_EXTENSIONS": "good-ext"})
+""", [REPO, site], env={"HAWK_OSPREYS": "good-ext"})
     assert out["p"] == {"ok": ["p"]} and out["again"] == {"ok": "ok"}
     assert out["typo"]["raised"] == "RaptorError" and "unknown target 'hots'" in out["typo"]["said"]
     assert any("damaged" in k and "cannot be read" in v for k, v in out["refused"].items()), out["refused"]
@@ -396,16 +396,16 @@ print(json.dumps({"miss": ("c", "simt") not in registry.spelling_refs(["host"]),
 def test_a_distribution_named_like_a_first_party_identity_is_refused_under_its_own_label(tmp_path):
     site = tmp_path / "site"
     site.mkdir()
-    make(site, "Hawk_CUDA", raw="{ not json")
+    make(site, "Osprey_CUDA", raw="{ not json")
     make(site, "hawk", {"backends": [backend("zz", "zz_mod:BACKEND")]}, modules={"zz_mod": copy_of("osprey_cpu.backend", "zz")})
-    make(site, "needs-cuda", {"requires": ["hawk-cuda"], "backends": [backend("nc", "nc_mod:BACKEND")]},
+    make(site, "needs-cuda", {"requires": ["cuda"], "backends": [backend("nc", "nc_mod:BACKEND")]},
          modules={"nc_mod": copy_of("osprey_cpu.backend", "nc")})
     out = _run(tmp_path, ATTEMPT + """
-print(json.dumps({"refused": registry.refused(), "ext": sorted(registry.extensions()), "nc": attempt(lambda: need("nc").id),
+print(json.dumps({"refused": registry.refused(), "ext": sorted(registry.ospreys()), "nc": attempt(lambda: need("nc").id),
                   "zz": attempt(lambda: need("zz").id), "ids": registry.backend_ids(default=True)}))
 """, [REPO, *EXTENSIONS, site])
-    assert "hawk-cuda" not in out["refused"] and "hawk" not in out["refused"]
-    assert sum("hawk's own" in v for v in out["refused"].values()) == 2 and "hawk-cuda" in out["ext"]
+    assert "cuda" not in out["refused"] and "hawk" not in out["refused"]
+    assert sum("hawk's own" in v for v in out["refused"].values()) == 2 and "cuda" in out["ext"]
     assert out["nc"] == {"ok": "nc"} and out["zz"]["raised"] == "RaptorError" and out["ids"] == ["cuda", "host", "c"]
 
 
@@ -413,18 +413,18 @@ def test_a_manifest_that_is_a_pipe_or_huge_is_refused_without_hanging(tmp_path):
     site = tmp_path / "site"
     site.mkdir()
     make(site, "pipe-ext")
-    (site / "pipe_ext" / "extension.json").unlink()
-    os.mkfifo(site / "pipe_ext" / "extension.json")
+    (site / "pipe_ext" / "osprey.json").unlink()
+    os.mkfifo(site / "pipe_ext" / "osprey.json")
     make(site, "huge-ext", raw='{"name": "x", "contract": "1", "pad": "' + "a" * (1 << 21) + '"}')
     out = _run(tmp_path, 'print(json.dumps({"refused": registry.refused()}))', [REPO, site])
     assert {"pipe-ext", "huge-ext"} <= set(out["refused"]) and all("malformed" in v for v in out["refused"].values())
 
 
 @pytest.mark.parametrize("value, raises", [("typo-ext", True), ("OFF", True), (" ", False), (",,", False)])
-def test_a_name_in_the_environment_that_is_no_extension_is_an_error_at_the_build(tmp_path, value, raises):
+def test_a_name_in_the_environment_that_is_no_osprey_is_an_error_at_the_build(tmp_path, value, raises):
     out = _run(tmp_path, ATTEMPT + """
 print(json.dumps({"host": attempt(lambda: host_build("h")), "refused": registry.refused()}))
-""", [REPO, *EXTENSIONS], env={"HAWK_EXTENSIONS": value})
+""", [REPO, *EXTENSIONS], env={"HAWK_OSPREYS": value})
     if raises:
         assert out["host"]["raised"] == "RaptorError" and value.lower() in out["host"]["said"].lower()
         assert value.lower() in out["refused"]

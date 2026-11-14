@@ -13,10 +13,10 @@ version = "0.0.0"
 description = "The host source texts and the host vector verdict"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
-dependencies = ["raptor-core"]
+dependencies = ["raptor-core", "aether-base", "raptor-cpu"]
 
-[project.entry-points."raptor.components"]
-aether_cpu = "aether.wings.cpu"
+[project.entry-points."aether.wings"]
+cpu = "aether.wings.cpu"
 
 [tool.setuptools]
 packages = ["aether.wings.cpu"]
@@ -25,4 +25,4 @@ packages = ["aether.wings.cpu"]
 "aether.wings.cpu" = "../../aether/wings/cpu"
 
 [tool.setuptools.package-data]
-"aether.wings.cpu" = ["component.json"]
+"aether.wings.cpu" = ["wing.json"]

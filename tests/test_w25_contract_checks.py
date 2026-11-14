@@ -10,7 +10,7 @@ import importlib
 import sys
 
 import pytest
-from _extensions import backend, copy_of, make
+from _ospreys import backend, copy_of, make
 
 from hawk import registry, variants
 from hawk.backends import need
@@ -52,7 +52,7 @@ def test_an_unknown_key_in_a_backend_item_is_refused_naming_the_key_and_the_mani
     make(site, "toy-ext", {"backends": [item]}, modules={"toy_mod": copy_of("osprey_cpu.backend", "toy")})
     registry.reset()
     why = refusal_of("toy-ext")
-    assert "varaint" in why and "extension.json" in why and "unknown key" in why
+    assert "varaint" in why and "osprey.json" in why and "unknown key" in why
 
 
 def test_an_unknown_top_level_key_is_refused_by_name(site):
@@ -62,9 +62,9 @@ def test_an_unknown_top_level_key_is_refused_by_name(site):
 
 
 def test_a_malformed_manifest_never_shows_only_as_an_unknown_target(site):
-    make(site, "toy-ext", {"backends": [backend("toy", "toy_mod:BACKEND", variant=7)]})
+    make(site, "toy-ext", {"backends": [backend("toy", "toy_mod:BACKEND", wings={"raptor": 7})]})
     registry.reset()
-    with pytest.raises(HawkError, match=r"toy' is refused: extension 'toy-ext' is refused: .*malformed"):
+    with pytest.raises(HawkError, match=r"toy' is refused: OSPREY 'toy-ext' is refused: .*malformed"):
         need("toy")
     make(site, "toy-raw", raw="{not json")
     registry.reset()
@@ -79,15 +79,15 @@ def test_a_backend_id_outside_the_grammar_is_refused_by_name(site, bad):
     assert "lowercase identifier" in refusal_of("toy-ext") and repr(bad) in refusal_of("toy-ext")
 
 
-def test_an_extension_name_outside_the_grammar_is_refused_by_name(site):
+def test_an_osprey_name_outside_the_grammar_is_refused_by_name(site):
     make(site, "toy-ext", {"name": "Toy X!", "backends": []})
     registry.reset()
-    assert "extension name" in refusal_of("toy-ext")
+    assert "OSPREY name" in refusal_of("toy-ext")
 
 
 def test_a_manifest_that_reads_a_number_its_variant_lacks_is_refused_at_load(site):
     make_variant(site, "bare", '{"name": "bare", "linalg": {"max_dim": 32}}\n')
-    item = backend("toy", "toy_mod:BACKEND", variant="bare", reads=["form.rolled_fold_min"])
+    item = backend("toy", "toy_mod:BACKEND", wings={"raptor": "bare"}, reads=["form.rolled_fold_min"])
     make(site, "toy-ext", {"backends": [item]})
     registry.reset()
     assert "'form.rolled_fold_min'" in refusal_of("toy-ext") and "'bare'" in refusal_of("toy-ext")

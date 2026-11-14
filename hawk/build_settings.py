@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from dataclasses import dataclass, fields, replace
 
 from ._errors import HawkError
-from . import components as _components
+from . import wings as _wings
 
 if TYPE_CHECKING:
     from lowering.settings import Settings
@@ -85,7 +85,7 @@ def check(settings: Settings, limits: dict | None = None) -> Settings:
 
 def default_settings() -> Settings:
     """The settings of a build that states none: every field at its default, ``team_threads`` read once from ``HAWK_TEAM_THREADS``."""
-    return _components.view("lowering", "settings").Settings(team_threads=int(os.environ.get("HAWK_TEAM_THREADS") or 0))
+    return _wings.view("raptor", "base", "settings").Settings(team_threads=int(os.environ.get("HAWK_TEAM_THREADS") or 0))
 
 
 @dataclass(frozen=True)

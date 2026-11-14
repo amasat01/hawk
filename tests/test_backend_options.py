@@ -17,7 +17,7 @@ from hawk import Mutable, Param, Scalar
 from hawk.artifact import bundle as B
 from raptor.errors import RaptorError as HawkError
 
-from _extensions import backend, host_reads, make
+from _ospreys import backend, host_reads, make
 
 STUB = '''
 from dataclasses import replace
@@ -60,7 +60,7 @@ def stub(monkeypatch, tmp_path):
 
     root = tmp_path / "ext"
     root.mkdir()
-    make(root, "opts-backend", {"backends": [backend("optb", "opts_plugin:BACKEND", device=False, builds=True, priority=5, variant="cpu", reads=host_reads(),
+    make(root, "opts-backend", {"backends": [backend("optb", "opts_plugin:BACKEND", device=False, builds=True, priority=5, wings={"raptor": "cpu"}, reads=host_reads(),
                                                       options=["tag"])]}, modules={"opts_plugin": STUB})
     monkeypatch.syspath_prepend(str(root))
     registry.reset()

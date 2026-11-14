@@ -543,7 +543,6 @@ __all__.append("KernelKind")
 
 
 def compensated_target(kind: Kind, sinks: Sequence[Any]) -> tuple[str, bool] | None:
-    """The compensated sink's resolved target (the lowering component's rule, :func:`lowering.split.compensated_target`)."""
-    from .. import components
-
-    return components.view("lowering", "split").compensated_target(kind, sinks)
+    """The compensated sink's resolved target (the base wing's rule, :func:`lowering.split.compensated_target`)."""
+    from .. import wings
+    return wings.view("raptor", "base", "split").compensated_target(kind, sinks)

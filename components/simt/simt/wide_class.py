@@ -11,7 +11,7 @@ A build's device arch maps to a feature tuple (the variant's ``arch_features``: 
 the NEAREST class by feature distance: an exact match when the arch is a class of its own, else the closest measured one. The
 class used is recorded in the sidecar (``launch.wide.class``) and in the unit key, so a table measured later for a nearer class
 changes the unit, and a unit built from the sm_61 table on another card says so. The vocabulary (:class:`Features`,
-:class:`Tables`) and the pure selection rule live here, in the SIMT component's variant loader; the tables are the variant's."""
+:class:`Tables`) and the pure selection rule live here, in the SIMT wing's variant loader; the tables are the variant's."""
 
 from __future__ import annotations
 

@@ -15,13 +15,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from .. import components as _components
+from .. import wings as _wings
 from .._errors import HawkError
 from raptor.ir import make as _make
 from raptor.ir.nodes import CONTRACTS, SCATTER_CONTRACTS, Leaf, ReduceSamples
 from .value import Value, _op, _operands, index_node, n_samples, node_of, real, select, vec
 
-_block = _components.view("lowering", "block")      # the block-shaped keyed sum is a kind of the lowering component
+_block = _wings.view("raptor", "base", "block")      # the block-shaped keyed sum is a kind of the base wing
 
 
 def _axis(value: Value, axis: Any, op: str):

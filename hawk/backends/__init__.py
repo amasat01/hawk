@@ -5,8 +5,8 @@
 
 A backend carries its row DATA (id, entry, format, suffixes) and the
 TRAITS the build asks about it. It is found, never imported by name: the
-registry (:mod:`hawk.registry`) reads each extension's manifest and imports a
-backend on its first :func:`need`, so adding a backend is shipping an extension that declares one.
+registry (:mod:`hawk.registry`) reads each OSPREY's manifest and imports a
+backend on its first :func:`need`, so adding a backend is shipping an OSPREY that declares one.
 """
 
 from __future__ import annotations
@@ -88,10 +88,10 @@ class Backend:
     api: object = None
     #: its loop over samples may be vectorised
     vectorise: bool = False
-    #: its variant as its manifest names it: a name, or a map from the host's isa to a name (:func:`hawk.variants.named`)
+    #: the facts it reads, as its manifest's raptor wing names them: a name, or a map from the host's isa to a name (:func:`hawk.variants.named`)
     variant: object = None
-    #: the components its builds need installed (manifest ``components``); a build without one is refused by name (:func:`hawk.components.require`)
-    components: tuple = ()
+    #: the wing each family contributes (manifest ``wings``); a build without one installed is refused by name (:func:`hawk.wings.require`)
+    wings: object = None
 
     def own_options(self, options) -> dict:
         """The part of ``options`` under this backend's ``<id>.`` prefix, prefix dropped (the driver refused any key its manifest does not declare)."""
@@ -124,13 +124,13 @@ class Backend:
         """The emitted unit of ``lowered.kernel``: the writer and wrapper around the shared body, under this backend's policy scopes."""
         from ..artifact import layout
         from aether.wings.base.wrapper import render_source
-        from .. import components
+        from .. import wings
         kernel = lowered.kernel
         team = getattr(kernel, "team", None)
         # the device text keeps wide values in their planes; a host row renders float selects as blends
         spec = lowered.spec.for_target(self).with_settings(placed=self.device, blend=not self.device, staged_rows=lowered.rows,
                                                            warps=getattr(team, "warps", 1))
-        sinks, walk = components.view("lowering", "lstsq").lowered(kernel.sinks, kernel.walk, spec)
+        sinks, walk = wings.view("raptor", "base", "lstsq").lowered(kernel.sinks, kernel.walk, spec)
         body = lowered.body
         if getattr(kernel, "per_target_body", False):         # a team stage: this row's text, device arms for a device row
             body = kernel.fused_body(lowered.kind, cells=lowered.smode.cells, spec=spec, writer=self.writer, device_text=getattr(self.wrapper, "device_text", None))
@@ -246,7 +246,7 @@ def default_backends(trait: str | None = None) -> list:
 
 
 def need_device() -> Backend:
-    """The default backend built for a device, or a refusal saying which extension to install."""
+    """The default backend built for a device, or a refusal saying which OSPREY to install."""
     for backend in default_backends("device"):
         return backend
     from .._errors import HawkError

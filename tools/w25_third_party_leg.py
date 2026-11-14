@@ -56,17 +56,17 @@ def main(python: str, work: Path) -> int:
     (src / "acme_toy" / "__init__.py").write_text("")
     (src / "acme_toy" / "backend.py").write_text(
         "from osprey_cpu.backend import Host\n\n\nclass Toy(Host):\n    id = 'acme_toy'\n    about = 'a third-party CPU backend'\n\n\nBACKEND = Toy()\n")
-    (src / "acme_toy" / "extension.json").write_text(json.dumps({
+    (src / "acme_toy" / "osprey.json").write_text(json.dumps({
         "name": "acme-toy", "version": "0.0", "contract": "1", "requires": [],
         "backends": [{"name": "acme_toy", "ref": "acme_toy.backend:BACKEND", "about": "a third-party CPU backend", "device": False,
-                      "builds": True, "variant": "acme", "components": ["lowering"], "priority": 7, "options": ["profile"],
+                      "builds": True, "wings": {"raptor": "cpu", "aether": "base"}, "priority": 7, "options": ["profile"],
                       "policy": ["emit_form"], "reads": ["form.rolled_fold_min"]}]}))
     (src / "pyproject.toml").write_text(
         '[build-system]\nrequires = ["setuptools>=64"]\nbuild-backend = "setuptools.build_meta"\n\n[project]\nname = "acme-toy"\nversion = "0.0"\n\n'
-        '[project.entry-points."raptor.extensions"]\nacme-toy = "acme_toy:extension.json"\n\n'
+        '[project.entry-points."ospreys"]\nacme-toy = "acme_toy:osprey.json"\n\n'
         '[project.entry-points."raptor.variants"]\nacme = "acme_toy_variants.acme"\n\n'
         '[tool.setuptools]\npackages = ["acme_toy", "acme_toy_variants", "acme_toy_variants.acme"]\n\n'
-        '[tool.setuptools.package-data]\nacme_toy = ["extension.json"]\n"acme_toy_variants.acme" = ["raptor_variant.h"]\n')
+        '[tool.setuptools.package-data]\nacme_toy = ["osprey.json"]\n"acme_toy_variants.acme" = ["raptor_variant.h"]\n')
     wheels = work / "wheels"
     subprocess.run([python, "-m", "pip", "wheel", "--no-deps", "-q", "-w", str(wheels), str(src)], check=True, cwd=work)
     wheel = next(wheels.glob("acme_toy-*.whl"))

@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Lane queries of the SIMT component: whether a value is the same over a warp's aligned run, the run a key moves in, and the choice
+"""Lane queries of the SIMT wing: whether a value is the same over a warp's aligned run, the run a key moves in, and the choice
 of block box and gather tile from a device card. The index algebra (the lane facts) is :mod:`raptor.ir.lanes`; every machine number
 here (bank width, run widths) is the variant's ``lanes`` data, passed in and refused by name when absent."""
 

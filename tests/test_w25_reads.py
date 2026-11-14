@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+import _w25_scan as S
 from hawk import registry
 
 REPO = Path(__file__).resolve().parent.parent
@@ -21,8 +22,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 def _piece_roots() -> dict:
     out = {"hawk": Path(importlib.util.find_spec("hawk").origin).resolve().parent}
-    out |= {f"component:{c.name}": c / c.name for c in sorted((REPO / "components").glob("*")) if (c / c.name / "__init__.py").is_file()}
-    out |= {f"extension:{e.name}": e for d in sorted((REPO / "extensions").glob("*")) for e in sorted(d.iterdir()) if (e / "__init__.py").is_file()}
+    out |= {pid: root for pid, (root, _) in S.pieces().items() if pid.startswith(("wing:", "osprey:")) and root.parent.parent.name in ("components", "extensions")}
     return out
 
 
@@ -32,9 +32,9 @@ PIECES = _piece_roots()
 def _declared(piece: str, root: Path) -> set:
     if piece == "hawk":      # hawk's front end reads the variant of the host row it builds: that row's reads (the cpu OSPREY's manifest)
         return set(registry.traits("host").get("reads", ()))
-    if piece.startswith("component:"):
-        return set(json.loads((root / "component.json").read_text()).get("reads", ()))
-    return {r for b in json.loads((root / "extension.json").read_text()).get("backends", ()) for r in b.get("reads", ())}
+    if piece.startswith("wing:"):
+        return set(json.loads((root / "wing.json").read_text()).get("reads", ()))
+    return {r for b in json.loads((root / "osprey.json").read_text()).get("backends", ()) for r in b.get("reads", ())}
 
 
 def need_sites(root: Path) -> list:
@@ -57,9 +57,9 @@ def test_every_variant_read_of_a_piece_is_stated_in_its_manifest(piece):
     assert not bad, "\n".join(bad)
 
 
-def test_the_scan_finds_the_reads_of_the_components():
-    assert {k for _, k in need_sites(PIECES["component:lowering"])} >= {"lanes.run_max", "scatter.max_chunks"}
-    assert {k for _, k in need_sites(PIECES["component:simt"])} == {"launch.warp_size"}
+def test_the_scan_finds_the_reads_of_the_wings():
+    assert {k for _, k in need_sites(PIECES["wing:raptor.base"])} >= {"lanes.run_max", "scatter.max_chunks"}
+    assert {k for _, k in need_sites(PIECES["wing:raptor.simt"])} == {"launch.warp_size"}
 
 
 def test_the_scan_sees_an_uncovered_read(tmp_path):
@@ -75,13 +75,13 @@ def test_a_first_party_variant_that_lacks_a_key_its_backend_reads_is_refused_at_
     from hawk import variants
 
     monkeypatch.setattr(variants, "load", lambda name: {"lanes": {"block_run": 4}})
-    item = {"name": "x", "variant": "v", "reads": ["lanes.block_run", "lanes.run_max"]}
+    item = {"name": "x", "wings": {"raptor": "v"}, "reads": ["lanes.block_run", "lanes.run_max"]}
     with pytest.raises(ValueError, match=r"reads 'lanes.run_max', which its variant 'v' does not state"):
         registry._check_reads(item, "m.json")
 
 
 def _manifest_with(tmp_path, **item):
-    (tmp_path / "extension.json").write_text(json.dumps({"name": "toy", "version": "0", "contract": "1",
+    (tmp_path / "osprey.json").write_text(json.dumps({"name": "toy", "version": "0", "contract": "1",
                                                           "backends": [{"name": "toy", "ref": "toy:B", "reads": [], **item}]}))
     return registry._read("toy", tmp_path)
 
@@ -99,7 +99,7 @@ def test_a_third_party_cannot_declare_kinds_under_a_first_party_name_or_another_
 
     row = {"name": "simt.mine", "family": "expr", "operands": {"min": 1, "max": 1}, "result": ["same_as", 0],
            "spelling": {"dialect": "simt", "name": "x", "args": ["ref0"]}}
-    for name in ("simt", "lowering", "hawk-cuda"):
+    for name in ("simt", "base", "cuda"):
         with pytest.raises(HawkError, match="belongs to a first-party piece"):
             declare_kinds({"name": name, "dialect": "simt", "kinds": [row]})
     with pytest.raises(HawkError, match="with the name of the manifest that declares it"):
@@ -107,11 +107,11 @@ def test_a_third_party_cannot_declare_kinds_under_a_first_party_name_or_another_
 
 
 def test_a_backend_row_that_states_no_reads_is_refused_by_name(tmp_path):
-    (tmp_path / "extension.json").write_text(json.dumps({"name": "toy", "version": "0", "contract": "1",
+    (tmp_path / "osprey.json").write_text(json.dumps({"name": "toy", "version": "0", "contract": "1",
                                                           "backends": [{"name": "toy", "ref": "toy:B"}]}))
     refusal = registry._read("toy", tmp_path)["refusal"]
-    assert "backend 'toy' does not state `reads`" in refusal and "extension.json" in refusal
-    (tmp_path / "extension.json").write_text(json.dumps({"name": "toy", "version": "0", "contract": "1",
+    assert "backend 'toy' does not state `reads`" in refusal and "osprey.json" in refusal
+    (tmp_path / "osprey.json").write_text(json.dumps({"name": "toy", "version": "0", "contract": "1",
                                                           "backends": [{"name": "toy", "ref": "toy:B", "reads": []}]}))
     assert "refusal" not in registry._read("toy", tmp_path)
 
