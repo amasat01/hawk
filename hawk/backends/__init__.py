@@ -114,7 +114,7 @@ class Backend:
             target=self.id, mode=lowered.smode.id, arch=arch, defines=tuple(options.get("defines", ())),
             extra=variants.include_flags(lowered.spec.for_target(self).primary),
             cache_dir=options.get("cache_dir"), host_profile=options.get("host_profile") or "",
-            opt_level=options.get("opt_level") or "")))
+            opt_level=options.get("opt_level") or "", settings=lowered.spec.for_target(self).settings)))
         entry, files, report = self.package(source, result, name=lowered.name, smode=lowered.smode, profile=own.get("profile"))
         facts = self.facts(lowered.kernel, name=lowered.name, smode=lowered.smode, block=options.get("block"), spec=lowered.spec.for_target(self),
                            built=entry, arch=arch)
@@ -143,18 +143,13 @@ class Backend:
             spec=spec)
         return self.finish(source, lowered, options)
 
-    def compile(self, source: str, name: str, opts):
-        """Compile ``source`` into this backend's artifact, through the content-closure cache
-        (:class:`hawk.compile.CompileResult`). Only a backend with ``builds`` and no :meth:`compile_plan` is asked."""
-        raise NotImplementedError
-
     def machine_facts(self) -> dict:
         """The facts this backend knows of the machine of a build it is in, as plain data (:class:`hawk.targets.Machine`
         field names: its compiler and profiles, the isa); the default knows none."""
         return {}
 
     def compile_plan(self, opts, inputs):
-        """The DATA of one compile, or ``None`` (this backend compiles itself, :meth:`compile`): a dict with ``compiler``,
+        """The DATA of one compile (``None`` for a backend that does not build): a dict with ``compiler``,
         ``identity`` (the key's compiler term), ``key_terms`` (the key's terms after the source, target, mode and identity),
         ``payload`` (the sealed-payload digest the entry is valid by, else ``None``), ``deps`` (the hook writes a dependency
         file), ``serve`` (hawk serves the payload for the compile), ``flags``, ``hit_argv`` (what a hit reports), ``tail``

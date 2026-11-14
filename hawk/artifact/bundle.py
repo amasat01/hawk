@@ -1372,7 +1372,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     _apply_settings(spec, settings, targets)            # refuses a key no target declares
     limits = None if spec.device is None else spec.device["launch"]      # what launch_bounds is checked against
     spec = spec.with_settings(form=emit_form, linalg_form=linalg_form, wide_form=wide_form, launch_bounds=launch_bounds,
-                              contraction=given.contraction, fold_k=given.fold_k, scalar=smode.id, device_only=_device_only(targets),
+                              contraction=given.contraction, fold_k=given.fold_k, fast_entries=given.fast_entries, scalar=smode.id, device_only=_device_only(targets),
                               route_to_ordered=smode.cells)
     spec = spec.with_settings(launch_bounds=_check_settings(spec.settings, limits).launch_bounds)
     kernels, names, kinds, split = _expand_split(kernels, names, kinds, spec=spec, smode=smode,

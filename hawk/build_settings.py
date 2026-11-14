@@ -95,7 +95,8 @@ class BuildSettings:
     ``emit_form`` how a product, dot, sum or norm is spelled (``auto``, ``static``, ``rolled``); ``linalg_form`` how per-lane linear
     algebra is worked (``auto``, ``thread``, ``team``); ``wide_form`` where a per-lane value wider than a thread's registers
     lives (``auto``, ``thread``, ``team``); ``contraction`` how a dense contraction is run (``direct``, ``gemm``); ``launch_bounds``
-    ``(threads, blocks_per_sm)`` for a device kernel; ``fold_rows`` the rows per warp forced in every cell-sum kernel."""
+    ``(threads, blocks_per_sm)`` for a device kernel; ``fold_rows`` the rows per warp forced in every cell-sum kernel;
+    ``fast_entries`` (a bool) builds the device unit's fast entry points."""
 
     emit_form: str | None = None
     linalg_form: str | None = None
@@ -103,12 +104,15 @@ class BuildSettings:
     contraction: str | None = None
     launch_bounds: tuple | None = None
     fold_rows: int | None = None
+    fast_entries: bool | None = None
 
     def __post_init__(self):
         for key in CHOICES:
             value = getattr(self, key)
             if value is not None:
                 refuse_choice(key, value)
+        if self.fast_entries is not None and not isinstance(self.fast_entries, bool):
+            raise SettingError(f"fast_entries must be a bool, got {self.fast_entries!r}")
 
     def keys(self) -> tuple:
         """The names of the fields these settings set."""
@@ -117,7 +121,8 @@ class BuildSettings:
 
 #: field -> the :class:`~lowering.settings.Settings` field it becomes.
 _SETTING = MappingProxyType({"emit_form": "form", "linalg_form": "linalg_form", "wide_form": "wide_form", "contraction": "contraction",
-                             "launch_bounds": "launch_bounds", "fold_rows": "fold_k"})
+                             "launch_bounds": "launch_bounds", "fold_rows": "fold_k",
+                             "fast_entries": "fast_entries"})
 
 
 def settings_of(build_settings: BuildSettings | None, base):

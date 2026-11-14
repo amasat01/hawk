@@ -14,6 +14,8 @@ against the same sealed payload goes through
 
 from __future__ import annotations
 
+import functools
+
 from . import payload as _payload_module
 from .cache import (
     Cache,
@@ -53,8 +55,20 @@ def __getattr__(name):
     if name in _CUDA_DOORS:
         from ..backends import need_device
 
-        return getattr(need_device().api, name)
+        door = getattr(need_device().api, name)
+        return _served(door) if name in ("cubin", "device") else door
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _served(door):
+    """``door`` (a device compile) serving this process's sealed payload (:func:`current_payload`) unless it is given headers."""
+    @functools.wraps(door)
+    def call(*args, **kwargs):
+        if kwargs.get("headers") is None:
+            kwargs["headers"] = lambda: current_payload().device_headers
+        return door(*args, **kwargs)
+
+    return call
 
 
 def _reset_artifact_memo() -> None:

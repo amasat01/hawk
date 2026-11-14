@@ -42,8 +42,8 @@ def test_ptxas_info_is_parsed_per_kernel():
 
 
 def test_ptxas_is_asked_to_report_only_when_it_runs():
-    assert "-v" in dtc.device_flags(arch="sm_61", target="cubin")
-    assert "-v" not in dtc.device_flags(arch="compute_61", target="ptx")
+    assert "-v" in dtc.device_flags(level="O3", arch="sm_61", target="cubin")
+    assert "-v" not in dtc.device_flags(level="O3", arch="compute_61", target="ptx")
 
 
 def test_sidecar_carries_the_ptxas_figures_when_given():

@@ -238,45 +238,6 @@ def opt_level(requested: str | None = None) -> str:
     return name
 
 
-#: ``nvcc --version``'s own release line, e.g. ``"Cuda compilation tools,
-#: release 12.6, V12.6.77"`` (see :func:`compiler_identity` for why the
-#: version lives on this line and not the first).
-_NVCC_RELEASE_RE = re.compile(r"release (\d+)\.(\d+)")
-
-#: The memo behind :func:`nvcc_version`, keyed and bounded like
-#: :data:`_IDENTITY_MEMO` — a separate dict because it holds a parsed
-#: version tuple rather than an opaque digest string.
-_NVCC_VERSION_MEMO: dict = {}
-
-
-def nvcc_version(compiler: str) -> tuple[int, int] | None:
-    """``(major, minor)`` parsed from ``<compiler> --version``'s "release"
-    line, or ``None`` when the text carries no such line or the subprocess
-    fails — an nvcc whose format this does not recognise is an unknown
-    version to the caller (:func:`hawk.compile.nvrtc.select_target`'s own
-    conservative answer), not a guess, and the real compile attempt right
-    after this is what reports an actual failure loudly."""
-    memo_key = None
-    try:
-        st = os.stat(compiler)
-        memo_key = (compiler, st.st_size, st.st_mtime_ns)
-    except OSError:
-        pass
-    if memo_key is not None and memo_key in _NVCC_VERSION_MEMO:
-        return _NVCC_VERSION_MEMO[memo_key]
-    try:
-        out = probe_stdout(compiler, ("--version",), timeout=IDENTITY_TIMEOUT_S)[1]
-    except (OSError, subprocess.SubprocessError):
-        return None
-    m = _NVCC_RELEASE_RE.search(out)
-    version = (int(m.group(1)), int(m.group(2))) if m else None
-    if memo_key is not None:
-        if len(_NVCC_VERSION_MEMO) >= _IDENTITY_MEMO_LIMIT:
-            _NVCC_VERSION_MEMO.clear()
-        _NVCC_VERSION_MEMO[memo_key] = version
-    return version
-
-
 def compiler_identity(compiler: str) -> str:
     """``<path> || <first --version line> || <digest of the whole --version
     text>`` — the compiler term of the lookup key. A binary/version change
@@ -317,11 +278,8 @@ def compiler_identity(compiler: str) -> str:
 
 
 def reset_identity_memo() -> None:
-    """Forget every memoised compiler identity (:data:`_IDENTITY_MEMO`) AND
-    every memoised nvcc version (:data:`_NVCC_VERSION_MEMO`) — a compiler
-    binary swapped mid-process should invalidate both alike."""
+    """Forget every memoised compiler identity (:data:`_IDENTITY_MEMO`)."""
     _IDENTITY_MEMO.clear()
-    _NVCC_VERSION_MEMO.clear()
 
 
 def subprocess_env(targets: tuple = ()) -> dict:

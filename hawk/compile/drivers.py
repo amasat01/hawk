@@ -63,6 +63,7 @@ from .cache import (
     artifact_memo_put,
     closure_of,
     closure_unchanged,
+    default_cache_dir,
     lookup_key,
     publish_atomic,
     tmp_sibling,
@@ -214,6 +215,8 @@ class CompileOptions:
     #: (``-O<n>`` / ``-Xptxas -O<n>``); ignored by the NVRTC device compile,
     #: which always optimises and takes no ``-O`` option.
     opt_level: str = ""
+    #: The unit's :class:`~lowering.settings.Settings`, for a backend whose compile reads one (``None``: none).
+    settings: object = None
 
 
 @dataclass(frozen=True)
@@ -268,35 +271,6 @@ def single_flight(key: str, lookup, build) -> CompileResult:
             event.set()
 
 
-def define_args(opts: CompileOptions) -> list[str]:
-    """``-D`` arguments of ``opts.defines``."""
-    return [f"-D{d}" for d in opts.defines]
-
-
-def _argv(compiler: str, flags, src: Path, out: Path, dep: Path) -> list[str]:
-    return [compiler, *flags, "-MD", "-MF", str(dep), str(src), "-o", str(out)]
-
-
-def key_flags(flags) -> tuple:
-    """``flags`` as the compile key reads them: a flag that carries a ``key_term`` (the variant's include directory:
-    :class:`hawk.variants.IncludeFlag`) stands for it, so the key does not depend on where that directory is. The compile
-    line itself keeps the flag."""
-    return tuple(getattr(f, "key_term", "") or f for f in flags)
-
-
-def _stable_served(flags) -> tuple[tuple, tuple]:
-    """``flags`` with the pip-only served ``-I`` root replaced by the sealed
-    payload's digest, and that root's path prefixes (empty when this process
-    serves none)."""
-    flags = key_flags(flags)
-    root = tc.pip_only_root()
-    if root is None:
-        return tuple(flags), ()
-    prefixes = tuple({os.path.abspath(root) + os.sep, os.path.realpath(root) + os.sep})
-    term = f"payload:{_payload.current_payload().digest}"
-    return tuple(term if f == root else f for f in flags), prefixes
-
-
 def _compiler_not_runnable(argv0: str, returncode: int) -> bool:
     """True when ``argv0`` was never a running compiler: the shell's 127
     (not found) or 126 (not executable), or an argv[0] that is no executable
@@ -313,26 +287,6 @@ def _allocation_failure(stderr: str) -> bool:
                                    "out of memory", "unable to allocate",
                                    "memory exhausted", "failed to map segment",
                                    "signal terminated program"))
-
-
-def _run_and_publish(argv, label, failed_tail, tmp_artifact, artifact, tmp_dep, dep,
-                     cache_root, target):
-    """Run the compiler into the private temporaries and move the artifact and
-    its dependency file into place; ``(done, seconds)``, or a :class:`HawkError`
-    carrying the compiler's stderr when it failed."""
-    start = time.perf_counter()
-    try:
-        done = run_compiler(argv, label, target)
-        if done.returncode == 0:
-            publish_atomic(tmp_artifact, artifact)
-            publish_atomic(tmp_dep, dep)
-    finally:
-        tmp_artifact.unlink(missing_ok=True)
-        tmp_dep.unlink(missing_ok=True)
-    seconds = time.perf_counter() - start
-    if done.returncode != 0:
-        _refuse(done, argv, label, failed_tail, cache_root)
-    return done, seconds
 
 
 def _refuse(done, argv, label: str, failed_tail: str, cache_root) -> None:
@@ -363,8 +317,7 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
     miss that compiles into the key's own slot and rewrites its validity
     record from the compiler-reported closure.
 
-    A backend with a plan (:meth:`hawk.backends.Backend.compile_plan`) is compiled by :func:`_drive`;
-    one without still compiles itself (:meth:`hawk.backends.Backend.compile`, through :func:`compile_cached`).
+    The row's plan (:meth:`hawk.backends.Backend.compile_plan`) is compiled by :func:`_drive`.
     """
     from ..registry import backend_ids, traits
     from ..targets import TARGETS
@@ -375,89 +328,8 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
         raise HawkError(f"unknown target {opts.target!r}; built are {built}")
     plan = row.compile_plan(opts, _Inputs())
     if plan is None:
-        return row.compile(source, name, opts)
+        raise HawkError(f"target {opts.target!r} builds but declares no compile plan")
     return _drive(source, name, opts, row, plan)
-
-
-def compile_cached(source: str, name: str, opts: CompileOptions, row, *, compiler: str,
-                   argv_flags, pick_target, terms, parse) -> CompileResult:
-    """The cached compile of ``source`` with ``compiler`` for ``row``: ``pick_target(compiler)`` names the
-    artifact kind, ``argv_flags(opts, device_target)`` the compiler's flags, ``terms(flags, device_target)`` the key's flag terms, ``parse(stderr)`` the resource
-    figures the compiler reports."""
-    identity = tc.compiler_identity(compiler)
-    art_ext, src_ext = row.artifact, row.source
-    cache = Cache(opts.cache_dir)
-
-    # The device artifact that actually loads on the driver present; "ptx"
-    # for every host compile, which carries no such choice.
-    device_target = pick_target(compiler)
-
-    # The key is computed from a nominal compile's flags; -o/-MF are
-    # excluded (they say where output goes, not what it is). The chosen
-    # target is folded in explicitly, beside the flags it already changes
-    # (-ptx vs -cubin): the same source to two targets must never share a
-    # slot.
-    probe = _argv(compiler, argv_flags(opts, device_target), Path("<src>"), Path("<out>"), Path("<dep>"))
-    # A device key also carries nvcc's host compiler (-ccbin): it compiles
-    # the TU's host side and its version gates what nvcc accepts.
-    # A pip-only compile serves the sealed payload into a per-process
-    # directory (tc.pip_only_root): its path differs in every process, so the
-    # key names the payload by digest and the closure leaves those headers out.
-    flags, served = _stable_served(probe[1:-4])
-    key_terms = terms(flags, device_target)
-    key = lookup_key(source, opts.target, opts.mode, identity, key_terms)
-    slot = cache.slot(key)
-    artifact, src_path, dep = (slot / f"{name}{art_ext}", slot / f"{name}{src_ext}",
-                               slot / f"{name}.d")
-
-    def lookup():
-        memo = artifact_memo_get(key)
-        if memo is not None and memo_still_valid(artifact, memo):
-            # Per-process memo hit: same key, same recorded closure, still valid
-            # by content — counted as a cache hit; it only skips re-reading the
-            # on-disk record.
-            cache.note(True)
-            return CompileResult(artifact, src_path, key, True, tuple(probe),
-                                 closure=tuple(p for p, _ in memo),
-                                 ptxas=cache.record(key).get("ptxas", {}))
-
-        if cache.check(key):
-            cache.note(True)
-            record = cache.record(key)
-            closure = tuple(record.get("closure", ()))
-            artifact_memo_put(key, tuple((p, d) for p, d in closure))
-            return CompileResult(artifact, src_path, key, True, tuple(probe),
-                                 closure=tuple(p for p, _ in closure),
-                                 ptxas=record.get("ptxas", {}))
-        return None
-
-    def build():
-        cache.note(False)
-        tc.announce_build(name, opts.target, cache.root)
-        check_source_budget(name, source)
-        slot.mkdir(parents=True, exist_ok=True)
-        write_atomic(src_path, source)
-        # Compile into private temporaries, then move into place: a concurrent
-        # reader of this slot sees the old artifact or the new one, never a
-        # partial write.
-        tmp_artifact, tmp_dep = tmp_sibling(artifact), tmp_sibling(dep)
-        argv = _argv(compiler, argv_flags(opts, device_target), src_path, tmp_artifact, tmp_dep)
-        done, seconds = _run_and_publish(
-            argv, f"{opts.target} compile of {name!r}", "",
-            tmp_artifact, artifact, tmp_dep, dep, cache.root, opts.target)
-        closure = tuple(p for p in closure_of(dep) if not p.startswith(served))
-        ptxas = parse(done.stderr)
-        cache.store(key, artifact=artifact, closure=closure,
-                    meta={"target": opts.target, "mode": opts.mode,
-                          "compiler": identity, "flags": argv[1:-4],
-                          "key_terms": list(key_terms),
-                          "seconds": seconds, "name": name,
-                          "device_target": device_target, "ptxas": ptxas})
-        artifact_memo_put(key, validity_digest(closure))
-        return CompileResult(artifact, src_path, key, False, tuple(argv), seconds,
-                             closure, ptxas)
-
-    return single_flight(key, lookup, build)
 
 
 def memo_still_valid(artifact: Path, closure,
@@ -511,6 +383,21 @@ class _Inputs:
         """The sealed payload of this process (:func:`hawk.compile.payload.current_payload`)."""
         return _payload.current_payload()
 
+    @property
+    def cache_dir(self) -> Path:
+        """The directory hawk keeps toolchain records in (:func:`hawk.compile.cache.default_cache_dir`)."""
+        return default_cache_dir()
+
+    @staticmethod
+    def identity(compiler: str) -> str:
+        """The compiler term of a key (:func:`hawk.compile.toolchain.compiler_identity`)."""
+        return tc.compiler_identity(compiler)
+
+    @staticmethod
+    def opt_level(requested: str | None = None) -> str:
+        """The optimisation level in effect (:func:`hawk.compile.toolchain.opt_level`)."""
+        return tc.opt_level(requested)
+
     def include_flags(self) -> tuple:
         """The aether and eagle ``-I`` flags; a per-process served root carries the payload digest as its key term."""
         flags = tc.include_flags()
@@ -525,13 +412,17 @@ class _Inputs:
 @dataclass(frozen=True)
 class _Job:
     """One compile as hawk hands it to :meth:`hawk.backends.Backend.compile_hook`: the source hawk wrote, the
-    temporaries the artifact and the dependency file go to (hawk publishes them), the served payload root (``None``: none)."""
+    temporaries the artifact and the dependency file go to (hawk publishes them), the served payload root (``None``: none), the
+    source text and the sealed payload (``None``: the entry has none)."""
 
     name: str
     src: Path
     out: Path
     dep: Path
     served: object
+    #: The source text (for a compiler that runs in this process), and the sealed payload when the entry is valid by one.
+    text: str
+    payload: object
 
 
 def _served_prefixes(*roots) -> tuple:
@@ -589,7 +480,8 @@ def _drive(source: str, name: str, opts: CompileOptions, row, plan: dict) -> Com
         start = time.perf_counter()
         try:
             with (_payload.current_payload().serve() if plan["serve"] else nullcontext()) as served_root:
-                out = row.compile_hook(plan, _Job(name, src_path, tmp_artifact, tmp_dep, served_root), run)
+                out = row.compile_hook(plan, _Job(name, src_path, tmp_artifact, tmp_dep, served_root, source,
+                                                   None if digest is None else _payload.current_payload()), run)
                 publish_atomic(tmp_artifact, artifact)
                 if plan["deps"]:
                     publish_atomic(tmp_dep, dep)

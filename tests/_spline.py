@@ -222,6 +222,7 @@ def main(argv=None) -> int:
     from hawk.compile import device_compiler
     from osprey_cpu.toolchain import host_compiler, host_flags
     from hawk_cuda.toolchain import device_flags
+    from hawk.compile import toolchain as _tc
     from hawk_cuda.toolchain import resolve_arch
     from aether.wings.base.wrapper import FLOAT64, render_source
     from hawk.targets import TARGETS
@@ -256,7 +257,7 @@ def main(argv=None) -> int:
         row[f"{target}_tu_bytes"] = path.stat().st_size
 
     ptx = tmp / f"{cell.name}.ptx"
-    rc, wall, peak, err = _timed([device_compiler(), *device_flags(),
+    rc, wall, peak, err = _timed([device_compiler(), *device_flags(level=_tc.opt_level(), include=_tc.include_flags()),
                                   str(sources["cuda"]), "-o", str(ptx)])
     if rc != 0:
         raise SystemExit(f"device compile failed (rc={rc}):\n{err[-3000:]}")

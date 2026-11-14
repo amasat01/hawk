@@ -13,7 +13,6 @@ from pathlib import Path
 
 from hawk.artifact.sidecar import LOCAL_LIMIT_B
 from hawk.backends import Backend
-from hawk.compile import drivers
 from aether.wings.base.wrapper import literal_table
 from aether.wings.base.writer_aether import AetherWriter, working_set_bytes
 from aether.wings.simt.writer_cells import CellsWriter
@@ -22,8 +21,9 @@ from raptor.errors import RaptorError
 import hawk_cuda
 
 from . import driver
+from . import nvrtc
 from . import toolchain as dtc
-from .emit import CUDA
+from .emit import CUDA, FAST_ENTRIES_MACRO
 
 
 _PTX_DEPOT = re.compile(r"^\s*\.local\s+[^\n;]*__local_depot\d+\[(\d+)\]", re.M)
@@ -153,16 +153,50 @@ class Cuda(Backend):
     device = True
     api = hawk_cuda
 
-    def compile(self, source, name, opts):
+    def compile_plan(self, opts, inputs):
+        nvrtc._PROBE_DIR = Path(inputs.cache_dir)
+        arch = dtc.resolve_arch(opts.arch)
+        defines = tuple(f"-D{d}" for d in opts.defines)
+        if getattr(opts.settings, "fast_entries", False) and f"-D{FAST_ENTRIES_MACRO}=1" not in defines:
+            defines = (*defines, f"-D{FAST_ENTRIES_MACRO}=1")
         if dtc.device_compiler_kind() == "nvrtc":
-            return driver._compile_nvrtc_source(source, name, opts, self)
-        return drivers.compile_cached(
-            source, name, opts, self, compiler=dtc.device_compiler(),
-            argv_flags=lambda o, target: dtc.device_flags(arch=o.arch, target=target,
-                                                     extra=(*drivers.define_args(o), *o.extra), opt=o.opt_level or None),
-            pick_target=lambda compiler: driver._device_target(compiler, dtc.resolve_arch(opts.arch)),
-            terms=lambda flags, target: (*flags, f"device_target:{target}", dtc.device_host_compiler_identity()),
-            parse=driver.parse_ptxas_info)
+            nvrtc._import_nvrtc()       # an absent compiler is refused first, by its own name, before any of its inputs is looked for
+            # in process, from the sealed payload: the key names the payload by digest, and ``-O`` has no meaning to NVRTC
+            digest = inputs.payload.digest
+            target = nvrtc.forced_target(arch) or nvrtc.select_target(
+                nvrtc._probed(nvrtc.nvrtc_version), nvrtc._probed(nvrtc.driver_cuda_version))
+            extra = (*defines, *opts.extra)
+            flags = tuple(nvrtc.options(arch, virtual_arch=(target == "ptx"), extra=extra))
+            return {"compiler": "", "identity": nvrtc.identity(), "deps": False, "serve": False, "payload": digest,
+                    "key_terms": (*flags, f"device_target:{target}", f"payload:{digest}", "ptxas-info:v1"),
+                    "flags": flags, "hit_argv": flags, "tail": "", "arch": arch, "target": target, "extra": extra,
+                    "meta": {"flags": list(flags), "device_target": target}}
+        compiler = dtc.device_compiler()
+        target = driver._device_target(compiler, arch)
+        flags = dtc.device_flags(level=inputs.opt_level(opts.opt_level or None), include=inputs.include_flags(),
+                                 arch=opts.arch, target=target, extra=(*defines, *opts.extra))
+        keyed = (*flags, "-MD", "-MF")
+        terms = (*(getattr(f, "key_term", "") or f for f in keyed), f"device_target:{target}",
+                 dtc.device_host_compiler_identity(inputs.identity))
+        return {"compiler": compiler, "identity": inputs.identity(compiler), "deps": True, "serve": False, "payload": None,
+                "key_terms": terms, "flags": flags, "tail": "",
+                "hit_argv": (compiler, *keyed, "<dep>", "<src>", "-o", "<out>"),
+                "meta": {"flags": list(keyed), "device_target": target}}
+
+    def compile_hook(self, plan, job, run):
+        if plan["compiler"] == "":
+            target, argv = plan["target"], tuple(plan["flags"])
+            compile_image = nvrtc.compile_cubin if target == "cubin" else nvrtc.compile_ptx
+            result = compile_image(job.text, job.name, plan["arch"], headers=job.payload.device_headers, extra=plan["extra"])
+            if not result.ok:
+                raise RaptorError(f"cuda compile of {job.name!r} failed under NVRTC (target={target}, "
+                                  f"rc != NVRTC_SUCCESS).\n$ nvrtc {' '.join(argv)}\n{result.log[:4000]}")
+            job.out.write_bytes(result.ptx)
+            # registers and stack frame read off the CUBIN itself; spills are not knowable (None)
+            return {"argv": argv, "figures": nvrtc.cubin_resources(result.ptx) if target == "cubin" else {}}
+        argv = [plan["compiler"], *plan["flags"], "-MD", "-MF", str(job.dep), str(job.src), "-o", str(job.out)]
+        done = run(argv)
+        return {"argv": tuple(argv), "figures": driver.parse_ptxas_info(done.stderr)}
 
     def object_format(self, path):
         # the real format, read off the compiled bytes: the same build lands PTX or CUBIN by the box's toolchain

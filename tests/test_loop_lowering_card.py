@@ -63,6 +63,7 @@ from osprey_cpu.toolchain import host_compiler, host_flags
 from hawk.compile.drivers import ADDRESS_SPACE_CAP_BYTES
 from hawk.compile.toolchain import subprocess_env
 from hawk_cuda.toolchain import resolve_arch, device_flags
+from hawk.compile import toolchain as _tc
 from aether.wings.base.wrapper import FLOAT64, render_source
 from raptor.ir import Loop
 from hawk.targets import TARGETS
@@ -139,7 +140,7 @@ def _grid_row(n_in: int, basis: int, tmp: Path) -> dict:
     device = _source(kernel, "cuda", tmp)
     host = _source(kernel, "host", tmp)
     d_rc, d_wall, d_rss, d_err = _capped(
-        [device_compiler(), *device_flags(), str(device),
+        [device_compiler(), *device_flags(level=_tc.opt_level(), include=_tc.include_flags()), str(device),
          "-o", str(tmp / f"{kernel.name}.ptx")])
     h_rc, h_wall, h_rss, h_err = _capped(
         [host_compiler(), *host_flags(), str(host),

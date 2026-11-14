@@ -33,7 +33,7 @@ BASELINE = {
     'artifact/unit_cache.py': ('COUNTERS', '_PUBLISH_LOG', '_UNIT_MEMO', '_UNIT_STATS'),
     'compile/cache.py': ('_ARTIFACT_MEMO', '_CLOSURE_VERDICT_MEMO', '_MEMO', '_STATS'),
     'compile/drivers.py': ('_INFLIGHT',),
-    'compile/toolchain.py': ('_IDENTITY_MEMO', '_NVCC_VERSION_MEMO'),
+    'compile/toolchain.py': ('_IDENTITY_MEMO',),
     'diff/event.py': ('_OPS', '_SIGN'),
     'diff/jump.py': ('_ORDERED',),
     'diff/transform.py': ('_READ_ROLE',),

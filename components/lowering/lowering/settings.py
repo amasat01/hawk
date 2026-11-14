@@ -22,7 +22,7 @@ class Settings:
     planes); ``warps`` the warps of a block of the warp-per-lane kernel; ``fold_k`` the rows per warp forced in every cell-sum
     kernel (0: the variant's own value); ``block_fold`` whether the body sits in a frame that allows the block-level commit;
     ``route_to_ordered`` whether a keyed accumulate of contract ``auto`` or ``compensated`` takes the ordered stages (a ``cells``
-    scalar mode has no atomic add on a packed cell)."""
+    scalar mode has no atomic add on a packed cell); ``fast_entries`` whether a device unit builds its fast entry points."""
 
     form: str = "auto"
     linalg_form: str = "auto"
@@ -38,5 +38,6 @@ class Settings:
     fold_k: int = 0
     block_fold: bool = False
     route_to_ordered: bool = False
+    fast_entries: bool = False
     #: The threads of every team stage when forced (0: the stage's own size).
     team_threads: int = 0

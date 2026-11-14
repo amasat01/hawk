@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import subprocess
 import sys
 import threading
@@ -23,8 +24,11 @@ _PROG = (
 )
 
 
-def test_dash_c_lift_is_scoped_to_verified_functions():
-    out = subprocess.run([sys.executable, "-c", _PROG], capture_output=True, text=True, check=True).stdout.split("\n")
+def test_dash_c_lift_is_scoped_to_verified_functions(tmp_path):
+    # the child imports what this process imports, from a folder that holds no package of its own
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
+    out = subprocess.run([sys.executable, "-c", _PROG], capture_output=True, text=True, check=True, cwd=tmp_path,
+                         env=env).stdout.split("\n")
     # CPython 3.13+ keeps the -c text in linecache itself, so the source is there before the lift.
     assert out[0] == ("True True True" if sys.version_info >= (3, 13) else "False True True")
     assert out[1] == "def k(x):"

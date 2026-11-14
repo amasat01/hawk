@@ -31,6 +31,7 @@ from hawk.compile import aether_include, compiler_identity, device_compiler, eag
 from osprey_cpu.toolchain import host_compiler, host_flags
 from hawk.compile.toolchain import subprocess_env
 from hawk_cuda.toolchain import resolve_arch, device_flags
+from hawk.compile import toolchain as _tc
 from aether.wings.base.wrapper import FLOAT64, render_source
 from hawk.targets import TARGETS
 
@@ -69,7 +70,7 @@ def _host_row(path: Path, tmp: Path) -> dict:
 
 def _device_row(path: Path, tmp: Path) -> dict:
     csv_path = tmp / f"{path.stem}.time.csv"
-    argv = [device_compiler(), "--time", str(csv_path), *device_flags(),
+    argv = [device_compiler(), "--time", str(csv_path), *device_flags(level=_tc.opt_level(), include=_tc.include_flags()),
             str(path), "-o", str(tmp / f"{path.stem}.ptx")]
     start = time.perf_counter()
     done = subprocess.run(argv, capture_output=True, text=True, env=subprocess_env())

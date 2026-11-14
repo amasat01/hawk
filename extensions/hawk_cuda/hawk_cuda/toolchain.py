@@ -13,15 +13,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hawk.compile.toolchain import (
-    IDENTITY_TIMEOUT_S,
-    probe_stdout,
-    compiler_identity,
-    include_flags,
-    nvcc_version,
-    opt_level,
-    subprocess_env,
-)
 from lowering.exchange import ToolchainAbsent
 from raptor.errors import RaptorError
 
@@ -29,6 +20,42 @@ from raptor.errors import RaptorError
 _CC_MAJOR, _CC_MINOR = 75, 76
 
 DEVICE_STD = "c++20"
+
+#: Seconds a toolchain probe (``nvcc --version``, ``--list-gpu-arch``) may take: long enough for a cold filesystem.
+_PROBE_TIMEOUT_S = 180
+
+#: ``nvcc --version``'s release line, e.g. ``Cuda compilation tools, release 12.6, V12.6.77``.
+_NVCC_RELEASE_RE = re.compile(r"release (\d+)\.(\d+)")
+
+#: Per-process memo of :func:`nvcc_version`, keyed on the binary's ``(path, size, mtime_ns)``.
+_NVCC_VERSION_MEMO: dict = {}
+
+
+def _probe_stdout(compiler: str, args: tuple[str, ...]) -> str:
+    """The stdout of ``<compiler> <args>``."""
+    return subprocess.run([compiler, *args], capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, check=False).stdout
+
+
+def nvcc_version(compiler: str) -> tuple[int, int] | None:
+    """``(major, minor)`` from ``<compiler> --version``'s release line, or ``None`` when the text carries none or the
+    command fails: an unknown version to the caller, never a guess."""
+    memo_key = None
+    try:
+        st = os.stat(compiler)
+        memo_key = (compiler, st.st_size, st.st_mtime_ns)
+    except OSError:
+        pass
+    if memo_key is not None and memo_key in _NVCC_VERSION_MEMO:
+        return _NVCC_VERSION_MEMO[memo_key]
+    try:
+        out = _probe_stdout(compiler, ("--version",))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = _NVCC_RELEASE_RE.search(out)
+    version = (int(m.group(1)), int(m.group(2))) if m else None
+    if memo_key is not None:
+        _NVCC_VERSION_MEMO[memo_key] = version
+    return version
 
 
 #: The arch :func:`resolve_arch` falls back to only when neither a device
@@ -136,7 +163,7 @@ def _nvcc_supported_archs() -> tuple[str, tuple[int, ...]] | None:
     if key in _TOOLKIT_ARCHS_MEMO:
         return _TOOLKIT_ARCHS_MEMO[key]
     try:
-        out = probe_stdout(nvcc, ("--list-gpu-arch",), timeout=IDENTITY_TIMEOUT_S)[1]
+        out = _probe_stdout(nvcc, ("--list-gpu-arch",))
     except (OSError, subprocess.SubprocessError):
         out = ""
     archs = tuple(sorted({int(m) for m in _COMPUTE_RE.findall(out)}))
@@ -297,7 +324,7 @@ def device_compiler() -> str:
     is not itself the NVRTC/nvcc dispatch.
 
     Resolved, never the bare name: the unresolved ``"nvcc"`` used to reach
-    :func:`compiler_identity` as the cache key's compiler term, so every
+    :func:`hawk.compile.compiler_identity` as the cache key's compiler term, so every
     box's PATH-found nvcc shared one literal string instead of its own
     install path, and ``os.stat("nvcc")`` resolves against the current
     working directory rather than ``PATH`` — it raised on every call and the
@@ -314,15 +341,14 @@ def device_compiler() -> str:
     raise ToolchainAbsent("no nvcc found; set $HAWK_NVCC.", toolchain="nvcc")
 
 
-def device_flags(*, arch: str = "", target: str = "ptx", extra=(),
-                 opt: str | None = None) -> list[str]:
+def device_flags(*, level: str, include=(), arch: str = "", target: str = "ptx", extra=()) -> list[str]:
     """The device recipe: AOT ``nvcc -ptx`` (forward-compatible, JIT'd PTX)
     or ``-cubin`` (SASS for the concrete arch, no driver-side ISA ceiling) at
     the artifact's arch. ``target`` defaults to ``"ptx"``; only
-    :mod:`hawk.compile.drivers` resolves a target first
-    (:func:`hawk_cuda.nvrtc.select_target`) and passes it here.
+    the backend resolves a target first
+    (:func:`hawk_cuda.nvrtc.select_target`) and passes it here; ``include`` are the header-root flags hawk hands it.
 
-    ``opt`` (resolved through :func:`opt_level`) is spelled out explicitly
+    ``level`` (the resolved optimisation level) is spelled out explicitly
     for BOTH halves of the nvcc compile: ``-O<n>`` for nvcc's own host-side
     code generation, and ``-Xptxas -O<n>`` passed through to ptxas for the
     device side — there used to be no explicit ``-O`` here at all (nvcc's
@@ -340,17 +366,16 @@ def device_flags(*, arch: str = "", target: str = "ptx", extra=(),
     if target not in ("ptx", "cubin"):
         raise RaptorError(
             f"device_flags(): target must be 'ptx' or 'cubin', got {target!r}")
-    level = opt_level(opt)
     resolved = resolve_arch(arch)
     if target == "cubin" and resolved.startswith("compute_"):
         raise RaptorError(
             f"device_flags(): arch {resolved} is virtual (PTX only); a CUBIN "
             "needs a real sm_<N> arch")
     # ptxas runs only for a CUBIN; `-v` has it report each kernel's registers,
-    # spills and stack on stderr (:func:`hawk.compile.drivers.parse_ptxas_info`).
+    # spills and stack on stderr (:func:`hawk_cuda.driver.parse_ptxas_info`).
     verbose = ["-Xptxas", "-v"] if target == "cubin" else []
     return [f"-{target}", f"-std={DEVICE_STD}", f"-arch={resolved}",
-            f"-{level}", "-Xptxas", f"-{level}", *verbose, *include_flags(), *extra]
+            f"-{level}", "-Xptxas", f"-{level}", *verbose, *include, *extra]
 
 
 def _ccbin_from_flags(flags: str) -> str | None:
@@ -390,11 +415,11 @@ def _strip_ccbin(flags: str) -> list[str]:
 
 def device_host_compiler(env: dict | None = None) -> str | None:
     """The host compiler ``nvcc`` will use under ``env`` (default
-    :func:`subprocess_env`): ``-ccbin`` from ``NVCC_PREPEND_FLAGS`` or
+    :func:`process_env` of the process environment): ``-ccbin`` from ``NVCC_PREPEND_FLAGS`` or
     ``NVCC_APPEND_FLAGS``, else ``$NVCC_CCBIN``, else the ``g++`` on the
     subprocess ``PATH`` (nvcc's own default). A ``-ccbin`` directory is
     resolved to the ``g++`` inside it. ``None`` when none can be found."""
-    env = subprocess_env(("cuda",)) if env is None else env
+    env = process_env(dict(os.environ)) if env is None else env
     chosen = (_ccbin_from_flags(env.get("NVCC_PREPEND_FLAGS", ""))
               or _ccbin_from_flags(env.get("NVCC_APPEND_FLAGS", ""))
               or env.get("NVCC_CCBIN") or "g++")
@@ -405,16 +430,15 @@ def device_host_compiler(env: dict | None = None) -> str | None:
     return shutil.which(chosen, path=env.get("PATH"))
 
 
-def device_host_compiler_identity() -> str:
-    """The device cache key's host-compiler term: the
-    :func:`compiler_identity` of :func:`device_host_compiler`, or
+def device_host_compiler_identity(identity) -> str:
+    """The device cache key's host-compiler term: ``identity`` (hawk's compiler identity) of :func:`device_host_compiler`, or
     ``"ccbin:unknown"`` when none is found (the nvcc compile then fails on
     its own)."""
     found = device_host_compiler()
     if not found:
         return "ccbin:unknown"
     try:
-        return f"ccbin:{compiler_identity(found)}"
+        return f"ccbin:{identity(found)}"
     except RaptorError:
         return f"ccbin:{found}"
 

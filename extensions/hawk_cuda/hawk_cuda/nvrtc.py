@@ -7,7 +7,7 @@ The shipped Python tier's device compile: an in-memory NVRTC compile of
 the device TU, serving the whole sealed :mod:`aether_dsc` payload as
 NVRTC's header array — no header ever touches a filesystem. ``nvcc``
 stays the developer/CI compiler; this module is reached only when
-:func:`hawk.compile.toolchain.device_compiler_kind` resolves to
+:func:`hawk_cuda.toolchain.device_compiler_kind` resolves to
 ``"nvrtc"``.
 
 The one translation this module owns: a payload header is stored under
@@ -32,7 +32,6 @@ from typing import NamedTuple
 
 from lowering.exchange import ToolchainAbsent
 from raptor.errors import RaptorError
-from hawk.compile import payload as _payload
 
 
 class NvrtcUnavailable(ToolchainAbsent):
@@ -208,6 +207,11 @@ def _library_fingerprint() -> str:
     return h.hexdigest()[:24]
 
 
+#: Where :func:`_nvrtc_probe` keeps its record: the build directory hawk hands the backend's compile plan; ``None``
+#: until then, and the probe is then not kept.
+_PROBE_DIR: Path | None = None
+
+
 def _nvrtc_probe() -> dict:
     """``{version, archs, root}`` of the NVRTC the import machinery loads. Asked
     of the library once per library fingerprint and kept in the cache directory:
@@ -216,11 +220,10 @@ def _nvrtc_probe() -> dict:
     :class:`NvrtcUnavailable` when it cannot be)."""
     if _NVRTC_PROBE_MEMO:
         return _NVRTC_PROBE_MEMO[0]
-    from hawk.compile.cache import default_cache_dir
-    path = default_cache_dir() / "toolchain" / f"nvrtc-{_library_fingerprint()}.json"
+    path = None if _PROBE_DIR is None else _PROBE_DIR / "toolchain" / f"nvrtc-{_library_fingerprint()}.json"
     try:
         record = json.loads(path.read_text())
-    except (OSError, ValueError):
+    except (AttributeError, OSError, ValueError):
         record = None
     if record is None:
         _nvrtc = _import_nvrtc()
@@ -235,7 +238,7 @@ def _nvrtc_probe() -> dict:
             tmp = path.with_suffix(f".{os.getpid()}.tmp")
             tmp.write_text(json.dumps(record))
             os.replace(tmp, path)
-        except OSError:
+        except (AttributeError, OSError):
             pass
     _NVRTC_PROBE_MEMO.append(record)
     return record
@@ -465,7 +468,7 @@ def supported_archs() -> tuple[int, ...]:
 def forced_target(arch: str) -> str | None:
     """``"ptx"`` for a virtual ``compute_<N>`` arch (no CUBIN exists for
     one: the arch policy's no-GPU and above-the-toolkit answers,
-    :func:`hawk.compile.toolchain.resolve_device_arch`), else ``None`` --
+    :func:`hawk_cuda.toolchain.resolve_device_arch`), else ``None`` --
     the target is then :func:`select_target`'s."""
     return "ptx" if arch.startswith("compute_") else None
 
@@ -494,7 +497,7 @@ def options(arch: str, *, cccl_include: str | None = None,
 
     No ``-O`` option is in this list, by design: NVRTC always optimises
     (there is no equivalent of nvcc/ptxas's ``-O0``..``-O3`` ladder to
-    select), so :func:`hawk.compile.toolchain.opt_level`/``opt_level=`` has
+    select), so the compile's ``opt_level`` has
     no effect on an NVRTC compile and this function does not pretend
     otherwise by accepting or faking one.
 
@@ -552,8 +555,11 @@ def _compile_image(source: str, name: str, arch: str, *, target: str,
     ``rstrip``'d the way the NUL-terminated PTX text is."""
     _nvrtc = _import_nvrtc()
 
-    served = dict(headers if headers is not None
-                  else _payload.current_payload().device_headers)
+    import aether_dsc
+
+    if headers is None:
+        headers = aether_dsc.payload().device_headers
+    served = dict(headers() if callable(headers) else headers)
     names = sorted(served)
     header_bytes = [served[n] for n in names]
     include_names = [served_name(n).encode() for n in names]
@@ -634,7 +640,7 @@ def compile_cubin(source: str, name: str, arch: str, *,
                   extra: Sequence[str] = ()) -> NvrtcResult:
     """:func:`compile_ptx`'s sibling: compile `source` through NVRTC
     straight to a CUBIN (SASS) for the concrete `arch`, for a caller
-    (:mod:`hawk.compile.drivers`) that wants the same in-memory compile
+    (the backend) that wants the same in-memory compile
     :func:`device`/:func:`cubin` offer, without their `DeviceImage`/
     arch-resolution wrapper."""
     return _compile_image(source, name, arch, target="cubin", headers=headers,
@@ -671,14 +677,14 @@ def device(source: str, *, target: str | None = None, arch: str | None = None,
 
     ``arch`` (``None``: ``$HAWK_CUDA_ARCH``, else the current device) goes
     through the arch policy against NVRTC's supported archs
-    (:func:`hawk.compile.toolchain.resolve_device_arch`): no GPU reachable
+    (:func:`hawk_cuda.toolchain.resolve_device_arch`): no GPU reachable
     gives PTX at NVRTC's minimum compute arch, a device newer than NVRTC
     supports gives PTX at its maximum, an older one raises. A virtual
     ``compute_<N>`` arch always compiles to PTX (:func:`forced_target`).
-    Headers are served from the sealed :mod:`hawk.compile.payload` (never
-    disk).
+    Headers are served from ``headers``, else the shipped sealed
+    :mod:`aether_dsc` payload (never disk).
 
-    This does not go through :mod:`hawk.compile.cache` — it has no lookup
+    This does not go through the compile cache — it has no lookup
     key of its own; a caller wanting one builds it from the returned
     :class:`DeviceImage`.
     """

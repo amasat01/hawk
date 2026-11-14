@@ -364,5 +364,5 @@ def test_device_key_carries_the_host_compiler(monkeypatch, tmp_path):
                             CompileOptions(target="cuda",
                                            cache_dir=str(tmp_path / "cache")))
     record = hcache.Cache(str(tmp_path / "cache")).record(result.key)
-    assert dtc.device_host_compiler_identity() in record["key_terms"]
+    assert dtc.device_host_compiler_identity(tc.compiler_identity) in record["key_terms"]
     assert any(t.startswith("ccbin:") for t in record["key_terms"])
