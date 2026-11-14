@@ -1,0 +1,12 @@
+[package]
+name = "osprey_gen"
+version = "0.0.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+
+[[bin]]
+name = "gen"
+path = "src/main.rs"
