@@ -246,6 +246,11 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, policy: Any) -> Any:
             f"{call}: a {op} over some of the lane axes is in the next release; "
             f"hawk.{op}(x) (one value for the run) and hawk.sum/mean(x, over=...) "
             "work now")
+    if policy == "ordered" and kept and gone != tuple(range(len(axes) - len(gone), len(axes))):
+        raise HawkError(
+            f"{call}: policy='ordered' sums over the trailing lane axes only (here the last "
+            f"{len(gone)}); over other axes it is refused. The sum over the trailing axes, over every axis, "
+            "and the 'auto' and 'compensated' policies over any axes are unaffected")
     if where_mask is not None:
         mask = where_mask if isinstance(where_mask, Value) else Value(node_of(where_mask))
         if mask.ttype.dtype != "bool" or mask.ttype.shape:

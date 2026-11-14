@@ -2,6 +2,12 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
+## 0.7.7 (unreleased)
+
+### Fixed
+
+- `hawk.sum` and `hawk.mean` with `policy="ordered"` over lane axes that are not the trailing ones returned wrong values; that call is now refused by name when the kernel is traced. The ordered sum over the trailing axes or over every axis, and the `auto` and `compensated` policies over any axes, are unchanged.
+
 ## 0.7.6 (2026-11-10)
 
 0.7.5 was tagged but never reached PyPI: 0.7.6 is the release of everything in 0.7.5 below, with one fix to how it is published.
