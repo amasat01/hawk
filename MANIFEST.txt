@@ -57,14 +57,14 @@ Every file with its line count (this file excluded):
     134  osprey_host/tools/cost_host.py
     601  osprey_host/tools/host_plugin.py
     101  osprey_host/tools/merge_host.py
-    362  osprey_host/tools/merge_text.py
+    419  osprey_host/tools/merge_text.py
      20  osprey_host/tools/run_host.sh
      34  osprey_host/tools/run_host_eagle.sh
      60  osprey_host/tools/test_host_axpb.py
     126  shadow/emit_record.py
     462  shadow/k6_plugin.py
      75  shadow/k6_stats.py
-    362  shadow/merge_text.py
+    419  shadow/merge_text.py
     141  shadow/rebuild.py
     393  shadow/rebuild_text.py
      95  shadow/shadow_mirror.py
@@ -72,7 +72,7 @@ Every file with its line count (this file excluded):
     869  shadow/text_plugin.py
      18  tools/expected.txt
     119  tools/proof.sh
-     31  tools/run_eagle_text.sh
+     35  tools/run_eagle_text.sh
      26  tools/run_k_gpu.sh
      18  tools/run_kreplay.sh
      25  tools/run_shadow.sh

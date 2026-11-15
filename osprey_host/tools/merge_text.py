@@ -22,12 +22,12 @@ _PIECE = 1 << 24
 
 
 class Line:
-    """One line of a recorded file: its bytes when it is short, its place in the file when it is long. The analyses of a recorded unit are the
-    large part of it and, the keys being sorted, a line that has them opens with them: they are read one by one, from pieces of the line, so
-    that a line of any size is never held whole."""
+    """One line of a recorded file: its bytes when it is short, its place in the file when it is long. A recorded unit is a JSON object whose
+    `analyses` array is the large part of it (the keys are sorted, but a key written before it, such as `_hawk_source`, may come first): the
+    line is read field by field, from pieces, and the analyses one element at a time, so that a line of any size is never parsed whole."""
 
     def __init__(self, data=None, path=None, start=0, size=0):
-        self.data, self.path, self.start, self.size, self.rest = data, path, start, size, None
+        self.data, self.path, self.start, self.size, self.has_analyses = data, path, start, size, False
 
     def pieces(self):
         """The bytes of the line, one piece at a time."""
@@ -41,10 +41,6 @@ class Line:
                 piece = f.read(min(_PIECE, left))
                 left -= len(piece)
                 yield piece
-
-    def text(self):
-        """The whole line as text (for a line that does not open with its analyses)."""
-        return b"".join(self.pieces()).decode()
 
     def __contains__(self, needle):
         keep, find = b"", needle.encode()
@@ -60,33 +56,75 @@ class Line:
         for piece in self.pieces():
             out.write(decode(piece))
 
-    def opens_with_analyses(self):
-        """True when the line starts with its analyses."""
-        return next(self.pieces()).startswith(_OPENS_WITH.encode())
+    def fields(self):
+        """Walks the top-level object: yields (None, an analysis) for each element of `analyses` and (key, value) for every other field."""
+        texts = map(codecs.getincrementaldecoder("utf-8")().decode, self.pieces())
+        buf, pos = next(texts, ""), 0
+
+        def more():
+            """Appends pieces to the unread text, at least as much as it holds (a value cut by the end of the text is read again from a text twice as long)."""
+            nonlocal buf, pos
+            got = []
+            while sum(map(len, got)) < max(1, len(buf) - pos):
+                piece = next(texts, None)
+                if piece is None:
+                    break
+                got.append(piece)
+            if not got:
+                raise ValueError("a recorded line ends inside a value")
+            buf, pos = buf[pos:] + "".join(got), 0
+
+        def peek():
+            """The next character that is not white space."""
+            nonlocal pos
+            while True:
+                while pos < len(buf) and buf[pos] in " \t\r\n":
+                    pos += 1
+                if pos < len(buf):
+                    return buf[pos]
+                more()
+
+        def value():
+            """The JSON value at the position, which moves past it."""
+            nonlocal pos
+            peek()
+            while True:
+                try:
+                    item, end = _DECODER.raw_decode(buf, pos)
+                    if end < len(buf):
+                        pos = end
+                        return item
+                except json.JSONDecodeError:
+                    pass
+                more()
+
+        if peek() != "{":
+            raise ValueError("a recorded line is not an object")
+        pos += 1
+        while peek() != "}":
+            key = value()
+            if peek() != ":":
+                raise ValueError("a recorded line has a key without a value")
+            pos += 1
+            if key == "analyses" and peek() == "[":
+                self.has_analyses = True
+                pos += 1
+                while peek() != "]":
+                    yield None, value()
+                    if peek() == ",":
+                        pos += 1
+                pos += 1
+            else:
+                yield key, value()
+            if peek() == ",":
+                pos += 1
 
     def analyses(self):
-        """The analyses, one value at a time; when they are all read, `rest` holds the line after them (the comma that follows included)."""
-        texts = map(codecs.getincrementaldecoder("utf-8")().decode, self.pieces())
-        buf, pos = next(texts, ""), len(_OPENS_WITH)
-        while True:
-            try:
-                if buf[pos] == "]":
-                    break
-                item, end = _DECODER.raw_decode(buf, pos)
-                if end < len(buf):
-                    yield item
-                    pos = end + (buf[end] == ",")
-                    continue
-            except (IndexError, json.JSONDecodeError):
-                pass
-            more = next(texts, None)    # the value is cut by the end of the piece: read on
-            if more is None:
-                raise ValueError("a recorded line ends inside its analyses")
-            buf, pos = buf[pos:] + more, 0
-        self.rest = buf[pos + 1 :] + "".join(texts)
+        """The analyses, one value at a time."""
+        return (a for key, a in self.fields() if key is None)
 
     def write_analyses(self, out):
-        """Writes the line up to the end of its analyses, in the form the merged files hold them."""
+        """Writes `{"analyses":[...` up to the end of the array, in the form the merged files hold them."""
         out.write(_OPENS_WITH)
         for n, a in enumerate(self.analyses()):
             out.write(("," if n else "") + canon(a))
@@ -94,13 +132,10 @@ class Line:
 
 
 def split_record(line):
-    """(the record without its analyses, a function that reads its analyses one by one, a function that writes them to a file or None)."""
-    if not line.opens_with_analyses():
-        rec = json.loads(line.text())
-        return rec, lambda: iter(rec.get("analyses", [])), None
-    for _ in line.analyses():
-        pass
-    return json.loads("{" + line.rest[1:] if line.rest[0] == "," else "{}"), line.analyses, line.write_analyses
+    """(the record without its analyses, a function that reads its analyses one by one, a function that writes them to a file or None when
+    the record has none)."""
+    head = {key: v for key, v in line.fields() if key is not None}
+    return head, line.analyses, line.write_analyses if line.has_analyses else None
 
 
 def read_lines(path):
@@ -128,6 +163,29 @@ def copy_spooled(spool, start, size, out):
         piece = spool.read(min(size, 1 << 24))
         out.write(piece.decode())
         size -= len(piece)
+
+
+# The fields of a merged unit that are held in the spool file, not in memory, until the unit is written.
+_SPOOLED = ("analyses", "analysis_extra", "analysis_nested", "closures", "error", "facts", "inner", "inputs", "node_sites", "output", "patched", "placement", "walk_opts", "walk_opts_used", "walk_props")
+
+
+def spool_value(spool, v):
+    """Writes the canonical text of `v` to the spool and returns (where it starts, its size)."""
+    start = spool.tell()
+    spool.write(canon(v).encode())
+    return start, spool.tell() - start
+
+
+def write_unit(fh, u, spool):
+    """Writes a merged unit as one line: the keys sorted, the spooled fields copied from the spool."""
+    fh.write("{")
+    for n, k in enumerate(sorted(u)):
+        fh.write(("," if n else "") + json.dumps(k) + ":")
+        if k in _SPOOLED:
+            copy_spooled(spool, *u[k], fh)
+        else:
+            fh.write(canon(u[k]))
+    fh.write("}\n")
 
 
 def canon(j):
@@ -242,7 +300,7 @@ def main(d, earlier=None):
             p["unmirrorable"] += bool(rec["unmirrorable"])
             unm += bool(rec["unmirrorable"])
             key = unit_key(tg, rec["inputs"])
-            outcome = canon([rec.get("output"), rec.get("error")])
+            outcome = hashlib.sha256(canon([rec.get("output"), rec.get("error")]).encode()).digest()    # equal outcomes, compared by digest
             u = uniq.get(key)
             if u is None:
                 ex = None
@@ -259,6 +317,8 @@ def main(d, earlier=None):
                              "output": rec.get("output"), "error": rec.get("error"), "texts": rec.get("texts", []), "unknown": rec["unknown"],
                              "unmirrorable": rec["unmirrorable"], "closures": rec.get("closures", []), "walk_opts": rec.get("walk_opts", {}), "walk_opts_used": rec.get("walk_opts_used", {}), "walk_props": rec.get("walk_props", {}), "outside_calls": rec.get("outside_calls", 0), "placement": rec.get("placement"), "patched": rec.get("patched"), "facts": rec.get("facts"),
                              "kept": "patched only in a machine fact whose answers are recorded in `facts`" if rec.get("patched") and not rest else None, "inner": rec.get("inner"), "_o": outcome}
+                for name in _SPOOLED[1:]:
+                    u[name] = spool_value(spool, u[name])
                 p["unique"] += 1
                 if ex:
                     p["excluded"] = p.get("excluded", 0) + 1
@@ -333,10 +393,7 @@ def main(d, earlier=None):
                 u["exclude"] = "patched render: equal inputs gave different texts (tests/test_finish_own_sample.py)"
                 per[u["target"]]["excluded"] = per[u["target"]].get("excluded", 0) + 1
             u.pop("_o")
-            off, size = u.pop("analyses")
-            fh.write('{"analyses":')
-            copy_spooled(spool, off, size, fh)
-            fh.write("," + json.dumps(u, sort_keys=True, separators=(",", ":"))[1:] + "\n")
+            write_unit(fh, u, spool)
     summ = {"checks": dict(ck), "callable_answers": dict(callables), "walk_opts": {**{k: (len(v) if isinstance(v, set) else v) for k, v in wo.items()}, "two_sets_digests": sorted(wo["two_sets"])[:10]}, "inner": {f"{a}|{b}": n for (a, b), n in inn.items()},
             "calls": n, "unique_units": len(uniq), "raised_calls": raised, "unmirrorable_calls": unm, "calls_per_seam": dict(seams),
             "per_target": {t: {**{k: v for k, v in p.items() if k != "texts"}, "distinct_texts": len(p["texts"])} for t, p in per.items()},
