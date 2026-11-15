@@ -1,8 +1,9 @@
 #!/bin/sh
 # The gate of osprey_host. Usage: sh ci/gate.sh [leg ...]   (no argument: every leg, in this order)
-#   fmt clippy test exports binding abi ruff cformat tidy replay
+#   fmt clippy test exports binding py39 abi ruff cformat tidy replay
 # Environment: PYTHON (the interpreter the binding is built for; the binding leg is red without it), CLANG_TIDY (the clang-tidy
-# program; the tidy leg is RED without it). The siblings ../raptor and ../aether are inputs.
+# program; the tidy leg is RED without it), the cformat leg skips, saying so, unless clang-format is major version 23, PYTHON39 and PY39_INCLUDE (a Python 3.9 interpreter and its headers; the py39 leg
+# skips, saying so, when the interpreter is absent; the default is the macOS command line tools' one). The siblings ../raptor and ../aether are inputs.
 # Each leg prints what it examined and is RED when it examined nothing. The exit status is non-zero when any leg is red.
 cd "$(dirname "$0")/.." || exit 2
 JOBS=${JOBS:-2}
@@ -39,13 +40,32 @@ leg_exports() {
   [ "$n" -eq 1 ] || { echo "RED: expected exactly one symbol line, got $n"; return 1; }
 }
 
-# the binding's build and its gate; it must print GATE GREEN
+# builds the binding for the interpreter $1 (its headers $2; empty: the interpreter's own) and runs binding/test_binding.py on it
+build_and_test_binding() {
+  PYTHON=$1 PY_INCLUDE=$2 sh binding/build.sh >"$out" 2>&1; rc=$?
+  tail -4 "$out"
+  g=$(grep -c "GATE GREEN" "$out"); echo "examined: binding build for $1, GATE GREEN lines: $g"
+  [ $rc -eq 0 ] || { echo "RED: binding build"; return 1; }; need binding "$g" || return 1
+  cargo build --release -j "$JOBS" >"$out" 2>&1 || { grep -E "^error" "$out" | head -3; echo "RED: library build"; return 1; }
+  case $(uname -s) in Darwin) ext=dylib ;; *) ext=so ;; esac
+  (cd binding && PYTHONPATH=build HOST_LIB="$PWD/../target/release/libosprey_host.$ext" ABI1_LIB="build/libabi1.$ext" \
+    CONTRACT0_LIB="build/libcontract0.$ext" "$1" test_binding.py) >"$out" 2>&1 || { tail -5 "$out"; echo "RED: test_binding.py"; return 1; }
+  line=$(grep -E "^test_binding: [0-9]+ checks passed" "$out"); echo "examined: $line"
+  need binding "$(echo "$line" | tr -dc '0-9 ' | awk '{print $1 + 0}')"
+}
+
+# the binding's build and its gate, then its tests; it must print GATE GREEN
 leg_binding() {
   [ -n "$PYTHON" ] || { echo "RED: PYTHON is not set"; return 1; }
-  sh binding/build.sh >"$out" 2>&1; rc=$?
-  tail -4 "$out"
-  g=$(grep -c "GATE GREEN" "$out"); echo "examined: binding build, GATE GREEN lines: $g"
-  [ $rc -eq 0 ] || { echo "RED: binding build"; return 1; }; need binding "$g"
+  build_and_test_binding "$PYTHON" ""
+}
+
+# the same for Python 3.9, the floor of the binding's stable ABI; skipped, with a line saying so, when no such interpreter exists
+leg_py39() {
+  py39=${PYTHON39:-/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9}
+  if [ ! -x "$py39" ]; then echo "skipped: no Python 3.9 interpreter at $py39 (set PYTHON39 and PY39_INCLUDE)"; return 0; fi
+  "$py39" -c 'import sys; sys.exit(sys.version_info[:2] != (3, 9))' || { echo "RED: $py39 is not Python 3.9"; return 1; }
+  build_and_test_binding "$py39" "${PY39_INCLUDE:-$(dirname "$(dirname "$py39")")/Headers}"
 }
 
 # the abi number has one source: the header's define. The loader and the table test read it from there.
@@ -65,8 +85,13 @@ leg_ruff() {
   ruff format --check >"$out" 2>&1 || { tail -5 "$out"; echo "RED: ruff format"; return 1; }
 }
 
+# The C files are formatted by clang-format major version $CFORMAT_MAJOR (the formatter's output differs between majors): on another
+# major this leg skips, saying so.
+CFORMAT_MAJOR=23
 leg_cformat() {
   command -v clang-format >/dev/null 2>&1 || { echo "RED: clang-format is not on PATH"; return 1; }
+  major=$(clang-format --version | sed -E 's/^.*version ([0-9]+)\..*$/\1/')
+  if [ "$major" != "$CFORMAT_MAJOR" ]; then echo "skipped: clang-format $major found, the C files are pinned to $CFORMAT_MAJOR"; return 0; fi
   n=$(echo "$CFILES" | grep -c .); echo "examined: $n C files in loader/ include/ binding/template/"; need cformat "$n" || return 1
   # shellcheck disable=SC2086
   clang-format --dry-run -Werror $CFILES >"$out" 2>&1 || { grep -E "error" "$out" | head -5; echo "RED: clang-format differs"; return 1; }
@@ -94,13 +119,24 @@ leg_replay() {
   [ "$#" -eq 3 ] && [ "$1" -gt 0 ] && [ "$1" -eq "$2" ] && [ "$3" -eq 0 ] \
     && grep -q '^body written but different 0$' "$out" && grep -q '^render errors 0$' "$out" \
     || { grep -E 'different|errors|refused' "$out" | head -5; echo "RED: a unit was not written or differs from its recording"; return 1; }
+
+  oracle
 }
 
-legs=${*:-fmt clippy test exports binding abi ruff cformat tidy replay}
+# the facts oracle: every recorded host unit's machine record equals the facts answer for the machine its recording states
+# (it reads recordings of the old shape, so it needs the old-contract feature); skipped, with a line saying so, when no recording is found
+oracle() {
+  cargo test --release -j "$JOBS" --features old-contract --test facts_oracle -- --nocapture >"$out" 2>&1 \
+    || { grep -E "FAILED|panicked|^error" "$out" | head -3; echo "RED: facts oracle"; return 1; }
+  if grep -q "^skipped: no recording" "$out"; then grep "^skipped: no recording" "$out" | head -1; return 0; fi
+  echo "examined: facts oracle, $(passed) test passed"; need oracle "$(passed)"
+}
+
+legs=${*:-fmt clippy test exports binding py39 abi ruff cformat tidy replay}
 green=; red=
 for l in $legs; do
   echo "== $l"
   if "leg_$l"; then green="$green $l"; else red="$red $l"; fi
 done
-echo "GREEN:$green"; echo "RED:$red"
+echo "GREEN:$green"; [ -z "$red" ] || echo "RED:$red"
 [ -z "$red" ]

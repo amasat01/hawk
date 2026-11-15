@@ -29,3 +29,9 @@ shadow = ["old-contract", "aether_writers/shadow"]
 name = "treplay"
 path = "src/bin/treplay.rs"
 required-features = ["old-contract"]
+
+# the lowering replay streams a recorded kernel corpus through the lowering entry
+[[bin]]
+name = "kreplay"
+path = "src/bin/kreplay.rs"
+required-features = ["old-contract"]

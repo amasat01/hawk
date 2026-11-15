@@ -1,0 +1,8 @@
+{
+  "default_arch": "sm_61",
+  "fusion": {"regs_base": 20, "regs_file": 255, "launch_us": 2.7, "plane_us_per_byte": 7.1e-06, "local_over_plane": 1.0},
+  "select_weight": {
+    "defaults": {"float64": 1.0, "float32": 1.0},
+    "rows": [{"cc": "sm_61", "dtype": "float64", "select_weight": 4.0}]
+  }
+}

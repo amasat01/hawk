@@ -1,0 +1,6 @@
+{
+  "profiles": ["native", "portable", "native-vector-math", "native-vector-math-nofma"],
+  "exact_profiles": ["native", "portable"],
+  "vector_math_profiles": ["native-vector-math", "native-vector-math-nofma"],
+  "select_weight": {"defaults": {"float64": 1.0, "float32": 1.0}}
+}

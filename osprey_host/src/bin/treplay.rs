@@ -3,7 +3,12 @@
 //! compared with the recorded one, and the unit's text is rendered by the writer crate and compared with the recorded text.
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
+use aether_writers::contract::old::typed_of;
+use aether_writers::contract::types::{Isa, Machine, Target, Unit};
+use aether_writers::contract::{Contract, Json};
+use aether_writers::refuse::Refusal;
 use aether_writers::{cuda_render, entry_body, host_render, RxCtx};
+use osprey_host::facts;
 use raptor_ir::door::rx_ctx_new;
 use raptor_ir::record::Ctx;
 use raptor_support::corpus::{
@@ -186,6 +191,120 @@ fn dump_unit(
     }
 }
 
+/// The reason text of a refusal, for the counts that group refusals by their text.
+fn reason(refusal: Refusal) -> String {
+    refusal.reason
+}
+
+/// The compiler identity of a clang the facts oracle asks with, and of a GCC, as the recording's build had.
+const COMPILER_IDENTITIES: [&str; 2] = [
+    "c++ || Apple clang version 21.0.0 (clang-2100.0.123.102) || 0",
+    "g++ || g++ (GCC) 13.2.0 || 0",
+];
+
+/// The first value under `key` anywhere in a recorded value.
+fn find<'a>(json: &'a Json, key: &str) -> Option<&'a Json> {
+    match json {
+        Json::Obj(members) => {
+            members
+                .iter()
+                .find_map(|(k, v)| if k == key { Some(v) } else { find(v, key) })
+        }
+        Json::Arr(items) => items.iter().find_map(|v| find(v, key)),
+        _ => None,
+    }
+}
+
+/// The machine the recording states for its build (its instruction set, cache sizes and host profile in effect) and the
+/// compiler identity that fits it (GCC when the recording says so, or when it builds the vector math profile on x86): what a
+/// caller building for that machine would pass to the facts entry, so that the rules are what the oracle tests.
+fn recorded_machine(unit: &Unit, contract: &Contract) -> (facts::Stated, &'static str) {
+    let isa = unit.machine.isa.as_ref().map(|isa| match isa {
+        Isa::Arm64 => "arm64".to_string(),
+        Isa::X86_64 => "x86_64".to_string(),
+    });
+    let host_profile = find(&contract.0, "host_profile").and_then(Json::str);
+    let gcc = matches!(find(&contract.0, "arm64_gcc"), Some(Json::Bool(true)))
+        || (isa.as_deref() == Some("x86_64") && host_profile.is_some_and(|p| p.contains("vector")));
+    let stated = facts::Stated {
+        isa,
+        vector_isa: find(&contract.0, "vector_isa")
+            .and_then(Json::str)
+            .map(String::from),
+        caches: unit.machine.caches.clone(),
+        host_profile: host_profile.map(String::from),
+        device_arch: None,
+    };
+    (stated, COMPILER_IDENTITIES[gcc as usize])
+}
+
+/// The machine record of the facts answer for the machine the recording states, as the typed wire reads it: the answer replaces
+/// the `machine` of the unit's own JSON, which is read back.
+fn facts_machine(unit: &Unit, contract: &Contract) -> Result<Machine, String> {
+    let (stated, compiler) = recorded_machine(unit, contract);
+    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/facts"));
+    let answer = facts::answer(dir, "host", compiler, &facts::probe(), &stated)?;
+    let Contract(mut top) = Contract::parse(&unit.to_json()).map_err(|refusal| refusal.reason)?;
+    let Json::Obj(members) = &mut top else {
+        return Err("the unit is not an object".into());
+    };
+    let slot = members
+        .iter_mut()
+        .find(|(key, _)| key == "machine")
+        .ok_or("the unit has no machine")?;
+    slot.1 = Contract::parse(&answer)
+        .map_err(|refusal| refusal.reason)?
+        .0;
+    Unit::from_value(&top)
+        .map(|read| read.machine)
+        .map_err(|refusal| refusal.reason)
+}
+
+/// What differs between the recorded machine record and the facts answer, one clause per field; empty when they agree. A select
+/// weight the converter has no recorded answer for (the unit never asked) is not compared.
+fn machine_differences(recorded: &Machine, ours: &Machine) -> String {
+    let mut clauses = vec![];
+    let mut clause = |name: &str, differs: bool, want: String, got: String| {
+        if differs {
+            clauses.push(format!("{name}: recorded {want}, answer {got}"))
+        }
+    };
+    clause(
+        "isa",
+        recorded.isa != ours.isa,
+        format!("{:?}", recorded.isa),
+        format!("{:?}", ours.isa),
+    );
+    clause(
+        "exact_libm",
+        recorded.exact_libm != ours.exact_libm,
+        recorded.exact_libm.to_string(),
+        ours.exact_libm.to_string(),
+    );
+    clause(
+        "routed_pow",
+        recorded.routed_pow != ours.routed_pow,
+        recorded.routed_pow.to_string(),
+        ours.routed_pow.to_string(),
+    );
+    clause(
+        "caches",
+        recorded.caches != ours.caches,
+        format!("{:?}", recorded.caches),
+        format!("{:?}", ours.caches),
+    );
+    let (want, got) = (&recorded.select_weight, &ours.select_weight);
+    let weight = |recorded: Option<f64>, ours: Option<f64>| recorded.is_some() && recorded != ours;
+    let differs = weight(want.float64, got.float64) || weight(want.float32, got.float32);
+    clause(
+        "select_weight",
+        differs,
+        format!("{want:?}"),
+        format!("{got:?}"),
+    );
+    clauses.join("; ")
+}
+
 /// How many rendered units the typed contract converts, and the refusal names of the others.
 #[derive(Default)]
 struct Typed {
@@ -195,6 +314,10 @@ struct Typed {
     refused: HashMap<String, usize>,
     /// Refusal names of the typed wire's round trip, with counts.
     wire_refused: HashMap<String, usize>,
+    /// Units whose machine record equals the facts answer for this machine.
+    facts_equal: usize,
+    /// Each way the facts answer differs from the converter's machine record, with the number of units it holds for.
+    facts_diffs: HashMap<String, usize>,
     /// Bodies the writers rendered themselves whose recorded needs were compared with their text.
     #[cfg(feature = "shadow")]
     needs_bodies: usize,
@@ -207,6 +330,9 @@ impl Typed {
     /// Counts one unit: its contract text and the target it renders for.
     fn note(&mut self, json: &str, target: &str) {
         self.total += 1;
+        if target == "host" {
+            self.machine(json)
+        }
         match aether_writers::unit::entry::wire_refusal(json, target) {
             Ok(None) => {}
             Ok(Some(why)) => *self.wire_refused.entry(why).or_default() += 1,
@@ -224,6 +350,30 @@ impl Typed {
                 *self
                     .refused
                     .entry(format!("unreadable: {why}"))
+                    .or_default() += 1
+            }
+        }
+    }
+
+    /// Compares the machine record the converter derives from the recording with the facts answer for the machine the recording
+    /// states: the answer is read back through the typed wire, as a caller's request would carry it. A unit the converter
+    /// refuses has no record to compare.
+    fn machine(&mut self, json: &str) {
+        let Ok(contract) = aether_writers::contract::Contract::parse(json) else {
+            return;
+        };
+        let Ok(unit) = typed_of(&contract, Target::Host) else {
+            return;
+        };
+        match facts_machine(&unit, &contract) {
+            Ok(ours) => match machine_differences(&unit.machine, &ours) {
+                none if none.is_empty() => self.facts_equal += 1,
+                some => *self.facts_diffs.entry(some).or_default() += 1,
+            },
+            Err(why) => {
+                *self
+                    .facts_diffs
+                    .entry(format!("answer refused: {why}"))
                     .or_default() += 1
             }
         }
@@ -260,6 +410,15 @@ impl Typed {
         );
         for (why, n) in &self.wire_refused {
             println!("  typed wire refusal {n}: {why}")
+        }
+        let different: usize = self.facts_diffs.values().sum();
+        println!(
+            "facts oracle: machine record equals the facts answer on {} of {} converted units, {different} differ",
+            self.facts_equal,
+            self.facts_equal + different
+        );
+        for (why, n) in &self.facts_diffs {
+            println!("  facts differ on {n}: {why}")
         }
         let mut names: Vec<_> = self.refused.iter().collect();
         names.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
@@ -751,7 +910,7 @@ fn unit(rec: &J, render: bool, show: usize, t: &mut Tally) -> String {
         }
         let team_stage = aether_writers::contract::Contract::parse(&json)
             .is_ok_and(|k| aether_writers::is_team_stage(&k));
-        let body_state = match entry_body(c as *mut RxCtx, w, &json, "host") {
+        let body_state = match entry_body(c as *mut RxCtx, w, &json, "host").map_err(reason) {
             Ok(b) if b == rec_text("body") => {
                 t.body_eq += 1;
                 t.team_eq += team_stage as usize;
@@ -780,7 +939,7 @@ fn unit(rec: &J, render: bool, show: usize, t: &mut Tally) -> String {
         line = format!("{line}  body {body_state}");
         t.typed.needs(c as *mut RxCtx, w, &json, "host", &name);
         t.typed.needs(c as *mut RxCtx, w, &json, "cuda", &name);
-        match host_render(c as *mut RxCtx, w, &json) {
+        match host_render(c as *mut RxCtx, w, &json).map_err(reason) {
             Ok(s) => {
                 #[cfg(feature = "shadow")]
                 if let Some(diffs) = &s.needs_diffs {
@@ -868,7 +1027,7 @@ fn main() {
         if !l.contains(&needle) {
             continue;
         }
-        let Ok(rec) = json::parse(&l) else {
+        let Ok(rec) = json::parse_without(&l, &["analyses"]) else {
             t.unparsed += 1;
             continue;
         };
@@ -1018,7 +1177,7 @@ fn text_from_recorded_body(path: &str, a: &[String]) {
         if !l.contains(&needle) {
             continue;
         }
-        let Ok(rec) = json::parse(&l) else {
+        let Ok(rec) = json::parse_without(&l, &["analyses"]) else {
             unparsed += 1;
             continue;
         };
@@ -1215,15 +1374,16 @@ fn text_from_recorded_body(path: &str, a: &[String]) {
             ));
             typed.note(&json, target);
             let s = if target == "cuda" {
-                cuda_render(c as *mut RxCtx, w, &json)?
+                cuda_render(c as *mut RxCtx, w, &json).map_err(reason)?
             } else {
-                host_render(c as *mut RxCtx, w, &json)?
+                host_render(c as *mut RxCtx, w, &json).map_err(reason)?
             };
             let unit_key = rec.get("key").and_then(J::str).unwrap_or("");
             dump_unit(&dump, target, unit_key, Some((&s.text, &s.body)), None);
+            let meta_text = s.meta.json();
             let meta_ok = s.entry == rt("entry")
-                && s.meta.contains(&format!("\"mode\":\"{}\"", rt("mode")))
-                && s.meta.contains(&format!(
+                && meta_text.contains(&format!("\"mode\":\"{}\"", rt("mode")))
+                && meta_text.contains(&format!(
                     "\"vectorised\":{}",
                     matches!(src.get("vectorised"), Some(J::Bool(true)))
                 ));
@@ -1233,7 +1393,7 @@ fn text_from_recorded_body(path: &str, a: &[String]) {
             if !meta_ok {
                 return Err(format!(
                     "differs: entry, mode or vectorised (computed {}; recorded {:?}, {:?}, {:?})",
-                    s.meta,
+                    meta_text,
                     rt("entry"),
                     rt("mode"),
                     src.get("vectorised")

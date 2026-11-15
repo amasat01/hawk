@@ -24,7 +24,7 @@ fn table_forwards_and_identifies() {
             0,
             lens.as_mut_ptr()
         ),
-        1
+        2
     );
     assert_eq!(
         unsafe { CStr::from_ptr((t.last_error)(c)) }
@@ -51,4 +51,90 @@ fn header_number(name: &str) -> u32 {
     let prefix = format!("#define {name} ");
     let line = header.lines().find_map(|l| l.strip_prefix(prefix.as_str()));
     line.unwrap().trim().parse().unwrap()
+}
+
+#[test]
+fn facts_entry_answers_and_refuses() {
+    std::env::set_var(
+        "OSPREY_FACTS_DIR",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/facts"),
+    );
+    let t = unsafe { &*osprey_host::osprey_v1() };
+    let c = (t.ctx_new)();
+    let (target, compiler) = (c"host", c"c++ || Apple clang version 21.0.0 || 0");
+    let mut len = 0usize;
+    let status = |buf: *mut c_char, cap: usize, len: &mut usize| {
+        (t.facts)(
+            c,
+            target.as_ptr(),
+            compiler.as_ptr(),
+            std::ptr::null(),
+            buf,
+            cap,
+            len,
+        )
+    };
+    assert_eq!(status(std::ptr::null_mut(), 0, &mut len), 3);
+    let mut buf = vec![0 as c_char; len + 1];
+    assert_eq!(status(buf.as_mut_ptr(), len + 1, &mut len), 0);
+    let text = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+    assert!(text.starts_with("{\"isa\":"), "{text}");
+    let refused = (t.facts)(
+        c,
+        c"fast".as_ptr(),
+        compiler.as_ptr(),
+        std::ptr::null(),
+        buf.as_mut_ptr(),
+        buf.len(),
+        &mut len,
+    );
+    assert_eq!(refused, 1);
+    let why = unsafe { CStr::from_ptr((t.last_error)(c)) };
+    assert_eq!(why.to_str().unwrap(), "no facts for the target fast");
+    // SAFETY: `c` came from this table's `ctx_new` and is freed once.
+    unsafe { (t.ctx_free)(c) };
+}
+
+/// A well-formed typed unit of the host target that holds no walk.
+const UNIT: &str = r#"{"v":1,"name":"axpb","target":"Host","scalar":"Float64","kind":{"guard":"Default","lanes":false,"sink":"Plain"},"form":"Plain","sinks":[5],"walk":{"access":"SampleLocal","slots":[{"role":"Mutable","name":"y","dtype":"F64","shape":[],"index":0},{"role":"PerSample","name":"x","dtype":"F64","shape":[],"index":1},{"role":"Uniform","name":"a","dtype":"F64","shape":[],"index":2},{"role":"Uniform","name":"b","dtype":"F64","shape":[],"index":3}]},"body":"Walk","rows":1,"build":{"form":{"lazy_leaf_width":32,"rolled_fold_min":16,"lean_width":4,"uniform_run":32},"fold_form":"Auto","lanes":{"run_max":32,"block_run":1024,"tile":[64,1024]},"linalg_max_dim":32,"cells_row":32,"blend":true,"warps":1},"machine":{"isa":"Arm64","exact_libm":true,"routed_pow":false,"caches":{"l1d_bytes":131072,"l2_bytes":16777216,"source":"sysctl hw.perflevel0.l1dcachesize/l2cachesize"},"select_weight":{}},"exports":"Derived","literal_table":false}"#;
+
+/// The status and reason of rendering `contract` with the walk `walk` in a fresh context of the library.
+fn render_refusal(contract: &str, walk: u32) -> (i32, String) {
+    let t = unsafe { &*osprey_host::osprey_v1() };
+    let c = (t.ctx_new)();
+    let mut lens = [0usize; 4];
+    let json = contract.as_ptr() as *const c_char;
+    let status = (t.render)(
+        c,
+        walk,
+        json,
+        contract.len(),
+        std::ptr::null_mut(),
+        0,
+        lens.as_mut_ptr(),
+    );
+    let reason = unsafe { CStr::from_ptr((t.last_error)(c)) }
+        .to_str()
+        .unwrap()
+        .to_string();
+    // SAFETY: `c` came from this table's `ctx_new` and is freed once.
+    unsafe { (t.ctx_free)(c) };
+    (status, reason)
+}
+
+#[test]
+fn a_refusal_status_follows_its_kind() {
+    // a request the library cannot read is a bad argument (status 2)
+    let (status, reason) = render_refusal(r#"{"v":1,"name":"k","target":"Bogus"}"#, 0);
+    assert_eq!(
+        (status, reason.as_str()),
+        (2, "not in this build: member Bogus of target")
+    );
+    // a well-formed request for a construct the build does not write is the refused status (1)
+    let (status, reason) = render_refusal(UNIT, u32::MAX);
+    assert_eq!(status, 1);
+    assert_eq!(
+        reason,
+        "not in this build: a unit with no walk (team stage)"
+    );
 }

@@ -1,0 +1,20 @@
+{
+  "form": {"lazy_leaf_width": 32, "rolled_fold_min": 16, "lean_width": 4},
+  "lanes": {"run_max": 32, "block_run": 1024, "copy_threads": 256, "team_threads": 128, "team_threads_large": 256, "tile_min": 64, "tile_max": 1024},
+  "thread_box": {"float64": 16, "float32": 8},
+  "uniform_run": 32,
+  "linalg_max_dim": 32,
+  "linalg_team_max_dim": 4096,
+  "cells_row": 32,
+  "scatter_max_chunks": 256, "scatter_threads": 32,
+  "host_wide": {
+    "runtime_min": {
+      "read": {"4": 16, "8": 2},
+      "slot_read": {"4": 16, "8": 4},
+      "rotate": {"4": 16, "8": 0},
+      "write": {"4": 96, "8": 8},
+      "accum": {"4": 4096, "8": 4096}
+    },
+    "wide_min": {"4": 128, "8": 64}
+  }
+}

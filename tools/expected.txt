@@ -1,11 +1,18 @@
+# Numbers recorded on an Arm Mac (Apple M4 Pro, macOS). Compare a Linux run with them; a difference is a finding, not an error here.
+# Columns are tab separated; tools/proof.sh reads the lines whose first column is host, cuda, typed, full-host, wreplay or replay.
+# The kreplay lines are for the kernel replay (tools/run_kreplay.sh): the reconciliation line of each target of each corpus, as printed.
 host	t5_record	1696 / 1709 (written but different 0) + 13
 host	e5_record	868 / 871 (written but different 0) + 3
 typed	t5_record	1709
 typed	e5_record	871
-cuda	t5_record	455 / 462
+cuda	t5_record	461 / 462
 cuda	e5_record	5 / 5
 full-host	t2_record	1708 / 1773 (written but different 0) + 13
 full-host	t4_record	1638 / 1703 (written but different 0) + 13
 wreplay	t5_record host	35 functions, 0 unequal, 99 skipped
 wreplay	t5_record cuda	35 functions, 0 unequal, 0 skipped
 replay	s0_record	roundtrip-equal 2631 / 2631 refusal-equal 6 / 6 loop-rebuild-equal 964 / 964
+kreplay	hawk_k7 host	outcomes 2295 = equal 2153 + equal with an adapted request 101 + equal to an earlier render only 3 + accepted 13 + box switch 2 + ambiguous record 2 + patched 19 + own card 1 + own fusion row 1 + no recorded text 0 + different 0 + refused 0 + request not built 0 : adds up
+kreplay	hawk_k7 cuda	outcomes 239 = equal 188 + equal with an adapted request 30 + equal to an earlier render only 4 + accepted 0 + box switch 0 + ambiguous record 2 + patched 2 + own card 1 + own fusion row 0 + no recorded text 1 + different 2 + refused 9 + request not built 0 : adds up
+kreplay	eagle_k7e host	outcomes 1533 = equal 1528 + equal with an adapted request 0 + equal to an earlier render only 0 + accepted 3 + box switch 1 + ambiguous record 0 + patched 1 + own card 0 + own fusion row 0 + no recorded text 0 + different 0 + refused 0 + request not built 0 : adds up
+kreplay	eagle_k7e cuda	outcomes 5 = equal 5 + equal with an adapted request 0 + equal to an earlier render only 0 + accepted 0 + box switch 0 + ambiguous record 0 + patched 0 + own card 0 + own fusion row 0 + no recorded text 0 + different 0 + refused 0 + request not built 0 : adds up

@@ -16,7 +16,7 @@
 #                            (a recording folder named <x>_record is dumped under <x>)
 #   BASE                     the baseline dump folder (default <SCRATCH>/dump_base). When it does not exist the dump of
 #                            this run is written there and the comparison is skipped, with a line saying so.
-#   SCRATCH                  a writable folder for the two-slot lock (folders <SLOT_PREFIX>1 and 2, default proof_slot_) and temporary files
+#   SCRATCH                  a writable folder for the four-slot lock (folders <SLOT_PREFIX>1 to 4, default proof_slot_) and temporary files
 #   ACCEPTED                 the accepted-differences list (default <OSPREY>/corpus_accepted.tsv)
 #   C3_JOBS (default 2)      cargo jobs        C3_FEATURES   cargo features of the host library (default: old-contract when the
 #                                              library has it)
@@ -36,8 +36,13 @@ fail() { bad="$bad [$1]"; echo "MOVED: $1"; }
 want_of() { awk -F'\t' -v k="$1" -v a="$2" '$1 == k && $2 == a { print $NF; exit }' "$EXPECTED"; }
 chk() { got=$(echo "$2" | sed 's/ *$//'); [ "$got" = "$3" ] && note "$1: $got" || fail "$1: got '$got' want '$3'"; }
 
-( cd "$RAPTOR" && cargo build --release -j "$jobs" -p raptor_ir -p raptor_wings -p raptor_support 2>&1 | grep -E "^error" -A 6 | head -12 )
-( cd "$OSPREY" && cargo build --release -j "$jobs" ${C3_FEATURES:+--features "$C3_FEATURES"} 2>&1 | grep -E "^error" -A 6 | head -12 )
+# A build that fails stops the proof: nothing is replayed with a stale binary.
+build_log=$SCRATCH/proof_build_$$.txt
+( cd "$RAPTOR" && cargo build --release -j "$jobs" -p raptor_ir -p raptor_wings -p raptor_support ) > "$build_log" 2>&1 \
+  || { grep -E "^error" -A 6 "$build_log" | head -12; rm -f "$build_log"; echo "NOT OK: the build of raptor failed (nothing was replayed)"; exit 1; }
+( cd "$OSPREY" && cargo build --release -j "$jobs" ${C3_FEATURES:+--features "$C3_FEATURES"} ) > "$build_log" 2>&1 \
+  || { grep -E "^error" -A 6 "$build_log" | head -12; rm -f "$build_log"; echo "NOT OK: the build of osprey_host failed (nothing was replayed)"; exit 1; }
+rm -f "$build_log"
 for r in "$RAPTOR" "$OSPREY"; do (cd "$r" && cargo fmt --all --check >/dev/null 2>&1) || fail "fmt $r"; done
 (cd "$AETHER" && cargo fmt --manifest-path rs/writers/Cargo.toml --check >/dev/null 2>&1) || fail "fmt aether"
 t=$(cd "$RAPTOR" && cargo test --release -j "$jobs" -p raptor_ir -p raptor_wings -p raptor_support 2>&1 | grep -cE "FAILED|panicked|^error|signal:")
@@ -51,10 +56,10 @@ note "writers tests: $(echo "$t" | grep -oE '[0-9]+ passed' | tr '\n' ' ')"
 sym=$(cd "$OSPREY" && sh check_exports.sh 2>/dev/null | tail -1)
 case "$sym" in _osprey_v1|osprey_v1) ;; *) fail "exports: '$sym'";; esac
 
-# At most two proofs replay at once on a machine (one replay holds a lot of memory): wait for a slot.
+# At most four proofs replay at once on a machine (a whole run peaks at about 2.2 GB): wait for a slot.
 slot=""
 while [ -z "$slot" ]; do
-  for n in 1 2; do
+  for n in 1 2 3 4; do
     if mkdir "$SCRATCH/${SLOT_PREFIX:-proof_slot_}$n" 2>/dev/null; then slot=$SCRATCH/${SLOT_PREFIX:-proof_slot_}$n; echo $$ > "$slot/pid"; break; fi
     owner=$(cat "$SCRATCH/${SLOT_PREFIX:-proof_slot_}$n/pid" 2>/dev/null)
     if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then rm -rf "$SCRATCH/${SLOT_PREFIX:-proof_slot_}$n"; fi

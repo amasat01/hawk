@@ -5,15 +5,19 @@
 /// The wings crate answers the analyses the writers declare as external functions: naming it here links it, and a
 /// function it lacks fails the build of the library (no symbol is left unresolved).
 extern crate raptor_wings;
+pub mod facts;
+pub mod lower;
+use aether_writers::refuse::{Refusal, RefusalKind};
 use aether_writers::{host_render, RxCtx};
 use raptor_ir::canon::rx_canonical;
 use raptor_ir::dialect::rx_declare_dialect;
 use raptor_ir::door::{
-    rx_ctx_free, rx_ctx_new, rx_last_error, RX_BADARG, RX_OK, RX_REFUSED, RX_TRUNC,
+    guard, put, rx_ctx_free, rx_ctx_new, rx_last_error, RX_BADARG, RX_OK, RX_PANIC, RX_REFUSED,
+    RX_TRUNC,
 };
 use raptor_ir::dump::rx_load;
-use raptor_ir::record::Ctx;
-use std::ffi::{c_char, c_int};
+use raptor_ir::record::{Ctx, Fault};
+use std::ffi::{c_char, c_int, CStr};
 
 /// The table's abi number, read from include/osprey_host.h by the build script (the one source of it).
 const ABI: u32 = include!(concat!(env!("OUT_DIR"), "/abi.rs"));
@@ -55,6 +59,21 @@ pub struct OspreyV1 {
     pub identity: extern "C" fn(*mut c_char) -> c_int,
     /// Declares the node classes of a dialect manifest in a context, so a dump that holds nodes of that dialect loads.
     pub declare: unsafe extern "C" fn(*mut Ctx, *const c_char, usize, *const c_char) -> c_int,
+    /// Writes the machine facts for a target, a compiler identity and an optional stated machine (a JSON record, NULL for none),
+    /// as the JSON of the contract's machine record.
+    pub facts: extern "C" fn(
+        *mut Ctx,
+        *const c_char,
+        *const c_char,
+        *const c_char,
+        *mut c_char,
+        usize,
+        *mut usize,
+    ) -> c_int,
+    /// Lowers the kernel whose IR the context holds, from a request (JSON), into the answer (JSON): the units, their texts per
+    /// target and their typed meta. The caller-buffer protocol: RX_TRUNC with the length filled in when the buffer is too small.
+    pub lower:
+        extern "C" fn(*mut Ctx, *const c_char, usize, *mut c_char, usize, *mut usize) -> c_int,
 }
 unsafe impl Sync for OspreyV1 {}
 
@@ -84,14 +103,20 @@ extern "C" fn render(
     let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         host_render(ctx as *mut RxCtx, walk, contract)
     }))
-    .unwrap_or_else(|_| Err("panic in host_render".into()));
+    .unwrap_or_else(|_| {
+        Err(Refusal {
+            kind: RefusalKind::Fault,
+            reason: "panic in host_render".into(),
+        })
+    });
     match done {
         Ok(s) => {
+            let meta = s.meta.json();
             let parts = [
                 s.text.as_bytes(),
                 s.body.as_bytes(),
                 s.entry.as_bytes(),
-                s.meta.as_bytes(),
+                meta.as_bytes(),
             ];
             let total: usize = parts.iter().map(|p| p.len()).sum();
             for (at, part) in parts.iter().enumerate() {
@@ -113,10 +138,20 @@ extern "C" fn render(
             }
             RX_OK
         }
-        Err(message) => {
-            unsafe { &mut *ctx }.set_err(&message);
-            RX_REFUSED
+        Err(refusal) => {
+            unsafe { &mut *ctx }.set_err(&refusal.reason);
+            status_of(refusal.kind)
         }
+    }
+}
+
+/// The door's status for a kind of refusal: a construct not written is a refusal, a malformed request is a bad argument, and a
+/// fault of the writers has no status of its own and is the panic status (the caller treats both as a failure of the library).
+fn status_of(kind: RefusalKind) -> c_int {
+    match kind {
+        RefusalKind::NotWritten => RX_REFUSED,
+        RefusalKind::BadRequest => RX_BADARG,
+        RefusalKind::Fault => RX_PANIC,
     }
 }
 
@@ -130,6 +165,86 @@ extern "C" fn ctx_new() -> *mut Ctx {
         return std::ptr::null_mut();
     }
     ctx
+}
+
+/// A NUL-terminated text argument of the facts entry.
+fn text_arg<'a>(arg: *const c_char, what: &str) -> Result<&'a str, Fault> {
+    if arg.is_null() {
+        return Err(Fault::BadArg(format!("{what} is NULL")));
+    }
+    // SAFETY: the caller passes a NUL-terminated string that lives through the call.
+    unsafe { CStr::from_ptr(arg) }
+        .to_str()
+        .map_err(|_| Fault::BadArg(format!("{what} is not UTF-8")))
+}
+
+/// Writes the facts answer for the target, the compiler identity and the stated machine (NULL: the probed one) into the caller's buffer (the door's length protocol: RX_TRUNC
+/// with the length filled in when the buffer is too small); the reason of a refusal is the context's last error.
+extern "C" fn facts(
+    ctx: *mut Ctx,
+    target: *const c_char,
+    compiler: *const c_char,
+    stated: *const c_char,
+    buf: *mut c_char,
+    cap: usize,
+    len: *mut usize,
+) -> c_int {
+    guard(ctx, |_| {
+        let (target, compiler) = (text_arg(target, "target")?, text_arg(compiler, "compiler")?);
+        let stated = if stated.is_null() {
+            facts::Stated::default()
+        } else {
+            facts::stated_from_json(text_arg(stated, "stated")?).map_err(Fault::Refused)?
+        };
+        let dir = facts::facts_dir().map_err(Fault::Refused)?;
+        let answer = facts::answer(&dir, target, compiler, &facts::probe(), &stated)
+            .map_err(Fault::Refused)?;
+        put(buf, cap, len, &answer)
+    })
+}
+
+/// Lowers one kernel: reads the request, asks the lowering, and writes the answer into the caller's buffer; a refusal becomes the
+/// context's last error with the status of its kind.
+extern "C" fn lower(
+    ctx: *mut Ctx,
+    json: *const c_char,
+    n: usize,
+    buf: *mut c_char,
+    cap: usize,
+    len: *mut usize,
+) -> c_int {
+    if ctx.is_null() || len.is_null() || json.is_null() {
+        return RX_BADARG;
+    }
+    // SAFETY: the caller passes `n` readable bytes at `json`.
+    let bytes = unsafe { std::slice::from_raw_parts(json as *const u8, n) };
+    let Ok(request) = std::str::from_utf8(bytes) else {
+        return RX_BADARG;
+    };
+    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dir = facts::facts_dir().map_err(|reason| Refusal {
+            kind: RefusalKind::Fault,
+            reason,
+        })?;
+        lower::lower(ctx, request, &dir)
+    }))
+    .unwrap_or_else(|_| {
+        Err(Refusal {
+            kind: RefusalKind::Fault,
+            reason: "panic in lower".into(),
+        })
+    });
+    match done {
+        Ok(answer) => match put(buf, cap, len, &answer.to_json()) {
+            Ok(()) => RX_OK,
+            Err(Fault::Truncated) => RX_TRUNC,
+            Err(_) => RX_BADARG,
+        },
+        Err(refusal) => {
+            unsafe { &mut *ctx }.set_err(&refusal.reason);
+            status_of(refusal.kind)
+        }
+    }
 }
 
 /// Writes the identity and its terminating NUL into the caller's 65-byte buffer.
@@ -157,10 +272,25 @@ static TABLE: OspreyV1 = OspreyV1 {
     render,
     identity,
     declare: rx_declare_dialect,
+    facts,
+    lower,
 };
 
 #[no_mangle]
 /// The one symbol of the library: the entry table.
 pub extern "C" fn osprey_v1() -> *const OspreyV1 {
     &TABLE
+}
+
+#[cfg(test)]
+mod tests {
+    //! The status each kind of refusal maps to.
+    use super::*;
+
+    #[test]
+    fn each_kind_has_its_status() {
+        assert_eq!(status_of(RefusalKind::NotWritten), RX_REFUSED);
+        assert_eq!(status_of(RefusalKind::BadRequest), RX_BADARG);
+        assert_eq!(status_of(RefusalKind::Fault), RX_PANIC);
+    }
 }

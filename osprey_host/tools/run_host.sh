@@ -15,6 +15,6 @@ mkdir -p $ROOT/snap/$name $ROOT/logs
 echo "HEAD=$(git -C $tree rev-parse HEAD 2>/dev/null) dirty=$(git -C $tree status --porcelain 2>/dev/null | wc -l | tr -d ' ')" > $ROOT/snap/$name/PROVENANCE
 cd $tree && HAWK_CACHE_DIR=$ROOT/cache/$name EMIT_RECORD_DIR=$ROOT/snap/$name HOST_MODE=${HOST_MODE-off} HOST_DIR=$ROOT/snap/$name/host_counters \
   HOST_LIB=$repo/target/release/libosprey_host.$ext PYTHONPATH=$repo/tools:$RECORDER_DIR:$repo/binding/build${EMIT_OVERLAY:+:$EMIT_OVERLAY} \
-  $PYTHON -m pytest -q -m "not gpu" -p no:cacheprovider \
+  $PYTHON -m pytest -q -m "not gpu" -o pythonpath= -p no:cacheprovider \
   -p emit_record -p host_plugin -n $jobs --dist ${EMIT_DIST:-worksteal} "$@" > $ROOT/logs/${name}${CHUNK:+_$CHUNK}.log 2>&1
 echo "RC=$?" >> $ROOT/logs/${name}${CHUNK:+_$CHUNK}.log

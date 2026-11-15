@@ -20,6 +20,6 @@ log=$ROOT/logs/${name}${CHUNK:+_$CHUNK}.log
 cd "$tree" || exit 2
 HAWK_CACHE_DIR=$ROOT/cache/$name EMIT_RECORD_DIR=$ROOT/snap/$name SHADOW_MODE=${SHADOW_MODE-off} SHADOW_DIR=$ROOT/corpus/$name \
   TEXT_DIR=${TEXT_DIR-$ROOT/corpus/$name} PYTHONPATH=$RECORDER_DIR${EMIT_OVERLAY:+:$EMIT_OVERLAY} \
-  ${RUN_PREFIX:-} "$PYTHON" -P -m pytest -q -m "${MARK:-not gpu}" -p no:cacheprovider \
+  ${RUN_PREFIX:-} "$PYTHON" -P -m pytest -q -m "${MARK:-not gpu}" -o pythonpath= -p no:cacheprovider \
   -p emit_record -p shadow_plugin $plug -n "$jobs" --dist "${EMIT_DIST:-worksteal}" "$@" > "$log" 2>&1
 echo "RC=$?" >> "$log"

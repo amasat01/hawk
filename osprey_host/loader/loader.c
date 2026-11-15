@@ -1,6 +1,8 @@
 /* Opens a backend library by path and drives it through its one entry symbol, osprey_v1. Owns the
    C functions of include/osprey_host.h; holds no state between calls beyond the handle the caller
    keeps. */
+/* strndup and the dl functions are POSIX: a strict C11 build on glibc hides them without this. */
+#define _POSIX_C_SOURCE 200809L
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -211,6 +213,37 @@ int ob_render(rx_ctx* ctx, ob_backend* lib, const char* dump, size_t n_dump, con
     out->meta      = out->entry + lens[2];
     out->meta_len  = lens[3];
     return RX_OK;
+}
+
+int ob_facts(rx_ctx* ctx, ob_backend* lib, const char* target, const char* compiler,
+    const char* stated, char* buf, size_t cap, size_t* len)
+{
+    const ob_table* table = lib->table;
+    rx_ctx* inner         = table->ctx_new();
+    if (!inner)
+        return fail(ctx, RX_REFUSED, "facts", "the library cannot create a context");
+    int status = table->facts(inner, target, compiler, stated, buf, cap, len);
+    if (status != RX_OK && status != RX_TRUNC)
+        status = forward(ctx, table, inner, status, "facts");
+    table->ctx_free(inner);
+    return status;
+}
+
+int ob_lower(rx_ctx* ctx, ob_backend* lib, const char* dump, size_t n_dump, const char* dialects,
+    const char* request, size_t n_request, char* buf, size_t cap, size_t* len)
+{
+    const ob_table* table = lib->table;
+    rx_ctx* inner         = table->ctx_new();
+    if (!inner)
+        return fail(ctx, RX_REFUSED, "lower", "the library cannot create a context");
+    int status = load_unit(ctx, table, inner, dump, n_dump, dialects);
+    if (status == RX_OK) {
+        status = table->lower(inner, request, n_request, buf, cap, len);
+        if (status != RX_OK && status != RX_TRUNC)
+            status = forward(ctx, table, inner, status, "lower");
+    }
+    table->ctx_free(inner);
+    return status;
 }
 
 int ob_close(rx_ctx* ctx, ob_backend* lib)

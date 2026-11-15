@@ -1,0 +1,12 @@
+{
+  "isa": "x86_64",
+  "libm_exact": false,
+  "gcc_routes_pow": false,
+  "vector_math_needs_gcc": true,
+  "default_profile": {"gcc": "native-vector-math", "other": "native"},
+  "fusion_host": {
+    "sse2": {"regs_base": 0, "regs_file": 16, "launch_us": null, "plane_us_per_byte": null, "local_over_plane": null},
+    "avx2": {"regs_base": 0, "regs_file": 16, "launch_us": null, "plane_us_per_byte": null, "local_over_plane": null},
+    "avx512": {"regs_base": 0, "regs_file": 32, "launch_us": null, "plane_us_per_byte": null, "local_over_plane": null}
+  }
+}

@@ -78,7 +78,7 @@ def table(folder, picklist, out):
     picks = [line.rstrip("\n").split("\t") for line in open(picklist) if line.strip()]
     lines = [
         "COST_HOST: render time per host unit, the old Python render against the library path",
-        "NOTE: measured on a loaded machine (other lanes compile at the same time): read the "
+        "NOTE: measured on a loaded machine (other jobs compile at the same time): read the "
         "ratios, not the absolute times.",
         "old = the old render call, median of 5 calls in one process after one warm-up; new = "
         "mirror + dump + load + canonical +",

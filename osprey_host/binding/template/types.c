@@ -38,15 +38,47 @@ static void Node_dealloc(PyObject* o)
     Py_DECREF((PyObject*)t);
 }
 
+/* A Node is made by the door only: before Python 3.10 the flag that forbids instantiation does not
+ * exist, and the type would inherit object's constructor. */
+static PyObject* Node_new(PyTypeObject* t, PyObject* a, PyObject* k)
+{
+    (void)t;
+    (void)a;
+    (void)k;
+    PyErr_SetString(PyExc_TypeError, "cannot create '_osprey.Node' instances");
+    return NULL;
+}
+
+/* Two nodes are equal when they are the same node of the same context: a front end keys its tables
+ * by node. */
+static PyObject* Node_richcompare(PyObject* a, PyObject* b, int op)
+{
+    if ((op != Py_EQ && op != Py_NE) || !PyObject_TypeCheck(a, osprey_node_type)
+        || !PyObject_TypeCheck(b, osprey_node_type))
+        Py_RETURN_NOTIMPLEMENTED;
+    int same = ((Node*)a)->ctx == ((Node*)b)->ctx && ((Node*)a)->h == ((Node*)b)->h;
+    return PyBool_FromLong(op == Py_EQ ? same : !same);
+}
+
+/* The hash of a node: its handle and its context together, as the equality sees them. */
+static Py_hash_t Node_hash(PyObject* o)
+{
+    Py_hash_t h
+        = ((Py_hash_t)((Node*)o)->h * 1000003) ^ (Py_hash_t)((uintptr_t)((Node*)o)->ctx >> 4);
+    return h == -1 ? -2 : h;
+}
+
 /* no Py_TPFLAGS_BASETYPE: not subclassable; no dict offset: no attribute can be added;
  * IMMUTABLETYPE: the type cannot be patched */
 static PyType_Slot ctx_slots[] = { { Py_tp_new, (void*)Ctx_new },
     { Py_tp_dealloc, (void*)Ctx_dealloc }, { Py_tp_methods, osprey_ctx_methods }, { 0, 0 } };
 static PyType_Spec ctx_spec
     = { "_osprey.Ctx", sizeof(Ctx), 0, Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE, ctx_slots };
-static PyType_Slot node_slots[] = { { Py_tp_dealloc, (void*)Node_dealloc },
-    { Py_tp_methods, osprey_node_methods }, { Py_tp_getset, osprey_node_getset }, { 0, 0 } };
-static PyType_Spec node_spec    = { "_osprey.Node", sizeof(Node), 0,
+static PyType_Slot node_slots[]
+    = { { Py_tp_new, (void*)Node_new }, { Py_tp_dealloc, (void*)Node_dealloc },
+          { Py_tp_richcompare, (void*)Node_richcompare }, { Py_tp_hash, (void*)Node_hash },
+          { Py_tp_methods, osprey_node_methods }, { Py_tp_getset, osprey_node_getset }, { 0, 0 } };
+static PyType_Spec node_spec = { "_osprey.Node", sizeof(Node), 0,
     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE | Py_TPFLAGS_DISALLOW_INSTANTIATION, node_slots };
 static struct PyModuleDef osprey_module
     = { PyModuleDef_HEAD_INIT, "_osprey", NULL, -1, NULL, NULL, NULL, NULL, NULL };
@@ -69,7 +101,8 @@ PyMODINIT_FUNC PyInit__osprey(void)
     Py_INCREF(nt);
     if (PyModule_AddObject(m, "Ctx", ct) < 0 || PyModule_AddObject(m, "Node", nt) < 0
         || PyModule_AddIntConstant(m, "ABI_VERSION", (long)rx_abi_version()) < 0
-        || PyModule_AddIntConstant(m, "CONTRACT_VERSION", (long)OB_CONTRACT) < 0) {
+        || PyModule_AddIntConstant(m, "CONTRACT_VERSION", (long)OB_CONTRACT) < 0
+        || osprey_add_errors(m) < 0) {
         Py_DECREF(m);
         return NULL;
     }

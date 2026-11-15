@@ -11,15 +11,38 @@ const LIFECYCLE: [&str; 4] = [
     "rx_ctx_free",
     "rx_last_error",
 ];
-const TEMPLATE_ALLOW: [&str; 4] = ["Ctx_new", "Ctx_dealloc", "Node_dealloc", "PyInit__osprey"];
+const TEMPLATE_ALLOW: [&str; 7] = [
+    "Ctx_new",
+    "Ctx_dealloc",
+    "Node_dealloc",
+    "Node_new",
+    "Node_richcompare",
+    "Node_hash",
+    "PyInit__osprey",
+];
 const TEMPLATE_RX: [&str; 3] = ["rx_ctx_new", "rx_ctx_free", "rx_abi_version"];
-// the Node surface: python name, door function, getter (true) or method (false); none: the queries of a node are the backend's,
-// not the front end's, so a Node is only a handle
-const NODE_SURFACE: [(&str, &str, bool); 0] = [];
-// Prototypes of the build header the binding does not wrap, by one rule: its shapes carry one output and lists that own a length.
-// These take several lists (rx_new_loop, rx_substitute: lists that share one length; rx_make_op_like: the
-// operands and a node whose literal the new op carries). The gate prints the list.
-const NOT_WRAPPED: [&str; 3] = ["rx_new_loop", "rx_substitute", "rx_make_op_like"];
+// the Node surface: python name, door function, getter (true) or method (false). A front end reads back what it made through
+// these: the class, the operands, the type and the typed fields of a node (raptor_ir_front.h); every other question is the backend's
+const NODE_SURFACE: [(&str, &str, bool); 12] = [
+    ("cls", "rx_class", true),
+    ("operands", "rx_operands", true),
+    ("ttype", "rx_ttype_of", true),
+    ("field_kind", "rx_field_kind", false),
+    ("field_text", "rx_field_text", false),
+    ("field_int", "rx_field_int", false),
+    ("field_real", "rx_field_real", false),
+    ("field_flag", "rx_field_flag", false),
+    ("field_nodes", "rx_field_nodes", false),
+    ("field_node_list", "rx_field_node_list", false),
+    ("field_ints", "rx_field_ints", false),
+    ("field_names", "rx_field_names", false),
+];
+// Prototypes of the headers the binding does not wrap: none. Every shape has a rule, and a prototype without one is refused.
+const NOT_WRAPPED: [&str; 0] = [];
+// The `int*` outputs that are codes, not flags (a flag answers a Python bool).
+const CODE_OUTPUTS: [&str; 1] = ["rx_field_kind"];
+// The prefix of the readers whose status RX_ABSENT answers None.
+const ABSENT_READERS: &str = "rx_field_";
 const KEYWORDS: [&str; 5] = ["class", "def", "import", "from", "lambda"];
 
 #[derive(Debug, Clone)]
@@ -29,9 +52,20 @@ enum P {
     Cstr(String, bool),
     Text(String, String),
     I64s(String, String),
-    Nodes(String, String),
+    /// One list of nodes; `group` names the length it shares (see `NodeLists`).
+    NodeList(String, usize),
+    /// The length of a group of node lists, at its place in the C call.
+    GroupLen(usize),
+    /// A node or None (a pointer that may be NULL).
+    OptNode(String),
+    /// An integer of 64 bits passed by value.
+    I64In(String),
+    /// An int passed by value.
+    IntIn(String),
     OutText(String, String, String),
     OutNodes(String, String, String),
+    /// A node and then a list of nodes, both answers (the base of a chain and its links).
+    OutNodeList,
     OutNode(String),
     OutWalk(String),
     OutChars(String, usize),
@@ -39,6 +73,12 @@ enum P {
     OutHandle,
     OutParts,
     OutInt,
+    OutCode,
+    OutI64,
+    OutF64,
+    OutType,
+    OutI64s,
+    OutNames,
 }
 
 struct Proto {
@@ -145,12 +185,42 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
         } else if t == "const int64_t*" && sz(&next) {
             out.push(P::I64s(n, next.unwrap().1));
             i += 2
-        } else if t == "const rx_node*" && sz(&next) {
-            out.push(P::Nodes(n, next.unwrap().1));
-            i += 2
+        } else if t == "const rx_node*" && opt {
+            out.push(P::OptNode(n));
+            i += 1
+        } else if t == "const rx_node*" {
+            i = node_run(&ps, i, &mut out, &bad)?;
+        } else if t == "int64_t" {
+            out.push(P::I64In(n));
+            i += 1
+        } else if t == "int" {
+            out.push(P::IntIn(n));
+            i += 1
+        } else if t == "double*" {
+            out.push(P::OutF64);
+            i += 1
+        } else if t == "int64_t*" && sz(&next) && szp(&next2) {
+            out.push(P::OutI64s);
+            i += 3
+        } else if t == "int64_t*" {
+            out.push(P::OutI64);
+            i += 1
+        } else if t == "rx_type*" {
+            out.push(P::OutType);
+            i += 1
+        } else if t == "char*" && sz(&next) && szp(&next2) && szp(&ps.get(i + 3).map(|p| shape(p))) {
+            out.push(P::OutNames);
+            i += 4
         } else if t == "char*" && sz(&next) && szp(&next2) {
             out.push(P::OutText(n, next.unwrap().1, next2.unwrap().1));
             i += 3
+        } else if t == "rx_node*"
+            && next.as_ref().is_some_and(|x| x.0 == "rx_node*")
+            && ps.get(i + 2).is_some_and(|p| shape(p).0 == "size_t")
+            && ps.get(i + 3).is_some_and(|p| shape(p).0 == "size_t*")
+        {
+            out.push(P::OutNodeList);
+            i += 4
         } else if t == "rx_node*" && sz(&next) && szp(&next2) {
             out.push(P::OutNodes(n, next.unwrap().1, next2.unwrap().1));
             i += 3
@@ -174,12 +244,19 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
                 p,
                 P::OutText(..)
                     | P::OutNodes(..)
+                    | P::OutNodeList
                     | P::OutNode(_)
                     | P::OutWalk(_)
                     | P::OutChars(..)
                     | P::OutHandle
                     | P::OutParts
                     | P::OutInt
+                    | P::OutCode
+                    | P::OutI64
+                    | P::OutF64
+                    | P::OutType
+                    | P::OutI64s
+                    | P::OutNames
             )
         })
         .count()
@@ -188,6 +265,68 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
         return Err(bad("more than one output"));
     }
     Ok(out)
+}
+
+/// The shape of one parameter as (type, name), pointer stars glued to the type.
+fn param_shape(p: &str) -> (String, String) {
+    let n = p
+        .replace(" *", "*")
+        .replace("* ", "*")
+        .replace("@opt", "")
+        .trim()
+        .to_string();
+    let k = n.rfind(|c: char| c == '*' || c == ' ').map_or(0, |i| i + 1);
+    (n[..k].trim().to_string(), n[k..].to_string())
+}
+
+/// Reads a run of node lists starting at parameter `start`: consecutive `const rx_node*` parameters that may not be NULL. A list
+/// followed by a `size_t` owns that length; a list with none shares the length of the next list that has one in the run, else of
+/// the one before it (carries, inits and nexts of a loop; from and to of a substitution). Pushes the lists and the lengths in
+/// the order of the C call and answers the index of the parameter after the run.
+fn node_run(
+    ps: &[String],
+    start: usize,
+    out: &mut Vec<P>,
+    bad: &dyn Fn(&str) -> String,
+) -> Result<usize, String> {
+    // (name, index of the sized list it shares the length of)
+    let mut lists: Vec<(String, usize)> = vec![];
+    let mut sized: Vec<usize> = vec![];
+    let mut at = start;
+    while at < ps.len() {
+        let (t, n) = param_shape(&ps[at]);
+        if t != "const rx_node*" || ps[at].contains("@opt") {
+            break;
+        }
+        let owns = ps
+            .get(at + 1)
+            .is_some_and(|p| param_shape(p).0 == "size_t");
+        if owns {
+            sized.push(lists.len());
+        }
+        lists.push((n, if owns { lists.len() } else { usize::MAX }));
+        at += 1 + usize::from(owns);
+    }
+    if sized.is_empty() {
+        return Err(bad("a run of node lists with no length"));
+    }
+    for i in 0..lists.len() {
+        if lists[i].1 == usize::MAX {
+            lists[i].1 = *sized.iter().find(|&&k| k > i).unwrap_or_else(|| {
+                sized.iter().rev().find(|&&k| k < i).expect("a sized list")
+            });
+        }
+    }
+    let group_of = |list: usize| sized.iter().position(|&k| k == lists[list].1).unwrap_or(0);
+    // the group's index is made unique over the whole call by the position of its first parameter
+    let base = out.len();
+    for (i, (name, _)) in lists.iter().enumerate() {
+        out.push(P::NodeList(name.clone(), base * 8 + group_of(i)));
+        if sized.contains(&i) {
+            out.push(P::GroupLen(base * 8 + group_of(i)));
+        }
+    }
+    Ok(at)
 }
 
 /// returns (prototypes, count of other statements understood: typedef, enum)
@@ -234,9 +373,9 @@ fn parse_header(src: &str) -> Result<(Vec<Proto>, usize), String> {
         );
         let name = ident_last(&s[..a]);
         let ret = s[..a].trim_end_matches(&name[..]).trim().replace(" *", "*");
-        if !(name.starts_with("rx_") || name.starts_with("ob_")) {
+        if !(name.starts_with("rx_") || name.starts_with("rw_") || name.starts_with("ob_")) {
             return Err(format!(
-                "cannot wrap `{s}`: the name does not start with rx_"
+                "cannot wrap `{s}`: the name does not start with rx_, rw_ or ob_"
             ));
         }
         let inner = s[a + 1..b].trim();
@@ -244,13 +383,18 @@ fn parse_header(src: &str) -> Result<(Vec<Proto>, usize), String> {
             other += 1;
             continue;
         }
-        let params = if inner == "void" {
+        let mut params = if inner == "void" {
             vec![]
         } else if LIFECYCLE.contains(&name.as_str()) {
             vec![]
         } else {
             parse_params(inner, s)?
         };
+        if CODE_OUTPUTS.contains(&name.as_str()) {
+            for q in params.iter_mut().filter(|q| matches!(q, P::OutInt)) {
+                *q = P::OutCode;
+            }
+        }
         if !LIFECYCLE.contains(&name.as_str()) && ret != "int" {
             return Err(format!(
                 "cannot wrap `{s}`: the return type is `{ret}`, not int"
@@ -270,7 +414,10 @@ fn parse_header(src: &str) -> Result<(Vec<Proto>, usize), String> {
 fn short(name: &str) -> String {
     match name.strip_prefix("ob_") {
         Some(rest) => format!("backend_{rest}"),
-        None => name.trim_start_matches("rx_").to_string(),
+        None => name
+            .trim_start_matches("rx_")
+            .trim_start_matches("rw_")
+            .to_string(),
     }
 }
 
@@ -283,6 +430,17 @@ fn pyname(rx: &str) -> String {
     } else {
         n.to_string()
     }
+}
+
+/// The node lists of a call that share the length of group `g`, in call order.
+fn groups(params: &[P], g: usize) -> Vec<String> {
+    params
+        .iter()
+        .filter_map(|q| match q {
+            P::NodeList(n, k) if *k == g => Some(n.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn wrapper(p: &Proto) -> String {
@@ -336,17 +494,47 @@ fn wrapper(p: &Proto) -> String {
                 args.push(format!("a_{n}"));
                 args.push(format!("(size_t)l_{l}"))
             }
-            P::Nodes(n, l) => {
+            P::NodeList(n, _) => {
                 decl +=
-                    &format!("  PyObject* o_{n}; rx_node* a_{n} = NULL; Py_ssize_t l_{l} = 0;\n");
+                    &format!("  PyObject* o_{n}; rx_node* a_{n} = NULL; Py_ssize_t l_{n} = 0;\n");
                 fmt += "O";
                 refs.push(format!("&o_{n}"));
-                conv += &format!("  if (osprey_nodes(s, o_{n}, &a_{n}, &l_{l}) < 0) goto done;\n");
+                conv += &format!("  if (osprey_nodes(s, o_{n}, &a_{n}, &l_{n}) < 0) goto done;\n");
                 done += &format!("  PyMem_Free(a_{n});\n");
-                args.push(format!("a_{n}"));
-                args.push(format!("(size_t)l_{l}"))
+                args.push(format!("a_{n}"))
+            }
+            P::GroupLen(g) => {
+                let first = &groups(&p.params, *g)[0];
+                args.push(format!("(size_t)l_{first}"))
+            }
+            P::OptNode(n) => {
+                decl += &format!("  PyObject* o_{n}; rx_node a_{n} = 0; const rx_node* p_{n} = NULL;\n");
+                fmt += "O";
+                refs.push(format!("&o_{n}"));
+                conv += &format!("  if (o_{n} != Py_None) {{ if (osprey_handle(s, o_{n}, &a_{n}) < 0) goto done; p_{n} = &a_{n}; }}\n");
+                args.push(format!("p_{n}"))
+            }
+            P::I64In(n) => {
+                decl += &format!("  long long a_{n};\n");
+                fmt += "L";
+                refs.push(format!("&a_{n}"));
+                args.push(format!("(int64_t)a_{n}"))
+            }
+            P::IntIn(n) => {
+                decl += &format!("  int a_{n};\n");
+                fmt += "i";
+                refs.push(format!("&a_{n}"));
+                args.push(format!("a_{n}"))
             }
             o => out = Some(o),
+        }
+    }
+    for q in &p.params {
+        if let P::GroupLen(g) = q {
+            let members = groups(&p.params, *g);
+            for m in &members[1..] {
+                conv += &format!("  if (l_{m} != l_{}) {{ PyErr_SetString(PyExc_ValueError, \"the lists {m} and {} must have one length\"); goto done; }}\n", members[0], members[0]);
+            }
         }
     }
     let call = |extra: &[&str]| {
@@ -367,23 +555,61 @@ fn wrapper(p: &Proto) -> String {
         None => tail += &format!("  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  Py_INCREF(Py_None); res = Py_None;\n", call(&[])),
         Some(P::OutText(..)) => tail += &format!("  char sb[256]; char* hb = NULL; size_t len = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hb = PyMem_Malloc(len + 1); if (!hb) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyUnicode_DecodeUTF8(hb ? hb : sb, (Py_ssize_t)len, \"strict\");\n  PyMem_Free(hb);\n", call(&["sb", "sizeof sb", "&len"]), call(&["hb", "len + 1", "&len"])),
         Some(P::OutNodes(..)) => tail += &format!("  rx_node sn[64]; rx_node* hn = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hn = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rx_node)); if (!hn) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hn); goto done; }}\n  res = osprey_node_tuple(s, hn ? hn : sn, cnt);\n  PyMem_Free(hn);\n", call(&["sn", "64", "&cnt"]), call(&["hn", "cnt", "&cnt"])),
+        Some(P::OutNodeList) => tail += &format!("  rx_node ob0 = 0; rx_node sn[64]; rx_node* hn = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hn = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rx_node)); if (!hn) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hn); goto done; }}\n  res = Py_BuildValue(\"(NN)\", osprey_wrap_node(s, ob0), osprey_node_tuple(s, hn ? hn : sn, cnt));\n  PyMem_Free(hn);\n", call(&["&ob0", "sn", "64", "&cnt"]), call(&["&ob0", "hn", "cnt", "&cnt"])),
         Some(P::OutNode(_)) => tail += &format!("  rx_node oh = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = osprey_wrap_node(s, oh);\n", call(&["&oh"])),
         Some(P::OutInt) => tail += &format!("  int oi = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyBool_FromLong(oi);\n", call(&["&oi"])),
         Some(P::OutParts) => tail += &format!("  ob_parts parts = {{0}};\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = osprey_parts_tuple(&parts);\n", call(&["&parts"])),
         Some(P::OutHandle) => tail += &format!("  ob_backend* ob = NULL;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyLong_FromVoidPtr(ob);\n", call(&["&ob"])),
         Some(P::OutWalk(_)) => tail += &format!("  rx_walk ow = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyLong_FromUnsignedLong(ow);\n", call(&["&ow"])),
+        Some(P::OutCode) => tail += &format!("  int oc = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyLong_FromLong(oc);\n", call(&["&oc"])),
+        Some(P::OutI64) => tail += &format!("  int64_t oi = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyLong_FromLongLong(oi);\n", call(&["&oi"])),
+        Some(P::OutF64) => tail += &format!("  double od = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyFloat_FromDouble(od);\n", call(&["&od"])),
+        Some(P::OutType) => tail += &format!("  rx_type ot; memset(&ot, 0, sizeof ot);\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = osprey_type_tuple(&ot);\n", call(&["&ot"])),
+        Some(P::OutI64s) => tail += &format!("  int64_t si[64]; int64_t* hi = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hi = PyMem_Malloc((cnt ? cnt : 1) * sizeof(int64_t)); if (!hi) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hi); goto done; }}\n  res = osprey_i64_tuple(hi ? hi : si, cnt);\n  PyMem_Free(hi);\n", call(&["si", "64", "&cnt"]), call(&["hi", "cnt", "&cnt"])),
+        Some(P::OutNames) => tail += &format!("  char sb[256]; char* hb = NULL; size_t len = 0, cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hb = PyMem_Malloc(len + 1); if (!hb) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hb); goto done; }}\n  res = osprey_names_tuple(hb ? hb : sb, len);\n  PyMem_Free(hb);\n", call(&["sb", "sizeof sb", "&len", "&cnt"]), call(&["hb", "len + 1", "&len", "&cnt"])),
         Some(P::OutChars(_, n)) => tail += &format!("  char dg[{n}] = {{0}};\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyUnicode_FromString(dg);\n", call(&["dg"])),
         _ => unreachable!(),
+    }
+    if p.name.starts_with(ABSENT_READERS) && !CODE_OUTPUTS.contains(&p.name.as_str()) {
+        // a field that holds nothing answers None
+        if let Some(at) = tail.find("\n  if (st") {
+            tail.insert_str(at, "\n  if (st == RX_ABSENT) { Py_INCREF(Py_None); res = Py_None; goto done; }");
+        }
     }
     format!("/* wrapper: {n} */\n/* {t} */\nstatic PyObject* call_{n}(Ctx* s, PyObject* args) {{\n  PyObject* res = NULL; int st;\n{decl}{parse}{conv}{tail}done:\n{done}  return res;\n}}\nstatic PyObject* m_{n}(PyObject* self, PyObject* args) {{ return call_{n}((Ctx*)self, args); }}\n\n", n = short(&p.name), t = p.text)
 }
 
-const PRELUDE: &str = r#"/* Generated by gen from raptor_ir.h. Do not edit. */
+const PRELUDE: &str = r#"/* Generated by gen from the headers of the door. Do not edit. */
 #include "osprey.h"
+#include "raptor_ir_front.h"
+#include "raptor_wings_front.h"
+#include <stdio.h>
+#include <string.h>
+
+/* The exception classes of the three kinds of refusal: a construct not written and a bad request are value errors, a fault is a
+   runtime error. Made at module init by osprey_add_errors; osprey_fail chooses by the door's status. */
+static PyObject* osprey_errors[3];
+
+int osprey_add_errors(PyObject* module) {
+  static const char* const names[3] = {"NotWritten", "BadRequest", "Fault"};
+  PyObject* const bases[3] = {PyExc_ValueError, PyExc_ValueError, PyExc_RuntimeError};
+  for (int i = 0; i < 3; i++) {
+    char full[40];
+    snprintf(full, sizeof full, "_osprey.%s", names[i]);
+    osprey_errors[i] = PyErr_NewException(full, bases[i], NULL);
+    if (!osprey_errors[i]) return -1;
+    Py_INCREF(osprey_errors[i]);
+    if (PyModule_AddObject(module, names[i], osprey_errors[i]) < 0) return -1;
+  }
+  return 0;
+}
 
 static inline void osprey_fail(Ctx* s, int st) {
-  if (st == RX_REFUSED || st == RX_BADARG) PyErr_SetString(PyExc_ValueError, rx_last_error(s->c));
-  else PyErr_Format(PyExc_RuntimeError, "door status %d: %s", st, rx_last_error(s->c));
+  const char* why = rx_last_error(s->c);
+  if (st == RX_REFUSED) PyErr_SetString(osprey_errors[0], why);
+  else if (st == RX_BADARG) PyErr_SetString(osprey_errors[1], why);
+  else if (st == RX_PANIC) PyErr_SetString(osprey_errors[2], why);
+  else PyErr_Format(PyExc_RuntimeError, "door status %d: %s", st, why);
 }
 
 static inline PyObject* osprey_wrap_node(Ctx* s, rx_node h) {
@@ -437,6 +663,57 @@ static inline int osprey_nodes(Ctx* s, PyObject* seq, rx_node** v, Py_ssize_t* n
   }
   Py_DECREF(t);
   return 0;
+}
+
+static inline PyObject* osprey_i64_tuple(const int64_t* v, size_t n) {
+  PyObject* t = PyTuple_New((Py_ssize_t)n);
+  if (!t) return NULL;
+  for (size_t i = 0; i < n; i++) {
+    PyObject* x = PyLong_FromLongLong((long long)v[i]);
+    if (!x) { Py_DECREF(t); return NULL; }
+    PyTuple_SetItem(t, (Py_ssize_t)i, x);
+  }
+  return t;
+}
+
+/* The texts a reader packs, each NUL-terminated and back to back in `len` bytes, as a tuple of str. */
+static inline PyObject* osprey_names_tuple(const char* packed, size_t len) {
+  Py_ssize_t count = 0;
+  for (size_t i = 0; i < len; i++) if (packed[i] == 0) count++;
+  PyObject* t = PyTuple_New(count);
+  if (!t) return NULL;
+  const char* at = packed;
+  for (Py_ssize_t k = 0; k < count; k++) {
+    size_t n = strlen(at);
+    PyObject* x = PyUnicode_DecodeUTF8(at, (Py_ssize_t)n, "strict");
+    if (!x) { Py_DECREF(t); return NULL; }
+    PyTuple_SetItem(t, k, x);
+    at += n + 1;
+  }
+  return t;
+}
+
+/* The dtype names, in the order of the RX_ codes of raptor_ir_front.h. */
+static const char* const osprey_dtype_names[] = {"f64", "f32", "i32", "i64", "bool", "int32", "uint32"};
+
+/* A node's type as (shape tuple, dtype name, tag or None). */
+static inline PyObject* osprey_type_tuple(const rx_type* ty) {
+  if (ty->dtype < 0 || ty->dtype >= (int)(sizeof osprey_dtype_names / sizeof *osprey_dtype_names)) {
+    PyErr_SetString(PyExc_ValueError, "a dtype code this binding does not know");
+    return NULL;
+  }
+  PyObject* shape = PyTuple_New((Py_ssize_t)ty->rank);
+  if (!shape) return NULL;
+  for (uint32_t i = 0; i < ty->rank; i++) {
+    PyObject* x = PyLong_FromLongLong((long long)ty->dims[i]);
+    if (!x) { Py_DECREF(shape); return NULL; }
+    PyTuple_SetItem(shape, (Py_ssize_t)i, x);
+  }
+  PyObject* tag;
+  if (ty->tag[0]) tag = PyUnicode_FromString(ty->tag);
+  else { Py_INCREF(Py_None); tag = Py_None; }
+  if (!tag) { Py_DECREF(shape); return NULL; }
+  return Py_BuildValue("(NsN)", shape, osprey_dtype_names[ty->dtype], tag);
 }
 
 static inline int osprey_i64s(PyObject* seq, int64_t** v, Py_ssize_t* n) {
@@ -768,7 +1045,7 @@ fn main() {
             .unwrap_or(d.to_string())
     };
     // the door header and any further header of C functions (--header may repeat); their text is read as one
-    let mut headers: Vec<String> = a
+    let headers: Vec<String> = a
         .iter()
         .enumerate()
         .filter(|(_, x)| *x == "--header")

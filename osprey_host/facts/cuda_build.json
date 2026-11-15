@@ -1,0 +1,35 @@
+{
+  "form": {"lazy_leaf_width": 32, "rolled_fold_min": 16, "lean_width": 4},
+  "lanes": {"run_max": 32, "block_run": 1024, "copy_threads": 256, "team_threads": 128, "team_threads_large": 256},
+  "fold": {"k_max": 8, "regs_base": 20, "regs_column": 2, "residency_regs": 32},
+  "thread_box": {"float64": 16, "float32": 8},
+  "linalg_max_dim": 32,
+  "linalg_team_max_dim": 4096,
+  "scatter": {"max_chunks": 256, "threads": 32},
+  "cells_row": 32,
+  "wide": {"slice_min": 128, "team_min": 128, "tile_bytes": 40960},
+  "warp_size": 32,
+  "wide_rows": [],
+  "arch_features": {
+    "61": [32, 65536, 2048, true],
+    "70": [2, 65536, 2048, true],
+    "75": [32, 65536, 1024, true],
+    "80": [2, 65536, 2048, true],
+    "86": [64, 65536, 1536, true],
+    "89": [64, 65536, 1536, true],
+    "90": [2, 65536, 2048, true]
+  },
+  "wide_classes": {
+    "sm61": {
+      "capability": 61,
+      "runtime_min": {
+        "read": {"4": 16, "8": 2},
+        "slot_read": {"4": 16, "8": 4},
+        "rotate": {"4": 16, "8": 0},
+        "write": {"4": 96, "8": 8},
+        "accum": {"4": 4096, "8": 4096}
+      },
+      "wide_min": {"4": 128, "8": 64}
+    }
+  }
+}
