@@ -3,13 +3,16 @@
 //! name across the stages). The IR decisions are the wing's; this module turns each stage into a pending unit and notes what the
 //! answer's stage block says of it.
 use super::card::BuildCard;
+use super::meta_fill;
 use super::placed::{interchanged, place_sinks, place_unit};
 use super::request::{DeclaredSlot, KernelRequest, Member, DTYPES, ROLES};
 use super::stage_block::{
     CellRecord, KeyedRecord, KeysGrid, PlaneRecord, ScatterGrid, StageBlock, StageRecord,
     TeamRecord,
 };
-use super::{finished_slot, Cards, Pending, FINISHED_PLANE};
+use super::unit_meta::Body;
+use super::unit_meta::UnitMeta;
+use super::{canonical, finished_slot, typed_walk, Cards, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{
     Active, Form, Grid, Scalar, Step, StepOp, Target, TeamShape, TeamStage,
 };
@@ -32,6 +35,8 @@ pub(crate) struct Note {
     pub planes: Vec<PlaneRecord>,
     /// The keyed planes of the kernel (carried by its first unit).
     pub keyed: Vec<KeyedRecord>,
+    /// The unit that lists the stages of a cut kernel (carried by its first unit).
+    pub source: Option<UnitMeta>,
 }
 
 /// A wing refusal as the refusal of the request.
@@ -146,6 +151,7 @@ fn whole_note(ctx: *mut Ctx, unit: &Pending) -> Result<Note, Refusal> {
         ),
         planes: planes_under(context, &sinks)?,
         keyed: vec![],
+        source: None,
     })
 }
 
@@ -239,6 +245,28 @@ fn stage_declared(
     Ok(member.declared)
 }
 
+/// The unit of a cut kernel that lists its stages and has no entry of its own: its slots are what the caller binds over the whole
+/// kernel and its digest is that of the kernel's walk.
+fn source_unit(
+    ctx: *mut Ctx,
+    request: &KernelRequest,
+    member: &Member,
+) -> Result<UnitMeta, Refusal> {
+    let (walk, digest) = canonical(ctx, member)?;
+    let typed = typed_walk(ctx, walk)?;
+    Ok(UnitMeta {
+        name: format!("{}_source", member.name),
+        digest,
+        scalar_type: meta_fill::scalar(request.scalar),
+        body: Body {
+            access: meta_fill::access(typed.access),
+            slots: meta_fill::slots(ctx, walk, &typed)?,
+            ..Body::default()
+        },
+        ..UnitMeta::default()
+    })
+}
+
 /// The pending units of a cut kernel, its wide values placed in scratch planes shared across the stages.
 fn staged(
     ctx: *mut Ctx,
@@ -251,6 +279,9 @@ fn staged(
     for stage in &cut.stages {
         taken.extend(names_under(unsafe { &*ctx }, &stage.sinks).map_err(wing)?);
     }
+    let source = (cut.stages.len() > 1)
+        .then(|| source_unit(ctx, request, &unit.member))
+        .transpose()?;
     let cells = cell_records(cut.cells.clone(), &request.planes);
     let keyed: Vec<KeyedRecord> = cut
         .keyed
@@ -327,6 +358,7 @@ fn staged(
                 cells: if first { cells.clone() } else { vec![] },
                 planes,
                 keyed: if first { keyed.clone() } else { vec![] },
+                source: if first { source.clone() } else { None },
             }),
             warp: None,
         });
@@ -343,6 +375,7 @@ pub(super) fn block(pending: &[Pending]) -> Option<StageBlock> {
         block.stages.push(note.stage.clone());
         block.cells.extend(note.cells.iter().cloned());
         block.keyed.extend(note.keyed.iter().cloned());
+        block.source = block.source.take().or_else(|| note.source.clone());
         for plane in &note.planes {
             if !block.team_planes.iter().any(|p| p.name == plane.name) {
                 block.team_planes.push(plane.clone());

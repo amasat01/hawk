@@ -8,7 +8,7 @@ use std::process::Command;
 /// The replay tool's report on the recording `name`, or none when the recording is not there.
 fn report(name: &str) -> Option<String> {
     let corpus = std::env::var("OSPREY_CORPUS").map_or_else(
-        |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../corpus"),
+        |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../corpus"),
         PathBuf::from,
     );
     let texts = corpus.join(name).join("texts.jsonl");

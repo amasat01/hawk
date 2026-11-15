@@ -1,7 +1,7 @@
 //! The meta of the answer's units against the sidecars the old build recorded for the same units, member by member, and the mode
 //! that writes the C source of the meta of recorded kernels to files (the source's compile test reads those).
 use super::{ask, facts_all, load, osprey_host_free, request_for, unit_targets, Found, SIDES};
-use osprey_host::lower::request::UnitAnswer;
+use osprey_host::lower::request::{KernelAnswer, UnitAnswer};
 use osprey_host::lower::unit_meta as meta;
 use rcore::json::{self, J};
 use std::collections::BTreeMap;
@@ -232,11 +232,17 @@ fn slot_rows(unit: &meta::UnitMeta, sc: &J) -> Vec<Pair> {
     ]
 }
 
-/// The stage facts of the unit that lists the kernel's stages, against the sidecar of that unit.
-fn stage_rows(unit: &meta::UnitMeta, sc: &J) -> Vec<Pair> {
-    if unit.stages.is_empty() {
+/// The stage facts of the unit that lists the kernel's stages, against the sidecar of the kernel's first stage. A scatter's
+/// target and a plane's target are named in the lister's body, or in the body of the stage unit the answer says holds them.
+fn stage_rows(unit: &meta::UnitMeta, answer: &KernelAnswer, sc: &J) -> Vec<Pair> {
+    let Some(unit) = answer.units.iter().map(|u| &u.meta).find(|lister| {
+        lister
+            .stages
+            .first()
+            .is_some_and(|s| s.unit.name == unit.name)
+    }) else {
         return vec![None; 6];
-    }
+    };
     let b = &unit.body;
     let cells = (
         joined(sorted(b.cells.iter().map(|c| {
@@ -283,8 +289,16 @@ fn stage_rows(unit: &meta::UnitMeta, sc: &J) -> Vec<Pair> {
             )
         })),
     );
-    let slot = |at: Option<usize>| {
-        at.and_then(|n| b.slots.get(n))
+    let slot = |at: Option<usize>, stage: Option<usize>| {
+        let slots = match stage {
+            None => Some(&b.slots),
+            Some(n) => unit
+                .stages
+                .get(n)
+                .and_then(|s| answer.units.iter().find(|u| u.meta.name == s.unit.name))
+                .map(|u| &u.meta.body.slots),
+        };
+        at.and_then(|n| slots?.get(n))
             .map_or("-".to_string(), |s| s.name.clone())
     };
     let team_ours = joined(unit.stages.iter().filter_map(|s| {
@@ -306,7 +320,7 @@ fn stage_rows(unit: &meta::UnitMeta, sc: &J) -> Vec<Pair> {
             t.warps,
             t.groups,
             keyed,
-            slot(t.of_slot),
+            slot(t.of_slot, t.of_stage),
             status
         ))
     }));
@@ -456,14 +470,21 @@ fn launch_rows(unit: &meta::UnitMeta, sc: &J, unboxed: bool) -> Vec<Pair> {
 
 impl Oracle {
     /// Compares the meta of an answer unit with the sidecar recorded for it; a unit with no sidecar is not counted.
-    pub fn unit(&mut self, id: &str, unit: &UnitAnswer, record: &J, unboxed: bool) {
+    pub fn unit(
+        &mut self,
+        id: &str,
+        unit: &UnitAnswer,
+        answer: &KernelAnswer,
+        record: &J,
+        unboxed: bool,
+    ) {
         let Some(sc) = record.get("sidecar").filter(|s| !matches!(s, J::Null)) else {
             return;
         };
         let m = &unit.meta;
         let host = word(sc, &["format"]).as_deref() == Some("host");
         let slots = slot_rows(m, sc);
-        let stages = stage_rows(m, sc);
+        let stages = stage_rows(m, answer, sc);
         let launch = launch_rows(m, sc, unboxed);
         let cell_row = (
             m.body.cell_row.to_string(),

@@ -1116,10 +1116,13 @@ fn replay_plain(
         &own.into_iter().collect::<Vec<_>>(),
         failed(found.call),
     );
-    if let ([unit], Some(record)) = (answer.units.as_slice(), own) {
-        tally.meta.unit(found.id, unit, record, box_off(own));
+    let written: Vec<&UnitAnswer> = answer.units.iter().filter(|u| !is_source(u)).collect();
+    if let ([unit], Some(record)) = (written.as_slice(), own) {
+        tally
+            .meta
+            .unit(found.id, unit, &answer, record, box_off(own));
     }
-    match answer.units.as_slice() {
+    match written.as_slice() {
         [unit] => compare(
             (found.id, name),
             digest_of(own),
@@ -1135,7 +1138,7 @@ fn replay_plain(
             tally,
         ),
         _ => {
-            let names: Vec<&str> = answer.units.iter().map(|u| u.meta.name.as_str()).collect();
+            let names: Vec<&str> = written.iter().map(|u| u.meta.name.as_str()).collect();
             let why = format!("the answer does not hold one unit|the answer holds {names:?}");
             count_failure((found.id, name), why, tally)
         }
@@ -1296,12 +1299,18 @@ struct Found<'a> {
 fn keep_recorded(answer: &mut KernelAnswer, recorded: &[&J], failed: bool) {
     if failed {
         let named = |unit: &UnitAnswer| {
-            recorded
-                .iter()
-                .any(|r| r.get("unit").and_then(J::str) == Some(unit.meta.name.as_str()))
+            is_source(unit)
+                || recorded
+                    .iter()
+                    .any(|r| r.get("unit").and_then(J::str) == Some(unit.meta.name.as_str()))
         };
         answer.units.retain(named);
     }
+}
+
+/// Whether a unit is the entry-less source unit of a cut kernel: it names no entry on any side.
+fn is_source(unit: &UnitAnswer) -> bool {
+    unit.meta.host_entry.is_none() && unit.meta.device_function.is_none()
 }
 
 /// A refusal or a failure to build, counted by its reason and listed by kernel.
@@ -1382,7 +1391,7 @@ fn replay_segmented(
         tally.segment_equal += tally.equal - before;
         tally
             .meta
-            .unit(found.id, unit, record, box_off(Some(record)));
+            .unit(found.id, unit, &answer, record, box_off(Some(record)));
     }
 }
 
@@ -1468,8 +1477,17 @@ fn answer_block(answer: &KernelAnswer) -> Option<V> {
     let texts = |items: &[String]| V::L(items.iter().map(|t| V::S(t.clone())).collect());
     let one =
         |pairs: Vec<(&str, V)>| V::D(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
-    let slot = |at: Option<usize>| {
-        at.and_then(|n| b.slots.get(n))
+    // a slot of the lister's body, or of the stage unit the `*_stage` member names
+    let slot = |at: Option<usize>, stage: Option<usize>| {
+        let slots = match stage {
+            None => Some(&b.slots),
+            Some(n) => carrier
+                .stages
+                .get(n)
+                .and_then(|s| answer.units.iter().find(|u| u.meta.name == s.unit.name))
+                .map(|u| &u.meta.body.slots),
+        };
+        at.and_then(|n| slots?.get(n))
             .map_or(V::N, |s| V::S(s.name.clone()))
     };
     let mut top = vec![
@@ -1531,7 +1549,7 @@ fn answer_block(answer: &KernelAnswer) -> Option<V> {
                             }
                             if matches!(team.grid, meta::TeamGrid::Chunks | meta::TeamGrid::Targets)
                             {
-                                held.push(("of", slot(team.of_slot)));
+                                held.push(("of", slot(team.of_slot, team.of_stage)));
                                 if let Some(plane) =
                                     team.status_plane.and_then(|n| b.team_planes.get(n))
                                 {
@@ -1561,7 +1579,7 @@ fn answer_block(answer: &KernelAnswer) -> Option<V> {
                 plane.push(("keys", keyed_value(k)));
             }
             if p.unit == meta::PlaneUnit::Target {
-                plane.push(("per_target", slot(p.target_slot)));
+                plane.push(("per_target", slot(p.target_slot, p.target_stage)));
             }
             if p.unit == meta::PlaneUnit::Once {
                 plane.push(("once", V::B(true)));
@@ -1754,12 +1772,18 @@ fn replay_staged(
     let test = found.call.get("test").and_then(J::str).unwrap_or("");
     let mut answer = answer;
     keep_recorded(&mut answer, &recorded, failed(found.call));
-    if answer.units.len() != recorded.len() {
+    // the entry-less source unit of a cut kernel has no record: it is compared through the stage block
+    let written: Vec<&UnitAnswer> = answer
+        .units
+        .iter()
+        .filter(|u| !u.texts.is_empty())
+        .collect();
+    if written.len() != recorded.len() {
         let why = "the answer holds another number of units than the record";
         count_failure((found.id, name), why.into(), tally);
         return;
     }
-    for (unit, record) in answer.units.iter().zip(&recorded) {
+    for (unit, record) in written.into_iter().zip(&recorded) {
         // of the units built under one name, the record ends with the last build: that is the one
         // compared
         let same = built_as(&every, &unit.meta.name, side_of(found.target));
@@ -1788,7 +1812,7 @@ fn replay_staged(
         tally.staged_equal += tally.equal - before;
         tally
             .meta
-            .unit(found.id, unit, record, box_off(Some(record)));
+            .unit(found.id, unit, &answer, record, box_off(Some(record)));
     }
     compare_block(found, name, &recorded, &answer, tally);
 }
@@ -1871,7 +1895,12 @@ fn compare(
             == want.boxed;
     let mut text_ok = got.text == want.text;
     let mut accepted = false;
-    if !text_ok && digest_ok && meta_ok && t.accepted_keys.contains(&want.ukey) {
+    if !text_ok
+        && digest_ok
+        && meta_ok
+        && !want.ukey.is_empty()
+        && t.accepted_keys.contains(&want.ukey)
+    {
         t.accepted
             .push(format!("{call} {name} {} {test}", want.ukey));
         text_ok = true;
@@ -1911,7 +1940,8 @@ fn compare(
             "meta".into()
         };
         println!(
-            "DIFF {call} {name} [{test}] ({} renders): {how}",
+            "DIFF {call} {name} key {} [{test}] ({} renders): {how}",
+            want.ukey,
             wants.len()
         );
     }
@@ -2182,7 +2212,8 @@ fn replay_chain(
     };
     let mut answer = answer;
     keep_recorded(&mut answer, &recorded, failed(found.call));
-    if answer.units.len() != recorded.len() {
+    let written: Vec<&UnitAnswer> = answer.units.iter().filter(|u| !is_source(u)).collect();
+    if written.len() != recorded.len() {
         let test = found.call.get("test").and_then(J::str).unwrap_or("");
         if test.contains("another_register_file") {
             tally.fusion_overridden.push(format!("{} {name}", found.id));
@@ -2194,7 +2225,7 @@ fn replay_chain(
         return;
     }
     let test = found.call.get("test").and_then(J::str).unwrap_or("");
-    for (unit, record) in answer.units.iter().zip(&recorded) {
+    for (unit, record) in written.into_iter().zip(&recorded) {
         let digest = record.get("digest").and_then(J::str);
         let Some(wants) = expected.get(&(found.id.to_string(), unit.meta.name.clone())) else {
             tally.no_text += 1;
@@ -2220,7 +2251,7 @@ fn replay_chain(
         tally.chain_equal += tally.equal - before;
         tally
             .meta
-            .unit(found.id, unit, record, box_off(Some(record)));
+            .unit(found.id, unit, &answer, record, box_off(Some(record)));
     }
     compare_block(found, name, &recorded, &answer, tally);
 }
@@ -2265,12 +2296,15 @@ fn main() {
         .position(|a| a == "--accepted")
         .and_then(|i| args.get(i + 1))
     {
-        tallies[0].accepted_keys = std::fs::read_to_string(list)
+        let keys: HashSet<String> = std::fs::read_to_string(list)
             .expect("the accepted list")
             .lines()
             .filter(|l| !l.starts_with('#'))
             .filter_map(|l| l.split('\t').next().map(String::from))
             .collect();
+        for t in &mut tallies {
+            t.accepted_keys.clone_from(&keys);
+        }
     }
     for kpath in &files {
         let tpath = kpath.with_file_name(

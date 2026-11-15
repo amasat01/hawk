@@ -1,6 +1,7 @@
 //! What the split of a kernel into launches decided, by name: the stages in launch order, the cells and keyed planes between them
 //! and the scratch planes they make. It is a step's product only: `meta_fill` turns it into the typed meta of the units (which is
 //! what the answer carries) once every unit's slots are known.
+use super::unit_meta::UnitMeta;
 
 /// A cell: a reduction over samples stored in rows, finished between two launches.
 #[derive(Debug, Clone, PartialEq)]
@@ -108,4 +109,6 @@ pub(crate) struct StageBlock {
     pub(crate) team_planes: Vec<PlaneRecord>,
     /// The keyed planes of the stages.
     pub(crate) keyed: Vec<KeyedRecord>,
+    /// The unit of a cut kernel that lists its stages and has no entry of its own: the caller's view of the kernel.
+    pub(crate) source: Option<UnitMeta>,
 }

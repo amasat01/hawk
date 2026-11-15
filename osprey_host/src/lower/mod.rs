@@ -379,12 +379,14 @@ fn write_target(
         Target::Device => cuda_render,
     };
     let source = render(ctx as *mut RxCtx, walk, &json)?;
+    let symbol = source.symbol();
     let meta = source.meta;
     Ok(TargetText {
         target,
         text: source.text,
         body: source.body,
         entry: source.entry,
+        symbol,
         mode: meta.mode.to_string(),
         vectorised: meta.vectorised,
         thread_box: meta.thread_box.filter(|b| b.axis.is_some()),

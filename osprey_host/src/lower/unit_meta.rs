@@ -179,9 +179,10 @@ closed! {
 closed! {
     /// The format of a device image.
     pub enum ImageFormat {
-        /** Text assembly. */ Ptx = 0 => "EG_IMAGE_PTX",
-        /** A binary for one architecture. */ Cubin = 1 => "EG_IMAGE_CUBIN",
-        /** Binaries for several architectures. */ Fatbin = 2 => "EG_IMAGE_FATBIN",
+        /** No image. */ None = 0 => "EG_IMAGE_NONE",
+        /** Text assembly. */ Ptx = 1 => "EG_IMAGE_PTX",
+        /** A binary for one architecture. */ Cubin = 2 => "EG_IMAGE_CUBIN",
+        /** Binaries for several architectures. */ Fatbin = 3 => "EG_IMAGE_FATBIN",
     }
 }
 closed! {
@@ -383,10 +384,14 @@ record! {
         pub target_slot: Option<usize>,
         /// The elements of one slice.
         pub per_lane: i64,
-        /// The value at the start of every run.
+        /// The value at the start of every run, read only when `fill_promised`.
         pub fill: i64,
         /// The plane's name.
         pub name: String,
+        /// With unit target: the index in the kernel's stages of the unit whose body holds `target_slot`; none: this unit.
+        pub target_stage: Option<usize>,
+        /// Whether `fill` is promised at the start of every run.
+        pub fill_promised: bool,
     }
 }
 record! {
@@ -507,7 +512,7 @@ record! {
         pub counter_slot: usize,
         /// The slot of the steps word of an auto count.
         pub steps_slot: Option<usize>,
-        /// The steps one launch takes, 0 for auto.
+        /// The steps one launch takes, -1 for auto.
         pub steps: Option<i64>,
         /// The most steps of an auto launch, 0 for none.
         pub steps_max: Option<i64>,
@@ -540,6 +545,8 @@ record! {
         pub of_slot: Option<usize>,
         /// With grid chunks: the index in the team planes of the out-of-range flags.
         pub status_plane: Option<usize>,
+        /// With grid chunks or targets: the index in the kernel's stages of the unit whose body holds `of_slot`; none: the source.
+        pub of_stage: Option<usize>,
     }
 }
 record! {
@@ -614,8 +621,6 @@ impl LibraryMeta {
 /// written as the header's absent value (or past the record's `struct_size`) and never as a value; the next slices shrink the list.
 /// Paths: raptor = rs/ir/src, aether = rs/writers/src, lower = osprey_host/src/lower.
 pub const NOT_COMPUTED: &[(&str, &str)] = &[
-    ("library.units: the entry-less source unit of a split kernel (its slots, digest, stages)", "lower/stages.rs:213 `staged` knows the stages; the source's slots are the caller's view over them"),
-    ("team.of_slot, team_plane.target_slot of a split kernel", "the source unit's slots (above); a scatter target is a slot of a later stage, not of the unit that lists the stages"),
     ("meta.device_image_format", "the request must carry the format a device compile is asked for"),
     ("slot.flags PRIOR", "raptor canon.rs:518 `prior_reads`, walk field `prior` (canon.rs:802)"),
     ("slot.flags GATHER, slot.gather", "aether ir/analysis.rs:434 `gather`, with the broadcast pattern the request must carry"),

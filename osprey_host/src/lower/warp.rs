@@ -224,5 +224,6 @@ fn note(ctx: *mut Ctx, member: &Member, warp: &Warp) -> Result<Note, Refusal> {
         cells: vec![],
         planes: vec![],
         keyed: vec![],
+        source: None,
     })
 }

@@ -276,7 +276,7 @@ if lib_path:
     assert str(e).startswith("render: not in this build"), str(e)
     banded = json.dumps({**UNIT, "scalar": "Banded"})
     e = raises(o.NotWritten, lambda: render(banded), "backend_render: a construct not written")
-    assert str(e) == "render: not in this build: scalar mode BANDED", str(e)
+    assert str(e) == "render: not in this build: banded mode", str(e)
     lost = json.dumps({**UNIT, "sinks": [99]})
     e = raises(o.Fault, lambda: render(lost), "backend_render: a fault of the compiled side")
     assert str(e).startswith("render: least squares (panic: "), str(e)

@@ -63,11 +63,20 @@ fn dtype(dtype: Dtype) -> m::WireDtype {
 }
 
 /// The scalar type of a request.
-fn scalar(scalar: Scalar) -> m::ScalarType {
+pub(super) fn scalar(scalar: Scalar) -> m::ScalarType {
     match scalar {
         Scalar::Float64 => m::ScalarType::Float64,
         Scalar::Float32 => m::ScalarType::Float32,
         Scalar::Banded => m::ScalarType::Banded,
+    }
+}
+
+/// The access class of a walk in the header's closed set.
+pub(super) fn access(access: Access) -> m::Access {
+    match access {
+        Access::SampleLocal => m::Access::SampleLocal,
+        Access::CrossSampleRead => m::Access::CrossSampleRead,
+        Access::CrossSampleWrite => m::Access::CrossSampleWrite,
     }
 }
 
@@ -76,15 +85,14 @@ fn slot_at(slots: &[m::Slot], name: &str) -> Option<usize> {
     slots.iter().position(|slot| slot.name == name)
 }
 
-/// The slots of a unit: position is the index.
-fn slots(parts: &Parts) -> Result<Vec<m::Slot>, Refusal> {
-    let ctx = parts.ctx as *mut RxCtx;
-    parts
-        .typed
+/// The slots of a walk: position is the index.
+pub(super) fn slots(ctx: *mut Ctx, walk: u32, typed: &Walk) -> Result<Vec<m::Slot>, Refusal> {
+    let ctx = ctx as *mut RxCtx;
+    typed
         .slots
         .iter()
         .map(|s| {
-            let planar = s.role == Role::Lookup && param_plane(ctx, parts.walk, &s.name)?;
+            let planar = s.role == Role::Lookup && param_plane(ctx, walk, &s.name)?;
             Ok(m::Slot {
                 flags: if planar { m::SLOT_PARAM_PLANE } else { 0 },
                 role: role(s.role),
@@ -157,37 +165,26 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
 
 /// The meta of one unit, without what only its kernel's stages tell (see `stages`).
 pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
-    let slots = slots(parts)?;
+    let slots = slots(parts.ctx, parts.walk, parts.typed)?;
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let stores = !stored_cells(unsafe { &*parts.ctx }, &parts.pending.member.sinks)
         .map_err(wing)?
         .is_empty();
     let name = &parts.pending.member.name;
-    let entry = |target: Target| {
-        parts
-            .texts
-            .iter()
-            .find(|t| t.target == target)
-            .map(|t| t.entry.clone())
-    };
-    let device = entry(Target::Device);
-    let access = match parts.typed.access {
-        Access::SampleLocal => m::Access::SampleLocal,
-        Access::CrossSampleRead => m::Access::CrossSampleRead,
-        Access::CrossSampleWrite => m::Access::CrossSampleWrite,
-    };
+    let entry = |target: Target| parts.texts.iter().find(|t| t.target == target);
+    let device = entry(Target::Device).map(|t| t.entry.clone());
     Ok(m::UnitMeta {
         name: name.clone(),
         digest: parts.digest.to_string(),
         scalar_type: scalar(parts.request.scalar),
-        host_entry: entry(Target::Host),
+        host_entry: entry(Target::Host).map(|t| t.symbol.clone()),
         device_image: device.as_ref().map(|_| format!("{name}__image")),
         device_image_size: device.as_ref().map(|_| format!("{name}__image_size")),
         device_function: device,
         launch: launch(parts, &slots),
         finish: finish(parts, &slots)?,
         body: m::Body {
-            access,
+            access: access(parts.typed.access),
             cell_row: if stores { parts.card.cells_row } else { 0 },
             slots,
             ..m::Body::default()
@@ -236,11 +233,32 @@ fn plane_dtype(name: &str) -> Result<m::WireDtype, Refusal> {
     }
 }
 
-/// One scratch plane of the block as a record; its keyed plane and target slot are looked up in the carrying unit.
+/// The slots a kernel's scratch planes and scatters name: those of the unit that lists the stages, then those of each stage unit.
+struct View<'a> {
+    /// The slots of the unit that lists the stages.
+    carrier: &'a [m::Slot],
+    /// The slots of each stage unit, in stage order.
+    stages: &'a [Vec<m::Slot>],
+}
+
+impl View<'_> {
+    /// The slot of that name: its index and, when it is not the lister's, the index of the stage whose unit holds it.
+    fn find(&self, name: &str) -> Option<(usize, Option<usize>)> {
+        if let Some(at) = slot_at(self.carrier, name) {
+            return Some((at, None));
+        }
+        self.stages
+            .iter()
+            .enumerate()
+            .find_map(|(stage, slots)| slot_at(slots, name).map(|at| (at, Some(stage))))
+    }
+}
+
+/// A scratch plane of the stages as a record, its keyed plane and target slot looked up.
 fn team_plane(
     plane: &PlaneRecord,
     keyed: &mut Vec<m::Keyed>,
-    slots: &[m::Slot],
+    view: &View,
 ) -> Result<m::TeamPlane, Refusal> {
     let unit = match (&plane.keys, &plane.per_target, plane.once) {
         (Some(_), _, _) => m::PlaneUnit::Key,
@@ -248,6 +266,7 @@ fn team_plane(
         (_, _, true) => m::PlaneUnit::Once,
         _ => m::PlaneUnit::Lane,
     };
+    let target = plane.per_target.as_deref().and_then(|name| view.find(name));
     Ok(m::TeamPlane {
         dtype: plane_dtype(&plane.dtype)?,
         unit,
@@ -256,22 +275,21 @@ fn team_plane(
             _ => m::PlaneLayout::Flat,
         },
         keyed: plane.keys.as_ref().map(|k| intern(keyed, k)),
-        target_slot: plane
-            .per_target
-            .as_deref()
-            .and_then(|name| slot_at(slots, name)),
+        target_slot: target.map(|(at, _)| at),
+        target_stage: target.and_then(|(_, stage)| stage),
         per_lane: plane.per_lane,
         fill: plane.fill.unwrap_or(0),
+        fill_promised: plane.fill.is_some(),
         name: plane.name.clone(),
         ..m::TeamPlane::default()
     })
 }
 
-/// The team of a stage as a record; the index of its keyed plane, scatter target and status plane are looked up in the carrying unit.
+/// The team of a stage as a record; the index of its keyed plane, scatter target and status plane are looked up in the lister.
 fn team(
     team: &TeamRecord,
     keyed: &mut Vec<m::Keyed>,
-    carrier: (&[m::Slot], &[m::TeamPlane]),
+    carrier: (&View, &[m::TeamPlane]),
 ) -> m::Team {
     let (grid, of) = match (&team.keys, &team.scatter) {
         (Some(_), _) => (m::TeamGrid::Keys, None),
@@ -279,6 +297,7 @@ fn team(
         (_, Some(s)) => (m::TeamGrid::Targets, Some(s)),
         _ => (m::TeamGrid::Lanes, None),
     };
+    let target = of.and_then(|s| carrier.0.find(&s.target));
     m::Team {
         grid,
         threads: team.threads,
@@ -286,37 +305,72 @@ fn team(
         lanes: team.lanes,
         groups: team.keys.as_ref().map_or(1, |k| k.groups),
         keyed: team.keys.as_ref().map(|k| intern(keyed, &k.keyed)),
-        of_slot: of.and_then(|s| slot_at(carrier.0, &s.target)),
+        of_slot: target.map(|(at, _)| at),
+        of_stage: target.and_then(|(_, stage)| stage),
         status_plane: of
             .and_then(|s| s.status.as_ref())
             .and_then(|name| carrier.1.iter().position(|p| &p.name == name)),
     }
 }
 
-/// Writes what the split into stages decided into the unit that carries it (the first stage): the stages, cells, keyed planes and
-/// scratch planes of the kernel, and the chunk cap of its ordered scatters.
+/// Writes what the split into stages decided into the unit that lists the stages: the kernel's entry-less source unit when the
+/// kernel was cut (put first in the answer), else the first stage. It gets the stages, cells, keyed planes and scratch planes of
+/// the kernel, and the chunk cap of its ordered scatters.
 pub(super) fn stages(
-    units: &mut [UnitAnswer],
+    units: &mut Vec<UnitAnswer>,
     block: &StageBlock,
     scatter_chunks: i64,
 ) -> Result<(), Refusal> {
     let first = block.stages.first().map(|s| s.kernel.as_str());
-    let at = units
-        .iter()
-        .position(|u| Some(u.meta.name.as_str()) == first)
-        .ok_or_else(|| fault("a stage block whose first stage is not a unit of the answer"))?;
     let refs: Vec<(String, String)> = units
         .iter()
         .map(|u| (u.meta.name.clone(), u.meta.digest.clone()))
         .collect();
+    let stage_slots: Vec<Vec<m::Slot>> = block
+        .stages
+        .iter()
+        .map(|s| {
+            units
+                .iter()
+                .find(|u| u.meta.name == s.kernel)
+                .map(|u| u.meta.body.slots.clone())
+                .ok_or_else(|| {
+                    fault(format!(
+                        "a stage {} that is no unit of the answer",
+                        s.kernel
+                    ))
+                })
+        })
+        .collect::<Result<_, _>>()?;
+    let at = match &block.source {
+        Some(source) => {
+            units.insert(
+                0,
+                UnitAnswer {
+                    texts: vec![],
+                    meta: source.clone(),
+                },
+            );
+            0
+        }
+        None => units
+            .iter()
+            .position(|u| Some(u.meta.name.as_str()) == first)
+            .ok_or_else(|| fault("a stage block whose first stage is not a unit of the answer"))?,
+    };
     let meta = &mut units[at].meta;
     let mut keyed = vec![];
     for plane in &block.keyed {
         intern(&mut keyed, plane);
     }
+    let carrier = meta.body.slots.clone();
+    let view = View {
+        carrier: &carrier,
+        stages: &stage_slots,
+    };
     let mut planes = vec![];
     for plane in &block.team_planes {
-        planes.push(team_plane(plane, &mut keyed, &meta.body.slots)?);
+        planes.push(team_plane(plane, &mut keyed, &view)?);
     }
     for stage in &block.stages {
         let digest = refs
@@ -339,7 +393,7 @@ pub(super) fn stages(
             team: stage
                 .team
                 .as_ref()
-                .map(|t| team(t, &mut keyed, (&meta.body.slots, &planes))),
+                .map(|t| team(t, &mut keyed, (&view, &planes))),
         });
     }
     for cell in &block.cells {

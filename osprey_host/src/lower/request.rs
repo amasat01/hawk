@@ -151,6 +151,8 @@ pub struct TargetText {
     pub body: String,
     /// The entry function's name.
     pub entry: String,
+    /// The symbol the text exports for its entry.
+    pub symbol: String,
     /// The scalar mode's id.
     pub mode: String,
     /// Whether the lane loop runs its lanes side by side.
@@ -754,6 +756,7 @@ impl KernelAnswer {
                 ("text".into(), Json::Str(t.text.clone())),
                 ("body".into(), Json::Str(t.body.clone())),
                 ("entry".into(), Json::Str(t.entry.clone())),
+                ("symbol".into(), Json::Str(t.symbol.clone())),
                 ("mode".into(), Json::Str(t.mode.clone())),
                 ("vectorised".into(), Json::Bool(t.vectorised)),
             ];
@@ -818,6 +821,7 @@ impl KernelAnswer {
                 text: text_of(k.req("text")?, "text")?,
                 body: text_of(k.req("body")?, "body")?,
                 entry: text_of(k.req("entry")?, "entry")?,
+                symbol: text_of(k.req("symbol")?, "symbol")?,
                 mode: text_of(k.req("mode")?, "mode")?,
                 vectorised: flag_of(k.req("vectorised")?, "vectorised")?,
                 thread_box,

@@ -273,6 +273,8 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("per_lane", p.per_lane.to_string()),
             ("fill", p.fill.to_string()),
             ("name", lit(&p.name)),
+            ("target_stage", index(p.target_stage)),
+            ("fill_promised", flag(p.fill_promised).into()),
         ];
         planes.push(out.record("eg_unit_team_plane", &format!("tp{at}"), None, &members));
     }
@@ -413,6 +415,7 @@ fn stages(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
                     ("keyed", index(t.keyed)),
                     ("of_slot", index(t.of_slot)),
                     ("status_plane", index(t.status_plane)),
+                    ("of_stage", index(t.of_stage)),
                 ];
                 format!(
                     "&{}",

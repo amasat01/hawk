@@ -129,6 +129,7 @@ pub(super) fn expand(
                 })
                 .collect(),
             keyed: vec![],
+            source: None,
         });
         units.push(unit);
     }

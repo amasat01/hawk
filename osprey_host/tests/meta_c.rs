@@ -164,6 +164,8 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             per_lane: 5,
             fill: -1,
             name: "tp".into(),
+            target_stage: Some(1),
+            fill_promised: true,
         }],
         dispatches: vec![Dispatch {
             strategy: DispatchStrategy::Segmented,
@@ -184,6 +186,7 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
         keyed: Some(0),
         of_slot: Some(1),
         status_plane: Some(0),
+        of_stage: Some(1),
     };
     let unit = UnitMeta {
         flags: 0,
@@ -233,7 +236,7 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             mask_slot: 0,
             counter_slot: 1,
             steps_slot: Some(1),
-            steps: Some(0),
+            steps: Some(-1),
             steps_max: Some(64),
             step_ops: Some(41),
             fp64_ops_ir: None,
