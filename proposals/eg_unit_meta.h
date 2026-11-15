@@ -25,14 +25,28 @@
  *    a reason, where hawk resolves a declaration, or where two units meet:
  *    across the units of one kernel (a source unit and its stage units) a
  *    team plane, a keyed plane or a cell is joined by NAME, as eg_door.h's
- *    ``eg_unit_stage`` cells are.
+ *    ``eg_unit_stage`` cells are. ``eg_unit_load`` resolves every such name
+ *    ONCE into index maps (source slot -> stage slot, per stage); no name is
+ *    looked up after the load call returns.
+ *  - Device image: ``eg_unit_meta.device_image`` names the image's BYTES
+ *    symbol; its length is read from the SIZE symbol the meta names (a
+ *    ``const uint64_t``, see the proposed door append below), so the meta is
+ *    generated before the compile. ``device_image_bytes`` is written 0 by the
+ *    generator. The compile step must export both symbols with C linkage and
+ *    default visibility from the unit library. PROPOSED DOOR APPEND (eg_door.h
+ *    owns ``eg_unit_meta``; not defined here): ``const char* device_image_size;``
+ *    after ``finish``: the size symbol, NULL when ``device_image`` is NULL.
+ *  - EG_SCALAR_BANDED on a host structure is refused by ``eg_plan_new`` with
+ *    EG_NOT_WRITTEN.
  *  - Names are NUL-terminated ASCII. Flags are 0 / 1. Absence is NULL, -1 or a
  *    count of 0 as each member states; never a text.
  *  - Contradictions inside the tree (an index out of range, a slot of the
  *    wrong role or dtype for its use, a count that disagrees) are refused by
  *    ``eg_unit_load`` with EG_BAD_REQUEST ("meta that contradicts itself").
  *  - The same tree serves the host and the device unit: per-target facts
- *    (the thread box) have one member per target; everything else is shared.
+ *    (the thread box, a companion's fold entry) have one member per target;
+ *    everything else is shared. No symbol or function name is derived from
+ *    another by a rule: each is a member.
  */
 #ifndef EG_UNIT_META_H
 #define EG_UNIT_META_H
@@ -54,7 +68,7 @@ typedef int32_t eg_unit_pattern;
 typedef int32_t eg_scalar_type;
 #define EG_SCALAR_FLOAT64 0
 #define EG_SCALAR_FLOAT32 1
-#define EG_SCALAR_BANDED 2 /**< banded accumulators; eagle refuses it on a host structure */
+#define EG_SCALAR_BANDED 2 /**< banded accumulators; a host structure refuses it as EG_NOT_WRITTEN */
 
 /** ``eg_unit_meta.device_image_format`` (the values eg_door.h states). */
 typedef int32_t eg_image_format;
@@ -77,13 +91,14 @@ typedef int32_t eg_slot_role;
 #define EG_ROLE_NSAMPLES 10   /**< the sample count, by value; eagle passes it */
 #define EG_ROLE_OUT 11        /**< a plain output plane */
 
-/** The element type ON THE WIRE (what eg_bind checks a plane's dtype against;
- *  a uniform's value is read at it). */
+/** The element type ON THE WIRE, at its real width: the width the entry text
+ *  binds, not the IR leaf's (what eg_bind checks a plane's dtype against; a
+ *  uniform's value is read at it; an index-set map is 32 or 64 bits by it). */
 typedef int32_t eg_wire_dtype;
 #define EG_DTYPE_REAL 0         /**< the unit's scalar_type (an f64 or f32 leaf) */
-#define EG_DTYPE_INT64 1        /**< the entry's Int (an i32 or i64 leaf) */
-#define EG_DTYPE_INT32 2
-#define EG_DTYPE_UINT32 3
+#define EG_DTYPE_INT64 1        /**< signed 64-bit, and nothing else */
+#define EG_DTYPE_INT32 2        /**< signed 32-bit, and nothing else */
+#define EG_DTYPE_UINT32 3       /**< unsigned 32-bit (the finished counter, a mix counter) */
 #define EG_DTYPE_BOOL 4
 #define EG_DTYPE_BAND_PARTIAL 5 /**< 16 bytes: a partial sum of a BANDED unit's team plane */
 
@@ -92,15 +107,6 @@ typedef int32_t eg_access;
 #define EG_ACCESS_SAMPLE_LOCAL 0
 #define EG_ACCESS_CROSS_SAMPLE_READ 1
 #define EG_ACCESS_CROSS_SAMPLE_WRITE 2
-#define EG_ACCESS_MAPREDUCE 3 /**< then ``access_op`` is not NONE */
-
-/** The combining op of a MAPREDUCE unit. */
-typedef int32_t eg_access_op;
-#define EG_ACCESS_OP_NONE 0
-#define EG_ACCESS_OP_SUM 1
-#define EG_ACCESS_OP_TIMES 2
-#define EG_ACCESS_OP_MAX 3
-#define EG_ACCESS_OP_LAND 4
 
 /** What one block of a team stage's launch stands for (contract Grid, same order). */
 typedef int32_t eg_team_grid;
@@ -116,11 +122,16 @@ typedef int32_t eg_plane_unit;
 #define EG_UNIT_TARGET 2 /**< chunks * cells of ``target_slot`` (an ordered scatter's partial sums) */
 #define EG_UNIT_ONCE 3   /**< one slice for the whole launch */
 
-/** How eagle lays out a plane it makes. */
+/** The SHAPE of a plane eagle makes. */
 typedef int32_t eg_plane_layout;
 #define EG_LAYOUT_FLAT 0        /**< (per_lane * units,) */
 #define EG_LAYOUT_PLANE_MAJOR 1 /**< (per_lane, units), (units,) when per_lane is 1 */
-#define EG_LAYOUT_WARP_TILED 2  /**< device: units rounded up to whole warps of 32; host: one unit */
+
+/** Whether a plane holds a placed wide value, and the UNIT COUNT that follows. */
+typedef int32_t eg_wide_layout;
+#define EG_WIDE_NONE 0        /**< not a wide value: units from ``unit``; filled with ``fill`` */
+#define EG_WIDE_PLAIN 1       /**< a wide value: units from ``unit``; written before read, never filled */
+#define EG_WIDE_WARP_TILED 2  /**< a wide value tiled by warp: device units rounded up to whole warps of 32, host one unit; never filled */
 
 /** A dispatch group's strategy. */
 typedef int32_t eg_dispatch_strategy;
@@ -137,13 +148,11 @@ typedef int32_t eg_steps_regime;
 /* ---- flags --------------------------------------------------------------- */
 
 #define EG_SLOT_PRIOR (1u << 0)       /**< the body reads the launch-start value: eagle keeps it between launches and records it */
-#define EG_SLOT_SORTED (1u << 1)      /**< declared sorted: eg_bind checks the plane is non-decreasing */
-#define EG_SLOT_PARAM_PLANE (1u << 2) /**< a parameter read at index 0 only: eg_reverse reduces its gradient over samples */
-#define EG_SLOT_GATHER (1u << 3)      /**< a matrix read only at lane indices: its column count is not the lane count */
+#define EG_SLOT_PARAM_PLANE (1u << 1) /**< a parameter read at index 0 only: eg_reverse reduces its gradient over samples */
+#define EG_SLOT_GATHER (1u << 2)      /**< a matrix read only at lane indices: its column count is not the lane count */
+#define EG_SLOT_SHARED (1u << 3)      /**< a parameter plane with NO lane axis: one value for every lane, bound flat (eg_bind sizes it by its shape, not by lanes) */
 
 #define EG_FINISH_ENTRY_COUNTS (1u << 0) /**< the fast entries count samples finished on entry: the runner zeroes the counter, it does not count the mask */
-
-#define EG_PLANE_WIDE (1u << 0) /**< holds a placed wide value: written before read, so eagle does not fill it */
 
 /* ---- records ------------------------------------------------------------- */
 
@@ -171,7 +180,8 @@ struct eg_unit_companion {
     int32_t slot;             /**< the companion's slot (eagle-made) */
     int32_t target_slot;      /**< the slot it compensates */
     int32_t reserved0;
-    const char* fold_entry;   /**< host symbol of the entry that folds it into the target (eg_launch after the unit), NULL: none */
+    const char* host_fold_entry;      /**< host symbol of the entry that folds it into the target (eg_launch after the unit), NULL: none */
+    const char* device_fold_function; /**< the fold function's name inside the unit's device image, NULL: none */
 };
 
 /** A cell: a reduction over samples kept in rows of ``cell_row`` samples, folded
@@ -203,15 +213,15 @@ struct eg_unit_keyed {
  *  every stage unit binds by name. */
 struct eg_unit_team_plane {
     uint32_t struct_size;
-    uint32_t flags;           /**< EG_PLANE_WIDE */
     eg_wire_dtype dtype;      /**< REAL, INT32 or BAND_PARTIAL */
     eg_plane_unit unit;       /**< what a slice stands for */
-    eg_plane_layout layout;
+    eg_plane_layout layout;   /**< the plane's own shape */
+    eg_wide_layout wide;      /**< wide placement: the unit count and whether it is filled */
     int32_t keyed;            /**< unit KEY: index in this body's keyed table, else -1 */
     int32_t target_slot;      /**< unit TARGET: the slot whose cells the slices stand for, else -1 */
     int32_t reserved0;
     int64_t per_lane;         /**< elements of one slice */
-    int64_t fill;             /**< value at the start of every run (0 unless promised); not read with EG_PLANE_WIDE */
+    int64_t fill;             /**< value at the start of every run (0 unless promised); not read when ``wide`` is not NONE */
     const char* name;         /**< joins the stage slot of that name; reasons (the scratch byte refusal) */
 };
 
@@ -231,14 +241,12 @@ struct eg_unit_dispatch {
 struct eg_unit_body {
     uint32_t struct_size;
     eg_access access;         /**< eg_plan_new: structure and partition checks */
-    eg_access_op access_op;   /**< MAPREDUCE only, else NONE */
     int32_t n_slots;
     int32_t n_companions;
     int32_t n_cells;
     int32_t n_keyed;
     int32_t n_team_planes;
     int32_t n_dispatches;
-    int32_t reserved0;
     int64_t cell_row;         /**< samples per row of a cell (eg_bind; one run has one row width), 0 when n_cells is 0 */
     int64_t scatter_chunks;   /**< the most chunks of an ordered scatter (team grid CHUNKS, plane unit TARGET), 0: none */
     const struct eg_unit_slot* const* slots;             /**< in argument order: the index IS the slot (eg_bind_desc) */
