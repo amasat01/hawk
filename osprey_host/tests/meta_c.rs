@@ -1,12 +1,13 @@
 //! The C source of the unit meta compiles against the runtime's headers as C11 and as C++17, follows the headers' member order, and
 //! builds a shared object whose only exported symbol is the meta function and whose data is read-only. The headers are found through
-//! EAGLE_DOOR_DIR; without it each test prints that it skipped and passes.
+//! EAGLE_DOOR_DIR, which names the include root that holds `eagle/door/eg_door.h` and `eagle/door/eg_unit_meta.h` (the tree's and the
+//! installed form); without it each test prints that it skipped and passes.
 use osprey_host::lower::meta_c;
 use osprey_host::lower::unit_meta::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The folder that holds eg_door.h and eg_unit_meta.h, when the environment names it.
+/// The include root that holds `eagle/door/eg_door.h` and `eagle/door/eg_unit_meta.h`, when the environment names it.
 fn door_dir() -> Option<PathBuf> {
     let dir = std::env::var_os("EAGLE_DOOR_DIR").map(PathBuf::from);
     if dir.is_none() {
@@ -260,8 +261,8 @@ fn the_records_cross_the_wire_unchanged() {
 #[test]
 fn every_closed_set_and_name_is_the_headers() {
     let Some(door) = door_dir() else { return };
-    let headers = std::fs::read_to_string(door.join("eg_door.h")).unwrap()
-        + &std::fs::read_to_string(door.join("eg_unit_meta.h")).unwrap();
+    let headers = std::fs::read_to_string(door.join("eagle/door/eg_door.h")).unwrap()
+        + &std::fs::read_to_string(door.join("eagle/door/eg_unit_meta.h")).unwrap();
     let defines = |name: &str| -> String {
         let at = headers
             .find(&format!("#define {name} "))
@@ -319,8 +320,8 @@ fn a_tree_with_every_record_follows_the_headers_and_compiles() {
     let (library, unit) = full_tree();
     let source = meta_c::source(&library, &[&unit]).unwrap();
     let headers = uncommented(
-        &(std::fs::read_to_string(door.join("eg_door.h")).unwrap()
-            + &std::fs::read_to_string(door.join("eg_unit_meta.h")).unwrap()),
+        &(std::fs::read_to_string(door.join("eagle/door/eg_door.h")).unwrap()
+            + &std::fs::read_to_string(door.join("eagle/door/eg_unit_meta.h")).unwrap()),
     );
     let written = written_members(&source);
     let mut seen: Vec<&str> = written.iter().map(|(ty, _)| ty.as_str()).collect();

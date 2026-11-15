@@ -1,5 +1,5 @@
 //! The C source of the meta: one translation unit of constant data that the unit library compiles next to the kernel texts. It
-//! includes the runtime's two headers, defines the whole tree as `static const` objects and defines the one exported function that
+//! includes the runtime's two headers (as `eagle/door/...`), defines the whole tree as `static const` objects and defines the one exported function that
 //! returns the tree. A record is written member by member in the header's order through `M(member, value)`: a designated
 //! initialiser in C and a positional one in C++17 (which has no designated form), so the same text compiles as both.
 //!
@@ -15,8 +15,8 @@ use std::fmt::Write;
 /// The first lines of every source: the headers and the member macro.
 const PRELUDE: &str =
     "/* The meta of a unit library: constant data and one exported function. Generated. */
-#include \"eg_door.h\"
-#include \"eg_unit_meta.h\"
+#include \"eagle/door/eg_door.h\"
+#include \"eagle/door/eg_unit_meta.h\"
 #ifdef __cplusplus
 #define M(member, ...) __VA_ARGS__
 #else
@@ -478,9 +478,9 @@ pub fn source(library: &LibraryMeta, units: &[&UnitMeta]) -> Result<String, Refu
         ("units", list),
     ];
     let lib = out.record("eg_library_meta", "meta", &members);
-    let _ = write!(
+    let _ = writeln!(
         out.text,
-        "#ifdef __cplusplus\nextern \"C\"\n#endif\n__attribute__((visibility(\"default\"))) const struct eg_library_meta* {LIBRARY_META_SYMBOL}(void) {{ return &{lib}; }}\n"
+        "__attribute__((visibility(\"default\"))) const struct eg_library_meta* {LIBRARY_META_SYMBOL}(void) {{ return &{lib}; }}"
     );
     Ok(out.text)
 }

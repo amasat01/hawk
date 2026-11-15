@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// The members of the meta compared with the record, one line each.
-const MEMBERS: [&str; 27] = [
+const MEMBERS: [&str; 29] = [
     "name",
     "digest",
     "pattern",
@@ -37,6 +37,8 @@ const MEMBERS: [&str; 27] = [
     "slot.flags PRIOR",
     "body.cells of a unit that lists no stages",
     "team_plane.wide (names)",
+    "source unit launch.lane_labels, lane_extents",
+    "source unit launch.plane_axes",
 ];
 
 /// What was compared of one member: the units, those equal, and the first differing ones with both values.
@@ -636,6 +638,17 @@ fn declared_rows(
     ]
 }
 
+/// The lane space and sink axes of a source unit (the kernel as the caller saw it) against the sidecar of the kernel's first stage.
+fn source_rows(lister: Option<&meta::UnitMeta>, sc: &J) -> Vec<Pair> {
+    match lister.filter(|l| l.host_entry.is_none() && l.device_function.is_none()) {
+        Some(source) => {
+            let rows = declared_rows(source, false, None, sc);
+            vec![rows[2].clone(), rows[3].clone()]
+        }
+        None => vec![None, None],
+    }
+}
+
 impl Oracle {
     /// Compares the meta of an answer unit with the sidecar recorded for it; a unit with no sidecar is not counted.
     pub fn unit(
@@ -696,6 +709,7 @@ impl Oracle {
         .chain(stages[..5].iter().cloned())
         .chain(launch)
         .chain(declared_rows(m, unsplit, lister, sc))
+        .chain(source_rows(lister, sc))
         .collect();
         // the member order of `MEMBERS`: the scatter chunks sit after the cell row
         for (member, pair) in MEMBERS.iter().zip(pairs) {

@@ -146,7 +146,7 @@ fn later_stage(parts: &Parts) -> bool {
 }
 
 /// The declared axes of the sink planes the unit binds, each at its slot.
-fn plane_axes(request: &KernelRequest, slots: &[m::Slot]) -> Vec<m::PlaneAxes> {
+pub(super) fn plane_axes(request: &KernelRequest, slots: &[m::Slot]) -> Vec<m::PlaneAxes> {
     request
         .sink_axes
         .iter()
@@ -504,5 +504,17 @@ pub(super) fn stages(
     let teamed = !planes.is_empty() || meta.stages.iter().any(|s| s.team.is_some());
     meta.body.scatter_chunks = if teamed { scatter_chunks } else { 0 };
     meta.body.team_planes = planes;
+    // a scratch plane is bound by the stage units under its own name: those slots hold the plane's element type
+    for unit in units.iter_mut() {
+        for slot in &mut unit.meta.body.slots {
+            let plane = block
+                .team_planes
+                .iter()
+                .find(|p| p.name == slot.name)
+                .map(|p| plane_dtype(&p.dtype))
+                .transpose()?;
+            slot.dtype = plane.unwrap_or(slot.dtype);
+        }
+    }
     Ok(())
 }

@@ -10,8 +10,8 @@ use super::stage_block::{
     CellRecord, KeyedRecord, KeysGrid, PlaneRecord, ScatterGrid, StageBlock, StageRecord,
     TeamRecord,
 };
-use super::unit_meta::Body;
 use super::unit_meta::UnitMeta;
+use super::unit_meta::{Body, Launch};
 use super::{canonical, finished_slot, typed_walk, Cards, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{
     Active, Form, Grid, Scalar, Step, StepOp, Target, TeamShape, TeamStage,
@@ -247,7 +247,8 @@ fn stage_declared(
 }
 
 /// The unit of a cut kernel that lists its stages and has no entry of its own: its slots are what the caller binds over the whole
-/// kernel and its digest is that of the kernel's walk.
+/// kernel and its digest is that of the kernel's walk. Its launch is the caller's view too: the kernel's lane space and the declared
+/// axes of its sink planes.
 fn source_unit(
     ctx: *mut Ctx,
     request: &KernelRequest,
@@ -255,15 +256,28 @@ fn source_unit(
 ) -> Result<UnitMeta, Refusal> {
     let (walk, digest) = canonical(ctx, member)?;
     let typed = typed_walk(ctx, walk)?;
+    let slots = meta_fill::slots(ctx, walk, &typed, &request.shared)?;
+    let launch = Launch {
+        group: request.group,
+        lane_labels: request.lane_space.iter().map(|a| a.label.clone()).collect(),
+        lane_extents: request
+            .lane_space
+            .iter()
+            .map(|a| a.extent.unwrap_or(-1))
+            .collect(),
+        plane_axes: meta_fill::plane_axes(request, &slots),
+        ..Launch::default()
+    };
     Ok(UnitMeta {
         name: format!("{}_source", member.name),
         digest,
         scalar_type: meta_fill::scalar(request.scalar),
         body: Body {
             access: meta_fill::access(typed.access),
-            slots: meta_fill::slots(ctx, walk, &typed, &request.shared)?,
+            slots,
             ..Body::default()
         },
+        launch,
         ..UnitMeta::default()
     })
 }
