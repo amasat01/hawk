@@ -500,7 +500,9 @@ pub(super) fn stages(
         });
     }
     meta.body.keyed = keyed;
-    meta.body.scatter_chunks = if planes.is_empty() { 0 } else { scatter_chunks };
+    // the chunks of an ordered scatter are stated when the unit has scratch planes or a stage runs on a team
+    let teamed = !planes.is_empty() || meta.stages.iter().any(|s| s.team.is_some());
+    meta.body.scatter_chunks = if teamed { scatter_chunks } else { 0 };
     meta.body.team_planes = planes;
     Ok(())
 }
