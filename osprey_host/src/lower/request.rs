@@ -9,6 +9,7 @@ use aether_writers::contract::types::{
 use aether_writers::contract::{Contract, Json};
 use aether_writers::refuse::{bad, unknown, Refusal};
 use raptor_wings::blocks::LinalgForm;
+use raptor_wings::chain::FusionRow;
 use std::fmt::Debug;
 
 /// The version of the request and answer schema, written as `"v"` and checked first.
@@ -180,6 +181,8 @@ pub struct KernelRequest {
     pub sink_axes: Vec<SinkAxes>,
     /// The parameter planes the caller declares shared: one value for every lane.
     pub shared: Vec<String>,
+    /// The fusion row the caller cuts its chains with, when it sets one of its own; else the target's row from the data files.
+    pub fusion: Option<FusionRow>,
     /// The answer of the facts entry for each target of the request, passed back as it was given.
     pub facts: Vec<(Target, String)>,
 }
@@ -513,6 +516,57 @@ fn steps_read(steps: Option<&Json>, max: Option<&Json>) -> Result<Option<Steps>,
     }
 }
 
+/// The cost members of a fusion row, with the keys that carry them.
+const FUSION_COSTS: [&str; 3] = ["launch_us", "plane_us_per_byte", "local_over_plane"];
+
+/// Reads a fusion row: two whole numbers, and three costs that are positive or null.
+fn fusion_read(json: &Json) -> Result<FusionRow, Refusal> {
+    let mut keys = Keys::of(json, "fusion")?;
+    let whole = |value: &Json, key: &str| match int_of(value, key)? {
+        n if n >= 0 => Ok(n),
+        n => Err(bad(format!("request key {key}: {n} is negative"))),
+    };
+    let regs_base = whole(keys.req("regs_base")?, "regs_base")?;
+    let regs_file = whole(keys.req("regs_file")?, "regs_file")?;
+    let mut cost = |key: &'static str| -> Result<Option<f64>, Refusal> {
+        match keys.opt(key) {
+            None => Ok(None),
+            Some(Json::Num(n)) => n
+                .parse::<f64>()
+                .ok()
+                .filter(|c| *c > 0.0)
+                .map(Some)
+                .ok_or_else(|| bad(format!("request key {key}: not positive"))),
+            Some(_) => Err(wrong(key, "not a number")),
+        }
+    };
+    let [launch_us, plane_us_per_byte, local_over_plane] = FUSION_COSTS.map(&mut cost);
+    let row = FusionRow {
+        regs_base,
+        regs_file,
+        launch_us: launch_us?,
+        plane_us_per_byte: plane_us_per_byte?,
+        local_over_plane: local_over_plane?,
+    };
+    keys.done()?;
+    Ok(row)
+}
+
+/// Writes a fusion row.
+fn fusion_write(row: &FusionRow) -> Json {
+    let mut o = vec![
+        ("regs_base".into(), Json::Num(row.regs_base.to_string())),
+        ("regs_file".into(), Json::Num(row.regs_file.to_string())),
+    ];
+    let costs = [row.launch_us, row.plane_us_per_byte, row.local_over_plane];
+    for (key, value) in FUSION_COSTS.iter().zip(costs) {
+        if let Some(c) = value {
+            o.push((key.to_string(), Json::Num(format!("{c:?}"))))
+        }
+    }
+    Json::Obj(o)
+}
+
 impl Member {
     /// Reads a member.
     fn read(json: &Json) -> Result<Member, Refusal> {
@@ -835,6 +889,7 @@ impl KernelRequest {
                 Some(l) => list_of(l, "shared", |n| text_of(n, "shared"))?,
                 None => vec![],
             },
+            fusion: keys.opt("fusion").map(fusion_read).transpose()?,
             facts: facts_read(keys.req("facts")?)?,
         };
         keys.done()?;
@@ -899,6 +954,9 @@ impl KernelRequest {
         }
         if !self.shared.is_empty() {
             o.push(("shared".into(), texts(&self.shared)))
+        }
+        if let Some(row) = &self.fusion {
+            o.push(("fusion".into(), fusion_write(row)))
         }
         o.push(("settings".into(), self.settings.write()));
         let answers = self
@@ -1053,6 +1111,7 @@ mod tests {
             lane_space: vec![],
             sink_axes: vec![],
             shared: vec![],
+            fusion: None,
             facts: vec![(Target::Host, "{}".into())],
         }
     }
@@ -1067,6 +1126,13 @@ mod tests {
             extent: Some(3),
         }];
         full.shared = vec!["w".into()];
+        full.fusion = Some(FusionRow {
+            regs_base: 0,
+            regs_file: 4096,
+            launch_us: Some(2.5),
+            plane_us_per_byte: None,
+            local_over_plane: None,
+        });
         let text = full.to_json();
         assert_eq!(KernelRequest::from_json(&text).unwrap(), full);
         let cases = [

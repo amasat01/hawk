@@ -74,13 +74,14 @@ pub(super) fn expand(
     members: &[Member],
     facts_dir: &Path,
 ) -> Result<Vec<Pending>, Refusal> {
-    // the build's one fusion row: the device's when a target is a device, else this host's
-    let row = if request.targets.contains(&Target::Device) {
-        facts::device_fusion(facts_dir)
-    } else {
-        facts::host_fusion(facts_dir, request.facts_for(Target::Host)?)
-    }
-    .map_err(fault)?;
+    // the build's one fusion row: the caller's own when it sets one, else the device's when a target is a device, else this host's
+    let row = match &request.fusion {
+        Some(row) => row.clone(),
+        None if request.targets.contains(&Target::Device) => {
+            facts::device_fusion(facts_dir).map_err(fault)?
+        }
+        None => facts::host_fusion(facts_dir, request.facts_for(Target::Host)?).map_err(fault)?,
+    };
     let named: Vec<ChainMember> = members
         .iter()
         .map(|m| ChainMember {

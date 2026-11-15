@@ -20,6 +20,7 @@
 use aether_writers::contract::types::{Access, Guard, Scalar, SinkPolicy, Target};
 use aether_writers::contract::types::{Caches, MapBits};
 use osprey_host::facts;
+use osprey_host::facts::FusionRow;
 use osprey_host::lower::request::{
     Body, DeclaredSlot, IndexSet, KernelAnswer, KernelRequest, LaneAxis, Member, RequestKind,
     Settings, SinkAxes, Steps, UnitAnswer, WideForm, ACCESSES, DTYPES, FOLD_FORMS, LINALG_FORMS,
@@ -561,6 +562,9 @@ struct Tally {
     chain_equal: usize,
     /// Chains a test built under its own fusion row (the row it set is not in the record), listed and not counted.
     fusion_overridden: Vec<String>,
+    /// Calls whose record lacks a field the request needs, so the converter's stated default stands: the auto cap, the fusion rows,
+    /// the plane declarations of a derivative, and the image format (no recording states it).
+    without: [usize; 4],
     /// Chains whose planes between the stages differ from the record.
     chain_planes_differ: Vec<String>,
     /// Plain kernels with no recorded host text.
@@ -841,7 +845,8 @@ fn request_for(
             .iter()
             .any(|(target, _)| *target == Target::Device)
             .then_some(RECORDED_IMAGE_FORMAT),
-        steps: steps_of(kernel),
+        steps: steps_of(kernel, call),
+        fusion: fusion_of(call),
         lane_space: lane_space_of(kernel),
         sink_axes: sink_axes_of(kernel),
         shared: shared_of(kernel),
@@ -853,20 +858,48 @@ fn request_for(
 /// recording gets this one (the recorder owes the field).
 const RECORDED_IMAGE_FORMAT: meta::ImageFormat = meta::ImageFormat::Cubin;
 
-/// The cap of an auto step count when the recording holds none: hawk's own constant (`AUTO_K_MAX` of its step planner), which the
-/// recorder does not store.
+/// The cap of an auto step count for a record that holds none (an older recording): hawk's own constant (`AUTO_K_MAX` of its step
+/// planner). A record made by the current recorder states the cap in force as `auto_k_max`.
 const AUTO_STEPS_CAP: i64 = 64;
 
-/// The steps the kernel record declares: a count, or `auto` with the cap above.
-fn steps_of(kernel: &J) -> Option<Steps> {
+/// The steps the kernel record declares: a count, or `auto` with the call's recorded cap.
+fn steps_of(kernel: &J, call: &J) -> Option<Steps> {
     let steps = kernel.get("steps")?;
+    let cap = match call.get("auto_k_max") {
+        Some(J::Num(n)) => *n as i64,
+        _ => AUTO_STEPS_CAP,
+    };
     match (num(Some(steps)), text(Some(steps))) {
         (Some(n), _) => Some(Steps::Fixed(n)),
-        (_, Some("auto")) => Some(Steps::Auto {
-            max: AUTO_STEPS_CAP,
-        }),
+        (_, Some("auto")) => Some(Steps::Auto { max: cap }),
         _ => None,
     }
+}
+
+/// A recorded number: a whole number or a float, `None` for null.
+fn number_of(j: &J) -> Option<f64> {
+    num(Some(j))
+        .map(|n| n as f64)
+        .or_else(|| j.get("f").and_then(J::str).and_then(|t| t.parse().ok()))
+}
+
+/// The fusion row the call's last chain cut used, when the recorder stored it.
+fn fusion_of(call: &J) -> Option<FusionRow> {
+    let row = call.get("fusion_rows")?.arr().last()?;
+    let held = |key: &str| {
+        row.get("d")
+            .map_or(&[][..], J::arr)
+            .iter()
+            .find(|pair| text(pair.arr().first()) == Some(key))
+            .and_then(|pair| pair.arr().get(1))
+    };
+    Some(FusionRow {
+        regs_base: num(held("R0"))?,
+        regs_file: num(held("R_file"))?,
+        launch_us: held("L_us").and_then(number_of),
+        plane_us_per_byte: held("c_plane_us_per_B").and_then(number_of),
+        local_over_plane: held("c_local_over_plane").and_then(number_of),
+    })
 }
 
 /// The kernel's lane axes; a record with none states a single axis with neither label nor extent (the old build's default for a
@@ -897,10 +930,15 @@ fn tuple_axes(tuple: Option<&J>) -> Vec<LaneAxis> {
         .collect()
 }
 
-/// The planes the kernel record declares, with their declaration record.
-fn declared_planes(kernel: &J) -> impl Iterator<Item = (String, &J)> {
+/// Whether the record lacks the fusion rows its chain cuts used (a recording made before the recorder stored them).
+fn call_without_fusion_row(call: &J) -> bool {
+    call.get("fusion_rows").is_none()
+}
+
+/// The planes the kernel record declares under `key` (`planes`, or `derived_planes` for a derivative), with their declaration record.
+fn declared_planes<'a>(kernel: &'a J, key: &str) -> impl Iterator<Item = (String, &'a J)> {
     kernel
-        .get("planes")
+        .get(key)
         .and_then(|p| p.get("d"))
         .map_or(&[][..], J::arr)
         .iter()
@@ -912,8 +950,10 @@ fn declared_planes(kernel: &J) -> impl Iterator<Item = (String, &J)> {
 
 /// The axes each declared sink plane (an accumulator) states in its `dims`.
 fn sink_axes_of(kernel: &J) -> Vec<SinkAxes> {
-    declared_planes(kernel)
-        .filter(|(_, plane)| text(plane.get("form")) == Some("accum"))
+    // a derivative's planes are all sinks; a declared plane is one when it is an accumulator
+    let own = declared_planes(kernel, "planes")
+        .filter(|(_, plane)| text(plane.get("form")) == Some("accum"));
+    own.chain(declared_planes(kernel, "derived_planes"))
         .filter_map(|(name, plane)| {
             let axes = tuple_axes(plane.get("dims"));
             (!axes.is_empty()).then_some(SinkAxes { name, axes })
@@ -923,7 +963,7 @@ fn sink_axes_of(kernel: &J) -> Vec<SinkAxes> {
 
 /// The planes the kernel record declares shared: those with a non-empty `shared` shape.
 fn shared_of(kernel: &J) -> Vec<String> {
-    declared_planes(kernel)
+    declared_planes(kernel, "planes")
         .filter(|(_, plane)| {
             plane
                 .get("shared")
@@ -1055,6 +1095,17 @@ fn replay(kpath: &Path, tpath: &Path, show: usize, tallies: &mut [Tally; 2]) {
             call.get("kernels").map_or(&[][..], J::arr),
             call.get("units").unwrap().arr(),
         );
+        let derived = |k: &J| text(k.get("derived").and_then(|d| d.get("kind"))).is_some();
+        tallies[0].without[0] += call.get("auto_k_max").is_none() as usize;
+        tallies[0].without[1] += call.get("fusion_rows").is_none() as usize;
+        tallies[0].without[2] += kernels
+            .iter()
+            .filter(|k| derived(k) && k.get("derived_planes").is_none())
+            .count();
+        tallies[0].without[3] += kernels
+            .iter()
+            .any(|k| unit_targets(k, units).contains(&"cuda"))
+            as usize;
         let shapes: Vec<Shape> = kernels
             .iter()
             .map(|k| host_shape(k, units, kernels))
@@ -2100,6 +2151,10 @@ fn print(label: &str, t: &Tally, side: &str) {
         t.chain_planes_differ.len()
     );
     println!(
+        "  records without auto_k_max: {}; without fusion_rows: {}; derivative kernels without derived_planes: {}; device records without image_format: {}",
+        t.without[0], t.without[1], t.without[2], t.without[3]
+    );
+    println!(
         "  built under a test's own fusion row, which the record does not hold, listed: {}",
         t.fusion_overridden.len()
     );
@@ -2304,7 +2359,7 @@ fn replay_chain(
     let written: Vec<&UnitAnswer> = answer.units.iter().filter(|u| !is_source(u)).collect();
     if written.len() != recorded.len() {
         let test = found.call.get("test").and_then(J::str).unwrap_or("");
-        if test.contains("another_register_file") {
+        if test.contains("another_register_file") && call_without_fusion_row(found.call) {
             tally.fusion_overridden.push(format!("{} {name}", found.id));
             tally.items += 1;
             return;

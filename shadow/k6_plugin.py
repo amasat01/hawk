@@ -85,6 +85,12 @@ def _kernel(c, k, kind=None):
               "time": getattr(k, "time", None), "time_step": getattr(k, "time_step", None), "jump": _enc_val(c, getattr(k, "jump", None)),
               "source_digest": getattr(k, "source_digest", None), "fused_body": hasattr(k, "fused_body"),
               "segmented": any(d.strategy == "segmented" for d in k.walk.dispatches)})
+    if type(k.sinks).__name__ == "Derived" and not getattr(k, "planes", None):     # a derivative's planes are derived from its primal's at build time
+        try:
+            from hawk.trace.kernel import derived_axes
+            r["derived_planes"] = _enc_val(c, derived_axes(k.walk, getattr(k.sinks, "source", None)))
+        except BaseException as e:
+            c["enc"].unknown.append("derived_planes:" + type(e).__name__)
     one = getattr(k, "one_step", None)
     r["one_step"] = None if one is None else _member(c, one)
     mem = getattr(k, "members", None)
@@ -124,6 +130,12 @@ def _new(entry, a, k, orig):
     c["args"] = {n: _enc_val(c, v) for n, v in bound.items() if n not in ("kernels", "kernel", "directory", "cache_dir", "layout_sizes_override")}
     c["explicit_kind"] = bound.get("kind") is not None
     c["exports_override"] = _enc_val(c, bound.get("layout_sizes_override"))
+    try:
+        from hawk.trace import steps as _steps
+        c["auto_k_max"] = _steps.AUTO_K_MAX          # the auto steps cap in force when the call starts
+    except BaseException as e:
+        c["enc"].unknown.append("auto_k_max:" + type(e).__name__)
+    c["fusion_rows"] = []                             # the fusion row each chain cut of the call used (a test may set its own)
     c["patched"] = _patched_now()
     c["box_env"] = os.environ.get("HAWK_BOX")
     return c
@@ -309,6 +321,19 @@ def _wrap_note(orig):
 _tl = threading.local()
 
 
+def _wrap_cuts(orig):
+    def cuts(members, card, scalar_type, samples):
+        c = _CUR.get()
+        if c is not None:
+            try:
+                c["fusion_rows"].append(_enc_val(c, dict(card)))
+            except BaseException as e:
+                c["enc"].unknown.append("fusion_rows:" + type(e).__name__)
+        return orig(members, card, scalar_type, samples)
+    cuts.__wrapped__ = orig
+    return cuts
+
+
 def _walk_opts_wrapper(orig):
     def canonical(sinks, declared=(), *, force_access=None, exempt_planes=()):
         w = orig(sinks, declared, force_access=force_access, exempt_planes=exempt_planes)
@@ -439,6 +464,8 @@ def pytest_configure(config):
     b.lower = _wrap_lower(b.lower)
     b._draft = _wrap_draft(b._draft)
     b._note = _wrap_note(b._note)
+    from hawk.passes import fusion as _fusion
+    _fusion.cuts = _wrap_cuts(_fusion.cuts)
     tp._write = _text_write(tp._write)
 
 
