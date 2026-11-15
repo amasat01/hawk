@@ -9,6 +9,10 @@ HOST_MODE selects what happens with the library's answer:
   off     nothing is changed (the baseline run);
   shadow  the old render always runs and its result is returned; the library's text is compared and
   counted;
+  kroute  kernel-level route (kroute.py): the library lowers the whole kernel for every target of
+          the build call and the build takes its text for each unit and target; a kernel the
+          library does not answer as the old lowering produced it keeps the old text, counted by
+          reason;
   route   the old render runs, and when the library answers, the unit returned to the build is made
   of the library's parts; a unit
           the library refuses by name is returned as the old render made it. The unit key's emission
@@ -573,6 +577,13 @@ def pytest_configure(config):
     from raptor.ir import walk as walk_module
 
     tp._patch_everywhere(walk_module.canonical, tp._walk_wrapper(walk_module.canonical))
+    if _MODE == "kroute":
+        import kroute
+
+        if not hasattr(config, "workerinput"):
+            kroute.clear()
+        kroute.install(_LIB)
+        return
     ctx = _osprey().Ctx()
     _state["ctx"], _state["lib"] = ctx, ctx.backend_open(_LIB)
     _state["identity"] = ctx.backend_identity(_state["lib"])
@@ -590,6 +601,10 @@ def pytest_configure(config):
 def pytest_runtest_protocol(item, nextitem):
     """Note the running test for the lists of differences and crossing errors."""
     _state["test"] = item.nodeid
+    if _MODE == "kroute" and _LIB:
+        import kroute
+
+        kroute.on_test(item.nodeid)
     tp = sys.modules.get("text_plugin")
     if tp is not None:
         tp._WALKSET.clear()
@@ -599,3 +614,17 @@ def pytest_runtest_protocol(item, nextitem):
 def pytest_sessionfinish(session, exitstatus):
     """Write this worker's counters."""
     _write_counts()
+    if _MODE == "kroute" and _LIB:
+        import kroute
+
+        kroute.write()
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Kernel route mode: the merged counters of every worker, printed and written (controller)."""
+    if _MODE == "kroute" and _DIR and not hasattr(config, "workerinput"):
+        import kroute
+
+        terminalreporter.write_line("")
+        for line in kroute.report(_DIR):
+            terminalreporter.write_line(line)

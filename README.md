@@ -23,8 +23,8 @@ the network.
 - `osprey_host/`: the host library (source, gate, binding, replay tools `treplay` and `kreplay`, live test plugin, runners).
 - `shadow/`: the pytest plugins that record (`emit_record.py`, `shadow_plugin.py`, `text_plugin.py`, `k6_plugin.py`) and the
   scripts that merge and rebuild a recording (`merge_text.py`, `rebuild_text.py`, `rebuild.py`, `k6_stats.py`, `shadow_mirror.py`).
-- `tools/`: `proof.sh` (the portable per-unit proof over three source trees), `run_shadow.sh` and `run_eagle_text.sh` (record a
-  suite), `run_k_gpu.sh` (kernel-level recording of the GPU-marked tests only), `run_kreplay.sh` (the kernel replay),
+- `tools/`: `proof.sh` (the portable per-unit proof over three source trees), `run_shadow.sh` (record the hawk suite; the eagle recorder runner is
+  `osprey_host/tools/run_eagle_text.sh`), `run_k_gpu.sh` (kernel-level recording of the GPU-marked tests only), `run_kreplay.sh` (the kernel replay),
   `expected.txt` (expected numbers, recorded on an Arm Mac). `MANIFEST.txt`: every file with its line count.
 
 ## Prerequisites
@@ -61,7 +61,7 @@ Report for every leg: the command's last 5 lines, and anything red with its firs
     EXTRA_PLUGINS=text_plugin TEXT_MODE=record sh WORK/tools/run_shadow.sh <hawk tree> hawk_text
     EXTRA_PLUGINS=text_plugin TEXT_MODE=record MARK=gpu RUN_PREFIX="<gpu wrapper>" TEXT_DIR=$RUN/corpus/hawk_text \
         sh WORK/tools/run_shadow.sh <hawk tree> hawk_text_gpu
-    sh WORK/tools/run_eagle_text.sh eagle_text 4      # EAGLE_SRC, EAGLE_RAPTOR, EAGLE_OVERLAY, EAGLE_TREE as in its header
+    sh WORK/osprey_host/tools/run_eagle_text.sh eagle_text 4      # EAGLE_SRC, EAGLE_RAPTOR, EAGLE_OVERLAY, EAGLE_TREE as in its header
     cd WORK/shadow && PYTHONPATH=. $PY merge_text.py $RUN/corpus/hawk_text && PYTHONPATH=. $PY merge_text.py $RUN/corpus/eagle_text
     cd WORK/osprey_host
     for c in hawk_text eagle_text; do for t in host cuda; do
@@ -99,22 +99,30 @@ Report for every leg: the command's last 5 lines, and anything red with its firs
   Report each run's counters line and whether its failed ids equal the baseline's (eagle: `$RUN/snap/<run>/eagle_run/failed.txt`);
   a test that fails only with the plugin is a finding.
 
-(G) THE GPU VALUE CHECK: where the device seam is, and what is routed today
-  The seam is `hawk.backends.Backend.render` (the method of the class, so every backend row passes through it: `self.id` is `host`
-  or `cuda`). The recorder swaps it in `shadow/text_plugin.py`, function `pytest_configure` (wrapper `_wrap`): it records the
-  inputs and the unit of every backend, device included (that is where the `cuda` records of (P) come from). The route plugin
-  `osprey_host/tools/host_plugin.py` swaps the same method (`pytest_configure`, wrapper `_wrap`, inner `render_seam`).
-  In route mode a HOST unit is rendered by the old code, rendered again through the binding's per-unit entry (`render`, which is
-  `host_render` in the library), and the build gets the old unit with the library's text, body, entry and flags (`_routed`).
-  A DEVICE unit is NOT routed today: `render_seam` returns the old render at once when `self.id != "host"` (counted as
-  `other target`), and the per-unit entry only writes host text. So no device text of the library ever reaches the compiler or
-  the GPU in a live run, and a value check on the GPU has nothing to run yet.
-  Smallest change: in `render_seam`, for `self.id == "cuda"` call `lower` (abi 6) with a one-kernel request for the device target
-  (built the way `kreplay`'s `request_for` builds it from the recorded kernel; the seam must then see the kernel, which
-  `k6_plugin.py` already captures per build call), take the answer's device text and meta, and return the old unit with them
-  (`_routed` with the new text, entry and mode). Until then the check can be done on the units that matter by hand: compile the
-  recorded text and the library's text of the same unit with NVRTC and compare the results on the GPU (the two units on the
-  accepted list of the Mac's device replay, `fill_mask_seg__k0` of the placement tests, differ only by one unread line).
+(G) THE GPU VALUE CHECK: the kernel-level route mode (`HOST_MODE=kroute`, `osprey_host/tools/kroute.py`)
+  For every build call of a suite the plugin mirrors the kernel into a library context, sends ONE request with every served
+  target of the call (host and cuda), asks `facts` per target, calls `lower` (abi 6), matches the answer's units to the old
+  units by name and walk digest, and swaps the library's text in at the render seam (`hawk.backends.Backend.render`) for the
+  host AND the device. Everything after the text is the old code (compile, publish, load, run), so the suite's own value
+  assertions judge the library's text; on a machine with a GPU that includes the device text through the compiler and the run.
+  A kernel is routed whole or falls back whole to the old text, counted by reason; an exception inside the plugin is a
+  crossing error (must be 0; `KROUTE_RAISE=1` re-raises it).
+    HOST_MODE=kroute sh WORK/osprey_host/tools/run_host.sh <hawk tree> hawk_kroute          # CPU tests
+    HOST_MODE=kroute HOST_MARK=gpu EMIT_JOBS=1 RUN_PREFIX="<your GPU wrapper>" sh WORK/osprey_host/tools/run_host.sh <hawk tree> hawk_kroute_gpu
+    HOST_MODE=kroute sh WORK/osprey_host/tools/run_host_eagle.sh eagle_kroute 4
+  (`HOST_MARK` and `RUN_PREFIX` of run_host.sh were added for this leg and have NOT been run with a GPU wrapper anywhere)
+  The counters are printed at the end and written to `<run folder>/kroute_counters.json`: kernels, routed whole, fallbacks by
+  reason, texts taken from the library per target, identical / different to the old text, crossing errors.
+  Recorded on an Arm Mac without a GPU (device texts were only taken at builds that emit without compiling):
+    hawk:  1693 kernels, routed whole 1638, texts from the library host 1561 / cuda 200, identical 1746, different 15
+           (13 on the accepted list + the two `fill_mask_seg__k0` device units), crossing errors 0, failed ids inside the base set;
+           fallbacks 55: a test replaces the old renderer 20, no served target 19, banded mode 9, a build without a thread box 2,
+           own card 1, unit mismatch 1, other refusals 3.
+    eagle: 1041 kernels, routed whole 1034, host 1117 / cuda 5, identical 1119, different 3 (accepted list), crossing errors 0;
+           fallbacks 7: unit mismatch 5 (the split tests of two and three stages), a patched renderer 1, no thread box 1.
+  NEVER RUN ANYWHERE: device facts from a live machine record, a device text through the compiler and on a GPU, calls whose
+  targets are device-only, the device compile-failure path. Report: the counters of each run, the failed ids against your
+  baseline, every fallback reason, and for the GPU run the device texts compiled / run and each failing test with its unit.
 
 ## Fixes
 - The hawk runners (`run_shadow.sh`, `run_k_gpu.sh`, `osprey_host/tools/run_host.sh`) pass `-o pythonpath=`: pytest's ini puts the
