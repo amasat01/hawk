@@ -236,7 +236,7 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             mask_slot: 0,
             counter_slot: 1,
             steps_slot: Some(1),
-            steps: Some(-1),
+            steps: -1,
             steps_max: Some(64),
             step_ops: Some(41),
             fp64_ops_ir: None,

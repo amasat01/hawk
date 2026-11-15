@@ -503,8 +503,8 @@ fn declared_rows(unit: &meta::UnitMeta, sc: &J) -> Vec<Pair> {
     let steps = (unit.finish.is_some() || recorded_finish.is_some()).then(|| {
         let ours = unit.finish.as_ref().map_or("none".to_string(), |f| {
             let steps = match f.steps {
-                Some(-1) => "auto".to_string(),
-                other => other.unwrap_or(0).to_string(),
+                -1 => "auto".to_string(),
+                other => other.to_string(),
             };
             format!("{steps}:{}", f.steps_max.unwrap_or(0))
         });

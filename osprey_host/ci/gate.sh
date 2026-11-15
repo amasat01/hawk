@@ -21,8 +21,11 @@ leg_fmt() {
 
 leg_clippy() {
   cargo clippy --release -j "$JOBS" --all-targets -- -D warnings >"$out" 2>&1
-  rc=$?; grep -E "^(warning|error)" "$out" | sort | uniq -c | sort -rn | head -8
-  n=$(git ls-files | grep -c '\.rs$'); echo "examined: clippy over $n rust files, warnings denied"
+  rc=$?
+  cargo clippy --release -j "$JOBS" --all-targets --features old-contract -- -D warnings >>"$out" 2>&1
+  rc2=$?; [ $rc -ne 0 ] || rc=$rc2
+  grep -E "^(warning|error)" "$out" | sort | uniq -c | sort -rn | head -8
+  n=$(git ls-files | grep -c '\.rs$'); echo "examined: clippy over $n rust files, default features and old-contract, warnings denied"
   [ $rc -eq 0 ] || { echo "RED: clippy"; return 1; }; need clippy "$n"
 }
 

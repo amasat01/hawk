@@ -9,7 +9,7 @@ use super::unit_meta as m;
 use super::{wing, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{Access, Dtype, Role, Scalar, Target, Walk};
 use aether_writers::ir::analysis::param_plane;
-use aether_writers::refuse::{fault, not_written, Refusal};
+use aether_writers::refuse::{bad, fault, not_written, Refusal};
 use aether_writers::RxCtx;
 use raptor_ir::record::Ctx;
 use raptor_wings::stages::stored_cells;
@@ -155,18 +155,13 @@ fn plane_axes(request: &KernelRequest, slots: &[m::Slot]) -> Vec<m::PlaneAxes> {
 
 /// The launch record: the group, the boxes and the slots of the index maps the unit runs over.
 fn launch(parts: &Parts, slots: &[m::Slot]) -> m::Launch {
-    // a later stage whose blocks are keys, chunks or targets runs over those, not over the caller's lanes: its space is one axis with
+    // a later stage that runs on a team runs over its blocks, not over the caller's lanes: its space is one axis with
     // neither label nor extent
     let anonymous = [LaneAxis {
         label: None,
         extent: None,
     }];
-    let teamed = later_stage(parts)
-        && parts
-            .pending
-            .team
-            .as_ref()
-            .is_some_and(|spec| spec.grid != raptor_wings::team::Grid::Lanes);
+    let teamed = later_stage(parts) && parts.pending.team.is_some();
     let space: &[LaneAxis] = if teamed {
         &anonymous
     } else {
@@ -215,16 +210,20 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
             .ok_or_else(|| fault(format!("a finishing unit without the slot {name}")))
     };
     let (steps, steps_max) = match parts.request.steps {
-        Some(Steps::Fixed(n)) => (Some(n), Some(0)),
-        Some(Steps::Auto { max }) => (Some(AUTO_STEPS), Some(max)),
-        None => (None, None),
+        Some(Steps::Fixed(n)) => (n, Some(0)),
+        Some(Steps::Auto { max }) => (AUTO_STEPS, Some(max)),
+        None => {
+            return Err(bad(
+                "request key steps: a kernel that finishes samples needs it",
+            ))
+        }
     };
     Ok(Some(m::Finish {
         mask_slot: slot(mask)?,
         counter_slot: slot(FINISHED_PLANE)?,
         steps,
         steps_max,
-        steps_slot: slot_at(slots, FUSED_STEPS_PLANE).filter(|_| steps == Some(AUTO_STEPS)),
+        steps_slot: slot_at(slots, FUSED_STEPS_PLANE).filter(|_| steps == AUTO_STEPS),
         ..m::Finish::default()
     }))
 }

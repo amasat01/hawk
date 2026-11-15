@@ -12,8 +12,9 @@
 //! - the box switch: a unit the old build wrote unboxed on purpose is listed, not compared (`box
 //! switch`);
 //! - patched calls: kernels of a call whose test replaced the old renderer are not compared
-//! (`patched`);
+//!   (`patched`);
 //! - own-card calls: kernels built under a card of the test's own are not compared (`own card`).
+//!
 //! A unit is `equal` only when it equals the last recorded render and the request needed none of
 //! the first two.
 use aether_writers::contract::types::{Access, Guard, Scalar, SinkPolicy, Target};
@@ -35,6 +36,9 @@ use std::path::Path;
 
 #[path = "kreplay/meta.rs"]
 mod oracle;
+
+/// The context a call's nodes are loaded into, with the handles the record's node numbers stand for; none before the first load.
+type Loaded = Option<(*mut raptor_ir::record::Ctx, Vec<u32>)>;
 
 extern crate raptor_wings; // links the wing analyses the writers call
 
@@ -1097,10 +1101,7 @@ fn replay_kernel(
     found: &Found,
     (kernel, shape): (&J, &Shape),
     expected: &HashMap<(String, String), Vec<Expected>>,
-    (ctx, machines): (
-        &mut Option<(*mut raptor_ir::record::Ctx, Vec<u32>)>,
-        &mut HashMap<String, String>,
-    ),
+    (ctx, machines): (&mut Loaded, &mut HashMap<String, String>),
     tally: &mut Tally,
 ) {
     let call = found.call;
@@ -1163,10 +1164,7 @@ fn replay_plain(
     found: &Found,
     kernel: &J,
     expected: &HashMap<(String, String), Vec<Expected>>,
-    (ctx, machines): (
-        &mut Option<(*mut raptor_ir::record::Ctx, Vec<u32>)>,
-        &mut HashMap<String, String>,
-    ),
+    (ctx, machines): (&mut Loaded, &mut HashMap<String, String>),
     tally: &mut Tally,
 ) {
     let name = kernel.get("name").and_then(J::str).unwrap_or("");
@@ -1298,7 +1296,7 @@ fn replay_warp(
     call: &J,
     kernel: &J,
     wants: Option<&Vec<Expected>>,
-    ctx: &mut Option<(*mut raptor_ir::record::Ctx, Vec<u32>)>,
+    ctx: &mut Loaded,
     t: &mut Tally,
 ) {
     let name = kernel.get("name").and_then(J::str).unwrap_or("");
@@ -1425,7 +1423,7 @@ fn replay_segmented(
     found: &Found,
     kernel: &J,
     expected: &HashMap<(String, String), Vec<Expected>>,
-    ctx: &mut Option<(*mut raptor_ir::record::Ctx, Vec<u32>)>,
+    ctx: &mut Loaded,
     machines: &mut HashMap<String, String>,
     tally: &mut Tally,
 ) {
@@ -1827,7 +1825,7 @@ fn replay_staged(
     found: &Found,
     kernel: &J,
     expected: &HashMap<(String, String), Vec<Expected>>,
-    ctx: &mut Option<(*mut raptor_ir::record::Ctx, Vec<u32>)>,
+    ctx: &mut Loaded,
     machines: &mut HashMap<String, String>,
     tally: &mut Tally,
 ) {
@@ -2276,10 +2274,7 @@ fn replay_chain(
     found: &Found,
     kernel: &J,
     expected: &HashMap<(String, String), Vec<Expected>>,
-    (ctx, machines): (
-        &mut Option<(*mut raptor_ir::record::Ctx, Vec<u32>)>,
-        &mut HashMap<String, String>,
-    ),
+    (ctx, machines): (&mut Loaded, &mut HashMap<String, String>),
     tally: &mut Tally,
 ) {
     let name = kernel.get("name").and_then(J::str).unwrap_or("");

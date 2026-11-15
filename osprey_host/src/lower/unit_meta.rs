@@ -503,8 +503,7 @@ record! {
     }
 }
 record! {
-    /// How a finishing unit stops a sample and steps. Absent `steps` means the record ends before `steps_slot`: the members from
-    /// `steps_slot` on are not written.
+    /// How a finishing unit stops a sample and steps.
     pub struct Finish {
         /// The flag bits.
         pub flags: u32,
@@ -514,8 +513,8 @@ record! {
         pub counter_slot: usize,
         /// The slot of the steps word of an auto count.
         pub steps_slot: Option<usize>,
-        /// The steps one launch takes, -1 for auto.
-        pub steps: Option<i64>,
+        /// The steps one launch takes, -1 for auto, never 0.
+        pub steps: i64,
         /// The most steps of an auto launch, 0 for none.
         pub steps_max: Option<i64>,
         /// One step's operation count, -1 for not counted.

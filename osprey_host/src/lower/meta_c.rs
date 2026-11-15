@@ -97,18 +97,12 @@ impl Out {
     fn name(&self, what: &str) -> String {
         format!("{}_{what}", self.unit)
     }
-    /// A record object: `ty` is the struct's name and `members` its members in the header's order; `size` is its `struct_size`
-    /// (the whole struct unless the record ends early). Returns the object's name.
-    fn record(
-        &mut self,
-        ty: &str,
-        what: &str,
-        size: Option<&str>,
-        members: &[(&str, String)],
-    ) -> String {
+    /// A record object: `ty` is the struct's name and `members` its members in the header's order; `struct_size` is the whole struct.
+    /// Returns the object's name.
+    fn record(&mut self, ty: &str, what: &str, members: &[(&str, String)]) -> String {
         let name = self.name(what);
-        let size = size.map_or(format!("sizeof(struct {ty})"), String::from);
-        let mut line = format!("static const struct {ty} {name} = {{M(struct_size, {size})");
+        let mut line =
+            format!("static const struct {ty} {name} = {{M(struct_size, sizeof(struct {ty}))");
         for (member, value) in members {
             let _ = write!(line, ", M({member}, {value})");
         }
@@ -155,7 +149,7 @@ impl Out {
             ("name", lit(name)),
             ("digest", digest_bytes(digest)?),
         ];
-        Ok(self.record("eg_unit_ref", what, None, &members).to_string())
+        Ok(self.record("eg_unit_ref", what, &members).to_string())
     }
     /// A thread box object, or NULL.
     fn thread_box(&mut self, what: &str, held: &Option<ThreadBox>) -> String {
@@ -165,7 +159,7 @@ impl Out {
             ("t", b.t.to_string()),
             ("stride", b.stride.to_string()),
         ];
-        format!("&{}", self.record("eg_unit_box", what, None, &members))
+        format!("&{}", self.record("eg_unit_box", what, &members))
     }
     /// A steps table object, or NULL.
     fn steps_table(&mut self, what: &str, held: &Option<StepsTable>) -> String {
@@ -183,10 +177,7 @@ impl Out {
             ("lo", lo),
             ("hi", hi),
         ];
-        format!(
-            "&{}",
-            self.record("eg_unit_steps_table", what, None, &members)
-        )
+        format!("&{}", self.record("eg_unit_steps_table", what, &members))
     }
 }
 
@@ -217,7 +208,7 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("gather", gather),
             ("name", lit(&s.name)),
         ];
-        slots.push(out.record("eg_unit_slot", &format!("s{at}"), None, &members));
+        slots.push(out.record("eg_unit_slot", &format!("s{at}"), &members));
     }
     let mut companions = vec![];
     for (at, c) in b.companions.iter().enumerate() {
@@ -228,7 +219,7 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("host_fold_entry", lit_or_null(&c.host_fold_entry)),
             ("device_fold_function", lit_or_null(&c.device_fold_function)),
         ];
-        companions.push(out.record("eg_unit_companion", &format!("c{at}"), None, &members));
+        companions.push(out.record("eg_unit_companion", &format!("c{at}"), &members));
     }
     let mut cells = vec![];
     for (at, c) in b.cells.iter().enumerate() {
@@ -241,7 +232,7 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("slots", row),
             ("name", lit(&c.name)),
         ];
-        cells.push(out.record("eg_unit_cell", &format!("cell{at}"), None, &members));
+        cells.push(out.record("eg_unit_cell", &format!("cell{at}"), &members));
     }
     let mut keyed = vec![];
     for (at, k) in b.keyed.iter().enumerate() {
@@ -258,7 +249,7 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("payload", payload),
             ("name", lit(&k.name)),
         ];
-        keyed.push(out.record("eg_unit_keyed", &format!("k{at}"), None, &members));
+        keyed.push(out.record("eg_unit_keyed", &format!("k{at}"), &members));
     }
     let mut planes = vec![];
     for (at, p) in b.team_planes.iter().enumerate() {
@@ -276,7 +267,7 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("target_stage", index(p.target_stage)),
             ("fill_promised", flag(p.fill_promised).into()),
         ];
-        planes.push(out.record("eg_unit_team_plane", &format!("tp{at}"), None, &members));
+        planes.push(out.record("eg_unit_team_plane", &format!("tp{at}"), &members));
     }
     let mut dispatches = vec![];
     for (at, d) in b.dispatches.iter().enumerate() {
@@ -296,7 +287,7 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("classify", classify),
             ("name", lit(&d.name)),
         ];
-        dispatches.push(out.record("eg_unit_dispatch", &format!("d{at}"), None, &members));
+        dispatches.push(out.record("eg_unit_dispatch", &format!("d{at}"), &members));
     }
     let members = [
         ("access", b.access.c_name().into()),
@@ -324,7 +315,7 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             out.pointers("eg_unit_dispatch", "dispatches", &dispatches),
         ),
     ];
-    Ok(out.record("eg_unit_body", "body", None, &members))
+    Ok(out.record("eg_unit_body", "body", &members))
 }
 
 /// The launch record of a unit; returns its name.
@@ -341,7 +332,7 @@ fn launch(out: &mut Out, unit: &UnitMeta) -> String {
             ("labels", labels),
             ("extents", extents),
         ];
-        axes.push(out.record("eg_unit_plane_axes", &format!("pa{at}"), None, &members));
+        axes.push(out.record("eg_unit_plane_axes", &format!("pa{at}"), &members));
     }
     let members = [
         ("n_lane_axes", l.lane_labels.len().to_string()),
@@ -364,23 +355,21 @@ fn launch(out: &mut Out, unit: &UnitMeta) -> String {
         ("host_box", out.thread_box("host_box", &l.host_box)),
         ("device_box", out.thread_box("device_box", &l.device_box)),
     ];
-    out.record("eg_unit_launch", "launch", None, &members)
+    out.record("eg_unit_launch", "launch", &members)
 }
 
-/// The finish record of a unit, or NULL; a record without `steps` ends before `steps_slot`.
+/// The finish record of a unit, or NULL.
 fn finish(out: &mut Out, unit: &UnitMeta) -> String {
     let Some(f) = &unit.finish else {
         return "NULL".into();
     };
-    let ended = f.steps.is_none();
-    let size = ended.then_some("offsetof(struct eg_unit_finish, steps_slot)");
     let members = [
         ("flags", flags(f.flags, &FINISH_FLAGS)),
         ("mask_slot", f.mask_slot.to_string()),
         ("counter_slot", f.counter_slot.to_string()),
-        ("steps_slot", index(f.steps_slot.filter(|_| !ended))),
+        ("steps_slot", index(f.steps_slot)),
         ("reserved0", "0".into()),
-        ("steps", f.steps.unwrap_or(0).to_string()),
+        ("steps", f.steps.to_string()),
         ("steps_max", f.steps_max.unwrap_or(0).to_string()),
         ("step_ops", f.step_ops.unwrap_or(-1).to_string()),
         ("fp64_ops_ir", f.fp64_ops_ir.unwrap_or(-1).to_string()),
@@ -393,10 +382,7 @@ fn finish(out: &mut Out, unit: &UnitMeta) -> String {
             out.steps_table("device_steps", &f.device_steps_reverse),
         ),
     ];
-    format!(
-        "&{}",
-        out.record("eg_unit_finish", "finish", size, &members)
-    )
+    format!("&{}", out.record("eg_unit_finish", "finish", &members))
 }
 
 /// The stages of a unit; returns the pointer array's name.
@@ -419,7 +405,7 @@ fn stages(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
                 ];
                 format!(
                     "&{}",
-                    out.record("eg_unit_team", &format!("st{at}_team"), None, &members)
+                    out.record("eg_unit_team", &format!("st{at}_team"), &members)
                 )
             }
             None => "NULL".into(),
@@ -433,7 +419,7 @@ fn stages(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("cells_out", out.names(&format!("st{at}_out"), &s.cells_out)),
             ("team", team),
         ];
-        all.push(out.record("eg_unit_stage", &format!("st{at}"), None, &members));
+        all.push(out.record("eg_unit_stage", &format!("st{at}"), &members));
     }
     Ok(out.pointers("eg_unit_stage", "stages", &all))
 }
@@ -463,7 +449,7 @@ fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
         ("finish", finish),
         ("device_image_size", lit_or_null(&unit.device_image_size)),
     ];
-    Ok(out.record("eg_unit_meta", "meta", None, &members))
+    Ok(out.record("eg_unit_meta", "meta", &members))
 }
 
 /// The C source of the meta of one kernel's units.
@@ -491,7 +477,7 @@ pub fn source(library: &LibraryMeta, units: &[&UnitMeta]) -> Result<String, Refu
         ("n_units", named.len().to_string() + "u"),
         ("units", list),
     ];
-    let lib = out.record("eg_library_meta", "meta", None, &members);
+    let lib = out.record("eg_library_meta", "meta", &members);
     let _ = write!(
         out.text,
         "#ifdef __cplusplus\nextern \"C\"\n#endif\n__attribute__((visibility(\"default\"))) const struct eg_library_meta* {LIBRARY_META_SYMBOL}(void) {{ return &{lib}; }}\n"
