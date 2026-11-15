@@ -61,6 +61,7 @@ Every file with its line count (this file excluded):
      20  osprey_host/tools/run_host.sh
      34  osprey_host/tools/run_host_eagle.sh
      60  osprey_host/tools/test_host_axpb.py
+    338  proposals/eg_unit_meta.h
     126  shadow/emit_record.py
     462  shadow/k6_plugin.py
      75  shadow/k6_stats.py
