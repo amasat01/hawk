@@ -1,0 +1,12 @@
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = ["F", "E", "D"]
+# D205, D401: a docstring here is one paragraph (a summary sentence that may wrap, then its detail) in the
+# descriptive mood ("The options the walk was made with ..."), not the imperative.
+ignore = ["D205", "D401"]
+
+[lint.pydocstyle]
+# one docstring convention: PEP 257
+convention = "pep257"

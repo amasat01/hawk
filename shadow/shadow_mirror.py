@@ -1,6 +1,3 @@
-# Copyright 2026 Alessandro Masat
-# SPDX-License-Identifier: Apache-2.0
-
 """Live objects (through the recorder's tagged values) into the C binding: value text, dialect manifests, nodes. Standard library only."""
 import json
 

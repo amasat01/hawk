@@ -1,47 +1,93 @@
-# Walk record, replay and shadow tools
+# Tools for checking the compiled slice on another machine
 
-Test tools around the compiled IR core of raptor (`rs/ir`, crate `raptor_ir`). They record every `canonical()` walk that a hawk
-test run makes, replay the recorded walks against the compiled core through its C door, and mirror each walk in-process through
-a generated CPython binding. They are not part of any package and nothing here ships.
+This folder holds what is needed to build the compiled slice, record the render calls of two test suites on the
+machine, replay those recordings through the compiled writers and run the suites against the compiled host library.
+Nothing here needs the network.
 
-- `shadow/`   pytest plugin (modes `record`, `shadow`), merge, rebuild check, statistics, refusal cases
-- `osprey/`   generator of the C binding (Rust, std only), the hand-written type lifecycle, `build.sh`, `test_binding.py`
-- `tools/run_shadow.sh`   runs a hawk tree's tests with the plugin
+## Contents
+- `osprey_host/`: the host library (source, gate, binding, replay tool, live test plugin and its runners).
+- `shadow/`: the pytest plugins that record render calls (`emit_record.py`, `shadow_plugin.py`, `text_plugin.py`) and the scripts
+  that merge and rebuild a recording (`merge_text.py`, `rebuild_text.py`, `rebuild.py`).
+- `tools/`: `run_shadow.sh` (record the hawk suite), `run_eagle_text.sh` (record the eagle suite), `proof.sh` (the portable
+  proof over three source trees), `expected.txt` (the format of its expected numbers, with the numbers of the first machine).
+- `MANIFEST.txt`: every file with its line count, and the files each leg uses.
 
 ## Prerequisites
-Rust (cargo), a C compiler (clang on macOS, gcc or cc on Linux), Python 3.10 or newer with its headers, pytest and pytest-xdist
-in that Python, a raptor checkout (`RX_SRC`, default: the parent folder of this one) and a hawk tree. raptor and its wings must be
-importable by the Python that runs the tests (installed, or through `EMIT_OVERLAY`, colon-separated path entries).
+Rust (cargo, rustfmt, clippy), a C compiler (`clang` for the binding), `make`, Python 3 with pytest and pytest-xdist, `nm`
+(or `llvm-nm`), a checkout of the hawk tree and of the eagle tree with their environments, ruff and clang-format for the
+host gate, `clang-tidy` (optional). Layout: one work folder `WORK` that holds this tree's folders next to the two source
+trees: `WORK/raptor`, `WORK/aether`, `WORK/osprey_host`, `WORK/shadow`, `WORK/tools`. In the shell below:
+`export RUN=<an empty run folder>` (records, logs and baselines go there) and `export PY=<python of the hawk environment>`.
 
-## Commands
-Variables: `RX_SRC` raptor checkout, `PYTHON` interpreter (default `python3`), `OUT` output folder (default `./out`),
-`EMIT_OVERLAY` extra PYTHONPATH entries, `PYTEST_MARK` marker expression (default `not gpu`; empty runs every test, GPU ones
-included), `JOBS` pytest workers (default 8), `SHADOW_EXT_DIR` folder of the built extension (default `osprey/build`).
-`TREE` is the hawk tree.
+## What a difference means
+A unit that is `written but different` or that a writer refuses on this machine is a FINDING. Report it with the unit's name,
+its test id and the first differing line pair. Do not fix anything on this machine. Units in `osprey_host/corpus_accepted.tsv`
+are known text differences of the first machine; their keys differ here, so report differing units by NAME and test id.
 
-1. Build the crate and replay:
-   `(cd $RX_SRC && cargo build -j 2 --release -p raptor_ir)`; the replay program is the binary `replay` of that crate; run it as
-   `cargo run --release -p raptor_ir --bin replay -- <walks.jsonl>` (after step 3).
-2. Build the binding, run its gate and its test:
-   `sh osprey/build.sh` (prints the gate: four checks, ends with GATE GREEN), then
-   `PYTHONPATH=osprey/build $PYTHON osprey/test_binding.py` (14 checks).
-3. Record a corpus, merge it, check that it rebuilds:
-   `SHADOW_MODE=record sh tools/run_shadow.sh $TREE record`, then
-   `$PYTHON shadow/merge.py $OUT/corpus/record` (writes walks.jsonl and SUMMARY.json), then
-   `$PYTHON shadow/rebuild.py $OUT/corpus/record` (prints `rebuild-equal K / U`; K must equal U).
-4. Replay the corpus through the core, with the dump and load round trip:
-   `cargo run --release -p raptor_ir --bin replay -- $OUT/corpus/record/walks.jsonl --roundtrip` (run in `$RX_SRC`; use absolute paths).
-5. Shadow run: every walk is mirrored through the binding and compared with the real result:
-   `SHADOW_MODE=shadow sh tools/run_shadow.sh $TREE shadow`, then
-   `$PYTHON shadow/merge_shadow.py $OUT/corpus/shadow $OUT/corpus/record/walks.jsonl`.
-   The test outcomes of the shadow run must equal those of a run without the plugin.
+## The run sheet
+Report for every leg: the command's last 5 lines, and anything red with its first error line.
 
-## What to report
-- the pass and fail counts of each test log (`$OUT/logs/<name>.log`), and the ids of the failing tests;
-- from step 3: N calls, U unique walks, raised calls, unmirrorable count, `rebuild-equal K / U`;
-- from step 4: the lines `digest-equal`, `arg_spec-equal`, `access-equal`, `roundtrip-equal`, the skipped-by-feature line;
-- from step 5: `shadow-equal`, `roundtrip-equal`, mismatches, shadow exceptions, the digests seen against the corpus;
-- the machine (CPU, OS, compiler, Python version) and the raptor and hawk commit ids (`$OUT/corpus/<name>/PROVENANCE`).
+(B) raptor crates and gate
+    cd WORK/raptor && cargo build --release -j 2 -p raptor_ir -p raptor_wings -p raptor_support
+    NM=$(command -v llvm-nm || command -v nm) sh ci/gate_rs.sh
+  The exports leg reads the release libraries with a symbol tool: `NM` names it (the first of `$NM`, `llvm-nm`, `nm` that
+  lists symbols is used). Report the `GREEN:` and `RED:` lines.
 
-Public API of the binding: module `_osprey` with the types `Ctx` and `Node` and the integer `ABI_VERSION`. `Node` is created only
-by the binding. Values read from a node come back as text.
+(W) writers crate and gate
+    cd WORK/aether && RAPTOR_IR_LIB=WORK/raptor/target/release/libraptor_ir.a sh ci/gate_rs.sh
+  Report the `GREEN:` and `RED:` lines and the number of tests passed.
+
+(H) host library, gate and binding
+    cd WORK/osprey_host
+    cargo build --release -j 2 --features old-contract
+    PYTHON=$PY CLANG_TIDY=<clang-tidy or leave unset> make gate
+  The feature `old-contract` lets the test builds read old-shape recordings (the replay tool and the live plugin need it).
+  `make gate` builds the binding (`binding/build.sh`, needs `PYTHON` and `clang`) and leaves it in `binding/build`.
+  Report the leg list. The Linux paths of `binding/build.sh`, `tools/cc` and `check_exports.sh` were written without a Linux
+  machine at hand: a failure there is a finding about those scripts, report the error line.
+
+(R) record the text corpus
+    export ROOT=$RUN RECORDER_DIR=WORK/shadow PYTHON=$PY
+    # hawk suite, CPU tests, then the GPU-marked tests into the same record folder through the machine's GPU wrapper
+    EXTRA_PLUGINS=text_plugin TEXT_MODE=record sh WORK/tools/run_shadow.sh <hawk tree> hawk_text
+    EXTRA_PLUGINS=text_plugin TEXT_MODE=record MARK=gpu RUN_PREFIX="<gpu wrapper>" TEXT_DIR=$RUN/corpus/hawk_text \
+        sh WORK/tools/run_shadow.sh <hawk tree> hawk_text_gpu
+    # eagle suite (EAGLE_SRC, EAGLE_RAPTOR, EAGLE_OVERLAY and EAGLE_TREE as in the header of the script)
+    sh WORK/tools/run_eagle_text.sh eagle_text 4
+    # merge each record folder
+    cd WORK/shadow && PYTHONPATH=. $PY merge_text.py $RUN/corpus/hawk_text && PYTHONPATH=. $PY merge_text.py $RUN/corpus/eagle_text
+  Each merge writes `texts.jsonl` and `SUMMARY.json` in the record folder. Report the merge's printed totals, the tests that
+  failed (`$RUN/logs/*.log`, `$RUN/snap/eagle_text/eagle_run/failed.txt`) and the number of units per target.
+
+(P) replay each corpus through the compiled writers
+    cd WORK/osprey_host
+    for c in hawk_text eagle_text; do for t in host cuda; do
+      ./target/release/treplay $RUN/corpus/$c/texts.jsonl --target $t --accepted corpus_accepted.tsv > $RUN/replay_${c}_$t.txt 2>&1
+    done; done
+  Per corpus report: `units`, `text identical (whole path)` (host) or `text identical (from the recorded body)` (cuda),
+  `written but different`, every refusal class with its count (the `body by feature` and `text by feature` lines), the two
+  lines starting `typed contract:` and `typed wire:`, and each differing unit by name and test id.
+  To compare against a baseline automatically, write `$RUN/corpus/expected.txt` in the format of `tools/expected.txt`
+  after the first clean run, then: `RAPTOR=WORK/raptor AETHER=WORK/aether OSPREY=WORK/osprey_host CORPUS=$RUN/corpus SCRATCH=$RUN/scratch sh WORK/tools/proof.sh quick`
+  (it writes a baseline dump of every text when none exists and says so; the next run compares byte for byte).
+
+(L) the live legs on CPU (the binding of (H) and the library built with `old-contract`)
+    export ROOT=$RUN RECORDER_DIR=WORK/shadow PYTHON=$PY
+    # the machine's own baseline first, once: the plugin is loaded but changes nothing
+    HOST_MODE=off    sh WORK/osprey_host/tools/run_host.sh <hawk tree> hawk_off
+    HOST_MODE=shadow sh WORK/osprey_host/tools/run_host.sh <hawk tree> hawk_shadow
+    HOST_MODE=route  sh WORK/osprey_host/tools/run_host.sh <hawk tree> hawk_route
+    # eagle (the variables of the header of run_host_eagle.sh are required)
+    HOST_MODE=off    sh WORK/osprey_host/tools/run_host_eagle.sh eagle_off 4
+    HOST_MODE=route  sh WORK/osprey_host/tools/run_host_eagle.sh eagle_route 4
+    $PY WORK/osprey_host/tools/merge_host.py $RUN/snap/hawk_shadow/host_counters      # the counters line; same for the others
+    for n in hawk_off hawk_shadow hawk_route; do grep -E '^(FAILED|ERROR) ' $RUN/logs/$n.log | sed 's/ - .*//' | sort > $RUN/failed_$n.txt; done
+    diff $RUN/failed_hawk_off.txt $RUN/failed_hawk_shadow.txt; diff $RUN/failed_hawk_off.txt $RUN/failed_hawk_route.txt
+  Report the counters line of each run and whether its failed test ids equal the baseline's (for eagle compare
+  `$RUN/snap/eagle_route/eagle_run/failed.txt` with `.../eagle_off/eagle_run/failed.txt`). Any test that fails only with the
+  plugin is a finding: report its id and the first error line of its log.
+
+## Notes
+- The runners take every path from the environment; their headers list the variables.
+- The library file is `libosprey_host.dylib` on macOS and `libosprey_host.so` elsewhere; the runners choose it by platform.
+- Run one cargo command at a time on a small machine (`-j 2`).

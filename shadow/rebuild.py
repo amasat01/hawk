@@ -1,8 +1,5 @@
-# Copyright 2026 Alessandro Masat
-# SPDX-License-Identifier: Apache-2.0
-
 """rebuild.py <corpus dir>: rebuild every unique walk in a fresh process FROM walks.jsonl ALONE, call raptor.ir.walk.canonical,
-compare digest, arg_spec, access, order length with the record. Needs raptor (and its wings) importable."""
+compare digest, arg_spec, access, order length with the record. Needs the frozen raptor (and wings) importable."""
 import importlib
 import json
 import os
@@ -63,8 +60,10 @@ def dec(v, nodes):
             return tuple.__new__(cls, [vals[f] for f in cls._fields])
         o = object.__new__(cls)
         if "kt" in v:
-            cls.__key_text__ = lambda self: self._kt      # a stand-in answers with the recorded key text
-            object.__setattr__(o, "_kt", v["kt"])
+            if not hasattr(cls, "__key_text__"):
+                cls.__key_text__ = lambda self: self._kt      # a stand-in answers with the recorded key text; a class with its own method keeps it
+            if cls.__key_text__.__name__ == "<lambda>":
+                object.__setattr__(o, "_kt", v["kt"])
         for f, i in vals.items():
             object.__setattr__(o, f, i)
         return o

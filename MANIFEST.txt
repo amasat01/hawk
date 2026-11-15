@@ -1,0 +1,75 @@
+Every file with its line count (this file excluded):
+      2  .ruff_cache/.gitignore
+      1  .ruff_cache/0.17.5/10547926274679253406
+      1  .ruff_cache/0.17.5/17479805388077514596
+      0  .ruff_cache/CACHEDIR.TAG
+     93  README.md
+      8  osprey_host/.cargo/config.toml
+     12  osprey_host/.clang-format
+      8  osprey_host/.clang-tidy
+      3  osprey_host/.gitignore
+      2  osprey_host/.ruff_cache/.gitignore
+      0  osprey_host/.ruff_cache/0.17.5/12634653051042903583
+      0  osprey_host/.ruff_cache/0.17.5/4680734339714532911
+      0  osprey_host/.ruff_cache/CACHEDIR.TAG
+     46  osprey_host/Cargo.lock
+     30  osprey_host/Cargo.toml
+     12  osprey_host/Makefile
+     37  osprey_host/binding/build.sh
+     11  osprey_host/binding/fixture/abi1.c
+      8  osprey_host/binding/fixture/contract0.c
+      7  osprey_host/binding/gen/Cargo.lock
+     12  osprey_host/binding/gen/Cargo.toml
+    804  osprey_host/binding/gen/src/main.rs
+     22  osprey_host/binding/template/osprey.h
+     77  osprey_host/binding/template/types.c
+    133  osprey_host/binding/test_binding.py
+     50  osprey_host/build.rs
+      9  osprey_host/check_exports.sh
+     90  osprey_host/ci/gate.sh
+      1  osprey_host/clippy.toml
+     30  osprey_host/corpus_accepted.tsv
+     85  osprey_host/include/osprey_host.h
+    223  osprey_host/loader/loader.c
+     12  osprey_host/ruff.toml
+      2  osprey_host/rustfmt.toml
+   1293  osprey_host/src/bin/treplay.rs
+    166  osprey_host/src/lib.rs
+      8  osprey_host/tests/data/units_small.jsonl
+     54  osprey_host/tests/table.rs
+     47  osprey_host/tests/treplay.rs
+     10  osprey_host/tools/cc
+    134  osprey_host/tools/cost_host.py
+    601  osprey_host/tools/host_plugin.py
+    101  osprey_host/tools/merge_host.py
+     20  osprey_host/tools/run_host.sh
+     28  osprey_host/tools/run_host_eagle.sh
+     60  osprey_host/tools/test_host_axpb.py
+    126  shadow/emit_record.py
+    230  shadow/merge_text.py
+    141  shadow/rebuild.py
+    393  shadow/rebuild_text.py
+     95  shadow/shadow_mirror.py
+    411  shadow/shadow_plugin.py
+    869  shadow/text_plugin.py
+     11  tools/expected.txt
+    114  tools/proof.sh
+     25  tools/run_eagle_text.sh
+     25  tools/run_shadow.sh
+
+Files each leg uses (plus the whole of osprey_host/, which holds the gate and the sources of (H), (P) and (L)):
+  (B) none of this tree; the raptor checkout and its own ci/gate_rs.sh
+  (W) none of this tree; the aether checkout and its own ci/gate_rs.sh
+  (H) osprey_host/Makefile, osprey_host/ci/gate.sh, osprey_host/check_exports.sh, osprey_host/binding/ (build.sh, gen/, template/,
+      fixture/, test_binding.py), osprey_host/loader/, osprey_host/include/, osprey_host/tools/cc, osprey_host/.cargo/config.toml
+  (R) tools/run_shadow.sh, tools/run_eagle_text.sh, shadow/emit_record.py, shadow/shadow_plugin.py, shadow/text_plugin.py,
+      shadow/merge_text.py (rebuild check, optional: shadow/rebuild_text.py, shadow/rebuild.py)
+  (P) osprey_host/src/bin/treplay.rs (the replay tool), osprey_host/corpus_accepted.tsv; optional automation: tools/proof.sh,
+      tools/expected.txt
+  (L) osprey_host/tools/run_host.sh, osprey_host/tools/run_host_eagle.sh, osprey_host/tools/host_plugin.py,
+      osprey_host/tools/merge_host.py, shadow/emit_record.py, shadow/shadow_plugin.py, shadow/text_plugin.py (imported by the
+      plugin), the binding built by (H)
+
+Left out of the recorder folder (not used by any leg): text_consts.py (stale), the walk-corpus merger and oracles
+(merge_shadow.py, merge.py, loops_oracle.py, positions_oracle.py), the statistics scripts (stats*.py) and the case lists
+(refusal_cases.py, typing_cases.py).

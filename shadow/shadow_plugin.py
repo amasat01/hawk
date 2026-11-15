@@ -1,6 +1,3 @@
-# Copyright 2026 Alessandro Masat
-# SPDX-License-Identifier: Apache-2.0
-
 """pytest plugin: record every call of raptor._core.canonical (inputs, result or refusal) into $SHADOW_DIR/w<pid>.jsonl.
 
 Use: SHADOW_MODE=record SHADOW_DIR=<dir> PYTHONPATH=<this dir>:<raptor> pytest -p shadow_plugin ...

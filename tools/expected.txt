@@ -1,0 +1,11 @@
+host	t5_record	1696 / 1709 (written but different 0) + 13
+host	e5_record	868 / 871 (written but different 0) + 3
+typed	t5_record	1709
+typed	e5_record	871
+cuda	t5_record	455 / 462
+cuda	e5_record	5 / 5
+full-host	t2_record	1708 / 1773 (written but different 0) + 13
+full-host	t4_record	1638 / 1703 (written but different 0) + 13
+wreplay	t5_record host	35 functions, 0 unequal, 99 skipped
+wreplay	t5_record cuda	35 functions, 0 unequal, 0 skipped
+replay	s0_record	roundtrip-equal 2631 / 2631 refusal-equal 6 / 6 loop-rebuild-equal 964 / 964
