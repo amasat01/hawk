@@ -56,7 +56,7 @@ Every file with its line count (this file excluded):
      12  osprey_host/tools/cc
     134  osprey_host/tools/cost_host.py
     630  osprey_host/tools/host_plugin.py
-    804  osprey_host/tools/kroute.py
+    806  osprey_host/tools/kroute.py
     101  osprey_host/tools/merge_host.py
     419  osprey_host/tools/merge_text.py
      35  osprey_host/tools/run_eagle_text.sh
