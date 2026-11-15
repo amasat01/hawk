@@ -457,7 +457,8 @@ def _plan(c, kernel, name, smode, targets):
     dialects = "".join(m + "\n" + k + "\n" for m, k in sm.manifests(inputs))
     built = {n for n, _ in old}
     claimed = set()
-    # a call can hold kernels whose names look like another kernel's stages: an old unit named as a kernel of the call is that kernel's
+    # a call can hold kernels whose names look like another kernel's stages:
+    # an old unit named as a kernel of the call is that kernel's
     kernels = {record.get("name") for record in call["kernels"]}
     for record, raw in zip(call["kernels"], c["kernels"]):
         if raw.get("stage") not in _STAGES:
