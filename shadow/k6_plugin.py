@@ -445,6 +445,28 @@ def _patch(orig, new):
             pass
 
 
+def _wrap_plugin_entry(orig):
+    """The compile format of a call's device image ("ptx", "cubin", "fatbin"), as the bundle's manifest states it: read off
+    the compiled bytes by the build, so only a machine that compiles records it. A call whose plugins disagree keeps the first
+    format and notes the disagreement."""
+    def call(*a, **k):
+        c = _CUR.get()
+        if c is not None:
+            try:
+                bound = inspect.signature(orig).bind(*a, **k)
+                bound.apply_defaults()
+                fmt = str(bound.arguments["fmt"]).lower()
+                if c.get("image_format") is None:
+                    c["image_format"] = fmt
+                elif c["image_format"] != fmt:
+                    c["enc"].unknown.append("image_format:" + fmt)
+            except BaseException as e:
+                c["enc"].unknown.append("image_format:" + type(e).__name__)
+        return orig(*a, **k)
+    call.__wrapped__ = orig
+    return call
+
+
 def pytest_configure(config):
     if not _ON:
         return
@@ -466,6 +488,8 @@ def pytest_configure(config):
     b._note = _wrap_note(b._note)
     from hawk.passes import fusion as _fusion
     _fusion.cuts = _wrap_cuts(_fusion.cuts)
+    from hawk.artifact import manifest as _manifest
+    _manifest.plugin_entry = _wrap_plugin_entry(_manifest.plugin_entry)
     tp._write = _text_write(tp._write)
 
 
