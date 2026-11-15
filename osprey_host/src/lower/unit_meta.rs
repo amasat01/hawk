@@ -626,10 +626,7 @@ impl LibraryMeta {
 pub const NOT_COMPUTED: &[(&str, &str)] = &[
     ("slot.flags GATHER, slot.gather", "aether ir/analysis.rs:434 `gather`, with the broadcast pattern the request must carry"),
     ("slot.like_slot", "raptor (a reader): the sidecar `adjoint_like` (42 units on k7, 81 on k7e) has no analysis in raptor rs/ir canon.rs, and the walk has no such field"),
-    ("companion.slot, companion.target_slot", "aether ir/analysis.rs:491 `companions` names (plane, correction plane)"),
-    ("companion.host_fold_entry", "the host writer that names the fold entry (aether unit/host/render.rs)"),
-    ("companion.device_fold_function", "the device writer that names the fold function (aether unit/device/render.rs)"),
-    ("cell.slots", "the render: positions of the row planes among the entry's arguments (aether unit/entry.rs)"),
+    ("companion.device_fold_function", "the device writer that names the fold function (aether unit/device/render.rs:142 `fold_name`, the local that names it; not stated in the answer)"),
     ("team_plane.wide of a wide OUTPUT plane (`bf`, `y`: a slot the placement made wide, not a scratch plane)", "a design choice: the meta has no member for a wide slot; the recorded launch.wide names it (4 units on k7); the warp step's own planes (`hwd*`) also come from lower/warp.rs `slice`"),
     ("dispatch.* (strategy, name, mix_slot)", "raptor (a reader): the walk's `dispatches` listing (canon.rs:507) holds name, K, reads and the static flag but not the strategy (switch / predicated / auto / segmented); the field is in raptor's golden walks, so the strategy needs a new walk field, not a changed one"),
     ("dispatch.class_slot, stale_slot, offsets_slot, classify", "the segment step: lower/segment.rs:34 `split`, raptor wings segment.rs"),

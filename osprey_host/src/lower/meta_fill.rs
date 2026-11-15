@@ -9,8 +9,10 @@ use super::stages::cell_records;
 use super::unit_meta as m;
 use super::{wing, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{Access, Dtype, Role, Scalar, Target, Walk};
-use aether_writers::ir::analysis::param_plane;
+use aether_writers::ir::analysis::{companions, param_plane};
 use aether_writers::refuse::{bad, fault, not_written, Refusal};
+use aether_writers::unit::host::render::fold_entry;
+use aether_writers::unit::sums::row_planes;
 use aether_writers::RxCtx;
 use raptor_ir::record::Ctx;
 use raptor_wings::stages::stored_cells;
@@ -241,15 +243,25 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let stored = stored_cells(unsafe { &*parts.ctx }, &parts.pending.member.sinks).map_err(wing)?;
     let stores = !stored.is_empty();
+    let rows = row_planes(
+        parts.ctx as *mut RxCtx,
+        &parts.pending.member.sinks,
+        &parts.typed.slots,
+    )?;
     let cells = cell_records(stored, &parts.request.planes)
         .iter()
         .map(|cell| {
+            let mine: Vec<usize> = rows
+                .iter()
+                .filter(|r| r.cell == cell.name)
+                .map(|r| r.slot)
+                .collect();
             Ok(m::Cell {
                 op: reduce_op(&cell.op)?,
                 internal: cell.internal,
                 columns: cell.columns,
                 name: cell.name.clone(),
-                slots: None,
+                slots: Some(mine).filter(|s| !s.is_empty()),
             })
         })
         .collect::<Result<Vec<_>, Refusal>>()?;
@@ -260,6 +272,23 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
         .as_ref()
         .and(parts.request.image_format)
         .unwrap_or(m::ImageFormat::None);
+    let host = entry(Target::Host).map(|t| t.entry.clone());
+    let pairs = companions(parts.ctx as *mut RxCtx, parts.walk)?;
+    let companions = pairs
+        .iter()
+        .map(|(comp, target)| {
+            let at = |plane: &str| {
+                slot_at(&slots, plane)
+                    .ok_or_else(|| fault(format!("a companion pair over the plane {plane}")))
+            };
+            Ok(m::Companion {
+                slot: at(comp)?,
+                target_slot: at(target)?,
+                host_fold_entry: host.as_ref().map(|entry| fold_entry(entry, target)),
+                ..m::Companion::default()
+            })
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
     Ok(m::UnitMeta {
         name: name.clone(),
         digest: parts.digest.to_string(),
@@ -275,6 +304,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
             access: access(parts.typed.access),
             cell_row: if stores { parts.card.cells_row } else { 0 },
             cells,
+            companions,
             slots,
             ..m::Body::default()
         },

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// The members of the meta compared with the record, one line each.
-const MEMBERS: [&str; 29] = [
+const MEMBERS: [&str; 31] = [
     "name",
     "digest",
     "pattern",
@@ -39,6 +39,8 @@ const MEMBERS: [&str; 29] = [
     "team_plane.wide (names)",
     "source unit launch.lane_labels, lane_extents",
     "source unit launch.plane_axes",
+    "cell.slots (row planes among the arguments)",
+    "companion.slot, target_slot (names)",
 ];
 
 /// What was compared of one member: the units, those equal, and the first differing ones with both values.
@@ -649,6 +651,61 @@ fn source_rows(lister: Option<&meta::UnitMeta>, sc: &J) -> Vec<Pair> {
     }
 }
 
+/// The positions of the row planes of the cells of a unit that lists no stages, against the positions of the recorded
+/// `accum_out` planes of the same names in the recorded argument spec.
+fn cell_slot_row(unit: &meta::UnitMeta, unsplit: bool, sc: &J) -> Pair {
+    let recorded = pairs(sc, &["cells"]);
+    if !unsplit || recorded.is_empty() || unit.body.cells.is_empty() {
+        return None;
+    }
+    let spec: Vec<(String, String)> = at(sc, &["arg_spec"])
+        .map_or(&[][..], J::arr)
+        .iter()
+        .map(|p| {
+            (
+                p.arr().first().and_then(J::str).unwrap_or("").to_string(),
+                p.arr().get(1).and_then(J::str).unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    let ours =
+        joined(sorted(unit.body.cells.iter().map(|c| {
+            format!("{}:{:?}", c.name, c.slots.clone().unwrap_or_default())
+        })));
+    let theirs = joined(sorted(recorded.iter().map(|(n, cell)| {
+        // a cell of one column fills the plane of its own name, a wider one the planes `<name>_<k>`
+        let columns = number(cell, &["columns"]).unwrap_or(1);
+        let named = |name: &str| {
+            if columns == 1 {
+                name == *n
+            } else {
+                (0..columns).any(|k| name == format!("{n}_{k}"))
+            }
+        };
+        let at: Vec<usize> = (0..spec.len())
+            .filter(|&p| spec[p].0 == "accum_out" && named(&spec[p].1))
+            .collect();
+        format!("{n}:{at:?}")
+    })));
+    Some((ours, theirs))
+}
+
+/// The companion pairs of a unit, each as the names of its two slots, against the recorded `companions` map (companion to target).
+fn companion_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let name = |at: usize| unit.body.slots.get(at).map_or("?", |s| s.name.as_str());
+    let ours = joined(sorted(
+        unit.body
+            .companions
+            .iter()
+            .map(|c| format!("{}:{}", name(c.slot), name(c.target_slot))),
+    ));
+    let theirs =
+        joined(sorted(pairs(sc, &["companions"]).into_iter().map(
+            |(comp, target)| format!("{comp}:{}", target.str().unwrap_or("")),
+        )));
+    Some((ours, theirs))
+}
+
 impl Oracle {
     /// Compares the meta of an answer unit with the sidecar recorded for it; a unit with no sidecar is not counted.
     pub fn unit(
@@ -710,6 +767,7 @@ impl Oracle {
         .chain(launch)
         .chain(declared_rows(m, unsplit, lister, sc))
         .chain(source_rows(lister, sc))
+        .chain([cell_slot_row(m, unsplit, sc), companion_row(m, sc)])
         .collect();
         // the member order of `MEMBERS`: the scatter chunks sit after the cell row
         for (member, pair) in MEMBERS.iter().zip(pairs) {
