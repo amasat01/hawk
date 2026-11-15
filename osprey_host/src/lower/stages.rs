@@ -4,9 +4,10 @@
 //! answer's stage block says of it.
 use super::card::BuildCard;
 use super::placed::{interchanged, place_sinks, place_unit};
-use super::request::{
-    CellRecord, DeclaredSlot, KernelRequest, KeyedRecord, KeysGrid, Member, PlaneRecord, RunFacts,
-    ScatterGrid, StageBlock, StageRecord, TeamRecord, DTYPES, ROLES,
+use super::request::{DeclaredSlot, KernelRequest, Member, DTYPES, ROLES};
+use super::stage_block::{
+    CellRecord, KeyedRecord, KeysGrid, PlaneRecord, ScatterGrid, StageBlock, StageRecord,
+    TeamRecord,
 };
 use super::{finished_slot, Cards, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{
@@ -137,7 +138,6 @@ fn whole_note(ctx: *mut Ctx, unit: &Pending) -> Result<Note, Refusal> {
             kernel: unit.member.name.clone(),
             cells_in: vec![],
             cells_out: vec![],
-            recomputed: vec![],
             team: None,
         },
         cells: cell_records(
@@ -322,7 +322,6 @@ fn staged(
                     kernel: name,
                     cells_in: stage.cells_in.clone(),
                     cells_out: stage.cells_out.clone(),
-                    recomputed: stage.recomputed.clone(),
                     team: team.as_ref().map(team_record),
                 },
                 cells: if first { cells.clone() } else { vec![] },
@@ -335,24 +334,8 @@ fn staged(
     Ok(out)
 }
 
-/// The stage block of the answer from the notes of the units, and the facts of a run: the row of a reduction over samples when a
-/// unit stores cells, and the scatter chunks when the kernel has scratch planes.
-pub(super) fn block(
-    ctx: *mut Ctx,
-    card: &BuildCard,
-    pending: &[Pending],
-) -> Result<(Option<StageBlock>, RunFacts), Refusal> {
-    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
-    let context = unsafe { &*ctx };
-    let mut run = RunFacts::default();
-    for unit in pending {
-        if !stored_cells(context, &unit.member.sinks)
-            .map_err(wing)?
-            .is_empty()
-        {
-            run.cell_row = Some(card.cells_row);
-        }
-    }
+/// The stage block from the notes of the units, when any unit is a stage.
+pub(super) fn block(pending: &[Pending]) -> Option<StageBlock> {
     let mut block = StageBlock::default();
     let mut any = false;
     for note in pending.iter().filter_map(|unit| unit.note.as_ref()) {
@@ -366,10 +349,7 @@ pub(super) fn block(
             }
         }
     }
-    if !block.team_planes.is_empty() {
-        run.scatter_chunks = Some(card.scatter_max_chunks);
-    }
-    Ok((any.then_some(block), run))
+    any.then_some(block)
 }
 
 /// The scratch planes of a team stage as the answer records them. A partial sum is the build's scalar, or a band of them when the

@@ -2,10 +2,7 @@
 //! closed-schema JSON on the rules of the writers' contract: every key is stated, a key the reader does not know is refused by
 //! name, a required key that is missing is refused by name, and the version is checked first. Nothing here knows how a caller
 //! records its kernels.
-pub use super::stage_block::{
-    CellRecord, KeyedRecord, KeysGrid, PlaneRecord, RunFacts, ScatterGrid, StageBlock, StageRecord,
-    TeamRecord,
-};
+use super::unit_meta::{LibraryMeta, UnitMeta, Wire};
 use aether_writers::contract::types::{
     Access, Dtype, FoldForm, Guard, MapBits, Role, Scalar, SinkPolicy, Target, ThreadBox,
 };
@@ -162,27 +159,25 @@ pub struct TargetText {
     pub thread_box: Option<ThreadBox>,
 }
 
-/// One unit of the answer.
+/// One unit of the answer: its text per target and its typed meta (which names it and holds its digest).
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnitAnswer {
-    /// The unit's name.
-    pub name: String,
-    /// The digest of the unit's canonical walk.
-    pub digest: String,
     /// The unit's text per target.
     pub texts: Vec<TargetText>,
+    /// The unit's meta.
+    pub meta: UnitMeta,
 }
 
-/// The answer: the units the kernel lowers to, in order, the stage block of a kernel cut into launches or placed in scratch planes
-/// (with the planes the runtime makes between its stages), and the facts of a run.
+/// The answer: the units the kernel lowers to, in order, the library record, and the C source of the meta of all the units (the
+/// constant data the front end compiles next to the kernel texts).
 #[derive(Debug, Clone, PartialEq)]
 pub struct KernelAnswer {
     /// The units.
     pub units: Vec<UnitAnswer>,
-    /// The stage block, when the kernel has one.
-    pub stages: Option<StageBlock>,
-    /// The facts of a run.
-    pub run: RunFacts,
+    /// The library record above the units.
+    pub library: LibraryMeta,
+    /// The C source of the meta.
+    pub meta_source: String,
 }
 
 /// The members of a closed set, read by their names.
@@ -776,12 +771,11 @@ impl KernelAnswer {
         };
         let unit = |u: &UnitAnswer| {
             Json::Obj(vec![
-                ("name".into(), Json::Str(u.name.clone())),
-                ("digest".into(), Json::Str(u.digest.clone())),
                 (
                     "texts".into(),
                     Json::Arr(u.texts.iter().map(text).collect()),
                 ),
+                ("meta".into(), u.meta.put()),
             ])
         };
         Json::Obj(vec![
@@ -790,11 +784,8 @@ impl KernelAnswer {
                 "units".into(),
                 Json::Arr(self.units.iter().map(unit).collect()),
             ),
-            (
-                "stages".into(),
-                self.stages.as_ref().map_or(Json::Null, StageBlock::to_json),
-            ),
-            ("run".into(), self.run.to_json()),
+            ("library".into(), self.library.put()),
+            ("meta_source".into(), Json::Str(self.meta_source.clone())),
         ])
         .to_text()
     }
@@ -837,18 +828,21 @@ impl KernelAnswer {
         let read_unit = |j: &Json| -> Result<UnitAnswer, Refusal> {
             let mut k = Keys::of(j, "unit")?;
             let unit = UnitAnswer {
-                name: text_of(k.req("name")?, "name")?,
-                digest: text_of(k.req("digest")?, "digest")?,
                 texts: list_of(k.req("texts")?, "texts", read_text)?,
+                meta: UnitMeta::get(k.opt("meta"), "meta")?,
             };
             k.done()?;
             Ok(unit)
         };
         let units = list_of(keys.req("units")?, "units", read_unit)?;
-        let stages = keys.opt("stages").map(StageBlock::read).transpose()?;
-        let run = RunFacts::read(keys.req("run")?)?;
+        let library = LibraryMeta::get(keys.opt("library"), "library")?;
+        let meta_source = text_of(keys.req("meta_source")?, "meta_source")?;
         keys.done()?;
-        Ok(KernelAnswer { units, stages, run })
+        Ok(KernelAnswer {
+            units,
+            library,
+            meta_source,
+        })
     }
 }
 

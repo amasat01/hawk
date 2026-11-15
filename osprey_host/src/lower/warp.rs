@@ -3,7 +3,8 @@
 //! rows of the tile its vector outputs go through) and what the answer's stage block says of the launch. The numbers come from
 //! the device card.
 use super::card::DeviceCard;
-use super::request::{Body, KernelRequest, Member, TeamRecord, WideForm};
+use super::request::{Body, KernelRequest, Member, WideForm};
+use super::stage_block::TeamRecord;
 use super::stages::{stage_facts, Note};
 use super::{canonical, leaf_slots, real_bytes, wing, Cards, Pending};
 use aether_writers::contract::types::{Form, Scalar, Target, TeamShape, Unit};
@@ -208,11 +209,10 @@ fn note(ctx: *mut Ctx, member: &Member, warp: &Warp) -> Result<Note, Refusal> {
         return Err(fault("a warp form that stores a reduction over samples"));
     }
     Ok(Note {
-        stage: super::request::StageRecord {
+        stage: super::stage_block::StageRecord {
             kernel: member.name.clone(),
             cells_in: vec![],
             cells_out: vec![],
-            recomputed: vec![],
             team: Some(TeamRecord {
                 threads: warp.threads(),
                 lanes: warp.rows,

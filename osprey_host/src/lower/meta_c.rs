@@ -1,0 +1,497 @@
+//! The C source of the meta: one translation unit of constant data that the unit library compiles next to the kernel texts. It
+//! includes the runtime's two headers, defines the whole tree as `static const` objects and defines the one exported function that
+//! returns the tree. A record is written member by member in the header's order through `M(member, value)`: a designated
+//! initialiser in C and a positional one in C++17 (which has no designated form), so the same text compiles as both.
+//!
+//! What the digest of a unit is: the unit's canonical walk digest (SHA-256 of the walk, 64 hex digits in the answer), decoded to
+//! its 32 bytes. The device image is named by its bytes symbol and its size symbol; its content is never part of the source.
+use super::unit_meta::{
+    LibraryMeta, StepsTable, ThreadBox, UnitMeta, FINISH_FLAGS, LIBRARY_META_SYMBOL, SCHEMA_MAJOR,
+    SLOT_FLAGS,
+};
+use aether_writers::refuse::{fault, Refusal};
+use std::fmt::Write;
+
+/// The first lines of every source: the headers and the member macro.
+const PRELUDE: &str =
+    "/* The meta of a unit library: constant data and one exported function. Generated. */
+#include \"eg_door.h\"
+#include \"eg_unit_meta.h\"
+#ifdef __cplusplus
+#define M(member, ...) __VA_ARGS__
+#else
+#define M(member, ...) .member = __VA_ARGS__
+#endif
+";
+
+/// The source being written, with the unit whose objects are being named.
+struct Out {
+    /// The text so far.
+    text: String,
+    /// The prefix of the object names of the unit being written.
+    unit: String,
+}
+
+/// A C string literal of a name.
+fn lit(name: &str) -> String {
+    let mut out = String::from("\"");
+    for byte in name.bytes() {
+        match byte {
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            0x20..=0x7e => out.push(byte as char),
+            other => out.push_str(&format!("\\{other:03o}")),
+        }
+    }
+    out + "\""
+}
+/// A C string literal, or NULL.
+fn lit_or_null(name: &Option<String>) -> String {
+    name.as_deref().map_or("NULL".into(), lit)
+}
+/// A slot or table index, -1 when absent.
+fn index(at: Option<usize>) -> String {
+    at.map_or("-1".into(), |n| n.to_string())
+}
+/// A flag word as the OR of the header's macro names, 0u when no bit is set.
+fn flags(word: u32, names: &[(u32, &str)]) -> String {
+    let set: Vec<&str> = names
+        .iter()
+        .filter(|(bit, _)| word & bit != 0)
+        .map(|(_, name)| *name)
+        .collect();
+    if set.is_empty() {
+        "0u".into()
+    } else {
+        set.join(" | ")
+    }
+}
+/// A flag as 0 or 1.
+fn flag(on: bool) -> &'static str {
+    if on {
+        "1"
+    } else {
+        "0"
+    }
+}
+/// The 32 bytes of a digest of 64 hex digits, as an initialiser list.
+fn digest_bytes(digest: &str) -> Result<String, Refusal> {
+    let bytes: Result<Vec<String>, Refusal> = (0..digest.len() / 2)
+        .map(|at| {
+            digest
+                .get(2 * at..2 * at + 2)
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                .map(|byte| format!("0x{byte:02x}"))
+                .ok_or_else(|| fault(format!("the digest {digest:?} is not hex")))
+        })
+        .collect();
+    let bytes = bytes?;
+    if bytes.len() != 32 || digest.len() != 64 {
+        return Err(fault(format!("the digest {digest:?} is not 32 bytes")));
+    }
+    Ok(format!("{{{}}}", bytes.join(", ")))
+}
+
+impl Out {
+    /// The name of an object of the current unit.
+    fn name(&self, what: &str) -> String {
+        format!("{}_{what}", self.unit)
+    }
+    /// A record object: `ty` is the struct's name and `members` its members in the header's order; `size` is its `struct_size`
+    /// (the whole struct unless the record ends early). Returns the object's name.
+    fn record(
+        &mut self,
+        ty: &str,
+        what: &str,
+        size: Option<&str>,
+        members: &[(&str, String)],
+    ) -> String {
+        let name = self.name(what);
+        let size = size.map_or(format!("sizeof(struct {ty})"), String::from);
+        let mut line = format!("static const struct {ty} {name} = {{M(struct_size, {size})");
+        for (member, value) in members {
+            let _ = write!(line, ", M({member}, {value})");
+        }
+        self.text += &(line + "};\n");
+        name
+    }
+    /// An array object of `item` (a type with its qualifiers, e.g. `int64_t`); NULL when there is nothing to list.
+    fn array(&mut self, item: &str, what: &str, items: &[String]) -> String {
+        if items.is_empty() {
+            return "NULL".into();
+        }
+        let name = self.name(what);
+        let _ = writeln!(
+            self.text,
+            "static const {item} {name}[] = {{{}}};",
+            items.join(", ")
+        );
+        name
+    }
+    /// An array of pointers to the records named in `items`.
+    fn pointers(&mut self, ty: &str, what: &str, items: &[String]) -> String {
+        let refs: Vec<String> = items.iter().map(|n| format!("&{n}")).collect();
+        self.array(&format!("struct {ty}* const"), what, &refs)
+    }
+    /// An array of numbers.
+    fn numbers<T: ToString>(&mut self, item: &str, what: &str, values: &[T]) -> String {
+        let all: Vec<String> = values.iter().map(T::to_string).collect();
+        self.array(item, what, &all)
+    }
+    /// An array of labels, an entry NULL when unlabelled.
+    fn labels(&mut self, what: &str, labels: &[Option<String>]) -> String {
+        let all: Vec<String> = labels.iter().map(lit_or_null).collect();
+        self.array("char* const", what, &all)
+    }
+    /// An array of names.
+    fn names(&mut self, what: &str, names: &[String]) -> String {
+        let all: Vec<String> = names.iter().map(|n| lit(n)).collect();
+        self.array("char* const", what, &all)
+    }
+    /// A unit reference object.
+    fn unit_ref(&mut self, what: &str, name: &str, digest: &str) -> Result<String, Refusal> {
+        let members = [
+            ("reserved0", "0".into()),
+            ("name", lit(name)),
+            ("digest", digest_bytes(digest)?),
+        ];
+        Ok(self.record("eg_unit_ref", what, None, &members).to_string())
+    }
+    /// A thread box object, or NULL.
+    fn thread_box(&mut self, what: &str, held: &Option<ThreadBox>) -> String {
+        let Some(b) = held else { return "NULL".into() };
+        let members = [
+            ("axis", b.axis.to_string()),
+            ("t", b.t.to_string()),
+            ("stride", b.stride.to_string()),
+        ];
+        format!("&{}", self.record("eg_unit_box", what, None, &members))
+    }
+    /// A steps table object, or NULL.
+    fn steps_table(&mut self, what: &str, held: &Option<StepsTable>) -> String {
+        let Some(t) = held else { return "NULL".into() };
+        let widths = self.numbers("int64_t", &format!("{what}_widths"), &t.widths);
+        let ks = self.numbers("int64_t", &format!("{what}_ks"), &t.ks);
+        let lo = self.numbers("double", &format!("{what}_lo"), &t.lo);
+        let hi = self.numbers("double", &format!("{what}_hi"), &t.hi);
+        let members = [
+            ("regime", t.regime.c_name().into()),
+            ("n_rows", t.widths.len().to_string()),
+            ("reserved0", "0".into()),
+            ("widths", widths),
+            ("ks", ks),
+            ("lo", lo),
+            ("hi", hi),
+        ];
+        format!(
+            "&{}",
+            self.record("eg_unit_steps_table", what, None, &members)
+        )
+    }
+}
+
+/// The objects of one unit's body; returns the body's name.
+fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
+    let b = &unit.body;
+    let mut slots = vec![];
+    for (at, s) in b.slots.iter().enumerate() {
+        let shape = out.numbers("int64_t", &format!("s{at}_shape"), &s.shape);
+        let gather = s.gather.clone().unwrap_or_default();
+        let gather = out.numbers(
+            "uint8_t",
+            &format!("s{at}_gather"),
+            &gather.iter().map(|g| u8::from(*g)).collect::<Vec<_>>(),
+        );
+        let members = [
+            ("flags", flags(s.flags, &SLOT_FLAGS)),
+            ("role", s.role.c_name().into()),
+            ("dtype", s.dtype.c_name().into()),
+            ("rank", s.shape.len().to_string()),
+            ("like_slot", index(s.like_slot)),
+            (
+                "n_gather",
+                s.gather.as_ref().map_or(0, Vec::len).to_string(),
+            ),
+            ("reserved0", "0".into()),
+            ("shape", shape),
+            ("gather", gather),
+            ("name", lit(&s.name)),
+        ];
+        slots.push(out.record("eg_unit_slot", &format!("s{at}"), None, &members));
+    }
+    let mut companions = vec![];
+    for (at, c) in b.companions.iter().enumerate() {
+        let members = [
+            ("slot", c.slot.to_string()),
+            ("target_slot", c.target_slot.to_string()),
+            ("reserved0", "0".into()),
+            ("host_fold_entry", lit_or_null(&c.host_fold_entry)),
+            ("device_fold_function", lit_or_null(&c.device_fold_function)),
+        ];
+        companions.push(out.record("eg_unit_companion", &format!("c{at}"), None, &members));
+    }
+    let mut cells = vec![];
+    for (at, c) in b.cells.iter().enumerate() {
+        let row = c.slots.clone().unwrap_or_default();
+        let row = out.numbers("int32_t", &format!("cell{at}_slots"), &row);
+        let members = [
+            ("op", c.op.c_name().into()),
+            ("internal", flag(c.internal).into()),
+            ("columns", c.columns.to_string()),
+            ("slots", row),
+            ("name", lit(&c.name)),
+        ];
+        cells.push(out.record("eg_unit_cell", &format!("cell{at}"), None, &members));
+    }
+    let mut keyed = vec![];
+    for (at, k) in b.keyed.iter().enumerate() {
+        let labels = out.labels(&format!("k{at}_labels"), &k.axis_labels);
+        let extents = out.numbers("int64_t", &format!("k{at}_extents"), &k.axis_extents);
+        let payload = out.numbers("int64_t", &format!("k{at}_payload"), &k.payload);
+        let members = [
+            ("n_axes", k.axis_labels.len().to_string()),
+            ("payload_rank", k.payload.len().to_string()),
+            ("reserved0", "0".into()),
+            ("width", k.width.to_string()),
+            ("axis_labels", labels),
+            ("axis_extents", extents),
+            ("payload", payload),
+            ("name", lit(&k.name)),
+        ];
+        keyed.push(out.record("eg_unit_keyed", &format!("k{at}"), None, &members));
+    }
+    let mut planes = vec![];
+    for (at, p) in b.team_planes.iter().enumerate() {
+        let members = [
+            ("dtype", p.dtype.c_name().into()),
+            ("unit", p.unit.c_name().into()),
+            ("layout", p.layout.c_name().into()),
+            ("wide", p.wide.c_name().into()),
+            ("keyed", index(p.keyed)),
+            ("target_slot", index(p.target_slot)),
+            ("reserved0", "0".into()),
+            ("per_lane", p.per_lane.to_string()),
+            ("fill", p.fill.to_string()),
+            ("name", lit(&p.name)),
+        ];
+        planes.push(out.record("eg_unit_team_plane", &format!("tp{at}"), None, &members));
+    }
+    let mut dispatches = vec![];
+    for (at, d) in b.dispatches.iter().enumerate() {
+        let classify = match &d.classify {
+            Some(r) => format!(
+                "&{}",
+                out.unit_ref(&format!("d{at}_classify"), &r.name, &r.digest)?
+            ),
+            None => "NULL".into(),
+        };
+        let members = [
+            ("strategy", d.strategy.c_name().into()),
+            ("mix_slot", index(d.mix_slot)),
+            ("class_slot", index(d.class_slot)),
+            ("stale_slot", index(d.stale_slot)),
+            ("offsets_slot", index(d.offsets_slot)),
+            ("classify", classify),
+            ("name", lit(&d.name)),
+        ];
+        dispatches.push(out.record("eg_unit_dispatch", &format!("d{at}"), None, &members));
+    }
+    let members = [
+        ("access", b.access.c_name().into()),
+        ("n_slots", slots.len().to_string()),
+        ("n_companions", companions.len().to_string()),
+        ("n_cells", cells.len().to_string()),
+        ("n_keyed", keyed.len().to_string()),
+        ("n_team_planes", planes.len().to_string()),
+        ("n_dispatches", dispatches.len().to_string()),
+        ("cell_row", b.cell_row.to_string()),
+        ("scatter_chunks", b.scatter_chunks.to_string()),
+        ("slots", out.pointers("eg_unit_slot", "slots", &slots)),
+        (
+            "companions",
+            out.pointers("eg_unit_companion", "companions", &companions),
+        ),
+        ("cells", out.pointers("eg_unit_cell", "cells", &cells)),
+        ("keyed", out.pointers("eg_unit_keyed", "keyed", &keyed)),
+        (
+            "team_planes",
+            out.pointers("eg_unit_team_plane", "team_planes", &planes),
+        ),
+        (
+            "dispatches",
+            out.pointers("eg_unit_dispatch", "dispatches", &dispatches),
+        ),
+    ];
+    Ok(out.record("eg_unit_body", "body", None, &members))
+}
+
+/// The launch record of a unit; returns its name.
+fn launch(out: &mut Out, unit: &UnitMeta) -> String {
+    let l = &unit.launch;
+    let mut axes = vec![];
+    for (at, a) in l.plane_axes.iter().enumerate() {
+        let labels = out.labels(&format!("pa{at}_labels"), &a.labels);
+        let extents = out.numbers("int64_t", &format!("pa{at}_extents"), &a.extents);
+        let members = [
+            ("slot", a.slot.to_string()),
+            ("n_axes", a.labels.len().to_string()),
+            ("reserved0", "0".into()),
+            ("labels", labels),
+            ("extents", extents),
+        ];
+        axes.push(out.record("eg_unit_plane_axes", &format!("pa{at}"), None, &members));
+    }
+    let members = [
+        ("n_lane_axes", l.lane_labels.len().to_string()),
+        ("block", l.block.to_string()),
+        ("active_map_slot", index(l.active_map_slot)),
+        ("active_count_slot", index(l.active_count_slot)),
+        ("index_map_slot", index(l.index_map_slot)),
+        ("index_count_slot", index(l.index_count_slot)),
+        ("n_plane_axes", axes.len().to_string()),
+        ("group", l.group.to_string()),
+        ("lane_labels", out.labels("lane_labels", &l.lane_labels)),
+        (
+            "lane_extents",
+            out.numbers("int64_t", "lane_extents", &l.lane_extents),
+        ),
+        (
+            "plane_axes",
+            out.pointers("eg_unit_plane_axes", "plane_axes", &axes),
+        ),
+        ("host_box", out.thread_box("host_box", &l.host_box)),
+        ("device_box", out.thread_box("device_box", &l.device_box)),
+    ];
+    out.record("eg_unit_launch", "launch", None, &members)
+}
+
+/// The finish record of a unit, or NULL; a record without `steps` ends before `steps_slot`.
+fn finish(out: &mut Out, unit: &UnitMeta) -> String {
+    let Some(f) = &unit.finish else {
+        return "NULL".into();
+    };
+    let ended = f.steps.is_none();
+    let size = ended.then_some("offsetof(struct eg_unit_finish, steps_slot)");
+    let members = [
+        ("flags", flags(f.flags, &FINISH_FLAGS)),
+        ("mask_slot", f.mask_slot.to_string()),
+        ("counter_slot", f.counter_slot.to_string()),
+        ("steps_slot", index(f.steps_slot.filter(|_| !ended))),
+        ("reserved0", "0".into()),
+        ("steps", f.steps.unwrap_or(0).to_string()),
+        ("steps_max", f.steps_max.unwrap_or(0).to_string()),
+        ("step_ops", f.step_ops.unwrap_or(-1).to_string()),
+        ("fp64_ops_ir", f.fp64_ops_ir.unwrap_or(-1).to_string()),
+        (
+            "host_steps_reverse",
+            out.steps_table("host_steps", &f.host_steps_reverse),
+        ),
+        (
+            "device_steps_reverse",
+            out.steps_table("device_steps", &f.device_steps_reverse),
+        ),
+    ];
+    format!(
+        "&{}",
+        out.record("eg_unit_finish", "finish", size, &members)
+    )
+}
+
+/// The stages of a unit; returns the pointer array's name.
+fn stages(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
+    let mut all = vec![];
+    for (at, s) in unit.stages.iter().enumerate() {
+        let unit_ref = out.unit_ref(&format!("st{at}_unit"), &s.unit.name, &s.unit.digest)?;
+        let team = match &s.team {
+            Some(t) => {
+                let members = [
+                    ("grid", t.grid.c_name().into()),
+                    ("threads", t.threads.to_string()),
+                    ("warps", t.warps.to_string()),
+                    ("lanes", t.lanes.to_string()),
+                    ("groups", t.groups.to_string()),
+                    ("keyed", index(t.keyed)),
+                    ("of_slot", index(t.of_slot)),
+                    ("status_plane", index(t.status_plane)),
+                ];
+                format!(
+                    "&{}",
+                    out.record("eg_unit_team", &format!("st{at}_team"), None, &members)
+                )
+            }
+            None => "NULL".into(),
+        };
+        let members = [
+            ("n_cells_in", s.cells_in.len().to_string()),
+            ("n_cells_out", s.cells_out.len().to_string()),
+            ("reserved0", "0".into()),
+            ("unit", format!("&{unit_ref}")),
+            ("cells_in", out.names(&format!("st{at}_in"), &s.cells_in)),
+            ("cells_out", out.names(&format!("st{at}_out"), &s.cells_out)),
+            ("team", team),
+        ];
+        all.push(out.record("eg_unit_stage", &format!("st{at}"), None, &members));
+    }
+    Ok(out.pointers("eg_unit_stage", "stages", &all))
+}
+
+/// One unit's objects; returns the unit record's name.
+fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
+    let stage_list = stages(out, unit)?;
+    let (body, launch, finish) = (body(out, unit)?, launch(out, unit), finish(out, unit));
+    let members = [
+        ("flags", flags(unit.flags, &[])),
+        ("name", lit(&unit.name)),
+        ("digest", digest_bytes(&unit.digest)?),
+        ("pattern", unit.pattern.c_name().into()),
+        ("scalar_type", unit.scalar_type.c_name().into()),
+        ("host_entry", lit_or_null(&unit.host_entry)),
+        ("device_image", lit_or_null(&unit.device_image)),
+        ("device_function", lit_or_null(&unit.device_function)),
+        ("device_image_bytes", unit.device_image_bytes.to_string()),
+        (
+            "device_image_format",
+            unit.device_image_format.c_name().into(),
+        ),
+        ("n_stages", unit.stages.len().to_string()),
+        ("stages", stage_list),
+        ("body", format!("&{body}")),
+        ("launch", format!("&{launch}")),
+        ("finish", finish),
+        ("device_image_size", lit_or_null(&unit.device_image_size)),
+    ];
+    Ok(out.record("eg_unit_meta", "meta", None, &members))
+}
+
+/// The C source of the meta of one kernel's units.
+pub fn source(library: &LibraryMeta, units: &[&UnitMeta]) -> Result<String, Refusal> {
+    let mut out = Out {
+        text: PRELUDE.to_string(),
+        unit: String::new(),
+    };
+    if library.schema_major != SCHEMA_MAJOR {
+        return Err(fault(format!(
+            "the records are written for schema major {SCHEMA_MAJOR}, not {}",
+            library.schema_major
+        )));
+    }
+    let mut named = vec![];
+    for (at, held) in units.iter().enumerate() {
+        out.unit = format!("u{at}");
+        named.push(unit(&mut out, held)?);
+    }
+    out.unit = "lib".into();
+    let list = out.pointers("eg_unit_meta", "units", &named);
+    let members = [
+        ("schema_major", "EG_META_SCHEMA_MAJOR".into()),
+        ("schema_minor", library.schema_minor.to_string() + "u"),
+        ("n_units", named.len().to_string() + "u"),
+        ("units", list),
+    ];
+    let lib = out.record("eg_library_meta", "meta", None, &members);
+    let _ = write!(
+        out.text,
+        "#ifdef __cplusplus\nextern \"C\"\n#endif\n__attribute__((visibility(\"default\"))) const struct eg_library_meta* {LIBRARY_META_SYMBOL}(void) {{ return &{lib}; }}\n"
+    );
+    Ok(out.text)
+}

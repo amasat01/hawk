@@ -8,9 +8,9 @@ use aether_writers::spell::binding_name;
 use raptor_ir::record::Ctx;
 
 /// The plane of the index map.
-const MAP_PLANE: &str = "active_map";
+pub(super) const MAP_PLANE: &str = "active_map";
 /// The plane that holds the number of listed samples.
-const COUNT_PLANE: &str = "active_count";
+pub(super) const COUNT_PLANE: &str = "active_count";
 
 /// The roles a walk's leaves are re-declared with: a written output and a row sum's companion are not leaves.
 const LEAF_ROLES: [Role; 9] = [

@@ -20,10 +20,10 @@ use aether_writers::contract::types::{Access, Guard, Scalar, SinkPolicy, Target}
 use aether_writers::contract::types::{Caches, MapBits};
 use osprey_host::facts;
 use osprey_host::lower::request::{
-    Body, DeclaredSlot, IndexSet, KernelAnswer, KernelRequest, KeyedRecord, Member, RequestKind,
-    Settings, StageBlock, UnitAnswer, WideForm, ACCESSES, DTYPES, FOLD_FORMS, LINALG_FORMS, ROLES,
-    SCALARS, WIDE_FORMS,
+    Body, DeclaredSlot, IndexSet, KernelAnswer, KernelRequest, Member, RequestKind, Settings,
+    UnitAnswer, WideForm, ACCESSES, DTYPES, FOLD_FORMS, LINALG_FORMS, ROLES, SCALARS, WIDE_FORMS,
 };
+use osprey_host::lower::unit_meta as meta;
 use raptor_ir::door::{RX_OK, RX_TRUNC};
 use raptor_support::corpus::{declare, err, make_nodes, manifests, Vals};
 use rcore::json::{self, J};
@@ -31,6 +31,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::c_char;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+
+#[path = "kreplay/meta.rs"]
+mod oracle;
 
 extern crate raptor_wings; // links the wing analyses the writers call
 
@@ -503,6 +506,8 @@ struct WarpTally {
 /// The counts of one corpus.
 #[derive(Default)]
 struct Tally {
+    /// The meta of the answer's units against the recorded sidecars.
+    meta: oracle::Oracle,
     /// Build calls read.
     calls: usize,
     /// Calls that ended in an error.
@@ -1109,6 +1114,9 @@ fn replay_plain(
         &own.into_iter().collect::<Vec<_>>(),
         failed(found.call),
     );
+    if let ([unit], Some(record)) = (answer.units.as_slice(), own) {
+        tally.meta.unit(found.id, unit, record, box_off(own));
+    }
     match answer.units.as_slice() {
         [unit] => compare(
             (found.id, name),
@@ -1120,12 +1128,12 @@ fn replay_plain(
                 test,
                 unboxed: box_off(own),
                 adapted: adaptations(found.call, kernel),
-                ambiguous: ambiguous_record(&same, &unit.digest),
+                ambiguous: ambiguous_record(&same, &unit.meta.digest),
             },
             tally,
         ),
         _ => {
-            let names: Vec<&str> = answer.units.iter().map(|u| u.name.as_str()).collect();
+            let names: Vec<&str> = answer.units.iter().map(|u| u.meta.name.as_str()).collect();
             let why = format!("the answer does not hold one unit|the answer holds {names:?}");
             count_failure((found.id, name), why, tally)
         }
@@ -1225,12 +1233,12 @@ fn replay_warp(
             .or_default() += 1;
         return;
     };
-    let digest_ok = Some(unit.digest.as_str()) == digest_of(same.last().copied());
+    let digest_ok = Some(unit.meta.digest.as_str()) == digest_of(same.last().copied());
     let recorded = call
         .get("split")
         .and_then(|s| entry(s, name))
-        .map(|b| from_record(rec(b)));
-    let block_ok = recorded == answer.stages.as_ref().map(answer_block);
+        .map(recorded_block);
+    let block_ok = recorded == answer_block(&answer);
     let text_ok = wants
         .and_then(|w| w.last())
         .is_some_and(|want| unit.texts[0].text == want.text);
@@ -1247,7 +1255,7 @@ fn replay_warp(
                 format!(
                     "stage block: recorded {} / computed {}",
                     show(recorded),
-                    show(answer.stages.as_ref().map(answer_block))
+                    show(answer_block(&answer))
                 )
             }
             _ => wants
@@ -1288,7 +1296,7 @@ fn keep_recorded(answer: &mut KernelAnswer, recorded: &[&J], failed: bool) {
         let named = |unit: &UnitAnswer| {
             recorded
                 .iter()
-                .any(|r| r.get("unit").and_then(J::str) == Some(unit.name.as_str()))
+                .any(|r| r.get("unit").and_then(J::str) == Some(unit.meta.name.as_str()))
         };
         answer.units.retain(named);
     }
@@ -1348,14 +1356,14 @@ fn replay_segmented(
     }
     for (unit, record) in answer.units.iter().zip(&recorded) {
         let digest = record.get("digest").and_then(J::str);
-        let Some(wants) = expected.get(&(found.id.to_string(), unit.name.clone())) else {
+        let Some(wants) = expected.get(&(found.id.to_string(), unit.meta.name.clone())) else {
             tally.segment_no_text += 1;
             tally.items += 1;
             continue;
         };
         let before = tally.equal;
         compare(
-            (found.id, &unit.name),
+            (found.id, &unit.meta.name),
             digest,
             wants,
             unit,
@@ -1370,6 +1378,9 @@ fn replay_segmented(
         );
         tally.segment_units += 1;
         tally.segment_equal += tally.equal - before;
+        tally
+            .meta
+            .unit(found.id, unit, record, box_off(Some(record)));
     }
 }
 
@@ -1442,12 +1453,23 @@ fn from_record(j: &J) -> V {
     }
 }
 
-/// The answer's stage block in the form the record is compared in: the planes and keyed planes are left out when there are none,
-/// and a cell states `internal` only when it is.
-fn answer_block(b: &StageBlock) -> V {
+/// The stage facts of the answer's units in the form the record is compared in: the unit that lists the stages carries the kernel's
+/// cells, keyed planes and scratch planes. The planes and keyed planes are left out when there are none, and a cell states
+/// `internal` only when it is.
+fn answer_block(answer: &KernelAnswer) -> Option<V> {
+    let carrier = answer
+        .units
+        .iter()
+        .map(|u| &u.meta)
+        .find(|m| !m.stages.is_empty())?;
+    let b = &carrier.body;
     let texts = |items: &[String]| V::L(items.iter().map(|t| V::S(t.clone())).collect());
     let one =
         |pairs: Vec<(&str, V)>| V::D(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+    let slot = |at: Option<usize>| {
+        at.and_then(|n| b.slots.get(n))
+            .map_or(V::N, |s| V::S(s.name.clone()))
+    };
     let mut top = vec![
         (
             "cells",
@@ -1455,8 +1477,11 @@ fn answer_block(b: &StageBlock) -> V {
                 b.cells
                     .iter()
                     .map(|c| {
-                        let mut cell =
-                            vec![("columns", V::I(c.columns)), ("op", V::S(c.op.clone()))];
+                        let op =
+                            c.op.c_name()
+                                .trim_start_matches("EG_REDUCE_")
+                                .to_lowercase();
+                        let mut cell = vec![("columns", V::I(c.columns)), ("op", V::S(op))];
                         if c.internal {
                             cell.push(("internal", V::B(true)));
                         }
@@ -1468,14 +1493,14 @@ fn answer_block(b: &StageBlock) -> V {
         (
             "stages",
             V::L(
-                b.stages
+                carrier
+                    .stages
                     .iter()
                     .map(|s| {
                         let mut stage = vec![
-                            ("kernel", V::S(s.kernel.clone())),
+                            ("kernel", V::S(s.unit.name.clone())),
                             ("cells_in", texts(&s.cells_in)),
                             ("cells_out", texts(&s.cells_out)),
-                            ("recomputed", texts(&s.recomputed)),
                         ];
                         if let Some(team) = &s.team {
                             let mut held = vec![("threads", V::I(team.threads))];
@@ -1485,18 +1510,30 @@ fn answer_block(b: &StageBlock) -> V {
                             if team.warps > 1 {
                                 held.push(("warps", V::I(team.warps)));
                             }
-                            if let Some(grid) = &team.keys {
-                                held.push(("grid", V::S("keys".into())));
-                                if grid.groups > 1 {
-                                    held.push(("groups", V::I(grid.groups)));
-                                }
-                                held.push(("keyed", keyed_value(&grid.keyed)));
+                            let grid = match team.grid {
+                                meta::TeamGrid::Lanes => None,
+                                meta::TeamGrid::Keys => Some("keys"),
+                                meta::TeamGrid::Chunks => Some("chunks"),
+                                meta::TeamGrid::Targets => Some("targets"),
+                            };
+                            if let Some(grid) = grid {
+                                held.push(("grid", V::S(grid.into())));
                             }
-                            if let Some(scatter) = &team.scatter {
-                                held.push(("grid", V::S(scatter.grid.clone())));
-                                held.push(("of", V::S(scatter.target.clone())));
-                                if let Some(status) = &scatter.status {
-                                    held.push(("status", V::S(status.clone())));
+                            if team.grid == meta::TeamGrid::Keys {
+                                if team.groups > 1 {
+                                    held.push(("groups", V::I(team.groups)));
+                                }
+                                if let Some(k) = team.keyed.and_then(|n| b.keyed.get(n)) {
+                                    held.push(("keyed", keyed_value(k)));
+                                }
+                            }
+                            if matches!(team.grid, meta::TeamGrid::Chunks | meta::TeamGrid::Targets)
+                            {
+                                held.push(("of", slot(team.of_slot)));
+                                if let Some(plane) =
+                                    team.status_plane.and_then(|n| b.team_planes.get(n))
+                                {
+                                    held.push(("status", V::S(plane.name.clone())));
                                 }
                             }
                             stage.push(("team", one(held)));
@@ -1509,53 +1546,113 @@ fn answer_block(b: &StageBlock) -> V {
     ];
     if !b.team_planes.is_empty() {
         let planes = b.team_planes.iter().map(|p| {
-            let mut plane = vec![
-                ("dtype", V::S(p.dtype.clone())),
-                ("per_lane", V::I(p.per_lane)),
-            ];
-            if let Some(layout) = &p.layout {
-                plane.push(("layout", V::S(layout.clone())));
+            let dtype = p
+                .dtype
+                .c_name()
+                .trim_start_matches("EG_DTYPE_")
+                .to_lowercase();
+            let mut plane = vec![("dtype", V::S(dtype)), ("per_lane", V::I(p.per_lane))];
+            if p.layout == meta::PlaneLayout::PlaneMajor {
+                plane.push(("layout", V::S("plane_major".into())));
             }
-            if let Some(keys) = &p.keys {
-                plane.push(("keys", keyed_value(keys)));
+            if let Some(k) = p.keyed.and_then(|n| b.keyed.get(n)) {
+                plane.push(("keys", keyed_value(k)));
             }
-            if let Some(target) = &p.per_target {
-                plane.push(("per_target", V::S(target.clone())));
+            if p.unit == meta::PlaneUnit::Target {
+                plane.push(("per_target", slot(p.target_slot)));
             }
-            if p.once {
+            if p.unit == meta::PlaneUnit::Once {
                 plane.push(("once", V::B(true)));
             }
-            if let Some(fill) = p.fill {
-                plane.push(("fill", V::I(fill)));
+            if p.fill != 0 {
+                plane.push(("fill", V::I(p.fill)));
             }
             (p.name.clone(), one(plane))
         });
         top.push(("team_planes", V::D(planes.collect())));
     }
-    if !b.keyed.is_empty() {
-        let keyed = b.keyed.iter().map(|k| (k.name.clone(), keyed_value(k)));
+    // the table holds a plane once however many stages and scratch planes use it: the block's own keyed planes are the ones no
+    // team stage or scratch plane is keyed by
+    let used: Vec<usize> = carrier
+        .stages
+        .iter()
+        .filter_map(|s| s.team.as_ref()?.keyed)
+        .chain(b.team_planes.iter().filter_map(|p| p.keyed))
+        .collect();
+    let own: Vec<_> = b
+        .keyed
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| !used.contains(at))
+        .collect();
+    if !own.is_empty() {
+        let keyed = own
+            .into_iter()
+            .map(|(_, k)| (k.name.clone(), keyed_value(k)));
         top.push(("keyed", V::D(keyed.collect())));
     }
-    one(top)
+    Some(one(top))
+}
+
+/// The recorded stage block as a value, without what the meta cannot state: the `recomputed` lists of its stages (no member) and a
+/// fill of 0 (a plane is zero at the start of every run unless promised another value, so 0 promised and nothing promised are one
+/// fact).
+fn recorded_block(j: &J) -> V {
+    let mut block = from_record(rec(j));
+    if let V::D(top) = &mut block {
+        if let Some(V::L(stages)) = top.get_mut("stages") {
+            for stage in stages {
+                if let V::D(held) = stage {
+                    held.remove("recomputed");
+                }
+            }
+        }
+        if let Some(V::D(planes)) = top.get_mut("team_planes") {
+            for plane in planes.values_mut() {
+                if let V::D(held) = plane {
+                    if held.get("fill") == Some(&V::I(0)) {
+                        held.remove("fill");
+                    }
+                }
+            }
+        }
+    }
+    block
 }
 
 /// A keyed plane's record as a comparable value: its width, the kept lane axes and the payload shape.
-fn keyed_value(keyed: &KeyedRecord) -> V {
-    let axis = |(label, extent): &(Option<String>, Option<i64>)| {
-        V::L(vec![
-            label.clone().map_or(V::N, V::S),
-            extent.map_or(V::N, V::I),
-        ])
-    };
+fn keyed_value(keyed: &meta::Keyed) -> V {
+    let axes = keyed
+        .axis_labels
+        .iter()
+        .zip(&keyed.axis_extents)
+        .map(|(label, extent)| {
+            V::L(vec![
+                label.clone().map_or(V::N, V::S),
+                if *extent < 0 { V::N } else { V::I(*extent) },
+            ])
+        });
     let pairs = [
         ("width", V::I(keyed.width)),
-        ("axes", V::L(keyed.axes.iter().map(axis).collect())),
+        ("axes", V::L(axes.collect())),
         (
             "payload",
             V::L(keyed.payload.iter().map(|n| V::I(*n)).collect()),
         ),
     ];
     V::D(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+}
+
+/// The cell row and the scatter chunks the answer's units state, when any does.
+fn run_facts(answer: &KernelAnswer) -> (Option<i64>, Option<i64>) {
+    let first = |value: fn(&meta::Body) -> i64| {
+        answer
+            .units
+            .iter()
+            .map(|u| value(&u.meta.body))
+            .find(|n| *n != 0)
+    };
+    (first(|b| b.cell_row), first(|b| b.scatter_chunks))
 }
 
 /// Compares the answer's stage block and run facts with the first recorded unit's block and the recorded sidecars.
@@ -1570,13 +1667,13 @@ fn compare_block(
         .first()
         .and_then(|u| u.get("stage_block"))
         .filter(|b| !matches!(b, J::Null))
-        .map(|b| from_record(rec(b)));
+        .map(recorded_block);
     // a call that failed after rendering never drafted its sidecar: the record has no block to compare
     if want.is_none() && failed(found.call) {
         return;
     }
     tally.blocks += 1;
-    let got = answer.stages.as_ref().map(answer_block);
+    let got = answer_block(answer);
     let side = |key: &str| {
         recorded
             .iter()
@@ -1595,10 +1692,10 @@ fn compare_block(
             show(&want),
             show(&got)
         );
-    } else if (row, chunks) != (answer.run.cell_row, answer.run.scatter_chunks) {
+    } else if (row, chunks) != run_facts(answer) {
         why = format!(
-            "run facts: recorded {row:?} {chunks:?} / computed {:?} {:?}",
-            answer.run.cell_row, answer.run.scatter_chunks
+            "run facts: recorded {row:?} {chunks:?} / computed {:?}",
+            run_facts(answer)
         );
     }
     if why.is_empty() {
@@ -1663,16 +1760,16 @@ fn replay_staged(
     for (unit, record) in answer.units.iter().zip(&recorded) {
         // of the units built under one name, the record ends with the last build: that is the one
         // compared
-        let same = built_as(&every, &unit.name, side_of(found.target));
+        let same = built_as(&every, &unit.meta.name, side_of(found.target));
         let digest = record.get("digest").and_then(J::str);
-        let Some(wants) = expected.get(&(found.id.to_string(), unit.name.clone())) else {
+        let Some(wants) = expected.get(&(found.id.to_string(), unit.meta.name.clone())) else {
             tally.no_text += 1;
             tally.items += 1;
             continue;
         };
         let before = tally.equal;
         compare(
-            (found.id, &unit.name),
+            (found.id, &unit.meta.name),
             digest,
             wants,
             unit,
@@ -1681,12 +1778,15 @@ fn replay_staged(
                 test,
                 unboxed: box_off(Some(record)),
                 adapted: adaptations(found.call, kernel),
-                ambiguous: ambiguous_record(&same, &unit.digest),
+                ambiguous: ambiguous_record(&same, &unit.meta.digest),
             },
             tally,
         );
         tally.staged_units += 1;
         tally.staged_equal += tally.equal - before;
+        tally
+            .meta
+            .unit(found.id, unit, record, box_off(Some(record)));
     }
     compare_block(found, name, &recorded, &answer, tally);
 }
@@ -1738,7 +1838,7 @@ fn compare(
     let test = set.test;
     t.items += 1;
     let got = &unit.texts[0];
-    let digest_ok = Some(unit.digest.as_str()) == digest;
+    let digest_ok = Some(unit.meta.digest.as_str()) == digest;
     let last = wants.len().saturating_sub(1);
     // the last render is the one to match; an earlier one is told apart
     let found = wants
@@ -2094,14 +2194,14 @@ fn replay_chain(
     let test = found.call.get("test").and_then(J::str).unwrap_or("");
     for (unit, record) in answer.units.iter().zip(&recorded) {
         let digest = record.get("digest").and_then(J::str);
-        let Some(wants) = expected.get(&(found.id.to_string(), unit.name.clone())) else {
+        let Some(wants) = expected.get(&(found.id.to_string(), unit.meta.name.clone())) else {
             tally.no_text += 1;
             tally.items += 1;
             continue;
         };
         let before = tally.equal;
         compare(
-            (found.id, &unit.name),
+            (found.id, &unit.meta.name),
             digest,
             wants,
             unit,
@@ -2116,6 +2216,9 @@ fn replay_chain(
         );
         tally.chain_units += 1;
         tally.chain_equal += tally.equal - before;
+        tally
+            .meta
+            .unit(found.id, unit, record, box_off(Some(record)));
     }
     compare_block(found, name, &recorded, &answer, tally);
 }
@@ -2128,6 +2231,13 @@ fn main() {
         );
     }
     let args: Vec<String> = std::env::args().collect();
+    if let Some(at) = args.iter().position(|a| a == "--emit-meta") {
+        let (file, out) = (args.get(at + 1), args.get(at + 2));
+        return oracle::emit(
+            Path::new(file.expect("--emit-meta <calls> <folder>")),
+            Path::new(out.expect("--emit-meta <calls> <folder>")),
+        );
+    }
     let dir = args
         .get(1)
         .expect("usage: kreplay <corpus dir> [--show k] [--accepted corpus_accepted.tsv]");
@@ -2173,5 +2283,6 @@ fn main() {
     }
     for (tally, (_, side)) in tallies.iter().zip(SIDES) {
         print(dir, tally, side);
+        tally.meta.print(side);
     }
 }

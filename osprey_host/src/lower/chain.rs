@@ -2,7 +2,8 @@
 //! piece, each piece reading what an earlier piece handed on in a plane the runtime makes per lane. The IR decisions (the
 //! composition, the cuts, the pieces) come from the wing analysis; this module reads the fusion row of the build's target from the facts and
 //! hands the pieces to the steps that follow as pending units.
-use super::request::{DeclaredSlot, KernelRequest, Member, PlaneRecord, StageRecord};
+use super::request::{DeclaredSlot, KernelRequest, Member};
+use super::stage_block::{PlaneRecord, StageRecord};
 use super::stages::Note;
 use super::{carries_no_forced_access, held_exempt, merge_slot, real_bytes, wing, Pending};
 use crate::facts;
@@ -110,7 +111,6 @@ pub(super) fn expand(
                 kernel: member.name.clone(),
                 cells_in: vec![],
                 cells_out: vec![],
-                recomputed: vec![],
                 team: None,
             },
             cells: vec![],

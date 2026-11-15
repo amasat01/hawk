@@ -13,11 +13,14 @@ pub mod boxed;
 pub mod card;
 mod chain;
 mod fused;
+pub mod meta_c;
+mod meta_fill;
 mod placed;
 pub mod request;
 mod segment;
-pub mod stage_block;
+mod stage_block;
 mod stages;
+pub mod unit_meta;
 mod warp;
 
 use aether_writers::contract::types::{
@@ -256,12 +259,21 @@ pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<Kern
         pending = step(ctx, &request, &cards, pending)?;
     }
     distinct_names(&pending)?;
-    let (stages, run) = stages::block(ctx, &cards.deciding, &pending)?;
-    let units = pending
+    let block = stages::block(&pending);
+    let mut units = pending
         .into_iter()
         .map(|unit| write(ctx, &request, &cards, unit))
-        .collect::<Result<_, _>>()?;
-    Ok(KernelAnswer { units, stages, run })
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(block) = &block {
+        meta_fill::stages(&mut units, block, cards.deciding.scatter_max_chunks)?;
+    }
+    let library = unit_meta::LibraryMeta::current();
+    let meta_source = meta_c::source(&library, &units.iter().map(|u| &u.meta).collect::<Vec<_>>())?;
+    Ok(KernelAnswer {
+        units,
+        library,
+        meta_source,
+    })
 }
 
 impl Pending {
@@ -302,11 +314,17 @@ fn write(
     for &target in &request.targets {
         texts.push(write_target(ctx, request, cards, &pending, (walk, target))?);
     }
-    Ok(UnitAnswer {
-        name: pending.member.name,
-        digest,
-        texts,
-    })
+    let meta = meta_fill::unit(&meta_fill::Parts {
+        ctx,
+        request,
+        card: &cards.deciding,
+        pending: &pending,
+        walk,
+        digest: &digest,
+        typed: &typed_walk(ctx, walk)?,
+        texts: &texts,
+    })?;
+    Ok(UnitAnswer { texts, meta })
 }
 
 /// The text of one pending unit for one target, from its walk: the writer unit, its thread box and the target's writer.
