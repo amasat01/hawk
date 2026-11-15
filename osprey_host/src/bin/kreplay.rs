@@ -781,10 +781,12 @@ fn request_for(
     handles: &[u32],
 ) -> Result<KernelRequest, String> {
     let spec = rec(call.get("spec").ok_or("a call without a spec")?);
+    // The build's mode: the split's own when the call was split, else the call's argument.
     let smode = call
         .get("split_in")
         .and_then(|s| s.get("smode"))
         .and_then(J::str)
+        .or_else(|| text(call.get("args").and_then(|a| a.get("mode"))))
         .unwrap_or("float64");
     let scalar: Scalar = *SCALARS
         .iter()
