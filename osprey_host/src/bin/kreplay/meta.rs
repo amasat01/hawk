@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// The members of the meta compared with the record, one line each.
-const MEMBERS: [&str; 24] = [
+const MEMBERS: [&str; 27] = [
     "name",
     "digest",
     "pattern",
@@ -34,6 +34,9 @@ const MEMBERS: [&str; 24] = [
     "finish.steps, steps_max",
     "launch.lane_labels, lane_extents",
     "launch.plane_axes",
+    "slot.flags PRIOR",
+    "body.cells of a unit that lists no stages",
+    "team_plane.wide (names)",
 ];
 
 /// What was compared of one member: the units, those equal, and the first differing ones with both values.
@@ -484,7 +487,12 @@ fn axis_text(label: Option<&str>, extent: Option<i64>) -> String {
 }
 
 /// The members the caller declares: the shared planes, the steps, the lane space and the sink axes.
-fn declared_rows(unit: &meta::UnitMeta, sc: &J) -> Vec<Pair> {
+fn declared_rows(
+    unit: &meta::UnitMeta,
+    unsplit: bool,
+    lister: Option<&meta::UnitMeta>,
+    sc: &J,
+) -> Vec<Pair> {
     let slots = &unit.body.slots;
     let shared = (
         joined(sorted(
@@ -564,7 +572,68 @@ fn declared_rows(unit: &meta::UnitMeta, sc: &J) -> Vec<Pair> {
             });
         (joined(sorted(ours)), joined(sorted(theirs)))
     });
-    vec![Some(shared), steps, Some(lane), axes]
+    let prior = (
+        joined(sorted(
+            slots
+                .iter()
+                .filter(|s| s.flags & meta::SLOT_PRIOR != 0)
+                .map(|s| s.name.clone()),
+        )),
+        joined(sorted(
+            at(sc, &["mutables"])
+                .map_or(&[][..], J::arr)
+                .iter()
+                .filter(|m| flag(m, &["prior"]))
+                .filter_map(|m| word(m, &["name"])),
+        )),
+    );
+    let cells = (unsplit && (!unit.body.cells.is_empty() || !pairs(sc, &["cells"]).is_empty()))
+        .then(|| {
+            (
+                joined(sorted(unit.body.cells.iter().map(|c| {
+                    format!(
+                        "{}:{}:{}:{}",
+                        c.name,
+                        lower(c.op.c_name(), "EG_REDUCE_"),
+                        c.columns,
+                        c.internal
+                    )
+                }))),
+                joined(sorted(pairs(sc, &["cells"]).into_iter().map(|(n, c)| {
+                    format!(
+                        "{n}:{}:{}:{}",
+                        word(c, &["op"]).unwrap_or_default(),
+                        number(c, &["columns"]).unwrap_or(0),
+                        flag(c, &["internal"])
+                    )
+                }))),
+            )
+        });
+    let recorded_wide: Vec<String> = pairs(sc, &["launch", "wide"])
+        .into_iter()
+        .map(|(n, _)| n.to_string())
+        .filter(|n| n != "class")
+        .collect();
+    let wide = (lister.is_some() || !recorded_wide.is_empty()).then(|| {
+        let ours = lister.map_or(vec![], |l| {
+            l.body
+                .team_planes
+                .iter()
+                .filter(|p| p.wide != meta::WideLayout::None)
+                .map(|p| p.name.clone())
+                .collect()
+        });
+        (joined(sorted(ours)), joined(sorted(recorded_wide)))
+    });
+    vec![
+        Some(shared),
+        steps,
+        Some(lane),
+        axes,
+        Some(prior),
+        cells,
+        wide,
+    ]
 }
 
 impl Oracle {
@@ -582,6 +651,15 @@ impl Oracle {
         };
         let m = &unit.meta;
         let host = word(sc, &["format"]).as_deref() == Some("host");
+        let unsplit = !answer
+            .units
+            .iter()
+            .any(|u| u.meta.stages.iter().any(|s| s.unit.name == m.name));
+        let lister = answer
+            .units
+            .iter()
+            .map(|u| &u.meta)
+            .find(|l| l.stages.first().is_some_and(|s| s.unit.name == m.name));
         let slots = slot_rows(m, sc);
         let stages = stage_rows(m, answer, sc);
         let launch = launch_rows(m, sc, unboxed);
@@ -617,7 +695,7 @@ impl Oracle {
         .chain([stages[5].clone()])
         .chain(stages[..5].iter().cloned())
         .chain(launch)
-        .chain(declared_rows(m, sc))
+        .chain(declared_rows(m, unsplit, lister, sc))
         .collect();
         // the member order of `MEMBERS`: the scatter chunks sit after the cell row
         for (member, pair) in MEMBERS.iter().zip(pairs) {

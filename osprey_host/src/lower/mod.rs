@@ -540,6 +540,20 @@ fn leaf_slots(ctx: *mut Ctx, walk: u32) -> Result<Vec<DeclaredSlot>, Refusal> {
     Ok(slots)
 }
 
+/// The names of the planes whose launch-start value the walk reads.
+fn prior_reads(ctx: *mut Ctx, walk: u32) -> Result<Vec<String>, Refusal> {
+    match parse(&walk_field(ctx, walk, "prior")?).map_err(fault)? {
+        Val::Tuple(names) | Val::List(names) => names
+            .into_iter()
+            .map(|n| match n {
+                Val::Str(name) => Ok(name),
+                _ => Err(fault("a prior read that is not a name")),
+            })
+            .collect(),
+        _ => Err(fault("the walk's prior reads are not a list")),
+    }
+}
+
 /// The walk's arguments, access class and finish, read back as the writers' typed walk.
 fn typed_walk(ctx: *mut Ctx, walk: u32) -> Result<Walk, Refusal> {
     let read = |field: &str| parse(&walk_field(ctx, walk, field)?).map_err(fault);

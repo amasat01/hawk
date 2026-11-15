@@ -287,6 +287,8 @@ pub const SLOT_FLAGS: [(u32, &str); 4] = [
     (1 << 2, "EG_SLOT_GATHER"),
     (1 << 3, "EG_SLOT_SHARED"),
 ];
+/// The flag of a plane whose launch-start value the body reads.
+pub const SLOT_PRIOR: u32 = 1 << 0;
 /// The parameter-plane flag of a slot.
 pub const SLOT_PARAM_PLANE: u32 = 1 << 1;
 /// The flag of a parameter plane with no lane axis.
@@ -622,20 +624,17 @@ impl LibraryMeta {
 /// written as the header's absent value (or past the record's `struct_size`) and never as a value; the next slices shrink the list.
 /// Paths: raptor = rs/ir/src, aether = rs/writers/src, lower = osprey_host/src/lower.
 pub const NOT_COMPUTED: &[(&str, &str)] = &[
-    ("slot.flags PRIOR", "raptor canon.rs:518 `prior_reads`, walk field `prior` (canon.rs:802)"),
     ("slot.flags GATHER, slot.gather", "aether ir/analysis.rs:434 `gather`, with the broadcast pattern the request must carry"),
-    ("slot.like_slot", "the walk's adjoint_like (a walk step; no reader in raptor canon.rs yet)"),
+    ("slot.like_slot", "raptor (a reader): the sidecar `adjoint_like` (42 units on k7, 81 on k7e) has no analysis in raptor rs/ir canon.rs, and the walk has no such field"),
     ("companion.slot, companion.target_slot", "aether ir/analysis.rs:491 `companions` names (plane, correction plane)"),
     ("companion.host_fold_entry", "the host writer that names the fold entry (aether unit/host/render.rs)"),
     ("companion.device_fold_function", "the device writer that names the fold function (aether unit/device/render.rs)"),
-    ("cell.* of a unit that is not split", "the walk's cells: raptor wings cells.rs (a split unit's cells come from lower/stages.rs `cell_records`)"),
     ("cell.slots", "the render: positions of the row planes among the entry's arguments (aether unit/entry.rs)"),
-    ("team_plane.wide", "the wide placement pass: lower/placed.rs:25 `place_unit`"),
-    ("dispatch.* (strategy, name, mix_slot)", "raptor canon.rs:801 walk field `dispatches`"),
+    ("team_plane.wide of a wide OUTPUT plane (`bf`, `y`: a slot the placement made wide, not a scratch plane)", "a design choice: the meta has no member for a wide slot; the recorded launch.wide names it (4 units on k7); the warp step's own planes (`hwd*`) also come from lower/warp.rs `slice`"),
+    ("dispatch.* (strategy, name, mix_slot)", "raptor (a reader): the walk's `dispatches` listing (canon.rs:507) holds name, K, reads and the static flag but not the strategy (switch / predicated / auto / segmented); the field is in raptor's golden walks, so the strategy needs a new walk field, not a changed one"),
     ("dispatch.class_slot, stale_slot, offsets_slot, classify", "the segment step: lower/segment.rs:34 `split`, raptor wings segment.rs"),
-    ("launch.block (the emit-fixed tile)", "the warp step: lower/warp.rs:62 `slice`"),
+    ("launch.block (the emit-fixed tile)", "no recorded oracle: the k7 / k7e sidecars hold no launch.block member; the value is the request's launch bounds today"),
     ("finish.flags ENTRY_COUNTS, finish.step_ops, finish.fp64_ops_ir", "the render's lane split of the step: aether lanes/mod.rs:35 `lane_split`"),
-    ("finish.steps_slot", "the steps word among the walk's slots"),
-    ("finish.host_steps_reverse, device_steps_reverse (steps tables)", "the facts step: osprey_host/facts/cpu.json and cuda.json hold no steps_reverse rows yet"),
+    ("finish.host_steps_reverse, device_steps_reverse (steps tables)", "data: the rows are in the old tree's installed wing facts (hawk/targets/steps_reverse.py `table_for`), and no copy of them is on this Mac (not in the tree, the overlay or venv_rel)"),
     ("slot.dtype of an index leaf bound at 32 bits", "the entry writer: aether unit/entry.rs `element` widens every index leaf to the 64-bit Int"),
 ];

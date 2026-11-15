@@ -156,7 +156,7 @@ fn whole_note(ctx: *mut Ctx, unit: &Pending) -> Result<Note, Refusal> {
 }
 
 /// The cells as the answer records them: one a later stage reads is the runtime's own unless the caller declares it.
-fn cell_records(cells: Vec<Cell>, declared: &[String]) -> Vec<CellRecord> {
+pub(super) fn cell_records(cells: Vec<Cell>, declared: &[String]) -> Vec<CellRecord> {
     cells
         .into_iter()
         .map(|c| CellRecord {
@@ -181,6 +181,7 @@ fn planes_under(context: &Ctx, sinks: &[u32]) -> Result<Vec<PlaneRecord>, Refusa
             keys: None,
             per_target: None,
             once: false,
+            wide: true,
             fill: None,
         })
         .collect())
@@ -414,6 +415,7 @@ fn team_planes(team: Option<&TeamSpec>, banded: bool) -> Vec<PlaneRecord> {
                 .then(|| target.clone())
                 .flatten(),
             once: plane.unit == Unit::Once,
+            wide: false,
             fill: plane.fill,
         })
         .collect()

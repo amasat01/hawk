@@ -5,6 +5,7 @@ use super::card::BuildCard;
 use super::request::{Body, KernelRequest, LaneAxis, Steps, TargetText, UnitAnswer};
 use super::segment::FUSED_STEPS_PLANE;
 use super::stage_block::{KeyedRecord, PlaneRecord, StageBlock, TeamRecord};
+use super::stages::cell_records;
 use super::unit_meta as m;
 use super::{wing, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{Access, Dtype, Role, Scalar, Target, Walk};
@@ -96,6 +97,7 @@ pub(super) fn slots(
     typed: &Walk,
     shared: &[String],
 ) -> Result<Vec<m::Slot>, Refusal> {
+    let prior = super::prior_reads(ctx, walk)?;
     let ctx = ctx as *mut RxCtx;
     typed
         .slots
@@ -104,6 +106,11 @@ pub(super) fn slots(
             let planar = s.role == Role::Lookup && param_plane(ctx, walk, &s.name)?;
             Ok(m::Slot {
                 flags: if planar { m::SLOT_PARAM_PLANE } else { 0 }
+                    | if prior.contains(&s.name) {
+                        m::SLOT_PRIOR
+                    } else {
+                        0
+                    }
                     | if shared.contains(&s.name) {
                         m::SLOT_SHARED
                     } else {
@@ -232,9 +239,20 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
 pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
     let slots = slots(parts.ctx, parts.walk, parts.typed, &parts.request.shared)?;
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
-    let stores = !stored_cells(unsafe { &*parts.ctx }, &parts.pending.member.sinks)
-        .map_err(wing)?
-        .is_empty();
+    let stored = stored_cells(unsafe { &*parts.ctx }, &parts.pending.member.sinks).map_err(wing)?;
+    let stores = !stored.is_empty();
+    let cells = cell_records(stored, &parts.request.planes)
+        .iter()
+        .map(|cell| {
+            Ok(m::Cell {
+                op: reduce_op(&cell.op)?,
+                internal: cell.internal,
+                columns: cell.columns,
+                name: cell.name.clone(),
+                slots: None,
+            })
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
     let name = &parts.pending.member.name;
     let entry = |target: Target| parts.texts.iter().find(|t| t.target == target);
     let device = entry(Target::Device).map(|t| t.entry.clone());
@@ -256,6 +274,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
         body: m::Body {
             access: access(parts.typed.access),
             cell_row: if stores { parts.card.cells_row } else { 0 },
+            cells,
             slots,
             ..m::Body::default()
         },
@@ -350,8 +369,12 @@ fn team_plane(
         per_lane: plane.per_lane,
         fill: plane.fill.unwrap_or(0),
         fill_promised: plane.fill.is_some(),
+        wide: if plane.wide {
+            m::WideLayout::Plain
+        } else {
+            m::WideLayout::None
+        },
         name: plane.name.clone(),
-        ..m::TeamPlane::default()
     })
 }
 
@@ -466,6 +489,7 @@ pub(super) fn stages(
                 .map(|t| team(t, &mut keyed, (&view, &planes))),
         });
     }
+    meta.body.cells.clear();
     for cell in &block.cells {
         meta.body.cells.push(m::Cell {
             op: reduce_op(&cell.op)?,

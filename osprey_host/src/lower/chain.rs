@@ -126,6 +126,7 @@ pub(super) fn expand(
                     keys: None,
                     per_target: None,
                     once: false,
+                    wide: false,
                     fill: None,
                 })
                 .collect(),
