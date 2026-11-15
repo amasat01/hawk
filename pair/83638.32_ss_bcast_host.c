@@ -1,6 +1,6 @@
 /* The meta of a unit library: constant data and one exported function. Generated. */
-#include "eg_door.h"
-#include "eg_unit_meta.h"
+#include "eagle/door/eg_door.h"
+#include "eagle/door/eg_unit_meta.h"
 #ifdef __cplusplus
 #define M(member, ...) __VA_ARGS__
 #else
@@ -18,7 +18,4 @@ static const struct eg_unit_launch u0_launch = {M(struct_size, sizeof(struct eg_
 static const struct eg_unit_meta u0_meta = {M(struct_size, sizeof(struct eg_unit_meta)), M(flags, 0u), M(name, "ss_bcast"), M(digest, {0x49, 0xa1, 0x2f, 0x72, 0xdf, 0xd7, 0x52, 0x0a, 0xa7, 0x6e, 0xd0, 0x7e, 0x9c, 0x47, 0x65, 0xed, 0x5f, 0x4c, 0x5a, 0x6d, 0x4d, 0x2b, 0x29, 0xb5, 0xad, 0x19, 0xeb, 0x91, 0x76, 0x7b, 0xef, 0xec}), M(pattern, EG_PATTERN_PURE), M(scalar_type, EG_SCALAR_FLOAT64), M(host_entry, "ss_bcast_host"), M(device_image, NULL), M(device_function, NULL), M(device_image_bytes, 0), M(device_image_format, EG_IMAGE_NONE), M(n_stages, 0), M(stages, NULL), M(body, &u0_body), M(launch, &u0_launch), M(finish, NULL), M(device_image_size, NULL)};
 static const struct eg_unit_meta* const lib_units[] = {&u0_meta};
 static const struct eg_library_meta lib_meta = {M(struct_size, sizeof(struct eg_library_meta)), M(schema_major, EG_META_SCHEMA_MAJOR), M(schema_minor, 0u), M(n_units, 1u), M(units, lib_units)};
-#ifdef __cplusplus
-extern "C"
-#endif
 __attribute__((visibility("default"))) const struct eg_library_meta* eg_unit_library_meta(void) { return &lib_meta; }
