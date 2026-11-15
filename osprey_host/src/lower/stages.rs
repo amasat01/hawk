@@ -95,6 +95,9 @@ fn one_unit(
     let found = stages(unsafe { &mut *ctx }, &unit.member.sinks, &facts).map_err(wing)?;
     match found {
         Stages::Team => Err(nib("a team stage that folds an ordered log")),
+        Stages::Unwritten => Err(nib(
+            "the block stages of a sum over the lanes of a key of this shape",
+        )),
         Stages::Whole => {
             if placement_wanted(ctx, request, (&unit.member, unit.lanes.is_some()))?
                 && place_unit(ctx, request, card, &mut unit)?

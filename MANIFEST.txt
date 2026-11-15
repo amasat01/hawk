@@ -31,7 +31,7 @@ Every file with its line count (this file excluded):
     256  osprey_host/loader/loader.c
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
-   2494  osprey_host/src/bin/kreplay.rs
+   2622  osprey_host/src/bin/kreplay.rs
     823  osprey_host/src/bin/kreplay/meta.rs
    1453  osprey_host/src/bin/treplay.rs
     665  osprey_host/src/facts.rs
@@ -49,7 +49,7 @@ Every file with its line count (this file excluded):
    1216  osprey_host/src/lower/request.rs
     133  osprey_host/src/lower/segment.rs
     116  osprey_host/src/lower/stage_block.rs
-    548  osprey_host/src/lower/stages.rs
+    551  osprey_host/src/lower/stages.rs
     640  osprey_host/src/lower/unit_meta.rs
     229  osprey_host/src/lower/warp.rs
       8  osprey_host/tests/data/meta_calls.jsonl

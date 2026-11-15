@@ -695,6 +695,128 @@ fn box_off(unit: Option<&J>) -> bool {
     unit.and_then(|u| u.get("box_env")).and_then(J::str) == Some("0")
 }
 
+/// The fields of a record that are the run's own bookkeeping, left out of a unit's key.
+const KEY_LEFT_OUT: [&str; 3] = ["primal_unit", "_hawk_source", "host_entry"];
+
+/// Writes `j` in the canonical form the unit keys are made from: sorted keys, no spaces, ASCII only.
+fn canon(j: &J, out: &mut String) {
+    match j {
+        J::Null => out.push_str("null"),
+        J::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        J::Num(n) => out.push_str(&n.to_string()),
+        J::Str(s) => {
+            out.push('"');
+            for c in s.chars() {
+                match c {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    ' '..='\x7f' => out.push(c),
+                    _ => {
+                        let mut units = [0u16; 2];
+                        for u in c.encode_utf16(&mut units) {
+                            out.push_str(&format!("\\u{u:04x}"));
+                        }
+                    }
+                }
+            }
+            out.push('"');
+        }
+        J::Arr(items) => {
+            out.push('[');
+            for (i, x) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                canon(x, out);
+            }
+            out.push(']');
+        }
+        J::Obj(members) => {
+            let mut sorted: Vec<_> = members
+                .iter()
+                .filter(|(k, _)| !KEY_LEFT_OUT.contains(&k.as_str()))
+                .collect();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            out.push('{');
+            for (i, (k, v)) in sorted.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                canon(&J::Str(k.clone()), out);
+                out.push(':');
+                canon(v, out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+/// `s` with each test temporary directory (`/...pytest-N/popen-gwN` or `/...basetemp/popen-gwN`, not crossing a quote) written as `<tmp>`.
+fn mask_tmp(s: &str) -> String {
+    let (mut out, mut done, mut from) = (String::new(), 0, 0);
+    while let Some(rel) = s[from..].find("/popen-gw") {
+        let gw = from + rel;
+        let digits = s[gw + 9..].bytes().take_while(u8::is_ascii_digit).count();
+        let head = &s[done..gw];
+        let kept = head.trim_end_matches(|c: char| c.is_ascii_digit());
+        let marker = if head.ends_with("basetemp") {
+            Some(head.len() - 8)
+        } else if digits_before(head) && kept.ends_with("pytest-") {
+            Some(kept.len() - 7)
+        } else {
+            None
+        };
+        let quote = head.rfind('"').map_or(0, |q| q + 1);
+        let slash = marker.and_then(|m| head[quote..m].find('/').map(|i| quote + i));
+        match slash.filter(|_| digits > 0) {
+            Some(i) => {
+                out.push_str(&head[..i]);
+                out.push_str("<tmp>");
+                done = gw + 9 + digits;
+                from = done;
+            }
+            None => from = gw + 1,
+        }
+    }
+    out.push_str(&s[done..]);
+    out
+}
+
+/// Whether `head` ends in at least one digit.
+fn digits_before(head: &str) -> bool {
+    head.ends_with(|c: char| c.is_ascii_digit())
+}
+
+/// `s` with the run's own folder name under `/snap/` written as `<run>`.
+fn mask_run(s: &str) -> String {
+    let (mut out, mut done, mut from) = (String::new(), 0, 0);
+    while let Some(rel) = s[from..].find("/snap/") {
+        let name = from + rel + 6;
+        let len = s[name..].find(['/', '"']).unwrap_or(0);
+        if len > 0 && s[name + len..].starts_with('/') {
+            out.push_str(&s[done..name]);
+            out.push_str("<run>");
+            done = name + len;
+        }
+        from = name;
+    }
+    out.push_str(&s[done..]);
+    out
+}
+
+/// The key of a unit on the accepted list: the digest of its target and inputs, as the per-unit tools compute it.
+fn unit_key(target: &str, inputs: &J) -> String {
+    let mut text = String::new();
+    canon(
+        &J::Arr(vec![J::Str(target.into()), inputs.clone()]),
+        &mut text,
+    );
+    rcore::sha256::hex(mask_run(&mask_tmp(&text)).as_bytes())
+}
+
 /// The recorded texts for one target (`host` or `cuda`) of the wanted keys, read from a process's text records.
 fn texts_of(
     path: &Path,
@@ -734,7 +856,13 @@ fn texts_of(
                     Some((num(b.get("axis"))?, num(b.get("T"))?, num(b.get("stride"))?))
                 }),
             test: rec.get("test").and_then(J::str).unwrap_or("").to_string(),
-            ukey: rec.get("ukey").and_then(J::str).unwrap_or("").to_string(),
+            ukey: match rec.get("ukey").and_then(J::str) {
+                Some(k) if !k.is_empty() => k.to_string(),
+                _ => rec
+                    .get("inputs")
+                    .map(|i| unit_key(target, i))
+                    .unwrap_or_default(),
+            },
         });
     }
     found
