@@ -260,7 +260,7 @@ fn source_unit(
         scalar_type: meta_fill::scalar(request.scalar),
         body: Body {
             access: meta_fill::access(typed.access),
-            slots: meta_fill::slots(ctx, walk, &typed)?,
+            slots: meta_fill::slots(ctx, walk, &typed, &request.shared)?,
             ..Body::default()
         },
         ..UnitMeta::default()

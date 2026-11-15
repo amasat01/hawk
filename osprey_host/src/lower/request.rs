@@ -2,7 +2,7 @@
 //! closed-schema JSON on the rules of the writers' contract: every key is stated, a key the reader does not know is refused by
 //! name, a required key that is missing is refused by name, and the version is checked first. Nothing here knows how a caller
 //! records its kernels.
-use super::unit_meta::{LibraryMeta, UnitMeta, Wire};
+use super::unit_meta::{ImageFormat, LibraryMeta, UnitMeta, Wire};
 use aether_writers::contract::types::{
     Access, Dtype, FoldForm, Guard, MapBits, Role, Scalar, SinkPolicy, Target, ThreadBox,
 };
@@ -115,6 +115,40 @@ pub struct Settings {
     pub literal_table: bool,
 }
 
+/// One axis the caller declares: its label and extent, each when it has one (a runtime axis has no extent).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaneAxis {
+    /// The axis's label.
+    pub label: Option<String>,
+    /// The axis's extent, at least 1.
+    pub extent: Option<i64>,
+}
+
+/// The axes the caller declares for a sink plane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SinkAxes {
+    /// The plane's name.
+    pub name: String,
+    /// The plane's axes.
+    pub axes: Vec<LaneAxis>,
+}
+
+/// How many steps one launch of a finishing kernel takes, as the caller declares it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Steps {
+    /// A fixed count, at least 1.
+    Fixed(i64),
+    /// The runner chooses, up to `max` (at least 1).
+    Auto {
+        /// The most steps of one launch.
+        max: i64,
+    },
+}
+
+/// The image formats a caller can compile a device text to.
+pub const IMAGE_FORMATS: [ImageFormat; 3] =
+    [ImageFormat::Ptx, ImageFormat::Cubin, ImageFormat::Fatbin];
+
 /// One request: a kernel and what the lowering needs to know about it beyond the IR.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KernelRequest {
@@ -136,6 +170,16 @@ pub struct KernelRequest {
     pub planes: Vec<String>,
     /// The build's settings.
     pub settings: Settings,
+    /// The format the caller compiles a device text to; a request with a device target states it.
+    pub image_format: Option<ImageFormat>,
+    /// The steps of one launch, when the kernel finishes samples and the caller declares them.
+    pub steps: Option<Steps>,
+    /// The kernel's lane axes.
+    pub lane_space: Vec<LaneAxis>,
+    /// The axes the caller declares for the kernel's sink planes.
+    pub sink_axes: Vec<SinkAxes>,
+    /// The parameter planes the caller declares shared: one value for every lane.
+    pub shared: Vec<String>,
     /// The answer of the facts entry for each target of the request, passed back as it was given.
     pub facts: Vec<(Target, String)>,
 }
@@ -389,6 +433,84 @@ fn ints<T: ToString>(values: &[T]) -> Json {
 /// A list of texts as a value.
 fn texts(values: &[String]) -> Json {
     Json::Arr(values.iter().map(|s| Json::Str(s.clone())).collect())
+}
+
+impl LaneAxis {
+    /// Reads an axis: both keys are optional, and an extent is at least 1.
+    fn read(json: &Json) -> Result<LaneAxis, Refusal> {
+        let mut keys = Keys::of(json, "axis")?;
+        let axis = LaneAxis {
+            label: keys.opt("label").map(|l| text_of(l, "label")).transpose()?,
+            extent: keys
+                .opt("extent")
+                .map(|e| int_of(e, "extent"))
+                .transpose()?,
+        };
+        keys.done()?;
+        match axis.extent {
+            Some(n) if n < 1 => Err(bad(format!("request key extent: {n} is not at least 1"))),
+            _ => Ok(axis),
+        }
+    }
+    /// Writes the axis.
+    fn write(&self) -> Json {
+        let mut o = vec![];
+        if let Some(label) = &self.label {
+            o.push(("label".into(), Json::Str(label.clone())))
+        }
+        if let Some(extent) = self.extent {
+            o.push(("extent".into(), Json::Num(extent.to_string())))
+        }
+        Json::Obj(o)
+    }
+}
+
+impl SinkAxes {
+    /// Reads the axes of a sink plane.
+    fn read(json: &Json) -> Result<SinkAxes, Refusal> {
+        let mut keys = Keys::of(json, "sink_axes")?;
+        let found = SinkAxes {
+            name: text_of(keys.req("name")?, "name")?,
+            axes: list_of(keys.req("axes")?, "axes", LaneAxis::read)?,
+        };
+        keys.done()?;
+        Ok(found)
+    }
+    /// Writes the axes of a sink plane.
+    fn write(&self) -> Json {
+        Json::Obj(vec![
+            ("name".into(), Json::Str(self.name.clone())),
+            (
+                "axes".into(),
+                Json::Arr(self.axes.iter().map(LaneAxis::write).collect()),
+            ),
+        ])
+    }
+}
+
+/// The steps a request declares from its two keys: a count or `"auto"` (which needs `steps_max`), and the cap that only an auto
+/// count has.
+fn steps_read(steps: Option<&Json>, max: Option<&Json>) -> Result<Option<Steps>, Refusal> {
+    let cap = max.map(|m| int_of(m, "steps_max")).transpose()?;
+    let positive = |key: &str, n: i64| {
+        if n < 1 {
+            Err(bad(format!("request key {key}: {n} is not at least 1")))
+        } else {
+            Ok(n)
+        }
+    };
+    match (steps, cap) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err(bad("request key steps_max: without steps")),
+        (Some(Json::Str(word)), Some(max)) if word == "auto" => Ok(Some(Steps::Auto {
+            max: positive("steps_max", max)?,
+        })),
+        (Some(Json::Str(word)), None) if word == "auto" => {
+            Err(bad("request key steps_max: missing for auto steps"))
+        }
+        (Some(_), Some(_)) => Err(bad("request key steps_max: only auto steps have one")),
+        (Some(n), None) => Ok(Some(Steps::Fixed(positive("steps", int_of(n, "steps")?)?))),
+    }
 }
 
 impl Member {
@@ -696,11 +818,31 @@ impl KernelRequest {
                 Some(s) => Settings::read(s)?,
                 None => Settings::read(&Json::Obj(vec![]))?,
             },
+            image_format: keys
+                .opt("image_format")
+                .map(|f| member_of(&IMAGE_FORMATS, f, "image_format"))
+                .transpose()?,
+            steps: steps_read(keys.opt("steps"), keys.opt("steps_max"))?,
+            lane_space: match keys.opt("lane_space") {
+                Some(l) => list_of(l, "lane_space", LaneAxis::read)?,
+                None => vec![],
+            },
+            sink_axes: match keys.opt("sink_axes") {
+                Some(l) => list_of(l, "sink_axes", SinkAxes::read)?,
+                None => vec![],
+            },
+            shared: match keys.opt("shared") {
+                Some(l) => list_of(l, "shared", |n| text_of(n, "shared"))?,
+                None => vec![],
+            },
             facts: facts_read(keys.req("facts")?)?,
         };
         keys.done()?;
         for target in &request.targets {
             request.facts_for(*target)?;
+        }
+        if request.targets.contains(&Target::Device) && request.image_format.is_none() {
+            return Err(bad("request key image_format: a device target needs one"));
         }
         Ok(request)
     }
@@ -735,6 +877,28 @@ impl KernelRequest {
         }
         if self.group != aether_writers::contract::types::DEFAULT_GROUP {
             o.push(("group".into(), Json::Num(self.group.to_string())))
+        }
+        if let Some(format) = self.image_format {
+            o.push(("image_format".into(), name_of(&format)))
+        }
+        match self.steps {
+            Some(Steps::Fixed(n)) => o.push(("steps".into(), Json::Num(n.to_string()))),
+            Some(Steps::Auto { max }) => {
+                o.push(("steps".into(), Json::Str("auto".into())));
+                o.push(("steps_max".into(), Json::Num(max.to_string())))
+            }
+            None => {}
+        }
+        if !self.lane_space.is_empty() {
+            let axes = self.lane_space.iter().map(LaneAxis::write).collect();
+            o.push(("lane_space".into(), Json::Arr(axes)))
+        }
+        if !self.sink_axes.is_empty() {
+            let sinks = self.sink_axes.iter().map(SinkAxes::write).collect();
+            o.push(("sink_axes".into(), Json::Arr(sinks)))
+        }
+        if !self.shared.is_empty() {
+            o.push(("shared".into(), texts(&self.shared)))
         }
         o.push(("settings".into(), self.settings.write()));
         let answers = self
@@ -884,8 +1048,44 @@ mod tests {
             group: 1,
             planes: vec![],
             settings: Settings::read(&Json::Obj(vec![])).unwrap(),
+            image_format: None,
+            steps: None,
+            lane_space: vec![],
+            sink_axes: vec![],
+            shared: vec![],
             facts: vec![(Target::Host, "{}".into())],
         }
+    }
+
+    #[test]
+    fn the_declared_members_round_trip_and_are_range_checked_by_name() {
+        let mut full = request();
+        full.steps = Some(Steps::Auto { max: 64 });
+        full.image_format = Some(ImageFormat::Ptx);
+        full.lane_space = vec![LaneAxis {
+            label: Some("a".into()),
+            extent: Some(3),
+        }];
+        full.shared = vec!["w".into()];
+        let text = full.to_json();
+        assert_eq!(KernelRequest::from_json(&text).unwrap(), full);
+        let cases = [
+            ("\"steps_max\":64", "\"steps_max\":0", "steps_max"),
+            ("\"extent\":3", "\"extent\":0", "extent"),
+            (
+                "\"steps\":\"auto\",\"steps_max\":64",
+                "\"steps\":\"auto\"",
+                "steps_max",
+            ),
+        ];
+        for (from, to, member) in cases {
+            let why = KernelRequest::from_json(&text.replace(from, to)).unwrap_err();
+            assert!(why.reason.contains(member), "{}", why.reason);
+        }
+        let device = text
+            .replace("\"Host\"", "\"Device\"")
+            .replace("\"image_format\":\"Ptx\",", "");
+        assert!(KernelRequest::from_json(&device).is_err());
     }
 
     #[test]

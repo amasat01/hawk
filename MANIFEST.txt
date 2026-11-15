@@ -31,8 +31,8 @@ Every file with its line count (this file excluded):
     256  osprey_host/loader/loader.c
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
-   2324  osprey_host/src/bin/kreplay.rs
-    610  osprey_host/src/bin/kreplay/meta.rs
+   2444  osprey_host/src/bin/kreplay.rs
+    731  osprey_host/src/bin/kreplay/meta.rs
    1453  osprey_host/src/bin/treplay.rs
     665  osprey_host/src/facts.rs
     296  osprey_host/src/lib.rs
@@ -43,20 +43,20 @@ Every file with its line count (this file excluded):
     137  osprey_host/src/lower/chain.rs
      57  osprey_host/src/lower/fused.rs
     500  osprey_host/src/lower/meta_c.rs
-    412  osprey_host/src/lower/meta_fill.rs
+    483  osprey_host/src/lower/meta_fill.rs
     737  osprey_host/src/lower/mod.rs
     120  osprey_host/src/lower/placed.rs
-    950  osprey_host/src/lower/request.rs
+   1150  osprey_host/src/lower/request.rs
     133  osprey_host/src/lower/segment.rs
     114  osprey_host/src/lower/stage_block.rs
     532  osprey_host/src/lower/stages.rs
-    644  osprey_host/src/lower/unit_meta.rs
+    642  osprey_host/src/lower/unit_meta.rs
     229  osprey_host/src/lower/warp.rs
       8  osprey_host/tests/data/meta_calls.jsonl
       8  osprey_host/tests/data/units_small.jsonl
     274  osprey_host/tests/facts.rs
      45  osprey_host/tests/facts_oracle.rs
-    479  osprey_host/tests/meta_c.rs
+    480  osprey_host/tests/meta_c.rs
     140  osprey_host/tests/table.rs
      47  osprey_host/tests/treplay.rs
      12  osprey_host/tools/cc
@@ -69,6 +69,9 @@ Every file with its line count (this file excluded):
      22  osprey_host/tools/run_host.sh
      38  osprey_host/tools/run_host_eagle.sh
      60  osprey_host/tools/test_host_axpb.py
+     24  pair/83638.32_ss_bcast_host.c
+    137  pair/83638.32_ss_bcast_host.cpp
+      5  pair/README.txt
     126  shadow/emit_record.py
     462  shadow/k6_plugin.py
      75  shadow/k6_stats.py

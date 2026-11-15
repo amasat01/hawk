@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// The members of the meta compared with the record, one line each.
-const MEMBERS: [&str; 20] = [
+const MEMBERS: [&str; 24] = [
     "name",
     "digest",
     "pattern",
@@ -30,6 +30,10 @@ const MEMBERS: [&str; 20] = [
     "launch.group",
     "launch.host_box / device_box",
     "launch.index_*, finish.mask_slot, counter_slot",
+    "slot.flags SHARED",
+    "finish.steps, steps_max",
+    "launch.lane_labels, lane_extents",
+    "launch.plane_axes",
 ];
 
 /// What was compared of one member: the units, those equal, and the first differing ones with both values.
@@ -468,6 +472,101 @@ fn launch_rows(unit: &meta::UnitMeta, sc: &J, unboxed: bool) -> Vec<Pair> {
     ]
 }
 
+/// An axis as `label=extent`, `-` for what it lacks.
+fn axis_text(label: Option<&str>, extent: Option<i64>) -> String {
+    format!(
+        "{}={}",
+        label.unwrap_or("-"),
+        extent
+            .filter(|n| *n >= 0)
+            .map_or("-".into(), |n| n.to_string())
+    )
+}
+
+/// The members the caller declares: the shared planes, the steps, the lane space and the sink axes.
+fn declared_rows(unit: &meta::UnitMeta, sc: &J) -> Vec<Pair> {
+    let slots = &unit.body.slots;
+    let shared = (
+        joined(sorted(
+            slots
+                .iter()
+                .filter(|s| s.flags & meta::SLOT_SHARED != 0)
+                .map(|s| s.name.clone()),
+        )),
+        joined(sorted(
+            pairs(sc, &["param_shapes"])
+                .into_iter()
+                .map(|(n, _)| n.to_string()),
+        )),
+    );
+    let recorded_finish = at(sc, &["finish"]).filter(|_| !flag(sc, &["terminated_readonly"]));
+    let steps = (unit.finish.is_some() || recorded_finish.is_some()).then(|| {
+        let ours = unit.finish.as_ref().map_or("none".to_string(), |f| {
+            let steps = match f.steps {
+                Some(-1) => "auto".to_string(),
+                other => other.unwrap_or(0).to_string(),
+            };
+            format!("{steps}:{}", f.steps_max.unwrap_or(0))
+        });
+        let recorded = recorded_finish.map_or("none".to_string(), |f| {
+            let steps = word(f, &["steps"])
+                .unwrap_or_else(|| number(f, &["steps"]).unwrap_or(0).to_string());
+            format!("{steps}:{}", number(f, &["steps_max"]).unwrap_or(0))
+        });
+        (ours, recorded)
+    });
+    let l = &unit.launch;
+    let lane = (
+        joined(
+            l.lane_labels
+                .iter()
+                .zip(&l.lane_extents)
+                .map(|(label, extent)| axis_text(label.as_deref(), Some(*extent))),
+        ),
+        joined(
+            at(sc, &["launch", "lane_space", "axes"])
+                .map_or(&[][..], J::arr)
+                .iter()
+                .map(|a| axis_text(word(a, &["label"]).as_deref(), number(a, &["extent"]))),
+        ),
+    );
+    let recorded_axes = pairs(sc, &["plane_axes"]);
+    let axes = (!recorded_axes.is_empty() || !l.plane_axes.is_empty()).then(|| {
+        let ours = l
+            .plane_axes
+            .iter()
+            .filter(|p| !slots.get(p.slot).is_some_and(|s| s.name.ends_with("_c")))
+            .map(|p| {
+                let axes = p
+                    .labels
+                    .iter()
+                    .zip(&p.extents)
+                    .map(|(label, extent)| axis_text(label.as_deref(), Some(*extent)));
+                format!(
+                    "{}:{}",
+                    slots.get(p.slot).map_or("?", |s| s.name.as_str()),
+                    joined(axes)
+                )
+            });
+        // a compensation plane (`<name>_c`) rides with its sum: the sum states the axes, on both sides
+        let theirs = recorded_axes
+            .iter()
+            .filter(|(n, _)| {
+                !n.strip_suffix("_c")
+                    .is_some_and(|base| recorded_axes.iter().any(|(b, _)| *b == base))
+            })
+            .map(|(n, p)| {
+                let axes = at(p, &["axes"])
+                    .map_or(&[][..], J::arr)
+                    .iter()
+                    .map(|a| axis_text(word(a, &["label"]).as_deref(), number(a, &["extent"])));
+                format!("{n}:{}", joined(axes))
+            });
+        (joined(sorted(ours)), joined(sorted(theirs)))
+    });
+    vec![Some(shared), steps, Some(lane), axes]
+}
+
 impl Oracle {
     /// Compares the meta of an answer unit with the sidecar recorded for it; a unit with no sidecar is not counted.
     pub fn unit(
@@ -518,6 +617,7 @@ impl Oracle {
         .chain([stages[5].clone()])
         .chain(stages[..5].iter().cloned())
         .chain(launch)
+        .chain(declared_rows(m, sc))
         .collect();
         // the member order of `MEMBERS`: the scatter chunks sit after the cell row
         for (member, pair) in MEMBERS.iter().zip(pairs) {
@@ -556,13 +656,25 @@ impl Oracle {
 
 /// Writes the C source of the meta of every kernel of the recorded calls in `file` into `dir`, one file per kernel and side, and
 /// prints one line per file with what the answer holds.
-pub fn emit(file: &Path, dir: &Path) {
+///
+/// With `only`, just the call of that id is written, and each unit's text per target is written beside the source; one line names
+/// the test that made the call.
+pub fn emit(file: &Path, dir: &Path, only: Option<&str>) {
     std::fs::create_dir_all(dir).expect("the output folder");
     let text = std::fs::read_to_string(file).expect("the calls");
     let mut machines = HashMap::new();
     for line in text.lines() {
         let call = json::parse(line).expect("a call");
         let id = call.get("call").and_then(J::str).unwrap_or("");
+        if only.is_some_and(|wanted| wanted != id) {
+            continue;
+        }
+        if only.is_some() {
+            println!(
+                "test {id}: {}",
+                call.get("test").and_then(J::str).unwrap_or("")
+            );
+        }
         let units = call.get("units").map_or(&[][..], J::arr);
         let mut ctx = None;
         for kernel in call.get("kernels").map_or(&[][..], J::arr) {
@@ -588,6 +700,15 @@ pub fn emit(file: &Path, dir: &Path) {
                 let answer = answer.unwrap_or_else(|why| panic!("{id} {name} {side}: {why}"));
                 let file = dir.join(format!("{id}_{name}_{side}.c"));
                 std::fs::write(&file, &answer.meta_source).expect("the source");
+                if only.is_some() {
+                    for unit in &answer.units {
+                        for text in unit.texts.iter().filter(|t| t.target == target) {
+                            let ext = if side == "host" { "cpp" } else { "cu" };
+                            let name = format!("{id}_{}_{side}.{ext}", unit.meta.name);
+                            std::fs::write(dir.join(name), &text.text).expect("the text");
+                        }
+                    }
+                }
                 let held: Vec<&meta::UnitMeta> = answer.units.iter().map(|u| &u.meta).collect();
                 println!(
                     "meta {}: units {} stages {} finish {} host_box {} device_box {} team {} companions {} image {}",

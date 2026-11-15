@@ -20,8 +20,9 @@ use aether_writers::contract::types::{Access, Guard, Scalar, SinkPolicy, Target}
 use aether_writers::contract::types::{Caches, MapBits};
 use osprey_host::facts;
 use osprey_host::lower::request::{
-    Body, DeclaredSlot, IndexSet, KernelAnswer, KernelRequest, Member, RequestKind, Settings,
-    UnitAnswer, WideForm, ACCESSES, DTYPES, FOLD_FORMS, LINALG_FORMS, ROLES, SCALARS, WIDE_FORMS,
+    Body, DeclaredSlot, IndexSet, KernelAnswer, KernelRequest, LaneAxis, Member, RequestKind,
+    Settings, SinkAxes, Steps, UnitAnswer, WideForm, ACCESSES, DTYPES, FOLD_FORMS, LINALG_FORMS,
+    ROLES, SCALARS, WIDE_FORMS,
 };
 use osprey_host::lower::unit_meta as meta;
 use raptor_ir::door::{RX_OK, RX_TRUNC};
@@ -832,8 +833,101 @@ fn request_for(
             },
             ..settings_of(spec)?
         },
+        image_format: facts
+            .iter()
+            .any(|(target, _)| *target == Target::Device)
+            .then_some(RECORDED_IMAGE_FORMAT),
+        steps: steps_of(kernel),
+        lane_space: lane_space_of(kernel),
+        sink_axes: sink_axes_of(kernel),
+        shared: shared_of(kernel),
         facts,
     })
+}
+
+/// The image format the converter states for a recording that names none: the recorder keeps no compile format, so every device
+/// recording gets this one (the recorder owes the field).
+const RECORDED_IMAGE_FORMAT: meta::ImageFormat = meta::ImageFormat::Cubin;
+
+/// The cap of an auto step count when the recording holds none: hawk's own constant (`AUTO_K_MAX` of its step planner), which the
+/// recorder does not store.
+const AUTO_STEPS_CAP: i64 = 64;
+
+/// The steps the kernel record declares: a count, or `auto` with the cap above.
+fn steps_of(kernel: &J) -> Option<Steps> {
+    let steps = kernel.get("steps")?;
+    match (num(Some(steps)), text(Some(steps))) {
+        (Some(n), _) => Some(Steps::Fixed(n)),
+        (_, Some("auto")) => Some(Steps::Auto {
+            max: AUTO_STEPS_CAP,
+        }),
+        _ => None,
+    }
+}
+
+/// The kernel's lane axes; a record with none states a single axis with neither label nor extent (the old build's default for a
+/// kernel that declares no lane space).
+fn lane_space_of(kernel: &J) -> Vec<LaneAxis> {
+    match kernel.get("lane_space").filter(|l| !matches!(l, J::Null)) {
+        Some(space) => tuple_axes(Some(space)),
+        None => vec![LaneAxis {
+            label: None,
+            extent: None,
+        }],
+    }
+}
+
+/// The axes of a recorded tuple of `(label, extent)` pairs; an entry may lack either.
+fn tuple_axes(tuple: Option<&J>) -> Vec<LaneAxis> {
+    tuple
+        .and_then(|t| t.get("t"))
+        .map_or(&[][..], J::arr)
+        .iter()
+        .map(|axis| {
+            let pair = axis.get("t").map_or(&[][..], J::arr);
+            LaneAxis {
+                label: text(pair.first()).map(String::from),
+                extent: num(pair.get(1)),
+            }
+        })
+        .collect()
+}
+
+/// The planes the kernel record declares, with their declaration record.
+fn declared_planes(kernel: &J) -> impl Iterator<Item = (String, &J)> {
+    kernel
+        .get("planes")
+        .and_then(|p| p.get("d"))
+        .map_or(&[][..], J::arr)
+        .iter()
+        .filter_map(|pair| {
+            let name = text(pair.arr().first())?.to_string();
+            Some((name, pair.arr().get(1)?.get("v")?))
+        })
+}
+
+/// The axes each declared sink plane (an accumulator) states in its `dims`.
+fn sink_axes_of(kernel: &J) -> Vec<SinkAxes> {
+    declared_planes(kernel)
+        .filter(|(_, plane)| text(plane.get("form")) == Some("accum"))
+        .filter_map(|(name, plane)| {
+            let axes = tuple_axes(plane.get("dims"));
+            (!axes.is_empty()).then_some(SinkAxes { name, axes })
+        })
+        .collect()
+}
+
+/// The planes the kernel record declares shared: those with a non-empty `shared` shape.
+fn shared_of(kernel: &J) -> Vec<String> {
+    declared_planes(kernel)
+        .filter(|(_, plane)| {
+            plane
+                .get("shared")
+                .and_then(|s| s.get("t"))
+                .is_some_and(|t| !t.arr().is_empty())
+        })
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// Asks the library's table to lower the request in `ctx`.
@@ -2269,7 +2363,33 @@ fn main() {
         return oracle::emit(
             Path::new(file.expect("--emit-meta <calls> <folder>")),
             Path::new(out.expect("--emit-meta <calls> <folder>")),
+            None,
         );
+    }
+    if let Some(at) = args.iter().position(|a| a == "--emit") {
+        let (id, out) = (args.get(at + 1), args.get(at + 2));
+        let (id, out) = (
+            id.expect("--emit <call id> <folder>"),
+            out.expect("--emit <call id> <folder>"),
+        );
+        let corpus = Path::new(
+            args.get(1)
+                .expect("kreplay <corpus dir> --emit <call id> <folder>"),
+        );
+        let mut files: Vec<_> = std::fs::read_dir(corpus)
+            .expect("the corpus folder")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with('k'))
+            })
+            .collect();
+        files.sort();
+        for file in files {
+            oracle::emit(&file, Path::new(out), Some(id));
+        }
+        return;
     }
     let dir = args
         .get(1)

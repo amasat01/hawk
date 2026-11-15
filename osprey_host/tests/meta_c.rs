@@ -453,8 +453,9 @@ fn lowered_kernels_of_every_shape_write_sources_that_compile() {
     )
     .unwrap();
     assert!(
-        staged.contains("offsetof(struct eg_unit_finish, steps_slot)"),
-        "the finish record ends before the steps"
+        staged.contains("M(struct_size, sizeof(struct eg_unit_finish))")
+            && staged.contains("M(steps, 1)"),
+        "the finish record states the steps the request declared"
     );
     let library = dir.join("kernel.so");
     let first = files[0].to_str().unwrap();

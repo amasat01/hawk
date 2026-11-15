@@ -2,7 +2,8 @@
 //! stages decided for the kernel. A member nothing here knows is left absent (see `NOT_COMPUTED`), never given a value.
 use super::active::{COUNT_PLANE, MAP_PLANE};
 use super::card::BuildCard;
-use super::request::{KernelRequest, TargetText, UnitAnswer};
+use super::request::{Body, KernelRequest, LaneAxis, Steps, TargetText, UnitAnswer};
+use super::segment::FUSED_STEPS_PLANE;
 use super::stage_block::{KeyedRecord, PlaneRecord, StageBlock, TeamRecord};
 use super::unit_meta as m;
 use super::{wing, Pending, FINISHED_PLANE};
@@ -32,6 +33,9 @@ pub(super) struct Parts<'a> {
     /// The unit's text per target.
     pub texts: &'a [TargetText],
 }
+
+/// The header's value of a count the runner chooses.
+const AUTO_STEPS: i64 = -1;
 
 /// The role of a slot in the header's closed set.
 fn role(role: Role) -> m::SlotRole {
@@ -86,7 +90,12 @@ fn slot_at(slots: &[m::Slot], name: &str) -> Option<usize> {
 }
 
 /// The slots of a walk: position is the index.
-pub(super) fn slots(ctx: *mut Ctx, walk: u32, typed: &Walk) -> Result<Vec<m::Slot>, Refusal> {
+pub(super) fn slots(
+    ctx: *mut Ctx,
+    walk: u32,
+    typed: &Walk,
+    shared: &[String],
+) -> Result<Vec<m::Slot>, Refusal> {
     let ctx = ctx as *mut RxCtx;
     typed
         .slots
@@ -94,7 +103,12 @@ pub(super) fn slots(ctx: *mut Ctx, walk: u32, typed: &Walk) -> Result<Vec<m::Slo
         .map(|s| {
             let planar = s.role == Role::Lookup && param_plane(ctx, walk, &s.name)?;
             Ok(m::Slot {
-                flags: if planar { m::SLOT_PARAM_PLANE } else { 0 },
+                flags: if planar { m::SLOT_PARAM_PLANE } else { 0 }
+                    | if shared.contains(&s.name) {
+                        m::SLOT_SHARED
+                    } else {
+                        0
+                    },
                 role: role(s.role),
                 dtype: dtype(s.dtype),
                 shape: s.shape.clone(),
@@ -119,8 +133,45 @@ fn thread_box(texts: &[TargetText], target: Target) -> Option<m::ThreadBox> {
     })
 }
 
+/// Whether the unit is a stage after the first of a cut plain kernel: only the first names the kernel's sinks.
+fn later_stage(parts: &Parts) -> bool {
+    matches!(parts.request.body, Body::Plain(_)) && parts.pending.member.name != parts.request.name
+}
+
+/// The declared axes of the sink planes the unit binds, each at its slot.
+fn plane_axes(request: &KernelRequest, slots: &[m::Slot]) -> Vec<m::PlaneAxes> {
+    request
+        .sink_axes
+        .iter()
+        .filter_map(|sink| {
+            Some(m::PlaneAxes {
+                slot: slot_at(slots, &sink.name)?,
+                labels: sink.axes.iter().map(|a| a.label.clone()).collect(),
+                extents: sink.axes.iter().map(|a| a.extent.unwrap_or(-1)).collect(),
+            })
+        })
+        .collect()
+}
+
 /// The launch record: the group, the boxes and the slots of the index maps the unit runs over.
 fn launch(parts: &Parts, slots: &[m::Slot]) -> m::Launch {
+    // a later stage whose blocks are keys, chunks or targets runs over those, not over the caller's lanes: its space is one axis with
+    // neither label nor extent
+    let anonymous = [LaneAxis {
+        label: None,
+        extent: None,
+    }];
+    let teamed = later_stage(parts)
+        && parts
+            .pending
+            .team
+            .as_ref()
+            .is_some_and(|spec| spec.grid != raptor_wings::team::Grid::Lanes);
+    let space: &[LaneAxis] = if teamed {
+        &anonymous
+    } else {
+        &parts.request.lane_space
+    };
     let mut found = m::Launch {
         group: parts.request.group,
         host_box: thread_box(parts.texts, Target::Host),
@@ -130,6 +181,13 @@ fn launch(parts: &Parts, slots: &[m::Slot]) -> m::Launch {
             .settings
             .launch_bounds
             .map_or(0, |(threads, _)| threads),
+        lane_labels: space.iter().map(|a| a.label.clone()).collect(),
+        lane_extents: space.iter().map(|a| a.extent.unwrap_or(-1)).collect(),
+        plane_axes: if later_stage(parts) {
+            vec![]
+        } else {
+            plane_axes(parts.request, slots)
+        },
         ..m::Launch::default()
     };
     if let Some(active) = &parts.pending.active {
@@ -156,16 +214,24 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
         slot_at(slots, name)
             .ok_or_else(|| fault(format!("a finishing unit without the slot {name}")))
     };
+    let (steps, steps_max) = match parts.request.steps {
+        Some(Steps::Fixed(n)) => (Some(n), Some(0)),
+        Some(Steps::Auto { max }) => (Some(AUTO_STEPS), Some(max)),
+        None => (None, None),
+    };
     Ok(Some(m::Finish {
         mask_slot: slot(mask)?,
         counter_slot: slot(FINISHED_PLANE)?,
+        steps,
+        steps_max,
+        steps_slot: slot_at(slots, FUSED_STEPS_PLANE).filter(|_| steps == Some(AUTO_STEPS)),
         ..m::Finish::default()
     }))
 }
 
 /// The meta of one unit, without what only its kernel's stages tell (see `stages`).
 pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
-    let slots = slots(parts.ctx, parts.walk, parts.typed)?;
+    let slots = slots(parts.ctx, parts.walk, parts.typed, &parts.request.shared)?;
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let stores = !stored_cells(unsafe { &*parts.ctx }, &parts.pending.member.sinks)
         .map_err(wing)?
@@ -173,6 +239,10 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
     let name = &parts.pending.member.name;
     let entry = |target: Target| parts.texts.iter().find(|t| t.target == target);
     let device = entry(Target::Device).map(|t| t.entry.clone());
+    let device_format = device
+        .as_ref()
+        .and(parts.request.image_format)
+        .unwrap_or(m::ImageFormat::None);
     Ok(m::UnitMeta {
         name: name.clone(),
         digest: parts.digest.to_string(),
@@ -180,6 +250,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
         host_entry: entry(Target::Host).map(|t| t.symbol.clone()),
         device_image: device.as_ref().map(|_| format!("{name}__image")),
         device_image_size: device.as_ref().map(|_| format!("{name}__image_size")),
+        device_image_format: device_format,
         device_function: device,
         launch: launch(parts, &slots),
         finish: finish(parts, &slots)?,
