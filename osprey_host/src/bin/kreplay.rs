@@ -1069,7 +1069,7 @@ fn request_for(
         image_format: facts
             .iter()
             .any(|(target, _)| *target == Target::Device)
-            .then_some(RECORDED_IMAGE_FORMAT),
+            .then(|| recorded_image_format(call)),
         steps: steps_of(kernel, call),
         fusion: fusion_of(call),
         lane_space: lane_space_of(kernel),
@@ -1080,9 +1080,15 @@ fn request_for(
     })
 }
 
-/// The image format the converter states for a recording that names none: the recorder keeps no compile format, so every device
-/// recording gets this one (the recorder owes the field).
-const RECORDED_IMAGE_FORMAT: meta::ImageFormat = meta::ImageFormat::Cubin;
+/// The image format the build call compiled its device texts to, as the recorder stored it; a recording made before the recorder
+/// kept the field gets a binary for one architecture.
+fn recorded_image_format(call: &J) -> meta::ImageFormat {
+    match call.get("image_format").and_then(J::str) {
+        Some("ptx") => meta::ImageFormat::Ptx,
+        Some("fatbin") => meta::ImageFormat::Fatbin,
+        _ => meta::ImageFormat::Cubin,
+    }
+}
 
 /// The cap of an auto step count for a record that holds none (an older recording): hawk's own constant (`AUTO_K_MAX` of its step
 /// planner). A record made by the current recorder states the cap in force as `auto_k_max`.
