@@ -302,6 +302,8 @@ def _wrap_draft(orig):
                 if u is not None:
                     u["sidecar"] = d.sidecar
                     u["files"] = [[f.name, f.digest] for f in d.files]
+                    for f in d.files:
+                        _DCALL[f.digest] = c["call"]
                     u["stage_block"] = None if split is None else _enc_val(c, split)
                     u["derivative"] = _enc_val(c, derivative)
             except BaseException as e:
@@ -473,9 +475,12 @@ def _wrap_plugin_entry(orig):
 _bh = {"pid": None, "fh": None}
 _KCALL = {}         # unit/kernel name -> id of the last build call of THIS test that made it (cleared at each test start)
 _SYMS = {}          # raw function handle -> kernel symbol, filled where eagle loads the function (_core.module_function)
+_HCALL = {}         # raw function handle -> id of the build call that made its image (kept across tests: cached kernels)
+_DCALL = {}         # artifact file digest (sha256 of its bytes) -> id of the build call that wrote it
+_MCALL = {}         # raw module handle -> build call id, by the sha256 of the image eagle loaded
 _B_HEADER = {"rec": "header", "join": ["call", "kernel"], "call": "build-call id (<pid>.<n>) of the k-file line, null outside a build call",
              "kernel": "kernel symbol as loaded by _core.module_function (null when unknown)",
-             "call_from": "last build call of this test that made this kernel",
+             "call_from": "the build call that wrote the loaded image (sha256 of the image = the artifact file digest); else the last build call of this test that made this kernel",
              "note": "'passed' is absent when the caller passed no block; 'declared' is null when absent; 'resolved' is the block returned"}
 
 
@@ -495,7 +500,8 @@ def _wrap_resolved_block(orig):
         try:
             c = _CUR.get()
             sym = _SYMS.get(int(fn)) if isinstance(fn, int) else None
-            rec = {"call": _KCALL.get(sym) if c is None else c["call"], "test": tp._state["test"], "kernel": sym,
+            h = int(fn) if isinstance(fn, int) else None
+            rec = {"call": c["call"] if c is not None else _HCALL.get(h) or _KCALL.get(sym), "test": tp._state["test"], "kernel": sym,
                    "n": n, "declared": declared, "resolved": out}
             if block is not None:
                 rec["passed"] = block
@@ -507,11 +513,30 @@ def _wrap_resolved_block(orig):
     return _resolved_block
 
 
+def _wrap_module_load(orig):
+    def module_load(image, *a, **k):
+        m = orig(image, *a, **k)
+        try:
+            b = bytes(image)
+            hc = _DCALL.get(hashlib.sha256(b).hexdigest()) or _DCALL.get(hashlib.sha256(b.rstrip(b"\0")).hexdigest())
+            if hc is not None:
+                _MCALL[int(m)] = hc
+        except BaseException:
+            pass
+        return m
+    module_load.__wrapped__ = orig
+    return module_load
+
+
 def _wrap_module_function(orig):
     def module_function(module, name, *a, **k):
         h = orig(module, name, *a, **k)
         try:
             _SYMS[int(h)] = name
+            c = _CUR.get()
+            hc = c["call"] if c is not None else _MCALL.get(int(module))
+            if hc is not None:
+                _HCALL[int(h)] = hc
         except BaseException:
             pass
         return h
@@ -530,6 +555,9 @@ def _patch_eagle_blocks():
     new = _wrap_resolved_block(orig)
     tp._patch_everywhere(orig, new)       # the module's own name and every module that bound it directly
     core.module_function = _wrap_module_function(core.module_function)
+    for nm in ("module_load", "module_load_jit"):
+        if hasattr(core, nm):
+            setattr(core, nm, _wrap_module_load(getattr(core, nm)))
 
 
 def pytest_configure(config):
