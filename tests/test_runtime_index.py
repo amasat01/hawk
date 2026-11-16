@@ -7,7 +7,6 @@ interpreter."""
 
 from __future__ import annotations
 from _specs import HOST, device, default_kind
-from _specs import aether_writer
 
 import re
 

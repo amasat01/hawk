@@ -61,11 +61,3 @@ def pin_caches(monkeypatch):
     import ospreys.cpu.toolchain as toolchain
 
     monkeypatch.setattr(toolchain, "host_caches", lambda *a, **k: PINNED_CACHES)
-
-
-def aether_writer(cells: bool = False):
-    """The aether C++ writer a render outside a build is given (the building backend row holds its own)."""
-    from aether.wings.base.writer_aether import AetherWriter
-    from aether.wings.simt.writer_cells import CellsWriter
-
-    return CellsWriter() if cells else AetherWriter()

@@ -44,7 +44,6 @@ fuse each shape.
 
 from __future__ import annotations
 from _specs import spec_for
-from _specs import aether_writer
 from _specs import HOST, with_caches
 
 import ctypes

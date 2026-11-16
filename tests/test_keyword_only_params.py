@@ -11,7 +11,6 @@ the all-positional one.
 
 from __future__ import annotations
 from _specs import HOST, default_kind
-from _specs import aether_writer
 
 import pytest
 

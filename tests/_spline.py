@@ -218,14 +218,12 @@ def main(argv=None) -> int:
     from _eval import evaluate
 
     from hawk.artifact import build
-    from hawk.artifact.layout import exports
     from hawk.compile import device_compiler
     from ospreys.cpu.toolchain import host_compiler, host_flags
     from ospreys.cuda.toolchain import device_flags
     from hawk.compile import toolchain as _tc
     from ospreys.cuda.toolchain import resolve_arch
-    from aether.wings.base.wrapper import FLOAT64, render_source
-    from hawk.targets import TARGETS
+    from hawk.artifact import emit_source
     from raptor.ir import Loop
 
     args = sys.argv[1:] if argv is None else list(argv)
@@ -249,8 +247,7 @@ def main(argv=None) -> int:
 
     sources = {}
     for target in ("cuda", "host"):
-        text = render_source(cell.name, cell.sinks, cell.walk, TARGETS[target],
-                             mode=FLOAT64, exports=exports(target), spec=spec_for(TARGETS[target]), kind=default_kind()).text
+        text = emit_source(cell, mode="float64", targets=(target,)).sources[target].text
         path = tmp / f"{cell.name}.{'cu' if target == 'cuda' else 'cpp'}"
         path.write_text(text)
         sources[target] = path

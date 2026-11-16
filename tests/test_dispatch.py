@@ -19,7 +19,6 @@ from __future__ import annotations
 from raptor.wings.base.cells import walk as _walk
 from raptor.wings.base.dispatch import DISPATCH_STRATEGIES, dispatch as _dispatch, strategy
 from _specs import spec_for, default_kind
-from _specs import aether_writer
 from _specs import HOST
 
 import platform

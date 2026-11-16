@@ -27,7 +27,6 @@ tile spans eight vector registers of the kernel's ``Real``. The SAME TU built wi
 
 from __future__ import annotations
 from _specs import default_kind
-from _specs import aether_writer
 from _specs import spec_for
 from _specs import HOST
 

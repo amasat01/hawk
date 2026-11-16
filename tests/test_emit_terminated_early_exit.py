@@ -39,7 +39,6 @@ outputs are the same before and after, which is the point.
 
 from __future__ import annotations
 from _specs import default_kind
-from _specs import aether_writer
 from _specs import HOST
 
 import _deploy as L

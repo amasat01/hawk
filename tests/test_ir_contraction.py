@@ -26,7 +26,6 @@ is that rule, and it is the reason ``Table["row":r, "col":c]`` exists at all).
 
 from __future__ import annotations
 from _specs import default_kind
-from _specs import aether_writer
 from _specs import HOST
 
 import dataclasses

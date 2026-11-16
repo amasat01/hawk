@@ -21,7 +21,6 @@ Rows:
 from __future__ import annotations
 from raptor.wings.base.dispatch import dispatch as _dispatch
 from _specs import default_kind
-from _specs import aether_writer
 from _specs import HOST
 
 import numpy as np

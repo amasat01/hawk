@@ -90,7 +90,6 @@ earlier state under this row gave **77 failed, 42 passed**.
 
 from __future__ import annotations
 from _specs import HOST, default_kind
-from _specs import aether_writer
 
 import dataclasses
 import itertools

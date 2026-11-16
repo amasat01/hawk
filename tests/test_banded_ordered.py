@@ -160,6 +160,48 @@ def test_a_banded_column_sum_is_the_same_cell_every_run_and_within_half_an_ulp_o
 
 
 
+@pytest.mark.gpu
+def test_a_banded_warp_sum_is_the_same_cells_every_run_and_close_to_the_exact_dot_product(cache_dir, tmp_path):
+    """A wide dot product in the warp form sums its lanes' slices with ``warp_sum``: the accumulators fan in through
+    eagle's ``shflXor`` and every lane ends with the same bits, run after run."""
+    import numpy as np
+    from fractions import Fraction
+
+    import _wide_kernels as W
+    import eagle
+    import eagle.plan
+    from eagle import arrays
+    from eagle._alloc import synchronize
+    from eagle.registry import load_manifest
+
+    n = 64
+    rng = np.random.default_rng(11)
+    f32 = lambda a: a.astype(np.float32).astype(np.float64)       # noqa: E731
+    x, w = f32(rng.uniform(0.5, 2.0, (W.W, n))), f32(rng.uniform(0.5, 2.0, (W.ROWS, W.W)))
+    # the warp (team) form on a banded build, asked for through the build's own wide_form; the plan runs the plugin it wrote
+    bundle = build_bundle([W.matvec_in], tmp_path / "banded", targets=("cuda",), mode="banded", cache_dir=cache_dir, wide_form="team")
+    plan = eagle.plan.auto(hawk.artifact.plugins(bundle, device_loader=load_manifest)[W.matvec_in.name])
+    runs = []
+    for _ in range(3):
+        planes = {k: arrays.asarray(eagle.banded_pack(arrays.asarray(v)), device="cuda:0")
+                  for k, v in {"x": x, "w": w, "y": np.zeros((W.ROWS, n))}.items()}
+        plan.bind(**planes).launch()
+        synchronize()
+        held = planes["y"].get()
+        runs.append(np.asarray(held).view(np.uint64).copy())
+    assert runs[0].tobytes() == runs[1].tobytes() == runs[2].tobytes()
+    got = np.asarray(eagle.banded_unpack(held))
+    worst = 0.0
+    for r in range(W.ROWS):
+        for lane in range(0, n, 9):
+            want = sum(Fraction(float(x[i, lane])) * Fraction(float(w[r, i])) for i in range(W.W))
+            err = float(abs(Fraction(float(got[r, lane])) - want) / Fraction(float(np.spacing(float(want)))))
+            if err > worst:
+                worst, where = err, (r, lane, float(got[r, lane]), float(want))
+    print("warp_sum worst ULP53", round(worst, 4))
+    assert worst <= 3.0, (worst, where)
+
+
 @pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("kernel", (scattered, add), ids=("default", "ordered"))
 @pytest.mark.parametrize("data", (_cancelling, _uniform), ids=("cancelling", "uniform"))

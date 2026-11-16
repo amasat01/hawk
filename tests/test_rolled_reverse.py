@@ -9,7 +9,6 @@ emitted text, and the compiled host kernel."""
 
 from __future__ import annotations
 from _specs import HOST, default_kind
-from _specs import aether_writer
 
 import _spline_forms as S
 import numpy as np

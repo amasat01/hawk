@@ -8,7 +8,6 @@ with an untaken branch's row never committed out of range."""
 
 from __future__ import annotations
 from _specs import HOST, default_kind
-from _specs import aether_writer
 
 from types import SimpleNamespace
 

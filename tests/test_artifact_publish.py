@@ -545,15 +545,15 @@ def test_a_renderer_patched_INSIDE_a_process_is_the_documented_exposure(
     """The unit key's STATED exposure, asserted so it is known and not silent —
     the same treatment gives the include-path shadowing false hit.
 
-    ``_unit_key`` names the render's INPUTS (the walk digest, the mode, the
-    kind, the targets, the arch, the defines, the ABI tag) and not its OUTPUT,
-    which buys a warm build the whole cost of a render. What it cannot see in
-    exchange is a change to the RENDERER made inside a live process: patch
-    ``render_source`` between two builds of one kernel and the second is served
-    the first's unit. The realistic way an emitter changes is an EDIT to a
-    source file, which is a new interpreter and therefore a cold memo, and no
-    row in this suite patches ``aether.wings.base`` at runtime — so the exposure is
-    accepted rather than paid for on every warm build.
+    ``_unit_key`` names the lowering's INPUTS (the request, the node dump, the
+    dialects, the library file's digest, the targets, the arch, the defines, the ABI
+    tag) and not its OUTPUT, which buys a warm build the whole cost of a lowering.
+    What it cannot see in exchange is a change to the LOWERING made inside a live
+    process: patch ``hawk.artifact.request.lower`` (the library's answer) between
+    two builds of one kernel and the second is served the first's unit. The
+    realistic way the library changes is a new library file, which changes
+    ``library_identity`` (and is a new interpreter with a cold memo) — so the
+    exposure is accepted rather than paid for on every warm build.
 
     :func:`reset_unit_memo` is the door out of it, and the second half of this
     row is what proves the door works: with the memo forgotten, the patched
@@ -565,14 +565,18 @@ def test_a_renderer_patched_INSIDE_a_process_is_the_documented_exposure(
     """
     first = _build(tmp_path / "u", cache_dir)
     original = (first.directory / "axpb.cu").read_text()
-    real = _module().render_source
+    from hawk.artifact import request
+
+    real = request.lower
 
     def patched(*a, **kw):
-        source = real(*a, **kw)
-        return type(source)(**{**vars(source),
-                               "text": source.text + "\n// PATCHED RENDERER\n"})
+        answer = real(*a, **kw)
+        for unit in answer["units"]:
+            for text in unit["texts"]:
+                text["text"] += "\n// PATCHED RENDERER\n"
+        return answer
 
-    monkeypatch.setattr(_module(), "render_source", patched)
+    monkeypatch.setattr(request, "lower", patched)
     served = _build(tmp_path / "u", cache_dir)
     assert unit_stats()["memo_hits"] == 1, (
         "the renderer patch became visible to the unit key; if that is now "

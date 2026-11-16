@@ -13,7 +13,7 @@ import pytest
 
 import hawk
 import hawk.math as m
-from _specs import aether_writer, default_kind, validation_spec
+from _specs import default_kind, validation_spec
 from hawk import Mutable, Param, Scalar, Terminated, Vector, kernel
 from hawk.artifact import bridge, request
 from hawk.ext import Guard, Kind

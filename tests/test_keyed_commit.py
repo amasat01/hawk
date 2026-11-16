@@ -581,3 +581,20 @@ def test_the_reverse_of_a_sorted_read_commits_once_per_run(target, compensated, 
         assert slots <= run < N // 8
 
 
+@pytest.mark.gpu
+def test_a_run_commit_compiles_through_the_sealed_payload(monkeypatch, tmp_path):
+    """The pip-only device route: NVRTC serving the sealed payload's in-memory
+    headers, which carry ``aether/accum/run.h``."""
+    from hawk.artifact import emit_source
+    from hawk.compile import CompileOptions, compile_source, cubin_available
+    from hawk.compile.payload import current_payload, reset_payload_memo
+
+    if not cubin_available():
+        pytest.skip("no NVRTC binding or no CUDA device")
+    monkeypatch.setenv("HAWK_DEVICE_COMPILER", "nvrtc")
+    reset_payload_memo()
+    assert "aether/accum/run.h" in current_payload().device_headers
+    src = emit_source(ksrt_c, mode="float64", targets=("cuda",)).sources["cuda"]
+    result = compile_source(src.text, ksrt_c.name,
+                            CompileOptions(target="cuda", cache_dir=str(tmp_path / "cache")))
+    assert result.artifact.is_file()

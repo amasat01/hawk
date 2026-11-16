@@ -147,13 +147,6 @@ def _osc_body(dt: Param, t_final: Scalar, terminated: Terminated,
     terminated = tn >= t_final
 
 
-def _sources(k):
-    from aether.wings.base.wrapper import render_source
-    from hawk.targets import TARGETS
-
-    return [render_source(k.name, k.sinks, k.walk, b, spec=spec_for(b), kind=default_kind()) for b in TARGETS.values() if b.wrapper]
-
-
 
 
 def test_the_decorator_form_reaches_a_defining_scope_local():

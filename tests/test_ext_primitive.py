@@ -28,7 +28,6 @@ sound, and the emitted-body row says the forward paid nothing for it.
 
 from __future__ import annotations
 from _specs import default_kind
-from _specs import aether_writer
 from _specs import HOST
 
 import _oracle as O

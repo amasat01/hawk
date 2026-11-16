@@ -12,7 +12,6 @@ Each row compares with a numpy reference, on the host and on GPU 1.
 
 from __future__ import annotations
 from _specs import HOST, default_kind
-from _specs import aether_writer
 
 import numpy as np
 import pytest

@@ -19,12 +19,22 @@ from hawk.artifact import build_bundle
 ROWS = (32, 21, 13)
 
 
-def _data(rows):
+def _data(rows, mode="float64"):
     rng = np.random.default_rng(rows)
-    feat = rng.uniform(-1, 1, 8 * L_ALL)
+    feat = rng.uniform(-1, 1, 8 * L_ALL).astype(mode)
     feat[:L_ALL] = rng.integers(0, 5, L_ALL)
-    th = rng.standard_normal(rows * N_IN * S_ROW)
+    th = rng.standard_normal(rows * N_IN * S_ROW).astype(mode)
     return feat, th
+
+
+def _run(bundle, target, rows, mode):
+    xp = np if target == "host" else pytest.importorskip("cupy")
+    n = rows * BATCH
+    feat, th = _data(rows, mode)
+    y = xp.full(n, np.nan, dtype=mode)
+    _launch(bundle, "kg_fwd", target, {"lane": xp.arange(n, dtype=np.int32),
+                                       "feat": xp.asarray(feat), "th": xp.asarray(th), "y": y}).launch()
+    return np.asarray(y.get() if hasattr(y, "get") else y)
 
 
 @pytest.mark.parametrize("rows", ROWS)
@@ -40,3 +50,20 @@ def test_host_values_equal_the_interpreter(tmp_path, cache_dir, rows):
     for lane in range(0, n, 97):
         want = float(evaluate(kg_fwd.sinks, {"lane": lane, "feat": feat, "th": th}, lanes=n, lane=lane)["y"])
         assert y[lane] == pytest.approx(want, rel=1e-12, abs=1e-12), lane
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("rows", ROWS)
+@pytest.mark.parametrize("mode", ["float64", "float32"])
+def test_device_values_are_the_box_free_values_and_near_the_host(tmp_path, cache_dir, mode, rows):
+    """The device build of ``kg_fwd`` (boxed by the card default) against the host build of it.
+
+    The old row also compared the boxed device build with a box-free one made under ``HAWK_BOX=0``; that switch is
+    deleted (DECISIONS.md U-133 (3): "the HAWK_BOX environment switch is deleted"), so that arm has no way to be built."""
+    host = build_bundle([kg_fwd], tmp_path / "h", mode=mode, targets=("host",), host_profile="native", cache_dir=cache_dir)
+    boxed = build_bundle([kg_fwd], tmp_path / "d", mode=mode, targets=("cuda",), host_profile="native", cache_dir=cache_dir)
+    got = _run(boxed, "cuda", rows, mode)
+    want = _run(host, "host", rows, mode)
+    # the device may fuse a multiply into an add the host keeps apart
+    np.testing.assert_allclose(got, want, rtol=64 * np.finfo(mode).eps,
+                               atol=64 * np.finfo(mode).eps * np.abs(want).max())

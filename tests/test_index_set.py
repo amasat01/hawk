@@ -61,7 +61,8 @@ def test_emit_source_is_the_text_and_sidecar_build_publishes(kind, tmp_path, cac
     sidecar["launch"] = {key: v for key, v in sidecar["launch"].items() if not key.startswith("local_") and key != "wide"}
     assert {key: v for key, v in emitted.sidecar.items() if key != "format"} == sidecar     # format: the row's, not the object's
     assert "launch_bounds" not in emitted.sources["cuda"].text
-    with pytest.raises(HawkError, match="no compiler"):
+    # was match="no compiler" (the old writer's words for a target without one); the C target is now refused by name
+    with pytest.raises(HawkError, match="embedded C target is not available"):
         hawk.artifact.emit_source(k, targets=("c",))
 
 

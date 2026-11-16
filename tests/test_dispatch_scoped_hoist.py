@@ -15,7 +15,6 @@ one numeric row at the bottom, which builds and runs the host artifact only
 from __future__ import annotations
 from raptor.wings.base.dispatch import dispatch as _dispatch
 from _specs import HOST, default_kind
-from _specs import aether_writer
 
 import re
 

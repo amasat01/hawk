@@ -241,7 +241,9 @@ _PLANE_ROLES = _SAMPLE_SHAPED_ROLES + _RUNTIME_LENGTH_ROLES
 #: marks "look at ``scalar_type`` instead" — see :func:`_wire_dtype`.
 _FIXED_WIRE_DTYPE = {"f64": None, "f32": None, "i32": "int64", "i64": "int64",
                      "int32": "int32", "uint32": "uint32",
-                     "bool": "bool"}
+                     "bool": "bool",
+                     # the 16-byte partial sum of a banded unit: one width whatever the scalar mode
+                     "band_partial": "band_partial"}
 
 
 def _wire_dtype(ttype, scalar_type: str) -> str:
@@ -498,7 +500,10 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
 
 # -- The sidecar of a unit the lowering library answered. ------------------------------------------------------------------- #
 #: The IR dtype each wire dtype of a unit record stands for (a ``Real`` follows the scalar mode).
-_RECORD_DTYPES = {"Real": "f64", "Int64": "i64", "Int32": "int32", "Uint32": "uint32", "Bool": "bool"}
+#: The element type a unit record states for a slot (the record's closed set, every member) -> the dtype the sidecar code
+#: above works with. A name missing here is a KeyError on the first record that carries it.
+_RECORD_DTYPES = {"Real": "f64", "Int64": "i64", "Int32": "int32", "Uint32": "uint32", "Bool": "bool",
+                  "BandPartial": "band_partial"}
 _SLOT_PRIOR, _SLOT_PARAM_PLANE, _SLOT_GATHER = 1, 2, 4
 _FINISH_ENTRY_COUNTS = 1
 
@@ -639,7 +644,10 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
     from ..trace.kernel import derived_axes
 
     planes = getattr(kernel, "planes", None) or derived_axes(kernel.walk, getattr(kernel.sinks, "source", None))
-    stages = next((u["meta"]["stages"] for u in family if u["meta"]["stages"]), [])
+    # the unit that lists the stages this unit is one of: the kernel's entry-less source unit or its first stage; each branch
+    # unit of a segmented split lists itself alone, so a family may hold several lists
+    source = next((u for u in family if any(st["unit"]["name"] == meta["name"] for st in u["meta"]["stages"])), None)
+    stages = source["meta"]["stages"] if source is not None else []
     at = next((i for i, st in enumerate(stages) if st["unit"]["name"] == unit["meta"]["name"]), None)
     segmented = any(d["strategy"] == "Segmented" for d in body["dispatches"])     # a branch unit or the classify unit, by its own record
     if (at and stages[at]["team"] is not None) or segmented:
@@ -661,8 +669,7 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
         block=block, index_set=index_set, planes=planes, broadcast=getattr(kernel, "broadcast", None),
         step_ops=_counted(finish, "step_ops"), wide={p["name"]: {"layout": "warp_tiled"} for p in body["team_planes"] if p["wide"] == "WarpTiled"} or None, fp64_ops_ir=_counted(finish, "fp64_ops_ir"),
         entry_counts_finished=bool(finish and finish["flags"] & _FINISH_ENTRY_COUNTS), ptxas=ptxas, local=local)
-    source = next((u for u in family if u["meta"]["stages"]), None)
-    if source is not None and source["meta"]["stages"][0]["unit"]["name"] == meta["name"]:
+    if stages and stages[0]["unit"]["name"] == meta["name"]:
         out.update(_split_block(source, family))
     if body["cell_row"]:
         out["cell_row"] = body["cell_row"]
