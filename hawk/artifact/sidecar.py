@@ -673,7 +673,9 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
         out.update(_split_block(source, family))
     if body["cell_row"]:
         out["cell_row"] = body["cell_row"]
-    teamed = (at is not None and stages[at]["team"] is not None) or out.get("team_planes") or any("team" in st for st in out.get("stages", ()))
-    if body["scatter_chunks"] or teamed:
-        out["scatter_chunks"] = body["scatter_chunks"] or max(u["meta"]["body"]["scatter_chunks"] for u in family)
+    # The chunk cap belongs to an ordered scatter: the unit of the family that has one states it, and the
+    # family's other units carry the same number; a family with no ordered scatter states none.
+    chunk_cap = max(u["meta"]["body"]["scatter_chunks"] for u in family)
+    if chunk_cap:
+        out["scatter_chunks"] = chunk_cap
     return out
