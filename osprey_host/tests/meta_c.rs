@@ -148,10 +148,11 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             device_fold_function: Some("fold_dev".into()),
         }],
         cells: vec![Cell {
-            op: ReduceOp::Max,
+            op: ReduceOp::Sum,
             internal: true,
             columns: 2,
             slots: Some(vec![0, 1]),
+            comp_slots: Some(vec![2, 3]),
             name: "c".into(),
         }],
         keyed: vec![keyed],
@@ -245,6 +246,27 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             device_steps_reverse: Some(table),
         }),
         device_image_size: Some("u__image_size".into()),
+        derived: Some(Derived {
+            role: DerivedRole::StepVjp,
+            of_unit: 0,
+            taped: vec![Taped {
+                slot: 0,
+                row0: 0,
+                rows: 1,
+            }],
+            links: vec![Link {
+                slot: 1,
+                source: DerivedSource::ParamGrad,
+                of_slot: Some(0),
+                reduced: true,
+            }],
+            refined: vec![Refined {
+                state_slot: 0,
+                refined_slot: 1,
+            }],
+            tape_rows: 1,
+            ..Derived::default()
+        }),
     };
     (LibraryMeta::current(), unit)
 }
@@ -329,7 +351,7 @@ fn a_tree_with_every_record_follows_the_headers_and_compiles() {
     seen.dedup();
     assert_eq!(
         seen.len(),
-        17,
+        21,
         "every record of the headers is written: {seen:?}"
     );
     for (ty, members) in &written {

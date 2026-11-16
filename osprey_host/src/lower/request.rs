@@ -2,6 +2,7 @@
 //! closed-schema JSON on the rules of the writers' contract: every key is stated, a key the reader does not know is refused by
 //! name, a required key that is missing is refused by name, and the version is checked first. Nothing here knows how a caller
 //! records its kernels.
+use super::derived::DerivedKernel;
 use super::unit_meta::{ImageFormat, LibraryMeta, UnitMeta, Wire};
 use aether_writers::contract::types::{
     Access, Dtype, FoldForm, Guard, MapBits, Role, Scalar, SinkPolicy, Target, ThreadBox,
@@ -167,6 +168,8 @@ pub struct KernelRequest {
     pub body: Body,
     /// The single step of a kernel written as two paths.
     pub one_step: Option<Member>,
+    /// The kernels derived from this one (a taping twin, a reverse unit), answered in the same table after its own units.
+    pub derived: Vec<DerivedKernel>,
     /// The samples one lane group covers when the launch runs over an active set.
     pub group: i64,
     /// The planes the caller declares for the kernel (an output it declares is its own, not the runtime's).
@@ -449,14 +452,14 @@ pub(super) fn int_of(json: &Json, key: &str) -> Result<i64, Refusal> {
     json.int().ok_or_else(|| wrong(key, "not an integer"))
 }
 /// The flag of a value.
-fn flag_of(json: &Json, key: &str) -> Result<bool, Refusal> {
+pub(super) fn flag_of(json: &Json, key: &str) -> Result<bool, Refusal> {
     match json {
         Json::Bool(flag) => Ok(*flag),
         _ => Err(wrong(key, "not a flag")),
     }
 }
 /// The member of a closed set under a key.
-fn member_of<T: Debug + Copy>(all: &[T], json: &Json, key: &str) -> Result<T, Refusal> {
+pub(super) fn member_of<T: Debug + Copy>(all: &[T], json: &Json, key: &str) -> Result<T, Refusal> {
     pick(
         all,
         json.str().ok_or_else(|| wrong(key, "not a name"))?,
@@ -474,7 +477,7 @@ fn facts_read(json: &Json) -> Result<Vec<(Target, String)>, Refusal> {
         .collect()
 }
 /// A list of values, each read by `one`.
-fn list_of<T>(
+pub(super) fn list_of<T>(
     json: &Json,
     key: &str,
     one: impl Fn(&Json) -> Result<T, Refusal>,
@@ -534,15 +537,15 @@ impl DeclaredSlot {
 }
 
 /// The name of a member of a closed set, as a value.
-fn name_of<T: Debug>(member: &T) -> Json {
+pub(super) fn name_of<T: Debug>(member: &T) -> Json {
     Json::Str(format!("{member:?}"))
 }
 /// A list of integers as a value.
-fn ints<T: ToString>(values: &[T]) -> Json {
+pub(super) fn ints<T: ToString>(values: &[T]) -> Json {
     Json::Arr(values.iter().map(|n| Json::Num(n.to_string())).collect())
 }
 /// A list of texts as a value.
-fn texts(values: &[String]) -> Json {
+pub(super) fn texts(values: &[String]) -> Json {
     Json::Arr(values.iter().map(|s| Json::Str(s.clone())).collect())
 }
 
@@ -677,7 +680,7 @@ fn fusion_write(row: &FusionRow) -> Json {
 
 impl Member {
     /// Reads a member.
-    fn read(json: &Json) -> Result<Member, Refusal> {
+    pub(super) fn read(json: &Json) -> Result<Member, Refusal> {
         let mut keys = Keys::of(json, "member")?;
         let member = Member {
             name: text_of(keys.req("name")?, "name")?,
@@ -695,7 +698,7 @@ impl Member {
         Ok(member)
     }
     /// Writes the member.
-    fn write(&self) -> Json {
+    pub(super) fn write(&self) -> Json {
         let mut o = vec![
             ("name".into(), Json::Str(self.name.clone())),
             ("sinks".into(), ints(&self.sinks)),
@@ -710,6 +713,70 @@ impl Member {
         o.push(("exempt".into(), texts(&self.exempt)));
         Json::Obj(o)
     }
+}
+
+/// Reads the members of a request that belong to one kernel's own lowering (its kind, single step, group, planes, settings, steps,
+/// lane axes, sink axes, shared planes and broadcast pattern) into `into`, each left as it is when the request does not state it.
+/// The kernel and each of its derived kernels are read by this one function.
+pub(super) fn read_part(keys: &mut Keys, into: &mut KernelRequest) -> Result<(), Refusal> {
+    if let Some(kind) = keys.opt("kind") {
+        into.kind = RequestKind::read(kind)?;
+    }
+    if let Some(step) = keys.opt("one_step") {
+        into.one_step = Some(Member::read(step)?);
+    }
+    if let Some(g) = keys.opt("group") {
+        into.group = int_of(g, "group")?;
+    }
+    if let Some(p) = keys.opt("planes") {
+        into.planes = list_of(p, "planes", |n| text_of(n, "planes"))?;
+    }
+    if let Some(s) = keys.opt("settings") {
+        into.settings = Settings::read(s)?;
+    }
+    let (steps, max) = (keys.opt("steps"), keys.opt("steps_max"));
+    if steps.is_some() || max.is_some() {
+        into.steps = steps_read(steps, max)?;
+    }
+    if let Some(l) = keys.opt("lane_space") {
+        into.lane_space = list_of(l, "lane_space", LaneAxis::read)?;
+    }
+    if let Some(l) = keys.opt("sink_axes") {
+        into.sink_axes = list_of(l, "sink_axes", SinkAxes::read)?;
+    }
+    if let Some(l) = keys.opt("shared") {
+        into.shared = list_of(l, "shared", |n| text_of(n, "shared"))?;
+    }
+    if let Some(l) = keys.opt("broadcast") {
+        into.broadcast = list_of(l, "broadcast", |p| {
+            let mut keys = Keys::of(p, "broadcast")?;
+            let found = (
+                text_of(keys.req("plane")?, "plane")?,
+                list_of(keys.req("axes")?, "axes", |b| flag_of(b, "axes"))?,
+            );
+            keys.done()?;
+            Ok(found)
+        })?;
+    }
+    Ok(())
+}
+
+/// Reads the derived kernels of a request over the kernel `base`: each states its own per-kernel members, and what it leaves out is
+/// the default of a request (its kind is the base's); two of one name and role are refused by name.
+fn derived_read(json: &Json, base: &KernelRequest) -> Result<Vec<DerivedKernel>, Refusal> {
+    let list = list_of(json, "derived", |one| DerivedKernel::read(one, base))?;
+    for (at, kernel) in list.iter().enumerate() {
+        let same =
+            |other: &DerivedKernel| other.name() == kernel.name() && other.role == kernel.role;
+        if list[..at].iter().any(same) {
+            return Err(bad(format!(
+                "request key derived: two kernels are named {} with the role {:?}",
+                kernel.name(),
+                kernel.role
+            )));
+        }
+    }
+    Ok(list)
 }
 
 impl Body {
@@ -801,7 +868,7 @@ impl RequestKind {
         Ok(kind)
     }
     /// Writes the kind.
-    fn write(&self) -> Json {
+    pub(super) fn write(&self) -> Json {
         let guard = match &self.guard {
             Guard::Default => Json::Str("Default".into()),
             Guard::DataOnly => Json::Str("DataOnly".into()),
@@ -873,7 +940,7 @@ fn in_range(key: &str, value: i64, low: i64, high: i64) -> Result<i64, Refusal> 
 
 impl Settings {
     /// Reads the settings; every key but the version is optional and has its default.
-    fn read(json: &Json) -> Result<Settings, Refusal> {
+    pub(super) fn read(json: &Json) -> Result<Settings, Refusal> {
         let mut keys = Keys::of(json, "settings")?;
         let pair = |j: &Json| match j.arr() {
             [a, b] => Ok((int_of(a, "launch_bounds")?, int_of(b, "launch_bounds")?)),
@@ -986,7 +1053,7 @@ impl KernelRequest {
         if version != i64::from(REQUEST_VERSION) {
             return Err(unknown(format!("request version {version}")));
         }
-        let request = KernelRequest {
+        let mut request = KernelRequest {
             name: text_of(keys.req("name")?, "name")?,
             scalar: member_of(&SCALARS, keys.req("scalar")?, "scalar")?,
             targets: list_of(keys.req("targets")?, "targets", |t| {
@@ -999,51 +1066,27 @@ impl KernelRequest {
             })?,
             kind: RequestKind::read(keys.req("kind")?)?,
             body: Body::read(keys.req("body")?)?,
-            one_step: keys.opt("one_step").map(Member::read).transpose()?,
-            group: match keys.opt("group") {
-                Some(g) => int_of(g, "group")?,
-                None => aether_writers::contract::types::DEFAULT_GROUP,
-            },
-            planes: match keys.opt("planes") {
-                Some(p) => list_of(p, "planes", |n| text_of(n, "planes"))?,
-                None => vec![],
-            },
-            settings: match keys.opt("settings") {
-                Some(s) => Settings::read(s)?,
-                None => Settings::read(&Json::Obj(vec![]))?,
-            },
+            one_step: None,
+            derived: vec![],
+            group: aether_writers::contract::types::DEFAULT_GROUP,
+            planes: vec![],
+            settings: Settings::read(&Json::Obj(vec![]))?,
             image_format: keys
                 .opt("image_format")
                 .map(|f| member_of(&IMAGE_FORMATS, f, "image_format"))
                 .transpose()?,
-            steps: steps_read(keys.opt("steps"), keys.opt("steps_max"))?,
-            lane_space: match keys.opt("lane_space") {
-                Some(l) => list_of(l, "lane_space", LaneAxis::read)?,
-                None => vec![],
-            },
-            sink_axes: match keys.opt("sink_axes") {
-                Some(l) => list_of(l, "sink_axes", SinkAxes::read)?,
-                None => vec![],
-            },
-            shared: match keys.opt("shared") {
-                Some(l) => list_of(l, "shared", |n| text_of(n, "shared"))?,
-                None => vec![],
-            },
-            broadcast: match keys.opt("broadcast") {
-                Some(l) => list_of(l, "broadcast", |p| {
-                    let mut keys = Keys::of(p, "broadcast")?;
-                    let found = (
-                        text_of(keys.req("plane")?, "plane")?,
-                        list_of(keys.req("axes")?, "axes", |b| flag_of(b, "axes"))?,
-                    );
-                    keys.done()?;
-                    Ok(found)
-                })?,
-                None => vec![],
-            },
+            steps: None,
+            lane_space: vec![],
+            sink_axes: vec![],
+            shared: vec![],
+            broadcast: vec![],
             fusion: keys.opt("fusion").map(fusion_read).transpose()?,
             facts: facts_read(keys.req("facts")?)?,
         };
+        read_part(&mut keys, &mut request)?;
+        if let Some(list) = keys.opt("derived") {
+            request.derived = derived_read(list, &request)?;
+        }
         keys.done()?;
         for target in &request.targets {
             request.facts_for(*target)?;
@@ -1063,19 +1106,9 @@ impl KernelRequest {
             .ok_or_else(|| bad(format!("no facts answer for the target {target:?}")))
     }
 
-    /// The request as JSON text, led by the version.
-    pub fn to_json(&self) -> String {
-        let mut o: Vec<(String, Json)> = vec![
-            ("v".into(), Json::Num(REQUEST_VERSION.to_string())),
-            ("name".into(), Json::Str(self.name.clone())),
-            ("scalar".into(), name_of(&self.scalar)),
-            (
-                "targets".into(),
-                Json::Arr(self.targets.iter().map(name_of).collect()),
-            ),
-            ("kind".into(), self.kind.write()),
-            ("body".into(), self.body.write()),
-        ];
+    /// The members of the request that belong to one kernel's own lowering, as `read_part` reads them.
+    pub(super) fn part_members(&self) -> Vec<(String, Json)> {
+        let mut o: Vec<(String, Json)> = vec![];
         if let Some(step) = &self.one_step {
             o.push(("one_step".into(), step.write()))
         }
@@ -1084,9 +1117,6 @@ impl KernelRequest {
         }
         if self.group != aether_writers::contract::types::DEFAULT_GROUP {
             o.push(("group".into(), Json::Num(self.group.to_string())))
-        }
-        if let Some(format) = self.image_format {
-            o.push(("image_format".into(), name_of(&format)))
         }
         match self.steps {
             Some(Steps::Fixed(n)) => o.push(("steps".into(), Json::Num(n.to_string()))),
@@ -1119,10 +1149,36 @@ impl KernelRequest {
             });
             o.push(("broadcast".into(), Json::Arr(planes.collect())))
         }
+        o.push(("settings".into(), self.settings.write()));
+        o
+    }
+
+    /// The request as JSON text, led by the version.
+    pub fn to_json(&self) -> String {
+        let mut o: Vec<(String, Json)> = vec![
+            ("v".into(), Json::Num(REQUEST_VERSION.to_string())),
+            ("name".into(), Json::Str(self.name.clone())),
+            ("scalar".into(), name_of(&self.scalar)),
+            (
+                "targets".into(),
+                Json::Arr(self.targets.iter().map(name_of).collect()),
+            ),
+            ("kind".into(), self.kind.write()),
+            ("body".into(), self.body.write()),
+        ];
+        if !self.derived.is_empty() {
+            o.push((
+                "derived".into(),
+                Json::Arr(self.derived.iter().map(DerivedKernel::write).collect()),
+            ))
+        }
+        if let Some(format) = self.image_format {
+            o.push(("image_format".into(), name_of(&format)))
+        }
+        o.extend(self.part_members());
         if let Some(row) = &self.fusion {
             o.push(("fusion".into(), fusion_write(row)))
         }
-        o.push(("settings".into(), self.settings.write()));
         let answers = self
             .facts
             .iter()
@@ -1269,6 +1325,7 @@ mod tests {
                 exempt: vec![],
             }),
             one_step: None,
+            derived: vec![],
             group: 1,
             planes: vec![],
             settings: Settings::read(&Json::Obj(vec![])).unwrap(),
@@ -1395,6 +1452,45 @@ mod tests {
         let parsed = Contract::parse(&text).unwrap();
         let why = read_written_facts(&parsed.0, String::new()).unwrap_err();
         assert!(why.reason.contains("slot"), "{}", why.reason);
+    }
+
+    #[test]
+    fn derived_kernels_round_trip_and_two_of_one_name_and_role_are_refused() {
+        use super::super::derived::{DerivedFacts, LinkFact};
+        use super::super::unit_meta::{DerivedRole, DerivedSource};
+        let kernel = |role| DerivedKernel {
+            request: KernelRequest {
+                body: Body::Plain(Member {
+                    name: "k".into(),
+                    sinks: vec![4],
+                    declared: vec![],
+                    force: None,
+                    exempt: vec![],
+                }),
+                steps: Some(Steps::Fixed(3)),
+                ..request()
+            },
+            role,
+            facts: DerivedFacts {
+                links: vec![LinkFact {
+                    slot: "bar_x".into(),
+                    source: DerivedSource::ParamGrad,
+                    of: Some("x".into()),
+                    reduced: true,
+                }],
+                ..DerivedFacts::default()
+            },
+        };
+        let mut set = request();
+        set.derived = vec![kernel(DerivedRole::Tape), kernel(DerivedRole::StepVjp)];
+        assert_eq!(KernelRequest::from_json(&set.to_json()), Ok(set.clone()));
+        set.derived.push(kernel(DerivedRole::Tape));
+        let why = KernelRequest::from_json(&set.to_json()).unwrap_err();
+        assert!(
+            why.reason.contains("named k with the role Tape"),
+            "{}",
+            why.reason
+        );
     }
 
     #[test]

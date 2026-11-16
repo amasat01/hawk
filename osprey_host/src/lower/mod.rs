@@ -12,6 +12,7 @@ mod blocks;
 pub mod boxed;
 pub mod card;
 mod chain;
+pub mod derived;
 mod fused;
 pub mod meta_c;
 mod meta_fill;
@@ -61,6 +62,8 @@ pub(super) struct Pending {
     pub warp: Option<warp::Warp>,
     /// The dispatch group a branch unit of a segmented split belongs to.
     pub group: Option<segment::Group>,
+    /// Whether the unit's text carries the library's self-check exports; a later unit of a table that has them already omits them.
+    pub exports_block: bool,
 }
 
 /// A wing refusal as the refusal of the request.
@@ -239,33 +242,16 @@ fn device_arch(request: &KernelRequest) -> Result<String, Refusal> {
         .ok_or_else(|| bad("the device facts answer names no architecture"))
 }
 
-/// The answer to a request, from the kernel's IR in `ctx` and the data files in `facts_dir`.
+/// The answer to a request, from the kernel's IR in `ctx` and the data files in `facts_dir`. A request with derived kernels is
+/// answered as one table: the units of the kernel first, then those of each derived kernel in list order.
 pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<KernelAnswer, Refusal> {
     let request = KernelRequest::from_json(request_text)?;
     scope(&request)?;
     known_sinks(ctx, &request)?;
     let cards = Cards::load(&request, facts_dir)?;
-    let mut pending = match &request.body {
-        Body::Plain(member) => vec![Pending::of(member, request.one_step.as_ref())],
-        Body::Chain(members) => chain::expand(ctx, &request, members, facts_dir)?,
-        Body::Fused(lanes) => vec![fused::expand(ctx, lanes, &request.name)?],
-    };
-    for unit in &mut pending {
-        for body in std::iter::once(&mut unit.member).chain(unit.one_step.as_mut()) {
-            body.declared.extend(finished_slot(ctx, body));
-        }
-    }
-    for step in STEPS {
-        pending = step(ctx, &request, &cards, pending)?;
-    }
-    distinct_names(&pending)?;
-    let block = stages::block(&pending);
-    let mut units = pending
-        .into_iter()
-        .map(|unit| write(ctx, &request, &cards, unit))
-        .collect::<Result<Vec<_>, _>>()?;
-    if let Some(block) = &block {
-        meta_fill::stages(&mut units, block, cards.deciding.scatter_max_chunks)?;
+    let mut units = kernel_units(ctx, &request, &cards, facts_dir, true)?;
+    if !request.derived.is_empty() {
+        units.extend(derived_units(ctx, &request, &cards, facts_dir, &units)?);
     }
     meta_fill::classify_digests(&mut units);
     let library = unit_meta::LibraryMeta::current();
@@ -275,6 +261,107 @@ pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<Kern
         library,
         meta_source,
     })
+}
+
+/// The units of the kernels derived from the request's kernel, each lowered as a kernel of its own over the shared IR with the
+/// request's settings, its self-check exports omitted, and its stated facts resolved against the units lowered before it.
+fn derived_units(
+    ctx: *mut Ctx,
+    request: &KernelRequest,
+    cards: &Cards,
+    facts_dir: &Path,
+    primal: &[UnitAnswer],
+) -> Result<Vec<UnitAnswer>, Refusal> {
+    let single = |units: &[UnitAnswer], name: &str| match units {
+        [_] => Ok(()),
+        _ => Err(not_written(format!(
+            "derived kernel {name}: a set over a kernel that lowers to {} units",
+            units.len()
+        ))),
+    };
+    single(primal, &request.name)?;
+    let mut all: Vec<UnitAnswer> = vec![];
+    let mut twin_at: Option<usize> = None;
+    for kernel in &request.derived {
+        let sub = kernel.request.clone();
+        let mut units = kernel_units(ctx, &sub, cards, facts_dir, false)?;
+        single(&units, kernel.name())?;
+        let at = primal.len() + all.len();
+        let twin = twin_at.map(|i| &all[i - primal.len()].meta);
+        let context = derived::Context {
+            primal: &primal[0].meta,
+            of_unit: 0,
+            twin,
+        };
+        units[0].meta.derived = Some(derived::resolve(
+            &kernel.stated(),
+            &units[0].meta,
+            &context,
+        )?);
+        if matches!(
+            kernel.role,
+            unit_meta::DerivedRole::Tape | unit_meta::DerivedRole::TapeFused
+        ) {
+            twin_at = Some(at);
+        }
+        all.extend(units);
+    }
+    let mut seen = std::collections::HashSet::new();
+    let names = primal
+        .iter()
+        .map(|u| (u.meta.name.clone(), None))
+        .chain(all.iter().map(|u| {
+            (
+                u.meta.name.clone(),
+                u.meta.derived.as_ref().map(|d| d.role as i32),
+            )
+        }));
+    for key in names {
+        if !seen.insert(key.clone()) {
+            return Err(fault(format!(
+                "the lowering made two units named {} with one role",
+                key.0
+            )));
+        }
+    }
+    Ok(all)
+}
+
+/// The units one kernel lowers to, with their meta; the first kernel of a table keeps the self-check exports in its texts, the
+/// later ones omit them.
+fn kernel_units(
+    ctx: *mut Ctx,
+    request: &KernelRequest,
+    cards: &Cards,
+    facts_dir: &Path,
+    exports_block: bool,
+) -> Result<Vec<UnitAnswer>, Refusal> {
+    let mut pending = match &request.body {
+        Body::Plain(member) => vec![Pending::of(member, request.one_step.as_ref())],
+        Body::Chain(members) => chain::expand(ctx, request, members, facts_dir)?,
+        Body::Fused(lanes) => vec![fused::expand(ctx, lanes, &request.name)?],
+    };
+    for unit in &mut pending {
+        for body in std::iter::once(&mut unit.member).chain(unit.one_step.as_mut()) {
+            body.declared.extend(finished_slot(ctx, body));
+        }
+    }
+    for step in STEPS {
+        pending = step(ctx, request, cards, pending)?;
+    }
+    distinct_names(&pending)?;
+    for unit in &mut pending {
+        unit.exports_block = exports_block;
+    }
+    let block = stages::block(&pending);
+    let mut units = pending
+        .into_iter()
+        .map(|unit| write(ctx, request, cards, unit))
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(block) = &block {
+        meta_fill::stages(&mut units, block, cards.deciding.scatter_max_chunks)?;
+    }
+    Ok(units)
 }
 
 impl Pending {
@@ -291,6 +378,7 @@ impl Pending {
             team: None,
             warp: None,
             group: None,
+            exports_block: true,
         }
     }
 }
@@ -344,6 +432,9 @@ fn write_target(
         cards,
         target,
     )?;
+    if !pending.exports_block {
+        unit.exports = Exports::Text(String::new());
+    }
     unit.segment = pending.segment.clone();
     unit.one_step = pending
         .one_step

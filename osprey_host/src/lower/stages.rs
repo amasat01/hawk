@@ -380,6 +380,7 @@ fn staged(
             }),
             warp: None,
             group: None,
+            exports_block: true,
         });
     }
     Ok(out)

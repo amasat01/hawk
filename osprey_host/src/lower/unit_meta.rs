@@ -356,6 +356,8 @@ record! {
         pub columns: i64,
         /// The row-plane slot of each column in this unit, absent when the unit binds none.
         pub slots: Option<Vec<usize>>,
+        /// The slot of each column's compensation of a sum, absent when the cell has none.
+        pub comp_slots: Option<Vec<usize>>,
         /// The cell's name.
         pub name: String,
     }
@@ -569,6 +571,95 @@ record! {
         pub team: Option<Team>,
     }
 }
+closed! {
+    /// What a derived unit is to a runner.
+    pub enum DerivedRole {
+        /** The one-step taping twin. */ Tape = 0 => "EG_DERIVED_TAPE",
+        /** The K-step taping twin. */ TapeFused = 1 => "EG_DERIVED_TAPE_FUSED",
+        /** The per-step reverse unit. */ StepVjp = 2 => "EG_DERIVED_STEP_VJP",
+        /** The K-step reverse unit. */ FusedVjp = 3 => "EG_DERIVED_FUSED_VJP",
+        /** The event refine entry. */ RefineEntry = 4 => "EG_DERIVED_REFINE_ENTRY",
+        /** The refine entry with its derivative in the event time. */ RefineNewton = 5 => "EG_DERIVED_REFINE_NEWTON",
+        /** The reverse unit of the refine entry. */ RefineVjp = 6 => "EG_DERIVED_REFINE_VJP",
+        /** The state guard. */ StateGuard = 7 => "EG_DERIVED_STATE_GUARD",
+        /** The reverse unit of the state guard. */ StateGuardVjp = 8 => "EG_DERIVED_STATE_GUARD_VJP",
+    }
+}
+closed! {
+    /// Where a slot of a derived unit comes from.
+    pub enum DerivedSource {
+        /** The primal's slot, unchanged. */ Primal = 0 => "EG_SRC_PRIMAL",
+        /** The adjoint of a state, read at this step's parity. */ StateAdjointIn = 1 => "EG_SRC_STATE_ADJOINT_IN",
+        /** The next-step adjoint of a state. */ StateAdjointOut = 2 => "EG_SRC_STATE_ADJOINT_OUT",
+        /** The accumulated gradient of a parameter. */ ParamGrad = 3 => "EG_SRC_PARAM_GRAD",
+        /** The tape rows of a primal slot. */ Taped = 4 => "EG_SRC_TAPED",
+        /** A step plane. */ Steps = 5 => "EG_SRC_STEPS",
+        /** An event multiplier of a refine run. */ Event = 6 => "EG_SRC_EVENT",
+        /** The start copy of a time plane. */ Time0 = 7 => "EG_SRC_TIME0",
+    }
+}
+record! {
+    /// One taped plane: rows `row0` to `row0 + rows` of the tape hold the primal's slot `slot`.
+    pub struct Taped {
+        /// The slot in the primal.
+        pub slot: usize,
+        /// The first row.
+        pub row0: i64,
+        /// The rows.
+        pub rows: i64,
+    }
+}
+record! {
+    /// One slot of a derived unit and its source.
+    pub struct Link {
+        /// The slot in this unit.
+        pub slot: usize,
+        /// Where it comes from.
+        pub source: DerivedSource,
+        /// The slot it is of, absent for none.
+        pub of_slot: Option<usize>,
+        /// Whether a parameter's gradient is summed over samples.
+        pub reduced: bool,
+    }
+}
+record! {
+    /// The refined plane of a primal state.
+    pub struct Refined {
+        /// The state's slot in the primal.
+        pub state_slot: usize,
+        /// The refined plane's slot in this unit.
+        pub refined_slot: usize,
+    }
+}
+record! {
+    /// What a derived unit is to its primal.
+    pub struct Derived {
+        /// The unit's role.
+        pub role: DerivedRole,
+        /// The primal's index in the library's table.
+        pub of_unit: usize,
+        /// The tape slot of a taping twin.
+        pub tape_slot: Option<usize>,
+        /// The rows of one recorded step.
+        pub tape_rows: i64,
+        /// The applied steps slot.
+        pub steps_slot: Option<usize>,
+        /// The slot that switches taping.
+        pub tape_on_slot: Option<usize>,
+        /// The time plane's start copy.
+        pub time0_slot: Option<usize>,
+        /// The per-sample step of a refine run.
+        pub tau_slot: Option<usize>,
+        /// The word of steps a fused unit runs.
+        pub fused_steps_slot: Option<usize>,
+        /// The taped planes.
+        pub taped: Vec<Taped>,
+        /// The slots' sources.
+        pub links: Vec<Link>,
+        /// The refined planes.
+        pub refined: Vec<Refined>,
+    }
+}
 record! {
     /// One unit of the library.
     pub struct UnitMeta {
@@ -602,6 +693,8 @@ record! {
         pub finish: Option<Finish>,
         /// The symbol of the image's byte count.
         pub device_image_size: Option<String>,
+        /// What the unit is to its primal, absent for a primal unit.
+        pub derived: Option<Derived>,
     }
 }
 record! {

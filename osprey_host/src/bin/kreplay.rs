@@ -35,6 +35,8 @@ use std::ffi::c_char;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+#[path = "kreplay/derived.rs"]
+mod derived_sets;
 #[path = "kreplay/meta.rs"]
 mod oracle;
 
@@ -1033,6 +1035,7 @@ fn request_for(
         .to_string();
     let member = member_of(&name, kernel, handles)?;
     Ok(KernelRequest {
+        derived: vec![],
         name,
         scalar,
         targets: facts.iter().map(|(target, _)| *target).collect(),
@@ -2650,6 +2653,19 @@ fn replay_chain(
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(at) = args.iter().position(|a| a == "--split-blocks") {
+        return derived_sets::split_blocks(Path::new(
+            args.get(at + 1).expect("--split-blocks <calls>"),
+        ));
+    }
+    if let Some(at) = args.iter().position(|a| a == "--derived") {
+        let (file, only, out) = (args.get(at + 1), args.get(at + 2), args.get(at + 3));
+        return derived_sets::census(
+            Path::new(file.expect("--derived <calls> [call id [folder]]")),
+            only.map(String::as_str),
+            out.map(Path::new),
+        );
+    }
     if let Some(at) = args.iter().position(|a| a == "--emit-meta") {
         let (file, out) = (args.get(at + 1), args.get(at + 2));
         return oracle::emit(

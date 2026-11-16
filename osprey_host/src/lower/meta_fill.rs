@@ -416,6 +416,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
                 columns: cell.columns,
                 name: cell.name.clone(),
                 slots: Some(mine).filter(|s| !s.is_empty()),
+                comp_slots: None,
             })
         })
         .collect::<Result<Vec<_>, Refusal>>()?;
@@ -451,6 +452,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
             })
         })
         .collect::<Result<Vec<_>, Refusal>>()?;
+    let cells = compensated(cells, &companions)?;
     Ok(m::UnitMeta {
         name: name.clone(),
         digest: parts.digest.to_string(),
@@ -473,6 +475,34 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
         },
         ..m::UnitMeta::default()
     })
+}
+
+/// The cells with the compensation slots of their sums: each row plane of a sum cell that a companion pair compensates names the
+/// pair's companion slot; a cell none of whose rows has a companion keeps none, one with only some of them is a fault.
+fn compensated(cells: Vec<m::Cell>, companions: &[m::Companion]) -> Result<Vec<m::Cell>, Refusal> {
+    cells
+        .into_iter()
+        .map(|mut cell| {
+            let rows = cell.slots.clone().unwrap_or_default();
+            let found: Vec<usize> = rows
+                .iter()
+                .filter_map(|row| companions.iter().find(|c| c.target_slot == *row))
+                .map(|c| c.slot)
+                .collect();
+            if cell.op == m::ReduceOp::Sum && !found.is_empty() {
+                if found.len() != rows.len() {
+                    return Err(fault(format!(
+                        "the sum cell {} compensates {} of its {} rows",
+                        cell.name,
+                        found.len(),
+                        rows.len()
+                    )));
+                }
+                cell.comp_slots = Some(found);
+            }
+            Ok(cell)
+        })
+        .collect()
 }
 
 /// The index of a keyed plane in the table, which holds each plane once by name.
@@ -690,6 +720,7 @@ pub(super) fn stages(
             columns: cell.columns,
             name: cell.name.clone(),
             slots: None,
+            comp_slots: None,
         });
     }
     meta.body.keyed = keyed;

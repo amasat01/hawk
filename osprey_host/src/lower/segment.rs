@@ -96,6 +96,7 @@ fn branches(
             team: None,
             warp: None,
             group: Some(ours.clone()),
+            exports_block: true,
         });
     }
     if fixed {
@@ -112,6 +113,7 @@ fn branches(
             team: None,
             warp: None,
             group: None,
+            exports_block: true,
         });
     }
     Ok(Some(units))

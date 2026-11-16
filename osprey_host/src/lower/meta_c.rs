@@ -6,8 +6,8 @@
 //! What the digest of a unit is: the unit's canonical walk digest (SHA-256 of the walk, 64 hex digits in the answer), decoded to
 //! its 32 bytes. The device image is named by its bytes symbol and its size symbol; its content is never part of the source.
 use super::unit_meta::{
-    LibraryMeta, StepsTable, ThreadBox, UnitMeta, FINISH_FLAGS, LIBRARY_META_SYMBOL, SCHEMA_MAJOR,
-    SLOT_FLAGS,
+    Derived, LibraryMeta, StepsTable, ThreadBox, UnitMeta, FINISH_FLAGS, LIBRARY_META_SYMBOL,
+    SCHEMA_MAJOR, SLOT_FLAGS,
 };
 use aether_writers::refuse::{fault, Refusal};
 use std::fmt::Write;
@@ -225,13 +225,15 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
     for (at, c) in b.cells.iter().enumerate() {
         let row = c.slots.clone().unwrap_or_default();
         let row = out.numbers("int32_t", &format!("cell{at}_slots"), &row);
+        let comp = c.comp_slots.clone().unwrap_or_default();
+        let comp = out.numbers("int32_t", &format!("cell{at}_comp"), &comp);
         let members = [
             ("op", c.op.c_name().into()),
             ("internal", flag(c.internal).into()),
             ("columns", c.columns.to_string()),
             ("slots", row),
             ("name", lit(&c.name)),
-            ("comp_slots", "NULL".into()),
+            ("comp_slots", comp),
         ];
         cells.push(out.record("eg_unit_cell", &format!("cell{at}"), &members));
     }
@@ -425,9 +427,78 @@ fn stages(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
     Ok(out.pointers("eg_unit_stage", "stages", &all))
 }
 
+/// The derived record of a unit, as a pointer to it or NULL for a primal unit.
+fn derived(out: &mut Out, derived: Option<&Derived>) -> String {
+    let Some(d) = derived else {
+        return "NULL".into();
+    };
+    let taped: Vec<String> = d
+        .taped
+        .iter()
+        .enumerate()
+        .map(|(at, t)| {
+            let members = [
+                ("slot", t.slot.to_string()),
+                ("row0", t.row0.to_string()),
+                ("rows", t.rows.to_string()),
+            ];
+            out.record("eg_unit_taped", &format!("dtp{at}"), &members)
+        })
+        .collect();
+    let links: Vec<String> = d
+        .links
+        .iter()
+        .enumerate()
+        .map(|(at, l)| {
+            let members = [
+                ("slot", l.slot.to_string()),
+                ("source", l.source.c_name().into()),
+                ("of_slot", index(l.of_slot)),
+                ("reduced", format!("{}u", flag(l.reduced))),
+            ];
+            out.record("eg_unit_link", &format!("dl{at}"), &members)
+        })
+        .collect();
+    let refined: Vec<String> = d
+        .refined
+        .iter()
+        .enumerate()
+        .map(|(at, r)| {
+            let members = [
+                ("state_slot", r.state_slot.to_string()),
+                ("refined_slot", r.refined_slot.to_string()),
+            ];
+            out.record("eg_unit_refined", &format!("dr{at}"), &members)
+        })
+        .collect();
+    let members = [
+        ("role", d.role.c_name().into()),
+        ("of_unit", d.of_unit.to_string()),
+        ("tape_slot", index(d.tape_slot)),
+        ("n_taped", taped.len().to_string()),
+        ("tape_rows", d.tape_rows.to_string()),
+        ("steps_slot", index(d.steps_slot)),
+        ("tape_on_slot", index(d.tape_on_slot)),
+        ("time0_slot", index(d.time0_slot)),
+        ("tau_slot", index(d.tau_slot)),
+        ("fused_steps_slot", index(d.fused_steps_slot)),
+        ("n_links", links.len().to_string()),
+        ("n_refined", refined.len().to_string()),
+        ("reserved0", "0".into()),
+        ("taped", out.pointers("eg_unit_taped", "taped", &taped)),
+        ("links", out.pointers("eg_unit_link", "links", &links)),
+        (
+            "refined",
+            out.pointers("eg_unit_refined", "refined", &refined),
+        ),
+    ];
+    format!("&{}", out.record("eg_unit_derived", "derived", &members))
+}
+
 /// One unit's objects; returns the unit record's name.
 fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
     let stage_list = stages(out, unit)?;
+    let derived_list = derived(out, unit.derived.as_ref());
     let (body, launch, finish) = (body(out, unit)?, launch(out, unit), finish(out, unit));
     let members = [
         ("flags", flags(unit.flags, &[])),
@@ -449,7 +520,7 @@ fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
         ("launch", format!("&{launch}")),
         ("finish", finish),
         ("device_image_size", lit_or_null(&unit.device_image_size)),
-        ("derived", "NULL".into()),
+        ("derived", derived_list),
         ("device_compiler", "NULL".into()),
         ("device_flags", "NULL".into()),
         ("device_ptx_isa", "0".into()),
