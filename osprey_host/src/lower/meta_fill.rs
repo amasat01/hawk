@@ -7,7 +7,7 @@ use super::segment::FUSED_STEPS_PLANE;
 use super::stage_block::{KeyedRecord, PlaneRecord, StageBlock, TeamRecord};
 use super::stages::cell_records;
 use super::unit_meta as m;
-use super::{wing, Pending, FINISHED_PLANE};
+use super::{walk_of, wing, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{Access, Dtype, Role, Scalar, Target, Walk};
 use aether_writers::refuse::{bad, fault, not_written, Refusal};
 use raptor_ir::record::Ctx;
@@ -57,10 +57,12 @@ fn role(role: Role) -> m::SlotRole {
     }
 }
 
-/// The type of a slot on the wire: an index leaf is bound as the 64-bit `Int` by the entry's writer, a float is `Real`. A
+/// The type of a slot on the wire: the sample count is always the unsigned 32-bit the runtime passes, whatever the request states
+/// (the text reads it as the runtime's index type either way). An index leaf is bound as the 64-bit `Int` by the entry's writer, a float is `Real`. A
 /// by-value integer (a uniform) is bound as that `Int` whatever its width: no unit that has one narrows `Int`.
 fn dtype(role: Role, dtype: Dtype) -> m::WireDtype {
     match dtype {
+        _ if role == Role::Nsamples => m::WireDtype::Uint32,
         Dtype::Int32 | Dtype::Uint32 if role == Role::Uniform => m::WireDtype::Int64,
         Dtype::F64 | Dtype::F32 => m::WireDtype::Real,
         Dtype::I32 | Dtype::I64 => m::WireDtype::Int64,
@@ -333,28 +335,43 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
     }))
 }
 
-/// The dispatch groups of a unit's walk: each group's name and strategy, and for an auto group the slot of its branch-mix plane.
+/// A unit reference by name, its digest filled once every unit of the answer is written.
+fn by_name(name: &str) -> m::UnitRef {
+    m::UnitRef {
+        name: name.to_string(),
+        digest: String::new(),
+    }
+}
+
+/// The dispatch groups of a unit's walk: each group's name, strategy and branches, and for an auto group the slot of its
+/// branch-mix plane.
 fn dispatches(parts: &Parts, slots: &[m::Slot]) -> Result<Vec<m::Dispatch>, Refusal> {
     if let Some(group) = &parts.pending.group {
         let at = |name: String| slot_at(slots, &name);
+        // the classify unit's record states the class plane it writes and nothing else
+        let lists = !group.branches.is_empty();
         return Ok(vec![m::Dispatch {
             strategy: m::DispatchStrategy::Segmented,
             class_slot: at(class_name(&group.name)),
-            stale_slot: at(stale_name(&group.name)),
-            offsets_slot: at(offsets_name(&group.name)),
-            classify: group.classify.as_ref().map(|name| m::UnitRef {
-                name: name.clone(),
-                digest: String::new(),
-            }),
+            stale_slot: at(stale_name(&group.name)).filter(|_| lists),
+            offsets_slot: at(offsets_name(&group.name)).filter(|_| lists),
+            classify: group.classify.as_deref().map(by_name),
             name: group.name.clone(),
+            k: group.k,
+            branches: group.branches.iter().map(|name| by_name(name)).collect(),
+            sweep: group.sweep.as_deref().map(by_name),
             ..m::Dispatch::default()
         }]);
     }
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
-    let found = strategies(unsafe { &*parts.ctx }, parts.walk).map_err(wing)?;
+    let ctx = unsafe { &*parts.ctx };
+    let found = strategies(ctx, parts.walk).map_err(wing)?;
+    let order = &walk_of(parts.ctx, parts.walk)?.order;
+    let nodes = ctx.dispatch_nodes(order).map_err(wing)?;
     found
         .into_iter()
-        .map(|(name, strategy)| {
+        .zip(nodes)
+        .map(|((name, strategy), node)| {
             let mix_slot = match strategy {
                 Strategy::Auto => {
                     let plane = parts
@@ -377,20 +394,27 @@ fn dispatches(parts: &Parts, slots: &[m::Slot]) -> Result<Vec<m::Dispatch>, Refu
                 },
                 mix_slot,
                 name,
+                k: ctx.nodes[node as usize].ops.len() - 1,
                 ..m::Dispatch::default()
             })
         })
         .collect()
 }
 
-/// Fills the digest of each classify unit a dispatch group names, once every unit of the answer is written.
-pub(super) fn classify_digests(units: &mut [UnitAnswer]) {
+/// Fills the digest of each unit a dispatch group names (its classify unit, its branch units and its sweep unit), once every unit
+/// of the answer is written.
+pub(super) fn unit_digests(units: &mut [UnitAnswer]) {
     let digests: Vec<(String, String)> = units
         .iter()
         .map(|u| (u.meta.name.clone(), u.meta.digest.clone()))
         .collect();
     for group in units.iter_mut().flat_map(|u| &mut u.meta.body.dispatches) {
-        if let Some(unit) = &mut group.classify {
+        let named = group
+            .classify
+            .iter_mut()
+            .chain(group.branches.iter_mut())
+            .chain(group.sweep.iter_mut());
+        for unit in named {
             if let Some((_, digest)) = digests.iter().find(|(name, _)| *name == unit.name) {
                 unit.digest = digest.clone();
             }
@@ -462,7 +486,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
             })
         })
         .collect::<Result<Vec<_>, Refusal>>()?;
-    let cells = compensated(cells, &companions)?;
+    let cells = compensated(cells, &companions, &slots)?;
     Ok(m::UnitMeta {
         name: name.clone(),
         digest: parts.digest.to_string(),
@@ -490,17 +514,27 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
     })
 }
 
-/// The cells with the compensation slots of their sums: each row plane of a sum cell that a companion pair compensates names the
-/// pair's companion slot; a cell none of whose rows has a companion keeps none, one with only some of them is a fault.
-fn compensated(cells: Vec<m::Cell>, companions: &[m::Companion]) -> Result<Vec<m::Cell>, Refusal> {
+/// The cells with the compensation slots of their sums: each row plane of a sum cell names the companion slot that compensates it,
+/// a companion pair's or else the `<row>_comp` plane the unit's own argument list holds for the row; a cell none of whose rows has
+/// one keeps none, one with only some of them is a fault.
+fn compensated(
+    cells: Vec<m::Cell>,
+    companions: &[m::Companion],
+    slots: &[m::Slot],
+) -> Result<Vec<m::Cell>, Refusal> {
     cells
         .into_iter()
         .map(|mut cell| {
             let rows = cell.slots.clone().unwrap_or_default();
             let found: Vec<usize> = rows
                 .iter()
-                .filter_map(|row| companions.iter().find(|c| c.target_slot == *row))
-                .map(|c| c.slot)
+                .filter_map(|&row| {
+                    companions
+                        .iter()
+                        .find(|c| c.target_slot == row)
+                        .map(|c| c.slot)
+                        .or_else(|| slot_at(slots, &format!("{}_comp", slots[row].name)))
+                })
                 .collect();
             if cell.op == m::ReduceOp::Sum && !found.is_empty() {
                 if found.len() != rows.len() {
@@ -605,8 +639,10 @@ fn team_plane(
         per_lane: plane.per_lane,
         fill: plane.fill.unwrap_or(0),
         fill_promised: plane.fill.is_some(),
+        // Every scratch plane the placement makes is tiled by warp: the host text keeps its tile on the stack and never
+        // touches the plane, the device text writes a whole warp.
         wide: if plane.wide {
-            m::WideLayout::Plain
+            m::WideLayout::WarpTiled
         } else {
             m::WideLayout::None
         },

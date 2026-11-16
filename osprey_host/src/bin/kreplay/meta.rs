@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// The members of the meta compared with the record, one line each.
-const MEMBERS: [&str; 38] = [
+const MEMBERS: [&str; 42] = [
     "name",
     "digest",
     "pattern",
@@ -47,10 +47,14 @@ const MEMBERS: [&str; 38] = [
     "slot.like_slot (gradient slot, lookup slot)",
     "dispatch.name, strategy, mix_slot (name)",
     "dispatch.class_slot, stale_slot, offsets_slot, classify (names)",
+    "dispatch.k (branches of every group)",
+    "dispatch.branches (units of a segmented group, in order)",
     "finish.step_ops, flags ENTRY_COUNTS",
     "finish.fp64_ops_ir",
     "slot.flags GATHER, slot.gather (plane, axis flags)",
     "launch.block (resolved block of a device launch)",
+    "cell.comp_slots (compensation planes of the sum cells, by name)",
+    "slot.dtype of the NSAMPLES slots (uint32)",
 ];
 
 /// What was compared of one member: the units, those equal, and the first differing ones with both values.
@@ -71,6 +75,10 @@ struct Row {
 pub struct Oracle {
     /// One row per member.
     rows: BTreeMap<&'static str, Row>,
+    /// The dispatch groups of the compared units, by strategy.
+    groups: BTreeMap<String, usize>,
+    /// The dispatch groups of the compared units with fewer than two branches (the runtime refuses those).
+    thin: Vec<String>,
     /// The block each recorded device launch declared, by build call and kernel symbol (none when the artifact stated none).
     launches: HashMap<(String, String), Vec<Option<i64>>>,
 }
@@ -732,9 +740,17 @@ fn like_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
     Some((ours, theirs))
 }
 
+/// The dispatch records of a unit the old build recorded too: the record a classify unit holds of its own is new and checked apart.
+fn listed(unit: &meta::UnitMeta) -> impl Iterator<Item = &meta::Dispatch> {
+    unit.body
+        .dispatches
+        .iter()
+        .filter(|d| !(d.strategy == meta::DispatchStrategy::Segmented && d.branches.is_empty()))
+}
+
 /// The dispatch groups of a unit as name, strategy and branch-mix plane, against the recorded `dispatch` list.
 fn dispatch_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
-    let ours = joined(sorted(unit.body.dispatches.iter().map(|d| {
+    let ours = joined(sorted(listed(unit).map(|d| {
         let mix = d
             .mix_slot
             .map_or("", |at| unit.body.slots[at].name.as_str());
@@ -762,30 +778,26 @@ fn segment_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
     let name = |at: Option<usize>| at.map_or("", |at| unit.body.slots[at].name.as_str());
     let segmented = meta::DispatchStrategy::Segmented;
     let ours = joined(sorted(
-        unit.body
-            .dispatches
-            .iter()
-            .filter(|d| d.strategy == segmented)
-            .map(|d| {
-                let classify = d.classify.as_ref().map_or(String::new(), |u| {
-                    format!(
-                        "{}{}",
-                        u.name,
-                        if u.digest.len() == 64 {
-                            ""
-                        } else {
-                            " without a digest"
-                        }
-                    )
-                });
+        listed(unit).filter(|d| d.strategy == segmented).map(|d| {
+            let classify = d.classify.as_ref().map_or(String::new(), |u| {
                 format!(
-                    "{}:{}:{}:{}:{classify}",
-                    name(d.class_slot),
-                    name(d.stale_slot),
-                    name(d.offsets_slot),
-                    d.name
+                    "{}{}",
+                    u.name,
+                    if u.digest.len() == 64 {
+                        ""
+                    } else {
+                        " without a digest"
+                    }
                 )
-            }),
+            });
+            format!(
+                "{}:{}:{}:{}:{classify}",
+                name(d.class_slot),
+                name(d.stale_slot),
+                name(d.offsets_slot),
+                d.name
+            )
+        }),
     ));
     let theirs = joined(sorted(
         at(sc, &["dispatch"])
@@ -807,6 +819,100 @@ fn segment_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
             }),
     ));
     Some((ours, theirs))
+}
+
+/// The branch count of each dispatch group of a unit, against the recorded `K`.
+fn branch_count_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let ours = joined(sorted(listed(unit).map(|d| format!("{}:{}", d.name, d.k))));
+    let theirs = joined(sorted(
+        at(sc, &["dispatch"])
+            .map_or(&[][..], J::arr)
+            .iter()
+            .map(|d| {
+                let k = number(d, &["K"]).map_or(String::new(), |k| k.to_string());
+                format!("{}:{k}", word(d, &["name"]).unwrap_or_default())
+            }),
+    ));
+    (!ours.is_empty() || !theirs.is_empty()).then_some((ours, theirs))
+}
+
+/// The units a segmented group lists as its branches, in order, against the recorded `units` of the group.
+fn branches_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let segmented = meta::DispatchStrategy::Segmented;
+    let ours = joined(listed(unit).filter(|d| d.strategy == segmented).map(|d| {
+        let names: Vec<&str> = d.branches.iter().map(|u| u.name.as_str()).collect();
+        format!("{}={}", d.name, names.join(","))
+    }));
+    let theirs = joined(
+        at(sc, &["dispatch"])
+            .map_or(&[][..], J::arr)
+            .iter()
+            .filter(|d| word(d, &["strategy"]).as_deref() == Some("segmented"))
+            .map(|d| {
+                let names: Vec<String> = at(d, &["units"])
+                    .map_or(&[][..], J::arr)
+                    .iter()
+                    .filter_map(|u| u.str().map(String::from))
+                    .collect();
+                format!(
+                    "{}={}",
+                    word(d, &["name"]).unwrap_or_default(),
+                    names.join(",")
+                )
+            }),
+    );
+    (!ours.is_empty() || !theirs.is_empty()).then_some((ours, theirs))
+}
+
+/// The compensation planes each sum cell of a unit names, against the `<row>_comp` planes of the recorded argument list for the
+/// cell's own rows.
+fn comp_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let name = |at: usize| unit.body.slots[at].name.as_str();
+    let spec: Vec<&str> = at(sc, &["arg_spec"])
+        .map_or(&[][..], J::arr)
+        .iter()
+        .filter_map(|p| p.arr().get(1).and_then(J::str))
+        .collect();
+    let sums = || {
+        unit.body
+            .cells
+            .iter()
+            .filter(|c| c.op == meta::ReduceOp::Sum && c.slots.is_some())
+    };
+    let ours = joined(sums().map(|c| {
+        let comp: Vec<&str> = c.comp_slots.iter().flatten().map(|&at| name(at)).collect();
+        format!("{}:{}", c.name, comp.join(","))
+    }));
+    let theirs = joined(sums().map(|c| {
+        let rows = c
+            .slots
+            .iter()
+            .flatten()
+            .map(|&at| format!("{}_comp", name(at)));
+        let held: Vec<String> = rows.filter(|r| spec.contains(&r.as_str())).collect();
+        format!("{}:{}", c.name, held.join(","))
+    }));
+    (!ours.is_empty()).then_some((ours, theirs))
+}
+
+/// The sample-count slots of a unit by type, against the unsigned 32-bit the runtime passes: the recorded argument list names the
+/// slots.
+fn nsamples_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let ours = joined(
+        unit.body
+            .slots
+            .iter()
+            .filter(|s| s.role == meta::SlotRole::Nsamples)
+            .map(|s| format!("{}={}", s.name, lower(s.dtype.c_name(), "EG_DTYPE_"))),
+    );
+    let theirs = joined(
+        at(sc, &["arg_spec"])
+            .map_or(&[][..], J::arr)
+            .iter()
+            .filter(|p| p.arr().first().and_then(J::str) == Some("nsamples"))
+            .map(|p| format!("{}=uint32", p.arr().get(1).and_then(J::str).unwrap_or(""))),
+    );
+    (!ours.is_empty() || !theirs.is_empty()).then_some((ours, theirs))
 }
 
 /// The step count and the entry-count flag of a finishing unit, against the recorded `step_ops` and `entry_counts_finished`.
@@ -944,6 +1050,15 @@ impl Oracle {
             .iter()
             .map(|u| &u.meta)
             .find(|l| l.stages.first().is_some_and(|s| s.unit.name == m.name));
+        for d in listed(m) {
+            if d.k < 2 {
+                self.thin.push(format!("{id} {} {}", m.name, d.name));
+            }
+            *self
+                .groups
+                .entry(lower(d.strategy.c_name(), "EG_DISPATCH_"))
+                .or_default() += 1;
+        }
         let slots = slot_rows(m, sc);
         let stages = stage_rows(m, answer, sc);
         let launch = launch_rows(m, sc, unboxed);
@@ -987,10 +1102,14 @@ impl Oracle {
             like_row(m, sc),
             dispatch_row(m, sc),
             segment_row(m, sc),
+            branch_count_row(m, sc),
+            branches_row(m, sc),
             finish_row(m, sc),
             fp64_row(m, sc),
             gather_row(m, sc),
             block_row(m, id, &self.launches),
+            comp_row(m, sc),
+            nsamples_row(m, sc),
         ])
         .collect();
         // the member order of `MEMBERS`: the scatter chunks sit after the cell row
@@ -1017,6 +1136,19 @@ impl Oracle {
     /// Prints one line per member and the first differing units.
     pub fn print(&self, side: &str) {
         println!("meta against the recorded sidecars, {side}: members, units compared / equal / different");
+        let groups: Vec<String> = self
+            .groups
+            .iter()
+            .map(|(s, n)| format!("{s} {n}"))
+            .collect();
+        println!(
+            "  dispatch groups by strategy: {}; groups of fewer than 2 branches: {}",
+            groups.join(", "),
+            self.thin.len()
+        );
+        for thin in self.thin.iter().take(10) {
+            println!("    {thin}");
+        }
         for member in MEMBERS {
             let row = self.rows.get(member);
             let (c, e, d) = row.map_or((0, 0, 0), |r| (r.compared, r.equal, r.different));

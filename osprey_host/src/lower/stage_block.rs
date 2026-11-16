@@ -94,7 +94,7 @@ pub(crate) struct PlaneRecord {
     pub(crate) per_target: Option<String>,
     /// Whether one slice serves the whole launch.
     pub(crate) once: bool,
-    /// Whether the plane holds a wide value the placement made (written before read, never filled).
+    /// Whether the plane is the scratch of a wide value the placement made (tiled by warp, written before read, never filled).
     pub(crate) wide: bool,
     /// What the plane holds at the start of every run, when something is promised.
     pub(crate) fill: Option<i64>,

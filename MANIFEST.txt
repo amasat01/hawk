@@ -32,13 +32,13 @@ Every file with its line count (this file excluded):
     256  osprey_host/loader/loader.c
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
-   2801  osprey_host/src/bin/kreplay.rs
-   1227  osprey_host/src/bin/kreplay/derived.rs
-   1124  osprey_host/src/bin/kreplay/meta.rs
+   2981  osprey_host/src/bin/kreplay.rs
+   1235  osprey_host/src/bin/kreplay/derived.rs
+   1256  osprey_host/src/bin/kreplay/meta.rs
    1454  osprey_host/src/bin/treplay.rs
     795  osprey_host/src/facts.rs
     349  osprey_host/src/lib.rs
-    158  osprey_host/src/lower/active.rs
+    160  osprey_host/src/lower/active.rs
      51  osprey_host/src/lower/blocks.rs
      35  osprey_host/src/lower/boxed.rs
     613  osprey_host/src/lower/card.rs
@@ -48,24 +48,26 @@ Every file with its line count (this file excluded):
      57  osprey_host/src/lower/fused.rs
     148  osprey_host/src/lower/image.rs
     334  osprey_host/src/lower/links.rs
-    548  osprey_host/src/lower/meta_c.rs
-    757  osprey_host/src/lower/meta_fill.rs
-    795  osprey_host/src/lower/mod.rs
+    707  osprey_host/src/lower/meta_c.rs
+    793  osprey_host/src/lower/meta_fill.rs
+    798  osprey_host/src/lower/mod.rs
     120  osprey_host/src/lower/placed.rs
    1575  osprey_host/src/lower/request.rs
-    144  osprey_host/src/lower/segment.rs
+    224  osprey_host/src/lower/segment.rs
     116  osprey_host/src/lower/stage_block.rs
     553  osprey_host/src/lower/stages.rs
-    735  osprey_host/src/lower/unit_meta.rs
+    740  osprey_host/src/lower/unit_meta.rs
     246  osprey_host/src/lower/warp.rs
       8  osprey_host/tests/data/meta_calls.jsonl
       8  osprey_host/tests/data/units_small.jsonl
     240  osprey_host/tests/derived.rs
+    125  osprey_host/tests/dispatch_k.rs
      72  osprey_host/tests/events.rs
     327  osprey_host/tests/facts.rs
      45  osprey_host/tests/facts_oracle.rs
      86  osprey_host/tests/link_rules.rs
-    507  osprey_host/tests/meta_c.rs
+    524  osprey_host/tests/meta_c.rs
+    152  osprey_host/tests/stage_records.rs
     174  osprey_host/tests/table.rs
      47  osprey_host/tests/treplay.rs
      12  osprey_host/tools/cc

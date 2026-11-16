@@ -250,8 +250,7 @@ closed! {
     /// Whether a plane holds a placed wide value.
     pub enum WideLayout {
         /** Not a wide value. */ None = 0 => "EG_WIDE_NONE",
-        /** A wide value. */ Plain = 1 => "EG_WIDE_PLAIN",
-        /** A wide value tiled by warp. */ WarpTiled = 2 => "EG_WIDE_WARP_TILED",
+        /** The scratch of a placed wide value, tiled by warp (value 1 is retired). */ WarpTiled = 2 => "EG_WIDE_WARP_TILED",
     }
 }
 closed! {
@@ -421,6 +420,12 @@ record! {
         pub classify: Option<UnitRef>,
         /// The group's name.
         pub name: String,
+        /// The group's number of branches: the dispatch's, read from the kernel's IR.
+        pub k: usize,
+        /// The branch units of a segmented group in selector-value order, the unit of branch `j` running over the run of class `j`.
+        pub branches: Vec<UnitRef>,
+        /// The fused unit of a segmented group with a dynamic selector, run over the index set of the stale samples.
+        pub sweep: Option<UnitRef>,
     }
 }
 record! {

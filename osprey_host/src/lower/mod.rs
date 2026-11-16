@@ -272,7 +272,7 @@ pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<Kern
     if !request.derived.is_empty() {
         units.extend(derived_units(ctx, &request, &cards, facts_dir, &units)?);
     }
-    meta_fill::classify_digests(&mut units);
+    meta_fill::unit_digests(&mut units);
     let library = unit_meta::LibraryMeta::current();
     let meta_source = meta_c::source(&library, &units.iter().map(|u| &u.meta).collect::<Vec<_>>())?;
     Ok(KernelAnswer {
@@ -379,6 +379,9 @@ fn kernel_units(
         .collect::<Result<Vec<_>, _>>()?;
     if let Some(block) = &block {
         meta_fill::stages(&mut units, block, cards.deciding.scatter_max_chunks)?;
+    }
+    if let Some(sweep) = segment::sweep_request(ctx, request)? {
+        units.extend(kernel_units(ctx, &sweep, cards, facts_dir, exports_block)?);
     }
     Ok(units)
 }

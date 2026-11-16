@@ -6,8 +6,8 @@
 //! What the digest of a unit is: the unit's canonical walk digest (SHA-256 of the walk, 64 hex digits in the answer), decoded to
 //! its 32 bytes. The device image is named by its bytes symbol and its size symbol; its content is never part of the source.
 use super::unit_meta::{
-    Derived, LibraryMeta, StepsTable, ThreadBox, UnitMeta, FINISH_FLAGS, LIBRARY_META_SYMBOL,
-    SCHEMA_MAJOR, SLOT_FLAGS,
+    Derived, Dispatch, DispatchStrategy, LibraryMeta, StepsTable, ThreadBox, UnitMeta,
+    FINISH_FLAGS, LIBRARY_META_SYMBOL, SCHEMA_MAJOR, SLOT_FLAGS,
 };
 use aether_writers::refuse::{fault, Refusal};
 use std::fmt::Write;
@@ -181,6 +181,50 @@ impl Out {
     }
 }
 
+/// Faults on a dispatch record the header's rules do not allow. A group that is not segmented names no branch, classify or sweep
+/// unit. A segmented group has exactly three shapes: the record of a branch unit with a static selector (one unit per branch, the
+/// classify unit, no stale slot, no sweep), that of a branch unit with a dynamic selector (one unit per branch, the stale slot and
+/// the sweep unit, no classify unit), and that of the classify unit itself (the class slot, and no other slot or unit). Every
+/// group has at least two branches.
+fn check_dispatch(d: &Dispatch) -> Result<(), Refusal> {
+    let broken = |why: &str| fault(format!("the dispatch record of {}: {why}", d.name));
+    if d.k < 2 {
+        return Err(broken("fewer than two branches"));
+    }
+    if d.strategy != DispatchStrategy::Segmented {
+        let named = !d.branches.is_empty() || d.classify.is_some() || d.sweep.is_some();
+        return if named {
+            Err(broken(
+                "branch, classify or sweep units on a group that is not segmented",
+            ))
+        } else {
+            Ok(())
+        };
+    }
+    if d.branches.is_empty() {
+        let bare = d.class_slot.is_some()
+            && d.mix_slot.is_none()
+            && d.stale_slot.is_none()
+            && d.offsets_slot.is_none()
+            && d.classify.is_none()
+            && d.sweep.is_none();
+        return if bare {
+            Ok(())
+        } else {
+            Err(broken(
+                "a classify unit's record that holds more than the class slot, or none",
+            ))
+        };
+    }
+    if d.branches.len() != d.k {
+        return Err(broken("a segmented group without one unit per branch"));
+    }
+    match (d.stale_slot.is_some(), d.classify.is_some(), d.sweep.is_some()) {
+        (false, true, false) | (true, false, true) => Ok(()),
+        _ => Err(broken("the stale slot, classify unit and sweep unit disagree on whether the selector is static")),
+    }
+}
+
 /// The objects of one unit's body; returns the body's name.
 fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
     let b = &unit.body;
@@ -274,10 +318,23 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
     }
     let mut dispatches = vec![];
     for (at, d) in b.dispatches.iter().enumerate() {
+        check_dispatch(d)?;
         let classify = match &d.classify {
             Some(r) => format!(
                 "&{}",
                 out.unit_ref(&format!("d{at}_classify"), &r.name, &r.digest)?
+            ),
+            None => "NULL".into(),
+        };
+        let mut refs = vec![];
+        for (j, r) in d.branches.iter().enumerate() {
+            refs.push(out.unit_ref(&format!("d{at}_branch{j}"), &r.name, &r.digest)?);
+        }
+        let branches = out.pointers("eg_unit_ref", &format!("d{at}_branches"), &refs);
+        let sweep = match &d.sweep {
+            Some(r) => format!(
+                "&{}",
+                out.unit_ref(&format!("d{at}_sweep"), &r.name, &r.digest)?
             ),
             None => "NULL".into(),
         };
@@ -289,6 +346,10 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("offsets_slot", index(d.offsets_slot)),
             ("classify", classify),
             ("name", lit(&d.name)),
+            ("k", d.k.to_string()),
+            ("reserved0", "0".into()),
+            ("branches", branches),
+            ("sweep", sweep),
         ];
         dispatches.push(out.record("eg_unit_dispatch", &format!("d{at}"), &members));
     }
@@ -545,4 +606,102 @@ pub fn source(library: &LibraryMeta, units: &[&UnitMeta]) -> Result<String, Refu
         "__attribute__((visibility(\"default\"))) const struct eg_library_meta* {LIBRARY_META_SYMBOL}(void) {{ return &{lib}; }}"
     );
     Ok(out.text)
+}
+
+#[cfg(test)]
+mod tests {
+    //! A dispatch record that breaks the header's rules is never written.
+    use super::*;
+    use crate::lower::unit_meta::UnitRef;
+
+    /// A reference to a unit of the given name.
+    fn unit(name: &str) -> UnitRef {
+        UnitRef {
+            name: name.into(),
+            digest: "00".repeat(32),
+        }
+    }
+
+    /// A segmented group of two branches with a static selector.
+    fn fixed() -> Dispatch {
+        Dispatch {
+            strategy: DispatchStrategy::Segmented,
+            name: "g".into(),
+            k: 2,
+            branches: vec![unit("a__k0"), unit("a__k1")],
+            classify: Some(unit("a__cls")),
+            ..Dispatch::default()
+        }
+    }
+
+    /// A segmented group of two branches with a dynamic selector.
+    fn moving() -> Dispatch {
+        Dispatch {
+            stale_slot: Some(3),
+            classify: None,
+            sweep: Some(unit("a__sweep")),
+            ..fixed()
+        }
+    }
+
+    /// The record of the classify unit of a group with a static selector.
+    fn lister() -> Dispatch {
+        Dispatch {
+            strategy: DispatchStrategy::Segmented,
+            name: "g".into(),
+            k: 2,
+            class_slot: Some(1),
+            ..Dispatch::default()
+        }
+    }
+
+    #[test]
+    fn the_three_valid_segmented_records_are_written() {
+        assert!(check_dispatch(&lister()).is_ok());
+        assert!(check_dispatch(&fixed()).is_ok());
+        assert!(check_dispatch(&moving()).is_ok());
+    }
+
+    #[test]
+    fn a_record_whose_members_disagree_is_a_fault_and_not_written() {
+        let torn = [
+            Dispatch {
+                sweep: Some(unit("s")),
+                ..fixed()
+            },
+            Dispatch {
+                stale_slot: Some(3),
+                ..fixed()
+            },
+            Dispatch {
+                classify: Some(unit("c")),
+                ..moving()
+            },
+            Dispatch {
+                sweep: None,
+                ..moving()
+            },
+            Dispatch {
+                stale_slot: None,
+                ..moving()
+            },
+            Dispatch {
+                branches: vec![unit("a__k0")],
+                ..fixed()
+            },
+            Dispatch {
+                k: 1,
+                branches: vec![unit("a__k0")],
+                ..fixed()
+            },
+            Dispatch {
+                strategy: DispatchStrategy::Switch,
+                ..fixed()
+            },
+        ];
+        for record in &torn {
+            let why = check_dispatch(record).expect_err("a record that disagrees");
+            assert_eq!(why.kind, aether_writers::refuse::RefusalKind::Fault);
+        }
+    }
 }

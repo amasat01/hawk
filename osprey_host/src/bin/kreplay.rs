@@ -565,6 +565,16 @@ struct Tally {
     segment_units: usize,
     /// Of those, the units equal to the record.
     segment_equal: usize,
+    /// Sweep units of segmented groups with a dynamic selector, as call id and unit name: units the old build did not make.
+    sweep_units: Vec<String>,
+    /// Segmented groups whose records were checked: with a static selector, and with a dynamic one.
+    split_groups: [usize; 2],
+    /// Segmented groups whose records break the rule of their selector, or whose sweep unit differs from the switch form.
+    split_wrong: Vec<String>,
+    /// Sweep units whose text equals the text of the same kernel requested with its dispatch as a switch and an active set.
+    sweep_equal: usize,
+    /// Dynamic segmented kernels whose request, stated as a chain, is refused NotWritten for the sweep unit it cannot make.
+    sweep_refused: usize,
     /// Units of chains replayed.
     chain_units: usize,
     /// Units of chains equal to the record.
@@ -1768,6 +1778,38 @@ fn replay_segmented(
     };
     let test = found.call.get("test").and_then(J::str).unwrap_or("");
     let mut answer = answer;
+    let (swept, kept): (Vec<_>, Vec<_>) = answer
+        .units
+        .drain(..)
+        .partition(|unit| unit.meta.name.strip_suffix("__sweep") == Some(name));
+    answer.units = kept;
+    tally.sweep_units.extend(
+        swept
+            .iter()
+            .map(|u| format!("{} {}", found.id, u.meta.name)),
+    );
+    check_split((found.id, name), &answer.units, &swept, tally);
+    for unit in &swept {
+        match switched_text(found, kernel, machines) {
+            Ok(text) if text == unit.texts[0].text.replace(&unit.meta.name, name) => {
+                tally.sweep_equal += 1;
+            }
+            other => tally.split_wrong.push(format!(
+                "{} {}: the sweep text is not the switch form over an active set ({})",
+                found.id,
+                unit.meta.name,
+                other.map_or_else(|why| why, |_| "texts differ".into())
+            )),
+        }
+    }
+    if !swept.is_empty() {
+        match chained_refusal(found, kernel, machines) {
+            Ok(()) => tally.sweep_refused += 1,
+            Err(why) => tally
+                .split_wrong
+                .push(format!("{} {name}: as a chain: {why}", found.id)),
+        }
+    }
     keep_recorded(&mut answer, &recorded, failed(found.call));
     if answer.units.len() != recorded.len() {
         let why = "the answer holds another number of units than the record";
@@ -1801,6 +1843,130 @@ fn replay_segmented(
         tally
             .meta
             .unit(found.id, unit, &answer, record, box_off(Some(record)));
+    }
+}
+
+/// Checks the dispatch records of the branch units of a segmented kernel against the header's rules: one reference per branch in
+/// order, then the classify unit for a static selector, or the sweep unit (with the stale slot and its own count slot) for a
+/// dynamic one; a wrong record is listed.
+fn check_split(
+    (id, name): (&str, &str),
+    units: &[UnitAnswer],
+    swept: &[UnitAnswer],
+    tally: &mut Tally,
+) {
+    let named = |wanted: &str| units.iter().chain(swept).find(|u| u.meta.name == wanted);
+    let branches: Vec<String> = (0..)
+        .map(|j| format!("{name}__k{j}"))
+        .take_while(|unit| named(unit).is_some())
+        .collect();
+    let refers = |r: &osprey_host::lower::unit_meta::UnitRef| {
+        named(&r.name).is_some_and(|u| u.meta.digest == r.digest)
+    };
+    // the classify unit of a static selector holds the record of its own: the class plane it writes and the group's branch count
+    if let Some(unit) = named(&format!("{name}__cls")) {
+        let held = |at: Option<usize>| at.map(|at| unit.meta.body.slots[at].name.as_str());
+        let fine = matches!(&unit.meta.body.dispatches[..], [d]
+            if d.strategy == osprey_host::lower::unit_meta::DispatchStrategy::Segmented
+                && d.k == branches.len()
+                && held(d.class_slot).is_some_and(|n| n == format!("{}_class", d.name))
+                && d.mix_slot.is_none() && d.stale_slot.is_none() && d.offsets_slot.is_none()
+                && d.classify.is_none() && d.branches.is_empty() && d.sweep.is_none());
+        if !fine {
+            tally.split_wrong.push(format!(
+                "{id} {}: the classify unit's record",
+                unit.meta.name
+            ));
+        }
+    }
+    for unit in branches.iter().filter_map(|b| named(b)) {
+        let [group] = &unit.meta.body.dispatches[..] else {
+            tally
+                .split_wrong
+                .push(format!("{id} {}: not one dispatch record", unit.meta.name));
+            continue;
+        };
+        let listed: Vec<&str> = group.branches.iter().map(|r| r.name.as_str()).collect();
+        let dynamic = group.stale_slot.is_some();
+        let rule = group.k == branches.len()
+            && listed == branches
+            && group.branches.iter().all(refers)
+            && group.classify.iter().all(refers)
+            && group.sweep.iter().all(refers)
+            && group.classify.is_some() != dynamic
+            && group.sweep.is_some() == dynamic
+            && (!dynamic
+                || swept
+                    .iter()
+                    .all(|s| s.meta.launch.active_count_slot.is_some())
+                    && swept.len() == 1);
+        if !rule {
+            tally
+                .split_wrong
+                .push(format!("{id} {}: {group:?}", unit.meta.name));
+        }
+        if unit.meta.name == branches[0] {
+            tally.split_groups[usize::from(dynamic)] += 1;
+        }
+    }
+}
+
+/// Checks that the request of a kernel with a dynamic segmented group, its body stated as a chain of one, is refused NotWritten and
+/// names the sweep unit it cannot make.
+fn chained_refusal(
+    found: &Found,
+    kernel: &J,
+    machines: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    let facts = facts_all(found, kernel, machines)?;
+    let (c, handles) = load(found.call)?;
+    let mut request = request_for(found.call, kernel, facts, &handles)?;
+    if let osprey_host::lower::request::Body::Plain(member) = request.body.clone() {
+        request.body = osprey_host::lower::request::Body::Chain(vec![member]);
+    }
+    let answer = ask_side(found.target, c, &request.to_json());
+    osprey_host_free(c);
+    match answer {
+        Err(why) if why.contains("the sweep unit of a segmented group with a dynamic selector") => {
+            Ok(())
+        }
+        Err(why) => Err(why),
+        Ok(_) => Err("answered".into()),
+    }
+}
+
+/// The text of the kernel with its segmented dispatch lowered as a switch and its kind's guard an active set, which is the text the
+/// sweep unit must have (the unit's own name aside).
+fn switched_text(
+    found: &Found,
+    kernel: &J,
+    machines: &mut HashMap<String, String>,
+) -> Result<String, String> {
+    let mut call = found.call.clone();
+    if let J::Obj(members) = &mut call {
+        for (_, nodes) in members.iter_mut().filter(|(key, _)| key == "nodes") {
+            let J::Arr(nodes) = nodes else { continue };
+            for node in nodes.iter_mut().filter_map(|n| match n {
+                J::Obj(members) => Some(members),
+                _ => None,
+            }) {
+                for (_, class) in node.iter_mut().filter(|(key, _)| key == "c") {
+                    if matches!(class, J::Str(c) if c == "SegmentedDispatch") {
+                        *class = J::Str("Dispatch".into());
+                    }
+                }
+            }
+        }
+    }
+    let facts = facts_all(found, kernel, machines)?;
+    let (c, handles) = load(&call)?;
+    let mut request = request_for(&call, kernel, facts, &handles)?;
+    request.kind.active_set = true;
+    let answer = ask_side(found.target, c, &request.to_json());
+    osprey_host_free(c);
+    match &answer?.units[..] {
+        [unit] => Ok(unit.texts[0].text.clone()),
+        other => Err(format!("{} units", other.len())),
     }
 }
 
@@ -2436,6 +2602,20 @@ fn print(label: &str, t: &Tally, side: &str) {
         "  of them units of a segmented split: {} (equal {})",
         t.segment_units, t.segment_equal
     );
+    println!(
+        "  answer units the old build did not make (sweep units of dynamic segmented groups): {}",
+        t.sweep_units.len()
+    );
+    for unit in &t.sweep_units {
+        println!("    {unit}");
+    }
+    println!(
+        "  segmented groups with a record by the rule: static {} (k branch references in order, classify, no sweep), dynamic {} (sweep, stale slot and own count slot, no classify), wrong {}; sweep units equal to the switch form over an active set: {}; dynamic kernels as a chain refused for the sweep unit: {}",
+        t.split_groups[0], t.split_groups[1], t.split_wrong.len(), t.sweep_equal, t.sweep_refused
+    );
+    for wrong in t.split_wrong.iter().take(10) {
+        println!("    {wrong}");
+    }
     println!(
         "  accepted, text differs (key on the accepted list): {}",
         t.accepted.len()

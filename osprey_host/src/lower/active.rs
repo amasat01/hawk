@@ -71,9 +71,11 @@ fn with_map(ctx: *mut Ctx, request: &KernelRequest, mut unit: Pending) -> Result
     let leaves = leaf_slots(ctx, walk)?;
     let lane_set = request.kind.lanes;
     if lane_set.is_none() {
+        let default = ["terminated".to_string()];
         let masks: &[String] = match &request.kind.guard {
             Guard::Masks(masks) => masks,
-            _ => &[],
+            Guard::Default => &default,
+            Guard::DataOnly => &[],
         };
         if leaves.iter().any(|slot| slot.role == Role::AccumOut) {
             return Err(accumulates(name));

@@ -62,6 +62,12 @@ fn slot<'a>(unit: &'a meta::UnitMeta, name: &str) -> Option<(usize, &'a meta::Sl
         .find(|(_, s)| s.name == name)
 }
 
+/// Whether the primal slot a gradient is taken of holds one value per sample: its gradient is then a per-sample plane, not a reduced one.
+fn per_sample(primal: &meta::UnitMeta, of: Option<&str>) -> bool {
+    of.and_then(|n| slot(primal, n))
+        .is_some_and(|(_, s)| s.role == meta::SlotRole::PerSample)
+}
+
 /// The text with its self-check block cut out and its runs of blank lines folded.
 fn without_block(text: &str) -> String {
     let cut = text.find("\n// The self-check exports").map(|from| {
@@ -202,8 +208,10 @@ fn vjp_facts(
             slot: s.name.clone(),
             what,
             form,
+            reduced: form == LinkForm::Grad
+                && what == LinkWhat::PrimalSlot
+                && !per_sample(primal, of.as_deref()),
             of,
-            reduced: form == LinkForm::Grad && what == LinkWhat::PrimalSlot,
         });
     }
     Ok(facts)
@@ -339,8 +347,8 @@ pub fn refine_facts(
             slot: s.name.clone(),
             what,
             form,
+            reduced: gradient && !per_sample(primal, of.as_deref()),
             of,
-            reduced: gradient,
         });
     }
     Ok(facts)

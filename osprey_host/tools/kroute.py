@@ -619,11 +619,11 @@ def _plan(c, kernel, name, smode, targets):
             _fall(_reason(why), kname, full=str(why)[:300])
             continue
         # a split kernel's answer also holds the unit that lists its stages and has no entry of its
-        # own: the old build made none
+        # own, and a segmented group with a dynamic selector also holds the fused unit that sweeps
+        # its stale samples: the old build made neither
+        extra = (kname + "_source", kname + "__sweep")
         units = [
-            u
-            for u in answer["units"]
-            if not (_unit(u)[0] == kname + "_source" and _unit(u)[0] not in built)
+            u for u in answer["units"] if not (_unit(u)[0] in extra and _unit(u)[0] not in built)
         ]
         mine = [n for n, _ in old if _owned(kname, n) and (n == kname or n not in kernels)]
         digests = dict(old)
