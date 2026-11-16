@@ -208,3 +208,37 @@ def test_the_host_compiler_line_is_the_real_one_unless_the_spec_names_another_ma
     machine = dataclasses.replace(spec.machine, isa=other, facts=MappingProxyType({**spec.machine.facts, "host_profile": "native-vector-math"}))
     line = request._host_line(dataclasses.replace(spec, machine=machine), {})
     assert line == ("g++ || g++ (GCC) 13.2.0 || 0" if other == "x86_64" else "cc || line || digest")
+
+
+#: The first line the device compiler driver prints for ``--version``: the same for every release (the release is on a later line).
+DRIVER_LINE = "/usr/local/cuda/bin/nvcc||nvcc: NVIDIA (R) Cuda compiler driver||0f3c"
+
+
+def test_a_device_build_states_the_compilers_release_from_its_plan(monkeypatch):
+    plan = {"identity": DRIVER_LINE, "release": "12.9", "meta": {"device_target": "fatbin"}}
+    monkeypatch.setattr(request, "_compile_plan", lambda target, spec, options: plan)
+    spec = build_spec(("cuda",), "")
+    stated, line, image = request._device(spec, {"device_arch": "sm_61"})
+    assert stated == {"device_arch": spec.machine.arch or "sm_61", "device_release": "12.9"}
+    assert line == "/usr/local/cuda/bin/nvcc || nvcc: NVIDIA (R) Cuda compiler driver || 0f3c" and image == "fatbin"
+    # a plan whose probe could not tell the release states none: the library then refuses the line by name
+    monkeypatch.setattr(request, "_compile_plan", lambda target, spec, options: {**plan, "release": None})
+    assert "device_release" not in request._device(spec, {})[0]
+
+
+def test_the_library_answers_a_driver_line_with_a_stated_release_and_refuses_it_without(monkeypatch):
+    import json
+
+    monkeypatch.undo()                                  # the real facts question
+    line = request._identity(DRIVER_LINE)
+    said = json.loads(request._facts("cuda", line, json.dumps({"device_release": "12.6"})))
+    named = json.loads(request._facts("cuda", request._identity("nvcc||Cuda compilation tools, release 12.6, V12.6.77||0"), "{}"))
+    assert said["device_build"] == named["device_build"] and said["device_build"]["compiler"] == "nvcc 12.6"
+    with pytest.raises(Exception, match="names no tool or no release, and no device_release is stated"):
+        request._facts("cuda", line, "{}")
+
+
+def test_the_device_plans_release_is_major_minor_or_nothing():
+    from ospreys.cuda.backend import _release
+
+    assert _release((12, 9)) == "12.9" and _release(None) is None

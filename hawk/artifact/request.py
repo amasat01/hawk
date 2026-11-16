@@ -148,19 +148,24 @@ def _compile_plan(target: str, spec, options):
 
 
 def _device(spec, options) -> tuple:
-    """``(device arch, compiler line, image format)`` of the device compile of this build."""
+    """``(stated device machine, compiler line, image format)`` of the device compile of this build. The stated machine holds the
+    architecture when one is asked for and the compiler's release as its compile plan states it: the first version line of the
+    device compiler driver names no release, so the line alone cannot tell the library which compiler it is."""
     arch = spec.machine.arch or options.get("device_arch") or ""
+    stated = {"device_arch": arch} if arch else {}
     try:
         plan = _compile_plan("cuda", spec, options)
     except ToolchainAbsent:
-        return arch, _identity(_NO_COMPILER["no device toolchain"]), "cubin"
+        return stated, _identity(_NO_COMPILER["no device toolchain"]), "cubin"
+    if plan.get("release"):
+        stated["device_release"] = plan["release"]
     line = plan["identity"]
     if "||" not in line:                    # the in-process compiler names its release, not a path
         from ..compile import nvrtc
 
         major, minor = nvrtc.nvrtc_version()
         line = f"nvrtc||Cuda compilation tools, release {major}.{minor}, V{major}.{minor}.0||{line.partition('cccl:')[2]}"
-    return arch, _identity(line), plan["meta"]["device_target"]
+    return stated, _identity(line), plan["meta"]["device_target"]
 
 
 def _stated_host(spec) -> dict:
@@ -295,8 +300,8 @@ def request(kernel, *, name: str, scalar: str, kind, targets, spec, position: di
             line = _host_line(spec, options)
             facts["Host"] = _facts("host", line, json.dumps(_stated_host(spec)))
         else:
-            arch, line, image = _device(spec, options)
-            facts["Device"] = _facts("cuda", line, json.dumps({"device_arch": arch} if arch else {}))
+            stated, line, image = _device(spec, options)
+            facts["Device"] = _facts("cuda", line, json.dumps(stated))
             out["image_format"] = _camel(image)
     one = getattr(kernel, "one_step", None)
     if one is not None:

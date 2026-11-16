@@ -165,6 +165,12 @@ def _local_memory(name: str, entries: dict, lead: str) -> tuple | None:
     return held, source
 
 
+def _release(version) -> str | None:
+    """The device compiler's release as ``major.minor``, the form the facts question takes, from the ``(major, minor)`` a
+    version probe returned; ``None`` when the probe could not tell, so the plan states nothing rather than a guess."""
+    return f"{version[0]}.{version[1]}" if version else None
+
+
 class Cuda(Backend):
     id = "cuda"
     about = "builds for the GPU"
@@ -189,7 +195,8 @@ class Cuda(Backend):
                 nvrtc._probed(nvrtc.nvrtc_version), nvrtc._probed(nvrtc.driver_cuda_version))
             extra = (*defines, *opts.extra)
             flags = tuple(nvrtc.options(arch, virtual_arch=(target == "ptx"), extra=extra))
-            return {"compiler": "", "identity": nvrtc.identity(), "deps": False, "serve": False, "payload": digest,
+            return {"compiler": "", "identity": nvrtc.identity(), "release": _release(nvrtc._probed(nvrtc.nvrtc_version)),
+                    "deps": False, "serve": False, "payload": digest,
                     "key_terms": (*flags, f"device_target:{target}", f"payload:{digest}", "ptxas-info:v1"),
                     "flags": flags, "hit_argv": flags, "tail": "", "arch": arch, "target": target, "extra": extra,
                     "meta": {"flags": list(flags), "device_target": target}}
@@ -200,7 +207,8 @@ class Cuda(Backend):
         keyed = (*flags, "-MD", "-MF")
         terms = (*(getattr(f, "key_term", "") or f for f in keyed), f"device_target:{target}",
                  dtc.device_host_compiler_identity(inputs.identity))
-        return {"compiler": compiler, "identity": inputs.identity(compiler), "deps": True, "serve": False, "payload": None,
+        return {"compiler": compiler, "identity": inputs.identity(compiler), "release": _release(dtc.nvcc_version(compiler)),
+                "deps": True, "serve": False, "payload": None,
                 "key_terms": terms, "flags": flags, "tail": "",
                 "hit_argv": (compiler, *keyed, "<dep>", "<src>", "-o", "<out>"),
                 "meta": {"flags": list(keyed), "device_target": target}}
