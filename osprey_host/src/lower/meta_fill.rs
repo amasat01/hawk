@@ -788,9 +788,15 @@ pub(super) fn stages(
         });
     }
     meta.body.keyed = keyed;
-    // the chunks of an ordered scatter are stated when the unit has scratch planes or a stage runs on a team
-    let teamed = !planes.is_empty() || meta.stages.iter().any(|s| s.team.is_some());
-    meta.body.scatter_chunks = if teamed { scatter_chunks } else { 0 };
+    // The chunk cap belongs to an ordered scatter alone: the unit states it when it has a plane sliced by
+    // the scatter's target or a stage that runs on the chunk grid, and states none (0) otherwise.
+    let scatters = planes.iter().any(|p| p.unit == m::PlaneUnit::Target)
+        || meta.stages.iter().any(|s| {
+            s.team
+                .as_ref()
+                .is_some_and(|t| t.grid == m::TeamGrid::Chunks)
+        });
+    meta.body.scatter_chunks = if scatters { scatter_chunks } else { 0 };
     meta.body.team_planes = planes;
     // a scratch plane is bound by the stage units under its own name: those slots hold the plane's element type
     for unit in units.iter_mut() {
