@@ -26,7 +26,7 @@ import pytest
 import _deployable as D
 from _cards import card_path
 
-from hawk.artifact.layout import exports
+from hawk.artifact import emit_source
 from hawk.compile import aether_include, compiler_identity, device_compiler, eagle_include
 from ospreys.cpu.toolchain import host_compiler, host_flags
 from hawk.compile.toolchain import subprocess_env
@@ -42,6 +42,13 @@ CARD = card_path("CARD_COMPILE_TIME.md")
 CLASSES = ("axpb", "vec3_scale", "spin", "vocab")
 
 _GPP_PHASE = re.compile(r"^\s*(phase [a-z. ]+|TOTAL)\s*:\s+([\d.]+)")
+
+
+def _emit(name: str, target: str, tmp: Path) -> Path:
+    text = emit_source(getattr(D, name), name=name, mode="float64", targets=(target,)).sources[target].text
+    path = tmp / f"{name}.{'cu' if target == 'cuda' else 'cpp'}"
+    path.write_text(text)
+    return path
 
 
 def _host_row(path: Path, tmp: Path) -> dict:
@@ -80,6 +87,51 @@ def _device_row(path: Path, tmp: Path) -> dict:
 #: the SAME host recipe. It includes eagle's ABI header and NO aether, so it is
 #: the floor a HAWK host TU's aether cost is read against.
 _EAGLE_TU = Path(eagle_include()) / "tests" / "fixtures" / "host_plugin_execv2.cpp"
+
+
+@pytest.mark.repo_local  # compiles the eagle repository's fixture TU
+def test_the_compile_time_card_is_written(tmp_path):
+    rows = {}
+    for name in CLASSES:
+        rows[f"hawk/{name}/host"] = _host_row(_emit(name, "host", tmp_path), tmp_path)
+        rows[f"hawk/{name}/device"] = _device_row(_emit(name, "cuda", tmp_path),
+                                                 tmp_path)
+    assert _EAGLE_TU.is_file(), f"the eagle exemplar TU is missing: {_EAGLE_TU}"
+    rows["eagle/host_plugin_execv2/host"] = _host_row(_EAGLE_TU, tmp_path)
+
+    payload = {
+        "card": "HAWK compile time (evidence)",
+        "produced": time.strftime("%Y-%m-%d"),
+        "machine": platform.machine(),
+        "platform": platform.platform(),
+        "host_compiler": compiler_identity(host_compiler()),
+        "device_compiler": compiler_identity(device_compiler()),
+        "device_arch": resolve_arch(),
+        "aether_include": Path(aether_include()).name,
+        "eagle_include": Path(eagle_include()).name,
+        "note": ("every compile below is COLD (a fresh tmpdir, no cache slot); "
+                 "the machine was shared at measurement time, so these are "
+                 "ORDERS OF MAGNITUDE for a deferred decision, not a gate"),
+        "rows": rows,
+    }
+    body = json.dumps(payload, indent=2, sort_keys=True)
+    fence = hashlib.md5(body.encode()).hexdigest()
+    CARD.parent.mkdir(parents=True, exist_ok=True)
+    CARD.write_text(
+        "# CARD_COMPILE_TIME — one card per consumer TU\n\n"
+        "Written BY THE RUN (`tests/test_compile_time_card.py`). Prose cites this "
+        "file; no number here may be restated without citing it. It DECIDES "
+        "NOTHING — it is the evidence gating aether's header partition "
+        " and whether the compile/cache driver moves to C++.\n\n"
+        "Host phases come from `g++ -ftime-report` (seconds, wall column); device "
+        "phases from `nvcc --time` (milliseconds, per compilation phase).\n\n"
+        f"md5: `{fence}`\n\n```json\n{body}\n```\n"
+    )
+    assert CARD.is_file()
+    text = CARD.read_text()
+    assert f"md5: `{fence}`" in text
+    assert hashlib.md5(text.split("```json\n")[1].split("\n```")[0]
+                       .encode()).hexdigest() == fence
 
 
 @pytest.mark.repo_local  # compiles the eagle repository's fixture TU

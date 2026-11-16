@@ -606,23 +606,6 @@ def test_jvp_matches_finite_differences(strategy):
             f"{strategy} kind={kind_value}: JVP {got['dot_out']} vs FD {expect}")
 
 
-def _switch_blocks(text: str) -> dict:
-    """``{declared switch local -> the set of case labels that assign it a
-    non-zero value}``, parsed straight off the emitted text. Sibling switches on
-    one selector are fused into ONE ``switch`` (each case assigns every member),
-    so the audit reads assignments, not switch boundaries."""
-    declared = set(re.findall(r"^\s*\S.*? (hawk_disp\d+);$", text, re.M))
-    blocks: dict = {v: set() for v in declared}
-    label = None
-    for line in text.splitlines():
-        m = re.match(r"\s*case (\d+): \{", line)
-        label = m.group(1) if m else ("default" if "default:" in line else label)
-        a = re.search(r"(hawk_disp\d+) = (.*);", line)
-        if a and a.group(1) in blocks and "static_cast<Real>(0)" not in a.group(2):
-            blocks[a.group(1)].add(label)
-    return blocks
-
-
 # --------------------------------------------------------------------------- #
 # 4. The training switch — Row (device).
 # --------------------------------------------------------------------------- #

@@ -107,7 +107,3 @@ def test_the_digest_rides_through_derived_kernels():
 # --------------------------------------------------------------------------- #
 # determinism
 # --------------------------------------------------------------------------- #
-def _bytes(directory):
-    return {p.name: p.read_bytes() for p in sorted(directory.iterdir())}
-
-

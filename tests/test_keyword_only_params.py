@@ -25,11 +25,6 @@ def _positional(x: Scalar, scale: Scalar, y: Mutable[Scalar]):
     y = x * scale
 
 
-@kernel
-def _keyword_only(x: Scalar, *, scale: Scalar, y: Mutable[Scalar]):
-    y = x * scale
-
-
 def test_trace_value_binds_keyword_only_parameters_by_name():
     def scaled(x, *, scale):
         return x * scale

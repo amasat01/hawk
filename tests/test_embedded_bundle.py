@@ -80,11 +80,3 @@ def _kernel_from(path, text: str):
     exec(compile(text, str(path), "exec"), ns)
     return ns["k"]
 
-
-def _key_for(targets, cache_dir, **kw) -> str:
-    return _unit_key(["drag"], [K.drag.walk.digest], [""], targets=targets,
-                     smode=scalar_mode("float64"), kind=DEFAULT_KIND, defines=(),
-                     cache_dir=cache_dir, device_arch="", derivative_blocks=[None],
-                     layout_sizes_override=None, **kw, spec=HOST)
-
-

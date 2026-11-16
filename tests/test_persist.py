@@ -299,15 +299,6 @@ def test_persist_counts_every_step_once_on_a_uniform_batch(bundle):
     assert slots == n * -(-stop // CHUNK) * CHUNK, "one sample per lane per chunk run"
 
 
-def _loop_parts(text, name):
-    """``(head, step body, rest)`` of a persist entry: the text up to the
-    chunk loop, the unrolled chunk loop, and what follows it."""
-    body = _entry_body(text, name, "_persist")
-    head, rest = body.split("        do {", 1)
-    chunk, tail = rest.split("        } while (", 1)
-    return head, chunk, tail
-
-
 def test_the_plan_view_reads_the_fp64_op_count_under_either_key(bundle):
     """``plan_view`` carries ``fp64_ops_ir``, and reads a sidecar that still
     spells it ``ops_per_step`` the same."""

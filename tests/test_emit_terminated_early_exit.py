@@ -104,22 +104,8 @@ def _derived(primal, transform, wrt, name):
     return Kernel(name, transform(primal, wrt=wrt))
 
 
-def _subjects():
-    return {
-        "busy": (_busy.sinks, _busy.walk),
-        "busy_d_vjp": _sinks_walk(vjp(_busy_d, wrt=("x",))),
-        "busy_d_jvp": _sinks_walk(jvp(_busy_d, wrt=("x",))),
-        "loop_gather_vjp": _sinks_walk(vjp(_loop_gather, wrt=("theta",))),
-    }
-
-
 def _sinks_walk(sinks):
     return sinks, canonical(sinks)
-
-
-def _unindent(lines):
-    assert all(line.startswith("    ") for line in lines if line.strip()), lines
-    return [line[4:] for line in lines]
 
 
 # --------------------------------------------------------------------------- #

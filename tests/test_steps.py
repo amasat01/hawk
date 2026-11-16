@@ -576,46 +576,6 @@ def test_a_one_step_launch_is_the_single_step_bit_for_bit(bundles, which, name,
 # -- the default: @kernel without steps= builds the auto kernel when auto
 # -- admits it, under the author's name; everything else stays plain.
 # --------------------------------------------------------------------------- #
-def _renamed(k, name="k"):
-    from aether.wings.base.wrapper import render_source
-    from hawk.targets import TARGETS
-
-    return [render_source(name, k.sinks, k.walk, b, spec=spec_for(b), kind=default_kind()).text for b in TARGETS.values() if b.wrapper]
-
-
-
-
-def _not_admitted():
-    """Kernels auto does not admit, each beside the reason."""
-    def no_finish(x: Scalar, y: Mutable[Scalar]):
-        y = y + x
-
-    def scatters(x: Scalar, lane: Index, terminated: Terminated,
-                 acc: Mutable[Scalar]):
-        hawk.scatter(acc)[lane] += x
-        terminated = x > 1.0
-
-    def scatters_and_steps(x: Scalar, lane: Index, terminated: Terminated,
-                           acc: Mutable[Scalar], y: Mutable[Scalar]):
-        y_start = y
-        hawk.scatter(acc)[lane] += x
-        y = y_start + x
-        terminated = y_start > 1.0
-
-    def word_named(fused_steps: Scalar, terminated: Terminated,
-                   x: Mutable[Scalar]):
-        x_start = x
-        x = x_start + fused_steps
-        terminated = x_start > 1.0
-
-    def commits_nothing(x: Scalar, terminated: Terminated):
-        terminated = x > 1.0
-
-    return (no_finish, scatters, scatters_and_steps, word_named, commits_nothing)
-
-
-
-
 def _finish_on_input(a: Scalar, terminated: Terminated, y: Mutable[Scalar]):
     """A finishing step with no launch-start read: its derivative exists."""
     y = a * a

@@ -193,30 +193,6 @@ def test_a_loop_is_not_entered():
 # the emitted stores
 
 
-def _two_edges():
-    """Two independent switches, each owning a different pair of slots of one
-    wide leaf: the spline shape at two edges."""
-    theta, x = _leaf("theta", VW), _leaf("x", S)
-    k1, k2 = _leaf("k1", I32), _leaf("k2", I32)
-    one = _dispatch(k1, [mk("mul", (_comp(theta, 0), x)),
-                        mk("mul", (_comp(theta, 1), x))], "switch", S)
-    two = _dispatch(k2, [mk("mul", (_comp(theta, 2), x)),
-                        mk("mul", (_comp(theta, 3), x))], "switch", S)
-    return vjp((Assign("y", mk("add", (one, two)), S),), wrt=("theta",))
-
-
-@kernel
-def _spline_pair(theta: Vector[6], x: Vector[3], k0: Index, k1: Index, k2: Index,
-              terminated: Terminated, y: Mutable[Scalar]):
-    """Three edges, each a two-case switch over its own slots of ``theta`` and
-    its own ``x``: the cotangents of ``theta`` and ``x`` read the same switches,
-    behind the termination mask."""
-    e0 = dispatch(k0, [theta[0] * x[0], theta[1] * sin(x[0])])
-    e1 = dispatch(k1, [theta[2] * x[1], theta[3] * sin(x[1])])
-    e2 = dispatch(k2, [theta[4] * x[2], theta[5] * sin(x[2])])
-    y = e0 + e1 + e2
-
-
 # --------------------------------------------------------------------------
 # the runtime form: an ``add_at`` chain over a slot-form base
 

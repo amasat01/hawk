@@ -27,25 +27,7 @@ from raptor.errors import RaptorError as HawkError
 VOCAB = {"terminated": Terminated, "scale": Scalar}
 
 
-@Kind("vocab_kind", vocabulary=VOCAB)
-def _vocab_kernel(x: Scalar, terminated, scale, y: Mutable[Scalar]):
-    y = x * scale
-
-
-@kernel
-def _annotated_twin(x: Scalar, terminated: Terminated, scale: Scalar,
-                    y: Mutable[Scalar]):
-    y = x * scale
-
-
 MASK_VOCAB = {"terminated": Terminated}
-
-
-@Kind("mask_vocab", vocabulary=MASK_VOCAB)
-def _omits_terminated(x: Scalar, y: Mutable[Scalar]):
-    """The signature never names ``terminated`` — the vocabulary's
-    `terminated`-form entry binds it anyway (unconditional, item 4)."""
-    y = x + 1.0
 
 
 def test_a_conflicting_annotation_refuses():

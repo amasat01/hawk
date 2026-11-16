@@ -38,14 +38,6 @@ def _inline(x: Scalar, v: Scalar, y: Mutable[Scalar]):
     y = a + 1.0
 
 
-def _host_kernel(value) -> Kernel:
-    """What a host does with a traced value: commit it to an output it declares."""
-    out = MutableRef("y", Mutable[Scalar].ttype)
-    out[...] = value
-    return Kernel("_inline", tuple(out.sinks),
-                  {"x": Scalar, "v": Scalar, "y": Mutable[Scalar]})
-
-
 def test_the_bindings_are_the_declarations_and_annotations_are_not_read():
     def doubled(x: NotAName):  # noqa: F821 - deliberately unresolvable
         return x * 2.0

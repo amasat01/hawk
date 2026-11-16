@@ -36,59 +36,6 @@ def _by_label():
     return k
 
 
-def _by_position():
-    @hawk.kernel
-    def k(lane: Grid["channel", "sample":8], x: Scalar) -> Scalar:
-        return x * lane[0] + lane[-1]
-
-    return k
-
-
-def _by_split():
-    @hawk.kernel
-    def k(x: Scalar) -> Scalar:
-        channel, sample = split_index(8)
-        return x * channel + sample
-
-    return k
-
-
-def _flat_grid():
-    @hawk.kernel
-    def k(lane: Grid["channel", "sample":8], x: Scalar) -> Scalar:
-        return x * lane.flat
-
-    return k
-
-
-def _flat_index():
-    @hawk.kernel
-    def k(x: Scalar) -> Scalar:
-        return x * hawk.math.sample_index()
-
-    return k
-
-
-def _three_axes():
-    @hawk.kernel
-    def k(lane: Grid["a", "b":4, "c":3], x: Scalar) -> Scalar:
-        return x + lane.a * 100.0 + lane.b * 10.0 + lane.c
-
-    return k
-
-
-def _three_axes_by_hand():
-    @hawk.kernel
-    def k(x: Scalar) -> Scalar:
-        lane = hawk.math.sample_index()
-        a = lane / 12
-        b = lane / 3 - a * 4
-        c = lane - (lane / 3) * 3
-        return x + a * 100.0 + b * 10.0 + c
-
-    return k
-
-
 def test_a_grid_kernel_has_the_lane_space_and_group_it_declared():
     k = _by_label()
     assert (k.lane_space, k.group) == ((("channel", None), ("sample", 8)), 1)

@@ -40,15 +40,6 @@ def _positional():
     return k
 
 
-def _reads(read):
-    """A kernel named ``k`` returning ``read(lane, t)`` (the name is part of the text)."""
-    @hawk.kernel
-    def k(lane: Grid["e", "a":4], t: Table["e":8, "a":4]) -> Scalar:
-        return read(lane, t)
-
-    return k
-
-
 @pytest.mark.parametrize("index,why", [
     ("lane.e", None),
     ("lane.e, lane.a, 0", r"'t': t\[\.\.\.\] takes one index per declared axis \['e', 'a'\], got 3"),

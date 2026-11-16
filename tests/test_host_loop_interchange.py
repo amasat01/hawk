@@ -255,11 +255,6 @@ def test_interchanged_and_per_sample_loops_are_byte_identical(twins, name, mode,
         assert len(set(want["k"].tolist())) > 3
 
 
-@hawk.kernel
-def _loop_free(x: Scalar, y: Mutable[Scalar]):
-    y = x * 2.0
-
-
 # --------------------------------------------------------------------------- #
 # The vectoriser and the flag
 # --------------------------------------------------------------------------- #

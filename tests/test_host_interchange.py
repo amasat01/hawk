@@ -408,13 +408,6 @@ def test_only_an_automatic_tu_has_a_run_entry(shapes):
     assert "#pragma omp" not in text, "the TU stays serial: threading is eagle's"
 
 
-def _trip_loop(text: str) -> str:
-    """The interchanged build's trip loop: from its ``for`` to the end of its lane
-    loop, where the refill (:func:`_refill`) begins."""
-    start = text.index("for (Int hawk_trip = 0;")
-    return text[start:text.index("std::int64_t hawk_idle = 0;", start)]
-
-
 def _refill(text: str) -> str:
     """The interchanged build's refill block: between the trip's live reduction and its exit."""
     start = text.index("if (hawk_idle != 0 && hawk_next < hawk_nlive) {")
@@ -531,19 +524,6 @@ def test_host_caches_reads_sysctl_on_macos(monkeypatch):
         assert cpu_toolchain.host_caches() is None
     finally:
         cpu_toolchain.host_caches.cache_clear()
-
-
-def _preprocessed(target: str, text: str, tmp_path) -> str:
-    cxx = shutil.which("clang++")
-    if cxx is None:
-        pytest.skip("no clang++")
-    src = tmp_path / "helpers.cpp"
-    src.write_text(text)
-    done = subprocess.run([cxx, "-E", "-P", "-target", target, "-x", "c++", str(src)],
-                          capture_output=True, text=True)
-    if done.returncode:
-        pytest.skip("clang++ cannot preprocess for " + target)
-    return done.stdout
 
 
 _COUNTED = 'extern "C" long long hawk_lane_trips = 0;\n'

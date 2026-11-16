@@ -147,18 +147,6 @@ ENV = {"v": np.array([0.3, -0.7, 1.1]), "k1": np.array([0.5, 0.25, -0.4]),
 # --------------------------------------------------------------------------- #
 
 
-def _computed_runtime_read():
-    from raptor.ir import Assign, Leaf
-    from raptor.ir import make as mk
-    from raptor.ir.types import TensorType
-
-    s, v = TensorType((), "f64"), TensorType((3,), "f64")
-    x = Leaf("vocab_read", "vec_in", "x", v)
-    k = Leaf("vocab_read", "per_sample", "k", TensorType((), "i32"))
-    sinks = (Assign("y", mk("component_at", (mk("cross", (x, x)), k)), s),)
-    return sinks, canonical(sinks)
-
-
 # --------------------------------------------------------------------------- #
 # The numbers.
 # --------------------------------------------------------------------------- #

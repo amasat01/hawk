@@ -49,12 +49,6 @@ def _dk_predicated(k: hawk.Index, a: hawk.Scalar, x: hawk.Scalar, b: hawk.Scalar
                         strategy="predicated")
 
 
-def _split_before_after_switch(text: str) -> tuple[list[str], list[str]]:
-    lines = text.splitlines()
-    switch_i = next(i for i, l in enumerate(lines) if "switch (" in l)
-    return lines[:switch_i], lines[switch_i:]
-
-
 # --------------------------------------------------------------------------- #
 # 1. Row own shape: no exp/log before the switch, shared reads before,
 #    one branch body per case.
@@ -71,24 +65,6 @@ def _split_before_after_switch(text: str) -> tuple[list[str], list[str]]:
 # 3. A value EVERY non-elided branch reads is computed once, above the switch;
 #    one only some branches read stays in its case.
 # --------------------------------------------------------------------------- #
-@hawk.kernel
-def _dk_shared_across_branches(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, [x * x + 1.0, x * x + 2.0, x * x + 3.0],
-                        strategy="switch")
-
-
-@hawk.kernel
-def _dk_shared_by_two_of_three(k: hawk.Index, x: hawk.Scalar, w: hawk.Scalar,
-                               y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, [x * x + 1.0, x * x + 2.0, w + 3.0], strategy="switch")
-
-
-@hawk.kernel
-def _dk_shared_by_two_of_four(k: hawk.Index, x: hawk.Scalar, w: hawk.Scalar,
-                              y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, [x * x + 1.0, x * x + 2.0, w + 3.0, w * 2.0], strategy="switch")
-
-
 # --------------------------------------------------------------------------- #
 # 4. the elision is unaffected by the scoping change.
 # --------------------------------------------------------------------------- #
@@ -128,35 +104,12 @@ def test_switch_numeric_matches_numpy_on_the_host(tmp_path_factory, cache_dir):
 # --------------------------------------------------------------------------- #
 # 6. Sibling switches on one selector fuse into ONE switch.
 # --------------------------------------------------------------------------- #
-@hawk.kernel
-def _dk_siblings(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar],
-                 z: hawk.Mutable[hawk.Scalar]):
-    s = M.exp(x * x)
-    g = M.log(s + 2.0)
-    y = M.dispatch(k, [s + 1.0, g], strategy="switch")
-    z = M.dispatch(k, [s * 3.0, g * 4.0], strategy="switch")
-
-
 # --------------------------------------------------------------------------- #
 # 7. The derived dispatch seeds a node every branch reads ONCE.
 # --------------------------------------------------------------------------- #
-@hawk.kernel
-def _dk_shared_operand(k: hawk.Index, a: hawk.Scalar, b: hawk.Scalar, x: hawk.Scalar,
-                       y: hawk.Mutable[hawk.Scalar]):
-    s = M.sin(x)
-    y = M.dispatch(k, [s * a, s * b], strategy="switch")
-
-
 # --------------------------------------------------------------------------- #
 # 8. The all-but-one hoist is speculative, so it refuses what could fault.
 # --------------------------------------------------------------------------- #
-@hawk.kernel
-def _dk_unsafe_shared(k: hawk.Index, m: hawk.Index, x: hawk.Scalar,
-                      y: hawk.Mutable[hawk.Scalar]):
-    q = M.real(m // 3) + x          # integer division: SIGFPE on the host if run unneeded
-    y = M.dispatch(k, [q * 1.0, q * 2.0, x + 3.0], strategy="switch")
-
-
 # --------------------------------------------------------------------------- #
 # 9. A switch inside a loop body is scoped like one outside it.
 # --------------------------------------------------------------------------- #
@@ -173,10 +126,6 @@ def _dk_switch_in_loop(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scala
         acc = acc + M.dispatch(k, [_twice(M.exp(xv), xv), _twice(M.log(xv * xv + 1.0), xv), xv],
                                strategy="switch")
     y = acc
-
-
-def _loop_body(text: str) -> str:
-    return text[text.index("for ("):]
 
 
 def test_a_switch_in_a_loop_body_matches_numpy_on_the_host(tmp_path_factory, cache_dir):
@@ -238,30 +187,6 @@ def _dk_ladder_explicit(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scal
     z = M.dispatch(k, [0.0, _twice(M.sin(x), x), _twice(M.cos(x), x)], strategy="switch")
     w = M.dispatch(M.int32(M.where(x > 0.5, 0.0, 1.0)),
                    [_twice(M.exp(-x), x), _twice(M.sqrt(x) / (x + 1.0), x)], strategy="switch")
-
-
-@hawk.kernel
-def _dk_ladder_vector(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Vector[2]]):
-    v = M.vec(0.0, 0.0)
-    if k == 0:
-        v = M.vec(M.exp(x), 1.0)
-    elif k == 1:
-        v = M.vec(M.log(x + 1.0), 2.0)
-    else:
-        v = M.vec(M.tanh(x), 3.0)
-    y = v
-
-
-@hawk.kernel
-def _dk_ladder_lazy(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-    v = 0.0
-    if k == 0:
-        v = M.exp(x) * x
-    elif k == 1:
-        v = M.log(x * x + 1.0) + x
-    else:
-        v = M.tanh(x)
-    y = v
 
 
 @hawk.kernel

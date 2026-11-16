@@ -135,10 +135,6 @@ def test_the_bound_must_be_an_index_and_max_a_compile_time_int():
             y = s
 
 
-def _header_lines(text):
-    return [ln.strip() for ln in text.splitlines() if ln.strip().startswith("for (")]
-
-
 @pytest.fixture(scope="module")
 def reverse_bundle(tmp_path_factory, cache_dir):
     adjoint = Kernel("powers_vjp", vjp(powers, wrt=("x",)), {})

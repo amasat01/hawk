@@ -57,7 +57,7 @@ from _spline import shallow_spline_cell as spline_cell
 
 import hawk
 import hawk.math as m
-from hawk.artifact.layout import exports
+from hawk.artifact import emit_source
 from hawk.compile import aether_include, compiler_identity, device_compiler, eagle_include
 from ospreys.cpu.toolchain import host_compiler, host_flags
 from hawk.compile.drivers import ADDRESS_SPACE_CAP_BYTES
@@ -108,6 +108,14 @@ def _reference(x, theta, g, n_in, basis):
     return total
 
 
+def _source(kernel, target: str, tmp: Path) -> Path:
+    # ONE unit per kernel: emit_source refuses a kernel the library answers with several launches.
+    text = emit_source(kernel, mode="float64", targets=(target,)).sources[target].text
+    path = tmp / f"{kernel.name}.{'cu' if target == 'cuda' else 'cpp'}"
+    path.write_text(text)
+    return path
+
+
 def _capped(argv: list) -> tuple:
     """Run ``argv`` under ``/usr/bin/time -v`` AND ``ulimit -v``; return
     ``(returncode, wall seconds, peak RSS in KiB, stderr)``.
@@ -124,6 +132,35 @@ def _capped(argv: list) -> tuple:
     wall = time.perf_counter() - start
     found = _RSS.search(done.stderr)
     return done.returncode, wall, int(found.group(1)) if found else -1, done.stderr
+
+
+def _grid_row(n_in: int, basis: int, tmp: Path) -> dict:
+    kernel = spline_cell(n_in, basis)
+    loops = [n for n in kernel.walk.order if isinstance(n, Loop)]
+    device = _source(kernel, "cuda", tmp)
+    host = _source(kernel, "host", tmp)
+    d_rc, d_wall, d_rss, d_err = _capped(
+        [device_compiler(), *device_flags(level=_tc.opt_level(), include=_tc.include_flags()), str(device),
+         "-o", str(tmp / f"{kernel.name}.ptx")])
+    h_rc, h_wall, h_rss, h_err = _capped(
+        [host_compiler(), *host_flags(), str(host),
+         "-o", str(tmp / f"{kernel.name}.so")])
+    assert d_rc == 0, f"device compile of {n_in}x{basis} failed:\n{d_err[-3000:]}"
+    assert h_rc == 0, f"host compile of {n_in}x{basis} failed:\n{h_err[-3000:]}"
+    ptx = tmp / f"{kernel.name}.ptx"
+    return {
+        "edges": n_in,
+        "basis": basis,
+        "walk_nodes": len(kernel.walk.order),
+        "top_level_loops": len(loops),
+        "device_wall_s": round(d_wall, 3),
+        "device_peak_rss_kib": d_rss,
+        "device_ptx_bytes": ptx.stat().st_size if ptx.is_file() else -1,
+        "device_tu_bytes": device.stat().st_size,
+        "host_wall_s": round(h_wall, 3),
+        "host_peak_rss_kib": h_rss,
+        "host_tu_bytes": host.stat().st_size,
+    }
 
 
 def _numerics_row(n_in: int, basis: int, tmp_path, cache_dir) -> dict:
@@ -287,6 +324,66 @@ def _spline_scale_row() -> dict:
     row = json.loads(payload[-1])
     row["ulimit_v_kib"] = SPLINE_SCALE_ULIMIT_KIB
     return row
+
+
+def test_the_loop_lowering_card_is_written(tmp_path, cache_dir):
+    grid = [_grid_row(n_in, basis, tmp_path) for n_in, basis in GRID]
+    numerics = [_numerics_row(n_in, basis, tmp_path, cache_dir)
+                for n_in, basis in GRID]
+    payload = {
+        "card": "HAWK loop lowering: what a lowered `for` costs to compile",
+        "produced": time.strftime("%Y-%m-%d"),
+        "machine": platform.machine(),
+        "platform": platform.platform(),
+        "host_compiler": compiler_identity(host_compiler()),
+        "device_compiler": compiler_identity(device_compiler()),
+        "device_arch": resolve_arch(),
+        "aether_include": Path(aether_include()).name,
+        "eagle_include": Path(eagle_include()).name,
+        "address_space_cap_bytes": ADDRESS_SPACE_CAP_BYTES,
+        "ulimit_v_kib": ULIMIT_KIB,
+        "note": ("every compile in `grid` ran under `ulimit -v 12000000` and "
+                 "was measured with `/usr/bin/time -v`; the 64x23 point is the "
+                 "one HW7d could not assemble at all when the same body was "
+                 "unrolled by trace-time execution (25-27 GB of ptxas RSS). "
+                 "`spline_scale_cell` is the point: a downstream package's own "
+                 "`spline_edge_kernel_loop` shape (a DEEP Cox-de Boor body, not "
+                 "the shallow `grid` family) at (n_in=64, G=20, k=3), taken "
+                 "trace -> canonicalise -> emit -> compile both targets -> run, "
+                 "all inside ONE child under `ulimit -v 6000000`, which caps "
+                 "the TRACER as well as the compilers. Before the "
+                 "fixed-width body key that child exhausted 6 GB during "
+                 "canonicalisation and never reached a compiler. The card "
+                 "DECIDES NOTHING: rules that whether to unroll is the "
+                 "compiler's decision, and no threshold is derived here"),
+        "grid": grid,
+        "numerics": numerics,
+        "a2_additive_loops": [_a2_row(b) for b in A2_BOUNDS],
+        "straight_line_twin": _twin_row(),
+        "spline_scale_cell": _spline_scale_row(),
+    }
+    body = json.dumps(payload, indent=2, sort_keys=True)
+    fence = hashlib.md5(body.encode()).hexdigest()
+    CARD.parent.mkdir(parents=True, exist_ok=True)
+    CARD.write_text(
+        "# CARD_LOOP_LOWERING — a bounded `for`, lowered\n\n"
+        "Written BY THE RUN (`tests/test_loop_lowering_card.py`). Prose cites "
+        "this file; no number here may be restated without citing it. It "
+        "DECIDES NOTHING — rules that whether to unroll a lowered loop is "
+        "the C++/CUDA compiler's decision, and this card is the evidence that "
+        "HAWK hands it a translation unit it can make that decision about.\n\n"
+        "Every compile in `grid` ran under `ulimit -v 12000000` (the same 12 "
+        "GiB `hawk.compile.drivers` installs with `RLIMIT_AS`) and was "
+        "measured with `/usr/bin/time -v`. `spline_scale_cell` — the point, "
+        "a downstream package's own spline edge shape at (n_in=64, G=20, k=3) — went trace to run "
+        "inside ONE child under `ulimit -v 6000000`, a cap that binds the "
+        "TRACER too.\n\n"
+        f"md5: `{fence}`\n\n```json\n{body}\n```\n"
+    )
+    text = CARD.read_text()
+    assert f"md5: `{fence}`" in text
+    assert hashlib.md5(text.split("```json\n")[1].split("\n```")[0]
+                       .encode()).hexdigest() == fence
 
 
 @pytest.mark.needs_toolchain("nvcc")

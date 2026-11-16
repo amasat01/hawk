@@ -142,35 +142,6 @@ def _zeros_uniform():
 
 
 @hawk.kernel
-def _uniform_scatter(u: hawk.Table[Scalar], o: Mutable[Vector[15]]):
-    group, lane_in = m.split_index(64)
-    acc = _zeros_uniform()
-    for t in range(6):
-        i = m.index(u.at(group * 6 + t), 10)
-        acc[i + 2] = acc[i + 2] + 1.0
-        acc[i + 3] = acc[i + 3] + 2.0
-    o = acc
-
-
-@hawk.kernel
-def _one_store4(u: Scalar, e: Scalar, o: Mutable[Vector[4]]):
-    acc = m.vec(0.0, 0.0, 0.0, 0.0)
-    for t in range(5):
-        i = m.index(u + t, 4)
-        acc[i] = acc[i] + e
-    o = acc
-
-
-@hawk.kernel
-def _one_store5(u: Scalar, e: Scalar, o: Mutable[Vector[5]]):
-    acc = m.vec(0.0, 0.0, 0.0, 0.0, 0.0)
-    for t in range(5):
-        i = m.index(u + t, 5)
-        acc[i] = acc[i] + e
-    o = acc
-
-
-@hawk.kernel
 def _clamped(u: Scalar, e: Scalar, o: Mutable[Vector[15]]):
     """Three accumulates whose indices are each clamped on their own."""
     acc = _zeros()
@@ -180,10 +151,6 @@ def _clamped(u: Scalar, e: Scalar, o: Mutable[Vector[15]]):
         acc[2 + m.index(m.real(p - 2), 13)] = acc[2 + m.index(m.real(p - 2), 13)] + e * 2.0
         acc[2 + m.index(m.real(p - 1), 13)] = acc[2 + m.index(m.real(p - 1), 13)] + e * 3.0
     o = acc
-
-
-def _copies(text, width):
-    return re.findall(rf"^\s*aether::Item<Real, {width}> hawk_sv\d+ = ", text, re.M)
 
 
 def _scatter_inputs(n, trips):
