@@ -665,10 +665,15 @@ fn probe_vector_isa() -> &'static str {
     return "";
 }
 
-/// The directory of the data files: the one the environment names, else `facts` beside the library file that holds this code.
-pub fn facts_dir() -> Result<PathBuf, String> {
-    if let Some(dir) = std::env::var_os("OSPREY_FACTS_DIR") {
-        return Ok(PathBuf::from(dir));
+/// The directory of the data files: the one the caller gives (which must be a directory), else `facts` beside the library file that
+/// holds this code.
+pub fn facts_dir(given: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(dir) = given {
+        return if dir.is_dir() {
+            Ok(dir.to_path_buf())
+        } else {
+            Err(format!("facts: {} is not a directory", dir.display()))
+        };
     }
     /// The loader's description of an address, as `dladdr` fills it.
     #[repr(C)]

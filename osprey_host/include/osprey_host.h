@@ -16,7 +16,7 @@ extern "C" {
 /* The abi number of the entry table, the one source of it: the library reads it from this file when
    it is built. Rule: a table whose shape (fields or their signatures) changes moves this number.
    ob_open refuses any other number by name. */
-#define OB_ABI 6
+#define OB_ABI 7
 
 /* The version of the typed contract the caller was built for (the JSON a render takes, with its
    closed schema). A library carries its own in the table; ob_open refuses any other version by
@@ -57,12 +57,13 @@ typedef struct {
     int (*render)(rx_ctx*, rx_walk, const char*, size_t, char*, size_t, size_t[4]);
     int (*identity)(char*);
     int (*declare)(rx_ctx*, const char*, size_t, const char*);
-    int (*facts)(rx_ctx*, const char*, const char*, const char*, char*, size_t, size_t*);
-    int (*lower)(rx_ctx*, const char*, size_t, char*, size_t, size_t*);
+    int (*facts)(
+        rx_ctx*, const char*, const char*, const char*, const char*, char*, size_t, size_t*);
+    int (*lower)(rx_ctx*, const char*, const char*, size_t, char*, size_t, size_t*);
 } ob_table;
 
 /* Opens the library at path and reads its entry table; a missing symbol or another abi number is
-   refused by name ("open: abi number N, expected 6"), and so is another contract version
+   refused by name ("open: abi number N, expected 7"), and so is another contract version
    ("open: contract version N, expected 1"). */
 int ob_open(rx_ctx* ctx, const char* path, ob_backend** out);
 /* The library's name (for example "host"). */
@@ -81,7 +82,8 @@ int ob_render(rx_ctx* ctx, ob_backend* lib, const char* dump, size_t n_dump, con
 /* The machine facts of a target ("host" or "cuda") for a compiler identity ("<path> || <first
    version line> || <digest>"), as the JSON of the contract's machine record: the cache sizes and
    instruction set come from a probe of the running machine, the rest from data files the library
-   reads from the directory $OSPREY_FACTS_DIR, else "facts" beside the library file. The caller
+   reads from the directory facts_dir (a NUL-terminated path; NULL = the directory "facts" beside
+   the library file; a path that is no directory is refused, naming it). The caller
    passes the answer back in a render's contract without reading it. The text and its length are
    written as ob_name does (RX_TRUNC when cap is too small, len filled in); a refusal says why in
    rx_last_error(ctx), starting with "facts". The library answers in a context of its own.
@@ -89,17 +91,21 @@ int ob_render(rx_ctx* ctx, ob_backend* lib, const char* dump, size_t n_dump, con
    optional keys isa ("arm64" or "x86_64"), l1d_bytes, l2_bytes and cache_source (all three or
    none), host_profile (the profile asked for) and device_arch (for "cuda", for example "sm_61"); a
    key left out is probed or the card's default, any other key is refused by name. */
-int ob_facts(rx_ctx* ctx, ob_backend* lib, const char* target, const char* compiler,
-    const char* stated /* NULL = the machine running */, char* buf, size_t cap, size_t* len);
+int ob_facts(rx_ctx* ctx, ob_backend* lib,
+    const char* facts_dir /* NULL = "facts" beside the library */, const char* target,
+    const char* compiler, const char* stated /* NULL = the machine running */, char* buf,
+    size_t cap, size_t* len);
 /* Lowers one kernel: the library loads the dump (as ob_render takes it: every node of the kernel in
    handle order, with the dialects' declaration lines) into a fresh context of its own and answers
    the request (JSON; the sinks are node positions of the dump) with the units the kernel lowers to
    as JSON: per unit its name, the digest of its walk and its text per target with the typed meta.
    The answer is written into buf as ob_facts writes its text (RX_TRUNC when cap is too small, len
    filled in). A refusal says why in rx_last_error(ctx), starting with "lower" or the stage it
-   happened in. */
-int ob_lower(rx_ctx* ctx, ob_backend* lib, const char* dump, size_t n_dump, const char* dialects,
-    const char* request, size_t n_request, char* buf, size_t cap, size_t* len);
+   happened in. facts_dir is the directory of the data files, as for ob_facts. */
+int ob_lower(rx_ctx* ctx, ob_backend* lib,
+    const char* facts_dir /* NULL = "facts" beside the library */, const char* dump, size_t n_dump,
+    const char* dialects, const char* request, size_t n_request, char* buf, size_t cap,
+    size_t* len);
 /* Closes the library and frees the parts of its last render. */
 int ob_close(rx_ctx* ctx, ob_backend* lib);
 

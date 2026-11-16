@@ -49,7 +49,7 @@ class Unbuildable(Exception):
     """The request cannot be built from what the recorder captured."""
 
 
-_S = {"lib": None, "ctx": None, "k6": None, "facts": {}, "accepted": None}
+_S = {"lib": None, "ctx": None, "k6": None, "facts": {}, "accepted": None, "facts_dir": None}
 _C = {
     "build_calls": 0,
     "calls_with_units": 0,
@@ -329,7 +329,7 @@ def _facts(call, target):
     if key not in _S["facts"]:
         try:
             _S["facts"][key] = _S["ctx"].backend_facts(
-                _S["lib"], target, compiler, json.dumps(stated)
+                _S["lib"], _S["facts_dir"], target, compiler, json.dumps(stated)
             )
         except ValueError as why:
             raise Unbuildable("facts: %s" % str(why)[:100]) from why
@@ -475,7 +475,9 @@ def _plan(c, kernel, name, smode, targets):
             continue
         try:
             answer = json.loads(
-                _S["ctx"].backend_lower(_S["lib"], dump, dialects, json.dumps(request))
+                _S["ctx"].backend_lower(
+                    _S["lib"], _S["facts_dir"], dump, dialects, json.dumps(request)
+                )
             )
         except (ValueError, RuntimeError) as why:
             _fall(_reason(why), kname, full=str(why)[:300])
@@ -680,9 +682,14 @@ def install(lib_path):
     from hawk.artifact import bundle
 
     here = os.path.dirname(os.path.abspath(lib_path))
-    for facts in (os.path.join(here, "facts"), os.path.join(here, "..", "..", "facts")):
-        if "OSPREY_FACTS_DIR" not in os.environ and os.path.isdir(facts):
-            os.environ["OSPREY_FACTS_DIR"] = os.path.abspath(facts)
+    _S["facts_dir"] = next(
+        (
+            os.path.abspath(facts)
+            for facts in (os.path.join(here, "facts"), os.path.join(here, "..", "..", "facts"))
+            if os.path.isdir(facts)
+        ),
+        None,
+    )
     _S["k6"] = k6
     _S["ctx"] = _osprey().Ctx()
     _S["lib"] = _S["ctx"].backend_open(lib_path)

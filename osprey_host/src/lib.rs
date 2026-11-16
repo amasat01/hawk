@@ -59,9 +59,10 @@ pub struct OspreyV1 {
     /// Declares the node classes of a dialect manifest in a context, so a dump that holds nodes of that dialect loads.
     pub declare: unsafe extern "C" fn(*mut Ctx, *const c_char, usize, *const c_char) -> c_int,
     /// Writes the machine facts for a target, a compiler identity and an optional stated machine (a JSON record, NULL for none),
-    /// as the JSON of the contract's machine record.
+    /// as the JSON of the contract's machine record, from the data files in the directory given (NULL: `facts` beside the library).
     pub facts: extern "C" fn(
         *mut Ctx,
+        *const c_char,
         *const c_char,
         *const c_char,
         *const c_char,
@@ -70,9 +71,16 @@ pub struct OspreyV1 {
         *mut usize,
     ) -> c_int,
     /// Lowers the kernel whose IR the context holds, from a request (JSON), into the answer (JSON): the units, their texts per
-    /// target and their typed meta. The caller-buffer protocol: RX_TRUNC with the length filled in when the buffer is too small.
-    pub lower:
-        extern "C" fn(*mut Ctx, *const c_char, usize, *mut c_char, usize, *mut usize) -> c_int,
+    /// target and their typed meta, from the data files in the directory given (NULL: `facts` beside the library). The caller-buffer protocol: RX_TRUNC with the length filled in when the buffer is too small.
+    pub lower: extern "C" fn(
+        *mut Ctx,
+        *const c_char,
+        *const c_char,
+        usize,
+        *mut c_char,
+        usize,
+        *mut usize,
+    ) -> c_int,
 }
 unsafe impl Sync for OspreyV1 {}
 
@@ -193,10 +201,19 @@ fn text_arg<'a>(arg: *const c_char, what: &str) -> Result<&'a str, Fault> {
         .map_err(|_| Fault::BadArg(format!("{what} is not UTF-8")))
 }
 
+/// The data directory a caller names, none for NULL.
+fn dir_arg<'a>(arg: *const c_char) -> Result<Option<&'a std::path::Path>, Fault> {
+    if arg.is_null() {
+        return Ok(None);
+    }
+    text_arg(arg, "facts_dir").map(|path| Some(std::path::Path::new(path)))
+}
+
 /// Writes the facts answer for the target, the compiler identity and the stated machine (NULL: the probed one) into the caller's buffer (the door's length protocol: RX_TRUNC
 /// with the length filled in when the buffer is too small); the reason of a refusal is the context's last error.
 extern "C" fn facts(
     ctx: *mut Ctx,
+    facts_dir: *const c_char,
     target: *const c_char,
     compiler: *const c_char,
     stated: *const c_char,
@@ -217,8 +234,9 @@ extern "C" fn facts(
             let text = text_arg(stated, "stated").map_err(|why| bad_arg(&why))?;
             facts::stated_from_json(text).map_err(facts_refusal)?
         };
+        let given = dir_arg(facts_dir).map_err(|why| bad_arg(&why))?;
         let dir =
-            facts::facts_dir().map_err(|reason| facts_refusal(facts::Failed::Card(reason)))?;
+            facts::facts_dir(given).map_err(|reason| facts_refusal(facts::Failed::Card(reason)))?;
         facts::answer(&dir, target, compiler, &facts::probe(), &stated).map_err(facts_refusal)
     }))
     .unwrap_or_else(|_| Err(fault("panic in facts")));
@@ -240,6 +258,7 @@ extern "C" fn facts(
 /// context's last error with the status of its kind.
 extern "C" fn lower(
     ctx: *mut Ctx,
+    facts_dir: *const c_char,
     json: *const c_char,
     n: usize,
     buf: *mut c_char,
@@ -255,7 +274,8 @@ extern "C" fn lower(
         return RX_BADARG;
     };
     let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let dir = facts::facts_dir().map_err(|reason| Refusal {
+        let given = dir_arg(facts_dir).map_err(|why| bad_arg(&why))?;
+        let dir = facts::facts_dir(given).map_err(|reason| Refusal {
             kind: RefusalKind::Fault,
             reason,
         })?;

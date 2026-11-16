@@ -1206,6 +1206,9 @@ fn shared_of(kernel: &J) -> Vec<String> {
         .collect()
 }
 
+/// The data files the library reads (NUL-terminated, as the table takes it).
+const FACTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/facts\0");
+
 /// Asks the library's table to lower the request in `ctx`.
 fn ask(ctx: *mut raptor_ir::record::Ctx, request: &str) -> Result<KernelAnswer, String> {
     let table = unsafe { &*osprey_host::osprey_v1() };
@@ -1214,6 +1217,7 @@ fn ask(ctx: *mut raptor_ir::record::Ctx, request: &str) -> Result<KernelAnswer, 
         let (mut buf, mut len) = (vec![0u8; cap], 0usize);
         let status = (table.lower)(
             ctx,
+            FACTS_DIR.as_ptr() as *const c_char,
             request.as_ptr() as *const c_char,
             request.len(),
             buf.as_mut_ptr() as *mut c_char,
@@ -2645,12 +2649,6 @@ fn replay_chain(
 }
 
 fn main() {
-    if std::env::var_os("OSPREY_FACTS_DIR").is_none() {
-        std::env::set_var(
-            "OSPREY_FACTS_DIR",
-            concat!(env!("CARGO_MANIFEST_DIR"), "/facts"),
-        );
-    }
     let args: Vec<String> = std::env::args().collect();
     if let Some(at) = args.iter().position(|a| a == "--emit-meta") {
         let (file, out) = (args.get(at + 1), args.get(at + 2));

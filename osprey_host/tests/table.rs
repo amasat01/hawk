@@ -53,12 +53,12 @@ fn header_number(name: &str) -> u32 {
     line.unwrap().trim().parse().unwrap()
 }
 
+/// The data files of this checkout, NUL-terminated as the table takes a directory.
+const FACTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/facts\0");
+
 #[test]
 fn facts_entry_answers_and_refuses() {
-    std::env::set_var(
-        "OSPREY_FACTS_DIR",
-        concat!(env!("CARGO_MANIFEST_DIR"), "/facts"),
-    );
+    let dir = FACTS.as_ptr() as *const c_char;
     let t = unsafe { &*osprey_host::osprey_v1() };
     let c = (t.ctx_new)();
     let (target, compiler) = (c"host", c"c++ || Apple clang version 21.0.0 || 0");
@@ -66,6 +66,7 @@ fn facts_entry_answers_and_refuses() {
     let status = |buf: *mut c_char, cap: usize, len: &mut usize| {
         (t.facts)(
             c,
+            dir,
             target.as_ptr(),
             compiler.as_ptr(),
             std::ptr::null(),
@@ -81,6 +82,7 @@ fn facts_entry_answers_and_refuses() {
     assert!(text.starts_with("{\"isa\":"), "{text}");
     let refused = (t.facts)(
         c,
+        dir,
         c"fast".as_ptr(),
         compiler.as_ptr(),
         std::ptr::null(),
@@ -96,6 +98,7 @@ fn facts_entry_answers_and_refuses() {
     let stated = c"{\"nope\":1}";
     let malformed = (t.facts)(
         c,
+        dir,
         target.as_ptr(),
         compiler.as_ptr(),
         stated.as_ptr(),
@@ -104,9 +107,24 @@ fn facts_entry_answers_and_refuses() {
         &mut len,
     );
     assert_eq!(malformed, 2);
-    // a data directory with no cards is the library's fault (status 4)
-    std::env::set_var("OSPREY_FACTS_DIR", "/nonexistent/osprey_facts");
-    assert_eq!(status(buf.as_mut_ptr(), buf.len(), &mut len), 4);
+    // a data directory that is none is the library's fault (status 4), and the reason names the path
+    let none = c"/nonexistent/osprey_facts";
+    let missing = (t.facts)(
+        c,
+        none.as_ptr(),
+        target.as_ptr(),
+        compiler.as_ptr(),
+        std::ptr::null(),
+        buf.as_mut_ptr(),
+        buf.len(),
+        &mut len,
+    );
+    assert_eq!(missing, 4);
+    let why = unsafe { CStr::from_ptr((t.last_error)(c)) };
+    assert_eq!(
+        why.to_str().unwrap(),
+        "facts: /nonexistent/osprey_facts is not a directory"
+    );
     // SAFETY: `c` came from this table's `ctx_new` and is freed once.
     unsafe { (t.ctx_free)(c) };
 }

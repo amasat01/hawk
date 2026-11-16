@@ -231,6 +231,7 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("columns", c.columns.to_string()),
             ("slots", row),
             ("name", lit(&c.name)),
+            ("comp_slots", "NULL".into()),
         ];
         cells.push(out.record("eg_unit_cell", &format!("cell{at}"), &members));
     }
@@ -448,6 +449,11 @@ fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
         ("launch", format!("&{launch}")),
         ("finish", finish),
         ("device_image_size", lit_or_null(&unit.device_image_size)),
+        ("derived", "NULL".into()),
+        ("device_compiler", "NULL".into()),
+        ("device_flags", "NULL".into()),
+        ("device_ptx_isa", "0".into()),
+        ("reserved1", "0".into()),
     ];
     Ok(out.record("eg_unit_meta", "meta", &members))
 }

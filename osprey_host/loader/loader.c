@@ -215,22 +215,22 @@ int ob_render(rx_ctx* ctx, ob_backend* lib, const char* dump, size_t n_dump, con
     return RX_OK;
 }
 
-int ob_facts(rx_ctx* ctx, ob_backend* lib, const char* target, const char* compiler,
-    const char* stated, char* buf, size_t cap, size_t* len)
+int ob_facts(rx_ctx* ctx, ob_backend* lib, const char* facts_dir, const char* target,
+    const char* compiler, const char* stated, char* buf, size_t cap, size_t* len)
 {
     const ob_table* table = lib->table;
     rx_ctx* inner         = table->ctx_new();
     if (!inner)
         return fail(ctx, RX_REFUSED, "facts", "the library cannot create a context");
-    int status = table->facts(inner, target, compiler, stated, buf, cap, len);
+    int status = table->facts(inner, facts_dir, target, compiler, stated, buf, cap, len);
     if (status != RX_OK && status != RX_TRUNC)
         status = forward(ctx, table, inner, status, "facts");
     table->ctx_free(inner);
     return status;
 }
 
-int ob_lower(rx_ctx* ctx, ob_backend* lib, const char* dump, size_t n_dump, const char* dialects,
-    const char* request, size_t n_request, char* buf, size_t cap, size_t* len)
+int ob_lower(rx_ctx* ctx, ob_backend* lib, const char* facts_dir, const char* dump, size_t n_dump,
+    const char* dialects, const char* request, size_t n_request, char* buf, size_t cap, size_t* len)
 {
     const ob_table* table = lib->table;
     rx_ctx* inner         = table->ctx_new();
@@ -238,7 +238,7 @@ int ob_lower(rx_ctx* ctx, ob_backend* lib, const char* dump, size_t n_dump, cons
         return fail(ctx, RX_REFUSED, "lower", "the library cannot create a context");
     int status = load_unit(ctx, table, inner, dump, n_dump, dialects);
     if (status == RX_OK) {
-        status = table->lower(inner, request, n_request, buf, cap, len);
+        status = table->lower(inner, facts_dir, request, n_request, buf, cap, len);
         if (status != RX_OK && status != RX_TRUNC)
             status = forward(ctx, table, inner, status, "lower");
     }
