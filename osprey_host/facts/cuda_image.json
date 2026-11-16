@@ -4,5 +4,42 @@
     "ptx": ["-ptx", "-std=c++20", "-arch={sm}", "-O3", "-Xptxas", "-O3", "-Wno-deprecated-gpu-targets"],
     "cubin": ["-cubin", "-std=c++20", "-arch={sm}", "-O3", "-Xptxas", "-O3", "-Wno-deprecated-gpu-targets"],
     "fatbin": ["-fatbin", "-std=c++20", "-O3", "-Xptxas", "-O3", "-Wno-deprecated-gpu-targets", "-gencode", "arch={virtual},code=[{sm},{virtual}]"]
+  },
+  "embed": {
+    "compile": ["{compiler}", "-x", "assembler", "-c", "{source}", "-o", "{object}"],
+    "image_tail": {"ptx": ["\t.byte 0"], "cubin": [], "fatbin": []},
+    "object_formats": {
+      "elf": [
+      "\t.section .rodata",
+      "\t.balign 16",
+      "\t.globl {symbol}",
+      "\t.type {symbol}, %object",
+      "{symbol}:",
+      "\t.incbin \"{image_path}\"",
+      "{symbol}__end:",
+      "{tail}",
+      "\t.size {symbol}, .-{symbol}",
+      "\t.globl {size_symbol}",
+      "\t.type {size_symbol}, %object",
+      "\t.balign 8",
+      "{size_symbol}:",
+      "\t.quad {symbol}__end - {symbol}",
+      "\t.size {size_symbol}, 8",
+      "\t.section .note.GNU-stack,\"\",%progbits"
+    ],
+      "macho": [
+      "\t.section __TEXT,__const",
+      "\t.globl _{symbol}",
+      "\t.p2align 4",
+      "_{symbol}:",
+      "\t.incbin \"{image_path}\"",
+      "_{symbol}__end:",
+      "{tail}",
+      "\t.globl _{size_symbol}",
+      "\t.p2align 3",
+      "_{size_symbol}:",
+      "\t.quad _{symbol}__end - _{symbol}"
+    ]
+    }
   }
 }

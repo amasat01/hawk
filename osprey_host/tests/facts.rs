@@ -285,12 +285,12 @@ fn a_stated_machine_is_refused_by_name() {
     );
     assert_eq!(
         why("gcc", r#"{"device_arch":"sm_61"}"#),
-        "stated machine: device_arch is for the cuda target"
+        "stated machine: device_arch and device_release are for the cuda target"
     );
     let device = stated("cuda", &line("12.6"), r#"{"isa":"arm64"}"#).unwrap_err();
     assert_eq!(
         device,
-        "stated machine: only device_arch is for the cuda target"
+        "stated machine: only device_arch and device_release are for the cuda target"
     );
 }
 
@@ -316,9 +316,10 @@ fn a_device_answer_states_the_compile_command_as_data() {
         r#""device_build":{"compiler":"nvcc 12.9","ptx_isa":88,"flags":{"#,
         r#""ptx":["-ptx","-std=c++20","-arch=sm_80","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets"],"#,
         r#""cubin":["-cubin","-std=c++20","-arch=sm_80","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets"],"#,
-        r#""fatbin":["-fatbin","-std=c++20","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets","-gencode","arch=compute_80,code=[sm_80,compute_80]"]}}"#
+        r#""fatbin":["-fatbin","-std=c++20","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets","-gencode","arch=compute_80,code=[sm_80,compute_80]"]},"embed":{"compile":["#
     );
-    assert!(text.ends_with(&format!("{want}}}")), "{text}");
+    // the embed recipe follows the flags; its own test is in set_text.rs
+    assert!(text.contains(want), "{text}");
 }
 
 #[test]
@@ -328,5 +329,33 @@ fn an_unknown_release_is_refused_naming_the_release_and_the_file() {
     assert!(
         why.contains("13.0") && why.contains("cuda_image.json"),
         "{why}"
+    );
+}
+
+/// The first version line of the device compiler driver names no release (the release is on a later line of its output), so a
+/// build under it states the release: the answer is then the one of a line that names the same release, and without the stated
+/// release the line is refused by name.
+#[test]
+fn a_device_compiler_line_without_a_release_takes_the_stated_one() {
+    let driver = "nvcc: NVIDIA (R) Cuda compiler driver";
+    let said = stated("cuda", driver, r#"{"device_release":"12.6"}"#).unwrap();
+    assert_eq!(said, stated("cuda", &line("12.6"), "{}").unwrap());
+    // the stated release wins over the one a line names
+    let other = stated("cuda", &line("12.9"), r#"{"device_release":"12.6"}"#).unwrap();
+    assert_eq!(other, said);
+    assert_eq!(
+        stated("cuda", driver, "{}").unwrap_err(),
+        format!("facts: the device compiler line {driver:?} names no tool or no release, and no device_release is stated")
+    );
+    for bad in ["12", "12.x", "12.6.77", ""] {
+        let record = format!(r#"{{"device_release":"{bad}"}}"#);
+        assert_eq!(
+            stated("cuda", driver, &record).unwrap_err(),
+            format!("stated machine: device_release {bad:?} is not major.minor")
+        );
+    }
+    assert_eq!(
+        stated("host", "clang", r#"{"device_release":"12.6"}"#).unwrap_err(),
+        "stated machine: device_arch and device_release are for the cuda target"
     );
 }

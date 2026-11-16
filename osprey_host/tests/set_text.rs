@@ -380,3 +380,222 @@ fn the_units_of_three_kernels_and_the_set_text_link_into_one_library_that_resolv
         objects.len()
     );
 }
+
+/// The device facts answer's `embed` recipe for the nvcc of the stand-in identity, with the data directory `facts_dir`.
+fn embed_of(facts_dir: &Path) -> Result<Json, String> {
+    let identity =
+        "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0";
+    let stated = osprey_host::facts::stated_from_json("{}").unwrap();
+    let probe = osprey_host::facts::probe();
+    let answer = osprey_host::facts::answer(facts_dir, "cuda", identity, &probe, &stated)
+        .map_err(String::from)?;
+    let machine = aether_writers::contract::Contract::parse(&answer)
+        .unwrap()
+        .0;
+    let build = machine.get("device_build").expect("device_build");
+    Ok(build.get("embed").expect("embed").clone())
+}
+
+/// The shipped data directory.
+fn shipped() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("facts")
+}
+
+/// The assembler source of an embed recipe for an image format and an object format, with its places filled.
+fn embed_source(embed: &Json, image: &str, object: &str, symbol: &str, path: &Path) -> String {
+    let source = embed
+        .get("source")
+        .unwrap()
+        .get(image)
+        .unwrap()
+        .get(object)
+        .unwrap();
+    source
+        .str()
+        .unwrap()
+        .replace("{size_symbol}", &format!("{symbol}_size"))
+        .replace("{symbol}", symbol)
+        .replace("{image_path}", &path.to_string_lossy())
+}
+
+#[test]
+fn the_elf_recipe_is_what_the_data_states_it_cannot_be_assembled_here() {
+    let embed = embed_of(&shipped()).unwrap();
+    let text = |image| embed_source(&embed, image, "elf", "u__image", Path::new("/i.bin"));
+    let body = "\t.section .rodata\n\t.balign 16\n\t.globl u__image\n\t.type u__image, %object\nu__image:\n\t.incbin \"/i.bin\"\nu__image__end:\n";
+    let rest = "\t.size u__image, .-u__image\n\t.globl u__image_size\n\t.type u__image_size, %object\n\t.balign 8\nu__image_size:\n\t.quad u__image__end - u__image\n\t.size u__image_size, 8\n\t.section .note.GNU-stack,\"\",%progbits\n";
+    assert_eq!(text("cubin"), format!("{body}{rest}"));
+    assert_eq!(text("ptx"), format!("{body}\t.byte 0\n{rest}"));
+    let argv: Vec<&str> = embed
+        .get("compile")
+        .unwrap()
+        .arr()
+        .iter()
+        .filter_map(Json::str)
+        .collect();
+    assert_eq!(
+        argv,
+        [
+            "{compiler}",
+            "-x",
+            "assembler",
+            "-c",
+            "{source}",
+            "-o",
+            "{object}"
+        ]
+    );
+}
+
+/// A copy of the data directory with one text of `cuda_image.json` replaced.
+fn edited_facts(name: &str, from: &str, to: &str) -> PathBuf {
+    let dir = scratch(name);
+    for entry in std::fs::read_dir(shipped()).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::copy(&path, dir.join(path.file_name().unwrap())).unwrap();
+    }
+    let file = dir.join("cuda_image.json");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains(from), "{from}");
+    std::fs::write(file, text.replacen(from, to, 1)).unwrap();
+    dir
+}
+
+#[test]
+fn an_image_format_or_an_object_format_without_a_recipe_is_refused_by_name() {
+    let no_image = edited_facts("embed_image", "\"cubin\": [],", "");
+    let said = embed_of(&no_image).unwrap_err();
+    assert!(
+        said.contains("no embed recipe for the image format cubin"),
+        "{said}"
+    );
+    let no_object = edited_facts("embed_object", "\"macho\": [", "\"other\": [");
+    let said = embed_of(&no_object).unwrap_err();
+    assert!(
+        said.contains("cuda_image.json has the unknown key other"),
+        "{said}"
+    );
+    let missing = edited_facts("embed_missing", "\"elf\": [", "\"other\": [");
+    assert!(embed_of(&missing).is_err());
+}
+
+/// A program that opens the library at its first argument and, for every unit that names a device image, compares the bytes and
+/// the size read through the two symbols the record names with the file `<folder>/<unit>.bin` (argv 2); a text image (PTX, format 1)
+/// must have a zero byte after its size.
+const IMAGE_READER: &str = r#"
+#include <dlfcn.h>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+#include "eagle/door/eg_door.h"
+#include "eagle/door/eg_unit_meta.h"
+int main(int, char** argv) {
+    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+    if (!lib) { std::printf("dlopen: %s\n", dlerror()); return 2; }
+    auto meta = reinterpret_cast<eg_unit_library_meta_fn>(dlsym(lib, EG_UNIT_LIBRARY_META_SYMBOL));
+    const eg_library_meta* record = meta();
+    int bad = 0;
+    for (unsigned at = 0; at < record->n_units; ++at) {
+        const eg_unit_meta* unit = record->units[at];
+        if (!unit->device_image) continue;
+        auto bytes = static_cast<const unsigned char*>(dlsym(lib, unit->device_image));
+        auto size = static_cast<const uint64_t*>(dlsym(lib, unit->device_image_size));
+        std::string path = std::string(argv[2]) + "/" + unit->name + ".bin";
+        FILE* f = std::fopen(path.c_str(), "rb");
+        std::vector<unsigned char> blob(1 << 20);
+        size_t n = f ? std::fread(blob.data(), 1, blob.size(), f) : 0;
+        bool same = bytes && size && *size == n && std::memcmp(bytes, blob.data(), n) == 0;
+        bool ended = unit->device_image_format != 1 || (bytes && bytes[n] == 0);
+        std::printf("%s %s %zu %s\n", unit->name, same && ended ? "same" : "DIFFERENT", n, unit->device_image);
+        bad += !(same && ended);
+    }
+    return bad ? 4 : 0;
+}
+"#;
+
+#[test]
+fn images_embedded_by_the_recipe_are_read_back_byte_for_byte_through_the_symbols_the_record_names()
+{
+    let Some(tools) = Tools::found() else { return };
+    let embed = embed_of(&shipped()).unwrap();
+    let object = if cfg!(target_os = "macos") {
+        "macho"
+    } else {
+        "elf"
+    };
+    let dir = scratch("embed");
+    let units = ["80036.18__matrix_cuda", "81814.4_kg_fwd_cuda"];
+    let answers: Vec<KernelAnswer> = units.iter().map(|k| answer(k, true)).collect();
+    let mut objects = vec![];
+    for (at, unit) in answers.iter().flat_map(|a| &a.units).enumerate() {
+        let meta = &unit.meta;
+        let (symbol, image) = (
+            meta.device_image.clone().expect("a device unit"),
+            format!("{:?}", meta.device_image_format).to_lowercase(),
+        );
+        // a blob of known bytes in place of the image, which needs a device compiler that is not on this machine
+        let blob: Vec<u8> = (0..4000 + 37 * at)
+            .map(|i| (i * 31 + at * 7 + i / 251) as u8)
+            .collect();
+        let path = dir.join(format!("{}.bin", meta.name));
+        std::fs::write(&path, &blob).unwrap();
+        let source = dir.join(format!("{}.s", meta.name));
+        std::fs::write(
+            &source,
+            embed_source(&embed, &image, object, &symbol, &path),
+        )
+        .unwrap();
+        let place = [
+            ("{source}", source.to_string_lossy().into_owned()),
+            (
+                "{object}",
+                dir.join(format!("{}.o", meta.name))
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        ];
+        tools.run(embed.get("compile").unwrap(), &place, &[]);
+        objects.push(dir.join(format!("{}.o", meta.name)));
+    }
+    let all: Vec<&KernelAnswer> = answers.iter().collect();
+    std::fs::write(dir.join("set.cpp"), set_text(&input(&all)).unwrap()).unwrap();
+    tools.object(&dir.join("set.cpp"), &dir.join("set.o"), true);
+    objects.push(dir.join("set.o"));
+    let library = dir.join(format!(
+        "units.{}",
+        if cfg!(target_os = "macos") {
+            "dylib"
+        } else {
+            "so"
+        }
+    ));
+    tools.link(&objects, &library);
+    std::fs::write(dir.join("reader.cpp"), IMAGE_READER).unwrap();
+    let built = Command::new("c++")
+        .args(["-std=c++17", "-I"])
+        .arg(&tools.door)
+        .arg(dir.join("reader.cpp"))
+        .arg("-o")
+        .arg(dir.join("reader"))
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(dir.join("reader"))
+        .arg(&library)
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert!(run.status.success(), "{said}");
+    assert_eq!(
+        said.lines().filter(|l| l.contains(" same ")).count(),
+        2,
+        "{said}"
+    );
+    println!("set_text: two embedded images read back byte for byte:\n{said}");
+}

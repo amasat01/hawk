@@ -26,7 +26,7 @@ Every file with its line count (this file excluded):
       6  osprey_host/facts/cpu.json
       8  osprey_host/facts/cuda.json
      35  osprey_host/facts/cuda_build.json
-      8  osprey_host/facts/cuda_image.json
+     45  osprey_host/facts/cuda_image.json
      22  osprey_host/facts/host_build.json
      27  osprey_host/facts/x86.json
     127  osprey_host/include/osprey_host.h
@@ -37,7 +37,7 @@ Every file with its line count (this file excluded):
    1235  osprey_host/src/bin/kreplay/derived.rs
    1314  osprey_host/src/bin/kreplay/meta.rs
    1459  osprey_host/src/bin/treplay.rs
-    840  osprey_host/src/facts.rs
+    921  osprey_host/src/facts.rs
     194  osprey_host/src/host_build.rs
     393  osprey_host/src/lib.rs
     162  osprey_host/src/lower/active.rs
@@ -66,12 +66,12 @@ Every file with its line count (this file excluded):
     240  osprey_host/tests/derived.rs
     186  osprey_host/tests/dispatch_k.rs
      72  osprey_host/tests/events.rs
-    332  osprey_host/tests/facts.rs
+    361  osprey_host/tests/facts.rs
      45  osprey_host/tests/facts_oracle.rs
     160  osprey_host/tests/host_build.rs
      86  osprey_host/tests/link_rules.rs
     524  osprey_host/tests/meta_c.rs
-    382  osprey_host/tests/set_text.rs
+    601  osprey_host/tests/set_text.rs
     173  osprey_host/tests/stage_records.rs
     174  osprey_host/tests/table.rs
      47  osprey_host/tests/treplay.rs

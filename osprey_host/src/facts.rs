@@ -23,7 +23,7 @@ pub struct Probe {
 /// A machine the caller states, for a build that is not for the machine running: every field absent means the probed machine's
 /// value (or the card's default). The host target takes `isa`, `caches`, `host_profile` and the build settings `opt_level`, `gcc_release` and
 /// `masked_call_witness`; the cuda target takes
-/// `device_arch`.
+/// `device_arch` and `device_release`.
 #[derive(Default)]
 pub struct Stated {
     /// The instruction set name.
@@ -36,6 +36,9 @@ pub struct Stated {
     pub host_profile: Option<String>,
     /// The device architecture (for example `sm_61`), which selects the rows of the device card.
     pub device_arch: Option<String>,
+    /// The release of the device compiler as `major.minor`, in place of the one its identity's version line names. A compiler whose
+    /// first version line carries no release (the device compiler driver prints it on a later line) must state it.
+    pub device_release: Option<String>,
     /// The optimisation level of the host build (`O0` to `O3`), in place of the default.
     pub opt_level: Option<String>,
     /// The release of a GCC compiler as `major.minor`, in place of the one its identity's version line ends with.
@@ -86,6 +89,7 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         "cache_source",
         "host_profile",
         "device_arch",
+        "device_release",
         "opt_level",
         "gcc_release",
         "masked_call_witness",
@@ -130,6 +134,7 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         caches,
         host_profile: name("host_profile")?,
         device_arch: name("device_arch")?,
+        device_release: name("device_release")?,
         opt_level: name("opt_level")?,
         gcc_release: name("gcc_release")?,
         masked_call_witness: name("masked_call_witness")?,
@@ -451,9 +456,9 @@ fn host_machine(
     probe: &Probe,
     stated: &Stated,
 ) -> Result<Json, Failed> {
-    if stated.device_arch.is_some() {
+    if stated.device_arch.is_some() || stated.device_release.is_some() {
         return Err(Failed::Bad(
-            "stated machine: device_arch is for the cuda target".into(),
+            "stated machine: device_arch and device_release are for the cuda target".into(),
         ));
     }
     let isa_name = stated.isa.as_ref().unwrap_or(&probe.isa);
@@ -533,7 +538,7 @@ fn host_machine(
 
 /// The tool and the release of a device compiler identity (`<path> || <version line> || <digest>`): the file name of the path and
 /// the number after `release` in the version line (`Cuda compilation tools, release 12.6, V12.6.77` gives `nvcc`, `12.6`).
-fn device_tool(identity: &str) -> Result<(String, String), Failed> {
+fn device_tool(identity: &str, stated: Option<&str>) -> Result<(String, String), Failed> {
     let parts: Vec<&str> = identity.split(" || ").collect();
     if parts.len() != 3 {
         return Err(Failed::Bad(
@@ -541,15 +546,28 @@ fn device_tool(identity: &str) -> Result<(String, String), Failed> {
         ));
     }
     let tool = parts[0].rsplit('/').next().unwrap_or(parts[0]);
-    let after = parts[1].split("release ").nth(1);
-    let release: String = after
-        .unwrap_or("")
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect();
+    let release: String = match stated {
+        Some(release) => {
+            let numbers: Vec<&str> = release.split('.').collect();
+            let whole = |n: &&str| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit());
+            if numbers.len() != 2 || !numbers.iter().all(whole) {
+                return Err(Failed::Bad(format!(
+                    "stated machine: device_release {release:?} is not major.minor"
+                )));
+            }
+            release.into()
+        }
+        None => parts[1]
+            .split("release ")
+            .nth(1)
+            .unwrap_or("")
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect(),
+    };
     if tool.is_empty() || release.is_empty() {
         return Err(Failed::Bad(format!(
-            "facts: the device compiler line {:?} names no tool or no release",
+            "facts: the device compiler line {:?} names no tool or no release, and no device_release is stated",
             parts[1]
         )));
     }
@@ -579,14 +597,76 @@ fn flags_of(card: &Json, file: &str, key: &str, arch: &str) -> Result<Json, Stri
     Ok(Json::Arr(flags))
 }
 
+/// The object formats an image can be embedded as, as `cuda_image.json` names them.
+const OBJECT_FORMATS: [&str; 2] = ["elf", "macho"];
+
+/// The recipe that turns an image file into an object of the unit library: the argv that assembles a source with the host compiler,
+/// and the assembler source for each image format and object format, with its places `{symbol}`, `{size_symbol}` and
+/// `{image_path}` left for the caller. The image's tail (a text image ends with a zero byte after its stated size) is written in
+/// by the image format. An image format or an object format the data has no recipe for is refused by name.
+fn embed_recipe(card: &Json, file: &str, formats: &[&str]) -> Result<Json, Failed> {
+    let embed = member(card, file, "embed")?;
+    closed(embed, file, &["compile", "image_tail", "object_formats"])?;
+    let tails = member(embed, file, "image_tail")?;
+    let objects = member(embed, file, "object_formats")?;
+    closed(objects, file, &OBJECT_FORMATS)?;
+    let mut by_image = vec![];
+    for format in formats {
+        if tails.get(format).is_none() {
+            return Err(Failed::Bad(format!(
+                "facts: {file} has no embed recipe for the image format {format}"
+            )));
+        }
+        let tail = names_of(tails, file, format)?.join("\n");
+        let mut by_object = vec![];
+        for object in OBJECT_FORMATS {
+            if objects.get(object).is_none() {
+                return Err(Failed::Bad(format!(
+                    "facts: {file} has no embed recipe for the object format {object}"
+                )));
+            }
+            let mut source = String::new();
+            for line in names_of(objects, file, object)? {
+                match (line.as_str(), tail.is_empty()) {
+                    ("{tail}", true) => {}
+                    ("{tail}", false) => source += &format!("{tail}\n"),
+                    _ => source += &format!("{line}\n"),
+                }
+            }
+            by_object.push((object.to_string(), Json::Str(source)));
+        }
+        by_image.push((format.to_string(), Json::Obj(by_object)));
+    }
+    Ok(Json::Obj(vec![
+        ("compile".into(), flags_of_names(embed, file, "compile")?),
+        ("source".into(), Json::Obj(by_image)),
+    ]))
+}
+
+/// A key of a card that is a list of texts, as a JSON list.
+fn flags_of_names(card: &Json, file: &str, key: &str) -> Result<Json, String> {
+    Ok(Json::Arr(
+        names_of(card, file, key)?
+            .into_iter()
+            .map(Json::Str)
+            .collect(),
+    ))
+}
+
 /// The compile command of a device build as data: the compiler's short name (the tool and its release), the PTX version its
-/// release writes, and the flags of an image of each format for the architecture, all from `cuda_image.json`. The flags carry no
+/// release writes, the flags of an image of each format for the architecture and the recipe that embeds an image file in the unit
+/// library (`embed`), all from `cuda_image.json`. The flags carry no
 /// host compiler: the caller that runs the command adds its own (`-ccbin`). A release with no row is refused by name.
-fn device_build(dir: &Path, compiler: &str, arch: &str) -> Result<Json, Failed> {
+fn device_build(
+    dir: &Path,
+    compiler: &str,
+    arch: &str,
+    release: Option<&str>,
+) -> Result<Json, Failed> {
     let file = "cuda_image.json";
-    let (tool, release) = device_tool(compiler)?;
+    let (tool, release) = device_tool(compiler, release)?;
     let card = read_file(dir, file)?;
-    closed(&card, file, &["ptx_isa", "flags"])?;
+    closed(&card, file, &["ptx_isa", "flags", "embed"])?;
     let isa = match member(&card, file, "ptx_isa")?.get(&release).and_then(Json::int) {
         Some(isa) if isa > 0 => isa,
         _ => {
@@ -606,6 +686,7 @@ fn device_build(dir: &Path, compiler: &str, arch: &str) -> Result<Json, Failed> 
         ("compiler".into(), Json::Str(format!("{tool} {release}"))),
         ("ptx_isa".into(), number(isa)),
         ("flags".into(), Json::Obj(flags)),
+        ("embed".into(), embed_recipe(&card, file, &names)?),
     ]))
 }
 
@@ -616,7 +697,7 @@ fn device_build(dir: &Path, compiler: &str, arch: &str) -> Result<Json, Failed> 
 fn device_machine(dir: &Path, compiler: &str, stated: &Stated) -> Result<Json, Failed> {
     if stated.isa.is_some() || stated.caches.is_some() || stated.host_profile.is_some() {
         return Err(Failed::Bad(
-            "stated machine: only device_arch is for the cuda target".into(),
+            "stated machine: only device_arch and device_release are for the cuda target".into(),
         ));
     }
     let file = "cuda.json";
@@ -626,7 +707,7 @@ fn device_machine(dir: &Path, compiler: &str, stated: &Stated) -> Result<Json, F
         Some(asked) => asked.clone(),
         None => text_of(&card, file, "default_arch")?,
     };
-    let build = device_build(dir, compiler, &arch)?;
+    let build = device_build(dir, compiler, &arch, stated.device_release.as_deref())?;
     Ok(Json::Obj(vec![
         ("exact_libm".into(), Json::Bool(true)),
         ("routed_pow".into(), Json::Bool(false)),
