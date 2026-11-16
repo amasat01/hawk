@@ -36,9 +36,40 @@ pub struct Stated {
     pub device_arch: Option<String>,
 }
 
+/// Why a facts question failed: the caller asked something that cannot be answered (a malformed stated machine, an unknown target
+/// or profile), or a data file of the library is broken.
+#[derive(Debug)]
+pub enum Failed {
+    /// The question is malformed or names what the cards do not have.
+    Bad(String),
+    /// A data file of the library cannot be read or does not hold what its schema says.
+    Card(String),
+}
+
+impl From<String> for Failed {
+    /// A failure of a data file, which is what every plain text failure of the loaders is.
+    fn from(reason: String) -> Failed {
+        Failed::Card(reason)
+    }
+}
+
+impl From<Failed> for String {
+    /// The reason in words.
+    fn from(failed: Failed) -> String {
+        match failed {
+            Failed::Bad(reason) | Failed::Card(reason) => reason,
+        }
+    }
+}
+
 /// The stated machine of its JSON record (`isa`, `l1d_bytes`, `l2_bytes`, `cache_source`, `host_profile`, `device_arch`, each
 /// optional); a key outside these, a value of the wrong kind and a cache record with a part missing are refused by name.
-pub fn stated_from_json(text: &str) -> Result<Stated, String> {
+pub fn stated_from_json(text: &str) -> Result<Stated, Failed> {
+    read_stated(text).map_err(Failed::Bad)
+}
+
+/// The stated machine of its JSON record, a failure as text.
+fn read_stated(text: &str) -> Result<Stated, String> {
     let keys = [
         "isa",
         "vector_isa",
@@ -347,10 +378,12 @@ fn fusion_row(row: &Json, file: &str) -> Result<FusionRow, String> {
 
 /// Whether a compiler identity (`<path> || <first version line> || <digest>`) names GCC proper: its version line says GCC or
 /// G++ and does not say clang.
-fn identity_is_gcc(identity: &str) -> Result<bool, String> {
+fn identity_is_gcc(identity: &str) -> Result<bool, Failed> {
     let parts: Vec<&str> = identity.split(" || ").collect();
     if parts.len() != 3 {
-        return Err("the compiler identity is not <path> || <version line> || <digest>".into());
+        return Err(Failed::Bad(
+            "the compiler identity is not <path> || <version line> || <digest>".into(),
+        ));
     }
     let line = parts[1].to_lowercase();
     Ok((line.contains("gcc") || line.contains("g++")) && !line.contains("clang"))
@@ -388,15 +421,21 @@ fn host_machine(
     compiler: &str,
     probe: &Probe,
     stated: &Stated,
-) -> Result<Json, String> {
+) -> Result<Json, Failed> {
     if stated.device_arch.is_some() {
-        return Err("stated machine: device_arch is for the cuda target".into());
+        return Err(Failed::Bad(
+            "stated machine: device_arch is for the cuda target".into(),
+        ));
     }
     let isa_name = stated.isa.as_ref().unwrap_or(&probe.isa);
     let (file, member_name) = match isa_name.as_str() {
         "arm64" => ("arm.json", "Arm64"),
         "x86_64" => ("x86.json", "X86_64"),
-        other => return Err(format!("no card for the instruction set {other}")),
+        other => {
+            return Err(Failed::Bad(format!(
+                "no card for the instruction set {other}"
+            )))
+        }
     };
     let cpu = load_cpu(dir)?;
     let isa = load_isa(dir, file, isa_name)?;
@@ -405,19 +444,19 @@ fn host_machine(
         .clone()
         .unwrap_or(probe.vector_isa.clone());
     if !isa.vector_isas.contains(&vector_isa) {
-        return Err(format!(
+        return Err(Failed::Bad(format!(
             "{file} has no fusion row for the vector instruction set {vector_isa:?}"
-        ));
+        )));
     }
     let gcc = identity_is_gcc(compiler)?;
     for named in [&isa.default_gcc, &isa.default_other] {
         if !cpu.profiles.contains(named) {
-            return Err(format!("{file}: default profile {named} is not a profile"));
+            return Err(format!("{file}: default profile {named} is not a profile").into());
         }
     }
     let profile = match &stated.host_profile {
         Some(asked) if !cpu.profiles.contains(asked) => {
-            return Err(format!("unknown host profile {asked}"));
+            return Err(Failed::Bad(format!("unknown host profile {asked}")));
         }
         Some(asked) => asked,
         None if gcc => &isa.default_gcc,
@@ -428,7 +467,9 @@ fn host_machine(
         && cpu.vector_math_profiles.contains(profile)
         && !gcc
     {
-        return Err(format!("host profile {profile} needs a GCC compiler"));
+        return Err(Failed::Bad(format!(
+            "host profile {profile} needs a GCC compiler"
+        )));
     }
     let exact = cpu.exact_profiles.contains(profile);
     let mut members = vec![
@@ -447,9 +488,11 @@ fn host_machine(
 
 /// The machine record of a device build: no instruction set, no caches, the device card's select weights and, last, the
 /// architecture the build is for (the one stated, else the card's default), which the lowering reads and the writers do not.
-fn device_machine(dir: &Path, stated: &Stated) -> Result<Json, String> {
+fn device_machine(dir: &Path, stated: &Stated) -> Result<Json, Failed> {
     if stated.isa.is_some() || stated.caches.is_some() || stated.host_profile.is_some() {
-        return Err("stated machine: only device_arch is for the cuda target".into());
+        return Err(Failed::Bad(
+            "stated machine: only device_arch is for the cuda target".into(),
+        ));
     }
     let file = "cuda.json";
     let card = read_file(dir, file)?;
@@ -479,11 +522,11 @@ pub fn answer(
     compiler: &str,
     probe: &Probe,
     stated: &Stated,
-) -> Result<String, String> {
+) -> Result<String, Failed> {
     let machine = match target {
         "host" => host_machine(dir, compiler, probe, stated)?,
         "cuda" => device_machine(dir, stated)?,
-        other => return Err(format!("no facts for the target {other}")),
+        other => return Err(Failed::Bad(format!("no facts for the target {other}"))),
     };
     Ok(machine.to_text())
 }

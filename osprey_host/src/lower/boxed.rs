@@ -26,8 +26,7 @@ pub(super) fn thread_box(
     }
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let context = unsafe { ctx.as_ref() }.ok_or_else(|| fault("a null context"))?;
-    let chosen = choose_box(context, sinks, request.group, card_lanes)
-        .map_err(|why| fault(format!("thread box: {why:?}")))?;
+    let chosen = choose_box(context, sinks, request.group, card_lanes).map_err(super::wing)?;
     Ok(chosen.map(|found| ThreadBox {
         axis: Some(found.axis as i64),
         t: found.lanes,

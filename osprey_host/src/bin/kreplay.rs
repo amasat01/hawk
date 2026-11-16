@@ -262,7 +262,8 @@ fn facts_answer(spec: &J, cache: &mut HashMap<String, String>) -> Result<String,
         COMPILERS[gcc as usize],
         &facts::probe(),
         &stated,
-    )?;
+    )
+    .map_err(String::from)?;
     cache.insert(key, answer.clone());
     Ok(answer)
 }
@@ -1559,7 +1560,7 @@ fn device_facts(call: &J) -> Result<String, String> {
         device_arch: stated.map(String::from),
         ..facts::Stated::default()
     };
-    facts::answer(dir, "cuda", COMPILERS[0], &facts::probe(), &machine)
+    facts::answer(dir, "cuda", COMPILERS[0], &facts::probe(), &machine).map_err(String::from)
 }
 
 /// The facts answer the call's build used for the target: the machine its spec states for the host, the device architecture it

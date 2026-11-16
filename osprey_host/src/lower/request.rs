@@ -269,7 +269,8 @@ fn read_written_facts(json: &Json, symbol: String) -> Result<Facts, Refusal> {
         let mut r = Keys::of(j, "row plane")?;
         let found = RowPlane {
             cell: text_of(r.req("cell")?, "cell")?,
-            slot: int_of(r.req("slot")?, "slot")? as usize,
+            slot: usize::try_from(int_of(r.req("slot")?, "slot")?)
+                .map_err(|_| wrong("slot", "not a position"))?,
         };
         r.done()?;
         Ok(found)
@@ -848,6 +849,18 @@ fn sink_of(json: &Json) -> Result<SinkPolicy, Refusal> {
     }
 }
 
+/// The most threads a block of a launch holds.
+const MAX_THREADS: i64 = 1024;
+
+/// The value of a setting, refused by name and value when it lies outside `low..=high`.
+fn in_range(key: &str, value: i64, low: i64, high: i64) -> Result<i64, Refusal> {
+    if (low..=high).contains(&value) {
+        Ok(value)
+    } else {
+        Err(wrong(key, &format!("{value} is outside {low} to {high}")))
+    }
+}
+
 impl Settings {
     /// Reads the settings; every key but the version is optional and has its default.
     fn read(json: &Json) -> Result<Settings, Refusal> {
@@ -881,17 +894,27 @@ impl Settings {
                 Some(f) => flag_of(f, "route_to_ordered")?,
                 None => false,
             },
-            launch_bounds: keys.opt("launch_bounds").map(pair).transpose()?,
+            launch_bounds: keys
+                .opt("launch_bounds")
+                .map(pair)
+                .transpose()?
+                .map(|(threads, blocks)| {
+                    Ok((
+                        in_range("launch_bounds threads", threads, 1, MAX_THREADS)?,
+                        in_range("launch_bounds blocks", blocks, 1, i64::from(i32::MAX))?,
+                    ))
+                })
+                .transpose()?,
             fold_k: keys
                 .opt("fold_k")
-                .map(|k| int_of(k, "fold_k"))
+                .map(|k| in_range("fold_k", int_of(k, "fold_k")?, 1, i64::from(i32::MAX)))
                 .transpose()?,
             warps: match keys.opt("warps") {
-                Some(w) => int_of(w, "warps")?,
+                Some(w) => in_range("warps", int_of(w, "warps")?, 1, MAX_THREADS / 32)?,
                 None => aether_writers::contract::types::DEFAULT_WARPS,
             },
             team_threads: match keys.opt("team_threads") {
-                Some(t) => int_of(t, "team_threads")?,
+                Some(t) => in_range("team_threads", int_of(t, "team_threads")?, 0, MAX_THREADS)?,
                 None => 0,
             },
             exports: keys.opt("exports").map(sizes).transpose()?,
@@ -1287,6 +1310,81 @@ mod tests {
             .replace("\"Host\"", "\"Device\"")
             .replace("\"image_format\":\"Ptx\",", "");
         assert!(KernelRequest::from_json(&device).is_err());
+    }
+
+    #[test]
+    fn a_setting_out_of_range_is_a_bad_request_naming_the_member_and_the_value() {
+        /// A setting set out of range, the member the refusal names and the value it quotes.
+        type Case<'a> = (&'a dyn Fn(&mut Settings), &'a str, &'a str);
+        let cases: [Case; 7] = [
+            (&|s| s.warps = 0, "warps", "0"),
+            (&|s| s.warps = 33, "warps", "33"),
+            (&|s| s.team_threads = -4, "team_threads", "-4"),
+            (&|s| s.team_threads = 2048, "team_threads", "2048"),
+            (
+                &|s| s.launch_bounds = Some((0, 1)),
+                "launch_bounds threads",
+                "0",
+            ),
+            (
+                &|s| s.launch_bounds = Some((128, 0)),
+                "launch_bounds blocks",
+                "0",
+            ),
+            (&|s| s.fold_k = Some(0), "fold_k", "0"),
+        ];
+        for (set, member, value) in cases {
+            let mut bad = request();
+            set(&mut bad.settings);
+            let why = KernelRequest::from_json(&bad.to_json()).unwrap_err();
+            assert_eq!(why.kind, aether_writers::refuse::RefusalKind::BadRequest);
+            assert!(
+                why.reason.contains(member) && why.reason.contains(value),
+                "{}",
+                why.reason
+            );
+        }
+        let mut fine = request();
+        fine.settings.launch_bounds = Some((128, 2));
+        fine.settings.warps = 4;
+        assert!(KernelRequest::from_json(&fine.to_json()).is_ok());
+    }
+
+    #[test]
+    fn a_sink_that_is_no_node_of_the_context_is_a_bad_request_not_a_panic() {
+        let mut bad = request();
+        if let Body::Plain(member) = &mut bad.body {
+            member.sinks = vec![7];
+        }
+        let table = unsafe { &*crate::osprey_v1() };
+        let ctx = (table.ctx_new)();
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/facts"));
+        let why = crate::lower::lower(ctx, &bad.to_json(), dir).unwrap_err();
+        // SAFETY: `ctx` came from this table's `ctx_new` and is freed once.
+        unsafe { (table.ctx_free)(ctx) };
+        assert_eq!(why.kind, aether_writers::refuse::RefusalKind::BadRequest);
+        assert!(
+            why.reason.contains("sinks") && why.reason.contains('7'),
+            "{}",
+            why.reason
+        );
+    }
+
+    #[test]
+    fn a_negative_slot_position_in_an_answer_is_refused_by_name() {
+        let facts = Facts {
+            row_planes: vec![RowPlane {
+                cell: "c".into(),
+                slot: 3,
+            }],
+            ..Facts::default()
+        };
+        let text = written_facts(&facts)
+            .to_text()
+            .replace("\"slot\":3", "\"slot\":-3");
+        let parsed = Contract::parse(&text).unwrap();
+        let why = read_written_facts(&parsed.0, String::new()).unwrap_err();
+        assert!(why.reason.contains("slot"), "{}", why.reason);
     }
 
     #[test]

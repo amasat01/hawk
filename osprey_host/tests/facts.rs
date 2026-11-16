@@ -1,6 +1,6 @@
 //! The facts answer: the profile and instruction-set rules, the refusals by name, and the schema check of the data files.
 use aether_writers::contract::types::Caches;
-use osprey_host::facts::{answer, device_fusion, stated_from_json, Probe, Stated};
+use osprey_host::facts::{answer as ask_facts, device_fusion, stated_from_json, Probe, Stated};
 use std::path::{Path, PathBuf};
 
 /// The data files that ship with the library.
@@ -20,6 +20,17 @@ fn machine(isa: &str) -> Probe {
         vector_isa: if isa == "arm64" { "neon" } else { "avx2" }.into(),
         caches: None,
     }
+}
+
+/// The facts answer, a failure as its reason.
+fn answer(
+    dir: &Path,
+    target: &str,
+    compiler: &str,
+    probe: &Probe,
+    stated: &Stated,
+) -> Result<String, String> {
+    ask_facts(dir, target, compiler, probe, stated).map_err(String::from)
 }
 
 /// The answer for the host target, or the refusal.

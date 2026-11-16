@@ -8,7 +8,7 @@ use aether_writers::contract::types::{
     DEFAULT_WARPS,
 };
 use aether_writers::contract::{Contract, Json};
-use aether_writers::refuse::{fault, Refusal};
+use aether_writers::refuse::{bad, fault, Refusal};
 use std::path::Path;
 
 /// The host build's numbers.
@@ -352,7 +352,7 @@ fn capability(arch: &str) -> Result<i64, Refusal> {
         .collect();
     digits
         .parse()
-        .map_err(|_| fault(format!("facts: {arch} is not a device architecture")))
+        .map_err(|_| bad(format!("facts: {arch} is not a device architecture")))
 }
 
 impl DeviceCard {

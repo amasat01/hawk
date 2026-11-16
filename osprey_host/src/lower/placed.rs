@@ -8,7 +8,7 @@ use super::request::{KernelRequest, Member, WideForm};
 use super::{canonical, leaf_slots, Pending};
 use aether_writers::door;
 use aether_writers::ir::analysis::interchanged_loops;
-use aether_writers::refuse::{fault, Refusal};
+use aether_writers::refuse::{bad, fault, Refusal};
 use aether_writers::RxCtx;
 use raptor_ir::door::RX_OK;
 use raptor_ir::record::Ctx;
@@ -89,7 +89,7 @@ pub(super) fn place_sinks(
     let limits = card
         .wide_limits(real_bytes(request.scalar))
         .ok_or_else(|| fault("the build card has no wide thresholds for the scalar"))?;
-    let text = |text: String| CString::new(text).map_err(|_| fault("a NUL in a plane name"));
+    let text = |text: String| CString::new(text).map_err(|_| bad("a NUL in a plane name"));
     let form = text(format!("{:?}", request.settings.fold_form).to_lowercase())?;
     let taken = text(taken.join("\n"))?;
     let thread_form = (request.settings.wide_form == WideForm::Thread) as c_int;

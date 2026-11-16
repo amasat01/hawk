@@ -8,7 +8,7 @@ use super::stage_block::TeamRecord;
 use super::stages::{stage_facts, Note};
 use super::{canonical, leaf_slots, real_bytes, wing, Cards, Pending};
 use aether_writers::contract::types::{Form, Scalar, Target, TeamShape, Unit};
-use aether_writers::refuse::{fault, nib, Refusal};
+use aether_writers::refuse::{nib, Refusal};
 use raptor_ir::record::Ctx;
 use raptor_wings::lanes::slice::{slice_sinks, SliceSpec};
 use raptor_wings::stages::{stages, Stages};
@@ -200,13 +200,18 @@ fn tile_rows(ctx: *mut Ctx, sinks: &[u32], scalar: Scalar, bodies: i64, card: &D
         .unwrap_or(1)
 }
 
+/// The refusal of a warp form over a body that stores a reduction over samples: a construct this build does not write.
+fn stores_cells() -> Refusal {
+    nib("a warp form that stores a reduction over samples")
+}
+
 /// What the answer's stage block says of the launch: one stage on a team of the block's threads.
 fn note(ctx: *mut Ctx, member: &Member, warp: &Warp) -> Result<Note, Refusal> {
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let context = unsafe { &*ctx };
     let cells = raptor_wings::stages::stored_cells(context, &member.sinks).map_err(wing)?;
     if !cells.is_empty() {
-        return Err(fault("a warp form that stores a reduction over samples"));
+        return Err(stores_cells());
     }
     Ok(Note {
         stage: super::stage_block::StageRecord {
@@ -226,4 +231,16 @@ fn note(ctx: *mut Ctx, member: &Member, warp: &Warp) -> Result<Note, Refusal> {
         keyed: vec![],
         source: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! A warp form over cells is refused as a construct, not as a fault.
+    use super::*;
+    use aether_writers::refuse::RefusalKind;
+
+    #[test]
+    fn a_warp_form_that_stores_cells_is_not_written() {
+        assert_eq!(stores_cells().kind, RefusalKind::NotWritten);
+    }
 }

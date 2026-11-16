@@ -243,7 +243,8 @@ fn recorded_machine(unit: &Unit, contract: &Contract) -> (facts::Stated, &'stati
 fn facts_machine(unit: &Unit, contract: &Contract) -> Result<Machine, String> {
     let (stated, compiler) = recorded_machine(unit, contract);
     let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/facts"));
-    let answer = facts::answer(dir, "host", compiler, &facts::probe(), &stated)?;
+    let answer =
+        facts::answer(dir, "host", compiler, &facts::probe(), &stated).map_err(String::from)?;
     let Contract(mut top) = Contract::parse(&unit.to_json()).map_err(|refusal| refusal.reason)?;
     let Json::Obj(members) = &mut top else {
         return Err("the unit is not an object".into());

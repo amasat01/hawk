@@ -3,7 +3,7 @@
 use super::request::{DeclaredSlot, IndexSet, KernelRequest};
 use super::{canonical, leaf_slots, Cards, Pending};
 use aether_writers::contract::types::{Active, Dtype, Guard, MapBits, Role};
-use aether_writers::refuse::{bad, Refusal};
+use aether_writers::refuse::{bad, not_written, Refusal};
 use aether_writers::spell::binding_name;
 use raptor_ir::record::Ctx;
 
@@ -41,15 +41,22 @@ pub(super) fn set(
         .collect()
 }
 
+/// The refusal of a kernel that accumulates across samples under an active set: a construct this build does not write.
+fn accumulates(name: &str) -> Refusal {
+    not_written(format!(
+        "{name:?}: an active set refuses a kernel that accumulates across samples"
+    ))
+}
+
 /// One unit with its walk widened by the map and count planes. A segmented unit, a unit that accumulates across samples under a
 /// thinning guard, a thinning guard none of whose masks the unit binds and a unit that already uses a reserved plane name are
 /// refused.
 fn with_map(ctx: *mut Ctx, request: &KernelRequest, mut unit: Pending) -> Result<Pending, Refusal> {
     let name = &request.name;
     let what = if request.kind.lanes.is_some() {
-        "lanes=IndexSet()"
+        "a lane set"
     } else {
-        "Guard(active_set=True)"
+        "an active set"
     };
     if unit.segment.is_some() {
         return Err(bad(format!(
@@ -69,9 +76,7 @@ fn with_map(ctx: *mut Ctx, request: &KernelRequest, mut unit: Pending) -> Result
             _ => &[],
         };
         if leaves.iter().any(|slot| slot.role == Role::AccumOut) {
-            return Err(bad(format!(
-                "{name:?}: Guard(active_set=True) refuses a kernel that accumulates across samples"
-            )));
+            return Err(accumulates(name));
         }
         let binds = |mask: &String| {
             leaves
@@ -80,7 +85,7 @@ fn with_map(ctx: *mut Ctx, request: &KernelRequest, mut unit: Pending) -> Result
         };
         if !masks.iter().any(binds) {
             return Err(bad(format!(
-                "{name:?}: Guard(active_set=True) needs the kernel to bind the mask the map follows"
+                "{name:?}: an active set needs the kernel to bind the mask the map follows"
             )));
         }
     }
@@ -136,4 +141,18 @@ fn with_map(ctx: *mut Ctx, request: &KernelRequest, mut unit: Pending) -> Result
         lane_set: lane_set.is_some() && (prefix || bits == MapBits::B32),
     });
     Ok(unit)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The refusals of an active set are of the kind of what they refuse.
+    use super::*;
+    use aether_writers::refuse::RefusalKind;
+
+    #[test]
+    fn a_kernel_that_accumulates_under_an_active_set_is_a_construct_not_written() {
+        let why = accumulates("k");
+        assert_eq!(why.kind, RefusalKind::NotWritten);
+        assert!(!why.reason.contains("Guard("), "{}", why.reason);
+    }
 }

@@ -7,13 +7,12 @@
 extern crate raptor_wings;
 pub mod facts;
 pub mod lower;
-use aether_writers::refuse::{Refusal, RefusalKind};
+use aether_writers::refuse::{bad, fault, Refusal, RefusalKind};
 use aether_writers::{host_render, RxCtx};
 use raptor_ir::canon::rx_canonical;
 use raptor_ir::dialect::rx_declare_dialect;
 use raptor_ir::door::{
-    guard, put, rx_ctx_free, rx_ctx_new, rx_last_error, RX_BADARG, RX_OK, RX_PANIC, RX_REFUSED,
-    RX_TRUNC,
+    put, rx_ctx_free, rx_ctx_new, rx_last_error, RX_BADARG, RX_OK, RX_PANIC, RX_REFUSED, RX_TRUNC,
 };
 use raptor_ir::dump::rx_load;
 use raptor_ir::record::{Ctx, Fault};
@@ -167,6 +166,22 @@ extern "C" fn ctx_new() -> *mut Ctx {
     ctx
 }
 
+/// The refusal of a facts question that failed: a malformed question is the caller's, a broken data file is the library's fault.
+fn facts_refusal(failed: facts::Failed) -> Refusal {
+    match failed {
+        facts::Failed::Bad(reason) => bad(reason),
+        facts::Failed::Card(reason) => fault(reason),
+    }
+}
+
+/// The refusal of an argument of the facts entry that is not a valid value.
+fn bad_arg(why: &Fault) -> Refusal {
+    match why {
+        Fault::BadArg(reason) | Fault::Refused(reason) => bad(reason),
+        _ => fault("a facts argument"),
+    }
+}
+
 /// A NUL-terminated text argument of the facts entry.
 fn text_arg<'a>(arg: *const c_char, what: &str) -> Result<&'a str, Fault> {
     if arg.is_null() {
@@ -189,18 +204,36 @@ extern "C" fn facts(
     cap: usize,
     len: *mut usize,
 ) -> c_int {
-    guard(ctx, |_| {
-        let (target, compiler) = (text_arg(target, "target")?, text_arg(compiler, "compiler")?);
+    if ctx.is_null() || len.is_null() {
+        return RX_BADARG;
+    }
+    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let args =
+            (|| Ok::<_, Fault>((text_arg(target, "target")?, text_arg(compiler, "compiler")?)))();
+        let (target, compiler) = args.map_err(|why| bad_arg(&why))?;
         let stated = if stated.is_null() {
             facts::Stated::default()
         } else {
-            facts::stated_from_json(text_arg(stated, "stated")?).map_err(Fault::Refused)?
+            let text = text_arg(stated, "stated").map_err(|why| bad_arg(&why))?;
+            facts::stated_from_json(text).map_err(facts_refusal)?
         };
-        let dir = facts::facts_dir().map_err(Fault::Refused)?;
-        let answer = facts::answer(&dir, target, compiler, &facts::probe(), &stated)
-            .map_err(Fault::Refused)?;
-        put(buf, cap, len, &answer)
-    })
+        let dir =
+            facts::facts_dir().map_err(|reason| facts_refusal(facts::Failed::Card(reason)))?;
+        facts::answer(&dir, target, compiler, &facts::probe(), &stated).map_err(facts_refusal)
+    }))
+    .unwrap_or_else(|_| Err(fault("panic in facts")));
+    match done {
+        Ok(answer) => match put(buf, cap, len, &answer) {
+            Ok(()) => RX_OK,
+            Err(Fault::Truncated) => RX_TRUNC,
+            Err(_) => RX_BADARG,
+        },
+        Err(refusal) => {
+            // SAFETY: `ctx` is the live context the caller holds.
+            unsafe { &mut *ctx }.set_err(&refusal.reason);
+            status_of(refusal.kind)
+        }
+    }
 }
 
 /// Lowers one kernel: reads the request, asks the lowering, and writes the answer into the caller's buffer; a refusal becomes the

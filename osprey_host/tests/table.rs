@@ -88,9 +88,25 @@ fn facts_entry_answers_and_refuses() {
         buf.len(),
         &mut len,
     );
-    assert_eq!(refused, 1);
+    // a target the cards do not describe is a malformed question (status 2)
+    assert_eq!(refused, 2);
     let why = unsafe { CStr::from_ptr((t.last_error)(c)) };
     assert_eq!(why.to_str().unwrap(), "no facts for the target fast");
+    // a malformed stated machine is a malformed question too
+    let stated = c"{\"nope\":1}";
+    let malformed = (t.facts)(
+        c,
+        target.as_ptr(),
+        compiler.as_ptr(),
+        stated.as_ptr(),
+        buf.as_mut_ptr(),
+        buf.len(),
+        &mut len,
+    );
+    assert_eq!(malformed, 2);
+    // a data directory with no cards is the library's fault (status 4)
+    std::env::set_var("OSPREY_FACTS_DIR", "/nonexistent/osprey_facts");
+    assert_eq!(status(buf.as_mut_ptr(), buf.len(), &mut len), 4);
     // SAFETY: `c` came from this table's `ctx_new` and is freed once.
     unsafe { (t.ctx_free)(c) };
 }

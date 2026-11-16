@@ -246,6 +246,7 @@ fn device_arch(request: &KernelRequest) -> Result<String, Refusal> {
 pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<KernelAnswer, Refusal> {
     let request = KernelRequest::from_json(request_text)?;
     scope(&request)?;
+    known_sinks(ctx, &request)?;
     let cards = Cards::load(&request, facts_dir)?;
     let mut pending = match &request.body {
         Body::Plain(member) => vec![Pending::of(member, request.one_step.as_ref())],
@@ -396,6 +397,28 @@ fn write_target(
     })
 }
 
+/// Refuses a sink handle that is no node of the context: the request names the nodes it writes, and the lowering indexes them.
+fn known_sinks(ctx: *mut Ctx, request: &KernelRequest) -> Result<(), Refusal> {
+    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
+    let nodes = unsafe { ctx.as_ref() }
+        .ok_or_else(|| fault("a null context"))?
+        .nodes
+        .len();
+    let members: Vec<&Member> = match &request.body {
+        Body::Plain(member) => vec![member],
+        Body::Chain(members) | Body::Fused(members) => members.iter().collect(),
+    };
+    let steps = request.one_step.iter().chain(members);
+    for sink in steps.flat_map(|member| member.sinks.iter()) {
+        if *sink as usize >= nodes {
+            return Err(bad(format!(
+                "request key sinks: node {sink} is not in the context ({nodes} nodes)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Refuses by name what the written shapes do not cover: a request without a target.
 fn scope(request: &KernelRequest) -> Result<(), Refusal> {
     if request.targets.is_empty() {
@@ -439,7 +462,7 @@ fn declared_text(declared: &[DeclaredSlot]) -> String {
 
 /// The canonical walk over the member's sinks with its declared slots, and the walk's digest.
 fn canonical(ctx: *mut Ctx, member: &Member) -> Result<(u32, String), Refusal> {
-    let text = |s: String| CString::new(s).map_err(|_| fault("a NUL in a request text"));
+    let text = |s: String| CString::new(s).map_err(|_| bad("a NUL in a request text"));
     let declared = text(declared_text(&member.declared))?;
     let exempt = text(tuple_of(member.exempt.iter().cloned()))?;
     let force = member.force.map(|a| text(a.name().into())).transpose()?;
