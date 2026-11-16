@@ -32,7 +32,7 @@ Every file with its line count (this file excluded):
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
    2738  osprey_host/src/bin/kreplay.rs
-   1122  osprey_host/src/bin/kreplay/meta.rs
+   1124  osprey_host/src/bin/kreplay/meta.rs
    1454  osprey_host/src/bin/treplay.rs
     708  osprey_host/src/facts.rs
     329  osprey_host/src/lib.rs

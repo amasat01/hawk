@@ -1081,7 +1081,9 @@ pub fn emit(file: &Path, dir: &Path, only: Option<&str>) {
                     target,
                 };
                 let answer = (|| {
-                    let facts = facts_all(&found, kernel, &mut machines)?;
+                    // one library per side: the meta written for a side names the entries of that side's text only
+                    let mut facts = facts_all(&found, kernel, &mut machines)?;
+                    facts.retain(|(asked, _)| *asked == target);
                     if ctx.is_none() {
                         ctx = Some(load(&call)?);
                     }
