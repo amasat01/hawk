@@ -316,11 +316,49 @@ def test_a_genuine_copy_outside_the_trusted_places_is_a_named_error(tmp_path, mo
         registry.reset()
 
 
-BUILD_DEFAULT = ATTEMPT + """
-print(json.dumps({"build": attempt(lambda: hawk.build([only], os.path.join(here, "out"), cache_dir=os.path.join(here, "cache"))
+#: The child's own answer to "does a folder on the path shadow ``ospreys.cuda`` here?": where importlib resolves the name,
+#: and whether that place lies inside the script's folder (where the tests plant their copies).
+PRECONDITION = """
+import importlib.util
+_spec = importlib.util.find_spec("ospreys.cuda")
+resolved = os.path.abspath(_spec.origin or next(iter(_spec.submodule_search_locations)))
+shadowed = os.path.commonpath([resolved, here]) == here
+"""
+
+BUILD_DEFAULT = ATTEMPT + PRECONDITION + """
+print(json.dumps({"shadowed": shadowed, "resolved": resolved,
+                  "build": attempt(lambda: hawk.build([only], os.path.join(here, "out"), cache_dir=os.path.join(here, "cache"))
                                     and "built"),
                   "need": attempt(lambda: need("cuda").id), "host": attempt(lambda: host_build("h"))}))
 """
+
+#: Stand-in for an editable install: a finder in front of the path finder that serves the first-party package from the real tree.
+REDIRECT = """
+import sys, importlib.machinery
+class _Redirect:
+    def find_spec(self, name, path=None, target=None):
+        if name == "ospreys":
+            return importlib.machinery.PathFinder.find_spec(name, [%r])
+sys.meta_path.insert(0, _Redirect())
+"""
+
+
+def _check_precondition_outcome(out, tmp_path, planted: str):
+    """Assert the property that holds in the import system the child reported.
+
+    An editable install (scikit-build-core) puts a redirecting finder in ``sys.meta_path`` ahead of the path finder; it maps
+    the first-party names to the source tree. A copy placed on the path is then never imported: the name still resolves to
+    the real package, so there is nothing to refuse, and the build must simply work and never run the copy. Without such a
+    finder (a wheel, or the tree on PYTHONPATH) the copy shadows the name and the product must refuse it by name."""
+    if out["shadowed"]:
+        for call in (out["build"], out["need"]):
+            assert call["raised"] == "RaptorError" and "import path resolves that name to" in call["said"]
+            assert "ospreys.cuda" in call["said"] and "not installed" not in call["said"] and planted in call["said"]
+    else:
+        # the default build reaches the device compile: it succeeds, or (no NVRTC on this machine) stops there, past the registry
+        assert out["build"] == {"ok": "built"} or out["build"]["raised"] == "NvrtcUnavailable", out
+        assert out["need"] == {"ok": "cuda"}
+    assert out["host"] == {"ok": ["host"]} and not (tmp_path / "RAN").exists()
 
 
 @pytest.mark.parametrize("stray", ["ospreys/cuda.py", "ospreys/cuda/__init__.py"])
@@ -328,20 +366,23 @@ def test_a_stray_file_named_like_a_first_party_package_is_a_named_error_not_a_si
     (tmp_path / stray).parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / stray).write_text(f"open({str(tmp_path / 'RAN')!r}, 'w').write('x')\n")
     out = _run(tmp_path, BUILD_DEFAULT, [REPO, *EXTENSIONS])
-    for call in (out["build"], out["need"]):
-        assert call["raised"] == "RaptorError" and "import path resolves that name to" in call["said"]
-        assert "ospreys.cuda" in call["said"] and "not installed" not in call["said"]
-    assert out["host"] == {"ok": ["host"]} and not (tmp_path / "RAN").exists()
+    _check_precondition_outcome(out, tmp_path, "ospreys")
 
 
 def test_a_genuine_first_party_copy_beside_nothing_is_a_named_error(tmp_path):
-    import shutil
-
     shutil.copytree(Path(EXTENSIONS[0]) / "ospreys" / "cuda", tmp_path / "elsewhere" / "ospreys" / "cuda")
     out = _run(tmp_path, BUILD_DEFAULT, [REPO, tmp_path / "elsewhere"])
-    for call in (out["build"], out["need"]):
-        assert call["raised"] == "RaptorError" and "import path resolves that name to" in call["said"] and "elsewhere" in call["said"]
-    assert out["host"] == {"ok": ["host"]}
+    _check_precondition_outcome(out, tmp_path, "elsewhere")
+
+
+def test_with_a_finder_ahead_of_the_path_a_planted_copy_is_never_imported_and_the_build_works(tmp_path):
+    """Stand-in for an editable install (no install needed): the child puts a standard-library finder first in
+    ``sys.meta_path`` that serves ``ospreys`` from the real tree, then a copy is planted on the path."""
+    (tmp_path / "ospreys").mkdir()
+    (tmp_path / "ospreys" / "cuda.py").write_text(f"open({str(tmp_path / 'RAN')!r}, 'w').write('x')\n")
+    out = _run(tmp_path, BUILD_DEFAULT, [REPO, *EXTENSIONS], pre=REDIRECT % EXTENSIONS[0])
+    assert out["shadowed"] is False, out["resolved"]
+    _check_precondition_outcome(out, tmp_path, "ospreys")
 
 
 DAMAGED = {"no metadata": dict(entry="[ospreys]\nbrk = brkpkg:osprey.json\n", metadata=False),

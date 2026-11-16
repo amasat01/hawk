@@ -59,18 +59,18 @@ def _kernel(group):
 
 
 def _sources(group):
-    k = _kernel(group)
-    unit = B._active_unit(k, "step", MAP)
-    targets = ("cuda", "host")
-    return B._emit(B.lower(unit, "step", scalar_mode("float64"), MAP, targets, DEVICE), targets, B._options(device_arch=""))
+    """The unit text of the group-``group`` kernel for both targets, from the public source entry."""
+    return hawk.artifact.emit_source(_kernel(group), name="step", kind=MAP, targets=("cuda", "host")).sources
 
 
-
-
-
-
-
-
+@pytest.mark.parametrize("target,exit_line", [("cuda", "if (hawk_i >= nSamples) return;"),
+                                              ("host", "if (hawk_i >= nSamples) continue;")])
+def test_group_text_carries_the_derived_read_and_the_exit(target, exit_line):
+    one, many = _sources(1)[target], _sources(G)[target]
+    assert GROUP_READ in many.text and PER_LANE_READ not in many.text
+    assert many.text.index(GROUP_READ) < many.text.index(exit_line)
+    assert exit_line in many.text
+    assert many.body == one.body
 
 
 @pytest.fixture(scope="module")
