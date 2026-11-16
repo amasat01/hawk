@@ -94,7 +94,10 @@ fn one_unit(
     // SAFETY: `ctx` is the live context the caller holds; nothing else reads it while the stages are made.
     let found = stages(unsafe { &mut *ctx }, &unit.member.sinks, &facts).map_err(wing)?;
     match found {
-        Stages::Team => Err(nib("a team stage that folds an ordered log")),
+        Stages::LoopLog => Err(nib(format!(
+            "{}: an ordered accumulate inside a loop is not written yet; the log of a loop's accumulates needs one slot per iteration",
+            unit.member.name
+        ))),
         Stages::Unwritten => Err(nib(
             "the block stages of a sum over the lanes of a key of this shape",
         )),
