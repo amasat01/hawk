@@ -81,6 +81,10 @@ pub struct OspreyV1 {
         usize,
         *mut usize,
     ) -> c_int,
+    /// Writes the C++ text of a set of units built into one library (the exports block and the library record over the units) from
+    /// a JSON list of their records, into the caller's buffer, as `lower` does.
+    pub set_text:
+        extern "C" fn(*mut Ctx, *const c_char, usize, *mut c_char, usize, *mut usize) -> c_int,
 }
 unsafe impl Sync for OspreyV1 {}
 
@@ -300,6 +304,44 @@ extern "C" fn lower(
     }
 }
 
+/// Writes the text of a set of units: reads the unit records, asks the lowering for the one text over them, and writes it into the
+/// caller's buffer; a refusal becomes the context's last error with the status of its kind.
+extern "C" fn set_text(
+    ctx: *mut Ctx,
+    json: *const c_char,
+    n: usize,
+    buf: *mut c_char,
+    cap: usize,
+    len: *mut usize,
+) -> c_int {
+    if ctx.is_null() || len.is_null() || json.is_null() {
+        return RX_BADARG;
+    }
+    // SAFETY: the caller passes `n` readable bytes at `json`.
+    let bytes = unsafe { std::slice::from_raw_parts(json as *const u8, n) };
+    let Ok(input) = std::str::from_utf8(bytes) else {
+        return RX_BADARG;
+    };
+    let done = std::panic::catch_unwind(|| lower::set_text(input)).unwrap_or_else(|_| {
+        Err(Refusal {
+            kind: RefusalKind::Fault,
+            reason: "panic in set_text".into(),
+        })
+    });
+    match done {
+        Ok(text) => match put(buf, cap, len, &text) {
+            Ok(()) => RX_OK,
+            Err(Fault::Truncated) => RX_TRUNC,
+            Err(_) => RX_BADARG,
+        },
+        Err(refusal) => {
+            // SAFETY: `ctx` is the live context the caller holds.
+            unsafe { &mut *ctx }.set_err(&refusal.reason);
+            status_of(refusal.kind)
+        }
+    }
+}
+
 /// Writes the identity and its terminating NUL into the caller's 65-byte buffer.
 extern "C" fn identity(out65: *mut c_char) -> c_int {
     if out65.is_null() {
@@ -327,6 +369,7 @@ static TABLE: OspreyV1 = OspreyV1 {
     declare: rx_declare_dialect,
     facts,
     lower,
+    set_text,
 };
 
 #[no_mangle]

@@ -15,7 +15,7 @@ Every file with its line count (this file excluded):
    1089  osprey_host/binding/gen/src/main.rs
      36  osprey_host/binding/template/osprey.h
     110  osprey_host/binding/template/types.c
-    288  osprey_host/binding/test_binding.py
+    295  osprey_host/binding/test_binding.py
      50  osprey_host/build.rs
      11  osprey_host/check_exports.sh
     145  osprey_host/ci/gate.sh
@@ -28,16 +28,16 @@ Every file with its line count (this file excluded):
      35  osprey_host/facts/cuda_build.json
       8  osprey_host/facts/cuda_image.json
      12  osprey_host/facts/x86.json
-    115  osprey_host/include/osprey_host.h
-    256  osprey_host/loader/loader.c
+    127  osprey_host/include/osprey_host.h
+    270  osprey_host/loader/loader.c
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
-   3221  osprey_host/src/bin/kreplay.rs
+   3223  osprey_host/src/bin/kreplay.rs
    1235  osprey_host/src/bin/kreplay/derived.rs
-   1298  osprey_host/src/bin/kreplay/meta.rs
+   1314  osprey_host/src/bin/kreplay/meta.rs
    1454  osprey_host/src/bin/treplay.rs
     795  osprey_host/src/facts.rs
-    349  osprey_host/src/lib.rs
+    392  osprey_host/src/lib.rs
     162  osprey_host/src/lower/active.rs
      51  osprey_host/src/lower/blocks.rs
      35  osprey_host/src/lower/boxed.rs
@@ -50,9 +50,9 @@ Every file with its line count (this file excluded):
     334  osprey_host/src/lower/links.rs
     707  osprey_host/src/lower/meta_c.rs
     847  osprey_host/src/lower/meta_fill.rs
-    800  osprey_host/src/lower/mod.rs
+    829  osprey_host/src/lower/mod.rs
     120  osprey_host/src/lower/placed.rs
-   1628  osprey_host/src/lower/request.rs
+   1681  osprey_host/src/lower/request.rs
     225  osprey_host/src/lower/segment.rs
     116  osprey_host/src/lower/stage_block.rs
     558  osprey_host/src/lower/stages.rs
@@ -67,6 +67,7 @@ Every file with its line count (this file excluded):
      45  osprey_host/tests/facts_oracle.rs
      86  osprey_host/tests/link_rules.rs
     524  osprey_host/tests/meta_c.rs
+    330  osprey_host/tests/set_text.rs
     173  osprey_host/tests/stage_records.rs
     174  osprey_host/tests/table.rs
      47  osprey_host/tests/treplay.rs

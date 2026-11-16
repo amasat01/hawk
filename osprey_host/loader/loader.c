@@ -246,6 +246,20 @@ int ob_lower(rx_ctx* ctx, ob_backend* lib, const char* facts_dir, const char* du
     return status;
 }
 
+int ob_set_text(rx_ctx* ctx, ob_backend* lib, const char* units, size_t n_units, char* buf,
+    size_t cap, size_t* len)
+{
+    const ob_table* table = lib->table;
+    rx_ctx* inner         = table->ctx_new();
+    if (!inner)
+        return fail(ctx, RX_REFUSED, "set_text", "the library cannot create a context");
+    int status = table->set_text(inner, units, n_units, buf, cap, len);
+    if (status != RX_OK && status != RX_TRUNC)
+        status = forward(ctx, table, inner, status, "set_text");
+    table->ctx_free(inner);
+    return status;
+}
+
 int ob_close(rx_ctx* ctx, ob_backend* lib)
 {
     (void)ctx;

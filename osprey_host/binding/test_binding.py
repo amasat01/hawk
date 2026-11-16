@@ -282,6 +282,13 @@ if lib_path:
     assert str(e).startswith("render: least squares (panic: "), str(e)
     assert render(json.dumps(UNIT))[0].startswith("// HAWK-emitted host translation unit")
     done.append("backend_render")
+    e = raises(
+        o.BadRequest,
+        lambda: c.backend_set_text(lib, '{"v": 1, "units": []}'),
+        "backend_set_text: an empty list of units",
+    )
+    assert str(e) == "set_text: a unit set without a unit", str(e)
+    done.append("backend_set_text")
     assert c.backend_close(lib) is None
     done.append("backend_close")
 print("\n".join("ok: " + d for d in done))

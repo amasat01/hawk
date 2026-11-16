@@ -38,8 +38,8 @@ use card::{BuildCard, DeviceCard};
 use raptor_ir::canon::{Tt, WalkRes};
 use raptor_ir::record::{Ctx, Fault};
 use raptor_wings::team::TeamSpec;
-use request::UnitAnswer;
 use request::{Body, DeclaredSlot, KernelAnswer, KernelRequest, Member, Settings, TargetText};
+use request::{UnitAnswer, UnitSet};
 use request::{ACCESSES, DTYPES, ROLES};
 use std::path::Path;
 
@@ -268,7 +268,7 @@ pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<Kern
     known_sinks(ctx, &request)?;
     refine_stop_rule(ctx, &request)?;
     let cards = Cards::load(&request, facts_dir)?;
-    let mut units = kernel_units(ctx, &request, &cards, facts_dir, true)?;
+    let mut units = kernel_units(ctx, &request, &cards, facts_dir, request.exports_block)?;
     if !request.derived.is_empty() {
         units.extend(derived_units(ctx, &request, &cards, facts_dir, &units)?);
     }
@@ -281,6 +281,35 @@ pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<Kern
         meta_source,
     })
 }
+
+/// The C++ text of a set of units built into one library: the headers the exports block needs, the block once, and the library
+/// record over all the units in the order given. The text of the units of one answer is `SET_HEADERS`, that answer's own exports
+/// block (the one its first unit carries when asked with the block) and its `meta_source`. Two units of one name are refused, as is
+/// an empty list; nothing is read from the environment: the sizes are the five stated or the ones the headers give.
+pub fn set_text(input: &str) -> Result<String, Refusal> {
+    let set = UnitSet::from_json(input)?;
+    if set.units.is_empty() {
+        return Err(bad("a unit set without a unit"));
+    }
+    for (at, unit) in set.units.iter().enumerate() {
+        if let Some(first) = set.units[..at].iter().position(|u| u.name == unit.name) {
+            return Err(bad(format!(
+                "units {first} and {at} of the set are both named {}",
+                unit.name
+            )));
+        }
+    }
+    let sizes = set.exports.map_or(Exports::Derived, Exports::Sizes);
+    let block = aether_writers::unit::exports(&sizes, false)?;
+    let meta = meta_c::source(
+        &unit_meta::LibraryMeta::current(),
+        &set.units.iter().collect::<Vec<_>>(),
+    )?;
+    Ok(format!("{SET_HEADERS}{block}{meta}"))
+}
+
+/// The headers the exports block of a set text needs, which a unit text has from its own prelude.
+pub const SET_HEADERS: &str = "#include \"plugin/gref_layout.h\"\n";
 
 /// The units of the kernels derived from the request's kernel, each lowered as a kernel of its own over the shared IR with the
 /// request's settings, its self-check exports omitted, and its stated facts resolved against the units lowered before it.

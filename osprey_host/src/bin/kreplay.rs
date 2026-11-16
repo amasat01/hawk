@@ -1115,6 +1115,7 @@ fn request_for(
         shared: shared_of(kernel),
         broadcast: broadcast_of(kernel),
         facts,
+        exports_block: true,
     })
 }
 
@@ -3141,6 +3142,7 @@ fn main() {
             Path::new(file.expect("--emit-meta <calls> <folder>")),
             Path::new(out.expect("--emit-meta <calls> <folder>")),
             None,
+            args.iter().any(|a| a == "--emit-set"),
         );
     }
     if let Some(at) = args.iter().position(|a| a == "--emit") {
@@ -3164,7 +3166,7 @@ fn main() {
             .collect();
         files.sort();
         for file in files {
-            oracle::emit(&file, Path::new(out), Some(id));
+            oracle::emit(&file, Path::new(out), Some(id), false);
         }
         return;
     }

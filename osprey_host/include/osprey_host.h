@@ -16,7 +16,7 @@ extern "C" {
 /* The abi number of the entry table, the one source of it: the library reads it from this file when
    it is built. Rule: a table whose shape (fields or their signatures) changes moves this number.
    ob_open refuses any other number by name. */
-#define OB_ABI 7
+#define OB_ABI 8
 
 /* The version of the typed contract the caller was built for (the JSON a render takes, with its
    closed schema). A library carries its own in the table; ob_open refuses any other version by
@@ -60,10 +60,11 @@ typedef struct {
     int (*facts)(
         rx_ctx*, const char*, const char*, const char*, const char*, char*, size_t, size_t*);
     int (*lower)(rx_ctx*, const char*, const char*, size_t, char*, size_t, size_t*);
+    int (*set_text)(rx_ctx*, const char*, size_t, char*, size_t, size_t*);
 } ob_table;
 
 /* Opens the library at path and reads its entry table; a missing symbol or another abi number is
-   refused by name ("open: abi number N, expected 7"), and so is another contract version
+   refused by name ("open: abi number N, expected 8"), and so is another contract version
    ("open: contract version N, expected 1"). */
 int ob_open(rx_ctx* ctx, const char* path, ob_backend** out);
 /* The library's name (for example "host"). */
@@ -106,6 +107,17 @@ int ob_lower(rx_ctx* ctx, ob_backend* lib,
     const char* facts_dir /* NULL = "facts" beside the library */, const char* dump, size_t n_dump,
     const char* dialects, const char* request, size_t n_request, char* buf, size_t cap,
     size_t* len);
+/* The one C++ text of a set of units built into one library: the headers and the self-check exports
+   block once, then the library record over all the units in the order given. units is JSON: {"v":
+   1, "units": [<the meta object of each unit, as an answer of ob_lower carries it>, ...],
+   "exports": [five layout sizes]} where "exports" is optional (without it the block states the
+   sizes the headers it is compiled with give; nothing is read from the environment). A set is built
+   from units that came with the block asked off (the request member exports_block false), so the
+   block is in the library once. An empty list, two units of one name and a record that does not
+   read are refused, saying why in rx_last_error(ctx). The text is written into buf as ob_facts
+   writes its text (RX_TRUNC when cap is too small, len filled in). */
+int ob_set_text(rx_ctx* ctx, ob_backend* lib, const char* units, size_t n_units, char* buf,
+    size_t cap, size_t* len);
 /* Closes the library and frees the parts of its last render. */
 int ob_close(rx_ctx* ctx, ob_backend* lib);
 

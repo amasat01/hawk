@@ -1204,7 +1204,9 @@ impl Oracle {
 ///
 /// With `only`, just the call of that id is written, and each unit's text per target is written beside the source; one line names
 /// the test that made the call.
-pub fn emit(file: &Path, dir: &Path, only: Option<&str>) {
+/// With `sets`, each answer is also written as JSON, once as asked alone and once as asked for the texts of a set (`<name>.json`,
+/// `<name>_set.json`); without it the folder holds what it always held.
+pub fn emit(file: &Path, dir: &Path, only: Option<&str>, sets: bool) {
     std::fs::create_dir_all(dir).expect("the output folder");
     let text = std::fs::read_to_string(file).expect("the calls");
     let mut machines = HashMap::new();
@@ -1251,7 +1253,7 @@ pub fn emit(file: &Path, dir: &Path, only: Option<&str>) {
                     show: 0,
                     target,
                 };
-                let answer = (|| {
+                let answers = (|| {
                     // one library per side: the meta written for a side names the entries of that side's text only
                     let mut facts = facts_all(&found, kernel, &mut machines)?;
                     facts.retain(|(asked, _)| *asked == target);
@@ -1259,12 +1261,26 @@ pub fn emit(file: &Path, dir: &Path, only: Option<&str>) {
                         ctx = Some(load(&call)?);
                     }
                     let (c, handles) = ctx.as_ref().ok_or("no context")?;
-                    ask(*c, &request_for(&call, kernel, facts, handles)?.to_json())
+                    let mut request = request_for(&call, kernel, facts, handles)?;
+                    let with_block = ask(*c, &request.to_json())?;
+                    if !sets {
+                        return Ok::<_, String>((with_block, None));
+                    }
+                    // the same kernel asked for the texts of a set, whose exports block is the set text's
+                    request.exports_block = false;
+                    Ok((with_block, Some(ask(*c, &request.to_json())?)))
                 })();
-                let answer = answer.unwrap_or_else(|why| {
+                let (answer, set_answer) = answers.unwrap_or_else(|why| {
                     eprintln!("{id} {name} {side}: {why}");
                     std::process::exit(1)
                 });
+                for (suffix, held) in [("", sets.then_some(&answer)), ("_set", set_answer.as_ref())]
+                {
+                    if let Some(held) = held {
+                        let file = dir.join(format!("{id}_{name}_{side}{suffix}.json"));
+                        std::fs::write(file, held.to_json()).expect("the answer");
+                    }
+                }
                 let file = dir.join(format!("{id}_{name}_{side}.c"));
                 std::fs::write(&file, &answer.meta_source).expect("the source");
                 if only.is_some() {

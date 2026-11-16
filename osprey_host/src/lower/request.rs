@@ -203,6 +203,10 @@ pub struct KernelRequest {
     pub fusion: Option<FusionRow>,
     /// The answer of the facts entry for each target of the request, passed back as it was given.
     pub facts: Vec<(Target, String)>,
+    /// Whether the first kernel's texts carry the self-check exports block. A set of kernels built into one library asks every
+    /// kernel with false and takes the block once from the set text; a text that is compiled alone asks with true. No other part
+    /// of any text changes.
+    pub exports_block: bool,
 }
 
 /// The text a unit has for one target, with the facts the caller reads back.
@@ -351,6 +355,33 @@ pub struct KernelAnswer {
     pub meta_source: String,
 }
 
+/// The input of the set text: the unit records of one or several answers, and the five layout sizes the exports block states.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnitSet {
+    /// The `meta` objects of the units, as the answers carry them, in the order the library lists them.
+    pub units: Vec<UnitMeta>,
+    /// Five layout sizes in place of the ones derived from the headers the text is compiled with.
+    pub exports: Option<[u64; 5]>,
+}
+
+impl UnitSet {
+    /// The input a JSON text describes: `{"v": 1, "units": [<meta>, ...], "exports": [5 sizes]}`, with `exports` optional.
+    pub fn from_json(source: &str) -> Result<UnitSet, Refusal> {
+        let parsed = Contract::parse(source)?;
+        let mut keys = Keys::of(&parsed.0, "unit set")?;
+        let version = int_of(keys.req("v")?, "v")?;
+        if version != i64::from(REQUEST_VERSION) {
+            return Err(unknown(format!("request version {version}")));
+        }
+        let units = list_of(keys.req("units")?, "units", |j| {
+            UnitMeta::get(Some(j), "units")
+        })?;
+        let exports = keys.opt("exports").map(layout_sizes).transpose()?;
+        keys.done()?;
+        Ok(UnitSet { units, exports })
+    }
+}
+
 /// The members of a closed set, read by their names.
 fn pick<T: Debug + Copy>(all: &[T], name: &str, what: &str) -> Result<T, Refusal> {
     all.iter()
@@ -461,6 +492,15 @@ pub(super) fn text_of(json: &Json, key: &str) -> Result<String, Refusal> {
 /// The integer of a value.
 pub(super) fn int_of(json: &Json, key: &str) -> Result<i64, Refusal> {
     json.int().ok_or_else(|| wrong(key, "not an integer"))
+}
+/// The five layout sizes of a value.
+pub(super) fn layout_sizes(j: &Json) -> Result<[u64; 5], Refusal> {
+    let values: Vec<u64> = list_of(j, "exports", |n| {
+        u64::try_from(int_of(n, "exports")?).map_err(|_| wrong("exports", "not a size"))
+    })?;
+    values
+        .try_into()
+        .map_err(|_| wrong("exports", "not five sizes"))
 }
 /// The flag of a value.
 pub(super) fn flag_of(json: &Json, key: &str) -> Result<bool, Refusal> {
@@ -975,14 +1015,6 @@ impl Settings {
             [a, b] => Ok((int_of(a, "launch_bounds")?, int_of(b, "launch_bounds")?)),
             _ => Err(wrong("launch_bounds", "not a pair")),
         };
-        let sizes = |j: &Json| -> Result<[u64; 5], Refusal> {
-            let values: Vec<u64> = list_of(j, "exports", |n| {
-                u64::try_from(int_of(n, "exports")?).map_err(|_| wrong("exports", "not a size"))
-            })?;
-            values
-                .try_into()
-                .map_err(|_| wrong("exports", "not five sizes"))
-        };
         let settings = Settings {
             fold_form: match keys.opt("fold_form") {
                 Some(form) => member_of(&FOLD_FORMS, form, "fold_form")?,
@@ -1023,7 +1055,7 @@ impl Settings {
                 Some(t) => in_range("team_threads", int_of(t, "team_threads")?, 0, MAX_THREADS)?,
                 None => 0,
             },
-            exports: keys.opt("exports").map(sizes).transpose()?,
+            exports: keys.opt("exports").map(layout_sizes).transpose()?,
             literal_table: match keys.opt("literal_table") {
                 Some(f) => flag_of(f, "literal_table")?,
                 None => false,
@@ -1111,6 +1143,10 @@ impl KernelRequest {
             broadcast: vec![],
             fusion: keys.opt("fusion").map(fusion_read).transpose()?,
             facts: facts_read(keys.req("facts")?)?,
+            exports_block: match keys.opt("exports_block") {
+                Some(flag) => flag_of(flag, "exports_block")?,
+                None => true,
+            },
         };
         read_part(&mut keys, &mut request)?;
         if let Some(list) = keys.opt("derived") {
@@ -1214,6 +1250,9 @@ impl KernelRequest {
             .map(|(target, answer)| (format!("{target:?}"), Json::Str(answer.clone())))
             .collect();
         o.push(("facts".into(), Json::Obj(answers)));
+        if !self.exports_block {
+            o.push(("exports_block".into(), Json::Bool(false)))
+        }
         Json::Obj(o).to_text()
     }
 }
@@ -1368,7 +1407,21 @@ mod tests {
             broadcast: vec![],
             fusion: None,
             facts: vec![(Target::Host, "{}".into())],
+            exports_block: true,
         }
+    }
+
+    #[test]
+    fn the_exports_block_is_on_unless_the_request_turns_it_off() {
+        let plain = request();
+        assert!(plain.exports_block && !plain.to_json().contains("exports_block"));
+        let off = KernelRequest {
+            exports_block: false,
+            ..plain
+        };
+        let text = off.to_json();
+        assert!(text.contains("\"exports_block\":false"));
+        assert_eq!(KernelRequest::from_json(&text).unwrap(), off);
     }
 
     #[test]
