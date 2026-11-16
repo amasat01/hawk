@@ -390,23 +390,44 @@ fn staged(
     Ok(out)
 }
 
-/// The stage block from the notes of the units, when any unit is a stage.
-pub(super) fn block(pending: &[Pending]) -> Option<StageBlock> {
-    let mut block = StageBlock::default();
-    let mut any = false;
-    for note in pending.iter().filter_map(|unit| unit.note.as_ref()) {
-        any = true;
-        block.stages.push(note.stage.clone());
-        block.cells.extend(note.cells.iter().cloned());
-        block.keyed.extend(note.keyed.iter().cloned());
-        block.source = block.source.take().or_else(|| note.source.clone());
-        for plane in &note.planes {
-            if !block.team_planes.iter().any(|p| p.name == plane.name) {
-                block.team_planes.push(plane.clone());
-            }
+/// The stage blocks from the notes of the units. The units that run one after the other (the stages of a cut kernel, the
+/// pieces of a chain) share one block. A unit that covers one run of a segmented input is an alternative of its dispatch
+/// group, never a stage after another branch: its note is a block of its own, with its own scratch planes.
+pub(super) fn blocks(pending: &[Pending]) -> Vec<StageBlock> {
+    let mut sequence = StageBlock::default();
+    let mut in_sequence = false;
+    let mut alternatives = vec![];
+    for unit in pending {
+        let Some(note) = unit.note.as_ref() else {
+            continue;
+        };
+        if unit.segment.is_some() {
+            let mut own = StageBlock::default();
+            add(&mut own, note);
+            alternatives.push(own);
+        } else {
+            in_sequence = true;
+            add(&mut sequence, note);
         }
     }
-    any.then_some(block)
+    let mut out = alternatives;
+    if in_sequence {
+        out.insert(0, sequence);
+    }
+    out
+}
+
+/// Adds what one unit's note says to a block; a scratch plane two stages share is recorded once.
+fn add(block: &mut StageBlock, note: &Note) {
+    block.stages.push(note.stage.clone());
+    block.cells.extend(note.cells.iter().cloned());
+    block.keyed.extend(note.keyed.iter().cloned());
+    block.source = block.source.take().or_else(|| note.source.clone());
+    for plane in &note.planes {
+        if !block.team_planes.iter().any(|p| p.name == plane.name) {
+            block.team_planes.push(plane.clone());
+        }
+    }
 }
 
 /// The scratch planes of a team stage as the answer records them. A partial sum is the build's scalar, or a band of them when the

@@ -48,10 +48,13 @@ fn meta_source(recording: &str, test: &str, units: &[&str], kernel: &str) -> Opt
         "{}",
         String::from_utf8_lossy(&run.stderr)
     );
-    Some(
-        std::fs::read_to_string(out.join(format!("{id}_{kernel}_host.c")))
-            .expect("the meta source"),
-    )
+    // the record source is named after the call's lead target
+    let source = ["host", "cuda"]
+        .iter()
+        .map(|target| out.join(format!("{id}_{kernel}_{target}.c")))
+        .find(|file| file.exists())
+        .expect("the meta source");
+    Some(std::fs::read_to_string(source).unwrap())
 }
 
 /// The numbers of the array object `name` of the source, in order.
@@ -169,5 +172,33 @@ fn a_plane_axis_sink_states_its_payload_as_its_slots_shape() {
             slot.contains("M(rank, 0)") && slot.contains("M(shape, NULL)"),
             "{slot}"
         );
+    }
+}
+
+#[test]
+fn each_branch_unit_of_a_segmented_kernel_lists_itself_alone_as_its_stage_with_scratch_of_its_own()
+{
+    // the branches are alternatives over runs of samples, never stages launched one after the other: a branch whose wide value
+    // is placed in scratch records one stage (itself) and its own scratch plane, as a kernel that is not segmented does
+    let test = "test_wide_placement.py::test_the_branch_units_of_a_segmented_kernel_are_placed_for_a_device[auto-fill_mask_seg]";
+    let Some(s) = meta_source("k8_record", test, &["fill_mask_seg__k0"], "fill_mask_seg") else {
+        return;
+    };
+    for (unit, name) in [
+        "fill_mask_seg__k0",
+        "fill_mask_seg__k1",
+        "fill_mask_seg__k2",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let meta = object(&s, &format!("u{unit}_meta"));
+        assert!(meta.contains(&format!("M(name, \"{name}\")")), "{meta}");
+        let stages = object(&s, &format!("u{unit}_stages[]"));
+        assert!(stages.contains(&format!("{{&u{unit}_st0}}")), "{stages}");
+        let staged = object(&s, &format!("u{unit}_st0_unit"));
+        assert!(staged.contains(&format!("\"{name}\"")), "{staged}");
+        let planes = object(&s, &format!("u{unit}_team_planes[]"));
+        assert!(planes.contains(&format!("{{&u{unit}_tp0}}")), "{planes}");
     }
 }

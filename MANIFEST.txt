@@ -27,7 +27,7 @@ Every file with its line count (this file excluded):
       8  osprey_host/facts/cuda.json
      35  osprey_host/facts/cuda_build.json
      45  osprey_host/facts/cuda_image.json
-     22  osprey_host/facts/host_build.json
+     23  osprey_host/facts/host_build.json
      27  osprey_host/facts/x86.json
     127  osprey_host/include/osprey_host.h
     270  osprey_host/loader/loader.c
@@ -38,7 +38,7 @@ Every file with its line count (this file excluded):
    1314  osprey_host/src/bin/kreplay/meta.rs
    1459  osprey_host/src/bin/treplay.rs
     921  osprey_host/src/facts.rs
-    194  osprey_host/src/host_build.rs
+    197  osprey_host/src/host_build.rs
     393  osprey_host/src/lib.rs
     162  osprey_host/src/lower/active.rs
      51  osprey_host/src/lower/blocks.rs
@@ -57,7 +57,7 @@ Every file with its line count (this file excluded):
    1681  osprey_host/src/lower/request.rs
     225  osprey_host/src/lower/segment.rs
     116  osprey_host/src/lower/stage_block.rs
-    558  osprey_host/src/lower/stages.rs
+    579  osprey_host/src/lower/stages.rs
     740  osprey_host/src/lower/unit_meta.rs
     246  osprey_host/src/lower/warp.rs
    3888  osprey_host/tests/data/host_argv_old.jsonl
@@ -72,12 +72,12 @@ Every file with its line count (this file excluded):
      86  osprey_host/tests/link_rules.rs
     524  osprey_host/tests/meta_c.rs
     601  osprey_host/tests/set_text.rs
-    173  osprey_host/tests/stage_records.rs
+    204  osprey_host/tests/stage_records.rs
     174  osprey_host/tests/table.rs
      47  osprey_host/tests/treplay.rs
      12  osprey_host/tools/cc
     134  osprey_host/tools/cost_host.py
-    210  osprey_host/tools/host_argv_old.py
+    219  osprey_host/tools/host_argv_old.py
     630  osprey_host/tools/host_plugin.py
     970  osprey_host/tools/kroute.py
     101  osprey_host/tools/merge_host.py

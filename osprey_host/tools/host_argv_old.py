@@ -19,6 +19,9 @@ old function:
     old probes run as written;
   * the include roots ($HAWK_AETHER_INCLUDE, $HAWK_EAGLE_INCLUDE, hawk/_roots.py): two empty
     folders;
+  * the folder of the facts header: every host build passes the driver one include flag of the
+    raptor wing's folder as the option `extra` (hawk/backends/__init__.py:115, made by
+    hawk/facts.py:include_flags); the same flag class is passed here over a fixed folder name;
   * the cache folder ($HAWK_CACHE_DIR): one per stand-in compiler, so no verdict is shared;
   * the profile and the opt level: the compile options (drivers.py:CompileOptions), the
     environment variables unset.
@@ -122,6 +125,7 @@ def main(out_path: str) -> None:
     for name in ("HAWK_HOST_PROFILE", "HAWK_OPT_LEVEL", "CXX"):
         os.environ.pop(name, None)
     from hawk.compile.drivers import CompileOptions, _Inputs
+    from hawk.facts import IncludeFlag
     from ospreys.cpu.backend import BACKEND
 
     real_machine = platform.machine
@@ -129,6 +133,7 @@ def main(out_path: str) -> None:
     placeholders = {
         str(aether): "{include:aether}",
         str(eagle): "{include:eagle}",
+        "-I/FACTS": "-I{include:facts}",
         "/SRC": "{source}",
         "/OUT": "{output}",
         "/DEP": "{depfile}",
@@ -167,7 +172,11 @@ def main(out_path: str) -> None:
                     "scalar": scalar,
                 }
                 options = CompileOptions(
-                    target="host", mode=scalar, host_profile=profile, opt_level=opt
+                    target="host",
+                    mode=scalar,
+                    host_profile=profile,
+                    opt_level=opt,
+                    extra=(IncludeFlag("-I/FACTS"),),
                 )
                 try:
                     plan = BACKEND.compile_plan(options, _Inputs())

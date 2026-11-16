@@ -401,12 +401,12 @@ fn kernel_units(
     for unit in &mut pending {
         unit.exports_block = exports_block;
     }
-    let block = stages::block(&pending);
+    let blocks = stages::blocks(&pending);
     let mut units = pending
         .into_iter()
         .map(|unit| write(ctx, request, cards, unit))
         .collect::<Result<Vec<_>, _>>()?;
-    if let Some(block) = &block {
+    for block in &blocks {
         meta_fill::stages(&mut units, block, cards.deciding.scatter_max_chunks)?;
     }
     if let Some(sweep) = segment::sweep_request(ctx, request)? {

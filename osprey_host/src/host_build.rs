@@ -128,6 +128,7 @@ pub(crate) fn host_build(
             "always",
             "unit_tail",
             "includes",
+            "facts_include",
             "set_includes",
             "dependency",
             "compile_only",
@@ -170,6 +171,8 @@ pub(crate) fn host_build(
     argv.extend(names_of(&card, file, "unit_tail")?);
     argv.extend(names_of(&card, file, "includes")?);
     let set = [&argv[..], &names_of(&card, file, "set_includes")?[..]].concat();
+    // a unit's text includes the facts header of the machine's wing; the set text does not
+    argv.extend(names_of(&card, file, "facts_include")?);
     let rest = [
         names_of(&card, file, "dependency")?,
         names_of(&card, file, "compile_only")?,
