@@ -37,7 +37,7 @@ import hawk
 from hawk import Index, Mutable, Param, Scalar, Terminated, Vector, kernel
 from hawk.artifact import build_bundle
 from hawk.diff.tape import tape, tape_width, taped_planes
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 N = 37
 DT = 0.0625
@@ -314,9 +314,9 @@ def test_a_taped_kernel_stays_sample_local_and_the_plain_kernel_is_untouched():
     assert tape(osc, 4).walk.access.cls == "sample_local"
     assert osc.walk.digest == before
     assert TWINS["osc"].name == "osc_tape" and TWINS["osc_auto"].name == "osc_auto_tape"
-    assert TWINS["osc_auto"].walk.finish == ("terminated", "auto")
-    assert TWINS["osc_auto"].step.walk.finish == ("terminated", 1)
-    assert TWINS["osc"].walk.finish == ("terminated", 1)
+    assert (TWINS["osc_auto"].walk.finish, TWINS["osc_auto"].steps) == ("terminated", "auto")
+    assert (TWINS["osc_auto"].step.walk.finish, TWINS["osc_auto"].step.steps) == ("terminated", 1)
+    assert (TWINS["osc"].walk.finish, TWINS["osc"].steps) == ("terminated", 1)
 
 
 def test_refusals_name_the_kernel():

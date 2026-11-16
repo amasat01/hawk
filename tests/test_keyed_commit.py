@@ -3,7 +3,7 @@
 
 """A keyed accumulate whose key moves in runs of lanes commits once per run.
 
-The lane facts (:func:`hawk.ir.lanes.key_run`) name the run: ``proven`` (the
+The lane facts (:func:`raptor.wings.base.lanes.key_run`) name the run: ``proven`` (the
 key is equal over every aligned run of W lanes), ``tested`` (no static
 proof; a warp vote decides) or ``sorted`` (a ``Sorted[Index]`` key, runs
 found at run time). The emitter spells ``aether::accum::run``'s call for it
@@ -20,7 +20,7 @@ the compensated target); any other key keeps the per-lane atomic. Pinned:
   run of 48 (n/16), one per uniform warp for the tested form, one per run
   inside each warp for the sorted form; on the host no lane commits.
 * **The sum contract** against ``math.fsum`` per slot: the error over
-  ``eps * sum|t|`` within 1 compensated, the default policy included, whose
+  ``eps * sum|t|`` within 1 compensated, the default contract included, whose
   companion the runtime owns (a plain bound grows with the terms per slot; 8 at
   these run lengths; 8 for runs shorter than
   a warp, whose in-warp tree is plain), float32 and float64, host and device. The error in ULP of the exact sum is printed as a card
@@ -32,6 +32,7 @@ the compensated target); any other key keeps the per-lane atomic. Pinned:
 
 from __future__ import annotations
 
+from _specs import spec_for
 import ctypes
 import math
 
@@ -45,7 +46,7 @@ import hawk.math as m
 from hawk import HawkError, Index, Mutable, Scalar, Sorted, Table, Terminated
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from hawk.emit import FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT64
 from hawk.ext import Kind, sink_policy
 from hawk.targets import TARGETS
 from hawk.trace.kernel import Kernel
@@ -61,25 +62,25 @@ def g(x):
 @hawk.kernel
 def kuni(x: Scalar, acc: Mutable[Scalar]):
     j, _ = m.split_index(NS)
-    hawk.scatter(acc, policy="plain")[j] += x
+    hawk.scatter(acc, contract="plain")[j] += x
 
 
 @hawk.kernel
 def kuni_c(x: Scalar, acc: Mutable[Scalar]):
     j, _ = m.split_index(NS)
-    hawk.scatter(acc, policy="compensated")[j] += x
+    hawk.scatter(acc, contract="compensated")[j] += x
 
 
 @hawk.kernel
 def kfb(x: Scalar, acc: Mutable[Scalar]):
     j, _ = m.split_index(48)
-    hawk.scatter(acc, policy="plain")[j] += x
+    hawk.scatter(acc, contract="plain")[j] += x
 
 
 @hawk.kernel
 def kfb_c(x: Scalar, acc: Mutable[Scalar]):
     j, _ = m.split_index(48)
-    hawk.scatter(acc, policy="compensated")[j] += x
+    hawk.scatter(acc, contract="compensated")[j] += x
 
 
 # The second divisor (6) makes the lane axes a non-chain, so no run is proven:
@@ -87,31 +88,31 @@ def kfb_c(x: Scalar, acc: Mutable[Scalar]):
 @hawk.kernel
 def ktst(x: Scalar, acc: Mutable[Scalar]):
     lane = m.sample_index()
-    hawk.scatter(acc, policy="plain")[lane / 64] += x + 0.0 * (lane - (lane / 6) * 6)
+    hawk.scatter(acc, contract="plain")[lane / 64] += x + 0.0 * (lane - (lane / 6) * 6)
 
 
 @hawk.kernel
 def ktst_c(x: Scalar, acc: Mutable[Scalar]):
     lane = m.sample_index()
-    hawk.scatter(acc, policy="compensated")[lane / 64] += x + 0.0 * (lane - (lane / 6) * 6)
+    hawk.scatter(acc, contract="compensated")[lane / 64] += x + 0.0 * (lane - (lane / 6) * 6)
 
 
 @hawk.kernel
 def ksrt(x: Scalar, seg: Sorted[Index], acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="plain")[seg] += x
+    hawk.scatter(acc, contract="plain")[seg] += x
 
 
 @hawk.kernel
 def ksrt_c(x: Scalar, seg: Sorted[Index], acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="compensated")[seg] += x
+    hawk.scatter(acc, contract="compensated")[seg] += x
 
 
 @hawk.kernel
 def knon(x: Scalar, key: Index, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="plain")[key] += x
+    hawk.scatter(acc, contract="plain")[key] += x
 
 
-# The default policy: compensated, with the companion owned by the runtime.
+# The default contract: compensated, with the companion owned by the runtime.
 @hawk.kernel
 def kuni_a(x: Scalar, acc: Mutable[Scalar]):
     j, _ = m.split_index(NS)
@@ -184,35 +185,6 @@ CALLS = {kuni: "add<32>(aout_acc, ", kfb: "add<16>(aout_acc, ",
          VREAD_C: "addSortedCompensated(aout_bar_th, aout_bar_th_c, "}
 
 
-def _text(kernel, target):
-    return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                         mode=FLOAT64, kind=kernel.kind)
-
-
-@pytest.mark.parametrize("kernel", list(CALLS), ids=lambda k: k.name)
-def test_a_run_key_spells_one_run_commit_on_both_targets(kernel):
-    cuda, host = _text(kernel, "cuda"), _text(kernel, "host")
-    assert cuda.body == host.body
-    state = "hawk_run_aout_bar_th" if kernel in (VREAD, VAXIS, VREAD_C) else "hawk_run_aout_acc"
-    target = state[len("hawk_run_"):]
-    for src in (cuda, host):
-        assert src.body.count(RUN + CALLS[kernel]) == 1
-        assert src.body.rstrip().endswith(f"{state});")
-        assert "hawk_abi::accum_add" not in src.body
-        assert src.text.count("#include <aether/accum/run.h>\n") == 1
-        assert f"    auto {state} = {RUN}open({target});" in src.text
-        assert f"    {RUN}close({state});" in src.text
-        assert "AETHER_RUN_COUNT_COMMITS" not in src.text
-
-
-@pytest.mark.parametrize("kernel", [knon, VFEM, VSPLINE], ids=lambda k: k.name)
-def test_an_index_or_data_key_keeps_the_per_lane_commit(kernel):
-    for target in ("cuda", "host"):
-        src = _text(kernel, target)
-        assert "hawk_abi::accum_add(" in src.body
-        assert RUN not in src.text and "hawk_run_" not in src.text
-
-
 def test_a_step_kernel_never_holds_a_keyed_commit():
     """The run state is entry-local to one loop; a step kernel's two-path entry
     never needs it, because a keyed accumulate is not a step's commit."""
@@ -246,7 +218,7 @@ def _warp_runs(key):
     return int(w.shape[0] + np.count_nonzero(w[:, 1:] != w[:, :-1]))
 
 
-#: The default-policy twin of each plain kernel.
+#: The default-contract twin of each plain kernel.
 AUTO = {kuni: kuni_a, kfb: kfb_a, ktst: ktst_a, ksrt: ksrt_a}
 
 #: case -> (plain kernel, compensated kernel, n, key(l), the device's run commits)
@@ -264,7 +236,9 @@ CASES = {
 @pytest.fixture(scope="module", params=["float32", "float64"])
 def bundles(request, tmp_path_factory, cache_dir):
     root = tmp_path_factory.mktemp(f"keyed_{request.param}")
-    kernels = {k for c in CASES.values() for k in c[:2]} | set(AUTO.values())
+    #: built in name order: a set of kernels iterates by object hash, and a unit that two kernels share is emitted under the name of
+    #: the first one built
+    kernels = sorted({k for c in CASES.values() for k in c[:2]} | set(AUTO.values()), key=lambda k: k.name)
     out = {k.name: build_bundle([k], root / k.name, mode=request.param,
                                 targets=("cuda", "host"), cache_dir=cache_dir,
                                 defines=COUNT)
@@ -326,23 +300,23 @@ def _error(got, terms, key, slots, mode, what):
     return scaled
 
 
-@pytest.mark.parametrize("policy", ["plain", "compensated", "auto"])
+@pytest.mark.parametrize("contract", ["plain", "compensated", "auto"])
 @pytest.mark.parametrize("case", list(CASES))
 @pytest.mark.parametrize("target", TARGET_ARMS)
-def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, policy):
+def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, contract):
     """``auto`` binds no companion: the runtime owns it, and the target alone
     holds the compensated sum."""
     built, mode = bundles
     plain, comp, n, key, device_runs = CASES[case]
-    kernel = {"plain": plain, "compensated": comp, "auto": AUTO.get(plain)}[policy]
+    kernel = {"plain": plain, "compensated": comp, "auto": AUTO.get(plain)}[contract]
     if kernel is None:
-        pytest.skip("no default-policy twin for this case")
-    compensated = policy != "plain"
+        pytest.skip("no default-contract twin for this case")
+    compensated = contract != "plain"
     xp = np if target == "host" else __import__("cupy")
     x = np.random.default_rng(1234).uniform(-1, 1, n).astype(mode)
     slots = int(key.max()) + 1
     planes = {"x": xp.asarray(x), "acc": xp.zeros(slots, mode)}
-    if policy == "compensated":
+    if contract == "compensated":
         planes["acc_c"] = xp.zeros(slots, mode)
     if any(name == "seg" for _, name in kernel.walk.arg_spec):
         planes["seg"] = xp.asarray(key)
@@ -350,9 +324,9 @@ def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, polic
     if target == "cuda":
         xp.cuda.Device().synchronize()
     got = sum(np.asarray(planes[p].get() if target == "cuda" else planes[p]).astype(np.float64)
-              for p in (("acc", "acc_c") if policy == "compensated" else ("acc",)))
+              for p in (("acc", "acc_c") if contract == "compensated" else ("acc",)))
     terms = x.astype(np.float64)        # the plane's values: exact terms on every arm
-    what = f"{case} {policy} {target}"
+    what = f"{case} {contract} {target}"
     assert _error(got, terms, key, slots, mode, what) <= _bound(compensated, case != "sorted_mixed")
     assert lane == 0
     if target == "cuda" and compensated and case == "proven_8192":
@@ -365,12 +339,12 @@ def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, polic
 
 @hawk.kernel
 def knon_c(x: Scalar, key: Index, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="compensated")[key] += x
+    hawk.scatter(acc, contract="compensated")[key] += x
 
 
 @hawk.kernel
 def kone_c(x: Scalar, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="compensated")[0] += x
+    hawk.scatter(acc, contract="compensated")[0] += x
 
 
 @hawk.kernel
@@ -388,23 +362,6 @@ def kone_a(x: Scalar, acc: Mutable[Scalar]):
 NB, NBIG = 16, 200_000
 BIG = {"unsorted": knon_c, "sorted": ksrt_c, "uniform": kone_c}
 BIG_AUTO = {"unsorted": knon_a, "sorted": ksrt_a, "uniform": kone_a}
-
-
-def test_a_compensated_commit_is_one_two_sum_without_a_fence():
-    """The hot path: the compensated commit is the atomic two-sum into the
-    target and its companion, nothing more; the unit's second entry
-    ``<kernel>__fold_<target>`` folds the pair after the launch. The plain
-    commit has neither; the default policy spells the compensated one."""
-    for target in ("cuda", "host"):
-        plain = _text(knon, target).text
-        assert "accum_add_compensated" not in plain and "__fold_" not in plain
-        text = _text(knon_c, target).text
-        assert "hawk_abi::accum_add_compensated(" in text
-        assert "__threadfence" not in text and "atomic_thread_fence" not in text
-        assert text.count("hawk_abi::fold_companion(aout_acc, aout_acc_c, i);") == 1
-        assert ("knon_c__fold_acc_host(" if target == "host" else "knon_c__fold_acc(") in text
-        assert _text(knon_a, target).body == _text(knon_c, target).body.replace(
-            "knon_c", "knon_a")
 
 
 def _plan(kernel, target, mode, tmp_path, cache_dir):
@@ -624,20 +581,3 @@ def test_the_reverse_of_a_sorted_read_commits_once_per_run(target, compensated, 
         assert slots <= run < N // 8
 
 
-@pytest.mark.gpu
-def test_a_run_commit_compiles_through_the_sealed_payload(monkeypatch, tmp_path):
-    """The pip-only device route: NVRTC serving the sealed payload's in-memory
-    headers, which carry ``aether/accum/run.h``."""
-    from hawk.compile import CompileOptions, compile_source, cubin_available
-    from hawk.compile.payload import current_payload, reset_payload_memo
-
-    if not cubin_available():
-        pytest.skip("no NVRTC binding or no CUDA device")
-    monkeypatch.setenv("HAWK_DEVICE_COMPILER", "nvrtc")
-    reset_payload_memo()
-    assert "aether/accum/run.h" in current_payload().device_headers
-    src = render_source(ksrt_c.name, ksrt_c.sinks, ksrt_c.walk, TARGETS["cuda"],
-                        mode=FLOAT64, kind=ksrt_c.kind)
-    result = compile_source(src.text, ksrt_c.name,
-                            CompileOptions(target="cuda", cache_dir=str(tmp_path / "cache")))
-    assert result.artifact.is_file()

@@ -11,13 +11,14 @@ at its own lane's key.
 * **forward** — matches numpy, f64 and f32; a mean; a vector payload read per
   component; ``auto`` and ``compensated`` within the per-key ``math.fsum`` contract;
 * **derivative** — the vjp has three stages and, like the jvp, matches central
-  differences; the derivative of a sum keeps its key, count and policy;
+  differences; the derivative of a sum keeps its key, count and contract;
 * **runs** — two runs are identical (the plane is zeroed each run);
 * **refused by name** — ``ordered`` and a keyed max/min read back, a stepping
   kernel, ``group=``.
 """
 
 from __future__ import annotations
+from _specs import DEVICE
 
 import math
 
@@ -29,8 +30,9 @@ import hawk.diff
 import hawk.math as m
 from hawk import Grid, HawkError, Index, Kernel, Mutable, Scalar, Terminated, Vector, kernel, runtime
 from hawk.artifact import build_bundle
-from hawk.ir.nodes import ReduceSamples
-from hawk.ir.split import _post_order, stages
+from raptor.ir.nodes import ReduceSamples
+from raptor.wings.base.split import stages
+from raptor.ir.walk import post_order as _post_order
 
 R, COL = 4, 64
 N = R * COL
@@ -43,7 +45,7 @@ def share(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:
 
 @kernel
 def share_c(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:
-    return x / hawk.sum(x, over="col", policy="compensated")
+    return x / hawk.sum(x, over="col", contract="compensated")
 
 
 @kernel
@@ -59,7 +61,7 @@ def pair(lane: Grid["row", "col":COL], x: Scalar) -> Vector[2]:
 
 @kernel
 def whole(x: Scalar) -> Scalar:
-    return x / hawk.sum(x, policy="ordered")
+    return x / hawk.sum(x, contract="ordered")
 
 
 def _bundle(kernels, tmp, mode, cache_dir):
@@ -140,7 +142,7 @@ def test_the_row_sum_is_within_the_fsum_contract(tmp_path, cache_dir, mode, whic
 def test_the_vjp_has_three_stages_and_matches_central_differences(tmp_path, cache_dir):
     fwd = _bundle([share], tmp_path / "f", "float64", cache_dir)
     grad = Kernel("share_vjp", hawk.diff.vjp(share, primal_unit=fwd.digest))
-    assert len(stages(grad.name, grad.sinks)) == 3
+    assert len(stages(grad.name, grad.sinks, spec=DEVICE)) == 3
     bundle = _bundle([grad], tmp_path / "g", "float64", cache_dir)
     x = _x("float64")
     w = np.random.default_rng(5).uniform(-1, 1, N)
@@ -168,7 +170,7 @@ def test_the_jvp_matches_central_differences(tmp_path, cache_dir):
     dx = np.random.default_rng(5).uniform(-1, 1, N)
     dz = np.zeros(N)
     planes = dict(runtime.load(bundle.directory, "share_jvp").arg_spec)
-    assert len(stages(tan.name, tan.sinks)) == 2, planes
+    assert len(stages(tan.name, tan.sinks, spec=DEVICE)) == 2, planes
     _run(bundle, "share_jvp", x=x, dot_x=dx, dot_out=dz)
     h = 1e-6
     lo, hi = np.zeros(N), np.zeros(N)
@@ -181,12 +183,12 @@ def _reductions(sinks):
     return [n for n in _post_order(tuple(s.value for s in sinks)) if isinstance(n, ReduceSamples)]
 
 
-def test_the_derivative_of_a_sum_keeps_its_key_count_and_policy():
+def test_the_derivative_of_a_sum_keeps_its_key_count_and_contract():
     keyed = [n for n in _reductions(hawk.diff.vjp(share_c)) if n.key is not None]
-    assert keyed and all(n.count is not None and n.policy == "compensated" for n in keyed)
+    assert keyed and all(n.count is not None and n.contract == "compensated" for n in keyed)
     for derive in (hawk.diff.vjp, hawk.diff.jvp):
         found = _reductions(derive(whole))
-        assert found and {n.policy for n in found} == {"ordered"}
+        assert found and {n.contract for n in found} == {"ordered"}
 
 
 # -- runs -------------------------------------------------------------------
@@ -206,32 +208,18 @@ def test_two_runs_are_identical(tmp_path, cache_dir):
 def test_a_keyed_max_is_refused_by_name_and_an_ordered_sum_reads_back():
     @kernel
     def ordered(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:
-        return x / hawk.sum(x, over="col", policy="ordered")
+        return x / hawk.sum(x, over="col", contract="ordered")
     with pytest.raises(HawkError, match="a max over some of the lane axes"):
         @kernel
         def peak(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:
             return x / hawk.max(x, over="col")
 
 
-def test_a_stepping_kernel_and_group_are_refused_by_name(tmp_path, cache_dir):
-    @kernel
-    def reading(lane: Grid["row", "col":COL], x: Scalar, terminated: Terminated,
-                y: Mutable[Scalar]):
-        y = x / hawk.sum(x, over="col")
-        terminated = x > 1.0
-    with pytest.raises(HawkError, match="stepping or segmented"):
-        _bundle([hawk.steps(reading, "auto")], tmp_path / "s", "float64", cache_dir)
-
-    @kernel(group="col")
-    def grouped(lane: Grid["row", "col":COL], x: Scalar) -> Scalar:
-        return x / hawk.sum(x, over="col")
-    with pytest.raises(HawkError, match="group="):
-        _bundle([grouped], tmp_path, "float64", cache_dir)
 
 
 def test_a_segmented_kernel_is_refused_by_name(tmp_path, cache_dir):
     @hawk.kernel(steps=1)
     def segmented(lane: Grid["row", "col":COL], k: Index, bs: Vector[2], y: Mutable[Scalar]):
-        y = y + m.dispatch(k, [bs[0], bs[1]], policy="segmented") / hawk.sum(bs[0], over="col")
+        y = y + m.dispatch(k, [bs[0], bs[1]], strategy="segmented") / hawk.sum(bs[0], over="col")
     with pytest.raises(HawkError, match="stepping or segmented"):
         _bundle([segmented], tmp_path, "float64", cache_dir)

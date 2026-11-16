@@ -7,6 +7,7 @@ about 2^30 as well as on ordinary data."""
 
 from __future__ import annotations
 
+from _specs import spec_for, default_kind
 from fractions import Fraction
 
 import numpy as np
@@ -81,12 +82,3 @@ def test_a_banded_row_sum_on_the_gpu_is_within_its_bound_of_the_exact_sum(data, 
     _check(data(), "cuda", tmp_path, bound)
 
 
-@pytest.mark.parametrize("target_id", ["cuda"])
-def test_a_banded_row_sum_folds_into_bandaccum_and_a_float_one_does_not(target_id):
-    from hawk.emit import BANDED, FLOAT64, render_source
-    from hawk.targets import TARGETS
-
-    banded = render_source("total", total.sinks, total.walk, TARGETS[target_id], mode=BANDED).text
-    assert "aether::banded::BandAccum hawk_" in banded and "hawk_ss[0].addTerm(aether::banded::Band(" in banded
-    assert "hawk_abi::ssOut_(hawk_s)" in banded and "BandAccum" not in render_source(
-        "total", total.sinks, total.walk, TARGETS[target_id], mode=FLOAT64).text

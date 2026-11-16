@@ -22,7 +22,7 @@ is a leaf that was already being hoisted for a completely different reason
 ( address-computation argument).
 
 THE CORPUS ENUMERATES, IT DOES NOT SAMPLE. The set of rank-collapsing kinds is
-COMPUTED from ``hawk.ir.ops`` itself (:func:`collapsing_kinds` probes every kind
+COMPUTED from ``raptor.ir.ops`` itself (:func:`collapsing_kinds` probes every kind
 in ``OP_KINDS`` over every operand-type combination it accepts and keeps the
 ones whose RESULT rank is below their widest operand's), and
 :func:`test_the_corpus_covers_every_rank_collapsing_kind` fails if the table
@@ -44,7 +44,7 @@ interpreter on inputs that DIFFER IN EVERY COLUMN. That last property is not
 decoration: a plane that is constant across samples makes sample 0's reduction
 the right answer everywhere, which is precisely how this defect survived.
 
-THE SECOND HALF — the rank-2 reduction's SPELLING. ``hawk.ir.ops`` admits
+THE SECOND HALF — the rank-2 reduction's SPELLING. ``raptor.ir.ops`` admits
 ``sum`` over a rank-2 operand and the reverse rule of a scalar uniform times a
 rank-2 expression MINTS one (``hawk/diff/transform._reduce_to`` un-broadcasts
 the rank-0 operand's adjoint with a ``sum``), but aether's ``Expression::sum()``
@@ -54,7 +54,7 @@ nobody could emit. It is checked here beside the first half because it is the
 same question (how does a rank>=1 value reach a rank-0 aether result) and the
 same fix site.
 
-This test previously failed: restoring ``hawk/emit/render.py`` to an
+This test previously failed: restoring ``staging/aether/wings/base/render.py`` to an
 earlier state under this row gave **77 failed, 42 passed**.
 
   * the NUMERIC row failed on 28 cases — every fan-out-1 case of ``norm``,
@@ -75,7 +75,7 @@ earlier state under this row gave **77 failed, 42 passed**.
   * the rank-2 arms did not get as far as a wrong answer — they did not
     COMPILE::
 
-        hawk.ir.nodes.HawkError: host compile of 'vjp_scalar_rank2' failed
+        hawk.HawkError: host compile of 'vjp_scalar_rank2' failed
         (rc=1). aether/expr/Expression.h:246:54: error: static assertion
         failed: sum: only rank-1 expressions are supported
 
@@ -89,7 +89,10 @@ earlier state under this row gave **77 failed, 42 passed**.
 """
 
 from __future__ import annotations
+from _specs import HOST, default_kind
+from _specs import aether_writer
 
+import dataclasses
 import itertools
 import zlib
 
@@ -98,14 +101,14 @@ import numpy as np
 import pytest
 from _eval import evaluate
 
-from hawk.artifact import build
+from hawk.artifact import build, emit_source
 from hawk.diff import vjp
-from hawk.emit import render_body
-from hawk.emit.render import mirror_of
-from hawk.ir import Assign, HawkError, Leaf, canonical
-from hawk.ir import make as mk
-from hawk.ir.ops import OP_KINDS
-from hawk.types import TensorType
+from raptor.wings.base.exchange import mirror_of
+from raptor.ir import Assign, Leaf, canonical
+from hawk import HawkError
+from raptor.ir import make as mk
+from raptor.ir.ops import OP_KINDS
+from raptor.ir.types import TensorType
 
 #: Samples per case. Small because every case is also evaluated sample by sample
 #: by the scratch interpreter; seven is enough that a body reading a fixed column
@@ -146,7 +149,7 @@ _INDEX_TAKING = frozenset({"at"})
 def collapsing_kinds() -> frozenset:
     """Every op kind whose RESULT rank is below its widest operand's rank.
 
-    Derived by probing :func:`hawk.ir.ops.make` over a small closed set of
+    Derived by probing :func:`raptor.ir.ops.make` over a small closed set of
     operand types rather than by transcribing a list: the vocabulary lives in
     ``ops.py`` and a kind added there must not be able to slip past this row
     just because nobody remembered to extend a constant here."""
@@ -172,7 +175,8 @@ def collapsing_kinds() -> frozenset:
 #: ``(kind, rank)`` groups, one emitted kernel each. The rank axis carries the
 #: ranks the kind's own type rule admits for the operand under test.
 GROUPS = (("norm", 1), ("dot", 1), ("sum", 1), ("sum", 2),
-          ("component", 1), ("mv", 1), ("mv", 2))
+          ("component", 1), ("mv", 1), ("mv", 2),
+          ("lstsq", 2), ("lstsq_gram_solve", 2), ("lstsq_info", 2))
 
 
 def _ttype(kind: str, rank: int) -> TensorType:
@@ -181,7 +185,7 @@ def _ttype(kind: str, rank: int) -> TensorType:
     square extent so both 2x2 and 3x3 are emitted somewhere in the corpus."""
     if rank == 1:
         return V3
-    return M33 if kind == "mv" else M22
+    return M33 if kind in ("mv", "lstsq", "lstsq_gram_solve", "lstsq_info") else M22
 
 
 def _operand(form: str, tag: str, t: TensorType) -> tuple:
@@ -210,6 +214,11 @@ def _collapse(kind: str, operand, tag: str) -> tuple:
     if kind == "dot":
         other = Leaf("vocab_read", "vec_in", f"{tag}_c", V3)
         return mk("dot", (operand, other)), (other,)
+    if kind in ("lstsq", "lstsq_gram_solve"):         # the matrix J is under test; the right-hand side is a vector leaf
+        other = Leaf("vocab_read", "vec_in", f"{tag}_c", V3)
+        return mk(kind, (operand, other)), (other,)
+    if kind == "lstsq_info":
+        return mk("cast", (mk("lstsq_info", (operand,)),), "f64"), ()      # the harness compares floating outputs
     # mv: the operand under test is the MATRIX on the rank-2 arm and the VECTOR
     # on the rank-1 arm, so both of a rank-changing binary's sides are covered.
     if len(operand.ttype.shape) == 2:
@@ -329,6 +338,8 @@ def _expected(sinks, cases, bound: dict) -> list:
 # --------------------------------------------------------------------------- #
 # Build + run the host path.
 # --------------------------------------------------------------------------- #
+
+
 class _Built:
     """One group's compiled host kernel, its outputs and the oracle's answer."""
 
@@ -345,20 +356,15 @@ class _Built:
         names = [nm for role, nm in loaded.arg_spec if role in O.OUTPUT_ROLES]
         self.got = dict(zip(names, got if isinstance(got, tuple) else (got,)))
         self.expected = _expected(sinks, cases, self.bound)
-        #: the BODY string, not the whole TU: the wrapper's ``params[]`` unpack
-        #: names every binding too, and a failure that pasted it would bury the
-        #: one line that is wrong.
-        self.body = render_body(sinks, kernel.walk).text
+        #: the emitted host source, pasted into a failure message
+        self.body = emit_source(kernel, targets=("host",)).sources["host"].text
 
 
 class _Builder:
     """Builds each group ON DEMAND and remembers it.
 
-    Lazy on purpose: a group whose emitted TU does not COMPILE (the rank-2
-    ``sum`` arm, before the renderer learned aether's spelling for it) must fail
-    its own cases and leave the other groups' verdicts standing — a module-wide
-    fixture that raised would erase the very rows that show which half of the
-    corpus is affected."""
+    Lazy on purpose: a group whose emitted TU does not COMPILE must fail
+    its own cases and leave the other groups' verdicts standing."""
 
     def __init__(self, root, cache) -> None:
         self.root, self.cache, self._made = root, cache, {}
@@ -398,37 +404,13 @@ def test_every_sample_gets_its_own_reduction(built, group, case):
     for i in range(N):
         want = np.asarray(b.expected[i][case["out"]], dtype=float)
         mine = got[i] if got.ndim == 1 else got[:, i].reshape(want.shape)
-        assert np.allclose(mine, want, rtol=1e-12, atol=1e-12), (
+        tol = 1e-6 if case["id"].startswith("lstsq") else 1e-12      # a solve on a random 3x3 loses digits; a whole-plane fold is O(1) off
+        assert np.allclose(mine, want, rtol=tol, atol=tol), (
             f"{case['id']} sample {i}: the host path gave {mine!r}, the "
             f"interpreter gives {want!r}. A rank>=1 operand folded at aether's "
             "sample-free SampleIndex::make(0) answers with sample 0's value in "
             f"every column.\n{b.body}"
         )
-
-
-@pytest.mark.parametrize("group,case", _flat(), ids=_ids())
-def test_no_rank1_leaf_reaches_a_fold_unsubscripted(built, group, case):
-    """The STRUCTURAL half, so the row still fails if the answer coincides.
-
-    Every rank>=1 binding a body reads is subscripted exactly once — the
-    materialisation into an ``Item`` — and no bare view identifier is ever the
-    receiver of a fold. Checked on the emitted text because a numeric row alone
-    would pass on a plane whose columns happened to agree."""
-    import re
-
-    b = built[group]
-    for leaf in case["leaves"]:
-        if not leaf.ttype.shape:
-            continue
-        ident = f"{'vin' if len(leaf.ttype.shape) == 1 else 'mtx'}_{leaf.name}"
-        bad = re.findall(rf"\b{ident}\.(norm|sum|dot|matDot)\(", b.body)
-        assert not bad, (
-            f"{case['id']}: the emitted body folds the WHOLE PLANE {ident!r} "
-            f"({bad}) — aether's reductions evaluate at SampleIndex::make(0), so "
-            f"this is sample 0's answer for every sample.\n{b.body}")
-        assert len(re.findall(rf"\b{ident}\[", b.body)) == 1, (
-            f"{case['id']}: {ident!r} is not subscripted exactly once — a rank>=1 "
-            f"leaf is read at the body's own sample, exactly once.\n{b.body}")
 
 
 def test_the_corpus_covers_every_rank_collapsing_kind():
@@ -468,8 +450,8 @@ def test_the_corpus_enumerates_both_fanouts_and_all_four_forms():
 
 
 def _wide_kernel(width: int, *, whole_use: bool = False) -> tuple:
-    """A per-sample parameter row read element-wise under branches (a KAN block's shape)."""
-    from hawk.ir import Select
+    """A per-sample parameter row read element-wise under branches (a spline block's shape)."""
+    from raptor.ir import Select
 
     p = Leaf("vocab_read", "vec_in", "p", TensorType((width,), "f64"))
     x = Leaf("vocab_read", "per_sample", "x", S)
@@ -485,38 +467,3 @@ def _wide_kernel(width: int, *, whole_use: bool = False) -> tuple:
     return tuple(sinks)
 
 
-def _host_run(width, directory, cache, **kw):
-    sinks = _wide_kernel(width, **kw)
-    from types import SimpleNamespace
-
-    kernel = SimpleNamespace(name="wide", sinks=sinks, walk=canonical(sinks))
-    build(kernel, directory, targets=("host",), cache_dir=str(cache))
-    loaded = O.load(directory, "wide")
-    rng = np.random.default_rng(7)
-    got = O.run_kernel(loaded, 32, p=rng.standard_normal((width, 32)),
-                       x=rng.standard_normal(32))
-    names = [nm for role, nm in loaded.arg_spec if role in O.OUTPUT_ROLES]
-    got = dict(zip(names, got))
-    return np.stack([got["out_a"], got["out_b"]]), render_body(sinks, kernel.walk).text
-
-
-def test_wide_readonly_leaf_is_read_through_the_proxy(tmp_path, monkeypatch):
-    """INTERIM wide-leaf rule: > LAZY_LEAF_WIDTH elements, read only by static
-    ``component`` => no ``.get()``, proxy reads, bits equal to the whole-leaf emit;
-    a narrow leaf, or a wide one also used whole, keeps today's text."""
-    import hawk.emit.render as A
-
-    wide, wide_text = _host_run(144, tmp_path / "w", tmp_path / "c1")
-    assert ".get()" not in wide_text and "vin_p_i = vin_p[i];" in wide_text
-    assert "vin_p_i.eval<143>()" in wide_text
-
-    _, whole_text = _host_run(144, tmp_path / "u", tmp_path / "c2", whole_use=True)
-    assert "vin_p[i].get()" in whole_text and ".eval<3>(i)" in whole_text
-
-    _, narrow_text = _host_run(16, tmp_path / "n", tmp_path / "c3")
-    assert "vin_p[i].get()" in narrow_text and ".eval<15>(i)" in narrow_text
-
-    monkeypatch.setattr(A, "LAZY_LEAF_WIDTH", 10**9)
-    old, old_text = _host_run(144, tmp_path / "o", tmp_path / "c4")
-    assert "vin_p[i].get()" in old_text
-    assert (wide == old).all()

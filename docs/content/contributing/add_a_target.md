@@ -15,7 +15,7 @@ Three jobs, smallest first:
 ## The row
 
 ```python
-Target(id="cuda", about="builds for the GPU", writer=AETHER, wrapper=CUDA, compile=GPU,
+Target(id="cuda", about="builds for the GPU", writer=AetherWriter(), wrapper=CUDA, compile=GPU,
        entry=ENTRY_DEVICE, format="ptx", artifact=".ptx", source=".cu", features=frozenset(FEATURES))
 ```
 
@@ -26,6 +26,12 @@ Target(id="cuda", about="builds for the GPU", writer=AETHER, wrapper=CUDA, compi
 `format` is the manifest's artifact format. `features` are the names from the shared table in
 `hawk/targets/features.py` that the row builds; a kernel that uses one the row lacks is refused by name before
 anything renders.
+
+## What the wing must state
+
+A number the shared passes or your Writer read comes from your row's wing, and a missing one is refused by name where it is read: the fold
+threshold (`form.rolled_fold_min`), `linalg.max_dim`, `launch.warp_size`, the host placement table. Nothing defaults to "no limit", and another
+target's number is never borrowed. A target that has no such number builds with `emit_form="static"` or `"rolled"`, which read none.
 
 ## A row that reuses a Writer
 
@@ -66,13 +72,13 @@ A Wrapper is the part of the unit that depends on how the kernel runs. It has on
 | `dispatch(...)` | a per-lane branch between formulas |
 
 A Wrapper may also supply optional hooks (`simd_safe`, `lane_guards`, `interchange`), which the renderer reads with
-`getattr`. See `hawk/emit/cuda.py` and `hawk/emit/host.py` for the two that exist. The launch geometry is eagle's:
+`getattr`. See `hawk/emit/cuda.py` and `staging/aether/wings/cpu/host.py` for the two that exist. The launch geometry is eagle's:
 a Wrapper names no stream and no occupancy.
 
 Then add the row. A HIP target that reuses the aether C++ Writer would be (a sketch; hawk builds no HIP today):
 
 ```python
-Target("hip", "builds for AMD GPUs", AETHER, HipWrapper(), HIP, ENTRY_DEVICE, "hsaco",
+Target("hip", "builds for AMD GPUs", AetherWriter(), HipWrapper(), HIP, ENTRY_DEVICE, "hsaco",
        ".hsaco", ".hip.cpp", frozenset(FEATURES))
 ```
 
@@ -85,7 +91,7 @@ A row that uses one of them needs nothing more. A new compiler (hiprtc) is a new
 ## A new language: the Writer
 
 A Writer answers the renderer's questions in one language: declare a local, write an operator, store to a sink,
-write a sum over lanes. `hawk.emit.writer.WRITER_MEMBERS` lists them, and each member's docstring gives the aether
+write a sum over lanes. `aether.wings.base.writer.WRITER_MEMBERS` lists them, and each member's docstring gives the aether
 writer's text. `hawk.embedded.writer.CWriter` is the second one. A language that cannot compile aether's C++ templates
 also needs its own core for the numerics contract: see [the numerics contract](https://amasat01.github.io/aether/content/numerics_contract.html).
 

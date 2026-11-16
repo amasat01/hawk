@@ -11,16 +11,18 @@ n^3/6, ``eigh`` S(n) n(n-1)/2 (6n+10), a solve n^2 k.
 
 from __future__ import annotations
 
+from raptor.wings.base.dispatch import dispatch as _dispatch
 import pytest
 
 from hawk import runtime
-from hawk.ir import Const, Dispatch, HawkError, Leaf, Select, make
-from hawk.ir.cost import linalg_bytes
-from hawk.ir.cost import _op_count, _own_cost, _wide
-from hawk.ir.linalg import (CONSUMERS, FACTORISATIONS, LINALG_OPS, MAX_DIM, PROJECTIONS, TEAM_MAX_DIM,
-                            as_matrix, op_bytes, op_count, sweeps)
-from hawk.ir.ops import OP_KINDS
-from hawk.types import TensorType
+from raptor.ir import Const, Dispatch, Leaf, Select, make
+from raptor.errors import RaptorError as HawkError
+from raptor.wings.base.cost import _op_count, _own_cost, _wide, linalg_bytes
+from hawk.facts import load as _load_facts
+MAX_DIM = _load_facts("cpu")["linalg"]["max_dim"]
+from raptor.ir.linalg import CONSUMERS, FACTORISATIONS, LINALG_OPS, PROJECTIONS, as_matrix, op_bytes, op_count, sweeps
+from raptor.ir.ops import OP_KINDS
+from raptor.ir.types import TensorType
 
 
 def _mat(n, dtype="f64", name="A"):
@@ -91,14 +93,13 @@ def test_only_a_square_float_matrix_is_factored(bad):
         make("lu", (Leaf("vocab_read", "mat_in", "A", bad),))
 
 
-def test_the_dimension_is_static_and_at_most_the_limit():
-    assert MAX_DIM == 32 and TEAM_MAX_DIM == 4096
+def test_the_dimension_is_static_and_positive():
+    assert MAX_DIM == 32
     assert make("eigh", (_mat(1),)).ttype.shape == (1, 1)
     assert make("eigh", (_mat(32),)).ttype.shape == (32, 32)
     assert make("chol", (_mat(33),)).ttype.shape == (33, 33)         # a team lowers it
     assert make("chol", (_mat(4096),)).ttype.shape == (4096, 4096)
-    with pytest.raises(HawkError, match=r"1 <= n <= 4096, got n=4097"):
-        make("chol", (_mat(4097),))
+    assert make("chol", (_mat(4097),)).ttype.shape == (4097, 4097)   # the IR has no upper bound: a backend states its own
 
 
 def test_a_solve_names_what_it_reads():
@@ -269,7 +270,7 @@ def test_select_and_dispatch_refuse_factorisation_arms(kind):
     with pytest.raises(HawkError, match="factorisations, which are read through"):
         Select(flag, one, other, one.ttype)
     with pytest.raises(HawkError, match="factorisations, which are read through"):
-        Dispatch(index, (one, other), "switch", one.ttype)
+        _dispatch(index, (one, other), "switch", one.ttype)
     # the fields they read are values like any other
     field = {"lu": "lu_det", "chol": "chol_info", "eigh": "eigh_info", "chol_from": "chol_info",
              "qr": "qr_info"}[kind]

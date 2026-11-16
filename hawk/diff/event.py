@@ -32,12 +32,13 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple
 
-from ..ir import Const, HawkError, Leaf, Node
-from ..ir import make as _mk
-from ..ir.loop_nodes import LoopIndex
-from ..ir.nodes import Assign, Dispatch, Finish, PlaneExtent, SampleIndex, Select
-from ..ir.ops import COMPARE, LOGICAL, PREDICATE
-from ..ir.walk import substitute
+from raptor.ir import Const, Leaf, Node
+from .._errors import HawkError
+from raptor.ir import make as _mk
+from raptor.ir.nodes import LoopIndex
+from raptor.ir.nodes import Assign, Dispatch, Finish, PlaneExtent, SampleIndex, Select
+from raptor.ir.ops import COMPARE, LOGICAL, PREDICATE
+from raptor.ir.walk import substitute
 from .tape import _reachable
 from .transform import _READ_ROLE
 
@@ -156,9 +157,9 @@ def event_guard(kernel: Any) -> EventGuard:
             f'events="refine": {name!r} never finishes its sample; there is no '
             "stop rule to refine — finish with `terminated = cond`")
     finish = finishes[0]
-    if finish.steps != 1:
+    if kernel.steps != 1:
         raise HawkError(
-            f'events="refine": {name!r} takes {finish.steps} steps per launch; '
+            f'events="refine": {name!r} takes {kernel.steps} steps per launch; '
             "the guard is read from the single step")
     guards, rules = _read(name, finish.value)
     return EventGuard(name, finish.name, guards, rules)

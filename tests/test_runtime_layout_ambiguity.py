@@ -21,7 +21,7 @@ from conftest import sidecar_of
 
 import hawk
 from hawk import runtime as rt
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 
 def _vec3(built):

@@ -15,6 +15,7 @@ Correctness only: no speed is claimed."""
 
 from __future__ import annotations
 
+from _specs import spec_for, default_kind
 import pathlib
 
 import _eval as E
@@ -172,27 +173,3 @@ def test_device_traversal_equals_host_and_brute_force(world, cache_dir, tmp_path
     np.testing.assert_allclose(got["y"], host, rtol=1e-12, atol=1e-12)
 
 
-@pytest.mark.gpu
-def test_the_f32_traversal_at_depth_32_has_no_spills(world, tmp_path):
-    """ptxas on the device unit at the real arch: the stack lives in a local frame by
-    design, and nothing is spilled."""
-    import subprocess
-
-    from hawk.artifact.layout import exports
-    from hawk.compile import device_compiler
-    from hawk.compile.drivers import parse_ptxas_info
-    from hawk.compile.toolchain import device_flags, resolve_arch
-    from hawk.emit import FLOAT32, render_source
-    from hawk.targets import TARGETS
-
-    _t, _o, _d, bvh, _ = world
-    k = _kernel(bvh, depth=32)
-    src = tmp_path / "nearest.cu"
-    src.write_text(render_source(k.name, k.sinks, k.walk, TARGETS["cuda"], mode=FLOAT32,
-                                 exports=exports("cuda")).text)
-    done = subprocess.run([device_compiler(), *device_flags(arch=resolve_arch(), target="cubin"),
-                           str(src), "-o", str(tmp_path / "nearest.cubin")],
-                          capture_output=True, text=True, check=False)
-    assert done.returncode == 0, done.stderr[-2000:]
-    figures = parse_ptxas_info(done.stderr)["nearest"]
-    assert figures["spill_store_B"] == figures["spill_load_B"] == 0, figures

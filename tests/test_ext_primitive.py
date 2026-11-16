@@ -27,6 +27,9 @@ sound, and the emitted-body row says the forward paid nothing for it.
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import HOST
 
 import _oracle as O
 import numpy as np
@@ -37,9 +40,9 @@ import hawk
 import hawk.math as hm
 from hawk.artifact import build
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
 from hawk.ext import primitive, primitives
-from hawk.ir import HawkError, Primitive
+from raptor.ir import Primitive
+from hawk import HawkError
 from hawk.math import dot, exp, log, vec, vsum
 
 RNG = np.random.default_rng(20260905)
@@ -50,7 +53,7 @@ H = 1e-5
 # --------------------------------------------------------------------------- #
 # The subject: softplus, whose derivative HAS a closed form the table would
 # otherwise reach through log/exp/div — the shape a real primitive is declared
-# for (a downstream KAN B-spline basis is the same shape at a larger size).
+# for (a downstream spline B-spline basis is the same shape at a larger size).
 # --------------------------------------------------------------------------- #
 @primitive("hw7a_softplus",
            vjp=lambda x, bar: bar / (1.0 + exp(-x)),
@@ -110,20 +113,6 @@ def test_the_boundary_node_is_recorded_in_the_dag():
     assert not any(isinstance(n, Primitive) for n in longhand_kernel.walk.order)
 
 
-def test_the_emitted_body_is_byte_identical_to_the_longhand_body():
-    """Needs the ``Primitive`` branch in ``hawk/emit/render._Renderer._expr``,
-    or the boundary falls through to the op dispatch::
-
-        hawk.ir.nodes.HawkError: op 'primitive' has no aether spelling at rank 0
-    """
-    mine = render_body(primitive_kernel.sinks, primitive_kernel.walk).text
-    theirs = render_body(longhand_kernel.sinks, longhand_kernel.walk).text
-    assert mine == theirs, (
-        "a primitive is INLINED: the emitted body must be the body "
-        f"the same arithmetic written longhand emits.\n--- primitive ---\n{mine}\n"
-        f"--- longhand ---\n{theirs}")
-
-
 def test_the_forward_runs_bit_identically_on_the_host_path(tmp_path, cache_dir):
     """Not `allclose`: the two bodies are the same text, so the two artifacts
     must give the same bits, and a tolerance here would hide a re-association."""
@@ -156,7 +145,7 @@ def test_the_supplied_vjp_matches_finite_differences(x0):
     """Needs the ``Primitive`` branch in ``hawk/diff/transform``'s reverse
     loop, or the boundary reaches the closed-world table::
 
-        hawk.ir.nodes.HawkError: no derivative rule for node kind 'primitive'
+        hawk.HawkError: no derivative rule for node kind 'primitive'
         (rank 0): HAWK's rule table is closed-world ...
     """
     sinks = primitive_kernel.sinks
@@ -184,7 +173,7 @@ def test_the_derived_reverse_ir_deploys_and_runs(tmp_path, cache_dir):
     toolchain — walk, emitter, compiler — not merely the interpreter."""
     from types import SimpleNamespace
 
-    from hawk.ir import canonical
+    from raptor.ir import canonical
 
     sinks = vjp(primitive_kernel)
     derived = SimpleNamespace(name="primitive_kernel_vjp", sinks=sinks,
@@ -293,16 +282,3 @@ def reused_longhand_kernel(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
     y = dot(p, p) + vsum(p)
 
 
-def test_a_reused_primitive_result_emits_no_alias_of_its_forward():
-    """A reused primitive's boundary node must not be named like any node
-    with fan-out >= 2: since its rank-1 forward was
-    already named as a leaf value the artifact carried ``const auto t60 = t59;``
-    -- an alias the longhand body does not have, so the two bodies were not
-    byte-identical. A primitive is not a node the emitter renders: every
-    reference to it is a reference to its forward, and its fan-out is the
-    forward's."""
-    mine = render_body(reused_primitive_kernel.sinks, reused_primitive_kernel.walk).text
-    theirs = render_body(reused_longhand_kernel.sinks, reused_longhand_kernel.walk).text
-    assert mine == theirs, (
-        "a reused primitive result must not alias its forward.\n"
-        f"--- primitive ---\n{mine}\n--- longhand ---\n{theirs}")

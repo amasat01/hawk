@@ -32,12 +32,17 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
-from ..ir import Const, Dispatch, HawkError, Leaf, Node, Select
-from ..ir import make as _mk
-from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from ..ir.nodes import AccumWrite, PlaneExtent, ReduceSamples, SampleIndex, WideWrite
-from ..types import TensorType
+from raptor.ir import Const, Dispatch, Leaf, Node, Select
+from .._errors import HawkError
+from raptor.ir import make as _mk
+from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from raptor.ir.nodes import AccumWrite, PlaneExtent, ReduceSamples, SampleIndex, WideWrite
+from raptor.ir.types import TensorType
 from .tape import _reachable
+from .. import wings as _wings
+_dispatch_kind = _wings.view("raptor", "base", "dispatch")
+
+_cells = _wings.view("raptor", "base", "cells")
 
 #: The derivative kernel's uniform input keying the alternate path's draw
 #: (:mod:`hawk.diff.altpath`).
@@ -541,7 +546,7 @@ class JumpPlan:
             count = _mk("sum", (Select(inside, ones, _zero(ones.ttype), ones.ttype),))
             inside = _mk("gt", (count, Const(0.5, _F64)))
         selector = Select(inside, Const(0, _I32), Const(1, _I32), _I32)
-        return Dispatch(selector, (value, zero), "switch", value.ttype)
+        return _dispatch_kind.dispatch(selector, (value, zero), "switch", value.ttype)
 
     # -- the record ---------------------------------------------------------
     def spread_cells(self) -> tuple:
@@ -554,14 +559,14 @@ class JumpPlan:
         out: list = []
         for g, terms in self._spreads().items():
             for j, term in enumerate(terms):
-                out.extend(ReduceSamples("sum", term).stored(f"jump_sd{g}_{j}"))
+                out.extend(_cells.stored(ReduceSamples("sum", term), f"jump_sd{g}_{j}"))
             if self.jump == AUTO:
                 # the mean of the one width every sample holds, as a sum cell
                 # (the op a gradient's own cells use, so one stage stores
                 # both): each sample adds h * its count / the count cell
                 h, _, count = self._auto_width(g)
                 share = _mk("div", (_mk("mul", (h, self._spreads()[g][2])), count))
-                out.extend(ReduceSamples("sum", share).stored(f"jump_h{g}"))
+                out.extend(_cells.stored(ReduceSamples("sum", share), f"jump_h{g}"))
         return tuple(out)
 
     def record(self, wrt: Sequence[str]) -> dict | None:
@@ -631,7 +636,7 @@ def spell(node: Node) -> str:
 
 
 def _zero(t: TensorType) -> Node:
-    from .rules import zero_like
+    from raptor.rules.core import zero_like
 
     return zero_like(TensorType(t.shape, "f64" if t.dtype not in _FLOAT else t.dtype))
 

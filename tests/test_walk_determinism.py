@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from _dags import V3, drag_dag
 
-from hawk.ir import Assign, Leaf, canonical
+from raptor.ir import Assign, Leaf, canonical
 
 
 def test_two_walks_of_the_same_dag_agree():

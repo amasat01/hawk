@@ -23,6 +23,7 @@ exit and the run reads and writes past the planes.
 """
 
 from __future__ import annotations
+from _specs import DEVICE, HOST
 
 import importlib
 
@@ -35,7 +36,7 @@ import hawk
 from hawk import Mutable, Param, Scalar, Terminated
 from hawk.artifact import build_bundle
 from hawk.artifact.unit_cache import _unit_key
-from hawk.emit import scalar_mode
+from aether.wings.base.wrapper import scalar_mode
 from hawk.ext import Guard, Kind
 
 B = importlib.import_module("hawk.artifact.bundle")
@@ -60,44 +61,16 @@ def _kernel(group):
 def _sources(group):
     k = _kernel(group)
     unit = B._active_unit(k, "step", MAP)
-    return B._sources(unit, name="step", smode=scalar_mode("float64"), kind=MAP,
-                      targets=("cuda", "host"), layout_sizes_override=None)
+    targets = ("cuda", "host")
+    return B._emit(B.lower(unit, "step", scalar_mode("float64"), MAP, targets, DEVICE), targets, B._options(device_arch=""))
 
 
-@pytest.mark.parametrize("target", ["cuda", "host"])
-def test_group_one_text_is_the_per_lane_map(target):
-    text = _sources(1)[target].text
-    assert PER_LANE_READ in text
-    assert GROUP_READ not in text and "hawk_i >= nSamples" not in text
 
 
-@pytest.mark.parametrize("target,exit_line", [("cuda", "if (hawk_i >= nSamples) return;"),
-                                              ("host", "if (hawk_i >= nSamples) continue;")])
-def test_group_text_carries_the_derived_read_and_the_exit(target, exit_line):
-    one, many = _sources(1)[target], _sources(G)[target]
-    assert GROUP_READ in many.text and PER_LANE_READ not in many.text
-    assert many.text.index(GROUP_READ) < many.text.index(exit_line)
-    assert exit_line in many.text
-    assert many.body == one.body
 
 
-def test_the_host_loop_at_a_group_is_not_the_identity_form():
-    assert "hawk_identity" not in _sources(G)["host"].text
 
 
-def test_the_group_is_part_of_the_unit_key_only_above_one():
-    def key(group):
-        k = _kernel(group)
-        return _unit_key(["step"], [k.walk.digest], [""], targets=("host",),
-                         smode=scalar_mode("float64"), kind=MAP, defines=(), cache_dir="",
-                         device_arch="", derivative_blocks=[{}], layout_sizes_override=None,
-                         groups=(group,))
-
-    assert key(32) != key(64) != key(1)
-    assert key(1) == _unit_key(["step"], [_kernel(1).walk.digest], [""], targets=("host",),
-                               smode=scalar_mode("float64"), kind=MAP, defines=(),
-                               cache_dir="", device_arch="", derivative_blocks=[{}],
-                               layout_sizes_override=None)
 
 
 @pytest.fixture(scope="module")

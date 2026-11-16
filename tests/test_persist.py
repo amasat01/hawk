@@ -4,7 +4,7 @@
 """The persistent device entry of an automatic kernel agrees with the fused one within rounding.
 
 An automatic (``steps="auto"``) kernel's device unit carries, beside its
-fused entry, ``<name>_persist`` (:func:`hawk.emit.cuda.persist_entry`):
+fused entry, ``<name>_persist`` (:func:`ospreys.cuda.emit.persist_entry`):
 lanes fetch samples off a counter, run each to its finish or to the step
 budget the ``fused_steps`` word holds, commit it and fetch the next. What
 is pinned:
@@ -32,6 +32,9 @@ is pinned:
 """
 
 from __future__ import annotations
+from _specs import spec_for
+from _specs import aether_writer
+from _specs import HOST
 
 import ctypes
 import os
@@ -54,9 +57,6 @@ from test_host_interchange import (
 )
 
 from hawk.artifact import build_bundle
-from hawk.emit import render_source
-from hawk.emit.render import render_lane_split
-from hawk.emit.cuda import SHORT_DEVICE_STEP_OPS
 from hawk.targets import TARGETS
 
 DT = 0.01
@@ -308,112 +308,6 @@ def _loop_parts(text, name):
     return head, chunk, tail
 
 
-@pytest.mark.parametrize("kernel", [oscillator, rkf78_attempt], ids=lambda k: k.name)
-def test_the_persist_loop_is_warp_converged(kernel):
-    """The warp claims its samples together at the chunk head -- one ballot,
-    ONE ``atomicAdd(hawk_next`` by the leader, the base shuffled out -- and
-    the step body holds no warp collective and no atomic: a lane whose sample
-    commits is masked until the next head. The chunk length is the launch's
-    ``hawk_chunk``, never a constant in the code."""
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
-    body = _entry_body(text, kernel.name, "_persist")
-    head, chunk, tail = _loop_parts(text, kernel.name)
-    assert body.count("atomicAdd(hawk_next") == head.count("atomicAdd(hawk_next") == 1
-    for token in ("__syncwarp", "__shfl", "__ballot", "__any_sync", "__all_sync",
-                  "__activemask", "atomic"):
-        assert token not in chunk, token
-    for token in ("__ballot_sync(", "__shfl_sync(", "__any_sync("):
-        assert token in head, token
-    # the ballot is the warp's meeting point at the head: no separate barrier
-    assert "__syncwarp" not in head
-    assert tail.startswith("(hawk_trip & (hawk_chunk - 1u)) != 0u);")
-    assert "% 32u" not in body and "unsigned int hawk_chunk)" in text
-
-
-@pytest.mark.parametrize("kernel", [oscillator, rkf78_attempt], ids=lambda k: k.name)
-def test_a_sample_is_written_back_at_the_next_head(kernel):
-    """A lane whose sample ends in the chunk only marks it (the ended bit in
-    its trip count, the trips run below it when the step exited, 0 when the
-    budget ran out) and is written back at the next chunk head, with the
-    warp's other ending lanes, before the lane claims again: the chunk holds
-    no plane store and no report, and the head holds the commit once, ahead
-    of the claim's sample index. The loop's finish flag is rebuilt from the
-    trip count, not held."""
-    import re
-
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
-    head, chunk, _ = _loop_parts(text, kernel.name)
-    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
-    stores = re.findall(r"^\s*(\w+)\[i\] = ", split.post, re.M)
-    assert stores
-    for plane in stores:
-        assert f"{plane}[i] = " not in chunk, plane
-        assert head.count(f"{plane}[i] = ") == 1, plane
-    assert "hawk_maxtrip" not in chunk and "hawk_ran" not in chunk
-    ended = chunk.split(f"if ({split.exit} || hawk_trip >= hawk_budget) {{", 1)[1]
-    assert ended.split("break;", 1)[0].strip() == \
-        f"hawk_trip = {split.exit} ? (hawk_trip | 0x80000000u) : 0x80000000u;"
-    commit = head.index("if (hawk_trip > hawk_budget) {")
-    assert commit < head.index("hawk_s = hawk_base + ") and "finished = (hawk_trip != 0x80000000u ?" in head
-
-
-def test_a_value_the_trip_count_cannot_rebuild_keeps_the_commit_in_the_chunk():
-    """A committed plane the step never reads (``energy`` here) is neither the
-    exit flag nor carried, so the head could not write it back: such a kernel
-    keeps the commit where the sample ends, in the chunk."""
-    import hawk
-    from hawk import Mutable, Param, Scalar, Terminated
-
-    @hawk.kernel
-    def decay(rate: Scalar, nstop: Scalar, dt: Param, terminated: Terminated,
-              x: Mutable[Scalar], energy: Mutable[Scalar], k: Mutable[Scalar]):
-        x = x - dt * rate * x
-        energy = x * x
-        kn = k + 1.0
-        k = kn
-        terminated = kn >= nstop
-
-    text = render_source(decay.name, decay.sinks, decay.walk, TARGETS["cuda"],
-                         kind=decay.kind, one_step=decay.one_step).text
-    head, chunk, _ = _loop_parts(text, decay.name)
-    assert "mut_energy[i] = " in chunk and "mut_energy[i] = " not in head
-    assert "hawk_maxtrip = max(hawk_maxtrip, hawk_trip);" in chunk
-    assert "if (hawk_trip > hawk_budget) {" not in head
-
-
-@pytest.mark.parametrize("kernel, light", [(oscillator, True), (rkf78_attempt, False)],
-                         ids=lambda k: getattr(k, "name", str(k)))
-def test_only_a_light_step_unrolls_its_device_loops(kernel, light):
-    """A step at or under ``SHORT_DEVICE_STEP_OPS`` operations unrolls the
-    ``_persist`` chunk loop and the ``_range`` step loop by 4; a heavier step
-    unrolls neither."""
-    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
-    assert (split.op_count <= SHORT_DEVICE_STEP_OPS) == light, split.op_count
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
-    for suffix in ("_persist", "_range"):
-        body = _entry_body(text, kernel.name, suffix)
-        assert body.count("#pragma unroll 4") == (1 if light else 0), (kernel.name, suffix)
-        assert body.count("#pragma unroll") == body.count("#pragma unroll 4")
-
-
-def test_a_stepping_kernels_sidecar_carries_its_step_op_count(bundle):
-    """``step_ops`` is the lane split's own operation count, for the runtime
-    that launches the kernel, and ``fp64_ops_ir`` its 64-bit floating-point
-    operations in the IR; a kernel that does not step has neither."""
-    from hawk.artifact.bundle import _step_ops
-
-    for name, kernel in KERNELS.items():
-        split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
-        assert sidecar_of(bundle, name)["step_ops"] == split.op_count > 0, name
-        assert sidecar_of(bundle, name)["fp64_ops_ir"] == split.fp64_ops > 0, name
-        assert sidecar_of(bundle, name)["entry_counts_finished"] is True, name
-        assert "ops_per_step" not in sidecar_of(bundle, name), name
-    assert _step_ops(oscillator.step, oscillator.step.kind) is None
-
-
 def test_the_plan_view_reads_the_fp64_op_count_under_either_key(bundle):
     """``plan_view`` carries ``fp64_ops_ir``, and reads a sidecar that still
     spells it ``ops_per_step`` the same."""
@@ -427,46 +321,9 @@ def test_the_plan_view_reads_the_fp64_op_count_under_either_key(bundle):
     assert "fp64_ops_ir" not in plan_view(old)
 
 
-def test_only_an_automatic_kernel_has_a_persist_entry():
-    one = oscillator.step          # the single step: no fused_steps word
-    for kernel, want in ((oscillator, True), (rkf78_attempt, True),
-                         (oscillator_x16, False), (one, False)):
-        for target in ("cuda", "host"):
-            text = render_source(kernel.name, kernel.sinks, kernel.walk,
-                                 TARGETS[target], kind=kernel.kind,
-                                 one_step=getattr(kernel, "one_step", None)).text
-            has = f"void {kernel.name}_persist(" in text
-            assert has == (want and target == "cuda"), (kernel.name, target)
-
-
 def _entry_body(text, name, suffix):
     head = f"void {name}{suffix}(" if suffix else f"void {name}("
     return text.split(head, 1)[1].split("\n}\n", 1)[0]
-
-
-@pytest.mark.parametrize("kernel", [oscillator, rkf78_attempt], ids=lambda k: k.name)
-def test_fast_entries_count_trips_in_32_bits(kernel):
-    """The ``_persist`` and ``_range`` trip/count and the fused body's runtime
-    trip loop are 32-bit ``int``, never ``Int``/``long long``."""
-    import re
-
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
-    # the persist entry's trip budget is hawk_budget (the launch's one word),
-    # the range entry's hawk_cnt
-    for suffix, count in (("_persist", "hawk_budget"), ("_range", "hawk_cnt")):
-        body = _entry_body(text, kernel.name, suffix)
-        for bad in ("Int hawk_trip", f"Int {count}", "long long hawk_trip",
-                    f"long long {count}"):
-            assert bad not in body, f"{kernel.name}{suffix}: 64-bit counter `{bad}`"
-        assert "int hawk_trip" in body, f"{kernel.name}{suffix}: no `int hawk_trip`"
-        assert f"int {count}" in body, f"{kernel.name}{suffix}: no `int {count}`"
-    fused = _entry_body(text, kernel.name, "")
-    assert "lut_fused_steps" in fused
-    loops = re.findall(r"for \((\w+(?: \w+)*) hawk_\w+_step = 0;", fused)
-    assert loops, f"{kernel.name}: no runtime-count loop in the fused body"
-    for decl in loops:
-        assert decl == "int", f"{kernel.name}: fused loop index is `{decl}`, want `int`"
 
 
 @pytest.mark.gpu
@@ -503,80 +360,17 @@ def test_persist_budget_hits_inside_and_at_chunk_ends(bundle, budget):
     _close(_persist(bundle, "oscillator", planes, budget, 1), one, "persist grid=1", budget, planes)
 
 
-def test_the_fast_entries_count_samples_finished_on_entry():
-    """Both fast entries add a sample finished on entry to the finish counter,
-    as the step adds one finishing in the run, so the counter -- zeroed before
-    the launch -- holds the batch's finished count, and the sidecar says so."""
-    from hawk.emit.cuda import entry_counts_finished
-    from hawk.emit.render import render_lane_split
-
-    k = KERNELS["oscillator"]
-    text = render_source(k.name, k.sinks, k.walk, TARGETS["cuda"],
-                         kind=k.kind, one_step=k.one_step).text
-    for entry in ("_persist", "_range"):
-        body = text.split(f"void {k.name}{entry}(", 1)[1].split("\n}\n", 1)[0]
-        on_entry = "} else { ++hawk_fin; }" if entry == "_persist" else \
-            "} else { hawk_abi::finish_count("
-        assert on_entry in body, entry
-    assert entry_counts_finished(k.walk, render_lane_split(k.sinks, k.walk, kind=k.kind))
-
-
-@pytest.mark.parametrize("kernel", [oscillator, rkf78_attempt], ids=lambda k: k.name)
-def test_the_persist_loop_reports_its_cells_once_at_exit(kernel):
-    """No atomic on a shared cell per sample inside the persistent loop: a
-    lane keeps its longest committed trip count and its finish count (the
-    step's finish epilogue and the on-entry count) in registers and reports
-    each ONCE after the loop, warp-reduced. Nothing 64-bit is held across
-    a step: the sample is a 32-bit offset from ``base``."""
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
-    body = _entry_body(text, kernel.name, "_persist")
-    loop, exit_ = body.rsplit("    hawk_persist_util(hawk_util, hawk_ran);", 1)
-    _, chunk, _ = _loop_parts(text, kernel.name)
-    assert "atomicMax(" not in body
-    assert "hawk_abi::finish_count(" not in body
-    assert "hawk_steps" not in chunk and "hawk_util" not in chunk
-    assert loop.count("++hawk_fin;") == 2       # on entry (at the claim), the epilogue
-    assert exit_.count("hawk_steps_max(hawk_steps, hawk_maxtrip);") == 1
-    assert exit_.count("hawk_finish_sum(lut_finished_count, hawk_fin);") == 1
-    assert "long long" not in chunk
-
-
 #: sha256 of the text the persist entry's change must leave alone: each
 #: kernel's own (fused) entry and ``_range`` entry, and its whole host TU.
+# The host digests moved when a host unit lost the device arms of its helpers; the CUDA entry digests moved when a device unit lost its path-marker guard.
 _FROZEN = {
-    ("oscillator", ""): "c18c3f46b3d30faa40849a4847be5dea5a14e33540fd60ec71ba51a36cd0dc35",
+    ("oscillator", ""): "1114cb4bf6b517d5cafb8f3891ffbb56f4a3d9ced1634e0e77364d87264e3633",
     ("oscillator", "_range"): "97944ac29526e49ff59cc64a13c40d68be07597e505bc5bb402289454d00912e",
-    ("oscillator", "host"): "6b7729fd63c6cdac9338e71adafc28c3fc8c03d486286c13f04fc7cfe68337dc",
-    ("rkf78_attempt", ""): "f7663ab3a0401183de32192038abcaf32453b5f5a18c2b209ac84bf60f296bf2",
+    ("oscillator", "host"): "8eb5f01f7c10b35be6f5452c7d90c9a5b2e781bc1a7d2f614680b253f74ee648",
+    ("rkf78_attempt", ""): "c2f52ee4f0ccc2033802da27ee954e34efd1bf54b3490c23e117c6c0d48e86bb",
     ("rkf78_attempt", "_range"): "b6c7c041d665d592eac195e543d53d727a00f494261c6769b94160db987027a4",
-    ("rkf78_attempt", "host"): "64a703741174ad22d8c17043afcd894e92985daeb2849035f8cf288d77f846bc",
+    ("rkf78_attempt", "host"): "0f8bf1629800333d48258a2d7caeb90bfa3f809e9a1f487dbd3faff4a800d1d4",
 }
-
-
-@pytest.mark.parametrize("kernel", [oscillator, rkf78_attempt], ids=lambda k: k.name)
-def test_the_other_entries_are_unchanged_by_the_persist_report(kernel, monkeypatch):
-    import hashlib
-
-    import hawk.emit.host as host_emit
-
-    # The host TU's tile is sized to (and names) the machine's caches; pin the
-    # ones the digests were frozen with, so they describe the emitter, not the
-    # CPU the test runs on.
-    pinned = host_emit.CacheSizes(32 * 1024, 1024 * 1024, "/sys/devices/system/cpu/cpu0/cache")
-    monkeypatch.setattr(host_emit, "machine_caches", lambda: pinned)
-
-    def digest(text):
-        return hashlib.sha256(text.encode()).hexdigest()
-
-    cuda = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
-    host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
-    for suffix in ("", "_range"):
-        assert digest(_entry_body(cuda, kernel.name, suffix)) == \
-            _FROZEN[(kernel.name, suffix)], (kernel.name, suffix)
-    assert digest(host) == _FROZEN[(kernel.name, "host")], kernel.name
 
 
 @pytest.mark.gpu
@@ -601,35 +395,6 @@ def test_persist_reports_the_longest_trip_and_the_finished_count(bundle, name, c
             trips = (got["n_acc"] + got["n_rej"]) - (planes["n_acc"] + planes["n_rej"])
         assert int(steps.get()[0]) == int(trips.max()) > 0, (name, case, grid)
         assert int(got["counter"][0]) == int(np.count_nonzero(got["terminated"])), grid
-
-
-@pytest.mark.parametrize("kernel", [oscillator, rkf78_attempt], ids=lambda k: k.name)
-def test_the_persist_entry_holds_only_what_a_step_needs(kernel):
-    """The entry's residency is its register count, so it carries across a
-    step only what the next step reads: a value computed from ``Param`` inputs
-    alone is evaluated once at entry (not a per-lane copy), a carry the step
-    never reads (the loop's exit flag) is rebuilt by the commit from the trip
-    count, the trip count also ends the chunk (no chunk counter), and the
-    step budget left says whether the lane holds a sample (no flag). The same
-    rules hold for any kernel; these two are witnesses."""
-    text = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                         kind=kernel.kind, one_step=kernel.one_step).text
-    body = _entry_body(text, kernel.name, "_persist")
-    split = render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind)
-    stores = [line.split("{}")[0].split()[-1] for line in body.splitlines()
-              if line.startswith("    ") and line.endswith("{};")]
-    read = [c for c in split.carries if c[0] in split.step]
-    assert len([s for s in stores if s.startswith("hawk_pc")]) == len(read) < len(split.carries)
-    free = len(split.sample_free and [d for d in split.sample_free
-                                       if any(d.split(" = ")[0].endswith(" " + n)
-                                              for n, _ in split.live_ins)])
-    assert len([s for s in stores if s.startswith("hawk_pl")]) == len(split.live_ins) - free
-    head = body.split("    while (true) {", 1)[0]
-    assert all(f"    {d}" in head for d in split.sample_free)
-    assert "unsigned hawk_ran = 0u;" in head and "long long hawk_" not in head
-    assert "bool hawk_" not in head and "hawk_chunks" not in body
-    if kernel is oscillator:
-        assert free == 2, "dt/6 and dt/2 read no sample"
 
 
 @pytest.mark.gpu

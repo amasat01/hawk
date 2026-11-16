@@ -21,22 +21,7 @@ import numpy as np
 from scipy import linalg as sla
 from scipy.linalg import lapack
 
-from hawk.ir import (
-    PlaneExtent,
-    AccumWrite,
-    At,
-    Const,
-    Dispatch,
-    Leaf,
-    Loop,
-    LoopCount,
-    LoopValue,
-    Node,
-    Primitive,
-    SampleIndex,
-    Select,
-    TapeRead,
-)
+from raptor.ir import PlaneExtent, AccumWrite, At, Const, Dispatch, Leaf, Loop, LoopCount, LoopValue, Node, Primitive, SampleIndex, Select, TapeRead
 
 _BINARY = {
     "add": lambda a, b: a + b, "sub": lambda a, b: a - b,
@@ -258,6 +243,11 @@ _LINALG = {
     "lu_det": _lu_det,
     "chol_factor": lambda f: np.zeros_like(f.l) if f.info else f.l,
     "eigh_w": lambda f: f.w, "eigh_v": lambda f: f.v,
+    "lstsq_info": lambda j: _qr(j).info,
+    "lstsq": lambda j, b: (np.zeros((np.shape(j)[1], *np.shape(b)[1:])) if _qr(j).info
+                           else np.linalg.lstsq(j, np.asarray(b, dtype=float), rcond=None)[0]),
+    "lstsq_gram_solve": lambda j, b: (np.zeros_like(np.asarray(b, dtype=float)) if _qr(j).info
+                                      else np.linalg.solve(np.asarray(j).T @ np.asarray(j), np.asarray(b, dtype=float))),
 }
 
 
@@ -265,7 +255,7 @@ def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0) -> dict:
     """Evaluate ``sinks`` at ``env`` (leaf name -> value); returns sink values.
 
     ``lane`` is the sample this evaluation stands at, and it is what a
-    :class:`~hawk.ir.nodes.SampleIndex` node reads: the interpreter walks ONE
+    :class:`~raptor.ir.nodes.SampleIndex` node reads: the interpreter walks ONE
     sample, so the lane index is a parameter of the walk rather than a plane in
     ``env``."""
     memo: dict[int, object] = {}
@@ -380,7 +370,7 @@ def _loop_state(loop, env: dict, memo: dict):
 
     The TAPE is the value each slot held at the START of every iteration — the
     same array the emitted forward loop writes when a reverse loop reads it
-    through a :class:`~hawk.ir.loop_nodes.TapeRead`."""
+    through a :class:`~raptor.ir.nodes.TapeRead`."""
     hit = memo.get(("loop", id(loop)))
     if hit is not None:
         return hit
@@ -431,10 +421,10 @@ def _compute(node: Node, env: dict, memo: dict):
         a, b = (_value(c, env, memo) for c in node.operands[1:])
         return np.where(cond, a, b)
     if isinstance(node, Dispatch):
-        # The serial oracle: the SAME clamp every emitted policy shares —
+        # The serial oracle: the SAME clamp every emitted strategy shares —
         # this interpreter does not model predicated/switch/segmented at all,
         # exactly as it models neither of `select`'s two aether spellings, so
-        # a policy that lowers the clamp differently is a defect the RENDERED
+        # a strategy that lowers the clamp differently is a defect the RENDERED
         # artifact must be compared against, not this scratch evaluator.
         k = int(_value(node.selector, env, memo))
         k = min(max(k, 0), node.K - 1)

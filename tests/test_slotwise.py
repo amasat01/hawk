@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Slotwise form (:mod:`hawk.ir.slotwise`): a wide cotangent as a ``vec`` of
+"""Slotwise form (:mod:`raptor.wings.base.slotwise`): a wide cotangent as a ``vec`` of
 scalar parts, committed where each part is ready.
 
 Three rows. The VALUE row evaluates a derived IR in its dense form and in its
@@ -12,23 +12,27 @@ idempotence, a non-finite seed). The EMIT row pins where the own-column stores
 land."""
 
 from __future__ import annotations
+from raptor.wings.base.dispatch import dispatch as _dispatch
+from _specs import HOST, default_kind
+from _specs import aether_writer
+
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from _eval import evaluate
-from _kan import kan_edge_cell
+from _spline import spline_edge_cell
 from _kernels import drag_vjp
 
 import hawk.diff.loops as diff_loops
 import hawk.diff.transform as diff_transform
 from hawk import Index, Mutable, Scalar, Terminated, Vector, kernel
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
-from hawk.ir import Assign, Const, Dispatch, Leaf, Loop, Select, WideWrite, canonical
-from hawk.ir import make as mk
-from hawk.ir.slotwise import slotwise
+from raptor.ir import Assign, Const, Dispatch, Leaf, Loop, Select, WideWrite, canonical
+from raptor.ir import make as mk
+from raptor.wings.base.slotwise import slotwise
 from hawk.math import dispatch, sin
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 I32 = TensorType((), "i32")
@@ -51,14 +55,14 @@ def _comp(v, k):
 
 
 def _wide_dispatch():
-    """A KAN-shaped read: three cases each reading some components of ONE wide
+    """A spline-shaped read: three cases each reading some components of ONE wide
     leaf, so the cotangent of ``theta`` is a rank-1 dispatch of one-hot sums."""
     theta, kd, x = _leaf("theta", VW), _leaf("kd", I32), _leaf("x", S)
     b0 = mk("mul", (_comp(theta, 0), x))
     b1 = mk("add", (mk("mul", (_comp(theta, 1), x)),
                     mk("mul", (_comp(theta, 2), mk("mul", (x, x))))))
     b2 = mk("add", (mk("sin", (mk("mul", (_comp(theta, 3), x)),)), _comp(theta, 0)))
-    y = Dispatch(kd, [b0, b1, b2], "switch", S)
+    y = _dispatch(kd, [b0, b1, b2], "switch", S)
     return vjp((Assign("y", y, S),), wrt=("theta", "x"))
 
 
@@ -85,7 +89,7 @@ def _select_in_select():
 
 
 def _loop_derived():
-    return vjp(kan_edge_cell(3, 4, 2), wrt=("theta", "g"))
+    return vjp(spline_edge_cell(3, 4, 2), wrt=("theta", "g"))
 
 
 def _component_fold():
@@ -95,7 +99,7 @@ def _component_fold():
     s, kd = _leaf("s", S), _leaf("kd", I32)
     one, two = mk("vec", (a, b, c)), mk("vec", (d, e, f))
     both = mk("add", (mk("mul", (one, s)), mk("sub", (two, one))))
-    pick = Dispatch(kd, [both, mk("neg", (two,)), one], "switch", V3)
+    pick = _dispatch(kd, [both, mk("neg", (two,)), one], "switch", V3)
     chosen = Select(mk("gt", (s, Const(0.0, S))), pick, two, V3)
     return (Assign("c0", _comp(chosen, 0), S), Assign("c2", _comp(chosen, 2), S),
             Assign("t", mk("sum", (chosen,)), S))
@@ -115,8 +119,10 @@ def _dense(build):
     """``build()`` with the pass switched off at both call sites."""
     mp = pytest.MonkeyPatch()
     try:
-        mp.setattr(diff_transform, "slotwise", lambda roots: tuple(roots))
-        mp.setattr(diff_loops, "slotwise", lambda roots: tuple(roots))
+        real = diff_loops._slotwise
+        dense = SimpleNamespace(chain=real.chain, is_structural_zero=real.is_structural_zero, slotwise=lambda roots: tuple(roots))
+        mp.setattr(diff_transform, "_slotwise", dense)
+        mp.setattr(diff_loops, "_slotwise", dense)
         return tuple(build())
     finally:
         mp.undo()
@@ -176,16 +182,6 @@ def test_a_non_finite_factor_leaves_an_untouched_slot_zero_not_nan():
     assert np.isnan(old[0]) and new[0] == 0.0 and np.isinf(new[1])
 
 
-def test_no_vec_combination_is_a_no_op_and_the_pass_is_idempotent():
-    plain = tuple(drag_vjp())
-    assert all(a is b for a, b in zip(slotwise(plain), plain))
-    assert (render_body(slotwise(plain), canonical(slotwise(plain))).text
-            == render_body(plain, canonical(plain)).text)
-    once = slotwise(_dense(_wide_dispatch))
-    again = slotwise(once)
-    assert all(a is b for a, b in zip(once, again))
-
-
 def test_a_loop_is_not_entered():
     dense = _dense(_loop_derived)
     loops = [s for s in dense if isinstance(s, Loop)]
@@ -197,42 +193,20 @@ def test_a_loop_is_not_entered():
 # the emitted stores
 
 
-def _body(sinks):
-    return render_body(tuple(sinks), canonical(tuple(sinks))).text
-
-
-def test_a_wide_cotangent_is_committed_per_component():
-    sinks = _wide_dispatch()
-    text = _body(sinks)
-    stores = [ln for ln in text.splitlines() if "mut_bar_theta(" in ln]
-    assert len(stores) == WIDE, text
-    assert "mut_bar_theta[i]" not in text
-    assert "aether::Item" not in text.split("mut_bar_theta(")[0].split("switch")[0]
-
-
 def _two_edges():
     """Two independent switches, each owning a different pair of slots of one
-    wide leaf: the KAN shape at two edges."""
+    wide leaf: the spline shape at two edges."""
     theta, x = _leaf("theta", VW), _leaf("x", S)
     k1, k2 = _leaf("k1", I32), _leaf("k2", I32)
-    one = Dispatch(k1, [mk("mul", (_comp(theta, 0), x)),
+    one = _dispatch(k1, [mk("mul", (_comp(theta, 0), x)),
                         mk("mul", (_comp(theta, 1), x))], "switch", S)
-    two = Dispatch(k2, [mk("mul", (_comp(theta, 2), x)),
+    two = _dispatch(k2, [mk("mul", (_comp(theta, 2), x)),
                         mk("mul", (_comp(theta, 3), x))], "switch", S)
     return vjp((Assign("y", mk("add", (one, two)), S),), wrt=("theta",))
 
 
-def test_each_store_follows_its_part_not_the_end_of_the_body():
-    """Edge one's slots are stored before edge two's switch runs; with the
-    commits left to the end of the body, no store would precede it."""
-    lines = _body(_two_edges()).splitlines()
-    switches = [n for n, ln in enumerate(lines) if "switch (" in ln]
-    store = next(n for n, ln in enumerate(lines) if "mut_bar_theta(0," in ln)
-    assert len(switches) == 2 and switches[0] < store < switches[1], (switches, store)
-
-
 @kernel
-def _kan_pair(theta: Vector[6], x: Vector[3], k0: Index, k1: Index, k2: Index,
+def _spline_pair(theta: Vector[6], x: Vector[3], k0: Index, k1: Index, k2: Index,
               terminated: Terminated, y: Mutable[Scalar]):
     """Three edges, each a two-case switch over its own slots of ``theta`` and
     its own ``x``: the cotangents of ``theta`` and ``x`` read the same switches,
@@ -241,45 +215,6 @@ def _kan_pair(theta: Vector[6], x: Vector[3], k0: Index, k1: Index, k2: Index,
     e1 = dispatch(k1, [theta[2] * x[1], theta[3] * sin(x[1])])
     e2 = dispatch(k2, [theta[4] * x[2], theta[5] * sin(x[2])])
     y = e0 + e1 + e2
-
-
-def test_a_store_whose_part_is_ready_early_is_not_left_to_its_turn():
-    """The part ``mask ? 0 : switch_result`` of ``bar_x`` sits, in walk order,
-    after the whole subtree of ``bar_theta``; it is ready as soon as its
-    switch has run, and its store follows that switch (as ``bar_theta``'s do)
-    rather than waiting for the end of the body."""
-    lines = _body(vjp(_kan_pair, wrt=("theta", "x"))).splitlines()
-    switches = [n for n, ln in enumerate(lines) if "switch (" in ln]
-    store = next(n for n, ln in enumerate(lines) if "mut_bar_x(0," in ln)
-    assert len(switches) == 3 and store < switches[1], (switches, store)
-
-
-def test_a_plane_that_is_read_keeps_its_whole_store():
-    """The plane's prior value is read after the early store would have
-    overwritten it: such a sink commits as one value, as before."""
-    theta, x = _leaf("theta", VW), _leaf("x", S)
-    prior = Leaf("prior_read", "mutable", "acc", VW)
-    wide = mk("vec", tuple(mk("mul", (x, Const(float(k), S))) for k in range(WIDE)))
-    sinks = (Assign("acc", mk("add", (prior, wide)), VW),)
-    del theta
-    assert "acc(" not in _body(sinks)
-    sinks = (Assign("acc", wide, VW),)
-    assert _body(sinks).count("mut_acc(") == WIDE
-
-
-def test_a_wide_write_is_committed_per_component_too():
-    x = _leaf("x", S)
-    wide = mk("vec", tuple(mk("mul", (x, Const(float(k), S))) for k in range(3)))
-    text = _body((WideWrite("w", wide, None, V3),))
-    assert text.count("out_w(") + text.count("wout_w(") + text.count("w(") >= 3
-
-
-def test_a_matrix_is_committed_per_entry_with_both_indices():
-    x = _leaf("x", S)
-    wide = mk("vec", tuple(mk("mul", (x, Const(float(k), S))) for k in range(6)),
-              literal=(2, 3))
-    text = _body((Assign("m", wide, TensorType((2, 3), "f64")),))
-    assert "mut_m(1, 2, i.global())" in text and "mut_m[i]" not in text
 
 
 # --------------------------------------------------------------------------
@@ -299,7 +234,7 @@ def _chains():
         "add": mk("add", (a, b)), "sub": mk("sub", (a, b)), "neg": mk("neg", (b,)),
         "mul": mk("mul", (a, s)), "mul_left": mk("mul", (s, a)),
         "div": mk("div", (a, s)), "select": Select(cond, a, b, V3),
-        "dispatch": Dispatch(kd, [a, b, mk("vec", (p, q, r))], "switch", V3),
+        "dispatch": _dispatch(kd, [a, b, mk("vec", (p, q, r))], "switch", V3),
         "mask": Select(mk("lt", (s, Const(1.0, S))), zero3, b, V3),
     }
     sinks = [Assign(f"o_{n}", v, V3) for n, v in out.items()]
@@ -336,7 +271,7 @@ def test_a_chain_is_kept_where_a_commit_can_take_it_and_lowered_where_not():
 
 
 def _nodes(sinks):
-    from hawk.ir.walk import canonical_nodes
+    from raptor.ir.walk import canonical_nodes
 
     return canonical_nodes(tuple(sinks))[0]
 

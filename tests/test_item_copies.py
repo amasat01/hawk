@@ -110,8 +110,12 @@ def _plain(v: Vector[N], k: Int32, y: Mutable[Scalar]):
     y = v[k]
 
 
+from hawk.build_settings import BuildSettings
+
+
 def _text(kernel, target):
-    return emit_source(kernel, mode="float64", targets=(target,)).sources[target].text
+    # emit_source gives the spec's own wide form (a device build takes the team form under auto): the test pins the thread form
+    return emit_source(kernel, mode="float64", targets=(target,), settings=BuildSettings(wide_form="thread")).sources[target].text
 
 
 @pytest.mark.parametrize("target", ["host", "cuda"])

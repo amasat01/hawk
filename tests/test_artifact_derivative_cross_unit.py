@@ -22,7 +22,7 @@ from conftest import sidecar_of
 from hawk import Kernel
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 #: `table` is the only differentiable leaf of `gather` (`where` is an `Index`,
 #: dtype `i32`, excluded from autodiff by `hawk.diff.transform._DIFFERENTIABLE`

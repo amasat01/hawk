@@ -5,13 +5,13 @@ Two observations, each with a known answer:
 * **Vector math only where it is called.** Under the default
   ``native-vector-math`` profile the host TU reaches aether's vector-math
   hook, whose symbols (``aether_hvm_<f>`` and its ``_ZGV...`` vector
-  variants) are each kept alive by a per-function anchor instantiated only
+  wings) are each kept alive by a per-function anchor instantiated only
   by a call of that function. A kernel that calls no math function emits
   none of them; a kernel calling ``sqrt`` and ``pow`` emits exactly those two
   families, every width the CPU has, scalar symbol included. Before the
   anchors every TU carried every function at every width (288 symbols on
   an AVX-512 host), the bulk of a math-free kernel's host compile time.
-* **Host and device compile side by side.** ``_compile_targets`` runs one
+* **Host and device compile side by side.** ``_build_targets`` runs one
   kernel's target compiles concurrently (at most ``$HAWK_COMPILE_JOBS``,
   default 2), returns them keyed by target whatever order they finish in,
   and on failure raises the FIRST failing target in ``targets`` order — the
@@ -25,7 +25,7 @@ Plants, each turning a row red, then removed:
 * the anchor odr-use dropped from ``hostvec``'s ``double`` legs --
   ``test_a_math_kernel_emits_only_the_functions_it_calls`` fails (no symbol
   emitted, the loop's vector calls left undefined);
-* ``max_workers=1`` forced in ``_compile_targets`` --
+* ``max_workers=1`` forced in ``_build_targets`` --
   ``test_the_target_compiles_overlap`` times out waiting for the second
   compile to start.
 """
@@ -45,7 +45,8 @@ from hawk import Mutable, Param, Scalar, Terminated
 from hawk import math as m
 from hawk.artifact import build_bundle
 from hawk.compile import toolchain as tc
-from hawk.ir import HawkError
+import ospreys.cpu.toolchain as ctc
+from raptor.errors import RaptorError as HawkError
 
 _X86 = platform.machine().lower() in ("x86_64", "amd64")
 needs_x86 = pytest.mark.skipif(not _X86, reason="the vector-math hook is x86-64 only")
@@ -87,29 +88,41 @@ def test_a_math_free_kernel_emits_no_vector_math(tmp_path):
 @needs_x86
 def test_a_math_kernel_emits_only_the_functions_it_calls(tmp_path):
     syms = _hvm_symbols(_host_so(root_pow_step, tmp_path))
-    masked_dropped = (tc.gcc_maskcall_affected(tc.compiler_macros(tc.host_compiler()))
-                      and "-DAETHER_HVM_MASKED=1" not in tc.host_codegen_flags())
+    masked_dropped = (ctc.gcc_maskcall_affected(ctc.compiler_macros(ctc.host_compiler()))
+                      and "-DAETHER_HVM_MASKED=1" not in ctc.host_codegen_flags())
     called = {re.sub(r"^.*aether_hvm_", "", s) for s in syms}
     # sqrt is inline on the host (aether b385084: the compiler widens it natively), so only pow leaves a symbol.
     assert called == {"pow"}, sorted(syms)
     # Every family is whole: the scalar symbol and the SSE pair at least,
-    # one masked and one unmasked variant per width the TU was built for.
+    # one masked and one unmasked form per width the TU was built for.
     for fn, arity in (("pow", "vv"),):
         assert f"aether_hvm_{fn}" in syms
         assert f"_ZGVbN2{arity}_aether_hvm_{fn}" in syms
         if not masked_dropped:
             assert f"_ZGVbM2{arity}_aether_hvm_{fn}" in syms
         # _ZGV<isa><mask><lanes>: every ISA built for has both mask kinds, except
-        # on a GCC that miscompiles masked variants, where aether declares none.
-        variants = {s[4:6] for s in syms if s.startswith("_ZGV") and s.endswith(f"_{fn}")}
-        isas = {v[0] for v in variants}
+        # on a GCC that miscompiles masked forms, where aether declares none.
+        facts = {s[4:6] for s in syms if s.startswith("_ZGV") and s.endswith(f"_{fn}")}
+        isas = {v[0] for v in facts}
         kinds = "N" if masked_dropped else "NM"
-        assert variants == {i + k for i in isas for k in kinds}, sorted(variants)
+        assert facts == {i + k for i in isas for k in kinds}, sorted(facts)
 
 
 class _Src:
     def __init__(self, text):
         self.text = text
+
+
+def _rows(monkeypatch, fake):
+    """``bundle_mod.TARGETS`` with rows whose ``build`` is ``fake(text, name, opts)``."""
+    class Row:
+        def __init__(self, target):
+            self.target = target
+
+        def build(self, lowered, source, options):
+            return fake(source.text, "k", None)
+
+    monkeypatch.setattr(bundle_mod, "TARGETS", {t: Row(t) for t in ("host", "cuda")})
 
 
 def test_the_target_compiles_overlap(monkeypatch):
@@ -122,10 +135,9 @@ def test_the_target_compiles_overlap(monkeypatch):
         assert started[other].wait(timeout=20), "the compiles ran one after the other"
         return f"result:{text}"
 
-    monkeypatch.setattr(bundle_mod, "compile_source", fake)
+    _rows(monkeypatch, fake)
     monkeypatch.delenv("HAWK_COMPILE_JOBS", raising=False)
-    out = bundle_mod._compile_targets({"host": _Src("host"), "cuda": _Src("cuda")}, "k",
-                                      {"host": None, "cuda": None})
+    out = bundle_mod._build_targets(None, {"host": _Src("host"), "cuda": _Src("cuda")}, {}, ("host", "cuda"))
     assert list(out) == ["host", "cuda"]
     assert out == {"host": "result:host", "cuda": "result:cuda"}
 
@@ -137,10 +149,9 @@ def test_one_job_is_the_sequential_build(monkeypatch):
         order.append((threading.current_thread().name, text))
         return text
 
-    monkeypatch.setattr(bundle_mod, "compile_source", fake)
+    _rows(monkeypatch, fake)
     monkeypatch.setenv("HAWK_COMPILE_JOBS", "1")
-    out = bundle_mod._compile_targets({"host": _Src("host"), "cuda": _Src("cuda")}, "k",
-                                      {"host": None, "cuda": None})
+    out = bundle_mod._build_targets(None, {"host": _Src("host"), "cuda": _Src("cuda")}, {}, ("host", "cuda"))
     main = threading.current_thread().name
     assert order == [(main, "host"), (main, "cuda")] and out == {"host": "host", "cuda": "cuda"}
 
@@ -155,11 +166,10 @@ def test_the_first_failing_target_is_reported_after_both_finish(monkeypatch, fai
             raise HawkError(f"{text} compile failed")
         return text
 
-    monkeypatch.setattr(bundle_mod, "compile_source", fake)
+    _rows(monkeypatch, fake)
     monkeypatch.delenv("HAWK_COMPILE_JOBS", raising=False)
     with pytest.raises(HawkError, match=f"^{failing[0]} compile failed"):
-        bundle_mod._compile_targets({"host": _Src("host"), "cuda": _Src("cuda")}, "k",
-                                    {"host": None, "cuda": None})
+        bundle_mod._build_targets(None, {"host": _Src("host"), "cuda": _Src("cuda")}, {}, ("host", "cuda"))
     assert sorted(finished) == ["cuda", "host"]
 
 

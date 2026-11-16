@@ -11,10 +11,10 @@ result keeps its ``members``, so the fusion rule cuts the derivative chain as it
 
 from __future__ import annotations
 
-from ..ir import canonical_nodes
-from ..ir import make as _mk
-from ..ir.chain import _walk_sinks, bind
-from ..ir.nodes import Assign, Leaf
+from raptor.ir import canonical_nodes
+from raptor.ir import make as _mk
+from ..passes.chain import _walk_sinks, bind
+from raptor.ir.nodes import Assign, Leaf
 from .transform import _DIFFERENTIABLE, Derived, _jvp, _sinks_of, _wrt, vjp
 
 
@@ -66,7 +66,7 @@ def jvp_chain(chain, wrt, primal_unit) -> Derived:
     return _derived(chain, members[::-1], "jvp", names, primal_unit, jump)
 
 
-def vjp_chain(chain, wrt, primal_unit, policy) -> Derived:
+def vjp_chain(chain, wrt, primal_unit, strategy) -> Derived:
     names = _resolve(chain, wrt)
     made, reach = [], set(names)               # the differentiable inputs of each member that carry an adjoint
     for k in chain.members:
@@ -76,7 +76,7 @@ def vjp_chain(chain, wrt, primal_unit, policy) -> Derived:
     for k, w in zip(reversed(chain.members), reversed(made)):
         if not w:
             continue
-        d = vjp(k, wrt=w, primal_unit=primal_unit, policy=policy)
+        d = vjp(k, wrt=w, primal_unit=primal_unit, strategy=strategy)
         jump = jump or d.jump
         sinks = []
         for s in d:

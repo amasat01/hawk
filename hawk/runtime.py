@@ -12,7 +12,7 @@ runtime; it is the last mile of the DEFINITION.
 
 The descriptor is derived, never re-tabulated: a slot's kind comes from
 the same role -> mirror map the emitter generated the entry signature
-from (:data:`hawk.emit.render.MIRROR_OF`), so a slot cannot be described
+from (:data:`raptor.wings.base.exchange.MIRROR_OF`), so a slot cannot be described
 one way to the compiler and another to the marshal — the failure mode
 being a 32-byte handle where the kernel reads a 40-byte mirror, which
 is deterministic garbage, not a crash.
@@ -61,7 +61,7 @@ import threading
 from pathlib import Path
 
 from . import _cells, _core, _lane_bind
-from ._cells import ROW
+from raptor.ir.cells import planes
 from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, narrow_index, refuse_index_width, widen_index
 from ._plane_layout import (
     LayoutChoice,
@@ -69,11 +69,11 @@ from ._plane_layout import (
     plane_layout,
     split_marks,
 )
-from .emit.box import threads
-from .emit.render import MIRROR_OF, mirror_of
-from .emit.wrapper import fold_entry_name
-from .ir import HawkError
-from .types import TensorType
+from . import wings as _wings
+_simt_box = _wings.view("raptor", "base", "box")
+from raptor.wings.base.exchange import MIRROR_OF, fold_entry_name, mirror_of
+from ._errors import HawkError
+from raptor.ir.types import TensorType
 
 __all__ = ["ArgBlock", "HostKernel", "descriptor_for_sidecar", "DEVICE_CPU",
            "kind_for", "load", "run"]
@@ -87,7 +87,7 @@ DEVICE_CPU = 1
 ArgBlock = _core.ArgBlock
 
 #: The by-value ABI shape -> ``_core`` descriptor-kind vocabulary
-#: (:data:`hawk.emit.render.MIRROR_OF` on the left).
+#: (:data:`raptor.wings.base.exchange.MIRROR_OF` on the left).
 _KIND_OF_MIRROR = {"GRefMirror": "gref", "ScalarHandle": "handle"}
 
 _INT_DTYPES = ("i32", "i64", "int32", "uint32")
@@ -123,7 +123,7 @@ def descriptor_for_sidecar(sidecar: dict) -> list:
     """The per-slot kind list for a DEPLOYED artifact, from its sidecar
     alone.
 
-    A consumer holds a directory, not a :class:`~hawk.ir.walk.Walk`, so
+    A consumer holds a directory, not a :class:`~raptor.ir.walk.Walk`, so
     types are reconstructed from the sidecar's own blocks: ``mutables``
     (resolves a ``mutable`` role's shape — without it a
     ``Mutable[Vector[3]]`` packs as a 32-byte handle where the kernel
@@ -213,7 +213,7 @@ class HostKernel:
         self.library = _core.HostLibrary(str(self.path))
         self.entry = self.library.entry(entry_name)
         #: ``{target: entry}``: the fold of each owned companion
-        #: (:func:`hawk.emit.wrapper.fold_entries`), run after the kernel.
+        #: (the writer's ``fold_entries``), run after the kernel.
         self.folds = {target: self.library.entry(fold_entry_name(sidecar["kernel"], target)
                                                  + "_host")
                       for target in (sidecar.get("companions") or {}).values()}
@@ -243,7 +243,7 @@ class HostKernel:
         ``<group>_mix`` plane per ``"auto"`` dispatch (its branch counts), and
         a ``jump_seed`` of ``0`` for an alternate-path ``jump=`` derivative."""
         from .diff.jump import SEED
-        from .ir.nodes import FINISHED_PLANE, FUSED_STEPS_PLANE
+        from raptor.wings.base.cells import FINISHED_PLANE, FUSED_STEPS_PLANE
 
         extra = {}
         if SEED not in arrays and any(n == SEED for _, n in self.slot_of):
@@ -354,7 +354,7 @@ class HostKernel:
         outputs = {c: arrays[c] for c in cells}
         held = self.__dict__.setdefault("_cell_scratches", {})
         if n_samples not in held:
-            held[n_samples] = _cells.Scratch(cells, n_samples, self.scalar_type)
+            held[n_samples] = _cells.Scratch(cells, n_samples, self.scalar_type, _cells.row_of(self.sidecar))
         scratch = held[n_samples]
         planes = {k: v for k, v in arrays.items() if k not in cells}
         return scratch, outputs, {**planes, **scratch.rows}
@@ -501,14 +501,16 @@ def load(directory, kernel: str, sidecar: dict | None = None) -> HostKernel:
 
     directory = Path(directory)
     if sidecar is None:
-        if (not (directory / f"{kernel}.json").exists()
-                and (directory / f"{kernel}.embedded.json").exists()):
-            raise HawkError(
-                f"{kernel!r} in {directory} was built for the 'c' target only: "
-                "it is a standalone C unit (<name>.c, <name>.h, "
-                "<name>.embedded.json, see hawk.embedded) for an embedded build, "
-                "not a host artifact hawk.load can run; build it with "
-                "targets=('host',) to load it here")
+        if not (directory / f"{kernel}.json").exists():
+            from .backends import default_backends
+
+            for row in default_backends():
+                if row.report_file(kernel) and (directory / row.report_file(kernel)).exists():
+                    raise HawkError(
+                        f"{kernel!r} in {directory} was built for the {row.id!r} target only: "
+                        f"it is {row.unit_note}, "
+                        "not a host artifact hawk.load can run; build it with "
+                        "targets=('host',) to load it here")
         sidecar = json.loads((directory / f"{kernel}.json").read_text())
     return HostKernel(directory / f"{kernel}.so", sidecar)
 
@@ -594,12 +596,13 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
                 cells, n_samples, arrays)
         kernel_artifact._bind_all(arrays, n_samples, layout)
         # a thread-box kernel's base and count count threads (sidecar launch.box)
-        count = (threads(sidecar.get("launch", {}).get("box"), n_samples)
+        count = (_simt_box.threads(sidecar.get("launch", {}).get("box"), n_samples)
                  if count is None else count)
         kernel_artifact._launch(base, count, n_samples)
         _fold_companions(kernel_artifact, arrays, owned)
         if scratch is not None:
-            scratch.finish(outputs, base // ROW, -(-(base + count) // ROW))
+            row = _cells.row_of(sidecar)
+            scratch.finish(outputs, base // row, -(-(base + count) // row))
 
 
 def _stage_names(first: HostKernel) -> set:
@@ -696,6 +699,13 @@ def _team_planes(first: HostKernel, held: dict, n_samples: int, arrays: dict) ->
     return out
 
 
+def _one_row_width(stages) -> None:
+    """One run has one row width: the stages of a split kernel that reduce over samples state the same ``cell_row``."""
+    widths = {st.path.stem: st.sidecar["cell_row"] for st in stages if "cell_row" in st.sidecar}
+    if len(set(widths.values())) > 1:
+        raise HawkError("one run has one row width, but the stages state " + ", ".join(f"{k}: {v}" for k, v in widths.items()))
+
+
 def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
                 owned: dict) -> None:
     """A split kernel: stage ``k``, then the host finish of its cells, then
@@ -708,6 +718,7 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
     if "stages" not in held:
         held["stages"] = [first] + [load(first.path.parent, st["kernel"])
                                     for st in first.sidecar["stages"][1:]]
+        _one_row_width(held["stages"])
         held["own"] = {c: np.zeros(spec["columns"], dtype=first.scalar_type)
                        for c, spec in cells.items()}
     values = {c: arrays[c] if c in arrays else held["own"][c] for c in cells}
@@ -721,7 +732,7 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
         bound.update({k: v for k, v in scratch_planes.items() if k in names})
         for cell in record["cells_in"]:
             column = np.asarray(values[cell]).reshape(-1)
-            for k, plane in enumerate(_cells.planes(cell, cells[cell]["columns"])):
+            for k, plane in enumerate(planes(cell, cells[cell]["columns"])):
                 bound[plane] = column[k:k + 1]
         out = {c: cells[c] for c in record["cells_out"]}
         scratch = None
@@ -742,7 +753,7 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
                      if t in keyed and c in keyed})
         _fold_companions(stage, bound, mine)
         if scratch is not None:
-            scratch.finish(outputs, 0, -(-n_samples // ROW))
+            scratch.finish(outputs, 0, -(-n_samples // _cells.row_of(first.sidecar)))
     for team in checks:
         _lane_bind.check_scatter_status(first.path.stem, team, scratch_planes[team["status"]],
                                         _lane_bind.target_size(arrays, team["of"]))

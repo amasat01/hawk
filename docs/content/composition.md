@@ -22,7 +22,7 @@ A plain `def` called from a kernel is inlined when it is given traced values, so
 
 A helper defined in the kernel's own module and traced as a kernel has no parameter declarations, and the error says so: move the helper to another module, or call it with traced values so it is inlined.
 
-A sum that skips some terms (a masked sum) writes each term as `m.dispatch(live, [0.0, term], policy="predicated")`, with `live` an integer 0 or 1 per element: both branches are evaluated and one kept, with no divergent branch. See [Choosing a dispatch policy](tutorials/08_choosing_a_dispatch_policy).
+A sum that skips some terms (a masked sum) writes each term as `m.dispatch(live, [0.0, term], strategy="predicated")`, with `live` an integer 0 or 1 per element: both branches are evaluated and one kept, with no divergent branch. See [Choosing a dispatch strategy](tutorials/08_choosing_a_dispatch_strategy).
 
 ## Kernels in sequence: `hawk.chain`
 

@@ -179,7 +179,7 @@ because GCC cannot vectorise a call into libm. Under this profile aether
 declares those functions with the x86-64 vector function ABI and supplies
 vector versions (its own packet math), so the loop vectorises; `fmax`/`fmin`
 become inline selects with libm's results (up to the sign of a +0/-0 tie,
-which C leaves unspecified). On GCC 13.0-13.3 and 14.0-14.2 aether keeps a loop with a conditional call scalar (those releases if-convert it wrongly); hawk runs a small witness of the miscompile once per compiler, and where a distribution compiler carries the fix it enables the vector variants with `-DAETHER_HVM_MASKED=1` (setting that macro yourself skips the check). The accuracy trade:
+which C leaves unspecified). On GCC 13.0-13.3 and 14.0-14.2 aether keeps a loop with a conditional call scalar (those releases if-convert it wrongly); hawk runs a small witness of the miscompile once per compiler, and where a distribution compiler carries the fix it enables the vector forms with `-DAETHER_HVM_MASKED=1` (setting that macro yourself skips the check). The accuracy trade:
 the transcendental functions are aether's, faithfully rounded (error < 1 ULP,
 verified against a 128-bit reference; the per-function accuracy table is in aether's
 `aether/backend/cpu/simd/math/PacketMath.h`), but not glibc's, so results are
@@ -200,7 +200,7 @@ floating-point value, only how floating-point exceptions may be raised.
 
 One caveat on GCC: on GCC 13.1-13.3 and 14.1-14.2 a masked call to a vector
 math function can be miscompiled, so aether-dsc 0.2.3 and newer declare no masked
-variants there, and a loop with a conditional math call runs scalar (the rule is `AETHER_HVM_MASKED`: off on GCC 13 before 13.4 and on
+forms there, and a loop with a conditional math call runs scalar (the rule is `AETHER_HVM_MASKED`: off on GCC 13 before 13.4 and on
 GCC 14 before 14.3, on elsewhere). hawk reports those loops as not
 `vectorised`, and results stay correct; other loops stay vectorised, and GCC 13.4,
 14.3 or newer vectorises these too.
@@ -217,7 +217,7 @@ served for it. For results bit-identical to libm, request `native`:
 `native` with `-ffp-contract=fast` in place of `-ffp-contract=off`, so the
 FMA trade above applies. With GCC it also adds `-DAETHER_HOST_VECTOR_MATH
 -fno-trapping-math -fno-thread-jumps`, which routes `pow` alone to aether's
-vector variant (faithfully rounded, checked by aether's `make faithful-gate`
+vector form (faithfully rounded, checked by aether's `make faithful-gate`
 on aarch64); every other math function stays libm's, and with clang `pow`
 does too. `-fno-thread-jumps` keeps GCC from copying the call onto
 conditional paths, which would keep the loop scalar. For results

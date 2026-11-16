@@ -37,23 +37,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir import Const, HawkError, Leaf, Node
-from ..ir import make as _mk
-from ..ir.loop_nodes import LoopCarry, LoopIndex, LoopValue
-from ..ir.loops import build_loop
-from ..ir.nodes import (
-    AccumWrite,
-    Assign,
-    Finish,
-    SampleSum,
-    Select,
-    TapeWrite,
-    element_count,
-    is_param_cell,
-)
-from ..ir.team import TeamStore
-from ..ir.walk import substitute
-from ..types import TensorType
+from raptor.ir import Const, Leaf, Node
+from .._errors import HawkError
+from raptor.ir import make as _mk
+from raptor.ir.nodes import LoopCarry, LoopIndex, LoopValue
+from raptor.ir.loops import build_loop
+from raptor.ir.nodes import AccumWrite, Assign, Finish, SampleSum, Select, TapeWrite, element_count, is_param_cell
+from raptor.ir.cells import with_value
+from ..dialects import is_a
+from raptor.ir.walk import substitute
+from raptor.ir.types import TensorType
 
 #: The reserved plane names the twin adds (refused as a kernel's own).
 TAPE_PLANE = "tape"
@@ -85,10 +78,9 @@ def tape(kernel: Any, window: int, *, events: str = "step") -> Any:
             or kernel)
     fused = step is not kernel
     name = step.name
-    finish = getattr(step.walk, "finish", None)
-    if finish is not None and finish[1] != 1:
+    if step.walk.finish is not None and step.steps != 1:
         raise HawkError(
-            f"hawk.diff.tape({name!r}): the kernel takes {finish[1]} steps per "
+            f"hawk.diff.tape({name!r}): the kernel takes {step.steps} steps per "
             "launch; tape the single step (steps=1) or the automatic kernel")
     if isinstance(window, bool) or not isinstance(window, int) or window < 1:
         raise HawkError(
@@ -212,9 +204,9 @@ def _fused_twin(step: Any, single: Any, planes: tuple, window: int) -> Any:
     out += [Assign(s.name, LoopValue(loop, j), s.ttype) for j, s in enumerate(commits)]
     out.append(Assign(APPLIED_STEPS, LoopValue(loop, m), _I32))
     done = _mk("gt", (LoopValue(loop, m + 1), Const(0.5, _FLAG)))
-    out.append(Finish(finish.name, done, steps="auto"))
+    out.append(Finish(finish.name, done))
     return Kernel(step.name + SUFFIX, tuple(out), step.planes, kind=step.kind,
-                  step=single, one_step=single)
+                  step=single, one_step=single, steps="auto")
 
 
 # --------------------------------------------------------------------------
@@ -282,20 +274,6 @@ def _time(step: Any) -> tuple | None:
     return None if dt is None else (step.time or "t", dt)
 
 
-def _resink(sink: Node, value: Node) -> Node:
-    if isinstance(sink, Finish):
-        return Finish(sink.name, value, steps=sink.steps)
-    if isinstance(sink, (SampleSum, AccumWrite)):
-        return sink.rebuilt(value)
-    if isinstance(sink, Assign):
-        return Assign(sink.name, value, sink.ttype)
-    if isinstance(sink, TeamStore):
-        return TeamStore(sink.name, value)
-    raise HawkError(
-        f"a promotion rebuilds Mutable commits, sample sums, keyed accumulates and a finish; "
-        f"{sink.kind} {getattr(sink, 'name', '?')!r} is none of them")
-
-
 def _index_time(t: str, h: Node, k: Node) -> Node:
     """``t_0 + k*h``: ONE multiply, ONE add (the index form)."""
     t0 = Leaf("vocab_read", "per_sample", t + T0_SUFFIX, h.ttype)
@@ -336,7 +314,7 @@ def _promoted(step: Any, *, tau: bool = False) -> Any:
     if sink is not None:
         mapping[id(sink.value)] = t_value
     values = substitute(tuple(s.value for s in step.sinks), mapping)
-    sinks = tuple(_resink(s, v) for s, v in zip(step.sinks, values))
+    sinks = tuple(with_value(s, v) for s, v in zip(step.sinks, values))
     if sink is None:
         finishes = tuple(s for s in sinks if isinstance(s, Finish))
         others = tuple(s for s in sinks if not isinstance(s, Finish))
@@ -366,7 +344,7 @@ def _closed_stop(step: Any, t_value: Node) -> Any:
                           _mk("mul", (spacing, _mk("abs", (_d_dt(g, t_value),))))))
         test = _mk("le", (g, tol))
         cond = test if cond is None else _mk("lor", (cond, test))
-    sinks = tuple(Finish(s.name, cond, steps=s.steps) if s is finish else s
+    sinks = tuple(Finish(s.name, cond) if s is finish else s
                   for s in step.sinks)
     out = Kernel(step.name, sinks, step.planes, kind=step.kind)
     out.time, out.time_step = step.time, step.time_step
@@ -589,7 +567,7 @@ def step_jvp(kernel: Any, *, wrt=None) -> Any:
             "is not carried across launches")
     state = tuple(dict.fromkeys(s.name for s in step.sinks if isinstance(s, Assign)))
     plain = Kernel(f"{step.name}_plain", tuple(
-        _resink(s, v) for s, v in zip(step.sinks, as_plain_reads(tuple(s.value for s in step.sinks)))),
+        with_value(s, v) for s, v in zip(step.sinks, as_plain_reads(tuple(s.value for s in step.sinks)))),
         step.planes, kind=step.kind)
     tangent = jvp(plain, wrt=None if wrt is None else tuple(dict.fromkeys((*wrt, *state))))
     carried = set(state) | {f"{TANGENT_PREFIX}_{name}" for name in state}
@@ -599,6 +577,6 @@ def step_jvp(kernel: Any, *, wrt=None) -> Any:
              if isinstance(n, Leaf) and n.kind != "prior_read" and n.name in carried}
     values = substitute(values, start) if start else values
     out = Kernel(f"{step.name}_jvp", tuple(step.sinks) + tuple(
-        _resink(s, v) for s, v in zip(tangent, values)), step.planes, kind=step.kind)
+        with_value(s, v) for s, v in zip(tangent, values)), step.planes, kind=step.kind)
     out.time, out.time_step = step.time, step.time_step
     return out

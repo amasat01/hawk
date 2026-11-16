@@ -6,8 +6,8 @@ import types
 
 import pytest
 
-from hawk.compile import nvrtc, toolchain
-from hawk.ir import HawkError
+from ospreys.cuda import nvrtc, toolchain
+from raptor.errors import RaptorError as HawkError
 
 
 class _DriverLibraryMissing(RuntimeError):

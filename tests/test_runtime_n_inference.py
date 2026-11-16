@@ -10,13 +10,13 @@ whose `arg_spec` leads with a `mutable`/`out` sink (the canonical role
 order), silently wrong for a kernel whose FIRST bound plane is a
 `lookup`/`wide_in`/`wide_out`/`accum_out` plane, because those four roles'
 own length is a runtime quantity UNRELATED to the sample count. This was hit
-for real by a KAN fold's reverse pass -- whose `arg_spec` leads with a
+for real by a spline fold's reverse pass -- whose `arg_spec` leads with a
 SCATTERED `accum_out` plane -- reading that plane's length as n_samples,
 over-running the correctly-sized cotangent plane the launch then read, and
 returning `6.94e-310` (a pointer's bytes, read back as a double) in the first
 two output slots, with no error anywhere.
 
-**The exact real shape, reproduced here without a KAN layer.** `_deployable.gather`'s own VJP (`hawk.diff.vjp(D.gather, wrt=("table"))`) is the SAME
+**The exact real shape, reproduced here without a spline layer.** `_deployable.gather`'s own VJP (`hawk.diff.vjp(D.gather, wrt=("table"))`) is the SAME
 transpose-of-a-gather-is-a-scatter shape: its `arg_spec` is
 `[(accum_out, "bar_table"), (per_sample, "bar_y"), (per_sample, "where")]` --
 `bar_table` (the scatter target, sized to the ORIGINAL table's row count) is
@@ -40,7 +40,7 @@ of merely citing the original pointer-bytes number.
 
 **Why the lookup-led and disagreement rows call `hawk.runtime._n_from`
 directly, with a HAND-BUILT `arg_spec`.** The canonical role order
-(`ROLE_ORDER` in `hawk/ir/nodes.py`) puts every sink
+(`ROLE_ORDER` in `raptor/ir/nodes.py`) puts every sink
 (`mutable`/`out`/`wide_out`/`accum_out`) BEFORE `lookup` -- no real
 single-sink kernel's OWN `arg_spec` can ever put a `lookup` slot first, so
 proving the role-based filter is POSITION-independent (not merely "the
@@ -67,7 +67,7 @@ import hawk.runtime as R
 from hawk import Kernel
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 #: The exact bug shape (this module's docstring): `gather`'s own reverse pass.
 #: Built ONCE per test process (host-only -- no row here needs the device leg)

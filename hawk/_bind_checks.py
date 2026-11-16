@@ -18,12 +18,12 @@ from ._plane_layout import (
     mixed_refusal,
     number_refusal,
 )
-from .ir import HawkError
-from .ir import nodes as _ir_nodes
-from .types import PER_SAMPLE_ROLES
+from ._errors import HawkError
+from raptor.ir import nodes as _ir_nodes
+from raptor.ir.types import PER_SAMPLE_ROLES
 
 #: The roles whose plane's trailing extent is n_samples by construction
-#: (:data:`hawk.types.PER_SAMPLE_ROLES`).
+#: (:data:`raptor.ir.types.PER_SAMPLE_ROLES`).
 _PER_SAMPLE_ROLES = PER_SAMPLE_ROLES
 
 #: Roles that NEVER vote on n_samples, whatever their trailing extent
@@ -50,7 +50,7 @@ def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None,
 
     An earlier version read the trailing extent of the FIRST plane in
     ``arg_spec`` order, full stop — silently wrong whenever that plane
-    wasn't per-sample. A KAN fold's reverse pass leads its ``arg_spec``
+    wasn't per-sample. A spline fold's reverse pass leads its ``arg_spec``
     with a scattered ``accum_out`` plane whose own length has nothing to
     do with the sample count; reading its length as ``n_samples`` over-ran
     the correctly-sized cotangent plane and returned garbage with no error
@@ -436,7 +436,7 @@ def _check_uniform_arg(name: str, value, params: dict, errors: list) -> None:
 def _check_bind(sidecar: dict, arg_spec, arrays: dict, n_samples: int,
                 choice=_NO_CHOICE) -> None:
     """Every bound argument, checked against the kernel's own declaration
-    — before any address is taken. Raises ONE :class:`~hawk.ir.HawkError`
+    — before any address is taken. Raises ONE :class:`~hawk.HawkError`
     naming every failing argument, or returns silently when all match.
 
     The declaration is read from the sidecar alone — ``arg_dtypes``,

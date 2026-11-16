@@ -14,9 +14,9 @@ from __future__ import annotations
 import threading
 from contextlib import contextmanager
 
-from ..ir import HawkError
-from ..ir import make as _make
-from ..ir.nodes import At, Leaf, RoleConst
+from .._errors import HawkError
+from raptor.ir import make as _make
+from raptor.ir.nodes import At, Leaf, RoleConst
 from .value import Value, index_node, sample_index, widened
 
 
@@ -156,14 +156,14 @@ _trace = threading.local()
 
 
 @contextmanager
-def tracing(axes: tuple):
-    """While a body is traced, ``axes`` is the Grid ``u.at(...)`` names its axes by."""
-    before = getattr(_trace, "axes", ((None, None),))
-    _trace.axes = axes
+def tracing(axes: tuple, name: str | None = None):
+    """While a body is traced, ``axes`` is the Grid ``u.at(...)`` names its axes by and ``name`` the kernel."""
+    before = getattr(_trace, "axes", ((None, None),)), getattr(_trace, "name", None)
+    _trace.axes, _trace.name = axes, name
     try:
         yield
     finally:
-        _trace.axes = before
+        _trace.axes, _trace.name = before
 
 
 def read_at(value: Value, positional: tuple, named: dict) -> Value:

@@ -10,19 +10,20 @@ import logging
 import pytest
 
 from hawk.compile import toolchain as tc
-from hawk.ir import HawkError
+import ospreys.cpu.toolchain as ctc
+from raptor.errors import RaptorError as HawkError
 
 
 def test_a_missing_host_compiler_names_the_install_and_hawk_cxx(monkeypatch, tmp_path):
     monkeypatch.setenv("HAWK_CXX", str(tmp_path / "no-such-c++"))
     with pytest.raises(HawkError, match=r"install g\+\+ 11\+ .*HAWK_CXX=/path/to/c\+\+"):
-        tc.host_compiler()
+        ctc.host_compiler()
     monkeypatch.delenv("HAWK_CXX")
     monkeypatch.delenv("CXX", raising=False)
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setitem(__import__("sys").modules, "ziglang", None)
     with pytest.raises(HawkError, match=r"install g\+\+ 11\+ .*HAWK_CXX=/path/to/c\+\+"):
-        tc.host_compiler()
+        ctc.host_compiler()
 
 
 def test_a_compile_error_ends_with_the_build_directory_and_hawk_cxx(tmp_path):
@@ -66,9 +67,8 @@ def test_a_missing_compiler_says_not_found_not_the_address_cap(monkeypatch, tmp_
 
     monkeypatch.setenv("HAWK_COMPILE_ADDRESS_CAP", str(12 * 1024**3))
     with pytest.raises(HawkError) as excinfo:
-        drivers._run_and_publish(["/no/such/dir/c++", "-c", "x.cpp"], "host compile", "",
-                                 tmp_path / "a", tmp_path / "b", tmp_path / "c",
-                                 tmp_path / "d", tmp_path)
+        argv = ["/no/such/dir/c++", "-c", "x.cpp"]
+        drivers._refuse(drivers.run_compiler(argv, "host compile", "host"), argv, "host compile", "", tmp_path)
     msg = str(excinfo.value)
     assert "compiler not found or not executable: /no/such/dir/c++" in msg, msg
     assert "$HAWK_CXX" in msg and "address-space cap" not in msg, msg

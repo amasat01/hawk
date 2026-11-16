@@ -1,0 +1,13 @@
+{
+ "family": "aether",
+ "name": "base",
+ "parent": null,
+ "version": "0",
+ "contract": "1",
+ "entries": {},
+ "spellings": [],
+ "emission_modules": [
+  "aether.wings.base.wrapper"
+ ],
+ "runtime_modules": []
+}

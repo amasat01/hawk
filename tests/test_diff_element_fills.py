@@ -17,7 +17,7 @@ from _eval import evaluate
 import hawk
 import hawk.math as m
 from hawk.diff import jvp, vjp
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 V3 = hawk.Vector[3]
 OUT3 = hawk.Mutable[hawk.Vector[3]]

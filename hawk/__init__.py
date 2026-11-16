@@ -9,7 +9,7 @@ host execution path — emitting ``aether-abi/2`` artifacts eagle deploys
 under the heterogeneous execution contract eagle enforces.
 
 This module is the authoring surface. Importing it never imports
-:mod:`hawk.ir`, :mod:`hawk.emit` or :mod:`hawk.compile`.
+:mod:`raptor.ir`, :mod:`aether.wings.base` or :mod:`hawk.compile`.
 
 Runtime dependencies: ``raptor-core`` (source lifts for ``python -c``).
 ``eagle`` is imported lazily, by calling a kernel (``k(...)``) only, and
@@ -19,7 +19,7 @@ nothing else under ``hawk/hawk/`` imports ``raptor`` or ``eagle``;
 This module also adds the authoring names (``kernel``, the declaration
 vocabulary, ``raw_device``, ``Quantity``), bound lazily through
 :pep:`562`'s module ``__getattr__`` because :mod:`hawk.trace` imports
-:mod:`hawk.ir` and forbids ``import hawk`` from pulling that in —
+:mod:`raptor.ir` and forbids ``import hawk`` from pulling that in —
 touching one authoring name imports the tracer, but importing the
 package alone costs nothing beyond this module.
 
@@ -43,10 +43,10 @@ from . import _contracts
 
 #: The authoring names put in front of a kernel author — the one
 #: canonical top-level surface, resolved lazily from :mod:`hawk.trace`
-#: (and, for :data:`_FROM_IR`, from :mod:`hawk.ir`). Math functions
+#: (and, for :data:`_FROM_IR`, from :mod:`hawk._errors`). Math functions
 #: (``dot``, ``norm``, ``sqrt``, ...) live at ``hawk.math`` only.
 #: ``TensorType``/``Wire`` stay out on purpose: their canonical path is
-#: :mod:`hawk.ir`, not the top level.
+#: :mod:`raptor.ir`, not the top level.
 _AUTHORING = (
     "kernel", "Kernel", "raw_device", "RawBlock", "Value", "Quantity",
     "Scalar", "Index", "Int32", "UInt32", "Quat", "Vector", "Matrix", "Param",
@@ -55,7 +55,7 @@ _AUTHORING = (
     "sum", "max", "min", "mean", "scatter",
 )
 
-#: The subset of :data:`_AUTHORING` resolved from :mod:`hawk.ir` rather
+#: The subset of :data:`_AUTHORING` resolved from :mod:`hawk._errors` rather
 #: than :mod:`hawk.trace` — today just ``HawkError``, an IR-tier name
 #: :mod:`hawk.trace` never re-exports.
 _FROM_IR = ("HawkError",)
@@ -81,13 +81,13 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "run": ("runtime", "run"),
                     "samples_first": ("_plane_layout", "samples_first"),
                     "samples_last": ("_plane_layout", "samples_last"),
-                    "lane_position": ("trace.value", "lane_position"),
+                    "sample_position": ("trace.value", "sample_position"),
                     "primitive": ("ext.primitive", "primitive"),
                     "chain": ("trace.chain", "chain")}
 
 #: Submodules ``import hawk`` resolves lazily: the door returns the module
-#: itself (``hawk.embedded.export``), imported on first access.
-_SUBMODULE_DOORS = ("embedded", "geometry")
+#: itself, imported on first access.
+_SUBMODULE_DOORS = ("geometry",)
 
 __all__ = ["__version__", *_AUTHORING, *_TOP_LEVEL_DOORS, *_SUBMODULE_DOORS]
 
@@ -245,8 +245,8 @@ def __getattr__(name: str) -> Any:
         return value
     if name in _AUTHORING:
         if name in _FROM_IR:
-            from . import ir
-            value = getattr(ir, name)
+            from . import _errors
+            value = getattr(_errors, name)
         elif name in _FROM_STEPS:
             from .trace import steps as _steps_module
             value = getattr(_steps_module, name)
@@ -255,8 +255,11 @@ def __getattr__(name: str) -> Any:
             value = getattr(trace, name)
         globals()[name] = value
         return value
+    if name == "embedded":
+        from ._errors import EMBEDDED_C, HawkError
+        raise HawkError(EMBEDDED_C)
     if name in _RETIRED:
-        from .ir import HawkError
+        from ._errors import HawkError
         raise HawkError(_RETIRED[name])
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

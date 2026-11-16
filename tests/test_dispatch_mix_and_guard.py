@@ -21,13 +21,16 @@ Rows:
   marked stale and keeps its old value, the class plane holds the new
   classes, and a switch pass over just the stale samples completes the step
   to 0 differences from a switch over all samples;
-* **resolve_dispatch** — an ``"auto"`` group resolves to the named policy
+* **resolve_dispatch** — an ``"auto"`` group resolves to the named strategy
   (the same values as the forced kernel), a declared group or an unknown
-  group or policy is refused, and an automatic kernel is resolved on its
+  group or strategy is refused, and an automatic kernel is resolved on its
   single step under the same name.
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import HOST
 
 import json
 import pathlib
@@ -40,8 +43,7 @@ import hawk
 import hawk.math as M
 from hawk import Index, Mutable, Scalar, Terminated, Vector
 from hawk.artifact import build_bundle
-from hawk.emit import render_body
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 N = 61
 K = 3
@@ -53,28 +55,28 @@ def _branches(bs):
 
 @hawk.kernel(steps=1)
 def mix_auto(k: Index, bs: Vector[K], terminated: Terminated, y: Mutable[Scalar]):
-    y = M.dispatch(k, _branches(bs), policy="auto")
+    y = M.dispatch(k, _branches(bs), strategy="auto")
 
 
 @hawk.kernel(steps=1)
 def mix_switch(k: Index, bs: Vector[K], terminated: Terminated, y: Mutable[Scalar]):
-    y = M.dispatch(k, _branches(bs), policy="switch")
+    y = M.dispatch(k, _branches(bs), strategy="switch")
 
 
 @hawk.kernel(steps=1)
 def mix_seg(k: Mutable[Index], bs: Vector[K], y: Mutable[Scalar]):
-    y = M.dispatch(k, _branches(bs), policy="segmented")
+    y = M.dispatch(k, _branches(bs), strategy="segmented")
     k = k * 1           # the step writes the selector's plane: state-dependent
 
 
 @hawk.kernel(steps=1)
 def mix_static(k: Index, bs: Vector[K], y: Mutable[Scalar]):
-    y = M.dispatch(k, _branches(bs), policy="segmented")
+    y = M.dispatch(k, _branches(bs), strategy="segmented")
 
 
 @hawk.kernel(steps=1)
 def plain_switch(k: Index, bs: Vector[K], y: Mutable[Scalar]):
-    y = M.dispatch(k, _branches(bs), policy="switch")
+    y = M.dispatch(k, _branches(bs), strategy="switch")
 
 
 @pytest.fixture(scope="module")
@@ -99,19 +101,6 @@ def _inputs(rng):
     bs = rng.uniform(0.5, 2.0, (K, N))
     stopped = rng.random(N) < 0.2
     return k, bs, stopped
-
-
-def test_auto_counts_the_mix_and_a_forced_policy_counts_nothing(built):
-    sc = _sidecar(built["local"], "mix_auto")
-    assert sc["dispatch"][0]["mix"] == "dispatch0_mix"
-    assert ["lookup", "dispatch0_mix"] in sc["arg_spec"]
-    forced = _sidecar(built["local"], "mix_switch")
-    assert "mix" not in forced["dispatch"][0]
-    assert all(n != "dispatch0_mix" for _, n in forced["arg_spec"])
-    auto_text = render_body(mix_auto.sinks, mix_auto.walk).text
-    switch_text = render_body(mix_switch.sinks, mix_switch.walk).text
-    lines = [ln for ln in auto_text.split("\n") if "hawk_abi::mix_count(" not in ln]
-    assert "\n".join(lines) == switch_text
 
 
 def _host_mix(built):
@@ -184,50 +173,16 @@ def test_a_stale_sort_is_guarded_and_a_switch_sweep_completes_it(built):
     assert int(np.sum(swept != full)) == 0
 
 
-def test_static_units_write_no_class_and_a_classify_kernel_does(built):
-    from hawk.ir import split_segmented
-
-    static = built["static"]
-    for j in range(K):
-        spec = _sidecar(static, f"mix_static__k{j}")["arg_spec"]
-        assert all(nm not in ("dispatch0_class", "dispatch0_stale", "k") for _, nm in spec)
-    units = split_segmented("mix_static", mix_static.sinks)
-    assert [u.name for u in units][-1] == "mix_static__cls"
-    assert all(u.walk.access.cls == "sample_local" for u in units[:K])
-    rng = np.random.default_rng(5)
-    k = rng.integers(-2, K + 2, N).astype(np.int32)
-    cls = np.full(N, -1, dtype=np.int64)
-    kern = O.load(static.directory, "mix_static__cls", _sidecar(static, "mix_static__cls"))
-    O.run_kernel(kern, N, base=0, count=N, k=k, dispatch0_class=cls)
-    np.testing.assert_array_equal(cls, np.clip(k, 0, K - 1))
-
-
-def test_resolve_dispatch_lowers_an_auto_group_and_refuses_the_rest():
-    resolved = hawk.resolve_dispatch(mix_auto, {"dispatch0": "switch"})
-    assert resolved.name == "mix_auto"
-    assert [d.policy for d in resolved.walk.dispatches] == ["switch"]
-    assert render_body(resolved.sinks, resolved.walk).text == render_body(
-        mix_switch.sinks, mix_switch.walk).text
-    seg = hawk.resolve_dispatch(mix_auto, {"dispatch0": "segmented"})
-    assert [d.policy for d in seg.walk.dispatches] == ["segmented"]
-    with pytest.raises(HawkError, match=r"declared policy='switch'; only an 'auto'"):
-        hawk.resolve_dispatch(mix_switch, {"dispatch0": "segmented"})
-    with pytest.raises(HawkError, match=r"'dispatch4' is not a dispatch group"):
-        hawk.resolve_dispatch(mix_auto, {"dispatch4": "switch"})
-    with pytest.raises(HawkError, match=r"resolves to one of 'switch', 'segmented'"):
-        hawk.resolve_dispatch(mix_auto, {"dispatch0": "auto"})
-
-
 def test_an_automatic_kernel_resolves_on_its_single_step():
     @hawk.kernel
     def walker(k: Index, bs: Vector[K], terminated: Terminated, x: Mutable[Scalar]):
-        x = x + M.dispatch(k, _branches(bs), policy="auto")
+        x = x + M.dispatch(k, _branches(bs), strategy="auto")
         terminated = x > 10.0
 
     assert walker.step is not None
     resolved = hawk.resolve_dispatch(walker, {"dispatch0": "predicated"})
     assert resolved.name == "walker" and resolved.step is not None
-    assert [d.policy for d in resolved.step.walk.dispatches] == ["predicated"]
+    assert [d.strategy for d in resolved.step.walk.dispatches] == ["predicated"]
 
 
 def test_the_host_runtime_counts_into_scratch_when_the_mix_is_left_out(built):
@@ -250,7 +205,7 @@ def walker(k: Index, bs: Vector[K], terminated: Terminated, x: Mutable[Scalar]):
     # the branches read the carried x, so the dispatch is evaluated every trip
     # (a dispatch of loop-invariant values is evaluated, and counted, once
     # per launch, before the loop)
-    x = x + M.dispatch(k, _scaled_branches(bs, 1.0 + 1e-3 * x), policy="auto")
+    x = x + M.dispatch(k, _scaled_branches(bs, 1.0 + 1e-3 * x), strategy="auto")
     terminated = x > 1e9
 
 
@@ -309,7 +264,7 @@ def test_a_carried_selector_inside_the_fused_loop_is_not_static():
     @hawk.kernel
     def drifter(bs: Vector[K], terminated: Terminated, x: Mutable[Scalar],
                 c: Mutable[Index]):
-        x = x + M.dispatch(c, _branches(bs), policy="auto")
+        x = x + M.dispatch(c, _branches(bs), strategy="auto")
         c = M.select(x > 1.0, c, c + 1)
         terminated = x > 1e9
 
@@ -323,7 +278,7 @@ def test_auto_segmented_runs_unfused(tmp_path, cache_dir):
     split into units: K=1 launches of the units over a sorted class equal the
     switch step, step after step."""
     split = hawk.resolve_dispatch(walker, {"dispatch0": "segmented"})
-    assert split.step is None and split.walk.finish == ("terminated", 1)
+    assert split.step is None and (split.walk.finish, split.steps) == ("terminated", 1)
     ref = hawk.resolve_dispatch(walker, {"dispatch0": "switch"}).step
     # exact profile: the unit and the switch step contract no multiply-add
     # differently, so they agree bit for bit
@@ -355,3 +310,21 @@ def test_auto_segmented_runs_unfused(tmp_path, cache_dir):
                  terminated=np.zeros(N, dtype=bool))
         np.testing.assert_array_equal(x_split, x_ref)
     assert not stale.any() and (x_ref > 0).all()
+
+
+def test_static_units_write_no_class_and_a_classify_kernel_does(built):
+    static = built["static"]
+    for j in range(K):
+        spec = _sidecar(static, f"mix_static__k{j}")["arg_spec"]
+        assert all(nm not in ("dispatch0_class", "dispatch0_stale", "k") for _, nm in spec)
+    # the units of the group, in order, as the build names them: K segment units, the classify kernel last
+    units = _sidecar(static, "mix_static__k0")["dispatch"][0]["units"]
+    assert units + [_sidecar(static, "mix_static__k0")["dispatch"][0]["classify"]] == [
+        *(f"mix_static__k{j}" for j in range(K)), "mix_static__cls"]
+    assert all(_sidecar(static, u)["exec_access"] == "sample_local" for u in units)
+    rng = np.random.default_rng(5)
+    k = rng.integers(-2, K + 2, N).astype(np.int32)
+    cls = np.full(N, -1, dtype=np.int64)
+    kern = O.load(static.directory, "mix_static__cls", _sidecar(static, "mix_static__cls"))
+    O.run_kernel(kern, N, base=0, count=N, k=k, dispatch0_class=cls)
+    np.testing.assert_array_equal(cls, np.clip(k, 0, K - 1))

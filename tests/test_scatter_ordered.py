@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""``hawk.scatter(acc, policy="ordered")[key] += x``: a keyed add with no atomics.
+"""``hawk.scatter(acc, contract="ordered")[key] += x``: a keyed add with no atomics.
 
 Lanes are cut into chunks (``B = clamp(N // T, 1, 256)`` for ``N`` lanes and ``T`` cells), each chunk
 adds its lanes in order into its own partial sum of every key, and each cell adds its partials in chunk
@@ -20,6 +20,7 @@ import hawk.math as m
 from hawk import HawkError, Index, Mutable, Scalar, Terminated, Vector, kernel
 from hawk.ext import IndexSet, Kind
 from hawk._lane_bind import scatter_chunks
+from hawk.facts import load as _facts
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
 
@@ -29,12 +30,12 @@ TARGETS = ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
 
 @kernel
 def add(key: Index, x: Scalar, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="ordered")[key] += x
+    hawk.scatter(acc, contract="ordered")[key] += x
 
 
 @kernel
 def add_sq(key: Index, x: Scalar, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="ordered")[key] += x * x
+    hawk.scatter(acc, contract="ordered")[key] += x * x
 
 
 @pytest.fixture(scope="module")
@@ -117,7 +118,8 @@ def test_ordered_scatter_equals_add_at_and_replays_bitwise(bundles, target, n, c
 
 
 def test_chunks_are_chosen_from_lanes_and_targets():
-    assert [scatter_chunks(n, t) for n, t in ((20000, 7), (50, 200), (1000, 1000), (10**6, 10**4),
+    CAP = _facts("cpu")["scatter"]["max_chunks"]
+    assert [scatter_chunks(n, t, CAP) for n, t in ((20000, 7), (50, 200), (1000, 1000), (10**6, 10**4),
                                               (10**6, 1), (10, 0))] == [256, 1, 1, 100, 256, 10]
 
 
@@ -172,33 +174,33 @@ def test_the_run_records_its_chunks(bundles):
 
 @kernel
 def add_term(key: Index, x: Scalar, terminated: Terminated, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="ordered")[key] += x
+    hawk.scatter(acc, contract="ordered")[key] += x
 
 
 def _add_set(key: Index, x: Scalar, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="ordered")[key] += x
+    hawk.scatter(acc, contract="ordered")[key] += x
 
 
 @kernel
 def add_masked(key: Index, x: Scalar, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="ordered")[key] += m.where(x > 0.0, x, 0.0)
+    hawk.scatter(acc, contract="ordered")[key] += m.where(x > 0.0, x, 0.0)
 
 
 @kernel
 def add_vec(key: Index, v: Vector[3], acc: Mutable[Vector[3], "bin":9]):
-    hawk.scatter(acc, policy="ordered")[key] += v
+    hawk.scatter(acc, contract="ordered")[key] += v
 
 
 @kernel
 def add_loop(key: Index, x: Scalar, acc: Mutable[Scalar]):
     for a in range(3):
-        hawk.scatter(acc, policy="ordered")[key + a] += x * a
+        hawk.scatter(acc, contract="ordered")[key + a] += x * a
 
 
 @kernel
 def add_two(key: Index, key2: Index, x: Scalar, acc: Mutable[Scalar]):
-    hawk.scatter(acc, policy="ordered")[key] += x
-    hawk.scatter(acc, policy="ordered")[key2] += x * 2.0
+    hawk.scatter(acc, contract="ordered")[key] += x
+    hawk.scatter(acc, contract="ordered")[key2] += x * 2.0
 
 
 @pytest.fixture(scope="module")
@@ -330,13 +332,13 @@ def test_two_ordered_scatters_into_one_plane_add_both(more, target):
 def add_nested(key: Index, x: Scalar, acc: Mutable[Scalar]):
     for a in range(2):
         for b in range(3):
-            hawk.scatter(acc, policy="ordered")[key + a + b] += x * (a + 1)
+            hawk.scatter(acc, contract="ordered")[key + a + b] += x * (a + 1)
 
 
 @kernel
 def add_step(key: Index, x: Scalar, acc: Mutable[Scalar]):
     for a in range(0, 6, 2):
-        hawk.scatter(acc, policy="ordered")[key + a] += x
+        hawk.scatter(acc, contract="ordered")[key + a] += x
 
 
 def test_a_run_time_trip_bound_that_scatters_is_refused_by_name():
@@ -344,7 +346,7 @@ def test_a_run_time_trip_bound_that_scatters_is_refused_by_name():
         @kernel
         def k(n: Index, key: Index, x: Scalar, acc: Mutable[Scalar]):
             for a in range(n, max=4):
-                hawk.scatter(acc, policy="ordered")[key + a] += x
+                hawk.scatter(acc, contract="ordered")[key + a] += x
 
 
 @pytest.mark.parametrize("target", TARGETS)
@@ -415,7 +417,7 @@ def test_a_key_out_of_range_stays_in_bounds_and_is_reported_by_name(bundles, tar
     for bad in (cells, cells + 5, -2, 2**31 - 2):
         wild = key.copy()
         wild[[3, n - 1]] = bad
-        with pytest.raises(HawkError, match=r"hawk.scatter\(acc, policy='ordered'\) got a key outside \[0, 9\)"):
+        with pytest.raises(HawkError, match=r"hawk.scatter\(acc, contract='ordered'\) got a key outside \[0, 9\)"):
             _run(bundles["add"], "add", target, wild, x, cells)
     # the in-range adds are in, the out-of-range ones are dropped, and the next run is clean
     wild = key.copy()

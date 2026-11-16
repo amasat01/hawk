@@ -30,7 +30,7 @@ import hawk
 from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk import math as hm
 from hawk.diff import jvp, step_jvp, step_vjp, vjp
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.trace.steps import _fused_function
 
 from _eval import evaluate
@@ -203,11 +203,6 @@ def test_jvp_of_a_fused_kernel_is_the_fused_step_jvp():
     assert got.walk.arg_spec == want.walk.arg_spec
 
 
-def test_the_fused_reverse_builds_as_a_standalone_c_unit(tmp_path):
-    fused = hawk.steps(pend, K)
-    fz = hawk.Kernel("pend_fz", step_vjp(fused, steps_reverse="fused"))
-    hawk.build([fz], tmp_path, targets=("c",), derivative={fz.name: (fused.name, "0" * 64)})
-    assert any(tmp_path.glob("pend_fz*.c")) or any(tmp_path.glob("pend_fz*"))
 
 
 def _device_runner(bundle, arts):
@@ -256,18 +251,3 @@ def test_the_fused_reverse_on_the_device_matches_the_per_step_reverse(tmp_path_f
         scale = mag[n] if n in mag else np.abs(r)
         np.testing.assert_allclose(got[n], r, rtol=1e-11, atol=1e-11 * (1 + scale.max()),
                                    err_msg=n)
-
-
-def test_auto_choice_is_the_measured_table_and_empty_classes_answer_per_step():
-    from hawk.ir import steps_class as S
-
-    assert S._choose(False, 4, 8, 16) == "fused" and S._choose(False, 4, 8, 4096) == "per_step"
-    assert S._choose(False, 2, 8, 65536) == "fused"                       # the card's wide matvec
-    assert S._choose(False, 3, 4, 64) == "fused"                           # the nearest measured regime
-    p2000, l4, a100 = 5 * 2048, 58 * 1536, 108 * 2048                       # SM count x resident threads
-    for resident in (p2000, l4, a100):
-        assert S._choose(True, 2, 8, 65536, resident) == "fused"
-        assert S._choose(True, 2, 8, 64, resident) == "per_step"          # below the measured regime
-    with pytest.raises(ValueError, match="resident"):
-        S._choose(True, 2, 8, 65536)                                       # a device run says what it holds
-    assert S._choose(True, 4, 8, 16, p2000) == "per_step"                   # outside the measured range

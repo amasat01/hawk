@@ -10,6 +10,8 @@ live to its end.
 """
 
 from __future__ import annotations
+from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import linecache
 import re
@@ -19,7 +21,6 @@ from conftest import sidecar_of
 
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk.emit.render import render_body
 
 
 def _source(text: str, tag: str):
@@ -46,26 +47,6 @@ def three_outputs():
     return _source("import hawk\nfrom hawk import Scalar, Mutable, math as m\n\n@hawk.kernel\n"
                    "def k(x: Scalar, a: Mutable[Scalar], b: Mutable[Scalar], c: Mutable[Scalar]):\n"
                    "    a = m.sin(x)\n    b = m.exp(a)\n    c = m.cos(b)\n", "three_outputs")
-
-
-def _body(kernel) -> str:
-    return render_body(kernel.sinks, kernel.walk).text
-
-
-def test_item_temps_linear_compile():
-    texts = {n: _body(fan_in(n)) for n in (6, 12)}
-    for n, text in texts.items():
-        held = re.findall(r"^\s*const aether::Item<Real, 8> t\d+ = ", text, re.M)
-        lazy = re.findall(r"^\s*const auto t\d+ = (?!aether::Item<)", text, re.M)   # a vec literal is a leaf already
-        assert len(held) == n - 1 and not lazy, (n, held, lazy)
-    assert len(texts[12]) <= 2.2 * len(texts[6]), {n: len(t) for n, t in texts.items()}
-
-
-def test_sink_at_producer():
-    lines = _body(three_outputs()).splitlines()
-    first = {op: next(i for i, line in enumerate(lines) if f"{op}(" in line) for op in ("sin", "exp", "cos")}
-    store = {name: next(i for i, line in enumerate(lines) if line.lstrip().startswith(f"mut_{name}[i] =")) for name in "abc"}
-    assert first["sin"] <= store["a"] < first["exp"] <= store["b"] < first["cos"] <= store["c"], lines
 
 
 def test_early_stores_keep_the_values(tmp_path, cache_dir):

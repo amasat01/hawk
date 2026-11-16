@@ -34,31 +34,19 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ..ir import (
-    Const,
-    Dispatch,
-    HawkError,
-    Leaf,
-    Loop,
-    LoopCarry,
-    LoopIndex,
-    LoopValue,
-    Node,
-    PlaneExtent,
-    SampleIndex,
-    Select,
-    Sink,
-    TapeRead,
-    build_loop,
-)
-from ..ir import make as _mk
-from ..ir.nodes import AccumWrite, At, ReduceSamples, WideWrite
-from ..ir.slotwise import slotwise
-from ..ir.walk import _rebuild
-from ..types import INT_PLANE_DTYPES, TensorType
+from raptor.ir import Const, Dispatch, Leaf, Loop, LoopCarry, LoopIndex, LoopValue, Node, PlaneExtent, SampleIndex, Select, Sink, TapeRead, build_loop
+from .._errors import HawkError
+from raptor.ir import make as _mk
+from raptor.ir.nodes import AccumWrite, At, WideWrite, has_feather
+from .. import wings as _wings
+
+_slotwise = _wings.view("raptor", "base", "slotwise")
+from raptor.ir.walk import rebuild
+from raptor.ir.types import INT_PLANE_DTYPES, TensorType
 from .jump import _F64, _I32, _ORDERED, SEED, JumpPlan
 from .loops import _TERMINALS, _post_order
-from .rules import zero_like
+from raptor.rules.core import zero_like
+_dispatch_kind = _wings.view("raptor", "base", "dispatch")
 
 #: The counter of that draw: a stream a kernel's own ``random_uniform`` calls
 #: do not use.
@@ -178,7 +166,7 @@ def _alt_pass(order: Sequence[Node], mapping: dict, wrap: dict) -> dict:
             continue
         new = [memo.get(id(c), c) for c in node.operands]
         out = (node if all(a is b for a, b in zip(new, node.operands))
-               else _rebuild(node, new))
+               else rebuild(node, new))
         if id(node) in wrap:
             out = wrap[id(node)](out)
         if out is not node:
@@ -394,12 +382,12 @@ class AltPath:
             return
         new = [self.amap.get(id(o), o) for o in node.operands]
         changed = any(a is not b for a, b in zip(new, node.operands))
-        if isinstance(node, ReduceSamples) and changed:
+        if has_feather(node, "reduces_samples") and changed:
             raise HawkError(
                 f"jump= in kernel {self.plan.kernel!r}: a read across samples "
                 "downstream of a switching comparison cannot run on the "
                 "alternate path of one sample")
-        out = _rebuild(node, new) if changed else node
+        out = rebuild(node, new) if changed else node
         if any(node is s for s in self.sites):
             hit, self.cum = self._fork_here(self.cum, self.rate(node))
             g = self.weight(node, t)
@@ -494,7 +482,7 @@ class AltPath:
         inits = (*parts.inits, *(self.amap.get(id(i), i) for i in loop.inits),
                  self.cum0.get(id(loop), _zero()), *(_zero() for _ in gain),
                  *(_zero() for _ in flags))
-        rooted = slotwise((*nexts, *extra.get("exit_values", ()),
+        rooted = _slotwise.slotwise((*nexts, *extra.get("exit_values", ()),
                            *([extra["exit_cond"]] if brk else [])))
         n = len(nexts)
         if brk:
@@ -570,7 +558,7 @@ class AltPath:
         (``S > 0``), else zero: a sample without one runs the plain tangent."""
         selector = Select(_mk("gt", (self.total, _zero())), Const(0, _I32),
                           Const(1, _I32), _I32)
-        return lambda value: Dispatch(selector, (value, zero_like(value.ttype)),
+        return lambda value: _dispatch_kind.dispatch(selector, (value, zero_like(value.ttype)),
                                       "switch", value.ttype)
 
     # -- the sinks ----------------------------------------------------------------

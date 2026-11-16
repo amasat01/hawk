@@ -28,7 +28,7 @@ import hawk
 from hawk import Index, Mutable, Param, Scalar, Terminated, kernel
 from hawk.diff import jvp
 from hawk.diff.event import event_guard, guard_kernel
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 _H = 1e-6
 _REFUSAL = (r'events="refine": the stop rule of {name!r} is not a smooth crossing '

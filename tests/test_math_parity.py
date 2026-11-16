@@ -344,8 +344,8 @@ def test_rank1_operands_map_component_wise(tmp_path, target):
 
 
 def test_class_tests_on_a_vector_are_a_bool_vector():
-    from hawk.ir import Leaf
-    from hawk.types import TensorType
+    from raptor.ir import Leaf
+    from raptor.ir.types import TensorType
 
     v = hawk.Value(Leaf("vocab_read", "vec_in", "v", TensorType((3,), "f64")))
     assert m.isnan(v).ttype == TensorType((3,), "bool")
@@ -600,8 +600,8 @@ def test_every_elementwise_function_has_a_matrix_row():
 
 
 def _leaf(shape: tuple, name: str = "a"):
-    from hawk.ir import Leaf
-    from hawk.types import TensorType
+    from raptor.ir import Leaf
+    from raptor.ir.types import TensorType
 
     role = {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(shape)]
     return hawk.Value(Leaf("vocab_read", role, name, TensorType(shape, "f64")))
@@ -621,7 +621,7 @@ def _leaf(shape: tuple, name: str = "a"):
 def test_mismatched_shapes_refuse_as_the_arithmetic_operators_do(spell):
     """A vector against a matrix (or a 2x3 against a 3x2) is refused in ONE set
     of words, the ``+`` operator's own (the last row)."""
-    from hawk.ir import HawkError
+    from raptor.errors import RaptorError as HawkError
 
     with pytest.raises(HawkError, match=r"do not broadcast — an elementwise op takes "
                        r"equal shapes or one rank-0 operand"):
@@ -639,7 +639,7 @@ def test_rank0_operands_still_mint_one_op():
 
 
 def test_matrix_class_test_is_a_bool_matrix():
-    from hawk.types import TensorType
+    from raptor.ir.types import TensorType
 
     M = _leaf((2, 3), "M")
     assert m.isinf(M).ttype == TensorType((2, 3), "bool")

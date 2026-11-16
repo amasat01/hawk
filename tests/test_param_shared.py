@@ -182,7 +182,7 @@ def test_a_scalar_param_is_unchanged():
 
 
 def test_unsupported_shared_types_are_refused_with_the_fix():
-    from hawk.types import TensorType
+    from raptor.ir.types import TensorType
 
     with pytest.raises(HawkError, match=r"rank 1 or 2.*separate Scalar/Int32 Params"):
         Param[TensorType((2, 2, 2), "f64")]

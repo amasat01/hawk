@@ -10,19 +10,15 @@ at another lane with ``.at`` only."""
 
 from __future__ import annotations
 
+from _specs import spec_for, default_kind
 import hashlib
 
 import pytest
 
 import hawk
 from hawk import Grid, HawkError, Scalar, Staged, Table, Wide
-from hawk.emit import FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT64
 from hawk.targets import TARGETS
-
-
-def _md5(kernel, row: str) -> str:
-    source = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[row], mode=FLOAT64)
-    return hashlib.md5(source.text.encode()).hexdigest()
 
 
 def _named():
@@ -44,11 +40,6 @@ def _positional():
     return k
 
 
-@pytest.mark.parametrize("row", ["cuda", "host"])
-def test_the_bracket_emits_the_text_of_at(row):
-    assert _md5(_positional(), row) == _md5(_named(), row)
-
-
 def _reads(read):
     """A kernel named ``k`` returning ``read(lane, t)`` (the name is part of the text)."""
     @hawk.kernel
@@ -56,19 +47,6 @@ def _reads(read):
         return read(lane, t)
 
     return k
-
-
-def test_the_bracket_takes_the_axes_in_declared_order():
-    swapped = _reads(lambda lane, t: t[lane.a, lane.e])
-    named = _reads(lambda lane, t: t.at(e=lane.a, a=lane.e))
-    assert _md5(swapped, "host") == _md5(named, "host")
-    assert _md5(swapped, "host") != _md5(_reads(lambda lane, t: t[lane.e, lane.a]), "host")
-
-
-def test_a_single_index_stays_the_flat_read():
-    bracket = _reads(lambda lane, t: t[lane.flat])
-    flat = _reads(lambda lane, t: t.at(lane.flat))
-    assert _md5(bracket, "host") == _md5(flat, "host")
 
 
 @pytest.mark.parametrize("index,why", [
@@ -101,7 +79,7 @@ def test_a_flat_table_refuses_a_bracket_of_two():
 
 
 def _exec(src: str):
-    from raptor import flow
+    from hawk.trace import flow
 
     ns: dict = {}
     flow.exec_source(src, ns)

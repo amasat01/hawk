@@ -17,7 +17,7 @@ import pytest
 import hawk
 from hawk.artifact import build_bundle
 from hawk.artifact.bundle import COUNTERS, counters_snapshot
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 #: Host-only builds: the device arch is never resolved, so no box arch is
 #: named here.
@@ -91,3 +91,5 @@ def test_builds_is_monotonic_never_reset(tmp_path):
         device_arch=DEVICE_ARCH,
     )
     assert COUNTERS["builds"] >= 2
+
+

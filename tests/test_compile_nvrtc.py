@@ -32,10 +32,10 @@ from hawk.compile import (
     cubin_available,
     device,
 )
-from hawk.compile import nvrtc as hnvrtc
-from hawk.compile.nvrtc import NvrtcUnavailable
+from ospreys.cuda import nvrtc as hnvrtc
+from ospreys.cuda.nvrtc import NvrtcUnavailable
 from _toolchain import real_arch
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 #: A minimal `__global__` TU: no aether/eagle `#include` at all, so these
 #: rows exercise `device`/`cubin`'s own plumbing (header serving, arch
@@ -246,6 +246,7 @@ def test_pip_only_roots_unresolvable_device_and_host_compile_still_succeed(
     not, by itself, a reason either one should fail."""
     import hawk._roots as _roots
     import hawk.compile.toolchain as tc
+    from ospreys.cuda import toolchain as dtc
 
     for var in ("HAWK_AETHER_INCLUDE", "HAWK_EAGLE_INCLUDE"):
         monkeypatch.delenv(var, raising=False)
@@ -263,6 +264,7 @@ def test_pip_only_roots_unresolvable_device_and_host_compile_still_succeed(
     # either compile below (the host one bypasses roots via the sealed
     # payload, the device one via NVRTC's in-memory headers), so this is its
     # only coverage.
+    monkeypatch.setattr(tc, "_PIP_ONLY_ROOT", None)     # an earlier test of this process may have asked already
     assert tc.pip_only_root() is None, (
         "nothing has asked for the pip-only fallback yet")
     flags = tc.include_flags()
@@ -297,10 +299,11 @@ def test_pip_only_device_compile_hits_the_cache_in_a_fresh_process(monkeypatch, 
     headers: a later process serving the payload elsewhere is a cache hit."""
     import hawk._roots as _roots
     import hawk.compile.toolchain as tc
+    from ospreys.cuda import toolchain as dtc
     from hawk.compile import _reset_artifact_memo, current_payload
 
     monkeypatch.setenv("HAWK_DEVICE_COMPILER", "nvcc")
-    if tc.device_compiler_kind() != "nvcc" or not cubin_available():
+    if dtc.device_compiler_kind() != "nvcc" or not cubin_available():
         pytest.skip("needs nvcc and a CUDA device")
     for var in ("HAWK_AETHER_INCLUDE", "HAWK_EAGLE_INCLUDE"):
         monkeypatch.delenv(var, raising=False)

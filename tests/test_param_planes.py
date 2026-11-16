@@ -36,7 +36,7 @@ import hawk
 from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import param_planes, vjp
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 N = 29
 
@@ -204,9 +204,9 @@ def test_a_name_clash_and_an_unknown_name_are_refused():
 
 def test_a_plane_already_named_like_the_uniform_is_refused():
     from hawk import Kernel
-    from hawk.ir import Assign, At, Const, Leaf
-    from hawk.ir import make as mk
-    from hawk.types import TensorType
+    from raptor.ir import Assign, At, Const, Leaf
+    from raptor.ir import make as mk
+    from raptor.ir.types import TensorType
 
     s, i = TensorType((), "f64"), TensorType((), "i32")
     uniform = Leaf("uniform", "uniform", "k", s)

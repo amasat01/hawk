@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 
 from .. import _contracts
-from ..ir import HawkError
+from .._errors import HawkError
 from ..targets import ENTRY_KINDS
 
 TOP_LEVEL_KEY_ORDER_V2 = ("schema_version", "pattern", "aether_abi", "exec_targets",

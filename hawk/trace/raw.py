@@ -12,13 +12,16 @@ most-restrictive-wins fold. The emitter splices the text verbatim."""
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from typing import Any
 
-from ..ir import HawkError, Op
-from ..ir.access import ACCESS_CLASSES
-from ..ir.nodes import RAW_KIND, RAW_LANGUAGE
-from ..types import TensorType
+from raptor.ir import key_text
+from raptor.ir import Op
+from .._errors import HawkError
+from raptor.ir.access import ACCESS_CLASSES
+from raptor.ir.nodes import RAW_KIND, RAW_LANGUAGE
+from raptor.ir.types import TensorType
 from .decl import Scalar
 from .value import Value, node_of
 
@@ -50,6 +53,13 @@ class RawBlock:
 
     def __repr__(self) -> str:
         return f"<RawBlock {self.name} access={self.access!r}>"
+
+    def __key_text__(self) -> str:
+        """The text this block contributes to a walk's key: its name and access, and a digest of everything the walk cannot see inside
+        (the spliced text, its language, the slots it reads and writes, the type it returns), so two blocks that differ in any of them
+        are two nodes and two units."""
+        digest = hashlib.sha256(repr((self.text, self.language, self.reads, self.writes, repr(self.returns))).encode("utf-8")).hexdigest()
+        return f"<RawBlock {self.name} access={key_text(self.access)} digest={digest}>"
 
 
 def raw_device(text: str, *, access: str | None = None, reads: Sequence[str] = (),

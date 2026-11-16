@@ -1,0 +1,88 @@
+[
+{
+"payload": [
+"leaf",
+[],
+"f64"
+],
+"contract": "auto",
+"want": "ok [False, False]"
+},
+{
+"payload": [
+"leaf",
+[],
+"f64"
+],
+"contract": "ordered",
+"want": "ok [True, True]"
+},
+{
+"payload": [
+"outer",
+[
+"leaf",
+[
+3
+],
+"f64"
+],
+[
+"leaf",
+[
+3
+],
+"f64"
+]
+],
+"contract": "auto",
+"want": "ok [True, False]"
+},
+{
+"payload": [
+"outer",
+[
+"leaf",
+[
+3
+],
+"f64"
+],
+[
+"leaf",
+[
+3
+],
+"f64"
+]
+],
+"contract": "ordered",
+"want": "ok [True, False]"
+},
+{
+"payload": [
+"mm",
+[
+"transpose",
+[
+"leaf",
+[
+2,
+3
+],
+"f64"
+]
+],
+[
+"leaf",
+[
+2,
+3
+],
+"f64"
+]
+],
+"contract": "ordered",
+"want": "ok [False, False]"
+}
+]

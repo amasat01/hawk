@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import pathlib
 
-import _embedded as E
 import numpy as np
 import pytest
 from conftest import sidecar_of
@@ -24,8 +23,7 @@ import hawk.math as m
 from hawk import Matrix, Mutable, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk.embedded import export
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 LANES = 6
 
@@ -170,25 +168,6 @@ def test_a_22_by_22_newton_matches_numpy(build):
 
 
 # --- the C unit and the device source ----------------------------------------------
-
-@pytest.mark.parametrize("n", [3, 22])
-def test_the_c_unit_computes_the_hosts_bits_and_passes_the_checks(tmp_path, build, n):
-    kernel = assembled_solve(n)
-    rng = np.random.default_rng(n)
-    planes = dict(C=rng.standard_normal((LANES, n, n)) + 3.0 * np.sqrt(n) * np.eye(n),
-                  t=rng.uniform(0.5, 1.5, (LANES, n)), b=rng.standard_normal((LANES, n)))
-    _, loaded = build(kernel)
-    h = {"x": np.zeros((n, LANES)), "i_x": np.zeros(LANES, np.int32)}
-    rt.run(loaded, **{k: _plane(v) for k, v in planes.items()}, **h)
-    art = export(kernel, tmp_path, mode="float64")
-    cppcheck = art.report["checks"]["cppcheck"]
-    assert "skipped" not in cppcheck and cppcheck["findings"] == [] and art.report["audit"] == {"hits": []}
-    so = E.cc_shared(art.c_path, art.directory)
-    written = [r["name"] for r in art.report["interface"] if r["direction"] != "in" and r["role"] != "nsamples"]
-    got = E.run_c(so, kernel.name, art.report, LANES, mode="float64", **{k: _plane(v) for k, v in planes.items()})
-    got = got if isinstance(got, tuple) else (got,)
-    for name, plane in zip(written, got):
-        assert np.asarray(plane).reshape(h[name].shape).tobytes() == h[name].tobytes(), name
 
 
 def test_the_device_source_compiles_and_assembles_entry_by_entry(build):

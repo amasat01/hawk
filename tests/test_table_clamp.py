@@ -8,6 +8,8 @@ evaluated) never reads outside the plane. An in-range read is the plain read it 
 """
 
 from __future__ import annotations
+from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import numpy as np
 import pytest
@@ -16,7 +18,7 @@ import hawk
 from hawk import Index, Mutable, Scalar, Table
 from hawk import math as hm
 from hawk.diff import jvp
-from hawk.ir import PlaneExtent
+from raptor.ir import PlaneExtent
 from hawk.trace.kernel import Kernel
 
 eagle = pytest.importorskip("eagle")
@@ -111,13 +113,6 @@ def _window(target: str) -> None:
     np.testing.assert_array_equal(held, want)
 
 
-def test_reads_at_one_base_and_static_offsets_share_one_range_test_on_the_host(private_cache):
-    from hawk.emit.render import render_body
-
-    text = render_body(window.sinks, window.walk).text
-    assert text.count(">= static_cast<Int>(4)) & (") == 6 == text.count("- static_cast<Int>(1)), 1)")    # one span: -4 .. 1
-    assert text.count("int_clamp_index<Int>") == 6                               # the out-of-range reads keep it
-    _window("host")
 
 
 @pytest.mark.gpu
@@ -125,20 +120,6 @@ def test_reads_at_one_base_and_static_offsets_share_one_range_test_on_the_host(p
 def test_reads_at_one_base_and_static_offsets_share_one_range_test_on_the_device(private_cache):
     _window("cuda")
 
-def test_the_clamp_is_integer_and_a_bounded_literal_is_read_as_it_is():
-    from hawk.emit.render import render_body
-    from hawk.ext import Kind  # noqa: F401 - the default kind renders the body
-
-    text = render_body(pick.sinks, pick.walk).text
-    assert "hawk_abi::int_clamp_index<Int>" in text and "fmin" not in text and "fmax" not in text
-
-    @hawk.kernel
-    def grid(t: Table["row":5, "col":2147483651], r: Index, y: Mutable[Scalar]):     # noqa: F821
-        y = t.at(row=3, col=r)
-
-    body = render_body(grid.sinks, grid.walk).text
-    assert "2147483651" in body                 # the static extent past 2**31, exact in the index type
-    assert "static_cast<Int>(3)" in body and body.count("int_clamp_index") == 1     # row 3 < 5: no clamp there
 
 
 def test_the_derivative_reads_through_the_same_clamp():

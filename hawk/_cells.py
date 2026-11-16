@@ -4,36 +4,31 @@
 """The host finish of a kernel's cells: rows to the cell, in eagle's ``ordered`` tree.
 
 A kernel that stores ``hawk.sum(x)`` (or ``hawk.mean``, ``hawk.max``,
-``hawk.min``) writes one row per 32 samples. :func:`hawk.runtime.run` owns that
+``hawk.min``) writes one row per ``cell_row`` samples (the sidecar's number, from the wing). :func:`hawk.runtime.run` owns that
 row scratch (made once per kernel and sample count), launches, and finishes the
 rows into the cell the caller bound. The finish replays the ``ordered`` tree
 of ``eagle/reduce/canonical.h`` operation for operation (leaves of 256 slots of
 16 terms, the in-leaf halving tree, then pairwise levels; a sum's partial is a
 compensated (hi, comp) pair), so the cell is bitwise the one eagle's
-``ordered`` policy gives.
+``ordered`` contract gives.
 """
 
 from __future__ import annotations
 
+from raptor.ir.cells import planes
+
 import numpy as np
 
-from .ir.nodes import ROW_WIDTH
+from raptor.wings.base.cells import SAMPLE_SUM_COMP
 
-#: samples per row, fixed by the language
-ROW = ROW_WIDTH
+from ._errors import HawkError
+
 SLOTS, TERMS = 256, 16
 LEAF = SLOTS * TERMS
-#: row scratch sets made so far (one per kernel and sample count)
-made = 0
 
 
 def comp_name(name: str) -> str:
-    return f"{name}_comp"
-
-
-def planes(cell: str, columns: int) -> tuple:
-    """The row planes of a cell: ``name``, or ``name_0 .. name_{columns-1}``."""
-    return (cell,) if columns == 1 else tuple(f"{cell}_{k}" for k in range(columns))
+    return f"{name}{SAMPLE_SUM_COMP}"
 
 
 def _finite(x):
@@ -119,14 +114,19 @@ def finish(hi, comp, op: str):
     return vh[0]
 
 
+def row_of(sidecar: dict) -> int:
+    """The samples per row of the unit ``sidecar`` describes (``cell_row``); a sidecar without it is refused by name."""
+    if "cell_row" not in sidecar:
+        raise HawkError("the sidecar states no cell_row (a unit built before the row width became a fact): rebuild the unit")
+    return int(sidecar["cell_row"])
+
+
 class Scratch:
     """The rows of one kernel at one sample count: ``rows[plane]`` for every
     cell plane and its ``_comp`` companion."""
 
-    def __init__(self, cells: dict, n: int, dtype) -> None:
-        global made
-        made += 1
-        count = -(-int(n) // ROW)
+    def __init__(self, cells: dict, n: int, dtype, row: int) -> None:
+        count = -(-int(n) // int(row))
         self.cells = cells
         self.rows = {}
         for cell, spec in cells.items():

@@ -36,7 +36,7 @@ import hawk
 from hawk import Kernel, Mutable, Param, Scalar, Terminated, kernel
 from hawk.diff import jvp, tape
 from hawk.diff.tape import refine_entry, taped_planes
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 N = 29
 

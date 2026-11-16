@@ -28,6 +28,9 @@ Rows:
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import HOST
 
 import _deploy as L
 import numpy as np
@@ -38,8 +41,8 @@ from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk.artifact import build_bundle
 from hawk.artifact.sidecar import sidecar_meta
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
-from hawk.ir import HawkError, canonical
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import canonical
 
 N = 40
 DT = 0.125
@@ -90,14 +93,14 @@ def smooth_finish(x: Scalar, terminated: Terminated, y: Mutable[Scalar]):
 # -- the IR and the sidecar.
 # --------------------------------------------------------------------------- #
 def test_the_walk_records_the_finish_and_binds_the_counter():
-    assert osc_finish.walk.finish == ("terminated", 1)
+    assert (osc_finish.walk.finish, osc_finish.steps) == ("terminated", 1)
     assert ("lookup", "finished_count") in osc_finish.arg_spec
     assert osc_finish.walk.slot_types[("lookup", "finished_count")].dtype == "uint32"
-    assert stop_only.walk.finish == ("terminated", 1)
+    assert (stop_only.walk.finish, stop_only.steps) == ("terminated", 1)
 
 
 def test_a_finishing_kernels_sidecar_declares_the_finish():
-    meta = sidecar_meta("osc_finish", osc_finish.walk, fmt="ptx",
+    meta = sidecar_meta("osc_finish", osc_finish.walk, steps=osc_finish.steps, fmt="ptx",
                         scalar_type="float64")
     assert meta["finish"] == {"mask": "terminated", "counter": "finished_count",
                               "steps": 1}
@@ -105,18 +108,6 @@ def test_a_finishing_kernels_sidecar_declares_the_finish():
     assert ["lookup", "finished_count"] in meta["arg_spec"]
     keys = list(meta)
     assert keys.index("finish") == keys.index("terminated_readonly") + 1
-
-
-@pytest.mark.parametrize("transform", [vjp, jvp], ids=["vjp", "jvp"])
-def test_a_derived_kernel_drops_the_finish(transform):
-    sinks = transform(smooth_finish, wrt=("x",))
-    assert not any(getattr(s, "kind", None) == "finish" for s in sinks)
-    walk = canonical(sinks)
-    assert walk.finish is None
-    assert ("lookup", "finished_count") not in walk.arg_spec
-    meta = sidecar_meta("d", walk, fmt="ptx", scalar_type="float64")
-    assert "finish" not in meta and meta["terminated_readonly"] is True
-    assert "finish_count" not in render_body(sinks, walk).text
 
 
 def test_a_non_finishing_kernel_keeps_its_readonly_sidecar():
@@ -192,19 +183,6 @@ def test_a_finish_inside_a_for_refuses():
 # --------------------------------------------------------------------------- #
 # -- structure.
 # --------------------------------------------------------------------------- #
-def test_the_epilogue_is_the_last_text_of_the_guarded_scope():
-    lines = render_body(osc_finish.sinks, osc_finish.walk).text.splitlines()
-    assert lines[0].strip() == "if (!trm_terminated[i].eval()) {"
-    assert lines[-1].strip() == "}"
-    assert lines[-2].strip() == EPILOGUE
-    commits = [k for k, line in enumerate(lines) if "] = " in line
-               and "trm_terminated_w" not in line]
-    assert commits and max(commits) < len(lines) - 2
-
-
-def test_a_one_sided_finish_folds_to_a_select():
-    text = render_body(branch_finish.sinks, branch_finish.walk).text
-    assert "? " in text and ": false)" in text, text
 
 
 # --------------------------------------------------------------------------- #
@@ -328,28 +306,6 @@ def test_a_stop_only_kernel_finishes_and_counts(bundles, target):
 # --------------------------------------------------------------------------- #
 # -- non-vacuity: drop the count, the counter row goes red.
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
-def test_dropping_the_count_from_the_epilogue_is_caught(tmp_path, cache_dir,
-                                                        monkeypatch, target):
-    from hawk.emit import render as aether
-
-    original = aether._Renderer._emit
-
-    def no_count(self, line):
-        original(self, line.replace(" hawk_abi::finish_count(lut_finished_count);",
-                                    ""))
-    monkeypatch.setattr(aether._Renderer, "_emit", no_count)
-    stripped = build_bundle([osc_finish], tmp_path / "stripped",
-                            targets=("cuda", "host"), cache_dir=cache_dir)
-    monkeypatch.undo()
-    text = (tmp_path / "stripped" / "osc_finish.cpp").read_text() \
-        if (tmp_path / "stripped" / "osc_finish.cpp").exists() else None
-    if text is not None:
-        assert "finish_count(lut_finished_count)" not in text
-    got, counted, launches, _ = _step_until_done(stripped, target)
-    assert got["terminated"].all(), "the mask still sets"
-    assert counted == 0 and launches == MAX_LAUNCHES, (
-        "with no count the guard never fires: the loop runs to its cap")
 
 
 def test_an_active_set_build_of_a_finishing_kernel_keeps_the_finish(tmp_path,

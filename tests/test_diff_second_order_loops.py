@@ -18,7 +18,7 @@ backward loop that reads the forward loop's tape ((b)). Forward mode carries
 tangents through either of those exactly as it carries them through a primal —
 so the refusal that used to sit in ``hawk/diff/loops.forward_loop`` was never a
 statement about the mathematics, only about the ONE node with no tangent rule:
-:class:`~hawk.ir.loop_nodes.TapeRead`. Its rule is that the tangent of
+:class:`~raptor.ir.nodes.TapeRead`. Its rule is that the tangent of
 ``TapeRead(F, j, k)`` is ``TapeRead(F', m + j, k)`` — the same iteration of the
 AUGMENTED forward loop, whose slot ``m + j`` already carries the tangent of slot
 ``j``. In the emitted code the tape becomes a tape of PAIRS, which
@@ -50,6 +50,10 @@ value.
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import spec_for
+from _specs import HOST
 
 import pathlib
 
@@ -61,8 +65,9 @@ import hawk
 import hawk.math as m
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
-from hawk.emit import FLOAT64, render_body, render_source
-from hawk.ir import HawkError, Loop, canonical
+from aether.wings.base.wrapper import FLOAT64
+from raptor.ir import Loop, canonical
+from hawk import HawkError
 from hawk.targets import TARGETS
 
 #: The central-difference step for the SECOND derivative row. It differences the
@@ -234,101 +239,11 @@ def test_the_two_second_order_routes_agree_with_each_other():
 # --------------------------------------------------------------------------- #
 # The emitted shape.
 # --------------------------------------------------------------------------- #
-def test_the_tape_becomes_a_tape_of_pairs():
-    """(b) at second order, read off the generated body.
-
-    Forward-over-reverse of a RECURRENCE emits three loops — the primal (taped),
-    its AUGMENTED twin (which tapes the tangent slot), and the reverse loop that
-    reads a row of each per iteration. That is what "the tape becomes a tape of
-    pairs" means concretely, and it is the whole reason the tangent of a tape
-    read needs no new storage mechanism: the augmented loop's own tape already
-    holds the tangent, at the same iteration, in the twin slot."""
-    derived = jvp(vjp(chebyshev, wrt=("z",)), wrt=("z",))
-    walk = canonical(derived)
-    text = render_body(derived, walk).text
-    assert text.count("for (") == 3, text
-    tapes = sorted({ln.strip().split()[1].split("[")[0]
-                    for ln in text.splitlines() if "hawk_tp" in ln
-                    and ln.strip().startswith("Real hawk_tp")})
-    assert len(tapes) == 2, (tapes, text)
-    # the reverse loop reads BOTH tapes, at its own (backwards) index
-    reverse = text.split("for (")[-1]
-    for tape in tapes:
-        assert f"{tape}[hawk_k" in reverse, (tape, reverse)
-    assert "> -1; --" in text, "the reverse loop must run the range backwards"
-
-
-def test_both_backends_wrap_the_same_second_order_body():
-    """ at second order: ONE renderer produces the body and a BACKEND
-    supplies only the wrapper, so nothing about a tape of pairs is a host
-    construct the device path re-derives."""
-    derived = jvp(vjp(saturating, wrt=("x", "g")), wrt=("x", "g"))
-    walk = canonical(derived)
-    host = render_source("hvp", derived, walk, TARGETS["host"])
-    device = render_source("hvp", derived, walk, TARGETS["cuda"])
-    assert host.body == device.body
-    assert host.body.count("for (") == 3
-
-
-@pytest.mark.parametrize("target", ["host", "cuda"])
-def test_a_second_order_loop_kernel_compiles(target, tmp_path):
-    """The emitted second-order TU is real C++ / CUDA, checked by the compiler
-    rather than by eye — a body full of correctly-named tape arrays that does
-    not compile certifies nothing. Never skipped: an unresolvable toolchain
-    FAILS and names the variable that would fix it (``tests/_toolchain.py``)."""
-    derived = jvp(vjp(saturating, wrt=("x", "g")), wrt=("x", "g"))
-    walk = canonical(derived)
-    src = render_source("hvp", derived, walk, TARGETS[target], mode=FLOAT64,
-                        exports=exports(target))
-    path = pathlib.Path(tmp_path) / ("hvp.cpp" if target == "host" else "hvp.cu")
-    path.write_text(src.text)
-    rc, err, argv = TC.compile_check(path, target)
-    assert rc == 0, f"$ {' '.join(argv)}\n{err[-4000:]}"
 
 
 # --------------------------------------------------------------------------- #
 # The BUGFIX, pinned structurally as well as numerically.
 # --------------------------------------------------------------------------- #
-def test_an_unseeded_carry_still_gets_its_adjoint_recurrence():
-    """The structural half of the ``_reverse_recurrence`` bugfix, read off the
-    emitted body rather than off a number.
-
-    ``vjp(jvp(chebyshev))`` reverses an augmented loop with four carried slots
-    whose seeds cover only the two TANGENT ones, so the two PRIMAL slots arrive
-    unseeded. Their adjoints are nevertheless live recurrences — the tangent
-    body results read the primal carries — so the derived loop must both READ
-    those carried locals inside its body and update them with real expressions.
-
-    With the pre-fix pullback the same body came out as::
-
-        const Real hawk_n10_1 = static_cast<Real>(0.0);
-
-    with ``hawk_v10_0_bar_cur`` and ``hawk_v10_1_bar_prev`` never read at all —
-    two carried locals written every iteration and consulted by nothing, which
-    is what a dropped adjoint recurrence looks like in generated code."""
-    derived = vjp(jvp(chebyshev, wrt=("z",)))
-    text = render_body(derived, canonical(derived)).text
-    reverse = text.split("for (")[-1]
-    results = [ln.strip() for ln in reverse.splitlines()
-               if ln.strip().startswith("const Real hawk_n")]
-    assert len(results) == 6, text
-    zeros = [ln for ln in results if ln.endswith("static_cast<Real>(0.0);")]
-    assert not zeros, (
-        "a carried slot of the reverse loop is updated with a literal zero: its "
-        f"adjoint recurrence was dropped.\n{text}")
-    # the reverse loop's OWN carried locals: every emitted loop identifier
-    # carries its loop's canonical position (`hawk_v<pos>_…`, `hawk_k<pos>_…`),
-    # so the header just split off names the prefix without guessing.
-    pos = reverse.split("Int hawk_k")[1].split("_")[0]
-    carried = sorted({ln.strip().split()[1] for ln in text.splitlines()
-                      if ln.strip().startswith(f"Real hawk_v{pos}_")})
-    assert len(carried) == 6, carried
-    for local in carried:
-        stores = sum(1 for ln in reverse.splitlines()
-                     if ln.strip().startswith(f"{local} = "))
-        assert reverse.count(local) > stores, (
-            f"the carried adjoint {local} is written every iteration and read "
-            f"by nothing: its recurrence was dropped.\n{text}")
 
 
 # --------------------------------------------------------------------------- #

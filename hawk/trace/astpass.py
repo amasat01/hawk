@@ -10,11 +10,11 @@ expression, ``if``/``elif``/``else`` and a bounded ``for`` over a literal
 ``range`` (holding at most one top-level ``if cond: break`` or ``if cond: <assignments>; break``) survive;
 everything else — ``while``, ``continue``, any other ``break``, ``try``,
 ``with``, ``import``, comprehensions, lambdas, ``and``/``or``/``not``, chained
-or identity comparisons — is refused by a :class:`~hawk.ir.HawkError` naming
+or identity comparisons — is refused by a :class:`~hawk.HawkError` naming
 the construct and its line. (3) The ``if`` and ``for`` REWRITES: each ``if``
 branch runs under Python's own evaluator and the names it assigns are merged
 afterwards by ``select``; a bounded ``for`` runs its body ONCE against a
-symbolic index and the names it carries become a :class:`~hawk.ir.Loop`. A
+symbolic index and the names it carries become a :class:`~raptor.ir.Loop`. A
 loop's ``if cond: break`` becomes the loop's EXIT (:meth:`_LoopBuilder.exit`),
 lowered to a real per-sample ``break``; ``if cond: S; break`` is sugar for a snapshot of
 ``cond``, ``if snapshot: S`` and the bare form (:func:`_lower_break_blocks`). A sink method call may not sit inside
@@ -22,7 +22,7 @@ a branch or a loop — it would commit unconditionally, or once instead of once
 per iteration.
 
 A ``for`` is lowered to a real C++/CUDA ``for`` rather than unrolled at trace
-time: unrolling blew ptxas's memory past 25 GB on one KAN-sized kernel, so the
+time: unrolling blew ptxas's memory past 25 GB on one spline-sized kernel, so the
 loop stays intact and the compiler decides whether to unroll it.
 """
 
@@ -33,12 +33,14 @@ import builtins
 import copy
 from typing import Any
 
-from ..ir import Const, Dispatch, HawkError, Node, Select
-from ..ir.cost import SPECIAL_KINDS
-from ..ir.loop_nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from ..types import TensorType
-from ..ir.loops import build_loop
+from raptor.ir import Const, Dispatch, Node, Select
+from .._errors import HawkError
+from hawk import wings as _wings
+from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
+from raptor.ir.types import TensorType
+from raptor.ir.loops import build_loop
 from .value import Value, index_node, node_of, own_column_rewrite_advice, select
+_dispatch_kind = _wings.view("raptor", "base", "dispatch")
 
 #: The reserved prefix of every name this pass synthesises.
 PREFIX = "__hawk_"
@@ -134,10 +136,10 @@ class _LoopBuilder:
     """The object the rewritten body drives ONE bounded ``for`` through.
 
     Three calls, in order: :attr:`index` binds the loop variable to a symbolic
-    :class:`~hawk.ir.loop_nodes.LoopIndex`, :meth:`carries` swaps each
-    loop-carried name for its :class:`~hawk.ir.loop_nodes.LoopCarry`
+    :class:`~raptor.ir.nodes.LoopIndex`, :meth:`carries` swaps each
+    loop-carried name for its :class:`~raptor.ir.nodes.LoopCarry`
     placeholder, and :meth:`close` reads the body's final values and mints the
-    :class:`~hawk.ir.Loop`. The body runs exactly once, under Python's own
+    :class:`~raptor.ir.Loop`. The body runs exactly once, under Python's own
     evaluator, like an ``if`` branch."""
 
     __slots__ = ("start", "stop", "step", "trip", "where", "names", "depth",
@@ -175,10 +177,11 @@ class _LoopBuilder:
         self.where = where
         self.names = tuple(names)
         self.depth = int(depth)
-        self.index = Value(LoopIndex(depth, index_name))
+        bounds = None
         if self.trip and isinstance(self.stop, int):
             first, last = self.start, self.start + (self.trip - 1) * self.step
-            self.index.node.bounds = (first, last) if first <= last else (last, first)
+            bounds = (first, last) if first <= last else (last, first)
+        self.index = Value(LoopIndex(depth, index_name, bounds=bounds))
         self._inits: tuple = ()
         self._originals: tuple = ()
         self._carries: tuple = ()
@@ -188,7 +191,7 @@ class _LoopBuilder:
         """The static ``(stop,)`` of ``range(n)`` with a traced ``n``, and the loop's
         clamped run-time count: ``n`` held to ``[0, cap]`` (``cap`` the author's
         ``max=``, else the int range, and then the loop has no tape size)."""
-        from ..ir import make as _make
+        from raptor.ir import make as _make
 
         if len(bounds) != 1:
             raise HawkError(
@@ -291,11 +294,11 @@ def set_component(vector: Any, index: Any, value: Any, name: str) -> Any:
     A HAWK value is IMMUTABLE, so this becomes a REBINDING:
     ``v = __hawk_setitem__(v, k, e, "v")``. That makes ``v`` an ordinary name,
     so a ``for`` whose body writes its components carries it like a scalar
-    accumulator (:mod:`hawk.ir.loops`).
+    accumulator (:mod:`raptor.ir.loops`).
 
     The index may be static or symbolic; folding a static one is the C++
     compiler's decision, not the tracer's."""
-    from ..ir import make as _make
+    from raptor.ir import make as _make
     from .decl import Plane
 
     if isinstance(vector, Plane):
@@ -338,21 +341,21 @@ def merge(cond: Any, on_true: Any, on_false: Any, name: str, shared: bool = Fals
 def _store_under(cond: Any, on_true: Any, on_false: Any) -> Any:
     """``select(c, v, set(v, i, x))`` as ``set(v, i, select(c, v[i], x))`` (and the arms the other way round) for a
     value written at a run-time index: the same value, but the store stays one store of one element, so the
-    vector is neither copied nor selected whole, and what lives in a plane (:mod:`hawk.ir.wide`) is written in place.
+    vector is neither copied nor selected whole, and what lives in a plane (:mod:`raptor.wings.simt.wide`) is written in place.
 
-    Only a vector written at a run-time index (placed from width 1: :func:`~hawk.ir.wide.runtime_min`), under a
-    build that places values; every other ``if`` keeps the select, so a kernel with no such value renders as it did."""
-    from ..emit.policy import wide_form
-    from ..ir.nodes import Op
+    Only a vector written at a run-time index (placed from width 1: :func:`~raptor.wings.simt.wide.runtime_min`); every other
+    ``if`` keeps the select, so a kernel with no such value renders as it did. A build with ``wide_form="thread"``
+    puts the select back (:func:`raptor.wings.simt.wide.unstored`)."""
+    from raptor.ir.nodes import Op
 
-    if wide_form() == "thread" or not (isinstance(on_true, Value) and isinstance(on_false, Value)):
+    if not (isinstance(on_true, Value) and isinstance(on_false, Value)):
         return None
     for held, stored, taken in ((on_true, on_false, False), (on_false, on_true, True)):
         node, base = node_of(stored), node_of(held)
         if (isinstance(node, Op) and node.kind == "set_component_at" and node.operands[0] is base
                 and len(base.ttype.shape) == 1
                 and not isinstance(node.operands[1], Const) and not node_of(cond).ttype.shape):
-            from ..ir import make as _make
+            from raptor.ir import make as _make
 
             index, value = node.operands[1], Value(node.operands[2])
             current = Value(_make("component_at", (base, index)))
@@ -397,14 +400,14 @@ def _as_switch(value: Value, shared: bool = False) -> Value:
     selector = Const(len(conds), _I32)
     for j in range(len(conds) - 1, -1, -1):
         selector = Select(conds[j], Const(j, _I32), selector, _I32)
-    return Value(Dispatch(selector, _one_node_per_value(arms), "switch", node.ttype))
+    return Value(_dispatch_kind.dispatch(selector, _one_node_per_value(arms), "switch", node.ttype))
 
 
 def _one_node_per_value(arms: list) -> list:
     """``arms`` with equal-structure nodes merged to one, so a value written twice
     in a case is named once there (a case renders by node, not by structure)."""
-    from ..ir.split import _keys, _post_order
-    from ..ir.walk import substitute
+    from raptor.ir.walk import post_order as _post_order, structural_keys as _keys
+    from raptor.ir.walk import substitute
 
     while True:
         order, key, first, swaps = _post_order(arms), {}, {}, {}
@@ -420,7 +423,7 @@ def _one_node_per_value(arms: list) -> list:
 
 def _switch_chain(node: Node) -> tuple | None:
     """``(conditions, arms)`` of a dispatch :func:`_as_switch` built, else ``None``."""
-    if not (isinstance(node, Dispatch) and node.policy == "switch"):
+    if not (isinstance(node, Dispatch) and _dispatch_kind.strategy(node) == "switch"):
         return None
     conds, sel = [], node.selector
     while isinstance(sel, Select):
@@ -440,7 +443,7 @@ def _costly_arm(arms: list, conds: list, shared: bool) -> bool:
     only while nothing else reads that work, so a named transcendental runs in every lane). Alone, a
     transcendental or division counts when its arm reads it twice, by structure: a value written
     twice is read twice."""
-    from ..ir.split import _keys, _post_order
+    from raptor.ir.walk import post_order as _post_order, structural_keys as _keys
 
     key: dict = {}
     _keys(_post_order([*arms, *conds]), key)
@@ -456,7 +459,7 @@ def _costly_arm(arms: list, conds: list, shared: bool) -> bool:
         for k, n in own.items():
             if isinstance(n, (Loop, Dispatch)):
                 return True
-            if (n.kind in SPECIAL_KINDS or n.kind == "div") and (shared or reads.get(key[k], 0) >= 2):
+            if (n.kind in _wings.view("raptor", "base", "cost").SPECIAL_KINDS or n.kind == "div") and (shared or reads.get(key[k], 0) >= 2):
                 return True
     return False
 
@@ -698,14 +701,14 @@ def _check_view_store(st: ast.stmt, filename: str, in_branch: bool,
                    "m.where(cond, v, 0.0) instead")
     call = t.value
     if (len(call.args) != 1 or not isinstance(call.args[0], ast.Name)
-            or any(k.arg != "policy" for k in call.keywords)):
+            or any(k.arg != "contract" for k in call.keywords)):
         raise _err(st, filename,
                    "a store target is hawk.scatter(name)[...] (or "
-                   "hawk.scatter(name, policy=...)[...]) with the name of an output plane")
+                   "hawk.scatter(name, contract=...)[...]) with the name of an output plane")
     if isinstance(st, ast.AugAssign) and not isinstance(st.op, (ast.Add, ast.BitOr)):
         raise _err(st, filename,
                    "only `hawk.scatter(y)[key] += t` accumulates by key, and "
-                   "`hawk.scatter(y, policy=\"or\")[key] |= bits` sets bits; "
+                   "`hawk.scatter(y)[key] |= bits` sets bits; "
                    "`-=` is `+= -t`, and max/min by key are not in this release")
 
 
@@ -713,8 +716,8 @@ _STORE_OPS = {ast.Add: "+=", ast.BitOr: "|="}
 
 
 def _rewrite_view_stores(stmts: list[ast.stmt], in_loop: bool = False) -> list[ast.stmt]:
-    """``hawk.scatter(y, policy=p)[k] (op)= e`` as
-    ``y = __hawk_scatter__(__hawk_refs__, "y", k, e, "op=", y, policy=p)``: the
+    """``hawk.scatter(y, contract=c)[k] (op)= e`` as
+    ``y = __hawk_scatter__(__hawk_refs__, "y", k, e, "op=", y, contract=c)``: the
     name carries a marker after a store by key. Inside a ``for`` the call is a
     statement of its own, so the sink is not a loop-carried name."""
     out = []
@@ -1376,7 +1379,7 @@ class _Logic(ast.NodeTransformer):
 
 class _Rewriter:
     """Turns every ``if``/``IfExp`` into ``select`` merges, and every bounded
-    ``for`` into ONE symbolic pass that mints a :class:`~hawk.ir.Loop`."""
+    ``for`` into ONE symbolic pass that mints a :class:`~raptor.ir.Loop`."""
 
     def __init__(self, filename: str) -> None:
         self.filename = filename

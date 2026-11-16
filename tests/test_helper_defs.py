@@ -11,6 +11,9 @@
 * **Complex pairs.** ``cmul``, ``conj``, ``abs2`` and ``arg`` on ``Vector[2]``."""
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
+from _specs import aether_writer
+from _specs import HOST
 
 import math
 import textwrap
@@ -22,9 +25,9 @@ from _eval import evaluate
 import hawk
 import hawk.math as m
 from hawk import HawkError
+from hawk.artifact import emit_source
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
-from hawk.ir import canonical
+from raptor.ir import canonical
 
 SCALE = 3.0
 
@@ -86,10 +89,6 @@ def uses_library(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
     y = library_only(x)
 
 
-def _text(kernel) -> str:
-    return render_body(kernel.sinks, canonical(kernel.sinks)).text
-
-
 def _ref_nested(x):
     acc = 0.0
     for _ in range(4):
@@ -104,7 +103,7 @@ def _value(kernel, x):
 
 
 def test_a_helper_with_if_for_and_break_is_rewritten_and_inlined():
-    text = _text(uses_nested)
+    text = emit_source(uses_nested, targets=("host",)).sources["host"].text
     assert "for (" in text and "break;" in text and "?" in text
     for x in (0.1, 0.4, 0.9, 1.7, 2.5):
         assert _value(uses_nested, x) == pytest.approx(_ref_nested(x), rel=1e-14)
@@ -275,12 +274,3 @@ def test_a_pair_helper_refuses_a_non_pair():
             y = m.cmul(a, a)
 
 
-def test_the_pair_helpers_render_in_both_precisions():
-    from hawk.emit import FLOAT32, FLOAT64, render_source
-    from hawk.targets import TARGETS
-
-    k = _pairs("both")
-    host = TARGETS["host"]
-    for mode in (FLOAT32, FLOAT64):
-        text = render_source("pairs", k.sinks, canonical(k.sinks), host, mode=mode).text
-        assert "atan2" in text

@@ -61,12 +61,17 @@ them; :func:`hawk.artifact.plan_view` projects all three straight through.
 
 from __future__ import annotations
 
+import re
+from types import SimpleNamespace
+
 from .. import _contracts
 from ..compile.toolchain import _strict_aether_include, _strict_eagle_include
-from ..ir import HawkError
-from ..ir.segment import class_name, mix_name, stale_name
+from .._errors import HawkError
+from raptor.ir.cells import CELL_PLANE
+from raptor.wings.base.cells import FUSED_STEPS_PLANE
+from raptor.wings.base.cells import class_name, mix_name, offsets_name, stale_name
 from ..targets import ENTRY_KINDS
-from ..types import INT_PLANE_DTYPES
+from raptor.ir.types import INT_PLANE_DTYPES
 
 
 def _root_or_sealed_marker(resolver) -> str:
@@ -133,9 +138,9 @@ def _launch(lane_space, group: int, box=None, block: int | None = None,
     """The ``launch.lane_space`` block: the launch shape (row-major, the last axis
     fastest, only the first extent may be ``None``: known at run time) and the
     compaction ``group``, a lane count. With a thread ``box``
-    (:class:`hawk.emit.box.Box`), ``launch.box`` = ``{axis, T, stride}``: a
+    (:class:`raptor.wings.simt.box.Box`), ``launch.box`` = ``{axis, T, stride}``: a
     launch of ``n`` lanes runs ``ceil(n / (T * stride)) * stride`` threads
-    (:func:`hawk.emit.box.threads`), and ``base``/``count`` count threads.
+    (:func:`raptor.wings.simt.box.threads`), and ``base``/``count`` count threads.
     ``block`` is the exact threads per block an emit that fixed one (a staged
     tile) needs; a launch uses it verbatim. ``index_set`` is the record of a kernel
     declaring ``lanes=IndexSet()``: ``launch.index_set`` = ``{"width": bits}`` (the map word, the host
@@ -147,7 +152,7 @@ def _launch(lane_space, group: int, box=None, block: int | None = None,
     depots the PTX declares, a ceiling), ``launch.local_limit`` the device's per-thread limit. A launch of
     ``n`` threads needs about ``n * local_bytes`` of device memory beside the planes. No threads-per-block
     cap follows from it (a build asking for ``launch_bounds`` records its block in ``launch.block``).
-    ``wide`` is the placement of the kernel's wide values (:mod:`hawk.ir.wide`): ``launch.wide`` =
+    ``wide`` is the placement of the kernel's wide values (:mod:`raptor.wings.simt.wide`): ``launch.wide`` =
     ``{plane: {form, plane, layout, width}}``, one record per plane a wide value lives in, and ``class``, the device feature class whose thresholds placed them (a reader that does not know
     the key ignores it; a scratch plane is also in the sidecar's ``team_planes``, which sizes it). Absent when no value is placed."""
     axes = [{"label": label, "extent": extent} for label, extent in lane_space]
@@ -286,7 +291,7 @@ def _arg_dtypes(walk, scalar_type: str) -> dict:
 
 
 def _dispatches(infos) -> list:
-    """The per-kernel dispatch listing: ``{name, K, policy,
+    """The per-kernel dispatch listing: ``{name, K, strategy,
     static_selector, selector_reads}`` (the kernel-scoped classification and
     the selector's read slots a launching runtime re-scopes to a whole
     step), straight off
@@ -297,20 +302,23 @@ def _dispatches(infos) -> list:
     original group's record instead, K ``units`` names included."""
     out = []
     for d in infos:
-        entry = {"name": d.name, "K": d.K, "policy": d.policy,
+        entry = {"name": d.name, "K": d.K, "strategy": d.strategy,
                  "static_selector": d.static_selector,
                  "selector_reads": [list(pair) for pair in d.selector_reads]}
-        if d.policy == "auto":
+        if d.strategy == "auto":
             entry["mix"] = mix_name(d.name)
-        if d.policy == "segmented":
+        if d.strategy == "segmented":
             entry["class"], entry["stale"] = class_name(d.name), stale_name(d.name)
+            entry["offsets"] = offsets_name(d.name)
+            if d.classify is not None:
+                entry["classify"] = d.classify
         if d.units:
             entry["units"] = list(d.units)
         out.append(entry)
     return out
 
 
-def _finish(walk) -> dict:
+def _finish(walk, steps) -> dict:
     """The optional ``finish`` key of a kernel that finishes its own
     sample: the mask it marks, the reserved counter plane it counts newly
     finished samples into, and the steps one launch takes. Absent means
@@ -319,10 +327,9 @@ def _finish(walk) -> dict:
     finish = getattr(walk, "finish", None)
     if finish is None:
         return {}
-    from ..ir.nodes import FINISHED_PLANE
+    from raptor.wings.base.cells import FINISHED_PLANE
 
-    mask, steps = finish
-    out = {"mask": mask, "counter": FINISHED_PLANE, "steps": steps}
+    out = {"mask": finish, "counter": FINISHED_PLANE, "steps": steps}
     if steps == "auto":
         from ..trace.steps import AUTO_K_MAX
 
@@ -332,7 +339,7 @@ def _finish(walk) -> dict:
 
 def _gather_mats(walk, broadcast: dict | None) -> dict:
     """``{compact Matrix plane: the lane axes it varies along (one bool per axis of
-    the lane space), or None when the kernel is not a broadcast variant}``: what the
+    the lane space), or None when the kernel is not a broadcast twin}``: what the
     binder checks its column count against. A tangent plane takes its input's pattern."""
     from ..diff.transform import TANGENT_PREFIX
 
@@ -345,7 +352,7 @@ def _gather_mats(walk, broadcast: dict | None) -> dict:
     return out
 
 
-def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
+def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | str = 1,
                  exec_targets=ENTRY_KINDS, host_entry: str | None = None,
                  derivative: dict | None = None, lanes=None,
                  lane_space=((None, None),), group: int = 1, box=None, block: int | None = None,
@@ -365,7 +372,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     ``arg_spec``, role ``lookup``.
 
     ``lanes`` is present only for a fused entry: one
-    :class:`~hawk.types.LaneMeta` record per lane, so a consumer that
+    :class:`aether.wings.base.fused.LaneMeta` record per lane, so a consumer that
     composed the group can tell, from the deployed artifact alone, which
     lanes are inside it and whether any moved since.
 
@@ -440,8 +447,11 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
         "buffers": [],
         "arg_spec": [list(pair) for pair in walk.arg_spec],
         "terminated_readonly": getattr(walk, "finish", None) is None,
-        **_finish(walk),
+        **_finish(walk, steps),
         **({"param_planes": list(walk.param_planes)} if walk.param_planes else {}),
+        # the reserved planes of the kernel's own, by name: the runtime binds them and the caller never passes them
+        **({"steps_plane": FUSED_STEPS_PLANE} if ("lookup", FUSED_STEPS_PLANE) in walk.arg_spec else {}),
+        **({"cell_plane": CELL_PLANE} if ("per_sample", CELL_PLANE) in walk.arg_spec else {}),
         # every reduction over samples, with its op: the rows it writes (one
         # per 32 samples) are the runtime's scratch, finished into the cell
         **({"cells": walk.cells} if walk.cells else {}),
@@ -484,3 +494,179 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str,
     if derivative is not None:
         meta["derivative"] = derivative
     return meta
+
+
+# -- The sidecar of a unit the lowering library answered. ------------------------------------------------------------------- #
+#: The IR dtype each wire dtype of a unit record stands for (a ``Real`` follows the scalar mode).
+_RECORD_DTYPES = {"Real": "f64", "Int64": "i64", "Int32": "int32", "Uint32": "uint32", "Bool": "bool"}
+_SLOT_PRIOR, _SLOT_PARAM_PLANE, _SLOT_GATHER = 1, 2, 4
+_FINISH_ENTRY_COUNTS = 1
+
+
+def _snake(word: str) -> str:
+    return re.sub(r"(?<!^)([A-Z])", r"_\1", word).lower()
+
+
+def _is_classify_record(dispatch: dict) -> bool:
+    """Whether ``dispatch`` is the classify unit's own record of its dispatch: a segmented record with no classify unit, no branches and
+    no sweep, whose class slot is set. The old sidecar format has no place for it, so it goes with that format."""
+    return (dispatch["strategy"] == "Segmented" and dispatch["classify"] is None and not dispatch["branches"]
+            and dispatch["sweep"] is None and dispatch["class_slot"] is not None)
+
+
+def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespace:
+    """What :func:`sidecar_meta` reads off a walk, rebuilt from the record of a unit and the declarations of its kernel."""
+    from raptor.ir.types import TensorType
+
+    meta = unit["meta"]
+    body = meta["body"]
+    slots = body["slots"]
+    names = [s["name"] for s in slots]
+    arg_spec = tuple((_snake(s["role"]), s["name"]) for s in slots)
+    held_types = kernel.walk.slot_types
+    slot_types = {(_snake(s["role"]), s["name"]): TensorType(tuple(s["shape"]), _RECORD_DTYPES[s["dtype"]],
+                                                              getattr(held_types.get((_snake(s["role"]), s["name"])), "tag", None))
+                  for s in slots}
+    reads = {n for r, n in arg_spec if r in ("lookup", "wide_in")}
+    finish = meta.get("finish")
+    quantities = kernel.walk.quantities
+    held = {d.name: d for d in kernel.walk.dispatches}
+    listed = [d for d in body["dispatches"] if not _is_classify_record(d)]
+
+    return SimpleNamespace(
+        arg_spec=arg_spec, slot_types=slot_types, digest=meta["digest"], quantities={p: q for p, q in quantities.items() if any(w in names for w in q.wires)},
+        access=SimpleNamespace(cls=_snake(body["access"]), op=None),
+        cells={c["name"]: {"op": _snake(c["op"]), "columns": c["columns"]} for c in body["cells"]},
+        companions={names[c["slot"]]: names[c["target_slot"]] for c in body["companions"]},
+        adjoint_like={n: n[len("bar_"):] for r, n in arg_spec if r == "accum_out" and n.startswith("bar_") and n[len("bar_"):] in reads},
+        gather_mats=tuple(sorted(s["name"] for s in slots if s["flags"] & _SLOT_GATHER)),
+        param_planes=tuple(s["name"] for s in slots if s["flags"] & _SLOT_PARAM_PLANE),
+        prior_reads=frozenset(s["name"] for s in slots if s["flags"] & _SLOT_PRIOR),
+        finish=None if finish is None else names[finish["mask_slot"]],
+        dispatches=tuple(SimpleNamespace(name=d["name"], K=held[d["name"]].K, strategy=_snake(d["strategy"]),
+                                         static_selector=held[d["name"]].static_selector, selector_reads=held[d["name"]].selector_reads,
+                                         units=tuple(ref["name"] for ref in d["branches"]),       # the record lists a segmented group's branch units in order
+                                         classify=None if d["classify"] is None else d["classify"]["name"])
+                         for d in listed),
+    )
+
+
+class _RecordBox:
+    """A thread box as the answer states it, written the way :meth:`raptor.wings.simt.box.Box.sidecar` writes one."""
+
+    def __init__(self, record: dict) -> None:
+        self.record = record
+
+    def sidecar(self) -> dict:
+        return dict(self.record)
+
+
+def _keys_record(keyed: dict) -> dict:
+    """The keys of a block sum as the sidecar spells a keyed plane."""
+    axes = [[label, None if extent < 0 else extent] for label, extent in zip(keyed["axis_labels"], keyed["axis_extents"])]
+    return {"width": keyed["width"], "axes": axes, "payload": list(keyed["payload"])}
+
+
+def _team_record(team: dict, source_body: dict, stage_slots: list) -> dict:
+    """The sidecar's ``team`` of a team stage."""
+    out = {"threads": team["threads"]}
+    if team["lanes"] > 1:
+        out["lanes"] = team["lanes"]
+    if team["warps"] > 1:
+        out["warps"] = team["warps"]
+    grid = _snake(team["grid"])
+    if grid == "keys":
+        out["grid"] = "keys"
+        if team["groups"] > 1:
+            out["groups"] = team["groups"]
+        out["keyed"] = _keys_record(source_body["keyed"][team["keyed"]])
+    elif grid in ("chunks", "targets"):
+        out["grid"], out["of"] = grid, stage_slots[team["of_slot"]]["name"]
+        if grid == "chunks":
+            out["status"] = source_body["team_planes"][team["status_plane"]]["name"]
+    return out
+
+
+def _split_block(source: dict, family: list) -> dict:
+    """What the first stage of a cut kernel carries: every stage, every cell, the scratch planes and the keyed planes, as the
+    entry-less unit that lists the stages records them."""
+    body = source["meta"]["body"]
+    cells = {c["name"]: {"op": _snake(c["op"]), "columns": c["columns"], **({"internal": True} if c["internal"] else {})} for c in body["cells"]}
+    stages = []
+    for st in source["meta"]["stages"]:
+        record = {"kernel": st["unit"]["name"], "cells_in": list(st["cells_in"]), "cells_out": list(st["cells_out"])}
+        if st["team"] is not None:
+            record["team"] = _team_record(st["team"], body, body["slots"])
+        stages.append(record)
+    out = {"cells": cells, "stages": stages}
+    scratch = {}
+    for p in body["team_planes"]:
+        row = {"dtype": {"Real": "real"}.get(p["dtype"], _snake(p["dtype"])), "per_lane": p["per_lane"]}
+        if _snake(p["layout"]) == "plane_major":
+            row["layout"] = "plane_major"
+        unit = _snake(p["unit"])
+        if unit == "key":
+            row["keys"] = _keys_record(body["keyed"][p["keyed"]])
+        elif unit == "target":
+            row["per_target"] = body["slots"][p["target_slot"]]["name"] if p["target_slot"] is not None else None
+        elif unit == "once":
+            row["once"] = True
+        if p["fill_promised"]:
+            row["fill"] = p["fill"]
+        scratch[p["name"]] = row
+    if scratch:
+        out["team_planes"] = scratch
+    used = {p["keyed"] for p in body["team_planes"] if p["keyed"] is not None} | {st["team"]["keyed"] for st in source["meta"]["stages"] if st["team"] and st["team"]["keyed"] is not None}
+    keyed = {k["name"]: _keys_record(k) for i, k in enumerate(body["keyed"]) if i not in used}
+    if keyed:
+        out["keyed"] = keyed
+    return out
+
+
+def _counted(finish: dict | None, key: str) -> int | None:
+    """A count the library states in the finish record; absent or negative is not counted."""
+    value = None if finish is None else finish.get(key)
+    return None if value is None or value < 0 else int(value)
+
+
+def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_type: str, exec_targets, family: list, steps=None,
+                    derivative: dict | None = None, block: int | None = None, ptxas: dict | None = None, local: tuple | None = None) -> dict:
+    """The sidecar of one unit the lowering library answered. ``unit`` is the unit's record, ``lead_device`` whether the lead target is the device (its thread box is the sidecar's), ``kernel`` the kernel the unit belongs to (its declarations, broadcast pattern, lanes and
+    steps), ``family`` the records of every unit the answer holds for the kernel (the entry-less unit that lists the stages of a cut
+    kernel, and the branch units of a segmented one, are among them)."""
+    meta = unit["meta"]
+    body, launch = meta["body"], meta["launch"]
+    from ..trace.kernel import derived_axes
+
+    planes = getattr(kernel, "planes", None) or derived_axes(kernel.walk, getattr(kernel.sinks, "source", None))
+    stages = next((u["meta"]["stages"] for u in family if u["meta"]["stages"]), [])
+    at = next((i for i, st in enumerate(stages) if st["unit"]["name"] == unit["meta"]["name"]), None)
+    segmented = any(d["strategy"] == "Segmented" for d in body["dispatches"])     # a branch unit or the classify unit, by its own record
+    if (at and stages[at]["team"] is not None) or segmented:
+        planes = {}                 # a team stage after the first, and a unit of a segmented split, declare none of the kernel's planes
+    walk = _unit_walk(unit, planes, kernel, family)
+    names = [s["name"] for s in body["slots"]]
+    labels, extents = launch["lane_labels"], launch["lane_extents"]
+    lane_space = tuple(zip(labels, [None if e < 0 else e for e in extents])) or ((None, None),)
+    index_set = None
+    if launch["index_count_slot"] is not None:
+        index_set = ({"width": 32, "prefix": True, "count": names[launch["index_count_slot"]]} if launch["index_map_slot"] is None
+                     else {"width": 64 if body["slots"][launch["index_map_slot"]]["dtype"] == "Int64" else 32})
+    finish = meta.get("finish")
+    box = launch["device_box"] if lead_device else launch["host_box"]
+    out = sidecar_meta(
+        meta["name"], walk, steps=getattr(kernel, "steps", 1) if steps is None else steps, fmt=fmt, scalar_type=scalar_type,
+        exec_targets=exec_targets, host_entry=meta["host_entry"], derivative=derivative, lanes=getattr(kernel, "lanes", None),
+        lane_space=lane_space, group=launch["group"], box=None if box is None else _RecordBox({"axis": box["axis"], "T": box["t"], "stride": box["stride"]}),
+        block=block, index_set=index_set, planes=planes, broadcast=getattr(kernel, "broadcast", None),
+        step_ops=_counted(finish, "step_ops"), wide={p["name"]: {"layout": "warp_tiled"} for p in body["team_planes"] if p["wide"] == "WarpTiled"} or None, fp64_ops_ir=_counted(finish, "fp64_ops_ir"),
+        entry_counts_finished=bool(finish and finish["flags"] & _FINISH_ENTRY_COUNTS), ptxas=ptxas, local=local)
+    source = next((u for u in family if u["meta"]["stages"]), None)
+    if source is not None and source["meta"]["stages"][0]["unit"]["name"] == meta["name"]:
+        out.update(_split_block(source, family))
+    if body["cell_row"]:
+        out["cell_row"] = body["cell_row"]
+    teamed = (at is not None and stages[at]["team"] is not None) or out.get("team_planes") or any("team" in st for st in out.get("stages", ()))
+    if body["scatter_chunks"] or teamed:
+        out["scatter_chunks"] = body["scatter_chunks"] or max(u["meta"]["body"]["scatter_chunks"] for u in family)
+    return out

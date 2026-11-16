@@ -20,7 +20,7 @@ from conftest import sidecar_of
 from hawk import Kernel
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 #: The one differentiated input this whole file exercises: ``vec3_scale``'s
 #: ``x`` (a ``Vector[3]``) — small enough that a REVERSE gradient (``bar_x``)

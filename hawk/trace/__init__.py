@@ -6,7 +6,7 @@
 ``@kernel`` traces a decorated function whose PARAMETERS are its declared
 vocabulary and whose body is rewritten by the ``ast`` pass into ``select``
 nodes; ``@raw_device`` is the bounded escape hatch for opaque text.
-Importing this package imports :mod:`hawk.ir`, so :mod:`hawk` itself binds
+Importing this package imports :mod:`raptor.ir`, so :mod:`hawk` itself binds
 these names LAZILY and a light consumer keeps paying only for
 :mod:`hawk.types`.
 
@@ -51,7 +51,7 @@ launch — see :mod:`hawk.trace.steps` for the loop, bit-identity and
 # path is the top level, never `hawk.trace.<name>` (hence absent from
 # `__all__`). The self-alias is the standard "yes, this is unused by this
 # file, on purpose" static-analysis idiom.
-from ..ir import Quantity as Quantity
+from raptor.ir import Quantity as Quantity
 from .decl import Grid as Grid
 from .decl import Index as Index
 from .decl import Int32 as Int32

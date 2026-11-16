@@ -1,0 +1,28 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+
+# The SIMT wing of raptor: the team/warp/box form of a lowering, a package root of its own. It imports the standard library and raptor
+# only; a front end finds it as an installed distribution (the ``raptor.wings`` entry point below) and reads its manifest.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "raptor-simt"
+version = "0.0.0"
+description = "The SIMT wing of the raptor family: team, warp and thread-box lowering forms"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+dependencies = ["raptor-core", "raptor-base"]
+
+[project.entry-points."raptor.wings"]
+simt = "raptor.wings.simt"
+
+[tool.setuptools]
+packages = ["raptor.wings.simt"]
+
+[tool.setuptools.package-dir]
+"raptor.wings.simt" = "../../raptor/wings/simt"
+
+[tool.setuptools.package-data]
+"raptor.wings.simt" = ["wing.json", "facts.py", "raptor_facts.h"]

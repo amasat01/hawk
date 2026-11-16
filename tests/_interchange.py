@@ -3,7 +3,7 @@
 
 """The two builds one host TU carries for a fused-step kernel.
 
-An interchanged host TU (:mod:`hawk.emit.host`) holds its fused loop twice
+An interchanged host TU (:mod:`aether.wings.cpu.host`) holds its fused loop twice
 under ``#if HAWK_HOST_INTERCHANGE``: the interchanged loop, and after the
 ``#else`` the plain per-sample loop a ``-DHAWK_HOST_INTERCHANGE=0`` build
 compiles. :func:`builds` cuts the text into the two programs the

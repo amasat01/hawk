@@ -1,0 +1,147 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+
+"""``vjp(..., strategy={group: ...})``, ``"auto"`` and the selector classification.
+
+Rows:
+
+* **override** — a derived dispatch inherits the primal's strategy unless
+  ``strategy=`` names its group; overridden, every derived dispatch carries the
+  new strategy, and the gradient equals central differences EITHER way (and the
+  two gradients are equal); an unknown group or strategy refuses by name.
+* **auto** — accepted by the node, a distinct digest, rendered as ``switch``
+  plus one branch-mix count line until a chooser resolves it.
+* **static_selector** — a selector reading only inputs is static; one reading
+  a plane the kernel writes (its own commit, or its finished mask) is not; the
+  STEP-scoped verdict turns a kernel's static group state-dependent when
+  another kernel of the step writes the selector's plane; the sidecar record
+  and a segmented unit's record carry the classification.
+"""
+
+from __future__ import annotations
+from raptor.wings.base.dispatch import dispatch as _dispatch
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import HOST
+
+import numpy as np
+import pytest
+from _eval import evaluate
+
+import hawk.math as M
+from hawk import Index, Mutable, Param, Scalar, Terminated, kernel
+from hawk.artifact.sidecar import _dispatches
+from hawk.diff import vjp
+from raptor.ir import Assign, Dispatch, Leaf, canonical
+from hawk import HawkError
+from raptor.ir import make as mk
+from raptor.wings.base.dispatch import DISPATCH_STRATEGIES, strategy
+from raptor.ir.walk import static_selectors
+from raptor.ir.types import TensorType
+
+S = TensorType((), "f64")
+I32 = TensorType((), "i32")
+_H = 1e-6
+
+
+def _primal(strategy: str, K: int = 3):
+    k = Leaf("vocab_read", "per_sample", "k", I32)
+    xs = [Leaf("vocab_read", "per_sample", f"x{i}", S) for i in range(K)]
+    branches = [mk("mul", (xs[i], mk("sin", (xs[(i + 1) % K],)))) for i in range(K)]
+    return (Assign("out", _dispatch(k, branches, strategy, S), S),)
+
+
+def _strategies(sinks) -> set:
+    return {strategy(n) for n in canonical(tuple(sinks)).order if isinstance(n, Dispatch)}
+
+
+@pytest.mark.parametrize("primal_strategy,override", [
+    ("switch", "predicated"), ("predicated", "switch"), ("segmented", "switch"),
+    ("switch", "segmented"), ("auto", "predicated"),
+])
+def test_an_overridden_reverse_strategy_differs_and_both_match_fd(primal_strategy, override):
+    sinks = _primal(primal_strategy)
+    inherited = vjp(sinks)
+    overridden = vjp(sinks, strategy={"dispatch0": override})
+    assert _strategies(inherited) == {primal_strategy}
+    assert _strategies(overridden) == {override}
+    rng = np.random.default_rng(31)
+    for kind in range(3):
+        env = {"k": kind, **{f"x{i}": float(rng.uniform(0.5, 2.0)) for i in range(3)}}
+        seed = float(rng.normal())
+        a = evaluate(inherited, {**env, "bar_out": seed})
+        b = evaluate(overridden, {**env, "bar_out": seed})
+        for i in range(3):
+            assert a[f"bar_x{i}"] == b[f"bar_x{i}"]
+            plus, minus = dict(env), dict(env)
+            plus[f"x{i}"] += _H
+            minus[f"x{i}"] -= _H
+            fd = (evaluate(sinks, plus)["out"] - evaluate(sinks, minus)["out"]) / (2 * _H)
+            assert b[f"bar_x{i}"] == pytest.approx(fd * seed, rel=1e-6, abs=1e-8)
+
+
+def test_an_unknown_group_or_strategy_refuses_by_name():
+    sinks = _primal("switch")
+    with pytest.raises(HawkError, match=r"'dispatch7' is not a dispatch group"):
+        vjp(sinks, strategy={"dispatch7": "switch"})
+    with pytest.raises(HawkError, match=r"unknown strategy 'fused'"):
+        vjp(sinks, strategy={"dispatch0": "fused"})
+
+
+# -- the selector classification --------------------------------------------- #
+@kernel(steps=1)
+def by_input(dt: Param, kind: Index, x: Mutable[Scalar]):
+    x = x + dt * M.dispatch(kind, [x, -x], strategy="auto")
+
+
+@kernel(steps=1)
+def by_state(dt: Param, kind: Index, x: Mutable[Scalar], c: Mutable[Index]):
+    x = x + dt * M.dispatch(c, [x, -x], strategy="auto")
+    c = M.select(x > 0.0, kind, kind + 1)
+
+
+@kernel(steps=1)
+def by_mask(dt: Param, kind: Index, terminated: Terminated, x: Mutable[Scalar]):
+    sel = M.select(terminated, kind, kind + 1)
+    x = x + dt * M.dispatch(sel, [x, -x])
+    terminated = x > 3.0
+
+
+@kernel(steps=1)
+def writes_kind(dt: Param, kind: Mutable[Index]):
+    kind = kind + 1
+
+
+def test_a_selector_reading_only_inputs_is_static():
+    (d,) = by_input.walk.dispatches
+    assert d.static_selector is True
+    assert ("per_sample", "kind") in d.selector_reads
+
+
+@pytest.mark.parametrize("k", [by_state, by_mask], ids=lambda k: k.name)
+def test_a_selector_reading_a_plane_the_kernel_writes_is_not(k):
+    (d,) = k.walk.dispatches
+    assert d.static_selector is False
+
+
+def test_the_step_scoped_verdict_sees_another_kernel_s_writes():
+    assert static_selectors([by_input]) == {"by_input": {"dispatch0": True}}
+    got = static_selectors([by_input, writes_kind])
+    assert got["by_input"] == {"dispatch0": False}
+    assert got["writes_kind"] == {}
+
+
+@kernel(steps=1)
+def by_uniform(dt: Param, kind: Index, x: Mutable[Scalar]):
+    x = x + dt * M.dispatch(M.select(dt > 0.5, kind, kind + 1), [x, -x])
+
+
+def test_a_uniform_the_selector_reads_is_listed_and_stays_static():
+    """A host-set uniform is not state (the class it picks changes only on a
+    rebind, which the launching runtime watches by these names): listed in
+    ``selector_reads``, and the group stays static."""
+    (d,) = by_uniform.walk.dispatches
+    assert ("uniform", "dt") in d.selector_reads
+    assert d.static_selector is True
+    (entry,) = _dispatches(by_uniform.walk.dispatches)
+    assert ["uniform", "dt"] in entry["selector_reads"]

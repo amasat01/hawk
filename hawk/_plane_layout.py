@@ -6,7 +6,9 @@ view, single sample), and the refusal texts for the rest."""
 
 from __future__ import annotations
 
-from .ir import HawkError
+from dataclasses import dataclass
+
+from ._errors import HawkError
 
 # -- Sample-major planes. A per-sample plane of declared width w >= 2 is
 # component-major, (w, L); most array code stores vectors sample-major,
@@ -125,14 +127,16 @@ def plane_layout(mv: memoryview, width: int, axis=None, layout=None) -> str:
     return "view" if mv.f_contiguous else "copy"
 
 
+@dataclass(frozen=True)
 class LayoutChoice:
     """One call's layout choices: the per-call ``layout`` and the per-array
     markers. :meth:`of` classifies one bound plane under them."""
 
-    __slots__ = ("layout", "axes")
+    layout: str | None = None
+    axes: dict | None = None
 
-    def __init__(self, layout=None, axes=None):
-        self.layout, self.axes = layout, axes or {}
+    def __post_init__(self):
+        object.__setattr__(self, "axes", self.axes or {})
 
     def of(self, name: str, mv: memoryview, width: int) -> str:
         return plane_layout(mv, width, self.axes.get(name), self.layout)

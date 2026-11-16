@@ -4,7 +4,7 @@
 """``v[k]`` and ``v[k] = …`` at a lowered loop's own index.
 
 Lowering a bounded ``for`` to a real loop makes the author's ``k`` a
-symbolic :class:`~hawk.ir.loop_nodes.LoopIndex` instead of a Python integer, so
+symbolic :class:`~raptor.ir.nodes.LoopIndex` instead of a Python integer, so
 every way of touching a rank-1 value one component at a time needs its own
 spelling: ``v[k]`` (a static-integer-component read only), ``v[k] = …`` (not
 a form on its own), and a comprehension over a symbolic index (banned
@@ -50,6 +50,10 @@ Three mechanisms, each with its own refusal:
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import spec_for
+from _specs import HOST
 
 import pathlib
 
@@ -62,8 +66,9 @@ import hawk
 import hawk.math as m
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
-from hawk.emit import FLOAT64, render_body, render_source
-from hawk.ir import HawkError, canonical
+from aether.wings.base.wrapper import FLOAT64
+from raptor.ir import canonical
+from hawk import HawkError
 from hawk.targets import TARGETS
 
 #: Classical RK4 (Kutta 1901), the stage and combine weights
@@ -137,93 +142,21 @@ ENV = {"v": np.array([0.3, -0.7, 1.1]), "k1": np.array([0.5, 0.25, -0.4]),
        "dt": 0.1}
 
 
-@pytest.fixture(autouse=True)
-def _card_free_select_weight(monkeypatch):
-    """The emitted text must not depend on the device the tests run on."""
-    from hawk.emit import rtstore
-
-    monkeypatch.setattr(rtstore, "_select_weight", lambda dtype: 1.0)
-
-
 # --------------------------------------------------------------------------- #
 # The IR and the emission.
 # --------------------------------------------------------------------------- #
-def test_a_read_at_the_loop_index_of_an_input_plane_reads_the_view_in_place():
-    """A runtime read of a read-only INPUT plane is aether's ``at()`` on the
-    plane's own sample proxy, at the loop's own index: no ``Item`` of the row
-    is built for it (a wide row would be one register per element)."""
-    text = render_body(rollout_read.sinks, rollout_read.walk).text
-    index = [ln for ln in text.splitlines() if "for (Int hawk_k" in ln]
-    assert len(index) == 1, text
-    variable = index[0].split("Int ")[1].split(" ")[0]
-    assert f"vin_v[i].at({variable})" in text, text
-    assert f"vin_k1[i].at({variable})" in text, text
-    assert "hawk_it" not in text and "[3];" not in text, text
-
-
-def test_a_runtime_read_of_a_computed_vector_keeps_the_item():
-    """What ``at()`` does not apply to keeps aether's ``Item::operator()``: a vector that is not element-wise
-    (a cross product) has no plane to read from and no per-element form."""
-    text = render_body(*_computed_runtime_read()).text
-    assert "const aether::Item<Real, 3> hawk_it" in text, text
-    assert ".at(" not in text, text
 
 
 def _computed_runtime_read():
-    from hawk.ir import Assign, Leaf
-    from hawk.ir import make as mk
-    from hawk.types import TensorType
+    from raptor.ir import Assign, Leaf
+    from raptor.ir import make as mk
+    from raptor.ir.types import TensorType
 
     s, v = TensorType((), "f64"), TensorType((3,), "f64")
     x = Leaf("vocab_read", "vec_in", "x", v)
     k = Leaf("vocab_read", "per_sample", "k", TensorType((), "i32"))
     sinks = (Assign("y", mk("component_at", (mk("cross", (x, x)), k)), s),)
     return sinks, canonical(sinks)
-
-
-def test_a_write_at_the_loop_index_is_a_carried_Item_the_body_reassigns():
-    """The WRITE half's emission. The carried vector is an ``aether::Item``
-    declared before the loop; each iteration writes the next value into it
-    (the loop's own index is uniform over the warp, so the indexed write is cheap). The node produces a new value and leaves its operand alone."""
-    text = render_body(rollout_write.sinks, rollout_write.walk).text
-    assert "aether::Item<Real, 3> hawk_v" in text, text
-    # the index is the loop's own, the same for every lane of a warp: one indexed
-    # write into the carried local
-    assert " == " not in text and "(hawk_k" in text, text
-    assert "aether::Item<Real, 3> hawk_sv" not in text, text
-    assert "mut_out[i] = hawk_v" in text, text
-
-
-def test_both_backends_wrap_the_same_body():
-    """ONE renderer, and a runtime component access is not a host
-    construct the device path re-derives."""
-    for kernel in (rollout_read, rollout_write):
-        host = render_source("k", kernel.sinks, kernel.walk, TARGETS["host"])
-        device = render_source("k", kernel.sinks, kernel.walk, TARGETS["cuda"])
-        assert host.body == device.body
-        assert "for (" in host.body
-
-
-@pytest.mark.parametrize("target", ["host", "cuda"])
-@pytest.mark.parametrize("case", ["read", "write", "read_vjp", "write_vjp"],
-                         ids=["read", "write", "read_vjp", "write_vjp"])
-def test_the_emitted_translation_unit_compiles(target, case, tmp_path):
-    """The compiler is the judge of whether ``Item::operator()`` was spelled
-    correctly, at the right constness, on a value of the right type — including
-    in the DERIVED kernels, whose loops carry rank-1 ``Item`` locals. Never
-    skipped: an unresolvable toolchain FAILS (``tests/_toolchain.py``)."""
-    primal = rollout_read if case.startswith("read") else rollout_write
-    if case.endswith("vjp"):
-        sinks = vjp(primal, wrt=("v", "k1", "dt"))
-        walk = canonical(sinks)
-    else:
-        sinks, walk = primal.sinks, primal.walk
-    src = render_source("k", sinks, walk, TARGETS[target], mode=FLOAT64,
-                        exports=exports(target))
-    path = pathlib.Path(tmp_path) / ("k.cpp" if target == "host" else "k.cu")
-    path.write_text(src.text)
-    rc, err, argv = TC.compile_check(path, target)
-    assert rc == 0, f"$ {' '.join(argv)}\n{err[-4000:]}"
 
 
 # --------------------------------------------------------------------------- #

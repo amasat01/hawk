@@ -20,9 +20,9 @@ import numpy as np
 from _eval import evaluate
 
 from hawk.diff import jvp, vjp
-from hawk.ir import AccumWrite, Assign, At, Const, Leaf, canonical
-from hawk.ir import make as mk
-from hawk.types import TensorType
+from raptor.ir import AccumWrite, Assign, At, Const, Leaf, canonical
+from raptor.ir import make as mk
+from raptor.ir.types import TensorType
 
 F64 = TensorType((), "f64")
 I32 = TensorType((), "i32")

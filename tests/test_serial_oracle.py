@@ -218,6 +218,42 @@ def test_the_oracle_runs_a_sub_range_when_asked(built):
     )
 
 
+@pytest.mark.parametrize("mode", ("float64", "float32"))
+@pytest.mark.parametrize("name", ["drag", "scatter"])
+def test_a_partition_writes_its_window_alone_on_the_host(name, mode, tmp_path, cache_dir):
+    """Host arm of the old two-sided row: a call over ``[base, base+count)`` writes that window and
+    no sample outside it (``drag``: per-sample output; ``scatter``: only the lanes the window's
+    samples target)."""
+    import _kernels as KK
+    from hawk.artifact import build_bundle
+
+    n, base, count = 8, 2, 3
+    kernel = {"drag": KK.drag, "scatter": D.scatter}[name]
+    bundle = build_bundle([kernel], tmp_path / name, mode=mode, targets=("host",),
+                          host_profile="native", cache_dir=cache_dir)
+    real = np.float64 if mode == "float64" else np.float32
+    rng = np.random.default_rng(20261016)
+    loaded = O.load(bundle.directory, name, sidecar_of(bundle, name))
+    if name == "drag":
+        values = {"state": rng.uniform(-2.0, 2.0, (3, n)).astype(real),
+                  "rho": float(real(rng.uniform(-2.0, 2.0))), "out": np.zeros((3, n), dtype=real)}
+    else:
+        values = {"x": rng.uniform(-2.0, 2.0, n).astype(real),
+                  "lane": rng.integers(0, n, n).astype(np.int32), "acc": np.zeros(n, dtype=real)}
+    O.runtime.run(loaded, base=base, count=count, n_samples=n, **values)
+    if name == "drag":
+        out = values["out"]
+        assert not out[:, :base].any() and not out[:, base + count:].any(), (
+            f"drag [{mode}]: a sample outside [{base}, {base + count}) was written")
+        assert out[:, base:base + count].all()
+    else:
+        hit = set(values["lane"][base:base + count].tolist())
+        idle = [j for j in range(n) if j not in hit]
+        assert not values["acc"][idle].any(), (
+            f"scatter [{mode}]: a lane no sample of [{base}, {base + count}) targets was written")
+        assert values["acc"][sorted(hit)].any()
+
+
 def test_the_comparison_can_detect_a_body_that_is_not_partition_invariant(
         built, tmp_path, cache_dir):
     """NON-VACUITY (a gate builds its own inputs). The planted artifact divides

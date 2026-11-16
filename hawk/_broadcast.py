@@ -7,15 +7,15 @@ Its shape is any that broadcasts, right-aligned, against ``(head, *lane shape)``
 (``head`` is a ``Vector[w]``'s component axis, which stays exact): a scalar, axes
 of size 1, fewer axes. NumPy's rule. The input binds as the CALLER's buffer,
 compact and never copied: the pattern (which lane axes it varies along) picks a
-variant of the kernel in which the per-lane read is a lookup at those axes
+twin of the kernel in which the per-lane read is a lookup at those axes
 (``Table["a", "c"]``, or a flat table when the runtime axis is kept) or, when it
-varies along none, a uniform. One variant per pattern, memoised on the kernel;
+varies along none, a uniform. One twin per pattern, memoised on the kernel;
 the exact shape runs the kernel untouched.
 
 Both hawk doors classify with :func:`kept_axes`. :func:`route` is
-``Kernel.__call__``'s: it picks the variant and compacts the arguments.
+``Kernel.__call__``'s: it picks the twin and compacts the arguments.
 ``hawk.runtime.run`` binds a loaded artifact, which is one kernel's, so it
-refuses a broadcast shape with the same words and names the variant to build.
+refuses a broadcast shape with the same words and names the twin to build.
 Written, accumulated and mask planes are exact: only a plane the kernel reads
 broadcasts."""
 
@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from math import prod
 
-from .ir import HawkError
+from ._errors import HawkError
 
 #: The roles of a read-only per-lane input; the ones that broadcast.
 READ_ROLES = ("per_sample", "vec_in", "mat_in")
@@ -133,8 +133,8 @@ def dense_only(name: str, shape: tuple, kept: tuple, head: tuple, axes) -> str:
     return (f"argument {name!r} has shape {shape}, which broadcasts against "
             f"{lane_text(head, axes)} along {pattern_text(kept, axes)} only; this "
             "artifact reads it per lane. Call the kernel (k(...)), which binds the "
-            "broadcast as given, or build and load the variant "
-            "hawk._broadcast.variant(k, {name: kept})")
+            "broadcast as given, or build and load the twin "
+            "hawk._broadcast.twin(k, {name: kept})")
 
 
 def check_rebind(name: str, held: tuple, got: tuple | None, axes) -> None:
@@ -150,7 +150,7 @@ def check_rebind(name: str, held: tuple, got: tuple | None, axes) -> None:
 
 def guard_rebind(kernel, name: str, bound, value) -> None:
     """The check of a plan rebinding plane ``name`` of the broadcast ``kernel``
-    (a variant): a rebound plane keeps the shape it was bound with."""
+    (a twin): a rebound plane keeps the shape it was bound with."""
     old, new = shape_of(bound), shape_of(value)
     if old == new or new is None:
         return
@@ -165,29 +165,29 @@ def guard_rebind(kernel, name: str, bound, value) -> None:
                     f"rebound with shape {new}")
 
 
-# -- the variant: the kernel with the per-lane read of a plane rewritten ----- #
+# -- the twin: the kernel with the per-lane read of a plane rewritten ----- #
 
 
-def variant(kernel, patterns: dict, reverse: tuple = ()):
+def twin(kernel, patterns: dict, reverse: tuple = ()):
     """``kernel`` with each plane of ``patterns`` (``{name: kept axes}``) read at
-    the axes it varies along; the memoised variant of this pattern. A plane named
+    the axes it varies along; the memoised twin of this pattern. A plane named
     in ``reverse`` (to differentiate with respect to) that varies along no axis
     is read from a one-cell table rather than as a uniform, so its gradient is
     the sum over every lane."""
     key = (tuple(sorted(patterns.items())), tuple(sorted(reverse)))
     with kernel._lock:
-        held = kernel._variants.get(key)
+        held = kernel._twins.get(key)
         if held is None:
-            held = kernel._variants[key] = _build(kernel, dict(patterns), reverse)
+            held = kernel._twins[key] = _build(kernel, dict(patterns), reverse)
     return held
 
 
 def _build(kernel, patterns: dict, reverse: tuple):
     from .diff.tape import _reachable
-    from .ir.nodes import At
+    from raptor.ir.nodes import At
     from .trace.kernel import Kernel
     from .trace.steps import default_step, default_steps
-    from .ir import Leaf
+    from raptor.ir import Leaf
 
     step = default_step(kernel)
     if step is not kernel and step.name != kernel.name:
@@ -228,9 +228,9 @@ def _index(kept: tuple, axes):
     """The flat index of a lane in the compact plane of pattern ``kept``: row-major
     over the kept axes, the last fastest (a runtime axis is never in the C), ``0``
     when it varies along none."""
-    from .ir import Const
+    from raptor.ir import Const
     from .trace.lane_axes import LaneAxes
-    from .types import TensorType
+    from raptor.ir.types import TensorType
 
     held = [i for i, k in enumerate(kept) if k]
     if not held:
@@ -248,11 +248,11 @@ def _read(name: str, ttype, kept: tuple, axes, cell: bool) -> tuple:
     caller's compact buffer: a uniform when it varies along no lane axis (a
     one-cell table when ``cell``), else a lookup. A flat table when it varies along the runtime axis (a runtime
     extent is never in the C), else a table named by its kept axes."""
-    from .ir import Leaf, make
+    from raptor.ir import Leaf, make
     from .trace.decl import Plane, _axes
     from .trace.lane_axes import LaneAxes
     from .trace.value import TableRef
-    from .types import TensorType
+    from raptor.ir.types import TensorType
 
     width = ttype.shape[0] if ttype.shape else 0
     element = TensorType((), ttype.dtype)
@@ -289,17 +289,16 @@ def _read(name: str, ttype, kept: tuple, axes, cell: bool) -> tuple:
 
 def _swap(sinks, mapping: dict) -> tuple:
     """``sinks`` with the nodes in ``mapping`` (by ``id``) replaced, in value and key."""
-    from .diff.tape import _resink
-    from .ir import AccumWrite
-    from .ir.walk import substitute
+    from raptor.ir.cells import with_value
+    from raptor.ir import AccumWrite
+    from raptor.ir.walk import substitute
 
     roots = substitute(tuple(o for s in sinks for o in s.operands), mapping)
     out, at = [], 0
     for s in sinks:
         part = roots[at:at + len(s.operands)]
         at += len(s.operands)
-        out.append(AccumWrite(s.name, part[0], part[1] if len(part) > 1 else None, s.ttype, s.policy)
-                   if isinstance(s, AccumWrite) else _resink(s, part[0]))
+        out.append(s.rebuilt(part, {}) if isinstance(s, AccumWrite) else with_value(s, part[0]))
     return tuple(out)
 
 
@@ -309,7 +308,7 @@ def _swap(sinks, mapping: dict) -> tuple:
 def route(kernel, args: tuple, kwargs: dict) -> tuple:
     """``(kernel to run, args, kwargs)`` for a call: a kernel that declares no
     ``Grid``, or a call whose planes are all the exact shape, is returned as it
-    came; otherwise the variant of its pattern, with each broadcast plane
+    came; otherwise the twin of its pattern, with each broadcast plane
     compacted to the caller's buffer."""
     axes = kernel.lane_space
     if axes[0][0] is None:
@@ -337,15 +336,15 @@ def route(kernel, args: tuple, kwargs: dict) -> tuple:
                 patterns[name] = kept
     if not patterns:
         return kernel, args, kwargs
-    run = variant(kernel, patterns)
+    run = twin(kernel, patterns)
     return run, (), {n: compact(n, v, patterns[n], heads[n], where) if n in patterns else v
                      for n, v in given.items()}
 
 
 def _route_derived(kernel, source, args: tuple, kwargs: dict) -> tuple:
     """:func:`route` for a derivative (``vjp``/``jvp``) of ``source``: broadcast
-    inputs are those of ``source``, so the variant is the derivative OF the
-    primal's variant (the reverse scatters into the compact shape, summing the
+    inputs are those of ``source``, so the twin is the derivative OF the
+    primal's twin (the reverse scatters into the compact shape, summing the
     axes the input does not vary along, compensated). A tangent takes its
     input's pattern; an omitted gradient is allocated in the input's own shape."""
     from .diff.transform import ADJOINT_PREFIX, TANGENT_PREFIX
@@ -369,11 +368,11 @@ def _route_derived(kernel, source, args: tuple, kwargs: dict) -> tuple:
     reverse = tuple(patterns) if derived.kind == "vjp" else ()
     key = ("derived", tuple(sorted(patterns.items())))
     with kernel._lock:
-        run = kernel._variants.get(key)
+        run = kernel._twins.get(key)
         if run is None:
-            run = kernel._variants[key] = type(kernel)(
-                kernel.name, derived.rebuild(variant(source, patterns, reverse)))
-            run.broadcast = dict(patterns)      # a variant: eagle's plan of it does not route again
+            run = kernel._twins[key] = type(kernel)(
+                kernel.name, derived.rebuild(twin(source, patterns, reverse)))
+            run.broadcast = dict(patterns)      # a twin: eagle's plan of it does not route again
     given = dict(kwargs)
     for name, kept in patterns.items():
         given[name] = compact(name, kwargs[name], kept, heads[name], where, cell=name in reverse)
@@ -407,7 +406,7 @@ def _zeros(like, shape: tuple):
 
 
 def compact(name: str, value, kept: tuple, head: tuple, where: str, cell: bool = False):
-    """The caller's buffer as the variant binds it: a scalar for a uniform, else
+    """The caller's buffer as the twin binds it: a scalar for a uniform, else
     the same memory with the size-1 axes dropped (flat when it varies along the
     runtime axis). A buffer that is not C-contiguous would need a copy: refused.
     A ``cell`` (the plane a reverse sums into) is a one-cell array, not a scalar."""

@@ -21,8 +21,9 @@ from __future__ import annotations
 import pytest
 from _dags import F64, V3
 
-from hawk.ir import Assign, HawkError, Leaf, Op, canonical
-from hawk.types import TensorType
+from raptor.ir import Assign, Leaf, Op, canonical
+from raptor.errors import RaptorError as HawkError
+from raptor.ir.types import TensorType
 
 
 def _collision(a: TensorType, b: TensorType):

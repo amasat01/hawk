@@ -14,7 +14,8 @@ against the same sealed payload goes through
 
 from __future__ import annotations
 
-from . import nvrtc
+import functools
+
 from . import payload as _payload_module
 from .cache import (
     Cache,
@@ -32,35 +33,42 @@ from .drivers import (
     compile_source,
     publish,
 )
-from .nvrtc import (
-    DeviceImage,
-    cubin,
-    cubin_available,
-    device,
-)
 from .payload import current_payload
 from .toolchain import (
-    HOST_PROFILES,
     OPT_LEVELS,
     aether_include,
     compiler_identity,
-    device_compiler,
-    device_compiler_kind,
     eagle_include,
-    host_codegen_flags,
-    host_compiler,
-    host_flags,
-    host_profile,
     opt_level,
 )
 
-__all__ = ["Cache", "CompileOptions", "DeviceImage", "HOST_PROFILES",
-           "OPT_LEVELS", "aether_include", "cache_stats",
-           "compile_source", "compiler_identity", "cubin", "cubin_available",
-           "current_payload", "default_cache_dir", "device", "device_compiler",
-           "device_compiler_kind", "digest_file", "eagle_include",
-           "host_codegen_flags", "host_compiler", "host_flags", "host_profile",
-           "lookup_key", "nvrtc", "opt_level", "publish", "reset_cache_stats"]
+#: Doors that are a device backend's names: ``hawk.compile.<door>`` is that backend's ``api`` attribute.
+_CUDA_DOORS = ("nvrtc", "DeviceImage", "cubin", "cubin_available", "device", "device_compiler", "device_compiler_kind")
+
+__all__ = ["Cache", "CompileOptions", "OPT_LEVELS", "aether_include", "cache_stats",
+           "compile_source", "compiler_identity",
+           "current_payload", "default_cache_dir", "digest_file", "eagle_include",
+           "lookup_key", "opt_level", "publish", "reset_cache_stats", *_CUDA_DOORS]
+
+
+def __getattr__(name):
+    if name in _CUDA_DOORS:
+        from ..backends import need_device
+
+        door = getattr(need_device().api, name)
+        return _served(door) if name in ("cubin", "device") else door
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _served(door):
+    """``door`` (a device compile) serving this process's sealed payload (:func:`current_payload`) unless it is given headers."""
+    @functools.wraps(door)
+    def call(*args, **kwargs):
+        if kwargs.get("headers") is None:
+            kwargs["headers"] = lambda: current_payload().device_headers
+        return door(*args, **kwargs)
+
+    return call
 
 
 def _reset_artifact_memo() -> None:

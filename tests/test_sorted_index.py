@@ -19,7 +19,7 @@ import hawk
 from hawk import HawkError, Index, Mutable, Scalar, Sorted
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk.ir import Leaf
+from raptor.ir import Leaf
 from hawk.trace.decl import Plane
 
 SEGMENTS = 5

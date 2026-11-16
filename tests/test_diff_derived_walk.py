@@ -9,7 +9,7 @@ transforms synthesise, because a derivative that depended on how the primal
 happened to be CONSTRUCTED (a shared subexpression versus the same expression
 written twice) would hash differently on every re-trace and defeat the content
 cache the whole pipeline is keyed on. Both transforms therefore traverse the
-walk's own node sequence (``hawk.ir.walk.canonical_nodes``), so structurally
+walk's own node sequence (``raptor.ir.walk.canonical_nodes``), so structurally
 equal primals -- ``tests/_dags.drag_dag()`` and its permuted twin, which 
  already pins to one primal digest -- derive to ONE digest and ONE
 ``arg_spec``. The last two tests add own reading of "the derived IR goes
@@ -30,7 +30,7 @@ from _dags import drag_dag
 
 from hawk import Mutable, Param, Scalar, Vector, kernel
 from hawk.diff import jvp, vjp
-from hawk.ir import canonical
+from raptor.ir import canonical
 from hawk.math import dot, norm
 
 TRANSFORMS = [("vjp", vjp), ("jvp", jvp)]
@@ -75,11 +75,10 @@ def test_the_derived_arg_spec_is_a_superset_of_the_primal_read_side(name, transf
 
 def test_the_derived_ir_of_a_quantity_kernel_keeps_the_whole_span():
     from hawk import Quantity
-    from hawk.types import Wire
+    from raptor.ir.types import Wire
 
     state = Quantity(slug="sc", name="state",
-                     wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))],
-                     reconstruct=lambda p, v: (p, v))
+                     wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))])
 
     @kernel
     def energy(sc: state, out: Mutable[Scalar]):

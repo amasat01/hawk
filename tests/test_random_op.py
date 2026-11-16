@@ -13,7 +13,7 @@ Related coverage lives beside the harness it extends: the NVRTC route in
 ``test_math_namespace.py``.
 
 The device rows bind ``seed``/``counter`` as per-sample i32 planes (bound as
-int64 arrays -- `hawk.emit.render.element_spelling` collapses BOTH i32 and
+int64 arrays -- `aether.wings.base.render.element_spelling` collapses BOTH i32 and
 i64 to the SAME C++ ``Int`` = ``long long``); the by-value ``uniform`` form is
 covered separately
 (``test_uniform_by_value_integer_seed_crosses_the_launch_intact``). That
@@ -36,16 +36,16 @@ from _eval import evaluate
 from conftest import sidecar_of
 
 import hawk
-import hawk.ir
 import hawk.math as m
 import hawk.trace.decl as _decl
 from hawk.artifact import build, build_bundle
 from hawk.diff import jvp, vjp
-from hawk.ir import Assign, HawkError, Leaf
-from hawk.ir import make as mk
-from hawk.ir.ops import OP_KINDS, RANDOM_OPS
-from hawk.ir.walk import canonical_nodes
-from hawk.types import TensorType
+from raptor.ir import Assign, Leaf
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import make as mk
+from raptor.ir.ops import OP_KINDS, RANDOM_OPS
+from raptor.ir.walk import canonical_nodes
+from raptor.ir.types import TensorType
 
 F64 = TensorType((), "f64")
 I32 = TensorType((), "i32")
@@ -109,7 +109,7 @@ def draw_poisson1(seed: hawk.Index[np.int64], counter: hawk.Index[np.int64], y: 
 #: role=uniform (a by-value scalar), dtype=i32 -- the ONE way to declare
 #: an integer "uniform" wire (``hawk.Param`` is fixed to f64 ``Scalar``). One
 #: by-value row binds the seed through it; the other kernels bind seed/counter
-#: as per-sample PLANES (a bare ``hawk.Index``/``hawk.ir.TensorType((), "i32")``
+#: as per-sample PLANES (a bare ``hawk.Index``/``raptor.ir.TensorType((), "i32")``
 #: annotation) because per-lane counters are the bootstrap's own shape.
 _UniformIndex = _decl.Plane("uniform", hawk.Index)
 
@@ -183,7 +183,7 @@ def test_math_random_uniform_refuses_a_literal_float_seed_by_name():
 # --------------------------------------------------------------------------- #
 # helpers shared below: bind seed/counter as per-sample INT64 planes
 # (the C++ side is `Int` = `long long` regardless of the IR's i32/i64 dtype,
-# `hawk.emit.render.element_spelling`) and run the compiled artifact.
+# `aether.wings.base.render.element_spelling`) and run the compiled artifact.
 # --------------------------------------------------------------------------- #
 def _plane(n: int, value) -> np.ndarray:
     if np.ndim(value) == 0:
@@ -261,7 +261,7 @@ def _bands(n: int):
     with ``true_var=1/12``: ``sqrt(2/n)/12 = sqrt(1/(180n))`` less a factor);
     ``normal`` mean band ``3/sqrt(n)``, var band ``3*sqrt(2/n)`` (the same
     3-sigma rule at ``true_var=1``); both KS bands are the same asymptotic
-    Kolmogorov bound ``1.63/sqrt(n)``."""
+    KS bound ``1.63/sqrt(n)``."""
     ks = 1.63 / np.sqrt(n)
     return (3.0 / np.sqrt(12 * n), 3.0 * np.sqrt(1.0 / (180 * n)), ks,
            3.0 / np.sqrt(n), 3.0 * np.sqrt(2.0 / n), ks)

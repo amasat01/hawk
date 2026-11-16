@@ -56,7 +56,7 @@ from hawk.trace import Index, Mutable, Param, Scalar, kernel, raw_device
 REQUIRED_ACCESS_CLASSES = ("sample_local", "cross_sample_read", "cross_sample_write")
 
 #: The shifted absolute read, spelled in the two identifiers BOTH backends bind:
-#: the plane's own view (``psc_<name>``, ``hawk.emit.render.binding_name``) and
+#: the plane's own view (``psc_<name>``, ``aether.wings.base.render.binding_name``) and
 #: the loop's global index ``hawk_i`` / the triple's ``nSamples``, which the host
 #: and device prologues each define. Same index expression as
 #: ``eagle/tests/fixtures/host_plugin_execv2.cpp``'s ``exec_gather``.

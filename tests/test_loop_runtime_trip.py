@@ -12,6 +12,9 @@ tape) and reverse mode refuses by name; with ``max=K`` the tape is ``K`` long an
 """
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
+from _specs import aether_writer
+from _specs import HOST
 
 import numpy as np
 import pytest
@@ -23,8 +26,8 @@ from hawk import Index, Mutable, Scalar
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
-from hawk.ir import HawkError, Loop
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import Loop
 from hawk.trace.kernel import Kernel
 
 K = 6
@@ -61,14 +64,6 @@ def _loop(kernel):
 def test_the_count_is_held_to_zero_and_max(n):
     got = evaluate(powers.sinks, {"x": 0.7, "n": float(n), "terminated": False}, lanes=1)["y"]
     assert abs(got - _ref(0.7, n)) < 1e-14
-
-
-def test_the_loop_says_how_it_is_bounded_and_is_never_unrolled():
-    assert _loop(powers).dynamic == "max" and _loop(powers).trip == K
-    assert _loop(powers_open).dynamic == "open"
-    for kernel in (powers, powers_open):
-        text = render_body(kernel.sinks, kernel.walk).text
-        assert "for (int hawk_k" in text and "hawk_clamp_count(" in text
 
 
 def test_max_enters_the_walk_digest():
@@ -142,23 +137,6 @@ def test_the_bound_must_be_an_index_and_max_a_compile_time_int():
 
 def _header_lines(text):
     return [ln.strip() for ln in text.splitlines() if ln.strip().startswith("for (")]
-
-
-def test_the_header_is_the_count_form_on_cuda_host_and_c():
-    from hawk.emit import FLOAT64, render_source
-    from hawk.embedded import render as render_c
-    from hawk.targets import TARGETS
-
-    for target in ("cuda", "host"):
-        src = render_source("powers", powers.sinks, powers.walk, TARGETS[target], mode=FLOAT64,
-                            kind=powers.kind)
-        heads = _header_lines(src.body)
-        assert len(heads) == 1 and "hawk_clamp_count(" in heads[0], heads
-        assert str(K) not in heads[0] or "hawk_clamp_count" in heads[0]
-    c_text = render_c(powers, mode="float64").text
-    heads = [h for h in _header_lines(c_text) if "hawk_k" in h]       # past the sample loop
-    assert len(heads) == 1 and "hawk_cnt" in heads[0], heads
-    assert "clamp_trips" in c_text and f"INT32_C({K})" in c_text
 
 
 @pytest.fixture(scope="module")

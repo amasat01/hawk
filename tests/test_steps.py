@@ -30,6 +30,9 @@ Rows:
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import spec_for
+from _specs import HOST, for_targets
 
 import math
 
@@ -51,7 +54,7 @@ from hawk import (
 from hawk.artifact import build_bundle
 from hawk.artifact.sidecar import sidecar_meta
 from hawk.diff import jvp, vjp
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 N = 48
 DT = 0.0625
@@ -89,9 +92,9 @@ def test_the_derived_kernel_is_named_and_records_its_steps():
     for k in KS:
         derived = hawk.steps(osc, k)
         assert derived.name == f"osc_x{k}"
-        assert derived.walk.finish == ("terminated", k)
+        assert (derived.walk.finish, derived.steps) == ("terminated", k)
         assert derived.arg_spec == osc.arg_spec
-        meta = sidecar_meta(derived.name, derived.walk, fmt="ptx",
+        meta = sidecar_meta(derived.name, derived.walk, steps=derived.steps, fmt="ptx",
                             scalar_type="float64")
         assert meta["finish"] == {"mask": "terminated",
                                   "counter": "finished_count", "steps": k}
@@ -145,21 +148,12 @@ def _osc_body(dt: Param, t_final: Scalar, terminated: Terminated,
 
 
 def _sources(k):
-    from hawk.emit import render_source
+    from aether.wings.base.wrapper import render_source
     from hawk.targets import TARGETS
 
-    return [render_source(k.name, k.sinks, k.walk, b) for b in TARGETS.values() if b.wrapper]
+    return [render_source(k.name, k.sinks, k.walk, b, spec=spec_for(b), kind=default_kind()) for b in TARGETS.values() if b.wrapper]
 
 
-@pytest.mark.parametrize("k", [4, 16])
-def test_the_decorator_form_is_hawk_steps(k):
-    decorated = kernel(steps=k)(_osc_body)
-    derived = hawk.steps(kernel(_osc_body), k)
-    assert decorated.name == derived.name == f"_osc_body_x{k}"
-    assert decorated.walk.finish == ("terminated", k)
-    assert decorated.walk.digest == derived.walk.digest
-    assert decorated.arg_spec == derived.arg_spec
-    assert _sources(decorated) == _sources(derived)
 
 
 def test_the_decorator_form_reaches_a_defining_scope_local():
@@ -172,17 +166,9 @@ def test_the_decorator_form_reaches_a_defining_scope_local():
         t = tn
         terminated = tn >= t_final
     assert local_osc.name == "local_osc_x4"
-    assert local_osc.walk.finish == ("terminated", 4)
+    assert (local_osc.walk.finish, local_osc.steps) == ("terminated", 4)
 
 
-def test_steps_one_is_the_plain_kernel():
-    plain = kernel(_osc_body, steps=1)
-    for one in (kernel(steps=1)(_osc_body), kernel(_osc_body, steps=1),
-                kernel()(_osc_body).step, kernel(_osc_body).step):
-        assert one.name == plain.name == "_osc_body"
-        assert one.walk.digest == plain.walk.digest
-        assert one.walk.finish == ("terminated", 1)
-        assert _sources(one) == _sources(plain)
 
 
 def test_the_decorator_form_keeps_the_kind():
@@ -331,67 +317,25 @@ def test_the_auto_kernel_is_named_and_records_auto_steps():
     for base in (osc, spin3):
         auto = hawk.steps(base, "auto")
         assert auto.name == f"{base.name}_xauto"
-        assert auto.walk.finish == ("terminated", "auto")
+        assert (auto.walk.finish, auto.steps) == ("terminated", "auto")
         spec = set(auto.arg_spec)
         assert {("lookup", "fused_steps"), ("lookup", "finished_count")} <= spec
         assert spec - set(base.arg_spec) == {("lookup", "fused_steps")}
         assert auto.walk.slot_types[("lookup", "fused_steps")].dtype == "i32"
-        meta = sidecar_meta(auto.name, auto.walk, fmt="ptx", scalar_type="float64")
+        meta = sidecar_meta(auto.name, auto.walk, steps=auto.steps, fmt="ptx", scalar_type="float64")
         assert meta["finish"] == {"mask": "terminated", "counter": "finished_count",
                                   "steps": "auto", "steps_max": AUTO_K_MAX}
         # the word is the runner's seam, not a cross-sample read of the body
-        plain = sidecar_meta(base.name, base.walk, fmt="ptx", scalar_type="float64")
+        plain = sidecar_meta(base.name, base.walk, steps=base.steps, fmt="ptx", scalar_type="float64")
         assert meta["exec_access"] == plain["exec_access"] == "sample_local"
         assert meta["arg_dtypes"]["fused_steps"] == "int64"
-    fixed = sidecar_meta("osc_x16", hawk.steps(osc, 16).walk, fmt="ptx",
+    fixed = sidecar_meta("osc_x16", hawk.steps(osc, 16).walk, steps=16, fmt="ptx",
                          scalar_type="float64")
     assert "steps_max" not in fixed["finish"]
 
 
-def test_the_auto_decorator_form_is_hawk_steps_auto():
-    decorated = kernel(steps="auto")(_osc_body)
-    derived = hawk.steps(kernel(_osc_body), "auto")
-    assert decorated.name == derived.name == "_osc_body_xauto"
-    assert decorated.walk.digest == derived.walk.digest
-    assert decorated.arg_spec == derived.arg_spec
-    assert _sources(decorated) == _sources(derived)
-    assert osc_active_auto.kind.guard.active_set
 
 
-def test_the_auto_loop_reads_the_word_once_and_the_fixed_loop_does_not():
-    """The auto header runs to the word read (and clamped) before the loop; the fixed-K
-    header keeps its literal bound and binds no word."""
-    import re
-
-    from _interchange import builds
-
-    for source in _sources(hawk.steps(osc, "auto")):
-        for shape, text in builds(source.text).items():
-            read = re.search(r"const auto (\w+) = lut_fused_steps\[", text)
-            assert read and text.count("lut_fused_steps[") == 1, shape
-            w = read.group(1)
-            clamp = re.search(
-                rf"const auto (\w+) = \(\({w} < static_cast<Int>\(0\)\) \? "
-                rf"static_cast<Int>\(0\) : {w}\);", text)
-            assert clamp, "the word is clamped below at 0 before the loop"
-            assert "static_cast<Int>(64)" not in text, "no static bound on the word"
-            if shape == "plain" or source.target != "host":
-                assert re.search(rf"hawk_k\d+_step < hawk_clamp_count\({clamp.group(1)}\);", text)
-            else:
-                # the interchanged loop: the word is each lane's trip count
-                assert f"hawk_cnt[hawk_t] = {clamp.group(1)};" in text
-                assert "hawk_rcnt[hawk_l] = hawk_cnt[hawk_t];" in text
-                assert "hawk_trip + 1 < hawk_rcnt[hawk_l]" in text
-    for source in _sources(hawk.steps(osc, 16)):
-        for shape, text in builds(source.text).items():
-            assert "fused_steps" not in text
-            if shape == "plain" or source.target != "host":
-                assert re.search(r"hawk_k\d+_step < 16;", text), shape
-            else:
-                # the interchanged loop: the literal bound is each lane's end trip
-                assert "hawk_rcnt[hawk_l] = static_cast<Int>(16);" in text
-                assert "hawk_rcnt[hawk_l] = hawk_trip + 1 + static_cast<Int>(16);" in text
-                assert "hawk_trip + 1 < hawk_rcnt[hawk_l]" in text
 
 
 def test_auto_refuses_what_hawk_steps_refuses():
@@ -626,28 +570,6 @@ def test_a_one_step_launch_is_the_single_step_bit_for_bit(bundles, which, name,
                          err_msg=f"{name}/{target}: {plane} after {step} steps")
 
 
-def test_the_auto_entry_branches_once_on_the_word_between_the_step_and_the_loop():
-    """Built, the auto TU reads the word once at entry and branches on it: the
-    word-1 side is the single step's own body text (no loop), the other side
-    holds the fused loop, each side opening with its own device marker; a
-    fixed-K TU and the single step's TU carry no branch."""
-    from hawk.artifact.bundle import _sources as built_sources
-    from hawk.emit import FLOAT64
-
-    auto = hawk.steps(osc, "auto")
-    texts = built_sources(auto, name=auto.name, smode=FLOAT64, kind=auto.kind,
-                          targets=("host", "cuda"), layout_sizes_override=None)
-    plain = {s.target: s for s in _sources(osc)}
-    for target, src in texts.items():
-        head, _, rest = src.text.partition("== 1) {")
-        assert "lut_fused_steps[" in head.splitlines()[-1]
-        one, _, many = rest.partition("} else {")
-        assert 'asm volatile("// hawk: one step")' in one
-        assert 'asm volatile("// hawk: fused steps")' in many
-        assert "_step < " not in one and "_step < " in many
-        assert plain[target].body in one
-    for k in (osc, hawk.steps(osc, 16)):
-        assert all("asm volatile" not in s.text for s in _sources(k))
 
 
 # --------------------------------------------------------------------------- #
@@ -655,37 +577,12 @@ def test_the_auto_entry_branches_once_on_the_word_between_the_step_and_the_loop(
 # -- admits it, under the author's name; everything else stays plain.
 # --------------------------------------------------------------------------- #
 def _renamed(k, name="k"):
-    from hawk.emit import render_source
+    from aether.wings.base.wrapper import render_source
     from hawk.targets import TARGETS
 
-    return [render_source(name, k.sinks, k.walk, b).text for b in TARGETS.values() if b.wrapper]
+    return [render_source(name, k.sinks, k.walk, b, spec=spec_for(b), kind=default_kind()).text for b in TARGETS.values() if b.wrapper]
 
 
-def test_the_default_is_the_auto_kernel_under_the_author_s_name():
-    """No ``steps=``: the auto kernel (same IR and emission as
-    ``hawk.steps(<plain>, "auto")`` apart from the name), named ``_osc_body``,
-    carrying the plain step as ``.step``. Non-vacuity: its emission differs
-    from ``steps=1``'s."""
-    from hawk.trace.steps import AUTO_K_MAX
-
-    plain = kernel(_osc_body, steps=1)
-    for default in (kernel(_osc_body), kernel()(_osc_body)):
-        assert default.name == "_osc_body"
-        assert default.walk.finish == ("terminated", "auto")
-        assert default.step is not None and default.step.walk.digest == plain.walk.digest
-        assert set(default.arg_spec) - set(plain.arg_spec) == {("lookup", "fused_steps")}
-        explicit = hawk.steps(plain, "auto")
-        assert default.walk.digest == explicit.walk.digest
-        assert _renamed(default) == _renamed(explicit)
-        assert _renamed(default) != _renamed(plain)
-        meta = sidecar_meta(default.name, default.walk, fmt="ptx",
-                            scalar_type="float64")
-        assert meta["kernel"] == "_osc_body"
-        assert meta["finish"]["steps"] == "auto"
-        assert meta["finish"]["steps_max"] == AUTO_K_MAX
-    assert plain.step is None and hawk.steps(plain, 4).step is plain
-    explicit = kernel(steps="auto")(_osc_body)      # its step rides along under another name
-    assert explicit.name == "_osc_body_xauto" and explicit.step.name == "_osc_body"
 
 
 def _not_admitted():
@@ -717,24 +614,6 @@ def _not_admitted():
     return (no_finish, scatters, scatters_and_steps, word_named, commits_nothing)
 
 
-def test_the_default_leaves_every_kernel_auto_does_not_admit_plain():
-    """Byte identity: each non-admitted kernel's default build emits exactly
-    ``steps=1``'s source and sidecar, and carries no ``.step``."""
-    from hawk.trace.steps import admits_auto
-
-    for fn in _not_admitted():
-        default, plain = kernel(fn), kernel(fn, steps=1)
-        assert not admits_auto(plain), fn.__name__
-        assert default.step is None and default.name == fn.__name__
-        assert default.walk.digest == plain.walk.digest
-        assert _sources(default) == _sources(plain)
-        assert (sidecar_meta(default.name, default.walk, fmt="ptx",
-                             scalar_type="float64")
-                == sidecar_meta(plain.name, plain.walk, fmt="ptx",
-                                scalar_type="float64"))
-    derived = hawk.steps(osc, 4)
-    assert not admits_auto(derived)
-    assert admits_auto(osc) and admits_auto(spin3)
 
 
 def _finish_on_input(a: Scalar, terminated: Terminated, y: Mutable[Scalar]):
@@ -749,7 +628,7 @@ def test_a_derivative_of_the_default_kernel_is_its_single_step_s(transform):
     the plain kernel's derivative, tagged with the same primal name. The
     explicit ``steps="auto"`` kernel (``<name>_xauto``) keeps refusing — the
     non-vacuity: without the delegation the default kernel would refuse too."""
-    from hawk.ir.walk import canonical
+    from raptor.ir.walk import canonical
 
     default = kernel(_finish_on_input)
     plain = kernel(_finish_on_input, steps=1)

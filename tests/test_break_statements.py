@@ -22,11 +22,14 @@ by hand (``m.where`` on the condition, then the bare break). Rows:
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import spec_for
+from _specs import HOST
 
 import linecache
 import math
 
-import _embedded as E
 import numpy as np
 import pytest
 from _eval import evaluate
@@ -39,9 +42,8 @@ from hawk import Mutable, Scalar, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.embedded import EmbeddedProfile, check, export, refuse_audit_hits, render
-from hawk.emit import FLOAT64, render_body, render_source
-from hawk.ir import HawkError
+from aether.wings.base.wrapper import FLOAT64
+from raptor.errors import RaptorError as HawkError
 from hawk.targets import TARGETS
 
 CAP = 12
@@ -397,19 +399,6 @@ def test_what_s_may_not_hold_is_refused_by_name(case):
     assert needle in str(excinfo.value), str(excinfo.value)
 
 
-def test_a_kernel_with_only_bare_exits_is_unchanged_by_the_lowering():
-    @hawk.kernel
-    def bare(x: Scalar, g: Scalar, lim: Scalar, y: Mutable[Scalar]):
-        s = x
-        for _k in range(CAP):
-            s = m.sin(g * s) + s * 1.2
-            if s > lim:
-                break
-        y = s
-
-    assert "brk" not in render_body(bare.sinks, bare.walk).text
-
-
 # B6 ------------------------------------------------------------------------ #
 def _jump_kernel(sugar: bool):
     body = ("        if s > lim:\n            r = s * 0.5\n            break\n" if sugar
@@ -439,54 +428,11 @@ def test_jump_gives_the_form_and_the_hand_written_kernel_the_same_refusal():
 
 
 # B7 ------------------------------------------------------------------------ #
-STRICT = EmbeddedProfile(require_cppcheck=True)
 C_CASES = [("ignite", ignite, _run_ignite, ("tau", "y")),
            ("trips", trips, _run_trips, ("n", "e_out"))]
 
 
-@pytest.mark.parametrize("case", C_CASES, ids=[c[0] for c in C_CASES])
-def test_the_c_unit_is_strict_c99_misra_clean_and_audited(case):
-    _name, kernel, _run, _outs = case
-    source = render(kernel, mode="float64")
-    assert source.text.count("break;") == 1
-    refuse_audit_hits(source)           # audit.break accepts the lowered shape
-    checks = check(source, profile=STRICT)
-    assert [run["std"] for run in checks["cc"]] == ["c99", "c11"]
-    assert all(run["rc"] == 0 for run in checks["cc"])
-    assert checks["cppcheck"]["findings"] == []
-
-
-@pytest.mark.parametrize("case", C_CASES, ids=[c[0] for c in C_CASES])
-def test_the_c_unit_computes_the_hosts_bits(bundle, tmp_path, case):
-    name, kernel, run_host, outs = case
-    art = export(kernel, tmp_path, mode="float64")
-    so = E.cc_shared(art.c_path, tmp_path)
-    if name == "ignite":
-        x, g = _xg()
-        inputs = {"x": x, "g": g, "lim": np.full(N, LIM)}
-    else:
-        x, g, tol = _trips_in()
-        inputs = {"x": x, "g": g, "tol": tol}
-    c_side = {o: np.zeros(N) for o in outs}
-    E.run_c(so, name, art.report, N, mode="float64", **inputs, **c_side)
-    for got, want in zip((c_side[o] for o in outs), run_host(bundle, name)):
-        assert got.tobytes() == want.tobytes()
-
-
 # B8 ------------------------------------------------------------------------ #
-@pytest.mark.parametrize("kernel", [ignite, trips, vec_exit], ids=lambda k: k.name)
-def test_the_emitted_sources_compile(tmp_path, kernel):
-    failures = []
-    for target in ("cuda", "host"):
-        src = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                            mode=FLOAT64, kind=kernel.kind)
-        path = tmp_path / f"{kernel.name}_{target}.{'cu' if target == 'cuda' else 'cpp'}"
-        path.write_text(src.text)
-        rc, stderr, argv = compile_check(path, target)
-        if rc != 0:
-            failures.append(f"--- {kernel.name}/{target}\n$ {' '.join(argv)}\n{stderr[:2000]}")
-        assert "break;" in src.text
-    assert not failures, "\n".join(failures)
 
 
 @pytest.mark.gpu

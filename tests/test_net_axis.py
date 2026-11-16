@@ -9,7 +9,7 @@ different width are padded to ``H`` and a per-net mask row zeroes the unused uni
 is exactly zero. A gradient is summed over its own net's samples only, so perturbing net i moves
 no value of net j (bitwise) and no gradient of net j beyond the ULPs of its atomic commits (the
 default, compensated gradient adds its per-warp partials atomically, so their order varies from launch
-to launch once a net spans three warps). The device row runs K = 16384 nets; the ordered policy
+to launch once a net spans three warps). The device row runs K = 16384 nets; the ordered contract
 replays bitwise."""
 
 from __future__ import annotations
@@ -32,18 +32,18 @@ TARGETS = ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
 
 @pytest.fixture(scope="module")
 def bundles(tmp_path_factory, cache_dir):
-    """``{kernel name: bundle}``: the loss under both policies at S = 40, 48, 64, and the
+    """``{kernel name: bundle}``: the loss under both contracts at S = 40, 48, 64, and the
     compensated gradient at S = 40 and 64."""
     root = tmp_path_factory.mktemp("net_axis")
     out = {}
-    for s, policy in ((40, "compensated"), (40, "ordered"), (48, "ordered"), (48, "compensated"),
+    for s, contract in ((40, "compensated"), (40, "ordered"), (48, "ordered"), (48, "compensated"),
                       (64, "compensated")):
-        loss = N.net_loss_for(s, policy)
+        loss = N.net_loss_for(s, contract)
         home = build_bundle([loss], root / loss.name, targets=("cuda", "host"),
                             cache_dir=cache_dir, host_profile="native")
         out[loss.name] = home
-        if s != 48 or policy == "ordered":
-            grad = Kernel(f"net_grad_{s}_{policy}", vjp(loss, wrt=("W",), primal_unit=home.digest))
+        if s != 48 or contract == "ordered":
+            grad = Kernel(f"net_grad_{s}_{contract}", vjp(loss, wrt=("W",), primal_unit=home.digest))
             out[grad.name] = build_bundle([grad], root / grad.name, targets=("cuda", "host"),
                                           cache_dir=cache_dir, host_profile="native")
     return out
@@ -142,17 +142,17 @@ def test_perturbing_one_net_moves_no_other_net(bundles, target):
     assert not np.array_equal(moved[1][2], base[1][2])
 
 
-def _grad(bundles, target, w, x, y, mask, policy, launches=1):
+def _grad(bundles, target, w, x, y, mask, contract, launches=1):
     """The gradient from ``launches`` launches. The ordered kernel has a fold stage, which the host
     runtime runs and the device driver of ``_team_stages`` launches."""
     from hawk import runtime as rt
     k, s = w.shape[0], x.shape[1]
-    name = f"net_grad_{s}_{policy}"
+    name = f"net_grad_{s}_{contract}"
     seen = []
     for _ in range(launches):
         planes = _planes(target, w, x, y, mask)
         back = {n: planes[n] for n in ("W", "mask", "x", "y", "bar_out", "bar_W")}
-        if policy == "compensated":
+        if contract == "compensated":
             _plan(bundles, name, target, back, k).launch()
         elif target == "host":
             rt.run(rt.load(bundles[name].directory, name, sidecar_of(bundles[name], name)), **back)
@@ -193,15 +193,15 @@ def test_sixteen_thousand_nets_compensated_match_the_loop_and_replay_when_aligne
         assert seen[0].tobytes() == seen[1].tobytes() == seen[2].tobytes()
 
 
-def _loss(bundles, target, w, x, y, mask, policy):
+def _loss(bundles, target, w, x, y, mask, contract):
     """The loss from 3 launches; the ordered one has team stages, which the host runtime runs and
     the device driver of ``_team_stages`` launches."""
     from hawk import runtime as rt
     k, s = w.shape[0], x.shape[1]
-    name = f"net_loss_{s}_{policy}"
+    name = f"net_loss_{s}_{contract}"
     seen = []
     for _ in range(3):
-        if policy == "compensated":
+        if contract == "compensated":
             planes = _planes(target, w, x, y, mask)
             _plan(bundles, name, target, {n: planes[n] for n in ("W", "mask", "x", "y", "out")}, k).launch()
             seen.append(_host(planes["out"]))

@@ -13,8 +13,7 @@ import pytest
 
 import hawk
 from hawk import Mutable, Scalar, Vector
-from hawk.artifact import bundle as B
-from hawk.emit import scalar_mode
+import hawk.artifact
 
 DEPTH = 1200
 
@@ -54,13 +53,7 @@ def _derived(kernel, kind):
 
 
 def _emit(kernel, target):
-    device = target == "cuda"
-    out = []
-    for kk, n, kd in zip(*B._expand_split([kernel], [kernel.name], [kernel.kind], smode=scalar_mode("float64"), device=device)[:3]):
-        src = B._sources(B._active_unit(kk, n, kd), name=n, smode=scalar_mode("float64"), kind=kd, targets=(target,),
-                         layout_sizes_override=None)
-        out.append(src[target].text)
-    return "".join(out)
+    return hawk.artifact.emit_source(kernel, targets=(target,)).sources[target].text
 
 
 @pytest.mark.parametrize("name", KERNELS)

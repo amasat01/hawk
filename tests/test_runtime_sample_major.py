@@ -27,7 +27,7 @@ import pytest
 from conftest import sidecar_of
 
 from hawk import runtime as rt
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 N = 8
 

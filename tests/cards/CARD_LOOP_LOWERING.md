@@ -2,7 +2,7 @@
 
 Written BY THE RUN (`tests/test_loop_lowering_card.py`). Prose cites this file; no number here may be restated without citing it. It DECIDES NOTHING — rules that whether to unroll a lowered loop is the C++/CUDA compiler's decision, and this card is the evidence that HAWK hands it a translation unit it can make that decision about.
 
-Every compile in `grid` ran under `ulimit -v 12000000` (the same 12 GiB `hawk.compile.drivers` installs with `RLIMIT_AS`) and was measured with `/usr/bin/time -v`. `kan_scale_cell` — the point, a downstream package's own KAN edge shape at (n_in=64, G=20, k=3) — went trace to run inside ONE child under `ulimit -v 6000000`, a cap that binds the TRACER too.
+Every compile in `grid` ran under `ulimit -v 12000000` (the same 12 GiB `hawk.compile.drivers` installs with `RLIMIT_AS`) and was measured with `/usr/bin/time -v`. `spline_scale_cell` — the point, a downstream package's own spline edge shape at (n_in=64, G=20, k=3) — went trace to run inside ONE child under `ulimit -v 6000000`, a cap that binds the TRACER too.
 
 md5: `a90c857ace714bdc41f3dd4db2fabe0b`
 
@@ -91,7 +91,7 @@ md5: `a90c857ace714bdc41f3dd4db2fabe0b`
     }
   ],
   "host_compiler": "/usr/bin/g++||g++ (GCC) 11.5.0 20240719 (Red Hat 11.5.0-5.0.1)",
-  "kan_scale_cell": {
+  "spline_scale_cell": {
     "G": 20,
     "compiled_minus_interpreted_abs": 4.440892098500626e-16,
     "cuda_tu_bytes": 28751,
@@ -120,7 +120,7 @@ md5: `a90c857ace714bdc41f3dd4db2fabe0b`
     "why": "banded: the emitted chain lets the compiler contract a multiply-add into an fma across the body's Cox-de Boor levels, which the interpreter's separate numpy operations cannot (the same low-bit consequence records for a fused ET)"
   },
   "machine": "x86_64",
-  "note": "every compile in `grid` ran under `ulimit -v 12000000` and was measured with `/usr/bin/time -v`; the 64x23 point is the one HW7d could not assemble at all when the same body was unrolled by trace-time execution (25-27 GB of ptxas RSS). `kan_scale_cell` is the point: a downstream package's own `kan_edge_kernel_loop` shape (a DEEP Cox-de Boor body, not the shallow `grid` family) at (n_in=64, G=20, k=3), taken trace -> canonicalise -> emit -> compile both targets -> run, all inside ONE child under `ulimit -v 6000000`, which caps the TRACER as well as the compilers. Before the fixed-width body key that child exhausted 6 GB during canonicalisation and never reached a compiler. The card DECIDES NOTHING: rules that whether to unroll is the compiler's decision, and no threshold is derived here",
+  "note": "every compile in `grid` ran under `ulimit -v 12000000` and was measured with `/usr/bin/time -v`; the 64x23 point is the one HW7d could not assemble at all when the same body was unrolled by trace-time execution (25-27 GB of ptxas RSS). `spline_scale_cell` is the point: a downstream package's own `spline_edge_kernel_loop` shape (a DEEP Cox-de Boor body, not the shallow `grid` family) at (n_in=64, G=20, k=3), taken trace -> canonicalise -> emit -> compile both targets -> run, all inside ONE child under `ulimit -v 6000000`, which caps the TRACER as well as the compilers. Before the fixed-width body key that child exhausted 6 GB during canonicalisation and never reached a compiler. The card DECIDES NOTHING: rules that whether to unroll is the compiler's decision, and no threshold is derived here",
   "numerics": [
     {
       "basis": 5,

@@ -22,8 +22,8 @@ target; the rows pin it
 
 from __future__ import annotations
 
+from _specs import spec_for
 import _deploy as L
-import _embedded as E
 import numpy as np
 import pytest
 from _toolchain import compile_check
@@ -35,8 +35,7 @@ from hawk import math as m
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.embedded import EmbeddedProfile, check, export, render
-from hawk.emit import FLOAT32, FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT32, FLOAT64
 from hawk.targets import TARGETS
 
 MODES = ("float64", "float32")
@@ -56,8 +55,8 @@ def window(lane: Grid["pair"], si: Mutable["w"], sj: Mutable["w"]):
     i, j = m.pair_index()
     k = m.sample_index()
     cell = k - ((k >> 6) << 6)
-    hawk.scatter(si, policy="plain")[cell] += m.real(i)
-    hawk.scatter(sj, policy="plain")[cell] += m.real(j)
+    hawk.scatter(si, contract="plain")[cell] += m.real(i)
+    hawk.scatter(sj, contract="plain")[cell] += m.real(j)
 
 
 @kernel
@@ -81,7 +80,7 @@ def near(lane: Grid["pair"], x: Table["node"], mask: Mutable[UInt32]):
     """Bit ``j`` of row ``i`` of a symmetric-free adjacency mask: ``x_i * x_j > 0.5``."""
     i, j = m.pair_index()
     bit = m.select(x.at(i) * x.at(j) > 0.5, m.uint32(1) << m.uint32(j & 31), m.uint32(0))
-    hawk.scatter(mask, policy="or")[i * WORDS + (j >> 5)] |= bit
+    hawk.scatter(mask)[i * WORDS + (j >> 5)] |= bit
 
 
 def _pairs(n_items):
@@ -195,6 +194,34 @@ def test_an_or_mask_written_from_the_pair_grid_equals_numpy(bundles, n_items):
     assert on.any()
 
 
+@pytest.mark.parametrize("mode", MODES)
+def test_products_and_the_or_mask_equal_numpy_in_both_scalar_modes(mode, tmp_path, cache_dir):
+    """Host arm of the old strict-C row: ``poly`` (products only) and ``near`` at n_items = 100 in each
+    scalar mode, read back against numpy at that mode's width."""
+    bundles = {(mode, k.name): build_bundle([poly, near], tmp_path, mode=mode, targets=("host",), cache_dir=cache_dir)
+               for k in (poly, near)}
+    n_items = 100
+    n = n_items * (n_items - 1) // 2
+    dt = np.float32 if mode == "float32" else np.float64
+    x = _x(n_items).astype(dt)
+    i, j = _pairs(n_items)
+    d, rs = np.zeros(n, dt), np.zeros(n_items, dt)
+    rt.run(_host(bundles, mode, poly), x=x, d=d, rs=rs, pair=n, node=n_items)
+    want = x[i] * x[j] * x[j] * x[i]
+    tol = 1e-5 if mode == "float32" else 1e-14
+    np.testing.assert_allclose(d, want, rtol=tol, atol=tol)
+    row = np.zeros(n_items, dt)
+    np.add.at(row, j, want)
+    np.testing.assert_allclose(rs, row, rtol=100 * tol, atol=100 * tol)
+    mask = np.zeros(n_items * WORDS, np.uint32)
+    rt.run(_host(bundles, mode, near), x=x, mask=mask, pair=n)
+    on = x[i] * x[j] > 0.5
+    expected = np.zeros(n_items * WORDS, np.uint32)
+    np.bitwise_or.at(expected, (i * WORDS + (j >> 5))[on],
+                     (np.uint32(1) << (j & 31).astype(np.uint32))[on])
+    assert mask.tobytes() == expected.tobytes() and on.any()
+
+
 # ---- derivatives: the lane axis map only ---------------------------------------
 
 def _energy_np(x, n_items):
@@ -245,53 +272,6 @@ def test_vjp_of_a_per_pair_kernel_matches_central_differences(n_items):
 
 
 # ---- the emitted sources ------------------------------------------------------
-
-@pytest.mark.parametrize("target", ["cuda", "host"])
-@pytest.mark.parametrize("mode", [FLOAT64, FLOAT32], ids=["f64", "f32"])
-def test_the_emitted_sources_compile(tmp_path, target, mode):
-    for k in (pairs, energy, near):
-        src = render_source(k.name, k.sinks, k.walk, TARGETS[target], mode=mode, kind=k.kind)
-        path = tmp_path / f"{k.name}.{'cu' if target == 'cuda' else 'cpp'}"
-        path.write_text(src.text)
-        rc, stderr, argv = compile_check(path, target)
-        assert rc == 0, f"$ {' '.join(argv)}\n{stderr[:2000]}"
-
-
-@pytest.mark.parametrize("mode", MODES)
-@pytest.mark.parametrize("k", [pairs, poly, near], ids=lambda k: k.name)
-def test_the_c_unit_is_strict_clean_and_equals_the_host(bundles, tmp_path, mode, k):
-    strict = EmbeddedProfile(require_cppcheck=True)
-    checks = check(render(k, mode=mode), profile=strict)
-    assert all(run["rc"] == 0 for run in checks["cc"])
-    assert checks["cppcheck"]["findings"] == []
-    art = export(k, tmp_path, mode=mode)
-    lib = E.cc_shared(art.c_path, tmp_path)
-    host = _host(bundles, mode, k)
-    n_items = 100
-    n = n_items * (n_items - 1) // 2
-    if k is pairs:
-        c = E.run_c(lib, "pairs", art.report, n, mode=mode,
-                    oi=np.zeros(n, np.int64), oj=np.zeros(n, np.int64))
-        h = (np.zeros(n, np.int64), np.zeros(n, np.int64))
-        rt.run(host, oi=h[0], oj=h[1], pair=n)
-        assert c[0].tobytes() == h[0].tobytes() and c[1].tobytes() == h[1].tobytes()
-        assert np.array_equal(c[1], _pairs(n_items)[1])
-    elif k is near:
-        x = _x(n_items).astype(np.float32 if mode == "float32" else np.float64)
-        c = E.run_c(lib, "near", art.report, n, mode=mode, x=x,
-                    mask=np.zeros(n_items * WORDS, np.uint32))
-        h = np.zeros(n_items * WORDS, np.uint32)
-        rt.run(host, x=x, mask=h, pair=n)
-        assert c.tobytes() == h.tobytes()
-    else:
-        dt = np.float32 if mode == "float32" else np.float64
-        x = _x(n_items).astype(dt)
-        c = E.run_c(lib, "poly", art.report, n, mode=mode, x=x, d=np.zeros(n, dt),
-                    rs=np.zeros(n_items, dt))
-        hd, hrs = np.zeros(n, dt), np.zeros(n_items, dt)
-        rt.run(host, x=x, d=hd, rs=hrs, pair=n, node=n_items)
-        c_d = c[0] if isinstance(c, tuple) else c
-        assert c_d.tobytes() == hd.tobytes()
 
 
 # ---- the device ---------------------------------------------------------------

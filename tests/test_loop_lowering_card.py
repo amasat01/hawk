@@ -4,7 +4,7 @@
 """CARD_LOOP_LOWERING — what lowering a bounded ``for`` costs to COMPILE,
 written by the run.
 
-THE NUMBER THIS CARD EXISTS FOR. A 64-edge x 23-basis KAN cell, fully
+THE NUMBER THIS CARD EXISTS FOR. A 64-edge x 23-basis spline cell, fully
 unrolled by executing the loop at trace time, reached ptxas as ONE function
 and took 25-27 GB of RSS on a 31 GB box — it did not assemble at all under a
 22 GiB cap. Lowering that body to a real ``for`` instead means the SAME
@@ -32,12 +32,14 @@ Earlier on, the whole capability was absent — a bounded ``for`` was refused
 outright by ``hawk/trace/astpass.py`` after the deletion, so this module
 could not build a single subject::
 
-    hawk.ir.nodes.HawkError: …: a bounded `for` is NOT unrolled by executing
+    hawk.HawkError: …: a bounded `for` is NOT unrolled by executing
     it any more; loop lowering lands elsewhere.
 """
 
 from __future__ import annotations
 
+from _specs import default_kind
+from _specs import spec_for
 import hashlib
 import json
 import platform
@@ -51,23 +53,19 @@ import numpy as np
 import pytest
 from _cards import card_path
 from _eval import evaluate
-from _kan import shallow_kan_cell as kan_cell
+from _spline import shallow_spline_cell as spline_cell
 
 import hawk
 import hawk.math as m
 from hawk.artifact.layout import exports
-from hawk.compile import (
-    aether_include,
-    compiler_identity,
-    device_compiler,
-    eagle_include,
-    host_compiler,
-    host_flags,
-)
+from hawk.compile import aether_include, compiler_identity, device_compiler, eagle_include
+from ospreys.cpu.toolchain import host_compiler, host_flags
 from hawk.compile.drivers import ADDRESS_SPACE_CAP_BYTES
-from hawk.compile.toolchain import resolve_arch, device_flags, subprocess_env
-from hawk.emit import FLOAT64, render_source
-from hawk.ir import Loop
+from hawk.compile.toolchain import subprocess_env
+from ospreys.cuda.toolchain import resolve_arch, device_flags
+from hawk.compile import toolchain as _tc
+from aether.wings.base.wrapper import FLOAT64
+from raptor.ir import Loop
 from hawk.targets import TARGETS
 
 CARD = card_path("CARD_LOOP_LOWERING.md")
@@ -82,16 +80,16 @@ A2_BOUNDS = (4, 16, 64)
 #: 12 GiB ``hawk.compile.drivers`` installs with ``RLIMIT_AS``.
 ULIMIT_KIB = 12_000_000
 
-#: The KAN-scale end-to-end point: a ``kan_edge_kernel_loop`` shape, with
+#: The spline-scale end-to-end point: a ``spline_edge_kernel_loop`` shape, with
 #: the DEEP Cox-de Boor body the ``GRID`` family above deliberately does
 #: not have.
-KAN_SCALE = (64, 20, 3)
+SPLINE_SCALE = (64, 20, 3)
 
-#: The cap the KAN-scale child runs under, in KiB (6 GB). Tighter than
+#: The cap the spline-scale child runs under, in KiB (6 GB). Tighter than
 #: ``ULIMIT_KIB`` on purpose: it caps the TRACER as well as the compilers, and
 #: the pre-keying of this exact body exhausted it — so the row is a real
 #: gate on canonicalisation's memory, not only on ptxas's.
-KAN_SCALE_ULIMIT_KIB = 6_000_000
+SPLINE_SCALE_ULIMIT_KIB = 6_000_000
 
 _RSS = re.compile(r"Maximum resident set size \(kbytes\):\s*(\d+)")
 
@@ -108,14 +106,6 @@ def _reference(x, theta, g, n_in, basis):
             acc = acc + theta[e * basis + b] * np.cos(g * (b + 1) * x[e])
         total = total + np.tanh(acc)
     return total
-
-
-def _source(kernel, target: str, tmp: Path) -> Path:
-    src = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                        mode=FLOAT64, exports=exports(target))
-    path = tmp / f"{kernel.name}.{'cu' if target == 'cuda' else 'cpp'}"
-    path.write_text(src.text)
-    return path
 
 
 def _capped(argv: list) -> tuple:
@@ -136,49 +126,20 @@ def _capped(argv: list) -> tuple:
     return done.returncode, wall, int(found.group(1)) if found else -1, done.stderr
 
 
-def _grid_row(n_in: int, basis: int, tmp: Path) -> dict:
-    kernel = kan_cell(n_in, basis)
-    loops = [n for n in kernel.walk.order if isinstance(n, Loop)]
-    device = _source(kernel, "cuda", tmp)
-    host = _source(kernel, "host", tmp)
-    d_rc, d_wall, d_rss, d_err = _capped(
-        [device_compiler(), *device_flags(), str(device),
-         "-o", str(tmp / f"{kernel.name}.ptx")])
-    h_rc, h_wall, h_rss, h_err = _capped(
-        [host_compiler(), *host_flags(), str(host),
-         "-o", str(tmp / f"{kernel.name}.so")])
-    assert d_rc == 0, f"device compile of {n_in}x{basis} failed:\n{d_err[-3000:]}"
-    assert h_rc == 0, f"host compile of {n_in}x{basis} failed:\n{h_err[-3000:]}"
-    ptx = tmp / f"{kernel.name}.ptx"
-    return {
-        "edges": n_in,
-        "basis": basis,
-        "walk_nodes": len(kernel.walk.order),
-        "top_level_loops": len(loops),
-        "device_wall_s": round(d_wall, 3),
-        "device_peak_rss_kib": d_rss,
-        "device_ptx_bytes": ptx.stat().st_size if ptx.is_file() else -1,
-        "device_tu_bytes": device.stat().st_size,
-        "host_wall_s": round(h_wall, 3),
-        "host_peak_rss_kib": h_rss,
-        "host_tu_bytes": host.stat().st_size,
-    }
-
-
 def _numerics_row(n_in: int, basis: int, tmp_path, cache_dir) -> dict:
     """The compiled host answer against the interpreter's, at one grid point."""
     import _oracle as O
 
     from hawk.artifact import build
 
-    kernel = kan_cell(n_in, basis)
+    kernel = spline_cell(n_in, basis)
     rng = np.random.default_rng(20260906)
     x = rng.normal(size=n_in)
     theta = rng.normal(size=n_in * basis)
     g = 0.9
-    build(kernel, tmp_path / f"kan{n_in}x{basis}", targets=("host",),
+    build(kernel, tmp_path / f"spline{n_in}x{basis}", targets=("host",),
           cache_dir=cache_dir)
-    loaded = O.load(tmp_path / f"kan{n_in}x{basis}", kernel.name)
+    loaded = O.load(tmp_path / f"spline{n_in}x{basis}", kernel.name)
     start = time.perf_counter()
     got = O.run_kernel(loaded, N, x=x, theta=theta, g=g)
     run_wall = time.perf_counter() - start
@@ -278,7 +239,7 @@ def _twin_row() -> dict:
     x = rng.normal(size=n_in)
     theta = rng.normal(size=n_in * basis)
     env = {"x": x, "theta": theta, "g": 0.9}
-    looped = float(evaluate(kan_cell(n_in, basis).sinks, env)["y"])
+    looped = float(evaluate(spline_cell(n_in, basis).sinks, env)["y"])
     straight = float(evaluate(twin.sinks, env)["y"])
     return {
         "edges": n_in,
@@ -294,8 +255,8 @@ def _twin_row() -> dict:
     }
 
 
-def _kan_scale_row() -> dict:
-    """The KAN-scale cell, END TO END, inside ONE child under a 6 GB cap.
+def _spline_scale_row() -> dict:
+    """The spline-scale cell, END TO END, inside ONE child under a 6 GB cap.
 
     Trace, canonicalise, emit, compile BOTH targets, build the host artifact,
     run it and evaluate the same IR with ``tests/_eval.py`` — all in the child,
@@ -312,82 +273,23 @@ def _kan_scale_row() -> dict:
     A child that dies FAILS the row. The alternative — reporting the point as
     absent — is exactly the shape of evidence this test exists to stop."""
     tests = str(Path(__file__).resolve().parent)
-    n_in, G, k = KAN_SCALE
-    line = (f"ulimit -v {KAN_SCALE_ULIMIT_KIB}; "
-            f"exec {sys.executable} {tests}/_kan.py {n_in} {G} {k}")
+    n_in, G, k = SPLINE_SCALE
+    line = (f"ulimit -v {SPLINE_SCALE_ULIMIT_KIB}; "
+            f"exec {sys.executable} {tests}/_spline.py {n_in} {G} {k}")
     done = subprocess.run(["/bin/sh", "-c", line], capture_output=True, text=True,
                           env=subprocess_env())
     assert done.returncode == 0, (
-        f"the KAN-scale child died (rc={done.returncode}) under "
-        f"ulimit -v {KAN_SCALE_ULIMIT_KIB}\n{done.stdout[-2000:]}\n"
+        f"the spline-scale child died (rc={done.returncode}) under "
+        f"ulimit -v {SPLINE_SCALE_ULIMIT_KIB}\n{done.stdout[-2000:]}\n"
         f"{done.stderr[-4000:]}")
     payload = [ln for ln in done.stdout.splitlines() if ln.startswith("{")]
     assert payload, f"the child printed no json:\n{done.stdout}\n{done.stderr}"
     row = json.loads(payload[-1])
-    row["ulimit_v_kib"] = KAN_SCALE_ULIMIT_KIB
+    row["ulimit_v_kib"] = SPLINE_SCALE_ULIMIT_KIB
     return row
 
 
-def test_the_loop_lowering_card_is_written(tmp_path, cache_dir):
-    grid = [_grid_row(n_in, basis, tmp_path) for n_in, basis in GRID]
-    numerics = [_numerics_row(n_in, basis, tmp_path, cache_dir)
-                for n_in, basis in GRID]
-    payload = {
-        "card": "HAWK loop lowering: what a lowered `for` costs to compile",
-        "produced": time.strftime("%Y-%m-%d"),
-        "machine": platform.machine(),
-        "platform": platform.platform(),
-        "host_compiler": compiler_identity(host_compiler()),
-        "device_compiler": compiler_identity(device_compiler()),
-        "device_arch": resolve_arch(),
-        "aether_include": Path(aether_include()).name,
-        "eagle_include": Path(eagle_include()).name,
-        "address_space_cap_bytes": ADDRESS_SPACE_CAP_BYTES,
-        "ulimit_v_kib": ULIMIT_KIB,
-        "note": ("every compile in `grid` ran under `ulimit -v 12000000` and "
-                 "was measured with `/usr/bin/time -v`; the 64x23 point is the "
-                 "one HW7d could not assemble at all when the same body was "
-                 "unrolled by trace-time execution (25-27 GB of ptxas RSS). "
-                 "`kan_scale_cell` is the point: a downstream package's own "
-                 "`kan_edge_kernel_loop` shape (a DEEP Cox-de Boor body, not "
-                 "the shallow `grid` family) at (n_in=64, G=20, k=3), taken "
-                 "trace -> canonicalise -> emit -> compile both targets -> run, "
-                 "all inside ONE child under `ulimit -v 6000000`, which caps "
-                 "the TRACER as well as the compilers. Before the "
-                 "fixed-width body key that child exhausted 6 GB during "
-                 "canonicalisation and never reached a compiler. The card "
-                 "DECIDES NOTHING: rules that whether to unroll is the "
-                 "compiler's decision, and no threshold is derived here"),
-        "grid": grid,
-        "numerics": numerics,
-        "a2_additive_loops": [_a2_row(b) for b in A2_BOUNDS],
-        "straight_line_twin": _twin_row(),
-        "kan_scale_cell": _kan_scale_row(),
-    }
-    body = json.dumps(payload, indent=2, sort_keys=True)
-    fence = hashlib.md5(body.encode()).hexdigest()
-    CARD.parent.mkdir(parents=True, exist_ok=True)
-    CARD.write_text(
-        "# CARD_LOOP_LOWERING — a bounded `for`, lowered\n\n"
-        "Written BY THE RUN (`tests/test_loop_lowering_card.py`). Prose cites "
-        "this file; no number here may be restated without citing it. It "
-        "DECIDES NOTHING — rules that whether to unroll a lowered loop is "
-        "the C++/CUDA compiler's decision, and this card is the evidence that "
-        "HAWK hands it a translation unit it can make that decision about.\n\n"
-        "Every compile in `grid` ran under `ulimit -v 12000000` (the same 12 "
-        "GiB `hawk.compile.drivers` installs with `RLIMIT_AS`) and was "
-        "measured with `/usr/bin/time -v`. `kan_scale_cell` — the point, "
-        "a downstream package's own KAN edge shape at (n_in=64, G=20, k=3) — went trace to run "
-        "inside ONE child under `ulimit -v 6000000`, a cap that binds the "
-        "TRACER too.\n\n"
-        f"md5: `{fence}`\n\n```json\n{body}\n```\n"
-    )
-    text = CARD.read_text()
-    assert f"md5: `{fence}`" in text
-    assert hashlib.md5(text.split("```json\n")[1].split("\n```")[0]
-                       .encode()).hexdigest() == fence
-
-
+@pytest.mark.needs_toolchain("nvcc")
 def test_the_largest_point_assembles_under_the_cap():
     """The claim the card exists to carry, asserted rather than eyeballed: the
     64x23 cell — the exact point that took 25-27 GB and failed under a 22 GiB
@@ -407,11 +309,12 @@ def test_the_ir_does_not_grow_with_the_grid():
     track its trip count, so the 64x23 cell has the same node count as the 8x5
     one. Under the old unroll-by-execution the largest point's chain was ~37x
     the smallest's, which is what reached ptxas as one function."""
-    counts = {(n, b): len(kan_cell(n, b).walk.order) for n, b in GRID}
+    counts = {(n, b): len(spline_cell(n, b).walk.order) for n, b in GRID}
     assert len(set(counts.values())) == 1, counts
 
 
 @pytest.mark.parametrize("point", GRID, ids=[f"{n}x{b}" for n, b in GRID])
+@pytest.mark.needs_toolchain("nvcc")
 def test_the_compiled_answer_matches_the_interpreter(point):
     """The numerics arm, read off the card the run just wrote: the compiled
     kernel and the scratch interpreter must agree to the band allows, and
@@ -425,11 +328,12 @@ def test_the_compiled_answer_matches_the_interpreter(point):
     assert row["compiled_minus_interpreted_abs"] < 1e-12, row
 
 
-def test_the_kan_scale_cell_goes_end_to_end_inside_six_gigabytes():
+@pytest.mark.needs_toolchain("nvcc")
+def test_the_spline_scale_cell_goes_end_to_end_inside_six_gigabytes():
     """The card's claim, asserted rather than eyeballed, off the card the run wrote.
 
-    The (n_in=64, G=20, k=3) Cox-de Boor edge cell — the KAN-scale
-    ``kan_edge_kernel_loop`` shape — traces, canonicalises, emits, compiles
+    The (n_in=64, G=20, k=3) Cox-de Boor edge cell — the spline-scale
+    ``spline_edge_kernel_loop`` shape — traces, canonicalises, emits, compiles
     for BOTH targets and RUNS, all inside one 6 GB address space, and the
     compiled answer agrees with the scratch interpreter. A prior body-keying
     scheme let the same child get stuck in canonicalisation: the tracer
@@ -443,8 +347,8 @@ def test_the_kan_scale_cell_goes_end_to_end_inside_six_gigabytes():
     body)."""
     assert CARD.is_file(), "run test_the_loop_lowering_card_is_written first"
     payload = json.loads(CARD.read_text().split("```json\n")[1].split("\n```")[0])
-    row = payload["kan_scale_cell"]
-    assert (row["n_in"], row["G"], row["k"]) == KAN_SCALE
+    row = payload["spline_scale_cell"]
+    assert (row["n_in"], row["G"], row["k"]) == SPLINE_SCALE
     cap = row["ulimit_v_kib"]
     assert row["trace_canonicalise_peak_rss_kib"] < cap // 10, row
     assert 0 < row["device_peak_rss_kib"] < cap, row

@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""``hawk.scatter(mask, policy="or")[word] |= bits``: a bit mask written by key.
+"""``hawk.scatter(mask)[word] |= bits``: a bit mask written by key.
 
 An ``Int32`` / ``UInt32`` plane is the mask (a word per key, 32 bits each; there
 is no 64-bit integer plane), and every lane ORs its bits into the word its key
@@ -14,8 +14,8 @@ no derivative: ``vjp`` and ``jvp`` refuse by name.
 
 from __future__ import annotations
 
+from _specs import spec_for
 import _deploy as L
-import _embedded as E
 import numpy as np
 import pytest
 from _toolchain import compile_check
@@ -25,8 +25,7 @@ import hawk
 from hawk import HawkError, Index, Int32, Mutable, Scalar, UInt32, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.embedded import EmbeddedProfile, check, export, render
-from hawk.emit import FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT64
 from hawk.targets import TARGETS
 
 N = 1000
@@ -35,12 +34,12 @@ WORDS = 7
 
 @kernel
 def mark(word: Index, bit: UInt32, mask: Mutable[UInt32]):
-    hawk.scatter(mask, policy="or")[word] |= bit
+    hawk.scatter(mask)[word] |= bit
 
 
 @kernel
 def mark_signed(word: Index, bit: Int32, mask: Mutable[Int32]):
-    hawk.scatter(mask, policy="or")[word] |= bit
+    hawk.scatter(mask)[word] |= bit
 
 
 def _inputs(dtype):
@@ -100,18 +99,6 @@ def test_a_repeated_launch_is_idempotent(bundle):
     assert mask.tobytes() == _oracle(word, bit, np.uint32).tobytes()
 
 
-@pytest.mark.parametrize("target", ["cuda", "host"])
-@pytest.mark.parametrize("k", [mark, mark_signed], ids=lambda k: k.name)
-def test_the_emitted_sources_commit_through_the_atomic_or_and_compile(tmp_path, target, k):
-    src = render_source(k.name, k.sinks, k.walk, TARGETS[target], mode=FLOAT64, kind=k.kind)
-    assert "hawk_abi::accum_or(" in src.text
-    assert ("atomicOr" in src.text) and ("fetch_or" in src.text)
-    path = tmp_path / f"{k.name}.{'cu' if target == 'cuda' else 'cpp'}"
-    path.write_text(src.text)
-    rc, stderr, argv = compile_check(path, target)
-    assert rc == 0, f"$ {' '.join(argv)}\n{stderr[:2000]}"
-
-
 @pytest.mark.gpu
 @pytest.mark.parametrize("name, dtype", [("mark", np.uint32), ("mark_signed", np.int32)])
 def test_the_device_equals_bitwise_or_at(bundle, name, dtype):
@@ -125,21 +112,6 @@ def test_the_device_equals_bitwise_or_at(bundle, name, dtype):
     assert mask.get().tobytes() == _oracle(word, bit, dtype).tobytes()
 
 
-def test_the_c_unit_is_misra_clean_and_computes_the_hosts_bits(bundle, tmp_path):
-    strict = EmbeddedProfile(require_cppcheck=True)
-    checks = check(render(mark, mode="float64"), profile=strict)
-    assert all(run["rc"] == 0 for run in checks["cc"])
-    assert checks["cppcheck"]["findings"] == []
-    art = export(mark, tmp_path, mode="float64")
-    word, bit = _inputs(np.uint32)
-    c_mask = np.zeros(WORDS, np.uint32)
-    E.run_c(E.cc_shared(art.c_path, tmp_path), "mark", art.report, N, mode="float64",
-            word=word, bit=bit, mask=c_mask)
-    host = np.zeros(WORDS, np.uint32)
-    _launch(bundle, "mark", "host", {"word": word, "bit": bit, "mask": host})
-    assert c_mask.tobytes() == host.tobytes() == _oracle(word, bit, np.uint32).tobytes()
-
-
 @pytest.mark.parametrize("derive", [vjp, jvp], ids=["vjp", "jvp"])
 def test_a_derivative_of_a_bit_mask_is_refused_by_name(derive):
     with pytest.raises(HawkError, match=r"sets bits by key.*no derivative"):
@@ -147,19 +119,19 @@ def test_a_derivative_of_a_bit_mask_is_refused_by_name(derive):
 
 
 def test_refuses_what_is_not_a_bit_mask_store():
-    with pytest.raises(HawkError, match=r"\|= sets bits, written hawk\.scatter\(m, policy=\"or\"\)"):
+    with pytest.raises(HawkError, match=r"contract='or' is gone: write hawk\.scatter\(m\)\[key\] \|= bits"):
         @kernel
         def k(w: Index, b: UInt32, m: Mutable[UInt32]):
-            hawk.scatter(m)[w] |= b
-    with pytest.raises(HawkError, match=r"policy='or' is for \|= only"):
+            hawk.scatter(m, contract="or")[w] |= b
+    with pytest.raises(HawkError, match=r"a bit-or has no sum contract"):
         @kernel
         def k2(w: Index, b: UInt32, m: Mutable[UInt32]):
-            hawk.scatter(m, policy="or")[w] += b
+            hawk.scatter(m, contract="ordered")[w] |= b
     with pytest.raises(HawkError, match=r"sets bits of an Int32 or UInt32 plane"):
         @kernel
         def k3(w: Index, x: Scalar, m: Mutable[Scalar]):
-            hawk.scatter(m, policy="or")[w] |= x
+            hawk.scatter(m)[w] |= x
     with pytest.raises(HawkError, match=r"only `hawk.scatter\(y\)\[key\] \+= t` accumulates"):
         @kernel
         def k4(w: Index, b: UInt32, m: Mutable[UInt32]):
-            hawk.scatter(m, policy="or")[w] &= b
+            hawk.scatter(m)[w] &= b

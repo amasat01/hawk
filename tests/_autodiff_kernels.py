@@ -63,7 +63,7 @@ def switch_if(x: Scalar, g: Scalar, y: Mutable[Scalar]):
 @kernel
 def switch_dispatch(x: Scalar, g: Scalar, y: Mutable[Scalar]):
     k = m.int32(x * 3.0)
-    y = g * m.dispatch(k, [x * x, 3.0 * x + 1.0, m.sin(x)], policy="switch")
+    y = g * m.dispatch(k, [x * x, 3.0 * x + 1.0, m.sin(x)], strategy="switch")
 
 
 CAP = 12
@@ -109,7 +109,7 @@ def keyed_sum(lane: Grid["key":2, "k2":3, "sample":16], x: Scalar,
 @kernel
 def keyed_sum_c(lane: Grid["key":2, "k2":3, "sample":16], x: Scalar,
                 tb: Mutable["key":2, "k2":3]):
-    tb = hawk.sum(m.sin(x) * x, over="sample", policy="compensated")
+    tb = hawk.sum(m.sin(x) * x, over="sample", contract="compensated")
 
 
 @kernel

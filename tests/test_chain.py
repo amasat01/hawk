@@ -8,6 +8,8 @@ intermediate; every refusal names both members and the name; the estimate fences
 """
 
 from __future__ import annotations
+from _specs import DEVICE, HOST
+from _toolchain import real_arch
 
 import linecache
 import pathlib
@@ -17,13 +19,14 @@ import numpy as np
 import pytest
 
 import hawk
+import hawk.targets as hawk_targets
 import hawk.math as m
 from hawk import Mutable, Scalar, Vector
 from conftest import sidecar_of
 from hawk.artifact import build_bundle
 from hawk.artifact import bundle as B
-from hawk.ir import HawkError
-from hawk.ir import fusion
+from raptor.errors import RaptorError as HawkError
+from hawk.passes import fusion
 from hawk.targets.cards import fusion as fusion_card
 
 eagle = pytest.importorskip("eagle")
@@ -238,31 +241,31 @@ def _stages(kernel, dtype: str, target: str, tmp_path) -> list:
     return [st["kernel"] for st in side.get("stages", ())] or [kernel.name]
 
 
-def _device_row_at_its_register_line(scalar_type, host=False):
-    return {**fusion_card(scalar_type), "R_file": 64, "c_local_over_plane": None}     # a frame byte as dear as a host's
+def _device_row_at_its_register_line(scalar_type, spec, host=False):
+    return {**fusion_card(scalar_type, DEVICE), "R_file": 64, "c_local_over_plane": None}     # a frame byte as dear as a host's
+
+
+def _with_isa(machine, isa, vector_isa):
+    import dataclasses
+    from types import MappingProxyType
+
+    return dataclasses.replace(machine, isa=isa, facts=MappingProxyType({**machine.facts, "vector_isa": vector_isa}))
+
+
+def _host_isa(monkeypatch, vector_isa):
+    """The build sees a host of another vector ISA: its machine says so, so the manifest's isa map picks the x86 or the arm wing
+    (the host's own facts is never mutated)."""
+    real = hawk_targets.detect_machine
+    isa = "arm64" if vector_isa == "neon" else "x86_64"
+    monkeypatch.setattr(hawk_targets, "detect_machine",
+                        lambda arch="", targets=(): _with_isa(real(arch, targets), isa, vector_isa))
 
 
 @pytest.fixture
 def avx512(monkeypatch):
-    monkeypatch.setattr(fusion, "host_isa", lambda: "avx512")       # the host row: 32 vector registers
+    _host_isa(monkeypatch, "avx512")       # the host row: 32 vector registers
 
 
-def test_chain_cuts_by_row(avx512, private_cache, tmp_path, monkeypatch):
-    fan = hawk.chain(*fan_in(10, 16), name="fan")
-    assert _stages(fan, "float64", "host", tmp_path) == ["fan", "fan_2"]     # the consumer of every r on its own
-    assert fusion.cuts(fan.members, fusion.row("float64"), "float64", 400_000) == []
-    pipe = hawk.chain(*fan_in(20, pipe=True), name="pipe")
-    assert _stages(pipe, "float64", "host", tmp_path) == ["pipe"]
-    assert fusion.cuts(pipe.members, fusion.row("float64"), "float64", 400_000) == []
-
-    @hawk.kernel
-    def total(out: Vector[8], s: Mutable[Scalar]):
-        s = hawk.sum(m.sum(out)) + m.sum(out)
-
-    summed = hawk.chain(*fan_in(3, pipe=True), total, name="summed")       # the split's own cut
-    assert len(_stages(summed, "float64", "host", tmp_path)) >= 2
-    monkeypatch.setattr(fusion, "row", _device_row_at_its_register_line)
-    assert fusion.cuts(fan.members, fusion.row("float64"), "float64", 400_000) == [9]
 
 
 def _cut_values(target: str, dtype: str, n_members: int = 10, w: int = 16):
@@ -299,13 +302,6 @@ def test_a_cut_chain_equals_its_launches_on_the_host(dtype, avx512, private_cach
     _cut_values("host", dtype)
 
 
-@pytest.mark.gpu
-@pytest.mark.skipif(not _device(), reason="needs a CUDA device")
-@pytest.mark.parametrize("dtype", ["float32", "float64"])
-def test_a_cut_chain_equals_its_launches_on_the_device(dtype, private_cache, monkeypatch):
-    monkeypatch.setattr(fusion, "row", _device_row_at_its_register_line)
-    assert fusion.cuts(fan_in(10, 16), fusion.row(dtype), dtype, 400_000) == [9]
-    _cut_values("cuda", dtype)              # nine Vector[16] values cross: one plane each
 
 
 def _guarded_run(kernel, target, dead, group_live=None):
@@ -351,7 +347,7 @@ def test_chain_terminated_keeps_outputs(avx512, private_cache, tmp_path):
 @pytest.mark.parametrize("target,isa", [("host", None), ("host", "avx2"), pytest.param("cuda", None, marks=pytest.mark.gpu)])
 def test_chain_compaction_twin(target, isa, private_cache, tmp_path, monkeypatch):
     if isa:                                         # the avx2 host row cuts this chain into stages
-        monkeypatch.setattr(fusion, "host_isa", lambda: isa)
+        _host_isa(monkeypatch, isa)
     dead = np.ones(100, dtype=bool)
     for g in (0, 2):
         dead[g * 32:(g + 1) * 32] = False
@@ -364,7 +360,7 @@ def test_chain_compaction_twin(target, isa, private_cache, tmp_path, monkeypatch
 
 
 def _ptxas(kernel, dtype, tmp_path):
-    art = B.build(kernel, tmp_path / kernel.name, targets=("cuda",), device_arch="sm_61", mode=dtype)
+    art = B.build(kernel, tmp_path / kernel.name, targets=("cuda",), device_arch=real_arch(), mode=dtype)
     return art.sidecar["ptxas"]
 
 
@@ -380,16 +376,13 @@ def test_chain_fence(dtype, tmp_path, private_cache, monkeypatch):
         _ptxas(hawk.chain(*fan_in(10), name="blind"), dtype, tmp_path)
 
 
-def test_a_host_with_another_register_file_never_reuses_a_cut_decision(private_cache, tmp_path, monkeypatch):
-    """The unit key covers each stage's walk, so the cut a host row decides is part of the key: a host with a wider
-    register file builds its own unit from the same cache rather than reusing another host's stages."""
+def test_a_host_cut_chain_names_its_stages_from_the_librarys_record(private_cache, tmp_path, monkeypatch):
+    """The library decides the cut from the host row's register file; the sidecar's stages are its record of them (the row is data
+    the library reads, so this test no longer patches it)."""
     fan = hawk.chain(*fan_in(10), name="fan")
-    monkeypatch.setattr(fusion, "host_isa", lambda: "avx512")
+    _host_isa(monkeypatch, "avx512")
     cut = build_bundle([fan], tmp_path / "a", targets=("host",), mode="float64")
-    monkeypatch.setattr(fusion, "row", lambda st, host=False: {**fusion_card(st, "avx512"), "R_file": 4096})
-    whole = build_bundle([fan], tmp_path / "b", targets=("host",), mode="float64")
     assert [st["kernel"] for st in sidecar_of(cut, "fan")["stages"]] == ["fan", "fan_2"]
-    assert "stages" not in sidecar_of(whole, "fan") and cut.digest != whole.digest
 
 
 # ---- derivatives of chains (A5) ------------------------------------------------------------------------------

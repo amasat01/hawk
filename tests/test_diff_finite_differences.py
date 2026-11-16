@@ -6,7 +6,7 @@
 A derivative rule table is the one place where a wrong sign or a swapped
 cofactor produces a graph that walks, hashes and emits perfectly and computes
 the wrong number, so this row does not inspect the rules — it EVALUATES them.
-For every op kind in ``hawk.ir.ops.OP_KINDS`` a small primal DAG is built, run
+For every op kind in ``raptor.ir.ops.OP_KINDS`` a small primal DAG is built, run
 through :func:`hawk.diff.vjp` and :func:`hawk.diff.jvp`, and both derivative IRs
 are evaluated by the scratch numpy interpreter (``tests/_eval.py``) against a
 CENTRAL DIFFERENCE of the primal at the same point, to 1e-6 relative. The
@@ -25,10 +25,10 @@ import pytest
 from _eval import evaluate
 
 from hawk.diff import jvp, vjp
-from hawk.ir import Assign, Const, Leaf, Node, Op, Select
-from hawk.ir import make as mk
-from hawk.ir.ops import CAST, INT_BINARY, INT_UNARY, OP_KINDS
-from hawk.types import TensorType
+from raptor.ir import Assign, Const, Leaf, Node, Op, Select
+from raptor.ir import make as mk
+from raptor.ir.ops import CAST, INT_BINARY, INT_UNARY, OP_KINDS
+from raptor.ir.types import TensorType
 
 RNG = np.random.default_rng(20260904)
 H = 1e-5
@@ -138,6 +138,15 @@ LINALG_CASES = [
      lambda j, r: mk("qr_gram_solve", (mk("qr", (j,)), mk("mv", (mk("transpose", (j,)), r))))),
     ("qr_gram_solve_matrix", ("m32", "m32"),
      lambda j, b: mk("qr_gram_solve", (mk("qr", (j,)), mk("mm", (mk("transpose", (j,)), b))))),
+    ("lstsq_vector", ("m32", "v3"), lambda j, r: mk("lstsq", (j, r))),
+    ("lstsq_matrix", ("m32", "m32"), lambda j, r: mk("lstsq", (j, r))),
+    ("lstsq_gram_solve_vector", ("m32", "v3"),
+     lambda j, r: mk("lstsq_gram_solve", (j, mk("mv", (mk("transpose", (j,)), r))))),
+    ("lstsq_gram_solve_matrix", ("m32", "m32"),
+     lambda j, b: mk("lstsq_gram_solve", (j, mk("mm", (mk("transpose", (j,)), b))))),
+    ("lstsq_info", ("m32", "v3"),
+     lambda j, r: (lambda x: Select(mk("eq", (mk("lstsq_info", (j,)), Const(0, TensorType((), "int32")))), x,
+                                    mk("splat", (Const(0.0, S),), x.ttype.shape), x.ttype))(mk("lstsq", (j, r)))),
     ("qr_info", ("m32", "v3"),
      lambda j, r: _lane("qr_info", mk("qr", (j,)), mk("qr_solve", (mk("qr", (j,)), r)))),
     # pathwise mvn_sample: mean + L z, z the counter generator's draws
@@ -171,7 +180,7 @@ CASES = [
     # produced, and the RANK of that sum is the rank it broadcast INTO. Rank 1
     # is the pair above; rank 2 is these two, and they are here because the
     # rank-2 `sum` they mint is the node aether has no `Expression::sum()` for
-    # (`hawk/emit/render._matrix_sum` spells it `matDot` against a ones matrix).
+    # (`staging/aether/wings/base/render._matrix_sum` spells it `matDot` against a ones matrix).
     # The rank axis of a broadcast is not a detail of one op: it decides which
     # aether reduction the emitter must reach for.
     ("mul_broadcast_rank2", ("s", "m33"), _b("mul")),

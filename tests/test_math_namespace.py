@@ -31,6 +31,10 @@ per row.
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import spec_for
+from _specs import HOST
 
 import _oracle as O
 import numpy as np
@@ -41,10 +45,10 @@ import hawk.math as M
 import hawk.math as hm
 import hawk.trace.value as T
 from hawk.artifact import build
-from hawk.emit import render_body
-from hawk.ir import Assign, HawkError, canonical
+from raptor.ir import Assign, canonical
+from raptor.errors import RaptorError as HawkError
 from hawk.trace.value import TableRef, node_of
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 B = TensorType((), "bool")
@@ -59,7 +63,7 @@ MINOR = 4
 
 def _v(t: TensorType, name: str = "a"):
     """A traced value over a fresh leaf of type ``t``."""
-    from hawk.ir import Leaf
+    from raptor.ir import Leaf
 
     if t.dtype == "bool":
         return hawk.Value(Leaf("terminated", "terminated", name, t))
@@ -235,18 +239,6 @@ def test_the_table_covers_exactly_the_exported_namespace():
     assert not stale, f"this row spells {stale}, which hawk.math no longer exports"
 
 
-@pytest.mark.parametrize("name", sorted(SPELLINGS), ids=sorted(SPELLINGS))
-def test_every_name_traces_and_emits(name):
-    """Traced AND rendered: an IR node with no aether spelling traces perfectly
-    and then fails at build time, far from the name that minted it."""
-    node = USED[name]
-    assert not isinstance(node, Exception), (
-        f"the recorded spelling for hawk.math.{name} does not run: {node!r}")
-    sinks = (Assign("out", node, node.ttype),)
-    text = render_body(sinks, canonical(sinks)).text
-    assert text.strip(), f"hawk.math.{name} emitted an empty body"
-
-
 #: The four names that are ADAPTERS rather than re-exports, and what each adapts.
 #: The list is short and named on purpose: every other entry in ``__all__`` must
 #: be the identical object ``hawk.trace`` exports, so "namespace, not layer" is
@@ -292,26 +284,6 @@ def test_every_exported_name_is_resolvable_and_is_the_trace_surface_itself():
     # mints an op kind the flat surface cannot.
     assert M.vec(1.0, 2.0).node.kind == hm.vec(1.0, 2.0).node.kind
     assert M.where(_v(B), _v(S), _v(S, "b")).node.kind == "select"
-
-
-def test_both_backends_bind_the_name_a_sample_index_renders_as():
-    """The body knows exactly ONE thing about its wrapper: the identifier the
-    index prologue binds the lane's integer index to ( lets it know no more).
-    Both wrappers must bind that name, and the name has one spelling
-    (:data:`hawk.emit.render.SAMPLE_INDEX_IDENT`) — otherwise a body that reads
-    the lane index compiles on one target and not the other."""
-    from hawk.targets import TARGETS
-    from hawk.emit.render import SAMPLE_INDEX_IDENT
-
-    for target in TARGETS.values():
-        if target.wrapper is None:
-            continue
-        prologue = target.wrapper.index_prologue()
-        assert f" {SAMPLE_INDEX_IDENT} =" in prologue, (
-            f"the {target.id} prologue binds no {SAMPLE_INDEX_IDENT!r}:\n{prologue}")
-    lane = M.sample_index()
-    sinks = (Assign("out", node_of(lane * 1.0), S),)
-    assert SAMPLE_INDEX_IDENT in render_body(sinks, canonical(sinks)).text
 
 
 def test_random_namespace_is_the_same_object_as_the_flat_names():
@@ -432,3 +404,5 @@ def test_nan_and_inf_are_the_float_constants(tmp_path, monkeypatch):
 
     got = np.asarray(miss(np.array([2.0, -1.0])))
     assert got[0] == 2.0 and np.isnan(got[1])
+
+

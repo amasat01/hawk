@@ -11,7 +11,7 @@ Two tiers: an IR-level check (:mod:`_eval`, the same scratch interpreter
 scattered-accumulate shape cheaply, then a COMPILED host+device run of a
 published bundle (``_deployable.diagnostic``'s vjp/jvp, the kind every other
 terminated-mask row in ``test_ext_seams.py`` already exercises) — the body
-text is shared between HAWK's two wrappers (``hawk/emit/host.py``'s own
+text is shared between HAWK's two wrappers (``staging/aether/wings/cpu/host.py``'s own
 docstring), so one compiled check pinned on both targets is what "host and
 device emitters both" means in practice.
 """
@@ -29,7 +29,7 @@ from conftest import sidecar_of
 
 from hawk import Index, Kernel, Mutable, Scalar, Table, Terminated, kernel
 from hawk.diff import jvp, vjp
-from hawk.ir import Leaf, Loop, canonical_nodes
+from raptor.ir import Leaf, Loop, canonical_nodes
 
 H = 1e-5
 N = 8
@@ -263,9 +263,9 @@ def test_a_kernel_like_object_with_no_kind_is_treated_as_guard_free():
 # --------------------------------------------------------------------------- #
 # -- regression (post-#30): a reverse loop's OWN scatter commit (the
 # -- gather/scatter transpose of a `.at()` read inside a lowered `for`) is a
-# -- Loop, not a value-bearing Sink -- a downstream package's KAN edge
-# -- kernels are built on exactly this shape (_kan.py's own docstring:
-# -- copied from a downstream package's KAN edge cell). 609 AttributeErrors
+# -- Loop, not a value-bearing Sink -- a downstream package's spline edge
+# -- kernels are built on exactly this shape (_spline.py's own docstring:
+# -- copied from a downstream package's spline edge cell). 609 AttributeErrors
 # -- on 'Loop' object has no attribute 'value' is what an un-recursing
 # -- masker does to it.
 # --------------------------------------------------------------------------- #
@@ -290,7 +290,7 @@ def test_vjp_of_a_scatter_inside_a_loop_does_not_crash_and_masks_it():
         "read the terminated plane -- inside the loop's own boundary")
     # canonical() (the same walk a build goes through) must succeed and bind
     # the terminated slot -- the ACTUAL crash site this message reports.
-    from hawk.ir import canonical
+    from raptor.ir import canonical
 
     walk = canonical(derived)
     assert ("terminated", "terminated") in walk.slot_of

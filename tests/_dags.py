@@ -10,8 +10,8 @@ node constructors directly, which is how tracer will build it later.
 from __future__ import annotations
 
 from hawk import Quantity
-from hawk.ir import AccumWrite, Assign, At, Const, Leaf, Op
-from hawk.types import TensorType, Wire
+from raptor.ir import AccumWrite, Assign, At, Const, Leaf, Op
+from raptor.ir.types import TensorType, Wire
 
 F64 = TensorType((), "f64")
 V3 = TensorType((3,), "f64")
@@ -22,8 +22,7 @@ IDX = TensorType((), "i32")
 def state_quantity() -> Quantity:
     """The second worked example: ``sc__state__pos`` / ``sc__state__vel``."""
     return Quantity(slug="sc", name="state",
-                    wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))],
-                    reconstruct=lambda p, v: (p, v))
+                    wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))])
 
 
 def orientation_quantity() -> Quantity:
@@ -31,8 +30,7 @@ def orientation_quantity() -> Quantity:
     ACCESS lowering to a quaternion wire plus a per-sample scalar wire."""
     return Quantity(slug="earth", name="orientation",
                     wires=[Wire("q", "vec_in", (4,), tag="quaternion"),
-                           Wire("w", "per_sample", ())],
-                    reconstruct=lambda q, w: (q, w))
+                           Wire("w", "per_sample", ())])
 
 
 def drag_dag(*, permuted: bool = False):

@@ -4,7 +4,7 @@
 """IR -> IR autodiff, symbolic and in both directions. :func:`~hawk.diff.transform.vjp`
 and :func:`~hawk.diff.transform.jvp` synthesise
 a NEW IR from a primal one, driven by the per-node-KIND rule table
-(:mod:`hawk.diff.rules`); the result is an ordinary HAWK IR that goes through
+(:mod:`raptor.rules.core`); the result is an ordinary HAWK IR that goes through
 the same canonical walk, emitter and cache as any primal.
 
 :func:`~hawk.diff.params.param_planes` reads a kernel's uniforms from one-cell

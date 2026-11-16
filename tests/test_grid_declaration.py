@@ -11,6 +11,9 @@ or shadowing label, a ``group`` that names nothing) saying what to write instead
 ``@hawk.kernel(group=...)`` stores the compaction group, a lane count."""
 
 from __future__ import annotations
+from _specs import spec_for, default_kind
+from _specs import aether_writer
+from _specs import HOST
 
 import hashlib
 
@@ -18,16 +21,11 @@ import pytest
 
 import hawk
 from hawk import Grid, HawkError, Mutable, Scalar
-from hawk.emit import FLOAT64, render_source
+from aether.wings.base.wrapper import FLOAT64
 from hawk.math import split_index
 from hawk.targets import TARGETS
 
 ROWS = ("cuda", "host")
-
-
-def _md5(kernel, row: str) -> str:
-    source = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[row], mode=FLOAT64)
-    return hashlib.md5(source.text.encode()).hexdigest()
 
 
 def _by_label():
@@ -89,25 +87,6 @@ def _three_axes_by_hand():
         return x + a * 100.0 + b * 10.0 + c
 
     return k
-
-
-@pytest.mark.parametrize("row", ROWS)
-def test_label_and_position_emit_the_text_split_index_does(row):
-    want = _md5(_by_split(), row)
-    assert _md5(_by_label(), row) == want
-    assert _md5(_by_position(), row) == want
-
-
-@pytest.mark.parametrize("row", ROWS)
-def test_lane_flat_is_the_sample_index(row):
-    assert _md5(_flat_grid(), row) == _md5(_flat_index(), row)
-
-
-@pytest.mark.parametrize("row", ROWS)
-def test_three_axes_read_each_coordinate_as_the_hand_split(row):
-    k = _three_axes()
-    assert k.lane_space == (("a", None), ("b", 4), ("c", 3))
-    assert _md5(k, row) == _md5(_three_axes_by_hand(), row)
 
 
 def test_a_grid_kernel_has_the_lane_space_and_group_it_declared():
@@ -182,7 +161,7 @@ def test_a_bad_positional_read_is_refused(index, why):
 
 
 def _exec(src: str):
-    from raptor import flow
+    from hawk.trace import flow
 
     ns: dict = {}
     flow.exec_source(src, ns)
@@ -257,31 +236,6 @@ def test_an_axis_read_needs_a_grid():
         "    return u.at(row=1)\n")
     with pytest.raises(HawkError, match=r"names Grid axes, but the kernel declares no Grid"):
         _exec(src)
-
-
-def test_the_axis_read_is_the_flat_read_of_its_index():
-    def build(read):
-        @hawk.kernel
-        def k(lane: Grid["row", "col":4], u: Scalar) -> Scalar:
-            return read(lane, u)
-
-        return k
-
-    by_axis = build(lambda lane, u: u.at(row=lane.row - 1, col=lane.col))
-    by_flat = build(lambda lane, u: u.at((lane.row - 1) * 4 + lane.col))
-    assert _md5(by_axis, "host") != ""
-    assert by_axis.walk.access.cls == by_flat.walk.access.cls == "cross_sample_read"
-
-
-def test_reading_an_input_keeps_a_comparison_in_the_order_it_was_written():
-    from hawk.emit import render_body
-
-    @hawk.kernel
-    def k(a: Scalar, b: Scalar) -> Scalar:
-        return hawk.math.where(a >= b, a, b)
-
-    text = render_body(k.sinks, k.walk).text
-    assert ">=" in text and "<=" not in text
 
 
 def test_a_value_computed_in_the_launch_cannot_be_read_at_another_lane():

@@ -16,6 +16,7 @@
 """
 
 from __future__ import annotations
+from _specs import DEVICE
 
 import json
 import math
@@ -29,7 +30,7 @@ import hawk.math
 from hawk import HawkError, Kernel, Mutable, Param, Scalar, Vector, kernel, runtime
 from hawk.artifact import build, build_bundle
 from hawk.compile import cache as compile_cache
-from hawk.ir.split import stages
+from raptor.wings.base.split import stages
 
 SIZES = (1, 31, 33, 1000, 65536)
 RUN = 4096
@@ -120,7 +121,7 @@ def _tol(mode):
 # -- two stages -------------------------------------------------------------
 
 def test_a_read_reduction_is_two_stages():
-    found = stages("share", share.sinks)
+    found = stages("share", share.sinks, spec=DEVICE)
     assert [s.name for s in found] == ["share", "share_2"]
     assert found[0].cells_out == ("cut0",) and found[0].cells_in == ()
     assert found[1].cells_in == ("cut0",) and found[1].cells_out == ()
@@ -179,7 +180,7 @@ def test_two_stages_through_hawk_run_are_eagles_ordered_bits(built, n):
 
 @pytest.mark.parametrize("n", (1, 33, 1000))
 def test_a_stored_and_read_vector_sum_reuses_its_cell(tmp_path, cache_dir, n):
-    found = stages("stored_vec", stored_vec.sinks)
+    found = stages("stored_vec", stored_vec.sinks, spec=DEVICE)
     assert [c for st in found for c in st.cells_out] == ["tot"]
     bundle = _bundle([stored_vec], tmp_path, "float64", cache_dir)
     side = json.loads((bundle.directory / "stored_vec.json").read_text())
@@ -230,7 +231,7 @@ def test_a_vector_reduction_is_read_back_column_by_column(built):
 
 def test_a_store_waits_for_the_last_stage_reading_the_planes_earlier_value(
         tmp_path, cache_dir):
-    found = stages("rescale", rescale.sinks)
+    found = stages("rescale", rescale.sinks, spec=DEVICE)
     assert [[getattr(s, "name", None) for s in st.sinks] for st in found] == [
         ["cut0"], ["y", "z"]]
     bundle = _bundle([rescale], tmp_path, "float64", cache_dir)
@@ -263,6 +264,29 @@ def test_a_cut_inside_a_for_is_still_refused():
             z = x / acc
 
 
+def test_a_cut_read_inside_a_for_is_refused_by_the_split():
+    """A cut taken outside a ``for`` and read inside it traces; the split that would lower it refuses, before any text."""
+    @kernel
+    def with_index(x: Scalar, z: Mutable[Scalar]):
+        s = hawk.sum(x)
+        acc = x
+        for i in range(3):
+            acc = acc + s * i
+        z = acc
+
+    @kernel
+    def alone(x: Scalar, z: Mutable[Scalar]):
+        s = hawk.sum(x)
+        acc = x
+        for _ in range(3):
+            acc = acc + s
+        z = acc
+
+    for looped in (with_index, alone):
+        with pytest.raises(HawkError, match="a cut inside a `for` is not in this release.*one launch per iteration"):
+            stages("looped", looped.sinks, spec=DEVICE)
+
+
 def test_a_max_over_samples_read_in_the_body_has_no_derivative():
     @kernel
     def peak(x: Scalar, z: Mutable[Scalar]):
@@ -278,7 +302,7 @@ def test_the_vjp_is_split_and_matches_central_differences(tmp_path, cache_dir, p
     primal = hawk.diff.param_planes(wave) if promoted else wave
     fwd = _bundle([wave], tmp_path / "f", "float64", cache_dir)
     grad = Kernel(primal.name + "_vjp", hawk.diff.vjp(primal, primal_unit=fwd.digest))
-    assert len(stages(grad.name, grad.sinks)) == 3
+    assert len(stages(grad.name, grad.sinks, spec=DEVICE)) == 3
     bundle = _bundle([grad], tmp_path / "g", "float64", cache_dir)
     n, k = 1000, 0.7
     x = _x(n, "float64", lo=-2.0)
@@ -300,7 +324,7 @@ def test_the_vjp_is_split_and_matches_central_differences(tmp_path, cache_dir, p
 # -- one stage --------------------------------------------------------------
 
 def test_a_kernel_reading_no_reduction_is_one_unchanged_kernel(tmp_path, cache_dir):
-    assert stages("plain", plain.sinks) is None
+    assert stages("plain", plain.sinks, spec=DEVICE) is None
     bundle = _bundle([plain], tmp_path, "float64", cache_dir)
     assert [a.name for a in bundle.artifacts] == ["plain"]
     assert "stages" not in bundle.artifacts[0].sidecar
@@ -326,12 +350,10 @@ def test_the_first_stage_names_every_stage_and_cell(built):
     assert list(arts) == ["standard", "standard_2", "standard_3"]
     first = arts["standard"]
     assert first["schema_version"] == 3
-    assert first["stages"] == [
-        {"kernel": "standard", "cells_in": [], "cells_out": ["mu"], "recomputed": []},
-        {"kernel": "standard_2", "cells_in": ["mu"], "cells_out": ["cut0"],
-         "recomputed": []},
-        {"kernel": "standard_3", "cells_in": ["mu", "cut0"], "cells_out": ["t"],
-         "recomputed": ["sub"]},
+    assert first["stages"] == [          # the library's record of a stage has no `recomputed` list
+        {"kernel": "standard", "cells_in": [], "cells_out": ["mu"]},
+        {"kernel": "standard_2", "cells_in": ["mu"], "cells_out": ["cut0"]},
+        {"kernel": "standard_3", "cells_in": ["mu", "cut0"], "cells_out": ["t"]},
     ]
     for later in ("standard_2", "standard_3"):
         assert "stages" not in arts[later]

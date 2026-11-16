@@ -8,6 +8,8 @@ interpreter twin against the unrolled layer and against finite differences, the
 emitted text, and the compiled host kernel."""
 
 from __future__ import annotations
+from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import _spline_forms as S
 import numpy as np
@@ -21,8 +23,8 @@ from hawk import Kernel
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
-from hawk.ir import HawkError, canonical
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import canonical
 
 WRT = ("x", "theta")
 
@@ -38,8 +40,8 @@ def _env(n, form, rng):
 
 
 def _layers(n, form):
-    rolled = S.kan_rolled(form, n)
-    unrolled = S.kan_layer("local", n) if form == "plain" else S.kan_switch(n)
+    rolled = S.spline_rolled(form, n)
+    unrolled = S.spline_layer("local", n) if form == "plain" else S.spline_switch(n)
     return rolled, unrolled
 
 
@@ -105,7 +107,7 @@ def _recurrence(x: hawk.Vector[4], kinds: hawk.Vector[4], g: hawk.Scalar,
     for e in range(4):
         acc = m.dispatch(m.int32(kinds[e]),
                          [m.tanh(g * acc + x[e]), acc * 0.5 + x[e] * x[e]],
-                         policy="switch")
+                         strategy="switch")
     y = acc
 
 
@@ -126,24 +128,6 @@ def test_a_recurrence_whose_dispatch_reads_the_carry_matches_finite_differences(
 
 # --------------------------------------------------------------------------
 # the emitted text
-
-
-@pytest.mark.parametrize("form", ["plain", "switch"])
-def test_the_rolled_vjp_commits_inside_the_loop_and_holds_no_row(form):
-    sinks = vjp(S.kan_rolled(form, 8), wrt=WRT)
-    lines = render_body(tuple(sinks), canonical(tuple(sinks))).text.splitlines()
-    text = "\n".join(lines)
-    # no carried or copied row (the dead zero base the loop boundary names is
-    # dropped by the compiler: an open item)
-    assert "hawk_sv" not in text and "hawk_it" not in text
-    for plane in ("mut_bar_theta", "mut_bar_x"):         # one prologue per plane
-        assert sum("for (Int hk" in ln and plane in ln for ln in lines) == 1, plane
-    loop = next(n for n, ln in enumerate(lines) if "for (Int hawk_k" in ln)
-    links = [n for n, ln in enumerate(lines) if "mut_bar_theta[i].at(" in ln and "+=" in ln]
-    depth = len(lines[loop]) - len(lines[loop].lstrip())
-    assert links and all(n > loop and len(lines[n]) - len(lines[n].lstrip()) > depth
-                         for n in links), links
-    assert not any(ln.strip().startswith("mut_bar_theta[i] =") for ln in lines)
 
 
 # --------------------------------------------------------------------------
@@ -169,7 +153,7 @@ def test_the_rolled_switch_vjp_host_kernel_equals_the_twin(host):
     lane agrees with the interpreter to host contraction, a terminated sample's
     planes are untouched, and a slot no edge reads is zeroed by the prologue."""
     n, count = 8, 64
-    rolled = S.kan_rolled("switch", n)
+    rolled = S.spline_rolled("switch", n)
     sinks = vjp(rolled, wrt=WRT)
     art = host("rolled_switch_vjp", rolled, sinks)
     rng = np.random.default_rng(5)
@@ -227,7 +211,7 @@ def test_two_iterations_hitting_one_slot_accumulate(host):
 
 def test_second_order_through_a_rolled_vjp_refuses_by_name():
     with pytest.raises(HawkError, match="once per iteration"):
-        jvp(vjp(S.kan_rolled("plain", 4), wrt=WRT), wrt=WRT)
+        jvp(vjp(S.spline_rolled("plain", 4), wrt=WRT), wrt=WRT)
 
 
 # --------------------------------------------------------------------------
@@ -241,7 +225,7 @@ def _gather_in_a_case(x: hawk.Vector[4], kinds: hawk.Vector[4],
     for e in range(4):
         t = m.dispatch(m.int32(kinds[e]),
                        [theta[m.index(t + 0.5 * m.real(e), 6)] * x[e], t * 0.5 + x[e] * x[e]],
-                       policy="switch")
+                       strategy="switch")
     y = t
 
 
@@ -271,7 +255,7 @@ def _jump_with_a_case(x: hawk.Vector[4], kinds: hawk.Vector[4], s: hawk.Scalar,
                       y: hawk.Mutable[hawk.Scalar]):
     t = 0.0
     for e in range(4):
-        t = m.dispatch(m.int32(kinds[e]), [m.tanh(t + x[e]), x[e] * x[e]], policy="switch")
+        t = m.dispatch(m.int32(kinds[e]), [m.tanh(t + x[e]), x[e] * x[e]], strategy="switch")
         if t < s:
             t = t * 2.0
     y = t

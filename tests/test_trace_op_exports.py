@@ -3,8 +3,8 @@
 
 """The authoring surface spells EVERY op the IR carries.
 
-WHY THIS ROW EXISTS. ``hawk.ir.ops.OP_KINDS`` is the vocabulary, the rule
-table is keyed on it and ``hawk/emit/render.py`` renders it — three consumers
+WHY THIS ROW EXISTS. ``raptor.ir.ops.OP_KINDS`` is the vocabulary, the rule
+table is keyed on it and ``staging/aether/wings/base/render.py`` renders it — three consumers
 that a row already checks against each other. Nobody was checking the FOURTH:
 the surface an author writes a kernel through. ``outer`` was in ``MATRIX_OPS``,
 carried a derivative rule, and rendered as ``aether::outer(...)``, but
@@ -43,7 +43,7 @@ traced at import::
 and with that one term removed so the module could collect, the two enumeration
 rows failed on their own::
 
-    AssertionError: these op kinds are in hawk.ir.ops.OP_KINDS but no name
+    AssertionError: these op kinds are in raptor.ir.ops.OP_KINDS but no name
     re-exported by hawk.trace mints them: ['outer']. An op the IR types, the
     rule table differentiates and the emitter renders, that an author cannot
     write, is a hole in the language
@@ -57,7 +57,7 @@ name behind the key did not exist.
 (b) the rank-2 reduction spelled ``.sum()`` again (``_Renderer._matrix_sum``
 bypassed). The VJP half stopped compiling, on ``bar_k`` exactly::
 
-    hawk.ir.nodes.HawkError: host compile of 'matvocab_vjp' failed (rc=1).
+    hawk.HawkError: host compile of 'matvocab_vjp' failed (rc=1).
     matvocab_vjp.cpp:126:64:
       126 | mut_bar_k[i] = mtx_bar_W_i.cwiseMul((t1 * mtx_A_i)).sum();
     aether/expr/Expression.h:246:54: error: static assertion failed:
@@ -77,10 +77,10 @@ import hawk
 import hawk.math as hm
 from hawk.artifact import build
 from hawk.diff import vjp
-from hawk.ir import Leaf, canonical
-from hawk.ir.ops import OP_KINDS
+from raptor.ir import Leaf, canonical
+from raptor.ir.ops import MINTED_OPS, OP_KINDS
 from hawk.trace.value import TableRef, node_of
-from hawk.types import TensorType
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 B = TensorType((), "bool")
@@ -235,30 +235,15 @@ SPELLINGS = {
     "eigh_w": lambda: hm.eigh(_v(M33))[0],
     "eigh_v": lambda: hm.eigh(_v(M33))[1],
     "eigh_info": lambda: hm.eigh(_v(M33))[2],
-    "qr": lambda: node_of(hm.lstsq(_v(TensorType((40, 34), "f64")), _v(TensorType((40,), "f64"), "b"))[0]).operands[0],
-    "qr_solve": lambda: hm.lstsq(_v(TensorType((40, 34), "f64")), _v(TensorType((40,), "f64"), "b"))[0],
-    "qr_info": lambda: hm.lstsq(_v(TensorType((40, 34), "f64")), _v(TensorType((40,), "f64"), "b"))[1],
+    "lstsq": lambda: hm.lstsq(_v(TensorType((40, 34), "f64")), _v(TensorType((40,), "f64"), "b"))[0],
+    "lstsq_info": lambda: hm.lstsq(_v(TensorType((40, 34), "f64")), _v(TensorType((40,), "f64"), "b"))[1],
     "ray_tri": lambda: hm.ray_tri(*(_v(V3, n) for n in "oabcd")),
     "ray_aabb": lambda: hm.ray_aabb(*(_v(V3, n) for n in "odlh")),
     "ray_sphere": lambda: hm.ray_sphere(_v(V3, "o"), _v(V3, "d"), _v(V3, "c"), _v(S, "r")),
 }
 
-#: The kinds with no authoring spelling, and why. ``add_at`` is the adjoint of
-#: ``component_at``: ``v[k]`` reverses into "add ``g`` at ``k``", IR the
-#: transform mints (an author accumulates with ``+``). ``splat`` is a BROADCAST
-#: node: an author never writes one, because writing ``a + 1.0`` against a
-#: rank-1 value already broadcasts through the elementwise type rule.
-#: The kind exists so a DERIVATIVE can name the transpose of that broadcast —
-#: ``hawk/diff/rules.zero_like`` and the ``sum``/``splat`` pair — which is IR
-#: the transform mints, never text an author types.
-UNSPELLED = {"lu_solve_t": "the transposed solve a derivative of lu_solve/lu_det mints",
-             "tri_lower": "the forward half of the Cholesky solve a derivative mints",
-             "tri_upper_t": "the back half of the Cholesky solve a derivative mints",
-             "qr_gram_solve": "the solve with J^T J a derivative of lstsq mints (two triangular solves on R)",
-             "splat": "the broadcast a derivative mints; an author's rank-0 "
-                      "operand broadcasts through the elementwise type rule",
-             "add_at": "the adjoint of component_at, minted by the derivative rule",
-             "clamp_index": "the bound Table.at holds its index in, minted by the read itself"}
+#: The ops with no authoring spelling are DECLARED by raptor (``MINTED_OPS`` in raptor/ir/core.json): a derivative rule, a
+#: lowering or a table read mints them. This row reads that declaration; it keeps no list of its own.
 
 
 def _mint(spell):
@@ -283,7 +268,7 @@ MINTED = {kind: _mint(spell) for kind, spell in SPELLINGS.items()}
 def test_every_op_kind_has_an_authoring_spelling():
     covered = {kind for kind, got in MINTED.items()
                if not isinstance(got, Exception) and got.kind == kind}
-    missing = sorted(set(OP_KINDS) - covered - set(UNSPELLED))
+    missing = sorted(set(OP_KINDS) - covered - set(MINTED_OPS))
     assert not missing, (
         "these op kinds are in hawk.ir.ops.OP_KINDS but no name re-exported by "
         f"hawk.trace mints them: {missing}. An op the IR types, the rule table "
@@ -303,11 +288,12 @@ def test_each_spelling_mints_the_kind_it_claims(kind):
         f"the surface spelling recorded for {kind!r} mints {node.kind!r} instead")
 
 
-def test_the_unspelled_kinds_are_named_with_a_reason():
-    """An exception list is only honest while it is short and explained."""
-    assert set(UNSPELLED) <= set(OP_KINDS)
-    for kind, why in UNSPELLED.items():
-        assert why, f"{kind!r} is excused with no reason"
+def test_a_declared_minted_op_has_no_authoring_spelling():
+    """The declaration is exact: a minted op is an op, and none of them is spelled by an author."""
+    assert set(MINTED_OPS) <= set(OP_KINDS)
+    spelled = sorted(set(MINTED_OPS) & {kind for kind, got in MINTED.items()
+                                        if not isinstance(got, Exception) and got.kind == kind})
+    assert not spelled, f"declared minted in raptor, yet an authoring name spells them: {spelled}"
 
 
 # --------------------------------------------------------------------------- #

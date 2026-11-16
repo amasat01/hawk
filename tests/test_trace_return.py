@@ -15,7 +15,7 @@ import pytest
 import hawk
 import hawk.math
 from hawk import Matrix, Mutable, Param, Scalar, Vector, kernel
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 _ids = itertools.count()
 

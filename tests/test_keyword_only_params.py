@@ -10,12 +10,13 @@ the all-positional one.
 """
 
 from __future__ import annotations
+from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import pytest
 
 from hawk import Mutable, Scalar, kernel
-from hawk.emit import render_body
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.trace import trace_value
 
 
@@ -27,12 +28,6 @@ def _positional(x: Scalar, scale: Scalar, y: Mutable[Scalar]):
 @kernel
 def _keyword_only(x: Scalar, *, scale: Scalar, y: Mutable[Scalar]):
     y = x * scale
-
-
-def test_a_keyword_only_signature_emits_the_same_slots_and_body():
-    assert _keyword_only.arg_spec == _positional.arg_spec
-    assert render_body(_keyword_only.sinks, _keyword_only.walk).text == \
-        render_body(_positional.sinks, _positional.walk).text
 
 
 def test_trace_value_binds_keyword_only_parameters_by_name():

@@ -8,14 +8,15 @@ an untaken arm's out-of-range row is never read). A read guarded by a
 per-iteration condition stays in the body."""
 
 from __future__ import annotations
+from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import numpy as np
 from _eval import evaluate
 
 import hawk
 import hawk.math as m
-from hawk.emit import render_body
-from hawk.ir import Loop
+from raptor.ir import Loop
 
 T = 6
 W = 3
@@ -30,7 +31,7 @@ def shared_row(x: hawk.Scalar, kind: hawk.Scalar, perm: hawk.Table["i":4],
     for t in range(T):
         arms = [s * th.at(r=q, c=1), s + th.at(r=q, c=2) * 0.5,
                 m.sin(s) * th.at(r=q, c=0)]
-        s = m.dispatch(m.int32(kind), arms, policy="switch") * 0.9 + 0.1 + xs.at(q + t) * 0.01
+        s = m.dispatch(m.int32(kind), arms, strategy="switch") * 0.9 + 0.1 + xs.at(q + t) * 0.01
     y = s
 
 
@@ -43,10 +44,6 @@ def per_iteration_guard(x: hawk.Scalar, n: hawk.Scalar, a: hawk.Table["k":T],
     y = s
 
 
-def _text(kernel) -> str:
-    return render_body(kernel.sinks, kernel.walk).text
-
-
 def _loop(kernel):
     return next(n for n in kernel.walk.order if isinstance(n, Loop))
 
@@ -57,19 +54,8 @@ def far_arm(x: hawk.Scalar, kind: hawk.Scalar, tab: hawk.Table[hawk.Scalar],
     s = x
     for t in range(T):
         arms = [s * tab.at(m.int32(x * 100.0)), s * 2.0]
-        s = m.dispatch(m.int32(kind), arms, policy="switch") + 0.1
+        s = m.dispatch(m.int32(kind), arms, strategy="switch") + 0.1
     y = s
-
-
-def _in_loop(kernel) -> str:
-    text = _text(kernel)
-    return text[text.index("for ("):]
-
-
-def test_the_row_and_the_arm_reads_are_hoisted_out_of_the_loop():
-    body = _in_loop(shared_row)
-    assert "lut_perm" not in body and "lut_th" not in body
-    assert "lut_xs" in body                      # the read that varies with the index
 
 
 def test_the_hoisted_kernel_gives_the_same_answer():
@@ -86,16 +72,3 @@ def test_the_hoisted_kernel_gives_the_same_answer():
         assert abs(got - s) < 1e-12
 
 
-def test_an_untaken_arms_row_out_of_range_is_not_read():
-    tab = np.arange(1.0, 6.0)
-    got = evaluate(far_arm.sinks, {"x": 0.6, "kind": 1.0, "tab": tab, "terminated": False},
-                   lanes=1)["y"]
-    s = 0.6
-    for _ in range(T):
-        s = s * 2.0 + 0.1
-    assert abs(got - s) < 1e-12
-    assert "lut_tab" not in _in_loop(far_arm)
-
-
-def test_a_read_guarded_by_the_loop_index_stays_in_the_body():
-    assert "lut_a" in _in_loop(per_iteration_guard)

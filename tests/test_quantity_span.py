@@ -22,8 +22,9 @@ from __future__ import annotations
 import pytest
 from _dags import F64, V3, orientation_quantity, state_quantity
 
-from hawk.ir import Assign, HawkError, Leaf, Op, canonical
-from hawk.types import TensorType, Wire
+from raptor.ir import Assign, Leaf, Op, canonical
+from raptor.errors import RaptorError as HawkError
+from raptor.ir.types import TensorType, Wire
 
 
 def test_namespacing_follows_the_declaration():

@@ -9,12 +9,13 @@ SAME body as the kernel an author would have written with the expression inline.
 """
 
 from __future__ import annotations
+from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import pytest
 
 from hawk import Mutable, Scalar, Terminated, kernel
-from hawk.emit import render_body
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.trace import trace_value
 from hawk.trace.kernel import Kernel
 from hawk.trace.value import MutableRef
@@ -43,13 +44,6 @@ def _host_kernel(value) -> Kernel:
     out[...] = value
     return Kernel("_inline", tuple(out.sinks),
                   {"x": Scalar, "v": Scalar, "y": Mutable[Scalar]})
-
-
-def test_a_traced_value_commits_to_the_same_body_as_the_inline_kernel():
-    host = _host_kernel(trace_value(_branchy, {"x": Scalar, "v": Scalar}))
-    assert host.arg_spec == _inline.arg_spec
-    assert render_body(host.sinks, host.walk).text == \
-        render_body(_inline.sinks, _inline.walk).text
 
 
 def test_the_bindings_are_the_declarations_and_annotations_are_not_read():

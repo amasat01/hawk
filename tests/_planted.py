@@ -31,10 +31,8 @@ import json
 import shutil
 from pathlib import Path
 
-from hawk.artifact.layout import exports
+from hawk.artifact import emit_source
 from hawk.compile import CompileOptions, compile_source
-from hawk.emit import FLOAT64, render_source
-from hawk.targets import TARGETS
 
 #: What the emitted ``fraction`` body reads, and what the plant makes it read.
 TRUE_TOTAL = "static_cast<Int>(nsm_n_samples)"
@@ -52,8 +50,7 @@ def count_reading_bundle(kernel, directory, *, name: str = "fraction",
     comparison fail."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    source = render_source(name, kernel.sinks, kernel.walk, TARGETS["host"],
-                           mode=FLOAT64, exports=exports("host"))
+    source = emit_source(kernel, name=name, mode="float64", targets=("host",)).sources["host"]
     if TRUE_TOTAL not in source.text:
         raise AssertionError(
             f"the planted surgery cannot find {TRUE_TOTAL!r} in the emitted "

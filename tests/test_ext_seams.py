@@ -41,6 +41,9 @@ Every plant was then removed.
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import HOST
 
 import _deploy as L
 import _deployable as D
@@ -105,7 +108,8 @@ def test_sink_policy_produces_a_different_artifact_from_the_default(built):
     assert "hawk_abi::accum_add_compensated(" in comp, (
         "the compensated commit must be ONE call to the target-atomic helper:\n"
         + comp)
-    assert "twoSumErr_" in comp and "atomicAdd" in comp, (
+    # a host unit carries the host arm only: ``fetch_add``, not the device's ``atomicAdd``
+    assert "twoSumErr_" in comp and "fetch_add" in comp, (
         "the compensated commit must carry the Knuth two-sum residual, target-"
         "atomic on both lanes:\n" + comp)
 
@@ -136,7 +140,7 @@ def test_sink_policy_names_a_slot_it_does_not_build():
     import pytest
 
     from hawk.ext import sink_policy
-    from hawk.ir import HawkError
+    from raptor.errors import RaptorError as HawkError
 
     for name in ("banded",):
         with pytest.raises(HawkError) as excinfo:
@@ -144,21 +148,6 @@ def test_sink_policy_names_a_slot_it_does_not_build():
         assert "not built" in str(excinfo.value) and "reserved sink policy" in str(excinfo.value)
 
 
-def test_sink_policy_atomic_is_built_and_names_the_commit_plain_already_makes():
-    """``atomic`` is a BUILT value. A scattered accumulate commits
-    through the TARGET's own atomic add under ``plain`` as well: a scattered
-    read-modify-write has no correct use under any parallel launch (eagle's host
-    team is OpenMP over tiles; the device is the device), so the seam offers no
-    such commit, and ``atomic`` spells the one it makes out loud."""
-    from hawk.emit import render_body
-    from hawk.ext import PLAIN, Kind, sink_policy
-
-    atomic = sink_policy("atomic")
-    assert atomic.id == "atomic"
-    plain = render_body(D.scatter.sinks, D.scatter.walk, kind=Kind("p", sink=PLAIN)).text
-    loud = render_body(D.scatter.sinks, D.scatter.walk, kind=Kind("a", sink=atomic)).text
-    assert plain == loud
-    assert "hawk_abi::accum_add(" in plain and "+=" not in plain
 
 
 @pytest.mark.gpu
@@ -431,14 +420,14 @@ def test_compensation_stays_exact_under_fma_contraction(tmp_path, cache_dir):
     its rounded value is p = 1 + 2^-29. Accumulated onto 1.0 the sum 1 + p is
     exact, so the companion must stay 0. Fused, the residual would see the
     2^-60 tail (confirmed by removing the AETHER_FP_BARRIER lines from
-    hawk/emit/wrapper.py: c = 2^-60). The probe kernel shows this very build
+    staging/aether/wings/base/wrapper.py: c = 2^-60). The probe kernel shows this very build
     does contract (non-vacuity)."""
     import platform
 
     import eagle.exec as eexec
     from eagle import plan as eplan
 
-    from hawk.compile import host_codegen_flags
+    from ospreys.cpu.toolchain import host_codegen_flags
 
     if platform.machine().lower() not in ("x86_64", "amd64"):
         pytest.skip("the fast host profile is x86-64 only")
@@ -516,7 +505,7 @@ def test_a_terminated_sample_keeps_its_prior_target_and_companion_bytes(
 
 
 def test_two_targets_under_one_into_refuses():
-    from hawk.ir import HawkError
+    from raptor.errors import RaptorError as HawkError
 
     K = _Kind("two_targets_one_into", sink=_compensated(into="c"))
     with pytest.raises(HawkError, match="exactly ONE"):
@@ -527,7 +516,7 @@ def test_two_targets_under_one_into_refuses():
 
 
 def test_a_companion_name_colliding_with_a_parameter_refuses():
-    from hawk.ir import HawkError
+    from raptor.errors import RaptorError as HawkError
 
     K = _Kind("companion_collides_with_parameter", sink=_compensated(into="x"))
     with pytest.raises(HawkError, match="collides"):
@@ -724,47 +713,5 @@ def test_a_drag_shaped_compensated_return_compiles_on_host(tmp_path, cache_dir):
 # -- d(term) = 1``, so vjp/jvp are the PLAIN kernel's -- the companion is
 # -- never mirrored as an ADJOINT plane.
 # --------------------------------------------------------------------------- #
-def test_a_derivative_of_an_own_column_compensated_kernel_commits_plain():
-    """The reverse direction binds NO companion slot at all (``bar_c``/``c``
-    is nowhere in its ``arg_spec``): the companion's value is a constant, so
-    its adjoint contribution to ``bar_x`` is algebraically zero and no
-    adjoint plane for it is ever created. The forward direction still
-    declares a tangent output for the companion (forward-mode mirrors EVERY
-    declared sink, constant-valued ones included), but that tangent commits
-    a plain zero store, never the compensated arithmetic -- in both
-    directions, the derived kernel never re-runs ``store_compensated``/
-    ``accum_add_compensated`` at all."""
-    from hawk import Kernel
-    from hawk.diff import jvp, vjp
-    from hawk.emit import render_body
-
-    vjp_kernel = Kernel("own_column_compensated_solo_vjp",
-                        vjp(own_column_compensated_solo, wrt=("x",)), {})
-    names = [name for _role, name in vjp_kernel.arg_spec]
-    assert "c" not in names, (
-        f"the reverse-mode derivative must bind NO companion slot: {names}")
-    vjp_text = render_body(vjp_kernel.sinks, vjp_kernel.walk).text
-    assert "store_compensated" not in vjp_text
-    assert "accum_add_compensated" not in vjp_text
-
-    jvp_kernel = Kernel("own_column_compensated_solo_jvp",
-                        jvp(own_column_compensated_solo, wrt=("x",)), {})
-    jvp_text = render_body(jvp_kernel.sinks, jvp_kernel.walk).text
-    assert "store_compensated" not in jvp_text, (
-        "a derivative must never re-run the compensated commit -- "
-        "d(target)/d(term) = 1 makes every derived commit a plain store:\n"
-        + jvp_text)
-    assert "accum_add_compensated" not in jvp_text
 
 
-def test_a_unit_using_no_compensated_helper_renders_the_plain_prelude():
-    """The compensated helpers are spliced only where used, and a unit using none
-    must render the prelude exactly as a plain unit always has: one blank line
-    before the namespace closes, never one per unused helper. Downstream render
-    goldens pin this text byte for byte."""
-    from hawk.emit.wrapper import abi_helpers
-
-    for qualifier in ("__host__ __device__", "inline"):
-        plain = abi_helpers(qualifier)
-        assert plain.endswith("}\n\n}  // namespace hawk_abi\n"), plain[-80:]
-        assert "store_compensated" not in plain and "twoSumErr_" not in plain

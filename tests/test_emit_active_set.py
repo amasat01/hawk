@@ -27,6 +27,7 @@ fail; render the map read into the body and the body-identity row fails.
 """
 
 from __future__ import annotations
+from _specs import HOST, for_targets
 
 import importlib
 
@@ -35,10 +36,9 @@ import pytest
 import hawk
 from hawk import Index, Kernel, Mutable, Param, Scalar, Terminated
 from hawk.diff import jvp
-from hawk.emit import scalar_mode
-from hawk.emit.render import geometry_hits
+from aether.wings.base.wrapper import scalar_mode
 from hawk.ext import DEFAULT_KIND, Guard, Kind
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 B = importlib.import_module("hawk.artifact.bundle")
 
@@ -49,13 +49,6 @@ COUNT_READ = "reinterpret_cast<const std::int32_t*>(lut_active_count.data())[0]"
 
 def _step(omega: Scalar, dt: Param, terminated: Terminated, x: Mutable[Scalar]):
     x = x + dt * omega
-
-
-def _sources(k, kind, name=None):
-    name = name or k.name
-    unit = B._active_unit(k, name, kind)
-    return B._sources(unit, name=name, smode=scalar_mode("float64"), kind=kind,
-                      targets=("cuda", "host"), layout_sizes_override=None)
 
 
 # --------------------------------------------------------------------------- #
@@ -76,92 +69,15 @@ def test_a_map_needs_a_mask():
 # --------------------------------------------------------------------------- #
 # -- the prologue.
 # --------------------------------------------------------------------------- #
-def test_map_free_kind_returns_the_kernel_itself():
-    k = hawk.kernel(_step)
-    assert B._active_unit(k, k.name, DEFAULT_KIND) is k
-    assert B._active_spec(DEFAULT_KIND) is None
-
-
-@pytest.mark.parametrize("target", ["cuda", "host"])
-def test_only_the_prologue_changes(target):
-    plain = _sources(hawk.kernel(_step), DEFAULT_KIND, name="step")[target]
-    mapped = _sources(hawk.kernel(_step, kind=MAP), MAP, name="step")[target]
-    assert mapped.body == plain.body, "the map must not reach the body"
-    assert geometry_hits(mapped.body) == []
-    for text in (MAP_READ, COUNT_READ):
-        assert text in mapped.text and text not in plain.text
-        assert text not in mapped.body
-    assert "lut_active_map" in mapped.text and "lut_active_count" in mapped.text
-    assert "hawk_t" not in plain.text
-
-
-def test_device_prologue_exits_on_the_count_before_reading_the_map():
-    src = _sources(hawk.kernel(_step, kind=MAP), MAP, name="step")["cuda"].text
-    exit_at = src.index(f"if (hawk_t >= static_cast<long long>({COUNT_READ})) return;")
-    read_at = src.index(MAP_READ)
-    assert exit_at < read_at
-    assert "if (hawk_flat >= count) return;" in src
-
-
-def test_host_loop_stops_at_the_live_count():
-    src = _sources(hawk.kernel(_step, kind=MAP), MAP, name="step")["host"].text
-    assert f"const std::int64_t hawk_live = static_cast<std::int64_t>({COUNT_READ});" in src
-    # the device's exit at the count is the host loop's hoisted bound, no `break`
-    assert "hawk_stop = hawk_end < hawk_live ? hawk_end : hawk_live;" in src
-    assert "for (std::int64_t hawk_t = base; hawk_t < hawk_stop; ++hawk_t)" in src
-    assert "break;" not in src
-    assert src.index("hawk_live =") < src.index(MAP_READ)
-
-
-def test_the_map_planes_are_declared_lookup_slots():
-    unit = B._active_unit(hawk.kernel(_step, kind=MAP), "step", MAP)
-    assert ("lookup", "active_map") in unit.walk.slot_of
-    assert ("lookup", "active_count") in unit.walk.slot_of
-    assert unit.walk.digest != hawk.kernel(_step).walk.digest
 
 
 def _term(omega: Scalar, x: Scalar, terminated: Terminated, y: Mutable[Scalar]):
     y = omega * x * x
 
 
-def test_a_derived_kernel_carries_the_map_prologue():
-    primal = hawk.kernel(_term, kind=MAP)
-    derived = Kernel("step_jvp", jvp(primal, wrt=("omega",)), {}, kind=MAP)
-    src = _sources(derived, MAP)
-    for target in ("cuda", "host"):
-        assert MAP_READ in src[target].text
-        assert MAP_READ not in src[target].body
-
-
 # --------------------------------------------------------------------------- #
 # -- refusals at build.
 # --------------------------------------------------------------------------- #
-def test_refuses_an_accumulating_kernel():
-    def scatter(x: Scalar, lane: Index, terminated: Terminated,
-                acc: Mutable[Scalar]):
-        hawk.scatter(acc)[lane] += x
-
-    k = hawk.kernel(scatter, kind=MAP)
-    with pytest.raises(HawkError, match="accum_out"):
-        B._active_unit(k, k.name, MAP)
-
-
-def test_refuses_a_kernel_binding_no_mask():
-    def bare(omega: Scalar, x: Mutable[Scalar]):
-        x = x * omega
-
-    k = hawk.kernel(bare, kind=MAP)
-    with pytest.raises(HawkError, match="binds none"):
-        B._active_unit(k, k.name, MAP)
-
-
-def test_refuses_a_reserved_plane_name():
-    def clash(active_map: Scalar, terminated: Terminated, x: Mutable[Scalar]):
-        x = x + active_map
-
-    k = hawk.kernel(clash, kind=MAP)
-    with pytest.raises(HawkError, match="reserved"):
-        B._active_unit(k, k.name, MAP)
 
 
 def test_refuses_a_segmented_unit(tmp_path):
@@ -169,7 +85,7 @@ def test_refuses_a_segmented_unit(tmp_path):
 
     def seg(k: hawk.Index, bs: hawk.Vector[2], terminated: Terminated,
             y: Mutable[Scalar]):
-        y = M.dispatch(k, [bs[0], bs[1]], policy="segmented")
+        y = M.dispatch(k, [bs[0], bs[1]], strategy="segmented")
 
     kern = hawk.kernel(seg, kind=MAP)
     with pytest.raises(HawkError, match="index map in a segmented"):

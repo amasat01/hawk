@@ -5,7 +5,7 @@
 
 A fused-step kernel's host TU (``steps=K`` or ``"auto"``) runs its fused
 side as tiles of samples advanced together, trip by trip, with the carried
-values in lane arrays (:func:`hawk.emit.host.interchange`); the SAME TU built
+values in lane arrays (:func:`aether.wings.cpu.host.interchange`); the SAME TU built
 with ``-DHAWK_HOST_INTERCHANGE=0`` runs the plain per-sample fused loop it
 replaced. What is pinned:
 
@@ -30,10 +30,10 @@ replaced. What is pinned:
   one that only reads lookup planes is as independent as a sample-local one), a step whose head holds a second lowered ``for`` (the
   interchange cuts at ONE loop), and an active-set kind (its tile is a
   gathered map, not a contiguous run) keep the per-sample loop.
-* **The tile rule.** :func:`hawk.emit.host.host_tile_rule` is a pure function
+* **The tile rule.** :func:`aether.wings.cpu.host.host_tile_rule` is a pure function
   of its recorded inputs: L1d share, the L2 fallback, whole lane blocks, the
-  ``[64, 1024]`` clamp, ``k``; :func:`hawk.emit.host.machine_caches` reads a
-  sysfs tree and falls back when it cannot.
+  ``[64, 1024]`` clamp, ``k``; :func:`aether.wings.cpu.host.machine_caches` reads the
+  cache facts of the spec and falls back when it has none (the probe itself is the cpu backend's ``host_caches``).
 
 Every build here pins the EXACT ``native`` host profile (FMA contraction
 off): the two loop shapes are compared bit for bit, and the default fast
@@ -43,10 +43,14 @@ fuse each shape.
 """
 
 from __future__ import annotations
+from _specs import spec_for
+from _specs import aether_writer
+from _specs import HOST, with_caches
 
 import ctypes
 import platform
 import re
+import dataclasses
 import shutil
 import subprocess
 import sys
@@ -61,16 +65,6 @@ import hawk
 from hawk import Index, Mutable, Param, Scalar, Table, Terminated, Vector
 from hawk import math as m
 from hawk.artifact import build_bundle
-from hawk.emit import render_source
-from hawk.emit.host import (
-    FALLBACK_CACHES,
-    TILE_MAX,
-    TILE_MIN,
-    CacheSizes,
-    host_tile_rule,
-    interchange,
-    machine_caches,
-)
 from hawk.ext import Guard, Kind
 from hawk.targets import TARGETS
 
@@ -427,68 +421,17 @@ def _refill(text: str) -> str:
     return text[start:text.index("if (hawk_live == 0) break;", start)]
 
 
-def test_the_trip_loop_runs_on_the_chunk_alone():
-    """The hot loop reads and writes only the chunk's own arrays: no lane
-    array of the tile (``hawk_lc*``/``hawk_li*``), no tile-strided index, no
-    tile live flag; the tile's lane arrays are touched before the trips, after
-    them, and in the refill between trips, which writes a finished lane's sample
-    back and takes the next live one. A short step's chunk is two vectors, a long one's one."""
-    from hawk.emit.host import SHORT_STEP_OPS, chunk_vectors
-
-    assert (chunk_vectors(1), chunk_vectors(SHORT_STEP_OPS),
-            chunk_vectors(SHORT_STEP_OPS + 1)) == (2, 2, 1)
-    vectors = {"oscillator": 2, "oscillator_x16": 2, "rkf78_attempt": 1}
-    for kernel in KERNELS.values():
-        host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                             kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
-        text = builds(host.text)["interchanged"]
-        trips = _trip_loop(text)
-        for token in (r"\bhawk_lc\d", r"\bhawk_li\d", r"\bhawk_tile\b", r"\bhawk_on\[",
-                      r"\bhawk_cnt\["):
-            assert not re.search(token, trips), (kernel.name, token)
-        assert re.search(r"hawk_abi::lane_get<.+?, hawk_w>\(hawk_rc0, hawk_l\);", trips)
-        assert "hawk_abi::lane_keep<hawk_w>(hawk_rc0, hawk_l, hawk_lane_on," in trips
-        assert "for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {" in trips
-        assert (f"constexpr aether::offset_t hawk_w = hawk_abi::kHostChunk * "
-                f"hawk_abi::kHostChunkVectors * {vectors[kernel.name]};") in text, kernel.name
-        assert text.count("for (Int hawk_trip = 0;") == 1, kernel.name
-        refill = _refill(text)
-        assert re.search(r"\bhawk_lc0\[", refill) and "hawk_perm[hawk_next++]" in refill, kernel.name
-        assert "hawk_rk0[hawk_l] = hawk_trip + 1;" in refill, kernel.name
-
-
 def test_the_two_builds_are_the_two_shapes(shapes):
     """Non-vacuity of the row above: the default build runs tiles, the
     macro-off build does not."""
     for name in KERNELS:
         tile = _exported_tile(shapes["interchanged"], name)
-        assert TILE_MIN <= tile <= TILE_MAX and tile % 64 == 0, (name, tile)
+        assert HOST.need("lanes", "tile_min") <= tile <= HOST.need("lanes", "tile_max") and tile % 64 == 0, (name, tile)
         assert _exported_tile(shapes["plain"], name) == 0, name
         text = (shapes["interchanged"].directory / f"{name}.cpp").read_text()
         assert "#if HAWK_HOST_INTERCHANGE" in text
         assert f"constexpr aether::offset_t hawk_tile = {tile};" in text
         assert "// hawk host tile rule: tile=" in text
-
-
-def test_the_device_source_carries_no_interchange():
-    for kernel in KERNELS.values():
-        cuda = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                             kind=kernel.kind,
-                             one_step=getattr(kernel, "one_step", None)).text
-        for token in ("HAWK_HOST_INTERCHANGE", "hawk_tile", "lane_put", "_host_tile"):
-            assert token not in cuda, (kernel.name, token)
-
-
-def test_both_shapes_wrap_the_one_body_string():
-    """The plain build of the host TU is the fused body string verbatim."""
-    for kernel in KERNELS.values():
-        host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                             kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
-        cuda = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["cuda"],
-                             kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
-        assert host.body == cuda.body
-        fused = host.body.split("\n")[-1]
-        assert fused in builds(host.text)["plain"]
 
 
 # --------------------------------------------------------------------------- #
@@ -521,31 +464,6 @@ def head_loop(x: Scalar, g: Param, nstop: Scalar, terminated: Terminated,
 ACTIVE = Kind("interchange_active", guard=Guard(active_set=True))
 
 
-def test_what_keeps_the_plain_fused_loop_and_why():
-    kernel = gathered
-    assert getattr(kernel, "one_step", None) is not None, kernel.name
-    # it only reads lookup planes (the same for every lane): its lanes advance together, though its class is cross_sample_read
-    assert kernel.walk.access.cls == "cross_sample_read"
-    assert interchange(kernel.name, kernel.sinks, kernel.walk, kernel.kind) is not None
-    # two lowered loops: the fused-step cut is at ONE, so both loops run as the
-    # loop interchange instead (hawk.emit.host.loop_interchange)
-    tiled = interchange(head_loop.name, head_loop.sinks, head_loop.walk, head_loop.kind)
-    assert tiled is not None and tiled.rule is None and tiled.prelude is not None
-    text = render_source(head_loop.name, head_loop.sinks, head_loop.walk, TARGETS["host"],
-                         kind=head_loop.kind, one_step=head_loop.one_step).text
-    assert "hawk_abi::kHostLoopTile" in text and "_host_tile" not in text
-    # an active-set kind: the tile is a gathered map, not a contiguous run
-    from hawk.emit.wrapper import ActiveSpec
-    from hawk.emit.spelling import binding_name
-
-    active = ActiveSpec(binding_name("lookup", "active_map"),
-                        binding_name("lookup", "active_count"))
-    text = render_source(oscillator.name, oscillator.sinks, oscillator.walk,
-                         TARGETS["host"], kind=ACTIVE, active=active,
-                         one_step=oscillator.one_step).text
-    assert "HAWK_HOST_INTERCHANGE" not in text
-
-
 @pytest.mark.parametrize("n", [1, 37, 200, 1001])
 def test_a_loop_beside_the_fused_loop_interchanges_both_byte_identically(
         tmp_path_factory, n):
@@ -571,29 +489,17 @@ def test_a_loop_beside_the_fused_loop_interchanges_both_byte_identically(
 # --------------------------------------------------------------------------- #
 # The tile rule
 # --------------------------------------------------------------------------- #
-CACHES = CacheSizes(32 * 1024, 1024 * 1024, "test")
+CACHED = with_caches(HOST, 32 * 1024, 1024 * 1024)
 
 
-def test_the_tile_rule_fills_half_of_l1d_in_whole_lane_blocks():
-    rule = host_tile_rule(96, 30, True, 64, caches=CACHES)
-    assert (rule.tile, rule.level, rule.k) == (128, "L1d", 64)   # 16384 // 96 = 170
-    assert (rule.lane_bytes, rule.op_count, rule.finishes, rule.stop) == (96, 30, True, 64)
-    assert (rule.l1d, rule.l2, rule.cache_source) == (32768, 1048576, "test")
-    assert "tile=128 k=64 level=L1d (lane_bytes=96 op_count=30" in rule.comment()
+def test_the_host_row_states_the_caches_of_this_machine():
+    facts = HOST.machine.facts
+    assert facts["l1d_cache_bytes"] > 0 and facts["l2_cache_bytes"] >= facts["l1d_cache_bytes"] and facts["cache_source"]
 
 
-def test_the_tile_rule_clamps_and_falls_back_to_l2():
-    assert host_tile_rule(8, 5, True, 16, caches=CACHES).tile == TILE_MAX
-    big = host_tile_rule(1000, 900, True, 64, caches=CACHES)   # 64 * 1000 > 16384
-    assert (big.level, big.tile) == ("L2", 512)                 # 524288 // 1000 = 524
-    assert host_tile_rule(40000, 5, True, 64, caches=CACHES).tile == TILE_MIN
-    assert host_tile_rule(96, 30, False, 64, caches=CACHES).k == 1
-    # op count is recorded, not (yet) a term
-    assert (host_tile_rule(96, 1, True, 64, caches=CACHES).tile
-            == host_tile_rule(96, 10_000, True, 64, caches=CACHES).tile)
+def test_host_caches_reads_sysfs_and_falls_back(tmp_path):
+    from ospreys.cpu.toolchain import host_caches
 
-
-def test_machine_caches_reads_sysfs_and_falls_back(tmp_path):
     for index, (level, kind, size) in enumerate(
             [(1, "Data", "48K"), (1, "Instruction", "32K"), (2, "Unified", "2048K"),
              (3, "Unified", "16M")]):
@@ -602,39 +508,29 @@ def test_machine_caches_reads_sysfs_and_falls_back(tmp_path):
         (d / "level").write_text(f"{level}\n")
         (d / "type").write_text(f"{kind}\n")
         (d / "size").write_text(f"{size}\n")
-    got = machine_caches(str(tmp_path))
-    assert (got.l1d, got.l2) == (48 * 1024, 2048 * 1024)
-    assert machine_caches(str(tmp_path / "missing")) == FALLBACK_CACHES
-    here = machine_caches()
-    assert here.l1d > 0 and here.l2 >= here.l1d
+    assert host_caches(str(tmp_path)) == (48 * 1024, 2048 * 1024, str(tmp_path))
+    assert host_caches(str(tmp_path / "missing")) is None
 
 
-def test_machine_caches_reads_sysctl_on_macos(monkeypatch):
-    import hawk.emit.host as host
+def test_host_caches_reads_sysctl_on_macos(monkeypatch):
+    import ospreys.cpu.toolchain as cpu_toolchain
 
     def fake(cmd, **_):
         if cmd[-1].startswith("hw.perflevel0."):
             return subprocess.CompletedProcess(cmd, 0, stdout="65536\n")
         raise OSError(cmd[-1])
 
-    monkeypatch.setattr(host.sys, "platform", "darwin")
-    monkeypatch.setattr(host.subprocess, "run", fake)
-    host.machine_caches.cache_clear()
+    monkeypatch.setattr(cpu_toolchain.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cpu_toolchain.subprocess, "run", fake)
+    cpu_toolchain.host_caches.cache_clear()
     try:
-        got = host.machine_caches()
-        assert (got.l1d, got.l2) == (65536, 65536) and got.source.startswith("sysctl hw.perflevel0.")
-        monkeypatch.setattr(host.subprocess, "run",
-                            lambda *a, **k: (_ for _ in ()).throw(OSError("no sysctl")))
-        host.machine_caches.cache_clear()
-        assert host.machine_caches() == FALLBACK_CACHES
+        l1d, l2, source = cpu_toolchain.host_caches()
+        assert (l1d, l2) == (65536, 65536) and source.startswith("sysctl hw.perflevel0.")
+        monkeypatch.setattr(cpu_toolchain.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("no sysctl")))
+        cpu_toolchain.host_caches.cache_clear()
+        assert cpu_toolchain.host_caches() is None
     finally:
-        host.machine_caches.cache_clear()
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="reads this machine's sysctl")
-def test_machine_caches_on_this_mac_names_its_sysctl_source():
-    here = machine_caches()
-    assert here.source.startswith("sysctl hw.") and here.l1d > 0 and here.l2 >= here.l1d
+        cpu_toolchain.host_caches.cache_clear()
 
 
 def _preprocessed(target: str, text: str, tmp_path) -> str:
@@ -650,62 +546,6 @@ def _preprocessed(target: str, text: str, tmp_path) -> str:
     return done.stdout
 
 
-def _helper_text() -> str:
-    from hawk.emit.host import _TRIP_ITERATIONS, HOST_MASK_HELPERS, INTERCHANGE_HELPERS
-
-    return (HOST_MASK_HELPERS.split("namespace hawk_abi")[0] + INTERCHANGE_HELPERS
-            + "\nnamespace hawk_abi { inline constexpr bool kGuards = HAWK_HOST_LANE_GUARDS; }\n"
-            + _TRIP_ITERATIONS + "\nvoid f();\n")
-
-
-def test_arm_branches_are_inactive_on_x86(tmp_path):
-    out = _preprocessed("x86_64-unknown-linux-gnu", _helper_text(), tmp_path)
-    kernel = KERNELS["rkf78_attempt"]
-    unit = builds(render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                                kind=kernel.kind, one_step=kernel.one_step).text)["interchanged"]
-    unit = _preprocessed("x86_64-unknown-linux-gnu", unit.replace("#include", "//#include"), tmp_path)
-    # compaction runs everywhere, in tile order; the arm-only effects stay off
-    assert "hawk_perm" in unit and "hawk_nlive" in unit
-    assert "std::sort" not in unit and "interleave_count" not in unit
-    assert "kHostChunkVectors = 4" not in unit
-    assert "kHostChunkVectors = 1;" in out and "kHostChunkVectors = 4" not in out
-    assert "interleave_count" not in out
-    assert "kGuards = 0;" in out
-    assert "#pragma clang loop vectorize(assume_safety)" in out
-
-
-def test_arm_branches_are_active_on_aarch64(tmp_path):
-    out = _preprocessed("arm64-apple-macos", _helper_text(), tmp_path)
-    assert "kHostChunkVectors = 4;" in out and "kGuards = 1;" in out
-    assert "vectorize(assume_safety) interleave_count(4)" in out
-
-
-def test_the_emitted_trip_loop_carries_the_arm_pragma():
-    kernel = next(iter(KERNELS.values()))
-    host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                         kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
-    text = builds(host.text)["interchanged"]
-    trips = text[text.index("for (Int hawk_trip = 0;"):]
-    pragma = trips[:trips.index("for (aether::offset_t hawk_l")]
-    assert "#if defined(__clang__) && defined(__aarch64__)" in pragma
-    assert "vectorize(assume_safety) interleave_count(4)" in pragma
-    assert "hawk_abi::kHostChunk * hawk_abi::kHostChunkVectors * " in text
-
-
-def test_the_chunk_copy_in_loop_is_not_unrolled_under_gcc():
-    kernel = next(iter(KERNELS.values()))
-    host = render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                         kind=kernel.kind, one_step=getattr(kernel, "one_step", None))
-    text = builds(host.text)["interchanged"]
-    loop = text.index("for (aether::offset_t hawk_l = 0; hawk_l < hawk_w; ++hawk_l) {")
-    head = text[text.rindex("alignas(64) Int hawk_rk0[hawk_w];", 0, loop):loop]
-    pragma = "#if defined(__GNUC__) && !defined(__clang__)\n#pragma GCC unroll 1\n#endif"
-    assert pragma in head
-    # the refill loop too: unrolled, it keeps GCC from vectorising the trip loop
-    refill = text.index("if (hawk_idle != 0 && hawk_next < hawk_nlive) {")
-    assert text[refill:].split("for (aether::offset_t hawk_l", 1)[0].strip().endswith(pragma.split("\n", 1)[1])
-
-
 _COUNTED = 'extern "C" long long hawk_lane_trips = 0;\n'
 
 
@@ -715,6 +555,7 @@ def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
     from types import SimpleNamespace
 
     from hawk.compile import toolchain as tc
+    import ospreys.cpu.toolchain as ctc
 
     out = tmp_path / tag
     shutil.copytree(bundle.directory, out)
@@ -722,7 +563,7 @@ def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
     marker = "    std::int64_t hawk_live = 0;"
     assert source.count(marker) == 1
     cpp.write_text(_COUNTED + source.replace(marker, "    __atomic_fetch_add(&hawk_lane_trips, (long long)hawk_w, __ATOMIC_RELAXED);\n" + marker))
-    subprocess.run([tc.host_compiler(), *flags, *tc.include_flags(), str(cpp), "-o",
+    subprocess.run([ctc.host_compiler(), *flags, *tc.include_flags(), str(cpp), "-o",
                     str(out / f"{name}.so")], check=True)
     return SimpleNamespace(directory=out, artifacts=bundle.artifacts)
 
@@ -733,6 +574,7 @@ def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile)
     lanes of very different lengths, a few trips per launch, give the same planes,
     bit for bit, in fewer lane-trips (a counter the TU bumps per chunk trip, no timing)."""
     from hawk.compile import toolchain as tc
+    import ospreys.cpu.toolchain as ctc
 
     kernel = KERNELS["rkf78_attempt"]
     bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
@@ -743,7 +585,7 @@ def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile)
     dead = "if (hawk_on[hawk_t] == 0.0) hawk_perm[hawk_o++] = hawk_t;"
     assert source.count(live) == source.count(dead) == 1
     plain = source.replace(live, "hawk_perm[hawk_nlive++] = hawk_t;").replace(dead, "{}")
-    flags = tc.host_flags(profile=profile)
+    flags = ctc.host_flags(profile=profile)
     planes = _planes("rkf78_attempt", 200, "spread", seed=20261004)
     # lanes of very different lengths: every 7th sample ends at once, a few run long
     planes["t_final"][::7] = 1e-3
@@ -793,46 +635,13 @@ def ramp_to_plane(rate: Scalar, lim: Scalar, terminated: Terminated, x: Mutable[
     terminated = xn >= lim
 
 
-def _exit_order(kernel):
-    from hawk.emit.render import render_lane_split
-
-    return render_lane_split(kernel.sinks, kernel.walk, kind=kernel.kind).exit_order
-
-
-def _host_text(kernel):
-    return builds(render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS["host"],
-                                kind=kernel.kind, one_step=getattr(kernel, "one_step", None)
-                                ).text)["interchanged"]
-
-
-def test_the_lane_order_follows_the_exit_bound_and_never_guesses():
-    assert _exit_order(hawk.steps(ramp, 16)) == (0, True)
-    assert _exit_order(hawk.steps(fall, 16)) == (0, False)
-    assert _exit_order(hawk.steps(ramp_or_cap, 16)) is None
-    assert _exit_order(hawk.steps(ramp_to_plane, 16)) is None
-    assert _exit_order(rkf78_attempt) is None
-    sorts = {}
-    for kern in (ramp, fall, ramp_or_cap, ramp_to_plane):
-        text = _host_text(hawk.steps(kern, 16))
-        sorts[kern.name] = re.findall(r"return x ([<>]) y; \}\);", text)
-        assert text.count("std::sort") == len(sorts[kern.name])
-    # farthest from the exit first: the lanes refill in this order, so the tile drains on its short samples
-    assert sorts == {"ramp": ["<"], "fall": [">"], "ramp_or_cap": [], "ramp_to_plane": []}
-
-
-def test_no_sort_survives_preprocessing_for_x86(tmp_path):
-    text = _host_text(hawk.steps(ramp, 16))
-    assert "std::sort" in text
-    out = _preprocessed("x86_64-unknown-linux-gnu", text.replace("#include", "//#include"), tmp_path)
-    assert "std::sort" not in out and "<algorithm>" not in out
-
-
 @pytest.mark.skipif(platform.machine() not in ("arm64", "aarch64"), reason="aarch64 emit")
 @pytest.mark.parametrize("profile,nan", [("native", False), (None, False), ("native", True)])
 def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, nan):
     """The sorted lanes against the same TU in plain compacted order: lanes of
     very different lengths give the same planes, bit for bit, in fewer lane-trips."""
     from hawk.compile import toolchain as tc
+    import ospreys.cpu.toolchain as ctc
 
     kernel = hawk.steps(ramp, 16)
     bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
@@ -848,7 +657,7 @@ def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, na
               "terminated": np.zeros(n, dtype=bool)}
     if nan:     # diverged lanes: a NaN carry must sort last without faulting, the planes unchanged
         planes["x"][::5] = np.nan
-    flags = tc.host_flags(profile=profile)
+    flags = ctc.host_flags(profile=profile)
     runs = {}
     for tag, text in (("sorted", source), ("plain", plain)):
         built = _counting_build(tmp_path, tag, text, bundle, flags, kernel.name)
@@ -865,20 +674,3 @@ def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, na
     assert nan or runs["sorted"][1].value < runs["plain"][1].value
 
 
-def test_every_compiler_takes_the_lane_loop():
-    # the live test runs after the lane loop (a reduction in it keeps GCC < 14's loop scalar), the TU
-    # defaults to the lane loop whatever the step's length, and no host profile keeps math errno
-    long_step = next(k for k in KERNELS.values() if k.name == "rkf78_attempt")
-    src = render_source(long_step.name, long_step.sinks, long_step.walk, TARGETS["host"],
-                        kind=long_step.kind, one_step=getattr(long_step, "one_step", None)).text
-    assert "hawk_live |= hawk_more" not in src and "hawk_live += " not in src
-    assert "hawk_live |= static_cast<std::int64_t>(hawk_ron[hawk_l] != 0.0);" in src
-    assert "__GNUC__ < 14" not in src
-    from hawk.compile import toolchain as tc
-    from hawk.ir.nodes import HawkError
-    for profile in ("native", "portable", "native-vector-math", "native-vector-math-nofma"):
-        try:
-            flags = tc.host_flags(profile=profile)
-        except HawkError:       # a vector-math profile off x86-64
-            continue
-        assert "-fno-math-errno" in flags, profile

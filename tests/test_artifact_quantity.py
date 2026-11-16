@@ -16,7 +16,7 @@ reconstructs the access from the declaration.
 The two counters names are asserted directly: ZERO text surgeries (the
 emitted body is the ONE renderer's, byte-identical on both targets, and carries
 no spliced raw block) and ZERO raw-IR constructions (the fixture module
-constructs no ``hawk.ir`` node at all — an AST scan, the same detector shape
+constructs no ``raptor.ir`` node at all — an AST scan, the same detector shape
  uses).
 
 This test previously failed: the wire namespacing stripped
@@ -29,6 +29,10 @@ removed.
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import spec_for
+from _specs import HOST
 
 import ast
 import pathlib
@@ -36,8 +40,6 @@ import pathlib
 import _deployable as D
 from conftest import sidecar_of
 
-from hawk.emit import render_body, render_source
-from hawk.emit.render import RAW_KIND
 from hawk.targets import TARGETS
 
 #: The IR node constructors a raw-IR workaround would have to name.
@@ -54,18 +56,6 @@ def test_the_quantitys_wires_are_namespaced_and_contiguous():
     # per role, ONE consecutive declaration-ordered run.
     q = walk.slot_of[("vec_in", "earth__orientation__q")]
     assert walk.arg_spec[q] == ("vec_in", "earth__orientation__q")
-
-
-def test_zero_text_surgery():
-    """The body both wrappers compile is the SAME string, and it
-    carries no spliced raw text — so there is nothing for a lowering pass to
-    edit and no anchor for one to find."""
-    body = render_body(D.spin.sinks, D.spin.walk).text
-    sources = [render_source("spin", D.spin.sinks, D.spin.walk, b)
-               for b in TARGETS.values() if b.wrapper]
-    assert len({s.body for s in sources}) == 1
-    assert "hawk_raw_arg" not in body and RAW_KIND not in body
-    assert "earth__orientation__q" in body and "earth__orientation__w" in body
 
 
 def test_zero_raw_ir_constructions():

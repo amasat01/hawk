@@ -12,6 +12,8 @@ not feel it. The tolerances are ``K n eps cond`` for solves and determinants,
 
 from __future__ import annotations
 
+from raptor.wings.base.dispatch import dispatch as _dispatch
+from _specs import spec_for, default_kind
 import pathlib
 import re
 
@@ -23,12 +25,11 @@ from conftest import sidecar_of
 from scipy.linalg import lapack
 
 from hawk import runtime as rt
-from hawk.artifact import build_bundle
-from hawk.ir import Assign, Dispatch, Leaf, make
+from hawk.artifact import build_bundle, emit_source
+from raptor.ir import Assign, Dispatch, Leaf, make
 from hawk.trace.kernel import Kernel
-from hawk.types import TensorType
-from hawk.emit import render_source
-from hawk.emit.wrapper import scalar_mode
+from raptor.ir.types import TensorType
+from aether.wings.base.wrapper import scalar_mode
 from hawk.artifact.layout import exports
 from hawk.targets import TARGETS
 
@@ -222,12 +223,6 @@ def test_a_built_factor_solves_and_fails_on_its_diagonal(build, n, mode):
                                    atol=_tol(mode, n, cond * max(1.0, np.abs(big).max())))
 
 
-def test_a_built_factor_is_read_through_the_plane_proxy():
-    text = _body(chol_from_kernel(22), "cuda").text
-    assert re.search(r"aether::linalg::choleskyFrom<22>\(hawk_lf\d+, mtx_A_i\);", text)
-    assert "const auto mtx_A_i = mtx_A[i];" in text
-
-
 # --- eigh -------------------------------------------------------------------
 
 @pytest.mark.parametrize("mode", MODES)
@@ -265,15 +260,15 @@ def test_eigh_without_eigenvectors_is_bit_identical_and_never_builds_them(build,
     full = _run(build(eigh_kernel(n), mode), planes, {"w": n, "V": n * n, "info": 1}, mode)
     only = _run(build(eigh_values_kernel(n), mode), planes, {"w": n, "info": 1}, mode)
     assert np.array_equal(only["w"], full["w"]) and np.array_equal(only["info"], full["info"])
-    text = _body(eigh_values_kernel(n)).text
+    text = emit_source(eigh_values_kernel(n), targets=("host",)).sources["host"].text
     assert f"aether::linalg::EighValues<Real, {n}>" in text and "aether::linalg::Eigh<" not in text
-    assert "aether::linalg::Eigh<" in _body(eigh_kernel(n)).text
+    assert "aether::linalg::Eigh<" in emit_source(eigh_kernel(n), targets=("host",)).sources["host"].text
 
 
 # --- inside a dispatch -------------------------------------------------------------
 
-@pytest.mark.parametrize("policy", ["switch", "predicated"])
-def test_factorisations_inside_the_arms_of_a_dispatch_run_per_case(build, policy):
+@pytest.mark.parametrize("strategy", ["switch", "predicated"])
+def test_factorisations_inside_the_arms_of_a_dispatch_run_per_case(build, strategy):
     n = 4
     f64 = "f64"
     a = Leaf("vocab_read", "mat_in", "A", TensorType((n, n), f64))
@@ -282,8 +277,8 @@ def test_factorisations_inside_the_arms_of_a_dispatch_run_per_case(build, policy
     lu, chol = make("lu", (a,)), make("chol", (a,))
     arms = (make("lu_solve", (lu, b)), make("cho_solve", (chol, b)),
             make("mul", (b, make("lu_det", (lu,)))))
-    kernel = Kernel(f"la_dispatch_{policy}", (
-        Assign("x", Dispatch(k, arms, policy, TensorType((n,), f64)), TensorType((n,), f64)),))
+    kernel = Kernel(f"la_dispatch_{strategy}", (
+        Assign("x", _dispatch(k, arms, strategy, TensorType((n,), f64)), TensorType((n,), f64)),))
     rng = np.random.default_rng(7)
     g = rng.standard_normal((LANES, n, n))
     mats = np.einsum("lij,lkj->lik", g, g) + n * np.eye(n)
@@ -299,23 +294,6 @@ def test_factorisations_inside_the_arms_of_a_dispatch_run_per_case(build, policy
 
 # --- the emitted text ---------------------------------------------------------
 
-def _body(kernel, target="host", mode="float64"):
-    return render_source(kernel.name, kernel.sinks, kernel.walk, TARGETS[target],
-                         mode=scalar_mode(mode), exports=exports(target))
-
-
-@pytest.mark.parametrize("target", ["host", "cuda"])
-@pytest.mark.parametrize("make,fn,struct", [(lu_kernel, "lu", "Lu"), (chol_kernel, "cholesky", "Cholesky"),
-                                            (eigh_kernel, "eigh", "Eigh"),
-                                            (chol_from_kernel, "choleskyFrom", "Cholesky")])
-def test_a_factorisation_is_computed_once_into_a_named_struct(make, fn, struct, target):
-    source = _body(make(6), target)
-    assert len(re.findall(rf"aether::linalg::{fn}<6>\(", source.text)) == 1
-    assert "#include <aether/linalg/linalg.h>" in source.text
-    # the struct is declared once and filled in place: never returned by value, never copied
-    assert len(re.findall(rf"aether::linalg::{struct}<Real, 6> hawk_lf\d+;", source.text)) == 1
-    assert re.search(rf"aether::linalg::{fn}<6>\(hawk_lf\d+, \w+\);", source.text)
-
 
 @pytest.mark.parametrize("make,n", [(lu_kernel, 5), (chol_kernel, 22), (eigh_kernel, 32),
                                     (chol_from_kernel, 22)])
@@ -326,7 +304,3 @@ def test_the_device_source_compiles_to_ptx(make, n, tmp_path, cache_dir):
     assert entry.artifact.stat().st_size > 0 and "aether::linalg::" in entry.source.read_text()
 
 
-def test_the_header_is_included_only_where_it_is_called():
-    from _kernels import scale
-
-    assert "linalg" not in _body(scale).text

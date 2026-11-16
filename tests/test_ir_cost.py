@@ -4,54 +4,56 @@
 """The per-branch cost vector of a ``dispatch`` group, counted from the IR.
 
 Every expected vector below is worked out by hand from the counting rules in
-``hawk/ir/cost.py``: ``(arith32, arith64, special32, special64, loads,
+``staging/raptor/wings/base/cost.py``: ``(arith32, arith64, special32, special64, loads,
 gathers)`` per branch.
 """
 
 from __future__ import annotations
+from raptor.wings.base.dispatch import dispatch as _dispatch
+from _specs import HOST
 
 import platform
 
 import hawk
 import hawk.math as M
-from hawk.ir import Assign, Dispatch, Leaf, canonical, dispatch_costs
-from hawk.ir.cost import kernel_cost
-from hawk.ir import make as mk
-from hawk.types import TensorType
+from raptor.ir import Assign, Dispatch, Leaf, canonical
+from aether.wings.cpu.host_vector import dispatch_costs, kernel_cost
+from raptor.ir import make as mk
+from raptor.ir.types import TensorType
 
 F32 = TensorType((), "f32")
 I32 = TensorType((), "i32")
 
 
 def _costs(kernel):
-    return dispatch_costs(canonical(kernel.sinks))["dispatch0"]
+    return dispatch_costs(canonical(kernel.sinks), HOST)["dispatch0"]
 
 
 @hawk.kernel
 def _mixed(k: hawk.Index, a: hawk.Scalar, x: hawk.Scalar, b: hawk.Scalar,
            y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, [a * x, M.exp(x), M.log(x * x + 1.0) * b], policy="switch")
+    y = M.dispatch(k, [a * x, M.exp(x), M.log(x * x + 1.0) * b], strategy="switch")
 
 
 @hawk.kernel
 def _vectors(k: hawk.Index, v: hawk.Vector[3], s: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, [M.norm(v), M.dot(v, v) * s], policy="switch")
+    y = M.dispatch(k, [M.norm(v), M.dot(v, v) * s], strategy="switch")
 
 
 @hawk.kernel
 def _shared(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, [x * x + 1.0, x * x + 2.0], policy="switch")
+    y = M.dispatch(k, [x * x + 1.0, x * x + 2.0], strategy="switch")
 
 
 @hawk.kernel
 def _selector_reused(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, [x * k, x], policy="switch")
+    y = M.dispatch(k, [x * k, x], strategy="switch")
 
 
 @hawk.kernel
 def _gather(k: hawk.Index, table: hawk.Table[hawk.Scalar], where: hawk.Index, x: hawk.Scalar,
             y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, [table.at(where), x * 2.0], policy="switch")
+    y = M.dispatch(k, [table.at(where), x * 2.0], strategy="switch")
 
 
 @hawk.kernel
@@ -59,7 +61,7 @@ def _looped(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
     acc = 0.0
     for _ in range(4):
         acc = acc * x + 1.0
-    y = M.dispatch(k, [acc, x], policy="switch")
+    y = M.dispatch(k, [acc, x], strategy="switch")
 
 
 def test_scalar_branches_split_into_arithmetic_and_library_calls():
@@ -107,8 +109,8 @@ def test_a_loop_counts_its_body_once_per_trip():
 def test_32_bit_work_lands_in_the_32_bit_fields():
     a = Leaf("vocab_read", "per_sample", "a", F32)
     k = Leaf("vocab_read", "per_sample", "k", I32)
-    d = Dispatch(k, [mk("mul", (a, a)), mk("sin", (a,))], "switch", F32)
-    cost = dispatch_costs(canonical((Assign("out", d, F32),)))["dispatch0"]
+    d = _dispatch(k, [mk("mul", (a, a)), mk("sin", (a,))], "switch", F32)
+    cost = dispatch_costs(canonical((Assign("out", d, F32),)), HOST)["dispatch0"]
     assert [b.as_tuple() for b in cost.branches] == [(1, 0, 0, 0, 1, 0), (0, 0, 1, 0, 1, 0)]
 
 
@@ -120,24 +122,24 @@ def test_the_sidecar_facts_ride_along():
 
 def test_every_group_of_a_kernel_is_costed_under_its_published_name():
     walk = canonical(_mixed.sinks)
-    assert set(dispatch_costs(walk)) == {d.name for d in walk.dispatches}
+    assert set(dispatch_costs(walk, HOST)) == {d.name for d in walk.dispatches}
 
 
 def test_a_library_call_vectorises_the_fused_loop_only_under_the_vector_math_profile():
     walk = canonical(_mixed.sinks)
-    lib = lambda profile: dispatch_costs(walk, profile)["dispatch0"].branches   # noqa: E731
+    lib = lambda profile: dispatch_costs(walk, HOST, profile)["dispatch0"].branches   # noqa: E731
     assert not all(b.vectorised for b in lib("native"))
     assert not all(b.vectorised for b in lib("portable"))
     # the vector math is x86-64 only: elsewhere a library call stays scalar under every profile
     assert all(b.vectorised for b in lib("native-vector-math")) is (platform.machine().lower() in ("x86_64", "amd64"))
     # the fused loop renders the dispatch as a C++ switch, which stays scalar under every profile
-    assert not dispatch_costs(walk, "native-vector-math")["dispatch0"].fused_vectorised
+    assert not dispatch_costs(walk, HOST, "native-vector-math")["dispatch0"].fused_vectorised
 
 
 def test_branches_without_a_library_call_vectorise_under_every_profile():
     walk = canonical(_shared.sinks)
     for profile in ("native", "portable", "native-vector-math"):
-        cost = dispatch_costs(walk, profile)["dispatch0"]
+        cost = dispatch_costs(walk, HOST, profile)["dispatch0"]
         assert all(b.vectorised for b in cost.branches)
         assert not cost.fused_vectorised          # a rendered switch keeps the fused loop scalar
 
@@ -149,7 +151,7 @@ def _two_chains(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
     for _ in range(8):
         a = a * x + 1.0
         b = b * x + 2.0
-    y = M.dispatch(k, [a + b, x], policy="switch")
+    y = M.dispatch(k, [a + b, x], strategy="switch")
 
 
 def test_a_chain_is_the_critical_path_not_the_op_count():
@@ -177,7 +179,7 @@ def test_kernel_cost_covers_a_kernel_without_a_dispatch():
     def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
         y = x * x + 1.0
 
-    cost = kernel_cost(canonical(plain.sinks), "native")
+    cost = kernel_cost(canonical(plain.sinks), HOST, "native")
     assert (cost.arith64, cost.chain64, cost.vectorised) == (2, 2, True)
 
 
@@ -188,7 +190,7 @@ def test_work_that_does_not_depend_on_a_carry_adds_nothing_to_the_chain():
         acc = x
         for i in range(8):
             acc = acc + table.at(where + i)    # the index arithmetic is off the recurrence
-        y = M.dispatch(k, [acc, x], policy="switch")
+        y = M.dispatch(k, [acc, x], strategy="switch")
 
     cost = _costs(gathered).branches[0]
     assert (cost.chain32, cost.chain64) == (0, 8)
@@ -199,7 +201,7 @@ def test_a_whole_kernel_counts_the_plane_elements_it_writes():
     def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
         y = x * x + 1.0
 
-    cost = kernel_cost(canonical(plain.sinks), "native")
+    cost = kernel_cost(canonical(plain.sinks), HOST, "native")
     assert cost.stores == 1
     assert cost.row_tuple() == cost.chain_tuple() + (1,)
 
@@ -211,7 +213,7 @@ def test_a_dispatch_branch_stores_the_value_it_hands_to_the_sink():
 
 
 def test_a_cost_without_a_store_count_has_no_store_entry():
-    from hawk.ir.cost import BranchCost
+    from raptor.wings.base.cost import BranchCost
 
     bare = BranchCost(loads=2)
     assert bare.stores is None

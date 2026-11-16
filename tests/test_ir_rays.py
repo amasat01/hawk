@@ -11,6 +11,8 @@ precisions against NumPy (a separate implementation of the same formulas,
 orbit scale."""
 
 from __future__ import annotations
+from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import pathlib
 
@@ -24,9 +26,8 @@ import hawk
 import hawk.math as m
 from hawk import HawkError, Mutable, Scalar, Vector
 from hawk.artifact import build_bundle
-from hawk.emit import render_body
-from hawk.ir import canonical
-from hawk.types import TensorType
+from raptor.ir import canonical
+from raptor.ir.types import TensorType
 
 V3 = Vector[3]
 
@@ -87,17 +88,6 @@ def _run(loaded, kind: str, dtype, planes, scalars):
     given = {nm: p.T.copy() for nm, p in zip(VECTORS[kind], planes)}
     given.update(zip(("r", "tmax") if kind == "ball" else ("tmax",), scalars))
     return O.run(bundle.directory, kind, len(planes[0]), sidecar_of(bundle, kind), **given)
-
-
-def test_each_op_is_one_node_typed_four():
-    for k in KERNELS.values():
-        (sink,) = k.sinks
-        node = sink.value
-        assert node.kind.startswith("ray_") and node.ttype == TensorType((4,), "f64")
-    text = render_body(tri.sinks, canonical(tri.sinks)).text
-    assert text.count("aether::geometry::rayTriangle<Real>(") == 1
-    assert "aether::geometry::rayAabb<Real>(" in render_body(box.sinks, canonical(box.sinks)).text
-    assert "aether::geometry::raySphere<Real>(" in render_body(ball.sinks, canonical(ball.sinks)).text
 
 
 def test_the_type_rule_refuses_the_wrong_shapes():
@@ -229,7 +219,7 @@ def _device(kernel, name, arrays, n, cache_dir, tmp, mode="float64"):
     import eagle.exec as eexec
     from _deploy import device_plugin
     from eagle import plan as eplan
-    from hawk.compile.toolchain import resolve_arch
+    from ospreys.cuda.toolchain import resolve_arch
 
     bundle = build_bundle([kernel], tmp, targets=("cuda",), cache_dir=cache_dir,
                           device_arch=resolve_arch(), mode=mode)

@@ -68,8 +68,8 @@ extent
   How many values a plane holds: one per sample, one per key (a by-key
   store), or one for the whole run (a cell).
 
-policy
-  How a sum over lanes is added up: `policy="auto"` (default),
+contract
+  How a sum over lanes is added up: `contract="auto"` (default),
   `"compensated"` (tightest) or `"ordered"` (the same bits on every run).
   The same three words as `eagle.reduce`. Every sum is within k ULP of the
   exactly rounded sum.
@@ -90,7 +90,7 @@ guard
   Which masks gate a sample (`hawk.ext.Guard`): a sample runs only when
   none of the named masks, such as `terminated` or `rejected`, is set.
 
-dispatch policy
+dispatch strategy
   How a per-sample branch between several formulas is compiled. It never
   changes what is computed.
 

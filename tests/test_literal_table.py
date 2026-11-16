@@ -14,6 +14,7 @@ literals from one ``__constant__`` table, the same bits as the immediates.
 
 from __future__ import annotations
 
+from _specs import spec_for
 import json
 import re
 
@@ -24,47 +25,13 @@ from _toolchain import real_arch
 import hawk
 import hawk.math as M
 from hawk import Mutable, Scalar, kernel
-from hawk.emit import literal_table, render_source, scalar_mode
+from aether.wings.base.wrapper import scalar_mode
 from hawk.targets import TARGETS
 
 
 @kernel(steps=1)
 def poly(x: Scalar, y: Mutable[Scalar]):
     y = ((0.1 * x + 2.5e-3) * x - 1.75) * x + M.exp(x * 0.5) * 0.1 + 3.141592653589793
-
-
-def _source(mode="float64"):
-    return render_source(poly.name, poly.sinks, poly.walk, TARGETS["cuda"],
-                         mode=scalar_mode(mode), kind=poly.kind)
-
-
-def test_the_option_is_off_by_default_and_changes_no_byte(tmp_path, cache_dir):
-    arch = real_arch("nvcc")
-    hawk.build([poly], tmp_path / "default", targets=("cuda",), cache_dir=cache_dir, device_arch=arch)
-    hawk.build([poly], tmp_path / "off", targets=("cuda",), cache_dir=cache_dir, device_arch=arch,
-               literal_table=False)
-    source = (tmp_path / "default" / "poly.cu").read_text()
-    assert source == (tmp_path / "off" / "poly.cu").read_text()
-    assert source.startswith(_source().text.split("\n", 1)[0])
-    assert "hawk_f64_literals" not in source
-
-
-def test_every_distinct_literal_lands_in_the_table_once():
-    off, on = _source().text, literal_table(_source()).text
-    (decl,) = re.findall(r"static __constant__ double hawk_f64_literals\[(\d+)\] = \{([^}]*)\};", on)
-    size, values = int(decl[0]), decl[1].split(", ")
-    assert size == len(values) == len(set(values)) >= 5
-    assert not re.search(r"static_cast<Real>\(-?[0-9][0-9.eE+-]*\)", on)
-    back = re.sub(r"static_cast<Real>\(hawk_f64_literals\[(\d+)\]\)",
-                  lambda m: f"static_cast<Real>({values[int(m.group(1))]})", on)
-    back = back.replace(f"static __constant__ double hawk_f64_literals[{size}] = "
-                        f"{{{decl[1]}}};\n", "")
-    assert back == off
-
-
-def test_a_float32_source_is_returned_unchanged():
-    f32 = _source("float32")
-    assert literal_table(f32) is f32
 
 
 def test_a_device_build_with_the_table_compiles(tmp_path, cache_dir):

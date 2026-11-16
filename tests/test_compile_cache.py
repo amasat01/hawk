@@ -70,7 +70,7 @@ artifact-level unit memo actually watches, ``hawk/artifact/
 build.py``'s ``_closure_watch``) now does its whole warm stat pass through ONE
 ``hawk._core.stat_many`` call instead of one Python ``os.stat`` per row --
 ``closure_unchanged`` itself is UNCHANGED and stays the Python loop, because it
-is a different call site (``drivers.py``'s per-TU ``_memo_still_valid``) with
+is a different call site (``drivers.py``'s per-TU ``memo_still_valid``) with
 its own row above pinning its shape. The two rows at the end of this file are
 ``ClosureWatch``'s: one pins the crossing count ("no per-path Python
 work" made a number, not a claim), one is a microbench comparing the same
@@ -160,9 +160,9 @@ def test_a_touch_of_a_reached_header_is_a_hit(tree):
 def sealed_path():
     """Only meaningful on the sealed-payload path (aether-dsc, no
     ``$HAWK_AETHER_INCLUDE``)."""
-    from hawk.compile.drivers import _host_uses_sealed_payload
+    from hawk.compile.drivers import _Inputs
 
-    if not _host_uses_sealed_payload():
+    if not _Inputs().sealed:
         pytest.skip("source-header path ($HAWK_AETHER_INCLUDE is set): this row "
                     "covers the sealed-payload path")
 
@@ -299,7 +299,8 @@ def test_two_such_compilers_give_different_cache_lookup_keys(tree, tmp_path):
     """End to end: the SAME source/backend/mode/flags, through two fake
     compilers differing only past the first ``--version`` line, must land on
     two DIFFERENT cache keys — never share a slot."""
-    from hawk.compile import compiler_identity, host_flags, lookup_key
+    from hawk.compile import compiler_identity, lookup_key
+    from ospreys.cpu.toolchain import host_flags
 
     a = _fake_compiler(tmp_path, "fake_cc_a", "release 12.6, V12.6.77")
     b = _fake_compiler(tmp_path, "fake_cc_b", "release 12.9, V12.9.10")
@@ -390,7 +391,7 @@ def test_the_memo_cannot_serve_a_stale_answer(tree):
     memo — and the memo re-verifies the recorded closure BY CONTENT, which is
     what makes this the same answer the disk record would give.
 
-    Needs ``_memo_still_valid`` to actually check::
+    Needs ``memo_still_valid`` to actually check::
 
         AssertionError: a memoised answer survived a content change in a reached
         header — the memo replaced the validity check instead of the record read
@@ -437,6 +438,7 @@ def test_the_compiler_is_identified_once_per_process(tree, monkeypatch, tmp_path
     import subprocess as sp
 
     from hawk.compile import toolchain
+    import ospreys.cpu.toolchain as ctc
     from hawk.compile.toolchain import reset_identity_memo
 
     monkeypatch.setenv("HAWK_CACHE_DIR", str(tmp_path / "probe_cache"))   # an empty on-disk probe store
@@ -445,7 +447,7 @@ def test_the_compiler_is_identified_once_per_process(tree, monkeypatch, tmp_path
     real = sp.run
     monkeypatch.setattr(toolchain.subprocess, "run",
                         lambda argv, **kw: runs.append(tuple(argv)) or real(argv, **kw))
-    compiler = toolchain.host_compiler()
+    compiler = ctc.host_compiler()
     for _ in range(3):
         toolchain.compiler_identity(compiler)
     versions = [a for a in runs if a[1:] == ("--version",)]

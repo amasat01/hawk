@@ -2,6 +2,12 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
+## Unreleased (0.8.x)
+
+### Removed
+
+- **Breaking:** the ambient `with policy.using(...)` and `policy.fold_rows(k)` blocks are gone. Build settings are one explicit value, `hawk.build_policy.BuildPolicy(emit_form=, linalg_form=, wide_form=, contraction=, launch_bounds=, fold_rows=)`, passed as `build_policy=` to `build`, `emit_source`, `build_bundle`, `render_source` and `ospreys.c.render`; a key that no target of the build declares in its manifest is refused by name.
+
 ## 0.7.6 (2026-11-10)
 
 0.7.5 was tagged but never reached PyPI: 0.7.6 is the release of everything in 0.7.5 below, with one fix to how it is published.
@@ -136,7 +142,7 @@ This section covers what changes from 0.7.1. Names that left are in the table at
 
 **Rays.** `hawk.math.ray_tri(o, d, a, b, c)`, `ray_aabb(o, d, lo, hi)` and `ray_sphere(o, d, c, r)` return a width-4 vector, `[hit, t, u, v]` for a triangle, `[hit, t_enter, t_exit, 0]` for a box and `[hit, t0, t1, 0]` for a sphere. `hit` is 0 or 1 with a zero derivative; the other entries differentiate (`vjp`, `jvp`), with no term for a ray that just grazes an edge. Parallel rays, zero-area triangles and zero direction components give finite values and finite gradients. They run on the host, CUDA and the C target. `hawk.geometry.build_bvh(triangles)` builds a bounding-volume tree on the host and `hawk.geometry.closest_hit(...)` walks it inside a kernel. A new domain page, [line of sight](docs/content/vocabulary/24_line_of_sight.ipynb), shows eclipse shadows from a mesh in single precision. This release checks correctness; speed numbers come later.
 
-**Lane sets.** `Kind("screen", lanes=IndexSet())` runs the lanes in a map you bind (`active_map`, `active_count`): launch lane `t` runs lane `map[t]`. `hawk.lane_position()` is `t`. Keyed sums, `hawk.scatter`, `vjp` and `jvp` work under a map; a keyed sum is rounded in the order the lanes arrive, so it matches a dense launch to the ULP contract, not bit for bit. `IndexSet(width=64)` is for a dense extent past `2**31 - 1`; the bind refuses a map that is out of range or lists a lane twice, and names the first bad position. `IndexSet(prefix=True)` runs the first `count` lanes, with the count read from a one-element plane on every run, so one build serves any batch size up to its bound; sums, keyed sums and `vjp` cover the live lanes only and the rest are untouched.
+**Lane sets.** `Kind("screen", lanes=IndexSet())` runs the lanes in a map you bind (`active_map`, `active_count`): launch lane `t` runs lane `map[t]`. `hawk.sample_position()` is `t`. Keyed sums, `hawk.scatter`, `vjp` and `jvp` work under a map; a keyed sum is rounded in the order the lanes arrive, so it matches a dense launch to the ULP contract, not bit for bit. `IndexSet(width=64)` is for a dense extent past `2**31 - 1`; the bind refuses a map that is out of range or lists a lane twice, and names the first bad position. `IndexSet(prefix=True)` runs the first `count` lanes, with the count read from a one-element plane on every run, so one build serves any batch size up to its bound; sums, keyed sums and `vjp` cover the live lanes only and the rest are untouched.
 
 **Run-time trip counts.** `for k in range(n, max=K)` runs `n` iterations, held to `[0, K]`, and is never unrolled. Without `max=`, `jvp` works and `vjp` is refused by name.
 

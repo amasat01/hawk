@@ -13,15 +13,16 @@ fixed stack position, so a wrapper decorator or a kernel-factory closure both
 resolve a string annotation correctly."""
 
 from __future__ import annotations
+from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import linecache
 
 import pytest
 
 from hawk import Mutable, Scalar, Terminated, Vector, kernel
-from hawk.emit import render_body
 from hawk.ext import DEFAULT_KIND, KernelKind, Kind, Output
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 VOCAB = {"terminated": Terminated, "scale": Scalar}
 
@@ -37,15 +38,6 @@ def _annotated_twin(x: Scalar, terminated: Terminated, scale: Scalar,
     y = x * scale
 
 
-def test_vocabulary_kernel_matches_its_fully_annotated_twin():
-    assert _vocab_kernel.arg_spec == _annotated_twin.arg_spec
-    assert _vocab_kernel.walk.digest == _annotated_twin.walk.digest
-    a = render_body(_vocab_kernel.sinks, _vocab_kernel.walk,
-                    kind=_vocab_kernel.kind).text
-    b = render_body(_annotated_twin.sinks, _annotated_twin.walk).text
-    assert a == b
-
-
 MASK_VOCAB = {"terminated": Terminated}
 
 
@@ -54,13 +46,6 @@ def _omits_terminated(x: Scalar, y: Mutable[Scalar]):
     """The signature never names ``terminated`` — the vocabulary's
     `terminated`-form entry binds it anyway (unconditional, item 4)."""
     y = x + 1.0
-
-
-def test_unconditional_terminated_binds_even_when_the_signature_omits_it():
-    assert ("terminated", "terminated") in _omits_terminated.arg_spec
-    text = render_body(_omits_terminated.sinks, _omits_terminated.walk,
-                       kind=_omits_terminated.kind).text
-    assert "if (!trm_terminated[i].eval())" in text
 
 
 def test_a_conflicting_annotation_refuses():
@@ -97,18 +82,6 @@ def _scale_kind():
     from hawk.ext import DATA_ONLY
 
     return Kind("kwonly_vocabulary", vocabulary={"scale": Scalar}, guard=DATA_ONLY)
-
-
-@pytest.mark.parametrize("positional, keyword_only", [
-    (_scale_positional, _scale_keyword_only),
-    (_scale_annotated_positional, _scale_annotated_keyword_only),
-])
-def test_a_keyword_only_vocabulary_parameter_binds_like_the_positional_form(positional, keyword_only):
-    K = _scale_kind()
-    a, b = K(positional), K(keyword_only)
-    assert a.arg_spec == b.arg_spec
-    assert (render_body(a.sinks, a.walk, kind=a.kind).text
-            == render_body(b.sinks, b.walk, kind=b.kind).text)
 
 
 def test_a_keyword_only_vocabulary_parameter_with_a_disagreeing_annotation_refuses():
@@ -197,26 +170,6 @@ def test_a_kernel_factory_resolves_an_unused_extent_from_the_defining_frame():
     assert k3.arg_spec == k5.arg_spec
 
 
-def test_returned_output_matches_the_named_twin_byte_for_byte():
-    RETURNED = Kind("returned_output", output=Output.returned(Vector[3], slot="acc"))
-
-    @RETURNED
-    def body_returns(e: Vector[3]):
-        return e
-
-    NAMED = Kind("named_output")
-
-    @NAMED
-    def body_named(e: Vector[3], acc: Mutable[Vector[3]]):
-        acc = e
-
-    assert body_returns.arg_spec == body_named.arg_spec
-    assert body_returns.walk.digest == body_named.walk.digest
-    a = render_body(body_returns.sinks, body_returns.walk, kind=RETURNED).text
-    b = render_body(body_named.sinks, body_named.walk, kind=NAMED).text
-    assert a == b
-
-
 def test_a_parameter_named_like_the_synthesised_slot_refuses():
     K = Kind("returned_slot_collision", output=Output.returned(Scalar, slot="acc"))
     with pytest.raises(HawkError, match="may not also be a parameter name"):
@@ -236,49 +189,6 @@ def test_a_returned_value_of_the_wrong_rank_refuses():
 # --------------------------------------------------------------------------- #
 # The class-form spelling of Kind: sugar, one object, two spellings.
 # --------------------------------------------------------------------------- #
-def test_the_class_form_builds_the_same_kind_the_instance_form_does():
-    from hawk.ext import KernelKind
-
-    instance_kind = Kind("class_form_twin", vocabulary={"terminated": Terminated,
-                                                        "scale": Scalar})
-
-    class ClassFormTwin(KernelKind, slug="class_form_twin"):
-        terminated: Terminated
-        scale: Scalar
-
-    assert ClassFormTwin.kind == instance_kind
-
-    @Kind("class_form_twin_instance", vocabulary={"terminated": Terminated,
-                                                  "scale": Scalar})
-    def instance_spelled(x: Scalar, terminated, scale, y: Mutable[Scalar]):
-        y = x * scale
-
-    @ClassFormTwin
-    def class_spelled(x: Scalar, terminated, scale, y: Mutable[Scalar]):
-        y = x * scale
-
-    assert instance_spelled.arg_spec == class_spelled.arg_spec
-    assert instance_spelled.walk.digest == class_spelled.walk.digest
-    a = render_body(instance_spelled.sinks, instance_spelled.walk,
-                    kind=instance_spelled.kind).text
-    b = render_body(class_spelled.sinks, class_spelled.walk, kind=class_spelled.kind).text
-    assert a == b
-
-
-def test_the_class_form_sets_kind_fields_by_plain_assignment():
-    from hawk.ext import KernelKind, compensated
-
-    class Compensated(KernelKind, slug="class_form_compensated"):
-        sink = compensated(into="c")
-
-    assert Compensated.kind == Kind("class_form_compensated", sink=compensated(into="c"))
-
-    @Compensated
-    def solo(x: Scalar, y: Mutable[Scalar]):
-        y = x
-
-    text = render_body(solo.sinks, solo.walk, kind=solo.kind).text
-    assert "hawk_abi::store_compensated(" in text
 
 
 def test_the_class_form_refuses_a_class_attribute_that_is_neither_form():

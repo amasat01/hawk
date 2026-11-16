@@ -22,7 +22,7 @@ import math
 from math import prod
 
 from . import _broadcast
-from .ir import HawkError
+from ._errors import HawkError
 
 
 def lane_axes(sidecar: dict) -> list | None:
@@ -104,14 +104,17 @@ def key_count(sidecar: dict, spec: dict, n: int) -> int:
     return keyed_size(sidecar, spec, n) // spec["width"]
 
 
-#: The most lane chunks an ordered ``hawk.scatter`` adds in (a chunk is one thread's run of lanes).
-SCATTER_CHUNKS = 256
-
-
-def scatter_chunks(n: int, targets: int) -> int:
+def scatter_chunks(n: int, targets: int, max_chunks: int) -> int:
     """The chunks an ordered scatter of ``n`` lanes into ``targets`` cells adds in:
-    ``clamp(n // targets, 1, 256)``, so the partial sums (``chunks * targets`` cells) stay O(n)."""
-    return min(SCATTER_CHUNKS, max(1, n // max(targets, 1)))
+    ``clamp(n // targets, 1, max_chunks)`` (the wing's ``scatter.max_chunks``), so the partial sums (``chunks * targets`` cells) stay O(n)."""
+    return min(max_chunks, max(1, n // max(targets, 1)))
+
+
+def chunk_cap(sidecar: dict) -> int:
+    """The unit's ``scatter_chunks`` (the wing's ``scatter.max_chunks``); a sidecar without it is refused by name."""
+    if "scatter_chunks" not in sidecar:
+        raise HawkError("the sidecar states no scatter_chunks (a unit built before the chunk cap became a fact): rebuild the unit")
+    return int(sidecar["scatter_chunks"])
 
 
 def target_size(arrays: dict, name: str) -> int:
@@ -128,7 +131,7 @@ def team_grid(sidecar: dict, team: dict, n: int, arrays: dict) -> int:
     if kind == "keys":
         return key_count(sidecar, team["keyed"], n) * team.get("groups", 1)
     if kind == "chunks":
-        return scatter_chunks(n, target_size(arrays, team["of"]))
+        return scatter_chunks(n, target_size(arrays, team["of"]), chunk_cap(sidecar))
     if kind == "targets":
         return target_size(arrays, team["of"])
     return -(-n // (team.get("lanes", 1) * team.get("warps", 1)))      # a block serving ``lanes`` lanes, or ``warps`` warps of one lane each
@@ -141,7 +144,7 @@ def team_units(sidecar: dict, spec: dict, n: int, arrays: dict) -> int:
         return 1
     if "per_target" in spec:
         size = target_size(arrays, spec["per_target"])
-        return scatter_chunks(n, size) * size
+        return scatter_chunks(n, size, chunk_cap(sidecar)) * size
     return n if "keys" not in spec else key_count(sidecar, spec["keys"], n)
 
 
@@ -150,7 +153,7 @@ def check_scatter_status(kernel: str, team: dict, status, cells: int) -> None:
     was not the skip key -1 (``status`` is the plane ``team["status"]`` after the run: flags from element 1)."""
     if any(int(f) for f in status[1:]):
         raise HawkError(
-            f"{kernel}: hawk.scatter({team['of']}, policy='ordered') got a key outside [0, {cells}) "
+            f"{kernel}: hawk.scatter({team['of']}, contract='ordered') got a key outside [0, {cells}) "
             f"that is not the skip key -1; those adds were dropped, the rest are in {team['of']}")
 
 

@@ -12,6 +12,8 @@ refused BY NAME: an inner ``break``, an inner gather of a differentiated plane i
 reverse, ``jump=``."""
 
 from __future__ import annotations
+from _specs import HOST, default_kind
+from _specs import aether_writer
 
 import numpy as np
 from conftest import declared
@@ -21,8 +23,8 @@ from _eval import evaluate
 import hawk
 import hawk.math as m
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body
-from hawk.ir import HawkError, canonical
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import canonical
 
 S = hawk.Scalar
 OUT = hawk.Mutable[hawk.Scalar]
@@ -173,15 +175,6 @@ def test_an_outer_break_around_a_nested_loop_is_exact():
                                    rtol=1e-6, atol=1e-8)
     fwd = evaluate(jvp(stop_outer, wrt=("x",)), {**env, "dot_x": 1.0})
     np.testing.assert_allclose(fwd["dot_out"], _fd(stop_outer, "stop", env, "x"), rtol=1e-6, atol=1e-8)
-
-
-def test_the_emitted_inner_tape_is_local_to_the_reversed_iteration():
-    d = vjp(carried_into_inner, wrt=("x", "g"))
-    text = render_body(tuple(d), canonical(tuple(d))).text
-    # the inner forward loop, its local tape and the inner reverse sit INSIDE the
-    # reversed outer loop (the outer tape is declared before it)
-    outer_reverse = text.index("--hawk_k")
-    assert text.index("Real hawk_tp", outer_reverse) > outer_reverse
 
 
 # -- gathers ------------------------------------------------------------------

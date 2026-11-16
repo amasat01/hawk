@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The index-form classifier: :func:`hawk.ir.access.index_form`.
+"""The index-form classifier: :func:`raptor.ir.access.index_form`.
 
 One analysis answers "how does this index expression move with the sample (or a
 loop) index?" for every rule that asks it — the contraction recogniser's
@@ -20,11 +20,11 @@ import pytest
 
 import hawk
 import hawk.math as m
-from hawk.ir import access
-from hawk.ir.access import IndexForm, index_form
-from hawk.ir.loop_nodes import LoopIndex
-from hawk.ir.nodes import At, Const, Op, RoleConst, SampleIndex
-from hawk.ir.ops import TensorType
+from raptor.ir import access
+from raptor.ir.access import IndexForm, index_form
+from raptor.ir.nodes import LoopIndex
+from raptor.ir.nodes import At, Const, Op, RoleConst, SampleIndex
+from raptor.ir.ops import TensorType
 
 I32 = TensorType((), "i32")
 F64 = TensorType((), "f64")
@@ -119,15 +119,15 @@ def test_every_rejected_shape_is_none(label, node, var, quotients):
 
 
 def test_a_planted_wrong_coefficient_is_caught(monkeypatch):
-    """Non-vacuity: an off-by-one integer factor must break the accepted table,
-    on the row it touches and only through the coefficient it scales."""
-    real = access._int_factor
+    """Non-vacuity: an off-by-one on every scaled form must break the accepted table, on the rows it touches and not on the
+    plain index."""
+    real = access._core.index_form
 
-    def planted(node):
-        value, label = real(node)
-        return (None, None) if value is None else (value + 1, label)
+    def planted(node, var=None, quotients=True):
+        got = real(node, var, quotients)
+        return got if got is None or not (got.anonymous or got.labels) else got._replace(coefficient=got.coefficient + 1)
 
-    monkeypatch.setattr(access, "_int_factor", planted)
+    monkeypatch.setattr(access._core, "index_form", planted)
     broken = dict(_mismatches())
     assert "s*3+2" in broken
     assert broken["s*3+2"].coefficient == 4

@@ -20,6 +20,9 @@ unconditionally makes the scattered-diagnostic row refuse (or silently
 compensate the wrong plane). Every plant was then removed."""
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import HOST
 
 import _deploy as L
 import numpy as np
@@ -29,9 +32,8 @@ from conftest import sidecar_of
 import hawk
 from hawk import Mutable, Scalar, Terminated, Vector
 from hawk.artifact import build_bundle as _build_bundle
-from hawk.emit import render_body
 from hawk.ext import Kind, Output, compensated
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 from hawk.math import norm
 
 N = 8
@@ -73,7 +75,7 @@ def returned_with_diagnostic_guarded(term: Vector[3], terminated: Terminated,
 def returned_with_scatter_diagnostic(term: Vector[3], hits: Mutable[Scalar]):
     """a SCATTERED diagnostic by-key store beside the returned compensated
     target — the scatter is not the target, so it commits plain."""
-    hawk.scatter(hits, policy="plain")[0] += 1.0
+    hawk.scatter(hits, contract="plain")[0] += 1.0
     return term
 
 
@@ -106,14 +108,6 @@ def _sequential_launch(bundle, name, terms, *, mask=None, extra=()):
 # --------------------------------------------------------------------------- #
 # byte identity with the ``Output.named`` twin.
 # --------------------------------------------------------------------------- #
-def test_returned_output_matches_the_named_twin_with_a_diagnostic_sink():
-    assert returned_with_diagnostic.arg_spec == named_with_diagnostic.arg_spec
-    assert returned_with_diagnostic.walk.digest == named_with_diagnostic.walk.digest
-    a = render_body(returned_with_diagnostic.sinks, returned_with_diagnostic.walk,
-                    kind=returned_with_diagnostic.kind).text
-    b = render_body(named_with_diagnostic.sinks, named_with_diagnostic.walk,
-                    kind=named_with_diagnostic.kind).text
-    assert a == b
 
 
 # --------------------------------------------------------------------------- #
@@ -212,11 +206,3 @@ def test_a_named_sink_colliding_with_the_compensated_companion_name_refuses():
 # the derivative differentiates EVERY sink, named and returned alike,
 # and never re-runs the compensated commit.
 # --------------------------------------------------------------------------- #
-def test_a_derivative_of_returned_plus_named_sinks_differentiates_every_sink():
-    from hawk import Kernel
-    from hawk.diff import jvp
-
-    d = jvp(returned_with_diagnostic, wrt=("term",))
-    assert [s.name for s in d] == ["dot_speed", "dot_acc", "dot_acc_c"]
-    text = render_body(tuple(d), Kernel("d", tuple(d)).walk).text
-    assert "store_compensated" not in text

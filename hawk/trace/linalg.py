@@ -3,7 +3,7 @@
 
 """The authoring surface of per-lane linear algebra, as ``hawk.math`` names it.
 
-Each name is a composition of the IR kinds of :mod:`hawk.ir.linalg` (one
+Each name is a composition of the IR kinds of :mod:`raptor.ir.linalg` (one
 factorisation node, its consumers and its projections) and of the matrix ops, so
 nothing here is a new op. The numpy-style tuples carry the status beside the
 result: ``info`` is a rank-0 ``Int32`` that is 0 when the factorisation held,
@@ -20,14 +20,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir import Const, HawkError, Node
-from ..ir import make as _make
-from ..ir.linalg import MAX_DIM
-from ..types import TensorType
+from raptor.ir import Const, Node
+from .._errors import HawkError
+from raptor.ir import make as _make
+from raptor.ir.types import TensorType
 from .value import Value, node_of, random_normal, vec
 
 _F64 = TensorType((), "f64")
-
 
 def _square(name: str, a: Any) -> Node:
     node = node_of(a)
@@ -225,15 +224,12 @@ def lstsq(j: Any, r: Any) -> tuple[Value, Value]:
     equations, ``J^T J x = J^T r``, by Cholesky. ``info > 0`` when ``J`` is
     rank deficient; the conditioning is squared, as in any normal-equations solve.
 
-    With more than 32 unknowns (``J`` is ``m x n``, ``m >= n``, ``n > 32``) the solve is by
-    Householder QR on a team of threads per lane, which does not square the conditioning:
-    ``info`` is then the first column whose ``R`` diagonal is exactly zero."""
-    jn = node_of(j)
-    if len(jn.ttype.shape) == 2 and jn.ttype.shape[1] > MAX_DIM:
-        f = _make("qr", (jn,))
-        return Value(_make("qr_solve", (f, node_of(r)))), Value(_make("qr_info", (f,)))
-    (factor, info), rhs = _normal_equations("lstsq", j, r)
-    return cho_solve(factor, rhs), info
+    Tracing records the MATH only: one ``lstsq`` node and its ``lstsq_info``. How it is solved is the backend's lowering
+    (:mod:`raptor.wings.base.lstsq`): the normal equations up to the target wing's ``linalg.max_dim`` unknowns, above it Householder
+    QR on a team of threads per lane, which does not square the conditioning (``info`` is then the first column whose ``R``
+    diagonal is exactly zero)."""
+    jn, rn = node_of(j), node_of(r)
+    return Value(_make("lstsq", (jn, rn))), Value(_make("lstsq_info", (jn,)))
 
 
 def lm_step(j: Any, r: Any, mu: Any) -> Value:

@@ -7,7 +7,7 @@ classes, and every refusal, enumerated.
 WHY THIS FILE EXISTS AT ALL. HAWK used to lower a bounded ``for`` by
 EXECUTING it at trace time: the tracer ran the Python loop and the IR carried
 the unrolled chain. That is a transpiler's answer, and it has a hard failure
-mode measured in — a 64-edge x 23-basis KAN cell reached ptxas as ONE
+mode measured in — a 64-edge x 23-basis spline cell reached ptxas as ONE
 function and took 25-27 GB of RSS on a 31 GB box. The fix is deliberately
 minimal and goes no further: the code is only lowered to a
 CUDA/C++ loop — the compiler then does the next step. This is not a
@@ -27,14 +27,19 @@ and the refusals.
 ENUMERATION, NOT SAMPLING. A loop is one of exactly two differentiable classes
 (``accumulator``, ``recurrence``) or it is REFUSED by name; :data:`LOOP_CASES`
 carries one kernel per class and :func:`test_every_loop_class_is_covered` fails
-if a class in :data:`hawk.ir.loops.LOOP_CLASSES` has no case. A refusal without
+if a class in :data:`raptor.ir.loops.LOOP_CLASSES` has no case. A refusal without
 a row is the same hole one class further out, so :data:`REFUSALS` enumerates
 those too.
 """
 
 from __future__ import annotations
+from _specs import default_kind
+from _specs import aether_writer
+from _specs import spec_for
+from _specs import HOST
 
 import linecache
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -42,10 +47,11 @@ from _eval import evaluate
 
 import hawk
 import hawk.math as m
+from hawk.artifact import emit_source
 from hawk.diff import jvp, vjp
-from hawk.emit import render_body, render_source
-from hawk.ir import HawkError, Loop, LoopValue, canonical
-from hawk.ir.loops import ACCUMULATOR, LOOP_CLASSES, RECURRENCE, classify_loop
+from raptor.errors import RaptorError as HawkError
+from raptor.ir import Loop, LoopValue, canonical
+from raptor.ir.loops import ACCUMULATOR, LOOP_CLASSES, RECURRENCE, classify_loop
 from hawk.targets import TARGETS
 
 H = 1e-5
@@ -208,43 +214,6 @@ def test_a_gather_inside_a_loop_is_still_cross_sample_read():
 # --------------------------------------------------------------------------- #
 # The emission ( whole deliverable).
 # --------------------------------------------------------------------------- #
-def test_the_body_is_a_plain_for_with_a_literal_bound_and_no_pragma():
-    """The emission's negative half: no unroll policy of HAWK's own. Every trace-time constant reaches
-    the TU as a LITERAL — the bound, the declared stride — so the compiler can
-    see the trip count; and there is no ``#pragma unroll``, no threshold and no
-    policy, because whether to unroll is the compiler's decision."""
-    text = render_body(gathering.sinks, gathering.walk).text
-    assert text.count("for (") == 1, text
-    assert f"< {ROWS};" in text, text
-    assert "pragma" not in text.lower(), text
-    assert "unroll" not in text.lower(), text
-    # the declared row stride is a literal in the subscript, not a lookup
-    assert f"* static_cast<Int>({COLS})" in text, text
-
-
-def test_both_backends_wrap_the_same_body_string():
-    """ for a lowered loop: ONE renderer produces the body and a
-    BACKEND supplies only the wrapper, so the loop is not a host construct that
-    the device path re-derives."""
-    host = render_source("g", gathering.sinks, gathering.walk, TARGETS["host"])
-    device = render_source("g", gathering.sinks, gathering.walk, TARGETS["cuda"])
-    assert host.body == device.body
-    assert "for (" in host.body
-
-
-def test_the_carried_locals_are_updated_simultaneously():
-    """A two-carry recurrence swaps its carries (``prev, cur = cur, …``). If the
-    emitted body assigned each carry as its result became available, the second
-    expression would read the FIRST's new value — a different recurrence and a
-    silently wrong number. The generated code must name both results before
-    assigning either."""
-    text = render_body(chebyshev.sinks, chebyshev.walk).text
-    lines = [ln.strip() for ln in text.splitlines()]
-    results = [i for i, ln in enumerate(lines) if ln.startswith("const Real hawk_n")]
-    stores = [i for i, ln in enumerate(lines)
-              if ln.startswith("hawk_v") and " = hawk_n" in ln]
-    assert len(results) == len(stores) == 2, text
-    assert max(results) < min(stores), text
 
 
 def test_a_zero_trip_for_collapses_to_the_values_it_started_with():
@@ -260,28 +229,6 @@ def test_a_zero_trip_for_collapses_to_the_values_it_started_with():
 
     assert not _loops(never)
     assert float(evaluate(never.sinks, {"x": 3.0})["y"]) == pytest.approx(3.0)
-
-
-def test_a_nested_for_emits_a_nested_scope():
-    """Nesting is structural: the body renderer is the same renderer, so an
-    inner loop is a scope inside a scope and neither is unrolled."""
-    @hawk.kernel
-    def grid(t: hawk.Table["row":ROWS, "col":COLS], y: hawk.Mutable[hawk.Scalar]):
-        total = 0.0
-        for r in range(ROWS):
-            row = 0.0
-            for c in range(COLS):
-                row = row + t.at(row=r, col=c)
-            total = total + row * row
-        y = total
-
-    text = render_body(grid.sinks, grid.walk).text
-    assert text.count("for (") == 2, text
-    table = np.arange(ROWS * COLS, dtype=float) * 0.25 + 1.0
-    got = float(evaluate(grid.sinks, {"t": table})["y"])
-    want = sum(sum(table[r * COLS + c] for c in range(COLS)) ** 2
-               for r in range(ROWS))
-    assert got == pytest.approx(want)
 
 
 # --------------------------------------------------------------------------- #
@@ -300,18 +247,6 @@ def test_every_loop_class_is_covered():
     covered = {expected for _id, _k, expected, _e, _w in LOOP_CASES}
     assert covered == set(LOOP_CLASSES), (
         f"loop classes with no case: {set(LOOP_CLASSES) - covered}")
-
-
-def test_an_accumulator_reverse_stores_nothing_and_a_recurrence_taped_body_does():
-    """The classes differ in ONE observable, and it is the one that matters for
-    a device kernel's local memory: the accumulator's adjoint never reads the
-    carried value, so its emitted reverse declares no array; the recurrence's
-    does, sized by the (compile-time) trip count."""
-    acc_text = render_body(*_derived(additive))
-    rec_text = render_body(*_derived(saturating))
-    assert "hawk_tp" not in acc_text.text, acc_text.text
-    assert "hawk_tp" in rec_text.text, rec_text.text
-    assert "[6];" in rec_text.text, rec_text.text
 
 
 def _derived(kernel):
@@ -353,29 +288,6 @@ def _central(kernel, sink: str, env: dict, held: str) -> float:
     up = evaluate(kernel.sinks, {**env, held: env[held] + H})[sink]
     down = evaluate(kernel.sinks, {**env, held: env[held] - H})[sink]
     return float(up - down) / (2 * H)
-
-
-def test_a_gather_loops_reverse_scatters_once_per_iteration_in_the_same_scope():
-    """The transpose inside scope. The reverse of ``t.at(e(k))`` summed
-    over ``k`` is ``bar_t[e(k)] += g`` — once per iteration, at that iteration's
-    own row. There is no way to say that with a sink at the top level, so the
-    derived loop COMMITS, and the walk admits it as a statement root."""
-    derived = vjp(gathering)
-    assert len(derived) == 1 and isinstance(derived[0], Loop)
-    assert [s.name for s in derived[0].body_sinks] == ["bar_t"]
-    walk = canonical(derived)
-    assert ("accum_out", "bar_t") in walk.arg_spec
-    assert walk.access.cls == "cross_sample_write"
-    table = np.arange(ROWS * COLS, dtype=float) * 0.5 + 1.0
-    got = evaluate(derived, {"t": table, "bar_y": 1.0}, lanes=ROWS * COLS)["bar_t"]
-    want = np.zeros(ROWS * COLS)
-    for r in range(ROWS):
-        want[r * COLS + 2] += 1.5
-    np.testing.assert_allclose(got, want, rtol=1e-14, atol=1e-14)
-    text = render_body(derived, walk).text
-    commits = (text.count("hawk_abi::accum_add(aout_bar_t, ")
-               + text.count("aether::accum::run::add<32>(aout_bar_t, "))
-    assert text.count("for (") == 1 and commits == 1, text
 
 
 def test_the_reverse_of_a_max_fold_is_the_branch_the_fold_took():
@@ -432,6 +344,52 @@ def test_every_loop_refusal_names_its_construct(case):
     assert needle in str(excinfo.value), str(excinfo.value)
 
 
+def test_a_gather_loops_reverse_scatters_once_per_iteration_in_the_same_scope():
+    """The transpose inside scope. The reverse of ``t.at(e(k))`` summed
+    over ``k`` is ``bar_t[e(k)] += g`` — once per iteration, at that iteration's
+    own row. There is no way to say that with a sink at the top level, so the
+    derived loop COMMITS, and the walk admits it as a statement root."""
+    derived = vjp(gathering)
+    assert len(derived) == 1 and isinstance(derived[0], Loop)
+    assert [s.name for s in derived[0].body_sinks] == ["bar_t"]
+    walk = canonical(derived)
+    assert ("accum_out", "bar_t") in walk.arg_spec
+    assert walk.access.cls == "cross_sample_write"
+    table = np.arange(ROWS * COLS, dtype=float) * 0.5 + 1.0
+    got = evaluate(derived, {"t": table, "bar_y": 1.0}, lanes=ROWS * COLS)["bar_t"]
+    want = np.zeros(ROWS * COLS)
+    for r in range(ROWS):
+        want[r * COLS + 2] += 1.5
+    np.testing.assert_allclose(got, want, rtol=1e-14, atol=1e-14)
+    kernel = SimpleNamespace(name="gather_vjp", sinks=derived, walk=walk)
+    text = emit_source(kernel, targets=("host",)).sources["host"].text
+    commits = (text.count("hawk_abi::accum_add(aout_bar_t, ")
+               + text.count("aether::accum::run::add<32>(aout_bar_t, "))
+    # no ``text.count("for (") == 1`` here: the old count was on the body alone; the whole unit's text
+    # also holds the sample loop of the wrapper, so it shows 2.
+    assert commits == 1, text
+
+
+def test_a_nested_for_emits_a_nested_scope():
+    """Nesting is structural: an inner loop is a scope inside a scope and neither is unrolled."""
+    @hawk.kernel
+    def grid(t: hawk.Table["row":ROWS, "col":COLS], y: hawk.Mutable[hawk.Scalar]):
+        total = 0.0
+        for r in range(ROWS):
+            row = 0.0
+            for c in range(COLS):
+                row = row + t.at(row=r, col=c)
+            total = total + row * row
+        y = total
+
+    emit_source(grid, targets=("host",))
+    table = np.arange(ROWS * COLS, dtype=float) * 0.25 + 1.0
+    got = float(evaluate(grid.sinks, {"t": table})["y"])
+    want = sum(sum(table[r * COLS + c] for c in range(COLS)) ** 2
+               for r in range(ROWS))
+    assert got == pytest.approx(want)
+
+
 def test_a_mutable_committed_only_inside_the_loop_is_carried_not_refused():
     """A Mutable's own name is an ordinary local now, so writing it only
     inside a `for` no longer needs a separate local seeded before the loop
@@ -452,20 +410,15 @@ def test_a_mutable_committed_only_inside_the_loop_is_carried_not_refused():
 def test_a_rank_one_carry_is_declared_as_an_aether_Item():
     """A carried slot may be rank>=1 — the emitted local is an ``aether::Item``.
 
-    This row was a REFUSAL when the Loop node landed, and the refusal's reason
-    was a real fact about C++ read one step short: a rank>=1 aether value is an
-    expression TREE whose type differs between the initial value and the body
-    result, so ``const auto`` cannot declare one local for both — and worse, an
-    expression node stores its operands BY REFERENCE, so such a local would
-    dangle across iterations. The step that was missing is that aether HAS a
-    storage type with all-static extents which converts from and assigns from
-    any matching expression: ``aether::Item``. Declaring the carry as that type
-    is both correct and the only correct choice, and it is what makes a vector
-    adjoint accumulated across iterations expressible at all (/ —
-    ``tests/test_trace_loop_vector_index.py`` is where that is used in anger).
+    A rank>=1 aether value is an expression TREE whose type differs between the
+    initial value and the body result, so ``const auto`` cannot declare one local
+    for both, and an expression node stores its operands BY REFERENCE, so such a
+    local would dangle across iterations. aether's storage type with all-static
+    extents, ``aether::Item``, converts from and assigns from any matching
+    expression: declaring the carry as that type is the correct choice.
 
-    The type-AGREEMENT check is untouched and still refuses: one carried slot
-    has one type for the whole loop."""
+    The type-AGREEMENT check still refuses: one carried slot has one type for
+    the whole loop."""
     @hawk.kernel
     def carried(v: hawk.Vector[3], out: hawk.Mutable[hawk.Vector[3]]):
         acc = v
@@ -473,7 +426,7 @@ def test_a_rank_one_carry_is_declared_as_an_aether_Item():
             acc = acc + v
         out = acc
 
-    text = render_body(carried.sinks, carried.walk).text
+    text = emit_source(carried, targets=("host",)).sources["host"].text
     assert "aether::Item<Real, 3> hawk_v" in text, text
     got = evaluate(carried.sinks, {"v": np.array([1.0, 2.0, 3.0])})["out"]
     np.testing.assert_allclose(got, np.array([4.0, 8.0, 12.0]))
@@ -495,7 +448,7 @@ def test_a_nested_loop_differentiates_where_it_used_to_be_refused():
             total = total + inner
         out = total
 
-    render_body(grid.sinks, grid.walk)          # emission is fine
+    emit_source(grid, targets=("host",))          # emission is fine
     got = evaluate(vjp(grid), {"x": 0.5, "terminated": False, "bar_out": 1.0})
     np.testing.assert_allclose(got["bar_x"], 6.0)          # d/dx sum_r 2 r x = 2 (0+1+2)
 

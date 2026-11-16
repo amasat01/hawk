@@ -10,7 +10,7 @@ import pytest
 
 import hawk
 from hawk.artifact import build
-from hawk.ir import HawkError
+from raptor.errors import RaptorError as HawkError
 
 
 @hawk.kernel
@@ -23,5 +23,5 @@ def test_unknown_target_lists_the_valid_names(tmp_path):
         build(_identity, tmp_path / "unit", targets=("device",))
     text = str(err.value)
     assert "unknown target 'device'" in text
-    assert "'cuda', 'host' and 'c'" in text
+    assert "'cuda' and 'host'" in text
     assert "GPU" in text and "CPU" in text

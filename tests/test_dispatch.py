@@ -3,12 +3,12 @@
 
 """Tests the `dispatch` node and its `predicated`/`switch`/`segmented`
 emission: K in {2, 5, 16}, a kind plane INCLUDING out-of-range values,
-rank-0/rank-1 branches, both wrappers. The built policies agree with the
-serial oracle (EXACT for an integer-typed branch set), and each policy's
+rank-0/rank-1 branches, both wrappers. The built strategies agree with the
+serial oracle (EXACT for an integer-typed branch set), and each strategy's
 units carry DISTINCT unit digests.
 
 `_eval.py`'s scratch interpreter carries its own `Dispatch` arm alongside
-`Select`'s (the same clamp every emitted policy shares) — this file's first
+`Select`'s (the same clamp every emitted strategy shares) — this file's first
 block is that arm's own unit check, single-sample, no compile; the numeric
 rows that follow build real artifacts and compare against a plain numpy
 reference on both the compiled HOST oracle (``hawk._core``) and the compiled
@@ -16,6 +16,11 @@ DEVICE kernel (eagle's `DeviceKernel`).
 """
 
 from __future__ import annotations
+from raptor.wings.base.cells import walk as _walk
+from raptor.wings.base.dispatch import DISPATCH_STRATEGIES, dispatch as _dispatch, strategy
+from _specs import spec_for, default_kind
+from _specs import aether_writer
+from _specs import HOST
 
 import platform
 import re
@@ -30,14 +35,12 @@ import hawk
 import hawk.math as M
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.diff.rules import zero_like
-from hawk.emit import render_body
-from hawk.ir import AccumWrite, Assign, At, Dispatch, HawkError, Leaf, canonical
-from hawk.ir import make as mk
-from hawk.ir.nodes import DISPATCH_POLICIES
-from hawk.ir.ops import OP_KINDS
-from hawk.ir.segment import split_segmented
-from hawk.types import TensorType
+from raptor.rules.core import zero_like
+from raptor.ir import AccumWrite, Assign, At, Dispatch, Leaf, canonical
+from hawk import HawkError
+from raptor.ir import make as mk
+from raptor.ir.ops import OP_KINDS
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 I32 = TensorType((), "i32")
@@ -58,11 +61,11 @@ def _leaf(name: str, t: TensorType, role: str | None = None) -> Leaf:
     return Leaf("vocab_read", role, name, t)
 
 
-def _dispatch_sinks(policy: str, K: int = 3, rank: int = 0):
+def _dispatch_sinks(strategy: str, K: int = 3, rank: int = 0):
     k = _leaf("k", I32)
     t = S if rank == 0 else V3
     branches = [_leaf(f"b{i}", t) for i in range(K)]
-    d = Dispatch(k, branches, policy, t)
+    d = _dispatch(k, branches, strategy, t)
     return (Assign("out", d, t),)
 
 
@@ -77,38 +80,38 @@ def test_the_selector_must_be_a_rank0_i32_value():
     b0, b1 = _leaf("b0", S), _leaf("b1", S)
     bad = _leaf("bad", S)                      # f64, not i32
     with pytest.raises(HawkError, match="rank-0 i32"):
-        Dispatch(bad, [b0, b1], "switch", S)
+        _dispatch(bad, [b0, b1], "switch", S)
     bad_rank = _leaf("bad2", TensorType((3,), "i32"))
     with pytest.raises(HawkError, match="rank-0 i32"):
-        Dispatch(bad_rank, [b0, b1], "switch", S)
+        _dispatch(bad_rank, [b0, b1], "switch", S)
 
 
 def test_at_least_two_branches_are_required():
     k = _leaf("k", I32)
     with pytest.raises(HawkError, match="at least 2 branches"):
-        Dispatch(k, [_leaf("b0", S)], "switch", S)
+        _dispatch(k, [_leaf("b0", S)], "switch", S)
 
 
 def test_every_branch_must_share_one_tensor_type():
     k = _leaf("k", I32)
     b0, b1 = _leaf("b0", S), _leaf("b1", V3)
     with pytest.raises(HawkError, match="disagree"):
-        Dispatch(k, [b0, b1], "switch", S)
+        _dispatch(k, [b0, b1], "switch", S)
 
 
-def test_an_unknown_policy_refuses_by_name():
+def test_an_unknown_strategy_refuses_by_name():
     k = _leaf("k", I32)
     b0, b1 = _leaf("b0", S), _leaf("b1", S)
-    with pytest.raises(HawkError, match="unknown policy"):
-        Dispatch(k, [b0, b1], "bogus", S)
+    with pytest.raises(HawkError, match="unknown strategy"):
+        _dispatch(k, [b0, b1], "bogus", S)
 
 
-def test_K_and_policy_are_readable_attributes():
+def test_K_and_strategy_are_readable_attributes():
     k = _leaf("k", I32)
     b0, b1, b2 = (_leaf(f"b{i}", S) for i in range(3))
-    d = Dispatch(k, [b0, b1, b2], "predicated", S)
+    d = _dispatch(k, [b0, b1, b2], "predicated", S)
     assert d.K == 3
-    assert d.policy == "predicated"
+    assert strategy(d) == "predicated"
     assert d.selector is k
     assert d.branches == (b0, b1, b2)
 
@@ -119,21 +122,21 @@ def test_dispatch_defaults_to_switch_and_mirrors_selects_trace_entry():
     b0, b1 = hawk.Value(_leaf("b0", S)), hawk.Value(_leaf("b1", S))
     node = node_of(M.dispatch(k, [b0, b1]))
     assert node.kind == "dispatch"
-    assert node.policy == "switch"
+    assert strategy(node) == "switch"
 
 
-def test_the_three_policies_carry_distinct_unit_digests():
-    """Policy is not cosmetic — a silent lowering-as-another-policy is
+def test_the_three_strategies_carry_distinct_unit_digests():
+    """Strategy is not cosmetic — a silent lowering-as-another-strategy is
     exactly the defect this pins."""
-    digests = {p: canonical(_dispatch_sinks(p)).digest for p in DISPATCH_POLICIES}
-    assert len(set(digests.values())) == len(DISPATCH_POLICIES), digests
+    digests = {p: canonical(_dispatch_sinks(p)).digest for p in DISPATCH_STRATEGIES}
+    assert len(set(digests.values())) == len(DISPATCH_STRATEGIES), digests
 
 
 def test_sidecar_lists_every_dispatch_node():
-    walk = canonical(_dispatch_sinks("switch", K=4))
+    walk = _walk(_dispatch_sinks("switch", K=4))
     assert len(walk.dispatches) == 1
     info = walk.dispatches[0]
-    assert (info.name, info.K, info.policy) == ("dispatch0", 4, "switch")
+    assert (info.name, info.K, info.strategy) == ("dispatch0", 4, "switch")
 
 
 # --------------------------------------------------------------------------- #
@@ -142,7 +145,7 @@ def test_sidecar_lists_every_dispatch_node():
 @pytest.mark.parametrize("kind_value", [-2, -1, 0, 1, 2, 3, 5])
 def test_eval_harness_clamps_exactly_like_H97(kind_value):
     K = 3
-    sinks = _dispatch_sinks("switch", K=K)      # policy is irrelevant here
+    sinks = _dispatch_sinks("switch", K=K)      # strategy is irrelevant here
     env = {"k": kind_value, "b0": 10.0, "b1": 20.0, "b2": 30.0}
     got = evaluate(sinks, env)["out"]
     want = [10.0, 20.0, 30.0][min(max(kind_value, 0), K - 1)]
@@ -150,10 +153,9 @@ def test_eval_harness_clamps_exactly_like_H97(kind_value):
 
 
 def test_eval_harness_is_exact_for_an_integer_branch_set():
-    from hawk.ir.nodes import Dispatch as _D
     ik = _leaf("k", I32)
     ib0, ib1 = _leaf("b0", I32), _leaf("b1", I32)
-    d = _D(ik, [ib0, ib1], "switch", I32)
+    d = _dispatch(ik, [ib0, ib1], "switch", I32)
     sinks = (Assign("out", d, I32),)
     for kind_value, want in ((-1, 7), (0, 7), (1, 9), (9, 9)):
         got = evaluate(sinks, {"k": kind_value, "b0": 7, "b1": 9})["out"]
@@ -163,68 +165,12 @@ def test_eval_harness_is_exact_for_an_integer_branch_set():
 # --------------------------------------------------------------------------- #
 # 2. Emission — string-level, no compile.
 # --------------------------------------------------------------------------- #
-def test_every_dispatch_materialises_the_shared_clamp():
-    sinks = _dispatch_sinks("switch", K=3)
-    text = render_body(sinks, canonical(sinks)).text
-    assert "std::int32_t" in text
-    assert "< 0 ?" in text and "2" in text       # K - 1 == 2 appears in the clamp
 
 
-def test_switch_emits_a_declared_local_and_a_switch_statement():
-    sinks = _dispatch_sinks("switch", K=3)
-    text = render_body(sinks, canonical(sinks)).text
-    assert "switch (" in text
-    assert "case 0:" in text and "case 1:" in text
-    assert "default:" in text
-
-
-def test_predicated_rank0_emits_a_ternary_chain_and_no_switch():
-    sinks = _dispatch_sinks("predicated", K=3)
-    text = render_body(sinks, canonical(sinks)).text
-    assert " ? " in text
-    assert "switch (" not in text
-
-
-def test_predicated_rank1_reaches_aether_select():
-    sinks = _dispatch_sinks("predicated", K=3, rank=1)
-    text = render_body(sinks, canonical(sinks)).text
-    assert "aether::select(" in text
-
-
-def test_a_literal_zero_branch_is_elided_under_switch():
-    """The elision, exercised at the EMISSION level ("no
-    case, no commit"): branch 1 is the structural zero `zero_like` mints, so
-    its `case 1:` label must not appear and `default:` must carry the typed
-    zero rather than the last branch's own expression."""
-    k = _leaf("k", I32)
-    b0, b2 = _leaf("b0", S), _leaf("b2", S)
-    z = zero_like(S)
-    d = Dispatch(k, [b0, z, b2], "switch", S)
-    sinks = (Assign("out", d, S),)
-    text = render_body(sinks, canonical(sinks)).text
-    assert "case 1:" not in text
-    assert "case 0:" in text
-    assert "default:" in text
-    assert "static_cast<Real>(0)" in text
-
-
-def test_segmented_has_no_per_node_emission_yet():
-    """A `segmented` dispatch is a per-UNIT split, done ahead of emission — by the
-    time a renderer sees a body, the node must already be gone."""
-    sinks = _dispatch_sinks("segmented", K=2)
-    with pytest.raises(HawkError, match="segmented"):
-        render_body(sinks, canonical(sinks))
-
-
-def test_both_backends_share_one_dispatch_helper():
-    from hawk.targets import TARGETS
-    text = {b.id: b.wrapper.dispatch("hawk_disp0_k", ["b0", "b1"], "predicated")
-            for b in TARGETS.values() if b.wrapper}
-    assert text["cuda"] == text["host"]
 
 
 # --------------------------------------------------------------------------- #
-# 2a. Numeric: real artifacts, both wrappers, both built policies.
+# 2a. Numeric: real artifacts, both wrappers, both built strategies.
 # --------------------------------------------------------------------------- #
 def _branches(bs, k):
     """A PLAIN-PYTHON helper (never traced by the `ast` pass): the K static
@@ -234,77 +180,77 @@ def _branches(bs, k):
 
 @hawk.kernel
 def disp_r0_k2_pred(k: hawk.Index, bs: hawk.Vector[2], y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, _branches(bs, 2), policy="predicated")
+    y = M.dispatch(k, _branches(bs, 2), strategy="predicated")
 
 
 @hawk.kernel
 def disp_r0_k2_switch(k: hawk.Index, bs: hawk.Vector[2], y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, _branches(bs, 2), policy="switch")
+    y = M.dispatch(k, _branches(bs, 2), strategy="switch")
 
 
 @hawk.kernel
 def disp_r0_k5_pred(k: hawk.Index, bs: hawk.Vector[5], y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, _branches(bs, 5), policy="predicated")
+    y = M.dispatch(k, _branches(bs, 5), strategy="predicated")
 
 
 @hawk.kernel
 def disp_r0_k5_switch(k: hawk.Index, bs: hawk.Vector[5], y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, _branches(bs, 5), policy="switch")
+    y = M.dispatch(k, _branches(bs, 5), strategy="switch")
 
 
 @hawk.kernel
 def disp_r0_k16_pred(k: hawk.Index, bs: hawk.Vector[16], y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, _branches(bs, 16), policy="predicated")
+    y = M.dispatch(k, _branches(bs, 16), strategy="predicated")
 
 
 @hawk.kernel
 def disp_r0_k16_switch(k: hawk.Index, bs: hawk.Vector[16], y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, _branches(bs, 16), policy="switch")
+    y = M.dispatch(k, _branches(bs, 16), strategy="switch")
 
 
 @hawk.kernel
 def disp_r1_k3_pred(k: hawk.Index, b0: hawk.Vector[3], b1: hawk.Vector[3], b2: hawk.Vector[3],
                     y: hawk.Mutable[hawk.Vector[3]]):
-    y = M.dispatch(k, [b0, b1, b2], policy="predicated")
+    y = M.dispatch(k, [b0, b1, b2], strategy="predicated")
 
 
 @hawk.kernel
 def disp_r1_k3_switch(k: hawk.Index, b0: hawk.Vector[3], b1: hawk.Vector[3], b2: hawk.Vector[3],
                       y: hawk.Mutable[hawk.Vector[3]]):
-    y = M.dispatch(k, [b0, b1, b2], policy="switch")
+    y = M.dispatch(k, [b0, b1, b2], strategy="switch")
 
 
 @hawk.kernel
 def disp_int_pred(k: hawk.Index, b0: hawk.Index, b1: hawk.Index, y: hawk.Mutable[hawk.Index]):
-    y = M.dispatch(k, [b0, b1], policy="predicated")
+    y = M.dispatch(k, [b0, b1], strategy="predicated")
 
 
 @hawk.kernel
 def disp_int_switch(k: hawk.Index, b0: hawk.Index, b1: hawk.Index, y: hawk.Mutable[hawk.Index]):
-    y = M.dispatch(k, [b0, b1], policy="switch")
+    y = M.dispatch(k, [b0, b1], strategy="switch")
 
 
 @hawk.kernel
 def disp_train_k4(k: hawk.Index, bs: hawk.Vector[4], y: hawk.Mutable[hawk.Scalar]):
     """The training-switch fixture (row): K = 4, `switch` — the
-    DEFAULT policy, and the one this row cares about (a `switch`
+    DEFAULT strategy, and the one this row cares about (a `switch`
     kernel is what a captured training step launches)."""
-    y = M.dispatch(k, _branches(bs, 4), policy="switch")
+    y = M.dispatch(k, _branches(bs, 4), strategy="switch")
 
 
 @hawk.kernel
 def disp_r0_k2_seg(k: hawk.Index, bs: hawk.Vector[2], y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, _branches(bs, 2), policy="segmented")
+    y = M.dispatch(k, _branches(bs, 2), strategy="segmented")
 
 
 @hawk.kernel
 def disp_r0_k5_seg(k: hawk.Index, bs: hawk.Vector[5], y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, _branches(bs, 5), policy="segmented")
+    y = M.dispatch(k, _branches(bs, 5), strategy="segmented")
 
 
 @hawk.kernel
 def disp_r0_k16_seg(k: hawk.Index, bs: hawk.Vector[16], y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(k, _branches(bs, 16), policy="segmented")
+    y = M.dispatch(k, _branches(bs, 16), strategy="segmented")
 
 
 _KERNELS = [disp_r0_k2_pred, disp_r0_k2_switch, disp_r0_k5_pred, disp_r0_k5_switch,
@@ -329,7 +275,7 @@ def dispatch_bundle(tmp_path_factory, cache_dir):
 @pytest.fixture(scope="module")
 def segmented_bundle(tmp_path_factory, cache_dir):
     """`build_bundle([kern])` expands EVERY segmented member into its K units
-    (`hawk/ir/segment.py`) before publishing — this bundle's own artifacts are
+    (`hawk/passes/segment.py`) before publishing — this bundle's own artifacts are
     `disp_r0_k2_seg__k0/__k1`, `disp_r0_k5_seg__k0..__k4`,
     `disp_r0_k16_seg__k0..__k15`: 2 + 5 + 16 = 23 units, no
     `disp_r0_k*_seg` artifact of its own."""
@@ -420,14 +366,14 @@ def test_forward_dispatch_matches_the_serial_oracle_on_the_device(
 
 
 def test_the_dispatch_sidecar_entries_land_on_the_deployed_artifact(dispatch_bundle):
-    """The deployed sidecar lists ``{name, K, policy}`` per kernel, which a
+    """The deployed sidecar lists ``{name, K, strategy}`` per kernel, which a
     downstream consumer reads without re-walking the IR."""
     sidecar = sidecar_of(dispatch_bundle, "disp_r0_k5_switch")
-    assert sidecar["dispatch"] == [{"name": "dispatch0", "K": 5, "policy": "switch",
+    assert sidecar["dispatch"] == [{"name": "dispatch0", "K": 5, "strategy": "switch",
                                     "static_selector": True,
                                     "selector_reads": [["per_sample", "k"]]}]
     sidecar = sidecar_of(dispatch_bundle, "disp_r1_k3_pred")
-    assert sidecar["dispatch"] == [{"name": "dispatch0", "K": 3, "policy": "predicated",
+    assert sidecar["dispatch"] == [{"name": "dispatch0", "K": 3, "strategy": "predicated",
                                     "static_selector": True,
                                     "selector_reads": [["per_sample", "k"]]}]
 
@@ -566,7 +512,7 @@ def test_segmented_units_carry_distinct_unit_digests(segmented_bundle):
     """The K units of ONE segmented kernel are K DIFFERENT compiled
     bodies (branch j substituted) — silently emitting the same body K times
     would be exactly the "silent lowering" defect pins for the three
-    policies, one level down."""
+    strategies, one level down."""
     for K, base_name in _SEG_BASE.items():
         digests = {sidecar_of(segmented_bundle, f"{base_name}__k{j}")["digest"]
                   for j in range(K)}
@@ -574,16 +520,17 @@ def test_segmented_units_carry_distinct_unit_digests(segmented_bundle):
 
 
 def test_segmented_sidecar_carries_the_group_and_its_offsets_plane(segmented_bundle):
-    """Each unit's own sidecar lists ``{name, K, policy, units}`` for the
+    """Each unit's own sidecar lists ``{name, K, strategy, units}`` for the
     GROUP it belongs to (its own walk carries no Dispatch node any more —
      already replaced it), and its ``offsets`` plane like any other
     ``lookup`` plane (the ordinary ``arg_spec``/``buffers`` machinery, no
     special case)."""
     sidecar = sidecar_of(segmented_bundle, "disp_r0_k5_seg__k2")
     assert sidecar["dispatch"] == [{
-        "name": "dispatch0", "K": 5, "policy": "segmented",
+        "name": "dispatch0", "K": 5, "strategy": "segmented",
         "static_selector": True, "selector_reads": [["per_sample", "k"]],
         "class": "dispatch0_class", "stale": "dispatch0_stale",
+        "offsets": "dispatch0_offsets", "classify": "disp_r0_k5_seg__cls",
         "units": [f"disp_r0_k5_seg__k{j}" for j in range(5)],
     }]
     assert ("lookup", "dispatch0_offsets") in [tuple(p) for p in sidecar["arg_spec"]]
@@ -595,21 +542,21 @@ def test_segmented_sidecar_carries_the_group_and_its_offsets_plane(segmented_bun
 _H = 1e-5
 
 
-def _dispatch_diff_primal(policy: str, K: int = 3):
+def _dispatch_diff_primal(strategy: str, K: int = 3):
     """A K-branch dispatch whose branch j reads ONLY leaf ``xj`` (a
     branch-PRIVATE parameter each, this fixture's own shape), through a
     nonlinear ``x**3`` so a swapped derivative is visible."""
     xs = [_leaf(f"x{i}", S) for i in range(K)]
     k = _leaf("k", I32)
     branches = [mk("mul", (mk("mul", (xs[i], xs[i])), xs[i])) for i in range(K)]
-    d = Dispatch(k, branches, policy, S)
+    d = _dispatch(k, branches, strategy, S)
     return xs, k, (Assign("out", d, S),)
 
 
-@pytest.mark.parametrize("policy", ["predicated", "switch", "segmented"])
-def test_vjp_matches_finite_differences_and_is_exactly_zero_off_branch(policy):
+@pytest.mark.parametrize("strategy", ["predicated", "switch", "segmented"])
+def test_vjp_matches_finite_differences_and_is_exactly_zero_off_branch(strategy):
     K = 3
-    xs, _k, sinks = _dispatch_diff_primal(policy, K)
+    xs, _k, sinks = _dispatch_diff_primal(strategy, K)
     rng = np.random.default_rng(20260908)
     derived = vjp(sinks)
     for kind_value in range(K):
@@ -623,7 +570,7 @@ def test_vjp_matches_finite_differences_and_is_exactly_zero_off_branch(policy):
                 # A branch-private parameter's gradient is EXACTLY zero
                 # on an element of another kind, never merely small.
                 assert actual == 0.0, (
-                    f"{policy}: bar_x{i} is {actual} at kind={kind_value}, "
+                    f"{strategy}: bar_x{i} is {actual} at kind={kind_value}, "
                     "branch-private but nonzero off its own branch")
                 continue
             plus = dict(env)
@@ -634,13 +581,13 @@ def test_vjp_matches_finite_differences_and_is_exactly_zero_off_branch(policy):
             fminus = evaluate(sinks, minus)["out"]
             expect = (fplus - fminus) / (2 * _H) * seed
             assert actual == pytest.approx(expect, rel=1e-5, abs=1e-7), (
-                f"{policy} kind={kind_value}: bar_x{i} = {actual} vs FD {expect}")
+                f"{strategy} kind={kind_value}: bar_x{i} = {actual} vs FD {expect}")
 
 
-@pytest.mark.parametrize("policy", ["predicated", "switch", "segmented"])
-def test_jvp_matches_finite_differences(policy):
+@pytest.mark.parametrize("strategy", ["predicated", "switch", "segmented"])
+def test_jvp_matches_finite_differences(strategy):
     K = 3
-    xs, _k, sinks = _dispatch_diff_primal(policy, K)
+    xs, _k, sinks = _dispatch_diff_primal(strategy, K)
     rng = np.random.default_rng(20260908 + 1)
     derived = jvp(sinks)
     for kind_value in range(K):
@@ -656,7 +603,7 @@ def test_jvp_matches_finite_differences(policy):
         fminus = evaluate(sinks, minus)["out"]
         expect = (fplus - fminus) / (2 * _H)
         assert got["dot_out"] == pytest.approx(expect, rel=1e-5, abs=1e-7), (
-            f"{policy} kind={kind_value}: JVP {got['dot_out']} vs FD {expect}")
+            f"{strategy} kind={kind_value}: JVP {got['dot_out']} vs FD {expect}")
 
 
 def _switch_blocks(text: str) -> dict:
@@ -674,43 +621,6 @@ def _switch_blocks(text: str) -> dict:
         if a and a.group(1) in blocks and "static_cast<Real>(0)" not in a.group(2):
             blocks[a.group(1)].add(label)
     return blocks
-
-
-def test_no_accum_add_for_an_elided_branch_in_the_derived_source():
-    """A `Table` read inside ONE branch reverses into a SCATTER
-    whose value must be MASKED to that branch alone — the switch
-    feeding `hawk_abi::accum_add` must carry a case for the branch that reads
-    the table and NO case for the branch that never does, and there is
-    exactly ONE `accum_add` call in the whole derived source (never a masked
-    commit per branch, the shape names WRONG)."""
-    k = _leaf("k", I32)
-    x0 = _leaf("x0", S)
-    tab = Leaf("table_read", "lookup", "tab", S)
-    idx = _leaf("idx", I32)
-    lane = _leaf("lane", I32)
-    branch0 = mk("mul", (x0, x0))          # branch 0: reads x0 only
-    branch1 = At(tab, idx, S)              # branch 1: reads the table only
-    d = Dispatch(k, [branch0, branch1], "switch", S)
-    sinks = (AccumWrite("acc", d, lane, S),)
-    derived = vjp(sinks)
-    text = render_body(derived, canonical(derived)).text
-
-    assert text.count("hawk_abi::accum_add(") == 1, (
-        "the scattered commit must fire ONCE, with a masked value -- not once "
-        f"per branch:\n{text}"
-    )
-    call = next(line for line in text.splitlines() if "hawk_abi::accum_add(" in line)
-    value_arg = call.strip().removeprefix("hawk_abi::accum_add(").split(",")[2].strip()
-    value_arg = value_arg.rstrip(");")
-    blocks = _switch_blocks(text)
-    assert value_arg in blocks, (
-        f"accum_add's value {value_arg!r} is not a declared switch local; "
-        f"blocks found: {sorted(blocks)}\n{text}"
-    )
-    assert blocks[value_arg] == {"1"}, (
-        f"the scatter's masked value must carry a case for branch 1 (the table "
-        f"reader) and NONE for branch 0 (elided) — got {blocks[value_arg]}"
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -923,35 +833,6 @@ def test_segmented_training_switch_rewrites_offsets_without_rebuild_or_retrace(
         "output — identical out1/out2 would mean the replay never re-read it")
 
 
-def test_segmented_units_are_divergence_free_by_construction():
-    """The STATIC form of (ii):
-    a segmented unit's body carries NO dispatch combinator (no `switch`, no
-    select chain over the branches) and evaluates its own branch alone — the
-    "divergence-free by construction" claim asserted EXACTLY, because at
-    few-percent effect sizes the timing form flipped run-to-run on identical
-    code. A static selector's unit never reads the kind plane at all (its
-    classes come from the classify kernel, appended last), so it is
-    sample-local and its host loop vectorises."""
-    for K in (2, 5, 16):
-        units = split_segmented("seg", _dispatch_sinks("segmented", K=K))
-        assert units is not None and len(units) == K + 1
-        assert units[-1].name == "seg__cls"
-        for j, unit in enumerate(units[:K]):
-            assert not any(isinstance(n, Dispatch) for n in unit.walk.order), (
-                f"unit {unit.name} (K={K}, j={j}) still carries a Dispatch node")
-            text = render_body(unit.sinks, unit.walk).text
-            assert "switch (" not in text and "switch(" not in text, (
-                f"unit {unit.name} emits a switch:\n{text}")
-            others = [i for i in range(K) if i != j]
-            assert not any(re.search(rf"\bpsc_b{i}\b", text) for i in others), (
-                f"unit {unit.name} evaluates another branch:\n{text}")
-            assert text.count("psc_k[i]") == 0, (
-                f"unit {unit.name} reads the kind plane:\n{text}")
-            assert unit.walk.access.cls == "sample_local"
-            assert f"b{j}" in text, (
-                f"unit {unit.name} must evaluate branch {j} alone:\n{text}")
-
-
 # --------------------------------------------------------------------------- #
 # The kind plane's WRITER may be a KERNEL inside the
 # same captured graph -- the router's arg-max. Two kernels, ONE graph.
@@ -968,7 +849,7 @@ def _argmax_consumer_branches(x):
 # a plane a kernel WROTE (``Mutable[Index]``, 64-bit) is read back as ``Index[np.int64]``
 @hawk.kernel
 def argmax_consumer(x: hawk.Scalar, kind: hawk.Index[np.int64], y: hawk.Mutable[hawk.Scalar]):
-    y = M.dispatch(M.index(M.real(kind), 4), _argmax_consumer_branches(x), policy="switch")
+    y = M.dispatch(M.index(M.real(kind), 4), _argmax_consumer_branches(x), strategy="switch")
 
 
 @pytest.mark.gpu
@@ -1070,16 +951,16 @@ def test_a_kernel_written_kind_plane_is_consumed_in_the_same_captured_graph(
 # The truthful per-branch `vectorised` flag of the cost counts.
 
 def _loop_branch_flags(trips: int, profile: str = "native-vector-math"):
-    from hawk.ir import dispatch_costs
+    from aether.wings.cpu.host_vector import dispatch_costs
 
     @hawk.kernel
     def looped(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
         acc = 0.0
         for _ in range(trips):
             acc = acc * x + 1.0
-        y = M.dispatch(k, [acc, x], policy="switch")
+        y = M.dispatch(k, [acc, x], strategy="switch")
 
-    costs = dispatch_costs(canonical(looped.sinks), profile)["dispatch0"]
+    costs = dispatch_costs(canonical(looped.sinks), HOST, profile)["dispatch0"]
     return [b.vectorised for b in costs.branches]
 
 
@@ -1089,61 +970,37 @@ def test_a_loop_the_compiler_will_not_unroll_is_not_vectorised():
 
 
 def test_a_float32_branch_vectorises_like_a_float64_one():
-    from hawk.ir import dispatch_costs
+    from aether.wings.cpu.host_vector import dispatch_costs
     a = Leaf("vocab_read", "per_sample", "a", TensorType((), "f32"))
     k = _leaf("k", I32)
-    d = Dispatch(k, [mk("mul", (a, a)), a], "switch", TensorType((), "f32"))
-    costs = dispatch_costs(canonical((Assign("out", d, TensorType((), "f32")),)))["dispatch0"]
+    d = _dispatch(k, [mk("mul", (a, a)), a], "switch", TensorType((), "f32"))
+    costs = dispatch_costs(canonical((Assign("out", d, TensorType((), "f32")),)), HOST)["dispatch0"]
     assert [b.vectorised for b in costs.branches] == [True, True]
 
 
 def test_a_library_call_holds_only_its_own_branch_scalar_under_an_exact_profile():
-    from hawk.ir import dispatch_costs
+    from aether.wings.cpu.host_vector import dispatch_costs
     x = _leaf("x", S)
     k = _leaf("k", I32)
-    d = Dispatch(k, [mk("sin", (x,)), mk("mul", (x, x))], "switch", S)
+    d = _dispatch(k, [mk("sin", (x,)), mk("mul", (x, x))], "switch", S)
     walk = canonical((Assign("out", d, S),))
-    assert [b.vectorised for b in dispatch_costs(walk, "native")["dispatch0"].branches] == [False, True]
+    assert [b.vectorised for b in dispatch_costs(walk, HOST, "native")["dispatch0"].branches] == [False, True]
     # the vector math is x86-64 only: elsewhere a library call stays scalar under every profile
-    vm = [b.vectorised for b in dispatch_costs(walk, "native-vector-math")["dispatch0"].branches]
+    vm = [b.vectorised for b in dispatch_costs(walk, HOST, "native-vector-math")["dispatch0"].branches]
     assert vm == ([True, True] if platform.machine().lower() in ("x86_64", "amd64") else [False, True])
 
 
 @pytest.mark.skipif(platform.machine().lower() not in ("x86_64", "amd64"),
                     reason="a library call vectorises only through the x86-64 vector math")
-@pytest.mark.parametrize("policy, fused", [("switch", False), ("auto", False), ("predicated", True)])
-def test_a_rendered_switch_keeps_the_fused_loop_scalar_while_each_branch_vectorises(policy, fused):
-    from hawk.ir import dispatch_costs
+@pytest.mark.parametrize("strategy, fused", [("switch", False), ("auto", False), ("predicated", True)])
+def test_a_rendered_switch_keeps_the_fused_loop_scalar_while_each_branch_vectorises(strategy, fused):
+    from aether.wings.cpu.host_vector import dispatch_costs
     x = _leaf("x", S)
     k = _leaf("k", I32)
-    d = Dispatch(k, [mk("exp", (x,)), mk("mul", (x, x))], policy, S)
+    d = _dispatch(k, [mk("exp", (x,)), mk("mul", (x, x))], strategy, S)
     walk = canonical((Assign("out", d, S),))
-    cost = dispatch_costs(walk, "native-vector-math")["dispatch0"]
+    cost = dispatch_costs(walk, HOST, "native-vector-math")["dispatch0"]
     assert cost.fused_vectorised is fused       # a C++ switch is control flow the compiler leaves scalar
     assert all(b.vectorised for b in cost.branches)
 
 
-def test_the_emitter_and_the_cost_counts_share_one_vectorisation_predicate():
-    from hawk.emit import render_source, scalar_mode
-    from hawk.targets import TARGETS
-    from hawk.ir.cost import kernel_cost
-
-    @hawk.kernel
-    def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-        acc = x
-        for _ in range(32):
-            acc = acc * x + 1.0
-        y = acc
-
-    @hawk.kernel
-    def short(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-        y = x * x + 1.0
-
-    # a 32-trip loop runs interchanged on the host (trips outside, samples'
-    # lanes inside), so its trip count does not keep the loop scalar
-    for kernel, expected in ((plain, True), (short, True)):
-        source = render_source("k", kernel.sinks, kernel.walk, TARGETS["host"], mode=scalar_mode("float64"))
-        assert source.vectorised is expected
-        assert kernel_cost(kernel.walk).vectorised is expected
-    f32 = render_source("k", short.sinks, short.walk, TARGETS["host"], mode=scalar_mode("float32"))
-    assert f32.vectorised

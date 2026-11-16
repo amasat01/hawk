@@ -21,13 +21,12 @@ from pathlib import Path
 import pytest
 
 import hawk
+from hawk.artifact import emit_source
 from hawk import Mutable, Param, Terminated, Vector
 from hawk.compile import toolchain as tc
+import ospreys.cpu.toolchain as ctc
 from hawk.diff import jvp
-from hawk.emit import FLOAT64, render_source
-from hawk.ir import canonical
 from hawk.math import dot, sqrt
-from hawk.targets import TARGETS
 from hawk.trace import Kernel
 
 HARNESS = Path(__file__).with_name("stale_stack_harness.cpp")
@@ -42,12 +41,11 @@ def drag_guarded(v: Vector[3], cd: Param, terminated: Terminated, a: Mutable[Vec
 def kernel_so(tmp_path_factory):
     # a derived level is a kernel in its own right (its guard is applied again): two nested selects
     first = Kernel("drag_jvp", jvp(drag_guarded))
-    sinks = jvp(first)
-    text = render_source("drag_jj", sinks, canonical(sinks), TARGETS["host"], mode=FLOAT64).text
+    text = emit_source(Kernel("drag_jj", jvp(first)), targets=("host",)).sources["host"].text
     work = tmp_path_factory.mktemp("stale_stack")
     (work / "k.cpp").write_text(text)
-    cxx = tc.host_compiler()
-    subprocess.run([cxx, *tc.host_flags(), "-o", str(work / "k.so"), str(work / "k.cpp")],
+    cxx = ctc.host_compiler()
+    subprocess.run([cxx, *ctc.host_flags(), "-o", str(work / "k.so"), str(work / "k.cpp")],
                    check=True)
     subprocess.run([cxx, "-O1", "-std=c++17", "-o", str(work / "harness"), str(HARNESS), "-ldl"],
                    check=True)

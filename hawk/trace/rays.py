@@ -3,7 +3,7 @@
 
 """The authoring surface of ray intersection, as ``hawk.math`` names it.
 
-Each name is ONE op (:mod:`hawk.ir.rays`) returning the rank-1 result
+Each name is ONE op (:mod:`raptor.ir.rays`) returning the rank-1 result
 ``[hit, a, b, c]`` of the aether primitive, read with ``r[k]``. ``hit`` is 1.0 or
 0.0 and has zero derivative; the other entries are the computed values also on
 a miss, so a program selects between candidates by ``hit`` and differentiates
@@ -19,9 +19,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ir import Const, HawkError, Node
-from ..ir import make as _make
-from ..types import TensorType
+from raptor.ir import Const, Node
+from .._errors import HawkError
+from raptor.ir import make as _make
+from raptor.ir.types import TensorType
 from .value import Value, node_of, vec
 
 _INF = Const(float("inf"), TensorType((), "f64"))

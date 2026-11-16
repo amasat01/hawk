@@ -9,14 +9,15 @@ branch (not just as a branch's own value, which
 
 from __future__ import annotations
 
+from raptor.wings.base.dispatch import dispatch as _dispatch
 import numpy as np
 import pytest
 from _eval import evaluate
 
 from hawk.diff import vjp
-from hawk.ir import Assign, At, Dispatch, Leaf
-from hawk.ir import make as mk
-from hawk.types import TensorType
+from raptor.ir import Assign, At, Dispatch, Leaf
+from raptor.ir import make as mk
+from raptor.ir.types import TensorType
 
 S = TensorType((), "f64")
 I32 = TensorType((), "i32")
@@ -38,7 +39,7 @@ def _table_dispatch_primal():
     idx = _leaf("idx", I32, "per_sample")
     branch0 = mk("mul", (x0, x0))
     branch1 = mk("mul", (x1, At(tab, idx, S)))
-    d = Dispatch(k, [branch0, branch1], "switch", S)
+    d = _dispatch(k, [branch0, branch1], "switch", S)
     return (Assign("out", d, S),)
 
 
