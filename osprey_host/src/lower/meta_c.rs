@@ -384,6 +384,8 @@ fn finish(out: &mut Out, unit: &UnitMeta) -> String {
             "device_steps_reverse",
             out.steps_table("device_steps", &f.device_steps_reverse),
         ),
+        ("n_events", f.n_events.to_string()),
+        ("reserved1", "0".into()),
     ];
     format!("&{}", out.record("eg_unit_finish", "finish", &members))
 }

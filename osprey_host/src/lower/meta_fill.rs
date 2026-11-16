@@ -285,6 +285,17 @@ fn launch(parts: &Parts, slots: &[m::Slot]) -> m::Launch {
     found
 }
 
+/// The sinks of the kernel the request states, whatever its units: a split kernel's later unit holds the stop rule as a plane it
+/// reads, and the comparisons are in the kernel's own sinks.
+fn request_sinks(request: &KernelRequest) -> Vec<u32> {
+    match &request.body {
+        Body::Plain(member) => member.sinks.clone(),
+        Body::Chain(members) | Body::Fused(members) => {
+            members.iter().flat_map(|m| m.sinks.clone()).collect()
+        }
+    }
+}
+
 /// The finish record of a unit that finishes samples: its mask and its counter.
 fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal> {
     let Some(mask) = &parts.typed.finish else {
@@ -304,6 +315,9 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
         }
     };
     let step = parts.texts.first().and_then(|t| t.facts.step.as_ref());
+    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
+    let n_events = super::events::count(unsafe { &*parts.ctx }, &request_sinks(parts.request));
+    super::events::limit(&parts.pending.member.name, n_events)?;
     Ok(Some(m::Finish {
         flags: if step.is_some_and(|s| s.entry_counts) {
             m::FINISH_ENTRY_COUNTS
@@ -319,6 +333,7 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
         },
         mask_slot: slot(mask)?,
         counter_slot: slot(FINISHED_PLANE)?,
+        n_events,
         steps,
         steps_max,
         steps_slot: slot_at(slots, FUSED_STEPS_PLANE).filter(|_| steps == AUTO_STEPS),

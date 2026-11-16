@@ -533,6 +533,8 @@ record! {
         pub host_steps_reverse: Option<StepsTable>,
         /// The device's measured rows.
         pub device_steps_reverse: Option<StepsTable>,
+        /// The comparisons of the stop rule, counted from the kernel's IR: 0 when it has none.
+        pub n_events: i64,
     }
 }
 record! {

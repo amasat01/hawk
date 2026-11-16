@@ -3,7 +3,7 @@
 //! row is refused by name, and so is a link that breaks a rule of its `what` or a cardinality rule.
 use super::derived::{Context, Stated};
 use super::unit_meta::{DerivedRole, Link, LinkForm, LinkWhat, SlotRole, UnitMeta, WireDtype};
-use aether_writers::refuse::{bad, not_written, Refusal};
+use aether_writers::refuse::{bad, Refusal};
 
 /// One slot of the derived unit and what it refers to, by name.
 #[derive(Debug, Clone, PartialEq)]
@@ -121,12 +121,6 @@ fn check_triple(kernel: &Stated, link: &LinkFact, runtime_owned: bool) -> Result
             ),
         ));
     }
-    if link.what == Guard {
-        return Err(not_written(format!(
-            "derived kernel {name}: links: the slot {} is a guard; the library has no event list",
-            link.slot
-        )));
-    }
     if link.reduced && link.form != Grad {
         return Err(refuse(
             name,
@@ -163,6 +157,7 @@ fn of_slot(
             format!("{} is a tau and names no slot it is of", link.slot),
         )),
         (Tau, None) => real_only(name, link, mine).map(|()| None),
+        (Guard, of) => event_index(kernel, at, link, of.as_deref()).map(Some),
         (Steps, of) => {
             if !matches!(
                 mine,
@@ -211,6 +206,60 @@ fn of_slot(
             }
             Ok(Some(found))
         }
+    }
+}
+
+/// The events of the primal: the comparisons of its stop rule, as its finish record counts them.
+fn primal_events(at: &Context) -> i64 {
+    at.primal.finish.as_ref().map_or(0, |f| f.n_events)
+}
+
+/// The event a guard link is of: `of` is the index, as decimal text, below the primal's event count.
+fn event_index(
+    kernel: &Stated,
+    at: &Context,
+    link: &LinkFact,
+    of: Option<&str>,
+) -> Result<usize, Refusal> {
+    let name = kernel.name.as_str();
+    let count = primal_events(at);
+    let index = of.and_then(|t| t.parse::<usize>().ok()).ok_or_else(|| {
+        refuse(
+            name,
+            format!("the guard {} names an event index in `of`", link.slot),
+        )
+    })?;
+    if (index as i64) >= count {
+        return Err(refuse(
+            name,
+            format!(
+                "the guard {} is of event {index}, and the primal has {count} events",
+                link.slot
+            ),
+        ));
+    }
+    Ok(index)
+}
+
+/// A refine-newton unit's (Guard, Value) links cover the events 0 to n_events - 1 of the primal once each.
+fn events_covered(kernel: &Stated, at: &Context, links: &[Link]) -> Result<(), Refusal> {
+    let count = primal_events(at);
+    let mut seen = vec![0usize; count.max(0) as usize];
+    for link in links.iter().filter(|l| (l.what, l.form) == (Guard, Value)) {
+        if let Some(n) = link.of_slot.and_then(|i| seen.get_mut(i)) {
+            *n += 1;
+        }
+    }
+    let wrong = seen.iter().position(|&n| n != 1);
+    match wrong {
+        None => Ok(()),
+        Some(i) => Err(refuse(
+            &kernel.name,
+            format!(
+                "event {i} of {count} is linked {} times as a (Guard, Value); a refine unit links each event once",
+                seen[i]
+            ),
+        )),
     }
 }
 
@@ -272,6 +321,9 @@ pub(super) fn links_of(
                 format!("a refine kernel has {time_steps} step slots, not one")
             },
         ));
+    }
+    if kernel.role == DerivedRole::RefineNewton {
+        events_covered(kernel, at, &out)?;
     }
     if twin && start_copies != usize::from(time0_slot.is_some()) {
         return Err(bad(format!(

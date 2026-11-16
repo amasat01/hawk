@@ -244,6 +244,7 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             fp64_ops_ir: None,
             host_steps_reverse: Some(table.clone()),
             device_steps_reverse: Some(table),
+            n_events: 2,
         }),
         device_image_size: Some("u__image_size".into()),
         device_compiler: Some("nvcc 12.6".into()),

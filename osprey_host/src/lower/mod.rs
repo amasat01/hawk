@@ -13,6 +13,7 @@ pub mod boxed;
 pub mod card;
 mod chain;
 pub mod derived;
+pub mod events;
 mod fused;
 pub mod image;
 pub mod links;

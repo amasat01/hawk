@@ -2676,6 +2676,16 @@ fn main() {
             sum[0], sum[1], sum[2]
         );
     }
+    if let Some(at) = args.iter().position(|a| a == "--events") {
+        let Some(corpus) = args.get(at + 1).filter(|c| Path::new(c).exists()) else {
+            return println!("usage: kreplay --events <corpus folder or calls file>");
+        };
+        let mut sum = derived_sets::Events::default();
+        for file in derived_sets::files_of(Path::new(corpus)) {
+            sum.add(derived_sets::event_census(&file));
+        }
+        return sum.print();
+    }
     if let Some(at) = args.iter().position(|a| a == "--derived") {
         let Some(corpus) = args.get(at + 1) else {
             return println!(

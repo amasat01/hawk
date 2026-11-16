@@ -537,7 +537,7 @@ mod tests {
             k.facts.links[0].what = LinkWhat::Guard;
             k.facts.links[0].form = LinkForm::AdjointIn;
         });
-        assert_eq!(guard.kind, RefusalKind::NotWritten);
+        assert_eq!(guard.kind, RefusalKind::BadRequest);
     }
 
     #[test]
@@ -578,8 +578,13 @@ mod tests {
     /// A link as (slot, what, form, of).
     type Stated4<'a> = (&'a str, LinkWhat, LinkForm, Option<&'a str>);
 
-    /// A refine-newton unit over a primal with a state `x`, a uniform `dt` and an integer `n`, with the links given.
+    /// A refine unit over a primal with no events.
     fn newton(links: &[Stated4], role: DerivedRole) -> Result<Derived, Refusal> {
+        newton_over(links, role, 0)
+    }
+
+    /// A refine unit over a primal with a state `x`, a uniform `dt`, an integer `n` and `events` events, with the links given.
+    fn newton_over(links: &[Stated4], role: DerivedRole, events: i64) -> Result<Derived, Refusal> {
         let real = WireDtype::Real;
         let mut primal = unit(&[
             ("x", real, &[]),
@@ -587,6 +592,10 @@ mod tests {
             ("n", WireDtype::Int32, &[]),
         ]);
         primal.body.slots[1].role = SlotRole::Uniform;
+        primal.finish = Some(crate::lower::unit_meta::Finish {
+            n_events: events,
+            ..Default::default()
+        });
         let own = unit(&[("h", real, &[]), ("tau", real, &[]), ("w", real, &[])]);
         let facts = DerivedFacts {
             links: links
@@ -679,11 +688,47 @@ mod tests {
             DerivedRole::RefineNewton
         )
         .is_ok());
-        let guard = why(
-            &[step, ("w", Guard, Value, Some("x"))],
-            DerivedRole::RefineNewton,
+        // a guard link is of an event index below the primal's count; a primal without events has none to link
+        let guard = |of: &'static str, events| {
+            newton_over(
+                &[step, ("w", Guard, Value, Some(of))],
+                DerivedRole::RefineNewton,
+                events,
+            )
+        };
+        let none = guard("0", 0).unwrap_err();
+        assert_eq!(none.kind, RefusalKind::BadRequest);
+        assert!(
+            none.reason.contains("derived kernel k_newton: links: the guard w is of event 0, and the primal has 0 events"),
+            "{}",
+            none.reason
         );
-        assert_eq!(guard.kind, RefusalKind::NotWritten);
+        let past = guard("2", 2).unwrap_err();
+        assert!(past.reason.contains("event 2, and the primal has 2 events"));
+        assert_eq!(guard("1", 2).unwrap_err().kind, RefusalKind::BadRequest);
+        assert!(guard("0", 1).is_ok());
+        // a refine-newton unit links each event once as a (Guard, Value): none missing, none twice
+        let twice = newton_over(
+            &[
+                step,
+                ("w", Guard, Value, Some("0")),
+                ("tau", Guard, Value, Some("0")),
+            ],
+            DerivedRole::RefineNewton,
+            1,
+        )
+        .unwrap_err();
+        assert!(
+            twice.reason.contains("event 0 of 1 is linked 2 times"),
+            "{}",
+            twice.reason
+        );
+        let missing = newton_over(&[step], DerivedRole::RefineNewton, 1).unwrap_err();
+        assert!(
+            missing.reason.contains("event 0 of 1 is linked 0 times"),
+            "{}",
+            missing.reason
+        );
         let none = why(
             &[("w", PrimalSlot, Value, Some("x"))],
             DerivedRole::RefineEntry,
