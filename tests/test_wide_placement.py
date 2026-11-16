@@ -172,6 +172,7 @@ def test_the_sidecar_names_every_plane_and_the_runtime_makes_the_scratch_ones(tm
 def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode, n, cache_dir, tmp_path):
     import eagle.plan
     from eagle import arrays
+    from eagle import _split
     from eagle._alloc import synchronize
     from eagle.registry import load_manifest
 
@@ -181,8 +182,11 @@ def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode
     out = arrays.asarray(np.zeros(entry.shape(n), real), device="cuda:0")
     # the warp (team) form, asked for through the build's own wide_form; the plan runs the plugin that build wrote
     bundle = build_bundle([entry.kernel], tmp_path / name, targets=("cuda",), mode=mode, cache_dir=cache_dir, wide_form="team")
-    plugin = hawk.artifact.plugins(bundle, device_loader=load_manifest)[entry.kernel.name]
-    bound = eagle.plan.auto(plugin).bind(**bound_args, **{entry.out: out})
+    # a kernel with stages runs its stages only when they are linked to its plugin: eagle.deploy (eagle.plan.auto given the kernel)
+    # does that, but it builds its own bundle and takes no wide_form, so the build above is linked the way deploy links its own
+    by_name = hawk.artifact.plugins(bundle, device_loader=load_manifest)
+    _split.link(by_name, bundle)
+    bound = eagle.plan.auto(by_name[entry.kernel.name]).bind(**bound_args, **{entry.out: out})
     got = []
     for _ in range(3):
         bound.launch()

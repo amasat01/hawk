@@ -170,6 +170,7 @@ def test_a_banded_warp_sum_is_the_same_cells_every_run_and_close_to_the_exact_do
     import _wide_kernels as W
     import eagle
     import eagle.plan
+    from eagle import _split
     from eagle import arrays
     from eagle._alloc import synchronize
     from eagle.registry import load_manifest
@@ -180,7 +181,9 @@ def test_a_banded_warp_sum_is_the_same_cells_every_run_and_close_to_the_exact_do
     x, w = f32(rng.uniform(0.5, 2.0, (W.W, n))), f32(rng.uniform(0.5, 2.0, (W.ROWS, W.W)))
     # the warp (team) form on a banded build, asked for through the build's own wide_form; the plan runs the plugin it wrote
     bundle = build_bundle([W.matvec_in], tmp_path / "banded", targets=("cuda",), mode="banded", cache_dir=cache_dir, wide_form="team")
-    plan = eagle.plan.auto(hawk.artifact.plugins(bundle, device_loader=load_manifest)[W.matvec_in.name])
+    by_name = hawk.artifact.plugins(bundle, device_loader=load_manifest)
+    _split.link(by_name, bundle)             # the stages attach to the plugin only through the link eagle.deploy makes for its own build
+    plan = eagle.plan.auto(by_name[W.matvec_in.name])
     runs = []
     for _ in range(3):
         planes = {k: arrays.asarray(eagle.banded_pack(arrays.asarray(v)), device="cuda:0")

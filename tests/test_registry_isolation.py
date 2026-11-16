@@ -254,37 +254,91 @@ def _home(tmp_path, monkeypatch):
     return root
 
 
-def test_a_first_party_package_that_cannot_be_read_is_an_error_at_the_default_build(tmp_path, monkeypatch):
+class _Redirect:
+    """The in-process stand-in for an editable install's finder: it serves ``ospreys`` from the real tree, ahead of the path finder."""
+
+    def find_spec(self, name, path=None, target=None):
+        import importlib.machinery
+
+        if name == "ospreys":
+            return importlib.machinery.PathFinder.find_spec(name, EXTENSIONS)
+
+
+@pytest.fixture(params=["path finder only", "redirecting finder first"])
+def import_mode(request, monkeypatch):
+    """Each in-process test runs twice: with the import system as it is here, and with a redirecting finder in front of the
+    path finder, as an editable install (scikit-build-core) has it. ``sys.meta_path`` is restored after the test."""
+    if request.param.startswith("redirecting"):
+        monkeypatch.setattr(sys, "meta_path", [_Redirect(), *sys.meta_path])
+    return request.param
+
+
+def _resolved() -> Path:
+    """Where importlib resolves ``ospreys.cuda`` in this process (the precondition of every test that plants a copy): the package
+    folder, or the module file. An editable install's redirecting finder maps the name to the source tree whatever the path holds,
+    so a copy planted on the path is then never the place it resolves to. The modules the lookup imported are dropped again."""
+    import importlib.util
+
+    try:
+        origin = Path(importlib.util.find_spec("ospreys.cuda").origin).resolve()
+    finally:
+        for name in ("ospreys.cuda", "ospreys"):
+            sys.modules.pop(name, None)
+    return origin.parent if origin.name == "__init__.py" else origin
+
+
+def _named_error(call, root: Path, resolved: Path) -> None:
+    """The refusal names where the distribution put the package and where the import system resolves it: one sentence true in both modes."""
+    with pytest.raises(HawkError) as raised:
+        call()
+    said = str(raised.value)
+    assert f"is installed at {root / 'ospreys' / 'cuda'}, but the import path resolves that name to {resolved}" in said, said
+
+
+def test_a_first_party_package_that_cannot_be_read_is_an_error_at_the_default_build(tmp_path, monkeypatch, import_mode):
     root = _home(tmp_path, monkeypatch)
     (root / "ospreys" / "cuda" / "osprey.json").write_text('{"name": "cuda", "contract": "1", "backends": [{"name": ["cuda"]}]}')
+    resolved = _resolved()
     try:
-        assert "malformed" in registry.refused()["cuda"]
-        for _ in range(2):
-            with pytest.raises(HawkError, match="first-party OSPREY 'cuda' is installed but refused"):
-                list(hawk.targets.DEFAULT_TARGETS)
+        if resolved.is_relative_to(root):
+            assert "malformed" in registry.refused()["cuda"]       # the installed copy is the one imported: its manifest is read and refused
+            for _ in range(2):
+                with pytest.raises(HawkError, match="first-party OSPREY 'cuda' is installed but refused"):
+                    list(hawk.targets.DEFAULT_TARGETS)
+        else:
+            assert "cuda" not in registry.refused()                 # the installed copy is never the one imported: its manifest is never read
+            for _ in range(2):
+                _named_error(lambda: list(hawk.targets.DEFAULT_TARGETS), root, resolved)
     finally:
         registry.reset()
 
 
-def test_the_wider_scan_keeps_what_the_narrow_one_answered(tmp_path, monkeypatch):
-    _home(tmp_path, monkeypatch)
+def test_the_wider_scan_keeps_what_the_narrow_one_answered(tmp_path, monkeypatch, import_mode):
+    root = _home(tmp_path, monkeypatch)
     site = tmp_path / "site"
     site.mkdir()
     make(site, "other-ext", {"name": "cuda", "backends": [backend("cuda", "other_mod:BACKEND")]},
          modules={"other_mod": "raise SystemExit('ran')\n"})
     monkeypatch.syspath_prepend(str(site))
     registry.reset()
+    resolved = _resolved()
     try:
-        narrow = (registry.backend_ids(default=True), registry.traits("cuda"))
-        assert narrow[0] == ("cuda", "host")
-        wide = (registry.backend_ids(), registry.backend_ids(default=True), registry.traits("cuda"))
-        assert wide == (narrow[0], narrow[0], narrow[1]) and "other_mod" not in sys.modules
-        assert "belongs to the built-in set" in registry.refused()["other-ext/backends/'cuda'"]
+        narrow = registry.backend_ids(default=True)
+        if resolved.is_relative_to(root):
+            narrow = (narrow, registry.traits("cuda"))
+            assert narrow[0] == ("cuda", "host")
+            wide = (registry.backend_ids(), registry.backend_ids(default=True), registry.traits("cuda"))
+            assert wide == (narrow[0], narrow[0], narrow[1]) and "other_mod" not in sys.modules
+            assert "belongs to the built-in set" in registry.refused()["other-ext/backends/'cuda'"]
+        else:      # the first-party package is refused, so the id is not offered: the wider scan keeps that answer too
+            assert "cuda" not in narrow
+            assert (registry.backend_ids(), registry.backend_ids(default=True)) == (narrow, narrow) and "other_mod" not in sys.modules
+            _named_error(lambda: registry.check(default=True), root, resolved)
     finally:
         registry.reset()
 
 
-def test_a_stray_module_that_shadows_a_first_party_package_is_a_named_error(tmp_path, monkeypatch):
+def test_a_stray_module_that_shadows_a_first_party_package_is_a_named_error(tmp_path, monkeypatch, import_mode):
     root = _home(tmp_path, monkeypatch)
     stray = tmp_path / "elsewhere"
     stray.mkdir()
@@ -292,26 +346,26 @@ def test_a_stray_module_that_shadows_a_first_party_package_is_a_named_error(tmp_
     (stray / "ospreys" / "cuda.py").write_text("raise SystemExit('ran')\n")
     monkeypatch.syspath_prepend(str(stray))
     registry.reset()
+    resolved = _resolved()
     try:
         for call in (lambda: list(hawk.targets.DEFAULT_TARGETS), lambda: need("cuda")):
-            with pytest.raises(HawkError, match=r"resolves that name to .*elsewhere.*ospreys.cuda\.py"):
-                call()
+            _named_error(call, root, resolved)
         assert "ospreys.cuda" not in sys.modules and root.exists()
     finally:
         registry.reset()
 
 
-def test_a_genuine_copy_outside_the_trusted_places_is_a_named_error(tmp_path, monkeypatch):
+def test_a_genuine_copy_outside_the_trusted_places_is_a_named_error(tmp_path, monkeypatch, import_mode):
     root = _home(tmp_path, monkeypatch)
     other = tmp_path.resolve() / "copy" / "ospreys" / "cuda"
     other.mkdir(parents=True)
     (other / "__init__.py").write_text("")
     monkeypatch.syspath_prepend(str(other.parent.parent))                        # a genuine copy, first on the path
     registry.reset()
+    resolved = _resolved()
     try:
         for call in (lambda: list(hawk.targets.DEFAULT_TARGETS), lambda: need("cuda")):
-            with pytest.raises(HawkError, match=r"resolves that name to .*copy.*ospreys.cuda"):
-                call()
+            _named_error(call, root, resolved)
     finally:
         registry.reset()
 
