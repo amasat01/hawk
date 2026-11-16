@@ -191,6 +191,7 @@ pub(super) fn sweep_request(
     twin.name = name.clone();
     twin.one_step = None;
     twin.kind.active_set = true;
+    twin.kind.runtime_set = true;
     twin.body = Body::Plain(Member {
         name,
         sinks,

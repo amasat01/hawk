@@ -598,6 +598,7 @@ fn leaf_slots(ctx: *mut Ctx, walk: u32) -> Result<Vec<DeclaredSlot>, Refusal> {
                     .ok_or_else(shape)?,
                 shape: ttype.shape.clone(),
                 tag: ttype.tag.clone(),
+                compensates: None,
             })
         })
         .collect()
@@ -723,6 +724,7 @@ mod tests {
             dtype,
             shape: vec![2],
             tag: None,
+            compensates: None,
         }
     }
 

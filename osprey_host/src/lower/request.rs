@@ -31,6 +31,9 @@ pub struct DeclaredSlot {
     pub shape: Vec<i64>,
     /// The type's tag, when it has one.
     pub tag: Option<String>,
+    /// The row plane the slot compensates, when it is the compensation plane of that row's sum: stated by the caller that declares
+    /// the plane, or by the lowering that makes it.
+    pub compensates: Option<String>,
 }
 
 /// One kernel body: the nodes it writes and how its walk is taken over them.
@@ -75,6 +78,10 @@ pub struct RequestKind {
     pub guard: Guard,
     /// Whether the guard is an active set the launch runs over.
     pub active_set: bool,
+    /// Whether the runtime fills the active set, as it does for the sweep unit of a segmented group (the stale samples) and not the
+    /// caller. A set a caller asks for is built from the caller's mask and follows it; the runtime's has no mask to follow. The
+    /// lowering sets it on the sweep's request alone: a request cannot state it.
+    pub runtime_set: bool,
     /// The index set of lanes the kind declares, when it does.
     pub lanes: Option<IndexSet>,
     /// How the sinks are summed.
@@ -505,6 +512,7 @@ impl DeclaredSlot {
             dtype,
             shape: vec![],
             tag: None,
+            compensates: None,
         }
     }
 
@@ -517,6 +525,10 @@ impl DeclaredSlot {
             dtype: member_of(&DTYPES, keys.req("dtype")?, "dtype")?,
             shape: list_of(keys.req("shape")?, "shape", |n| int_of(n, "shape"))?,
             tag: keys.opt("tag").map(|t| text_of(t, "tag")).transpose()?,
+            compensates: keys
+                .opt("compensates")
+                .map(|r| text_of(r, "compensates"))
+                .transpose()?,
         };
         keys.done()?;
         Ok(slot)
@@ -531,6 +543,9 @@ impl DeclaredSlot {
         ];
         if let Some(tag) = &self.tag {
             o.push(("tag".into(), Json::Str(tag.clone())))
+        }
+        if let Some(row) = &self.compensates {
+            o.push(("compensates".into(), Json::Str(row.clone())))
         }
         Json::Obj(o)
     }
@@ -861,6 +876,7 @@ impl RequestKind {
         let kind = RequestKind {
             guard,
             active_set: flag_of(keys.req("active_set")?, "active_set")?,
+            runtime_set: false,
             lanes: keys.opt("lanes").map(IndexSet::read).transpose()?,
             sink: sink_of(keys.req("sink")?)?,
         };
@@ -1308,6 +1324,7 @@ mod tests {
             kind: RequestKind {
                 guard: Guard::Masks(vec!["m".into()]),
                 active_set: false,
+                runtime_set: false,
                 lanes: None,
                 sink: SinkPolicy::Plain,
             },
@@ -1320,6 +1337,7 @@ mod tests {
                     dtype: Dtype::F64,
                     shape: vec![2],
                     tag: None,
+                    compensates: None,
                 }],
                 force: None,
                 exempt: vec![],

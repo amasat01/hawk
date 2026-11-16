@@ -93,6 +93,7 @@ fn kind_of(kind: &J) -> Result<RequestKind, String> {
     let plain = |guard| RequestKind {
         guard,
         active_set: false,
+        runtime_set: false,
         lanes: None,
         sink: SinkPolicy::Plain,
     };
@@ -151,6 +152,7 @@ fn kind_of(kind: &J) -> Result<RequestKind, String> {
     Ok(RequestKind {
         guard,
         active_set,
+        runtime_set: false,
         lanes: lanes_of(kind),
         sink,
     })
@@ -189,6 +191,11 @@ fn declared_of(slot: &J) -> Result<DeclaredSlot, String> {
             .filter_map(|n| num(Some(n)))
             .collect(),
         tag: text(ttype.get("tag")).map(String::from),
+        // the record states no pairing: the old front end named a sum row's compensation plane `<row>_comp`
+        compensates: (role == Some("accum_out"))
+            .then(|| text(slot.get("name")).and_then(|n| n.strip_suffix("_comp")))
+            .flatten()
+            .map(String::from),
     })
 }
 
@@ -573,6 +580,20 @@ struct Tally {
     split_wrong: Vec<String>,
     /// Sweep units whose text equals the text of the same kernel requested with its dispatch as a switch and an active set.
     sweep_equal: usize,
+    /// Dynamic segmented kernels with their finishing and mask taken out: answered with the branch units and a sweep unit that holds
+    /// no mask slot and reads no mask, and refused under a caller's active set; the sweep's loop header is kept.
+    maskless: [usize; 3],
+    /// The loop header of the first maskless sweep unit's text.
+    maskless_loop: Option<String>,
+    /// Access classes of segmented units against the recorded `exec_access`: branch units, then classify units, each as compared,
+    /// equal and different.
+    access_recorded: [usize; 6],
+    /// Dynamic kernels by their branch units' access and their sweep unit's, as "branch/sweep".
+    access_pairs: BTreeMap<String, usize>,
+    /// Sweep units whose access equals that of the same kernel requested as a switch over an active set, and those compared.
+    sweep_access: [usize; 2],
+    /// Units whose access differs, as kernel, unit and both classes.
+    access_wrong: Vec<String>,
     /// Dynamic segmented kernels whose request, stated as a chain, is refused NotWritten for the sweep unit it cannot make.
     sweep_refused: usize,
     /// Units of chains replayed.
@@ -1791,8 +1812,28 @@ fn replay_segmented(
     check_split((found.id, name), &answer.units, &swept, tally);
     for unit in &swept {
         match switched_text(found, kernel, machines) {
-            Ok(text) if text == unit.texts[0].text.replace(&unit.meta.name, name) => {
+            Ok((text, access)) if text == unit.texts[0].text.replace(&unit.meta.name, name) => {
                 tally.sweep_equal += 1;
+                tally.sweep_access[1] += 1;
+                if access == access_word(unit) {
+                    tally.sweep_access[0] += 1;
+                } else {
+                    tally.access_wrong.push(format!(
+                        "{} {}: access {} against {access} for the switch form over an active set",
+                        found.id,
+                        unit.meta.name,
+                        access_word(unit)
+                    ));
+                }
+                let branch = answer
+                    .units
+                    .iter()
+                    .find(|u| u.meta.name == format!("{name}__k0"))
+                    .map_or_else(String::new, access_word);
+                *tally
+                    .access_pairs
+                    .entry(format!("{branch}/{}", access_word(unit)))
+                    .or_default() += 1;
             }
             other => tally.split_wrong.push(format!(
                 "{} {}: the sweep text is not the switch form over an active set ({})",
@@ -1803,6 +1844,12 @@ fn replay_segmented(
         }
     }
     if !swept.is_empty() {
+        tally.maskless[0] += 1;
+        if let Err(why) = maskless(found, kernel, machines, tally) {
+            tally
+                .split_wrong
+                .push(format!("{} {name}: with no mask: {why}", found.id));
+        }
         match chained_refusal(found, kernel, machines) {
             Ok(()) => tally.sweep_refused += 1,
             Err(why) => tally
@@ -1817,6 +1864,25 @@ fn replay_segmented(
         return;
     }
     for (unit, record) in answer.units.iter().zip(&recorded) {
+        let was = record
+            .get("sidecar")
+            .and_then(|s| s.get("exec_access"))
+            .and_then(J::str);
+        if let Some(was) = was {
+            let at = usize::from(unit.meta.name.ends_with("__cls")) * 3;
+            tally.access_recorded[at] += 1;
+            if was == access_word(unit) {
+                tally.access_recorded[at + 1] += 1;
+            } else {
+                tally.access_recorded[at + 2] += 1;
+                tally.access_wrong.push(format!(
+                    "{} {}: access {} against the recorded {was}",
+                    found.id,
+                    unit.meta.name,
+                    access_word(unit)
+                ));
+            }
+        }
         let digest = record.get("digest").and_then(J::str);
         let Some(wants) = expected.get(&(found.id.to_string(), unit.meta.name.clone())) else {
             tally.segment_no_text += 1;
@@ -1935,13 +2001,160 @@ fn chained_refusal(
     }
 }
 
+/// The access class of a unit as the sidecars word it.
+fn access_word(unit: &UnitAnswer) -> String {
+    let c = unit.meta.body.access.c_name();
+    c.strip_prefix("EG_ACCESS_").unwrap_or(c).to_lowercase()
+}
+
+/// The kernel's answer with its finishing and mask taken out (a record whose finish sink and mask slots are removed), as a segmented
+/// kernel and, with `caller` set, as a plain one under an active set a caller asks for.
+fn maskless_answer(
+    found: &Found,
+    kernel: &J,
+    machines: &mut HashMap<String, String>,
+    caller: bool,
+) -> Result<KernelAnswer, String> {
+    let mut call = found.call.clone();
+    let name = kernel
+        .get("name")
+        .and_then(J::str)
+        .unwrap_or("")
+        .to_string();
+    let J::Obj(members) = &mut call else {
+        return Err("a call that is no object".into());
+    };
+    let nodes: Vec<J> = members
+        .iter()
+        .find(|(k, _)| k == "nodes")
+        .map_or(vec![], |(_, n)| n.arr().to_vec());
+    let named = |n: &J, c: &str| matches!(n.get("c"), Some(J::Str(s)) if s == c);
+    for (key, value) in members.iter_mut() {
+        match (key.as_str(), value) {
+            ("nodes", J::Arr(all)) if caller => {
+                for node in all.iter_mut().filter(|n| named(n, "SegmentedDispatch")) {
+                    if let J::Obj(m) = node {
+                        for (_, c) in m.iter_mut().filter(|(k, _)| k == "c") {
+                            *c = J::Str("Dispatch".into());
+                        }
+                    }
+                }
+            }
+            ("kernels", J::Arr(kernels)) => {
+                for k in kernels
+                    .iter_mut()
+                    .filter(|k| k.get("name").and_then(J::str) == Some(&name))
+                {
+                    let J::Obj(fields) = k else { continue };
+                    for (field, v) in fields.iter_mut() {
+                        match (field.as_str(), v) {
+                            ("sinks", J::Arr(sinks)) => sinks.retain(|s| {
+                                let at = s.get("n").and_then(|n| {
+                                    if let J::Num(x) = n {
+                                        Some(*x as usize)
+                                    } else {
+                                        None
+                                    }
+                                });
+                                !at.is_some_and(|at| named(&nodes[at], "Finish"))
+                            }),
+                            ("declared", J::Obj(list)) => {
+                                for (_, items) in list.iter_mut() {
+                                    if let J::Arr(items) = items {
+                                        items.retain(|slot| {
+                                            let word = slot
+                                                .get("v")
+                                                .and_then(|v| v.get("name"))
+                                                .and_then(|n| n.get("s"))
+                                                .and_then(J::str);
+                                            !matches!(word, Some("terminated" | "finished_count"))
+                                        });
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let kernel = call
+        .get("kernels")
+        .map_or(&[][..], J::arr)
+        .iter()
+        .find(|k| k.get("name").and_then(J::str) == Some(&name))
+        .ok_or("the kernel")?
+        .clone();
+    let facts = facts_all(found, &kernel, machines)?;
+    let (c, handles) = load(&call)?;
+    let mut request = request_for(&call, &kernel, facts, &handles)?;
+    if caller {
+        request.kind.active_set = true;
+    }
+    let answer = ask_side(found.target, c, &request.to_json());
+    osprey_host_free(c);
+    answer
+}
+
+/// Checks the sweep of a dynamic segmented kernel that binds no terminated mask: the kernel answers its branch units and a sweep
+/// unit with the map and count slots and no mask, and an active set a caller asks for on it is still refused for the mask.
+fn maskless(
+    found: &Found,
+    kernel: &J,
+    machines: &mut HashMap<String, String>,
+    tally: &mut Tally,
+) -> Result<(), String> {
+    let answer = maskless_answer(found, kernel, machines, false)?;
+    let sweep = answer
+        .units
+        .iter()
+        .find(|u| u.meta.name.ends_with("__sweep"))
+        .ok_or("no sweep unit")?;
+    let launch = &sweep.meta.launch;
+    let clean = launch.active_map_slot.is_some()
+        && launch.active_count_slot.is_some()
+        && sweep
+            .meta
+            .body
+            .slots
+            .iter()
+            .all(|s| s.role != meta::SlotRole::Terminated)
+        && !sweep.texts[0].text.contains("terminated");
+    if !clean {
+        return Err("the sweep holds a mask or lacks its map".into());
+    }
+    tally.maskless[1] += 1;
+    tally.maskless_loop.get_or_insert_with(|| {
+        sweep.texts[0]
+            .text
+            .lines()
+            .filter(|l| {
+                l.contains("hawk_live") || l.contains("hawk_stop") || l.contains("hawk_t <")
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    });
+    match maskless_answer(found, kernel, machines, true) {
+        Err(why)
+            if why.contains("an active set needs the kernel to bind the mask the map follows") =>
+        {
+            tally.maskless[2] += 1;
+            Ok(())
+        }
+        Err(why) => Err(why),
+        Ok(_) => Err("a caller's active set with no mask was answered".into()),
+    }
+}
+
 /// The text of the kernel with its segmented dispatch lowered as a switch and its kind's guard an active set, which is the text the
 /// sweep unit must have (the unit's own name aside).
 fn switched_text(
     found: &Found,
     kernel: &J,
     machines: &mut HashMap<String, String>,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     let mut call = found.call.clone();
     if let J::Obj(members) = &mut call {
         for (_, nodes) in members.iter_mut().filter(|(key, _)| key == "nodes") {
@@ -1965,7 +2178,7 @@ fn switched_text(
     let answer = ask_side(found.target, c, &request.to_json());
     osprey_host_free(c);
     match &answer?.units[..] {
-        [unit] => Ok(unit.texts[0].text.clone()),
+        [unit] => Ok((unit.texts[0].text.clone(), access_word(unit))),
         other => Err(format!("{} units", other.len())),
     }
 }
@@ -2614,6 +2827,23 @@ fn print(label: &str, t: &Tally, side: &str) {
         t.split_groups[0], t.split_groups[1], t.split_wrong.len(), t.sweep_equal, t.sweep_refused
     );
     for wrong in t.split_wrong.iter().take(10) {
+        println!("    {wrong}");
+    }
+    println!(
+        "  maskless dynamic kernels: {}; answered with a sweep that holds no mask: {}; a caller's active set refused for the mask: {}; sweep loop: {}",
+        t.maskless[0], t.maskless[1], t.maskless[2], t.maskless_loop.as_deref().unwrap_or("-")
+    );
+    let a = &t.access_recorded;
+    let pairs: Vec<String> = t
+        .access_pairs
+        .iter()
+        .map(|(p, n)| format!("{p} {n}"))
+        .collect();
+    println!(
+        "  access of segmented units, branch units against the recorded: compared {} equal {} different {}; classify units against the recorded: compared {} equal {} different {}; sweep access equal to the switch form's: {} of {}; (branch/sweep) of dynamic kernels: {}",
+        a[0], a[1], a[2], a[3], a[4], a[5], t.sweep_access[0], t.sweep_access[1], pairs.join(", ")
+    );
+    for wrong in t.access_wrong.iter().take(10) {
         println!("    {wrong}");
     }
     println!(

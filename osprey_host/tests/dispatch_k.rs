@@ -45,6 +45,14 @@ fn every_group_states_the_recorded_branch_count_and_every_sweep_is_the_switch_fo
     // equal sweep units, groups of fewer than two branches
     let mut sum = [0usize; 12];
     let mut strategies: BTreeMap<String, usize> = BTreeMap::new();
+    let mut access = [0usize; 8];
+    let mut maskless = [0usize; 3];
+    let mut loops: Vec<String> = vec![];
+    let mut pairs: BTreeMap<String, usize> = BTreeMap::new();
+    if !RECORDINGS.iter().any(|name| corpus.join(name).exists()) {
+        println!("skipped: no recording under {}", corpus.display());
+        return;
+    }
     for name in RECORDINGS {
         let folder = corpus.join(name);
         if !folder.exists() {
@@ -84,6 +92,33 @@ fn every_group_states_the_recorded_branch_count_and_every_sweep_is_the_switch_fo
         }
         for line in report
             .lines()
+            .filter_map(|l| l.trim_start().strip_prefix("maskless dynamic kernels:"))
+        {
+            let counts = numbers(line.split("sweep loop:").next().unwrap());
+            maskless[0] += counts[0];
+            maskless[1] += counts[1];
+            maskless[2] += counts[2];
+            if let Some(header) = line.split("sweep loop:").nth(1).filter(|h| h.trim() != "-") {
+                loops.push(header.trim().to_string());
+            }
+        }
+        for line in report
+            .lines()
+            .filter_map(|l| l.trim_start().strip_prefix("access of segmented units,"))
+        {
+            let (counts, rest) = line
+                .split_once("(branch/sweep) of dynamic kernels:")
+                .unwrap();
+            for (at, n) in numbers(counts).into_iter().enumerate() {
+                access[at] += n;
+            }
+            for pair in rest.split(',').filter_map(|p| p.trim().split_once(' ')) {
+                *pairs.entry(pair.0.to_string()).or_default() +=
+                    pair.1.parse::<usize>().unwrap_or(0);
+            }
+        }
+        for line in report
+            .lines()
             .filter_map(|l| l.trim_start().strip_prefix("dispatch groups by strategy:"))
         {
             let counted = line.split(';').next().unwrap_or("").split(',');
@@ -106,6 +141,32 @@ fn every_group_states_the_recorded_branch_count_and_every_sweep_is_the_switch_fo
         "segmented groups: static {} dynamic {} wrong {}; sweep units equal to the switch form: {}; groups of fewer than 2 branches: {}",
         sum[6], sum[7], sum[8], sum[9], sum[10]
     );
+    println!(
+        "access: branch units against the recorded: compared {} equal {} different {}; classify units: compared {} equal {} different {}; sweep access equal to the switch form's: {} of {}; (branch/sweep) pairs: {pairs:?}",
+        access[0], access[1], access[2], access[3], access[4], access[5], access[6], access[7]
+    );
+    println!(
+        "maskless dynamic kernels: {} answered with a sweep that holds no mask: {} caller's set refused: {}; loop: {:?}",
+        maskless[0], maskless[1], maskless[2], loops.first()
+    );
+    assert_eq!(
+        maskless[0], maskless[1],
+        "a maskless dynamic kernel's sweep"
+    );
+    assert_eq!(
+        maskless[0], maskless[2],
+        "a caller's set on a maskless kernel"
+    );
+    assert_eq!(
+        access[2] + access[5],
+        0,
+        "a unit's access differs from the recorded unit's"
+    );
+    assert_eq!(
+        access[6], access[7],
+        "a sweep unit's access differs from the switch form's"
+    );
+    assert!(access[0] > 0, "no segmented unit compared");
     assert_eq!(
         sum[2] + sum[5] + sum[8],
         0,

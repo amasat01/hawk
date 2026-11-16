@@ -2,7 +2,7 @@
 //! stages decided for the kernel. A member nothing here knows is left absent (see `NOT_COMPUTED`), never given a value.
 use super::active::{COUNT_PLANE, MAP_PLANE};
 use super::card::BuildCard;
-use super::request::{Body, KernelRequest, LaneAxis, Steps, TargetText, UnitAnswer};
+use super::request::{Body, DeclaredSlot, KernelRequest, LaneAxis, Steps, TargetText, UnitAnswer};
 use super::segment::FUSED_STEPS_PLANE;
 use super::stage_block::{KeyedRecord, PlaneRecord, StageBlock, TeamRecord};
 use super::stages::cell_records;
@@ -486,7 +486,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
             })
         })
         .collect::<Result<Vec<_>, Refusal>>()?;
-    let cells = compensated(cells, &companions, &slots)?;
+    let cells = compensated(cells, &companions, &slots, &parts.pending.member.declared)?;
     Ok(m::UnitMeta {
         name: name.clone(),
         digest: parts.digest.to_string(),
@@ -515,12 +515,13 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
 }
 
 /// The cells with the compensation slots of their sums: each row plane of a sum cell names the companion slot that compensates it,
-/// a companion pair's or else the `<row>_comp` plane the unit's own argument list holds for the row; a cell none of whose rows has
-/// one keeps none, one with only some of them is a fault.
+/// a companion pair's or else the slot the lowering made as that row's compensation plane (`created`, each stating the row it
+/// compensates), never a slot found by its name; a cell none of whose rows has one keeps none, one with only some of them is a fault.
 fn compensated(
     cells: Vec<m::Cell>,
     companions: &[m::Companion],
     slots: &[m::Slot],
+    created: &[DeclaredSlot],
 ) -> Result<Vec<m::Cell>, Refusal> {
     cells
         .into_iter()
@@ -533,7 +534,12 @@ fn compensated(
                         .iter()
                         .find(|c| c.target_slot == row)
                         .map(|c| c.slot)
-                        .or_else(|| slot_at(slots, &format!("{}_comp", slots[row].name)))
+                        .or_else(|| {
+                            created
+                                .iter()
+                                .find(|d| d.compensates.as_ref() == Some(&slots[row].name))
+                                .and_then(|d| slot_at(slots, &d.name))
+                        })
                 })
                 .collect();
             if cell.op == m::ReduceOp::Sum && !found.is_empty() {
@@ -790,4 +796,43 @@ pub(super) fn stages(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! A compensation plane is the one the lowering made for the row, never one a name suggests.
+    use super::*;
+
+    /// A slot of the given name.
+    fn slot(name: &str) -> m::Slot {
+        m::Slot {
+            name: name.into(),
+            ..m::Slot::default()
+        }
+    }
+
+    /// A sum cell over the slot 0.
+    fn sum() -> Vec<m::Cell> {
+        vec![m::Cell {
+            op: m::ReduceOp::Sum,
+            columns: 1,
+            name: "c".into(),
+            slots: Some(vec![0]),
+            ..m::Cell::default()
+        }]
+    }
+
+    #[test]
+    fn a_user_slot_named_like_a_compensation_plane_is_not_taken() {
+        // the argument list holds a user plane `mu_comp` and the plane the lowering made, `mu_low`
+        let slots = [slot("mu"), slot("mu_comp"), slot("mu_low")];
+        let made = DeclaredSlot {
+            compensates: Some("mu".into()),
+            ..DeclaredSlot::lookup("mu_low", Dtype::F64)
+        };
+        let cells = compensated(sum(), &[], &slots, &[made]).unwrap();
+        assert_eq!(cells[0].comp_slots, Some(vec![2]));
+        let cells = compensated(sum(), &[], &slots, &[]).unwrap();
+        assert_eq!(cells[0].comp_slots, None);
+    }
 }

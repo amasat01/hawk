@@ -49,8 +49,8 @@ fn accumulates(name: &str) -> Refusal {
 }
 
 /// One unit with its walk widened by the map and count planes. A segmented unit, a unit that accumulates across samples under a
-/// thinning guard, a thinning guard none of whose masks the unit binds and a unit that already uses a reserved plane name are
-/// refused.
+/// thinning guard, a thinning guard a caller asks for none of whose masks the unit binds (a set the runtime fills follows no mask)
+/// and a unit that already uses a reserved plane name are refused.
 fn with_map(ctx: *mut Ctx, request: &KernelRequest, mut unit: Pending) -> Result<Pending, Refusal> {
     let name = &request.name;
     let what = if request.kind.lanes.is_some() {
@@ -85,7 +85,9 @@ fn with_map(ctx: *mut Ctx, request: &KernelRequest, mut unit: Pending) -> Result
                 .iter()
                 .any(|s| s.role == Role::Terminated && &s.name == mask)
         };
-        if !masks.iter().any(binds) {
+        // the mask rule belongs to a set a caller asks for, which is built from the caller's mask and follows it; a set the runtime
+        // fills lists the live samples whatever they are, and a kernel with no mask has every sample live
+        if !request.kind.runtime_set && !masks.iter().any(binds) {
             return Err(bad(format!(
                 "{name:?}: an active set needs the kernel to bind the mask the map follows"
             )));

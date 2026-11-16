@@ -204,16 +204,19 @@ fn stage_declared(
     for &sink in &base.sinks {
         let node = &context.nodes[sink as usize];
         if context.table.is_a(node.class, "SampleSum") {
-            own.push(format!(
-                "{}_comp",
-                context.str_field(sink, "name").map_err(wing)?
-            ));
+            own.push(context.str_field(sink, "name").map_err(wing)?);
         }
     }
     let mut declared: Vec<DeclaredSlot> = base
         .declared
         .iter()
-        .filter(|slot| slot.name != FINISHED_PLANE && !own.contains(&slot.name))
+        .filter(|slot| {
+            slot.name != FINISHED_PLANE
+                && !slot
+                    .compensates
+                    .as_ref()
+                    .is_some_and(|row| own.contains(row))
+        })
         .cloned()
         .collect();
     for &sink in sinks {
@@ -239,6 +242,7 @@ fn stage_declared(
                 .ok_or_else(|| fault("a cell with an element type the request does not know"))?,
             shape: node.shape.clone(),
             tag: node.tag.clone(),
+            compensates: Some(name),
         });
     }
     let mut member = Member {
@@ -502,6 +506,7 @@ fn read_slots(ctx: *mut Ctx, reads: &[u32]) -> Result<Vec<DeclaredSlot>, Refusal
                     .ok_or_else(missing)?,
                 shape: node.shape.clone(),
                 tag: node.tag.clone(),
+                compensates: None,
             })
         })
         .collect()

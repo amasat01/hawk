@@ -77,6 +77,8 @@ pub struct Oracle {
     rows: BTreeMap<&'static str, Row>,
     /// The dispatch groups of the compared units, by strategy.
     groups: BTreeMap<String, usize>,
+    /// The sum cells with row slots and no compensation plane, as the unit that holds each.
+    uncompensated: Vec<String>,
     /// The dispatch groups of the compared units with fewer than two branches (the runtime refuses those).
     thin: Vec<String>,
     /// The block each recorded device launch declared, by build call and kernel symbol (none when the artifact stated none).
@@ -1050,6 +1052,12 @@ impl Oracle {
             .iter()
             .map(|u| &u.meta)
             .find(|l| l.stages.first().is_some_and(|s| s.unit.name == m.name));
+        for cell in &m.body.cells {
+            if cell.op == meta::ReduceOp::Sum && cell.slots.is_some() && cell.comp_slots.is_none() {
+                self.uncompensated
+                    .push(format!("{id} {} {}", m.name, cell.name));
+            }
+        }
         for d in listed(m) {
             if d.k < 2 {
                 self.thin.push(format!("{id} {} {}", m.name, d.name));
@@ -1146,6 +1154,13 @@ impl Oracle {
             groups.join(", "),
             self.thin.len()
         );
+        println!(
+            "  sum cells with row slots and no compensation plane: {}",
+            self.uncompensated.len()
+        );
+        for cell in &self.uncompensated {
+            println!("    {cell}");
+        }
         for thin in self.thin.iter().take(10) {
             println!("    {thin}");
         }
@@ -1222,7 +1237,10 @@ pub fn emit(file: &Path, dir: &Path, only: Option<&str>) {
                     let (c, handles) = ctx.as_ref().ok_or("no context")?;
                     ask(*c, &request_for(&call, kernel, facts, handles)?.to_json())
                 })();
-                let answer = answer.unwrap_or_else(|why| panic!("{id} {name} {side}: {why}"));
+                let answer = answer.unwrap_or_else(|why| {
+                    eprintln!("{id} {name} {side}: {why}");
+                    std::process::exit(1)
+                });
                 let file = dir.join(format!("{id}_{name}_{side}.c"));
                 std::fs::write(&file, &answer.meta_source).expect("the source");
                 if only.is_some() {

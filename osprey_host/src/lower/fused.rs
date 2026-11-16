@@ -18,6 +18,7 @@ fn bound_slots(ctx: *mut Ctx, lane: &Member) -> Result<Vec<DeclaredSlot>, Refusa
             dtype: slot.dtype,
             shape: slot.shape,
             tag: None,
+            compensates: None,
         })
         .collect())
 }
