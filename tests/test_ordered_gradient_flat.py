@@ -107,8 +107,9 @@ def test_the_gradient_is_one_stage_of_the_kernel_and_one_keyed_fold_stage_over_t
 
 def test_the_same_reverse_inside_a_loop_is_refused_by_name(tmp_path):
     """Pins a refusal that a later change removes: the same loss with its prediction written as a ``for`` loop over the
-    parameters has a reverse that accumulates inside that loop, which is not written yet. When
-    that is written, this test is replaced by one that holds the loop's gradient to a reference."""
+    parameters has a reverse that accumulates inside that loop. Its log slots are planned, one per
+    site and iteration, but the writer of a loop body does not store into a log yet and says so. When
+    it does, this test is replaced by one that holds the loop's gradient to a reference."""
     @kernel
     def looped(lane: Grid["net", "sample":SAMPLES], W: Table["net", "p":PARAMS], x: Scalar, y: Scalar) -> Scalar:
         pred = 0.0
@@ -119,5 +120,5 @@ def test_the_same_reverse_inside_a_loop_is_refused_by_name(tmp_path):
     loss = Kernel("looped", looped.sinks, looped.planes)
     home = build_bundle([loss], tmp_path / "loss", targets=("host",), host_profile="native")
     grad = Kernel("looped_g", vjp(loss, wrt=("W",), primal_unit=home.digest))
-    with pytest.raises(RaptorError, match="an ordered accumulate inside a loop is not written yet"):
+    with pytest.raises(RaptorError, match="a loop body sink that is not a per-iteration accumulate"):
         build_bundle([grad], tmp_path / "grad", targets=("host",), host_profile="native")
