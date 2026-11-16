@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The reverse of an ordered keyed sum that is not inside a loop.
+"""The reverse of an ordered keyed sum, without and with a loop in the loss.
 
 ``hawk.sum(..., contract="ordered")`` adds the samples of each key in sample order, so its value depends on that order
 bit for bit. The reverse (``vjp``) of such a loss is one more ordered keyed sum: the gradient of a parameter is the sum, in
@@ -45,29 +45,46 @@ def _inputs(dtype):
     return y, np.ones((KEYS, SAMPLES), dtype), np.zeros((KEYS, PARAMS), dtype)
 
 
-def _reference(y, x, dtype, order):
+def _reference(y, x, dtype, order, loop=False):
     """The gradient of the loss in ``W`` by the chain rule at ``W = 0``, each key's contributions added one by one in ``order``
     of the samples, every operation in the kernel's scalar type: parameter 0 gets ``2 r x``, parameter 1 gets ``2 r``
-    (``r`` is the residual, minus ``y``), the others get 0."""
+    (``r`` is the residual, minus ``y``), the others get 0. With ``loop`` every parameter is read by one trip of a loop and
+    gets ``2 r x``."""
     t, out = np.dtype(dtype).type, np.zeros((KEYS, PARAMS), dtype)
     for k in range(KEYS):
-        for p in (0, 1):
+        for p in range(PARAMS) if loop else (0, 1):
             total = t(0)
             for i in order:
                 r = t(0) - y[k, i]
-                total = t(total + (t(2) * r * x[k, i] if p == 0 else t(2) * r))
+                total = t(total + (t(2) * r * x[k, i] if p == 0 or loop else t(2) * r))
             out[k, p] = total
     return out
 
 
+@kernel
+def looped(lane: Grid["net", "sample":SAMPLES], W: Table["net", "p":PARAMS], x: Scalar, y: Scalar) -> Scalar:
+    pred = 0.0
+    for h in range(PARAMS):
+        pred = pred + W.at(net=lane.net, p=h) * x
+    return hawk.sum((pred - y) * (pred - y), over="sample", contract="ordered")
+
+
+def _build(dtype, root, source):
+    """``(dtype, bundle of the gradient kernel, the gradient kernel)`` of the loss ``source``, built for the host."""
+    loss = Kernel(f"{source.name}_{dtype}", source.sinks, source.planes)
+    home = build_bundle([loss], root / "loss", targets=("host",), mode=dtype, host_profile="native")
+    grad = Kernel(f"{source.name}_g_{dtype}", vjp(loss, wrt=("W",), primal_unit=home.digest))
+    return dtype, build_bundle([grad], root / "grad", targets=("host",), mode=dtype, host_profile="native"), grad
+
+
 @pytest.fixture(scope="module", params=["float32", "float64"])
 def built(request, tmp_path_factory):
-    """``(dtype, bundle of the gradient kernel, the gradient kernel)`` built for the host."""
-    dtype, root = request.param, tmp_path_factory.mktemp(request.param)
-    loss = Kernel(f"flat_{dtype}", flat.sinks, flat.planes)
-    home = build_bundle([loss], root / "loss", targets=("host",), mode=dtype, host_profile="native")
-    grad = Kernel(f"flat_g_{dtype}", vjp(loss, wrt=("W",), primal_unit=home.digest))
-    return dtype, build_bundle([grad], root / "grad", targets=("host",), mode=dtype, host_profile="native"), grad
+    return _build(request.param, tmp_path_factory.mktemp(request.param), flat)
+
+
+@pytest.fixture(scope="module", params=["float32", "float64"])
+def built_loop(request, tmp_path_factory):
+    return _build(request.param, tmp_path_factory.mktemp("loop" + request.param), looped)
 
 
 def _launch(built):
@@ -105,20 +122,26 @@ def test_the_gradient_is_one_stage_of_the_kernel_and_one_keyed_fold_stage_over_t
     assert next(iter(values.values()))["per_lane"] == next(iter(cells.values()))["per_lane"]
 
 
-def test_the_same_reverse_inside_a_loop_is_refused_by_name(tmp_path):
-    """Pins a refusal that a later change removes: the same loss with its prediction written as a ``for`` loop over the
-    parameters has a reverse that accumulates inside that loop. Its log slots are planned, one per
-    site and iteration, but the writer of a loop body does not store into a log yet and says so. When
-    it does, this test is replaced by one that holds the loop's gradient to a reference."""
-    @kernel
-    def looped(lane: Grid["net", "sample":SAMPLES], W: Table["net", "p":PARAMS], x: Scalar, y: Scalar) -> Scalar:
-        pred = 0.0
-        for h in range(2):
-            pred = pred + W.at(net=lane.net, p=h) * x
-        return hawk.sum((pred - y) * (pred - y), over="sample", contract="ordered")
+def test_the_reverse_inside_a_loop_adds_each_cell_in_sample_order_bit_for_bit(built_loop):
+    """The loss reads parameter ``h`` at trip ``h`` of a loop, so the reverse accumulates at every trip. The order of one cell
+    ``(key, h)``: the reverse writes one scratch slot per trip for each lane (the value plane has ``sites x trips`` slots
+    per lane, see the sidecar test below), and the fold stage adds the slot of a cell over the rows of its key in lane
+    order, i.e. in sample order. Trips do not mix: a slot is one parameter. The reference adds exactly that."""
+    dtype = built_loop[0]
+    y, x, _ = _inputs(dtype)
+    runs = [_launch(built_loop) for _ in range(3)]
+    want = _reference(y, x, dtype, range(SAMPLES), loop=True)
+    assert runs[0].tobytes() == want.tobytes()
+    assert all(r.tobytes() == runs[0].tobytes() for r in runs[1:])
+    assert _reference(y, x, dtype, reversed(range(SAMPLES)), loop=True).tobytes() != want.tobytes()
 
-    loss = Kernel("looped", looped.sinks, looped.planes)
-    home = build_bundle([loss], tmp_path / "loss", targets=("host",), host_profile="native")
-    grad = Kernel("looped_g", vjp(loss, wrt=("W",), primal_unit=home.digest))
-    with pytest.raises(RaptorError, match="a loop body sink that is not a per-iteration accumulate"):
-        build_bundle([grad], tmp_path / "grad", targets=("host",), host_profile="native")
+
+def test_the_reverse_inside_a_loop_has_one_slot_per_site_and_trip_and_one_keyed_fold_stage(built_loop):
+    """One site (the read of ``W``) at ``PARAMS`` trips: both scratch planes hold ``sites x trips`` slots per lane."""
+    _, bundle, grad = built_loop
+    side = sidecar_of(bundle, grad.name)
+    first, fold = side["stages"]
+    assert first["kernel"] == grad.name and not first.get("team") and len(side["stages"]) == 2
+    assert fold["team"]["grid"] == "keys" and fold["team"]["keyed"]["axes"] == [["net", None]]
+    sites, trips = 1, PARAMS
+    assert sorted(s["per_lane"] for s in side["team_planes"].values()) == [sites * trips] * 2
