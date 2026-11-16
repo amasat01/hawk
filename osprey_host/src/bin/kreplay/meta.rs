@@ -864,8 +864,24 @@ fn block_row(
             .filter(|b| *b > 0)
             .map_or("runtime's choice".to_string(), |b| b.to_string())
     };
-    let ours = vec![word(Some(unit.launch.block)); held.len()].join(" ");
-    let theirs = held.iter().map(|b| word(*b)).collect::<Vec<_>>().join(" ");
+    // the block is the caller's argument at each launch: a launch that declares none leaves the choice to the runtime and says
+    // nothing about the unit unless no launch of it declares one
+    let declared: Vec<Option<i64>> = held
+        .iter()
+        .copied()
+        .filter(|b| b.is_some_and(|b| b > 0))
+        .collect();
+    let stated = if declared.is_empty() {
+        vec![None]
+    } else {
+        declared
+    };
+    let ours = vec![word(Some(unit.launch.block)); stated.len()].join(" ");
+    let theirs = stated
+        .iter()
+        .map(|b| word(*b))
+        .collect::<Vec<_>>()
+        .join(" ");
     Some((ours, theirs))
 }
 
