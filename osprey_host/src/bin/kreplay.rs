@@ -1296,6 +1296,17 @@ fn replay(kpath: &Path, tpath: &Path, show: usize, tallies: &mut [Tally; 2]) {
         texts_of(tpath, &wanted, "host"),
         texts_of(tpath, &wanted, "cuda"),
     ];
+    let beside = kpath.with_file_name(
+        kpath
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replacen('k', "b", 1),
+    );
+    for tally in tallies.iter_mut() {
+        tally.meta.launches_from(&beside);
+    }
     let mut machines = HashMap::new();
     for line in BufReader::new(std::fs::File::open(kpath).unwrap()).lines() {
         let mut call = json::parse(&line.unwrap()).unwrap();

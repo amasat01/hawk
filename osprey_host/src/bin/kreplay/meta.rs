@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// The members of the meta compared with the record, one line each.
-const MEMBERS: [&str; 36] = [
+const MEMBERS: [&str; 37] = [
     "name",
     "digest",
     "pattern",
@@ -49,6 +49,7 @@ const MEMBERS: [&str; 36] = [
     "dispatch.class_slot, stale_slot, offsets_slot, classify (names)",
     "finish.step_ops, flags ENTRY_COUNTS",
     "slot.flags GATHER, slot.gather (plane, axis flags)",
+    "launch.block (resolved block of a device launch)",
 ];
 
 /// What was compared of one member: the units, those equal, and the first differing ones with both values.
@@ -69,6 +70,8 @@ struct Row {
 pub struct Oracle {
     /// One row per member.
     rows: BTreeMap<&'static str, Row>,
+    /// The block each recorded device launch declared, by build call and kernel symbol (none when the artifact stated none).
+    launches: HashMap<(String, String), Vec<Option<i64>>>,
 }
 
 /// A recorded value of a sidecar by key path.
@@ -848,7 +851,50 @@ fn gather_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
     Some((ours, theirs))
 }
 
+/// The block of each launch of a unit's device function, as the meta states it and as the recorded launches resolved it: a
+/// stated block is the one the launch used, no stated block leaves the runtime's choice.
+fn block_row(
+    unit: &meta::UnitMeta,
+    id: &str,
+    launches: &HashMap<(String, String), Vec<Option<i64>>>,
+) -> Pair {
+    let held = launches.get(&(id.to_string(), unit.device_function.clone()?))?;
+    let word = |block: Option<i64>| {
+        block
+            .filter(|b| *b > 0)
+            .map_or("runtime's choice".to_string(), |b| b.to_string())
+    };
+    let ours = vec![word(Some(unit.launch.block)); held.len()].join(" ");
+    let theirs = held.iter().map(|b| word(*b)).collect::<Vec<_>>().join(" ");
+    Some((ours, theirs))
+}
+
 impl Oracle {
+    /// Reads the launches a recorder stored beside a corpus file (`b<pid>.jsonl`: a header, then one record per launch with its
+    /// `call`, `kernel` and the artifact's `declared` block); no such file leaves the row empty.
+    pub fn launches_from(&mut self, path: &Path) {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        for line in text.lines() {
+            let Ok(rec) = json::parse(line) else { continue };
+            let (Some(call), Some(kernel)) = (
+                rec.get("call").and_then(J::str),
+                rec.get("kernel").and_then(J::str),
+            ) else {
+                continue;
+            };
+            let declared = match rec.get("declared") {
+                Some(J::Num(n)) => Some(*n as i64),
+                _ => None,
+            };
+            self.launches
+                .entry((call.to_string(), kernel.to_string()))
+                .or_default()
+                .push(declared);
+        }
+    }
+
     /// Compares the meta of an answer unit with the sidecar recorded for it; a unit with no sidecar is not counted.
     pub fn unit(
         &mut self,
@@ -917,6 +963,7 @@ impl Oracle {
             segment_row(m, sc),
             finish_row(m, sc),
             gather_row(m, sc),
+            block_row(m, id, &self.launches),
         ])
         .collect();
         // the member order of `MEMBERS`: the scatter chunks sit after the cell row
