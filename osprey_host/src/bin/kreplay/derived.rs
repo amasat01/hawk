@@ -4,15 +4,20 @@
 use super::*;
 use meta::{DerivedRole, LinkForm, LinkWhat, SlotRole, WireDtype};
 use osprey_host::lower::derived::{DerivedFacts, DerivedKernel, TapedPlane};
+use osprey_host::lower::events;
 use osprey_host::lower::links::LinkFact;
 
 /// What one set of a call came to.
 enum Built {
     /// The set was answered: (texts equal modulo the block, texts different, blocks omitted).
-    Answered(usize, usize, usize),
+    Answered(usize, usize, usize, usize),
     /// The library or the converter refused it, with the reason.
     Refused(String),
 }
+
+/// The unit-name suffixes of the units of roles the runtime does not load (the refine entry and the state guard): a set is built
+/// without them.
+const UNLOADED: [&str; 2] = ["_refine", "_state_guard"];
 
 /// The slot of a name in a unit.
 fn slot<'a>(unit: &'a meta::UnitMeta, name: &str) -> Option<(usize, &'a meta::Slot)> {
@@ -334,11 +339,11 @@ fn one_set(
         call,
         id,
         show: 0,
-        target: Target::Host,
+        target: build_target(call, primal),
     };
     let mut go = || -> Result<Built, String> {
         let mut facts = facts_all(&found, primal, machines)?;
-        facts.retain(|(t, _)| *t == Target::Host);
+        facts.retain(|(t, _)| *t == found.target);
         if ctx.is_none() {
             *ctx = Some(load(call)?);
         }
@@ -351,8 +356,13 @@ fn one_set(
         let mut list = vec![];
         let mut singles = vec![own.units[0].texts[0].text.clone()];
         let mut twin: Option<DerivedFacts> = None;
+        let mut unloaded = 0;
         for kernel in kernels {
             let kname = kernel.get("name").and_then(J::str).unwrap_or("");
+            if UNLOADED.iter().any(|s| kname == format!("{name}{s}")) {
+                unloaded += 1;
+                continue;
+            }
             let (request, answer) = alone(call, kernel, &facts, held)?;
             let (role, facts_of) = if kname == format!("{name}_tape") {
                 let f = twin_facts(&own.units[0].meta, &answer.units[0].meta, time)?;
@@ -420,7 +430,7 @@ fn one_set(
                 different += 1
             }
         }
-        Ok(Built::Answered(equal, different, omitted))
+        Ok(Built::Answered(equal, different, omitted, unloaded))
     };
     go().unwrap_or_else(|why| Built::Refused(format!("{id} {name}: {why}")))
 }
@@ -435,8 +445,10 @@ fn is_lone_twin(why: &str) -> bool {
 /// twins recorded without their primal, and the first refusal.
 #[derive(Default)]
 pub struct Totals {
-    /// The seven counts.
-    pub counts: [usize; 7],
+    /// The eight counts.
+    pub counts: [usize; 8],
+    /// Each distinct refusal reason with its count and the first call id that met it, most frequent first once sorted.
+    pub reasons: Vec<(String, usize, String)>,
     /// The first refusal.
     pub first: Option<String>,
 }
@@ -449,6 +461,17 @@ impl Totals {
         }
         if self.first.is_none() {
             self.first = other.first;
+        }
+        for (reason, n, id) in other.reasons {
+            self.note(&reason, n, &id);
+        }
+    }
+
+    /// Counts `n` refusals for a reason, keeping the first call id.
+    fn note(&mut self, reason: &str, n: usize, id: &str) {
+        match self.reasons.iter_mut().find(|r| r.0 == reason) {
+            Some(r) => r.1 += n,
+            None => self.reasons.push((reason.into(), n, id.into())),
         }
     }
 
@@ -467,6 +490,18 @@ impl Totals {
             c[3], c[4], c[5]
         );
         println!("twins recorded without their primal: {}", c[6]);
+        println!("units of roles the runtime does not load: {}", c[7]);
+        if self.reasons.is_empty() {
+            return;
+        }
+        let mut sorted = self.reasons.clone();
+        sorted.sort_by_key(|r| std::cmp::Reverse(r.1));
+        println!("refusal reasons, most frequent first:");
+        for (reason, n, _) in sorted.iter().take(12) {
+            println!("  {n:>5}  {reason}");
+        }
+        let ids: Vec<&str> = sorted.iter().take(12).map(|r| r.2.as_str()).collect();
+        println!("first of each: {}", ids.join(", "));
     }
 }
 
@@ -498,7 +533,8 @@ pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) -> Totals {
     let mut machines = HashMap::new();
     let mut expected = None;
     let (mut found, mut built, mut refused, mut first) = (0, 0, 0, None);
-    let mut lone = 0;
+    let (mut lone, mut unloaded) = (0, 0);
+    let mut totals = Totals::default();
     let (mut equal, mut different, mut omitted) = (0, 0, 0);
     for line in text_of_file.lines() {
         let mut call = json::parse(line).expect("a call");
@@ -532,7 +568,8 @@ pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) -> Totals {
                             || REFINE_SUFFIXES
                                 .iter()
                                 .any(|(suffix, _)| kname == format!("{name}{suffix}")));
-                    kname == format!("{name}_tape") || reverse
+                    let unloaded = UNLOADED.iter().any(|s| kname == format!("{name}{s}"));
+                    kname == format!("{name}_tape") || reverse || unloaded
                 })
                 .collect();
             if mine.is_empty() {
@@ -545,8 +582,9 @@ pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) -> Totals {
             }
             found += 1;
             match answered {
-                Built::Answered(e, d, o) => {
+                Built::Answered(e, d, o, u) => {
                     built += 1;
+                    unloaded += u;
                     (equal, different, omitted) = (equal + e, different + d, omitted + o);
                 }
                 Built::Refused(why) => {
@@ -554,6 +592,11 @@ pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) -> Totals {
                         println!("refused: {why}");
                     }
                     refused += 1;
+                    let reason = why
+                        .strip_prefix(&format!("{id} {name}: "))
+                        .unwrap_or(&why)
+                        .replace(name, "<kernel>");
+                    totals.note(&reason, 1, &id);
                     first.get_or_insert(why);
                 }
             }
@@ -562,10 +605,11 @@ pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) -> Totals {
             osprey_host_free(c);
         }
     }
-    Totals {
-        counts: [found, built, refused, equal, different, omitted, lone],
-        first,
-    }
+    totals.counts = [
+        found, built, refused, equal, different, omitted, lone, unloaded,
+    ];
+    totals.first = first;
+    totals
 }
 
 /// The comparisons of a recorded stop rule, read from the recorded nodes alone: the leaves of the `or` chain under the finish value
@@ -612,6 +656,14 @@ pub struct Events {
     pub counts: [usize; 10],
     /// The library's counts of the kernels named `ev_osc`.
     pub ev_osc: Vec<usize>,
+    /// Kernels whose every comparison is smooth, those with a comparison that is not, and those with a leaf that is no comparison.
+    pub smooth: [usize; 3],
+    /// With a refine unit asked for: the kernels refused by name, and the ones the check let through that should have been.
+    pub refine: [usize; 2],
+    /// Kernels the check refused that are smooth, or let through that are not (must be 0).
+    pub wrong: usize,
+    /// The smooth state of `ev_osc` kernels, true when smooth.
+    pub ev_osc_smooth: Vec<bool>,
 }
 
 impl Events {
@@ -625,6 +677,14 @@ impl Events {
             *a += b;
         }
         self.ev_osc.extend(other.ev_osc);
+        self.ev_osc_smooth.extend(other.ev_osc_smooth);
+        self.wrong += other.wrong;
+        for (a, b) in self.smooth.iter_mut().zip(other.smooth) {
+            *a += b;
+        }
+        for (a, b) in self.refine.iter_mut().zip(other.refine) {
+            *a += b;
+        }
     }
 
     /// The summary lines.
@@ -645,6 +705,14 @@ impl Events {
             .collect();
         println!("events: distribution of the counts: {}", spread.join("; "));
         println!("events: ev_osc library counts: {:?}", self.ev_osc);
+        println!(
+            "events: stop rules with every comparison smooth {} / with a comparison that is not smooth {} / with a leaf that is no comparison {}; ev_osc smooth: {:?}",
+            self.smooth[0], self.smooth[1], self.smooth[2], self.ev_osc_smooth
+        );
+        println!(
+            "events: with a refine unit asked for: refused by name {} / let through {}; wrong {}",
+            self.refine[0], self.refine[1], self.wrong
+        );
         for d in self.different.iter().take(10) {
             println!("events: DIFFERENT {d}");
         }
@@ -698,15 +766,43 @@ pub fn event_census(file: &Path) -> Events {
                     ctx = Some(load(&call)?);
                 }
                 let (c, handles) = ctx.as_ref().ok_or("no context")?;
-                let answer = ask(*c, &request_for(&call, kernel, facts, handles)?.to_json())?;
+                let answer = ask(
+                    *c,
+                    &request_for(&call, kernel, facts.clone(), handles)?.to_json(),
+                )?;
                 let n = answer
                     .units
                     .iter()
                     .find_map(|u| u.meta.finish.as_ref().map(|f| f.n_events));
-                Ok::<_, String>(n.unwrap_or(-1))
+                // the smoothness rule over the kernel's own sinks, and the refusal a refine unit would meet
+                let sinks = items_of_nodes(kernel.get("sinks"), handles);
+                // SAFETY: `c` is the live context of this call; it is only read here.
+                let verdict = events::refine_verdict(unsafe { &**c }, &sinks);
+                let mut asked = request_for(&call, kernel, facts, handles)?;
+                asked.derived = vec![DerivedKernel {
+                    request: asked.clone(),
+                    role: DerivedRole::RefineNewton,
+                    facts: DerivedFacts::default(),
+                }];
+                let refused = ask(*c, &asked.to_json())
+                    .err()
+                    .is_some_and(|why| why.contains("cannot be refined"));
+                Ok::<_, String>((n.unwrap_or(-1), verdict, refused))
             })();
             match got {
-                Ok(n) if n >= 0 => {
+                Ok((n, verdict, refused)) if n >= 0 => {
+                    match &verdict {
+                        Ok(_) => tally.smooth[0] += 1,
+                        Err((_, why)) if why.starts_with("it is not a comparison") => {
+                            tally.smooth[2] += 1
+                        }
+                        Err(_) => tally.smooth[1] += 1,
+                    }
+                    tally.refine[usize::from(!refused)] += 1;
+                    tally.wrong += usize::from(refused == verdict.is_ok());
+                    if name == "ev_osc" {
+                        tally.ev_osc_smooth.push(verdict.is_ok());
+                    }
                     tally.compared += 1;
                     tally.counts[(n as usize).min(9)] += 1;
                     if n as usize == want {
@@ -856,6 +952,51 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn equal_refusal_reasons_group_and_keep_the_first_call() {
+        let mut totals = Totals::default();
+        totals.note("a", 1, "1.1");
+        totals.note("b", 1, "1.2");
+        totals.note("a", 2, "1.3");
+        assert_eq!(
+            totals.reasons,
+            [
+                ("a".to_string(), 3, "1.1".to_string()),
+                ("b".to_string(), 1, "1.2".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_device_build_is_replayed_with_the_device_facts_the_default_mode_gives() {
+        let call = json::parse(
+            r#"{"call":"1.1","kernels":[{"name":"k"}],"units":[{"unit":"k","targets":["cuda"]}],"args":{"options":{}}}"#,
+        )
+        .expect("a call");
+        let kernel = &call.get("kernels").unwrap().arr()[0];
+        let target = build_target(&call, kernel);
+        assert_eq!(target, Target::Device);
+        let found = Found {
+            call: &call,
+            id: "1.1",
+            show: 0,
+            target,
+        };
+        let facts = facts_all(&found, kernel, &mut HashMap::new()).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].0, Target::Device);
+        assert!(facts[0].1.contains("\"device_arch\""), "{}", facts[0].1);
+        assert!(facts[0].1.contains("\"device_build\""), "{}", facts[0].1);
+        let host = json::parse(
+            r#"{"kernels":[{"name":"k"}],"units":[{"unit":"k","targets":["host","cuda"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            build_target(&host, &host.get("kernels").unwrap().arr()[0]),
+            Target::Host
+        );
     }
 
     #[test]

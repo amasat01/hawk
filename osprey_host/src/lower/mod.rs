@@ -254,12 +254,19 @@ fn device_arch(request: &KernelRequest) -> Result<String, Refusal> {
         .ok_or_else(|| bad("the device facts answer names no architecture"))
 }
 
+/// Refuses a refine unit over a stop rule that cannot be refined.
+fn refine_stop_rule(ctx: *mut Ctx, request: &KernelRequest) -> Result<(), Refusal> {
+    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
+    events::check_refine(unsafe { &*ctx }, request)
+}
+
 /// The answer to a request, from the kernel's IR in `ctx` and the data files in `facts_dir`. A request with derived kernels is
 /// answered as one table: the units of the kernel first, then those of each derived kernel in list order.
 pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<KernelAnswer, Refusal> {
     let request = KernelRequest::from_json(request_text)?;
     scope(&request)?;
     known_sinks(ctx, &request)?;
+    refine_stop_rule(ctx, &request)?;
     let cards = Cards::load(&request, facts_dir)?;
     let mut units = kernel_units(ctx, &request, &cards, facts_dir, true)?;
     if !request.derived.is_empty() {

@@ -53,4 +53,20 @@ fn every_recorded_kernel_with_a_finish_has_the_recorded_number_of_events() {
         ev.contains("[1") && !ev.contains(", 0") && !ev.contains(", 2"),
         "{ev}"
     );
+    // a refine unit asked for: the kernels whose stop rule has a comparison that is not smooth are refused by name, the others
+    // are let through by the check, and none is wrong; the oscillator with an event is smooth
+    let refine = said
+        .lines()
+        .find(|l| l.contains("with a refine unit asked for"))
+        .expect("the refine line");
+    assert!(refine.contains("wrong 0"), "{refine}");
+    assert!(!refine.contains("refused by name 0 "), "{refine}");
+    let smooth = said
+        .lines()
+        .find(|l| l.contains("ev_osc smooth"))
+        .expect("the smooth line");
+    assert!(
+        smooth.contains("[true") && !smooth.contains("false"),
+        "{smooth}"
+    );
 }

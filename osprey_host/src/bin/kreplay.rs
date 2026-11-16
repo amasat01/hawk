@@ -1260,6 +1260,16 @@ fn facts_all(
     Ok(facts)
 }
 
+/// The target a derived set of the kernel is replayed for: the host, unless the kernel's own unit was built for the device alone.
+fn build_target(call: &J, kernel: &J) -> Target {
+    let named = unit_targets(kernel, call_units(call));
+    if named.contains(&"cuda") && !named.contains(&"host") {
+        Target::Device
+    } else {
+        Target::Host
+    }
+}
+
 /// Asks for the answer and keeps of each unit the text for one target.
 fn ask_side(
     target: Target,
