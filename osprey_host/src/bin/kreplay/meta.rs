@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// The members of the meta compared with the record, one line each.
-const MEMBERS: [&str; 37] = [
+const MEMBERS: [&str; 38] = [
     "name",
     "digest",
     "pattern",
@@ -48,6 +48,7 @@ const MEMBERS: [&str; 37] = [
     "dispatch.name, strategy, mix_slot (name)",
     "dispatch.class_slot, stale_slot, offsets_slot, classify (names)",
     "finish.step_ops, flags ENTRY_COUNTS",
+    "finish.fp64_ops_ir",
     "slot.flags GATHER, slot.gather (plane, axis flags)",
     "launch.block (resolved block of a device launch)",
 ];
@@ -824,6 +825,15 @@ fn finish_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
     Some((ours, theirs))
 }
 
+/// The 64-bit float operations of a finishing unit's step, against the recorded `fp64_ops_ir`.
+fn fp64_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let finish = unit.finish.as_ref()?;
+    Some((
+        format!("{:?}", finish.fp64_ops_ir),
+        format!("{:?}", number(sc, &["fp64_ops_ir"])),
+    ))
+}
+
 /// The gathered planes of a unit with the lane axes each varies along (none when the request stated none), against the recorded
 /// `gather_mats`.
 fn gather_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
@@ -978,6 +988,7 @@ impl Oracle {
             dispatch_row(m, sc),
             segment_row(m, sc),
             finish_row(m, sc),
+            fp64_row(m, sc),
             gather_row(m, sc),
             block_row(m, id, &self.launches),
         ])

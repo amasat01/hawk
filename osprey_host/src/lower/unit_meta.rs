@@ -629,6 +629,5 @@ impl LibraryMeta {
 /// Paths: raptor = rs/ir/src, aether = rs/writers/src, lower = osprey_host/src/lower.
 pub const NOT_COMPUTED: &[(&str, &str)] = &[
     ("team_plane.wide of a wide OUTPUT plane (`bf`, `y`: a slot the placement made wide, not a scratch plane)", "a design choice: the meta has no member for a wide slot; the recorded launch.wide names it (4 units on k7); the warp step's own planes (`hwd*`) also come from lower/warp.rs `slice`"),
-    ("finish.fp64_ops_ir", "raptor (a reader): the count of 64-bit float operations of the step in the IR (the old cost module's `fp64_ops`) has no analysis in raptor rs/wings; the lane split holds only `op_count`"),
     ("finish.host_steps_reverse, device_steps_reverse (steps tables)", "data: the rows are in the old tree's installed wing facts (hawk/targets/steps_reverse.py `table_for`), and no copy of them is on this Mac (not in the tree, the overlay or venv_rel)"),
 ];

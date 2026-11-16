@@ -154,12 +154,13 @@ fn keep_held(bodies: &[Member], under: &[String], declared: &[DeclaredSlot]) -> 
     held
 }
 
-/// Refuses units that share a name: the answer names each unit, and the stage block and the caller key on it.
+/// Faults on units that share a name, which the lowering itself made (the caller's own names are checked when the request is read):
+/// the answer names each unit, and the stage block and the caller key on it.
 fn distinct_names(pending: &[Pending]) -> Result<(), Refusal> {
     let mut seen = std::collections::HashSet::new();
     match pending.iter().find(|unit| !seen.insert(&unit.member.name)) {
-        Some(unit) => Err(not_written(format!(
-            "two units are named {} (a piece of a chain and a stage of another piece)",
+        Some(unit) => Err(fault(format!(
+            "the lowering made two units named {} (a piece of a chain and a stage of another piece)",
             unit.member.name
         ))),
         None => Ok(()),
@@ -677,7 +678,7 @@ mod tests {
         };
         assert!(distinct_names(&units(&["k", "k_2", "k_3"])).is_ok());
         let refusal = distinct_names(&units(&["k", "k_2", "k_2"])).unwrap_err();
-        assert_eq!(refusal.kind, RefusalKind::NotWritten);
+        assert_eq!(refusal.kind, RefusalKind::Fault);
         assert!(refusal.reason.contains("named k_2"), "{}", refusal.reason);
     }
 }

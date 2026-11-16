@@ -715,7 +715,17 @@ impl Member {
 impl Body {
     /// Reads a body: `{"Plain": member}`, `{"Chain": [members]}` or `{"Fused": [members]}`.
     fn read(json: &Json) -> Result<Body, Refusal> {
-        let members = |j: &Json| list_of(j, "body", Member::read);
+        let members = |j: &Json| {
+            let list = list_of(j, "body", Member::read)?;
+            let mut seen = std::collections::HashSet::new();
+            match list.iter().find(|member| !seen.insert(&member.name)) {
+                Some(member) => Err(bad(format!(
+                    "request key body: two members are named {}",
+                    member.name
+                ))),
+                None => Ok(list),
+            }
+        };
         match tagged(json, "body")? {
             ("Plain", member) => Ok(Body::Plain(Member::read(member)?)),
             ("Chain", list) => Ok(Body::Chain(members(list)?)),
@@ -1385,6 +1395,24 @@ mod tests {
         let parsed = Contract::parse(&text).unwrap();
         let why = read_written_facts(&parsed.0, String::new()).unwrap_err();
         assert!(why.reason.contains("slot"), "{}", why.reason);
+    }
+
+    #[test]
+    fn two_members_of_one_name_are_refused_by_name() {
+        let member = |name: &str| Member {
+            name: name.into(),
+            sinks: vec![3],
+            declared: vec![],
+            force: None,
+            exempt: vec![],
+        };
+        let mut chain = request();
+        chain.body = Body::Chain(vec![member("a"), member("b")]);
+        assert!(KernelRequest::from_json(&chain.to_json()).is_ok());
+        chain.body = Body::Chain(vec![member("a"), member("b"), member("a")]);
+        let why = KernelRequest::from_json(&chain.to_json()).unwrap_err();
+        assert_eq!(why.kind, aether_writers::refuse::RefusalKind::BadRequest);
+        assert!(why.reason.contains("named a"), "{}", why.reason);
     }
 
     #[test]

@@ -309,6 +309,12 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
             0
         },
         step_ops: step.map(|s| s.ops),
+        fp64_ops_ir: match step {
+            // SAFETY: `ctx` is the live context the caller holds; it is only read here.
+            Some(_) => raptor_wings::cost::step_fp64_ops(unsafe { &*parts.ctx }, parts.walk)
+                .map_err(wing)?,
+            None => None,
+        },
         mask_slot: slot(mask)?,
         counter_slot: slot(FINISHED_PLANE)?,
         steps,
