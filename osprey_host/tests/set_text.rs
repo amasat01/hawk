@@ -143,7 +143,7 @@ fn an_empty_list_two_units_of_one_name_and_a_record_that_does_not_read_are_refus
     refused("broken", broken);
 }
 
-/// The compile flags of a host unit, as the derived-set test compiles them, and the include roots.
+/// The include roots and the host build instructions of this machine and the system compiler, from the facts answer.
 struct Tools {
     /// The aether tree.
     aether: PathBuf,
@@ -151,43 +151,105 @@ struct Tools {
     eagle: PathBuf,
     /// The root of the door headers.
     door: PathBuf,
+    /// The `host_build` record of the facts answer for the system compiler on this machine.
+    build: Json,
 }
 
 impl Tools {
-    /// The trees, when the environment names them; a line says what is missing.
+    /// The trees and the build instructions, when the environment names the trees; a line says what is missing.
     fn found() -> Option<Tools> {
         let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
         let (Some(eagle), Some(door)) = (var("EAGLE_ROOT"), var("EAGLE_DOOR_DIR")) else {
             println!("set_text: skipped, EAGLE_ROOT and EAGLE_DOOR_DIR are not both set");
             return None;
         };
+        let version = Command::new("c++").arg("--version").output().ok()?;
+        let line = String::from_utf8_lossy(&version.stdout);
+        let identity = format!("c++ || {} || 0", line.lines().next().unwrap_or(""));
+        let facts_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("facts");
+        let stated = osprey_host::facts::stated_from_json("{}").unwrap();
+        let answer = osprey_host::facts::answer(
+            &facts_dir,
+            "host",
+            &identity,
+            &osprey_host::facts::probe(),
+            &stated,
+        )
+        .expect("the facts of this machine");
+        let machine = aether_writers::contract::Contract::parse(&answer)
+            .unwrap()
+            .0;
+        let build = machine.get("host_build").expect("host_build").clone();
         let aether = Path::new(env!("CARGO_MANIFEST_DIR")).join("../aether");
         Some(Tools {
             aether,
             eagle,
             door,
+            build,
         })
     }
 
-    /// Compiles a C++ text to an object (`-c`) with the flags of a host unit and the door headers; the compiler's own words fail the test.
-    fn object(&self, source: &Path, object: &Path) {
-        let built = Command::new("c++")
-            .args(["-std=c++23", "-fPIC", "-DAETHER_CPP_MODE", "-I"])
-            .arg(&self.aether)
-            .arg("-I")
-            .arg(&self.eagle)
-            .arg("-I")
-            .arg(&self.door)
-            .args(["-c", "-x", "c++"])
-            .arg(source)
-            .arg("-o")
-            .arg(object)
+    /// Runs an argv template of the build instructions with its places filled; the compiler's own words fail the test.
+    fn run(&self, template: &Json, places: &[(&str, String)], objects: &[PathBuf]) {
+        let mut argv: Vec<String> = vec![];
+        for item in template.arr() {
+            let item = item.str().unwrap();
+            match item {
+                "{compiler}" => argv.push("c++".into()),
+                "{objects}" => {
+                    argv.extend(objects.iter().map(|o| o.to_string_lossy().into_owned()))
+                }
+                "{include:aether}" => argv.push(self.aether.to_string_lossy().into_owned()),
+                "{include:eagle}" => argv.push(self.eagle.to_string_lossy().into_owned()),
+                "{include:door}" => argv.push(self.door.to_string_lossy().into_owned()),
+                _ => argv.push(
+                    places
+                        .iter()
+                        .find(|(k, _)| *k == item)
+                        .map_or(item.into(), |(_, v)| v.clone()),
+                ),
+            }
+        }
+        let built = Command::new(&argv[0])
+            .args(&argv[1..])
             .output()
             .expect("c++ starts");
         assert!(
             built.status.success(),
-            "{}",
+            "{argv:?}\n{}",
             String::from_utf8_lossy(&built.stderr)
+        );
+    }
+
+    /// Compiles a C++ text to an object with the instructions for a unit text, or for the set text when `set`.
+    fn object(&self, source: &Path, object: &Path, set: bool) {
+        let template = self
+            .build
+            .get(if set { "compile_set" } else { "compile_unit" })
+            .unwrap();
+        let places = [
+            ("{source}", source.to_string_lossy().into_owned()),
+            ("{object}", object.to_string_lossy().into_owned()),
+            (
+                "{depfile}",
+                object.with_extension("d").to_string_lossy().into_owned(),
+            ),
+        ];
+        self.run(template, &places, &[]);
+    }
+
+    /// Links objects into one shared library with the instructions of this system.
+    fn link(&self, objects: &[PathBuf], library: &Path) {
+        let system = if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        };
+        let template = self.build.get("link").unwrap().get(system).unwrap();
+        self.run(
+            template,
+            &[("{output}", library.to_string_lossy().into_owned())],
+            objects,
         );
     }
 }
@@ -216,7 +278,7 @@ fn the_text_over_three_kernels_has_one_block_and_one_record_and_compiles() {
     let Some(tools) = Tools::found() else { return };
     let dir = scratch("compile");
     std::fs::write(dir.join("set.cpp"), &text).unwrap();
-    tools.object(&dir.join("set.cpp"), &dir.join("set.o"));
+    tools.object(&dir.join("set.cpp"), &dir.join("set.o"), true);
 }
 
 /// A program that opens the library at its first argument, reads the library record and resolves the host entry every unit names.
@@ -264,6 +326,7 @@ fn the_units_of_three_kernels_and_the_set_text_link_into_one_library_that_resolv
                 tools.object(
                     &dir.join(format!("{name}.cpp")),
                     &dir.join(format!("{name}.o")),
+                    false,
                 );
                 objects.push(dir.join(format!("{name}.o")));
             }
@@ -271,7 +334,7 @@ fn the_units_of_three_kernels_and_the_set_text_link_into_one_library_that_resolv
     }
     let set = set_text(&input(&answers.iter().collect::<Vec<_>>())).unwrap();
     std::fs::write(dir.join("set.cpp"), set).unwrap();
-    tools.object(&dir.join("set.cpp"), &dir.join("set.o"));
+    tools.object(&dir.join("set.cpp"), &dir.join("set.o"), true);
     objects.push(dir.join("set.o"));
     let library = dir.join(format!(
         "units.{}",
@@ -281,18 +344,7 @@ fn the_units_of_three_kernels_and_the_set_text_link_into_one_library_that_resolv
             "so"
         }
     ));
-    let linked = Command::new("c++")
-        .arg("-shared")
-        .args(&objects)
-        .arg("-o")
-        .arg(&library)
-        .output()
-        .unwrap();
-    assert!(
-        linked.status.success(),
-        "{}",
-        String::from_utf8_lossy(&linked.stderr)
-    );
+    tools.link(&objects, &library);
     std::fs::write(dir.join("driver.cpp"), DRIVER).unwrap();
     let built = Command::new("c++")
         .args(["-std=c++17", "-I"])

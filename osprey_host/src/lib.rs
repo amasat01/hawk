@@ -6,6 +6,7 @@
 /// function it lacks fails the build of the library (no symbol is left unresolved).
 extern crate raptor_wings;
 pub mod facts;
+mod host_build;
 pub mod lower;
 use aether_writers::refuse::{bad, fault, Refusal, RefusalKind};
 use aether_writers::{host_render, RxCtx};

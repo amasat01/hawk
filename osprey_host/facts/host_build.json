@@ -1,0 +1,22 @@
+{
+  "opt_flag": "-{level}",
+  "opt_levels": ["O0", "O1", "O2", "O3"],
+  "default_opt_level": "O3",
+  "contraction": {
+    "native": "-ffp-contract=off",
+    "portable": "-ffp-contract=off",
+    "native-vector-math": "-ffp-contract=fast",
+    "native-vector-math-nofma": "-ffp-contract=off"
+  },
+  "always": ["-fno-math-errno"],
+  "unit_tail": ["-std=c++23", "-fPIC", "-DAETHER_CPP_MODE"],
+  "includes": ["-I", "{include:aether}", "-I", "{include:eagle}"],
+  "set_includes": ["-I", "{include:door}"],
+  "dependency": ["-MD", "-MF", "{depfile}"],
+  "compile_only": ["-c", "{source}", "-o", "{object}"],
+  "masked_call": {"flag": "-DAETHER_HVM_MASKED=1", "affected": [[13, 0, 13, 3], [14, 0, 14, 2]]},
+  "link": {
+    "linux": ["-shared", "-o", "{output}", "{objects}"],
+    "macos": ["-shared", "-o", "{output}", "{objects}"]
+  }
+}

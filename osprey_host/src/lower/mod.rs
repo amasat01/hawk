@@ -719,13 +719,15 @@ fn build_of(settings: &Settings, cards: &Cards, target: Target) -> Result<Build,
     })
 }
 
-/// The unit's contract JSON with its machine member replaced by the facts answer (less the architecture and the compile command a device answer names).
+/// The unit's contract JSON with its machine member replaced by the facts answer (less the architecture and the compile commands an answer names).
 fn with_facts(unit: &Unit, facts: &str) -> Result<String, Refusal> {
     let mut top = Contract::parse(&unit.to_json())?.0;
     let mut machine = Contract::parse(facts)?.0;
     if let aether_writers::contract::Json::Obj(stated) = &mut machine {
         // the architecture is the lowering's to read; the writers' machine record does not hold it
-        stated.retain(|(key, _)| key != "device_arch" && key != "device_build");
+        stated.retain(|(key, _)| {
+            !["device_arch", "device_build", "host_build"].contains(&key.as_str())
+        });
     }
     let aether_writers::contract::Json::Obj(members) = &mut top else {
         return Err(fault("a unit that is not an object"));

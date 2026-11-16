@@ -21,23 +21,25 @@ Every file with its line count (this file excluded):
     145  osprey_host/ci/gate.sh
       1  osprey_host/clippy.toml
      33  osprey_host/corpus_accepted.tsv
-     10  osprey_host/facts/arm.json
+     19  osprey_host/facts/arm.json
      20  osprey_host/facts/build.json
       6  osprey_host/facts/cpu.json
       8  osprey_host/facts/cuda.json
      35  osprey_host/facts/cuda_build.json
       8  osprey_host/facts/cuda_image.json
-     12  osprey_host/facts/x86.json
+     22  osprey_host/facts/host_build.json
+     27  osprey_host/facts/x86.json
     127  osprey_host/include/osprey_host.h
     270  osprey_host/loader/loader.c
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
-   3223  osprey_host/src/bin/kreplay.rs
+   3224  osprey_host/src/bin/kreplay.rs
    1235  osprey_host/src/bin/kreplay/derived.rs
    1314  osprey_host/src/bin/kreplay/meta.rs
-   1454  osprey_host/src/bin/treplay.rs
-    795  osprey_host/src/facts.rs
-    392  osprey_host/src/lib.rs
+   1459  osprey_host/src/bin/treplay.rs
+    840  osprey_host/src/facts.rs
+    194  osprey_host/src/host_build.rs
+    393  osprey_host/src/lib.rs
     162  osprey_host/src/lower/active.rs
      51  osprey_host/src/lower/blocks.rs
      35  osprey_host/src/lower/boxed.rs
@@ -50,7 +52,7 @@ Every file with its line count (this file excluded):
     334  osprey_host/src/lower/links.rs
     707  osprey_host/src/lower/meta_c.rs
     847  osprey_host/src/lower/meta_fill.rs
-    829  osprey_host/src/lower/mod.rs
+    831  osprey_host/src/lower/mod.rs
     120  osprey_host/src/lower/placed.rs
    1681  osprey_host/src/lower/request.rs
     225  osprey_host/src/lower/segment.rs
@@ -58,21 +60,24 @@ Every file with its line count (this file excluded):
     558  osprey_host/src/lower/stages.rs
     740  osprey_host/src/lower/unit_meta.rs
     246  osprey_host/src/lower/warp.rs
+   3888  osprey_host/tests/data/host_argv_old.jsonl
       8  osprey_host/tests/data/meta_calls.jsonl
       8  osprey_host/tests/data/units_small.jsonl
     240  osprey_host/tests/derived.rs
     186  osprey_host/tests/dispatch_k.rs
      72  osprey_host/tests/events.rs
-    327  osprey_host/tests/facts.rs
+    332  osprey_host/tests/facts.rs
      45  osprey_host/tests/facts_oracle.rs
+    160  osprey_host/tests/host_build.rs
      86  osprey_host/tests/link_rules.rs
     524  osprey_host/tests/meta_c.rs
-    330  osprey_host/tests/set_text.rs
+    382  osprey_host/tests/set_text.rs
     173  osprey_host/tests/stage_records.rs
     174  osprey_host/tests/table.rs
      47  osprey_host/tests/treplay.rs
      12  osprey_host/tools/cc
     134  osprey_host/tools/cost_host.py
+    210  osprey_host/tools/host_argv_old.py
     630  osprey_host/tools/host_plugin.py
     970  osprey_host/tools/kroute.py
     101  osprey_host/tools/merge_host.py

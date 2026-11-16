@@ -234,6 +234,7 @@ fn recorded_machine(unit: &Unit, contract: &Contract) -> (facts::Stated, &'stati
         caches: unit.machine.caches.clone(),
         host_profile: host_profile.map(String::from),
         device_arch: None,
+        ..Default::default()
     };
     (stated, COMPILER_IDENTITIES[gcc as usize])
 }
@@ -256,6 +257,10 @@ fn facts_machine(unit: &Unit, contract: &Contract) -> Result<Machine, String> {
     slot.1 = Contract::parse(&answer)
         .map_err(|refusal| refusal.reason)?
         .0;
+    // the build commands are the caller's, not a member of the typed machine record
+    if let Json::Obj(stated) = &mut slot.1 {
+        stated.retain(|(key, _)| key != "host_build");
+    }
     Unit::from_value(&top)
         .map(|read| read.machine)
         .map_err(|refusal| refusal.reason)

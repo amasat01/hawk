@@ -42,7 +42,12 @@ fn answer(
     probe: &Probe,
     stated: &Stated,
 ) -> Result<String, String> {
-    ask_facts(dir, target, compiler, probe, stated).map_err(String::from)
+    let text = ask_facts(dir, target, compiler, probe, stated).map_err(String::from)?;
+    // the build commands are tested in host_build.rs; the machine record is what these tests read
+    Ok(match text.find(r#","host_build":"#) {
+        Some(at) => format!("{}}}", &text[..at]),
+        None => text,
+    })
 }
 
 /// The answer for the host target, or the refusal.

@@ -267,6 +267,7 @@ fn facts_answer(spec: &J, cache: &mut HashMap<String, String>) -> Result<String,
         caches,
         host_profile: profile,
         device_arch: None,
+        ..Default::default()
     };
     let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/facts"));
     let answer = facts::answer(

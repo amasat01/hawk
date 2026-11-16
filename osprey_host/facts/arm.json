@@ -6,5 +6,14 @@
   "default_profile": {"gcc": "native-vector-math", "other": "native-vector-math"},
   "fusion_host": {
     "neon": {"regs_base": 0, "regs_file": 32, "launch_us": null, "plane_us_per_byte": null, "local_over_plane": null}
+  },
+  "host_flags": {
+    "native": ["-mcpu=native"],
+    "portable": [],
+    "vector_math": {
+      "gcc": {"native-vector-math": ["-fno-trapping-math", "-fno-thread-jumps", "-DAETHER_HOST_VECTOR_MATH"]},
+      "other": {"native-vector-math": []}
+    },
+    "masked_call": false
   }
 }

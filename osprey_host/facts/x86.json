@@ -8,5 +8,20 @@
     "sse2": {"regs_base": 0, "regs_file": 16, "launch_us": null, "plane_us_per_byte": null, "local_over_plane": null},
     "avx2": {"regs_base": 0, "regs_file": 16, "launch_us": null, "plane_us_per_byte": null, "local_over_plane": null},
     "avx512": {"regs_base": 0, "regs_file": 32, "launch_us": null, "plane_us_per_byte": null, "local_over_plane": null}
+  },
+  "host_flags": {
+    "native": ["-march=native", "-mprefer-vector-width=512"],
+    "portable": ["-march=x86-64-v2"],
+    "vector_math": {
+      "gcc": {
+        "native-vector-math": ["-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"],
+        "native-vector-math-nofma": ["-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
+      },
+      "other": {
+        "native-vector-math": ["-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"],
+        "native-vector-math-nofma": ["-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
+      }
+    },
+    "masked_call": true
   }
 }

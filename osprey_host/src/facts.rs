@@ -3,6 +3,7 @@
 //! the select weights; the probe states the instruction set and the cache sizes. The answer is the JSON of the typed
 //! contract's `machine` record, which the caller hands back to a render without reading it. A file that does not match its
 //! schema is refused by name at load.
+use crate::host_build;
 use aether_writers::contract::types::Caches;
 use aether_writers::contract::{Contract, Json};
 pub use raptor_wings::chain::FusionRow;
@@ -20,7 +21,8 @@ pub struct Probe {
 }
 
 /// A machine the caller states, for a build that is not for the machine running: every field absent means the probed machine's
-/// value (or the card's default). The host target takes `isa`, `caches` and `host_profile`; the cuda target takes
+/// value (or the card's default). The host target takes `isa`, `caches`, `host_profile` and the build settings `opt_level`, `gcc_release` and
+/// `masked_call_witness`; the cuda target takes
 /// `device_arch`.
 #[derive(Default)]
 pub struct Stated {
@@ -34,6 +36,12 @@ pub struct Stated {
     pub host_profile: Option<String>,
     /// The device architecture (for example `sm_61`), which selects the rows of the device card.
     pub device_arch: Option<String>,
+    /// The optimisation level of the host build (`O0` to `O3`), in place of the default.
+    pub opt_level: Option<String>,
+    /// The release of a GCC compiler as `major.minor`, in place of the one its identity's version line ends with.
+    pub gcc_release: Option<String>,
+    /// What the masked-call witness did on the compiler: `fixed`, `miscompile` or `unrun`; none counts as `unrun`.
+    pub masked_call_witness: Option<String>,
 }
 
 /// Why a facts question failed: the caller asked something that cannot be answered (a malformed stated machine, an unknown target
@@ -62,8 +70,8 @@ impl From<Failed> for String {
     }
 }
 
-/// The stated machine of its JSON record (`isa`, `l1d_bytes`, `l2_bytes`, `cache_source`, `host_profile`, `device_arch`, each
-/// optional); a key outside these, a value of the wrong kind and a cache record with a part missing are refused by name.
+/// The stated machine of its JSON record (`isa`, `l1d_bytes`, `l2_bytes`, `cache_source`, `host_profile`, `device_arch`, `opt_level`, `gcc_release`,
+/// `masked_call_witness`, each optional); a key outside these, a value of the wrong kind and a cache record with a part missing are refused by name.
 pub fn stated_from_json(text: &str) -> Result<Stated, Failed> {
     read_stated(text).map_err(Failed::Bad)
 }
@@ -78,6 +86,9 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         "cache_source",
         "host_profile",
         "device_arch",
+        "opt_level",
+        "gcc_release",
+        "masked_call_witness",
     ];
     let record = Contract::parse(text)
         .map_err(|e| format!("stated machine: {e}"))?
@@ -119,6 +130,9 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         caches,
         host_profile: name("host_profile")?,
         device_arch: name("device_arch")?,
+        opt_level: name("opt_level")?,
+        gcc_release: name("gcc_release")?,
+        masked_call_witness: name("masked_call_witness")?,
     })
 }
 
@@ -151,7 +165,7 @@ struct IsaCard {
 }
 
 /// Reads and parses one data file of the facts directory.
-fn read_file(dir: &Path, file: &str) -> Result<Json, String> {
+pub(crate) fn read_file(dir: &Path, file: &str) -> Result<Json, String> {
     let text =
         std::fs::read_to_string(dir.join(file)).map_err(|e| format!("cannot read {file}: {e}"))?;
     Ok(Contract::parse(&text)
@@ -160,7 +174,11 @@ fn read_file(dir: &Path, file: &str) -> Result<Json, String> {
 }
 
 /// The members of a card as a closed set: a key outside `keys` is refused by name.
-fn closed<'a>(card: &'a Json, file: &str, keys: &[&str]) -> Result<&'a [(String, Json)], String> {
+pub(crate) fn closed<'a>(
+    card: &'a Json,
+    file: &str,
+    keys: &[&str],
+) -> Result<&'a [(String, Json)], String> {
     let Json::Obj(members) = card else {
         return Err(format!("{file} is not an object"));
     };
@@ -174,13 +192,13 @@ fn closed<'a>(card: &'a Json, file: &str, keys: &[&str]) -> Result<&'a [(String,
 }
 
 /// The value of a key a card must hold.
-fn member<'a>(card: &'a Json, file: &str, key: &str) -> Result<&'a Json, String> {
+pub(crate) fn member<'a>(card: &'a Json, file: &str, key: &str) -> Result<&'a Json, String> {
     card.get(key)
         .ok_or_else(|| format!("{file} lacks the key {key}"))
 }
 
 /// A key of a card that must be a text.
-fn text_of(card: &Json, file: &str, key: &str) -> Result<String, String> {
+pub(crate) fn text_of(card: &Json, file: &str, key: &str) -> Result<String, String> {
     match member(card, file, key)? {
         Json::Str(text) => Ok(text.clone()),
         _ => Err(format!("{file}: {key} is not a text")),
@@ -196,7 +214,7 @@ fn flag_of(card: &Json, file: &str, key: &str) -> Result<bool, String> {
 }
 
 /// A key of a card that must be a list of texts.
-fn names_of(card: &Json, file: &str, key: &str) -> Result<Vec<String>, String> {
+pub(crate) fn names_of(card: &Json, file: &str, key: &str) -> Result<Vec<String>, String> {
     let Json::Arr(items) = member(card, file, key)? else {
         return Err(format!("{file}: {key} is not a list"));
     };
@@ -296,6 +314,7 @@ fn load_isa(dir: &Path, file: &str, isa: &str) -> Result<IsaCard, String> {
         "vector_math_needs_gcc",
         "default_profile",
         "fusion_host",
+        "host_flags",
     ];
     closed(&card, file, &keys)?;
     if text_of(&card, file, "isa")? != isa {
@@ -387,6 +406,16 @@ fn identity_is_gcc(identity: &str) -> Result<bool, Failed> {
     }
     let line = parts[1].to_lowercase();
     Ok((line.contains("gcc") || line.contains("g++")) && !line.contains("clang"))
+}
+
+/// The release a compiler identity's version line ends with, as `major.minor` (`g++ (GCC) 13.2.0` gives `13.2`; a major alone gives
+/// minor 0, as the compiler's own macros did); none when the line does not end with a number.
+fn identity_release(identity: &str) -> Option<String> {
+    let last = identity.split(" || ").nth(1)?.split_whitespace().last()?;
+    let mut parts = last.split('.');
+    let (major, minor) = (parts.next()?, parts.next().unwrap_or("0"));
+    let number = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    (number(major) && number(minor)).then(|| format!("{major}.{minor}"))
 }
 
 /// A number as the wire writes it.
@@ -483,6 +512,22 @@ fn host_machine(
     ];
     members.extend(caches_json(&stated.caches.clone().or(probe.caches.clone())));
     members.push(("select_weight".into(), weights_json(cpu.select_weight)));
+    let release = stated
+        .gcc_release
+        .clone()
+        .or_else(|| identity_release(compiler));
+    let settings = host_build::Settings {
+        profile,
+        gcc,
+        opt_level: stated.opt_level.as_deref(),
+        gcc_release: release.as_deref(),
+        masked_call_witness: stated.masked_call_witness.as_deref(),
+    };
+    let vector = cpu.vector_math_profiles.contains(profile);
+    members.push((
+        "host_build".into(),
+        host_build::host_build(dir, file, vector, &settings)?,
+    ));
     Ok(Json::Obj(members))
 }
 
