@@ -259,9 +259,10 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             }],
             links: vec![Link {
                 slot: 1,
-                source: DerivedSource::ParamGrad,
+                what: LinkWhat::PrimalSlot,
                 of_slot: Some(0),
                 reduced: true,
+                form: LinkForm::Grad,
             }],
             tape_rows: 1,
             ..Derived::default()
@@ -319,7 +320,10 @@ fn every_closed_set_and_name_is_the_headers() {
         WideLayout,
         DispatchStrategy,
         StepsRegime,
-        ReduceOp
+        ReduceOp,
+        DerivedRole,
+        LinkWhat,
+        LinkForm
     );
     for (bit, name) in SLOT_FLAGS.iter().chain(&FINISH_FLAGS) {
         assert_eq!(

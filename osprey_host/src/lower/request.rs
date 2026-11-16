@@ -1456,8 +1456,9 @@ mod tests {
 
     #[test]
     fn derived_kernels_round_trip_and_two_of_one_name_and_role_are_refused() {
-        use super::super::derived::{DerivedFacts, LinkFact};
-        use super::super::unit_meta::{DerivedRole, DerivedSource};
+        use super::super::derived::DerivedFacts;
+        use super::super::links::LinkFact;
+        use super::super::unit_meta::{DerivedRole, LinkForm, LinkWhat};
         let kernel = |role| DerivedKernel {
             request: KernelRequest {
                 body: Body::Plain(Member {
@@ -1474,7 +1475,8 @@ mod tests {
             facts: DerivedFacts {
                 links: vec![LinkFact {
                     slot: "bar_x".into(),
-                    source: DerivedSource::ParamGrad,
+                    what: LinkWhat::PrimalSlot,
+                    form: LinkForm::Grad,
                     of: Some("x".into()),
                     reduced: true,
                 }],

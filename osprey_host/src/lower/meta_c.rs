@@ -452,9 +452,10 @@ fn derived(out: &mut Out, derived: Option<&Derived>) -> String {
         .map(|(at, l)| {
             let members = [
                 ("slot", l.slot.to_string()),
-                ("source", l.source.c_name().into()),
+                ("what", l.what.c_name().into()),
                 ("of_slot", index(l.of_slot)),
                 ("reduced", format!("{}u", flag(l.reduced))),
+                ("form", l.form.c_name().into()),
             ];
             out.record("eg_unit_link", &format!("dl{at}"), &members)
         })
@@ -468,14 +469,11 @@ fn derived(out: &mut Out, derived: Option<&Derived>) -> String {
         ("steps_slot", index(d.steps_slot)),
         ("tape_on_slot", index(d.tape_on_slot)),
         ("time0_slot", index(d.time0_slot)),
-        ("tau_slot", index(d.tau_slot)),
         ("fused_steps_slot", index(d.fused_steps_slot)),
         ("n_links", links.len().to_string()),
-        ("n_refined", "0".into()),
         ("reserved0", "0".into()),
         ("taped", out.pointers("eg_unit_taped", "taped", &taped)),
         ("links", out.pointers("eg_unit_link", "links", &links)),
-        ("refined", "NULL".into()),
     ];
     format!("&{}", out.record("eg_unit_derived", "derived", &members))
 }

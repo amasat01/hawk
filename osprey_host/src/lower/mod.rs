@@ -15,6 +15,7 @@ mod chain;
 pub mod derived;
 mod fused;
 pub mod image;
+pub mod links;
 pub mod meta_c;
 mod meta_fill;
 mod placed;

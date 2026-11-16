@@ -586,23 +586,28 @@ closed! {
     }
 }
 closed! {
-    /// Where a slot of a derived unit comes from.
-    pub enum DerivedSource {
-        /** The primal's slot, unchanged. */ Primal = 0 => "EG_SRC_PRIMAL",
-        /** The adjoint of a state, read at this step's parity. */ StateAdjointIn = 1 => "EG_SRC_STATE_ADJOINT_IN",
-        /** The next-step adjoint of a state. */ StateAdjointOut = 2 => "EG_SRC_STATE_ADJOINT_OUT",
-        /** The accumulated gradient of a parameter. */ ParamGrad = 3 => "EG_SRC_PARAM_GRAD",
-        /** The tape rows of a primal slot. */ Taped = 4 => "EG_SRC_TAPED",
-        /** A step plane. */ Steps = 5 => "EG_SRC_STEPS",
-        /** An event multiplier of a refine run. */ Event = 6 => "EG_SRC_EVENT",
-        /** The start copy of a time plane. */ Time0 = 7 => "EG_SRC_TIME0",
-        /** A refine unit's value of an event at the candidate time. */ Guard = 8 => "EG_SRC_GUARD",
-        /** That value's derivative in the candidate time. */ GuardDot = 9 => "EG_SRC_GUARD_DOT",
-        /** A state at the candidate time. */ Refined = 10 => "EG_SRC_REFINED",
-        /** That state's derivative in the candidate time. */ RefinedDot = 11 => "EG_SRC_REFINED_DOT",
-        /** The seed of the candidate-time derivative. */ TauSeed = 12 => "EG_SRC_TAU_SEED",
-        /** The guard's gradient in a state. */ StateGrad = 13 => "EG_SRC_STATE_GRAD",
-        /** The length of the accepted step. */ TimeStep = 14 => "EG_SRC_TIME_STEP",
+    /// What quantity a link of a derived unit refers to.
+    pub enum LinkWhat {
+        /** The primal's slot. */ PrimalSlot = 0 => "EG_WHAT_PRIMAL_SLOT",
+        /** The start copy of the primal's time plane. */ Time0 = 1 => "EG_WHAT_TIME0",
+        /** A step plane. */ Steps = 2 => "EG_WHAT_STEPS",
+        /** The candidate or located time inside the stop step. */ Tau = 3 => "EG_WHAT_TAU",
+        /** The length of the accepted step. */ TimeStep = 4 => "EG_WHAT_TIME_STEP",
+        /** An event guard, zero at the crossing. */ Guard = 5 => "EG_WHAT_GUARD",
+        /** The tape rows of a primal state. */ TapeRow = 6 => "EG_WHAT_TAPE_ROW",
+        /** A primal state at the candidate time. */ Refined = 7 => "EG_WHAT_REFINED",
+    }
+}
+closed! {
+    /// In which form a derived unit holds what a link refers to.
+    pub enum LinkForm {
+        /** The quantity itself. */ Value = 0 => "EG_FORM_VALUE",
+        /** Its derivative in the candidate time. */ Dot = 1 => "EG_FORM_DOT",
+        /** The cotangent arriving at it. */ AdjointIn = 2 => "EG_FORM_ADJOINT_IN",
+        /** The unit's output cotangent of it. */ AdjointOut = 3 => "EG_FORM_ADJOINT_OUT",
+        /** An accumulated gradient. */ Grad = 4 => "EG_FORM_GRAD",
+        /** A plane filled with ones. */ Seed = 5 => "EG_FORM_SEED",
+        /** Written by the unit, read by nobody. */ Discard = 6 => "EG_FORM_DISCARD",
     }
 }
 record! {
@@ -617,16 +622,18 @@ record! {
     }
 }
 record! {
-    /// One slot of a derived unit and its source.
+    /// One slot of a derived unit: what it refers to and in which form.
     pub struct Link {
         /// The slot in this unit.
         pub slot: usize,
-        /// Where it comes from.
-        pub source: DerivedSource,
+        /// What it refers to.
+        pub what: LinkWhat,
         /// The slot it is of, absent for none.
         pub of_slot: Option<usize>,
-        /// Whether a parameter's gradient is summed over samples.
+        /// Whether a gradient is summed over samples.
         pub reduced: bool,
+        /// The form the unit holds it in.
+        pub form: LinkForm,
     }
 }
 record! {
@@ -646,13 +653,11 @@ record! {
         pub tape_on_slot: Option<usize>,
         /// The time plane's start copy.
         pub time0_slot: Option<usize>,
-        /// The per-sample step of a refine run.
-        pub tau_slot: Option<usize>,
         /// The word of steps a fused unit runs.
         pub fused_steps_slot: Option<usize>,
         /// The taped planes.
         pub taped: Vec<Taped>,
-        /// The slots' sources.
+        /// The slots' links.
         pub links: Vec<Link>,
     }
 }

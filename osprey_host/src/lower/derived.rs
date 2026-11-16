@@ -1,13 +1,12 @@
 //! The derived units of a kernel: a taping twin or a reverse unit of a primal kernel. The caller states, by slot name, what each
 //! derived unit is to the primal (its tape, its reserved slots, where each slot comes from); the library resolves the names to the
 //! slot indices of the units it lowers, range-checks everything stated, and writes the record into the unit's meta.
+use super::links::{links_of, role_has_rows, LinkFact};
 use super::request::{
     flag_of, int_of, list_of, member_of, name_of, read_part, text_of, Body, KernelRequest, Keys,
     Member, Settings,
 };
-use super::unit_meta::{
-    Derived, DerivedRole, DerivedSource, Link, SlotRole, Taped, UnitMeta, WireDtype,
-};
+use super::unit_meta::{Derived, DerivedRole, LinkForm, LinkWhat, Taped, UnitMeta};
 use aether_writers::contract::Json;
 use aether_writers::refuse::{bad, not_written, Refusal};
 
@@ -18,19 +17,6 @@ pub struct TapedPlane {
     pub plane: String,
     /// The rows of one recorded step it takes.
     pub rows: i64,
-}
-
-/// One slot of the derived unit and where it comes from, by name.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LinkFact {
-    /// The slot's name in the derived unit.
-    pub slot: String,
-    /// Where it comes from.
-    pub source: DerivedSource,
-    /// The primal's slot it is of (a step plane names a slot of the taping twin); none where the source has no slot.
-    pub of: Option<String>,
-    /// Whether a parameter's gradient is summed over samples.
-    pub reduced: bool,
 }
 
 /// What the caller states of a derived unit; every slot is named, a slot left out is absent.
@@ -48,8 +34,6 @@ pub struct DerivedFacts {
     pub tape_on: Option<String>,
     /// The start copy of the time plane.
     pub time0: Option<String>,
-    /// The per-sample step of a refine run.
-    pub tau: Option<String>,
     /// The word of steps a fused unit runs.
     pub fused_steps: Option<String>,
     /// The slots' sources.
@@ -127,7 +111,8 @@ impl DerivedKernel {
                 let mut keys = Keys::of(one, "links")?;
                 let link = LinkFact {
                     slot: text_of(keys.req("slot")?, "slot")?,
-                    source: member_of(DerivedSource::ALL, keys.req("source")?, "source")?,
+                    what: member_of(LinkWhat::ALL, keys.req("what")?, "what")?,
+                    form: member_of(LinkForm::ALL, keys.req("form")?, "form")?,
                     of: name_opt(&mut keys, "of")?,
                     reduced: keys
                         .opt("reduced")
@@ -159,7 +144,6 @@ impl DerivedKernel {
             steps: name_opt(&mut keys, "steps_slot")?,
             tape_on: name_opt(&mut keys, "tape_on")?,
             time0: name_opt(&mut keys, "time0")?,
-            tau: name_opt(&mut keys, "tau")?,
             fused_steps: name_opt(&mut keys, "fused_steps")?,
             links,
         };
@@ -190,7 +174,6 @@ impl DerivedKernel {
             ("steps_slot", &f.steps),
             ("tape_on", &f.tape_on),
             ("time0", &f.time0),
-            ("tau", &f.tau),
             ("fused_steps", &f.fused_steps),
         ] {
             if let Some(name) = name {
@@ -220,7 +203,8 @@ impl DerivedKernel {
                     .map(|l| {
                         let mut one = vec![
                             ("slot".to_string(), text(&l.slot)),
-                            ("source".into(), name_of(&l.source)),
+                            ("what".into(), name_of(&l.what)),
+                            ("form".into(), name_of(&l.form)),
                         ];
                         if let Some(of) = &l.of {
                             one.push(("of".into(), text(of)))
@@ -260,6 +244,12 @@ fn refuse(kernel: &str, member: &str, why: impl std::fmt::Display) -> Refusal {
 pub(super) fn resolve(kernel: &Stated, own: &UnitMeta, at: &Context) -> Result<Derived, Refusal> {
     let (name, f) = (kernel.name.as_str(), &kernel.facts);
     let twin = matches!(kernel.role, DerivedRole::Tape | DerivedRole::TapeFused);
+    if !role_has_rows(kernel.role) {
+        return Err(not_written(format!(
+            "derived kernel {name}: the role {:?} has no link rows in the library",
+            kernel.role
+        )));
+    }
     let mine = |member: &str, slot: &Option<String>| -> Result<Option<usize>, Refusal> {
         slot.as_deref()
             .map(|s| {
@@ -272,16 +262,14 @@ pub(super) fn resolve(kernel: &Stated, own: &UnitMeta, at: &Context) -> Result<D
         mine("steps", &f.steps)?,
         mine("tape_on", &f.tape_on)?,
     );
-    let (time0_slot, tau_slot, fused_steps_slot) = (
+    let (time0_slot, fused_steps_slot) = (
         mine("time0", &f.time0)?,
-        mine("tau", &f.tau)?,
         mine("fused_steps", &f.fused_steps)?,
     );
     let mut named: Vec<(&str, usize)> = [
         ("tape", tape_slot),
         ("steps", steps_slot),
         ("tape_on", tape_on_slot),
-        ("tau", tau_slot),
         ("fused_steps", fused_steps_slot),
     ]
     .into_iter()
@@ -325,7 +313,6 @@ pub(super) fn resolve(kernel: &Stated, own: &UnitMeta, at: &Context) -> Result<D
         steps_slot,
         tape_on_slot,
         time0_slot,
-        tau_slot,
         fused_steps_slot,
         taped,
         links,
@@ -393,210 +380,10 @@ fn taped_rows(
     Ok(out)
 }
 
-/// The slots the unit's own record names as the runtime's: the finish counter and the launch's active map and count.
-fn runtime_slots(unit: &UnitMeta) -> Vec<usize> {
-    let finish = unit.finish.as_ref().map(|f| f.counter_slot);
-    [
-        finish,
-        unit.launch.active_map_slot,
-        unit.launch.active_count_slot,
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
-}
-
-/// Checks a time-step link: it is of a uniform or per-sample slot of the primal with a real element type.
-fn time_step_of(name: &str, link: &LinkFact, primal: &UnitMeta) -> Result<(), Refusal> {
-    let found = link
-        .of
-        .as_deref()
-        .and_then(|of| slot_in(primal, of).map(|at| &primal.body.slots[at]));
-    match found {
-        Some(s)
-            if matches!(s.role, SlotRole::Uniform | SlotRole::PerSample)
-                && s.dtype == WireDtype::Real =>
-        {
-            Ok(())
-        }
-        _ => Err(refuse(
-            name,
-            "links",
-            format!(
-                "the time step {} is of a uniform or per-sample real slot of the primal",
-                link.slot
-            ),
-        )),
-    }
-}
-
-/// The slot links of the unit, checked against the role.
-fn links_of(
-    kernel: &Stated,
-    own: &UnitMeta,
-    at: &Context,
-    time0_slot: Option<usize>,
-    stated: &[LinkFact],
-) -> Result<Vec<Link>, Refusal> {
-    let name = kernel.name.as_str();
-    let twin = matches!(kernel.role, DerivedRole::Tape | DerivedRole::TapeFused);
-    let mut out = vec![];
-    let mut time0s = 0;
-    let mut steps_of_time = 0;
-    let runtime_owned = runtime_slots(own);
-    for link in stated {
-        let slot = slot_in(own, &link.slot).unwrap_or(0);
-        if runtime_owned.contains(&slot) {
-            return Err(refuse(
-                name,
-                "links",
-                format!("{} is a slot the runtime owns (the finish counter or the active set) and takes no link", link.slot),
-            ));
-        }
-        if matches!(
-            link.source,
-            DerivedSource::Event | DerivedSource::Guard | DerivedSource::GuardDot
-        ) {
-            return Err(not_written(format!("derived kernel {name}: links: the slot {} is an event value ({:?}); the library has no event list", link.slot, link.source)));
-        }
-        if link.reduced && link.source != DerivedSource::ParamGrad {
-            return Err(refuse(
-                name,
-                "links",
-                format!("{} is reduced but is not a parameter gradient", link.slot),
-            ));
-        }
-        if twin && !matches!(link.source, DerivedSource::Primal | DerivedSource::Time0) {
-            return Err(refuse(
-                name,
-                "links",
-                format!(
-                    "a taping twin's slot {} comes from {:?}",
-                    link.slot, link.source
-                ),
-            ));
-        }
-        if link.source == DerivedSource::Steps
-            && !matches!(
-                own.body.slots[slot].dtype,
-                WireDtype::Int64 | WireDtype::Int32 | WireDtype::Uint32
-            )
-        {
-            return Err(refuse(
-                name,
-                "links",
-                format!("the step plane {} is not an integer", link.slot),
-            ));
-        }
-        if link.source == DerivedSource::Time0 {
-            time0s += 1;
-            if twin && Some(slot) != time0_slot {
-                return Err(refuse(
-                    name,
-                    "links",
-                    format!("{} is a start copy but is not the time0 slot", link.slot),
-                ));
-            }
-        }
-        if link.source == DerivedSource::TimeStep {
-            steps_of_time += 1;
-            if kernel.role != DerivedRole::RefineNewton {
-                return Err(refuse(
-                    name,
-                    "links",
-                    format!(
-                        "{} is a time step, which only a refine-newton unit has",
-                        link.slot
-                    ),
-                ));
-            }
-            time_step_of(name, link, at.primal)?;
-        }
-        let of_slot = match (&link.of, link.source) {
-            (Some(_), DerivedSource::TauSeed) => {
-                return Err(refuse(
-                    name,
-                    "links",
-                    format!("{} is a tau seed and names no slot it is of", link.slot),
-                ))
-            }
-            (None, DerivedSource::TauSeed | DerivedSource::Steps) => None,
-            (Some(of), DerivedSource::Steps) => {
-                Some(at.twin.and_then(|t| slot_in(t, of)).ok_or_else(|| {
-                    refuse(name, "links", format!("no step slot {of} in a taping twin"))
-                })?)
-            }
-            (Some(of), _) => {
-                let found = slot_in(at.primal, of).ok_or_else(|| {
-                    refuse(name, "links", format!("the primal has no slot named {of}"))
-                })?;
-                let source_dtype = at.primal.body.slots[found].dtype;
-                let free = !matches!(
-                    link.source,
-                    DerivedSource::Primal
-                        | DerivedSource::StateAdjointIn
-                        | DerivedSource::StateAdjointOut
-                        | DerivedSource::Taped
-                        | DerivedSource::Time0
-                );
-                if link.source == DerivedSource::StateGrad
-                    && at.primal.body.slots[found].role != SlotRole::Mutable
-                {
-                    return Err(refuse(
-                        name,
-                        "links",
-                        format!("{of} is not a state of the primal"),
-                    ));
-                }
-                if !free && own.body.slots[slot].dtype != source_dtype {
-                    return Err(refuse(
-                        name,
-                        "links",
-                        format!("{} and {of} differ in element type", link.slot),
-                    ));
-                }
-                Some(found)
-            }
-            (None, _) => {
-                return Err(refuse(
-                    name,
-                    "links",
-                    format!("{} names no slot it is of", link.slot),
-                ))
-            }
-        };
-        out.push(Link {
-            slot,
-            source: link.source,
-            of_slot,
-            reduced: link.reduced,
-        });
-    }
-    if kernel.role == DerivedRole::RefineNewton && steps_of_time != 1 {
-        return Err(refuse(
-            name,
-            "links",
-            if steps_of_time == 0 {
-                "a refine kernel needs a declared step".to_string()
-            } else {
-                format!("a refine kernel has {steps_of_time} step slots, not one")
-            },
-        ));
-    }
-    if twin && time0s != usize::from(time0_slot.is_some()) {
-        return Err(refuse(
-            name,
-            "time0",
-            "a start copy is stated exactly when the twin has one TIME0 link",
-        ));
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lower::unit_meta::{Body, Slot, SlotRole};
+    use crate::lower::unit_meta::{Body, LinkForm, LinkWhat, Slot, SlotRole, WireDtype};
     use aether_writers::refuse::RefusalKind;
 
     /// A unit with the slots given as (name, element type, extents).
@@ -629,9 +416,10 @@ mod tests {
             ("c", real, &[]),
             ("t_0", real, &[]),
         ]);
-        let link = |slot: &str, source, of: &str| LinkFact {
+        let link = |slot: &str, what, of: &str| LinkFact {
             slot: slot.into(),
-            source,
+            what,
+            form: LinkForm::Value,
             of: Some(of.into()),
             reduced: false,
         };
@@ -651,10 +439,10 @@ mod tests {
             steps: Some("applied_steps".into()),
             time0: Some("t_0".into()),
             links: vec![
-                link("x", DerivedSource::Primal, "x"),
-                link("t", DerivedSource::Primal, "t"),
-                link("c", DerivedSource::Primal, "c"),
-                link("t_0", DerivedSource::Time0, "t"),
+                link("x", LinkWhat::PrimalSlot, "x"),
+                link("t", LinkWhat::PrimalSlot, "t"),
+                link("c", LinkWhat::PrimalSlot, "c"),
+                link("t_0", LinkWhat::Time0, "t"),
             ],
             ..DerivedFacts::default()
         };
@@ -710,9 +498,19 @@ mod tests {
         refused("tape", |k, _| k.facts.tape = None);
         refused("tape_rows", |k, _| k.facts.tape_rows = 3);
         refused("tape", |_, u| u.body.slots[3].shape = vec![41]);
+        // each check of the links is refused by name: reduced without a gradient, a triple that is no row of the role
         refused("links", |k, _| k.facts.links[0].reduced = true);
+        refused("links", |k, _| k.facts.links[0].form = LinkForm::AdjointIn);
+        refused("links", |k, _| k.facts.links[3].form = LinkForm::Grad);
         refused("links", |k, _| {
-            k.facts.links[0].source = DerivedSource::StateAdjointIn
+            k.facts.links.push(LinkFact {
+                slot: "t".into(),
+                what: LinkWhat::Time0,
+                form: LinkForm::Value,
+                of: Some("t".into()),
+                reduced: false,
+            });
+            k.facts.links.remove(1);
         });
         refused("links", |k, _| k.facts.links[3].slot = "c".into());
         refused("links", |k, _| k.facts.time0 = None);
@@ -724,15 +522,22 @@ mod tests {
             u.body.slots[0].dtype = WireDtype::Real;
             k.facts.links[0] = LinkFact {
                 slot: "applied_steps".into(),
-                source: DerivedSource::Steps,
+                what: LinkWhat::Steps,
+                form: LinkForm::Value,
                 of: None,
                 reduced: false,
             }
         });
-        let event = refused("links", |k, _| {
-            k.facts.links[0].source = DerivedSource::Event
+        let guard = refused("links", |k, _| {
+            k.role = DerivedRole::StateGuardVjp;
+            k.facts = DerivedFacts {
+                links: vec![k.facts.links[0].clone()],
+                ..DerivedFacts::default()
+            };
+            k.facts.links[0].what = LinkWhat::Guard;
+            k.facts.links[0].form = LinkForm::AdjointIn;
         });
-        assert_eq!(event.kind, RefusalKind::NotWritten);
+        assert_eq!(guard.kind, RefusalKind::NotWritten);
     }
 
     #[test]
@@ -745,13 +550,15 @@ mod tests {
             links: vec![
                 LinkFact {
                     slot: "bar_c".into(),
-                    source: DerivedSource::ParamGrad,
+                    what: LinkWhat::PrimalSlot,
+                    form: LinkForm::Grad,
                     of: Some("c".into()),
                     reduced: true,
                 },
                 LinkFact {
                     slot: "c".into(),
-                    source: DerivedSource::Primal,
+                    what: LinkWhat::PrimalSlot,
+                    form: LinkForm::Value,
                     of: Some("c".into()),
                     reduced: false,
                 },
@@ -768,11 +575,11 @@ mod tests {
         assert!(resolve(&kernel, &vjp, &at).is_err());
     }
 
-    /// A refine-newton unit over a primal with a state `x`, a uniform `dt` and an integer `n`, with the links given as (slot, source, of).
-    fn newton(
-        links: &[(&str, DerivedSource, Option<&str>)],
-        role: DerivedRole,
-    ) -> Result<Derived, Refusal> {
+    /// A link as (slot, what, form, of).
+    type Stated4<'a> = (&'a str, LinkWhat, LinkForm, Option<&'a str>);
+
+    /// A refine-newton unit over a primal with a state `x`, a uniform `dt` and an integer `n`, with the links given.
+    fn newton(links: &[Stated4], role: DerivedRole) -> Result<Derived, Refusal> {
         let real = WireDtype::Real;
         let mut primal = unit(&[
             ("x", real, &[]),
@@ -784,9 +591,10 @@ mod tests {
         let facts = DerivedFacts {
             links: links
                 .iter()
-                .map(|(slot, source, of)| LinkFact {
+                .map(|(slot, what, form, of)| LinkFact {
                     slot: slot.to_string(),
-                    source: *source,
+                    what: *what,
+                    form: *form,
                     of: of.map(String::from),
                     reduced: false,
                 })
@@ -810,14 +618,15 @@ mod tests {
     }
 
     #[test]
-    fn the_refine_sources_and_the_runtime_slots_are_checked_by_name() {
-        use DerivedSource::{Guard, GuardDot, Primal, StateGrad, TauSeed, TimeStep};
-        let ok = [("h", TimeStep, Some("dt")), ("tau", TauSeed, None)];
+    fn the_refine_links_and_the_runtime_slots_are_checked_by_name() {
+        use LinkForm::{AdjointIn, Discard, Value};
+        use LinkWhat::{Guard, PrimalSlot, Refined, Tau, TimeStep};
+        let step = ("h", TimeStep, Value, Some("dt"));
+        let ok = [step, ("tau", Tau, Value, None)];
         let done = newton(&ok, DerivedRole::RefineNewton).unwrap();
         assert_eq!(done.links[1].of_slot, None);
-        let why =
-            |links: &[(&str, DerivedSource, Option<&str>)], role| newton(links, role).unwrap_err();
-        let needs = why(&[("tau", TauSeed, None)], DerivedRole::RefineNewton);
+        let why = |links: &[Stated4], role| newton(links, role).unwrap_err();
+        let needs = why(&[("tau", Tau, Value, None)], DerivedRole::RefineNewton);
         assert!(
             needs
                 .reason
@@ -825,48 +634,63 @@ mod tests {
             "{}",
             needs.reason
         );
-        assert!(why(
-            &[("h", TimeStep, Some("dt")), ("w", TimeStep, Some("dt"))],
-            DerivedRole::RefineNewton
-        )
-        .reason
-        .contains("2 step slots"));
-        assert!(why(&ok, DerivedRole::StepVjp)
-            .reason
-            .contains("only a refine-newton unit"));
-        assert!(
-            why(&[("h", TimeStep, Some("x"))], DerivedRole::RefineNewton)
-                .reason
-                .contains("uniform or per-sample real")
-        );
-        assert!(
-            why(&[("h", TimeStep, Some("n"))], DerivedRole::RefineNewton)
-                .reason
-                .contains("uniform or per-sample real")
-        );
-        assert!(why(
-            &[("h", TimeStep, Some("dt")), ("tau", TauSeed, Some("x"))],
-            DerivedRole::RefineNewton
-        )
-        .reason
-        .contains("tau seed"));
-        for source in [Guard, GuardDot] {
-            let refused = why(
-                &[("h", TimeStep, Some("dt")), ("w", source, Some("x"))],
-                DerivedRole::RefineNewton,
-            );
-            assert_eq!(refused.kind, RefusalKind::NotWritten);
-        }
-        let grad = why(
-            &[("h", TimeStep, Some("dt")), ("w", StateGrad, Some("dt"))],
+        let two = why(
+            &[step, ("w", TimeStep, Value, Some("dt"))],
             DerivedRole::RefineNewton,
         );
-        assert!(grad.reason.contains("not a state"), "{}", grad.reason);
+        assert!(two.reason.contains("2 step slots"), "{}", two.reason);
+        // a triple that is no row of the role names the kernel, the slot and the three names
+        let row = why(&ok, DerivedRole::StepVjp);
+        assert!(
+            row.reason.contains(
+                "derived kernel k_newton: links: the slot h is (StepVjp, TimeStep, Value)"
+            ),
+            "{}",
+            row.reason
+        );
+        assert!(why(
+            &[step, ("tau", Tau, Discard, None)],
+            DerivedRole::RefineNewton
+        )
+        .reason
+        .contains("(RefineNewton, Tau, Discard)"));
+        let off = why(
+            &[("h", TimeStep, Value, Some("x"))],
+            DerivedRole::RefineNewton,
+        );
+        assert!(off.reason.contains("uniform or per-sample real"));
+        let int = why(
+            &[("h", TimeStep, Value, Some("n"))],
+            DerivedRole::RefineNewton,
+        );
+        assert!(int.reason.contains("uniform or per-sample real"));
+        let named = why(
+            &[step, ("tau", Tau, Value, Some("x"))],
+            DerivedRole::RefineNewton,
+        );
+        assert!(named.reason.contains("names no slot it is of"));
+        let kinds = why(
+            &[step, ("w", Refined, Value, Some("n"))],
+            DerivedRole::RefineNewton,
+        );
+        assert!(kinds.reason.contains("differ in element type"));
         assert!(newton(
-            &[("h", TimeStep, Some("dt")), ("w", StateGrad, Some("x"))],
+            &[step, ("w", Refined, Value, Some("x"))],
             DerivedRole::RefineNewton
         )
         .is_ok());
+        let guard = why(
+            &[step, ("w", Guard, Value, Some("x"))],
+            DerivedRole::RefineNewton,
+        );
+        assert_eq!(guard.kind, RefusalKind::NotWritten);
+        let none = why(
+            &[("w", PrimalSlot, Value, Some("x"))],
+            DerivedRole::RefineEntry,
+        );
+        assert_eq!(none.kind, RefusalKind::NotWritten);
+        assert!(none.reason.contains("RefineEntry"));
+        let _ = AdjointIn;
         // a slot the unit's own record names as the runtime's takes no link
         let (primal, mut own, _) = set();
         own.finish = Some(crate::lower::unit_meta::Finish {
@@ -879,7 +703,8 @@ mod tests {
             facts: DerivedFacts {
                 links: vec![LinkFact {
                     slot: "c".into(),
-                    source: Primal,
+                    what: PrimalSlot,
+                    form: Value,
                     of: Some("c".into()),
                     reduced: false,
                 }],

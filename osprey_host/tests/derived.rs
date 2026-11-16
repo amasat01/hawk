@@ -8,10 +8,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The members that tell two records apart, as `member=value` words; the pointers are left out.
-const MEMBERS: [&str; 7] = [
+const MEMBERS: [&str; 9] = [
     "slot",
     "of_slot",
-    "source",
+    "what",
+    "form",
+    "reduced",
     "role",
     "tape_on_slot",
     "fused_steps_slot",
@@ -36,7 +38,8 @@ fn records(file: &Path) -> BTreeMap<String, usize> {
             "row0",
             "rows",
             "of_slot",
-            "source",
+            "what",
+            "form",
             "reduced",
             "role",
             "of_unit",
@@ -46,10 +49,8 @@ fn records(file: &Path) -> BTreeMap<String, usize> {
             "steps_slot",
             "tape_on_slot",
             "time0_slot",
-            "tau_slot",
             "fused_steps_slot",
             "n_links",
-            "n_refined",
         ] {
             if let Some(at) = line.find(&format!("M({member}, ")) {
                 let value = line[at + member.len() + 4..]
@@ -165,12 +166,12 @@ fn the_rr_pend_set_is_one_table_that_compiles_and_links_with_one_self_check() {
         oracle,
         [
             "eg_unit_derived role=EG_DERIVED_TAPE tape_on_slot=10 fused_steps_slot=-1 n_links=7",
-            "eg_unit_link slot=7 of_slot=5 source=EG_SRC_PRIMAL",
-            "eg_unit_link slot=8 of_slot=6 source=EG_SRC_PRIMAL",
-            "eg_unit_link slot=9 of_slot=7 source=EG_SRC_PRIMAL"
+            "eg_unit_link slot=7 of_slot=5 what=EG_WHAT_PRIMAL_SLOT form=EG_FORM_VALUE reduced=0u",
+            "eg_unit_link slot=8 of_slot=6 what=EG_WHAT_PRIMAL_SLOT form=EG_FORM_VALUE reduced=0u",
+            "eg_unit_link slot=9 of_slot=7 what=EG_WHAT_PRIMAL_SLOT form=EG_FORM_VALUE reduced=0u"
         ]
     );
-    assert_eq!(mine, ["eg_unit_derived role=EG_DERIVED_TAPE_FUSED tape_on_slot=11 fused_steps_slot=7 n_links=7", "eg_unit_link slot=10 of_slot=7 source=EG_SRC_PRIMAL", "eg_unit_link slot=8 of_slot=5 source=EG_SRC_PRIMAL", "eg_unit_link slot=9 of_slot=6 source=EG_SRC_PRIMAL"]);
+    assert_eq!(mine, ["eg_unit_derived role=EG_DERIVED_TAPE_FUSED tape_on_slot=11 fused_steps_slot=7 n_links=7", "eg_unit_link slot=10 of_slot=7 what=EG_WHAT_PRIMAL_SLOT form=EG_FORM_VALUE reduced=0u", "eg_unit_link slot=8 of_slot=5 what=EG_WHAT_PRIMAL_SLOT form=EG_FORM_VALUE reduced=0u", "eg_unit_link slot=9 of_slot=6 what=EG_WHAT_PRIMAL_SLOT form=EG_FORM_VALUE reduced=0u"]);
     compiles(&ours, &door, &dir);
     let Some(eagle) = std::env::var_os("EAGLE_ROOT").map(PathBuf::from) else {
         return;

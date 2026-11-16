@@ -2,8 +2,9 @@
 //! with the list of derived kernels. The stated facts are converted from the reserved names the old build used (`tape`,
 //! `applied_steps`, `tape_on`, `<time>_0`, `bar_*`, `*_next`): a guess of this proof tool, not a rule of the library.
 use super::*;
-use meta::{DerivedRole, DerivedSource, SlotRole, WireDtype};
-use osprey_host::lower::derived::{DerivedFacts, DerivedKernel, LinkFact, TapedPlane};
+use meta::{DerivedRole, LinkForm, LinkWhat, SlotRole, WireDtype};
+use osprey_host::lower::derived::{DerivedFacts, DerivedKernel, TapedPlane};
+use osprey_host::lower::links::LinkFact;
 
 /// What one set of a call came to.
 enum Built {
@@ -80,15 +81,16 @@ fn twin_facts(
             continue;
         }
         let link = if Some(&s.name) == time0.as_ref() {
-            (DerivedSource::Time0, time.map(String::from))
+            (LinkWhat::Time0, time.map(String::from))
         } else if slot(primal, &s.name).is_some() {
-            (DerivedSource::Primal, Some(s.name.clone()))
+            (LinkWhat::PrimalSlot, Some(s.name.clone()))
         } else {
             return Err(format!("the twin's slot {} has no primal slot", s.name));
         };
         facts.links.push(LinkFact {
             slot: s.name.clone(),
-            source: link.0,
+            what: link.0,
+            form: LinkForm::Value,
             of: link.1,
             reduced: false,
         });
@@ -123,37 +125,46 @@ fn vjp_facts(
     for s in &own.body.slots {
         let n = s.name.as_str();
         let state = |x: &str| slot(primal, x).filter(|p| p.1.role == SlotRole::Mutable);
-        let (source, of, reduced) =
+        let (what, form, of) =
             if let Some(x) = n.strip_prefix("bar_").and_then(|r| r.strip_suffix("_next")) {
-                (DerivedSource::StateAdjointIn, Some(x.to_string()), false)
+                (
+                    LinkWhat::PrimalSlot,
+                    LinkForm::AdjointIn,
+                    Some(x.to_string()),
+                )
             } else if time.is_some_and(|t| n == format!("bar_{t}_0")) {
-                (DerivedSource::Time0, time.map(String::from), false)
+                (LinkWhat::Time0, LinkForm::Grad, time.map(String::from))
             } else if let Some(x) = n.strip_prefix("bar_") {
                 if state(x).is_some() {
-                    (DerivedSource::StateAdjointOut, Some(x.to_string()), false)
+                    (
+                        LinkWhat::PrimalSlot,
+                        LinkForm::AdjointOut,
+                        Some(x.to_string()),
+                    )
                 } else if slot(primal, x).is_some() {
-                    (DerivedSource::ParamGrad, Some(x.to_string()), true)
+                    (LinkWhat::PrimalSlot, LinkForm::Grad, Some(x.to_string()))
                 } else {
                     return Err(format!("the reverse unit's slot {n} has no primal"));
                 }
             } else if n == "applied_steps" {
                 (
-                    DerivedSource::Steps,
+                    LinkWhat::Steps,
+                    LinkForm::Value,
                     twin.and_then(|t| t.steps.clone()),
-                    false,
                 )
             } else if taped.iter().any(|t| t == n) {
-                (DerivedSource::Taped, Some(n.to_string()), false)
+                (LinkWhat::TapeRow, LinkForm::Value, Some(n.to_string()))
             } else if slot(primal, n).is_some() {
-                (DerivedSource::Primal, Some(n.to_string()), false)
+                (LinkWhat::PrimalSlot, LinkForm::Value, Some(n.to_string()))
             } else {
                 return Err(format!("the reverse unit's slot {n} has no primal"));
             };
         facts.links.push(LinkFact {
             slot: s.name.clone(),
-            source,
+            what,
+            form,
             of,
-            reduced,
+            reduced: form == LinkForm::Grad && what == LinkWhat::PrimalSlot,
         });
     }
     Ok(facts)
