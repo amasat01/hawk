@@ -486,6 +486,8 @@ struct Expected {
     test: String,
     /// The unit key of the per-unit corpus.
     ukey: String,
+    /// The broadcast pattern of the kernel the unit was written from: each gathered plane and its flag for each lane axis.
+    broadcast: Vec<(String, Vec<bool>)>,
 }
 
 /// The counts of the kernels written as a warp per lane.
@@ -817,6 +819,99 @@ fn unit_key(target: &str, inputs: &J) -> String {
     rcore::sha256::hex(mask_run(&mask_tmp(&text)).as_bytes())
 }
 
+/// The broadcast pattern a text record's kernel holds: the pairs of a plane name and its flags.
+fn recorded_pattern(rec: &J) -> Vec<(String, Vec<bool>)> {
+    let kernel = rec
+        .get("inputs")
+        .and_then(|i| i.get("lowered"))
+        .map(self::rec)
+        .and_then(|l| l.get("kernel"))
+        .map(self::rec);
+    let pairs = kernel
+        .and_then(|k| k.get("broadcast"))
+        .and_then(|b| b.get("d"))
+        .map_or(&[][..], J::arr);
+    pairs
+        .iter()
+        .filter_map(|pair| {
+            let flags = pair.arr().get(1)?.get("t")?.arr();
+            let flags = flags.iter().map(|f| matches!(f, J::Bool(true))).collect();
+            Some((text(pair.arr().first())?.to_string(), flags))
+        })
+        .collect()
+}
+
+/// Gives each kernel of the call the broadcast pattern its recorded units were written from, as the build call would pass it.
+fn recorded_broadcast(call: &mut J, expected: &[HashMap<(String, String), Vec<Expected>>; 2]) {
+    let id = call.get("call").and_then(J::str).unwrap_or("").to_string();
+    // the planes each written unit binds: the old build passed the call's whole pattern, the request names only planes its kernel has
+    let bound: Vec<(String, Vec<String>)> = call
+        .get("units")
+        .map_or(&[][..], J::arr)
+        .iter()
+        .filter_map(|u| {
+            let spec = u.get("sidecar")?.get("arg_spec")?.arr();
+            let names = spec.iter().filter_map(|a| a.arr().get(1)?.str());
+            Some((
+                u.get("unit")?.str()?.to_string(),
+                names.map(String::from).collect(),
+            ))
+        })
+        .collect();
+    let J::Obj(members) = call else { return };
+    for (_, value) in members.iter_mut().filter(|m| m.0 == "kernels") {
+        let J::Arr(kernels) = value else { continue };
+        for kernel in kernels {
+            let name = kernel
+                .get("name")
+                .and_then(J::str)
+                .unwrap_or("")
+                .to_string();
+            let pattern = expected
+                .iter()
+                .filter_map(|side| side.get(&(id.clone(), name.clone())))
+                .flatten()
+                .map(|e| &e.broadcast)
+                .find(|b| !b.is_empty());
+            let (Some(pattern), J::Obj(fields)) = (pattern, kernel) else {
+                continue;
+            };
+            let held = |plane: &str| {
+                bound
+                    .iter()
+                    .find(|(unit, _)| *unit == name)
+                    .is_none_or(|(_, names)| {
+                        names
+                            .iter()
+                            .any(|n| n == plane || *n == format!("dot_{plane}"))
+                    })
+            };
+            let pairs = pattern
+                .iter()
+                .filter(|(plane, _)| held(plane))
+                .map(|(plane, flags)| {
+                    let flags = flags.iter().map(|f| J::Bool(*f)).collect();
+                    J::Arr(vec![J::Str(plane.clone()), J::Arr(flags)])
+                });
+            fields.push(("broadcast".into(), J::Arr(pairs.collect())));
+        }
+    }
+}
+
+/// The broadcast pattern a kernel record holds, as the request states it.
+fn broadcast_of(kernel: &J) -> Vec<(String, Vec<bool>)> {
+    kernel
+        .get("broadcast")
+        .map_or(&[][..], J::arr)
+        .iter()
+        .filter_map(|pair| {
+            let flags = pair.arr().get(1)?.arr();
+            let flags = flags.iter().map(|f| matches!(f, J::Bool(true))).collect();
+            Some((pair.arr().first()?.str()?.to_string(), flags))
+        })
+        .collect()
+}
+
 /// The recorded texts for one target (`host` or `cuda`) of the wanted keys, read from a process's text records.
 fn texts_of(
     path: &Path,
@@ -856,6 +951,7 @@ fn texts_of(
                     Some((num(b.get("axis"))?, num(b.get("T"))?, num(b.get("stride"))?))
                 }),
             test: rec.get("test").and_then(J::str).unwrap_or("").to_string(),
+            broadcast: recorded_pattern(&rec),
             ukey: match rec.get("ukey").and_then(J::str) {
                 Some(k) if !k.is_empty() => k.to_string(),
                 _ => rec
@@ -978,6 +1074,7 @@ fn request_for(
         lane_space: lane_space_of(kernel),
         sink_axes: sink_axes_of(kernel),
         shared: shared_of(kernel),
+        broadcast: broadcast_of(kernel),
         facts,
     })
 }
@@ -1203,6 +1300,7 @@ fn replay(kpath: &Path, tpath: &Path, show: usize, tallies: &mut [Tally; 2]) {
     for line in BufReader::new(std::fs::File::open(kpath).unwrap()).lines() {
         let mut call = json::parse(&line.unwrap()).unwrap();
         name_as_built(&mut call);
+        recorded_broadcast(&mut call, &expected);
         tallies[0].calls += 1;
         let errored = failed(&call);
         if errored {

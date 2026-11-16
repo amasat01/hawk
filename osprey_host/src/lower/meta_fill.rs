@@ -9,9 +9,7 @@ use super::stages::cell_records;
 use super::unit_meta as m;
 use super::{wing, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{Access, Dtype, Role, Scalar, Target, Walk};
-use aether_writers::ir::analysis::{mix_name, param_plane};
 use aether_writers::refuse::{bad, fault, not_written, Refusal};
-use aether_writers::RxCtx;
 use raptor_ir::record::Ctx;
 use raptor_wings::segment::{class_name, offsets_name, stale_name, strategies, Strategy};
 use raptor_wings::stages::stored_cells;
@@ -98,18 +96,28 @@ pub(super) fn slots(
     ctx: *mut Ctx,
     walk: u32,
     typed: &Walk,
-    shared: &[String],
+    request: &KernelRequest,
 ) -> Result<Vec<m::Slot>, Refusal> {
+    let shared = &request.shared;
+    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
+    let gathered = raptor_wings::gather_mats(unsafe { &*ctx }, walk).map_err(wing)?;
+    let patterns = patterns(request, typed)?;
     let prior = super::prior_reads(ctx, walk)?;
-    let ctx = ctx as *mut RxCtx;
+    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
+    let params = raptor_wings::param_cells(unsafe { &*ctx }, walk).map_err(wing)?;
     typed
         .slots
         .iter()
         .enumerate()
         .map(|(at, s)| {
-            let planar = s.role == Role::Lookup && param_plane(ctx, walk, &s.name)?;
+            let planar = s.role == Role::Lookup && params.contains(&s.name);
             Ok(m::Slot {
                 flags: if planar { m::SLOT_PARAM_PLANE } else { 0 }
+                    | if gathered.contains(&s.name) {
+                        m::SLOT_GATHER
+                    } else {
+                        0
+                    }
                     | if prior.contains(&s.name) {
                         m::SLOT_PRIOR
                     } else {
@@ -123,12 +131,51 @@ pub(super) fn slots(
                 role: role(s.role),
                 dtype: dtype(s.role, s.dtype),
                 like_slot: like_slot(typed, at),
+                gather: gathered
+                    .contains(&s.name)
+                    .then(|| pattern_of(patterns, &s.name))
+                    .flatten(),
                 shape: s.shape.clone(),
                 name: s.name.clone(),
-                ..m::Slot::default()
             })
         })
         .collect()
+}
+
+/// The prefix of the name of the tangent of a plane.
+const TANGENT_PREFIX: &str = "dot_";
+
+/// The request's broadcast pattern, checked against the unit: each plane is one the unit binds (or the primal of a tangent plane it
+/// binds) and states one flag for each lane axis.
+fn patterns<'a>(
+    request: &'a KernelRequest,
+    typed: &Walk,
+) -> Result<&'a [(String, Vec<bool>)], Refusal> {
+    let axes = request.lane_space.len().max(1);
+    for (plane, flags) in &request.broadcast {
+        let tangent = format!("{TANGENT_PREFIX}{plane}");
+        let bound = typed
+            .slots
+            .iter()
+            .any(|s| s.name == *plane || s.name == tangent);
+        if !bound || flags.len() != axes {
+            return Err(bad(format!(
+                "request key broadcast: the plane {plane:?} is not a plane of the kernel, or its flags are not one per lane axis ({axes})"
+            )));
+        }
+    }
+    Ok(&request.broadcast)
+}
+
+/// The lane axes a gathered plane varies along: the pattern of its own name, else of its primal plane (a tangent plane takes its
+/// primal's); none when the request states none.
+fn pattern_of(patterns: &[(String, Vec<bool>)], name: &str) -> Option<Vec<bool>> {
+    let primal = name.strip_prefix(TANGENT_PREFIX).unwrap_or(name);
+    patterns
+        .iter()
+        .find(|(plane, _)| plane == name)
+        .or_else(|| patterns.iter().find(|(plane, _)| plane == primal))
+        .map(|(_, flags)| flags.clone())
 }
 
 /// The prefix of the name of the accumulated gradient of a plane.
@@ -293,13 +340,19 @@ fn dispatches(parts: &Parts, slots: &[m::Slot]) -> Result<Vec<m::Dispatch>, Refu
     found
         .into_iter()
         .map(|(name, strategy)| {
-            let mix_slot =
-                match strategy {
-                    Strategy::Auto => Some(slot_at(slots, &mix_name(&name)?).ok_or_else(|| {
+            let mix_slot = match strategy {
+                Strategy::Auto => {
+                    let plane = parts
+                        .texts
+                        .first()
+                        .and_then(|t| t.facts.mix_planes.iter().find(|(group, _)| *group == name));
+                    let held = plane.and_then(|(_, plane)| slot_at(slots, plane));
+                    Some(held.ok_or_else(|| {
                         fault(format!("the branch-mix plane of the group {name}"))
-                    })?),
-                    _ => None,
-                };
+                    })?)
+                }
+                _ => None,
+            };
             Ok(m::Dispatch {
                 strategy: match strategy {
                     Strategy::Predicated => m::DispatchStrategy::Predicated,
@@ -332,7 +385,7 @@ pub(super) fn classify_digests(units: &mut [UnitAnswer]) {
 
 /// The meta of one unit, without what only its kernel's stages tell (see `stages`).
 pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
-    let slots = slots(parts.ctx, parts.walk, parts.typed, &parts.request.shared)?;
+    let slots = slots(parts.ctx, parts.walk, parts.typed, parts.request)?;
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let stored = stored_cells(unsafe { &*parts.ctx }, &parts.pending.member.sinks).map_err(wing)?;
     let stores = !stored.is_empty();

@@ -259,7 +259,7 @@ fn source_unit(
 ) -> Result<UnitMeta, Refusal> {
     let (walk, digest) = canonical(ctx, member)?;
     let typed = typed_walk(ctx, walk)?;
-    let slots = meta_fill::slots(ctx, walk, &typed, &request.shared)?;
+    let slots = meta_fill::slots(ctx, walk, &typed, request)?;
     let launch = Launch {
         group: request.group,
         lane_labels: request.lane_space.iter().map(|a| a.label.clone()).collect(),

@@ -293,6 +293,8 @@ pub const SLOT_PRIOR: u32 = 1 << 0;
 pub const SLOT_PARAM_PLANE: u32 = 1 << 1;
 /// The flag of a parameter plane with no lane axis.
 pub const SLOT_SHARED: u32 = 1 << 3;
+/// The slot flag of a matrix plane the unit reads only at lane indices.
+pub const SLOT_GATHER: u32 = 1 << 2;
 /// The flag bits of a finish record, with the header's macro names.
 pub const FINISH_FLAGS: [(u32, &str); 1] = [(FINISH_ENTRY_COUNTS, "EG_FINISH_ENTRY_COUNTS")];
 /// The flag of a finishing unit whose fast entries count the samples finished on entry.
@@ -626,7 +628,6 @@ impl LibraryMeta {
 /// written as the header's absent value (or past the record's `struct_size`) and never as a value; the next slices shrink the list.
 /// Paths: raptor = rs/ir/src, aether = rs/writers/src, lower = osprey_host/src/lower.
 pub const NOT_COMPUTED: &[(&str, &str)] = &[
-    ("slot.flags GATHER, slot.gather", "aether ir/analysis.rs:434 `gather`, with the broadcast pattern the request must carry"),
     ("companion.device_fold_function", "the device writer that names the fold function (aether unit/device/render.rs:142 `fold_name`, the local that names it; not stated in the answer)"),
     ("team_plane.wide of a wide OUTPUT plane (`bf`, `y`: a slot the placement made wide, not a scratch plane)", "a design choice: the meta has no member for a wide slot; the recorded launch.wide names it (4 units on k7); the warp step's own planes (`hwd*`) also come from lower/warp.rs `slice`"),
     ("finish.fp64_ops_ir", "raptor (a reader): the count of 64-bit float operations of the step in the IR (the old cost module's `fp64_ops`) has no analysis in raptor rs/wings; the lane split holds only `op_count`"),

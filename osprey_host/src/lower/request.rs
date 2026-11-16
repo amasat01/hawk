@@ -183,6 +183,8 @@ pub struct KernelRequest {
     pub sink_axes: Vec<SinkAxes>,
     /// The parameter planes the caller declares shared: one value for every lane.
     pub shared: Vec<String>,
+    /// The kernel's broadcast pattern: for a matrix plane the kernel reads at lane indices, whether it varies along each lane axis.
+    pub broadcast: Vec<(String, Vec<bool>)>,
     /// The fusion row the caller cuts its chains with, when it sets one of its own; else the target's row from the data files.
     pub fusion: Option<FusionRow>,
     /// The answer of the facts entry for each target of the request, passed back as it was given.
@@ -236,9 +238,20 @@ fn written_facts(facts: &Facts) -> Json {
             Json::Obj(o)
         })
         .collect();
+    let mixes = facts
+        .mix_planes
+        .iter()
+        .map(|(group, plane)| {
+            Json::Obj(vec![
+                ("group".into(), Json::Str(group.clone())),
+                ("plane".into(), Json::Str(plane.clone())),
+            ])
+        })
+        .collect();
     let mut o = vec![
         ("row_planes".into(), Json::Arr(rows)),
         ("companions".into(), Json::Arr(companions)),
+        ("mix_planes".into(), Json::Arr(mixes)),
     ];
     if let Some(step) = &facts.step {
         o.push((
@@ -277,6 +290,15 @@ fn read_written_facts(json: &Json, symbol: String) -> Result<Facts, Refusal> {
         c.done()?;
         Ok(found)
     })?;
+    let mix_planes = list_of(k.req("mix_planes")?, "mix_planes", |j| {
+        let mut m = Keys::of(j, "mix plane")?;
+        let found = (
+            text_of(m.req("group")?, "group")?,
+            text_of(m.req("plane")?, "plane")?,
+        );
+        m.done()?;
+        Ok(found)
+    })?;
     let step = k
         .opt("step")
         .map(|j| {
@@ -295,6 +317,7 @@ fn read_written_facts(json: &Json, symbol: String) -> Result<Facts, Refusal> {
         row_planes,
         companions,
         step,
+        mix_planes,
     })
 }
 
@@ -979,6 +1002,18 @@ impl KernelRequest {
                 Some(l) => list_of(l, "shared", |n| text_of(n, "shared"))?,
                 None => vec![],
             },
+            broadcast: match keys.opt("broadcast") {
+                Some(l) => list_of(l, "broadcast", |p| {
+                    let mut keys = Keys::of(p, "broadcast")?;
+                    let found = (
+                        text_of(keys.req("plane")?, "plane")?,
+                        list_of(keys.req("axes")?, "axes", |b| flag_of(b, "axes"))?,
+                    );
+                    keys.done()?;
+                    Ok(found)
+                })?,
+                None => vec![],
+            },
             fusion: keys.opt("fusion").map(fusion_read).transpose()?,
             facts: facts_read(keys.req("facts")?)?,
         };
@@ -1044,6 +1079,18 @@ impl KernelRequest {
         }
         if !self.shared.is_empty() {
             o.push(("shared".into(), texts(&self.shared)))
+        }
+        if !self.broadcast.is_empty() {
+            let planes = self.broadcast.iter().map(|(plane, axes)| {
+                Json::Obj(vec![
+                    ("plane".into(), Json::Str(plane.clone())),
+                    (
+                        "axes".into(),
+                        Json::Arr(axes.iter().map(|b| Json::Bool(*b)).collect()),
+                    ),
+                ])
+            });
+            o.push(("broadcast".into(), Json::Arr(planes.collect())))
         }
         if let Some(row) = &self.fusion {
             o.push(("fusion".into(), fusion_write(row)))
@@ -1203,6 +1250,7 @@ mod tests {
             lane_space: vec![],
             sink_axes: vec![],
             shared: vec![],
+            broadcast: vec![],
             fusion: None,
             facts: vec![(Target::Host, "{}".into())],
         }
@@ -1218,6 +1266,7 @@ mod tests {
             extent: Some(3),
         }];
         full.shared = vec!["w".into()];
+        full.broadcast = vec![("m".into(), vec![true, false])];
         full.fusion = Some(FusionRow {
             regs_base: 0,
             regs_file: 4096,

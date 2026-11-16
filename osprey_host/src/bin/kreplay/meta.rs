@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// The members of the meta compared with the record, one line each.
-const MEMBERS: [&str; 35] = [
+const MEMBERS: [&str; 36] = [
     "name",
     "digest",
     "pattern",
@@ -45,6 +45,7 @@ const MEMBERS: [&str; 35] = [
     "dispatch.name, strategy, mix_slot (name)",
     "dispatch.class_slot, stale_slot, offsets_slot, classify (names)",
     "finish.step_ops, flags ENTRY_COUNTS",
+    "slot.flags GATHER, slot.gather (plane, axis flags)",
 ];
 
 /// What was compared of one member: the units, those equal, and the first differing ones with both values.
@@ -817,6 +818,33 @@ fn finish_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
     Some((ours, theirs))
 }
 
+/// The gathered planes of a unit with the lane axes each varies along (none when the request stated none), against the recorded
+/// `gather_mats`.
+fn gather_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let word = |flags: Option<&Vec<bool>>| {
+        flags.map_or("none".to_string(), |f| {
+            f.iter().map(|b| if *b { '1' } else { '0' }).collect()
+        })
+    };
+    let ours = joined(sorted(
+        unit.body
+            .slots
+            .iter()
+            .filter(|s| s.flags & meta::SLOT_GATHER != 0)
+            .map(|s| format!("{}:{}", s.name, word(s.gather.as_ref()))),
+    ));
+    let theirs = joined(sorted(pairs(sc, &["gather_mats"]).into_iter().map(
+        |(plane, flags)| {
+            let flags = match flags {
+                J::Arr(f) => Some(f.iter().map(|b| matches!(b, J::Bool(true))).collect()),
+                _ => None,
+            };
+            format!("{plane}:{}", word(flags.as_ref()))
+        },
+    )));
+    Some((ours, theirs))
+}
+
 impl Oracle {
     /// Compares the meta of an answer unit with the sidecar recorded for it; a unit with no sidecar is not counted.
     pub fn unit(
@@ -885,6 +913,7 @@ impl Oracle {
             dispatch_row(m, sc),
             segment_row(m, sc),
             finish_row(m, sc),
+            gather_row(m, sc),
         ])
         .collect();
         // the member order of `MEMBERS`: the scatter chunks sit after the cell row
