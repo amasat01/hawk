@@ -5,6 +5,7 @@
 produced, and (through text_plugin, which must be loaded too) every render-seam record tagged with the call id and the unit name.
 
 Use: TEXT_MODE=record TEXT_DIR=<dir> SHADOW_MODE=off pytest -p shadow_plugin -p text_plugin -p k6_plugin ...
+Also b<pid>.jsonl: one line per device launch's block resolution (eagle.launch._resolved_block), after a header record naming the join key.
 Files in $TEXT_DIR: k<pid>.jsonl (one line per build call, written when the call ends) beside text_plugin's t<pid>.jsonl, whose records
 gain `call` (the build-call id, `<pid>.<n>`) and `kunit` (the unit being lowered when the render ran); `call` is null outside a build call.
 Hooks (wrapping, from here, at session start; hawk's tree is not edited): build_bundle, build, emit_source (open a call), _emitted,
@@ -144,6 +145,8 @@ def _new(entry, a, k, orig):
 def _flush(c):
     enc = c.pop("enc")
     c.pop("cur", None)
+    for u in c.get("units", ()):
+        _KCALL[u.get("unit")] = c["call"]
     c.update({"nodes": enc.nodes, "kinds": enc.kinds, "objs": enc.objs, "unknown": sorted(set(enc.unknown)), "pid": os.getpid()})
     try:
         pid = os.getpid()
@@ -467,9 +470,72 @@ def _wrap_plugin_entry(orig):
     return call
 
 
+_bh = {"pid": None, "fh": None}
+_KCALL = {}         # unit/kernel name -> id of the last build call of THIS test that made it (cleared at each test start)
+_SYMS = {}          # raw function handle -> kernel symbol, filled where eagle loads the function (_core.module_function)
+_B_HEADER = {"rec": "header", "join": ["call", "kernel"], "call": "build-call id (<pid>.<n>) of the k-file line, null outside a build call",
+             "kernel": "kernel symbol as loaded by _core.module_function (null when unknown)",
+             "call_from": "last build call of this test that made this kernel",
+             "note": "'passed' is absent when the caller passed no block; 'declared' is null when absent; 'resolved' is the block returned"}
+
+
+def _b_write(rec):
+    pid = os.getpid()
+    if _bh["pid"] != pid:
+        os.makedirs(tp._DIR, exist_ok=True)
+        _bh["fh"], _bh["pid"] = open(os.path.join(tp._DIR, f"b{pid}.jsonl"), "a"), pid
+        _bh["fh"].write(json.dumps(_B_HEADER, sort_keys=True, separators=(",", ":")) + "\n")
+    _bh["fh"].write(json.dumps(rec, sort_keys=True, separators=(",", ":"), default=str) + "\n")
+    _bh["fh"].flush()
+
+
+def _wrap_resolved_block(orig):
+    def _resolved_block(fn, n, block, device=-1, declared=None):
+        out = orig(fn, n, block, device, declared)
+        try:
+            c = _CUR.get()
+            sym = _SYMS.get(int(fn)) if isinstance(fn, int) else None
+            rec = {"call": _KCALL.get(sym) if c is None else c["call"], "test": tp._state["test"], "kernel": sym,
+                   "n": n, "declared": declared, "resolved": out}
+            if block is not None:
+                rec["passed"] = block
+            _b_write(rec)
+        except BaseException:
+            pass
+        return out
+    _resolved_block.__wrapped__ = orig
+    return _resolved_block
+
+
+def _wrap_module_function(orig):
+    def module_function(module, name, *a, **k):
+        h = orig(module, name, *a, **k)
+        try:
+            _SYMS[int(h)] = name
+        except BaseException:
+            pass
+        return h
+    module_function.__wrapped__ = orig
+    return module_function
+
+
+def _patch_eagle_blocks():
+    import importlib
+    try:
+        el = sys.modules.get("eagle.launch") or importlib.import_module("eagle.launch")
+        core = importlib.import_module("eagle._core")
+    except BaseException:
+        return
+    orig = el._resolved_block
+    new = _wrap_resolved_block(orig)
+    tp._patch_everywhere(orig, new)       # the module's own name and every module that bound it directly
+    core.module_function = _wrap_module_function(core.module_function)
+
+
 def pytest_configure(config):
     if not _ON:
         return
+    _patch_eagle_blocks()
     from raptor.ir import walk as _wk
     from hawk.artifact import bundle as b
     _patch(_wk.canonical, _walk_opts_wrapper(_wk.canonical))
@@ -500,6 +566,7 @@ def pytest_runtest_logfinish(nodeid, location):
 
 def pytest_runtest_protocol(item, nextitem):
     if _ON:
+        _KCALL.clear()
         if not _SEAM0:
             try:
                 _SEAM0.update(_seams())
