@@ -10,7 +10,7 @@ use osprey_host::lower::links::LinkFact;
 /// What one set of a call came to.
 enum Built {
     /// The set was answered: (texts equal modulo the block, texts different, blocks omitted).
-    Answered(usize, usize, usize, usize),
+    Answered(usize, usize, usize),
     /// The library or the converter refused it, with the reason.
     Refused(String),
 }
@@ -18,6 +18,40 @@ enum Built {
 /// The unit-name suffixes of the units of roles the runtime does not load (the refine entry and the state guard): a set is built
 /// without them.
 const UNLOADED: [&str; 2] = ["_refine", "_state_guard"];
+
+/// The suffixes of the units a derived set is made of, in the order the outside-of-sets line prints them; the last two are the
+/// roles the runtime does not load (`UNLOADED`).
+const SET_SUFFIXES: [&str; 7] = [
+    "_tape",
+    "_step_vjp",
+    "_newton",
+    "_state_guard_vjp",
+    "_refine_vjp",
+    "_refine",
+    "_state_guard",
+];
+
+/// Counts recorded units by set suffix: those outside any set that was opened (`in_set` holds the names inside one), and how many
+/// recorded units, inside a set or not, are of a role the runtime does not load. Each unit name counts once.
+fn suffix_counts(
+    units: &[&str],
+    in_set: &std::collections::HashSet<String>,
+) -> ([usize; 7], usize) {
+    let mut seen = std::collections::HashSet::new();
+    let (mut outside, mut not_loaded) = ([0; 7], 0);
+    for &unit in units.iter().filter(|u| seen.insert(**u)) {
+        let Some(at) = SET_SUFFIXES.iter().position(|s| unit.ends_with(s)) else {
+            continue;
+        };
+        if at >= SET_SUFFIXES.len() - UNLOADED.len() {
+            not_loaded += 1;
+        }
+        if !in_set.contains(unit) {
+            outside[at] += 1;
+        }
+    }
+    (outside, not_loaded)
+}
 
 /// The slot of a name in a unit.
 fn slot<'a>(unit: &'a meta::UnitMeta, name: &str) -> Option<(usize, &'a meta::Slot)> {
@@ -356,11 +390,9 @@ fn one_set(
         let mut list = vec![];
         let mut singles = vec![own.units[0].texts[0].text.clone()];
         let mut twin: Option<DerivedFacts> = None;
-        let mut unloaded = 0;
         for kernel in kernels {
             let kname = kernel.get("name").and_then(J::str).unwrap_or("");
             if UNLOADED.iter().any(|s| kname == format!("{name}{s}")) {
-                unloaded += 1;
                 continue;
             }
             let (request, answer) = alone(call, kernel, &facts, held)?;
@@ -430,7 +462,7 @@ fn one_set(
                 different += 1
             }
         }
-        Ok(Built::Answered(equal, different, omitted, unloaded))
+        Ok(Built::Answered(equal, different, omitted))
     };
     go().unwrap_or_else(|why| Built::Refused(format!("{id} {name}: {why}")))
 }
@@ -447,6 +479,8 @@ fn is_lone_twin(why: &str) -> bool {
 pub struct Totals {
     /// The eight counts.
     pub counts: [usize; 8],
+    /// Recorded units by set suffix that lie outside every set the mode opened.
+    pub outside: [usize; 7],
     /// Each distinct refusal reason with its count and the first call id that met it, most frequent first once sorted.
     pub reasons: Vec<(String, usize, String)>,
     /// The first refusal.
@@ -461,6 +495,9 @@ impl Totals {
         }
         if self.first.is_none() {
             self.first = other.first;
+        }
+        for (a, b) in self.outside.iter_mut().zip(other.outside) {
+            *a += b;
         }
         for (reason, n, id) in other.reasons {
             self.note(&reason, n, &id);
@@ -491,9 +528,28 @@ impl Totals {
         );
         println!("twins recorded without their primal: {}", c[6]);
         println!("units of roles the runtime does not load: {}", c[7]);
-        if self.reasons.is_empty() {
-            return;
+        if !self.reasons.is_empty() {
+            self.print_reasons();
         }
+        let listed: Vec<String> = SET_SUFFIXES
+            .iter()
+            .zip(self.outside)
+            .filter(|(_, n)| *n > 0)
+            .map(|(s, n)| format!("{s} {n}"))
+            .collect();
+        let none = "none".to_string();
+        println!(
+            "derived units recorded outside any set, by suffix: {}",
+            if listed.is_empty() {
+                none
+            } else {
+                listed.join(", ")
+            }
+        );
+    }
+
+    /// The refusal reasons, most frequent first, and the first call of each.
+    fn print_reasons(&self) {
         let mut sorted = self.reasons.clone();
         sorted.sort_by_key(|r| std::cmp::Reverse(r.1));
         println!("refusal reasons, most frequent first:");
@@ -555,6 +611,7 @@ pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) -> Totals {
         let id = call.get("call").and_then(J::str).unwrap_or("").to_string();
         let kernels: Vec<&J> = call.get("kernels").map_or(&[][..], J::arr).iter().collect();
         let mut ctx = None;
+        let mut in_set = std::collections::HashSet::new();
         for primal in &kernels {
             let name = primal.get("name").and_then(J::str).unwrap_or("");
             let mine: Vec<&J> = kernels
@@ -581,10 +638,14 @@ pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) -> Totals {
                 continue;
             }
             found += 1;
+            in_set.extend(
+                mine.iter()
+                    .filter_map(|k| k.get("name").and_then(J::str))
+                    .map(String::from),
+            );
             match answered {
-                Built::Answered(e, d, o, u) => {
+                Built::Answered(e, d, o) => {
                     built += 1;
-                    unloaded += u;
                     (equal, different, omitted) = (equal + e, different + d, omitted + o);
                 }
                 Built::Refused(why) => {
@@ -604,6 +665,15 @@ pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) -> Totals {
         if let Some((c, _)) = ctx {
             osprey_host_free(c);
         }
+        let units: Vec<&str> = call_units(&call)
+            .iter()
+            .filter_map(|u| u.get("unit").and_then(J::str))
+            .collect();
+        let (outside, not_loaded) = suffix_counts(&units, &in_set);
+        for (a, b) in totals.outside.iter_mut().zip(outside) {
+            *a += b;
+        }
+        unloaded += not_loaded;
     }
     totals.counts = [
         found, built, refused, equal, different, omitted, lone, unloaded,
@@ -952,6 +1022,31 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn units_outside_every_set_are_counted_by_suffix() {
+        let in_set: std::collections::HashSet<String> = ["a_tape", "a_refine"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let units = [
+            "a",
+            "a_tape",
+            "a_refine",
+            "b_tape",
+            "b_tape",
+            "b_newton",
+            "c_refine",
+            "c_state_guard",
+            "c_state_guard_vjp",
+            "d_step_vjp",
+        ];
+        let (outside, not_loaded) = suffix_counts(&units, &in_set);
+        // b_tape once (a repeated name counts once), b_newton, c_refine, c_state_guard, c_state_guard_vjp, d_step_vjp
+        assert_eq!(outside, [1, 1, 1, 1, 0, 1, 1]);
+        // a_refine (inside a set), c_refine and c_state_guard
+        assert_eq!(not_loaded, 3);
     }
 
     #[test]

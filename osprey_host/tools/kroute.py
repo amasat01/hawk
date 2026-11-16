@@ -244,6 +244,113 @@ def _member(name, record):
     return out
 
 
+# The members below mirror the replay tool's converters (src/bin/kreplay.rs `steps_of`, `fusion_of`,
+# `lane_space_of`, `sink_axes_of`, `shared_of`, `broadcast_of`, `recorded_image_format`): the replay
+# is in Rust and this plugin in Python, so each is written twice.
+_AUTO_STEPS_CAP = 64
+
+
+def _seq(j):
+    """The items of a recorded list, tagged or plain."""
+    return j if isinstance(j, list) else _items(j)
+
+
+def _axes(pairs):
+    """The axes of a recorded tuple of `(label, extent)` pairs; an entry may lack either."""
+    out = []
+    for axis in _seq(pairs):
+        pair = _seq(axis)
+        one = {}
+        label = _text(pair[0]) if pair else None
+        extent = _num(pair[1]) if len(pair) > 1 else None
+        if label is not None:
+            one["label"] = label
+        if extent is not None:
+            one["extent"] = extent
+        out.append(one)
+    return out
+
+
+def _declared_planes(kernel, key):
+    """The planes the kernel record declares under `key`, as (name, declaration record)."""
+    mapping = kernel.get(key)
+    while isinstance(mapping, dict) and ("of" in mapping or "mp" in mapping):
+        mapping = mapping.get("of", mapping.get("mp"))
+    out = []
+    for pair in mapping.get("d", []) if isinstance(mapping, dict) else []:
+        name = _text(pair[0])
+        if name is not None and len(pair) > 1:
+            out.append((name, _rec(pair[1])))
+    return out
+
+
+def _steps_members(kernel, call):
+    """The `steps` (and the cap of an auto count) a kernel record declares."""
+    steps = kernel.get("steps")
+    if _num(steps) is not None:
+        return {"steps": _num(steps)}
+    if _text(steps) == "auto":
+        cap = call.get("auto_k_max")
+        return {"steps": "auto", "steps_max": cap if isinstance(cap, int) else _AUTO_STEPS_CAP}
+    return {}
+
+
+def _number(j):
+    """A recorded number: a whole number or a float, None for null."""
+    if _num(j) is not None:
+        return _num(j)
+    try:
+        return float(j["f"]) if isinstance(j, dict) and "f" in j else None
+    except ValueError:
+        return None
+
+
+def _fusion(call):
+    """The fusion row the call's last chain cut used, when the recorder stored it."""
+    rows = _seq(call.get("fusion_rows"))
+    if not rows:
+        return None
+    row = rows[-1]
+    base, file = _num(_entry(row, "R0")), _num(_entry(row, "R_file"))
+    if base is None or file is None:
+        return None
+    out = {"regs_base": base, "regs_file": file}
+    for key, field in (
+        ("launch_us", "L_us"),
+        ("plane_us_per_byte", "c_plane_us_per_B"),
+        ("local_over_plane", "c_local_over_plane"),
+    ):
+        value = _number(_entry(row, field))
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _part_members(kernel, call):
+    """The per-kernel members of a request besides its body, from the kernel record."""
+    out = _steps_members(kernel, call)
+    lanes = kernel.get("lane_space")
+    out["lane_space"] = _axes(lanes) if lanes is not None else [{}]
+    planes = _declared_planes(kernel, "planes")
+    sinks = [(n, p) for n, p in planes if _text(p.get("form")) == "accum"]
+    sinks += _declared_planes(kernel, "derived_planes")
+    axes = [{"name": n, "axes": _axes(p.get("dims"))} for n, p in sinks if _axes(p.get("dims"))]
+    if axes:
+        out["sink_axes"] = axes
+    shared = [n for n, p in planes if p.get("shared") and _seq(p["shared"])]
+    if shared:
+        out["shared"] = shared
+    broadcast = []
+    for pair in _seq(kernel.get("broadcast")):
+        pair = _seq(pair)
+        name = pair[0] if pair and isinstance(pair[0], str) else _text(pair[0]) if pair else None
+        if name is not None and len(pair) > 1:
+            broadcast.append({"plane": name, "axes": [f is True for f in _seq(pair[1])]})
+    if broadcast:
+        out["broadcast"] = broadcast
+    return out
+
+
 def _settings(spec, split):
     """The request's settings from the spec; a call with no split never chose a warp per lane."""
     s = _rec(spec["settings"])
@@ -405,6 +512,16 @@ def _request(call, kernel, targets, built):
         request["one_step"] = _member(_text(one.get("name")) or "", one)
     if planes:
         request["planes"] = planes
+    request.update(_part_members(kernel, call))
+    fusion = _fusion(call)
+    if fusion is not None:
+        request["fusion"] = fusion
+    if "cuda" in targets:
+        # the format the recorded build asked for; a recording that kept none gets a binary for one
+        # architecture
+        request["image_format"] = _camel(
+            call.get("image_format") if call.get("image_format") in ("ptx", "fatbin") else "cubin"
+        )
     return name, request, adapted
 
 
@@ -417,6 +534,11 @@ def _owned(kernel, unit):
         return True
     rest = unit[len(kernel) + 1 :] if unit.startswith(kernel + "_") else ""
     return rest.isdigit()
+
+
+def _unit(u):
+    """The name and the digest of an answered unit: they are in its meta record."""
+    return u["meta"]["name"], u["meta"]["digest"]
 
 
 def _reason(why):
@@ -449,7 +571,16 @@ def _plan(c, kernel, name, smode, targets):
         return plan
     call = {
         key: _plain(c.get(key))
-        for key in ("kernels", "spec", "args", "split_in", "exports_override")
+        for key in (
+            "kernels",
+            "spec",
+            "args",
+            "split_in",
+            "exports_override",
+            "image_format",
+            "auto_k_max",
+            "fusion_rows",
+        )
     }
     call["smode"] = smode.id
     if call["spec"] is None:
@@ -487,31 +618,37 @@ def _plan(c, kernel, name, smode, targets):
         except (ValueError, RuntimeError) as why:
             _fall(_reason(why), kname, full=str(why)[:300])
             continue
-        units = answer["units"]
+        # a split kernel's answer also holds the unit that lists its stages and has no entry of its
+        # own: the old build made none
+        units = [
+            u
+            for u in answer["units"]
+            if not (_unit(u)[0] == kname + "_source" and _unit(u)[0] not in built)
+        ]
         mine = [n for n, _ in old if _owned(kname, n) and (n == kname or n not in kernels)]
         digests = dict(old)
         problem = None
-        if sorted(mine) != sorted(u["name"] for u in units):
+        if sorted(mine) != sorted(_unit(u)[0] for u in units):
             problem = "unit mismatch: count or name"
-        elif any(digests.get(u["name"]) != u["digest"] for u in units):
+        elif any(digests.get(_unit(u)[0]) != _unit(u)[1] for u in units):
             problem = "unit mismatch: digest"
         elif any({t["target"] for t in u["texts"]} != {_SERVED[t] for t in served} for u in units):
             problem = "unit mismatch: targets"
         if problem:
-            _fall(problem, kname, old=old, answer=[(u["name"], u["digest"][:12]) for u in units])
+            _fall(problem, kname, old=old, answer=[(_unit(u)[0], _unit(u)[1][:12]) for u in units])
             continue
         _C["kernels_routed"] += 1
         _C["units_routed"] += len(units)
         for tag in adapted:
             _bump(_C["adapted"], tag)
         plan["kernels"][kname] = {
-            "units": [u["name"] for u in units],
+            "units": [_unit(u)[0] for u in units],
             "taken": set(),
             "served": served,
         }
         for u in units:
-            claimed.add(u["name"])
-            plan["units"][u["name"]] = {
+            claimed.add(_unit(u)[0])
+            plan["units"][_unit(u)[0]] = {
                 "kernel": kname,
                 "adapted": adapted,
                 "texts": {t["target"]: t for t in u["texts"]},

@@ -33,7 +33,7 @@ Every file with its line count (this file excluded):
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
    2801  osprey_host/src/bin/kreplay.rs
-   1132  osprey_host/src/bin/kreplay/derived.rs
+   1227  osprey_host/src/bin/kreplay/derived.rs
    1124  osprey_host/src/bin/kreplay/meta.rs
    1454  osprey_host/src/bin/treplay.rs
     795  osprey_host/src/facts.rs
@@ -71,7 +71,7 @@ Every file with its line count (this file excluded):
      12  osprey_host/tools/cc
     134  osprey_host/tools/cost_host.py
     630  osprey_host/tools/host_plugin.py
-    820  osprey_host/tools/kroute.py
+    957  osprey_host/tools/kroute.py
     101  osprey_host/tools/merge_host.py
     419  osprey_host/tools/merge_text.py
      35  osprey_host/tools/run_eagle_text.sh
