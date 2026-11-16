@@ -294,7 +294,9 @@ pub const SLOT_PARAM_PLANE: u32 = 1 << 1;
 /// The flag of a parameter plane with no lane axis.
 pub const SLOT_SHARED: u32 = 1 << 3;
 /// The flag bits of a finish record, with the header's macro names.
-pub const FINISH_FLAGS: [(u32, &str); 1] = [(1 << 0, "EG_FINISH_ENTRY_COUNTS")];
+pub const FINISH_FLAGS: [(u32, &str); 1] = [(FINISH_ENTRY_COUNTS, "EG_FINISH_ENTRY_COUNTS")];
+/// The flag of a finishing unit whose fast entries count the samples finished on entry.
+pub const FINISH_ENTRY_COUNTS: u32 = 1 << 0;
 /// The schema major the records are written for.
 pub const SCHEMA_MAJOR: u32 = 1;
 /// The name of the one function a unit library exports.
@@ -625,13 +627,8 @@ impl LibraryMeta {
 /// Paths: raptor = rs/ir/src, aether = rs/writers/src, lower = osprey_host/src/lower.
 pub const NOT_COMPUTED: &[(&str, &str)] = &[
     ("slot.flags GATHER, slot.gather", "aether ir/analysis.rs:434 `gather`, with the broadcast pattern the request must carry"),
-    ("slot.like_slot", "raptor (a reader): the sidecar `adjoint_like` (42 units on k7, 81 on k7e) has no analysis in raptor rs/ir canon.rs, and the walk has no such field"),
     ("companion.device_fold_function", "the device writer that names the fold function (aether unit/device/render.rs:142 `fold_name`, the local that names it; not stated in the answer)"),
     ("team_plane.wide of a wide OUTPUT plane (`bf`, `y`: a slot the placement made wide, not a scratch plane)", "a design choice: the meta has no member for a wide slot; the recorded launch.wide names it (4 units on k7); the warp step's own planes (`hwd*`) also come from lower/warp.rs `slice`"),
-    ("dispatch.* (strategy, name, mix_slot)", "raptor (a reader): the walk's `dispatches` listing (canon.rs:507) holds name, K, reads and the static flag but not the strategy (switch / predicated / auto / segmented); the field is in raptor's golden walks, so the strategy needs a new walk field, not a changed one"),
-    ("dispatch.class_slot, stale_slot, offsets_slot, classify", "the segment step: lower/segment.rs:34 `split`, raptor wings segment.rs"),
-    ("launch.block (the emit-fixed tile)", "no recorded oracle: the k7 / k7e sidecars hold no launch.block member; the value is the request's launch bounds today"),
-    ("finish.flags ENTRY_COUNTS, finish.step_ops, finish.fp64_ops_ir", "the render's lane split of the step: aether lanes/mod.rs:35 `lane_split`"),
+    ("finish.fp64_ops_ir", "raptor (a reader): the count of 64-bit float operations of the step in the IR (the old cost module's `fp64_ops`) has no analysis in raptor rs/wings; the lane split holds only `op_count`"),
     ("finish.host_steps_reverse, device_steps_reverse (steps tables)", "data: the rows are in the old tree's installed wing facts (hawk/targets/steps_reverse.py `table_for`), and no copy of them is on this Mac (not in the tree, the overlay or venv_rel)"),
-    ("slot.dtype of an index leaf bound at 32 bits", "the entry writer: aether unit/entry.rs `element` widens every index leaf to the 64-bit Int"),
 ];

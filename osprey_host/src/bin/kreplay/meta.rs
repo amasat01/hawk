@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// The members of the meta compared with the record, one line each.
-const MEMBERS: [&str; 31] = [
+const MEMBERS: [&str; 35] = [
     "name",
     "digest",
     "pattern",
@@ -41,6 +41,10 @@ const MEMBERS: [&str; 31] = [
     "source unit launch.plane_axes",
     "cell.slots (row planes among the arguments)",
     "companion.slot, target_slot (names)",
+    "slot.like_slot (gradient slot, lookup slot)",
+    "dispatch.name, strategy, mix_slot (name)",
+    "dispatch.class_slot, stale_slot, offsets_slot, classify (names)",
+    "finish.step_ops, flags ENTRY_COUNTS",
 ];
 
 /// What was compared of one member: the units, those equal, and the first differing ones with both values.
@@ -706,6 +710,113 @@ fn companion_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
     Some((ours, theirs))
 }
 
+/// The gradient slots of a unit, each as its name and the name of the slot it is sized like, against the recorded `adjoint_like`.
+fn like_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let slots = &unit.body.slots;
+    let ours = joined(sorted(slots.iter().filter_map(|s| {
+        s.like_slot
+            .map(|like| format!("{}:{}", s.name, slots[like].name))
+    })));
+    let theirs =
+        joined(sorted(pairs(sc, &["adjoint_like"]).into_iter().map(
+            |(plane, like)| format!("{plane}:{}", like.str().unwrap_or("")),
+        )));
+    Some((ours, theirs))
+}
+
+/// The dispatch groups of a unit as name, strategy and branch-mix plane, against the recorded `dispatch` list.
+fn dispatch_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let ours = joined(sorted(unit.body.dispatches.iter().map(|d| {
+        let mix = d
+            .mix_slot
+            .map_or("", |at| unit.body.slots[at].name.as_str());
+        format!(
+            "{}:{}:{mix}",
+            d.name,
+            lower(d.strategy.c_name(), "EG_DISPATCH_")
+        )
+    })));
+    let theirs = joined(sorted(
+        at(sc, &["dispatch"])
+            .map_or(&[][..], J::arr)
+            .iter()
+            .map(|d| {
+                let field = |key: &str| word(d, &[key]).unwrap_or_default();
+                format!("{}:{}:{}", field("name"), field("strategy"), field("mix"))
+            }),
+    ));
+    Some((ours, theirs))
+}
+
+/// The planes and classify unit of the segmented groups of a unit by name. The recorded sidecar names the class and stale planes
+/// of every group, but a unit holds them as slots only when the selector is dynamic: the others are left out of the record's side.
+fn segment_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let name = |at: Option<usize>| at.map_or("", |at| unit.body.slots[at].name.as_str());
+    let segmented = meta::DispatchStrategy::Segmented;
+    let ours = joined(sorted(
+        unit.body
+            .dispatches
+            .iter()
+            .filter(|d| d.strategy == segmented)
+            .map(|d| {
+                let classify = d.classify.as_ref().map_or(String::new(), |u| {
+                    format!(
+                        "{}{}",
+                        u.name,
+                        if u.digest.len() == 64 {
+                            ""
+                        } else {
+                            " without a digest"
+                        }
+                    )
+                });
+                format!(
+                    "{}:{}:{}:{}:{classify}",
+                    name(d.class_slot),
+                    name(d.stale_slot),
+                    name(d.offsets_slot),
+                    d.name
+                )
+            }),
+    ));
+    let theirs = joined(sorted(
+        at(sc, &["dispatch"])
+            .map_or(&[][..], J::arr)
+            .iter()
+            .filter(|d| word(d, &["strategy"]).as_deref() == Some("segmented"))
+            .map(|d| {
+                let field = |key: &str| word(d, &[key]).unwrap_or_default();
+                let dynamic = !flag(d, &["static_selector"]);
+                let held = |key: &str| if dynamic { field(key) } else { String::new() };
+                format!(
+                    "{}:{}:{}:{}:{}",
+                    held("class"),
+                    held("stale"),
+                    field("offsets"),
+                    field("name"),
+                    field("classify")
+                )
+            }),
+    ));
+    Some((ours, theirs))
+}
+
+/// The step count and the entry-count flag of a finishing unit, against the recorded `step_ops` and `entry_counts_finished`.
+fn finish_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let finish = unit.finish.as_ref()?;
+    let ours = format!(
+        "{:?} {}",
+        finish.step_ops,
+        finish.flags & meta::FINISH_ENTRY_COUNTS != 0
+    );
+    let theirs = format!(
+        "{:?} {}",
+        number(sc, &["step_ops"]),
+        flag(sc, &["entry_counts_finished"])
+    );
+    Some((ours, theirs))
+}
+
 impl Oracle {
     /// Compares the meta of an answer unit with the sidecar recorded for it; a unit with no sidecar is not counted.
     pub fn unit(
@@ -767,7 +878,14 @@ impl Oracle {
         .chain(launch)
         .chain(declared_rows(m, unsplit, lister, sc))
         .chain(source_rows(lister, sc))
-        .chain([cell_slot_row(m, unsplit, sc), companion_row(m, sc)])
+        .chain([
+            cell_slot_row(m, unsplit, sc),
+            companion_row(m, sc),
+            like_row(m, sc),
+            dispatch_row(m, sc),
+            segment_row(m, sc),
+            finish_row(m, sc),
+        ])
         .collect();
         // the member order of `MEMBERS`: the scatter chunks sit after the cell row
         for (member, pair) in MEMBERS.iter().zip(pairs) {

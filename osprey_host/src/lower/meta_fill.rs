@@ -9,12 +9,11 @@ use super::stages::cell_records;
 use super::unit_meta as m;
 use super::{wing, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{Access, Dtype, Role, Scalar, Target, Walk};
-use aether_writers::ir::analysis::{companions, param_plane};
+use aether_writers::ir::analysis::{mix_name, param_plane};
 use aether_writers::refuse::{bad, fault, not_written, Refusal};
-use aether_writers::unit::host::render::fold_entry;
-use aether_writers::unit::sums::row_planes;
 use aether_writers::RxCtx;
 use raptor_ir::record::Ctx;
+use raptor_wings::segment::{class_name, offsets_name, stale_name, strategies, Strategy};
 use raptor_wings::stages::stored_cells;
 
 /// What the meta of one unit is written from.
@@ -58,9 +57,11 @@ fn role(role: Role) -> m::SlotRole {
     }
 }
 
-/// The type of a slot on the wire: an index leaf is bound as the 64-bit `Int` by the entry's writer, a float is `Real`.
-fn dtype(dtype: Dtype) -> m::WireDtype {
+/// The type of a slot on the wire: an index leaf is bound as the 64-bit `Int` by the entry's writer, a float is `Real`. A
+/// by-value integer (a uniform) is bound as that `Int` whatever its width: no unit that has one narrows `Int`.
+fn dtype(role: Role, dtype: Dtype) -> m::WireDtype {
     match dtype {
+        Dtype::Int32 | Dtype::Uint32 if role == Role::Uniform => m::WireDtype::Int64,
         Dtype::F64 | Dtype::F32 => m::WireDtype::Real,
         Dtype::I32 | Dtype::I64 => m::WireDtype::Int64,
         Dtype::Int32 => m::WireDtype::Int32,
@@ -104,7 +105,8 @@ pub(super) fn slots(
     typed
         .slots
         .iter()
-        .map(|s| {
+        .enumerate()
+        .map(|(at, s)| {
             let planar = s.role == Role::Lookup && param_plane(ctx, walk, &s.name)?;
             Ok(m::Slot {
                 flags: if planar { m::SLOT_PARAM_PLANE } else { 0 }
@@ -119,13 +121,29 @@ pub(super) fn slots(
                         0
                     },
                 role: role(s.role),
-                dtype: dtype(s.dtype),
+                dtype: dtype(s.role, s.dtype),
+                like_slot: like_slot(typed, at),
                 shape: s.shape.clone(),
                 name: s.name.clone(),
                 ..m::Slot::default()
             })
         })
         .collect()
+}
+
+/// The prefix of the name of the accumulated gradient of a plane.
+const ADJOINT_PREFIX: &str = "bar_";
+
+/// The lookup or wide input slot a gradient slot is sized like: the accumulated output `bar_<plane>` of a plane the unit reads by
+/// index, whatever the lane count.
+fn like_slot(typed: &Walk, at: usize) -> Option<usize> {
+    let slot = &typed.slots[at];
+    let plane = slot.name.strip_prefix(ADJOINT_PREFIX)?;
+    (slot.role == Role::AccumOut).then_some(())?;
+    typed
+        .slots
+        .iter()
+        .position(|s| s.name == plane && matches!(s.role, Role::Lookup | Role::WideIn))
 }
 
 /// The thread box a unit's text of a target states.
@@ -162,6 +180,19 @@ pub(super) fn plane_axes(request: &KernelRequest, slots: &[m::Slot]) -> Vec<m::P
         .collect()
 }
 
+/// The device threads of one block: the tile the warp step fixed (its lanes, one warp each, or the warps of a single lane), else
+/// the request's launch bounds, else 0 for the runtime's choice. No recording states it: the old build's sidecars hold no block.
+fn block_threads(parts: &Parts) -> i64 {
+    match &parts.pending.warp {
+        Some(warp) => warp.threads() * warp.warps,
+        None => parts
+            .request
+            .settings
+            .launch_bounds
+            .map_or(0, |(threads, _)| threads),
+    }
+}
+
 /// The launch record: the group, the boxes and the slots of the index maps the unit runs over.
 fn launch(parts: &Parts, slots: &[m::Slot]) -> m::Launch {
     // a later stage that runs on a team runs over its blocks, not over the caller's lanes: its space is one axis with
@@ -180,11 +211,7 @@ fn launch(parts: &Parts, slots: &[m::Slot]) -> m::Launch {
         group: parts.request.group,
         host_box: thread_box(parts.texts, Target::Host),
         device_box: thread_box(parts.texts, Target::Device),
-        block: parts
-            .request
-            .settings
-            .launch_bounds
-            .map_or(0, |(threads, _)| threads),
+        block: block_threads(parts),
         lane_labels: space.iter().map(|a| a.label.clone()).collect(),
         lane_extents: space.iter().map(|a| a.extent.unwrap_or(-1)).collect(),
         plane_axes: if later_stage(parts) {
@@ -227,7 +254,14 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
             ))
         }
     };
+    let step = parts.texts.first().and_then(|t| t.facts.step.as_ref());
     Ok(Some(m::Finish {
+        flags: if step.is_some_and(|s| s.entry_counts) {
+            m::FINISH_ENTRY_COUNTS
+        } else {
+            0
+        },
+        step_ops: step.map(|s| s.ops),
         mask_slot: slot(mask)?,
         counter_slot: slot(FINISHED_PLANE)?,
         steps,
@@ -237,17 +271,78 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
     }))
 }
 
+/// The dispatch groups of a unit's walk: each group's name and strategy, and for an auto group the slot of its branch-mix plane.
+fn dispatches(parts: &Parts, slots: &[m::Slot]) -> Result<Vec<m::Dispatch>, Refusal> {
+    if let Some(group) = &parts.pending.group {
+        let at = |name: String| slot_at(slots, &name);
+        return Ok(vec![m::Dispatch {
+            strategy: m::DispatchStrategy::Segmented,
+            class_slot: at(class_name(&group.name)),
+            stale_slot: at(stale_name(&group.name)),
+            offsets_slot: at(offsets_name(&group.name)),
+            classify: group.classify.as_ref().map(|name| m::UnitRef {
+                name: name.clone(),
+                digest: String::new(),
+            }),
+            name: group.name.clone(),
+            ..m::Dispatch::default()
+        }]);
+    }
+    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
+    let found = strategies(unsafe { &*parts.ctx }, parts.walk).map_err(wing)?;
+    found
+        .into_iter()
+        .map(|(name, strategy)| {
+            let mix_slot =
+                match strategy {
+                    Strategy::Auto => Some(slot_at(slots, &mix_name(&name)?).ok_or_else(|| {
+                        fault(format!("the branch-mix plane of the group {name}"))
+                    })?),
+                    _ => None,
+                };
+            Ok(m::Dispatch {
+                strategy: match strategy {
+                    Strategy::Predicated => m::DispatchStrategy::Predicated,
+                    Strategy::Switch => m::DispatchStrategy::Switch,
+                    Strategy::Segmented => m::DispatchStrategy::Segmented,
+                    Strategy::Auto => m::DispatchStrategy::Auto,
+                },
+                mix_slot,
+                name,
+                ..m::Dispatch::default()
+            })
+        })
+        .collect()
+}
+
+/// Fills the digest of each classify unit a dispatch group names, once every unit of the answer is written.
+pub(super) fn classify_digests(units: &mut [UnitAnswer]) {
+    let digests: Vec<(String, String)> = units
+        .iter()
+        .map(|u| (u.meta.name.clone(), u.meta.digest.clone()))
+        .collect();
+    for group in units.iter_mut().flat_map(|u| &mut u.meta.body.dispatches) {
+        if let Some(unit) = &mut group.classify {
+            if let Some((_, digest)) = digests.iter().find(|(name, _)| *name == unit.name) {
+                unit.digest = digest.clone();
+            }
+        }
+    }
+}
+
 /// The meta of one unit, without what only its kernel's stages tell (see `stages`).
 pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
     let slots = slots(parts.ctx, parts.walk, parts.typed, &parts.request.shared)?;
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let stored = stored_cells(unsafe { &*parts.ctx }, &parts.pending.member.sinks).map_err(wing)?;
     let stores = !stored.is_empty();
-    let rows = row_planes(
-        parts.ctx as *mut RxCtx,
-        &parts.pending.member.sinks,
-        &parts.typed.slots,
-    )?;
+    // what the writer decided is the same in every text of the unit
+    let facts = &parts
+        .texts
+        .first()
+        .ok_or_else(|| fault("a unit without a text"))?
+        .facts;
+    let rows = &facts.row_planes;
     let cells = cell_records(stored, &parts.request.planes)
         .iter()
         .map(|cell| {
@@ -272,11 +367,13 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
         .as_ref()
         .and(parts.request.image_format)
         .unwrap_or(m::ImageFormat::None);
-    let host = entry(Target::Host).map(|t| t.entry.clone());
-    let pairs = companions(parts.ctx as *mut RxCtx, parts.walk)?;
-    let companions = pairs
+    let host = entry(Target::Host);
+    let dispatches = dispatches(parts, &slots)?;
+    let companions = facts
+        .companions
         .iter()
-        .map(|(comp, target)| {
+        .map(|c| {
+            let (comp, target) = (&c.plane, &c.target);
             let at = |plane: &str| {
                 slot_at(&slots, plane)
                     .ok_or_else(|| fault(format!("a companion pair over the plane {plane}")))
@@ -284,7 +381,9 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
             Ok(m::Companion {
                 slot: at(comp)?,
                 target_slot: at(target)?,
-                host_fold_entry: host.as_ref().map(|entry| fold_entry(entry, target)),
+                host_fold_entry: host
+                    .and_then(|t| t.facts.companions.iter().find(|h| h.plane == *comp))
+                    .and_then(|h| h.fold_entry.clone()),
                 ..m::Companion::default()
             })
         })
@@ -293,7 +392,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
         name: name.clone(),
         digest: parts.digest.to_string(),
         scalar_type: scalar(parts.request.scalar),
-        host_entry: entry(Target::Host).map(|t| t.symbol.clone()),
+        host_entry: entry(Target::Host).map(|t| t.facts.symbol.clone()),
         device_image: device.as_ref().map(|_| format!("{name}__image")),
         device_image_size: device.as_ref().map(|_| format!("{name}__image_size")),
         device_image_format: device_format,
@@ -305,6 +404,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
             cell_row: if stores { parts.card.cells_row } else { 0 },
             cells,
             companions,
+            dispatches,
             slots,
             ..m::Body::default()
         },

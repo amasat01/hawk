@@ -63,6 +63,8 @@ pub(super) struct Pending {
     pub team: Option<TeamSpec>,
     /// The warp per lane the unit is written as, when it is.
     pub warp: Option<warp::Warp>,
+    /// The dispatch group a branch unit of a segmented split belongs to.
+    pub group: Option<segment::Group>,
 }
 
 /// A wing refusal as the refusal of the request.
@@ -267,6 +269,7 @@ pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<Kern
     if let Some(block) = &block {
         meta_fill::stages(&mut units, block, cards.deciding.scatter_max_chunks)?;
     }
+    meta_fill::classify_digests(&mut units);
     let library = unit_meta::LibraryMeta::current();
     let meta_source = meta_c::source(&library, &units.iter().map(|u| &u.meta).collect::<Vec<_>>())?;
     Ok(KernelAnswer {
@@ -289,6 +292,7 @@ impl Pending {
             note: None,
             team: None,
             warp: None,
+            group: None,
         }
     }
 }
@@ -379,14 +383,13 @@ fn write_target(
         Target::Device => cuda_render,
     };
     let source = render(ctx as *mut RxCtx, walk, &json)?;
-    let symbol = source.symbol();
     let meta = source.meta;
     Ok(TargetText {
         target,
         text: source.text,
         body: source.body,
         entry: source.entry,
-        symbol,
+        facts: source.facts,
         mode: meta.mode.to_string(),
         vectorised: meta.vectorised,
         thread_box: meta.thread_box.filter(|b| b.axis.is_some()),

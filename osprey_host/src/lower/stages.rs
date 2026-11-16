@@ -379,6 +379,7 @@ fn staged(
                 source: if first { source.clone() } else { None },
             }),
             warp: None,
+            group: None,
         });
     }
     Ok(out)

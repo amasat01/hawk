@@ -29,6 +29,15 @@ fn selector_is_static(ctx: *mut Ctx, walk: u32, index: usize) -> Result<bool, Re
     }
 }
 
+/// The dispatch group a branch unit belongs to.
+#[derive(Clone)]
+pub(crate) struct Group {
+    /// The group's name.
+    pub name: String,
+    /// The unit that writes the classes, for a selector the kernel never writes.
+    pub classify: Option<String>,
+}
+
 /// The segmented split as a step: a kernel with a segmented dispatch becomes one pending unit per branch in order, and (for a
 /// selector the kernel never writes) a last unit that writes the classes; any other unit passes on.
 pub(super) fn split(
@@ -68,6 +77,11 @@ fn branches(
     let fixed = selector_is_static(ctx, walk, split.index)?;
     let group = group_name(split.index);
     let offsets = offsets_name(&group);
+    let classify = format!("{}__cls", request.name);
+    let ours = Group {
+        name: group.clone(),
+        classify: fixed.then(|| classify.clone()),
+    };
     let mut units = vec![];
     for branch in 0..split.branches {
         // SAFETY: the caller's context is not read elsewhere while the units are made.
@@ -87,14 +101,14 @@ fn branches(
             note: None,
             team: None,
             warp: None,
+            group: Some(ours.clone()),
         });
     }
     if fixed {
         // SAFETY: the caller's context is not read elsewhere while the unit is made.
         let sinks = class_sinks(unsafe { &mut *ctx }, &split).map_err(wing)?;
-        let name = format!("{}__cls", request.name);
         units.push(Pending {
-            member: unit_member(ctx, name, sinks, None),
+            member: unit_member(ctx, classify, sinks, None),
             segment: None,
             one_step: None,
             active: None,
@@ -103,6 +117,7 @@ fn branches(
             note: None,
             team: None,
             warp: None,
+            group: None,
         });
     }
     Ok(Some(units))

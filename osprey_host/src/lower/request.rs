@@ -8,6 +8,8 @@ use aether_writers::contract::types::{
 };
 use aether_writers::contract::{Contract, Json};
 use aether_writers::refuse::{bad, unknown, Refusal};
+use aether_writers::unit::sums::RowPlane;
+use aether_writers::unit::{CompanionFact, Facts, StepFacts};
 use raptor_wings::blocks::LinalgForm;
 use raptor_wings::chain::FusionRow;
 use std::fmt::Debug;
@@ -198,14 +200,102 @@ pub struct TargetText {
     pub body: String,
     /// The entry function's name.
     pub entry: String,
-    /// The symbol the text exports for its entry.
-    pub symbol: String,
     /// The scalar mode's id.
     pub mode: String,
     /// Whether the lane loop runs its lanes side by side.
     pub vectorised: bool,
     /// The thread box, when the unit has one with an axis.
     pub thread_box: Option<ThreadBox>,
+    /// What the writer decided about the unit that its meta states.
+    pub facts: Facts,
+}
+
+/// The facts of a text as a value.
+fn written_facts(facts: &Facts) -> Json {
+    let rows = facts
+        .row_planes
+        .iter()
+        .map(|r| {
+            Json::Obj(vec![
+                ("cell".into(), Json::Str(r.cell.clone())),
+                ("slot".into(), Json::Num(r.slot.to_string())),
+            ])
+        })
+        .collect();
+    let companions = facts
+        .companions
+        .iter()
+        .map(|c| {
+            let mut o = vec![
+                ("plane".into(), Json::Str(c.plane.clone())),
+                ("target".into(), Json::Str(c.target.clone())),
+            ];
+            if let Some(entry) = &c.fold_entry {
+                o.push(("fold_entry".into(), Json::Str(entry.clone())))
+            }
+            Json::Obj(o)
+        })
+        .collect();
+    let mut o = vec![
+        ("row_planes".into(), Json::Arr(rows)),
+        ("companions".into(), Json::Arr(companions)),
+    ];
+    if let Some(step) = &facts.step {
+        o.push((
+            "step".into(),
+            Json::Obj(vec![
+                ("ops".into(), Json::Num(step.ops.to_string())),
+                ("entry_counts".into(), Json::Bool(step.entry_counts)),
+            ]),
+        ))
+    }
+    Json::Obj(o)
+}
+
+/// The facts of a text a value describes.
+fn read_written_facts(json: &Json, symbol: String) -> Result<Facts, Refusal> {
+    let mut k = Keys::of(json, "facts")?;
+    let row_planes = list_of(k.req("row_planes")?, "row_planes", |j| {
+        let mut r = Keys::of(j, "row plane")?;
+        let found = RowPlane {
+            cell: text_of(r.req("cell")?, "cell")?,
+            slot: int_of(r.req("slot")?, "slot")? as usize,
+        };
+        r.done()?;
+        Ok(found)
+    })?;
+    let companions = list_of(k.req("companions")?, "companions", |j| {
+        let mut c = Keys::of(j, "companion")?;
+        let found = CompanionFact {
+            plane: text_of(c.req("plane")?, "plane")?,
+            target: text_of(c.req("target")?, "target")?,
+            fold_entry: c
+                .opt("fold_entry")
+                .map(|e| text_of(e, "fold_entry"))
+                .transpose()?,
+        };
+        c.done()?;
+        Ok(found)
+    })?;
+    let step = k
+        .opt("step")
+        .map(|j| {
+            let mut s = Keys::of(j, "step")?;
+            let found = StepFacts {
+                ops: int_of(s.req("ops")?, "ops")?,
+                entry_counts: flag_of(s.req("entry_counts")?, "entry_counts")?,
+            };
+            s.done()?;
+            Ok(found)
+        })
+        .transpose()?;
+    k.done()?;
+    Ok(Facts {
+        symbol,
+        row_planes,
+        companions,
+        step,
+    })
 }
 
 /// One unit of the answer: its text per target and its typed meta (which names it and holds its digest).
@@ -978,10 +1068,11 @@ impl KernelAnswer {
                 ("text".into(), Json::Str(t.text.clone())),
                 ("body".into(), Json::Str(t.body.clone())),
                 ("entry".into(), Json::Str(t.entry.clone())),
-                ("symbol".into(), Json::Str(t.symbol.clone())),
+                ("symbol".into(), Json::Str(t.facts.symbol.clone())),
                 ("mode".into(), Json::Str(t.mode.clone())),
                 ("vectorised".into(), Json::Bool(t.vectorised)),
             ];
+            o.push(("facts".into(), written_facts(&t.facts)));
             if let Some(b) = &t.thread_box {
                 o.push((
                     "box".into(),
@@ -1038,12 +1129,13 @@ impl KernelAnswer {
                     Some(found)
                 }
             };
+            let symbol = text_of(k.req("symbol")?, "symbol")?;
             let text = TargetText {
                 target: member_of(&TARGETS, k.req("target")?, "target")?,
                 text: text_of(k.req("text")?, "text")?,
                 body: text_of(k.req("body")?, "body")?,
                 entry: text_of(k.req("entry")?, "entry")?,
-                symbol: text_of(k.req("symbol")?, "symbol")?,
+                facts: read_written_facts(k.req("facts")?, symbol)?,
                 mode: text_of(k.req("mode")?, "mode")?,
                 vectorised: flag_of(k.req("vectorised")?, "vectorised")?,
                 thread_box,
