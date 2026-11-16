@@ -228,14 +228,11 @@ fn written_facts(facts: &Facts) -> Json {
         .companions
         .iter()
         .map(|c| {
-            let mut o = vec![
+            Json::Obj(vec![
                 ("plane".into(), Json::Str(c.plane.clone())),
                 ("target".into(), Json::Str(c.target.clone())),
-            ];
-            if let Some(entry) = &c.fold_entry {
-                o.push(("fold_entry".into(), Json::Str(entry.clone())))
-            }
-            Json::Obj(o)
+                ("fold_entry".into(), Json::Str(c.fold_entry.clone())),
+            ])
         })
         .collect();
     let mixes = facts
@@ -282,10 +279,7 @@ fn read_written_facts(json: &Json, symbol: String) -> Result<Facts, Refusal> {
         let found = CompanionFact {
             plane: text_of(c.req("plane")?, "plane")?,
             target: text_of(c.req("target")?, "target")?,
-            fold_entry: c
-                .opt("fold_entry")
-                .map(|e| text_of(e, "fold_entry"))
-                .transpose()?,
+            fold_entry: text_of(c.req("fold_entry")?, "fold_entry")?,
         };
         c.done()?;
         Ok(found)

@@ -421,6 +421,12 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
         .and(parts.request.image_format)
         .unwrap_or(m::ImageFormat::None);
     let host = entry(Target::Host);
+    let device_text = entry(Target::Device);
+    // the symbol that folds a companion plane, as the target's text states it
+    let fold_of = |text: Option<&TargetText>, plane: &String| {
+        text.and_then(|t| t.facts.companions.iter().find(|h| h.plane == *plane))
+            .map(|h| h.fold_entry.clone())
+    };
     let dispatches = dispatches(parts, &slots)?;
     let companions = facts
         .companions
@@ -434,10 +440,8 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
             Ok(m::Companion {
                 slot: at(comp)?,
                 target_slot: at(target)?,
-                host_fold_entry: host
-                    .and_then(|t| t.facts.companions.iter().find(|h| h.plane == *comp))
-                    .and_then(|h| h.fold_entry.clone()),
-                ..m::Companion::default()
+                host_fold_entry: fold_of(host, comp),
+                device_fold_function: fold_of(device_text, comp),
             })
         })
         .collect::<Result<Vec<_>, Refusal>>()?;
