@@ -1,6 +1,9 @@
 //! The meta of the answer's units against the sidecars the old build recorded for the same units, member by member, and the mode
 //! that writes the C source of the meta of recorded kernels to files (the source's compile test reads those).
-use super::{ask, facts_all, load, osprey_host_free, request_for, unit_targets, Found, SIDES};
+use super::{
+    ask, facts_all, load, name_as_built, needed_keys, osprey_host_free, recorded_broadcast,
+    request_for, texts_of, unit_targets, Found, SIDES,
+};
 use osprey_host::lower::request::{KernelAnswer, UnitAnswer};
 use osprey_host::lower::unit_meta as meta;
 use rcore::json::{self, J};
@@ -960,12 +963,29 @@ pub fn emit(file: &Path, dir: &Path, only: Option<&str>) {
     std::fs::create_dir_all(dir).expect("the output folder");
     let text = std::fs::read_to_string(file).expect("the calls");
     let mut machines = HashMap::new();
+    // the recorded texts beside the calls hold what only the caller knew (the broadcast pattern): read as the replay reads them
+    let texts = file.with_file_name(
+        file.file_name()
+            .map_or(String::new(), |n| n.to_string_lossy().replacen('k', "t", 1)),
+    );
+    let mut expected = None;
     for line in text.lines() {
-        let call = json::parse(line).expect("a call");
-        let id = call.get("call").and_then(J::str).unwrap_or("");
-        if only.is_some_and(|wanted| wanted != id) {
+        let mut call = json::parse(line).expect("a call");
+        if only.is_some_and(|wanted| call.get("call").and_then(J::str) != Some(wanted)) {
             continue;
         }
+        if texts.is_file() {
+            let both = expected.get_or_insert_with(|| {
+                let wanted = needed_keys(file);
+                [
+                    texts_of(&texts, &wanted, "host"),
+                    texts_of(&texts, &wanted, "cuda"),
+                ]
+            });
+            name_as_built(&mut call);
+            recorded_broadcast(&mut call, both);
+        }
+        let id = call.get("call").and_then(J::str).unwrap_or("");
         if only.is_some() {
             println!(
                 "test {id}: {}",
