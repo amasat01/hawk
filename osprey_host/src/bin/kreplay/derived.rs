@@ -57,7 +57,17 @@ fn twin_facts(
     facts.fused_steps = has("fused_steps");
     let time0 = time.map(|t| format!("{t}_0")).and_then(|n| has(&n));
     facts.time0 = time0.clone();
-    for s in &own.body.slots {
+    let runtime: Vec<usize> = own
+        .finish
+        .iter()
+        .map(|f| f.counter_slot)
+        .chain(own.launch.active_map_slot)
+        .chain(own.launch.active_count_slot)
+        .collect();
+    for (at, s) in own.body.slots.iter().enumerate() {
+        if runtime.contains(&at) {
+            continue;
+        }
         let reserved = [
             &facts.tape,
             &facts.steps,
@@ -254,9 +264,64 @@ fn one_set(
     go().unwrap_or_else(|why| Built::Refused(format!("{id} {name}: {why}")))
 }
 
+/// The counts of a replay of derived sets: found, built, refused, texts equal modulo the block, texts different, blocks omitted, and
+/// the first refusal.
+#[derive(Default)]
+pub struct Totals {
+    /// The six counts.
+    pub counts: [usize; 6],
+    /// The first refusal.
+    pub first: Option<String>,
+}
+
+impl Totals {
+    /// Adds the counts of another replay.
+    pub fn add(&mut self, other: Totals) {
+        for (a, b) in self.counts.iter_mut().zip(other.counts) {
+            *a += b;
+        }
+        if self.first.is_none() {
+            self.first = other.first;
+        }
+    }
+
+    /// The two count lines.
+    pub fn print(&self) {
+        let c = self.counts;
+        println!(
+            "derived sets: found {} / built {} / refused {}; first refusal: {}",
+            c[0],
+            c[1],
+            c[2],
+            self.first.as_deref().unwrap_or("none")
+        );
+        println!(
+            "derived texts: equal modulo the block {} / different {}; blocks omitted {}",
+            c[3], c[4], c[5]
+        );
+    }
+}
+
+/// The recordings a corpus argument names: the `k*.jsonl` files of a folder, in name order, or the one file.
+pub fn files_of(path: &Path) -> Vec<std::path::PathBuf> {
+    if !path.is_dir() {
+        return vec![path.to_path_buf()];
+    }
+    let mut files: Vec<_> = std::fs::read_dir(path)
+        .map(|d| d.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    files.retain(|f| {
+        f.file_name().is_some_and(|n| {
+            n.to_string_lossy().starts_with('k') && n.to_string_lossy().ends_with(".jsonl")
+        })
+    });
+    files.sort();
+    files
+}
+
 /// Replays every derived set of the calls in `file` as one request each and prints the counts; the meta source and the texts of the set
 /// of the call `only` are written into `dir`.
-pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) {
+pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) -> Totals {
     let text_of_file = std::fs::read_to_string(file).expect("the calls");
     let texts = file.with_file_name(
         file.file_name()
@@ -308,7 +373,9 @@ pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) {
                     (equal, different, omitted) = (equal + e, different + d, omitted + o);
                 }
                 Built::Refused(why) => {
-                    println!("refused: {why}");
+                    if only.is_some() {
+                        println!("refused: {why}");
+                    }
                     refused += 1;
                     first.get_or_insert(why);
                 }
@@ -318,16 +385,15 @@ pub fn census(file: &Path, only: Option<&str>, dir: Option<&Path>) {
             osprey_host_free(c);
         }
     }
-    println!(
-        "derived sets: found {found} / built {built} / refused {refused}; first refusal: {}",
-        first.unwrap_or_else(|| "none".into())
-    );
-    println!("derived texts: equal modulo the block {equal} / different {different}; blocks omitted {omitted}");
+    Totals {
+        counts: [found, built, refused, equal, different, omitted],
+        first,
+    }
 }
 
 /// Counts, over the answers of single kernels in `file`, the texts after the first unit of an answer that carry the self-check block
 /// (the ones a "one block per answer" rule would change), per target.
-pub fn split_blocks(file: &Path) {
+pub fn split_blocks(file: &Path) -> [usize; 3] {
     let text_of_file = std::fs::read_to_string(file).expect("the calls");
     let texts = file.with_file_name(
         file.file_name()
@@ -392,5 +458,5 @@ pub fn split_blocks(file: &Path) {
             osprey_host_free(c);
         }
     }
-    println!("split blocks: answers {answers} host {host} cuda {device}");
+    [answers, host, device]
 }

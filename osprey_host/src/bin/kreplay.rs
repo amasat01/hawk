@@ -2654,17 +2654,41 @@ fn replay_chain(
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let Some(at) = args.iter().position(|a| a == "--split-blocks") {
-        return derived_sets::split_blocks(Path::new(
-            args.get(at + 1).expect("--split-blocks <calls>"),
-        ));
+        let Some(corpus) = args.get(at + 1) else {
+            return println!("usage: kreplay --split-blocks <corpus folder or calls file>");
+        };
+        if !Path::new(corpus).exists() {
+            return println!("usage: kreplay --split-blocks <corpus folder or calls file>: {corpus} is not there");
+        }
+        let mut sum = [0usize; 3];
+        for file in derived_sets::files_of(Path::new(corpus)) {
+            for (a, b) in sum.iter_mut().zip(derived_sets::split_blocks(&file)) {
+                *a += b;
+            }
+        }
+        return println!(
+            "split blocks: answers {} host {} cuda {}",
+            sum[0], sum[1], sum[2]
+        );
     }
     if let Some(at) = args.iter().position(|a| a == "--derived") {
-        let (file, only, out) = (args.get(at + 1), args.get(at + 2), args.get(at + 3));
-        return derived_sets::census(
-            Path::new(file.expect("--derived <calls> [call id [folder]]")),
-            only.map(String::as_str),
-            out.map(Path::new),
+        let Some(corpus) = args.get(at + 1) else {
+            return println!(
+                "usage: kreplay --derived <corpus folder or calls file> [call id [output folder]]"
+            );
+        };
+        if !Path::new(corpus).exists() {
+            return println!("usage: kreplay --derived <corpus folder or calls file> [call id [output folder]]: {corpus} is not there");
+        }
+        let (only, out) = (
+            args.get(at + 2).map(String::as_str),
+            args.get(at + 3).map(Path::new),
         );
+        let mut sum = derived_sets::Totals::default();
+        for file in derived_sets::files_of(Path::new(corpus)) {
+            sum.add(derived_sets::census(&file, only, out));
+        }
+        return sum.print();
     }
     if let Some(at) = args.iter().position(|a| a == "--emit-meta") {
         let (file, out) = (args.get(at + 1), args.get(at + 2));

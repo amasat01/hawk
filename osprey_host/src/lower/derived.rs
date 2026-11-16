@@ -6,7 +6,7 @@ use super::request::{
     Member, Settings,
 };
 use super::unit_meta::{
-    Derived, DerivedRole, DerivedSource, Link, Refined, Taped, UnitMeta, WireDtype,
+    Derived, DerivedRole, DerivedSource, Link, SlotRole, Taped, UnitMeta, WireDtype,
 };
 use aether_writers::contract::Json;
 use aether_writers::refuse::{bad, not_written, Refusal};
@@ -54,8 +54,6 @@ pub struct DerivedFacts {
     pub fused_steps: Option<String>,
     /// The slots' sources.
     pub links: Vec<LinkFact>,
-    /// The refined planes: (state in the primal, refined plane in the derived unit).
-    pub refined: Vec<(String, String)>,
 }
 
 /// A derived kernel: the request of its own lowering, its role and what the caller states of it.
@@ -152,18 +150,6 @@ impl DerivedKernel {
             })?,
             None => vec![],
         };
-        let refined = match keys.opt("refined") {
-            Some(l) => list_of(l, "refined", |one| {
-                let mut keys = Keys::of(one, "refined")?;
-                let pair = (
-                    text_of(keys.req("state")?, "state")?,
-                    text_of(keys.req("refined")?, "refined")?,
-                );
-                keys.done()?;
-                Ok(pair)
-            })?,
-            None => vec![],
-        };
         let facts = DerivedFacts {
             tape: name_opt(&mut keys, "tape")?,
             tape_rows: keys
@@ -176,7 +162,6 @@ impl DerivedKernel {
             tau: name_opt(&mut keys, "tau")?,
             fused_steps: name_opt(&mut keys, "fused_steps")?,
             links,
-            refined,
         };
         keys.done()?;
         Ok(DerivedKernel {
@@ -246,17 +231,6 @@ impl DerivedKernel {
                     .collect(),
             ),
         ));
-        o.push((
-            "refined".into(),
-            Json::Arr(
-                f.refined
-                    .iter()
-                    .map(|(s, r)| {
-                        Json::Obj(vec![("state".into(), text(s)), ("refined".into(), text(r))])
-                    })
-                    .collect(),
-            ),
-        ));
         Json::Obj(o)
     }
 }
@@ -292,10 +266,6 @@ pub(super) fn resolve(kernel: &Stated, own: &UnitMeta, at: &Context) -> Result<D
                 slot_in(own, s).ok_or_else(|| refuse(name, member, format!("no slot named {s}")))
             })
             .transpose()
-    };
-    let primal = |member: &str, slot: &str| {
-        slot_in(at.primal, slot)
-            .ok_or_else(|| refuse(name, member, format!("the primal has no slot named {slot}")))
     };
     let (tape_slot, steps_slot, tape_on_slot) = (
         mine("tape", &f.tape)?,
@@ -347,17 +317,6 @@ pub(super) fn resolve(kernel: &Stated, own: &UnitMeta, at: &Context) -> Result<D
     }
     let taped = taped_rows(kernel, own, at, tape_slot)?;
     let links = links_of(kernel, own, at, time0_slot, &f.links)?;
-    let refined = f
-        .refined
-        .iter()
-        .map(|(state, plane)| {
-            Ok(Refined {
-                state_slot: primal("refined", state)?,
-                refined_slot: slot_in(own, plane)
-                    .ok_or_else(|| refuse(name, "refined", format!("no slot named {plane}")))?,
-            })
-        })
-        .collect::<Result<_, Refusal>>()?;
     Ok(Derived {
         role: kernel.role,
         of_unit: at.of_unit,
@@ -370,7 +329,6 @@ pub(super) fn resolve(kernel: &Stated, own: &UnitMeta, at: &Context) -> Result<D
         fused_steps_slot,
         taped,
         links,
-        refined,
     })
 }
 
@@ -435,6 +393,43 @@ fn taped_rows(
     Ok(out)
 }
 
+/// The slots the unit's own record names as the runtime's: the finish counter and the launch's active map and count.
+fn runtime_slots(unit: &UnitMeta) -> Vec<usize> {
+    let finish = unit.finish.as_ref().map(|f| f.counter_slot);
+    [
+        finish,
+        unit.launch.active_map_slot,
+        unit.launch.active_count_slot,
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Checks a time-step link: it is of a uniform or per-sample slot of the primal with a real element type.
+fn time_step_of(name: &str, link: &LinkFact, primal: &UnitMeta) -> Result<(), Refusal> {
+    let found = link
+        .of
+        .as_deref()
+        .and_then(|of| slot_in(primal, of).map(|at| &primal.body.slots[at]));
+    match found {
+        Some(s)
+            if matches!(s.role, SlotRole::Uniform | SlotRole::PerSample)
+                && s.dtype == WireDtype::Real =>
+        {
+            Ok(())
+        }
+        _ => Err(refuse(
+            name,
+            "links",
+            format!(
+                "the time step {} is of a uniform or per-sample real slot of the primal",
+                link.slot
+            ),
+        )),
+    }
+}
+
 /// The slot links of the unit, checked against the role.
 fn links_of(
     kernel: &Stated,
@@ -447,10 +442,22 @@ fn links_of(
     let twin = matches!(kernel.role, DerivedRole::Tape | DerivedRole::TapeFused);
     let mut out = vec![];
     let mut time0s = 0;
+    let mut steps_of_time = 0;
+    let runtime_owned = runtime_slots(own);
     for link in stated {
         let slot = slot_in(own, &link.slot).unwrap_or(0);
-        if link.source == DerivedSource::Event {
-            return Err(not_written(format!("derived kernel {name}: links: the slot {} is an event multiplier; the library has no event list", link.slot)));
+        if runtime_owned.contains(&slot) {
+            return Err(refuse(
+                name,
+                "links",
+                format!("{} is a slot the runtime owns (the finish counter or the active set) and takes no link", link.slot),
+            ));
+        }
+        if matches!(
+            link.source,
+            DerivedSource::Event | DerivedSource::Guard | DerivedSource::GuardDot
+        ) {
+            return Err(not_written(format!("derived kernel {name}: links: the slot {} is an event value ({:?}); the library has no event list", link.slot, link.source)));
         }
         if link.reduced && link.source != DerivedSource::ParamGrad {
             return Err(refuse(
@@ -491,8 +498,29 @@ fn links_of(
                 ));
             }
         }
+        if link.source == DerivedSource::TimeStep {
+            steps_of_time += 1;
+            if kernel.role != DerivedRole::RefineNewton {
+                return Err(refuse(
+                    name,
+                    "links",
+                    format!(
+                        "{} is a time step, which only a refine-newton unit has",
+                        link.slot
+                    ),
+                ));
+            }
+            time_step_of(name, link, at.primal)?;
+        }
         let of_slot = match (&link.of, link.source) {
-            (None, DerivedSource::Steps) => None,
+            (Some(_), DerivedSource::TauSeed) => {
+                return Err(refuse(
+                    name,
+                    "links",
+                    format!("{} is a tau seed and names no slot it is of", link.slot),
+                ))
+            }
+            (None, DerivedSource::TauSeed | DerivedSource::Steps) => None,
             (Some(of), DerivedSource::Steps) => {
                 Some(at.twin.and_then(|t| slot_in(t, of)).ok_or_else(|| {
                     refuse(name, "links", format!("no step slot {of} in a taping twin"))
@@ -503,7 +531,23 @@ fn links_of(
                     refuse(name, "links", format!("the primal has no slot named {of}"))
                 })?;
                 let source_dtype = at.primal.body.slots[found].dtype;
-                let free = matches!(link.source, DerivedSource::ParamGrad);
+                let free = !matches!(
+                    link.source,
+                    DerivedSource::Primal
+                        | DerivedSource::StateAdjointIn
+                        | DerivedSource::StateAdjointOut
+                        | DerivedSource::Taped
+                        | DerivedSource::Time0
+                );
+                if link.source == DerivedSource::StateGrad
+                    && at.primal.body.slots[found].role != SlotRole::Mutable
+                {
+                    return Err(refuse(
+                        name,
+                        "links",
+                        format!("{of} is not a state of the primal"),
+                    ));
+                }
                 if !free && own.body.slots[slot].dtype != source_dtype {
                     return Err(refuse(
                         name,
@@ -527,6 +571,17 @@ fn links_of(
             of_slot,
             reduced: link.reduced,
         });
+    }
+    if kernel.role == DerivedRole::RefineNewton && steps_of_time != 1 {
+        return Err(refuse(
+            name,
+            "links",
+            if steps_of_time == 0 {
+                "a refine kernel needs a declared step".to_string()
+            } else {
+                format!("a refine kernel has {steps_of_time} step slots, not one")
+            },
+        ));
     }
     if twin && time0s != usize::from(time0_slot.is_some()) {
         return Err(refuse(
@@ -711,5 +766,141 @@ mod tests {
         assert!(resolve(&kernel, &vjp, &at).is_ok());
         kernel.facts.tape = Some("c".into());
         assert!(resolve(&kernel, &vjp, &at).is_err());
+    }
+
+    /// A refine-newton unit over a primal with a state `x`, a uniform `dt` and an integer `n`, with the links given as (slot, source, of).
+    fn newton(
+        links: &[(&str, DerivedSource, Option<&str>)],
+        role: DerivedRole,
+    ) -> Result<Derived, Refusal> {
+        let real = WireDtype::Real;
+        let mut primal = unit(&[
+            ("x", real, &[]),
+            ("dt", real, &[]),
+            ("n", WireDtype::Int32, &[]),
+        ]);
+        primal.body.slots[1].role = SlotRole::Uniform;
+        let own = unit(&[("h", real, &[]), ("tau", real, &[]), ("w", real, &[])]);
+        let facts = DerivedFacts {
+            links: links
+                .iter()
+                .map(|(slot, source, of)| LinkFact {
+                    slot: slot.to_string(),
+                    source: *source,
+                    of: of.map(String::from),
+                    reduced: false,
+                })
+                .collect(),
+            ..DerivedFacts::default()
+        };
+        let kernel = Stated {
+            name: "k_newton".into(),
+            role,
+            facts,
+        };
+        resolve(
+            &kernel,
+            &own,
+            &Context {
+                primal: &primal,
+                of_unit: 0,
+                twin: None,
+            },
+        )
+    }
+
+    #[test]
+    fn the_refine_sources_and_the_runtime_slots_are_checked_by_name() {
+        use DerivedSource::{Guard, GuardDot, Primal, StateGrad, TauSeed, TimeStep};
+        let ok = [("h", TimeStep, Some("dt")), ("tau", TauSeed, None)];
+        let done = newton(&ok, DerivedRole::RefineNewton).unwrap();
+        assert_eq!(done.links[1].of_slot, None);
+        let why =
+            |links: &[(&str, DerivedSource, Option<&str>)], role| newton(links, role).unwrap_err();
+        let needs = why(&[("tau", TauSeed, None)], DerivedRole::RefineNewton);
+        assert!(
+            needs
+                .reason
+                .contains("a refine kernel needs a declared step"),
+            "{}",
+            needs.reason
+        );
+        assert!(why(
+            &[("h", TimeStep, Some("dt")), ("w", TimeStep, Some("dt"))],
+            DerivedRole::RefineNewton
+        )
+        .reason
+        .contains("2 step slots"));
+        assert!(why(&ok, DerivedRole::StepVjp)
+            .reason
+            .contains("only a refine-newton unit"));
+        assert!(
+            why(&[("h", TimeStep, Some("x"))], DerivedRole::RefineNewton)
+                .reason
+                .contains("uniform or per-sample real")
+        );
+        assert!(
+            why(&[("h", TimeStep, Some("n"))], DerivedRole::RefineNewton)
+                .reason
+                .contains("uniform or per-sample real")
+        );
+        assert!(why(
+            &[("h", TimeStep, Some("dt")), ("tau", TauSeed, Some("x"))],
+            DerivedRole::RefineNewton
+        )
+        .reason
+        .contains("tau seed"));
+        for source in [Guard, GuardDot] {
+            let refused = why(
+                &[("h", TimeStep, Some("dt")), ("w", source, Some("x"))],
+                DerivedRole::RefineNewton,
+            );
+            assert_eq!(refused.kind, RefusalKind::NotWritten);
+        }
+        let grad = why(
+            &[("h", TimeStep, Some("dt")), ("w", StateGrad, Some("dt"))],
+            DerivedRole::RefineNewton,
+        );
+        assert!(grad.reason.contains("not a state"), "{}", grad.reason);
+        assert!(newton(
+            &[("h", TimeStep, Some("dt")), ("w", StateGrad, Some("x"))],
+            DerivedRole::RefineNewton
+        )
+        .is_ok());
+        // a slot the unit's own record names as the runtime's takes no link
+        let (primal, mut own, _) = set();
+        own.finish = Some(crate::lower::unit_meta::Finish {
+            counter_slot: 4,
+            ..Default::default()
+        });
+        let kernel = Stated {
+            name: "k".into(),
+            role: DerivedRole::StepVjp,
+            facts: DerivedFacts {
+                links: vec![LinkFact {
+                    slot: "c".into(),
+                    source: Primal,
+                    of: Some("c".into()),
+                    reduced: false,
+                }],
+                ..DerivedFacts::default()
+            },
+        };
+        let refused = resolve(
+            &kernel,
+            &own,
+            &Context {
+                primal: &primal,
+                of_unit: 0,
+                twin: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            refused.reason.contains("the runtime owns"),
+            "{}",
+            refused.reason
+        );
+        assert_eq!(refused.kind, RefusalKind::BadRequest);
     }
 }

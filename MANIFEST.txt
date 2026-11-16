@@ -31,8 +31,8 @@ Every file with its line count (this file excluded):
     256  osprey_host/loader/loader.c
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
-   2752  osprey_host/src/bin/kreplay.rs
-    396  osprey_host/src/bin/kreplay/derived.rs
+   2776  osprey_host/src/bin/kreplay.rs
+    462  osprey_host/src/bin/kreplay/derived.rs
    1124  osprey_host/src/bin/kreplay/meta.rs
    1454  osprey_host/src/bin/treplay.rs
     713  osprey_host/src/facts.rs
@@ -42,9 +42,9 @@ Every file with its line count (this file excluded):
      35  osprey_host/src/lower/boxed.rs
     613  osprey_host/src/lower/card.rs
     139  osprey_host/src/lower/chain.rs
-    715  osprey_host/src/lower/derived.rs
+    906  osprey_host/src/lower/derived.rs
      57  osprey_host/src/lower/fused.rs
-    563  osprey_host/src/lower/meta_c.rs
+    548  osprey_host/src/lower/meta_c.rs
     744  osprey_host/src/lower/meta_fill.rs
     775  osprey_host/src/lower/mod.rs
     120  osprey_host/src/lower/placed.rs
@@ -52,14 +52,14 @@ Every file with its line count (this file excluded):
     144  osprey_host/src/lower/segment.rs
     116  osprey_host/src/lower/stage_block.rs
     553  osprey_host/src/lower/stages.rs
-    726  osprey_host/src/lower/unit_meta.rs
+    722  osprey_host/src/lower/unit_meta.rs
     246  osprey_host/src/lower/warp.rs
       8  osprey_host/tests/data/meta_calls.jsonl
       8  osprey_host/tests/data/units_small.jsonl
-    250  osprey_host/tests/derived.rs
+    239  osprey_host/tests/derived.rs
     285  osprey_host/tests/facts.rs
      45  osprey_host/tests/facts_oracle.rs
-    503  osprey_host/tests/meta_c.rs
+    499  osprey_host/tests/meta_c.rs
     174  osprey_host/tests/table.rs
      47  osprey_host/tests/treplay.rs
      12  osprey_host/tools/cc

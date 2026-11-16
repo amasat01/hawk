@@ -260,10 +260,6 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
                 of_slot: Some(0),
                 reduced: true,
             }],
-            refined: vec![Refined {
-                state_slot: 0,
-                refined_slot: 1,
-            }],
             tape_rows: 1,
             ..Derived::default()
         }),
@@ -351,7 +347,7 @@ fn a_tree_with_every_record_follows_the_headers_and_compiles() {
     seen.dedup();
     assert_eq!(
         seen.len(),
-        21,
+        20,
         "every record of the headers is written: {seen:?}"
     );
     for (ty, members) in &written {

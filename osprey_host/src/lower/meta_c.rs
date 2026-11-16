@@ -459,18 +459,6 @@ fn derived(out: &mut Out, derived: Option<&Derived>) -> String {
             out.record("eg_unit_link", &format!("dl{at}"), &members)
         })
         .collect();
-    let refined: Vec<String> = d
-        .refined
-        .iter()
-        .enumerate()
-        .map(|(at, r)| {
-            let members = [
-                ("state_slot", r.state_slot.to_string()),
-                ("refined_slot", r.refined_slot.to_string()),
-            ];
-            out.record("eg_unit_refined", &format!("dr{at}"), &members)
-        })
-        .collect();
     let members = [
         ("role", d.role.c_name().into()),
         ("of_unit", d.of_unit.to_string()),
@@ -483,14 +471,11 @@ fn derived(out: &mut Out, derived: Option<&Derived>) -> String {
         ("tau_slot", index(d.tau_slot)),
         ("fused_steps_slot", index(d.fused_steps_slot)),
         ("n_links", links.len().to_string()),
-        ("n_refined", refined.len().to_string()),
+        ("n_refined", "0".into()),
         ("reserved0", "0".into()),
         ("taped", out.pointers("eg_unit_taped", "taped", &taped)),
         ("links", out.pointers("eg_unit_link", "links", &links)),
-        (
-            "refined",
-            out.pointers("eg_unit_refined", "refined", &refined),
-        ),
+        ("refined", "NULL".into()),
     ];
     format!("&{}", out.record("eg_unit_derived", "derived", &members))
 }

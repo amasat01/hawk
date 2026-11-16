@@ -164,13 +164,13 @@ fn the_rr_pend_set_is_one_table_that_compiles_and_links_with_one_self_check() {
     assert_eq!(
         oracle,
         [
-            "eg_unit_derived role=EG_DERIVED_TAPE tape_on_slot=10 fused_steps_slot=-1 n_links=8",
+            "eg_unit_derived role=EG_DERIVED_TAPE tape_on_slot=10 fused_steps_slot=-1 n_links=7",
             "eg_unit_link slot=7 of_slot=5 source=EG_SRC_PRIMAL",
             "eg_unit_link slot=8 of_slot=6 source=EG_SRC_PRIMAL",
             "eg_unit_link slot=9 of_slot=7 source=EG_SRC_PRIMAL"
         ]
     );
-    assert_eq!(mine, ["eg_unit_derived role=EG_DERIVED_TAPE_FUSED tape_on_slot=11 fused_steps_slot=7 n_links=8", "eg_unit_link slot=10 of_slot=7 source=EG_SRC_PRIMAL", "eg_unit_link slot=8 of_slot=5 source=EG_SRC_PRIMAL", "eg_unit_link slot=9 of_slot=6 source=EG_SRC_PRIMAL"]);
+    assert_eq!(mine, ["eg_unit_derived role=EG_DERIVED_TAPE_FUSED tape_on_slot=11 fused_steps_slot=7 n_links=7", "eg_unit_link slot=10 of_slot=7 source=EG_SRC_PRIMAL", "eg_unit_link slot=8 of_slot=5 source=EG_SRC_PRIMAL", "eg_unit_link slot=9 of_slot=6 source=EG_SRC_PRIMAL"]);
     compiles(&ours, &door, &dir);
     let Some(eagle) = std::env::var_os("EAGLE_ROOT").map(PathBuf::from) else {
         return;
@@ -228,23 +228,12 @@ fn the_rr_pend_set_is_one_table_that_compiles_and_links_with_one_self_check() {
 }
 
 #[test]
-fn the_time_step_set_equals_the_loaded_records_but_for_one_twin_link() {
+fn the_time_step_set_equals_the_loaded_records() {
     let Some((dir, _, door)) = replay("k83638.jsonl", "83638.59", "timed") else {
         return;
     };
     let ours = dir.join("83638.59__timed_set.c");
     let (oracle, mine) = differences(&door.join("eagle/door/test/derived/timed_meta.c"), &ours);
-    // the loaded twin does not link its finished-count lookup; the converter links every slot the primal has, as the rr_pend set does
-    assert_eq!(
-        oracle,
-        ["eg_unit_derived role=EG_DERIVED_TAPE tape_on_slot=11 fused_steps_slot=-1 n_links=8"]
-    );
-    assert_eq!(
-        mine,
-        [
-            "eg_unit_derived role=EG_DERIVED_TAPE tape_on_slot=11 fused_steps_slot=-1 n_links=9",
-            "eg_unit_link slot=8 of_slot=4 source=EG_SRC_PRIMAL"
-        ]
-    );
+    assert_eq!((oracle, mine), (Vec::<String>::new(), Vec::<String>::new()));
     compiles(&ours, &door, &dir);
 }

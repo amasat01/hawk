@@ -596,6 +596,13 @@ closed! {
         /** A step plane. */ Steps = 5 => "EG_SRC_STEPS",
         /** An event multiplier of a refine run. */ Event = 6 => "EG_SRC_EVENT",
         /** The start copy of a time plane. */ Time0 = 7 => "EG_SRC_TIME0",
+        /** A refine unit's value of an event at the candidate time. */ Guard = 8 => "EG_SRC_GUARD",
+        /** That value's derivative in the candidate time. */ GuardDot = 9 => "EG_SRC_GUARD_DOT",
+        /** A state at the candidate time. */ Refined = 10 => "EG_SRC_REFINED",
+        /** That state's derivative in the candidate time. */ RefinedDot = 11 => "EG_SRC_REFINED_DOT",
+        /** The seed of the candidate-time derivative. */ TauSeed = 12 => "EG_SRC_TAU_SEED",
+        /** The guard's gradient in a state. */ StateGrad = 13 => "EG_SRC_STATE_GRAD",
+        /** The length of the accepted step. */ TimeStep = 14 => "EG_SRC_TIME_STEP",
     }
 }
 record! {
@@ -623,15 +630,6 @@ record! {
     }
 }
 record! {
-    /// The refined plane of a primal state.
-    pub struct Refined {
-        /// The state's slot in the primal.
-        pub state_slot: usize,
-        /// The refined plane's slot in this unit.
-        pub refined_slot: usize,
-    }
-}
-record! {
     /// What a derived unit is to its primal.
     pub struct Derived {
         /// The unit's role.
@@ -656,8 +654,6 @@ record! {
         pub taped: Vec<Taped>,
         /// The slots' sources.
         pub links: Vec<Link>,
-        /// The refined planes.
-        pub refined: Vec<Refined>,
     }
 }
 record! {
