@@ -2,7 +2,7 @@
 //! over one run of the segmented input, and (for a selector the kernel never writes) a last unit that writes each sample's class.
 //! The IR of the units comes from the wing analysis; this module turns each branch into a pending unit for the write step.
 use super::request::{DeclaredSlot, KernelRequest, Member};
-use super::{canonical, finished_slot, walk_field, wing, Cards, Pending};
+use super::{canonical, finished_slot, walk_of, wing, Cards, Pending};
 use aether_writers::contract::types::{Access, Dtype, Segment};
 use aether_writers::refuse::{fault, Refusal};
 use aether_writers::spell::binding_name;
@@ -10,23 +10,17 @@ use raptor_ir::record::Ctx;
 use raptor_wings::segment::{
     branch_sinks, class_sinks, group_name, offsets_name, segmented_dispatch,
 };
-use rcore::keytext::{parse, Val};
 
 /// The plane of the fused-steps word, which the access class does not read.
 pub(super) const FUSED_STEPS_PLANE: &str = "fused_steps";
 
 /// Whether the selector of the walk's dispatch number `index` is one no sink of the kernel writes (the walk's own listing).
 fn selector_is_static(ctx: *mut Ctx, walk: u32, index: usize) -> Result<bool, Refusal> {
-    let listing = parse(&walk_field(ctx, walk, "dispatches")?).map_err(fault)?;
-    let (Val::Tuple(entries) | Val::List(entries)) = listing else {
-        return Err(fault("the walk's dispatches are not a tuple"));
-    };
-    match entries.get(index) {
-        Some(Val::Tuple(entry)) if matches!(entry.last(), Some(Val::Bool(_))) => {
-            Ok(entry.last() == Some(&Val::Bool(true)))
-        }
-        _ => Err(fault("a dispatch listing without the dispatch")),
-    }
+    walk_of(ctx, walk)?
+        .static_selector
+        .get(index)
+        .copied()
+        .ok_or_else(|| fault("a dispatch listing without the dispatch"))
 }
 
 /// The dispatch group a branch unit belongs to.

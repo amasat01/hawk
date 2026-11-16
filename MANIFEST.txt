@@ -44,10 +44,10 @@ Every file with its line count (this file excluded):
      57  osprey_host/src/lower/fused.rs
     486  osprey_host/src/lower/meta_c.rs
     707  osprey_host/src/lower/meta_fill.rs
-    777  osprey_host/src/lower/mod.rs
+    683  osprey_host/src/lower/mod.rs
     120  osprey_host/src/lower/placed.rs
    1449  osprey_host/src/lower/request.rs
-    148  osprey_host/src/lower/segment.rs
+    142  osprey_host/src/lower/segment.rs
     116  osprey_host/src/lower/stage_block.rs
     552  osprey_host/src/lower/stages.rs
     634  osprey_host/src/lower/unit_meta.rs
@@ -73,7 +73,7 @@ Every file with its line count (this file excluded):
     137  pair/83638.32_ss_bcast_host.cpp
       5  pair/README.txt
     126  shadow/emit_record.py
-    580  shadow/k6_plugin.py
+    608  shadow/k6_plugin.py
      75  shadow/k6_stats.py
     419  shadow/merge_text.py
     141  shadow/rebuild.py

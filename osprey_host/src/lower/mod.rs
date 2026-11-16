@@ -28,19 +28,15 @@ use aether_writers::contract::types::{
     Scalar, Segment, SelectWeight, Slot, Target, Unit, Walk, DEFAULT_ROWS,
 };
 use aether_writers::contract::Contract;
-use aether_writers::door;
-use aether_writers::refuse::{bad, fault, not_written, Refusal};
+use aether_writers::refuse::{bad, fault, nib, not_written, Refusal};
 use aether_writers::{cuda_render, host_render, RxCtx};
 use card::{BuildCard, DeviceCard};
-use raptor_ir::canon::{rx_canonical, rx_digest, rx_walk_field};
-use raptor_ir::door::{RX_OK, RX_TRUNC};
+use raptor_ir::canon::{Tt, WalkRes};
 use raptor_ir::record::{Ctx, Fault};
 use raptor_wings::team::TeamSpec;
-use rcore::keytext::{parse, text_val, Val};
 use request::UnitAnswer;
 use request::{Body, DeclaredSlot, KernelAnswer, KernelRequest, Member, Settings, TargetText};
 use request::{ACCESSES, DTYPES, ROLES};
-use std::ffi::{c_char, CString};
 use std::path::Path;
 
 /// A unit waiting to be written: the body its walk is taken over and what the steps before the write have decided for it.
@@ -427,162 +423,78 @@ fn scope(request: &KernelRequest) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// The key text of a tuple of texts.
-fn tuple_of(items: impl Iterator<Item = String>) -> String {
-    text_val(&Val::Tuple(items.map(Val::Str).collect()))
+/// The refusal a failed walk stands for: a construct the core refuses is not written, a bad argument is a bad request.
+fn walk_refusal(why: Fault) -> Refusal {
+    match why {
+        Fault::Refused(reason) => nib(reason),
+        Fault::BadArg(reason) => bad(reason),
+        other => fault(format!("walk: {other:?}")),
+    }
 }
 
-/// The key text of the declared slots, as the IR core's canonical walk reads them.
-fn declared_text(declared: &[DeclaredSlot]) -> String {
-    let slot = |slot: &DeclaredSlot| {
-        let shape = slot
-            .shape
-            .iter()
-            .map(|n| Val::Int(i128::from(*n)))
-            .collect();
-        let ttype = Val::Rec(
-            "TensorType".into(),
-            vec![
-                ("dtype".into(), Val::Str(slot.dtype.name().into())),
-                ("shape".into(), Val::Tuple(shape)),
-                ("tag".into(), slot.tag.clone().map_or(Val::None, Val::Str)),
-            ],
-        );
-        Val::Rec(
-            "Slot".into(),
-            vec![
-                ("role".into(), Val::Str(slot.role.name().into())),
-                ("name".into(), Val::Str(slot.name.clone())),
-                ("ttype".into(), ttype),
-            ],
-        )
-    };
-    text_val(&Val::Tuple(declared.iter().map(slot).collect()))
+/// The IR core's slot key and type of a declared slot.
+fn declared_leaf(slot: &DeclaredSlot) -> ((String, String), Tt) {
+    (
+        (slot.role.name().into(), slot.name.clone()),
+        Tt {
+            dtype: slot.dtype.name().into(),
+            shape: slot.shape.clone(),
+            tag: slot.tag.clone(),
+        },
+    )
 }
 
 /// The canonical walk over the member's sinks with its declared slots, and the walk's digest.
 fn canonical(ctx: *mut Ctx, member: &Member) -> Result<(u32, String), Refusal> {
-    let text = |s: String| CString::new(s).map_err(|_| bad("a NUL in a request text"));
-    let declared = text(declared_text(&member.declared))?;
-    let exempt = text(tuple_of(member.exempt.iter().cloned()))?;
-    let force = member.force.map(|a| text(a.name().into())).transpose()?;
-    let mut walk = 0u32;
-    // SAFETY: `ctx` is the live context the caller holds; the pointers live through the call.
-    let status = unsafe {
-        rx_canonical(
-            ctx,
-            member.sinks.as_ptr(),
-            member.sinks.len(),
-            declared.as_ptr(),
-            force.as_ref().map_or(std::ptr::null(), |f| f.as_ptr()),
-            exempt.as_ptr(),
-            &mut walk,
-        )
-    };
-    if status != RX_OK {
-        return Err(door::failed(ctx as *mut RxCtx, status));
-    }
-    let mut out = [0 as c_char; 65];
-    // SAFETY: `out` holds the 65 bytes the digest is written into.
-    let status = unsafe { rx_digest(ctx, walk, out.as_mut_ptr()) };
-    if status != RX_OK {
-        return Err(door::failed(ctx as *mut RxCtx, status));
-    }
-    // SAFETY: `rx_digest` wrote a NUL-terminated text.
-    let digest = unsafe { std::ffi::CStr::from_ptr(out.as_ptr()) };
-    Ok((walk, digest.to_string_lossy().into_owned()))
+    let declared: Vec<_> = member.declared.iter().map(declared_leaf).collect();
+    let force = member.force.map(|a| a.name());
+    // SAFETY: `ctx` is the live context the caller holds; nothing else reads it during the call.
+    let context = unsafe { &mut *ctx };
+    let walk = context
+        .canonical(&member.sinks, &declared, force, &member.exempt)
+        .map_err(walk_refusal)?;
+    let digest = context
+        .walk(walk as u32)
+        .map_err(walk_refusal)?
+        .digest
+        .clone();
+    Ok((walk as u32, digest))
 }
 
-/// One field of the walk as key text (the two-call protocol of the door).
-fn walk_field(ctx: *mut Ctx, walk: u32, field: &str) -> Result<String, Refusal> {
-    let name = CString::new(field).map_err(|_| fault("a NUL in a field name"))?;
-    let mut cap = 4096usize;
-    loop {
-        let (mut buf, mut len) = (vec![0u8; cap], 0usize);
-        // SAFETY: `buf` holds `cap` bytes and `len` takes one write.
-        let status = unsafe {
-            rx_walk_field(
-                ctx,
-                walk,
-                name.as_ptr(),
-                buf.as_mut_ptr() as *mut c_char,
-                cap,
-                &mut len,
-            )
-        };
-        match status {
-            RX_TRUNC => cap = len + 1,
-            RX_OK => {
-                buf.truncate(len);
-                return String::from_utf8(buf).map_err(fault);
-            }
-            other => return Err(door::failed(ctx as *mut RxCtx, other)),
-        }
-    }
+/// The walk the context holds under the handle `walk`.
+pub(super) fn walk_of<'a>(ctx: *mut Ctx, walk: u32) -> Result<&'a WalkRes, Refusal> {
+    // SAFETY: `ctx` is the live context the caller holds; it is only read here and outlives the lowering step.
+    unsafe { &*ctx }.walk(walk).map_err(walk_refusal)
 }
 
 /// The walk's leaves read back as slots, in argument order: each with its role, name, element type, shape and tag.
 fn leaf_slots(ctx: *mut Ctx, walk: u32) -> Result<Vec<DeclaredSlot>, Refusal> {
-    let (Val::Tuple(leaves) | Val::List(leaves)) =
-        parse(&walk_field(ctx, walk, "leaves")?).map_err(fault)?
-    else {
-        return Err(fault("the walk's leaves are not a tuple"));
-    };
-    let shape = || fault("a walk leaf without a role, a name and a type");
-    let mut slots = vec![];
-    for leaf in &leaves {
-        let Val::Rec(_, members) = leaf else {
-            return Err(shape());
-        };
-        let get = |key: &str| members.iter().find(|m| m.0 == key).map(|m| &m.1);
-        let (Some(Val::Str(role)), Some(Val::Str(name)), Some(Val::Rec(_, ttype))) =
-            (get("role"), get("name"), get("ttype"))
-        else {
-            return Err(shape());
-        };
-        let field = |key: &str| ttype.iter().find(|m| m.0 == key).map(|m| &m.1);
-        let (Some(Val::Str(dtype)), Some(Val::Tuple(extents))) = (field("dtype"), field("shape"))
-        else {
-            return Err(shape());
-        };
-        let extent = |n: &Val| match n {
-            Val::Int(n) => i64::try_from(*n).map_err(|_| shape()),
-            _ => Err(shape()),
-        };
-        slots.push(DeclaredSlot {
-            role: *ROLES.iter().find(|r| r.name() == role).ok_or_else(shape)?,
-            name: name.clone(),
-            dtype: *DTYPES
-                .iter()
-                .find(|d| d.name() == dtype)
-                .ok_or_else(shape)?,
-            shape: extents.iter().map(extent).collect::<Result<_, _>>()?,
-            tag: match field("tag") {
-                Some(Val::Str(tag)) => Some(tag.clone()),
-                _ => None,
-            },
-        });
-    }
-    Ok(slots)
+    let shape = || fault("a walk leaf with a role or an element type this library does not know");
+    walk_of(ctx, walk)?
+        .leaves
+        .iter()
+        .map(|((role, name), ttype)| {
+            Ok(DeclaredSlot {
+                role: *ROLES.iter().find(|r| r.name() == role).ok_or_else(shape)?,
+                name: name.clone(),
+                dtype: *DTYPES
+                    .iter()
+                    .find(|d| d.name() == ttype.dtype)
+                    .ok_or_else(shape)?,
+                shape: ttype.shape.clone(),
+                tag: ttype.tag.clone(),
+            })
+        })
+        .collect()
 }
 
 /// The names of the planes whose launch-start value the walk reads.
 fn prior_reads(ctx: *mut Ctx, walk: u32) -> Result<Vec<String>, Refusal> {
-    match parse(&walk_field(ctx, walk, "prior")?).map_err(fault)? {
-        Val::Tuple(names) | Val::List(names) => names
-            .into_iter()
-            .map(|n| match n {
-                Val::Str(name) => Ok(name),
-                _ => Err(fault("a prior read that is not a name")),
-            })
-            .collect(),
-        _ => Err(fault("the walk's prior reads are not a list")),
-    }
+    Ok(walk_of(ctx, walk)?.prior.clone())
 }
 
 /// The walk's arguments, access class and finish, read back as the writers' typed walk.
 fn typed_walk(ctx: *mut Ctx, walk: u32) -> Result<Walk, Refusal> {
-    let read = |field: &str| parse(&walk_field(ctx, walk, field)?).map_err(fault);
     let slots = leaf_slots(ctx, walk)?
         .into_iter()
         .enumerate()
@@ -594,20 +506,14 @@ fn typed_walk(ctx: *mut Ctx, walk: u32) -> Result<Walk, Refusal> {
             index: index as i64,
         })
         .collect();
-    let Val::Str(access) = read("access")? else {
-        return Err(fault("the walk's access is not a name"));
-    };
-    let finish = match read("finish")? {
-        Val::Str(name) => Some(name),
-        _ => None,
-    };
+    let read = walk_of(ctx, walk)?;
     let access: Access = *ACCESSES
         .iter()
-        .find(|a| a.name() == access)
-        .ok_or_else(|| fault(format!("a walk with the access class {access}")))?;
+        .find(|a| a.name() == read.access)
+        .ok_or_else(|| fault(format!("a walk with the access class {}", read.access)))?;
     Ok(Walk {
         access,
-        finish,
+        finish: read.finish.clone(),
         slots,
     })
 }
