@@ -486,9 +486,89 @@ fn host_machine(
     Ok(Json::Obj(members))
 }
 
-/// The machine record of a device build: no instruction set, no caches, the device card's select weights and, last, the
-/// architecture the build is for (the one stated, else the card's default), which the lowering reads and the writers do not.
-fn device_machine(dir: &Path, stated: &Stated) -> Result<Json, Failed> {
+/// The tool and the release of a device compiler identity (`<path> || <version line> || <digest>`): the file name of the path and
+/// the number after `release` in the version line (`Cuda compilation tools, release 12.6, V12.6.77` gives `nvcc`, `12.6`).
+fn device_tool(identity: &str) -> Result<(String, String), Failed> {
+    let parts: Vec<&str> = identity.split(" || ").collect();
+    if parts.len() != 3 {
+        return Err(Failed::Bad(
+            "the compiler identity is not <path> || <version line> || <digest>".into(),
+        ));
+    }
+    let tool = parts[0].rsplit('/').next().unwrap_or(parts[0]);
+    let after = parts[1].split("release ").nth(1);
+    let release: String = after
+        .unwrap_or("")
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    if tool.is_empty() || release.is_empty() {
+        return Err(Failed::Bad(format!(
+            "facts: the device compiler line {:?} names no tool or no release",
+            parts[1]
+        )));
+    }
+    Ok((tool.into(), release))
+}
+
+/// A list of texts of a card, each with the architecture's names put in: `{sm}` is the physical name (`sm_80`) and `{virtual}` the
+/// virtual one (`compute_80`), both made from the number the stated architecture ends in (`sm_80`, `compute_80` or `80a`).
+fn flags_of(card: &Json, file: &str, key: &str, arch: &str) -> Result<Json, String> {
+    let number = &arch[arch
+        .find(|c: char| c.is_ascii_digit())
+        .unwrap_or(arch.len())..];
+    if number.is_empty() {
+        return Err(format!("facts: {arch} is not a device architecture name"));
+    }
+    let (sm, virtual_arch) = (format!("sm_{number}"), format!("compute_{number}"));
+    let mut flags = vec![];
+    for flag in member(card, file, key)?.arr() {
+        let Json::Str(text) = flag else {
+            return Err(format!("{file}: {key} holds a flag that is not a text"));
+        };
+        let put = text
+            .replace("{sm}", &sm)
+            .replace("{virtual}", &virtual_arch);
+        flags.push(Json::Str(put));
+    }
+    Ok(Json::Arr(flags))
+}
+
+/// The compile command of a device build as data: the compiler's short name (the tool and its release), the PTX version its
+/// release writes, and the flags of an image of each format for the architecture, all from `cuda_image.json`. The flags carry no
+/// host compiler: the caller that runs the command adds its own (`-ccbin`). A release with no row is refused by name.
+fn device_build(dir: &Path, compiler: &str, arch: &str) -> Result<Json, Failed> {
+    let file = "cuda_image.json";
+    let (tool, release) = device_tool(compiler)?;
+    let card = read_file(dir, file)?;
+    closed(&card, file, &["ptx_isa", "flags"])?;
+    let isa = match member(&card, file, "ptx_isa")?.get(&release).and_then(Json::int) {
+        Some(isa) if isa > 0 => isa,
+        _ => {
+            return Err(Failed::Bad(format!(
+                "facts: the device compiler release {release} has no PTX version: add its row to {file}"
+            )))
+        }
+    };
+    let formats = member(&card, file, "flags")?;
+    let names = ["ptx", "cubin", "fatbin"];
+    closed(formats, file, &names)?;
+    let mut flags = vec![];
+    for name in names {
+        flags.push((name.to_string(), flags_of(formats, file, name, arch)?));
+    }
+    Ok(Json::Obj(vec![
+        ("compiler".into(), Json::Str(format!("{tool} {release}"))),
+        ("ptx_isa".into(), number(isa)),
+        ("flags".into(), Json::Obj(flags)),
+    ]))
+}
+
+/// The machine record of a device build: no instruction set, no caches, the device card's select weights, the architecture the
+/// build is for (the one stated, else the card's default), which the lowering reads and the writers do not, and, last, the
+/// compile command (`device_build`). One answer states one command: every unit built from it carries the same compiler, flags and
+/// PTX version.
+fn device_machine(dir: &Path, compiler: &str, stated: &Stated) -> Result<Json, Failed> {
     if stated.isa.is_some() || stated.caches.is_some() || stated.host_profile.is_some() {
         return Err(Failed::Bad(
             "stated machine: only device_arch is for the cuda target".into(),
@@ -501,6 +581,7 @@ fn device_machine(dir: &Path, stated: &Stated) -> Result<Json, Failed> {
         Some(asked) => asked.clone(),
         None => text_of(&card, file, "default_arch")?,
     };
+    let build = device_build(dir, compiler, &arch)?;
     Ok(Json::Obj(vec![
         ("exact_libm".into(), Json::Bool(true)),
         ("routed_pow".into(), Json::Bool(false)),
@@ -509,6 +590,7 @@ fn device_machine(dir: &Path, stated: &Stated) -> Result<Json, Failed> {
             weights_json(weights_of(&card, file, stated.device_arch.as_deref())?),
         ),
         ("device_arch".into(), Json::Str(arch)),
+        ("device_build".into(), build),
     ]))
 }
 
@@ -525,7 +607,7 @@ pub fn answer(
 ) -> Result<String, Failed> {
     let machine = match target {
         "host" => host_machine(dir, compiler, probe, stated)?,
-        "cuda" => device_machine(dir, stated)?,
+        "cuda" => device_machine(dir, compiler, stated)?,
         other => return Err(Failed::Bad(format!("no facts for the target {other}"))),
     };
     Ok(machine.to_text())

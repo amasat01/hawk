@@ -246,6 +246,9 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             device_steps_reverse: Some(table),
         }),
         device_image_size: Some("u__image_size".into()),
+        device_compiler: Some("nvcc 12.6".into()),
+        device_flags: Some("-fatbin -std=c++20 -O3".into()),
+        device_ptx_isa: 85,
         derived: Some(Derived {
             role: DerivedRole::StepVjp,
             of_unit: 0,

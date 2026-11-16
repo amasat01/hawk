@@ -51,6 +51,10 @@ const COMPILERS: [&str; 2] = [
     "g++ || g++ (GCC) 13.2.0 || 0",
 ];
 
+/// The device compiler identity the replay asks the device facts with: the recorder keeps none for a device build, so the replay
+/// states one release line and counts the records that needed it (`Tally::without`, last entry).
+const DEVICE_COMPILER: &str = "nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0";
+
 /// The record under a tagged record's `v`, or the value itself.
 fn rec(j: &J) -> &J {
     j.get("v").unwrap_or(j)
@@ -569,7 +573,7 @@ struct Tally {
     fusion_overridden: Vec<String>,
     /// Calls whose record lacks a field the request needs, so the converter's stated default stands: the auto cap, the fusion rows,
     /// the plane declarations of a derivative, and the image format (no recording states it).
-    without: [usize; 4],
+    without: [usize; 5],
     /// Chains whose planes between the stages differ from the record.
     chain_planes_differ: Vec<String>,
     /// Plain kernels with no recorded host text.
@@ -1353,10 +1357,11 @@ fn replay(kpath: &Path, tpath: &Path, show: usize, tallies: &mut [Tally; 2]) {
             .iter()
             .filter(|k| derived(k) && k.get("derived_planes").is_none())
             .count();
-        tallies[0].without[3] += kernels
+        let device_build = kernels
             .iter()
-            .any(|k| unit_targets(k, units).contains(&"cuda"))
-            as usize;
+            .any(|k| unit_targets(k, units).contains(&"cuda"));
+        tallies[0].without[3] += device_build as usize;
+        tallies[0].without[4] += (device_build && call.get("device_compiler").is_none()) as usize;
         let shapes: Vec<Shape> = kernels
             .iter()
             .map(|k| host_shape(k, units, kernels))
@@ -1573,7 +1578,7 @@ fn device_facts(call: &J) -> Result<String, String> {
         device_arch: stated.map(String::from),
         ..facts::Stated::default()
     };
-    facts::answer(dir, "cuda", COMPILERS[0], &facts::probe(), &machine).map_err(String::from)
+    facts::answer(dir, "cuda", DEVICE_COMPILER, &facts::probe(), &machine).map_err(String::from)
 }
 
 /// The facts answer the call's build used for the target: the machine its spec states for the host, the device architecture it
@@ -2402,8 +2407,8 @@ fn print(label: &str, t: &Tally, side: &str) {
         t.chain_planes_differ.len()
     );
     println!(
-        "  records without auto_k_max: {}; without fusion_rows: {}; derivative kernels without derived_planes: {}; device records without image_format: {}",
-        t.without[0], t.without[1], t.without[2], t.without[3]
+        "  records without auto_k_max: {}; without fusion_rows: {}; derivative kernels without derived_planes: {}; device records without image_format: {}; device records without a compiler identity (the 12.6 line stated): {}",
+        t.without[0], t.without[1], t.without[2], t.without[3], t.without[4]
     );
     println!(
         "  built under a test's own fusion row, which the record does not hold, listed: {}",

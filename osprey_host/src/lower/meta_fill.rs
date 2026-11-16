@@ -22,6 +22,8 @@ pub(super) struct Parts<'a> {
     pub request: &'a KernelRequest,
     /// The numbers the lowering decided on.
     pub card: &'a BuildCard,
+    /// The command that makes the device image, when the request names the device.
+    pub image: Option<&'a super::image::DeviceImage>,
     /// The unit.
     pub pending: &'a Pending,
     /// The unit's canonical walk and its digest.
@@ -423,6 +425,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
     let name = &parts.pending.member.name;
     let entry = |target: Target| parts.texts.iter().find(|t| t.target == target);
     let device = entry(Target::Device).map(|t| t.entry.clone());
+    let image = parts.image.filter(|_| device.is_some());
     let device_format = device
         .as_ref()
         .and(parts.request.image_format)
@@ -461,6 +464,9 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
         device_image: device.as_ref().map(|_| format!("{name}__image")),
         device_image_size: device.as_ref().map(|_| format!("{name}__image_size")),
         device_image_format: device_format,
+        device_compiler: image.map(|i| i.compiler.clone()),
+        device_flags: image.map(|i| i.flags.clone()),
+        device_ptx_isa: image.map_or(0, |i| i.ptx_isa),
         device_function: device,
         launch: launch(parts, &slots),
         finish: finish(parts, &slots)?,

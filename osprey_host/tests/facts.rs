@@ -13,6 +13,18 @@ fn identity(line: &str) -> String {
     format!("/usr/bin/c++ || {line} || 0")
 }
 
+/// The version line of a device compiler of the release `release`.
+fn line(release: &str) -> String {
+    format!("Cuda compilation tools, release {release}, V{release}.77")
+}
+
+/// A device compiler identity of the release `release`.
+fn nvcc(release: &str) -> String {
+    format!(
+        "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release {release}, V{release}.77 || 0"
+    )
+}
+
 /// A probe of a machine of the instruction set `isa` with no cache sizes.
 fn machine(isa: &str) -> Probe {
     Probe {
@@ -101,7 +113,7 @@ fn a_device_has_no_instruction_set() {
     let text = answer(
         &shipped(),
         "cuda",
-        "",
+        &nvcc("12.6"),
         &machine("arm64"),
         &Stated::default(),
     )
@@ -225,16 +237,16 @@ fn a_stated_machine_replaces_the_probed_one() {
     let caches = r#"{"l1d_bytes":32768,"l2_bytes":1048576,"cache_source":"stated"}"#;
     let text = stated("host", "clang", caches).unwrap();
     assert!(text.contains(r#""caches":{"l1d_bytes":32768,"l2_bytes":1048576,"source":"stated"}"#));
-    let device = stated("cuda", "", r#"{"device_arch":"sm_61"}"#).unwrap();
+    let device = stated("cuda", &line("12.6"), r#"{"device_arch":"sm_61"}"#).unwrap();
     assert!(
         device.contains(r#""select_weight":{"float64":4,"float32":1}"#),
         "{device}"
     );
     assert!(device.contains(r#""device_arch":"sm_61""#), "{device}");
-    let unstated = stated("cuda", "", "{}").unwrap();
+    let unstated = stated("cuda", &line("12.6"), "{}").unwrap();
     assert!(unstated.contains(r#""device_arch":"sm_61""#), "{unstated}");
     assert!(unstated.contains(r#""select_weight":{"float64":1,"float32":1}"#));
-    let other = stated("cuda", "", r#"{"device_arch":"sm_80"}"#).unwrap();
+    let other = stated("cuda", &line("12.6"), r#"{"device_arch":"sm_80"}"#).unwrap();
     assert!(
         other.contains(r#""select_weight":{"float64":1,"float32":1}"#),
         "{other}"
@@ -270,7 +282,7 @@ fn a_stated_machine_is_refused_by_name() {
         why("gcc", r#"{"device_arch":"sm_61"}"#),
         "stated machine: device_arch is for the cuda target"
     );
-    let device = stated("cuda", "", r#"{"isa":"arm64"}"#).unwrap_err();
+    let device = stated("cuda", &line("12.6"), r#"{"isa":"arm64"}"#).unwrap_err();
     assert_eq!(
         device,
         "stated machine: only device_arch is for the cuda target"
@@ -282,4 +294,34 @@ fn the_device_card_states_a_fusion_row() {
     let row = device_fusion(&shipped()).unwrap();
     assert_eq!((row.regs_base, row.regs_file), (20, 255));
     assert_eq!(row.launch_us, Some(2.7));
+}
+
+#[test]
+fn a_device_answer_states_the_compile_command_as_data() {
+    let stated = stated_from_json(r#"{"device_arch":"sm_80"}"#).unwrap();
+    let text = answer(
+        &shipped(),
+        "cuda",
+        &nvcc("12.9"),
+        &machine("arm64"),
+        &stated,
+    )
+    .unwrap();
+    let want = concat!(
+        r#""device_build":{"compiler":"nvcc 12.9","ptx_isa":88,"flags":{"#,
+        r#""ptx":["-ptx","-std=c++20","-arch=sm_80","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets"],"#,
+        r#""cubin":["-cubin","-std=c++20","-arch=sm_80","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets"],"#,
+        r#""fatbin":["-fatbin","-std=c++20","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets","-gencode","arch=compute_80,code=[sm_80,compute_80]"]}}"#
+    );
+    assert!(text.ends_with(&format!("{want}}}")), "{text}");
+}
+
+#[test]
+fn an_unknown_release_is_refused_naming_the_release_and_the_file() {
+    let why = stated("cuda", &line("13.0"), "{}").unwrap_err();
+    assert!(why.starts_with("facts"), "{why}");
+    assert!(
+        why.contains("13.0") && why.contains("cuda_image.json"),
+        "{why}"
+    );
 }

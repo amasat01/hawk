@@ -506,9 +506,9 @@ fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
         ("finish", finish),
         ("device_image_size", lit_or_null(&unit.device_image_size)),
         ("derived", derived_list),
-        ("device_compiler", "NULL".into()),
-        ("device_flags", "NULL".into()),
-        ("device_ptx_isa", "0".into()),
+        ("device_compiler", lit_or_null(&unit.device_compiler)),
+        ("device_flags", lit_or_null(&unit.device_flags)),
+        ("device_ptx_isa", unit.device_ptx_isa.to_string()),
         ("reserved1", "0".into()),
     ];
     Ok(out.record("eg_unit_meta", "meta", &members))

@@ -36,6 +36,9 @@ _COMPILERS = (
     "c++ || Apple clang version 21.0.0 (clang-2100.0.123.102) || 0",
     "g++ || g++ (GCC) 13.2.0 || 0",
 )
+# the recorder keeps no identity of the device compiler: the router states one release line
+# and counts the calls that needed it
+_DEVICE_COMPILER = "nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0"
 _SERVED = {"host": "Host", "cuda": "Device"}
 _NAMES = {
     "fold_form": ("auto", "static", "rolled"),
@@ -69,6 +72,7 @@ _C = {
     "fallbacks": {},
     "fallback_examples": [],
     "crossing": 0,
+    "device_line_stated": 0,
     "differences": [],
     "crossings": [],
 }
@@ -318,7 +322,8 @@ def _facts(call, target):
         stated, gcc = _host_stated(spec)
         compiler = _COMPILERS[gcc]
     else:
-        compiler = _COMPILERS[0]
+        compiler = _DEVICE_COMPILER
+        _C["device_line_stated"] += 1
         arch = (
             _text(_rec(spec["machine"]).get("arch"))
             or _text(_option(call, "device_arch"))
@@ -777,7 +782,7 @@ def summary(total):
         ),
         "kroute: texts taken from the library %s, left old %s %s; identical %d, different %d "
         "(on the accepted list %d); "
-        "adapted requests %s; crossing errors %d"
+        "adapted requests %s; crossing errors %d; device facts asked with the stated 12.6 line %d"
         % (
             total["texts_taken"],
             total["texts_old"],
@@ -787,6 +792,7 @@ def summary(total):
             total["texts_different_accepted"],
             total["adapted"],
             total["crossing"],
+            total["device_line_stated"],
         ),
     ]
     lines += [

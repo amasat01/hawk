@@ -14,6 +14,7 @@ pub mod card;
 mod chain;
 pub mod derived;
 mod fused;
+pub mod image;
 pub mod meta_c;
 mod meta_fill;
 mod placed;
@@ -191,6 +192,8 @@ struct Cards {
     device: Option<DeviceCard>,
     /// The card the steps decide on.
     deciding: BuildCard,
+    /// The command that makes the device image, when the request names the device.
+    image: Option<image::DeviceImage>,
 }
 
 impl Cards {
@@ -206,10 +209,17 @@ impl Cards {
             Some(device) => device.deciding(&host, &device_arch(request)?)?,
             None => host.clone(),
         };
+        let image = match request.image_format {
+            Some(format) if request.targets.contains(&Target::Device) => {
+                Some(image::DeviceImage::of_request(request, format)?)
+            }
+            _ => None,
+        };
         Ok(Cards {
             host,
             device,
             deciding,
+            image,
         })
     }
 
@@ -408,6 +418,7 @@ fn write(
         ctx,
         request,
         card: &cards.deciding,
+        image: cards.image.as_ref(),
         pending: &pending,
         walk,
         digest: &digest,
@@ -666,13 +677,13 @@ fn build_of(settings: &Settings, cards: &Cards, target: Target) -> Result<Build,
     })
 }
 
-/// The unit's contract JSON with its machine member replaced by the facts answer (less the architecture a device answer names).
+/// The unit's contract JSON with its machine member replaced by the facts answer (less the architecture and the compile command a device answer names).
 fn with_facts(unit: &Unit, facts: &str) -> Result<String, Refusal> {
     let mut top = Contract::parse(&unit.to_json())?.0;
     let mut machine = Contract::parse(facts)?.0;
     if let aether_writers::contract::Json::Obj(stated) = &mut machine {
         // the architecture is the lowering's to read; the writers' machine record does not hold it
-        stated.retain(|(key, _)| key != "device_arch");
+        stated.retain(|(key, _)| key != "device_arch" && key != "device_build");
     }
     let aether_writers::contract::Json::Obj(members) = &mut top else {
         return Err(fault("a unit that is not an object"));

@@ -691,6 +691,12 @@ record! {
         pub device_image_size: Option<String>,
         /// What the unit is to its primal, absent for a primal unit.
         pub derived: Option<Derived>,
+        /// The compiler that made the image (`nvcc 12.6`), absent without an image.
+        pub device_compiler: Option<String>,
+        /// The flags of the compile command, as given, absent without an image.
+        pub device_flags: Option<String>,
+        /// The PTX version of the image's PTX as major * 10 + minor (85 is 8.5); 0 when it holds no PTX.
+        pub device_ptx_isa: i64,
     }
 }
 record! {
