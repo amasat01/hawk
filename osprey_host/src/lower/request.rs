@@ -135,11 +135,15 @@ pub struct LaneAxis {
     pub extent: Option<i64>,
 }
 
-/// The axes the caller declares for a sink plane.
+/// The axes the caller declares for a sink plane, with the plane's payload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SinkAxes {
     /// The plane's name.
     pub name: String,
+    /// The per-sample component of the plane: its extents, empty for a scalar plane. Every entry states it (a missing member is
+    /// refused, never read as a scalar). The plane is bound with the payload first and the named axes after it, and the slot's
+    /// rank and shape in the unit's record are the payload.
+    pub payload: Vec<i64>,
     /// The plane's axes.
     pub axes: Vec<LaneAxis>,
 }
@@ -595,11 +599,18 @@ impl LaneAxis {
 }
 
 impl SinkAxes {
-    /// Reads the axes of a sink plane.
-    fn read(json: &Json) -> Result<SinkAxes, Refusal> {
+    /// Reads the axes and the payload of a sink plane of the kernel `kernel`.
+    fn read(json: &Json, kernel: &str) -> Result<SinkAxes, Refusal> {
         let mut keys = Keys::of(json, "sink_axes")?;
+        let name = text_of(keys.req("name")?, "name")?;
+        let Some(payload) = keys.opt("payload") else {
+            return Err(bad(format!(
+                "kernel {kernel:?}: the sink {name:?} states no payload (an empty list for a scalar plane)"
+            )));
+        };
         let found = SinkAxes {
-            name: text_of(keys.req("name")?, "name")?,
+            name,
+            payload: list_of(payload, "payload", |n| int_of(n, "payload"))?,
             axes: list_of(keys.req("axes")?, "axes", LaneAxis::read)?,
         };
         keys.done()?;
@@ -609,6 +620,7 @@ impl SinkAxes {
     fn write(&self) -> Json {
         Json::Obj(vec![
             ("name".into(), Json::Str(self.name.clone())),
+            ("payload".into(), ints(&self.payload)),
             (
                 "axes".into(),
                 Json::Arr(self.axes.iter().map(LaneAxis::write).collect()),
@@ -757,7 +769,8 @@ pub(super) fn read_part(keys: &mut Keys, into: &mut KernelRequest) -> Result<(),
         into.lane_space = list_of(l, "lane_space", LaneAxis::read)?;
     }
     if let Some(l) = keys.opt("sink_axes") {
-        into.sink_axes = list_of(l, "sink_axes", SinkAxes::read)?;
+        let kernel = into.name.clone();
+        into.sink_axes = list_of(l, "sink_axes", |j| SinkAxes::read(j, &kernel))?;
     }
     if let Some(l) = keys.opt("shared") {
         into.shared = list_of(l, "shared", |n| text_of(n, "shared"))?;
@@ -1588,6 +1601,28 @@ mod tests {
         assert_eq!(
             KernelRequest::from_json(&version),
             Err(unknown("request version 2"))
+        );
+    }
+
+    #[test]
+    fn a_sink_with_axes_states_its_payload_and_a_request_without_it_is_refused_by_name() {
+        let mut stated = request();
+        stated.sink_axes = vec![SinkAxes {
+            name: "acc".into(),
+            payload: vec![3],
+            axes: vec![LaneAxis {
+                label: Some("bin".into()),
+                extent: Some(9),
+            }],
+        }];
+        let text = stated.to_json();
+        assert_eq!(KernelRequest::from_json(&text).unwrap(), stated);
+        let why = KernelRequest::from_json(&text.replace("\"payload\":[3],", "")).unwrap_err();
+        assert_eq!(why.kind, aether_writers::refuse::RefusalKind::BadRequest);
+        assert!(
+            why.reason.contains("\"k\"") && why.reason.contains("\"acc\""),
+            "{}",
+            why.reason
         );
     }
 }

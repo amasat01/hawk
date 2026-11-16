@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// The members of the meta compared with the record, one line each.
-const MEMBERS: [&str; 42] = [
+const MEMBERS: [&str; 43] = [
     "name",
     "digest",
     "pattern",
@@ -54,6 +54,7 @@ const MEMBERS: [&str; 42] = [
     "slot.flags GATHER, slot.gather (plane, axis flags)",
     "launch.block (resolved block of a device launch)",
     "cell.comp_slots (compensation planes of the sum cells, by name)",
+    "slot.shape of the plane-axis sinks (payload)",
     "slot.dtype of the NSAMPLES slots (uint32)",
 ];
 
@@ -897,6 +898,28 @@ fn comp_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
     (!ours.is_empty()).then_some((ours, theirs))
 }
 
+/// The payload each plane-axis sink of a unit states as its slot's shape, against the `payload` the recorded `plane_axes` holds.
+fn payload_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
+    let sinks: Vec<&meta::Slot> = unit
+        .launch
+        .plane_axes
+        .iter()
+        .map(|a| &unit.body.slots[a.slot])
+        .collect();
+    let ours = joined(sorted(
+        sinks.iter().map(|s| format!("{}:{:?}", s.name, s.shape)),
+    ));
+    let theirs = joined(sorted(sinks.iter().map(|s| {
+        let held: Vec<i64> = at(sc, &["plane_axes", &s.name, "payload"])
+            .map_or(&[][..], J::arr)
+            .iter()
+            .filter_map(|n| number(n, &[]))
+            .collect();
+        format!("{}:{held:?}", s.name)
+    })));
+    (!sinks.is_empty()).then_some((ours, theirs))
+}
+
 /// The sample-count slots of a unit by type, against the unsigned 32-bit the runtime passes: the recorded argument list names the
 /// slots.
 fn nsamples_row(unit: &meta::UnitMeta, sc: &J) -> Pair {
@@ -1117,6 +1140,7 @@ impl Oracle {
             gather_row(m, sc),
             block_row(m, id, &self.launches),
             comp_row(m, sc),
+            payload_row(m, sc),
             nsamples_row(m, sc),
         ])
         .collect();

@@ -150,3 +150,24 @@ fn the_classify_unit_of_a_static_segmented_group_holds_the_record_of_its_own() {
             && branch.contains("M(sweep, NULL)")
     );
 }
+
+#[test]
+fn a_plane_axis_sink_states_its_payload_as_its_slots_shape() {
+    let sums = "test_block_sums_match_the_exact_sum_and_the_per_entry_path[n8-team-host]";
+    if let Some(s) = meta_source("k6_record", sums, &["grad"], "grad") {
+        assert!(object(&s, "u0_s0").contains("M(rank, 1)"));
+        assert_eq!(numbers(&s, "u0_s0_shape"), [8]);
+    }
+    if let Some(s) = meta_source("k6_record", sums, &["gram"], "gram") {
+        assert!(object(&s, "u0_s0").contains("M(rank, 2)"));
+        assert_eq!(numbers(&s, "u0_s0_shape"), [8, 8]);
+    }
+    let named = "test_the_sidecar_names_the_sorted_inputs_only_when_declared";
+    if let Some(s) = meta_source("k6_record", named, &["by_segment"], "by_segment") {
+        let slot = object(&s, "u0_s0");
+        assert!(
+            slot.contains("M(rank, 0)") && slot.contains("M(shape, NULL)"),
+            "{slot}"
+        );
+    }
+}

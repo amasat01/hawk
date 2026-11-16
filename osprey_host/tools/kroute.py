@@ -329,6 +329,12 @@ def _fusion(call):
     return out
 
 
+def _payload(plane):
+    """The per-sample component of a recorded plane: its declared extents, empty for a scalar."""
+    ttype = _rec(plane.get("ttype") or {})
+    return [n for n in map(_num, _items(ttype.get("shape"))) if n is not None]
+
+
 def _part_members(kernel, call):
     """The per-kernel members of a request besides its body, from the kernel record."""
     out = _steps_members(kernel, call)
@@ -337,7 +343,11 @@ def _part_members(kernel, call):
     planes = _declared_planes(kernel, "planes")
     sinks = [(n, p) for n, p in planes if _text(p.get("form")) == "accum"]
     sinks += _declared_planes(kernel, "derived_planes")
-    axes = [{"name": n, "axes": _axes(p.get("dims"))} for n, p in sinks if _axes(p.get("dims"))]
+    axes = [
+        {"name": n, "payload": _payload(p), "axes": _axes(p.get("dims"))}
+        for n, p in sinks
+        if _axes(p.get("dims"))
+    ]
     if axes:
         out["sink_axes"] = axes
     shared = [n for n, p in planes if p.get("shared") and _seq(p["shared"])]

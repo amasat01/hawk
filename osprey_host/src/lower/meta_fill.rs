@@ -139,11 +139,20 @@ pub(super) fn slots(
                     .contains(&s.name)
                     .then(|| pattern_of(patterns, &s.name))
                     .flatten(),
-                shape: s.shape.clone(),
+                shape: payload_of(request, s),
                 name: s.name.clone(),
             })
         })
         .collect()
+}
+
+/// The shape the record states for a slot: the payload of a sink plane with named axes, else the slot's own.
+fn payload_of(request: &KernelRequest, slot: &aether_writers::contract::types::Slot) -> Vec<i64> {
+    request
+        .sink_axes
+        .iter()
+        .find(|sink| sink.name == slot.name)
+        .map_or_else(|| slot.shape.clone(), |sink| sink.payload.clone())
 }
 
 /// The prefix of the name of the tangent of a plane.

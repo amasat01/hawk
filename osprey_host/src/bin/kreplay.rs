@@ -1226,7 +1226,17 @@ fn sink_axes_of(kernel: &J) -> Vec<SinkAxes> {
     own.chain(declared_planes(kernel, "derived_planes"))
         .filter_map(|(name, plane)| {
             let axes = tuple_axes(plane.get("dims"));
-            (!axes.is_empty()).then_some(SinkAxes { name, axes })
+            let payload = plane.get("ttype").map(rec).map_or(vec![], |t| {
+                items(t.get("shape"))
+                    .iter()
+                    .filter_map(|n| num(Some(n)))
+                    .collect()
+            });
+            (!axes.is_empty()).then_some(SinkAxes {
+                name,
+                payload,
+                axes,
+            })
         })
         .collect()
 }
