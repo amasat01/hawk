@@ -22,7 +22,7 @@ import hawk
 import hawk.math as m
 from hawk import Grid, Index, Mutable, Scalar, Table
 from hawk import runtime as rt
-from hawk.artifact import build_bundle
+from hawk.artifact import build_bundle, request
 from hawk.ext import DEFAULT_KIND, IndexSet, Kind
 from raptor.errors import RaptorError as HawkError
 from conftest import sidecar_of
@@ -49,14 +49,27 @@ def test_a_lane_set_reads_the_map_prologue_without_a_mask():
     assert src["cuda"].body == _sources(hawk.kernel(_square), DEFAULT_KIND)["cuda"].body
 
 
+def _exports_block(kernel) -> str:
+    """The exports block the library states in the text of a set of the one unit of ``kernel``: from its comment line to the
+    closing of its sizes."""
+    meta = B._emitted(kernel, kernel.name, "float64", None, ("host",), "", "", "", None, exports_block=False,
+                      options=B._user_options(None, False, None, "", ""))[2]["meta"]
+    text = request.set_text([meta])
+    start = text.index("// The self-check exports")
+    return text[start:text.index("};\n", start) + len("};\n")]
+
+
 @pytest.mark.parametrize("kind", [SET, Kind("p", lanes=IndexSet(prefix=True)), Kind("w", lanes=IndexSet(width=64))],
                          ids=["map", "prefix", "width64"])
-def test_emit_source_is_the_text_and_sidecar_build_publishes(kind, tmp_path, cache_dir):
+def test_emit_source_is_the_text_build_publishes_with_the_exports_block_and_the_same_sidecar(kind, tmp_path, cache_dir):
     k = hawk.kernel(_square, kind=kind)
     emitted = hawk.artifact.emit_source(k)
     built = hawk.artifact.build(k, tmp_path, targets=("cuda", "host"), cache_dir=cache_dir, host_profile="native")
-    for target, ext in (("cuda", "cu"), ("host", "cpp")):
-        assert emitted.sources[target].text == (tmp_path / f"{k.name}.{ext}").read_text()
+    assert emitted.sources["cuda"].text == (tmp_path / f"{k.name}.cu").read_text()
+    # a build links the set text, which states the exports block once; emit_source's host text states it itself, followed by
+    # one blank line, so taking the block out of it leaves the text the build publishes
+    before, after = emitted.sources["host"].text.split(_exports_block(k) + "\n")
+    assert before + after == (tmp_path / f"{k.name}.cpp").read_text()
     sidecar = {key: v for key, v in built.sidecar.items() if key not in ("ptxas", "format")}
     sidecar["launch"] = {key: v for key, v in sidecar["launch"].items() if not key.startswith("local_") and key != "wide"}
     assert {key: v for key, v in emitted.sidecar.items() if key != "format"} == sidecar     # format: the row's, not the object's

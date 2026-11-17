@@ -137,6 +137,32 @@ def test_a_second_build_of_the_same_set_runs_no_compiler(tmp_path, cache_dir, mo
     assert first.digest == second.digest
 
 
+WIDE_INDEX = ("AETHER_INDEX_T=std::uint64_t",)
+INDEX_FIELD = 3                             # the slot of ``eagle_layout_sizes`` that holds ``sizeof(EAGLE_ABI_INDEX_T)``
+
+
+def _exported_index_width(library) -> int:
+    """The index width, in bytes, that a built library states in its exported layout sizes."""
+    sizes = (ctypes.c_uint64 * 5).in_dll(ctypes.CDLL(str(library)), "eagle_layout_sizes")
+    return sizes[INDEX_FIELD]
+
+
+def test_the_index_width_a_host_library_exports_is_the_width_its_units_were_compiled_with(tmp_path, cache_dir):
+    narrow = build_bundle([D.fraction], tmp_path / "narrow", targets=("host",), cache_dir=cache_dir)
+    wide = build_bundle([D.fraction], tmp_path / "wide", targets=("host",), cache_dir=cache_dir, defines=WIDE_INDEX)
+    assert _exported_index_width(narrow.directory / "units.so") == 4
+    assert _exported_index_width(wide.directory / "units.so") == 8
+
+
+def test_changing_only_the_defines_rebuilds_the_set_text_object(tmp_path, monkeypatch):
+    cache = str(tmp_path / "cache")                 # its own cache: a shared one may hold the wide build already
+    build_bundle([D.fraction], tmp_path / "a", targets=("host",), cache_dir=cache)
+    reset_unit_memo()
+    labels = _compiles(monkeypatch)
+    build_bundle([D.fraction], tmp_path / "b", targets=("host",), cache_dir=cache, defines=WIDE_INDEX)
+    assert "host compile of 'set'" in labels
+
+
 def _x86_gcc():
     """``(facts, line)`` of a machine and a GCC the masked-call table lists, as a compile would state them: the library answers for them
     with no compiler present."""

@@ -758,8 +758,9 @@ def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targe
                 settings: BuildSettings | None = None) -> EmitUnit:
     """Emit ONE kernel's source text and sidecar for ``targets`` without compiling or writing anything.
 
-    The text and the sidecar are what :func:`build` publishes (same lane-set lowering, same settings), so a consumer that
-    compiles the source itself gets the same translation unit and the same plane list. Honours ``settings``
+    The sidecar is what :func:`build` publishes (same lane-set lowering, same settings). The device text is what a build
+    publishes; the host text is the one a build publishes with the exports block in it (a build states that block once, in
+    the text of its set), so it is a whole translation unit a consumer can compile alone, with the same plane list. Honours ``settings``
     (:class:`hawk.build_settings.BuildSettings`, ``launch_bounds`` included). Refuses what :func:`build` refuses, and a target
     that has no compiler (``c``)."""
     name = name or kernel.name

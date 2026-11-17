@@ -122,10 +122,11 @@ def _key_terms(build: HostBuild, template, served: bool) -> tuple:
 def compile_object(text: str, name: str, opts: CompileOptions, build: HostBuild, *, of_set: bool = False) -> CompileResult:
     """Compile the text of a unit (or, with ``of_set``, the text of the set) to an object with the template of ``build`` (the
     library's ``host_build`` record), through the cache. ``opts`` carries the target, the scalar mode, the cache directory and the
-    caller's defines, which a unit's template places, and extra flags, which follow the template. The text of a set takes no defines."""
+    caller's defines, which the template of a unit and of a set both place (the set text states the layout sizes a define can change),
+    and extra flags, which follow the template."""
     template = build.instructions["compile_set" if of_set else "compile_unit"]
     served = drivers.header_shape() == "served"
-    defines = [] if of_set else [f"-D{d}" for d in opts.defines]
+    defines = [f"-D{d}" for d in opts.defines]
     return drivers.drive(text, name, opts, _ObjectRow, {
         "compiler": build.compiler, "identity": build.identity, "payload": _payload.current_payload().digest if served else None,
         "serve": served, "tail": " against the sealed payload" if served else "", "deps": True,
