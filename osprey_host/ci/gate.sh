@@ -126,7 +126,7 @@ leg_tidy() {
   tfiles=$(git ls-files loader binding/template | grep '\.c$')
   n=$(echo "$tfiles" | grep -c .); echo "examined: $n C files of loader/ and binding/template/ with .clang-tidy"; need tidy "$n" || return 1
   # shellcheck disable=SC2086
-  "$CLANG_TIDY" $tfiles -- -std=c11 -Iinclude -Ibinding/template -I"$pyinc" -I"$EAGLE_DOOR_DIR" -I../raptor/rs/ir/include >"$out" 2>&1 \
+  "$CLANG_TIDY" $tfiles -- -std=c11 -Iinclude -Ibinding/template -I"$pyinc" -I"$EAGLE_DOOR_DIR" -I"$EAGLE_DOOR_DIR/eagle/door/test/c_shim" -I../raptor/rs/ir/include >"$out" 2>&1 \
     || { grep -E "error|warning" "$out" | head -5; echo "RED: clang-tidy"; return 1; }
 }
 

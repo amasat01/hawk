@@ -12,6 +12,7 @@
 #include "osprey.h"
 
 #include "eagle/door/eg_door.h"
+#include "plugin/dlpack.h"
 #include <dlfcn.h>
 #include <string.h>
 
@@ -50,7 +51,15 @@
     X(eg_device_props)                                                                             \
     X(eg_stream_use)                                                                               \
     X(eg_sync)                                                                                     \
-    X(eg_record_child)
+    X(eg_record_child)                                                                             \
+    X(eg_plane_new)                                                                                \
+    X(eg_plane_dlpack)                                                                             \
+    X(eg_banded_pack)                                                                              \
+    X(eg_banded_unpack)                                                                            \
+    X(eg_banded_pack_scalar)                                                                       \
+    X(eg_plan_entry_figures)                                                                       \
+    X(eg_runner_reset)                                                                             \
+    X(eg_runner_figures)
 
 /* The door's functions of one opened library, typed by their declarations in the header. */
 typedef struct {
@@ -454,6 +463,8 @@ static PyObject* m_ctx_free(PyObject* self, PyObject* args)
     if (!PyArg_ParseTuple(args, ""))
         return NULL;
     if (d->ctx) {
+        /* with a DLPack export outstanding the door only closes the context; the pointer is not
+         * used again either way */
         d->fn.eg_ctx_free(d->ctx);
         d->ctx = NULL;
     }
@@ -1012,6 +1023,210 @@ static PyObject* m_record_child(PyObject* self, PyObject* args)
     Py_RETURN_NONE;
 }
 
+/* ---- planes the door makes, banded cells, figures and reset -------------------------------- */
+
+/* plane_new(shape, dtype_code, dtype_bits, kind=EG_MEM_HOST, flags=0): a plane the door owns;
+ * the dtype is the DLPack code (kDLInt 0, kDLUInt 1, kDLFloat 2, kDLBool 6) and bit width. */
+static PyObject* m_plane_new(PyObject* self, PyObject* args, PyObject* kw)
+{
+    static char* names[] = { "shape", "dtype_code", "dtype_bits", "kind", "flags", NULL };
+    Door* d              = (Door*)self;
+    PyObject* oshape;
+    unsigned int code, bits, flags = 0;
+    int kind = EG_MEM_HOST;
+    if (!PyArg_ParseTupleAndKeywords(
+            args, kw, "OII|iI", names, &oshape, &code, &bits, &kind, &flags)
+        || !door_ready(d))
+        return NULL;
+    void* shape;
+    Py_ssize_t ndim;
+    if (seq_ints(oshape, sizeof(int64_t), &shape, &ndim) < 0)
+        return NULL;
+    struct eg_plane_desc desc = { .struct_size = sizeof desc,
+        .flags                                 = flags,
+        .kind                                  = kind,
+        .ndim                                  = (int32_t)ndim,
+        .dtype_code                            = code,
+        .dtype_bits                            = bits,
+        .shape                                 = shape };
+    eg_plane* plane           = NULL;
+    PyObject* res             = NULL;
+    if (door_check(d, d->fn.eg_plane_new(d->ctx, &desc, &plane)) == 0)
+        res = handle_make(d, KIND_PLANE, plane);
+    PyMem_Free(shape);
+    return res;
+}
+
+/* Frees the tensor of a capsule nobody consumed (a consumer renames the capsule and owns it). */
+static void dlpack_capsule_destructor(PyObject* capsule)
+{
+    if (!PyCapsule_IsValid(capsule, DLPACK_NAME))
+        return;
+    struct DLManagedTensorVersioned* tensor = PyCapsule_GetPointer(capsule, DLPACK_NAME);
+    tensor->deleter(tensor);
+}
+
+/* plane_dlpack(plane): a `dltensor_versioned` capsule over the plane's memory. The tensor holds
+ * its own reference, so the plane handle may be freed at once; its deleter runs once, from the
+ * consumer or from the capsule if it is dropped unconsumed. */
+static PyObject* m_plane_dlpack(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject* oplane;
+    void* plane;
+    if (!PyArg_ParseTuple(args, "O", &oplane) || !door_ready(d)
+        || handle_ptr(d, oplane, KIND_PLANE, &plane) < 0)
+        return NULL;
+    struct DLManagedTensorVersioned* tensor = NULL;
+    if (door_check(d, d->fn.eg_plane_dlpack(d->ctx, plane, &tensor)) < 0)
+        return NULL;
+    PyObject* capsule = PyCapsule_New(tensor, DLPACK_NAME, dlpack_capsule_destructor);
+    if (!capsule)
+        tensor->deleter(tensor);
+    return capsule;
+}
+
+/* banded_pack(values): the 8-byte banded cell (an int) of each float64. */
+static PyObject* m_banded_pack(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject* seq;
+    if (!PyArg_ParseTuple(args, "O", &seq) || !door_ready(d))
+        return NULL;
+    PyObject* t = PySequence_Tuple(seq);
+    if (!t)
+        return NULL;
+    Py_ssize_t n  = PyTuple_Size(t);
+    double* in    = PyMem_Malloc((size_t)(n ? n : 1) * sizeof(double));
+    uint64_t* out = PyMem_Malloc((size_t)(n ? n : 1) * sizeof(uint64_t));
+    PyObject* res = NULL;
+    if (!in || !out) {
+        PyErr_NoMemory();
+        goto done;
+    }
+    for (Py_ssize_t i = 0; i < n; i++) {
+        in[i] = PyFloat_AsDouble(PyTuple_GetItem(t, i));
+        if (in[i] == -1.0 && PyErr_Occurred())
+            goto done;
+    }
+    if (door_check(d, d->fn.eg_banded_pack(d->ctx, in, out, (uint64_t)n)) < 0)
+        goto done;
+    res = PyTuple_New(n);
+    for (Py_ssize_t i = 0; res && i < n; i++) {
+        PyObject* cell = PyLong_FromUnsignedLongLong(out[i]);
+        if (!cell) {
+            Py_CLEAR(res);
+            break;
+        }
+        PyTuple_SetItem(res, i, cell);
+    }
+done:
+    PyMem_Free(in);
+    PyMem_Free(out);
+    Py_DECREF(t);
+    return res;
+}
+
+/* banded_unpack(cells): the float64 of each banded cell. */
+static PyObject* m_banded_unpack(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject* seq;
+    if (!PyArg_ParseTuple(args, "O", &seq) || !door_ready(d))
+        return NULL;
+    PyObject* t = PySequence_Tuple(seq);
+    if (!t)
+        return NULL;
+    Py_ssize_t n  = PyTuple_Size(t);
+    uint64_t* in  = PyMem_Malloc((size_t)(n ? n : 1) * sizeof(uint64_t));
+    double* out   = PyMem_Malloc((size_t)(n ? n : 1) * sizeof(double));
+    PyObject* res = NULL;
+    if (!in || !out) {
+        PyErr_NoMemory();
+        goto done;
+    }
+    for (Py_ssize_t i = 0; i < n; i++) {
+        in[i] = PyLong_AsUnsignedLongLong(PyTuple_GetItem(t, i));
+        if (in[i] == (uint64_t)-1 && PyErr_Occurred())
+            goto done;
+    }
+    if (door_check(d, d->fn.eg_banded_unpack(d->ctx, in, out, (uint64_t)n)) < 0)
+        goto done;
+    res = PyTuple_New(n);
+    for (Py_ssize_t i = 0; res && i < n; i++) {
+        PyObject* value = PyFloat_FromDouble(out[i]);
+        if (!value) {
+            Py_CLEAR(res);
+            break;
+        }
+        PyTuple_SetItem(res, i, value);
+    }
+done:
+    PyMem_Free(in);
+    PyMem_Free(out);
+    Py_DECREF(t);
+    return res;
+}
+
+static PyObject* m_banded_pack_scalar(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    double x;
+    uint64_t cell = 0;
+    if (!PyArg_ParseTuple(args, "d", &x) || !door_ready(d))
+        return NULL;
+    if (door_check(d, d->fn.eg_banded_pack_scalar(d->ctx, x, &cell)) < 0)
+        return NULL;
+    return PyLong_FromUnsignedLongLong(cell);
+}
+
+/* plan_entry_figures(plan): what the driver reported for the plan's device function. */
+static PyObject* m_plan_entry_figures(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject* oplan;
+    void* plan;
+    struct eg_entry_figures f = { .struct_size = sizeof f };
+    if (!PyArg_ParseTuple(args, "O", &oplan) || !door_ready(d)
+        || handle_ptr(d, oplan, KIND_PLAN, &plan) < 0)
+        return NULL;
+    if (door_check(d, d->fn.eg_plan_entry_figures(d->ctx, plan, &f)) < 0)
+        return NULL;
+    return Py_BuildValue("{s:I,s:i,s:i,s:i,s:i,s:i,s:i,s:i}", "flags", f.flags, "regs", f.regs,
+        "max_threads", f.max_threads, "persist_regs", f.persist_regs, "persist_max_threads",
+        f.persist_max_threads, "local_bytes", f.local_bytes, "shared_bytes", f.shared_bytes,
+        "const_bytes", f.const_bytes);
+}
+
+/* runner_figures(runner): the mode and resolved launch of the runner's last run. */
+static PyObject* m_runner_figures(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject* orunner;
+    void* runner;
+    struct eg_runner_figures f = { .struct_size = sizeof f };
+    if (!PyArg_ParseTuple(args, "O", &orunner) || !door_ready(d)
+        || handle_ptr(d, orunner, KIND_RUNNER, &runner) < 0)
+        return NULL;
+    if (door_check(d, d->fn.eg_runner_figures(d->ctx, runner, &f)) < 0)
+        return NULL;
+    return Py_BuildValue("{s:i,s:i,s:i,s:i,s:L}", "mode", f.mode, "block", f.block, "chunk",
+        f.chunk, "steps_reverse", f.steps_reverse, "grid", (long long)f.grid);
+}
+
+static PyObject* m_runner_reset(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject* orunner;
+    void* runner;
+    if (!PyArg_ParseTuple(args, "O", &orunner) || !door_ready(d)
+        || handle_ptr(d, orunner, KIND_RUNNER, &runner) < 0)
+        return NULL;
+    if (door_check(d, d->fn.eg_runner_reset(d->ctx, runner)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
 /* ---- the types and the module -------------------------------------------------------------- */
 
 #define KEYWORD_CALL(f) ((PyCFunction)(void (*)(void))(f))
@@ -1050,6 +1265,14 @@ static PyMethodDef door_methods[] = {
     { "stream_use", m_stream_use, METH_VARARGS, NULL },
     { "sync", m_sync, METH_VARARGS, NULL },
     { "record_child", m_record_child, METH_VARARGS, NULL },
+    { "plane_new", KEYWORD_CALL(m_plane_new), METH_VARARGS | METH_KEYWORDS, NULL },
+    { "plane_dlpack", m_plane_dlpack, METH_VARARGS, NULL },
+    { "banded_pack", m_banded_pack, METH_VARARGS, NULL },
+    { "banded_unpack", m_banded_unpack, METH_VARARGS, NULL },
+    { "banded_pack_scalar", m_banded_pack_scalar, METH_VARARGS, NULL },
+    { "plan_entry_figures", m_plan_entry_figures, METH_VARARGS, NULL },
+    { "runner_reset", m_runner_reset, METH_VARARGS, NULL },
+    { "runner_figures", m_runner_figures, METH_VARARGS, NULL },
     { NULL, NULL, 0, NULL },
 };
 
@@ -1148,13 +1371,17 @@ static PyType_Spec handle_spec    = { "_osprey.Handle", sizeof(Handle), 0,
     X(EG_RUN_REORDER)                                                                              \
     X(EG_REPORT_DONE)                                                                              \
     X(EG_REPORT_EXACT_STEPS)                                                                       \
-    X(EG_REPORT_PROBE)                                                                             \
-    X(EG_REPORT_TIMED)                                                                             \
     X(EG_REPORT_SLOT_FILL)                                                                         \
     X(EG_CAP_HOST)                                                                                 \
     X(EG_CAP_DEVICE)                                                                               \
     X(EG_CAP_COND_IF_ELSE)                                                                         \
-    X(EG_CAP_COND_SWITCH)
+    X(EG_CAP_COND_SWITCH)                                                                          \
+    X(EG_MEM_HOST)                                                                                 \
+    X(EG_MEM_PINNED)                                                                               \
+    X(EG_MEM_DEVICE)                                                                               \
+    X(EG_PLANE_ZERO)                                                                               \
+    X(EG_ENTRY_DEVICE)                                                                             \
+    X(EG_ENTRY_PERSIST)
 
 /* Adds the Door and Handle types, the door's constants and the digest width to the module; the
  * exception classes must be in it already (osprey_add_errors). */

@@ -340,6 +340,85 @@ raises(
 )
 done.append("make_op_like: with no literal and with the literal of another node")
 
+# ---- the derivative rules: the manifest's templates over the nodes of the context ----
+vec3 = c.make("Leaf", "f64", [3], None, [], LEAF % "v")
+tan3 = c.make("Leaf", "f64", [3], None, [], LEAF % "tv")
+adj = mk(c, "Leaf", [], LEAF % "g")
+tan = mk(c, "Leaf", [], LEAF % "tx")
+assert len(c.rule_kinds("unary_d")) == 26 and c.rule_kinds("core")[:2] == ("fma", "clip")
+assert c.rule_kinds("no_such_table") == ()
+assert c.rule_modes("zero")[:2] == ("lt", "le") and c.rule_modes("walker") == ("at", "dispatch")
+done.append("rule_kinds and rule_modes")
+negated = c.make_op("neg", [x], "")
+(slope,) = c.rule_factor("unary_d", "neg", "n x", [negated, x], "")
+assert slope.cls == "Const" and slope.field_real("literal") == -1.0
+raises(
+    ValueError,
+    lambda: c.rule_factor("unary_d", "neg", "n", [negated, x], ""),
+    "rule_factor: a name for two nodes",
+)
+raises(
+    ValueError,
+    lambda: c.rule_factor("unary_d", "no_such", "n x", [negated, x], ""),
+    "rule_factor: no template",
+)
+done.append("rule_factor: a factor, and its refusals")
+product = c.make_op("mul", [x, adj], "")
+reverse = c.rule_factor("bin_vjp", "mul", "n g a b", [product, adj, x, adj], "")
+assert len(reverse) == 4 and (reverse[0], reverse[2]) == (x, adj)
+assert reverse[1].field_text("kind") == "mul"
+forward = c.rule_factor("bin_jvp", "mul", "n a b ta", [product, x, adj, tan], "tb")
+assert len(forward) == 1 and forward[0].field_text("kind") == "mul"
+done.append("rule_factor: the pairs of bin_vjp and the live entries of bin_jvp")
+scalar_product = c.make_op("dot", [vec3, vec3], "")
+back = c.rule_vjp("core", "dot", scalar_product, adj)
+assert len(back) == 4 and back[0] == vec3 and back[2] == vec3
+done.append("rule_vjp")
+length = c.make_op("norm", [vec3], "")
+(rate,) = c.rule_jvp("core", "norm", length, [vec3], [tan3])
+assert rate.ttype == ((), "f64", None)
+raises(
+    ValueError,
+    lambda: c.rule_jvp("core", "norm", length, [], []),
+    "rule_jvp: no tangent to a kind that needs one",
+)
+done.append("rule_jvp: a tangent, and a refusal")
+total = c.new("ReduceSamples", "(('op', 'sum'), ('value', #0))", [x])
+child, summed = c.reduce_vjp(total, adj)
+assert child == x and summed.cls == "ReduceSamples" and summed.operands == (adj,)
+(summed,) = c.reduce_jvp(total, [x], [tan])
+assert summed.operands == (tan,) and c.reduce_jvp(total, [], []) == ()
+largest = c.new("ReduceSamples", "(('op', 'max'), ('value', #0))", [x])
+e = raises(ValueError, lambda: c.reduce_vjp(largest, adj), "reduce_vjp of a max")
+assert "no derivative for the max over samples" in str(e), str(e)
+done.append("reduce_vjp and reduce_jvp")
+widened = c.entrywise("add", [vec3, x])
+assert widened.field_text("kind") == "vec" and len(widened.operands) == 3
+assert widened.ttype == ((3,), "f64", None)
+assert c.entrywise("add", [x, adj]).field_text("kind") == "add"
+done.append("entrywise: per entry over a vector, and as itself over scalars")
+assert c.zero_of("f64", []).cls == "Const"
+filled = c.zero_of("f64", [3])
+assert filled.field_text("kind") == "splat" and filled.ttype == ((3,), "f64", None)
+done.append("zero_of")
+
+# ---- the checks of a derivative template, and the kind names a primitive may not take ----
+inside = mk(c, "Leaf", [], LEAF.replace("vocab_read", "uniform") % "$in0")
+stranger = mk(c, "Leaf", [], LEAF.replace("vocab_read", "uniform") % "zz")
+closed = c.make_op("add", [inside, inside], "")
+assert c.rule_template_check("p", [closed], "$in0 $dot0 $out") is None
+e = raises(
+    ValueError,
+    lambda: c.rule_template_check("p", [c.make_op("add", [inside, stranger], "")], "$in0 $out"),
+    "rule_template_check: a free leaf that is not a placeholder",
+)
+assert str(e).startswith("primitive 'p': a rule template reads"), str(e)
+assert "'zz'" in str(e) and "(['$in0', '$out'])" in str(e), str(e)
+done.append("rule_template_check: a closed template, and a refusal by name")
+assert c.kind_reserved("primitive") and c.kind_reserved("assign")
+assert not c.kind_reserved("my_primitive") and not c.kind_reserved("add")
+done.append("kind_reserved")
+
 # ---- the backend library entry: open by path, name, identity, render, close (HOST_LIB names the
 # library) ----
 lib_path = os.environ.get("HOST_LIB")
