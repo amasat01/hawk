@@ -31,7 +31,7 @@ from ospreys.cuda import toolchain as device_toolchain
 from raptor.errors import RaptorError
 
 import hawk.runtime as R
-from hawk.artifact import build, build_bundle, request
+from hawk.artifact import build, build_bundle, emit_source, request
 from hawk import facts
 from hawk.compile import host as host_driver
 from hawk.compile import toolchain as host_toolchain
@@ -130,6 +130,116 @@ def test_a_library_of_one_bare_text_resolves_its_symbol_and_a_second_call_runs_n
     assert again.hit and again.artifact == first.artifact
 
 
+class _UnitMeta(ctypes.Structure):
+    """The head of ``struct eg_unit_meta`` (eagle/door/eg_door.h) up to its stages."""
+
+    _fields_ = [("struct_size", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("name", ctypes.c_char_p),
+                ("digest", ctypes.c_uint8 * 32), ("pattern", ctypes.c_int32), ("scalar_type", ctypes.c_int32),
+                ("host_entry", ctypes.c_char_p), ("device_image", ctypes.c_char_p), ("device_function", ctypes.c_char_p),
+                ("device_image_bytes", ctypes.c_uint64), ("device_image_format", ctypes.c_int32), ("n_stages", ctypes.c_int32),
+                ("stages", ctypes.c_void_p)]
+
+
+class _Stage(ctypes.Structure):
+    """The head of ``struct eg_unit_stage``: the reference to the unit a stage runs."""
+
+    _fields_ = [("struct_size", ctypes.c_uint32), ("n_cells_in", ctypes.c_int32), ("n_cells_out", ctypes.c_int32),
+                ("reserved0", ctypes.c_int32), ("unit", ctypes.POINTER(ctypes.c_void_p))]
+
+
+class _LibraryMeta(ctypes.Structure):
+    """``struct eg_library_meta``: the tree a unit library returns from ``eg_unit_library_meta``."""
+
+    _fields_ = [("struct_size", ctypes.c_uint32), ("schema_major", ctypes.c_uint32), ("schema_minor", ctypes.c_uint32),
+                ("n_units", ctypes.c_uint32), ("units", ctypes.POINTER(ctypes.POINTER(_UnitMeta)))]
+
+
+def _units_of(library) -> dict:
+    """``{unit name: [names of the units its stages run]}`` of a library, read off the meta it exports."""
+    ask = library.eg_unit_library_meta
+    ask.restype = ctypes.POINTER(_LibraryMeta)
+    meta = ask().contents
+    found = {}
+    for at in range(meta.n_units):
+        unit = meta.units[at].contents
+        stages = ctypes.cast(unit.stages, ctypes.POINTER(ctypes.POINTER(_Stage)))
+        # a stage's unit reference starts with its size and a reserved word, then the name
+        found[unit.name.decode()] = [ctypes.c_char_p.from_address(ctypes.addressof(stages[i].contents.unit.contents) + 8).value.decode()
+                                     for i in range(unit.n_stages)]
+    return found
+
+
+def test_the_set_library_of_a_team_kernel_lists_its_source_unit_and_the_stage_units_it_names(tmp_path, cache_dir):
+    """Oracle: the bundle's own artifacts are the units that have a text (the stages); the source unit is the one of the lowering
+    library's answer that has none (checked there: ``<kernel>_source``, which names the stages in order). The library lists the
+    source unit with its stages and each stage unit with none."""
+    from _linalg_kernels import chol_kernel
+
+    kernel = chol_kernel(40)
+    bundle = build_bundle([kernel], tmp_path, targets=("host",), cache_dir=cache_dir, linalg_form="auto")
+    listed = _units_of(ctypes.CDLL(str(bundle.directory / "units.so")))
+    stage_units = [artifact.name for artifact in bundle.artifacts]
+    source = f"{kernel.name}_source"
+    assert listed == {source: stage_units, **{name: [] for name in stage_units}}
+
+
+def test_a_team_kernel_is_refused_by_emit_source_and_build_as_stages_with_the_way_out(tmp_path):
+    """Oracle: the answer's own records (the stages of ``<kernel>_source`` carry a team member), not the name."""
+    from _linalg_kernels import chol_kernel
+
+    with pytest.raises(HawkError, match=r"worked by a team per lane.*several stages.*call build_bundle"):
+        emit_source(chol_kernel(40), targets=("host",))
+    with pytest.raises(HawkError, match=r"worked by a team per lane.*call build_bundle"):
+        build(chol_kernel(40), tmp_path, targets=("host",))
+
+
+def test_a_value_reduced_over_samples_is_refused_by_emit_source_and_build_as_several_launches_with_the_way_out(tmp_path):
+    """Oracle: the answer's stages state no team, so the split is the reduction's."""
+    from test_split_stages import standard
+
+    with pytest.raises(HawkError, match=r"reduced over samples.*call build_bundle"):
+        emit_source(standard, targets=("host",))
+    with pytest.raises(HawkError, match=r"reduced over samples.*call build_bundle"):
+        build(standard, tmp_path, targets=("host",))
+
+
+def test_the_set_library_of_a_team_kernel_on_the_device_row_lists_its_units_and_holds_each_stage_image(tmp_path, stand_in):
+    """Oracle: the bundle's artifacts are the stage units; each holds the image file its build wrote, the source unit holds none."""
+    from _linalg_kernels import chol_kernel
+
+    kernel = chol_kernel(40)
+    bundle = build_bundle([kernel], tmp_path / "a", cache_dir=str(tmp_path / "cache"), **DEVICE_BUILD)
+    library = ctypes.CDLL(str(bundle.directory / "units.so"))
+    stage_units = [artifact.name for artifact in bundle.artifacts]
+    assert _units_of(library) == {f"{kernel.name}_source": stage_units, **{name: [] for name in stage_units}}
+    for artifact in bundle.artifacts:
+        image = artifact.entries["cuda"].artifact.read_bytes()
+        assert _image_held_by(library, artifact.name) == (len(image), image)
+
+
+def test_the_device_compile_a_build_runs_names_the_compiler_of_the_sets_host_objects_as_its_host_compiler(tmp_path, stand_in, monkeypatch):
+    for name in ("HAWK_NVCC_CCBIN", "NVCC_PREPEND_FLAGS", "NVCC_APPEND_FLAGS", "NVCC_CCBIN"):
+        monkeypatch.delenv(name, raising=False)
+    build_bundle([D.axpb], tmp_path / "a", cache_dir=str(tmp_path / "cache"), **DEVICE_BUILD)
+    ran = stand_in.read_text().split("--\n")[0].splitlines()
+    assert ran[ran.index("-ccbin") + 1] == TARGETS["host"].compiler()
+
+
+def test_a_callers_nvcc_ccbin_is_the_one_ccbin_of_the_device_command_and_the_child_environment_has_none(tmp_path, stand_in, monkeypatch):
+    monkeypatch.delenv("HAWK_NVCC_CCBIN", raising=False)
+    monkeypatch.setenv("NVCC_PREPEND_FLAGS", "-ccbin /opt/some/g++ -Xfoo")
+    build_bundle([D.axpb], tmp_path / "a", cache_dir=str(tmp_path / "cache"), **DEVICE_BUILD)
+    ran = stand_in.read_text().split("--\n")[0].splitlines()
+    assert ran.count("-ccbin") == 1 and ran[ran.index("-ccbin") + 1] == "/opt/some/g++"
+    assert device_toolchain.process_env({"NVCC_PREPEND_FLAGS": os.environ["NVCC_PREPEND_FLAGS"]})["NVCC_PREPEND_FLAGS"] == "-Xfoo"
+
+
+def test_a_ccbin_in_the_flags_of_a_device_compile_is_refused_by_name(stand_in):
+    opts = drivers.CompileOptions(target="cuda", arch="sm_80", extra=("-ccbin", "/opt/other/g++"))
+    with pytest.raises(RaptorError, match=r"HAWK_NVCC_CCBIN"):
+        TARGETS["cuda"].compile_plan(opts, drivers._Inputs())
+
+
 def test_two_units_of_one_name_are_refused_naming_both_kernels(tmp_path, cache_dir):
     with pytest.raises(HawkError, match=r"'axpb' and 'fraction' both write a unit named 'same'"):
         build_bundle([D.axpb, D.fraction], tmp_path, targets=("host",), cache_dir=cache_dir, name="same")
@@ -207,19 +317,6 @@ def test_the_masked_call_flag_follows_the_verdict_of_the_witness(verdict):
     assert ("-DAETHER_HVM_MASKED=1" in ran[0]) == (verdict == "fixed")
 
 
-def test_a_host_build_does_not_call_the_old_command_builder(tmp_path, monkeypatch):
-    import ospreys.cpu.toolchain as old_tools
-
-    def called(*args, **kwargs):
-        raise AssertionError("the old host command builder was called")
-
-    for owner, name in ((old_tools, "host_flags"), (old_tools, "host_codegen_flags")):
-        monkeypatch.setattr(owner, name, called)
-    reset_unit_memo()
-    bundle = build_bundle([D.axpb, D.fraction], tmp_path, targets=("host",), cache_dir=str(tmp_path / "cache"))
-    assert (tmp_path / "units.so").is_file() and not any(e.hit for a in bundle.artifacts for e in a.entries.values())
-
-
 @pytest.mark.parametrize("macro", ["AETHER_HVM_MASKED=0", "AETHER_HVM_MASKED=1", "AETHER_HVM_MASKED"])
 def test_a_masked_call_macro_of_the_caller_wins_without_a_probe(macro):
     """The caller's own macro for the masked call is in the argv once, from the template's ``{defines}``, and no flag of the template's
@@ -262,6 +359,63 @@ def test_the_witness_runs_for_real_under_the_template_of_this_machine(tmp_path, 
     template = request.host_build(*request.compiling_host(), {})["compile_unit"]
     driver = host_driver.HostBuild({}, backend.compiler(), tc.compiler_identity(backend.compiler()), "native", "O3", "cpu", "/facts", "")
     assert host_driver._run_witness(driver, backend.masked_call_witness_source, template) == ("fixed", "")
+
+
+def _probe_counting(monkeypatch, tmp_path, verdicts):
+    """A stand-in for one run of the witness that answers ``verdicts`` in turn and counts its runs; the verdict memo and the cache
+    directory are this test's own."""
+    from hawk.compile import host
+
+    monkeypatch.setenv("HAWK_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(host, "_WITNESS_MEMO", {})
+    runs = []
+    monkeypatch.setattr(host, "_run_witness", lambda build, source, template: (runs.append(template), (verdicts[len(runs) - 1], "stand-in"))[1])
+    return host, runs, host.HostBuild({}, "c++", "c++ || x || 0", "native", "O3", "cpu", "/facts", "")
+
+
+def test_the_masked_call_verdict_is_run_once_and_kept_on_disk_for_a_new_process(tmp_path, monkeypatch):
+    """Oracle: the count of witness runs, and the verdict a fresh process (an empty memo) reads from the cache directory."""
+    host, runs, driver = _probe_counting(monkeypatch, tmp_path, ["fixed", "fixed"])
+    assert host.masked_call_verdict(driver, "w.cpp", ["-O3"]) == host.masked_call_verdict(driver, "w.cpp", ["-O3"]) == "fixed"
+    assert len(runs) == 1
+    host._WITNESS_MEMO.clear()
+    assert host.masked_call_verdict(driver, "w.cpp", ["-O3"]) == "fixed" and len(runs) == 1
+    assert host.masked_call_verdict(driver, "w.cpp", ["-O2"]) == "fixed" and len(runs) == 2      # other flags, other verdict
+
+
+def test_an_unrun_masked_call_witness_is_not_stored(tmp_path, monkeypatch):
+    host, runs, driver = _probe_counting(monkeypatch, tmp_path, ["unrun", "miscompile"])
+    assert host.masked_call_verdict(driver, "w.cpp", ["-O3"]) == "unrun"
+    host._WITNESS_MEMO.clear()
+    assert host.masked_call_verdict(driver, "w.cpp", ["-O3"]) == "miscompile" and len(runs) == 2
+
+
+#: Compilers of the lanes that run this: the verdict the witness gives each (GCC 13.3 miscompiles; the 14.2 backport is fixed).
+REAL_WITNESSED = [("/home/mas/mambaforge/bin/x86_64-conda-linux-gnu-g++", "miscompile"),
+                  ("/opt/rh/gcc-toolset-14/root/usr/bin/g++", "fixed")]
+
+
+@pytest.mark.parametrize("compiler,expected", REAL_WITNESSED)
+def test_the_witness_gives_a_real_affected_or_fixed_gcc_its_verdict(compiler, expected, tmp_path, monkeypatch):
+    if not os.path.exists(compiler):
+        pytest.skip("this local compiler is not installed")
+    from hawk.compile import toolchain as tc
+
+    monkeypatch.setenv("HAWK_CACHE_DIR", str(tmp_path))
+    facts, _ = request.compiling_host()
+    template = request.host_build(facts, request._identity(tc.compiler_identity(compiler)), {"host_profile": "native-vector-math"})["compile_unit"]
+    driver = host_driver.HostBuild({}, compiler, tc.compiler_identity(compiler), "native-vector-math", "O3", "cpu", "/facts", "")
+    assert host_driver._run_witness(driver, TARGETS["host"].masked_call_witness_source, template)[0] == expected
+
+
+def test_a_virtual_architecture_is_built_as_ptx_whatever_the_driver_so_no_cubin_is_asked_of_it():
+    """Oracle: a CUBIN holds SASS for one concrete ``sm_<N>``, which a ``compute_<N>`` arch does not name; the library answers PTX for it
+    with a driver that needs no PTX and with none known, where a real arch gets a CUBIN."""
+    ident = "/usr/local/cuda/bin/nvcc||nvcc: NVIDIA (R) Cuda compiler driver||0f3c"
+    for driver in (None, "11.0", "99.0"):
+        virtual = request.device_build(ident, arch="compute_75", release="12.9", driver=driver, level="O3")
+        assert virtual["image_format"] == "ptx" and "-cubin" not in virtual["compile"]
+    assert request.device_build(ident, arch="sm_75", release="12.9", driver=None, level="O3")["image_format"] == "cubin"
 
 
 def test_the_build_template_is_the_library_answer_for_this_machine_whatever_machine_the_spec_names():
@@ -400,7 +554,7 @@ def test_the_image_argv_a_build_runs_is_the_librarys_template_with_its_places_fi
     template = request.device_build(identity, arch="sm_80", release=None, driver=None,
                                     level="O3")["compile"]
     aether, eagle = host_toolchain.include_roots()
-    filled = {"{include:aether}": aether, "{include:eagle}": eagle,
+    filled = {"{include:aether}": aether, "{include:eagle}": eagle, "{host_compiler}": TARGETS["host"].compiler(),
               "-I{include:facts}": f"-I{facts.include_dir({'name': 'cuda'})}"}
     unplaced = ("{depfile}", "{source}", "{output}")    # the files of the compile: only that each is given
     expected = [filled.get(element, element) for element in template[1:] if element != "{defines}"]

@@ -493,9 +493,11 @@ def _host_row(targets):
                     "install the host OSPREY")
 
 
-def _link_set(drafts, lowered, options, *, targets, stem: str | None) -> "_Library | None":
+def _link_set(drafts, answers, lowered, options, *, targets, stem: str | None) -> "_Library | None":
     """Link the objects of ``drafts`` into one library (:meth:`hawk.backends.Backend.link`): each
-    unit's host object and the object that holds its device image, with the text of the set. The
+    unit's host object and the object that holds its device image, with the text of the set. The set
+    lists every unit of every answer in the answers' order: a unit with no text (the source unit of a
+    split kernel, which names its stages) has a record in the library and no object. The
     file is ``<stem>.<ext>`` (``stem`` is the bundle's name; none for a library named for its one
     unit); each host unit also gets a link ``<unit>.<ext>`` to it, which the runtime still opens by
     the unit's name. ``None`` when no target of the build is compiled."""
@@ -504,8 +506,14 @@ def _link_set(drafts, lowered, options, *, targets, stem: str | None) -> "_Libra
     target = next((t for t in targets if TARGETS[t].host_compiled), None)
     device = next((t for t in targets if TARGETS[t].device), None)
     row = _host_row(targets)
-    units = [(None if target is None else d.entries[target][0],
-              None if device is None else d.entries[device][0], d.meta) for d in drafts]
+    written = iter(drafts)
+    units = []
+    for unit in (u for answer in answers for u in answer["units"]):
+        if not unit["texts"]:
+            units.append((None, None, unit["meta"]))
+            continue
+        d = next(written)
+        units.append((None if target is None else d.entries[target][0], None if device is None else d.entries[device][0], d.meta))
     recipe = None if device is None else TARGETS[device].embed_recipe(lowered, options)
     ext = row.artifact if target is None else Path(drafts[0].entries[target][1]).suffix
     name = (stem or drafts[0].name) + ext
@@ -699,7 +707,7 @@ def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
     parts = _build_targets(prepared[0], prepared[1], options, targets)
     draft = _draft(kernel, unit, answer["units"], prepared, parts, options, targets=targets, derivative=derivative)
     # one kernel is a set of one: its library is named for its unit
-    library = _link_set([draft], lowered, options, targets=targets, stem=None)
+    library = _link_set([draft], [answer], lowered, options, targets=targets, stem=None)
     directory.mkdir(parents=True, exist_ok=True)
     for f in (*draft.files, *(() if library is None else library.files)):
         f.write(directory)
@@ -736,8 +744,11 @@ def _emitted(kernel, name, mode, kind, targets, device_arch, does, instead, spec
                                     exports_block=exports_block)[0])
     written = [u for u in answer["units"] if u["texts"]]
     if len(written) != 1:
-        raise HawkError(f"{name!r} reads a value reduced over samples, so it runs as several launches: {does} ONE "
-                        f"artifact — call {instead}([kernel], ...) instead")
+        # what the answer is decides the cause: a split with a team stage is a team kernel, any other split a reduction over samples
+        teams = any(stage["team"] is not None for unit in answer["units"] for stage in unit["meta"]["stages"])
+        cause = ("is worked by a team per lane, so it runs as several stages, one launch each" if teams
+                 else "reads a value reduced over samples, so it runs as several launches")
+        raise HawkError(f"{name!r} {cause}: {does} ONE artifact — call {instead}([kernel], ...) instead")
     return SimpleNamespace(smode=smode, kind=kind, spec=spec), answer, written[0], options
 
 
@@ -1012,7 +1023,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
             pool.shutdown(cancel_futures=True)
             raise
     drafts = [d for family in families for d in family]
-    library = _link_set(drafts, SimpleNamespace(smode=smode, kind=kinds[0], spec=spec), inputs,
+    library = _link_set(drafts, answers, SimpleNamespace(smode=smode, kind=kinds[0], spec=spec), inputs,
                         targets=targets, stem=name or "units")
     files = tuple(f for d in drafts for f in d.files) + (() if library is None else library.files)
     doc = _manifest_of(families, library)

@@ -28,10 +28,10 @@ from _cards import card_path
 
 from hawk.artifact import emit_source
 from hawk.compile import aether_include, compiler_identity, device_compiler, eagle_include
-from ospreys.cpu.toolchain import host_compiler, host_flags
+from _toolchain import device_command, host_command
+from ospreys.cpu.toolchain import host_compiler
 from hawk.compile.toolchain import subprocess_env
-from ospreys.cuda.toolchain import resolve_arch, device_flags
-from hawk.compile import toolchain as _tc
+from ospreys.cuda.toolchain import resolve_arch
 from aether.wings.base.wrapper import FLOAT64
 from hawk.targets import TARGETS
 
@@ -52,11 +52,11 @@ def _emit(name: str, target: str, tmp: Path) -> Path:
 
 
 def _host_row(path: Path, tmp: Path) -> dict:
-    argv = [host_compiler(), *host_flags(extra=("-ftime-report",)),
-            str(path), "-o", str(tmp / f"{path.stem}.so")]
-    start = time.perf_counter()
-    done = subprocess.run(argv, capture_output=True, text=True, env=subprocess_env())
-    wall = time.perf_counter() - start
+    # -ftime-report is the card's measurement flag, appended to the library's command
+    with host_command(path, tmp / f"{path.stem}.o", extra=("-ftime-report",)) as argv:
+        start = time.perf_counter()
+        done = subprocess.run(argv, capture_output=True, text=True, env=subprocess_env())
+        wall = time.perf_counter() - start
     assert done.returncode == 0, done.stderr[-2000:]
     phases = {}
     for line in done.stderr.splitlines():
@@ -68,8 +68,8 @@ def _host_row(path: Path, tmp: Path) -> dict:
 
 def _device_row(path: Path, tmp: Path) -> dict:
     csv_path = tmp / f"{path.stem}.time.csv"
-    argv = [device_compiler(), "--time", str(csv_path), *device_flags(level=_tc.opt_level(), include=_tc.include_flags()),
-            str(path), "-o", str(tmp / f"{path.stem}.ptx")]
+    # --time is the card's measurement flag, appended to the library's command
+    argv = device_command(path, tmp / f"{path.stem}.ptx", arch=resolve_arch(), extra=("--time", str(csv_path)))
     start = time.perf_counter()
     done = subprocess.run(argv, capture_output=True, text=True, env=subprocess_env())
     wall = time.perf_counter() - start

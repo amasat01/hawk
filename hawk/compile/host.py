@@ -145,6 +145,8 @@ class _EmbedRow:
     @staticmethod
     def compile_hook(plan: dict, job, run) -> dict:
         """Run the assemble template of ``plan`` for ``job``."""
+        # the compiler of the host build: this assembles a host object. The device compile's own ``{host_compiler}`` may be another
+        # (``$HAWK_NVCC_CCBIN``: a device compiler may not accept the host build's compiler)
         places = {"{host_compiler}": lambda: plan["compiler"], "{source}": lambda: job.src,
                   "{object}": lambda: job.out}
         argv = fill_argv(plan["template"], places)

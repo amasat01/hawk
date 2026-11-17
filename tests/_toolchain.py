@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from raptor.wings.base.exchange import ToolchainAbsent
@@ -123,9 +124,8 @@ def _env() -> dict:
     env = dict(os.environ)
     cuda = Path(device_compiler()).resolve().parent
     env["PATH"] = f"{cuda}:{env.get('PATH', '')}"
-    # The nvcc host compiler follows hawk's own rule
-    # (hawk.compile.toolchain.subprocess_env): $HAWK_NVCC_CCBIN, else the
-    # caller's NVCC_PREPEND_FLAGS/NVCC_CCBIN untouched, else nvcc's default.
+    # The fixtures' own nvcc argv carries no -ccbin (a build's does, from the library's template): $HAWK_NVCC_CCBIN is given
+    # to nvcc through its environment here.
     ccbin = os.environ.get("HAWK_NVCC_CCBIN")
     if ccbin:
         env["NVCC_PREPEND_FLAGS"] = f"-ccbin {ccbin}"
@@ -168,3 +168,54 @@ def host_template(profile: str | None = None, opt: str | None = None) -> list[st
 
     facts, line = compiling_host()
     return host_build(facts, line, {"host_profile": profile, "opt_level": opt})["compile_unit"]
+
+
+@contextmanager
+def host_command(source: Path, output: Path, *, profile: str | None = None, defines=(), extra=()):
+    """The one host compile command of a build, for a fixture that measures it (stderr reports, peak memory, wall time): the library's
+    ``compile_unit`` template for this machine with its places filled by the product's own filler, as the argv of ``source`` to the
+    object ``output``. ``extra`` are the fixture's own MEASUREMENT flags, appended after the template. The command is valid inside the
+    ``with`` only: the headers may be served from a directory that lives that long."""
+    from contextlib import nullcontext
+
+    from hawk.compile import drivers, host
+    from hawk.compile import payload as _payload
+    from hawk.compile.drivers import CompileOptions
+    from hawk.targets import TARGETS, build_spec
+
+    row = TARGETS["host"]
+    opts = CompileOptions(target="host", host_profile=profile or "", defines=tuple(defines), extra=tuple(extra))
+    build = row.host_build(build_spec(("host",)).for_target(row).primary, {"host_profile": profile}, opts)
+    served = drivers.header_shape() == "served"
+    with (_payload.current_payload().serve() if served else nullcontext()) as root:
+        places = {**host._places(build, door=False), "{compiler}": lambda: build.compiler, "{source}": lambda: source,
+                  "{object}": lambda: output, "{depfile}": lambda: output.with_suffix(".d")}
+        if served:
+            places["{include:served}"] = lambda: root
+        yield [*host.fill_argv(build.instructions["compile_unit"], places, {"{defines}": [f"-D{d}" for d in opts.defines]}), *extra]
+
+
+def device_command(source: Path, output: Path, *, arch: str = "", cubin: bool = False, extra=()) -> list[str]:
+    """The one device compile command of a build, for a fixture that measures it: the library's ``compile`` template for this machine
+    and compiler, filled by the product's own filler, with the host compiler of :func:`ospreys.cuda.toolchain.device_host_compiler`
+    (the ``-ccbin`` a build gives). ``cubin`` asks the library for the form it states when no device driver is known (a CUBIN, with
+    the ptxas report), whatever driver this machine has. ``extra`` are the fixture's own MEASUREMENT flags, appended after the template. Refuses by name
+    when the device compiler is not nvcc."""
+    from hawk.compile import drivers
+    from hawk.compile.drivers import CompileOptions
+    from hawk.compile.host import fill_argv
+    from hawk.targets import TARGETS
+
+    plan = TARGETS["cuda"].compile_plan(CompileOptions(target="cuda", arch=arch, extra=tuple(extra)), drivers._Inputs())
+    if not plan["compiler"]:
+        raise ToolchainAbsent("the device command of a fixture is the nvcc one; this machine compiles in process", toolchain="nvcc")
+    template = plan["template"]
+    if cubin:
+        from hawk.artifact import request
+        from ospreys.cuda.toolchain import resolve_arch
+
+        template = request.device_build(plan["identity"], arch=resolve_arch(arch), release=plan["release"], driver=None,
+                                        level=drivers._Inputs.opt_level())["compile"]
+    places = {**plan["places"], "{compiler}": lambda: plan["compiler"], "{depfile}": lambda: output.with_suffix(".d"),
+              "{source}": lambda: source, "{output}": lambda: output}
+    return [*fill_argv(template, places, {"{defines}": plan["defines"]}), *plan["extra"]]

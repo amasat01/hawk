@@ -240,11 +240,8 @@ def opt_level(requested: str | None = None) -> str:
     :data:`DEFAULT_OPT_LEVEL`. An unknown name RAISES — mirrors
     :func:`host_profile`'s own resolution order exactly.
 
-    Feeds the host build's ``-O<n>`` (:func:`host_codegen_flags`, replacing
-    what used to be a hard-coded ``-O3``) and the AOT device build's
-    ``-O<n>``/``-Xptxas -O<n>`` (:func:`device_flags`, nvcc only — there was
-    no explicit ``-O`` there before, so the default is now spelled out
-    rather than left to nvcc's own). NVRTC always optimises and takes no
+    Feeds the ``-O<n>`` of the host build's and the AOT device build's compile templates (the lowering library states the
+    flag from this level). NVRTC always optimises and takes no
     ``-O`` option at all: this level does not reach it (see
     :func:`hawk.compile.nvrtc.options`)."""
     name = requested or os.environ.get("HAWK_OPT_LEVEL") or DEFAULT_OPT_LEVEL

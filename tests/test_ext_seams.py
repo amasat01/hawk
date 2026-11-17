@@ -426,11 +426,11 @@ def test_compensation_stays_exact_under_fma_contraction(tmp_path, cache_dir):
     import eagle.exec as eexec
     from eagle import plan as eplan
 
-    from ospreys.cpu.toolchain import host_codegen_flags
+    from _toolchain import host_template
 
     if platform.machine().lower() not in ("x86_64", "amd64"):
         pytest.skip("the fast host profile is x86-64 only")
-    assert "-ffp-contract=fast" in host_codegen_flags("native-vector-math")
+    assert "-ffp-contract=fast" in host_template("native-vector-math")
     bundle, probed = (
         _build_bundle([k], tmp_path / sub, targets=("host",),
                       cache_dir=cache_dir, host_profile="native-vector-math")

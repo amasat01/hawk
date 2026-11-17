@@ -59,11 +59,11 @@ import hawk
 import hawk.math as m
 from hawk.artifact import emit_source
 from hawk.compile import aether_include, compiler_identity, device_compiler, eagle_include
-from ospreys.cpu.toolchain import host_compiler, host_flags
+from _toolchain import device_command, host_command
+from ospreys.cpu.toolchain import host_compiler
 from hawk.compile.drivers import ADDRESS_SPACE_CAP_BYTES
 from hawk.compile.toolchain import subprocess_env
-from ospreys.cuda.toolchain import resolve_arch, device_flags
-from hawk.compile import toolchain as _tc
+from ospreys.cuda.toolchain import resolve_arch
 from aether.wings.base.wrapper import FLOAT64
 from raptor.ir import Loop
 from hawk.targets import TARGETS
@@ -139,12 +139,9 @@ def _grid_row(n_in: int, basis: int, tmp: Path) -> dict:
     loops = [n for n in kernel.walk.order if isinstance(n, Loop)]
     device = _source(kernel, "cuda", tmp)
     host = _source(kernel, "host", tmp)
-    d_rc, d_wall, d_rss, d_err = _capped(
-        [device_compiler(), *device_flags(level=_tc.opt_level(), include=_tc.include_flags()), str(device),
-         "-o", str(tmp / f"{kernel.name}.ptx")])
-    h_rc, h_wall, h_rss, h_err = _capped(
-        [host_compiler(), *host_flags(), str(host),
-         "-o", str(tmp / f"{kernel.name}.so")])
+    d_rc, d_wall, d_rss, d_err = _capped(device_command(device, tmp / f"{kernel.name}.ptx", arch=resolve_arch()))
+    with host_command(host, tmp / f"{kernel.name}.o") as host_argv:
+        h_rc, h_wall, h_rss, h_err = _capped(host_argv)
     assert d_rc == 0, f"device compile of {n_in}x{basis} failed:\n{d_err[-3000:]}"
     assert h_rc == 0, f"host compile of {n_in}x{basis} failed:\n{h_err[-3000:]}"
     ptx = tmp / f"{kernel.name}.ptx"

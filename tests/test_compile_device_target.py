@@ -22,7 +22,6 @@ from _toolchain import real_arch
 
 from hawk.compile import CompileOptions, compile_source
 from hawk.compile import nvrtc as hnvrtc
-from hawk.compile import toolchain as tc
 from ospreys.cuda import toolchain as dtc
 from raptor.errors import RaptorError as HawkError
 
@@ -36,45 +35,6 @@ def _skip_without_nvcc():
         pytest.skip("no nvcc on this box")
     if dtc.device_compiler_kind() != "nvcc":
         pytest.skip("$HAWK_DEVICE_COMPILER forces nvrtc on this box")
-
-
-def test_device_flags_swaps_ptx_for_cubin():
-    ptx = dtc.device_flags(level="O3", include=(), arch=real_arch())
-    cubin = dtc.device_flags(level="O3", include=(), arch=real_arch(), target="cubin")
-    assert "-ptx" in ptx and "-cubin" not in ptx
-    assert "-cubin" in cubin and "-ptx" not in cubin
-    # every other flag is unchanged -- only the target flag itself differs, and
-    # a cubin (the one target ptxas runs for) adds the ptxas report flags.
-    i = cubin.index("-v")
-    assert cubin[i - 1] == "-Xptxas" and "-v" not in ptx
-    rest = cubin[:i - 1] + cubin[i + 1:]
-    assert [f for f in ptx if f != "-ptx"] == [f for f in rest if f != "-cubin"]
-
-
-def test_device_flags_rejects_an_unknown_target():
-    with pytest.raises(HawkError, match="target"):
-        dtc.device_flags(level="O3", include=(), arch=real_arch(), target="fatbin")
-
-
-def test_device_flags_carries_an_explicit_opt_level():
-    """There used to be no explicit ``-O`` here at all (nvcc's own default);
-    the default is now spelled out as O3, on both halves of the nvcc
-    compile -- its own host-side flag and the ``-Xptxas`` passthrough to the
-    device-side optimiser."""
-    default = dtc.device_flags(level="O3", include=(), arch=real_arch())
-    assert "-O3" in default
-    assert default[default.index("-Xptxas") + 1] == "-O3"
-    o0 = dtc.device_flags(level="O0", include=(), arch=real_arch())
-    assert "-O3" not in o0
-    assert "-O0" in o0 and o0[o0.index("-Xptxas") + 1] == "-O0"
-    # every other flag is unchanged -- only the two -O terms differ.
-    stripped = lambda flags, level: [f for f in flags if f != f"-{level}"]  # noqa: E731
-    assert stripped(default, "O3") == stripped(o0, "O0")
-
-
-def test_device_flags_rejects_an_unknown_opt_level():
-    with pytest.raises(HawkError, match="unknown opt level"):
-        tc.opt_level("Ofast")
 
 
 def test_nvcc_version_parses_the_release_line():
@@ -134,7 +94,7 @@ def test_compile_source_keys_ptx_and_cubin_into_different_slots(monkeypatch, tmp
 def test_compile_source_keys_differ_by_opt_level_for_the_AOT_nvcc_path(
         monkeypatch, tmp_path):
     """An O0 AOT nvcc build and an O3 one of the same source must never
-    share a cache slot: ``opt_level`` rides inside ``device_flags``'s own
+    share a cache slot: ``opt_level`` rides inside the compile template's own
     ``-O<n>``/``-Xptxas -O<n>``, so this is the real compiler, not a flag
     string, proving the two never collide."""
     _skip_without_nvcc()
@@ -149,7 +109,3 @@ def test_compile_source_keys_differ_by_opt_level_for_the_AOT_nvcc_path(
     assert o3.artifact.is_file() and o0.artifact.is_file()
 
 
-def test_device_flags_refuse_a_cubin_for_a_virtual_arch():
-    """A virtual ``compute_<N>`` arch has no CUBIN: the nvcc argv builder refuses one by name."""
-    with pytest.raises(HawkError, match="virtual"):
-        dtc.device_flags(level="O3", include=(), arch="compute_75", target="cubin")

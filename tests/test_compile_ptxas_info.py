@@ -11,7 +11,6 @@ import hawk
 import hawk.math as M
 from hawk.artifact.sidecar import sidecar_meta
 from hawk.compile import toolchain as tc
-from ospreys.cuda import toolchain as dtc
 from ospreys.cuda.driver import parse_ptxas_info
 
 _STDERR = """\
@@ -42,8 +41,14 @@ def test_ptxas_info_is_parsed_per_kernel():
 
 
 def test_ptxas_is_asked_to_report_only_when_it_runs():
-    assert "-v" in dtc.device_flags(level="O3", arch="sm_61", target="cubin")
-    assert "-v" not in dtc.device_flags(level="O3", arch="compute_61", target="ptx")
+    """The library's device template: a CUBIN (ptxas runs) asks for the report, PTX does not."""
+    from hawk.artifact import request
+
+    identity = "/usr/local/cuda/bin/nvcc||nvcc: NVIDIA (R) Cuda compiler driver||0f3c"
+    cubin = request.device_build(identity, arch="sm_61", release="12.9", driver=None, level="O3")
+    ptx = request.device_build(identity, arch="compute_61", release="12.9", driver="99.0", level="O3")
+    assert (cubin["image_format"], ptx["image_format"]) == ("cubin", "ptx")
+    assert "-v" in cubin["compile"] and "-v" not in ptx["compile"]
 
 
 def test_sidecar_carries_the_ptxas_figures_when_given():

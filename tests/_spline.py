@@ -218,10 +218,7 @@ def main(argv=None) -> int:
     from _eval import evaluate
 
     from hawk.artifact import build
-    from hawk.compile import device_compiler
-    from ospreys.cpu.toolchain import host_compiler, host_flags
-    from ospreys.cuda.toolchain import device_flags
-    from hawk.compile import toolchain as _tc
+    from _toolchain import device_command, host_command
     from ospreys.cuda.toolchain import resolve_arch
     from hawk.artifact import emit_source
     from raptor.ir import Loop
@@ -254,15 +251,14 @@ def main(argv=None) -> int:
         row[f"{target}_tu_bytes"] = path.stat().st_size
 
     ptx = tmp / f"{cell.name}.ptx"
-    rc, wall, peak, err = _timed([device_compiler(), *device_flags(level=_tc.opt_level(), include=_tc.include_flags()),
-                                  str(sources["cuda"]), "-o", str(ptx)])
+    rc, wall, peak, err = _timed(device_command(sources["cuda"], ptx, arch=resolve_arch()))
     if rc != 0:
         raise SystemExit(f"device compile failed (rc={rc}):\n{err[-3000:]}")
     row.update(device_wall_s=round(wall, 3), device_peak_rss_kib=peak,
                device_ptx_bytes=ptx.stat().st_size)
 
-    rc, wall, peak, err = _timed([host_compiler(), *host_flags(),
-                                  str(sources["host"]), "-o", str(tmp / "cell.so")])
+    with host_command(sources["host"], tmp / "cell.o") as host_argv:
+        rc, wall, peak, err = _timed(host_argv)
     if rc != 0:
         raise SystemExit(f"host compile failed (rc={rc}):\n{err[-3000:]}")
     row.update(host_wall_s=round(wall, 3), host_peak_rss_kib=peak)

@@ -213,13 +213,22 @@ class Cuda(Backend):
         aether, eagle = tc.include_roots()
         served = tc.pip_only_root()
         facts_flag, = include_flags({"name": self.facts_name})
+        # the host compiler of THIS device compile: the user's choice ($HAWK_NVCC_CCBIN, the caller's NVCC_* variables), else the
+        # compiler of the set's host objects. The embed recipe's own ``{host_compiler}`` (hawk/compile/host.py) always is the
+        # latter, since it assembles a host object; a device compiler may not accept that compiler, hence the two may differ
+        host_fallback = self._host_compiler()
+        host_compiler = dtc.device_host_compiler(host_fallback)
         # the caller's own flags follow the template, which states the facts header's folder itself
         extra = tuple(f for f in opts.extra if not isinstance(f, IncludeFlag))
+        if banned := [f for f in extra if str(f).split("=")[0] in ("-ccbin", "--compiler-bindir")]:
+            raise RaptorError(f"{banned[0]!r}: the host compiler of a device build is set in $HAWK_NVCC_CCBIN (default: the build's host "
+                              "compiler), not in the flags of the device compile")
         places = {"{include:aether}": lambda: aether, "{include:eagle}": lambda: eagle,
-                  "{include:facts}": lambda: include_dir({"name": self.facts_name})}
+                  "{include:facts}": lambda: include_dir({"name": self.facts_name}),
+                  "{host_compiler}": lambda: host_compiler}
         # the key reads the facts by their content and a served root by the payload's digest,
         # not by where they are on this machine
-        keyed = {**places, "{include:facts}": lambda: facts_flag.key_term}
+        keyed = {**places, "{include:facts}": lambda: facts_flag.key_term, "{host_compiler}": lambda: dtc.device_host_compiler_identity(inputs.identity, host_fallback)}
         for name, root in (("aether", aether), ("eagle", eagle)):
             if root == served:
                 keyed[f"{{include:{name}}}"] = lambda: f"payload:{inputs.payload.digest}"
@@ -227,7 +236,7 @@ class Cuda(Backend):
                    "{source}": lambda: "<src>", "{output}": lambda: "<out>"}
         lists = {"{defines}": defines}
         terms = (*fill_argv(build["compile"], {**keyed, **pending}, lists), *extra,
-                 f"device_target:{target}", dtc.device_host_compiler_identity(inputs.identity))
+                 f"device_target:{target}")
         return {"compiler": compiler, "identity": inputs.identity(compiler),
                 "release": _release(dtc.nvcc_version(compiler)),
                 "deps": True, "serve": False, "payload": None, "embed": build["embed"],
@@ -235,6 +244,17 @@ class Cuda(Backend):
                 "defines": defines, "extra": extra,
                 "hit_argv": (*fill_argv(build["compile"], {**places, **pending}, lists), *extra),
                 "meta": {"flags": list(terms), "device_target": target}}
+
+    @staticmethod
+    def _host_compiler() -> str:
+        """The compiler of the host build whose objects the set library holds: the device compile names it as its own host compiler,
+        so one library is not made with two C++ runtimes."""
+        from hawk.targets import TARGETS
+
+        row = next((r for r in TARGETS.values() if r.host_compiled), None)
+        if row is None:
+            raise RaptorError("a device build links its images into one library with the host compiler: install the host OSPREY")
+        return row.compiler()
 
     def _instructions(self, identity, arch, version, level) -> dict:
         """The library's ``device_build`` record (:func:`hawk.artifact.request.device_build`) for

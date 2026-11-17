@@ -35,7 +35,7 @@ import re
 
 import numpy as np
 import pytest
-from _toolchain import host_library
+from _toolchain import host_library, host_template
 from conftest import avx512, sidecar_of
 
 import hawk
@@ -345,9 +345,9 @@ def test_contraction_off_makes_the_vector_and_the_per_sample_loop_bitwise_equal(
 
 
 def test_the_nofma_profile_is_the_default_with_contraction_off():
-    flags = ctc.host_codegen_flags("native-vector-math-nofma") if _vm_ok() else None
+    flags = host_template("native-vector-math-nofma") if _vm_ok() else None
     if flags is not None:
-        fast = ctc.host_codegen_flags("native-vector-math")
+        fast = host_template("native-vector-math")
         assert "-ffp-contract=off" in flags and "-ffp-contract=fast" in fast
         assert [f for f in flags if "contract" not in f] == [f for f in fast if "contract" not in f]
 

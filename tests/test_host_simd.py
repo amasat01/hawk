@@ -61,7 +61,8 @@ import hawk
 from hawk import Mutable, Param, Scalar, Terminated
 from hawk.artifact import build_bundle
 from hawk.compile import OPT_LEVELS, Cache, CompileOptions, compile_source, opt_level
-from ospreys.cpu.toolchain import host_codegen_flags, host_profile
+from _toolchain import host_template
+from ospreys.cpu.toolchain import host_profile
 from hawk.compile import toolchain as tc
 import ospreys.cpu.toolchain as ctc
 from hawk.ext import Guard, Kind
@@ -394,14 +395,14 @@ def test_profile_flags_keep_the_bit_identity_guard():
     """The exact profiles and `-nofma` keep contraction off; the fast one turns it on;
     none of the three reassociates or enables fast-math."""
     for profile in _profiles_here():
-        flags = host_codegen_flags(profile)
+        flags = host_template(profile)
         want = ("-ffp-contract=off" if profile in ctc.EXACT_HOST_PROFILES or profile.endswith("-nofma")
                 else "-ffp-contract=fast")
         assert "-O3" in flags and want in flags, flags
         assert not any("fast-math" in f or "Ofast" in f or "reassoc" in f
                        for f in flags), flags
     assert set(ctc.EXACT_HOST_PROFILES) == {"native", "portable"}
-    assert "-march=native" not in host_codegen_flags("portable")
+    assert "-march=native" not in host_template("portable")
 
 
 def test_the_profile_comes_from_the_options_then_the_environment(monkeypatch):
@@ -472,15 +473,7 @@ def test_the_vector_math_profile_is_the_x86_default(monkeypatch):
     x86 = platform.machine().lower() in ("x86_64", "amd64")
     arm = platform.machine().lower() in ("aarch64", "arm64")
     assert host_profile() == ("native-vector-math" if x86 or arm else "native")
-    default = ctc.host_codegen_flags("native")
-    assert "-DAETHER_HOST_VECTOR_MATH" not in default
-    assert "-fno-trapping-math" not in default
     if platform.machine().lower() in ("x86_64", "amd64"):
-        vm = ctc.host_codegen_flags("native-vector-math")
-        assert default[:2] == ["-O3", "-ffp-contract=off"]
-        vm = [f for f in vm if f != "-DAETHER_HVM_MASKED=1"]   # added on a compiler that carries the masked-call fix
-        assert vm == ["-O3", "-ffp-contract=fast", *default[2:],
-                      "-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH"]
         monkeypatch.setenv("HAWK_HOST_PROFILE", "native-vector-math")
         assert host_profile() == "native-vector-math"
 
@@ -500,20 +493,17 @@ def test_the_opt_level_comes_from_the_options_then_the_environment(monkeypatch):
         opt_level()
 
 
-def test_host_codegen_flags_carries_the_opt_level_in_place_of_the_hardcoded_O3():
-    """The opt level replaces what used to be a hard-coded ``-O3``; nothing
-    else in the profile's recipe moves."""
-    default = host_codegen_flags("native")
-    assert default[0] == "-O3"
-    o0 = host_codegen_flags("native", "O0")
-    assert o0[0] == "-O0" and o0[1:] == default[1:]
-    o1 = host_codegen_flags("native", "O1")
-    assert o1[0] == "-O1" and o1[1:] == default[1:]
+def test_the_host_template_carries_the_opt_level_in_place_of_the_hardcoded_O3():
+    """The opt level replaces what used to be a hard-coded ``-O3``; nothing else in the profile's recipe moves."""
+    default = host_template("native")
+    assert "-O3" in default
+    for level in ("O0", "O1"):
+        assert host_template("native", level) == [f"-{level}" if f == "-O3" else f for f in default]
 
 
-def test_host_codegen_flags_rejects_an_unknown_opt_level():
+def test_the_host_template_rejects_an_unknown_opt_level():
     with pytest.raises(hawk.HawkError, match="unknown opt level"):
-        host_codegen_flags("native", "Ofast")
+        host_template("native", "Ofast")
 
 
 def test_the_opt_levels_never_share_a_slot(tmp_path):
@@ -625,53 +615,6 @@ def test_the_family_memo_agrees_across_threads(monkeypatch):
         t.join()
     assert seen == [want] * 8
     assert ctc._GCC_FAMILY_MEMO == {cxx: want}
-
-
-def _flags_as(machine, profile, monkeypatch):
-    monkeypatch.setattr(platform, "machine", lambda: machine)
-    monkeypatch.setattr(ctc, "masked_call_flag", lambda flags, extra=(): ["-DAETHER_HVM_MASKED=1"])
-    return host_codegen_flags(profile)
-
-
-def test_the_x86_flag_lists_are_frozen(monkeypatch):
-    monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
-    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/g++")
-    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: True)
-    base = ["-O3", "-ffp-contract=off", "-fno-math-errno"]
-    wide = ["-march=native", "-mprefer-vector-width=512"]
-    vm = ["-fno-trapping-math", "-DAETHER_HOST_VECTOR_MATH", "-DAETHER_HVM_MASKED=1"]
-    assert _flags_as("x86_64", "native", monkeypatch) == [*base, *wide]
-    assert _flags_as("x86_64", "portable", monkeypatch) == [*base, "-march=x86-64-v2"]
-    assert _flags_as("x86_64", "native-vector-math", monkeypatch) == [
-        "-O3", "-ffp-contract=fast", "-fno-math-errno", *wide, *vm]
-    assert _flags_as("x86_64", "native-vector-math-nofma", monkeypatch) == [*base, *wide, *vm]
-
-
-def test_the_arm64_vector_math_profile_is_contraction_only(monkeypatch):
-    monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
-    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/clang++")
-    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: False)
-    for machine in ("arm64", "aarch64"):
-        assert _flags_as(machine, "native-vector-math", monkeypatch) == [
-            "-O3", "-ffp-contract=fast", "-fno-math-errno", "-mcpu=native"]
-        with pytest.raises(hawk.HawkError, match="x86-64 host"):
-            _flags_as(machine, "native-vector-math-nofma", monkeypatch)
-    with pytest.raises(hawk.HawkError, match="x86-64 host"):
-        _flags_as("ppc64le", "native-vector-math", monkeypatch)
-
-
-def test_the_arm64_gcc_vector_math_profile_routes_pow(monkeypatch):
-    monkeypatch.delenv("HAWK_HOST_PROFILE", raising=False)
-    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/g++")
-    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: True)
-    for machine in ("arm64", "aarch64"):
-        assert _flags_as(machine, "native-vector-math", monkeypatch) == [
-            "-O3", "-ffp-contract=fast", "-fno-math-errno", "-mcpu=native",
-            "-fno-trapping-math", "-fno-thread-jumps", "-DAETHER_HOST_VECTOR_MATH"]
-        with pytest.raises(hawk.HawkError, match="x86-64 host"):
-            _flags_as(machine, "native-vector-math-nofma", monkeypatch)
-    # an exact profile on arm64 gets no route
-    assert "-DAETHER_HOST_VECTOR_MATH" not in _flags_as("aarch64", "native", monkeypatch)
 
 
 def test_the_default_profile_per_architecture(monkeypatch):

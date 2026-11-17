@@ -19,7 +19,6 @@ from raptor.errors import RaptorError
 #: ``CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR`` / ``_MINOR`` (cuda.h).
 _CC_MAJOR, _CC_MINOR = 75, 76
 
-DEVICE_STD = "c++20"
 
 #: Seconds a toolchain probe (``nvcc --version``, ``--list-gpu-arch``) may take: long enough for a cold filesystem.
 _PROBE_TIMEOUT_S = 180
@@ -341,43 +340,6 @@ def device_compiler() -> str:
     raise ToolchainAbsent("no nvcc found; set $HAWK_NVCC.", toolchain="nvcc")
 
 
-def device_flags(*, level: str, include=(), arch: str = "", target: str = "ptx", extra=()) -> list[str]:
-    """The device recipe: AOT ``nvcc -ptx`` (forward-compatible, JIT'd PTX)
-    or ``-cubin`` (SASS for the concrete arch, no driver-side ISA ceiling) at
-    the artifact's arch. ``target`` defaults to ``"ptx"``; only
-    the backend resolves a target first
-    (:func:`ospreys.cuda.nvrtc.select_target`) and passes it here; ``include`` are the header-root flags hawk hands it.
-
-    ``level`` (the resolved optimisation level) is spelled out explicitly
-    for BOTH halves of the nvcc compile: ``-O<n>`` for nvcc's own host-side
-    code generation, and ``-Xptxas -O<n>`` passed through to ptxas for the
-    device side — there used to be no explicit ``-O`` here at all (nvcc's
-    own default), so :data:`DEFAULT_OPT_LEVEL` now makes that default
-    explicit instead of leaving it implicit. NVRTC (:mod:`ospreys.cuda.nvrtc`)
-    never reaches this function; it always optimises and takes no ``-O``
-    option, so ``opt_level`` has no effect there.
-
-    ``arch`` is resolved through :func:`resolve_arch`: an explicit value is
-    checked against the toolkit's supported archs, and an empty one falls to
-    ``$HAWK_CUDA_ARCH``/the running GPU/the toolkit's minimum -- this
-    function is reached only for a device-compiled target, so that chain
-    (including its device probe) is always in scope here. A virtual
-    ``compute_<N>`` arch has no CUBIN and refuses ``target="cubin"``."""
-    if target not in ("ptx", "cubin"):
-        raise RaptorError(
-            f"device_flags(): target must be 'ptx' or 'cubin', got {target!r}")
-    resolved = resolve_arch(arch)
-    if target == "cubin" and resolved.startswith("compute_"):
-        raise RaptorError(
-            f"device_flags(): arch {resolved} is virtual (PTX only); a CUBIN "
-            "needs a real sm_<N> arch")
-    # ptxas runs only for a CUBIN; `-v` has it report each kernel's registers,
-    # spills and stack on stderr (:func:`ospreys.cuda.driver.parse_ptxas_info`).
-    verbose = ["-Xptxas", "-v"] if target == "cubin" else []
-    return [f"-{target}", f"-std={DEVICE_STD}", f"-arch={resolved}",
-            f"-{level}", "-Xptxas", f"-{level}", *verbose, *include, *extra]
-
-
 def _ccbin_from_flags(flags: str) -> str | None:
     """The ``-ccbin``/``--compiler-bindir`` value in an nvcc flag string."""
     try:
@@ -413,30 +375,26 @@ def _strip_ccbin(flags: str) -> list[str]:
     return out
 
 
-def device_host_compiler(env: dict | None = None) -> str | None:
-    """The host compiler ``nvcc`` will use under ``env`` (default
-    :func:`process_env` of the process environment): ``-ccbin`` from ``NVCC_PREPEND_FLAGS`` or
-    ``NVCC_APPEND_FLAGS``, else ``$NVCC_CCBIN``, else the ``g++`` on the
-    subprocess ``PATH`` (nvcc's own default). A ``-ccbin`` directory is
-    resolved to the ``g++`` inside it. ``None`` when none can be found."""
-    env = process_env(dict(os.environ)) if env is None else env
-    chosen = (_ccbin_from_flags(env.get("NVCC_PREPEND_FLAGS", ""))
-              or _ccbin_from_flags(env.get("NVCC_APPEND_FLAGS", ""))
-              or env.get("NVCC_CCBIN") or "g++")
+def device_host_compiler(fallback: str, env: dict | None = None) -> str:
+    """The host compiler of a device build, the one ``-ccbin`` of its command line, in this order: ``$HAWK_NVCC_CCBIN``; else the
+    ``-ccbin`` that the caller's ``NVCC_PREPEND_FLAGS`` or ``NVCC_APPEND_FLAGS`` name, else ``$NVCC_CCBIN`` (``env``: the caller's
+    environment, default the process's); else ``fallback``, the compiler of the host objects the device image is linked with. A
+    directory is resolved to the ``g++`` inside it. :func:`process_env` takes the caller's own ``-ccbin`` out of what the child sees,
+    so the command line carries exactly this one."""
+    env = dict(os.environ) if env is None else env
+    chosen = (env.get("HAWK_NVCC_CCBIN") or _ccbin_from_flags(env.get("NVCC_PREPEND_FLAGS", ""))
+              or _ccbin_from_flags(env.get("NVCC_APPEND_FLAGS", "")) or env.get("NVCC_CCBIN") or fallback)
     if Path(chosen).is_dir():
         chosen = str(Path(chosen) / "g++")
     if Path(chosen).is_file():
         return str(Path(chosen).resolve())
-    return shutil.which(chosen, path=env.get("PATH"))
+    return shutil.which(chosen, path=env.get("PATH")) or chosen
 
 
-def device_host_compiler_identity(identity) -> str:
-    """The device cache key's host-compiler term: ``identity`` (hawk's compiler identity) of :func:`device_host_compiler`, or
-    ``"ccbin:unknown"`` when none is found (the nvcc compile then fails on
-    its own)."""
-    found = device_host_compiler()
-    if not found:
-        return "ccbin:unknown"
+def device_host_compiler_identity(identity, fallback: str) -> str:
+    """The device cache key's host-compiler term: ``identity`` (hawk's compiler identity) of :func:`device_host_compiler`, or the
+    compiler as named when its identity cannot be read (the nvcc compile then fails on its own)."""
+    found = device_host_compiler(fallback)
     try:
         return f"ccbin:{identity(found)}"
     except RaptorError:
@@ -444,18 +402,17 @@ def device_host_compiler_identity(identity) -> str:
 
 
 def process_env(env: dict) -> dict:
-    """``env`` with the device toolkit's ``bin`` first on ``PATH`` and ``CUDA_PATH`` at its root.
-
-    The nvcc host compiler is chosen in this order: ``$HAWK_NVCC_CCBIN``
-    (set as ``-ccbin`` in ``NVCC_PREPEND_FLAGS``, replacing any other
-    ``-ccbin`` there and keeping the rest), else a user-set
-    ``NVCC_PREPEND_FLAGS``/``NVCC_CCBIN`` left untouched, else nothing --
-    nvcc's own default, the ``g++`` on ``PATH``. The choice is part of the
-    device cache key (:func:`device_host_compiler_identity`)."""
-    ccbin = os.environ.get("HAWK_NVCC_CCBIN")
-    if ccbin:
-        rest = _strip_ccbin(env.get("NVCC_PREPEND_FLAGS", ""))
-        env["NVCC_PREPEND_FLAGS"] = shlex.join(["-ccbin", ccbin, *rest])
+    """``env`` with the device toolkit's ``bin`` first on ``PATH`` and ``CUDA_PATH`` at its root, and without any ``-ccbin`` of the
+    caller's own ``NVCC_PREPEND_FLAGS`` / ``NVCC_APPEND_FLAGS`` / ``NVCC_CCBIN``: the host compiler is the one on the command line
+    (:func:`device_host_compiler`), and a second would be a second source."""
+    for name in ("NVCC_PREPEND_FLAGS", "NVCC_APPEND_FLAGS"):
+        if name in env:
+            rest = _strip_ccbin(env[name])
+            if rest:
+                env[name] = shlex.join(rest)
+            else:
+                del env[name]
+    env.pop("NVCC_CCBIN", None)
     try:
         cuda = Path(device_compiler()).resolve().parent
     except RaptorError:                                       # pragma: no cover

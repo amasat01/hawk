@@ -329,31 +329,39 @@ def test_compile_writes_through_a_temporary_and_keys_libc(monkeypatch, tmp_path)
 # --------------------------------------------------------------------------- #
 # The nvcc host compiler.
 # --------------------------------------------------------------------------- #
-def test_ccbin_default_leaves_nvcc_prepend_flags_alone(monkeypatch):
-    monkeypatch.delenv("HAWK_NVCC_CCBIN", raising=False)
-    monkeypatch.setenv("NVCC_PREPEND_FLAGS", "-ccbin /opt/some/g++ -Xfoo")
-    assert tc.subprocess_env(("cuda",))["NVCC_PREPEND_FLAGS"] == "-ccbin /opt/some/g++ -Xfoo"
-    monkeypatch.delenv("NVCC_PREPEND_FLAGS")
-    assert "NVCC_PREPEND_FLAGS" not in tc.subprocess_env(("cuda",)), (
-        "with nothing set, nvcc's own default (the g++ on PATH) must stand")
-
-
-def test_hawk_nvcc_ccbin_replaces_only_the_ccbin(monkeypatch):
-    monkeypatch.setenv("HAWK_NVCC_CCBIN", "/opt/other/g++")
-    monkeypatch.setenv("NVCC_PREPEND_FLAGS", "-ccbin /opt/some/g++ -Xfoo")
-    assert tc.subprocess_env(("cuda",))["NVCC_PREPEND_FLAGS"] == "-ccbin /opt/other/g++ -Xfoo"
-
-
-def test_device_host_compiler_follows_the_environment(tmp_path):
-    fake = tmp_path / "g++"
+def _fake_gxx(directory):
+    fake = directory / "g++"
     fake.write_text("#!/bin/sh\n")
     fake.chmod(0o755)
+    return fake
+
+
+def test_a_ccbin_of_the_callers_own_nvcc_variables_is_taken_out_of_the_childs_environment(monkeypatch):
+    """The command line carries the one resolved ``-ccbin`` (:func:`ospreys.cuda.toolchain.device_host_compiler`)."""
+    monkeypatch.delenv("HAWK_NVCC_CCBIN", raising=False)
+    monkeypatch.setenv("NVCC_PREPEND_FLAGS", "-ccbin /opt/some/g++ -Xfoo")
+    monkeypatch.setenv("NVCC_CCBIN", "/opt/some/g++")
+    child = tc.subprocess_env(("cuda",))
+    assert child["NVCC_PREPEND_FLAGS"] == "-Xfoo" and "NVCC_CCBIN" not in child
+    monkeypatch.setenv("NVCC_PREPEND_FLAGS", "--compiler-bindir=/opt/some/g++")
+    assert "NVCC_PREPEND_FLAGS" not in tc.subprocess_env(("cuda",))
+
+
+def test_hawk_nvcc_ccbin_is_the_host_compiler_and_writes_nothing_into_the_childs_environment(monkeypatch, tmp_path):
+    fake = _fake_gxx(tmp_path)
+    monkeypatch.setenv("HAWK_NVCC_CCBIN", str(fake))
+    monkeypatch.setenv("NVCC_PREPEND_FLAGS", "-ccbin /opt/some/g++ -Xfoo")
+    assert dtc.device_host_compiler("/fallback/g++") == str(fake.resolve())
+    assert tc.subprocess_env(("cuda",))["NVCC_PREPEND_FLAGS"] == "-Xfoo"
+
+
+def test_the_device_host_compiler_follows_the_environment_and_defaults_to_the_fallback(tmp_path):
+    fake = _fake_gxx(tmp_path)
     env = {"PATH": "/nonexistent", "NVCC_PREPEND_FLAGS": f"-ccbin {fake}"}
-    assert dtc.device_host_compiler(env) == str(fake.resolve())
+    assert dtc.device_host_compiler("/fallback/g++", env) == str(fake.resolve())
     env = {"PATH": "/nonexistent", "NVCC_CCBIN": str(tmp_path)}
-    assert dtc.device_host_compiler(env) == str(fake.resolve())
-    env = {"PATH": str(tmp_path)}
-    assert dtc.device_host_compiler(env) == str(fake)
+    assert dtc.device_host_compiler("/fallback/g++", env) == str(fake.resolve())
+    assert dtc.device_host_compiler(str(fake), {"PATH": "/nonexistent"}) == str(fake.resolve())
 
 
 def test_device_key_carries_the_host_compiler(monkeypatch, tmp_path):
@@ -367,5 +375,8 @@ def test_device_key_carries_the_host_compiler(monkeypatch, tmp_path):
                             CompileOptions(target="cuda",
                                            cache_dir=str(tmp_path / "cache")))
     record = hcache.Cache(str(tmp_path / "cache")).record(result.key)
-    assert dtc.device_host_compiler_identity(tc.compiler_identity) in record["key_terms"]
-    assert any(t.startswith("ccbin:") for t in record["key_terms"])
+    from hawk.targets import TARGETS
+
+    term = dtc.device_host_compiler_identity(tc.compiler_identity, TARGETS["host"].compiler())
+    assert record["key_terms"].count(term) == 1
+    assert sum(t.startswith("ccbin:") for t in record["key_terms"]) == 1

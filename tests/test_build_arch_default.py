@@ -186,24 +186,23 @@ def test_host_only_build_never_probes(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(os.environ.get("HAWK_DEVICE_COMPILER") == "nvrtc",
-                    reason="spies the nvcc argv builder (dtc.device_flags), which a forced NVRTC build never calls")
+                    reason="spies the arch resolution of the nvcc compile, which a forced NVRTC build never reaches")
 def test_build_cuda_target_resolves_through_the_same_chain(monkeypatch, tmp_path):
     """``build(..., targets=("cuda",))`` with no ``device_arch=`` and no
     ``$HAWK_CUDA_ARCH`` resolves through the probe -- spied at
-    ``dtc.device_flags``, the real function underneath
-    :func:`hawk.compile.drivers`'s AOT nvcc compile -- and the compiled
-    ``-arch=`` flag carries the probed value."""
+    ``dtc.resolve_arch``, which the AOT nvcc compile's plan reads -- and the
+    arch it compiles for is the probed value."""
     monkeypatch.delenv("HAWK_CUDA_ARCH", raising=False)
     probe = _pins()[2]
     monkeypatch.setattr(hnvrtc, "current_device_arch", lambda: probe)
-    real_device_flags = dtc.device_flags
+    real_resolve = dtc.resolve_arch
     seen = []
 
-    def _spy(*, arch="", **kw):
-        seen.append(arch)
-        return real_device_flags(arch=arch, **kw)
+    def _spy(requested=""):
+        seen.append(real_resolve(requested))
+        return seen[-1]
 
-    monkeypatch.setattr(dtc, "device_flags", _spy)
+    monkeypatch.setattr(dtc, "resolve_arch", _spy)
 
     build(_arch_probe_kernel, tmp_path / "unit", targets=("cuda",))
 
@@ -211,20 +210,20 @@ def test_build_cuda_target_resolves_through_the_same_chain(monkeypatch, tmp_path
 
 
 @pytest.mark.skipif(os.environ.get("HAWK_DEVICE_COMPILER") == "nvrtc",
-                    reason="spies the nvcc argv builder (dtc.device_flags), which a forced NVRTC build never calls")
+                    reason="spies the arch resolution of the nvcc compile, which a forced NVRTC build never reaches")
 def test_build_cuda_target_prefers_the_env_over_the_probe(monkeypatch, tmp_path):
     pin = _pins()[1]
     monkeypatch.setenv("HAWK_CUDA_ARCH", pin)
     monkeypatch.setattr(hnvrtc, "current_device_arch", lambda: (_ for _ in ()).throw(
         AssertionError("the probe must not run when $HAWK_CUDA_ARCH is set")))
-    real_device_flags = dtc.device_flags
+    real_resolve = dtc.resolve_arch
     seen = []
 
-    def _spy(*, arch="", **kw):
-        seen.append(arch)
-        return real_device_flags(arch=arch, **kw)
+    def _spy(requested=""):
+        seen.append(real_resolve(requested))
+        return seen[-1]
 
-    monkeypatch.setattr(dtc, "device_flags", _spy)
+    monkeypatch.setattr(dtc, "resolve_arch", _spy)
 
     build(_arch_probe_kernel, tmp_path / "unit", targets=("cuda",))
 
@@ -232,20 +231,20 @@ def test_build_cuda_target_prefers_the_env_over_the_probe(monkeypatch, tmp_path)
 
 
 @pytest.mark.skipif(os.environ.get("HAWK_DEVICE_COMPILER") == "nvrtc",
-                    reason="spies the nvcc argv builder (dtc.device_flags), which a forced NVRTC build never calls")
+                    reason="spies the arch resolution of the nvcc compile, which a forced NVRTC build never reaches")
 def test_build_cuda_target_device_arch_beats_everything(monkeypatch, tmp_path):
     env_pin, pin, _ = _pins()
     monkeypatch.setenv("HAWK_CUDA_ARCH", env_pin)
     monkeypatch.setattr(hnvrtc, "current_device_arch", lambda: (_ for _ in ()).throw(
         AssertionError("device_arch= must beat the env and the probe both")))
-    real_device_flags = dtc.device_flags
+    real_resolve = dtc.resolve_arch
     seen = []
 
-    def _spy(*, arch="", **kw):
-        seen.append(arch)
-        return real_device_flags(arch=arch, **kw)
+    def _spy(requested=""):
+        seen.append(real_resolve(requested))
+        return seen[-1]
 
-    monkeypatch.setattr(dtc, "device_flags", _spy)
+    monkeypatch.setattr(dtc, "resolve_arch", _spy)
 
     build(_arch_probe_kernel, tmp_path / "unit", targets=("cuda",), device_arch=pin)
 

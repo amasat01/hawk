@@ -15,7 +15,7 @@ Correctness only: no speed is claimed."""
 
 from __future__ import annotations
 
-from _specs import spec_for, default_kind
+from _specs import default_kind
 import pathlib
 
 import _eval as E
@@ -180,23 +180,16 @@ def test_the_f32_traversal_at_depth_32_has_no_spills(world, tmp_path):
     import subprocess
 
     from hawk.artifact import emit_source
-    from hawk.compile import device_compiler
     from ospreys.cuda.driver import parse_ptxas_info
-    from ospreys.cuda.toolchain import device_flags
-    from hawk.compile import toolchain as _tc
+    from _toolchain import device_command
     from ospreys.cuda.toolchain import resolve_arch
-    from hawk import facts
-    from hawk.targets import TARGETS
 
     _t, _o, _d, bvh, _ = world
     k = _kernel(bvh, depth=32)
     src = tmp_path / "nearest.cu"
-    spec = spec_for(TARGETS["cuda"])
     src.write_text(emit_source(k, mode="float32", targets=("cuda",)).sources["cuda"].text)
-    flags = facts.include_flags(spec.for_target(TARGETS["cuda"]).primary)     # the text includes its wing's header
-    done = subprocess.run([device_compiler(), *device_flags(level=_tc.opt_level(), include=_tc.include_flags(), arch=resolve_arch(),
-                                                           target="cubin", extra=flags),
-                           str(src), "-o", str(tmp_path / "nearest.cubin")],
+    # the CUBIN form: ptxas runs and reports each kernel's registers, spills and stack
+    done = subprocess.run(device_command(src, tmp_path / "nearest.cubin", arch=resolve_arch(), cubin=True),
                           capture_output=True, text=True, check=False)
     assert done.returncode == 0, done.stderr[-2000:]
     figures = parse_ptxas_info(done.stderr)["nearest"]

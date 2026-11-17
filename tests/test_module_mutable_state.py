@@ -59,7 +59,7 @@ BASELINE = {
 
 ALLOWED = {
     **{("cpu/toolchain.py", n): "predates the guard, moved with its module from hawk/compile/toolchain.py" for n in
-       ('_GCC_FAMILY_MEMO', '_HOST_CONTRACTION', '_LIBC_MEMO', '_MACRO_MEMO', '_TARGET_MEMO', '_WITNESS_MEMO')},
+       ('_GCC_FAMILY_MEMO', '_LIBC_MEMO', '_MACRO_MEMO', '_TARGET_MEMO')},
     ("cpu/backend.py", "BACKEND"): "the backend object, a stateless row never written after import",
     ("registry.py", "KNOWN"): "read-only table, never mutated after import",
     ("registry.py", "_STATE"): "the registry scan, rebuilt under _LOCK; hawk.registry.reset() forgets it",
