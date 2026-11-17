@@ -383,7 +383,6 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             None => "NULL".into(),
         };
         let costs = branch_costs(out, at, &d.branch_costs)?;
-        let selector = out.numbers("int32_t", &format!("d{at}_selector"), &d.selector_slots);
         let members = [
             ("strategy", d.strategy.c_name().into()),
             ("mix_slot", index(d.mix_slot)),
@@ -399,8 +398,6 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("branch_costs", costs),
             // the vectorisation verdicts of the fused loop are not stated (see `BranchCost`)
             ("cost_flags", "0u".into()),
-            ("n_selector_slots", d.selector_slots.len().to_string()),
-            ("selector_slots", selector),
         ];
         dispatches.push(out.record("eg_unit_dispatch", &format!("d{at}"), &members));
     }

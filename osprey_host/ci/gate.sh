@@ -3,7 +3,15 @@
 #   fmt clippy test exports binding py39 abi ruff cformat tidy replay
 # Environment: PYTHON (the interpreter the binding is built for; the binding leg is red without it), EAGLE_DOOR_DIR (the include root of eagle/door/eg_door.h and the folder of libeagle_door; the binding and tidy legs are red without it), CLANG_TIDY (the clang-tidy
 # program; the tidy leg is RED without it), the cformat leg skips, saying so, unless clang-format is major version 23, PYTHON39 and PY39_INCLUDE (a Python 3.9 interpreter and its headers; the py39 leg
-# skips, saying so, when the interpreter is absent; the default is the macOS command line tools' one). The siblings ../raptor and ../aether are inputs.
+# skips, saying so, when the interpreter is absent; the default is the macOS command line tools' one). The siblings ../raptor and ../aether are inputs (RAPTOR names the first);
+# the binding legs build the contract's static libraries in it (raptor_ir, raptor_wings, raptor_support; a no-op when current), so they need no prior build.
+# Door root (EAGLE_DOOR_DIR): ONE directory that holds three entries, which the binding and tidy legs refuse by name when one is missing:
+#   eagle/door/eg_door.h   a symlink `eagle` to the `eagle` folder of an eagle checkout (the door's headers)
+#   plugin/dlpack.h        a symlink `plugin` to the `plugin` folder of the same checkout
+#   libeagle_door.dylib    (.so on Linux) a symlink to the door library built from that checkout
+# Make it: (cd <eagle checkout>/eagle/door && make -j3 OUT=<root>/build CXX=<clang++> CC=clang AETHER_INCLUDE=<aether checkout> \
+#   WING_FACTS=<raptor_facts.h> lib); ln -s <eagle checkout>/eagle <root>/eagle; ln -s <eagle checkout>/plugin <root>/plugin;
+#   ln -s <root>/build/libeagle_door.dylib <root>/libeagle_door.dylib
 # Each leg prints what it examined and is RED when it examined nothing. The exit status is non-zero when any leg is red.
 cd "$(dirname "$0")/.." || exit 2
 JOBS=${JOBS:-2}
@@ -61,8 +69,23 @@ leg_exports() {
   [ "$n" -eq 1 ] || { echo "RED: expected exactly one symbol line, got $n"; return 1; }
 }
 
+# refuses, by name, a door root that lacks one of its three entries (see "Door root" in the header of this file, which says how to make it)
+door_root() {
+  [ -n "$EAGLE_DOOR_DIR" ] || { echo "RED: EAGLE_DOOR_DIR is not set; the \"Door root\" lines in the header of ci/gate.sh say what it must hold"; return 1; }
+  case $(uname -s) in Darwin) door_ext=dylib ;; *) door_ext=so ;; esac
+  for entry in eagle/door/eg_door.h plugin/dlpack.h "libeagle_door.$door_ext"; do
+    [ -e "$EAGLE_DOOR_DIR/$entry" ] || {
+      echo "RED: EAGLE_DOOR_DIR $EAGLE_DOOR_DIR lacks $entry; the \"Door root\" lines in the header of ci/gate.sh say how to make it"
+      return 1
+    }
+  done
+}
+
 # builds the binding for the interpreter $1 (its headers $2; empty: the interpreter's own) and runs binding/test_binding.py on it
 build_and_test_binding() {
+  door_root || return 1
+  cargo build --release -j "$JOBS" --manifest-path "${RAPTOR:-../raptor}/Cargo.toml" -p raptor_ir -p raptor_wings -p raptor_support >"$out" 2>&1 \
+    || { grep -E "^error" "$out" | head -3; echo "RED: build of the contract libraries in ${RAPTOR:-../raptor}"; return 1; }
   PYTHON=$1 PY_INCLUDE=$2 sh binding/build.sh >"$out" 2>&1; rc=$?
   tail -4 "$out"
   g=$(grep -c "GATE GREEN" "$out"); echo "examined: binding build for $1, GATE GREEN lines: $g"
@@ -121,7 +144,7 @@ leg_cformat() {
 leg_tidy() {
   [ -n "$CLANG_TIDY" ] || { echo "RED: CLANG_TIDY is not set (examined: 0 files)"; return 1; }
   [ -n "$PYTHON" ] || { echo "RED: PYTHON is not set (the binding template includes Python.h)"; return 1; }
-  [ -n "$EAGLE_DOOR_DIR" ] || { echo "RED: EAGLE_DOOR_DIR is not set (door.c includes the door header)"; return 1; }
+  door_root || return 1
   pyinc=$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_paths()["include"])')
   tfiles=$(git ls-files loader binding/template | grep '\.c$')
   n=$(echo "$tfiles" | grep -c .); echo "examined: $n C files of loader/ and binding/template/ with .clang-tidy"; need tidy "$n" || return 1

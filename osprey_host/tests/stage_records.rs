@@ -98,14 +98,6 @@ int main(void) {
         printf("unit %s persist %s range %s\n", unit->name,
                finish ? shown(finish->device_persist_function) : "-",
                finish ? shown(finish->device_range_function) : "-");
-        const struct eg_unit_body* body = unit->body;
-        for (int32_t g = 0; g < body->n_dispatches; ++g) {
-            const struct eg_unit_dispatch* d = body->dispatches[g];
-            printf("selector %s %s", unit->name, d->name);
-            for (int32_t i = 0; i < d->n_selector_slots; ++i)
-                printf(" %s", body->slots[d->selector_slots[i]]->name);
-            printf("\n");
-        }
     }
     return 0;
 }
@@ -295,23 +287,4 @@ fn a_device_unit_states_the_two_entry_names_its_text_holds_and_a_host_unit_state
     );
     let host = read_record(&door, &dir.join(format!("{id}_walker_host.c")));
     assert!(host.contains("unit walker persist - range -\n"), "{host}");
-}
-
-#[test]
-fn the_selector_slots_of_a_loop_carried_selector_are_the_planes_its_carry_starts_from() {
-    // oracle: the kernel's IR, where the selector reads the carry `xs` (started from the plane `x`) and the uniform `t`
-    let test = "test_diff_jump.py::test_a_switch_in_a_loop_body_gets_its_jump[primal0-0]";
-    let Some(emitted) = emit("k7_record", test, &["g"], "g") else {
-        return;
-    };
-    let Some(door) = door_dir() else { return };
-    let source = emitted.dir.join(format!("{}_g_host.c", emitted.id));
-    let read = read_record(&door, &source);
-    let line = read
-        .lines()
-        .find(|l| l.starts_with("selector g dispatch0"))
-        .unwrap_or_else(|| panic!("{read}"));
-    let mut names: Vec<&str> = line.split(' ').skip(3).collect();
-    names.sort_unstable();
-    assert_eq!(names, ["t", "x"], "{read}");
 }

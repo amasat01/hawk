@@ -530,6 +530,75 @@ assert all(n.field_text("cell") == "out" and n.field_int("columns") == 3 for n i
 raises(ValueError, lambda: c.cells_stored(x, "out"), "cells_stored of a node that is no reduction")
 done.append("cells_stored: a scalar sum, one sink per component, a refusal")
 
+# ---- the kernel's walk: companion, finished-count and branch-mix slots ----
+plain = c.new("Assign", "(('name', 'o'), ('value', #0))", [x])
+finish = c.new("Finish", "(('name', 'done'), ('value', #0))", [c.make_op("gt", [x, x], "")])
+assert not c.walk_binds(c.cells_walk([plain], "()", None), "lookup", "finished_count")
+assert c.walk_binds(c.cells_walk([plain, finish], "()", None), "lookup", "finished_count")
+sum_a = c.new("SampleSum", "(('name', 's'), ('value', #0), ('op', 'sum'))", [x])
+sum_b = c.new("SampleSum", "(('name', 's_comp'), ('value', #0), ('op', 'sum'))", [x])
+e = raises(ValueError, lambda: c.cells_walk([sum_a, sum_b], "()", None), "cells_walk: a collision")
+assert str(e) == (
+    "sample_sum 's': its compensation plane 's_comp' collides with a plane of the same name"
+), str(e)
+done.append("cells_walk: the finished-count slot, and the compensation collision")
+
+# ---- the typed reads of a walk: slot types, prior reads, strategies, static selectors ----
+selector = c.make("Leaf", "i32", [], None, [], PER_SAMPLE % "sel")
+cases_ = [c.make_op("add", [x, x], ""), c.make_op("mul", [x, x], "")]
+core = c.new(
+    "Dispatch",
+    "(('selector', #0), ('branches', (#1, #2)), "
+    "('ttype', TensorType(shape=(), dtype='f64', tag=None)))",
+    [selector, *cases_],
+)
+auto = c.make("AutoDispatch", "f64", [], None, core.operands, "()")
+walked = c.cells_walk([c.new("Assign", "(('name', 'o'), ('value', #0))", [auto])], "()", None)
+assert c.walk_strategies(walked) == ("auto",) and c.walk_static_selector(walked, 0) is True
+assert c.walk_slot_type(walked, "lookup", "dispatch0_mix") == ((), "uint32", None)
+assert c.walk_prior(walked) == ()
+raises(
+    ValueError,
+    lambda: c.walk_slot_type(walked, "lookup", "no_such"),
+    "walk_slot_type of a slot the walk does not bind",
+)
+raises(
+    ValueError,
+    lambda: c.walk_static_selector(walked, 3),
+    "walk_static_selector of a dispatch the walk lacks",
+)
+done.append("walk_slot_type, walk_prior, walk_strategies and walk_static_selector")
+
+# ---- block-sum writes expanded into per-entry accumulates ----
+c.declare_kinds()
+zero_key = c.make("Const", "i32", [], None, [], "(('literal', 0),)")
+one_count = c.make("Const", "i32", [], None, [], "(('literal', 1),)")
+blocks = c.make(
+    "BlockSum",
+    "f64",
+    [3],
+    None,
+    [vec3, zero_key, one_count],
+    "(('contract', 'auto'), ('kept', ()))",
+)
+stored_block = c.make("BlockSumWrite", "f64", [], None, [blocks], "(('name', 'g'),)")
+expanded = c.blocks_expand_stores([plain, stored_block, plain])
+assert len(expanded) == 5 and expanded[0] == plain and expanded[4] == plain
+assert [n.cls for n in expanded[1:4]] == ["AccumWrite"] * 3 and c.blocks_expand_stores([]) == ()
+done.append(
+    "blocks_expand_stores: a vector block makes three accumulates, other sinks stay in order"
+)
+
+# ---- the dispatch strategies, derived from the wing manifests ----
+assert c.dispatch_strategies() == ("switch", "predicated", "segmented", "auto")
+done.append("dispatch_strategies")
+
+# ---- the number of a root in its dump ----
+dumped = c.dump([picked, x])
+lines = [int(line[len("root|#") :]) for line in dumped.splitlines() if line.startswith("root|#")]
+assert list(c.dump_numbers([picked, x])) == lines and c.dump_numbers([]) == ()
+done.append("dump_numbers: the line of each root in the dump")
+
 # ---- the backend library entry: open by path, name, identity, render, close (HOST_LIB names the
 # library) ----
 lib_path = os.environ.get("HOST_LIB")

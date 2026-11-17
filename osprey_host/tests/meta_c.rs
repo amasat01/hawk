@@ -183,7 +183,6 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
                 branches: vec![reference.clone(), reference.clone()],
                 sweep: None,
                 branch_costs: vec![],
-                selector_slots: vec![],
             },
             Dispatch {
                 strategy: DispatchStrategy::Segmented,
@@ -197,7 +196,6 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
                 branches: vec![reference.clone(), reference.clone()],
                 sweep: Some(reference.clone()),
                 branch_costs: vec![],
-                selector_slots: vec![],
             },
             Dispatch {
                 strategy: DispatchStrategy::Auto,
@@ -212,7 +210,6 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
                     },
                     BranchCost::default(),
                 ],
-                selector_slots: vec![0, 1],
                 ..Dispatch::default()
             },
         ],
@@ -410,16 +407,15 @@ fn a_tree_with_every_record_follows_the_headers_and_compiles() {
     compile_both(&door, &file);
 }
 
-/// A C program that includes the meta source and prints what each dispatch group of the unit states of its costs and selector.
+/// A C program that includes the meta source and prints what each dispatch group of the unit states of its costs.
 const READER: &str = r#"#include <stdio.h>
 #include "SOURCE"
 int main(void) {
     const struct eg_unit_body* body = eg_unit_library_meta()->units[0]->body;
     for (int32_t g = 0; g < body->n_dispatches; ++g) {
         const struct eg_unit_dispatch* d = body->dispatches[g];
-        printf("group %s k %d costs %s cost_flags %u slots", d->name, d->k,
+        printf("group %s k %d costs %s cost_flags %u", d->name, d->k,
                d->branch_costs ? "yes" : "no", d->cost_flags);
-        for (int32_t i = 0; i < d->n_selector_slots; ++i) printf(" %d", d->selector_slots[i]);
         printf("\n");
         for (int32_t j = 0; d->branch_costs && j < d->k; ++j) {
             const struct eg_branch_cost* c = d->branch_costs[j];
@@ -433,7 +429,7 @@ int main(void) {
 "#;
 
 #[test]
-fn a_c_reader_of_the_compiled_record_sees_the_branch_costs_and_selector_slots_that_were_written() {
+fn a_c_reader_of_the_compiled_record_sees_the_branch_costs_that_were_written() {
     let Some(door) = door_dir() else { return };
     let (library, unit) = full_tree();
     let dir = scratch("reader");
@@ -456,9 +452,9 @@ fn a_c_reader_of_the_compiled_record_sees_the_branch_costs_and_selector_slots_th
     let read = run(binary.to_str().unwrap(), &[]);
     // oracle: the values `full_tree` wrote; the group `m` is the auto one, `g` and `h` are segmented and state no costs
     let want = [
-        "group g k 2 costs no cost_flags 0 slots\n",
-        "group h k 2 costs no cost_flags 0 slots\n",
-        "group m k 2 costs yes cost_flags 0 slots 0 1\n",
+        "group g k 2 costs no cost_flags 0\n",
+        "group h k 2 costs no cost_flags 0\n",
+        "group m k 2 costs yes cost_flags 0\n",
         "branch m 0 flags 2 1.5 0 0 0 0 0 0 0 0 0 stores 2\n",
         "branch m 1 flags 0 0 0 0 0 0 0 0 0 0 0 stores 0\n",
     ];

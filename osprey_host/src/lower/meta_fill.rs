@@ -384,19 +384,14 @@ fn branch_cost(cost: &BranchCost) -> m::BranchCost {
     }
 }
 
-/// What the record states of one dispatch group besides its strategy: the cost of each branch and the slots its selector reads.
-type GroupReads = (Vec<m::BranchCost>, Vec<usize>);
-
-/// What the record states of each dispatch group of a walk besides its strategy, in the walk's dispatch listing order: the cost of
-/// each branch (an auto group only: the runtime prices its entry choice from them) and the slots of the unit's own table that the
-/// group's selector reads, ascending. A read with no slot in the unit is a fault: the record cannot name a plane the unit lacks.
-fn group_reads(
+/// The cost of each branch of each dispatch group of a walk, in the walk's dispatch listing order (an auto group only: the runtime
+/// prices its entry choice from them; any other group states none).
+fn group_costs(
     ctx: &Ctx,
     order: &[u32],
     found: &[(String, Strategy)],
-    slots: &[m::Slot],
-) -> Result<Vec<GroupReads>, Refusal> {
-    // the model prices every group of the walk, in the same listing the strategies and the nodes come in
+) -> Result<Vec<Vec<m::BranchCost>>, Refusal> {
+    // the model prices every group of the walk, in the same listing the strategies come in
     let priced = if found
         .iter()
         .any(|(_, strategy)| *strategy == Strategy::Auto)
@@ -405,27 +400,14 @@ fn group_reads(
     } else {
         vec![]
     };
-    let nodes = ctx.dispatch_nodes(order).map_err(wing)?;
-    let mut out = vec![];
-    for (at, ((name, strategy), node)) in found.iter().zip(nodes).enumerate() {
-        let mut selector = vec![];
-        for (role, read) in ctx.selector_reads(node).map_err(wing)? {
-            let slot = slot_at(slots, &read).ok_or_else(|| {
-                fault(format!(
-                    "the selector of the group {name} reads {role} {read}, which is no slot of the unit"
-                ))
-            })?;
-            selector.push(slot);
-        }
-        selector.sort_unstable();
-        selector.dedup();
-        let costs = match (strategy, priced.get(at)) {
+    Ok(found
+        .iter()
+        .enumerate()
+        .map(|(at, (_, strategy))| match (strategy, priced.get(at)) {
             (Strategy::Auto, Some(group)) => group.branches.iter().map(branch_cost).collect(),
             _ => vec![],
-        };
-        out.push((costs, selector));
-    }
-    Ok(out)
+        })
+        .collect())
 }
 
 /// The dispatch groups of a unit's walk: each group's name, strategy and branches, and for an auto group the slot of its
@@ -453,41 +435,39 @@ fn dispatches(parts: &Parts, slots: &[m::Slot]) -> Result<Vec<m::Dispatch>, Refu
     let found = strategies(ctx, parts.walk).map_err(wing)?;
     let order = &walk_of(parts.ctx, parts.walk)?.order;
     let nodes = ctx.dispatch_nodes(order).map_err(wing)?;
-    let reads = group_reads(ctx, order, &found, slots)?;
+    let costs = group_costs(ctx, order, &found)?;
     found
         .into_iter()
         .zip(nodes)
-        .zip(reads)
-        .map(
-            |(((name, strategy), node), (branch_costs, selector_slots))| {
-                let mix_slot = match strategy {
-                    Strategy::Auto => {
-                        let plane = parts.texts.first().and_then(|t| {
-                            t.facts.mix_planes.iter().find(|(group, _)| *group == name)
-                        });
-                        let held = plane.and_then(|(_, plane)| slot_at(slots, plane));
-                        Some(held.ok_or_else(|| {
-                            fault(format!("the branch-mix plane of the group {name}"))
-                        })?)
-                    }
-                    _ => None,
-                };
-                Ok(m::Dispatch {
-                    strategy: match strategy {
-                        Strategy::Predicated => m::DispatchStrategy::Predicated,
-                        Strategy::Switch => m::DispatchStrategy::Switch,
-                        Strategy::Segmented => m::DispatchStrategy::Segmented,
-                        Strategy::Auto => m::DispatchStrategy::Auto,
-                    },
-                    mix_slot,
-                    selector_slots,
-                    branch_costs,
-                    name,
-                    k: ctx.nodes[node as usize].ops.len() - 1,
-                    ..m::Dispatch::default()
-                })
-            },
-        )
+        .zip(costs)
+        .map(|(((name, strategy), node), branch_costs)| {
+            let mix_slot = match strategy {
+                Strategy::Auto => {
+                    let plane = parts
+                        .texts
+                        .first()
+                        .and_then(|t| t.facts.mix_planes.iter().find(|(group, _)| *group == name));
+                    let held = plane.and_then(|(_, plane)| slot_at(slots, plane));
+                    Some(held.ok_or_else(|| {
+                        fault(format!("the branch-mix plane of the group {name}"))
+                    })?)
+                }
+                _ => None,
+            };
+            Ok(m::Dispatch {
+                strategy: match strategy {
+                    Strategy::Predicated => m::DispatchStrategy::Predicated,
+                    Strategy::Switch => m::DispatchStrategy::Switch,
+                    Strategy::Segmented => m::DispatchStrategy::Segmented,
+                    Strategy::Auto => m::DispatchStrategy::Auto,
+                },
+                mix_slot,
+                branch_costs,
+                name,
+                k: ctx.nodes[node as usize].ops.len() - 1,
+                ..m::Dispatch::default()
+            })
+        })
         .collect()
 }
 
@@ -974,8 +954,8 @@ mod tests {
         let auto = ("g".to_string(), Strategy::Auto);
         let found = [auto.clone(), ("h".to_string(), Strategy::Auto)];
         with_two_groups(|ctx, order| {
-            let read = group_reads(ctx, order, &found, &[slot("x"), slot("k")]).unwrap();
-            let [(first, _), (second, _)] = &read[..] else {
+            let read = group_costs(ctx, order, &found).unwrap();
+            let [first, second] = &read[..] else {
                 panic!("two groups: {read:?}");
             };
             let counts = |g: &[m::BranchCost]| -> Vec<(f64, f64, f64, f64)> {
@@ -990,29 +970,14 @@ mod tests {
     }
 
     #[test]
-    fn a_group_that_is_not_auto_states_no_costs_and_every_group_states_the_slots_its_selector_reads(
-    ) {
+    fn a_group_that_is_not_auto_states_no_costs() {
         let found = [
             ("g".to_string(), Strategy::Switch),
             ("h".to_string(), Strategy::Segmented),
         ];
         with_two_groups(|ctx, order| {
-            let read = group_reads(ctx, order, &found, &[slot("x"), slot("k")]).unwrap();
-            assert_eq!(read, [(vec![], vec![1]), (vec![], vec![1])]);
-        });
-    }
-
-    #[test]
-    fn a_selector_that_reads_a_plane_the_unit_has_no_slot_for_is_a_fault_naming_it() {
-        let found = [("g".to_string(), Strategy::Switch)];
-        with_two_groups(|ctx, order| {
-            let why = group_reads(ctx, order, &found, &[slot("x")]).unwrap_err();
-            assert!(
-                why.reason
-                    .contains("reads per_sample k, which is no slot of the unit"),
-                "{}",
-                why.reason
-            );
+            let costs = group_costs(ctx, order, &found).unwrap();
+            assert_eq!(costs, [vec![], vec![]]);
         });
     }
 }

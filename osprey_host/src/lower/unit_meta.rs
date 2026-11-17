@@ -286,9 +286,10 @@ pub const SLOT_FLAGS: [(u32, &str); 4] = [
     (1 << 2, "EG_SLOT_GATHER"),
     (1 << 3, "EG_SLOT_SHARED"),
 ];
-/// The flag of a plane whose launch-start value the body reads.
+/// The flag of a slot the body reads before writing it: a caller must give it an initial value (the door validates the bit and does
+/// not act on it).
 pub const SLOT_PRIOR: u32 = 1 << 0;
-/// The parameter-plane flag of a slot.
+/// The flag of a lookup slot that is a parameter read at index 0 only: its gradient is the sum over samples into that one cell.
 pub const SLOT_PARAM_PLANE: u32 = 1 << 1;
 /// The flag of a parameter plane with no lane axis.
 pub const SLOT_SHARED: u32 = 1 << 3;
@@ -464,8 +465,6 @@ record! {
         pub sweep: Option<UnitRef>,
         /// The cost of each branch of an auto group, in branch order; empty for any other group.
         pub branch_costs: Vec<BranchCost>,
-        /// The slots the group's selector reads, ascending; empty when the unit states none.
-        pub selector_slots: Vec<usize>,
     }
 }
 record! {

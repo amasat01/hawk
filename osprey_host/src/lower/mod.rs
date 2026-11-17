@@ -81,7 +81,7 @@ pub(super) fn wing(why: Fault) -> Refusal {
 }
 
 /// The plane a finishing kernel counts its finished samples in.
-pub(super) const FINISHED_PLANE: &str = "finished_count";
+pub(super) const FINISHED_PLANE: &str = raptor_wings::cells::FINISHED_PLANE;
 
 /// The finished-count plane a body declares when any of its sinks finishes samples and it does not declare the plane yet.
 pub(super) fn finished_slot(ctx: *mut Ctx, member: &Member) -> Option<DeclaredSlot> {
