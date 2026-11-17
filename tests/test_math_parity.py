@@ -94,10 +94,13 @@ TERNARY = {
     "clip": (_clip, np.clip, True),
 }
 
-#: The ULP budget for an inexact function off the bit-identical host build
-#: (the device's libdevice, the default profile's vector packets), against
-#: glibc: aether's measured device-vs-host bounds.
-ULP = {"erfc": 4, "cbrt": 3}
+#: The ULP budget of an inexact function off the bit-identical host build (the device's
+#: libdevice, the default profile's vector packets), against glibc. Per function, double
+#: precision: glibc's documented maximum (libm-test-ulps, glibc 2.34, x86_64) plus the CUDA
+#: Programming Guide's maximum (mathematical-functions tables), as the two sides differ by at
+#: most the sum of their errors against the exact value. A function absent here keeps
+#: :data:`ULP_DEFAULT`; matrix rows (``mat-<function>``) take their function's budget.
+ULP = {"asinh": 2 + 3, "atanh": 2 + 2, "tanh": 2 + 1, "cbrt": 4 + 1, "erfc": 5 + 5}
 ULP_DEFAULT = 2
 
 _SUB = 2.2250738585072014e-308 / 4          # a subnormal
@@ -184,7 +187,7 @@ def _assert_bitwise(name, got, want, inputs):
 
 
 def _assert_ulps(name, got, want, inputs):
-    budget = ULP.get(name, ULP_DEFAULT)
+    budget = ULP.get(name.removeprefix("mat-"), ULP_DEFAULT)
     d = _ulps(got, want)
     bad = np.flatnonzero(d > budget)
     assert bad.size == 0, (
