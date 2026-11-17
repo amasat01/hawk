@@ -45,15 +45,6 @@ S = TensorType((), "f64")
 I32 = TensorType((), "i32")
 V3 = TensorType((3,), "f64")
 
-_EPS = np.finfo(np.float64).eps
-
-
-def _band(s: int, a, b) -> float:
-    """The ONE anchor, restated (test_serial_oracle.band): S x 2 x eps,
-    applied relatively — derived, never fitted."""
-    scale = max(1.0, float(np.max(np.abs(a))), float(np.max(np.abs(b))))
-    return s * 2.0 * _EPS * scale
-
 
 def _leaf(name: str, t: TensorType, role: str | None = None) -> Leaf:
     role = role or {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(t.shape)]
@@ -334,13 +325,7 @@ def test_forward_dispatch_matches_the_serial_oracle_on_the_host(
     got = O.run(dispatch_bundle.directory, name, N, sidecar_of(dispatch_bundle, name),
                **kw)
     got = np.asarray(got)
-    if dtype == "i":
-        np.testing.assert_array_equal(got, want)
-        return
-    limit = _band(got.size, got, want)
-    worst = float(np.max(np.abs(got.astype(float) - np.asarray(want, dtype=float))))
-    assert worst <= limit, f"{name}: host dispatch differs from the reference by "\
-        f"{worst}, band {limit}"
+    np.testing.assert_array_equal(got, want, err_msg=f"{name}: host dispatch")
 
 
 @pytest.mark.parametrize("name,K,rank,dtype", _CASES, ids=[c[0] for c in _CASES])
@@ -355,13 +340,7 @@ def test_forward_dispatch_matches_the_serial_oracle_on_the_device(
                            sidecar_of(dispatch_bundle, name))
     got = np.asarray(eplan.plan(plugin, structure=eexec.DeviceKernel,
                                 npartitions=1).run(**kw))
-    if dtype == "i":
-        np.testing.assert_array_equal(got, want)
-        return
-    limit = _band(got.size, got, want)
-    worst = float(np.max(np.abs(got.astype(float) - np.asarray(want, dtype=float))))
-    assert worst <= limit, f"{name}: device dispatch differs from the reference by "\
-        f"{worst}, band {limit}"
+    np.testing.assert_array_equal(got, want, err_msg=f"{name}: device dispatch")
 
 
 def test_the_dispatch_sidecar_entries_land_on_the_deployed_artifact(dispatch_bundle):
@@ -454,12 +433,7 @@ def test_segmented_forward_matches_the_serial_oracle_on_the_host(segmented_bundl
     O.run_kernel(O.load(segmented_bundle.directory, cname, sidecar_of(segmented_bundle, cname)),
                  N, base=0, count=N, k=kinds, **{_seg_plane(offs_name, "class"): classes})
     np.testing.assert_array_equal(classes, kinds)
-    limit = _band(N, y, want)
-    worst = float(np.max(np.abs(y - want)))
-    assert worst <= limit, (
-        f"K={K}: segmented host run differs from the reference by {worst}, "
-        f"band {limit}"
-    )
+    np.testing.assert_array_equal(y, want, err_msg=f"K={K}: segmented host run")
 
 
 @pytest.mark.parametrize("K", [2, 5, 16])
@@ -499,12 +473,7 @@ def test_segmented_forward_matches_the_serial_oracle_on_the_device(
         p.bind(bs=bs_dev, y=y_dev, **{offs_name: off_dev}).launch()
     cp.cuda.get_current_stream().synchronize()
     got = cp.asnumpy(y_dev)
-    limit = _band(N, got, want)
-    worst = float(np.max(np.abs(got - want)))
-    assert worst <= limit, (
-        f"K={K}: segmented device run differs from the reference by {worst}, "
-        f"band {limit}"
-    )
+    np.testing.assert_array_equal(got, want, err_msg=f"K={K}: segmented device run")
 
 
 def test_segmented_units_carry_distinct_unit_digests(segmented_bundle):
@@ -697,8 +666,8 @@ def test_training_switch_rewrites_the_kind_plane_without_rebuild_or_retrace(
 
     want1 = bs_host[kind_first, np.arange(n)]
     want2 = bs_host[kind_second, np.arange(n)]
-    np.testing.assert_allclose(out1, want1, rtol=0, atol=_band(n, out1, want1))
-    np.testing.assert_allclose(out2, want2, rtol=0, atol=_band(n, out2, want2))
+    np.testing.assert_array_equal(out1, want1)
+    np.testing.assert_array_equal(out2, want2)
     assert not np.allclose(out1, out2), (
         "the rewritten kind plane must change the dispatch's own output — "
         "identical out1/out2 would mean the replay never re-read the plane")
@@ -808,8 +777,8 @@ def test_segmented_training_switch_rewrites_offsets_without_rebuild_or_retrace(
 
     want1 = bs_host[kind_first, np.arange(n)]
     want2 = bs_host[kind_second, np.arange(n)]
-    np.testing.assert_allclose(out1, want1, rtol=0, atol=_band(n, out1, want1))
-    np.testing.assert_allclose(out2, want2, rtol=0, atol=_band(n, out2, want2))
+    np.testing.assert_array_equal(out1, want1)
+    np.testing.assert_array_equal(out2, want2)
     assert not np.allclose(out1, out2), (
         "the rewritten offsets plane must change the segmented run's own "
         "output — identical out1/out2 would mean the replay never re-read it")
@@ -921,9 +890,9 @@ def test_a_kernel_written_kind_plane_is_consumed_in_the_same_captured_graph(
 
     want_second = (-logits).argmax(axis=0)
     assert np.array_equal(kind_first, want)
-    assert np.allclose(y_first, x * (want + 1))
+    assert np.array_equal(y_first, x * (want + 1))
     assert np.array_equal(kind_second, want_second)
-    assert np.allclose(y_second, x * (want_second + 1))
+    assert np.array_equal(y_second, x * (want_second + 1))
     assert not np.array_equal(kind_first, kind_second)
     assert calls["n"] == 0, (
         f"build_bundle was called {calls['n']} time(s) between launches")

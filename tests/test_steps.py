@@ -21,9 +21,9 @@ Rows:
   ``finished_count``, misspellings and a clashing plane refused; compiled, a
   launch with ``fused_steps = k`` takes exactly ``k`` steps — after every
   launch of a hand-driven ``k`` sequence the planes equal the step-by-step
-  reference after the same total (host: the ``K = 1`` kernel, bit-identical;
-  device: the same auto artifact driven with ``k = 1``, since nvcc's default
-  FMA contraction is kept and may differ from ``K = 1`` by an ULP), plain and
+  reference after the same total, bit for bit (the reference is the ``K = 1``
+  kernel on the host and the same auto artifact driven with ``k = 1`` on the
+  device, which compiles the same loop body), plain and
   active-set kind (the map compacted by hand between launches). Non-vacuity: a launch of ``k = 37``
   equals 37 one-step launches and differs from 36 and 38, and the fixed
   ``steps=16`` artifact overshoots the same cap to 48.
@@ -297,7 +297,7 @@ def test_k_steps_per_launch_are_bit_identical_to_one(bundles, which, target):
         assert counted_k == N, f"{which}_x{k}/{target}: counter {counted_k}"
         assert launches_k == math.ceil(launches / k), (k, launches_k, launches)
         for plane, ref in one.items():
-            _assert_same(got[plane], ref, target, err_msg=f"{which}_x{k}/{target}:{plane}")
+            _assert_same(got[plane], ref, err_msg=f"{which}_x{k}/{target}:{plane}")
 
 
 # --------------------------------------------------------------------------- #
@@ -426,35 +426,19 @@ def _one_step_snapshots(bundle, name, which, target, *, never=False,
 def _oracle(bundles, bundle, name, which, target, **kw):
     """The step-by-step reference of an auto kernel: the SAME auto artifact
     one step per launch (``fused_steps = 1``), which runs the single step's
-    straight-line body, i.e. the K = 1 kernel. Host results equal it bit for
-    bit; on the device nvcc's default FMA contraction is kept, so a fused
-    launch may differ from it by an ULP where a multiply-add is contracted
-    differently (:func:`_same`)."""
+    straight-line body, i.e. the K = 1 kernel. A fused launch equals it bit
+    for bit (:func:`_same`)."""
     return _one_step_snapshots(bundle, name, which, target, **kw)
 
 
-#: The device's tolerance for a fused launch against one step per launch: a
-#: few ULPs of contraction difference, accumulated over at most ``CAP`` steps
-#: of O(1) planes; a step off (``dt = 0.0625``) is ~1e-2 away.
-_DEVICE_RTOL, _DEVICE_ATOL = 1e-12, 1e-14
-
-
-def _same(got, want, target) -> bool:
-    """``got == want`` bit for bit on the host; on the device within
-    :data:`_DEVICE_RTOL` for a floating plane (exact for any other)."""
+def _same(got, want) -> bool:
+    """``got == want`` bit for bit, shape included."""
     got, want = np.asarray(got), np.asarray(want)
-    if target == "host" or got.dtype.kind != "f":
-        return got.shape == want.shape and bool(np.array_equal(got, want))
-    return got.shape == want.shape and bool(
-        np.allclose(got, want, rtol=_DEVICE_RTOL, atol=_DEVICE_ATOL))
+    return got.shape == want.shape and bool(np.array_equal(got, want))
 
 
-def _assert_same(got, want, target, err_msg=""):
-    if target == "host" or np.asarray(got).dtype.kind != "f":
-        np.testing.assert_array_equal(got, want, err_msg=err_msg)
-    else:
-        np.testing.assert_allclose(got, want, rtol=_DEVICE_RTOL, atol=_DEVICE_ATOL,
-                                   err_msg=err_msg)
+def _assert_same(got, want, err_msg=""):
+    np.testing.assert_array_equal(got, want, err_msg=err_msg)
 
 
 def _compact(extra, planes, xp):
@@ -489,7 +473,7 @@ def test_auto_takes_exactly_the_word_s_steps_per_launch(bundles, active_bundle,
         got = _host(planes)
         for plane, want in ref.items():
             _assert_same(
-                got[plane], want, target, err_msg=f"{name}/{target}: {plane} after "
+                got[plane], want, err_msg=f"{name}/{target}: {plane} after "
                 f"{launches} launches ({total} steps)")
         if active:
             _compact(extra, planes, xp)
@@ -518,10 +502,10 @@ def test_auto_caps_exactly_where_the_fixed_artifact_overshoots(bundles, target):
         fixed_bound.launch()
     fixed = _host(fixed_planes)
     for plane in ("x", "v", "t"):
-        _assert_same(auto[plane], snaps[37][plane], target)
-        _assert_same(fixed[plane], fixed_snaps[48][plane], target)
+        _assert_same(auto[plane], snaps[37][plane])
+        _assert_same(fixed[plane], fixed_snaps[48][plane])
         for off in (36, 38):
-            assert not _same(auto[plane], snaps[off][plane], target), (plane, off)
+            assert not _same(auto[plane], snaps[off][plane]), (plane, off)
     assert not auto["terminated"].any()
 
 
@@ -540,10 +524,10 @@ def test_the_word_is_a_runtime_bound_clamped_below_at_zero(bundles, target):
         bound.launch()
         got = _host(planes)
         for plane in ("x", "v", "t"):
-            _assert_same(got[plane], snaps[want][plane], target,
+            _assert_same(got[plane], snaps[want][plane],
                          err_msg=f"word {word}: {plane}")
         if word == 100:
-            assert not _same(got["t"], snaps[64]["t"], target)
+            assert not _same(got["t"], snaps[64]["t"])
 
 
 @pytest.mark.parametrize("which,name", [("osc", "osc_xauto"), ("spin3", "spin3_xauto")])
@@ -551,15 +535,14 @@ def test_the_word_is_a_runtime_bound_clamped_below_at_zero(bundles, target):
 def test_a_one_step_launch_is_the_single_step_bit_for_bit(bundles, which, name,
                                                           target):
     """A launch whose word is 1 runs the single step's straight-line body, so
-    one step per launch of the auto artifact is the K = 1 kernel bit for bit on
-    the host and within :data:`_DEVICE_RTOL` on the device (another entry, so
-    another contraction), after every launch until every sample finished."""
+    one step per launch of the auto artifact is the K = 1 kernel bit for bit,
+    after every launch until every sample finished."""
     auto = _one_step_snapshots(bundles, name, which, target)
     one = _one_step_snapshots(bundles, which, which, target)
     assert len(auto) == len(one) > 2
     for step, (got, want) in enumerate(zip(auto, one)):
         for plane in want:
-            _assert_same(got[plane], want[plane], target,
+            _assert_same(got[plane], want[plane],
                          err_msg=f"{name}/{target}: {plane} after {step} steps")
 
 

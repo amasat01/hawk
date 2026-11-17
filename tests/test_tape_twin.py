@@ -289,11 +289,7 @@ def test_a_fused_launch_of_k_steps_equals_k_single_step_launches(bundle, target)
             single.launch(1)
         a, b = fused.snap(), single.snap()
         for plane in a:
-            if target == "host":
-                np.testing.assert_array_equal(a[plane], b[plane], err_msg=f"{plane} k={k}")
-            else:
-                np.testing.assert_allclose(a[plane], b[plane], rtol=1e-12, atol=1e-14,
-                                           err_msg=f"{plane} k={k}")
+            np.testing.assert_array_equal(a[plane], b[plane], err_msg=f"{plane} k={k}")
     assert fused.done()
 
 

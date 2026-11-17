@@ -912,7 +912,7 @@ def test_device_matches_host(rig, tmp_path, cache_dir, op):
         eplan.plan(L.device_plugin(bundle.directory, "g", side),
                    structure=eexec.DeviceKernel).bind(**planes).launch()
         runs.append(cupy.asnumpy(planes["bar_t"]))
-    np.testing.assert_allclose(runs[0], host, rtol=1e-12, atol=1e-300)
+    np.testing.assert_array_equal(runs[0], host)
     assert all(np.array_equal(r, runs[0]) for r in runs[1:])
 
 
@@ -939,5 +939,5 @@ def test_device_matches_host_through_a_loop(rig, tmp_path, cache_dir):
         eplan.plan(L.device_plugin(bundle.directory, "g", side),
                    structure=eexec.DeviceKernel).bind(**planes).launch()
         runs.append(cupy.asnumpy(planes["bar_t"]))
-    np.testing.assert_allclose(runs[0], host, rtol=1e-12, atol=1e-300)
+    np.testing.assert_array_equal(runs[0], host)
     assert all(np.array_equal(r, runs[0]) for r in runs[1:])
