@@ -313,6 +313,12 @@ fn load_cpu(dir: &Path) -> Result<CpuCard, String> {
     }
 }
 
+/// The cards of the instruction sets a host build knows: the name, the data file and the name of the instruction set in a record.
+pub(crate) const ISA_CARDS: [(&str, &str, &str); 2] = [
+    ("arm64", "arm.json", "Arm64"),
+    ("x86_64", "x86.json", "X86_64"),
+];
+
 /// Loads the card of an instruction set, and checks that it names that instruction set.
 fn load_isa(dir: &Path, file: &str, isa: &str) -> Result<IsaCard, String> {
     let card = read_file(dir, file)?;
@@ -466,14 +472,10 @@ fn host_machine(
         ));
     }
     let isa_name = stated.isa.as_ref().unwrap_or(&probe.isa);
-    let (file, member_name) = match isa_name.as_str() {
-        "arm64" => ("arm.json", "Arm64"),
-        "x86_64" => ("x86.json", "X86_64"),
-        other => {
-            return Err(Failed::Bad(format!(
-                "no card for the instruction set {other}"
-            )))
-        }
+    let Some(&(_, file, member_name)) = ISA_CARDS.iter().find(|card| card.0 == isa_name) else {
+        return Err(Failed::Bad(format!(
+            "no card for the instruction set {isa_name}"
+        )));
     };
     let cpu = load_cpu(dir)?;
     let isa = load_isa(dir, file, isa_name)?;

@@ -367,3 +367,55 @@ fn a_device_compiler_line_without_a_release_takes_the_stated_one() {
         "stated machine: device_arch and device_release are for the cuda target"
     );
 }
+
+/// The refusal of a host answer for the profile `profile` with the compiler `line` over the data in `dir`.
+fn profile_refusal(dir: &Path, line: &str, profile: &str) -> String {
+    let stated = Stated {
+        host_profile: Some(profile.into()),
+        ..roots()
+    };
+    let probe = machine("arm64");
+    answer(dir, "host", &identity(line), &probe, &stated).unwrap_err()
+}
+
+#[test]
+fn a_profile_no_card_builds_for_this_instruction_set_says_where_it_is_built() {
+    let want =
+        "host profile native-vector-math-nofma is not built on arm64; it is built only on x86_64";
+    for line in ["g++ (GCC) 13.2.0", "Apple clang version 21.0.0"] {
+        assert_eq!(
+            profile_refusal(&shipped(), line, "native-vector-math-nofma"),
+            want
+        );
+    }
+}
+
+#[test]
+fn a_profile_the_other_compiler_family_builds_says_which_family() {
+    // an x86 card whose non-GCC table lacks the profile (and which lets such a compiler ask for vector math)
+    let only_gcc = edited(
+        "x86.json",
+        ",\n        \"native-vector-math-nofma\": [\"-fno-trapping-math\", \"-DAETHER_HOST_VECTOR_MATH\"]\n      }\n    },",
+        "\n      }\n    },",
+    )
+    .replace("\"vector_math_needs_gcc\": true", "\"vector_math_needs_gcc\": false");
+    let dir = changed("only_gcc", "x86.json", &only_gcc);
+    let stated = Stated {
+        isa: Some("x86_64".into()),
+        vector_isa: Some("avx2".into()),
+        host_profile: Some("native-vector-math-nofma".into()),
+        ..roots()
+    };
+    let got = answer(
+        &dir,
+        "host",
+        &identity("Apple clang version 21.0.0"),
+        &machine("x86_64"),
+        &stated,
+    )
+    .unwrap_err();
+    assert_eq!(
+        got,
+        "host profile native-vector-math-nofma is not built on x86_64 with a compiler other than GCC; it is built there only with a GCC compiler"
+    );
+}

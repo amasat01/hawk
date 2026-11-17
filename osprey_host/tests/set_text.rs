@@ -23,6 +23,9 @@ const KERNELS: [&str; 3] = [
     "83645.104_ev_untimed_host",
 ];
 
+/// A recorded device kernel.
+const DEVICE_KERNEL: &str = "80036.18__matrix_cuda";
+
 /// The folder of answers, written once by the replay tool.
 fn answers_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -75,6 +78,26 @@ fn a_request_without_the_block_has_it_in_no_text_and_by_default_in_every_text_of
         assert_eq!(with_block(&alone), texts, "{kernel}");
         assert_eq!(with_block(&answer(kernel, true)), 0, "{kernel}");
     }
+}
+
+#[test]
+fn a_set_request_takes_the_block_from_host_texts_only() {
+    let block = aether_writers::unit::exports(&Exports::Derived, false).unwrap();
+    let texts = |answer: &KernelAnswer| -> Vec<String> {
+        let all = answer.units.iter().flat_map(|u| &u.texts);
+        all.map(|t| t.text.clone()).collect()
+    };
+    // a host text loses exactly the block
+    let (alone, set) = (answer(KERNELS[0], false), answer(KERNELS[0], true));
+    for (with, without) in texts(&alone).iter().zip(texts(&set)) {
+        assert!(with.contains(&block) && !without.contains("eagle_abi_tag"));
+        assert_eq!(with.replacen(&block, "", 1), without);
+    }
+    // a device text is the same text for both values of the member
+    let (alone, set) = (answer(DEVICE_KERNEL, false), answer(DEVICE_KERNEL, true));
+    let device = texts(&alone);
+    assert!(device.iter().all(|t| t.contains("eagle_abi_tag")));
+    assert_eq!(device, texts(&set));
 }
 
 #[test]

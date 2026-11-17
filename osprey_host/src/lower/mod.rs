@@ -484,7 +484,8 @@ fn write_target(
         cards,
         target,
     )?;
-    if !pending.exports_block {
+    // a set has one host library, so its block is in the set text; a device unit's image is a module of its own and keeps its block
+    if !pending.exports_block && target == Target::Host {
         unit.exports = Exports::Text(String::new());
     }
     unit.segment = pending.segment.clone();

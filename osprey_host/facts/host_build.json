@@ -14,6 +14,7 @@
     "roots": ["-I", "{include:aether}", "-I", "{include:eagle}"],
     "served": ["-I{include:served}"]
   },
+  "defines": ["{defines}"],
   "facts_include": ["-I{include:facts}"],
   "set_includes": ["-I", "{include:door}"],
   "dependency": ["-MD", "-MF", "{depfile}"],

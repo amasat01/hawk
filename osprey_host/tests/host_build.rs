@@ -69,7 +69,7 @@ fn asked(row: &Json) -> Result<Json, String> {
 }
 
 /// Whether the old argv and the commands the answer states agree, by the rule above.
-fn agree(old: &[String], build: &Json) -> bool {
+fn agree(old: &[String], defines: &[String], build: &Json) -> bool {
     let link_only =
         |at: usize| old[at] == "-shared" || old[at] == "-o" || (at > 0 && old[at - 1] == "-o");
     let (mut compile, mut link) = (vec![], vec![]);
@@ -85,6 +85,10 @@ fn agree(old: &[String], build: &Json) -> bool {
     let unit_compile: Vec<String> = unit
         .into_iter()
         .filter(|flag| !["-c", "-o", "{object}"].contains(&flag.as_str()))
+        .flat_map(|flag| match flag.as_str() {
+            "{defines}" => defines.iter().map(|d| format!("-D{d}")).collect(),
+            _ => vec![flag],
+        })
         .collect();
     let systems = build.get("link").expect("a link record");
     let linked = ["linux", "macos"].iter().all(|system| {
@@ -110,7 +114,8 @@ fn the_commands_of_every_recorded_combination_are_the_old_ones() {
                     .iter()
                     .map(|a| a.str().unwrap().to_string())
                     .collect();
-                agree(&old, &build)
+                let defines = texts(&row, "defines");
+                agree(&old, &defines, &build)
             }
             (None, Err(_)) => {
                 refusals += 1;
@@ -177,4 +182,31 @@ fn headers_are_required_and_closed() {
     };
     assert!(refusal("{}").contains("needs headers"));
     assert!(refusal(r#"{"headers":"both"}"#).contains("headers both is not roots or served"));
+}
+
+#[test]
+fn only_a_unit_compile_has_a_place_for_defines() {
+    let state = facts::stated_from_json(r#"{"headers":"served"}"#).unwrap();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("facts");
+    let answer = facts::answer(
+        &dir,
+        "host",
+        "c++ || clang version 17.0.1 || 0",
+        &facts::probe(),
+        &state,
+    )
+    .unwrap();
+    let build = Contract::parse(&answer)
+        .unwrap()
+        .0
+        .get("host_build")
+        .unwrap()
+        .clone();
+    let count = |key: &str| {
+        texts(&build, key)
+            .iter()
+            .filter(|a| *a == "{defines}")
+            .count()
+    };
+    assert_eq!((count("compile_unit"), count("compile_set")), (1, 0));
 }

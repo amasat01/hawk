@@ -203,9 +203,10 @@ pub struct KernelRequest {
     pub fusion: Option<FusionRow>,
     /// The answer of the facts entry for each target of the request, passed back as it was given.
     pub facts: Vec<(Target, String)>,
-    /// Whether the first kernel's texts carry the self-check exports block. A set of kernels built into one library asks every
-    /// kernel with false and takes the block once from the set text; a text that is compiled alone asks with true. No other part
-    /// of any text changes.
+    /// Whether the first kernel's host texts carry the self-check exports block. A set of kernels built into one host library asks
+    /// every kernel with false and takes the block once from the set text; a text that is compiled alone asks with true. A device
+    /// text always keeps its block (each device unit's image is a module of its own, and its layout self-check reads the block).
+    /// No other part of any text changes.
     pub exports_block: bool,
 }
 

@@ -27,6 +27,8 @@ old function:
     raptor wing's folder as the option `extra` (hawk/backends/__init__.py:115, made by
     hawk/facts.py:include_flags); the same flag class is passed here over a fixed folder name;
   * the cache folder ($HAWK_CACHE_DIR): one per stand-in compiler, so no verdict is shared;
+  * the user defines: the compile options (`defines`, passed as the driver passes the caller's
+    `-D` list) in a small separate witness, none in every other row;
   * the profile and the opt level: the compile options (drivers.py:CompileOptions), the
     environment variables unset.
 ONE thing has no seam: the architecture is `platform.machine()` read directly
@@ -89,6 +91,11 @@ PROFILES = (
 )
 OPT_LEVELS = ("", "O0", "O1", "O2", "O3", "O4")
 HEADERS = ("roots", "served")
+#: The user defines of the small witness axis: for these families, profiles and defines only, so the
+#: axes above are not multiplied by it. Every other row has none.
+DEFINES_FAMILIES = ("gcc-13.2", "apple-clang-21")
+DEFINES_PROFILES = ("native", "native-vector-math")
+DEFINES_WITNESS = (("FOO",), ("FOO", "BAR=2"))
 SCALARS = ("float64", "float32")
 VERDICTS = ("fixed", "miscompile", "unrun")
 WITNESS_EXIT = {"fixed": 0, "miscompile": 1, "unrun": 2}
@@ -165,7 +172,13 @@ def main(out_path: str) -> None:
             else:
                 platform.machine = lambda m=machine: m
             axes = itertools.product(HEADERS, PROFILES, OPT_LEVELS, SCALARS)
-            for headers, profile, opt, scalar in axes:
+            witness = itertools.product(
+                DEFINES_WITNESS, HEADERS, DEFINES_PROFILES, ("O2",), ("float64",)
+            )
+            for defines, headers, profile, opt, scalar in [
+                *(((), *axis) for axis in axes),
+                *(witness if family in DEFINES_FAMILIES and verdict == "fixed" else ()),
+            ]:
                 if headers == "roots":
                     os.environ.update(
                         HAWK_AETHER_INCLUDE=str(aether), HAWK_EAGLE_INCLUDE=str(eagle)
@@ -175,6 +188,7 @@ def main(out_path: str) -> None:
                         os.environ.pop(name, None)
                 row = {
                     "headers": headers,
+                    "defines": list(defines),
                     "machine": machine,
                     "machine_patched": machine != native,
                     "compiler": kind,
@@ -191,6 +205,7 @@ def main(out_path: str) -> None:
                     mode=scalar,
                     host_profile=profile,
                     opt_level=opt,
+                    defines=defines,
                     extra=(IncludeFlag("-I/FACTS"),),
                 )
                 try:
@@ -216,7 +231,9 @@ def main(out_path: str) -> None:
     # the scalar mode must not change the argv: check it here
     seen = {}
     for row in rows:
-        key = tuple(row[k] for k in ("machine", "headers", "family", "profile", "opt_level"))
+        key = tuple(
+            str(row[k]) for k in ("machine", "headers", "defines", "family", "profile", "opt_level")
+        )
         got = json.dumps(row.get("argv", row.get("refused")))
         if row["scalar"] == "float32" and seen.get(key + (row["witness"],)) not in (None, got):
             raise SystemExit(f"the scalar mode changes the argv at {key}")

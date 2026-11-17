@@ -3,7 +3,9 @@
 //! link of the objects into one shared library. Every flag is read from the data files (`host_build.json` and the `host_flags`
 //! of the instruction set's card); nothing is probed. Places the caller fills in are written `{compiler}`, `{source}`, `{object}`,
 //! `{output}`, `{depfile}`, `{include:aether}` and `{include:eagle}` (headers in two roots), `{include:served}` (headers served into
-//! one folder), `{include:facts}`, `{include:door}` and, for the link, `{objects}` (one element for each object).
+//! one folder), `{include:facts}`, `{include:door}` and, for the link, `{objects}` (one element for each object). The place `{defines}` stands for
+//! the caller's defines, one element `-D<define>` for each and none when it has none; only a unit compile has it (the set text
+//! takes no defines).
 //!
 //! Where the headers are is the caller's fact (`headers`, `roots` or `served`); the include places of a compile follow it. With
 //! roots the includes come before the facts include; served, they come after it, as the old command had them.
@@ -13,7 +15,7 @@
 //! flags of a unit (the entities its headers define with external linkage must be identical across the objects of one library)
 //! and one more include root, the door's. The link is `-shared` on both systems, as the old command had it; only the Linux
 //! spelling is unverified here.
-use crate::facts::{closed, member, names_of, read_file, text_of, Failed};
+use crate::facts::{closed, member, names_of, read_file, text_of, Failed, ISA_CARDS};
 use aether_writers::contract::Json;
 use std::path::Path;
 
@@ -39,21 +41,69 @@ fn flags(items: Vec<String>) -> Json {
     Json::Arr(items.into_iter().map(Json::Str).collect())
 }
 
+/// Whether the `vector_math` table of an instruction set's `host_flags` has the profile for the compiler family.
+fn carries(host: &Json, file: &str, profile: &str, gcc: bool) -> Result<bool, Failed> {
+    let table = member(
+        member(host, file, "vector_math")?,
+        file,
+        if gcc { "gcc" } else { "other" },
+    )?;
+    Ok(table.get(profile).is_some())
+}
+
 /// The flags a profile adds to the instruction set's flags for the compiler's family, refused when the instruction set has no such
 /// profile for that family.
-fn vector_flags(card: &Json, file: &str, s: &Settings) -> Result<Vec<String>, Failed> {
+fn vector_flags(
+    dir: &Path,
+    host: &Json,
+    isa_file: &str,
+    s: &Settings,
+) -> Result<Vec<String>, Failed> {
     let table = member(
-        member(card, file, "vector_math")?,
-        file,
+        member(host, isa_file, "vector_math")?,
+        isa_file,
         if s.gcc { "gcc" } else { "other" },
     )?;
     match table.get(s.profile) {
-        Some(_) => Ok(names_of(table, file, s.profile)?),
-        None => Err(Failed::Bad(format!(
-            "host profile {} is not built on this instruction set with this compiler",
-            s.profile
-        ))),
+        Some(_) => Ok(names_of(table, isa_file, s.profile)?),
+        None => Err(not_built(dir, host, isa_file, s)?),
     }
+}
+
+/// The refusal of a profile this instruction set and compiler do not build, saying where the cards do build it: with the other
+/// compiler family on this instruction set, else on the instruction sets whose cards carry it.
+fn not_built(dir: &Path, host: &Json, isa_file: &str, s: &Settings) -> Result<Failed, Failed> {
+    let isa = text_of(&read_file(dir, isa_file)?, isa_file, "isa")?;
+    if carries(host, isa_file, s.profile, !s.gcc)? {
+        let (here, there) = if s.gcc {
+            ("a GCC compiler", "a compiler other than GCC")
+        } else {
+            ("a compiler other than GCC", "a GCC compiler")
+        };
+        return Ok(Failed::Bad(format!(
+            "host profile {} is not built on {isa} with {here}; it is built there only with {there}",
+            s.profile
+        )));
+    }
+    let mut only = vec![];
+    for (name, file, _) in ISA_CARDS {
+        let other = read_file(dir, file)?;
+        let flags = member(&other, file, "host_flags")?;
+        if carries(flags, file, s.profile, true)? || carries(flags, file, s.profile, false)? {
+            only.push(name);
+        }
+    }
+    if only.is_empty() {
+        return Err(Failed::Card(format!(
+            "no instruction set card builds the vector math profile {}",
+            s.profile
+        )));
+    }
+    Ok(Failed::Bad(format!(
+        "host profile {} is not built on {isa}; it is built only on {}",
+        s.profile,
+        only.join(" and ")
+    )))
 }
 
 /// Whether the release (`major.minor`) lies in one of the ranges `[major, minor, major, minor]` of the card.
@@ -133,6 +183,7 @@ pub(crate) fn host_build(
             "always",
             "unit_tail",
             "includes",
+            "defines",
             "facts_include",
             "set_includes",
             "dependency",
@@ -170,7 +221,7 @@ pub(crate) fn host_build(
         },
     )?);
     if vector {
-        argv.extend(vector_flags(host, isa_file, s)?);
+        argv.extend(vector_flags(dir, host, isa_file, s)?);
     }
     argv.extend(masked_flags(&card, file, host, vector, s)?);
     argv.extend(names_of(&card, file, "unit_tail")?);
@@ -185,8 +236,12 @@ pub(crate) fn host_build(
     let includes = names_of(places, file, s.headers)?;
     let set_includes = names_of(&card, file, "set_includes")?;
     let set = [&argv[..], &includes[..], &set_includes[..]].concat();
-    // a unit's text includes the facts header of the machine's wing; the set text does not
-    let facts = names_of(&card, file, "facts_include")?;
+    // a unit's text takes the caller's defines and the facts header of the machine's wing; the set text takes neither
+    let facts = [
+        names_of(&card, file, "defines")?,
+        names_of(&card, file, "facts_include")?,
+    ]
+    .concat();
     if s.headers == "roots" {
         argv.extend(includes);
         argv.extend(facts);
