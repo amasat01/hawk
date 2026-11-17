@@ -212,6 +212,40 @@ def _compile_plan(target: str, spec, options):
                        settings=spec.for_target(row).settings))
 
 
+def _device_line(identity: str) -> str:
+    """The device compiler's identity in the library's three-part form. The first version line of
+    the device compiler driver names no release, and the in-process compiler names its release, not
+    a path: it is written out here."""
+    if "||" not in identity:
+        from ..compile import nvrtc
+
+        major, minor = nvrtc.nvrtc_version()
+        digest = identity.partition("cccl:")[2]
+        identity = f"nvrtc||Cuda compilation tools, release {major}.{minor}, V{major}.{minor}.0||{digest}"
+    return _identity(identity)
+
+
+def device_build(identity: str, *, arch: str, release: str | None, driver: str | None,
+                 level: str) -> dict:
+    """The library's instructions for the device compile of a build, the ``device_build`` record of
+    its facts answer: the form of image the build makes (``image_format``), the argv template of the
+    one compile that makes it (``compile``) and the recipe that embeds the image file in the set
+    library (``embed``).
+
+    hawk states, as the facts of the machine and the compiler that compile: ``identity`` (the
+    compile driver's identity of the device compiler), its ``arch``, its ``release``
+    (``major.minor``; ``None``: the identity names it), the ``driver`` release the device driver
+    supports (``major.minor``; ``None``: unknown, which the library answers with the form that needs
+    no driver) and the optimisation ``level``. The library states the form, every flag and the
+    texts; hawk fills the places."""
+    stated = {"device_arch": arch, "opt_level": level}
+    if release:
+        stated["device_release"] = release
+    if driver:
+        stated["driver_release"] = driver
+    return json.loads(_facts("cuda", _device_line(identity), json.dumps(stated)))["device_build"]
+
+
 def _device(spec, options) -> tuple:
     """``(stated device machine, compiler line, image format)`` of the device compile of this build. The stated machine holds the
     architecture when one is asked for and the compiler's release as its compile plan states it: the first version line of the
@@ -224,13 +258,7 @@ def _device(spec, options) -> tuple:
         return stated, _identity(_NO_COMPILER["no device toolchain"]), "cubin"
     if plan.get("release"):
         stated["device_release"] = plan["release"]
-    line = plan["identity"]
-    if "||" not in line:                    # the in-process compiler names its release, not a path
-        from ..compile import nvrtc
-
-        major, minor = nvrtc.nvrtc_version()
-        line = f"nvrtc||Cuda compilation tools, release {major}.{minor}, V{major}.{minor}.0||{line.partition('cccl:')[2]}"
-    return stated, _identity(line), plan["meta"]["device_target"]
+    return stated, _device_line(plan["identity"]), plan["meta"]["device_target"]
 
 
 def _stated_host(spec) -> dict:

@@ -35,11 +35,11 @@ from .._errors import HawkError
 from . import drivers
 from . import payload as _payload
 from . import toolchain as tc
-from .cache import Cache, default_cache_dir, publish_atomic, tmp_sibling
+from .cache import Cache, default_cache_dir, digest_file, publish_atomic, tmp_sibling
 from .drivers import CompileOptions, CompileResult
 
 #: A place in an argv template: ``{compiler}``, ``{object}``, ``{include:eagle}`` ...
-_PLACE = re.compile(r"\{[a-z]+(?::[a-z]+)?\}")
+_PLACE = re.compile(r"\{[a-z_]+(?::[a-z_]+)?\}")
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,7 @@ class HostBuild:
     facts_term: str
 
 
-def _argv(template, places: dict, lists: dict | None = None) -> list:
+def fill_argv(template, places: dict, lists: dict | None = None) -> list:
     """``template`` with each place replaced by its text (``places`` maps a place, braces included, to a function that gives the
     text), and each element that is a place of ``lists`` (``{objects}``, ``{defines}``) by one element for each of its items, none
     when it has none. A place nobody fills is refused by name."""
@@ -91,7 +91,7 @@ class _ObjectRow:
                   "{depfile}": lambda: job.dep}
         if job.served is not None:
             places["{include:served}"] = lambda: job.served
-        argv = [*_argv(plan["template"], places, {"{defines}": plan["defines"]}), *plan["extra"]]
+        argv = [*fill_argv(plan["template"], places, {"{defines}": plan["defines"]}), *plan["extra"]]
         run(argv)
         return {"argv": tuple(argv), "figures": {}}
 
@@ -134,6 +134,44 @@ def compile_object(text: str, name: str, opts: CompileOptions, build: HostBuild,
         "hit_argv": tuple(template), "meta": {"flags": list(template)}})
 
 
+class _EmbedRow:
+    """What :func:`~hawk.compile.drivers.drive` asks of a target row, for the assembly of the text
+    that embeds an image: the suffixes of the files in its slot and the command to run."""
+
+    artifact = ".o"
+    source = ".s"
+
+    @staticmethod
+    def compile_hook(plan: dict, job, run) -> dict:
+        """Run the assemble template of ``plan`` for ``job``."""
+        places = {"{host_compiler}": lambda: plan["compiler"], "{source}": lambda: job.src,
+                  "{object}": lambda: job.out}
+        argv = fill_argv(plan["template"], places)
+        run(argv)
+        return {"argv": tuple(argv), "figures": {}}
+
+
+def embed_image(image: CompileResult, meta: dict, recipe: dict, opts: CompileOptions,
+                build: HostBuild) -> CompileResult:
+    """Assemble the object that holds the image file of a device unit under the two symbols its
+    record names (``meta["device_image"]``, ``meta["device_image_size"]``), through the cache.
+    ``recipe`` is the ``embed`` record of the library's ``device_build`` answer: the text for this
+    operating system and the command that assembles it with the host compiler of ``build``. The key
+    is the text, the command, the compiler and the CONTENT of the image, which the text reaches only
+    by its path."""
+    digest = digest_file(image.artifact)
+    if digest is None:
+        raise HawkError(f"the image of {meta['name']!r} is at {image.artifact} "
+                        "but it cannot be read")
+    text = (recipe["source"][_system()].replace("{size_symbol}", meta["device_image_size"])
+            .replace("{symbol}", meta["device_image"]).replace("{image_path}", str(image.artifact)))
+    template = recipe["compile"]
+    return drivers.drive(text, f"{meta['name']}__image", opts, _EmbedRow, {
+        "compiler": build.compiler, "identity": build.identity, "payload": None, "serve": False,
+        "tail": "", "deps": False, "template": template, "key_terms": ("embed", *template, f"image:{digest}"),
+        "hit_argv": tuple(template), "meta": {"flags": list(template)}})
+
+
 def _system() -> str:
     """The key of the link template for this operating system."""
     return "macos" if sys.platform == "darwin" else "linux"
@@ -165,7 +203,7 @@ def link(objects: list, set_object: CompileResult, set_text: str, library: str, 
         slot.mkdir(parents=True, exist_ok=True)
         tmp = tmp_sibling(slot / library)
         placed = {"{compiler}": lambda: build.compiler, "{output}": lambda: tmp}
-        argv = _argv(template, placed, {"{objects}": [r.artifact for r in done]})
+        argv = fill_argv(template, placed, {"{objects}": [r.artifact for r in done]})
         label = "host link of " + repr(library)
         start = time.perf_counter()
         try:
@@ -230,7 +268,7 @@ def _run_witness(build: HostBuild, source: Path, template: list) -> tuple:
         places.update({"{compiler}": lambda: build.compiler, "{source}": lambda: source, "{object}": lambda: obj,
                        "{depfile}": lambda: os.path.join(tmp, "witness.d")})
         try:
-            built = subprocess.run(_argv(template, places, {"{defines}": []}), capture_output=True, text=True, timeout=120)
+            built = subprocess.run(fill_argv(template, places, {"{defines}": []}), capture_output=True, text=True, timeout=120)
             if built.returncode == 0:
                 built = subprocess.run([build.compiler, obj, "-o", exe], capture_output=True, text=True, timeout=120)
             if built.returncode != 0:

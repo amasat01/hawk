@@ -52,6 +52,7 @@ from .. import wings as _wings
 _wt = _wings.view("raptor", "base", "wrapper_text")
 from .. import options as _options_mod
 from ..build_settings import BuildSettings, apply as _apply_settings, check as _check_settings, default_settings, refuse_choice, settings_of as _settings_of
+from ..backends import default_backends
 from ..registry import KNOWN, check, denial, missing, traits
 from ..targets import DEFAULT_TARGETS, TARGETS, build_spec
 from . import manifest as _manifest
@@ -99,9 +100,11 @@ class Entry:
 
 @dataclass(frozen=True)
 class Artifact:
-    """One kernel's published files + the sidecar it was described by. The ``entries`` of the host target name the shared
-    library of the build call; ``links`` are the files named for this unit that resolve to it (none when the library is
-    itself named for the unit)."""
+    """One kernel's published files + the sidecar it was described by. ``library`` is the shared
+    library of the build call (every unit of the call is in it; ``None`` when the call made none);
+    the ``entries`` of the host target name it, and those of a device target name the unit's image
+    file, which the library also holds. ``links`` are the files named for this unit that resolve to
+    the library (none when it is itself named for the unit, and none for a device-only unit)."""
 
     name: str
     directory: Path
@@ -109,6 +112,7 @@ class Artifact:
     sidecar: dict
     entries: dict
     links: tuple = ()
+    library: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +140,8 @@ class Bundle:
         for a in self.artifacts:
             out.append(a.sidecar_path)
             out += a.links
+            if a.library is not None:
+                out.append(a.library)
             for entry in a.entries.values():
                 out += [entry.artifact, entry.source]
                 if entry.report is not None:
@@ -464,29 +470,52 @@ def _build_targets(lowered, sources, options, targets) -> dict:
 
 @dataclass(frozen=True)
 class _Library:
-    """The shared library the host units of one build call are linked into: its file name, the target it is the library of, its
-    link in the cache and the files it publishes (the library, then one link to it for each unit not named like it)."""
+    """The shared library of one build call: its file name, the host target whose units' objects it
+    holds (``None``: a device-only build), its link in the cache and the files it publishes (the
+    library, then one link to it for each host unit not named like it)."""
 
     name: str
-    target: str
+    target: str | None
     result: object
     files: tuple
 
 
-def _link_host(drafts, lowered, options, *, targets, stem: str | None) -> "_Library | None":
-    """Link the host objects of ``drafts`` into one library (:meth:`hawk.backends.Backend.link`) and name the files that publish it:
-    ``<stem>.<ext>`` (``stem`` is the bundle's name; none for a library named for its one unit), and a link ``<unit>.<ext>`` to it
-    for each unit, which the runtime still opens by the unit's name. ``None`` when no target of the build is compiled for the host."""
-    target = next((t for t in targets if TARGETS[t].host_compiled), None)
-    if target is None:
+def _host_row(targets):
+    """The backend whose compiler links the library of a build: the host row of the build, else the
+    host row installed (a build for a device alone still assembles its images and links with the
+    host compiler)."""
+    row = next((TARGETS[t] for t in targets if TARGETS[t].host_compiled), None)
+    if row is not None:
+        return row
+    for row in default_backends():
+        if row.host_compiled:
+            return row
+    raise HawkError("a device build links its images into one library with the host compiler: "
+                    "install the host OSPREY")
+
+
+def _link_set(drafts, lowered, options, *, targets, stem: str | None) -> "_Library | None":
+    """Link the objects of ``drafts`` into one library (:meth:`hawk.backends.Backend.link`): each
+    unit's host object and the object that holds its device image, with the text of the set. The
+    file is ``<stem>.<ext>`` (``stem`` is the bundle's name; none for a library named for its one
+    unit); each host unit also gets a link ``<unit>.<ext>`` to it, which the runtime still opens by
+    the unit's name. ``None`` when no target of the build is compiled."""
+    if not _native(targets):
         return None
-    ext = Path(drafts[0].entries[target][1]).suffix
+    target = next((t for t in targets if TARGETS[t].host_compiled), None)
+    device = next((t for t in targets if TARGETS[t].device), None)
+    row = _host_row(targets)
+    units = [(None if target is None else d.entries[target][0],
+              None if device is None else d.entries[device][0], d.meta) for d in drafts]
+    recipe = None if device is None else TARGETS[device].embed_recipe(lowered, options)
+    ext = row.artifact if target is None else Path(drafts[0].entries[target][1]).suffix
     name = (stem or drafts[0].name) + ext
-    result = TARGETS[target].link(lowered, options, [(d.entries[target][0], d.meta) for d in drafts], name)
+    result = row.link(lowered, options, units, name, recipe)
     digest = digest_file(result.artifact)
     if digest is None:                                       # pragma: no cover
         raise HawkError(f"the content-closure cache says the library {name!r} is at {result.artifact} but it cannot be read")
-    links = tuple(UnitFile(d.entries[target][1], digest, link_to=name) for d in drafts if d.entries[target][1] != name)
+    links = () if target is None else tuple(UnitFile(d.entries[target][1], digest, link_to=name)
+                                            for d in drafts if d.entries[target][1] != name)
     return _Library(name, target, result, (UnitFile(name, digest, source_path=result.artifact), *links))
 
 
@@ -514,10 +543,11 @@ def _artifact_of(draft: _Draft, directory: Path, library: "_Library | None") -> 
                       None if draft.report_files[target] is None else directory / draft.report_files[target])
         for target, (result, art_name, src_name, _fmt) in draft.entries.items()
     }
-    link = None if library is None else draft.entries[library.target][1]
+    link = None if library is None or library.target is None else draft.entries[library.target][1]
     links = () if link is None or link == library.name else (directory / link,)
     return Artifact(draft.name, directory, directory / draft.sidecar_name,
-                    draft.sidecar, entries, links)
+                    draft.sidecar, entries, links,
+                    None if library is None else directory / library.name)
 
 
 def _served(bundle: Bundle) -> Bundle:
@@ -526,9 +556,7 @@ def _served(bundle: Bundle) -> Bundle:
     compile-floor rows assert ``not entry.hit`` to prove they time a
     compiler and not a lookup."""
     artifacts = tuple(
-        Artifact(a.name, a.directory, a.sidecar_path, a.sidecar,
-                 {t: replace(e, hit=True, seconds=0.0)
-                  for t, e in a.entries.items()}, a.links)
+        replace(a, entries={t: replace(e, hit=True, seconds=0.0) for t, e in a.entries.items()})
         for a in bundle.artifacts
     )
     return Bundle(bundle.directory, bundle.manifest_path, bundle.manifest, artifacts,
@@ -546,7 +574,8 @@ def _rehome_bundle(bundle: Bundle, directory: Path) -> Bundle:
                  {t: replace(e, artifact=directory / e.artifact.name,
                              source=directory / e.source.name,
                              report=_rehomed(e.report, directory))
-                  for t, e in a.entries.items()}, tuple(directory / link.name for link in a.links))
+                  for t, e in a.entries.items()}, tuple(directory / link.name for link in a.links),
+                 _rehomed(a.library, directory))
         for a in bundle.artifacts
     )
     return Bundle(directory, _rehomed(bundle.manifest_path, directory),
@@ -671,7 +700,7 @@ def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
     parts = _build_targets(prepared[0], prepared[1], options, targets)
     draft = _draft(kernel, unit, answer["units"], prepared, parts, options, targets=targets, derivative=derivative)
     # one kernel is a set of one: its library is named for its unit
-    library = _link_host([draft], lowered, options, targets=targets, stem=None)
+    library = _link_set([draft], lowered, options, targets=targets, stem=None)
     directory.mkdir(parents=True, exist_ok=True)
     for f in (*draft.files, *(() if library is None else library.files)):
         f.write(directory)
@@ -983,7 +1012,8 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
             pool.shutdown(cancel_futures=True)
             raise
     drafts = [d for family in families for d in family]
-    library = _link_host(drafts, SimpleNamespace(smode=smode, kind=kinds[0], spec=spec), inputs, targets=targets, stem=name or "units")
+    library = _link_set(drafts, SimpleNamespace(smode=smode, kind=kinds[0], spec=spec), inputs,
+                        targets=targets, stem=name or "units")
     files = tuple(f for d in drafts for f in d.files) + (() if library is None else library.files)
     doc = _manifest_of(families, library)
     manifest_blob = text_blob(json.dumps(doc, indent=2) + "\n")

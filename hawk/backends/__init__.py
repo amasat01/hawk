@@ -124,18 +124,35 @@ class Backend:
         caller_flags = (*(f"-D{d}" for d in opts.defines), *map(str, opts.extra))
         return replace(build, instructions=host_build(facts, line, options, witness, caller_flags))
 
-    def link(self, lowered, options, units: list, library: str):
-        """Link the objects of ``units`` (``(compile result, unit record)`` pairs, in order) with the text of their set into the
-        shared library ``library`` (a file name) by the library's instructions: the :class:`~hawk.compile.CompileResult` of the
-        link, whose ``artifact`` is the library in the cache. ``lowered`` carries the build's scalar mode, kind and spec."""
+    def link(self, lowered, options, units: list, library: str, recipe: dict | None = None):
+        """Link the objects of ``units`` (``(host object, device image, unit record)`` triples, in
+        order; either of the first two may be ``None``) with the text of their set into the shared
+        library ``library`` (a file name) by the library's instructions: the
+        :class:`~hawk.compile.CompileResult` of the link, whose ``artifact`` is the library in the
+        cache. A device image is assembled into an object first, by ``recipe`` (the ``embed`` record
+        of the device build instructions, :meth:`embed_recipe`). ``lowered`` carries the build's
+        scalar mode, kind and spec."""
         from ..artifact.request import set_text
         from ..compile import host
 
         opts = self._compile_options(lowered, options)
         build = self._host_build(lowered, options, opts)
-        text = set_text([meta for _, meta in units], options.get("layout_sizes_override"))
+        objects = []
+        for unit_object, image, meta in units:
+            if unit_object is not None:
+                objects.append(unit_object)
+            if image is not None:
+                objects.append(host.embed_image(image, meta, recipe, opts, build))
+        text = set_text([meta for _, _, meta in units], options.get("layout_sizes_override"))
         set_object = host.compile_object(text, "set", opts, build, of_set=True)
-        return host.link([result for result, _ in units], set_object, text, library, opts, build)
+        return host.link(objects, set_object, text, library, opts, build)
+
+    def embed_recipe(self, lowered, options) -> dict:
+        """The recipe the library states for assembling this backend's image file into the set
+        library: the ``embed`` record of its compile plan (a device backend)."""
+        from ..compile import drivers
+
+        return drivers.plan_for(self._compile_options(lowered, options))["embed"]
 
     #: The program the masked-call witness builds and runs (``None``: the backend has none).
     masked_call_witness_source = None

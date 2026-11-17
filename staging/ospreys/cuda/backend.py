@@ -11,8 +11,12 @@ import subprocess
 import warnings
 from pathlib import Path
 
+from hawk.artifact import request
 from hawk.artifact.sidecar import LOCAL_LIMIT_B
 from hawk.backends import Backend
+from hawk.compile import toolchain as tc
+from hawk.compile.host import fill_argv
+from hawk.facts import IncludeFlag, include_dir, include_flags
 from math import prod
 
 from raptor.errors import RaptorError
@@ -195,23 +199,51 @@ class Cuda(Backend):
                 nvrtc._probed(nvrtc.nvrtc_version), nvrtc._probed(nvrtc.driver_cuda_version))
             extra = (*defines, *opts.extra)
             flags = tuple(nvrtc.options(arch, virtual_arch=(target == "ptx"), extra=extra))
+            build = self._instructions(nvrtc.identity(), arch, nvrtc.nvrtc_version(),
+                                       inputs.opt_level(opts.opt_level or None))
             return {"compiler": "", "identity": nvrtc.identity(), "release": _release(nvrtc._probed(nvrtc.nvrtc_version)),
-                    "deps": False, "serve": False, "payload": digest,
+                    "deps": False, "serve": False, "payload": digest, "embed": build["embed"],
                     "key_terms": (*flags, f"device_target:{target}", f"payload:{digest}", "ptxas-info:v1"),
                     "flags": flags, "hit_argv": flags, "tail": "", "arch": arch, "target": target, "extra": extra,
                     "meta": {"flags": list(flags), "device_target": target}}
         compiler = dtc.device_compiler()
-        target = driver._device_target(compiler, arch)
-        flags = dtc.device_flags(level=inputs.opt_level(opts.opt_level or None), include=inputs.include_flags(),
-                                 arch=opts.arch, target=target, extra=(*defines, *opts.extra))
-        keyed = (*flags, "-MD", "-MF")
-        terms = (*(getattr(f, "key_term", "") or f for f in keyed), f"device_target:{target}",
-                 dtc.device_host_compiler_identity(inputs.identity))
-        return {"compiler": compiler, "identity": inputs.identity(compiler), "release": _release(dtc.nvcc_version(compiler)),
-                "deps": True, "serve": False, "payload": None,
-                "key_terms": terms, "flags": flags, "tail": "",
-                "hit_argv": (compiler, *keyed, "<dep>", "<src>", "-o", "<out>"),
-                "meta": {"flags": list(keyed), "device_target": target}}
+        level = inputs.opt_level(opts.opt_level or None)
+        build = self._instructions(inputs.identity(compiler), arch, dtc.nvcc_version(compiler),
+                                   level)
+        target = build["image_format"]
+        aether, eagle = tc.include_roots()
+        served = tc.pip_only_root()
+        facts_flag, = include_flags({"name": self.facts_name})
+        # the caller's own flags follow the template, which states the facts header's folder itself
+        extra = tuple(f for f in opts.extra if not isinstance(f, IncludeFlag))
+        places = {"{include:aether}": lambda: aether, "{include:eagle}": lambda: eagle,
+                  "{include:facts}": lambda: include_dir({"name": self.facts_name})}
+        # the key reads the facts by their content and a served root by the payload's digest,
+        # not by where they are on this machine
+        keyed = {**places, "{include:facts}": lambda: facts_flag.key_term}
+        for name, root in (("aether", aether), ("eagle", eagle)):
+            if root == served:
+                keyed[f"{{include:{name}}}"] = lambda: f"payload:{inputs.payload.digest}"
+        pending = {"{compiler}": lambda: compiler, "{depfile}": lambda: "<dep>",
+                   "{source}": lambda: "<src>", "{output}": lambda: "<out>"}
+        lists = {"{defines}": defines}
+        terms = (*fill_argv(build["compile"], {**keyed, **pending}, lists), *extra,
+                 f"device_target:{target}", dtc.device_host_compiler_identity(inputs.identity))
+        return {"compiler": compiler, "identity": inputs.identity(compiler),
+                "release": _release(dtc.nvcc_version(compiler)),
+                "deps": True, "serve": False, "payload": None, "embed": build["embed"],
+                "key_terms": terms, "tail": "", "template": build["compile"], "places": places,
+                "defines": defines, "extra": extra,
+                "hit_argv": (*fill_argv(build["compile"], {**places, **pending}, lists), *extra),
+                "meta": {"flags": list(terms), "device_target": target}}
+
+    def _instructions(self, identity, arch, version, level) -> dict:
+        """The library's ``device_build`` record (:func:`hawk.artifact.request.device_build`) for
+        the compiler ``identity`` whose release is ``version`` and the device driver this process
+        can reach."""
+        driver_version = nvrtc._probed(nvrtc.driver_cuda_version)
+        return request.device_build(identity, arch=arch, release=_release(version),
+                                    driver=_release(driver_version), level=level)
 
     def compile_hook(self, plan, job, run):
         if plan["compiler"] == "":
@@ -224,7 +256,11 @@ class Cuda(Backend):
             job.out.write_bytes(result.ptx)
             # registers and stack frame read off the CUBIN itself; spills are not knowable (None)
             return {"argv": argv, "figures": nvrtc.cubin_resources(result.ptx) if target == "cubin" else {}}
-        argv = [plan["compiler"], *plan["flags"], "-MD", "-MF", str(job.dep), str(job.src), "-o", str(job.out)]
+        places = {**plan["places"], "{compiler}": lambda: plan["compiler"],
+                  "{depfile}": lambda: job.dep, "{source}": lambda: job.src,
+                  "{output}": lambda: job.out}
+        lists = {"{defines}": plan["defines"]}
+        argv = [*fill_argv(plan["template"], places, lists), *plan["extra"]]
         done = run(argv)
         return {"argv": tuple(argv), "figures": driver.parse_ptxas_info(done.stderr)}
 

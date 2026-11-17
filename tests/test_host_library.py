@@ -7,7 +7,12 @@ its name).
 
 What these rows state: the layout of the published files, that every unit's entry resolves from the one library, that a set of
 units of two scalar modes links and runs both, that two units of one name are refused before anything is compiled, and that a
-second build of the same set runs no compiler."""
+second build of the same set runs no compiler.
+
+A device unit's image is assembled into an object and linked into the same library, under the
+symbols its record names. No device compiler is here: a stand-in for the image compile alone writes
+a file that depends on the source text; everything after it (the embedding text, the assembler,
+the set text, the link) is real."""
 
 from __future__ import annotations
 
@@ -15,15 +20,19 @@ import ctypes
 import json
 import os
 import shutil
+import stat
 from types import SimpleNamespace
 
 import _deployable as D
 import numpy as np
 import pytest
+from ospreys.cuda import toolchain as device_toolchain
 
 import hawk.runtime as R
 from hawk.artifact import build, build_bundle, request
+from hawk import facts
 from hawk.compile import host as host_driver
+from hawk.compile import toolchain as host_toolchain
 from hawk.artifact.bundle import _emitted, _prepared
 from hawk.compile import drivers
 from hawk.artifact.bundle import reset_unit_memo
@@ -96,7 +105,7 @@ def test_a_set_of_float32_and_float64_units_links_and_runs_both(tmp_path, cache_
     for kernel, mode in ((D.axpb, "float64"), (D.fraction, "float32")):
         side = build_bundle([kernel], tmp_path / mode, mode=mode, targets=("host",), cache_dir=cache_dir)
         shutil.copy(side.artifacts[0].sidecar_path, mixed)
-    result = TARGETS["host"].link(lowered, options, [(p64.entry[0], m64), (p32.entry[0], m32)], "mixed.so")
+    result = TARGETS["host"].link(lowered, options, [(p64.entry[0], None, m64), (p32.entry[0], None, m32)], "mixed.so")
     shutil.copy(result.artifact, mixed / "mixed.so")
     for unit in ("axpb", "fraction"):
         os.symlink("mixed.so", mixed / f"{unit}.so")
@@ -146,15 +155,17 @@ def test_the_masked_call_flag_follows_the_verdict_of_the_witness(verdict):
     assert ("-DAETHER_HVM_MASKED=1" in build["compile_unit"]) == (verdict == "fixed")
     # the argv the driver runs is that template with its places filled and the caller's defines after it
     ran = []
+    # the include roots are this environment's (a sealed payload or a source checkout)
+    aether, eagle = host_toolchain.include_roots()
     driver = host_driver.HostBuild(build, "c++", "c++ || x || 0", "native-vector-math", "O3", "cpu", "/facts", "facts:x")
     plan = {"places": host_driver._places(driver, door=False), "template": build["compile_unit"], "compiler": "c++", "defines": ["-DX"],
             "extra": []}
     job = SimpleNamespace(src="/s.cpp", out="/s.o", dep="/s.d", served="/served")
     host_driver._ObjectRow.compile_hook(plan, job, ran.append)
-    assert ran[0] == host_driver._argv(build["compile_unit"], {"{compiler}": lambda: "c++", "{source}": lambda: "/s.cpp", "{object}": lambda: "/s.o",
+    assert ran[0] == host_driver.fill_argv(build["compile_unit"], {"{compiler}": lambda: "c++", "{source}": lambda: "/s.cpp", "{object}": lambda: "/s.o",
                                                               "{depfile}": lambda: "/s.d", "{include:served}": lambda: "/served",
-                                                              "{include:facts}": lambda: "/facts", "{include:aether}": lambda: "",
-                                                              "{include:eagle}": lambda: ""}, {"{defines}": ["-DX"]})
+                                                              "{include:facts}": lambda: "/facts", "{include:aether}": lambda: aether,
+                                                              "{include:eagle}": lambda: eagle}, {"{defines}": ["-DX"]})
     assert ("-DAETHER_HVM_MASKED=1" in ran[0]) == (verdict == "fixed")
 
 
@@ -233,4 +244,122 @@ def test_the_build_template_is_the_library_answer_for_this_machine_whatever_mach
     got = TARGETS["host"]._host_build(SimpleNamespace(spec=spec), {}, opts).instructions
     stated = {**request._stated(real.machine.isa, real.machine.facts), "opt_level": "O3"}
     line = request._identity(tc.compiler_identity(TARGETS["host"].compiler()))
-    assert got == json.loads(request._facts("host", line, json.dumps(stated)))["host_build"]
+    # a compiler the library asks the masked-call witness about gets the answer for its verdict
+    answers = [json.loads(request._facts("host", line, json.dumps({**stated, **verdict})))["host_build"]
+               for verdict in ({}, *({"masked_call_witness": v} for v in ("fixed", "miscompile", "unrun")))]
+    assert got in answers
+
+
+# -- device images in the set library ------------------------------------------------------------
+
+#: The stand-in for the device compiler: it reports a release, logs each argv (one argument to a
+#: line, then a mark) and writes an image that starts with the ELF magic and holds the source text,
+#: so two sources never give one image.
+_STAND_IN = r"""#!/bin/sh
+if [ "$1" = "--version" ]; then echo "Cuda compilation tools, release 12.6, V12.6.77"; exit 0; fi
+printf '%s\n' "$@" >> "$STAND_IN_LOG"
+echo -- >> "$STAND_IN_LOG"
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out=$2; shift ;; -MF) dep=$2; shift ;; *.cu) src=$1 ;; esac
+  shift
+done
+{ printf '\177ELF'; cat "$src"; } > "$out"
+echo "$out: $src" > "$dep"
+"""
+DEVICE_BUILD = {"targets": ("cuda", "host"), "options": {"cuda.arch": "sm_80"}}
+
+
+@pytest.fixture
+def stand_in(tmp_path, monkeypatch):
+    """The stand-in device compiler, found as ``$HAWK_NVCC``; its log file's path."""
+    script, log = tmp_path / "nvcc", tmp_path / "nvcc.log"
+    script.write_text(_STAND_IN)
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("HAWK_NVCC", str(script))
+    monkeypatch.setenv("STAND_IN_LOG", str(log))
+    monkeypatch.delenv("HAWK_DEVICE_COMPILER", raising=False)
+    monkeypatch.setattr(device_toolchain, "toolkit_archs",
+                        lambda kind=None: ("stand-in toolkit", (50, 90)))
+    return log
+
+
+def _image_held_by(library, unit: str) -> tuple:
+    """``(size word, bytes)`` of the image a library holds under the symbols of ``unit``'s record."""
+    size = ctypes.c_uint64.in_dll(library, f"{unit}__image_size").value
+    start = ctypes.addressof(ctypes.c_char.in_dll(library, f"{unit}__image"))
+    return size, ctypes.string_at(start, size)
+
+
+def _compiles(monkeypatch) -> list:
+    """The labels of every compiler run from now on."""
+    labels, real = [], drivers.run_compiler
+    monkeypatch.setattr(drivers, "run_compiler",
+                        lambda argv, what, *target: labels.append(what) or real(argv, what, *target))
+    return labels
+
+
+def test_the_image_symbols_of_every_device_unit_resolve_in_the_set_library_and_hold_the_image_file(
+        tmp_path, stand_in):
+    cache = str(tmp_path / "cache")
+    bundle = build_bundle(list(KERNELS), tmp_path / "a", cache_dir=cache, **DEVICE_BUILD)
+    library = ctypes.CDLL(str(bundle.directory / "units.so"))
+    for artifact in bundle.artifacts:
+        image = artifact.entries["cuda"].artifact.read_bytes()
+        assert _image_held_by(library, artifact.name) == (len(image), image)
+        assert ctypes.cast(getattr(library, f"{artifact.name}_host"), ctypes.c_void_p).value
+
+
+def test_a_second_build_of_a_set_with_device_units_runs_no_compiler_and_no_assembler(
+        tmp_path, stand_in, monkeypatch):
+    cache = str(tmp_path / "cache")
+    build_bundle(list(KERNELS), tmp_path / "a", cache_dir=cache, **DEVICE_BUILD)
+    reset_unit_memo()
+    labels = _compiles(monkeypatch)
+    second = build_bundle(list(KERNELS), tmp_path / "b", cache_dir=cache, **DEVICE_BUILD)
+    assert labels == []
+    assert all(e.hit for a in second.artifacts for e in a.entries.values())
+
+
+def test_a_change_to_one_unit_rebuilds_its_image_object_the_set_text_and_the_link_and_nothing_else(
+        tmp_path, stand_in, monkeypatch):
+    cache = str(tmp_path / "cache")
+    first = [D.axpb, D.vec3_scale, D.fraction]
+    build_bundle(first, tmp_path / "a", cache_dir=cache, **DEVICE_BUILD)
+    reset_unit_memo()
+    labels = _compiles(monkeypatch)
+    build_bundle([D.axpb, D.vec3_scale, D.speed], tmp_path / "b", cache_dir=cache, **DEVICE_BUILD)
+    assert sorted(labels) == sorted(["cuda compile of 'speed'", "host compile of 'speed'",
+                                     "host compile of 'speed__image'",
+                                     "host compile of 'set'", "host link of 'units.so'"])
+
+
+def test_a_set_of_device_units_alone_has_a_library_the_manifest_names_and_no_link_for_a_unit(
+        tmp_path, stand_in):
+    bundle = build_bundle(list(KERNELS), tmp_path / "a", targets=("cuda",),
+                          options={"cuda.arch": "sm_80"}, cache_dir=str(tmp_path / "cache"))
+    library = bundle.directory / "units.so"
+    assert library.is_file() and not library.is_symlink()
+    assert not [p for p in bundle.directory.iterdir() if p.is_symlink()]
+    assert library in bundle.files() and {a.library for a in bundle.artifacts} == {library}
+    for plugin in bundle.manifest["plugins"]:
+        assert plugin["library"] == "units.so" and plugin["artifact"] == f"{plugin['id']}.cubin"
+    held = ctypes.CDLL(str(library))
+    for artifact in bundle.artifacts:
+        image = artifact.entries["cuda"].artifact.read_bytes()
+        assert _image_held_by(held, artifact.name) == (len(image), image)
+
+
+def test_the_image_argv_a_build_runs_is_the_librarys_template_with_its_places_filled(
+        tmp_path, stand_in):
+    build_bundle([D.axpb], tmp_path / "a", cache_dir=str(tmp_path / "cache"), **DEVICE_BUILD)
+    ran = stand_in.read_text().split("--\n")[0].splitlines()
+    identity = host_toolchain.compiler_identity(os.environ["HAWK_NVCC"])
+    template = request.device_build(identity, arch="sm_80", release=None, driver=None,
+                                    level="O3")["compile"]
+    aether, eagle = host_toolchain.include_roots()
+    filled = {"{include:aether}": aether, "{include:eagle}": eagle,
+              "-I{include:facts}": f"-I{facts.include_dir({'name': 'cuda'})}"}
+    unplaced = ("{depfile}", "{source}", "{output}")    # the files of the compile: only that each is given
+    expected = [filled.get(element, element) for element in template[1:] if element != "{defines}"]
+    assert len(ran) == len(expected)
+    assert [(got if want not in unplaced else want) for got, want in zip(ran, expected)] == expected
