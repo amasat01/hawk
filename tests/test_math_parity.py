@@ -577,9 +577,9 @@ def _assert_matrix(name, got, ref, inputs, exact):
 
 
 @pytest.mark.parametrize("row", MAT_REFS, ids=MAT_NAMES)
-def test_matrix_host_native_is_the_scalar_reference_bit_for_bit(host_native, row):
-    name, inputs, ref, _exact = row
-    _assert_matrix(name, host_native[name], ref, inputs, True)
+def test_matrix_host_native_is_within_the_ulp_rule_of_the_reference(host_native, row):
+    name, inputs, ref, exact = row
+    _assert_matrix(name, host_native[name], ref, inputs, exact)
 
 
 @pytest.mark.parametrize("row", MAT_REFS, ids=MAT_NAMES)

@@ -46,11 +46,11 @@ Three more, for the lane-wide guard and the active-set loops:
 """
 
 from __future__ import annotations
-from _specs import HOST
 
 import platform
 import re
 import subprocess
+import sys
 
 import _deploy as L
 import numpy as np
@@ -146,12 +146,29 @@ def _run(bundle):
     return x, v, k
 
 
+#: The C symbol prefix of the object format the host build makes: Mach-O spells every C symbol with a leading underscore, ELF does
+#: not, and the disassembly labels the entry by the symbol table's own spelling.
+_SYMBOL_PREFIX = "_" if sys.platform == "darwin" else ""
+#: The packed float64 arithmetic of the ISA the unit is built for: x86 ``*pd`` forms (SSE and AVX spellings), and on arm64 the NEON
+#: two-lane forms (LLVM writes ``fmul.2d v0, ...``, GNU ``fmul v0.2d, ...``).
+_PACKED_DOUBLE = {
+    "x86": r"\bv?(?:add|sub|mul|div|sqrt)pd\b",
+    "arm": r"\bf(?:add|sub|mul|div|sqrt|mla|mls)(?:\.2d\b|\s+v\d+\.2d\b)",
+}
+
+
+def _isa() -> str:
+    return "arm" if platform.machine().lower() in ("arm64", "aarch64") else "x86"
+
+
 def _packed_double_ops(so, symbol):
+    """How many packed float64 arithmetic instructions the host entry ``symbol`` of the object ``so`` holds."""
     out = subprocess.run(["objdump", "-d", "--no-show-raw-insn", str(so)],
                          capture_output=True, text=True, check=True).stdout
-    body = re.search(rf"<{re.escape(symbol)}>:\n(.*?)(?:\n\n|\Z)", out, re.S)
-    assert body, f"{symbol} not found in {so}"
-    return len(re.findall(r"\bv?(?:add|sub|mul|div|sqrt)pd\b", body.group(1)))
+    label = _SYMBOL_PREFIX + symbol
+    body = re.search(rf"<{re.escape(label)}>:\n(.*?)(?:\n\n|\Z)", out, re.S)
+    assert body, f"{label} not found in {so}"
+    return len(re.findall(_PACKED_DOUBLE[_isa()], body.group(1)))
 
 
 def test_the_exact_profiles_are_bit_identical_to_numpy(bundles):
@@ -373,6 +390,8 @@ def test_the_identity_map_takes_the_vector_loop(mapped):
     packed = _packed_double_ops(mapped["native"].directory / "osc_step.so",
                                 "osc_step_host")
     if re.search(r"\bavx512f\b", flags) and ctc.host_compiler().endswith("g++"):
+        assert packed > 0, f"packed float64 ops: {packed}"
+    elif _isa() == "arm":                    # NEON is baseline on arm64: the vector loop is there whatever the compiler
         assert packed > 0, f"packed float64 ops: {packed}"
 
 

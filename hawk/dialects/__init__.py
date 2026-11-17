@@ -15,9 +15,9 @@ from .._errors import HawkError
 KINDS = Registry()
 def _first_party() -> tuple:
     """The names that own first-party kinds: hawk and the first-party OSPREYs (the registry's table)."""
-    from .. import registry
+    from .. import targets
 
-    return ("hawk", *(d.removeprefix("osprey-") for d in registry.KNOWN.values()))
+    return ("hawk", *(d.removeprefix("osprey-") for d in targets.DISTRIBUTIONS.values()))
 
 
 def declare_kinds(group: dict) -> tuple:

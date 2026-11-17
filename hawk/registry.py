@@ -26,6 +26,8 @@ import sys
 import threading
 from pathlib import Path
 
+from .targets import DEVICE_TARGET, DISTRIBUTIONS, distribution
+
 GROUP = "ospreys"
 CONTRACT = "1"
 ARMS = ("backends", "spellings")
@@ -44,12 +46,11 @@ _DIST = re.compile(r"[a-z][a-z0-9_-]*\Z")
 FIRST_PARTY = ("ospreys.cpu", "ospreys.cuda")
 OWN_DIST = "raptor-hawk"
 #: The distribution that provides a first-party backend id, for the sentences that say what to install.
-KNOWN = {"cuda": "osprey-cuda", "host": "osprey-cpu"}
 #: Backend ids only the first-party OSPREYs may use, installed or not.
-RESERVED = tuple(KNOWN)
+RESERVED = tuple(DISTRIBUTIONS)
 #: Writer ids of the spellings arm that belong to the built-in and first-party backends.
 RESERVED_WRITERS = ("aether", *RESERVED)
-_OWN = ("hawk", *KNOWN.values())
+_OWN = ("hawk", *DISTRIBUTIONS.values())
 
 _LOCK = threading.RLock()
 
@@ -62,14 +63,14 @@ def _error(message: str):
 
 def missing(backend_id: str) -> str:
     """The sentence that refuses a backend ``backend_id`` that no installed OSPREY provides."""
-    dist = KNOWN.get(backend_id)
+    dist = DISTRIBUTIONS.get(backend_id)
     return (f"the {backend_id!r} backend is not installed; install the distribution {dist}"
             if dist else f"no backend {backend_id!r} is installed")
 
 
 def missing_device() -> str:
     """The sentence that refuses a need for a device backend when none is installed."""
-    return f"no device backend is installed; install the distribution {KNOWN['cuda']}"
+    return f"no device backend is installed; install the distribution {distribution(DEVICE_TARGET)}"
 
 
 #: hawk's emission tables: what an emitted artifact (its text, its sidecar, its manifest) is written with.
@@ -454,7 +455,7 @@ def _read(identity: str, where) -> dict:
 
     fields = {"backends": {"name": (str,), "ref": (str,), "about": (str,), "device": (bool,), "builds": (bool,),
                            "priority": (int, float), "options": (list,), "settings": (list,), "wings": (dict,),
-                           "entry": (str, type(None)), "process_env": (bool,), "reads": (list,)},
+                           "entry": (str, type(None)), "request_name": (str,), "process_env": (bool,), "reads": (list,)},
               "spellings": {"writer": (str,), "dialect": (str,), "ref": (str,)}}
     needed = {"backends": ("name", "ref"), "spellings": ("writer", "dialect", "ref")}
     try:
@@ -649,7 +650,7 @@ def denial(arm: str, key) -> str | None:
     """Why an item that some OSPREY declared is not available, or ``None``."""
     with _LOCK:
         s = _scan(third=True)
-        why = s.broken.get(KNOWN.get(key, "").removeprefix("osprey-")) if arm == "backends" and (arm, key) not in s.denied else None
+        why = s.broken.get(DISTRIBUTIONS.get(key, "").removeprefix("osprey-")) if arm == "backends" and (arm, key) not in s.denied else None
         maybe = ([f"OSPREY {n!r} could not be read and may have declared it: {w}" for n, w in s.unreadable.items()]
                  if (arm, key) not in s.items else [])
         found = (s.denied.get((arm, key), []) + s.shadowed.get((arm, key), []) + maybe + ([why] if why else [])

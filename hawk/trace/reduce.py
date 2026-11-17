@@ -296,7 +296,8 @@ def sum(x: Any, over: Any = None, where: Any = None, contract: str = "auto") -> 
     may be read back later in the body (a stage boundary); over some axes it is
     an output, one value per kept coordinate, bound ``(*payload, *kept)``. Over some axes,
     ``contract="ordered"`` adds each key's lanes in lane order in a stage of its own (no atomics: the
-    same bits on every launch, for any lane count); the default contracts commit atomically."""
+    same bits on every launch, for any lane count), and the summed axes must be the trailing axes of the Grid; the default
+    contracts commit atomically."""
     return _reduce("sum", x, over, where, contract)
 
 

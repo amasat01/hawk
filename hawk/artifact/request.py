@@ -16,6 +16,7 @@ import os
 import platform
 import sys
 from pathlib import Path
+from types import MappingProxyType
 
 from raptor.ir.nodes import LEAF_ROLES
 from raptor.ir.types import Slot
@@ -23,18 +24,37 @@ from raptor.wings.base.exchange import ToolchainAbsent
 
 from .. import wings as _wings
 from .._errors import HawkError
+from ..backends import default_backends
 from ..compile import toolchain as _tc
+from ..registry import backend_ids, traits
 from ..ext import PLAIN, DEFAULT_GUARD, DATA_ONLY, DEFAULT_KIND
 from ..trace import steps as _steps
 from ..trace.decl import Plane
-from ..targets import TARGETS
+from ..targets import HOST_TARGET, TARGETS
 from ..trace.kernel import _declared, derived_axes
 
 _cells = _wings.view("raptor", "base", "cells")
 
-#: The targets the library serves: the id of a row, the name the request spells it by.
-SERVED = {"host": "Host", "cuda": "Device"}
-_SCALARS = {"float64": "Float64", "float32": "Float32", "banded": "Banded"}
+_SCALARS = MappingProxyType({"float64": "Float64", "float32": "Float32", "banded": "Banded"})
+
+
+def served() -> dict:
+    """``{id of a row: the name the request spells it by}`` for the rows of the default set whose manifest states one: the targets
+    the lowering library serves."""
+    return {t: traits(t)["request_name"] for t in backend_ids(default=True) if traits(t).get("request_name")}
+
+
+def _compiling_row():
+    """The row whose compiler compiles a host build, asked by its id: no other row of the default set is loaded for it."""
+    return TARGETS[HOST_TARGET]
+
+
+def _device_row():
+    """The row that builds for a device: the first row of the default set that does."""
+    row = next(iter(default_backends("device")), None)
+    if row is None:
+        raise HawkError("a device build needs the device OSPREY: none is installed")
+    return row
 
 
 def _camel(word: str) -> str:
@@ -95,7 +115,7 @@ def compiling_host() -> tuple:
     (instruction set, vector set, profile in effect, caches) and the identity of the compiler the driver runs, in the library's
     three-part form. They are the owner's facts of the compile, whatever machine a spec's texts are written for
     (:func:`_host_line`, :func:`_stated_host`)."""
-    host = TARGETS["host"]
+    host = _compiling_row()
     return host.machine_facts(), _identity(_tc.compiler_identity(host.compiler()))
 
 
@@ -119,7 +139,7 @@ def host_build(facts: dict, line: str, options, witness=None, caller_flags=()) -
 
     def ask(verdict=None) -> dict:
         said = {**stated, **({} if verdict is None else {"masked_call_witness": verdict})}
-        return json.loads(_facts("host", line, json.dumps(said)))["host_build"]
+        return json.loads(_facts(_compiling_row().id, line, json.dumps(said)))["host_build"]
 
     try:
         build = ask()
@@ -173,10 +193,10 @@ def _this_isa() -> str:
 
 #: The compiler lines of a machine no compiler can be asked about, by what is missing. They stand in until the library can answer
 #: the facts of a stated compiler family with no compiler present; nowhere else is a compiler line made up.
-_NO_COMPILER = {
+_NO_COMPILER = MappingProxyType({
     "another x86_64 host": "g++||g++ (GCC) 13.2.0||0",
     "no device toolchain": "nvcc||Cuda compilation tools, release 12.6, V12.6.77||0",
-}
+})
 
 def _host_line(spec, options) -> str:
     """The compiler identity a host unit is written under: the compiler the compile driver runs here; but when the spec names
@@ -185,7 +205,7 @@ def _host_line(spec, options) -> str:
     machine = spec.machine
     if machine.isa != _this_isa() and machine.isa == "x86_64" and machine.facts.get("host_profile") not in machine.facts.get("exact_host_profiles", ()):
         return _identity(_NO_COMPILER["another x86_64 host"])
-    return _identity(_tc.compiler_identity(TARGETS["host"].compiler()))
+    return _identity(_tc.compiler_identity(_compiling_row().compiler()))
 
 
 def _compile_plan(target: str, spec, options):
@@ -229,7 +249,7 @@ def device_build(identity: str, *, arch: str, release: str | None, driver: str |
         stated["device_release"] = release
     if driver:
         stated["driver_release"] = driver
-    return json.loads(_facts("cuda", _device_line(identity), json.dumps(stated)))["device_build"]
+    return json.loads(_facts(_device_row().id, _device_line(identity), json.dumps(stated)))["device_build"]
 
 
 def _device(spec, options) -> tuple:
@@ -239,7 +259,7 @@ def _device(spec, options) -> tuple:
     arch = spec.machine.arch or options.get("device_arch") or ""
     stated = _under_cards({"device_arch": arch} if arch else {}, spec)
     try:
-        plan = _compile_plan("cuda", spec, options)
+        plan = _compile_plan(_device_row().id, spec, options)
     except ToolchainAbsent:
         return stated, _identity(_NO_COMPILER["no device toolchain"]), "cubin"
     if plan.get("release"):
@@ -290,14 +310,12 @@ def _mixes(body) -> tuple:
 
 
 def _member(body, name: str, position: dict) -> dict:
-    """A body of the request: the nodes it writes and how its walk is taken. A kernel declares its terminated planes, the
-    companion plane of each compensated sum and the branch-mix plane of each ``auto`` dispatch; a body with no planes of its own
-    declares the slots its walk binds."""
+    """A body of the request: the nodes it writes and how its walk is taken. A kernel declares its terminated planes and the
+    branch-mix plane of each ``auto`` dispatch (the library derives the companion plane of a compensated sum from the walk); a
+    body with no planes of its own declares the slots its walk binds."""
     planes = getattr(body, "planes", None)
     if planes is not None:
-        pairs = _cells.companion_pairs(body.sinks)
         declared = [_slot(slot) for slot in _declared(planes)]
-        declared += [{**_slot(slot), "compensates": row.name} for row, slot in pairs]     # the sum row the plane compensates
         declared += [_slot(slot) for slot in _mixes(body)]
     else:
         declared = [_slot(Slot(role, slot, body.walk.slot_types[role, slot])) for role, slot in body.walk.arg_spec if role in LEAF_ROLES]
@@ -377,25 +395,26 @@ def request(kernel, *, name: str, scalar: str, kind, targets, spec, position: di
     (:func:`hawk.artifact.bridge.dump`), ``options`` the build inputs (:func:`hawk.artifact.bundle._options`). The texts carry the
     self-check block of a library unless ``exports_block`` is false, which a build asks: its units are linked with the text of the
     set (:func:`set_text`), which carries the block once."""
+    names = served()
     for target in targets:
-        if target not in SERVED:
-            raise HawkError(f"target {target!r} is refused: a back end registered from Python is not built in this version; the build writes {tuple(SERVED)} only")
+        if target not in names:
+            raise HawkError(f"target {target!r} is refused: a back end registered from Python is not built in this version; the build writes {tuple(names)} only")
     kind = kind if kind is not None else DEFAULT_KIND
     members = getattr(kernel, "members", None)
     if members and hasattr(members[0], "sinks"):
         body = {"Chain": [_member(m, m.name, position) for m in members]}
     else:
         body = {"Plain": _member(kernel, name, position)}
-    out = {"v": 1, "name": name, "scalar": _SCALARS[scalar], "targets": [SERVED[t] for t in targets], "kind": _kind(kind), "body": body}
+    out = {"v": 1, "name": name, "scalar": _SCALARS[scalar], "targets": [names[t] for t in targets], "kind": _kind(kind), "body": body}
     facts = {}
     for target in targets:
-        if target == "host":
-            line = _host_line(spec, options)
-            facts["Host"] = _facts("host", line, json.dumps(_stated_host(spec)))
-        else:
+        if traits(target).get("device"):
             stated, line, image = _device(spec, options)
-            facts["Device"] = _facts("cuda", line, json.dumps(stated))
+            facts[names[target]] = _facts(target, line, json.dumps(stated))
             out["image_format"] = _camel(image)
+        else:
+            line = _host_line(spec, options)
+            facts[names[target]] = _facts(target, line, json.dumps(_stated_host(spec)))
     one = getattr(kernel, "one_step", None)
     if one is not None:
         out["one_step"] = _member(one, one.name, position)

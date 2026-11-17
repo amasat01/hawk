@@ -62,7 +62,7 @@ them; :func:`hawk.artifact.plan_view` projects all three straight through.
 from __future__ import annotations
 
 import re
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 from .. import _contracts
 from ..compile.toolchain import _strict_aether_include, _strict_eagle_include
@@ -502,8 +502,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
 #: The IR dtype each wire dtype of a unit record stands for (a ``Real`` follows the scalar mode).
 #: The element type a unit record states for a slot (the record's closed set, every member) -> the dtype the sidecar code
 #: above works with. A name missing here is a KeyError on the first record that carries it.
-_RECORD_DTYPES = {"Real": "f64", "Int64": "i64", "Int32": "int32", "Uint32": "uint32", "Bool": "bool",
-                  "BandPartial": "band_partial"}
+_RECORD_DTYPES = MappingProxyType({"Real": "f64", "Int64": "i64", "Int32": "int32", "Uint32": "uint32", "Bool": "bool",
+                                   "BandPartial": "band_partial"})
 _SLOT_PRIOR, _SLOT_PARAM_PLANE, _SLOT_GATHER = 1, 2, 4
 _FINISH_ENTRY_COUNTS = 1
 

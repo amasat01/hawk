@@ -13,7 +13,6 @@ import pytest
 
 import hawk
 import hawk.math as m
-from _specs import default_kind, validation_spec
 from hawk import Mutable, Param, Scalar, Terminated, Vector, kernel
 from hawk.artifact import bridge, request
 from hawk.ext import Guard, Kind
@@ -117,12 +116,11 @@ def test_a_chain_names_each_member_as_a_body():
     }
 
 
-def test_a_kernel_that_splits_declares_the_companion_plane_of_each_compensated_sum_and_the_row_it_compensates():
+def test_a_kernel_with_compensated_sums_states_no_companion_plane_and_no_compensated_row():
+    """The library derives the companion plane of a compensated sum from the walk: the request declares nothing for it."""
     assert built(standard) == {
         "v": 1, "name": "standard", "scalar": "Float64", "targets": ["Host"], "kind": KIND,
-        "body": {"Plain": {"name": "standard", "sinks": [4, 16, 18], "exempt": ["fused_steps"], "declared": [
-            {"role": "AccumOut", "name": "mu_comp", "dtype": "F64", "shape": [], "compensates": "mu"},
-            {"role": "AccumOut", "name": "t_comp", "dtype": "F64", "shape": [], "compensates": "t"}]}},
+        "body": {"Plain": {"name": "standard", "sinks": [4, 16, 18], "exempt": ["fused_steps"], "declared": []}},
         "planes": ["x", "mu", "z", "t"], "steps": 1, "lane_space": [{}], "facts": {"Host": "FACTS-host"},
     }
 

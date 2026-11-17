@@ -8,7 +8,6 @@ intermediate; every refusal names both members and the name; the estimate fences
 """
 
 from __future__ import annotations
-from _specs import HOST
 from _toolchain import real_arch
 
 import linecache
@@ -22,7 +21,7 @@ import hawk
 import hawk.targets as hawk_targets
 import hawk.math as m
 from hawk import Mutable, Scalar, Vector
-from conftest import sidecar_of
+from conftest import assert_within, sidecar_of
 from hawk.artifact import build_bundle
 from hawk.artifact import bundle as B
 from raptor.errors import RaptorError as HawkError
@@ -334,6 +333,18 @@ def _guarded_run(kernel, target, dead, group_live=None):
     return np.asarray(out.get() if hasattr(out, "get") else out).copy()
 
 
+def _chain_vs_members_bound(n_members: int, live_out) -> float:
+    """Bound on ``|chain - member launches|`` of :func:`fan_in` ``(n_members)``, derived (not fitted). Both builds are within
+    ``gamma_n * M`` of the exact value (Higham), whatever contraction or library routine the compiler picked for each, so they
+    differ by at most ``2 * gamma_n * M``. ``n`` is the longest chain of dependent operations: a member ``r_j`` adds five to
+    ``r_{j-1}`` (multiply, add, sine, multiply, add), the last member takes the first read through a multiply, an add and a sine
+    and every further read through an add and a sine. ``M`` is the largest magnitude of the output, which every operation
+    here keeps (sine and exponential are at most 1 in magnitude, and the sums are of such terms) from growing."""
+    n = 5 * (n_members - 1) + 3 + 2 * (n_members - 2)
+    u = np.finfo(np.float64).eps / 2
+    return 2 * (n * u / (1 - n * u)) * float(np.max(np.abs(live_out)))
+
+
 def test_chain_terminated_keeps_outputs(avx512, private_cache, tmp_path):
     dead = np.zeros(70, dtype=bool)
     dead[::3] = True
@@ -346,7 +357,7 @@ def test_chain_terminated_keeps_outputs(avx512, private_cache, tmp_path):
               **{nm: np.full((8, dead.size), 7.0) for k in members for _, nm in k.arg_spec if nm not in ("x", "terminated")}}
     for k in members:
         eagle.deploy(k, scalar_type="float64", targets=("host",))(**{nm: planes[nm] for _, nm in k.arg_spec})
-    np.testing.assert_array_equal(got, planes["out"])
+    assert_within(got, planes["out"], _chain_vs_members_bound(len(members), planes["out"][:, ~dead]))
 
 
 @pytest.mark.parametrize("target,isa", [("host", None), ("host", "avx2"), pytest.param("cuda", None, marks=pytest.mark.gpu)])

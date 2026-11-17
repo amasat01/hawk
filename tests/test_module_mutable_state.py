@@ -61,7 +61,6 @@ ALLOWED = {
     **{("cpu/toolchain.py", n): "predates the guard, moved with its module from hawk/compile/toolchain.py" for n in
        ('_GCC_FAMILY_MEMO', '_LIBC_MEMO', '_MACRO_MEMO', '_TARGET_MEMO')},
     ("cpu/backend.py", "BACKEND"): "the backend object, a stateless row never written after import",
-    ("registry.py", "KNOWN"): "read-only table, never mutated after import",
     ("registry.py", "_STATE"): "the registry scan, rebuilt under _LOCK; hawk.registry.reset() forgets it",
     ("compile/payload.py", "_PAYLOAD_MEMO"): "memo of the sealed payload; hawk.compile.payload.reset_payload_memo() forgets it",
     ("compile/toolchain.py", "_PIP_ONLY_ROOT"): "process-lifetime served directory, made once under _PIP_ONLY_LOCK and removed at exit; no reset function exists, tests put it back with monkeypatch",

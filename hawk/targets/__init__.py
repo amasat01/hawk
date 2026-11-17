@@ -17,9 +17,27 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from .. import registry
-from ..backends import need
 from .._errors import HawkError
+
+#: The first-party targets and the distribution that provides each: a fact about the targets, stated where their names are
+#: stated. A row that is not installed has no manifest to say it, and the registry names it in the sentence that asks to install it.
+DISTRIBUTIONS = MappingProxyType({"cuda": "osprey-cuda", "host": "osprey-cpu"})
+#: The first-party target that builds for a device. No row is installed when a build asks for one, so no manifest can say which it is.
+DEVICE_TARGET = "cuda"
+#: The first-party target whose compiler compiles a host build. A build asks this one row by its id, so that no other row of
+#: the default set is loaded for the question (a broken or a device row stays unimported).
+HOST_TARGET = "host"
+
+
+def distribution(target_id: str) -> str:
+    """The distribution that provides the first-party target ``target_id``; any other id is refused by name."""
+    if target_id not in DISTRIBUTIONS:
+        raise HawkError(f"{target_id!r} is not a first-party target; they are {', '.join(DISTRIBUTIONS)}")
+    return DISTRIBUTIONS[target_id]
+
+# The tables above come before this import: the registry reads them from this package while it loads, and importing it from here
+# finds it part-loaded.
+from .. import registry  # noqa: E402
 
 if TYPE_CHECKING:
     from raptor.wings.base.settings import Settings
@@ -39,6 +57,8 @@ class _Targets(Mapping):
     def __getitem__(self, key):
         if key not in self:
             raise KeyError(key)
+        from ..backends import need  # a local import: the registry imports this package for its tables, and the backends import the registry
+
         return need(key)
 
     def __contains__(self, key):

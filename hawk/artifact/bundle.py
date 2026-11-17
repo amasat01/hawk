@@ -52,8 +52,8 @@ _wt = _wings.view("raptor", "base", "wrapper_text")
 from .. import options as _options_mod
 from ..build_settings import BuildSettings, apply as _apply_settings, check as _check_settings, default_settings, refuse_choice, settings_of as _settings_of
 from ..backends import default_backends
-from ..registry import KNOWN, check, denial, missing, traits
-from ..targets import DEFAULT_TARGETS, TARGETS, build_spec
+from ..registry import check, denial, missing, traits
+from ..targets import DEFAULT_TARGETS, DISTRIBUTIONS, TARGETS, build_spec
 from . import manifest as _manifest
 from .derivative import _per_kernel_derivative
 from . import bridge as _bridge
@@ -324,9 +324,7 @@ def _refuse_targets(name: str, targets) -> None:
     def hint() -> str:
         each = [f"targets=({t!r},)" for t in TARGETS]
         if not each:
-            from .. import registry
-
-            return f"no backend is installed; install one of {', '.join(sorted(set(registry.KNOWN.values())))}"
+            return f"no backend is installed; install one of {', '.join(sorted(set(DISTRIBUTIONS.values())))}"
         return f"pass {', '.join(each[:-1])} or {each[-1]}"
 
     if not targets:
@@ -340,10 +338,12 @@ def _refuse_targets(name: str, targets) -> None:
             raise HawkError(
                 f"unknown target {target!r}: the valid targets are "
                 f"{', '.join(ids[:-1])} and {ids[-1]} ({about}); {hint()}"
-                + (f"; {missing(target)}" if target in KNOWN else ""))
+                + (f"; {missing(target)}" if target in DISTRIBUTIONS else ""))
 
 
-_SERVED_ID = {name: target for target, name in _request.SERVED.items()}
+def _served_id() -> dict:
+    """``{the name a request spells a target by: the id of its row}``."""
+    return {name: target for target, name in _request.served().items()}
 
 
 def _plans(kernels, names, kinds, *, smode, targets, spec, options, exports_block: bool = False) -> list:
@@ -378,7 +378,8 @@ def _prepared(unit, lowered, kernel, targets) -> tuple:
     """``(lowered, texts)`` of one answered unit: ``lowered`` with the unit's name and kernel, ``texts`` the text the library wrote
     for each target, by target."""
     name = unit["meta"]["name"]
-    found = {_SERVED_ID[text["target"]]: text for text in unit["texts"]}
+    served = _served_id()
+    found = {served[text["target"]]: text for text in unit["texts"]}
     if absent := [t for t in targets if t not in found]:
         raise HawkError(f"the lowering library wrote no {absent[0]} text for {name!r}")
     lowered = SimpleNamespace(kernel=kernel, name=name, smode=lowered.smode, kind=lowered.kind, spec=lowered.spec)
@@ -786,7 +787,8 @@ def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targe
     bounds = lowered.spec.settings.launch_bounds
     sidecar = sidecar_of_unit(kernel, unit, lead_device=_trait(lead, "device", False), fmt=TARGETS[lead].format, scalar_type=lowered.smode.id,
                               exec_targets=[TARGETS[t].entry for t in native], family=answer["units"], block=None if bounds is None else bounds[0])
-    return EmitUnit({_SERVED_ID[text["target"]]: SimpleNamespace(**text) for text in unit["texts"]}, sidecar, kernel)
+    served = _served_id()
+    return EmitUnit({served[text["target"]]: SimpleNamespace(**text) for text in unit["texts"]}, sidecar, kernel)
 
 
 def _member_kind(kernel, kind, explicit: bool):

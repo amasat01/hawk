@@ -11,6 +11,7 @@ It lives beside :mod:`hawk.ext.primitive` because a caller registers its rules f
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Sequence
 
 from .. import _ir
@@ -18,7 +19,7 @@ from .._errors import HawkError
 
 #: A placeholder leaf's name starts with this; no plane or uniform may.
 PREFIX = "$"
-_WORDS = {"vjp": "reverse (vjp)", "jvp": "forward (jvp)"}
+_WORDS = MappingProxyType({"vjp": "reverse (vjp)", "jvp": "forward (jvp)"})
 
 
 @dataclass(frozen=True)

@@ -330,3 +330,11 @@ def test_a_normally_installed_distribution_is_accepted_beside_its_metadata(tmp_p
     monkeypatch.syspath_prepend(str(tmp_path / "site"))
     home, problem = registry._locate("pc_normal", dist)
     assert problem is None and home == (tmp_path / "site" / "pc_normal").resolve()
+
+
+def test_the_install_sentences_name_the_distribution_the_targets_package_states():
+    from hawk import registry
+
+    assert registry.missing_device() == "no device backend is installed; install the distribution osprey-cuda"
+    assert registry.missing("host") == "the 'host' backend is not installed; install the distribution osprey-cpu"
+    assert registry.missing("fast") == "no backend 'fast' is installed"
