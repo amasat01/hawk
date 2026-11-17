@@ -19,6 +19,7 @@ LEAF = (
 ADD = "(('kind', 'add'), ('literal', None))"
 WANT = "e5528739b51eb34fa87421825d26571b381966750395a5e74f9b131dd037afff"
 done = []
+not_run = []
 
 
 # a typed host unit of the probe expression: well formed, so its refusals are the writers' own
@@ -901,6 +902,9 @@ except ImportError:
 else:
     import test_door
 
-    test_door.run(done, raises)
+    test_door.run(done, raises, not_run)
 print("\n".join("ok: " + d for d in done))
+if not_run:
+    print("\n".join("not run: " + r for r in not_run))
+    print("test_binding: %d rows not run" % len(not_run))
 print("test_binding: %d checks passed" % len(done))

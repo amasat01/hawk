@@ -22,6 +22,9 @@ DOOR_LIB = os.path.join(os.environ["EAGLE_DOOR_DIR"], f"libeagle_door.{EXT}")
 FIXTURE = os.path.join(HERE, "build", f"libfixture_unit.{EXT}")
 REVERSE = os.path.join(HERE, "build", f"libfixture_reverse.{EXT}")
 GEMM = os.path.join(HERE, "build", f"libfixture_gemm.{EXT}")
+# the unit libraries with device images are built by the door's own device build, beside its library
+DEVICE_FIXTURE = os.path.join(os.environ["EAGLE_DOOR_DIR"], f"libfixture_device.{EXT}")
+DEVICE_GEMM = os.path.join(os.environ["EAGLE_DOOR_DIR"], f"libfixture_gemm.{EXT}")
 N = 1000
 
 
@@ -58,15 +61,48 @@ class Export:
 
 
 def product(a, b, flags, c_before):
-    """The oracle of one matrix product over stored arrays: C = op(A) op(B), accumulated or not."""
+    """The oracle of C = op(A) op(B) over stored arrays, accumulated or not, with its bound.
+
+    Returns the float64 product and the largest difference a float64 or float32 implementation may
+    show from it per element. A sum of k terms is rounded k - 1 times, each by at most eps / 2 of
+    the sum of the terms' magnitudes, on both sides of the comparison (the implementation and this
+    float64 oracle): (k - 1) * eps * sum |a * b|. Accumulating adds one term, the one in C.
+    """
     left = a.T if flags & o.EG_GEMM_TRANS_A else a
     right = b.T if flags & o.EG_GEMM_TRANS_B else b
-    result = (left.astype(np.float64) @ right.astype(np.float64)).astype(a.dtype)
+    left, right = left.astype(np.float64), right.astype(np.float64)
+    result, magnitude = left @ right, np.abs(left) @ np.abs(right)
     if flags & o.EG_GEMM_TRANS_C:
-        result = result.T
+        result, magnitude = result.T, magnitude.T
+    terms = left.shape[1]
     if flags & o.EG_GEMM_ACCUMULATE:
         result = result + c_before
-    return result
+        magnitude = magnitude + np.abs(c_before)
+        terms += 1
+    return result, (terms - 1) * np.finfo(a.dtype).eps * magnitude
+
+
+def within(got, want, bound):
+    """True when every element of `got` is within its bound of the oracle `want`."""
+    return bool((np.abs(got.astype(np.float64) - want) <= bound).all())
+
+
+def to_device(door, array):
+    """A device plane holding a copy of `array`; the door's copy returns once the data is there."""
+    plane = door.plane_new(list(array.shape), 2, array.dtype.itemsize * 8, kind=o.EG_MEM_DEVICE)
+    host = door.plane_wrap(array)
+    door.copy(host, plane)
+    door.plane_free(host)
+    return plane
+
+
+def from_device(door, plane, like):
+    """The values of a device plane as a new array shaped and typed like `like`."""
+    out = np.zeros_like(like)
+    host = door.plane_wrap(out)
+    door.copy(plane, host)
+    door.plane_free(host)
+    return out
 
 
 def check_gemm(door, done, raises):
@@ -74,18 +110,17 @@ def check_gemm(door, done, raises):
     rng = np.random.default_rng(11)
     m, k, n = 3, 5, 4
     for bits, dtype in ((64, np.float64), (32, np.float32)):
-        tol = 1e-4 if bits == 32 else 1e-12
         for flags in range(16):
             a_shape = (k, m) if flags & o.EG_GEMM_TRANS_A else (m, k)
             b_shape = (n, k) if flags & o.EG_GEMM_TRANS_B else (k, n)
             c_shape = (n, m) if flags & o.EG_GEMM_TRANS_C else (m, n)
             a, b = (rng.standard_normal(s).astype(dtype) for s in (a_shape, b_shape))
             c = rng.standard_normal(c_shape).astype(dtype)
-            want = product(a, b, flags, c.copy())
+            want, bound = product(a, b, flags, c.copy())
             gemm = door.gemm_new(a_shape, b_shape, c_shape, bits, flags)
             planes = [door.plane_wrap(x) for x in (a, b, c)]
             door.gemm_run(gemm, *planes)
-            assert np.abs(c - want).max() <= tol * max(1.0, np.abs(want).max()), (bits, flags)
+            assert within(c, want, bound), (bits, flags)
             door.gemm_run(gemm, *planes)  # a second run of the plan; accumulating adds again
             for plane in planes:
                 door.plane_free(plane)
@@ -100,9 +135,8 @@ def check_gemm(door, done, raises):
     gemm = door.gemm_new((3, 5), (5, 4), (3, 4), 64)
     planes = [door.plane_wrap(x) for x in (wide_a, b, wide_c)]
     door.gemm_run(gemm, *planes)
-    assert (
-        np.allclose(wide_c[:, :4], wide_a[:, :5] @ b, rtol=1e-12) and (wide_c[:, 4:] == 9.0).all()
-    )
+    want, bound = product(wide_a[:, :5], b, 0, None)
+    assert within(wide_c[:, :4], want, bound) and (wide_c[:, 4:] == 9.0).all()
     done.append("gemm_run: wider planes serve a column slice and leave the rest alone")
 
     a, b, c = rng.standard_normal((3, 5)), rng.standard_normal((5, 4)), np.zeros((3, 4))
@@ -113,7 +147,7 @@ def check_gemm(door, done, raises):
     graph = door.record_end()
     door.gemm_free(gemm)
     door.graph_launch(graph)
-    assert np.allclose(c, a @ b, rtol=1e-12)
+    assert within(c, *product(a, b, 0, None))
     door.graph_free(graph)
     done.append("gemm_run recorded: runs on replay, and gemm_free before the replay is safe")
 
@@ -199,7 +233,6 @@ def check_gemm(door, done, raises):
         "wide": (0, (3, 5), (5, 4), (3, 4)),
     }
     for bits, base, dtype in ((64, 0x30, np.float64), (32, 0x40, np.float32)):
-        tol = 1e-4 if bits == 32 else 1e-12
         for index, (name, (flags, a_s, b_s, c_s)) in enumerate(shapes.items()):
             slack = 2 if name == "wide" else 0
             full = [(r, c + slack) for r, c in (a_s, b_s, c_s)]
@@ -212,8 +245,7 @@ def check_gemm(door, done, raises):
             assert door.plan_entry_figures(plan)["flags"] & o.EG_ENTRY_GEMM == 0
             door.launch(plan)
             cut = lambda x, s: x[: s[0], : s[1]]  # noqa: E731
-            want = product(cut(a, a_s), cut(b, b_s), flags, 0.0)
-            assert np.abs(cut(c, c_s) - want).max() <= tol * max(1.0, np.abs(want).max()), name
+            assert within(cut(c, c_s), *product(cut(a, a_s), cut(b, b_s), flags, None)), name
             for plane in planes:
                 door.plane_free(plane)
             door.plan_free(plan)
@@ -231,9 +263,8 @@ def check_gemm(door, done, raises):
         planes = [door.plane_wrap(v) for v in (w, x, dy, dw, dx)]
         door.bind(plan, [0, 1, 2, 3, 4], planes)
         door.launch(plan)
-        tol = 1e-4 if bits == 32 else 1e-12
-        assert np.abs(dw - dy @ x.T).max() <= tol * 10
-        assert np.abs(dx - (before + w.T @ dy)).max() <= tol * 10
+        assert within(dw, *product(dy, x, o.EG_GEMM_TRANS_B, None))
+        assert within(dx, *product(w, dy, o.EG_GEMM_TRANS_A | o.EG_GEMM_ACCUMULATE, before))
     done.append(
         "gemm unit with two calls: dW = dY X^T, dX += W^T dY (ACCUMULATE over a prefilled plane)"
     )
@@ -609,8 +640,94 @@ def check_fft(door, done, raises):
     done.append("fft_new refused while recording; a recorded run replays after fft_free")
 
 
-def run(done, raises):
-    """Run every row; `done` collects the passed rows, `raises` is the harness's check."""
+def device_door():
+    """A context on device 0, or None when the door was built without a device group."""
+    try:
+        return o.Door(DOOR_LIB, device=0)
+    except o.NotWritten:
+        return None
+
+
+def check_device(door, done, raises):
+    """Rows on a device context: a banded slot's refusal, routed gemm units, direct gemm calls.
+
+    Data moves through the door's copy between host planes and device planes; numpy is the oracle,
+    with the bound of `product`.
+    """
+    rng = np.random.default_rng(11)
+
+    unit = door.unit_load(DEVICE_FIXTURE, "banded", digest(0xC4))
+    plan = door.plan_new(unit, o.EG_STRUCTURE_DEVICE, o.EG_REDUCE_COMPENSATED, N)
+    packed = door.plane_new([N], 1, 64, kind=o.EG_MEM_DEVICE)
+    door.bind(plan, [0], [packed])  # the packed cell is the banded real slot's own element type
+    doubles = door.plane_new([N], 2, 64, kind=o.EG_MEM_DEVICE)
+    e = raises(o.BadRequest, lambda: door.bind(plan, [0], [doubles]), "bind: a double on a band")
+    assert "a banded cell is not a double; pack it with eg_banded_pack" in refusal_text(door, e)
+    for plane in (packed, doubles):
+        door.plane_free(plane)
+    door.plan_free(plan)
+    door.unit_free(unit)
+    done.append("banded slot on a device plan: a packed cell binds, a float64 plane is refused")
+
+    m, k, n = 3, 5, 4
+    for bits, dtype in ((64, np.float64), (32, np.float32)):
+        for flags in range(16):
+            a_shape = (k, m) if flags & o.EG_GEMM_TRANS_A else (m, k)
+            b_shape = (n, k) if flags & o.EG_GEMM_TRANS_B else (k, n)
+            c_shape = (n, m) if flags & o.EG_GEMM_TRANS_C else (m, n)
+            a, b = (rng.standard_normal(s).astype(dtype) for s in (a_shape, b_shape))
+            c = rng.standard_normal(c_shape).astype(dtype)
+            want, bound = product(a, b, flags, c)
+            gemm = door.gemm_new(a_shape, b_shape, c_shape, bits, flags)
+            planes = [to_device(door, x) for x in (a, b, c)]
+            door.gemm_run(gemm, *planes)
+            door.sync()
+            assert within(from_device(door, planes[2], c), want, bound), (bits, flags)
+            for plane in planes:
+                door.plane_free(plane)
+            door.gemm_free(gemm)
+    done.append("device gemm_new, gemm_run: 32 products (f32, f64, every flag) equal numpy")
+
+    shapes = {
+        "sq": (0, (4, 4), (4, 4), (4, 4)),
+        "rect": (0, (3, 5), (5, 4), (3, 4)),
+        "ta": (o.EG_GEMM_TRANS_A, (5, 3), (5, 4), (3, 4)),
+        "tb": (o.EG_GEMM_TRANS_B, (3, 5), (4, 5), (3, 4)),
+        "tc": (o.EG_GEMM_TRANS_C, (3, 5), (5, 4), (4, 3)),
+        "all": (7, (5, 3), (4, 5), (4, 3)),
+        "lane": (0, (3, 5), (5, 4), (3, 4)),
+        "wide": (0, (3, 5), (5, 4), (3, 4)),
+    }
+    for bits, base, dtype in ((64, 0x30, np.float64), (32, 0x40, np.float32)):
+        for index, (name, (flags, a_s, b_s, c_s)) in enumerate(shapes.items()):
+            slack = 2 if name == "wide" else 0
+            full = [(r, c + slack) for r, c in (a_s, b_s, c_s)]
+            a, b, c = (rng.standard_normal(s).astype(dtype) for s in full)
+            c[:] = 5.0
+            unit = door.unit_load(DEVICE_GEMM, f"f{bits}_{name}", digest(base + index))
+            plan = door.plan_new(unit, o.EG_STRUCTURE_DEVICE, o.EG_REDUCE_COMPENSATED, 12)
+            planes = [to_device(door, x) for x in (a, b, c)]
+            door.bind(plan, [0, 1, 2], planes)
+            assert door.plan_entry_figures(plan)["flags"] & o.EG_ENTRY_GEMM != 0, (bits, name)
+            door.launch(plan)
+            door.sync()
+            cut = lambda x, s: x[: s[0], : s[1]]  # noqa: E731
+            got = cut(from_device(door, planes[2], c), c_s)
+            assert within(got, *product(cut(a, a_s), cut(b, b_s), flags, None)), (bits, name)
+            for plane in planes:
+                door.plane_free(plane)
+            door.plan_free(plan)
+            door.unit_free(unit)
+    done.append(
+        "gemm units on a device plan: EG_ENTRY_GEMM set, eight shapes, f32 and f64, equal numpy"
+    )
+
+
+def run(done, raises, not_run):
+    """Run every row; `done` collects the passed rows, `not_run` the rows the door cannot run.
+
+    `raises` is the harness's check.
+    """
     # ---- the context: opening, refusals of the library, information ----
     e = raises(
         o.Fault, lambda: o.Door("/nonexistent/libnothing"), "Door: a path that is no library"
@@ -619,6 +736,7 @@ def run(done, raises):
     e = raises(o.Fault, lambda: o.Door(FIXTURE), "Door: a library without the door's functions")
     assert "no function eg_" in str(e), str(e)
     door = o.Door(DOOR_LIB)
+    device = device_door()
     info = door.ctx_info()
     assert info["abi_major"] == 1 and info["device"] == -1 and info["stream"] == -1, info
     assert info["capabilities"] & o.EG_CAP_HOST, info
@@ -856,20 +974,25 @@ def run(done, raises):
     )
 
     # ---- the device group on a door built without it: NOT_WRITTEN everywhere, sync excepted ----
-    for call in (
-        door.device_count,
-        lambda: door.device_props(0),
-        lambda: door.stream_use(0),
-        lambda: door.record_child(0),
-    ):
-        e = raises(o.NotWritten, call, "the device group: not built")
-        assert "the device group is not built" in refusal_text(door, e)
-    assert door.sync() is None
-    e = raises(
-        o.NotWritten, lambda: o.Door(DOOR_LIB, device=0), "Door: a device context without a device"
-    )
-    assert "EG_CTX_DEVICE" in str(e), str(e)
-    done.append("the device group without a device: NOT_WRITTEN by reason, sync answers")
+    if device is None:
+        for call in (
+            door.device_count,
+            lambda: door.device_props(0),
+            lambda: door.stream_use(0),
+            lambda: door.record_child(0),
+        ):
+            e = raises(o.NotWritten, call, "the device group: not built")
+            assert "the device group is not built" in refusal_text(door, e)
+        assert door.sync() is None
+        e = raises(
+            o.NotWritten,
+            lambda: o.Door(DOOR_LIB, device=0),
+            "Door: a device context without a device",
+        )
+        assert "EG_CTX_DEVICE" in str(e), str(e)
+        done.append("the device group without a device: NOT_WRITTEN by reason, sync answers")
+    else:
+        not_run.append("the device group without a device: this door has a device group")
 
     # ---- the arms of a conditional, by kind ----
     cell = door.plane_wrap(np.zeros(1, dtype=np.int32))
@@ -965,20 +1088,22 @@ def run(done, raises):
     door.launch(plan)
     assert np.array_equal(mine_view, 4.0 * x + 1.0)
     done.append("plane_new, plane_dlpack: numpy sees shape, dtype, zeros and a launch's results")
-    for kind in (o.EG_MEM_PINNED, o.EG_MEM_DEVICE):
-        e = raises(
-            o.NotWritten, lambda: door.plane_new([2], 2, 64, kind=kind), "plane_new: no device"
-        )
-        refusal_text(door, e)
+    if device is None:
+        for kind in (o.EG_MEM_PINNED, o.EG_MEM_DEVICE):
+            e = raises(
+                o.NotWritten, lambda: door.plane_new([2], 2, 64, kind=kind), "plane_new: no device"
+            )
+            refusal_text(door, e)
+        done.append("plane_new: pinned and device memory refused on a door without a device")
+    else:
+        not_run.append("plane_new on a door without a device: this door has a device group")
     e = raises(
         o.NotWritten, lambda: door.plane_new([2], 2, 16), "plane_new: a dtype it does not run"
     )
     refusal_text(door, e)
     e = raises(o.BadRequest, lambda: door.plane_new([-1], 2, 64), "plane_new: a negative extent")
     refusal_text(door, e)
-    done.append(
-        "plane_new: pinned and device memory on a host door, a dtype, an extent refused by reason"
-    )
+    done.append("plane_new: a dtype and an extent refused by reason")
     del mine_view, view
     door.plan_free(plan)
     door.plane_free(mine)
@@ -1049,6 +1174,17 @@ def run(done, raises):
     check_gemm(door, done, raises)
     check_segmented(door, done, raises)
     check_auto_set(door, done, raises)
+    if device is None:
+        not_run.extend(
+            f"{row}: no device"
+            for row in (
+                "banded slot on a device plan",
+                "device gemm_new, gemm_run",
+                "gemm units on a device plan",
+            )
+        )
+    else:
+        check_device(device, done, raises)
 
     # ---- handles and the context's end ----
     plane = door.plane_wrap(np.zeros(2))
