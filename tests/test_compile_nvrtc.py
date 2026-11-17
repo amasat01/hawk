@@ -311,6 +311,7 @@ def test_pip_only_device_compile_hits_the_cache_in_a_fresh_process(monkeypatch, 
     monkeypatch.setattr(_roots, "WORKSPACE", pathlib.Path("/nonexistent/hawk-probe"))
     monkeypatch.setattr(tc, "_PIP_ONLY_ROOT", None)
     opts = CompileOptions(target="cuda", cache_dir=str(tmp_path / "cache"))
+    _reset_artifact_memo()     # the payload is memoised per process: a test before this one may have sealed it under other roots
 
     first = compile_source(KERNEL_SRC, "pip_only_fresh", opts)
     assert not first.hit
