@@ -17,6 +17,10 @@ What each row proves:
   called ONCE with the manifest path and every plugin carries a
   ``device_function`` that runs under ``DeviceKernel`` within one ULP of the
   host entry per multiply-add the device may contract.
+* STAGES: a plugin carries its sidecar (read-only) and the plugins of its
+  bundle, so a kernel built in stages runs through ``plugins`` and
+  ``eagle.plan.auto`` as it does through a deploy: on the host equal bit for
+  bit to the same chain built whole, on the device (a team stage) equal to NumPy.
 """
 
 from __future__ import annotations
@@ -139,3 +143,72 @@ def test_a_derivative_plugin_carries_its_tag_and_a_primal_carries_none(tmp_path)
                    "primal_unit": None}
     sidecar = next(a.sidecar for a in bundle.artifacts if a.name == "pl_affine_vjp")
     assert plan_view(sidecar)["derivative"]["primal"] == sidecar["derivative"]["primal"]
+
+
+# ---- a kernel built in stages, through plugins() and eagle's plan ------------------------------------------------------
+
+def _fan(tmp_path, monkeypatch, *, cut: bool):
+    """The ten-member fan of :mod:`test_chain` on the host, cut in two stages (an AVX-512 register file) or whole."""
+    from test_chain import fan_in
+
+    from hawk.ir import fusion
+    from hawk.targets.cards import fusion as fusion_card
+
+    monkeypatch.setenv("HAWK_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(fusion, "host_isa", lambda: "avx512")
+    if not cut:
+        monkeypatch.setattr(fusion, "row", lambda st, host=False: {**fusion_card(st, "avx512"), "R_file": 4096})
+    fan = hawk.chain(*fan_in(10), name="fan")
+    bundle = build_bundle([fan], tmp_path / ("cut" if cut else "whole"), targets=("host",), mode="float64",
+                          host_profile="native")
+    return bundle, next(a.sidecar for a in bundle.artifacts if a.name == "fan")
+
+
+def test_a_plugin_carries_its_sidecar_and_the_plugins_of_its_bundle(tmp_path, monkeypatch):
+    bundle, side = _fan(tmp_path, monkeypatch, cut=True)
+    got = plugins(bundle)
+    assert [st["kernel"] for st in side["stages"]] == ["fan", "fan_2"]
+    for art in bundle.artifacts:
+        assert got[art.name].sidecar == art.sidecar and got[art.name].bundle_plugins is got
+    with pytest.raises(TypeError):
+        got["fan"].sidecar["stages"] = []          # read-only: the plan reads it, never writes it
+
+
+def test_a_kernel_in_stages_runs_through_plugins_and_the_automatic_plan_as_the_whole_kernel(tmp_path, monkeypatch):
+    """The documented prebuilt path, ``plugins(bundle)`` then ``eagle.plan.auto``, runs every stage: equal, bit for
+    bit, to the same chain built as one kernel (0.7.7 and before ran the first stage alone, with no error)."""
+    eplan = pytest.importorskip("eagle.plan")
+    x = np.linspace(-1.5, 2.0, 2048)
+    cut, side = _fan(tmp_path / "a", monkeypatch, cut=True)
+    assert len(side["stages"]) == 2
+    have = np.asarray(eplan.auto(plugins(cut)["fan"]).run(x=x))
+    whole, side = _fan(tmp_path / "b", monkeypatch, cut=False)
+    assert "stages" not in side
+    want = np.asarray(eplan.auto(plugins(whole)["fan"]).run(x=x))
+    assert have.shape == want.shape and have.tobytes() == want.tobytes()
+    assert len(np.unique(have[0])) == x.size        # every sample written
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("name", ["matvec_in", "matvec_in_vjp"])
+@pytest.mark.parametrize("n", [2048, 2045])
+def test_a_team_stage_runs_through_plugins_and_the_automatic_plan_on_the_device(name, n, tmp_path, cache_dir):
+    """The warp form of a wide value is a team stage: through ``plugins(bundle)`` and ``eagle.plan.auto`` every sample
+    equals NumPy (0.7.7 and before launched it on the per-sample grid: 16 of 2048 samples written, no error)."""
+    import _wide_kernels as W
+    from eagle import arrays
+    from eagle._alloc import synchronize
+    from eagle.registry import load_manifest
+    eplan = pytest.importorskip("eagle.plan")
+
+    entry = W.CORPUS[name]
+    planes = entry.planes(np.random.default_rng(7), np.float64, n, True)
+    bundle = build_bundle([entry.kernel], tmp_path, targets=("cuda",), mode="float64", cache_dir=cache_dir,
+                          wide_form="team")
+    assert next(a.sidecar for a in bundle.artifacts if a.name == entry.kernel.name)["stages"][0]["team"]
+    plugin = plugins(bundle, device_loader=load_manifest)[entry.kernel.name]
+    bound_args = {k: arrays.asarray(np.ascontiguousarray(v), device="cuda:0") for k, v in planes.items()}
+    out = arrays.asarray(np.zeros(entry.shape(n), np.float64), device="cuda:0")
+    eplan.auto(plugin).bind(**bound_args, **{entry.out: out}).launch()
+    synchronize()
+    assert np.array_equal(np.asarray(out.get()), entry.want(np.float64, planes, n))

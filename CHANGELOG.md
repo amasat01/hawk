@@ -2,6 +2,12 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
+## 0.7.8 (unreleased)
+
+### Fixed
+
+- A kernel built in stages (a wide value in the warp form, a reduction over samples that a later part reads, a long chain cut in parts), taken from `hawk.artifact.plugins(bundle)` and run through `eagle.plan.auto` or `eagle.plan.plan`, ran its first stage alone and returned wrong values with no error: on a GPU, a wide value in the warp form wrote 16 of 2048 samples. Each plugin now carries its kernel's `sidecar` and the plugins of its bundle (`bundle_plugins`), and eagle 0.7.8 attaches the stages from them. Upgrade both: with an earlier eagle the stages are still not attached. `eagle.deploy` and `eagle.plan.auto(kernel)`, which build their own bundle, were not affected.
+
 ## 0.7.7 (2026-11-14)
 
 ### Fixed

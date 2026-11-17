@@ -14,7 +14,7 @@ loader rather than an eagle import.
 from __future__ import annotations
 
 import ctypes
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 from ..ir import HawkError
 from ..targets import ENTRY_DEVICE, ENTRY_HOST, TARGETS
@@ -157,6 +157,11 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
     Everything an entry point points into is held on the plugin's
     ``_keepalive``, so it stays valid as long as the caller holds it.
 
+    Each plugin also carries its kernel's ``sidecar`` (read-only) and
+    ``bundle_plugins``, this same mapping: a kernel built in stages (sidecar
+    ``stages``) runs as one only with the plugins of its other stages, which
+    eagle's plan attaches from these two.
+
     A kernel built only for an exported target such as ``c`` (a standalone C
     unit, :mod:`hawk.embedded`) has no entry point to plan and is refused,
     as :func:`hawk.load` refuses its directory."""
@@ -196,5 +201,6 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
             entries["device_function"] = loaded.fn.kernel.ptr
             keep += [registry, loaded]
         out[art.name] = SimpleNamespace(name=art.name, _keepalive=tuple(keep),
+                                        sidecar=MappingProxyType(art.sidecar), bundle_plugins=out,
                                         **entries, **view)
     return out
