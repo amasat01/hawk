@@ -68,7 +68,7 @@ def test_a_missing_compiler_says_not_found_not_the_address_cap(monkeypatch, tmp_
     monkeypatch.setenv("HAWK_COMPILE_ADDRESS_CAP", str(12 * 1024**3))
     with pytest.raises(HawkError) as excinfo:
         argv = ["/no/such/dir/c++", "-c", "x.cpp"]
-        drivers._refuse(drivers.run_compiler(argv, "host compile", "host"), argv, "host compile", "", tmp_path)
+        drivers.refuse(drivers.run_compiler(argv, "host compile", "host"), argv, "host compile", "", tmp_path)
     msg = str(excinfo.value)
     assert "compiler not found or not executable: /no/such/dir/c++" in msg, msg
     assert "$HAWK_CXX" in msg and "address-space cap" not in msg, msg

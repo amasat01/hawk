@@ -62,11 +62,20 @@ def eagle_include() -> str:
     The candidate must be an **aether-abi/2** header: a dev env's prefix
     can easily hold a pre-v2 eagle, so one not defining the v2 macro is
     skipped, not used."""
-    return _root("HAWK_EAGLE_INCLUDE",
-                 [Path(p) / "include" / "eagle" for p in _prefixes()]
-                 + [Path(p) / "include" for p in _prefixes()]
-                 + [WORKSPACE / "eagle", WORKSPACE / "eagle-abi", SDIST_INCLUDE],
-                 "plugin/gref_abi.h", must_contain="EAGLE_AETHER_ABI_V2")
+    return _root("HAWK_EAGLE_INCLUDE", _eagle_candidates(), "plugin/gref_abi.h", must_contain="EAGLE_AETHER_ABI_V2")
+
+
+def door_include() -> str:
+    """The root the runtime's door headers hang off (``eagle/door/eg_door.h``, which the library record of a set of units
+    includes): searched where the eagle root is, and ``$HAWK_EAGLE_INCLUDE`` names it too."""
+    return _root("HAWK_EAGLE_INCLUDE", _eagle_candidates(), "eagle/door/eg_door.h")
+
+
+def _eagle_candidates() -> list:
+    """The places the eagle headers are looked for, best first."""
+    return ([Path(p) / "include" / "eagle" for p in _prefixes()]
+            + [Path(p) / "include" for p in _prefixes()]
+            + [WORKSPACE / "eagle", WORKSPACE / "eagle-abi", SDIST_INCLUDE])
 
 
 def roots() -> tuple:

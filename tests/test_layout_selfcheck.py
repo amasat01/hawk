@@ -45,13 +45,17 @@ def bad_bundle(tmp_path_factory, cache_dir):
                         layout_sizes_override=BAD)
 
 
-def test_the_override_reaches_the_emitted_text(bad_bundle):
-    for suffix in (".cpp", ".cu"):
-        text = (bad_bundle.directory / f"axpb{suffix}").read_text()
-        assert "41ull" in text and "sizeof(eagle::plugin::GRefMirror)" not in text, (
-            "the test-only override must replace the DERIVED sizeof expressions, "
-            "or the row is asserting a refusal that cannot happen:\n" + text
-        )
+def test_the_override_reaches_the_library_the_units_are_linked_into(bad_bundle):
+    """A build's host unit text carries no self-check block: the text of the set the units are linked with carries it once, and the
+    override replaces the DERIVED sizes there. So the host override is read from the sizes the library exports, or the row would
+    be asserting a refusal that cannot happen. The device text keeps its block, as it always did."""
+    import ctypes
+
+    assert "eagle_layout_sizes" not in (bad_bundle.directory / "axpb.cpp").read_text()
+    text = (bad_bundle.directory / "axpb.cu").read_text()
+    assert "41ull" in text and "sizeof(eagle::plugin::GRefMirror)" not in text
+    sizes = (ctypes.c_uint64 * 5).in_dll(ctypes.CDLL(str(bad_bundle.directory / "axpb.so")), "eagle_layout_sizes")
+    assert tuple(sizes) == BAD, "the test-only override must replace the DERIVED sizeof expressions of the set text"
 
 
 def test_a_wrong_layout_host_artifact_is_refused_naming_the_field(bad_bundle):

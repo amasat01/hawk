@@ -162,9 +162,16 @@ def include_flags(facts: dict) -> tuple:
     name = facts.get("name") if facts else None
     if not name:
         return ()
-    flag = IncludeFlag(f"-I{home(name)}")
+    flag = IncludeFlag(f"-I{include_dir(facts)}")
     flag.key_term = f"facts:{name}:{header_digest(name)}"
     return (flag,)
+
+
+def include_dir(facts: dict) -> Path | None:
+    """The folder of ``facts``' raptor wing, where its header is (the directory :func:`include_flags` names); none for a build
+    with no facts."""
+    name = facts.get("name") if facts else None
+    return home(name) if name else None
 
 
 def named(entry, isa: str) -> str:

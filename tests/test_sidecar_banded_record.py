@@ -23,10 +23,10 @@ def sidecars(monkeypatch, tmp_path):
     def no_toolchain(target, spec, options):
         raise request.ToolchainAbsent("stood in: no device toolchain")
 
-    def not_compiled(lowered, sources, options, targets):
+    def not_compiled(pool, lowered, sources, options, targets):
         result = SimpleNamespace(key="stood-in", hit=False, seconds=0.0, closure=())
-        return {t: SimpleNamespace(files=[], entry=(result, "a." + t, "s." + t, "cubin"), facts={}, report_file=None)
-                for t in targets}
+        parts = {t: SimpleNamespace(files=[], entry=(result, "a." + t, "s." + t, "cubin"), facts={}, report_file=None) for t in targets}
+        return {t: pool.submit(lambda part=part: part) for t, part in parts.items()}
 
     drafted = {}
     draft = bundle._draft
@@ -37,7 +37,7 @@ def sidecars(monkeypatch, tmp_path):
         return made
 
     monkeypatch.setattr(request, "_compile_plan", no_toolchain)
-    monkeypatch.setattr(bundle, "_build_targets", not_compiled)
+    monkeypatch.setattr(bundle, "_submit_targets", not_compiled)
     monkeypatch.setattr(bundle, "_draft", keep)
 
     def build(mode):

@@ -11,7 +11,7 @@ backend on its first :func:`need`, so adding a backend is shipping an OSPREY tha
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..registry import backend_ids, load, missing_device, traits
 
@@ -49,7 +49,7 @@ class Backend:
     builds: bool = True
     #: built for a device: resolves a device arch, runs team forms and banded modes
     device: bool = False
-    #: its compile reads the host profile
+    #: its compile reads the host profile, and its units are objects linked into one library for the build
     host_compiled: bool = False
     #: eagle enters a host symbol of it
     host_entry: bool = False
@@ -72,20 +72,81 @@ class Backend:
     def build(self, lowered, source, options) -> Part:
         """Compile ``source`` through the cache (a backend with ``builds``) and package it: the :class:`Part` of this backend.
         Never asked on a memo hit."""
-        from ..facts import include_flags
-        from ..compile import CompileOptions, compile_source
+        from ..compile import compile_source
 
         own = self.own_options(options)
         arch = options.get("device_arch", "")
-        result = None if not self.builds else compile_source(source.text, lowered.name, lowered.kind.apply(CompileOptions(
-            target=self.id, mode=lowered.smode.id, arch=arch, defines=tuple(options.get("defines", ())),
-            extra=include_flags(lowered.spec.for_target(self).primary),
-            cache_dir=options.get("cache_dir"), host_profile=options.get("host_profile") or "",
-            opt_level=options.get("opt_level") or "", settings=lowered.spec.for_target(self).settings)))
+        opts = self._compile_options(lowered, options)
+        if not self.builds:
+            result = None
+        elif self.host_compiled:
+            # a host unit is compiled to an object by the library's instructions; the bundle links the objects of its units
+            from ..compile import host
+
+            result = host.compile_object(source.text, lowered.name, opts, self._host_build(lowered, options, opts))
+        else:
+            result = compile_source(source.text, lowered.name, opts)
         entry, files, report = self.package(source, result, name=lowered.name, smode=lowered.smode, profile=own.get("profile"))
         facts = self.facts(lowered.kernel, name=lowered.name, smode=lowered.smode, block=options.get("block"), spec=lowered.spec.for_target(self),
                            built=entry, arch=arch)
         return Part(entry, files, report, self.report_file(lowered.name), facts)
+
+    def _compile_options(self, lowered, options):
+        """The :class:`~hawk.compile.CompileOptions` of this backend's compile in a build, as the kind of the build adjusts them."""
+        from ..facts import include_flags
+        from ..compile import CompileOptions
+
+        return lowered.kind.apply(CompileOptions(
+            target=self.id, mode=lowered.smode.id, arch=options.get("device_arch", ""), defines=tuple(options.get("defines", ())),
+            extra=() if self.host_compiled else include_flags(lowered.spec.for_target(self).primary),
+            cache_dir=options.get("cache_dir"), host_profile=options.get("host_profile") or "",
+            opt_level=options.get("opt_level") or "", settings=lowered.spec.for_target(self).settings))
+
+    def _host_build(self, lowered, options, opts):
+        """The :class:`~hawk.compile.host.HostBuild` of a build: the library's argv templates (with the witness's verdict, when the
+        compiler needs one), this machine's compiler and the terms its keys hold. The caller's own flags (``opts``) go with the
+        question: a macro they set for the masked call wins over the witness (:func:`hawk.artifact.request.host_build`)."""
+        from ..artifact.request import compiling_host, host_build
+        from ..compile import host
+        from ..compile import toolchain as tc
+        from ..facts import include_dir, include_flags
+
+        primary = lowered.spec.for_target(self).primary
+        compiler = self.compiler()
+        identity = tc.compiler_identity(compiler)
+        facts, line = compiling_host()
+        profile = options.get("host_profile") or facts["host_profile"]
+        build = host.HostBuild({}, compiler, identity, profile, tc.opt_level(options.get("opt_level") or None), self.target_identity(),
+                               include_dir(primary), next((f.key_term for f in include_flags(primary)), ""))
+        def witness(template):
+            return host.masked_call_verdict(build, self.masked_call_witness_source, template)
+
+        caller_flags = (*(f"-D{d}" for d in opts.defines), *map(str, opts.extra))
+        return replace(build, instructions=host_build(facts, line, options, witness, caller_flags))
+
+    def link(self, lowered, options, units: list, library: str):
+        """Link the objects of ``units`` (``(compile result, unit record)`` pairs, in order) with the text of their set into the
+        shared library ``library`` (a file name) by the library's instructions: the :class:`~hawk.compile.CompileResult` of the
+        link, whose ``artifact`` is the library in the cache. ``lowered`` carries the build's scalar mode, kind and spec."""
+        from ..artifact.request import set_text
+        from ..compile import host
+
+        opts = self._compile_options(lowered, options)
+        build = self._host_build(lowered, options, opts)
+        text = set_text([meta for _, meta in units], options.get("layout_sizes_override"))
+        set_object = host.compile_object(text, "set", opts, build, of_set=True)
+        return host.link([result for result, _ in units], set_object, text, library, opts, build)
+
+    #: The program the masked-call witness builds and runs (``None``: the backend has none).
+    masked_call_witness_source = None
+
+    def compiler(self) -> str:
+        """The compiler a host build runs (discovery stays with the backend); a backend with no host build has none."""
+        raise NotImplementedError(self.id)
+
+    def target_identity(self) -> str:
+        """A digest naming the CPU a native profile of this backend targets."""
+        raise NotImplementedError(self.id)
 
     def machine_facts(self) -> dict:
         """The facts this backend knows of the machine of a build it is in, as plain data (:class:`hawk.targets.Machine`
@@ -127,8 +188,9 @@ class Backend:
                 "published from a store that lost its own artifact")
         self.check(name, smode, result.artifact, fmt)
         blob = text_blob(source.text)
-        files = [UnitFile(art_name, compiled, source_path=result.artifact),
-                 UnitFile(src_name, digest_bytes(blob), blob=blob)]
+        files = [UnitFile(src_name, digest_bytes(blob), blob=blob)]
+        if not self.host_compiled:                           # a host unit's object is linked, with its bundle's, into one library
+            files.insert(0, UnitFile(art_name, compiled, source_path=result.artifact))
         return (result, art_name, src_name, fmt), files, None
 
     def key_terms(self, source_digests, own) -> tuple:

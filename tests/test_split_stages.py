@@ -29,7 +29,6 @@ import hawk.diff
 import hawk.math
 from hawk import HawkError, Kernel, Mutable, Param, Scalar, Vector, kernel, runtime
 from hawk.artifact import build, build_bundle
-from hawk.compile import cache as compile_cache
 from raptor.wings.base.split import stages
 
 SIZES = (1, 31, 33, 1000, 65536)
@@ -335,11 +334,11 @@ def test_a_kernel_reading_no_reduction_is_one_unchanged_kernel(tmp_path, cache_d
 def test_a_change_after_the_cut_recompiles_only_the_later_stage(tmp_path):
     cache = str(tmp_path / "cache")
     _bundle([Kernel("scaled", scaled_two.sinks)], tmp_path / "a", "float64", cache)
-    compile_cache.reset_cache_stats()
     bundle = _bundle([Kernel("scaled", scaled_three.sinks)], tmp_path / "b", "float64",
                      cache)
-    assert compile_cache.cache_stats() == {"hits": 1, "misses": 1}
-    assert [a.name for a in bundle.artifacts] == ["scaled", "scaled_2"]
+    # the unit objects: the first stage is the one already compiled, the later stage is new (the set text and the link of the new
+    # library are new too, and are not stages)
+    assert [(a.name, a.entries["host"].hit) for a in bundle.artifacts] == [("scaled", True), ("scaled_2", False)]
 
 
 # -- sidecar ----------------------------------------------------------------

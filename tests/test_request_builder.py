@@ -201,7 +201,8 @@ def test_the_host_compiler_line_is_the_real_one_unless_the_spec_names_another_ma
     from types import MappingProxyType
 
     monkeypatch.undo()
-    monkeypatch.setattr(request, "_compile_plan", lambda target, spec, options: {"identity": "cc||line||digest"})
+    monkeypatch.setattr(request.TARGETS["host"], "compiler", lambda: "cc")
+    monkeypatch.setattr(request._tc, "compiler_identity", lambda compiler: "cc||line||digest")
     spec = build_spec(("host",), "")
     assert request._host_line(spec, {}) == "cc || line || digest"
     other = "x86_64" if spec.machine.isa == "arm64" else "arm64"

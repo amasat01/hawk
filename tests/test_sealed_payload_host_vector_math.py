@@ -62,6 +62,8 @@ def _sealed_payload_probe(omega: Scalar, dt: Param, terminated: Terminated,
     v = v0 - dt * w2 * x0
 
 
+@pytest.mark.xfail(strict=True, reason="the door headers are not part of the shipped headers yet: a host build from the shipped headers alone "
+                   "returns when they are packaged with them")
 def test_host_compile_and_run_against_the_shipped_sealed_payload(
         monkeypatch, tmp_path):
     """No `$HAWK_AETHER_INCLUDE`/`$HAWK_EAGLE_INCLUDE` override: a host

@@ -289,7 +289,7 @@ def _allocation_failure(stderr: str) -> bool:
                                    "signal terminated program"))
 
 
-def _refuse(done, argv, label: str, failed_tail: str, cache_root) -> None:
+def refuse(done, argv, label: str, failed_tail: str, cache_root) -> None:
     """Raise the refusal of a failed compiler command: its stderr, the reason (the cap, a missing compiler) and the hint."""
     missing = _compiler_not_runnable(argv[0], done.returncode)
     cap = address_space_cap()
@@ -317,7 +317,7 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
     miss that compiles into the key's own slot and rewrites its validity
     record from the compiler-reported closure.
 
-    The row's plan (:meth:`hawk.backends.Backend.compile_plan`) is compiled by :func:`_drive`.
+    The row's plan (:meth:`hawk.backends.Backend.compile_plan`) is compiled by :func:`drive`.
     """
     from ..registry import backend_ids, traits
     from ..targets import TARGETS
@@ -329,7 +329,7 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
     plan = row.compile_plan(opts, _Inputs())
     if plan is None:
         raise HawkError(f"target {opts.target!r} builds but declares no compile plan")
-    return _drive(source, name, opts, row, plan)
+    return drive(source, name, opts, row, plan)
 
 
 def plan_for(opts: CompileOptions) -> dict:
@@ -442,7 +442,7 @@ def _served_prefixes(*roots) -> tuple:
     return tuple({p for r in roots if r for p in (os.path.abspath(str(r)) + os.sep, os.path.realpath(str(r)) + os.sep)})
 
 
-def _drive(source: str, name: str, opts: CompileOptions, row, plan: dict) -> CompileResult:
+def drive(source: str, name: str, opts: CompileOptions, row, plan: dict) -> CompileResult:
     """The cached compile of ``source`` for ``row`` from its ``plan`` (data) and its
     :meth:`~hawk.backends.Backend.compile_hook` (code). hawk owns the key, the slot, the memo and its validity, the
     single flight, the payload serving, the machine guards, the closure and the record.
@@ -487,7 +487,7 @@ def _drive(source: str, name: str, opts: CompileOptions, row, plan: dict) -> Com
         def run(argv):
             done = run_compiler(argv, label, opts.target)
             if done.returncode != 0:
-                _refuse(done, argv, label, plan["tail"], cache.root)
+                refuse(done, argv, label, plan["tail"], cache.root)
             return done
 
         start = time.perf_counter()

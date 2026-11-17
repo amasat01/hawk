@@ -26,6 +26,7 @@ import pytest
 
 import hawk
 import hawk.math as m
+from hawk.artifact import emit_source
 from hawk import Index, Kernel, Mutable, Param, Scalar, Terminated, Vector, kernel
 from hawk.diff import jvp, step_vjp, vjp
 from hawk.ext import DATA_ONLY, KernelKind
@@ -375,11 +376,9 @@ def test_a_switch_that_only_reaches_the_outputs_affinely_keeps_its_source(tmp_pa
     for k in [getattr(t, n) for n in sorted({n.split("/")[0] for n in PINNED}) if n != "step"] + [step]:
         wrt = ("t",) if "t" in k.planes else None
         for tag, derive in (("jvp", jvp), ("vjp", vjp)):
-            d = tmp_path / f"{k.name}_{tag}"
-            d.mkdir()
-            hawk.build([k, Kernel("g", derive(k, wrt=wrt))], d, targets=("host",),
-                       cache_dir=cache_dir)
-            got[f"{k.name}/{tag}"] = hashlib.sha256((d / "g.cpp").read_bytes()).hexdigest()
+            # the unit text as a consumer compiles it alone: with its self-check block (a build's unit text has none: the set carries it)
+            text = emit_source(Kernel("g", derive(k, wrt=wrt)), targets=("host",)).sources["host"].text
+            got[f"{k.name}/{tag}"] = hashlib.sha256(text.encode()).hexdigest()
     assert got == PINNED
 
 

@@ -63,7 +63,7 @@ from conftest import sidecar_of
 import hawk
 from hawk import Index, Mutable, Param, Scalar, Table, Terminated, Vector
 from hawk import math as m
-from hawk.artifact import build_bundle
+from hawk.artifact import build_bundle, emit_source
 from hawk.ext import Guard, Kind
 from hawk.targets import TARGETS
 
@@ -530,7 +530,8 @@ _COUNTED = 'extern "C" long long hawk_lane_trips = 0;\n'
 
 def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
     """The bundle's directory with its ``rkf78_attempt.so`` rebuilt from
-    ``source``, which counts one lane-trip per lane per trip."""
+    ``source`` (a whole translation unit, the self-check block included: :func:`hawk.artifact.emit_source`), which counts one
+    lane-trip per lane per trip."""
     from types import SimpleNamespace
 
     from hawk.compile import toolchain as tc
@@ -538,6 +539,7 @@ def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
 
     out = tmp_path / tag
     shutil.copytree(bundle.directory, out)
+    (out / f"{name}.so").unlink()       # the unit's name is a link to the bundle's library: the compile makes a library of its own
     cpp = out / f"{name}.cpp"
     marker = "    std::int64_t hawk_live = 0;"
     assert source.count(marker) == 1
@@ -559,7 +561,7 @@ def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile)
     bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
                           cache_dir=str(tmp_path / "cache"), defines=INTERCHANGED,
                           host_profile=profile)
-    source = (bundle.directory / "rkf78_attempt.cpp").read_text()
+    source = emit_source(kernel, targets=("host",)).sources["host"].text
     live = "if (hawk_on[hawk_t] != 0.0) hawk_perm[hawk_nlive++] = hawk_t;"
     dead = "if (hawk_on[hawk_t] == 0.0) hawk_perm[hawk_o++] = hawk_t;"
     assert source.count(live) == source.count(dead) == 1
@@ -626,7 +628,7 @@ def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, na
     bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
                           cache_dir=str(tmp_path / "cache"), defines=INTERCHANGED,
                           host_profile=profile)
-    source = (bundle.directory / f"{kernel.name}.cpp").read_text()
+    source = emit_source(kernel, targets=("host",)).sources["host"].text
     sort = re.search(r"    std::sort\(hawk_perm.*?\}\);\n", source, re.S)
     assert sort is not None
     plain = source.replace(sort.group(0), "")

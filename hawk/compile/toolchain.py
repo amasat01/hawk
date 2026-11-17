@@ -96,6 +96,12 @@ def _strict_eagle_include() -> str:
     return _resolve(_roots.eagle_include)
 
 
+def _strict_door_include() -> str:
+    """The root of the door headers, or a :class:`~hawk.HawkError` when no real
+    tree resolves (:func:`hawk._roots.door_include`)."""
+    return _resolve(_roots.door_include)
+
+
 def aether_include() -> str:
     """The aether header root: the resolved tree, else the sealed payload's
     served root (a wheel install carries no C++ header tree), like
@@ -108,6 +114,15 @@ def eagle_include() -> str:
     the resolved tree, else the sealed payload's served root, like
     :func:`include_flags`."""
     return _resolved_or_sealed(_strict_eagle_include)
+
+
+def door_include() -> str:
+    """The root the door headers hang off (``eagle/door/eg_door.h``): the resolved tree, else the sealed payload's served
+    root, like :func:`eagle_include`. A root that does not hold the door headers is refused by name."""
+    root = _resolved_or_sealed(_strict_door_include)
+    if not (Path(root) / "eagle" / "door" / "eg_door.h").is_file():
+        raise HawkError(f"the door headers (eagle/door/eg_door.h) are not under {root}: set $HAWK_EAGLE_INCLUDE to an eagle root that holds them")
+    return root
 
 
 def _resolve(fn):
@@ -187,11 +202,14 @@ def include_flags(*, aether_root: str | None = None,
     to confirm it, since a wheel-only install carries no C++ header tree for
     those resolvers to find. Omitted, this falls back to the sealed
     payload's own served directory for whichever root does not resolve."""
-    resolved_aether = (aether_root if aether_root is not None
-                      else _resolved_or_sealed(_strict_aether_include))
-    resolved_eagle = (eagle_root if eagle_root is not None
-                      else _resolved_or_sealed(_strict_eagle_include))
+    resolved_aether, resolved_eagle = include_roots(aether_root=aether_root, eagle_root=eagle_root)
     return ["-I", resolved_aether, "-I", resolved_eagle]
+
+
+def include_roots(*, aether_root: str | None = None, eagle_root: str | None = None) -> tuple[str, str]:
+    """``(aether root, eagle root)``, the two directories :func:`include_flags` names; a root passed in is taken as it is."""
+    return (aether_root if aether_root is not None else _resolved_or_sealed(_strict_aether_include),
+            eagle_root if eagle_root is not None else _resolved_or_sealed(_strict_eagle_include))
 
 
 def compile_hint(cache_dir: Path | str | None = None) -> str:

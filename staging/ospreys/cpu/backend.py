@@ -59,6 +59,15 @@ class Host(Backend):
     host_compiled = True
     host_entry = True
 
+    #: The program the masked-call witness builds and runs (:func:`hawk.compile.host.masked_call_verdict`).
+    masked_call_witness_source = tc.MASKED_CALL_WITNESS
+
+    def compiler(self) -> str:
+        return tc.host_compiler()
+
+    def target_identity(self) -> str:
+        return tc.host_target_identity()
+
     def machine_facts(self):
         caches = tc.host_caches()
         try:

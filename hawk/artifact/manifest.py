@@ -9,7 +9,7 @@ writes exactly ``raptor.schema.manifest.TOP_LEVEL_KEY_ORDER_V2``. The
 keys are flat, not a nested ``execution`` object. ``exec_op`` is present
 iff ``exec_access == 'mapreduce'`` and forbidden otherwise.
 
-The manifest gains no new key: ``Walk.digest`` lives in the sidecar.
+A plugin entry names the build's shared library as ``library`` when the build made one.
 """
 
 from __future__ import annotations
@@ -67,10 +67,14 @@ def manifest_doc(entries, *, exec_targets, exec_access, exec_op=None,
 
 
 def plugin_entry(pid: str, order: int, artifact: str, sidecar: str,
-                 fmt: str = "ptx") -> dict:
-    """One ``plugins[]`` record. ``order`` is the injection order (== index)."""
-    return {"id": pid, "order": order, "enabled": True, "artifact": artifact,
-            "sidecar": sidecar, "format": fmt}
+                 fmt: str = "ptx", library: str | None = None) -> dict:
+    """One ``plugins[]`` record. ``order`` is the injection order (== index). ``library`` is the shared library of the build
+    that holds the unit's host entry, when the build made one; ``artifact`` stays the file named for the unit."""
+    entry = {"id": pid, "order": order, "enabled": True, "artifact": artifact,
+             "sidecar": sidecar, "format": fmt}
+    if library is not None:
+        entry["library"] = library
+    return entry
 
 
 def write_manifest(directory: Path, doc: dict) -> Path:

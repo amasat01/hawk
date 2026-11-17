@@ -148,15 +148,15 @@ def _build(directory, cache, kernels=(D.axpb,), **kw):
 def test_the_write_counter_sees_a_real_publish(tmp_path, cache_dir, monkeypatch,
                                                fresh):
     """The counter's KNOWN ANSWER. A first publish writes the whole unit —
-    manifest, sidecar, both objects, both sources — so a counter that read zero
-    here would be measuring nothing and every "wrote nothing" row below would be
-    vacuous."""
+    manifest, sidecar, the device object, the host library and its link, both
+    sources — so a counter that read zero here would be measuring nothing and
+    every "wrote nothing" row below would be vacuous."""
     writes = _Writes(monkeypatch)
     bundle = _build(tmp_path / "first", cache_dir)
     assert writes.total >= 8, (
         "a first publish of a two-target unit makes the directory and writes the "
-        "manifest, the sidecar, two objects, two sources and the stamp — seven "
-        "files; the counter saw only " + writes.report())
+        "manifest, the sidecar, the device object, the host library, its link, two "
+        "sources and the stamp — eight files; the counter saw only " + writes.report())
     assert any(f.endswith(STAMP_NAME) for f in writes.files), (
         "the stamp is written through a route the counter cannot see, so a row "
         "asserting 'wrote nothing' could be wrong about the stamp and never know")

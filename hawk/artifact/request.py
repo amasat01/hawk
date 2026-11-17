@@ -23,6 +23,7 @@ from raptor.wings.base.exchange import ToolchainAbsent
 
 from .. import wings as _wings
 from .._errors import HawkError
+from ..compile import toolchain as _tc
 from ..ext import PLAIN, DEFAULT_GUARD, DATA_ONLY, DEFAULT_KIND
 from ..trace import steps as _steps
 from ..trace.decl import Plane
@@ -84,6 +85,70 @@ def _facts(target: str, compiler: str, stated: str) -> str:
     return module.Ctx().backend_facts(lib, folder, target, compiler, stated)
 
 
+def _macro(flag: str):
+    """The macro a ``-D<name>`` or ``-D<name>=<value>`` flag defines (``None``: the flag defines none)."""
+    return flag[2:].split("=", 1)[0] if flag.startswith("-D") else None
+
+
+def compiling_host() -> tuple:
+    """``(facts, line)`` of the machine and the compiler that COMPILE a host build: this machine's facts as its backend states them
+    (instruction set, vector set, profile in effect, caches) and the identity of the compiler the driver runs, in the library's
+    three-part form. They are the owner's facts of the compile, whatever machine a spec's texts are written for
+    (:func:`_host_line`, :func:`_stated_host`)."""
+    host = TARGETS["host"]
+    return host.machine_facts(), _identity(_tc.compiler_identity(host.compiler()))
+
+
+def host_build(facts: dict, line: str, options, witness=None, caller_flags=()) -> dict:
+    """The library's instructions for the host compile of this build, the ``host_build`` record of its facts answer: the argv
+    templates of a unit's compile, of the set text's compile and of the link. The question is about the machine and the compiler
+    that run the compile (``facts`` and ``line``, from :func:`compiling_host`), never about the machine a spec's texts are written
+    for: a flag of another machine does not compile here. It carries the host profile the build asks for, when it asks for one, and
+    the optimisation level in effect.
+
+    The masked-call flag is in the template only for a verdict of the witness. ``witness`` (``None``: there is none) is asked for the
+    verdict when the library's templates for a fixed compiler and for an unproven one differ: it is called with the template of the
+    unproven one and returns ``fixed``, ``miscompile`` or ``unrun``, which the question then states. A macro the caller sets
+    itself wins without a probe: when one of ``caller_flags`` (the build's own ``-D`` flags) defines a macro that the fixed
+    template's extra flags define, the witness is not run and no verdict is stated. Which macro that is comes from the library's
+    two templates, never from a name written here."""
+    stated = _stated(facts["isa"], facts)
+    if options.get("host_profile"):
+        stated["host_profile"] = options["host_profile"]
+    stated["opt_level"] = _tc.opt_level(options.get("opt_level") or None)
+
+    def ask(verdict=None) -> dict:
+        said = {**stated, **({} if verdict is None else {"masked_call_witness": verdict})}
+        return json.loads(_facts("host", line, json.dumps(said)))["host_build"]
+
+    try:
+        build = ask()
+        # what a fixed compiler adds to the unit compile, and the macros those flags define
+        added = [flag for flag in ask("fixed")["compile_unit"] if flag not in build["compile_unit"]]
+        theirs = {_macro(flag) for flag in added} - {None}
+        mine = {_macro(str(flag)) for flag in caller_flags} - {None}
+        if witness is not None and added and not theirs & mine:
+            build = ask(witness(build["compile_unit"]))
+        return build
+    except library()[0].BadRequest as why:
+        if not options.get("host_profile"):
+            raise
+        # a profile the build asked for that this machine's compiler does not build: the machine lacks the toolchain for it
+        raise ToolchainAbsent(f"host profile {options['host_profile']!r}: {why}", toolchain="host-profile") from why
+
+
+def set_text(units: list, exports=None) -> str:
+    """The C++ text of a set of units built into one library: the self-check block once and the library record over ``units``
+    (their ``meta`` records in the answers, in the order they are linked). ``exports`` are the five layout sizes to state in
+    place of the ones the headers give, when the build is given them."""
+    module, lib, _ = library()
+    asked = {"v": 1, "units": units, **({} if exports is None else {"exports": [int(n) for n in exports]})}
+    try:
+        return module.Ctx().backend_set_text(lib, json.dumps(asked))
+    except ValueError as why:
+        raise HawkError(f"the lowering library refuses the set of units {[u['name'] for u in units]}: {why}") from why
+
+
 def lower(request: dict, dump: str, dialects: str) -> dict:
     """The library's answer to ``request`` over the nodes of ``dump``, as parsed JSON: one context for the call, made and dropped
     here."""
@@ -121,7 +186,7 @@ def _host_line(spec, options) -> str:
     machine = spec.machine
     if machine.isa != _this_isa() and machine.isa == "x86_64" and machine.facts.get("host_profile") not in machine.facts.get("exact_host_profiles", ()):
         return _identity(_NO_COMPILER["another x86_64 host"])
-    return _identity(_compile_plan("host", spec, options)["identity"])
+    return _identity(_tc.compiler_identity(TARGETS["host"].compiler()))
 
 
 def _own_card(spec, target: str) -> bool:
@@ -169,13 +234,17 @@ def _device(spec, options) -> tuple:
 
 
 def _stated_host(spec) -> dict:
-    """The machine a host unit is written for and where its compile finds the headers, as the library's facts entry takes
-    them."""
+    """The machine a host unit's TEXT is written for (the spec's) and where its compile finds the headers, as the library's facts
+    entry takes them."""
+    return _stated(spec.machine.isa, spec.machine.facts)
+
+
+def _stated(isa: str, facts) -> dict:
+    """``isa`` and its ``facts`` (a machine's, as :class:`hawk.targets.Machine` holds them) and where a compile finds the headers, as
+    the library's facts entry takes them."""
     from ..compile import drivers
 
-    machine = spec.machine
-    facts = machine.facts
-    stated = {"isa": machine.isa, "vector_isa": facts.get("vector_isa"), "host_profile": facts.get("host_profile")}
+    stated = {"isa": isa, "vector_isa": facts.get("vector_isa"), "host_profile": facts.get("host_profile")}
     stated = {key: value for key, value in stated.items() if value is not None}
     stated["headers"] = drivers.header_shape()
     l1, l2 = facts.get("l1d_cache_bytes"), facts.get("l2_cache_bytes")
@@ -282,10 +351,12 @@ def sinks_of(kernel) -> list:
     return out
 
 
-def request(kernel, *, name: str, scalar: str, kind, targets, spec, position: dict, options: dict) -> dict:
+def request(kernel, *, name: str, scalar: str, kind, targets, spec, position: dict, options: dict, exports_block: bool = True) -> dict:
     """The request of ``kernel`` for ``targets`` as a dict: ``name`` the unit name wanted, ``scalar`` the scalar mode's id, ``kind``
     the kind the kernel is built under, ``spec`` the build spec with the settings resolved, ``position`` the handle of each node
-    (:func:`hawk.artifact.bridge.dump`), ``options`` the build inputs (:func:`hawk.artifact.bundle._options`)."""
+    (:func:`hawk.artifact.bridge.dump`), ``options`` the build inputs (:func:`hawk.artifact.bundle._options`). The texts carry the
+    self-check block of a library unless ``exports_block`` is false, which a build asks: its units are linked with the text of the
+    set (:func:`set_text`), which carries the block once."""
     for target in targets:
         if target not in SERVED:
             raise HawkError(f"target {target!r} is refused: a back end registered from Python is not built in this version; the build writes {tuple(SERVED)} only")
@@ -344,4 +415,6 @@ def request(kernel, *, name: str, scalar: str, kind, targets, spec, position: di
     if broadcast:
         out["broadcast"] = broadcast
     out["facts"] = facts
+    if not exports_block:
+        out["exports_block"] = False
     return out
