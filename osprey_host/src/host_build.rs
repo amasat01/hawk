@@ -41,7 +41,7 @@ fn flags(items: Vec<String>) -> Json {
 }
 
 /// Whether the `vector_math` table of an instruction set's `host_flags` has the profile for the compiler family.
-fn carries(host: &Json, file: &str, profile: &str, gcc: bool) -> Result<bool, Failed> {
+fn carries(host: &Json, file: &str, profile: &str, gcc: bool) -> Result<bool, String> {
     let table = member(
         member(host, file, "vector_math")?,
         file,
@@ -58,13 +58,15 @@ fn vector_flags(
     isa_file: &str,
     s: &Settings,
 ) -> Result<Vec<String>, Failed> {
+    let blame = |reason: String| cards.defect(isa_file, reason);
     let table = member(
-        member(host, isa_file, "vector_math")?,
+        member(host, isa_file, "vector_math").map_err(blame)?,
         isa_file,
         if s.gcc { "gcc" } else { "other" },
-    )?;
+    )
+    .map_err(blame)?;
     match table.get(s.profile) {
-        Some(_) => Ok(names_of(table, isa_file, s.profile)?),
+        Some(_) => names_of(table, isa_file, s.profile).map_err(blame),
         None => Err(not_built(cards, host, isa_file, s)?),
     }
 }
@@ -72,8 +74,12 @@ fn vector_flags(
 /// The refusal of a profile this instruction set and compiler do not build, saying where the cards do build it: with the other
 /// compiler family on this instruction set, else on the instruction sets whose cards carry it.
 fn not_built(cards: &CardSet, host: &Json, isa_file: &str, s: &Settings) -> Result<Failed, Failed> {
-    let isa = text_of(&cards.json(isa_file)?, isa_file, "isa")?;
-    if carries(host, isa_file, s.profile, !s.gcc)? {
+    let blame = |file: &str, reason: String| cards.defect(file, reason);
+    let isa = cards
+        .json(isa_file)
+        .and_then(|card| text_of(&card, isa_file, "isa"))
+        .map_err(|reason| blame(isa_file, reason))?;
+    if carries(host, isa_file, s.profile, !s.gcc).map_err(|reason| blame(isa_file, reason))? {
         let (here, there) = if s.gcc {
             ("a GCC compiler", "a compiler other than GCC")
         } else {
@@ -86,9 +92,11 @@ fn not_built(cards: &CardSet, host: &Json, isa_file: &str, s: &Settings) -> Resu
     }
     let mut only = vec![];
     for (name, file, _) in ISA_CARDS {
-        let other = cards.json(file)?;
-        let flags = member(&other, file, "host_flags")?;
-        if carries(flags, file, s.profile, true)? || carries(flags, file, s.profile, false)? {
+        let both = cards.json(file).and_then(|other| {
+            let flags = member(&other, file, "host_flags")?;
+            Ok(carries(flags, file, s.profile, true)? || carries(flags, file, s.profile, false)?)
+        });
+        if both.map_err(|reason| blame(file, reason))? {
             only.push(name);
         }
     }
@@ -130,13 +138,15 @@ fn in_ranges(file: &str, ranges: &Json, release: &str) -> Result<bool, Failed> {
 /// The masked-call flag, when the card of the instruction set asks for it on a vector math profile, the compiler is a GCC release
 /// the table lists, and the witness says it compiles correctly (no verdict is as if the witness did not run).
 fn masked_flags(
+    cards: &CardSet,
     card: &Json,
-    file: &str,
+    isa_file: &str,
     isa: &Json,
-    vector: bool,
-    s: &Settings,
+    (vector, s): (bool, &Settings),
 ) -> Result<Vec<String>, Failed> {
-    let wanted = matches!(member(isa, file, "masked_call")?, Json::Bool(true));
+    let stated =
+        member(isa, isa_file, "masked_call").map_err(|reason| cards.defect(isa_file, reason))?;
+    let wanted = matches!(stated, Json::Bool(true));
     if !(wanted && vector && s.gcc) {
         return Ok(vec![]);
     }
@@ -198,31 +208,36 @@ pub(crate) fn host_build(
     if !names_of(&card, file, "opt_levels")?.contains(&level) {
         return Err(Failed::Bad(format!("unknown opt level {level}")));
     }
-    let isa = cards.json(isa_file)?;
-    let host = member(&isa, isa_file, "host_flags")?;
+    let blame = |reason: String| cards.defect(isa_file, reason);
+    let isa = cards.json(isa_file).map_err(blame)?;
+    let host = member(&isa, isa_file, "host_flags").map_err(blame)?;
     closed(
         host,
         isa_file,
         &["native", "portable", "vector_math", "masked_call"],
-    )?;
+    )
+    .map_err(blame)?;
     let contraction = member(&card, file, "contraction")?;
     let mut argv = vec!["{compiler}".to_string()];
     argv.push(text_of(&card, file, "opt_flag")?.replace("{level}", &level));
     argv.push(text_of(contraction, file, s.profile)?);
     argv.extend(names_of(&card, file, "always")?);
-    argv.extend(names_of(
-        host,
-        isa_file,
-        if s.profile == "portable" {
-            "portable"
-        } else {
-            "native"
-        },
-    )?);
+    argv.extend(
+        names_of(
+            host,
+            isa_file,
+            if s.profile == "portable" {
+                "portable"
+            } else {
+                "native"
+            },
+        )
+        .map_err(blame)?,
+    );
     if vector {
         argv.extend(vector_flags(cards, host, isa_file, s)?);
     }
-    argv.extend(masked_flags(&card, file, host, vector, s)?);
+    argv.extend(masked_flags(cards, &card, isa_file, host, (vector, s))?);
     argv.extend(names_of(&card, file, "unit_tail")?);
     let places = member(&card, file, "includes")?;
     closed(places, file, &["roots", "served"])?;

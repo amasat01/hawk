@@ -9,7 +9,7 @@ use super::{carries_no_forced_access, held_exempt, merge_slot, real_bytes, wing,
 use crate::facts;
 use crate::facts::CardSet;
 use aether_writers::contract::types::{Scalar, Target};
-use aether_writers::refuse::{bad, fault, nib, Refusal};
+use aether_writers::refuse::{bad, nib, Refusal};
 use raptor_ir::record::Ctx;
 use raptor_wings::chain::{bind, cuts, pieces, Member as ChainMember, Piece};
 use std::collections::HashSet;
@@ -70,8 +70,8 @@ fn declared_by_members(members: &[Member]) -> Result<Vec<DeclaredSlot>, Refusal>
 /// The fusion row of a device build for the architecture and the scalar type: the stated row of that type whose architecture is
 /// nearest by hardware, else the device document's default row.
 fn device_row(arch: &str, scalar: Scalar, docs: &CardSet) -> Result<facts::FusionRow, Refusal> {
-    let rows = facts::device_fusion(docs).map_err(fault)?;
-    let device = super::card::device_build(&docs.text("cuda_build.json").map_err(fault)?)?;
+    let rows = facts::device_fusion(docs).map_err(facts::Failed::refusal)?;
+    let device = super::card::device_build_of(docs)?;
     let of_type: Vec<(String, facts::FusionRow)> = rows
         .rows
         .into_iter()
@@ -99,7 +99,8 @@ pub(super) fn expand(
     let row = if request.targets.contains(&Target::Device) {
         device_row(&super::device_arch(request)?, request.scalar, docs)?
     } else {
-        facts::host_fusion(docs, request.facts_for(Target::Host)?).map_err(fault)?
+        facts::host_fusion(docs, request.facts_for(Target::Host)?)
+            .map_err(facts::Failed::refusal)?
     };
     let named: Vec<ChainMember> = members
         .iter()

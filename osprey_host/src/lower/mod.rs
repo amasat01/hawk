@@ -40,6 +40,7 @@ use card::{BuildCard, DeviceCard};
 use raptor_ir::canon::{Tt, WalkRes};
 use raptor_ir::record::{Ctx, Fault};
 use raptor_wings::team::TeamSpec;
+use raptor_wings::working_set::working_set_bytes;
 use request::{Body, DeclaredSlot, KernelAnswer, KernelRequest, Member, Settings, TargetText};
 use request::{UnitAnswer, UnitSet};
 use request::{ACCESSES, DTYPES, ROLES};
@@ -203,11 +204,11 @@ struct Cards {
 impl Cards {
     /// The cards the request needs, from the data documents in `docs`.
     fn load(request: &KernelRequest, docs: &CardSet) -> Result<Cards, Refusal> {
-        let host = card::host_build(&docs.text("build.json").map_err(fault)?)?;
+        let host = card::host_build_of(docs)?;
         let device = request
             .targets
             .contains(&Target::Device)
-            .then(|| card::device_build(&docs.text("cuda_build.json").map_err(fault)?))
+            .then(|| card::device_build_of(docs))
             .transpose()?;
         if let (Some(device), Some(bounds)) = (&device, request.settings.launch_bounds) {
             device.check_launch_bounds(bounds)?;
@@ -307,6 +308,38 @@ pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<Kern
         units,
         library,
         meta_source,
+        working_set_bytes: working_set(ctx, &request, &cards)?,
+    })
+}
+
+/// The working-set figure of the request's body: the walk over every sink of its members (the kernel as the caller wrote it,
+/// before any step rewrites it), counted by the wing under the deciding card's fold threshold and the settings' fold form, the
+/// same two numbers the steps decide rolled sites with.
+fn working_set(ctx: *mut Ctx, request: &KernelRequest, cards: &Cards) -> Result<i64, Refusal> {
+    let members = match &request.body {
+        Body::Plain(member) => std::slice::from_ref(member),
+        Body::Chain(members) | Body::Fused(members) => members.as_slice(),
+    };
+    let whole = Member {
+        name: request.name.clone(),
+        sinks: members
+            .iter()
+            .flat_map(|m| m.sinks.iter().copied())
+            .collect(),
+        declared: vec![],
+        force: None,
+        exempt: vec![],
+    };
+    let (walk, _) = canonical(ctx, &whole)?;
+    let order = walk_of(ctx, walk)?.order.clone();
+    let form = format!("{:?}", request.settings.fold_form).to_lowercase();
+    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
+    let context = unsafe { &*ctx };
+    working_set_bytes(context, &order, Some(cards.deciding.rolled_fold_min), &form).map_err(|why| {
+        match why {
+            Fault::Refused(reason) => bad(reason),
+            other => fault(format!("working set: {other:?}")),
+        }
     })
 }
 
@@ -757,14 +790,7 @@ fn with_facts(unit: &Unit, facts: &str) -> Result<String, Refusal> {
         // the architecture is the lowering's to read, and the digest of stated cards is no machine fact: the writers' machine
         // record is closed, so none of them may reach it
         stated.retain(|(key, _)| {
-            ![
-                "device_arch",
-                "device_build",
-                "device_card",
-                "host_build",
-                "cards",
-            ]
-            .contains(&key.as_str())
+            !["device_arch", "device_build", "host_build", "cards"].contains(&key.as_str())
         });
     }
     let aether_writers::contract::Json::Obj(members) = &mut top else {
@@ -864,6 +890,27 @@ mod tests {
         assert!(facts_under_cards(&hand_written, &lean).is_err());
     }
 
+    /// A request cannot reach the lowering with a device document its facts call refused: the answer a request needs carries the
+    /// digest of the request's cards, and the facts call states none for a document it does not accept.
+    #[test]
+    fn a_stated_document_the_facts_call_refuses_has_no_answer_to_lower_under() {
+        let text = std::fs::read_to_string(shipped().join("cuda.json")).unwrap();
+        let broken = [(
+            "cuda.json".to_string(),
+            format!("{{\"nonsense\": 1,{}", &text[1..]),
+        )];
+        let machine = Stated {
+            cards: broken.to_vec(),
+            ..Stated::default()
+        };
+        let compiler =
+            "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0";
+        assert!(answer(&shipped(), "cuda", compiler, &probe(), &machine).is_err());
+        let plain = [(Target::Device, device_facts(&[]))];
+        let why = facts_under_cards(&plain, &CardSet::new(&shipped(), &broken)).unwrap_err();
+        assert!(why.reason.contains("other cards"), "{}", why.reason);
+    }
+
     /// Oracle: a stated copy of the shipped file has the digest of the text it states, which differs from that of another text.
     #[test]
     fn the_digest_is_none_without_stated_cards_and_follows_the_stated_text_with_them() {
@@ -881,6 +928,67 @@ mod tests {
     }
     use aether_writers::contract::types::Role;
     use aether_writers::refuse::RefusalKind;
+
+    /// Oracle: `working_set_bytes` of the Python model (the old IR package), recorded per kernel in the wings' oracle file under
+    /// the shipped card's fold threshold (16) and form "auto". The answer's figure is that of the kernel's own sinks.
+    #[test]
+    fn the_answer_states_the_working_set_the_python_model_gives_for_the_kernel() {
+        use raptor_ir::door::{rx_ctx_free, rx_ctx_new};
+        use raptor_ir::dump::rx_load;
+        let oracle = rcore::json::parse(include_str!(
+            "../../../raptor/rs/wings/tests/data/working_set_oracle.json"
+        ))
+        .unwrap();
+        let docs = CardSet::new(&shipped(), &[]);
+        let mut checked = 0;
+        for case in oracle.get("cases").unwrap().arr() {
+            let name = case.get("name").and_then(rcore::json::J::str).unwrap();
+            let text = case.get("dump").and_then(rcore::json::J::str).unwrap();
+            let ctx = rx_ctx_new();
+            let (mut handles, mut n) = (vec![0u32; 4096], 0usize);
+            // SAFETY: `ctx` is the live context made above; the buffer holds `cap` handles.
+            let status = unsafe {
+                rx_load(
+                    ctx,
+                    text.as_ptr().cast(),
+                    text.len(),
+                    handles.as_mut_ptr(),
+                    handles.len(),
+                    &mut n,
+                )
+            };
+            assert_eq!(status, 0, "{name}");
+            let sinks = case.get("sinks").unwrap().arr();
+            let request = KernelRequest {
+                body: Body::Plain(Member {
+                    name: name.into(),
+                    sinks: sinks.iter().map(|p| handles[p.int() as usize]).collect(),
+                    declared: vec![],
+                    force: None,
+                    exempt: vec![],
+                }),
+                ..plain_request()
+            };
+            let cards = Cards::load(&request, &docs).unwrap();
+            let want = case.get("figures").unwrap().arr()[0]
+                .get("bytes")
+                .unwrap()
+                .int();
+            assert_eq!(working_set(ctx, &request, &cards).unwrap(), want, "{name}");
+            checked += 1;
+            // SAFETY: the context is not used again.
+            unsafe { rx_ctx_free(ctx) };
+        }
+        assert_eq!(checked, 15);
+    }
+
+    /// A host request with no body of its own, the caller's settings all at their defaults.
+    fn plain_request() -> KernelRequest {
+        KernelRequest::from_json(
+            r#"{"v": 1, "name": "k", "scalar": "Float64", "targets": ["Host"], "kind": {"guard": "Default", "active_set": false, "sink": "Plain"}, "body": {"Plain": {"name": "k", "sinks": [0], "declared": [], "exempt": []}}, "facts": {"Host": "{}"}}"#,
+        )
+        .unwrap()
+    }
 
     /// A declared slot of the given type.
     fn slot(name: &str, dtype: Dtype) -> DeclaredSlot {

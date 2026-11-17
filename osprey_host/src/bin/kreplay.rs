@@ -1219,7 +1219,7 @@ fn call_cards(call: &J, device: bool) -> Vec<(String, String)> {
         let answer = format!("{{\"isa\":\"{record}\",\"vector_isa\":\"{vector}\"}}");
         (name, Some(vector), facts::host_fusion(&set, &answer))
     };
-    if shipped.as_ref() == Ok(&row) {
+    if shipped.as_ref().ok() == Some(&row) {
         return cards;
     }
     let document = with_fusion_row(dir, &cards, (name, vector.as_deref()), &row)

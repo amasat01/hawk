@@ -182,6 +182,24 @@ done.append("new_loop: several lists, optional nodes, integers; its operands and
 # ---- the query surface: constants, kinds, feathers, parameter cells, sinks, matrices ----
 assert c.const_names("COMPARE") == ("lt", "le", "gt", "ge", "eq", "ne"), c.const_names("COMPARE")
 assert c.const_names("PARAM_CELL") == ("param_cell",)
+# the lists the core composes (linear-algebra kinds, the cast kind, every op kind a body can mint),
+# composed here as the previous package composed them
+linalg_ops = tuple(
+    k for n in ("FACTORISATIONS", "CONSUMERS", "PROJECTIONS") for k in c.const_names("LINALG_" + n)
+)
+assert len(linalg_ops) == 20 and c.const_names("LINALG_OPS") == linalg_ops
+assert c.const_names("CAST") == ("cast",)
+op_parts = (
+    "ELEMENTWISE_BINARY UNARY_MATH COMPARE LOGICAL VECTOR_OPS MATRIX_OPS LINALG_OPS LSTSQ_OPS "
+    "RAY_OPS QUAT_OPS RANDOM_OPS"
+).split()
+op_kinds = sum((c.const_names(n) for n in op_parts), ()) + ("select", "dispatch", "at")
+op_kinds += sum(
+    (c.const_names(n) for n in "ELEMENTWISE_TERNARY PREDICATE INT_BINARY INT_UNARY".split()), ()
+)
+op_kinds += c.const_names("CAST")
+assert len(op_kinds) == 121 and c.const_names("OP_KINDS") == op_kinds
+done.append("const_names: LINALG_OPS, CAST and OP_KINDS")
 raises(ValueError, lambda: c.const_names("NO_SUCH_CONSTANT"), "const_names of a name nobody owns")
 done.append("const_names: a list, a string, a refusal")
 assert c.const_names("ACCESS_CLASSES")[-1] == "mapreduce" and c.const_names("ADJOINT_PREFIX") == (
@@ -286,6 +304,13 @@ recurrence = c.new_loop(idx, [carry], [init], [scaled], 0, 3, 1, [], None, [], N
 assert c.loop_is_accumulator(recurrence) is False
 raises(ValueError, lambda: c.loop_addends(recurrence), "loop_addends of a recurrence")
 done.append("loop_is_accumulator of a recurrence")
+# where a break sits, as the exit_form: it yields the carries (head), the next values (tail), others
+assert recurrence.field_text("exit_form") is None
+breaks = c.make_op("gt", [carry, x], "")
+for yields, form in (([carry], "head"), ([scaled], "tail"), ([x], "middle")):
+    broken = c.new_loop(idx, [carry], [init], [scaled], 0, 3, 1, [], breaks, yields, None, 0, None)
+    assert broken.field_text("exit_form") == form, (form, broken.field_text("exit_form"))
+done.append("exit_form: none, head, tail, middle")
 raises(
     ValueError,
     lambda: c.new_loop(
@@ -418,6 +443,92 @@ done.append("rule_template_check: a closed template, and a refusal by name")
 assert c.kind_reserved("primitive") and c.kind_reserved("assign")
 assert not c.kind_reserved("my_primitive") and not c.kind_reserved("add")
 done.append("kind_reserved")
+
+# ---- the kinds the wings declare: block sums, ordered writes, dispatch strategies ----
+wing_kinds = (
+    "block_sum",
+    "block_sum_write",
+    "ordered_accum_write",
+    "predicated_dispatch",
+    "segmented_dispatch",
+    "auto_dispatch",
+)
+fresh = o.Ctx()
+assert not any(fresh.kind_reserved(k) for k in wing_kinds)
+assert fresh.declare_kinds() is None and all(fresh.kind_reserved(k) for k in wing_kinds)
+assert fresh.declare_kinds() is None
+done.append("declare_kinds: the wing kinds exist after it, and a second call changes nothing")
+
+# ---- the block predicates of a keyed-sum payload (values recorded from the previous package) ----
+mat = c.make("Leaf", "f64", [4, 3], None, [], LEAF % "M")
+rhs = c.make("Leaf", "f64", [4], None, [], LEAF % "r")
+mat_t = c.make_op("transpose", [mat], "")
+gram, normal = c.make_op("mm", [mat_t, mat], ""), c.make_op("mv", [mat_t, rhs], "")
+assert c.block_factors(gram) == (mat, mat) and c.block_factor_rows(gram) == 4
+assert c.block_factors(normal) == (mat, rhs) and c.block_factor_rows(normal) == 4
+outer = c.make_op("outer", [vec3, vec3], "")
+assert c.block_factors(outer) == (vec3, vec3) and c.block_factor_rows(outer) == 1
+assert c.block_factors(c.make_op("add", [vec3, vec3], "")) == () and c.block_factors(vec3) == ()
+raises(
+    ValueError, lambda: c.block_factor_rows(vec3), "block_factor_rows of a payload without factors"
+)
+done.append("block_factors and block_factor_rows")
+assert c.block_ordered_case(vec3, "ordered", []) and c.block_ordered_case(vec3, "ordered", [3])
+assert not c.block_ordered_case(vec3, "ordered", [2]) and not c.block_ordered_case(vec3, "auto", [])
+assert not c.block_ordered_case(mat, "ordered", [])
+done.append("block_ordered_case")
+assert c.block_shaped(gram, "auto", []) and c.block_shaped(gram, "auto", [3])
+assert not c.block_shaped(gram, "auto", [2]) and not c.block_shaped(vec3, "auto", [])
+assert c.block_shaped(vec3, "ordered", []) and not c.block_shaped(mat, "ordered", [])
+done.append("block_shaped")
+
+# ---- the slotwise rewrite (values recorded from the previous package's pass) ----
+zero = c.make("Const", "f64", [], None, [], "(('literal', 0.0),)")
+parts = [mk(c, "Leaf", [], LEAF % n) for n in ("sa", "sb", "sc")]
+wide, zeroed = c.make_op("vec", parts, ""), c.make_op("vec", [zero, parts[1], zero], "")
+(picked,) = c.slotwise([c.make_op("component", [wide], "1")])
+assert picked == parts[1]
+(summed,) = c.slotwise([c.make_op("sum", [zeroed], "")])
+assert summed == parts[1]
+(added,) = c.slotwise([c.make_op("add", [wide, zeroed], "")])
+assert added.field_text("kind") == "vec" and len(added.operands) == 3
+# the zeros fold away: slot 0 and 2 are the parts themselves, slot 1 the sum of the two
+assert added.operands[0] == parts[0] and added.operands[2] == parts[2]
+assert (
+    added.operands[1].field_text("kind") == "add" and added.operands[1].operands == (parts[1],) * 2
+)
+assert c.slotwise([wide, vec3]) == (wide, vec3) and c.slotwise([]) == ()
+done.append("slotwise: component, sum and add per slot, unchanged roots, no roots")
+
+# ---- the log lowering of ordered accumulates ----
+PER_SAMPLE = LEAF.replace("vec_in", "per_sample")
+sample_x = c.make("Leaf", "f64", [], None, [], PER_SAMPLE % "lx")
+sample_k = c.make("Leaf", "i64", [], None, [], PER_SAMPLE % "lk")
+cell_a = c.make("Leaf", "i64", [], None, [], PER_SAMPLE % "ca")
+cell_b = c.make("Leaf", "i64", [], None, [], PER_SAMPLE % "cb")
+ORDERED = "(('name', 'g'), ('role', 'accum_out'), ('kept', (('net', None),)))"
+site_a = c.make("OrderedAccumWrite", "f64", [], None, [sample_x, cell_a, sample_k], ORDERED)
+site_b = c.make("OrderedAccumWrite", "f64", [], None, [sample_x, cell_b, sample_k], ORDERED)
+logged = c.logs_ordered([site_a, site_b])
+assert len(logged) == 4 and [n.cls for n in logged] == ["LogStore"] * 4
+assert c.logs_ordered([sample_x]) == (sample_x,) and c.logs_ordered([]) == ()
+vector = c.make("Leaf", "f64", [3], None, [], PER_SAMPLE % "lv")
+not_scalar = c.make("OrderedAccumWrite", "f64", [3], None, [vector, sample_k, sample_k], ORDERED)
+e = raises(ValueError, lambda: c.logs_ordered([not_scalar]), "logs_ordered of a vector accumulate")
+assert "the one into g is not a scalar" in str(e), str(e)
+done.append(
+    "logs_ordered: two sites make four stores, other sinks pass, a vector is refused by name"
+)
+
+# ---- the cell sinks of a reduction over samples (shapes recorded from the previous package) ----
+total = c.new("ReduceSamples", "(('op', 'sum'), ('value', #0))", [x])
+(cell,) = c.cells_stored(total, "out")
+assert cell.cls == "SampleSum" and cell.field_text("name") == "out" and cell.operands == (x,)
+columns = c.cells_stored(c.new("ReduceSamples", "(('op', 'sum'), ('value', #0))", [vec3]), "out")
+assert [n.field_text("name") for n in columns] == ["out_0", "out_1", "out_2"]
+assert all(n.field_text("cell") == "out" and n.field_int("columns") == 3 for n in columns)
+raises(ValueError, lambda: c.cells_stored(x, "out"), "cells_stored of a node that is no reduction")
+done.append("cells_stored: a scalar sum, one sink per component, a refusal")
 
 # ---- the backend library entry: open by path, name, identity, render, close (HOST_LIB names the
 # library) ----

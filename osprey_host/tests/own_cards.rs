@@ -2,7 +2,12 @@
 //! changed number moves the decision it governs. The answers come from the replay tool over the recorded calls.
 #![cfg(feature = "old-contract")]
 mod common;
-use osprey_host::facts::CARD_NAMES;
+use aether_writers::refuse::{Refusal, RefusalKind};
+use osprey_host::facts::{
+    answer, device_fusion, host_fusion, stated_from_json, CardSet, Failed, Probe, Stated,
+    CARD_NAMES,
+};
+use osprey_host::lower::card::{device_build_of, host_build_of};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -252,4 +257,390 @@ fn the_steps_table_of_the_unit_record_is_the_one_the_build_card_states() {
         moved.contains("EG_REGIME_PER_RESIDENT") && moved.contains("M(n_rows, 1)"),
         "{moved}"
     );
+}
+
+// ---- a mistake in a document the caller states is the caller's: a bad request that names the document; a defect in a shipped
+// document is the library's own fault ----
+
+/// A reader of the documents of a set, answering as the library does: the reason of its refusal and the kind of it.
+type Reader = fn(&CardSet) -> Result<(), Refusal>;
+
+/// The shipped text of the document `name`.
+fn shipped_text(name: &str) -> String {
+    std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("facts")
+            .join(name),
+    )
+    .expect("a shipped document")
+}
+
+/// The shipped text with `old` put as `new`, which must occur in it.
+fn changed(name: &str, old: &str, new: &str) -> String {
+    let text = shipped_text(name);
+    assert!(text.contains(old), "{name} holds {old}");
+    text.replacen(old, new, 1)
+}
+
+/// The shipped text with one member no reader asks for put first.
+fn with_unknown_key(name: &str) -> String {
+    format!(
+        "{{\"nonsense\": 1,{}",
+        &shipped_text(name).trim_start()[1..]
+    )
+}
+
+/// The set of the shipped directory in which the caller states `name` as `text`.
+fn stating(name: &str, text: String) -> CardSet {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("facts");
+    CardSet::new(&dir, &[(name.to_string(), text)])
+}
+
+/// The answer of the host facts call, for an Arm64 machine under a clang compiler, as the set's documents state it.
+const ARM_ANSWER: &str = r#"{"isa":"Arm64","vector_isa":"neon"}"#;
+
+/// A document, its reader and the mistakes to state in it as (what, text).
+type ReaderRow = (&'static str, Reader, Vec<(&'static str, String)>);
+
+/// The readers the lowering has of each stated document, and the mistakes each is strict about: (document, reader, mistakes as
+/// (what, text)). A reader reads only what its rule needs, so a key no reader asks for is a mistake only where a reader is closed.
+fn lowering_readers() -> Vec<ReaderRow> {
+    let common = |name: &str, old: &str, new: &str| {
+        vec![
+            ("a missing key", "{}".to_string()),
+            ("a wrong type", changed(name, old, new)),
+            ("text that is not JSON", "not json".to_string()),
+        ]
+    };
+    let strict = |name: &str, rest: Vec<(&'static str, String)>| {
+        [vec![("an unknown key", with_unknown_key(name))], rest].concat()
+    };
+    vec![
+        (
+            "build.json",
+            |set| host_build_of(set).map(|_| ()),
+            strict(
+                "build.json",
+                common(
+                    "build.json",
+                    "\"uniform_run\": 32",
+                    "\"uniform_run\": \"x\"",
+                ),
+            ),
+        ),
+        (
+            "cuda_build.json",
+            |set| device_build_of(set).map(|_| ()),
+            strict(
+                "cuda_build.json",
+                common(
+                    "cuda_build.json",
+                    "\"warp_size\": 32",
+                    "\"warp_size\": \"x\"",
+                ),
+            ),
+        ),
+        (
+            "cuda.json",
+            |set| device_fusion(set).map(|_| ()).map_err(Failed::refusal),
+            common("cuda.json", "\"regs_base\": 20", "\"regs_base\": \"x\""),
+        ),
+        (
+            "arm.json",
+            |set| {
+                host_fusion(set, ARM_ANSWER)
+                    .map(|_| ())
+                    .map_err(Failed::refusal)
+            },
+            common("arm.json", "\"regs_file\": 32", "\"regs_file\": \"x\""),
+        ),
+    ]
+}
+
+#[test]
+fn a_mistake_in_a_document_the_request_states_is_a_bad_request_that_names_the_document() {
+    for (name, read, mistakes) in lowering_readers() {
+        for (what, text) in mistakes {
+            let why = read(&stating(name, text)).expect_err(what);
+            assert_eq!(
+                why.kind,
+                RefusalKind::BadRequest,
+                "{name}, {what}: {}",
+                why.reason
+            );
+            assert!(why.reason.contains(name), "{name}, {what}: {}", why.reason);
+        }
+    }
+}
+
+#[test]
+fn a_mistake_in_a_document_the_facts_call_states_is_a_bad_request_that_names_the_document() {
+    let compiler =
+        "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0";
+    let probe = Probe {
+        isa: "arm64".into(),
+        vector_isa: "neon".into(),
+        caches: None,
+    };
+    let mistakes = |name: &str, old: &str, new: &str| {
+        vec![
+            with_unknown_key(name),
+            "{}".to_string(),
+            changed(name, old, new),
+            "not json".to_string(),
+        ]
+    };
+    let calls = [
+        (
+            "cuda.json",
+            "cuda",
+            mistakes(
+                "cuda.json",
+                "\"default_arch\": \"sm_61\"",
+                "\"default_arch\": 61",
+            ),
+        ),
+        (
+            "arm.json",
+            "host",
+            mistakes("arm.json", "\"libm_exact\": true", "\"libm_exact\": 1"),
+        ),
+    ];
+    for (name, target, texts) in calls {
+        for text in texts {
+            let stated = Stated {
+                headers: Some("roots".into()),
+                cards: vec![(name.to_string(), text)],
+                ..Stated::default()
+            };
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("facts");
+            let failed = answer(&dir, target, compiler, &probe, &stated).expect_err(name);
+            let why = failed.refusal();
+            assert_eq!(why.kind, RefusalKind::BadRequest, "{name}: {}", why.reason);
+            assert!(why.reason.contains(name), "{name}: {}", why.reason);
+        }
+    }
+}
+
+#[test]
+fn a_document_name_the_library_does_not_have_is_a_bad_request_that_names_it() {
+    let why = stated_from_json(r#"{"cards": {"nonsense.json": "{}"}}"#)
+        .err()
+        .expect("an unknown document")
+        .refusal();
+    assert_eq!(why.kind, RefusalKind::BadRequest);
+    assert!(why.reason.contains("nonsense.json"), "{}", why.reason);
+}
+
+#[test]
+fn a_defect_in_a_shipped_document_is_a_fault_of_the_library() {
+    let dir = folder("broken_shipped");
+    let readers: [Reader; 4] = [
+        |set| host_build_of(set).map(|_| ()),
+        |set| device_build_of(set).map(|_| ()),
+        |set| device_fusion(set).map(|_| ()).map_err(Failed::refusal),
+        |set| {
+            host_fusion(set, ARM_ANSWER)
+                .map(|_| ())
+                .map_err(Failed::refusal)
+        },
+    ];
+    // a document with no member and one that is no object at all: a library whose own document has the wrong shape has a defect,
+    // it does not answer that the build lacks something
+    for broken in ["{}", "[1]"] {
+        for name in ["build.json", "cuda_build.json", "cuda.json", "arm.json"] {
+            std::fs::write(dir.join(name), broken).expect("a broken document");
+        }
+        let set = CardSet::new(&dir, &[]);
+        for read in readers {
+            let why = read(&set).expect_err("a broken shipped document");
+            assert_eq!(why.kind, RefusalKind::Fault, "{broken}: {}", why.reason);
+        }
+    }
+}
+
+/// The shipped `cuda_build.json` without any architecture's hardware facts.
+fn without_arch_features() -> String {
+    let text = shipped_text("cuda_build.json");
+    let (start, end) = (
+        text.find("\"arch_features\": {")
+            .expect("the hardware facts")
+            + "\"arch_features\": {".len(),
+        text.find("},\n  \"wide_classes\"")
+            .expect("the end of the hardware facts"),
+    );
+    format!("{}{}", &text[..start], &text[end..])
+}
+
+/// The lookups of a device card the lowering makes at lowering time, over documents that read without a defect but state what
+/// the lookup cannot satisfy: each (what, text of `cuda_build.json`).
+fn unsatisfiable_device_cards() -> [(&'static str, String); 2] {
+    [
+        ("no hardware facts", without_arch_features()),
+        (
+            "a wide class of a capability with no hardware facts",
+            changed(
+                "cuda_build.json",
+                "\"capability\": 61,",
+                "\"capability\": 99,",
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn a_lookup_the_stated_device_document_cannot_satisfy_is_a_bad_request_naming_the_document() {
+    for (what, text) in unsatisfiable_device_cards() {
+        let card = device_build_of(&stating("cuda_build.json", text)).expect("the document reads");
+        let why = card.wide_class("sm_61").expect_err(what);
+        assert_eq!(why.kind, RefusalKind::BadRequest, "{what}: {}", why.reason);
+        assert!(
+            why.reason.contains("cuda_build.json"),
+            "{what}: {}",
+            why.reason
+        );
+    }
+}
+
+#[test]
+fn the_same_lookup_failing_on_the_shipped_device_document_is_a_fault() {
+    for (what, text) in unsatisfiable_device_cards() {
+        let dir = folder("shipped_lookup");
+        std::fs::write(dir.join("cuda_build.json"), text).expect("a broken document");
+        let card = device_build_of(&CardSet::new(&dir, &[])).expect("the document reads");
+        let why = card.wide_class("sm_61").expect_err(what);
+        assert_eq!(why.kind, RefusalKind::Fault, "{what}: {}", why.reason);
+    }
+}
+
+/// The host facts call for an Arm64 machine stating `arm.json` as `text`, or the shipped directory's copies but for `arm.json`
+/// being `text` in a directory of its own when `shipped` is set.
+fn host_answer(text: String, shipped: bool) -> Result<String, Failed> {
+    let facts = Path::new(env!("CARGO_MANIFEST_DIR")).join("facts");
+    let probe = Probe {
+        isa: "arm64".into(),
+        vector_isa: "neon".into(),
+        caches: None,
+    };
+    let mut stated = Stated {
+        headers: Some("roots".into()),
+        ..Stated::default()
+    };
+    let dir = if shipped {
+        let dir = folder("shipped_flags");
+        for entry in std::fs::read_dir(&facts).expect("the facts directory") {
+            let path = entry.expect("an entry").path();
+            std::fs::copy(&path, dir.join(path.file_name().expect("a name"))).expect("a copy");
+        }
+        std::fs::write(dir.join("arm.json"), text).expect("a broken document");
+        dir
+    } else {
+        stated.cards = vec![("arm.json".to_string(), text)];
+        facts
+    };
+    answer(
+        &dir,
+        "host",
+        "/usr/bin/c++ || Apple clang version 21.0.0 || 0",
+        &probe,
+        &stated,
+    )
+}
+
+/// Mistakes in the `host_flags` section of `arm.json`, which the host build reads: the section's own keys and the vector math
+/// table.
+fn host_flag_mistakes() -> [(&'static str, String); 3] {
+    [
+        (
+            "a flag list that is no list",
+            changed(
+                "arm.json",
+                "\"native\": [\"-mcpu=native\"]",
+                "\"native\": 1",
+            ),
+        ),
+        (
+            "an unknown key",
+            changed(
+                "arm.json",
+                "\"masked_call\": false",
+                "\"masked_call\": false, \"nonsense\": 1",
+            ),
+        ),
+        (
+            "a vector math table without the compiler family",
+            changed(
+                "arm.json",
+                "\"other\": {\"native-vector-math\": []}",
+                "\"others\": {\"native-vector-math\": []}",
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn a_mistake_in_the_host_flags_of_a_stated_instruction_set_document_is_a_bad_request_naming_it() {
+    for (what, text) in host_flag_mistakes() {
+        let why = host_answer(text, false).expect_err(what).refusal();
+        assert_eq!(why.kind, RefusalKind::BadRequest, "{what}: {}", why.reason);
+        assert!(why.reason.contains("arm.json"), "{what}: {}", why.reason);
+    }
+}
+
+#[test]
+fn the_same_mistake_in_the_host_flags_of_a_shipped_instruction_set_document_is_a_fault() {
+    for (what, text) in host_flag_mistakes() {
+        let why = host_answer(text, true).expect_err(what).refusal();
+        assert_eq!(why.kind, RefusalKind::Fault, "{what}: {}", why.reason);
+    }
+}
+
+#[test]
+fn a_key_no_decision_reads_is_refused_by_name_in_a_stated_device_document() {
+    let run_max = "\"run_max\": 32,";
+    let linalg = "\"linalg_max_dim\": 32,";
+    let stated = [
+        (
+            "bank_words",
+            changed(
+                "cuda_build.json",
+                run_max,
+                "\"run_max\": 32, \"bank_words\": 32,",
+            ),
+        ),
+        (
+            "eigh_team_threads",
+            changed(
+                "cuda_build.json",
+                run_max,
+                "\"run_max\": 32, \"eigh_team_threads\": 32,",
+            ),
+        ),
+        (
+            "linalg_fast_fp64",
+            changed(
+                "cuda_build.json",
+                linalg,
+                "\"linalg_max_dim\": 32, \"linalg_fast_fp64\": 8,",
+            ),
+        ),
+        (
+            "linalg_warp_entries",
+            changed(
+                "cuda_build.json",
+                linalg,
+                "\"linalg_max_dim\": 32, \"linalg_warp_entries\": [],",
+            ),
+        ),
+    ];
+    for (key, text) in stated {
+        let why = device_build_of(&stating("cuda_build.json", text)).expect_err(key);
+        assert_eq!(why.kind, RefusalKind::BadRequest, "{key}: {}", why.reason);
+        assert!(why.reason.contains(key), "{key}: {}", why.reason);
+        assert!(
+            why.reason.contains("cuda_build.json"),
+            "{key}: {}",
+            why.reason
+        );
+    }
 }

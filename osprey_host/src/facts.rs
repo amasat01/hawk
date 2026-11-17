@@ -6,6 +6,7 @@
 use crate::{device_build, host_build};
 use aether_writers::contract::types::Caches;
 use aether_writers::contract::{Contract, Json};
+use aether_writers::refuse::{bad, fault, Refusal};
 pub use raptor_wings::chain::FusionRow;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::path::{Path, PathBuf};
@@ -67,6 +68,26 @@ impl From<String> for Failed {
     /// A failure of a data file, which is what every plain text failure of the loaders is.
     fn from(reason: String) -> Failed {
         Failed::Card(reason)
+    }
+}
+
+/// The failure of a defect found in the document `file`, which is the caller's own when `stated`: their mistake, naming the
+/// document, or else a broken data file of the library.
+pub(crate) fn blame(stated: bool, file: &str, reason: String) -> Failed {
+    match stated {
+        true => Failed::Bad(format!("the {file} the request states: {reason}")),
+        false => Failed::Card(reason),
+    }
+}
+
+impl Failed {
+    /// The refusal of the lowering library: a malformed question is the caller's bad request, a broken data file is the
+    /// library's fault.
+    pub fn refusal(self) -> Refusal {
+        match self {
+            Failed::Bad(reason) => bad(reason),
+            Failed::Card(reason) => fault(reason),
+        }
     }
 }
 
@@ -250,6 +271,18 @@ impl CardSet {
             dir: dir.to_path_buf(),
             stated: stated.to_vec(),
         }
+    }
+
+    /// What a defect found while reading the document `file` is: a mistake of the caller's request when the caller stated that
+    /// document, a broken data file of the library otherwise. The one place that decides it, since only the set knows which
+    /// documents are the caller's, and a reader's reason does not always name the document.
+    pub(crate) fn defect(&self, file: &str, reason: String) -> Failed {
+        blame(self.states(file), file, reason)
+    }
+
+    /// Whether the caller states the document `file`.
+    pub(crate) fn states(&self, file: &str) -> bool {
+        self.stated.iter().any(|(name, _)| name == file)
     }
 
     /// The text of the document `file`.
@@ -461,24 +494,33 @@ fn optional_cost(row: &Json, file: &str, key: &str) -> Result<Option<f64>, Strin
 
 /// The fusion row of the host that a facts answer describes: the row of its vector instruction set in the card of its
 /// instruction set.
-pub fn host_fusion(cards: &CardSet, answer: &str) -> Result<FusionRow, String> {
+pub fn host_fusion(cards: &CardSet, answer: &str) -> Result<FusionRow, Failed> {
     let machine = Contract::parse(answer)
-        .map_err(|e| format!("facts answer: {e}"))?
+        .map_err(|e| Failed::Card(format!("facts answer: {e}")))?
         .0;
     let file = match machine.get("isa").and_then(Json::str) {
         Some("Arm64") => "arm.json",
         Some("X86_64") => "x86.json",
-        _ => return Err("the machine has no host instruction set".into()),
+        _ => {
+            return Err(Failed::Card(
+                "the machine has no host instruction set".into(),
+            ))
+        }
     };
     let vector = machine
         .get("vector_isa")
         .and_then(Json::str)
-        .ok_or("the machine states no vector instruction set")?;
-    let card = cards.json(file)?;
-    fusion_row(
-        member(member(&card, file, "fusion_host")?, file, vector)?,
-        file,
-    )
+        .ok_or_else(|| Failed::Card("the machine states no vector instruction set".into()))?;
+    let row = |card: &Json| {
+        fusion_row(
+            member(member(card, file, "fusion_host")?, file, vector)?,
+            file,
+        )
+    };
+    cards
+        .json(file)
+        .and_then(|card| row(&card))
+        .map_err(|reason| cards.defect(file, reason))
 }
 
 /// The fusion rows of the device document: the row every architecture and scalar type takes unless a row is stated for it, and the
@@ -492,7 +534,12 @@ pub struct DeviceFusion {
 
 /// The fusion rows of the device document: the cost of a launch, of a plane byte and of local memory, and the registers a lane may
 /// hold. Every row is checked as the default row is; a row's `dtype` other than `float32` and `float64` is refused by name.
-pub fn device_fusion(cards: &CardSet) -> Result<DeviceFusion, String> {
+pub fn device_fusion(cards: &CardSet) -> Result<DeviceFusion, Failed> {
+    device_fusion_of_document(cards).map_err(|reason| cards.defect("cuda.json", reason))
+}
+
+/// The rows of `device_fusion` as the reader of the document `cuda.json` finds them, a defect as its reason.
+fn device_fusion_of_document(cards: &CardSet) -> Result<DeviceFusion, String> {
     let file = "cuda.json";
     let document = cards.json(file)?;
     let defaults = member(&document, file, "fusion")?;
@@ -638,7 +685,7 @@ fn host_machine(
         )));
     };
     let cpu = load_cpu(cards)?;
-    let isa = load_isa(cards, file, isa_name)?;
+    let isa = load_isa(cards, file, isa_name).map_err(|reason| cards.defect(file, reason))?;
     let vector_isa = stated
         .vector_isa
         .clone()
@@ -881,20 +928,10 @@ fn device_build(
     ]))
 }
 
-/// The device build card as the answer states it, for the callers that read its numbers: the document of `cuda_build.json` (the
-/// caller's own when it states one), checked by the reader of the lowering so that an answer never carries a card the lowering
-/// would refuse.
-fn device_card(cards: &CardSet) -> Result<Json, Failed> {
-    let file = "cuda_build.json";
-    let text = cards.text(file)?;
-    crate::lower::card::device_build(&text).map_err(|refusal| Failed::Card(refusal.reason))?;
-    Ok(parse_card(&text, file)?)
-}
-
 /// The machine record of a device build: no instruction set, no caches, the device card's select weights, the architecture the
 /// build is for (the one stated, else the card's default), which the lowering reads and the writers do not, and, last, the
-/// compile command (`device_build`) and the device build card (`device_card`). One answer states one command: every unit built from it carries the same compiler, flags and
-/// PTX version.
+/// compile command (`device_build`). One answer states one command: every unit built from it carries the same compiler, flags
+/// and PTX version.
 fn device_machine(cards: &CardSet, compiler: &str, stated: &Stated) -> Result<Json, Failed> {
     if stated.isa.is_some() || stated.caches.is_some() || stated.host_profile.is_some() {
         return Err(Failed::Bad(
@@ -902,15 +939,20 @@ fn device_machine(cards: &CardSet, compiler: &str, stated: &Stated) -> Result<Js
         ));
     }
     let file = "cuda.json";
-    let card = cards.json(file)?;
+    let card = cards
+        .json(file)
+        .map_err(|reason| cards.defect(file, reason))?;
     closed(
         &card,
         file,
         &["select_weight", "default_arch", "fusion", "fusion_rows"],
-    )?;
+    )
+    .map_err(|reason| cards.defect(file, reason))?;
     let arch = match &stated.device_arch {
         Some(asked) => asked.clone(),
-        None => text_of(&card, file, "default_arch")?,
+        None => {
+            text_of(&card, file, "default_arch").map_err(|reason| cards.defect(file, reason))?
+        }
     };
     let build = device_build(cards, compiler, &arch, stated)?;
     Ok(Json::Obj(vec![
@@ -918,11 +960,13 @@ fn device_machine(cards: &CardSet, compiler: &str, stated: &Stated) -> Result<Js
         ("routed_pow".into(), Json::Bool(false)),
         (
             "select_weight".into(),
-            weights_json(weights_of(&card, file, stated.device_arch.as_deref())?),
+            weights_json(
+                weights_of(&card, file, stated.device_arch.as_deref())
+                    .map_err(|reason| cards.defect(file, reason))?,
+            ),
         ),
         ("device_arch".into(), Json::Str(arch)),
         ("device_build".into(), build),
-        ("device_card".into(), device_card(cards)?),
     ]))
 }
 

@@ -373,6 +373,9 @@ pub struct KernelAnswer {
     pub library: LibraryMeta,
     /// The C source of the meta.
     pub meta_source: String,
+    /// Bytes of per-lane storage the kernel's body declares for its library results (a chain or a fused body: all its members
+    /// together), under the fold threshold and form the lowering decided its rolled sites with.
+    pub working_set_bytes: i64,
 }
 
 /// The input of the set text: the unit records of one or several answers, and the five layout sizes the exports block states.
@@ -1278,6 +1281,10 @@ impl KernelAnswer {
             ),
             ("library".into(), self.library.put()),
             ("meta_source".into(), Json::Str(self.meta_source.clone())),
+            (
+                "working_set_bytes".into(),
+                Json::Num(self.working_set_bytes.to_string()),
+            ),
         ])
         .to_text()
     }
@@ -1331,11 +1338,13 @@ impl KernelAnswer {
         let units = list_of(keys.req("units")?, "units", read_unit)?;
         let library = LibraryMeta::get(keys.opt("library"), "library")?;
         let meta_source = text_of(keys.req("meta_source")?, "meta_source")?;
+        let working_set_bytes = int_of(keys.req("working_set_bytes")?, "working_set_bytes")?;
         keys.done()?;
         Ok(KernelAnswer {
             units,
             library,
             meta_source,
+            working_set_bytes,
         })
     }
 }
@@ -1397,6 +1406,7 @@ mod tests {
         stated.cards = vec![("build.jsn".into(), "{}".into())];
         let why = KernelRequest::from_json(&stated.to_json()).unwrap_err();
         assert!(why.reason.contains("build.jsn"), "{}", why.reason);
+        assert_eq!(why.kind, aether_writers::refuse::RefusalKind::BadRequest);
         stated.cards = vec![("build.json".into(), "{}".into())];
         let numbered = stated.to_json().replace("\"{}\"", "{}");
         let why = KernelRequest::from_json(&numbered).unwrap_err();

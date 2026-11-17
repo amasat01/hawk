@@ -1,9 +1,9 @@
 //! The facts answer: the profile and instruction-set rules, the refusals by name, and the schema check of the data files.
 use aether_writers::contract::types::Caches;
-use aether_writers::contract::{Contract, Json};
 use osprey_host::facts::{
     answer as ask_facts, device_fusion, stated_from_json, CardSet, Probe, Stated,
 };
+use osprey_host::lower::card::{device_build_of, DeviceCard};
 use std::path::{Path, PathBuf};
 
 /// The data files that ship with the library.
@@ -442,95 +442,24 @@ fn the_shipped_text_of_each_named_document_is_its_file_and_another_name_is_refus
     assert!(why.contains("cpu.json"), "{why}");
 }
 
-/// The `device_card` member of the device facts answer made with `old` of the shipped device build card replaced by `new`, or the
-/// reason the answer is refused.
-fn device_card_stating(old: &str, new: &str) -> Result<Json, String> {
+/// The device build card the lowering reads from the shipped one with `old` replaced by `new` and stated by the caller, or the
+/// reason it is refused.
+fn device_card_stating(old: &str, new: &str) -> Result<DeviceCard, String> {
     let text = std::fs::read_to_string(shipped().join("cuda_build.json")).unwrap();
     assert!(text.contains(old), "the shipped card holds {old}");
-    let document = Json::Str(text.replacen(old, new, 1)).to_text();
-    let state =
-        stated_from_json(&format!(r#"{{"cards":{{"cuda_build.json":{document}}}}}"#)).unwrap();
-    let identity =
-        "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0";
-    let answer = ask_facts(
-        &shipped(),
-        "cuda",
-        identity,
-        &osprey_host::facts::probe(),
-        &state,
-    )
-    .map_err(String::from)?;
-    let machine = Contract::parse(&answer).unwrap().0;
-    Ok(machine.get("device_card").expect("a device_card").clone())
-}
-
-/// Oracle: the shipped device build card states 8 for the slowest FP64 rate and two warp entries, the order 32 eigenvalue
-/// solves of both scalar types.
-#[test]
-fn the_linalg_numbers_of_the_device_build_card_reach_the_facts_answer_as_stated() {
-    let shipped_card =
-        device_card_stating("\"linalg_fast_fp64\": 8", "\"linalg_fast_fp64\": 8").unwrap();
-    assert_eq!(
-        shipped_card.get("linalg_fast_fp64").and_then(Json::int),
-        Some(8)
-    );
-    assert_eq!(
-        shipped_card.get("linalg_warp_entries").unwrap().arr().len(),
-        2
-    );
-    let slower =
-        device_card_stating("\"linalg_fast_fp64\": 8", "\"linalg_fast_fp64\": 64").unwrap();
-    assert_eq!(slower.get("linalg_fast_fp64").and_then(Json::int), Some(64));
-    let narrower = device_card_stating(
-        "\"n\": 32, \"scalar\": \"float64\"",
-        "\"n\": 16, \"scalar\": \"float64\"",
-    )
-    .unwrap();
-    assert_eq!(
-        narrower.get("linalg_warp_entries").unwrap().arr()[1]
-            .get("n")
-            .and_then(Json::int),
-        Some(16)
-    );
-}
-
-#[test]
-fn a_device_build_card_without_its_fast_fp64_rate_or_with_an_unknown_warp_scalar_is_refused_by_name(
-) {
-    let why = device_card_stating("  \"linalg_fast_fp64\": 8,\n", "").unwrap_err();
-    assert!(why.contains("linalg_fast_fp64"), "{why}");
-    let why = device_card_stating("\"scalar\": \"float64\"", "\"scalar\": \"half\"").unwrap_err();
-    assert!(why.contains("half"), "{why}");
-}
-
-/// Oracle: the shipped device build card states 32 words for a row of shared memory without a bank conflict, in its `lanes`.
-#[test]
-fn the_bank_words_of_the_device_build_card_reach_the_facts_answer_as_stated_and_a_missing_one_is_refused(
-) {
-    let words = |card: Json| {
-        card.get("lanes")
-            .and_then(|lanes| lanes.get("bank_words"))
-            .and_then(Json::int)
-    };
-    let kept = device_card_stating("\"bank_words\": 32", "\"bank_words\": 32").unwrap();
-    assert_eq!(words(kept), Some(32));
-    let narrow = device_card_stating("\"bank_words\": 32", "\"bank_words\": 16").unwrap();
-    assert_eq!(words(narrow), Some(16));
-    let why = device_card_stating("\"bank_words\": 32, ", "").unwrap_err();
-    assert!(why.contains("bank_words"), "{why}");
+    let stated = [("cuda_build.json".to_string(), text.replacen(old, new, 1))];
+    device_build_of(&CardSet::new(&shipped(), &stated)).map_err(|why| why.reason)
 }
 
 /// Oracle: the shipped device build card states no wide row, and its default `slice_min` of 128 is four warps of 32.
 #[test]
-fn a_wide_row_stated_in_the_device_build_card_reaches_the_facts_answer_and_a_malformed_one_is_refused_by_name(
-) {
+fn a_wide_row_stated_in_the_device_build_card_is_read_and_a_malformed_one_is_refused_by_name() {
     let row = r#"{"cc": "sm_80", "dtype": "float32", "slice_min": 64, "team_min": 64, "tile_bytes": 8192}"#;
     let kept = device_card_stating("\"wide_rows\": []", "\"wide_rows\": []").unwrap();
-    assert!(kept.get("wide_rows").unwrap().arr().is_empty());
+    assert!(kept.wide_rows.is_empty());
     let stated =
         device_card_stating("\"wide_rows\": []", &format!("\"wide_rows\": [{row}]")).unwrap();
-    let rows = stated.get("wide_rows").unwrap().arr();
-    assert_eq!(rows[0].get("tile_bytes").and_then(Json::int), Some(8192));
+    assert_eq!(stated.wide_rows[0].tile_bytes, 8192);
     let missing = row.replace(", \"team_min\": 64", "");
     let why = device_card_stating("\"wide_rows\": []", &format!("\"wide_rows\": [{missing}]"))
         .unwrap_err();
@@ -545,63 +474,29 @@ fn a_wide_row_stated_in_the_device_build_card_reaches_the_facts_answer_and_a_mal
 
 /// Oracle: the shipped device build card runs a dense contraction as `gemm` for both scalar types and states no row.
 #[test]
-fn the_contraction_and_the_rows_of_the_device_thread_box_reach_the_facts_answer_and_a_bad_one_is_refused_by_name(
-) {
-    let route = |card: Json, scalar: &str| {
-        let boxes = card.get("thread_box").unwrap().clone();
-        let routes = boxes.get("contraction").unwrap().clone();
-        routes.get(scalar).and_then(Json::str).map(String::from)
+fn the_contraction_and_the_rows_of_the_device_thread_box_are_read_and_a_bad_one_is_refused_by_name()
+{
+    let route = |card: &DeviceCard, scalar: &str| {
+        card.box_contraction
+            .iter()
+            .find(|(name, _)| name == scalar)
+            .map(|(_, route)| route.clone())
     };
     let kept = device_card_stating("\"float32\": \"gemm\"", "\"float32\": \"gemm\"").unwrap();
-    assert_eq!(route(kept.clone(), "float32").as_deref(), Some("gemm"));
-    assert!(kept
-        .get("thread_box")
-        .unwrap()
-        .get("rows")
-        .unwrap()
-        .arr()
-        .is_empty());
+    assert_eq!(route(&kept, "float32").as_deref(), Some("gemm"));
+    assert!(kept.box_rows.is_empty());
     let direct = device_card_stating("\"float32\": \"gemm\"", "\"float32\": \"direct\"").unwrap();
-    assert_eq!(route(direct, "float32").as_deref(), Some("direct"));
+    assert_eq!(route(&direct, "float32").as_deref(), Some("direct"));
     let why = device_card_stating("\"float32\": \"gemm\"", "\"float32\": \"blas\"").unwrap_err();
     assert!(why.contains("contraction"), "{why}");
     let row = r#"{"cc": "sm_00", "device": "Test Card", "dtype": "float64", "contraction": "direct",
         "tile": {"kind": "BT", "SB": 128, "T": 16, "R": 1, "EB": 4, "smem": 49152}}"#;
     let stated = device_card_stating("\"rows\": []", &format!("\"rows\": [{row}]")).unwrap();
-    let rows = stated
-        .get("thread_box")
-        .unwrap()
-        .get("rows")
-        .unwrap()
-        .clone();
-    assert_eq!(
-        rows.arr()[0].get("device").and_then(Json::str),
-        Some("Test Card")
-    );
+    assert_eq!(stated.box_rows[0].device, "Test Card");
     let no_device = row.replace("\"device\": \"Test Card\", ", "");
     let why = device_card_stating("\"rows\": []", &format!("\"rows\": [{no_device}]")).unwrap_err();
     assert!(why.contains("device"), "{why}");
     let lanes = row.replace("\"contraction\"", "\"lanes\": 32, \"contraction\"");
     let why = device_card_stating("\"rows\": []", &format!("\"rows\": [{lanes}]")).unwrap_err();
     assert!(why.contains("lanes"), "{why}");
-}
-
-/// Oracle: the team of a stage made only of warp-per-lane eigenvalue solves is one warp, 32 threads, which the shipped device card
-/// states in its `lanes` beside the two team sizes.
-#[test]
-fn the_eigh_team_of_the_device_build_card_reaches_the_facts_answer_as_stated_and_a_missing_one_is_refused(
-) {
-    let team = |card: Json| {
-        card.get("lanes")
-            .and_then(|lanes| lanes.get("eigh_team_threads"))
-            .and_then(Json::int)
-    };
-    let kept =
-        device_card_stating("\"eigh_team_threads\": 32", "\"eigh_team_threads\": 32").unwrap();
-    assert_eq!(team(kept), Some(32));
-    let wider =
-        device_card_stating("\"eigh_team_threads\": 32", "\"eigh_team_threads\": 64").unwrap();
-    assert_eq!(team(wider), Some(64));
-    let why = device_card_stating("\"eigh_team_threads\": 32, ", "").unwrap_err();
-    assert!(why.contains("eigh_team_threads"), "{why}");
 }

@@ -190,14 +190,6 @@ extern "C" fn ctx_new() -> *mut Ctx {
     ctx
 }
 
-/// The refusal of a facts question that failed: a malformed question is the caller's, a broken data file is the library's fault.
-fn facts_refusal(failed: facts::Failed) -> Refusal {
-    match failed {
-        facts::Failed::Bad(reason) => bad(reason),
-        facts::Failed::Card(reason) => fault(reason),
-    }
-}
-
 /// The refusal of an argument of the facts entry that is not a valid value.
 fn bad_arg(why: &Fault) -> Refusal {
     match why {
@@ -248,12 +240,13 @@ extern "C" fn facts(
             facts::Stated::default()
         } else {
             let text = text_arg(stated, "stated").map_err(|why| bad_arg(&why))?;
-            facts::stated_from_json(text).map_err(facts_refusal)?
+            facts::stated_from_json(text).map_err(facts::Failed::refusal)?
         };
         let given = dir_arg(facts_dir).map_err(|why| bad_arg(&why))?;
         let dir =
-            facts::facts_dir(given).map_err(|reason| facts_refusal(facts::Failed::Card(reason)))?;
-        facts::answer(&dir, target, compiler, &facts::probe(), &stated).map_err(facts_refusal)
+            facts::facts_dir(given).map_err(|reason| facts::Failed::Card(reason).refusal())?;
+        facts::answer(&dir, target, compiler, &facts::probe(), &stated)
+            .map_err(facts::Failed::refusal)
     }))
     .unwrap_or_else(|_| Err(fault("panic in facts")));
     match done {
@@ -370,8 +363,8 @@ extern "C" fn card(
         let given = dir_arg(facts_dir).map_err(|why| bad_arg(&why))?;
         let name = text_arg(name, "name").map_err(|why| bad_arg(&why))?;
         let dir =
-            facts::facts_dir(given).map_err(|reason| facts_refusal(facts::Failed::Card(reason)))?;
-        facts::shipped_card(&dir, name).map_err(facts_refusal)
+            facts::facts_dir(given).map_err(|reason| facts::Failed::Card(reason).refusal())?;
+        facts::shipped_card(&dir, name).map_err(facts::Failed::refusal)
     })
     .unwrap_or_else(|_| Err(fault("panic in card")));
     match done {

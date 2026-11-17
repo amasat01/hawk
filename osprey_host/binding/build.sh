@@ -26,6 +26,25 @@ mkdir -p "$here/build"
 for f in "$here/build/_osprey.c" "$here/template/types.c" "$here/template/door.c" "$repo/loader/loader.c"; do
   clang -std=c11 -O2 -fPIC -Wall -Wextra -Werror -I"$here/template" -I"$inc" -I"$wings_inc" -I"$repo/include" -I"$EAGLE_DOOR_DIR" -I"$shim" -I"$py" -c "$f" -o "$here/build/$(basename "$f" .c).o"
 done
+# The link leaves unresolved symbols to the import (dynamic lookup, a version script), so a static library older than the headers the
+# wrappers were generated from would only fail when the module loads. Every rx_ / rw_ function the objects call must be defined by it.
+# The static library is link-time-optimised bitcode, which only LLVM's nm reads: NM, else llvm-nm on PATH, else the one beside
+# CLANG_TIDY.
+nm=${NM:-}
+[ -n "$nm" ] || nm=$(command -v llvm-nm || true)
+if [ -z "$nm" ] && [ -n "${CLANG_TIDY:-}" ] && [ -x "$(dirname "$CLANG_TIDY")/llvm-nm" ]; then
+  nm=$(dirname "$CLANG_TIDY")/llvm-nm
+fi
+[ -n "$nm" ] || { echo "build.sh: no llvm-nm to read $lib; set NM to it" >&2; exit 1; }
+"$nm" -u "$here/build/_osprey.o" "$here/build/types.o" "$here/build/door.o" "$here/build/loader.o" |
+  sed -n 's/^ *_\{0,1\}\(r[xw]_[A-Za-z0-9_]*\)$/\1/p' | sort -u > "$here/build/symbols_needed.txt"
+"$nm" -g --defined-only "$lib" | sed -n 's/^.* [TDS] _\{0,1\}\(r[xw]_[A-Za-z0-9_]*\)$/\1/p' | sort -u > "$here/build/symbols_defined.txt"
+missing=$(comm -23 "$here/build/symbols_needed.txt" "$here/build/symbols_defined.txt")
+if [ -n "$missing" ]; then
+  echo "build.sh: $lib does not define: $(echo $missing | tr '\n' ' ')" >&2
+  echo "build.sh: it is older than the headers the wrappers are generated from; rebuild it: (cd $raptor && cargo build --release)" >&2
+  exit 1
+fi
 case $(uname -s) in
   Darwin) shared=-dynamiclib; ext=dylib ;;
   *) shared=-shared; ext=so ;;
@@ -47,3 +66,5 @@ clang $shared -fPIC -std=c11 -I"$EAGLE_DOOR_DIR" -o "$here/build/libfixture_unit
 clang $shared -fPIC -std=c11 -I"$EAGLE_DOOR_DIR" -o "$here/build/libfixture_reverse.$ext" "$EAGLE_DOOR_DIR/eagle/door/test/fixture_reverse.c"
 "$gen" --check $hdrs --header "$repo/include/osprey_host.h" --door-header "$EAGLE_DOOR_DIR/eagle/door/eg_door.h" --door-source "$here/template/door.c" \
   --template "$here/template" --generated "$here/build/_osprey.c" --ext "$here/build/_osprey.abi3.so"
+# the module must load: a link gap fails here, not in a later caller
+PYTHONPATH="$here/build" "$PYTHON" -c "import _osprey"
