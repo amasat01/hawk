@@ -29,8 +29,6 @@ def test_float32_values_only_n32_is_one_warp_stage():
 
 @pytest.mark.parametrize("arch,warp", [("sm_61", False), ("sm_89", False), ("", False), ("sm_80", True), ("sm_90", True)])
 def test_float64_takes_the_warp_form_only_where_fp64_is_fast(arch, warp):
-    from hawk.targets import cards
-
     spec = device(arch)
     got = _ops(eigh_values_kernel(32), scalar="float64", spec=spec)
     assert (got == [(32, "eigh_warp")]) is warp

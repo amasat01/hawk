@@ -8,7 +8,7 @@ intermediate; every refusal names both members and the name; the estimate fences
 """
 
 from __future__ import annotations
-from _specs import DEVICE, HOST
+from _specs import HOST
 from _toolchain import real_arch
 
 import linecache
@@ -27,7 +27,7 @@ from hawk.artifact import build_bundle
 from hawk.artifact import bundle as B
 from raptor.errors import RaptorError as HawkError
 from hawk.passes import fusion
-from hawk.targets.cards import fusion as fusion_card
+from hawk.targets import shipped_card
 
 eagle = pytest.importorskip("eagle")
 
@@ -241,8 +241,13 @@ def _stages(kernel, dtype: str, target: str, tmp_path) -> list:
     return [st["kernel"] for st in side.get("stages", ())] or [kernel.name]
 
 
-def _device_row_at_its_register_line(scalar_type, spec, host=False):
-    return {**fusion_card(scalar_type, DEVICE), "R_file": 64, "c_local_over_plane": None}     # a frame byte as dear as a host's
+def _states_a_device_register_line(monkeypatch):
+    """Every device build of the test states a fusion row of 64 registers per lane for sm_61 and each type, with a frame byte as dear
+    as a host's: the library cuts the chain where the shipped 255 keeps it whole."""
+    rows = [{"cc": "sm_61", "dtype": dtype, "regs_file": 64, "local_over_plane": None} for dtype in ("float32", "float64")]
+    cards = {"cuda.json": {**shipped_card("cuda.json"), "fusion_rows": rows}}
+    real = B.build_spec
+    monkeypatch.setattr(B, "build_spec", lambda *args, **kwargs: real(*args, cards=cards, **kwargs))
 
 
 def _with_isa(machine, isa, vector_isa):
@@ -518,6 +523,6 @@ def test_a_cut_chain_derivative_equals_dag_on_the_host(direction, dtype, avx512,
 @pytest.mark.parametrize("direction", ["jvp", "vjp"])
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
 def test_a_cut_chain_derivative_equals_dag_on_the_device(direction, dtype, private_cache, tmp_path, monkeypatch):
-    monkeypatch.setattr(fusion, "row", _device_row_at_its_register_line)
+    _states_a_device_register_line(monkeypatch)
     _, mine = _check_derivative(_cut_case(), direction, "cuda", dtype)
     assert len(_stages(mine, dtype, "cuda", tmp_path)) >= 2

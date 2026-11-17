@@ -597,44 +597,6 @@ def test_a_malformed_tile_is_refused(tile):
         _choose_mapping(fa, card={"T": 8, "tile": tile})
 
 
-def test_the_contraction_choice_is_the_cards_per_dtype(monkeypatch):
-    from _specs import DEVICE
-    from hawk.passes.contraction import recognize
-    from hawk.targets import build_spec, cards
-    from hawk.facts import derive, load
-    from test_ir_contraction import spline_contract as shared_contract
-
-    def spec_with(**changes):
-        cuda = load("cuda")
-        card = {**cuda["cards"]["thread_box"], **changes}
-        return build_spec(("host", "cuda"), "sm_61", device=derive(cuda, {"cards": {"thread_box": card}}))
-
-    fa = _facts(kg_fwd)
-    assert [_choose_mapping(fa, card=cards.thread_box(t, DEVICE))["contraction"]
-            for t in ("float32", "float64")] == ["gemm", "gemm"]
-    spec = spec_with(rows=[{"cc": "sm_00", "device": "Test Card", "dtype": "float64", "contraction": "direct"}])
-    monkeypatch.setattr(cards, "_device", lambda: ("sm_00", "Test Card"))
-    direct = dict(_choose_mapping(fa, card=cards.thread_box("float64", spec)))
-    assert direct["contraction"] == "direct"
-    assert _choose_mapping(fa, card=cards.thread_box("float32", spec))["contraction"] == "gemm"
-    assert recognize(shared_contract) is not None
-    assert recognize(shared_contract, mapping=direct) is None
-    assert recognize(shared_contract, mapping={"contraction": "gemm"}) is not None
-    bad = spec_with(contraction={**load("cuda")["cards"]["thread_box"]["contraction"], "float32": "blas"})
-    with pytest.raises(hawk.HawkError, match="contraction"):
-        cards.thread_box("float32", bad)
-
-
-def test_the_committed_card_names_its_tile_examples_only_as_examples():
-    from _specs import DEVICE
-    from hawk.targets import cards
-    from hawk.facts import load
-
-    doc = load("cuda")["cards"]["thread_box"]
-    assert doc["rows"] == [] and len(doc["examples"]) == 2
-    assert "tile" not in cards.thread_box("float32", DEVICE)
-
-
 # --------------------------------------------------------------------------
 # warp-uniform values
 

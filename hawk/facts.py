@@ -9,8 +9,8 @@ a path relative to hawk, and reading them runs no wing code. The name is ONE ide
 
 The facts of a wing are RESOLVED along its chain, root to leaf (:func:`hawk.wings.lineage`, the one walk of a chain): a key the nearest
 wing states wins, a key that is a dict is merged one key deep at each step, and a wing cannot remove a key. A wing states only what it
-adds or changes. The loaded facts are READ-ONLY (nested dicts and lists too): shared code takes the loaded facts as an argument and
-copies them explicitly (:func:`derive`) to change a number. The resolved facts carry ``name``: the leaf wing's name.
+adds or changes. The loaded facts are READ-ONLY (nested dicts and lists too): shared code takes the loaded facts as an argument; a build
+states other numbers through ``build_spec(cards=...)``. The resolved facts carry ``name``: the leaf wing's name.
 
 THE SCHEMA, checked once at load (:data:`SCHEMA`): the top-level keys are the known groups below, each of its type; a key that is not in
 the schema is refused by name, with the file.
@@ -35,7 +35,7 @@ FAMILY = "raptor"
 #: The top-level keys a wing's facts may hold and their types.
 SCHEMA = MappingProxyType({"isa": str, "default_arch": str, "uniform_run": int,
           "steps_reverse": dict, "linalg": dict, "lanes": dict, "cells": dict, "scatter": dict, "form": dict, "host_wide": dict,
-          "thread_box": dict, "launch": dict, "fold": dict, "arch_features": dict, "fusion_host": dict, "wide_classes": dict,
+          "launch": dict, "fold": dict, "arch_features": dict, "fusion_host": dict, "wide_classes": dict,
           "cards": dict})
 #: A further data file of a wing, ``<stem>.py`` (one literal), is the key ``<stem>``.
 DATA_FILES = ("cards",)
@@ -45,7 +45,7 @@ class _Frozen(dict):
     """A dict that refuses every change (loaded facts are shared by every build of the process)."""
 
     def _no(self, *a, **k):
-        raise TypeError("facts are read-only: copy them (hawk.facts.derive) to change a number")
+        raise TypeError("facts are read-only: a build states other numbers through build_spec(cards=...)")
 
     __setitem__ = __delitem__ = update = pop = popitem = clear = setdefault = __ior__ = _no
 
@@ -60,7 +60,7 @@ class _Frozen(dict):
 
 class _FrozenList(list):
     def _no(self, *a, **k):
-        raise TypeError("facts are read-only: copy them (hawk.facts.derive) to change a number")
+        raise TypeError("facts are read-only: a build states other numbers through build_spec(cards=...)")
 
     __setitem__ = __delitem__ = append = extend = insert = pop = remove = clear = sort = reverse = __iadd__ = __imul__ = _no
 
@@ -182,12 +182,3 @@ def named(entry, isa: str) -> str:
     if isinstance(entry, dict) and isa in entry:
         return entry[isa]
     raise ValueError(f"the row's raptor wing {entry!r} names no wing for isa {isa!r}")
-
-
-def derive(facts: dict, overrides: dict) -> dict:
-    """A copy of ``facts`` with ``overrides`` merged in (one dict level deep, like a wing over its parent): how a test or a
-    kit run passes other numbers to code that takes facts."""
-    merged = dict(facts)
-    for key, value in overrides.items():
-        merged[key] = {**facts[key], **value} if isinstance(value, dict) and isinstance(facts.get(key), dict) else value
-    return merged

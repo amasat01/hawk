@@ -92,34 +92,3 @@ def test_the_boundary_of_the_limit_is_the_numpy_value_under_both_contracts(cache
     else:
         scale = np.abs(terms).sum(axis=1)
         assert np.all(np.abs(got - want.T) <= 8 * np.finfo(np.float64).eps * scale.T + 1e-300)
-
-
-def _blocks_under(spec, k):
-    from raptor.wings.base import team
-    from raptor.wings.base.block import is_block
-
-    from raptor.ir.walk import canonical_nodes
-
-    sinks = team.plain_blocks(k.sinks, "auto", spec)
-    return sum(is_block(n) for n in canonical_nodes(tuple(sinks))[0])
-
-
-def test_the_fallback_point_is_the_facts(cache):
-    import dataclasses
-
-    from hawk.targets import build_spec
-    from hawk.facts import derive
-
-    spec = build_spec(("host",))
-    small = dataclasses.replace(spec, host=derive(spec.host, {"linalg": {"team_max_dim": 64}}))
-    big = dataclasses.replace(spec, host=derive(spec.host, {"linalg": {"team_max_dim": 128}}))
-    k = _vector_sum(100, "ordered")
-    assert (_blocks_under(spec, k), _blocks_under(big, k), _blocks_under(small, k)) == (1, 1, 0)
-
-    @kernel
-    def outer_sum(lane: Grid["key", "row":ROWS], a: Vector[40], b: Vector[40]) -> Matrix[40, 40]:
-        return hawk.sum(m.outer(a, b), over="row")
-
-    assert (_blocks_under(spec, outer_sum), _blocks_under(small, outer_sum)) == (1, 1)     # extents 40 <= 64
-    tiny = dataclasses.replace(spec, host=derive(spec.host, {"linalg": {"team_max_dim": 32}}))
-    assert _blocks_under(tiny, outer_sum) == 0                                             # extent 40 > 32

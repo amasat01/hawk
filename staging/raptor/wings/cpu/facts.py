@@ -42,11 +42,4 @@
         },
         "wide_min": {4: 128, 8: 64},
     },
-    # The host's own thread-box table (the thread box of a host text: T lanes a thread visits along a non-fastest axis) and the weight of a
-    # select-written runtime-index store; the same numbers the device card measured, kept as the host's own facts.
-    "thread_box": {
-        "defaults": {'float64': 16, 'float32': 8},
-        "contraction": {'float64': 'gemm', 'float32': 'gemm'},
-        "select_weight": {"defaults": {'float64': 1.0, 'float32': 1.0}},
-    },
 }

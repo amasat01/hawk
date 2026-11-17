@@ -11,7 +11,7 @@ import pytest
 import hawk
 from hawk import HawkError, Kernel, Mutable, Scalar, kernel, runtime
 from hawk.artifact import build_bundle
-from hawk.facts import derive, load
+from hawk.facts import load
 
 SIZES = (1, 31, 32, 33, 1000)
 
@@ -59,8 +59,6 @@ def test_a_facts_without_cells_row_is_refused_by_name_at_the_reader():
     bare = type(spec)(**{**bare.__dict__, "host": {k: v for k, v in load("cpu").items() if k != "cells"}, "device": None, "focus": None})
     with pytest.raises(HawkError, match="no cells.row"):
         bare.need("cells", "row")
-    derived = derive(load("cpu"), {"cells": None})
-    assert derived["cells"] is None
 
 
 def test_stages_of_one_run_with_two_row_widths_are_refused_by_name():

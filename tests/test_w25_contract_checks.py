@@ -144,7 +144,6 @@ def test_loaded_facts_are_read_only_down_to_its_nested_values():
                    lambda: data["fusion_host"]["neon"].__setitem__("x", 1), lambda: data.pop("form")):
         with pytest.raises(TypeError, match="read-only"):
             change()
-    assert facts.derive(data, {"form": {"rolled_fold_min": 1}})["form"]["rolled_fold_min"] == 1 and data["form"]["rolled_fold_min"] != 1
 
 
 def test_an_emission_module_that_does_not_exist_is_refused_by_name(site):

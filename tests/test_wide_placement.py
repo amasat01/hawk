@@ -314,44 +314,6 @@ def test_a_stepped_or_automatic_kernel_is_a_warp_per_lane_on_a_device_bundle(ent
     assert "team_planes" not in side            # nothing is placed in a scratch plane: the value is sliced across the lanes
 
 
-# -- the device feature classes -----------------------------------------------------------------
-
-def test_a_known_arch_selects_its_own_class_and_an_unknown_feature_tuple_the_nearest():
-    from raptor.wings.simt import wide_class as C
-    from hawk.facts import derive
-
-    cuda = DEVICE.device
-    assert C.select("sm_61", cuda) == "sm61" and C.select("", cuda) == "sm61"
-    feats = C.arch_features(cuda)
-    classes = C.classes_of(cuda)
-    base = classes["sm61"][1]
-    volta = {"capability": 70, "runtime_min": {p: {4: 1, 8: 1} for p in base.runtime_min}, "wide_min": {4: 64, 8: 32}}
-    ampere = {"capability": 90, "runtime_min": {p: {4: 2, 8: 2} for p in base.runtime_min}, "wide_min": {4: 64, 8: 32}}
-    facts = derive(cuda, {"wide_classes": {"fake70": volta, "fake90": ampere}})
-    C_select = lambda arch="", features=None: C.select(arch, facts, features)
-    assert C_select("sm_61") == "sm61" and C_select("sm_70") == "fake70"
-    assert C_select("sm_75") == "sm61"                 # 1:32 and 1024 threads: one step from Pascal, a long way from Volta
-    assert C_select("sm_80") == "fake70"               # 1:2 and 2048 threads, as Volta (a tie with Hopper goes to the lower name)
-    assert C_select("sm_99") == "fake70"               # an arch nobody listed: the features of the nearest capability (90)
-    assert C_select(features=C.Features(2, 65536, 2048, True)) == "fake70"
-
-
-def test_the_tables_of_the_selected_class_decide_the_placement():
-    import dataclasses
-
-    from raptor.wings.simt import wide_class as C
-    from hawk.facts import derive
-
-    cuda = DEVICE.device
-    base = C.classes_of(cuda)["sm61"][1]
-    never = {"capability": 80, "runtime_min": {p: {4: 10 ** 6, 8: 10 ** 6} for p in base.runtime_min}, "wide_min": {4: 10 ** 6, 8: 10 ** 6}}
-    keeps = dataclasses.replace(DEVICE, device=derive(cuda, {"wide_classes": {"keeps": never}}), wide_class="keeps")
-    _, planes, record = wide.place(W.rotate16.sinks, keeps, real_bytes=8)
-    assert not planes and not record
-    _, planes, record = wide.place(W.rotate16.sinks, DEVICE, real_bytes=8)
-    assert record
-
-
 def test_the_unit_key_changes_with_the_arch_and_a_host_kernel_states_no_placement(tmp_path, cache_dir):
     """The thresholds class is the library's answer for an arch, so a build of another class is a build of another arch: the
     resolved arch is a term of the unit key."""

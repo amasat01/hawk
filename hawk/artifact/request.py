@@ -189,19 +189,6 @@ def _host_line(spec, options) -> str:
     return _identity(_tc.compiler_identity(TARGETS["host"].compiler()))
 
 
-def _own_card(spec, target: str) -> bool:
-    """Whether the spec carries data of its own for the target (a card a test or a kit passes, or thresholds forced by
-    ``wide_override``) instead of the row's data files."""
-    from ..facts import load, named
-    from ..targets import TARGETS
-
-    row = TARGETS[target]
-    if row.device and spec.wide_override:
-        return True
-    held = spec.by_target.get(target)
-    return row.facts_name is not None and held is not None and held != load(named(row.facts_name, spec.machine.isa))
-
-
 def _compile_plan(target: str, spec, options):
     """The plan the compile driver will run for the target of this build."""
     from ..compile import CompileOptions, drivers
@@ -251,7 +238,7 @@ def _device(spec, options) -> tuple:
     architecture when one is asked for and the compiler's release as its compile plan states it: the first version line of the
     device compiler driver names no release, so the line alone cannot tell the library which compiler it is."""
     arch = spec.machine.arch or options.get("device_arch") or ""
-    stated = {"device_arch": arch} if arch else {}
+    stated = _under_cards({"device_arch": arch} if arch else {}, spec)
     try:
         plan = _compile_plan("cuda", spec, options)
     except ToolchainAbsent:
@@ -264,7 +251,13 @@ def _device(spec, options) -> tuple:
 def _stated_host(spec) -> dict:
     """The machine a host unit's TEXT is written for (the spec's) and where its compile finds the headers, as the library's facts
     entry takes them."""
-    return _stated(spec.machine.isa, spec.machine.facts)
+    return _under_cards(_stated(spec.machine.isa, spec.machine.facts), spec)
+
+
+def _under_cards(stated: dict, spec) -> dict:
+    """``stated`` with the documents the build states (:func:`hawk.targets.build_spec`), so the facts answer is made from them; the
+    request carries the same documents, and the library refuses an answer made under others."""
+    return {**stated, "cards": dict(spec.cards)} if spec.cards else stated
 
 
 def _stated(isa: str, facts) -> dict:
@@ -388,8 +381,6 @@ def request(kernel, *, name: str, scalar: str, kind, targets, spec, position: di
     for target in targets:
         if target not in SERVED:
             raise HawkError(f"target {target!r} is refused: a back end registered from Python is not built in this version; the build writes {tuple(SERVED)} only")
-        if _own_card(spec, target):
-            raise HawkError(f"target {target!r} is refused: the build runs under a card of its own, which the request does not carry")
     kind = kind if kind is not None else DEFAULT_KIND
     members = getattr(kernel, "members", None)
     if members and hasattr(members[0], "sinks"):
@@ -443,6 +434,8 @@ def request(kernel, *, name: str, scalar: str, kind, targets, spec, position: di
     if broadcast:
         out["broadcast"] = broadcast
     out["facts"] = facts
+    if spec.cards:
+        out["cards"] = dict(spec.cards)
     if not exports_block:
         out["exports_block"] = False
     return out

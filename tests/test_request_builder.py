@@ -181,21 +181,6 @@ def test_the_c_target_is_refused_by_name():
         built(axpb, targets=("c",))
 
 
-def test_a_build_under_a_card_of_its_own_is_refused_by_name():
-    import dataclasses
-
-    spec = build_spec(("host",), "")
-    held = spec.by_target["host"]
-    own = dataclasses.replace(spec, by_target={"host": {**held, "form": {**held["form"], "lazy_leaf_width": held["form"]["lazy_leaf_width"] + 1}}})
-    with pytest.raises(hawk.HawkError, match="card of its own"):
-        built(axpb, spec=own)
-
-
-def test_thresholds_forced_by_wide_override_are_a_card_of_its_own():
-    with pytest.raises(hawk.HawkError, match="card of its own"):
-        built(axpb, targets=("cuda",), spec=build_spec(("cuda",), "sm_80", wide_override={"WARPS": 2}))
-
-
 def test_the_host_compiler_line_is_the_real_one_unless_the_spec_names_another_machine(monkeypatch):
     import dataclasses
     from types import MappingProxyType

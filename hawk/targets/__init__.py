@@ -11,6 +11,7 @@ OSPREY manifests and imports one on its first lookup.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -114,14 +115,15 @@ class BuildSpec:
     """The one object that carries the wing of the target being built through a build: the merged facts of the
     host row and of the device row (``None``: no such target; a backend whose manifest names no wing has none: its own text
     gets an EMPTY wing, never another target's), the machine as data, the class the device's thresholds come from, the
-    thresholds a kit forces. Holds no callable, no backend and no
+    documents the build states in place of the lowering library's (``cards``). Holds no callable, no backend and no
     per-build setting of its own: those are :attr:`settings`, a frozen :class:`raptor.wings.base.settings.Settings` set by the entry."""
 
     host: dict | None
     device: dict | None
     machine: Machine
     wide_class: str
-    wide_override: dict
+    #: ``{document name: the whole document as JSON text}`` the build states to the lowering library (see :func:`build_spec`)
+    cards: dict
     by_target: dict
     focus: dict | None = None
     settings: "Settings" = None
@@ -203,12 +205,6 @@ class BuildSpec:
 
         return replace(self, focus=self.by_target.get(row.id) or {}, reads=frozenset(registry.traits(row.id).get("reads", ())))
 
-    def wide(self, scalar_type: str) -> dict:
-        """The wide-value thresholds card for ``scalar_type`` on this spec's device arch."""
-        from . import cards
-
-        return cards.wide(scalar_type, self)
-
     def fusion(self, scalar_type: str, host: bool = False) -> dict:
         """The fusion constants for ``scalar_type`` (of this host's vector ISA with ``host``)."""
         from . import cards
@@ -216,12 +212,15 @@ class BuildSpec:
         return cards.fusion(scalar_type, self, host)
 
 
-def build_spec(targets, arch: str = "", *, machine: Machine | None = None, device: dict | None = None,
-               wide_override: dict | None = None, settings=None, build_settings=None) -> BuildSpec:
+def build_spec(targets, arch: str = "", *, machine: Machine | None = None, cards: Mapping[str, Mapping] | None = None,
+               settings=None, build_settings=None) -> BuildSpec:
     """The spec of a build of ``targets`` (ids) for device ``arch``: each row's manifest names its wings (the raptor leaf, a map from the host's
-    isa for a host row, gives its facts). ``device`` replaces the device wing's data (a test or a kit passes other numbers), ``wide_override``
-    forces card thresholds. ``settings`` are the per-build settings (default: all unset); ``build_settings`` (:class:`hawk.build_settings.BuildSettings`) is laid over them after its keys
-    are checked against the targets' manifests."""
+    isa for a host row, gives its facts). ``cards`` states other numbers for the lowering to decide on: a map from the name of one of the
+    library's data documents (``build.json``, ``cuda_build.json``, ``cuda.json``, ``arm.json``, ``x86.json``) to the WHOLE document as a
+    mapping; :func:`shipped_card` gives the document to start from. hawk passes the documents to the library's facts call and to its
+    request alike and checks nothing in them: the library refuses a wrong key or range by name. A document given as text is refused.
+    ``settings`` are the per-build settings (default: all unset); ``build_settings`` (:class:`hawk.build_settings.BuildSettings`) is laid
+    over them after its keys are checked against the targets' manifests."""
     from .. import wings as _wings
     from ..facts import load, named
 
@@ -235,16 +234,37 @@ def build_spec(targets, arch: str = "", *, machine: Machine | None = None, devic
         _wings.require(_wings.row_wings(row.wings, machine.isa), target)
         if row.facts_name is None:
             continue
-        data = load(named(row.facts_name, machine.isa))
-        by_target[target] = device if (row.device and device is not None) else data
+        by_target[target] = data = load(named(row.facts_name, machine.isa))
         if row.device:
             dev = dev or data
         else:
             host = host or data
-    dev = device if device is not None else dev
-    return BuildSpec(host, dev, machine, _wings.device_view("wide_class").select(arch, dev) if arch and dev else "", dict(wide_override or {}), by_target,
+    return BuildSpec(host, dev, machine, _wings.device_view("wide_class").select(arch, dev) if arch and dev else "", _card_texts(cards), by_target,
                      settings=_laid(build_settings, settings, targets), spellings=_spellings(targets, machine.isa),
                      reads=frozenset(k for t in targets if t in TARGETS for k in registry.traits(t).get("reads", ())))
+
+
+def _card_texts(cards: Mapping[str, Mapping] | None) -> dict:
+    """The documents of ``cards`` as the JSON text the library takes, each serialised once in the order its mapping holds."""
+    out = {}
+    for name, document in (cards or {}).items():
+        if not isinstance(document, Mapping):
+            raise HawkError(f"build_spec: cards[{name!r}] must be a mapping (the parsed document), not {type(document).__name__}; "
+                            "start from hawk.targets.shipped_card(name)")
+        out[name] = json.dumps(document)
+    return out
+
+
+def shipped_card(name: str) -> dict:
+    """The data document ``name`` that the lowering library ships, parsed: the whole document a caller edits (change a number, keep the
+    rest) and passes back as ``build_spec(cards={name: document})``. The library refuses a name outside its closed set."""
+    from ..artifact import request
+
+    module, lib, folder = request.library()
+    try:
+        return json.loads(module.Ctx().backend_card(lib, folder, name))
+    except module.BadRequest as why:
+        raise HawkError(f"shipped_card: {why}") from None
 
 
 def _spellings(targets, isa: str) -> dict:
