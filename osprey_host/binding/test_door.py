@@ -20,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DOOR_LIB = os.path.join(os.environ["EAGLE_DOOR_DIR"], f"libeagle_door.{EXT}")
 FIXTURE = os.path.join(HERE, "build", f"libfixture_unit.{EXT}")
 REVERSE = os.path.join(HERE, "build", f"libfixture_reverse.{EXT}")
+GEMM = os.path.join(HERE, "build", f"libfixture_gemm.{EXT}")
 N = 1000
 
 
@@ -53,6 +54,352 @@ class Export:
     def __dlpack_device__(self):
         """Say host memory (kDLCPU)."""
         return (1, 0)
+
+
+def product(a, b, flags, c_before):
+    """The oracle of one matrix product over stored arrays: C = op(A) op(B), accumulated or not."""
+    left = a.T if flags & o.EG_GEMM_TRANS_A else a
+    right = b.T if flags & o.EG_GEMM_TRANS_B else b
+    result = (left.astype(np.float64) @ right.astype(np.float64)).astype(a.dtype)
+    if flags & o.EG_GEMM_TRANS_C:
+        result = result.T
+    if flags & o.EG_GEMM_ACCUMULATE:
+        result = result + c_before
+    return result
+
+
+def check_gemm(door, done, raises):
+    """Rows of the matrix-product calls, and of the units that state products, against numpy."""
+    rng = np.random.default_rng(11)
+    m, k, n = 3, 5, 4
+    for bits, dtype in ((64, np.float64), (32, np.float32)):
+        tol = 1e-4 if bits == 32 else 1e-12
+        for flags in range(16):
+            a_shape = (k, m) if flags & o.EG_GEMM_TRANS_A else (m, k)
+            b_shape = (n, k) if flags & o.EG_GEMM_TRANS_B else (k, n)
+            c_shape = (n, m) if flags & o.EG_GEMM_TRANS_C else (m, n)
+            a, b = (rng.standard_normal(s).astype(dtype) for s in (a_shape, b_shape))
+            c = rng.standard_normal(c_shape).astype(dtype)
+            want = product(a, b, flags, c.copy())
+            gemm = door.gemm_new(a_shape, b_shape, c_shape, bits, flags)
+            planes = [door.plane_wrap(x) for x in (a, b, c)]
+            door.gemm_run(gemm, *planes)
+            assert np.abs(c - want).max() <= tol * max(1.0, np.abs(want).max()), (bits, flags)
+            door.gemm_run(gemm, *planes)  # a second run of the plan; accumulating adds again
+            for plane in planes:
+                door.plane_free(plane)
+            door.gemm_free(gemm)
+    done.append("gemm_new, gemm_run, gemm_free: 32 products (f32, f64, every flag) equal numpy")
+
+    wide_a, b, wide_c = (
+        rng.standard_normal((3, 7)),
+        rng.standard_normal((5, 4)),
+        np.full((3, 6), 9.0),
+    )
+    gemm = door.gemm_new((3, 5), (5, 4), (3, 4), 64)
+    planes = [door.plane_wrap(x) for x in (wide_a, b, wide_c)]
+    door.gemm_run(gemm, *planes)
+    assert (
+        np.allclose(wide_c[:, :4], wide_a[:, :5] @ b, rtol=1e-12) and (wide_c[:, 4:] == 9.0).all()
+    )
+    done.append("gemm_run: wider planes serve a column slice and leave the rest alone")
+
+    a, b, c = rng.standard_normal((3, 5)), rng.standard_normal((5, 4)), np.zeros((3, 4))
+    pa, pb, pc = (door.plane_wrap(x) for x in (a, b, c))
+    door.record_begin()
+    door.gemm_run(gemm, pa, pb, pc)
+    assert not c.any()
+    graph = door.record_end()
+    door.gemm_free(gemm)
+    door.graph_launch(graph)
+    assert np.allclose(c, a @ b, rtol=1e-12)
+    door.graph_free(graph)
+    done.append("gemm_run recorded: runs on replay, and gemm_free before the replay is safe")
+
+    gemm = door.gemm_new((3, 5), (5, 4), (3, 4), 64)
+
+    def run_with(a_array=a, c_array=c, plane_c=None):
+        """Run the product over arrays that break one rule."""
+        pa2 = door.plane_wrap(a_array)
+        door.gemm_run(gemm, pa2, pb, plane_c or door.plane_wrap(c_array))
+
+    read_only = np.zeros((3, 4))
+    read_only.flags.writeable = False
+    for what, call, fragment in (
+        (
+            "dtype_bits 16",
+            lambda: door.gemm_new((3, 5), (5, 4), (3, 4), 16),
+            "is not a float width",
+        ),
+        ("an extent of 0", lambda: door.gemm_new((0, 5), (5, 4), (3, 4), 64), "is outside 1 .. "),
+        (
+            "an extent past 2^31 - 1",
+            lambda: door.gemm_new((3, 1 << 31), (5, 4), (3, 4), 64),
+            "outside",
+        ),
+        (
+            "contracted extents",
+            lambda: door.gemm_new((3, 5), (4, 4), (3, 4), 64),
+            "contracted extents",
+        ),
+        (
+            "a C stored otherwise",
+            lambda: door.gemm_new((3, 5), (5, 4), (4, 3), 64),
+            "is stored (4, 3)",
+        ),
+        (
+            "an unknown flag",
+            lambda: door.gemm_new((3, 5), (5, 4), (3, 4), 64, 1 << 7),
+            "unknown bits",
+        ),
+    ):
+        e = raises(o.BadRequest, call, f"gemm_new: {what}")
+        assert fragment in refusal_text(door, e), str(e)
+    for what, call, fragment in (
+        ("a plane of the wrong rank", lambda: run_with(a_array=np.zeros(15)), "must be 2-D"),
+        ("a plane of the wrong rows", lambda: run_with(a_array=np.zeros((4, 5))), "with 3 rows"),
+        (
+            "a row stride below the columns",
+            lambda: run_with(a_array=np.zeros((3, 4))),
+            "row stride",
+        ),
+        (
+            "a plane of the wrong width",
+            lambda: run_with(a_array=np.zeros((3, 5), np.float32)),
+            "float64",
+        ),
+        ("a read-only output", lambda: run_with(c_array=read_only), "read-only"),
+        ("an output over an input", lambda: door.gemm_run(gemm, pa, pb, pa), "overlaps"),
+    ):
+        e = raises(o.BadRequest, call, f"gemm_run: {what}")
+        assert fragment in refusal_text(door, e), str(e)
+    door.record_begin()
+    e = raises(
+        o.BadRequest, lambda: door.gemm_new((3, 5), (5, 4), (3, 4), 64), "gemm_new: recording"
+    )
+    assert "while recording" in refusal_text(door, e)
+    door.graph_free(door.record_end())
+    raises(TypeError, lambda: door.gemm_run(pa, pa, pb, pc), "gemm_run: a plane for a product")
+    door.gemm_free(gemm)
+    raises(ValueError, lambda: door.gemm_free(gemm), "gemm_free: a second free of one handle")
+    done.append(
+        "gemm refusals: each stated sentence of eg_gemm_new and eg_gemm_run by its stable part"
+    )
+
+    # units that state matrix products: the host entry is the oracle of the record, numpy of both
+    shapes = {
+        "sq": (0, (4, 4), (4, 4), (4, 4)),
+        "rect": (0, (3, 5), (5, 4), (3, 4)),
+        "ta": (o.EG_GEMM_TRANS_A, (5, 3), (5, 4), (3, 4)),
+        "tb": (o.EG_GEMM_TRANS_B, (3, 5), (4, 5), (3, 4)),
+        "tc": (o.EG_GEMM_TRANS_C, (3, 5), (5, 4), (4, 3)),
+        "all": (7, (5, 3), (4, 5), (4, 3)),
+        "lane": (0, (3, 5), (5, 4), (3, 4)),  # columns are n_samples / lane_fanin: 12 / 3
+        "wide": (0, (3, 5), (5, 4), (3, 4)),
+    }
+    for bits, base, dtype in ((64, 0x30, np.float64), (32, 0x40, np.float32)):
+        tol = 1e-4 if bits == 32 else 1e-12
+        for index, (name, (flags, a_s, b_s, c_s)) in enumerate(shapes.items()):
+            slack = 2 if name == "wide" else 0
+            full = [(r, c + slack) for r, c in (a_s, b_s, c_s)]
+            a, b, c = (rng.standard_normal(s).astype(dtype) for s in full)
+            c[:] = 5.0
+            unit = door.unit_load(GEMM, f"f{bits}_{name}", digest(base + index))
+            plan = door.plan_new(unit, o.EG_STRUCTURE_HOST_TEAM, o.EG_REDUCE_COMPENSATED, 12)
+            planes = [door.plane_wrap(x) for x in (a, b, c)]
+            door.bind(plan, [0, 1, 2], planes)
+            assert door.plan_entry_figures(plan)["flags"] & o.EG_ENTRY_GEMM == 0
+            door.launch(plan)
+            cut = lambda x, s: x[: s[0], : s[1]]  # noqa: E731
+            want = product(cut(a, a_s), cut(b, b_s), flags, 0.0)
+            assert np.abs(cut(c, c_s) - want).max() <= tol * max(1.0, np.abs(want).max()), name
+            for plane in planes:
+                door.plane_free(plane)
+            door.plan_free(plan)
+            door.unit_free(unit)
+    done.append(
+        "gemm units: all eight shapes, f32 and f64, equal numpy; no gemm entry on a host plan"
+    )
+
+    for bits, byte, dtype in ((64, 0x50, np.float64), (32, 0x51, np.float32)):
+        w, x, dy = (rng.standard_normal(s).astype(dtype) for s in ((3, 5), (5, 4), (3, 4)))
+        dw, dx = np.zeros((3, 5), dtype), rng.standard_normal((5, 4)).astype(dtype)
+        before = dx.copy()
+        unit = door.unit_load(GEMM, f"f{bits}_vjp", digest(byte))
+        plan = door.plan_new(unit, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, 1)
+        planes = [door.plane_wrap(v) for v in (w, x, dy, dw, dx)]
+        door.bind(plan, [0, 1, 2, 3, 4], planes)
+        door.launch(plan)
+        tol = 1e-4 if bits == 32 else 1e-12
+        assert np.abs(dw - dy @ x.T).max() <= tol * 10
+        assert np.abs(dx - (before + w.T @ dy)).max() <= tol * 10
+    done.append(
+        "gemm unit with two calls: dW = dY X^T, dX += W^T dY (ACCUMULATE over a prefilled plane)"
+    )
+
+    e = raises(
+        o.NotWritten,
+        lambda: door.unit_load(GEMM, "bad_banded", digest(0x67)),
+        "unit_load: a banded unit with a gemm record",
+    )
+    assert "banded unit with a gemm record" in refusal_text(door, e)
+    e = raises(
+        o.BadRequest,
+        lambda: door.unit_load(GEMM, "bad_extent", digest(0x64)),
+        "unit_load: a gemm call extent of 0",
+    )
+    assert "extent 0" in refusal_text(door, e)
+    done.append("gemm record refusals at load: a banded unit, an extent of 0")
+
+    # banded cells ride as unsigned 64-bit planes, never as doubles
+    cells = np.array(door.banded_pack([0.5, -2.0, 3.25]), dtype=np.uint64)
+    plane = door.plane_wrap(cells)
+    door.plane_free(plane)
+    made = door.plane_new([3], 1, 64, flags=o.EG_PLANE_ZERO)
+    view = np.from_dlpack(Export(door.plane_dlpack(made)))
+    assert view.dtype == np.uint64
+    view[:] = cells
+    assert door.banded_unpack(view.tolist()) == (0.5, -2.0, 3.25)
+    door.plane_free(made)
+    done.append(
+        "banded planes: packed cells wrap and export as uint64 planes and unpack to the values"
+    )
+
+
+def check_fft(door, done, raises):
+    """Rows of the transform calls; numpy.fft is the oracle, for every kind, norm and width."""
+    rng = np.random.default_rng(7)
+    norms = {o.EG_FFT_NORM_BACKWARD: "backward", o.EG_FFT_NORM_FORWARD: "forward"}
+    norms[o.EG_FFT_NORM_ORTHO] = "ortho"
+
+    def planes(source, out):
+        """Plane handles over two numpy arrays, as float planes."""
+        return door.plane_wrap(source), door.plane_wrap(out)
+
+    def close(got, want, dtype):
+        """Equal to the oracle within the float width's rounding."""
+        scale = max(1.0, float(np.abs(want).max()))
+        assert np.abs(got - want).max() <= (1e-4 if dtype == np.float32 else 1e-11) * scale
+
+    count = 0
+    for bits, dtype in ((64, np.float64), (32, np.float32)):
+        for shape, axes in (((6, 10), (1,)), ((7, 12), (0, 1)), ((9,), (0,)), ((5, 7), (0,))):
+            z = rng.standard_normal(shape + (2,)).astype(dtype)
+            zc = z[..., 0] + 1j * z[..., 1]
+            for norm, name in norms.items():
+                for inverse in (0, o.EG_FFT_INVERSE):
+                    out = np.zeros_like(z)
+                    plan = door.fft_new(o.EG_FFT_C2C, norm, bits, shape, axes, inverse)
+                    pin, pout = planes(z, out)
+                    door.fft_run(plan, pin, pout)
+                    fn = np.fft.ifftn if inverse else np.fft.fftn
+                    want = fn(zc, axes=axes, norm=name)
+                    close(out[..., 0] + 1j * out[..., 1], want, dtype)
+                    count += 1
+                    z2 = rng.standard_normal(z.shape).astype(dtype)  # a second run of the plan
+                    z[:] = z2
+                    door.fft_run(plan, pin, pout)
+                    want = fn(z2[..., 0] + 1j * z2[..., 1], axes=axes, norm=name)
+                    close(out[..., 0] + 1j * out[..., 1], want, dtype)
+                    z = z.copy()
+                    for handle in (pin, pout):
+                        door.plane_free(handle)
+                    door.fft_free(plan)
+                    zc = z[..., 0] + 1j * z[..., 1]
+    done.append(
+        f"fft_new, fft_run, fft_free: {count} C2C plans equal numpy.fft, a second run, free"
+    )
+    for bits, dtype in ((64, np.float64), (32, np.float32)):
+        for shape, axes in (((4, 9), (1,)), ((6, 10), (0, 1)), ((8, 7), (1, 0)), ((11,), (0,))):
+            x = rng.standard_normal(shape).astype(dtype)
+            halved = list(shape)
+            halved[axes[-1]] = shape[axes[-1]] // 2 + 1
+            spec = np.zeros(tuple(halved) + (2,), dtype=dtype)
+            for norm, name in norms.items():
+                plan = door.fft_new(o.EG_FFT_R2C, norm, bits, shape, axes)
+                pin, pout = planes(x, spec)
+                door.fft_run(plan, pin, pout)
+                want = np.fft.rfftn(x, axes=axes, norm=name)
+                close(spec[..., 0] + 1j * spec[..., 1], want, dtype)
+                back = np.zeros(shape, dtype=dtype)
+                keep = spec.copy()
+                inverse = door.fft_new(o.EG_FFT_C2R, norm, bits, shape, axes)
+                sp, pback = planes(spec, back)
+                door.fft_run(inverse, sp, pback)
+                assert np.array_equal(spec, keep)
+                sizes = [shape[a] for a in axes]
+                close(back, np.fft.irfftn(want, s=sizes, axes=axes, norm=name), dtype)
+                close(back, x, dtype)
+                for handle in (pin, pout, sp, pback):
+                    door.plane_free(handle)
+                door.fft_free(plan)
+                door.fft_free(inverse)
+    done.append("fft R2C and C2R on one and two axes, even and odd lengths, f32 and f64: numpy.fft")
+
+    z = rng.standard_normal((5, 6, 2))
+    keep = z.copy()
+    plan = door.fft_new(o.EG_FFT_C2C, o.EG_FFT_NORM_BACKWARD, 64, [5, 6], [0, 1])
+    pz = door.plane_wrap(z)
+    door.fft_run(plan, pz, pz)
+    want = np.fft.fft2(keep[..., 0] + 1j * keep[..., 1])
+    close(z[..., 0] + 1j * z[..., 1], want, np.float64)
+    done.append("fft_run: a C2C plan runs in place")
+
+    def new(kind=o.EG_FFT_C2C, bits=64, shape=(4,), axes=(0,), flags=0):
+        """A plan description with one thing changed."""
+        return lambda: door.fft_new(
+            kind, o.EG_FFT_NORM_BACKWARD, bits, list(shape), list(axes), flags
+        )
+
+    for what, call, kind in (
+        ("an axis of length 0", new(shape=(0,)), o.BadRequest),
+        ("no axes", new(axes=()), o.BadRequest),
+        ("a repeated axis", new(shape=(4, 4), axes=(0, 0)), o.BadRequest),
+        ("an axis out of range", new(axes=(1,)), o.BadRequest),
+        ("a negative extent", new(shape=(-3,)), o.BadRequest),
+        ("INVERSE on R2C", new(kind=o.EG_FFT_R2C, flags=o.EG_FFT_INVERSE), o.BadRequest),
+        ("a float width of 24", new(bits=24), o.BadRequest),
+        ("an unknown flag", new(flags=1 << 9), o.BadRequest),
+    ):
+        refusal_text(door, raises(kind, call, f"fft_new: {what}"))
+    for bits in (16, 128):
+        e = raises(o.NotWritten, new(bits=bits), f"fft_new: a float width of {bits}")
+        refusal_text(door, e)
+    done.append(
+        "fft_new refusals: length 0, no axes, a repeated or foreign axis, INVERSE on R2C, widths"
+    )
+
+    good = door.fft_new(o.EG_FFT_R2C, o.EG_FFT_NORM_BACKWARD, 64, [4, 6], [1])
+    real = door.plane_wrap(np.zeros((4, 6)))
+    spec_ok = door.plane_wrap(np.zeros((4, 4, 2)))
+    spec_bad = door.plane_wrap(np.zeros((4, 3, 2)))
+    narrow = door.plane_wrap(np.zeros((4, 4, 2), dtype=np.float32))
+    e = raises(o.BadRequest, lambda: door.fft_run(good, real, spec_bad), "fft_run: a wrong shape")
+    refusal_text(door, e)
+    e = raises(o.BadRequest, lambda: door.fft_run(good, real, narrow), "fft_run: a wrong width")
+    refusal_text(door, e)
+    e = raises(o.BadRequest, lambda: door.fft_run(good, real, real), "fft_run: R2C in place")
+    refusal_text(door, e)
+    door.fft_run(good, real, spec_ok)
+    done.append("fft_run refusals: a wrong shape, a wrong float width, a real transform in place")
+
+    # a recording keeps the plan: free it after the recording, replay still runs
+    x = rng.standard_normal((4, 6))
+    xin, spec = door.plane_wrap(x), np.zeros((4, 4, 2))
+    pspec = door.plane_wrap(spec)
+    door.record_begin()
+    e = raises(o.BadRequest, new(), "fft_new: while recording")
+    assert "while recording" in refusal_text(door, e)
+    door.fft_run(good, xin, pspec)
+    assert not spec.any()
+    graph = door.record_end()
+    door.fft_free(good)
+    door.graph_launch(graph)
+    want = np.fft.rfftn(x, axes=(1,))
+    close(spec[..., 0] + 1j * spec[..., 1], want, np.float64)
+    door.graph_free(graph)
+    raises(ValueError, lambda: door.fft_free(good), "fft_free: a second free of one handle")
+    done.append("fft_new refused while recording; a recorded run replays after fft_free")
 
 
 def run(done, raises):
@@ -480,6 +827,9 @@ def run(done, raises):
     done.append(
         "runner_reset: the recorded run is dropped, eg_reverse refuses it by name; a rerun equals"
     )
+
+    check_fft(door, done, raises)
+    check_gemm(door, done, raises)
 
     # ---- handles and the context's end ----
     plane = door.plane_wrap(np.zeros(2))

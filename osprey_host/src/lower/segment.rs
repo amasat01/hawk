@@ -13,7 +13,7 @@ use raptor_wings::segment::{
 };
 
 /// The plane of the fused-steps word, which the access class does not read.
-pub(super) const FUSED_STEPS_PLANE: &str = "fused_steps";
+pub(super) const FUSED_STEPS_PLANE: &str = raptor_wings::cells::FUSED_STEPS_PLANE;
 
 /// Whether the selector of the walk's dispatch number `index` is one no sink of the kernel writes (the walk's own listing).
 fn selector_is_static(ctx: *mut Ctx, walk: u32, index: usize) -> Result<bool, Refusal> {

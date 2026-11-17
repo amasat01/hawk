@@ -287,6 +287,21 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
         device_compiler: Some("nvcc 12.6".into()),
         device_flags: Some("-fatbin -std=c++20 -O3".into()),
         device_ptx_isa: 85,
+        gemm: Some(Gemm {
+            lane_fanin: 6,
+            calls: vec![GemmCall {
+                flags: GEMM_TRANS_A | GEMM_ACCUMULATE,
+                a_slot: 1,
+                b_slot: 0,
+                c_slot: 2,
+                a_rows: 8,
+                a_cols: GEMM_PER_LANE,
+                b_rows: 8,
+                b_cols: 6,
+                c_rows: GEMM_PER_LANE,
+                c_cols: 6,
+            }],
+        }),
         derived: Some(Derived {
             role: DerivedRole::StepVjp,
             of_unit: 0,
@@ -392,7 +407,7 @@ fn a_tree_with_every_record_follows_the_headers_and_compiles() {
     seen.dedup();
     assert_eq!(
         seen.len(),
-        21,
+        23,
         "every record of the headers is written: {seen:?}"
     );
     for (ty, members) in &written {
@@ -424,12 +439,22 @@ int main(void) {
                    c->chain32, c->chain64, c->chain_special32, c->chain_special64, c->stores);
         }
     }
+    const struct eg_unit_meta* unit = eg_unit_library_meta()->units[0];
+    const struct eg_unit_gemm* gemm = unit->gemm;
+    printf("gemm %d fanin %lld host_entry %s\n", gemm ? gemm->n_calls : -1, gemm ? (long long)gemm->lane_fanin : -1,
+           unit->host_entry ? "kept" : "dropped");
+    if (gemm) {
+        const struct eg_unit_gemm_call* c = gemm->calls[0];
+        printf("call flags %u slots %d %d %d shape %lld %lld %lld %lld %lld %lld\n", c->flags, c->a_slot, c->b_slot,
+               c->c_slot, (long long)c->a_rows, (long long)c->a_cols, (long long)c->b_rows, (long long)c->b_cols,
+               (long long)c->c_rows, (long long)c->c_cols);
+    }
     return 0;
 }
 "#;
 
 #[test]
-fn a_c_reader_of_the_compiled_record_sees_the_branch_costs_that_were_written() {
+fn a_c_reader_of_the_compiled_record_sees_the_branch_costs_and_the_products_that_were_written() {
     let Some(door) = door_dir() else { return };
     let (library, unit) = full_tree();
     let dir = scratch("reader");
@@ -457,6 +482,9 @@ fn a_c_reader_of_the_compiled_record_sees_the_branch_costs_that_were_written() {
         "group m k 2 costs yes cost_flags 0\n",
         "branch m 0 flags 2 1.5 0 0 0 0 0 0 0 0 0 stores 2\n",
         "branch m 1 flags 0 0 0 0 0 0 0 0 0 0 0 stores 0\n",
+        // a unit with the member keeps its kernel: a host plan runs it, and a device plan the door cannot route does
+        "gemm 1 fanin 6 host_entry kept\n",
+        "call flags 9 slots 1 0 2 shape 8 -1 8 6 -1 6\n",
     ];
     assert_eq!(read, want.concat());
 }

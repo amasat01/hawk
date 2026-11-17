@@ -1,7 +1,7 @@
 //! The typed meta of the units, from what the lowering already knows: each unit's walk, request and texts, and what the split into
 //! stages decided for the kernel. A member nothing here knows is left absent (see `NOT_COMPUTED`), never given a value.
 use super::active::{COUNT_PLANE, MAP_PLANE};
-use super::card::BuildCard;
+use super::card::{BuildCard, ContractionRoute};
 use super::request::{Body, DeclaredSlot, KernelRequest, LaneAxis, Steps, TargetText, UnitAnswer};
 use super::segment::FUSED_STEPS_PLANE;
 use super::stage_block::{KeyedRecord, PlaneRecord, StageBlock, TeamRecord};
@@ -11,7 +11,9 @@ use super::{walk_of, wing, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{Access, Dtype, Role, Scalar, Target, Walk};
 use aether_writers::refuse::{bad, fault, not_written, Refusal};
 use raptor_ir::record::Ctx;
+use raptor_wings::contraction::recognize;
 use raptor_wings::cost::{dispatch_costs, BranchCost};
+use raptor_wings::gemm::{gemm_plan, Extent, GemmPlan};
 use raptor_wings::segment::{class_name, offsets_name, stale_name, strategies, Strategy};
 use raptor_wings::stages::stored_cells;
 
@@ -35,6 +37,8 @@ pub(super) struct Parts<'a> {
     pub typed: &'a Walk,
     /// The unit's text per target.
     pub texts: &'a [TargetText],
+    /// How the card runs a dense contraction of the request's scalar type on the device; `Gemm` without a device card.
+    pub route: ContractionRoute,
 }
 
 /// The header's value of a count the runner chooses.
@@ -384,6 +388,61 @@ fn branch_cost(cost: &BranchCost) -> m::BranchCost {
     }
 }
 
+/// The matrix products of a unit that is one dense contraction the card routes, or none. The unit keeps its full kernel in either
+/// case: a host plan runs the loop, a device plan the products. A banded unit and a contraction whose shapes the strides do not state
+/// have none, as have the units the old route did not take.
+fn gemm(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Gemm>, Refusal> {
+    if parts.route == ContractionRoute::Direct || parts.request.scalar == Scalar::Banded {
+        return Ok(None);
+    }
+    // SAFETY: `ctx` is the live context the caller holds; the recogniser only reads it.
+    let ctx = unsafe { &mut *parts.ctx };
+    let Some(found) = recognize(ctx, &parts.pending.member.sinks, &[]).map_err(wing)? else {
+        return Ok(None);
+    };
+    let Some(plan) = gemm_plan(&found) else {
+        return Ok(None);
+    };
+    Ok(gemm_member(&plan, slots))
+}
+
+/// The record of a product over the unit's slots, by plane name; none when the unit lacks a slot of that name.
+fn gemm_member(plan: &GemmPlan, slots: &[m::Slot]) -> Option<m::Gemm> {
+    let call = &plan.forward;
+    let (Some(a), Some(b), Some(c)) = (
+        slot_at(slots, &call.a),
+        slot_at(slots, &call.b),
+        slot_at(slots, &call.c),
+    ) else {
+        return None;
+    };
+    let number = |extent: Extent| match extent {
+        Extent::Fixed(n) => n,
+        Extent::PerLane => m::GEMM_PER_LANE,
+    };
+    let [(a_rows, a_cols), (b_rows, b_cols), (c_rows, c_cols)] =
+        call.shapes.map(|(rows, cols)| (number(rows), number(cols)));
+    let bit = |on: bool, flag: u32| if on { flag } else { 0 };
+    Some(m::Gemm {
+        lane_fanin: plan.lane_fanin,
+        calls: vec![m::GemmCall {
+            flags: bit(call.trans_a, m::GEMM_TRANS_A)
+                | bit(call.trans_b, m::GEMM_TRANS_B)
+                | bit(call.trans_c, m::GEMM_TRANS_C)
+                | bit(call.accumulate, m::GEMM_ACCUMULATE),
+            a_slot: a,
+            b_slot: b,
+            c_slot: c,
+            a_rows,
+            a_cols,
+            b_rows,
+            b_cols,
+            c_rows,
+            c_cols,
+        }],
+    })
+}
+
 /// The cost of each branch of each dispatch group of a walk, in the walk's dispatch listing order (an auto group only: the runtime
 /// prices its entry choice from them; any other group states none).
 fn group_costs(
@@ -539,6 +598,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
             .map(|h| h.fold_entry.clone())
     };
     let dispatches = dispatches(parts, &slots)?;
+    let gemm = gemm(parts, &slots)?;
     let companions = facts
         .companions
         .iter()
@@ -573,6 +633,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
         device_compiler: image.map(|i| i.compiler.clone()),
         device_flags: image.map(|i| i.flags.clone()),
         device_ptx_isa: image.map_or(0, |i| i.ptx_isa),
+        gemm,
         device_function: device,
         launch: launch(parts, &slots),
         finish: finish(parts, &slots)?,
@@ -979,5 +1040,103 @@ mod tests {
             let costs = group_costs(ctx, order, &found).unwrap();
             assert_eq!(costs, [vec![], vec![]]);
         });
+    }
+
+    /// The recorded kernels of the gemm tests: the IR dump of each and the positions of its sinks in it.
+    const KERNELS: &str = include_str!("../../tests/data/gemm_kernels.json");
+
+    /// The matrix products of the recorded kernel `name`, from the recogniser over its dump.
+    fn plan_of(name: &str) -> GemmPlan {
+        let kernels = rcore::json::parse(KERNELS).unwrap();
+        let case = kernels
+            .get("cases")
+            .and_then(|c| c.get(name))
+            .expect("a recorded kernel");
+        let dump = case.get("dump").and_then(rcore::json::J::str).unwrap();
+        let c = rx_ctx_new();
+        let mut roots = vec![0u32; 4096];
+        let mut n = 0;
+        // SAFETY: `c` is the live context made above, `dump` and `roots` outlive the call.
+        let status = unsafe {
+            rx_load(
+                c,
+                dump.as_ptr().cast(),
+                dump.len(),
+                roots.as_mut_ptr(),
+                roots.len(),
+                &mut n,
+            )
+        };
+        assert_eq!(status, RX_OK);
+        let sinks: Vec<u32> = case
+            .get("sinks")
+            .unwrap()
+            .arr()
+            .iter()
+            .map(|p| match p {
+                rcore::json::J::Num(at) => roots[*at as usize],
+                _ => panic!("a sink position"),
+            })
+            .collect();
+        // SAFETY: `c` is the live context made above; nothing else holds it.
+        let found = recognize(unsafe { &mut *c }, &sinks, &[])
+            .unwrap()
+            .expect("a contraction");
+        // SAFETY: `c` is the live context made above and is not used after.
+        unsafe { rx_ctx_free(c) };
+        gemm_plan(&found).expect("a product")
+    }
+
+    /// Oracle: the product the old route planned for `contract_staged` (the plane counted by the launch is the lane-major operand,
+    /// so A is it, stored (8, lanes / 6) and read transposed; B is `w`, stored (8, 6); C is `y`, (lanes / 6, 6)), over six lanes
+    /// per slot.
+    #[test]
+    fn a_contraction_with_a_plane_counted_by_the_launch_states_one_per_lane_extent_and_the_fan_in()
+    {
+        let slots = [slot("w"), slot("feat"), slot("y")];
+        let gemm = gemm_member(&plan_of("contract_staged"), &slots).expect("a member");
+        assert_eq!(gemm.lane_fanin, 6);
+        let [call] = &gemm.calls[..] else {
+            panic!("one call")
+        };
+        assert_eq!((call.a_slot, call.b_slot, call.c_slot), (1, 0, 2));
+        assert_eq!(call.flags, m::GEMM_TRANS_A);
+        let lane = m::GEMM_PER_LANE;
+        assert_eq!(
+            [
+                call.a_rows,
+                call.a_cols,
+                call.b_rows,
+                call.b_cols,
+                call.c_rows,
+                call.c_cols
+            ],
+            [8, lane, 8, 6, lane, 6]
+        );
+    }
+
+    /// Oracle: the same planned for `contract`, whose planes have declared sizes: no extent is the run's, so there is no fan-in.
+    #[test]
+    fn a_contraction_over_planes_of_declared_sizes_states_numbers_only() {
+        let slots = [slot("w"), slot("f"), slot("y")];
+        let gemm = gemm_member(&plan_of("contract"), &slots).expect("a member");
+        assert_eq!(gemm.lane_fanin, 0);
+        let call = &gemm.calls[0];
+        assert_eq!(
+            [
+                call.a_rows,
+                call.a_cols,
+                call.b_rows,
+                call.b_cols,
+                call.c_rows,
+                call.c_cols
+            ],
+            [8, 5, 8, 6, 5, 6]
+        );
+    }
+
+    #[test]
+    fn a_unit_without_a_slot_of_an_operands_name_states_no_product() {
+        assert!(gemm_member(&plan_of("contract"), &[slot("w"), slot("y")]).is_none());
     }
 }

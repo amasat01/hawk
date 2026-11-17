@@ -686,6 +686,58 @@ record! {
         pub form: LinkForm,
     }
 }
+/// The flag bits of a matrix product, with the header's macro names.
+pub const GEMM_FLAGS: [(u32, &str); 4] = [
+    (1 << 0, "EG_GEMM_TRANS_A"),
+    (1 << 1, "EG_GEMM_TRANS_B"),
+    (1 << 2, "EG_GEMM_TRANS_C"),
+    (1 << 3, "EG_GEMM_ACCUMULATE"),
+];
+/// The flag of a product whose A is stored (k, m).
+pub const GEMM_TRANS_A: u32 = 1 << 0;
+/// The flag of a product whose B is stored (n, k).
+pub const GEMM_TRANS_B: u32 = 1 << 1;
+/// The flag of a product whose C is stored through a transposed view.
+pub const GEMM_TRANS_C: u32 = 1 << 2;
+/// The flag of a product that adds into C.
+pub const GEMM_ACCUMULATE: u32 = 1 << 3;
+/// An extent that is the run's lane count over the record's `lane_fanin`.
+pub const GEMM_PER_LANE: i64 = -1;
+record! {
+    /// One matrix product of a gemm unit over three of its slots, as stored shapes.
+    pub struct GemmCall {
+        /// The flag bits (`GEMM_FLAGS`).
+        pub flags: u32,
+        /// The slot that is A.
+        pub a_slot: usize,
+        /// The slot that is B.
+        pub b_slot: usize,
+        /// The slot that is C, a written one.
+        pub c_slot: usize,
+        /// The stored rows of A.
+        pub a_rows: i64,
+        /// The stored columns of A.
+        pub a_cols: i64,
+        /// The stored rows of B.
+        pub b_rows: i64,
+        /// The stored columns of B.
+        pub b_cols: i64,
+        /// The stored rows of C.
+        pub c_rows: i64,
+        /// The stored columns of C.
+        pub c_cols: i64,
+    }
+}
+record! {
+    /// The matrix products a unit that is one dense contraction is, stated beside its kernel, which it still carries in full: a
+    /// host plan runs the kernel's own loop and a device plan the products.
+    pub struct Gemm {
+        /// The other operand's free extent: a `GEMM_PER_LANE` extent is the run's lane count over it; 0: none.
+        pub lane_fanin: i64,
+        /// The products, run in order.
+        pub calls: Vec<GemmCall>,
+    }
+}
 record! {
     /// What a derived unit is to its primal.
     pub struct Derived {
@@ -752,6 +804,8 @@ record! {
         pub device_flags: Option<String>,
         /// The PTX version of the image's PTX as major * 10 + minor (85 is 8.5); 0 when it holds no PTX.
         pub device_ptx_isa: i64,
+        /// The matrix products the unit is, when it is one dense contraction the card routes.
+        pub gemm: Option<Gemm>,
     }
 }
 record! {

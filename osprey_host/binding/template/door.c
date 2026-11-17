@@ -59,7 +59,13 @@
     X(eg_banded_pack_scalar)                                                                       \
     X(eg_plan_entry_figures)                                                                       \
     X(eg_runner_reset)                                                                             \
-    X(eg_runner_figures)
+    X(eg_runner_figures)                                                                           \
+    X(eg_fft_new)                                                                                  \
+    X(eg_fft_run)                                                                                  \
+    X(eg_fft_free)                                                                                 \
+    X(eg_gemm_new)                                                                                 \
+    X(eg_gemm_run)                                                                                 \
+    X(eg_gemm_free)
 
 /* The door's functions of one opened library, typed by their declarations in the header. */
 typedef struct {
@@ -73,8 +79,17 @@ typedef struct {
     eg_ctx* ctx; /* NULL once the context is freed */
 } Door;
 
-typedef enum { KIND_UNIT, KIND_PLANE, KIND_PLAN, KIND_RUNNER, KIND_GRAPH } Kind;
-static const char* const kind_names[] = { "unit", "plane", "plan", "runner", "graph" };
+typedef enum {
+    KIND_UNIT,
+    KIND_PLANE,
+    KIND_PLAN,
+    KIND_RUNNER,
+    KIND_GRAPH,
+    KIND_FFT,
+    KIND_GEMM
+} Kind;
+static const char* const kind_names[]
+    = { "unit", "plane", "plan", "runner", "graph", "fft", "gemm" };
 
 /* A handle the door made, with the Door that made it; ptr is NULL once the handle is freed. */
 typedef struct {
@@ -184,8 +199,12 @@ static eg_status handle_release(Door* d, Kind kind, void* ptr)
         return d->fn.eg_plan_free(d->ctx, ptr);
     case KIND_RUNNER:
         return d->fn.eg_runner_free(d->ctx, ptr);
-    default:
+    case KIND_GRAPH:
         return d->fn.eg_graph_free(d->ctx, ptr);
+    case KIND_FFT:
+        return d->fn.eg_fft_free(d->ctx, ptr);
+    default:
+        return d->fn.eg_gemm_free(d->ctx, ptr);
     }
 }
 
@@ -1227,6 +1246,133 @@ static PyObject* m_runner_reset(PyObject* self, PyObject* args)
     Py_RETURN_NONE;
 }
 
+/* ---- transforms ---------------------------------------------------------------------------- */
+
+/* fft_new(kind, norm, dtype_bits, shape, axes, flags=0): a transform plan. Complex data is a float
+ * plane whose last axis has extent 2; `shape` counts complex elements (the real side for R2C and
+ * C2R) and never that trailing 2. The kinds, norms and flags are the EG_FFT_ constants. */
+static PyObject* m_fft_new(PyObject* self, PyObject* args, PyObject* kw)
+{
+    static char* names[] = { "kind", "norm", "dtype_bits", "shape", "axes", "flags", NULL };
+    Door* d              = (Door*)self;
+    int kind, norm;
+    unsigned int bits, flags = 0;
+    PyObject *oshape, *oaxes;
+    if (!PyArg_ParseTupleAndKeywords(
+            args, kw, "iiIOO|I", names, &kind, &norm, &bits, &oshape, &oaxes, &flags)
+        || !door_ready(d))
+        return NULL;
+    void *shape, *axes;
+    Py_ssize_t ndim, n_axes;
+    if (seq_ints(oshape, sizeof(int64_t), &shape, &ndim) < 0)
+        return NULL;
+    if (seq_ints(oaxes, sizeof(int32_t), &axes, &n_axes) < 0) {
+        PyMem_Free(shape);
+        return NULL;
+    }
+    struct eg_fft_desc desc = { .struct_size = sizeof desc,
+        .flags                               = flags,
+        .kind                                = kind,
+        .norm                                = norm,
+        .dtype_bits                          = bits,
+        .ndim                                = (int32_t)ndim,
+        .shape                               = shape,
+        .n_axes                              = (int32_t)n_axes,
+        .axes                                = axes };
+    eg_fft* plan            = NULL;
+    PyObject* res           = NULL;
+    if (door_check(d, d->fn.eg_fft_new(d->ctx, &desc, &plan)) == 0)
+        res = handle_make(d, KIND_FFT, plan);
+    PyMem_Free(shape);
+    PyMem_Free(axes);
+    return res;
+}
+
+/* fft_run(plan, source, out): runs the plan once, source -> out, both plane handles. */
+static PyObject* m_fft_run(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject *oplan, *osource, *oout;
+    void *plan, *source, *out;
+    if (!PyArg_ParseTuple(args, "OOO", &oplan, &osource, &oout) || !door_ready(d)
+        || handle_ptr(d, oplan, KIND_FFT, &plan) < 0
+        || handle_ptr(d, osource, KIND_PLANE, &source) < 0
+        || handle_ptr(d, oout, KIND_PLANE, &out) < 0)
+        return NULL;
+    if (door_check(d, d->fn.eg_fft_run(d->ctx, plan, source, out)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
+/* fft_free(plan): drops the caller's reference; a recording that runs the plan keeps it. */
+static PyObject* m_fft_free(PyObject* self, PyObject* args)
+{
+    return handle_free(self, args, KIND_FFT);
+}
+
+/* ---- matrix products ----------------------------------------------------------------------- */
+
+/* The two extents (rows, columns) of a stored shape. */
+static int gemm_extents(PyObject* shape, int64_t* rows, int64_t* cols)
+{
+    void* v;
+    Py_ssize_t n;
+    if (seq_ints(shape, sizeof(int64_t), &v, &n) < 0)
+        return -1;
+    if (n != 2) {
+        PyMem_Free(v);
+        PyErr_SetString(PyExc_ValueError, "a stored shape is (rows, columns)");
+        return -1;
+    }
+    *rows = ((int64_t*)v)[0];
+    *cols = ((int64_t*)v)[1];
+    PyMem_Free(v);
+    return 0;
+}
+
+/* gemm_new(a_shape, b_shape, c_shape, dtype_bits, flags=0): C = op(A) op(B) over the STORED shapes
+ * (rows, columns) of three row-major matrices; flags are the EG_GEMM_ constants. */
+static PyObject* m_gemm_new(PyObject* self, PyObject* args, PyObject* kw)
+{
+    static char* names[] = { "a_shape", "b_shape", "c_shape", "dtype_bits", "flags", NULL };
+    Door* d              = (Door*)self;
+    PyObject *oa, *ob, *oc;
+    unsigned int bits, flags = 0;
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOOI|I", names, &oa, &ob, &oc, &bits, &flags)
+        || !door_ready(d))
+        return NULL;
+    struct eg_gemm_desc desc = { .struct_size = sizeof desc, .flags = flags, .dtype_bits = bits };
+    if (gemm_extents(oa, &desc.a_rows, &desc.a_cols) < 0
+        || gemm_extents(ob, &desc.b_rows, &desc.b_cols) < 0
+        || gemm_extents(oc, &desc.c_rows, &desc.c_cols) < 0)
+        return NULL;
+    eg_gemm* gemm = NULL;
+    if (door_check(d, d->fn.eg_gemm_new(d->ctx, &desc, &gemm)) < 0)
+        return NULL;
+    return handle_make(d, KIND_GEMM, gemm);
+}
+
+/* gemm_run(gemm, a, b, c): runs the product once over three plane handles. */
+static PyObject* m_gemm_run(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject *ogemm, *oa, *ob, *oc;
+    void *gemm, *a, *b, *c;
+    if (!PyArg_ParseTuple(args, "OOOO", &ogemm, &oa, &ob, &oc) || !door_ready(d)
+        || handle_ptr(d, ogemm, KIND_GEMM, &gemm) < 0 || handle_ptr(d, oa, KIND_PLANE, &a) < 0
+        || handle_ptr(d, ob, KIND_PLANE, &b) < 0 || handle_ptr(d, oc, KIND_PLANE, &c) < 0)
+        return NULL;
+    if (door_check(d, d->fn.eg_gemm_run(d->ctx, gemm, a, b, c)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
+/* gemm_free(gemm): drops the caller's reference; a host recording that runs it keeps it. */
+static PyObject* m_gemm_free(PyObject* self, PyObject* args)
+{
+    return handle_free(self, args, KIND_GEMM);
+}
+
 /* ---- the types and the module -------------------------------------------------------------- */
 
 #define KEYWORD_CALL(f) ((PyCFunction)(void (*)(void))(f))
@@ -1273,6 +1419,12 @@ static PyMethodDef door_methods[] = {
     { "plan_entry_figures", m_plan_entry_figures, METH_VARARGS, NULL },
     { "runner_reset", m_runner_reset, METH_VARARGS, NULL },
     { "runner_figures", m_runner_figures, METH_VARARGS, NULL },
+    { "fft_new", KEYWORD_CALL(m_fft_new), METH_VARARGS | METH_KEYWORDS, NULL },
+    { "fft_run", m_fft_run, METH_VARARGS, NULL },
+    { "fft_free", m_fft_free, METH_VARARGS, NULL },
+    { "gemm_new", KEYWORD_CALL(m_gemm_new), METH_VARARGS | METH_KEYWORDS, NULL },
+    { "gemm_run", m_gemm_run, METH_VARARGS, NULL },
+    { "gemm_free", m_gemm_free, METH_VARARGS, NULL },
     { NULL, NULL, 0, NULL },
 };
 
@@ -1381,7 +1533,20 @@ static PyType_Spec handle_spec    = { "_osprey.Handle", sizeof(Handle), 0,
     X(EG_MEM_DEVICE)                                                                               \
     X(EG_PLANE_ZERO)                                                                               \
     X(EG_ENTRY_DEVICE)                                                                             \
-    X(EG_ENTRY_PERSIST)
+    X(EG_ENTRY_PERSIST)                                                                            \
+    X(EG_FFT_C2C)                                                                                  \
+    X(EG_FFT_R2C)                                                                                  \
+    X(EG_FFT_C2R)                                                                                  \
+    X(EG_FFT_NORM_BACKWARD)                                                                        \
+    X(EG_FFT_NORM_FORWARD)                                                                         \
+    X(EG_FFT_NORM_ORTHO)                                                                           \
+    X(EG_FFT_INVERSE)                                                                              \
+    X(EG_FFT_ADJOINT)                                                                              \
+    X(EG_ENTRY_GEMM)                                                                               \
+    X(EG_GEMM_TRANS_A)                                                                             \
+    X(EG_GEMM_TRANS_B)                                                                             \
+    X(EG_GEMM_TRANS_C)                                                                             \
+    X(EG_GEMM_ACCUMULATE)
 
 /* Adds the Door and Handle types, the door's constants and the digest width to the module; the
  * exception classes must be in it already (osprey_add_errors). */

@@ -23,7 +23,7 @@ const TEMPLATE_ALLOW: [&str; 7] = [
 const TEMPLATE_RX: [&str; 3] = ["rx_ctx_new", "rx_ctx_free", "rx_abi_version"];
 // the Node surface: python name, door function, getter (true) or method (false). A front end reads back what it made through
 // these: the class, the operands, the type and the typed fields of a node (raptor_ir_front.h); every other question is the backend's
-const NODE_SURFACE: [(&str, &str, bool); 12] = [
+const NODE_SURFACE: [(&str, &str, bool); 13] = [
     ("cls", "rx_class", true),
     ("operands", "rx_operands", true),
     ("ttype", "rx_ttype_of", true),
@@ -36,6 +36,7 @@ const NODE_SURFACE: [(&str, &str, bool); 12] = [
     ("field_node_list", "rx_field_node_list", false),
     ("field_ints", "rx_field_ints", false),
     ("field_names", "rx_field_names", false),
+    ("field_pairs", "rx_field_pairs", false),
 ];
 // Prototypes of the headers the binding does not wrap: none. Every shape has a rule, and a prototype without one is refused.
 const NOT_WRAPPED: [&str; 0] = [];
@@ -79,6 +80,7 @@ enum P {
     OutType,
     OutI64s,
     OutNames,
+    OutPairs,
 }
 
 struct Proto {
@@ -208,6 +210,9 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
         } else if t == "rx_type*" {
             out.push(P::OutType);
             i += 1
+        } else if t == "rx_pair*" && sz(&next) && szp(&next2) {
+            out.push(P::OutPairs);
+            i += 3
         } else if t == "char*" && sz(&next) && szp(&next2) && szp(&ps.get(i + 3).map(|p| shape(p)))
         {
             out.push(P::OutNames);
@@ -258,6 +263,7 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
                     | P::OutType
                     | P::OutI64s
                     | P::OutNames
+                    | P::OutPairs
             )
         })
         .count()
@@ -569,6 +575,7 @@ fn wrapper(p: &Proto) -> String {
         Some(P::OutType) => tail += &format!("  rx_type ot; memset(&ot, 0, sizeof ot);\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = osprey_type_tuple(&ot);\n", call(&["&ot"])),
         Some(P::OutI64s) => tail += &format!("  int64_t si[64]; int64_t* hi = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hi = PyMem_Malloc((cnt ? cnt : 1) * sizeof(int64_t)); if (!hi) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hi); goto done; }}\n  res = osprey_i64_tuple(hi ? hi : si, cnt);\n  PyMem_Free(hi);\n", call(&["si", "64", "&cnt"]), call(&["hi", "cnt", "&cnt"])),
         Some(P::OutNames) => tail += &format!("  char sb[256]; char* hb = NULL; size_t len = 0, cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hb = PyMem_Malloc(len + 1); if (!hb) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hb); goto done; }}\n  res = osprey_names_tuple(hb ? hb : sb, len);\n  PyMem_Free(hb);\n", call(&["sb", "sizeof sb", "&len", "&cnt"]), call(&["hb", "len + 1", "&len", "&cnt"])),
+        Some(P::OutPairs) => tail += &format!("  rx_pair sp[16]; rx_pair* hp = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hp = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rx_pair)); if (!hp) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hp); goto done; }}\n  res = osprey_pairs_tuple(hp ? hp : sp, cnt);\n  PyMem_Free(hp);\n", call(&["sp", "16", "&cnt"]), call(&["hp", "cnt", "&cnt"])),
         Some(P::OutChars(_, n)) => tail += &format!("  char dg[{n}] = {{0}};\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyUnicode_FromString(dg);\n", call(&["dg"])),
         _ => unreachable!(),
     }
@@ -701,6 +708,26 @@ static inline PyObject* osprey_names_tuple(const char* packed, size_t len) {
 
 /* The dtype names, in the order of the RX_ codes of raptor_ir_front.h. */
 static const char* const osprey_dtype_names[] = {"f64", "f32", "i32", "i64", "bool", "int32", "uint32"};
+
+/* One part of a pair as None, an int or a str. */
+static inline PyObject* osprey_pair_part(const rx_pair_part* part) {
+  if (part->kind == 1) return PyLong_FromLongLong((long long)part->number);
+  if (part->kind == 2) return PyUnicode_FromString(part->text);
+  Py_INCREF(Py_None);
+  return Py_None;
+}
+
+/* A tuple of pairs as a tuple of 2-tuples, an absent part None. */
+static inline PyObject* osprey_pairs_tuple(const rx_pair* pairs, size_t n) {
+  PyObject* out = PyTuple_New((Py_ssize_t)n);
+  if (!out) return NULL;
+  for (size_t i = 0; i < n; i++) {
+    PyObject* item = Py_BuildValue("(NN)", osprey_pair_part(&pairs[i].first), osprey_pair_part(&pairs[i].second));
+    if (!item) { Py_DECREF(out); return NULL; }
+    PyTuple_SetItem(out, (Py_ssize_t)i, item);
+  }
+  return out;
+}
 
 /* A node's type as (shape tuple, dtype name, tag or None). */
 static inline PyObject* osprey_type_tuple(const rx_type* ty) {

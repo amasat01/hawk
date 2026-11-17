@@ -61,9 +61,10 @@ fi
 # a library with the wrong abi number, for the entry's refusal test
 clang $shared -fPIC -o "$here/build/libabi1.$ext" "$here/fixture/abi1.c"
 clang $shared -fPIC -I"$inc" -I"$repo/include" -o "$here/build/libcontract0.$ext" "$here/fixture/contract0.c"
-# the unit libraries of the door's own fixtures (units; a recorded loop and its reverse), for the binding's tests of the door calls
+# the unit libraries of the door's own fixtures (units; a recorded loop and its reverse; matrix-product units), for the binding's tests of the door calls
 clang $shared -fPIC -std=c11 -I"$EAGLE_DOOR_DIR" -o "$here/build/libfixture_unit.$ext" "$EAGLE_DOOR_DIR/eagle/door/test/fixture_unit.c"
 clang $shared -fPIC -std=c11 -I"$EAGLE_DOOR_DIR" -o "$here/build/libfixture_reverse.$ext" "$EAGLE_DOOR_DIR/eagle/door/test/fixture_reverse.c"
+clang $shared -fPIC -std=c11 -I"$EAGLE_DOOR_DIR" -o "$here/build/libfixture_gemm.$ext" "$EAGLE_DOOR_DIR/eagle/door/test/fixture_gemm.c"
 "$gen" --check $hdrs --header "$repo/include/osprey_host.h" --door-header "$EAGLE_DOOR_DIR/eagle/door/eg_door.h" --door-source "$here/template/door.c" \
   --template "$here/template" --generated "$here/build/_osprey.c" --ext "$here/build/_osprey.abi3.so"
 # the module must load: a link gap fails here, not in a later caller

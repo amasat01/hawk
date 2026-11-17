@@ -500,3 +500,40 @@ fn the_contraction_and_the_rows_of_the_device_thread_box_are_read_and_a_bad_one_
     let why = device_card_stating("\"rows\": []", &format!("\"rows\": [{lanes}]")).unwrap_err();
     assert!(why.contains("lanes"), "{why}");
 }
+
+/// Oracle: the shipped device card runs a contraction as `gemm` for both scalar types; a type the card states `direct` for runs its
+/// loop, the other type still states the products; a thread box row of the architecture and type that states a route replaces the
+/// card's for that type alone; a row of another architecture, or one that states no route, changes nothing; and no device name is
+/// asked for.
+#[test]
+fn the_card_decides_the_route_of_a_contraction_per_scalar_type_and_architecture() {
+    use osprey_host::lower::card::ContractionRoute::{Direct, Gemm};
+    let kept = device_card_stating("\"float32\": \"gemm\"", "\"float32\": \"gemm\"").unwrap();
+    for (arch, scalar) in [
+        ("sm_61", "float32"),
+        ("sm_61", "float64"),
+        ("sm_80", "float64"),
+    ] {
+        assert_eq!(
+            kept.contraction_route(arch, scalar),
+            Gemm,
+            "{arch} {scalar}"
+        );
+    }
+    let direct = device_card_stating("\"float32\": \"gemm\"", "\"float32\": \"direct\"").unwrap();
+    assert_eq!(direct.contraction_route("sm_61", "float32"), Direct);
+    assert_eq!(direct.contraction_route("sm_61", "float64"), Gemm);
+    let row =
+        r#"{"cc": "sm_00", "device": "Test Card", "dtype": "float64", "contraction": "direct"}"#;
+    let with_row = device_card_stating("\"rows\": []", &format!("\"rows\": [{row}]")).unwrap();
+    assert_eq!(with_row.contraction_route("sm_00", "float64"), Direct);
+    assert_eq!(with_row.contraction_route("sm_00", "float32"), Gemm);
+    assert_eq!(with_row.contraction_route("sm_61", "float64"), Gemm);
+    let silent = row.replace(", \"contraction\": \"direct\"", ", \"lanes\": 8");
+    let no_route = device_card_stating("\"rows\": []", &format!("\"rows\": [{silent}]")).unwrap();
+    assert_eq!(no_route.contraction_route("sm_00", "float64"), Gemm);
+    // the row states `direct` over a card that states `gemm`; the row wins even where the card says `direct` the other way
+    let direct_default =
+        device_card_stating("\"float64\": \"gemm\"", "\"float64\": \"direct\"").unwrap();
+    assert_eq!(direct_default.contraction_route("sm_61", "float64"), Direct);
+}

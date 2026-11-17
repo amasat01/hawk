@@ -345,7 +345,39 @@ pub struct DeviceCard {
     stated: bool,
 }
 
+/// How a dense contraction of one scalar type runs on a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractionRoute {
+    /// The library states the matrix products beside the kernel, for a device plan to run through the vendor's library.
+    Gemm,
+    /// The unit states none and runs its own loop everywhere.
+    Direct,
+}
+
 impl DeviceCard {
+    /// The route of a contraction of the scalar type `scalar` (`float32` or `float64`) on the architecture `arch`: the row of the
+    /// card's thread box rows for that architecture and type that states a route, else the card's route for the type, else
+    /// `Gemm`. A row matches on architecture and type only: the library is told no device name.
+    pub fn contraction_route(&self, arch: &str, scalar: &str) -> ContractionRoute {
+        let word = self
+            .box_rows
+            .iter()
+            .find(|row| row.cc == arch && row.dtype == scalar && row.contraction.is_some())
+            .and_then(|row| row.contraction.as_deref())
+            .or_else(|| {
+                self.box_contraction
+                    .iter()
+                    .find(|(name, _)| name == scalar)
+                    .map(|(_, route)| route.as_str())
+            });
+        // the readers refuse every other word, so a word here is one of the two
+        if word == Some("direct") {
+            ContractionRoute::Direct
+        } else {
+            ContractionRoute::Gemm
+        }
+    }
+
     /// What a lookup this card cannot satisfy is: a bad request naming the document when the caller stated it, else a fault.
     fn defect(&self, reason: &str) -> Refusal {
         blame(self.stated, "cuda_build.json", reason.into()).refusal()

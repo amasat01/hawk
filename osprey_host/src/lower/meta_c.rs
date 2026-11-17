@@ -6,9 +6,9 @@
 //! What the digest of a unit is: the unit's canonical walk digest (SHA-256 of the walk, 64 hex digits in the answer), decoded to
 //! its 32 bytes. The device image is named by its bytes symbol and its size symbol; its content is never part of the source.
 use super::unit_meta::{
-    BranchCost, Derived, Dispatch, DispatchStrategy, LibraryMeta, StepsTable, ThreadBox, UnitMeta,
-    BRANCH_FLAGS, BRANCH_HAS_STORES, FINISH_FLAGS, LIBRARY_META_SYMBOL, SCHEMA_MAJOR, SLOT_FLAGS,
-    UNIT_FLAGS,
+    BranchCost, Derived, Dispatch, DispatchStrategy, Gemm, LibraryMeta, StepsTable, ThreadBox,
+    UnitMeta, BRANCH_FLAGS, BRANCH_HAS_STORES, FINISH_FLAGS, GEMM_FLAGS, GEMM_PER_LANE,
+    LIBRARY_META_SYMBOL, SCHEMA_MAJOR, SLOT_FLAGS, UNIT_FLAGS,
 };
 use aether_writers::refuse::{fault, Refusal};
 use std::fmt::Write;
@@ -597,10 +597,57 @@ fn derived(out: &mut Out, derived: Option<&Derived>) -> String {
     format!("&{}", out.record("eg_unit_derived", "derived", &members))
 }
 
+/// An extent of a stored plane: the header's name for the run's lane count, else the number.
+fn extent(n: i64) -> String {
+    if n == GEMM_PER_LANE {
+        "EG_GEMM_PER_LANE".into()
+    } else {
+        n.to_string()
+    }
+}
+
+/// The gemm record of a unit, as a pointer to it or NULL for a unit that is not one.
+fn gemm(out: &mut Out, gemm: Option<&Gemm>) -> String {
+    let Some(g) = gemm else {
+        return "NULL".into();
+    };
+    let calls: Vec<String> = g
+        .calls
+        .iter()
+        .enumerate()
+        .map(|(at, c)| {
+            let members = [
+                ("flags", flags(c.flags, &GEMM_FLAGS)),
+                ("a_slot", c.a_slot.to_string()),
+                ("b_slot", c.b_slot.to_string()),
+                ("c_slot", c.c_slot.to_string()),
+                ("reserved0", "0".into()),
+                ("a_rows", extent(c.a_rows)),
+                ("a_cols", extent(c.a_cols)),
+                ("b_rows", extent(c.b_rows)),
+                ("b_cols", extent(c.b_cols)),
+                ("c_rows", extent(c.c_rows)),
+                ("c_cols", extent(c.c_cols)),
+            ];
+            out.record("eg_unit_gemm_call", &format!("gc{at}"), &members)
+        })
+        .collect();
+    let members = [
+        ("n_calls", calls.len().to_string()),
+        ("lane_fanin", g.lane_fanin.to_string()),
+        (
+            "calls",
+            out.pointers("eg_unit_gemm_call", "gemm_calls", &calls),
+        ),
+    ];
+    format!("&{}", out.record("eg_unit_gemm", "gemm", &members))
+}
+
 /// One unit's objects; returns the unit record's name.
 fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
     let stage_list = stages(out, unit)?;
     let derived_list = derived(out, unit.derived.as_ref());
+    let gemm_record = gemm(out, unit.gemm.as_ref());
     let (body, launch, finish) = (body(out, unit)?, launch(out, unit), finish(out, unit));
     let members = [
         ("flags", flags(unit.flags, &UNIT_FLAGS)),
@@ -627,6 +674,7 @@ fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
         ("device_flags", lit_or_null(&unit.device_flags)),
         ("device_ptx_isa", unit.device_ptx_isa.to_string()),
         ("reserved1", "0".into()),
+        ("gemm", gemm_record),
     ];
     Ok(out.record("eg_unit_meta", "meta", &members))
 }

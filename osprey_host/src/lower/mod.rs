@@ -231,6 +231,21 @@ impl Cards {
         })
     }
 
+    /// How the device card runs a dense contraction of the request's scalar type; `Gemm` for a request without a device target.
+    fn contraction_route(
+        &self,
+        request: &KernelRequest,
+    ) -> Result<card::ContractionRoute, Refusal> {
+        let Some(device) = &self.device else {
+            return Ok(card::ContractionRoute::Gemm);
+        };
+        let scalar = match request.scalar {
+            Scalar::Float32 => "float32",
+            _ => "float64",
+        };
+        Ok(device.contraction_route(&device_arch(request)?, scalar))
+    }
+
     /// The build numbers of a target's card, before the caller's settings are laid over them.
     fn numbers(&self, target: Target) -> Result<Build, Refusal> {
         match (target, &self.device) {
@@ -526,6 +541,7 @@ fn write(
         digest: &digest,
         typed: &typed_walk(ctx, walk)?,
         texts: &texts,
+        route: cards.contraction_route(request)?,
     })?;
     Ok(UnitAnswer { texts, meta })
 }

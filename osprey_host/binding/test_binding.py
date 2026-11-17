@@ -557,6 +557,9 @@ walked = c.cells_walk([c.new("Assign", "(('name', 'o'), ('value', #0))", [auto])
 assert c.walk_strategies(walked) == ("auto",) and c.walk_static_selector(walked, 0) is True
 assert c.walk_slot_type(walked, "lookup", "dispatch0_mix") == ((), "uint32", None)
 assert c.walk_prior(walked) == ()
+# the previous package named the mix slot of an automatic group `dispatch<i>_mix`; the walk bound
+# no mix slot for any other group
+assert c.walk_mix_slots(walked) == (("dispatch0", "dispatch0_mix"),)
 raises(
     ValueError,
     lambda: c.walk_slot_type(walked, "lookup", "no_such"),
@@ -568,6 +571,51 @@ raises(
     "walk_static_selector of a dispatch the walk lacks",
 )
 done.append("walk_slot_type, walk_prior, walk_strategies and walk_static_selector")
+
+
+# the mix slot of each dispatch group: `dispatch<i>_mix` for an automatic group, None (never a
+# text) for any other
+def groups_of(*forms):
+    """The mix slots of the walk of a kernel that assigns each dispatch form to its own plane."""
+    sinks = [
+        c.new("Assign", f"(('name', 'o{i}'), ('value', #0))", [dispatch])
+        for i, dispatch in enumerate(forms)
+    ]
+    return c.walk_mix_slots(c.cells_walk(sinks, "()", None))
+
+
+def form(word):
+    """The dispatch of the strategy word over the selector and the two cases above."""
+    if word == "switch":
+        return core
+    return c.make(word.capitalize() + "Dispatch", "f64", [], None, core.operands, "()")
+
+
+mixes = (("switch", None), ("predicated", None), ("segmented", None), ("auto", "dispatch0_mix"))
+for word, mix in mixes:
+    assert groups_of(form(word)) == (("dispatch0", mix),), word
+assert c.walk_mix_slots(c.cells_walk([plain], "()", None)) == ()
+done.append("walk_mix_slots: an automatic group names its mix slot, every other form is None")
+
+# a sample_position read inside a loop body is in the flat order of the walk, as in the previous
+# walk's `order`, so a scan of the order answers what its `reads_sample_position` answered (True
+# for a read in a carry's next value and for one in a body sink)
+position = c.make("SamplePosition", "i32", [], None, [], "()")
+k = c.make("LoopIndex", "i32", [], None, [], "(('depth', 0), ('name', 'k'), ('bounds', None))")
+carry_i = c.make("LoopCarry", "i32", [], None, [], "(('depth', 0), ('slot', 0), ('name', 's'))")
+zero_i = c.make("Const", "i32", [], None, [], "(('literal', 0),)")
+body_next = c.make("Op", "i32", [], None, [carry_i, position], ADD)
+by_next = c.new_loop(k, [carry_i], [zero_i], [body_next], 0, 3, 1, [], None, [], None, 0, None)
+body_sink = c.new("Assign", "(('name', 't'), ('value', #0))", [position])
+by_sink = c.new_loop(
+    k, [carry_i], [zero_i], [carry_i], 0, 3, 1, [body_sink], None, [], None, 0, None
+)
+for looped in (by_next, by_sink):
+    walk = c.cells_walk([c.new("Assign", "(('name', 'o'), ('value', #0))", [looped])], "()", None)
+    assert [n.cls for n in c.walk_order(walk) if n.cls == "SamplePosition"] == ["SamplePosition"]
+unread = c.cells_walk([c.new("Assign", "(('name', 'o'), ('value', #0))", [zero_i])], "()", None)
+assert not any(n.cls == "SamplePosition" for n in c.walk_order(unread))
+done.append("walk_order holds a sample_position read inside a loop body, as the old order did")
 
 # ---- block-sum writes expanded into per-entry accumulates ----
 c.declare_kinds()
@@ -598,6 +646,34 @@ dumped = c.dump([picked, x])
 lines = [int(line[len("root|#") :]) for line in dumped.splitlines() if line.startswith("root|#")]
 assert list(c.dump_numbers([picked, x])) == lines and c.dump_numbers([]) == ()
 done.append("dump_numbers: the line of each root in the dump")
+
+# ---- tuple fields of pairs: an absent part is None, never a text ----
+pair_key = c.make("Leaf", "i32", [], None, [], LEAF % "pk")
+for kept, held in (
+    ("(('net', None),)", (("net", None),)),
+    ("((None, 4), ('a', None))", ((None, 4), ("a", None))),
+    ("()", ()),
+):
+    params = f"(('op', 'sum'), ('value', #0), ('key', #1), ('count', #1), ('kept', {kept}))"
+    assert c.new("ReduceSamples", params, [x, pair_key]).field_pairs("kept") == held, kept
+assert c.new("ReduceSamples", "(('op', 'sum'), ('value', #0))", [x]).field_pairs("kept") == ()
+bounded = c.make(
+    "LoopIndex", "int32", [], None, [], "(('depth', 0), ('name', '_'), ('bounds', (0, 3)))"
+)
+assert bounded.field_ints("bounds") == (0, 3)
+done.append("field_pairs: kept axes with absent parts, and the empty tuple")
+
+# ---- the names the wings own ----
+special = c.wing_names("SPECIAL_KINDS")
+assert "exp" in special and "pow" in special and "add" not in special and len(special) > 20
+assert c.wing_names("FUSED_STEPS_PLANE") == ("fused_steps",)
+assert c.wing_names("FINISHED_PLANE") == ("finished_count",)
+raises(
+    ValueError,
+    lambda: c.wing_names("NO_SUCH_NAME"),
+    "wing_names of a name no wing owns",
+)
+done.append("wing_names: SPECIAL_KINDS and the reserved planes")
 
 # ---- the backend library entry: open by path, name, identity, render, close (HOST_LIB names the
 # library) ----
@@ -662,6 +738,11 @@ if lib_path:
     e = raises(o.Fault, lambda: render(lost), "backend_render: a fault of the compiled side")
     assert str(e).startswith("render: least squares (panic: "), str(e)
     assert render(json.dumps(UNIT))[0].startswith("// HAWK-emitted host translation unit")
+    # a dump whose only root is the sink names the same nodes by position: the same text comes back
+    sink_only = c3.backend_render(
+        lib, c3.dump(every[3:]), "", "[]", None, "[]", [3], json.dumps(UNIT)
+    )
+    assert sink_only[0] == render(json.dumps(UNIT))[0], "a sink-only dump renders the same unit"
     done.append("backend_render")
     e = raises(
         o.BadRequest,

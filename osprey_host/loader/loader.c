@@ -109,8 +109,9 @@ static int declare_dialects(rx_ctx* ctx, const ob_table* table, rx_ctx* inner, c
     return RX_OK;
 }
 
-/* Loads the dump into the library's fresh context; every node must keep its position as its
-   handle. */
+/* Loads the dump into the library's fresh context. The request names nodes by their position in
+   the dump, so every root must come back with the position its `root|#<position>` line states:
+   a context that numbered the nodes otherwise would make the request's handles name other nodes. */
 static int load_unit(rx_ctx* ctx, const ob_table* table, rx_ctx* inner, const char* dump,
     size_t n_dump, const char* dialects)
 {
@@ -127,10 +128,15 @@ static int load_unit(rx_ctx* ctx, const ob_table* table, rx_ctx* inner, const ch
     status = table->load(inner, dump, n_dump, handles, roots, &got);
     if (status != RX_OK)
         status = forward(ctx, table, inner, status, "load");
+    const char* at = dump;
     for (size_t i = 0; status == RX_OK && i < got; i++) {
-        if (handles[i] != i) {
+        at = strstr(at, "\nroot|#");
+        if (at == NULL || at >= dump + n_dump
+            || (size_t)handles[i] != (size_t)strtoull(at + 7, NULL, 10)) {
             status = fail(
                 ctx, RX_REFUSED, "load", "a node's handle differs from its position in the dump");
+        } else {
+            at += 7;
         }
     }
     free(handles);
