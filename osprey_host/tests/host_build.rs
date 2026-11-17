@@ -185,7 +185,7 @@ fn headers_are_required_and_closed() {
 }
 
 #[test]
-fn only_a_unit_compile_has_a_place_for_defines() {
+fn the_unit_and_the_set_compile_each_have_one_place_for_defines() {
     let state = facts::stated_from_json(r#"{"headers":"served"}"#).unwrap();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("facts");
     let answer = facts::answer(
@@ -208,5 +208,5 @@ fn only_a_unit_compile_has_a_place_for_defines() {
             .filter(|a| *a == "{defines}")
             .count()
     };
-    assert_eq!((count("compile_unit"), count("compile_set")), (1, 0));
+    assert_eq!((count("compile_unit"), count("compile_set")), (1, 1));
 }

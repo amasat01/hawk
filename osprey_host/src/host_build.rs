@@ -4,8 +4,8 @@
 //! of the instruction set's card); nothing is probed. Places the caller fills in are written `{compiler}`, `{source}`, `{object}`,
 //! `{output}`, `{depfile}`, `{include:aether}` and `{include:eagle}` (headers in two roots), `{include:served}` (headers served into
 //! one folder), `{include:facts}`, `{include:door}` and, for the link, `{objects}` (one element for each object). The place `{defines}` stands for
-//! the caller's defines, one element `-D<define>` for each and none when it has none; only a unit compile has it (the set text
-//! takes no defines).
+//! the caller's defines, one element `-D<define>` for each and none when it has none; a unit compile and the compile of the set
+//! text have it.
 //!
 //! Where the headers are is the caller's fact (`headers`, `roots` or `served`); the include places of a compile follow it. With
 //! roots the includes come before the facts include; served, they come after it, as the old command had them.
@@ -235,13 +235,11 @@ pub(crate) fn host_build(
     }
     let includes = names_of(places, file, s.headers)?;
     let set_includes = names_of(&card, file, "set_includes")?;
-    let set = [&argv[..], &includes[..], &set_includes[..]].concat();
-    // a unit's text takes the caller's defines and the facts header of the machine's wing; the set text takes neither
-    let facts = [
-        names_of(&card, file, "defines")?,
-        names_of(&card, file, "facts_include")?,
-    ]
-    .concat();
+    let defines = names_of(&card, file, "defines")?;
+    // the set text states the layout sizes of the exports block, which a caller's define can change (the index width), so it
+    // takes the defines the units take; it takes no facts header, which the door's headers it includes already state
+    let set = [&argv[..], &includes[..], &defines[..], &set_includes[..]].concat();
+    let facts = [defines, names_of(&card, file, "facts_include")?].concat();
     if s.headers == "roots" {
         argv.extend(includes);
         argv.extend(facts);

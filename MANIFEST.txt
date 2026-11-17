@@ -39,7 +39,7 @@ Every file with its line count (this file excluded):
    1460  osprey_host/src/bin/treplay.rs
      96  osprey_host/src/device_build.rs
     949  osprey_host/src/facts.rs
-    273  osprey_host/src/host_build.rs
+    271  osprey_host/src/host_build.rs
     394  osprey_host/src/lib.rs
     162  osprey_host/src/lower/active.rs
      51  osprey_host/src/lower/blocks.rs
