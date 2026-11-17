@@ -10,7 +10,6 @@ from pathlib import Path
 
 from raptor.errors import RaptorError
 from hawk.backends import Backend
-from hawk.compile import toolchain as _shared
 from . import toolchain as tc
 
 #: The headers a unit includes: the names they declare are the C library names a kernel may not take.
@@ -83,44 +82,6 @@ class Host(Backend):
     def key_terms(self, source_digests, own):
         # the profile in effect (asked, else $HAWK_HOST_PROFILE, else this machine's): the unit's text is a function of it
         return ("host_profile:" + tc.host_profile(own.get("profile") or None),)
-
-    def compile_plan(self, opts, inputs):
-        compiler = tc.host_compiler()
-        defines = [f"-D{d}" for d in opts.defines]
-        head = (*tc.host_codegen_flags(opts.host_profile or None, opts.opt_level or None, (*defines, *opts.extra)),
-                f"-std={tc.HOST_STD}", "-shared", "-fPIC", "-DAETHER_CPP_MODE")
-        plan = {"compiler": compiler, "identity": _shared.compiler_identity(compiler), "deps": True}
-        if inputs.sealed:
-            # the payload is served into a private directory per compile: the key names it by digest
-            digest = inputs.payload.digest
-            flags = (*head, *defines, *opts.extra)
-            return {**plan, "flags": flags, "key_terms": (*self._terms(flags, opts), f"payload:{digest}"), "payload": digest,
-                    "serve": True, "hit_argv": flags, "tail": " against the sealed payload", "meta": {"flags": list(flags)}}
-        flags = (*head, *inputs.include_flags(), *defines, *opts.extra)
-        keyed = (*flags, "-MD", "-MF")
-        return {**plan, "flags": flags, "key_terms": self._terms(keyed, opts), "payload": None, "serve": False,
-                "hit_argv": (compiler, *keyed, Path("<dep>"), Path("<src>"), "-o", Path("<out>")), "tail": "",
-                "meta": {"flags": list(keyed), "device_target": "ptx"}}
-
-    def compile_hook(self, plan, job, run):
-        served = () if job.served is None else (f"-I{job.served}",)
-        argv = [plan["compiler"], *plan["flags"], *served, "-MD", "-MF", str(job.dep), str(job.src), "-o", str(job.out)]
-        run(argv)
-        return {"argv": tuple(argv), "figures": {}}
-
-    @staticmethod
-    def _terms(flags, opts) -> tuple:
-        """The key's flag terms (a flag carrying a ``key_term`` stands for it), the profile, the resolved opt level and
-        the C library (a host ``.so`` links against the libc it was built on); for a ``-march=native`` profile also the
-        CPU it targets (:func:`~ospreys.cpu.toolchain.host_target_identity`), since that flag reads the same on every
-        machine and a shared cache directory would otherwise serve one CPU's binary to another's."""
-        profile = tc.host_profile(opts.host_profile or None)
-        level = _shared.opt_level(opts.opt_level or None)
-        libc = "-".join(part for part in platform.libc_ver() if part) or "unknown"
-        terms = (*(getattr(f, "key_term", "") or f for f in flags), f"host_profile:{profile}", f"opt_level:{level}", f"libc:{libc}")
-        if profile != "portable":
-            terms = (*terms, f"host_target:{tc.host_target_identity()}")
-        return terms
 
 
 BACKEND = Host()

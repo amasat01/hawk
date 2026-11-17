@@ -21,9 +21,9 @@ from pathlib import Path
 import pytest
 
 import hawk
+from _toolchain import host_library
 from hawk.artifact import emit_source
 from hawk import Mutable, Param, Terminated, Vector
-from hawk.compile import toolchain as tc
 import ospreys.cpu.toolchain as ctc
 from hawk.diff import jvp
 from hawk.math import dot, sqrt
@@ -45,8 +45,7 @@ def kernel_so(tmp_path_factory):
     work = tmp_path_factory.mktemp("stale_stack")
     (work / "k.cpp").write_text(text)
     cxx = ctc.host_compiler()
-    subprocess.run([cxx, *ctc.host_flags(), "-o", str(work / "k.so"), str(work / "k.cpp")],
-                   check=True)
+    host_library(text, work, "k")
     subprocess.run([cxx, "-O1", "-std=c++17", "-o", str(work / "harness"), str(HARNESS), "-ldl"],
                    check=True)
     return work

@@ -52,13 +52,13 @@ def _source(i: int) -> str:
 
 @pytest.fixture
 def compiles(monkeypatch):
-    """Counts the real compiler invocations (the ones building a ``.so``)."""
+    """Counts the real compiles of a text to an object (the link of objects into a library is a command of its own)."""
     real = subprocess.run
     lock = threading.Lock()
     box = {"n": 0}
 
     def counting(argv, *a, **kw):
-        if "-shared" in argv:
+        if "-MD" in argv:
             with lock:
                 box["n"] += 1
         return real(argv, *a, **kw)
@@ -81,7 +81,8 @@ def test_same_source_cold_compiles_exactly_once(tmp_path, compiles):
     assert errors == [None] * THREADS
     assert compiles["n"] == 1
     stats = cache_mod.cache_stats()
-    assert (stats["misses"], stats["hits"]) == (1, THREADS - 1), stats
+    # the object and its library each take one miss and every other thread's hit
+    assert (stats["misses"], stats["hits"]) == (2, 2 * (THREADS - 1)), stats
     assert sum(1 for r in results if not r.hit) == 1
     assert len({r.key for r in results}) == 1 and len({r.artifact for r in results}) == 1
     assert results[0].artifact.is_file()
@@ -98,7 +99,7 @@ def test_distinct_sources_each_compile_once(tmp_path, compiles):
     assert errors == [None] * THREADS
     assert compiles["n"] == THREADS
     stats = cache_mod.cache_stats()
-    assert (stats["misses"], stats["hits"]) == (THREADS, 0), stats
+    assert (stats["misses"], stats["hits"]) == (2 * THREADS, 0), stats
     assert len({r.key for r in results}) == THREADS
     assert all(r.artifact.is_file() and not r.hit for r in results)
     assert _no_tmp(tmp_path) == []

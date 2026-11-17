@@ -83,7 +83,8 @@ class Backend:
             # a host unit is compiled to an object by the library's instructions; the bundle links the objects of its units
             from ..compile import host
 
-            result = host.compile_object(source.text, lowered.name, opts, self._host_build(lowered, options, opts))
+            primary = lowered.spec.for_target(self).primary
+            result = host.compile_object(source.text, lowered.name, opts, self.host_build(primary, options, opts))
         else:
             result = compile_source(source.text, lowered.name, opts)
         entry, files, report = self.package(source, result, name=lowered.name, smode=lowered.smode, profile=own.get("profile"))
@@ -102,16 +103,15 @@ class Backend:
             cache_dir=options.get("cache_dir"), host_profile=options.get("host_profile") or "",
             opt_level=options.get("opt_level") or "", settings=lowered.spec.for_target(self).settings))
 
-    def _host_build(self, lowered, options, opts):
-        """The :class:`~hawk.compile.host.HostBuild` of a build: the library's argv templates (with the witness's verdict, when the
-        compiler needs one), this machine's compiler and the terms its keys hold. The caller's own flags (``opts``) go with the
-        question: a macro they set for the masked call wins over the witness (:func:`hawk.artifact.request.host_build`)."""
+    def host_build(self, primary, options, opts):
+        """The :class:`~hawk.compile.host.HostBuild` of a compile for the facts ``primary`` of this backend's wing: the library's
+        argv templates (with the witness's verdict, when the compiler needs one), this machine's compiler and the terms its keys
+        hold. The caller's own flags (``opts``) go with the question: a macro they set for the masked call wins over the witness (:func:`hawk.artifact.request.host_build`)."""
         from ..artifact.request import compiling_host, host_build
         from ..compile import host
         from ..compile import toolchain as tc
         from ..facts import include_dir, include_flags
 
-        primary = lowered.spec.for_target(self).primary
         compiler = self.compiler()
         identity = tc.compiler_identity(compiler)
         facts, line = compiling_host()
@@ -136,7 +136,7 @@ class Backend:
         from ..compile import host
 
         opts = self._compile_options(lowered, options)
-        build = self._host_build(lowered, options, opts)
+        build = self.host_build(lowered.spec.for_target(self).primary, options, opts)
         objects = []
         for unit_object, image, meta in units:
             if unit_object is not None:

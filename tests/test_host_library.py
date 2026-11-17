@@ -120,6 +120,16 @@ def test_a_set_of_float32_and_float64_units_links_and_runs_both(tmp_path, cache_
     assert y32.tolist() == (x32 / np.float32(5)).tolist()
 
 
+def test_a_library_of_one_bare_text_resolves_its_symbol_and_a_second_call_runs_no_compiler(tmp_path):
+    """A bare text is not a set of units: it is compiled to an object and linked alone, with no set text."""
+    text = 'extern "C" int bare_probe(void) { return 7; }\n'
+    opts = drivers.CompileOptions(target="host", cache_dir=str(tmp_path / "cache"))
+    first = drivers.compile_source(text, "bare_probe", opts)
+    assert not first.hit and ctypes.CDLL(str(first.artifact)).bare_probe() == 7
+    again = drivers.compile_source(text, "bare_probe", opts)
+    assert again.hit and again.artifact == first.artifact
+
+
 def test_two_units_of_one_name_are_refused_naming_both_kernels(tmp_path, cache_dir):
     with pytest.raises(HawkError, match=r"'axpb' and 'fraction' both write a unit named 'same'"):
         build_bundle([D.axpb, D.fraction], tmp_path, targets=("host",), cache_dir=cache_dir, name="same")
@@ -203,8 +213,7 @@ def test_a_host_build_does_not_call_the_old_command_builder(tmp_path, monkeypatc
     def called(*args, **kwargs):
         raise AssertionError("the old host command builder was called")
 
-    backend = TARGETS["host"]
-    for owner, name in ((type(backend), "compile_plan"), (type(backend), "compile_hook"), (old_tools, "host_flags"), (old_tools, "host_codegen_flags")):
+    for owner, name in ((old_tools, "host_flags"), (old_tools, "host_codegen_flags")):
         monkeypatch.setattr(owner, name, called)
     reset_unit_memo()
     bundle = build_bundle([D.axpb, D.fraction], tmp_path, targets=("host",), cache_dir=str(tmp_path / "cache"))
@@ -269,7 +278,7 @@ def test_the_build_template_is_the_library_answer_for_this_machine_whatever_mach
     machine = dataclasses.replace(real.machine, isa=other, facts=MappingProxyType({**real.machine.facts, "vector_isa": "avx512"}))
     spec = dataclasses.replace(real, machine=machine)
     opts = SimpleNamespace(defines=(), extra=())
-    got = TARGETS["host"]._host_build(SimpleNamespace(spec=spec), {}, opts).instructions
+    got = TARGETS["host"].host_build(spec.for_target(TARGETS["host"]).primary, {}, opts).instructions
     stated = {**request._stated(real.machine.isa, real.machine.facts), "opt_level": "O3"}
     line = request._identity(tc.compiler_identity(TARGETS["host"].compiler()))
     # a compiler the library asks the masked-call witness about gets the answer for its verdict

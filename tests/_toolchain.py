@@ -146,3 +146,25 @@ def compile_check(path: Path, target: str) -> tuple[int, str, list[str]]:
                 *includes, str(path)]
     done = subprocess.run(argv, capture_output=True, text=True, env=_env())
     return done.returncode, done.stderr, argv
+
+
+def host_library(text: str, directory: Path, name: str, *, mode: str = "float64", profile: str | None = None, defines=(), extra=()):
+    """The shared library of the host text ``text``, built the way a build builds it (:func:`hawk.compile.compile_source`: the
+    library's own commands) and copied to ``<directory>/<name>.so``. ``defines`` and ``extra`` are the caller's own flags. Returns the
+    :class:`~hawk.compile.CompileResult`; its ``source`` is the text as compiled."""
+    from hawk.compile import CompileOptions, compile_source
+
+    opts = CompileOptions(target="host", mode=mode, cache_dir=str(directory / "hawk_cache"), host_profile=profile or "",
+                          defines=tuple(defines), extra=tuple(extra))
+    result = compile_source(text, name, opts)
+    shutil.copyfile(result.artifact, directory / f"{name}.so")
+    return result
+
+
+def host_template(profile: str | None = None, opt: str | None = None) -> list[str]:
+    """The argv template of a unit's host compile that the lowering library gives this machine for ``profile`` and optimisation level
+    ``opt`` (``None``: the one in effect)."""
+    from hawk.artifact.request import compiling_host, host_build
+
+    facts, line = compiling_host()
+    return host_build(facts, line, {"host_profile": profile, "opt_level": opt})["compile_unit"]

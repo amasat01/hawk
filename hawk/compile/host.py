@@ -178,26 +178,32 @@ def _system() -> str:
     return "macos" if sys.platform == "darwin" else "linux"
 
 
-def link(objects: list, set_object: CompileResult, set_text: str, library: str, opts: CompileOptions, build: HostBuild) -> CompileResult:
+def link(objects: list, set_object: CompileResult | None, set_text: str | None, library: str, opts: CompileOptions,
+         build: HostBuild) -> CompileResult:
     """Link the objects of the units, in order, and the object of the set text into the shared library ``library`` (a file name),
     through the cache. The result's ``artifact`` is the library in its cache slot, ``source`` the set text, ``key`` the key of
-    the library: the keys of the objects in order, the text of the set and the link argv."""
+    the library: the keys of the objects in order, the text of the set and the link argv.
+
+    A library of plain objects has no set: ``set_object`` and ``set_text`` are both ``None``, ``source`` is the last object's text
+    and the key names the compiler's identity in place of the set text."""
     template = build.instructions["link"][_system()]
     cache = Cache(opts.cache_dir)
-    parts = [r.key for r in objects] + [set_object.key]
+    parts = [r.key for r in objects] + ([] if set_object is None else [set_object.key])
     h = hashlib.sha256(b"hawk.compile.link/1\n")
-    for part in (*parts, set_text, library, *template):
+    for part in (*parts, build.identity if set_object is None else set_text, library, *template):
         h.update(part.encode("utf-8") + b"\0")
     key = h.hexdigest()
     slot = cache.slot(key)
     digest = _payload.current_payload().digest if drivers.header_shape() == "served" else None
-    done = [*objects, set_object]
+    done = [*objects] if set_object is None else [*objects, set_object]
+    last = done[-1]
+    closure = tuple(set_object.closure) if set_object else tuple(dict.fromkeys(pair for r in objects for pair in r.closure))
 
     def lookup():
         if not cache.check(key, payload_digest=digest):
             return None
         cache.note(True)
-        return CompileResult(slot / library, set_object.source, key, True, tuple(template), closure=tuple(set_object.closure))
+        return CompileResult(slot / library, last.source, key, True, tuple(template), closure=closure)
 
     def build_library():
         cache.note(False)
@@ -224,7 +230,7 @@ def link(objects: list, set_object: CompileResult, set_text: str, library: str, 
         if digest is not None:
             meta["payload_digest"] = digest
         cache.store(key, artifact=slot / library, closure=tuple(dict.fromkeys(recorded)), meta=meta)
-        return CompileResult(slot / library, set_object.source, key, False, tuple(argv), seconds, closure=tuple(set_object.closure))
+        return CompileResult(slot / library, last.source, key, False, tuple(argv), seconds, closure=closure)
 
     return drivers.single_flight(key, lookup, build_library)
 

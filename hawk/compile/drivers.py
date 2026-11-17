@@ -6,8 +6,7 @@
 ``g++`` builds the host ``.so`` (flags from one host profile, see
 :data:`ospreys.cpu.toolchain.HOST_PROFILES`). The device toolchain has two
 compilers, chosen by :func:`hawk.compile.toolchain.device_compiler_kind`:
-``nvcc`` ahead of time on the developer/CI tree (the only path for
-LTO/relocatable fatbins), or an in-memory NVRTC compile
+``nvcc`` ahead of time on the developer/CI tree (a PTX or CUBIN image), or an in-memory NVRTC compile
 (:mod:`hawk.compile.nvrtc`) on the shipped Python tier, serving the sealed
 :mod:`aether_dsc` payload as NVRTC's header array — NVRTC has no host
 stdlib, so the payload supplies the seven std headers it reaches as
@@ -326,10 +325,23 @@ def compile_source(source: str, name: str, opts: CompileOptions) -> CompileResul
     if row is None or not row.builds:
         built = tuple(t for t in backend_ids(default=True) if traits(t).get("builds", True))
         raise HawkError(f"unknown target {opts.target!r}; built are {built}")
+    if row.host_compiled:
+        return _compile_host_text(source, name, opts, row)
     plan = row.compile_plan(opts, _Inputs())
     if plan is None:
         raise HawkError(f"target {opts.target!r} builds but declares no compile plan")
     return drive(source, name, opts, row, plan)
+
+
+def _compile_host_text(source: str, name: str, opts: CompileOptions, row) -> CompileResult:
+    """A bare host text, by the library's instructions: compiled to an object and linked, alone, into its library. It is not a
+    unit of a set, so the library has no set text."""
+    from ..targets import build_spec
+    from . import host
+
+    primary = build_spec((opts.target,)).for_target(row).primary
+    build = row.host_build(primary, {"host_profile": opts.host_profile, "opt_level": opts.opt_level}, opts)
+    return host.link([host.compile_object(source, name, opts, build)], None, None, name + row.artifact, opts, build)
 
 
 def plan_for(opts: CompileOptions) -> dict:

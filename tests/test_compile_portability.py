@@ -27,6 +27,7 @@ import pytest
 from hawk.compile import CompileOptions, compile_source
 from hawk.compile import cache as hcache
 from hawk.compile import drivers as hdrivers
+from hawk.compile import host as hhost
 from ospreys.cuda import nvrtc as hnvrtc
 from hawk.compile import toolchain as tc
 from ospreys.cuda import toolchain as dtc
@@ -311,14 +312,16 @@ def test_compile_writes_through_a_temporary_and_keys_libc(monkeypatch, tmp_path)
         real_publish(tmp, path)
 
     monkeypatch.setattr(hdrivers, "publish_atomic", _spy)
+    monkeypatch.setattr(hhost, "publish_atomic", _spy)      # the library's link publishes the same way
     result = compile_source(HOST_SRC, "hawk_probe_host",
                             CompileOptions(target="host",
                                            cache_dir=str(tmp_path / "cache")))
     assert not result.hit
-    assert any(path == result.artifact for _, path in moves)
+    assert any(path == result.artifact for _, path in moves) and len(moves) >= 2   # the object, then the library
     assert result.artifact.is_file()
     assert not list(result.artifact.parent.glob(".tmp.*"))
-    record = hcache.Cache(str(tmp_path / "cache")).record(result.key)
+    cache = hcache.Cache(str(tmp_path / "cache"))
+    record = cache.record(cache.record(result.key)["key_terms"][0])        # the library's key names its object's key
     libc = "-".join(p for p in platform.libc_ver() if p) or "unknown"
     assert f"libc:{libc}" in record["key_terms"]
 

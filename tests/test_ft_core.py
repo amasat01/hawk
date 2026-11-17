@@ -214,16 +214,14 @@ print(json.dumps({"bad": bad, "errors": errors}))
 @register_ft_row("FT-5-HAWK-HOSTLIBRARY-SHARED")
 def test_shared_hostlibrary_entries_stay_intact(built, tmp_path):
     gate.require_free_threaded()
-    from ospreys.cpu.toolchain import host_compiler, host_flags
-    from hawk.compile.toolchain import subprocess_env
+    from _toolchain import host_library
 
     # A real hawk artifact (its ABI tag and layout table) with many exported
     # entries, so the threads race on many distinct names. The extra entries
     # are no-ops appended to the kernel's own translation unit and built with
     # hawk's host recipe, so nothing depends on what the toolchain links in.
     names = [f"hawk_ft_entry_{i:03d}" for i in range(128)]
-    tu = tmp_path / "many_entries.cpp"
-    tu.write_text(
+    text = (
         (built["axpb"].directory / "axpb.cpp").read_text()
         + "\n"
         + "".join(
@@ -232,12 +230,8 @@ def test_shared_hostlibrary_entries_stay_intact(built, tmp_path):
             for n in names
         )
     )
+    host_library(text, tmp_path, "many_entries")
     lib_path = tmp_path / "many_entries.so"
-    done = subprocess.run(
-        [host_compiler(), *host_flags(), str(tu), "-o", str(lib_path)],
-        capture_output=True, text=True, env=subprocess_env(), check=False,
-    )
-    assert done.returncode == 0, done.stderr[-2000:]
     serial = _core.HostLibrary(str(lib_path))
     assert all(_resolves(serial, n) for n in names)
     proc = subprocess.run(

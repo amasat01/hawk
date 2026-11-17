@@ -41,8 +41,7 @@ _PTX_BODY = re.compile(r"^\.(visible\s+)?\.(entry|func)\b", re.M)
 
 
 #: The published extension for each real device format
-#: :func:`_sniff_device_format` can return (NVRTC/nvcc here never emit a
-#: ``fatbin``, the third ``eagle.roles.MANIFEST_FORMATS`` member).
+#: :func:`_sniff_device_format` can return: a build produces PTX or CUBIN.
 _DEVICE_EXT = {"ptx": ".ptx", "cubin": ".cubin"}
 
 

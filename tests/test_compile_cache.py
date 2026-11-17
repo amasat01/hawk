@@ -96,7 +96,6 @@ import pytest
 from hawk.compile import (
     CompileOptions,
     cache_stats,
-    compile_source,
     lookup_key,
     reset_cache_stats,
 )
@@ -127,8 +126,16 @@ def _opts(tree, *, defines=(), extra=()):
 
 
 def _compile(tree, **kw):
+    """The compile of :data:`SOURCE` to an object, the node the cache keys and memoises (a library of it is that object linked alone:
+    :func:`hawk.compile.compile_source`)."""
+    from hawk.compile import host
+    from hawk.targets import TARGETS, build_spec
+
     reset_cache_stats()
-    result = compile_source(SOURCE, "cache_probe", _opts(tree, **kw))
+    opts = _opts(tree, **kw)
+    row = TARGETS["host"]
+    build = row.host_build(build_spec(("host",)).for_target(row).primary, {}, opts)
+    result = host.compile_object(SOURCE, "cache_probe", opts, build)
     stats = cache_stats()
     return result, ("hit" if stats["hits"] else "miss")
 
@@ -181,7 +188,7 @@ def test_sealed_path_a_changed_user_header_rebuilds_and_an_unchanged_one_hits(
     real, box = subprocess.run, {"n": 0}
 
     def counting(argv, *a, **kw):
-        if "-shared" in argv:
+        if "-MD" in argv:                       # the compile of the text to an object
             box["n"] += 1
         return real(argv, *a, **kw)
 
@@ -246,8 +253,9 @@ def test_a_compiler_change_is_a_key_change(tree, monkeypatch):
     from hawk.compile import drivers
 
     first, _ = _compile(tree)
-    monkeypatch.setattr(drivers.tc, "compiler_identity",
-                        lambda c: hcompile.compiler_identity(c) + "||pretend-15.0")
+    real = hcompile.compiler_identity
+    # another build of the same compiler: the three-part identity the library reads, with another digest
+    monkeypatch.setattr(drivers.tc, "compiler_identity", lambda c: real(c).rpartition("||")[0] + "||0f0f0f0f")
     _second, answer = _compile(tree)
     assert answer == "miss"
 
@@ -300,11 +308,10 @@ def test_two_such_compilers_give_different_cache_lookup_keys(tree, tmp_path):
     compilers differing only past the first ``--version`` line, must land on
     two DIFFERENT cache keys — never share a slot."""
     from hawk.compile import compiler_identity, lookup_key
-    from ospreys.cpu.toolchain import host_flags
 
     a = _fake_compiler(tmp_path, "fake_cc_a", "release 12.6, V12.6.77")
     b = _fake_compiler(tmp_path, "fake_cc_b", "release 12.9, V12.9.10")
-    flags = host_flags(extra=_opts(tree).extra)
+    flags = list(_opts(tree).extra)
     key_a = lookup_key(SOURCE, "host", "float64", compiler_identity(a), flags)
     key_b = lookup_key(SOURCE, "host", "float64", compiler_identity(b), flags)
     assert key_a != key_b
@@ -348,7 +355,6 @@ def test_the_lookup_key_is_computable_before_any_compile(tree):
     result, _ = _compile(tree)
     record = __import__("hawk.compile", fromlist=["Cache"]).Cache(
         _opts(tree).cache_dir).record(result.key)
-    assert record["key_terms"][:len(record["flags"])] == record["flags"]
     assert lookup_key(SOURCE, "host", "float64", record["compiler"],
                       record["key_terms"]) == result.key
 

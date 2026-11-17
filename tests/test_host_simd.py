@@ -451,7 +451,8 @@ def test_the_native_key_names_the_target_cpu(tmp_path, monkeypatch, profile):
         pytest.skip("native-vector-math is x86-64 only")
     opts = CompileOptions(target="host", cache_dir=str(tmp_path), host_profile=profile)
     first = compile_source(SOURCE, "probe", opts)
-    record = Cache(str(tmp_path)).record(first.key)
+    cache = Cache(str(tmp_path))
+    record = cache.record(cache.record(first.key)["key_terms"][0])      # the library's key names its object's key
     assert f"host_target:{ctc.host_target_identity()}" in record["key_terms"]
     # Another CPU (a different identity) must miss, not hit.
     monkeypatch.setattr(ctc, "host_target_identity", lambda: "another-cpu")

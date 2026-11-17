@@ -8,6 +8,7 @@ are injected."""
 
 from __future__ import annotations
 from _specs import HOST
+from _toolchain import host_template
 
 import platform
 
@@ -51,7 +52,7 @@ def _inject(monkeypatch, macros):
 
 def test_no_compile_flag_is_added(monkeypatch):
     _inject(monkeypatch, gcc(13, 2, 0))
-    assert "-fno-tree-loop-if-convert" not in ctc.host_flags(profile=VM)
+    assert "-fno-tree-loop-if-convert" not in host_template(VM)
 
 
 def test_predicate_does_not_depend_on_the_compiler_release(monkeypatch):

@@ -32,10 +32,10 @@ from _specs import HOST
 
 import platform
 import re
-import subprocess
 
 import numpy as np
 import pytest
+from _toolchain import host_library
 from conftest import avx512, sidecar_of
 
 import hawk
@@ -260,15 +260,11 @@ def test_interchanged_and_per_sample_loops_are_byte_identical(twins, name, mode,
 def _lane_loop_report(tmp_path, kernel, mode, profile, width="64"):
     """(lines of the trips' lane loops, lines GCC vectorised with 64-byte vectors)."""
     src = tmp_path / f"{kernel.name}_{mode}_{profile}.cpp"
-    so = src.with_suffix(".so")
-    src.write_text(hawk.artifact.emit_source(kernel, mode=mode, targets=("host",)).sources["host"].text)
-    cc = subprocess.run(
-        [ctc.host_compiler(), *ctc.host_flags(profile=profile,
-                                            extra=["-fopt-info-vec-optimized"]),
-         "-o", str(so), str(src)], capture_output=True, text=True)
-    assert cc.returncode == 0, cc.stderr
-    assert "warning" not in cc.stderr
-    lines = src.read_text().splitlines()
+    log = tmp_path / f"{src.stem}.vec.log"
+    # -Werror: the compile that reported "warning" is the one that now refuses
+    built = host_library(hawk.artifact.emit_source(kernel, mode=mode, targets=("host",)).sources["host"].text, tmp_path, src.stem,
+                         mode=mode, profile=profile, extra=(f"-fopt-info-vec-optimized={log}", "-Werror"))
+    lines = built.source.read_text().splitlines()
     lane = set()
     for at, line in enumerate(lines):
         if "for (Int hawk_trip = 0;" in line:
@@ -276,8 +272,8 @@ def _lane_loop_report(tmp_path, kernel, mode, profile, width="64"):
                        if "for (aether::offset_t hawk_l = 0" in lines[j])
             lane.add(nxt + 1)
     wide = {int(g) for g in re.findall(
-        rf"{re.escape(src.name)}:(\d+):\d+: optimized: loop vectorized using (?:{width}) byte vectors",
-        cc.stderr)}
+        rf"{re.escape(built.source.name)}:(\d+):\d+: optimized: loop vectorized using (?:{width}) byte vectors",
+        log.read_text())}
     return lane, wide
 
 

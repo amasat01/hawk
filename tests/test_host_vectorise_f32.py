@@ -15,8 +15,8 @@ from __future__ import annotations
 import re
 import subprocess
 
-import ospreys.cpu.toolchain as ctc
 import pytest
+from _toolchain import host_library
 from conftest import avx512
 
 import hawk
@@ -40,19 +40,15 @@ def _source(kernel, mode):
 
 def _compile(tmp_path, kernel, mode):
     """Build the TU per sample; ``sample`` is the line of the lane-guarded sample loop that runs the kernel's arithmetic."""
-    src = tmp_path / "k.cpp"
+    log = tmp_path / "k.vec.log"
+    # -Werror: the compile that reported "warning" is the one that now refuses
+    built = host_library(_source(kernel, mode).text, tmp_path, "k", mode=mode, profile="native", defines=("HAWK_HOST_INTERCHANGE=0",),
+                         extra=(f"-fopt-info-vec-optimized={log}", "-Werror"))
     so = tmp_path / "k.so"
-    src.write_text(_source(kernel, mode).text)
-    cc = subprocess.run(
-        [ctc.host_compiler(), *ctc.host_flags(profile="native",
-                                              extra=["-fopt-info-vec-optimized", "-DHAWK_HOST_INTERCHANGE=0"]),
-         "-o", str(so), str(src)], capture_output=True, text=True)
-    assert cc.returncode == 0, cc.stderr
-    assert "warning" not in cc.stderr
-    lines = src.read_text().splitlines()
+    lines = built.source.read_text().splitlines()
     sample = next(i + 1 for i, ln in enumerate(lines) if "for (aether::offset_t hawk_j = hawk_blo" in ln)
     wide = {int(m.group(1)) for m in re.finditer(
-        r"k\.cpp:(\d+):\d+: optimized: loop vectorized using 64 byte vectors", cc.stderr)}
+        r"k\.cpp:(\d+):\d+: optimized: loop vectorized using 64 byte vectors", log.read_text())}
     return so, sample, wide
 
 

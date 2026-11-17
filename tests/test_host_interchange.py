@@ -528,14 +528,13 @@ def test_host_caches_reads_sysctl_on_macos(monkeypatch):
 _COUNTED = 'extern "C" long long hawk_lane_trips = 0;\n'
 
 
-def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
+def _counting_build(tmp_path, tag, source, bundle, profile, name="rkf78_attempt"):
     """The bundle's directory with its ``rkf78_attempt.so`` rebuilt from
     ``source`` (a whole translation unit, the self-check block included: :func:`hawk.artifact.emit_source`), which counts one
     lane-trip per lane per trip."""
     from types import SimpleNamespace
 
-    from hawk.compile import toolchain as tc
-    import ospreys.cpu.toolchain as ctc
+    from _toolchain import host_library
 
     out = tmp_path / tag
     shutil.copytree(bundle.directory, out)
@@ -544,8 +543,7 @@ def _counting_build(tmp_path, tag, source, bundle, flags, name="rkf78_attempt"):
     marker = "    std::int64_t hawk_live = 0;"
     assert source.count(marker) == 1
     cpp.write_text(_COUNTED + source.replace(marker, "    __atomic_fetch_add(&hawk_lane_trips, (long long)hawk_w, __ATOMIC_RELAXED);\n" + marker))
-    subprocess.run([ctc.host_compiler(), *flags, *tc.include_flags(), str(cpp), "-o",
-                    str(out / f"{name}.so")], check=True)
+    host_library(cpp.read_text(), out, name, profile=profile)
     return SimpleNamespace(directory=out, artifacts=bundle.artifacts)
 
 
@@ -554,9 +552,6 @@ def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile)
     """Live-lane compaction against the same TU with the identity permutation:
     lanes of very different lengths, a few trips per launch, give the same planes,
     bit for bit, in fewer lane-trips (a counter the TU bumps per chunk trip, no timing)."""
-    from hawk.compile import toolchain as tc
-    import ospreys.cpu.toolchain as ctc
-
     kernel = KERNELS["rkf78_attempt"]
     bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
                           cache_dir=str(tmp_path / "cache"), defines=INTERCHANGED,
@@ -566,14 +561,13 @@ def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile)
     dead = "if (hawk_on[hawk_t] == 0.0) hawk_perm[hawk_o++] = hawk_t;"
     assert source.count(live) == source.count(dead) == 1
     plain = source.replace(live, "hawk_perm[hawk_nlive++] = hawk_t;").replace(dead, "{}")
-    flags = ctc.host_flags(profile=profile)
     planes = _planes("rkf78_attempt", 200, "spread", seed=20261004)
     # lanes of very different lengths: every 7th sample ends at once, a few run long
     planes["t_final"][::7] = 1e-3
     planes["t_final"][3::50] = 4.0
     runs = {}
     for tag, text in (("compact", source), ("identity", plain)):
-        built = _counting_build(tmp_path, tag, text, bundle, flags)
+        built = _counting_build(tmp_path, tag, text, bundle, profile)
         lib = ctypes.CDLL(str(built.directory / "rkf78_attempt.so"))
         runs[tag] = (_launches(built, "rkf78_attempt", planes, (4,) * 40),
                      ctypes.c_longlong.in_dll(lib, "hawk_lane_trips"))
@@ -621,9 +615,6 @@ def ramp_to_plane(rate: Scalar, lim: Scalar, terminated: Terminated, x: Mutable[
 def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, nan):
     """The sorted lanes against the same TU in plain compacted order: lanes of
     very different lengths give the same planes, bit for bit, in fewer lane-trips."""
-    from hawk.compile import toolchain as tc
-    import ospreys.cpu.toolchain as ctc
-
     kernel = hawk.steps(ramp, 16)
     bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
                           cache_dir=str(tmp_path / "cache"), defines=INTERCHANGED,
@@ -638,10 +629,9 @@ def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, na
               "terminated": np.zeros(n, dtype=bool)}
     if nan:     # diverged lanes: a NaN carry must sort last without faulting, the planes unchanged
         planes["x"][::5] = np.nan
-    flags = ctc.host_flags(profile=profile)
     runs = {}
     for tag, text in (("sorted", source), ("plain", plain)):
-        built = _counting_build(tmp_path, tag, text, bundle, flags, kernel.name)
+        built = _counting_build(tmp_path, tag, text, bundle, profile, kernel.name)
         lib = ctypes.CDLL(str(built.directory / f"{kernel.name}.so"))
         runs[tag] = (_launches(built, kernel.name, planes, (1,) * 8),
                      ctypes.c_longlong.in_dll(lib, "hawk_lane_trips"))
