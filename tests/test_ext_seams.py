@@ -233,8 +233,6 @@ def test_guard_kind_binds_the_declared_mask_even_where_the_body_never_reads_it(b
     DECLARES it — the same "declared => bound, read or not" rule gives
     a compound quantity's unread wires. Without it the seam would have nothing
     to gate on."""
-    import _deployable as D
-
     assert ("terminated", "terminated") in D.diagnostic.walk.slot_of
     assert ["terminated", "terminated"] in sidecar_of(built["diag_free"],
                                                       "diagnostic")["arg_spec"]

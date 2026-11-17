@@ -15,10 +15,14 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from .. import registry
 from ..backends import need
 from .._errors import HawkError
+
+if TYPE_CHECKING:
+    from raptor.wings.base.settings import Settings
 
 #: How eagle enters a built kernel (the manifest's ``exec_targets`` words).
 ENTRY_KINDS = ("device", "host")

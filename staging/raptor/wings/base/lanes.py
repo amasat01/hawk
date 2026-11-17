@@ -151,8 +151,6 @@ def warp_uniform(sinks: Any, warp: int | None):
     ``y`` (or ``y * (1 / d)``) when ``d`` is a multiple of ``warp`` and the
     lanes of a run differ only in ``y``'s fastest axis (whose coefficient is 1), as ``lane / k`` and
     ``split_index`` write it."""
-    from raptor.ir.ops import RANDOM_OPS
-
     axes, _notes = axes_from(divisors(nodes_of(sinks)))
     ev = Eval(axes)
     memo: dict = {}

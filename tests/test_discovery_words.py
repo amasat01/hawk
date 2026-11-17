@@ -174,7 +174,7 @@ def _wing_folders():
 
 
 def test_the_facts_live_in_the_wings_under_their_final_names():
-    bad = [p for p in _tracked() if p.startswith(OLD_UNIT + "s/") or p.startswith(f"staging/raptor/wings/") and p.rsplit("/", 1)[-1] in ("data.py", OLD_HEADER)]
+    bad = [p for p in _tracked() if p.startswith(OLD_UNIT + "s/") or p.startswith("staging/raptor/wings/") and p.rsplit("/", 1)[-1] in ("data.py", OLD_HEADER)]
     bad += [f"{p}: group raptor.{OLD_UNIT}s" for p, g in _groups() if g == f"raptor.{OLD_UNIT}s"]
     for d in _wing_folders():
         facts = d / "facts.py"

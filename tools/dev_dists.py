@@ -57,7 +57,7 @@ def write(pyproject: Path, out: Path) -> str:
     version = project.get("version", "0.0.0.dev0")
     folder = out / f"{re.sub(r'[-_.]+', '_', name)}-{version}.dist-info"
     folder.mkdir(parents=True, exist_ok=True)
-    meta = [f"Metadata-Version: 2.1", f"Name: {name}", f"Version: {version}"]
+    meta = ["Metadata-Version: 2.1", f"Name: {name}", f"Version: {version}"]
     meta += [f"Requires-Dist: {d}" for d in project.get("dependencies", [])]
     (folder / "METADATA").write_text("\n".join(meta) + "\n", encoding="utf-8")
     lines = []

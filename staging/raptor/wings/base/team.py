@@ -601,7 +601,7 @@ def log_names(target: str) -> tuple:
     return f"{PLANE_PREFIX}o_{target}_v", f"{PLANE_PREFIX}o_{target}_i"
 
 
-def fold_spec(log: LogStore, keyed, forced: int = 0) -> TeamSpec:
+def fold_spec(log: Node, keyed, forced: int = 0) -> TeamSpec:
     """The team stage that folds the log of ``log.target``: each key's lanes are contiguous, and
     for each of the ``log.width`` slots the key's contributions are added in lane order into the
     cell the slot names (``out[cell] = sum``; the cells are held per key, as reals): no atomics, the same bits on every launch. The

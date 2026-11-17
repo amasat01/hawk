@@ -69,7 +69,7 @@ def missing(backend_id: str) -> str:
 
 def missing_device() -> str:
     """The sentence that refuses a need for a device backend when none is installed."""
-    return f"no device backend is installed; install the distribution {KNOWN["cuda"]}"
+    return f"no device backend is installed; install the distribution {KNOWN['cuda']}"
 
 
 #: hawk's emission tables: what an emitted artifact (its text, its sidecar, its manifest) is written with.
