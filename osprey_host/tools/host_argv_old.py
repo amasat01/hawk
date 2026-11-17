@@ -17,8 +17,12 @@ old function:
     (hawk/compile/toolchain.py:compiler_identity) and, when asked to build the masked-call
     witness (toolchain.py:_witness_run), writes a program that exits with the verdict, so the
     old probes run as written;
-  * the include roots ($HAWK_AETHER_INCLUDE, $HAWK_EAGLE_INCLUDE, hawk/_roots.py): two empty
-    folders;
+  * the header shape, the axis `headers`. ROOTS: the include roots ($HAWK_AETHER_INCLUDE,
+    $HAWK_EAGLE_INCLUDE, hawk/_roots.py) are two empty folders, and the plan carries their `-I`
+    flags. SERVED (the installed wheel): neither variable is set, so `_Inputs.sealed`
+    (hawk/compile/drivers.py:368) is true, the plan carries no include, and the hook is handed one
+    served folder (the `served` of the job, drivers.py:482) that it appends as `-I<folder>`
+    (backend.py:84-89 and 92-94);
   * the folder of the facts header: every host build passes the driver one include flag of the
     raptor wing's folder as the option `extra` (hawk/backends/__init__.py:115, made by
     hawk/facts.py:include_flags); the same flag class is passed here over a fixed folder name;
@@ -84,6 +88,7 @@ PROFILES = (
     "no-such-profile",
 )
 OPT_LEVELS = ("", "O0", "O1", "O2", "O3", "O4")
+HEADERS = ("roots", "served")
 SCALARS = ("float64", "float32")
 VERDICTS = ("fixed", "miscompile", "unrun")
 WITNESS_EXIT = {"fixed": 0, "miscompile": 1, "unrun": 2}
@@ -118,10 +123,10 @@ chmod +x "$out"
 def main(out_path: str) -> None:
     """Write one JSON line for every combination of the tables to `out_path`."""
     root = Path(tempfile.mkdtemp(prefix="host_argv_old_"))
-    aether, eagle = root / "aether", root / "eagle"
+    aether, eagle, served = root / "aether", root / "eagle", root / "served"
     aether.mkdir()
     eagle.mkdir()
-    os.environ.update(HAWK_AETHER_INCLUDE=str(aether), HAWK_EAGLE_INCLUDE=str(eagle))
+    served.mkdir()
     for name in ("HAWK_HOST_PROFILE", "HAWK_OPT_LEVEL", "CXX"):
         os.environ.pop(name, None)
     from hawk.compile.drivers import CompileOptions, _Inputs
@@ -133,6 +138,7 @@ def main(out_path: str) -> None:
     placeholders = {
         str(aether): "{include:aether}",
         str(eagle): "{include:eagle}",
+        f"-I{served}": "-I{include:served}",
         "-I/FACTS": "-I{include:facts}",
         "/SRC": "{source}",
         "/OUT": "{output}",
@@ -158,8 +164,17 @@ def main(out_path: str) -> None:
                 platform.machine = real_machine
             else:
                 platform.machine = lambda m=machine: m
-            for profile, opt, scalar in itertools.product(PROFILES, OPT_LEVELS, SCALARS):
+            axes = itertools.product(HEADERS, PROFILES, OPT_LEVELS, SCALARS)
+            for headers, profile, opt, scalar in axes:
+                if headers == "roots":
+                    os.environ.update(
+                        HAWK_AETHER_INCLUDE=str(aether), HAWK_EAGLE_INCLUDE=str(eagle)
+                    )
+                else:
+                    for name in ("HAWK_AETHER_INCLUDE", "HAWK_EAGLE_INCLUDE"):
+                        os.environ.pop(name, None)
                 row = {
+                    "headers": headers,
                     "machine": machine,
                     "machine_patched": machine != native,
                     "compiler": kind,
@@ -182,7 +197,10 @@ def main(out_path: str) -> None:
                     plan = BACKEND.compile_plan(options, _Inputs())
                     argv = []
                     job = SimpleNamespace(
-                        src=Path("/SRC"), out=Path("/OUT"), dep=Path("/DEP"), served=None
+                        src=Path("/SRC"),
+                        out=Path("/OUT"),
+                        dep=Path("/DEP"),
+                        served=served if headers == "served" else None,
                     )
                     BACKEND.compile_hook(plan, job, lambda a: argv.extend(a))
                     row["argv"] = [placeholders.get(a, a) for a in argv]
@@ -198,7 +216,7 @@ def main(out_path: str) -> None:
     # the scalar mode must not change the argv: check it here
     seen = {}
     for row in rows:
-        key = tuple(row[k] for k in ("machine", "family", "profile", "opt_level"))
+        key = tuple(row[k] for k in ("machine", "headers", "family", "profile", "opt_level"))
         got = json.dumps(row.get("argv", row.get("refused")))
         if row["scalar"] == "float32" and seen.get(key + (row["witness"],)) not in (None, got):
             raise SystemExit(f"the scalar mode changes the argv at {key}")

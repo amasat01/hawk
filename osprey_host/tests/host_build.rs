@@ -1,5 +1,5 @@
 //! The host build instructions against the recorded old driver: for every line of `tests/data/host_argv_old.jsonl` (the argv the old
-//! command builder made, with its paths as placeholders), the facts answer for the same compiler, machine and settings states
+//! command builder made in both header shapes, with its paths as placeholders), the facts answer for the same compiler, machine and settings states
 //! `compile_unit` and `link` that make the same command.
 //!
 //! The old command compiled and linked in one: `<compiler> <flags> -shared <flags> -MD -MF <dep> <src> -o <library>`. The split rule:
@@ -36,6 +36,7 @@ fn stated(row: &Json) -> String {
     let isa = text("machine");
     let vector = if isa == "arm64" { "neon" } else { "avx2" };
     let mut members = vec![
+        format!("\"headers\":\"{}\"", text("headers")),
         format!("\"isa\":\"{isa}\""),
         format!("\"vector_isa\":\"{vector}\""),
     ];
@@ -138,7 +139,7 @@ fn the_commands_of_every_recorded_combination_are_the_old_ones() {
 fn a_gcc_release_is_read_from_the_identity_when_none_is_stated() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("facts");
     let state = |witness: &str| {
-        let text = format!("{{\"isa\":\"x86_64\",\"vector_isa\":\"avx2\",\"host_profile\":\"native-vector-math\",\"masked_call_witness\":\"{witness}\"}}");
+        let text = format!("{{\"headers\":\"roots\",\"isa\":\"x86_64\",\"vector_isa\":\"avx2\",\"host_profile\":\"native-vector-math\",\"masked_call_witness\":\"{witness}\"}}");
         facts::stated_from_json(&text).unwrap()
     };
     let flag = |identity: &str, witness: &str| {
@@ -157,4 +158,23 @@ fn a_gcc_release_is_read_from_the_identity_when_none_is_stated() {
     assert!(!flag("g++ || g++ (GCC) 13.4.0 || 0", "fixed"));
     assert!(flag("g++ || g++ (GCC) 13 || 0", "fixed"));
     assert!(!flag("g++ || g++ 11 || 0", "fixed"));
+}
+
+#[test]
+fn headers_are_required_and_closed() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("facts");
+    let refusal = |record: &str| -> String {
+        let state = facts::stated_from_json(record).unwrap();
+        facts::answer(
+            &dir,
+            "host",
+            "c++ || clang version 17.0.1 || 0",
+            &facts::probe(),
+            &state,
+        )
+        .map_err(String::from)
+        .unwrap_err()
+    };
+    assert!(refusal("{}").contains("needs headers"));
+    assert!(refusal(r#"{"headers":"both"}"#).contains("headers both is not roots or served"));
 }

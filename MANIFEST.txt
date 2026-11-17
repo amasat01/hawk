@@ -27,18 +27,18 @@ Every file with its line count (this file excluded):
       8  osprey_host/facts/cuda.json
      35  osprey_host/facts/cuda_build.json
      45  osprey_host/facts/cuda_image.json
-     23  osprey_host/facts/host_build.json
+     26  osprey_host/facts/host_build.json
      27  osprey_host/facts/x86.json
     127  osprey_host/include/osprey_host.h
     270  osprey_host/loader/loader.c
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
-   3224  osprey_host/src/bin/kreplay.rs
+   3225  osprey_host/src/bin/kreplay.rs
    1235  osprey_host/src/bin/kreplay/derived.rs
    1314  osprey_host/src/bin/kreplay/meta.rs
-   1459  osprey_host/src/bin/treplay.rs
-    921  osprey_host/src/facts.rs
-    197  osprey_host/src/host_build.rs
+   1460  osprey_host/src/bin/treplay.rs
+    929  osprey_host/src/facts.rs
+    218  osprey_host/src/host_build.rs
     393  osprey_host/src/lib.rs
     162  osprey_host/src/lower/active.rs
      51  osprey_host/src/lower/blocks.rs
@@ -60,15 +60,15 @@ Every file with its line count (this file excluded):
     579  osprey_host/src/lower/stages.rs
     740  osprey_host/src/lower/unit_meta.rs
     246  osprey_host/src/lower/warp.rs
-   3888  osprey_host/tests/data/host_argv_old.jsonl
+   7776  osprey_host/tests/data/host_argv_old.jsonl
       8  osprey_host/tests/data/meta_calls.jsonl
       8  osprey_host/tests/data/units_small.jsonl
     240  osprey_host/tests/derived.rs
     186  osprey_host/tests/dispatch_k.rs
      72  osprey_host/tests/events.rs
-    361  osprey_host/tests/facts.rs
+    369  osprey_host/tests/facts.rs
      45  osprey_host/tests/facts_oracle.rs
-    160  osprey_host/tests/host_build.rs
+    180  osprey_host/tests/host_build.rs
      86  osprey_host/tests/link_rules.rs
     524  osprey_host/tests/meta_c.rs
     601  osprey_host/tests/set_text.rs
@@ -77,7 +77,7 @@ Every file with its line count (this file excluded):
      47  osprey_host/tests/treplay.rs
      12  osprey_host/tools/cc
     134  osprey_host/tools/cost_host.py
-    219  osprey_host/tools/host_argv_old.py
+    237  osprey_host/tools/host_argv_old.py
     630  osprey_host/tools/host_plugin.py
     970  osprey_host/tools/kroute.py
     101  osprey_host/tools/merge_host.py

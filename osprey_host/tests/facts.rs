@@ -50,15 +50,17 @@ fn answer(
     })
 }
 
+/// A stated machine whose headers are in roots, which a host question must state.
+fn roots() -> Stated {
+    Stated {
+        headers: Some("roots".into()),
+        ..Stated::default()
+    }
+}
+
 /// The answer for the host target, or the refusal.
 fn host(isa: &str, line: &str) -> Result<String, String> {
-    answer(
-        &shipped(),
-        "host",
-        &identity(line),
-        &machine(isa),
-        &Stated::default(),
-    )
+    answer(&shipped(), "host", &identity(line), &machine(isa), &roots())
 }
 
 #[test]
@@ -106,7 +108,7 @@ fn caches_are_the_probes() {
         "host",
         &identity("clang version 1"),
         &probe,
-        &Stated::default(),
+        &roots(),
     )
     .unwrap();
     let want = r#""caches":{"l1d_bytes":65536,"l2_bytes":4194304,"source":"probe"}"#;
@@ -224,7 +226,12 @@ fn stated(target: &str, line: &str, record: &str) -> Result<String, String> {
 
 #[test]
 fn a_stated_machine_replaces_the_probed_one() {
-    let x86 = stated("host", "g++ 11", r#"{"isa":"x86_64","vector_isa":"avx2"}"#).unwrap();
+    let x86 = stated(
+        "host",
+        "g++ 11",
+        r#"{"headers":"roots","isa":"x86_64","vector_isa":"avx2"}"#,
+    )
+    .unwrap();
     assert!(
         x86.contains(r#""isa":"X86_64","vector_isa":"avx2","exact_libm":false"#),
         "{x86}"
@@ -232,14 +239,15 @@ fn a_stated_machine_replaces_the_probed_one() {
     let portable = stated(
         "host",
         "g++ 11",
-        r#"{"isa":"x86_64","vector_isa":"avx2","host_profile":"portable"}"#,
+        r#"{"headers":"served","isa":"x86_64","vector_isa":"avx2","host_profile":"portable"}"#,
     )
     .unwrap();
     assert!(
         portable.contains(r#""isa":"X86_64","vector_isa":"avx2","exact_libm":true"#),
         "{portable}"
     );
-    let caches = r#"{"l1d_bytes":32768,"l2_bytes":1048576,"cache_source":"stated"}"#;
+    let caches =
+        r#"{"headers":"roots","l1d_bytes":32768,"l2_bytes":1048576,"cache_source":"stated"}"#;
     let text = stated("host", "clang", caches).unwrap();
     assert!(text.contains(r#""caches":{"l1d_bytes":32768,"l2_bytes":1048576,"source":"stated"}"#));
     let device = stated("cuda", &line("12.6"), r#"{"device_arch":"sm_61"}"#).unwrap();

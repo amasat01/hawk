@@ -21,8 +21,8 @@ pub struct Probe {
 }
 
 /// A machine the caller states, for a build that is not for the machine running: every field absent means the probed machine's
-/// value (or the card's default). The host target takes `isa`, `caches`, `host_profile` and the build settings `opt_level`, `gcc_release` and
-/// `masked_call_witness`; the cuda target takes
+/// value (or the card's default). The host target takes `isa`, `caches`, `host_profile` and the build settings `headers` (required),
+/// `opt_level`, `gcc_release` and `masked_call_witness`; the cuda target takes
 /// `device_arch` and `device_release`.
 #[derive(Default)]
 pub struct Stated {
@@ -39,6 +39,8 @@ pub struct Stated {
     /// The release of the device compiler as `major.minor`, in place of the one its identity's version line names. A compiler whose
     /// first version line carries no release (the device compiler driver prints it on a later line) must state it.
     pub device_release: Option<String>,
+    /// Where the headers of a host build are: `roots` or `served`. A host answer needs it.
+    pub headers: Option<String>,
     /// The optimisation level of the host build (`O0` to `O3`), in place of the default.
     pub opt_level: Option<String>,
     /// The release of a GCC compiler as `major.minor`, in place of the one its identity's version line ends with.
@@ -73,7 +75,7 @@ impl From<Failed> for String {
     }
 }
 
-/// The stated machine of its JSON record (`isa`, `l1d_bytes`, `l2_bytes`, `cache_source`, `host_profile`, `device_arch`, `opt_level`, `gcc_release`,
+/// The stated machine of its JSON record (`isa`, `l1d_bytes`, `l2_bytes`, `cache_source`, `host_profile`, `device_arch`, `headers`, `opt_level`, `gcc_release`,
 /// `masked_call_witness`, each optional); a key outside these, a value of the wrong kind and a cache record with a part missing are refused by name.
 pub fn stated_from_json(text: &str) -> Result<Stated, Failed> {
     read_stated(text).map_err(Failed::Bad)
@@ -90,6 +92,7 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         "host_profile",
         "device_arch",
         "device_release",
+        "headers",
         "opt_level",
         "gcc_release",
         "masked_call_witness",
@@ -135,6 +138,7 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         host_profile: name("host_profile")?,
         device_arch: name("device_arch")?,
         device_release: name("device_release")?,
+        headers: name("headers")?,
         opt_level: name("opt_level")?,
         gcc_release: name("gcc_release")?,
         masked_call_witness: name("masked_call_witness")?,
@@ -521,8 +525,12 @@ fn host_machine(
         .gcc_release
         .clone()
         .or_else(|| identity_release(compiler));
+    let headers = stated.headers.as_deref().ok_or_else(|| {
+        Failed::Bad("stated machine: a host build needs headers (roots or served)".into())
+    })?;
     let settings = host_build::Settings {
         profile,
+        headers,
         gcc,
         opt_level: stated.opt_level.as_deref(),
         gcc_release: release.as_deref(),

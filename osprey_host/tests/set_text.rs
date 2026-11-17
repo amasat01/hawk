@@ -167,7 +167,7 @@ impl Tools {
         let line = String::from_utf8_lossy(&version.stdout);
         let identity = format!("c++ || {} || 0", line.lines().next().unwrap_or(""));
         let facts_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("facts");
-        let stated = osprey_host::facts::stated_from_json("{}").unwrap();
+        let stated = osprey_host::facts::stated_from_json(r#"{"headers":"roots"}"#).unwrap();
         let answer = osprey_host::facts::answer(
             &facts_dir,
             "host",

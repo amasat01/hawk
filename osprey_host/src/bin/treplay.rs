@@ -233,6 +233,7 @@ fn recorded_machine(unit: &Unit, contract: &Contract) -> (facts::Stated, &'stati
             .map(String::from),
         caches: unit.machine.caches.clone(),
         host_profile: host_profile.map(String::from),
+        headers: Some("roots".into()),
         device_arch: None,
         ..Default::default()
     };

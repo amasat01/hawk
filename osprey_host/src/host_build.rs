@@ -2,8 +2,11 @@
 //! three commands that make a host unit library: the compile of a unit text to an object, the compile of the set text, and the
 //! link of the objects into one shared library. Every flag is read from the data files (`host_build.json` and the `host_flags`
 //! of the instruction set's card); nothing is probed. Places the caller fills in are written `{compiler}`, `{source}`, `{object}`,
-//! `{output}`, `{depfile}`, `{include:aether}`, `{include:eagle}`, `{include:door}` and, for the link, `{objects}` (one element
-//! for each object).
+//! `{output}`, `{depfile}`, `{include:aether}` and `{include:eagle}` (headers in two roots), `{include:served}` (headers served into
+//! one folder), `{include:facts}`, `{include:door}` and, for the link, `{objects}` (one element for each object).
+//!
+//! Where the headers are is the caller's fact (`headers`, `roots` or `served`); the include places of a compile follow it. With
+//! roots the includes come before the facts include; served, they come after it, as the old command had them.
 //!
 //! A unit compile is the old one-command build (compile and link) with the link half taken out: the same flags in the same order,
 //! with `-shared` and `-o <library>` left to the link and `-c` and `-o <object>` added. The set text is compiled with exactly the
@@ -14,11 +17,13 @@ use crate::facts::{closed, member, names_of, read_file, text_of, Failed};
 use aether_writers::contract::Json;
 use std::path::Path;
 
-/// What the facts question states that the commands depend on: the profile in effect, whether the compiler is GCC, the
-/// optimisation level asked for, and for a GCC the release and the verdict of the masked-call witness (none: it did not run).
+/// What the facts question states that the commands depend on: the profile in effect, where the headers are, whether the compiler
+/// is GCC, the optimisation level asked for, and for a GCC the release and the verdict of the masked-call witness (none: it did not run).
 pub(crate) struct Settings<'a> {
     /// The host profile in effect.
     pub profile: &'a str,
+    /// Where the headers are: `roots` (one include root for each header set) or `served` (one folder).
+    pub headers: &'a str,
     /// Whether the compiler is GCC proper.
     pub gcc: bool,
     /// The optimisation level asked for, without its dash (`O2`); none means the default.
@@ -169,10 +174,26 @@ pub(crate) fn host_build(
     }
     argv.extend(masked_flags(&card, file, host, vector, s)?);
     argv.extend(names_of(&card, file, "unit_tail")?);
-    argv.extend(names_of(&card, file, "includes")?);
-    let set = [&argv[..], &names_of(&card, file, "set_includes")?[..]].concat();
+    let places = member(&card, file, "includes")?;
+    closed(places, file, &["roots", "served"])?;
+    if !["roots", "served"].contains(&s.headers) {
+        return Err(Failed::Bad(format!(
+            "stated machine: headers {} is not roots or served",
+            s.headers
+        )));
+    }
+    let includes = names_of(places, file, s.headers)?;
+    let set_includes = names_of(&card, file, "set_includes")?;
+    let set = [&argv[..], &includes[..], &set_includes[..]].concat();
     // a unit's text includes the facts header of the machine's wing; the set text does not
-    argv.extend(names_of(&card, file, "facts_include")?);
+    let facts = names_of(&card, file, "facts_include")?;
+    if s.headers == "roots" {
+        argv.extend(includes);
+        argv.extend(facts);
+    } else {
+        argv.extend(facts);
+        argv.extend(includes);
+    }
     let rest = [
         names_of(&card, file, "dependency")?,
         names_of(&card, file, "compile_only")?,

@@ -425,7 +425,7 @@ def _host_stated(spec):
     gcc = get("arm64_gcc") is True or (
         isa == "x86_64" and profile is not None and "vector" in profile
     )
-    stated = {}
+    stated = {"headers": "roots"}
     for key, value in (("isa", isa), ("vector_isa", vector), ("host_profile", profile)):
         if value is not None:
             stated[key] = value

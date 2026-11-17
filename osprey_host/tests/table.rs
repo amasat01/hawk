@@ -69,7 +69,7 @@ fn facts_entry_answers_and_refuses() {
             dir,
             target.as_ptr(),
             compiler.as_ptr(),
-            std::ptr::null(),
+            c"{\"headers\":\"roots\"}".as_ptr(),
             buf,
             cap,
             len,

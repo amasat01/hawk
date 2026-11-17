@@ -266,6 +266,7 @@ fn facts_answer(spec: &J, cache: &mut HashMap<String, String>) -> Result<String,
         vector_isa: text(get("vector_isa")).map(String::from),
         caches,
         host_profile: profile,
+        headers: Some("roots".into()),
         device_arch: None,
         ..Default::default()
     };

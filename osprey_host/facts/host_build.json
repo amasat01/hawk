@@ -10,7 +10,10 @@
   },
   "always": ["-fno-math-errno"],
   "unit_tail": ["-std=c++23", "-fPIC", "-DAETHER_CPP_MODE"],
-  "includes": ["-I", "{include:aether}", "-I", "{include:eagle}"],
+  "includes": {
+    "roots": ["-I", "{include:aether}", "-I", "{include:eagle}"],
+    "served": ["-I{include:served}"]
+  },
   "facts_include": ["-I{include:facts}"],
   "set_includes": ["-I", "{include:door}"],
   "dependency": ["-MD", "-MF", "{depfile}"],
