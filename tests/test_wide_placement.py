@@ -352,18 +352,18 @@ def test_the_tables_of_the_selected_class_decide_the_placement():
     assert record
 
 
-def test_the_unit_key_changes_with_the_class_and_a_host_kernel_states_no_placement(tmp_path, cache_dir):
+def test_the_unit_key_changes_with_the_arch_and_a_host_kernel_states_no_placement(tmp_path, cache_dir):
+    """The thresholds class is the library's answer for an arch, so a build of another class is a build of another arch: the
+    resolved arch is a term of the unit key."""
     from hawk.artifact.unit_cache import _unit_key
-    from aether.wings.base.wrapper import scalar_mode
 
     _, host = _build("masked_sum", tmp_path / "plain", cache_dir)
     assert "wide" not in sidecar_of(host, "masked_sum")["launch"]
 
-    def key(cls):
-        return _unit_key(["k"], ["d"], ["e"], targets=("cuda",), smode=scalar_mode("float64"), kind=None, defines=(), cache_dir=None,
-                         device_arch="sm_61", derivative_blocks=(), layout_sizes_override=None, wide_class=cls, spec=DEVICE)
+    def key(device_arch):
+        return _unit_key(["k"], ["d"], targets=("cuda",), defines=(), cache_dir=None, device_arch=device_arch, derivative_blocks=())
 
-    assert key("sm61") != key("sm75") and key("sm61") == key("sm61")
+    assert key("sm_61") != key("sm_75") and key("sm_61") == key("sm_61")
 
 
 def test_the_text_of_the_one_measured_class_does_not_depend_on_the_arch(tmp_path, cache_dir):
