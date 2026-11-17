@@ -20,7 +20,7 @@ import _deploy as L
 import numpy as np
 import pytest
 from _eval import evaluate
-from conftest import _xp, sidecar_of
+from conftest import _xp, assert_within, sidecar_of, sum_bound
 
 import hawk
 import hawk.math as m
@@ -314,12 +314,12 @@ def test_scatter_add_equals_add_at(built, target, n):
     got, bound, planes = _run(bundle, "hist", target, {"lane": d["lane"], "u": d["v"]}, outs)
     want = np.zeros(NB)
     np.add.at(want, d["lane"], 1.0)
-    np.testing.assert_allclose(got["bins"], want, rtol=TOL[mode])
+    np.testing.assert_array_equal(got["bins"], want)
     for k in range(3):
         wa = np.zeros(NB)
         np.add.at(wa, d["lane"], d["v"][k].astype(np.float64))
-        np.testing.assert_allclose(got[f"acc{k}"], wa, rtol=TOL[mode] * 100,
-                                   atol=TOL[mode] * 100 * n)
+        bound = [sum_bound(d["v"][k][d["lane"] == b], mode) for b in range(NB)]
+        assert_within(got[f"acc{k}"], wa, bound)
 
 
 @pytest.mark.parametrize("n", SIZES)
@@ -354,7 +354,9 @@ def test_vector_and_matrix_cells_equal_columnwise_numpy(built, target, n):
                     ("u", mm.astype(np.float64).sum(axis=(0, 2)))):
         cell = np.array([(got[f"{c}_{k}"].astype(np.float64) + got[f"{c}_{k}_comp"]).sum()
                          for k in range(3)])
-        np.testing.assert_allclose(cell, want, rtol=TOL[mode] * 100, atol=TOL[mode] * 100 * n)
+        columns = (v, mm.transpose(1, 0, 2).reshape(3, -1))[c == "u"]
+        bound = [sum_bound(column, mode) for column in columns]
+        assert_within(cell, want, bound)
 
 
 @pytest.mark.parametrize("target", TARGETS)
@@ -433,7 +435,7 @@ def test_the_mean_over_an_axis_divides_by_its_extent(built, target):
     bundle, mode = built
     x = np.arange(8.0, dtype=mode)
     got, *_ = _run(bundle, "kmean", target, {"x": x}, {"out": np.zeros(2, mode)})
-    np.testing.assert_allclose(got["out"], x.reshape(2, 4).mean(axis=1), rtol=TOL[mode])
+    np.testing.assert_array_equal(got["out"], x.reshape(2, 4).mean(axis=1))
 
 
 @pytest.mark.parametrize("contract", ("auto", "compensated"))

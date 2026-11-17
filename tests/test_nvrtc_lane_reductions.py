@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from _team_stages import run_device
 from _toolchain import real_arch
-from conftest import sidecar_of
+from conftest import assert_within, sidecar_of, sum_bound
 
 import hawk
 from hawk import Mutable, Scalar, kernel
@@ -63,7 +63,9 @@ def test_nvrtc_builds_the_lane_reduction_and_matches_nvcc(kern, out, fold, ref, 
     got, side = _run(kern, out, tmp_path, "nvrtc", monkeypatch, x)
     want, nvcc_side = _run(kern, out, tmp_path, "nvcc", monkeypatch, x)
     assert all(np.array_equal(got[k], want[k]) for k in got)
-    np.testing.assert_allclose(fold(got), ref(x), rtol=1e-12)
+    # max and min are exact; the sum folds the row partials in another order than the reference
+    bound = sum_bound(x[x > 0]) if kern is lane_sum else 0.0
+    assert_within(fold(got), ref(x), bound)
     row, ref_row = side["ptxas"][kern.name], nvcc_side["ptxas"][kern.name]
     # NVRTC's figures come off the CUBIN: registers and frame equal nvcc's, spills are unknown (None)
     assert (row["regs"], row["stack_B"]) == (ref_row["regs"], ref_row["stack_B"])

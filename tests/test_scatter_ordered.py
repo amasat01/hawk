@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from conftest import assert_within, fd_bound, sidecar_of, sum_bound
 
 import hawk
 import hawk.math as m
@@ -91,7 +91,7 @@ def _case(n, cells, seed, heavy=False):
 def _same(got, key, x, cells):
     want = np.zeros(cells)
     np.add.at(want, key, x)
-    np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-12 * np.abs(want).max(initial=1.0))
+    assert_within(got, want, [sum_bound(x[key == cell]) for cell in range(cells)])
 
 
 @pytest.mark.parametrize("target", TARGETS)
@@ -115,6 +115,15 @@ def test_ordered_scatter_equals_add_at_and_replays_bitwise(bundles, target, n, c
     base = np.linspace(1.0, 2.0, cells)
     more = _run(bundles["add"], "add", target, key, x, cells, acc0=base)
     np.testing.assert_allclose(more - base, seen[0], rtol=1e-9, atol=1e-9 * np.abs(seen[0]).max())
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("n, cells, heavy", [(20000, 7, True), (1000, 1000, False)])
+def test_the_ordered_scatter_is_bit_identical_on_the_host_and_the_device(bundles, n, cells, heavy):
+    key, x = _case(n, cells, seed=n, heavy=heavy)
+    host = _run(bundles["add"], "add", "host", key, x, cells)
+    device = _run(bundles["add"], "add", "cuda", key, x, cells)
+    np.testing.assert_array_equal(host, device)
 
 
 def test_chunks_are_chosen_from_lanes_and_targets():
@@ -150,13 +159,14 @@ def test_the_vjp_is_a_gather_and_matches_finite_differences(bundles, target):
         eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**planes).launch()
         cp.cuda.get_current_stream().synchronize()
         bar = cp.asnumpy(planes["bar_x"])
-    np.testing.assert_allclose(bar, 2 * x * g[key], rtol=1e-12)
+    np.testing.assert_array_equal(bar, 2 * x * g[key])
     eps = 1e-6
+    bound = fd_bound(eps, np.sum(np.abs(g[key]) * x * x))
     for i in np.random.default_rng(2).choice(n, 6, replace=False):
         hi, lo = x.copy(), x.copy()
         hi[i] += eps
         lo[i] -= eps
-        np.testing.assert_allclose((loss(hi) - loss(lo)) / (2 * eps), bar[i], rtol=1e-5, atol=1e-7)
+        assert_within((loss(hi) - loss(lo)) / (2 * eps), bar[i], bound)
 
 
 def test_the_run_records_its_chunks(bundles):

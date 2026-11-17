@@ -151,6 +151,27 @@ __all__ = ["BOTH", "sidecar_of"]
 assert TARGETS  # the targets table is what `targets` names
 
 
+def sum_bound(terms, dtype=np.float64) -> float:
+    """Largest gap between two orderings of one sum of ``terms`` in ``dtype``.
+
+    Each ordering is within ``(k-1)u*sum|x|`` of the exact sum (``k`` terms, ``u = eps/2``).
+    """
+    magnitude = np.abs(np.asarray(terms, dtype=np.float64))
+    return max(magnitude.size - 1, 0) * np.finfo(dtype).eps * float(magnitude.sum())
+
+
+def fd_bound(step, magnitude) -> float:
+    """Roundoff of a central difference of step ``step``: two evaluations each carry
+    ``eps*magnitude``, divided by ``2*step``. Exact for a quadratic, which has no truncation."""
+    return np.finfo(np.float64).eps * float(magnitude) / step
+
+
+def assert_within(got, want, bound):
+    """``|got - want| <= bound`` element by element, ``bound`` a scalar or one value per element."""
+    gap = np.abs(np.asarray(got, dtype=np.float64) - np.asarray(want, dtype=np.float64))
+    assert (gap <= bound).all(), f"gap {gap} beyond the bound {bound}"
+
+
 def run_threads(fns):
     """Start every callable at once; return ``(results, errors)`` by index."""
     barrier = threading.Barrier(len(fns))
