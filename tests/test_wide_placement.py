@@ -156,10 +156,7 @@ def test_the_team_form_is_refused_by_name(tmp_path, cache_dir):
 def test_the_sidecar_names_every_plane_and_the_runtime_makes_the_scratch_ones(tmp_path, cache_dir):
     _, bundle = _build("fill_mask", tmp_path, cache_dir, targets=TARGETS_BOTH, host_profile="native")     # a host target keeps the placed form
     side = sidecar_of(bundle, "fill_mask")
-    assert side["launch"]["wide"] == {
-        "bf": {"form": "resident", "plane": "bf", "layout": "plane_major", "width": W.W},
-        "hwd0": {"form": "resident", "plane": "hwd0", "layout": "warp_tiled", "width": W.W},
-        "class": "sm61"}
+    assert side["launch"]["wide"] == {"hwd0": {"layout": "warp_tiled"}}     # the one fact a run reads: which scratch plane is tiled by warp
     assert side["team_planes"] == {"hwd0": {"dtype": "real", "per_lane": W.W}}
     assert [st["kernel"] for st in side["stages"]] == ["fill_mask"] and ("wide_in", "hwd0") in map(tuple, side["arg_spec"])
     assert side["launch"]["local_bytes"] == 0
@@ -355,12 +352,10 @@ def test_the_tables_of_the_selected_class_decide_the_placement():
     assert record
 
 
-def test_the_sidecar_names_the_class_and_the_unit_key_changes_with_it(tmp_path, cache_dir):
+def test_the_unit_key_changes_with_the_class_and_a_host_kernel_states_no_placement(tmp_path, cache_dir):
     from hawk.artifact.unit_cache import _unit_key
     from aether.wings.base.wrapper import scalar_mode
 
-    _, bundle = _build("fill_mask", tmp_path, cache_dir, device_arch="sm_75", targets=TARGETS_BOTH, host_profile="native")   # no class of its own: the nearest
-    assert sidecar_of(bundle, "fill_mask")["launch"]["wide"]["class"] == "sm61"
     _, host = _build("masked_sum", tmp_path / "plain", cache_dir)
     assert "wide" not in sidecar_of(host, "masked_sum")["launch"]
 
