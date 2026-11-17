@@ -416,6 +416,12 @@ class _Inputs:
         return tuple(keyed if f == root else f for f in flags)
 
 
+def header_shape() -> str:
+    """Where a host compile of this process finds its headers, in the words of the library's facts question: ``"served"``
+    (the shipped payload, served into one folder per compile) or ``"roots"`` (one include root per header set)."""
+    return "served" if _Inputs().sealed else "roots"
+
+
 @dataclass(frozen=True)
 class _Job:
     """One compile as hawk hands it to :meth:`hawk.backends.Backend.compile_hook`: the source hawk wrote, the

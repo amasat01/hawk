@@ -169,11 +169,15 @@ def _device(spec, options) -> tuple:
 
 
 def _stated_host(spec) -> dict:
-    """The machine a host unit is written for, as the library's facts entry takes it."""
+    """The machine a host unit is written for and where its compile finds the headers, as the library's facts entry takes
+    them."""
+    from ..compile import drivers
+
     machine = spec.machine
     facts = machine.facts
     stated = {"isa": machine.isa, "vector_isa": facts.get("vector_isa"), "host_profile": facts.get("host_profile")}
     stated = {key: value for key, value in stated.items() if value is not None}
+    stated["headers"] = drivers.header_shape()
     l1, l2 = facts.get("l1d_cache_bytes"), facts.get("l2_cache_bytes")
     if l1 and l2:
         stated.update(l1d_bytes=l1, l2_bytes=l2, cache_source=facts.get("cache_source") or "")
