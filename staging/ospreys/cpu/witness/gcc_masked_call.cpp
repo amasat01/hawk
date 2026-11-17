@@ -10,8 +10,11 @@
 #include <cstdint>
 #include <cstdio>
 
-// GNU simd attribute: both masked and unmasked vector clones are generated from this definition
-__attribute__((noinline, simd)) double fn(double t) { return std::tanh(t); }
+// GNU simd attribute: both masked and unmasked vector clones are generated from this definition.
+// Hidden visibility, as the vector-math functions of a real unit have: a unit is position-independent code, where a
+// callee of default visibility may be replaced at load time, so GCC does not call its local clones and the bug is
+// never reached. Without it the witness reports a fixed compiler under the unit's own flags.
+__attribute__((visibility("hidden"), noinline, simd)) double fn(double t) { return std::tanh(t); }
 
 constexpr long N = 64, TILE = 32;
 

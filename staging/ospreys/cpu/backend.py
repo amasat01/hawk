@@ -8,7 +8,6 @@ from __future__ import annotations
 import platform
 from pathlib import Path
 
-from raptor.errors import RaptorError
 from hawk.backends import Backend
 from . import toolchain as tc
 
@@ -69,10 +68,7 @@ class Host(Backend):
 
     def machine_facts(self):
         caches = tc.host_caches()
-        try:
-            in_effect = tc.host_profile()
-        except RaptorError:                  # a refusal (unknown name, no GCC): key_terms and the compile raise it by name, later
-            in_effect = tc.default_host_profile()
+        in_effect = tc.asked_host_profile()     # unchecked: the library's answer to the facts refuses a profile this compiler cannot build
         cache_facts = {} if caches is None else {"l1d_cache_bytes": caches[0], "l2_cache_bytes": caches[1], "cache_source": caches[2]}
         return {**cache_facts, "isa": "x86_64" if tc._is_x86_64() else "arm64", "arm64_gcc": bool(tc._arm64_gcc()),
                 "exact_host_profiles": tuple(tc.EXACT_HOST_PROFILES), "host_profile": in_effect,

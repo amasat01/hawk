@@ -38,7 +38,6 @@ import subprocess
 import threading
 
 import pytest
-from _toolchain import host_template
 
 import hawk
 import hawk.artifact.bundle as bundle_mod
@@ -81,6 +80,18 @@ def _host_so(kernel, tmp_path):
     return bundle.directory / f"{kernel.name}.so"
 
 
+def _build_template() -> list:
+    """The unit compile template the build itself uses for the host compiler: the library's, with the verdict of the masked-call witness
+    that the product asks for (a distributor's compiler that carries the fix is rightly flagged though its version says affected)."""
+    from hawk.compile.drivers import CompileOptions
+    from hawk.targets import TARGETS, build_spec
+
+    row = TARGETS["host"]
+    build = row.host_build(build_spec(("host",)).for_target(row).primary, {"host_profile": "native-vector-math"},
+                           CompileOptions(target="host", host_profile="native-vector-math"))
+    return build.instructions["compile_unit"]
+
+
 @needs_x86
 def test_a_math_free_kernel_emits_no_vector_math(tmp_path):
     assert _hvm_symbols(_host_so(plain_step, tmp_path)) == set()
@@ -90,7 +101,7 @@ def test_a_math_free_kernel_emits_no_vector_math(tmp_path):
 def test_a_math_kernel_emits_only_the_functions_it_calls(tmp_path):
     syms = _hvm_symbols(_host_so(root_pow_step, tmp_path))
     masked_dropped = (ctc.gcc_maskcall_affected(ctc.compiler_macros(ctc.host_compiler()))
-                      and "-DAETHER_HVM_MASKED=1" not in host_template())
+                      and "-DAETHER_HVM_MASKED=1" not in _build_template())
     called = {re.sub(r"^.*aether_hvm_", "", s) for s in syms}
     # sqrt is inline on the host (aether b385084: the compiler widens it natively), so only pow leaves a symbol.
     assert called == {"pow"}, sorted(syms)

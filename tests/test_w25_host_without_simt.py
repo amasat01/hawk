@@ -136,6 +136,17 @@ def test_a_broken_default_set_osprey_is_skipped_by_an_implicit_call_with_one_war
     assert done.returncode == 0 and done.stdout.strip().endswith("OK"), done.stderr[-1800:] + done.stdout
 
 
+def test_the_device_compile_asks_the_host_row_by_id_and_loads_no_other_target(tmp_path, broken):
+    code = KERNEL + textwrap.dedent('''
+        import sys
+        from hawk.targets import TARGETS
+        from ospreys.cuda.backend import BACKEND
+        print("HOST", BACKEND._host_compiler() == TARGETS["host"].compiler(), "broken_mod" in sys.modules)
+    ''')
+    done = run(code, tmp_path, extra_path=(broken,), HAWK_OSPREYS="broken-ext")     # named: it is in the default set, and not loaded
+    assert done.stdout.strip().endswith("HOST True False"), done.stderr[-1500:] + done.stdout
+
+
 def test_a_broken_default_set_osprey_is_refused_by_name_when_requested(tmp_path, broken):
     code = KERNEL + textwrap.dedent(f'''
         try:

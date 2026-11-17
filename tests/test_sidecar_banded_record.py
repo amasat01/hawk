@@ -1,15 +1,13 @@
-"""The sidecar of a banded device kernel, rebuilt from its unit records, with the compile stood in.
+"""The sidecar of a banded device kernel, read from a real build under the stand-in device compiler.
 
-A banded kernel builds for a device only, so on a machine without a device compiler nothing else in the suite reaches
-this path: here the compile plan and the compile itself are replaced, and everything before them (the trace, the
-request, the lowering answer, the sidecar made from each unit record) is the real code."""
-
-from types import SimpleNamespace
+A banded kernel builds for a device only, so no host build reaches this path. The stand-in compiler of ``conftest`` writes the
+image from the real device text; the trace, the request, the lowering answer, the sidecar of each unit and the set library
+are the real code."""
 
 import pytest
 
 import hawk
-from hawk.artifact import build_bundle, bundle, request
+from hawk.artifact import build_bundle
 
 
 @hawk.kernel
@@ -18,32 +16,12 @@ def banded_colsum(lane: hawk.Grid["key", "col":64], x: hawk.Scalar, y: hawk.Muta
 
 
 @pytest.fixture
-def sidecars(monkeypatch, tmp_path):
-    """``sidecars(mode)``: unit name to the sidecar a device build of ``banded_colsum`` drafts, no compiler run."""
-    def no_toolchain(target, spec, options):
-        raise request.ToolchainAbsent("stood in: no device toolchain")
-
-    def not_compiled(pool, lowered, sources, options, targets):
-        result = SimpleNamespace(key="stood-in", hit=False, seconds=0.0, closure=())
-        parts = {t: SimpleNamespace(files=[], entry=(result, "a." + t, "s." + t, "cubin"), facts={}, report_file=None) for t in targets}
-        return {t: pool.submit(lambda part=part: part) for t, part in parts.items()}
-
-    drafted = {}
-    draft = bundle._draft
-
-    def keep(*args, **kwargs):
-        made = draft(*args, **kwargs)
-        drafted[made.name] = made.sidecar
-        return made
-
-    monkeypatch.setattr(request, "_compile_plan", no_toolchain)
-    monkeypatch.setattr(bundle, "_submit_targets", not_compiled)
-    monkeypatch.setattr(bundle, "_draft", keep)
-
+def sidecars(tmp_path, stand_in):
+    """``sidecars(mode)``: unit name to the sidecar of the device build of ``banded_colsum`` under ``mode``."""
     def build(mode):
-        drafted.clear()
-        build_bundle([banded_colsum], tmp_path / mode, mode=mode, targets=("cuda",), host_profile="native")
-        return dict(drafted)
+        built = build_bundle([banded_colsum], tmp_path / mode, mode=mode, targets=("cuda",),
+                             cache_dir=str(tmp_path / "cache"), options={"cuda.arch": "sm_80"})
+        return {artifact.name: artifact.sidecar for artifact in built.artifacts}
 
     return build
 

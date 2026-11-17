@@ -40,10 +40,13 @@ _ITERATING_BUILTINS = {
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "hawk"
 _IR_ROOTS = (_PACKAGE_ROOT / "passes",)
+# hawk's own IR module: its Quantity record has a ``leaves`` method, which is not a walk's field
+_IR_MODULE = _PACKAGE_ROOT / "_ir.py"
 
 
 def _scanned_files() -> list[Path]:
-    return [p for p in sorted(_PACKAGE_ROOT.rglob("*.py")) if not any(r in p.parents for r in _IR_ROOTS)]
+    return [p for p in sorted(_PACKAGE_ROOT.rglob("*.py"))
+            if p != _IR_MODULE and not any(r in p.parents for r in _IR_ROOTS)]
 
 
 def _is_walk_field(node: ast.AST) -> bool:

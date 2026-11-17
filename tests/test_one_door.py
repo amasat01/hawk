@@ -13,7 +13,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 ROOTS = ("hawk", "components", "staging", "extensions")
 #: the door itself; every other module is refused
-ALLOWED = {"staging/raptor/wings/base/cells.py": "the door"}
+ALLOWED = {"staging/raptor/wings/base/cells.py": "the door",
+           "hawk/_ir.py": "hawk's IR module: its canonical is the binding's walk, with the declared slots stated"}
 
 
 def _direct_calls(path: Path) -> list:

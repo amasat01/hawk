@@ -246,8 +246,9 @@ def masked_call_verdict(build: HostBuild, source: Path, template: list) -> str:
     for the verdict ``unrun``): ``fixed`` (it was built and ran correctly), ``miscompile`` (it ran and gave wrong results) or ``unrun``
     (it could not be built or run). The witness ``source`` is compiled with the template's own flags (no header is read: every
     include place is an empty folder), linked and run. The verdict is kept in the process and in the compile cache directory, by the
-    compiler's identity, the CPU and the template."""
-    key = hashlib.sha256("\n".join([build.identity, build.target_identity, *template]).encode()).hexdigest()[:16]
+    compiler's identity, the CPU, the template and the witness text, so a witness that changed never reads a verdict of the old one."""
+    witness = hashlib.sha256(Path(source).read_bytes()).hexdigest()
+    key = hashlib.sha256("\n".join([build.identity, build.target_identity, witness, *template]).encode()).hexdigest()[:16]
     if key in _WITNESS_MEMO:
         return _WITNESS_MEMO[key]
     stored = default_cache_dir() / "toolchain" / f"masked_call_{key}.json"

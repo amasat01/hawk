@@ -15,11 +15,15 @@ from __future__ import annotations
 import os
 import pathlib
 import platform
+import stat
 import threading
 
 import _deployable as D
 import numpy as np
 import pytest
+from ospreys.cuda import nvrtc as device_nvrtc
+from ospreys.cuda import toolchain as device_toolchain
+from raptor.errors import RaptorError
 
 from hawk.artifact import build_bundle
 from raptor.wings.base.exchange import ToolchainAbsent
@@ -275,3 +279,38 @@ def pytest_terminal_summary(terminalreporter):
         terminalreporter.write_line(f"TOOLCHAIN-ABSENT {r.nodeid} - {r.toolchain}")
         by[r.toolchain] = by.get(r.toolchain, 0) + 1
     terminalreporter.write_line(f"{len(rows)} {_ABSENT}" + (" (" + ", ".join(f"{k}={v}" for k, v in sorted(by.items())) + ")" if by else ""))
+
+
+#: The stand-in for the device compiler: it reports a release, logs each argv (one argument to a
+#: line, then a mark) and writes an image that starts with the ELF magic and holds the source text,
+#: so two sources never give one image.
+_STAND_IN = r"""#!/bin/sh
+if [ "$1" = "--version" ]; then echo "Cuda compilation tools, release 12.6, V12.6.77"; exit 0; fi
+printf '%s\n' "$@" >> "$STAND_IN_LOG"
+echo -- >> "$STAND_IN_LOG"
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out=$2; shift ;; -MF) dep=$2; shift ;; *.cu) src=$1 ;; esac
+  shift
+done
+{ printf '\177ELF'; cat "$src"; } > "$out"
+echo "$out: $src" > "$dep"
+"""
+
+@pytest.fixture
+def stand_in(tmp_path, monkeypatch):
+    """The stand-in device compiler, found as ``$HAWK_NVCC``; its log file's path."""
+    script, log = tmp_path / "nvcc", tmp_path / "nvcc.log"
+    script.write_text(_STAND_IN)
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("HAWK_NVCC", str(script))
+    monkeypatch.setenv("STAND_IN_LOG", str(log))
+    monkeypatch.delenv("HAWK_DEVICE_COMPILER", raising=False)
+    monkeypatch.setattr(device_toolchain, "toolkit_archs",
+                        lambda kind=None: ("stand-in toolkit", (50, 90)))
+
+    def no_driver():
+        raise RaptorError("the stand-in machine has no device driver")
+
+    # the image form follows the driver's release: these rows state a machine with none
+    monkeypatch.setattr(device_nvrtc, "driver_cuda_version", no_driver)
+    return log

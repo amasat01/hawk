@@ -131,10 +131,9 @@ def host_build(facts: dict, line: str, options, witness=None, caller_flags=()) -
             build = ask(witness(build["compile_unit"]))
         return build
     except library()[0].BadRequest as why:
-        if not options.get("host_profile"):
-            raise
-        # a profile the build asked for that this machine's compiler does not build: the machine lacks the toolchain for it
-        raise ToolchainAbsent(f"host profile {options['host_profile']!r}: {why}", toolchain="host-profile") from why
+        # a profile (asked for in the options or the environment, else the machine's own) that this machine's compiler does not build:
+        # the machine lacks the toolchain for it
+        raise ToolchainAbsent(f"host profile {stated.get('host_profile')!r}: {why}", toolchain="host-profile") from why
 
 
 def set_text(units: list, exports=None) -> str:

@@ -380,13 +380,25 @@ def default_host_profile() -> str:
     return "native"
 
 
+def _explicit_host_profile(requested: str | None) -> str | None:
+    """The profile a caller named: ``requested`` (the compile options' ``host_profile``), else ``$HAWK_HOST_PROFILE``, else ``None``.
+    The one place the environment variable is read."""
+    return requested or os.environ.get("HAWK_HOST_PROFILE") or None
+
+
+def asked_host_profile(requested: str | None = None) -> str:
+    """The profile the caller named, else this machine's default, NOT checked: the lowering library refuses a name it does not know and
+    a vector-math profile under a compiler that cannot build it."""
+    return _explicit_host_profile(requested) or default_host_profile()
+
+
 def host_profile(requested: str | None = None) -> str:
     """The host profile in effect: ``requested`` when given (the compile
     options' ``host_profile``), else ``$HAWK_HOST_PROFILE``, else
     :func:`default_host_profile`. An unknown name RAISES, and so does an
     explicit ``native-vector-math`` under a non-GCC host compiler on x86-64
     (its vector function ABI is GCC-only)."""
-    explicit = requested or os.environ.get("HAWK_HOST_PROFILE")
+    explicit = _explicit_host_profile(requested)
     name = explicit or default_host_profile()
     if name not in HOST_PROFILES:
         raise RaptorError(

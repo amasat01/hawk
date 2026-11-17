@@ -590,7 +590,7 @@ def test_explicit_vector_math_with_clang_raises_before_any_compile(monkeypatch, 
         monkeypatch.setattr(ctc, "_GCC_FAMILY_MEMO", {})
         monkeypatch.setenv("HAWK_CXX", clang)
         monkeypatch.setenv("HAWK_HOST_PROFILE", "native-vector-math")
-        with pytest.raises(hawk.HawkError, match="GCC-only"):
+        with pytest.raises(hawk.HawkError, match="needs a GCC compiler"):
             compile_source(SOURCE, "probe", CompileOptions(
                 target="host", cache_dir=str(tmp_path)))
         assert not list(tmp_path.glob("**/*.so"))

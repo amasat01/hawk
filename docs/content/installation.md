@@ -170,6 +170,11 @@ Neither of these two profiles changes a result: FMA contraction is off and
 nothing enables fast-math or reassociation, so host results are
 bit-identical to a scalar build that calls libm.
 
+A device build is compiled differently: it keeps the device compiler's default, which fuses a multiply and an add into
+one operation wherever it can. A device result can therefore differ from a `native` or `portable` host result by one
+rounding per fused pair (1 ULP on a single multiply-add). That difference is expected. A test that compares host values
+with device values uses a tolerance derived from the kernel's operation count and names this rule, never a bare number.
+
 **`native-vector-math`** (the default on x86-64 with a GCC host compiler, and on arm64; arm64 is described below): `native` plus
 `-DAETHER_HOST_VECTOR_MATH -fno-trapping-math`, and `-ffp-contract=fast` in
 place of `-ffp-contract=off`. A per-sample loop that calls a

@@ -251,10 +251,9 @@ class Cuda(Backend):
         so one library is not made with two C++ runtimes."""
         from hawk.targets import TARGETS
 
-        row = next((r for r in TARGETS.values() if r.host_compiled), None)
-        if row is None:
+        if "host" not in TARGETS:
             raise RaptorError("a device build links its images into one library with the host compiler: install the host OSPREY")
-        return row.compiler()
+        return TARGETS["host"].compiler()
 
     def _instructions(self, identity, arch, version, level) -> dict:
         """The library's ``device_build`` record (:func:`hawk.artifact.request.device_build`) for

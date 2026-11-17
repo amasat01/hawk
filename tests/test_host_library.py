@@ -20,13 +20,11 @@ import ctypes
 import json
 import os
 import shutil
-import stat
 from types import SimpleNamespace
 
 import _deployable as D
 import numpy as np
 import pytest
-from ospreys.cuda import nvrtc as device_nvrtc
 from ospreys.cuda import toolchain as device_toolchain
 from raptor.errors import RaptorError
 
@@ -291,6 +289,15 @@ def _x86_gcc():
     return {"isa": "x86_64", "vector_isa": "avx2", "host_profile": "native-vector-math"}, "g++ || g++ (GCC) 13.2.0 || 0"
 
 
+def test_a_vector_math_profile_asked_by_the_environment_is_refused_by_the_library_for_a_compiler_that_is_not_gcc(monkeypatch):
+    # the machine's facts state the profile the environment names, unchecked; the library's answer to the question refuses it
+    monkeypatch.setenv("HAWK_HOST_PROFILE", "native-vector-math")
+    facts = {**TARGETS["host"].machine_facts(), "isa": "x86_64", "vector_isa": "avx2"}
+    assert facts["host_profile"] == "native-vector-math"
+    with pytest.raises(HawkError, match="host profile 'native-vector-math': .*needs a GCC compiler"):
+        request.host_build(facts, "/usr/bin/clang++ || clang version 19.1.7 || 0", {})
+
+
 @pytest.mark.parametrize("verdict", ["fixed", "miscompile", "unrun"])
 def test_the_masked_call_flag_follows_the_verdict_of_the_witness(verdict):
     (facts, line), asked = _x86_gcc(), []
@@ -370,24 +377,40 @@ def _probe_counting(monkeypatch, tmp_path, verdicts):
     monkeypatch.setattr(host, "_WITNESS_MEMO", {})
     runs = []
     monkeypatch.setattr(host, "_run_witness", lambda build, source, template: (runs.append(template), (verdicts[len(runs) - 1], "stand-in"))[1])
-    return host, runs, host.HostBuild({}, "c++", "c++ || x || 0", "native", "O3", "cpu", "/facts", "")
+    witness = tmp_path / "w.cpp"
+    witness.write_text("int main() { return 0; }\n")
+    return host, runs, host.HostBuild({}, "c++", "c++ || x || 0", "native", "O3", "cpu", "/facts", ""), witness
 
 
 def test_the_masked_call_verdict_is_run_once_and_kept_on_disk_for_a_new_process(tmp_path, monkeypatch):
     """Oracle: the count of witness runs, and the verdict a fresh process (an empty memo) reads from the cache directory."""
-    host, runs, driver = _probe_counting(monkeypatch, tmp_path, ["fixed", "fixed"])
-    assert host.masked_call_verdict(driver, "w.cpp", ["-O3"]) == host.masked_call_verdict(driver, "w.cpp", ["-O3"]) == "fixed"
+    host, runs, driver, witness = _probe_counting(monkeypatch, tmp_path, ["fixed", "fixed"])
+    assert host.masked_call_verdict(driver, witness, ["-O3"]) == host.masked_call_verdict(driver, witness, ["-O3"]) == "fixed"
     assert len(runs) == 1
     host._WITNESS_MEMO.clear()
-    assert host.masked_call_verdict(driver, "w.cpp", ["-O3"]) == "fixed" and len(runs) == 1
-    assert host.masked_call_verdict(driver, "w.cpp", ["-O2"]) == "fixed" and len(runs) == 2      # other flags, other verdict
+    assert host.masked_call_verdict(driver, witness, ["-O3"]) == "fixed" and len(runs) == 1
+    assert host.masked_call_verdict(driver, witness, ["-O2"]) == "fixed" and len(runs) == 2      # other flags, other verdict
+
+
+def test_a_verdict_kept_for_one_witness_text_is_not_read_for_another(tmp_path, monkeypatch):
+    """Oracle: the count of witness runs. A verdict stored by an old witness (blind to the bug) must not answer for the fixed one,
+    neither from the process memo nor from the cache directory."""
+    host, runs, driver, witness = _probe_counting(monkeypatch, tmp_path, ["fixed", "miscompile", "miscompile"])
+    assert host.masked_call_verdict(driver, witness, ["-O3"]) == "fixed"
+    witness.write_text("int main() { return 1; }\n")
+    assert host.masked_call_verdict(driver, witness, ["-O3"]) == "miscompile" and len(runs) == 2           # the memo
+    host._WITNESS_MEMO.clear()
+    assert host.masked_call_verdict(driver, witness, ["-O3"]) == "miscompile" and len(runs) == 2           # the disk
+    witness.write_text("int main() { return 0; }\n")
+    host._WITNESS_MEMO.clear()
+    assert host.masked_call_verdict(driver, witness, ["-O3"]) == "fixed" and len(runs) == 2                 # the old text finds its own
 
 
 def test_an_unrun_masked_call_witness_is_not_stored(tmp_path, monkeypatch):
-    host, runs, driver = _probe_counting(monkeypatch, tmp_path, ["unrun", "miscompile"])
-    assert host.masked_call_verdict(driver, "w.cpp", ["-O3"]) == "unrun"
+    host, runs, driver, witness = _probe_counting(monkeypatch, tmp_path, ["unrun", "miscompile"])
+    assert host.masked_call_verdict(driver, witness, ["-O3"]) == "unrun"
     host._WITNESS_MEMO.clear()
-    assert host.masked_call_verdict(driver, "w.cpp", ["-O3"]) == "miscompile" and len(runs) == 2
+    assert host.masked_call_verdict(driver, witness, ["-O3"]) == "miscompile" and len(runs) == 2
 
 
 #: Compilers of the lanes that run this: the verdict the witness gives each (GCC 13.3 miscompiles; the 14.2 backport is fixed).
@@ -443,41 +466,7 @@ def test_the_build_template_is_the_library_answer_for_this_machine_whatever_mach
 
 # -- device images in the set library ------------------------------------------------------------
 
-#: The stand-in for the device compiler: it reports a release, logs each argv (one argument to a
-#: line, then a mark) and writes an image that starts with the ELF magic and holds the source text,
-#: so two sources never give one image.
-_STAND_IN = r"""#!/bin/sh
-if [ "$1" = "--version" ]; then echo "Cuda compilation tools, release 12.6, V12.6.77"; exit 0; fi
-printf '%s\n' "$@" >> "$STAND_IN_LOG"
-echo -- >> "$STAND_IN_LOG"
-while [ $# -gt 0 ]; do
-  case "$1" in -o) out=$2; shift ;; -MF) dep=$2; shift ;; *.cu) src=$1 ;; esac
-  shift
-done
-{ printf '\177ELF'; cat "$src"; } > "$out"
-echo "$out: $src" > "$dep"
-"""
 DEVICE_BUILD = {"targets": ("cuda", "host"), "options": {"cuda.arch": "sm_80"}}
-
-
-@pytest.fixture
-def stand_in(tmp_path, monkeypatch):
-    """The stand-in device compiler, found as ``$HAWK_NVCC``; its log file's path."""
-    script, log = tmp_path / "nvcc", tmp_path / "nvcc.log"
-    script.write_text(_STAND_IN)
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    monkeypatch.setenv("HAWK_NVCC", str(script))
-    monkeypatch.setenv("STAND_IN_LOG", str(log))
-    monkeypatch.delenv("HAWK_DEVICE_COMPILER", raising=False)
-    monkeypatch.setattr(device_toolchain, "toolkit_archs",
-                        lambda kind=None: ("stand-in toolkit", (50, 90)))
-
-    def no_driver():
-        raise RaptorError("the stand-in machine has no device driver")
-
-    # the image form follows the driver's release: these rows state a machine with none
-    monkeypatch.setattr(device_nvrtc, "driver_cuda_version", no_driver)
-    return log
 
 
 def _image_held_by(library, unit: str) -> tuple:
