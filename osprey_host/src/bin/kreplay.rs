@@ -1,4 +1,4 @@
-//! kreplay <corpus dir> [--show k] [--accepted list]: streams a kernel corpus (per build call: the kernel before lowering, the units the old lowering
+//! kreplay <corpus dir> [--show k] [--accepted list] [--cards file]: streams a kernel corpus (per build call: the kernel before lowering, the units the old lowering
 //! made and each unit's recorded host text) through the lowering entry of the library's table. For every kernel the old lowering
 //! left as one plain unit it loads the kernel's IR, builds the request from the record, asks the facts entry for the machine the
 //! recording states, calls `lower`, and compares the walk digest, the text byte for byte and the meta. Kernels of any other shape
@@ -39,6 +39,21 @@ use std::path::Path;
 mod derived_sets;
 #[path = "kreplay/meta.rs"]
 mod oracle;
+
+/// The data documents the run states to the facts entry and to every request, from `--cards <file>`; none unless the flag is given.
+static CARDS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+/// The documents of `--cards`, or none.
+fn stated_cards() -> Vec<(String, String)> {
+    CARDS.get().cloned().unwrap_or_default()
+}
+
+/// Reads the file of `--cards`: a JSON object from a document name to the whole text of the document.
+fn read_cards(file: &str) -> Vec<(String, String)> {
+    let text = std::fs::read_to_string(file).expect("the cards file");
+    let parsed = aether_writers::contract::Contract::parse(&text).expect("the cards file is JSON");
+    facts::cards_from_json(&parsed.0).expect("the cards file states known documents as texts")
+}
 
 /// The context a call's nodes are loaded into, with the handles the record's node numbers stand for; none before the first load.
 type Loaded = Option<(*mut raptor_ir::record::Ctx, Vec<u32>)>;
@@ -234,7 +249,11 @@ fn settings_of(spec: &J) -> Result<Settings, String> {
 
 /// The facts answer for the machine the record's spec states (the caller's side of the facts entry), by instruction set, caches,
 /// host profile and compiler: asked once each.
-fn facts_answer(spec: &J, cache: &mut HashMap<String, String>) -> Result<String, String> {
+fn facts_answer(
+    spec: &J,
+    cards: &[(String, String)],
+    cache: &mut HashMap<String, String>,
+) -> Result<String, String> {
     let machine = rec(spec.get("machine").ok_or("a spec without a machine")?);
     let mp = machine
         .get("facts")
@@ -257,7 +276,7 @@ fn facts_answer(spec: &J, cache: &mut HashMap<String, String>) -> Result<String,
         _ => None,
     };
     let vector = text(get("vector_isa"));
-    let key = format!("{isa:?}|{vector:?}|{caches:?}|{profile:?}|{gcc}");
+    let key = format!("{isa:?}|{vector:?}|{caches:?}|{profile:?}|{gcc}|{cards:?}");
     if let Some(found) = cache.get(&key) {
         return Ok(found.clone());
     }
@@ -268,6 +287,7 @@ fn facts_answer(spec: &J, cache: &mut HashMap<String, String>) -> Result<String,
         host_profile: profile,
         headers: Some("roots".into()),
         device_arch: None,
+        cards: cards.to_vec(),
         ..Default::default()
     };
     let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/facts"));
@@ -1111,7 +1131,10 @@ fn request_for(
             .any(|(target, _)| *target == Target::Device)
             .then(|| recorded_image_format(call)),
         steps: steps_of(kernel, call),
-        fusion: fusion_of(call),
+        cards: call_cards(
+            call,
+            facts.iter().any(|(target, _)| *target == Target::Device),
+        ),
         lane_space: lane_space_of(kernel),
         sink_axes: sink_axes_of(kernel),
         shared: shared_of(kernel),
@@ -1173,6 +1196,99 @@ fn fusion_of(call: &J) -> Option<FusionRow> {
         plane_us_per_byte: held("c_plane_us_per_B").and_then(number_of),
         local_over_plane: held("c_local_over_plane").and_then(number_of),
     })
+}
+
+/// The documents a call is built under: the run's own (`--cards`) and, when the recording holds a chain cut's fusion row that is not
+/// the shipped one, the document that carries the row (the device document for a build with a device target, else the
+/// instruction set document of the host's vector instruction set) with the recorded row in place of the shipped one.
+fn call_cards(call: &J, device: bool) -> Vec<(String, String)> {
+    let mut cards = stated_cards();
+    let Some(row) = fusion_of(call) else {
+        return cards;
+    };
+    let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/facts"));
+    let set = facts::CardSet::new(dir, &cards);
+    let (name, vector, shipped) = if device {
+        (
+            "cuda.json",
+            None,
+            facts::device_fusion(&set).map(|rows| rows.defaults),
+        )
+    } else {
+        let (name, record, vector) = host_row_place(call);
+        let answer = format!("{{\"isa\":\"{record}\",\"vector_isa\":\"{vector}\"}}");
+        (name, Some(vector), facts::host_fusion(&set, &answer))
+    };
+    if shipped.as_ref() == Ok(&row) {
+        return cards;
+    }
+    let document = with_fusion_row(dir, &cards, (name, vector.as_deref()), &row)
+        .expect("the recorded fusion row can be stated through cards");
+    cards.retain(|(stated, _)| stated != name);
+    cards.push((name.to_string(), document));
+    cards
+}
+
+/// The instruction set document, the instruction set's record name and the vector instruction set a call's host build had.
+fn host_row_place(call: &J) -> (&'static str, &'static str, String) {
+    let machine = call
+        .get("spec")
+        .map(rec)
+        .and_then(|spec| spec.get("machine"))
+        .map(rec);
+    let mp = machine
+        .and_then(|m| m.get("facts"))
+        .and_then(|f| f.get("mp"));
+    let probed = facts::probe();
+    let isa = machine
+        .and_then(|m| text(m.get("isa")))
+        .unwrap_or(&probed.isa);
+    let vector = mp
+        .and_then(|mp| entry(mp, "vector_isa"))
+        .and_then(|v| text(Some(v)))
+        .unwrap_or(&probed.vector_isa);
+    match isa {
+        "x86_64" => ("x86.json", "X86_64", vector.to_string()),
+        _ => ("arm.json", "Arm64", vector.to_string()),
+    }
+}
+
+/// The text of the document `name` (the run's stated one, else the shipped file) with the fusion row at `place` replaced: the
+/// device document's `fusion`, or the instruction set document's `fusion_host` row of a vector instruction set.
+fn with_fusion_row(
+    dir: &Path,
+    cards: &[(String, String)],
+    (name, vector): (&str, Option<&str>),
+    row: &FusionRow,
+) -> Option<String> {
+    use aether_writers::contract::Json;
+    let base = match cards.iter().find(|(stated, _)| stated == name) {
+        Some((_, text)) => text.clone(),
+        None => facts::shipped_card(dir, name).ok()?,
+    };
+    let mut document = aether_writers::contract::Contract::parse(&base).ok()?.0;
+    let Json::Obj(top) = &mut document else {
+        return None;
+    };
+    let number = |value: Option<f64>| value.map_or(Json::Null, |v| Json::Num(v.to_string()));
+    let written = Json::Obj(vec![
+        ("regs_base".into(), Json::Num(row.regs_base.to_string())),
+        ("regs_file".into(), Json::Num(row.regs_file.to_string())),
+        ("launch_us".into(), number(row.launch_us)),
+        ("plane_us_per_byte".into(), number(row.plane_us_per_byte)),
+        ("local_over_plane".into(), number(row.local_over_plane)),
+    ]);
+    match vector {
+        None => top.iter_mut().find(|(key, _)| key == "fusion")?.1 = written,
+        Some(vector) => {
+            let rows = top.iter_mut().find(|(key, _)| key == "fusion_host")?;
+            let Json::Obj(rows) = &mut rows.1 else {
+                return None;
+            };
+            rows.iter_mut().find(|(key, _)| key == vector)?.1 = written;
+        }
+    }
+    Some(document.to_text())
 }
 
 /// The kernel's lane axes; a record with none states a single axis with neither label nor extent (the old build's default for a
@@ -1295,11 +1411,15 @@ fn facts_all(
     machines: &mut HashMap<String, String>,
 ) -> Result<Vec<(Target, String)>, String> {
     let named = unit_targets(kernel, call_units(found.call));
+    let asked: Vec<Target> = SIDES
+        .iter()
+        .filter(|(target, side)| *target == found.target || named.contains(side))
+        .map(|(target, _)| *target)
+        .collect();
+    let cards = call_cards(found.call, asked.contains(&Target::Device));
     let mut facts = vec![];
-    for (target, side) in SIDES {
-        if target == found.target || named.contains(&side) {
-            facts.push((target, facts_for(found.call, target, machines)?));
-        }
+    for target in asked {
+        facts.push((target, facts_for(found.call, target, &cards, machines)?));
     }
     Ok(facts)
 }
@@ -1624,12 +1744,13 @@ fn own_card(spec: &J, device: bool) -> bool {
 
 /// The facts answer for the device the record's build was for: the architecture the call states, else none (the answer then names
 /// the card's default architecture and keeps the default select weights, as a build with no stated architecture did).
-fn device_facts(call: &J) -> Result<String, String> {
+fn device_facts(call: &J, cards: &[(String, String)]) -> Result<String, String> {
     let stated =
         text(build_option(call, "device_arch")).or_else(|| text(build_option(call, "arch")));
     let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/facts"));
     let machine = facts::Stated {
         device_arch: stated.map(String::from),
+        cards: cards.to_vec(),
         ..facts::Stated::default()
     };
     facts::answer(dir, "cuda", DEVICE_COMPILER, &facts::probe(), &machine).map_err(String::from)
@@ -1640,14 +1761,16 @@ fn device_facts(call: &J) -> Result<String, String> {
 fn facts_for(
     call: &J,
     target: Target,
+    cards: &[(String, String)],
     machines: &mut HashMap<String, String>,
 ) -> Result<String, String> {
     match target {
         Target::Host => facts_answer(
             rec(call.get("spec").ok_or("a call without a spec")?),
+            cards,
             machines,
         ),
-        Target::Device => device_facts(call),
+        Target::Device => device_facts(call, cards),
     }
 }
 
@@ -1668,7 +1791,7 @@ fn replay_warp(
     let all: Vec<&J> = units.iter().collect();
     let same = built_as(&all, name, "cuda");
     let outcome = (|| -> Result<KernelAnswer, String> {
-        let facts = vec![(Target::Device, device_facts(call)?)];
+        let facts = vec![(Target::Device, device_facts(call, &call_cards(call, true))?)];
         if ctx.is_none() {
             *ctx = Some(load(call)?);
         }
@@ -3091,6 +3214,10 @@ fn replay_chain(
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(at) = args.iter().position(|a| a == "--cards") {
+        let file = args.get(at + 1).expect("--cards <file>");
+        CARDS.set(read_cards(file)).expect("--cards is read once");
+    }
     if let Some(at) = args.iter().position(|a| a == "--split-blocks") {
         let Some(corpus) = args.get(at + 1) else {
             return println!("usage: kreplay --split-blocks <corpus folder or calls file>");

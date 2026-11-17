@@ -15,9 +15,8 @@
 //! flags of a unit (the entities its headers define with external linkage must be identical across the objects of one library)
 //! and one more include root, the door's. The link is `-shared` on both systems, as the old command had it; only the Linux
 //! spelling is unverified here.
-use crate::facts::{closed, member, names_of, read_file, text_of, Failed, ISA_CARDS};
+use crate::facts::{closed, member, names_of, text_of, CardSet, Failed, ISA_CARDS};
 use aether_writers::contract::Json;
-use std::path::Path;
 
 /// What the facts question states that the commands depend on: the profile in effect, where the headers are, whether the compiler
 /// is GCC, the optimisation level asked for, and for a GCC the release and the verdict of the masked-call witness (none: it did not run).
@@ -54,7 +53,7 @@ fn carries(host: &Json, file: &str, profile: &str, gcc: bool) -> Result<bool, Fa
 /// The flags a profile adds to the instruction set's flags for the compiler's family, refused when the instruction set has no such
 /// profile for that family.
 fn vector_flags(
-    dir: &Path,
+    cards: &CardSet,
     host: &Json,
     isa_file: &str,
     s: &Settings,
@@ -66,14 +65,14 @@ fn vector_flags(
     )?;
     match table.get(s.profile) {
         Some(_) => Ok(names_of(table, isa_file, s.profile)?),
-        None => Err(not_built(dir, host, isa_file, s)?),
+        None => Err(not_built(cards, host, isa_file, s)?),
     }
 }
 
 /// The refusal of a profile this instruction set and compiler do not build, saying where the cards do build it: with the other
 /// compiler family on this instruction set, else on the instruction sets whose cards carry it.
-fn not_built(dir: &Path, host: &Json, isa_file: &str, s: &Settings) -> Result<Failed, Failed> {
-    let isa = text_of(&read_file(dir, isa_file)?, isa_file, "isa")?;
+fn not_built(cards: &CardSet, host: &Json, isa_file: &str, s: &Settings) -> Result<Failed, Failed> {
+    let isa = text_of(&cards.json(isa_file)?, isa_file, "isa")?;
     if carries(host, isa_file, s.profile, !s.gcc)? {
         let (here, there) = if s.gcc {
             ("a GCC compiler", "a compiler other than GCC")
@@ -87,7 +86,7 @@ fn not_built(dir: &Path, host: &Json, isa_file: &str, s: &Settings) -> Result<Fa
     }
     let mut only = vec![];
     for (name, file, _) in ISA_CARDS {
-        let other = read_file(dir, file)?;
+        let other = cards.json(file)?;
         let flags = member(&other, file, "host_flags")?;
         if carries(flags, file, s.profile, true)? || carries(flags, file, s.profile, false)? {
             only.push(name);
@@ -165,13 +164,13 @@ fn masked_flags(
 /// The `host_build` record for an instruction set's card (`isa_file`) and the settings: `compile_unit`, `compile_set` and `link`
 /// (per system), each an argv template.
 pub(crate) fn host_build(
-    dir: &Path,
+    cards: &CardSet,
     isa_file: &str,
     vector: bool,
     s: &Settings,
 ) -> Result<Json, Failed> {
     let file = "host_build.json";
-    let card = read_file(dir, file)?;
+    let card = cards.json(file)?;
     closed(
         &card,
         file,
@@ -199,7 +198,7 @@ pub(crate) fn host_build(
     if !names_of(&card, file, "opt_levels")?.contains(&level) {
         return Err(Failed::Bad(format!("unknown opt level {level}")));
     }
-    let isa = read_file(dir, isa_file)?;
+    let isa = cards.json(isa_file)?;
     let host = member(&isa, isa_file, "host_flags")?;
     closed(
         host,
@@ -221,7 +220,7 @@ pub(crate) fn host_build(
         },
     )?);
     if vector {
-        argv.extend(vector_flags(dir, host, isa_file, s)?);
+        argv.extend(vector_flags(cards, host, isa_file, s)?);
     }
     argv.extend(masked_flags(&card, file, host, vector, s)?);
     argv.extend(names_of(&card, file, "unit_tail")?);

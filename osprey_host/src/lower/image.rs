@@ -12,7 +12,7 @@ use aether_writers::refuse::{bad, Refusal};
 pub struct DeviceImage {
     /// The compiler's short name: its tool and release (`nvcc 12.6`).
     pub compiler: String,
-    /// The flags of the command, joined by one space. The host compiler (`-ccbin`) is the caller's and is not among them.
+    /// The flags of the command, joined by one space. The host compiler of the set's objects (`-ccbin`) is the place `{host_compiler}` of the compile template, not among them.
     pub flags: String,
     /// The PTX version of the image's PTX as major * 10 + minor (85 is 8.5); 0 when the image holds no PTX.
     pub ptx_isa: i64,

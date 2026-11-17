@@ -1,0 +1,474 @@
+[
+ {
+  "name": "gain",
+  "dtype": "f64",
+  "shape": [],
+  "tag": null,
+  "per_cell": false,
+  "nodes": [
+   {
+    "c": "Leaf",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": []
+       },
+       "dtype": {
+        "s": "f64"
+       },
+       "tag": null
+      }
+     },
+     "operands": {
+      "t": []
+     },
+     "kind": {
+      "s": "table_read"
+     },
+     "role": {
+      "s": "lookup"
+     },
+     "name": {
+      "s": "gain"
+     },
+     "quantity": null,
+     "wire_index": {
+      "i": "0"
+     },
+     "sorted": false
+    }
+   },
+   {
+    "c": "RoleConst",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": []
+       },
+       "dtype": {
+        "s": "i32"
+       },
+       "tag": null
+      }
+     },
+     "operands": {
+      "t": []
+     },
+     "literal": {
+      "i": "0"
+     },
+     "label": {
+      "s": "param_cell"
+     }
+    }
+   },
+   {
+    "c": "At",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": []
+       },
+       "dtype": {
+        "s": "f64"
+       },
+       "tag": null
+      }
+     },
+     "operands": {
+      "t": [
+       {
+        "n": 0
+       },
+       {
+        "n": 1
+       }
+      ]
+     },
+     "kind": {
+      "s": "at"
+     },
+     "literal": null
+    }
+   }
+  ],
+  "node": 2
+ },
+ {
+  "name": "gain",
+  "dtype": "f64",
+  "shape": [],
+  "tag": null,
+  "per_cell": true,
+  "nodes": [
+   {
+    "c": "Leaf",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": []
+       },
+       "dtype": {
+        "s": "f64"
+       },
+       "tag": null
+      }
+     },
+     "operands": {
+      "t": []
+     },
+     "kind": {
+      "s": "table_read"
+     },
+     "role": {
+      "s": "lookup"
+     },
+     "name": {
+      "s": "gain"
+     },
+     "quantity": null,
+     "wire_index": {
+      "i": "0"
+     },
+     "sorted": false
+    }
+   },
+   {
+    "c": "Leaf",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": []
+       },
+       "dtype": {
+        "s": "i32"
+       },
+       "tag": null
+      }
+     },
+     "operands": {
+      "t": []
+     },
+     "kind": {
+      "s": "vocab_read"
+     },
+     "role": {
+      "s": "per_sample"
+     },
+     "name": {
+      "s": "param_cell"
+     },
+     "quantity": null,
+     "wire_index": {
+      "i": "0"
+     },
+     "sorted": false
+    }
+   },
+   {
+    "c": "At",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": []
+       },
+       "dtype": {
+        "s": "f64"
+       },
+       "tag": null
+      }
+     },
+     "operands": {
+      "t": [
+       {
+        "n": 0
+       },
+       {
+        "n": 1
+       }
+      ]
+     },
+     "kind": {
+      "s": "at"
+     },
+     "literal": null
+    }
+   }
+  ],
+  "node": 2
+ },
+ {
+  "name": "offsets",
+  "dtype": "f64",
+  "shape": [
+   3
+  ],
+  "tag": "xs",
+  "per_cell": false,
+  "nodes": [
+   {
+    "c": "Leaf",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": [
+         {
+          "i": "3"
+         }
+        ]
+       },
+       "dtype": {
+        "s": "f64"
+       },
+       "tag": {
+        "s": "xs"
+       }
+      }
+     },
+     "operands": {
+      "t": []
+     },
+     "kind": {
+      "s": "table_read"
+     },
+     "role": {
+      "s": "lookup"
+     },
+     "name": {
+      "s": "offsets"
+     },
+     "quantity": null,
+     "wire_index": {
+      "i": "0"
+     },
+     "sorted": false
+    }
+   },
+   {
+    "c": "RoleConst",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": []
+       },
+       "dtype": {
+        "s": "i32"
+       },
+       "tag": null
+      }
+     },
+     "operands": {
+      "t": []
+     },
+     "literal": {
+      "i": "0"
+     },
+     "label": {
+      "s": "param_cell"
+     }
+    }
+   },
+   {
+    "c": "At",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": [
+         {
+          "i": "3"
+         }
+        ]
+       },
+       "dtype": {
+        "s": "f64"
+       },
+       "tag": {
+        "s": "xs"
+       }
+      }
+     },
+     "operands": {
+      "t": [
+       {
+        "n": 0
+       },
+       {
+        "n": 1
+       }
+      ]
+     },
+     "kind": {
+      "s": "at"
+     },
+     "literal": null
+    }
+   }
+  ],
+  "node": 2
+ },
+ {
+  "name": "offsets",
+  "dtype": "f64",
+  "shape": [
+   3
+  ],
+  "tag": "xs",
+  "per_cell": true,
+  "nodes": [
+   {
+    "c": "Leaf",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": [
+         {
+          "i": "3"
+         }
+        ]
+       },
+       "dtype": {
+        "s": "f64"
+       },
+       "tag": {
+        "s": "xs"
+       }
+      }
+     },
+     "operands": {
+      "t": []
+     },
+     "kind": {
+      "s": "table_read"
+     },
+     "role": {
+      "s": "lookup"
+     },
+     "name": {
+      "s": "offsets"
+     },
+     "quantity": null,
+     "wire_index": {
+      "i": "0"
+     },
+     "sorted": false
+    }
+   },
+   {
+    "c": "Leaf",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": []
+       },
+       "dtype": {
+        "s": "i32"
+       },
+       "tag": null
+      }
+     },
+     "operands": {
+      "t": []
+     },
+     "kind": {
+      "s": "vocab_read"
+     },
+     "role": {
+      "s": "per_sample"
+     },
+     "name": {
+      "s": "param_cell"
+     },
+     "quantity": null,
+     "wire_index": {
+      "i": "0"
+     },
+     "sorted": false
+    }
+   },
+   {
+    "c": "At",
+    "m": "raptor.ir.nodes",
+    "v": {
+     "ttype": {
+      "m": "raptor.ir.types",
+      "r": "TensorType",
+      "v": {
+       "shape": {
+        "t": [
+         {
+          "i": "3"
+         }
+        ]
+       },
+       "dtype": {
+        "s": "f64"
+       },
+       "tag": {
+        "s": "xs"
+       }
+      }
+     },
+     "operands": {
+      "t": [
+       {
+        "n": 0
+       },
+       {
+        "n": 1
+       }
+      ]
+     },
+     "kind": {
+      "s": "at"
+     },
+     "literal": null
+    }
+   }
+  ],
+  "node": 2
+ }
+]

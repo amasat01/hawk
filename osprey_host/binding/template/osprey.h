@@ -7,6 +7,13 @@
 #include "osprey_host.h"
 #include "raptor_ir.h"
 #include <Python.h>
+/* A read-only object attribute: Python 3.12 names its member kinds in Python.h; before, they come
+ * from structmember.h under the old names. */
+#if PY_VERSION_HEX < 0x030C0000
+#include <structmember.h>
+#define Py_T_OBJECT_EX T_OBJECT_EX
+#define Py_READONLY READONLY
+#endif
 
 /* The two type flags that make a type unpatchable and uninstantiable exist from Python 3.10. Their
  * bits are free in 3.9, so setting them there does nothing; from 3.10 on they take effect, with one
@@ -30,6 +37,8 @@ extern PyTypeObject* osprey_node_type;
 /* Makes the exception classes of the three kinds of refusal and adds them to the module (defined in
  * the generated code). */
 int osprey_add_errors(PyObject* module);
+/* Adds the door's types and constants (door.c); after osprey_add_errors. */
+int osprey_add_door(PyObject* module);
 extern PyMethodDef osprey_ctx_methods[];
 extern PyMethodDef osprey_node_methods[];
 extern PyGetSetDef osprey_node_getset[];

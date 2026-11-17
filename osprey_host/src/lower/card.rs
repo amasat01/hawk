@@ -3,13 +3,13 @@
 //! over samples). The host's are data in `build.json` and the device's in `cuda_build.json`, beside the machine cards, loaded
 //! when a request is lowered; a file that does not match its schema is refused by name.
 use super::request::Keys;
+use super::unit_meta::{StepsRegime, StepsTable};
 use aether_writers::contract::types::{
     Build, FoldForm, FoldLimits, FormSettings, LaneSettings, WideCard, DEFAULT_CELLS_ROW,
     DEFAULT_WARPS,
 };
 use aether_writers::contract::{Contract, Json};
 use aether_writers::refuse::{bad, fault, Refusal};
-use std::path::Path;
 
 /// The host build's numbers.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +48,10 @@ pub struct BuildCard {
     pub team_threads_large: i64,
     /// The lanes one thread serves in a thread box, by scalar type name; a type with no entry is built without a box.
     pub box_lanes: Vec<(String, i64)>,
+    /// The measured rows of the host's `steps_reverse` choice.
+    pub steps_reverse: StepsTable,
+    /// The measured rows of the device's, when the build has a device target.
+    pub device_steps_reverse: Option<StepsTable>,
     /// The thresholds the host's wide-value placement reads, by the scalar's width in bytes.
     pub host_wide: Vec<(i64, WideLimits)>,
 }
@@ -200,7 +204,7 @@ impl DeviceCard {
             fold_k: None,
             fold_limits: Some(self.fold.clone()),
             wide_card: Some(WideCard {
-                row_scalars: self.wide_rows.clone(),
+                row_scalars: self.wide_rows.iter().map(|row| row.dtype.clone()).collect(),
                 slice_min: Some(self.slice_min),
                 forced: false,
             }),
@@ -208,19 +212,16 @@ impl DeviceCard {
     }
 }
 
-/// The parsed JSON of a card file in the facts directory.
-fn card_file(dir: &Path, file: &str) -> Result<Json, Refusal> {
-    let path = dir.join(file);
-    let text = std::fs::read_to_string(&path)
-        .map_err(|why| fault(format!("facts: {}: {why}", path.display())))?;
-    Ok(Contract::parse(&text)
+/// The parsed JSON of the text of a card document; `file` names it in a refusal.
+fn card_json(text: &str, file: &str) -> Result<Json, Refusal> {
+    Ok(Contract::parse(text)
         .map_err(|why| fault(format!("facts: {file}: {why}")))?
         .0)
 }
 
-/// Reads `build.json` from the facts directory.
-pub fn host_build(dir: &Path) -> Result<BuildCard, Refusal> {
-    let card = card_file(dir, "build.json")?;
+/// Reads the text of the host build card (`build.json`).
+pub fn host_build(text: &str) -> Result<BuildCard, Refusal> {
+    let card = card_json(text, "build.json")?;
     let section = |keys: &mut Keys, key: &'static str| -> Result<Json, Refusal> {
         keys.req(key)
             .cloned()
@@ -249,6 +250,8 @@ pub fn host_build(dir: &Path) -> Result<BuildCard, Refusal> {
         team_threads,
         team_threads_large,
         box_lanes: box_lanes(&section(&mut top, "thread_box")?)?,
+        steps_reverse: steps_reverse(top.req("steps_reverse")?, "build.json")?,
+        device_steps_reverse: None,
         host_wide: host_wide(&section(&mut top, "host_wide")?)?,
     };
     for done in [form.done(), lanes.done(), top.done()] {
@@ -271,6 +274,10 @@ pub struct DeviceCard {
     pub run_max: i64,
     /// The block of lanes of a run.
     pub block_run: i64,
+    /// The words a row of shared memory serves without a bank conflict.
+    pub bank_words: i64,
+    /// The threads of the team of a stage that is only warp-per-lane eigenvalue solves: one warp.
+    pub eigh_team_threads: i64,
     /// The widest matrix one thread holds.
     pub linalg_max_dim: i64,
     /// The samples one row of a reduction over samples stands for.
@@ -279,18 +286,30 @@ pub struct DeviceCard {
     pub fold: FoldLimits,
     /// The lanes one thread serves in a thread box, by scalar type name.
     pub box_lanes: Vec<(String, i64)>,
+    /// How a dense contraction is run, by scalar type name: `gemm` or `direct`.
+    pub box_contraction: Vec<(String, String)>,
+    /// The thread box choices measured on one device and scalar type, which replace the card's own for that type.
+    pub box_rows: Vec<BoxRow>,
     /// The narrowest vector held sliced.
     pub slice_min: i64,
     /// The shortest sliced value from which a warp is chosen without being asked for.
     pub team_min: i64,
     /// The bytes of shared memory the output tiles of one block may take.
     pub tile_bytes: i64,
+    /// The measured rows of the device's `steps_reverse` choice.
+    pub steps_reverse: StepsTable,
     /// The lanes of a warp.
     pub warp_size: i64,
-    /// The scalar names the wide card has a row of its own for.
-    pub wide_rows: Vec<String>,
+    /// The resident threads of one multiprocessor: the most a launch's threads times blocks may come to.
+    pub max_threads_per_sm: i64,
+    /// The wide thresholds measured for one architecture and scalar type, which replace the card's own for that type.
+    pub wide_rows: Vec<WideRow>,
     /// The largest extent a team of threads works on.
     pub linalg_team_max_dim: i64,
+    /// The linear algebra operations the device works one warp per lane.
+    pub linalg_warp_entries: Vec<WarpEntry>,
+    /// The slowest FP64 rate, as one over this many of the FP32 rate, at which a float64 warp entry is still taken.
+    pub linalg_fast_fp64: i64,
     /// The threads of the block of a stage that only copies operands into team scratch.
     pub copy_threads: i64,
     /// The threads of a team for a matrix of order up to this many.
@@ -305,6 +324,312 @@ pub struct DeviceCard {
     pub arch_features: Vec<(i64, ArchFeatures)>,
     /// The classes of device the wide thresholds were measured on.
     pub wide_classes: Vec<WideClass>,
+}
+
+impl DeviceCard {
+    /// Refuses launch bounds `(threads, blocks)` that the device cannot run: threads must be a multiple of the warp size and
+    /// threads times blocks at most the resident threads of a multiprocessor.
+    pub fn check_launch_bounds(&self, (threads, blocks): (i64, i64)) -> Result<(), Refusal> {
+        let (warp, cap) = (self.warp_size, self.max_threads_per_sm);
+        if threads < warp || threads % warp != 0 || blocks < 1 || threads * blocks > cap {
+            return Err(bad(format!(
+                "launch_bounds ({threads}, {blocks}) needs threads a multiple of {warp} and threads times blocks at most {cap}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// The `steps_reverse` table of a card: the regime (`lanes` or `per_resident`) and the rows, each a state `width`, a step count `k`
+/// and the narrowest and widest regime `lo` and `hi` the row serves (`lo` at most `hi`, both positive).
+fn steps_reverse(json: &Json, file: &str) -> Result<StepsTable, Refusal> {
+    let mut keys = Keys::of(json, "steps_reverse")?;
+    let regime = match text(&mut keys, "regime")?.as_str() {
+        "lanes" => StepsRegime::Lanes,
+        "per_resident" => StepsRegime::PerResident,
+        other => {
+            return Err(fault(format!(
+                "facts: {file}: steps_reverse regime {other} is not lanes or per_resident"
+            )))
+        }
+    };
+    let Json::Arr(rows) = keys
+        .req("rows")
+        .map_err(|why| fault(format!("facts: {file}: {why}")))?
+    else {
+        return Err(fault(format!(
+            "facts: {file}: steps_reverse rows is not a list"
+        )));
+    };
+    let mut table = StepsTable {
+        regime,
+        widths: vec![],
+        ks: vec![],
+        lo: vec![],
+        hi: vec![],
+    };
+    for row in rows {
+        let mut row = Keys::of(row, "steps_reverse rows")?;
+        let mut bound = |key: &'static str| -> Result<f64, Refusal> {
+            match row
+                .req(key)
+                .map_err(|why| fault(format!("facts: {file}: {why}")))?
+            {
+                Json::Num(n) => n.parse::<f64>().ok().filter(|v| *v > 0.0),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                fault(format!(
+                    "facts: {file}: steps_reverse {key} is not a positive number"
+                ))
+            })
+        };
+        let (lo, hi) = (bound("lo")?, bound("hi")?);
+        if lo > hi {
+            return Err(fault(format!(
+                "facts: {file}: a steps_reverse row has lo {lo} above hi {hi}"
+            )));
+        }
+        table
+            .widths
+            .push(positive(number(&mut row, "width")?, "steps_reverse width")?);
+        table
+            .ks
+            .push(positive(number(&mut row, "k")?, "steps_reverse k")?);
+        table.lo.push(lo);
+        table.hi.push(hi);
+        row.done()
+            .map_err(|why| fault(format!("facts: {file}: {why}")))?;
+    }
+    keys.done()
+        .map_err(|why| fault(format!("facts: {file}: {why}")))?;
+    Ok(table)
+}
+
+/// The thread box choices measured on one device and scalar type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoxRow {
+    /// The compute capability of the device (`sm_61`).
+    pub cc: String,
+    /// The device's name.
+    pub device: String,
+    /// The scalar type name the row is for.
+    pub dtype: String,
+    /// The lanes one thread serves, when the row changes them.
+    pub lanes: Option<i64>,
+    /// The way a dense contraction is run, when the row changes it.
+    pub contraction: Option<String>,
+    /// The tile of a block, when the device has one.
+    pub tile: Option<BoxTile>,
+}
+
+/// The tile of one block of a thread box row: its kind and the sizes the mapping reads (`SB` block samples, `T` lanes per thread,
+/// `R` rows, `EB` elements per block lane, `smem` shared bytes), named as the mapping that reads them names them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoxTile {
+    /// The tile's kind.
+    pub kind: String,
+    /// The sizes `SB`, `T`, `R`, `EB` and `smem`, in that order.
+    pub sizes: [i64; 5],
+}
+
+/// The scalar type names a thread box has numbers for.
+const BOX_SCALARS: [&str; 2] = ["float64", "float32"];
+
+/// Splits the device's `thread_box` section: the lane counts by scalar type and the rest of the section's keys, left in the keys.
+fn split_thread_box<'a>(json: &'a Json) -> Result<(Json, Keys<'a>), Refusal> {
+    let mut keys = Keys::of(json, "thread_box")?;
+    let mut lanes = vec![];
+    for scalar in BOX_SCALARS {
+        let key: &'static str = scalar;
+        lanes.push((
+            key.to_string(),
+            keys.req(key)
+                .map_err(|why| fault(format!("facts: cuda_build.json: {why}")))?
+                .clone(),
+        ));
+    }
+    Ok((Json::Obj(lanes), keys))
+}
+
+/// A contraction route name: `gemm` or `direct`, else refused by name.
+fn route(json: &Json, what: &str) -> Result<String, Refusal> {
+    match json.str() {
+        Some(name @ ("gemm" | "direct")) => Ok(name.to_string()),
+        _ => Err(fault(format!(
+            "facts: cuda_build.json: {what} contraction must be gemm or direct"
+        ))),
+    }
+}
+
+/// The `contraction` of the device's thread box: the route for each scalar type.
+fn box_contraction(json: &Json) -> Result<Vec<(String, String)>, Refusal> {
+    let mut keys = Keys::of(json, "thread_box contraction")?;
+    let mut routes = vec![];
+    for scalar in BOX_SCALARS {
+        let key: &'static str = scalar;
+        let value = keys
+            .req(key)
+            .map_err(|why| fault(format!("facts: {why}")))?;
+        routes.push((scalar.to_string(), route(value, scalar)?));
+    }
+    keys.done().map_err(|why| fault(format!("facts: {why}")))?;
+    Ok(routes)
+}
+
+/// The `rows` of the device's thread box: `cc`, `device` and `dtype` and, each optional, `lanes`, `contraction` and `tile`.
+fn box_rows(json: &Json) -> Result<Vec<BoxRow>, Refusal> {
+    let Json::Arr(items) = json else {
+        return Err(fault(
+            "facts: cuda_build.json: thread_box rows is not a list",
+        ));
+    };
+    items
+        .iter()
+        .map(|item| {
+            let mut keys = Keys::of(item, "thread_box rows")?;
+            let row = BoxRow {
+                cc: text(&mut keys, "cc")?,
+                device: text(&mut keys, "device")?,
+                dtype: text(&mut keys, "dtype")?,
+                lanes: keys
+                    .opt("lanes")
+                    .map(|n| match n.int() {
+                        Some(n) if (2..=BOX_LANES_MAX).contains(&n) => Ok(n),
+                        _ => Err(fault("facts: cuda_build.json: a thread box row's lanes is not a lane count from 2 to 16")),
+                    })
+                    .transpose()?,
+                contraction: keys.opt("contraction").map(|c| route(c, "a row's")).transpose()?,
+                tile: keys.opt("tile").map(box_tile).transpose()?,
+            };
+            if !BOX_SCALARS.contains(&row.dtype.as_str()) {
+                return Err(fault(format!(
+                    "facts: cuda_build.json: a thread box row names the scalar type {}",
+                    row.dtype
+                )));
+            }
+            keys.done().map_err(|why| fault(format!("facts: {why}")))?;
+            Ok(row)
+        })
+        .collect()
+}
+
+/// The `tile` of a thread box row: a kind and five positive sizes.
+fn box_tile(json: &Json) -> Result<BoxTile, Refusal> {
+    let mut keys = Keys::of(json, "thread_box tile")?;
+    let kind = text(&mut keys, "kind")?;
+    let mut sizes = [0; 5];
+    for (slot, key) in sizes.iter_mut().zip(["SB", "T", "R", "EB", "smem"]) {
+        *slot = positive(number(&mut keys, key)?, key)?;
+    }
+    keys.done().map_err(|why| fault(format!("facts: {why}")))?;
+    Ok(BoxTile { kind, sizes })
+}
+
+/// The wide thresholds measured for one architecture and scalar type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WideRow {
+    /// The compute capability the row was measured on (`sm_61`).
+    pub cc: String,
+    /// The scalar type name the row is for.
+    pub dtype: String,
+    /// The narrowest vector held sliced.
+    pub slice_min: i64,
+    /// The shortest sliced value from which a warp is chosen without being asked for.
+    pub team_min: i64,
+    /// The bytes of shared memory the output tiles of one block may take.
+    pub tile_bytes: i64,
+}
+
+/// The `wide_rows` list of the device card: each row names its architecture and scalar type and states the three thresholds,
+/// each positive; a scalar type other than `float32` and `float64` is refused by name.
+fn wide_rows(json: &Json) -> Result<Vec<WideRow>, Refusal> {
+    let Json::Arr(items) = json else {
+        return Err(fault("facts: wide_rows is not a list"));
+    };
+    items
+        .iter()
+        .map(|item| {
+            let mut keys = Keys::of(item, "wide_rows")?;
+            let row = WideRow {
+                cc: text(&mut keys, "cc")?,
+                dtype: text(&mut keys, "dtype")?,
+                slice_min: positive(number(&mut keys, "slice_min")?, "wide_rows slice_min")?,
+                team_min: positive(number(&mut keys, "team_min")?, "wide_rows team_min")?,
+                tile_bytes: positive(number(&mut keys, "tile_bytes")?, "wide_rows tile_bytes")?,
+            };
+            if !["float32", "float64"].contains(&row.dtype.as_str()) {
+                return Err(fault(format!(
+                    "facts: wide_rows names the scalar type {}",
+                    row.dtype
+                )));
+            }
+            keys.done().map_err(|why| fault(format!("facts: {why}")))?;
+            Ok(row)
+        })
+        .collect()
+}
+
+/// One linear algebra operation the device works one warp per lane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WarpEntry {
+    /// The operation (`eigh`).
+    pub kind: String,
+    /// The order of the matrix.
+    pub n: i64,
+    /// The scalar type name the entry is for.
+    pub scalar: String,
+    /// The outputs read beyond the base ones (`v` for the vectors).
+    pub reads: Vec<String>,
+    /// The warp function of the writers' linear algebra that does the work.
+    pub function: String,
+}
+
+/// A text member of a card section; a missing or non-text member is refused by name.
+fn text(keys: &mut Keys, key: &'static str) -> Result<String, Refusal> {
+    keys.req(key)
+        .map_err(|why| fault(format!("facts: {why}")))?
+        .str()
+        .map(String::from)
+        .ok_or_else(|| fault(format!("facts: {key} is not a text")))
+}
+
+/// The `linalg_warp_entries` list of the device card: each entry names its operation, order, scalar type, extra outputs and
+/// warp function; a scalar type other than `float32` and `float64` is refused by name.
+fn warp_entries(json: &Json) -> Result<Vec<WarpEntry>, Refusal> {
+    let Json::Arr(items) = json else {
+        return Err(fault("facts: linalg_warp_entries is not a list"));
+    };
+    items
+        .iter()
+        .map(|item| {
+            let mut keys = Keys::of(item, "linalg_warp_entries")?;
+            let entry = WarpEntry {
+                kind: text(&mut keys, "kind")?,
+                n: positive(number(&mut keys, "n")?, "linalg_warp_entries n")?,
+                scalar: text(&mut keys, "scalar")?,
+                reads: match keys.req("reads")? {
+                    Json::Arr(names) => names
+                        .iter()
+                        .map(|name| name.str().map(String::from))
+                        .collect::<Option<_>>()
+                        .ok_or_else(|| {
+                            fault("facts: linalg_warp_entries reads holds a non-name")
+                        })?,
+                    _ => return Err(fault("facts: linalg_warp_entries reads is not a list")),
+                },
+                function: text(&mut keys, "function")?,
+            };
+            if !["float32", "float64"].contains(&entry.scalar.as_str()) {
+                return Err(fault(format!(
+                    "facts: linalg_warp_entries names the scalar type {}",
+                    entry.scalar
+                )));
+            }
+            keys.done().map_err(|why| fault(format!("facts: {why}")))?;
+            Ok(entry)
+        })
+        .collect()
 }
 
 /// The hardware facts the wide thresholds depend on.
@@ -366,6 +691,24 @@ impl DeviceCard {
             .ok_or_else(|| fault("facts: cuda_build.json: no architecture has hardware facts"))
     }
 
+    /// The value of the row whose architecture has hardware nearest the architecture's among `rows` (the first on a tie), or none
+    /// when there is no row.
+    pub fn nearest_row<'a, T>(
+        &self,
+        arch: &str,
+        rows: &'a [(String, T)],
+    ) -> Result<Option<&'a T>, Refusal> {
+        let want = self.features_of(arch)?;
+        let mut best: Option<(f64, &'a T)> = None;
+        for (cc, value) in rows {
+            let distance = want.distance(self.features_of(cc)?);
+            if best.is_none_or(|(held, _)| distance < held) {
+                best = Some((distance, value));
+            }
+        }
+        Ok(best.map(|(_, value)| value))
+    }
+
     /// The measured class whose hardware is nearest the architecture's (the lower name on a tie).
     pub fn wide_class(&self, arch: &str) -> Result<&WideClass, Refusal> {
         let want = self.features_of(arch)?;
@@ -412,6 +755,7 @@ impl DeviceCard {
             scatter_max_chunks: self.scatter_max_chunks,
             scatter_threads: self.scatter_threads,
             host_wide: self.wide_class(arch)?.limits.clone(),
+            device_steps_reverse: Some(self.steps_reverse.clone()),
             ..host.clone()
         })
     }
@@ -469,6 +813,14 @@ fn wide_classes(json: &Json) -> Result<Vec<WideClass>, Refusal> {
         .collect()
 }
 
+/// A card number that must be positive; a card with another is refused by name.
+fn positive(value: i64, key: &str) -> Result<i64, Refusal> {
+    match value > 0 {
+        true => Ok(value),
+        false => Err(fault(format!("facts: {key} must be positive, got {value}"))),
+    }
+}
+
 /// A named section of a card.
 fn part(top: &mut Keys, key: &'static str, file: &str) -> Result<Json, Refusal> {
     top.req(key)
@@ -476,10 +828,10 @@ fn part(top: &mut Keys, key: &'static str, file: &str) -> Result<Json, Refusal> 
         .map_err(|why| fault(format!("facts: {file}: {why}")))
 }
 
-/// Reads `cuda_build.json` from the facts directory.
-pub fn device_build(dir: &Path) -> Result<DeviceCard, Refusal> {
+/// Reads the text of the device build card (`cuda_build.json`).
+pub fn device_build(text: &str) -> Result<DeviceCard, Refusal> {
     let file = "cuda_build.json";
-    let card = card_file(dir, file)?;
+    let card = card_json(text, file)?;
     let mut top = Keys::of(&card, "device build card")?;
     let (form, lanes) = (
         part(&mut top, "form", file)?,
@@ -501,14 +853,22 @@ pub fn device_build(dir: &Path) -> Result<DeviceCard, Refusal> {
     let mut fold = Keys::of(&fold, "fold")?;
     let mut wide = Keys::of(&wide, "wide")?;
     let (team_threads, team_threads_large) = team_threads(&mut lanes)?;
+    let (lanes_of_box, mut boxes) = split_thread_box(&boxes)?;
     let found = DeviceCard {
         lazy_leaf_width: number(&mut form, "lazy_leaf_width")?,
         rolled_fold_min: number(&mut form, "rolled_fold_min")?,
         lean_width: number(&mut form, "lean_width")?,
         run_max: number(&mut lanes, "run_max")?,
         block_run: number(&mut lanes, "block_run")?,
+        bank_words: positive(number(&mut lanes, "bank_words")?, "bank_words")?,
+        eigh_team_threads: positive(
+            number(&mut lanes, "eigh_team_threads")?,
+            "eigh_team_threads",
+        )?,
         linalg_max_dim: number(&mut top, "linalg_max_dim")?,
         linalg_team_max_dim: number(&mut top, "linalg_team_max_dim")?,
+        linalg_warp_entries: warp_entries(top.req("linalg_warp_entries")?)?,
+        linalg_fast_fp64: positive(number(&mut top, "linalg_fast_fp64")?, "linalg_fast_fp64")?,
         cells_row: number(&mut top, "cells_row")?,
         copy_threads: number(&mut lanes, "copy_threads")?,
         team_threads,
@@ -523,26 +883,33 @@ pub fn device_build(dir: &Path) -> Result<DeviceCard, Refusal> {
             regs_column: number(&mut fold, "regs_column")?,
             residency_regs: number(&mut fold, "residency_regs")?,
         },
-        box_lanes: box_lanes(&boxes)?,
+        box_lanes: box_lanes(&lanes_of_box)?,
+        box_contraction: box_contraction(boxes.req("contraction")?)?,
+        box_rows: box_rows(boxes.req("rows")?)?,
         slice_min: number(&mut wide, "slice_min")?,
         team_min: number(&mut wide, "team_min")?,
         tile_bytes: number(&mut wide, "tile_bytes")?,
+        steps_reverse: steps_reverse(top.req("steps_reverse")?, file)?,
         warp_size: number(&mut top, "warp_size")?,
-        wide_rows: match rows {
-            Json::Arr(names) => names
-                .iter()
-                .map(|n| n.str().map(String::from))
-                .collect::<Option<_>>()
-                .ok_or_else(|| fault(format!("facts: {file}: wide_rows holds a non-name")))?,
-            _ => return Err(fault(format!("facts: {file}: wide_rows is not a list"))),
-        },
+        max_threads_per_sm: positive(
+            number(&mut top, "max_threads_per_sm")?,
+            "max_threads_per_sm",
+        )?,
+        wide_rows: wide_rows(&rows)?,
     };
+    if found.slice_min % found.warp_size != 0 {
+        return Err(fault(format!(
+            "facts: {file}: wide slice_min {} is not a whole number of warps of {}",
+            found.slice_min, found.warp_size
+        )));
+    }
     for done in [
         form.done(),
         lanes.done(),
         fold.done(),
         wide.done(),
         scatter.done(),
+        boxes.done(),
         top.done(),
     ] {
         done.map_err(|why| fault(format!("facts: {file}: {why}")))?;
@@ -557,7 +924,7 @@ mod tests {
 
     /// The shipped device card.
     fn shipped() -> DeviceCard {
-        device_build(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/facts"))).unwrap()
+        device_build(include_str!("../../facts/cuda_build.json")).unwrap()
     }
 
     /// With one measured class every architecture takes it, and its thresholds replace the host's in the deciding card.
@@ -567,9 +934,38 @@ mod tests {
         for arch in ["sm_61", "sm_80", "sm_90a", "sm_120"] {
             assert_eq!(card.wide_class(arch).unwrap().name, "sm61", "{arch}");
         }
-        let host = host_build(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/facts"))).unwrap();
+        let host = host_build(include_str!("../../facts/build.json")).unwrap();
         let deciding = card.deciding(&host, "sm_80").unwrap();
         assert_eq!(deciding.host_wide, card.wide_classes[0].limits);
+    }
+
+    /// Oracle: the shipped host card states the `lanes` regime and the rows (4, 8), (4, 4), (2, 8); a regime the unit record has no
+    /// name for, a row whose widest regime is below its narrowest and a missing rows list are refused by name.
+    #[test]
+    fn the_steps_table_of_the_card_is_read_strictly() {
+        let text = include_str!("../../facts/build.json");
+        let card = host_build(text).unwrap();
+        assert_eq!(card.steps_reverse.regime, StepsRegime::Lanes);
+        assert_eq!(
+            (card.steps_reverse.widths, card.steps_reverse.ks),
+            (vec![4, 4, 2], vec![8, 4, 8])
+        );
+        for (old, new, named) in [
+            (
+                "\"regime\": \"lanes\"",
+                "\"regime\": \"samples\"",
+                "samples",
+            ),
+            (
+                "\"lo\": 1, \"hi\": 1024",
+                "\"lo\": 2000, \"hi\": 1024",
+                "above hi",
+            ),
+            ("\"rows\": [", "\"rowz\": [", "rows"),
+        ] {
+            let why = host_build(&text.replacen(old, new, 1)).unwrap_err();
+            assert!(why.reason.contains(named), "{}", why.reason);
+        }
     }
 
     /// A second measured class is chosen by the hardware distance, and a tie goes to the lower name.

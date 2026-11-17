@@ -11,6 +11,7 @@ use super::{walk_of, wing, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{Access, Dtype, Role, Scalar, Target, Walk};
 use aether_writers::refuse::{bad, fault, not_written, Refusal};
 use raptor_ir::record::Ctx;
+use raptor_wings::cost::{dispatch_costs, BranchCost};
 use raptor_wings::segment::{class_name, offsets_name, stale_name, strategies, Strategy};
 use raptor_wings::stages::stored_cells;
 
@@ -315,6 +316,7 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
         }
     };
     let step = parts.texts.first().and_then(|t| t.facts.step.as_ref());
+    let device = parts.texts.iter().find(|t| t.target == Target::Device);
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let n_events = super::events::count(
         unsafe { &*parts.ctx },
@@ -334,13 +336,26 @@ fn finish(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Finish>, Refusal
                 .map_err(wing)?,
             None => None,
         },
+        // the device writer names its fast entries; the record copies the names
+        device_persist_function: device.and_then(|t| t.facts.persist_function.clone()),
+        device_range_function: device.and_then(|t| t.facts.range_function.clone()),
         mask_slot: slot(mask)?,
         counter_slot: slot(FINISHED_PLANE)?,
         n_events,
+        host_steps_reverse: parts
+            .request
+            .targets
+            .contains(&Target::Host)
+            .then(|| parts.card.steps_reverse.clone()),
+        device_steps_reverse: parts
+            .request
+            .targets
+            .contains(&Target::Device)
+            .then(|| parts.card.device_steps_reverse.clone())
+            .flatten(),
         steps,
         steps_max,
         steps_slot: slot_at(slots, FUSED_STEPS_PLANE).filter(|_| steps == AUTO_STEPS),
-        ..m::Finish::default()
     }))
 }
 
@@ -350,6 +365,67 @@ fn by_name(name: &str) -> m::UnitRef {
         name: name.to_string(),
         digest: String::new(),
     }
+}
+
+/// The record of one branch's cost: the model's counts, its stores when it states them.
+fn branch_cost(cost: &BranchCost) -> m::BranchCost {
+    m::BranchCost {
+        arith32: cost.arith32,
+        arith64: cost.arith64,
+        special32: cost.special32,
+        special64: cost.special64,
+        loads: cost.loads,
+        gathers: cost.gathers,
+        chain32: cost.chain32,
+        chain64: cost.chain64,
+        chain_special32: cost.chain_special32,
+        chain_special64: cost.chain_special64,
+        stores: cost.stores,
+    }
+}
+
+/// What the record states of one dispatch group besides its strategy: the cost of each branch and the slots its selector reads.
+type GroupReads = (Vec<m::BranchCost>, Vec<usize>);
+
+/// What the record states of each dispatch group of a walk besides its strategy, in the walk's dispatch listing order: the cost of
+/// each branch (an auto group only: the runtime prices its entry choice from them) and the slots of the unit's own table that the
+/// group's selector reads, ascending. A read with no slot in the unit is a fault: the record cannot name a plane the unit lacks.
+fn group_reads(
+    ctx: &Ctx,
+    order: &[u32],
+    found: &[(String, Strategy)],
+    slots: &[m::Slot],
+) -> Result<Vec<GroupReads>, Refusal> {
+    // the model prices every group of the walk, in the same listing the strategies and the nodes come in
+    let priced = if found
+        .iter()
+        .any(|(_, strategy)| *strategy == Strategy::Auto)
+    {
+        dispatch_costs(ctx, order).map_err(wing)?
+    } else {
+        vec![]
+    };
+    let nodes = ctx.dispatch_nodes(order).map_err(wing)?;
+    let mut out = vec![];
+    for (at, ((name, strategy), node)) in found.iter().zip(nodes).enumerate() {
+        let mut selector = vec![];
+        for (role, read) in ctx.selector_reads(node).map_err(wing)? {
+            let slot = slot_at(slots, &read).ok_or_else(|| {
+                fault(format!(
+                    "the selector of the group {name} reads {role} {read}, which is no slot of the unit"
+                ))
+            })?;
+            selector.push(slot);
+        }
+        selector.sort_unstable();
+        selector.dedup();
+        let costs = match (strategy, priced.get(at)) {
+            (Strategy::Auto, Some(group)) => group.branches.iter().map(branch_cost).collect(),
+            _ => vec![],
+        };
+        out.push((costs, selector));
+    }
+    Ok(out)
 }
 
 /// The dispatch groups of a unit's walk: each group's name, strategy and branches, and for an auto group the slot of its
@@ -377,36 +453,41 @@ fn dispatches(parts: &Parts, slots: &[m::Slot]) -> Result<Vec<m::Dispatch>, Refu
     let found = strategies(ctx, parts.walk).map_err(wing)?;
     let order = &walk_of(parts.ctx, parts.walk)?.order;
     let nodes = ctx.dispatch_nodes(order).map_err(wing)?;
+    let reads = group_reads(ctx, order, &found, slots)?;
     found
         .into_iter()
         .zip(nodes)
-        .map(|((name, strategy), node)| {
-            let mix_slot = match strategy {
-                Strategy::Auto => {
-                    let plane = parts
-                        .texts
-                        .first()
-                        .and_then(|t| t.facts.mix_planes.iter().find(|(group, _)| *group == name));
-                    let held = plane.and_then(|(_, plane)| slot_at(slots, plane));
-                    Some(held.ok_or_else(|| {
-                        fault(format!("the branch-mix plane of the group {name}"))
-                    })?)
-                }
-                _ => None,
-            };
-            Ok(m::Dispatch {
-                strategy: match strategy {
-                    Strategy::Predicated => m::DispatchStrategy::Predicated,
-                    Strategy::Switch => m::DispatchStrategy::Switch,
-                    Strategy::Segmented => m::DispatchStrategy::Segmented,
-                    Strategy::Auto => m::DispatchStrategy::Auto,
-                },
-                mix_slot,
-                name,
-                k: ctx.nodes[node as usize].ops.len() - 1,
-                ..m::Dispatch::default()
-            })
-        })
+        .zip(reads)
+        .map(
+            |(((name, strategy), node), (branch_costs, selector_slots))| {
+                let mix_slot = match strategy {
+                    Strategy::Auto => {
+                        let plane = parts.texts.first().and_then(|t| {
+                            t.facts.mix_planes.iter().find(|(group, _)| *group == name)
+                        });
+                        let held = plane.and_then(|(_, plane)| slot_at(slots, plane));
+                        Some(held.ok_or_else(|| {
+                            fault(format!("the branch-mix plane of the group {name}"))
+                        })?)
+                    }
+                    _ => None,
+                };
+                Ok(m::Dispatch {
+                    strategy: match strategy {
+                        Strategy::Predicated => m::DispatchStrategy::Predicated,
+                        Strategy::Switch => m::DispatchStrategy::Switch,
+                        Strategy::Segmented => m::DispatchStrategy::Segmented,
+                        Strategy::Auto => m::DispatchStrategy::Auto,
+                    },
+                    mix_slot,
+                    selector_slots,
+                    branch_costs,
+                    name,
+                    k: ctx.nodes[node as usize].ops.len() - 1,
+                    ..m::Dispatch::default()
+                })
+            },
+        )
         .collect()
 }
 
@@ -497,6 +578,11 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
         .collect::<Result<Vec<_>, Refusal>>()?;
     let cells = compensated(cells, &companions, &slots, &parts.pending.member.declared)?;
     Ok(m::UnitMeta {
+        flags: if parts.request.cards.is_empty() {
+            0
+        } else {
+            m::UNIT_CALLER_CARDS
+        },
         name: name.clone(),
         digest: parts.digest.to_string(),
         scalar_type: scalar(parts.request.scalar),
@@ -817,6 +903,8 @@ pub(super) fn stages(
 mod tests {
     //! A compensation plane is the one the lowering made for the row, never one a name suggests.
     use super::*;
+    use raptor_ir::door::{rx_ctx_free, rx_ctx_new, RX_OK};
+    use raptor_ir::dump::rx_load;
 
     /// A slot of the given name.
     fn slot(name: &str) -> m::Slot {
@@ -849,5 +937,82 @@ mod tests {
         assert_eq!(cells[0].comp_slots, Some(vec![2]));
         let cells = compensated(sum(), &[], &slots, &[]).unwrap();
         assert_eq!(cells[0].comp_slots, None);
+    }
+
+    /// The kernel with two dispatch groups of two branches each over one sink, as an IR dump, and its walk order as dump positions.
+    /// Both groups select on the plane `k`. The groups' branches cost different numbers, so the order of the records shows.
+    const TWO_GROUPS: &str = include_str!("../../tests/data/two_groups.dump");
+    const TWO_GROUPS_ORDER: [usize; 10] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10];
+
+    /// Runs `check` on the context of the two-group kernel and its walk order; the context is freed after.
+    fn with_two_groups(check: impl FnOnce(&Ctx, &[u32])) {
+        let c = rx_ctx_new();
+        let mut roots = vec![0u32; 4096];
+        let mut n = 0;
+        // SAFETY: `c` is the live context just made, the text and the buffers outlive the call.
+        let status = unsafe {
+            rx_load(
+                c,
+                TWO_GROUPS.as_ptr().cast(),
+                TWO_GROUPS.len(),
+                roots.as_mut_ptr(),
+                roots.len(),
+                &mut n,
+            )
+        };
+        assert_eq!(status, RX_OK);
+        let order: Vec<u32> = TWO_GROUPS_ORDER.iter().map(|&p| roots[p]).collect();
+        // SAFETY: `c` is the live context; nothing else holds it.
+        check(unsafe { &*c }, &order);
+        // SAFETY: `c` is the live context made above and is not used after.
+        unsafe { rx_ctx_free(c) };
+    }
+
+    #[test]
+    fn the_groups_of_a_two_group_kernel_state_their_own_branch_costs_in_the_walks_order() {
+        // oracle: the per-branch counts the cost model recorded for the kernel (the wing's cost oracle, case two_groups_one_sink)
+        let auto = ("g".to_string(), Strategy::Auto);
+        let found = [auto.clone(), ("h".to_string(), Strategy::Auto)];
+        with_two_groups(|ctx, order| {
+            let read = group_reads(ctx, order, &found, &[slot("x"), slot("k")]).unwrap();
+            let [(first, _), (second, _)] = &read[..] else {
+                panic!("two groups: {read:?}");
+            };
+            let counts = |g: &[m::BranchCost]| -> Vec<(f64, f64, f64, f64)> {
+                g.iter()
+                    .map(|b| (b.arith64, b.special64, b.loads, b.chain_special64))
+                    .collect()
+            };
+            assert_eq!(counts(first), [(1.0, 0.0, 2.0, 0.0), (0.0, 1.0, 1.0, 1.0)]);
+            assert_eq!(counts(second), [(0.0, 0.0, 1.0, 0.0), (0.0, 1.0, 1.0, 1.0)]);
+            assert!(first.iter().chain(second).all(|b| b.stores.is_none()));
+        });
+    }
+
+    #[test]
+    fn a_group_that_is_not_auto_states_no_costs_and_every_group_states_the_slots_its_selector_reads(
+    ) {
+        let found = [
+            ("g".to_string(), Strategy::Switch),
+            ("h".to_string(), Strategy::Segmented),
+        ];
+        with_two_groups(|ctx, order| {
+            let read = group_reads(ctx, order, &found, &[slot("x"), slot("k")]).unwrap();
+            assert_eq!(read, [(vec![], vec![1]), (vec![], vec![1])]);
+        });
+    }
+
+    #[test]
+    fn a_selector_that_reads_a_plane_the_unit_has_no_slot_for_is_a_fault_naming_it() {
+        let found = [("g".to_string(), Strategy::Switch)];
+        with_two_groups(|ctx, order| {
+            let why = group_reads(ctx, order, &found, &[slot("x")]).unwrap_err();
+            assert!(
+                why.reason
+                    .contains("reads per_sample k, which is no slot of the unit"),
+                "{}",
+                why.reason
+            );
+        });
     }
 }

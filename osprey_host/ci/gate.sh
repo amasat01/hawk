@@ -1,7 +1,7 @@
 #!/bin/sh
 # The gate of osprey_host. Usage: sh ci/gate.sh [leg ...]   (no argument: every leg, in this order)
 #   fmt clippy test exports binding py39 abi ruff cformat tidy replay
-# Environment: PYTHON (the interpreter the binding is built for; the binding leg is red without it), CLANG_TIDY (the clang-tidy
+# Environment: PYTHON (the interpreter the binding is built for; the binding leg is red without it), EAGLE_DOOR_DIR (the include root of eagle/door/eg_door.h and the folder of libeagle_door; the binding and tidy legs are red without it), CLANG_TIDY (the clang-tidy
 # program; the tidy leg is RED without it), the cformat leg skips, saying so, unless clang-format is major version 23, PYTHON39 and PY39_INCLUDE (a Python 3.9 interpreter and its headers; the py39 leg
 # skips, saying so, when the interpreter is absent; the default is the macOS command line tools' one). The siblings ../raptor and ../aether are inputs.
 # Each leg prints what it examined and is RED when it examined nothing. The exit status is non-zero when any leg is red.
@@ -121,11 +121,12 @@ leg_cformat() {
 leg_tidy() {
   [ -n "$CLANG_TIDY" ] || { echo "RED: CLANG_TIDY is not set (examined: 0 files)"; return 1; }
   [ -n "$PYTHON" ] || { echo "RED: PYTHON is not set (the binding template includes Python.h)"; return 1; }
+  [ -n "$EAGLE_DOOR_DIR" ] || { echo "RED: EAGLE_DOOR_DIR is not set (door.c includes the door header)"; return 1; }
   pyinc=$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_paths()["include"])')
   tfiles=$(git ls-files loader binding/template | grep '\.c$')
   n=$(echo "$tfiles" | grep -c .); echo "examined: $n C files of loader/ and binding/template/ with .clang-tidy"; need tidy "$n" || return 1
   # shellcheck disable=SC2086
-  "$CLANG_TIDY" $tfiles -- -std=c11 -Iinclude -Ibinding/template -I"$pyinc" -I../raptor/rs/ir/include >"$out" 2>&1 \
+  "$CLANG_TIDY" $tfiles -- -std=c11 -Iinclude -Ibinding/template -I"$pyinc" -I"$EAGLE_DOOR_DIR" -I../raptor/rs/ir/include >"$out" 2>&1 \
     || { grep -E "error|warning" "$out" | head -5; echo "RED: clang-tidy"; return 1; }
 }
 

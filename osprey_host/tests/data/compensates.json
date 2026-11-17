@@ -1,0 +1,9 @@
+{
+ "auto": false,
+ "compensated": true,
+ "keyed_auto": true,
+ "no_such_contract": false,
+ "or": false,
+ "ordered": false,
+ "plain": false
+}

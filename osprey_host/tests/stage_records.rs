@@ -7,9 +7,19 @@ mod common;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// The C source of the meta of the kernel `kernel` the recorded call (the one in `recording` whose line holds `test` and every
-/// text of `units`) lowers to, or none when the recording is not there.
-fn meta_source(recording: &str, test: &str, units: &[&str], kernel: &str) -> Option<String> {
+/// What one replayed recorded call wrote: the folder with every file, the call's id and the C source of the meta.
+struct Emitted {
+    /// The folder the replay wrote into: the meta sources and the unit texts, named by the call's id.
+    dir: PathBuf,
+    /// The recorded call's id.
+    id: String,
+    /// The C source of the meta of the replayed kernel.
+    source: String,
+}
+
+/// Replays the recorded call of `recording` whose line holds `test` and every text of `units`, and reads the C source of the meta
+/// of its kernel `kernel`; none when the recording is not there.
+fn emit(recording: &str, test: &str, units: &[&str], kernel: &str) -> Option<Emitted> {
     let corpus = std::env::var("OSPREY_CORPUS").map_or_else(
         |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../corpus"),
         PathBuf::from,
@@ -40,11 +50,11 @@ fn meta_source(recording: &str, test: &str, units: &[&str], kernel: &str) -> Opt
         }
     }
     let id = id.unwrap_or_else(|| panic!("no recorded call of {kernel} for {test}"));
-    let out = std::env::temp_dir().join(format!("osprey_stage_records_{kernel}"));
-    std::fs::create_dir_all(&out).unwrap();
+    let dir = std::env::temp_dir().join(format!("osprey_stage_records_{kernel}"));
+    std::fs::create_dir_all(&dir).unwrap();
     let run = Command::new(env!("CARGO_BIN_EXE_kreplay"))
         .arg(&folder)
-        .args(["--emit", &id, out.to_str().unwrap()])
+        .args(["--emit", &id, dir.to_str().unwrap()])
         .output()
         .expect("run kreplay");
     assert!(
@@ -55,10 +65,70 @@ fn meta_source(recording: &str, test: &str, units: &[&str], kernel: &str) -> Opt
     // the record source is named after the call's lead target
     let source = ["host", "cuda"]
         .iter()
-        .map(|target| out.join(format!("{id}_{kernel}_{target}.c")))
+        .map(|target| dir.join(format!("{id}_{kernel}_{target}.c")))
         .find(|file| file.exists())
         .expect("the meta source");
-    Some(std::fs::read_to_string(source).unwrap())
+    let source = std::fs::read_to_string(source).unwrap();
+    Some(Emitted { dir, id, source })
+}
+
+/// The C source of the meta of the kernel `kernel`, as `emit` reads it.
+fn meta_source(recording: &str, test: &str, units: &[&str], kernel: &str) -> Option<String> {
+    emit(recording, test, units, kernel).map(|emitted| emitted.source)
+}
+
+/// The include root of the runtime's door headers, when the environment names it.
+fn door_dir() -> Option<PathBuf> {
+    let dir = std::env::var_os("EAGLE_DOOR_DIR").map(PathBuf::from);
+    if dir.is_none() {
+        common::skipped(Some("EAGLE_DOOR_DIR"), "EAGLE_DOOR_DIR is not set");
+    }
+    dir
+}
+
+/// The reader of a compiled record: a C program that includes the meta source and prints, for each unit, what the record states.
+const READER: &str = r#"#include <stdio.h>
+#include "SOURCE"
+static const char* shown(const char* name) { return name ? name : "-"; }
+int main(void) {
+    const struct eg_library_meta* library = eg_unit_library_meta();
+    for (uint32_t u = 0; u < library->n_units; ++u) {
+        const struct eg_unit_meta* unit = library->units[u];
+        const struct eg_unit_finish* finish = unit->finish;
+        printf("unit %s persist %s range %s\n", unit->name,
+               finish ? shown(finish->device_persist_function) : "-",
+               finish ? shown(finish->device_range_function) : "-");
+        const struct eg_unit_body* body = unit->body;
+        for (int32_t g = 0; g < body->n_dispatches; ++g) {
+            const struct eg_unit_dispatch* d = body->dispatches[g];
+            printf("selector %s %s", unit->name, d->name);
+            for (int32_t i = 0; i < d->n_selector_slots; ++i)
+                printf(" %s", body->slots[d->selector_slots[i]]->name);
+            printf("\n");
+        }
+    }
+    return 0;
+}
+"#;
+
+/// Compiles the reader against the meta source `source` and the headers under `door`, runs it and returns what it printed.
+fn read_record(door: &std::path::Path, source: &std::path::Path) -> String {
+    let program = source.with_extension("reader.c");
+    std::fs::write(&program, READER.replace("SOURCE", source.to_str().unwrap())).unwrap();
+    let binary = source.with_extension("reader");
+    let build = Command::new("cc")
+        .args(["-std=c11", "-I", door.to_str().unwrap()])
+        .args([program.to_str().unwrap(), "-o", binary.to_str().unwrap()])
+        .output()
+        .expect("cc starts");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&binary).output().expect("the reader runs");
+    assert!(run.status.success(), "the reader failed");
+    String::from_utf8(run.stdout).unwrap()
 }
 
 /// The numbers of the array object `name` of the source, in order.
@@ -205,4 +275,43 @@ fn each_branch_unit_of_a_segmented_kernel_lists_itself_alone_as_its_stage_with_s
         let planes = object(&s, &format!("u{unit}_team_planes[]"));
         assert!(planes.contains(&format!("{{&u{unit}_tp0}}")), "{planes}");
     }
+}
+
+#[test]
+fn a_device_unit_states_the_two_entry_names_its_text_holds_and_a_host_unit_states_none() {
+    // the oracle is the unit's own text: the symbols of its persistent and range entries
+    let test = "test_dispatch_mix_and_guard.py::test_fused_loop_counts_mix[host]";
+    let Some(emitted) = emit("k7_record", test, &["walker"], "walker") else {
+        return;
+    };
+    let Some(door) = door_dir() else { return };
+    let (dir, id) = (&emitted.dir, &emitted.id);
+    let text = std::fs::read_to_string(dir.join(format!("{id}_walker_cuda.cu"))).unwrap();
+    let device = read_record(&door, &dir.join(format!("{id}_walker_cuda.c")));
+    assert!(text.contains("void walker_persist(") && text.contains("void walker_range("));
+    assert!(
+        device.contains("unit walker persist walker_persist range walker_range\n"),
+        "{device}"
+    );
+    let host = read_record(&door, &dir.join(format!("{id}_walker_host.c")));
+    assert!(host.contains("unit walker persist - range -\n"), "{host}");
+}
+
+#[test]
+fn the_selector_slots_of_a_loop_carried_selector_are_the_planes_its_carry_starts_from() {
+    // oracle: the kernel's IR, where the selector reads the carry `xs` (started from the plane `x`) and the uniform `t`
+    let test = "test_diff_jump.py::test_a_switch_in_a_loop_body_gets_its_jump[primal0-0]";
+    let Some(emitted) = emit("k7_record", test, &["g"], "g") else {
+        return;
+    };
+    let Some(door) = door_dir() else { return };
+    let source = emitted.dir.join(format!("{}_g_host.c", emitted.id));
+    let read = read_record(&door, &source);
+    let line = read
+        .lines()
+        .find(|l| l.starts_with("selector g dispatch0"))
+        .unwrap_or_else(|| panic!("{read}"));
+    let mut names: Vec<&str> = line.split(' ').skip(3).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["t", "x"], "{read}");
 }

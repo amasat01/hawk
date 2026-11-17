@@ -98,7 +98,7 @@ fn one_unit(
         4 => "float32",
         _ => "float64",
     };
-    if device.wide_rows.iter().any(|row| row == scalar) {
+    if device.wide_rows.iter().any(|row| row.dtype == scalar) {
         return Err(nib("staged rows over a card row or a forced wide setting"));
     }
     let spec = SliceSpec {

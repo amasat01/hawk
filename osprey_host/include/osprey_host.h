@@ -16,7 +16,7 @@ extern "C" {
 /* The abi number of the entry table, the one source of it: the library reads it from this file when
    it is built. Rule: a table whose shape (fields or their signatures) changes moves this number.
    ob_open refuses any other number by name. */
-#define OB_ABI 8
+#define OB_ABI 9
 
 /* The version of the typed contract the caller was built for (the JSON a render takes, with its
    closed schema). A library carries its own in the table; ob_open refuses any other version by
@@ -61,10 +61,11 @@ typedef struct {
         rx_ctx*, const char*, const char*, const char*, const char*, char*, size_t, size_t*);
     int (*lower)(rx_ctx*, const char*, const char*, size_t, char*, size_t, size_t*);
     int (*set_text)(rx_ctx*, const char*, size_t, char*, size_t, size_t*);
+    int (*card)(rx_ctx*, const char*, const char*, char*, size_t, size_t*);
 } ob_table;
 
 /* Opens the library at path and reads its entry table; a missing symbol or another abi number is
-   refused by name ("open: abi number N, expected 8"), and so is another contract version
+   refused by name ("open: abi number N, expected 9"), and so is another contract version
    ("open: contract version N, expected 1"). */
 int ob_open(rx_ctx* ctx, const char* path, ob_backend** out);
 /* The library's name (for example "host"). */
@@ -91,7 +92,10 @@ int ob_render(rx_ctx* ctx, ob_backend* lib, const char* dump, size_t n_dump, con
    stated is the machine the build is for when it is not the one running: ONE JSON record with the
    optional keys isa ("arm64" or "x86_64"), l1d_bytes, l2_bytes and cache_source (all three or
    none), host_profile (the profile asked for) and device_arch (for "cuda", for example "sm_61"); a
-   key left out is probed or the card's default, any other key is refused by name. */
+   key left out is probed or the card's default, any other key is refused by name. The optional key
+   cards states whole data documents in place of the library's files for this answer: a JSON object
+   from a document name (see ob_card) to the text of the document; the answer states a digest of the
+   documents it was made under, which ob_lower checks against the request's own cards. */
 int ob_facts(rx_ctx* ctx, ob_backend* lib,
     const char* facts_dir /* NULL = "facts" beside the library */, const char* target,
     const char* compiler, const char* stated /* NULL = the machine running */, char* buf,
@@ -117,6 +121,15 @@ int ob_lower(rx_ctx* ctx, ob_backend* lib,
    read are refused, saying why in rx_last_error(ctx). The text is written into buf as ob_facts
    writes its text (RX_TRUNC when cap is too small, len filled in). */
 int ob_set_text(rx_ctx* ctx, ob_backend* lib, const char* units, size_t n_units, char* buf,
+    size_t cap, size_t* len);
+/* The text of a data document the library ships, by name: build.json (the host build card),
+   cuda_build.json (the device build card), cuda.json (the device document: the fusion row and the
+   select weights), arm.json and x86.json (the instruction set documents). A caller derives its own
+   document from this text (change a number, keep the rest) and states the whole of it under its
+   name in the cards of ob_facts and of the request of ob_lower. facts_dir and the text protocol are
+   as for ob_facts; a name outside the five is refused by name in rx_last_error(ctx). */
+int ob_card(rx_ctx* ctx, ob_backend* lib,
+    const char* facts_dir /* NULL = "facts" beside the library */, const char* name, char* buf,
     size_t cap, size_t* len);
 /* Closes the library and frees the parts of its last render. */
 int ob_close(rx_ctx* ctx, ob_backend* lib);

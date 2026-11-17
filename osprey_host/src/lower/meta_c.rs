@@ -6,8 +6,9 @@
 //! What the digest of a unit is: the unit's canonical walk digest (SHA-256 of the walk, 64 hex digits in the answer), decoded to
 //! its 32 bytes. The device image is named by its bytes symbol and its size symbol; its content is never part of the source.
 use super::unit_meta::{
-    Derived, Dispatch, DispatchStrategy, LibraryMeta, StepsTable, ThreadBox, UnitMeta,
-    FINISH_FLAGS, LIBRARY_META_SYMBOL, SCHEMA_MAJOR, SLOT_FLAGS,
+    BranchCost, Derived, Dispatch, DispatchStrategy, LibraryMeta, StepsTable, ThreadBox, UnitMeta,
+    BRANCH_FLAGS, BRANCH_HAS_STORES, FINISH_FLAGS, LIBRARY_META_SYMBOL, SCHEMA_MAJOR, SLOT_FLAGS,
+    UNIT_FLAGS,
 };
 use aether_writers::refuse::{fault, Refusal};
 use std::fmt::Write;
@@ -191,6 +192,12 @@ fn check_dispatch(d: &Dispatch) -> Result<(), Refusal> {
     if d.k < 2 {
         return Err(broken("fewer than two branches"));
     }
+    let costed = d.strategy == DispatchStrategy::Auto;
+    if d.branch_costs.len() != if costed { d.k } else { 0 } {
+        return Err(broken(
+            "branch costs not one per branch of an auto group, or on another group",
+        ));
+    }
     if d.strategy != DispatchStrategy::Segmented {
         let named = !d.branches.is_empty() || d.classify.is_some() || d.sweep.is_some();
         return if named {
@@ -223,6 +230,43 @@ fn check_dispatch(d: &Dispatch) -> Result<(), Refusal> {
         (false, true, false) | (true, false, true) => Ok(()),
         _ => Err(broken("the stale slot, classify unit and sweep unit disagree on whether the selector is static")),
     }
+}
+
+/// The branch cost objects of a group, as pointers; NULL for a group that states none. A count the model produced that is not a finite
+/// number is a fault: the header's counts are plain numbers.
+fn branch_costs(out: &mut Out, at: usize, costs: &[BranchCost]) -> Result<String, Refusal> {
+    let mut names = vec![];
+    for (j, c) in costs.iter().enumerate() {
+        let counts = [
+            ("arith32", c.arith32),
+            ("arith64", c.arith64),
+            ("special32", c.special32),
+            ("special64", c.special64),
+            ("loads", c.loads),
+            ("gathers", c.gathers),
+            ("chain32", c.chain32),
+            ("chain64", c.chain64),
+            ("chain_special32", c.chain_special32),
+            ("chain_special64", c.chain_special64),
+        ];
+        let stored = c.stores.unwrap_or(0.0);
+        if counts.iter().any(|(_, n)| !n.is_finite()) || !stored.is_finite() {
+            return Err(fault(format!(
+                "the branch cost {j} of dispatch group {at}: a count is not a finite number"
+            )));
+        }
+        let word = if c.stores.is_some() {
+            BRANCH_HAS_STORES
+        } else {
+            0
+        };
+        // the vectorisation bits stay unstated: their verdict is another writer's, not the cost model's
+        let mut members = vec![("flags", flags(word, &BRANCH_FLAGS))];
+        members.extend(counts.map(|(member, n)| (member, format!("{n:?}"))));
+        members.push(("stores", format!("{stored:?}")));
+        names.push(out.record("eg_branch_cost", &format!("d{at}_cost{j}"), &members));
+    }
+    Ok(out.pointers("eg_branch_cost", &format!("d{at}_costs"), &names))
 }
 
 /// The objects of one unit's body; returns the body's name.
@@ -338,6 +382,8 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ),
             None => "NULL".into(),
         };
+        let costs = branch_costs(out, at, &d.branch_costs)?;
+        let selector = out.numbers("int32_t", &format!("d{at}_selector"), &d.selector_slots);
         let members = [
             ("strategy", d.strategy.c_name().into()),
             ("mix_slot", index(d.mix_slot)),
@@ -350,6 +396,11 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
             ("reserved0", "0".into()),
             ("branches", branches),
             ("sweep", sweep),
+            ("branch_costs", costs),
+            // the vectorisation verdicts of the fused loop are not stated (see `BranchCost`)
+            ("cost_flags", "0u".into()),
+            ("n_selector_slots", d.selector_slots.len().to_string()),
+            ("selector_slots", selector),
         ];
         dispatches.push(out.record("eg_unit_dispatch", &format!("d{at}"), &members));
     }
@@ -447,6 +498,14 @@ fn finish(out: &mut Out, unit: &UnitMeta) -> String {
         ),
         ("n_events", f.n_events.to_string()),
         ("reserved1", "0".into()),
+        (
+            "device_persist_function",
+            lit_or_null(&f.device_persist_function),
+        ),
+        (
+            "device_range_function",
+            lit_or_null(&f.device_range_function),
+        ),
     ];
     format!("&{}", out.record("eg_unit_finish", "finish", &members))
 }
@@ -547,7 +606,7 @@ fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
     let derived_list = derived(out, unit.derived.as_ref());
     let (body, launch, finish) = (body(out, unit)?, launch(out, unit), finish(out, unit));
     let members = [
-        ("flags", flags(unit.flags, &[])),
+        ("flags", flags(unit.flags, &UNIT_FLAGS)),
         ("name", lit(&unit.name)),
         ("digest", digest_bytes(&unit.digest)?),
         ("pattern", unit.pattern.c_name().into()),

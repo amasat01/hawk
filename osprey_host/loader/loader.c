@@ -260,6 +260,20 @@ int ob_set_text(rx_ctx* ctx, ob_backend* lib, const char* units, size_t n_units,
     return status;
 }
 
+int ob_card(rx_ctx* ctx, ob_backend* lib, const char* facts_dir, const char* name, char* buf,
+    size_t cap, size_t* len)
+{
+    const ob_table* table = lib->table;
+    rx_ctx* inner         = table->ctx_new();
+    if (!inner)
+        return fail(ctx, RX_REFUSED, "card", "the library cannot create a context");
+    int status = table->card(inner, facts_dir, name, buf, cap, len);
+    if (status != RX_OK && status != RX_TRUNC)
+        status = forward(ctx, table, inner, status, "card");
+    table->ctx_free(inner);
+    return status;
+}
+
 int ob_close(rx_ctx* ctx, ob_backend* lib)
 {
     (void)ctx;

@@ -1,11 +1,11 @@
 //! The device image build as data: for the device compiler, the architecture and the settings a facts question states, which
 //! form of image the build makes (`ptx` or `cubin`) and the argv template of the one compile that makes it. Every flag and
 //! every rule is read from `cuda_image.json`; nothing is probed. Places the caller fills in are written `{compiler}`,
-//! `{source}`, `{output}`, `{depfile}`, `{include:aether}`, `{include:eagle}`, `{include:facts}` and `{defines}`, as the host
-//! compile writes them; `{defines}` stands for one `-D<define>` element for each define and for nothing when there is none.
-use crate::facts::{arch_names, member, names_of, read_file, text_of, Failed};
+//! `{host_compiler}` (the compiler of the set's host objects, which the device compiler is told with `-ccbin` so that one C++
+//! runtime serves the whole library), `{source}`, `{output}`, `{depfile}`, `{include:aether}`, `{include:eagle}`, `{include:facts}`
+//! and `{defines}`, as the host compile writes them; `{defines}` stands for one `-D<define>` element for each define and for nothing when there is none.
+use crate::facts::{arch_names, member, names_of, text_of, CardSet, Failed};
 use aether_writers::contract::Json;
-use std::path::Path;
 
 /// The release `major.minor` of a stated compiler or driver as a pair; `what` names it in the refusal.
 fn release_pair(text: &str, what: &str) -> Result<(u32, u32), Failed> {
@@ -60,12 +60,12 @@ pub(crate) fn image_form(
 /// stands for the flags that make the compiler report each kernel's registers, spills and stack, which the card states for the
 /// forms that have them.
 pub(crate) fn compile(
-    dir: &Path,
+    cards: &CardSet,
     card: &Json,
     file: &str,
     (form, arch, level): (&str, &str, Option<&str>),
 ) -> Result<Json, Failed> {
-    let host = read_file(dir, "host_build.json")?;
+    let host = cards.json("host_build.json")?;
     let level = match level {
         Some(asked) => asked.to_string(),
         None => text_of(&host, "host_build.json", "default_opt_level")?,

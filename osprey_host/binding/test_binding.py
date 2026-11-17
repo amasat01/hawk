@@ -5,6 +5,7 @@ ABI1_LIB=<binding>/build/libabi1.<dylib or so>
 CONTRACT0_LIB=<binding>/build/libcontract0.<dylib or so> <python> test_binding.py
 """
 
+import gc
 import json
 import os
 import sys
@@ -105,7 +106,11 @@ if sys.version_info >= (3, 10):
     raises(TypeError, lambda: setattr(o.Ctx, "new_method", 1), "Ctx.new_method = ...")
     raises(TypeError, lambda: setattr(o.Node, "new_method", 1), "Node.new_method = ...")
 raises(TypeError, lambda: c2.canonical([y], "[]", None, "[]"), "Node of another Ctx")
-pub = sorted(n for n in dir(o) if not n.startswith("_"))
+pub = sorted(
+    n
+    for n in dir(o)
+    if not n.startswith("_") and not n.startswith("EG_") and n not in ("Door", "Handle")
+)
 assert pub == [
     "ABI_VERSION",
     "BadRequest",
@@ -126,6 +131,15 @@ done.append("node.cls, node.ttype, node.operands")
 assert x == x and x != y and hash(x) == hash(x) and x != 3
 assert x.operands == () and y.operands[0] == y.operands[0]
 done.append("nodes compare and hash by handle and context")
+assert x.ctx is c and y.operands[0].ctx is c and c2.load(text)[0].ctx is c2
+raises(AttributeError, lambda: setattr(x, "ctx", c2), "node.ctx = ...")
+# a node keeps its context alive: the context object dies only after the last node that reads it
+probe = o.Ctx()
+survivor = mk(probe, "Leaf", [], LEAF % "s")
+del probe
+gc.collect()
+assert survivor.ctx.is_a(survivor, "leaf") and survivor.operands == ()
+done.append("node.ctx: the context of the node, read-only, kept alive by the node")
 tagged = c.make("Leaf", "f64", [3, 2], "t", [], LEAF % "tagged")
 assert tagged.ttype == ((3, 2), "f64", "t"), tagged.ttype
 done.append("node.ttype with a shape and a tag")
@@ -164,6 +178,114 @@ assert loop.field_int("start") == 0 and loop.field_int("stop") == 3
 assert loop.field_ints("body_sinks") == () and loop.field_kind("body_sinks") == 7
 assert loop.field_text("exit_cond") is None and loop.field_text("dynamic") is None
 done.append("new_loop: several lists, optional nodes, integers; its operands and fields read back")
+
+# ---- the query surface: constants, kinds, feathers, parameter cells, sinks, matrices ----
+assert c.const_names("COMPARE") == ("lt", "le", "gt", "ge", "eq", "ne"), c.const_names("COMPARE")
+assert c.const_names("PARAM_CELL") == ("param_cell",)
+raises(ValueError, lambda: c.const_names("NO_SUCH_CONSTANT"), "const_names of a name nobody owns")
+done.append("const_names: a list, a string, a refusal")
+assert c.const_names("ACCESS_CLASSES")[-1] == "mapreduce" and c.const_names("ADJOINT_PREFIX") == (
+    "bar",
+)
+done.append("const_names of the constants the manifest gained")
+assert c.compensates("compensated") and c.compensates("keyed_auto") and not c.compensates("ordered")
+done.append("compensates")
+assert c.is_a(x, "leaf") and not c.is_a(x, "op") and not c.is_a(x, "NoSuchKind")
+done.append("is_a")
+sink = mk(c, "Assign", [x], "(('name', 'out'),)")
+assert not c.has_feather(sink, "commits_value") and not c.has_feather(x, "reduces_samples")
+reduced = mk(
+    c,
+    "ReduceSamples",
+    [x],
+    "(('op', 'sum'), ('contract', 'auto'), ('key', None), ('count', None), ('kept', None))",
+)
+assert c.has_feather(reduced, "reduces_samples") and not c.has_feather(reduced, "commits_value")
+raises(ValueError, lambda: c.has_feather(x, "no_such_feather"), "has_feather of an unknown feather")
+done.append("has_feather")
+# a declared dialect kind states its feathers: the simt wing declares a static-index terminal
+wings = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "raptor", "rs", "wings", "manifests"
+)
+for manifest in ("base.json", "simt.json"):
+    with open(os.path.join(wings, manifest)) as text:
+        c.declare_dialect(text.read(), "('base', 'simt')")
+lane = c.make("WarpLane", "i32", [], None, [], "()")
+assert c.has_feather(lane, "static_index") and not c.has_feather(lane, "fresh_read")
+done.append("has_feather of a declared dialect kind")
+table = c.make(
+    "Leaf",
+    "f64",
+    [4],
+    None,
+    [],
+    LEAF.replace("vocab_read", "table_read").replace("vec_in", "lookup") % "t",
+)
+cell = c.make("RoleConst", "i32", [], None, [], "(('literal', 0), ('label', 'param_cell'))")
+other = c.make("RoleConst", "i32", [], None, [], "(('literal', 0), ('label', 'other'))")
+assert c.is_param_cell(c.make("At", "f64", [], None, [table, cell], "()"))
+assert not c.is_param_cell(c.make("At", "f64", [], None, [table, other], "()"))
+assert not c.is_param_cell(x)
+done.append("is_param_cell")
+read = c.param_cell("gain", "f64", [], None, False)
+assert c.is_param_cell(read) and read.cls == "At" and read.ttype == ((), "f64", None)
+assert not c.is_param_cell(c.param_cell("gain", "f64", [], None, True))
+assert c.param_cell("offsets", "f64", [3], "xs", False).ttype == ((3,), "f64", "xs")
+done.append("param_cell")
+
+
+def ints(value):
+    """A 32-bit integer constant."""
+    return c.make("Const", "i32", [], None, [], "(('literal', %d),)" % value)
+
+
+strided = c.make_op("add", [c.make_op("mul", [idx, ints(4)], ""), ints(2)], "")
+assert c.index_form(strided, idx, True) == ("form", "4/1", "2/1", "1", "-")
+halved = c.make_op("div", [strided, ints(2)], "")
+assert c.index_form(halved, idx, True) == ("form", "2/1", "1/1", "1", "-")
+assert c.index_form(halved, idx, False) == ("none",)
+assert c.index_form(ints(7), None, True) == ("form", "0/1", "7/1", "0", "-")
+done.append("index_form")
+assert c.quantity_check("pos", "auto", "(('vec_in', 'x'), ('mat_in', 'm'))") is None
+e = raises(
+    ValueError,
+    lambda: c.quantity_check("pos", "auto", "(('vec_in', 'x'), ('vec_in', 'x'))"),
+    "a duplicate wire",
+)
+assert str(e) == "Quantity 'pos': duplicate wire name 'x'", str(e)
+done.append("quantity_check")
+lit = lambda text: c.make("Const", "f64", [], None, [], "(('literal', %s),)" % text)  # noqa: E731
+twin_a, twin_b, other, negative, nan_a, nan_b = (
+    lit(t) for t in ("1.5", "1.5", "2.5", "-0.0", "nan", "nan")
+)
+keys = c.structural_keys([twin_a, twin_b, other, lit("0.0"), negative, nan_a, nan_b])
+assert (
+    keys[0] == keys[1] and keys[2] not in keys[:2] and keys[3] != keys[4] and keys[5] == keys[6]
+), keys
+assert c.structural_keys([]) == ()
+done.append("structural_keys: a value twice is one key; -0.0 is not 0.0; nan is nan")
+moved = c.with_value(sink, y)
+assert moved.cls == "Assign" and moved.operands == (y,) and moved.field_text("name") == "out"
+raises(ValueError, lambda: c.with_value(x, y), "with_value on a sink that commits no value")
+done.append("with_value")
+chol = c.make("Leaf", "f64", [2, 2], "chol_factor", [], LEAF % "chol")
+lu = c.make("Leaf", "f64", [2, 2], "lu_factor", [], LEAF % "lu")
+assert c.as_matrix(x) == x and c.as_matrix(chol).cls == "Op"
+raises(ValueError, lambda: c.as_matrix(lu), "as_matrix of an LU factor")
+done.append("as_matrix")
+
+# ---- the loop rules: the terms of a sum, nested loops, accumulator or recurrence ----
+assert c.add_terms(step_add) == (carry, x) and c.add_terms(x) == (x,)
+done.append("add_terms")
+assert c.refuse_nesting(loop) is None
+done.append("refuse_nesting")
+assert c.loop_is_accumulator(loop) is True and c.loop_addends(loop) == (x,)
+done.append("loop_is_accumulator and loop_addends of an accumulator")
+scaled = mk(c, "Op", [carry, x], "(('kind', 'mul'), ('literal', None))")
+recurrence = c.new_loop(idx, [carry], [init], [scaled], 0, 3, 1, [], None, [], None, 0, None)
+assert c.loop_is_accumulator(recurrence) is False
+raises(ValueError, lambda: c.loop_addends(recurrence), "loop_addends of a recurrence")
+done.append("loop_is_accumulator of a recurrence")
 raises(
     ValueError,
     lambda: c.new_loop(
@@ -289,7 +411,25 @@ if lib_path:
     )
     assert str(e) == "set_text: a unit set without a unit", str(e)
     done.append("backend_set_text")
+    facts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "facts")
+    shipped = c.backend_card(lib, facts_dir, "build.json")
+    assert json.loads(shipped)["lanes"]["team_threads"] == 128, shipped
+    e = raises(
+        o.BadRequest,
+        lambda: c.backend_card(lib, facts_dir, "cpu.json"),
+        "backend_card: another name",
+    )
+    assert "cpu.json" in str(e), str(e)
+    done.append("backend_card")
     assert c.backend_close(lib) is None
     done.append("backend_close")
+try:
+    import numpy  # noqa: F401
+except ImportError:
+    print("skipped: the door rows: numpy is not installed for this interpreter")
+else:
+    import test_door
+
+    test_door.run(done, raises)
 print("\n".join("ok: " + d for d in done))
 print("test_binding: %d checks passed" % len(done))

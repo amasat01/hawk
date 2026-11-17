@@ -49,6 +49,8 @@ pub struct Stated {
     pub gcc_release: Option<String>,
     /// What the masked-call witness did on the compiler: `fixed`, `miscompile` or `unrun`; none counts as `unrun`.
     pub masked_call_witness: Option<String>,
+    /// The data documents the answer is made from in place of the files of their names (see `CARD_NAMES`).
+    pub cards: Vec<(String, String)>,
 }
 
 /// Why a facts question failed: the caller asked something that cannot be answered (a malformed stated machine, an unknown target
@@ -78,7 +80,7 @@ impl From<Failed> for String {
 }
 
 /// The stated machine of its JSON record (`isa`, `l1d_bytes`, `l2_bytes`, `cache_source`, `host_profile`, `device_arch`, `headers`, `opt_level`, `gcc_release`,
-/// `masked_call_witness`, each optional); a key outside these, a value of the wrong kind and a cache record with a part missing are refused by name.
+/// `masked_call_witness`, `cards`, each optional); a key outside these, a value of the wrong kind and a cache record with a part missing are refused by name.
 pub fn stated_from_json(text: &str) -> Result<Stated, Failed> {
     read_stated(text).map_err(Failed::Bad)
 }
@@ -99,6 +101,7 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         "opt_level",
         "gcc_release",
         "masked_call_witness",
+        "cards",
     ];
     let record = Contract::parse(text)
         .map_err(|e| format!("stated machine: {e}"))?
@@ -146,6 +149,11 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         opt_level: name("opt_level")?,
         gcc_release: name("gcc_release")?,
         masked_call_witness: name("masked_call_witness")?,
+        cards: record
+            .get("cards")
+            .map(|value| cards_from_json(value).map_err(|e| format!("stated machine: {e}")))
+            .transpose()?
+            .unwrap_or_default(),
     })
 }
 
@@ -177,13 +185,102 @@ struct IsaCard {
     vector_isas: Vec<String>,
 }
 
-/// Reads and parses one data file of the facts directory.
-pub(crate) fn read_file(dir: &Path, file: &str) -> Result<Json, String> {
-    let text =
-        std::fs::read_to_string(dir.join(file)).map_err(|e| format!("cannot read {file}: {e}"))?;
-    Ok(Contract::parse(&text)
-        .map_err(|e| format!("{file}: {e}"))?
-        .0)
+/// Parses the text of a data document; `file` names it in a refusal.
+pub(crate) fn parse_card(text: &str, file: &str) -> Result<Json, String> {
+    Ok(Contract::parse(text).map_err(|e| format!("{file}: {e}"))?.0)
+}
+
+/// The names of the data documents a caller may replace for one call: the host build card, the device build card, the device
+/// document (the fusion row and the select weights) and the instruction set documents (the host's fusion rows).
+pub const CARD_NAMES: [&str; 5] = [
+    "build.json",
+    "cuda_build.json",
+    "cuda.json",
+    "arm.json",
+    "x86.json",
+];
+
+/// The text of the data document `name` as it ships in the directory `dir`; a name outside `CARD_NAMES` is refused by name.
+pub fn shipped_card(dir: &Path, name: &str) -> Result<String, Failed> {
+    if !CARD_NAMES.contains(&name) {
+        return Err(Failed::Bad(format!(
+            "card: the unknown document {name}; the documents are {}",
+            CARD_NAMES.join(", ")
+        )));
+    }
+    Ok(CardSet::new(dir, &[]).text(name)?)
+}
+
+/// Reads the `cards` member of a request or of a stated machine: an object from a document name to the whole text of the
+/// document. A name outside `CARD_NAMES` and a value that is no text are refused by name.
+pub fn cards_from_json(value: &Json) -> Result<Vec<(String, String)>, String> {
+    let Json::Obj(members) = value else {
+        return Err("cards is not an object".into());
+    };
+    members
+        .iter()
+        .map(|(name, document)| {
+            if !CARD_NAMES.contains(&name.as_str()) {
+                return Err(format!(
+                    "cards names the unknown document {name}; the documents are {}",
+                    CARD_NAMES.join(", ")
+                ));
+            }
+            match document {
+                Json::Str(text) => Ok((name.clone(), text.clone())),
+                _ => Err(format!("cards: {name} is not the text of a document")),
+            }
+        })
+        .collect()
+}
+
+/// Where the data documents come from: the facts directory, with the documents a caller states for this call laid over it.
+/// Every reader takes the text of its document from here, and a stated document is parsed by the reader of the file it replaces.
+pub struct CardSet {
+    /// The facts directory.
+    dir: PathBuf,
+    /// The documents the caller states, by name, each the whole text of the document.
+    stated: Vec<(String, String)>,
+}
+
+impl CardSet {
+    /// The documents of the facts directory `dir`, the caller's `stated` ones in place of the files of their names.
+    pub fn new(dir: &Path, stated: &[(String, String)]) -> CardSet {
+        CardSet {
+            dir: dir.to_path_buf(),
+            stated: stated.to_vec(),
+        }
+    }
+
+    /// The text of the document `file`.
+    pub(crate) fn text(&self, file: &str) -> Result<String, String> {
+        if let Some((_, text)) = self.stated.iter().find(|(name, _)| name == file) {
+            return Ok(text.clone());
+        }
+        std::fs::read_to_string(self.dir.join(file)).map_err(|e| format!("cannot read {file}: {e}"))
+    }
+
+    /// A digest of the documents in effect (the text of every document of `CARD_NAMES`, the caller's or the file's), or none when
+    /// the caller states no document. A facts answer states it only in that case, and a lowering request is refused when its
+    /// answers state another than its own cards give.
+    pub fn digest(&self) -> Result<Option<String>, String> {
+        if self.stated.is_empty() {
+            return Ok(None);
+        }
+        let mut bytes = vec![];
+        for name in CARD_NAMES {
+            bytes.extend_from_slice(name.as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(self.text(name)?.as_bytes());
+            bytes.push(0);
+        }
+        Ok(Some(rcore::sha256::hex(&bytes)))
+    }
+
+    /// The parsed document `file`.
+    pub(crate) fn json(&self, file: &str) -> Result<Json, String> {
+        parse_card(&self.text(file)?, file)
+    }
 }
 
 /// The members of a card as a closed set: a key outside `keys` is refused by name.
@@ -288,9 +385,9 @@ fn weights_of(card: &Json, file: &str, arch: Option<&str>) -> Result<[f64; 2], S
 }
 
 /// Loads the cpu card and checks that its exact profiles are among its profiles.
-fn load_cpu(dir: &Path) -> Result<CpuCard, String> {
+fn load_cpu(cards: &CardSet) -> Result<CpuCard, String> {
     let file = "cpu.json";
-    let card = read_file(dir, file)?;
+    let card = cards.json(file)?;
     closed(
         &card,
         file,
@@ -324,8 +421,8 @@ pub(crate) const ISA_CARDS: [(&str, &str, &str); 2] = [
 ];
 
 /// Loads the card of an instruction set, and checks that it names that instruction set.
-fn load_isa(dir: &Path, file: &str, isa: &str) -> Result<IsaCard, String> {
-    let card = read_file(dir, file)?;
+fn load_isa(cards: &CardSet, file: &str, isa: &str) -> Result<IsaCard, String> {
+    let card = cards.json(file)?;
     let keys = [
         "isa",
         "libm_exact",
@@ -364,7 +461,7 @@ fn optional_cost(row: &Json, file: &str, key: &str) -> Result<Option<f64>, Strin
 
 /// The fusion row of the host that a facts answer describes: the row of its vector instruction set in the card of its
 /// instruction set.
-pub fn host_fusion(dir: &Path, answer: &str) -> Result<FusionRow, String> {
+pub fn host_fusion(cards: &CardSet, answer: &str) -> Result<FusionRow, String> {
     let machine = Contract::parse(answer)
         .map_err(|e| format!("facts answer: {e}"))?
         .0;
@@ -377,18 +474,74 @@ pub fn host_fusion(dir: &Path, answer: &str) -> Result<FusionRow, String> {
         .get("vector_isa")
         .and_then(Json::str)
         .ok_or("the machine states no vector instruction set")?;
-    let card = read_file(dir, file)?;
+    let card = cards.json(file)?;
     fusion_row(
         member(member(&card, file, "fusion_host")?, file, vector)?,
         file,
     )
 }
 
-/// The fusion row of the device card: the cost of a launch, of a plane byte and of local memory, and the registers a lane may hold.
-/// The card states one row; it has no per-architecture rows yet.
-pub fn device_fusion(dir: &Path) -> Result<FusionRow, String> {
+/// The fusion rows of the device document: the row every architecture and scalar type takes unless a row is stated for it, and the
+/// rows stated for a compute capability (`cc`, such as `sm_61`) and a scalar type (`dtype`).
+pub struct DeviceFusion {
+    /// The row of a build that no stated row serves.
+    pub defaults: FusionRow,
+    /// The stated rows as (cc, dtype, row); a row states only the numbers it changes, the rest are the defaults'.
+    pub rows: Vec<(String, String, FusionRow)>,
+}
+
+/// The fusion rows of the device document: the cost of a launch, of a plane byte and of local memory, and the registers a lane may
+/// hold. Every row is checked as the default row is; a row's `dtype` other than `float32` and `float64` is refused by name.
+pub fn device_fusion(cards: &CardSet) -> Result<DeviceFusion, String> {
     let file = "cuda.json";
-    fusion_row(member(&read_file(dir, file)?, file, "fusion")?, file)
+    let document = cards.json(file)?;
+    let defaults = member(&document, file, "fusion")?;
+    let mut rows = vec![];
+    for row in member(&document, file, "fusion_rows")?.arr() {
+        let own = ["cc", "dtype"];
+        let Json::Obj(stated) = row else {
+            return Err(format!("{file}: a fusion row is not an object"));
+        };
+        let Json::Obj(merged) = defaults.clone() else {
+            return Err(format!("{file}: fusion is not an object"));
+        };
+        let mut merged = merged;
+        for (key, value) in stated
+            .iter()
+            .filter(|(key, _)| !own.contains(&key.as_str()))
+        {
+            match merged.iter_mut().find(|(held, _)| held == key) {
+                Some(slot) => slot.1 = value.clone(),
+                None => merged.push((key.clone(), value.clone())),
+            }
+        }
+        let dtype = text_of(row, file, "dtype")?;
+        if !["float32", "float64"].contains(&dtype.as_str()) {
+            return Err(format!("{file}: a fusion row names the type {dtype}"));
+        }
+        closed(
+            row,
+            file,
+            &[
+                "cc",
+                "dtype",
+                "regs_base",
+                "regs_file",
+                "launch_us",
+                "plane_us_per_byte",
+                "local_over_plane",
+            ],
+        )?;
+        rows.push((
+            text_of(row, file, "cc")?,
+            dtype,
+            fusion_row(&Json::Obj(merged), file)?,
+        ));
+    }
+    Ok(DeviceFusion {
+        defaults: fusion_row(defaults, file)?,
+        rows,
+    })
 }
 
 /// A fusion row of a card file, its keys closed and its numbers checked.
@@ -465,7 +618,7 @@ fn caches_json(caches: &Option<Caches>) -> Option<(String, Json)> {
 
 /// The machine record of a host build: the instruction set, the profile the compiler gets by default and what follows from it.
 fn host_machine(
-    dir: &Path,
+    cards: &CardSet,
     compiler: &str,
     probe: &Probe,
     stated: &Stated,
@@ -484,8 +637,8 @@ fn host_machine(
             "no card for the instruction set {isa_name}"
         )));
     };
-    let cpu = load_cpu(dir)?;
-    let isa = load_isa(dir, file, isa_name)?;
+    let cpu = load_cpu(cards)?;
+    let isa = load_isa(cards, file, isa_name)?;
     let vector_isa = stated
         .vector_isa
         .clone()
@@ -548,7 +701,7 @@ fn host_machine(
     let vector = cpu.vector_math_profiles.contains(profile);
     members.push((
         "host_build".into(),
-        host_build::host_build(dir, file, vector, &settings)?,
+        host_build::host_build(cards, file, vector, &settings)?,
     ));
     Ok(Json::Obj(members))
 }
@@ -667,10 +820,15 @@ fn flags_of_names(card: &Json, file: &str, key: &str) -> Result<Json, String> {
 /// flags of an image of each format for the architecture and the recipe that embeds an image file in the unit library
 /// (`embed`), all from `cuda_image.json`. The device compiler's host compiler is the caller's (its environment), not a place
 /// of the argv. A release with no row is refused by name.
-fn device_build(dir: &Path, compiler: &str, arch: &str, stated: &Stated) -> Result<Json, Failed> {
+fn device_build(
+    cards: &CardSet,
+    compiler: &str,
+    arch: &str,
+    stated: &Stated,
+) -> Result<Json, Failed> {
     let file = "cuda_image.json";
     let (tool, release) = device_tool(compiler, stated.device_release.as_deref())?;
-    let card = read_file(dir, file)?;
+    let card = cards.json(file)?;
     closed(
         &card,
         file,
@@ -711,31 +869,50 @@ fn device_build(dir: &Path, compiler: &str, arch: &str, stated: &Stated) -> Resu
         ("image_format".into(), Json::Str(form.clone())),
         (
             "compile".into(),
-            device_build::compile(dir, &card, file, (&form, arch, stated.opt_level.as_deref()))?,
+            device_build::compile(
+                cards,
+                &card,
+                file,
+                (&form, arch, stated.opt_level.as_deref()),
+            )?,
         ),
         ("flags".into(), Json::Obj(flags)),
         ("embed".into(), embed_recipe(&card, file)?),
     ]))
 }
 
+/// The device build card as the answer states it, for the callers that read its numbers: the document of `cuda_build.json` (the
+/// caller's own when it states one), checked by the reader of the lowering so that an answer never carries a card the lowering
+/// would refuse.
+fn device_card(cards: &CardSet) -> Result<Json, Failed> {
+    let file = "cuda_build.json";
+    let text = cards.text(file)?;
+    crate::lower::card::device_build(&text).map_err(|refusal| Failed::Card(refusal.reason))?;
+    Ok(parse_card(&text, file)?)
+}
+
 /// The machine record of a device build: no instruction set, no caches, the device card's select weights, the architecture the
 /// build is for (the one stated, else the card's default), which the lowering reads and the writers do not, and, last, the
-/// compile command (`device_build`). One answer states one command: every unit built from it carries the same compiler, flags and
+/// compile command (`device_build`) and the device build card (`device_card`). One answer states one command: every unit built from it carries the same compiler, flags and
 /// PTX version.
-fn device_machine(dir: &Path, compiler: &str, stated: &Stated) -> Result<Json, Failed> {
+fn device_machine(cards: &CardSet, compiler: &str, stated: &Stated) -> Result<Json, Failed> {
     if stated.isa.is_some() || stated.caches.is_some() || stated.host_profile.is_some() {
         return Err(Failed::Bad(
             "stated machine: only device_arch, device_release, driver_release and opt_level are for the cuda target".into(),
         ));
     }
     let file = "cuda.json";
-    let card = read_file(dir, file)?;
-    closed(&card, file, &["select_weight", "default_arch", "fusion"])?;
+    let card = cards.json(file)?;
+    closed(
+        &card,
+        file,
+        &["select_weight", "default_arch", "fusion", "fusion_rows"],
+    )?;
     let arch = match &stated.device_arch {
         Some(asked) => asked.clone(),
         None => text_of(&card, file, "default_arch")?,
     };
-    let build = device_build(dir, compiler, &arch, stated)?;
+    let build = device_build(cards, compiler, &arch, stated)?;
     Ok(Json::Obj(vec![
         ("exact_libm".into(), Json::Bool(true)),
         ("routed_pow".into(), Json::Bool(false)),
@@ -745,12 +922,13 @@ fn device_machine(dir: &Path, compiler: &str, stated: &Stated) -> Result<Json, F
         ),
         ("device_arch".into(), Json::Str(arch)),
         ("device_build".into(), build),
+        ("device_card".into(), device_card(cards)?),
     ]))
 }
 
-/// The facts answer for a named target (`host` or `cuda`) and a compiler identity, from the cards in `dir`, the probe and the
+/// The facts answer for a named target (`host` or `cuda`) and a compiler identity, from the cards in the directory `dir`, the probe and the
 /// machine the caller states (empty: the probed machine):
-/// the JSON of the contract's `machine` record. A target without facts, a card that does not match its schema and an
+/// the JSON of the contract's `machine` record and, last and only when the caller states cards, the digest of the cards it was made under (`cards`). A target without facts, a card that does not match its schema and an
 /// identity that is not well formed are refused with the reason.
 pub fn answer(
     dir: &Path,
@@ -759,11 +937,18 @@ pub fn answer(
     probe: &Probe,
     stated: &Stated,
 ) -> Result<String, Failed> {
-    let machine = match target {
-        "host" => host_machine(dir, compiler, probe, stated)?,
-        "cuda" => device_machine(dir, compiler, stated)?,
+    let cards = CardSet::new(dir, &stated.cards);
+    let mut machine = match target {
+        "host" => host_machine(&cards, compiler, probe, stated)?,
+        "cuda" => device_machine(&cards, compiler, stated)?,
         other => return Err(Failed::Bad(format!("no facts for the target {other}"))),
     };
+    let Json::Obj(members) = &mut machine else {
+        return Err(Failed::Card("the machine record is not an object".into()));
+    };
+    if let Some(digest) = cards.digest()? {
+        members.push(("cards".into(), Json::Str(digest)));
+    }
     Ok(machine.to_text())
 }
 

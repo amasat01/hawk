@@ -182,6 +182,8 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
                 k: 2,
                 branches: vec![reference.clone(), reference.clone()],
                 sweep: None,
+                branch_costs: vec![],
+                selector_slots: vec![],
             },
             Dispatch {
                 strategy: DispatchStrategy::Segmented,
@@ -194,6 +196,24 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
                 k: 2,
                 branches: vec![reference.clone(), reference.clone()],
                 sweep: Some(reference.clone()),
+                branch_costs: vec![],
+                selector_slots: vec![],
+            },
+            Dispatch {
+                strategy: DispatchStrategy::Auto,
+                mix_slot: Some(0),
+                name: "m".into(),
+                k: 2,
+                branch_costs: vec![
+                    BranchCost {
+                        arith32: 1.5,
+                        stores: Some(2.0),
+                        ..BranchCost::default()
+                    },
+                    BranchCost::default(),
+                ],
+                selector_slots: vec![0, 1],
+                ..Dispatch::default()
             },
         ],
     };
@@ -263,6 +283,8 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             host_steps_reverse: Some(table.clone()),
             device_steps_reverse: Some(table),
             n_events: 2,
+            device_persist_function: Some("u_persist".into()),
+            device_range_function: Some("u_range".into()),
         }),
         device_image_size: Some("u__image_size".into()),
         device_compiler: Some("nvcc 12.6".into()),
@@ -344,7 +366,7 @@ fn every_closed_set_and_name_is_the_headers() {
         LinkWhat,
         LinkForm
     );
-    for (bit, name) in SLOT_FLAGS.iter().chain(&FINISH_FLAGS) {
+    for (bit, name) in SLOT_FLAGS.iter().chain(&FINISH_FLAGS).chain(&BRANCH_FLAGS) {
         assert_eq!(
             defines(name),
             format!("(1u<<{})", bit.trailing_zeros()).trim_end_matches('u'),
@@ -373,7 +395,7 @@ fn a_tree_with_every_record_follows_the_headers_and_compiles() {
     seen.dedup();
     assert_eq!(
         seen.len(),
-        20,
+        21,
         "every record of the headers is written: {seen:?}"
     );
     for (ty, members) in &written {
@@ -386,6 +408,61 @@ fn a_tree_with_every_record_follows_the_headers_and_compiles() {
     let file = scratch("full").join("full.c");
     std::fs::write(&file, source).unwrap();
     compile_both(&door, &file);
+}
+
+/// A C program that includes the meta source and prints what each dispatch group of the unit states of its costs and selector.
+const READER: &str = r#"#include <stdio.h>
+#include "SOURCE"
+int main(void) {
+    const struct eg_unit_body* body = eg_unit_library_meta()->units[0]->body;
+    for (int32_t g = 0; g < body->n_dispatches; ++g) {
+        const struct eg_unit_dispatch* d = body->dispatches[g];
+        printf("group %s k %d costs %s cost_flags %u slots", d->name, d->k,
+               d->branch_costs ? "yes" : "no", d->cost_flags);
+        for (int32_t i = 0; i < d->n_selector_slots; ++i) printf(" %d", d->selector_slots[i]);
+        printf("\n");
+        for (int32_t j = 0; d->branch_costs && j < d->k; ++j) {
+            const struct eg_branch_cost* c = d->branch_costs[j];
+            printf("branch %s %d flags %u %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g stores %.17g\n",
+                   d->name, j, c->flags, c->arith32, c->arith64, c->special32, c->special64, c->loads, c->gathers,
+                   c->chain32, c->chain64, c->chain_special32, c->chain_special64, c->stores);
+        }
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn a_c_reader_of_the_compiled_record_sees_the_branch_costs_and_selector_slots_that_were_written() {
+    let Some(door) = door_dir() else { return };
+    let (library, unit) = full_tree();
+    let dir = scratch("reader");
+    let source = dir.join("meta.c");
+    std::fs::write(&source, meta_c::source(&library, &[&unit]).unwrap()).unwrap();
+    let program = dir.join("reader.c");
+    std::fs::write(&program, READER.replace("SOURCE", source.to_str().unwrap())).unwrap();
+    let binary = dir.join("reader");
+    run(
+        "cc",
+        &[
+            "-std=c11",
+            "-I",
+            door.to_str().unwrap(),
+            program.to_str().unwrap(),
+            "-o",
+            binary.to_str().unwrap(),
+        ],
+    );
+    let read = run(binary.to_str().unwrap(), &[]);
+    // oracle: the values `full_tree` wrote; the group `m` is the auto one, `g` and `h` are segmented and state no costs
+    let want = [
+        "group g k 2 costs no cost_flags 0 slots\n",
+        "group h k 2 costs no cost_flags 0 slots\n",
+        "group m k 2 costs yes cost_flags 0 slots 0 1\n",
+        "branch m 0 flags 2 1.5 0 0 0 0 0 0 0 0 0 stores 2\n",
+        "branch m 1 flags 0 0 0 0 0 0 0 0 0 0 0 stores 0\n",
+    ];
+    assert_eq!(read, want.concat());
 }
 
 /// The exported symbols of a library and the sections of the data it holds.

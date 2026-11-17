@@ -34,6 +34,8 @@ use aether_writers::contract::types::{
 use aether_writers::contract::Contract;
 use aether_writers::refuse::{bad, fault, nib, not_written, Refusal};
 use aether_writers::{cuda_render, host_render, RxCtx};
+
+use crate::facts::CardSet;
 use card::{BuildCard, DeviceCard};
 use raptor_ir::canon::{Tt, WalkRes};
 use raptor_ir::record::{Ctx, Fault};
@@ -199,14 +201,17 @@ struct Cards {
 }
 
 impl Cards {
-    /// The cards the request needs, from the data files in `dir`.
-    fn load(request: &KernelRequest, dir: &Path) -> Result<Cards, Refusal> {
-        let host = card::host_build(dir)?;
+    /// The cards the request needs, from the data documents in `docs`.
+    fn load(request: &KernelRequest, docs: &CardSet) -> Result<Cards, Refusal> {
+        let host = card::host_build(&docs.text("build.json").map_err(fault)?)?;
         let device = request
             .targets
             .contains(&Target::Device)
-            .then(|| card::device_build(dir))
+            .then(|| card::device_build(&docs.text("cuda_build.json").map_err(fault)?))
             .transpose()?;
+        if let (Some(device), Some(bounds)) = (&device, request.settings.launch_bounds) {
+            device.check_launch_bounds(bounds)?;
+        }
         let deciding = match &device {
             Some(device) => device.deciding(&host, &device_arch(request)?)?,
             None => host.clone(),
@@ -244,8 +249,29 @@ impl Cards {
     }
 }
 
+/// Refuses a request whose facts answers were made under other cards than the request states: a request with cards needs
+/// answers that state the digest of those cards, and a request without cards needs answers that state none.
+fn facts_under_cards(answers: &[(Target, String)], docs: &CardSet) -> Result<(), Refusal> {
+    let ours = docs.digest().map_err(fault)?;
+    for (target, answer) in answers {
+        let stated = Contract::parse(answer).ok().and_then(|parsed| {
+            parsed
+                .0
+                .get("cards")
+                .and_then(aether_writers::contract::Json::str)
+                .map(String::from)
+        });
+        if stated != ours {
+            return Err(bad(format!(
+                "the {target:?} facts answer was made under other cards than the request's `cards`; ask the facts call with the same cards"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The architecture the device facts answer of the request states.
-fn device_arch(request: &KernelRequest) -> Result<String, Refusal> {
+pub(super) fn device_arch(request: &KernelRequest) -> Result<String, Refusal> {
     let machine = Contract::parse(request.facts_for(Target::Device)?)?.0;
     machine
         .get("device_arch")
@@ -260,17 +286,19 @@ fn refine_stop_rule(ctx: *mut Ctx, request: &KernelRequest) -> Result<(), Refusa
     events::check_refine(unsafe { &*ctx }, request)
 }
 
-/// The answer to a request, from the kernel's IR in `ctx` and the data files in `facts_dir`. A request with derived kernels is
+/// The answer to a request, from the kernel's IR in `ctx` and the data files in the directory `facts_dir`. A request with derived kernels is
 /// answered as one table: the units of the kernel first, then those of each derived kernel in list order.
 pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<KernelAnswer, Refusal> {
     let request = KernelRequest::from_json(request_text)?;
+    let docs = &CardSet::new(facts_dir, &request.cards);
     scope(&request)?;
     known_sinks(ctx, &request)?;
     refine_stop_rule(ctx, &request)?;
-    let cards = Cards::load(&request, facts_dir)?;
-    let mut units = kernel_units(ctx, &request, &cards, facts_dir, request.exports_block)?;
+    facts_under_cards(&request.facts, docs)?;
+    let cards = Cards::load(&request, docs)?;
+    let mut units = kernel_units(ctx, &request, &cards, docs, request.exports_block)?;
     if !request.derived.is_empty() {
-        units.extend(derived_units(ctx, &request, &cards, facts_dir, &units)?);
+        units.extend(derived_units(ctx, &request, &cards, docs, &units)?);
     }
     meta_fill::unit_digests(&mut units);
     let library = unit_meta::LibraryMeta::current();
@@ -317,7 +345,7 @@ fn derived_units(
     ctx: *mut Ctx,
     request: &KernelRequest,
     cards: &Cards,
-    facts_dir: &Path,
+    docs: &CardSet,
     primal: &[UnitAnswer],
 ) -> Result<Vec<UnitAnswer>, Refusal> {
     let single = |units: &[UnitAnswer], name: &str| match units {
@@ -332,7 +360,7 @@ fn derived_units(
     let mut twin_at: Option<usize> = None;
     for kernel in &request.derived {
         let sub = kernel.request.clone();
-        let mut units = kernel_units(ctx, &sub, cards, facts_dir, false)?;
+        let mut units = kernel_units(ctx, &sub, cards, docs, false)?;
         single(&units, kernel.name())?;
         let at = primal.len() + all.len();
         let twin = twin_at.map(|i| &all[i - primal.len()].meta);
@@ -381,12 +409,12 @@ fn kernel_units(
     ctx: *mut Ctx,
     request: &KernelRequest,
     cards: &Cards,
-    facts_dir: &Path,
+    docs: &CardSet,
     exports_block: bool,
 ) -> Result<Vec<UnitAnswer>, Refusal> {
     let mut pending = match &request.body {
         Body::Plain(member) => vec![Pending::of(member, request.one_step.as_ref())],
-        Body::Chain(members) => chain::expand(ctx, request, members, facts_dir)?,
+        Body::Chain(members) => chain::expand(ctx, request, members, docs)?,
         Body::Fused(lanes) => vec![fused::expand(ctx, lanes, &request.name)?],
     };
     for unit in &mut pending {
@@ -410,7 +438,7 @@ fn kernel_units(
         meta_fill::stages(&mut units, block, cards.deciding.scatter_max_chunks)?;
     }
     if let Some(sweep) = segment::sweep_request(ctx, request)? {
-        units.extend(kernel_units(ctx, &sweep, cards, facts_dir, exports_block)?);
+        units.extend(kernel_units(ctx, &sweep, cards, docs, exports_block)?);
     }
     Ok(units)
 }
@@ -720,14 +748,23 @@ fn build_of(settings: &Settings, cards: &Cards, target: Target) -> Result<Build,
     })
 }
 
-/// The unit's contract JSON with its machine member replaced by the facts answer (less the architecture and the compile commands an answer names).
+/// The unit's contract JSON with its machine member replaced by the facts answer (less the architecture, the compile commands and
+/// the digest of the cards an answer names).
 fn with_facts(unit: &Unit, facts: &str) -> Result<String, Refusal> {
     let mut top = Contract::parse(&unit.to_json())?.0;
     let mut machine = Contract::parse(facts)?.0;
     if let aether_writers::contract::Json::Obj(stated) = &mut machine {
-        // the architecture is the lowering's to read; the writers' machine record does not hold it
+        // the architecture is the lowering's to read, and the digest of stated cards is no machine fact: the writers' machine
+        // record is closed, so none of them may reach it
         stated.retain(|(key, _)| {
-            !["device_arch", "device_build", "host_build"].contains(&key.as_str())
+            ![
+                "device_arch",
+                "device_build",
+                "device_card",
+                "host_build",
+                "cards",
+            ]
+            .contains(&key.as_str())
         });
     }
     let aether_writers::contract::Json::Obj(members) = &mut top else {
@@ -745,6 +782,103 @@ fn with_facts(unit: &Unit, facts: &str) -> Result<String, Refusal> {
 mod tests {
     //! The scalar width has one answer, and a merge that would drop something is refused by name.
     use super::*;
+    use crate::facts::{answer, probe, Stated};
+
+    /// The shipped facts directory.
+    fn shipped() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("facts")
+    }
+
+    /// The shipped build card with the lean width changed to 64, as a stated document.
+    fn lean_card() -> Vec<(String, String)> {
+        let text = std::fs::read_to_string(shipped().join("build.json")).unwrap();
+        vec![(
+            "build.json".into(),
+            text.replace("\"lean_width\": 4", "\"lean_width\": 64"),
+        )]
+    }
+
+    /// The device facts answer made under the cards `stated`.
+    fn device_facts(stated: &[(String, String)]) -> String {
+        let machine = Stated {
+            cards: stated.to_vec(),
+            ..Stated::default()
+        };
+        let compiler =
+            "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0";
+        answer(&shipped(), "cuda", compiler, &probe(), &machine).unwrap()
+    }
+
+    /// The device build card the cards state, with `old` of the shipped text replaced by `new`.
+    fn device_card_with(old: &str, new: &str) -> DeviceCard {
+        let text = std::fs::read_to_string(shipped().join("cuda_build.json")).unwrap();
+        assert!(text.contains(old), "the shipped card holds {old}");
+        let stated = [("cuda_build.json".to_string(), text.replacen(old, new, 1))];
+        let docs = CardSet::new(&shipped(), &stated);
+        card::device_build(&docs.text("cuda_build.json").unwrap()).unwrap()
+    }
+
+    /// Oracle: a launch needs threads a multiple of the warp size (32) and threads times blocks at most the resident threads of
+    /// a multiprocessor, which the shipped card states as 2048; the same bounds are refused once the card states 1024.
+    #[test]
+    fn the_resident_threads_of_the_device_card_decide_which_launch_bounds_are_refused() {
+        let shipped_card = device_card_with("\"warp_size\": 32", "\"warp_size\": 32");
+        let small = device_card_with(
+            "\"max_threads_per_sm\": 2048",
+            "\"max_threads_per_sm\": 1024",
+        );
+        assert!(shipped_card.check_launch_bounds((128, 16)).is_ok());
+        assert!(small.check_launch_bounds((128, 16)).is_err());
+        assert!(small.check_launch_bounds((128, 8)).is_ok());
+        for bad_bounds in [(100, 1), (16, 1), (128, 17)] {
+            let why = shipped_card.check_launch_bounds(bad_bounds).unwrap_err();
+            assert!(why.reason.contains("launch_bounds"), "{}", why.reason);
+        }
+    }
+
+    /// Oracle: the shipped build card states a lean width of 4.
+    #[test]
+    fn a_build_card_stated_in_the_request_replaces_the_file_for_that_request() {
+        let kept = CardSet::new(&shipped(), &[]);
+        let stated = CardSet::new(&shipped(), &lean_card());
+        let host = |docs: &CardSet| card::host_build(&docs.text("build.json").unwrap()).unwrap();
+        assert_eq!(host(&kept).lean_width, 4);
+        assert_eq!(host(&stated).lean_width, 64);
+    }
+
+    #[test]
+    fn a_facts_answer_must_state_the_digest_of_the_request_cards_and_state_none_when_the_request_has_none(
+    ) {
+        let files = CardSet::new(&shipped(), &[]);
+        let lean = CardSet::new(&shipped(), &lean_card());
+        let stated = [(Target::Device, device_facts(&lean_card()))];
+        let plain = [(Target::Device, device_facts(&[]))];
+        assert!(facts_under_cards(&stated, &lean).is_ok());
+        assert!(facts_under_cards(&plain, &files).is_ok());
+        for (answers, docs) in [(&plain, &lean), (&stated, &files)] {
+            let why = facts_under_cards(answers, docs).unwrap_err();
+            assert!(why.reason.contains("other cards"), "{}", why.reason);
+        }
+        let hand_written = [(Target::Host, "{}".to_string())];
+        assert!(facts_under_cards(&hand_written, &files).is_ok());
+        assert!(facts_under_cards(&hand_written, &lean).is_err());
+    }
+
+    /// Oracle: a stated copy of the shipped file has the digest of the text it states, which differs from that of another text.
+    #[test]
+    fn the_digest_is_none_without_stated_cards_and_follows_the_stated_text_with_them() {
+        let text = std::fs::read_to_string(shipped().join("cuda.json")).unwrap();
+        let same = CardSet::new(&shipped(), &[("cuda.json".into(), text)]);
+        assert_eq!(CardSet::new(&shipped(), &[]).digest().unwrap(), None);
+        let shipped_text = same.digest().unwrap().unwrap();
+        assert_ne!(
+            CardSet::new(&shipped(), &lean_card())
+                .digest()
+                .unwrap()
+                .unwrap(),
+            shipped_text
+        );
+    }
     use aether_writers::contract::types::Role;
     use aether_writers::refuse::RefusalKind;
 

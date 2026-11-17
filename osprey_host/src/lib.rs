@@ -87,6 +87,16 @@ pub struct OspreyV1 {
     /// a JSON list of their records, into the caller's buffer, as `lower` does.
     pub set_text:
         extern "C" fn(*mut Ctx, *const c_char, usize, *mut c_char, usize, *mut usize) -> c_int,
+    /// Writes the text of the data document of a name that ships with the library (from the directory given, NULL: `facts` beside
+    /// the library), as `facts` writes its answer.
+    pub card: extern "C" fn(
+        *mut Ctx,
+        *const c_char,
+        *const c_char,
+        *mut c_char,
+        usize,
+        *mut usize,
+    ) -> c_int,
 }
 unsafe impl Sync for OspreyV1 {}
 
@@ -344,6 +354,40 @@ extern "C" fn set_text(
     }
 }
 
+/// Writes the text of the shipped data document `name` into the caller's buffer; a refusal is the context's last error.
+extern "C" fn card(
+    ctx: *mut Ctx,
+    facts_dir: *const c_char,
+    name: *const c_char,
+    buf: *mut c_char,
+    cap: usize,
+    len: *mut usize,
+) -> c_int {
+    if ctx.is_null() || len.is_null() {
+        return RX_BADARG;
+    }
+    let done = std::panic::catch_unwind(|| {
+        let given = dir_arg(facts_dir).map_err(|why| bad_arg(&why))?;
+        let name = text_arg(name, "name").map_err(|why| bad_arg(&why))?;
+        let dir =
+            facts::facts_dir(given).map_err(|reason| facts_refusal(facts::Failed::Card(reason)))?;
+        facts::shipped_card(&dir, name).map_err(facts_refusal)
+    })
+    .unwrap_or_else(|_| Err(fault("panic in card")));
+    match done {
+        Ok(text) => match put(buf, cap, len, &text) {
+            Ok(()) => RX_OK,
+            Err(Fault::Truncated) => RX_TRUNC,
+            Err(_) => RX_BADARG,
+        },
+        Err(refusal) => {
+            // SAFETY: `ctx` is the live context the caller holds.
+            unsafe { &mut *ctx }.set_err(&refusal.reason);
+            status_of(refusal.kind)
+        }
+    }
+}
+
 /// Writes the identity and its terminating NUL into the caller's 65-byte buffer.
 extern "C" fn identity(out65: *mut c_char) -> c_int {
     if out65.is_null() {
@@ -372,6 +416,7 @@ static TABLE: OspreyV1 = OspreyV1 {
     facts,
     lower,
     set_text,
+    card,
 };
 
 #[no_mangle]

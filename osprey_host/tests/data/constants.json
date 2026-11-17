@@ -1,0 +1,73 @@
+{
+ "ACCESS_CLASSES": [
+  "sample_local",
+  "cross_sample_read",
+  "cross_sample_write",
+  "mapreduce"
+ ],
+ "ADJOINT_PREFIX": "bar",
+ "CELL_PLANE": "param_cell",
+ "COMPANION_SUFFIX": "_c",
+ "COMPARE": [
+  "lt",
+  "le",
+  "gt",
+  "ge",
+  "eq",
+  "ne"
+ ],
+ "CONTRACTS": [
+  "auto",
+  "compensated",
+  "ordered"
+ ],
+ "GATHER_ROLES": [
+  "lookup",
+  "wide_in"
+ ],
+ "INT_PLANE_DTYPES": [
+  "int32",
+  "uint32"
+ ],
+ "KEYED_AUTO": "keyed_auto",
+ "LEAF_ROLES": [
+  "vec_in",
+  "mat_in",
+  "wide_in",
+  "per_sample",
+  "lookup",
+  "terminated",
+  "uniform",
+  "nsamples",
+  "mutable"
+ ],
+ "LOGICAL": [
+  "land",
+  "lor",
+  "lnot"
+ ],
+ "NAMESPACE_SEP": "__",
+ "PARAM_CELL": "param_cell",
+ "PER_SAMPLE_ROLES": [
+  "per_sample",
+  "vec_in",
+  "mat_in",
+  "terminated",
+  "mutable",
+  "out"
+ ],
+ "PREDICATE": [
+  "isnan",
+  "isinf",
+  "isfinite"
+ ],
+ "RAW_KIND": "raw_device",
+ "RAW_LANGUAGE": "aether",
+ "SCATTER_CONTRACTS": [
+  "auto",
+  "compensated",
+  "ordered",
+  "plain",
+  "or"
+ ]
+}

@@ -294,6 +294,14 @@ pub const SLOT_PARAM_PLANE: u32 = 1 << 1;
 pub const SLOT_SHARED: u32 = 1 << 3;
 /// The slot flag of a matrix plane the unit reads only at lane indices.
 pub const SLOT_GATHER: u32 = 1 << 2;
+/// The flag bits of a unit record, with the header's macro names.
+pub const UNIT_FLAGS: [(u32, &str); 1] = [(UNIT_CALLER_CARDS, "EG_UNIT_CALLER_CARDS")];
+/// The flag of a unit lowered under data documents the caller stated, not the ones the library ships.
+pub const UNIT_CALLER_CARDS: u32 = 1 << 0;
+/// The flag bits of a branch cost record that this library states, with the header's macro names.
+pub const BRANCH_FLAGS: [(u32, &str); 1] = [(BRANCH_HAS_STORES, "EG_BRANCH_HAS_STORES")];
+/// The flag of a branch cost whose `stores` is stated.
+pub const BRANCH_HAS_STORES: u32 = 1 << 1;
 /// The flag bits of a finish record, with the header's macro names.
 pub const FINISH_FLAGS: [(u32, &str); 1] = [(FINISH_ENTRY_COUNTS, "EG_FINISH_ENTRY_COUNTS")];
 /// The flag of a finishing unit whose fast entries count the samples finished on entry.
@@ -404,6 +412,34 @@ record! {
     }
 }
 record! {
+    /// One branch's operation counts per sample, as the cost model counts them. The header's vectorisation bits are not here: their
+    /// verdict comes from the host loop's own writer, so the record leaves them unstated until that writer states them.
+    pub struct BranchCost {
+        /// Arithmetic operations at 32 bits.
+        pub arith32: f64,
+        /// Arithmetic operations at 64 bits.
+        pub arith64: f64,
+        /// Special functions at 32 bits.
+        pub special32: f64,
+        /// Special functions at 64 bits.
+        pub special64: f64,
+        /// Plane reads at the lane index.
+        pub loads: f64,
+        /// Reads at a computed index.
+        pub gathers: f64,
+        /// The longest dependent arithmetic chain at 32 bits.
+        pub chain32: f64,
+        /// The longest dependent arithmetic chain at 64 bits.
+        pub chain64: f64,
+        /// The special functions on the 32-bit chain.
+        pub chain_special32: f64,
+        /// The special functions on the 64-bit chain.
+        pub chain_special64: f64,
+        /// The plane writes; none when no sink takes the group's value directly.
+        pub stores: Option<f64>,
+    }
+}
+record! {
     /// One dispatch group of a unit.
     pub struct Dispatch {
         /// The strategy.
@@ -426,6 +462,10 @@ record! {
         pub branches: Vec<UnitRef>,
         /// The fused unit of a segmented group with a dynamic selector, run over the index set of the stale samples.
         pub sweep: Option<UnitRef>,
+        /// The cost of each branch of an auto group, in branch order; empty for any other group.
+        pub branch_costs: Vec<BranchCost>,
+        /// The slots the group's selector reads, ascending; empty when the unit states none.
+        pub selector_slots: Vec<usize>,
     }
 }
 record! {
@@ -540,6 +580,10 @@ record! {
         pub device_steps_reverse: Option<StepsTable>,
         /// The comparisons of the stop rule, counted from the kernel's IR: 0 when it has none.
         pub n_events: i64,
+        /// The persistent entry of the device text, as the device writer names it; none for a unit without one.
+        pub device_persist_function: Option<String>,
+        /// The contiguous-range entry of the device text, as the device writer names it; none for a unit without one.
+        pub device_range_function: Option<String>,
     }
 }
 record! {
@@ -671,7 +715,7 @@ record! {
 record! {
     /// One unit of the library.
     pub struct UnitMeta {
-        /// None defined yet.
+        /// The flag bits of a unit (`UNIT_FLAGS`).
         pub flags: u32,
         /// The unit's name.
         pub name: String,
@@ -736,5 +780,4 @@ impl LibraryMeta {
 /// Paths: raptor = rs/ir/src, aether = rs/writers/src, lower = osprey_host/src/lower.
 pub const NOT_COMPUTED: &[(&str, &str)] = &[
     ("team_plane.wide of a wide OUTPUT plane (`bf`, `y`: a slot the placement made wide, not a scratch plane)", "a design choice: the meta has no member for a wide slot; the recorded launch.wide names it (4 units on k7); the warp step's own planes (`hwd*`) also come from lower/warp.rs `slice`"),
-    ("finish.host_steps_reverse, device_steps_reverse (steps tables)", "data: the rows are in the old tree's installed wing facts (hawk/targets/steps_reverse.py `table_for`), and no copy of them is on this Mac (not in the tree, the overlay or venv_rel)"),
 ];

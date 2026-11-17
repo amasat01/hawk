@@ -309,7 +309,11 @@ def _number(j):
 
 
 def _fusion(call):
-    """The fusion row the call's last chain cut used, when the recorder stored it."""
+    """The fusion row the call's last chain cut used, when the recorder stored it.
+
+    The row names the five numbers of the device and instruction set documents; a number the
+    recorder did not store is None, as the documents state it.
+    """
     rows = _seq(call.get("fusion_rows"))
     if not rows:
         return None
@@ -323,10 +327,39 @@ def _fusion(call):
         ("plane_us_per_byte", "c_plane_us_per_B"),
         ("local_over_plane", "c_local_over_plane"),
     ):
-        value = _number(_entry(row, field))
-        if value is not None:
-            out[key] = value
+        out[key] = _number(_entry(row, field))
     return out
+
+
+def _fusion_cards(call, device):
+    """The documents a call is built under: the shipped ones, but for the recorded fusion row.
+
+    A chain cut depends on the fusion row of its build. When the recording holds a row that is not
+    the shipped one, the document that carries the row (the device document for a build with a
+    device target, else the instruction set document of the host's vector instruction set) is
+    stated with the recorded row in place of the shipped one, as the replay tool does. The same
+    documents go to the facts call and to the request. Returns {document name: text}, empty when
+    the shipped row is the recorded one.
+    """
+    row = _fusion(call)
+    if row is None:
+        return {}
+    if device:
+        name, place = "cuda.json", ("fusion",)
+    else:
+        machine = json.loads(_facts(call, "host", {}))
+        name = {"Arm64": "arm.json", "X86_64": "x86.json"}.get(machine.get("isa"))
+        if name is None or not machine.get("vector_isa"):
+            raise Unbuildable("a host without an instruction set card")
+        place = ("fusion_host", machine["vector_isa"])
+    document = json.loads(_S["ctx"].backend_card(_S["lib"], _S["facts_dir"], name))
+    holder = document
+    for part in place[:-1]:
+        holder = holder[part]
+    if holder[place[-1]] == row:
+        return {}
+    holder[place[-1]] = row
+    return {name: json.dumps(document)}
 
 
 def _payload(plane):
@@ -435,8 +468,11 @@ def _host_stated(spec):
     return stated, gcc
 
 
-def _facts(call, target):
-    """The facts answer for the target: the host the spec states, the device arch."""
+def _facts(call, target, cards):
+    """The facts answer for the target: the host the spec states, the device arch.
+
+    `cards` are the documents the build is stated under (see `_fusion_cards`).
+    """
     spec = _rec(call["spec"])
     if target == "host":
         stated, gcc = _host_stated(spec)
@@ -450,6 +486,8 @@ def _facts(call, target):
             or _text(_option(call, "arch"))
         )
         stated = {"device_arch": arch} if arch else {}
+    if cards:
+        stated["cards"] = cards
     key = (target, compiler, json.dumps(stated, sort_keys=True))
     if key not in _S["facts"]:
         try:
@@ -487,6 +525,7 @@ def _request(call, kernel, targets, built):
     spec = _rec(call["spec"])
     if any(_own_card(call["spec"], t == "cuda") for t in targets):
         raise Unbuildable("own card")
+    cards = _fusion_cards(call, "cuda" in targets)
     scalar = {"float64": "Float64", "float32": "Float32", "banded": "Banded"}.get(call["smode"])
     if scalar is None:
         raise Unbuildable("scalar mode " + str(call["smode"]))
@@ -519,16 +558,15 @@ def _request(call, kernel, targets, built):
         "body": body,
         "group": kernel.get("group") or 1,
         "settings": settings,
-        "facts": {_SERVED[t]: _facts(call, t) for t in targets},
+        "facts": {_SERVED[t]: _facts(call, t, cards) for t in targets},
     }
     if one:
         request["one_step"] = _member(_text(one.get("name")) or "", one)
     if planes:
         request["planes"] = planes
     request.update(_part_members(kernel, call))
-    fusion = _fusion(call)
-    if fusion is not None:
-        request["fusion"] = fusion
+    if cards:
+        request["cards"] = cards
     if "cuda" in targets:
         # the format the recorded build asked for; a recording that kept none gets a binary for one
         # architecture

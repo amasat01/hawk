@@ -2,6 +2,14 @@
   "form": {"lazy_leaf_width": 32, "rolled_fold_min": 16, "lean_width": 4},
   "lanes": {"run_max": 32, "block_run": 1024, "copy_threads": 256, "team_threads": 128, "team_threads_large": 256, "tile_min": 64, "tile_max": 1024},
   "thread_box": {"float64": 16, "float32": 8},
+  "steps_reverse": {
+    "regime": "lanes",
+    "rows": [
+      {"width": 4, "k": 8, "lo": 1, "hi": 1024},
+      {"width": 4, "k": 4, "lo": 1, "hi": 64},
+      {"width": 2, "k": 8, "lo": 1, "hi": 65536}
+    ]
+  },
   "uniform_run": 32,
   "linalg_max_dim": 32,
   "linalg_team_max_dim": 4096,
