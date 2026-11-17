@@ -1262,6 +1262,11 @@ pub fn emit(file: &Path, dir: &Path, only: Option<&str>, sets: bool) {
                     }
                     let (c, handles) = ctx.as_ref().ok_or("no context")?;
                     let mut request = request_for(&call, kernel, facts, handles)?;
+                    // a single call's request is kept beside its answer, for a caller that builds the same unit for another target
+                    if only.is_some() {
+                        let file = dir.join(format!("{id}_{name}_{side}_request.json"));
+                        std::fs::write(file, request.to_json()).map_err(|e| e.to_string())?;
+                    }
                     let with_block = ask(*c, &request.to_json())?;
                     if !sets {
                         return Ok::<_, String>((with_block, None));

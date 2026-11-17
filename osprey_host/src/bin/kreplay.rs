@@ -40,6 +40,49 @@ mod derived_sets;
 #[path = "kreplay/meta.rs"]
 mod oracle;
 
+/// Whether the run asks for the segmented set of an automatic group in every request (`--auto-set`).
+fn auto_set_asked() -> bool {
+    std::env::args().any(|a| a == "--auto-set")
+}
+
+/// Whether the run reads each call with its automatic dispatches pinned to the segmented strategy (`--auto-as-segmented`): the twin
+/// of a request whose only difference is the strategy.
+fn auto_as_segmented() -> bool {
+    std::env::args().any(|a| a == "--auto-as-segmented")
+}
+
+/// The call with the class of each automatic dispatch node replaced by the segmented one, which has the same operands and fields.
+fn segmented_twin(call: &J) -> J {
+    let J::Obj(members) = call else {
+        return call.clone();
+    };
+    J::Obj(
+        members
+            .iter()
+            .map(|(key, value)| {
+                if key != "nodes" {
+                    return (key.clone(), value.clone());
+                }
+                let nodes = value.arr().iter().map(|node| match node {
+                    J::Obj(parts) => J::Obj(
+                        parts
+                            .iter()
+                            .map(|(k, v)| match (k.as_str(), v.str()) {
+                                ("c", Some("AutoDispatch")) => {
+                                    (k.clone(), J::Str("SegmentedDispatch".into()))
+                                }
+                                _ => (k.clone(), v.clone()),
+                            })
+                            .collect(),
+                    ),
+                    other => other.clone(),
+                });
+                (key.clone(), J::Arr(nodes.collect()))
+            })
+            .collect(),
+    )
+}
+
 /// The data documents the run states to the facts entry and to every request, from `--cards <file>`; none unless the flag is given.
 static CARDS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
 
@@ -206,11 +249,6 @@ fn declared_of(slot: &J) -> Result<DeclaredSlot, String> {
             .filter_map(|n| num(Some(n)))
             .collect(),
         tag: text(ttype.get("tag")).map(String::from),
-        // the record states no pairing: the old front end named a sum row's compensation plane `<row>_comp`
-        compensates: (role == Some("accum_out"))
-            .then(|| text(slot.get("name")).and_then(|n| n.strip_suffix("_comp")))
-            .flatten()
-            .map(String::from),
     })
 }
 
@@ -244,6 +282,7 @@ fn settings_of(spec: &J) -> Result<Settings, String> {
         team_threads: num(s.get("team_threads")).unwrap_or(0),
         exports: None,
         literal_table: false,
+        auto_segmented_set: std::env::args().any(|a| a == "--auto-set"),
     })
 }
 
@@ -550,6 +589,9 @@ struct WarpTally {
 /// The counts of one corpus.
 #[derive(Default)]
 struct Tally {
+    /// With `--auto-set`: the units the answer holds beside a recorded kernel's own unit (its branch and classify units), which the
+    /// recording does not hold; each as `kernel/unit`.
+    added: Vec<String>,
     /// The meta of the answer's units against the recorded sidecars.
     meta: oracle::Oracle,
     /// Build calls read.
@@ -590,6 +632,8 @@ struct Tally {
     boxed: usize,
     /// Of those, the units equal to the record.
     boxed_equal: usize,
+    /// Replayed units that state a matrix product (`gemm`) beside their kernel.
+    gemm: usize,
     /// Units of segmented splits replayed.
     segment_units: usize,
     /// Of those, the units equal to the record.
@@ -1689,7 +1733,28 @@ fn replay_plain(
         &own.into_iter().collect::<Vec<_>>(),
         failed(found.call),
     );
-    let written: Vec<&UnitAnswer> = answer.units.iter().filter(|u| !is_source(u)).collect();
+    let mut written: Vec<&UnitAnswer> = answer.units.iter().filter(|u| !is_source(u)).collect();
+    if auto_set_asked() {
+        // the units of an asked set are not in the recording: they are counted and named, and the kernel's own unit is compared as ever
+        let is_added = |u: &UnitAnswer| {
+            let unit = u.meta.name.as_str();
+            unit.strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix("__"))
+                .is_some_and(|rest| {
+                    rest == "cls"
+                        || rest
+                            .strip_prefix('k')
+                            .is_some_and(|j| j.parse::<usize>().is_ok())
+                })
+        };
+        tally.added.extend(
+            written
+                .iter()
+                .filter(|u| is_added(u))
+                .map(|u| format!("{name}/{}", u.meta.name)),
+        );
+        written.retain(|u| !is_added(u));
+    }
     if let ([unit], Some(record)) = (written.as_slice(), own) {
         tally
             .meta
@@ -2746,6 +2811,8 @@ fn load(call: &J) -> Result<(*mut raptor_ir::record::Ctx, Vec<u32>), String> {
     let table = unsafe { &*osprey_host::osprey_v1() };
     let c = (table.ctx_new)();
     declare(c, &manifests(call)).map_err(|e| format!("declare: {e}"))?;
+    let twin = auto_as_segmented().then(|| segmented_twin(call));
+    let call = twin.as_ref().unwrap_or(call);
     let handles = make_nodes(c, call, &mut Vals::default()).map_err(|e| format!("make: {e}"))?;
     Ok((c, handles))
 }
@@ -2854,6 +2921,7 @@ fn compare(
     }
     t.boxed += want.boxed.is_some() as usize;
     t.boxed_equal += (want.boxed.is_some() && all_ok) as usize;
+    t.gemm += unit.meta.gemm.is_some() as usize;
     if !all_ok && t.shown < set.show {
         t.shown += 1;
         let how = if !digest_ok {
@@ -2924,6 +2992,10 @@ fn print(label: &str, t: &Tally, side: &str) {
     println!(
         "  of them written with a thread box: {} (equal {})",
         t.boxed, t.boxed_equal
+    );
+    println!(
+        "  of them stating a matrix product beside the kernel: {}",
+        t.gemm
     );
     println!(
         "  of them units of a chain: {} (equal {}), chains with other planes between the stages: {}",
@@ -3023,6 +3095,14 @@ fn print(label: &str, t: &Tally, side: &str) {
     );
     for a in &t.ambiguous {
         println!("    {a}");
+    }
+    if auto_set_asked() {
+        println!(
+            "auto-set mode: every recorded unit is compared as in the default mode; the units the asked sets add ({}), which the \
+             recording does not hold, are counted and named here, not compared: {}",
+            t.added.len(),
+            t.added.join(" ")
+        );
     }
     let sum = |m: &BTreeMap<String, usize>| m.values().sum::<usize>();
     println!(

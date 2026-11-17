@@ -228,9 +228,6 @@ def _declared(slot):
     }
     if _text(ttype.get("tag")) is not None:
         out["tag"] = _text(ttype["tag"])
-    # the record states no pairing: the old front end named a row's compensation plane `<row>_comp`
-    if role == "accum_out" and out["name"].endswith("_comp"):
-        out["compensates"] = out["name"][: -len("_comp")]
     return out
 
 

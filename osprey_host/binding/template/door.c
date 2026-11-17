@@ -509,6 +509,9 @@ static PyObject* m_error(PyObject* self, PyObject* args)
     return res;
 }
 
+/* ctx_info(): the door's eg_ctx_info as a dict, member by member under the struct's own names.
+ * The weight_ members state the class key the dispatch weights were looked up by and the row
+ * taken (-1: the built-in row); they are read-only facts of the context. */
 static PyObject* m_ctx_info(PyObject* self, PyObject* args)
 {
     Door* d                 = (Door*)self;
@@ -517,10 +520,12 @@ static PyObject* m_ctx_info(PyObject* self, PyObject* args)
         return NULL;
     if (door_check(d, d->fn.eg_ctx_info(d->ctx, &info)) < 0)
         return NULL;
-    return Py_BuildValue("{s:I,s:I,s:i,s:K,s:i,s:i,s:L}", "abi_major", info.abi_major, "abi_minor",
-        info.abi_minor, "device", info.device, "capabilities",
+    return Py_BuildValue("{s:I,s:I,s:i,s:K,s:i,s:i,s:L,s:i,s:i,s:i,s:i}", "abi_major",
+        info.abi_major, "abi_minor", info.abi_minor, "device", info.device, "capabilities",
         (unsigned long long)info.capabilities, "host_threads", info.host_threads, "device_type",
-        info.device_type, "stream", (long long)info.stream);
+        info.device_type, "stream", (long long)info.stream, "weight_vendor", info.weight_vendor,
+        "weight_family", info.weight_family, "weight_model", info.weight_model, "weight_row",
+        info.weight_row);
 }
 
 static PyObject* m_host_threads(PyObject* self, PyObject* args)

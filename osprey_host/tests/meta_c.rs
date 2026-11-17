@@ -212,6 +212,17 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
                 ],
                 ..Dispatch::default()
             },
+            // an automatic group with the segmented set built beside it: the branch units and the classify unit, and its costs
+            Dispatch {
+                strategy: DispatchStrategy::Auto,
+                mix_slot: Some(0),
+                classify: Some(reference.clone()),
+                name: "n".into(),
+                k: 2,
+                branches: vec![reference.clone(), reference.clone()],
+                branch_costs: vec![BranchCost::default(), BranchCost::default()],
+                ..Dispatch::default()
+            },
         ],
     };
     let team = Team {
@@ -431,7 +442,8 @@ int main(void) {
         const struct eg_unit_dispatch* d = body->dispatches[g];
         printf("group %s k %d costs %s cost_flags %u", d->name, d->k,
                d->branch_costs ? "yes" : "no", d->cost_flags);
-        printf("\n");
+        printf(" branches %s classify %s sweep %s\n", d->branches ? "yes" : "no",
+               d->classify ? d->classify->name : "none", d->sweep ? "yes" : "no");
         for (int32_t j = 0; d->branch_costs && j < d->k; ++j) {
             const struct eg_branch_cost* c = d->branch_costs[j];
             printf("branch %s %d flags %u %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g stores %.17g\n",
@@ -477,11 +489,15 @@ fn a_c_reader_of_the_compiled_record_sees_the_branch_costs_and_the_products_that
     let read = run(binary.to_str().unwrap(), &[]);
     // oracle: the values `full_tree` wrote; the group `m` is the auto one, `g` and `h` are segmented and state no costs
     let want = [
-        "group g k 2 costs no cost_flags 0\n",
-        "group h k 2 costs no cost_flags 0\n",
-        "group m k 2 costs yes cost_flags 0\n",
+        "group g k 2 costs no cost_flags 0 branches yes classify stage sweep no\n",
+        "group h k 2 costs no cost_flags 0 branches yes classify none sweep yes\n",
+        "group m k 2 costs yes cost_flags 0 branches no classify none sweep no\n",
         "branch m 0 flags 2 1.5 0 0 0 0 0 0 0 0 0 stores 2\n",
         "branch m 1 flags 0 0 0 0 0 0 0 0 0 0 0 stores 0\n",
+        // an automatic group that names the segmented set built beside it keeps its costs and has no sweep
+        "group n k 2 costs yes cost_flags 0 branches yes classify stage sweep no\n",
+        "branch n 0 flags 0 0 0 0 0 0 0 0 0 0 0 stores 0\n",
+        "branch n 1 flags 0 0 0 0 0 0 0 0 0 0 0 stores 0\n",
         // a unit with the member keeps its kernel: a host plan runs it, and a device plan the door cannot route does
         "gemm 1 fanin 6 host_entry kept\n",
         "call flags 9 slots 1 0 2 shape 8 -1 8 6 -1 6\n",

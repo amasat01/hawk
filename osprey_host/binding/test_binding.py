@@ -597,6 +597,41 @@ for word, mix in mixes:
 assert c.walk_mix_slots(c.cells_walk([plain], "()", None)) == ()
 done.append("walk_mix_slots: an automatic group names its mix slot, every other form is None")
 
+# the other reads of a walk, with the values the previous walk and wing gave for the same kernels
+# (recorded in the library's walk.json): the selector reads of a group, the access class, the
+# companion pairs of the summing sample sums, and the slot names a group owns
+assert c.walk_selector_reads(walked, 0) == (("per_sample", "sel"),)
+raises(
+    ValueError,
+    lambda: c.walk_selector_reads(walked, 3),
+    "walk_selector_reads of a dispatch the walk lacks",
+)
+assert c.walk_access_class(walked) == "sample_local"
+assert c.walk_companions(c.cells_walk([sum_a], "()", None)) == (("s", "s_comp"),)
+assert c.walk_companions(c.cells_walk([plain], "()", None)) == ()
+# the companions of the compensated keyed accumulates: {<plane>_c: plane} of the previous
+# walk, once per plane
+ACCUM = (
+    "(('kind', 'accum_write'), ('name', '%s'), ('role', 'accum_out'), "
+    "('contract', '%s'), ('reduced', None))"
+)
+accums = [
+    c.make("AccumWrite", "f64", [], None, [x], ACCUM % pair)
+    for pair in (("a", "compensated"), ("b", "auto"), ("a", "compensated"), ("c", "keyed_auto"))
+]
+assert c.walk_accum_companions(c.cells_walk(accums, "()", None)) == (("a_c", "a"), ("c_c", "c"))
+assert c.walk_accum_companions(c.cells_walk([plain], "()", None)) == ()
+assert c.group_plane_names("dispatch3") == (
+    "dispatch3_offsets",
+    "dispatch3_class",
+    "dispatch3_stale",
+    "dispatch3_mix",
+)
+done.append(
+    "walk_selector_reads, walk_access_class, walk_companions, walk_accum_companions, "
+    "group_plane_names"
+)
+
 # a sample_position read inside a loop body is in the flat order of the walk, as in the previous
 # walk's `order`, so a scan of the order answers what its `reads_sample_position` answered (True
 # for a read in a carry's next value and for one in a body sink)

@@ -2,7 +2,7 @@
 //! stages decided for the kernel. A member nothing here knows is left absent (see `NOT_COMPUTED`), never given a value.
 use super::active::{COUNT_PLANE, MAP_PLANE};
 use super::card::{BuildCard, ContractionRoute};
-use super::request::{Body, DeclaredSlot, KernelRequest, LaneAxis, Steps, TargetText, UnitAnswer};
+use super::request::{Body, KernelRequest, LaneAxis, Steps, TargetText, UnitAnswer};
 use super::segment::FUSED_STEPS_PLANE;
 use super::stage_block::{KeyedRecord, PlaneRecord, StageBlock, TeamRecord};
 use super::stages::cell_records;
@@ -513,6 +513,7 @@ fn dispatches(parts: &Parts, slots: &[m::Slot]) -> Result<Vec<m::Dispatch>, Refu
                 }
                 _ => None,
             };
+            let set = parts.pending.auto_set.as_ref().filter(|g| g.name == name);
             Ok(m::Dispatch {
                 strategy: match strategy {
                     Strategy::Predicated => m::DispatchStrategy::Predicated,
@@ -522,6 +523,9 @@ fn dispatches(parts: &Parts, slots: &[m::Slot]) -> Result<Vec<m::Dispatch>, Refu
                 },
                 mix_slot,
                 branch_costs,
+                // the segmented set of an automatic group, when the request asked for it: the refs of the fused unit's record
+                classify: set.and_then(|g| g.classify.as_deref().map(by_name)),
+                branches: set.map_or(vec![], |g| g.branches.iter().map(|b| by_name(b)).collect()),
                 name,
                 k: ctx.nodes[node as usize].ops.len() - 1,
                 ..m::Dispatch::default()
@@ -616,7 +620,10 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
             })
         })
         .collect::<Result<Vec<_>, Refusal>>()?;
-    let cells = compensated(cells, &companions, &slots, &parts.pending.member.declared)?;
+    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
+    let made =
+        raptor_wings::cells::walk_companions(unsafe { &*parts.ctx }, parts.walk).map_err(wing)?;
+    let cells = compensated(cells, &companions, &slots, &made)?;
     Ok(m::UnitMeta {
         flags: if parts.request.cards.is_empty() {
             0
@@ -651,13 +658,13 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
 }
 
 /// The cells with the compensation slots of their sums: each row plane of a sum cell names the companion slot that compensates it,
-/// a companion pair's or else the slot the lowering made as that row's compensation plane (`created`, each stating the row it
-/// compensates), never a slot found by its name; a cell none of whose rows has one keeps none, one with only some of them is a fault.
+/// a companion pair's or else the compensation plane the walk made for that row (`made`, the walk's (row, plane) pairs), never a
+/// slot found by its name; a cell none of whose rows has one keeps none, one with only some of them is a fault.
 fn compensated(
     cells: Vec<m::Cell>,
     companions: &[m::Companion],
     slots: &[m::Slot],
-    created: &[DeclaredSlot],
+    made: &[(String, String)],
 ) -> Result<Vec<m::Cell>, Refusal> {
     cells
         .into_iter()
@@ -671,10 +678,9 @@ fn compensated(
                         .find(|c| c.target_slot == row)
                         .map(|c| c.slot)
                         .or_else(|| {
-                            created
-                                .iter()
-                                .find(|d| d.compensates.as_ref() == Some(&slots[row].name))
-                                .and_then(|d| slot_at(slots, &d.name))
+                            made.iter()
+                                .find(|(sum, _)| *sum == slots[row].name)
+                                .and_then(|(_, plane)| slot_at(slots, plane))
                         })
                 })
                 .collect();
@@ -942,7 +948,7 @@ pub(super) fn stages(
 
 #[cfg(test)]
 mod tests {
-    //! A compensation plane is the one the lowering made for the row, never one a name suggests.
+    //! A compensation plane is the one the walk made for the row, never one a name suggests.
     use super::*;
     use raptor_ir::door::{rx_ctx_free, rx_ctx_new, RX_OK};
     use raptor_ir::dump::rx_load;
@@ -968,12 +974,9 @@ mod tests {
 
     #[test]
     fn a_user_slot_named_like_a_compensation_plane_is_not_taken() {
-        // the argument list holds a user plane `mu_comp` and the plane the lowering made, `mu_low`
+        // the argument list holds a user plane `mu_comp` and the plane the walk made, `mu_low`
         let slots = [slot("mu"), slot("mu_comp"), slot("mu_low")];
-        let made = DeclaredSlot {
-            compensates: Some("mu".into()),
-            ..DeclaredSlot::lookup("mu_low", Dtype::F64)
-        };
+        let made = ("mu".to_string(), "mu_low".to_string());
         let cells = compensated(sum(), &[], &slots, &[made]).unwrap();
         assert_eq!(cells[0].comp_slots, Some(vec![2]));
         let cells = compensated(sum(), &[], &slots, &[]).unwrap();

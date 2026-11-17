@@ -182,8 +182,8 @@ impl Out {
     }
 }
 
-/// Faults on a dispatch record the header's rules do not allow. A group that is not segmented names no branch, classify or sweep
-/// unit. A segmented group has exactly three shapes: the record of a branch unit with a static selector (one unit per branch, the
+/// Faults on a dispatch record the header's rules do not allow. A group that is neither segmented nor automatic names no branch,
+/// classify or sweep unit; an automatic group names the branch units and the classify unit of its segmented set, both or neither. A segmented group has exactly three shapes: the record of a branch unit with a static selector (one unit per branch, the
 /// classify unit, no stale slot, no sweep), that of a branch unit with a dynamic selector (one unit per branch, the stale slot and
 /// the sweep unit, no classify unit), and that of the classify unit itself (the class slot, and no other slot or unit). Every
 /// group has at least two branches.
@@ -197,6 +197,20 @@ fn check_dispatch(d: &Dispatch) -> Result<(), Refusal> {
         return Err(broken(
             "branch costs not one per branch of an auto group, or on another group",
         ));
+    }
+    if d.strategy == DispatchStrategy::Auto {
+        // an automatic group may name the segmented set built beside it: its branch units and its classify unit, both or neither, and
+        // never a sweep unit (a moving selector runs fused)
+        let paired = d.branches.is_empty() == d.classify.is_none();
+        let sized = d.branches.is_empty() || d.branches.len() == d.k;
+        return match (d.sweep.is_none(), paired, sized) {
+            (true, true, true) => Ok(()),
+            (false, _, _) => Err(broken("a sweep unit on an automatic group")),
+            (_, false, _) => Err(broken(
+                "branch units without a classify unit, or the reverse, on an automatic group",
+            )),
+            _ => Err(broken("an automatic group without one unit per branch")),
+        };
     }
     if d.strategy != DispatchStrategy::Segmented {
         let named = !d.branches.is_empty() || d.classify.is_some() || d.sweep.is_some();
@@ -805,6 +819,52 @@ mod tests {
         ];
         for record in &torn {
             let why = check_dispatch(record).expect_err("a record that disagrees");
+            assert_eq!(why.kind, aether_writers::refuse::RefusalKind::Fault);
+        }
+    }
+
+    /// An automatic group of two branches that states its costs, with the segmented set built beside it.
+    fn auto_with_set() -> Dispatch {
+        Dispatch {
+            strategy: DispatchStrategy::Auto,
+            branch_costs: vec![BranchCost::default(), BranchCost::default()],
+            ..fixed()
+        }
+    }
+
+    #[test]
+    fn an_automatic_group_names_its_segmented_set_whole_or_not_at_all() {
+        let bare = Dispatch {
+            branches: vec![],
+            classify: None,
+            ..auto_with_set()
+        };
+        assert!(check_dispatch(&bare).is_ok());
+        assert!(check_dispatch(&auto_with_set()).is_ok());
+        let torn = [
+            Dispatch {
+                classify: None,
+                ..auto_with_set()
+            },
+            Dispatch {
+                branches: vec![],
+                ..auto_with_set()
+            },
+            Dispatch {
+                sweep: Some(unit("a__sweep")),
+                ..auto_with_set()
+            },
+            Dispatch {
+                branches: vec![unit("a__k0")],
+                ..auto_with_set()
+            },
+            Dispatch {
+                branch_costs: vec![],
+                ..auto_with_set()
+            },
+        ];
+        for record in &torn {
+            let why = check_dispatch(record).expect_err("an automatic record that disagrees");
             assert_eq!(why.kind, aether_writers::refuse::RefusalKind::Fault);
         }
     }

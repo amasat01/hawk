@@ -190,61 +190,21 @@ fn planes_under(context: &Ctx, sinks: &[u32]) -> Result<Vec<PlaneRecord>, Refusa
         .collect())
 }
 
-/// The slots a stage declares beyond its kernel's: the compensation plane of each summing cell it stores, and the finished-count
-/// plane when it finishes samples.
-fn stage_declared(
-    ctx: *mut Ctx,
-    base: &Member,
-    sinks: &[u32],
-) -> Result<Vec<DeclaredSlot>, Refusal> {
+/// The slots a stage declares: its kernel's, and the finished-count plane when the kernel finishes samples. The compensation planes
+/// of the kernel's sums, which a caller may declare for the whole kernel, are left out: the walk of the stage makes those of the
+/// sums the stage stores, so a plane another stage's sum compensates is not bound here.
+fn stage_declared(ctx: *mut Ctx, base: &Member) -> Result<Vec<DeclaredSlot>, Refusal> {
+    let (walk, _) = canonical(ctx, base)?;
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
-    let context = unsafe { &*ctx };
-    // the kernel's declared slots hold the compensation planes of its own sums: each stage declares those of its own sinks
-    let mut own = vec![];
-    for &sink in &base.sinks {
-        let node = &context.nodes[sink as usize];
-        if context.table.is_a(node.class, "SampleSum") {
-            own.push(context.str_field(sink, "name").map_err(wing)?);
-        }
-    }
-    let mut declared: Vec<DeclaredSlot> = base
+    let made = raptor_wings::cells::walk_companions(unsafe { &*ctx }, walk).map_err(wing)?;
+    let declared: Vec<DeclaredSlot> = base
         .declared
         .iter()
         .filter(|slot| {
-            slot.name != FINISHED_PLANE
-                && !slot
-                    .compensates
-                    .as_ref()
-                    .is_some_and(|row| own.contains(row))
+            slot.name != FINISHED_PLANE && !made.iter().any(|(_, comp)| *comp == slot.name)
         })
         .cloned()
         .collect();
-    for &sink in sinks {
-        let is_sum = context
-            .table
-            .is_a(context.nodes[sink as usize].class, "SampleSum")
-            && context.str_field(sink, "op").map_err(wing)? == "sum";
-        if !is_sum {
-            continue;
-        }
-        let node = &context.nodes[sink as usize];
-        let role = context.str_field(sink, "role").map_err(wing)?;
-        let name = context.str_field(sink, "name").map_err(wing)?;
-        declared.push(DeclaredSlot {
-            role: *ROLES
-                .iter()
-                .find(|r| r.name() == role)
-                .ok_or_else(|| fault("a cell with a role the request does not know"))?,
-            name: format!("{name}_comp"),
-            dtype: *DTYPES
-                .iter()
-                .find(|d| d.name() == node.dtype)
-                .ok_or_else(|| fault("a cell with an element type the request does not know"))?,
-            shape: node.shape.clone(),
-            tag: node.tag.clone(),
-            compensates: Some(name),
-        });
-    }
     let mut member = Member {
         declared,
         ..base.clone()
@@ -317,7 +277,7 @@ fn staged(
         .collect();
     let mut wide = false;
     for stage in cut.stages.iter().filter(|stage| stage.team.is_none()) {
-        let declared = stage_declared(ctx, &unit.member, &stage.sinks)?;
+        let declared = stage_declared(ctx, &unit.member)?;
         let member = Member {
             sinks: stage.sinks.clone(),
             declared,
@@ -355,7 +315,7 @@ fn staged(
                 held.extend(read_slots(ctx, &spec.reads)?);
                 held
             }
-            _ => stage_declared(ctx, &unit.member, &sinks)?,
+            _ => stage_declared(ctx, &unit.member)?,
         };
         out.push(Pending {
             member: Member {
@@ -384,6 +344,7 @@ fn staged(
             }),
             warp: None,
             group: None,
+            auto_set: None,
             exports_block: true,
         });
     }
@@ -527,7 +488,6 @@ fn read_slots(ctx: *mut Ctx, reads: &[u32]) -> Result<Vec<DeclaredSlot>, Refusal
                     .ok_or_else(missing)?,
                 shape: node.shape.clone(),
                 tag: node.tag.clone(),
-                compensates: None,
             })
         })
         .collect()

@@ -68,6 +68,9 @@ pub(super) struct Pending {
     pub warp: Option<warp::Warp>,
     /// The dispatch group a branch unit of a segmented split belongs to.
     pub group: Option<segment::Group>,
+    /// The units of the segmented form of the unit's automatic group, when the request asked for them: the fused unit's record names
+    /// them.
+    pub auto_set: Option<segment::Group>,
     /// Whether the unit's text carries the library's self-check exports; a later unit of a table that has them already omits them.
     pub exports_block: bool,
 }
@@ -505,6 +508,7 @@ impl Pending {
             team: None,
             warp: None,
             group: None,
+            auto_set: None,
             exports_block: true,
         }
     }
@@ -666,21 +670,18 @@ fn declared_leaf(slot: &DeclaredSlot) -> ((String, String), Tt) {
     )
 }
 
-/// The canonical walk over the member's sinks with its declared slots, and the walk's digest.
+/// The kernel's canonical walk over the member's sinks and declared slots (the wing adds the companion, finished-count and
+/// branch-mix slots), and the walk's digest.
 fn canonical(ctx: *mut Ctx, member: &Member) -> Result<(u32, String), Refusal> {
     let declared: Vec<_> = member.declared.iter().map(declared_leaf).collect();
     let force = member.force.map(|a| a.name());
     // SAFETY: `ctx` is the live context the caller holds; nothing else reads it during the call.
     let context = unsafe { &mut *ctx };
-    let walk = context
-        .canonical(&member.sinks, &declared, force, &member.exempt)
-        .map_err(walk_refusal)?;
-    let digest = context
-        .walk(walk as u32)
-        .map_err(walk_refusal)?
-        .digest
-        .clone();
-    Ok((walk as u32, digest))
+    let walk =
+        raptor_wings::cells::kernel_walk(context, &member.sinks, &declared, force, &member.exempt)
+            .map_err(walk_refusal)?;
+    let digest = context.walk(walk).map_err(walk_refusal)?.digest.clone();
+    Ok((walk, digest))
 }
 
 /// The walk the context holds under the handle `walk`.
@@ -705,7 +706,6 @@ fn leaf_slots(ctx: *mut Ctx, walk: u32) -> Result<Vec<DeclaredSlot>, Refusal> {
                     .ok_or_else(shape)?,
                 shape: ttype.shape.clone(),
                 tag: ttype.tag.clone(),
-                compensates: None,
             })
         })
         .collect()
@@ -1014,7 +1014,6 @@ mod tests {
             dtype,
             shape: vec![2],
             tag: None,
-            compensates: None,
         }
     }
 

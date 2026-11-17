@@ -31,9 +31,6 @@ pub struct DeclaredSlot {
     pub shape: Vec<i64>,
     /// The type's tag, when it has one.
     pub tag: Option<String>,
-    /// The row plane the slot compensates, when it is the compensation plane of that row's sum: stated by the caller that declares
-    /// the plane, or by the lowering that makes it.
-    pub compensates: Option<String>,
 }
 
 /// One kernel body: the nodes it writes and how its walk is taken over them.
@@ -124,6 +121,11 @@ pub struct Settings {
     pub exports: Option<[u64; 5]>,
     /// Whether the device text is followed by its table of literals.
     pub literal_table: bool,
+    /// Whether the units of the segmented form of an automatic dispatch group are built beside the fused unit, and the fused unit's
+    /// record names them. Asked for a kernel whose one automatic group has a selector no sink of the kernel writes, in a plain body,
+    /// it adds one unit per branch and the classify unit; any other kernel (no automatic group, a dynamic selector, a chain or fused
+    /// body, several groups) is built as if it were not asked, and that is not an error.
+    pub auto_segmented_set: bool,
 }
 
 /// One axis the caller declares: its label and extent, each when it has one (a runtime axis has no extent).
@@ -579,7 +581,6 @@ impl DeclaredSlot {
             dtype,
             shape: vec![],
             tag: None,
-            compensates: None,
         }
     }
 
@@ -592,10 +593,6 @@ impl DeclaredSlot {
             dtype: member_of(&DTYPES, keys.req("dtype")?, "dtype")?,
             shape: list_of(keys.req("shape")?, "shape", |n| int_of(n, "shape"))?,
             tag: keys.opt("tag").map(|t| text_of(t, "tag")).transpose()?,
-            compensates: keys
-                .opt("compensates")
-                .map(|r| text_of(r, "compensates"))
-                .transpose()?,
         };
         keys.done()?;
         Ok(slot)
@@ -610,9 +607,6 @@ impl DeclaredSlot {
         ];
         if let Some(tag) = &self.tag {
             o.push(("tag".into(), Json::Str(tag.clone())))
-        }
-        if let Some(row) = &self.compensates {
-            o.push(("compensates".into(), Json::Str(row.clone())))
         }
         Json::Obj(o)
     }
@@ -1032,6 +1026,10 @@ impl Settings {
                 Some(f) => flag_of(f, "literal_table")?,
                 None => false,
             },
+            auto_segmented_set: match keys.opt("auto_segmented_set") {
+                Some(f) => flag_of(f, "auto_segmented_set")?,
+                None => false,
+            },
         };
         keys.done()?;
         Ok(settings)
@@ -1071,6 +1069,9 @@ impl Settings {
         }
         if self.literal_table {
             o.push(("literal_table".into(), Json::Bool(true)))
+        }
+        if self.auto_segmented_set {
+            o.push(("auto_segmented_set".into(), Json::Bool(true)))
         }
         Json::Obj(o)
     }
@@ -1376,7 +1377,6 @@ mod tests {
                     dtype: Dtype::F64,
                     shape: vec![2],
                     tag: None,
-                    compensates: None,
                 }],
                 force: None,
                 exempt: vec![],
@@ -1396,6 +1396,20 @@ mod tests {
             facts: vec![(Target::Host, "{}".into())],
             exports_block: true,
         }
+    }
+
+    #[test]
+    fn the_segmented_set_of_an_automatic_group_is_asked_for_by_a_setting_that_is_absent_by_default()
+    {
+        let none = Settings::read(&Json::Obj(vec![])).unwrap();
+        assert!(!none.auto_segmented_set);
+        assert_eq!(none.write(), Json::Obj(vec![]));
+        let asked = Json::Obj(vec![("auto_segmented_set".into(), Json::Bool(true))]);
+        let read = Settings::read(&asked).unwrap();
+        assert!(read.auto_segmented_set);
+        assert_eq!(read.write(), asked);
+        let not_a_flag = Json::Obj(vec![("auto_segmented_set".into(), Json::Num("1".into()))]);
+        assert!(Settings::read(&not_a_flag).is_err());
     }
 
     #[test]

@@ -266,6 +266,212 @@ def check_gemm(door, done, raises):
     )
 
 
+def check_segmented(door, done, raises):
+    """Rows of a runner over a SEGMENTED group, on the door's static and dynamic fixtures."""
+    samples = 200
+
+    def load_group(prefix, first, branches, extras, fused):
+        """The units of a group (branch 0 last, with the others in deps) and its fused unit."""
+        others = [door.unit_load(FIXTURE, name, digest(byte)) for name, byte in branches + extras]
+        head = door.unit_load(FIXTURE, f"{prefix}__k0", digest(first), deps=others)
+        return head, door.unit_load(FIXTURE, f"{prefix}f", digest(fused))
+
+    class Set:
+        """The planes of one run over a unit: k, limit, mask and, for the dynamic group, pos."""
+
+        def __init__(self, unit, dynamic, with_pos):
+            """Bind fresh inputs to a plan of the unit."""
+            index = np.arange(samples)
+            self.k = 0.02 * ((index * 37) % samples) if dynamic else np.zeros(samples)
+            self.limit = np.full(samples, 7.0) if dynamic else (2 + index % 9).astype(float)
+            self.mask = np.zeros(samples, dtype=np.bool_)
+            self.pos = np.full(samples, -1.0)
+            arrays, slots = [self.k, self.limit, self.mask], [0, 1, 2]
+            if with_pos:
+                arrays, slots = arrays + [self.pos], slots + [7]
+            self.plan = door.plan_new(unit, o.EG_STRUCTURE_HOST_TEAM, 0, samples)
+            door.bind(self.plan, slots, [door.plane_wrap(a) for a in arrays])
+
+        def launch_until_done(self, max_steps):
+            """Launch the plan by hand with the runner's finish rule; answer the launches made."""
+            launches = 0
+            while launches < max_steps and not self.mask.all():
+                door.launch(self.plan)
+                launches += 1
+            return launches
+
+        def same(self, other, with_pos):
+            """Bit-for-bit equal planes."""
+            same = np.array_equal(self.k, other.k) and np.array_equal(self.mask, other.mask)
+            return same and (not with_pos or np.array_equal(self.pos, other.pos))
+
+    static = load_group("sg", 0xE2, [("sg__k1", 0xE3)], [("sg__cls", 0xE1)], 0xE4)
+    dynamic = load_group("dg", 0xE5, [("dg__k1", 0xE6)], [("dg__sweep", 0xE7)], 0xE8)
+    for name, (head, fused), is_dynamic in (("static", static, False), ("dynamic", dynamic, True)):
+        hand, run, fus = (
+            Set(u, is_dynamic, w) for u, w in ((head, is_dynamic),) * 2 + ((fused, False),)
+        )
+        want = hand.launch_until_done(1000)
+        assert want > 1 and hand.mask.all(), (name, want)
+        # the runner and the hand launches: the same compiled units launched two ways, bit for bit
+        runner = door.runner_new([run.plan], 1000)
+        report = door.run(runner)
+        assert run.same(hand, is_dynamic) and report["launches"] == want, (name, report)
+        assert report["steps"] == want and report["finished"] == samples and report["mode"] == 0
+        assert report["flags"] == o.EG_REPORT_DONE | o.EG_REPORT_EXACT_STEPS
+        assert report["mapped"] == want * samples
+        fused_report = door.run(door.runner_new([fus.plan], 1000))
+        # the fused unit is a different computation of k: the one rule is |k_fused - k_group| <=
+        # n * eps * M. In the fixture (door test folder, fixture_unit.c) every launch adds one step
+        # to each live sample (seg_step runs once per sample and launch: its branch, or the sweep
+        # for a stale slot), so n is the launches made; a step is at most 2.0 in the static group
+        # (branch j adds j + 1) and 0.125 * (class + 1) <= 0.25 in the dynamic one; k stays below
+        # its limit before its last addition, so M is the largest limit plus the largest step.
+        step_max = 0.25 if is_dynamic else 2.0
+        bound = want * np.finfo(np.float64).eps * (hand.limit.max() + step_max)
+        assert np.abs(fus.k - hand.k).max() <= bound, (name, np.abs(fus.k - hand.k).max(), bound)
+        assert fused_report["launches"] == want, name
+        run.k[:] = Set(head, is_dynamic, False).k
+        run.mask[:] = False
+        run.pos[:] = -1.0
+        door.runner_reset(runner)
+        again = door.run(runner)
+        assert run.same(hand, is_dynamic) and again == report, (name, again, report)
+        fresh = Set(head, is_dynamic, is_dynamic)
+        assert door.run(door.runner_new([fresh.plan], 1000)) == report and fresh.same(
+            hand, is_dynamic
+        )
+        cut_hand, cut = Set(head, is_dynamic, is_dynamic), Set(head, is_dynamic, is_dynamic)
+        part = cut_hand.launch_until_done(3)
+        cut_report = door.run(door.runner_new([cut.plan], 3))
+        assert cut.same(cut_hand, is_dynamic) and cut_report["launches"] == part
+        assert cut_report["finished"] < samples and cut_report["flags"] == o.EG_REPORT_EXACT_STEPS
+    done.append("a SEGMENTED group under a runner (static, dynamic): hand launches and fused unit")
+    done.append(
+        "runner_reset over a SEGMENTED group: the second run equals the first and a fresh runner"
+    )
+
+    head, _ = static
+    group = Set(head, False, False)
+    axpb = door.unit_load(FIXTURE, "axpb", digest(0xA1))
+    other = door.plan_new(axpb, o.EG_STRUCTURE_HOST_TEAM, 0, samples)
+    for what, call, kind, fragment in (
+        (
+            "beside another plan",
+            lambda: door.runner_new([group.plan, other], 10),
+            o.NotWritten,
+            "the whole step of its runner",
+        ),
+        (
+            "REORDER",
+            lambda: door.runner_new([group.plan], 10, flags=o.EG_RUN_REORDER),
+            o.BadRequest,
+            "nothing to reorder",
+        ),
+        (
+            "every",
+            lambda: door.runner_new([group.plan], 10, every=4),
+            o.BadRequest,
+            "compaction does not apply",
+        ),
+        (
+            "events REFINE",
+            lambda: door.runner_new([group.plan], 10, events=o.EG_EVENTS_REFINE),
+            o.NotWritten,
+            "is not recorded or refined",
+        ),
+        (
+            "RECORD",
+            lambda: door.runner_new(
+                [group.plan],
+                10,
+                flags=o.EG_RUN_RECORD,
+                derived_roles=[o.EG_DERIVED_TAPE],
+                derived_units=[axpb],
+            ),
+            o.NotWritten,
+            "is not recorded or refined",
+        ),
+    ):
+        e = raises(kind, call, f"runner_new: a SEGMENTED group, {what}")
+        assert fragment in refusal_text(door, e), str(e)
+    done.append("SEGMENTED runner refusals: several plans, REORDER, every, REFINE, RECORD")
+
+
+def check_auto_set(door, done, raises):
+    """The segmented set of an AUTO group as the lowering writes it loads; a torn set is refused."""
+    import re
+    import subprocess
+    import tempfile
+
+    source = open(os.path.join(HERE, "fixture", "auto_set_meta.c")).read()
+    entries = re.findall(r'M\(host_entry, "([^"]+)"\)', source)
+    root = os.environ["EAGLE_DOOR_DIR"]
+    # the meta carries no code: the entries are empty functions, and the size block is the one every
+    # unit library exports (GRefMirror, ScalarHandle, IntHandle, the index type, the triple)
+    stubs = "".join(f"void {name}(void) {{}}\n" for name in entries) + (
+        '#include <stdint.h>\nconst char eagle_abi_tag[] = "aether-abi/2";\n'
+        "const uint64_t eagle_layout_sizes[5] = {40, 32, 32, 4, 24};\n"
+    )
+    flags = ["-dynamiclib"] if sys.platform == "darwin" else ["-shared", "-fPIC"]
+    names = 'M(name, "dispatch0"), M(k, 3), M(reserved0, 0), M(branches, u0_d0_branches)'
+    classify = "M(classify, &u0_d0_classify), " + names
+
+    def swap(old, new):
+        assert old in source, old
+        return source.replace(old, new, 1)
+
+    def other_group(text=source):
+        head = text.index("static const struct eg_unit_dispatch u2_d0")
+        end = text.index("\n", head)
+        return text[:head] + text[head:end].replace('"dispatch0"', '"dispatch1"') + text[end:]
+
+    torn = {
+        "branches without a classify unit": swap(
+            classify, classify.replace("&u0_d0_classify", "NULL")
+        ),
+        "a classify unit without branches": swap(
+            classify, classify.replace("u0_d0_branches", "NULL")
+        ),
+        "branches without costs": swap("M(branch_costs, u0_d0_costs)", "M(branch_costs, NULL)"),
+        "a branch record of another group": other_group(),
+    }
+
+    def load_set(directory, tag, text):
+        """Loads the set in the order the door plans a group.
+
+        The units other than branch 0 come first, branch 0 follows with them in deps, and the
+        fused unit last with the whole group in deps.
+        """
+        base = os.path.join(directory, tag)
+        open(base + ".c", "w").write(text)
+        open(base + "_stubs.c", "w").write(stubs)
+        library = base + (".dylib" if sys.platform == "darwin" else ".so")
+        cc = ["cc", *flags, "-std=c11", "-w", "-I", root, base + ".c", base + "_stubs.c"]
+        subprocess.check_call([*cc, "-o", library])
+        found = re.findall(r'M\(name, "([^"]+)"\), M\(digest, \{([^}]*)\}\), M\(pattern', text)
+        digests = {name: bytes(int(x, 16) for x in raw.split(",")) for name, raw in found}
+
+        def load(name, deps=()):
+            return door.unit_load(library, name, digests[name], deps=list(deps))
+
+        others = [load(name) for name in ("mix_auto__k1", "mix_auto__k2", "mix_auto__cls")]
+        head = load("mix_auto__k0", others)
+        return load("mix_auto", [head] + others)
+
+    with tempfile.TemporaryDirectory() as directory:
+        assert load_set(directory, "whole", source) is not None
+        done.append("unit_load: an AUTO group naming its segmented set (branches, classify, costs)")
+        for what, text in torn.items():
+            tag = what.replace(" ", "_")
+            e = raises(
+                o.BadRequest,
+                lambda: load_set(directory, tag, text),
+                f"unit_load: a torn set, {what}",
+            )
+            assert "contradicts itself" in str(e) and "dispatch" in str(e), str(e)
+
+
 def check_fft(door, done, raises):
     """Rows of the transform calls; numpy.fft is the oracle, for every kind, norm and width."""
     rng = np.random.default_rng(7)
@@ -416,6 +622,14 @@ def run(done, raises):
     assert info["abi_major"] == 1 and info["device"] == -1 and info["stream"] == -1, info
     assert info["capabilities"] & o.EG_CAP_HOST, info
     done.append("Door, ctx_info: a host context")
+    # the class key of the dispatch weights: the header says vendor 0 is "other" and row -1 the
+    # built-in row; it states no family or model for a host without CPUID, so those two are
+    # only checked to be integers
+    assert info["weight_vendor"] == 0 and info["weight_row"] == -1, info
+    assert isinstance(info["weight_family"], int) and isinstance(info["weight_model"], int)
+    done.append(
+        "ctx_info: the weight class key members, vendor 0 and the built-in row on this host"
+    )
     assert door.error() == "", door.error()
     done.append("error: no reason stored after OK calls")
     door.host_threads(2)
@@ -830,6 +1044,8 @@ def run(done, raises):
 
     check_fft(door, done, raises)
     check_gemm(door, done, raises)
+    check_segmented(door, done, raises)
+    check_auto_set(door, done, raises)
 
     # ---- handles and the context's end ----
     plane = door.plane_wrap(np.zeros(2))
