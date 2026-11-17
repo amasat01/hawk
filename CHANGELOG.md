@@ -2,7 +2,7 @@
 
 Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases): the notes are the pull request body.
 
-## 0.7.8 (unreleased)
+## 0.7.8 (2026-11-17)
 
 ### Fixed
 
