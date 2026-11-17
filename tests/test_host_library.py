@@ -26,7 +26,9 @@ from types import SimpleNamespace
 import _deployable as D
 import numpy as np
 import pytest
+from ospreys.cuda import nvrtc as device_nvrtc
 from ospreys.cuda import toolchain as device_toolchain
+from raptor.errors import RaptorError
 
 import hawk.runtime as R
 from hawk.artifact import build, build_bundle, request
@@ -306,6 +308,12 @@ def stand_in(tmp_path, monkeypatch):
     monkeypatch.delenv("HAWK_DEVICE_COMPILER", raising=False)
     monkeypatch.setattr(device_toolchain, "toolkit_archs",
                         lambda kind=None: ("stand-in toolkit", (50, 90)))
+
+    def no_driver():
+        raise RaptorError("the stand-in machine has no device driver")
+
+    # the image form follows the driver's release: these rows state a machine with none
+    monkeypatch.setattr(device_nvrtc, "driver_cuda_version", no_driver)
     return log
 
 

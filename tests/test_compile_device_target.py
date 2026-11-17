@@ -21,8 +21,6 @@ import pytest
 from _toolchain import real_arch
 
 from hawk.compile import CompileOptions, compile_source
-from hawk.compile import drivers as hdrivers
-from ospreys.cuda import driver as hdriver
 from hawk.compile import nvrtc as hnvrtc
 from hawk.compile import toolchain as tc
 from ospreys.cuda import toolchain as dtc
@@ -90,32 +88,6 @@ def test_nvcc_version_is_none_for_a_binary_with_no_release_line():
     assert dtc.nvcc_version("/nonexistent/hawk-probe-binary") is None
 
 
-def test_device_target_follows_select_target(monkeypatch):
-    """:func:`hawk.compile.drivers._device_target` wires nvcc's OWN parsed
-    version into the SAME law :func:`hawk.compile.nvrtc.select_target`
-    states, compared against the installed driver."""
-    monkeypatch.setattr(dtc, "nvcc_version", lambda compiler: (99, 9))
-    monkeypatch.setattr(hnvrtc, "driver_cuda_version", lambda: (1, 0))
-    assert hdriver._device_target("nvcc", "sm_75") == "cubin"
-
-    monkeypatch.setattr(dtc, "nvcc_version", lambda compiler: (1, 0))
-    monkeypatch.setattr(hnvrtc, "driver_cuda_version", lambda: (99, 9))
-    assert hdriver._device_target("nvcc", "sm_75") == "ptx"
-
-
-def test_device_target_is_cubin_when_the_driver_is_unreachable(monkeypatch):
-    """A headless, GPU-less build-time compile (no device to ask) must not
-    turn into a hard failure that never existed before target selection did
-    -- it answers the conservative CUBIN, the same "unknown" :func:`select_target`
-    already gives a missing version."""
-    def _no_driver():
-        raise HawkError("no CUDA driver reachable (simulated)")
-
-    monkeypatch.setattr(dtc, "nvcc_version", lambda compiler: (12, 9))
-    monkeypatch.setattr(hnvrtc, "driver_cuda_version", _no_driver)
-    assert hdriver._device_target("nvcc", "sm_75") == "cubin"
-
-
 def test_compile_source_emits_cubin_when_nvcc_outruns_the_driver(monkeypatch, tmp_path):
     """The end-to-end AOT leg: force the "nvcc newer than driver" condition
     deterministically and check the ACTUAL compiled bytes are an ELF CUBIN,
@@ -177,12 +149,7 @@ def test_compile_source_keys_differ_by_opt_level_for_the_AOT_nvcc_path(
     assert o3.artifact.is_file() and o0.artifact.is_file()
 
 
-def test_device_target_is_ptx_for_a_virtual_arch(monkeypatch):
-    """A virtual ``compute_<N>`` arch (the arch policy's no-GPU and
-    above-the-toolkit answers) is PTX whatever the versions say: there is no
-    CUBIN for a virtual arch."""
-    monkeypatch.setattr(dtc, "nvcc_version", lambda compiler: (99, 9))
-    monkeypatch.setattr(hnvrtc, "driver_cuda_version", lambda: (1, 0))
-    assert hdriver._device_target("nvcc", "compute_75") == "ptx"
+def test_device_flags_refuse_a_cubin_for_a_virtual_arch():
+    """A virtual ``compute_<N>`` arch has no CUBIN: the nvcc argv builder refuses one by name."""
     with pytest.raises(HawkError, match="virtual"):
         dtc.device_flags(level="O3", include=(), arch="compute_75", target="cubin")

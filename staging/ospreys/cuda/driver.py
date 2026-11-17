@@ -1,14 +1,11 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The device compile facts: the ptxas report parser and the AOT target choice."""
+"""The device compile facts: the ptxas report parser."""
 
 from __future__ import annotations
 
 import re
-
-from . import nvrtc as _nvrtc_driver
-from . import toolchain as dtc
 
 _PTXAS_ENTRY = re.compile(r"Compiling entry function '([^']+)'")
 
@@ -41,18 +38,3 @@ def _grow(entry: dict, **values: str) -> None:
     for key, value in values.items():
         entry[key] = max(entry.get(key, 0), int(value))
 
-
-def _device_target(compiler: str, arch: str) -> str:
-    """``"cubin"`` or ``"ptx"`` for an AOT nvcc device compile at the
-    resolved ``arch``. A virtual ``compute_<N>`` arch (the arch policy's
-    no-GPU and above-the-toolkit answers) is always PTX
-    (:func:`ospreys.cuda.nvrtc.forced_target`); otherwise the device
-    artifact that loads on the driver present
-    (:func:`ospreys.cuda.nvrtc.select_target`), compared against nvcc's own
-    parsed version rather than NVRTC's."""
-    forced = _nvrtc_driver.forced_target(arch)
-    if forced is not None:
-        return forced
-    return _nvrtc_driver.select_target(
-        dtc.nvcc_version(compiler),
-        _nvrtc_driver._probed(_nvrtc_driver.driver_cuda_version))

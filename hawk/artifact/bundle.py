@@ -32,7 +32,6 @@ through to a real publish; :func:`publish_log` names which and why.
 from __future__ import annotations
 
 import contextvars
-import functools
 import hashlib
 import json
 import os
