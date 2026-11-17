@@ -2,6 +2,7 @@
 //! builds a shared object whose only exported symbol is the meta function and whose data is read-only. The headers are found through
 //! EAGLE_DOOR_DIR, which names the include root that holds `eagle/door/eg_door.h` and `eagle/door/eg_unit_meta.h` (the tree's and the
 //! installed form); without it each test prints that it skipped and passes.
+mod common;
 use osprey_host::lower::meta_c;
 use osprey_host::lower::unit_meta::*;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,7 @@ use std::process::Command;
 fn door_dir() -> Option<PathBuf> {
     let dir = std::env::var_os("EAGLE_DOOR_DIR").map(PathBuf::from);
     if dir.is_none() {
-        println!("meta_c: skipped, EAGLE_DOOR_DIR is not set");
+        common::skipped(Some("EAGLE_DOOR_DIR"), "EAGLE_DOOR_DIR is not set");
     }
     dir
 }

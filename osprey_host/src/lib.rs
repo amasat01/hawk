@@ -5,6 +5,7 @@
 /// The wings crate answers the analyses the writers declare as external functions: naming it here links it, and a
 /// function it lacks fails the build of the library (no symbol is left unresolved).
 extern crate raptor_wings;
+mod device_build;
 pub mod facts;
 mod host_build;
 pub mod lower;

@@ -11,6 +11,7 @@ out=$(mktemp "${TMPDIR:-/tmp}/gate.XXXXXX")
 trap 'rm -f "$out" "$out".*' EXIT
 CFILES=$(git ls-files loader include binding/template | grep -E '\.(c|h)$')
 
+leg_skips=0; test_skips=0
 need() { [ "$2" -gt 0 ] || { echo "RED: $1 examined nothing"; return 1; }; }
 passed() { awk '/^test result:/ { p += $4 } END { print p + 0 }' "$out"; }
 
@@ -29,11 +30,28 @@ leg_clippy() {
   [ $rc -eq 0 ] || { echo "RED: clippy"; return 1; }; need clippy "$n"
 }
 
+# Every test file is compiled in (the old-contract feature) and must contribute tests: a file that contributes none is red. A test that
+# checks nothing says so with one `skipped: <test>: <reason> [<variable>]` line (tests/common/mod.rs); the count is shown, and a skip on a
+# variable that is set in this environment (stated but not honoured) is red.
 leg_test() {
-  cargo test --release -j "$JOBS" >"$out" 2>&1
+  cargo test --release -j "$JOBS" --features old-contract -- --nocapture >"$out" 2>&1
   rc=$?; n=$(passed); grep -E "FAILED|panicked|^error" "$out" | head -5
-  echo "examined: $n tests passed"
-  [ $rc -eq 0 ] || { echo "RED: cargo test"; return 1; }; need test "$n"
+  per_file=$(awk '/^ *Running tests\// { name = $2 } /^running [0-9]+ tests?$/ && name != "" { print name, $2; name = "" }' "$out")
+  files=; empty=
+  for f in tests/*.rs; do
+    count=$(echo "$per_file" | awk -v f="$f" '$1 == f { c = $2 } END { print c + 0 }')
+    files="$files $(basename "$f" .rs)=$count"
+    [ "$count" -gt 0 ] || empty="$empty $f"
+  done
+  skips=$(grep -c '^skipped: ' "$out"); test_skips=$skips
+  echo "examined: $n tests passed, $skips skipped; per file:$files"
+  [ $rc -eq 0 ] || { echo "RED: cargo test"; return 1; }
+  [ -z "$empty" ] || { echo "RED: test files that contribute no tests:$empty"; return 1; }
+  for v in $(grep -o '^skipped: .*\[[A-Z_]*\]$' "$out" | sed -E 's/.*\[([A-Z_]*)\]$/\1/' | sort -u); do
+    eval "state=\${$v+set}"
+    [ "$state" != set ] || { echo "RED: a test was skipped on $v, which is set"; return 1; }
+  done
+  need test "$n"
 }
 
 # the built library exports exactly one symbol (check_exports.sh prints it)
@@ -66,7 +84,7 @@ leg_binding() {
 # the same for Python 3.9, the floor of the binding's stable ABI; skipped, with a line saying so, when no such interpreter exists
 leg_py39() {
   py39=${PYTHON39:-/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9}
-  if [ ! -x "$py39" ]; then echo "skipped: no Python 3.9 interpreter at $py39 (set PYTHON39 and PY39_INCLUDE)"; return 0; fi
+  if [ ! -x "$py39" ]; then echo "skipped: no Python 3.9 interpreter at $py39 (set PYTHON39 and PY39_INCLUDE)"; leg_skips=$((leg_skips + 1)); return 0; fi
   "$py39" -c 'import sys; sys.exit(sys.version_info[:2] != (3, 9))' || { echo "RED: $py39 is not Python 3.9"; return 1; }
   build_and_test_binding "$py39" "${PY39_INCLUDE:-$(dirname "$(dirname "$py39")")/Headers}"
 }
@@ -94,7 +112,7 @@ CFORMAT_MAJOR=23
 leg_cformat() {
   command -v clang-format >/dev/null 2>&1 || { echo "RED: clang-format is not on PATH"; return 1; }
   major=$(clang-format --version | sed -E 's/^.*version ([0-9]+)\..*$/\1/')
-  if [ "$major" != "$CFORMAT_MAJOR" ]; then echo "skipped: clang-format $major found, the C files are pinned to $CFORMAT_MAJOR"; return 0; fi
+  if [ "$major" != "$CFORMAT_MAJOR" ]; then echo "skipped: clang-format $major found, the C files are pinned to $CFORMAT_MAJOR"; leg_skips=$((leg_skips + 1)); return 0; fi
   n=$(echo "$CFILES" | grep -c .); echo "examined: $n C files in loader/ include/ binding/template/"; need cformat "$n" || return 1
   # shellcheck disable=SC2086
   clang-format --dry-run -Werror $CFILES >"$out" 2>&1 || { grep -E "error" "$out" | head -5; echo "RED: clang-format differs"; return 1; }
@@ -131,7 +149,7 @@ leg_replay() {
 oracle() {
   cargo test --release -j "$JOBS" --features old-contract --test facts_oracle -- --nocapture >"$out" 2>&1 \
     || { grep -E "FAILED|panicked|^error" "$out" | head -3; echo "RED: facts oracle"; return 1; }
-  if grep -q "^skipped: no recording" "$out"; then grep "^skipped: no recording" "$out" | head -1; return 0; fi
+  if grep -q "^skipped: .*no recording" "$out"; then grep "^skipped: .*no recording" "$out" | head -1; return 0; fi
   echo "examined: facts oracle, $(passed) test passed"; need oracle "$(passed)"
 }
 
@@ -141,5 +159,6 @@ for l in $legs; do
   echo "== $l"
   if "leg_$l"; then green="$green $l"; else red="$red $l"; fi
 done
+echo "skipped in total: $test_skips test(s), $leg_skips leg(s) (python3.9 / clang-format)"
 echo "GREEN:$green"; [ -z "$red" ] || echo "RED:$red"
 [ -z "$red" ]

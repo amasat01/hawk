@@ -3,6 +3,7 @@
 //! tool's own, separate reading of the `or` chain). Runs where the recordings are found (`OSPREY_CORPUS`, else the folder beside the
 //! clones); without them it says so and skips.
 #![cfg(feature = "old-contract")]
+mod common;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -14,7 +15,10 @@ fn every_recorded_kernel_with_a_finish_has_the_recorded_number_of_events() {
     );
     let calls = corpus.join("k7e_record");
     if !calls.is_dir() {
-        eprintln!("skipped: no recording at {}", calls.display());
+        common::skipped(
+            Some("OSPREY_CORPUS"),
+            &format!("no recording at {}", calls.display()),
+        );
         return;
     }
     let run = Command::new(env!("CARGO_BIN_EXE_kreplay"))

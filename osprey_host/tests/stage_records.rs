@@ -3,6 +3,7 @@
 //! holds a dispatch record of its own. Each kernel is replayed from its recorded call and the C source of its meta is read.
 //! Runs where the recordings are found (`OSPREY_CORPUS`, else the folder beside the clones); otherwise it skips with a line.
 #![cfg(feature = "old-contract")]
+mod common;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -15,7 +16,10 @@ fn meta_source(recording: &str, test: &str, units: &[&str], kernel: &str) -> Opt
     );
     let folder = corpus.join(recording);
     if !folder.exists() {
-        println!("skipped: no recording at {}", folder.display());
+        common::skipped(
+            Some("OSPREY_CORPUS"),
+            &format!("no recording at {}", folder.display()),
+        );
         return None;
     }
     let mut id = None;

@@ -2,6 +2,7 @@
 //! the facts answer for the machine that recording states (its instruction set, cache sizes and host profile), so the rules of
 //! the cards are what is tested. Runs only where the recordings are found (`OSPREY_CORPUS`, else the folder beside the clones).
 #![cfg(feature = "old-contract")]
+mod common;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -13,7 +14,10 @@ fn report(name: &str) -> Option<String> {
     );
     let texts = corpus.join(name).join("texts.jsonl");
     if !texts.exists() {
-        eprintln!("skipped: no recording at {}", texts.display());
+        common::skipped(
+            Some("OSPREY_CORPUS"),
+            &format!("no recording at {}", texts.display()),
+        );
         return None;
     }
     let out = Command::new(env!("CARGO_BIN_EXE_treplay"))

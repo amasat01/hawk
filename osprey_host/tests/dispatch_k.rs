@@ -5,6 +5,7 @@
 //! Runs where the recordings are found (`OSPREY_CORPUS`, else the folder beside the clones); each recording that is not there is skipped
 //! with a line.
 #![cfg(feature = "old-contract")]
+mod common;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
@@ -50,13 +51,19 @@ fn every_group_states_the_recorded_branch_count_and_every_sweep_is_the_switch_fo
     let mut loops: Vec<String> = vec![];
     let mut pairs: BTreeMap<String, usize> = BTreeMap::new();
     if !RECORDINGS.iter().any(|name| corpus.join(name).exists()) {
-        println!("skipped: no recording under {}", corpus.display());
+        common::skipped(
+            Some("OSPREY_CORPUS"),
+            &format!("no recording under {}", corpus.display()),
+        );
         return;
     }
     for name in RECORDINGS {
         let folder = corpus.join(name);
         if !folder.exists() {
-            println!("skipped: no recording at {}", folder.display());
+            common::skipped(
+                Some("OSPREY_CORPUS"),
+                &format!("no recording at {}", folder.display()),
+            );
             continue;
         }
         let out = Command::new(env!("CARGO_BIN_EXE_kreplay"))

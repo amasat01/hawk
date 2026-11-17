@@ -293,12 +293,12 @@ fn a_stated_machine_is_refused_by_name() {
     );
     assert_eq!(
         why("gcc", r#"{"device_arch":"sm_61"}"#),
-        "stated machine: device_arch and device_release are for the cuda target"
+        "stated machine: device_arch, device_release and driver_release are for the cuda target"
     );
     let device = stated("cuda", &line("12.6"), r#"{"isa":"arm64"}"#).unwrap_err();
     assert_eq!(
         device,
-        "stated machine: only device_arch and device_release are for the cuda target"
+        "stated machine: only device_arch, device_release, driver_release and opt_level are for the cuda target"
     );
 }
 
@@ -320,11 +320,15 @@ fn a_device_answer_states_the_compile_command_as_data() {
         &stated,
     )
     .unwrap();
+    // no driver is stated, so the image is a cubin, and its compile asks for the resource figures
     let want = concat!(
-        r#""device_build":{"compiler":"nvcc 12.9","ptx_isa":88,"flags":{"#,
+        r#""device_build":{"compiler":"nvcc 12.9","ptx_isa":88,"image_format":"cubin","compile":["#,
+        r#""{compiler}","-cubin","-std=c++20","-arch=sm_80","-O3","-Xptxas","-O3","-Xptxas","-v","#,
+        r#""-I","{include:aether}","-I","{include:eagle}","{defines}","-I{include:facts}","#,
+        r#""-MD","-MF","{depfile}","{source}","-o","{output}"],"flags":{"#,
         r#""ptx":["-ptx","-std=c++20","-arch=sm_80","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets"],"#,
         r#""cubin":["-cubin","-std=c++20","-arch=sm_80","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets"],"#,
-        r#""fatbin":["-fatbin","-std=c++20","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets","-gencode","arch=compute_80,code=[sm_80,compute_80]"]},"embed":{"compile":["#
+        r#""fatbin":["-fatbin","-std=c++20","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets","-gencode","arch=compute_80,code=[sm_80,compute_80]"]},"embed":{"compile":["{host_compiler}","#
     );
     // the embed recipe follows the flags; its own test is in set_text.rs
     assert!(text.contains(want), "{text}");
@@ -364,7 +368,7 @@ fn a_device_compiler_line_without_a_release_takes_the_stated_one() {
     }
     assert_eq!(
         stated("host", "clang", r#"{"device_release":"12.6"}"#).unwrap_err(),
-        "stated machine: device_arch and device_release are for the cuda target"
+        "stated machine: device_arch, device_release and driver_release are for the cuda target"
     );
 }
 

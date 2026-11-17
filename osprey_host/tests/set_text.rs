@@ -3,6 +3,7 @@
 //! in the first text) and once for the texts of a set (no block anywhere). The compile and link legs need the aether tree beside the
 //! clones, `EAGLE_ROOT` and `EAGLE_DOOR_DIR`, and a system C++ compiler; each prints that it skipped when one is absent.
 #![cfg(feature = "old-contract")]
+mod common;
 use aether_writers::contract::types::Exports;
 use aether_writers::contract::Json;
 use osprey_host::lower::request::KernelAnswer;
@@ -183,10 +184,18 @@ impl Tools {
     fn found() -> Option<Tools> {
         let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
         let (Some(eagle), Some(door)) = (var("EAGLE_ROOT"), var("EAGLE_DOOR_DIR")) else {
-            println!("set_text: skipped, EAGLE_ROOT and EAGLE_DOOR_DIR are not both set");
+            let missing = if var("EAGLE_ROOT").is_none() {
+                "EAGLE_ROOT"
+            } else {
+                "EAGLE_DOOR_DIR"
+            };
+            common::skipped(Some(missing), &format!("{missing} is not set"));
             return None;
         };
-        let version = Command::new("c++").arg("--version").output().ok()?;
+        let Ok(version) = Command::new("c++").arg("--version").output() else {
+            common::skipped(None, "no system C++ compiler");
+            return None;
+        };
         let line = String::from_utf8_lossy(&version.stdout);
         let identity = format!("c++ || {} || 0", line.lines().next().unwrap_or(""));
         let facts_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("facts");
@@ -218,13 +227,15 @@ impl Tools {
         for item in template.arr() {
             let item = item.str().unwrap();
             match item {
-                "{compiler}" => argv.push("c++".into()),
+                "{compiler}" | "{host_compiler}" => argv.push("c++".into()),
                 "{objects}" => {
                     argv.extend(objects.iter().map(|o| o.to_string_lossy().into_owned()))
                 }
                 "{include:aether}" => argv.push(self.aether.to_string_lossy().into_owned()),
                 "{include:eagle}" => argv.push(self.eagle.to_string_lossy().into_owned()),
                 "{include:door}" => argv.push(self.door.to_string_lossy().into_owned()),
+                // these builds state no defines
+                "{defines}" => {}
                 _ => argv.push(
                     places
                         .iter()
@@ -330,10 +341,6 @@ int main(int, char** argv) {
 #[test]
 fn the_units_of_three_kernels_and_the_set_text_link_into_one_library_that_resolves_every_entry() {
     let Some(tools) = Tools::found() else { return };
-    if Command::new("c++").arg("--version").output().is_err() {
-        println!("set_text: skipped, no system C++ compiler");
-        return;
-    }
     let dir = scratch("link");
     let answers = three();
     let mut objects = vec![];
@@ -424,15 +431,9 @@ fn shipped() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("facts")
 }
 
-/// The assembler source of an embed recipe for an image format and an object format, with its places filled.
-fn embed_source(embed: &Json, image: &str, object: &str, symbol: &str, path: &Path) -> String {
-    let source = embed
-        .get("source")
-        .unwrap()
-        .get(image)
-        .unwrap()
-        .get(object)
-        .unwrap();
+/// The assembler source of an embed recipe for an operating system, with its places filled.
+fn embed_source(embed: &Json, system: &str, symbol: &str, path: &Path) -> String {
+    let source = embed.get("source").unwrap().get(system).unwrap();
     source
         .str()
         .unwrap()
@@ -442,13 +443,12 @@ fn embed_source(embed: &Json, image: &str, object: &str, symbol: &str, path: &Pa
 }
 
 #[test]
-fn the_elf_recipe_is_what_the_data_states_it_cannot_be_assembled_here() {
+fn the_linux_recipe_is_what_the_data_states_it_cannot_be_assembled_here() {
     let embed = embed_of(&shipped()).unwrap();
-    let text = |image| embed_source(&embed, image, "elf", "u__image", Path::new("/i.bin"));
+    let text = embed_source(&embed, "linux", "u__image", Path::new("/i.bin"));
     let body = "\t.section .rodata\n\t.balign 16\n\t.globl u__image\n\t.type u__image, %object\nu__image:\n\t.incbin \"/i.bin\"\nu__image__end:\n";
     let rest = "\t.size u__image, .-u__image\n\t.globl u__image_size\n\t.type u__image_size, %object\n\t.balign 8\nu__image_size:\n\t.quad u__image__end - u__image\n\t.size u__image_size, 8\n\t.section .note.GNU-stack,\"\",%progbits\n";
-    assert_eq!(text("cubin"), format!("{body}{rest}"));
-    assert_eq!(text("ptx"), format!("{body}\t.byte 0\n{rest}"));
+    assert_eq!(text, format!("{body}{rest}"));
     let argv: Vec<&str> = embed
         .get("compile")
         .unwrap()
@@ -459,7 +459,7 @@ fn the_elf_recipe_is_what_the_data_states_it_cannot_be_assembled_here() {
     assert_eq!(
         argv,
         [
-            "{compiler}",
+            "{host_compiler}",
             "-x",
             "assembler",
             "-c",
@@ -485,26 +485,48 @@ fn edited_facts(name: &str, from: &str, to: &str) -> PathBuf {
 }
 
 #[test]
-fn an_image_format_or_an_object_format_without_a_recipe_is_refused_by_name() {
-    let no_image = edited_facts("embed_image", "\"cubin\": [],", "");
-    let said = embed_of(&no_image).unwrap_err();
+fn each_system_embeds_one_incbin_between_the_symbol_and_its_end_with_no_byte_after_it() {
+    let embed = embed_of(&shipped()).unwrap();
+    // what a line may be between the end label and the size word: names, types, sizes and alignment, never data
+    let layout_only = [".size", ".globl", ".type", ".balign", ".p2align"];
+    for (system, prefix) in [("linux", ""), ("macos", "_")] {
+        let text = embed_source(&embed, system, "u", Path::new("/i.bin"));
+        let lines: Vec<&str> = text.lines().collect();
+        let at = |label: &str| lines.iter().position(|l| *l == label).expect(label);
+        let (start, end) = (at(&format!("{prefix}u:")), at(&format!("{prefix}u__end:")));
+        let size = at(&format!("{prefix}u_size:"));
+        assert_eq!(&lines[start + 1..end], ["\t.incbin \"/i.bin\""], "{system}");
+        for line in &lines[end + 1..size] {
+            let directive = line.split_whitespace().next().unwrap();
+            assert!(layout_only.contains(&directive), "{system}: {line}");
+        }
+    }
+}
+
+#[test]
+fn an_operating_system_without_a_recipe_and_a_key_the_data_does_not_know_are_refused_by_name() {
+    let tail = edited_facts(
+        "embed_tail",
+        "\"compile\":",
+        "\"image_tail\": {}, \"compile\":",
+    );
+    let said = embed_of(&tail).unwrap_err();
     assert!(
-        said.contains("no embed recipe for the image format cubin"),
+        said.contains("cuda_image.json has the unknown key image_tail"),
         "{said}"
     );
-    let no_object = edited_facts("embed_object", "\"macho\": [", "\"other\": [");
+    let no_object = edited_facts("embed_object", "\"macos\": [", "\"other\": [");
     let said = embed_of(&no_object).unwrap_err();
     assert!(
         said.contains("cuda_image.json has the unknown key other"),
         "{said}"
     );
-    let missing = edited_facts("embed_missing", "\"elf\": [", "\"other\": [");
+    let missing = edited_facts("embed_missing", "\"linux\": [", "\"other\": [");
     assert!(embed_of(&missing).is_err());
 }
 
 /// A program that opens the library at its first argument and, for every unit that names a device image, compares the bytes and
-/// the size read through the two symbols the record names with the file `<folder>/<unit>.bin` (argv 2); a text image (PTX, format 1)
-/// must have a zero byte after its size.
+/// the size read through the two symbols the record names with the file `<folder>/<unit>.bin` (argv 2).
 const IMAGE_READER: &str = r#"
 #include <dlfcn.h>
 #include <cstdio>
@@ -529,9 +551,8 @@ int main(int, char** argv) {
         std::vector<unsigned char> blob(1 << 20);
         size_t n = f ? std::fread(blob.data(), 1, blob.size(), f) : 0;
         bool same = bytes && size && *size == n && std::memcmp(bytes, blob.data(), n) == 0;
-        bool ended = unit->device_image_format != 1 || (bytes && bytes[n] == 0);
-        std::printf("%s %s %zu %s\n", unit->name, same && ended ? "same" : "DIFFERENT", n, unit->device_image);
-        bad += !(same && ended);
+        std::printf("%s %s %zu %s\n", unit->name, same ? "same" : "DIFFERENT", n, unit->device_image);
+        bad += !same;
     }
     return bad ? 4 : 0;
 }
@@ -542,10 +563,10 @@ fn images_embedded_by_the_recipe_are_read_back_byte_for_byte_through_the_symbols
 {
     let Some(tools) = Tools::found() else { return };
     let embed = embed_of(&shipped()).unwrap();
-    let object = if cfg!(target_os = "macos") {
-        "macho"
+    let system = if cfg!(target_os = "macos") {
+        "macos"
     } else {
-        "elf"
+        "linux"
     };
     let dir = scratch("embed");
     let units = ["80036.18__matrix_cuda", "81814.4_kg_fwd_cuda"];
@@ -553,22 +574,17 @@ fn images_embedded_by_the_recipe_are_read_back_byte_for_byte_through_the_symbols
     let mut objects = vec![];
     for (at, unit) in answers.iter().flat_map(|a| &a.units).enumerate() {
         let meta = &unit.meta;
-        let (symbol, image) = (
-            meta.device_image.clone().expect("a device unit"),
-            format!("{:?}", meta.device_image_format).to_lowercase(),
-        );
+        let symbol = meta.device_image.clone().expect("a device unit");
         // a blob of known bytes in place of the image, which needs a device compiler that is not on this machine
-        let blob: Vec<u8> = (0..4000 + 37 * at)
+        // (a zero byte and a 0xff byte first, and a length that is no multiple of the 16-byte alignment)
+        let mut blob: Vec<u8> = (0..4001 + 37 * at)
             .map(|i| (i * 31 + at * 7 + i / 251) as u8)
             .collect();
+        blob[..2].copy_from_slice(&[0x00, 0xff]);
         let path = dir.join(format!("{}.bin", meta.name));
         std::fs::write(&path, &blob).unwrap();
         let source = dir.join(format!("{}.s", meta.name));
-        std::fs::write(
-            &source,
-            embed_source(&embed, &image, object, &symbol, &path),
-        )
-        .unwrap();
+        std::fs::write(&source, embed_source(&embed, system, &symbol, &path)).unwrap();
         let place = [
             ("{source}", source.to_string_lossy().into_owned()),
             (

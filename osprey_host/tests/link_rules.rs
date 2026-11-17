@@ -1,6 +1,7 @@
 //! The library's table of valid links against the runtime's own: the rows of `EG_LINK_RULES(X)` in its header and the library's
 //! constant must be the same set. Runs only where the runtime's tree is found (`EAGLE_DOOR_DIR`); without it, it says so and skips.
 #![cfg(feature = "old-contract")]
+mod common;
 use osprey_host::lower::links::LINK_RULES;
 use osprey_host::lower::unit_meta::{DerivedRole, LinkForm, LinkWhat};
 use std::collections::BTreeSet;
@@ -66,7 +67,7 @@ fn differing(ours: &BTreeSet<[String; 3]>, theirs: &BTreeSet<[String; 3]>) -> Ve
 #[test]
 fn the_library_table_is_the_headers_table() {
     let Some(door) = std::env::var_os("EAGLE_DOOR_DIR") else {
-        eprintln!("skipped: EAGLE_DOOR_DIR is not set");
+        common::skipped(Some("EAGLE_DOOR_DIR"), "EAGLE_DOOR_DIR is not set");
         return;
     };
     let header =

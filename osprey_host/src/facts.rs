@@ -3,7 +3,7 @@
 //! the select weights; the probe states the instruction set and the cache sizes. The answer is the JSON of the typed
 //! contract's `machine` record, which the caller hands back to a render without reading it. A file that does not match its
 //! schema is refused by name at load.
-use crate::host_build;
+use crate::{device_build, host_build};
 use aether_writers::contract::types::Caches;
 use aether_writers::contract::{Contract, Json};
 pub use raptor_wings::chain::FusionRow;
@@ -41,7 +41,9 @@ pub struct Stated {
     pub device_release: Option<String>,
     /// Where the headers of a host build are: `roots` or `served`. A host answer needs it.
     pub headers: Option<String>,
-    /// The optimisation level of the host build (`O0` to `O3`), in place of the default.
+    /// The release of the GPU driver as `major.minor`, for a device build; none means the driver is not known.
+    pub driver_release: Option<String>,
+    /// The optimisation level of a build (`O0` to `O3`), in place of the default.
     pub opt_level: Option<String>,
     /// The release of a GCC compiler as `major.minor`, in place of the one its identity's version line ends with.
     pub gcc_release: Option<String>,
@@ -92,6 +94,7 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         "host_profile",
         "device_arch",
         "device_release",
+        "driver_release",
         "headers",
         "opt_level",
         "gcc_release",
@@ -138,6 +141,7 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         host_profile: name("host_profile")?,
         device_arch: name("device_arch")?,
         device_release: name("device_release")?,
+        driver_release: name("driver_release")?,
         headers: name("headers")?,
         opt_level: name("opt_level")?,
         gcc_release: name("gcc_release")?,
@@ -466,9 +470,12 @@ fn host_machine(
     probe: &Probe,
     stated: &Stated,
 ) -> Result<Json, Failed> {
-    if stated.device_arch.is_some() || stated.device_release.is_some() {
+    if stated.device_arch.is_some()
+        || stated.device_release.is_some()
+        || stated.driver_release.is_some()
+    {
         return Err(Failed::Bad(
-            "stated machine: device_arch and device_release are for the cuda target".into(),
+            "stated machine: device_arch, device_release and driver_release are for the cuda target".into(),
         ));
     }
     let isa_name = stated.isa.as_ref().unwrap_or(&probe.isa);
@@ -584,16 +591,22 @@ fn device_tool(identity: &str, stated: Option<&str>) -> Result<(String, String),
     Ok((tool.into(), release))
 }
 
-/// A list of texts of a card, each with the architecture's names put in: `{sm}` is the physical name (`sm_80`) and `{virtual}` the
-/// virtual one (`compute_80`), both made from the number the stated architecture ends in (`sm_80`, `compute_80` or `80a`).
-fn flags_of(card: &Json, file: &str, key: &str, arch: &str) -> Result<Json, String> {
+/// The physical (`sm_80`) and the virtual (`compute_80`) name of a device architecture, both made from the number the stated
+/// name ends in (`sm_80`, `compute_80` or `80a`).
+pub(crate) fn arch_names(arch: &str) -> Result<(String, String), String> {
     let number = &arch[arch
         .find(|c: char| c.is_ascii_digit())
         .unwrap_or(arch.len())..];
     if number.is_empty() {
         return Err(format!("facts: {arch} is not a device architecture name"));
     }
-    let (sm, virtual_arch) = (format!("sm_{number}"), format!("compute_{number}"));
+    Ok((format!("sm_{number}"), format!("compute_{number}")))
+}
+
+/// A list of texts of a card, each with the architecture's names put in: `{sm}` is the physical name (`sm_80`) and `{virtual}` the
+/// virtual one (`compute_80`), both made from the number the stated architecture ends in (`sm_80`, `compute_80` or `80a`).
+fn flags_of(card: &Json, file: &str, key: &str, arch: &str) -> Result<Json, String> {
+    let (sm, virtual_arch) = arch_names(arch)?;
     let mut flags = vec![];
     for flag in member(card, file, key)?.arr() {
         let Json::Str(text) = flag else {
@@ -607,49 +620,35 @@ fn flags_of(card: &Json, file: &str, key: &str, arch: &str) -> Result<Json, Stri
     Ok(Json::Arr(flags))
 }
 
-/// The object formats an image can be embedded as, as `cuda_image.json` names them.
-const OBJECT_FORMATS: [&str; 2] = ["elf", "macho"];
+/// The operating systems an image can be embedded for, as `cuda_image.json` and the link recipe of `host_build.json` name them.
+const SYSTEMS: [&str; 2] = ["linux", "macos"];
 
-/// The recipe that turns an image file into an object of the unit library: the argv that assembles a source with the host compiler,
-/// and the assembler source for each image format and object format, with its places `{symbol}`, `{size_symbol}` and
-/// `{image_path}` left for the caller. The image's tail (a text image ends with a zero byte after its stated size) is written in
-/// by the image format. An image format or an object format the data has no recipe for is refused by name.
-fn embed_recipe(card: &Json, file: &str, formats: &[&str]) -> Result<Json, Failed> {
+/// The recipe that turns an image file into an object of the unit library: the argv that assembles a source with the host
+/// compiler (`{host_compiler}`, the compiler of the host build, not the device compiler), and the assembler source for each
+/// operating system, with its places `{symbol}`, `{size_symbol}` and `{image_path}` left for the caller. The image is embedded as
+/// its file holds it, whatever its form, and the size symbol counts exactly those bytes; the loader that reads an image
+/// terminates it itself. An operating system the data has no recipe for is refused by name.
+fn embed_recipe(card: &Json, file: &str) -> Result<Json, Failed> {
     let embed = member(card, file, "embed")?;
-    closed(embed, file, &["compile", "image_tail", "object_formats"])?;
-    let tails = member(embed, file, "image_tail")?;
-    let objects = member(embed, file, "object_formats")?;
-    closed(objects, file, &OBJECT_FORMATS)?;
-    let mut by_image = vec![];
-    for format in formats {
-        if tails.get(format).is_none() {
+    closed(embed, file, &["compile", "source"])?;
+    let systems = member(embed, file, "source")?;
+    closed(systems, file, &SYSTEMS)?;
+    let mut by_system = vec![];
+    for system in SYSTEMS {
+        if systems.get(system).is_none() {
             return Err(Failed::Bad(format!(
-                "facts: {file} has no embed recipe for the image format {format}"
+                "facts: {file} has no embed recipe for the operating system {system}"
             )));
         }
-        let tail = names_of(tails, file, format)?.join("\n");
-        let mut by_object = vec![];
-        for object in OBJECT_FORMATS {
-            if objects.get(object).is_none() {
-                return Err(Failed::Bad(format!(
-                    "facts: {file} has no embed recipe for the object format {object}"
-                )));
-            }
-            let mut source = String::new();
-            for line in names_of(objects, file, object)? {
-                match (line.as_str(), tail.is_empty()) {
-                    ("{tail}", true) => {}
-                    ("{tail}", false) => source += &format!("{tail}\n"),
-                    _ => source += &format!("{line}\n"),
-                }
-            }
-            by_object.push((object.to_string(), Json::Str(source)));
-        }
-        by_image.push((format.to_string(), Json::Obj(by_object)));
+        let source: String = names_of(systems, file, system)?
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect();
+        by_system.push((system.to_string(), Json::Str(source)));
     }
     Ok(Json::Obj(vec![
         ("compile".into(), flags_of_names(embed, file, "compile")?),
-        ("source".into(), Json::Obj(by_image)),
+        ("source".into(), Json::Obj(by_system)),
     ]))
 }
 
@@ -664,19 +663,26 @@ fn flags_of_names(card: &Json, file: &str, key: &str) -> Result<Json, String> {
 }
 
 /// The compile command of a device build as data: the compiler's short name (the tool and its release), the PTX version its
-/// release writes, the flags of an image of each format for the architecture and the recipe that embeds an image file in the unit
-/// library (`embed`), all from `cuda_image.json`. The flags carry no
-/// host compiler: the caller that runs the command adds its own (`-ccbin`). A release with no row is refused by name.
-fn device_build(
-    dir: &Path,
-    compiler: &str,
-    arch: &str,
-    release: Option<&str>,
-) -> Result<Json, Failed> {
+/// release writes, the form of image the build makes and the argv template of the compile that makes it (`device_build.rs`), the
+/// flags of an image of each format for the architecture and the recipe that embeds an image file in the unit library
+/// (`embed`), all from `cuda_image.json`. The device compiler's host compiler is the caller's (its environment), not a place
+/// of the argv. A release with no row is refused by name.
+fn device_build(dir: &Path, compiler: &str, arch: &str, stated: &Stated) -> Result<Json, Failed> {
     let file = "cuda_image.json";
-    let (tool, release) = device_tool(compiler, release)?;
+    let (tool, release) = device_tool(compiler, stated.device_release.as_deref())?;
     let card = read_file(dir, file)?;
-    closed(&card, file, &["ptx_isa", "flags", "embed"])?;
+    closed(
+        &card,
+        file,
+        &[
+            "ptx_isa",
+            "flags",
+            "compile",
+            "figures",
+            "image_format",
+            "embed",
+        ],
+    )?;
     let isa = match member(&card, file, "ptx_isa")?.get(&release).and_then(Json::int) {
         Some(isa) if isa > 0 => isa,
         _ => {
@@ -685,6 +691,13 @@ fn device_build(
             )))
         }
     };
+    let form = device_build::image_form(
+        &card,
+        file,
+        arch,
+        &release,
+        stated.driver_release.as_deref(),
+    )?;
     let formats = member(&card, file, "flags")?;
     let names = ["ptx", "cubin", "fatbin"];
     closed(formats, file, &names)?;
@@ -695,8 +708,13 @@ fn device_build(
     Ok(Json::Obj(vec![
         ("compiler".into(), Json::Str(format!("{tool} {release}"))),
         ("ptx_isa".into(), number(isa)),
+        ("image_format".into(), Json::Str(form.clone())),
+        (
+            "compile".into(),
+            device_build::compile(dir, &card, file, (&form, arch, stated.opt_level.as_deref()))?,
+        ),
         ("flags".into(), Json::Obj(flags)),
-        ("embed".into(), embed_recipe(&card, file, &names)?),
+        ("embed".into(), embed_recipe(&card, file)?),
     ]))
 }
 
@@ -707,7 +725,7 @@ fn device_build(
 fn device_machine(dir: &Path, compiler: &str, stated: &Stated) -> Result<Json, Failed> {
     if stated.isa.is_some() || stated.caches.is_some() || stated.host_profile.is_some() {
         return Err(Failed::Bad(
-            "stated machine: only device_arch and device_release are for the cuda target".into(),
+            "stated machine: only device_arch, device_release, driver_release and opt_level are for the cuda target".into(),
         ));
     }
     let file = "cuda.json";
@@ -717,7 +735,7 @@ fn device_machine(dir: &Path, compiler: &str, stated: &Stated) -> Result<Json, F
         Some(asked) => asked.clone(),
         None => text_of(&card, file, "default_arch")?,
     };
-    let build = device_build(dir, compiler, &arch, stated.device_release.as_deref())?;
+    let build = device_build(dir, compiler, &arch, stated)?;
     Ok(Json::Obj(vec![
         ("exact_libm".into(), Json::Bool(true)),
         ("routed_pow".into(), Json::Bool(false)),

@@ -3,6 +3,7 @@
 //! meta linked into one library. Runs only where the recordings (`OSPREY_CORPUS`, else the folder beside the clones) and the runtime's
 //! tree (`EAGLE_DOOR_DIR`, which holds `eagle/door/test/derived/*.c`) are found; the link leg also needs `EAGLE_ROOT`.
 #![cfg(feature = "old-contract")]
+mod common;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -104,9 +105,15 @@ fn replay(file: &str, call: &str, name: &str) -> Option<(PathBuf, String, PathBu
         PathBuf::from,
     );
     let calls = corpus.join("k7e_record").join(file);
-    let door = PathBuf::from(std::env::var_os("EAGLE_DOOR_DIR")?);
+    let Some(door) = std::env::var_os("EAGLE_DOOR_DIR").map(PathBuf::from) else {
+        common::skipped(Some("EAGLE_DOOR_DIR"), "EAGLE_DOOR_DIR is not set");
+        return None;
+    };
     if !calls.is_file() {
-        eprintln!("skipped: no recording at {}", calls.display());
+        common::skipped(
+            Some("OSPREY_CORPUS"),
+            &format!("no recording at {}", calls.display()),
+        );
         return None;
     }
     let dir = scratch(name);
@@ -174,6 +181,7 @@ fn the_rr_pend_set_is_one_table_that_compiles_and_links_with_one_self_check() {
     assert_eq!(mine, ["eg_unit_derived role=EG_DERIVED_TAPE_FUSED tape_on_slot=11 fused_steps_slot=7 n_links=7", "eg_unit_link slot=10 of_slot=7 what=EG_WHAT_PRIMAL_SLOT form=EG_FORM_VALUE reduced=0u", "eg_unit_link slot=8 of_slot=5 what=EG_WHAT_PRIMAL_SLOT form=EG_FORM_VALUE reduced=0u", "eg_unit_link slot=9 of_slot=6 what=EG_WHAT_PRIMAL_SLOT form=EG_FORM_VALUE reduced=0u"]);
     compiles(&ours, &door, &dir);
     let Some(eagle) = std::env::var_os("EAGLE_ROOT").map(PathBuf::from) else {
+        common::skipped(Some("EAGLE_ROOT"), "EAGLE_ROOT is not set");
         return;
     };
     let aether = Path::new(env!("CARGO_MANIFEST_DIR")).join("../aether");
