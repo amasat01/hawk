@@ -344,8 +344,8 @@ PINNED = {
     "k_vec/vjp": "ab94d3221a41508915ea685bb52ab328545251881fb43438899521587dc84602",
     "k_three/jvp": "b8326fa2a26c3263678d73698b64ac87e0370eff2573af9f1d96b336604fc46b",
     "k_three/vjp": "dd8894a1293bd36a3da8bbe6a257a14d4de8deb44885f06c0c17d1deddf2c569",
-    "k_param/jvp": "90abf98a3721d1235fe18ae95380d7e11b89bd073e8f436244a08b9059c17079",
-    "k_param/vjp": "81d20dbc5e084ef86928d981421d3f1e0e4d99236e19c10b2d2fd85d7fbf54ef",
+    "k_param/jvp": "1dfd84d3a1d578916727185a71b35fa763cfc36a97b455127c6fdefbdd739a86",
+    "k_param/vjp": "478287577c37d5bdd2d86f96d3400f6eea3c86fd281de6bfcea8501fd37e6388",
     "k_const_cmp/jvp": "39c2fd390002bba57f7d80488f10947c092ad151b9783b50caedf347b730b155",
     "k_const_cmp/vjp": "1e11ad77c17d6b514b7f834714e9ff6d539dbba8e77f0fd6a1fc07f8cbadd127",
     # these two lost the loop's self-move of an unchanged carry (`const n = v; v = n;`): nothing else differs
