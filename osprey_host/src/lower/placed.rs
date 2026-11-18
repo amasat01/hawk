@@ -102,6 +102,7 @@ pub(super) fn place_sinks(
             sinks.len(),
             thread_form,
             limits.runtime_min.as_ptr(),
+            limits.runtime_min.len(),
             limits.wide_min,
             &card.rolled_fold_min,
             form.as_ptr(),

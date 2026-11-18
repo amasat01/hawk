@@ -798,6 +798,102 @@ if lib_path:
     done.append("backend_card")
     assert c.backend_close(lib) is None
     done.append("backend_close")
+# ---- the fold threshold: the rule is the library's ----
+assert c.fold_exceeds(3, 2) is True and c.fold_exceeds(2, 2) is False
+e = raises(ValueError, lambda: c.fold_exceeds(3, None), "fold_exceeds: no threshold")
+assert "fold threshold" in str(e), str(e)
+sum3 = c.make_op("sum", [vec3], "")  # a reduction over the three elements of vec3
+assert c.fold_rolled(sum3, 2, "auto") is True and c.fold_rolled(sum3, 3, "auto") is False
+assert c.fold_rolled(sum3, None, "rolled") is True and c.fold_rolled(sum3, None, "static") is False
+assert c.fold_rolled(vec3, 2, "auto") is False
+raises(ValueError, lambda: c.fold_rolled(sum3, None, "auto"), "fold_rolled: auto with no threshold")
+done.append("fold_exceeds, fold_rolled: n > limit, the form words, a refusal with no threshold")
+
+# ---- the key run of a keyed sink: a constant key is one run over all the lanes ----
+keyed = list(expanded[1:4])
+assert c.lanes_key_run_in_kernel(keyed, keyed[0], 32, 1024) == ("proven", 32, True)
+done.append("lanes_key_run_in_kernel: a constant key is proven over the whole run")
+
+# ---- warp uniformity: a lane index differs across a warp, a constant does not ----
+lane = c.make("SampleIndex", "i32", [], None, [], "()")
+one_i = c.make("Const", "i32", [], None, [], "(('literal', 1),)")
+lane_sink = c.make("Assign", "i32", [], None, [lane], "(('name', 'o'),)")
+assert c.lanes_warp_uniform([lane_sink], 32, [lane, one_i]) == (False, True)
+assert c.lanes_warp_uniform([lane_sink], None, [lane, one_i]) == (False, True)
+done.append("lanes_warp_uniform: a lane index is not uniform, a constant is, with or without run")
+
+# ---- wide placement: a wide value stored whole to a mutable is placed in its plane ----
+wide_in = [c.make("Leaf", "f64", [100], None, [], LEAF % n) for n in ("wa", "wb")]
+wide_sum = c.make("Op", "f64", [100], None, wide_in, "(('kind', 'add'), ('literal', None))")
+wide_fields = "(('name', 'wy'), ('role', 'mutable'))"
+wide_sink = c.make("Assign", "f64", [100], None, [wide_sum], wide_fields)
+facts = ((2, 4, 0, 8, 4096), 64, 16, "auto", "")  # runtime_min, wide_min, rolled_min, form, taken
+assert c.wide_place([wide_sink], 1, *facts) == ((wide_sink,), False)
+placed, changed = c.wide_place([wide_sink], 0, *facts)
+(resident,) = placed[0].operands
+assert changed is True and resident != wide_sum
+assert c.wide_is_resident(resident) is True and c.wide_is_resident(wide_sum) is False
+plane = resident.operands[1]
+assert c.wide_is_scratch(plane) is True and c.wide_is_scratch(wide_in[0]) is False
+assert c.wide_is_tiled(plane) is False and c.wide_is_prior(plane) is False
+((row_plane, layout, width),) = c.wide_record([resident])
+assert (row_plane, layout, width) == (plane, "plane_major", 100)
+RW_ELEMENT = {"none": 0, "proxy": 1, "input": 2, "parts": 3, "splat": 4, "elementwise": 5}
+assert c.wide_element_kind(wide_in[0]) == RW_ELEMENT["input"]
+assert c.wide_element_kind(wide_sum) == RW_ELEMENT["elementwise"]
+assert c.wide_element_kind(resident) == RW_ELEMENT["proxy"]
+reads = [c.make("At", "f64", [], None, [wide_in[0], ints(k)], "()") for k in (2, 4, 6)]
+run3 = c.make("Op", "f64", [3], None, reads, "(('kind', 'vec'), ('literal', None))")
+assert c.wide_gather(run3) == (wide_in[0], None, 2, 2, False)  # indices 2, 4, 6
+assert c.wide_gather(wide_sum) is None
+done.append(
+    "wide_place, wide_is_resident, wide_is_scratch, wide_is_tiled, wide_is_prior, wide_record, "
+    "wide_element_kind, wide_gather: placement of a stored wide value and a gather of an index run"
+)
+
+# ---- the loop boundary: the maximal values of a body that do not depend on its own nodes ----
+free_value = c.make_op("mul", [x, other], "")
+body_next = c.make_op("add", [carry, free_value], "")
+assert c.loop_boundary([body_next], [carry], []) == (free_value,)
+assert c.loop_boundary([body_next], [], []) == (body_next,)
+done.append("loop_boundary: the invariant product is the boundary, nothing is own then the root is")
+
+# ---- the matrices a walk reads only through a gather ----
+mat_in = c.make("Leaf", "f64", [2, 3], None, [], LEAF.replace("vec_in", "mat_in") % "gm")
+row = c.make("At", "f64", [3], None, [mat_in, ints(1)], "()")
+gather_sink = c.make("Assign", "f64", [3], None, [c.make_op("neg", [row], "")], "(('name', 'gy'),)")
+assert c.walk_gather_mats(c.cells_walk([gather_sink], "()", None)) == ("gm",)
+assert c.walk_gather_mats(c.cells_walk([plain], "()", None)) == ()
+done.append("walk_gather_mats: a matrix read only through a gather is named")
+
+
+# ---- the quantities a walk reaches: (namespace, wires, slots) rows in the walk's order ----
+def wire_leaf(slug, wires, at):
+    """A read leaf of wire `at` of the quantity `slug`, carrying the whole declaration."""
+    wire = "Wire(name='%s', role='vec_in', shape=(), dtype='f64', tag=None)"
+    declared = ", ".join(wire % w for w in wires)
+    quantity = "Quantity(slug='%s', pack='auto', wires=(%s,))" % (slug, declared)
+    fields = (
+        "(('kind', 'vocab_read'), ('role', 'vec_in'), ('name', '%s__%s'), ('quantity', %s), "
+        "('wire_index', %d), ('sorted', False))" % (slug, wires[at], quantity, at)
+    )
+    return c.make("Leaf", "f64", [], None, [], fields)
+
+
+pos_x, pos_v = (wire_leaf("pos", ("x", "v"), i) for i in (0, 1))
+acc_w = wire_leaf("acc", ("w",), 0)
+quantity_sum = c.make_op("add", [c.make_op("add", [pos_x, pos_v], ""), acc_w], "")
+quantity_sink = c.make(
+    "Assign", "f64", [], None, [quantity_sum], "(('name', 'qy'), ('role', 'mutable'))"
+)
+quantity_walk = c.cells_walk([quantity_sink], "()", None)
+# Slots are ordered by role (mutable first, then vec_in); inside a role the wires of the reached
+# quantities come first, in the order reached and then declared: qy 0, pos__x 1, pos__v 2, acc__w 3.
+assert c.walk_quantity_wires(quantity_walk) == (("pos", ("pos__x", "pos__v")), ("acc", ("acc__w",)))
+assert c.walk_quantity_slots(quantity_walk) == (("pos", (1, 2)), ("acc", (3,)))
+assert c.walk_quantity_wires(c.cells_walk([plain], "()", None)) == ()
+done.append("walk_quantity_wires, walk_quantity_slots: one row per reached quantity, in walk order")
+
 try:
     import numpy  # noqa: F401
 except ImportError:

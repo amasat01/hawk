@@ -7,6 +7,7 @@ fixture, built beside the extension as libfixture_unit.<dylib or so>. numpy is t
 import gc
 import math
 import os
+import platform
 import struct
 import sys
 import weakref
@@ -622,14 +623,16 @@ def run(done, raises):
     assert info["abi_major"] == 1 and info["device"] == -1 and info["stream"] == -1, info
     assert info["capabilities"] & o.EG_CAP_HOST, info
     done.append("Door, ctx_info: a host context")
-    # the class key of the dispatch weights: the header says vendor 0 is "other" and row -1 the
-    # built-in row; it states no family or model for a host without CPUID, so those two are
-    # only checked to be integers
-    assert info["weight_vendor"] == 0 and info["weight_row"] == -1, info
+    # the class key of the dispatch weights: row -1 is the built-in row (no card states a class
+    # row for a host); the key is what the machine reads, a CPUID vendor and family on x86 and
+    # vendor 0 ("other") where there is no CPUID
+    assert info["weight_row"] == -1, info
+    if platform.machine() in ("x86_64", "AMD64"):
+        assert info["weight_vendor"] != 0 and info["weight_family"] > 0, info
+    else:
+        assert info["weight_vendor"] == 0, info
     assert isinstance(info["weight_family"], int) and isinstance(info["weight_model"], int)
-    done.append(
-        "ctx_info: the weight class key members, vendor 0 and the built-in row on this host"
-    )
+    done.append("ctx_info: the weight class key of this machine, and the built-in row")
     assert door.error() == "", door.error()
     done.append("error: no reason stored after OK calls")
     door.host_threads(2)

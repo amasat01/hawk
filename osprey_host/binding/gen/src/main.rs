@@ -41,9 +41,12 @@ const NODE_SURFACE: [(&str, &str, bool); 13] = [
 // Prototypes of the headers the binding does not wrap: none. Every shape has a rule, and a prototype without one is refused.
 const NOT_WRAPPED: [&str; 0] = [];
 // The `int*` outputs that are codes, not flags (a flag answers a Python bool).
-const CODE_OUTPUTS: [&str; 1] = ["rx_field_kind"];
+const CODE_OUTPUTS: [&str; 2] = ["rx_field_kind", "rw_wide_element_kind"];
 // The prefix of the readers whose status RX_ABSENT answers None.
 const ABSENT_READERS: &str = "rx_field_";
+// The pair readers whose answer is one row per first part: the pairs of one first part are together, and the answer is a tuple of
+// (first part, tuple of the second parts).
+const GROUPED_PAIRS: [&str; 2] = ["rx_walk_quantity_wires", "rx_walk_quantity_slots"];
 const KEYWORDS: [&str; 5] = ["class", "def", "import", "from", "lambda"];
 
 #[derive(Debug, Clone)]
@@ -81,6 +84,20 @@ enum P {
     OutI64s,
     OutNames,
     OutPairs,
+    /// An integer passed by pointer that may be NULL (`/* NULL */`): a Python int or None.
+    OptI64(String),
+    /// One scalar answer before the outputs are told apart: `i` an int, `n` a node, `l` a 64-bit integer, with its name.
+    Scalar(char, String),
+    /// Several scalar answers of one call, as a tuple in call order; a first one named `found` answers None when 0 and is not listed.
+    OutScalars(Vec<(char, String)>),
+    /// An `int` flag after a list of nodes the call made: the answer is the pair (nodes, flag).
+    TrailFlag,
+    /// `int* flags` after the node list of that name: one flag per node of it, as a tuple of bool.
+    OutFlags(String),
+    /// A `rw_key_run*`: None for no key run, else (form, width, block).
+    OutKeyRun,
+    /// Rows of `rw_plane_row`, the list protocol: a tuple of (plane node, layout, width).
+    OutPlaneRows,
 }
 
 struct Proto {
@@ -163,8 +180,11 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
         } else if t == "ob_backend*" {
             out.push(P::HandleIn(n));
             i += 1
+        } else if t == "int*" && n == "flags" {
+            out.push(P::OutFlags(String::new()));
+            i += 1
         } else if t == "int*" {
-            out.push(P::OutInt);
+            out.push(P::Scalar('i', n));
             i += 1
         } else if t == "ob_parts*" {
             out.push(P::OutParts);
@@ -183,6 +203,9 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
             i += 2
         } else if t == "const char*" {
             out.push(P::Cstr(n, opt));
+            i += 1
+        } else if t == "const int64_t*" && opt {
+            out.push(P::OptI64(n));
             i += 1
         } else if t == "const int64_t*" && sz(&next) {
             out.push(P::I64s(n, next.unwrap().1));
@@ -205,11 +228,17 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
             out.push(P::OutI64s);
             i += 3
         } else if t == "int64_t*" {
-            out.push(P::OutI64);
+            out.push(P::Scalar('l', n));
             i += 1
         } else if t == "rx_type*" {
             out.push(P::OutType);
             i += 1
+        } else if t == "rw_key_run*" {
+            out.push(P::OutKeyRun);
+            i += 1
+        } else if t == "rw_plane_row*" && sz(&next) && szp(&next2) {
+            out.push(P::OutPlaneRows);
+            i += 3
         } else if t == "rx_pair*" && sz(&next) && szp(&next2) {
             out.push(P::OutPairs);
             i += 3
@@ -231,7 +260,7 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
             out.push(P::OutNodes(n, next.unwrap().1, next2.unwrap().1));
             i += 3
         } else if t == "rx_node*" {
-            out.push(P::OutNode(n));
+            out.push(P::Scalar('n', n));
             i += 1
         } else if t == "rx_walk*" || t == "uint32_t*" {
             out.push(P::OutWalk(n));
@@ -243,6 +272,7 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
             )));
         }
     }
+    let out = group_outputs(out);
     if out
         .iter()
         .filter(|p| {
@@ -264,6 +294,10 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
                     | P::OutI64s
                     | P::OutNames
                     | P::OutPairs
+                    | P::OutScalars(..)
+                    | P::OutFlags(_)
+                    | P::OutKeyRun
+                    | P::OutPlaneRows
             )
         })
         .count()
@@ -272,6 +306,46 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
         return Err(bad("more than one output"));
     }
     Ok(out)
+}
+
+/// Settles what the scalar answers are: a lone one is the plain answer, a run of them one tuple, an int after the nodes a call
+/// made a flag beside them; an `int* flags` is told which node list it has one flag per node of.
+fn group_outputs(params: Vec<P>) -> Vec<P> {
+    let mut out: Vec<P> = vec![];
+    let mut last_list = String::new();
+    for q in params {
+        match q {
+            P::NodeList(n, k) => {
+                last_list = n.clone();
+                out.push(P::NodeList(n, k))
+            }
+            P::OutFlags(_) => out.push(P::OutFlags(last_list.clone())),
+            P::Scalar('i', _) if matches!(out.last(), Some(P::OutNodes(..))) => {
+                out.push(P::TrailFlag)
+            }
+            P::Scalar(kind, name) => match out.pop() {
+                Some(P::Scalar(k, n)) => out.push(P::OutScalars(vec![(k, n), (kind, name)])),
+                Some(P::OutScalars(mut run)) => {
+                    run.push((kind, name));
+                    out.push(P::OutScalars(run))
+                }
+                Some(before) => {
+                    out.push(before);
+                    out.push(P::Scalar(kind, name))
+                }
+                None => out.push(P::Scalar(kind, name)),
+            },
+            other => out.push(other),
+        }
+    }
+    out.into_iter()
+        .map(|q| match q {
+            P::Scalar('i', _) => P::OutInt,
+            P::Scalar('n', _) => P::OutNode(String::new()),
+            P::Scalar(..) => P::OutI64,
+            other => other,
+        })
+        .collect()
 }
 
 /// The shape of one parameter as (type, name), pointer stars glued to the type.
@@ -455,6 +529,7 @@ fn wrapper(p: &Proto) -> String {
         (String::new(), vec![], String::new(), String::new());
     let mut args: Vec<String> = vec!["s->c".into()];
     let mut out: Option<&P> = None;
+    let mut trail = false;
     for q in &p.params {
         match q {
             P::HandleIn(n) => {
@@ -522,6 +597,16 @@ fn wrapper(p: &Proto) -> String {
                 conv += &format!("  if (o_{n} != Py_None) {{ if (osprey_handle(s, o_{n}, &a_{n}) < 0) goto done; p_{n} = &a_{n}; }}\n");
                 args.push(format!("p_{n}"))
             }
+            P::OptI64(n) => {
+                decl += &format!(
+                    "  PyObject* o_{n}; int64_t a_{n} = 0; const int64_t* p_{n} = NULL;\n"
+                );
+                fmt += "O";
+                refs.push(format!("&o_{n}"));
+                conv += &format!("  if (o_{n} != Py_None) {{ long long v_{n} = PyLong_AsLongLong(o_{n}); if (v_{n} == -1 && PyErr_Occurred()) goto done; a_{n} = (int64_t)v_{n}; p_{n} = &a_{n}; }}\n");
+                args.push(format!("p_{n}"))
+            }
+            P::TrailFlag => trail = true,
             P::I64In(n) => {
                 decl += &format!("  long long a_{n};\n");
                 fmt += "L";
@@ -562,7 +647,40 @@ fn wrapper(p: &Proto) -> String {
     match out {
         None => tail += &format!("  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  Py_INCREF(Py_None); res = Py_None;\n", call(&[])),
         Some(P::OutText(..)) => tail += &format!("  char sb[256]; char* hb = NULL; size_t len = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hb = PyMem_Malloc(len + 1); if (!hb) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyUnicode_DecodeUTF8(hb ? hb : sb, (Py_ssize_t)len, \"strict\");\n  PyMem_Free(hb);\n", call(&["sb", "sizeof sb", "&len"]), call(&["hb", "len + 1", "&len"])),
-        Some(P::OutNodes(..)) => tail += &format!("  rx_node sn[64]; rx_node* hn = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hn = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rx_node)); if (!hn) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hn); goto done; }}\n  res = osprey_node_tuple(s, hn ? hn : sn, cnt);\n  PyMem_Free(hn);\n", call(&["sn", "64", "&cnt"]), call(&["hn", "cnt", "&cnt"])),
+        Some(P::OutNodes(..)) => {
+            let (first, again, made) = if trail {
+                (call(&["sn", "64", "&cnt", "&oc"]), call(&["hn", "cnt", "&cnt", "&oc"]), "Py_BuildValue(\"(NN)\", osprey_node_tuple(s, hn ? hn : sn, cnt), PyBool_FromLong(oc))")
+            } else {
+                (call(&["sn", "64", "&cnt"]), call(&["hn", "cnt", "&cnt"]), "osprey_node_tuple(s, hn ? hn : sn, cnt)")
+            };
+            let flag = if trail { " int oc = 0;" } else { "" };
+            tail += &format!("  rx_node sn[64]; rx_node* hn = NULL; size_t cnt = 0;{flag}\n  st = {first};\n  if (st == RX_TRUNC) {{ hn = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rx_node)); if (!hn) {{ PyErr_NoMemory(); goto done; }} st = {again}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hn); goto done; }}\n  res = {made};\n  PyMem_Free(hn);\n")
+        }
+        Some(P::OutKeyRun) => tail += &format!("  rw_key_run ok; memset(&ok, 0, sizeof ok);\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = osprey_key_run_tuple(&ok);\n", call(&["&ok"])),
+        Some(P::OutPlaneRows) => tail += &format!("  rw_plane_row sr[16]; rw_plane_row* hr = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hr = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rw_plane_row)); if (!hr) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hr); goto done; }}\n  res = osprey_rows_tuple(s, hr ? hr : sr, cnt);\n  PyMem_Free(hr);\n", call(&["sr", "16", "&cnt"]), call(&["hr", "cnt", "&cnt"])),
+        Some(P::OutFlags(list)) => tail += &format!("  int* fl = PyMem_Malloc((l_{list} ? (size_t)l_{list} : 1) * sizeof(int));\n  if (!fl) {{ PyErr_NoMemory(); goto done; }}\n  memset(fl, 0, (l_{list} ? (size_t)l_{list} : 1) * sizeof(int));\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(fl); goto done; }}\n  res = osprey_flags_tuple(fl, (size_t)l_{list});\n  PyMem_Free(fl);\n", call(&["fl"])),
+        Some(P::OutScalars(run)) => {
+            let found = run[0].1 == "found";
+            let (mut decls, mut extra, mut items) = (String::new(), vec![], String::new());
+            for (k, (kind, name)) in run.iter().enumerate() {
+                let ctype = match kind { 'i' => "int", 'n' => "rx_node", _ => "int64_t" };
+                decls += &format!(" {ctype} r{k} = 0;");
+                extra.push(format!("&r{k}"));
+                if found && k == 0 {
+                    continue;
+                }
+                let item = match kind {
+                    'i' => format!("PyBool_FromLong(r{k})"),
+                    'n' => format!("(r{k} == UINT32_MAX ? (Py_INCREF(Py_None), Py_None) : osprey_wrap_node(s, r{k}))"),
+                    _ => format!("PyLong_FromLongLong((long long)r{k})"),
+                };
+                items += &format!("  PyTuple_SetItem(res, {}, {item}); /* {name} */\n", k - usize::from(found));
+            }
+            let refs: Vec<&str> = extra.iter().map(String::as_str).collect();
+            let count = run.len() - usize::from(found);
+            let none = if found { "  if (!r0) { Py_INCREF(Py_None); res = Py_None; goto done; }\n" } else { "" };
+            tail += &format!("{decls}\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n{none}  res = PyTuple_New({count});\n  if (!res) goto done;\n{items}", call(&refs));
+        }
         Some(P::OutNodeList) => tail += &format!("  rx_node ob0 = 0; rx_node sn[64]; rx_node* hn = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hn = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rx_node)); if (!hn) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hn); goto done; }}\n  res = Py_BuildValue(\"(NN)\", osprey_wrap_node(s, ob0), osprey_node_tuple(s, hn ? hn : sn, cnt));\n  PyMem_Free(hn);\n", call(&["&ob0", "sn", "64", "&cnt"]), call(&["&ob0", "hn", "cnt", "&cnt"])),
         Some(P::OutNode(_)) => tail += &format!("  rx_node oh = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = osprey_wrap_node(s, oh);\n", call(&["&oh"])),
         Some(P::OutInt) => tail += &format!("  int oi = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyBool_FromLong(oi);\n", call(&["&oi"])),
@@ -575,7 +693,10 @@ fn wrapper(p: &Proto) -> String {
         Some(P::OutType) => tail += &format!("  rx_type ot; memset(&ot, 0, sizeof ot);\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = osprey_type_tuple(&ot);\n", call(&["&ot"])),
         Some(P::OutI64s) => tail += &format!("  int64_t si[64]; int64_t* hi = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hi = PyMem_Malloc((cnt ? cnt : 1) * sizeof(int64_t)); if (!hi) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hi); goto done; }}\n  res = osprey_i64_tuple(hi ? hi : si, cnt);\n  PyMem_Free(hi);\n", call(&["si", "64", "&cnt"]), call(&["hi", "cnt", "&cnt"])),
         Some(P::OutNames) => tail += &format!("  char sb[256]; char* hb = NULL; size_t len = 0, cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hb = PyMem_Malloc(len + 1); if (!hb) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hb); goto done; }}\n  res = osprey_names_tuple(hb ? hb : sb, len);\n  PyMem_Free(hb);\n", call(&["sb", "sizeof sb", "&len", "&cnt"]), call(&["hb", "len + 1", "&len", "&cnt"])),
-        Some(P::OutPairs) => tail += &format!("  rx_pair sp[16]; rx_pair* hp = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hp = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rx_pair)); if (!hp) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hp); goto done; }}\n  res = osprey_pairs_tuple(hp ? hp : sp, cnt);\n  PyMem_Free(hp);\n", call(&["sp", "16", "&cnt"]), call(&["hp", "cnt", "&cnt"])),
+        Some(P::OutPairs) => {
+            let rows = if GROUPED_PAIRS.contains(&p.name.as_str()) { "osprey_grouped_pairs_tuple" } else { "osprey_pairs_tuple" };
+            tail += &format!("  rx_pair sp[16]; rx_pair* hp = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hp = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rx_pair)); if (!hp) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hp); goto done; }}\n  res = {rows}(hp ? hp : sp, cnt);\n  PyMem_Free(hp);\n", call(&["sp", "16", "&cnt"]), call(&["hp", "cnt", "&cnt"]), rows = rows);
+        },
         Some(P::OutChars(_, n)) => tail += &format!("  char dg[{n}] = {{0}};\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyUnicode_FromString(dg);\n", call(&["dg"])),
         _ => unreachable!(),
     }
@@ -727,6 +848,72 @@ static inline PyObject* osprey_pairs_tuple(const rx_pair* pairs, size_t n) {
     PyTuple_SetItem(out, (Py_ssize_t)i, item);
   }
   return out;
+}
+
+/* One flag per node as a tuple of bool. */
+static inline PyObject* osprey_flags_tuple(const int* flags, size_t n) {
+  PyObject* t = PyTuple_New((Py_ssize_t)n);
+  if (!t) return NULL;
+  for (size_t i = 0; i < n; i++) PyTuple_SetItem(t, (Py_ssize_t)i, PyBool_FromLong(flags[i]));
+  return t;
+}
+
+/* A key run as None or (form name, width, whether it is a block), the forms in the order of the RW_KEY_ codes of raptor_wings_front.h. */
+static inline PyObject* osprey_key_run_tuple(const rw_key_run* run) {
+  static const char* const forms[] = {"proven", "sorted", "tested"};
+  if (!run->found) Py_RETURN_NONE;
+  if (run->form < RW_KEY_PROVEN || run->form > RW_KEY_TESTED) {
+    PyErr_SetString(PyExc_ValueError, "a key run form this binding does not know");
+    return NULL;
+  }
+  return Py_BuildValue("(sLN)", forms[run->form - RW_KEY_PROVEN], (long long)run->width, PyBool_FromLong(run->block));
+}
+
+/* The placed planes as a tuple of (plane node, layout name, width), the layouts as the RW_LAYOUT_ codes of raptor_wings_front.h. */
+static inline PyObject* osprey_rows_tuple(Ctx* s, const rw_plane_row* rows, size_t n) {
+  static const char* const layouts[] = {"plane_major", "warp_tiled"};
+  PyObject* out = PyTuple_New((Py_ssize_t)n);
+  if (!out) return NULL;
+  for (size_t i = 0; i < n; i++) {
+    if (rows[i].layout < RW_LAYOUT_PLANE_MAJOR || rows[i].layout > RW_LAYOUT_WARP_TILED) {
+      Py_DECREF(out);
+      PyErr_SetString(PyExc_ValueError, "a plane layout this binding does not know");
+      return NULL;
+    }
+    PyObject* item = Py_BuildValue("(NsL)", osprey_wrap_node(s, rows[i].plane), layouts[rows[i].layout], (long long)rows[i].width);
+    if (!item) { Py_DECREF(out); return NULL; }
+    PyTuple_SetItem(out, (Py_ssize_t)i, item);
+  }
+  return out;
+}
+
+/* The pairs of one first part together, as a tuple of (first part, tuple of the second parts); the pairs of a part are consecutive. */
+static inline PyObject* osprey_grouped_pairs_tuple(const rx_pair* pairs, size_t n) {
+  PyObject* out = PyList_New(0);
+  if (!out) return NULL;
+  PyObject* seconds = NULL;
+  for (size_t i = 0; i < n; i++) {
+    if (i == 0 || strcmp(pairs[i].first.text, pairs[i - 1].first.text) != 0) {
+      seconds = PyList_New(0);
+      PyObject* row = seconds ? Py_BuildValue("(NO)", osprey_pair_part(&pairs[i].first), seconds) : NULL;
+      if (!row || PyList_Append(out, row) < 0) { Py_XDECREF(row); Py_XDECREF(seconds); Py_DECREF(out); return NULL; }
+      Py_DECREF(row);
+      Py_DECREF(seconds);
+    }
+    PyObject* part = osprey_pair_part(&pairs[i].second);
+    if (!part || PyList_Append(seconds, part) < 0) { Py_XDECREF(part); Py_DECREF(out); return NULL; }
+    Py_DECREF(part);
+  }
+  PyObject* rows = PyList_AsTuple(out);
+  Py_DECREF(out);
+  if (!rows) return NULL;
+  for (Py_ssize_t k = 0; k < PyTuple_Size(rows); k++) {
+    PyObject* row = PyTuple_GetItem(rows, k);
+    PyObject* frozen = PyList_AsTuple(PyTuple_GetItem(row, 1));
+    if (!frozen) { Py_DECREF(rows); return NULL; }
+    PyTuple_SetItem(row, 1, frozen);
+  }
+  return rows;
 }
 
 /* A node's type as (shape tuple, dtype name, tag or None). */
