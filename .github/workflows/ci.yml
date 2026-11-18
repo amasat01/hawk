@@ -302,6 +302,8 @@ jobs:
       # aether + eagle headers installed into a local prefix).
       - run: |
           cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
+            -DCMAKE_CUDA_HOST_COMPILER="${CXX:-g++}" \
+            -DAETHER_FACTS_DIR="${GITHUB_WORKSPACE}/raptor/rs/wings/cards/cuda" \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
             -B aether/build -S aether
           cmake --install aether/build
@@ -592,6 +594,8 @@ jobs:
       # aether + eagle headers installed into a local prefix).
       - run: |
           cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
+            -DCMAKE_CUDA_HOST_COMPILER="${CXX:-g++}" \
+            -DAETHER_FACTS_DIR="${GITHUB_WORKSPACE}/raptor/rs/wings/cards/cuda" \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/__install" \
             -B aether/build -S aether
           cmake --install aether/build

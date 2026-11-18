@@ -99,7 +99,9 @@ gate-venv: gate-tools
 	# eagle: both header sets into a prefix of the gate's own, then its binding built against it
 	if [ -n "$(EAGLE_SRC)" ]; then \
 	  test -n "$(AETHER_SRC)" || { echo "gate: EAGLE_SRC needs AETHER_SRC (eagle builds against its headers)" >&2; exit 2; }; \
-	  cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER=$(NVCC) -DCMAKE_INSTALL_PREFIX=$(GATE_ABS)/prefix \
+	  test -n "$(RAPTOR_SRC)" || { echo "gate: EAGLE_SRC needs RAPTOR_SRC (aether's headers are configured against the facts header generated in raptor's cards)" >&2; exit 2; }; \
+	  cmake -DAETHER_CPP_MODE=OFF -DCMAKE_CUDA_COMPILER=$(NVCC) -DCMAKE_CUDA_HOST_COMPILER="$(CXX)" \
+	      -DAETHER_FACTS_DIR="$(abspath $(RAPTOR_SRC))/rs/wings/cards/cuda" -DCMAKE_INSTALL_PREFIX=$(GATE_ABS)/prefix \
 	      -B $(GATE_ABS)/aether-build -S "$(abspath $(AETHER_SRC))" >/dev/null && \
 	  cmake --install $(GATE_ABS)/aether-build >/dev/null && \
 	  cmake -DCMAKE_CUDA_COMPILER=$(NVCC) -DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH) -DCMAKE_PREFIX_PATH=$(GATE_ABS)/prefix \

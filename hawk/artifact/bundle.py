@@ -271,7 +271,7 @@ def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | Non
     cfg = _resolved_settings(None, targets)
     machines = _machines(targets, options, opt_level, default_cache_dir())
     keyed = {t: {"key": machines[t]["key"]} for t in targets}
-    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, options=options, machines=keyed, sizes=None)
+    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, machines=keyed, sizes=None)
     derivative = _per_kernel_derivative(kernels, names, None)
     return hashlib.sha256(json.dumps([plans, derivative, opt_level], sort_keys=True, default=repr).encode()).hexdigest()
 
@@ -287,7 +287,7 @@ def _machines(targets, options, opt_level: str, root: Path) -> dict:
             for t in targets}
 
 
-def _plans(kernels, names, kinds, *, mode, targets, settings, options, machines, sizes, exports_block: bool = False) -> list:
+def _plans(kernels, names, kinds, *, mode, targets, settings, machines, sizes, exports_block: bool = False) -> list:
     """``(request, dump, dialects)`` of each kernel: the request the lowering is asked, the text of the nodes it names and the
     text of their dialects (empty: the lowering context declares the dialect kinds itself). A build asks for texts without the
     self-check block, which the text of its set carries once; a text that is compiled alone (:func:`emit_source`) asks for it."""
@@ -299,7 +299,7 @@ def _plans(kernels, names, kinds, *, mode, targets, settings, options, machines,
         copies = _ir.adopt(_ir.new_context(), roots)
         position = dict(zip(roots, _ir.dump_numbers(copies)))
         request = _request.request(kernel, name=name, scalar=mode, kind=kind, targets=targets, settings=settings, position=position,
-                                   options=options, machines=machines, sizes=sizes, exports_block=exports_block)
+                                   machines=machines, sizes=sizes, exports_block=exports_block)
         out.append((request, _ir.dump_text(copies), ""))
     return out
 
@@ -632,7 +632,7 @@ def _emitted(kernel, name, mode, kind, targets, does, instead, settings, options
                         f"— call {instead}([kernel], ...) instead")
     kind = resolve_kind(name, getattr(kernel, "kind", None), kind)
     machines = _machines(targets, options, opt_level, root)
-    plan = _plans([kernel], [name], [kind], mode=mode, targets=targets, settings=settings, options=options, machines=machines,
+    plan = _plans([kernel], [name], [kind], mode=mode, targets=targets, settings=settings, machines=machines,
                   sizes=sizes, exports_block=exports_block)[0]
     answer = _lower(plan, targets)
     written = [u for u in answer["units"] if u["texts"]]
@@ -653,7 +653,7 @@ def _lowered(kernels, names, kind, *, mode, targets, cfg, options, opt_level, ro
     kind = _resolve_bundle_kind(names, kernels, kind)
     kinds = [_member_kind(k, kind, explicit) for k in kernels]
     machines = _machines(targets, options, opt_level, root)
-    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, options=options, machines=machines, sizes=sizes)
+    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, machines=machines, sizes=sizes)
     if tools_needed:
         _require_tools(machines)
     answers = [_lower(plan, targets) for plan in plans]

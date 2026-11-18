@@ -18,7 +18,7 @@ def lowered(kernel, kind=None, *, scalar_type: str = "float64") -> dict:
     """The answer of the host OSPREY for ``kernel`` lowered for the host."""
     targets = ("host",)
     plan = bundle._plans([kernel], [kernel.name], [kind or kernel.kind], mode=scalar_type, targets=targets,
-                         settings=default_settings(), options={}, machines=bundle._machines(targets, {}, "", bundle.default_cache_dir()),
+                         settings=default_settings(), machines=bundle._machines(targets, {}, "", bundle.default_cache_dir()),
                          sizes=None)[0]
     return bundle._lower(plan, targets)
 

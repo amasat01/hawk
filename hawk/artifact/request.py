@@ -6,7 +6,7 @@ libraries stated.
 
 Every member is read from the objects the build holds; nothing is guessed from a record and nothing is retried. The members the
 library defaults (a group of one, no planes, settings at their defaults) are left out, as the library's own writer leaves them
-out. The machine answers and the user's target options travel as given. :func:`sinks_of` lists the nodes a request names; their
+out. The machine answers travel as given. :func:`sinks_of` lists the nodes a request names; their
 positions in the dump come from :func:`hawk._ir.dump_numbers`."""
 
 from __future__ import annotations
@@ -115,12 +115,11 @@ def sinks_of(kernel) -> list:
     return out
 
 
-def request(kernel, *, name: str, scalar: str, kind, targets, settings, position: dict, options: dict, machines: dict,
+def request(kernel, *, name: str, scalar: str, kind, targets, settings, position: dict, machines: dict,
             sizes=None, exports_block: bool = True) -> dict:
     """The request of ``kernel`` for ``targets`` as a dict: ``name`` the unit name wanted, ``scalar`` the scalar mode's name,
     ``kind`` the kind the kernel is built under, ``settings`` the :class:`hawk.build_settings.Settings` of the build, ``position``
-    the handle of each node (:func:`hawk._ir.dump_numbers`), ``options`` the user's target options (``<target>.<key>``),
-    ``machines`` ``{target: the machine answer of its OSPREY}`` and ``sizes`` the layout sizes a test states. The texts carry the
+    the handle of each node (:func:`hawk._ir.dump_numbers`), ``machines`` ``{target: the machine answer of its OSPREY}`` and ``sizes`` the layout sizes a test states. The texts carry the
     self-check block of a library unless ``exports_block`` is false, which a build asks: its units are linked with the text of the
     set, which carries the block once."""
     kind = kind if kind is not None else DEFAULT_KIND
@@ -141,9 +140,6 @@ def request(kernel, *, name: str, scalar: str, kind, targets, settings, position
     if planes:
         out["planes"] = list(planes)
     stated = _settings(settings, sizes)
-    # the option of the device target that is a setting of the lowering: stated only when the build has that target
-    if options.get("cuda.literal_table") and "cuda" in targets:
-        stated["literal_table"] = True
     if stated:
         out["settings"] = stated
     steps = getattr(kernel, "steps", None)
