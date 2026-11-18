@@ -31,13 +31,21 @@ def _team_stages(kernel, tmp_path, target, *, mode="float32", form="auto"):
     return [stage["team"] for stage in sidecar_of(bundle, kernel.name).get("stages", []) if "team" in stage]
 
 
-@pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("case", ["float32", "float64", "thread", "vectors", "n31"])
+PER_LANE = [pytest.param("host", c, id=f"host-{c}") for c in ("float32", "float64", "thread", "vectors", "n31")]
+PER_LANE += [pytest.param("cuda", c, marks=DEVICE, id=f"cuda-{c}") for c in ("float64", "thread", "vectors", "n31")]
+
+
+@pytest.mark.parametrize("target,case", PER_LANE)
 def test_a_matrix_of_at_most_32_rows_keeps_the_per_lane_form(case, target, tmp_path):
     kernel = {"vectors": eigh_kernel(CTX, 32), "n31": eigh_values_kernel(CTX, 31)}.get(case, eigh_values_kernel(CTX, 32))
     mode = "float64" if case == "float64" else "float32"
     form = "thread" if case == "thread" else "auto"
     assert _team_stages(kernel, tmp_path, target, mode=mode, form=form) == []
+
+
+@DEVICE
+def test_a_float32_values_only_eigen_solve_of_at_most_32_rows_on_a_device_is_a_team_of_32_threads(tmp_path):
+    assert _team_stages(eigh_values_kernel(CTX, 32), tmp_path, "cuda") == [{"threads": 32}]
 
 
 @pytest.mark.parametrize("target", TARGETS)

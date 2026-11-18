@@ -9,15 +9,12 @@ SAME body as the kernel an author would have written with the expression inline.
 """
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
 import pytest
 
 from hawk import Mutable, Scalar, Terminated, kernel
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk.trace import trace_value
-from hawk.trace.kernel import Kernel
-from hawk.trace.value import MutableRef
 
 
 def _branchy(x, v):

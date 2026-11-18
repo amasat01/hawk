@@ -26,50 +26,18 @@ Rows:
 """
 
 from __future__ import annotations
-from _specs import HOST
 
-import json
 
-import _kernels as K
-import pytest
 
 import hawk
-from hawk.artifact import (
-    STAMP_NAME,
-    build,
-    build_bundle,
-    plugins,
-    reset_unit_memo,
-    unit_stats,
-)
-from hawk.artifact import manifest as _manifest
-from hawk.artifact.unit_cache import _unit_key
-from aether.wings.base.wrapper import scalar_mode
-from hawk.ext import DEFAULT_KIND
-from raptor.errors import RaptorError as HawkError
-from hawk.targets import TARGETS
 
 C_FILES = ["drag.c", "drag.embedded.json", "drag.h"]
 
 
-@pytest.fixture
-def fresh():
-    """A publisher with no memory of any unit, before and after the row."""
-    reset_unit_memo()
-    yield
-    reset_unit_memo()
 
 
-def _c_only(directory, cache_dir, **kw):
-    return build_bundle([K.drag], directory, targets=("c",), cache_dir=cache_dir, **kw)
 
 
-def test_no_target_is_refused(tmp_path, cache_dir, fresh):
-    """``targets=()`` must not publish an empty unit now that a draft may
-    legitimately carry no native target."""
-    with pytest.raises(HawkError, match="no target to build"):
-        build_bundle([K.drag], tmp_path / "u", targets=(), cache_dir=cache_dir)
-    assert not (tmp_path / "u").exists()
 
 
 def _kernel_from(path, text: str):

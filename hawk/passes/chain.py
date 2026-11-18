@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 
 #: The roles a member may read an intermediate as: its own lane's element.
 BOUND_LEAF_ROLES = ("per_sample", "vec_in", "mat_in", "mutable")

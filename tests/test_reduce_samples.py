@@ -19,8 +19,6 @@ Rows (the ``cuda`` arm is marked ``gpu``):
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import spec_for
 
 import numpy as np
 import pytest

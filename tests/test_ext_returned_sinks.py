@@ -20,8 +20,6 @@ unconditionally makes the scattered-diagnostic row refuse (or silently
 compensate the wrong plane). Every plant was then removed."""
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import HOST
 
 import _deploy as L
 import numpy as np
@@ -32,7 +30,7 @@ import hawk
 from hawk import Mutable, Scalar, Terminated, Vector
 from hawk.artifact import build_bundle as _build_bundle
 from hawk.ext import Kind, Output, compensated
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk.math import norm
 
 N = 8

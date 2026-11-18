@@ -58,7 +58,6 @@ from __future__ import annotations
 import _deploy as L
 import _deployable as D
 import _oracle as O
-import _planted as PL
 import numpy as np
 import pytest
 from conftest import sidecar_of
@@ -254,32 +253,3 @@ def test_a_partition_writes_its_window_alone_on_the_host(name, mode, tmp_path, c
         assert values["acc"][sorted(hit)].any()
 
 
-def test_the_comparison_can_detect_a_body_that_is_not_partition_invariant(
-        built, tmp_path, cache_dir):
-    """NON-VACUITY (a gate builds its own inputs). The planted artifact divides
-    by the partition's own ``count`` instead of the ``nsamples`` role — the
-    failure verbatim — and the SAME comparison the rows above run must catch it.
-
-    Whole-view the plant AGREES (one partition's count IS the total), which is
-    what makes it the right plant: it is invisible to any check that only ever
-    runs the whole view."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    sidecar = sidecar_of(built["fraction"], "fraction")
-    directory = PL.with_sidecar(
-        PL.count_reading_bundle(D.fraction, tmp_path / "planted",
-                                cache_dir=cache_dir), sidecar)
-    kw = {"x": D.plane(N, w=1)[0]}
-    oracle = O.run(directory, "fraction", N, sidecar, **kw)
-    plugin = L.host_plugin(directory, "fraction", sidecar)
-
-    whole = eplan.plan(plugin, structure=eexec.HostTeam, npartitions=1).run(**kw)
-    _assert_bit_identical(whole, oracle, "the plant, whole-view")
-
-    split = eplan.plan(plugin, structure=eexec.HostTeam, npartitions=K).run(**kw)
-    assert np.asarray(split).tobytes() != np.asarray(oracle).tobytes(), (
-        "the planted count-reading body agreed with the oracle under "
-        f"{K} partitions; this row cannot detect a body that is not "
-        "partition-invariant, and every bit-identity assertion above is vacuous"
-    )

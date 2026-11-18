@@ -38,12 +38,9 @@ outputs are the same before and after, which is the point.
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import HOST
 
 import _deploy as L
 import _deployable as D
-import _kernels as K
 import numpy as np
 import pytest
 from conftest import sidecar_of
@@ -52,7 +49,6 @@ import hawk
 from hawk import Index, Kernel, Mutable, Scalar, Table, Terminated, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from hawk.ext import Guard, Kind
 from hawk import _ir
 
 N = 16

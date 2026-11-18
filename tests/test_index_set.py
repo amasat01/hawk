@@ -22,9 +22,11 @@ import hawk
 import hawk.math as m
 from hawk import Grid, Index, Mutable, Scalar, Table
 from hawk import runtime as rt
-from hawk.artifact import build_bundle, request
+from hawk import ospreys
+from hawk.artifact import build_bundle
+from hawk.build_settings import default_settings
 from hawk.ext import DEFAULT_KIND, IndexSet, Kind
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from conftest import sidecar_of
 
 B = importlib.import_module("hawk.artifact.bundle")
@@ -52,9 +54,9 @@ def test_a_lane_set_reads_the_map_prologue_without_a_mask():
 def _exports_block(kernel) -> str:
     """The exports block the library states in the text of a set of the one unit of ``kernel``: from its comment line to the
     closing of its sizes."""
-    meta = B._emitted(kernel, kernel.name, "float64", None, ("host",), "", "", "", None, exports_block=False,
-                      options=B._user_options(None, False, None, "", ""))[2]["meta"]
-    text = request.set_text([meta])
+    _, unit, _, _ = B._emitted(kernel, kernel.name, "float64", None, ("host",), "", "", default_settings(), {}, "", None,
+                               exports_block=False)
+    text = ospreys.serving("host").set_text([unit["meta"]])
     start = text.index("// The self-check exports")
     return text[start:text.index("};\n", start) + len("};\n")]
 

@@ -11,8 +11,6 @@
 * **Complex pairs.** ``cmul``, ``conj``, ``abs2`` and ``arg`` on ``Vector[2]``."""
 
 from __future__ import annotations
-from _specs import spec_for, default_kind
-from _specs import HOST
 
 import math
 import textwrap

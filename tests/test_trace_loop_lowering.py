@@ -45,7 +45,7 @@ import hawk
 import hawk.math as m
 from hawk.artifact import emit_source
 from hawk.diff import jvp, vjp
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk import _ir
 
 H = 1e-5

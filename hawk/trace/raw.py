@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from .decl import Scalar
 from .lane_axes import current_context
 from .value import Value, node_of

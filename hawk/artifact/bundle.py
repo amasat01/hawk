@@ -3,87 +3,47 @@
 
 """From a traced kernel to a deployment unit on disk.
 
-One HAWK artifact directory is: one compiled object per declared device
-target (a ``.ptx`` *or* ``.cubin``, whichever the compiled bytes actually
-are), ONE shared library holding every host unit of the build call (with a
-link ``<unit>.so`` to it for each unit, which the runtime still reads), the
-emitted SOURCE of each, one JSON sidecar per kernel and one ``manifest.json``
-per bundle. Every compile goes through
-the content-closure cache, so a rebuild of an unchanged kernel spawns no
-compiler. Nothing here launches anything: eagle loads and runs the device
-object (``eagle.registry.load_manifest`` -> ``eagle.plan``) and the host
-object (``eagle.HostTeam``); HAWK's job ends at the bytes on disk.
+One HAWK artifact directory is: one compiled object per declared device target, ONE shared library holding every host unit of
+the build call (with a link ``<unit>.so`` to it for each unit, which the runtime still reads), the emitted SOURCE of each, one
+JSON sidecar per kernel and one ``manifest.json`` per bundle. Nothing here launches anything: eagle loads and runs the device
+object and the host object; HAWK's job ends at the bytes on disk.
 
-Publishing is content-addressed and idempotent — a unit's identity is the
-digest of what it contains, not the directory it sits in. Within one
-process, :func:`build_bundle` remembers each unit under a key naming every
-input its content is a function of: a repeat build into the same directory
-is a no-op, a different one gets the published files COPIED there (never a
-second compile). Across processes, a digest STAMP (:data:`STAMP_NAME`)
-marks a directory as already holding that unit.
-
-Neither memo short-circuits validity: a hit re-verifies every TU's
-dependency closure (:func:`~hawk.compile.cache.ClosureWatch`) and the
-unit's own published files (:func:`~hawk.compile.digest_file`), both by
-content. A changed header, a deleted unit or a corrupted binary falls
-through to a real publish; :func:`publish_log` names which and why.
+hawk does not compile. A build asks each OSPREY that serves a target for its machine, sends the kernel-side request to the
+OSPREYs' lowering, asks each for the build of every unit, asks the host OSPREY to link the set, and publishes what came back with
+a sidecar. The OSPREYs keep the compilers, the flags, the headers and the store of built units under the one folder hawk names
+(:func:`default_cache_dir`), so a second build of an unchanged unit runs no compiler there.
 """
 
 from __future__ import annotations
 
-import contextvars
 import hashlib
 import json
 import os
 import shutil
-from concurrent.futures import ThreadPoolExecutor
+import uuid
 from collections.abc import Mapping
-from types import SimpleNamespace
-from dataclasses import dataclass, field, replace
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 
-from ..compile import digest_file
-from ..compile.cache import ClosureWatch, publish_atomic, tmp_sibling
-from aether.wings.base.wrapper import scalar_mode
-from ..ext import DEFAULT_KIND
-from .._errors import EMBEDDED_C, HawkError
 from .. import _ir
 from .. import options as _options_mod
-from ..build_settings import BuildSettings, apply as _apply_settings, check as _check_settings, default_settings, refuse_choice, settings_of as _settings_of
-from ..backends import default_backends
-from ..registry import check, denial, missing, traits
-from ..targets import DEFAULT_TARGETS, DISTRIBUTIONS, TARGETS, build_spec
+from .. import ospreys
+from ..build_settings import BuildSettings, check as _check_settings, default_settings, refuse_choice, settings_of as _settings_of
+from ..errors import EMBEDDED_C, HawkError
+from ..ext import DEFAULT_KIND
+from ..targets import DEFAULT_TARGETS, TARGETS, host_target
 from . import manifest as _manifest
-from .derivative import _per_kernel_derivative
 from . import request as _request
+from .derivative import _per_kernel_derivative
 from .sidecar import sidecar_of_unit
-from .unit_cache import (
-    _UNIT_MEMO,
-    _UNIT_MEMO_LIMIT,
-    _closure_watch,
-    _first_moved,
-    _log,
-    _note,
-    _stamp_digest,
-    _unit_key,
-    _write_stamp,
-    declaration_digest,
-    arch,
-)
-from .unit_cache import COUNTERS as COUNTERS
-from .unit_cache import bump_builds as _bump_builds
-from .unit_cache import STAMP_NAME as STAMP_NAME
-from .unit_cache import counters_snapshot as counters_snapshot
-from .unit_cache import publish_log as publish_log
-from .unit_cache import reset_unit_memo as reset_unit_memo
-from .unit_cache import unit_stats as unit_stats
 
 
 @dataclass(frozen=True)
 class Entry:
-    """One built target of one kernel. An exported entry's ``artifact`` is its
-    header, its ``source`` the unit and its ``report`` the
-    ``<name>.embedded.json``; ``report`` is ``None`` for every compiled target."""
+    """One built target of one kernel: ``artifact`` its compiled object (a host entry names the build's library), ``source`` the
+    unit's text, ``key`` the OSPREY's key of the build, ``hit`` whether the store served it and ``seconds`` what it took."""
 
     target: str
     artifact: Path
@@ -91,8 +51,6 @@ class Entry:
     key: str
     hit: bool
     seconds: float
-    closure: tuple = field(default=())
-    report: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -117,7 +75,7 @@ class Bundle:
     """A deployment unit: one ``manifest.json`` over one or more artifacts.
 
     ``digest`` is the unit's own content identity — the same value
-    :func:`_unit_digest` computes and :data:`STAMP_NAME` records, exposed
+    :func:`_unit_digest` computes, exposed
     here because a second unit's derivative can name this one as its
     primal's home (:func:`_per_kernel_derivative`'s cross-unit reference).
 
@@ -131,8 +89,7 @@ class Bundle:
     digest: str | None = None
 
     def files(self) -> list:
-        """EVERY file this unit published — the set row greps. Each path
-        once: a c-only artifact's sidecar IS its ``c`` entry's report."""
+        """EVERY file this unit published — the set row greps. Each path once."""
         out = [] if self.manifest_path is None else [self.manifest_path]
         for a in self.artifacts:
             out.append(a.sidecar_path)
@@ -141,8 +98,6 @@ class Bundle:
                 out.append(a.library)
             for entry in a.entries.values():
                 out += [entry.artifact, entry.source]
-                if entry.report is not None:
-                    out.append(entry.report)
         return list(dict.fromkeys(out))
 
 
@@ -152,7 +107,7 @@ class UnitFile:
     """One file of a unit: its name, its bytes, and their digest.
 
     ``blob`` is carried inline (HAWK-made text) or fetched from the
-    content-closure cache on demand (a compiled object, never held in
+    a file of an OSPREY's store on demand (a compiled object, never held in
     memory). Either way the digest is of the bytes on disk, so the unit
     digest is re-computable from the published tree by anyone. A file with
     ``link_to`` is a symbolic link to the file of that name beside it; its
@@ -169,7 +124,7 @@ class UnitFile:
         # Written whole to a private sibling, then renamed into place: a
         # concurrent reader (or a second builder of the same unit) sees the
         # old file or the new one, never a partial write.
-        tmp = tmp_sibling(path)
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         try:
             if self.link_to is not None:
                 os.symlink(self.link_to, tmp)
@@ -177,7 +132,7 @@ class UnitFile:
                 tmp.write_bytes(self.blob)
             else:
                 shutil.copyfile(self.source_path, tmp)
-            publish_atomic(tmp, path)
+            os.replace(tmp, path)
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
@@ -195,34 +150,25 @@ class _Draft:
     sidecar_name: str
     entries: dict                      # target -> (result, art name, src name, fmt)
     files: tuple                       # the UnitFile records this kernel contributes
-    report_files: dict                 # target -> its report's file name, or None
-
-
-@dataclass(frozen=True)
-class _Unit:
-    """A published unit, remembered: what it is, where it is, and what its
-    validity still depends on."""
-
-    bundle: Bundle
-    digest: str
-    files: tuple                       # (absolute path, content digest) pairs
-    closure: ClosureWatch              # every target's validity record, watched
-    kind: object                       # kept ALIVE: the key names it by identity
 
 
 def text_blob(text: str) -> bytes:
-    """The bytes a text file is published as, hashed as bytes so the digest
-    reflects what's on disk, not an encoding assumption."""
+    """The bytes a text file is published as, hashed as bytes so the digest reflects what's on disk, not an encoding assumption."""
     return text.encode("utf-8")
 
 
 def digest_bytes(blob: bytes) -> str:
+    """The sha256 of ``blob``."""
     return hashlib.sha256(blob).hexdigest()
 
 
+def _digest_file(path: Path) -> str:
+    return digest_bytes(path.read_bytes())
+
+
 def _unit_digest(files) -> str:
-    """The unit's identity: its files' NAMES and CONTENT digests, sorted so
-    two publishes of the same content agree regardless of build order."""
+    """The unit's identity: its files' NAMES and CONTENT digests, sorted so two publishes of the same content agree regardless of
+    build order."""
     h = hashlib.sha256()
     h.update(b"hawk.artifact.unit/1\n")
     for f in sorted(files, key=lambda f: f.name):
@@ -249,51 +195,19 @@ def _comparable(value):
     return tuple(value) if isinstance(value, (list, tuple)) else value
 
 
-def _trait(target: str, key: str, default):
-    """One datum of a target's manifest row, without importing its backend."""
-    return traits(target).get(key, default)
-
-
-def _native(targets) -> tuple:
-    """The targets this module compiles and the manifest describes: every
-    one whose row has a compiler. The rest are exported units
-    (:mod:`hawk.embedded`)."""
-    return tuple(t for t in targets if _trait(t, "builds", True))
-
-
-def _exported(targets) -> tuple:
-    """The targets whose row is written whole and never compiled."""
-    return tuple(t for t in targets if not _trait(t, "builds", True))
-
-
 def _has_device(targets) -> bool:
-    """Whether any known target is built for a device."""
-    return any(_trait(t, "device", False) for t in targets if t in TARGETS)
+    """Whether any target is built for a device."""
+    return any(TARGETS[t].device for t in targets)
 
 
 def _device_only(targets) -> bool:
-    """Whether every known target is built for a device."""
-    return all(_trait(t, "device", False) for t in targets if t in TARGETS)
+    """Whether every target is built for a device."""
+    return all(TARGETS[t].device for t in targets)
 
 
 def _lead(entries) -> str:
-    """The compiled entry a manifest plugin names: the device object when the
-    unit has one, else the first compiled."""
-    native = _native(entries)
-    return next((t for t in native if _trait(t, "device", False)), native[0])
-
-
-def _refuse_libc_names(kernels, targets) -> None:
-    """Refuse an authored kernel that takes a name a row of the build reserves, with the reason that row gives. The names are a
-    machine fact of the build's rows (``reserved_names``: name -> reason); a chain or a derivative carries no source digest and
-    is named by its builder."""
-    from ..targets import detect_machine
-
-    authored = [k for k in kernels if getattr(k, "source_digest", None) is not None]
-    reserved = detect_machine("", tuple(targets)).reserved_names if authored else {}
-    for k in authored:
-        if k.name in reserved:
-            raise HawkError(f"kernel {k.name!r}: {reserved[k.name]}; rename the kernel")
+    """The entry a manifest plugin names: the device object when the unit has one, else the first target's."""
+    return next((t for t in entries if TARGETS[t].device), next(iter(entries)))
 
 
 def _refuse_segmented_position(kernels, names) -> None:
@@ -307,223 +221,220 @@ def _refuse_segmented_position(kernels, names) -> None:
 
 
 def _refuse_targets(name: str, targets) -> None:
-    """Refuse an empty ``targets`` or an id that is no row of
-    :data:`hawk.targets.TARGETS`, naming the valid ones."""
-    check()
+    """Refuse an empty ``targets``, the embedded C target, and a target no OSPREY serves (by name, with the served ones)."""
     if "c" in targets:
         raise HawkError(EMBEDDED_C)
-
-    def hint() -> str:
-        each = [f"targets=({t!r},)" for t in TARGETS]
-        if not each:
-            return f"no backend is installed; install one of {', '.join(sorted(set(DISTRIBUTIONS.values())))}"
-        return f"pass {', '.join(each[:-1])} or {each[-1]}"
-
     if not targets:
-        raise HawkError(f"{name!r}: no target to build; {hint()}")
+        raise HawkError(f"{name!r}: no target to build; the served targets are {tuple(TARGETS) or 'none'}")
     for target in targets:
-        if target not in TARGETS:
-            if why := denial("backends", target):
-                raise HawkError(f"target {target!r} is refused: {why}")
-            ids = [repr(t) for t in TARGETS]
-            about = ", ".join(f"{t!r} {traits(t).get('about', '')}" for t in TARGETS)
-            raise HawkError(
-                f"unknown target {target!r}: the valid targets are "
-                f"{', '.join(ids[:-1])} and {ids[-1]} ({about}); {hint()}"
-                + (f"; {missing(target)}" if target in DISTRIBUTIONS else ""))
+        ospreys.serving(target)
 
 
-def _served_id() -> dict:
-    """``{the name a request spells a target by: the id of its row}``."""
-    return {name: target for target, name in _request.served().items()}
+# -- The store the OSPREYs keep their built units in: hawk names the folder and asks for its state. -------------------------- #
+def default_cache_dir() -> Path:
+    """The folder the OSPREYs store built units under: ``$HAWK_CACHE_DIR``, else ``$XDG_CACHE_HOME/hawk``, else ``~/.cache/hawk``."""
+    override = os.environ.get("HAWK_CACHE_DIR")
+    if override:
+        return Path(override)
+    xdg = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(xdg) / "hawk"
 
 
-def _plans(kernels, names, kinds, *, smode, targets, spec, options, exports_block: bool = False) -> list:
-    """``(request, dump, dialects)`` of each kernel: the request the lowering library is asked, the text of the nodes it names and the
+def cache_stats(cache_dir=None) -> dict:
+    """``{OSPREY name: the counters of its store}`` under ``cache_dir`` (default: :func:`default_cache_dir`), as the libraries state them."""
+    root = Path(cache_dir) if cache_dir else default_cache_dir()
+    return {name: osprey.state("stats", root) for name, osprey in ospreys.found().items()}
+
+
+def reset(cache_dir=None) -> None:
+    """Empty every OSPREY's store under ``cache_dir`` (default: :func:`default_cache_dir`)."""
+    root = Path(cache_dir) if cache_dir else default_cache_dir()
+    for osprey in ospreys.found().values():
+        osprey.state("reset", root)
+
+
+def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | None = None, opt_level: str = "") -> str:
+    """One opaque text naming everything a build of ``kernels`` for ``targets`` is made of.
+
+    Per kernel: its name, the text of its traced nodes, the request the lowering is asked (declarations, kind, sinks, settings)
+    and its derivative tag; per target: the ``key`` the serving OSPREY states for the machine; and ``mode``, ``options`` and
+    ``opt_level``. Equal requests give equal texts, and a change in any of these gives another. A caller that has choices of its
+    own (a folder name, say) hashes this text together with them.
+    """
+    options = _user_options(options, False, None, "", "")
+    kernels, targets = list(kernels), tuple(targets)
+    names = [k.name for k in kernels]
+    _refuse_targets(names[0] if names else "", targets)
+    explicit = False
+    kind = _resolve_bundle_kind(names, kernels, None)
+    kinds = [_member_kind(k, kind, explicit) for k in kernels]
+    cfg = _resolved_settings(None, targets)
+    machines = _machines(targets, options, opt_level, default_cache_dir())
+    keyed = {t: {"key": machines[t]["key"]} for t in targets}
+    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, options=options, machines=keyed, sizes=None)
+    derivative = _per_kernel_derivative(kernels, names, None)
+    return hashlib.sha256(json.dumps([plans, derivative, opt_level], sort_keys=True, default=repr).encode()).hexdigest()
+
+
+# -- The calls to the OSPREYs. ------------------------------------------------------------------------------------------------ #
+def _machines(targets, options, opt_level: str, root: Path) -> dict:
+    """``{target: the machine answer of its OSPREY}``, stored as given; a machine with no tools still states itself.
+
+    ``root`` is the folder the OSPREY may keep what it finds out about the machine in (the store of the build).
+    """
+    return {t: ospreys.serving(t).machine({"target": t, "options": _options_mod.of_target(options, t), "opt_level": opt_level,
+                                           "root": str(root)})
+            for t in targets}
+
+
+def _plans(kernels, names, kinds, *, mode, targets, settings, options, machines, sizes, exports_block: bool = False) -> list:
+    """``(request, dump, dialects)`` of each kernel: the request the lowering is asked, the text of the nodes it names and the
     text of their dialects (empty: the lowering context declares the dialect kinds itself). A build asks for texts without the
     self-check block, which the text of its set carries once; a text that is compiled alone (:func:`emit_source`) asks for it."""
     out = []
     for kernel, name, kind in zip(kernels, names, kinds):
         roots = _request.sinks_of(kernel)
-        # the lowering library loads the text into an empty context, where a node's handle is its position in the text: so the
-        # roots are copied into one first, and the request names the copies' numbers
+        # the lowering loads the text into an empty context, where a node's handle is its position in the text: so the roots
+        # are copied into one first, and the request names the copies' numbers
         copies = _ir.adopt(_ir.new_context(), roots)
-        dump = _ir.dump_text(copies)
-        dialects = ""        # the library declares the wing kinds itself, so no dialect text is passed
         position = dict(zip(roots, _ir.dump_numbers(copies)))
-        out.append((_request.request(kernel, name=name, scalar=smode.id, kind=kind, targets=targets, spec=spec, position=position,
-                                     options=options, exports_block=exports_block), dump, dialects))
+        request = _request.request(kernel, name=name, scalar=mode, kind=kind, targets=targets, settings=settings, position=position,
+                                   options=options, machines=machines, sizes=sizes, exports_block=exports_block)
+        out.append((request, _ir.dump_text(copies), ""))
     return out
 
 
-def _options(*, device_arch: str, options=None, layout_sizes_override=None,
-             defines=(), cache_dir=None, host_profile: str = "", opt_level: str = "", block: int | None = None) -> dict:
-    """The build inputs backends read (:meth:`hawk.backends.Backend.emit`, ``build``): shared keys flat
-    (``device_arch`` is the resolved one), the user's ``options`` under their ``<id>.`` prefix."""
-    return {**(options or {}), "device_arch": device_arch, "layout_sizes_override": layout_sizes_override,
-            "defines": tuple(defines), "cache_dir": cache_dir, "host_profile": host_profile or "",
-            "opt_level": opt_level or "", "block": block}
+def _restricted(request: dict, names) -> dict:
+    """``request`` asking only for the targets spelled ``names`` (the ones one OSPREY serves)."""
+    mine = {**request, "targets": list(names), "machine": {n: request["machine"][n] for n in names}}
+    reserved = next((m["stated"]["reserved_names"] for m in mine["machine"].values()
+                     if isinstance(m.get("stated"), dict) and "reserved_names" in m["stated"]), None)
+    if reserved is not None:
+        mine["reserved_names"] = reserved
+    return mine
 
 
-def _emit_arch(targets, device_arch: str) -> str:
-    """The device arch the emit may read cards for: resolved (once, memoised) only
-    when a target compiles with the device toolchain, so a host-only build never
-    probes."""
-    return arch(device_arch) if _has_device(targets) else ""
+def _linker(targets):
+    """The OSPREY that links the build: the one serving the first host-entry target, else any host OSPREY."""
+    host = next((t for t in targets if TARGETS[t].host_entry), None)
+    return ospreys.serving((host_target() if host is None else TARGETS[host]).id)
 
 
-def _prepared(unit, lowered, kernel, targets) -> tuple:
-    """``(lowered, texts)`` of one answered unit: ``lowered`` with the unit's name and kernel, ``texts`` the text the library wrote
-    for each target, by target."""
-    name = unit["meta"]["name"]
-    served = _served_id()
-    found = {served[text["target"]]: text for text in unit["texts"]}
+def _lower(plan, targets) -> dict:
+    """The answer to one kernel's request, as the linking OSPREY merges the answers of the OSPREYs lowered.
+
+    The leader (the OSPREY whose target row says ``device``) is lowered first and its request carries ``companions``, the
+    target names of the other OSPREYs of the build (none for a build of one). The ``peer`` member of its answer is passed on,
+    unread, in the request of every other OSPREY as ``peer: {leader's target name: record}``. All answers go, as given, to
+    the linking OSPREY's ``merge``, which states a merged answer with no ``peer``.
+    """
+    request, dump, dialects = plan
+    owned = {}
+    for target in targets:
+        owned.setdefault(ospreys.serving(target).name, []).append(target)
+    leader = next((n for n, ts in owned.items() if any(TARGETS[t].device for t in ts)), None)
+    leader_target = None if leader is None else next(TARGETS[t].target for t in owned[leader] if TARGETS[t].device)
+    companions = [TARGETS[t].target for n, ts in owned.items() if n != leader for t in ts]
+    answers, peer = [], None
+    for name in sorted(owned, key=lambda n: n != leader):
+        mine = _restricted(request, [TARGETS[t].target for t in owned[name]])
+        if name == leader:
+            mine["companions"] = companions
+        elif leader is not None:
+            mine["peer"] = {leader_target: peer}
+        answer = ospreys.found()[name].lower(mine, dump, dialects)
+        if name == leader:
+            peer = answer.get("peer")
+        answers.append(answer)
+    return _linker(targets).merge(answers)
+
+
+def _require_tools(machines: dict) -> None:
+    """Raise ``ToolchainAbsent`` for the first target whose machine says its tools are absent: a build needs them."""
+    for target, machine in machines.items():
+        ospreys.serving(target).require_tools(machine)
+
+
+def _texts(unit: dict, targets) -> dict:
+    """``{target: the text record the OSPREYs wrote for it}`` of one answered unit; a target with no text is refused by name."""
+    by_request = {TARGETS[t].target: t for t in targets}
+    found = {by_request[text["target"]]: text for text in unit["texts"] if text["target"] in by_request}
     if absent := [t for t in targets if t not in found]:
-        raise HawkError(f"the lowering library wrote no {absent[0]} text for {name!r}")
-    lowered = SimpleNamespace(kernel=kernel, name=name, smode=lowered.smode, kind=lowered.kind, spec=lowered.spec,
-                              working_set_bytes=lowered.working_set_bytes)
-    return lowered, {t: SimpleNamespace(**text) for t, text in found.items()}
+        raise HawkError(f"the lowering wrote no {absent[0]} text for {unit['meta']['name']!r}")
+    return found
 
 
-def _draft(kernel, unit, family, prepared, parts, options, *, targets, derivative) -> _Draft:
-    """Assemble the unit CONTENT of one answered unit from the :class:`~hawk.backends.Part` each target built for it.
+def _build_one(target: str, texts: dict, unit: dict, *, machines, options, defines, opt_level: str, block, kind, root: Path) -> dict:
+    """The build of one unit for one target, as its OSPREY answers: the files, the format, the figures."""
+    request = {"v": 1, "name": unit["meta"]["name"], "target": TARGETS[target].target, "text": texts[target]["text"], "meta": unit["meta"],
+               "machine": machines[target], "options": _options_mod.of_target(options, target), "defines": list(defines),
+               "opt_level": opt_level, "block": block}
+    return ospreys.serving(target).build(kind.apply(request), root)
 
-    Everything here is a pure function of the inputs plus the content-closure cache; nothing is written, which is what lets the
-    publish step ask "is this already on disk?" before "where do I put it?". ``unit`` is the unit's record in the library's answer,
-    ``family`` the records of every unit the answer holds for ``kernel``, ``prepared`` what :func:`_prepared` made of the unit.
 
-    Each target's backend builds its own :class:`~hawk.backends.Part` from the text the library wrote for it
-    (:meth:`hawk.backends.Backend.build`, started by :func:`_submit_targets` or run by :func:`_build_targets`); ``options["device_arch"]``
-    is the arch the driver resolved once, and only when a target builds for a device, so a host-only build never pays for the
-    probe. The sidecar is the unit's record and the kernel's own declarations (:func:`hawk.artifact.sidecar.sidecar_of_unit`)."""
-    lowered = prepared[0]
-    name = lowered.name
+def _built(answer: dict) -> tuple:
+    """``(result, artifact name, source name, format)`` of one build answer: what a draft's entry holds."""
+    return SimpleNamespace(key=answer["key"], hit=answer["hit"], seconds=answer["seconds"]), answer["artifact"], answer["source"], answer["format"]
+
+
+def _draft(kernel, unit, family, answers, *, mode, targets, machines, derivative, block, records=None) -> _Draft:
+    """Assemble the unit CONTENT of one answered unit from what each target's OSPREY built for it.
+
+    Everything here is a pure function of the answers; nothing is written, which lets the publish step lay the files down at once.
+    ``unit`` is the unit's record in the lowering answer, ``family`` the records of every unit the answer holds for ``kernel``,
+    ``answers`` ``{target: its build answer}``. The sidecar is the unit's record and the kernel's own declarations, with the
+    figures each OSPREY gave and the machine it stated, written as given.
+    """
+    name = unit["meta"]["name"]
     entries, files = {}, []
     for target in targets:
-        files += parts[target].files
-        entries[target] = parts[target].entry
+        # A host-entry target's artifact is the build's linked library: its object is a link input, so only its source is published.
+        published = [answers[target]["source"]] if TARGETS[target].host_entry else list(answers[target]["files"])
+        files += [UnitFile(file, _digest_file(Path(answers[target]["files"][file])), source_path=Path(answers[target]["files"][file]))
+                  for file in published]
+        built = _built(answers[target])
+        # the runtime opens a host unit as ``<unit>.so``: the file name is the bundle's, the object the library built is link input
+        entries[target] = (built[0], f"{name}.so", *built[2:]) if TARGETS[target].host_entry else built
     lead = _lead(entries)
-    # The real format: the detected device format when a device object was built, else the first compiled one: mirrors build_bundle's
-    # manifest-entry choice so the sidecar and manifest never disagree.
-    meta = sidecar_of_unit(kernel, unit, lead_device=_trait(lead, "device", False), fmt=entries[lead][3], scalar_type=lowered.smode.id,
-                           exec_targets=[TARGETS[t].entry for t in targets], family=family, derivative=derivative, **parts[lead].facts)
-    sidecar_blob = text_blob(json.dumps(meta, indent=2) + "\n")
-    files.append(UnitFile(f"{name}.json", digest_bytes(sidecar_blob), blob=sidecar_blob))
-    return _Draft(name, kernel.name, unit["meta"], meta, f"{name}.json", entries, tuple(files), {t: p.report_file for t, p in parts.items()})
-
-
-def compile_jobs() -> int:
-    """How many of one kernel's target compiles may run at once:
-    ``$HAWK_COMPILE_JOBS`` (a positive integer), else 2 — the host and the
-    device compile side by side. ``1`` compiles them one after the other.
-    An invalid value RAISES."""
-    raw = os.environ.get("HAWK_COMPILE_JOBS", "").strip()
-    if not raw:
-        return 2
-    try:
-        jobs = int(raw)
-    except ValueError:
-        jobs = 0
-    if jobs < 1:
-        raise HawkError(
-            f"$HAWK_COMPILE_JOBS={raw!r} is not a positive integer (the number "
-            "of a kernel's target compiles allowed to run at once; 1 = one "
-            "after the other)")
-    return jobs
-
-
-def _submit_targets(pool, lowered, sources, options, targets) -> dict:
-    """The ``build`` of every target in ``targets`` started in ``pool``: ``{target: future}``. One pool serves all the units of a
-    build call, so the compiles of the call run at most :func:`compile_jobs` at once."""
-    return {t: pool.submit(contextvars.copy_context().run, TARGETS[t].build, lowered, sources[t], options) for t in targets}
-
-
-def _collect(futures: dict) -> dict:
-    """The parts of :func:`_submit_targets`, by target, once every one has finished; the failure raised is the one of the first
-    target in order."""
-    for future in futures.values():
-        future.exception()
-    return {t: future.result() for t, future in futures.items()}
-
-
-def _build_targets(lowered, sources, options, targets) -> dict:
-    """``build`` of every target in ``targets``, side by side when
-    there is more than one (:func:`compile_jobs` at most at once): the host
-    compiler and the device compiler are separate processes on separate
-    cache slots, so neither waits for the other. Parts are keyed by
-    target and consumed in ``targets`` order, so the unit is the same
-    whichever finishes first; a failure is raised for the FIRST failing
-    target in that order — the error a one-after-the-other build reports —
-    after every started build has finished."""
-    targets = list(targets)
-    jobs = min(len(targets), compile_jobs())
-    if jobs <= 1:
-        return {t: TARGETS[t].build(lowered, sources[t], options) for t in targets}
-    with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="hawk-compile") as pool:
-        futures = {t: pool.submit(contextvars.copy_context().run, TARGETS[t].build, lowered, sources[t], options)
-                   for t in targets}
-        for future in futures.values():
-            future.exception()  # wait for every build before reporting any
-    return {t: futures[t].result() for t in targets}
+    tool = {ospreys.serving(t).name: answers[t]["figures"] for t in targets}
+    stated = {ospreys.serving(t).name: machines[t]["stated"] for t in targets}
+    meta = sidecar_of_unit(kernel, unit, lead_device=TARGETS[lead].device, fmt=entries[lead][3], scalar_type=mode,
+                           exec_targets=[TARGETS[t].entry for t in targets], family=family, derivative=derivative, block=block,
+                           measured=answers[lead]["figures"].get("launch"), tool=tool, stated=stated, records=records)
+    blob = text_blob(json.dumps(meta, indent=2) + "\n")
+    files.append(UnitFile(f"{name}.json", digest_bytes(blob), blob=blob))
+    return _Draft(name, kernel.name, unit["meta"], meta, f"{name}.json", entries, tuple(files))
 
 
 @dataclass(frozen=True)
 class _Library:
-    """The shared library of one build call: its file name, the host target whose units' objects it
-    holds (``None``: a device-only build), its link in the cache and the files it publishes (the
-    library, then one link to it for each host unit not named like it)."""
+    """The shared library of one build call: its file name, the host target whose units it holds (``None``: a device-only build)
+    and the files it publishes (the library, then one link to it for each host unit not named like it)."""
 
     name: str
     target: str | None
-    result: object
     files: tuple
 
 
-def _host_row(targets):
-    """The backend whose compiler links the library of a build: the host row of the build, else the
-    host row installed (a build for a device alone still assembles its images and links with the
-    host compiler)."""
-    row = next((TARGETS[t] for t in targets if TARGETS[t].host_compiled), None)
-    if row is not None:
-        return row
-    for row in default_backends():
-        if row.host_compiled:
-            return row
-    raise HawkError("a device build links its images into one library with the host compiler: "
-                    "install the host OSPREY")
-
-
-def _link_set(drafts, answers, lowered, options, *, targets, stem: str | None) -> "_Library | None":
-    """Link the objects of ``drafts`` into one library (:meth:`hawk.backends.Backend.link`): each
-    unit's host object and the object that holds its device image, with the text of the set. The set
-    lists every unit of every answer in the answers' order: a unit with no text (the source unit of a
-    split kernel, which names its stages) has a record in the library and no object. The
-    file is ``<stem>.<ext>`` (``stem`` is the bundle's name; none for a library named for its one
-    unit); each host unit also gets a link ``<unit>.<ext>`` to it, which the runtime still opens by
-    the unit's name. ``None`` when no target of the build is compiled."""
-    if not _native(targets):
-        return None
-    target = next((t for t in targets if TARGETS[t].host_compiled), None)
-    device = next((t for t in targets if TARGETS[t].device), None)
-    row = _host_row(targets)
-    written = iter(drafts)
-    units = []
+def _link_set(drafts, answers, built, *, targets, stem: str, exports, root: Path) -> "_Library":
+    """Link the units of ``drafts`` into one library with the OSPREY that serves the host: each unit's host and device parts with the
+    text of the set. The set lists every unit of every answer in the answers' order: a unit with no text (the source unit of a split
+    kernel, which names its stages) has a record in the library and no part. Each host unit also gets a link ``<unit>.<ext>`` to the
+    library, which the runtime still opens by the unit's name."""
+    host = next((t for t in targets if TARGETS[t].host_entry), None)
+    linker = _linker(targets)
+    written = iter(built)
+    parts, metas = [], []
     for unit in (u for answer in answers for u in answer["units"]):
-        if not unit["texts"]:
-            units.append((None, None, unit["meta"]))
-            continue
-        d = next(written)
-        units.append((None if target is None else d.entries[target][0], None if device is None else d.entries[device][0], d.meta))
-    recipe = None if device is None else TARGETS[device].embed_recipe(lowered, options)
-    ext = row.artifact if target is None else Path(drafts[0].entries[target][1]).suffix
-    name = (stem or drafts[0].name) + ext
-    result = row.link(lowered, options, units, name, recipe)
-    digest = digest_file(result.artifact)
-    if digest is None:                                       # pragma: no cover
-        raise HawkError(f"the content-closure cache says the library {name!r} is at {result.artifact} but it cannot be read")
-    links = () if target is None else tuple(UnitFile(d.entries[target][1], digest, link_to=name)
-                                            for d in drafts if d.entries[target][1] != name)
-    return _Library(name, target, result, (UnitFile(name, digest, source_path=result.artifact), *links))
+        metas.append(unit["meta"])
+        if unit["texts"]:
+            parts.append(next(written)[host or host_target().id])
+    path = Path(linker.link(parts, linker.set_text(metas, exports), f"{stem}.so", root)["library"])
+    name = path.name
+    digest = _digest_file(path)
+    links = () if host is None else tuple(UnitFile(d.entries[host][1], digest, link_to=name)
+                                          for d in drafts if d.entries[host][1] != name)
+    return _Library(name, host, (UnitFile(name, digest, source_path=path), *links))
 
 
 def _refuse_repeated_units(drafts_names) -> None:
@@ -538,83 +449,25 @@ def _refuse_repeated_units(drafts_names) -> None:
 
 
 def _artifact_of(draft: _Draft, directory: Path, library: "_Library | None") -> Artifact:
-    """The public :class:`Artifact` view of a drafted kernel published at
-    ``directory``. Built the same way whether the files were just written or
-    were already there — a served unit and a fresh one are the same object.
-    A host entry names the build's shared library (``library``), and the
-    unit's link to it is listed in ``links``."""
+    """The public :class:`Artifact` view of a drafted kernel published at ``directory``. A host entry names the build's shared
+    library (``library``), and the unit's link to it is listed in ``links``."""
     entries = {
         target: Entry(target, directory / (library.name if library is not None and target == library.target else art_name),
-                      directory / src_name, result.key, result.hit, result.seconds,
-                      tuple(result.closure),
-                      None if draft.report_files[target] is None else directory / draft.report_files[target])
+                      directory / src_name, result.key, result.hit, result.seconds)
         for target, (result, art_name, src_name, _fmt) in draft.entries.items()
     }
     link = None if library is None or library.target is None else draft.entries[library.target][1]
     links = () if link is None or link == library.name else (directory / link,)
-    return Artifact(draft.name, directory, directory / draft.sidecar_name,
-                    draft.sidecar, entries, links,
+    return Artifact(draft.name, directory, directory / draft.sidecar_name, draft.sidecar, entries, links,
                     None if library is None else directory / library.name)
 
 
-def _served(bundle: Bundle) -> Bundle:
-    """The bundle a MEMO HIT hands back: identical, except every entry is
-    marked ``hit`` with zero compile seconds — needed because the
-    compile-floor rows assert ``not entry.hit`` to prove they time a
-    compiler and not a lookup."""
-    artifacts = tuple(
-        replace(a, entries={t: replace(e, hit=True, seconds=0.0) for t, e in a.entries.items()})
-        for a in bundle.artifacts
-    )
-    return Bundle(bundle.directory, bundle.manifest_path, bundle.manifest, artifacts,
-                 digest=bundle.digest)
-
-
-def _rehome_bundle(bundle: Bundle, directory: Path) -> Bundle:
-    """``bundle``, pointed at ``directory`` instead of wherever it was
-    actually built: every path field rewritten to the same names under the
-    new directory, everything else carried over untouched. Rehoming names
-    where the bytes now ARE; it writes nothing itself —
-    :func:`_materialize` is what puts them there first."""
-    artifacts = tuple(
-        Artifact(a.name, directory, directory / a.sidecar_path.name, a.sidecar,
-                 {t: replace(e, artifact=directory / e.artifact.name,
-                             source=directory / e.source.name,
-                             report=_rehomed(e.report, directory))
-                  for t, e in a.entries.items()}, tuple(directory / link.name for link in a.links),
-                 _rehomed(a.library, directory))
-        for a in bundle.artifacts
-    )
-    return Bundle(directory, _rehomed(bundle.manifest_path, directory),
-                 bundle.manifest, artifacts, digest=bundle.digest)
-
-
-def _rehomed(path: Path | None, directory: Path) -> Path | None:
-    """``path``'s name under ``directory``; ``None`` (no manifest, no
-    report) stays ``None``."""
-    return None if path is None else directory / path.name
-
-
-def _materialize(bundle: Bundle, files, digest: str, directory: Path) -> Bundle:
-    """Copy a MEMOISED unit's files into a different ``directory`` than the
-    one it was published at, and return it rehomed there
-    (:func:`_rehome_bundle`) — a second physical copy, no recompile.
-
-    A no-op when ``directory`` already holds this unit (the same
-    cross-process stamp check :func:`build_bundle`'s Phase 3 makes). Every
-    file is a literal byte copy; this stays content-correct because the
-    manifest/sidecar carry no absolute path, only file names."""
-    pairs = [(Path(p).name, p, d) for p, d in files]
-    if (_stamp_digest(directory) == digest and _first_moved(
-            [(str(directory / n), d) for n, _p, d in pairs]) is None):
-        return _rehome_bundle(bundle, directory)
+def _publish(files, directory: Path) -> None:
+    """Lay ``files`` down in ``directory``, each whole to a private sibling and then renamed into place: a concurrent reader (or a
+    second builder of the same unit) sees the old file or the new one, never a partial write."""
     directory.mkdir(parents=True, exist_ok=True)
-    copied = tuple(UnitFile(n, d, link_to=os.readlink(p)) if Path(p).is_symlink() else UnitFile(n, d, source_path=Path(p))
-                   for n, p, d in pairs)
-    for f in copied:
+    for f in files:
         f.write(directory)
-    _write_stamp(directory, digest, copied)
-    return _rehome_bundle(bundle, directory)
 
 
 def resolve_kind(name: str, kernel_kind, explicit_kind):
@@ -666,130 +519,6 @@ def _resolve_bundle_kind(names: list, kernels: list, explicit_kind):
     return distinct[0] if distinct else DEFAULT_KIND
 
 
-# -- The public entry points. ----------------------------------------------- #
-def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
-          kind=None, layout_sizes_override=None, defines=(), cache_dir=None,
-          device_arch: str = "", name: str | None = None,
-          derivative: dict | None = None, host_profile: str = "",
-          opt_level: str = "", literal_table: bool = False,
-          embedded_profile=None, options: Mapping | None = None, spec=None,
-          settings: BuildSettings | None = None) -> Artifact:
-    """Emit, compile and publish ONE kernel into ``directory``.
-
-    ``kernel`` is anything carrying ``.name``/``.sinks``/``.walk`` (a
-    :class:`hawk.trace.Kernel`). ``layout_sizes_override=`` is a test-only
-    door threaded to the export block.
-
-    This is the PRIMITIVE, not the deployment unit: no ``manifest.json``, no
-    stamp, no unit memo — :func:`build_bundle` publishes a unit (one
-    manifest per bundle) with content-addressed publishing.
-
-    ``opt_level`` picks the optimisation level
-    (:data:`hawk.compile.toolchain.OPT_LEVELS`), exactly like
-    ``host_profile`` picks the host profile: empty means
-    ``$HAWK_OPT_LEVEL``, else :data:`hawk.compile.toolchain.DEFAULT_OPT_LEVEL`
-    (``"O3"``). See :func:`build_bundle`'s own docstring for the full rule.
-
-    ``literal_table`` (default ``False``) and ``embedded_profile``: see
-    :func:`build_bundle`.
-
-    Refuses a ``segmented`` dispatch, which needs K artifacts: call
-    :func:`build_bundle` with ``[kernel]`` instead."""
-    name = name or kernel.name
-    options = _user_options(options, literal_table, embedded_profile, device_arch, host_profile)
-    device_arch, host_profile = _options_mod.shared(options)
-    lowered, answer, unit, options = _emitted(
-        kernel, name, mode, kind, targets, device_arch, "build() publishes", "build_bundle", spec, settings=settings,
-        layout_sizes_override=layout_sizes_override, options=options,
-        defines=defines, cache_dir=cache_dir, host_profile=host_profile, opt_level=opt_level, exports_block=False)
-    directory = Path(directory)
-    prepared = _prepared(unit, lowered, kernel, targets)
-    parts = _build_targets(prepared[0], prepared[1], options, targets)
-    draft = _draft(kernel, unit, answer["units"], prepared, parts, options, targets=targets, derivative=derivative)
-    # one kernel is a set of one: its library is named for its unit
-    library = _link_set([draft], [answer], lowered, options, targets=targets, stem=None)
-    directory.mkdir(parents=True, exist_ok=True)
-    for f in (*draft.files, *(() if library is None else library.files)):
-        f.write(directory)
-    return _artifact_of(draft, directory, library)
-
-
-def _user_options(options, literal_table, embedded_profile, device_arch, host_profile) -> dict:
-    """The user's ``options`` with the old keywords folded in, checked against the manifests (:mod:`hawk.options`)."""
-    if embedded_profile is not None or any(str(key).partition(".")[0] == "c" for key in options or ()):
-        raise HawkError(EMBEDDED_C)
-    merged = _options_mod.merge(options, literal_table=literal_table, device_arch=device_arch, host_profile=host_profile)
-    _options_mod.check(merged)
-    return merged
-
-
-def _emitted(kernel, name, mode, kind, targets, device_arch, does, instead, spec, settings=None, *, exports_block: bool, **inputs) -> tuple:
-    """``(lowered, answer, unit, options)`` of ONE kernel (``inputs`` are the :func:`_options` keywords but the arch): the lowering half of
-    :func:`build` and :func:`emit_source`. ``lowered`` holds the scalar mode, the kind and the spec of the build, ``answer`` is the
-    library's answer and ``unit`` the one unit it wrote a text for. A kernel that needs several launches (a segmented dispatch, a value
-    reduced over samples) is refused: ``does`` says what the caller publishes and ``instead`` what to call."""
-    _refuse_targets(name, targets)
-    emit_arch = _emit_arch(targets, device_arch)
-    spec = build_spec(tuple(targets), emit_arch) if spec is None else spec
-    spec = _apply_settings(spec, settings, targets).with_settings(route_to_ordered=scalar_mode(mode).cells)
-    if any(d.strategy == "segmented" for d in _ir.dispatch_groups(kernel.walk)):
-        raise HawkError(f"{name!r} carries a segmented dispatch: {does} ONE artifact, and a segmented kernel needs K "
-                        f"— call {instead}([kernel], ...) instead")
-    kind = resolve_kind(name, getattr(kernel, "kind", None), kind)
-    smode = scalar_mode(mode)
-    _refuse_libc_names((kernel,), targets)
-    options = _options(device_arch=emit_arch, **inputs)
-    answer = _request.lower(*_plans([kernel], [name], [kind], smode=smode, targets=targets, spec=spec, options=options,
-                                    exports_block=exports_block)[0])
-    written = [u for u in answer["units"] if u["texts"]]
-    if len(written) != 1:
-        # what the answer is decides the cause: a split with a team stage is a team kernel, any other split a reduction over samples
-        teams = any(stage["team"] is not None for unit in answer["units"] for stage in unit["meta"]["stages"])
-        cause = ("is worked by a team per lane, so it runs as several stages, one launch each" if teams
-                 else "reads a value reduced over samples, so it runs as several launches")
-        raise HawkError(f"{name!r} {cause}: {does} ONE artifact — call {instead}([kernel], ...) instead")
-    lowered = SimpleNamespace(smode=smode, kind=kind, spec=spec, working_set_bytes=answer["working_set_bytes"])
-    return lowered, answer, written[0], options
-
-
-@dataclass(frozen=True)
-class EmitUnit:
-    """What :func:`emit_source` returns: ``sources`` (target name to its :class:`hawk.emit.Source`, the ``.text``
-    of each as :func:`build` would write it), the ``sidecar`` dict without the figures only a compile gives (``ptxas``,
-    ``launch.local_*``, ``launch.wide``, and ``format`` as the target row's default, not the compiled object's), and ``unit``, the kernel as it was emitted (with the lane-set slots appended)."""
-
-    sources: dict
-    sidecar: dict
-    unit: object
-
-
-def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targets=DEFAULT_TARGETS, kind=None,
-                device_arch: str = "", literal_table: bool = False, options: Mapping | None = None, spec=None,
-                settings: BuildSettings | None = None) -> EmitUnit:
-    """Emit ONE kernel's source text and sidecar for ``targets`` without compiling or writing anything.
-
-    The sidecar is what :func:`build` publishes (same lane-set lowering, same settings). The device text is what a build
-    publishes; the host text is the one a build publishes with the exports block in it (a build states that block once, in
-    the text of its set), so it is a whole translation unit a consumer can compile alone, with the same plane list. Honours ``settings``
-    (:class:`hawk.build_settings.BuildSettings`, ``launch_bounds`` included). Refuses what :func:`build` refuses, and a target
-    that has no compiler (``c``)."""
-    name = name or kernel.name
-    _refuse_targets(name, targets)
-    native = _native(targets)
-    if len(native) != len(targets):
-        raise HawkError(f"emit_source covers the compiled targets only; {_exported(targets)} has no compiler: use build()")
-    options = _user_options(options, literal_table, None, device_arch, "")
-    lowered, answer, unit, _ = _emitted(kernel, name, mode, kind, targets, _options_mod.shared(options)[0],
-                                        "emit_source returns", "build_bundle", spec, settings=settings, options=options,
-                                        exports_block=True)
-    lead = _lead(dict.fromkeys(native))
-    bounds = lowered.spec.settings.launch_bounds
-    sidecar = sidecar_of_unit(kernel, unit, lead_device=_trait(lead, "device", False), fmt=TARGETS[lead].format, scalar_type=lowered.smode.id,
-                              exec_targets=[TARGETS[t].entry for t in native], family=answer["units"], block=None if bounds is None else bounds[0])
-    served = _served_id()
-    return EmitUnit({served[text["target"]]: SimpleNamespace(**text) for text in unit["texts"]}, sidecar, kernel)
-
-
 def _member_kind(kernel, kind, explicit: bool):
     """The kind one bundle member renders under: the bundle's, except that a
     member traced without a kind of its own skips the active-set index map
@@ -835,7 +564,7 @@ def _manifest_of(families, library: "_Library | None" = None) -> dict:
             d.name, order,
             d.entries[_lead(d.entries)][1],
             d.sidecar_name,
-            # The real format (``ptx``/``cubin``, read off the compiled
+            # The real format (the OSPREY states it for the compiled
             # bytes), not a static "ptx" guess.
             d.entries[_lead(d.entries)][3],
             None if library is None else library.name)
@@ -845,97 +574,10 @@ def _manifest_of(families, library: "_Library | None" = None) -> dict:
                                   exec_access=access, exec_op=op)
 
 
-def build_bundle(kernels, directory, *, mode: str = "float64",
-                 targets=DEFAULT_TARGETS, kind=None, layout_sizes_override=None,
-                 defines=(), cache_dir=None, device_arch: str = "",
-                 name: str | None = None,
-                 derivative: Mapping[str, str] | None = None,
-                 host_profile: str = "", opt_level: str = "",
-                 literal_table: bool = False, embedded_profile=None, options: Mapping | None = None,
-                 emit_form: str | None = None, linalg_form: str | None = None, wide_form: str | None = None,
-                 launch_bounds: tuple[int, int] | None = None, spec=None,
-                 settings: BuildSettings | None = None) -> Bundle:
-    """Build every kernel into ``directory`` and write ONE ``manifest.json``
-    over them. An ``emit_form``/``linalg_form``/``wide_form``/``launch_bounds`` left unset is the value of ``settings``
-    (a :class:`hawk.build_settings.BuildSettings`; the default: ``"auto"``, no bound); an explicit argument wins. ``emit_form`` is how a product, dot, sum or norm is spelled: ``"auto"`` unrolls a site of at most 16 elements and
-    writes a longer one as a loop, ``"static"`` unrolls every site, ``"rolled"`` writes
-    every site as a loop, the fast-compile mode (the compiler does no per-element work).
-    ``linalg_form`` is how per-lane linear algebra is worked: ``"auto"`` keeps one thread per
-    matrix up to ``n = 32`` and uses a team of threads per matrix above it, ``"team"`` uses a
-    team at every size, ``"thread"`` refuses a matrix above 32 by name
-    (:mod:`raptor.wings.simt.team`). ``wide_form`` is where a per-lane value wider than a thread's
-    registers lives: ``"auto"`` builds a kernel as a warp per lane when every target is a device
-    and the kernel has a rule in that form (:mod:`raptor.wings.simt.lane`, folds of 128 elements or more), else places
-    the value (:mod:`raptor.wings.simt.wide`) -- a bundle with a host target keeps the placed form, as the host has no
-    warp; ``"thread"`` keeps every value in the lane's registers and local memory (the text before the pass);
-    ``"team"`` asks for the warp form (device targets only). ``launch_bounds=(threads, blocks_per_sm)`` compiles every device kernel with
-    ``__launch_bounds__(threads, blocks_per_sm)`` and records ``launch.block = threads`` in the sidecar, so a launch runs
-    that block size (``threads`` a multiple of 32, ``threads * blocks_per_sm`` at most 2048; the values do not change).
-    Every member must agree on the execution axis (a
-    manifest-level, not per-entry, declaration) — a set that doesn't agree is
-    two bundles.
-
-    This is the DEPLOYMENT UNIT: publishing is content-addressed (see the
-    module docstring) — a repeat build of an already-published definition
-    recompiles nothing, copying files into a different directory if asked,
-    so the returned :class:`Bundle` always names a directory that
-    genuinely holds the unit.
-
-    ``derivative`` names each derivative kernel's primal, per kernel:
-    ``{kernel_name: primal_name}``, or leave it (``None``) to use a
-    :func:`hawk.diff.vjp`/:func:`~hawk.diff.jvp` kernel's own recorded
-    primal. A primal outside this bundle is named by
-    ``{kernel_name: (primal_name, primal_unit_digest)}`` via its
-    :attr:`Bundle.digest` — needed when the primal and its scattering VJP
-    can't share one manifest.
-
-    ``host_profile`` picks the host code-gen profile
-    (:data:`ospreys.cpu.toolchain.HOST_PROFILES`): ``"native-vector-math"``
-    (default on x86-64 with a GCC host compiler, and on arm64) or ``"native"`` (libm
-    bit-identity) for a bundle built on the machine that runs it,
-    ``"portable"`` for one that's prebuilt and shipped. Empty means
-    ``$HAWK_HOST_PROFILE``, else
-    :func:`ospreys.cpu.toolchain.default_host_profile`.
-
-    ``opt_level`` picks the optimisation level
-    (:data:`hawk.compile.toolchain.OPT_LEVELS`: ``"O0"``..``"O3"``), the
-    same way for every target this bundle builds: ``-O<n>`` on the host
-    build and on an AOT nvcc device build (nvcc's own ``-O<n>`` plus
-    ``-Xptxas -O<n>``); NVRTC device compiles always optimise and ignore it.
-    Empty means ``$HAWK_OPT_LEVEL``, else
-    :data:`hawk.compile.toolchain.DEFAULT_OPT_LEVEL` (``"O3"``).
-
-    ``literal_table`` (default ``False``) makes the device source read its
-    ``double`` literals from one ``__constant__`` table per translation unit
-    instead of as operand immediates: the same bits, fewer constant-move
-    instructions on architectures that issue a move pair per literal (sm_90),
-    unchanged on the others. Off, the device code is byte-identical to a
-    build without the option. A ``float32`` build ignores it, and the host
-    build is not affected.
-
-    Only the ``host`` and ``cuda`` targets are built: any other target, ``"c"`` included, is refused by name. ``embedded_profile`` is
-    refused with it."""
-    _bump_builds()  #: every CALL, attempt or success (one locked increment)
-    options = _user_options(options, literal_table, embedded_profile, device_arch, host_profile)
-    device_arch, host_profile = _options_mod.shared(options)
-    kernels = list(kernels)
-    smode = scalar_mode(mode)
-    directory = Path(directory)
-    targets = tuple(targets)
-    names = [name or k.name for k in kernels]
-    _refuse_targets(names[0] if names else "", targets)
-    _refuse_libc_names(kernels, targets)
-    _refuse_segmented_position(kernels, names)
-    native = _native(targets)
-    if native and not kernels:
-        raise HawkError("no kernel to build: a bundle holds at least one")
-    explicit = kind is not None
-    kind = _resolve_bundle_kind(names, kernels, kind)
-    kinds = [_member_kind(k, kind, explicit) for k in kernels]
-
-    # an argument left unset is ``settings``' value (over the settings of a spec the caller passes); an explicit one wins
-    given = _settings_of(settings, default_settings() if spec is None else spec.settings)
-    # ONE door: settings= (each legacy keyword still works alone; one that disagrees with it is refused by name)
+def _resolved_settings(settings, targets, *, emit_form=None, linalg_form=None, wide_form=None, launch_bounds=None):
+    """The :class:`~hawk.build_settings.Settings` of a build: ``settings`` over the defaults, an explicit keyword over both, a
+    keyword that disagrees with ``settings`` refused by name. Values the targets cannot take are the library's refusal."""
+    given = _settings_of(settings, default_settings())
     for key, value in (("emit_form", emit_form), ("linalg_form", linalg_form), ("wide_form", wide_form), ("launch_bounds", launch_bounds)):
         held = None if settings is None else getattr(settings, key)
         if value is not None and held is not None and _comparable(value) != _comparable(held):
@@ -949,107 +591,206 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
         refuse_choice(key, value)
     if wide_form == "team" and not _device_only(targets):
         raise HawkError("wide_form='team' (a warp per lane) is built for device targets only; use 'auto' with a host target")
-    emit_arch = _emit_arch(targets, device_arch)
-    spec = build_spec(tuple(targets), emit_arch) if spec is None else spec
-    if launch_bounds is not None and spec.device is None:
+    if launch_bounds is not None and not _has_device(targets):
         raise ValueError(f"launch_bounds={launch_bounds!r}: launch bounds are a device setting, refused on a build with no device target")
-    _apply_settings(spec, settings, targets)            # refuses a key no target declares
-    limits = None if spec.device is None else spec.device["launch"]      # what launch_bounds is checked against
-    spec = spec.with_settings(form=emit_form, linalg_form=linalg_form, wide_form=wide_form, launch_bounds=launch_bounds,
-                              contraction=given.contraction, fold_k=given.fold_k, fast_entries=given.fast_entries, scalar=smode.id, device_only=_device_only(targets),
-                              route_to_ordered=smode.cells)
-    spec = spec.with_settings(launch_bounds=_check_settings(spec.settings, limits).launch_bounds)
-    # Phase 1 — resolve `derivative` and ask for every kernel's request before anything is lowered; the unit key hashes the requests,
-    # so a refusal here is validation.
+    bounds = None if launch_bounds is None else tuple(int(n) for n in launch_bounds)
+    return _check_settings(replace(given, form=emit_form, linalg_form=linalg_form, wide_form=wide_form, launch_bounds=bounds))
+
+
+def _user_options(options, literal_table, embedded_profile, device_arch, host_profile) -> dict:
+    """The user's ``options`` with the old keywords folded in, checked (:mod:`hawk.options`)."""
+    if embedded_profile is not None or any(str(key).partition(".")[0] == "c" for key in options or ()):
+        raise HawkError(EMBEDDED_C)
+    merged = _options_mod.merge(options, literal_table=literal_table, device_arch=device_arch, host_profile=host_profile)
+    _options_mod.check(merged)
+    return merged
+
+
+def _emitted(kernel, name, mode, kind, targets, does, instead, settings, options, opt_level, sizes, root: Path, exports_block: bool) -> tuple:
+    """``(answer, unit, kind, machines)`` of ONE kernel: the lowering half of :func:`build` and :func:`emit_source`.
+    A kernel that needs several launches (a segmented dispatch, a value reduced over samples) is refused: ``does`` says what the
+    caller publishes and ``instead`` what to call."""
+    _refuse_targets(name, targets)
+    if any(d.strategy == "segmented" for d in _ir.dispatch_groups(kernel.walk)):
+        raise HawkError(f"{name!r} carries a segmented dispatch: {does} ONE artifact, and a segmented kernel needs K "
+                        f"— call {instead}([kernel], ...) instead")
+    kind = resolve_kind(name, getattr(kernel, "kind", None), kind)
+    machines = _machines(targets, options, opt_level, root)
+    plan = _plans([kernel], [name], [kind], mode=mode, targets=targets, settings=settings, options=options, machines=machines,
+                  sizes=sizes, exports_block=exports_block)[0]
+    answer = _lower(plan, targets)
+    written = [u for u in answer["units"] if u["texts"]]
+    if len(written) != 1:
+        # what the answer is decides the cause: a split with a team stage is a team kernel, any other split a reduction over samples
+        teams = any(stage["team"] is not None for unit in answer["units"] for stage in unit["meta"]["stages"])
+        cause = ("is worked by a team per lane, so it runs as several stages, one launch each" if teams
+                 else "reads a value reduced over samples, so it runs as several launches")
+        raise HawkError(f"{name!r} {cause}: {does} ONE artifact — call {instead}([kernel], ...) instead")
+    return answer, written[0], kind, machines
+
+
+def _build_units(families, *, targets, machines, options, defines, opt_level, block, kinds, root) -> list:
+    """The build answers of every unit of every family, ``[[{target: answer}]]``: every call runs on its own thread and the OSPREYs
+    bound how many compiles run at once; a failure is the first one in order, raised after every started call has finished."""
+    calls = [[[(target, unit, _texts(unit, targets), kind) for target in targets] for unit in answer["units"] if unit["texts"]]
+             for answer, kind in zip(families, kinds)]
+    flat = [call for family in calls for unit in family for call in unit]
+    if not flat:
+        return [[] for _ in calls]
+    with ThreadPoolExecutor(max_workers=len(flat), thread_name_prefix="hawk-build") as pool:
+        futures = [pool.submit(_build_one, target, texts, unit, machines=machines, options=options, defines=defines,
+                               opt_level=opt_level, block=block, kind=kind, root=root) for target, unit, texts, kind in flat]
+        for future in futures:
+            future.exception()
+    done = iter(f.result() for f in futures)
+    return [[{call[0]: next(done) for call in unit} for unit in family] for family in calls]
+
+
+# -- The public entry points. ----------------------------------------------- #
+def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
+          kind=None, layout_sizes_override=None, defines=(), cache_dir=None,
+          device_arch: str = "", name: str | None = None,
+          derivative: dict | None = None, host_profile: str = "",
+          opt_level: str = "", literal_table: bool = False,
+          embedded_profile=None, options: Mapping | None = None,
+          settings: BuildSettings | None = None) -> Artifact:
+    """Emit, build and publish ONE kernel into ``directory``.
+
+    ``kernel`` is anything carrying ``.name``/``.sinks``/``.walk`` (a :class:`hawk.trace.Kernel`). ``layout_sizes_override=`` is a
+    test-only door threaded to the export block.
+
+    This is the PRIMITIVE, not the deployment unit: no ``manifest.json``; :func:`build_bundle` publishes a unit (one manifest per
+    bundle). ``opt_level`` is the optimisation level asked of every OSPREY, as it spells it (empty: its own default).
+
+    Refuses a ``segmented`` dispatch, which needs K artifacts: call :func:`build_bundle` with ``[kernel]`` instead."""
+    name = name or kernel.name
+    targets = tuple(targets)
+    options = _user_options(options, literal_table, embedded_profile, device_arch, host_profile)
+    cfg = _resolved_settings(settings, targets)
+    root = Path(cache_dir) if cache_dir else default_cache_dir()
+    answer, unit, kind, machines = _emitted(kernel, name, mode, kind, targets, "build() publishes", "build_bundle", cfg, options,
+                                            opt_level, layout_sizes_override, root, exports_block=False)
+    _require_tools(machines)
+    built = _build_units([answer], targets=targets, machines=machines, options=options, defines=defines, opt_level=opt_level,
+                         block=None if cfg.launch_bounds is None else cfg.launch_bounds[0], kinds=[kind], root=root)[0][0]
+    draft = _draft(kernel, unit, answer["units"], built, mode=mode, targets=targets, machines=machines, derivative=derivative,
+                   block=None if cfg.launch_bounds is None else cfg.launch_bounds[0], records=answer)
+    # one kernel is a set of one: its library is named for its unit
+    library = _link_set([draft], [answer], [built], targets=targets, stem=name, exports=layout_sizes_override, root=root)
+    _publish((*draft.files, *library.files), Path(directory))
+    return _artifact_of(draft, Path(directory), library)
+
+
+@dataclass(frozen=True)
+class EmitUnit:
+    """What :func:`emit_source` returns: ``sources`` (target name to the text record its OSPREY wrote, with ``.text``, of each as
+    :func:`build` would write it), the ``sidecar`` dict without the figures only a build gives, and ``unit``, the kernel as it
+    was emitted."""
+
+    sources: dict
+    sidecar: dict
+    unit: object
+
+
+def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targets=DEFAULT_TARGETS, kind=None,
+                device_arch: str = "", literal_table: bool = False, options: Mapping | None = None,
+                settings: BuildSettings | None = None) -> EmitUnit:
+    """Emit ONE kernel's source text and sidecar for ``targets`` without building or writing anything.
+
+    The sidecar is what :func:`build` publishes less the figures a build gives. The host text is the one a build publishes with the
+    exports block in it (a build states that block once, in the text of its set), so it is a whole translation unit a consumer can
+    build alone. Honours ``settings`` (:class:`hawk.build_settings.BuildSettings`). Refuses what :func:`build` refuses; a machine that
+    with no tools raises ``ToolchainAbsent`` only for a build."""
+    name = name or kernel.name
+    targets = tuple(targets)
+    options = _user_options(options, literal_table, None, device_arch, "")
+    cfg = _resolved_settings(settings, targets)
+    answer, unit, kind, machines = _emitted(kernel, name, mode, kind, targets, "emit_source returns", "build_bundle", cfg, options, "",
+                                            None, default_cache_dir(), exports_block=True)
+    lead = _lead(dict.fromkeys(targets))
+    bounds = cfg.launch_bounds
+    sidecar = sidecar_of_unit(kernel, unit, lead_device=TARGETS[lead].device, fmt=TARGETS[lead].format, scalar_type=mode,
+                              exec_targets=[TARGETS[t].entry for t in targets], family=answer["units"],
+                              block=None if bounds is None else bounds[0],
+                              stated={ospreys.serving(t).name: machines[t]["stated"] for t in targets})
+    return EmitUnit({t: SimpleNamespace(**text) for t, text in _texts(unit, targets).items()}, sidecar, kernel)
+
+
+def build_bundle(kernels, directory, *, mode: str = "float64",
+                 targets=DEFAULT_TARGETS, kind=None, layout_sizes_override=None,
+                 defines=(), cache_dir=None, device_arch: str = "",
+                 name: str | None = None,
+                 derivative: Mapping[str, str] | None = None,
+                 host_profile: str = "", opt_level: str = "",
+                 literal_table: bool = False, embedded_profile=None, options: Mapping | None = None,
+                 emit_form: str | None = None, linalg_form: str | None = None, wide_form: str | None = None,
+                 launch_bounds: tuple[int, int] | None = None,
+                 settings: BuildSettings | None = None) -> Bundle:
+    """Build every kernel into ``directory`` and write ONE ``manifest.json`` over them.
+
+    An ``emit_form``/``linalg_form``/``wide_form``/``launch_bounds`` left unset is the value of ``settings`` (a
+    :class:`hawk.build_settings.BuildSettings`; the default: ``"auto"``, no bound); an explicit argument wins. ``emit_form`` is how a
+    product, dot, sum or norm is spelled: ``"auto"`` unrolls a site of at most 16 elements and writes a longer one as a loop,
+    ``"static"`` unrolls every site, ``"rolled"`` writes every site as a loop, the fast-compile mode. ``linalg_form`` is how
+    per-lane linear algebra is worked: ``"auto"`` keeps one thread per matrix up to ``n = 32`` and uses a team of threads per
+    matrix above it, ``"team"`` uses a team at every size, ``"thread"`` refuses a matrix above 32 by name. ``wide_form`` is where a
+    per-lane value wider than a thread's registers lives: ``"auto"`` builds a kernel as a warp per lane when every target is a
+    device and the kernel has a rule in that form, else places the value; ``"thread"`` keeps every value in the lane's registers and
+    local memory; ``"team"`` asks for the warp form (device targets only). ``launch_bounds=(threads, blocks_per_sm)`` bounds every
+    device kernel and records ``launch.block = threads`` in the sidecar. Every member must agree on the execution axis (a
+    manifest-level declaration): a set that does not agree is two bundles.
+
+    This is the DEPLOYMENT UNIT. The OSPREYs store what they build under ``cache_dir`` (default :func:`default_cache_dir`), so a
+    repeat build of an unchanged definition runs no compiler.
+
+    ``derivative`` names each derivative kernel's primal, per kernel: ``{kernel_name: primal_name}``, or leave it (``None``) to use a
+    :func:`hawk.diff.vjp`/:func:`~hawk.diff.jvp` kernel's own recorded primal. A primal outside this bundle is named by
+    ``{kernel_name: (primal_name, primal_unit_digest)}`` via its :attr:`Bundle.digest`.
+
+    ``host_profile``, ``device_arch`` and ``literal_table`` are the old spellings of the target options ``host.profile``,
+    ``cuda.arch`` and ``cuda.literal_table`` (:mod:`hawk.options`); ``opt_level`` is the optimisation level asked of every OSPREY.
+    Only the targets an OSPREY serves are built: any other target, ``"c"`` included, is refused by name."""
+    options = _user_options(options, literal_table, embedded_profile, device_arch, host_profile)
+    kernels = list(kernels)
+    directory = Path(directory)
+    targets = tuple(targets)
+    names = [name or k.name for k in kernels]
+    _refuse_targets(names[0] if names else "", targets)
+    _refuse_segmented_position(kernels, names)
+    if not kernels:
+        raise HawkError("no kernel to build: a bundle holds at least one")
+    explicit = kind is not None
+    kind = _resolve_bundle_kind(names, kernels, kind)
+    kinds = [_member_kind(k, kind, explicit) for k in kernels]
+    cfg = _resolved_settings(settings, targets, emit_form=emit_form, linalg_form=linalg_form, wide_form=wide_form,
+                             launch_bounds=launch_bounds)
+    block = None if cfg.launch_bounds is None else cfg.launch_bounds[0]
     per_kernel_derivative = _per_kernel_derivative(kernels, names, derivative)
-    inputs = _options(device_arch=emit_arch, options=options, layout_sizes_override=layout_sizes_override, defines=defines, cache_dir=cache_dir,
-                      host_profile=host_profile, opt_level=opt_level, block=None if launch_bounds is None else launch_bounds[0])
-    plans = _plans(kernels, names, kinds, smode=smode, targets=targets, spec=spec, options=inputs)
-    key = _unit_key([json.dumps(request, sort_keys=True) + "\0" + dump + "\0" + dialects for request, dump, dialects in plans],
-                    [declaration_digest(k) for k in kernels], targets=targets, defines=defines, cache_dir=cache_dir, device_arch=device_arch,
-                    derivative_blocks=per_kernel_derivative, opt_level=opt_level, options=options,
-                    source_digests=[getattr(k, "source_digest", None) for k in kernels])
-
-    memo = _UNIT_MEMO.get(key)
-    if memo is not None:
-        # Still re-verified: compile valid by content, unit still the bytes
-        # it was published as — either "no" falls through to a real publish.
-        if not memo.closure.valid():
-            _log(f"unit {memo.digest[:12]} invalidated: a header its compile "
-                 "reached changed by content")
-        elif (moved := _first_moved(memo.files)) is not None:
-            _log(f"unit {memo.digest[:12]} invalidated: {moved} is no longer the "
-                 "bytes the unit was published as")
-        elif directory == memo.bundle.directory:
-            _note("memo_hits", f"unit {memo.digest[:12]} served from the "
-                               f"per-process memo at {memo.bundle.directory}")
-            return memo.bundle
-        else:
-            # Same unit, different directory: no recompile, but the
-            # caller's directory must really hold the bytes.
-            try:
-                bundle = _materialize(memo.bundle, memo.files, memo.digest, directory)
-                _note("memo_hits", f"unit {memo.digest[:12]} served from the "
-                                   f"per-process memo at {memo.bundle.directory}; "
-                                   f"materialised at {directory}")
-                return bundle
-            except FileNotFoundError as gone:
-                # The memo's directory vanished between the check and the
-                # copy: fall through to a real publish.
-                _log(f"unit {memo.digest[:12]} invalidated: {gone.filename} vanished "
-                     "while being materialised")
-
-    # Phase 2 — lower, compile and assemble the unit's content; still nothing
-    # written. Each draft gets its own per_kernel_derivative[i] block. One IR context per kernel, made and dropped inside each lowering call, before any compile starts.
-    answers = [_request.lower(*plan) for plan in plans]
+    root = Path(cache_dir) if cache_dir else default_cache_dir()
+    machines = _machines(targets, options, opt_level, root)
+    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, options=options, machines=machines,
+                   sizes=layout_sizes_override)
+    _require_tools(machines)
+    answers = [_lower(plan, targets) for plan in plans]
     _refuse_repeated_units([(k.name, unit["meta"]["name"]) for k, answer in zip(kernels, answers) for unit in answer["units"] if unit["texts"]])
-    if launch_bounds is not None:
+    if cfg.launch_bounds is not None:
         for answer in answers:
             teams = [st["unit"]["name"] for unit in answer["units"] for st in unit["meta"]["stages"] if st["team"] is not None]
             if teams:
-                raise HawkError(f"launch_bounds={launch_bounds!r}: {teams[0]!r} is built as a warp per lane (a team), whose block the emit "
-                                "fixes; drop launch_bounds, or build it with wide_form='thread'")
-    # every target compile of every unit of the call runs in ONE pool (compile_jobs at most at once); the drafts are assembled in order
-    with ThreadPoolExecutor(max_workers=compile_jobs(), thread_name_prefix="hawk-compile") as pool:
-        try:
-            started = [[(k, unit, answer["units"], d, _prepared(unit, SimpleNamespace(smode=smode, kind=kd, spec=spec, working_set_bytes=answer["working_set_bytes"]), k, targets))
-                        for unit in answer["units"] if unit["texts"]]
-                       for k, kd, d, answer in zip(kernels, kinds, per_kernel_derivative, answers)]
-            submitted = [[(*one, _submit_targets(pool, one[4][0], one[4][1], inputs, targets)) for one in family] for family in started]
-            families = [[_draft(k, unit, family_units, prepared, _collect(futures), inputs, targets=targets, derivative=d)
-                         for k, unit, family_units, d, prepared, futures in family] for family in submitted]
-        except BaseException:
-            pool.shutdown(cancel_futures=True)
-            raise
+                raise HawkError(f"launch_bounds={cfg.launch_bounds!r}: {teams[0]!r} is built as a warp per lane (a team), whose block the "
+                                "emit fixes; drop launch_bounds, or build it with wide_form='thread'")
+    built = _build_units(answers, targets=targets, machines=machines, options=options, defines=defines, opt_level=opt_level,
+                         block=block, kinds=kinds, root=root)
+    families = [[_draft(k, unit, answer["units"], got, mode=mode, targets=targets, machines=machines, derivative=d, block=block, records=answer)
+                 for unit, got in zip((u for u in answer["units"] if u["texts"]), family)]
+                for k, answer, family, d in zip(kernels, answers, built, per_kernel_derivative)]
     drafts = [d for family in families for d in family]
-    library = _link_set(drafts, answers, SimpleNamespace(smode=smode, kind=kinds[0], spec=spec), inputs,
-                        targets=targets, stem=name or "units")
-    files = tuple(f for d in drafts for f in d.files) + (() if library is None else library.files)
+    library = _link_set(drafts, answers, [got for family in built for got in family], targets=targets, stem=name or "units",
+                        exports=layout_sizes_override, root=root)
+    files = tuple(f for d in drafts for f in d.files) + library.files
     doc = _manifest_of(families, library)
     manifest_blob = text_blob(json.dumps(doc, indent=2) + "\n")
     files += (UnitFile("manifest.json", digest_bytes(manifest_blob), blob=manifest_blob),)
-    digest = _unit_digest(files)
-
-    # Phase 3 — publish idempotently: a directory already holding this
-    # exact unit is left alone.
-    if _stamp_digest(directory) == digest and _first_moved(
-            [(str(directory / f.name), f.digest) for f in files]) is None:
-        _note("stamp_hits", f"unit {digest[:12]} already published at {directory}; "
-                            "no file written")
-    else:
-        directory.mkdir(parents=True, exist_ok=True)
-        for f in files:
-            f.write(directory)
-        _write_stamp(directory, digest, files)
-        _note("published", f"unit {digest[:12]} published at {directory}")
-
-    bundle = Bundle(directory, directory / "manifest.json",
-                    doc, tuple(_artifact_of(d, directory, library) for d in drafts),
-                    digest=digest)
-    if len(_UNIT_MEMO) >= _UNIT_MEMO_LIMIT:
-        _UNIT_MEMO.clear()
-    _UNIT_MEMO[key] = _Unit(
-        _served(bundle), digest,
-        tuple((str(directory / f.name), f.digest) for f in files),
-        _closure_watch(drafts), kind)
-    return bundle
+    _publish(files, directory)
+    return Bundle(directory, directory / "manifest.json", doc, tuple(_artifact_of(d, directory, library) for d in drafts),
+                  digest=_unit_digest(files))

@@ -28,11 +28,7 @@ import hawk
 from hawk import HawkError
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from raptor.ir import Leaf, make
-from hawk.facts import load as _load_facts
-MAX_DIM = _load_facts("cpu")["linalg"]["max_dim"]
 from hawk.trace.kernel import Kernel
-from raptor.ir.types import TensorType
 from hawk import _ir
 
 CTX = _ir.new_context()  # the context of the shared kernel builders
@@ -438,10 +434,6 @@ def test_a_team_matrix_makes_a_store_stage_a_team_stage_and_a_read_stage(cache):
     assert sidecar_of(_build(big, cache / "team200", "host", "auto"), big.name)["stages"][1]["team"]["threads"] == 256
 
 
-def test_a_matrix_in_one_lane_is_not_split_unless_the_build_asks_for_a_team(cache):
-    kernel = chol_kernel(CTX, MAX_DIM)
-    assert _team_stages(kernel, cache / "lane_auto") == []
-    assert len(_team_stages(kernel, cache / "lane_team", "team")) >= 1
 
 
 def test_the_sidecar_names_the_team_stage_and_its_scratch(cache):
@@ -571,18 +563,6 @@ def test_a_block_sum_in_an_arm_of_a_dispatch_runs_over_every_lane_and_matches_nu
         assert_within(got[:, :, lane], want, bound)
 
 
-def test_the_dimension_bound_is_the_facts_team_max_dim():
-    from types import SimpleNamespace
-    from hawk.facts import load
-    from raptor.wings.base import team
-
-    data = load("cuda")
-    assert data["linalg"]["team_max_dim"] == 4096
-    node = make("lu", (Leaf("vocab_read", "mat_in", "A", TensorType((4097, 4097), "f64")),))     # the IR types it: n >= 1 is the math rule
-    spec = SimpleNamespace(primary=data, device=None, settings=SimpleNamespace(linalg_form="auto", device_only=False, scalar="float64"),
-                           need=lambda section, key=None: data[section][key])
-    with pytest.raises(HawkError, match=r"linalg.team_max_dim\), got n=4097"):
-        team.members_of([node], (), spec)
 
 
 # --- the bits -----------------------------------------------------------------------

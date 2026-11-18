@@ -11,11 +11,8 @@ through its proxy; the resource report puts a kernel's frame beside its working 
 """
 
 from __future__ import annotations
-from _specs import spec_for, default_kind
-from _specs import DEVICE
 
 import pathlib
-import warnings
 
 import numpy as np
 import pytest
@@ -26,13 +23,7 @@ import hawk.math as m
 from hawk import Matrix, Mutable, Scalar, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from ospreys.cuda.backend import _resource_report
-from hawk.artifact.layout import exports
-from hawk.diff import jvp, vjp
-from aether.wings.base.wrapper import scalar_mode
-from raptor.errors import RaptorError as HawkError
-from hawk.targets import TARGETS
-from hawk.trace.kernel import Kernel
+from hawk.errors import HawkError
 
 LANES = 12
 

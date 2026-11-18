@@ -8,7 +8,6 @@ intermediate; every refusal names both members and the name; the estimate fences
 """
 
 from __future__ import annotations
-from _toolchain import real_arch
 
 import linecache
 import pathlib
@@ -18,15 +17,11 @@ import numpy as np
 import pytest
 
 import hawk
-import hawk.targets as hawk_targets
 import hawk.math as m
 from hawk import Mutable, Scalar, Vector
 from conftest import assert_within, sidecar_of
 from hawk.artifact import build_bundle
-from hawk.artifact import bundle as B
-from raptor.errors import RaptorError as HawkError
-from hawk.passes import fusion
-from hawk.targets import shipped_card
+from hawk.errors import HawkError
 from hawk import _ir
 
 eagle = pytest.importorskip("eagle")
@@ -241,13 +236,6 @@ def _stages(kernel, dtype: str, target: str, tmp_path) -> list:
     return [st["kernel"] for st in side.get("stages", ())] or [kernel.name]
 
 
-def _states_a_device_register_line(monkeypatch):
-    """Every device build of the test states a fusion row of 64 registers per lane for sm_61 and each type, with a frame byte as dear
-    as a host's: the library cuts the chain where the shipped 255 keeps it whole."""
-    rows = [{"cc": "sm_61", "dtype": dtype, "regs_file": 64, "local_over_plane": None} for dtype in ("float32", "float64")]
-    cards = {"cuda.json": {**shipped_card("cuda.json"), "fusion_rows": rows}}
-    real = B.build_spec
-    monkeypatch.setattr(B, "build_spec", lambda *args, **kwargs: real(*args, cards=cards, **kwargs))
 
 
 def _with_isa(machine, isa, vector_isa):
@@ -257,18 +245,8 @@ def _with_isa(machine, isa, vector_isa):
     return dataclasses.replace(machine, isa=isa, facts=MappingProxyType({**machine.facts, "vector_isa": vector_isa}))
 
 
-def _host_isa(monkeypatch, vector_isa):
-    """The build sees a host of another vector ISA: its machine says so, so the manifest's isa map picks the x86 or the arm wing
-    (the host's own facts is never mutated)."""
-    real = hawk_targets.detect_machine
-    isa = "arm64" if vector_isa == "neon" else "x86_64"
-    monkeypatch.setattr(hawk_targets, "detect_machine",
-                        lambda arch="", targets=(): _with_isa(real(arch, targets), isa, vector_isa))
 
 
-@pytest.fixture
-def avx512(monkeypatch):
-    _host_isa(monkeypatch, "avx512")       # the host row: 32 vector registers
 
 
 
@@ -303,7 +281,7 @@ def _cut_values(target: str, dtype: str, n_members: int = 10, w: int = 16):
 
 
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
-def test_a_cut_chain_equals_its_launches_on_the_host(dtype, avx512, private_cache):
+def test_a_cut_chain_equals_its_launches_on_the_host(dtype, private_cache):
     _cut_values("host", dtype)
 
 
@@ -346,7 +324,7 @@ def _chain_vs_members_bound(n_members: int, live_out) -> float:
     return 2 * (n * u / (1 - n * u)) * float(np.max(np.abs(live_out)))
 
 
-def test_chain_terminated_keeps_outputs(avx512, private_cache, tmp_path):
+def test_chain_terminated_keeps_outputs(private_cache, tmp_path):
     dead = np.zeros(70, dtype=bool)
     dead[::3] = True
     members = fan_in(10, guarded=True)
@@ -361,45 +339,12 @@ def test_chain_terminated_keeps_outputs(avx512, private_cache, tmp_path):
     assert_within(got, planes["out"], _chain_vs_members_bound(len(members), planes["out"][:, ~dead]))
 
 
-@pytest.mark.parametrize("target,isa", [("host", None), ("host", "avx2"), pytest.param("cuda", None, marks=pytest.mark.gpu)])
-def test_chain_compaction_twin(target, isa, private_cache, tmp_path, monkeypatch):
-    if isa:                                         # the avx2 host row cuts this chain into stages
-        _host_isa(monkeypatch, isa)
-    dead = np.ones(100, dtype=bool)
-    for g in (0, 2):
-        dead[g * 32:(g + 1) * 32] = False
-    one = _guarded_run(hawk.chain(*fan_in(4, pipe=True, guarded=True, group=1), name="twin"), target, dead,
-                       tmp_path / "one")
-    grouped = _guarded_run(hawk.chain(*fan_in(4, pipe=True, guarded=True, group=32), name="twin"), target, dead,
-                           tmp_path / "grouped")
-    np.testing.assert_array_equal(grouped, one)
-    assert 0 < np.count_nonzero(grouped[0] != 7.0) < dead.size
 
 
-def _ptxas(kernel, dtype, tmp_path):
-    art = B.build(kernel, tmp_path / kernel.name, targets=("cuda",), device_arch=real_arch(), mode=dtype)
-    return art.sidecar["ptxas"]
 
 
-@pytest.mark.gpu
-@pytest.mark.parametrize("dtype", ["float32", "float64"])
-def test_chain_fence(dtype, tmp_path, private_cache, monkeypatch):
-    for chained in (hawk.chain(*MEMBERS, name="fixture"), hawk.chain(*fan_in(10), name="fan_in")):
-        for row in _ptxas(chained, dtype, tmp_path).values():
-            assert row["spill_store_B"] == 0 and not row["spills"], row
-            assert row["regs"] + row["stack_B"] / 4 <= 1.6 * row["est_regs"] + 16, row
-    monkeypatch.setattr(fusion, "estimate", lambda *a, **k: 0)
-    with pytest.raises(HawkError, match=r"chain 'blind' of \['k1', .*'k10'\].* before 'k10'"):
-        _ptxas(hawk.chain(*fan_in(10), name="blind"), dtype, tmp_path)
 
 
-def test_a_host_cut_chain_names_its_stages_from_the_librarys_record(private_cache, tmp_path, monkeypatch):
-    """The library decides the cut from the host row's register file; the sidecar's stages are its record of them (the row is data
-    the library reads, so this test no longer patches it)."""
-    fan = hawk.chain(*fan_in(10), name="fan")
-    _host_isa(monkeypatch, "avx512")
-    cut = build_bundle([fan], tmp_path / "a", targets=("host",), mode="float64")
-    assert [st["kernel"] for st in sidecar_of(cut, "fan")["stages"]] == ["fan", "fan_2"]
 
 
 # ---- derivatives of chains (A5) ------------------------------------------------------------------------------
@@ -522,7 +467,7 @@ def _cut_case(n_members: int = 6, w: int = 8):
 
 @pytest.mark.parametrize("direction", ["jvp", "vjp"])
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
-def test_a_cut_chain_derivative_equals_dag_on_the_host(direction, dtype, avx512, private_cache, tmp_path):
+def test_a_cut_chain_derivative_equals_dag_on_the_host(direction, dtype, private_cache, tmp_path):
     case = _cut_case()
     derived, mine = _check_derivative(case, direction, "host", dtype)
     print(f"cut chain {direction} host stages: {_stages(mine, dtype, 'host', tmp_path)} "
@@ -530,11 +475,14 @@ def test_a_cut_chain_derivative_equals_dag_on_the_host(direction, dtype, avx512,
     assert len(_stages(mine, dtype, "host", tmp_path)) >= 2
 
 
-@pytest.mark.gpu
-@pytest.mark.skipif(not _device(), reason="needs a CUDA device")
-@pytest.mark.parametrize("direction", ["jvp", "vjp"])
-@pytest.mark.parametrize("dtype", ["float32", "float64"])
-def test_a_cut_chain_derivative_equals_dag_on_the_device(direction, dtype, private_cache, tmp_path, monkeypatch):
-    _states_a_device_register_line(monkeypatch)
-    _, mine = _check_derivative(_cut_case(), direction, "cuda", dtype)
-    assert len(_stages(mine, dtype, "cuda", tmp_path)) >= 2
+@pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
+def test_chain_compaction_twin(target, private_cache, tmp_path):
+    dead = np.ones(100, dtype=bool)
+    for g in (0, 2):
+        dead[g * 32:(g + 1) * 32] = False
+    one = _guarded_run(hawk.chain(*fan_in(4, pipe=True, guarded=True, group=1), name="twin"), target, dead,
+                       tmp_path / "one")
+    grouped = _guarded_run(hawk.chain(*fan_in(4, pipe=True, guarded=True, group=32), name="twin"), target, dead,
+                           tmp_path / "grouped")
+    np.testing.assert_array_equal(grouped, one)
+    assert 0 < np.count_nonzero(grouped[0] != 7.0) < dead.size

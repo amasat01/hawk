@@ -7,7 +7,6 @@ float64 stages add in, and a stored cell is encoded once: the bits do not depend
 compensated one the banded sum promises. A float build keeps its ``real`` partials plane."""
 
 from __future__ import annotations
-from _specs import DEVICE
 
 import pytest
 from conftest import sidecar_of

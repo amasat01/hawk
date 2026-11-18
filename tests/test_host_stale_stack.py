@@ -21,10 +21,8 @@ from pathlib import Path
 import pytest
 
 import hawk
-from _toolchain import host_library
-from hawk.artifact import emit_source
 from hawk import Mutable, Param, Terminated, Vector
-import ospreys.cpu.toolchain as ctc
+from hawk.artifact import build_bundle
 from hawk.diff import jvp
 from hawk.math import dot, sqrt
 from hawk.trace import Kernel
@@ -37,17 +35,17 @@ def drag_guarded(v: Vector[3], cd: Param, terminated: Terminated, a: Mutable[Vec
     a = -cd * sqrt(dot(v, v)) * v
 
 
+
+
 @pytest.fixture(scope="module")
 def kernel_so(tmp_path_factory):
+    """The folder holding the built host library ``k.so`` of the second derivative and the compiled ``harness``."""
     # a derived level is a kernel in its own right (its guard is applied again): two nested selects
     first = Kernel("drag_jvp", jvp(drag_guarded))
-    text = emit_source(Kernel("drag_jj", jvp(first)), targets=("host",)).sources["host"].text
     work = tmp_path_factory.mktemp("stale_stack")
-    (work / "k.cpp").write_text(text)
-    cxx = ctc.host_compiler()
-    host_library(text, work, "k")
-    subprocess.run([cxx, "-O1", "-std=c++17", "-o", str(work / "harness"), str(HARNESS), "-ldl"],
-                   check=True)
+    bundle = build_bundle([drag_guarded, first, Kernel("drag_jj", jvp(first))], work / "bundle", targets=("host",), cache_dir=str(work / "cache"))
+    (work / "k.so").symlink_to(bundle.artifacts[0].entries["host"].artifact)
+    subprocess.run(["c++", "-O1", "-std=c++17", "-o", str(work / "harness"), str(HARNESS), "-ldl"], check=True)
     return work
 
 

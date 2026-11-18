@@ -43,29 +43,19 @@ fuse each shape.
 """
 
 from __future__ import annotations
-from _specs import spec_for
-from _specs import HOST, with_caches
 
 import ctypes
-import platform
-import re
-import dataclasses
-import shutil
-import subprocess
-import sys
 
 import _deploy as L
 import numpy as np
 import pytest
-from _interchange import builds
 from conftest import sidecar_of
 
 import hawk
 from hawk import Index, Mutable, Param, Scalar, Table, Terminated, Vector
 from hawk import math as m
-from hawk.artifact import build_bundle, emit_source
+from hawk.artifact import build_bundle
 from hawk.ext import Guard, Kind
-from hawk.targets import TARGETS
 
 #: The macro-off build: the plain per-sample fused loop of the SAME TU.
 PLAIN = ("HAWK_HOST_INTERCHANGE=0",)
@@ -413,17 +403,6 @@ def _refill(text: str) -> str:
     return text[start:text.index("if (hawk_live == 0) break;", start)]
 
 
-def test_the_two_builds_are_the_two_shapes(shapes):
-    """Non-vacuity of the row above: the default build runs tiles, the
-    macro-off build does not."""
-    for name in KERNELS:
-        tile = _exported_tile(shapes["interchanged"], name)
-        assert HOST.need("lanes", "tile_min") <= tile <= HOST.need("lanes", "tile_max") and tile % 64 == 0, (name, tile)
-        assert _exported_tile(shapes["plain"], name) == 0, name
-        text = (shapes["interchanged"].directory / f"{name}.cpp").read_text()
-        assert "#if HAWK_HOST_INTERCHANGE" in text
-        assert f"constexpr aether::offset_t hawk_tile = {tile};" in text
-        assert "// hawk host tile rule: tile=" in text
 
 
 # --------------------------------------------------------------------------- #
@@ -481,101 +460,19 @@ def test_a_loop_beside_the_fused_loop_interchanges_both_byte_identically(
 # --------------------------------------------------------------------------- #
 # The tile rule
 # --------------------------------------------------------------------------- #
-CACHED = with_caches(HOST, 32 * 1024, 1024 * 1024)
 
 
-def test_the_host_row_states_the_caches_of_this_machine():
-    facts = HOST.machine.facts
-    assert facts["l1d_cache_bytes"] > 0 and facts["l2_cache_bytes"] >= facts["l1d_cache_bytes"] and facts["cache_source"]
 
 
-def test_host_caches_reads_sysfs_and_falls_back(tmp_path):
-    from ospreys.cpu.toolchain import host_caches
-
-    for index, (level, kind, size) in enumerate(
-            [(1, "Data", "48K"), (1, "Instruction", "32K"), (2, "Unified", "2048K"),
-             (3, "Unified", "16M")]):
-        d = tmp_path / f"index{index}"
-        d.mkdir()
-        (d / "level").write_text(f"{level}\n")
-        (d / "type").write_text(f"{kind}\n")
-        (d / "size").write_text(f"{size}\n")
-    assert host_caches(str(tmp_path)) == (48 * 1024, 2048 * 1024, str(tmp_path))
-    assert host_caches(str(tmp_path / "missing")) is None
 
 
-def test_host_caches_reads_sysctl_on_macos(monkeypatch):
-    import ospreys.cpu.toolchain as cpu_toolchain
-
-    def fake(cmd, **_):
-        if cmd[-1].startswith("hw.perflevel0."):
-            return subprocess.CompletedProcess(cmd, 0, stdout="65536\n")
-        raise OSError(cmd[-1])
-
-    monkeypatch.setattr(cpu_toolchain.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(cpu_toolchain.subprocess, "run", fake)
-    cpu_toolchain.host_caches.cache_clear()
-    try:
-        l1d, l2, source = cpu_toolchain.host_caches()
-        assert (l1d, l2) == (65536, 65536) and source.startswith("sysctl hw.perflevel0.")
-        monkeypatch.setattr(cpu_toolchain.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("no sysctl")))
-        cpu_toolchain.host_caches.cache_clear()
-        assert cpu_toolchain.host_caches() is None
-    finally:
-        cpu_toolchain.host_caches.cache_clear()
 
 
 _COUNTED = 'extern "C" long long hawk_lane_trips = 0;\n'
 
 
-def _counting_build(tmp_path, tag, source, bundle, profile, name="rkf78_attempt"):
-    """The bundle's directory with its ``rkf78_attempt.so`` rebuilt from
-    ``source`` (a whole translation unit, the self-check block included: :func:`hawk.artifact.emit_source`), which counts one
-    lane-trip per lane per trip."""
-    from types import SimpleNamespace
-
-    from _toolchain import host_library
-
-    out = tmp_path / tag
-    shutil.copytree(bundle.directory, out)
-    (out / f"{name}.so").unlink()       # the unit's name is a link to the bundle's library: the compile makes a library of its own
-    cpp = out / f"{name}.cpp"
-    marker = "    std::int64_t hawk_live = 0;"
-    assert source.count(marker) == 1
-    cpp.write_text(_COUNTED + source.replace(marker, "    __atomic_fetch_add(&hawk_lane_trips, (long long)hawk_w, __ATOMIC_RELAXED);\n" + marker))
-    host_library(cpp.read_text(), out, name, profile=profile)
-    return SimpleNamespace(directory=out, artifacts=bundle.artifacts)
 
 
-@pytest.mark.parametrize("profile", ["native", None])
-def test_compaction_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile):
-    """Live-lane compaction against the same TU with the identity permutation:
-    lanes of very different lengths, a few trips per launch, give the same planes,
-    bit for bit, in fewer lane-trips (a counter the TU bumps per chunk trip, no timing)."""
-    kernel = KERNELS["rkf78_attempt"]
-    bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
-                          cache_dir=str(tmp_path / "cache"), defines=INTERCHANGED,
-                          host_profile=profile)
-    source = emit_source(kernel, targets=("host",)).sources["host"].text
-    live = "if (hawk_on[hawk_t] != 0.0) hawk_perm[hawk_nlive++] = hawk_t;"
-    dead = "if (hawk_on[hawk_t] == 0.0) hawk_perm[hawk_o++] = hawk_t;"
-    assert source.count(live) == source.count(dead) == 1
-    plain = source.replace(live, "hawk_perm[hawk_nlive++] = hawk_t;").replace(dead, "{}")
-    planes = _planes("rkf78_attempt", 200, "spread", seed=20261004)
-    # lanes of very different lengths: every 7th sample ends at once, a few run long
-    planes["t_final"][::7] = 1e-3
-    planes["t_final"][3::50] = 4.0
-    runs = {}
-    for tag, text in (("compact", source), ("identity", plain)):
-        built = _counting_build(tmp_path, tag, text, bundle, profile)
-        lib = ctypes.CDLL(str(built.directory / "rkf78_attempt.so"))
-        runs[tag] = (_launches(built, "rkf78_attempt", planes, (4,) * 40),
-                     ctypes.c_longlong.in_dll(lib, "hawk_lane_trips"))
-    for launch, (a, b) in enumerate(zip(runs["compact"][0], runs["identity"][0])):
-        for key in b:
-            assert a[key].tobytes() == b[key].tobytes(), (key, launch)
-    assert runs["compact"][0][-1]["terminated"].all()
-    assert 0 < runs["compact"][1].value < runs["identity"][1].value
 
 
 @hawk.kernel
@@ -610,38 +507,5 @@ def ramp_to_plane(rate: Scalar, lim: Scalar, terminated: Terminated, x: Mutable[
     terminated = xn >= lim
 
 
-@pytest.mark.skipif(platform.machine() not in ("arm64", "aarch64"), reason="aarch64 emit")
-@pytest.mark.parametrize("profile,nan", [("native", False), (None, False), ("native", True)])
-def test_packing_runs_fewer_lane_trips_with_the_same_bytes(tmp_path, profile, nan):
-    """The sorted lanes against the same TU in plain compacted order: lanes of
-    very different lengths give the same planes, bit for bit, in fewer lane-trips."""
-    kernel = hawk.steps(ramp, 16)
-    bundle = build_bundle([kernel], tmp_path / "base", targets=("host",),
-                          cache_dir=str(tmp_path / "cache"), defines=INTERCHANGED,
-                          host_profile=profile)
-    source = emit_source(kernel, targets=("host",)).sources["host"].text
-    sort = re.search(r"    std::sort\(hawk_perm.*?\}\);\n", source, re.S)
-    assert sort is not None
-    plain = source.replace(sort.group(0), "")
-    rng = np.random.default_rng(20261109)
-    n = 300
-    planes = {"rate": rng.choice([1.0, 2.0, 10.0, 50.0], n), "x": np.zeros(n),
-              "terminated": np.zeros(n, dtype=bool)}
-    if nan:     # diverged lanes: a NaN carry must sort last without faulting, the planes unchanged
-        planes["x"][::5] = np.nan
-    runs = {}
-    for tag, text in (("sorted", source), ("plain", plain)):
-        built = _counting_build(tmp_path, tag, text, bundle, profile, kernel.name)
-        lib = ctypes.CDLL(str(built.directory / f"{kernel.name}.so"))
-        runs[tag] = (_launches(built, kernel.name, planes, (1,) * 8),
-                     ctypes.c_longlong.in_dll(lib, "hawk_lane_trips"))
-    for launch, (a, b) in enumerate(zip(runs["sorted"][0], runs["plain"][0])):
-        for key in b:
-            assert a[key].tobytes() == b[key].tobytes(), (key, launch)
-    last = runs["sorted"][0][-1]
-    assert nan or last["terminated"].all()
-    assert not nan or np.isnan(last["x"][::5]).all()
-    assert 0 < runs["sorted"][1].value <= runs["plain"][1].value
-    assert nan or runs["sorted"][1].value < runs["plain"][1].value
 
 

@@ -11,18 +11,12 @@ or shadowing label, a ``group`` that names nothing) saying what to write instead
 ``@hawk.kernel(group=...)`` stores the compaction group, a lane count."""
 
 from __future__ import annotations
-from _specs import spec_for, default_kind
-from _specs import HOST
 
-import hashlib
 
 import pytest
 
 import hawk
 from hawk import Grid, HawkError, Mutable, Scalar
-from aether.wings.base.wrapper import FLOAT64
-from hawk.math import split_index
-from hawk.targets import TARGETS
 
 ROWS = ("cuda", "host")
 

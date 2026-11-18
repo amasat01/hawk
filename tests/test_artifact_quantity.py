@@ -29,9 +29,6 @@ removed.
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import spec_for
-from _specs import HOST
 
 import ast
 import pathlib
@@ -39,7 +36,6 @@ import pathlib
 import _deployable as D
 from conftest import sidecar_of
 
-from hawk.targets import TARGETS
 from hawk import _ir
 
 #: The IR node constructors a raw-IR workaround would have to name.

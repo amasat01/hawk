@@ -15,8 +15,8 @@ import pytest
 eagle = pytest.importorskip("eagle")
 
 import hawk  # noqa: E402
+from hawk.artifact import cache_stats  # noqa: E402
 from hawk import Grid, Index, Mutable, Param, Scalar, Table, Vector  # noqa: E402
-from hawk.compile import drivers  # noqa: E402
 
 
 @pytest.fixture
@@ -25,13 +25,9 @@ def private_cache(tmp_path, monkeypatch):
     return tmp_path / "cache"
 
 
-@pytest.fixture
-def compiler_calls(monkeypatch):
-    calls = []
-    real = drivers.run_compiler
-    monkeypatch.setattr(drivers, "run_compiler",
-                        lambda argv, what, *target: calls.append(what) or real(argv, what, *target))
-    return calls
+def _tool_runs() -> int:
+    """How many times the OSPREYs ran a tool for the store under ``$HAWK_CACHE_DIR``, as their counters state."""
+    return sum(figures["tool_runs"] for figures in cache_stats().values())
 
 
 def _scale():
@@ -46,18 +42,18 @@ def _bundles(cache):
     return sorted(p.name for p in cache.rglob("*") if p.suffix == ".so")
 
 
-def test_kernel_call_cpu(private_cache, compiler_calls):
+def test_kernel_call_cpu(private_cache):
     k = _scale()
     x = np.arange(8.0)
     y = k(x, 2.0, 1.0)
     np.testing.assert_array_equal(y, 2.0 * x + 1.0)
-    built, first = _bundles(private_cache), len(compiler_calls)
+    built, first = _bundles(private_cache), _tool_runs()
     assert built and first >= 1
     twin = eagle.deploy(k).run(x=x, a=2.0, b=1.0)
     np.testing.assert_array_equal(twin, y)
-    assert _bundles(private_cache) == built and len(compiler_calls) == first
+    assert _bundles(private_cache) == built and _tool_runs() == first
     assert k(x, 3.0, 0.0).tolist() == (3.0 * x).tolist()
-    assert len(compiler_calls) == first
+    assert _tool_runs() == first
 
 
 def test_kernel_call_positional_and_keyword(private_cache):
@@ -157,7 +153,7 @@ def _device():
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not _device(), reason="needs a CUDA device")
-def test_kernel_call_gpu(private_cache, compiler_calls):
+def test_kernel_call_gpu(private_cache):
     import cupy as cp
 
     k = _scale()
@@ -166,10 +162,10 @@ def test_kernel_call_gpu(private_cache, compiler_calls):
     assert isinstance(y, (cp.ndarray, eagle.Array))     # eagle hands the result back as its own array unless returns= asks for cupy's
     y = cp.asarray(y)
     cp.testing.assert_array_equal(y, 2.0 * x + 1.0)
-    first = len(compiler_calls)
+    first = _tool_runs()
     twin = cp.asarray(eagle.deploy(k).run(x=x, a=2.0, b=1.0))
     cp.testing.assert_array_equal(twin, y)
-    assert len(compiler_calls) == first
+    assert _tool_runs() == first
 
 
 @pytest.mark.gpu

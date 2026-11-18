@@ -23,17 +23,14 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import json
 import re
 import textwrap
 
 import _kernels as K
-import pytest
 
 import hawk
 from hawk import Index, Int32, Mutable, Param, Scalar, Vector
 from hawk.math import norm, where
-from hawk.trace.kernel import Kernel
 
 #: The report's keys in the spec's order (``int_division_sites`` and
 #: ``int_ub_sites`` sit where the verify pass puts them, after

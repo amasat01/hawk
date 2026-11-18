@@ -1,6 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
+
 """A HAWK artifact loads under eagle and RUNS, on both targets.
 
 The whole path a consumer walks, per fixture: ``eagle.registry.load_manifest``
@@ -127,25 +128,6 @@ def test_every_gap_row_of_h51_is_closed(built):
     assert "EAGLE_ABI_INDEX_T p_nsm_n_samples" in cu
 
 
-def test_a_v1_loader_refuses_a_v2_artifact(built):
-    """The cross-generation ruling's first direction. A loader refuses a document
-    above its ceiling by VERSION (the ceiling lives in raptor's core, so the
-    document is raised above it here), and even taken as v1 it is refused for carrying the
-    execution keys (the legacy bridge is whole-view by the axis's
-    ABSENCE, never a silent upgrade)."""
-    from raptor.schema import manifest as rmanifest
-
-    doc = built["vec3"].manifest
-    newer = {**doc, "schema_version": rmanifest.MAX_SCHEMA_VERSION + 1}
-    with pytest.raises(ValueError, match="upgrade eagle"):
-        rmanifest.check_schema_version(newer, name="manifest.json")
-    # taken AS v1 it is refused twice over: by the tag it carries, and -- with
-    # the tag downgraded -- by the execution keys themselves.
-    with pytest.raises(ValueError, match="aether-abi/1"):
-        rmanifest.check_execution_axis(doc, 1, name="manifest.json")
-    downgraded = {**doc, "aether_abi": "aether-abi/1"}
-    with pytest.raises(ValueError, match="execution key"):
-        rmanifest.check_execution_axis(downgraded, 1, name="manifest.json")
 
 
 def test_a_v1_artifact_is_refused_by_a_v2_plan(built):

@@ -8,7 +8,6 @@ an untaken arm's out-of-range row is never read). A read guarded by a
 per-iteration condition stays in the body."""
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
 import numpy as np
 from _eval import evaluate

@@ -22,11 +22,9 @@ target; the rows pin it
 
 from __future__ import annotations
 
-from _specs import spec_for
 import _deploy as L
 import numpy as np
 import pytest
-from _toolchain import compile_check
 from conftest import sidecar_of
 
 import hawk
@@ -35,8 +33,6 @@ from hawk import math as m
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from aether.wings.base.wrapper import FLOAT32, FLOAT64
-from hawk.targets import TARGETS
 
 MODES = ("float64", "float32")
 WORDS = 4          # mask words per row: j >> 5 < 4 for N <= 128

@@ -26,7 +26,7 @@ from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk.ext import Guard, Kind
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk import _ir
 
 LANES = 8

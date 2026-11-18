@@ -22,7 +22,7 @@ import math
 from math import prod
 
 from . import _broadcast
-from ._errors import HawkError
+from .errors import HawkError
 
 
 def lane_axes(sidecar: dict) -> list | None:

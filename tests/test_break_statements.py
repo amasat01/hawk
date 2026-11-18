@@ -22,9 +22,6 @@ by hand (``m.where`` on the condition, then the bare break). Rows:
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import spec_for
-from _specs import HOST
 
 import linecache
 import math
@@ -32,7 +29,6 @@ import math
 import numpy as np
 import pytest
 from _eval import evaluate
-from _toolchain import compile_check
 from conftest import sidecar_of
 
 import hawk
@@ -41,9 +37,7 @@ from hawk import Mutable, Scalar, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from aether.wings.base.wrapper import FLOAT64
-from raptor.errors import RaptorError as HawkError
-from hawk.targets import TARGETS
+from hawk.errors import HawkError
 
 CAP = 12
 LIM = 3.0

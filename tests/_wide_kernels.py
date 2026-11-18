@@ -854,12 +854,8 @@ REPEATS = {"fill_mask_seg": 3, "matvec_in_seg": 3, "index_set": 25, "narrow4": 1
 
 
 def device_arch() -> str:
-    """The device's own ``sm_<N>`` (what the gate builds for and times on)."""
-    if os.environ.get("HAWK_GATE_ARCH"):      # the gate hands its device's arch to the other release's environment
-        return os.environ["HAWK_GATE_ARCH"]
-    from _toolchain import real_arch
-
-    return real_arch()
+    """The device arch the gate builds for and times on (empty: the OSPREY picks its own)."""
+    return os.environ.get("HAWK_GATE_ARCH", "")
 
 
 def array_digest(a) -> str:

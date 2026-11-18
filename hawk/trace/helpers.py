@@ -24,7 +24,7 @@ import threading
 import types
 from typing import Any
 
-from .._errors import HawkError
+from ..errors import HawkError
 from .value import Value
 
 #: The rewritten form of each helper, by code object.

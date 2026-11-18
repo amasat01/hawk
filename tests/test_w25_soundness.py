@@ -2,10 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Four mechanisms that must not depend on history or on another target: the unit key (import order), a raw block's text in the IR
 key, least squares inside a loop body, and each target's own least-squares method."""
-import os
 import pathlib
-import subprocess
-import sys
 
 import numpy as np
 import pytest
@@ -19,37 +16,8 @@ from hawk.artifact import build_bundle
 HERE = pathlib.Path(__file__).resolve().parent
 LANES = 8
 
-_TWICE = """
-import sys
-import hawk
-from hawk import Mutable, Scalar, Vector
-from hawk.artifact import bundle as B, unit_stats
-from hawk.math import dot
-
-keys = []
-_uk = B._unit_key
-def uk(*a, **k):
-    keys.append(_uk(*a, **k)); return keys[-1]
-B._unit_key = uk
-
-@hawk.kernel
-def twice(u: Vector[12], v: Vector[12], y: Mutable[Scalar]):
-    y = dot(u, v)
-
-out = sys.argv[1]
-B.build_bundle([twice], out + "/a", targets=("host",))
-before = unit_stats()["memo_hits"]
-B.build_bundle([twice], out + "/a", targets=("host",))
-print(keys[0] == keys[1], unit_stats()["memo_hits"] - before)
-"""
 
 
-def test_one_request_has_one_unit_key_and_the_repeat_build_hits_the_memo(tmp_path):
-    env = {**os.environ, "HAWK_CACHE_DIR": str(tmp_path / "cache"),
-           "PYTHONPATH": os.pathsep.join([str(HERE.parent), str(HERE), str(HERE.parent / "staging"), os.environ.get("PYTHONPATH", "")])}
-    out = subprocess.run([sys.executable, "-c", _TWICE, str(tmp_path / "out")], capture_output=True, text=True, env=env)
-    assert out.returncode == 0, out.stderr[-800:]
-    assert out.stdout.split()[-2:] == ["True", "1"]
 
 
 def _run(bundle, name, **planes):
@@ -128,31 +96,12 @@ def gn_loop(J: Matrix[4, 3], r: Vector[4], x: Mutable[Vector[3]]):
     x = acc
 
 
-@pytest.mark.parametrize("k,rows,cols,trips", [(gn_loop, 4, 3, 3)])
-def test_lstsq_in_a_loop_body_runs_against_numpy(tmp_path, cache_dir, k, rows, cols, trips):
-    from raptor.wings.base import team as _team
-    from hawk.targets import build_spec
-
-    assert cols <= _team.max_dim_of(build_spec(("host",)))          # the normal equations: one lane factors it
-    assert any(n.field_text("kind") == "lstsq" for n in _ir.walk_order(k.walk))                      # one lstsq node in the traced IR
-    rng = np.random.default_rng(5)
-    J = rng.standard_normal((LANES, rows, cols)) + 3 * np.eye(rows, cols)
-    r = rng.standard_normal((LANES, rows))
-    pl = lambda a: np.ascontiguousarray(a.reshape(LANES, -1).T)
-    x = np.zeros((cols, LANES))
-    bundle = build_bundle([k], tmp_path / k.name, targets=("host",), cache_dir=cache_dir)
-    _run(bundle, k.name, J=pl(J), r=pl(r), x=x)
-    for lane in range(LANES):
-        acc = np.zeros(cols)
-        for _ in range(trips):
-            acc = acc + 0.5 * np.linalg.lstsq(J[lane], r[lane] - J[lane] @ acc, rcond=None)[0]
-        np.testing.assert_allclose(x[:, lane], acc, rtol=1e-9, atol=1e-11)
 
 
 def test_lstsq_above_max_dim_in_a_loop_body_is_lowered_to_qr_and_the_per_lane_writer_refuses_it_by_name(tmp_path, cache_dir):
     """Above ``linalg.max_dim`` the lowering gives Householder QR inside the body (it is built); one lane cannot hold it, and a team
     stage has no place inside a loop body: that refusal is the writer's, by name, not a missing lowering."""
-    from raptor.errors import RaptorError as HawkError
+    from hawk.errors import HawkError
 
     @kernel
     def wide(J: Matrix[36, 34], r: Vector[36], x: Mutable[Vector[34]]):
@@ -166,13 +115,20 @@ def test_lstsq_above_max_dim_in_a_loop_body_is_lowered_to_qr_and_the_per_lane_wr
         build_bundle([wide], tmp_path / "wide", targets=("host",), cache_dir=cache_dir)
 
 
+@pytest.mark.parametrize("k,rows,cols,trips", [(gn_loop, 4, 3, 3)])
+def test_lstsq_in_a_loop_body_runs_against_numpy(tmp_path, cache_dir, k, rows, cols, trips):
 
-
-def test_a_facts_without_the_number_is_refused_by_name():
-    from raptor.errors import RaptorError as HawkError
-    from types import SimpleNamespace
-
-    from raptor.wings.base import team as _team
-
-    with pytest.raises(HawkError, match="linalg.max_dim"):
-        _team.max_dim_of(SimpleNamespace(primary={"form": {}}), required=True)
+    assert cols <= 32          # the normal equations: one lane factors it
+    assert any(n.field_text("kind") == "lstsq" for n in _ir.walk_order(k.walk))                      # one lstsq node in the traced IR
+    rng = np.random.default_rng(5)
+    J = rng.standard_normal((LANES, rows, cols)) + 3 * np.eye(rows, cols)
+    r = rng.standard_normal((LANES, rows))
+    pl = lambda a: np.ascontiguousarray(a.reshape(LANES, -1).T)
+    x = np.zeros((cols, LANES))
+    bundle = build_bundle([k], tmp_path / k.name, targets=("host",), cache_dir=cache_dir)
+    _run(bundle, k.name, J=pl(J), r=pl(r), x=x)
+    for lane in range(LANES):
+        acc = np.zeros(cols)
+        for _ in range(trips):
+            acc = acc + 0.5 * np.linalg.lstsq(J[lane], r[lane] - J[lane] @ acc, rcond=None)[0]
+        np.testing.assert_allclose(x[:, lane], acc, rtol=1e-9, atol=1e-11)

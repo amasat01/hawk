@@ -80,7 +80,9 @@ def child(args) -> None:
     if args.heavy:
         sys.path.insert(0, str(_TESTS))
         from _linalg_kernels import lu_kernel
-        units = {f"lu{HEAVY[1]}": (lu_kernel(HEAVY[1]), {"linalg_form": "team"})}
+
+        from hawk import _ir
+        units = {f"lu{HEAVY[1]}": (lu_kernel(_ir.new_context(), HEAVY[1]), {"linalg_form": "team"})}
     else:
         units = {n: (k, {}) for n, k in _kernels().items()}
     imported = time.perf_counter() - t0

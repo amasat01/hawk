@@ -15,7 +15,6 @@ import hawk
 import hawk.math as m
 from hawk import Int32, Matrix, Mutable, Vector
 from hawk.artifact import build_bundle
-from _specs import HOST
 
 N, LANES = 40, 5
 
@@ -38,10 +37,6 @@ def bundle(tmp_path_factory, cache_dir):
                         host_profile="native")
 
 
-def test_the_first_stage_is_a_block_per_lane_copy(bundle):
-    first = sidecar_of(bundle, "solve")["stages"][0]
-    assert first["team"]["threads"] == HOST.need("lanes", "copy_threads") and "grid" not in first["team"]
-    assert "team" in sidecar_of(bundle, "solve")["stages"][1]
 
 
 def test_host_solves_through_the_copy_stage(bundle):

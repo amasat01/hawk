@@ -8,7 +8,6 @@ interpreter twin against the unrolled layer and against finite differences, the
 emitted text, and the compiled host kernel."""
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
 import _spline_forms as S
 import numpy as np
@@ -22,7 +21,7 @@ from hawk import Kernel
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 
 WRT = ("x", "theta")
 

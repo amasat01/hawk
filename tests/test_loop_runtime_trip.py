@@ -12,8 +12,6 @@ tape) and reverse mode refuses by name; with ``max=K`` the tape is ``K`` long an
 """
 
 from __future__ import annotations
-from _specs import spec_for, default_kind
-from _specs import HOST
 
 import numpy as np
 import pytest
@@ -25,10 +23,9 @@ from hawk import Index, Mutable, Scalar
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk import _ir
 from hawk.trace.kernel import Kernel
-from hawk import _ir
 
 K = 6
 

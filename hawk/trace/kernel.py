@@ -28,7 +28,7 @@ from typing import Any
 
 from .. import _ir
 from .._broadcast import route
-from .._errors import HawkError
+from ..errors import HawkError
 from . import astpass, helpers, reduce
 from .decl import Plane, resolve, role_of, spell
 from .lane_axes import (
@@ -176,19 +176,6 @@ class Kernel:
                     self.sinks.primal_unit = eagle.deploy(source).plugin._hawk_source[1]
                 self._plan = eagle.deploy(self)
         return self._plan
-
-    def steps_reverse_table(self, device: bool) -> dict:
-        """The measured rows of ``steps_reverse="auto"`` for the host or a device, as plain data (what the runtime's
-        ``steps_reverse="auto"`` rule is applied to)."""
-        from ..targets.steps_reverse import table_for
-
-        return table_for(device)
-
-    def host_spec(self):
-        """The build spec of the host rows, for a door that takes it explicitly (eagle's dispatch costs and stage split)."""
-        from ..targets.steps_reverse import host_spec
-
-        return host_spec()
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
         return f"<Kernel {self.name} slots={len(self.arg_spec)}>"

@@ -14,40 +14,27 @@ import os
 from dataclasses import dataclass, fields, replace
 from types import MappingProxyType
 
-from ._errors import HawkError
+from .errors import HawkError
 
 
 @dataclass(frozen=True)
 class Settings:
-    """The per-build settings, carried by the build spec (a build spec's ``settings``): none is a machine
-    number. Set once by the outermost entry (``with_settings`` on the spec returns a new one), read from the spec below it.
+    """The per-build settings a build states to the lowering, none of them a machine number.
 
     ``form`` the ``emit_form``; ``linalg_form``, ``wide_form``, ``contraction`` as the build option of that name;
-    ``launch_bounds`` ``(threads, blocks_per_sm)`` or ``None``; ``scalar`` the scalar mode id (``""``: not stated);
-    ``device_only`` whether every target of the build is a device; ``placed`` whether the text keeps wide values in their planes
-    (the device text; the host renders a placement as its value); ``blend`` whether float selects render as ``hawk_abi::blend``
-    (a host row); ``staged_rows`` the samples a block of the warp form shares one output tile for (1: stores go straight to the
-    planes); ``warps`` the warps of a block of the warp-per-lane kernel; ``fold_k`` the rows per warp forced in every cell-sum
-    kernel (0: the wing's own value); ``block_fold`` whether the body sits in a frame that allows the block-level commit;
-    ``route_to_ordered`` whether a keyed accumulate of contract ``auto`` or ``compensated`` takes the ordered stages (a ``cells``
-    scalar mode has no atomic add on a packed cell); ``fast_entries`` whether a device unit builds its fast entry points."""
+    ``launch_bounds`` ``(threads, blocks_per_sm)`` or ``None``; ``warps`` the warps of a block of the warp-per-lane kernel;
+    ``fold_k`` the rows per warp forced in every cell-sum kernel (0: the library's own value); ``fast_entries`` whether a
+    device unit builds its fast entry points; ``team_threads`` the threads of every team stage when forced (0: the stage's own
+    size). The library refuses a value outside what its target allows."""
 
     form: str = "auto"
     linalg_form: str = "auto"
     wide_form: str = "auto"
     contraction: str = "direct"
     launch_bounds: tuple | None = None
-    scalar: str = ""
-    device_only: bool = True
-    placed: bool = False
-    blend: bool = False
-    staged_rows: int = 1
     warps: int = 1
     fold_k: int = 0
-    block_fold: bool = False
-    route_to_ordered: bool = False
     fast_entries: bool = False
-    #: The threads of every team stage when forced (0: the stage's own size).
     team_threads: int = 0
 
 
@@ -64,24 +51,14 @@ FORMS = ("auto", "static", "rolled")
 LINALG_FORMS = ("auto", "thread", "team")
 
 #: The forms a build may ask of a per-lane value wider than a thread's registers (``wide_form``):
-#: ``auto`` places each such value where the card keeps it (:mod:`raptor.wings.simt.wide`), ``thread``
+#: ``auto`` places each such value where the card keeps it (the library), ``thread``
 #: keeps every value in the lane's own registers and local memory (the text before the pass),
-#: and ``team`` is a warp per lane (:mod:`raptor.wings.simt.lane`), for the kernels it has a rule for; the others build as ``auto``.
+#: and ``team`` is a warp per lane (the library), for the kernels it has a rule for; the others build as ``auto``.
 WIDE_FORMS = ("auto", "thread", "team")
 
 #: How a dense contraction is run (``contraction``): ``direct`` is the kernel's own loop; ``gemm`` asks eagle for a
 #: matrix-multiply route, for the kernels that have one (opt in: its values are within a few ulp, not the same bits).
 CONTRACTION_FORMS = ("direct", "gemm")
-
-
-def checked_bounds(launch_bounds: tuple[int, int], limits: dict) -> tuple[int, int]:
-    """``launch_bounds`` as ints, refused by name when it breaks ``limits`` (the wing's ``launch`` data: ``warp_size``,
-    ``max_threads_per_sm``)."""
-    threads, blocks = launch_bounds
-    warp, cap = limits["warp_size"], limits["max_threads_per_sm"]
-    if threads < warp or threads % warp or blocks < 1 or threads * blocks > cap:
-        raise ValueError(f"launch_bounds=(threads, blocks) needs threads a multiple of {warp} and threads*blocks <= {cap}, got {launch_bounds!r}")
-    return (int(threads), int(blocks))
 
 
 class SettingError(HawkError, ValueError):
@@ -99,14 +76,11 @@ def refuse_choice(key: str, value) -> None:
         raise SettingError(f"{key} must be one of {CHOICES[key]}, got {value!r}")
 
 
-def check(settings: Settings, limits: dict | None = None) -> Settings:
-    """``settings`` with its choices validated (and ``launch_bounds`` checked against ``limits``, the device wing's ``launch``
-    data, when given), refused by name."""
+def check(settings: Settings) -> Settings:
+    """``settings`` with its choices validated, refused by name."""
     for key, value in (("emit_form", settings.form), ("linalg_form", settings.linalg_form), ("wide_form", settings.wide_form),
                        ("contraction", settings.contraction)):
         refuse_choice(key, value)
-    if settings.launch_bounds is not None and limits is not None:
-        return replace(settings, launch_bounds=checked_bounds(settings.launch_bounds, limits))
     return settings
 
 
@@ -159,27 +133,3 @@ def settings_of(build_settings: BuildSettings | None, base):
     if not isinstance(build_settings, BuildSettings):
         raise HawkError(f"settings must be a hawk.build_settings.BuildSettings, got {type(build_settings).__name__}")
     return replace(base, **{_SETTING[k]: getattr(build_settings, k) for k in build_settings.keys()})
-
-
-def refuse_undeclared(build_settings: BuildSettings | None, targets) -> None:
-    """Refuse by name a key ``build_settings`` sets that no target of the build declares in its manifest (``"settings"``)."""
-    if build_settings is None:
-        return
-    from . import registry
-
-    declared = set()
-    for target in targets:
-        if registry.has("backends", target):
-            declared |= set(registry.traits(target).get("settings", ()))
-    for key in build_settings.keys():
-        if key not in declared:
-            raise HawkError(f"build settings key {key!r} is declared by none of the targets {tuple(targets)}: a backend's manifest "
-                            f"names the setting keys it accepts")
-
-
-def apply(spec, build_settings: BuildSettings | None, targets):
-    """``spec`` with ``build_settings`` laid over its settings, after the keys it sets are checked against the targets' manifests."""
-    if build_settings is None:
-        return spec
-    refuse_undeclared(build_settings, targets)
-    return replace(spec, settings=settings_of(build_settings, spec.settings))

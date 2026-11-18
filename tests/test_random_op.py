@@ -27,8 +27,8 @@ what the bootstrap needs.
 
 from __future__ import annotations
 
-import os
 
+import os
 import numpy as np
 import pytest
 from _deploy import device_plugin
@@ -41,7 +41,7 @@ import hawk.trace.decl as _decl
 from hawk.artifact import build, build_bundle
 from hawk.diff import jvp, vjp
 from hawk import _ir
-from hawk._errors import HawkError
+from hawk.errors import HawkError
 
 OP_KINDS, RANDOM_OPS = _ir.OP_KINDS, _ir.RANDOM_OPS
 #: One context holds every node these rows build.
@@ -65,7 +65,6 @@ def Assign(name, value, ttype):
     """Make an assign of ``value`` to the plane ``name``."""
     return _ir.make_node("Assign", ttype, (value,), name=name)
 
-_AETHER_ROOT = os.environ.get("HAWK_AETHER_SOURCE", "")
 
 
 @hawk.kernel
@@ -383,29 +382,6 @@ def _bits_to_double(bits: int) -> float:
     return struct.unpack("<d", struct.pack("<Q", bits))[0]
 
 
-@pytest.mark.skipif(not os.path.isdir(_AETHER_ROOT + "/tests/random"),
-                    reason="aether/tests/random/golden_random.h not on this box")
-def test_matches_the_aether_golden_oracle(tmp_path, cache_dir):
-    import _oracle as O
-
-    build(draw_uniform, tmp_path / "r4u", targets=("host",), cache_dir=cache_dir)
-    build(draw_normal, tmp_path / "r4n", targets=("host",), cache_dir=cache_dir)
-    u_loaded = O.load(tmp_path / "r4u", "draw_uniform")
-    n_loaded = O.load(tmp_path / "r4n", "draw_normal")
-
-    for seed, counter, u_bits, n_val in _GOLDEN_ROWS:
-        u_planes = O.planes(u_loaded, 1, {"seed": _plane(1, _hawk_seed(seed, _SALT_UNIFORM)), "counter": _plane(1, counter)})
-        u = float(np.asarray(O.run_kernel(u_loaded, 1, **u_planes))[0])
-        want_u = _bits_to_double(u_bits)
-        assert u == want_u, (
-            f"R4 uniform: seed={seed:#x} counter={counter}: got {u!r}, golden "
-            f"{want_u!r} (bits {u_bits:#018x})")
-
-        n_planes = O.planes(n_loaded, 1, {"seed": _plane(1, _hawk_seed(seed, _SALT_NORMAL)), "counter": _plane(1, counter)})
-        got_n = float(np.asarray(O.run_kernel(n_loaded, 1, **n_planes))[0])
-        assert abs(got_n - n_val) <= 1e-12, (
-            f"R4 normal: seed={seed:#x} counter={counter}: got {got_n!r}, golden "
-            f"{n_val!r} (TIER-TOL 1e-12)")
 
 
 # --------------------------------------------------------------------------- #
@@ -686,3 +662,30 @@ def test_multivariate_normal_mean_and_covariance(tmp_path, cache_dir):
     assert np.all(np.abs(S - cov) <= band), (S, cov, band)
     assert not np.allclose(S, np.diag(np.diag(S))), "the draws must be correlated (L is not diagonal)"
 
+
+_AETHER_ROOT = os.environ.get("HAWK_AETHER_SOURCE", "")
+
+
+@pytest.mark.skipif(not os.path.isdir(_AETHER_ROOT + "/tests/random"),
+                    reason="aether/tests/random/golden_random.h not on this box")
+def test_matches_the_aether_golden_oracle(tmp_path, cache_dir):
+    import _oracle as O
+
+    build(draw_uniform, tmp_path / "r4u", targets=("host",), cache_dir=cache_dir)
+    build(draw_normal, tmp_path / "r4n", targets=("host",), cache_dir=cache_dir)
+    u_loaded = O.load(tmp_path / "r4u", "draw_uniform")
+    n_loaded = O.load(tmp_path / "r4n", "draw_normal")
+
+    for seed, counter, u_bits, n_val in _GOLDEN_ROWS:
+        u_planes = O.planes(u_loaded, 1, {"seed": _plane(1, _hawk_seed(seed, _SALT_UNIFORM)), "counter": _plane(1, counter)})
+        u = float(np.asarray(O.run_kernel(u_loaded, 1, **u_planes))[0])
+        want_u = _bits_to_double(u_bits)
+        assert u == want_u, (
+            f"R4 uniform: seed={seed:#x} counter={counter}: got {u!r}, golden "
+            f"{want_u!r} (bits {u_bits:#018x})")
+
+        n_planes = O.planes(n_loaded, 1, {"seed": _plane(1, _hawk_seed(seed, _SALT_NORMAL)), "counter": _plane(1, counter)})
+        got_n = float(np.asarray(O.run_kernel(n_loaded, 1, **n_planes))[0])
+        assert abs(got_n - n_val) <= 1e-12, (
+            f"R4 normal: seed={seed:#x} counter={counter}: got {got_n!r}, golden "
+            f"{n_val!r} (TIER-TOL 1e-12)")

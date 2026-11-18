@@ -22,7 +22,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple, Seque
 
 import _osprey
 
-from ._errors import HawkError
+from .errors import HawkError
 
 # ---- the library's constants, read once ----
 
@@ -31,7 +31,7 @@ _CONTEXT_OF_CONSTANTS = _osprey.Ctx()
 # constant as a tuple).
 _STRING_CONSTANTS = (
     "KEYED_AUTO", "NAMESPACE_SEP", "PARAM_CELL", "RAW_KIND", "CELL_PLANE", "RAW_LANGUAGE",
-    "COMPANION_SUFFIX", "ADJOINT_PREFIX", "REDUCE_KIND", "PRIMITIVE_KIND",
+    "COMPANION_SUFFIX", "ADJOINT_PREFIX", "REDUCE_KIND", "PRIMITIVE_KIND", "SAMPLE_SUM_COMP_SUFFIX",
 )  # fmt: skip
 _TUPLE_CONSTANTS = (
     "COMPARE", "LOGICAL", "PREDICATE", "CONTRACTS", "SCATTER_CONTRACTS", "LEAF_ROLES",
@@ -47,7 +47,7 @@ COMPARE, LOGICAL, PREDICATE, CONTRACTS, SCATTER_CONTRACTS = (
     _CONTEXT_OF_CONSTANTS.const_names(name) for name in _TUPLE_CONSTANTS[5:]
 )  # fmt: skip
 (KEYED_AUTO, NAMESPACE_SEP, PARAM_CELL, RAW_KIND, CELL_PLANE, RAW_LANGUAGE, COMPANION_SUFFIX,
- ADJOINT_PREFIX, REDUCE_KIND, PRIMITIVE_KIND) = (
+ ADJOINT_PREFIX, REDUCE_KIND, PRIMITIVE_KIND, SAMPLE_SUM_COMP_SUFFIX) = (
     _CONTEXT_OF_CONSTANTS.const_names(name)[0] for name in _STRING_CONSTANTS
 )  # fmt: skip
 INT_BINARY = _CONTEXT_OF_CONSTANTS.const_names("INT_BINARY")

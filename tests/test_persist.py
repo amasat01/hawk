@@ -32,8 +32,6 @@ is pinned:
 """
 
 from __future__ import annotations
-from _specs import spec_for
-from _specs import HOST
 
 import ctypes
 import os
@@ -46,7 +44,6 @@ from test_host_interchange import (
     _mixed,
     _planes,
     oscillator,
-    oscillator_x16,
     EXP_REJECT,
     RK_A,
     RK_B,
@@ -56,7 +53,6 @@ from test_host_interchange import (
 )
 
 from hawk.artifact import build_bundle
-from hawk.targets import TARGETS
 
 DT = 0.01
 #: The chunk length these rows launch with unless they vary it.

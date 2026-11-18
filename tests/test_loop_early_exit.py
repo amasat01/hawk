@@ -42,7 +42,7 @@ from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk.ext import Guard, Kind
 from hawk import _ir
-from hawk._errors import HawkError
+from hawk.errors import HawkError
 
 CAP = 12
 LIM = 3.0

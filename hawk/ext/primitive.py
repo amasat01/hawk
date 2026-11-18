@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from ..trace.helpers import call, call_lowered
 from ..trace.lane_axes import trace_context
 from ..trace.value import Value, node_of

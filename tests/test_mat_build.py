@@ -23,7 +23,7 @@ import hawk.math as m
 from hawk import Matrix, Mutable, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk import _ir
 
 LANES = 6

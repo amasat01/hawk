@@ -23,9 +23,6 @@
 
 from __future__ import annotations
 
-from _specs import default_kind
-from _specs import spec_for
-import hashlib
 import threading
 
 import numpy as np

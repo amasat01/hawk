@@ -30,7 +30,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from .tape import TAPE_ON
 
 #: The per-sample plane that names each sample's parameter cell (read by the framework bridges).

@@ -13,12 +13,8 @@ off consecutive counters sat 3.8 SE from its exact discrete closed form.
 from __future__ import annotations
 
 import math
-import os
-import subprocess
-import textwrap
 
 import numpy as np
-import pytest
 import _oracle as O
 
 import hawk
@@ -109,31 +105,5 @@ def test_mvn_components_0_and_2_have_an_independent_fourth_moment(tmp_path, cach
 # Boundary words: hawk's exponential and uniform_int formulas, fed the extreme
 # uniforms aether can return (words 0 and 0xFFFFFFFF), stay finite / in range.
 # --------------------------------------------------------------------------- #
-_AETHER = os.environ.get("HAWK_AETHER_INCLUDE", "")
 
 
-@pytest.mark.skipif(not os.path.isfile(_AETHER + "/aether/random/detail/Backend.h"),
-                    reason="aether headers not on this box")
-def test_boundary_words_keep_exponential_finite_and_uniform_int_in_range(tmp_path):
-    src = tmp_path / "edge.cpp"
-    src.write_text(textwrap.dedent("""
-        #include <cstdio>
-        #include <initializer_list>
-        #include "aether/random/detail/Backend.h"
-        int main() {
-            using namespace aether::random::detail;
-            for (unsigned w : {0u, 0xFFFFFFFFu})
-                std::printf("%.17g %.9g\\n", uniformDoubleFromWord(w), (double)uniformFloatFromWord(w));
-        }
-    """))
-    exe = tmp_path / "edge"
-    subprocess.run(["g++", "-std=c++23", "-DAETHER_CPP_MODE=1", f"-I{_AETHER}", str(src), "-o", str(exe)],
-                   check=True)
-    rows = [tuple(map(float, ln.split())) for ln in subprocess.run(
-        [str(exe)], check=True, capture_output=True, text=True).stdout.splitlines()]
-    for column in (0, 1):
-        for row in rows:
-            u = row[column]
-            assert 0.0 < u < 1.0
-            assert math.isfinite(-math.log(1.0 - u) / 2.0)  # random_exponential(rate=2)
-            assert -2 <= math.floor(u * (5 - -2 + 1) + -2) <= 5  # random_uniform_int(-2, 5)

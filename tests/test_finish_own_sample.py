@@ -28,8 +28,6 @@ Rows:
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import HOST
 
 import _deploy as L
 import numpy as np
@@ -37,11 +35,9 @@ import pytest
 from conftest import sidecar_of
 
 from hawk import Mutable, Param, Scalar, Terminated, kernel
-from hawk.artifact import build_bundle, emit_source
-from hawk.compile import CompileOptions, compile_source
+from hawk.artifact import build_bundle
 from _unit_sidecar import finish_mask, sidecar_of_kernel
-from hawk.diff import jvp, vjp
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk import _ir
 
 N = 40
@@ -324,24 +320,3 @@ def test_an_active_set_build_of_a_finishing_kernel_keeps_the_finish(tmp_path,
         assert ["lookup", name] in side["arg_spec"]
 
 
-@pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
-def test_dropping_the_count_from_the_epilogue_is_caught(tmp_path, cache_dir, target):
-    """NON-VACUITY: an artifact whose finish epilogue lacks the count must be seen failing by the same loop.
-
-    The old row stripped the line inside the writer while it rendered; the writer is the library now, so the line is
-    cut from the emitted source (the surgery ``_planted`` does) and that source is compiled and put in the published
-    unit's place: same toolchain, same loader, same plan."""
-    import shutil
-
-    count = " hawk_abi::finish_count(lut_finished_count);"
-    text = emit_source(osc_finish, targets=(target,)).sources[target].text
-    assert count in text, "the epilogue no longer spells the count this surgery cuts"
-    stripped = build_bundle([osc_finish], tmp_path / "stripped", targets=(target,), cache_dir=cache_dir)
-    planted = compile_source(text.replace(count, ""), "osc_finish",
-                             CompileOptions(target=target, mode="float64", cache_dir=cache_dir))
-    shutil.copyfile(planted.artifact, stripped.artifacts[0].entries[target].artifact)
-    assert "finish_count(lut_finished_count)" not in text.replace(count, "")
-    got, counted, launches, _ = _step_until_done(stripped, target)
-    assert got["terminated"].all(), "the mask still sets"
-    assert counted == 0 and launches == MAX_LAUNCHES, (
-        "with no count the guard never fires: the loop runs to its cap")

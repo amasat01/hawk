@@ -89,7 +89,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from . import _ir
-from ._errors import HawkError
+from .errors import HawkError
 from .trace.value import (
     Value,
     absolute,

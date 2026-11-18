@@ -50,25 +50,16 @@ Three mechanisms, each with its own refusal:
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import spec_for
-from _specs import HOST
 
-import pathlib
 
-import _toolchain as TC
 import numpy as np
 import pytest
 from _eval import evaluate
 
 import hawk
 import hawk.math as m
-from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
-from aether.wings.base.wrapper import FLOAT64
 from hawk import HawkError
-from hawk.targets import TARGETS
-from hawk import _ir
 
 #: Classical RK4 (Kutta 1901), the stage and combine weights
 #: a downstream rollout kernel carries as structural constants.

@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from .loops import with_body_sinks
 
 

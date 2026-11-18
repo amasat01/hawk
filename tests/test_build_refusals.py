@@ -7,7 +7,7 @@ import hawk
 import hawk.math as M
 import pytest
 from hawk import Index, Mutable, Scalar, Terminated
-from hawk._errors import HawkError
+from hawk.errors import HawkError
 from hawk.artifact import build_bundle
 from hawk.ext import Guard, IndexSet, Kind
 

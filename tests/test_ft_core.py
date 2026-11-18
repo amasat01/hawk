@@ -4,8 +4,7 @@
 """Free-threading rows for the compiled seam (``hawk._core``).
 
 Row classes FT-1, FT-2, FT-3 and FT-5 of the family's free-threading
-acceptance, registered against the conformance harness that ``raptor-core``
-hosts (a TEST dependency only: nothing under ``hawk/`` imports it).
+acceptance, run with the helpers of ``tests/ft_gate.py``.
 
 On a GIL build every row that needs real parallelism SKIPS with a reason; the
 name manifest below keeps "skipped" from degrading into "silently not
@@ -26,32 +25,18 @@ import sys
 from pathlib import Path
 
 import ft_gate as gate
+import ft_gate as ft
 import pytest
 from conftest import sidecar_of
 
 from hawk import _core
-from raptor.conformance import freethreading as ft
-from raptor.conformance.freethreading import declare_ft_row, register_ft_row
 
 pytestmark = pytest.mark.ft
 
-declare_ft_row("FT-1-GIL-FREE-HAWK-CORE", "hawk",
-               "importing hawk._core leaves the GIL disabled")
-declare_ft_row("FT-2-CANARY-HAWK-CORE", "hawk",
-               "the planted unsynchronised counter in hawk._core loses >= 10% of updates")
-declare_ft_row("FT-3-HAWK-CROSSINGS-EXACT", "hawk",
-               "crossings() is exact under 8 threads x 200k calls")
-declare_ft_row("FT-5-HAWK-ARGBLOCK-SHARED", "hawk",
-               "one ArgBlock bound and run from many threads is never torn")
-declare_ft_row("FT-5-HAWK-HOSTLIBRARY-SHARED", "hawk",
-               "one HostLibrary resolving entries from many threads stays intact")
-declare_ft_row("FT-LINT-HAWK-NO-GIL-RELEASE", "hawk",
-               "the bindings never detach (no gil_scoped_release / call_guard)")
 
 EXPECTED_TESTS = frozenset(
     {
         "test_manifest_all_tests_collected",
-        "test_rows_declared_and_collected",
         "test_core_is_gil_free",
         "test_core_canary_loses_updates",
         "test_crossings_exact_under_threads",
@@ -78,17 +63,13 @@ def test_manifest_all_tests_collected(request):
     assert {n for n in here if "[" not in n} <= EXPECTED_TESTS
 
 
-def test_rows_declared_and_collected():
-    ft.assert_ft_rows_complete("hawk")
 
 
-@register_ft_row("FT-1-GIL-FREE-HAWK-CORE")
 def test_core_is_gil_free():
     gate.require_free_threaded()
     ft.assert_gil_free("hawk._core")
 
 
-@register_ft_row("FT-2-CANARY-HAWK-CORE")
 def test_core_canary_loses_updates():
     gate.require_free_threaded()
     res = gate.require_not_vacuous(
@@ -97,7 +78,6 @@ def test_core_canary_loses_updates():
     print(f"hawk._core canary lost {res.lost_fraction:.1%} of {res.expected}")
 
 
-@register_ft_row("FT-3-HAWK-CROSSINGS-EXACT")
 def test_crossings_exact_under_threads():
     gate.require_free_threaded()
     threads, iterations = ft.CANARY_THREADS, ft.CANARY_ITERATIONS
@@ -161,7 +141,6 @@ print(json.dumps({"torn": torn, "runs": runs, "errors": errors}))
 """
 
 
-@register_ft_row("FT-5-HAWK-ARGBLOCK-SHARED")
 def test_shared_argblock_is_never_torn(built):
     gate.require_free_threaded()
     bundle = built["vec3"]
@@ -211,27 +190,19 @@ print(json.dumps({"bad": bad, "errors": errors}))
 
 # Exported by libc, so a dlsym through the artifact's dependency chain finds
 # each: the library's `entry()` caches by name and never calls what it finds.
-@register_ft_row("FT-5-HAWK-HOSTLIBRARY-SHARED")
 def test_shared_hostlibrary_entries_stay_intact(built, tmp_path):
     gate.require_free_threaded()
-    from _toolchain import host_library
+    # One bundle of many units: a real hawk library (its ABI tag and layout table) that exports many distinct entries,
+    # so the threads race on many distinct names.
+    import _deployable as D
 
-    # A real hawk artifact (its ABI tag and layout table) with many exported
-    # entries, so the threads race on many distinct names. The extra entries
-    # are no-ops appended to the kernel's own translation unit and built with
-    # hawk's host recipe, so nothing depends on what the toolchain links in.
-    names = [f"hawk_ft_entry_{i:03d}" for i in range(128)]
-    text = (
-        (built["axpb"].directory / "axpb.cpp").read_text()
-        + "\n"
-        + "".join(
-            f'extern "C" __attribute__((visibility("default"))) '
-            f"void {n}(void* const*, long, long, long) {{}}\n"
-            for n in names
-        )
-    )
-    host_library(text, tmp_path, "many_entries")
-    lib_path = tmp_path / "many_entries.so"
+    from hawk.artifact import build_bundle
+    from hawk.trace import Kernel
+
+    units = [Kernel(f"hawk_ft_entry_{i:03d}", D.axpb.sinks) for i in range(32)]
+    bundle = build_bundle(units, tmp_path / "many", targets=("host",), cache_dir=str(tmp_path / "cache"))
+    names = [f"{unit.name}_host" for unit in units]
+    lib_path = bundle.directory / "units.so"
     serial = _core.HostLibrary(str(lib_path))
     assert all(_resolves(serial, n) for n in names)
     proc = subprocess.run(
@@ -258,7 +229,6 @@ def _resolves(lib, name: str) -> bool:
 # A2 lint: the bindings never detach.
 # --------------------------------------------------------------------------- #
 @pytest.mark.repo_local
-@register_ft_row("FT-LINT-HAWK-NO-GIL-RELEASE")
 def test_bindings_never_release_the_gil():
     # nb::lock_self is a critical section that CPython suspends whenever the
     # thread detaches, so a binding that releases the GIL needs a per-object

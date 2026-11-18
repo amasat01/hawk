@@ -29,7 +29,7 @@ import pytest
 from conftest import sidecar_of
 
 from hawk import runtime as rt
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 
 N = 8
 

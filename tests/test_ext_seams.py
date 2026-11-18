@@ -408,52 +408,6 @@ def contraction_probe(a: _Scalar, b: _Scalar, z: _Mutable[_Scalar]):
     z = a * b - 1.0
 
 
-def test_compensation_stays_exact_under_fma_contraction(tmp_path, cache_dir):
-    """The fast host profile contracts ``a*b + c`` into FMAs; the compensated
-    commit's two-sum must still see the ROUNDED term.
-
-    Known answer: a = b = 1 + 2^-30, so a*b = 1 + 2^-29 + 2^-60 exactly and
-    its rounded value is p = 1 + 2^-29. Accumulated onto 1.0 the sum 1 + p is
-    exact, so the companion must stay 0. Fused, the residual would see the
-    2^-60 tail (confirmed by removing the AETHER_FP_BARRIER lines from
-    staging/aether/wings/base/wrapper.py: c = 2^-60). The probe kernel shows this very build
-    does contract (non-vacuity)."""
-    import platform
-
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    from _toolchain import host_template
-
-    if platform.machine().lower() not in ("x86_64", "amd64"):
-        pytest.skip("the fast host profile is x86-64 only")
-    assert "-ffp-contract=fast" in host_template("native-vector-math")
-    bundle, probed = (
-        _build_bundle([k], tmp_path / sub, targets=("host",),
-                      cache_dir=cache_dir, host_profile="native-vector-math")
-        for k, sub in ((own_column_compensated_product, "fma_comp"),
-                       (contraction_probe, "fma_probe")))
-    a = np.full(N, 1.0 + 2.0 ** -30)
-
-    probe = eplan.plan(L.host_plugin(probed.directory, "contraction_probe",
-                                     sidecar_of(probed, "contraction_probe")),
-                       structure=eexec.HostTeam)
-    z = np.zeros(N)
-    probe.bind(a=a, b=a, z=z).launch()
-    if z[0] != 2.0 ** -29 + 2.0 ** -60:
-        pytest.skip(f"this host build does not contract (a*b - 1 = {z[0]!r}): "
-                    "no FMA on this CPU, nothing to guard")
-
-    name = "own_column_compensated_product"
-    plan = eplan.plan(L.host_plugin(bundle.directory, name, sidecar_of(bundle, name)),
-                      structure=eexec.HostTeam)
-    y, c = np.zeros(N), np.zeros(N)
-    bound = plan.bind(a=np.ones(N), b=np.ones(N), terminated=np.zeros(N, dtype=bool),
-                      y=y, c=c)
-    bound.launch()
-    bound.rebind(a=a, b=a).launch()
-    np.testing.assert_array_equal(y, np.full(N, 2.0 + 2.0 ** -29))
-    np.testing.assert_array_equal(c, np.zeros(N), "the term was fused into the two-sum")
 
 
 def test_store_compensated_appears_once_inside_the_guard(tmp_path, cache_dir):
@@ -711,3 +665,41 @@ def test_a_drag_shaped_compensated_return_compiles_on_host(tmp_path, cache_dir):
 # --------------------------------------------------------------------------- #
 
 
+def test_compensation_stays_exact_under_fma_contraction(tmp_path, cache_dir):
+    """The fast host profile contracts ``a*b + c`` into FMAs; the compensated
+    commit's two-sum must still see the ROUNDED term.
+
+    Known answer: a = b = 1 + 2^-30, so a*b = 1 + 2^-29 + 2^-60 exactly and
+    its rounded value is p = 1 + 2^-29. Accumulated onto 1.0 the sum 1 + p is
+    exact, so the companion must stay 0. Fused, the residual would see the
+    2^-60 tail . The probe kernel shows this very build
+    does contract (non-vacuity)."""
+    import eagle.exec as eexec
+    from eagle import plan as eplan
+
+    bundle, probed = (
+        _build_bundle([k], tmp_path / sub, targets=("host",),
+                      cache_dir=cache_dir, options={"host.profile": "native-vector-math"})
+        for k, sub in ((own_column_compensated_product, "fma_comp"),
+                       (contraction_probe, "fma_probe")))
+    a = np.full(N, 1.0 + 2.0 ** -30)
+
+    probe = eplan.plan(L.host_plugin(probed.directory, "contraction_probe",
+                                     sidecar_of(probed, "contraction_probe")),
+                       structure=eexec.HostTeam)
+    z = np.zeros(N)
+    probe.bind(a=a, b=a, z=z).launch()
+    if z[0] != 2.0 ** -29 + 2.0 ** -60:
+        pytest.skip(f"this host build does not contract (a*b - 1 = {z[0]!r}): "
+                    "no FMA on this CPU, nothing to guard")
+
+    name = "own_column_compensated_product"
+    plan = eplan.plan(L.host_plugin(bundle.directory, name, sidecar_of(bundle, name)),
+                      structure=eexec.HostTeam)
+    y, c = np.zeros(N), np.zeros(N)
+    bound = plan.bind(a=np.ones(N), b=np.ones(N), terminated=np.zeros(N, dtype=bool),
+                      y=y, c=c)
+    bound.launch()
+    bound.rebind(a=a, b=a).launch()
+    np.testing.assert_array_equal(y, np.full(N, 2.0 + 2.0 ** -29))
+    np.testing.assert_array_equal(c, np.zeros(N), "the term was fused into the two-sum")

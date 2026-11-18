@@ -24,7 +24,7 @@ from __future__ import annotations
 from math import prod
 
 from . import _ir
-from ._errors import HawkError
+from .errors import HawkError
 
 #: The roles of a read-only per-lane input; the ones that broadcast.
 READ_ROLES = ("per_sample", "vec_in", "mat_in")

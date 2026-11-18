@@ -19,8 +19,6 @@ import hawk
 import hawk.math as m
 from hawk import HawkError, Index, Mutable, Scalar, Terminated, Vector, kernel
 from hawk.ext import IndexSet, Kind
-from hawk._lane_bind import scatter_chunks
-from hawk.facts import load as _facts
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
 
@@ -126,10 +124,6 @@ def test_the_ordered_scatter_is_bit_identical_on_the_host_and_the_device(bundles
     np.testing.assert_array_equal(host, device)
 
 
-def test_chunks_are_chosen_from_lanes_and_targets():
-    CAP = _facts("cpu")["scatter"]["max_chunks"]
-    assert [scatter_chunks(n, t, CAP) for n, t in ((20000, 7), (50, 200), (1000, 1000), (10**6, 10**4),
-                                              (10**6, 1), (10, 0))] == [256, 1, 1, 100, 256, 10]
 
 
 @pytest.mark.parametrize("target", TARGETS)

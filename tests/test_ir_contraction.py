@@ -25,8 +25,6 @@ is that rule, and it is the reason ``Table["row":r, "col":c]`` exists at all).
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import HOST
 
 import dataclasses
 
@@ -229,11 +227,6 @@ def test_a_staged_buffer_counted_by_the_launch_is_recognized_with_a_run_time_str
     assert n.adjoint_accumulates == spline.adjoint_accumulates
 
 
-def test_the_launch_counted_kernel_is_one_build_for_every_size():
-    from hawk.artifact.unit_cache import declaration_digest
-    assert declaration_digest(_dot_staged(7)) != declaration_digest(_dot_staged(64))
-    assert declaration_digest(_dot_staged(m.n_samples)) == declaration_digest(_dot_staged(m.n_samples))
-    assert "7" not in repr(_dot_staged(m.n_samples).planes["feat"])
 
 
 @pytest.mark.parametrize("n", [7, 64])
@@ -443,3 +436,9 @@ def test_a_fold_committed_through_a_vector_constructor_is_recognized():
     assert (rec.reduce_start, rec.reduce_step, rec.reduce_extent) == (0, 1, ROWS)
     assert rec.operand_class == "gemv"
     assert recognize(vec_committed_twice) is None
+
+
+def test_the_launch_counted_kernel_is_one_build_for_every_size():
+    assert repr(_dot_staged(7).planes["feat"]) != repr(_dot_staged(64).planes["feat"])
+    assert repr(_dot_staged(m.n_samples).planes["feat"]) == repr(_dot_staged(m.n_samples).planes["feat"])
+    assert "7" not in repr(_dot_staged(m.n_samples).planes["feat"])

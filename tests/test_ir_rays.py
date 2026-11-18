@@ -11,7 +11,6 @@ precisions against NumPy (a separate implementation of the same formulas,
 orbit scale."""
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
 import pathlib
 
@@ -216,28 +215,10 @@ def _device(kernel, name, arrays, n, cache_dir, tmp, mode="float64"):
     import eagle.exec as eexec
     from _deploy import device_plugin
     from eagle import plan as eplan
-    from ospreys.cuda.toolchain import resolve_arch
 
     bundle = build_bundle([kernel], tmp, targets=("cuda",), cache_dir=cache_dir,
-                          device_arch=resolve_arch(), mode=mode)
+                          mode=mode)
     plugin = device_plugin(bundle.directory, name, sidecar_of(bundle, name))
     planes = {k: cp.asarray(v) for k, v in arrays.items()}
     eplan.plan(plugin, structure=eexec.DeviceKernel, npartitions=1).run(**planes)
     return bundle, {k: cp.asnumpy(v) for k, v in planes.items()}
-
-
-@pytest.mark.gpu
-@pytest.mark.parametrize("kind", ["tri", "box", "ball"])
-def test_device_values_equal_the_host_in_both_precisions(loaded, kind, cache_dir, tmp_path):
-    for mode, dtype in (("float64", np.float64), ("float32", np.float32)):
-        rng = np.random.default_rng(31)
-        planes = _scene(rng, kind)
-        scalars = ([rng.uniform(0.5, 2.0, N)] if kind == "ball" else []) + [np.full(N, 6.0)]
-        host = _run(loaded, kind, dtype, planes, scalars)
-        given = {nm: p.T.astype(dtype).copy() for nm, p in zip(VECTORS[kind], planes)}
-        given.update({nm: s.astype(dtype) for nm, s in zip(("r", "tmax") if kind == "ball" else ("tmax",), scalars)})
-        given["y"] = np.zeros((4, N), dtype)
-        _bundle, got = _device(KERNELS[kind], kind, given, N, cache_dir, tmp_path / f"{kind}_{mode}", mode)
-        tol = 1e-5 if dtype is np.float32 else 1e-12
-        np.testing.assert_array_equal(got["y"][0], host[0])
-        np.testing.assert_allclose(got["y"], host, rtol=tol, atol=tol * 10)

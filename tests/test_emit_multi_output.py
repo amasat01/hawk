@@ -10,10 +10,8 @@ live to its end.
 """
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
 import linecache
-import re
 
 import numpy as np
 from conftest import sidecar_of

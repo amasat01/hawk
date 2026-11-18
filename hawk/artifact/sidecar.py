@@ -68,23 +68,8 @@ import re
 from types import MappingProxyType, SimpleNamespace
 
 from .. import _contracts, _ir
-from ..compile.toolchain import _strict_aether_include, _strict_eagle_include
-from .._errors import HawkError
 from ..targets import ENTRY_KINDS
 
-
-def _root_or_sealed_marker(resolver) -> str:
-    """The provenance value for one header root — the real resolved root
-    when one exists, else a SEALED marker naming the payload it was built
-    from (a wheel install carries no C++ header tree, so calling
-    ``resolver`` unconditionally would refuse even after a successful
-    compile). Re-raises when neither exists: that combination means the
-    kernel could not have been compiled at all."""
-    try:
-        return resolver()
-    except HawkError:
-        from ..compile import payload as _payload
-        return f"sealed:{_payload.current_payload().digest}"
 
 #: The ``params`` block's own wire version: decl-carrying ``{name, dtype}``
 #: entries. HAWK never writes the v1 bare-name shape — an integer uniform
@@ -128,30 +113,22 @@ def _mutables(walk) -> list:
     return out
 
 
-#: The local memory one thread may hold, per CUDA (all targeted archs), in bytes.
-LOCAL_LIMIT_B = 512 * 1024
-
-
 def _launch(lane_space, group: int, box=None, block: int | None = None,
-            index_set: dict | None = None, local: tuple | None = None, wide: dict | None = None) -> dict:
+            index_set: dict | None = None, measured: dict | None = None, wide: dict | None = None) -> dict:
     """The ``launch.lane_space`` block: the launch shape (row-major, the last axis
     fastest, only the first extent may be ``None``: known at run time) and the
     compaction ``group``, a lane count. With a thread ``box``
-    (:class:`raptor.wings.simt.box.Box`), ``launch.box`` = ``{axis, T, stride}``: a
+    (a record with ``sidecar()``), ``launch.box`` = ``{axis, T, stride}``: a
     launch of ``n`` lanes runs ``ceil(n / (T * stride)) * stride`` threads
-    (:func:`raptor.wings.simt.box.threads`), and ``base``/``count`` count threads.
+    , and ``base``/``count`` count threads.
     ``block`` is the exact threads per block an emit that fixed one (a staged
     tile) needs; a launch uses it verbatim. ``index_set`` is the record of a kernel
     declaring ``lanes=IndexSet()``: ``launch.index_set`` = ``{"width": bits}`` (the map word, the host
     bind's cue to range- and duplicate-check the caller's ``active_map``), or, for the prefix form
     (``IndexSet(prefix=True)``), ``{"width": 32, "prefix": true, "count": "active_count"}``: no map, the
     named one-element ``uint32`` plane holds how many leading lanes run. Absent for every other kernel.
-    ``local`` is ``(bytes, source)`` of a device unit: ``launch.local_bytes`` is the local memory one thread
-    holds (``source`` ``launch.local_source``: ``"ptxas"``, the stack frame of a CUBIN, or ``"ptx"``, the
-    depots the PTX declares, a ceiling), ``launch.local_limit`` the device's per-thread limit. A launch of
-    ``n`` threads needs about ``n * local_bytes`` of device memory beside the planes. No threads-per-block
-    cap follows from it (a build asking for ``launch_bounds`` records its block in ``launch.block``).
-    ``wide`` is the placement of the kernel's wide values (:mod:`raptor.wings.simt.wide`): ``launch.wide`` =
+    ``measured`` is the library's own record of the unit's launch needs (the local memory one thread holds, say), stored as given.
+    ``wide`` is the placement of the kernel's wide values (the library's placement): ``launch.wide`` =
     ``{plane: {form, plane, layout, width}}``, one record per plane a wide value lives in, and ``class``, the device feature class whose thresholds placed them (a reader that does not know
     the key ignores it; a scratch plane is also in the sidecar's ``team_planes``, which sizes it). Absent when no value is placed."""
     axes = [{"label": label, "extent": extent} for label, extent in lane_space]
@@ -162,8 +139,8 @@ def _launch(lane_space, group: int, box=None, block: int | None = None,
         out["box"] = box.sidecar()
     if index_set is not None:
         out["index_set"] = dict(index_set)
-    if local is not None:
-        out["local_bytes"], out["local_source"], out["local_limit"] = int(local[0]), local[1], LOCAL_LIMIT_B
+    if measured:
+        out.update(measured)
     if block is not None:
         if not isinstance(block, int) or isinstance(block, bool) or block < 1:
             raise ValueError(f"launch.block must be an integer >= 1, got {block!r}")
@@ -355,7 +332,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
                  step_ops: int | None = None,
                  fp64_ops_ir: int | None = None,
                  entry_counts_finished: bool = False,
-                 ptxas: dict | None = None, local: tuple | None = None,
+                 measured: dict | None = None, tool: dict | None = None, stated: dict | None = None,
                  wide: dict | None = None) -> dict:
     """The full v2 sidecar for one kernel.
 
@@ -366,7 +343,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
     ``arg_spec``, role ``lookup``.
 
     ``lanes`` is present only for a fused entry: one
-    :class:`aether.wings.base.fused.LaneMeta` record per lane, so a consumer that
+    record per lane, so a consumer that
     composed the group can tell, from the deployed artifact alone, which
     lanes are inside it and whether any moved since.
 
@@ -394,9 +371,9 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
     ``entry_counts_finished`` is present (``true``) when the kernel's fast
     entries count samples finished on entry into the finish counter, so the
     runtime zeroes the counter instead of counting the mask before a run.
-    ``ptxas`` (present when the device compile ran ptxas, i.e. built a CUBIN)
-    is ``{kernel: {regs, spill_store_B, spill_load_B, stack_B}}``, recorded for a
-    reader of the artifact; nothing in the build acts on it."""
+    ``measured`` is the library's record of the unit's launch needs, written into ``launch`` as given. ``tool`` is
+    ``{OSPREY name: the figures its build gave}`` and ``stated`` the machine record each OSPREY stated, both written as given
+    for a reader of the artifact; nothing in hawk acts on them."""
     planes = planes or {}
     sorted_in, axes = _sorted_inputs(walk, planes), _plane_axes(walk, planes)
     index_in = _index_planes(walk)
@@ -458,9 +435,9 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         **({"step_ops": step_ops} if step_ops is not None else {}),
         **({"fp64_ops_ir": fp64_ops_ir} if fp64_ops_ir is not None else {}),
         **({"entry_counts_finished": True} if entry_counts_finished else {}),
-        **({"ptxas": ptxas} if ptxas else {}),
-
-        "launch": _launch(lane_space, group, box, block, index_set, local, wide),
+        **({"tool": tool} if tool else {}),
+        **({"stated": stated} if stated else {}),
+        "launch": _launch(lane_space, group, box, block, index_set, measured, wide),
         **({"sorted_inputs": sorted_in} if sorted_in else {}),
         **({"index_planes": index_in} if index_in else {}),
         **({"plane_axes": axes} if axes else {}),
@@ -471,8 +448,6 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         # declared but never read or written: the compiled kernel has no slot for them
         **({"unused_planes": unused} if unused else {}),
         "digest": walk.digest,
-        "aether_include": _root_or_sealed_marker(_strict_aether_include),
-        "eagle_include": _root_or_sealed_marker(_strict_eagle_include),
     }
     if lanes:
         meta["lanes"] = [{"name": lane.name,
@@ -546,7 +521,7 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
 
 
 class _RecordBox:
-    """A thread box as the answer states it, written the way :meth:`raptor.wings.simt.box.Box.sidecar` writes one."""
+    """A thread box as the answer states it, written as the sidecar spells a box."""
 
     def __init__(self, record: dict) -> None:
         self.record = record
@@ -624,7 +599,8 @@ def _counted(finish: dict | None, key: str) -> int | None:
 
 
 def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_type: str, exec_targets, family: list, steps=None,
-                    derivative: dict | None = None, block: int | None = None, ptxas: dict | None = None, local: tuple | None = None) -> dict:
+                    derivative: dict | None = None, block: int | None = None, measured: dict | None = None, tool: dict | None = None,
+                    stated: dict | None = None, records: dict | None = None) -> dict:
     """The sidecar of one unit the lowering library answered. ``unit`` is the unit's record, ``lead_device`` whether the lead target is the device (its thread box is the sidecar's), ``kernel`` the kernel the unit belongs to (its declarations, broadcast pattern, lanes and
     steps), ``family`` the records of every unit the answer holds for the kernel (the entry-less unit that lists the stages of a cut
     kernel, and the branch units of a segmented one, are among them)."""
@@ -657,7 +633,11 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
         lane_space=lane_space, group=launch["group"], box=None if box is None else _RecordBox({"axis": box["axis"], "T": box["t"], "stride": box["stride"]}),
         block=block, index_set=index_set, planes=planes, broadcast=getattr(kernel, "broadcast", None),
         step_ops=_counted(finish, "step_ops"), wide={p["name"]: {"layout": "warp_tiled"} for p in body["team_planes"] if p["wide"] == "WarpTiled"} or None, fp64_ops_ir=_counted(finish, "fp64_ops_ir"),
-        entry_counts_finished=bool(finish and finish["flags"] & _FINISH_ENTRY_COUNTS), ptxas=ptxas, local=local)
+        entry_counts_finished=bool(finish and finish["flags"] & _FINISH_ENTRY_COUNTS), measured=measured, tool=tool, stated=stated)
+    # the records of the lowering answer the runtime reads, kept as given: the steps table and the dispatch costs
+    for key, member in (("steps_reverse_table", "steps_reverse"), ("dispatch_costs", "dispatch_costs")):
+        if records and records.get(member) is not None:
+            out[key] = records[member]
     if stages and stages[0]["unit"]["name"] == meta["name"]:
         out.update(_split_block(source, family))
     if body["cell_row"]:

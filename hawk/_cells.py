@@ -17,10 +17,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from raptor.wings.base.cells import SAMPLE_SUM_COMP
-
 from . import _ir
-from ._errors import HawkError
+from .errors import HawkError
 
 SLOTS, TERMS = 256, 16
 LEAF = SLOTS * TERMS
@@ -28,7 +26,7 @@ LEAF = SLOTS * TERMS
 
 def comp_name(name: str) -> str:
     """The companion plane a summing sample sum keeps beside its target ``name``."""
-    return f"{name}{SAMPLE_SUM_COMP}"
+    return f"{name}{_ir.SAMPLE_SUM_COMP_SUFFIX}"
 
 
 def fold_entry_name(kernel: str, target: str) -> str:

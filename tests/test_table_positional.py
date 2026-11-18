@@ -10,15 +10,11 @@ at another lane with ``.at`` only."""
 
 from __future__ import annotations
 
-from _specs import spec_for, default_kind
-import hashlib
 
 import pytest
 
 import hawk
 from hawk import Grid, HawkError, Scalar, Staged, Table, Wide
-from aether.wings.base.wrapper import FLOAT64
-from hawk.targets import TARGETS
 
 
 def _named():

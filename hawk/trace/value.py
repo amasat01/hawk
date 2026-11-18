@@ -18,7 +18,7 @@ import math
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 
 _F64 = _ir.TensorType((), "f64")
 _BOOL = _ir.TensorType((), "bool")

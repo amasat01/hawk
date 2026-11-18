@@ -6,7 +6,6 @@ Mutable and Terminated state: the kernel it builds emits the same body, and
 the same digest, as the one with the update written inline."""
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
 import numpy as np
 

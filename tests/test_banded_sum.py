@@ -7,7 +7,6 @@ about 2^30 as well as on ordinary data."""
 
 from __future__ import annotations
 
-from _specs import spec_for, default_kind
 from fractions import Fraction
 
 import numpy as np

@@ -11,7 +11,6 @@ partial last block and a launch that is not block-aligned included (they take th
 
 from __future__ import annotations
 
-from _specs import spec_for, default_kind
 import math
 
 import numpy as np

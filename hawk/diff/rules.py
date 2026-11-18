@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 
 #: The kinds with no derivative (piecewise constant, integer-valued or random) and the kinds the
 #: transform handles itself (``at``, ``dispatch``).

@@ -20,8 +20,6 @@ block traced, walked and classified ``sample_local``.
 
 from __future__ import annotations
 
-from _specs import default_kind
-from _specs import spec_for
 import pytest
 
 from hawk import Scalar, raw_device

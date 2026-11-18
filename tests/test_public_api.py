@@ -26,7 +26,6 @@ from collections import defaultdict
 
 import hawk
 import hawk.artifact
-import hawk.compile
 import hawk.diff
 import hawk.ext
 import hawk.math
@@ -40,7 +39,6 @@ _SURFACES = {
     "hawk.math": hawk.math,
     "hawk.runtime": hawk.runtime,
     "hawk.ext": hawk.ext,
-    "hawk.compile": hawk.compile,
     "hawk.diff": hawk.diff,
     "hawk.artifact": hawk.artifact,
 }
@@ -53,7 +51,7 @@ _EXPECTED_MANIFEST = {
     "hawk": [
         "Grid", "HawkError", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
         "Param", "Quantity", "Quat", "RawBlock", "Scalar", "Sorted",
-        "Staged", "Table", "Terminated", "UInt32", "Value", "Vector", "Wide",
+        "Staged", "Table", "Terminated", "ToolchainAbsent", "UInt32", "Value", "Vector", "Wide",
         "WideOut", "__version__", "build", "chain", "geometry", "kernel", "load", "max", "mean", "min",
         "primitive", "raw_device", "resolve_dispatch", "run", "sample_position", "samples_first", "samples_last",
         "scatter", "steps", "sum",
@@ -81,20 +79,12 @@ _EXPECTED_MANIFEST = {
     ],
     "hawk.runtime": [
         "ArgBlock", "DEVICE_CPU", "HostKernel",
-        "descriptor_for_sidecar", "kind_for", "load", "run",
+        "descriptor_for_sidecar", "dispatch_costs", "kind_for", "load", "run", "steps_reverse_table",
     ],
     "hawk.ext": [
         "ATOMIC", "DEFAULT_GUARD", "DEFAULT_KIND", "Guard", "IndexSet",
         "KernelKind", "Kind", "Output", "PLAIN", "PrimitiveDef",
         "compensated", "primitive", "primitives", "sink_policy",
-    ],
-    "hawk.compile": [
-        "Cache", "CompileOptions", "DeviceImage", "OPT_LEVELS", "aether_include", "cache_stats",
-        "compile_source", "compiler_identity", "cubin",
-        "cubin_available", "current_payload", "default_cache_dir",
-        "device", "device_compiler", "device_compiler_kind",
-        "digest_file", "eagle_include", "lookup_key",
-        "nvrtc", "opt_level", "publish", "reset_cache_stats",
     ],
     "hawk.diff": [
         "ADJOINT_PREFIX", "Derived", "TANGENT_PREFIX", "jvp", "param_planes",
@@ -104,9 +94,9 @@ _EXPECTED_MANIFEST = {
     "hawk.artifact": [
         "Artifact", "Bundle", "EXEC_ACCESS_CLASSES", "EXEC_OPS",
         "EXEC_TARGETS", "Entry", "LAYOUT_FIELDS", "PARAMS_SCHEMA",
-        "STAMP_NAME", "TOP_LEVEL_KEY_ORDER_V2", "arch", "build",
-        "build_bundle", "emit_source", "exports", "plan_view", "plugins",
-        "reset_unit_memo", "unit_stats", "write_manifest",
+        "TOP_LEVEL_KEY_ORDER_V2", "build", "build_bundle", "build_key",
+        "cache_stats", "default_cache_dir", "emit_source", "plan_view", "plugins", "reset",
+        "write_manifest",
     ],
 }
 

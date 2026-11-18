@@ -7,7 +7,6 @@ differentiated in reverse: the branches' contributions merge into ONE scatter
 with an untaken branch's row never committed out of range."""
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
 from types import SimpleNamespace
 
@@ -19,7 +18,7 @@ import hawk
 import hawk.math as m
 from hawk.artifact import emit_source
 from hawk.diff import vjp
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk import _ir
 
 N = 5

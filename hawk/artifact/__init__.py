@@ -16,21 +16,20 @@ from __future__ import annotations
 import ctypes
 from types import SimpleNamespace
 
-from .._errors import HawkError
 from ..targets import TARGETS
 from .bundle import (
-    STAMP_NAME,
     Artifact,
     Bundle,
     Entry,
-    arch,
     build,
     build_bundle,
+    build_key,
+    cache_stats,
+    default_cache_dir,
     emit_source,
-    reset_unit_memo,
-    unit_stats,
+    reset,
 )
-from .layout import LAYOUT_FIELDS, exports
+from .layout import LAYOUT_FIELDS
 from .manifest import (
     EXEC_ACCESS_CLASSES,
     EXEC_OPS,
@@ -40,11 +39,9 @@ from .manifest import (
 )
 from .sidecar import PARAMS_SCHEMA
 
-__all__ = ["Artifact", "Bundle", "Entry", "EXEC_ACCESS_CLASSES", "EXEC_OPS",
-           "EXEC_TARGETS", "LAYOUT_FIELDS", "PARAMS_SCHEMA", "STAMP_NAME",
-           "TOP_LEVEL_KEY_ORDER_V2", "arch", "build", "build_bundle", "emit_source", "exports",
-           "plan_view", "plugins", "reset_unit_memo", "unit_stats",
-           "write_manifest"]
+__all__ = ["Artifact", "Bundle", "EXEC_ACCESS_CLASSES", "EXEC_OPS", "EXEC_TARGETS", "Entry", "LAYOUT_FIELDS",
+           "PARAMS_SCHEMA", "TOP_LEVEL_KEY_ORDER_V2", "build", "build_bundle", "build_key", "cache_stats", "default_cache_dir",
+           "emit_source", "plan_view", "plugins", "reset", "write_manifest"]
 
 
 def plan_view(sidecar: dict) -> dict:
@@ -128,7 +125,7 @@ def plan_view(sidecar: dict) -> dict:
 
 def fold_entries(cdll, sidecar: dict) -> dict:
     """``{"fold_entries": {target: address}}``: the host entry that folds each
-    owned companion into its target (:func:`aether.wings.base.wrapper.fold_entries`),
+    owned companion into its target (),
     for a kernel that has any; else ``{}``."""
     from .._cells import fold_entry_name
 
@@ -157,14 +154,12 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
     Everything an entry point points into is held on the plugin's
     ``_keepalive``, so it stays valid as long as the caller holds it.
 
-    A kernel built only for an exported target such as ``c`` (a standalone C
-    unit, :mod:`hawk.embedded`) has no entry point to plan and is refused,
-    as :func:`hawk.load` refuses its directory."""
+    """
     from .. import _core
 
     def entry_of(art, host):
         return next((e for t, e in art.entries.items()
-                     if TARGETS[t].host_entry == host and TARGETS[t].entry), None)
+                     if TARGETS[t].host_entry == host), None)
 
     registry = None
     if device_loader is not None and any(entry_of(a, False)
@@ -172,13 +167,6 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
         registry = device_loader(bundle.manifest_path)
     out = {}
     for art in bundle.artifacts:
-        if not any(TARGETS[t].entry for t in art.entries):
-            built = ", ".join(repr(t) for t in art.entries)
-            raise HawkError(
-                f"{art.name!r} was built for the {built} target only: it is "
-                f"{next(TARGETS[t].unit_note for t in art.entries if TARGETS[t].unit_note)}, "
-                "with no host or device entry point to plan; build it with "
-                "targets=('host',) or ('cuda',) for plugins")
         view = plan_view(art.sidecar)
         symbol = view.pop("host_entry", None)
         entries, keep = {}, []

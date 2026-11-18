@@ -21,7 +21,7 @@ import hawk
 from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk import math as hm
 from hawk.diff import step_jvp, step_vjp
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 
 
 @kernel(steps=1)

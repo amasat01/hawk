@@ -21,7 +21,6 @@ derivative. Every plant was then removed."""
 
 from __future__ import annotations
 
-from _specs import spec_for
 import _deploy as L
 import numpy as np
 import pytest
@@ -33,7 +32,7 @@ from hawk import Terminated as _Terminated
 from hawk import Vector as _Vector
 from hawk import kernel as _hkernel
 from hawk.artifact import build_bundle as _build_bundle
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk.math import cross as _cross
 from hawk.math import maximum as _maximum
 from hawk.math import norm as _norm

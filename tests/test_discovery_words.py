@@ -189,19 +189,6 @@ def test_the_facts_live_in_the_wings_under_their_final_names():
     _fail("the facts of a raptor wing", bad)
 
 
-def test_every_raptor_wing_with_facts_holds_the_header_its_resolved_facts_generate():
-    import importlib.util
-
-    tool = REPO / "tools" / "gen_facts_header.py"
-    wings = [d for d in _wing_folders() if d.name != "base"]
-    if not tool.is_file():
-        _fail("no tools/gen_facts_header.py", [f"{d.relative_to(REPO)}: no raptor_facts.h" for d in wings])
-    spec = importlib.util.spec_from_file_location("_gen_facts_header", tool)
-    gen = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(gen)
-    bad = [f"{d.relative_to(REPO)}: raptor_facts.h absent or not what the facts generate" for d in wings if d.name in gen.drift()]
-    bad += [f"{d.relative_to(REPO)}: no raptor_facts.h" for d in wings if not (d / "raptor_facts.h").is_file()]
-    _fail("a wing header that is not generated from its resolved facts", sorted(set(bad)))
 
 
 def test_no_writer_includes_the_old_header_name():

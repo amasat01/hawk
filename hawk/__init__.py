@@ -9,7 +9,7 @@ host execution path — emitting ``aether-abi/2`` artifacts eagle deploys
 under the heterogeneous execution contract eagle enforces.
 
 This module is the authoring surface. Importing it never imports
-:mod:`hawk._ir`, :mod:`aether.wings.base` or :mod:`hawk.compile`.
+:mod:`hawk._ir` or :mod:`hawk.ospreys`.
 
 Runtime dependencies: ``raptor-core`` (source lifts for ``python -c``).
 ``eagle`` is imported lazily, by calling a kernel (``k(...)``) only, and
@@ -43,7 +43,7 @@ from . import _contracts
 
 #: The authoring names put in front of a kernel author — the one
 #: canonical top-level surface, resolved lazily from :mod:`hawk.trace`
-#: (and, for :data:`_FROM_IR`, from :mod:`hawk._errors`). Math functions
+#: (and, for :data:`_FROM_IR`, from :mod:`hawk.errors`). Math functions
 #: (``dot``, ``norm``, ``sqrt``, ...) live at ``hawk.math`` only.
 #: ``TensorType``/``Wire`` stay out on purpose: their canonical path is
 #: :mod:`hawk._ir`, not the top level.
@@ -51,14 +51,14 @@ _AUTHORING = (
     "kernel", "Kernel", "raw_device", "RawBlock", "Value", "Quantity",
     "Scalar", "Index", "Int32", "UInt32", "Quat", "Vector", "Matrix", "Param",
     "Mutable", "Meta", "Table", "Grid", "Sorted", "Staged", "Wide", "WideOut",
-    "Terminated", "HawkError", "steps", "resolve_dispatch",
+    "Terminated", "HawkError", "ToolchainAbsent", "steps", "resolve_dispatch",
     "sum", "max", "min", "mean", "scatter",
 )
 
-#: The subset of :data:`_AUTHORING` resolved from :mod:`hawk._errors` rather
-#: than :mod:`hawk.trace` — today just ``HawkError``, an IR-tier name
+#: The subset of :data:`_AUTHORING` resolved from :mod:`hawk.errors` rather
+#: than :mod:`hawk.trace` — the two refusal types, names
 #: :mod:`hawk.trace` never re-exports.
-_FROM_IR = ("HawkError",)
+_FROM_IR = ("HawkError", "ToolchainAbsent")
 
 #: The one authoring transform at the top level: ``hawk.steps(kernel, K)``.
 _FROM_STEPS = ("steps",)
@@ -245,8 +245,8 @@ def __getattr__(name: str) -> Any:
         return value
     if name in _AUTHORING:
         if name in _FROM_IR:
-            from . import _errors
-            value = getattr(_errors, name)
+            from . import errors
+            value = getattr(errors, name)
         elif name in _FROM_STEPS:
             from .trace import steps as _steps_module
             value = getattr(_steps_module, name)
@@ -256,10 +256,10 @@ def __getattr__(name: str) -> Any:
         globals()[name] = value
         return value
     if name == "embedded":
-        from ._errors import EMBEDDED_C, HawkError
+        from .errors import EMBEDDED_C, HawkError
         raise HawkError(EMBEDDED_C)
     if name in _RETIRED:
-        from ._errors import HawkError
+        from .errors import HawkError
         raise HawkError(_RETIRED[name])
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

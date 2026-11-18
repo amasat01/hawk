@@ -33,7 +33,7 @@ from __future__ import annotations
 from typing import Any, NamedTuple
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from .transform import _READ_ROLE, _single_step
 
 __all__ = ["EventGuard", "event_guard", "guard_kernel", "state_guard"]

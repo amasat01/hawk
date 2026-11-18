@@ -49,14 +49,12 @@ def test_namespacing_follows_the_declaration():
     """The wire name is ``<kind-slug>__<instance>__<wire>``, and ``<kind-slug>__<wire>``
     when the quantity is not instanced."""
     assert [s.name for s in state_quantity().expand()] == ["sc__state__pos", "sc__state__vel"]
-    from hawk import Quantity
     bare = _ir.Quantity(slug="drag", wires=[_ir.Wire("cd", "per_sample", ())])
     assert [s.name for s in bare.expand()] == ["drag__cd"]
 
 
 def test_two_quantities_may_declare_the_same_wire_spelling():
     """The point: a consumer never writes a wire name, so no collision."""
-    from hawk import Quantity
     a = _ir.Quantity(slug="earth", name="orientation", wires=[_ir.Wire("q", "vec_in", (4,), tag="quaternion")])
     b = _ir.Quantity(slug="moon", name="orientation", wires=[_ir.Wire("q", "vec_in", (4,), tag="quaternion")])
     assert a.expand()[0].name != b.expand()[0].name

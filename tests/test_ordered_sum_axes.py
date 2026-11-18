@@ -8,7 +8,7 @@ import pytest
 
 import hawk
 from hawk import Grid, Scalar, kernel
-from hawk._errors import HawkError
+from hawk.errors import HawkError
 
 AXES = ("a", "b", "c")
 

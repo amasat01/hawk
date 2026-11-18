@@ -48,7 +48,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from .primitive import PrimitiveDef, primitive, primitives
 
 __all__ = ["Guard", "IndexSet", "Kind", "Output", "PLAIN", "ATOMIC", "DEFAULT_GUARD",
@@ -294,8 +294,8 @@ class Kind:
     kernel ever sees it. Calling a ``Kind`` instance is the decorator
     form: ``@Kind(...)`` == ``hawk.kernel(fn, kind=that Kind)``.
 
-    ``compile_hook(options) -> options`` returns the
-    :class:`hawk.compile.CompileOptions` to use."""
+    ``compile_hook(request) -> request`` returns the build request of one unit (plain data: the text, the options, the
+    defines) an OSPREY is asked to build."""
 
     slug: str
     vocabulary: Mapping[str, Any] | tuple = field(default_factory=dict)

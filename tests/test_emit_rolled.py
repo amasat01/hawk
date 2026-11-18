@@ -12,10 +12,7 @@ factors in place, with no ``n x n`` identity literal for an inverse.
 
 from __future__ import annotations
 
-from _specs import default_kind, spec_for
-import dataclasses
 import pathlib
-import re
 
 import numpy as np
 import pytest
@@ -23,13 +20,9 @@ from conftest import sidecar_of
 
 import hawk
 import hawk.math as m
-from hawk import _broadcast as broadcast
 from hawk import Matrix, Mutable, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk.artifact.layout import exports
-from aether.wings.base.wrapper import scalar_mode
-from hawk.targets import TARGETS
 
 LANES = 8
 

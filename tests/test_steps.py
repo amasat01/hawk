@@ -51,7 +51,7 @@ from hawk import (
 from hawk.artifact import build_bundle
 from _unit_sidecar import finish_mask, sidecar_of_kernel
 from hawk.diff import jvp, vjp
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk import _ir
 
 N = 48

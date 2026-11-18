@@ -13,7 +13,6 @@ fixed stack position, so a wrapper decorator or a kernel-factory closure both
 resolve a string annotation correctly."""
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
 import linecache
 
@@ -21,7 +20,7 @@ import pytest
 
 from hawk import Mutable, Scalar, Terminated, Vector, kernel
 from hawk.ext import DEFAULT_KIND, KernelKind, Kind, Output
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk import _ir
 
 VOCAB = {"terminated": Terminated, "scale": Scalar}

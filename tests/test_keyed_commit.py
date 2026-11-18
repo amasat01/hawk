@@ -32,7 +32,6 @@ the compensated target); any other key keeps the per-lane atomic. Pinned:
 
 from __future__ import annotations
 
-from _specs import spec_for
 import ctypes
 import math
 
@@ -46,9 +45,7 @@ import hawk.math as m
 from hawk import HawkError, Index, Mutable, Scalar, Sorted, Table, Terminated
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from aether.wings.base.wrapper import FLOAT64
 from hawk.ext import Kind, sink_policy
-from hawk.targets import TARGETS
 from hawk.trace.kernel import Kernel
 from hawk import _ir
 
@@ -582,20 +579,3 @@ def test_the_reverse_of_a_sorted_read_commits_once_per_run(target, compensated, 
         assert slots <= run < N // 8
 
 
-@pytest.mark.gpu
-def test_a_run_commit_compiles_through_the_sealed_payload(monkeypatch, tmp_path):
-    """The pip-only device route: NVRTC serving the sealed payload's in-memory
-    headers, which carry ``aether/accum/run.h``."""
-    from hawk.artifact import emit_source
-    from hawk.compile import CompileOptions, compile_source, cubin_available
-    from hawk.compile.payload import current_payload, reset_payload_memo
-
-    if not cubin_available():
-        pytest.skip("no NVRTC binding or no CUDA device")
-    monkeypatch.setenv("HAWK_DEVICE_COMPILER", "nvrtc")
-    reset_payload_memo()
-    assert "aether/accum/run.h" in current_payload().device_headers
-    src = emit_source(ksrt_c, mode="float64", targets=("cuda",)).sources["cuda"]
-    result = compile_source(src.text, ksrt_c.name,
-                            CompileOptions(target="cuda", cache_dir=str(tmp_path / "cache")))
-    assert result.artifact.is_file()

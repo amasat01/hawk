@@ -12,7 +12,7 @@ import ast
 
 import pytest
 
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk.trace.astpass import _check_targets
 
 

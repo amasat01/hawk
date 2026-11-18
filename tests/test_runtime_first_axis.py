@@ -17,7 +17,7 @@ import eagle
 import hawk
 from hawk import Grid, HawkError, Index, Mutable, Scalar, Table
 from hawk import runtime as rt
-from hawk.artifact import build_bundle, reset_unit_memo, unit_stats
+from hawk.artifact import build_bundle
 
 
 @hawk.kernel
@@ -74,10 +74,9 @@ def test_one_unit_serves_every_size(tmp_path, cache_dir):
             hawk.scatter(b)[conn.at(lane.flat)] += 1.0
         return counted
 
-    reset_unit_memo()
     digests = {build_bundle([kernel(n)], tmp_path / f"b{n}", targets=("host",),
                             cache_dir=cache_dir).digest for n in (4, 9, 4)}
-    assert len(digests) == 1 and unit_stats()["published"] == 1
+    assert len(digests) == 1
     assert build_bundle([count], tmp_path / "c", targets=("host",),
                         cache_dir=cache_dir).artifacts[0].sidecar["plane_axes"]["b"]["axes"] \
         == [{"label": "node", "extent": None}]

@@ -21,8 +21,6 @@ Rows (host; the ``cuda`` arm is marked ``gpu``):
 
 from __future__ import annotations
 
-from _specs import default_kind
-from _specs import spec_for
 import numpy as np
 import pytest
 from conftest import _launch, _xp, sidecar_of
@@ -31,8 +29,7 @@ import hawk
 from hawk import Kernel, Mutable, Param, Scalar, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import param_planes, vjp
-from raptor.errors import RaptorError as HawkError
-from hawk.targets import TARGETS
+from hawk.errors import HawkError
 from hawk import _ir
 
 SIZES = (1, 31, 32, 33, 1000, 65536)

@@ -14,14 +14,14 @@ import pytest
 import hawk
 from hawk import Grid, Mutable, Param, Scalar, Terminated, Vector, kernel
 from _unit_sidecar import lowered, sidecar_of_kernel
-from hawk.artifact import request
 from hawk.ext import Guard, Kind
 
 pytest.importorskip("_osprey")
 try:
-    request.library()
-except Exception as why:                 # no library file at hand
-    pytest.skip(f"the lowering library is not available: {why}", allow_module_level=True)
+    from hawk import ospreys
+    ospreys.serving("host")
+except Exception as why:                 # no host OSPREY at hand
+    pytest.skip(f"the host OSPREY is not available: {why}", allow_module_level=True)
 
 import test_dispatch_mix_and_guard as DM
 import test_split_stages as S

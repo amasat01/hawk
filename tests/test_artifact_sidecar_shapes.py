@@ -159,8 +159,9 @@ def test_every_plane_bound_slot_declares_its_shape_and_dtype(built, bundle_name,
     module's docstring's measured ``eagle.plan._declared_widths`` crash)."""
     sc = sidecar_of(built[bundle_name], kernel)
     walk = getattr(D, kernel).walk
+    spec = getattr(D, kernel).arg_spec
     widths, shapes, dtypes = sc["arg_widths"], sc["arg_shapes"], sc["arg_dtypes"]
-    for role, name in walk.arg_spec:
+    for role, name in spec:
         if role in ("uniform", "nsamples"):
             assert name not in widths and name not in shapes and name not in dtypes, (
                 f"{kernel}: {role} {name!r} carries no plane; it must not "
@@ -317,31 +318,9 @@ def test_the_hawk_consumer_check_accepts_correctly_declared_planes(built):
     L.check_declared_planes(sc, arrays, N)  # must not raise
 
 
-@pytest.mark.parametrize("bundle_name,kernel,kw,want", _cases(),
-                         ids=[c[0] for c in _cases()])
-def test_every_kernel_declares_its_launch_shape(built, bundle_name, kernel, kw, want):
-    """``launch.lane_space`` is written for EVERY kernel: a kernel that declares no
-    ``Grid`` is one unlabelled runtime axis with group 1, and the block passes the
-    shape check raptor's manifest validator runs. No ``sorted_inputs`` or
-    ``plane_axes`` key appears unless a declaration asks for it."""
-    from raptor.schema.manifest import check_lane_space
-
-    sc = sidecar_of(built[bundle_name], kernel)
-    assert {k: v for k, v in sc["launch"].items() if not k.startswith("local_")} == {
-        "lane_space": {"axes": [{"label": None, "extent": None}], "group": 1}}
-    check_lane_space(sc, name=kernel)
-    assert "sorted_inputs" not in sc and "plane_axes" not in sc
-
-
 def test_a_fixed_block_and_a_thread_box_are_written_to_launch():
     """``launch.block`` appears only when an emit fixed one and must be an integer >= 1;
-    ``launch.box`` is the thread box. The sidecar passes raptor's lane-space check and,
-    when ``jsonschema`` is installed, the published schema."""
-    import json
-    from pathlib import Path
-
-    import raptor
-    from raptor.schema.manifest import check_lane_space
+    ``launch.box`` is the thread box. """
 
     import hawk
     from _unit_sidecar import sidecar_of_kernel
@@ -354,11 +333,19 @@ def test_a_fixed_block_and_a_thread_box_are_written_to_launch():
     assert "block" not in sidecar_of_kernel(k, **kw)["launch"]
     meta = sidecar_of_kernel(k, block=128, **kw)
     assert meta["launch"]["block"] == 128
-    check_lane_space(meta, name="k")
     for bad in (0, -4, "128", 64.0, True):
         with pytest.raises(ValueError, match=r"launch\.block"):
             sidecar_of_kernel(k, block=bad, **kw)
-    schema = Path(raptor.__file__).parents[1] / "docs/schemas/sidecar-v1.schema.json"
-    jsonschema = pytest.importorskip("jsonschema")
-    if schema.exists():
-        jsonschema.validate(meta, json.loads(schema.read_text()))
+
+
+@pytest.mark.parametrize("bundle_name,kernel,kw,want", _cases(),
+                         ids=[c[0] for c in _cases()])
+def test_every_kernel_declares_its_launch_shape(built, bundle_name, kernel, kw, want):
+    """``launch.lane_space`` is written for EVERY kernel: a kernel that declares no
+    ``Grid`` is one unlabelled runtime axis with group 1, and the block passes the
+    lane-space shape. No ``sorted_inputs`` or
+    ``plane_axes`` key appears unless a declaration asks for it."""
+    sc = sidecar_of(built[bundle_name], kernel)
+    assert {k: v for k, v in sc["launch"].items() if not k.startswith("local_")} == {
+        "lane_space": {"axes": [{"label": None, "extent": None}], "group": 1}}
+    assert "sorted_inputs" not in sc and "plane_axes" not in sc

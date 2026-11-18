@@ -1,312 +1,92 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The targets table: a read-only view of the registered backends.
+"""The targets table: a read-only view of the targets the found OSPREYs serve (:mod:`hawk.ospreys`).
 
-Each row is a :class:`hawk.backends.Backend`: a writer paired with a wrapper,
-plus the data and traits the build and the package step read. Nothing here
-imports a backend: the registry (:mod:`hawk.registry`) finds them through the
-OSPREY manifests and imports one on its first lookup.
+A row is what the manifest of the serving OSPREY states about one target, as plain data. Nothing here knows how a target is
+built: that is the library's.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from types import MappingProxyType
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
-from .._errors import HawkError
-
-#: The first-party targets and the distribution that provides each: a fact about the targets, stated where their names are
-#: stated. A row that is not installed has no manifest to say it, and the registry names it in the sentence that asks to install it.
-DISTRIBUTIONS = MappingProxyType({"cuda": "osprey-cuda", "host": "osprey-cpu"})
-#: The first-party target that builds for a device. No row is installed when a build asks for one, so no manifest can say which it is.
-DEVICE_TARGET = "cuda"
-#: The first-party target whose compiler compiles a host build. A build asks this one row by its id, so that no other row of
-#: the default set is loaded for the question (a broken or a device row stays unimported).
-HOST_TARGET = "host"
-
-
-def distribution(target_id: str) -> str:
-    """The distribution that provides the first-party target ``target_id``; any other id is refused by name."""
-    if target_id not in DISTRIBUTIONS:
-        raise HawkError(f"{target_id!r} is not a first-party target; they are {', '.join(DISTRIBUTIONS)}")
-    return DISTRIBUTIONS[target_id]
-
-# The tables above come before this import: the registry reads them from this package while it loads, and importing it from here
-# finds it part-loaded.
-from .. import registry  # noqa: E402
-
-if TYPE_CHECKING:
-    from ..build_settings import Settings
+from .. import ospreys
+from ..errors import HawkError
 
 #: How eagle enters a built kernel (the manifest's ``exec_targets`` words).
 ENTRY_KINDS = ("device", "host")
 
 
+@dataclass(frozen=True)
+class Target:
+    """One served target: ``id``, ``osprey`` (the name of the OSPREY that serves it), ``request`` (how the lowering request
+    spells it), ``about`` (what it builds, in words), ``device`` (built for a device) and ``entry`` (``"host"`` or ``"device"``:
+    how eagle enters it), ``format`` (the manifest's word for its compiled object)."""
+
+    id: str
+    osprey: str
+    request: str
+    target: str
+    about: str
+    device: bool
+    entry: str
+    format: str
+
+    @property
+    def host_entry(self) -> bool:
+        """Whether eagle enters a host symbol of it."""
+        return self.entry == "host"
+
+
 class _Targets(Mapping):
-    """The backends by id, in (priority, id) order; a row is imported when read, never when listed.
+    """The served targets by id, in the order the OSPREYs were found."""
 
-    LISTING (iteration, ``len``, ``items``) gives the default set: the built-in and first-party backends and the
-    OSPREYs named in ``HAWK_OSPREYS``. An installed OSPREY that was not named is reached only by its
-    id (``TARGETS["x"]``, ``"x" in TARGETS``): a caller that walks every row (a runtime asking which rows it can
-    enter, on every deploy) must neither read the installed distributions nor import a backend nobody named."""
-
-    def __getitem__(self, key):
-        if key not in self:
-            raise KeyError(key)
-        from ..backends import need  # a local import: the registry imports this package for its tables, and the backends import the registry
-
-        return need(key)
-
-    def __contains__(self, key):
-        return registry.has("backends", key)       # the installed OSPREYs are read only for an id that is not built in
+    def __getitem__(self, key) -> Target:
+        for osprey in ospreys.found().values():
+            if key in osprey.targets:
+                return Target(key, osprey.name, **{k: osprey.targets[key][k] for k in ("request", "target", "about", "device", "entry", "format")})
+        raise KeyError(key)
 
     def __iter__(self):
-        return iter(registry.backend_ids(default=True))
+        return iter(ospreys.targets())
 
     def __len__(self):
-        return len(registry.backend_ids(default=True))
+        return len(ospreys.targets())
 
 
 class _Default(Sequence):
-    def _ids(self):
-        registry.check(default=True)
-        return registry.loadable_backend_ids(t for t in registry.backend_ids(default=True) if registry.traits(t).get("builds", True))
+    """What ``build`` builds when ``targets`` is not given: every served target."""
 
     def __getitem__(self, i):
-        return self._ids()[i]
+        return tuple(ospreys.targets())[i]
 
     def __len__(self):
-        return len(self._ids())
+        return len(ospreys.targets())
 
     def __repr__(self):
-        return repr(self._ids())
+        return repr(tuple(ospreys.targets()))
 
 
 TARGETS = _Targets()
-
-
-def entry_ids(entry: str, loadable: bool = False) -> tuple:
-    """The ids of the default set's rows that eagle enters as ``entry``, as their manifests state it: LISTING reads manifest data
-    only and imports nothing. ``loadable``: only the rows whose backend imports, for the moment a row is about to be built (an
-    implicit call skips a row that fails to import, with one warning that names it and the cause)."""
-    ids = tuple(t for t in registry.backend_ids(default=True) if registry.traits(t).get("entry") == entry)
-    return registry.loadable_backend_ids(ids) if loadable else ids
-
-
-#: What ``build`` builds when ``targets`` is not given: every default-set row with a compiler.
 DEFAULT_TARGETS = _Default()
 
 
-@dataclass(frozen=True)
-class Machine:
-    """The host and its device as plain data: the INPUT of a build, read once (:func:`detect_machine`) from the facts the rows of
-    the build supply. ``isa`` is ``"x86_64"`` or ``"arm64"``; ``arch`` the device arch the build resolved (``""``: a host-only
-    build); ``reserved_names`` the names a kernel of the build may not take, each with the reason its row gives (a mapping name -> reason);
-    ``facts`` every other fact the rows supply, merged by name and read by name (empty where no row knows one)."""
-
-    isa: str = ""
-    arch: str = ""
-    reserved_names: Mapping = field(default_factory=lambda: MappingProxyType({}))
-    facts: Mapping = field(default_factory=lambda: MappingProxyType({}))
+def host_target() -> Target:
+    """The target whose OSPREY links the library of a build: the first served target that eagle enters as a host symbol."""
+    for target in TARGETS.values():
+        if target.host_entry:
+            return target
+    raise HawkError("a build links its units into one library with a host OSPREY: none is found")
 
 
-def detect_machine(arch: str = "", targets=()) -> Machine:
-    """The machine of a build of ``targets``, with the device ``arch`` it resolved: the facts each row supplies
-    (:meth:`hawk.backends.Backend.machine_facts`); hawk reads no host itself. A set-valued fact is the union of the rows' sets, a mapping-valued one the union of the rows' mappings (the first row's value for a key two rows give);
-    two rows that disagree on any other fact are refused."""
-    facts: dict = {}
-    for target in targets:
-        row = TARGETS.get(target)
-        for name, value in ({} if row is None else row.machine_facts()).items():
-            known = facts.setdefault(name, value)
-            if isinstance(value, frozenset) and isinstance(known, frozenset):
-                facts[name] = known | value
-            elif isinstance(value, Mapping) and isinstance(known, Mapping):
-                facts[name] = {**value, **known}
-            elif known != value:
-                raise HawkError(f"the backends of this build disagree on the machine's {name}: {facts[name]!r}, and "
-                                f"{value!r} from {target!r}")
-    return Machine(isa=facts.pop("isa", ""), arch=arch, reserved_names=facts.pop("reserved_names", MappingProxyType({})),
-                   facts=MappingProxyType(facts))
+def buildable(target: str) -> bool:
+    """Whether the OSPREY serving ``target`` says its tools are present on this machine.
 
+    A target no OSPREY serves is refused by name.
+    """
+    from ..artifact import default_cache_dir    # the artifact package imports this one: a module-level import would be a cycle
 
-@dataclass(frozen=True)
-class BuildSpec:
-    """The one object that carries the wing of the target being built through a build: the merged facts of the
-    host row and of the device row (``None``: no such target; a backend whose manifest names no wing has none: its own text
-    gets an EMPTY wing, never another target's), the machine as data, the class the device's thresholds come from, the
-    documents the build states in place of the lowering library's (``cards``). Holds no callable, no backend and no
-    per-build setting of its own: those are :attr:`settings`, a frozen :class:`hawk.build_settings.Settings` set by the entry."""
-
-    host: dict | None
-    device: dict | None
-    machine: Machine
-    wide_class: str
-    #: ``{document name: the whole document as JSON text}`` the build states to the lowering library (see :func:`build_spec`)
-    cards: dict
-    by_target: dict
-    focus: dict | None = None
-    settings: "Settings" = None
-    #: ``{(writer, dialect): module name}`` from the manifests: where a writer finds its spellings of a dialect (data; the module loads when used)
-    spellings: dict = field(default_factory=dict)
-    #: The fact keys the backend rows of the build state under ``reads`` (``None``: a spec made by hand, nothing is checked): :meth:`need`
-    #: refuses a key no row states.
-    reads: frozenset | None = None
-
-    def __post_init__(self):
-        if self.settings is None:
-            from ..build_settings import default_settings
-
-            object.__setattr__(self, "settings", default_settings())
-
-    def with_settings(self, **changes) -> "BuildSpec":
-        """A new spec with these per-build settings changed (:class:`hawk.build_settings.Settings`); this one is unchanged."""
-        from dataclasses import replace
-
-        return replace(self, settings=replace(self.settings, **changes))
-
-    @property
-    def primary(self) -> dict:
-        """The wing the code in hand reads: that of the text being rendered (:meth:`for_target`; empty when its backend names
-        none), else, for what is common to every target of the build, the device's when there is one, else the host's."""
-        if self.focus is not None:
-            return self.focus
-        data = self.device if self.device is not None else self.host
-        return {} if data is None else data
-
-    def need(self, section: str, key: str | None = None):
-        """``primary[section][key]`` (the section when ``key`` is ``None``), refused by name when the wing has no such data."""
-        dotted = section if key is None else f"{section}.{key}"
-        if self.reads is not None and dotted not in self.reads and section not in self.reads:
-            raise HawkError(f"the build reads the fact key {dotted!r}, which no backend row of the build states under `reads` in its manifest")
-        data = self.primary.get(section)
-        if data is None or (key is not None and key not in data):
-            raise HawkError(f"the wing of the target being built has no {section}{'.' + key if key else ''}: a backend whose manifest "
-                            "names no wing cannot use a pass that reads it")
-        return data if key is None else data[key]
-
-    @property
-    def uniform_run(self) -> int | None:
-        """The lanes an aligned run a uniform access is proven over spans in the text being rendered: the device's warp width, else the
-        host's own run (``None``: the wing names none, so nothing is proven uniform)."""
-        data = self.primary
-        return data.get("launch", {}).get("warp_size") or data.get("uniform_run")
-
-    @property
-    def placement_class(self) -> str:
-        """The name of the wide-value class the placement reads: the device class of the build, else the host wing's own."""
-        if self.wide_class:
-            return self.wide_class
-        from .. import wings as _wings
-        wide_class = _wings.device_view("wide_class")
-
-        return wide_class.select("", self.device) if self.device is not None else self.need("host_wide")["name"]
-
-    def wide_tables(self) -> dict:
-        """The wide-value thresholds the placement reads, ``{"runtime_min", "wide_min"}``: the host wing's own table, else the table of
-        the device class of the build."""
-        if self.device is None:
-            return {k: v for k, v in self.need("host_wide").items() if k != "name"}
-        from .. import wings as _wings
-
-        found = _wings.device_view("wide_class").tables(self.placement_class, self.device)
-        return {"runtime_min": found.runtime_min, "wide_min": found.wide_min}
-
-    def device_fp64_ratio(self) -> int:
-        """FP32 lanes per FP64 lane of the device the build runs on (a build with a device wing only)."""
-        from .. import wings as _wings
-
-        arch = self.machine.arch or self.device["default_arch"]
-        return _wings.device_view("wide_class").features_of(arch, self.device).fp64_ratio
-
-    def for_target(self, row) -> "BuildSpec":
-        """This spec as seen by the text of backend ``row``: its own wing (empty when it names none) is the one :attr:`primary` answers."""
-        from dataclasses import replace
-
-        return replace(self, focus=self.by_target.get(row.id) or {}, reads=frozenset(registry.traits(row.id).get("reads", ())))
-
-    def fusion(self, scalar_type: str, host: bool = False) -> dict:
-        """The fusion constants for ``scalar_type`` (of this host's vector ISA with ``host``)."""
-        from . import cards
-
-        return cards.fusion(scalar_type, self, host)
-
-
-def build_spec(targets, arch: str = "", *, machine: Machine | None = None, cards: Mapping[str, Mapping] | None = None,
-               settings=None, build_settings=None) -> BuildSpec:
-    """The spec of a build of ``targets`` (ids) for device ``arch``: each row's manifest names its wings (the raptor leaf, a map from the host's
-    isa for a host row, gives its facts). ``cards`` states other numbers for the lowering to decide on: a map from the name of one of the
-    library's data documents (``build.json``, ``cuda_build.json``, ``cuda.json``, ``arm.json``, ``x86.json``) to the WHOLE document as a
-    mapping; :func:`shipped_card` gives the document to start from. hawk passes the documents to the library's facts call and to its
-    request alike and checks nothing in them: the library refuses a wrong key or range by name. A document given as text is refused.
-    ``settings`` are the per-build settings (default: all unset); ``build_settings`` (:class:`hawk.build_settings.BuildSettings`) is laid
-    over them after its keys are checked against the targets' manifests."""
-    from .. import wings as _wings
-    from ..facts import load, named
-
-    machine = machine or detect_machine(arch, targets)
-    host = dev = None
-    by_target = {}
-    for target in targets:
-        if target not in TARGETS:
-            continue                    # lowering refuses it by name
-        row = TARGETS[target]
-        _wings.require(_wings.row_wings(row.wings, machine.isa), target)
-        if row.facts_name is None:
-            continue
-        by_target[target] = data = load(named(row.facts_name, machine.isa))
-        if row.device:
-            dev = dev or data
-        else:
-            host = host or data
-    return BuildSpec(host, dev, machine, _wings.device_view("wide_class").select(arch, dev) if arch and dev else "", _card_texts(cards), by_target,
-                     settings=_laid(build_settings, settings, targets), spellings=_spellings(targets, machine.isa),
-                     reads=frozenset(k for t in targets if t in TARGETS for k in registry.traits(t).get("reads", ())))
-
-
-def _card_texts(cards: Mapping[str, Mapping] | None) -> dict:
-    """The documents of ``cards`` as the JSON text the library takes, each serialised once in the order its mapping holds."""
-    out = {}
-    for name, document in (cards or {}).items():
-        if not isinstance(document, Mapping):
-            raise HawkError(f"build_spec: cards[{name!r}] must be a mapping (the parsed document), not {type(document).__name__}; "
-                            "start from hawk.targets.shipped_card(name)")
-        out[name] = json.dumps(document)
-    return out
-
-
-def shipped_card(name: str) -> dict:
-    """The data document ``name`` that the lowering library ships, parsed: the whole document a caller edits (change a number, keep the
-    rest) and passes back as ``build_spec(cards={name: document})``. The library refuses a name outside its closed set."""
-    from ..artifact import request
-
-    module, lib, folder = request.library()
-    try:
-        return json.loads(module.Ctx().backend_card(lib, folder, name))
-    except module.BadRequest as why:
-        raise HawkError(f"shipped_card: {why}") from None
-
-
-def _spellings(targets, isa: str) -> dict:
-    """``{(writer, dialect): module name}`` the build names: the spellings arms of its backends' OSPREYs and of the wings
-    those backends (and the wings in turn) name."""
-    from .. import wings as _wings
-
-    found = registry.spelling_refs(tuple(targets))
-    for key in _wings.chain([k for t in targets if t in TARGETS for k in _wings.row_wings(TARGETS[t].wings, isa)]):
-        manifest = _wings.wing(*key).MANIFEST
-        found.update({(arm["writer"], arm["dialect"]): arm["ref"] for arm in manifest.get("spellings", ())})
-    return found
-
-
-def _laid(build_settings, settings, targets):
-    """``settings`` (default: all unset) with ``build_settings`` laid over it."""
-    from ..build_settings import default_settings, refuse_undeclared, settings_of
-
-    if build_settings is not None:
-        refuse_undeclared(build_settings, targets)
-    return settings_of(build_settings, default_settings() if settings is None else settings)
+    ask = {"target": target, "options": {}, "opt_level": "", "root": str(default_cache_dir())}
+    return ospreys.serving(target).machine(ask)["tools_absent"] is None

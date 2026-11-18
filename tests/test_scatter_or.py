@@ -14,19 +14,15 @@ no derivative: ``vjp`` and ``jvp`` refuse by name.
 
 from __future__ import annotations
 
-from _specs import spec_for
 import _deploy as L
 import numpy as np
 import pytest
-from _toolchain import compile_check
 from conftest import sidecar_of
 
 import hawk
 from hawk import HawkError, Index, Int32, Mutable, Scalar, UInt32, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from aether.wings.base.wrapper import FLOAT64
-from hawk.targets import TARGETS
 
 N = 1000
 WORDS = 7

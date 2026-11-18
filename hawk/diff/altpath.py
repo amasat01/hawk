@@ -35,7 +35,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from .jump import (
     _F64,
     _I32,

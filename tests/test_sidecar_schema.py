@@ -1,28 +1,24 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""A hawk sidecar validates against raptor's ``sidecar-v1`` schema, as written.
+"""A hawk sidecar keeps its vector-width record and, where the schema file is at hand, validates against it.
 
-The schema requires ``vec_widths`` (per-name vector width, so a host can
-allocate ``(W, N)`` buffers) for the ``pure`` pattern; it holds the width of
-every vector input and nothing else."""
+The schema is a data file of the consumer (``$HAWK_SIDECAR_SCHEMA`` names it); no Python package is imported for it.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+from _unit_sidecar import sidecar_of_kernel
 
 import hawk
 from hawk import Grid, Scalar, Vector
-from _unit_sidecar import sidecar_of_kernel
 
-jsonschema = pytest.importorskip("jsonschema")
-raptor = pytest.importorskip("raptor")
-
-_SCHEMA = Path(raptor.__file__).resolve().parent.parent / "docs/schemas/sidecar-v1.schema.json"
-pytestmark = pytest.mark.skipif(not _SCHEMA.is_file(), reason="raptor's schema file is not installed")
+pytest.importorskip("_osprey")
 
 
 @hawk.kernel
@@ -41,8 +37,11 @@ def _sidecar(kernel):
 
 @pytest.mark.parametrize("kernel", [_flat, _grid], ids=["flat", "grid"])
 def test_the_sidecar_satisfies_the_schema(kernel):
-    schema = json.loads(_SCHEMA.read_text())
-    jsonschema.validate(_sidecar(kernel), schema)
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = os.environ.get("HAWK_SIDECAR_SCHEMA", "")
+    if not Path(schema).is_file():
+        pytest.skip("$HAWK_SIDECAR_SCHEMA does not name the sidecar schema file")
+    jsonschema.validate(_sidecar(kernel), json.loads(Path(schema).read_text()))
 
 
 def test_vec_widths_names_the_vector_inputs_only():

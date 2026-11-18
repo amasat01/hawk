@@ -33,7 +33,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from .loops import _select
 
 #: The derivative kernel's uniform input keying the alternate path's draw

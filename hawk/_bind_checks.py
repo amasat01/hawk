@@ -18,7 +18,7 @@ from ._plane_layout import (
     mixed_refusal,
     number_refusal,
 )
-from ._errors import HawkError
+from .errors import HawkError
 from . import _ir
 
 #: The roles whose plane's trailing extent is n_samples by construction

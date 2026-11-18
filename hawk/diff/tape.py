@@ -38,7 +38,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 
 #: The reserved plane names the twin adds (refused as a kernel's own).
 TAPE_PLANE = "tape"

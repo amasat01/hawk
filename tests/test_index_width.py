@@ -46,7 +46,6 @@ from _device_file import device_artifact
 from conftest import sidecar_of
 
 from hawk.artifact import build_bundle
-from hawk.compile import aether_include, eagle_include
 
 #: The layout array's positional index of ``sizeof(aether::idx_t)``.
 IDX_FIELD = 3
@@ -75,13 +74,6 @@ def test_the_mandated_include_order_is_aether_first(built):
             "AETHER_INDEX_T only if that macro is already visible, and the reverse "
             f"order silently narrows the index width:\n{text[:800]}"
         )
-
-
-def test_the_resolved_header_roots_are_recorded(built):
-    sc = sidecar_of(built["fraction"], "fraction")
-    assert sc["eagle_include"] == eagle_include()
-    assert sc["aether_include"] == aether_include()
-    assert (ctypes.c_char * 1) is not None  # keep the import honest
 
 
 @pytest.mark.gpu

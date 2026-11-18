@@ -15,14 +15,11 @@ answer, so those ops are refused by name.
 
 from __future__ import annotations
 
-from _specs import spec_for, default_kind
 import pytest
 
 import hawk
 import hawk.math as m
-from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from aether.wings.base.wrapper import scalar_mode
 from hawk.ext import sink_policy
 from hawk import HawkError
 
@@ -130,8 +127,6 @@ def test_the_banded_SINK_policy_is_the_same_named_slot_on_its_own_seam():
 
 def test_an_unknown_mode_still_shows_banded():
     """Non-vacuity for the row above: the vocabulary a refusal prints must
-    include ``banded`` on both seams, or "named rather than absent" means nothing."""
-    with pytest.raises(HawkError, match="banded"):
-        scalar_mode("float128")
+    include ``banded``, or "named rather than absent" means nothing."""
     with pytest.raises(HawkError, match="banded"):
         sink_policy("float128")

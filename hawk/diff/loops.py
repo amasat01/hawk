@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from ..ext.primitive import jvp_tangent, vjp_contributions
 from ..trace.value import dispatch_node, dispatch_strategy
 from . import rules

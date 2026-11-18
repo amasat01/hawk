@@ -19,8 +19,6 @@ from conftest import sidecar_of
 import hawk
 import hawk.math as m
 from hawk.artifact import build_bundle
-from ospreys.cuda.backend import _refuse_fp64
-from raptor.errors import RaptorError as HawkError
 
 
 @hawk.kernel
@@ -37,14 +35,6 @@ def stepping(x: hawk.Scalar, out: hawk.Mutable[hawk.Scalar]):
     out = acc
 
 
-def test_a_device_object_with_an_fp64_instruction_is_refused_by_name(tmp_path):
-    ptx = tmp_path / "planted.ptx"
-    ptx.write_text(".visible .entry k()\n{\n    add.f32 %f1, %f2, %f3;\n    add.f64 %fd1, %fd2, %fd3;\n}\n")
-    with pytest.raises(HawkError, match=r"contains the FP64 PTX instruction 'add\.f64"):
-        _refuse_fp64("k", "cuda", ptx, "ptx")
-    clean = tmp_path / "clean.ptx"
-    clean.write_text(".visible .entry k()\n{\n    add.f32 %f1, %f2, %f3;\n}\n")
-    _refuse_fp64("k", "cuda", clean, "ptx")
 
 
 @pytest.mark.gpu

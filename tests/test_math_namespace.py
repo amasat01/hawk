@@ -31,9 +31,6 @@ per row.
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import spec_for
-from _specs import HOST
 
 import _oracle as O
 import numpy as np
@@ -46,7 +43,7 @@ import hawk.trace.value as T
 from hawk.artifact import build
 from hawk import _ir
 from hawk.trace.lane_axes import trace_context
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk.trace.value import TableRef, node_of
 
 

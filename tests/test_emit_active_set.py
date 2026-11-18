@@ -27,18 +27,15 @@ fail; render the map read into the body and the body-identity row fails.
 """
 
 from __future__ import annotations
-from _specs import HOST, for_targets
 
 import importlib
 
 import pytest
 
 import hawk
-from hawk import Index, Kernel, Mutable, Param, Scalar, Terminated
-from hawk.diff import jvp
-from aether.wings.base.wrapper import scalar_mode
-from hawk.ext import DEFAULT_KIND, Guard, Kind
-from raptor.errors import RaptorError as HawkError
+from hawk import Mutable, Param, Scalar, Terminated
+from hawk.ext import Guard, Kind
+from hawk.errors import HawkError
 
 B = importlib.import_module("hawk.artifact.bundle")
 

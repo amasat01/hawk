@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from ..diff import Derived
-from .._errors import HawkError
+from ..errors import HawkError
 
 
 # -- Per-kernel ``derivative`` resolution, including cross-unit primals. --- #

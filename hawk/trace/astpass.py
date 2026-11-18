@@ -34,7 +34,7 @@ import copy
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from .lane_axes import current_context
 from .value import (
     Value,

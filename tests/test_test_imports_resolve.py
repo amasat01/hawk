@@ -31,11 +31,7 @@ TOOLS = TESTS.parent / "tools"
 
 #: ``(file, module)`` -> why an unresolvable import is the test's DATA, not a leftover: a literal source the test
 #: writes to a temporary package to prove a guard sees an undeclared name.
-BY_DESIGN = {
-    ("test_w25_wing_entries.py", "raptor.wings.base.box"): "the guard must see an undeclared name (not_an_entry)",
-    ("test_w25_wing_entries.py", "raptor.wings.base.nosuch"): "the guard must see an undeclared module",
-    ("test_w25_wing_entries.py", "ospreys.cuda.emit"): "the guard must see a leaf importing another leaf's module",
-}
+BY_DESIGN: dict = {}
 
 #: third-party modules a test may import without their being installed: module -> how the test is guarded.
 OPTIONAL = {

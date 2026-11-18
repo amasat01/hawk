@@ -15,19 +15,14 @@ from __future__ import annotations
 import os
 import pathlib
 import platform
-import stat
 import threading
 
 import _deployable as D
 import numpy as np
 import pytest
-from ospreys.cuda import nvrtc as device_nvrtc
-from ospreys.cuda import toolchain as device_toolchain
-from raptor.errors import RaptorError
 
 from hawk.artifact import build_bundle
-from raptor.wings.base.exchange import ToolchainAbsent
-from hawk.targets import TARGETS
+from hawk.errors import ToolchainAbsent
 
 BOTH = ("cuda", "host")
 
@@ -64,22 +59,6 @@ _UNITS = (
 #: directly — pytest's own rule for initial arguments, which this hook does not
 #: apply to.
 collect_ignore = ["mpi"]
-
-
-@pytest.fixture
-def spec():
-    """The build spec of a host and device build on this machine (device arch ``sm_61``): what a test that calls a pass outside a build passes."""
-    from hawk.targets import build_spec
-
-    return build_spec(("host", "cuda"), "sm_61")
-
-
-@pytest.fixture
-def host_spec():
-    """The build spec of a host-only build on this machine."""
-    from hawk.targets import build_spec
-
-    return build_spec(("host",))
 
 
 @pytest.fixture(scope="session")
@@ -152,7 +131,6 @@ def _xp(target):
 
 
 __all__ = ["BOTH", "sidecar_of"]
-assert TARGETS  # the targets table is what `targets` names
 
 
 def sum_bound(terms, dtype=np.float64) -> float:
@@ -222,40 +200,26 @@ import sys
 _ABSENT = "toolchain-absent"
 
 
-def _on_path(name_or_path: str | None) -> bool:
-    return bool(name_or_path) and (os.path.isfile(name_or_path) or shutil.which(name_or_path) is not None)
-
-
 @functools.lru_cache(maxsize=None)
 def toolchains() -> dict:
-    """The probes, once per session, cheap (no compile): ``name -> (present, what)``."""
+    """The host-feature probes of the rows that declare ``needs_toolchain``, once per session: ``name -> (present, what)``.
+
+    No compiler is probed here: a missing compiler reaches a row as the ``ToolchainAbsent`` an OSPREY's ``machine`` answers.
+    """
     x86 = platform.machine().lower() in ("x86_64", "amd64")
     linux = sys.platform.startswith("linux")
-    try:
-        from cuda.bindings import nvrtc as _nvrtc        # noqa: F401
-        nvrtc = True
-    except Exception:                                    # noqa: BLE001 - any failure to load means absent
-        nvrtc = False
-    nvcc = any(_on_path(c) for c in (os.environ.get("HAWK_NVCC"), "nvcc"))
-    cppcheck = _on_path(os.environ.get("HAWK_CPPCHECK") or "cppcheck")
-    device = linux and (os.path.exists("/dev/nvidiactl") or shutil.which("nvidia-smi") is not None)
     return {
-        "cuda-nvrtc": (nvrtc, "cuda python bindings with NVRTC are not loadable"),
-        "nvcc": (nvcc, "nvcc is not on PATH ($HAWK_NVCC)"),
-        "cppcheck": (cppcheck, "cppcheck is not on PATH ($HAWK_CPPCHECK)"),
-        "cuda-device": (device, "no CUDA device"),
         "x86-64": (x86, f"host is {platform.machine()}, not x86-64"),
         "linux": (linux and os.path.isdir("/proc"), f"host is {sys.platform}: no /proc, ulimit -v address cap, ldd or dynamic symbol table"),
         "linux-tools": (linux and shutil.which("ldd") is not None, "ldd is not on PATH"),
         "avx512": (avx512(), "no AVX-512"),
-        "aether-src": (os.path.isdir(os.environ.get("W25_AETHER_SRC") or ""), "$W25_AETHER_SRC is unset or not a directory (the aether source tree)"),
     }
 
 
 def absent_toolchain(exc: BaseException) -> str | None:
     """The absent toolchain this failure is the typed refusal for, else ``None``.
 
-    Only by type: the product's :class:`~raptor.wings.base.exchange.ToolchainAbsent` (its ``toolchain`` attribute names which)
+    Only by type: the product's :class:`~hawk.errors.ToolchainAbsent` (its ``toolchain`` attribute names which)
     anywhere in the cause chain. A row that asserts on a tool the product does not itself refuse for declares it with
     ``@pytest.mark.needs_toolchain("<name>")``, which raises the same type from setup when the probe says it is absent.
     """
@@ -304,38 +268,3 @@ def pytest_terminal_summary(terminalreporter):
         terminalreporter.write_line(f"TOOLCHAIN-ABSENT {r.nodeid} - {r.toolchain}")
         by[r.toolchain] = by.get(r.toolchain, 0) + 1
     terminalreporter.write_line(f"{len(rows)} {_ABSENT}" + (" (" + ", ".join(f"{k}={v}" for k, v in sorted(by.items())) + ")" if by else ""))
-
-
-#: The stand-in for the device compiler: it reports a release, logs each argv (one argument to a
-#: line, then a mark) and writes an image that starts with the ELF magic and holds the source text,
-#: so two sources never give one image.
-_STAND_IN = r"""#!/bin/sh
-if [ "$1" = "--version" ]; then echo "Cuda compilation tools, release 12.6, V12.6.77"; exit 0; fi
-printf '%s\n' "$@" >> "$STAND_IN_LOG"
-echo -- >> "$STAND_IN_LOG"
-while [ $# -gt 0 ]; do
-  case "$1" in -o) out=$2; shift ;; -MF) dep=$2; shift ;; *.cu) src=$1 ;; esac
-  shift
-done
-{ printf '\177ELF'; cat "$src"; } > "$out"
-echo "$out: $src" > "$dep"
-"""
-
-@pytest.fixture
-def stand_in(tmp_path, monkeypatch):
-    """The stand-in device compiler, found as ``$HAWK_NVCC``; its log file's path."""
-    script, log = tmp_path / "nvcc", tmp_path / "nvcc.log"
-    script.write_text(_STAND_IN)
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    monkeypatch.setenv("HAWK_NVCC", str(script))
-    monkeypatch.setenv("STAND_IN_LOG", str(log))
-    monkeypatch.delenv("HAWK_DEVICE_COMPILER", raising=False)
-    monkeypatch.setattr(device_toolchain, "toolkit_archs",
-                        lambda kind=None: ("stand-in toolkit", (50, 90)))
-
-    def no_driver():
-        raise RaptorError("the stand-in machine has no device driver")
-
-    # the image form follows the driver's release: these rows state a machine with none
-    monkeypatch.setattr(device_nvrtc, "driver_cuda_version", no_driver)
-    return log

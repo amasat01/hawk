@@ -51,7 +51,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 
 #: The static bound of a ``steps="auto"`` loop: the most steps any launch
 #: can take (the sidecar's ``finish.steps_max``).

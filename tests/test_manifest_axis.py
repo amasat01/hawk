@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hawk._errors import HawkError
+from hawk.errors import HawkError
 from hawk.artifact.bundle import _manifest_of
 
 

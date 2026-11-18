@@ -23,7 +23,7 @@ import keyword
 from dataclasses import dataclass, replace
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 
 #: Payload types. ``Vector``/``Matrix`` are subscripted with static extents —
 #: an extent is a TYPE, never a runtime value.
@@ -129,7 +129,7 @@ class Plane:
         raise HawkError(f"a `{self.form}` DECLARATION is annotated, not called")
 
     def __setitem__(self, key: object, value: object) -> None:
-        from .._errors import HawkError
+        from ..errors import HawkError
 
         if self.form == "terminated":
             from .value import FinishRefusal

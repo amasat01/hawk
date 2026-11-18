@@ -81,37 +81,6 @@ def git_commit(module, short=False):
     return None
 
 
-def host_compile_facts():
-    """The EXACT host code-generation recipe hawk's own compile toolchain
-    uses for every host-compiled kernel in these cards (``hawk.compile.
-    toolchain.host_codegen_flags``) -- recorded verbatim here rather than
-    re-asserted, so a card never has to guess what optimisation level
-    produced its numbers. The effective ``opt_level`` (``hawk.compile.
-    toolchain.opt_level``, user-controllable via ``$HAWK_OPT_LEVEL``) is
-    recorded next to it: it is what the host flags' ``-O<n>`` now comes
-    from, and it ALSO changes a device (nvcc) build's own flags the same
-    way (``-O<n>`` for nvcc's host side, ``-Xptxas -O<n>`` for the device
-    side) -- there used to be no explicit ``-O`` there at all (nvcc's own
-    default), which is why this used to be a note rather than a flag; NVRTC
-    device compiles always optimise and ignore ``opt_level`` entirely."""
-    try:
-        from hawk.compile import toolchain
-    except Exception as exc:  # hawk not importable: the arm cannot have run
-        return {"host_profile": None, "host_flags": None, "error": repr(exc)}
-    profile = toolchain.host_profile()
-    level = toolchain.opt_level()
-    return {
-        "host_profile": profile,
-        "host_flags": toolchain.host_codegen_flags(profile, level),
-        "opt_level": level,
-        "device_flags_note": (
-            f"hawk.compile.toolchain.device_flags now carries the same "
-            f"opt_level explicitly: -{level} for nvcc's own host-side code "
-            f"generation and -Xptxas -{level} for ptxas; NVRTC device "
-            "compiles always optimise and ignore opt_level"),
-    }
-
-
 def software(modules=("numpy", "torch", "cupy")):
     """Versions and commits of the cards' software."""
     import hawk
@@ -127,7 +96,6 @@ def software(modules=("numpy", "torch", "cupy")):
         out["eagle_commit"] = git_commit(eagle)
     except Exception:
         out["eagle_commit"] = None
-    out["compile"] = host_compile_facts()
     return out
 
 

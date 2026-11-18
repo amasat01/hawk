@@ -7,7 +7,7 @@ import hawk
 import hawk.artifact
 import pytest
 from hawk import Mutable, Scalar
-from hawk._errors import EMBEDDED_C, HawkError
+from hawk.errors import EMBEDDED_C, HawkError
 
 
 @hawk.kernel

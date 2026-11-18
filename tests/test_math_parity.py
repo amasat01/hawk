@@ -630,7 +630,7 @@ def _leaf(shape: tuple, name: str = "a"):
 def test_mismatched_shapes_refuse_as_the_arithmetic_operators_do(spell):
     """A vector against a matrix (or a 2x3 against a 3x2) is refused in ONE set
     of words, the ``+`` operator's own (the last row)."""
-    from raptor.errors import RaptorError as HawkError
+    from hawk.errors import HawkError
 
     with pytest.raises(HawkError, match=r"do not broadcast — an elementwise op takes "
                        r"equal shapes or one rank-0 operand"):

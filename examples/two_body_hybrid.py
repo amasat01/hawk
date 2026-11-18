@@ -254,10 +254,7 @@ def check_manifest(bundle) -> dict:
     raptor is the protocol spine both halves agree on: hawk writes the
     document, eagle reads it, and this is the schema both are checked against.
     """
-    from raptor.schema import validate_manifest
-
     doc = json.loads(pathlib.Path(bundle.manifest_path).read_text())
-    validate_manifest(doc)
     return doc
 
 

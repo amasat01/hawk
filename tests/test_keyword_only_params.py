@@ -10,12 +10,11 @@ the all-positional one.
 """
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
 import pytest
 
 from hawk import Mutable, Scalar, _ir, kernel
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 from hawk.trace import trace_value
 
 

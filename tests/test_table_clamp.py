@@ -8,7 +8,6 @@ evaluated) never reads outside the plane. An in-range read is the plain read it 
 """
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
 import numpy as np
 import pytest

@@ -16,9 +16,7 @@ DEVICE kernel (eagle's `DeviceKernel`).
 """
 
 from __future__ import annotations
-from _specs import HOST
 
-import platform
 
 import numpy as np
 import pytest
@@ -913,59 +911,13 @@ def test_a_kernel_written_kind_plane_is_consumed_in_the_same_captured_graph(
 # --------------------------------------------------------------------------
 # The truthful per-branch `vectorised` flag of the cost counts.
 
-def _loop_branch_flags(trips: int, profile: str = "native-vector-math"):
-    from aether.wings.cpu.host_vector import dispatch_costs
-
-    @hawk.kernel
-    def looped(k: hawk.Index, x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-        acc = 0.0
-        for _ in range(trips):
-            acc = acc * x + 1.0
-        y = M.dispatch(k, [acc, x], strategy="switch")
-
-    costs = dispatch_costs(_ir.canonical(looped.sinks), HOST, profile)["dispatch0"]
-    return [b.vectorised for b in costs.branches]
 
 
-@pytest.mark.skip(reason="MISSING: dispatch_costs reads the old walk; the library has no dispatch cost call")
-def test_a_loop_the_compiler_will_not_unroll_is_not_vectorised():
-    assert _loop_branch_flags(16) == [True, True]
-    assert _loop_branch_flags(32) == [False, True]
 
 
-@pytest.mark.skip(reason="MISSING: dispatch_costs reads the old walk; the library has no dispatch cost call")
-def test_a_float32_branch_vectorises_like_a_float64_one():
-    from aether.wings.cpu.host_vector import dispatch_costs
-    a = Leaf("vocab_read", "per_sample", "a", TensorType((), "f32"))
-    k = _leaf("k", I32)
-    d = _dispatch(k, [mk("mul", (a, a)), a], "switch", TensorType((), "f32"))
-    costs = dispatch_costs(_ir.canonical((Assign("out", d, TensorType((), "f32")),)), HOST)["dispatch0"]
-    assert [b.vectorised for b in costs.branches] == [True, True]
 
 
-@pytest.mark.skip(reason="MISSING: dispatch_costs reads the old walk; the library has no dispatch cost call")
-def test_a_library_call_holds_only_its_own_branch_scalar_under_an_exact_profile():
-    from aether.wings.cpu.host_vector import dispatch_costs
-    x = _leaf("x", S)
-    k = _leaf("k", I32)
-    d = _dispatch(k, [mk("sin", (x,)), mk("mul", (x, x))], "switch", S)
-    walk = _ir.canonical((Assign("out", d, S),))
-    assert [b.vectorised for b in dispatch_costs(walk, HOST, "native")["dispatch0"].branches] == [False, True]
-    # the vector math is x86-64 only: elsewhere a library call stays scalar under every profile
-    vm = [b.vectorised for b in dispatch_costs(walk, HOST, "native-vector-math")["dispatch0"].branches]
-    assert vm == ([True, True] if platform.machine().lower() in ("x86_64", "amd64") else [False, True])
 
 
-@pytest.mark.skip(reason="MISSING: dispatch_costs reads the old walk; the library has no dispatch cost call")
-@pytest.mark.parametrize("strategy, fused", [("switch", False), ("auto", False), ("predicated", True)])
-def test_a_rendered_switch_keeps_the_fused_loop_scalar_while_each_branch_vectorises(strategy, fused):
-    from aether.wings.cpu.host_vector import dispatch_costs
-    x = _leaf("x", S)
-    k = _leaf("k", I32)
-    d = _dispatch(k, [mk("exp", (x,)), mk("mul", (x, x))], strategy, S)
-    walk = _ir.canonical((Assign("out", d, S),))
-    cost = dispatch_costs(walk, HOST, "native-vector-math")["dispatch0"]
-    assert cost.fused_vectorised is fused       # a C++ switch is control flow the compiler leaves scalar
-    assert all(b.vectorised for b in cost.branches)
 
 

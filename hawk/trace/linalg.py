@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from .lane_axes import current_context
 from .value import Value, node_of, random_normal, vec
 

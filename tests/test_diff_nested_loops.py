@@ -12,7 +12,6 @@ refused BY NAME: an inner ``break``, an inner gather of a differentiated plane i
 reverse, ``jump=``."""
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
 import numpy as np
 from conftest import declared
@@ -22,7 +21,7 @@ from _eval import evaluate
 import hawk
 import hawk.math as m
 from hawk.diff import jvp, vjp
-from raptor.errors import RaptorError as HawkError
+from hawk.errors import HawkError
 
 S = hawk.Scalar
 OUT = hawk.Mutable[hawk.Scalar]

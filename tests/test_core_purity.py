@@ -93,7 +93,6 @@ import pytest
 
 import hawk
 from hawk import _core
-from hawk.targets import TARGETS
 
 REPO = Path(hawk.__file__).resolve().parent.parent
 PACKAGE = REPO / "hawk"
@@ -214,52 +213,6 @@ def _code_of(path: Path, text: str) -> str:
     return _hash_code(text)
 
 
-def _excise(path: Path, text: str) -> tuple:
-    """Remove the NAMED exceptions from one file's text; returns
-    ``(text, [what was removed])`` so each removal can be asserted real."""
-    removed = []
-    if path in _EMITTERS.values():
-        key = next(k for k, v in _EMITTERS.items() if v == path)
-        span = TARGETS[key].wrapper.index_prologue()
-        assert span and span in text, (
-            f"{path}: the wrapper's index_prologue() string is not present verbatim "
-            "in its own source, so the named exception cannot be located — the "
-            "audit would either scan it or excise the wrong thing"
-        )
-        # The placeholder keeps the file VALID and the same length in LINES: the
-        # excised text is scanned as code afterwards, and a placeholder that
-        # broke the parse (or moved every following line) would make the audit
-        # report on a file it could no longer read.
-        text = text.replace(span, "<index_prologue excised>"
-                            + "\n" * span.count("\n"))
-        removed.append(span)
-        if getattr(TARGETS[key].wrapper, "team_flat", None):
-            # the team stage's prologue is the same seam: one block per lane
-            team = TARGETS[key].wrapper.index_prologue(team=1)
-            warp = TARGETS[key].wrapper.index_prologue(team=32)[len(team):]      # the warp form's lane-in-warp line
-            for span in (team, warp):
-                assert span and span in text, f"{path}: the team prologue string is not present verbatim"
-                text = text.replace(span, "<team index_prologue excised>" + "\n" * span.count("\n"))
-                removed.append(span)
-    if path == _EMITTERS["cuda"]:
-        # the warp form's block frame is the same seam: the marked region of the device wrapper
-        begin, end = text.index("    # geometry-seam: begin"), text.index("    # geometry-seam: end")
-        span = text[begin:end]
-        text = text.replace(span, "    pass  # stage_frame excised" + "\n" * span.count("\n"))
-        removed.append(span)
-    if path == REPO / "staging" / "aether" / "wings" / "base" / "spelling.py":
-        tree = ast.parse(text, filename=str(path))
-        for node in tree.body:
-            if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                    and isinstance(node.targets[0], ast.Name)
-                    and node.targets[0].id == "GEOMETRY_TOKENS"):
-                span = ast.get_source_segment(text, node)
-                assert span, f"{path}: could not locate the GEOMETRY_TOKENS assignment"
-                text = text.replace(
-                    span, 'GEOMETRY_TOKENS = ("<excised>")'
-                    + "\n" * span.count("\n"))
-                removed.append(span)
-    return text, removed
 
 
 @pytest.mark.repo_local

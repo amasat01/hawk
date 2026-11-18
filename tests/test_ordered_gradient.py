@@ -26,7 +26,6 @@ from hawk import Grid, Kernel, Scalar, Table, kernel
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from raptor.errors import RaptorError
 
 KEYS, SAMPLES, PARAMS = 5, 64, 4
 

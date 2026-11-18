@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ._errors import HawkError
+from .errors import HawkError
 
 # -- Sample-major planes. A per-sample plane of declared width w >= 2 is
 # component-major, (w, L); most array code stores vectors sample-major,

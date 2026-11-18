@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from .value import Value, _op, _operands, index_node, n_samples, node_of, real, select, vec
 
 

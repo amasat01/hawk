@@ -28,8 +28,6 @@ Rows:
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import HOST
 
 import json
 import pathlib
@@ -43,7 +41,6 @@ import hawk
 import hawk.math as M
 from hawk import Index, Mutable, Scalar, Terminated, Vector
 from hawk.artifact import build_bundle
-from raptor.errors import RaptorError as HawkError
 from hawk import _ir
 
 N = 61

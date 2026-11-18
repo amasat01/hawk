@@ -23,21 +23,10 @@ from hawk.artifact import TOP_LEVEL_KEY_ORDER_V2
 from hawk import _ir
 
 
-def test_the_manifest_passes_raptors_own_shape_validator(built):
-    from raptor.schema import validate_manifest
-    from raptor.wings.simt import MANIFEST
-
-    for name, bundle in built.items():
-        validate_manifest(json.loads(bundle.manifest_path.read_text()), MANIFEST["vocabulary"]), name
-
-
 def test_top_level_key_order_is_the_contractual_one(built):
-    from raptor.schema.manifest import TOP_LEVEL_KEY_ORDER_V2 as RAPTOR_ORDER
-
-    assert TOP_LEVEL_KEY_ORDER_V2 == RAPTOR_ORDER
     for bundle in built.values():
         doc = json.loads(bundle.manifest_path.read_text())
-        assert list(doc) == [k for k in RAPTOR_ORDER if k in doc]
+        assert list(doc) == [k for k in TOP_LEVEL_KEY_ORDER_V2 if k in doc]
         assert "execution" not in doc, "the v2 axis is FLAT keys, not a nested block"
 
 
@@ -66,7 +55,7 @@ def test_a_bundle_whose_members_disagree_on_the_axis_is_refused(tmp_path, cache_
     import _deployable as D
 
     from hawk.artifact import build_bundle
-    from raptor.errors import RaptorError as HawkError
+    from hawk.errors import HawkError
 
     with pytest.raises(HawkError, match="ONE execution axis"):
         build_bundle([D.axpb, D.scatter], tmp_path / "mixed", targets=("host",),

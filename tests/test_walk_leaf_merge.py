@@ -22,7 +22,7 @@ import pytest
 from _dags import F64, V3
 
 from hawk import _ir
-from hawk._errors import HawkError
+from hawk.errors import HawkError
 
 TensorType = _ir.TensorType
 

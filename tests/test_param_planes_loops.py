@@ -104,6 +104,11 @@ def bundle(request, tmp_path_factory, cache_dir):
 TARGETS = ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
 
 
+def _summed(kernel) -> set:
+    """The names of the planes a kernel sums per 32 samples: its ``accum_out`` slots."""
+    return {name for role, name in kernel.arg_spec if role == "accum_out"}
+
+
 def _run(built, kernel, target, values, dtype):
     import eagle.exec as eexec
     from eagle import plan as eplan
@@ -112,7 +117,7 @@ def _run(built, kernel, target, values, dtype):
     if target == "cuda":
         import cupy as xp
     bound, outs = {}, {}
-    summed = set(kernel.walk.sample_sums)
+    summed = _summed(kernel)
     for role, name in kernel.arg_spec:
         if role == "mutable":
             outs[name] = bound[name] = xp.zeros(N, dtype=dtype)
@@ -172,7 +177,7 @@ def test_a_promoted_loop_kernel_equals_the_param_kernel_at_every_level(
     want = _run(built, plain, target, point, MODES[mode])
     assert got.keys() == want.keys()
     for n in want:
-        if n in promoted.walk.sample_sums:
+        if n in _summed(promoted):
             # the promoted gradient is summed per 32 samples; the plain one is not
             np.testing.assert_allclose(got[n], _per_32(want[n]),
                                        rtol=64 * np.finfo(MODES[mode]).eps)

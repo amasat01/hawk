@@ -14,7 +14,6 @@ from test_team_linalg import KEYS, ROWS, _build_sum, _run_sum
 import hawk
 import hawk.math as m
 from hawk import Grid, Matrix, Vector, kernel
-from hawk.facts import load
 
 
 @pytest.fixture(scope="module")
@@ -22,13 +21,15 @@ def cache(tmp_path_factory):
     return tmp_path_factory.mktemp("w25_keyed_over_limit")
 
 
-def test_the_limit_is_the_facts_number():
-    assert load("cpu")["linalg"]["team_max_dim"] == 4096
+
+
+#: The element count past which a keyed sum is a block sum at trace time.
+TEAM_MAX_DIM = 4096
 
 
 def test_a_keyed_sum_of_an_outer_product_above_the_limit_is_the_numpy_value(cache):
     p, q = 65, 64                      # 4160 elements per key: above team_max_dim
-    assert p * q > load("cpu")["linalg"]["team_max_dim"]
+    assert p * q > TEAM_MAX_DIM
 
     @kernel
     def outer_sum(lane: Grid["key", "row":ROWS], a: Vector[p], b: Vector[q]) -> Matrix[p, q]:

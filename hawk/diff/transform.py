@@ -23,7 +23,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from ..ext.primitive import jvp_tangent, vjp_contributions
 from ..trace.value import DISPATCH_STRATEGIES, dispatch_node, dispatch_strategy
 from . import rules

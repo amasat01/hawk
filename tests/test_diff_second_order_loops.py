@@ -50,23 +50,15 @@ value.
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import spec_for
-from _specs import HOST
 
-import pathlib
 
-import _toolchain as TC
 import pytest
 from _eval import evaluate
 
 import hawk
 import hawk.math as m
-from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
-from aether.wings.base.wrapper import FLOAT64
 from hawk import HawkError, _ir
-from hawk.targets import TARGETS
 
 #: The central-difference step for the SECOND derivative row. It differences the
 #: analytic FIRST derivative (not the primal twice), so the usual h**2 error of a

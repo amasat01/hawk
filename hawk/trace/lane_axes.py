@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from .. import _ir
-from .._errors import HawkError
+from ..errors import HawkError
 from .value import INDEX, Value, index_node, sample_index, widened
 
 

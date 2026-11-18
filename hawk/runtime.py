@@ -68,11 +68,12 @@ from ._plane_layout import (
     plane_layout,
     split_marks,
 )
-from ._errors import HawkError
+from .errors import HawkError
+from .targets import ENTRY_KINDS
 from . import _ir
 
 __all__ = ["ArgBlock", "HostKernel", "descriptor_for_sidecar", "DEVICE_CPU",
-           "kind_for", "load", "run"]
+           "dispatch_costs", "kind_for", "load", "run", "steps_reverse_table"]
 
 #: The DLPack CPU device code every host plane's mirror carries. Spelled
 #: here rather than imported, to sever the runtime.
@@ -488,27 +489,25 @@ def _index_ctype():
 
 
 def load(directory, kernel: str, sidecar: dict | None = None) -> HostKernel:
-    """Load ``<directory>/<kernel>.so``, reading its sidecar JSON if omitted.
-
-    Refuses a directory holding only ``kernel``'s standalone C unit (a
-    ``<kernel>.embedded.json`` and no ``<kernel>.json``): that is source for
-    an embedded build, not a host artifact."""
+    """Load ``<directory>/<kernel>.so``, reading its sidecar JSON if omitted."""
     import json
 
     directory = Path(directory)
     if sidecar is None:
-        if not (directory / f"{kernel}.json").exists():
-            from .backends import default_backends
-
-            for row in default_backends():
-                if row.report_file(kernel) and (directory / row.report_file(kernel)).exists():
-                    raise HawkError(
-                        f"{kernel!r} in {directory} was built for the {row.id!r} target only: "
-                        f"it is {row.unit_note}, "
-                        "not a host artifact hawk.load can run; build it with "
-                        "targets=('host',) to load it here")
         sidecar = json.loads((directory / f"{kernel}.json").read_text())
     return HostKernel(directory / f"{kernel}.so", sidecar)
+
+
+def steps_reverse_table(sidecar: dict, device: bool) -> dict:
+    """The measured rows of ``steps_reverse="auto"`` for the host or the device, as the build stored them in the sidecar."""
+    table = sidecar.get("steps_reverse_table") or {}
+    device_kind, host_kind = ENTRY_KINDS
+    return dict(table.get(device_kind if device else host_kind) or {})
+
+
+def dispatch_costs(sidecar: dict) -> dict:
+    """The dispatch-cost record of the sidecar, as the build stored it (empty when the answer stated none)."""
+    return dict(sidecar.get("dispatch_costs") or {})
 
 
 def _own_companions(sidecar: dict, arrays: dict) -> tuple:

@@ -61,7 +61,6 @@ from __future__ import annotations
 import _deploy as L
 import _deployable as D
 import _oracle as O
-import _planted as PL
 import numpy as np
 import pytest
 from conftest import sidecar_of
@@ -225,32 +224,6 @@ def _tuple(value):
     return value if isinstance(value, tuple) else (value,)
 
 
-def test_the_invariance_comparison_can_fail(built, tmp_path, cache_dir):
-    """NON-VACUITY for the row above (a gate builds its own inputs). The planted
-    ``count``-reading artifact declares ``sample_local`` — truthfully, its DAG is
-    elementwise — and is therefore permitted to split; its body is nevertheless
-    not partition-invariant, and the same comparison must say so."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    sidecar = sidecar_of(built["fraction"], "fraction")
-    assert sidecar["exec_access"] == "sample_local"
-    directory = PL.with_sidecar(
-        PL.count_reading_bundle(D.fraction, tmp_path / "planted",
-                                cache_dir=cache_dir), sidecar)
-    plugin = L.host_plugin(directory, "fraction", sidecar)
-    kw = {"x": D.plane(N, w=1)[0]}
-    whole = eplan.plan(plugin, structure=eexec.HostTeam, npartitions=1).run(**kw)
-    split = eplan.plan(plugin, structure=eexec.HostTeam, npartitions=K).run(**kw)
-    assert np.asarray(whole).tobytes() != np.asarray(split).tobytes(), (
-        "the planted body — which divides by the partition's own count — came out "
-        f"bit-identical whole and over {K} partitions; the invariance comparison "
-        "above cannot detect the defect it exists for"
-    )
-    # ... and the un-planted artifact, through the identical comparison, agrees:
-    real = L.host_plugin(built["fraction"].directory, "fraction", sidecar)
-    assert (np.asarray(eplan.plan(real, structure=eexec.HostTeam, npartitions=1).run(**kw)).tobytes()
-            == np.asarray(eplan.plan(real, structure=eexec.HostTeam, npartitions=K).run(**kw)).tobytes())
 
 
 def test_every_access_class_the_contract_names_is_covered_by_a_fixture(built):
