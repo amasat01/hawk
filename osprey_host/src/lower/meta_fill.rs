@@ -120,6 +120,11 @@ pub(super) fn slots(
         .enumerate()
         .map(|(at, s)| {
             let planar = s.role == Role::Lookup && params.contains(&s.name);
+            let shape = payload_of(request, s);
+            // the writers cross the boundary by the rank of the walk's slot; the record's shape is the caller's payload, which a
+            // sink plane may state wider than the slot the entry binds
+            let mirror =
+                aether_writers::ir::runtime_names::mirror_of(s.role.name(), s.shape.len())?;
             Ok(m::Slot {
                 flags: if planar { m::SLOT_PARAM_PLANE } else { 0 }
                     | if gathered.contains(&s.name) {
@@ -144,8 +149,9 @@ pub(super) fn slots(
                     .contains(&s.name)
                     .then(|| pattern_of(patterns, &s.name))
                     .flatten(),
-                shape: payload_of(request, s),
+                shape,
                 name: s.name.clone(),
+                mirror: mirror.into(),
             })
         })
         .collect()

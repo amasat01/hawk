@@ -653,6 +653,23 @@ unread = c.cells_walk([c.new("Assign", "(('name', 'o'), ('value', #0))", [zero_i
 assert not any(n.cls == "SamplePosition" for n in c.walk_order(unread))
 done.append("walk_order holds a sample_position read inside a loop body, as the old order did")
 
+# a refusal may carry a code, a promise callers can match on; the text is not one. Substituting
+# into a loop that commits once per iteration is the one refusal with a code now; every other
+# refusal has code None
+one_i = c.make("Const", "i32", [], None, [], "(('literal', 1),)")
+refused = raises(
+    o.NotWritten,
+    lambda: c.substitute([by_sink], [zero_i], [one_i]),
+    "substitute into a derived loop",
+)
+assert refused.code == "derived_loop_rewrite", refused.code
+assert str(refused) == (
+    "a loop that commits once per iteration (a derived loop) cannot be rewritten by substitution"
+), str(refused)
+other_refusal = raises(o.NotWritten, lambda: c.with_value(x, y), "a refusal without a code")
+assert other_refusal.code is None
+done.append("NotWritten carries the code of a refusal that has one, None for every other")
+
 # ---- block-sum writes expanded into per-entry accumulates ----
 c.declare_kinds()
 zero_key = c.make("Const", "i32", [], None, [], "(('literal', 0),)")

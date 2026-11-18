@@ -650,10 +650,17 @@ fn known_sinks(ctx: *mut Ctx, request: &KernelRequest) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Refuses by name what the written shapes do not cover: a request without a target.
+/// Refuses by name what the written shapes do not cover: a request without a target, and a banded kernel (one with cells) for the
+/// host, because cells are written for device execution paths only.
 fn scope(request: &KernelRequest) -> Result<(), Refusal> {
     if request.targets.is_empty() {
         return Err(bad("a request without a target"));
+    }
+    if request.scalar == Scalar::Banded && request.targets.contains(&Target::Host) {
+        return Err(bad(format!(
+            "{:?}: banded runs on device execution paths; on a CPU use float64 (target 'host' is not a device)",
+            request.name
+        )));
     }
     Ok(())
 }
@@ -951,8 +958,11 @@ mod tests {
             shipped_text
         );
     }
+    use crate::lower::unit_meta::SlotRole;
     use aether_writers::contract::types::Role;
     use aether_writers::refuse::RefusalKind;
+    use raptor_ir::door::{rx_ctx_free, rx_ctx_new, RX_OK};
+    use raptor_ir::dump::rx_load;
 
     /// Oracle: `working_set_bytes` of the Python model (the old IR package), recorded per kernel in the wings' oracle file under
     /// the shipped card's fold threshold (16) and form "auto". The answer's figure is that of the kernel's own sinks.
@@ -1065,6 +1075,57 @@ mod tests {
         assert_eq!(cards.wide_class.as_deref(), Some("sm61"));
     }
 
+    /// The warp rows a request's split may take, for the scalar type, targets and architecture the request states.
+    fn warp_rows_of(
+        scalar: Scalar,
+        targets: Vec<Target>,
+        arch: Option<&str>,
+    ) -> Vec<(i64, String)> {
+        let stated = [];
+        let mut request = device_request(facts_of_arch(arch, &stated));
+        request.scalar = scalar;
+        request.targets = targets;
+        if request.targets.contains(&Target::Host) {
+            request.facts.push((Target::Host, "{}".into()));
+        }
+        let cards = Cards::load(&request, &CardSet::new(&shipped(), &stated)).unwrap();
+        let rows = stages::stage_facts(&request, &cards.deciding)
+            .team
+            .warp_eigh;
+        rows.into_iter().map(|row| (row.n, row.scalar)).collect()
+    }
+
+    /// Oracle: the old rule of the warp form (the removed hawk test): a float32 build takes the row on any device; a float64 build
+    /// only where FP64 is fast: sm_80 and sm_90 yes, sm_61, sm_89 and no stated architecture (which is sm_61) no; a build with a
+    /// host target has no warp.
+    #[test]
+    fn a_double_build_takes_the_warp_row_only_where_fp64_is_fast_and_a_host_target_takes_none() {
+        let row = |scalar: &str| vec![(32, scalar.to_string())];
+        for (arch, double) in [
+            (Some("sm_61"), false),
+            (Some("sm_89"), false),
+            (None, false),
+            (Some("sm_80"), true),
+            (Some("sm_90"), true),
+        ] {
+            let rows = warp_rows_of(Scalar::Float64, vec![Target::Device], arch);
+            assert_eq!(
+                rows,
+                if double { row("float64") } else { vec![] },
+                "{arch:?}"
+            );
+            let rows = warp_rows_of(Scalar::Float32, vec![Target::Device], arch);
+            assert_eq!(rows, row("float32"), "{arch:?}");
+        }
+        for targets in [vec![Target::Host], vec![Target::Device, Target::Host]] {
+            assert_eq!(warp_rows_of(Scalar::Float32, targets, Some("sm_80")), []);
+        }
+        assert_eq!(
+            warp_rows_of(Scalar::Banded, vec![Target::Device], Some("sm_80")),
+            []
+        );
+    }
+
     #[test]
     fn a_device_facts_answer_naming_an_unknown_architecture_is_refused_by_name() {
         let request = device_request(r#"{"device_arch": "cuda"}"#.into());
@@ -1112,6 +1173,149 @@ mod tests {
             force: None,
             exempt: vec![],
         }
+    }
+
+    /// A request for `scalar` on the given targets, under the host facts answer the plain request states.
+    fn scalar_request(scalar: Scalar, targets: Vec<Target>) -> KernelRequest {
+        KernelRequest {
+            scalar,
+            targets,
+            ..plain_request()
+        }
+    }
+
+    /// Oracle: the sentence the old build refused a banded kernel with when a target was not a device.
+    #[test]
+    fn a_banded_kernel_for_the_host_is_refused_with_the_sentence_of_the_old_build() {
+        for targets in [vec![Target::Host], vec![Target::Device, Target::Host]] {
+            let why = scope(&scalar_request(Scalar::Banded, targets)).unwrap_err();
+            assert_eq!(
+                why.reason,
+                "\"k\": banded runs on device execution paths; on a CPU use float64 (target 'host' is not a device)"
+            );
+        }
+    }
+
+    #[test]
+    fn a_host_kernel_without_cells_and_a_banded_kernel_for_the_device_are_not_refused() {
+        scope(&scalar_request(Scalar::Float64, vec![Target::Host])).unwrap();
+        scope(&scalar_request(Scalar::Banded, vec![Target::Device])).unwrap();
+    }
+
+    /// The answer for the host to the kernel with two dispatch groups over one sink (an IR dump recorded from the front end), with a
+    /// vector and a matrix input declared beside the slots its body binds.
+    fn lowered_two_groups() -> KernelAnswer {
+        lowered_two_groups_with(vec![])
+    }
+
+    /// As [`lowered_two_groups`], the caller stating `sink_axes` for the sink planes.
+    fn lowered_two_groups_with(sink_axes: Vec<request::SinkAxes>) -> KernelAnswer {
+        const DUMP: &str = include_str!("../../tests/data/two_groups.dump");
+        let ctx = rx_ctx_new();
+        let mut roots = vec![0u32; 4096];
+        let mut loaded = 0;
+        // SAFETY: `ctx` is the live context just made, the text and the buffers outlive the call.
+        let status = unsafe {
+            rx_load(
+                ctx,
+                DUMP.as_ptr().cast(),
+                DUMP.len(),
+                roots.as_mut_ptr(),
+                roots.len(),
+                &mut loaded,
+            )
+        };
+        assert_eq!(status, RX_OK);
+        let machine = Stated {
+            headers: Some("roots".into()),
+            ..Stated::default()
+        };
+        let facts = answer(
+            &shipped(),
+            "host",
+            "/usr/bin/c++ || Apple clang version 21.0.0 || 0",
+            &probe(),
+            &machine,
+        )
+        .unwrap();
+        let mut request = plain_request();
+        request.sink_axes = sink_axes;
+        request.facts = vec![(Target::Host, facts)];
+        request.body = Body::Plain(Member {
+            // the one sink of the dump is its last root, the assignment to `y`
+            sinks: vec![roots[10]],
+            declared: vec![
+                DeclaredSlot {
+                    role: Role::VecIn,
+                    shape: vec![3],
+                    ..slot("v", Dtype::F64)
+                },
+                DeclaredSlot {
+                    role: Role::MatIn,
+                    shape: vec![2, 2],
+                    ..slot("m", Dtype::F64)
+                },
+            ],
+            ..body("k")
+        });
+        let answer = lower(ctx, &request.to_json(), &shipped());
+        // SAFETY: `ctx` is the live context made above and is not used after.
+        unsafe { rx_ctx_free(ctx) };
+        answer.unwrap()
+    }
+
+    /// Oracle: the table in aether's `runtime_names.rs` (`mirror_of`), read by hand: a mutable slot is a `GRefMirror` when it has a
+    /// rank and a `ScalarHandle` when it has none; a vector or matrix input or an output is a `GRefMirror`; a per-sample, lookup or
+    /// terminated slot is a `ScalarHandle`; a uniform or the sample count is passed by `value`.
+    #[test]
+    fn every_slot_of_a_lowered_kernel_states_how_it_crosses_the_launch_boundary() {
+        let answer = lowered_two_groups();
+        let slots: Vec<_> = answer
+            .units
+            .iter()
+            .flat_map(|u| &u.meta.body.slots)
+            .collect();
+        let mirror_of = |name: &str| {
+            let slot = slots
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("slot {name}"));
+            (slot.role, slot.shape.len(), slot.mirror.as_str())
+        };
+        // rank 0: a per-sample read is a scalar handle, a mutable output without rank too
+        assert_eq!(mirror_of("x"), (SlotRole::PerSample, 0, "ScalarHandle"));
+        assert_eq!(mirror_of("y"), (SlotRole::Mutable, 0, "ScalarHandle"));
+        // ranked: a vector and a matrix input, two roles, are each read through a mirror
+        assert_eq!(mirror_of("v"), (SlotRole::VecIn, 1, "GRefMirror"));
+        assert_eq!(mirror_of("m"), (SlotRole::MatIn, 2, "GRefMirror"));
+        // the answer's JSON states it on every slot
+        let json = answer.to_json();
+        let count = slots.len();
+        assert_eq!(json.matches("\"mirror\":").count(), count);
+        assert_eq!(KernelAnswer::from_json(&json).unwrap(), answer);
+    }
+
+    /// A sink plane the caller states with a payload wider than the walk's slot keeps the mirror of the slot the entry binds (the
+    /// writers decide by the walk's rank), where the record's shape is the payload: the kernel lowers as it did before the mirror was
+    /// stated.
+    #[test]
+    fn a_sink_payload_wider_than_its_slot_does_not_change_the_mirror() {
+        let wide = request::SinkAxes {
+            name: "y".into(),
+            payload: vec![4],
+            axes: vec![],
+        };
+        let answer = lowered_two_groups_with(vec![wide]);
+        let slot = answer
+            .units
+            .iter()
+            .flat_map(|u| &u.meta.body.slots)
+            .find(|s| s.name == "y")
+            .expect("slot y");
+        assert_eq!(
+            (slot.shape.clone(), slot.mirror.as_str()),
+            (vec![4], "ScalarHandle")
+        );
     }
 
     #[test]

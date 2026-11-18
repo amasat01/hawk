@@ -598,7 +598,6 @@ fn the_same_mistake_in_the_host_flags_of_a_shipped_instruction_set_document_is_a
 #[test]
 fn a_key_no_decision_reads_is_refused_by_name_in_a_stated_device_document() {
     let run_max = "\"run_max\": 32,";
-    let linalg = "\"linalg_max_dim\": 32,";
     let stated = [
         (
             "bank_words",
@@ -614,22 +613,6 @@ fn a_key_no_decision_reads_is_refused_by_name_in_a_stated_device_document() {
                 "cuda_build.json",
                 run_max,
                 "\"run_max\": 32, \"eigh_team_threads\": 32,",
-            ),
-        ),
-        (
-            "linalg_fast_fp64",
-            changed(
-                "cuda_build.json",
-                linalg,
-                "\"linalg_max_dim\": 32, \"linalg_fast_fp64\": 8,",
-            ),
-        ),
-        (
-            "linalg_warp_entries",
-            changed(
-                "cuda_build.json",
-                linalg,
-                "\"linalg_max_dim\": 32, \"linalg_warp_entries\": [],",
             ),
         ),
     ];

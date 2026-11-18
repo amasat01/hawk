@@ -9,6 +9,8 @@
   },
   "linalg_max_dim": 32,
   "linalg_team_max_dim": 4096,
+  "linalg_fast_fp64": 8,
+  "linalg_warp_entries": [["eigh", 32, "float32", []], ["eigh", 32, "float64", []]],
   "scatter": {"max_chunks": 256, "threads": 32},
   "cells_row": 32,
   "wide": {"slice_min": 128, "team_min": 128, "tile_bytes": 40960},

@@ -11,6 +11,7 @@ use aether_writers::contract::types::{
 };
 use aether_writers::contract::{Contract, Json};
 use aether_writers::refuse::{bad, fault, Refusal};
+use raptor_wings::team::WarpEntry;
 
 /// The host build's numbers.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +36,9 @@ pub struct BuildCard {
     pub linalg_max_dim: i64,
     /// The largest extent a team of threads works on.
     pub linalg_team_max_dim: i64,
+    /// The factorisations a warp takes per lane at the architecture the build is for: empty for the host's own card; the device's
+    /// rows with a double row kept only where the architecture's FP64 rate is at least `1 / linalg_fast_fp64` of its FP32 rate.
+    pub warp_entries: Vec<WarpEntry>,
     /// The samples one row of a reduction over samples stands for.
     pub cells_row: i64,
     /// The most chunks of an ordered scatter a launch splits the lanes into.
@@ -268,6 +272,7 @@ pub fn host_build(text: &str) -> Result<BuildCard, Refusal> {
         tile_max: number(&mut lanes, "tile_max")?,
         linalg_max_dim: number(&mut top, "linalg_max_dim")?,
         linalg_team_max_dim: number(&mut top, "linalg_team_max_dim")?,
+        warp_entries: vec![],
         cells_row: number(&mut top, "cells_row")?,
         scatter_max_chunks: number(&mut top, "scatter_max_chunks")?,
         scatter_threads: number(&mut top, "scatter_threads")?,
@@ -327,6 +332,10 @@ pub struct DeviceCard {
     pub wide_rows: Vec<WideRow>,
     /// The largest extent a team of threads works on.
     pub linalg_team_max_dim: i64,
+    /// The most FP32 lanes per FP64 lane a device may have for a double warp row to be taken.
+    pub linalg_fast_fp64: i64,
+    /// The factorisations a warp takes per lane.
+    pub linalg_warp_entries: Vec<WarpEntry>,
     /// The threads of the block of a stage that only copies operands into team scratch.
     pub copy_threads: i64,
     /// The threads of a team for a matrix of order up to this many.
@@ -747,7 +756,14 @@ impl DeviceCard {
     /// The numbers the steps of the lowering decide on when the build has a device target: the host's card with the device's
     /// limits and the wide thresholds of the class nearest the architecture laid over it.
     pub fn deciding(&self, host: &BuildCard, arch: &str) -> Result<BuildCard, Refusal> {
+        let fast = self.features_of(arch)?.fp64_ratio <= self.linalg_fast_fp64;
         Ok(BuildCard {
+            warp_entries: self
+                .linalg_warp_entries
+                .iter()
+                .filter(|row| row.scalar == "float32" || fast)
+                .cloned()
+                .collect(),
             rolled_fold_min: self.rolled_fold_min,
             linalg_max_dim: self.linalg_max_dim,
             linalg_team_max_dim: self.linalg_team_max_dim,
@@ -789,6 +805,41 @@ fn arch_features(json: &Json) -> Result<Vec<(i64, ArchFeatures)>, Refusal> {
                 )),
                 _ => Err(bad("a row is not [rate, registers, threads, cached]")),
             }
+        })
+        .collect()
+}
+
+/// The warp rows of the card: each `[kind, order, scalar, outputs]`, the outputs a list of names.
+fn warp_entries(json: &Json) -> Result<Vec<WarpEntry>, Refusal> {
+    let bad = |what: &str| {
+        fault(format!(
+            "facts: cuda_build.json: linalg_warp_entries: {what}"
+        ))
+    };
+    if !matches!(json, Json::Arr(_)) {
+        return Err(bad("not a list"));
+    }
+    json.arr()
+        .iter()
+        .map(|row| match row.arr() {
+            [kind, n, scalar, outputs] => Ok(WarpEntry {
+                kind: kind.str().ok_or_else(|| bad("a kind is not text"))?.into(),
+                n: n.int().ok_or_else(|| bad("an order is not an integer"))?,
+                scalar: scalar
+                    .str()
+                    .ok_or_else(|| bad("a scalar is not text"))?
+                    .into(),
+                outputs: outputs
+                    .arr()
+                    .iter()
+                    .map(|o| {
+                        o.str()
+                            .map(String::from)
+                            .ok_or_else(|| bad("an output is not text"))
+                    })
+                    .collect::<Result<_, _>>()?,
+            }),
+            _ => Err(bad("a row is not [kind, order, scalar, outputs]")),
         })
         .collect()
 }
@@ -865,6 +916,11 @@ pub fn device_build(text: &str) -> Result<DeviceCard, Refusal> {
         block_run: number(&mut lanes, "block_run")?,
         linalg_max_dim: number(&mut top, "linalg_max_dim")?,
         linalg_team_max_dim: number(&mut top, "linalg_team_max_dim")?,
+        linalg_fast_fp64: positive(number(&mut top, "linalg_fast_fp64")?, "linalg_fast_fp64")?,
+        linalg_warp_entries: warp_entries(
+            top.req("linalg_warp_entries")
+                .map_err(|why| fault(format!("facts: {why}")))?,
+        )?,
         cells_row: number(&mut top, "cells_row")?,
         copy_threads: number(&mut lanes, "copy_threads")?,
         team_threads,
@@ -922,6 +978,54 @@ mod tests {
     /// The shipped device card.
     fn shipped() -> DeviceCard {
         device_build(include_str!("../../facts/cuda_build.json")).unwrap()
+    }
+
+    /// Oracle: the old rule of the warp form: a float32 row always, a float64 row only where the architecture's FP64 rate is at least
+    /// an eighth of its FP32 rate (sm_80 and sm_90 at 1:2; sm_61 at 1:32 and sm_89 at 1:64 are not), the default architecture being
+    /// sm_61.
+    #[test]
+    fn a_double_warp_row_is_kept_only_where_fp64_is_fast() {
+        let card = shipped();
+        let host = host_build(include_str!("../../facts/build.json")).unwrap();
+        for (arch, scalars) in [
+            ("sm_61", vec!["float32"]),
+            ("sm_89", vec!["float32"]),
+            ("sm_80", vec!["float32", "float64"]),
+            ("sm_90", vec!["float32", "float64"]),
+        ] {
+            let rows = card.deciding(&host, arch).unwrap().warp_entries;
+            let got: Vec<&str> = rows.iter().map(|r| r.scalar.as_str()).collect();
+            assert_eq!(got, scalars, "{arch}");
+        }
+        assert!(host.warp_entries.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_warp_row_is_refused_by_name() {
+        let text = include_str!("../../facts/cuda_build.json");
+        let rows = r#"[["eigh", 32, "float32", []], ["eigh", 32, "float64", []]]"#;
+        for (bad, why) in [
+            (r#"[["eigh", 32, "float32"]]"#, "a row is not"),
+            (
+                r#"[["eigh", "32", "float32", []]]"#,
+                "an order is not an integer",
+            ),
+            (r#"[[1, 32, "float32", []]]"#, "a kind is not text"),
+            (r#"[["eigh", 32, "float32", [1]]]"#, "an output is not text"),
+            (r#"{}"#, "not a list"),
+        ] {
+            let broken = text.replacen(rows, bad, 1);
+            assert_ne!(broken, text);
+            let Err(refused) = device_build(&broken) else {
+                panic!("{bad} was read");
+            };
+            assert!(refused.reason.contains(why), "{bad}: {}", refused.reason);
+            assert!(
+                refused.reason.contains("linalg_warp_entries"),
+                "{}",
+                refused.reason
+            );
+        }
     }
 
     /// With one measured class every architecture takes it, and its thresholds replace the host's in the deciding card.

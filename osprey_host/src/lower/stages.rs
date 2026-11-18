@@ -23,7 +23,7 @@ use raptor_wings::stages::Keyed;
 use raptor_wings::stages::{
     names_under, scratch_planes, stages, stored_cells, Cell, Cut, StageFacts, Stages,
 };
-use raptor_wings::team::{Grid as TeamGrid, Plane, TeamLimits, TeamSpec, Unit};
+use raptor_wings::team::{Grid as TeamGrid, Plane, TeamLimits, TeamSpec, Unit, WarpEntry};
 
 /// What the answer's stage block holds of one unit.
 pub(crate) struct Note {
@@ -61,6 +61,21 @@ pub(super) fn split(
     Ok(out)
 }
 
+/// The warp rows the build may take: those of the card for the build's scalar type when every target of the request is a device (a
+/// host has no warp), none otherwise. The card has already dropped a double row for a device whose FP64 rate is low.
+fn warp_rows(request: &KernelRequest, card: &BuildCard) -> Vec<WarpEntry> {
+    let scalar = match request.scalar {
+        Scalar::Float32 => "float32",
+        Scalar::Float64 => "float64",
+        Scalar::Banded => return vec![],
+    };
+    if request.targets != [Target::Device] {
+        return vec![];
+    }
+    let fits = |row: &&WarpEntry| row.scalar == scalar;
+    card.warp_entries.iter().filter(fits).cloned().collect()
+}
+
 /// What the split reads besides the IR: the request's settings and the deciding card's limits.
 pub(super) fn stage_facts(request: &KernelRequest, card: &BuildCard) -> StageFacts {
     StageFacts {
@@ -73,6 +88,7 @@ pub(super) fn stage_facts(request: &KernelRequest, card: &BuildCard) -> StageFac
             team_threads: card.team_threads,
             team_threads_large: card.team_threads_large,
             forced: request.settings.team_threads,
+            warp_eigh: warp_rows(request, card),
         },
         in_place: !request.kind.active_set && request.kind.lanes.is_none(),
         scatter: (card.scatter_max_chunks, card.scatter_threads),

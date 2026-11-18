@@ -117,6 +117,7 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
         gather: Some(vec![true, false]),
         shape: vec![3, 2],
         name: name.into(),
+        mirror: "GRefMirror".into(),
     };
     let keyed = Keyed {
         width: 6,

@@ -13,11 +13,11 @@ Every file with its line count (this file excluded):
       8  osprey_host/binding/fixture/contract0.c
       7  osprey_host/binding/gen/Cargo.lock
      12  osprey_host/binding/gen/Cargo.toml
-   1379  osprey_host/binding/gen/src/main.rs
+   1396  osprey_host/binding/gen/src/main.rs
    1584  osprey_host/binding/template/door.c
      45  osprey_host/binding/template/osprey.h
     116  osprey_host/binding/template/types.c
-    931  osprey_host/binding/test_binding.py
+    948  osprey_host/binding/test_binding.py
    1246  osprey_host/binding/test_door.py
      50  osprey_host/build.rs
      11  osprey_host/check_exports.sh
@@ -28,7 +28,7 @@ Every file with its line count (this file excluded):
      28  osprey_host/facts/build.json
       6  osprey_host/facts/cpu.json
       9  osprey_host/facts/cuda.json
-     44  osprey_host/facts/cuda_build.json
+     46  osprey_host/facts/cuda_build.json
      49  osprey_host/facts/cuda_image.json
      27  osprey_host/facts/host_build.json
      27  osprey_host/facts/x86.json
@@ -47,7 +47,7 @@ Every file with its line count (this file excluded):
     162  osprey_host/src/lower/active.rs
      51  osprey_host/src/lower/blocks.rs
      35  osprey_host/src/lower/boxed.rs
-   1025  osprey_host/src/lower/card.rs
+   1129  osprey_host/src/lower/card.rs
     229  osprey_host/src/lower/chain.rs
     776  osprey_host/src/lower/derived.rs
     199  osprey_host/src/lower/events.rs
@@ -55,14 +55,14 @@ Every file with its line count (this file excluded):
     148  osprey_host/src/lower/image.rs
     334  osprey_host/src/lower/links.rs
     871  osprey_host/src/lower/meta_c.rs
-   1145  osprey_host/src/lower/meta_fill.rs
-   1175  osprey_host/src/lower/mod.rs
+   1151  osprey_host/src/lower/meta_fill.rs
+   1379  osprey_host/src/lower/mod.rs
     121  osprey_host/src/lower/placed.rs
    1801  osprey_host/src/lower/request.rs
     377  osprey_host/src/lower/segment.rs
     116  osprey_host/src/lower/stage_block.rs
-    539  osprey_host/src/lower/stages.rs
-    836  osprey_host/src/lower/unit_meta.rs
+    555  osprey_host/src/lower/stages.rs
+    841  osprey_host/src/lower/unit_meta.rs
     246  osprey_host/src/lower/warp.rs
     209  osprey_host/tests/auto_set.rs
      13  osprey_host/tests/common/mod.rs
@@ -93,8 +93,8 @@ Every file with its line count (this file excluded):
      77  osprey_host/tests/index_form.rs
      87  osprey_host/tests/link_rules.rs
     189  osprey_host/tests/loop_rules.rs
-    642  osprey_host/tests/meta_c.rs
-    646  osprey_host/tests/own_cards.rs
+    643  osprey_host/tests/meta_c.rs
+    629  osprey_host/tests/own_cards.rs
      49  osprey_host/tests/param_cell.rs
      41  osprey_host/tests/quantity.rs
     640  osprey_host/tests/set_text.rs

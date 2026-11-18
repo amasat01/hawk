@@ -1,7 +1,9 @@
 //! The typed meta of a unit: the records of the runtime's door headers, member for member. A count the header carries beside a list
 //! (`n_slots`, `rank`, `n_axes`, ...) is the list's length here; a member that may be absent is an `Option` or an empty list; a
 //! closed set is an enum whose discriminants are the header's values. The same declaration gives the answer's JSON, so the records
-//! cross the wire as they are, and the C source of the meta is written from them (see `meta_c`).
+//! cross the wire as they are, and the C source of the meta is written from them (see `meta_c`). The C source names the members it
+//! writes one by one, so a member the header has no counterpart of (a fact the answer states for its reader) is documented as such
+//! and stays out of the C source and of its header comparison.
 use super::request::{int_of, text_of, wrong, Keys};
 use aether_writers::contract::Json;
 use aether_writers::refuse::{unknown, Refusal};
@@ -338,6 +340,9 @@ record! {
         pub shape: Vec<i64>,
         /// The declared name.
         pub name: String,
+        /// How the slot crosses the launch boundary: `GRefMirror`, `ScalarHandle` or `value`, from the writers' one table of roles.
+        /// Stated in the answer's JSON only: the C record of the header has no such member, and `meta_c` does not write it.
+        pub mirror: String,
     }
 }
 record! {
