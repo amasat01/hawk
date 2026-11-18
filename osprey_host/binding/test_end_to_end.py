@@ -39,7 +39,10 @@ def library_of(folder):
 
 def exported(path):
     """Return the names of the global symbols the library at `path` defines."""
-    shown = subprocess.run(["nm", "-gU", path], capture_output=True, text=True, check=True)
+    version = subprocess.run(["nm", "--version"], capture_output=True, text=True).stdout
+    # GNU nm has no -U and the macOS nm has no --defined-only
+    defined = ["-g", "--defined-only"] if "GNU" in version else ["-gU"]
+    shown = subprocess.run(["nm", *defined, path], capture_output=True, text=True, check=True)
     return {line.split()[-1].lstrip("_") for line in shown.stdout.splitlines() if line.strip()}
 
 
@@ -130,7 +133,7 @@ def run(done, o, raises, folders, header_abi, make_nodes):
         "cuda build: no compiler on this machine",
     )
     assert getattr(e, "code", None) == "tool_absent", (e, getattr(e, "code", None))
-    # a device unit's text needs the release of a device compiler: with none stated, lower refuses
+    # a device unit's text needs no tool: without a device compiler it takes the card's release
     device = {
         **REQUEST,
         "targets": ["Device"],
@@ -138,11 +141,9 @@ def run(done, o, raises, folders, header_abi, make_nodes):
         "machine": {"Device": answered},
     }
     device["body"] = {"Plain": {**REQUEST["body"]["Plain"], "sinks": sinks}}
-    e = raises(
-        o.BadRequest,
-        lambda: c3.backend_lower(cuda, c3.dump(dump_nodes), "", json.dumps(device)),
-        "cuda lower: no device compiler stated",
-    )
-    assert "no device compiler" in str(e) and "HAWK_NVCC" in str(e), str(e)
-    done.append("end to end: cuda lower refuses by name with no device compiler stated")
+    written = json.loads(c3.backend_lower(cuda, c3.dump(dump_nodes), "", json.dumps(device)))
+    unit = written["units"][0]
+    assert [t["target"] for t in unit["texts"]] == ["Device"], unit["texts"]
+    assert unit["meta"]["device_compiler"] == "nvcc 12.6", unit["meta"]["device_compiler"]
+    done.append("end to end: cuda lower writes text with no device compiler")
     c.backend_close(cuda)

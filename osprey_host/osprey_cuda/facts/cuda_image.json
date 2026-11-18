@@ -1,4 +1,5 @@
 {
+  "text_compiler": "nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0",
   "ptx_isa": {"12.6": 85, "12.9": 88},
   "opt_levels": ["O0", "O1", "O2", "O3"],
   "default_opt_level": "O3",

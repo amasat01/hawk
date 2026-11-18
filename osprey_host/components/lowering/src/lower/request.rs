@@ -1085,7 +1085,7 @@ impl Settings {
         Ok(settings)
     }
     /// Writes the settings, leaving out what has its default.
-    fn write(&self) -> Json {
+    pub(super) fn write(&self) -> Json {
         let mut o: Vec<(String, Json)> = vec![];
         if self.fold_form != FoldForm::default() {
             o.push(("fold_form".into(), name_of(&self.fold_form)))

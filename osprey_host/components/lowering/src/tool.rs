@@ -3,7 +3,7 @@
 //! own build card. No compiler flag, header shape or tool identity crosses the door in either direction; the library states the
 //! machine once and every later call carries that answer back as given.
 use crate::backend::{target_name, unserved, Backend};
-use crate::facts::{self, Failed};
+use crate::facts::{self, CardSet, Failed};
 use aether_writers::contract::{Contract, Json};
 use aether_writers::refuse::{bad, Refusal};
 use std::path::Path;
@@ -81,8 +81,13 @@ pub fn machine<B: Backend>(backend: &B, ask: &str) -> Result<String, toolkit::Re
 
 /// The stated machine (the JSON `facts::stated_from_json` reads) a machine answer stands for, and the compiler identity the facts
 /// question takes. A target's own members only: the host's instruction set, caches, profile, header shape (the library embeds both
-/// header trees, so `roots`), level and witness verdict; the device's arch, driver and compiler release.
-fn stated_of<B: Backend>(backend: &B, machine: &Json) -> Result<(String, String), Failed> {
+/// header trees, so `roots`), level and witness verdict; the device's arch, driver and compiler release. A device machine with
+/// neither a compiler nor a runtime compile library is written under the card's `text_compiler`: text needs no tool.
+fn stated_of<B: Backend>(
+    backend: &B,
+    cards: &CardSet,
+    machine: &Json,
+) -> Result<(String, String), Failed> {
     let stated = machine
         .get("stated")
         .ok_or_else(|| Failed::Bad("the machine answer states nothing".into()))?;
@@ -93,12 +98,7 @@ fn stated_of<B: Backend>(backend: &B, machine: &Json) -> Result<(String, String)
         None if stated.get("runtime").is_some() => {
             "none || the runtime compile library || none".to_string()
         }
-        None => {
-            let why = text(machine, "tools_absent").unwrap_or("no device compiler");
-            return Err(Failed::Bad(format!(
-                "the machine states no device compiler and no runtime compile library, and a device unit's text needs the release of one: {why}"
-            )));
-        }
+        None => facts::device_text_compiler(cards)?,
     };
     let asked = stated.get("asked");
     let level = asked
@@ -161,8 +161,9 @@ fn stated_of<B: Backend>(backend: &B, machine: &Json) -> Result<(String, String)
 /// # Errors
 /// Refuses a machine answer that states nothing usable, or the facts question the cards cannot answer.
 pub fn facts_for<B: Backend>(backend: &B, machine: &Json) -> Result<String, Failed> {
-    let (identity, stated) = stated_of(backend, machine)?;
     let dir = facts::facts_dir(None).map_err(Failed::Card)?;
+    let cards = CardSet::new(&dir, &[], backend.card_names());
+    let (identity, stated) = stated_of(backend, &cards, machine)?;
     facts::answer(
         &dir,
         backend,
@@ -200,8 +201,28 @@ pub fn with_facts<B: Backend>(backend: &B, request: &str) -> Result<String, Refu
         ))
     })?;
     let answer = facts_for(backend, own).map_err(Failed::refusal)?;
+    if !parts.iter().any(|(k, _)| k == "image_format") {
+        if let Some(format) = image_format_of(&answer)? {
+            parts.push(("image_format".into(), Json::Str(format)));
+        }
+    }
     parts.push(("facts".into(), Json::Obj(vec![(target, Json::Str(answer))])));
     Ok(json.to_text())
+}
+
+/// The form of device image the facts answer states (`Ptx`, `Cubin` or `Fatbin`), as the request names it; none for a facts answer
+/// with no device build, a host's.
+fn image_format_of(answer: &str) -> Result<Option<String>, Refusal> {
+    let facts = Contract::parse(answer)?.0;
+    let Some(form) = facts
+        .get("device_build")
+        .and_then(|build| text(build, "image_format"))
+    else {
+        return Ok(None);
+    };
+    let mut letters = form.chars();
+    let first = letters.next().map(|c| c.to_ascii_uppercase());
+    Ok(Some(first.into_iter().chain(letters).collect()))
 }
 
 /// The strings of a JSON list.
@@ -216,7 +237,8 @@ fn strings(j: Option<&Json>) -> Vec<String> {
 
 /// Builds one unit: `{"name", "text", "machine", "defines"?}` in; the toolkit's answer out with what a caller publishes and links
 /// from it: `artifact` (the object's file name), `source` (the source's), `format`, `seconds`, `files` (name to path) and
-/// `link_recipe`, the opaque instructions the link needs, which the caller hands back untouched in `parts`.
+/// `link_recipe`, the opaque instructions the link needs (the compile of the set, its link, the machine and the defines the unit was
+/// compiled with), which the caller hands back untouched in `parts`.
 ///
 /// # Errors
 /// Refuses a request without a machine, a machine for another target, and what the tool side refuses.
@@ -283,6 +305,10 @@ pub fn build<B: Backend>(
             recipe.get("link").cloned().unwrap_or(Json::Null),
         ),
         ("machine".into(), Json::Str(key.into())),
+        (
+            "defines".into(),
+            Json::Arr(defines.iter().map(|d| Json::Str(d.clone())).collect()),
+        ),
     ]);
     Ok(wire::render(&wire::obj(vec![
         ("artifact", wire::s(&object)),
@@ -375,7 +401,10 @@ pub fn link<B: Backend>(
         ),
         (
             "lists".into(),
-            Json::Obj(vec![("{defines}".into(), Json::Arr(vec![]))]),
+            Json::Obj(vec![(
+                "{defines}".into(),
+                recipe.get("defines").cloned().unwrap_or(Json::Arr(vec![])),
+            )]),
         ),
         (
             "key_terms".into(),

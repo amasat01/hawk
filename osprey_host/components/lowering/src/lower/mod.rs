@@ -37,7 +37,7 @@ use aether_writers::contract::types::{
     Access, Active, BodySource, Build, Dtype, Exports, Form, FusedLane, Kind, Machine, OneStep,
     Scalar, Segment, SelectWeight, Slot, Target, Unit, Walk, DEFAULT_ROWS,
 };
-use aether_writers::contract::Contract;
+use aether_writers::contract::{Contract, Json};
 use aether_writers::refuse::{bad, fault, nib, not_written, Refusal};
 use aether_writers::RxCtx;
 
@@ -211,6 +211,8 @@ pub(crate) struct Cards {
     deciding: BuildCard,
     /// The command that makes the device image, when the request names the device.
     image: Option<image::DeviceImage>,
+    /// The build settings the library's target declares.
+    settings: Vec<String>,
     /// The name of the device card's wide class for the architecture the request's device facts state, whose thresholds place the
     /// kernel's wide values; none when the request has no device target.
     wide_class: Option<String>,
@@ -249,10 +251,16 @@ impl Cards {
             }
             _ => None,
         };
+        let settings = match (&device, &host) {
+            (Some(device), _) => device.settings.clone(),
+            (None, Some(host)) => host.settings.clone(),
+            (None, None) => vec![],
+        };
         Ok(Cards {
             host,
             device,
             render: backend.render(),
+            settings,
             deciding,
             image,
             wide_class,
@@ -275,6 +283,24 @@ impl Cards {
             _ => "float64",
         };
         Ok(device.contraction_route(&device_arch(request)?, scalar))
+    }
+
+    /// Refuses a build setting the request states that the library's target does not declare. A library that lowers beside a leader
+    /// leaves the judgement to the leader, which declares every setting of the build.
+    fn refuse_undeclared_settings(&self, request: &KernelRequest) -> Result<(), Refusal> {
+        if request.peer.is_some() {
+            return Ok(());
+        }
+        let Json::Obj(stated) = request.settings.write() else {
+            return Ok(());
+        };
+        match stated.iter().find(|(key, _)| !self.settings.contains(key)) {
+            Some((key, _)) => Err(bad(format!(
+                "build settings key {key:?} is declared by none of the targets {:?}: the target's card names the setting keys it accepts",
+                request.targets.iter().map(|t| crate::backend::target_name(*t)).collect::<Vec<_>>()
+            ))),
+            None => Ok(()),
+        }
     }
 
     /// The measured `steps_reverse` rows of the target this library serves: the key of the other target is empty.
@@ -390,6 +416,7 @@ pub fn lower<B: Backend>(
     refine_stop_rule(ctx, &request)?;
     facts_under_cards(&request.facts, docs)?;
     let cards = Cards::load(backend, &request, docs)?;
+    cards.refuse_undeclared_settings(&request)?;
     let mut units = kernel_units(ctx, &request, &cards, docs, request.exports_block)?;
     if !request.derived.is_empty() {
         units.extend(derived_units(ctx, &request, &cards, docs, &units)?);

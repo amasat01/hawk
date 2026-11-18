@@ -59,6 +59,9 @@ pub struct BuildCard {
     pub device_steps_reverse: Option<StepsTable>,
     /// The thresholds the host's wide-value placement reads, by the scalar's width in bytes.
     pub host_wide: Vec<(i64, WideLimits)>,
+    /// The build settings the target declares, by the names a request states them under; a setting no target of a build declares is
+    /// refused by name.
+    pub settings: Vec<String>,
 }
 
 /// What the placement of wide values reads of the target for one scalar width.
@@ -141,6 +144,18 @@ fn number(keys: &mut Keys, key: &'static str) -> Result<i64, Refusal> {
         .map_err(|why| fault(format!("facts: {why}")))?
         .int()
         .ok_or_else(|| fault(format!("facts: {key} is not an integer")))
+}
+
+/// The setting names of a card's `settings` list: a list of texts.
+fn setting_names(json: &Json) -> Result<Vec<String>, Refusal> {
+    json.arr()
+        .iter()
+        .map(|name| {
+            name.str()
+                .map(String::from)
+                .ok_or_else(|| fault("facts: settings is not a list of names"))
+        })
+        .collect()
 }
 
 /// The two team sizes of the card: the smaller serves a matrix up to its own order, the larger the rest. A card whose larger
@@ -283,6 +298,10 @@ pub fn host_build(text: &str) -> Result<BuildCard, Refusal> {
         steps_reverse: Some(steps_reverse(top.req("steps_reverse")?, "build.json")?),
         device_steps_reverse: None,
         host_wide: host_wide(&section(&mut top, "host_wide")?)?,
+        settings: setting_names(
+            top.req("settings")
+                .map_err(|why| fault(format!("facts: build.json: {why}")))?,
+        )?,
     };
     for done in [form.done(), lanes.done(), top.done()] {
         done.map_err(|why| fault(format!("facts: build.json: {why}")))?;
@@ -336,6 +355,8 @@ pub struct DeviceCard {
     pub max_threads_per_sm: i64,
     /// The wide thresholds measured for one architecture and scalar type, which replace the card's own for that type.
     pub wide_rows: Vec<WideRow>,
+    /// The build settings the device declares, by the names a request states them under.
+    pub settings: Vec<String>,
     /// The largest extent a team of threads works on.
     pub linalg_team_max_dim: i64,
     /// The most FP32 lanes per FP64 lane a device may have for a double warp row to be taken.
@@ -790,6 +811,7 @@ impl DeviceCard {
             steps_reverse: None,
             device_steps_reverse: Some(self.steps_reverse.clone()),
             host_wide: self.wide_class(arch)?.limits.clone(),
+            settings: self.settings.clone(),
         })
     }
 }
@@ -966,6 +988,10 @@ pub fn device_build(text: &str) -> Result<DeviceCard, Refusal> {
             "max_threads_per_sm",
         )?,
         wide_rows: wide_rows(&rows)?,
+        settings: setting_names(
+            top.req("settings")
+                .map_err(|why| fault(format!("facts: {file}: {why}")))?,
+        )?,
     };
     if found.slice_min % found.warp_size != 0 {
         return Err(fault(format!(

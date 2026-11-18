@@ -865,6 +865,18 @@ fn flags_of_names(card: &Json, file: &str, key: &str) -> Result<Json, String> {
     ))
 }
 
+/// The compiler identity a device unit's text is written under when the machine has neither a device compiler nor a runtime compile
+/// library: writing text needs no tool, only the release whose PTX version the unit states, which `cuda_image.json` names
+/// (`text_compiler`).
+///
+/// # Errors
+/// Refuses a card without the member.
+pub fn device_text_compiler(cards: &CardSet) -> Result<String, Failed> {
+    let file = "cuda_image.json";
+    let card = cards.json(file)?;
+    text_of(&card, file, "text_compiler").map_err(|reason| cards.defect(file, reason))
+}
+
 /// The compile command of a device build as data: the compiler's short name (the tool and its release), the PTX version its
 /// release writes, the form of image the build makes and the argv template of the compile that makes it (`device_build.rs`), the
 /// flags of an image of each format for the architecture and the recipe that embeds an image file in the unit library
@@ -883,6 +895,7 @@ fn device_build(
         &card,
         file,
         &[
+            "text_compiler",
             "ptx_isa",
             "opt_levels",
             "default_opt_level",

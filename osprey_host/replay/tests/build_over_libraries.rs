@@ -202,3 +202,21 @@ fn a_kernel_named_after_a_reserved_name_is_refused_by_name() {
     // SAFETY: the context is not used again.
     unsafe { rx_ctx_free(ctx) };
 }
+
+#[test]
+fn a_setting_the_target_does_not_declare_is_refused_by_name_and_the_target_that_declares_it_takes_it(
+) {
+    let (ctx, sink) = plain_kernel();
+    let mut host = request_for(Target::Host, sink);
+    host.settings.fold_k = Some(2);
+    let why = lowered(ctx, &host).unwrap_err();
+    assert!(
+        why.contains("\"fold_k\"") && why.contains("declared by none"),
+        "{why}"
+    );
+    let mut device = request_for(Target::Device, sink);
+    device.settings.fold_k = Some(2);
+    lowered(ctx, &device).unwrap();
+    // SAFETY: the context is not used again.
+    unsafe { rx_ctx_free(ctx) };
+}
