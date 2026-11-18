@@ -11,12 +11,9 @@
 #
 # WHAT THE BUILD MUST GET RIGHT, and what each block below is for:
 #
-# 1. THE TWO HEADER ROOTS ARE RESOLVED BY THE SAME CODE THE PYTHON DRIVER USES.
-# `hawk/_roots.py` is loaded BY PATH — not imported as
-#     `hawk.compile.toolchain`, because importing any hawk submodule runs
-# `hawk/__init__`, whose self-check imports the very `_core` this build
-# is about to produce. A hand-written second copy of the search rule here would
-# be exactly the drift this shared code is meant to prevent, so there isn't one.
+# 1. THE TWO HEADER ROOTS COME FROM ONE RESOLVER, `_build_roots.py`, run as a script:
+#     it cannot be a module of the hawk package, whose import checks the very
+#     `_core` this build is about to produce.
 #
 # 2. THE INCLUDE ORDER IS MANDATORY: aether first, eagle second.
 #     `EAGLE_ABI_INDEX_T` binds to `AETHER_INDEX_T` only if that macro is already
@@ -56,20 +53,18 @@ if(NOT nanobind_FOUND)
 endif()
 
 # ---------------------------------------------------------------------------
-# (1) The header roots — HAWK's own resolver, run as a script.
+# (1) The header roots: the build's resolver, run as a script (`-I`: isolated
+# from the environment and from the script's own folder).
 # ---------------------------------------------------------------------------
-# `-I` keeps the script's own folder off sys.path: run by path, hawk/_roots.py
-# would otherwise put hawk/ first, and hawk/types.py would shadow the
-# standard-library `types` module.
 execute_process(
-  COMMAND "${Python_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/hawk/_roots.py"
+  COMMAND "${Python_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/_build_roots.py"
   OUTPUT_VARIABLE _hawk_roots
   ERROR_VARIABLE _hawk_roots_err
   RESULT_VARIABLE _hawk_roots_rc
   OUTPUT_STRIP_TRAILING_WHITESPACE)
 if(NOT _hawk_roots_rc EQUAL 0)
   message(FATAL_ERROR
-    "hawk/_roots.py could not resolve the aether/eagle include roots.\n"
+    "_build_roots.py could not resolve the aether/eagle include roots.\n"
     "Set $HAWK_AETHER_INCLUDE / $HAWK_EAGLE_INCLUDE and re-run.\n${_hawk_roots_err}")
 endif()
 string(REPLACE "\n" ";" _hawk_roots_list "${_hawk_roots}")

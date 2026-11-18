@@ -8,7 +8,7 @@
 carries nothing from outside itself, so the sdist hook copies those two headers,
 and every header they include, into ``_sdist_include/`` (git-ignored, listed in
 ``sdist.include``) and removes the copy again afterwards. The two roots are found
-by ``hawk/_roots.py``, the same resolver the build uses, which also tries
+by ``_build_roots.py``, the same resolver the build uses, which also tries
 ``_sdist_include/`` as its last resort, so a checkout keeps building against
 its live roots. Every other hook runs scikit-build-core unchanged.
 """
@@ -32,7 +32,7 @@ _INCLUDE_LINE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
 def _load_roots():
     # By path, not `import hawk`: hawk/__init__ imports the extension being built.
     spec = importlib.util.spec_from_file_location(
-        "_hawk_sdist_roots", _HERE / "hawk" / "_roots.py")
+        "_hawk_sdist_roots", _HERE / "_build_roots.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
