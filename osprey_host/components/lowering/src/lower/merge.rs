@@ -34,6 +34,8 @@ pub fn merge(answers: &str) -> Result<String, Refusal> {
         merged = join(merged, next)?;
     }
     merged.peer = None;
+    // the merged answer always states the record: a build with no device states it with every member unstated
+    merged.dispatch_costs.get_or_insert_with(Default::default);
     let metas: Vec<&UnitMeta> = merged.units.iter().map(|u| &u.meta).collect();
     merged.meta_source = meta_c::source(&merged.library, &metas)?;
     Ok(merged.to_json())

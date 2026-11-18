@@ -1,6 +1,6 @@
 #!/bin/sh
 # The gate of the OSPREY libraries (components/lowering, osprey_cpu, osprey_cuda) and the tools that prove them. Usage: sh ci/gate.sh [leg ...]   (no argument: every leg, in this order)
-#   fmt clippy test exports binding py39 abi ruff cformat tidy replay
+#   fmt clippy test exports binding py39 abi wheels ruff cformat tidy replay
 # Environment: PYTHON (the interpreter the binding is built for; the binding leg is red without it), EAGLE_DOOR_DIR (the include root of eagle/door/eg_door.h and the folder of libeagle_door; the binding and tidy legs are red without it), CLANG_TIDY (the clang-tidy
 # program; the tidy leg is RED without it), the cformat leg skips, saying so, unless clang-format is major version 23, PYTHON39 and PY39_INCLUDE (a Python 3.9 interpreter and its headers; the py39 leg
 # skips, saying so, when the interpreter is absent; the default is the macOS command line tools' one). The siblings ../raptor and ../aether are inputs (RAPTOR names the first);
@@ -34,6 +34,7 @@ build_env() {
       eval "export OSPREY_${up}_${tu}_HEADERS=$PWD/target/headers/$kind/$tree"
     done
   done
+  export OSPREY_CUDA_RTC_HEADERS=$PWD/target/headers/cuda/rtc
 }
 
 leg_skips=0; test_skips=0
@@ -145,6 +146,23 @@ leg_abi() {
   [ $rc -eq 0 ] || { grep -E "FAILED|panicked|^error" "$out" | head -3; echo "RED: table test"; return 1; }; need abi "$n"
 }
 
+# the binding and the libraries are built, then the three wheels are written from them, installed with no other package of ours into a fresh
+# environment, and there the binding imports and both backend folders are found through the entry points
+leg_wheels() {
+  build_env || return 1
+  [ -n "$PYTHON" ] || { echo "RED: PYTHON is not set"; return 1; }
+  build_and_test_binding "$PYTHON" "" || return 1
+  rm -rf dist/wheels target/wheels_venv
+  "$PYTHON" ci/wheels.py build >"$out" 2>&1 || { tail -3 "$out"; echo "RED: ci/wheels.py build"; return 1; }
+  cat "$out"; n=$(ls dist/wheels/*.whl | wc -l | tr -d ' '); need wheels "$n" || return 1
+  [ "$n" -eq 3 ] || { echo "RED: expected three wheels, got $n"; return 1; }
+  "$PYTHON" -m venv target/wheels_venv >"$out" 2>&1 || { tail -3 "$out"; echo "RED: venv"; return 1; }
+  target/wheels_venv/bin/python -m pip install --quiet --no-index --no-deps dist/wheels/*.whl >"$out" 2>&1 \
+    || { tail -3 "$out"; echo "RED: pip install of the wheels"; return 1; }
+  target/wheels_venv/bin/python -I ci/wheels.py check >"$out" 2>&1 || { tail -3 "$out"; echo "RED: wheels check"; return 1; }
+  echo "examined: $(cat "$out")"
+}
+
 leg_ruff() {
   command -v ruff >/dev/null 2>&1 || { echo "RED: ruff is not on PATH"; return 1; }
   n=$(git ls-files | grep -c '\.py$'); echo "examined: $n python files"; need ruff "$n" || return 1
@@ -201,7 +219,7 @@ oracle() {
   echo "examined: facts oracle, $(passed) test passed"; need oracle "$(passed)"
 }
 
-legs=${*:-fmt clippy test exports binding py39 abi ruff cformat tidy replay}
+legs=${*:-fmt clippy test exports binding py39 abi wheels ruff cformat tidy replay}
 green=; red=
 for l in $legs; do
   echo "== $l"

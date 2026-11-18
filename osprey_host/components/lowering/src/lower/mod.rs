@@ -1563,6 +1563,34 @@ mod tests {
         }
     }
 
+    /// Oracle: the kernel's own source, read by hand: `y` is the mutable output, `x`, `v` and `m` are only read. A slot's element count
+    /// is the product of its shape, 1 for a scalar.
+    #[test]
+    fn every_slot_states_its_element_count_and_whether_the_kernel_writes_it() {
+        let answer = lowered_two_groups();
+        let slots: Vec<_> = answer
+            .units
+            .iter()
+            .flat_map(|u| &u.meta.body.slots)
+            .collect();
+        let found = |name: &str| {
+            *slots
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("slot {name}"))
+        };
+        assert_eq!((found("x").elements, found("x").written), (1, false));
+        assert_eq!((found("y").elements, found("y").written), (1, true));
+        for name in ["v", "m"] {
+            let slot = found(name);
+            assert_eq!(slot.elements, slot.shape.iter().product::<i64>());
+            assert!(slot.elements > 1 && !slot.written, "{name}");
+        }
+        let json = answer.to_json();
+        assert_eq!(json.matches("\"elements\":").count(), slots.len());
+        assert_eq!(json.matches("\"written\":").count(), slots.len());
+    }
+
     /// Oracle: the table in aether's `runtime_names.rs` (`mirror_of`), read by hand: a mutable slot is a `GRefMirror` when it has a
     /// rank and a `ScalarHandle` when it has none; a vector or matrix input or an output is a `GRefMirror`; a per-sample, lookup or
     /// terminated slot is a `ScalarHandle`; a uniform or the sample count is passed by `value`.

@@ -231,6 +231,20 @@ impl Toolkit {
         discover::child_env(&self.spec, &self.env, machine)
     }
 
+    /// What the environment says for the ask `name` (`opt_level`, `host_profile`) when the caller states none: the value of the
+    /// variable the table's `asks` names, trimmed; `None` when the table names none, the variable is unset or it is empty.
+    #[must_use]
+    pub fn ask_from_env(&self, name: &str) -> Option<String> {
+        let var = self
+            .spec
+            .get("asks")
+            .and_then(|asks| asks.get(name))
+            .and_then(|rule| rule.get("env"))
+            .and_then(J::str)?;
+        let value = self.env.get(var)?.trim();
+        (!value.is_empty()).then(|| value.to_string())
+    }
+
     /// The limit `name` of the table: its environment variable's value when set, else its default; 0 disables it.
     pub(crate) fn limit(&self, name: &str, default: u64) -> Done<u64> {
         let Some(rule) = self.spec.get("limits").and_then(|l| l.get(name)) else {

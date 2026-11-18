@@ -9,7 +9,7 @@
       "about": "C++ shared library for the CPU of the machine that builds it",
       "device": false,
       "entry": "host",
-      "format": "shared_library"
+      "format": "host"
     }
   ]
 }

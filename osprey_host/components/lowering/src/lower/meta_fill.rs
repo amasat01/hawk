@@ -149,12 +149,24 @@ pub(super) fn slots(
                     .contains(&s.name)
                     .then(|| pattern_of(patterns, &s.name))
                     .flatten(),
+                elements: shape.iter().product(),
+                written: is_written(s.role, &s.name, typed.finish.as_deref()),
                 shape,
                 name: s.name.clone(),
                 mirror: mirror.into(),
             })
         })
         .collect()
+}
+
+/// Whether the unit writes a slot of this role and name. A mask is only read unless the walk finishes samples through it (the
+/// `finish` record names the mask it stores); every other output role is written by its declaration.
+fn is_written(role: Role, name: &str, finish_mask: Option<&str>) -> bool {
+    match role {
+        Role::Terminated => finish_mask == Some(name),
+        Role::Mutable | Role::Out | Role::WideOut | Role::AccumOut => true,
+        _ => false,
+    }
 }
 
 /// The shape the record states for a slot: the payload of a sink plane with named axes, else the slot's own.
@@ -977,6 +989,20 @@ mod tests {
             slots: Some(vec![0]),
             ..m::Cell::default()
         }]
+    }
+
+    #[test]
+    fn a_mask_is_written_only_when_the_walk_finishes_samples_through_it() {
+        // an active-set kernel that never stores to its mask reads it; one that finishes samples through it stores to it
+        assert!(!is_written(Role::Terminated, "terminated", None));
+        assert!(!is_written(Role::Terminated, "terminated", Some("other")));
+        assert!(is_written(
+            Role::Terminated,
+            "terminated",
+            Some("terminated")
+        ));
+        assert!(is_written(Role::Mutable, "y", None));
+        assert!(!is_written(Role::PerSample, "x", None));
     }
 
     #[test]

@@ -45,7 +45,7 @@ impl Backend for Cpu {
         Target::Host
     }
     fn format(&self) -> &'static str {
-        "shared_library"
+        "host"
     }
     fn reserved_names_prelude(&self) -> Option<&'static str> {
         Some(aether_writers::unit::text::UNIT_INCLUDES)
@@ -83,4 +83,22 @@ pub fn table() -> &'static OspreyV1 {
     /// The table, made on first use.
     static TABLE: OnceLock<OspreyV1> = OnceLock::new();
     TABLE.get_or_init(door_table::<Cpu>)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The host row of the manifest names its object by the vocabulary of a bundle manifest's formats.
+    use super::*;
+
+    /// A bundle manifest's formats are `ptx`, `cubin`, `fatbin` and `host`; its reader refuses any other word, so the
+    /// host target's format, in the library and in the manifest beside it, is `host`.
+    #[test]
+    fn the_host_format_is_the_bundle_manifest_word() {
+        assert_eq!(Cpu.format(), "host");
+        let manifest = include_str!("../osprey.json");
+        assert!(
+            manifest.contains("\"format\": \"host\""),
+            "osprey.json states another format word"
+        );
+    }
 }

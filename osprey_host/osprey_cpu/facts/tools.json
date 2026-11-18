@@ -13,6 +13,10 @@
       ]
     }
   },
+  "asks": {
+    "opt_level": {"env": "HAWK_OPT_LEVEL"},
+    "host_profile": {"env": "HAWK_HOST_PROFILE"}
+  },
   "limits": {
     "address_cap": {"env": "HAWK_COMPILE_ADDRESS_CAP", "default": 12884901888},
     "source_budget": {"env": "HAWK_COMPILE_SOURCE_BUDGET", "default": 8388608},

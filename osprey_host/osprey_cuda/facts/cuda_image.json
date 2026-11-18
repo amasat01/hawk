@@ -25,7 +25,7 @@
       "cubin": ["-std=c++20", "-arch={sm}", "-default-device", "-D__builtin_inf()=__longlong_as_double(0x7ff0000000000000LL)"]
     },
     "compile": ["{flags}", "-I{include:cccl}", "{defines}"],
-    "headers": ["aether", "eagle", "facts"]
+    "headers": ["aether", "eagle", "facts", "rtc"]
   },
   "image_format": {"virtual_arch": "ptx", "driver_unknown": "cubin", "compiler_newer": "cubin", "otherwise": "ptx"},
   "embed": {

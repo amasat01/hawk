@@ -343,6 +343,12 @@ record! {
         /// How the slot crosses the launch boundary: `GRefMirror`, `ScalarHandle` or `value`, from the writers' one table of roles.
         /// Stated in the answer's JSON only: the C record of the header has no such member, and `meta_c` does not write it.
         pub mirror: String,
+        /// The number of scalars one value of the slot's type holds: the product of `shape`, 1 for a scalar.
+        /// Stated in the answer's JSON only, like `mirror`.
+        pub elements: i64,
+        /// Whether the kernel writes the slot: a mutable, output, wide output or accumulated plane, or the mask of finished samples.
+        /// Stated in the answer's JSON only, like `mirror`.
+        pub written: bool,
     }
 }
 record! {

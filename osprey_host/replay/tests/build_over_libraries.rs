@@ -170,6 +170,29 @@ fn a_companion_refuses_a_cut_it_cannot_meet_by_naming_both_cuts() {
     unsafe { rx_ctx_free(ctx) };
 }
 
+/// Oracle: the card of a host states no launch cost, so the merged answer of a host-only build states the record with every
+/// member unstated, and a build that has a device states the device's own.
+#[test]
+fn the_merged_answer_states_the_dispatch_costs_of_a_host_only_build_with_every_member_unstated() {
+    let (ctx, sink) = plain_kernel();
+    let host = lowered(ctx, &request_for(Target::Host, sink)).unwrap();
+    let merged = osprey_lowering::lower::merge(&format!("[{host}]")).unwrap();
+    let costs = KernelAnswer::from_json(&merged)
+        .unwrap()
+        .dispatch_costs
+        .expect("the merged answer states the record");
+    assert_eq!(
+        (
+            costs.launch_us,
+            costs.plane_us_per_byte,
+            costs.local_over_plane
+        ),
+        (None, None, None)
+    );
+    // SAFETY: the context is not used again.
+    unsafe { rx_ctx_free(ctx) };
+}
+
 /// Oracle: the shipped device documents state the launch cost 2.7 microseconds and the steps rows of width 2, and the host's own
 /// documents state the host rows.
 #[test]

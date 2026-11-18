@@ -151,9 +151,11 @@ def run(done, o, raises, folders, header_abi, make_nodes):
     device = {
         **REQUEST,
         "targets": ["Device"],
-        "image_format": "Ptx",
         "machine": {"Device": answered},
     }
+    if not tooled:
+        # a tooled machine takes the format its answer states: a newer compiler refuses "Ptx"
+        device["image_format"] = "Ptx"
     device["body"] = {"Plain": {**REQUEST["body"]["Plain"], "sinks": sinks}}
     written = json.loads(c3.backend_lower(cuda, c3.dump(dump_nodes), "", json.dumps(device)))
     unit = written["units"][0]

@@ -41,8 +41,16 @@ pub fn machine<B: Backend>(backend: &B, ask: &str) -> Result<String, toolkit::Re
             unserved(backend, text(&ask, "target").unwrap_or("")).reason,
         ));
     }
-    let options = ask.get("options").cloned().unwrap_or(Json::Obj(vec![]));
-    let level = text(&ask, "opt_level").unwrap_or("");
+    let toolkit = backend.toolkit()?;
+    let (level, options) = effective_ask(
+        text(&ask, "opt_level").unwrap_or(""),
+        ask.get("options").cloned().unwrap_or(Json::Obj(vec![])),
+        toolkit.ask_from_env("opt_level"),
+        toolkit
+            .ask_from_env("host_profile")
+            .filter(|_| backend.host_card_wanted()),
+    );
+    let level = level.as_str();
     let mut tool_ask = vec![
         (
             "key_terms".to_string(),
@@ -64,7 +72,7 @@ pub fn machine<B: Backend>(backend: &B, ask: &str) -> Result<String, toolkit::Re
     if let Some(arch) = text(&options, "arch") {
         tool_ask.push(("device_arch".into(), Json::Str(arch.into())));
     }
-    let answer = backend.toolkit()?.machine(&Json::Obj(tool_ask).to_text())?;
+    let answer = toolkit.machine(&Json::Obj(tool_ask).to_text())?;
     let Json::Obj(mut parts) = parse("the toolkit's machine answer", &answer)? else {
         return Err(refuse("the toolkit's machine answer is not an object"));
     };
@@ -78,6 +86,39 @@ pub fn machine<B: Backend>(backend: &B, ask: &str) -> Result<String, toolkit::Re
         }
     }
     Ok(Json::Obj(parts).to_text())
+}
+
+/// The level and the options a machine is stated for: what the ask states, else what the environment says (`env_level`,
+/// `env_profile`), else nothing (the card's default). The answer's `stated` and `key` follow the result, so two builds under
+/// different variables never share a cache entry. A value that names no level or profile is refused by name where the lowering
+/// reads it, as the same ask in the options is.
+fn effective_ask(
+    level: &str,
+    options: Json,
+    env_level: Option<String>,
+    env_profile: Option<String>,
+) -> (String, Json) {
+    let level = if level.is_empty() {
+        env_level.unwrap_or_default()
+    } else {
+        level.to_string()
+    };
+    let options = match (options, env_profile) {
+        (Json::Obj(mut members), Some(profile)) if text_in(&members, "profile").is_none() => {
+            members.push(("profile".into(), Json::Str(profile)));
+            Json::Obj(members)
+        }
+        (options, _) => options,
+    };
+    (level, options)
+}
+
+/// The text member `key` of an object's members.
+fn text_in<'a>(members: &'a [(String, Json)], key: &str) -> Option<&'a str> {
+    members
+        .iter()
+        .find(|(name, _)| name == key)
+        .and_then(|(_, value)| value.str())
 }
 
 /// The stated machine (the JSON `facts::stated_from_json` reads) a machine answer stands for, and the compiler identity the facts
@@ -605,4 +646,59 @@ fn build_device<B: Backend>(
             wire::parse("recipe", &link_recipe.to_text())?,
         ),
     ])))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(profile: Option<&str>) -> Json {
+        Json::Obj(
+            profile
+                .map(|p| ("profile".to_string(), Json::Str(p.into())))
+                .into_iter()
+                .collect(),
+        )
+    }
+
+    fn profile_of(options: &Json) -> Option<String> {
+        options.get("profile").and_then(Json::str).map(String::from)
+    }
+
+    #[test]
+    fn an_option_beats_the_variable_and_the_variable_beats_the_default() {
+        let env = |l: &str, p: &str| (Some(l.to_string()), Some(p.to_string()));
+        let (env_level, env_profile) = env("O1", "portable");
+        // the option wins
+        let (level, opts) = effective_ask(
+            "O2",
+            options(Some("native")),
+            env_level.clone(),
+            env_profile.clone(),
+        );
+        assert_eq!(
+            (level.as_str(), profile_of(&opts).as_deref()),
+            ("O2", Some("native"))
+        );
+        // the variable decides when the ask states none
+        let (level, opts) = effective_ask("", options(None), env_level, env_profile);
+        assert_eq!(
+            (level.as_str(), profile_of(&opts).as_deref()),
+            ("O1", Some("portable"))
+        );
+        // with neither, nothing is stated and the card's default stands
+        let (level, opts) = effective_ask("", options(None), None, None);
+        assert_eq!((level.as_str(), profile_of(&opts)), ("", None));
+    }
+
+    #[test]
+    fn the_key_terms_of_two_variables_differ() {
+        let terms = |level: &str, profile: &str| {
+            let (level, opts) =
+                effective_ask("", options(None), Some(level.into()), Some(profile.into()));
+            format!("opt_level:{level}|options:{}", opts.to_text())
+        };
+        assert_ne!(terms("O1", "native"), terms("O3", "native"));
+        assert_ne!(terms("O1", "native"), terms("O1", "portable"));
+    }
 }

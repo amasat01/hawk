@@ -81,3 +81,72 @@ pub fn table() -> &'static OspreyV1 {
     static TABLE: OnceLock<OspreyV1> = OnceLock::new();
     TABLE.get_or_init(door_table::<Cuda>)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::trees::TREES;
+
+    fn tree(name: &str) -> &'static toolkit::HeaderTree {
+        TREES
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("the library embeds no tree {name:?}"))
+    }
+
+    fn file(tree: &toolkit::HeaderTree, name: &str) -> Option<&'static [u8]> {
+        tree.files.iter().find(|f| f.0 == name).map(|f| f.1)
+    }
+
+    /// Oracle: the runtime compiler has no system C++ headers, so its served tree holds aether's seven shims under the bare standard
+    /// names and eagle's layout header under the name the units include, with the layout header's own bytes.
+    #[test]
+    fn the_runtime_tree_holds_the_seven_bare_shims_and_the_layout_alias() {
+        let rtc = tree("rtc");
+        for shim in [
+            "cstddef",
+            "cstdint",
+            "type_traits",
+            "utility",
+            "concepts",
+            "cmath",
+            "atomic",
+        ] {
+            assert!(
+                file(rtc, shim).is_some_and(|bytes| !bytes.is_empty()),
+                "{shim}"
+            );
+        }
+        let layout =
+            file(tree("eagle"), "plugin/gref_layout.h").expect("eagle's layout header is embedded");
+        assert_eq!(file(rtc, "plugin/gref_abi.h"), Some(layout));
+        assert_eq!(
+            rtc.files.len(),
+            8,
+            "the tree holds the seven shims and the alias, nothing else"
+        );
+    }
+
+    /// The offline compiler reads the aether, eagle and facts trees as include roots: none of them holds a bare standard name, which
+    /// would shadow the host's own headers; and the card lists the runtime tree for the runtime compile only.
+    #[test]
+    fn the_offline_include_roots_hold_none_of_the_runtime_names() {
+        for name in ["aether", "eagle", "facts"] {
+            for bare in [
+                "cstddef",
+                "cstdint",
+                "type_traits",
+                "utility",
+                "concepts",
+                "cmath",
+                "atomic",
+            ] {
+                assert!(file(tree(name), bare).is_none(), "{name}/{bare}");
+            }
+        }
+        let card = include_str!("../facts/cuda_image.json");
+        let runtime = &card[card.find("\"runtime\"").expect("the runtime member")..];
+        let offline = &card[..card.find("\"runtime\"").unwrap()];
+        assert!(runtime.contains("\"rtc\""));
+        assert!(!offline.contains("\"rtc\""));
+    }
+}

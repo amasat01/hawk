@@ -10,6 +10,7 @@ fn main() {
             ("aether", "OSPREY_CUDA_AETHER_HEADERS"),
             ("eagle", "OSPREY_CUDA_EAGLE_HEADERS"),
             ("facts", "OSPREY_CUDA_FACTS_HEADERS"),
+            ("rtc", "OSPREY_CUDA_RTC_HEADERS"),
         ],
         &out,
     )

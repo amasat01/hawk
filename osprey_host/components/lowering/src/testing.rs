@@ -68,7 +68,7 @@ pub struct TestDevice;
 
 impl Backend for TestHost {
     fn format(&self) -> &'static str {
-        "shared_library"
+        "host"
     }
     fn name(&self) -> &'static CStr {
         c"test_host"
