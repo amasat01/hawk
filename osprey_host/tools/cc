@@ -3,7 +3,7 @@
 # through the library. The export list rustc hands to the linker is cut to the one entry point before linking.
 #   macOS: the list is the file named by -exported_symbols_list; it keeps only the line `_osprey_v1`.
 #   Linux: the list is the GNU ld version script named by --version-script=; it is rewritten to export `osprey_v1` alone.
-# To check the exported list of a Linux build:  nm -g --defined-only target/debug/libosprey_host.so   (one line: osprey_v1)
+# To check the exported list of a Linux build:  nm -g --defined-only target/debug/libosprey_cpu.so   (one line: osprey_v1)
 for a in "$@"; do
   case "$prev" in -Wl,-exported_symbols_list) f=${a#-Wl,}; grep -x '_osprey_v1' "$f" > "$f.cut" && mv "$f.cut" "$f" ;; esac
   case "$a" in -Wl,--version-script=*) printf '{ global: osprey_v1; local: *; };\n' > "${a#-Wl,--version-script=}" ;; esac

@@ -20,9 +20,9 @@ wings_inc=${RW_INC:-$raptor/rs/wings/include}
 hdrs="--header $inc/raptor_ir.h --header $inc/raptor_ir_front.h --header $inc/raptor_ir_query.h --header $wings_inc/raptor_wings_front.h"
 py=${PY_INCLUDE:-$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_paths()["include"])')}
 cargo build -j 2 --release --manifest-path "$here/gen/Cargo.toml" 2>&1 | tail -1
-gen=$here/gen/target/release/gen
+gen=$repo/target/release/gen
 mkdir -p "$here/build"
-"$gen" $hdrs --header "$repo/include/osprey_host.h" --generated "$here/build/_osprey.c"
+"$gen" $hdrs --header "$repo/include/osprey.h" --generated "$here/build/_osprey.c"
 for f in "$here/build/_osprey.c" "$here/template/types.c" "$here/template/door.c" "$repo/loader/loader.c"; do
   clang -std=c11 -O2 -fPIC -Wall -Wextra -Werror -I"$here/template" -I"$inc" -I"$wings_inc" -I"$repo/include" -I"$EAGLE_DOOR_DIR" -I"$shim" -I"$py" -c "$f" -o "$here/build/$(basename "$f" .c).o"
 done
@@ -65,7 +65,7 @@ clang $shared -fPIC -I"$inc" -I"$repo/include" -o "$here/build/libcontract0.$ext
 clang $shared -fPIC -std=c11 -I"$EAGLE_DOOR_DIR" -o "$here/build/libfixture_unit.$ext" "$EAGLE_DOOR_DIR/eagle/door/test/fixture_unit.c"
 clang $shared -fPIC -std=c11 -I"$EAGLE_DOOR_DIR" -o "$here/build/libfixture_reverse.$ext" "$EAGLE_DOOR_DIR/eagle/door/test/fixture_reverse.c"
 clang $shared -fPIC -std=c11 -I"$EAGLE_DOOR_DIR" -o "$here/build/libfixture_gemm.$ext" "$EAGLE_DOOR_DIR/eagle/door/test/fixture_gemm.c"
-"$gen" --check $hdrs --header "$repo/include/osprey_host.h" --door-header "$EAGLE_DOOR_DIR/eagle/door/eg_door.h" --door-source "$here/template/door.c" \
+"$gen" --check $hdrs --header "$repo/include/osprey.h" --door-header "$EAGLE_DOOR_DIR/eagle/door/eg_door.h" --door-source "$here/template/door.c" \
   --template "$here/template" --generated "$here/build/_osprey.c" --ext "$here/build/_osprey.abi3.so"
 # the module must load: a link gap fails here, not in a later caller
 PYTHONPATH="$here/build" "$PYTHON" -c "import _osprey"

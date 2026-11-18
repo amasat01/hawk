@@ -1,5 +1,5 @@
 /* Opens a backend library by path and drives it through its one entry symbol, osprey_v1. Owns the
-   C functions of include/osprey_host.h; holds no state between calls beyond the handle the caller
+   C functions of include/osprey.h; holds no state between calls beyond the handle the caller
    keeps. */
 /* strndup and the dl functions are POSIX: a strict C11 build on glibc hides them without this. */
 #define _POSIX_C_SOURCE 200809L
@@ -8,19 +8,20 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "osprey_host.h"
+#include "osprey.h"
 
 /* The library, its table, and the bytes of its last render (the parts point into them). */
 struct ob_backend {
     void* handle;
     const ob_table* table;
     char* bytes;
+    char code[40];
 };
 
 /* Records "<stage>: <message>" as the last error of ctx and returns status. */
 static int fail(rx_ctx* ctx, int status, const char* stage, const char* message)
 {
-    char text[512];
+    char text[4096];
     int n       = snprintf(text, sizeof text, "%s: %s", stage, message ? message : "unknown");
     size_t used = n < 0 ? 0 : (size_t)n >= sizeof text ? sizeof text - 1 : (size_t)n;
     rx_set_error(ctx, text, used);
@@ -235,8 +236,8 @@ int ob_facts(rx_ctx* ctx, ob_backend* lib, const char* facts_dir, const char* ta
     return status;
 }
 
-int ob_lower(rx_ctx* ctx, ob_backend* lib, const char* facts_dir, const char* dump, size_t n_dump,
-    const char* dialects, const char* request, size_t n_request, char* buf, size_t cap, size_t* len)
+int ob_lower(rx_ctx* ctx, ob_backend* lib, const char* dump, size_t n_dump, const char* dialects,
+    const char* request, size_t n_request, char* buf, size_t cap, size_t* len)
 {
     const ob_table* table = lib->table;
     rx_ctx* inner         = table->ctx_new();
@@ -244,7 +245,7 @@ int ob_lower(rx_ctx* ctx, ob_backend* lib, const char* facts_dir, const char* du
         return fail(ctx, RX_REFUSED, "lower", "the library cannot create a context");
     int status = load_unit(ctx, table, inner, dump, n_dump, dialects);
     if (status == RX_OK) {
-        status = table->lower(inner, facts_dir, request, n_request, buf, cap, len);
+        status = table->lower(inner, request, n_request, buf, cap, len);
         if (status != RX_OK && status != RX_TRUNC)
             status = forward(ctx, table, inner, status, "lower");
     }
@@ -278,6 +279,88 @@ int ob_card(rx_ctx* ctx, ob_backend* lib, const char* facts_dir, const char* nam
         status = forward(ctx, table, inner, status, "card");
     table->ctx_free(inner);
     return status;
+}
+
+/* Records the failure of a tool-side entry: the stage, the library's message and its code. */
+static int forward_tool(rx_ctx* ctx, ob_backend* lib, rx_ctx* inner, int status, const char* stage)
+{
+    const char* code = lib->table->last_code(inner);
+    snprintf(lib->code, sizeof lib->code, "%s", code ? code : "");
+    return forward(ctx, lib->table, inner, status, stage);
+}
+
+int ob_machine(rx_ctx* ctx, ob_backend* lib, const char* ask, char* buf, size_t cap, size_t* len)
+{
+    rx_ctx* inner = lib->table->ctx_new();
+    if (!inner)
+        return fail(ctx, RX_REFUSED, "machine", "the library cannot create a context");
+    lib->code[0] = '\0';
+    int status   = lib->table->machine(inner, ask, buf, cap, len);
+    if (status != RX_OK && status != RX_TRUNC)
+        status = forward_tool(ctx, lib, inner, status, "machine");
+    lib->table->ctx_free(inner);
+    return status;
+}
+
+int ob_build(rx_ctx* ctx, ob_backend* lib, const char* unit, size_t n_unit, const char* root,
+    char* buf, size_t cap, size_t* len)
+{
+    rx_ctx* inner = lib->table->ctx_new();
+    if (!inner)
+        return fail(ctx, RX_REFUSED, "build", "the library cannot create a context");
+    lib->code[0] = '\0';
+    int status   = lib->table->build(inner, unit, n_unit, root, buf, cap, len);
+    if (status != RX_OK && status != RX_TRUNC)
+        status = forward_tool(ctx, lib, inner, status, "build");
+    lib->table->ctx_free(inner);
+    return status;
+}
+
+int ob_link(rx_ctx* ctx, ob_backend* lib, const char* parts, size_t n_parts, const char* set_text,
+    const char* name, const char* root, char* buf, size_t cap, size_t* len)
+{
+    rx_ctx* inner = lib->table->ctx_new();
+    if (!inner)
+        return fail(ctx, RX_REFUSED, "link", "the library cannot create a context");
+    lib->code[0] = '\0';
+    int status   = lib->table->link(inner, parts, n_parts, set_text, name, root, buf, cap, len);
+    if (status != RX_OK && status != RX_TRUNC)
+        status = forward_tool(ctx, lib, inner, status, "link");
+    lib->table->ctx_free(inner);
+    return status;
+}
+
+int ob_state(rx_ctx* ctx, ob_backend* lib, const char* op, const char* root, char* buf, size_t cap,
+    size_t* len)
+{
+    rx_ctx* inner = lib->table->ctx_new();
+    if (!inner)
+        return fail(ctx, RX_REFUSED, "state", "the library cannot create a context");
+    lib->code[0] = '\0';
+    int status   = lib->table->state(inner, op, root, buf, cap, len);
+    if (status != RX_OK && status != RX_TRUNC)
+        status = forward_tool(ctx, lib, inner, status, "state");
+    lib->table->ctx_free(inner);
+    return status;
+}
+
+int ob_merge(rx_ctx* ctx, ob_backend* lib, const char* answers, size_t n_answers, char* buf,
+    size_t cap, size_t* len)
+{
+    const ob_table* table = lib->table;
+    rx_ctx* inner         = table->ctx_new();
+    if (!inner)
+        return fail(ctx, RX_REFUSED, "merge", "the library cannot create a context");
+    int status = table->merge(inner, answers, n_answers, buf, cap, len);
+    if (status != RX_OK && status != RX_TRUNC)
+        status = forward(ctx, table, inner, status, "merge");
+    table->ctx_free(inner);
+    return status;
+}
+
+const char* ob_last_code(ob_backend* lib)
+{
+    return lib->code;
 }
 
 int ob_close(rx_ctx* ctx, ob_backend* lib)

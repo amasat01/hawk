@@ -1,5 +1,5 @@
 #!/bin/sh
-# The gate of osprey_host. Usage: sh ci/gate.sh [leg ...]   (no argument: every leg, in this order)
+# The gate of the OSPREY libraries (components/lowering, osprey_cpu, osprey_cuda) and the tools that prove them. Usage: sh ci/gate.sh [leg ...]   (no argument: every leg, in this order)
 #   fmt clippy test exports binding py39 abi ruff cformat tidy replay
 # Environment: PYTHON (the interpreter the binding is built for; the binding leg is red without it), EAGLE_DOOR_DIR (the include root of eagle/door/eg_door.h and the folder of libeagle_door; the binding and tidy legs are red without it), CLANG_TIDY (the clang-tidy
 # program; the tidy leg is RED without it), the cformat leg skips, saying so, unless clang-format is major version 23, PYTHON39 and PY39_INCLUDE (a Python 3.9 interpreter and its headers; the py39 leg
@@ -19,6 +19,23 @@ out=$(mktemp "${TMPDIR:-/tmp}/gate.XXXXXX")
 trap 'rm -f "$out" "$out".*' EXIT
 CFILES=$(git ls-files loader include binding/template | grep -E '\.(c|h)$')
 
+# The libraries embed the headers their compiles include, from folders their build names (OSPREY_CPU_* and OSPREY_CUDA_* _AETHER_HEADERS,
+# _EAGLE_HEADERS, _FACTS_HEADERS). This gate prunes them from the checkouts named by OSPREY_AETHER_SRC (the aether checkout) and
+# OSPREY_EAGLE_SRC (the eagle checkout that holds eagle/door and plugin/) into target/headers, and exports the six variables; a leg that builds is red without the two.
+build_env() {
+  [ -z "$OSPREY_CPU_AETHER_HEADERS" ] || return 0
+  [ -n "$OSPREY_AETHER_SRC" ] && [ -n "$OSPREY_EAGLE_SRC" ] || { echo "RED: OSPREY_AETHER_SRC and OSPREY_EAGLE_SRC name the checkouts whose headers the libraries embed"; return 1; }
+  sh ci/prepare_headers.sh target/headers "$OSPREY_AETHER_SRC" "$OSPREY_EAGLE_SRC" >"$out.headers" 2>&1 || { tail -3 "$out.headers"; echo "RED: ci/prepare_headers.sh"; return 1; }
+  cat "$out.headers"
+  for kind in cpu cuda; do
+    up=$(echo $kind | tr a-z A-Z)
+    for tree in aether eagle facts; do
+      tu=$(echo $tree | tr a-z A-Z)
+      eval "export OSPREY_${up}_${tu}_HEADERS=$PWD/target/headers/$kind/$tree"
+    done
+  done
+}
+
 leg_skips=0; test_skips=0
 need() { [ "$2" -gt 0 ] || { echo "RED: $1 examined nothing"; return 1; }; }
 passed() { awk '/^test result:/ { p += $4 } END { print p + 0 }' "$out"; }
@@ -29,9 +46,10 @@ leg_fmt() {
 }
 
 leg_clippy() {
-  cargo clippy --release -j "$JOBS" --all-targets -- -D warnings >"$out" 2>&1
+  build_env || return 1
+  cargo clippy --release -j "$JOBS" --workspace --all-targets -- -D warnings >"$out" 2>&1
   rc=$?
-  cargo clippy --release -j "$JOBS" --all-targets --features old-contract -- -D warnings >>"$out" 2>&1
+  cargo clippy --release -j "$JOBS" --workspace --all-targets --features osprey_replay/old-contract -- -D warnings >>"$out" 2>&1
   rc2=$?; [ $rc -ne 0 ] || rc=$rc2
   grep -E "^(warning|error)" "$out" | sort | uniq -c | sort -rn | head -8
   n=$(git ls-files | grep -c '\.rs$'); echo "examined: clippy over $n rust files, default features and old-contract, warnings denied"
@@ -42,12 +60,13 @@ leg_clippy() {
 # checks nothing says so with one `skipped: <test>: <reason> [<variable>]` line (tests/common/mod.rs); the count is shown, and a skip on a
 # variable that is set in this environment (stated but not honoured) is red.
 leg_test() {
-  cargo test --release -j "$JOBS" --features old-contract -- --nocapture >"$out" 2>&1
+  build_env || return 1
+  cargo test --release -j "$JOBS" --workspace --features osprey_replay/old-contract --no-fail-fast -- --nocapture >"$out" 2>&1
   rc=$?; n=$(passed); grep -E "FAILED|panicked|^error" "$out" | head -5
   per_file=$(awk '/^ *Running tests\// { name = $2 } /^running [0-9]+ tests?$/ && name != "" { print name, $2; name = "" }' "$out")
   files=; empty=
-  for f in tests/*.rs; do
-    count=$(echo "$per_file" | awk -v f="$f" '$1 == f { c = $2 } END { print c + 0 }')
+  for f in replay/tests/*.rs; do
+    count=$(echo "$per_file" | awk -v f="${f#replay/}" '$1 == f { c = $2 } END { print c + 0 }')
     files="$files $(basename "$f" .rs)=$count"
     [ "$count" -gt 0 ] || empty="$empty $f"
   done
@@ -62,11 +81,12 @@ leg_test() {
   need test "$n"
 }
 
-# the built library exports exactly one symbol (check_exports.sh prints it)
+# each built library exports exactly one symbol (check_exports.sh prints it once per library)
 leg_exports() {
+  build_env || return 1
   sh check_exports.sh >"$out" 2>"$out.err" || { tail -3 "$out" "$out.err"; echo "RED: check_exports.sh"; return 1; }
-  n=$(grep -c . "$out"); echo "examined: $n exported symbol: $(head -1 "$out")"
-  [ "$n" -eq 1 ] || { echo "RED: expected exactly one symbol line, got $n"; return 1; }
+  n=$(grep -c . "$out"); echo "examined: $n libraries, each exporting: $(head -1 "$out")"
+  [ "$n" -eq 2 ] || { echo "RED: expected one symbol line for each of the two libraries, got $n"; return 1; }
 }
 
 # refuses, by name, a door root that lacks one of its three entries (see "Door root" in the header of this file, which says how to make it)
@@ -90,9 +110,9 @@ build_and_test_binding() {
   tail -4 "$out"
   g=$(grep -c "GATE GREEN" "$out"); echo "examined: binding build for $1, GATE GREEN lines: $g"
   [ $rc -eq 0 ] || { echo "RED: binding build"; return 1; }; need binding "$g" || return 1
-  cargo build --release -j "$JOBS" >"$out" 2>&1 || { grep -E "^error" "$out" | head -3; echo "RED: library build"; return 1; }
+  JOBS=$JOBS sh ci/dist.sh >"$out" 2>&1 || { grep -E "^error" "$out" | head -3; echo "RED: library build (ci/dist.sh)"; return 1; }
   case $(uname -s) in Darwin) ext=dylib ;; *) ext=so ;; esac
-  (cd binding && PYTHONPATH=build HOST_LIB="$PWD/../target/release/libosprey_host.$ext" ABI1_LIB="build/libabi1.$ext" \
+  (cd binding && PYTHONPATH=build OSPREY_DIST="$PWD/../dist" HOST_LIB="$PWD/../dist/osprey_cpu/libosprey_cpu.$ext" CUDA_LIB="$PWD/../dist/osprey_cuda/libosprey_cuda.$ext" ABI1_LIB="build/libabi1.$ext" \
     CONTRACT0_LIB="build/libcontract0.$ext" "$1" test_binding.py) >"$out" 2>&1 || { tail -5 "$out"; echo "RED: test_binding.py"; return 1; }
   line=$(grep -E "^test_binding: [0-9]+ checks passed" "$out"); echo "examined: $line"
   need binding "$(echo "$line" | tr -dc '0-9 ' | awk '{print $1 + 0}')"
@@ -100,12 +120,14 @@ build_and_test_binding() {
 
 # the binding's build and its gate, then its tests; it must print GATE GREEN
 leg_binding() {
+  build_env || return 1
   [ -n "$PYTHON" ] || { echo "RED: PYTHON is not set"; return 1; }
   build_and_test_binding "$PYTHON" ""
 }
 
 # the same for Python 3.9, the floor of the binding's stable ABI; skipped, with a line saying so, when no such interpreter exists
 leg_py39() {
+  build_env || return 1
   py39=${PYTHON39:-/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9}
   if [ ! -x "$py39" ]; then echo "skipped: no Python 3.9 interpreter at $py39 (set PYTHON39 and PY39_INCLUDE)"; leg_skips=$((leg_skips + 1)); return 0; fi
   "$py39" -c 'import sys; sys.exit(sys.version_info[:2] != (3, 9))' || { echo "RED: $py39 is not Python 3.9"; return 1; }
@@ -114,10 +136,11 @@ leg_py39() {
 
 # the abi number has one source: the header's define. The loader and the table test read it from there.
 leg_abi() {
-  defs=$(git ls-files include loader src binding tests | xargs grep -E '^[ \t]*#[ \t]*define[ \t]+OB_ABI[ \t]' 2>/dev/null | wc -l | tr -d ' ')
-  echo "examined: $defs definition(s) of OB_ABI (include/osprey_host.h is the one source)"
+  build_env || return 1
+  defs=$(git ls-files include loader components osprey_cpu osprey_cuda replay binding | xargs grep -E '^[ \t]*#[ \t]*define[ \t]+OB_ABI[ \t]' 2>/dev/null | wc -l | tr -d ' ')
+  echo "examined: $defs definition(s) of OB_ABI (include/osprey.h is the one source)"
   [ "$defs" -eq 1 ] || { echo "RED: OB_ABI is defined $defs times"; return 1; }
-  cargo test --release -j "$JOBS" --test table >"$out" 2>&1; rc=$?; n=$(passed)
+  cargo test --release -j "$JOBS" -p osprey_replay --features old-contract --test table >"$out" 2>&1; rc=$?; n=$(passed)
   echo "examined: the table test, $n passed (header define equals the library's entry table abi)"
   [ $rc -eq 0 ] || { grep -E "FAILED|panicked|^error" "$out" | head -3; echo "RED: table test"; return 1; }; need abi "$n"
 }
@@ -155,7 +178,8 @@ leg_tidy() {
 
 # the recorded small file replays through the writers end to end: every unit is written and none differs from its recording
 leg_replay() {
-  cargo run --release -j "$JOBS" --features old-contract --bin treplay -- tests/data/units_small.jsonl --target host >"$out" 2>&1 \
+  build_env || return 1
+  cargo run --release -j "$JOBS" -p osprey_replay --features old-contract --bin treplay -- replay/tests/data/units_small.jsonl --target host >"$out" 2>&1 \
     || { tail -5 "$out"; echo "RED: treplay"; return 1; }
   line=$(grep -E '^text identical \(whole path\)' "$out" | head -1)
   echo "examined: $line"
@@ -171,7 +195,7 @@ leg_replay() {
 # the facts oracle: every recorded host unit's machine record equals the facts answer for the machine its recording states
 # (it reads recordings of the old shape, so it needs the old-contract feature); skipped, with a line saying so, when no recording is found
 oracle() {
-  cargo test --release -j "$JOBS" --features old-contract --test facts_oracle -- --nocapture >"$out" 2>&1 \
+  cargo test --release -j "$JOBS" -p osprey_replay --features old-contract --test facts_oracle -- --nocapture >"$out" 2>&1 \
     || { grep -E "FAILED|panicked|^error" "$out" | head -3; echo "RED: facts oracle"; return 1; }
   if grep -q "^skipped: .*no recording" "$out"; then grep "^skipped: .*no recording" "$out" | head -1; return 0; fi
   echo "examined: facts oracle, $(passed) test passed"; need oracle "$(passed)"

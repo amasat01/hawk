@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::process::Command;
 
-const LIFECYCLE: [&str; 5] = [
+const LIFECYCLE: [&str; 6] = [
+    "ob_last_code",
     "rx_abi_version",
     "rx_ctx_new",
     "rx_ctx_free",
@@ -41,6 +42,8 @@ const NODE_SURFACE: [(&str, &str, bool); 13] = [
 ];
 // Prototypes of the headers the binding does not wrap: none. Every shape has a rule, and a prototype without one is refused.
 const NOT_WRAPPED: [&str; 0] = [];
+// the entries of the tool side: a refusal of theirs carries a code (the refusal kind's name), read from the library handle
+const CODED: [&str; 4] = ["ob_machine", "ob_build", "ob_link", "ob_state"];
 // The `int*` outputs that are codes, not flags (a flag answers a Python bool).
 const CODE_OUTPUTS: [&str; 2] = ["rx_field_kind", "rw_wide_element_kind"];
 // The prefix of the readers whose status RX_ABSENT answers None.
@@ -67,13 +70,13 @@ enum P {
     I64In(String),
     /// An int passed by value.
     IntIn(String),
-    OutText(String, String, String),
-    OutNodes(String, String, String),
+    OutText,
+    OutNodes,
     /// A node and then a list of nodes, both answers (the base of a chain and its links).
     OutNodeList,
-    OutNode(String),
-    OutWalk(String),
-    OutChars(String, usize),
+    OutNode,
+    OutWalk,
+    OutChars(usize),
     HandleIn(String),
     OutHandle,
     OutParts,
@@ -105,7 +108,6 @@ enum P {
 
 struct Proto {
     name: String,
-    ret: String,
     params: Vec<P>,
     text: String,
 }
@@ -150,7 +152,7 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
     };
     let shape = |p: &str| {
         let n = norm(p);
-        let k = n.rfind(|c: char| c == '*' || c == ' ').map_or(0, |i| i + 1);
+        let k = n.rfind(['*', ' ']).map_or(0, |i| i + 1);
         (n[..k].trim().to_string(), n[k..].to_string())
     };
     if ps.is_empty() || shape(&ps[0]) != ("rx_ctx*".into(), "ctx".into()) {
@@ -176,7 +178,6 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
                 return Err(bad("an array parameter that is not `char name[N]`"));
             }
             out.push(P::OutChars(
-                ident_last(&nm[..a]),
                 nm[a + 1..b].parse().map_err(|_| bad("array size"))?,
             ));
             i += 1;
@@ -257,7 +258,7 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
             out.push(P::OutNames);
             i += 4
         } else if t == "char*" && sz(&next) && szp(&next2) {
-            out.push(P::OutText(n, next.unwrap().1, next2.unwrap().1));
+            out.push(P::OutText);
             i += 3
         } else if t == "rx_node*"
             && next.as_ref().is_some_and(|x| x.0 == "rx_node*")
@@ -267,13 +268,13 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
             out.push(P::OutNodeList);
             i += 4
         } else if t == "rx_node*" && sz(&next) && szp(&next2) {
-            out.push(P::OutNodes(n, next.unwrap().1, next2.unwrap().1));
+            out.push(P::OutNodes);
             i += 3
         } else if t == "rx_node*" {
             out.push(P::Scalar('n', n));
             i += 1
         } else if t == "rx_walk*" || t == "uint32_t*" {
-            out.push(P::OutWalk(n));
+            out.push(P::OutWalk);
             i += 1
         } else {
             return Err(bad(&format!(
@@ -288,12 +289,12 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
         .filter(|p| {
             matches!(
                 p,
-                P::OutText(..)
-                    | P::OutNodes(..)
+                P::OutText
+                    | P::OutNodes
                     | P::OutNodeList
-                    | P::OutNode(_)
-                    | P::OutWalk(_)
-                    | P::OutChars(..)
+                    | P::OutNode
+                    | P::OutWalk
+                    | P::OutChars(_)
                     | P::OutHandle
                     | P::OutParts
                     | P::OutInt
@@ -331,9 +332,7 @@ fn group_outputs(params: Vec<P>) -> Vec<P> {
                 out.push(P::NodeList(n, k))
             }
             P::OutFlags(_) => out.push(P::OutFlags(last_list.clone())),
-            P::Scalar('i', _) if matches!(out.last(), Some(P::OutNodes(..))) => {
-                out.push(P::TrailFlag)
-            }
+            P::Scalar('i', _) if matches!(out.last(), Some(P::OutNodes)) => out.push(P::TrailFlag),
             P::Scalar(kind, name) => match out.pop() {
                 Some(P::Scalar(k, n)) => out.push(P::OutScalars(vec![(k, n), (kind, name)])),
                 Some(P::OutScalars(mut run)) => {
@@ -352,7 +351,7 @@ fn group_outputs(params: Vec<P>) -> Vec<P> {
     out.into_iter()
         .map(|q| match q {
             P::Scalar('i', _) => P::OutInt,
-            P::Scalar('n', _) => P::OutNode(String::new()),
+            P::Scalar('n', _) => P::OutNode,
             P::Scalar(..) => P::OutI64,
             other => other,
         })
@@ -367,7 +366,7 @@ fn param_shape(p: &str) -> (String, String) {
         .replace("@opt", "")
         .trim()
         .to_string();
-    let k = n.rfind(|c: char| c == '*' || c == ' ').map_or(0, |i| i + 1);
+    let k = n.rfind(['*', ' ']).map_or(0, |i| i + 1);
     (n[..k].trim().to_string(), n[k..].to_string())
 }
 
@@ -400,9 +399,9 @@ fn node_run(
     if sized.is_empty() {
         return Err(bad("a run of node lists with no length"));
     }
-    for i in 0..lists.len() {
-        if lists[i].1 == usize::MAX {
-            lists[i].1 = *sized
+    for (i, list) in lists.iter_mut().enumerate() {
+        if list.1 == usize::MAX {
+            list.1 = *sized
                 .iter()
                 .find(|&&k| k > i)
                 .unwrap_or_else(|| sized.iter().rev().find(|&&k| k < i).expect("a sized list"));
@@ -474,9 +473,7 @@ fn parse_header(src: &str) -> Result<(Vec<Proto>, usize), String> {
             other += 1;
             continue;
         }
-        let mut params = if inner == "void" {
-            vec![]
-        } else if LIFECYCLE.contains(&name.as_str()) {
+        let mut params = if inner == "void" || LIFECYCLE.contains(&name.as_str()) {
             vec![]
         } else {
             parse_params(inner, s)?
@@ -493,7 +490,6 @@ fn parse_header(src: &str) -> Result<(Vec<Proto>, usize), String> {
         }
         protos.push(Proto {
             name,
-            ret,
             params,
             text: s.split_whitespace().collect::<Vec<_>>().join(" "),
         });
@@ -657,8 +653,8 @@ fn wrapper(p: &Proto) -> String {
     let mut tail = String::new();
     match out {
         None => tail += &format!("  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  Py_INCREF(Py_None); res = Py_None;\n", call(&[])),
-        Some(P::OutText(..)) => tail += &format!("  char sb[256]; char* hb = NULL; size_t len = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hb = PyMem_Malloc(len + 1); if (!hb) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyUnicode_DecodeUTF8(hb ? hb : sb, (Py_ssize_t)len, \"strict\");\n  PyMem_Free(hb);\n", call(&["sb", "sizeof sb", "&len"]), call(&["hb", "len + 1", "&len"])),
-        Some(P::OutNodes(..)) => {
+        Some(P::OutText) => tail += &format!("  char sb[256]; char* hb = NULL; size_t len = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hb = PyMem_Malloc(len + 1); if (!hb) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyUnicode_DecodeUTF8(hb ? hb : sb, (Py_ssize_t)len, \"strict\");\n  PyMem_Free(hb);\n", call(&["sb", "sizeof sb", "&len"]), call(&["hb", "len + 1", "&len"])),
+        Some(P::OutNodes) => {
             let (first, again, made) = if trail {
                 (call(&["sn", "64", "&cnt", "&oc"]), call(&["hn", "cnt", "&cnt", "&oc"]), "Py_BuildValue(\"(NN)\", osprey_node_tuple(s, hn ? hn : sn, cnt), PyBool_FromLong(oc))")
             } else {
@@ -694,11 +690,11 @@ fn wrapper(p: &Proto) -> String {
             tail += &format!("{decls}\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n{none}  res = PyTuple_New({count});\n  if (!res) goto done;\n{items}", call(&refs));
         }
         Some(P::OutNodeList) => tail += &format!("  rx_node ob0 = 0; rx_node sn[64]; rx_node* hn = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hn = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rx_node)); if (!hn) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hn); goto done; }}\n  res = Py_BuildValue(\"(NN)\", osprey_wrap_node(s, ob0), osprey_node_tuple(s, hn ? hn : sn, cnt));\n  PyMem_Free(hn);\n", call(&["&ob0", "sn", "64", "&cnt"]), call(&["&ob0", "hn", "cnt", "&cnt"])),
-        Some(P::OutNode(_)) => tail += &format!("  rx_node oh = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = osprey_wrap_node(s, oh);\n", call(&["&oh"])),
+        Some(P::OutNode) => tail += &format!("  rx_node oh = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = osprey_wrap_node(s, oh);\n", call(&["&oh"])),
         Some(P::OutInt) => tail += &format!("  int oi = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyBool_FromLong(oi);\n", call(&["&oi"])),
         Some(P::OutParts) => tail += &format!("  ob_parts parts = {{0}};\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = osprey_parts_tuple(&parts);\n", call(&["&parts"])),
         Some(P::OutHandle) => tail += &format!("  ob_backend* ob = NULL;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyLong_FromVoidPtr(ob);\n", call(&["&ob"])),
-        Some(P::OutWalk(_)) => tail += &format!("  rx_walk ow = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyLong_FromUnsignedLong(ow);\n", call(&["&ow"])),
+        Some(P::OutWalk) => tail += &format!("  rx_walk ow = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyLong_FromUnsignedLong(ow);\n", call(&["&ow"])),
         Some(P::OutCode) => tail += &format!("  int oc = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyLong_FromLong(oc);\n", call(&["&oc"])),
         Some(P::OutI64) => tail += &format!("  int64_t oi = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyLong_FromLongLong(oi);\n", call(&["&oi"])),
         Some(P::OutF64) => tail += &format!("  double od = 0;\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyFloat_FromDouble(od);\n", call(&["&od"])),
@@ -709,7 +705,7 @@ fn wrapper(p: &Proto) -> String {
             let rows = if GROUPED_PAIRS.contains(&p.name.as_str()) { "osprey_grouped_pairs_tuple" } else { "osprey_pairs_tuple" };
             tail += &format!("  rx_pair sp[16]; rx_pair* hp = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hp = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rx_pair)); if (!hp) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hp); goto done; }}\n  res = {rows}(hp ? hp : sp, cnt);\n  PyMem_Free(hp);\n", call(&["sp", "16", "&cnt"]), call(&["hp", "cnt", "&cnt"]), rows = rows);
         },
-        Some(P::OutChars(_, n)) => tail += &format!("  char dg[{n}] = {{0}};\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyUnicode_FromString(dg);\n", call(&["dg"])),
+        Some(P::OutChars(n)) => tail += &format!("  char dg[{n}] = {{0}};\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = PyUnicode_FromString(dg);\n", call(&["dg"])),
         _ => unreachable!(),
     }
     if p.name.starts_with(ABSENT_READERS) && !CODE_OUTPUTS.contains(&p.name.as_str()) {
@@ -721,11 +717,19 @@ fn wrapper(p: &Proto) -> String {
             );
         }
     }
-    format!("/* wrapper: {n} */\n/* {t} */\nstatic PyObject* call_{n}(Ctx* s, PyObject* args) {{\n  PyObject* res = NULL; int st;\n{decl}{parse}{conv}{tail}done:\n{done}  return res;\n}}\nstatic PyObject* m_{n}(PyObject* self, PyObject* args) {{ return call_{n}((Ctx*)self, args); }}\n\n", n = short(&p.name), t = p.text)
+    let text = format!("/* wrapper: {n} */\n/* {t} */\nstatic PyObject* call_{n}(Ctx* s, PyObject* args) {{\n  PyObject* res = NULL; int st;\n{decl}{parse}{conv}{tail}done:\n{done}  return res;\n}}\nstatic PyObject* m_{n}(PyObject* self, PyObject* args) {{ return call_{n}((Ctx*)self, args); }}\n\n", n = short(&p.name), t = p.text);
+    if CODED.contains(&p.name.as_str()) {
+        text.replace(
+            "osprey_fail(s, st)",
+            "osprey_fail_lib(s, st, (ob_backend*)(uintptr_t)a_lib)",
+        )
+    } else {
+        text
+    }
 }
 
 const PRELUDE: &str = r#"/* Generated by gen from the headers of the door. Do not edit. */
-#include "osprey.h"
+#include "module.h"
 #include "raptor_ir_front.h"
 #include "raptor_ir_query.h"
 #include "raptor_wings_front.h"
@@ -762,6 +766,14 @@ static void osprey_raise_coded(const char* why, const char* code) {
   if (text && PyObject_SetAttrString(exc, "code", text) == 0) PyErr_SetObject(osprey_errors[0], exc);
   Py_XDECREF(text);
   Py_XDECREF(exc);
+}
+
+static inline void osprey_fail(Ctx* s, int st);
+/* A refusal of the tool side: NotWritten carrying the library's code, a code being a promise to callers. */
+static inline void osprey_fail_lib(Ctx* s, int st, ob_backend* lib) {
+  const char* code = ob_last_code(lib);
+  if (st == RX_REFUSED && *code) osprey_raise_coded(rx_last_error(s->c), code);
+  else osprey_fail(s, st);
 }
 
 static inline void osprey_fail(Ctx* s, int st) {
@@ -1065,7 +1077,7 @@ fn clean_c(src: &str) -> String {
                 i += 1
             }
             i += 1;
-            o.push_str("0");
+            o.push('0');
             continue;
         }
         o.push(b[i]);
@@ -1200,7 +1212,7 @@ fn check(hsrc: &str, tdir: &str, genfile: &str, ext: &str, door: Option<(String,
     // (2)
     let (mut nfn, mut bad) = (0usize, vec![]);
     let mut calls = 0usize;
-    for f in ["types.c", "osprey.h"] {
+    for f in ["types.c", "module.h"] {
         let src = fs::read_to_string(format!("{tdir}/{f}")).unwrap_or_default();
         if src.is_empty() {
             bad.push(format!("{f} is empty or missing"))

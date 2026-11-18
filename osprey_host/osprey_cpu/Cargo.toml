@@ -1,0 +1,25 @@
+[package]
+name = "osprey_cpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+osprey_lowering = { path = "../components/lowering" }
+toolkit = { path = "../components/toolkit" }
+raptor_ir = { path = "../../raptor/rs/ir" }
+raptor_wings = { path = "../../raptor/rs/wings" }
+aether_writers = { path = "../../aether/rs/writers" }
+
+[build-dependencies]
+toolkit = { path = "../components/toolkit" }
+rcore = { path = "../../raptor/rs/core" }
+
+[features]
+# the exported entry symbol; the replay tools link both libraries as plain crates and switch it off
+default = ["door"]
+door = []

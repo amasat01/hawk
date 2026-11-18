@@ -1,0 +1,51 @@
+{
+  "ptx_isa": {"12.6": 85, "12.9": 88},
+  "opt_levels": ["O0", "O1", "O2", "O3"],
+  "default_opt_level": "O3",
+  "flags": {
+    "ptx": ["-ptx", "-std=c++20", "-arch={sm}", "-O3", "-Xptxas", "-O3", "-Wno-deprecated-gpu-targets"],
+    "cubin": ["-cubin", "-std=c++20", "-arch={sm}", "-O3", "-Xptxas", "-O3", "-Wno-deprecated-gpu-targets"],
+    "fatbin": ["-fatbin", "-std=c++20", "-O3", "-Xptxas", "-O3", "-Wno-deprecated-gpu-targets", "-gencode", "arch={virtual},code=[{sm},{virtual}]"]
+  },
+  "compile": [
+    "{compiler}", "-ccbin", "{host_compiler}", "-{form}", "-std=c++20", "-arch={arch}", "-{level}", "-Xptxas", "-{level}", "{figures}",
+    "-I", "{include:aether}", "-I", "{include:eagle}", "{defines}", "-I{include:facts}",
+    "-MD", "-MF", "{depfile}", "{source}", "-o", "{output}"
+  ],
+  "figures": {"ptx": [], "cubin": ["-Xptxas", "-v"]},
+  "image_format": {"virtual_arch": "ptx", "driver_unknown": "cubin", "compiler_newer": "cubin", "otherwise": "ptx"},
+  "embed": {
+    "compile": ["{host_compiler}", "-x", "assembler", "-c", "{source}", "-o", "{object}"],
+    "source": {
+      "linux": [
+      "\t.section .rodata",
+      "\t.balign 16",
+      "\t.globl {symbol}",
+      "\t.type {symbol}, %object",
+      "{symbol}:",
+      "\t.incbin \"{image_path}\"",
+      "{symbol}__end:",
+      "\t.size {symbol}, .-{symbol}",
+      "\t.globl {size_symbol}",
+      "\t.type {size_symbol}, %object",
+      "\t.balign 8",
+      "{size_symbol}:",
+      "\t.quad {symbol}__end - {symbol}",
+      "\t.size {size_symbol}, 8",
+      "\t.section .note.GNU-stack,\"\",%progbits"
+    ],
+      "macos": [
+      "\t.section __TEXT,__const",
+      "\t.globl _{symbol}",
+      "\t.p2align 4",
+      "_{symbol}:",
+      "\t.incbin \"{image_path}\"",
+      "_{symbol}__end:",
+      "\t.globl _{size_symbol}",
+      "\t.p2align 3",
+      "_{size_symbol}:",
+      "\t.quad _{symbol}__end - _{symbol}"
+    ]
+    }
+  }
+}

@@ -1,0 +1,32 @@
+[package]
+name = "osprey_replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+osprey_lowering = { path = "../components/lowering" }
+osprey_cpu = { path = "../osprey_cpu", default-features = false }
+osprey_cuda = { path = "../osprey_cuda", default-features = false }
+raptor_ir = { path = "../../raptor/rs/ir" }
+rcore = { path = "../../raptor/rs/core" }
+raptor_wings = { path = "../../raptor/rs/wings" }
+aether_writers = { path = "../../aether/rs/writers" }
+raptor_support = { path = "../../raptor/rs/support", optional = true }
+
+[features]
+# the replay tools read recordings in the old shape
+old-contract = ["aether_writers/old-contract", "dep:raptor_support"]
+shadow = ["old-contract", "aether_writers/shadow"]
+
+# the replay tool reads recordings in the old shape
+[[bin]]
+name = "treplay"
+path = "src/bin/treplay.rs"
+required-features = ["old-contract"]
+
+# the lowering replay streams a recorded kernel corpus through the lowering entry
+[[bin]]
+name = "kreplay"
+path = "src/bin/kreplay.rs"
+required-features = ["old-contract"]

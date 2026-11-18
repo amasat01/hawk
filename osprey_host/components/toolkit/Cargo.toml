@@ -1,0 +1,20 @@
+[package]
+name = "toolkit"
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+description = "The tool side of an OSPREY: tool discovery, a content-addressed store, header serving, compiler runs and links."
+
+[dependencies]
+# the JSON reader and the sha256 the other crates of the tree already use; nothing is added to the tree
+rcore = { path = "../../../raptor/rs/core" }
+
+[lints.rust]
+missing_docs = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+missing_docs_in_private_items = "deny"
+unwrap_used = "deny"
+expect_used = "deny"

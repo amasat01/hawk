@@ -659,9 +659,7 @@ def _plan(c, kernel, name, smode, targets):
             continue
         try:
             answer = json.loads(
-                _S["ctx"].backend_lower(
-                    _S["lib"], _S["facts_dir"], dump, dialects, json.dumps(request)
-                )
+                _S["ctx"].backend_lower(_S["lib"], dump, dialects, json.dumps(request))
             )
         except (ValueError, RuntimeError) as why:
             _fall(_reason(why), kname, full=str(why)[:300])
@@ -875,7 +873,7 @@ def install(lib_path):
     _S["facts_dir"] = next(
         (
             os.path.abspath(facts)
-            for facts in (os.path.join(here, "facts"), os.path.join(here, "..", "..", "facts"))
+            for facts in (os.path.join(here, "facts"),)
             if os.path.isdir(facts)
         ),
         None,

@@ -1,6 +1,6 @@
 Checks: "bugprone-*,performance-*,readability-function-size"
 WarningsAsErrors: ""
-HeaderFilterRegex: "osprey_host/(loader|include|binding/template)/"
+HeaderFilterRegex: "/(loader|include|binding/template)/"
 # Findings left, with the reason (9 in all):
 #  - bugprone-easily-swappable-parameters, Ctx_new: the signature of CPython's tp_new slot is fixed.
 #  - bugprone-easily-swappable-parameters, prepare_unit: a static helper whose text parameters follow the

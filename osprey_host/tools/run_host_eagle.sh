@@ -30,7 +30,7 @@ ln -sf python/conftest.py "$run/conftest.py"
 cd "$run/python"
 RAPTOR_ROOT=$EAGLE_RAPTOR PYTHONPATH=$repo/tools:$RECORDER_DIR:$repo/binding/build:$EAGLE_OVERLAY:$EAGLE_TREE PYTHONDONTWRITEBYTECODE=1 \
   HAWK_CACHE_DIR=$run/cache HOST_MODE=${HOST_MODE-off} HOST_DIR=$ROOT/snap/$id/host_counters \
-  HOST_LIB=$repo/target/release/libosprey_host.$ext \
+  HOST_LIB=$repo/target/release/libosprey_cpu.$ext \
   nice -n 10 "$PYTHON" -P -m pytest -o pythonpath= -p no:cacheprovider -p host_plugin -q -m "not gpu" -n "$jobs" --dist loadfile \
   --tb=line --basetemp="$run/basetemp" "$@" > "$run/run.log" 2>&1 || true
 cd "$run"

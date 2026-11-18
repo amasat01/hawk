@@ -1,0 +1,12 @@
+[package]
+name = "osprey_lowering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+raptor_ir = { path = "../../../raptor/rs/ir" }
+raptor_wings = { path = "../../../raptor/rs/wings" }
+rcore = { path = "../../../raptor/rs/core" }
+aether_writers = { path = "../../../aether/rs/writers" }
+toolkit = { path = "../toolkit" }

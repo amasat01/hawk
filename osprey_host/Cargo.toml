@@ -1,37 +1,8 @@
-[package]
-name = "osprey_host"
+[workspace]
+resolver = "2"
+members = ["components/lowering", "components/toolkit", "osprey_cpu", "osprey_cuda", "replay", "binding/gen"]
+
+[workspace.package]
 version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
-build = "build.rs"
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[dependencies]
-raptor_ir = { path = "../raptor/rs/ir" }
-raptor_wings = { path = "../raptor/rs/wings" }
-rcore = { path = "../raptor/rs/core" }
-aether_writers = { path = "../aether/rs/writers" }
-# the replay tool and its tests only: the shipped library does not link the test-support crate
-raptor_support = { path = "../raptor/rs/support", optional = true }
-
-[build-dependencies]
-rcore = { path = "../raptor/rs/core" }
-
-[features]
-# prints how many units the writers' typed contract converts; the replay tool (and its test support) is built with it
-old-contract = ["aether_writers/old-contract", "dep:raptor_support"]
-shadow = ["old-contract", "aether_writers/shadow"]
-
-# the replay tool reads recordings in the old shape
-[[bin]]
-name = "treplay"
-path = "src/bin/treplay.rs"
-required-features = ["old-contract"]
-
-# the lowering replay streams a recorded kernel corpus through the lowering entry
-[[bin]]
-name = "kreplay"
-path = "src/bin/kreplay.rs"
-required-features = ["old-contract"]

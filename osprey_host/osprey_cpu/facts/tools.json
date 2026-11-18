@@ -1,0 +1,27 @@
+{
+  "tools": {
+    "compiler": {
+      "rules": [
+        {"env": "HAWK_CXX", "required": true},
+        {"env": "CXX", "first_word": true},
+        {"path": "g++"}
+      ],
+      "fix": "set HAWK_CXX to a C++23 compiler, or CXX, or put g++ on PATH",
+      "identity_args": ["--version"],
+      "probes": [
+        {"name": "family", "args": ["-dM", "-E", "-x", "c++", "/dev/null"], "as": "gcc_family"}
+      ]
+    }
+  },
+  "limits": {
+    "address_cap": {"env": "HAWK_COMPILE_ADDRESS_CAP", "default": 12884901888},
+    "source_budget": {"env": "HAWK_COMPILE_SOURCE_BUDGET", "default": 8388608},
+    "timeout": {"env": "HAWK_COMPILE_TIMEOUT", "default": 1800},
+    "jobs": {"env": "HAWK_COMPILE_JOBS", "default": 2}
+  },
+  "reserved_names": {
+    "tool": "compiler",
+    "args": ["-E", "-P", "-x", "c++", "-std=c++23", "-DAETHER_CPP_MODE", "-I{include:aether}", "-I{include:eagle}", "{source}"],
+    "system_headers": ["cstdlib", "cstdio", "cstring", "cmath", "unistd.h"]
+  }
+}

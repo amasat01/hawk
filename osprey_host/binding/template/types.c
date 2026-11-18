@@ -1,5 +1,5 @@
 /* The lifecycle of the two types and the module init: the only hand-written C of the extension. */
-#include "osprey.h"
+#include "module.h"
 
 PyTypeObject* osprey_node_type = NULL;
 

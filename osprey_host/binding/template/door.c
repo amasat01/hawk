@@ -9,7 +9,7 @@
  * The door library is opened by path when a Door is made and its functions are looked up by name,
  * so this extension links no runtime. The interpreter lock stays held during every call: the
  * deleter of a DLPack tensor, which the door runs on the calling thread, may need it. */
-#include "osprey.h"
+#include "module.h"
 
 #include "eagle/door/eg_door.h"
 #include "plugin/dlpack.h"

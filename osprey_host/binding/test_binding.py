@@ -1,6 +1,6 @@
 """Check the binding.
 
-Run: PYTHONPATH=<binding>/build HOST_LIB=<library>
+Run: PYTHONPATH=<binding>/build HOST_LIB=<cpu library> [CUDA_LIB=<cuda library>]
 ABI1_LIB=<binding>/build/libabi1.<dylib or so>
 CONTRACT0_LIB=<binding>/build/libcontract0.<dylib or so> <python> test_binding.py
 """
@@ -55,7 +55,7 @@ UNIT = {
 def header_abi():
     """The abi number the loader's header defines (the one source of it)."""
     here = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(here, "..", "include", "osprey_host.h")) as header:
+    with open(os.path.join(here, "..", "include", "osprey.h")) as header:
         return next(int(line.split()[2]) for line in header if line.startswith("#define OB_ABI "))
 
 
@@ -771,7 +771,7 @@ if lib_path:
         assert str(e) == want % (o.CONTRACT_VERSION + 1, o.CONTRACT_VERSION), str(e)
     lib = c.backend_open(lib_path)
     done.append("backend_open")
-    assert c.backend_name(lib) == "host"
+    assert c.backend_name(lib) == "cpu"
     done.append("backend_name")
     ident = c.backend_identity(lib)
     assert len(ident) == 64 and int(ident, 16) >= 0, ident
@@ -786,6 +786,9 @@ if lib_path:
     a3, b3 = mk(c3, "Leaf", [], LEAF % "a"), mk(c3, "Leaf", [], LEAF % "b")
     s3 = mk(c3, "Op", [a3, b3], ADD)
     every = [a3, b3, s3, mk(c3, "Assign", [s3], "(('name', 'y'),)")]
+    render_in = lambda cx, nodes, opened, contract: cx.backend_render(  # noqa: E731
+        opened, cx.dump(nodes), "", "[]", None, "[]", [3], contract
+    )[0]
     render = lambda contract: c3.backend_render(  # noqa: E731
         lib, c3.dump(every), "", "[]", None, "[]", [3], contract
     )
@@ -811,7 +814,9 @@ if lib_path:
     )
     assert str(e) == "set_text: a unit set without a unit", str(e)
     done.append("backend_set_text")
-    facts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "facts")
+    facts_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "osprey_cpu", "facts"
+    )
     shipped = c.backend_card(lib, facts_dir, "build.json")
     assert json.loads(shipped)["lanes"]["team_threads"] == 128, shipped
     e = raises(
@@ -821,6 +826,39 @@ if lib_path:
     )
     assert "cpu.json" in str(e), str(e)
     done.append("backend_card")
+    cuda_path = os.environ.get("CUDA_LIB")
+    if cuda_path:
+        import test_sideways
+
+        repo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        test_sideways.run(
+            done,
+            o,
+            raises,
+            {"cpu": lib_path, "cuda": cuda_path},
+            {
+                "cpu": os.path.join(repo, "osprey_cpu", "facts"),
+                "cuda": os.path.join(repo, "osprey_cuda", "facts"),
+            },
+            lambda opened: render_in(c3, every, opened, json.dumps(UNIT)),
+        )
+    dist = os.environ.get("OSPREY_DIST")
+    if dist:
+        import test_end_to_end
+
+        def make_nodes():
+            """Return a context, the nodes of y = a + b and the sink position."""
+            cx = o.Ctx()
+            leaf = test_end_to_end.LEAF
+            a, b = mk(cx, "Leaf", [], leaf % "a"), mk(cx, "Leaf", [], leaf % "b")
+            total = mk(cx, "Op", [a, b], ADD)
+            return cx, [a, b, total, mk(cx, "Assign", [total], test_end_to_end.ASSIGN)], [3]
+
+        folders = {
+            "cpu": os.path.join(dist, "osprey_cpu"),
+            "cuda": os.path.join(dist, "osprey_cuda"),
+        }
+        test_end_to_end.run(done, o, raises, folders, header_abi(), make_nodes)
     assert c.backend_close(lib) is None
     done.append("backend_close")
 # ---- the fold threshold: the rule is the library's ----

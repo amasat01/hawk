@@ -1,0 +1,15 @@
+{
+  "name": "cpu",
+  "version": "@VERSION@",
+  "door": @DOOR@,
+  "targets": [
+    {
+      "request": "host",
+      "target": "Host",
+      "about": "C++ shared library for the CPU of the machine that builds it",
+      "device": false,
+      "entry": "host",
+      "format": "shared_library"
+    }
+  ]
+}

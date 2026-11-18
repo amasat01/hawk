@@ -1,0 +1,80 @@
+{
+  "tools": {
+    "compiler": {
+      "rules": [
+        {"env": "HAWK_NVCC", "required": true},
+        {"path": "nvcc"}
+      ],
+      "fix": "set HAWK_NVCC to nvcc, or put nvcc on PATH",
+      "identity_args": ["--version"],
+      "probes": [
+        {"name": "release", "args": ["--version"], "after": "release ", "as": "version"},
+        {"name": "archs", "args": ["--list-gpu-arch"], "after": "compute_", "as": "int_list"}
+      ]
+    },
+    "host_compiler": {
+      "rules": [
+        {"env": "HAWK_NVCC_CCBIN", "dir_child": "g++"},
+        {"env_flag": {"var": "NVCC_PREPEND_FLAGS", "flags": ["-ccbin", "--compiler-bindir"]}, "dir_child": "g++"},
+        {"env_flag": {"var": "NVCC_APPEND_FLAGS", "flags": ["-ccbin", "--compiler-bindir"]}, "dir_child": "g++"},
+        {"env": "NVCC_CCBIN", "dir_child": "g++"},
+        {"path": "g++"}
+      ],
+      "fix": "pass the host compiler to nvcc with -ccbin, or set HAWK_NVCC_CCBIN, or put g++ on PATH",
+      "identity_args": ["--version"]
+    }
+  },
+  "process_env": {
+    "strip_flags": {"vars": ["NVCC_PREPEND_FLAGS", "NVCC_APPEND_FLAGS"], "flags": ["-ccbin", "--compiler-bindir"]},
+    "remove": ["NVCC_CCBIN"],
+    "path_prepend": ["compiler"],
+    "root_of": {"CUDA_PATH": "compiler"}
+  },
+  "limits": {
+    "address_cap": {"env": "HAWK_COMPILE_ADDRESS_CAP", "default": 12884901888},
+    "source_budget": {"env": "HAWK_COMPILE_SOURCE_BUDGET", "default": 8388608},
+    "timeout": {"env": "HAWK_COMPILE_TIMEOUT", "default": 1800},
+    "jobs": {"env": "HAWK_COMPILE_JOBS", "default": 2}
+  },
+  "device": {
+    "driver": {
+      "libraries": ["libcuda.so.1", "libcuda.so"],
+      "calls": {
+        "init": "cuInit",
+        "version": "cuDriverGetVersion",
+        "current_device": "cuCtxGetDevice",
+        "device_by_ordinal": "cuDeviceGet",
+        "attribute": "cuDeviceGetAttribute"
+      },
+      "version_decode": [1000, 10],
+      "attributes": {"major": 75, "minor": 76},
+      "arch_format": "sm_{major}{minor}"
+    },
+    "arch": {
+      "pin_env": "HAWK_CUDA_ARCH",
+      "fallback": "compute_61",
+      "portable_min": 60,
+      "toolkit": {"tool": "compiler", "probe": "archs"}
+    }
+  },
+  "runtime_compile": {
+    "replaces": "compiler",
+    "libraries": ["libnvrtc.so", "libnvrtc.so.12"],
+    "ok_status": 0,
+    "force": {"env": "HAWK_DEVICE_COMPILER", "tool": "nvcc", "runtime": "nvrtc"},
+    "calls": {
+      "version": "nvrtcVersion",
+      "arch_count": "nvrtcGetNumSupportedArchs",
+      "arch_list": "nvrtcGetSupportedArchs",
+      "create": "nvrtcCreateProgram",
+      "compile": "nvrtcCompileProgram",
+      "log_size": "nvrtcGetProgramLogSize",
+      "log": "nvrtcGetProgramLog",
+      "destroy": "nvrtcDestroyProgram",
+      "images": {
+        "ptx": {"size": "nvrtcGetPTXSize", "get": "nvrtcGetPTX", "text": true},
+        "cubin": {"size": "nvrtcGetCUBINSize", "get": "nvrtcGetCUBIN", "text": false}
+      }
+    }
+  }
+}

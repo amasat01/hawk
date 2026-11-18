@@ -7,10 +7,52 @@ name = "aether_writers"
 version = "0.0.1"
 
 [[package]]
-name = "osprey_host"
+name = "osprey_cpu"
 version = "0.0.1"
 dependencies = [
  "aether_writers",
+ "osprey_lowering",
+ "raptor_ir",
+ "raptor_wings",
+ "rcore",
+ "toolkit",
+]
+
+[[package]]
+name = "osprey_cuda"
+version = "0.0.1"
+dependencies = [
+ "aether_writers",
+ "osprey_lowering",
+ "raptor_ir",
+ "raptor_wings",
+ "rcore",
+ "toolkit",
+]
+
+[[package]]
+name = "osprey_gen"
+version = "0.0.0"
+
+[[package]]
+name = "osprey_lowering"
+version = "0.0.1"
+dependencies = [
+ "aether_writers",
+ "raptor_ir",
+ "raptor_wings",
+ "rcore",
+ "toolkit",
+]
+
+[[package]]
+name = "osprey_replay"
+version = "0.0.1"
+dependencies = [
+ "aether_writers",
+ "osprey_cpu",
+ "osprey_cuda",
+ "osprey_lowering",
  "raptor_ir",
  "raptor_support",
  "raptor_wings",
@@ -44,3 +86,10 @@ dependencies = [
 [[package]]
 name = "rcore"
 version = "0.0.1"
+
+[[package]]
+name = "toolkit"
+version = "0.0.1"
+dependencies = [
+ "rcore",
+]
