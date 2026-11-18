@@ -11,10 +11,8 @@ under the heterogeneous execution contract eagle enforces.
 This module is the authoring surface. Importing it never imports
 :mod:`hawk._ir` or :mod:`hawk.ospreys`.
 
-Runtime dependencies: ``raptor-core`` (source lifts for ``python -c``).
-``eagle`` is imported lazily, by calling a kernel (``k(...)``) only, and
-nothing else under ``hawk/hawk/`` imports ``raptor`` or ``eagle``;
-``hawk/tests/test_severance.py`` checks it.
+Runtime dependency: numpy only. ``eagle`` is imported lazily, by calling a
+kernel (``k(...)``) only, and nothing else under ``hawk/`` imports it.
 
 This module also adds the authoring names (``kernel``, the declaration
 vocabulary, ``raw_device``, ``Quantity``), bound lazily through

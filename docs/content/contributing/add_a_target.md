@@ -1,106 +1,37 @@
 # Add a target
 
-A target is one row of `hawk.targets.TARGETS`. The build, the package step and the compile drivers read the row, and
-none of them compares a target's name, so a new target is a new row and the code it points to. A test fails if
-`"cuda"` or `"host"` appears as a string anywhere outside `hawk/targets`.
+A target is served by an OSPREY: one compiled library with its own facts, compilers and toolchains. hawk lists what
+the libraries it finds serve in `hawk.targets.TARGETS` and asks the serving library for everything else, so a new
+target is a new library (or a new row in one) and no hawk code. A test fails if `"cuda"` or `"host"` appears as a
+string anywhere outside `hawk/targets`.
 
-Three jobs, smallest first:
+## What hawk needs to find it
 
-| You want | You add |
+An OSPREY is a folder `osprey_<name>/` holding the library `libosprey_<name>` and a manifest, `osprey.json`:
+
+| Member | States |
 |---|---|
-| another file layout for the same language (a second export) | a row that reuses a Writer |
-| a new execution model for a language hawk already writes (HIP) | a Wrapper, a row, and a compile entry |
-| a new language (OpenCL C, MSL) | a Writer, then the same as above |
+| `name`, `version` | the library's name and version |
+| `door` | the version of the door the library speaks |
+| `targets` | one row per target the library serves |
 
-## The row
+A row of `targets` states `request` (the id users write: `host`, `cuda`), `target` (the library's own name for it, the
+spelling its requests and answers use), `about` (a phrase), `device` (whether it builds for a device), `entry`
+(`"host"` or `"device"`: how eagle enters a built kernel) and `format` (the manifest's word for its object).
 
-```python
-Target(id="cuda", about="builds for the GPU", writer=AetherWriter(), wrapper=CUDA, compile=GPU,
-       entry=ENTRY_DEVICE, format="ptx", artifact=".ptx", source=".cu", features=frozenset(FEATURES))
-```
+hawk searches the folders that installed distributions declare under the entry-point group `hawk.ospreys` (the value is
+a data path; nothing is imported) and the folders of the environment variable `HAWK_OSPREY_PATH`. A library that is
+missing its manifest members, or that speaks another door, is refused by name.
 
-`writer` says how the language spells each construct and `wrapper` how a kernel is wrapped for one execution model.
-`wrapper=None` means the Writer produces the whole file (the `c` row). `compile` is the toolchain, `GPU`, `CPU` or
-`None`: with `None` the row is exported, not built, and `export` names the module that renders and checks it.
-`entry` is how eagle enters a built kernel (`"device"` or `"host"`, or `None` when eagle never runs it), and
-`format` is the manifest's artifact format. `features` are the names from the shared table in
-`hawk/targets/features.py` that the row builds; a kernel that uses one the row lacks is refused by name before
-anything renders.
+## What the library answers
 
-## What the wing must state
-
-A number the shared passes or your Writer read comes from your row's wing, and a missing one is refused by name where it is read: the fold
-threshold (`form.rolled_fold_min`), `linalg.max_dim`, `launch.warp_size`, the host placement table. Nothing defaults to "no limit", and another
-target's number is never borrowed. A target that has no such number builds with `emit_form="static"` or `"rolled"`, which read none.
-
-## A row that reuses a Writer
-
-The smallest target is a copy of an existing row. This one exports the same C under new suffixes, with no change to
-the build:
-
-```python
-from dataclasses import replace
-
-import hawk
-from hawk import Mutable, Param, Scalar
-from hawk.targets import TARGETS
-
-
-@hawk.kernel
-def drag(v: Scalar, k: Param, a: Mutable[Scalar]):
-    a = -k * v
-
-
-TARGETS["toy"] = replace(TARGETS["c"], id="toy", about="a toy export", artifact=".toyh", source=".toy")
-bundle = hawk.build([drag], "out", targets=("toy",))      # out/drag.toy and out/drag.toyh
-```
-
-Remove the row and the same call is refused: `unknown target 'toy'`, with the valid ones listed.
-
-## A new execution model: the Wrapper
-
-A Wrapper is the part of the unit that depends on how the kernel runs. It has one attribute and six methods:
-
-| Member | It writes |
-|---|---|
-| `qualifier` | the prefix of the helper functions (`__device__ __forceinline__`, `static inline`) |
-| `entry_signature(walk, name)` | the entry's declaration: the arguments, then the partition triple `base`, `count`, `nSamples` |
-| `index_prologue(...)` | the one place that binds the body's lane index (a CUDA block and thread, a serial host loop) |
-| `index_epilogue()` | the closing half of that seam |
-| `unpack(walk)` | the lines that rebuild each argument's view from what the entry receives |
-| `sample_sum_frame(...)` | the frame around a body with a reduction over lanes |
-| `dispatch(...)` | a per-lane branch between formulas |
-
-A Wrapper may also supply optional hooks (`simd_safe`, `lane_guards`, `interchange`), which the renderer reads with
-`getattr`. See `hawk/emit/cuda.py` and `staging/aether/wings/cpu/host.py` for the two that exist. The launch geometry is eagle's:
-a Wrapper names no stream and no occupancy.
-
-Then add the row. A HIP target that reuses the aether C++ Writer would be (a sketch; hawk builds no HIP today):
-
-```python
-Target("hip", "builds for AMD GPUs", AetherWriter(), HipWrapper(), HIP, ENTRY_DEVICE, "hsaco",
-       ".hsaco", ".hip.cpp", frozenset(FEATURES))
-```
-
-## A toolchain
-
-`compile=GPU` and `compile=CPU` name the two toolchains hawk drives: the device compiler and the host compiler.
-A row that uses one of them needs nothing more. A new compiler (hiprtc) is a new value and a branch in
-`hawk.compile.drivers.compile_source`, the one function that forks on the row's toolchain.
-
-## A new language: the Writer
-
-A Writer answers the renderer's questions in one language: declare a local, write an operator, store to a sink,
-write a sum over lanes. `aether.wings.base.writer.WRITER_MEMBERS` lists them, and each member's docstring gives the aether
-writer's text. `hawk.embedded.writer.CWriter` is the second one. A language that cannot compile aether's C++ templates
-also needs its own core for the numerics contract: see [the numerics contract](https://amasat01.github.io/aether/content/numerics_contract.html).
+hawk calls the library's door and nothing else: the machine, the lowering of a kernel's request, one unit's build, the
+link and the state of the store. The facts a number comes from (a fold threshold, a maximum dimension, a warp size), the
+flags and the compilers all live inside the library; a missing one is refused by the library with its own code, and
+hawk relays the refusal.
 
 ## The family side
 
-A built row also reaches the other repos:
-
-- `entry` and `format` are written to the manifest. A new format word is added to
-  `raptor.schema.manifest.MANIFEST_FORMATS` and to eagle's `plugin/roles.h`; a test in each repo pins the two lists
-  against each other.
-- eagle runs the kernel through an execution backend for that device kind. See
-  [Add an execution backend](https://amasat01.github.io/eagle/content/devguide/add_an_execution_backend.html).
+A built target also reaches the other repos: `entry` and `format` are written to the manifest, and eagle runs the
+kernel through an execution backend for that device kind. See
+[Add an execution backend](https://amasat01.github.io/eagle/content/devguide/add_an_execution_backend.html).

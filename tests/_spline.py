@@ -3,9 +3,8 @@
 
 """The spline edge cell, at HAWK's own authoring surface — TEST SCAFFOLD.
 
-ONE definition of the shape and were both ruled over, shared by the
-compile card (``tests/test_loop_lowering_card.py``) and the scale entry point below, so the two can never drift into
-measuring different subjects and reporting them under one name.
+ONE definition of the shape, shared by the tests that use it and the scale
+entry point below, so they can never drift into measuring different subjects and reporting them under one name.
 
 WHY IT IS COPIED AND NOT IMPORTED. The real subject is a downstream
 package's spline edge kernel,
@@ -149,8 +148,7 @@ def shallow_spline_cell(n_in: int, basis: int):
 # child that the parent starts under that cap. `RLIMIT_AS` is inherited, so the
 # compilers this child spawns run under the same ceiling without being told.
 #
-# It prints ONE json line, which `tests/test_loop_lowering_card.py` folds into
-# CARD_LOOP_LOWERING.md. It measures; it decides nothing.
+# It prints ONE json line for its caller to read. It measures; it decides nothing.
 # --------------------------------------------------------------------------- #
 
 #: Samples the compiled host kernel is run over for the timing column.

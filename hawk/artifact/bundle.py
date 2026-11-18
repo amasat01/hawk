@@ -395,20 +395,32 @@ def _draft(kernel, unit, family, answers, *, mode, targets, machines, derivative
         built = _built(answers[target])
         # the runtime opens a host unit as ``<unit>.so``: the file name is the bundle's, the object the library built is link input
         entries[target] = (built[0], f"{name}.so", *built[2:]) if TARGETS[target].host_entry else built
-    lead = _lead(entries)
-    tool = {ospreys.serving(t).name: answers[t]["figures"] for t in targets}
-    stated = {ospreys.serving(t).name: machines[t]["stated"] for t in targets}
-    meta = sidecar_of_unit(kernel, unit, lead_device=TARGETS[lead].device, fmt=entries[lead][3], scalar_type=mode,
-                           exec_targets=[TARGETS[t].entry for t in targets], family=family, derivative=derivative, block=block,
-                           measured=answers[lead]["figures"].get("launch"), tool=tool, stated=stated, records=records)
+    meta = _sidecar(kernel, unit, family, mode=mode, targets=targets, machines=machines, derivative=derivative, block=block,
+                    records=records, built=answers)
     blob = text_blob(json.dumps(meta, indent=2) + "\n")
     files.append(UnitFile(f"{name}.json", digest_bytes(blob), blob=blob))
     return _Draft(name, kernel.name, unit["meta"], meta, f"{name}.json", entries, tuple(files))
 
 
+def _sidecar(kernel, unit, family, *, mode, targets, machines, derivative, block, records, built=None) -> dict:
+    """The sidecar of one answered unit: what the lowering states and the machines stated, and, when ``built`` (``{target: its
+    build answer}``) is given, what the builds measured (the unit's launch figures and each tool's figures). :func:`describe` and
+    :func:`build` both come through here, so the one document has one writer."""
+    lead = _lead(built if built is not None else dict.fromkeys(targets))
+    stated = {ospreys.serving(t).name: machines[t]["stated"] for t in targets}
+    host = next((t for t in targets if TARGETS[t].host_entry), None)
+    measured = tool = None
+    if built is not None:
+        measured = built[lead]["figures"].get("launch")
+        tool = {ospreys.serving(t).name: built[t]["figures"] for t in targets}
+    return sidecar_of_unit(kernel, unit, lead_device=TARGETS[lead].device, fmt=built[lead]["format"] if built else TARGETS[lead].format,
+                           scalar_type=mode, exec_targets=[TARGETS[t].entry for t in targets], family=family, derivative=derivative,
+                           block=block, measured=measured, tool=tool, stated=stated, records=records)
+
+
 @dataclass(frozen=True)
 class _Library:
-    """The shared library of one build call: its file name, the host target whose units it holds (``None``: a device-only build)
+    """The shared library of one build call: its file name, the host target whose units it holds
     and the files it publishes (the library, then one link to it for each host unit not named like it)."""
 
     name: str
@@ -416,24 +428,26 @@ class _Library:
     files: tuple
 
 
-def _link_set(drafts, answers, built, *, targets, stem: str, exports, root: Path) -> "_Library":
-    """Link the units of ``drafts`` into one library with the OSPREY that serves the host: each unit's host and device parts with the
+def _link_set(drafts, answers, built, *, targets, stem: str, exports, root: Path) -> "_Library | None":
+    """Link the units of ``drafts`` into one library with the OSPREY that serves the host: each unit's host part with the
     text of the set. The set lists every unit of every answer in the answers' order: a unit with no text (the source unit of a split
     kernel, which names its stages) has a record in the library and no part. Each host unit also gets a link ``<unit>.<ext>`` to the
-    library, which the runtime still opens by the unit's name."""
+    library, which the runtime still opens by the unit's name. ``None`` for a build of no host target: its units are the device
+    artifacts themselves, and a library links host objects only."""
     host = next((t for t in targets if TARGETS[t].host_entry), None)
+    if host is None:
+        return None
     linker = _linker(targets)
     written = iter(built)
     parts, metas = [], []
     for unit in (u for answer in answers for u in answer["units"]):
         metas.append(unit["meta"])
         if unit["texts"]:
-            parts.append(next(written)[host or host_target().id])
+            parts.append(next(written)[host])
     path = Path(linker.link(parts, linker.set_text(metas, exports), f"{stem}.so", root)["library"])
     name = path.name
     digest = _digest_file(path)
-    links = () if host is None else tuple(UnitFile(d.entries[host][1], digest, link_to=name)
-                                          for d in drafts if d.entries[host][1] != name)
+    links = tuple(UnitFile(d.entries[host][1], digest, link_to=name) for d in drafts if d.entries[host][1] != name)
     return _Library(name, host, (UnitFile(name, digest, source_path=path), *links))
 
 
@@ -629,6 +643,28 @@ def _emitted(kernel, name, mode, kind, targets, does, instead, settings, options
     return answer, written[0], kind, machines
 
 
+def _lowered(kernels, names, kind, *, mode, targets, cfg, options, opt_level, root: Path, sizes, tools_needed: bool) -> tuple:
+    """``(kinds, machines, answers)`` of a set of kernels: each target's machine and each kernel's lowering answer, with every refusal
+    the lowering makes. ``tools_needed`` refuses a machine that lacks its tools before anything is lowered; a caller that compiles
+    nothing does not ask."""
+    explicit = kind is not None
+    kind = _resolve_bundle_kind(names, kernels, kind)
+    kinds = [_member_kind(k, kind, explicit) for k in kernels]
+    machines = _machines(targets, options, opt_level, root)
+    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, options=options, machines=machines, sizes=sizes)
+    if tools_needed:
+        _require_tools(machines)
+    answers = [_lower(plan, targets) for plan in plans]
+    _refuse_repeated_units([(k.name, unit["meta"]["name"]) for k, answer in zip(kernels, answers) for unit in answer["units"] if unit["texts"]])
+    if cfg.launch_bounds is not None:
+        for answer in answers:
+            teams = [st["unit"]["name"] for unit in answer["units"] for st in unit["meta"]["stages"] if st["team"] is not None]
+            if teams:
+                raise HawkError(f"launch_bounds={cfg.launch_bounds!r}: {teams[0]!r} is built as a warp per lane (a team), whose block the "
+                                "emit fixes; drop launch_bounds, or build it with wide_form='thread'")
+    return kinds, machines, answers
+
+
 def _build_units(families, *, targets, machines, options, defines, opt_level, block, kinds, root) -> list:
     """The build answers of every unit of every family, ``[[{target: answer}]]``: every call runs on its own thread and the OSPREYs
     bound how many compiles run at once; a failure is the first one in order, raised after every started call has finished."""
@@ -677,7 +713,7 @@ def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
                    block=None if cfg.launch_bounds is None else cfg.launch_bounds[0], records=answer)
     # one kernel is a set of one: its library is named for its unit
     library = _link_set([draft], [answer], [built], targets=targets, stem=name, exports=layout_sizes_override, root=root)
-    _publish((*draft.files, *library.files), Path(directory))
+    _publish((*draft.files, *(library.files if library else ())), Path(directory))
     return _artifact_of(draft, Path(directory), library)
 
 
@@ -690,6 +726,33 @@ class EmitUnit:
     sources: dict
     sidecar: dict
     unit: object
+
+
+def describe(kernels, *, targets=None, mode: str = "float64", options: Mapping | None = None, opt_level: str = "") -> dict:
+    """``{kernel name: the sidecar a build of it would write}``, answered before any build and with no compiler run.
+
+    The document has the sidecar's own shape, less the members that exist only after a compile (the unit files, each tool's
+    figures and the unit's measured launch figures), so one reader serves a kernel before and after its build. It asks each target's
+    OSPREY for its machine and the lowering and nothing more, so it answers on a machine whose tools are absent. ``targets`` left
+    unset is every target an OSPREY serves, as :func:`build` chooses; the refusals are :func:`build`'s up to the compile. A kernel
+    that splits into several units answers with its first unit, which lists the stages (``stages``) of the others.
+    """
+    kernels = list(kernels)
+    targets = tuple(DEFAULT_TARGETS if targets is None else targets)
+    names = [k.name for k in kernels]
+    _refuse_targets(names[0] if names else "", targets)
+    _refuse_segmented_position(kernels, names)
+    if not kernels:
+        raise HawkError("no kernel to describe: name at least one")
+    options = _user_options(options, False, None, "", "")
+    cfg = _resolved_settings(None, targets)
+    derivative = _per_kernel_derivative(kernels, names, None)
+    _kinds, machines, answers = _lowered(kernels, names, None, mode=mode, targets=targets, cfg=cfg, options=options, opt_level=opt_level,
+                                         root=default_cache_dir(), sizes=None, tools_needed=False)
+    return {k.name: _sidecar(k, unit, answer["units"], mode=mode, targets=targets, machines=machines, derivative=d, block=None,
+                             records=answer)
+            for k, answer, d in zip(kernels, answers, derivative)
+            for unit in [next(u for u in answer["units"] if u["texts"])]}
 
 
 def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targets=DEFAULT_TARGETS, kind=None,
@@ -707,12 +770,9 @@ def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targe
     cfg = _resolved_settings(settings, targets)
     answer, unit, kind, machines = _emitted(kernel, name, mode, kind, targets, "emit_source returns", "build_bundle", cfg, options, "",
                                             None, default_cache_dir(), exports_block=True)
-    lead = _lead(dict.fromkeys(targets))
     bounds = cfg.launch_bounds
-    sidecar = sidecar_of_unit(kernel, unit, lead_device=TARGETS[lead].device, fmt=TARGETS[lead].format, scalar_type=mode,
-                              exec_targets=[TARGETS[t].entry for t in targets], family=answer["units"],
-                              block=None if bounds is None else bounds[0],
-                              stated={ospreys.serving(t).name: machines[t]["stated"] for t in targets})
+    sidecar = _sidecar(kernel, unit, answer["units"], mode=mode, targets=targets, machines=machines, derivative=None,
+                       block=None if bounds is None else bounds[0], records=answer)
     return EmitUnit({t: SimpleNamespace(**text) for t, text in _texts(unit, targets).items()}, sidecar, kernel)
 
 
@@ -759,26 +819,13 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     _refuse_segmented_position(kernels, names)
     if not kernels:
         raise HawkError("no kernel to build: a bundle holds at least one")
-    explicit = kind is not None
-    kind = _resolve_bundle_kind(names, kernels, kind)
-    kinds = [_member_kind(k, kind, explicit) for k in kernels]
     cfg = _resolved_settings(settings, targets, emit_form=emit_form, linalg_form=linalg_form, wide_form=wide_form,
                              launch_bounds=launch_bounds)
     block = None if cfg.launch_bounds is None else cfg.launch_bounds[0]
     per_kernel_derivative = _per_kernel_derivative(kernels, names, derivative)
     root = Path(cache_dir) if cache_dir else default_cache_dir()
-    machines = _machines(targets, options, opt_level, root)
-    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, options=options, machines=machines,
-                   sizes=layout_sizes_override)
-    _require_tools(machines)
-    answers = [_lower(plan, targets) for plan in plans]
-    _refuse_repeated_units([(k.name, unit["meta"]["name"]) for k, answer in zip(kernels, answers) for unit in answer["units"] if unit["texts"]])
-    if cfg.launch_bounds is not None:
-        for answer in answers:
-            teams = [st["unit"]["name"] for unit in answer["units"] for st in unit["meta"]["stages"] if st["team"] is not None]
-            if teams:
-                raise HawkError(f"launch_bounds={cfg.launch_bounds!r}: {teams[0]!r} is built as a warp per lane (a team), whose block the "
-                                "emit fixes; drop launch_bounds, or build it with wide_form='thread'")
+    kinds, machines, answers = _lowered(kernels, names, kind, mode=mode, targets=targets, cfg=cfg, options=options, opt_level=opt_level,
+                                        root=root, sizes=layout_sizes_override, tools_needed=True)
     built = _build_units(answers, targets=targets, machines=machines, options=options, defines=defines, opt_level=opt_level,
                          block=block, kinds=kinds, root=root)
     families = [[_draft(k, unit, answer["units"], got, mode=mode, targets=targets, machines=machines, derivative=d, block=block, records=answer)
@@ -787,7 +834,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     drafts = [d for family in families for d in family]
     library = _link_set(drafts, answers, [got for family in built for got in family], targets=targets, stem=name or "units",
                         exports=layout_sizes_override, root=root)
-    files = tuple(f for d in drafts for f in d.files) + library.files
+    files = tuple(f for d in drafts for f in d.files) + (library.files if library else ())
     doc = _manifest_of(families, library)
     manifest_blob = text_blob(json.dumps(doc, indent=2) + "\n")
     files += (UnitFile("manifest.json", digest_bytes(manifest_blob), blob=manifest_blob),)

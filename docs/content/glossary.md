@@ -42,16 +42,9 @@ Sorted
   `Sorted[Index]`: an index plane whose values never decrease along the
   lanes. A promise that lets hawk add each run of equal keys once.
 
-Writer
-  How one language writes each IR construct as source text for a target.
-
-Wrapper
-  How a kernel is wrapped for one execution model: the declaration, the
-  index, the argument unpacking and the reduction frame.
-
 target
-  A Writer and a Wrapper with their compile and package facts. Its id is
-  what `hawk.build(targets=...)` takes. See
+  What an OSPREY library serves: one thing `hawk.build(targets=...)` builds
+  (`host`, `cuda`). Its id is what that argument takes. See
   [Add a target](contributing/add_a_target).
 
 stage

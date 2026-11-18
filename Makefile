@@ -15,8 +15,11 @@
 # The environment:
 #   a venv and the sibling build trees are made under GATE_DIR (default build/gate, git-ignored), afresh by every run; GATE_REUSE=1 keeps them
 #   (the inner loop: GATE_REUSE=1 make gate-test PYTEST_ARGS="tests/test_foo.py").
+#   OSPREY_WHEELS is the folder holding the three wheels of the OSPREY libraries (raptor-osprey, raptor-osprey-cpu,
+#   raptor-osprey-cuda; the library repository's `ci/wheels.py build` writes them to dist/wheels): they are installed first, then hawk.
 #   Siblings come from PyPI (the declared dependencies) unless a source directory is given:
-#   RAPTOR_SRC, AETHER_SRC (its dsc/ is sealed and installed), EAGLE_SRC (built against the headers of AETHER_SRC and its own).
+#   AETHER_SRC (the headers hawk._core and eagle build against), EAGLE_SRC (built against the headers of AETHER_SRC and its own),
+#   RAPTOR_SRC (read in place, never installed: the checkout whose public-name checker gate-names runs).
 #   SITE_SRC is the checkout of amasat01.github.io (the docs skin and the freshness generator): gate-lint and gate-docs need it.
 #   Toolchains come from the environment, never guessed: a C++ compiler (CXX), nvcc on PATH (or CUDACXX), cppcheck on PATH
 #   (or HAWK_CPPCHECK). A missing one stops the gate before it starts. GATE_JOBS (default 2) is the build parallelism;
@@ -29,6 +32,7 @@ PYTEST_JOBS ?= $(GATE_JOBS)
 # GPU rows share the one card: their time is mostly host compiles, so a few workers overlap them with the device runs
 GPU_PYTEST_JOBS ?= 3
 PYTEST_ARGS ?= tests
+OSPREY_WHEELS ?=
 RAPTOR_SRC ?=
 AETHER_SRC ?=
 EAGLE_SRC ?=
@@ -78,6 +82,7 @@ gate-all: gate gate-gpu
 gate-tools:
 	@mkdir -p $(GATE_ABS)/tmp $(HAWK_GATE_CACHE) $(HAWK_CACHE_DIR)
 	@test -n "$(CXX)" || { echo "gate: CXX is unset (the C++ compiler the host objects are built with)" >&2; exit 2; }
+	@test -d "$(OSPREY_WHEELS)" || { echo "gate: OSPREY_WHEELS (the folder holding the three OSPREY wheels) is unset or not a folder" >&2; exit 2; }
 	@command -v "$${CUDACXX:-nvcc}" >/dev/null || { echo "gate: nvcc is not on PATH and CUDACXX is unset" >&2; exit 2; }
 	@command -v "$${HAWK_CPPCHECK:-cppcheck}" >/dev/null || { echo "gate: cppcheck is not on PATH and HAWK_CPPCHECK is unset" >&2; exit 2; }
 
@@ -89,12 +94,8 @@ gate-venv: gate-tools
 	@if [ ! -x $(VPY) ]; then $(PYTHON) -m venv $(VENV); fi
 	$(VPY) -m pip install --quiet --upgrade pip
 	$(VPY) -m pip install --quiet "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4" cmake ninja -c ci/constraints.txt
-	if [ -n "$(RAPTOR_SRC)" ]; then $(VPY) -m pip install --quiet "$(abspath $(RAPTOR_SRC))" -c ci/constraints.txt; fi
-	# (the builds go to GATE_DIR, never into a sibling checkout.) aether-dsc's payload is sealed at build time (it is not tracked): seal it from the checkout, then install it
-	if [ -n "$(AETHER_SRC)" ]; then \
-	  $(VPY) -m pip install --quiet "cuda-bindings>=12.6,<13" "nvidia-cuda-nvrtc-cu12>=12.6,<13" "nvidia-cuda-cccl-cu12>=12.6,<13" -c ci/constraints.txt && \
-	  (cd "$(abspath $(AETHER_SRC))/dsc" && $(VPY) -m aether_dsc.seal) && \
-	  $(VPY) -m pip install --quiet --config-settings=build-dir=$(GATE_ABS)/build/aether-dsc "$(abspath $(AETHER_SRC))/dsc" -c ci/constraints.txt; fi
+	# the OSPREY wheels and no other package of ours: hawk's requirements on them are then already met (the builds go to GATE_DIR, never into a sibling checkout)
+	$(VPY) -m pip install --quiet --no-index --no-deps "$(OSPREY_WHEELS)"/*.whl
 	# eagle: both header sets into a prefix of the gate's own, then its binding built against it
 	if [ -n "$(EAGLE_SRC)" ]; then \
 	  test -n "$(AETHER_SRC)" || { echo "gate: EAGLE_SRC needs AETHER_SRC (eagle builds against its headers)" >&2; exit 2; }; \
@@ -128,7 +129,8 @@ gate-test: gate-venv
 
 # coverage: every public name has a test that mentions it (static, seconds); the untested ones are in the allowlist, which only shrinks
 gate-names: gate-venv
-	$(VPY) -m raptor.conformance.public_names --src . --tests tests --allow ci/public_names_untested.txt --module hawk
+	@test -n "$(RAPTOR_SRC)" || { echo "gate-names: RAPTOR_SRC (a checkout of raptor, which holds the checker) is unset" >&2; exit 2; }
+	$(VPY) "$(abspath $(RAPTOR_SRC))/raptor/conformance/public_names.py" --src . --tests tests --allow ci/public_names_untested.txt --module hawk
 
 # docs: every notebook filled and run on the CPU (the card is hidden: this leg is the GPU-less one; the card pool is for gate-gpu), the strict (-W) Sphinx build, every public name has a page
 gate-docs: gate-venv

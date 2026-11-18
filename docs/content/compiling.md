@@ -2,9 +2,6 @@
 
 How hawk turns a kernel into something that runs.
 
-- [The compile cache](compile_cache): why building the same kernel twice compiles once.
-- [Compile options](compile_options): the flags and profiles a build takes.
-
 The `c` target emits standalone MISRA-C for an embedded build instead of a
 native library; see [Embedded C target](embedded.md).
 
@@ -57,11 +54,3 @@ way out: hold fewer live matrices per lane, build with `linalg_form="team"` (see
 [small linear algebra](linear_algebra)), or use a smaller `n`. The sidecar records the figure as
 `launch.local_bytes`, with `local_source` (how it was measured) and `local_limit`. A launch of `n` threads needs about
 `n * local_bytes` of device memory beside your planes, and eagle refuses a bind that cannot fit it.
-
-```{toctree}
-:maxdepth: 1
-:hidden:
-
-compile_cache
-compile_options
-```

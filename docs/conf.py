@@ -115,12 +115,8 @@ intersphinx_mapping = {
 templates_path = ["_templates"]
 exclude_patterns = ["_templates", "_build", "Thumbs.db", ".DS_Store", "README.md", "superpowers"]
 
-# Two narrow, tooling-internal rough edges, not content bugs:
-# - "autodoc": sphinx_autodoc_typehints' autodoc-process-signature hook
-#   throws formatting the synthesised __new__ of a typing.NamedTuple
-#   (hawk.compile.DeviceImage) -- a known interaction between the two, not a
-#   docstring or type-annotation problem on hawk's side.
-# - "sphinx_autodoc_typehints.forward_reference": the same plugin cannot
+# A narrow, tooling-internal rough edge, not a content bug:
+# - "sphinx_autodoc_typehints.forward_reference": the plugin cannot
 #   resolve `Mapping` while rendering hawk.ext.DEFAULT_KIND's own type (an
 #   `autodata`-documented dataclass instance, not a function/class the
 #   plugin's forward-reference resolver is built for).

@@ -67,7 +67,17 @@ class RecognizedContraction:
     Field-for-field ``eagle.gemm.contraction.RecognizedContraction``.
 
     ``carry`` is the sink the fold commits to; ``reduce_var`` is the loop's
-    own index variable, a real symbolic index read off its header."""
+    own index variable, a real symbolic index read off its header.
+
+    ``lane_major`` is the NAME of the operand the lanes are major in, or ``None``:
+    a lane is one point ``(i, j)`` of a grid of ``m`` columns (``lane = i * m + j``),
+    one operand is read through the major half ``lane // m`` alone and the other
+    through the minor half ``lane - (lane // m) * m``. For each operand the kinds of the
+    operations applied DIRECTLY to the lane index in its read indices are
+    collected. Operand X is lane-major when its kinds are exactly ``{"div"}``,
+    the other operand's kinds are a strict superset of ``{"div"}``, and ``m``, the
+    divisor of both, is X's staged fan-in and the other operand's free extent (its one
+    declared axis that is not the reduced one). Any other shape of the reads is ``None``."""
 
     carry: str
     reduce_var: str
@@ -83,6 +93,7 @@ class RecognizedContraction:
     staged_fanin: tuple
     fanin_source: str
     adjoint_accumulates: tuple
+    lane_major: str | None
 
     @property
     def operand_count(self) -> int:
@@ -254,18 +265,58 @@ def _fanin(indices: Sequence) -> int | None:
         for node in _walk(index):
             if _ir.is_a(node, "sample_index"):
                 reached.add(node)
-            if _op_kind(node) == "div" and _ir.is_a(node.operands[0], "sample_index"):
-                # a divisor free of the lane index reads back as a constant
-                # form whose offset is its value when it is a compile-time int
-                divisor = _ir.index_form(node.operands[1])
-                if divisor is None or divisor.coefficient != 0\
-                        or divisor.offset is None:
-                    continue
-                divisors.add(int(divisor.offset))
+            divisor = _lane_divisor(node)
+            if divisor is not None:
+                divisors.add(divisor)
                 covered.add(node.operands[0])
     if not reached or reached - covered or len(divisors) != 1:
         return None
     return divisors.pop()
+
+
+def _lane_divisor(node: Any) -> int | None:
+    """``m`` of a node ``lane // m`` with a compile-time integer ``m``, else ``None``."""
+    if _op_kind(node) != "div" or not _ir.is_a(node.operands[0], "sample_index"):
+        return None
+    # a divisor free of the lane index reads back as a constant form whose offset is its value when it is a compile-time int
+    divisor = _ir.index_form(node.operands[1])
+    if divisor is None or divisor.coefficient != 0 or divisor.offset is None:
+        return None
+    return int(divisor.offset)
+
+
+def _lane_ops(indices: Sequence) -> tuple:
+    """``(kinds, divisors)`` of the lane index in ``indices``: the kinds of the operations applied directly to it and the
+    divisors of its integer divisions."""
+    kinds, divisors = set(), set()
+    for index in indices:
+        for node in _walk(index):
+            if any(_ir.is_a(child, "sample_index") for child in node.operands):
+                kinds.add(_op_kind(node))
+            divisor = _lane_divisor(node)
+            if divisor is not None:
+                divisors.add(divisor)
+    return kinds, divisors
+
+
+def _free_extent(operand: ContractionOperand) -> int | None:
+    """The extent of the one declared axis of ``operand`` that is not the reduced one, or ``None``."""
+    free = [size for label, size, _stride in operand.dims if label != operand.reduce_dim]
+    return free[0] if len(free) == 1 else None
+
+
+def _lane_major(operands: tuple, per_plane: dict) -> str | None:
+    """The operand the lanes are major in (:class:`RecognizedContraction`'s ``lane_major``), or ``None``."""
+    if len(operands) != 2:
+        return None
+    for major, minor in (operands, operands[::-1]):
+        kinds, divisors = _lane_ops(per_plane[major.name])
+        other_kinds, other_divisors = _lane_ops(per_plane[minor.name])
+        fanin = _fanin(per_plane[major.name])
+        if (kinds == {"div"} and other_kinds > {"div"} and fanin is not None
+                and divisors == other_divisors == {fanin} and _free_extent(minor) == fanin):
+            return major.name
+    return None
 
 
 def _describe(name: str, indices: list, dims: tuple, staged: bool,
@@ -516,4 +567,5 @@ def recognize(kernel: Any, vjp: Any = None, *, mapping: dict | None = None
         staged_fanin=fanin,
         fanin_source="primal_walk" if fanin else "none",
         adjoint_accumulates=adjoint,
+        lane_major=_lane_major(operands, per_plane),
     )

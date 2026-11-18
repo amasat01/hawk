@@ -104,9 +104,10 @@ def bundle(request, tmp_path_factory, cache_dir):
 TARGETS = ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
 
 
-def _summed(kernel) -> set:
-    """The names of the planes a kernel sums per 32 samples: its ``accum_out`` slots."""
-    return {name for role, name in kernel.arg_spec if role == "accum_out"}
+def _summed(built, kernel) -> set:
+    """The names of the planes a kernel sums per 32 samples: the targets of the sidecar's ``cells``. The compensation plane
+    beside each is an ``accum_out`` slot too, but it is nobody's target."""
+    return set(sidecar_of(built, kernel.name).get("cells", {}))
 
 
 def _run(built, kernel, target, values, dtype):
@@ -117,7 +118,7 @@ def _run(built, kernel, target, values, dtype):
     if target == "cuda":
         import cupy as xp
     bound, outs = {}, {}
-    summed = _summed(kernel)
+    summed = _summed(built, kernel)
     for role, name in kernel.arg_spec:
         if role == "mutable":
             outs[name] = bound[name] = xp.zeros(N, dtype=dtype)
@@ -177,7 +178,7 @@ def test_a_promoted_loop_kernel_equals_the_param_kernel_at_every_level(
     want = _run(built, plain, target, point, MODES[mode])
     assert got.keys() == want.keys()
     for n in want:
-        if n in _summed(promoted):
+        if n in _summed(built, promoted):
             # the promoted gradient is summed per 32 samples; the plain one is not
             np.testing.assert_allclose(got[n], _per_32(want[n]),
                                        rtol=64 * np.finfo(MODES[mode]).eps)

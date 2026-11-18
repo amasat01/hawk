@@ -89,7 +89,7 @@ forward, lookups and sums.
 :link: content/api/index
 :link-type: doc
 Every public name in `hawk`, `hawk.math`, `hawk.ext`, `hawk.diff`,
-`hawk.compile` and `hawk.runtime`.
+`hawk.ospreys` and `hawk.runtime`.
 :::
 ::::
 

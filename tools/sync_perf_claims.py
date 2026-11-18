@@ -16,9 +16,8 @@ larger N with the smaller N beside it.
 
 hawk's CI has no eagle checkout, so the rendered values are kept in
 ``docs/perf_claims.json`` (span spec -> text, the headline sentence, the md5 of
-each card read); ``tests/test_perf_claims.py`` checks the README against that
-file always, and the file against the cards whenever ``RAPTOR_EAGLE_ROOT`` points
-at an eagle checkout.
+each card read); ``--check`` fails when the README or that file differs from what the cards
+under ``--eagle-root`` render.
 
 When the headline device has no card this script stops with an error naming the
 missing file and writes nothing; ``--without-headline`` regenerates the rest.

@@ -226,7 +226,7 @@ Extras, platforms, requirements and the CPU-only route: [installation](https://a
 ## Performance
 
 Every number in this section is generated from the performance cards committed in eagle (`benchmarks/perf_card`):
-`tools/sync_perf_claims.py` rewrites them, and `tests/test_perf_claims.py` fails if this text, the snapshot `docs/perf_claims.json` or (with `RAPTOR_EAGLE_ROOT` set to an eagle checkout) the cards disagree.
+`tools/sync_perf_claims.py` rewrites them, and `tools/sync_perf_claims.py --check` fails if this text, the snapshot `docs/perf_claims.json` or the cards disagree.
 Kernels authored with hawk are what eagle's performance card times.
 
 <!-- hero:begin -->
@@ -248,30 +248,6 @@ The chart shows one GPU; [the performance page](https://amasat01.github.io/eagle
 The same hawk kernel also runs on a CPU alone, through eagle's host team: on an <!--c spec card=ensemblecpu dev=amd-epyc-9b45 field=cpu-->AMD EPYC 9B45<!--/c--> (<!--c spec card=ensemblecpu dev=amd-epyc-9b45 field=logical_cpus-->16<!--/c--> logical CPUs) the 8-thread spread batch of 1,000,000 samples takes **<!--c wall card=ensemblecpu dev=amd-epyc-9b45 arm=eagle_cpu8 n=1000000 dist=spread-->2.49 s<!--/c-->**. eagle's [performance page](https://amasat01.github.io/eagle/content/performance.html) has a tab for every CPU and GPU measured, with Numba, JAX, PyTorch, NumPy and multiprocessing on the CPU cards, each with the setting where it fits best; on some cells and CPUs another tool is ahead, and the card shows which.
 
 ## Going deeper
-
-<details>
-<summary>The pip-only device compile, directly</summary>
-
-The device compile `hawk.artifact.build`/`build_bundle` use when no `nvcc`
-is on `$PATH` goes through `hawk.compile.device`/`hawk.compile.cubin`; the
-same entry points are usable directly, for an ad hoc CUDA C++ `source`
-string that was never authored as a traced hawk kernel at all:
-
-```python
-from hawk.compile import cubin, cubin_available
-
-if cubin_available():
-    image = cubin(source)          # DeviceImage(image=<SASS bytes>, target="cubin", arch="sm_XX")
-```
-
-`cubin_available()` never raises; `device(source, target="ptx")` is the
-alternative when PTX (the portable intermediate form NVRTC can also emit)
-is what a caller needs, guarded against a driver too old to JIT a newer
-NVRTC's PTX (`target="cubin"` needs no such guard — it is already SASS,
-the GPU's own machine code). Headers come from `aether_dsc`'s **sealed
-payload** — a copy of the headers hawk's device compiler reads from
-directly, bundled into the wheel — never from disk.
-</details>
 
 <details>
 <summary>Build and test from a source checkout (development)</summary>

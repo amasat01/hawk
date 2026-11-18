@@ -47,12 +47,14 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
-# Runtime dependencies: numpy only (hawk never imports it, but the host route and every example pass NumPy arrays). The compiled
-# binding `_osprey` and the OSPREY libraries are found at run time (`hawk.ospreys`): a distribution that ships an OSPREY
-# declares its folder under the entry-point group `hawk.ospreys`.
-dependencies = ["numpy>=1.26"]
+# Runtime dependencies: numpy (hawk never imports it, but the host route and every example pass NumPy arrays), the compiled binding
+# `_osprey` with the base OSPREY inside, and the cpu OSPREY. Every OSPREY is a distribution of its own that declares its folder
+# under the entry-point group `hawk.ospreys`, which hawk finds at run time.
+dependencies = ["numpy>=1.26", "raptor-osprey", "raptor-osprey-cpu"]
 
 [project.optional-dependencies]
+# the OSPREY of the cuda backend
+cuda = ["raptor-osprey-cuda"]
 # numpy is a TEST dependency only: the finite-difference row evaluates a
 # primal and its derivative IR with the scratch interpreter in tests/_eval.py.
 # The tests drive kernels through eagle, so the test environment carries it (the PyPI wheel, or a source build via EAGLE_SRC).
@@ -157,7 +159,6 @@ ignore = ["F841"]
 "tests/test_diff_nested_loops.py" = ["F821"]
 "tests/test_diff_second_order_loops.py" = ["F821"]
 "tests/test_emit_rolled.py" = ["F821"]
-"tests/test_host_loop_interchange.py" = ["F821"]
 "tests/test_keyed_block_fold.py" = ["F821"]
 "tests/test_ordered_fixed_tree.py" = ["F821"]
 "tests/test_grid_bind.py" = ["F821"]
@@ -165,7 +166,6 @@ ignore = ["F841"]
 "tests/test_ir_contraction.py" = ["F821"]
 "tests/test_kernel_call.py" = ["F821"]
 "tests/test_linalg_frontend.py" = ["F821"]
-"tests/test_loop_lowering_card.py" = ["F821"]
 "tests/test_named_axis_mutable.py" = ["F821"]
 "tests/test_pair_index.py" = ["F821"]
 "tests/test_reduce_samples.py" = ["F821"]
@@ -179,6 +179,5 @@ ignore = ["F841"]
 "tests/test_keyed_sum_digest.py" = ["F821"]
 "tests/test_ordered_gradient.py" = ["F821"]
 "tests/test_ordered_sum_axes.py" = ["F821"]
-"tests/test_sidecar_banded_record.py" = ["F821"]
 "tests/test_unit_sidecar.py" = ["F821"]
 "tests/test_w25_keyed_sum_over_limit.py" = ["F821"]

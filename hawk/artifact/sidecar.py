@@ -268,6 +268,22 @@ def _arg_dtypes(walk, scalar_type: str) -> dict:
             for role, name in walk.arg_spec if role in _PLANE_ROLES}
 
 
+def _branch_cost(record: dict) -> dict:
+    """One branch's operation counts as the library states them; ``stores`` is negative when no sink takes the branch's value directly."""
+    return {**record, "stores": -1.0 if record["stores"] is None else record["stores"]}
+
+
+def _joined_names(walk) -> dict:
+    """``{plane: {"group": ..., "wire": ...}}`` of every plane whose name joins a quantity's namespace to a wire name (a plane
+    of a derived kernel), so that a reader never parses the separator."""
+    out = {}
+    for _role, name in walk.arg_spec:
+        group, sep, wire = name.rpartition(_ir.NAMESPACE_SEP)
+        if sep:
+            out[name] = {"group": group, "wire": wire}
+    return out
+
+
 def _dispatches(infos) -> list:
     """The per-kernel dispatch listing: ``{name, K, strategy,
     static_selector, selector_reads}`` (the kernel-scoped classification and
@@ -280,6 +296,7 @@ def _dispatches(infos) -> list:
                  "selector_reads": [list(pair) for pair in d.selector_reads]}
         if d.strategy == "auto":
             entry["mix"] = d.mix
+            entry["cost"] = {"branches": [_branch_cost(cost) for cost in d.branch_costs]}
         if d.strategy == "segmented":
             planes = _ir.group_plane_names(d.name)
             entry["class"], entry["stale"], entry["offsets"] = planes.cls, planes.stale, planes.offsets
@@ -410,6 +427,9 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         "wide_outputs": _names(walk, "wide_out"),
         "accum_outputs": _names(walk, "accum_out"),
         "dispatch": _dispatches(walk.dispatches),
+        "planes_written": list(walk.planes_written),
+        "element_counts": dict(walk.element_counts),
+        **({"plane_names": names} if (names := _joined_names(walk)) else {}),
         "buffers": [],
         "arg_spec": [list(pair) for pair in walk.arg_spec],
         "arg_mirrors": dict(walk.mirrors),
@@ -503,6 +523,8 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
     return SimpleNamespace(
         arg_spec=arg_spec, slot_types=slot_types, digest=meta["digest"],
         mirrors={s["name"]: s["mirror"] for s in slots},
+        planes_written=tuple(sorted(s["name"] for s in slots if s["written"])),
+        element_counts={s["name"]: s["elements"] for s in slots},
         access=SimpleNamespace(cls=_snake(body["access"]), op=None),
         cells={c["name"]: {"op": _snake(c["op"]), "columns": c["columns"]} for c in body["cells"]},
         companions={names[c["slot"]]: names[c["target_slot"]] for c in body["companions"]},
@@ -514,6 +536,7 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
         dispatches=tuple(SimpleNamespace(name=d["name"], K=held[d["name"]][1].branches, strategy=_snake(d["strategy"]),
                                          static_selector=_ir.static_selector(kernel.walk, held[d["name"]][0]), mix=mixes.get(d["name"]),
                                          selector_reads=_ir.selector_reads(kernel.walk, held[d["name"]][0]),
+                                         branch_costs=d["branch_costs"],
                                          units=tuple(ref["name"] for ref in d["branches"]),       # the record lists a segmented group's branch units in order
                                          classify=None if d["classify"] is None else d["classify"]["name"])
                          for d in listed),

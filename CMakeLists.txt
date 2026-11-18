@@ -135,8 +135,8 @@ target_include_directories(_core PRIVATE
   "${HAWK_AETHER_INCLUDE}"
   "${HAWK_EAGLE_INCLUDE}")
 # The host build of aether's headers: the same mode every HAWK host TU compiles
-# under (`hawk.compile.toolchain.host_flags`), so `_core` and the artifacts it
-# loads agree about what aether they were built against.
+# under, so `_core` and the artifacts it loads agree about what aether they
+# were built against.
 target_compile_definitions(_core PRIVATE AETHER_CPP_MODE)
 # Bundle libstdc++/libgcc, exactly as eagle's binding does and for the same
 # reason: the runtime env's system libstdc++ can predate the build toolchain's.

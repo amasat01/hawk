@@ -47,7 +47,7 @@ COLS = 6
 _RECORD_FIELDS = (
     "carry", "reduce_var", "reduce_extent", "reduce_start", "reduce_step",
     "operands", "operand_class", "term_form", "outputs", "dense", "refusals",
-    "staged_fanin", "fanin_source", "adjoint_accumulates",
+    "staged_fanin", "fanin_source", "adjoint_accumulates", "lane_major",
 )
 _OPERAND_FIELDS = (
     "name", "role", "dims", "bound", "reads", "reduce_stride", "reduce_dim",
@@ -442,3 +442,60 @@ def test_the_launch_counted_kernel_is_one_build_for_every_size():
     assert repr(_dot_staged(7).planes["feat"]) != repr(_dot_staged(64).planes["feat"])
     assert repr(_dot_staged(m.n_samples).planes["feat"]) == repr(_dot_staged(m.n_samples).planes["feat"])
     assert "7" not in repr(_dot_staged(m.n_samples).planes["feat"])
+
+
+# --------------------------------------------------------------------------- #
+# ``lane_major``: which operand the lanes are major in.
+# --------------------------------------------------------------------------- #
+@hawk.kernel
+def major_is_second(
+    a: hawk.Table["row":ROWS, "col":N_OUT],
+    b: hawk.Table["row":ROWS, "col":BATCH],
+    y: hawk.Mutable[hawk.Scalar],
+):
+    """``a`` is read through the minor half of the lane, ``b`` through the major half."""
+    major, minor = m.split_index(N_OUT)
+    total = 0.0
+    for r in range(ROWS):
+        total = total + a.at(row=r, col=minor) * b.at(row=r, col=major)
+    y = total
+
+
+@hawk.kernel
+def major_is_first(
+    a: hawk.Table["row":ROWS, "col":BATCH],
+    b: hawk.Table["row":ROWS, "col":N_OUT],
+    y: hawk.Mutable[hawk.Scalar],
+):
+    """The mirror of :func:`major_is_second`: the operands swap their halves."""
+    major, minor = m.split_index(N_OUT)
+    total = 0.0
+    for r in range(ROWS):
+        total = total + a.at(row=r, col=major) * b.at(row=r, col=minor)
+    y = total
+
+
+@hawk.kernel
+def major_for_both(
+    a: hawk.Table["row":ROWS, "col":BATCH],
+    b: hawk.Table["row":ROWS, "col":BATCH],
+    y: hawk.Mutable[hawk.Scalar],
+):
+    """Both operands are read through the major half: no operand is the minor one."""
+    major, _minor = m.split_index(N_OUT)
+    total = 0.0
+    for r in range(ROWS):
+        total = total + a.at(row=r, col=major) * b.at(row=r, col=major)
+    y = total
+
+
+def test_lane_major_names_the_operand_read_through_the_major_half_of_the_lane():
+    assert recognize(major_is_second).lane_major == "b"
+
+
+def test_the_mirrored_kernel_names_the_other_operand():
+    assert recognize(major_is_first).lane_major == "a"
+
+
+def test_lane_major_is_none_when_no_operand_is_read_through_the_minor_half():
+    assert recognize(major_for_both).lane_major is None

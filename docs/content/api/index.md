@@ -24,7 +24,7 @@ them may change between releases.
    hawk.ext
    hawk.diff
    hawk.diff.event
-   hawk.compile
+   hawk.ospreys
    hawk.runtime
    hawk.artifact
    hawk.embedded

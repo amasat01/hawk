@@ -1,0 +1,43 @@
+# Copyright 2026 Alessandro Masat
+# SPDX-License-Identifier: Apache-2.0
+name: OSPREY wheels
+description: Build the three OSPREY wheels (raptor-osprey, raptor-osprey-cpu, raptor-osprey-cuda) from the library folder with the library's own gate leg, into one folder.
+inputs:
+  osprey:
+    description: The library folder (osprey_host) of a checkout of the library's branch; the siblings aether and raptor of that branch sit beside it.
+    required: true
+  eagle:
+    description: The eagle checkout (its door headers and library are built into the door root the library builds against).
+    required: true
+  out:
+    description: Folder that receives the wheels.
+    required: false
+    default: osprey-wheels
+runs:
+  using: composite
+  steps:
+    # The door root holds the three entries ci/gate.sh of the library names: the door headers, the vendored dlpack.h
+    # and the door library built from the same eagle checkout. Paths are made absolute first: make and the gate change directory.
+    - shell: bash
+      env:
+        OSPREY: ${{ inputs.osprey }}
+        EAGLE: ${{ inputs.eagle }}
+        OUT: ${{ inputs.out }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$OUT"
+        OSPREY=$(cd "$OSPREY" && pwd); EAGLE=$(cd "$EAGLE" && pwd); OUT=$(cd "$OUT" && pwd)
+        case $(uname -s) in Darwin) ext=dylib ;; *) ext=so ;; esac
+        root="$RUNNER_TEMP/door"
+        mkdir -p "$root/build"
+        make -C "$EAGLE/eagle/door" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" OUT="$root/build" CXX="${CXX:-c++}" CC="${CC:-cc}" \
+          AETHER_INCLUDE="$OSPREY/../aether" WING_FACTS="$OSPREY/../raptor/rs/wings/cards/cpu/raptor_facts.h" lib
+        ln -s "$EAGLE/eagle" "$root/eagle"
+        ln -s "$EAGLE/plugin" "$root/plugin"
+        ln -s "$root/build/libeagle_door.$ext" "$root/libeagle_door.$ext"
+        # the binding build reads the static libraries of the contract with LLVM's nm
+        nm=$(command -v llvm-nm || ls /usr/lib/llvm-*/bin/llvm-nm | tail -n 1)
+        cd "$OSPREY"
+        NM="$nm" PYTHON="$(command -v python)" EAGLE_DOOR_DIR="$root" OSPREY_AETHER_SRC="$OSPREY/../aether" OSPREY_EAGLE_SRC="$EAGLE" \
+          sh ci/gate.sh wheels
+        cp dist/wheels/*.whl "$OUT/"

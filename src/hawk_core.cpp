@@ -25,18 +25,12 @@
 // numpy or ctypes conversion, a dict lookup or a dtype check; the argument block
 // is already the bytes the entry reads. Both shapes are counted.
 //
-// STAT_MANY IS NOT A LAUNCH PRIMITIVE. The
-// AOT compile cache's warm re-verification (`hawk.compile.cache.ClosureWatch`)
-// pays one `os.stat` per header its last compile reached — 317 on
-// one measured shape — and profiling already showed that cost is Python call
-// frames, not syscalls (`closure_unchanged`'s docstring: 317 stats of one file
-// and 317 of 317 distinct files cost the same to within noise; batching by
-// directory is a 10x LOSS). The lever left is doing those 317 `stat()` calls
-// from C++ in ONE crossing instead of 317 Python-level ones. This is a
-// PER-HIT cost, not a per-launch one — it runs once per warm compile-cache
-// check, never from `run`, `bind` or `rebind` — so the per-launch budget is
-// untouched, and `crossings()` counts it exactly like every other call so
-// nobody has to take that on faith.
+// STAT_MANY IS NOT A LAUNCH PRIMITIVE. It stats a whole list of
+// paths in ONE crossing instead of one Python `os.stat` call per path, because
+// the cost of many stats is Python call frames, not syscalls. It never runs from
+// `run`, `bind` or `rebind`, so the per-launch budget is untouched, and
+// `crossings()` counts it exactly like every other call so nobody has to take
+// that on faith.
 //
 // THE ORACLE NEVER PARALLELISES. `run` calls the entry
 // ONCE with the whole triple. That is not an omission to be optimised later: this
@@ -449,12 +443,12 @@ std::vector<std::uint64_t> host_layout_sizes() {
 }
 
 // ---------------------------------------------------------------------------
-// stat_many — the compile cache's batched, per-hit `stat()`.
+// stat_many — a batched `stat()`: size and mtime of many paths in one crossing.
 // ---------------------------------------------------------------------------
 // `paths` is read with the raw list C-API (`PyList_GET_ITEM`) rather than
-// nanobind's `std::vector<std::string>` caster: the caller (`ClosureWatch`)
-// pre-encodes its paths ONCE at construction into a plain Python `list` kept
-// alive for the object's whole life, and a `std::vector<std::string>` caster
+// nanobind's `std::vector<std::string>` caster: the caller
+// pre-encodes its paths ONCE into a plain Python `list` kept
+// alive across calls, and a `std::vector<std::string>` caster
 // would COPY every entry into a fresh vector on every one of the 317 x N
 // warm-hit calls this exists to make cheap — the one Python-object identity
 // this function is handed is the thing worth not throwing away.
@@ -581,17 +575,14 @@ NB_MODULE(_core, m) {
     }, "paths"_a,
     "`stat()` every entry of `paths` (each a `str` or `bytes`) in ONE crossing, "
     "returning `(sizes, mtimes_ns)` — parallel int64 arrays in `paths` order. "
-    "This is the compile cache's PER-HIT instrument, not a launch primitive: "
-    "`hawk.compile.cache.ClosureWatch.valid()`'s warm re-verification "
-    "used to cost one Python `os.stat` call per reached header (317 on "
-    "the A1 stage-4 closure); this collapses that into one binding crossing "
-    "without changing what is checked — content still decides, this call reads "
-    "only (size, mtime_ns), never bytes. the per-launch budget is untouched "
+    "This is not a launch primitive: it replaces one Python `os.stat` call "
+    "per path with one binding crossing and reads "
+    "only (size, mtime_ns), never bytes. The per-launch budget is untouched "
     "(nothing here is called from `run`, `bind` or `rebind`) and `crossings()` "
     "counts this call exactly like any other. A path that cannot be stat'd "
-    "reports size -1 rather than raising, so one deleted header cannot turn a "
-    "cheap per-hit check into an exception path over the other 316. Serial, "
-    "like everything else in this module: 317 near-instant syscalls "
+    "reports size -1 rather than raising, so one deleted path cannot turn a "
+    "cheap batched check into an exception path over the others. Serial, "
+    "like everything else in this module: near-instant syscalls "
     "would spend more on thread synchronisation than the loop they replace.");
 
     // -- ArgBlock ------------------------------------------------------

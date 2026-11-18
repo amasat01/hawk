@@ -4,7 +4,7 @@ name: Install siblings
 description: For each sibling package, pin its checkout's version if that version is on PyPI, else build it from the checkout. Install with `pip install --find-links "$dir" $pins`.
 inputs:
   siblings:
-    description: Whitespace-separated `pkg=path` pairs, path being the package directory inside the sibling's companion checkout (e.g. `raptor-core=raptor aether-dsc=aether/dsc`).
+    description: Whitespace-separated `pkg=path` pairs, path being the package directory inside the sibling's companion checkout (e.g. `raptor-eagle=eagle/python`).
     required: true
   dir:
     description: Output directory for what gets built.

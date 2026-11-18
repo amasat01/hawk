@@ -63,8 +63,6 @@ hawk.build([step], "warm/", targets=TARGETS)    # in the install step
 hawk.build([step], "out/", targets=TARGETS)     # in the program: a cache hit
 ```
 
-See [the compile cache](compile_cache).
-
 ## Let hawk pick the host compiler
 
 - Leave `HAWK_CXX` unset. hawk finds a suitable compiler on its own.

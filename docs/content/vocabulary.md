@@ -91,9 +91,8 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
 - A **contract** says how a sum over lanes is added up: `"auto"`, `"compensated"` or `"ordered"`.
   See [Across lanes](across_lanes).
 - `Sorted[Index]` is an index plane whose values never decrease. It lets hawk add each run of equal keys once.
-- A **target** is a Writer and a Wrapper with their compile facts, one thing `hawk.build(targets=...)` builds
-  (`cuda`, `host`, `c`). The **Writer** says how a language writes each construct, the **Wrapper** how a kernel is
-  wrapped for one execution model. [Add a target](contributing/add_a_target) shows the row.
+- A **target** is what an OSPREY library serves, one thing `hawk.build(targets=...)` builds (`cuda`, `host`).
+  [Add a target](contributing/add_a_target) shows what hawk needs to find one.
 
 `Table` (a shared read-only plane) and `Param` (one value for the run) keep their names. Calling them `Const`
 and `Uniform` was considered and not taken.

@@ -75,15 +75,11 @@ artifact; it changes nothing about this one.
 pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # or [cuda13] on both
 ```
 
-Compiling a device artifact needs a GPU driver, a host `g++`, and NVRTC
-from pip — the `[cuda12]` / `[cuda13]` extra above brings `cuda-bindings`,
-`nvidia-cuda-nvrtc` and `nvidia-cuda-cccl` for you (or use an equivalent CUDA wheel set already on the
-machine) — no `nvcc`, no `aether`/`eagle` source checkout, and no headers
-under any prefix: `aether-dsc` ships a sealed copy of the headers hawk's
-device compiler reads from directly. `hawk.compile.device` /
-`hawk.compile.cubin` take this path automatically whenever
-`hawk.artifact.build`/`build_bundle` compile a `cuda` target and no
-`nvcc` is found on `$PATH`/`$HAWK_NVCC`.
+Compiling a device artifact needs a GPU driver, a host `g++`, and the device
+toolchain the `cuda` OSPREY library finds on the machine; the `[cuda12]` /
+`[cuda13]` extra above brings the packages it can use from pip. There is no
+`aether`/`eagle` source checkout to make: the library carries what it compiles
+against. `hawk.targets.buildable("cuda")` says whether the library finds its tools.
 
 That compiles a device artifact. To *run* one, you also need `eagle`
 installed (see [eagle's installation page](https://amasat01.github.io/eagle/content/userguide/installation.html)) — hawk compiles it, eagle
@@ -99,45 +95,16 @@ To work on hawk itself, build it from a clone: see
 - Python 3.9 or newer (CPython 3.9–3.15, including free-threaded 3.14t and 3.15t).
 - CUDA 12.6 or newer for the device target (the toolkit each performance card was measured with is recorded in the card).
 - A CUDA-capable GPU is **optional** for authoring and host execution; it is
-  required only to compile and run a kernel's device target. `hawk.compile`
-  reports what is available on the current machine:
-
-  ```python
-  from hawk.compile import cubin_available
-  cubin_available()   # NVRTC importable and a CUDA device present
-  ```
+  required only to compile and run a kernel's device target.
+  `hawk.targets.buildable("cuda")` reports whether the `cuda` OSPREY library
+  finds its tools on the current machine.
 
 ## Going deeper
 
 Everything above is enough to install and run hawk. This section is for
-anyone calling the device compiler directly, or tuning host performance
+anyone tuning host performance
 and chasing bit-for-bit reproducibility — it changes nothing about
 whether a kernel runs.
-
-<details>
-<summary>The pip-only device compile, directly</summary>
-
-The same entry points `hawk.artifact.build`/`build_bundle` use are also
-usable directly, for an ad hoc CUDA C++ `source` string that was never
-authored as a traced hawk kernel at all — see
-[Your first kernel](tutorials/01_your_first_kernel) for a kernel-authored
-artifact, and the snippet below for the primitive NVRTC compile underneath
-it:
-
-```python
-from hawk.compile import cubin, cubin_available
-
-if cubin_available():
-    image = cubin(source)   # DeviceImage(image=<SASS bytes>, target="cubin", arch="sm_XX")
-```
-
-`cubin_available()` never raises; `device(source, target="ptx")` is the
-alternative when PTX (the portable intermediate form NVRTC can also
-emit) is what a caller needs (guarded against a driver too old to JIT a
-newer NVRTC's PTX — `target="cubin"` needs no such guard, it is already
-SASS: the GPU's own machine code). Headers for any `#include` in
-`source` are served from `aether_dsc`'s sealed payload, never from disk.
-</details>
 
 <details>
 <summary>SIMD and the host profiles</summary>

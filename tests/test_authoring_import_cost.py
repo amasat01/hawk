@@ -4,7 +4,7 @@
 """``import hawk`` still imports no heavy tier: ``hawk/__init__.py`` binds
 authoring names lazily (PEP 562 ``__getattr__``), so importing the package
 alone does not import ``raptor.ir``, ``hawk.trace``, ``hawk.diff``,
-``aether.wings.base`` or ``hawk.compile``. The pinned module set is an exact
+``aether.wings.base`` or ``hawk.ospreys``. The pinned module set is an exact
 equality, checked in a fresh subprocess, and allows only ``hawk``,
 ``hawk._core`` (the binding the import-time self-check reads) and
 ``hawk._contracts`` (the layout it compares against).
@@ -50,7 +50,7 @@ def _without_wheel_digest(mods: list[str]) -> list[str]:
 def test_importing_hawk_imports_no_heavy_module():
     assert _without_wheel_digest(_modules(_BARE)) == _ALLOWED_BARE, (
         "importing hawk must not import raptor.ir / hawk.trace / hawk.diff "
-        "/ hawk.emit / hawk.compile — the authoring names are bound lazily, and the "
+        "/ hawk.ospreys — the authoring names are bound lazily, and the "
         "only modules the self-check may add are the binding it reads and the "
         "constants it compares against"
     )

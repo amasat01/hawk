@@ -125,8 +125,7 @@ Sidecar schema is v3: `cells` (each cell's operation and width) replaces `sample
 ## The device crossing: eagle
 
 A compiled device artifact (`.ptx`/`.cubin`, from
-`hawk.artifact.build(..., targets=("cuda",))` or the pip-only
-`hawk.compile.cubin`) is loaded and launched by eagle, which is where
+`hawk.artifact.build(..., targets=("cuda",))`) is loaded and launched by eagle, which is where
 `cupy`, CUDA `torch` tensors, Warp arrays and JAX arrays cross — through the same
 DLPack contract raptor's matrix certifies. The gradients of a hawk-derived kernel
 cross too: `jax.grad`, torch autograd and `wp.Tape` each read one

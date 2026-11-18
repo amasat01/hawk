@@ -315,22 +315,21 @@ def test_the_core_exports_nothing_else_public():
 
 
 # --------------------------------------------------------------------------- #
-# stat_many — the compile cache's batched stat, at the _core boundary.
+# stat_many — the batched stat, at the _core boundary.
 # --------------------------------------------------------------------------- #
 def test_stat_many_reports_a_sentinel_for_a_missing_path_and_never_throws(
         tmp_path):
     """The contract, exercised directly at the binding: a mix of a real file
     and a missing one must come back as data, not an exception.
 
-    ``hawk.compile.cache.ClosureWatch.valid()`` calls this once over a whole
-    recorded closure (hundreds of headers on a real closure); if a
-    single deleted header raised, one stale header would turn a cheap per-hit
-    check into an exception-handling path over every OTHER entry in the same
-    closure, instead of the plain miss already treats a vanished file as.
+    A caller stats a whole recorded set of files in one call (hundreds of
+    headers); if a single deleted file raised, one stale entry would turn a
+    cheap batched check into an exception-handling path over every OTHER
+    entry, instead of the plain miss a vanished file is.
 
-    Both accepted path forms are checked (str and bytes), because
-    ``ClosureWatch`` reserves either as the pre-encoded form and this row is
-    what pins that the C++ side actually honours both."""
+    Both accepted path forms are checked (str and bytes), because a caller may
+    hold either as the pre-encoded form and this row is what pins that the C++
+    side actually honours both."""
     present = tmp_path / "present.h"
     present.write_text("#define HW6E_PROBE 1\n")
     missing = tmp_path / "does_not_exist.h"
@@ -349,10 +348,9 @@ def test_stat_many_reports_a_sentinel_for_a_missing_path_and_never_throws(
 
 
 def test_stat_many_counts_as_one_crossing_however_many_paths():
-    """At this call specifically, `stat_many` is the compile cache's PER-HIT
-    instrument, not a per-path one — the whole point of moving the loop into
-    C++ is that Python pays ONE crossing for however many headers are in the
-    closure.
+    """`stat_many` is a per-call instrument, not a per-path one — the whole
+    point of moving the loop into C++ is that Python pays ONE crossing for
+    however many paths are in the list.
 
     ``crossings()`` increments the SAME counter it reads (calibrated in
     ``test_launch_crossings.py::

@@ -20,10 +20,10 @@ Running a device artifact is eagle's job.
 
 ## Build and run the gate
 
-hawk has a compiled half (`hawk._core`) and builds against two sibling checkouts. Clone `aether`, `eagle` and `hawk` side by side, then:
+hawk has a compiled half (`hawk._core`) and builds against two sibling checkouts. Clone `aether`, `eagle` and `hawk` side by side. The compiled OSPREY libraries come as three wheels (`raptor-osprey`, `raptor-osprey-cpu`, `raptor-osprey-cuda`), built by the library repository's `ci/wheels.py build`; install them first, then:
 
 ```bash
-pip install ../aether/dsc               # aether's sealed header payload, first
+pip install <wheels>/*.whl              # the OSPREY wheels, first
 pip install -e .[test]                  # builds hawk._core; $HAWK_AETHER_INCLUDE / $HAWK_EAGLE_INCLUDE override the sibling paths
 python -m pytest tests -q -m "not gpu"  # the gate (.github/workflows/ci.yml)
 ```
