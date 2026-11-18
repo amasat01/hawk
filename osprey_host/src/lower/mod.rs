@@ -958,7 +958,7 @@ mod tests {
             shipped_text
         );
     }
-    use crate::lower::unit_meta::SlotRole;
+    use crate::lower::unit_meta::{ImageFormat, SlotRole};
     use aether_writers::contract::types::Role;
     use aether_writers::refuse::RefusalKind;
     use raptor_ir::door::{rx_ctx_free, rx_ctx_new, RX_OK};
@@ -1210,8 +1210,20 @@ mod tests {
 
     /// As [`lowered_two_groups`], the caller stating `sink_axes` for the sink planes.
     fn lowered_two_groups_with(sink_axes: Vec<request::SinkAxes>) -> KernelAnswer {
+        lowered_two_groups_as(|request| request.sink_axes = sink_axes).unwrap()
+    }
+
+    /// The answer to the two-group kernel's request after `edit` has changed it.
+    fn lowered_two_groups_as(
+        edit: impl FnOnce(&mut KernelRequest),
+    ) -> Result<KernelAnswer, Refusal> {
         const DUMP: &str = include_str!("../../tests/data/two_groups.dump");
         let ctx = rx_ctx_new();
+        // SAFETY: `ctx` is the live context just made.
+        assert_eq!(
+            unsafe { raptor_wings::declare::rw_declare_kinds(ctx) },
+            RX_OK
+        );
         let mut roots = vec![0u32; 4096];
         let mut loaded = 0;
         // SAFETY: `ctx` is the live context just made, the text and the buffers outlive the call.
@@ -1239,7 +1251,6 @@ mod tests {
         )
         .unwrap();
         let mut request = plain_request();
-        request.sink_axes = sink_axes;
         request.facts = vec![(Target::Host, facts)];
         request.body = Body::Plain(Member {
             // the one sink of the dump is its last root, the assignment to `y`
@@ -1258,10 +1269,85 @@ mod tests {
             ],
             ..body("k")
         });
+        edit(&mut request);
         let answer = lower(ctx, &request.to_json(), &shipped());
         // SAFETY: `ctx` is the live context made above and is not used after.
         unsafe { rx_ctx_free(ctx) };
-        answer.unwrap()
+        answer
+    }
+
+    /// Oracle: the old build set the routing of a banded build itself (a banded mode has cells, which route to the ordered stages), so a
+    /// banded request that does not say so lowers to the answer of one that does; a request of another scalar is as it states.
+    #[test]
+    fn a_banded_request_routes_to_ordered_whether_or_not_it_says_so() {
+        let banded = |route: bool| {
+            let ctx = rx_ctx_new();
+            // SAFETY: `ctx` is the live context just made, and is not used after the free below.
+            let c = unsafe { &mut *ctx };
+            assert_eq!(
+                unsafe { raptor_wings::declare::rw_declare_kinds(ctx) },
+                RX_OK
+            );
+            let x = c
+                .make(
+                    "Leaf",
+                    "f64",
+                    &[],
+                    None,
+                    &[],
+                    "(('kind', 'vocab_read'), ('role', 'per_sample'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False))",
+                )
+                .unwrap();
+            let sum = c
+                .make(
+                    "Op",
+                    "f64",
+                    &[],
+                    None,
+                    &[x, x],
+                    "(('kind', 'add'), ('literal', None))",
+                )
+                .unwrap();
+            let out = c
+                .make(
+                    "Assign",
+                    "f64",
+                    &[],
+                    None,
+                    &[sum],
+                    "(('kind', 'assign'), ('role', 'mutable'), ('name', 'y'))",
+                )
+                .unwrap();
+            let mut request = scalar_request(Scalar::Banded, vec![Target::Device]);
+            request.facts = vec![(Target::Device, facts_of_arch(None, &[]))];
+            request.image_format = Some(ImageFormat::Ptx);
+            request.settings.route_to_ordered = route;
+            request.body = Body::Plain(Member {
+                sinks: vec![out],
+                ..body("k")
+            });
+            let answer = lower(ctx, &request.to_json(), &shipped());
+            // SAFETY: `ctx` is the live context made above and is not used after.
+            unsafe { rx_ctx_free(ctx) };
+            answer.unwrap().to_json()
+        };
+        assert_eq!(banded(false), banded(true));
+        let card = card::host_build(include_str!("../../facts/build.json")).unwrap();
+        for (scalar, route, routed) in [
+            (Scalar::Float64, false, false),
+            (Scalar::Float64, true, true),
+            (Scalar::Float32, false, false),
+            (Scalar::Float32, true, true),
+            (Scalar::Banded, false, true),
+        ] {
+            let mut request = scalar_request(scalar, vec![Target::Device]);
+            request.settings.route_to_ordered = route;
+            assert_eq!(
+                stages::stage_facts(&request, &card).routed,
+                routed,
+                "{scalar:?} {route}"
+            );
+        }
     }
 
     /// Oracle: the table in aether's `runtime_names.rs` (`mirror_of`), read by hand: a mutable slot is a `GRefMirror` when it has a

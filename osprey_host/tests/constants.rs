@@ -26,6 +26,14 @@ fn every_constant_the_front_end_imports_equals_the_old_python_value() {
     }
 }
 
+/// Oracle: the old package's sample-sum companion suffix (`SAMPLE_SUM_COMP` of its cells module), which is not the keyed accumulate's
+/// `COMPANION_SUFFIX`.
+#[test]
+fn the_sample_sum_companion_suffix_is_its_own_constant_beside_the_keyed_one() {
+    assert_eq!(names("SAMPLE_SUM_COMP_SUFFIX"), Some(vec!["_comp"]));
+    assert_eq!(names("COMPANION_SUFFIX"), Some(vec!["_c"]));
+}
+
 #[test]
 fn compensates_equals_the_old_python_answer_for_every_contract_and_an_unknown_text() {
     let all = oracle("compensates.json");

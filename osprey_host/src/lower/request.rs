@@ -107,7 +107,8 @@ pub struct Settings {
     pub wide_form: WideForm,
     /// How the linear algebra of a lane is held: block sums kept for a team of threads, or written per entry.
     pub linalg_form: LinalgForm,
-    /// Whether a keyed accumulate is routed to the ordered stages.
+    /// Whether a keyed accumulate is routed to the ordered stages. A banded build routes whatever this says; for the other scalars it
+    /// is as stated.
     pub route_to_ordered: bool,
     /// The launch bounds a device kernel states.
     pub launch_bounds: Option<(i64, i64)>,
@@ -1620,6 +1621,22 @@ mod tests {
             "{}",
             why.reason
         );
+    }
+
+    /// A request names its scalar by one of the three closed names; any other is refused by name, so a caller keeps no list of its own.
+    #[test]
+    fn a_scalar_the_library_does_not_know_is_refused_by_name() {
+        let text = |scalar: &str| {
+            format!(
+                r#"{{"v": 1, "name": "k", "scalar": "{scalar}", "targets": ["Host"], "kind": {{"guard": "Default", "active_set": false, "sink": "Plain"}}, "body": {{"Plain": {{"name": "k", "sinks": [0], "declared": [], "exempt": []}}}}, "facts": {{"Host": "{{}}"}}}}"#
+            )
+        };
+        for known in ["Float64", "Float32", "Banded"] {
+            KernelRequest::from_json(&text(known)).unwrap();
+        }
+        let why = KernelRequest::from_json(&text("Float128")).unwrap_err();
+        assert_eq!(why.kind, aether_writers::refuse::RefusalKind::BadRequest);
+        assert_eq!(why.reason, "not in this build: member Float128 of scalar");
     }
 
     #[test]

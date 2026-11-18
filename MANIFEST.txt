@@ -17,7 +17,7 @@ Every file with its line count (this file excluded):
    1584  osprey_host/binding/template/door.c
      45  osprey_host/binding/template/osprey.h
     116  osprey_host/binding/template/types.c
-    948  osprey_host/binding/test_binding.py
+    951  osprey_host/binding/test_binding.py
    1246  osprey_host/binding/test_door.py
      50  osprey_host/build.rs
      11  osprey_host/check_exports.sh
@@ -56,9 +56,9 @@ Every file with its line count (this file excluded):
     334  osprey_host/src/lower/links.rs
     871  osprey_host/src/lower/meta_c.rs
    1151  osprey_host/src/lower/meta_fill.rs
-   1379  osprey_host/src/lower/mod.rs
+   1465  osprey_host/src/lower/mod.rs
     121  osprey_host/src/lower/placed.rs
-   1801  osprey_host/src/lower/request.rs
+   1818  osprey_host/src/lower/request.rs
     377  osprey_host/src/lower/segment.rs
     116  osprey_host/src/lower/stage_block.rs
     555  osprey_host/src/lower/stages.rs
@@ -66,7 +66,7 @@ Every file with its line count (this file excluded):
     246  osprey_host/src/lower/warp.rs
     209  osprey_host/tests/auto_set.rs
      13  osprey_host/tests/common/mod.rs
-     41  osprey_host/tests/constants.rs
+     49  osprey_host/tests/constants.rs
       9  osprey_host/tests/data/compensates.json
      73  osprey_host/tests/data/constants.json
     720  osprey_host/tests/data/device_argv_old.jsonl

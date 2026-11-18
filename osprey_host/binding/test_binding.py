@@ -183,6 +183,9 @@ done.append("new_loop: several lists, optional nodes, integers; its operands and
 # ---- the query surface: constants, kinds, feathers, parameter cells, sinks, matrices ----
 assert c.const_names("COMPARE") == ("lt", "le", "gt", "ge", "eq", "ne"), c.const_names("COMPARE")
 assert c.const_names("PARAM_CELL") == ("param_cell",)
+# the two companion suffixes are two constants: the keyed accumulate's and the summing sample sum's
+assert c.const_names("COMPANION_SUFFIX") == ("_c",)
+assert c.const_names("SAMPLE_SUM_COMP_SUFFIX") == ("_comp",)
 # the lists the core composes (linear-algebra kinds, the cast kind, every op kind a body can mint),
 # composed here as the previous package composed them
 linalg_ops = tuple(

@@ -79,7 +79,7 @@ fn warp_rows(request: &KernelRequest, card: &BuildCard) -> Vec<WarpEntry> {
 /// What the split reads besides the IR: the request's settings and the deciding card's limits.
 pub(super) fn stage_facts(request: &KernelRequest, card: &BuildCard) -> StageFacts {
     StageFacts {
-        routed: request.settings.route_to_ordered,
+        routed: request.settings.route_to_ordered || request.scalar == Scalar::Banded,
         team: TeamLimits {
             form: request.settings.linalg_form,
             max_dim: card.linalg_max_dim,
