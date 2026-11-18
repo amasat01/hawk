@@ -1531,6 +1531,86 @@ mod tests {
     }
 
     #[test]
+    fn a_team_op_inside_a_loop_of_the_body_is_a_named_refusal_not_a_fault() {
+        let table = unsafe { &*crate::osprey_v1() };
+        let ctx = (table.ctx_new)();
+        // SAFETY: `ctx` came from this table's `ctx_new`; nothing else holds it until it is freed below.
+        let c = unsafe { &mut *ctx };
+        let leaf = |c: &mut raptor_ir::record::Ctx, role: &str, name: &str, shape: &[i64]| {
+            let fields = format!("(('kind', 'vocab_read'), ('role', '{role}'), ('name', '{name}'), ('quantity', None), ('wire_index', 0), ('sorted', False))");
+            c.make("Leaf", "f64", shape, None, &[], &fields).unwrap()
+        };
+        let (a, b) = (
+            leaf(c, "mat_in", "A", &[40, 40]),
+            leaf(c, "vec_in", "b", &[40]),
+        );
+        let index = c
+            .make(
+                "LoopIndex",
+                "int32",
+                &[],
+                None,
+                &[],
+                "(('depth', 0), ('name', '_'), ('bounds', (0, 3)))",
+            )
+            .unwrap();
+        let carry = c
+            .make(
+                "LoopCarry",
+                "f64",
+                &[40],
+                None,
+                &[],
+                "(('depth', 0), ('slot', 0), ('name', 's'))",
+            )
+            .unwrap();
+        let op = "(('kind', 'chol'), ('literal', None))";
+        let factor = c.make("Op", "f64", &[40, 40], None, &[a], op).unwrap();
+        let solve = "(('kind', 'cho_solve'), ('literal', None))";
+        let next = c
+            .make("Op", "f64", &[40], None, &[factor, carry], solve)
+            .unwrap();
+        let assign = "(('kind', 'assign'), ('role', 'mutable'), ('name', 'y'))";
+        let store = c
+            .make("Assign", "f64", &[40], None, &[next], assign)
+            .unwrap();
+        let parts = raptor_ir::build::LoopParts {
+            index,
+            carries: &[carry],
+            inits: &[b],
+            nexts: &[next],
+            range: (0, 3, 1),
+            body_sinks: &[store],
+            exit_cond: None,
+            exit_values: &[],
+            count: None,
+            count_tail: false,
+            dynamic: None,
+        };
+        let looped = c.build_loop(&parts).unwrap();
+        let mut asked = request();
+        if let Body::Plain(member) = &mut asked.body {
+            member.sinks = vec![looped];
+            member.declared.clear();
+        }
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/facts"));
+        let why = crate::lower::lower(ctx, &asked.to_json(), dir).unwrap_err();
+        // SAFETY: `ctx` came from this table's `ctx_new` and is freed once.
+        unsafe { (table.ctx_free)(ctx) };
+        assert_ne!(
+            why.kind,
+            aether_writers::refuse::RefusalKind::Fault,
+            "{}",
+            why.reason
+        );
+        assert!(
+            why.reason.contains("cannot sit inside a loop of the body"),
+            "{}",
+            why.reason
+        );
+    }
+
+    #[test]
     fn a_negative_slot_position_in_an_answer_is_refused_by_name() {
         let facts = Facts {
             row_planes: vec![RowPlane {

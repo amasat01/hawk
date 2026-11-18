@@ -96,6 +96,8 @@ enum P {
     OutFlags(String),
     /// A `rw_key_run*`: None for no key run, else (form, width, block).
     OutKeyRun,
+    /// A `rw_compensated_target*` and the text buffer after it: None when no sink is compensated, else (target name, own column).
+    OutCompensated,
     /// Rows of `rw_plane_row`, the list protocol: a tuple of (plane node, layout, width).
     OutPlaneRows,
 }
@@ -233,6 +235,13 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
         } else if t == "rx_type*" {
             out.push(P::OutType);
             i += 1
+        } else if t == "rw_compensated_target*"
+            && next.as_ref().is_some_and(|x| x.0 == "char*")
+            && ps.get(i + 2).is_some_and(|p| shape(p).0 == "size_t")
+            && ps.get(i + 3).is_some_and(|p| shape(p).0 == "size_t*")
+        {
+            out.push(P::OutCompensated);
+            i += 4
         } else if t == "rw_key_run*" {
             out.push(P::OutKeyRun);
             i += 1
@@ -297,6 +306,7 @@ fn parse_params(raw: &str, whole: &str) -> Result<Vec<P>, String> {
                     | P::OutScalars(..)
                     | P::OutFlags(_)
                     | P::OutKeyRun
+                    | P::OutCompensated
                     | P::OutPlaneRows
             )
         })
@@ -656,6 +666,7 @@ fn wrapper(p: &Proto) -> String {
             let flag = if trail { " int oc = 0;" } else { "" };
             tail += &format!("  rx_node sn[64]; rx_node* hn = NULL; size_t cnt = 0;{flag}\n  st = {first};\n  if (st == RX_TRUNC) {{ hn = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rx_node)); if (!hn) {{ PyErr_NoMemory(); goto done; }} st = {again}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hn); goto done; }}\n  res = {made};\n  PyMem_Free(hn);\n")
         }
+        Some(P::OutCompensated) => tail += &format!("  rw_compensated_target ot; memset(&ot, 0, sizeof ot); char sb[256]; char* hb = NULL; size_t len = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hb = PyMem_Malloc(len + 1); if (!hb) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hb); goto done; }}\n  if (!ot.found) {{ Py_INCREF(Py_None); res = Py_None; }}\n  else res = Py_BuildValue(\"(NN)\", PyUnicode_DecodeUTF8(hb ? hb : sb, (Py_ssize_t)len, \"strict\"), PyBool_FromLong(ot.own_column));\n  PyMem_Free(hb);\n", call(&["&ot", "sb", "sizeof sb", "&len"]), call(&["&ot", "hb", "len + 1", "&len"])),
         Some(P::OutKeyRun) => tail += &format!("  rw_key_run ok; memset(&ok, 0, sizeof ok);\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); goto done; }}\n  res = osprey_key_run_tuple(&ok);\n", call(&["&ok"])),
         Some(P::OutPlaneRows) => tail += &format!("  rw_plane_row sr[16]; rw_plane_row* hr = NULL; size_t cnt = 0;\n  st = {};\n  if (st == RX_TRUNC) {{ hr = PyMem_Malloc((cnt ? cnt : 1) * sizeof(rw_plane_row)); if (!hr) {{ PyErr_NoMemory(); goto done; }} st = {}; }}\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(hr); goto done; }}\n  res = osprey_rows_tuple(s, hr ? hr : sr, cnt);\n  PyMem_Free(hr);\n", call(&["sr", "16", "&cnt"]), call(&["hr", "cnt", "&cnt"])),
         Some(P::OutFlags(list)) => tail += &format!("  int* fl = PyMem_Malloc((l_{list} ? (size_t)l_{list} : 1) * sizeof(int));\n  if (!fl) {{ PyErr_NoMemory(); goto done; }}\n  memset(fl, 0, (l_{list} ? (size_t)l_{list} : 1) * sizeof(int));\n  st = {};\n  if (st != RX_OK) {{ osprey_fail(s, st); PyMem_Free(fl); goto done; }}\n  res = osprey_flags_tuple(fl, (size_t)l_{list});\n  PyMem_Free(fl);\n", call(&["fl"])),

@@ -688,16 +688,20 @@ pair_key = c.make("Leaf", "i32", [], None, [], LEAF % "pk")
 for kept, held in (
     ("(('net', None),)", (("net", None),)),
     ("((None, 4), ('a', None))", ((None, 4), ("a", None))),
+    ("(('key', None), ('bin', 9))", (("key", None), ("bin", 9))),
     ("()", ()),
 ):
     params = f"(('op', 'sum'), ('value', #0), ('key', #1), ('count', #1), ('kept', {kept}))"
     assert c.new("ReduceSamples", params, [x, pair_key]).field_pairs("kept") == held, kept
 assert c.new("ReduceSamples", "(('op', 'sum'), ('value', #0))", [x]).field_pairs("kept") == ()
+bare = c.new("ReduceSamples", "(('op', 'sum'), ('value', #0), ('kept', ('key', 'bin')))", [x])
+e = raises(ValueError, lambda: bare.field_pairs("kept"), "field_pairs: bare names are no pairs")
+assert "not a pair" in str(e), str(e)
 bounded = c.make(
     "LoopIndex", "int32", [], None, [], "(('depth', 0), ('name', '_'), ('bounds', (0, 3)))"
 )
 assert bounded.field_ints("bounds") == (0, 3)
-done.append("field_pairs: kept axes with absent parts, and the empty tuple")
+done.append("field_pairs: kept axes with absent parts, the empty tuple, bare names refused")
 
 # ---- the names the wings own ----
 special = c.wing_names("SPECIAL_KINDS")
@@ -894,6 +898,23 @@ assert c.walk_quantity_wires(quantity_walk) == (("pos", ("pos__x", "pos__v")), (
 assert c.walk_quantity_slots(quantity_walk) == (("pos", (1, 2)), ("acc", (3,)))
 assert c.walk_quantity_wires(c.cells_walk([plain], "()", None)) == ()
 done.append("walk_quantity_wires, walk_quantity_slots: one row per reached quantity, in walk order")
+
+# ---- the target of a compensated sink: a name and whether it is the sink's own column ----
+comp_out = "(('name', 'out'), ('role', 'mutable'))"
+comp_sinks = [
+    c.make("Assign", "f64", [], None, [x], comp_out),
+    c.make("Assign", "f64", [], None, [x], comp_out.replace("'out'", "'out_comp'")),
+]
+# the one output besides "out_comp" is "out"; an assignment commits to the lane's own column
+assert c.split_compensated_target("compensated", "out_comp", None, "", comp_sinks) == ("out", True)
+assert c.split_compensated_target("compensated", "out_comp", "out", "", comp_sinks) == ("out", True)
+assert c.split_compensated_target("plain", "out_comp", None, "", comp_sinks) is None
+raises(
+    ValueError,
+    lambda: c.split_compensated_target("compensated", "none", None, "", comp_sinks),
+    "split_compensated_target: two candidate outputs",
+)
+done.append("split_compensated_target: the output besides the companion, None for another sink")
 
 try:
     import numpy  # noqa: F401

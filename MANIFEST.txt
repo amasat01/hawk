@@ -13,12 +13,12 @@ Every file with its line count (this file excluded):
       8  osprey_host/binding/fixture/contract0.c
       7  osprey_host/binding/gen/Cargo.lock
      12  osprey_host/binding/gen/Cargo.toml
-   1368  osprey_host/binding/gen/src/main.rs
+   1379  osprey_host/binding/gen/src/main.rs
    1584  osprey_host/binding/template/door.c
      45  osprey_host/binding/template/osprey.h
     116  osprey_host/binding/template/types.c
-    906  osprey_host/binding/test_binding.py
-   1110  osprey_host/binding/test_door.py
+    931  osprey_host/binding/test_binding.py
+   1246  osprey_host/binding/test_door.py
      50  osprey_host/build.rs
      11  osprey_host/check_exports.sh
     188  osprey_host/ci/gate.sh
@@ -58,7 +58,7 @@ Every file with its line count (this file excluded):
    1145  osprey_host/src/lower/meta_fill.rs
    1089  osprey_host/src/lower/mod.rs
     121  osprey_host/src/lower/placed.rs
-   1695  osprey_host/src/lower/request.rs
+   1775  osprey_host/src/lower/request.rs
     377  osprey_host/src/lower/segment.rs
     116  osprey_host/src/lower/stage_block.rs
     539  osprey_host/src/lower/stages.rs
