@@ -254,6 +254,7 @@ pub fn with_facts<B: Backend>(backend: &B, request: &str) -> Result<String, Refu
         ))
     })?;
     let answer = facts_for(backend, own).map_err(Failed::refusal)?;
+    state_option_settings(backend.option_names(), own, parts);
     let named = parts.iter().find(|(k, _)| k == "image_format");
     if let Some((_, Json::Str(format))) = named {
         refuse_unloadable_ptx(own, format).map_err(Failed::refusal)?;
@@ -265,6 +266,34 @@ pub fn with_facts<B: Backend>(backend: &B, request: &str) -> Result<String, Refu
     }
     parts.push(("facts".into(), Json::Obj(vec![(target, Json::Str(answer))])));
     Ok(json.to_text())
+}
+
+/// States in the request's `settings` the options of the machine answer that are settings of the lowering and that the library
+/// declares (`declared`): the literal table of a device library. An option that is off, or that the library does not declare, states
+/// nothing; a setting the request already states stays as it is.
+fn state_option_settings(declared: &[&str], machine: &Json, parts: &mut Vec<(String, Json)>) {
+    let asked = machine.get("stated").and_then(|s| s.get("asked"));
+    let on = |name: &str| {
+        declared.contains(&name)
+            && asked
+                .and_then(|a| a.get("options"))
+                .and_then(|o| o.get(name))
+                .is_some_and(|flag| matches!(flag, Json::Bool(true)))
+    };
+    if !on("literal_table") {
+        return;
+    }
+    let at = parts.iter().position(|(k, _)| k == "settings");
+    let Some(at) = at else {
+        let flag = ("literal_table".into(), Json::Bool(true));
+        parts.push(("settings".into(), Json::Obj(vec![flag])));
+        return;
+    };
+    if let Json::Obj(members) = &mut parts[at].1 {
+        if !members.iter().any(|(k, _)| k == "literal_table") {
+            members.push(("literal_table".into(), Json::Bool(true)));
+        }
+    }
 }
 
 /// Refuses a request that names the image format `Ptx` on a machine whose driver cannot load the PTX its compiler writes: the
@@ -748,6 +777,34 @@ mod tests {
             why.contains("\"bogus\"") && why.contains("declared by the target host"),
             "{why}"
         );
+    }
+
+    /// The machine answer of a build asked with `options`.
+    fn answer_asked(options: &str) -> Json {
+        let text = format!("{{\"stated\":{{\"asked\":{{\"options\":{options}}}}}}}");
+        Contract::parse(&text).unwrap().0
+    }
+
+    #[test]
+    fn the_literal_table_option_of_the_machine_answer_is_the_setting_of_the_lowering() {
+        let on = |declared: &[&str], options: &str, settings: Option<&str>| {
+            let mut parts: Vec<(String, Json)> = settings
+                .map(|text| ("settings".to_string(), Contract::parse(text).unwrap().0))
+                .into_iter()
+                .collect();
+            state_option_settings(declared, &answer_asked(options), &mut parts);
+            Json::Obj(parts).to_text()
+        };
+        let declared = ["arch", "literal_table"];
+        let table = "{\"settings\":{\"literal_table\":true}}";
+        assert_eq!(on(&declared, "{\"literal_table\":true}", None), table);
+        assert_eq!(
+            on(&declared, "{\"literal_table\":true}", Some("{\"warps\":2}")),
+            "{\"settings\":{\"warps\":2,\"literal_table\":true}}"
+        );
+        assert_eq!(on(&declared, "{\"literal_table\":false}", None), "{}");
+        assert_eq!(on(&declared, "{\"arch\":\"sm_61\"}", None), "{}");
+        assert_eq!(on(&["profile"], "{\"literal_table\":true}", None), "{}");
     }
 
     #[test]

@@ -58,7 +58,7 @@ Every file with its line count (this file excluded):
     923  osprey_host/components/lowering/src/lower/unit_meta.rs
     246  osprey_host/components/lowering/src/lower/warp.rs
     153  osprey_host/components/lowering/src/testing.rs
-    763  osprey_host/components/lowering/src/tool.rs
+    820  osprey_host/components/lowering/src/tool.rs
      15  osprey_host/components/lowering/tests/data/gemm_kernels.json
      23  osprey_host/components/lowering/tests/data/two_groups.dump
      14  osprey_host/components/toolkit/Cargo.lock
