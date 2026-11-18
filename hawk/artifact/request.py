@@ -95,6 +95,8 @@ def _settings(settings, sizes) -> dict:
         out["warps"] = settings.warps
     if settings.team_threads:
         out["team_threads"] = settings.team_threads
+    if settings.fast_entries:
+        out["fast_entries"] = True
     if sizes is not None:
         out["exports"] = [int(n) for n in sizes]
     return out
@@ -139,6 +141,9 @@ def request(kernel, *, name: str, scalar: str, kind, targets, settings, position
     if planes:
         out["planes"] = list(planes)
     stated = _settings(settings, sizes)
+    # the option of the device target that is a setting of the lowering: stated only when the build has that target
+    if options.get("cuda.literal_table") and "cuda" in targets:
+        stated["literal_table"] = True
     if stated:
         out["settings"] = stated
     steps = getattr(kernel, "steps", None)

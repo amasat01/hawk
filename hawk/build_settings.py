@@ -21,7 +21,7 @@ from .errors import HawkError
 class Settings:
     """The per-build settings a build states to the lowering, none of them a machine number.
 
-    ``form`` the ``emit_form``; ``linalg_form``, ``wide_form``, ``contraction`` as the build option of that name;
+    ``form`` the ``emit_form``; ``linalg_form``, ``wide_form`` as the build option of that name;
     ``launch_bounds`` ``(threads, blocks_per_sm)`` or ``None``; ``warps`` the warps of a block of the warp-per-lane kernel;
     ``fold_k`` the rows per warp forced in every cell-sum kernel (0: the library's own value); ``fast_entries`` whether a
     device unit builds its fast entry points; ``team_threads`` the threads of every team stage when forced (0: the stage's own
@@ -30,7 +30,6 @@ class Settings:
     form: str = "auto"
     linalg_form: str = "auto"
     wide_form: str = "auto"
-    contraction: str = "direct"
     launch_bounds: tuple | None = None
     warps: int = 1
     fold_k: int = 0
@@ -56,9 +55,9 @@ LINALG_FORMS = ("auto", "thread", "team")
 #: and ``team`` is a warp per lane (the library), for the kernels it has a rule for; the others build as ``auto``.
 WIDE_FORMS = ("auto", "thread", "team")
 
-#: How a dense contraction is run (``contraction``): ``direct`` is the kernel's own loop; ``gemm`` asks eagle for a
-#: matrix-multiply route, for the kernels that have one (opt in: its values are within a few ulp, not the same bits).
-CONTRACTION_FORMS = ("direct", "gemm")
+#: How a dense contraction is run is the device card's choice per scalar type; no build setting states it.
+CONTRACTION_REFUSAL = ("contraction is not a build setting: the device card of the OSPREY chooses, per scalar type and architecture, "
+                       "whether a dense contraction runs as the kernel's own loop or as a matrix product")
 
 
 class SettingError(HawkError, ValueError):
@@ -66,7 +65,7 @@ class SettingError(HawkError, ValueError):
 
 
 #: setting name -> its allowed values: the ONE table every validation of a form set reads.
-CHOICES = MappingProxyType({"emit_form": FORMS, "linalg_form": LINALG_FORMS, "wide_form": WIDE_FORMS, "contraction": CONTRACTION_FORMS})
+CHOICES = MappingProxyType({"emit_form": FORMS, "linalg_form": LINALG_FORMS, "wide_form": WIDE_FORMS})
 
 
 def refuse_choice(key: str, value) -> None:
@@ -78,8 +77,7 @@ def refuse_choice(key: str, value) -> None:
 
 def check(settings: Settings) -> Settings:
     """``settings`` with its choices validated, refused by name."""
-    for key, value in (("emit_form", settings.form), ("linalg_form", settings.linalg_form), ("wide_form", settings.wide_form),
-                       ("contraction", settings.contraction)):
+    for key, value in (("emit_form", settings.form), ("linalg_form", settings.linalg_form), ("wide_form", settings.wide_form)):
         refuse_choice(key, value)
     return settings
 
@@ -95,7 +93,7 @@ class BuildSettings:
 
     ``emit_form`` how a product, dot, sum or norm is spelled (``auto``, ``static``, ``rolled``); ``linalg_form`` how per-lane linear
     algebra is worked (``auto``, ``thread``, ``team``); ``wide_form`` where a per-lane value wider than a thread's registers
-    lives (``auto``, ``thread``, ``team``); ``contraction`` how a dense contraction is run (``direct``, ``gemm``); ``launch_bounds``
+    lives (``auto``, ``thread``, ``team``); ``contraction`` is refused by name (see :data:`CONTRACTION_REFUSAL`); ``launch_bounds``
     ``(threads, blocks_per_sm)`` for a device kernel; ``fold_rows`` the rows per warp forced in every cell-sum kernel;
     ``fast_entries`` (a bool) builds the device unit's fast entry points."""
 
@@ -112,6 +110,8 @@ class BuildSettings:
             value = getattr(self, key)
             if value is not None:
                 refuse_choice(key, value)
+        if self.contraction is not None:
+            raise SettingError(CONTRACTION_REFUSAL)
         if self.fast_entries is not None and not isinstance(self.fast_entries, bool):
             raise SettingError(f"fast_entries must be a bool, got {self.fast_entries!r}")
 
@@ -121,7 +121,7 @@ class BuildSettings:
 
 
 #: field -> the :class:`Settings` field it becomes.
-_SETTING = MappingProxyType({"emit_form": "form", "linalg_form": "linalg_form", "wide_form": "wide_form", "contraction": "contraction",
+_SETTING = MappingProxyType({"emit_form": "form", "linalg_form": "linalg_form", "wide_form": "wide_form",
                              "launch_bounds": "launch_bounds", "fold_rows": "fold_k",
                              "fast_entries": "fast_entries"})
 

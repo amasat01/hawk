@@ -260,6 +260,12 @@ def _arg_shapes(walk) -> dict:
     return out
 
 
+def _slot_shapes(walk) -> dict:
+    """The static shape of every slot the unit binds, as lists of ints: ``[]`` for a scalar, ``[n]`` for a vector, ``[r, c]`` for a
+    matrix. A consumer that sizes a plane before a build reads it here; ``arg_spec`` stays the pairs that bind them."""
+    return {name: [int(e) for e in walk.slot_types[(role, name)].shape] for role, name in walk.arg_spec}
+
+
 def _arg_dtypes(walk, scalar_type: str) -> dict:
     """The per-slot wire dtype block — every plane-bound role, inputs
     included, so a consumer can tell an integer-valued handle from a Real
@@ -423,6 +429,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         "vec_widths": {n: widths[n] for n in _names(walk, "vec_in")},
         "arg_shapes": _arg_shapes(walk),
         "arg_dtypes": _arg_dtypes(walk, scalar_type),
+        "slot_shapes": _slot_shapes(walk),
         "wide_inputs": _names(walk, "wide_in"),
         "wide_outputs": _names(walk, "wide_out"),
         "accum_outputs": _names(walk, "accum_out"),

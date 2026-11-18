@@ -367,7 +367,9 @@ def _texts(unit: dict, targets) -> dict:
 def _build_one(target: str, texts: dict, unit: dict, *, machines, options, defines, opt_level: str, block, kind, root: Path) -> dict:
     """The build of one unit for one target, as its OSPREY answers: the files, the format, the figures."""
     request = {"v": 1, "name": unit["meta"]["name"], "target": TARGETS[target].target, "text": texts[target]["text"], "meta": unit["meta"],
-               "machine": machines[target], "options": _options_mod.of_target(options, target), "defines": list(defines),
+               "machine": machines[target], "options": _options_mod.of_target(options, target),
+               # the defines the user gave, then the ones the library states its text for this target needs
+               "defines": [*defines, *unit.get("defines", {}).get(TARGETS[target].target, [])],
                "opt_level": opt_level, "block": block}
     return ospreys.serving(target).build(kind.apply(request), root)
 

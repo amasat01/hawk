@@ -20,7 +20,7 @@ from conftest import sidecar_of
 
 import hawk
 import hawk.math as M
-from hawk import HawkError, Index, Mutable, Scalar, Terminated, Vector, runtime
+from hawk import HawkError, Index, Matrix, Mutable, Scalar, Terminated, Vector, runtime
 from hawk.artifact import build_bundle, describe
 from hawk.diff import vjp
 
@@ -117,6 +117,16 @@ def test_the_planes_a_kernel_writes_and_the_element_count_of_each_value_are_stat
         "v": 1,
         "finished_count": 1,
     }
+
+
+@hawk.kernel
+def shaped(m: Matrix[2, 3], v: Vector[3], x: Scalar, y: Mutable[Vector[2]]):
+    y = m @ v + x
+
+
+def test_each_slot_states_its_shape_a_matrix_as_rows_and_columns_a_vector_as_its_length_a_scalar_as_nothing():
+    shapes = describe([shaped], targets=("host",))["shaped"]["slot_shapes"]
+    assert shapes == {"m": [2, 3], "v": [3], "x": [], "y": [2]}
 
 
 def test_a_derived_kernel_states_the_group_and_wire_of_each_joined_plane_name():
