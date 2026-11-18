@@ -63,8 +63,9 @@ def plans(cache_dir):
             for k in (daffine, dcube, dmix)}
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def rng():
+    """A generator seeded afresh for each test: a test's data does not depend on which tests ran before it."""
     return np.random.default_rng(23)
 
 
@@ -252,9 +253,12 @@ def test_recorded_reverse_is_compensated_and_equals_the_hawk_door(plans, rng, ru
     got = _reverse(plans["dcube"], "x", x, g).reshape(A, 1, NC)
     door = Kernel("dcube_vjp", vjp(dcube, wrt=("x",)))(x=x, bar_out=g, a=A)
     np.testing.assert_array_equal(got, np.asarray(door).reshape(A, 1, NC))
-    exact = np.array([[[math.fsum(3.0 * x[i, 0, j] ** 2 * g[i, k, j] for k in range(NB))
-                        for j in range(NC)]] for i in range(A)])
-    assert np.max(np.abs(got - exact) / np.abs(exact)) < 4e-15      # the products round once, the sum does not
+    terms = 3.0 * x[:, :, None, :] ** 2 * g[:, None, :, :]         # (A, 1, NB, NC): the products one adjoint cell sums
+    exact = np.array([[[math.fsum(terms[i, 0, :, j]) for j in range(NC)]] for i in range(A)])
+    # each product is three rounded multiplications and the compensated sum rounds once: four half-ulps of the terms'
+    # magnitudes. The terms have both signs, so the bound is on their magnitudes, not on the sum they cancel to.
+    bound = 4 * (np.finfo(np.float64).eps / 2) * np.abs(terms).sum(axis=2)
+    assert np.all(np.abs(got - exact) <= bound), np.max(np.abs(got - exact) / bound)
 
 
 def test_a_derivative_plan_routes_a_broadcast_input_as_the_hawk_door_does(rng, run_cache):
