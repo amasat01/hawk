@@ -378,6 +378,9 @@ pub struct KernelAnswer {
     /// Bytes of per-lane storage the kernel's body declares for its library results (a chain or a fused body: all its members
     /// together), under the fold threshold and form the lowering decided its rolled sites with.
     pub working_set_bytes: i64,
+    /// The name of the device card's wide class whose thresholds placed the kernel's wide values: the class nearest the
+    /// architecture the request's device facts state. None for a request with no device target.
+    pub wide_class: Option<String>,
 }
 
 /// The input of the set text: the unit records of one or several answers, and the five layout sizes the exports block states.
@@ -1286,6 +1289,10 @@ impl KernelAnswer {
                 "working_set_bytes".into(),
                 Json::Num(self.working_set_bytes.to_string()),
             ),
+            (
+                "wide_class".into(),
+                self.wide_class.clone().map_or(Json::Null, Json::Str),
+            ),
         ])
         .to_text()
     }
@@ -1340,12 +1347,17 @@ impl KernelAnswer {
         let library = LibraryMeta::get(keys.opt("library"), "library")?;
         let meta_source = text_of(keys.req("meta_source")?, "meta_source")?;
         let working_set_bytes = int_of(keys.req("working_set_bytes")?, "working_set_bytes")?;
+        let wide_class = keys
+            .opt("wide_class")
+            .map(|name| text_of(name, "wide_class"))
+            .transpose()?;
         keys.done()?;
         Ok(KernelAnswer {
             units,
             library,
             meta_source,
             working_set_bytes,
+            wide_class,
         })
     }
 }
@@ -1608,6 +1620,20 @@ mod tests {
             "{}",
             why.reason
         );
+    }
+
+    #[test]
+    fn an_answer_carries_its_wide_class_name_or_none_through_its_text() {
+        for wide_class in [Some("sm61".to_string()), None] {
+            let answer = KernelAnswer {
+                units: vec![],
+                library: super::super::unit_meta::LibraryMeta::current(),
+                meta_source: String::new(),
+                working_set_bytes: 0,
+                wide_class,
+            };
+            assert_eq!(KernelAnswer::from_json(&answer.to_json()).unwrap(), answer);
+        }
     }
 
     #[test]

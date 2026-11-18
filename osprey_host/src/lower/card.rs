@@ -986,6 +986,25 @@ mod tests {
         assert!(card.wide_class("cuda").is_err());
     }
 
+    /// Oracle: the old `nearest` and `features_of` rules: a tie between two classes goes to the lower name, and an architecture
+    /// between two known capabilities takes the lower one.
+    #[test]
+    fn ties_go_to_the_lower_name_and_the_lower_capability() {
+        let mut card = shipped();
+        let limits = card.wide_classes[0].limits.clone();
+        for name in ["b70", "a70"] {
+            card.wide_classes.push(WideClass {
+                name: name.into(),
+                capability: 70,
+                limits: limits.clone(),
+            });
+        }
+        // sm_80 has the hardware of capability 70: both classes are at distance 0 and the lower name wins
+        assert_eq!(card.wide_class("sm_80").unwrap().name, "a70");
+        // 83 is three from 80 and three from 86: the lower (80, FP64 1:2) is taken, not 86 (1:64)
+        assert_eq!(card.features_of("sm_83").unwrap().fp64_ratio, 2);
+    }
+
     /// The two team sizes are read from the card, and a card whose larger team is below the smaller is refused by name.
     #[test]
     fn the_team_sizes_are_card_numbers_and_must_not_decrease() {

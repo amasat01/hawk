@@ -202,6 +202,9 @@ struct Cards {
     deciding: BuildCard,
     /// The command that makes the device image, when the request names the device.
     image: Option<image::DeviceImage>,
+    /// The name of the device card's wide class for the architecture the request's device facts state, whose thresholds place the
+    /// kernel's wide values; none when the request has no device target.
+    wide_class: Option<String>,
 }
 
 impl Cards {
@@ -220,6 +223,10 @@ impl Cards {
             Some(device) => device.deciding(&host, &device_arch(request)?)?,
             None => host.clone(),
         };
+        let wide_class = match &device {
+            Some(device) => Some(device.wide_class(&device_arch(request)?)?.name.clone()),
+            None => None,
+        };
         let image = match request.image_format {
             Some(format) if request.targets.contains(&Target::Device) => {
                 Some(image::DeviceImage::of_request(request, format)?)
@@ -231,6 +238,7 @@ impl Cards {
             device,
             deciding,
             image,
+            wide_class,
         })
     }
 
@@ -327,6 +335,7 @@ pub fn lower(ctx: *mut Ctx, request_text: &str, facts_dir: &Path) -> Result<Kern
         library,
         meta_source,
         working_set_bytes: working_set(ctx, &request, &cards)?,
+        wide_class: cards.wide_class.clone(),
     })
 }
 
@@ -996,6 +1005,83 @@ mod tests {
             unsafe { rx_ctx_free(ctx) };
         }
         assert_eq!(checked, 15);
+    }
+
+    /// The cards the shipped files give, plus a second wide class measured on capability 70 (a copy of the shipped class's
+    /// thresholds), as the old tests of the class choice stated it: `sm_61` and `sm_75` are nearest the shipped class, `sm_80` is
+    /// nearest the class of capability 70.
+    fn two_class_cards() -> Vec<(String, String)> {
+        let text = std::fs::read_to_string(shipped().join("cuda_build.json")).unwrap();
+        let first = "\"wide_classes\": {";
+        assert!(text.contains(first), "the shipped card holds {first}");
+        let second = format!(
+            "{first}\"fake70\": {{\"capability\": 70, \"runtime_min\": {{\"read\": {{\"4\": 16, \"8\": 2}}, \"slot_read\": {{\"4\": 16, \"8\": 4}}, \"rotate\": {{\"4\": 16, \"8\": 0}}, \"write\": {{\"4\": 96, \"8\": 8}}, \"accum\": {{\"4\": 4096, \"8\": 4096}}}}, \"wide_min\": {{\"4\": 128, \"8\": 64}}}},"
+        );
+        vec![("cuda_build.json".into(), text.replacen(first, &second, 1))]
+    }
+
+    /// A request for the device whose facts answer states `device_facts`.
+    fn device_request(device_facts: String) -> KernelRequest {
+        KernelRequest {
+            targets: vec![Target::Device],
+            facts: vec![(Target::Device, device_facts)],
+            ..plain_request()
+        }
+    }
+
+    /// The device facts answer for a stated architecture (none: the card's default), under the cards `stated`.
+    fn facts_of_arch(arch: Option<&str>, stated: &[(String, String)]) -> String {
+        let machine = Stated {
+            cards: stated.to_vec(),
+            device_arch: arch.map(String::from),
+            ..Stated::default()
+        };
+        let compiler =
+            "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0";
+        answer(&shipped(), "cuda", compiler, &probe(), &machine).unwrap()
+    }
+
+    /// Oracle: the old tests of the class choice (`test_build_cards.py`): with a class measured on capability 70 beside the shipped
+    /// one, sm_61 is its own class, sm_75 (FP64 1:32, 1024 threads) is one step from Pascal and sm_80 (1:2, 2048 threads) is nearest
+    /// the class of capability 70.
+    #[test]
+    fn the_answer_names_the_wide_class_nearest_the_architecture_of_the_device_facts() {
+        let stated = two_class_cards();
+        let docs = CardSet::new(&shipped(), &stated);
+        for (arch, class) in [("sm_61", "sm61"), ("sm_75", "sm61"), ("sm_80", "fake70")] {
+            let request = device_request(facts_of_arch(Some(arch), &stated));
+            let cards = Cards::load(&request, &docs).unwrap();
+            assert_eq!(cards.wide_class.as_deref(), Some(class), "{arch}");
+        }
+    }
+
+    /// Oracle: the old device card's `default_arch` is `sm_61` (a fact of the card the library applies when the caller states none),
+    /// so the class of the default is the shipped one.
+    #[test]
+    fn a_device_request_that_states_no_architecture_takes_the_class_of_the_cards_default() {
+        let stated = two_class_cards();
+        let request = device_request(facts_of_arch(None, &stated));
+        let cards = Cards::load(&request, &CardSet::new(&shipped(), &stated)).unwrap();
+        assert_eq!(cards.wide_class.as_deref(), Some("sm61"));
+    }
+
+    #[test]
+    fn a_device_facts_answer_naming_an_unknown_architecture_is_refused_by_name() {
+        let request = device_request(r#"{"device_arch": "cuda"}"#.into());
+        let Err(why) = Cards::load(&request, &CardSet::new(&shipped(), &[])) else {
+            panic!("an architecture that is not one was taken");
+        };
+        assert!(
+            why.reason.contains("is not a device architecture"),
+            "{}",
+            why.reason
+        );
+    }
+
+    #[test]
+    fn a_request_with_no_device_target_states_no_wide_class() {
+        let cards = Cards::load(&plain_request(), &CardSet::new(&shipped(), &[])).unwrap();
+        assert_eq!(cards.wide_class, None);
     }
 
     /// A host request with no body of its own, the caller's settings all at their defaults.

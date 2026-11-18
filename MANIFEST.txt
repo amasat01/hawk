@@ -47,7 +47,7 @@ Every file with its line count (this file excluded):
     162  osprey_host/src/lower/active.rs
      51  osprey_host/src/lower/blocks.rs
      35  osprey_host/src/lower/boxed.rs
-   1006  osprey_host/src/lower/card.rs
+   1025  osprey_host/src/lower/card.rs
     229  osprey_host/src/lower/chain.rs
     776  osprey_host/src/lower/derived.rs
     199  osprey_host/src/lower/events.rs
@@ -56,9 +56,9 @@ Every file with its line count (this file excluded):
     334  osprey_host/src/lower/links.rs
     871  osprey_host/src/lower/meta_c.rs
    1145  osprey_host/src/lower/meta_fill.rs
-   1089  osprey_host/src/lower/mod.rs
+   1175  osprey_host/src/lower/mod.rs
     121  osprey_host/src/lower/placed.rs
-   1775  osprey_host/src/lower/request.rs
+   1801  osprey_host/src/lower/request.rs
     377  osprey_host/src/lower/segment.rs
     116  osprey_host/src/lower/stage_block.rs
     539  osprey_host/src/lower/stages.rs
