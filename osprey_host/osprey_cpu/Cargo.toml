@@ -6,7 +6,9 @@ license.workspace = true
 build = "build.rs"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+# the loadable object is made by the door package beside it, so that no other crate links the exported symbol
+name = "osprey_cpu_lib"
+crate-type = ["rlib"]
 
 [dependencies]
 osprey_lowering = { path = "../components/lowering" }
@@ -18,8 +20,3 @@ aether_writers = { path = "../../aether/rs/writers" }
 [build-dependencies]
 toolkit = { path = "../components/toolkit" }
 rcore = { path = "../../raptor/rs/core" }
-
-[features]
-# the exported entry symbol; the replay tools link both libraries as plain crates and switch it off
-default = ["door"]
-door = []

@@ -6,8 +6,8 @@ license.workspace = true
 
 [dependencies]
 osprey_lowering = { path = "../components/lowering" }
-osprey_cpu = { path = "../osprey_cpu", default-features = false }
-osprey_cuda = { path = "../osprey_cuda", default-features = false }
+osprey_cpu = { path = "../osprey_cpu" }
+osprey_cuda = { path = "../osprey_cuda" }
 raptor_ir = { path = "../../raptor/rs/ir" }
 rcore = { path = "../../raptor/rs/core" }
 raptor_wings = { path = "../../raptor/rs/wings" }

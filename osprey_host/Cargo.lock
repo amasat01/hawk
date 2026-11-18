@@ -19,6 +19,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "osprey_cpu_door"
+version = "0.0.1"
+dependencies = [
+ "osprey_cpu",
+ "osprey_lowering",
+]
+
+[[package]]
 name = "osprey_cuda"
 version = "0.0.1"
 dependencies = [
@@ -28,6 +36,14 @@ dependencies = [
  "raptor_wings",
  "rcore",
  "toolkit",
+]
+
+[[package]]
+name = "osprey_cuda_door"
+version = "0.0.1"
+dependencies = [
+ "osprey_cuda",
+ "osprey_lowering",
 ]
 
 [[package]]

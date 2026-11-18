@@ -311,6 +311,14 @@ impl Toolkit {
         if let (Some(runtime), false) = (&job.runtime, machine.replaced.is_empty()) {
             return self.run_runtime_job(job, runtime, &machine, root);
         }
+        if job.template.is_empty() {
+            return Err(Refusal::bad(format!(
+                "the request for {:?} has no argv template, and this machine's compiler is not replaced by the runtime compile: \
+                 a request carries a `template` for the offline tool and a `runtime` member for the runtime compile, and the \
+                 machine decides which one is used",
+                job.name
+            )));
+        }
         for (name, why) in &machine.replaced {
             if places_in(&job.template)
                 .iter()
@@ -433,8 +441,13 @@ impl Toolkit {
         }
         let output = format!("{}{}", job.name, job.output_suffix);
         let produced = scratch.join(&output);
-        let head = fs::read(&produced)
-            .map_err(|_| Refusal::new(Kind::ToolFailed, format!("{label} wrote no {output}")))?;
+        let head = fs::read(&produced).map_err(|_| {
+            let log: String = done.stderr.chars().take(COMPLAINT_CHARS).collect();
+            Refusal::new(
+                Kind::ToolFailed,
+                format!("{label} wrote no {output}\n$ {}\n{log}", argv.join(" ")),
+            )
+        })?;
         let meta = wire::obj(vec![
             ("argv", wire::strs(&argv)),
             ("seconds", J::Num(start.elapsed().as_secs_f64())),
@@ -502,8 +515,7 @@ pub(crate) fn key_of(entry: &Entry) -> String {
     entry
         .dir
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

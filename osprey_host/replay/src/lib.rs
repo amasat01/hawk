@@ -11,8 +11,8 @@ pub const CUDA_FACTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../osprey_cud
 /// The entry table of the library that serves `target`.
 pub fn table_of(target: Target) -> &'static osprey_lowering::door::OspreyV1 {
     match target {
-        Target::Host => osprey_cpu::table(),
-        Target::Device => osprey_cuda::table(),
+        Target::Host => osprey_cpu_lib::table(),
+        Target::Device => osprey_cuda_lib::table(),
     }
 }
 
@@ -63,8 +63,8 @@ pub fn answer_named(
 ) -> Result<String, osprey_lowering::facts::Failed> {
     use osprey_lowering::facts::{answer, Failed};
     match target {
-        "host" => answer(dir, &osprey_cpu::Cpu, compiler, probe, stated),
-        "cuda" => answer(dir, &osprey_cuda::Cuda, compiler, probe, stated),
+        "host" => answer(dir, &osprey_cpu_lib::Cpu, compiler, probe, stated),
+        "cuda" => answer(dir, &osprey_cuda_lib::Cuda, compiler, probe, stated),
         other => Err(Failed::Bad(format!("no facts for the target {other}"))),
     }
 }
@@ -75,8 +75,8 @@ pub fn shipped_card_named(
     name: &str,
 ) -> Result<String, osprey_lowering::facts::Failed> {
     use osprey_lowering::facts::shipped_card;
-    match osprey_cuda::Cuda.card_names().contains(&name) {
-        true => shipped_card(&osprey_cuda::Cuda, dir, name),
-        false => shipped_card(&osprey_cpu::Cpu, dir, name),
+    match osprey_cuda_lib::Cuda.card_names().contains(&name) {
+        true => shipped_card(&osprey_cuda_lib::Cuda, dir, name),
+        false => shipped_card(&osprey_cpu_lib::Cpu, dir, name),
     }
 }

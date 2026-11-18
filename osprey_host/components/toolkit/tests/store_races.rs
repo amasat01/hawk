@@ -9,14 +9,14 @@ use std::path::Path;
 use std::process::Command;
 use toolkit::{Env, Toolkit};
 
-/// A toolkit whose compiler is the fake of `dir`, in the environment of this process plus the fake's variable.
+/// A toolkit whose compiler is the fake of `dir`, in the environment of this process plus the fake's variable. The fake is
+/// written by `fake_compiler` before any process runs it: a script rewritten while another process starts it cannot be executed.
 fn with_fake(dir: &Path, process_env: bool) -> Toolkit {
-    let fake = fake_compiler(dir, "fakecc");
     let env = if process_env {
         Env::process()
     } else {
         Env::from_pairs(&[
-            ("FAKE_CXX", &fake.display().to_string()),
+            ("FAKE_CXX", &dir.join("fakecc").display().to_string()),
             ("PATH", "/bin:/usr/bin"),
         ])
     };
@@ -49,6 +49,7 @@ fn child(dir: &Path) -> Command {
 #[test]
 fn a_second_build_of_one_unit_runs_no_compiler() {
     let dir = scratch("second");
+    fake_compiler(&dir, "fakecc");
     let tk = with_fake(&dir, false);
     let first = tk.build(&unit("u", "int x;"), &dir.join("store")).unwrap();
     let second = tk.build(&unit("u", "int x;"), &dir.join("store")).unwrap();
@@ -66,6 +67,7 @@ fn a_second_build_of_one_unit_runs_no_compiler() {
 fn six_threads_racing_on_one_key_run_one_compiler() {
     let dir = scratch("threads");
     fs::write(dir.join("sleep"), "0.3").unwrap();
+    fake_compiler(&dir, "fakecc");
     let tk = with_fake(&dir, false);
     std::thread::scope(|scope| {
         for _ in 0..6 {

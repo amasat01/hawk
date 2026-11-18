@@ -7,6 +7,7 @@ use crate::refusal::{Done, Kind, Refusal};
 use crate::wire;
 use rcore::json::J;
 use std::ffi::{c_char, c_int, c_void, CString};
+use std::path::PathBuf;
 use std::ptr;
 
 /// `(program*, source, name, header count, header texts, header names) -> status`.
@@ -117,6 +118,46 @@ impl Runtime {
             .collect();
         archs.sort_unstable();
         Some(archs)
+    }
+
+    /// The folder the table's `include` member names `name` for: the first of its `beside` folders (relative to the folder the
+    /// library was loaded from) that holds the `marker` file. The headers such a compile reads from a real path live there.
+    ///
+    /// # Errors
+    /// Refuses a table without the entry, and a library beside which no listed folder holds the marker.
+    pub fn include_root(&self, spec: &J, name: &str) -> Done<PathBuf> {
+        let rule = wire::need(
+            wire::need(spec, "include", "runtime_compile")?,
+            name,
+            "runtime_compile.include",
+        )?;
+        let marker = wire::text(rule, "marker", "runtime_compile.include")?;
+        let beside = wire::texts(rule, "beside", "runtime_compile.include")?;
+        let anchor = wire::text(&self.calls, "version", "runtime_compile.calls")?;
+        let home = self.lib.folder(anchor).ok_or_else(|| {
+            Refusal::new(
+                Kind::ToolAbsent,
+                format!(
+                    "the loader cannot say where {} was loaded from",
+                    self.lib.name
+                ),
+            )
+        })?;
+        beside
+            .iter()
+            .map(|relative| home.join(relative))
+            .find(|folder| folder.join(marker).is_file())
+            .ok_or_else(|| {
+                Refusal::new(
+                    Kind::ToolAbsent,
+                    format!(
+                        "no folder with {marker} beside {} ({}): tried {}",
+                        self.lib.name,
+                        home.display(),
+                        beside.join(", ")
+                    ),
+                )
+            })
     }
 
     /// The identity term of keys: the library's name and version.

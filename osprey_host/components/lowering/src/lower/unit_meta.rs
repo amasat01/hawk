@@ -853,8 +853,8 @@ record! {
 }
 record! {
     /// What a library that lowers the same build beside the leading one must match: the numbers the cut was decided on, the fusion
-    /// row of a chain, whether the leader runs a contraction directly, and the names of its units in order (the cut). The caller
-    /// hands it unread into the other libraries' requests.
+    /// row of a chain, whether the leader runs a contraction directly, the build setting keys its target declares and the names of
+    /// its units in order (the cut). The caller hands it unread into the other libraries' requests.
     pub struct PeerRecord {
         /// The numbers the steps decided on.
         pub numbers: PeerNumbers,
@@ -862,6 +862,9 @@ record! {
         pub fusion: Option<PeerFusion>,
         /// Whether a dense contraction is run directly instead of as a matrix product.
         pub direct_contraction: bool,
+        /// The build setting keys the leader's target declares: a companion accepts a stated setting its own card does not name
+        /// when the leader's target does.
+        pub settings: Vec<String>,
         /// The names of the leader's units, in order.
         pub units: Vec<String>,
     }

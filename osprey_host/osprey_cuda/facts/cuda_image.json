@@ -14,6 +14,19 @@
     "-MD", "-MF", "{depfile}", "{source}", "-o", "{output}"
   ],
   "figures": {"ptx": [], "cubin": ["-Xptxas", "-v"]},
+  "figures_read": {
+    "offline": {"ptx": null, "cubin": "ptxas_info"},
+    "runtime": {"ptx": null, "cubin": "image_resources"}
+  },
+  "runtime": {
+    "compiler": "nvrtc || the runtime compile library || 0",
+    "flags": {
+      "ptx": ["-std=c++20", "-arch={virtual}", "-default-device", "-D__builtin_inf()=__longlong_as_double(0x7ff0000000000000LL)"],
+      "cubin": ["-std=c++20", "-arch={sm}", "-default-device", "-D__builtin_inf()=__longlong_as_double(0x7ff0000000000000LL)"]
+    },
+    "compile": ["{flags}", "-I{include:cccl}", "{defines}"],
+    "headers": ["aether", "eagle", "facts"]
+  },
   "image_format": {"virtual_arch": "ptx", "driver_unknown": "cubin", "compiler_newer": "cubin", "otherwise": "ptx"},
   "embed": {
     "compile": ["{host_compiler}", "-x", "assembler", "-c", "{source}", "-o", "{object}"],

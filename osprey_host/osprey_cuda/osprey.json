@@ -8,7 +8,7 @@
       "target": "Device",
       "about": "CUDA device image for one GPU architecture",
       "device": true,
-      "entry": "kernel",
+      "entry": "device",
       "format": "ptx"
     }
   ]

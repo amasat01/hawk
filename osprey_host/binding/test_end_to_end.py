@@ -2,8 +2,9 @@
 
 The caller knows nothing of the target: the manifest, `machine`, `lower`, one `build` for each
 unit, `merge`, `set_text`, `link`, `state`. It hands each answer on as given and reads no card,
-no compiler identity and no flag. The cuda folder answers `machine` with `tools_absent` here and
-refuses `build` by name.
+no compiler identity and no flag. A cuda folder on a machine with no device tool answers `machine`
+with `tools_absent` and refuses `build` by name; on a machine with one it states the tool and builds
+a device unit.
 """
 
 import ctypes
@@ -119,21 +120,34 @@ def run(done, o, raises, folders, header_abi, make_nodes):
     assert "neither `machine`" in str(e) and "nor `facts`" in str(e), str(e)
     done.append("end to end: lower refuses a request with neither machine nor facts by name")
     c.backend_close(lib)
-    # the cuda folder: no compiler here, so machine says why and build refuses by name
+    # the cuda folder: with no device tool, machine says why and build refuses by name;
+    # with one, machine states the tool that was found
     _, cuda_path = library_of(folders["cuda"])
     cuda = c.backend_open(cuda_path)
     answered = json.loads(
         c.backend_machine(cuda, json.dumps({"target": "cuda", "options": {}, "opt_level": ""}))
     )
-    assert answered["tools_absent"] and "HAWK_NVCC" in answered["tools_absent"], answered
-    refused_unit = {"name": "k", "text": "int x;", "machine": answered}
-    e = raises(
-        o.NotWritten,
-        lambda: c.backend_build(cuda, json.dumps(refused_unit), root),
-        "cuda build: no compiler on this machine",
-    )
-    assert getattr(e, "code", None) == "tool_absent", (e, getattr(e, "code", None))
-    # a device unit's text needs no tool: without a device compiler it takes the card's release
+    tooled = answered["tools_absent"] is None
+    if tooled:
+        stated = answered["stated"]
+        assert "compiler" in stated["tools"] or "runtime" in stated, stated
+        done.append("end to end: cuda machine states the device tool it found")
+        # with a device tool, a device unit is built: its image and the record the host link takes
+        unit_request = {"name": "k", "text": "__global__ void k() {}", "machine": answered}
+        built = json.loads(c.backend_build(cuda, json.dumps(unit_request), root))
+        assert built["artifact"] in ("k.ptx", "k.cubin"), built["artifact"]
+        assert built["embed"]["symbol"] == "k__image", built["embed"]
+        done.append("end to end: cuda build writes " + built["artifact"] + " with its embed record")
+    else:
+        assert "HAWK_NVCC" in answered["tools_absent"], answered
+        refused_unit = {"name": "k", "text": "int x;", "machine": answered}
+        e = raises(
+            o.NotWritten,
+            lambda: c.backend_build(cuda, json.dumps(refused_unit), root),
+            "cuda build: no compiler on this machine",
+        )
+        assert getattr(e, "code", None) == "tool_absent", (e, getattr(e, "code", None))
+        # a device unit's text needs no tool: without a device compiler it takes the card's release
     device = {
         **REQUEST,
         "targets": ["Device"],
@@ -144,6 +158,7 @@ def run(done, o, raises, folders, header_abi, make_nodes):
     written = json.loads(c3.backend_lower(cuda, c3.dump(dump_nodes), "", json.dumps(device)))
     unit = written["units"][0]
     assert [t["target"] for t in unit["texts"]] == ["Device"], unit["texts"]
-    assert unit["meta"]["device_compiler"] == "nvcc 12.6", unit["meta"]["device_compiler"]
-    done.append("end to end: cuda lower writes text with no device compiler")
+    if not tooled:
+        assert unit["meta"]["device_compiler"] == "nvcc 12.6", unit["meta"]["device_compiler"]
+    done.append("end to end: cuda lower writes the device text")
     c.backend_close(cuda)

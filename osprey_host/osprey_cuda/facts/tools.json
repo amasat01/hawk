@@ -18,9 +18,11 @@
         {"env_flag": {"var": "NVCC_PREPEND_FLAGS", "flags": ["-ccbin", "--compiler-bindir"]}, "dir_child": "g++"},
         {"env_flag": {"var": "NVCC_APPEND_FLAGS", "flags": ["-ccbin", "--compiler-bindir"]}, "dir_child": "g++"},
         {"env": "NVCC_CCBIN", "dir_child": "g++"},
+        {"env": "CUDAHOSTCXX", "dir_child": "g++"},
+        {"env": "CXX", "first_word": true, "dir_child": "g++"},
         {"path": "g++"}
       ],
-      "fix": "pass the host compiler to nvcc with -ccbin, or set HAWK_NVCC_CCBIN, or put g++ on PATH",
+      "fix": "pass the host compiler to nvcc with -ccbin, or set HAWK_NVCC_CCBIN, CUDAHOSTCXX or CXX, or put g++ on PATH",
       "identity_args": ["--version"]
     }
   },
@@ -61,6 +63,9 @@
     "replaces": "compiler",
     "libraries": ["libnvrtc.so", "libnvrtc.so.12"],
     "ok_status": 0,
+    "include": {
+      "cccl": {"marker": "cuda/std/version", "beside": ["../include", "../include/cccl", "../../include", "../../include/cccl", "../../../include", "../../../include/cccl"]}
+    },
     "force": {"env": "HAWK_DEVICE_COMPILER", "tool": "nvcc", "runtime": "nvrtc"},
     "calls": {
       "version": "nvrtcVersion",

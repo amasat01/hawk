@@ -126,7 +126,7 @@ fn an_explicit_override_that_does_not_resolve_stops_the_search() {
 #[test]
 fn a_tool_that_does_not_run_is_absent_not_found() {
     let dir = scratch("broken");
-    script(&dir.join("fakecc"), "#!/bin/sh\nexit 3\n");
+    script(&dir.join("fakecc"), "#!/bin/sh\necho trouble >&2\nexit 3\n");
     let tk = Toolkit::new(
         TABLE,
         &[],
@@ -139,7 +139,29 @@ fn a_tool_that_does_not_run_is_absent_not_found() {
         .unwrap()
         .to_string();
     assert!(
-        reason.contains("was found but `--version` does not run"),
+        reason.contains("was found but `--version` does not run (exit 3: trouble)"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_tool_that_cannot_be_started_is_absent_with_the_operating_systems_error() {
+    let dir = scratch("unstartable");
+    // a script whose interpreter does not exist: the system refuses to start it
+    script(&dir.join("fakecc"), "#!/no/such/interpreter\n");
+    let tk = Toolkit::new(
+        TABLE,
+        &[],
+        Env::from_pairs(&[("PATH", dir.to_str().unwrap())]),
+    )
+    .unwrap();
+    let reason = ask(&tk)
+        .get("tools_absent")
+        .and_then(J::str)
+        .unwrap()
+        .to_string();
+    assert!(
+        reason.contains("does not run (") && reason.contains("No such file or directory"),
         "{reason}"
     );
 }
@@ -241,5 +263,52 @@ fn a_host_compiler_in_a_quoted_flag_value_with_a_space_in_its_path_is_found() {
     assert_eq!(
         host.get("path").and_then(J::str),
         Some(dir.join("my gcc/g++").to_str().unwrap())
+    );
+}
+
+/// The host compiler the shipped device table finds, with `vars` set beside a device compiler and a `g++` on `PATH`.
+fn shipped_host_compiler(dir: &std::path::Path, vars: &[(&str, String)]) -> String {
+    let table = fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../osprey_cuda/facts/tools.json"),
+    )
+    .unwrap();
+    let nvcc = dir.join("cuda/nvcc");
+    script(
+        &nvcc,
+        "#!/bin/sh\necho 'Cuda compilation tools, release 12.6, V12.6.20'\n",
+    );
+    let bin = dir.to_str().unwrap().to_string();
+    let nvcc_path = nvcc.display().to_string();
+    let mut pairs = vec![("HAWK_NVCC", nvcc_path.as_str()), ("PATH", bin.as_str())];
+    pairs.extend(vars.iter().map(|(k, v)| (*k, v.as_str())));
+    let answer = ask(&Toolkit::new(&table, &[], Env::from_pairs(&pairs)).unwrap());
+    let tools = answer.get("stated").unwrap().get("tools").unwrap();
+    tools
+        .get("host_compiler")
+        .unwrap()
+        .get("path")
+        .and_then(J::str)
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn the_device_host_compiler_is_read_from_the_standard_variables_before_path() {
+    let dir = scratch("device_host");
+    for name in ["from_cxx", "from_cudahostcxx"] {
+        fake_compiler(&dir.join(name), "g++");
+    }
+    fake_compiler(&dir, "g++");
+    let at = |name: &str| dir.join(name).join("g++").display().to_string();
+    // CUDAHOSTCXX first, then CXX (a command line: its first word), then the compiler on PATH
+    let both = [
+        ("CUDAHOSTCXX", at("from_cudahostcxx")),
+        ("CXX", format!("{} -m64", at("from_cxx"))),
+    ];
+    assert_eq!(shipped_host_compiler(&dir, &both), at("from_cudahostcxx"));
+    assert_eq!(shipped_host_compiler(&dir, &both[1..]), at("from_cxx"));
+    assert_eq!(
+        shipped_host_compiler(&dir, &[]),
+        dir.join("g++").display().to_string()
     );
 }

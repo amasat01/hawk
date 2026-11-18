@@ -285,16 +285,22 @@ impl Cards {
         Ok(device.contraction_route(&device_arch(request)?, scalar))
     }
 
-    /// Refuses a build setting the request states that the library's target does not declare. A library that lowers beside a leader
-    /// leaves the judgement to the leader, which declares every setting of the build.
+    /// Refuses a build setting the request states that neither the library's target declares nor, for a library that lowers beside
+    /// a leader, the leader's target (the keys its peer record lists).
     fn refuse_undeclared_settings(&self, request: &KernelRequest) -> Result<(), Refusal> {
-        if request.peer.is_some() {
-            return Ok(());
-        }
         let Json::Obj(stated) = request.settings.write() else {
             return Ok(());
         };
-        match stated.iter().find(|(key, _)| !self.settings.contains(key)) {
+        let leader_declares = |key: &String| {
+            request
+                .peer
+                .as_ref()
+                .is_some_and(|(_, leader)| leader.settings.contains(key))
+        };
+        match stated
+            .iter()
+            .find(|(key, _)| !self.settings.contains(key) && !leader_declares(key))
+        {
             Some((key, _)) => Err(bad(format!(
                 "build settings key {key:?} is declared by none of the targets {:?}: the target's card names the setting keys it accepts",
                 request.targets.iter().map(|t| crate::backend::target_name(*t)).collect::<Vec<_>>()
@@ -431,7 +437,12 @@ pub fn lower<B: Backend>(
         _ => None,
     };
     let direct = cards.contraction_route(&request)? == card::ContractionRoute::Direct;
-    let peer = peer::record(&cards.deciding, fusion.as_ref(), direct, &metas);
+    let peer = peer::record(
+        &cards.deciding,
+        fusion.as_ref(),
+        (direct, &cards.settings),
+        &metas,
+    );
     Ok(KernelAnswer {
         working_set_bytes: working_set(ctx, &request, &cards)?,
         wide_class: cards.wide_class.clone(),

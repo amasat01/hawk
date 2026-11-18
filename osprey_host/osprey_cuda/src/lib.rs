@@ -1,5 +1,5 @@
 //! The cuda OSPREY: the library that lowers kernels for the device. It serves the device target alone, ships the device's data
-//! documents beside the library, and exports one symbol, `osprey_v1`, which returns the entry table every OSPREY offers.
+//! documents beside the library, and offers the entry table every OSPREY hands out; the `door` package beside it exports that table as the one symbol, `osprey_v1`.
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 use aether_writers::contract::types::Target;
@@ -80,11 +80,4 @@ pub fn table() -> &'static OspreyV1 {
     /// The table, made on first use.
     static TABLE: OnceLock<OspreyV1> = OnceLock::new();
     TABLE.get_or_init(door_table::<Cuda>)
-}
-
-#[cfg(feature = "door")]
-#[no_mangle]
-/// The one symbol of the library: the entry table.
-pub extern "C" fn osprey_v1() -> *const OspreyV1 {
-    table()
 }

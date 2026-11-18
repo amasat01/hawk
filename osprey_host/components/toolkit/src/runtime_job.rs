@@ -57,6 +57,14 @@ impl Toolkit {
         let mut options = vec![];
         for option in &runtime.options {
             options.push(super::fill(option, &mut |place| {
+                if let Some(name) = place
+                    .strip_prefix("include:")
+                    .filter(|n| spec.get("include").is_some_and(|i| i.get(n).is_some()))
+                {
+                    return Ok(Some(
+                        library.include_root(spec, name)?.display().to_string(),
+                    ));
+                }
                 let given = job
                     .places
                     .iter()

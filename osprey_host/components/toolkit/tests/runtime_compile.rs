@@ -251,3 +251,57 @@ fn with_neither_a_tool_nor_the_library_the_absence_names_everything_tried() {
     assert!(reason.contains("libno-such-runtime.so"), "{reason}");
     let _ = f;
 }
+
+/// A runtime request whose only option is `-I{include:cccl}`, over a toolkit whose table names the include folders beside the
+/// library: `include` first (absent from the fixture unless planted), then `lib`.
+fn include_toolkit_and_request(f: &Fixture) -> (Toolkit, String) {
+    let table = table(&f.library).replace(
+        r#""calls":"#,
+        r#""include":{"cccl":{"marker":"cuda/std/version","beside":["include","lib"]}},"calls":"#,
+    );
+    let toolkit = Toolkit::new(
+        &table,
+        &[DEVICE],
+        Env::from_pairs(&[("PATH", "/bin:/usr/bin")]),
+    )
+    .unwrap();
+    let request = wire::render(&wire::obj(vec![
+        ("name", wire::s("k")),
+        ("text", wire::s("int x;")),
+        ("source_suffix", wire::s(".cu")),
+        ("output_suffix", wire::s(".ptx")),
+        (
+            "runtime",
+            wire::obj(vec![
+                ("options", wire::strs(&["-I{include:cccl}"])),
+                ("target", wire::s("ptx")),
+                ("headers", wire::strs(&["device"])),
+            ]),
+        ),
+    ]));
+    (toolkit, request)
+}
+
+#[test]
+fn an_include_folder_of_the_table_is_found_beside_the_loaded_library_and_named_in_the_options() {
+    let f = fixture("rt-include");
+    let (toolkit, request) = include_toolkit_and_request(&f);
+    let missing = toolkit.build(&request, &f.dir.join("store")).unwrap_err();
+    assert_eq!(missing.kind, Kind::ToolAbsent);
+    assert!(
+        missing.message.contains("cuda/std/version") && missing.message.contains("include, lib"),
+        "{}",
+        missing.message
+    );
+    fs::create_dir_all(f.dir.join("lib/cuda/std")).unwrap();
+    fs::write(f.dir.join("lib/cuda/std/version"), "").unwrap();
+    let built = toolkit.build(&request, &f.dir.join("store")).unwrap();
+    let image = fs::read_to_string(output_of(&built)).unwrap();
+    assert!(
+        image.contains(&format!(
+            "// options -I{}/lib ",
+            f.dir.canonicalize().unwrap().display()
+        )),
+        "{image}"
+    );
+}

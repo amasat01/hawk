@@ -3,6 +3,7 @@
 //! own build card. No compiler flag, header shape or tool identity crosses the door in either direction; the library states the
 //! machine once and every later call carries that answer back as given.
 use crate::backend::{target_name, unserved, Backend};
+use crate::device_build;
 use crate::facts::{self, CardSet, Failed};
 use aether_writers::contract::{Contract, Json};
 use aether_writers::refuse::{bad, Refusal};
@@ -95,9 +96,7 @@ fn stated_of<B: Backend>(
     let identity = match tool.and_then(|t| text(t, "identity")) {
         Some(found) => found.replace("||", " || "),
         None if backend.host_card_wanted() => "none || no compiler found || none".to_string(),
-        None if stated.get("runtime").is_some() => {
-            "none || the runtime compile library || none".to_string()
-        }
+        None if stated.get("runtime").is_some() => facts::device_runtime_compiler(cards)?,
         None => facts::device_text_compiler(cards)?,
     };
     let asked = stated.get("asked");
@@ -151,6 +150,8 @@ fn stated_of<B: Backend>(
             .and_then(|t| text(t, "release"))
             .or_else(|| stated.get("runtime").and_then(|r| text(r, "version")));
         put("device_release", release.map(|r| Json::Str(r.into())));
+        let runtime_only = tool.is_none() && stated.get("runtime").is_some();
+        put("device_runtime", runtime_only.then_some(Json::Bool(true)));
     }
     Ok((identity, Json::Obj(out).to_text()))
 }
@@ -201,13 +202,42 @@ pub fn with_facts<B: Backend>(backend: &B, request: &str) -> Result<String, Refu
         ))
     })?;
     let answer = facts_for(backend, own).map_err(Failed::refusal)?;
-    if !parts.iter().any(|(k, _)| k == "image_format") {
+    let named = parts.iter().find(|(k, _)| k == "image_format");
+    if let Some((_, Json::Str(format))) = named {
+        refuse_unloadable_ptx(own, format).map_err(Failed::refusal)?;
+    }
+    if named.is_none() {
         if let Some(format) = image_format_of(&answer)? {
             parts.push(("image_format".into(), Json::Str(format)));
         }
     }
     parts.push(("facts".into(), Json::Obj(vec![(target, Json::Str(answer))])));
     Ok(json.to_text())
+}
+
+/// Refuses a request that names the image format `Ptx` on a machine whose driver cannot load the PTX its compiler writes: the
+/// compiler (offline or runtime) is newer than the driver. A request that names no format gets `cubin` from the facts instead; a
+/// machine that states no compiler or no driver release has nothing to refuse by.
+fn refuse_unloadable_ptx(machine: &Json, format: &str) -> Result<(), Failed> {
+    let Some(stated) = machine.get("stated").filter(|_| format == "Ptx") else {
+        return Ok(());
+    };
+    let compiler = stated
+        .get("tools")
+        .and_then(|t| t.get("compiler"))
+        .and_then(|c| text(c, "release"))
+        .or_else(|| stated.get("runtime").and_then(|r| text(r, "version")));
+    let driver = stated.get("device").and_then(|d| text(d, "driver_release"));
+    let (Some(compiler), Some(driver)) = (compiler, driver) else {
+        return Ok(());
+    };
+    if device_build::compiler_newer(compiler, driver)? {
+        return Err(Failed::Bad(format!(
+            "lower: the request names the image format Ptx, but the device compiler {compiler} is newer than the driver {driver}, \
+             which cannot load its PTX; ask for Cubin or leave the format out"
+        )));
+    }
+    Ok(())
 }
 
 /// The form of device image the facts answer states (`Ptx`, `Cubin` or `Fatbin`), as the request names it; none for a facts answer
@@ -255,9 +285,7 @@ pub fn build<B: Backend>(
         return Err(toolkit::Refusal::new(toolkit::Kind::ToolAbsent, reason));
     }
     if !backend.host_card_wanted() {
-        return Err(refuse(
-            "build: this library builds no unit through the door yet",
-        ));
+        return build_device(backend, &req, machine, root);
     }
     let facts = parse(
         "the facts answer",
@@ -425,4 +453,156 @@ pub fn link<B: Backend>(
         ),
     ]);
     backend.toolkit()?.link(&request.to_text(), root)
+}
+
+/// Builds one device unit: the request is the host's (`name`, `text`, `machine`, `defines`) with the image format the lowering
+/// answered if it names one. The machine's facts state which tool makes the image (`compile_with`): the offline compiler gets the
+/// argv template, the runtime compile library the options and the header trees it serves from memory. The answer is the host's
+/// (`artifact`, `source`, `format`, `key`, `hit`, `seconds`, `files`, `figures`, `report`) with `embed`, the record the host link
+/// takes back, and a `link_recipe` that carries the recipe that embeds the image.
+fn device_unit(
+    req: &Json,
+    machine: &Json,
+    facts: &Json,
+) -> Result<(String, rcore::json::J, Vec<String>, String), toolkit::Refusal> {
+    let build = facts
+        .get("device_build")
+        .ok_or_else(|| refuse("the facts answer has no device_build"))?;
+    let form =
+        text(build, "image_format").ok_or_else(|| refuse("device_build states no image_format"))?;
+    if let Some(named) = text(req, "image_format").filter(|n| !n.eq_ignore_ascii_case(form)) {
+        return Err(refuse(format!(
+            "build: the request names the image format {named}, but this machine's compile makes {form}"
+        )));
+    }
+    let name = text(req, "name").ok_or_else(|| refuse("build: the request has no name"))?;
+    let defines: Vec<String> = strings(req.get("defines"))
+        .iter()
+        .map(|d| format!("-D{d}"))
+        .collect();
+    let key = text(machine, "key").unwrap_or("");
+    let compile = strings(build.get("compile"));
+    let mut members = vec![
+        ("name", wire::s(name)),
+        (
+            "text",
+            wire::s(text(req, "text").ok_or_else(|| refuse("build: the request has no text"))?),
+        ),
+        ("source_suffix", wire::s(".cu")),
+        ("output_suffix", wire::s(&format!(".{form}"))),
+        ("key_terms", wire::strs(&[key])),
+        ("keep_source", rcore::json::J::Bool(true)),
+        (
+            "embed",
+            wire::obj(vec![
+                ("symbol", wire::s(&format!("{name}__image"))),
+                ("size_symbol", wire::s(&format!("{name}__image_size"))),
+            ]),
+        ),
+    ];
+    if let Some(grammar) = text(build, "figures") {
+        members.push(("figures", wire::s(grammar)));
+    }
+    if text(build, "compile_with") == Some("runtime") {
+        let options: Vec<String> = compile
+            .iter()
+            .flat_map(|o| {
+                if o == "{defines}" {
+                    defines.clone()
+                } else {
+                    vec![o.clone()]
+                }
+            })
+            .collect();
+        members.push((
+            "runtime",
+            wire::obj(vec![
+                ("options", wire::strs(&options)),
+                ("target", wire::s(form)),
+                ("headers", wire::strs(&strings(build.get("headers")))),
+            ]),
+        ));
+    } else {
+        members.push(("template", wire::strs(&compile)));
+        members.push((
+            "lists",
+            wire::obj(vec![("{defines}", wire::strs(&defines))]),
+        ));
+    }
+    Ok((
+        name.to_string(),
+        wire::obj(members),
+        defines,
+        form.to_string(),
+    ))
+}
+
+/// The build of a device unit through the toolkit (see [`device_unit`]).
+fn build_device<B: Backend>(
+    backend: &B,
+    req: &Json,
+    machine: &Json,
+    root: &Path,
+) -> Result<String, toolkit::Refusal> {
+    let facts = parse(
+        "the facts answer",
+        &facts_for(backend, machine).map_err(|f| refuse(String::from(f)))?,
+    )?;
+    let (name, unit, defines, form) = device_unit(req, machine, &facts)?;
+    let answer = wire::parse(
+        "the toolkit's answer",
+        &backend.toolkit()?.build(&wire::render(&unit), root)?,
+    )?;
+    let image = format!("{name}.{form}");
+    let source = format!("{name}.cu");
+    let file = |member: &str| answer.get("files").and_then(|f| f.get(member)).cloned();
+    let null = || rcore::json::J::Null;
+    let recipe = facts
+        .get("device_build")
+        .and_then(|b| b.get("embed"))
+        .cloned()
+        .unwrap_or(Json::Null);
+    let link_recipe = Json::Obj(vec![
+        ("embed".into(), recipe),
+        (
+            "machine".into(),
+            Json::Str(text(machine, "key").unwrap_or("").into()),
+        ),
+        (
+            "defines".into(),
+            Json::Arr(defines.iter().map(|d| Json::Str(d.clone())).collect()),
+        ),
+    ]);
+    Ok(wire::render(&wire::obj(vec![
+        ("artifact", wire::s(&image)),
+        ("source", wire::s(&source)),
+        ("format", wire::s(&form)),
+        ("key", answer.get("key").cloned().unwrap_or_else(null)),
+        ("hit", answer.get("hit").cloned().unwrap_or_else(null)),
+        (
+            "seconds",
+            answer
+                .get("report")
+                .and_then(|r| r.get("seconds"))
+                .cloned()
+                .unwrap_or_else(null),
+        ),
+        (
+            "files",
+            wire::obj(vec![
+                (image.as_str(), file("output").unwrap_or_else(null)),
+                (source.as_str(), file("source").unwrap_or_else(null)),
+            ]),
+        ),
+        (
+            "figures",
+            answer.get("figures").cloned().unwrap_or_else(null),
+        ),
+        ("report", answer.get("report").cloned().unwrap_or_else(null)),
+        ("embed", answer.get("embed").cloned().unwrap_or_else(null)),
+        (
+            "link_recipe",
+            wire::parse("recipe", &link_recipe.to_text())?,
+        ),
+    ])))
 }

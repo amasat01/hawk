@@ -1,0 +1,14 @@
+[package]
+name = "osprey_cpu_door"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# the loadable object of the cpu OSPREY: libosprey_cpu.dylib / .so
+name = "osprey_cpu"
+crate-type = ["cdylib"]
+
+[dependencies]
+osprey_lowering = { path = "../../components/lowering" }
+osprey_cpu_lib = { package = "osprey_cpu", path = ".." }

@@ -51,11 +51,11 @@ pub(super) fn fusion_row(row: &PeerFusion) -> FusionRow {
 }
 
 /// The record a library states of a lowering it has done: the numbers it decided on, the fusion row of a chain (none for another
-/// body), whether its contraction runs directly, and the names of its units.
+/// body), whether its contraction runs directly, the setting keys its target declares, and the names of its units.
 pub(super) fn record(
     deciding: &BuildCard,
     fusion: Option<&FusionRow>,
-    direct_contraction: bool,
+    (direct_contraction, settings): (bool, &[String]),
     units: &[&UnitMeta],
 ) -> PeerRecord {
     PeerRecord {
@@ -68,6 +68,7 @@ pub(super) fn record(
             local_over_plane: row.local_over_plane,
         }),
         direct_contraction,
+        settings: settings.to_vec(),
         units: units.iter().map(|u| u.name.clone()).collect(),
     }
 }

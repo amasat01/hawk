@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["components/lowering", "components/toolkit", "osprey_cpu", "osprey_cuda", "replay", "binding/gen"]
+members = ["components/lowering", "components/toolkit", "osprey_cpu", "osprey_cpu/door", "osprey_cuda", "osprey_cuda/door", "replay", "binding/gen"]
 
 [workspace.package]
 version = "0.0.1"

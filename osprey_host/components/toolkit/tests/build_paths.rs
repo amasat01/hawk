@@ -215,3 +215,47 @@ fn an_unknown_table_member_in_a_request_is_a_named_refusal() {
     );
     assert_eq!(tk.state("nope", &dir).unwrap_err().kind, Kind::BadRequest);
 }
+
+#[test]
+fn a_request_with_no_template_is_refused_by_name_and_a_tool_that_writes_no_output_is_refused_with_its_argv_and_log(
+) {
+    let dir = scratch("no_output");
+    let silent = dir.join("silent");
+    script(
+        &silent,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo silent; exit 0; fi\necho 'nothing to do' >&2\n",
+    );
+    let env = Env::from_pairs(&[
+        ("FAKE_NVCC", silent.to_str().unwrap()),
+        ("FAKE_HOST", silent.to_str().unwrap()),
+        ("PATH", "/bin:/usr/bin"),
+    ]);
+    let tk = Toolkit::new(TABLE, &[], env).unwrap();
+    let request = |template: &[&str]| {
+        wire::render(&wire::obj(vec![
+            ("name", wire::s("kern")),
+            ("text", wire::s("int x;")),
+            ("output_suffix", wire::s(".ptx")),
+            ("template", wire::strs(template)),
+        ]))
+    };
+    let none = tk.build(&request(&[]), &dir.join("store")).unwrap_err();
+    assert!(
+        none.message.contains("has no argv template"),
+        "{}",
+        none.message
+    );
+    let silent_run = tk
+        .build(
+            &request(&["{compiler}", "-ptx", "{source}"]),
+            &dir.join("store"),
+        )
+        .unwrap_err();
+    assert!(
+        silent_run.message.contains("wrote no kern.ptx")
+            && silent_run.message.contains("silent -ptx")
+            && silent_run.message.contains("nothing to do"),
+        "{}",
+        silent_run.message
+    );
+}

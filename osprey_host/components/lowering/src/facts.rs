@@ -25,7 +25,7 @@ pub struct Probe {
 /// A machine the caller states, for a build that is not for the machine running: every field absent means the probed machine's
 /// value (or the card's default). The host target takes `isa`, `caches`, `host_profile` and the build settings `headers` (required),
 /// `opt_level`, `gcc_release` and `masked_call_witness`; the cuda target takes
-/// `device_arch` and `device_release`.
+/// `device_arch`, `device_release`, `driver_release` and `device_runtime`.
 #[derive(Default)]
 pub struct Stated {
     /// The instruction set name.
@@ -45,6 +45,8 @@ pub struct Stated {
     pub headers: Option<String>,
     /// The release of the GPU driver as `major.minor`, for a device build; none means the driver is not known.
     pub driver_release: Option<String>,
+    /// Whether the runtime compile library, not an offline compiler, is the device tool of the machine.
+    pub device_runtime: bool,
     /// The optimisation level of a build (`O0` to `O3`), in place of the default.
     pub opt_level: Option<String>,
     /// The release of a GCC compiler as `major.minor`, in place of the one its identity's version line ends with.
@@ -119,6 +121,7 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         "device_arch",
         "device_release",
         "driver_release",
+        "device_runtime",
         "headers",
         "opt_level",
         "gcc_release",
@@ -167,6 +170,11 @@ fn read_stated(text: &str) -> Result<Stated, String> {
         device_arch: name("device_arch")?,
         device_release: name("device_release")?,
         driver_release: name("driver_release")?,
+        device_runtime: match record.get("device_runtime") {
+            None => false,
+            Some(Json::Bool(runtime)) => *runtime,
+            Some(_) => return Err("stated machine: device_runtime is not a flag".into()),
+        },
         headers: name("headers")?,
         opt_level: name("opt_level")?,
         gcc_release: name("gcc_release")?,
@@ -203,6 +211,8 @@ struct IsaCard {
     default_gcc: String,
     /// The default profile with any other compiler.
     default_other: String,
+    /// The vector instruction set of a machine that states this instruction set and no vector set.
+    default_vector_isa: String,
     /// The vector instruction sets the card has a fusion row for.
     vector_isas: Vec<String>,
 }
@@ -465,6 +475,7 @@ fn load_isa(cards: &CardSet, file: &str, isa: &str) -> Result<IsaCard, String> {
         "gcc_routes_pow",
         "vector_math_needs_gcc",
         "default_profile",
+        "default_vector_isa",
         "fusion_host",
         "host_flags",
     ];
@@ -480,6 +491,7 @@ fn load_isa(cards: &CardSet, file: &str, isa: &str) -> Result<IsaCard, String> {
         vector_math_needs_gcc: flag_of(&card, file, "vector_math_needs_gcc")?,
         default_gcc: text_of(defaults, file, "gcc")?,
         default_other: text_of(defaults, file, "other")?,
+        default_vector_isa: text_of(&card, file, "default_vector_isa")?,
         vector_isas: match member(&card, file, "fusion_host")? {
             Json::Obj(rows) => rows.iter().map(|(name, _)| name.clone()).collect(),
             _ => return Err(format!("{file}: fusion_host is not an object")),
@@ -689,10 +701,12 @@ pub fn host_machine(
     };
     let cpu = load_cpu(cards)?;
     let isa = load_isa(cards, file, isa_name).map_err(|reason| cards.defect(file, reason))?;
-    let vector_isa = stated
-        .vector_isa
-        .clone()
-        .unwrap_or(probe.vector_isa.clone());
+    // the probe's vector set belongs to the probed instruction set: a stated instruction set takes its card's default
+    let vector_isa = match (&stated.vector_isa, &stated.isa) {
+        (Some(vector), _) => vector.clone(),
+        (None, Some(_)) => isa.default_vector_isa.clone(),
+        (None, None) => probe.vector_isa.clone(),
+    };
     if !isa.vector_isas.contains(&vector_isa) {
         return Err(Failed::Bad(format!(
             "{file} has no fusion row for the vector instruction set {vector_isa:?}"
@@ -808,7 +822,7 @@ pub(crate) fn arch_names(arch: &str) -> Result<(String, String), String> {
 
 /// A list of texts of a card, each with the architecture's names put in: `{sm}` is the physical name (`sm_80`) and `{virtual}` the
 /// virtual one (`compute_80`), both made from the number the stated architecture ends in (`sm_80`, `compute_80` or `80a`).
-fn flags_of(card: &Json, file: &str, key: &str, arch: &str) -> Result<Json, String> {
+pub(crate) fn flags_of(card: &Json, file: &str, key: &str, arch: &str) -> Result<Json, String> {
     let (sm, virtual_arch) = arch_names(arch)?;
     let mut flags = vec![];
     for flag in member(card, file, key)?.arr() {
@@ -877,6 +891,18 @@ pub fn device_text_compiler(cards: &CardSet) -> Result<String, Failed> {
     text_of(&card, file, "text_compiler").map_err(|reason| cards.defect(file, reason))
 }
 
+/// The compiler identity a device build is made under when the runtime compile library is the machine's device tool: the card's
+/// own statement of it (`runtime.compiler`), since the library has no executable to identify.
+///
+/// # Errors
+/// Refuses a card without the member.
+pub fn device_runtime_compiler(cards: &CardSet) -> Result<String, Failed> {
+    let file = "cuda_image.json";
+    let card = cards.json(file)?;
+    let record = device_build::runtime_record(&card, file)?;
+    text_of(record, file, "compiler").map_err(|reason| cards.defect(file, reason))
+}
+
 /// The compile command of a device build as data: the compiler's short name (the tool and its release), the PTX version its
 /// release writes, the form of image the build makes and the argv template of the compile that makes it (`device_build.rs`), the
 /// flags of an image of each format for the architecture and the recipe that embeds an image file in the unit library
@@ -902,6 +928,8 @@ fn device_build(
             "flags",
             "compile",
             "figures",
+            "figures_read",
+            "runtime",
             "image_format",
             "embed",
         ],
@@ -921,24 +949,44 @@ fn device_build(
         &release,
         stated.driver_release.as_deref(),
     )?;
-    let formats = member(&card, file, "flags")?;
-    let names = ["ptx", "cubin", "fatbin"];
-    closed(formats, file, &names)?;
-    let mut flags = vec![];
-    for name in names {
-        flags.push((name.to_string(), flags_of(formats, file, name, arch)?));
-    }
-    Ok(Json::Obj(vec![
+    let (kind, compile, flags) = if stated.device_runtime {
+        let record = device_build::runtime_record(&card, file)?;
+        let compile = device_build::runtime_compile(record, file, &form, arch)?;
+        (
+            "runtime",
+            compile,
+            device_build::runtime_flags(record, file, arch)?,
+        )
+    } else {
+        let formats = member(&card, file, "flags")?;
+        let names = ["ptx", "cubin", "fatbin"];
+        closed(formats, file, &names)?;
+        let mut flags = vec![];
+        for name in names {
+            flags.push((name.to_string(), flags_of(formats, file, name, arch)?));
+        }
+        let level = stated.opt_level.as_deref();
+        let compile = device_build::compile(&card, file, (&form, arch, level))?;
+        ("offline", compile, Json::Obj(flags))
+    };
+    let mut members = vec![
         ("compiler".into(), Json::Str(format!("{tool} {release}"))),
         ("ptx_isa".into(), number(isa)),
         ("image_format".into(), Json::Str(form.clone())),
+        ("compile_with".into(), Json::Str(kind.into())),
+        ("compile".into(), compile),
         (
-            "compile".into(),
-            device_build::compile(&card, file, (&form, arch, stated.opt_level.as_deref()))?,
+            "figures".into(),
+            device_build::figures_grammar(&card, file, kind, &form)?,
         ),
-        ("flags".into(), Json::Obj(flags)),
+        ("flags".into(), flags),
         ("embed".into(), embed_recipe(&card, file)?),
-    ]))
+    ];
+    if stated.device_runtime {
+        let record = device_build::runtime_record(&card, file)?;
+        members.push(("headers".into(), flags_of_names(record, file, "headers")?));
+    }
+    Ok(Json::Obj(members))
 }
 
 /// The machine record of a device build: no instruction set, no caches, the device card's select weights, the architecture the

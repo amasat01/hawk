@@ -37,7 +37,7 @@ fn host_machine(root: &std::path::Path) -> Option<String> {
         r#"{{"target": "host", "options": {{}}, "opt_level": "O1", "root": "{}"}}"#,
         root.display()
     );
-    let answer = tool::machine(&osprey_cpu::Cpu, &ask).unwrap();
+    let answer = tool::machine(&osprey_cpu_lib::Cpu, &ask).unwrap();
     let parsed = json::parse(&answer).unwrap();
     match parsed.get("tools_absent") {
         Some(J::Str(_)) => None,
@@ -52,7 +52,7 @@ fn build_unit(machine: &str, text: &str, defines: &[&str], root: &std::path::Pat
         r#"{{"name": "u", "text": {text:?}, "machine": {machine}, "defines": [{}]}}"#,
         list.join(", ")
     );
-    tool::build(&osprey_cpu::Cpu, &request, root).unwrap()
+    tool::build(&osprey_cpu_lib::Cpu, &request, root).unwrap()
 }
 
 /// Oracle: the compiler's own refusal of a mark nobody defined. A unit compiled with `MARK=7` makes a set text that reads `MARK`
@@ -68,7 +68,7 @@ fn the_defines_of_a_unit_reach_the_compile_of_its_set() {
     let linked = |defines: &[&str], name: &str| {
         let part = build_unit(&machine, unit, defines, &root);
         let parts = format!("[{part}]");
-        tool::link(&osprey_cpu::Cpu, &parts, set, name, &root)
+        tool::link(&osprey_cpu_lib::Cpu, &parts, set, name, &root)
     };
     assert!(linked(&["MARK=7"], "with.dylib").is_ok());
     let why = linked(&[], "without.dylib").unwrap_err();
@@ -112,15 +112,202 @@ fn a_device_text_is_written_under_the_cards_release_on_a_machine_with_no_device_
     let parsed = aether_writers::contract::Contract::parse(machine)
         .unwrap()
         .0;
-    let facts = tool::facts_for(&osprey_cuda::Cuda, &parsed).unwrap();
+    let facts = tool::facts_for(&osprey_cuda_lib::Cuda, &parsed).unwrap();
     let answer = json::parse(&facts).unwrap();
     let build = answer.get("device_build").unwrap();
     assert_eq!(build.get("compiler").and_then(J::str), Some("nvcc 12.6"));
     assert_eq!(build.get("ptx_isa").map(J::int), Some(85));
     let request = format!(r#"{{"name": "u", "text": "", "machine": {machine}}}"#);
-    let why = tool::build(&osprey_cuda::Cuda, &request, &store("absent")).unwrap_err();
+    let why = tool::build(&osprey_cuda_lib::Cuda, &request, &store("absent")).unwrap_err();
     assert!(
         why.message.contains("no device compiler"),
+        "{}",
+        why.message
+    );
+}
+
+/// A stated device machine: the compiler release (none: the runtime compile library stands in at 12.6) and the driver release.
+fn stated_device(compiler: Option<&str>, driver: &str) -> String {
+    let tools = match compiler {
+        Some(release) => format!(
+            r#"{{"compiler": {{"identity": "/usr/local/cuda/bin/nvcc||Cuda compilation tools, release {release}, V{release}.1||0", "release": "{release}"}}}}"#
+        ),
+        None => "{}".to_string(),
+    };
+    let runtime = if compiler.is_none() {
+        r#""runtime": {"library": "libnvrtc.so||runtime 12.6", "version": "12.6"},"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{"key": "k", "stated": {{"tools": {tools}, {runtime} "device": {{"arch": "sm_61", "driver_release": "{driver}"}}, "asked": {{"opt_level": "", "options": {{}}}}}}, "tools_absent": null}}"#
+    )
+}
+
+/// The lowering request `with_facts` gets for a stated device machine, naming `format` when given.
+fn lower_request(machine: &str, format: Option<&str>) -> String {
+    let named = format.map_or(String::new(), |f| format!(r#""image_format": "{f}", "#));
+    format!(r#"{{{named}"machine": {{"Device": {machine}}}}}"#)
+}
+
+/// The text of the member `key` of the JSON record `text`.
+fn member_text(text: &str, key: &str) -> Option<String> {
+    json::parse(text)
+        .unwrap()
+        .get(key)
+        .and_then(J::str)
+        .map(str::to_string)
+}
+
+/// A device compiler newer than the driver gets the image format Cubin when the request names none, and a request that names Ptx
+/// on it is refused by name; a driver as new as the compiler takes Ptx either way.
+#[test]
+fn a_ptx_the_driver_cannot_load_is_refused_and_an_unnamed_format_is_the_one_that_loads() {
+    shipped_beside_the_program();
+    let newer = stated_device(Some("12.9"), "12.6");
+    let unnamed = tool::with_facts(&osprey_cuda_lib::Cuda, &lower_request(&newer, None)).unwrap();
+    assert_eq!(
+        member_text(&unnamed, "image_format").as_deref(),
+        Some("Cubin")
+    );
+    let why =
+        tool::with_facts(&osprey_cuda_lib::Cuda, &lower_request(&newer, Some("Ptx"))).unwrap_err();
+    assert!(
+        why.reason.contains("12.9") && why.reason.contains("12.6") && why.reason.contains("Ptx"),
+        "{}",
+        why.reason
+    );
+    let named = tool::with_facts(
+        &osprey_cuda_lib::Cuda,
+        &lower_request(&newer, Some("Cubin")),
+    )
+    .unwrap();
+    assert_eq!(
+        member_text(&named, "image_format").as_deref(),
+        Some("Cubin")
+    );
+    let level = stated_device(Some("12.6"), "12.6");
+    for format in [None, Some("Ptx")] {
+        let text =
+            tool::with_facts(&osprey_cuda_lib::Cuda, &lower_request(&level, format)).unwrap();
+        assert_eq!(member_text(&text, "image_format").as_deref(), Some("Ptx"));
+    }
+}
+
+/// With no offline compiler and the runtime compile library present, the facts name the runtime compiler and state its own option
+/// list: virtual arch for PTX, the physical one for a CUBIN, no optimisation level and no assembler flags.
+#[test]
+fn the_runtime_compiler_states_its_own_label_and_options() {
+    shipped_beside_the_program();
+    let machine = aether_writers::contract::Contract::parse(&stated_device(None, "12.6"))
+        .unwrap()
+        .0;
+    let facts = aether_writers::contract::Contract::parse(
+        &tool::facts_for(&osprey_cuda_lib::Cuda, &machine).unwrap(),
+    )
+    .unwrap()
+    .0;
+    let build = facts.get("device_build").unwrap();
+    assert_eq!(
+        build.get("compiler").and_then(|c| c.str()),
+        Some("nvrtc 12.6")
+    );
+    assert_eq!(
+        build.get("compile_with").and_then(|c| c.str()),
+        Some("runtime")
+    );
+    let flags = |form: &str| build.get("flags").unwrap().get(form).unwrap().to_text();
+    let inf = "-D__builtin_inf()=__longlong_as_double(0x7ff0000000000000LL)";
+    assert_eq!(
+        flags("ptx"),
+        format!(r#"["-std=c++20","-arch=compute_61","-default-device","{inf}"]"#)
+    );
+    assert_eq!(
+        flags("cubin"),
+        format!(r#"["-std=c++20","-arch=sm_61","-default-device","{inf}"]"#)
+    );
+    assert!(build.get("flags").unwrap().get("fatbin").is_none());
+    let options = build.get("compile").unwrap().to_text();
+    assert!(
+        options.ends_with(r#""-I{include:cccl}","{defines}"]"#)
+            && !options.contains("-O")
+            && !options.contains("Xptxas"),
+        "{options}"
+    );
+}
+
+/// Writes the executable script `body` at `path`.
+fn script(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, body).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A device unit built through the door with a fake device compiler (proven against fakes, not a real nvcc): the machine states
+/// the compiler it found, the build writes the image the facts name, publishes it with the record the host link takes back, states
+/// the figures the compiler reported, and a second build runs no compiler.
+#[test]
+fn a_device_unit_is_built_through_the_door_with_the_found_compiler_and_a_second_build_runs_nothing()
+{
+    let root = store("device_unit");
+    let tools = root.join("tools");
+    let runs = tools.join("runs");
+    script(
+        &tools.join("nvcc"),
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in --version) echo 'Cuda compilation tools, release 12.6, V12.6.77'; exit 0;; \
+             --list-gpu-arch) printf 'compute_61\\ncompute_75\\n'; exit 0;; esac\necho run >> {runs}\n\
+             out=\"\"; prev=\"\"; for a in \"$@\"; do [ \"$prev\" = \"-o\" ] && out=\"$a\"; prev=\"$a\"; done\n\
+             printf '\\177ELFimage' > \"$out\"\n\
+             echo \"ptxas info    : Compiling entry function 'k' for 'sm_61'\" >&2\n\
+             echo '    8 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads' >&2\n\
+             echo 'ptxas info    : Used 32 registers, 360 bytes cmem[0]' >&2\n",
+            runs = runs.display()
+        ),
+    );
+    script(&tools.join("host/g++"), "#!/bin/sh\necho 'g++ fake'\n");
+    // the library reads the process environment once, when its tool side is first used
+    std::env::set_var("HAWK_NVCC", tools.join("nvcc"));
+    std::env::set_var("HAWK_NVCC_CCBIN", tools.join("host"));
+    let ask = r#"{"target": "cuda", "options": {"arch": "sm_61"}, "opt_level": ""}"#;
+    let machine = tool::machine(&osprey_cuda_lib::Cuda, ask).unwrap();
+    assert_eq!(member_text(&machine, "tools_absent"), None, "{machine}");
+    let request = format!(
+        r#"{{"name": "k", "text": "__global__ void k() {{}}", "machine": {machine}, "defines": ["WIDTH=4"]}}"#
+    );
+    let built = tool::build(&osprey_cuda_lib::Cuda, &request, &root).unwrap();
+    let answer = json::parse(&built).unwrap();
+    // no driver is stated here, so the image is the one that loads whatever the driver is
+    assert_eq!(answer.get("artifact").and_then(J::str), Some("k.cubin"));
+    assert_eq!(answer.get("format").and_then(J::str), Some("cubin"));
+    let image = answer
+        .get("files")
+        .unwrap()
+        .get("k.cubin")
+        .and_then(J::str)
+        .unwrap();
+    assert!(std::fs::read(image).unwrap().starts_with(b"\x7fELF"));
+    let figures = answer.get("figures").unwrap().get("k").unwrap();
+    assert_eq!(figures.get("regs").map(J::int), Some(32));
+    let embed = answer.get("embed").unwrap();
+    assert_eq!(embed.get("symbol").and_then(J::str), Some("k__image"));
+    assert!(answer
+        .get("link_recipe")
+        .unwrap()
+        .get("embed")
+        .unwrap()
+        .get("source")
+        .is_some());
+    let again =
+        json::parse(&tool::build(&osprey_cuda_lib::Cuda, &request, &root).unwrap()).unwrap();
+    assert!(matches!(again.get("hit"), Some(J::Bool(true))));
+    assert_eq!(std::fs::read_to_string(&runs).unwrap().lines().count(), 1);
+    // a request that names the other format is refused by name
+    let other = request.replace(r#""defines""#, r#""image_format": "Ptx", "defines""#);
+    let why = tool::build(&osprey_cuda_lib::Cuda, &other, &root).unwrap_err();
+    assert!(
+        why.message.contains("names the image format Ptx"),
         "{}",
         why.message
     );

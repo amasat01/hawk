@@ -93,6 +93,43 @@ fn x86_answers_follow_the_compiler() {
     );
 }
 
+/// The vector instruction set the host answer states when `stated` names the instruction set and the probe is `probe`.
+fn vector_set(probe: &Probe, stated: Stated) -> String {
+    let text = answer(
+        &shipped(),
+        "host",
+        &identity("clang version 1"),
+        probe,
+        &stated,
+    )
+    .unwrap();
+    let after = text.split(r#""vector_isa":""#).nth(1).unwrap();
+    after.split('"').next().unwrap().to_string()
+}
+
+#[test]
+fn a_stated_instruction_set_takes_its_own_default_vector_set_never_the_probes() {
+    let states = |isa: &str, vector: Option<&str>| Stated {
+        isa: Some(isa.into()),
+        vector_isa: vector.map(Into::into),
+        ..roots()
+    };
+    // a machine that probes as arm64 with neon is asked about x86, and the other way round
+    let arm_probe = machine("arm64");
+    let x86_probe = Probe {
+        vector_isa: "avx512".into(),
+        ..machine("x86_64")
+    };
+    assert_eq!(vector_set(&arm_probe, states("x86_64", None)), "sse2");
+    assert_eq!(vector_set(&x86_probe, states("arm64", None)), "neon");
+    // a stated vector set is taken as stated, and an unstated machine is the probe whole
+    assert_eq!(
+        vector_set(&arm_probe, states("x86_64", Some("avx2"))),
+        "avx2"
+    );
+    assert_eq!(vector_set(&x86_probe, roots()), "avx512");
+}
+
 #[test]
 fn caches_are_the_probes() {
     let caches = Caches {
@@ -326,10 +363,10 @@ fn a_device_answer_states_the_compile_command_as_data() {
     .unwrap();
     // no driver is stated, so the image is a cubin, and its compile asks for the resource figures
     let want = concat!(
-        r#""device_build":{"compiler":"nvcc 12.9","ptx_isa":88,"image_format":"cubin","compile":["#,
+        r#""device_build":{"compiler":"nvcc 12.9","ptx_isa":88,"image_format":"cubin","compile_with":"offline","compile":["#,
         r#""{compiler}","-ccbin","{host_compiler}","-cubin","-std=c++20","-arch=sm_80","-O3","-Xptxas","-O3","-Xptxas","-v","#,
         r#""-I","{include:aether}","-I","{include:eagle}","{defines}","-I{include:facts}","#,
-        r#""-MD","-MF","{depfile}","{source}","-o","{output}"],"flags":{"#,
+        r#""-MD","-MF","{depfile}","{source}","-o","{output}"],"figures":"ptxas_info","flags":{"#,
         r#""ptx":["-ptx","-std=c++20","-arch=sm_80","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets"],"#,
         r#""cubin":["-cubin","-std=c++20","-arch=sm_80","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets"],"#,
         r#""fatbin":["-fatbin","-std=c++20","-O3","-Xptxas","-O3","-Wno-deprecated-gpu-targets","-gencode","arch=compute_80,code=[sm_80,compute_80]"]},"embed":{"compile":["{host_compiler}","#

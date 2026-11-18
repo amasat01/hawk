@@ -331,7 +331,7 @@ fn facts_answer(
     let dir = Path::new(osprey_replay::CPU_FACTS);
     let answer = facts::answer(
         dir,
-        &osprey_cpu::Cpu,
+        &osprey_cpu_lib::Cpu,
         COMPILERS[gcc as usize],
         &facts::probe(),
         &stated,
@@ -1249,9 +1249,9 @@ fn fusion_of(call: &J) -> Option<FusionRow> {
 /// instruction set document of the host's vector instruction set) with the recorded row in place of the shipped one.
 fn call_cards(call: &J, device: bool) -> Vec<(String, String)> {
     let shipped = if device {
-        osprey_cuda::Cuda.card_names()
+        osprey_cuda_lib::Cuda.card_names()
     } else {
-        osprey_cpu::Cpu.card_names()
+        osprey_cpu_lib::Cpu.card_names()
     };
     // a library is asked only about the documents it ships
     let mut cards: Vec<(String, String)> = stated_cards()
@@ -1270,9 +1270,9 @@ fn call_cards(call: &J, device: bool) -> Vec<(String, String)> {
         dir,
         &cards,
         if device {
-            osprey_cuda::Cuda.card_names()
+            osprey_cuda_lib::Cuda.card_names()
         } else {
-            osprey_cpu::Cpu.card_names()
+            osprey_cpu_lib::Cpu.card_names()
         },
     );
     let (name, vector, shipped) = if device {
@@ -1331,8 +1331,10 @@ fn with_fusion_row(
     use aether_writers::contract::Json;
     let base = match cards.iter().find(|(stated, _)| stated == name) {
         Some((_, text)) => text.clone(),
-        None if name == "cuda.json" => facts::shipped_card(&osprey_cuda::Cuda, dir, name).ok()?,
-        None => facts::shipped_card(&osprey_cpu::Cpu, dir, name).ok()?,
+        None if name == "cuda.json" => {
+            facts::shipped_card(&osprey_cuda_lib::Cuda, dir, name).ok()?
+        }
+        None => facts::shipped_card(&osprey_cpu_lib::Cpu, dir, name).ok()?,
     };
     let mut document = aether_writers::contract::Contract::parse(&base).ok()?.0;
     let Json::Obj(top) = &mut document else {
@@ -1451,9 +1453,9 @@ fn ask_library(ctx: *mut raptor_ir::record::Ctx, request: &str) -> Result<String
         Target::Host
     }));
     let done = if device {
-        osprey_lowering::lower::lower(&osprey_cuda::Cuda, ctx, request, facts_dir)
+        osprey_lowering::lower::lower(&osprey_cuda_lib::Cuda, ctx, request, facts_dir)
     } else {
-        osprey_lowering::lower::lower(&osprey_cpu::Cpu, ctx, request, facts_dir)
+        osprey_lowering::lower::lower(&osprey_cpu_lib::Cpu, ctx, request, facts_dir)
     };
     match done {
         Ok(answer) => Ok(answer.to_json()),
@@ -1946,7 +1948,7 @@ fn device_facts(call: &J, cards: &[(String, String)]) -> Result<String, String> 
     };
     facts::answer(
         dir,
-        &osprey_cuda::Cuda,
+        &osprey_cuda_lib::Cuda,
         DEVICE_COMPILER,
         &facts::probe(),
         &machine,
@@ -2941,7 +2943,7 @@ fn replay_staged(
 
 /// A context holding the call's nodes, and the handles the record's node numbers stand for.
 fn load(call: &J) -> Result<(*mut raptor_ir::record::Ctx, Vec<u32>), String> {
-    let table = osprey_cpu::table();
+    let table = osprey_cpu_lib::table();
     let c = (table.ctx_new)();
     declare(c, &manifests(call)).map_err(|e| format!("declare: {e}"))?;
     let twin = auto_as_segmented().then(|| segmented_twin(call));
@@ -2952,7 +2954,7 @@ fn load(call: &J) -> Result<(*mut raptor_ir::record::Ctx, Vec<u32>), String> {
 
 /// Frees a context of the library.
 fn osprey_host_free(c: *mut raptor_ir::record::Ctx) {
-    let table = osprey_cpu::table();
+    let table = osprey_cpu_lib::table();
     unsafe { (table.ctx_free)(c) };
 }
 

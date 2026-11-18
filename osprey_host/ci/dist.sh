@@ -10,7 +10,7 @@ case $(uname -s) in Darwin) ext=dylib ;; *) ext=so ;; esac
 door=$(sed -n 's/^#define OB_ABI \([0-9]*\).*/\1/p' include/osprey.h)
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 for name in osprey_cpu osprey_cuda; do
-  cargo build --release -j "$JOBS" -p $name
+  cargo build --release -j "$JOBS" -p ${name}_door
   folder=dist/$name
   rm -rf "$folder"; mkdir -p "$folder"
   cp target/release/lib$name.$ext "$folder/"

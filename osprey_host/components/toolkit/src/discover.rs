@@ -59,8 +59,7 @@ impl Env {
     /// The folders of `PATH`, in order.
     fn path_dirs(&self) -> Vec<PathBuf> {
         self.get("PATH")
-            .map(|p| std::env::split_paths(p).collect())
-            .unwrap_or_default()
+            .map_or_else(Vec::new, |p| std::env::split_paths(p).collect())
     }
 }
 
@@ -320,31 +319,39 @@ pub fn forget_probes() {
     }
 }
 
-/// The standard output of `<path> <args>`, `None` when it cannot run or exits non-zero; a success is memoised per executable.
-fn probe(path: &Path, args: &[String], env: &Env) -> Option<String> {
-    let meta = std::fs::metadata(path).ok()?;
+/// The standard output of `<path> <args>`, or why it did not run: the operating system's error when it could not be started,
+/// else the exit code and the tool's own complaint. A success is memoised per executable.
+fn probe(path: &Path, args: &[String], env: &Env) -> Result<String, String> {
+    let unreadable = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let meta = std::fs::metadata(path).map_err(|e| unreadable(&e))?;
     let mtime = meta
         .modified()
-        .ok()?
+        .map_err(|e| unreadable(&e))?
         .duration_since(UNIX_EPOCH)
-        .ok()?
+        .map_err(|e| unreadable(&e))?
         .as_nanos();
     let key = (path.to_path_buf(), meta.len(), mtime, args.to_vec());
-    if let Some(hit) = PROBES.lock().ok()?.as_ref().and_then(|m| m.get(&key)) {
-        return Some(hit.clone());
+    let remembered = PROBES
+        .lock()
+        .ok()
+        .and_then(|m| m.as_ref().and_then(|m| m.get(&key).cloned()));
+    if let Some(hit) = remembered {
+        return Ok(hit);
     }
     let mut command = vec![path.display().to_string()];
     command.extend_from_slice(args);
-    let done = run::run(&command, env.vars(), 0, run::PROBE_SECONDS).ok()?;
+    let done = run::run(&command, env.vars(), 0, run::PROBE_SECONDS).map_err(|r| r.message)?;
     if done.code != Some(0) {
-        return None;
+        let code = done
+            .code
+            .map_or("no exit code".to_string(), |c| format!("exit {c}"));
+        return Err(format!("{code}: {}", done.stderr.trim()));
     }
-    PROBES
-        .lock()
-        .ok()?
-        .get_or_insert_with(HashMap::new)
-        .insert(key, done.stdout.clone());
-    Some(done.stdout)
+    if let Ok(mut memo) = PROBES.lock() {
+        memo.get_or_insert_with(HashMap::new)
+            .insert(key, done.stdout.clone());
+    }
+    Ok(done.stdout)
 }
 
 /// The identity of the tool at `path` and the facts of its probes, or the reason it cannot be asked.
@@ -353,12 +360,15 @@ fn describe(path: &Path, spec: &J, env: &Env) -> Done<Result<Tool, String>> {
         Some(_) => wire::texts(spec, "identity_args", "tool")?,
         None => vec!["--version".to_string()],
     };
-    let Some(text) = probe(path, &args, env) else {
-        return Ok(Err(format!(
-            "{} was found but `{}` does not run",
-            path.display(),
-            args.join(" ")
-        )));
+    let text = match probe(path, &args, env) {
+        Ok(text) => text,
+        Err(why) => {
+            return Ok(Err(format!(
+                "{} was found but `{}` does not run ({why})",
+                path.display(),
+                args.join(" ")
+            )))
+        }
     };
     let first = text.lines().next().unwrap_or("").trim();
     let digest = &sha256::hex(text.as_bytes())[..16];
@@ -366,7 +376,7 @@ fn describe(path: &Path, spec: &J, env: &Env) -> Done<Result<Tool, String>> {
     let mut facts = vec![];
     for p in spec.get("probes").map_or(&[][..], J::arr) {
         let name = wire::text(p, "name", "probe")?;
-        let answer = probe(path, &wire::texts(p, "args", "probe")?, env);
+        let answer = probe(path, &wire::texts(p, "args", "probe")?, env).ok();
         facts.push((name.to_string(), read_probe(p, answer.as_deref())?));
     }
     Ok(Ok(Tool {

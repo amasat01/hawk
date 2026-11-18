@@ -4,6 +4,7 @@
   "gcc_routes_pow": true,
   "vector_math_needs_gcc": false,
   "default_profile": {"gcc": "native-vector-math", "other": "native-vector-math"},
+  "default_vector_isa": "neon",
   "fusion_host": {
     "neon": {"regs_base": 0, "regs_file": 32, "launch_us": null, "plane_us_per_byte": null, "local_over_plane": null}
   },

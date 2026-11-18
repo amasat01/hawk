@@ -4,7 +4,7 @@
 //! `{host_compiler}` (the compiler of the set's host objects, which the device compiler is told with `-ccbin` so that one C++
 //! runtime serves the whole library), `{source}`, `{output}`, `{depfile}`, `{include:aether}`, `{include:eagle}`, `{include:facts}`
 //! and `{defines}`, as the host compile writes them; `{defines}` stands for one `-D<define>` element for each define and for nothing when there is none.
-use crate::facts::{arch_names, member, names_of, text_of, Failed};
+use crate::facts::{arch_names, closed, flags_of, member, names_of, text_of, Failed};
 use aether_writers::contract::Json;
 
 /// The release `major.minor` of a stated compiler or driver as a pair; `what` names it in the refusal.
@@ -16,6 +16,12 @@ fn release_pair(text: &str, what: &str) -> Result<(u32, u32), Failed> {
             "stated machine: {what} {text:?} is not major.minor"
         ))),
     }
+}
+
+/// Whether the compiler of release `release` is newer than the driver of release `driver`: the PTX it writes then carries an ISA
+/// version the driver's loader does not take.
+pub(crate) fn compiler_newer(release: &str, driver: &str) -> Result<bool, Failed> {
+    Ok(release_pair(release, "device_release")? > release_pair(driver, "driver_release")?)
 }
 
 /// The image form the build makes. A virtual architecture (`compute_<N>`) has no binary image, so it takes the card's
@@ -36,9 +42,7 @@ pub(crate) fn image_form(
         match driver {
             None => "driver_unknown",
             Some(driver) => {
-                if release_pair(release, "device_release")?
-                    > release_pair(driver, "driver_release")?
-                {
+                if compiler_newer(release, driver)? {
                     "compiler_newer"
                 } else {
                     "otherwise"
@@ -91,4 +95,62 @@ pub(crate) fn compile(
         }
     }
     Ok(Json::Arr(argv.into_iter().map(Json::Str).collect()))
+}
+
+/// The record of the card that describes the runtime compile library as the tool of a device build.
+pub(crate) fn runtime_record<'a>(card: &'a Json, file: &str) -> Result<&'a Json, Failed> {
+    let record = member(card, file, "runtime")?;
+    closed(record, file, &["compiler", "flags", "compile", "headers"])?;
+    Ok(record)
+}
+
+/// The flags of the runtime compile for each format it can write (`ptx` and `cubin`: it cannot write a fatbin), for `arch`.
+pub(crate) fn runtime_flags(record: &Json, file: &str, arch: &str) -> Result<Json, Failed> {
+    let formats = member(record, file, "flags")?;
+    closed(formats, file, &["ptx", "cubin"])?;
+    let mut flags = vec![];
+    for name in ["ptx", "cubin"] {
+        flags.push((name.to_string(), flags_of(formats, file, name, arch)?));
+    }
+    Ok(Json::Obj(flags))
+}
+
+/// The options template of the runtime compile of `form` for `arch`: the card's `compile` with `{flags}` standing for the flags of
+/// the form. The places `{include:cccl}` and `{defines}` are left for the caller.
+pub(crate) fn runtime_compile(
+    record: &Json,
+    file: &str,
+    form: &str,
+    arch: &str,
+) -> Result<Json, Failed> {
+    let flags = runtime_flags(record, file, arch)?;
+    let mut options = vec![];
+    for element in names_of(record, file, "compile")? {
+        match (element.as_str(), flags.get(form)) {
+            ("{flags}", Some(list)) => options.extend(list.arr().iter().cloned()),
+            ("{flags}", None) => {
+                return Err(Failed::Bad(format!(
+                    "facts: the runtime compile writes no {form} image"
+                )))
+            }
+            _ => options.push(Json::Str(element)),
+        }
+    }
+    Ok(Json::Arr(options))
+}
+
+/// The grammar the figures of a `form` image are read by, for the tool kind `kind` (`offline` or `runtime`), from the card's
+/// `figures_read`; null for a form whose compile states none.
+pub(crate) fn figures_grammar(
+    card: &Json,
+    file: &str,
+    kind: &str,
+    form: &str,
+) -> Result<Json, Failed> {
+    let kinds = member(card, file, "figures_read")?;
+    Ok(member(kinds, file, kind)
+        .map_err(Failed::Card)?
+        .get(form)
+        .cloned()
+        .unwrap_or(Json::Null))
 }
