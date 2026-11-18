@@ -226,3 +226,23 @@ fn a_place_nobody_fills_is_refused_by_name() {
         refused.message
     );
 }
+
+#[test]
+fn a_define_in_a_list_moves_the_key_of_the_build() {
+    let tk = toolkit(&[FACTS, SERVED]);
+    let machine = tk.tools().unwrap();
+    let with = |defines: &[&str]| {
+        let request = wire::obj(vec![
+            ("name", wire::s("u")),
+            ("text", wire::s("")),
+            ("template", wire::strs(&["{compiler}", "{defines}"])),
+            ("lists", wire::obj(vec![("{defines}", wire::strs(defines))])),
+        ]);
+        tk.job_key(&Job::from_request(&request).unwrap(), &machine)
+    };
+    assert_ne!(with(&["-DHAWK_FAST_ENTRIES=1"]), with(&[]));
+    assert_eq!(
+        with(&["-DHAWK_FAST_ENTRIES=1"]),
+        with(&["-DHAWK_FAST_ENTRIES=1"])
+    );
+}

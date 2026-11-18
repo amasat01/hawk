@@ -24,6 +24,10 @@ pub trait Backend: Default + Sync + 'static {
     fn target(&self) -> Target;
     /// The data documents the library ships and a caller may replace for one call.
     fn card_names(&self) -> &'static [&'static str];
+    /// The keys of the options a caller may state for this target (`options` of a machine ask); any other key is refused by name.
+    fn option_names(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// The machine record of the target for a compiler identity, from the library's own documents.
     fn machine(
         &self,

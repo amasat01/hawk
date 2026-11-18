@@ -129,6 +129,9 @@ pub struct Settings {
     /// it adds one unit per branch and the classify unit; any other kernel (no automatic group, a dynamic selector, a chain or fused
     /// body, several groups) is built as if it were not asked, and that is not an error.
     pub auto_segmented_set: bool,
+    /// Whether a device unit builds its fast entry points: the unit text gates them behind a macro, which the device compile defines
+    /// when this is set.
+    pub fast_entries: bool,
 }
 
 /// One axis the caller declares: its label and extent, each when it has one (a runtime axis has no extent).
@@ -404,6 +407,9 @@ pub struct UnitAnswer {
     pub texts: Vec<TargetText>,
     /// The unit's meta.
     pub meta: UnitMeta,
+    /// The defines the unit's compile for a target needs, as `(target, define)` pairs: a text that gates code behind a macro the
+    /// request's settings turn on. The caller hands them to that target's build.
+    pub defines: Vec<(Target, String)>,
 }
 
 /// The answer: the units the kernel lowers to, in order, the library record, and the C source of the meta of all the units (the
@@ -1080,6 +1086,10 @@ impl Settings {
                 Some(f) => flag_of(f, "auto_segmented_set")?,
                 None => false,
             },
+            fast_entries: match keys.opt("fast_entries") {
+                Some(f) => flag_of(f, "fast_entries")?,
+                None => false,
+            },
         };
         keys.done()?;
         Ok(settings)
@@ -1122,6 +1132,9 @@ impl Settings {
         }
         if self.auto_segmented_set {
             o.push(("auto_segmented_set".into(), Json::Bool(true)))
+        }
+        if self.fast_entries {
+            o.push(("fast_entries".into(), Json::Bool(true)))
         }
         Json::Obj(o)
     }
@@ -1340,13 +1353,26 @@ impl KernelAnswer {
             Json::Obj(o)
         };
         let unit = |u: &UnitAnswer| {
-            Json::Obj(vec![
+            let mut o = vec![
                 (
                     "texts".into(),
                     Json::Arr(u.texts.iter().map(text).collect()),
                 ),
                 ("meta".into(), u.meta.put()),
-            ])
+            ];
+            if !u.defines.is_empty() {
+                let mut by_target: Vec<(String, Json)> = vec![];
+                for (target, define) in &u.defines {
+                    let name = crate::backend::target_name(*target);
+                    match by_target.iter_mut().find(|(n, _)| n == name) {
+                        Some((_, Json::Arr(list))) => list.push(Json::Str(define.clone())),
+                        _ => by_target
+                            .push((name.into(), Json::Arr(vec![Json::Str(define.clone())]))),
+                    }
+                }
+                o.push(("defines".into(), Json::Obj(by_target)));
+            }
+            Json::Obj(o)
         };
         Json::Obj(vec![
             ("v".into(), Json::Num(REQUEST_VERSION.to_string())),
@@ -1410,9 +1436,19 @@ impl KernelAnswer {
         };
         let read_unit = |j: &Json| -> Result<UnitAnswer, Refusal> {
             let mut k = Keys::of(j, "unit")?;
+            let mut defines = vec![];
+            if let Some(Json::Obj(by_target)) = k.opt("defines") {
+                for (name, list) in by_target {
+                    let target = member_of(&TARGETS, &Json::Str(name.clone()), "defines")?;
+                    for define in list_of(list, "defines", |d| text_of(d, "defines"))? {
+                        defines.push((target, define));
+                    }
+                }
+            }
             let unit = UnitAnswer {
                 texts: list_of(k.req("texts")?, "texts", read_text)?,
                 meta: UnitMeta::get(k.opt("meta"), "meta")?,
+                defines,
             };
             k.done()?;
             Ok(unit)
@@ -1572,6 +1608,22 @@ mod tests {
             .replace("\"Host\"", "\"Device\"")
             .replace("\"image_format\":\"Ptx\",", "");
         assert!(KernelRequest::from_json(&device).is_err());
+    }
+
+    #[test]
+    fn the_fast_entry_setting_is_a_flag_that_is_written_only_when_set() {
+        let on =
+            Settings::read(&Json::Obj(vec![("fast_entries".into(), Json::Bool(true))])).unwrap();
+        assert!(on.fast_entries);
+        assert!(on.write().to_text().contains("\"fast_entries\":true"));
+        let off = Settings::read(&Json::Obj(vec![])).unwrap();
+        assert!(!off.fast_entries && !off.write().to_text().contains("fast_entries"));
+        let why = Settings::read(&Json::Obj(vec![(
+            "fast_entries".into(),
+            Json::Num("1".into()),
+        )]))
+        .unwrap_err();
+        assert!(why.reason.contains("fast_entries"), "{}", why.reason);
     }
 
     #[test]

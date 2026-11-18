@@ -50,6 +50,9 @@ impl Backend for Cuda {
     fn card_names(&self) -> &'static [&'static str] {
         &CARDS
     }
+    fn option_names(&self) -> &'static [&'static str] {
+        &["arch", "literal_table"]
+    }
     fn machine(
         &self,
         cards: &CardSet,

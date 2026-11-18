@@ -4,7 +4,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a panic is the failure
 use rcore::json::J;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use toolkit::wire;
 
@@ -16,11 +15,24 @@ pub fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// Writes an executable script.
+/// Writes an executable script, through a child process.
 pub fn script(path: &Path, body: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, body).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    // A child writes the file: this process, whose sibling test threads fork tools, never holds a write handle to an
+    // executable. A fork made while such a handle is open keeps it until its own exec, and running the script meanwhile
+    // fails with "text file busy" on Linux.
+    let mut writer = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut writer.stdin.take().unwrap(), body.as_bytes()).unwrap();
+    assert!(
+        writer.wait().unwrap().success(),
+        "writing {} failed",
+        path.display()
+    );
 }
 
 /// A fake compiler: answers its version, counts each real run in `dir/runs`, sleeps `dir/sleep` seconds when that file exists,

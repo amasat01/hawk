@@ -881,6 +881,7 @@ pub(super) fn stages(
                 UnitAnswer {
                     texts: vec![],
                     meta: source.clone(),
+                    defines: vec![],
                 },
             );
             0

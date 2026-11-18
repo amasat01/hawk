@@ -247,6 +247,24 @@ fn a_setting_the_target_does_not_declare_is_refused_by_name_and_the_target_that_
 }
 
 #[test]
+fn the_fast_entry_setting_is_refused_by_the_host_card_by_name_and_taken_by_the_device_card() {
+    // the host library has no fast entry points to build, so its card does not declare the setting and a host-only build is told so
+    let (ctx, sink) = plain_kernel();
+    let mut host = request_for(Target::Host, sink);
+    host.settings.fast_entries = true;
+    let why = lowered(ctx, &host).unwrap_err();
+    assert!(
+        why.contains("\"fast_entries\"") && why.contains("declared by none"),
+        "{why}"
+    );
+    let mut device = request_for(Target::Device, sink);
+    device.settings.fast_entries = true;
+    lowered(ctx, &device).unwrap();
+    // SAFETY: the context is not used again.
+    unsafe { rx_ctx_free(ctx) };
+}
+
+#[test]
 fn a_companion_takes_a_setting_the_leader_declares_and_refuses_one_that_neither_declares() {
     let (ctx, sink) = plain_kernel();
     let mut lead = request_for(Target::Device, sink);

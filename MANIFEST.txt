@@ -29,7 +29,7 @@ Every file with its line count (this file excluded):
       1  osprey_host/clippy.toml
      12  osprey_host/components/lowering/Cargo.toml
      55  osprey_host/components/lowering/build_support.rs
-     80  osprey_host/components/lowering/src/backend.rs
+     84  osprey_host/components/lowering/src/backend.rs
     156  osprey_host/components/lowering/src/device_build.rs
     651  osprey_host/components/lowering/src/door.rs
    1244  osprey_host/components/lowering/src/facts.rs
@@ -45,20 +45,20 @@ Every file with its line count (this file excluded):
      57  osprey_host/components/lowering/src/lower/fused.rs
     154  osprey_host/components/lowering/src/lower/image.rs
     334  osprey_host/components/lowering/src/lower/links.rs
-    171  osprey_host/components/lowering/src/lower/merge.rs
+    174  osprey_host/components/lowering/src/lower/merge.rs
     871  osprey_host/components/lowering/src/lower/meta_c.rs
-   1178  osprey_host/components/lowering/src/lower/meta_fill.rs
-   1706  osprey_host/components/lowering/src/lower/mod.rs
+   1179  osprey_host/components/lowering/src/lower/meta_fill.rs
+   1745  osprey_host/components/lowering/src/lower/mod.rs
      89  osprey_host/components/lowering/src/lower/peer.rs
     121  osprey_host/components/lowering/src/lower/placed.rs
-   1918  osprey_host/components/lowering/src/lower/request.rs
+   1970  osprey_host/components/lowering/src/lower/request.rs
     377  osprey_host/components/lowering/src/lower/segment.rs
     116  osprey_host/components/lowering/src/lower/stage_block.rs
     555  osprey_host/components/lowering/src/lower/stages.rs
     923  osprey_host/components/lowering/src/lower/unit_meta.rs
     246  osprey_host/components/lowering/src/lower/warp.rs
     153  osprey_host/components/lowering/src/testing.rs
-    704  osprey_host/components/lowering/src/tool.rs
+    763  osprey_host/components/lowering/src/tool.rs
      15  osprey_host/components/lowering/tests/data/gemm_kernels.json
      23  osprey_host/components/lowering/tests/data/two_groups.dump
      14  osprey_host/components/toolkit/Cargo.lock
@@ -66,7 +66,7 @@ Every file with its line count (this file excluded):
     235  osprey_host/components/toolkit/DOOR_ADDITIONS.md
       3  osprey_host/components/toolkit/clippy.toml
       2  osprey_host/components/toolkit/rustfmt.toml
-    228  osprey_host/components/toolkit/src/argv_tests.rs
+    248  osprey_host/components/toolkit/src/argv_tests.rs
     526  osprey_host/components/toolkit/src/compile.rs
     311  osprey_host/components/toolkit/src/device.rs
     562  osprey_host/components/toolkit/src/discover.rs
@@ -89,7 +89,7 @@ Every file with its line count (this file excluded):
     174  osprey_host/components/toolkit/src/wire.rs
     183  osprey_host/components/toolkit/src/witness.rs
     261  osprey_host/components/toolkit/tests/build_paths.rs
-    155  osprey_host/components/toolkit/tests/common/mod.rs
+    167  osprey_host/components/toolkit/tests/common/mod.rs
      70  osprey_host/components/toolkit/tests/data/gcc_masked_call.cpp
     127  osprey_host/components/toolkit/tests/device_policy.rs
     314  osprey_host/components/toolkit/tests/discovery.rs
@@ -112,7 +112,7 @@ Every file with its line count (this file excluded):
      31  osprey_host/osprey_cpu/facts/tools.json
      28  osprey_host/osprey_cpu/facts/x86.json
      15  osprey_host/osprey_cpu/osprey.json
-    104  osprey_host/osprey_cpu/src/lib.rs
+    107  osprey_host/osprey_cpu/src/lib.rs
      22  osprey_host/osprey_cuda/Cargo.toml
      18  osprey_host/osprey_cuda/build.rs
      14  osprey_host/osprey_cuda/door/Cargo.toml
@@ -122,15 +122,15 @@ Every file with its line count (this file excluded):
      65  osprey_host/osprey_cuda/facts/cuda_image.json
      88  osprey_host/osprey_cuda/facts/tools.json
      15  osprey_host/osprey_cuda/osprey.json
-    152  osprey_host/osprey_cuda/src/lib.rs
+    155  osprey_host/osprey_cuda/src/lib.rs
      32  osprey_host/replay/Cargo.toml
-   3573  osprey_host/replay/src/bin/kreplay.rs
+   3574  osprey_host/replay/src/bin/kreplay.rs
    1235  osprey_host/replay/src/bin/kreplay/derived.rs
    1319  osprey_host/replay/src/bin/kreplay/meta.rs
    1466  osprey_host/replay/src/bin/treplay.rs
      82  osprey_host/replay/src/lib.rs
     209  osprey_host/replay/tests/auto_set.rs
-    276  osprey_host/replay/tests/build_over_libraries.rs
+    294  osprey_host/replay/tests/build_over_libraries.rs
      13  osprey_host/replay/tests/common/mod.rs
      49  osprey_host/replay/tests/constants.rs
       9  osprey_host/replay/tests/data/compensates.json
@@ -165,7 +165,7 @@ Every file with its line count (this file excluded):
     290  osprey_host/replay/tests/stage_records.rs
      72  osprey_host/replay/tests/structural_keys.rs
     251  osprey_host/replay/tests/table.rs
-    314  osprey_host/replay/tests/tool_side.rs
+    326  osprey_host/replay/tests/tool_side.rs
      47  osprey_host/replay/tests/treplay.rs
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml

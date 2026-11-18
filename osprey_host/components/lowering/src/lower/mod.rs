@@ -680,7 +680,33 @@ fn write(
         texts: &texts,
         route: cards.contraction_route(request)?,
     })?;
-    Ok(UnitAnswer { texts, meta })
+    let defines = fast_entry_defines(
+        request.settings.fast_entries,
+        texts.iter().map(|t| (t.target, t.text.as_str())),
+    );
+    Ok(UnitAnswer {
+        texts,
+        meta,
+        defines,
+    })
+}
+
+/// The macro a device text gates its fast entry points behind.
+const FAST_ENTRIES_MACRO: &str = "HAWK_FAST_ENTRIES";
+
+/// The defines the settings put on the compile of each text: the fast-entry macro for a text that gates code behind it, when the
+/// build asks for the fast entries. `texts` are the `(target, text)` pairs of a unit.
+fn fast_entry_defines<'a>(
+    asked: bool,
+    texts: impl Iterator<Item = (Target, &'a str)>,
+) -> Vec<(Target, String)> {
+    if !asked {
+        return vec![];
+    }
+    texts
+        .filter(|(_, text)| text.contains(FAST_ENTRIES_MACRO))
+        .map(|(target, _)| (target, format!("{FAST_ENTRIES_MACRO}=1")))
+        .collect()
 }
 
 /// The text of one pending unit for one target, from its walk: the writer unit, its thread box and the target's writer.
@@ -980,10 +1006,23 @@ fn with_facts(unit: &Unit, facts: &str) -> Result<String, Refusal> {
 
 #[cfg(test)]
 mod tests {
-    //! The scalar width has one answer, and a merge that would drop something is refused by name.
+    //! The scalar width has one answer, a merge that would drop something is refused by name, and the fast-entry setting becomes
+    //! the macro of the texts that gate on it.
     use super::*;
     use crate::facts::{answer, probe, Stated};
     use crate::testing::{TestDevice, TestHost};
+
+    #[test]
+    fn the_fast_entry_setting_defines_the_macro_for_exactly_the_texts_that_gate_on_it() {
+        let gated = "#ifndef HAWK_FAST_ENTRIES\n#define HAWK_FAST_ENTRIES 0\n#endif";
+        let texts = || [(Target::Device, gated), (Target::Host, "int k;")].into_iter();
+        assert_eq!(
+            fast_entry_defines(true, texts()),
+            vec![(Target::Device, "HAWK_FAST_ENTRIES=1".to_string())]
+        );
+        assert!(fast_entry_defines(false, texts()).is_empty());
+        assert!(fast_entry_defines(true, [(Target::Device, "int k;")].into_iter()).is_empty());
+    }
 
     /// The shipped facts directory.
     fn shipped() -> std::path::PathBuf {

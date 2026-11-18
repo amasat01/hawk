@@ -53,6 +53,9 @@ impl Backend for Cpu {
     fn card_names(&self) -> &'static [&'static str] {
         &CARDS
     }
+    fn option_names(&self) -> &'static [&'static str] {
+        &["profile"]
+    }
     fn machine(
         &self,
         cards: &CardSet,

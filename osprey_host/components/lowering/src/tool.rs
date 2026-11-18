@@ -32,7 +32,7 @@ fn parse(what: &str, source: &str) -> Result<Json, toolkit::Refusal> {
 /// `stated.asked`, so the answer alone says what the build is for. The key covers the library's identity, the level and the options.
 ///
 /// # Errors
-/// Refuses an ask that is not JSON or names another target.
+/// Refuses an ask that is not JSON, names another target, or states an option the target does not declare.
 pub fn machine<B: Backend>(backend: &B, ask: &str) -> Result<String, toolkit::Refusal> {
     let ask = parse("the machine ask", ask)?;
     let wanted = target_name(backend.target());
@@ -40,6 +40,17 @@ pub fn machine<B: Backend>(backend: &B, ask: &str) -> Result<String, toolkit::Re
         return Err(refuse(
             unserved(backend, text(&ask, "target").unwrap_or("")).reason,
         ));
+    }
+    if let Some(Json::Obj(stated)) = ask.get("options") {
+        if let Some((key, _)) = stated
+            .iter()
+            .find(|(key, _)| !backend.option_names().contains(&key.as_str()))
+        {
+            return Err(refuse(format!(
+                "the option {key:?} is declared by the target {wanted}: its options are {:?}",
+                backend.option_names()
+            )));
+        }
     }
     let toolkit = backend.toolkit()?;
     let (level, options) = effective_ask(
@@ -689,6 +700,54 @@ mod tests {
         // with neither, nothing is stated and the card's default stands
         let (level, opts) = effective_ask("", options(None), None, None);
         assert_eq!((level.as_str(), profile_of(&opts)), ("", None));
+    }
+
+    /// The device unit a build of `defines` makes, as the text the toolkit is sent, for an image made by the offline compiler (`runtime`
+    /// false) or by the runtime compile library.
+    fn device_unit_text(defines: &[&str], runtime: bool) -> String {
+        let strs =
+            |items: &[&str]| Json::Arr(items.iter().map(|d| Json::Str((*d).into())).collect());
+        let mut build = vec![
+            ("image_format".to_string(), Json::Str("ptx".into())),
+            ("compile".to_string(), strs(&["{flags}", "{defines}"])),
+        ];
+        if runtime {
+            build.push(("compile_with".to_string(), Json::Str("runtime".into())));
+        }
+        let facts = Json::Obj(vec![("device_build".to_string(), Json::Obj(build))]);
+        let req = Json::Obj(vec![
+            ("name".to_string(), Json::Str("k".into())),
+            ("text".to_string(), Json::Str("int k;".into())),
+            ("defines".to_string(), strs(defines)),
+        ]);
+        let machine = Json::Obj(vec![("key".to_string(), Json::Str("m".into()))]);
+        let (_, unit, _, _) = device_unit(&req, &machine, &facts).unwrap();
+        wire::render(&unit)
+    }
+
+    #[test]
+    fn a_define_of_the_build_is_in_the_offline_argv_lists_and_in_the_runtime_options() {
+        for runtime in [false, true] {
+            let on = device_unit_text(&["HAWK_FAST_ENTRIES=1"], runtime);
+            assert!(on.contains("-DHAWK_FAST_ENTRIES=1"), "{on}");
+            assert!(!device_unit_text(&[], runtime).contains("HAWK_FAST_ENTRIES"));
+        }
+    }
+
+    #[test]
+    fn an_option_the_target_does_not_declare_is_refused_by_name() {
+        use crate::testing::TestHost;
+        let ask = |options: &str| {
+            machine(
+                &TestHost,
+                &format!("{{\"target\":\"host\",\"options\":{options}}}"),
+            )
+        };
+        let why = ask("{\"bogus\":1}").unwrap_err().message;
+        assert!(
+            why.contains("\"bogus\"") && why.contains("declared by the target host"),
+            "{why}"
+        );
     }
 
     #[test]

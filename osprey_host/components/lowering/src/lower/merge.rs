@@ -131,9 +131,12 @@ fn join_unit(first: UnitAnswer, second: UnitAnswer) -> Result<UnitAnswer, Refusa
     }
     let mut texts = first.texts;
     texts.extend(second.texts);
+    let mut defines = first.defines;
+    defines.extend(second.defines);
     Ok(UnitAnswer {
         texts,
         meta: merged,
+        defines,
     })
 }
 

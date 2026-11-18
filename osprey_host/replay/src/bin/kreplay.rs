@@ -282,6 +282,7 @@ fn settings_of(spec: &J) -> Result<Settings, String> {
         exports: None,
         literal_table: false,
         auto_segmented_set: std::env::args().any(|a| a == "--auto-set"),
+        fast_entries: false,
     })
 }
 

@@ -236,12 +236,24 @@ fn the_runtime_compiler_states_its_own_label_and_options() {
     );
 }
 
-/// Writes the executable script `body` at `path`.
+/// Writes the executable script `body` at `path`, through a child process.
 fn script(path: &std::path::Path, body: &str) {
-    use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, body).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // A child writes the file: this process, whose sibling test threads fork tools, never holds a write handle to an
+    // executable. A fork made while such a handle is open keeps it until its own exec, and running the script meanwhile
+    // fails with "text file busy" on Linux.
+    let mut writer = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut writer.stdin.take().unwrap(), body.as_bytes()).unwrap();
+    assert!(
+        writer.wait().unwrap().success(),
+        "writing {} failed",
+        path.display()
+    );
 }
 
 /// A device unit built through the door with a fake device compiler (proven against fakes, not a real nvcc): the machine states
