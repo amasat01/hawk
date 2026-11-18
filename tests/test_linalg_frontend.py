@@ -27,11 +27,11 @@ from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk.ext import Guard, Kind
 from raptor.errors import RaptorError as HawkError
-from raptor.ir.types import TensorType
+from hawk import _ir
 
 LANES = 8
 BAD = 3
-I32 = TensorType((), "int32")
+I32 = _ir.TensorType((), "int32")
 
 
 @pytest.fixture(scope="module")

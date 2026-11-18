@@ -16,7 +16,7 @@ import pytest
 
 import hawk
 from hawk import Grid, Scalar, Vector
-from hawk.artifact.sidecar import sidecar_meta
+from _unit_sidecar import sidecar_of_kernel
 
 jsonschema = pytest.importorskip("jsonschema")
 raptor = pytest.importorskip("raptor")
@@ -36,8 +36,7 @@ def _grid(lane: Grid["channel", "sample":8], x: Scalar) -> Scalar:
 
 
 def _sidecar(kernel):
-    return sidecar_meta(kernel.name, kernel.walk, fmt="host", scalar_type="float64",
-                        lane_space=kernel.lane_space, group=kernel.group)
+    return sidecar_of_kernel(kernel, fmt="host", scalar_type="float64")
 
 
 @pytest.mark.parametrize("kernel", [_flat, _grid], ids=["flat", "grid"])

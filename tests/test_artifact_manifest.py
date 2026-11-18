@@ -20,6 +20,7 @@ from conftest import sidecar_of
 
 from hawk import _contracts
 from hawk.artifact import TOP_LEVEL_KEY_ORDER_V2
+from hawk import _ir
 
 
 def test_the_manifest_passes_raptors_own_shape_validator(built):
@@ -58,7 +59,7 @@ def test_the_digest_lives_in_the_sidecar_not_the_manifest(built):
 
     bundle = built["vec3"]
     assert "digest" not in bundle.manifest
-    assert sidecar_of(bundle, "vec3_scale")["digest"] == D.vec3_scale.walk.digest
+    assert sidecar_of(bundle, "vec3_scale")["digest"] == _ir.digest(D.vec3_scale.walk)
 
 
 def test_a_bundle_whose_members_disagree_on_the_axis_is_refused(tmp_path, cache_dir):

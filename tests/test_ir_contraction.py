@@ -14,8 +14,8 @@ pins the record's FIELD SET, because a field renamed on this side is a
 ``AttributeError`` in eagle's lowering that nothing on this side would catch.
 
 WHAT IT MATCHES. HAWK matches a ``ForLoopStmt`` with one additive carry, the
-same way the previous code generator did: a bounded ``for`` LOWERS to a
-:class:`~raptor.ir.nodes.Loop` rather than being unrolled by trace-time execution,
+same way the previous code generator did: a bounded ``for`` LOWERS to
+a ``loop`` node rather than being unrolled by trace-time execution,
 so the reduce variable is a real symbolic index and each operand's stride is the
 COEFFICIENT of that index, rather than a difference between
 unrolled terms. This includes the rule that matters most: a stride built from a bare literal is

@@ -12,39 +12,32 @@ the loads; a value the placement pass puts in a scratch plane counts nothing) an
 
 from __future__ import annotations
 
+from .. import _ir
 from .chain import bind        # noqa: F401  (the device backend's report reads the chain's crossings through this module)
-from raptor.ir.nodes import Const, Leaf, Sink
 
 #: The fence: registers plus frame words may pass the estimate by this factor plus :data:`FENCE_SLACK` registers.
 FENCE_RATIO = 1.6
 FENCE_SLACK = 16
 
 
-def _elements(ttype) -> int:
-    count = 1
-    for d in ttype.shape:
-        count *= d
-    return count
-
-
 def maxlive(walk, wide_min: int | None = None) -> int:
     """The most elements per sample live at one point of ``walk``'s canonical order. A value is live from its node (a
     plane read from the start) to its last reader; a sink ends nothing of its own and a literal holds no register. A
     value of ``wide_min`` elements or more is placed in a scratch plane and counts nothing."""
-    order = walk.order
+    order = _ir.walk_order(walk)
     last = {}
     for i, node in enumerate(order):
         for o in node.operands:
-            last[id(o)] = i
+            last[o] = i
     delta = [0] * (len(order) + 1)
     for i, node in enumerate(order):
-        if isinstance(node, (Sink, Const)) or id(node) not in last:
+        if _ir.is_a(node, "sink", "const") or node not in last:
             continue
-        width = _elements(node.ttype)
+        width = _ir.element_count(_ir.type_of(node))
         if wide_min is not None and width >= wide_min:
             continue
-        delta[0 if isinstance(node, Leaf) else i] += width
-        delta[last[id(node)] + 1] -= width
+        delta[0 if _ir.is_a(node, "leaf") else i] += width
+        delta[last[node] + 1] -= width
     best = live = 0
     for d in delta:
         live += d

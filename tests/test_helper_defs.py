@@ -26,7 +26,6 @@ import hawk.math as m
 from hawk import HawkError
 from hawk.artifact import emit_source
 from hawk.diff import jvp, vjp
-from raptor.ir import canonical
 
 SCALE = 3.0
 

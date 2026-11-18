@@ -4,7 +4,7 @@
 """The traced VALUE — operator overloading from Python expressions to IR nodes.
 
 A :class:`Value` wraps one IR node; every operator mints an
-:func:`raptor.ir.ops.make` call, building the DAG as the body runs once. Free
+:func:`hawk._ir.make` call, building the DAG as the body runs once. Free
 functions below cover what operators can't spell (``norm``, ``dot``,
 ``cross``, ``select``); three REF objects cover the write side (a mutable
 plane, a wide plane) plus a :class:`TableRef` read
@@ -17,29 +17,27 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from raptor.ir import At, Const, Leaf, Node, Select
-from .. import wings as _wings
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir import make as _make
-from raptor.ir.linalg import as_matrix
-from raptor.ir.nodes import KEYED_AUTO, AccumWrite, Assign, Dispatch, Finish, ReduceSamples, RoleConst, SamplePosition, SampleIndex, WideWrite
-from raptor.ir.types import INT_PLANE_DTYPES, TensorType
-_dispatch_kind = _wings.view("raptor", "base", "dispatch")
 
-_block = _wings.view("raptor", "base", "block")
-_cells = _wings.view("raptor", "base", "cells")
-
-_F64 = TensorType((), "f64")
-_BOOL = TensorType((), "bool")
-_I32 = TensorType((), "i32")
+_F64 = _ir.TensorType((), "f64")
+_BOOL = _ir.TensorType((), "bool")
+_I32 = _ir.TensorType((), "i32")
 INDEX = _I32
-INT32 = TensorType((), "int32")
+INT32 = _ir.TensorType((), "int32")
 #: the stored type of an ``Index`` plane: the tag marks it for the sidecar
-INDEX32 = TensorType((), "int32", "index")
+INDEX32 = _ir.TensorType((), "int32", "index")
 
 
-def node_of(x: Any) -> Node:
-    """The IR node behind a traced value or a Python literal (the constant).
+def _context() -> Any:
+    """The context of the body being traced (a local import: ``lane_axes`` imports this module)."""
+    from .lane_axes import current_context
+
+    return current_context()
+
+
+def node_of(x: Any) -> Any:
+    """The IR node (a handle) behind a traced value or a Python literal (a constant of the traced body's context).
 
     An object carrying ``_hawk_refuse`` refuses HERE instead of the generic
     message — a loop-local name's sentinel
@@ -51,12 +49,12 @@ def node_of(x: Any) -> Node:
         refuse()
     if isinstance(x, Value):
         return x.node
-    if isinstance(x, Node):
+    if isinstance(x, _ir.Node):
         return x
     if isinstance(x, bool):
-        return Const(x, _BOOL)
+        return _ir.const(_context(), x, _BOOL)
     if isinstance(x, (int, float)):
-        return Const(float(x), _F64)
+        return _ir.const(_context(), float(x), _F64)
     from .reduce import Reduced
 
     if isinstance(x, Reduced):
@@ -67,7 +65,7 @@ def node_of(x: Any) -> Node:
     )
 
 
-def index_node(x: Any) -> Node:
+def index_node(x: Any) -> Any:
     """The IR node behind an INDEX — a traced value, or an integer literal,
     separate from :func:`node_of`, which types a bare ``int`` as ``f64``. An
     index is an address: as ``f64`` it would cast to ``std::size_t`` and
@@ -76,7 +74,7 @@ def index_node(x: Any) -> Node:
     if isinstance(x, bool):
         raise HawkError(f"{x!r} is not an index — a bool is a mask, not an address")
     if isinstance(x, int):
-        return Const(int(x), _I32)
+        return _ir.const(_context(), int(x), _I32)
     return node_of(x)
 
 
@@ -86,9 +84,9 @@ def _operands(args: tuple) -> tuple:
     it types as an integer instead — otherwise an index like
     ``entry * cols + row`` would promote to ``Real`` and lose its stride
     derivation (:mod:`hawk.passes.contraction`)."""
-    traced = [a for a in args if isinstance(a, (Value, Node))]
-    dtypes = {(a.node if isinstance(a, Value) else a).ttype.dtype for a in traced}
-    plane = next((d for d in INT_PLANE_DTYPES if d in dtypes), None)
+    traced = [a for a in args if isinstance(a, (Value, _ir.Node))]
+    dtypes = {_ir.type_of(a.node if isinstance(a, Value) else a).dtype for a in traced}
+    plane = next((d for d in _ir.INT_PLANE_DTYPES if d in dtypes), None)
     if plane is not None:
         return tuple(int_literal(a, plane) if isinstance(a, int) and not isinstance(a, bool)
                      else node_of(a) for a in args)
@@ -97,11 +95,21 @@ def _operands(args: tuple) -> tuple:
                  and not isinstance(a, bool) else node_of(a) for a in args)
 
 
+#: What a node's ``field_kind`` answers for a field that holds an integer.
+_INTEGER_FIELD = 2
+
+
+def literal_int(node: Any) -> int | None:
+    """The integer a constant node holds, ``None`` for any other node (or another literal)."""
+    if _ir.is_a(node, "const") and node.field_kind("literal") == _INTEGER_FIELD:
+        return node.field_int("literal")
+    return None
+
 #: The value range of each integer plane dtype.
 _INT_RANGE = {"int32": (-2**31, 2**31 - 1), "uint32": (0, 2**32 - 1)}
 
 
-def int_literal(x: int, dtype: str) -> Const:
+def int_literal(x: int, dtype: str) -> Any:
     """A Python ``int`` beside an ``int32``/``uint32`` value, typed as that
     value: a literal outside the type's range is refused, never wrapped."""
     lo, hi = _INT_RANGE[dtype]
@@ -109,15 +117,15 @@ def int_literal(x: int, dtype: str) -> Const:
         raise HawkError(
             f"the literal {x} is outside the {dtype} range [{lo}, {hi}]; write a "
             f"value inside it (an {dtype} wraps only through arithmetic)")
-    return Const(int(x), TensorType((), dtype))
+    return _ir.const(_context(), int(x), _ir.TensorType((), dtype))
 
 
 def _op(kind: str, *args: Any, literal: Any = None) -> Value:
-    return Value(_make(kind, _operands(args), literal))
+    return Value(_ir.make(kind, _operands(args), literal))
 
 
 def _is_condition(x: Any) -> bool:
-    return isinstance(x, bool) or (isinstance(x, (Value, Node)) and node_of(x).ttype.dtype == "bool")
+    return isinstance(x, bool) or (isinstance(x, (Value, _ir.Node)) and _ir.type_of(node_of(x)).dtype == "bool")
 
 
 def _logic(kind: str, a: Any, b: Any) -> Value:
@@ -133,13 +141,13 @@ class Value:
 
     __slots__ = ("node",)
 
-    def __init__(self, node: Node) -> None:
+    def __init__(self, node: Any) -> None:
         self.node = node
 
     @property
-    def ttype(self) -> TensorType:
+    def ttype(self) -> _ir.TensorType:
         """The node's tensor type."""
-        return self.node.ttype
+        return _ir.type_of(self.node)
 
     def at(self, *positional: Any, **named: Any) -> Value:
         """``u.at(i)`` / ``u.at(row=…, col=…)``: this per-lane input read at
@@ -149,7 +157,7 @@ class Value:
         return read_at(self, positional, named)
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
-        return f"<Value {self.node.kind} {self.node.ttype}>"
+        return f"<Value {self.node.cls} {self.ttype}>"
 
     def __add__(self, o: Any) -> Value:
         return _op("add", self, o)
@@ -175,7 +183,7 @@ class Value:
         # call; the reciprocal folds into one FFMA). Integral values keep
         # the division — the contraction recognizer reads it as a stride.
         if (isinstance(o, (int, float)) and not isinstance(o, bool)
-                and self.ttype.dtype not in ("i32", "i64", "bool", *INT_PLANE_DTYPES)
+                and self.ttype.dtype not in ("i32", "i64", "bool", *_ir.INT_PLANE_DTYPES)
                 and o != 0 and math.isfinite(o) and math.isfinite(1.0 / o)):
             return _op("mul", self, 1.0 / o)
         return _op("div", self, o)
@@ -241,7 +249,7 @@ class Value:
 
     def __matmul__(self, o: Any) -> Value:
         other = node_of(o)
-        return _op("mv" if len(other.ttype.shape) == 1 else "mm", self, other)
+        return _op("mv" if len(_ir.type_of(other).shape) == 1 else "mm", self, other)
 
     def __lt__(self, o: Any) -> Value:
         return _elementwise("lt", self, o)
@@ -268,7 +276,7 @@ class Value:
 
         A STATIC integer is ``component``, checked at trace time; a TRACED
         integer is ``component_at`` — needed inside a lowered ``for``, where
-        ``k`` is a symbolic :class:`~raptor.ir.nodes.LoopIndex`, not a
+        ``k`` is a symbolic loop index, not a
         Python int (it materialises into an ``Item`` first, since aether's
         EXPRESSION only carries compile-time ``eval<Is...>``). A float is
         refused rather than truncated: rounding would silently read the
@@ -279,19 +287,19 @@ class Value:
                 "a bool is a mask, not an address")
         if isinstance(k, int):
             return _op("component", self, literal=k)
-        if (isinstance(k, tuple) and len(k) == len(self.node.ttype.shape) == 2
+        if (isinstance(k, tuple) and len(k) == len(self.ttype.shape) == 2
                 and all(isinstance(x, int) and not isinstance(x, bool) for x in k)):
             return _op("component", self, literal=k)        # a matrix entry, `m[i, j]`
-        if not self.node.ttype.shape and isinstance(k, Value):
+        if not self.ttype.shape and isinstance(k, Value):
             raise HawkError(
                 "x[key] indexes a component and a rank-0 value has none; another "
                 "lane's input is read with x.at(key)")
         node = k.node if isinstance(k, Value) else k
-        if isinstance(node, Node) and node.ttype.shape == ()\
-                and node.ttype.dtype in _INDEX_DTYPES:
-            if node.ttype.dtype not in ("i32", "i64"):     # an int plane value (hm.int32) indexes as i32
-                node = _make("cast", (node,), "i32")
-            return Value(_make("component_at", (self.node, node)))
+        if isinstance(node, _ir.Node) and _ir.type_of(node).shape == ()\
+                and _ir.type_of(node).dtype in _INDEX_DTYPES:
+            if _ir.type_of(node).dtype not in ("i32", "i64"):     # an int plane value (hm.int32) indexes as i32
+                node = _ir.make("cast", (node,), "i32")
+            return Value(_ir.make("component_at", (self.node, node)))
         raise HawkError(
             f"a traced value is indexed by a STATIC integer component or by a "
             f"traced INTEGER index, got {k!r}. A lowered `for`'s own index is "
@@ -365,9 +373,9 @@ class Value:
 
 def _cast(x: Any, dtype: str) -> Value:
     node = node_of(x)
-    if node.ttype.dtype == dtype:
+    if _ir.type_of(node).dtype == dtype:
         return Value(node)
-    return Value(_make("cast", (node,), dtype))
+    return Value(_ir.make("cast", (node,), dtype))
 
 
 def int32(x: Any) -> Value:
@@ -493,24 +501,24 @@ def _elementwise(kind: str, *args: Any) -> Value:
     nodes = _operands(args)
     shape: tuple = ()
     for n in nodes:
-        shape = _broadcast_shape(kind, shape, n.ttype.shape)
+        shape = _broadcast_shape(kind, shape, _ir.type_of(n).shape)
     if not shape:
-        return Value(_make(kind, nodes))
+        return Value(_ir.make(kind, nodes))
     if len(shape) > 2:
         raise HawkError(
             f"{kind}: applies component-wise to rank-0, rank-1 or rank-2 values, "
-            f"got {[n.ttype for n in nodes]}")
+            f"got {[_ir.type_of(n) for n in nodes]}")
     parts = []
     for k in _entries(shape):
-        ops = [n if n.ttype.shape == () else _make("component", (n,), k)
+        ops = [n if _ir.type_of(n).shape == () else _ir.make("component", (n,), k)
                for n in nodes]
-        parts.append(_make(kind, ops))
-    return Value(_make("vec", parts, shape if len(shape) == 2 else None))
+        parts.append(_ir.make(kind, ops))
+    return Value(_ir.make("vec", parts, shape if len(shape) == 2 else None))
 
 
 def _broadcast_shape(kind: str, a: tuple, b: tuple) -> tuple:
     """The shape two elementwise operands combine to — the arithmetic
-    operators' rule (:func:`raptor.ir.ops.result_type`), with its refusal."""
+    operators' rule, with its refusal."""
     if a == b or b == ():
         return a
     if a == ():
@@ -631,17 +639,18 @@ def select(cond: Any, on_true: Any, on_false: Any) -> Value:
     c = node_of(cond)
     a, b = _operands((on_true, on_false))
     shape = _broadcast_shape("select", _broadcast_shape(
-        "select", c.ttype.shape, a.ttype.shape), b.ttype.shape)
+        "select", _ir.type_of(c).shape, _ir.type_of(a).shape), _ir.type_of(b).shape)
     if shape:
         # a rank-0 branch broadcasts like an arithmetic operand (numpy's
         # ``where``); the mask is rank-0 (one choice per sample) or the
         # branches' own shape (one choice per entry)
-        a, b = (_make("splat", (x,), shape) if x.ttype.shape == () else x
+        a, b = (_ir.make("splat", (x,), shape) if _ir.type_of(x).shape == () else x
                 for x in (a, b))
-    if a.ttype != b.ttype:
-        raise HawkError(f"select: the branches disagree — {a.ttype!r} vs {b.ttype!r}; "
+    ttype = _ir.type_of(a)
+    if ttype != _ir.type_of(b):
+        raise HawkError(f"select: the branches disagree — {ttype!r} vs {_ir.type_of(b)!r}; "
                         "cast one with m.float64(...) or write the literal in the other's type")
-    return Value(Select(c, a, b, a.ttype))
+    return Value(_ir.make_node("Select", ttype, [c, a, b]))
 
 
 def dispatch(kind: Any, branches: Any, strategy: str = "switch") -> Value:
@@ -655,18 +664,38 @@ def dispatch(kind: Any, branches: Any, strategy: str = "switch") -> Value:
     until then it renders as ``switch`` and counts the branch mix); the
     default ``switch`` is what a compiler already picks for a branch-heavy
     chain.
-    :class:`~raptor.ir.nodes.Dispatch` does the type/arity checking."""
+    The library checks the type and the arity."""
     bs = [node_of(b) for b in branches]
-    ttype = bs[0].ttype if bs else TensorType((), "f64")
+    ttype = _ir.type_of(bs[0]) if bs else _ir.TensorType((), "f64")
     selector = node_of(kind)
-    if selector.ttype.dtype in INT_PLANE_DTYPES:
-        selector = _make("cast", (selector,), "i32")
-    return Value(_dispatch_kind.dispatch(selector, bs, strategy, ttype))
+    if _ir.type_of(selector).dtype in _ir.INT_PLANE_DTYPES:
+        selector = _ir.make("cast", (selector,), "i32")
+    return Value(dispatch_node(selector, bs, strategy, ttype))
+
+
+#: The strategies a dispatch can be pinned to; ``switch`` is the core kind itself.
+DISPATCH_STRATEGIES = _ir.dispatch_strategies()
+
+
+def dispatch_node(selector: Any, branches: Any, strategy: str, ttype: Any) -> Any:
+    """The dispatch of ``selector`` over ``branches`` (each of ``ttype``) pinned to ``strategy``.
+
+    ``switch`` is the core kind; any other strategy is the dialect kind ``<strategy>_dispatch``, which the
+    context declares. The library checks the types and the arity."""
+    if strategy not in DISPATCH_STRATEGIES:
+        raise HawkError(f"dispatch: unknown strategy {strategy!r}; declared are {DISPATCH_STRATEGIES}")
+    cls = "Dispatch" if strategy == "switch" else f"{strategy.capitalize()}Dispatch"
+    return _ir.make_node(cls, ttype, [selector, *branches])
+
+
+def dispatch_strategy(node: Any) -> str:
+    """The strategy a dispatch node is pinned to: the core class is ``switch``, a pinned one its kind's word."""
+    return node.cls.removesuffix("Dispatch").lower() or "switch"
 
 
 def n_samples() -> Value:
     """The readable sample count: the TRUE ``nSamples``, never ``count``."""
-    return Value(Leaf("nsamples", "nsamples", "n_samples", TensorType((), "i32")))
+    return Value(_ir.leaf(_context(), "nsamples", "nsamples", "n_samples", _I32))
 
 
 def sample_index() -> Value:
@@ -675,7 +704,7 @@ def sample_index() -> Value:
     partition-invariant — safe for the oracle to compare — and lets a
     2-D-domain kernel recover the coordinates a flattened launch folded
     together."""
-    return Value(SampleIndex())
+    return Value(_ir.make_node("SampleIndex", _I32, context=_context()))
 
 
 def sample_position() -> Value:
@@ -685,7 +714,7 @@ def sample_position() -> Value:
     (``Kind(..., lanes=IndexSet())``) :func:`sample_index` is the lane the map
     names, ``map[t]``, and this is ``t`` itself, the slot a compacted output
     ``out[sample_position()]`` is written at."""
-    return Value(SamplePosition())
+    return Value(_ir.make_node("SamplePosition", _I32, context=_context()))
 
 
 def _random(kind: str, seed: Any, counter: Any) -> Value:
@@ -717,9 +746,9 @@ def random_normal(seed: Any, counter: Any) -> Value:
     return _random("random_normal", seed, counter)
 
 
-def widened(node: Node) -> Node:
+def widened(node: Any) -> Any:
     """``node``, an ``int32`` read of an ``Index`` plane, as the 64-bit index the body computes in."""
-    return _make("cast", (node,), "i32")
+    return _ir.make("cast", (node,), "i32")
 
 
 class TableRef:
@@ -728,17 +757,17 @@ class TableRef:
     Two read spellings, one form. ``t.at(expr)`` is the positional read of a
     flat plane; ``t.at(row=…, col=…)`` is the NAMED-AXIS read, folding to
     ``sum(index_d * stride_d)`` over the DECLARED order, each stride minted
-    as a :class:`~raptor.ir.nodes.RoleConst` carrying its axis — recoverable as
+    as a ``RoleConst`` carrying its axis — recoverable as
     the declaration's, unlike the flat form."""
 
     __slots__ = ("leaf", "name", "dims", "widen")
 
-    def __init__(self, name: str, ttype: TensorType, *, role: str = "lookup",
+    def __init__(self, name: str, ttype: _ir.TensorType, *, role: str = "lookup",
                  dims: Any = ()) -> None:
         kind = "table_read" if role == "lookup" else "vocab_read"
         #: an ``Index`` payload is stored 32-bit and widened at the read
         self.widen = ttype == INDEX
-        self.leaf = Leaf(kind, role, name, INDEX32 if self.widen else ttype)
+        self.leaf = _ir.leaf(_context(), kind, role, name, INDEX32 if self.widen else ttype)
         self.name = name
         self.dims = tuple(dims)
 
@@ -746,7 +775,7 @@ class TableRef:
         """The ``at(expr)``: an absolute-index read of this plane. Every index is CLAMPED to its axis, ``[0,
         extent)``, per axis (the flat index to the plane's length), so a read outside the plane reads its edge
         element; a literal index a static extent already bounds is read as it is."""
-        read = At(self.leaf, self._index(positional, named), self.leaf.ttype)
+        read = _ir.make_node("At", _ir.type_of(self.leaf), [self.leaf, self._index(positional, named)])
         return Value(widened(read) if self.widen else read)
 
     def __getitem__(self, i: Any) -> Value:
@@ -761,7 +790,7 @@ class TableRef:
                 f"{labels or '(none: this plane is flat, read t[i])'}, got {len(i)}")
         return self.at(**dict(zip(labels, i)))
 
-    def _index(self, positional: tuple, named: dict) -> Node:
+    def _index(self, positional: tuple, named: dict) -> Any:
         if named and positional:
             raise HawkError(
                 f"{self.name!r}: at() takes a flat index OR every declared axis by "
@@ -788,42 +817,37 @@ class TableRef:
                 + (f"; missing {missing}" if missing else "")
                 + (f"; unknown {unknown}" if unknown else "")
                 + " — a partial address would silently read the wrong row")
-        flat: Node | None = None
+        flat: Any = None
         for label, size, stride in self.dims:
             static = size if isinstance(size, int) and not isinstance(size, bool) else None
-            factor = n_samples().node if stride == "n_samples" else RoleConst(stride, f"{self.name}_{label}_stride")
-            term = _make("mul", (self._clamped(index_node(named[label]), static, None if stride == "n_samples" else stride),
+            factor = (n_samples().node if stride == "n_samples" else _ir.make_node(
+                "RoleConst", _I32, context=_context(), literal=stride, label=f"{self.name}_{label}_stride"))
+            term = _ir.make("mul", (self._clamped(index_node(named[label]), static, None if stride == "n_samples" else stride),
                                  factor))
-            flat = term if flat is None else _make("add", (flat, term))
+            flat = term if flat is None else _ir.make("add", (flat, term))
         return flat
 
-    def _clamped(self, index: Node, extent: int | None, stride: int | None = 1) -> Node:
+    def _clamped(self, index: Any, extent: int | None, stride: int | None = 1) -> Any:
         """``index`` held to ``[0, extent)`` in its own integer type by ONE ``clamp_index``: a static extent, else the
         plane's length over the axis stride read at run time (``stride`` ``None``: an axis over the lanes, held to
         the lane count). An index provably in range (a literal, or a compile-time loop's range, inside a static
         extent) is not clamped."""
-        from raptor.ir.nodes import LoopIndex
-        from raptor.ir.nodes import Op, PlaneExtent
-
-        if index.ttype.dtype not in ("i32", "i64"):
-            index = _make("cast", (index,), "i32")      # a real index truncates, as the read always did, then clamps
-        t = index.ttype
-        if isinstance(index, Const) and isinstance(index.literal, int):
-            lo = hi = int(index.literal)
-        elif isinstance(index, LoopIndex) and index.bounds is not None:
-            lo, hi = index.bounds
-        else:
-            lo = hi = None
+        if _ir.type_of(index).dtype not in ("i32", "i64"):
+            index = _ir.make("cast", (index,), "i32")      # a real index truncates, as the read always did, then clamps
+        t = _ir.type_of(index)
+        lo = hi = literal_int(index)
+        if lo is None and _ir.is_a(index, "loop_index") and index.field_kind("bounds"):
+            lo, hi = index.field_ints("bounds")
         if extent is not None:
             if lo is not None and lo >= 0 and hi < extent:
                 return index
-            bound = Const(extent, t)
+            bound = _ir.const(index.ctx, extent, t)
         elif stride is None:
             bound = n_samples().node
         else:
-            length = PlaneExtent(self.leaf, t)
-            bound = length if stride == 1 else Op("floordiv", (length, Const(int(stride), t)), t)
-        return Op("clamp_index", (index, bound), t)
+            length = _ir.make_node("PlaneExtent", t, [self.leaf])
+            bound = length if stride == 1 else _ir.make("floordiv", (length, _ir.const(index.ctx, int(stride), t)))
+        return _ir.make("clamp_index", (index, bound))
 
 
 class SharedValue(Value):
@@ -840,14 +864,15 @@ class SharedValue(Value):
     def __init__(self, name: str, shape: tuple, dims: tuple) -> None:  # noqa: D107 - see the class
         self.ref = TableRef(name, _F64, role="lookup", dims=dims)
         self.shape = tuple(shape)
-        self._whole: Node | None = None
+        self._whole: Any = None
 
     @property  # type: ignore[override]
-    def node(self) -> Node:
+    def node(self) -> Any:
         """The whole value, built from its cells on first use."""
         if self._whole is None:
-            cells = [At(self.ref.leaf, Const(k, _I32), _F64) for k in range(math.prod(self.shape))]
-            self._whole = _make("vec", cells, self.shape if len(self.shape) == 2 else None)
+            cells = [_ir.make_node("At", _F64, [self.ref.leaf, _ir.const(_context(), k, _I32)])
+                     for k in range(math.prod(self.shape))]
+            self._whole = _ir.make("vec", cells, self.shape if len(self.shape) == 2 else None)
         return self._whole
 
     def _cell(self, k: Any, extent: int, axis: str) -> Any:
@@ -885,7 +910,7 @@ class FinishRefusal(HawkError):
 
 
 #: The one type a finish condition carries.
-_BOOL0 = TensorType((), "bool")
+_BOOL0 = _ir.TensorType((), "bool")
 
 
 class TerminatedRef(Value):
@@ -898,24 +923,24 @@ class TerminatedRef(Value):
 
     __slots__ = ("sinks",)
 
-    def __init__(self, node: Node) -> None:
+    def __init__(self, node: Any) -> None:
         super().__init__(node)
-        self.sinks: list[Node] = []
+        self.sinks: list[Any] = []
 
     def unset(self) -> Value:
         """The "does not finish on this path" value an ``if`` merges against."""
-        return Value(Const(False, _BOOL0))
+        return Value(_ir.const(_context(), False, _BOOL0))
 
     def __setitem__(self, key: Any, value: Any) -> None:
         if key is not Ellipsis:
+            name = self.node.field_text("name")
             raise FinishRefusal(
-                f"{self.node.name!r}: a mask is finished whole — write "
-                f"`{self.node.name}[...] = cond`")
+                f"{name!r}: a mask is finished whole — write `{name}[...] = cond`")
         self.write(value)
 
     def write(self, value: Any) -> None:
         """Record the finish: the sample's mask becomes ``mask | value``."""
-        name = self.node.name
+        name = self.node.field_text("name")
         if type(value).__name__ in ("bool", "bool_"):
             raise FinishRefusal(
                 f"{name!r} is finished with the Python literal {value!r}; "
@@ -927,14 +952,14 @@ class TerminatedRef(Value):
                 f"`{name}[...] = cond` statement — combine the conditions with "
                 "lor(...)")
         node = node_of(value)
-        if node.ttype != _BOOL0:
+        if _ir.type_of(node) != _BOOL0:
             raise FinishRefusal(
-                f"{name!r} is finished with a value typed {node.ttype!r}; the "
+                f"{name!r} is finished with a value typed {_ir.type_of(node)!r}; the "
                 "condition is a traced rank-0 bool")
-        self.sinks = [Finish(name, node)]
+        self.sinks = [_ir.make_node("Finish", _BOOL0, [node], name=name)]
 
 
-_INDEX_DTYPES = ("i32", "i64") + tuple(INT_PLANE_DTYPES)
+_INDEX_DTYPES = ("i32", "i64") + tuple(_ir.INT_PLANE_DTYPES)
 
 
 def _is_stored(value: Any) -> bool:
@@ -942,19 +967,20 @@ def _is_stored(value: Any) -> bool:
     return isinstance(value, _Stored)
 
 
-def by_key(ref: Any, index: Node, value: Any, accumulate: bool, contract: str = "auto") -> None:
+def by_key(ref: Any, index: Any, value: Any, accumulate: bool, contract: str = "auto") -> None:
     """One store by key into ``ref`` at the flat ``index``: an accumulate
     (``AccumWrite``) or a store (``WideWrite``). A vector or matrix payload into
     a sink declared with named axes adds entry ``k`` at ``index + k * extent``,
     payload first."""
     where = f"hawk.scatter({ref.name})[key]"
-    if any(not isinstance(k, (AccumWrite, WideWrite)) for k in ref.sinks):
+    if any(not _ir.is_a(k, "accum_write", "wide_write") for k in ref.sinks):
         raise HawkError(
             f"{ref.name!r} is written per lane (locked) and by key ({where}): one "
             "plane has one extent")
-    if index.ttype.shape != () or index.ttype.dtype not in _INDEX_DTYPES:
-        raise HawkError(f"{where}: key is an Index or an integer value, got {index.ttype!r}")
-    if contract == "or" and (ref.ttype.shape or ref.ttype.dtype not in INT_PLANE_DTYPES):
+    key_type = _ir.type_of(index)
+    if key_type.shape != () or key_type.dtype not in _INDEX_DTYPES:
+        raise HawkError(f"{where}: key is an Index or an integer value, got {key_type!r}")
+    if contract == "or" and (ref.ttype.shape or ref.ttype.dtype not in _ir.INT_PLANE_DTYPES):
         raise HawkError(
             f"{where}: |= sets bits of an Int32 or UInt32 plane (a word per key), "
             f"{ref.name!r} is declared {ref.ttype!r}")
@@ -970,18 +996,19 @@ def by_key(ref: Any, index: Node, value: Any, accumulate: bool, contract: str = 
             f"{ref.name!r} is stored by key twice (or both accumulated and stored): "
             "one plane takes one by-key statement, or several `+=`")
     if not accumulate:
-        ref.sinks = [WideWrite(ref.name, ref._typed(value), index, ref.ttype)]
+        ref.sinks = [_ir.make_node("WideWrite", ref.ttype, [ref._typed(value), index], name=ref.name)]
     elif ref.ttype.shape:
         extent = 1
         for _label, size, _stride in ref.dims:
             extent *= size
-        reduced = ReduceSamples("sum", ref._typed(value), key=index,
-                                count=Const(extent, index.ttype),
-                                contract="auto" if contract == "plain" else contract)
-        ref.sinks.extend(_cells.stored(reduced, ref.name))
+        reduced = _ir.reduce_samples("sum", ref._typed(value), key=index,
+                                     count=_ir.const(index.ctx, extent, key_type),
+                                     contract="auto" if contract == "plain" else contract)
+        ref.sinks.extend(_ir.cells_stored(reduced, ref.name))
     else:
-        contract = KEYED_AUTO if contract == "auto" else contract
-        ref.sinks.append(AccumWrite(ref.name, ref._typed(value), index, ref.ttype, contract))
+        contract = _ir.KEYED_AUTO if contract == "auto" else contract
+        ref.sinks.append(_ir.make_node("AccumWrite", ref.ttype, [ref._typed(value), index],
+                                       name=ref.name, contract=contract, reduced=None))
     ref.by_key_kind = kind
 
 
@@ -994,25 +1021,30 @@ def retired_sink_method(name: str, method: str) -> str:
             f"key) or hawk.scatter({name})[key] = v (store by key)")
 
 
+def _block_write(name: str, block: Any) -> Any:
+    """The store of a block-shaped keyed sum to the plane ``name`` (``(*payload, *kept)``, payload first)."""
+    return _ir.make_node("BlockSumWrite", _ir.TensorType((), _ir.type_of(block).dtype), [block], name=name)
+
+
 class _SinkRef:
     """Shared write-side state: the sinks a body commits through one plane.
     ``dims`` are the sink's declared named axes ``((label, size, stride), ...)``."""
 
     __slots__ = ("name", "ttype", "sinks", "by_key_kind", "dims")
 
-    def __init__(self, name: str, ttype: TensorType, dims: tuple = ()) -> None:
+    def __init__(self, name: str, ttype: _ir.TensorType, dims: tuple = ()) -> None:
         self.name = name
         self.ttype = ttype
         self.dims = dims
-        self.sinks: list[Node] = []
+        self.sinks: list[Any] = []
         self.by_key_kind: str | None = None
 
-    def _typed(self, value: Any) -> Node:
-        node = as_matrix(node_of(value))
-        if node.ttype != self.ttype:
+    def _typed(self, value: Any) -> Any:
+        node = _ir.as_matrix(node_of(value))
+        if _ir.type_of(node) != self.ttype:
             raise HawkError(
                 f"{self.name!r} is declared {self.ttype!r} but the committed value is "
-                f"typed {node.ttype!r}"
+                f"typed {_ir.type_of(node)!r}"
             )
         return node
 
@@ -1066,7 +1098,7 @@ class MutableRef(_SinkRef):
         internally, never the `.prior` spelling itself, which the ast front
         end refuses syntactically before this property is ever reached from
         author source."""
-        return Value(Leaf("prior_read", "mutable", self.name, self.ttype))
+        return Value(_ir.leaf(_context(), "prior_read", "mutable", self.name, self.ttype))
 
     def zero_cover(self, spec: Any) -> Value:
         """The start value of a body that stores elements before it reads them: zeros
@@ -1098,7 +1130,7 @@ class MutableRef(_SinkRef):
 
         if _is_stored(value):
             return
-        if any(isinstance(k, (AccumWrite, WideWrite)) for k in self.sinks):
+        if any(_ir.is_a(k, "accum_write", "wide_write") for k in self.sinks):
             raise HawkError(
                 f"{self.name!r} is written per lane (locked) and by key "
                 f"(hawk.scatter({self.name})[key]): one plane has one extent")
@@ -1106,12 +1138,12 @@ class MutableRef(_SinkRef):
             self._reduced(value)
             return
         node = self._typed(value)
-        if isinstance(node, ReduceSamples):
-            self.sinks = list(_cells.stored(node, self.name, self.ttype))
-        elif _block.is_block(node):
-            self.sinks = [_block.BlockSumWrite(self.name, node)]
+        if _ir.is_a(node, "reduce_samples"):
+            self.sinks = list(_ir.cells_stored(node, self.name))
+        elif _ir.is_a(node, "block_sum"):
+            self.sinks = [_block_write(self.name, node)]
         else:
-            self.sinks = [Assign(self.name, node, self.ttype)]
+            self.sinks = [_ir.make_node("Assign", self.ttype, [node], name=self.name)]
 
     def _reduced(self, value: Any) -> None:
         """``out = hawk.sum(x, over=...)``: ``out`` declares the kept axes."""
@@ -1133,9 +1165,14 @@ class MutableRef(_SinkRef):
             extent = 1
             for _label, size in kept:
                 extent *= size
-            node = (_block.recount(node, Const(extent, _block.key_of(node).ttype)) if _block.is_block(node)
-                    else node.recount(Const(extent, node.key.ttype)))
-        self.sinks = [_block.BlockSumWrite(self.name, node)] if _block.is_block(node) else list(_cells.stored(node, self.name))
+            if _ir.is_a(node, "block_sum"):
+                value, key, _count = node.operands
+                node = _ir.rebuild(node, (value, key, _ir.const(node.ctx, extent, _ir.type_of(key))))
+            else:
+                key_type = _ir.type_of(node.field_nodes("key")[0])
+                node = _ir.recount(node, _ir.const(node.ctx, extent, key_type))
+        self.sinks = ([_block_write(self.name, node)] if _ir.is_a(node, "block_sum")
+                      else list(_ir.cells_stored(node, self.name)))
         self.by_key_kind = "accum"
 
 
@@ -1157,4 +1194,4 @@ class WideOutRef(_SinkRef):
         """Commit ``value`` to the own column."""
         if _is_stored(value):
             return
-        self.sinks = [WideWrite(self.name, self._typed(value), None, self.ttype)]
+        self.sinks = [_ir.make_node("WideWrite", self.ttype, [self._typed(value)], name=self.name)]

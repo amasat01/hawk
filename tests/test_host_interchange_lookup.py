@@ -19,9 +19,7 @@ Every build pins the EXACT ``native`` host profile.
 """
 
 from __future__ import annotations
-from _specs import HOST
 
-import re
 
 import _oracle as O
 import _wide_kernels as W
@@ -29,9 +27,8 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
-from hawk.artifact import build_bundle
-from aether.wings.cpu.host_vector import vectorise_blocker, vectorises
-from raptor.wings.cpu.vectorise import interchanged_loops
+from hawk import _ir
+from hawk.artifact import build_bundle, emit_source
 
 ROWS = ["fill_mask", "matvec_computed", "masked_sum", "wide51"]
 PLAIN = ("HAWK_HOST_INTERCHANGE=0",)
@@ -39,20 +36,26 @@ PLAIN = ("HAWK_HOST_INTERCHANGE=0",)
 
 
 
+#: The line the host text states in front of a tile loop that runs interchanged.
+INTERCHANGE_MARK = "hawk host loop interchange"
+
+
+def _host_text(kernel) -> str:
+    """The host source text one build of ``kernel`` emits (no compiler runs)."""
+    (source,) = emit_source(kernel, targets=("host",), options={"host.profile": "native"}).sources.values()
+    return source.text
+
+
 @pytest.mark.parametrize("name", ["fill_mask", "matvec_computed", "masked_sum"])
 def test_a_kernel_that_only_reads_a_table_interchanges(name):
-    walk = W.CORPUS[name].kernel.walk
-    assert walk.access.cls == "cross_sample_read"             # the class placement legality reads is unchanged
-    assert interchanged_loops(walk)
+    kernel = W.CORPUS[name].kernel
+    assert _ir.access_class(kernel.walk) == "cross_sample_read"      # the class placement legality reads is unchanged
+    assert INTERCHANGE_MARK in _host_text(kernel)
 
 
-def test_a_loop_that_folds_a_long_vector_stays_its_lanes_own_and_the_gate_says_why():
-    walk = W.matvec_in.walk
-    assert walk.access.cls == "cross_sample_read" and interchanged_loops(walk) == ()
-    assert not vectorises(walk, HOST)
-    assert "no loop runs interchanged" in vectorise_blocker(walk, HOST)
-
-
+def test_a_loop_that_folds_a_long_vector_stays_its_lanes_own():
+    assert _ir.access_class(W.matvec_in.walk) == "cross_sample_read"
+    assert INTERCHANGE_MARK not in _host_text(W.matvec_in)
 
 
 @pytest.mark.parametrize("name", ["fill_mask", "matvec_computed", "wide51", "masked_sum"])

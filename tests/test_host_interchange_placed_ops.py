@@ -20,7 +20,6 @@ import hawk
 import hawk.math as m
 from hawk import Mutable, Scalar, Vector
 from hawk.artifact import build_bundle
-from raptor.wings.cpu.vectorise import interchanged_loops
 
 W = 512
 N = 70
@@ -84,13 +83,13 @@ CASES = {
 @pytest.mark.parametrize("name", CASES)
 def test_a_placed_wide_value_feeds_a_whole_value_op(name, tmp_path, cache_dir):
     k, want = CASES[name]
-    assert interchanged_loops(k.walk)
     rng = np.random.default_rng(5)
     a = rng.integers(1, 6, N).astype(np.float64) / 2
     s = rng.integers(0, W, N).astype(np.float64)
     t = rng.choice([1.0, 4.0, 9.0, 16.0], (W, N))          # perfect squares: the square roots, and so every sum, are exact
     b = build_bundle([k], tmp_path / name, targets=("host",), cache_dir=cache_dir, host_profile="native",
                      emit_form="static")
+    assert "hawk host loop interchange" in (b.directory / f"{k.name}.cpp").read_text()    # the tile loop runs interchanged
     kernel = O.load(b.directory, k.name, sidecar_of(b, k.name))
     planes = {"a": a, "s": s, "t": t, "y": np.zeros((W, N) if name != "dot" else N)}
     for _role, nm in kernel.arg_spec:

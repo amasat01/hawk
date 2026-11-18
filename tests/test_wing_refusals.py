@@ -15,7 +15,7 @@ from hawk import wings
 from hawk._errors import HawkError
 
 
-def _wing(root, monkeypatch, name, *, family="raptor", parent=None, stated=None, group=None, dist=None, kinds=None):
+def _wing(root, monkeypatch, name, *, family="raptor", parent=None, stated=None, group=None, dist=None):
     """A distribution ``dist`` (default ``<family>-<name>``) that declares the wing ``name`` under ``group`` (default ``<family>.wings``)."""
     dist = dist or f"{family}-{name}"
     package = f"zz_{dist.replace('-', '_')}"
@@ -26,8 +26,6 @@ def _wing(root, monkeypatch, name, *, family="raptor", parent=None, stated=None,
     (root / package).mkdir()
     (root / package / "wing.json").write_text(json.dumps({"family": stated or family, "name": name, "parent": parent}))
     text = f"MANIFEST = {{'family': {stated or family!r}, 'name': {name!r}, 'parent': {parent!r}}}\n"
-    if kinds:
-        text += f"from types import SimpleNamespace\nKINDS = SimpleNamespace(kinds={dict.fromkeys(kinds, 1)!r}, classes={{}})\n"
     (root / package / "__init__.py").write_text(text)
     monkeypatch.syspath_prepend(str(root))
     importlib.invalidate_caches()
@@ -58,17 +56,6 @@ def test_two_distributions_that_declare_one_wing_name_are_refused_by_name(tmp_pa
     _wing(tmp_path, monkeypatch, "zsame", dist="other-zsame")
     with pytest.raises(HawkError, match=r"raptor wing zsame is declared by more than one distribution \(other-zsame, raptor-zsame\)"):
         wings.wing("raptor", "zsame")
-
-
-def test_a_kind_defined_twice_in_a_chain_is_refused_by_name(tmp_path, monkeypatch):
-    from hawk.dialects import KINDS
-
-    _wing(tmp_path, monkeypatch, "zroot", kinds=["zz_twice_kind"])
-    _wing(tmp_path, monkeypatch, "zleaf", parent="zroot", kinds=["zz_twice_kind"])
-    with pytest.raises(HawkError, match="the kind 'zz_twice_kind' is defined twice in the chain of the raptor wing zleaf: by the raptor wing zroot "
-                                        "and by the raptor wing zleaf"):
-        wings.wing("raptor", "zleaf")
-    assert "zz_twice_kind" not in KINDS.kinds
 
 
 def test_a_host_build_on_arm64_does_not_require_the_x86_wing(monkeypatch):

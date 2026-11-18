@@ -6,9 +6,7 @@ accumulate on the own column, and the compiled HOST kernel against the scratch
 interpreter."""
 
 from __future__ import annotations
-from _specs import HOST, device, default_kind
 
-import re
 
 import _spline_forms as S
 import numpy as np
@@ -20,10 +18,7 @@ import hawk
 import hawk.math as m
 from hawk import Index, Kernel, Mutable, Scalar, Vector
 from hawk.diff import vjp
-from raptor.ir import Assign, Leaf, Op, canonical
-from raptor.ir import make as mk
-from raptor.ir.walk import canonical_nodes
-from raptor.ir.types import TensorType
+from hawk import _ir
 
 
 # --------------------------------------------------------------------------
@@ -256,8 +251,12 @@ def test_an_int32_value_indexes_a_vector(host):
 def _read_of_the_accumulated_plane():
     """``vjp(_double_hit)`` plus a runtime-index read of the accumulated ``bar_theta`` value."""
     sinks = vjp(_double_hit, wrt=("theta",))
-    read = next(n for n in canonical_nodes(tuple(_double_hit.sinks))[0] if isinstance(n, Op) and n.kind == "component_at")
-    return (*sinks, Assign("z", mk("component_at", (sinks[0].value, read.operands[1])), TensorType((), "f64")))
+    read = next(
+        n for n in _ir.post_order(_double_hit.sinks)
+        if _ir.is_a(n, "op") and n.field_text("kind") == "component_at"
+    )
+    picked = _ir.make("component_at", (sinks[0].operands[0], read.operands[1]))
+    return (*sinks, _ir.make_node("Assign", _ir.TensorType((), "f64"), (picked,), name="z"))
 
 
 def test_a_runtime_read_of_an_accumulated_plane_equals_the_interpreter(host):

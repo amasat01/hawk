@@ -22,6 +22,7 @@ import pytest
 from hawk import Mutable, Scalar, Terminated, Vector, kernel
 from hawk.ext import DEFAULT_KIND, KernelKind, Kind, Output
 from raptor.errors import RaptorError as HawkError
+from hawk import _ir
 
 VOCAB = {"terminated": Terminated, "scale": Scalar}
 
@@ -132,7 +133,7 @@ def test_a_wrapper_decorator_does_not_see_a_shadowed_vocabulary_name():
         y = v
 
     assert k.arg_spec == bare.arg_spec
-    assert k.walk.digest == bare.walk.digest
+    assert _ir.digest(k.walk) == _ir.digest(bare.walk)
 
 
 def _make_factory(w):
@@ -146,8 +147,8 @@ def _make_factory(w):
 
 def test_a_kernel_factory_resolves_an_unused_extent_from_the_defining_frame():
     k3, k5 = _make_factory(3), _make_factory(5)
-    assert k3.walk.slot_types[("vec_in", "v")].shape == (3,)
-    assert k5.walk.slot_types[("vec_in", "v")].shape == (5,)
+    assert _ir.slot_type(k3.walk, "vec_in", "v").shape == (3,)
+    assert _ir.slot_type(k5.walk, "vec_in", "v").shape == (5,)
     assert k3.arg_spec == k5.arg_spec
 
 
@@ -210,7 +211,7 @@ def test_a_kind_decorator_takes_the_launch_keywords_of_hawk_kernel(launch):
     spelled = kernel(_launch_body(), kind=LAUNCH, **launch)
     decorated = LAUNCH(**launch)(_launch_body())
     assert decorated.name == spelled.name
-    assert decorated.walk.digest == spelled.walk.digest
+    assert _ir.digest(decorated.walk) == _ir.digest(spelled.walk)
     for field in ("group", "time", "time_step", "jump"):
         assert getattr(decorated, field) == getattr(spelled, field)
 

@@ -3,7 +3,7 @@
 
 """The authoring surface spells EVERY op the IR carries.
 
-WHY THIS ROW EXISTS. ``raptor.ir.ops.OP_KINDS`` is the vocabulary, the rule
+WHY THIS ROW EXISTS. the library's op kinds is the vocabulary, the rule
 table is keyed on it and ``staging/aether/wings/base/render.py`` renders it — three consumers
 that a row already checks against each other. Nobody was checking the FOURTH:
 the surface an author writes a kernel through. ``outer`` was in ``MATRIX_OPS``,
@@ -77,33 +77,35 @@ import hawk
 import hawk.math as hm
 from hawk.artifact import build
 from hawk.diff import vjp
-from raptor.ir import Leaf, canonical
-from raptor.ir.ops import MINTED_OPS, OP_KINDS
+from hawk import _ir
+from hawk.trace.lane_axes import trace_context
 from hawk.trace.value import TableRef, node_of
-from raptor.ir.types import TensorType
 
-S = TensorType((), "f64")
-B = TensorType((), "bool")
-I32 = TensorType((), "i32")
-I32_PLANE = TensorType((), "int32")
-V3 = TensorType((3,), "f64")
-Q = TensorType((4,), "f64", "quaternion")
-M33 = TensorType((3, 3), "f64")
+CTX = _ir.new_context()
+OP_KINDS, MINTED_OPS = _ir.OP_KINDS, _ir.MINTED_OPS
+
+S = _ir.TensorType((), "f64")
+B = _ir.TensorType((), "bool")
+I32 = _ir.TensorType((), "i32")
+I32_PLANE = _ir.TensorType((), "int32")
+V3 = _ir.TensorType((3,), "f64")
+Q = _ir.TensorType((4,), "f64", "quaternion")
+M33 = _ir.TensorType((3, 3), "f64")
 
 #: Samples the end-to-end half runs. Every column differs, so a body that read
 #: a fixed sample would be visible.
 N = 5
 
 
-def _v(t: TensorType, name: str = "a"):
+def _v(t: _ir.TensorType, name: str = "a"):
     """A traced value over a fresh leaf of type ``t``, built through the surface.
 
     A bool payload binds the reserved ``terminated`` mask role, which is the one
     boolean leaf HAWK's vocabulary has; everything else binds by rank."""
     if t.dtype == "bool":
-        return hawk.Value(Leaf("terminated", "terminated", name, t))
+        return hawk.Value(_ir.leaf(CTX, "terminated", "terminated", name, t))
     role = {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(t.shape)]
-    return hawk.Value(Leaf("vocab_read", role, name, t))
+    return hawk.Value(_ir.leaf(CTX, "vocab_read", role, name, t))
 
 
 def _spell_at():
@@ -235,8 +237,8 @@ SPELLINGS = {
     "eigh_w": lambda: hm.eigh(_v(M33))[0],
     "eigh_v": lambda: hm.eigh(_v(M33))[1],
     "eigh_info": lambda: hm.eigh(_v(M33))[2],
-    "lstsq": lambda: hm.lstsq(_v(TensorType((40, 34), "f64")), _v(TensorType((40,), "f64"), "b"))[0],
-    "lstsq_info": lambda: hm.lstsq(_v(TensorType((40, 34), "f64")), _v(TensorType((40,), "f64"), "b"))[1],
+    "lstsq": lambda: hm.lstsq(_v(_ir.TensorType((40, 34), "f64")), _v(_ir.TensorType((40,), "f64"), "b"))[0],
+    "lstsq_info": lambda: hm.lstsq(_v(_ir.TensorType((40, 34), "f64")), _v(_ir.TensorType((40,), "f64"), "b"))[1],
     "ray_tri": lambda: hm.ray_tri(*(_v(V3, n) for n in "oabcd")),
     "ray_aabb": lambda: hm.ray_aabb(*(_v(V3, n) for n in "odlh")),
     "ray_sphere": lambda: hm.ray_sphere(_v(V3, "o"), _v(V3, "d"), _v(V3, "c"), _v(S, "r")),
@@ -255,27 +257,35 @@ def _mint(spell):
     op" fails naming the kind, rather than passing because the table has a key
     for it."""
     try:
-        return node_of(spell())
+        with trace_context(CTX):
+            return node_of(spell())
     except Exception as exc:                            # noqa: BLE001 - reported
         return exc
 
 
 #: Every spelling, RUN once at collection: ``kind -> the node it minted`` or the
 #: exception it raised.
+def _kind(node) -> str | None:
+    """The op kind a node states: an op's own, or ``select`` / ``dispatch`` for those two core classes; ``None`` otherwise."""
+    if _ir.is_a(node, "op"):
+        return node.field_text("kind")
+    return next((kind for kind in ("select", "dispatch") if _ir.is_a(node, kind)), None)
+
+
 MINTED = {kind: _mint(spell) for kind, spell in SPELLINGS.items()}
 
 
 def test_every_op_kind_has_an_authoring_spelling():
     covered = {kind for kind, got in MINTED.items()
-               if not isinstance(got, Exception) and got.kind == kind}
+               if not isinstance(got, Exception) and _kind(got) == kind}
     missing = sorted(set(OP_KINDS) - covered - set(MINTED_OPS))
     assert not missing, (
-        "these op kinds are in hawk.ir.ops.OP_KINDS but no name re-exported by "
+        "these op kinds are in the library's op kinds but no name re-exported by "
         f"hawk.trace mints them: {missing}. An op the IR types, the rule table "
         "differentiates and the emitter renders, that an author cannot write, is "
         "a hole in the language")
     stale = sorted(set(SPELLINGS) - set(OP_KINDS))
-    assert not stale, f"this row spells {stale}, which ops.py no longer declares"
+    assert not stale, f"this row spells {stale}, which the library no longer declares"
 
 
 @pytest.mark.parametrize("kind", sorted(SPELLINGS), ids=sorted(SPELLINGS))
@@ -284,15 +294,15 @@ def test_each_spelling_mints_the_kind_it_claims(kind):
     node = MINTED[kind]
     assert not isinstance(node, Exception), (
         f"the surface spelling recorded for {kind!r} does not run: {node!r}")
-    assert node.kind == kind, (
-        f"the surface spelling recorded for {kind!r} mints {node.kind!r} instead")
+    assert _kind(node) == kind, (
+        f"the surface spelling recorded for {kind!r} mints {_kind(node)!r} instead")
 
 
 def test_a_declared_minted_op_has_no_authoring_spelling():
     """The declaration is exact: a minted op is an op, and none of them is spelled by an author."""
     assert set(MINTED_OPS) <= set(OP_KINDS)
     spelled = sorted(set(MINTED_OPS) & {kind for kind, got in MINTED.items()
-                                        if not isinstance(got, Exception) and got.kind == kind})
+                                        if not isinstance(got, Exception) and _kind(got) == kind})
     assert not spelled, f"declared minted in raptor, yet an authoring name spells them: {spelled}"
 
 
@@ -345,7 +355,7 @@ def matvocab_run(tmp_path_factory) -> dict:
     planes = _planes(np.random.default_rng(20260905))
     sinks = vjp(matvocab)
     derived = SimpleNamespace(name="matvocab_vjp", sinks=sinks,
-                              walk=canonical(sinks))
+                              walk=_ir.canonical(sinks))
     return {"planes": planes,
             "primal": (matvocab.sinks,
                        _run(matvocab, root / "primal", cache, planes)),

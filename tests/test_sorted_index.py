@@ -19,7 +19,7 @@ import hawk
 from hawk import HawkError, Index, Mutable, Scalar, Sorted
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from raptor.ir import Leaf
+from hawk import _ir
 from hawk.trace.decl import Plane
 
 SEGMENTS = 5
@@ -59,7 +59,7 @@ def _leaf(kernel, name):
         if id(node) in seen:
             continue
         seen.add(id(node))
-        if isinstance(node, Leaf) and node.name == name:
+        if _ir.is_a(node, "leaf") and node.field_text("name") == name:
             return node
         stack.extend(node.operands)
     raise AssertionError(name)
@@ -76,8 +76,8 @@ def test_only_an_index_can_be_sorted():
 
 
 def test_the_flag_reaches_the_leaf():
-    assert _leaf(by_segment, "seg").sorted is True
-    assert _leaf(by_index, "seg").sorted is False
+    assert _leaf(by_segment, "seg").field_flag("sorted") is True
+    assert _leaf(by_index, "seg").field_flag("sorted") is False
 
 
 def test_the_sidecar_names_the_sorted_inputs_only_when_declared(loaded):

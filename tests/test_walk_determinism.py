@@ -3,7 +3,7 @@
 
 """Walk determinism.
 
-Two ``canonical()`` calls on structurally equal DAGs produce an equal
+Two ``_ir.canonical()`` calls on structurally equal DAGs produce an equal
 ``digest`` and an equal ``arg_spec``. "Structurally equal" is the load-bearing
 word: the second DAG below is built in a different CONSTRUCTION order and
 duplicates the shared subexpression instead of sharing the object, so the
@@ -20,21 +20,24 @@ from __future__ import annotations
 
 from _dags import V3, drag_dag
 
-from raptor.ir import Assign, Leaf, canonical
+from hawk import _ir
+
+#: One context holds the DAGs these rows build.
+CTX = _ir.new_context()
 
 
 def test_two_walks_of_the_same_dag_agree():
-    dag = drag_dag()
-    a, b = canonical(dag), canonical(dag)
-    assert a.digest == b.digest
-    assert a.arg_spec == b.arg_spec
+    dag = drag_dag(CTX)
+    a, b = _ir.canonical(dag), _ir.canonical(dag)
+    assert _ir.digest(a) == _ir.digest(b)
+    assert _ir.arg_spec(a) == _ir.arg_spec(b)
 
 
 def test_permuted_construction_order_gives_the_same_walk():
-    a = canonical(drag_dag())
-    b = canonical(drag_dag(permuted=True))
-    assert a.arg_spec == b.arg_spec, (a.arg_spec, b.arg_spec)
-    assert a.digest == b.digest, (
+    a = _ir.canonical(drag_dag(CTX))
+    b = _ir.canonical(drag_dag(CTX, permuted=True))
+    assert _ir.arg_spec(a) == _ir.arg_spec(b), (_ir.arg_spec(a), _ir.arg_spec(b))
+    assert _ir.digest(a) == _ir.digest(b), (
         "structurally equal DAGs must hash identically: construction order "
         "and subexpression sharing are not part of a DAG's identity"
     )
@@ -42,12 +45,14 @@ def test_permuted_construction_order_gives_the_same_walk():
 
 def test_digest_is_sensitive_to_a_real_change():
     """Non-vacuity: the digest must not be constant. Renaming one leaf moves it."""
-    a = canonical(drag_dag())
-    b = canonical((Assign("acc", Leaf("vocab_read", "vec_in", "other", V3), V3),))
-    assert a.digest != b.digest
+    a = _ir.canonical(drag_dag(CTX))
+    ctx = _ir.new_context()
+    other = _ir.leaf(ctx, "vocab_read", "vec_in", "other", V3)
+    b = _ir.canonical((_ir.make_node("Assign", V3, (other,), name="acc"),))
+    assert _ir.digest(a) != _ir.digest(b)
 
 
 def test_shared_subexpression_is_emitted_once():
-    walk = canonical(drag_dag())
-    kinds = [getattr(n, "kind", None) for n in walk.order]
+    walk = _ir.canonical(drag_dag(CTX))
+    kinds = [n.field_text("kind") for n in _ir.walk_order(walk)]
     assert kinds.count("mul") == 1, kinds

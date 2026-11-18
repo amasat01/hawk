@@ -122,24 +122,10 @@ def _up(family: str, name: str) -> list:
 
 @cache
 def wing(family: str, name: str):
-    """The wing package ``name`` of ``family``; its chain is loaded root to leaf and its kinds join the front end's registry.
+    """The wing package ``name`` of ``family``; its chain is loaded root to leaf.
 
     One load per wing (the function's own memo; a refusal is not remembered, so a later install is seen)."""
-    from .dialects import KINDS
-
     up = _up(family, name)
-    defined: dict = {}
-    chain_kinds = [(each, getattr(mod, "KINDS", None)) for each, mod in reversed(up)]       # a wing that declares no node kinds has none
-    for each, declared in chain_kinds:
-        for kind in () if declared is None else declared.kinds:
-            if kind in defined:
-                raise HawkError(f"the kind {kind!r} is defined twice in the chain of the {_label(family, name)}: by the {_label(family, defined[kind])} "
-                                f"and by the {_label(family, each)}")
-            defined[kind] = each
-    for _, declared in chain_kinds:
-        if declared is not None:
-            KINDS.kinds.update(declared.kinds)
-            KINDS.classes.update(declared.classes)
     return up[0][1]
 
 

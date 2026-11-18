@@ -1,56 +1,25 @@
-"""Every node class has a state/edges/from_state recipe, and rebuilding every node reproduces the Walk."""
+"""Rebuilding every node over its own operands reproduces the walk."""
 import _kernels as K
-import raptor.wings.base.box  # noqa: F401  (BoxStore)
-import raptor.wings.base.team  # noqa: F401
 import pytest
-from raptor.ir.nodes import Node
-from raptor.wings.base.cells import walk as canonical
+
+from hawk import _ir
 from hawk.trace.kernel import _declared
 
 
-def subclasses(cls):
-    for c in cls.__subclasses__():
-        yield c
-        yield from subclasses(c)
-
-
-ALL = sorted(set(subclasses(Node)), key=lambda c: (c.__module__, c.__name__))
-
-
-def _own_slots(cls):
-    out = []
-    for k in cls.__mro__:
-        if k not in (Node, object):
-            slots = vars(k).get("__slots__", ())
-            out += [slots] if isinstance(slots, str) else list(slots)
-    return out
-
-
-@pytest.mark.parametrize("cls", ALL, ids=lambda c: f"{c.__module__}.{c.__name__}")
-def test_class_has_a_recipe(cls):
-    has = any("from_state" in vars(k) for k in cls.__mro__ if k is not Node)
-    assert has or not _own_slots(cls), f"{cls.__name__} holds {_own_slots(cls)} and has no recipe"
-
-
 def _rebuild_all(sinks):
-    done = {}
-
-    def go(n):
-        if id(n) not in done:
-            ops = tuple(go(o) for o in n.operands)
-            edges = {k: None if v is None else tuple(go(c) for c in v) if isinstance(v, tuple) else go(v)
-                     for k, v in n.edges().items()}
-            done[id(n)] = n.rebuilt(ops, edges)
-        return done[id(n)]
-
-    return tuple(go(s) for s in sinks)
+    """The sinks rebuilt bottom-up: every node over the rebuilt copies of its operands."""
+    rebuilt = {}
+    for node in _ir.post_order(sinks):
+        rebuilt[node] = _ir.rebuild(node, [rebuilt[operand] for operand in node.operands])
+    return tuple(rebuilt[sink] for sink in sinks)
 
 
 @pytest.mark.parametrize("name", sorted(K.CORPUS))
 def test_rebuilt_reproduces_the_walk(name):
     k = K.CORPUS[name]
     declared = _declared(k.planes)
-    assert canonical(_rebuild_all(k.sinks), declared).digest == canonical(k.sinks, declared).digest
+    rebuilt = _ir.cells_walk(_rebuild_all(k.sinks), declared)
+    assert _ir.digest(rebuilt) == _ir.digest(_ir.cells_walk(k.sinks, declared))
 
 
 def test_core_imports_no_dialect():

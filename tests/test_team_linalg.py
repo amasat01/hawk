@@ -13,9 +13,6 @@ the refusals name what they refuse.
 """
 
 from __future__ import annotations
-from raptor.wings.base.dispatch import dispatch as _dispatch
-from _specs import spec_for, default_kind
-from _specs import DEVICE as DEVICE_SPEC
 
 import math
 import os
@@ -24,21 +21,21 @@ import numpy as np
 import pytest
 from _block_kernels import gram_kernel, grad_kernel, keyed_transpose_kernel, readback_kernel, scaled_kernel, step_kernel, stored_and_read_kernel, total_kernel
 from _linalg_kernels import chol_from_kernel, chol_kernel, eigh_kernel, lstsq_kernel, lu_kernel
-from conftest import sidecar_of
+from conftest import assert_within, sidecar_of, sum_bound
 from scipy.linalg import lapack
 
 import hawk
 from hawk import HawkError
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from raptor.ir import Assign, Leaf, make
+from raptor.ir import Leaf, make
 from hawk.facts import load as _load_facts
 MAX_DIM = _load_facts("cpu")["linalg"]["max_dim"]
-from raptor.wings.base.block import is_block_write
-from raptor.wings.base.team import plain_blocks
-from raptor.wings.base.split import stages
 from hawk.trace.kernel import Kernel
 from raptor.ir.types import TensorType
+from hawk import _ir
+
+CTX = _ir.new_context()  # the context of the shared kernel builders
 
 LANES = 5
 K = 2                                    # right-hand side columns of the kernels
@@ -99,6 +96,12 @@ def _build(kernel, tmp, target, form):
     return build_bundle([kernel], tmp, targets=targets, host_profile="native", linalg_form=form)
 
 
+def _team_stages(kernel, tmp, form="auto"):
+    """The ``team`` records of the stages the sidecar of the host build of ``kernel`` states, in launch order."""
+    side = sidecar_of(_build_sum(kernel, tmp, "host", form), kernel.name)
+    return [s["team"] for s in side.get("stages", []) if "team" in s]
+
+
 def _build_all(kernels, tmp, target):
     return build_bundle(kernels, tmp, targets=("host",) if target == "host" else ("cuda",),
                         host_profile="native", linalg_form="auto")
@@ -150,7 +153,7 @@ def _marked(cases):
 
 @pytest.mark.parametrize("n,form,target", _marked(CASES))
 def test_lu_solve_det_and_info_match_numpy_and_lapack(cache, n, form, target):
-    kernel = lu_kernel(n)
+    kernel = lu_kernel(CTX, n)
     bundle = _build(kernel, cache / f"lu_{n}_{form}_{target}", target, form)
     mats, vecs, rhs = _data(n, _general)
     out = _run(bundle, kernel, mats, vecs, rhs,
@@ -171,7 +174,7 @@ def test_lu_solve_det_and_info_match_numpy_and_lapack(cache, n, form, target):
 
 @pytest.mark.parametrize("n,form,target", _marked(CASES))
 def test_cholesky_solve_factor_and_info_match_numpy_and_lapack(cache, n, form, target):
-    kernel = chol_kernel(n)
+    kernel = chol_kernel(CTX, n)
     bundle = _build(kernel, cache / f"chol_{n}_{form}_{target}", target, form)
     mats, vecs, rhs = _data(n, _spd)
     out = _run(bundle, kernel, mats, vecs, rhs, {"x": n, "X": n * K, "L": n * n, "info": 1}, target)
@@ -192,7 +195,7 @@ def test_cholesky_solve_factor_and_info_match_numpy_and_lapack(cache, n, form, t
 
 @pytest.mark.parametrize("n,form,target", _marked(CASES))
 def test_chol_from_solves_against_the_lower_factor_and_reports_the_bad_diagonal(cache, n, form, target):
-    kernel = chol_from_kernel(n)
+    kernel = chol_from_kernel(CTX, n)
     bundle = _build(kernel, cache / f"cfrom_{n}_{form}_{target}", target, form)
     mats, vecs, rhs = _data(n, _lower)
     out = _run(bundle, kernel, mats, vecs, rhs, {"x": n, "X": n * K, "L": n * n, "info": 1}, target)
@@ -209,7 +212,7 @@ def test_chol_from_solves_against_the_lower_factor_and_reports_the_bad_diagonal(
 @pytest.mark.parametrize("n,form,target", _marked([c for c in CASES if c[0] <= 71 and c[2] == "host"
                                                   or c[0] in (16, 33)]))
 def test_eigh_values_vectors_and_info_match_numpy(cache, n, form, target):
-    kernel = eigh_kernel(n)
+    kernel = eigh_kernel(CTX, n)
     bundle = _build(kernel, cache / f"eigh_{n}_{form}_{target}", target, form)
     mats, vecs, rhs = _data(n, _symmetric)
     out = _run(bundle, kernel, mats, vecs, rhs, {"w": n, "V": n * n, "info": 1}, target)
@@ -228,11 +231,12 @@ def test_eigh_values_vectors_and_info_match_numpy(cache, n, form, target):
 @pytest.mark.parametrize("target", [pytest.param("host", id="host"), pytest.param("cuda", marks=DEVICE, id="cuda")])
 def test_a_matrix_of_512_runs_in_scratch_a_lane_could_not_hold(cache, target):
     n = BIG
-    a = Leaf("vocab_read", "mat_in", "A", TensorType((n, n), "f64"))
-    b = Leaf("vocab_read", "vec_in", "b", TensorType((n,), "f64"))
-    f = make("chol", (a,))
-    kernel = Kernel(f"big_chol_{n}", (Assign("x", make("cho_solve", (f, b)), TensorType((n,), "f64")),
-                                      Assign("info", make("chol_info", (f,)), TensorType((), "int32"))))
+    a = _ir.leaf(CTX, "vocab_read", "mat_in", "A", _ir.TensorType((n, n), "f64"))
+    b = _ir.leaf(CTX, "vocab_read", "vec_in", "b", _ir.TensorType((n,), "f64"))
+    f = _ir.make("chol", (a,))
+    solved = _ir.make_node("Assign", _ir.TensorType((n,), "f64"), (_ir.make("cho_solve", (f, b)),), name="x")
+    status = _ir.make_node("Assign", _ir.TensorType((), "int32"), (_ir.make("chol_info", (f,)),), name="info")
+    kernel = Kernel(f"big_chol_{n}", (solved, status))
     bundle = _build(kernel, cache / f"chol_big_{target}", target, "auto")
     mats, vecs, rhs = _data(n, _spd)
     out = _run(bundle, kernel, mats, vecs, rhs, {"x": n, "info": 1}, target)
@@ -243,7 +247,7 @@ def test_a_matrix_of_512_runs_in_scratch_a_lane_could_not_hold(cache, target):
 
 def _per_lane_factor(cache, target, n=128):
     """The Cholesky kernel at ``n``: its solution and its ``n x n`` factor, a per-lane matrix output."""
-    kernel = chol_kernel(n)
+    kernel = chol_kernel(CTX, n)
     bundle = _build(kernel, cache / f"chol_out_{n}_{target}", target, "auto")
     mats, vecs, rhs = _data(n, _spd)
     return mats, _run(bundle, kernel, mats, vecs, rhs, {"x": n, "X": n * K, "L": n * n, "info": 1}, target)
@@ -280,7 +284,7 @@ LSQ_CASES = [(n, "auto", "host") for n in (33, 64, 71)] + [(33, "auto", "cuda"),
 @pytest.mark.parametrize("n,form,target", _marked(LSQ_CASES))
 def test_lstsq_by_qr_matches_numpy_and_reports_a_zero_column(cache, n, form, target):
     m = 2 * n
-    kernel = lstsq_kernel(m, n)
+    kernel = lstsq_kernel(CTX, m, n)
     bundle = _build(kernel, cache / f"lsq_{n}_{target}", target, form)
     rng = np.random.default_rng(500 + n)
     j = rng.standard_normal((LANES, m, n))
@@ -313,7 +317,7 @@ def _launch(bundle, kernel, planes, sink, target):
 
 def _lstsq_x(m, n):
     """The solution of ``lstsq(J, r)`` as a kernel of its own (what a derivative differentiates)."""
-    return Kernel(f"lsq_x_{m}_{n}", tuple(s for s in lstsq_kernel(m, n).sinks if s.name == "x"))
+    return Kernel(f"lsq_x_{m}_{n}", tuple(s for s in lstsq_kernel(CTX, m, n).sinks if s.field_text("name") == "x"))
 
 
 DERIV_CASES = [(33, "host"), (71, "host"), (33, "cuda")]
@@ -418,30 +422,30 @@ def test_lstsq_by_qr_derivative_keeps_the_conditioning_of_the_matrix(cache):
 
 def test_a_qr_is_refused_under_the_thread_form_and_when_wide(cache):
     with pytest.raises(HawkError, match="least squares by QR is worked by a team"):
-        _build(lstsq_kernel(80, 40), cache / "lsq_thread", "host", "thread")
+        _build(lstsq_kernel(CTX, 80, 40), cache / "lsq_thread", "host", "thread")
     with pytest.raises(HawkError, match="a tall matrix"):
-        lstsq_kernel(30, 40)
+        lstsq_kernel(CTX, 30, 40)
 
 
 # --- the split, the policy and the refusals ------------------------------------------
 
-def test_a_team_matrix_makes_a_store_stage_a_team_stage_and_a_read_stage():
-    found = stages("t", chol_kernel(40).sinks, spec=DEVICE_SPEC)
-    assert [s.team is not None for s in found] == [True, True, False]       # a matrix of 1024 or more elements is copied by a team
-    spec = found[1].team
-    assert spec.threads == 128 and [s.op for s in spec.steps] == ["chol", "cho_solve", "cho_solve"]
-    assert {p.name: p.per_lane for p in spec.planes}["tm0_a"] == 40 * 40
-    assert stages("t", chol_kernel(40).sinks, spec=DEVICE_SPEC)[1].team.threads == 128
-    assert stages("t", chol_kernel(200).sinks, spec=DEVICE_SPEC)[1].team.threads == 256
+def test_a_team_matrix_makes_a_store_stage_a_team_stage_and_a_read_stage(cache):
+    side = sidecar_of(_build(chol_kernel(CTX, 40), cache / "team40", "host", "auto"), chol_kernel(CTX, 40).name)
+    assert ["team" in s for s in side["stages"]] == [True, True, False]       # a matrix of 1024 or more elements is copied by a team
+    assert side["stages"][1]["team"]["threads"] == 128
+    assert side["team_planes"]["tm0_a"] == {"dtype": "real", "per_lane": 40 * 40}
+    big = chol_kernel(CTX, 200)
+    assert sidecar_of(_build(big, cache / "team200", "host", "auto"), big.name)["stages"][1]["team"]["threads"] == 256
 
 
-def test_a_matrix_in_one_lane_is_not_split_unless_the_build_asks_for_a_team():
-    assert stages("t", chol_kernel(MAX_DIM).sinks, spec=DEVICE_SPEC) is None
-    assert stages("t", chol_kernel(MAX_DIM).sinks, spec=DEVICE_SPEC.with_settings(linalg_form="team")) is not None
+def test_a_matrix_in_one_lane_is_not_split_unless_the_build_asks_for_a_team(cache):
+    kernel = chol_kernel(CTX, MAX_DIM)
+    assert _team_stages(kernel, cache / "lane_auto") == []
+    assert len(_team_stages(kernel, cache / "lane_team", "team")) >= 1
 
 
 def test_the_sidecar_names_the_team_stage_and_its_scratch(cache):
-    kernel = lu_kernel(40)
+    kernel = lu_kernel(CTX, 40)
     bundle = _build(kernel, cache / "sidecar", "host", "auto")
     side = sidecar_of(bundle, kernel.name)
     first, *team = [s for s in side["stages"] if "team" in s]
@@ -454,15 +458,15 @@ def test_the_sidecar_names_the_team_stage_and_its_scratch(cache):
 
 def test_a_thread_form_matrix_above_32_is_refused_by_name(cache):
     with pytest.raises(HawkError, match=r"linalg_form='thread' keeps the matrix in one lane"):
-        _build(chol_kernel(64), cache / "thread64", "host", "thread")
+        _build(chol_kernel(CTX, 64), cache / "thread64", "host", "thread")
 
 
 def test_the_form_must_be_one_of_the_three(cache):
     with pytest.raises(HawkError, match="linalg_form must be one of"):
-        _build(chol_kernel(4), cache / "bad_form", "host", "fast")
+        _build(chol_kernel(CTX, 4), cache / "bad_form", "host", "fast")
 
 
-def test_a_team_matrix_in_a_loop_body_is_refused_by_name():
+def test_a_team_matrix_in_a_loop_body_is_refused_by_name(cache):
     import hawk
     import hawk.math as hm
     from hawk import Index, Matrix, Mutable, Vector
@@ -475,26 +479,71 @@ def test_a_team_matrix_in_a_loop_body_is_refused_by_name():
         y = s
 
     with pytest.raises(HawkError, match="launch of its own and cannot sit inside a loop"):
-        stages("iterate", iterate.sinks, spec=DEVICE_SPEC)
+        _build(iterate, cache / "loop_body", "host", "auto")
 
 
-def test_a_team_op_in_an_arm_of_a_dispatch_is_refused_by_name_unless_the_body_also_reads_it_outside():
-    from raptor.ir import Dispatch
+@pytest.mark.parametrize("also_outside", [False, True], ids=["arm_only", "arm_and_outside"])
+def test_a_cholesky_solve_in_an_arm_of_a_dispatch_matches_numpy_whether_or_not_the_body_reads_it_outside(
+        cache, also_outside):
+    """Lanes with ``k == 0`` read the solve of their own system and the others read ``b * b``.
 
-    n = 40
-    a = Leaf("vocab_read", "mat_in", "A", TensorType((n, n), "f64"))
-    b = Leaf("vocab_read", "vec_in", "b", TensorType((n,), "f64"))
-    k = Leaf("vocab_read", "per_sample", "k", TensorType((), "i32"))
-    solve = make("cho_solve", (make("chol", (a,)), b))
-    plain = make("mul", (b, b))
-    arm = _dispatch(k, [solve, plain], "switch", solve.ttype)
-    with pytest.raises(HawkError, match=r"op 'chol' at n=40.*inside an arm of a dispatch"):
-        stages("arm", (Assign("x", arm, solve.ttype),), spec=DEVICE_SPEC)
-    both = (Assign("x", arm, solve.ttype), Assign("y", solve, solve.ttype))
-    assert any(s.team for s in stages("arm", both, spec=DEVICE_SPEC))                  # read outside too: every lane's
+    With ``also_outside`` the body commits the same solve to a second plane, so every lane runs it.
+    Oracle: ``np.linalg.solve`` on a symmetric positive definite matrix per lane; the solve's bound is
+    the forward bound ``50 n eps cond(A) max|x|`` the lstsq test of this file uses, the product arm's
+    is half an ulp per entry.
+    """
+    import hawk.math as hm
+    from hawk import Int32, Matrix, Mutable, Vector
+
+    n, lanes = 40, 8
+
+    if also_outside:
+        @hawk.kernel
+        def armed(A: Matrix[40, 40], b: Vector[40], k: Int32, x: Mutable[Vector[40]], y: Mutable[Vector[40]]):
+            factor, _ = hm.cholesky(A)
+            x = hm.dispatch(k, [hm.cho_solve(factor, b), b * b])
+            y = hm.cho_solve(factor, b)
+    else:
+        @hawk.kernel
+        def armed(A: Matrix[40, 40], b: Vector[40], k: Int32) -> Vector[40]:
+            factor, _ = hm.cholesky(A)
+            return hm.dispatch(k, [hm.cho_solve(factor, b), b * b])
+
+    rng = np.random.default_rng(40)
+    root = rng.standard_normal((lanes, n, n)) / np.sqrt(n)
+    a = root @ root.transpose(0, 2, 1) + np.eye(n)          # SPD: A = R R^T + I
+    b = rng.standard_normal((lanes, n))
+    k = (np.arange(lanes) % 2).astype(np.int32)             # both arms, interleaved across lanes
+    bundle = _build(armed, cache / f"arm_chol_{also_outside}", "host", "auto")
+    planes = {"A": np.ascontiguousarray(a.reshape(lanes, -1).T), "b": np.ascontiguousarray(b.T), "k": k}
+    outs = {name: np.zeros((n, lanes)) for name in (("x", "y") if also_outside else ("out",))}
+    rt.run(rt.load(bundle.directory, armed.name, sidecar_of(bundle, armed.name)), **planes, **outs)
+
+    got = outs["x"] if also_outside else outs["out"]
+    for lane in range(lanes):
+        solved = np.linalg.solve(a[lane], b[lane])
+        if also_outside:
+            assert_within(outs["y"][:, lane], solved, 50 * n * EPS * np.linalg.cond(a[lane]) * np.abs(solved).max())
+        if k[lane] == 0:
+            want, bound = solved, 50 * n * EPS * np.linalg.cond(a[lane]) * np.abs(solved).max()
+        else:
+            want = b[lane] * b[lane]
+            bound = EPS / 2 * np.abs(want)
+        assert_within(got[:, lane], want, bound)
 
 
-def test_a_block_sum_in_an_arm_of_a_dispatch_is_refused_by_name():
+def test_a_block_sum_in_an_arm_of_a_dispatch_runs_over_every_lane_and_matches_numpy(cache):
+    """``hm.dispatch(k, [hawk.sum(outer(j, j)), outer(j, j)])`` gives each lane its arm's value.
+
+    The meaning, from the language: ``hawk.sum`` is "the sum of ``x`` over the lane axes ... ``None``:
+    every axis, one value for the run", and only ``where=`` masks a lane out of it; ``dispatch`` is
+    ``branches[clamp(kind, 0)]``, a per-element choice of VALUE. So the sum in arm 0 is the sum over
+    every lane of ``outer(j, j)``, whichever arm a lane selects, and a lane with ``k == 0`` reads
+    that total while any other lane reads its own ``outer(j, j)``.
+
+    Oracle: NumPy in float64. The total's bound is ``sum_bound`` of each entry's terms plus half an
+    ulp per rounded product; the own-lane arm carries the product's half ulp alone.
+    """
     import hawk.math as hm
     from hawk import Int32, Matrix, Vector
 
@@ -502,12 +551,24 @@ def test_a_block_sum_in_an_arm_of_a_dispatch_is_refused_by_name():
     def armed(j: Vector[40], k: Int32) -> Matrix[40, 40]:
         return hm.dispatch(k, [hawk.sum(hm.outer(j, j)), hm.outer(j, j)])
 
-    with pytest.raises(HawkError, match="sum.*dense block.*inside an arm of a dispatch"):
-        stages("armed", armed.sinks, spec=DEVICE_SPEC)
+    lanes = 200
+    rng = np.random.default_rng(40)
+    j = rng.uniform(0.5, 2.0, (40, lanes))
+    k = (np.arange(lanes) % 2).astype(np.int32)            # both arms, interleaved across lanes
+    terms = j[:, None, :] * j[None, :, :]                  # (40, 40, lanes): outer(j, j) of each lane
+    bundle = _build(armed, cache / "arm_block", "host", "auto")
+    out = np.zeros((1600, lanes))
+    rt.run(rt.load(bundle.directory, armed.name, sidecar_of(bundle, armed.name)), j=j, k=k, out=out)
+    got = out.reshape(40, 40, lanes)
 
-
-
-
+    eps = np.finfo(np.float64).eps
+    total = terms.sum(axis=2)
+    total_bound = np.array([[sum_bound(terms[a, b]) + eps / 2 * terms[a, b].sum() for b in range(40)]
+                            for a in range(40)])
+    own_bound = eps / 2 * terms
+    for lane in range(lanes):
+        want, bound = (total, total_bound) if k[lane] == 0 else (terms[:, :, lane], own_bound[:, :, lane])
+        assert_within(got[:, :, lane], want, bound)
 
 
 def test_the_dimension_bound_is_the_facts_team_max_dim():
@@ -530,7 +591,7 @@ def _bits_run(cache, tag, target, threads):
     old = os.environ.get("HAWK_TEAM_THREADS")
     os.environ["HAWK_TEAM_THREADS"] = str(threads)
     try:
-        kernel = lu_kernel(71)
+        kernel = lu_kernel(CTX, 71)
         bundle = _build(kernel, cache / f"bits_{tag}_{target}_{threads}", target, "auto")
         mats, vecs, rhs = _data(71, _general)
         return _run(bundle, kernel, mats, vecs, rhs, {"x": 71, "X": 71 * K, "det": 1, "info": 1}, target)
@@ -552,7 +613,7 @@ def test_the_team_size_never_changes_a_bit(cache, target):
 @pytest.mark.parametrize("n", (16, 32))
 @pytest.mark.parametrize("target", [pytest.param("host", id="host"), pytest.param("cuda", marks=DEVICE, id="cuda")])
 def test_team_and_thread_forms_agree_to_a_few_ulp(cache, n, target):
-    kernel = lu_kernel(n)
+    kernel = lu_kernel(CTX, n)
     mats, vecs, rhs = _data(n, _general)
     outs = {"x": n, "X": n * K, "det": 1, "info": 1}
     got = {form: _run(_build(kernel, cache / f"ab_{n}_{form}_{target}", target, form),
@@ -639,7 +700,7 @@ def test_block_sums_match_the_exact_sum_and_the_per_entry_path(cache, p, form, t
         assert np.all(np.abs(got - ref) <= SUM_BOUND * EPS * scale + 1e-300), build.__name__
         if p == 8:
             per_entry = build(p, ROWS, "thread")
-            assert not any(is_block_write(s) for s in plain_blocks(per_entry.sinks, "thread", DEVICE_SPEC))
+            assert _team_stages(per_entry, cache / f"thread_stages_{build.__name__}", "thread") == []
             other = _sums_of(per_entry, cache, f"ent_{build.__name__}_{p}_{target}", target, "thread", j, r, p)
             assert np.all(np.abs(got - other) <= 2 * SUM_BOUND * EPS * scale + 1e-300)
 
@@ -693,21 +754,14 @@ def test_the_vjp_through_a_block_sum_matches_finite_differences(cache, make, tar
 
 
 @pytest.mark.parametrize("make", (gram_kernel, grad_kernel))
-def test_a_keyed_product_sum_at_p71_lowers_to_one_block_sum(make):
-    kernel = make(71, ROWS)
-    assert [is_block_write(s) for s in kernel.sinks] == [True]
-    found = stages(kernel.name, kernel.sinks, spec=DEVICE_SPEC)
-    assert [s.team is not None for s in found] == [False, True]
-    (step,) = found[1].team.steps
-    assert (step.op, found[1].team.grid) == ("block_sum", "keys")
-    assert (step.n, step.k) == (71, 71 if make is gram_kernel else 1)
+def test_a_keyed_product_sum_at_p71_lowers_to_one_block_sum(cache, make):
+    (team,) = _team_stages(make(71, ROWS), cache / f"p71_{make.__name__}")
+    assert team["grid"] == "keys" and team["keyed"]["payload"] == ([71, 71] if make is gram_kernel else [71])
 
 
-def test_a_payload_that_is_not_a_product_keeps_the_per_entry_path():
-    scaled, small = scaled_kernel(20, ROWS), gram_kernel(4, ROWS)
-    plain = plain_blocks(scaled.sinks, "auto", DEVICE_SPEC) + plain_blocks(small.sinks, "auto", DEVICE_SPEC)
-    assert not any(is_block_write(s) for s in plain)
-    assert len(plain_blocks(small.sinks, "auto", DEVICE_SPEC)) == 16 and stages("gram", plain_blocks(small.sinks, "auto", DEVICE_SPEC), spec=DEVICE_SPEC) is None
+def test_a_payload_that_is_not_a_product_keeps_the_per_entry_path(cache):
+    assert _team_stages(scaled_kernel(20, ROWS), cache / "scaled20") == []
+    assert _team_stages(gram_kernel(4, ROWS), cache / "gram4") == []
 
 
 def test_the_sidecar_names_the_block_sum_stage_its_keys_and_its_scratch(cache):
@@ -724,9 +778,8 @@ def test_the_sidecar_names_the_block_sum_stage_its_keys_and_its_scratch(cache):
 
 def test_a_block_sum_is_built_per_entry_under_the_thread_form(cache):
     kernel = gram_kernel(40, ROWS)
-    assert any(is_block_write(s) for s in kernel.sinks)
-    assert not any(is_block_write(s) for s in plain_blocks(kernel.sinks, "thread", DEVICE_SPEC))
-    _build_sum(kernel, cache / "blk_thread", "host", "thread")
+    assert len(_team_stages(kernel, cache / "blk_auto")) == 1
+    assert _team_stages(kernel, cache / "blk_thread", "thread") == []
 
 
 @pytest.mark.parametrize("target", [pytest.param("host", id="host"), pytest.param("cuda", marks=DEVICE, id="cuda")])
@@ -847,20 +900,15 @@ def _total_run(cache, tag, spelling, p, target, form="auto"):
 
 
 @pytest.mark.parametrize("spelling", SPELLINGS)
-def test_a_product_sum_over_every_lane_at_p71_lowers_to_one_block_sum_of_one_key(spelling):
-    kernel = total_kernel(spelling, 71, TOTAL_ROWS)
-    assert [is_block_write(s) for s in kernel.sinks] == [True]
-    found = stages(kernel.name, kernel.sinks, spec=DEVICE_SPEC)
-    assert [s.team is not None for s in found] == [False, True]
-    (step,) = found[1].team.steps
-    assert (step.op, step.n, step.k, step.m) == (
-        "block_sum", 71, 71 if spelling in ("outer", "gram") else 1, TOTAL_ROWS if spelling in ("gram", "moment") else 1)
-    assert found[1].team.keyed.kept == ()
+def test_a_product_sum_over_every_lane_at_p71_lowers_to_one_block_sum_of_one_key(cache, spelling):
+    (team,) = _team_stages(total_kernel(spelling, 71, TOTAL_ROWS), cache / f"total71_{spelling}")
+    assert team["grid"] == "keys"
+    assert team["keyed"]["axes"] == []                    # the sum is over every lane: one key
 
 
-def test_a_small_or_thread_form_sum_over_every_lane_keeps_the_per_entry_path():
-    assert not any(is_block_write(s) for s in plain_blocks(total_kernel("outer", 4).sinks, "auto", DEVICE_SPEC))
-    assert not any(is_block_write(s) for s in plain_blocks(total_kernel("gram", 71, TOTAL_ROWS, "thread").sinks, "thread", DEVICE_SPEC))
+def test_a_small_or_thread_form_sum_over_every_lane_keeps_the_per_entry_path(cache):
+    assert _team_stages(total_kernel("outer", 4), cache / "total4") == []
+    assert _team_stages(total_kernel("gram", 71, TOTAL_ROWS, "thread"), cache / "total71_thread", "thread") == []
 
 
 @pytest.mark.parametrize("spelling", SPELLINGS)

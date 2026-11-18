@@ -37,6 +37,8 @@ from _eval import c_round
 
 import hawk
 import hawk.math as m
+from hawk import _ir
+from hawk.trace.lane_axes import trace_context
 from hawk import Kernel, Matrix, Mutable, Scalar, Terminated, Vector
 from hawk.diff import jvp, vjp
 
@@ -346,12 +348,19 @@ def test_rank1_operands_map_component_wise(tmp_path, target):
     np.testing.assert_array_equal(z, np.clip(v, lo, 1.0))
 
 
-def test_class_tests_on_a_vector_are_a_bool_vector():
-    from raptor.ir import Leaf
-    from raptor.ir.types import TensorType
+CTX = _ir.new_context()
 
-    v = hawk.Value(Leaf("vocab_read", "vec_in", "v", TensorType((3,), "f64")))
-    assert m.isnan(v).ttype == TensorType((3,), "bool")
+
+@pytest.fixture(autouse=True)
+def _traced_context():
+    """Literals met while a value is built are made in the context the leaves live in."""
+    with trace_context(CTX):
+        yield
+
+
+def test_class_tests_on_a_vector_are_a_bool_vector():
+    v = hawk.Value(_ir.leaf(CTX, "vocab_read", "vec_in", "v", _ir.TensorType((3,), "f64")))
+    assert m.isnan(v).ttype == _ir.TensorType((3,), "bool")
 
 
 # --------------------------------------------------------------------------- #
@@ -603,11 +612,8 @@ def test_every_elementwise_function_has_a_matrix_row():
 
 
 def _leaf(shape: tuple, name: str = "a"):
-    from raptor.ir import Leaf
-    from raptor.ir.types import TensorType
-
     role = {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(shape)]
-    return hawk.Value(Leaf("vocab_read", role, name, TensorType(shape, "f64")))
+    return hawk.Value(_ir.leaf(CTX, "vocab_read", role, name, _ir.TensorType(shape, "f64")))
 
 
 @pytest.mark.parametrize("spell", [
@@ -638,16 +644,14 @@ def test_rank0_operands_still_mint_one_op():
     for value, kind in ((m.atan2(a, b), "atan2"), (m.expm1(a), "expm1"),
                         (a < b, "lt"), (m.lnot(a < b), "lnot"),
                         (m.land(a < b, b < a), "land")):
-        assert value.node.kind == kind
+        assert value.node.field_text("kind") == kind
 
 
 def test_matrix_class_test_is_a_bool_matrix():
-    from raptor.ir.types import TensorType
-
     M = _leaf((2, 3), "M")
-    assert m.isinf(M).ttype == TensorType((2, 3), "bool")
-    assert (M >= 0.0).ttype == TensorType((2, 3), "bool")
-    assert m.where(m.isinf(M), 0.0, M).ttype == TensorType((2, 3), "f64")
+    assert m.isinf(M).ttype == _ir.TensorType((2, 3), "bool")
+    assert (M >= 0.0).ttype == _ir.TensorType((2, 3), "bool")
+    assert m.where(m.isinf(M), 0.0, M).ttype == _ir.TensorType((2, 3), "f64")
 
 
 # --------------------------------------------------------------------------- #

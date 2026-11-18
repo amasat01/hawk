@@ -7,7 +7,7 @@ table's LOC -- WRITTEN BY THE RUN, and RED when a kind has no rule.
 The measurable claim is "a rule-table LOC count in the card, not an
 assertion here", so the number lands in a card the run regenerates
 (``tests/cards/CARD_DIFF_RULES.md``) and prose only cites it. The gate is the
-enumeration around it: every kind in ``raptor.ir.ops.OP_KINDS`` must carry a table
+enumeration around it: every kind in ``_ir.OP_KINDS`` must carry a table
 entry -- an explicit zero rule for the undifferentiable ones, or the transform's
 own cross-sample handling -- and every SINK family must survive both transforms,
 checked by deriving one, not by reading the source. Absence is the failure
@@ -21,24 +21,19 @@ kind as unruled.
 
 from __future__ import annotations
 
-from raptor.wings.base.dispatch import dispatch as _dispatch
 import hashlib
 from pathlib import Path
 
 import pytest
 from _cards import card_path
 
-from hawk.diff import jvp, vjp
-import raptor.rules.core as _rules_core
-from raptor.rules.core import RULES, _zero_jvp, _zero_vjp
-from raptor.ir import AccumWrite, Assign, At, Const, Dispatch, Leaf, SampleIndex, WideWrite
-from raptor.ir import make as mk
-from raptor.ir.ops import OP_KINDS
-from raptor.ir.types import TensorType
+from hawk import _ir
+from hawk._errors import HawkError
+from hawk.diff import jvp, rules, vjp
 
-F64 = TensorType((), "f64")
-I32 = TensorType((), "i32")
-_TABLE = Path(_rules_core.__file__)
+F64 = _ir.TensorType((), "f64")
+I32 = _ir.TensorType((), "i32")
+_TABLE = Path(rules.__file__)
 _CARD = card_path("CARD_DIFF_RULES.md")
 
 #: The node families the TRANSFORM differentiates itself: terminals, the
@@ -109,9 +104,12 @@ def _primitive_sinks(x, value):
     if definition is None:
         definition = primitive(name, vjp=lambda a, bar: bar,
                                jvp=lambda a, da: da)(lambda a: a * 1.0)
+    from hawk.trace.lane_axes import trace_context
     from hawk.trace.value import Value, node_of
 
-    return (Assign("out", node_of(definition(Value(value))), F64),)
+    with trace_context(value.ctx):
+        boundary = node_of(definition(Value(value)))
+    return (_ir.make_node("Assign", F64, [boundary], name="out"),)
 
 
 def _loop_recurrence():
@@ -132,22 +130,25 @@ def _loop_recurrence():
 
 
 def _entry(kind: str):
-    return next((rule for key, rule in RULES.items() if key[0] == kind), None)
+    """The rule of ``kind``, or ``None`` when the table is silent (the library refuses it by name)."""
+    try:
+        return rules.rule_for(kind, 0)
+    except HawkError:
+        return None
 
 
 def _direction(rule, which: str) -> str:
     if rule is None:
         return "MISSING"
-    fn = getattr(rule, which)
-    if fn in (_zero_vjp, _zero_jvp):
+    if rule.mode == "zero":
         return "zero"
-    if fn is None:
+    if getattr(rule, which) is None:
         return rule.mode
     return "rule"
 
 
 def test_every_op_kind_carries_a_rule():
-    unruled = [kind for kind in OP_KINDS if _entry(kind) is None]
+    unruled = [kind for kind in _ir.OP_KINDS if _entry(kind) is None]
     assert not unruled, (
         "the rule table is closed-world -- a kind with no derivative is "
         "registered with an explicit zero rule, never omitted. Unruled: "
@@ -156,7 +157,7 @@ def test_every_op_kind_carries_a_rule():
 
 
 def test_every_kind_covers_both_directions():
-    gaps = [kind for kind in OP_KINDS
+    gaps = [kind for kind in _ir.OP_KINDS
             if "MISSING" in (_direction(_entry(kind), "vjp"),
                              _direction(_entry(kind), "jvp"))]
     assert not gaps, f"differentiation is BOTH directions; kinds missing one: {gaps}"
@@ -164,12 +165,17 @@ def test_every_kind_covers_both_directions():
 
 @pytest.mark.parametrize("family", sorted(_FAMILIES))
 def test_every_sink_family_survives_both_transforms(family):
-    x = Leaf("vocab_read", "per_sample", "x", F64)
-    idx = Leaf("vocab_read", "per_sample", "idx", I32)
-    tab = Leaf("table_read", "lookup", "tab", F64)
-    value = mk("mul", (x, x))
+    context = _ir.new_context()
+    x = _ir.leaf(context, "vocab_read", "per_sample", "x", F64)
+    idx = _ir.leaf(context, "vocab_read", "per_sample", "idx", I32)
+    tab = _ir.leaf(context, "table_read", "lookup", "tab", F64)
+    value = _ir.make("mul", (x, x))
     prim = _primitive_sinks(x, value)
     loop_sinks = _loop_sinks(x)
+
+    def sink(cls, node, *operands, **fields):
+        return (_ir.make_node(cls, F64, [node, *operands], **fields),)
+
     sinks = {
         "loop": loop_sinks,
         "loop_value": loop_sinks,
@@ -177,16 +183,22 @@ def test_every_sink_family_survives_both_transforms(family):
         "loop_carry": loop_sinks,
         "tape_read": _loop_recurrence(),
         "primitive": prim,
-        "sample_index": (Assign("out", mk("mul", (At(tab, SampleIndex(), F64), x)),
-                                F64),),
-        "assign": (Assign("out", value, F64),),
-        "wide_write": (WideWrite("wide", value, None, F64),),
-        "accum_write": (AccumWrite("acc", value, idx, F64),),
-        "at": (Assign("out", mk("mul", (At(tab, idx, F64), x)), F64),),
-        "dispatch": (Assign("out", _dispatch(idx, [x, mk("mul", (x, x))], "switch",
-                                            F64), F64),),
-        "leaf": (Assign("out", x, F64),),
-        "constant": (Assign("out", mk("add", (x, Const(3.0, F64))), F64),),
+        "sample_index": sink(
+            "Assign",
+            _ir.make("mul", (_ir.make_node("At", F64, [tab, _ir.make_node("SampleIndex", I32, context=context)]), x)),
+            name="out",
+        ),
+        "assign": sink("Assign", value, name="out"),
+        "wide_write": sink("WideWrite", value, name="wide"),
+        "accum_write": sink("AccumWrite", value, idx, name="acc", contract="auto", reduced=None),
+        "at": sink("Assign", _ir.make("mul", (_ir.make_node("At", F64, [tab, idx]), x)), name="out"),
+        "dispatch": sink(
+            "Assign",
+            _ir.make_node("Dispatch", F64, [idx, x, _ir.make("mul", (x, x))]),
+            name="out",
+        ),
+        "leaf": sink("Assign", x, name="out"),
+        "constant": sink("Assign", _ir.make("add", (x, _ir.const(context, 3.0, F64))), name="out"),
     }[family]
     assert vjp(sinks) and jvp(sinks), f"{family} must derive in both directions"
 
@@ -198,17 +210,17 @@ def test_the_card_is_regenerated_and_carries_the_table_loc():
     rows = [f"| `{kind}` | {_direction(_entry(kind), 'vjp')} | "
             f"{_direction(_entry(kind), 'jvp')} | "
             f"{getattr(_entry(kind), 'mode', 'MISSING')} |"
-            for kind in OP_KINDS]
+            for kind in _ir.OP_KINDS]
     families = [f"| `{k}` | {v} |" for k, v in sorted(_FAMILIES.items())]
     _CARD.write_text(
         "# CARD — the derivative rule table\n\n"
         f"Generated by `tests/test_diff_rule_card.py`; the run writes the card, "
         "prose only cites it.\n\n"
-        f"- rule table: `raptor/rules/core.py`\n"
+        f"- rule table: `hawk/diff/rules.py`\n"
         f"- **rule-table LOC: {loc}**\n"
         f"- rule-table sha256: `{hashlib.sha256(text.encode()).hexdigest()}`\n"
-        f"- op kinds with a rule: **{len(OP_KINDS)}/{len(OP_KINDS)}**\n"
-        f"- table entries (`(kind, rank)` keys): {len(RULES)}\n\n"
+        f"- op kinds with a rule: **{len(_ir.OP_KINDS)}/{len(_ir.OP_KINDS)}**\n"
+        "\n"
         "`rule` = a derivative formula; `zero` = an explicit zero rule (a kind that "
         "is genuinely undifferentiable, registered rather than omitted); `walker` = "
         "differentiated by the transform itself (the cross-sample forms).\n\n"

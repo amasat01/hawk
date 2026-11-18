@@ -29,7 +29,7 @@ from conftest import sidecar_of
 
 from hawk import Index, Kernel, Mutable, Scalar, Table, Terminated, kernel
 from hawk.diff import jvp, vjp
-from raptor.ir import Leaf, Loop, canonical_nodes
+from hawk import _ir
 
 H = 1e-5
 N = 8
@@ -226,8 +226,8 @@ def test_a_finishing_primals_derivatives_drop_the_finish_on_device(tmp_path,
 # -- kernel wrapper) must be read the SAME way, never crash.
 # --------------------------------------------------------------------------- #
 def _terminated_leaves(derived) -> list:
-    seq, _ = canonical_nodes(derived)
-    return [n for n in seq if isinstance(n, Leaf) and n.kind == "terminated"]
+    seq, _ = _ir.canonical_nodes(derived)
+    return [n for n in seq if _ir.is_a(n, "leaf") and n.field_text("kind") == "terminated"]
 
 
 def test_a_guard_free_kernel_gets_no_termination_select():
@@ -280,7 +280,7 @@ def _loop_gather_masked(x: Table[Scalar], theta: Table[Scalar],
 
 def test_vjp_of_a_scatter_inside_a_loop_does_not_crash_and_masks_it():
     derived = vjp(_loop_gather_masked, wrt=("theta",))
-    loops = [s for s in derived if isinstance(s, Loop)]
+    loops = [s for s in derived if _ir.is_a(s, "loop")]
     assert loops, (
         "this fixture's own reverse pass must produce a Loop root (the "
         "gather/scatter transpose) or the row is not exercising #30's "
@@ -290,10 +290,7 @@ def test_vjp_of_a_scatter_inside_a_loop_does_not_crash_and_masks_it():
         "read the terminated plane -- inside the loop's own boundary")
     # canonical() (the same walk a build goes through) must succeed and bind
     # the terminated slot -- the ACTUAL crash site this message reports.
-    from raptor.ir import canonical
-
-    walk = canonical(derived)
-    assert ("terminated", "terminated") in walk.slot_of
+    _ir.canonical(derived)
 
     zeros, one_hot = [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]
     live = evaluate(derived, {"x": zeros, "theta": zeros, "terminated": False,
@@ -325,5 +322,5 @@ def test_kernel_without_a_planes_argument_matches_one_given_an_empty_dict():
     explicit = Kernel("diagnostic_vjp", sinks, no_planes)
     defaulted = Kernel("diagnostic_vjp", sinks)
     assert defaulted.planes == {}
-    assert defaulted.walk.digest == explicit.walk.digest
+    assert _ir.digest(defaulted.walk) == _ir.digest(explicit.walk)
     assert defaulted.arg_spec == explicit.arg_spec

@@ -34,57 +34,66 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from raptor.ir import Const, Dispatch, Leaf, Loop, LoopCarry, LoopIndex, LoopValue, Node, PlaneExtent, SampleIndex, Select, Sink, TapeRead, build_loop
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir import make as _mk
-from raptor.ir.nodes import AccumWrite, At, WideWrite, has_feather
-from .. import wings as _wings
-
-_slotwise = _wings.view("raptor", "base", "slotwise")
-from raptor.ir.walk import rebuild
-from raptor.ir.types import INT_PLANE_DTYPES, TensorType
-from .jump import _F64, _I32, _ORDERED, SEED, JumpPlan
-from .loops import _TERMINALS, _post_order
-from raptor.rules.core import zero_like
-_dispatch_kind = _wings.view("raptor", "base", "dispatch")
+from .jump import (
+    _F64,
+    _I32,
+    _ORDERED,
+    SEED,
+    JumpPlan,
+    _switch,
+)
+from .loops import _TERMINALS, _bounds, _index_of, _post_order, _select
+from .tape import _carry
 
 #: The counter of that draw: a stream a kernel's own ``random_uniform`` calls
 #: do not use.
 STREAM = 0x4A554D50
-_BOOL = TensorType((), "bool")
+_BOOL = _ir.TensorType((), "bool")
 #: Ops a tainted value passes through affinely.
-_AFFINE = ("add", "sub", "neg", "vec", "component", "component_at", "splat",
-           "sum", "set_component_at", "add_at")
+_AFFINE = (
+    "add",
+    "sub",
+    "neg",
+    "vec",
+    "component",
+    "component_at",
+    "splat",
+    "sum",
+    "set_component_at",
+    "add_at",
+)
 _BILINEAR = ("mul", "dot")
-_SIGHT = (Leaf, Const, SampleIndex, PlaneExtent, LoopIndex, LoopCarry)
+_SIGHT = ("leaf", "const", "sample_index", "plane_extent", "loop_index", "loop_carry")
 
 
 # --------------------------------------------------------------------------
 # engagement: where a switched value goes
 
 
-def _step(node: Node, get, live) -> tuple:
+def _step(node, get, live) -> tuple:
     """``(tainted, engages)`` for ``node``: whether it carries a switched value
     and whether it feeds one into control or a nonlinear op. ``live(cond)`` says
     a select's condition switches."""
-    if isinstance(node, _SIGHT):
+    if _ir.is_a(node, *_SIGHT):
         return False, False
     ops = node.operands
-    if isinstance(node, Select):
+    if _ir.is_a(node, "select"):
         cond, a, b = ops
         if get(cond):
             return True, True
         return live(cond) or get(a) or get(b), False
-    if isinstance(node, Dispatch):
+    if _ir.is_a(node, "dispatch"):
         if get(ops[0]):
             return True, True
-        return any(get(b) for b in node.branches), False
-    if isinstance(node, At):
+        return any(get(b) for b in ops[1:]), False
+    if _ir.is_a(node, "at"):
         return get(ops[0]), get(ops[1])
     tainted = [get(o) for o in ops]
     if not any(tainted):
         return False, False
-    kind = node.kind
+    kind = node.field_text("kind")
     if kind in _AFFINE:
         return True, False
     if kind in _BILINEAR:
@@ -94,58 +103,62 @@ def _step(node: Node, get, live) -> tuple:
     return True, True
 
 
-def engaged(plan: JumpPlan, seq: Sequence[Node]) -> bool:
+def engaged(plan: JumpPlan, seq: Sequence) -> bool:
     """Whether a live select's value reaches a comparison, a select condition,
     a ``break`` or a non-affine op (a product of two switched values counts)."""
     taint: dict = {}
     slots: dict = {}
 
-    def get(n: Node) -> bool:
-        return taint.get(id(n), False)
+    def get(n) -> bool:
+        return taint.get(n, False)
 
     for node in seq:
-        if isinstance(node, Loop):
+        if _ir.is_a(node, "loop"):
             carried, hit = _loop_taint(plan, node, get)
             if hit:
                 return True
-            slots[id(node)] = carried
-        elif isinstance(node, LoopValue):
-            taint[id(node)] = bool(slots[id(node.loop)][node.slot])
-        elif not isinstance(node, Sink):
+            slots[node] = carried
+        elif _ir.is_a(node, "loop_value"):
+            loop, slot = _ir.loop_value_of(node)
+            taint[node] = bool(slots[loop][slot])
+        elif not _ir.is_a(node, "sink"):
             tainted, hit = _step(node, get, plan.is_live)
             if hit:
                 return True
-            taint[id(node)] = tainted
+            taint[node] = tainted
     return False
 
 
-def _loop_taint(plan: JumpPlan, loop: Loop, outer) -> tuple:
+def _loop_taint(plan: JumpPlan, loop, outer) -> tuple:
     """``(switched per carried slot, engages)`` for one loop, the carries'
     taint iterated to a fixed point."""
-    roots = tuple(loop.nexts) + tuple(loop.exit_values) + (
-        () if loop.exit_cond is None else (loop.exit_cond,))
+    nexts = loop.field_nodes("nexts")
+    exits = _ir.exit_kwargs(loop)
+    roots = (*nexts, *exits["exit_values"])
+    if exits["exit_cond"] is not None:
+        roots += (exits["exit_cond"],)
     body = plan.body(loop, roots)
     live = body.is_live if body is not None else (lambda n: False)
-    stop = {id(o) for o in loop.operands} | {id(loop.index)}
+    stop = {*loop.operands, _index_of(loop)}
     order = _post_order(roots, stop)
-    slot = {id(c): j for j, c in enumerate(loop.carries)}
-    carried = [outer(i) for i in loop.inits]
+    slot = {c: j for j, c in enumerate(loop.field_nodes("carries"))}
+    carried = [outer(i) for i in loop.field_nodes("inits")]
     for _ in range(len(carried) + 1):
         taint: dict = {}
 
-        def get(n: Node) -> bool:
-            if id(n) in slot:
-                return carried[slot[id(n)]]
-            return taint.get(id(n), outer(n) if id(n) in stop else False)
+        def get(n) -> bool:
+            if n in slot:
+                return carried[slot[n]]
+            return taint.get(n, outer(n) if n in stop else False)
 
         for node in order:
-            if id(node) in stop or id(node) in slot or isinstance(node, _TERMINALS):
+            if node in stop or node in slot or _ir.is_a(node, *_TERMINALS):
                 continue
             tainted, hit = _step(node, get, live)
             if hit:
                 return carried, True
-            taint[id(node)] = tainted
-        new = [c or get(n) for c, n in zip(carried, loop.nexts)]
+            taint[node] = tainted
+        new = [c or get(n) for c, n in zip(carried, nexts)]
         if new == carried:
             break
         carried = new
@@ -156,70 +169,91 @@ def _loop_taint(plan: JumpPlan, loop: Loop, outer) -> tuple:
 # the alternate clone
 
 
-def _alt_pass(order: Sequence[Node], mapping: dict, wrap: dict) -> dict:
-    """``{id(node): alternate}`` over ``order`` (operands first): a node whose
+def _alt_pass(order: Sequence, mapping: dict, wrap: dict) -> dict:
+    """``{node: alternate}`` over ``order`` (operands first): a node whose
     operands changed is rebuilt, one in ``wrap`` is passed through its function
     after that. Unchanged nodes stay shared with the primal."""
     memo = dict(mapping)
     for node in order:
-        if id(node) in memo or not node.operands:
+        if node in memo or not node.operands:
             continue
-        new = [memo.get(id(c), c) for c in node.operands]
-        out = (node if all(a is b for a, b in zip(new, node.operands))
-               else rebuild(node, new))
-        if id(node) in wrap:
-            out = wrap[id(node)](out)
-        if out is not node:
-            memo[id(node)] = out
+        new = [memo.get(c, c) for c in node.operands]
+        out = node if all(a == b for a, b in zip(new, node.operands)) else _ir.rebuild(node, new)
+        if node in wrap:
+            out = wrap[node](out)
+        if out != node:
+            memo[node] = out
     return memo
 
 
-def _and(a, b: Node) -> Node:
-    return b if a is True else _mk("land", (a, b))
+def _and(a, b):
+    return b if a is True else _ir.make("land", (a, b))
 
 
-def _guards(order: Sequence[Node], roots: Sequence[Node], stop=()) -> dict:
-    """``{id(comparison): guard}`` over ``order`` (operands first): the
+def _guards(order: Sequence, roots: Sequence, stop=()) -> dict:
+    """``{comparison: guard}`` over ``order`` (operands first): the
     condition under which the comparison's outcome reaches a root, ``None`` when
     always. A select passes its own to a branch under that branch's condition;
     ``and``/``or`` pass it to an operand under the other operand's value."""
-    sel: dict = {id(r): True for r in roots}
+    sel: dict = {r: True for r in roots}
     for node in reversed(order):
-        held = sel.get(id(node))
-        if held is None or id(node) in stop:
+        held = sel.get(node)
+        if held is None or node in stop:
             continue
         ops = node.operands
-        if isinstance(node, Select):
+        if _ir.is_a(node, "select"):
             cond, a, b = ops
-            given = ((cond, held), (a, _and(held, cond)),
-                     (b, _and(held, _mk("lnot", (cond,)))))
-        elif node.kind in ("land", "lor"):
+            given = (
+                (cond, held),
+                (a, _and(held, cond)),
+                (b, _and(held, _ir.make("lnot", (cond,)))),
+            )
+        elif node.field_text("kind") in ("land", "lor"):
             first, second = ops
-            by = (lambda o: o) if node.kind == "land" else (lambda o: _mk("lnot", (o,)))
+            by = (
+                (lambda o: o)
+                if node.field_text("kind") == "land"
+                else (lambda o: _ir.make("lnot", (o,)))
+            )
             given = ((first, _and(held, by(second))), (second, _and(held, by(first))))
         else:
             given = tuple((o, held) for o in ops)
         for o, g in given:
-            was = sel.get(id(o))
-            sel[id(o)] = True if was is True or g is True else (
-                g if was is None else _mk("lor", (was, g)))
-    return {id(n): (None if sel.get(id(n), True) is True else sel[id(n)])
-            for n in order if n.kind in _ORDERED}
+            was = sel.get(o)
+            sel[o] = (
+                True
+                if was is True or g is True
+                else (g if was is None else _ir.make("lor", (was, g)))
+            )
+    return {
+        n: (None if sel.get(n, True) is True else sel[n])
+        for n in order
+        if n.field_text("kind") in _ORDERED
+    }
 
 
-def _flip(hit: Node):
-    return lambda cond: Select(hit, _mk("lnot", (cond,)), cond, _BOOL)
+def _flip(hit):
+    """Return the function negating a comparison where ``hit`` holds."""
+    return lambda cond: _select(hit, _ir.make("lnot", (cond,)), cond)
 
 
-def _sum(terms: Sequence[Node]) -> Node:
+def _sum(terms: Sequence):
     out = terms[0]
     for term in terms[1:]:
-        out = _mk("add", (out, term))
+        out = _ir.make("add", (out, term))
     return out
 
 
-def _zero() -> Const:
-    return Const(0.0, _F64)
+def _zero(context):
+    """Return the constant ``0.0`` of ``context``."""
+    return _ir.const(context, 0.0, _F64)
+
+
+def _keyed_index(sink):
+    """Return the key a keyed scatter commits at, or ``None``."""
+    if _ir.is_a(sink, "accum_write", "wide_write") and len(sink.operands) > 1:
+        return sink.operands[1]
+    return None
 
 
 @dataclass(frozen=True)
@@ -240,7 +274,7 @@ class Parts:
 class _Body:
     """One loop's switching comparisons and its first sweep."""
 
-    def __init__(self, sites: tuple, sweep: Loop | None) -> None:
+    def __init__(self, sites: tuple, sweep) -> None:
         self.sites, self.sweep = sites, sweep
 
 
@@ -248,15 +282,16 @@ class AltPath:
     """The alternate-path derivative of one engaged :class:`JumpPlan`."""
 
     @classmethod
-    def of(cls, plan: JumpPlan | None, seq: Sequence[Node],
-           reverse: bool = False) -> AltPath | None:
+    def of(cls, plan: JumpPlan | None, seq: Sequence, reverse: bool = False) -> AltPath | None:
         if plan is None or not engaged(plan, seq):
             return None
         plan.engaged = True
         return cls(plan, seq, reverse)
 
-    def __init__(self, plan: JumpPlan, seq: Sequence[Node], reverse: bool = False) -> None:
+    def __init__(self, plan: JumpPlan, seq: Sequence, reverse: bool = False) -> None:
         self.plan = plan
+        #: the context every node the plan builds belongs to
+        self.ctx = seq[0].ctx
         #: reverse mode: ``top`` holds the straight-line sites' injections,
         #: ``tapes`` each joint loop's per-iteration injection vector, ``g``
         #: the seed ``sum bar (alt - out)``
@@ -264,262 +299,331 @@ class AltPath:
         self.top: list = []
         self.tapes: dict = {}
         self.alt_at: dict = {}
-        self.g: Node | None = None
+        self.g = None
         self.amap: dict = {}
         self.joints: dict = {}
-        self.seed = Leaf("uniform", "uniform", SEED, _I32)
-        top = [n for n in seq if n.kind in _ORDERED and plan.is_live(n)
-               and not isinstance(n, Loop)]
+        self.seed = _ir.leaf(self.ctx, "uniform", "uniform", SEED, _I32)
+        top = [
+            n
+            for n in seq
+            if n.field_text("kind") in _ORDERED and plan.is_live(n) and not _ir.is_a(n, "loop")
+        ]
         self.sites = tuple(top)
-        self.gamma = _guards(seq, [n for n in seq if isinstance(n, Sink)])
+        self.gamma = _guards(seq, [n for n in seq if _ir.is_a(n, "sink")])
         self.bodies: dict = {}
-        offset = [_sum([self.rate(s) for s in top])] if top else [_zero()]
+        offset = [_sum([self.rate(s) for s in top])] if top else [_zero(self.ctx)]
         self.cum0: dict = {}
         totals = list(offset)
         for node in seq:
-            if isinstance(node, Loop):
+            if _ir.is_a(node, "loop"):
                 body = self._body(node)
-                self.bodies[id(node)] = body
+                self.bodies[node] = body
                 if body.sweep is not None:
-                    self.cum0[id(node)] = _sum(totals)
-                    totals.append(LoopValue(body.sweep, node.carry_count))
+                    self.cum0[node] = _sum(totals)
+                    totals.append(_ir.loop_value(body.sweep, node.field_int("carry_count")))
         self.total = _sum(totals)
-        uniform = _mk("random_uniform", (self.seed, Const(STREAM, _I32)))
-        self.fork = _mk("mul", (uniform, self.total))
-        self.cum = _zero()
+        uniform = _ir.make("random_uniform", (self.seed, _ir.const(self.ctx, STREAM, _I32)))
+        self.fork = _ir.make("mul", (uniform, self.total))
+        self.cum = _zero(self.ctx)
         self.gains: list = []
 
     # -- sites and rates ----------------------------------------------------
-    def _body(self, loop: Loop) -> _Body:
-        for node in loop.body_nodes():
-            if isinstance(node, Loop):
-                raise HawkError(
-                    f"jump= in kernel {self.plan.kernel!r}: the alternate path "
-                    "through a loop holding a nested `for` is not built")
-        if self.reverse and any(isinstance(n, Dispatch) for n in loop.body_nodes()):
+    def _body(self, loop) -> _Body:
+        body_nodes = _ir.body_nodes(loop)
+        if any(_ir.is_a(node, "loop") for node in body_nodes):
+            raise HawkError(
+                f"jump= in kernel {self.plan.kernel!r}: the alternate path "
+                "through a loop holding a nested `for` is not built"
+            )
+        if self.reverse and any(_ir.is_a(n, "dispatch") for n in body_nodes):
             raise HawkError(
                 f"jump= in kernel {self.plan.kernel!r}: a `dispatch` inside a loop "
                 "body of a `jump=` kernel differentiated in REVERSE: the switching "
                 "comparisons of the plan are not applied under a branch; this is "
-                "not built")
-        exit_roots = () if loop.exit_cond is None else (loop.exit_cond,
-                                                      *loop.exit_values)
-        roots = tuple(loop.nexts) + exit_roots
+                "not built"
+            )
+        exits = _ir.exit_kwargs(loop)
+        exit_roots = ()
+        if exits["exit_cond"] is not None:
+            exit_roots = (exits["exit_cond"], *exits["exit_values"])
+        roots = (*loop.field_nodes("nexts"), *exit_roots)
         body = self.plan.body(loop, roots)
         if body is None:
             return _Body((), None)
-        stop = {id(o) for o in loop.operands} | {id(loop.index)}
+        stop = {*loop.operands, _index_of(loop)}
         order = _post_order(roots, stop)
         self.gamma.update(_guards(order, roots, stop))
-        sites = tuple(n for n in order if n.kind in _ORDERED and body.is_live(n))
+        sites = tuple(n for n in order if n.field_text("kind") in _ORDERED and body.is_live(n))
         if not sites:
             return _Body((), None)
-        if loop.exit_form == "middle":
+        if _ir.exit_form(loop) == "middle":
             raise HawkError(
                 f"jump= in kernel {self.plan.kernel!r}: a `break` in the middle "
                 "of a loop body with a switching comparison: the alternate "
-                "path needs the exit at the head or the tail of the body")
+                "path needs the exit at the head or the tail of the body"
+            )
         return _Body(sites, self._sweep(loop, sites))
 
-    def rate(self, site: Node, guard=False) -> Node:
+    def rate(self, site, guard=False):
         """``K(d)`` of one comparison, exactly zero outside its support and
         where its outcome reaches no output (``guard``: its condition, else the
         one :func:`_guards` found)."""
         k = self.plan._supported(site, lambda kern: kern, 1.0)
-        guard = self.gamma.get(id(site)) if guard is False else guard
-        return k if guard is None else Select(guard, k, _zero(), _F64)
+        guard = self.gamma.get(site) if guard is False else guard
+        return k if guard is None else _select(guard, k, _zero(self.ctx))
 
-    def _sweep(self, loop: Loop, sites: tuple) -> Loop:
+    def _sweep(self, loop, sites: tuple):
         """The first sweep: the primal's loop plus the sum of the rates."""
-        m = loop.carry_count
-        acc = LoopCarry(loop.index.depth, m, "jump_rate", _F64)
-        step = _mk("add", (acc, _sum([self.rate(s) for s in sites])))
+        m = loop.field_int("carry_count")
+        index = _index_of(loop)
+        acc = _carry(self.ctx, index.field_int("depth"), m, "jump_rate", _F64)
+        step = _ir.make("add", (acc, _sum([self.rate(s) for s in sites])))
+        exits = _ir.exit_kwargs(loop)
         extra: dict = {}
-        if loop.exit_cond is not None:
-            held = acc if loop.exit_form == "head" else step
-            extra = {"exit_cond": loop.exit_cond,
-                     "exit_values": tuple(loop.exit_values) + (held,)}
-        return build_loop(loop.index, (*loop.carries, acc), (*loop.inits, _zero()),
-                          (*loop.nexts, step), start=loop.start, stop=loop.stop,
-                          step=loop.step, **extra)
+        if exits["exit_cond"] is not None:
+            held = acc if _ir.exit_form(loop) == "head" else step
+            extra = {
+                "exit_cond": exits["exit_cond"],
+                "exit_values": (*exits["exit_values"], held),
+            }
+        return _ir.loop(
+            index,
+            (*loop.field_nodes("carries"), acc),
+            (*loop.field_nodes("inits"), _zero(self.ctx)),
+            (*loop.field_nodes("nexts"), step),
+            **_bounds(loop),
+            **extra,
+        )
 
-    def weight(self, site: Node, t) -> Node | None:
+    def weight(self, site, t):
         """``S sigma phi d'`` of one comparison, ``None`` without a tangent;
         in reverse mode (``t`` is ``None``) the part without ``d'``."""
-        side = _ORDERED[site.kind]
-        scale = Select(site, Const(-side, _F64), Const(side, _F64), _F64)
-        base = _mk("mul", (self.total, scale))
+        side = _ORDERED[site.field_text("kind")]
+        scale = _select(site, _ir.const(self.ctx, -side, _F64), _ir.const(self.ctx, side, _F64))
+        base = _ir.make("mul", (self.total, scale))
         if t is None:
             return base
         lhs, rhs = site.operands
         tl, tr = t(lhs), t(rhs)
         if tl is None and tr is None:
             return None
-        diff = (_mk("neg", (tr,)) if tl is None
-                else tl if tr is None else _mk("sub", (tl, tr)))
-        return _mk("mul", (base, diff))
+        diff = (
+            _ir.make("neg", (tr,))
+            if tl is None
+            else tl
+            if tr is None
+            else _ir.make("sub", (tl, tr))
+        )
+        return _ir.make("mul", (base, diff))
 
-    def _fork_here(self, cum: Node, rate: Node) -> tuple:
+    def _fork_here(self, cum, rate) -> tuple:
         """``(cum < U <= cum + rate, cum + rate)``."""
-        after = _mk("add", (cum, rate))
-        hit = _mk("land", (_mk("lt", (cum, self.fork)), _mk("ge", (after, self.fork))))
+        after = _ir.make("add", (cum, rate))
+        hit = _ir.make(
+            "land", (_ir.make("lt", (cum, self.fork)), _ir.make("ge", (after, self.fork)))
+        )
         return hit, after
 
     # -- straight-line nodes ---------------------------------------------------
-    def visit(self, node: Node, t) -> None:
+    def visit(self, node, t) -> None:
         """Record ``node``'s alternate, operands first (``t`` is the ordinary
         tangent)."""
-        if isinstance(node, LoopValue):
-            joint = self.joints.get(id(node.loop))
+        if _ir.is_a(node, "loop_value"):
+            loop, node_slot = _ir.loop_value_of(node)
+            joint = self.joints.get(loop)
             if joint is not None:
-                self.amap[id(node)] = LoopValue(joint, self.alt_at[id(node.loop)] + node.slot)
+                slot = self.alt_at[loop] + node_slot
+                self.amap[node] = _ir.loop_value(joint, slot)
             return
-        if isinstance(node, Loop):
+        if _ir.is_a(node, "loop"):
             if self.reverse and self.affects(node):
-                self.joint(node, Parts(tuple(node.carries), (), tuple(node.inits),
-                                       tuple(node.nexts), (), tuple(node.exit_values),
-                                       (), None))
+                exits = _ir.exit_kwargs(node)
+                self.joint(
+                    node,
+                    Parts(
+                        tuple(node.field_nodes("carries")),
+                        (),
+                        tuple(node.field_nodes("inits")),
+                        tuple(node.field_nodes("nexts")),
+                        (),
+                        tuple(exits["exit_values"]),
+                        (),
+                        None,
+                    ),
+                )
             return
-        new = [self.amap.get(id(o), o) for o in node.operands]
-        changed = any(a is not b for a, b in zip(new, node.operands))
-        if has_feather(node, "reduces_samples") and changed:
+        new = [self.amap.get(o, o) for o in node.operands]
+        changed = any(a != b for a, b in zip(new, node.operands))
+        if _ir.has_feather(node, "reduces_samples") and changed:
             raise HawkError(
                 f"jump= in kernel {self.plan.kernel!r}: a read across samples "
                 "downstream of a switching comparison cannot run on the "
-                "alternate path of one sample")
-        out = rebuild(node, new) if changed else node
-        if any(node is s for s in self.sites):
+                "alternate path of one sample"
+            )
+        out = _ir.rebuild(node, new) if changed else node
+        if node in self.sites:
             hit, self.cum = self._fork_here(self.cum, self.rate(node))
             g = self.weight(node, t)
             if g is not None:
-                (self.top if self.reverse else self.gains).append(
-                    (node, Select(hit, g, _zero(), _F64)) if self.reverse
-                    else Select(hit, g, _zero(), _F64))
+                gained = _select(hit, g, _zero(self.ctx))
+                if self.reverse:
+                    self.top.append((node, gained))
+                else:
+                    self.gains.append(gained)
             out = _flip(hit)(out)
-        if out is not node:
-            self.amap[id(node)] = out
+        if out != node:
+            self.amap[node] = out
 
-    def affects(self, loop: Loop) -> bool:
-        return (id(loop) in self.cum0
-                or any(id(o) in self.amap for o in loop.operands))
+    def affects(self, loop) -> bool:
+        return loop in self.cum0 or any(o in self.amap for o in loop.operands)
 
     # -- the joint loop -----------------------------------------------------------
-    def joint(self, loop: Loop, parts: Parts) -> Loop:
+    def joint(self, loop, parts: Parts):
         """The augmented loop with the alternate beside the primal and tangent:
         slots ``[0, m)`` primal, ``[m, 2m)`` tangent, ``[2m, 3m)`` alternate,
         then ``cum`` and ``G`` (and, for a ``break``, a done flag each for the
         primal and the alternate)."""
-        m, depth = loop.carry_count, loop.index.depth
-        body = self.bodies[id(loop)]
+        m = loop.field_int("carry_count")
+        index = _index_of(loop)
+        depth = index.field_int("depth")
+        body = self.bodies[loop]
         nb = m + len(parts.dots)
-        alts = tuple(LoopCarry(depth, nb + j, f"alt_{c.name}", c.ttype)
-                     for j, c in enumerate(parts.carries))
-        cum = LoopCarry(depth, nb + m, "jump_cum", _F64)
+        alts = tuple(
+            _carry(self.ctx, depth, nb + j, f"alt_{c.field_text('name')}", _ir.type_of(c))
+            for j, c in enumerate(parts.carries)
+        )
+        cum = _carry(self.ctx, depth, nb + m, "jump_cum", _F64)
         reverse = parts.tangent is None
         # forward mode also carries the gain G; reverse mode re-draws the fork off
         # the taped ``cum`` of each iteration instead (:meth:`inject`)
-        gain = () if reverse else (LoopCarry(depth, nb + m + 1, "jump_gain", _F64),)
-        brk = loop.exit_cond is not None
+        gain = () if reverse else (_carry(self.ctx, depth, nb + m + 1, "jump_gain", _F64),)
+        exits = _ir.exit_kwargs(loop)
+        exit_cond = exits["exit_cond"]
+        brk = exit_cond is not None
         first = nb + m + 1 + len(gain)
-        flags = (LoopCarry(depth, first, "jump_done", _F64),
-                 LoopCarry(depth, first + 1, "jump_done_alt", _F64)) if brk else ()
-        half = Const(0.5, _F64)
-        done = [_mk("gt", (f, half)) for f in flags]
+        flags = (
+            (
+                _carry(self.ctx, depth, first, "jump_done", _F64),
+                _carry(self.ctx, depth, first + 1, "jump_done_alt", _F64),
+            )
+            if brk
+            else ()
+        )
+        half = _ir.const(self.ctx, 0.5, _F64)
+        done = [_ir.make("gt", (f, half)) for f in flags]
         active = None
         if brk:
-            active = _mk("lnot", (done[0],))
-            if loop.exit_form == "head":
-                active = _mk("land", (active, _mk("lnot", (loop.exit_cond,))))
+            active = _ir.make("lnot", (done[0],))
+            if _ir.exit_form(loop) == "head":
+                active = _ir.make("land", (active, _ir.make("lnot", (exit_cond,))))
         # the fork, along the primal's comparisons
         c, terms, hits = cum, [], {}
         for site in body.sites:
             rate = self.rate(site)
             if active is not None:
-                rate = Select(active, rate, _zero(), _F64)
+                rate = _select(active, rate, _zero(self.ctx))
             hit, after = self._fork_here(c, rate)
-            hits[id(site)] = _flip(hit)
+            hits[site] = _flip(hit)
             g = self.weight(site, parts.tangent)
             if g is not None and not reverse:
-                terms.append(Select(hit, g, _zero(), _F64))
+                terms.append(_select(hit, g, _zero(self.ctx)))
             c = after
         gain_next = ()
         if gain:
-            gain_next = (_mk("add", (gain[0], _sum(terms))) if terms else gain[0],)
+            gain_next = (_ir.make("add", (gain[0], _sum(terms))) if terms else gain[0],)
         # the alternate body
-        mapping = {id(p): a for p, a in zip(parts.carries, alts)}
-        mapping.update({id(o): self.amap[id(o)] for o in loop.operands
-                        if id(o) in self.amap})
-        stop = {id(o) for o in loop.operands} | {id(loop.index)} | {id(p) for p in parts.carries}
-        roots = parts.nexts + parts.exits + ((loop.exit_cond,) if brk else ())
+        mapping = dict(zip(parts.carries, alts))
+        mapping.update({o: self.amap[o] for o in loop.operands if o in self.amap})
+        stop = {*loop.operands, index, *parts.carries}
+        roots = parts.nexts + parts.exits + ((exit_cond,) if brk else ())
         memo = _alt_pass(_post_order(roots, stop), mapping, hits)
 
-        def alt(n: Node) -> Node:
-            return memo.get(id(n), n)
+        def alt(n):
+            return memo.get(n, n)
 
         a_nexts = tuple(alt(n) for n in parts.nexts)
         p_nexts, d_nexts = parts.nexts, parts.dot_nexts
         extra: dict = {}
         flag_nexts: tuple = ()
         if brk:
-            ep, ea = loop.exit_cond, alt(loop.exit_cond)
+            ep, ea = exit_cond, alt(exit_cond)
 
             def freeze(is_done, now, held, at_exit, ahead):
-                return Select(is_done, held, Select(now, at_exit, ahead, held.ttype),
-                              held.ttype)
+                return _select(is_done, held, _select(now, at_exit, ahead))
 
-            p_nexts = tuple(freeze(done[0], ep, p, e, n) for p, e, n in
-                            zip(parts.carries, parts.exits, parts.nexts))
-            d_nexts = tuple(freeze(done[0], ep, d, e, n) for d, e, n in
-                            zip(parts.dots, parts.dot_exits, parts.dot_nexts))
-            a_nexts = tuple(freeze(done[1], ea, a, alt(e), n) for a, e, n in
-                            zip(alts, parts.exits, a_nexts))
-            stopped = (_mk("lor", (done[0], ep)), _mk("lor", (done[1], ea)))
-            flag_nexts = tuple(Select(s, Const(1.0, _F64), _zero(), _F64) for s in stopped)
-            extra["exit_cond"] = _mk("land", stopped)
+            p_nexts = tuple(
+                freeze(done[0], ep, p, e, n)
+                for p, e, n in zip(parts.carries, parts.exits, parts.nexts)
+            )
+            d_nexts = tuple(
+                freeze(done[0], ep, d, e, n)
+                for d, e, n in zip(parts.dots, parts.dot_exits, parts.dot_nexts)
+            )
+            a_nexts = tuple(
+                freeze(done[1], ea, a, alt(e), n) for a, e, n in zip(alts, parts.exits, a_nexts)
+            )
+            stopped = (_ir.make("lor", (done[0], ep)), _ir.make("lor", (done[1], ea)))
+            flag_nexts = tuple(
+                _select(s, _ir.const(self.ctx, 1.0, _F64), _zero(self.ctx)) for s in stopped
+            )
+            extra["exit_cond"] = _ir.make("land", stopped)
         nexts = (*p_nexts, *d_nexts, *a_nexts, c, *gain_next, *flag_nexts)
         if brk:
             extra["exit_values"] = nexts
-        inits = (*parts.inits, *(self.amap.get(id(i), i) for i in loop.inits),
-                 self.cum0.get(id(loop), _zero()), *(_zero() for _ in gain),
-                 *(_zero() for _ in flags))
-        rooted = _slotwise.slotwise((*nexts, *extra.get("exit_values", ()),
-                           *([extra["exit_cond"]] if brk else [])))
+        inits = (
+            *parts.inits,
+            *(self.amap.get(i, i) for i in loop.field_nodes("inits")),
+            self.cum0.get(loop, _zero(self.ctx)),
+            *(_zero(self.ctx) for _ in gain),
+            *(_zero(self.ctx) for _ in flags),
+        )
+        rooted = _ir.slotwise(
+            (*nexts, *extra.get("exit_values", ()), *([extra["exit_cond"]] if brk else []))
+        )
         n = len(nexts)
         if brk:
-            extra["exit_values"], extra["exit_cond"] = rooted[n:2 * n], rooted[-1]
-        built = build_loop(loop.index, (*parts.carries, *parts.dots, *alts, cum, *gain, *flags),
-                           inits, rooted[:n], start=loop.start, stop=loop.stop,
-                           step=loop.step, **extra)
-        self.joints[id(loop)] = built
-        self.alt_at[id(loop)] = nb
+            extra["exit_values"], extra["exit_cond"] = rooted[n : 2 * n], rooted[-1]
+        built = _ir.loop(
+            index,
+            (*parts.carries, *parts.dots, *alts, cum, *gain, *flags),
+            inits,
+            rooted[:n],
+            **_bounds(loop),
+            **extra,
+        )
+        self.joints[loop] = built
+        self.alt_at[loop] = nb
         if reverse:
             if body.sites:
-                self.tapes[id(loop)] = (built, nb + m)
+                self.tapes[loop] = (built, nb + m)
         else:
-            self.gains.append(LoopValue(built, nb + m + 1))
+            self.gains.append(_ir.loop_value(built, nb + m + 1))
         return built
 
     # -- reverse mode ---------------------------------------------------------------
-    def seed_gain(self, sinks: Sequence[Node], seed) -> Node | None:
+    def seed_gain(self, sinks: Sequence, seed):
         """``g = sum bar (alt - out)`` over the sinks (``seed(sink)`` is the
         incoming adjoint), ``None`` when no output moves on the alternate."""
         terms = []
         for sink in sinks:
-            if sink.ttype.dtype in INT_PLANE_DTYPES:
+            if _ir.type_of(sink).dtype in _ir.INT_PLANE_DTYPES:
                 continue
             bar = seed(sink)
-            alt_value = self.amap.get(id(sink.value), sink.value)
-            keyed = isinstance(sink, (AccumWrite, WideWrite)) and sink.index is not None
-            alt_index = self.amap.get(id(sink.index), sink.index) if keyed else None
-            if keyed and alt_index is not sink.index:
-                there = At(bar.operands[0], alt_index, bar.ttype)
-                term = _mk("sub", (_mk("mul", (there, alt_value)),
-                                   _mk("mul", (bar, sink.value))))
-            elif alt_value is not sink.value:
-                term = _mk("mul", (bar, _mk("sub", (alt_value, sink.value))))
+            value = sink.operands[0]
+            alt_value = self.amap.get(value, value)
+            index = _keyed_index(sink)
+            alt_index = None if index is None else self.amap.get(index, index)
+            if index is not None and alt_index != index:
+                there = _ir.make_node("At", _ir.type_of(bar), [bar.operands[0], alt_index])
+                term = _ir.make(
+                    "sub",
+                    (_ir.make("mul", (there, alt_value)), _ir.make("mul", (bar, value))),
+                )
+            elif alt_value != value:
+                term = _ir.make("mul", (bar, _ir.make("sub", (alt_value, value))))
             else:
                 continue
-            terms.append(_mk("sum", (term,)) if term.ttype.shape else term)
+            terms.append(_ir.make("sum", (term,)) if _ir.type_of(term).shape else term)
         return _sum(terms) if terms else None
 
     def injections(self) -> tuple:
@@ -527,42 +631,45 @@ class AltPath:
         times ``g``."""
         if self.g is None:
             return ()
-        return tuple((site, _mk("mul", (coef, self.g))) for site, coef in self.top)
+        return tuple((site, _ir.make("mul", (coef, self.g))) for site, coef in self.top)
 
-    def sites_of(self, loop: Loop) -> tuple:
-        got = self.tapes.get(id(loop))
-        return self.bodies[id(loop)].sites if got is not None else ()
+    def sites_of(self, loop) -> tuple:
+        got = self.tapes.get(loop)
+        return self.bodies[loop].sites if got is not None else ()
 
-    def inject(self, loop: Loop, sites: Sequence[Node], roots: Sequence[Node],
-               stop) -> tuple:
+    def inject(self, loop, sites: Sequence, roots: Sequence, stop) -> tuple:
         """``(site, weight)`` for the reverse body's ``sites`` (the forward
         ones, in order, rewritten onto the tape): the fork is drawn again from
         the ``cum`` the joint loop held entering this iteration, and the weight
         is the site's ``S sigma phi`` where it falls, times ``g``. The primal
         ran every iteration a reverse loop visits, so no site is masked."""
-        got = self.tapes.get(id(loop))
+        got = self.tapes.get(loop)
         if got is None or self.g is None:
             return ()
         built, slot = got
-        cum, out = TapeRead(built, slot, loop.index), []
+        ttype = _ir.type_of(built.field_nodes("carries")[slot])
+        cum = _ir.make_node("TapeRead", ttype, [built, _index_of(loop)], slot=slot, literal=slot)
+        out = []
         guard = _guards(_post_order(roots, stop), roots, stop)
         for site in sites:
-            hit, after = self._fork_here(cum, self.rate(site, guard[id(site)]))
-            out.append((site, _mk("mul", (Select(hit, self.weight(site, None), _zero(), _F64),
-                                           self.g))))
+            hit, after = self._fork_here(cum, self.rate(site, guard[site]))
+            weight = _select(hit, self.weight(site, None), _zero(self.ctx))
+            out.append((site, _ir.make("mul", (weight, self.g))))
             cum = after
         return tuple(out)
 
     def _events(self):
         """``f(value)``: ``value`` where the sample has a switching instance
         (``S > 0``), else zero: a sample without one runs the plain tangent."""
-        selector = Select(_mk("gt", (self.total, _zero())), Const(0, _I32),
-                          Const(1, _I32), _I32)
-        return lambda value: _dispatch_kind.dispatch(selector, (value, zero_like(value.ttype)),
-                                      "switch", value.ttype)
+        selector = _select(
+            _ir.make("gt", (self.total, _zero(self.ctx))),
+            _ir.const(self.ctx, 0, _I32),
+            _ir.const(self.ctx, 1, _I32),
+        )
+        return lambda value: _switch(selector, (value, _ir.zero_like(self.ctx, _ir.type_of(value))))
 
     # -- the sinks ----------------------------------------------------------------
-    def sinks(self, sinks: Sequence[Node], tangent, derived) -> list:
+    def sinks(self, sinks: Sequence, tangent, derived) -> list:
         """The tangent sinks of ``sinks``: ``delta + G (alt - out)`` per value
         (a keyed scatter commits the alternate beside the primal at its own
         key). ``tangent(node)`` is the ordinary tangent and ``derived`` mints
@@ -571,21 +678,26 @@ class AltPath:
         events = self._events()
         out: list = []
         for sink in sinks:
-            if sink.ttype.dtype in INT_PLANE_DTYPES:
+            if _ir.type_of(sink).dtype in _ir.INT_PLANE_DTYPES:
                 continue
-            value = tangent(sink.value)
-            plain = value if value is not None else zero_like(sink.ttype)
-            alt_value = self.amap.get(id(sink.value), sink.value)
-            keyed = isinstance(sink, (AccumWrite, WideWrite)) and sink.index is not None
-            alt_index = self.amap.get(id(sink.index), sink.index) if keyed else None
-            moved = keyed and alt_index is not sink.index
-            if gain is None or (alt_value is sink.value and not moved):
+            sink_value = sink.operands[0]
+            value = tangent(sink_value)
+            plain = value if value is not None else _ir.zero_like(self.ctx, _ir.type_of(sink))
+            alt_value = self.amap.get(sink_value, sink_value)
+            index = _keyed_index(sink)
+            alt_index = None if index is None else self.amap.get(index, index)
+            moved = index is not None and alt_index != index
+            if gain is None or (alt_value == sink_value and not moved):
                 out.append(derived(sink, plain))
             elif moved:
                 out.append(derived(sink, plain))
-                out.append(derived(sink, events(_mk("mul", (gain, alt_value))), alt_index))
-                out.append(derived(sink, events(_mk("neg", (_mk("mul", (gain, sink.value)),)))))
+                out.append(derived(sink, events(_ir.make("mul", (gain, alt_value))), alt_index))
+                out.append(
+                    derived(sink, events(_ir.make("neg", (_ir.make("mul", (gain, sink_value)),))))
+                )
             else:
-                diff = _mk("sub", (alt_value, sink.value))
-                out.append(derived(sink, _mk("add", (plain, events(_mk("mul", (gain, diff)))))))
+                diff = _ir.make("sub", (alt_value, sink_value))
+                out.append(
+                    derived(sink, _ir.make("add", (plain, events(_ir.make("mul", (gain, diff))))))
+                )
         return out

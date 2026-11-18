@@ -6,37 +6,41 @@
 from __future__ import annotations
 
 import hawk
-from raptor.wings.simt import WarpLane
-from raptor.ir.loops import boundary
-from raptor.ir.nodes import At, Const, Leaf, LoopIndex, Select, TensorType
-from raptor.ir.ops import make
+from hawk import _ir
 
-_I32, _F64 = TensorType((), "i32"), TensorType((), "f64")
-_TABLE = Leaf("table_read", "lookup", "w", TensorType((64,), "f64"))
-_INDEX = LoopIndex(0, "r")
+_CONTEXT = _ir.new_context()
+_I32, _F64 = ((), "i32", None), ((), "f64", None)
+_TABLE = _ir.leaf(_CONTEXT, "table_read", "lookup", "w", ((64,), "f64", None))
+_INDEX = _ir.make_node("LoopIndex", _I32, context=_CONTEXT, depth=0, name="r", bounds=None)
+
+
+def _warp_lane():
+    return _ir.make_node("WarpLane", _I32, context=_CONTEXT)
 
 
 def _arm_boundary(index):
     """The boundary of a loop body whose ``select`` arm reads the table at ``index``; returns the arm and the boundary."""
-    arm = make("add", (At(_TABLE, index, _F64), Const(1.0, _F64)))
-    body = Select(make("lt", (_INDEX, Const(3, _I32))), arm, Const(2.0, _F64), _F64)
-    return arm, boundary((body,), frozenset({id(_INDEX)}))
+    read = _ir.make_node("At", _F64, [_TABLE, index])
+    arm = _ir.make("add", (read, _ir.const(_CONTEXT, 1.0, _F64)))
+    cond = _ir.make("lt", (_INDEX, _ir.const(_CONTEXT, 3, _I32)))
+    body = _ir.make_node("Select", _F64, [cond, arm, _ir.const(_CONTEXT, 2.0, _F64)])
+    return arm, _ir.loop_boundary((body,), {_INDEX})
 
 
 def _leaves_the_guard(index):
     arm, edge = _arm_boundary(index)
-    return any(node is arm for node in edge)
+    return arm in edge
 
 
 def test_a_compile_time_or_warp_lane_index_is_not_a_guarded_gather():
-    assert _leaves_the_guard(Const(5, _I32))
-    assert _leaves_the_guard(make("add", (Const(8, _I32), WarpLane())))
+    assert _leaves_the_guard(_ir.const(_CONTEXT, 5, _I32))
+    assert _leaves_the_guard(_ir.make("add", (_ir.const(_CONTEXT, 8, _I32), _warp_lane())))
 
 
 def test_a_runtime_index_stays_in_the_guard():
     assert not _leaves_the_guard(_INDEX)
-    runtime = Leaf("uniform", "uniform", "row", _I32)
-    assert not _leaves_the_guard(make("add", (WarpLane(), runtime)))
+    runtime = _ir.leaf(_CONTEXT, "uniform", "uniform", "row", _I32)
+    assert not _leaves_the_guard(_ir.make("add", (_warp_lane(), runtime)))
 
 
 def test_the_jvp_of_a_fused_matvec_reads_its_table_before_the_step_loop(tmp_path):

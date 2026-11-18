@@ -15,12 +15,11 @@ compensated (hi, comp) pair), so the cell is bitwise the one eagle's
 
 from __future__ import annotations
 
-from raptor.ir.cells import planes
-
 import numpy as np
 
 from raptor.wings.base.cells import SAMPLE_SUM_COMP
 
+from . import _ir
 from ._errors import HawkError
 
 SLOTS, TERMS = 256, 16
@@ -28,7 +27,13 @@ LEAF = SLOTS * TERMS
 
 
 def comp_name(name: str) -> str:
+    """The companion plane a summing sample sum keeps beside its target ``name``."""
     return f"{name}{SAMPLE_SUM_COMP}"
+
+
+def fold_entry_name(kernel: str, target: str) -> str:
+    """The entry of ``kernel`` that folds the owned companion into ``target`` (a host entry adds ``_host``)."""
+    return f"{kernel}__fold_{target}"
 
 
 def _finite(x):
@@ -130,7 +135,7 @@ class Scratch:
         self.cells = cells
         self.rows = {}
         for cell, spec in cells.items():
-            for plane in planes(cell, spec["columns"]):
+            for plane in _ir.planes(cell, spec["columns"]):
                 self.rows[plane] = np.zeros(count, dtype=dtype)
                 if spec["op"] in ("sum", "mean"):
                     self.rows[comp_name(plane)] = np.zeros(count, dtype=dtype)
@@ -140,6 +145,6 @@ class Scratch:
         for cell, spec in self.cells.items():
             op = spec["op"]
             out = np.asarray(outputs[cell]).reshape(-1)
-            for k, plane in enumerate(planes(cell, spec["columns"])):
+            for k, plane in enumerate(_ir.planes(cell, spec["columns"])):
                 comp = self.rows.get(comp_name(plane))
                 out[k] = finish(self.rows[plane][lo:hi], None if comp is None else comp[lo:hi], op)

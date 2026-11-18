@@ -29,10 +29,13 @@ from hawk import (Grid, HawkError, Index, Kernel, Matrix, Mutable, Param, Scalar
 from hawk import _lane_bind as LB
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
-from raptor.wings.base.cells import stored as _stored
-from raptor.wings.base.lanes import key_run
 from _specs import DEVICE
-from raptor.ir.nodes import AccumWrite, ReduceSamples, SampleSum
+from hawk import _ir
+
+
+def key_run(sinks, sink, spec):
+    """The key run of ``sink`` among ``sinks`` with the lane numbers of the build's target."""
+    return _ir.key_run(sinks, sink, spec.need("lanes", "run_max"), spec.need("lanes", "block_run"))
 
 SIZES = (1, 31, 32, 33, 1000)
 TOL = {"float32": 1e-6, "float64": 1e-13}
@@ -106,7 +109,7 @@ def test_where_types_an_int_literal_by_company_and_refuses_the_rest():
     for i in (0, 1, 7):
         assert evaluate(lit.sinks, {"i": i}) == evaluate(hand.sinks, {"i": i})
     assert evaluate(lit.sinks, {"i": 0})["y"] == 3 and evaluate(lit.sinks, {"i": 7})["y"] == 6
-    assert hawk.kernel(_where_int_f64).sinks[0].ttype.dtype == "f64"             # an int literal beside f64 was f64 already
+    assert _ir.type_of(hawk.kernel(_where_int_f64).sinks[0]).dtype == "f64"             # an int literal beside f64 was f64 already
     for bad in (_where_f64_int, _where_typed_int_f64):
         with pytest.raises(HawkError, match=r"branches disagree.*m\.float64"):
             hawk.kernel(bad)
@@ -378,7 +381,7 @@ def test_contraction_backward_key_runs_along_the_sample_axis():
     """Every component's key is invariant along ``sample`` (64 lanes): one commit
     per warp."""
     for s in contract_bwd_static.sinks:
-        assert isinstance(s, AccumWrite)
+        assert _ir.is_a(s, "accum_write")
         run = key_run(contract_bwd_static.sinks, s, DEVICE)
         assert run is not None and (run.form, run.width) == ("proven", 32)
 
@@ -470,9 +473,9 @@ def test_a_full_sum_is_the_cell_it_always_was():
     def k(x: Scalar, t: Mutable[Scalar]):
         t = hawk.sum(x * x)
 
-    x = k.sinks[0].value
-    assert [type(s) for s in k.sinks] == [SampleSum]
-    assert Kernel("k", _stored(ReduceSamples("sum", x), "t")).walk.digest == k.walk.digest
+    x = k.sinks[0].operands[0]
+    assert [s.cls for s in k.sinks] == ["SampleSum"]
+    assert _ir.digest(Kernel("k", _ir.cells_stored(_ir.reduce_samples("sum", x), "t")).walk) == _ir.digest(k.walk)
 
 
 def test_scatter_by_the_kept_coordinates_is_the_sum_over_the_rest():
@@ -488,9 +491,9 @@ def test_scatter_by_the_kept_coordinates_is_the_sum_over_the_rest():
                   tb: Mutable["channel":4, "input":8]):
         hawk.scatter(tb, contract="plain")[lane.channel, lane.input] += x * x
 
-    assert summed.walk.digest == scattered.walk.digest
+    assert _ir.digest(summed.walk) == _ir.digest(scattered.walk)
     (sink,) = summed.sinks
-    assert isinstance(sink, AccumWrite) and sink.contract == "auto"
+    assert _ir.is_a(sink, "accum_write") and sink.field_text("contract") == "auto"
     assert key_run(summed.sinks, sink, DEVICE).form == "proven"
 
 
@@ -504,7 +507,7 @@ def test_over_by_label_position_and_tuple_agree(over):
     def ref(lane: Grid["channel":4, "input":8, "sample":32], x: Scalar) -> Scalar:
         return hawk.sum(x, over="sample")
 
-    assert by.walk.digest == ref.walk.digest
+    assert _ir.digest(by.walk) == _ir.digest(ref.walk)
     assert [(a, e) for a, e, _s in by.planes["out"].dims] == [("channel", 4), ("input", 8)]
 
 
@@ -518,7 +521,7 @@ def test_over_two_axes_keeps_one_and_over_every_axis_is_the_cell():
         return hawk.sum(x, over=(0, 1, 2))
 
     assert [(a, e) for a, e, _s in two.planes["out"].dims] == [("channel", 4)]
-    assert [type(s) for s in every.sinks] == [SampleSum]
+    assert [s.cls for s in every.sinks] == ["SampleSum"]
 
 
 @pytest.mark.parametrize("contract", ("auto", "compensated", "ordered"))
@@ -527,11 +530,11 @@ def test_every_contract_is_accepted_on_a_full_sum(contract):
     def k(x: Scalar, t: Mutable[Scalar]):
         t = hawk.sum(x, contract=contract)
 
-    assert [type(s) for s in k.sinks] == [SampleSum]
+    assert [s.cls for s in k.sinks] == ["SampleSum"]
 
 
 def test_compensated_marks_the_sink_and_binds_its_companion():
-    assert [s.contract for s in COMP.sinks if s.name == "out"] == ["compensated"]
+    assert [s.field_text("contract") for s in COMP.sinks if s.field_text("name") == "out"] == ["compensated"]
     assert ("accum_out", "out_c") in COMP.arg_spec
     assert ("accum_out", "out_c") not in AUTO.arg_spec
 
@@ -539,7 +542,7 @@ def test_compensated_marks_the_sink_and_binds_its_companion():
     def k(x: Scalar, key: Index, acc: Mutable[Scalar]):
         hawk.scatter(acc, contract="compensated")[key] += x
 
-    assert [(s.name, s.contract) for s in k.sinks] == [("acc", "compensated"), ("acc_c", "auto")]
+    assert [(s.field_text("name"), s.field_text("contract")) for s in k.sinks] == [("acc", "compensated"), ("acc_c", "auto")]
 
 
 # ---- refusals: one named test each, the text that migrates the author ------
@@ -558,18 +561,18 @@ def test_ordered_over_some_axes_is_a_block_sum_and_an_ordered_scatter_is_a_keyed
     def ok(lane: Grid["a", "b":4], x: Scalar) -> Scalar:
         return hawk.sum(x, over="b", contract="ordered")
 
-    assert type(ok.sinks[0]).__name__ == "BlockSumWrite"
+    assert ok.sinks[0].cls == "BlockSumWrite"
 
     @kernel
     def k2(x: Scalar, key: Index, acc: Mutable[Scalar]):
         hawk.scatter(acc, contract="ordered")[key] += x
 
-    assert [(s.name, s.contract) for s in k2.sinks] == [("acc", "ordered")]
+    assert [(s.field_text("name"), s.field_text("contract")) for s in k2.sinks] == [("acc", "ordered")]
     @kernel
     def k3(x: Vector[3], key: Index, acc: Mutable[Vector[3], "bin":4]):
         hawk.scatter(acc, contract="ordered")[key] += x
 
-    assert {s.contract for s in k3.sinks} == {"ordered"} and len(k3.sinks) == 3
+    assert {s.field_text("contract") for s in k3.sinks} == {"ordered"} and len(k3.sinks) == 3
 
 
 def test_refuses_a_contract_on_a_store():
@@ -689,7 +692,7 @@ def test_a_scatter_in_a_for_is_one_commit_per_iteration():
         hawk.scatter(y, contract="plain")[lane + 2] += x * 2
 
     assert len(looped.sinks) == 3
-    assert looped.walk.digest == written.walk.digest
+    assert _ir.digest(looped.walk) == _ir.digest(written.walk)
 
 
 def test_refuses_a_mask_as_a_key_naming_where():
@@ -711,7 +714,7 @@ def test_a_vector_by_key_into_a_named_axis_sink_is_payload_first():
     def k(lane: Index, u: Vector[3], acc: Mutable[Vector[3], "bin":4]):
         hawk.scatter(acc)[lane] += u
 
-    assert len(k.sinks) == 3 and all(isinstance(s, AccumWrite) for s in k.sinks)
+    assert len(k.sinks) == 3 and all(_ir.is_a(s, "accum_write") for s in k.sinks)
 
 
 def test_masked_mean_names_the_count():
@@ -730,7 +733,7 @@ def test_table_subscript_is_at():
     def k2(t: Table[Scalar], i: Index, y: Mutable[Scalar]):
         y = t.at(i)
 
-    assert k.walk.digest == k2.walk.digest
+    assert _ir.digest(k.walk) == _ir.digest(k2.walk)
 
 
 def test_traced_rows_and_columns_equal_numpy():
@@ -760,7 +763,7 @@ def test_at_adjoint_is_a_scatter_add_of_the_seed():
         ref[j] = (f(up) - f(dn)) / 2e-6
     np.testing.assert_allclose(want, ref, rtol=1e-6)
     d = vjp(grad_gather, wrt=("x",))
-    names = [type(k).__name__ + ":" + k.name for k in d]
+    names = [k.cls + ":" + k.field_text("name") for k in d]
     assert any(nm.startswith("AccumWrite") for nm in names), names
 
 

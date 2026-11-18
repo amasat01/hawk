@@ -27,6 +27,7 @@ from hawk.artifact import bundle as B
 from raptor.errors import RaptorError as HawkError
 from hawk.passes import fusion
 from hawk.targets import shipped_card
+from hawk import _ir
 
 eagle = pytest.importorskip("eagle")
 
@@ -183,9 +184,9 @@ def test_chain_structure():
     chained = hawk.chain(*MEMBERS, name="fixture")
     assert isinstance(chained, hawk.Kernel)
     assert {name for _, name in chained.arg_spec} == {"x", "acc", "y"}
-    assert hawk.chain(k1, name="one").walk.digest == k1.walk.digest
+    assert _ir.digest(hawk.chain(k1, name="one").walk) == _ir.digest(k1.walk)
     nested = hawk.chain(hawk.chain(k1, k2, name="front"), k3, k4, name="fixture")
-    assert nested.walk.digest == chained.walk.digest and nested.members == MEMBERS
+    assert _ir.digest(nested.walk) == _ir.digest(chained.walk) and nested.members == MEMBERS
 
 
 def _with(kernel, **attrs):

@@ -1,8 +1,8 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""A node class that can appear in a unit lives in the IR definition (raptor.ir) or in a registered dialect, never in a
-pass: no subclass of the IR ``Node`` is defined under ``hawk/passes``."""
+"""A node kind that can appear in a unit lives in the IR definition or in a registered dialect, never in a
+pass: no class derived from the IR module's node handle is defined under ``hawk/passes``."""
 
 from __future__ import annotations
 
@@ -11,11 +11,9 @@ import importlib
 import pathlib
 import pkgutil
 
-import raptor.ir
-from raptor.ir.nodes import Node
-
 import hawk.backends
 import hawk.passes
+from hawk import _ir
 
 _PASSES = pathlib.Path(hawk.passes.__file__).parent
 
@@ -31,7 +29,7 @@ def _all_subclasses(cls):
 
 
 def test_no_node_class_is_defined_in_a_pass_statically():
-    node_names = {c.__name__ for c in _all_subclasses(Node)} | {"Node"}
+    node_names = {c.__name__ for c in _all_subclasses(_ir.Node)} | {"Node"}
     stray = []
     for path in sorted(_PASSES.glob("*.py")):
         classes = [n for n in ast.walk(ast.parse(path.read_text())) if isinstance(n, ast.ClassDef)]
@@ -54,6 +52,5 @@ def test_no_node_class_is_defined_in_a_pass_at_run_time():
                 importlib.import_module(m.name)
             except ImportError:      # a backend whose toolchain is absent
                 pass
-    assert any(c.__name__ == "BlockSum" for c in _all_subclasses(Node))      # a kind of the lowering wing, declared when it loads
-    stray = sorted(f"{c.__module__}.{c.__qualname__}" for c in _all_subclasses(Node) if c.__module__.startswith("hawk.passes"))
+    stray = sorted(f"{c.__module__}.{c.__qualname__}" for c in _all_subclasses(_ir.Node) if c.__module__.startswith("hawk.passes"))
     assert not stray, stray

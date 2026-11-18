@@ -66,9 +66,9 @@ import hawk.math as m
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
 from aether.wings.base.wrapper import FLOAT64
-from raptor.ir import canonical
 from hawk import HawkError
 from hawk.targets import TARGETS
+from hawk import _ir
 
 #: Classical RK4 (Kutta 1901), the stage and combine weights
 #: a downstream rollout kernel carries as structural constants.
@@ -170,7 +170,7 @@ def test_the_reverse_matches_a_central_difference(name):
     neighbouring component and still look plausible), so the rules are
     EVALUATED against the primal rather than inspected."""
     kernel = {"rollout_read": rollout_read, "rollout_write": rollout_write}[name]
-    sink = kernel.sinks[0].name
+    sink = kernel.sinks[0].field_text("name")
     seed = (1.0 if sink == "y" else np.array([1.0, -0.5, 0.25]))
     derived = vjp(kernel, wrt=("v", "k1", "dt"))
     got = evaluate(derived, {**ENV, f"bar_{sink}": seed})
@@ -200,7 +200,7 @@ def test_the_forward_matches_a_central_difference(name):
     read is the same component of the tangent, and the tangent of a replacement
     is the replacement of the tangents."""
     kernel = {"rollout_read": rollout_read, "rollout_write": rollout_write}[name]
-    sink = kernel.sinks[0].name
+    sink = kernel.sinks[0].field_text("name")
     tangent = {"v": np.array([1.0, -0.5, 0.25]),
                "k1": np.array([0.2, 0.7, -1.0]), "dt": 0.3}
     derived = jvp(kernel, wrt=("v", "k1", "dt"))

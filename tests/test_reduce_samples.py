@@ -21,7 +21,6 @@ Rows (the ``cuda`` arm is marked ``gpu``):
 from __future__ import annotations
 from _specs import default_kind
 from _specs import spec_for
-from _specs import DEVICE
 
 import numpy as np
 import pytest
@@ -212,7 +211,7 @@ def test_a_written_sum_is_the_derived_parameter_gradient(built, target):
 def test_a_sum_over_samples_has_a_broadcast_adjoint():
     d = vjp(_cell("sum"), wrt=("x",))
     sinks = Kernel("d", d).sinks
-    assert [s.name for s in sinks] == ["bar_x"]
+    assert [s.field_text("name") for s in sinks] == ["bar_x"]
     got = evaluate(sinks, {"x": 1.5, "bar_t": 2.0})
     np.testing.assert_allclose(got["bar_x"], 2.0 * 2 * 1.5)
 
@@ -246,15 +245,14 @@ def test_max_of_an_iterable_refuses():
             y = max(v)
 
 
-def test_a_reduced_value_read_later_is_a_launch_boundary():
-    from raptor.wings.base.split import stages
-
+def test_a_reduced_value_read_later_is_a_launch_boundary(tmp_path, cache_dir):
     @kernel
     def k(x: Scalar, t: Mutable[Scalar], u: Mutable[Scalar]):
         t = hawk.sum(x)
         u = t + 1.0
-    first, second = stages("k", k.sinks, spec=DEVICE)
-    assert first.cells_out == ("t",) and second.cells_in == ("t",)
+    bundle = build_bundle([k], tmp_path, targets=("host",), cache_dir=cache_dir, host_profile="native")
+    first, second = sidecar_of(bundle, "k")["stages"]
+    assert first["cells_out"] == ["t"] and second["cells_in"] == ["t"]
 
 
 def test_arithmetic_on_a_sum_over_some_axes_is_not_stored_per_lane():

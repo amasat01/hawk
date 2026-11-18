@@ -9,38 +9,44 @@ branch (not just as a branch's own value, which
 
 from __future__ import annotations
 
-from raptor.wings.base.dispatch import dispatch as _dispatch
 import numpy as np
 import pytest
 from _eval import evaluate
 
+from hawk import _ir
 from hawk.diff import vjp
-from raptor.ir import Assign, At, Dispatch, Leaf
-from raptor.ir import make as mk
-from raptor.ir.types import TensorType
 
-S = TensorType((), "f64")
-I32 = TensorType((), "i32")
+S = _ir.TensorType((), "f64")
+I32 = _ir.TensorType((), "i32")
 _H = 1e-5
 
 
-def _leaf(name: str, t: TensorType, role: str) -> Leaf:
-    return Leaf("vocab_read", role, name, t)
+def _leaf(context, name: str, t, role: str):
+    return _ir.leaf(context, "vocab_read", role, name, t)
+
+
+def _assign(name: str, value):
+    return _ir.make_node("Assign", S, [value], name=name)
+
+
+def _gather(plane, index):
+    return _ir.make_node("At", S, [plane, index])
 
 
 def _table_dispatch_primal():
     """K=2 ``dispatch``: branch 0 reads ``x0`` only; branch 1 reads ``x1``
     AND ``tab.at(idx)`` as an OPERAND of its own arithmetic (``x1 *
     tab[idx]``)."""
-    k = _leaf("k", I32, "per_sample")
-    x0 = _leaf("x0", S, "per_sample")
-    x1 = _leaf("x1", S, "per_sample")
-    tab = Leaf("table_read", "lookup", "tab", S)
-    idx = _leaf("idx", I32, "per_sample")
-    branch0 = mk("mul", (x0, x0))
-    branch1 = mk("mul", (x1, At(tab, idx, S)))
-    d = _dispatch(k, [branch0, branch1], "switch", S)
-    return (Assign("out", d, S),)
+    context = _ir.new_context()
+    k = _leaf(context, "k", I32, "per_sample")
+    x0 = _leaf(context, "x0", S, "per_sample")
+    x1 = _leaf(context, "x1", S, "per_sample")
+    tab = _ir.leaf(context, "table_read", "lookup", "tab", S)
+    idx = _leaf(context, "idx", I32, "per_sample")
+    branch0 = _ir.make("mul", (x0, x0))
+    branch1 = _ir.make("mul", (x1, _gather(tab, idx)))
+    d = _ir.make_node("Dispatch", S, [k, branch0, branch1])
+    return (_assign("out", d),)
 
 
 def test_table_read_vjp_inside_dispatch_matches_fd_not_doubled():
@@ -58,8 +64,14 @@ def test_table_read_vjp_inside_dispatch_matches_fd_not_doubled():
     seed = float(rng.normal())
     tab_arr = np.array([tab_val, tab_val + 3.0])
 
-    env = {"k": 1, "x0": x0_val, "x1": x1_val, "tab": tab_arr, "idx": idx_val,
-           "bar_out": seed}
+    env = {
+        "k": 1,
+        "x0": x0_val,
+        "x1": x1_val,
+        "tab": tab_arr,
+        "idx": idx_val,
+        "bar_out": seed,
+    }
     got = evaluate(derived, env)
     analytic = float(np.asarray(got["bar_tab"])[idx_val])
 
@@ -79,8 +91,7 @@ def test_table_read_vjp_inside_dispatch_matches_fd_not_doubled():
         f"{fd} (ratio {ratio:.6f} -- the HAWK GAP is exactly 2.0x)"
     )
     assert float(got["bar_x0"]) == 0.0, (
-        f"off-branch leaf gradient bar_x0 must stay exactly zero, got "
-        f"{got['bar_x0']}"
+        f"off-branch leaf gradient bar_x0 must stay exactly zero, got {got['bar_x0']}"
     )
 
 
@@ -88,11 +99,12 @@ def test_table_read_vjp_outside_dispatch_is_exact_control():
     """Control: the SAME ``x1 * tab.at(idx)`` construct, OUTSIDE any
     dispatch, is exact (ratio 1.0) -- isolates the defect to dispatch's own
     reverse rule, not ``At``'s ordinary (non-local-pass) scatter rule."""
-    x1 = _leaf("x1", S, "per_sample")
-    tab = Leaf("table_read", "lookup", "tab", S)
-    idx = _leaf("idx", I32, "per_sample")
-    y = mk("mul", (x1, At(tab, idx, S)))
-    sinks = (Assign("out", y, S),)
+    context = _ir.new_context()
+    x1 = _leaf(context, "x1", S, "per_sample")
+    tab = _ir.leaf(context, "table_read", "lookup", "tab", S)
+    idx = _leaf(context, "idx", I32, "per_sample")
+    y = _ir.make("mul", (x1, _gather(tab, idx)))
+    sinks = (_assign("out", y),)
     derived = vjp(sinks)
 
     x1_val, tab_val, idx_val, seed = 1.7, 0.9, 0, -0.6

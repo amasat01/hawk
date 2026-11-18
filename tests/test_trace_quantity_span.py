@@ -21,18 +21,15 @@ from __future__ import annotations
 
 import pytest
 
-from hawk import Mutable, Param, Quantity, Scalar, kernel
+from hawk import HawkError, Mutable, Param, Quantity, Scalar, _ir, kernel
 from hawk.diff import vjp
-from raptor.ir import Assign, Leaf, Node, canonical
-from raptor.errors import RaptorError as HawkError
 from hawk.math import norm
-from raptor.ir.types import Wire
 
 STATE = Quantity(slug="sc", name="state",
-                 wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))])
+                 wires=[_ir.Wire("pos", "vec_in", (3,)), _ir.Wire("vel", "vec_in", (3,))])
 FIELD = Quantity(slug="earth", name="orientation",
-                 wires=[Wire("q", "vec_in", (4,), tag="quaternion"),
-                        Wire("w", "per_sample", ())])
+                 wires=[_ir.Wire("q", "vec_in", (4,), tag="quaternion"),
+                        _ir.Wire("w", "per_sample", ())])
 
 
 @kernel
@@ -47,35 +44,30 @@ def reaches_neither(unused: FIELD, x: Scalar, out: Mutable[Scalar]):
 
 
 def _names_read(sinks) -> set[str]:
-    seen: set[str] = set()
+    return {n.field_text("name") for n in _ir.post_order(sinks) if _ir.is_a(n, "leaf")}
 
-    def visit(node: Node) -> None:
-        if isinstance(node, Leaf):
-            seen.add(node.name)
-        for child in node.operands:
-            visit(child)
 
-    for sink in sinks:
-        visit(sink)
-    return seen
+def _bound(walk, quantity) -> list:
+    """Where the wires of ``quantity`` sit in the walk's argument list, as ``(index, name)`` pairs."""
+    spec = _ir.arg_spec(walk)
+    wires = [(w.role, quantity.wire_name(w)) for w in quantity.wires]
+    return [(spec.index(slot), slot[1]) for slot in wires if slot in spec]
 
 
 def test_reached_quantity_binds_every_wire_contiguously_in_declaration_order():
-    walk = reads_one_wire.walk
-    span = walk.quantities["sc__state"]
-    assert span.wires == ("sc__state__pos", "sc__state__vel")
-    assert span.slots == tuple(range(span.slots[0], span.slots[0] + 2)), (
+    slots, names = zip(*_bound(reads_one_wire.walk, STATE))
+    assert names == ("sc__state__pos", "sc__state__vel")
+    assert slots == tuple(range(slots[0], slots[0] + 2)), (
         "a reached quantity's wires occupy ONE consecutive, "
-        f"declaration-ordered run; got {span.slots}"
+        f"declaration-ordered run; got {slots}"
     )
-    assert [walk.arg_spec[i][1] for i in span.slots] == list(span.wires)
 
 
 def test_the_unread_wire_is_bound_and_unused():
     read = _names_read(reads_one_wire.sinks)
     assert "sc__state__pos" in read
     assert "sc__state__vel" not in read, "the body reads only one wire"
-    assert ("vec_in", "sc__state__vel") in reads_one_wire.walk.slot_of, (
+    assert ("vec_in", "sc__state__vel") in _ir.slot_of(reads_one_wire.walk), (
         "a reached-but-UNREAD wire is bound and unused -- dropping it "
         "breaks every VJP"
     )
@@ -86,14 +78,13 @@ def test_an_unreached_quantity_binds_nothing():
     assert not any(name.startswith("earth__orientation") for name in names), (
         f"an UNREACHED quantity binds no wire and occupies no slot; got {names}"
     )
-    assert reaches_neither.walk.quantities == {}
+    assert _bound(reaches_neither.walk, FIELD) == []
 
 
 def test_the_span_survives_the_derived_ir():
-    derived = canonical(vjp(reads_one_wire))
-    span = derived.quantities["sc__state"]
-    assert span.wires == ("sc__state__pos", "sc__state__vel")
-    assert span.slots == tuple(range(span.slots[0], span.slots[0] + 2))
+    slots, names = zip(*_bound(_ir.canonical(vjp(reads_one_wire)), STATE))
+    assert names == ("sc__state__pos", "sc__state__vel")
+    assert slots == tuple(range(slots[0], slots[0] + 2))
     assert "sc__state__vel" not in _names_read(vjp(reads_one_wire)), (
         "the VJP reaches a proper SUBSET of the primal's wires -- which is exactly "
         "why binds on the access and not on the read"
@@ -101,6 +92,7 @@ def test_the_span_survives_the_derived_ir():
 
 
 def test_a_wire_name_outside_a_quantity_is_refused():
-    stray = Leaf("vocab_read", "vec_in", "sc__state__pos", STATE.expand()[0].ttype)
+    ttype = STATE.expand()[0].ttype
+    stray = _ir.leaf(_ir.new_context(), "vocab_read", "vec_in", "sc__state__pos", ttype)
     with pytest.raises(HawkError, match="no owning quantity"):
-        canonical((Assign("out", stray, stray.ttype),))
+        _ir.canonical((_ir.make_node("Assign", ttype, [stray], name="out"),))

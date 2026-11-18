@@ -29,12 +29,37 @@ from conftest import sidecar_of
 import hawk
 from hawk import HawkError, Mutable, Scalar, Table, Vector
 from hawk.artifact import build_bundle
-from raptor.wings.base.settings import Settings
+from hawk.build_settings import Settings
 from hawk.ext import IndexSet, Kind
-from raptor.wings.base import wide
-from raptor.ir.nodes import Select
+from collections import namedtuple
+
+from hawk import _ir
 
 TARGETS_BOTH = ("cuda", "host")
+
+#: A scratch plane the placement made: its name and its elements per lane.
+Plane = namedtuple("Plane", "name per_lane")
+
+
+def _place(sinks, spec, real_bytes):
+    """``(sinks, planes, record)`` of the library's placement of ``sinks`` with the thresholds of ``spec`` at ``real_bytes``.
+
+    ``planes`` are the scratch planes the runtime makes; ``record`` is ``{plane name: {form, plane, layout, width}}`` of
+    every placement, a mutable's own plane included.
+    """
+    tables = spec.wide_tables()
+    patterns = ("read", "slot_read", "rotate", "write", "accum")
+    runtime = tuple(tables["runtime_min"][p].get(real_bytes, tables["runtime_min"][p][8]) for p in patterns)
+    wide_min = tables["wide_min"].get(real_bytes, tables["wide_min"][8])
+    placed, _ = _ir.wide_place(
+        sinks, thread_form=spec.settings.wide_form == "thread", runtime_min=runtime, wide_min=wide_min,
+        rolled_min=spec.primary.get("form", {}).get("rolled_fold_min"), form="auto")
+    rows = _ir.wide_record(_ir.post_order(placed))
+    names = {leaf: leaf.field_text("name") for leaf, _, _ in rows}
+    record = {names[leaf]: {"form": "resident", "plane": names[leaf], "layout": layout, "width": width}
+              for leaf, layout, width in rows}
+    planes = [Plane(names[leaf], width) for leaf, _, width in rows if _ir.wide_is_tiled(leaf)]
+    return tuple(placed), planes, record
 
 
 def _unit(bundle, name, suffix=".cu"):
@@ -49,7 +74,6 @@ def _a1_arch() -> str:
     """The arch the A1 rows compile for: the card's own when one is reachable (and then only if the committed figures are
     its class's), else the measured one, so a GPU-less run builds a CUBIN of the arch the figures describe (a virtual arch
     gives PTX, whose local sizes are a ceiling before ptxas)."""
-    from hawk.compile import toolchain as tc
     from ospreys.cuda import toolchain as dtc
 
     probed = dtc._probed_device_arch()
@@ -75,37 +99,37 @@ def _build(entry, tmp_path, cache_dir, **options):
 # -- what the pass places -----------------------------------------------------------------------
 
 def test_a_runtime_index_over_a_wide_value_places_it_in_a_scratch_plane_and_the_mask_lands_in_the_output_plane():
-    _, planes, record = wide.place(W.fill_mask.sinks, DEVICE, real_bytes=4)
-    assert [p.name for p in planes] == ["hwd0"] and planes[0].per_lane == W.W and planes[0].dtype == "real"
+    _, planes, record = _place(W.fill_mask.sinks, DEVICE, real_bytes=4)
+    assert [p.name for p in planes] == ["hwd0"] and planes[0].per_lane == W.W
     assert record["hwd0"] == {"form": "resident", "plane": "hwd0", "layout": "warp_tiled", "width": W.W}
     assert record["bf"] == {"form": "resident", "plane": "bf", "layout": "plane_major", "width": W.W}   # a Mutable is its own plane
 
 
 def test_a_row_of_products_read_by_a_rolled_sum_is_placed_and_the_accumulator_is_the_output_plane():
-    _, planes, record = wide.place(W.matvec_in.sinks, DEVICE, real_bytes=8)
+    _, planes, record = _place(W.matvec_in.sinks, DEVICE, real_bytes=8)
     assert [p.name for p in planes] == ["hwd0"] and "y" not in record       # the accumulator is written in a loop and read once: registers
 
 
 def test_a_value_computed_once_is_placed_in_place_over_the_plane_it_was_filled_in():
-    _, planes, record = wide.place(W.matvec_computed.sinks, DEVICE, real_bytes=8)
+    _, planes, record = _place(W.matvec_computed.sinks, DEVICE, real_bytes=8)
     assert sorted(record) == ["hwd0", "hwd1"]          # the fill and its mask share one plane, the products another
 
 
 def test_a_dispatched_sum_over_a_vector_input_has_nothing_to_place():
-    sinks, planes, record = wide.place(W.masked_sum.sinks, DEVICE, real_bytes=8)
+    sinks, planes, record = _place(W.masked_sum.sinks, DEVICE, real_bytes=8)
     assert sinks is not None and not planes and not record
 
 
 def test_a_narrow_vector_read_at_a_runtime_index_is_placed_where_the_resident_form_is_faster():
     for name in ("narrow8", "narrow16", "rotate16"):
-        _, planes, record = wide.place(getattr(W, name).sinks, DEVICE, real_bytes=8)
+        _, planes, record = _place(getattr(W, name).sinks, DEVICE, real_bytes=8)
         assert record and all(p.name.startswith("hwd") for p in planes), name
         assert any(v["layout"] == "plane_major" for v in record.values()), name      # the Mutable output is its own plane
 
 
 def test_the_widths_registers_win_at_stay_in_registers():
     for name, real_bytes in (("narrow4", 8), ("narrow16", 4), ("rotate16", 4)):
-        sinks, planes, record = wide.place(getattr(W, name).sinks, DEVICE, real_bytes=real_bytes)
+        sinks, planes, record = _place(getattr(W, name).sinks, DEVICE, real_bytes=real_bytes)
         assert not planes and not record, name
 
 
@@ -114,7 +138,7 @@ def test_a_vector_whose_every_index_is_a_constant_keeps_its_registers():
     def narrow(tbl: Table["i":16], y: Mutable[Vector[16]]):
         y = W.mask_vec(tbl, 16) * 2.0
 
-    sinks, planes, record = wide.place(narrow.sinks, DEVICE, real_bytes=8)
+    sinks, planes, record = _place(narrow.sinks, DEVICE, real_bytes=8)
     assert sinks == tuple(narrow.sinks) and not planes and not record
 
 
@@ -138,7 +162,7 @@ def test_launch_bounds_are_refused_on_a_warp_per_lane_kernel(tmp_path, cache_dir
 
 
 def test_the_thread_form_places_nothing(tmp_path, cache_dir):
-    sinks, planes, record = wide.place(W.fill_mask.sinks, DEVICE.with_settings(wide_form="thread"), real_bytes=8)
+    sinks, planes, record = _place(W.fill_mask.sinks, DEVICE.with_settings(wide_form="thread"), real_bytes=8)
     assert not planes and not record
     with pytest.warns(UserWarning, match="local frame"):     # the thread form spills, and the build says so
         _, bundle = _build("fill_mask", tmp_path, cache_dir, wide_form="thread")
@@ -247,12 +271,12 @@ def test_a_kernel_with_nothing_wide_is_one_kernel_as_it_was(tmp_path, cache_dir)
 
 def test_the_derivatives_of_a_wide_kernel_place_what_the_primal_places_and_the_scaled_reverse_reads():
     for name in ("fill_mask_jvp", "fill_mask_vjp", "matvec_in_jvp"):
-        _, planes, record = wide.place(W.CORPUS[name].kernel.sinks, DEVICE, real_bytes=8)
+        _, planes, record = _place(W.CORPUS[name].kernel.sinks, DEVICE, real_bytes=8)
         assert planes and record, name
 
 
 def test_the_tangent_of_a_stepping_accumulation_lives_in_planes_across_the_trips():
-    _, planes, record = wide.place(W.steps_acc_jvp_k8.sinks, DEVICE, real_bytes=8)
+    _, planes, record = _place(W.steps_acc_jvp_k8.sinks, DEVICE, real_bytes=8)
     assert {"bf", "dot_bf"} <= set(record)
 
 
@@ -337,28 +361,30 @@ def test_the_text_of_the_one_measured_class_does_not_depend_on_the_arch(tmp_path
 # -- a stepping kernel ---------------------------------------------------------------------------
 
 def test_a_step_loop_carries_a_wide_mutable_in_its_own_plane_and_places_what_it_reads():
-    _, planes, record = wide.place(W.steps_fill_k8.sinks, DEVICE, real_bytes=8)
+    _, planes, record = _place(W.steps_fill_k8.sinks, DEVICE, real_bytes=8)
     assert [p.name for p in planes] == ["hwd0"]
     assert record["bf"] == {"form": "resident", "plane": "bf", "layout": "plane_major", "width": W.W}
 
 
-def test_a_step_loop_writes_the_carried_plane_once_after_the_loop_from_a_shadow_of_the_last_trip():
-    from raptor.ir.nodes import Loop, LoopValue
+def _step_loops(sinks):
+    """The loops of the sinks that stop on an exit condition (the step loops), each once."""
+    return [n for n in _ir.post_order(sinks) if _ir.is_a(n, "loop") and n.field_kind("exit_cond")]
 
-    sinks, _, _ = wide.place(W.steps_fill_k8.sinks, DEVICE, real_bytes=8)
-    step = next(l for l in wide._Graph(sinks).loops if l.exit_cond is not None)
-    assert [c.name for c in step.carries].count("c_last") == 1               # the counter's value at the start of a trip
-    assert not any(isinstance(n, Loop) or wide.is_resident(n) and n.ttype.shape for n in step.body_nodes())   # nothing wide in the body
-    bf = next(s for s in sinks if getattr(s, "name", None) == "bf")
-    assert wide.is_resident(bf.operands[0]) and isinstance(bf.operands[0].operands[0].operands[1], LoopValue)
+
+def test_a_step_loop_writes_the_carried_plane_once_after_the_loop_from_a_shadow_of_the_last_trip():
+    sinks, _, _ = _place(W.steps_fill_k8.sinks, DEVICE, real_bytes=8)
+    (step,) = _step_loops(sinks)
+    carries = [c.field_text("name") for c in step.field_nodes("carries")]
+    assert carries.count("c_last") == 1               # the counter's value at the start of a trip
+    wide_in_body = [n for n in _ir.body_nodes(step) if _ir.is_a(n, "loop") or _ir.wide_is_resident(n) and _ir.type_of(n).shape]
+    assert not wide_in_body                           # nothing wide in the body
+    bf = next(s for s in sinks if s.cls == "Assign" and s.field_text("name") == "bf")
+    assert _ir.wide_is_resident(bf.operands[0])
 
 
 def test_a_step_loop_runs_one_loop_the_finish_follows():
-    from raptor.ir.nodes import Loop
-
-    sinks, _, _ = wide.place(W.steps_matvec_k8.sinks, DEVICE, real_bytes=8)
-    loops = [n for n in wide._Graph(sinks).loops if isinstance(n, Loop) and n.exit_cond is not None]
-    assert len(loops) == 1                          # the finish reads the placed loop's flag, not a second copy of the loop
+    sinks, _, _ = _place(W.steps_matvec_k8.sinks, DEVICE, real_bytes=8)
+    assert len(_step_loops(sinks)) == 1             # the finish reads the placed loop's flag, not a second copy of the loop
 
 
 @pytest.mark.parametrize("entry", ["steps_fill_k1", "steps_fill_k8", "steps_early_k8", "steps_matvec_k1", "steps_matvec_k8", "narrow4", "narrow16",
@@ -372,15 +398,12 @@ def test_a_stepping_or_narrow_corpus_kernel_holds_no_local_memory(entry, mode, t
 # -- the identity ------------------------------------------------------------------------------
 
 def _vector_selects(kernel):
-    from raptor.ir.nodes import Loop
-    from raptor.ir.walk import canonical_nodes
-
-    found, nodes = [], list(canonical_nodes(kernel.sinks)[0])
+    found, nodes = [], list(_ir.canonical_nodes(kernel.sinks)[0])
     while nodes:
         n = nodes.pop()
-        if isinstance(n, Loop):
-            nodes.extend(n.body_nodes())
-        elif isinstance(n, Select) and n.ttype.shape:
+        if _ir.is_a(n, "loop"):
+            nodes.extend(_ir.body_nodes(n))
+        elif n.cls == "Select" and _ir.type_of(n).shape:
             found.append(n)
     return found
 

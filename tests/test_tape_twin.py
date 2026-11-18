@@ -31,6 +31,7 @@ from __future__ import annotations
 import _deploy as L
 import numpy as np
 import pytest
+from _unit_sidecar import finish_mask
 from conftest import sidecar_of
 
 import hawk
@@ -38,6 +39,7 @@ from hawk import Index, Mutable, Param, Scalar, Terminated, Vector, kernel
 from hawk.artifact import build_bundle
 from hawk.diff.tape import tape, tape_width, taped_planes
 from raptor.errors import RaptorError as HawkError
+from hawk import _ir
 
 N = 37
 DT = 0.0625
@@ -297,22 +299,22 @@ def test_the_width_is_derived_from_the_read_and_overwritten_state():
     assert [n for n, _ in taped_planes(spin)] == ["r", "s"]
     assert tape_width(spin) == 4
     tw = TWINS["spin"]
-    assert tw.walk.slot_types[("out", "tape")].shape == (W_BIG * 4,)
+    assert _ir.slot_type(tw.walk, "out", "tape").shape == (W_BIG * 4,)
     assert [n for n, _ in taped_planes(osc)] == ["t", "v", "x"]
-    assert ("mutable", "applied_steps") in tw.walk.arg_spec
-    assert ("uniform", "tape_on") in tw.walk.arg_spec
+    assert ("mutable", "applied_steps") in _ir.arg_spec(tw.walk)
+    assert ("uniform", "tape_on") in _ir.arg_spec(tw.walk)
 
 
 def test_a_taped_kernel_stays_sample_local_and_the_plain_kernel_is_untouched():
-    before = osc.walk.digest
+    before = _ir.digest(osc.walk)
     for tw in TWINS.values():
-        assert tw.walk.access.cls == "sample_local", tw.name
-    assert tape(osc, 4).walk.access.cls == "sample_local"
-    assert osc.walk.digest == before
+        assert _ir.access_class(tw.walk) == "sample_local", tw.name
+    assert _ir.access_class(tape(osc, 4).walk) == "sample_local"
+    assert _ir.digest(osc.walk) == before
     assert TWINS["osc"].name == "osc_tape" and TWINS["osc_auto"].name == "osc_auto_tape"
-    assert (TWINS["osc_auto"].walk.finish, TWINS["osc_auto"].steps) == ("terminated", "auto")
-    assert (TWINS["osc_auto"].step.walk.finish, TWINS["osc_auto"].step.steps) == ("terminated", 1)
-    assert (TWINS["osc"].walk.finish, TWINS["osc"].steps) == ("terminated", 1)
+    assert (finish_mask(TWINS["osc_auto"]), TWINS["osc_auto"].steps) == ("terminated", "auto")
+    assert (finish_mask(TWINS["osc_auto"].step), TWINS["osc_auto"].step.steps) == ("terminated", 1)
+    assert (finish_mask(TWINS["osc"]), TWINS["osc"].steps) == ("terminated", 1)
 
 
 def test_refusals_name_the_kernel():
@@ -341,9 +343,9 @@ def test_a_fixed_k_kernel_tapes_through_its_single_step():
     fixed = hawk.steps(osc, 4)
     assert fixed.step is osc and fixed.name == "osc_x4"
     twin, auto = tape(fixed, 8), tape(osc_auto, 8)
-    assert ("lookup", "fused_steps") in twin.walk.arg_spec
-    assert twin.walk.arg_spec == auto.walk.arg_spec
-    assert twin.one_step.walk.arg_spec == tape(osc, 8).walk.arg_spec
+    assert ("lookup", "fused_steps") in _ir.arg_spec(twin.walk)
+    assert _ir.arg_spec(twin.walk) == _ir.arg_spec(auto.walk)
+    assert _ir.arg_spec(twin.one_step.walk) == _ir.arg_spec(tape(osc, 8).walk)
 
 
 @pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])

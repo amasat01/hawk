@@ -26,13 +26,20 @@ import pytest
 
 from hawk import Scalar, raw_device
 from hawk.diff import vjp
-from raptor.ir import Assign, Leaf, Op, canonical
+from hawk import _ir
 from hawk import HawkError
-from raptor.ir.nodes import RAW_KIND
-from raptor.ir.types import TensorType
 
 TEXT = "acc[i] += rho * pos[i];"
-F64 = TensorType((), "f64")
+F64 = _ir.TensorType((), "f64")
+CTX = _ir.new_context()
+
+
+def _x():
+    return _ir.leaf(CTX, "vocab_read", "per_sample", "x", F64)
+
+
+def _out(value):
+    return (_ir.make_node("Assign", F64, [value], name="out"),)
 
 
 def test_raw_device_without_access_is_refused_at_trace_time():
@@ -58,32 +65,27 @@ def test_the_decorator_spelling_adopts_the_stub_name():
         """The `@raw_device(...)` spelling: a stub naming the block."""
 
     assert wobble.name == "wobble"
-    x = Leaf("vocab_read", "per_sample", "x", F64)
-    assert wobble(x).node.kind == RAW_KIND
+    assert wobble(_x()).node.field_text("kind") == _ir.RAW_KIND
 
 
 def test_the_declared_class_folds_into_the_inferred_one():
     block = raw_device(TEXT, access="cross_sample_write", returns=Scalar)
-    x = Leaf("vocab_read", "per_sample", "x", F64)
-    value = block(x)
-    walk = canonical((Assign("out", value.node, F64),))
-    assert walk.access.cls == "cross_sample_write", (
+    walk = _ir.canonical(_out(block(_x()).node))
+    assert _ir.access_class(walk) == "cross_sample_write", (
         "a raw block's DECLARED class folds into the walk's inferred "
         "class -- otherwise the annotation is decorative"
     )
 
 
 def test_an_unannotated_raw_op_reaching_the_classifier_is_refused():
-    x = Leaf("vocab_read", "per_sample", "x", F64)
-    opaque = Op(RAW_KIND, (x,), F64, literal="just some text")
+    opaque = _ir.make_node("Op", F64, [_x()], kind=_ir.RAW_KIND, literal="just some text")
     with pytest.raises(HawkError, match="explicit access="):
-        canonical((Assign("out", opaque, F64),))
+        _ir.canonical(_out(opaque))
 
 
 def test_a_raw_block_cannot_be_differentiated():
     block = raw_device(TEXT, access="sample_local", returns=Scalar)
-    x = Leaf("vocab_read", "per_sample", "x", F64)
-    sinks = (Assign("out", block(x).node, F64),)
+    sinks = _out(block(_x()).node)
     with pytest.raises(HawkError, match="raw_device"):
         vjp(sinks)
 

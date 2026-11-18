@@ -30,7 +30,7 @@ from raptor.errors import RaptorError
 
 import hawk.runtime as R
 from hawk.artifact import build, build_bundle, emit_source, request
-from hawk import facts
+from hawk import _ir, facts
 from hawk.compile import host as host_driver
 from hawk.compile import toolchain as host_toolchain
 from hawk.artifact.bundle import _emitted, _prepared
@@ -173,7 +173,7 @@ def test_the_set_library_of_a_team_kernel_lists_its_source_unit_and_the_stage_un
     source unit with its stages and each stage unit with none."""
     from _linalg_kernels import chol_kernel
 
-    kernel = chol_kernel(40)
+    kernel = chol_kernel(_ir.new_context(), 40)
     bundle = build_bundle([kernel], tmp_path, targets=("host",), cache_dir=cache_dir, linalg_form="auto")
     listed = _units_of(ctypes.CDLL(str(bundle.directory / "units.so")))
     stage_units = [artifact.name for artifact in bundle.artifacts]
@@ -186,9 +186,9 @@ def test_a_team_kernel_is_refused_by_emit_source_and_build_as_stages_with_the_wa
     from _linalg_kernels import chol_kernel
 
     with pytest.raises(HawkError, match=r"worked by a team per lane.*several stages.*call build_bundle"):
-        emit_source(chol_kernel(40), targets=("host",))
+        emit_source(chol_kernel(_ir.new_context(), 40), targets=("host",))
     with pytest.raises(HawkError, match=r"worked by a team per lane.*call build_bundle"):
-        build(chol_kernel(40), tmp_path, targets=("host",))
+        build(chol_kernel(_ir.new_context(), 40), tmp_path, targets=("host",))
 
 
 def test_a_value_reduced_over_samples_is_refused_by_emit_source_and_build_as_several_launches_with_the_way_out(tmp_path):
@@ -205,7 +205,7 @@ def test_the_set_library_of_a_team_kernel_on_the_device_row_lists_its_units_and_
     """Oracle: the bundle's artifacts are the stage units; each holds the image file its build wrote, the source unit holds none."""
     from _linalg_kernels import chol_kernel
 
-    kernel = chol_kernel(40)
+    kernel = chol_kernel(_ir.new_context(), 40)
     bundle = build_bundle([kernel], tmp_path / "a", cache_dir=str(tmp_path / "cache"), **DEVICE_BUILD)
     library = ctypes.CDLL(str(bundle.directory / "units.so"))
     stage_units = [artifact.name for artifact in bundle.artifacts]

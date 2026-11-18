@@ -18,7 +18,6 @@ at its own lane's key.
 """
 
 from __future__ import annotations
-from _specs import DEVICE
 
 import math
 
@@ -28,11 +27,10 @@ import pytest
 import hawk
 import hawk.diff
 import hawk.math as m
-from hawk import Grid, HawkError, Index, Kernel, Mutable, Scalar, Terminated, Vector, kernel, runtime
+from hawk import Grid, HawkError, Index, Kernel, Mutable, Scalar, Vector, kernel, runtime
 from hawk.artifact import build_bundle
-from raptor.ir.nodes import ReduceSamples
-from raptor.wings.base.split import stages
-from raptor.ir.walk import post_order as _post_order
+from conftest import sidecar_of
+from hawk import _ir
 
 R, COL = 4, 64
 N = R * COL
@@ -142,8 +140,8 @@ def test_the_row_sum_is_within_the_fsum_contract(tmp_path, cache_dir, mode, whic
 def test_the_vjp_has_three_stages_and_matches_central_differences(tmp_path, cache_dir):
     fwd = _bundle([share], tmp_path / "f", "float64", cache_dir)
     grad = Kernel("share_vjp", hawk.diff.vjp(share, primal_unit=fwd.digest))
-    assert len(stages(grad.name, grad.sinks, spec=DEVICE)) == 3
     bundle = _bundle([grad], tmp_path / "g", "float64", cache_dir)
+    assert len(sidecar_of(bundle, grad.name)["stages"]) == 3
     x = _x("float64")
     w = np.random.default_rng(5).uniform(-1, 1, N)
     bar_x = np.zeros(N)
@@ -170,7 +168,7 @@ def test_the_jvp_matches_central_differences(tmp_path, cache_dir):
     dx = np.random.default_rng(5).uniform(-1, 1, N)
     dz = np.zeros(N)
     planes = dict(runtime.load(bundle.directory, "share_jvp").arg_spec)
-    assert len(stages(tan.name, tan.sinks, spec=DEVICE)) == 2, planes
+    assert len(sidecar_of(bundle, tan.name)["stages"]) == 2, planes
     _run(bundle, "share_jvp", x=x, dot_x=dx, dot_out=dz)
     h = 1e-6
     lo, hi = np.zeros(N), np.zeros(N)
@@ -180,15 +178,15 @@ def test_the_jvp_matches_central_differences(tmp_path, cache_dir):
 
 
 def _reductions(sinks):
-    return [n for n in _post_order(tuple(s.value for s in sinks)) if isinstance(n, ReduceSamples)]
+    return [n for n in _ir.post_order([s.operands[0] for s in sinks]) if n.cls == "ReduceSamples"]
 
 
 def test_the_derivative_of_a_sum_keeps_its_key_count_and_contract():
-    keyed = [n for n in _reductions(hawk.diff.vjp(share_c)) if n.key is not None]
-    assert keyed and all(n.count is not None and n.contract == "compensated" for n in keyed)
+    keyed = [n for n in _reductions(hawk.diff.vjp(share_c)) if n.field_kind("key")]
+    assert keyed and all(n.field_kind("count") and n.field_text("contract") == "compensated" for n in keyed)
     for derive in (hawk.diff.vjp, hawk.diff.jvp):
         found = _reductions(derive(whole))
-        assert found and {n.contract for n in found} == {"ordered"}
+        assert found and {n.field_text("contract") for n in found} == {"ordered"}
 
 
 # -- runs -------------------------------------------------------------------

@@ -37,16 +37,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from raptor.ir import Const, Leaf, Node
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir import make as _mk
-from raptor.ir.nodes import LoopCarry, LoopIndex, LoopValue
-from raptor.ir.loops import build_loop
-from raptor.ir.nodes import AccumWrite, Assign, Finish, SampleSum, Select, TapeWrite, element_count, is_param_cell
-from raptor.ir.cells import with_value
-from ..dialects import is_a
-from raptor.ir.walk import substitute
-from raptor.ir.types import TensorType
 
 #: The reserved plane names the twin adds (refused as a kernel's own).
 TAPE_PLANE = "tape"
@@ -57,8 +49,8 @@ RESERVED = (TAPE_PLANE, APPLIED_STEPS, TAPE_ON)
 #: The twin's name suffix.
 SUFFIX = "_tape"
 
-_I32 = TensorType((), "i32")
-_FLAG = TensorType((), "f64")
+_I32 = _ir.TensorType((), "i32")
+_FLAG = _ir.TensorType((), "f64")
 _FLOAT = ("f64", "f32")
 
 
@@ -74,31 +66,34 @@ def tape(kernel: Any, window: int, *, events: str = "step") -> Any:
     rounding of the index-form time a crossing exactly on the step grid
     can carry — so a stop that lands on a grid point is taken at that step,
     never one step late. ``events="step"`` keeps the kernel's own test."""
-    step = (getattr(kernel, "step", None) or getattr(kernel, "one_step", None)
-            or kernel)
+    step = getattr(kernel, "step", None) or getattr(kernel, "one_step", None) or kernel
     fused = step is not kernel
     name = step.name
-    if step.walk.finish is not None and step.steps != 1:
+    if any(_ir.is_a(s, "finish") for s in step.sinks) and step.steps != 1:
         raise HawkError(
             f"hawk.diff.tape({name!r}): the kernel takes {step.steps} steps per "
-            "launch; tape the single step (steps=1) or the automatic kernel")
+            "launch; tape the single step (steps=1) or the automatic kernel"
+        )
     if isinstance(window, bool) or not isinstance(window, int) or window < 1:
         raise HawkError(
-            f"hawk.diff.tape({name!r}): the window is a positive int of steps, "
-            f"got {window!r}")
+            f"hawk.diff.tape({name!r}): the window is a positive int of steps, got {window!r}"
+        )
     if events not in ("step", "refine"):
         raise HawkError(
             f"hawk.diff.tape({name!r}): events is 'step' (the kernel's own stop "
-            f"test) or 'refine' (the closed test refinement needs), got {events!r}")
+            f"test) or 'refine' (the closed test refinement needs), got {events!r}"
+        )
     if events == "refine" and _time(step) is None:
         raise HawkError(
             f"hawk.diff.tape({name!r}, events='refine'): refinement steps by a "
-            "partial step size; declare it with @hawk.kernel(time_step=...)")
-    taken = [n for _, n in step.walk.arg_spec if n in RESERVED]
+            "partial step size; declare it with @hawk.kernel(time_step=...)"
+        )
+    taken = [n for _, n in _ir.arg_spec(step.walk) if n in RESERVED]
     if taken:
         raise HawkError(
             f"hawk.diff.tape({name!r}): {taken} are reserved for the taping twin "
-            f"({list(RESERVED)}); rename those parameters")
+            f"({list(RESERVED)}); rename those parameters"
+        )
     step, t_value = _promoted(step)
     if events == "refine":
         step = _closed_stop(step, t_value)
@@ -106,7 +101,8 @@ def tape(kernel: Any, window: int, *, events: str = "step") -> Any:
     if not planes:
         raise HawkError(
             f"hawk.diff.tape({name!r}): the step reads and overwrites no "
-            "floating-point state plane, so there is nothing to tape")
+            "floating-point state plane, so there is nothing to tape"
+        )
     single = _single_twin(step, planes, window)
     if not fused:
         return single
@@ -118,52 +114,88 @@ def taped_planes(step: Any) -> tuple:
     order — floating-point ``Mutable`` planes read before their store and
     overwritten by the step."""
     walk = step.walk
-    committed = {s.name for s in step.sinks if isinstance(s, Assign)}
+    committed = {s.field_text("name") for s in step.sinks if _ir.is_a(s, "assign")}
     time = getattr(step, "time", None) if getattr(step, "time_step", None) else None
     out = []
-    for role, name in walk.arg_spec:
-        ttype = walk.slot_types[(role, name)]
-        if (role == "mutable" and name in committed and ttype.dtype in _FLOAT
-                and (name in walk.prior_reads or name == time)):
+    prior = _ir.prior_reads(walk)
+    for role, name in _ir.arg_spec(walk):
+        ttype = _ir.slot_type(walk, role, name)
+        if (
+            role == "mutable"
+            and name in committed
+            and ttype.dtype in _FLOAT
+            and (name in prior or name == time)
+        ):
             out.append((name, ttype))
     return tuple(out)
 
 
 def tape_width(step: Any) -> int:
     """``w``: the flattened component count of one tape row."""
-    return sum(element_count(t) for _, t in taped_planes(step))
+    return sum(_ir.element_count(t) for _, t in taped_planes(step))
 
 
-def _tape_ttype(name: str, planes: tuple, window: int) -> TensorType:
+def _tape_ttype(name: str, planes: tuple, window: int) -> Any:
     dtypes = {t.dtype for _, t in planes}
     if len(dtypes) != 1:
         raise HawkError(
             f"hawk.diff.tape({name!r}): the taped planes mix {sorted(dtypes)}; "
-            "one tape holds one floating-point type")
-    width = sum(element_count(t) for _, t in planes)
-    return TensorType((window * width,), dtypes.pop())
+            "one tape holds one floating-point type"
+        )
+    width = sum(_ir.element_count(t) for _, t in planes)
+    return _ir.TensorType((window * width,), dtypes.pop())
 
 
-def _row(applied: Node, window: int) -> Node:
+def _row(applied: Any, window: int) -> Any:
     """``applied mod window`` for a non-negative ``applied`` (integer ops)."""
-    w = Const(window, _I32)
-    return _mk("sub", (applied, _mk("mul", (_mk("div", (applied, w)), w))))
+    w = _ir.const(applied.ctx, window, _I32)
+    return _ir.make(
+        "sub", (applied, _ir.make("mul", (_ir.make("div", (applied, w)), w)))
+    )
 
 
-def _on() -> Leaf:
-    return Leaf("uniform", "uniform", TAPE_ON, _I32)
+def _on(context: Any) -> Any:
+    """The ``tape_on`` flag, a uniform read in ``context``."""
+    return _ir.leaf(context, "uniform", "uniform", TAPE_ON, _I32)
+
+
+def _tape_write(row: Any, on: Any, values: tuple, ttype: Any) -> Any:
+    """The tape store of ``values`` at ``row`` (a whole row of their components), when ``on``."""
+    width = sum(_ir.element_count(_ir.type_of(v)) for v in values)
+    return _ir.make_node(
+        "TapeWrite", ttype, [row, on, *values], name=TAPE_PLANE, width=width
+    )
+
+
+def _carry(context: Any, depth: int, slot: int, name: str, ttype: Any) -> Any:
+    """The loop-carried value ``name`` in ``slot`` of the loop at nesting ``depth``."""
+    return _ir.make_node(
+        "LoopCarry", ttype, context=context, depth=depth, slot=slot, name=name
+    )
+
+
+def _assign(name: str, value: Any, ttype: Any) -> Any:
+    """The commit of ``value`` to the plane ``name``."""
+    return _ir.make_node("Assign", ttype, [value], name=name)
 
 
 def _single_twin(step: Any, planes: tuple, window: int) -> Any:
     from ..trace.kernel import Kernel
 
-    applied = Leaf("prior_read", "mutable", APPLIED_STEPS, _I32)
-    values = tuple(Leaf("prior_read", "mutable", n, t) for n, t in planes)
-    store = TapeWrite(TAPE_PLANE, _row(applied, window), _on(), values,
-                      _tape_ttype(step.name, planes, window))
-    finishes = tuple(s for s in step.sinks if isinstance(s, Finish))
-    others = tuple(s for s in step.sinks if not isinstance(s, Finish))
-    count = Assign(APPLIED_STEPS, _mk("add", (applied, Const(1, _I32))), _I32)
+    context = step.context
+    applied = _ir.leaf(context, "prior_read", "mutable", APPLIED_STEPS, _I32)
+    values = tuple(_ir.leaf(context, "prior_read", "mutable", n, t) for n, t in planes)
+    store = _tape_write(
+        _row(applied, window),
+        _on(context),
+        values,
+        _tape_ttype(step.name, planes, window),
+    )
+    finishes = tuple(s for s in step.sinks if _ir.is_a(s, "finish"))
+    others = tuple(s for s in step.sinks if not _ir.is_a(s, "finish"))
+    count = _assign(
+        APPLIED_STEPS, _ir.make("add", (applied, _ir.const(context, 1, _I32))), _I32
+    )
     # The store FIRST: it reads the pre-step state before any commit moves it.
     sinks = (store, *others, count, *finishes)
     return Kernel(step.name + SUFFIX, sinks, step.planes, kind=step.kind)
@@ -176,37 +208,85 @@ def _fused_twin(step: Any, single: Any, planes: tuple, window: int) -> Any:
     from ..trace.kernel import Kernel
     from ..trace.steps import AUTO_K_MAX, _clamped_word, _prior_reads
 
+    context = step.context
     sinks = tuple(step.sinks)
-    finish = next(s for s in sinks if isinstance(s, Finish))
-    commits = [s for s in sinks if s is not finish]
+    finish = next(s for s in sinks if _ir.is_a(s, "finish"))
+    commits = [s for s in sinks if s != finish]
     depth = 0
-    carries = [LoopCarry(depth, j, s.name, s.ttype) for j, s in enumerate(commits)]
+    carries = [
+        _carry(context, depth, j, s.field_text("name"), _ir.type_of(s))
+        for j, s in enumerate(commits)
+    ]
     m = len(commits)
-    applied = LoopCarry(depth, m, APPLIED_STEPS, _I32)
-    flag = LoopCarry(depth, m + 1, "finished", _FLAG)
-    by_name = {s.name: c for s, c in zip(commits, carries)}
+    applied = _carry(context, depth, m, APPLIED_STEPS, _I32)
+    flag = _carry(context, depth, m + 1, "finished", _FLAG)
+    by_name = {s.field_text("name"): c for s, c in zip(commits, carries)}
     by_name[APPLIED_STEPS] = applied
-    mapping = {id(leaf): by_name[leaf.name] for leaf in _prior_reads(sinks)}
-    roots = tuple(s.value for s in commits) + (finish.value,)
-    new = substitute(roots, mapping)
+    mapping = {leaf: by_name[leaf.field_text("name")] for leaf in _prior_reads(sinks)}
+    roots = tuple(s.operands[0] for s in commits) + (finish.operands[0],)
+    new = _ir.substitute(roots, mapping)
     cond = new[-1]
-    nexts = (tuple(new[:-1]) + (_mk("add", (applied, Const(1, _I32))),)
-             + (Select(cond, Const(1.0, _FLAG), Const(0.0, _FLAG), _FLAG),))
-    inits = (tuple(Leaf("prior_read", "mutable", s.name, s.ttype) for s in commits)
-             + (Leaf("prior_read", "mutable", APPLIED_STEPS, _I32), Const(0.0, _FLAG)))
-    store = TapeWrite(TAPE_PLANE, _row(applied, window), _on(),
-                      tuple(by_name[n] for n, _ in planes),
-                      _tape_ttype(step.name, planes, window))
-    loop = build_loop(LoopIndex(depth, "step"), (*carries, applied, flag), inits,
-                      nexts, start=0, stop=AUTO_K_MAX, step=1, body_sinks=(store,),
-                      exit_cond=cond, exit_values=nexts, count=_clamped_word())
+    nexts = (
+        tuple(new[:-1])
+        + (_ir.make("add", (applied, _ir.const(context, 1, _I32))),)
+        + (
+            _ir.make_node(
+                "Select",
+                _FLAG,
+                [cond, _ir.const(context, 1.0, _FLAG), _ir.const(context, 0.0, _FLAG)],
+            ),
+        )
+    )
+    inits = tuple(
+        _ir.leaf(context, "prior_read", "mutable", s.field_text("name"), _ir.type_of(s))
+        for s in commits
+    ) + (
+        _ir.leaf(context, "prior_read", "mutable", APPLIED_STEPS, _I32),
+        _ir.const(context, 0.0, _FLAG),
+    )
+    store = _tape_write(
+        _row(applied, window),
+        _on(context),
+        tuple(by_name[n] for n, _ in planes),
+        _tape_ttype(step.name, planes, window),
+    )
+    index = _ir.make_node(
+        "LoopIndex", _I32, context=context, depth=depth, name="step", bounds=None
+    )
+    loop = _ir.loop(
+        index,
+        (*carries, applied, flag),
+        inits,
+        nexts,
+        start=0,
+        stop=AUTO_K_MAX,
+        step=1,
+        body_sinks=(store,),
+        exit_cond=cond,
+        exit_values=nexts,
+        count=_clamped_word(context),
+    )
     out: list = [loop]
-    out += [Assign(s.name, LoopValue(loop, j), s.ttype) for j, s in enumerate(commits)]
-    out.append(Assign(APPLIED_STEPS, LoopValue(loop, m), _I32))
-    done = _mk("gt", (LoopValue(loop, m + 1), Const(0.5, _FLAG)))
-    out.append(Finish(finish.name, done))
-    return Kernel(step.name + SUFFIX, tuple(out), step.planes, kind=step.kind,
-                  step=single, one_step=single, steps="auto")
+    out += [
+        _assign(s.field_text("name"), _ir.loop_value(loop, j), _ir.type_of(s))
+        for j, s in enumerate(commits)
+    ]
+    out.append(_assign(APPLIED_STEPS, _ir.loop_value(loop, m), _I32))
+    done = _ir.make("gt", (_ir.loop_value(loop, m + 1), _ir.const(context, 0.5, _FLAG)))
+    out.append(
+        _ir.make_node(
+            "Finish", _ir.type_of(done), [done], name=finish.field_text("name")
+        )
+    )
+    return Kernel(
+        step.name + SUFFIX,
+        tuple(out),
+        step.planes,
+        kind=step.kind,
+        step=single,
+        one_step=single,
+        steps="auto",
+    )
 
 
 # --------------------------------------------------------------------------
@@ -220,53 +300,62 @@ TAU_SUFFIX = "_tau"
 REFINED_SUFFIX = "_refined"
 
 
-def _reachable(roots) -> list:
-    out, seen, stack = [], set(), list(roots)
-    while stack:
-        node = stack.pop()
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        out.append(node)
-        stack.extend(node.operands)
-    return out
-
-
 def check_time(kernel: Any, time: str, time_step: str) -> None:
     """Refuse a time declaration the body contradicts: ``time_step`` must be
     a floating-point rank-0 input the body reads, and a time plane the body
     commits must be updated exactly as ``time = time + time_step`` (either
     operand order), its launch-start value plus the step. A time plane the
     body does not declare is legal (the twin mints it)."""
-    step = (getattr(kernel, "step", None) or getattr(kernel, "one_step", None)
-            or kernel)
+    step = getattr(kernel, "step", None) or getattr(kernel, "one_step", None) or kernel
     name = step.name
-    nodes = _reachable(step.sinks)
-    dts = [n for n in nodes if isinstance(n, Leaf) and n.name == time_step]
-    if not dts or any(d.role not in ("uniform", "per_sample") or d.ttype.shape
-                      or d.ttype.dtype not in _FLOAT for d in dts):
+    nodes = _ir.post_order(step.sinks)
+    dts = [
+        n for n in nodes if _ir.is_a(n, "leaf") and n.field_text("name") == time_step
+    ]
+    if not dts or any(
+        d.field_text("role") not in ("uniform", "per_sample")
+        or _ir.type_of(d).shape
+        or _ir.type_of(d).dtype not in _FLOAT
+        for d in dts
+    ):
         raise HawkError(
             f"kernel {name!r}: time_step={time_step!r} must name a scalar "
-            "floating-point input the body reads (a Param or a Scalar)")
-    sink = next((s for s in step.sinks
-                 if isinstance(s, Assign) and s.name == time), None)
+            "floating-point input the body reads (a Param or a Scalar)"
+        )
+    sink = next(
+        (
+            s
+            for s in step.sinks
+            if _ir.is_a(s, "assign") and s.field_text("name") == time
+        ),
+        None,
+    )
     if sink is None:
-        if any(isinstance(n, Leaf) and n.name == time for n in nodes):
+        if any(_ir.is_a(n, "leaf") and n.field_text("name") == time for n in nodes):
             raise HawkError(
                 f"kernel {name!r}: time={time!r} is read but never updated; a "
-                "time plane is a Mutable the step advances by time_step")
+                "time plane is a Mutable the step advances by time_step"
+            )
         return
-    ops = sink.value.operands if getattr(sink.value, "kind", None) == "add" else ()
-    ok = (len(ops) == 2
-          and any(isinstance(o, Leaf) and o.kind == "prior_read" and o.name == time
-                  for o in ops)
-          and any(isinstance(o, Leaf) and o.name == time_step for o in ops))
+    value = sink.operands[0]
+    ops = value.operands if value.field_text("kind") == "add" else ()
+    ok = (
+        len(ops) == 2
+        and any(
+            _ir.is_a(o, "leaf")
+            and o.field_text("kind") == "prior_read"
+            and o.field_text("name") == time
+            for o in ops
+        )
+        and any(_ir.is_a(o, "leaf") and o.field_text("name") == time_step for o in ops)
+    )
     if not ok:
         raise HawkError(
             f"kernel {name!r}: the time plane {time!r} must advance as "
             f"`{time} = {time} + {time_step}` (its launch-start value plus the "
             "step), so the twin can write it in index form; got a different "
-            "update")
+            "update"
+        )
 
 
 def _time(step: Any) -> tuple | None:
@@ -274,10 +363,10 @@ def _time(step: Any) -> tuple | None:
     return None if dt is None else (step.time or "t", dt)
 
 
-def _index_time(t: str, h: Node, k: Node) -> Node:
+def _index_time(t: str, h: Any, k: Any) -> Any:
     """``t_0 + k*h``: ONE multiply, ONE add (the index form)."""
-    t0 = Leaf("vocab_read", "per_sample", t + T0_SUFFIX, h.ttype)
-    return _mk("add", (t0, _mk("mul", (k, h))))
+    t0 = _ir.leaf(h.ctx, "vocab_read", "per_sample", t + T0_SUFFIX, _ir.type_of(h))
+    return _ir.make("add", (t0, _ir.make("mul", (k, h))))
 
 
 def _promoted(step: Any, *, tau: bool = False) -> Any:
@@ -293,32 +382,37 @@ def _promoted(step: Any, *, tau: bool = False) -> Any:
     if got is None:
         return step, None
     t, dt = got
-    nodes = _reachable(step.sinks)
-    if any(getattr(n, "kind", None) == "loop" for n in nodes):
+    context = step.context
+    nodes = _ir.post_order(step.sinks)
+    if any(_ir.is_a(n, "loop") for n in nodes):
         raise HawkError(
             f"hawk.diff.tape({step.name!r}): promoting the time plane through a "
-            "loop in the step body is not built")
-    dt_leaves = [n for n in nodes if isinstance(n, Leaf) and n.name == dt]
-    ttype = dt_leaves[0].ttype
-    h = Leaf("vocab_read", "per_sample", dt, ttype)
-    k = Leaf("prior_read", "mutable", APPLIED_STEPS, _I32)
+            "loop in the step body is not built"
+        )
+    dt_leaves = [n for n in nodes if _ir.is_a(n, "leaf") and n.field_text("name") == dt]
+    ttype = _ir.type_of(dt_leaves[0])
+    h = _ir.leaf(context, "vocab_read", "per_sample", dt, ttype)
+    k = _ir.leaf(context, "prior_read", "mutable", APPLIED_STEPS, _I32)
     if tau:
-        step_size = Leaf("vocab_read", "per_sample", dt + TAU_SUFFIX, ttype)
-        t_value = _mk("add", (_index_time(t, h, k), step_size))
+        step_size = _ir.leaf(
+            context, "vocab_read", "per_sample", dt + TAU_SUFFIX, ttype
+        )
+        t_value = _ir.make("add", (_index_time(t, h, k), step_size))
     else:
         step_size = h
-        t_value = _index_time(t, h, _mk("add", (k, Const(1, _I32))))
-    mapping = {id(leaf): step_size for leaf in dt_leaves}
-    sink = next((s for s in step.sinks if isinstance(s, Assign) and s.name == t),
-                None)
+        t_value = _index_time(t, h, _ir.make("add", (k, _ir.const(context, 1, _I32))))
+    mapping = {leaf: step_size for leaf in dt_leaves}
+    sink = next(
+        (s for s in step.sinks if _ir.is_a(s, "assign") and s.field_text("name") == t),
+        None,
+    )
     if sink is not None:
-        mapping[id(sink.value)] = t_value
-    values = substitute(tuple(s.value for s in step.sinks), mapping)
-    sinks = tuple(with_value(s, v) for s, v in zip(step.sinks, values))
+        mapping[sink.operands[0]] = t_value
+    sinks = _ir.swap(step.sinks, mapping)
     if sink is None:
-        finishes = tuple(s for s in sinks if isinstance(s, Finish))
-        others = tuple(s for s in sinks if not isinstance(s, Finish))
-        sinks = (*others, Assign(t, t_value, ttype), *finishes)
+        finishes = tuple(s for s in sinks if _ir.is_a(s, "finish"))
+        others = tuple(s for s in sinks if not _ir.is_a(s, "finish"))
+        sinks = (*others, _assign(t, t_value, ttype), *finishes)
     out = Kernel(step.name, sinks, step.planes, kind=step.kind)
     out.time, out.time_step = t, dt
     out.jump = step.jump
@@ -329,53 +423,76 @@ def _promoted(step: Any, *, tau: bool = False) -> Any:
 EVENT_ULPS = 4.0
 
 
-def _closed_stop(step: Any, t_value: Node) -> Any:
+def _closed_stop(step: Any, t_value: Any) -> Any:
     """``step`` with its finish replaced by the closed, tolerant test
     ``any_i g_i <= EVENT_ULPS * spacing(|t|) * |dg_i/dt|`` (``t`` the
     post-step time, ``t_value``)."""
     from ..trace.kernel import Kernel
     from .event import guards_of
 
-    finish = next(s for s in step.sinks if isinstance(s, Finish))
-    spacing = _mk("spacing", (_mk("abs", (t_value,)),))
+    finish = next(s for s in step.sinks if _ir.is_a(s, "finish"))
+    spacing = _ir.make("spacing", (_ir.make("abs", (t_value,)),))
     cond = None
-    for g in guards_of(step.name, finish.value):
-        tol = _mk("mul", (Const(EVENT_ULPS, g.ttype),
-                          _mk("mul", (spacing, _mk("abs", (_d_dt(g, t_value),))))))
-        test = _mk("le", (g, tol))
-        cond = test if cond is None else _mk("lor", (cond, test))
-    sinks = tuple(Finish(s.name, cond) if s is finish else s
-                  for s in step.sinks)
+    for g in guards_of(step.name, finish.operands[0]):
+        tol = _ir.make(
+            "mul",
+            (
+                _ir.const(g.ctx, EVENT_ULPS, _ir.type_of(g)),
+                _ir.make("mul", (spacing, _ir.make("abs", (_d_dt(g, t_value),)))),
+            ),
+        )
+        test = _ir.make("le", (g, tol))
+        cond = test if cond is None else _ir.make("lor", (cond, test))
+    sinks = tuple(
+        _ir.make_node("Finish", _ir.type_of(cond), [cond], name=s.field_text("name"))
+        if s == finish
+        else s
+        for s in step.sinks
+    )
     out = Kernel(step.name, sinks, step.planes, kind=step.kind)
     out.time, out.time_step = step.time, step.time_step
     out.jump = step.jump
     return out
 
 
-def _d_dt(g: Node, t_value: Node) -> Node:
+def _d_dt(g: Any, t_value: Any) -> Any:
     """``dg/dt`` as an IR expression of the same inputs: the forward-mode
     rule of ``g`` with the time value as the one direction."""
     from .event import as_plain_reads
     from .transform import jvp
 
-    probe = Leaf("vocab_read", "per_sample", "hawk_event_time", t_value.ttype)
-    prior = {n.name: n for n in _reachable((g,))
-             if isinstance(n, Leaf) and n.kind == "prior_read"}
-    (plain,) = as_plain_reads(substitute((g,), {id(t_value): probe}))
-    if not any(isinstance(n, Leaf) and n.name == probe.name for n in _reachable((plain,))):
-        return Const(0.0, g.ttype)      # a guard that does not read the time
-    (sink,) = jvp((Assign("hawk_event_g", plain, plain.ttype),), wrt=(probe.name,))
+    probe_name = "hawk_event_time"
+    probe = _ir.leaf(
+        g.ctx, "vocab_read", "per_sample", probe_name, _ir.type_of(t_value)
+    )
+    prior = {
+        n.field_text("name"): n
+        for n in _ir.post_order((g,))
+        if _ir.is_a(n, "leaf") and n.field_text("kind") == "prior_read"
+    }
+    (plain,) = as_plain_reads(_ir.substitute((g,), {t_value: probe}))
+    if not any(
+        _ir.is_a(n, "leaf") and n.field_text("name") == probe_name
+        for n in _ir.post_order((plain,))
+    ):
+        return _ir.const(
+            g.ctx, 0.0, _ir.type_of(g)
+        )  # a guard that does not read the time
+    (sink,) = jvp(
+        (_assign("hawk_event_g", plain, _ir.type_of(plain)),), wrt=(probe_name,)
+    )
     back = {}
-    for n in _reachable((sink.value,)):
-        if not isinstance(n, Leaf):
+    for n in _ir.post_order((sink.operands[0],)):
+        if not _ir.is_a(n, "leaf"):
             continue
-        if n.name == probe.name:
-            back[id(n)] = t_value
-        elif n.name.endswith(probe.name):
-            back[id(n)] = Const(1.0, n.ttype)
-        elif n.name in prior:
-            back[id(n)] = prior[n.name]
-    return substitute((sink.value,), back)[0]
+        name = n.field_text("name")
+        if name == probe_name:
+            back[n] = t_value
+        elif name.endswith(probe_name):
+            back[n] = _ir.const(n.ctx, 1.0, _ir.type_of(n))
+        elif name in prior:
+            back[n] = prior[name]
+    return _ir.substitute((sink.operands[0],), back)[0]
 
 
 def refine_entry(kernel: Any) -> Any:
@@ -394,25 +511,30 @@ def refine_entry(kernel: Any) -> Any:
     from ..trace.kernel import Kernel
     from .event import GUARD_PREFIX, as_plain_reads, guards_of
 
-    step = (getattr(kernel, "step", None) or getattr(kernel, "one_step", None)
-            or kernel)
+    step = getattr(kernel, "step", None) or getattr(kernel, "one_step", None) or kernel
     if _time(step) is None:
         raise HawkError(
             f"hawk.diff.refine_entry({step.name!r}): the kernel declares no "
-            "time_step=; a refine entry steps by a per-sample partial step")
+            "time_step=; a refine entry steps by a per-sample partial step"
+        )
     refined, _ = _promoted(step, tau=True)
-    finish = next((s for s in refined.sinks if isinstance(s, Finish)), None)
+    finish = next((s for s in refined.sinks if _ir.is_a(s, "finish")), None)
     if finish is None:
         raise HawkError(
             f"hawk.diff.refine_entry({step.name!r}): the kernel never finishes "
-            "its sample, so there is no stop to refine")
-    guards = guards_of(step.name, finish.value)
-    commits = [s for s in refined.sinks if isinstance(s, Assign)]
-    new = as_plain_reads(tuple(s.value for s in commits) + guards)
-    sinks = tuple(Assign(s.name + REFINED_SUFFIX, v, s.ttype)
-                  for s, v in zip(commits, new[:len(commits)]))
-    sinks += tuple(Assign(f"{GUARD_PREFIX}{i}", g, g.ttype)
-                   for i, g in enumerate(new[len(commits):]))
+            "its sample, so there is no stop to refine"
+        )
+    guards = guards_of(step.name, finish.operands[0])
+    commits = [s for s in refined.sinks if _ir.is_a(s, "assign")]
+    new = as_plain_reads(tuple(s.operands[0] for s in commits) + guards)
+    sinks = tuple(
+        _assign(s.field_text("name") + REFINED_SUFFIX, v, _ir.type_of(s))
+        for s, v in zip(commits, new[: len(commits)])
+    )
+    sinks += tuple(
+        _assign(f"{GUARD_PREFIX}{i}", g, _ir.type_of(g))
+        for i, g in enumerate(new[len(commits) :])
+    )
     out = Kernel(step.name + "_refine", sinks, {}, kind=step.kind)
     out.time, out.time_step = refined.time, refined.time_step
     out.jump = refined.jump
@@ -423,8 +545,13 @@ def refine_entry(kernel: Any) -> Any:
 NEXT_SUFFIX = "_next"
 
 
-def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None,
-             steps_reverse: str = "per_step") -> Any:
+def step_vjp(
+    kernel: Any,
+    *,
+    wrt=None,
+    primal_unit: str | None = None,
+    steps_reverse: str = "per_step",
+) -> Any:
     """The vjp of ONE step of an in-place step kernel (one that updates
     ``Mutable`` planes and finishes its samples), for a reverse through a
     rollout. :func:`~hawk.diff.vjp` refuses such a kernel, because a plane
@@ -478,16 +605,21 @@ def step_vjp(kernel: Any, *, wrt=None, primal_unit: str | None = None,
 
     if steps_reverse not in ("per_step", "fused"):
         raise HawkError(
-            f"step_vjp: steps_reverse is 'per_step' or 'fused', got {steps_reverse!r}")
+            f"step_vjp: steps_reverse is 'per_step' or 'fused', got {steps_reverse!r}"
+        )
     if steps_reverse == "fused" and _fused_steps_of(kernel) is None:
         raise HawkError(
             f"step_vjp({kernel.name!r}, steps_reverse='fused'): needs hawk.steps(k, K) "
-            "with a fixed integer K > 1 (an 'auto' kernel's trip count is a launch-time word)")
+            "with a fixed integer K > 1 (an 'auto' kernel's trip count is a launch-time word)"
+        )
     if steps_reverse == "fused" and wrt is None:
         # the same inputs as one step (the loop's stop rule reads more, none differentiable)
-        wrt = _step_vjp(kernel, wrt=None, primal_unit=None, steps_reverse="per_step").wrt
-    return _rederivable(_step_vjp)(kernel, wrt=wrt, primal_unit=primal_unit,
-                                   steps_reverse=steps_reverse)
+        wrt = _step_vjp(
+            kernel, wrt=None, primal_unit=None, steps_reverse="per_step"
+        ).wrt
+    return _rederivable(_step_vjp)(
+        kernel, wrt=wrt, primal_unit=primal_unit, steps_reverse=steps_reverse
+    )
 
 
 def _step_vjp(kernel: Any, *, wrt, primal_unit, steps_reverse) -> Any:
@@ -497,18 +629,26 @@ def _step_vjp(kernel: Any, *, wrt, primal_unit, steps_reverse) -> Any:
     from .transform import Derived, vjp
 
     fused = _fused_steps_of(kernel) if steps_reverse == "fused" else None
-    step = (getattr(kernel, "step", None) or getattr(kernel, "one_step", None)
-            or kernel)
+    step = getattr(kernel, "step", None) or getattr(kernel, "one_step", None) or kernel
     if fused is not None:
         function = _fused_function(*fused)
     else:
         twin = tape(kernel, 1)
         single = getattr(twin, "one_step", None) or twin
-        commits = [s for s in single.sinks if isinstance(s, Assign) and s.name != APPLIED_STEPS]
-        values = as_plain_reads(tuple(s.value for s in commits))
-        function = Kernel(f"{step.name}_function",
-                          tuple(Assign(s.name + NEXT_SUFFIX, v, s.ttype)
-                                for s, v in zip(commits, values)), {})
+        commits = [
+            s
+            for s in single.sinks
+            if _ir.is_a(s, "assign") and s.field_text("name") != APPLIED_STEPS
+        ]
+        values = as_plain_reads(tuple(s.operands[0] for s in commits))
+        function = Kernel(
+            f"{step.name}_function",
+            tuple(
+                _assign(s.field_text("name") + NEXT_SUFFIX, v, _ir.type_of(s))
+                for s, v in zip(commits, values)
+            ),
+            {},
+        )
     function.jump = getattr(step, "jump", None)
     out = vjp(function, wrt=wrt)
     if (out.jump or {}).get("engaged"):
@@ -516,12 +656,21 @@ def _step_vjp(kernel: Any, *, wrt, primal_unit, steps_reverse) -> Any:
             f"step_vjp({step.name!r}): a jump= switch whose value reaches control or a "
             "nonlinear op is differentiated by an alternate path of ONE launch; "
             "carrying it across launches (steps=, time_step, eagle stepping) is not "
-            "built. Differentiate the whole rollout in one kernel with hawk.diff.vjp")
-    result = Derived(tuple(out), primal=kernel.name if fused else step.name, kind="vjp",
-                     wrt=out.wrt, primal_unit=primal_unit, jump=out.jump)
+            "built. Differentiate the whole rollout in one kernel with hawk.diff.vjp"
+        )
+    result = Derived(
+        tuple(out),
+        primal=kernel.name if fused else step.name,
+        kind="vjp",
+        wrt=out.wrt,
+        primal_unit=primal_unit,
+        jump=out.jump,
+    )
     if fused:
         result._fused_steps = fused[1]
-        result._kernel_kind = function.kind     # the stop flag is read in the body: no second guard
+        result._kernel_kind = (
+            function.kind
+        )  # the stop flag is read in the body: no second guard
     return result
 
 
@@ -555,28 +704,52 @@ def step_jvp(kernel: Any, *, wrt=None) -> Any:
     from .event import as_plain_reads
     from .transform import TANGENT_PREFIX, jvp
 
-    step = (getattr(kernel, "step", None) or getattr(kernel, "one_step", None)
-            or kernel)
+    step = getattr(kernel, "step", None) or getattr(kernel, "one_step", None) or kernel
     if getattr(step, "jump", None) is not None:
         raise HawkError(
             f"step_jvp({step.name!r}): a kernel declaring jump= is not carried forward; "
-            "differentiate its per-launch term with hawk.diff.jvp")
-    if any(is_param_cell(n) for n in _reachable(tuple(s.value for s in step.sinks))):
+            "differentiate its per-launch term with hawk.diff.jvp"
+        )
+    if any(_ir.is_param_cell(n) for n in _ir.post_order(step.sinks)):
         raise HawkError(
             f"step_jvp({step.name!r}): the kernel reads parameter cells, whose tangent "
-            "is not carried across launches")
-    state = tuple(dict.fromkeys(s.name for s in step.sinks if isinstance(s, Assign)))
-    plain = Kernel(f"{step.name}_plain", tuple(
-        with_value(s, v) for s, v in zip(step.sinks, as_plain_reads(tuple(s.value for s in step.sinks)))),
-        step.planes, kind=step.kind)
-    tangent = jvp(plain, wrt=None if wrt is None else tuple(dict.fromkeys((*wrt, *state))))
+            "is not carried across launches"
+        )
+    state = tuple(
+        dict.fromkeys(s.field_text("name") for s in step.sinks if _ir.is_a(s, "assign"))
+    )
+    plain = Kernel(
+        f"{step.name}_plain",
+        tuple(
+            _ir.with_value(s, v)
+            for s, v in zip(
+                step.sinks, as_plain_reads(tuple(s.operands[0] for s in step.sinks))
+            )
+        ),
+        step.planes,
+        kind=step.kind,
+    )
+    tangent = jvp(
+        plain, wrt=None if wrt is None else tuple(dict.fromkeys((*wrt, *state)))
+    )
     carried = set(state) | {f"{TANGENT_PREFIX}_{name}" for name in state}
-    values = tuple(s.value for s in tangent)
-    start = {id(n): Leaf("prior_read", "mutable", n.name, n.ttype)
-             for n in _reachable(values)
-             if isinstance(n, Leaf) and n.kind != "prior_read" and n.name in carried}
-    values = substitute(values, start) if start else values
-    out = Kernel(f"{step.name}_jvp", tuple(step.sinks) + tuple(
-        with_value(s, v) for s, v in zip(tangent, values)), step.planes, kind=step.kind)
+    values = tuple(s.operands[0] for s in tangent)
+    start = {
+        n: _ir.leaf(
+            n.ctx, "prior_read", "mutable", n.field_text("name"), _ir.type_of(n)
+        )
+        for n in _ir.post_order(values)
+        if _ir.is_a(n, "leaf")
+        and n.field_text("kind") != "prior_read"
+        and n.field_text("name") in carried
+    }
+    values = _ir.substitute(values, start) if start else values
+    out = Kernel(
+        f"{step.name}_jvp",
+        tuple(step.sinks)
+        + tuple(_ir.with_value(s, v) for s, v in zip(tangent, values)),
+        step.planes,
+        kind=step.kind,
+    )
     out.time, out.time_step = step.time, step.time_step
     return out

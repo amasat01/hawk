@@ -39,10 +39,10 @@ from conftest import sidecar_of
 from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk.artifact import build_bundle, emit_source
 from hawk.compile import CompileOptions, compile_source
-from hawk.artifact.sidecar import sidecar_meta
+from _unit_sidecar import finish_mask, sidecar_of_kernel
 from hawk.diff import jvp, vjp
 from raptor.errors import RaptorError as HawkError
-from raptor.ir import canonical
+from hawk import _ir
 
 N = 40
 DT = 0.125
@@ -93,14 +93,14 @@ def smooth_finish(x: Scalar, terminated: Terminated, y: Mutable[Scalar]):
 # -- the IR and the sidecar.
 # --------------------------------------------------------------------------- #
 def test_the_walk_records_the_finish_and_binds_the_counter():
-    assert (osc_finish.walk.finish, osc_finish.steps) == ("terminated", 1)
+    assert (finish_mask(osc_finish), osc_finish.steps) == ("terminated", 1)
     assert ("lookup", "finished_count") in osc_finish.arg_spec
-    assert osc_finish.walk.slot_types[("lookup", "finished_count")].dtype == "uint32"
-    assert (stop_only.walk.finish, stop_only.steps) == ("terminated", 1)
+    assert _ir.slot_type(osc_finish.walk, "lookup", "finished_count").dtype == "uint32"
+    assert (finish_mask(stop_only), stop_only.steps) == ("terminated", 1)
 
 
 def test_a_finishing_kernels_sidecar_declares_the_finish():
-    meta = sidecar_meta("osc_finish", osc_finish.walk, steps=osc_finish.steps, fmt="ptx",
+    meta = sidecar_of_kernel(osc_finish, steps=osc_finish.steps, fmt="ptx",
                         scalar_type="float64")
     assert meta["finish"] == {"mask": "terminated", "counter": "finished_count",
                               "steps": 1}
@@ -113,7 +113,7 @@ def test_a_finishing_kernels_sidecar_declares_the_finish():
 def test_a_non_finishing_kernel_keeps_its_readonly_sidecar():
     import _deployable as D
 
-    plain = sidecar_meta("d", D.diagnostic.walk, fmt="ptx", scalar_type="float64")
+    plain = sidecar_of_kernel(D.diagnostic, fmt="ptx", scalar_type="float64")
     assert "finish" not in plain and plain["terminated_readonly"] is True
     assert ["lookup", "finished_count"] not in plain["arg_spec"]
 

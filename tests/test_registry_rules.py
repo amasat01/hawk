@@ -52,12 +52,15 @@ NO_OWN_DIST = ("import importlib.metadata as _md\n_orig = _md.distribution\n"
 def _run(code: str, paths, env=None, own: bool = True) -> str:
     import os
 
+    import _osprey
     import raptor
 
     code = code if own else NO_OWN_DIST + code
 
-    # hawk reads its IR definition from raptor, which a package-only install carries
-    script = f"import sys; sys.path[:0] = {[*paths, os.path.dirname(os.path.dirname(raptor.__file__))]!r}\n" + code
+    # the isolated child sees only these paths: hawk imports the compiled binding at import and the
+    # wing packages it loads live beside raptor
+    homes = [os.path.dirname(os.path.dirname(raptor.__file__)), os.path.dirname(_osprey.__file__)]
+    script = f"import sys; sys.path[:0] = {[*paths, *homes]!r}\n" + code
     done = subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True,
                           env={**os.environ, **(env or {})}, check=False)
     assert done.returncode == 0, done.stderr[-2000:]

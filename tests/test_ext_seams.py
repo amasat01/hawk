@@ -41,8 +41,6 @@ Every plant was then removed.
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import HOST
 
 import _deploy as L
 import _deployable as D
@@ -61,6 +59,7 @@ from hawk.ext import Kind as _Kind
 from hawk.ext import Output as _Output
 from hawk.ext import compensated as _compensated
 from hawk.math import norm as _norm
+from hawk import _ir
 
 N = 16
 
@@ -139,7 +138,7 @@ def test_sink_policy_names_a_slot_it_does_not_build():
     import pytest
 
     from hawk.ext import sink_policy
-    from raptor.errors import RaptorError as HawkError
+    from hawk import HawkError
 
     for name in ("banded",):
         with pytest.raises(HawkError) as excinfo:
@@ -233,7 +232,7 @@ def test_guard_kind_binds_the_declared_mask_even_where_the_body_never_reads_it(b
     DECLARES it — the same "declared => bound, read or not" rule gives
     a compound quantity's unread wires. Without it the seam would have nothing
     to gate on."""
-    assert ("terminated", "terminated") in D.diagnostic.walk.slot_of
+    assert ("terminated", "terminated") in _ir.slot_of(D.diagnostic.walk)
     assert ["terminated", "terminated"] in sidecar_of(built["diag_free"],
                                                       "diagnostic")["arg_spec"]
 
@@ -502,10 +501,10 @@ def test_a_terminated_sample_keeps_its_prior_target_and_companion_bytes(
 
 
 def test_two_targets_under_one_into_refuses():
-    from raptor.errors import RaptorError as HawkError
+    from hawk.ext import HawkError
 
     K = _Kind("two_targets_one_into", sink=_compensated(into="c"))
-    with pytest.raises(HawkError, match="exactly ONE"):
+    with pytest.raises(HawkError, match="exactly one output target besides the companion"):
         @K
         def bad(x: _Scalar, y1: _Mutable[_Scalar], y2: _Mutable[_Scalar]):
             y1 = x
@@ -513,7 +512,7 @@ def test_two_targets_under_one_into_refuses():
 
 
 def test_a_companion_name_colliding_with_a_parameter_refuses():
-    from raptor.errors import RaptorError as HawkError
+    from hawk import HawkError
 
     K = _Kind("companion_collides_with_parameter", sink=_compensated(into="x"))
     with pytest.raises(HawkError, match="collides"):

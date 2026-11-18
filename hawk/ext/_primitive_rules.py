@@ -58,7 +58,7 @@ def signature_of(node: Any) -> tuple:
 
 
 def declare_primitive(
-    registry: PrimitiveRegistry, name: str, *, ext: str, directions: tuple
+    registry: PrimitiveRegistry, context: Any, name: str, *, ext: str, directions: tuple
 ) -> PrimitiveDecl:
     """Register a primitive's name; an equal re-registration returns the held one.
 
@@ -69,7 +69,7 @@ def declare_primitive(
             "a primitive is registered by NAME: the name is the boundary node's identity in the "
             "walk's digest"
         )
-    if name == _ir.PRIMITIVE_KIND:
+    if _ir.kind_reserved(context, name):
         raise HawkError(f"primitive {name!r}: the name is reserved (a core or declared kind)")
     decl = PrimitiveDecl(name, ext, tuple(directions))
     held = registry.primitives.get(name)
@@ -93,19 +93,6 @@ def _allowed(direction: str, count: int) -> set:
     else:
         names |= {f"dot{i}" for i in range(count)}
     return {PREFIX + name for name in names}
-
-
-def _check_free_leaves(name: str, template: Any, allowed: set) -> None:
-    """Refuse a template that reads a leaf other than its inputs, adjoint and tangents."""
-    inside = {n for lp in _loops(template) for n in _ir.body_nodes(lp)}
-    for node in _walk(template):
-        if _ir.is_a(node, "leaf") and node.field_text("name") not in allowed:
-            where = " inside a loop body" if node in inside else ""
-            raise HawkError(
-                f"primitive {name!r}: a rule template reads {node.field_text('role')} "
-                f"{node.field_text('name')!r}{where}: only its inputs, the incoming adjoint and "
-                f"the input tangents may be free in a rule ({sorted(allowed)})"
-            )
 
 
 def _loops(template: Any) -> list:
@@ -156,7 +143,7 @@ def register_rule(
                 "because a rank or dtype mismatch here reaches the emitter as a shape error far "
                 "from the declaration that caused it"
             )
-        _check_free_leaves(name, template, allowed)
+        _ir.rule_template_check(name, [template], sorted(allowed))
     key = tuple(template.ctx.dump([template]) for template in found)
     instance = held[1].setdefault(signature, {})
     old = instance.get(direction)
@@ -180,6 +167,9 @@ def substitute(template: Any, mapping: dict) -> Any:
     The substitution goes through operands and loop bodies in one library call; a placeholder the
     mapping does not name is left as it is.
     """
+    if mapping:
+        # a rule is registered in its own context; the nodes substituted in belong to the kernel's
+        template = _ir.adopt(next(iter(mapping.values())).ctx, [template])[0]
     leaves = {
         node.field_text("name"): node
         for node in _walk(template)

@@ -44,30 +44,38 @@ import hawk.math as M
 import hawk.math as hm
 import hawk.trace.value as T
 from hawk.artifact import build
-from raptor.ir import Assign, canonical
+from hawk import _ir
+from hawk.trace.lane_axes import trace_context
 from raptor.errors import RaptorError as HawkError
 from hawk.trace.value import TableRef, node_of
-from raptor.ir.types import TensorType
 
-S = TensorType((), "f64")
-B = TensorType((), "bool")
-V3 = TensorType((3,), "f64")
-V2 = TensorType((2,), "f64")
-Q = TensorType((4,), "f64", "quaternion")
-M33 = TensorType((3, 3), "f64")
+
+CTX = _ir.new_context()
+
+
+@pytest.fixture(autouse=True)
+def _traced_context():
+    """Literals met while a value is built are made in the context the leaves live in."""
+    with trace_context(CTX):
+        yield
+
+S = _ir.TensorType((), "f64")
+B = _ir.TensorType((), "bool")
+V3 = _ir.TensorType((3,), "f64")
+V2 = _ir.TensorType((2,), "f64")
+Q = _ir.TensorType((4,), "f64", "quaternion")
+M33 = _ir.TensorType((3, 3), "f64")
 
 N = 12
 MINOR = 4
 
 
-def _v(t: TensorType, name: str = "a"):
+def _v(t: _ir.TensorType, name: str = "a"):
     """A traced value over a fresh leaf of type ``t``."""
-    from raptor.ir import Leaf
-
     if t.dtype == "bool":
-        return hawk.Value(Leaf("terminated", "terminated", name, t))
+        return hawk.Value(_ir.leaf(CTX, "terminated", "terminated", name, t))
     role = {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(t.shape)]
-    return hawk.Value(Leaf("vocab_read", role, name, t))
+    return hawk.Value(_ir.leaf(CTX, "vocab_read", role, name, t))
 
 
 def _table():
@@ -86,7 +94,7 @@ SPELLINGS = {
     "atan2": lambda: M.atan2(_v(S), _v(S, "b")),
     "cos": lambda: M.cos(_v(S)),
     "cross": lambda: M.cross(_v(V3), _v(V3, "b")),
-    "dispatch": lambda: M.dispatch(_v(TensorType((), "i32"), "k"),
+    "dispatch": lambda: M.dispatch(_v(_ir.TensorType((), "i32"), "k"),
                                    [_v(S, "b"), _v(S, "c")]),
     "dot": lambda: M.dot(_v(V3), _v(V3, "b")),
     "exp": lambda: M.exp(_v(S)),
@@ -111,23 +119,23 @@ SPELLINGS = {
     "quat_mul": lambda: M.as_vec3(M.quat_mul(_v(Q), _v(Q, "b"))),
     "quat_recip": lambda: M.as_vec3(M.quat_recip(_v(Q))),
     "quat_rotate": lambda: M.quat_rotate(_v(Q), _v(V3, "b")),
-    "random_normal": lambda: M.random_normal(_v(TensorType((), "i32"), "seed"),
-                                             _v(TensorType((), "i32"), "counter")),
-    "random_bernoulli": lambda: M.random_bernoulli(_v(TensorType((), "i32"), "seed"),
-                                                 _v(TensorType((), "i32"), "counter"), 0.3),
-    "random_exponential": lambda: M.random_exponential(_v(TensorType((), "i32"), "seed"),
-                                                     _v(TensorType((), "i32"), "counter"), 2.0),
-    "random_lognormal": lambda: M.random_lognormal(_v(TensorType((), "i32"), "seed"),
-                                                 _v(TensorType((), "i32"), "counter"), 0.5, 0.25),
+    "random_normal": lambda: M.random_normal(_v(_ir.TensorType((), "i32"), "seed"),
+                                             _v(_ir.TensorType((), "i32"), "counter")),
+    "random_bernoulli": lambda: M.random_bernoulli(_v(_ir.TensorType((), "i32"), "seed"),
+                                                 _v(_ir.TensorType((), "i32"), "counter"), 0.3),
+    "random_exponential": lambda: M.random_exponential(_v(_ir.TensorType((), "i32"), "seed"),
+                                                     _v(_ir.TensorType((), "i32"), "counter"), 2.0),
+    "random_lognormal": lambda: M.random_lognormal(_v(_ir.TensorType((), "i32"), "seed"),
+                                                 _v(_ir.TensorType((), "i32"), "counter"), 0.5, 0.25),
     "random_multivariate_normal": lambda: M.vsum(M.random_multivariate_normal(
-        _v(TensorType((), "i32"), "seed"), _v(TensorType((), "i32"), "counter"),
+        _v(_ir.TensorType((), "i32"), "seed"), _v(_ir.TensorType((), "i32"), "counter"),
         _v(V3, "mu"), _v(M33, "L"))),
-    "random_uniform_int": lambda: M.random_uniform_int(_v(TensorType((), "i32"), "seed"),
-                                                     _v(TensorType((), "i32"), "counter"), -2, 5),
-    "random_poisson1": lambda: M.random_poisson1(_v(TensorType((), "i32"), "seed"),
-                                               _v(TensorType((), "i32"), "counter")),
-    "random_uniform": lambda: M.random_uniform(_v(TensorType((), "i32"), "seed"),
-                                               _v(TensorType((), "i32"), "counter")),
+    "random_uniform_int": lambda: M.random_uniform_int(_v(_ir.TensorType((), "i32"), "seed"),
+                                                     _v(_ir.TensorType((), "i32"), "counter"), -2, 5),
+    "random_poisson1": lambda: M.random_poisson1(_v(_ir.TensorType((), "i32"), "seed"),
+                                               _v(_ir.TensorType((), "i32"), "counter")),
+    "random_uniform": lambda: M.random_uniform(_v(_ir.TensorType((), "i32"), "seed"),
+                                               _v(_ir.TensorType((), "i32"), "counter")),
     "cmul": lambda: M.vsum(M.cmul(_v(V2), _v(V2, "b"))),
     "conj": lambda: M.vsum(M.conj(_v(V2))),
     "abs2": lambda: M.abs2(_v(V2)),
@@ -188,7 +196,7 @@ SPELLINGS = {
     "inf": lambda: M.minimum(_v(S), M.inf),
     "solve": lambda: M.solve(_v(M33), _v(V3, "b"))[0],
     "lu": lambda: M.lu_solve(M.lu(_v(M33))[0], _v(V3, "b")),
-    "lu_solve": lambda: M.lu_solve(M.lu(_v(M33))[0], _v(TensorType((3, 2), "f64"), "B")),
+    "lu_solve": lambda: M.lu_solve(M.lu(_v(M33))[0], _v(_ir.TensorType((3, 2), "f64"), "B")),
     "cholesky": lambda: M.cholesky(_v(M33))[0],
     "cho_solve": lambda: M.cho_solve(M.cholesky(_v(M33))[0], _v(V3, "b")),
     "mat": lambda: M.mat([[_v(S), _v(S, "b")], [_v(S, "c"), _v(S, "d")]]),
@@ -196,12 +204,12 @@ SPELLINGS = {
     "inv": lambda: M.inv(_v(M33))[0],
     "det": lambda: M.det(_v(M33)),
     "eigh": lambda: M.eigh(_v(M33))[1],
-    "lstsq": lambda: M.lstsq(_v(TensorType((4, 3), "f64"), "J"),
-                             _v(TensorType((4,), "f64"), "r"))[0],
-    "lm_step": lambda: M.lm_step(_v(TensorType((4, 3), "f64"), "J"),
-                                 _v(TensorType((4,), "f64"), "r"), _v(S, "mu")),
-    "mvn_sample": lambda: M.mvn_sample(_v(TensorType((), "i32"), "seed"),
-                                       _v(TensorType((), "i32"), "counter"),
+    "lstsq": lambda: M.lstsq(_v(_ir.TensorType((4, 3), "f64"), "J"),
+                             _v(_ir.TensorType((4,), "f64"), "r"))[0],
+    "lm_step": lambda: M.lm_step(_v(_ir.TensorType((4, 3), "f64"), "J"),
+                                 _v(_ir.TensorType((4,), "f64"), "r"), _v(S, "mu")),
+    "mvn_sample": lambda: M.mvn_sample(_v(_ir.TensorType((), "i32"), "seed"),
+                                       _v(_ir.TensorType((), "i32"), "counter"),
                                        _v(V3, "mu"), _v(M33, "S")),
     "eye": lambda: M.eye(3) @ _v(V3),
     "diag": lambda: M.diag(_v(V3)) @ _v(V3, "b"),
@@ -281,8 +289,8 @@ def test_every_exported_name_is_resolvable_and_is_the_trace_surface_itself():
         assert why, f"the adapter {name!r} is excused with no reason"
     # an adapter is still a composition of the SAME vocabulary: nothing here
     # mints an op kind the flat surface cannot.
-    assert M.vec(1.0, 2.0).node.kind == hm.vec(1.0, 2.0).node.kind
-    assert M.where(_v(B), _v(S), _v(S, "b")).node.kind == "select"
+    assert M.vec(1.0, 2.0).node.field_text("kind") == hm.vec(1.0, 2.0).node.field_text("kind")
+    assert M.where(_v(B), _v(S), _v(S, "b")).node.field_text("kind") == "select"
 
 
 def test_random_namespace_is_the_same_object_as_the_flat_names():
@@ -302,12 +310,12 @@ def test_uniform_and_normal_are_the_primitive_at_their_defaults():
     """``random.uniform(seed, counter)`` traces to ONE ``random_uniform`` node
     (the primitive, nothing wrapped around it); a range or a scale makes
     it the documented composition."""
-    seed, counter = _v(TensorType((), "i32"), "seed"), _v(TensorType((), "i32"), "counter")
-    assert M.random.uniform(seed, counter).node.kind == "random_uniform"
-    assert M.random.normal(seed, counter).node.kind == "random_normal"
-    assert M.random.uniform(seed, counter, -1.0, 3.0).node.kind == "add"
-    assert M.random.normal(seed, counter, sd=0.5).node.kind == "add"
-    assert M.random.uniform(seed, counter, 0, 1).node.kind == "random_uniform"
+    seed, counter = _v(_ir.TensorType((), "i32"), "seed"), _v(_ir.TensorType((), "i32"), "counter")
+    assert M.random.uniform(seed, counter).node.field_text("kind") == "random_uniform"
+    assert M.random.normal(seed, counter).node.field_text("kind") == "random_normal"
+    assert M.random.uniform(seed, counter, -1.0, 3.0).node.field_text("kind") == "add"
+    assert M.random.normal(seed, counter, sd=0.5).node.field_text("kind") == "add"
+    assert M.random.uniform(seed, counter, 0, 1).node.field_text("kind") == "random_uniform"
 
 
 def test_split_index_refuses_a_non_constant_or_non_positive_divisor():

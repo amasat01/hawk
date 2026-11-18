@@ -16,8 +16,9 @@ records, the compound-quantity composition) is written here once. The library re
 from __future__ import annotations
 
 import functools
+from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any, Callable, Iterable, Mapping, NamedTuple, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple, Sequence
 
 import _osprey
 
@@ -35,19 +36,37 @@ _STRING_CONSTANTS = (
 _TUPLE_CONSTANTS = (
     "COMPARE", "LOGICAL", "PREDICATE", "CONTRACTS", "SCATTER_CONTRACTS", "LEAF_ROLES",
     "INT_PLANE_DTYPES", "GATHER_ROLES", "PER_SAMPLE_ROLES", "ACCESS_CLASSES",
+    "LINALG_FACTORISATIONS",
 )  # fmt: skip
 
 COMPARE, LOGICAL, PREDICATE, CONTRACTS, SCATTER_CONTRACTS = (
     _CONTEXT_OF_CONSTANTS.const_names(name) for name in _TUPLE_CONSTANTS[:5]
 )
-LEAF_ROLES, INT_PLANE_DTYPES, GATHER_ROLES, PER_SAMPLE_ROLES, ACCESS_CLASSES = (
+(LEAF_ROLES, INT_PLANE_DTYPES, GATHER_ROLES, PER_SAMPLE_ROLES, ACCESS_CLASSES,
+ LINALG_FACTORISATIONS) = (
     _CONTEXT_OF_CONSTANTS.const_names(name) for name in _TUPLE_CONSTANTS[5:]
-)
+)  # fmt: skip
 (KEYED_AUTO, NAMESPACE_SEP, PARAM_CELL, RAW_KIND, CELL_PLANE, RAW_LANGUAGE, COMPANION_SUFFIX,
  ADJOINT_PREFIX, REDUCE_KIND, PRIMITIVE_KIND) = (
     _CONTEXT_OF_CONSTANTS.const_names(name)[0] for name in _STRING_CONSTANTS
 )  # fmt: skip
+INT_BINARY = _CONTEXT_OF_CONSTANTS.const_names("INT_BINARY")
+INT_UNARY = _CONTEXT_OF_CONSTANTS.const_names("INT_UNARY")
+MINTED_OPS = _CONTEXT_OF_CONSTANTS.const_names("MINTED_OPS")
+RANDOM_OPS = _CONTEXT_OF_CONSTANTS.const_names("RANDOM_OPS")
+#: Names the dialects state: the op kinds that are costly to compute, and the two reserved planes the runtime fills.
+SPECIAL_KINDS = _CONTEXT_OF_CONSTANTS.wing_names("SPECIAL_KINDS")
+FUSED_STEPS_PLANE = _CONTEXT_OF_CONSTANTS.wing_names("FUSED_STEPS_PLANE")[0]
+FINISHED_PLANE = _CONTEXT_OF_CONSTANTS.wing_names("FINISHED_PLANE")[0]
+OP_KINDS = _CONTEXT_OF_CONSTANTS.const_names("OP_KINDS")
+CAST = _CONTEXT_OF_CONSTANTS.const_names("CAST")
+LINALG_OPS = _CONTEXT_OF_CONSTANTS.const_names("LINALG_OPS")
+ROLE_ORDER = _CONTEXT_OF_CONSTANTS.const_names("ROLE_ORDER")
+SINK_ROLES = _CONTEXT_OF_CONSTANTS.const_names("SINK_ROLES")
 _ROLE_PAIRS = _CONTEXT_OF_CONSTANTS.const_names("QUANTITY_ROLE_PAIRS")
+
+#: The handle class of a node (an operand check is ``isinstance(x, Node)``).
+Node = _osprey.Node
 
 #: The two loop classes: the labels :func:`classify_loop` answers with (they carry no contract
 # meaning).
@@ -58,7 +77,9 @@ RECURRENCE = "recurrence"
 def _as_hawk_error(call: Callable) -> Callable:
     """Wrap ``call`` so the library's ``ValueError`` reaches the caller as ``HawkError``.
 
-    Same text.
+    Same text. The refusal's ``code`` (a short word the library gives to a refusal a caller may
+    act on, or ``None``) is kept as the attribute ``code`` of the ``HawkError``; an error hawk
+    raises itself has no ``code`` attribute, so a reader asks ``getattr(error, "code", None)``.
     """
 
     @functools.wraps(call)
@@ -66,17 +87,74 @@ def _as_hawk_error(call: Callable) -> Callable:
         try:
             return call(*args, **kwargs)
         except ValueError as refusal:
-            raise HawkError(str(refusal)) from refusal
+            error = HawkError(str(refusal))
+            error.code = getattr(refusal, "code", None)
+            raise error from refusal
 
     return refusing
 
 
-class TensorType(NamedTuple):
-    """Make a value's type: its shape, its dtype and its tag, as a node's ``ttype`` reads."""
+@dataclass(frozen=True, eq=False)
+class TensorType:
+    """A value's type: its shape, its dtype and its tag, as a node's ``ttype`` reads.
+
+    Not a tuple on purpose: a builtin container subscripted with a tuple (``list[Scalar]``) would read it as
+    several type arguments. Equal by value and hashable; iterating gives ``shape, dtype, tag``.
+    """
 
     shape: tuple
     dtype: str
     tag: Any = None
+
+    #: The field names the library reads a record's text by (:func:`_text`).
+    _fields = ("shape", "dtype", "tag")
+
+    def __iter__(self) -> Iterator:
+        return iter((self.shape, self.dtype, self.tag))
+
+    def __eq__(self, other: object) -> bool:
+        """Equal by value to any type record, a subclass (a declaration) included."""
+        return isinstance(other, TensorType) and tuple(self) == tuple(other)
+
+    def __hash__(self) -> int:
+        return hash(tuple(self))
+
+
+class Wire(NamedTuple):
+    """One wire of a compound quantity: its name, read role, shape, dtype and tag."""
+
+    name: str
+    role: str
+    shape: tuple = ()
+    dtype: str = "f64"
+    tag: Any = None
+
+
+class RawBlock(NamedTuple):
+    """The literal of a raw-device op: the library writes its key text from these seven fields."""
+
+    name: str
+    access: str
+    text: str
+    language: str
+    reads: tuple
+    writes: tuple
+    returns: TensorType
+
+
+class KeyRun(NamedTuple):
+    """The run of one keyed sink: its form (``proven``, ``sorted`` or ``tested``), its width and whether it is a block."""
+
+    form: str
+    width: int
+    block: bool
+
+
+class QuantityRecord(NamedTuple):
+    """The slot names (``wires``) and the slot numbers (``slots``) of one compound quantity a walk reaches."""
+
+    wires: tuple
+    slots: tuple
 
 
 class Slot(NamedTuple):
@@ -104,11 +182,49 @@ class IndexForm(NamedTuple):
     symbol: str = ""
 
 
+class DispatchGroup(NamedTuple):
+    """One dispatch group of a walk: its name, branch count, strategy word and node."""
+
+    name: str
+    branches: int
+    strategy: str
+    node: Any
+
+
+class GroupPlanes(NamedTuple):
+    """The names of the planes a dispatch group owns: its offsets, class and stale planes and its branch-mix plane."""
+
+    offsets: str
+    cls: str
+    stale: str
+    mix: str
+
+
 class Walk(NamedTuple):
     """Make a canonical walk of the library: its number and the context that holds it."""
 
     context: Any
     number: int
+
+    @property
+    def companions(self) -> dict:
+        """The companion plane of each compensated keyed sum the walk holds: ``{companion plane: its target plane}``."""
+        return accum_companions(self)
+
+    @property
+    def gather_mats(self) -> tuple:
+        """The sorted names of the matrix input planes the walk reads only through a gather (their column count is the caller's)."""
+        return gather_mats(self)
+
+    @property
+    def reduces(self) -> bool:
+        """Whether the kernel reduces over samples (a node with the ``reduces_samples`` feather); its access class stays ``sample_local``."""
+        return any(has_feather(node, "reduces_samples") for node in walk_order(self))
+
+    @property
+    def dispatches(self) -> tuple:
+        """The walk's dispatch groups in its order (:func:`dispatch_groups`): each has a ``name`` and a ``strategy``."""
+        return dispatch_groups(self)
 
 
 # ---- value text: how a plain value is handed to the library ----
@@ -119,6 +235,10 @@ def _text(value: Any) -> str:
 
     Or a tuple of them) as the library reads it.
     """
+    if hasattr(value, "_fields"):
+        # a record: the library reads ``Name(field=value, ...)``
+        fields = ", ".join(f"{name}={_text(item)}" for name, item in zip(value._fields, value))
+        return f"{type(value).__name__}({fields})"
     if isinstance(value, (tuple, list)):
         return "(" + "".join(_text(item) + ", " for item in value) + ")"
     if value is None or isinstance(value, (bool, int, float, str)):
@@ -152,12 +272,22 @@ def _slot_text(slot: Slot) -> str:
     )
 
 
+def _slots_text(slots: Sequence[Slot]) -> str:
+    """Write declared slots as the tuple of records the library reads."""
+    return "(" + "".join(_slot_text(slot) + ", " for slot in slots) + ")"
+
+
 # ---- contexts ----
 
 
 def new_context() -> Any:
-    """Make a context: the home of one kernel family's graph (a node keeps its context alive)."""
-    return _osprey.Ctx()
+    """Make a context: the home of one kernel family's graph (a node keeps its context alive).
+
+    The wings' kinds (dispatch strategies, block sums, ordered writes) are declared in it.
+    """
+    context = _osprey.Ctx()
+    context.declare_kinds()
+    return context
 
 
 @_as_hawk_error
@@ -277,6 +407,26 @@ def loop(
 
 
 @_as_hawk_error
+def accum_write(name: str, value: Any, *, index: Any = None, contract: str = "auto") -> Any:
+    """Make the keyed accumulate of ``value`` into the plane ``name`` (at ``index``, a lane or key)."""
+    refs = [value] + ([] if index is None else [index])
+    at = ", ('index', #1)" if index is not None else ""
+    fields = f"(('name', {name!r}), ('value', #0){at}, ('contract', {contract!r}))"
+    return value.ctx.new("AccumWrite", fields, refs)
+
+
+@_as_hawk_error
+def loop_value(loop_node: Any, slot: int) -> Any:
+    """Make the value carry ``slot`` holds when ``loop_node`` ends (checked by the library)."""
+    return loop_node.ctx.new("LoopValue", f"(('loop', #0), ('slot', {int(slot)}))", [loop_node])
+
+
+def loop_value_of(node: Any) -> tuple:
+    """Return ``(loop, slot)`` of a loop value node."""
+    return node.operands[0], node.field_int("literal")
+
+
+@_as_hawk_error
 def param_cell(context: Any, name: str, ttype: Sequence, per_cell: bool = False) -> Any:
     """Return the read of parameter ``name``.
 
@@ -340,7 +490,7 @@ def as_matrix(node: Any) -> Any:
 def element_count(ttype: Sequence) -> int:
     """How many scalars one value of ``ttype`` (shape, dtype, tag) holds."""
     count = 1
-    for extent in ttype[0]:
+    for extent in ttype.shape:
         count *= int(extent)
     return count
 
@@ -404,18 +554,46 @@ def unreduced(sink: Any, operands: Sequence[Any]) -> Any:
 
 
 @_as_hawk_error
-def recount(node: Any, count: Any) -> Any:
-    """Return the keyed reduction ``node`` over ``count`` kept coordinates."""
-    key = _optional_node(node, "key")
-    kept = node.field_names("kept") if node.field_kind("kept") else ()
-    refs = [node.operands[0], count] + ([] if key is None else [key])
-    fields = (
-        f"(('op', {node.field_text('op')!r}), ('value', #0), ('count', #1), "
-        f"('contract', {node.field_text('contract')!r}), ('kept', {_text(kept)})"
-        + ("" if key is None else ", ('key', #2)")
-        + ")"
+def reduce_samples(
+    op: str,
+    value: Any,
+    *,
+    key: Any = None,
+    count: Any = None,
+    contract: str = "auto",
+    kept: Sequence[tuple] = (),
+) -> Any:
+    """Make the reduction of ``value`` over samples; ``key`` and ``count`` are edges or ``None``.
+
+    ``kept`` holds one (label or ``None``, extent or ``None``) pair per lane axis the reduction keeps.
+    """
+    refs = [value] + [node for node in (key, count) if node is not None]
+    edges = "".join(
+        f", ('{name}', #{index})"
+        for index, name in enumerate(
+            [n for n, v in (("key", key), ("count", count)) if v is not None], 1
+        )
     )
-    return node.ctx.new("ReduceSamples", fields, refs)
+    head = f"(('op', {op!r}), ('value', #0), ('contract', {contract!r})"
+    fields = f"{head}, ('kept', {_text(tuple(kept))}){edges})"
+    return value.ctx.new("ReduceSamples", fields, refs)
+
+
+@_as_hawk_error
+def recount(node: Any, count: Any) -> Any:
+    """Return the keyed reduction ``node`` over ``count`` kept coordinates.
+
+    The kept axes are carried over as the node states them: (label, extent) pairs.
+    """
+    kept = field_pairs(node, "kept") if node.field_kind("kept") else ()
+    return reduce_samples(
+        node.field_text("op"),
+        node.operands[0],
+        key=_optional_node(node, "key"),
+        count=count,
+        contract=node.field_text("contract"),
+        kept=kept,
+    )
 
 
 @_as_hawk_error
@@ -472,16 +650,159 @@ def canonical(
     """
     sinks = list(sinks)
     context = _context_of(sinks, "canonical")
-    slots = _text(())[:-1] + "".join(_slot_text(slot) + ", " for slot in declared) + ")"
-    number = context.canonical(sinks, slots, force_access, _text(list(exempt_planes)))
+    number = context.canonical(
+        sinks, _slots_text(declared), force_access, _text(list(exempt_planes))
+    )
     return Walk(context, number)
 
 
 @_as_hawk_error
-def canonical_nodes(sinks: Sequence[Any]) -> tuple:
-    """Return the walk's node order and ``{node.
+def cells_walk(
+    sinks: Sequence[Any], declared: Sequence[Slot] = (), force_access: str | None = None
+) -> Walk:
+    """Return the canonical walk of a kernel's sinks, as the kernel takes it.
 
-    Position}`` of every node it reached (loop-body nodes have none).
+    Over ``declared`` it adds the compensation slot ``<name>_comp`` of every summing sample sum
+    (refused when a sink already holds that plane), the finished-count slot when a sink finishes
+    and the ``<group>_mix`` slot of every dispatch group that counts its branch mix; the fused-steps
+    plane is exempt from the access class. ``force_access`` floors the access class.
+    """
+    sinks = list(sinks)
+    context = _context_of(sinks, "cells_walk")
+    number = context.cells_walk(sinks, _slots_text(declared), force_access)
+    return Walk(context, number)
+
+
+@_as_hawk_error
+def slot_type(walk: Walk, role: str, name: str) -> TensorType:
+    """Return the type of the slot ``(role, name)`` the walk binds; refuse one it does not."""
+    shape, dtype, tag = walk.context.walk_slot_type(walk.number, role, name)
+    return TensorType(tuple(shape), dtype, tag)
+
+
+@_as_hawk_error
+def prior_reads(walk: Walk) -> tuple:
+    """Return the sorted names of the planes whose launch-start value the walk reads."""
+    return tuple(walk.context.walk_prior(walk.number))
+
+
+@_as_hawk_error
+def dispatch_groups(walk: Walk) -> tuple:
+    """Return the walk's dispatch groups in its order as :class:`DispatchGroup` records.
+
+    The name is the library's ``dispatch<i>``; the branch count is the operands less the selector;
+    the strategy word is the library's (``switch``, ``predicated``, ``segmented``, ``auto``).
+    """
+    context = walk.context
+    nodes = context.dispatch_nodes(walk.number)
+    words = context.walk_strategies(walk.number)
+    return tuple(
+        DispatchGroup(f"dispatch{index}", len(node.operands) - 1, word, node)
+        for index, (node, word) in enumerate(zip(nodes, words))
+    )
+
+
+@_as_hawk_error
+def mix_slots(walk: Walk) -> dict:
+    """Return ``{group name: slot name}`` of the branch-mix plane of every dispatch group that counts its mix."""
+    return {
+        group: slot for group, slot in walk.context.walk_mix_slots(walk.number) if slot is not None
+    }
+
+
+@_as_hawk_error
+def selector_reads(walk: Walk, index: int) -> tuple:
+    """Return the ``(role, name)`` slots the selector of dispatch ``index`` reads; refuse a dispatch the walk lacks."""
+    return tuple(tuple(slot) for slot in walk.context.walk_selector_reads(walk.number, index))
+
+
+@_as_hawk_error
+def access_class(walk: Walk) -> str:
+    """Return the access class of the walk: ``sample_local``, ``cross_sample_read`` or ``cross_sample_write``."""
+    return walk.context.walk_access_class(walk.number)
+
+
+def group_plane_names(group: str) -> GroupPlanes:
+    """Return the names of the planes the dispatch group ``group`` (``dispatch<i>``) owns."""
+    return GroupPlanes(*_CONTEXT_OF_CONSTANTS.group_plane_names(group))
+
+
+@_as_hawk_error
+def field_pairs(node: Any, name: str) -> tuple:
+    """Return the ``(text, text)`` pairs a node's field holds (refused when it holds no list of pairs)."""
+    return tuple(tuple(pair) for pair in node.field_pairs(name))
+
+
+@_as_hawk_error
+def static_selector(walk: Walk, index: int) -> bool:
+    """Whether the selector of dispatch ``index`` is static: no sink writes a plane it reads."""
+    return walk.context.walk_static_selector(walk.number, index)
+
+
+@_as_hawk_error
+def expand_stores(sinks: Sequence[Any]) -> tuple:
+    """Return the sinks with every block-sum write replaced by the accumulates of its keyed form."""
+    sinks = list(sinks)
+    if not sinks:
+        return ()
+    return tuple(sinks[0].ctx.blocks_expand_stores(sinks))
+
+
+def dispatch_strategies() -> tuple:
+    """Return the strategies a dispatch can be pinned to: ``switch``, then one per wing kind."""
+    return new_context().dispatch_strategies()
+
+
+@_as_hawk_error
+def dump_numbers(roots: Sequence[Any]) -> tuple:
+    """Return the number each root has in the dump of the roots (the ``root|#p`` line), in order."""
+    roots = list(roots)
+    if not roots:
+        return ()
+    return tuple(roots[0].ctx.dump_numbers(roots))
+
+
+@_as_hawk_error
+def digest(walk: Walk) -> str:
+    """Return the walk's digest (64 hex digits): the identity of the canonical form."""
+    return walk.context.digest(walk.number)
+
+
+def walk_order(walk: Walk) -> tuple:
+    """Return the walk's nodes in canonical order."""
+    return tuple(walk.context.walk_order(walk.number))
+
+
+@_as_hawk_error
+def dump_text(roots: Sequence[Any]) -> str:
+    """Return the text of the graph the roots reach, in the context of the first root.
+
+    Roots of another context are copied in first (:func:`adopt`). The text numbers nodes in the
+    context's own order; the library does not answer which number a node has, nor the text of the
+    dialects the graph uses.
+    """
+    roots = list(roots)
+    context = _context_of(roots, "dump_text")
+    return context.dump(list(adopt(context, roots)))
+
+
+@_as_hawk_error
+def arg_spec(walk: Walk) -> tuple:
+    """Return the walk's argument list as ``((role, name), ...)`` in argument order."""
+    flat = walk.context.walk_args(walk.number)
+    return tuple(zip(flat[::2], flat[1::2]))
+
+
+def slot_of(walk: Walk) -> dict:
+    """Return ``{(role, name): index}`` over the walk's argument list."""
+    return {slot: index for index, slot in enumerate(arg_spec(walk))}
+
+
+@_as_hawk_error
+def canonical_nodes(sinks: Sequence[Any]) -> tuple:
+    """Return the walk's node order and ``{node: position}`` of every node it reached.
+
+    Nodes inside loop bodies have no position and are left out.
     """
     walk = canonical(sinks)
     context = walk.context
@@ -744,3 +1065,238 @@ def reduce_jvp(node: Any, tangents: Mapping[Any, Any]) -> Any:
     """Return the tangent of a sum over samples, or ``None`` when its operand has none."""
     answer = node.ctx.reduce_jvp(node, list(tangents), list(tangents.values()))
     return answer[0] if answer else None
+
+
+@_as_hawk_error
+def rule_template_check(name: str, roots: Sequence[Any], allowed: Sequence[str]) -> None:
+    """Refuse, by name, a graph that is not a closed rule template of primitive ``name``.
+
+    Its free leaves must be among ``allowed``; loop placeholders, edges, plane writes and tape reads
+    are checked by the library.
+    """
+    roots = list(roots)
+    _context_of(roots, "rule_template_check").rule_template_check(name, roots, " ".join(allowed))
+
+
+@_as_hawk_error
+def kind_reserved(context: Any, name: str) -> bool:
+    """Whether ``name`` is taken as a kind name (primitive, core or declared)."""
+    return context.kind_reserved(name)
+
+
+# ---- the wings' rewrites and predicates (the library runs them) ----
+
+
+@_as_hawk_error
+def exit_form(loop_node: Any) -> str | None:
+    """Return where a loop's break sits: ``head``, ``middle`` or ``tail``.
+
+    ``None`` without a break.
+    """
+    return loop_node.field_text("exit_form")
+
+
+@_as_hawk_error
+def slotwise(roots: Sequence[Any]) -> tuple:
+    """Return the roots rewritten slot by slot.
+
+    (a vector op over known slots becomes per-slot ops).
+    """
+    roots = list(roots)
+    if not roots:
+        return ()
+    return tuple(roots[0].ctx.slotwise(roots))
+
+
+@_as_hawk_error
+def slotwise_chain(node: Any) -> tuple:
+    """Return ``(base, links)`` of a chain of per-slot writes over ``base`` (no links.
+
+    Not a chain).
+    """
+    return node.ctx.slotwise_chain(node)
+
+
+@_as_hawk_error
+def is_structural_zero(node: Any) -> bool:
+    """Whether ``node`` is a structural zero (a zero constant or a splat of one)."""
+    return node.ctx.slotwise_is_structural_zero(node)
+
+
+@_as_hawk_error
+def cells_stored(reduction: Any, name: str) -> tuple:
+    """Return the cell sinks that store a sum over samples to the plane ``name``.
+
+    One sink for a scalar, one per component (planes ``name_0``, ...) for a vector or matrix.
+    """
+    return tuple(reduction.ctx.cells_stored(reduction, name))
+
+
+@_as_hawk_error
+def block_factors(payload: Any) -> tuple:
+    """Return ``(u, v)`` when the payload is a sum over rows of rank-1 products, else ``()``."""
+    return tuple(payload.ctx.block_factors(payload))
+
+
+@_as_hawk_error
+def block_factor_rows(payload: Any) -> int:
+    """Return how many rows a lane holds for a payload that has factors; refuse one without."""
+    return payload.ctx.block_factor_rows(payload)
+
+
+def _limit(max_dim: int | None) -> list:
+    """Write an optional largest extent as the library's list (empty: any length)."""
+    return [] if max_dim is None else [max_dim]
+
+
+@_as_hawk_error
+def block_ordered_case(payload: Any, contract: str, max_dim: int | None = None) -> bool:
+    """Whether the ordered contract keeps the payload (a float scalar or vector) as one block."""
+    return payload.ctx.block_ordered_case(payload, contract, _limit(max_dim))
+
+
+@_as_hawk_error
+def block_shaped(payload: Any, contract: str, max_dim: int | None = None) -> bool:
+    """Whether the keyed sum of the payload can be one block, by its structure and type alone."""
+    return payload.ctx.block_shaped(payload, contract, _limit(max_dim))
+
+
+@_as_hawk_error
+def logs_ordered(sinks: Sequence[Any]) -> tuple:
+    """Return the sinks with each ordered accumulate replaced by the stores of its log.
+
+    Other sinks pass unchanged. The library refuses, by name: a step other than 1, a nested loop,
+    and a value that is not a scalar.
+    """
+    sinks = list(sinks)
+    if not sinks:
+        return ()
+    return tuple(sinks[0].ctx.logs_ordered(sinks))
+
+
+# ---- the fold threshold, key runs, loop boundaries, quantities and wide placement ----
+
+
+@_as_hawk_error
+def fold_exceeds(count: int, threshold: int | None) -> bool:
+    """Whether ``count`` exceeds the fold threshold; the library refuses, by name, a build that names none."""
+    return _CONTEXT_OF_CONSTANTS.fold_exceeds(count, threshold)
+
+
+@_as_hawk_error
+def fold_rolled(node: Any, threshold: int | None, form: str) -> bool:
+    """Whether the node is spelled as its runtime twin (``form``: ``auto``, ``rolled`` or ``static``)."""
+    return node.ctx.fold_rolled(node, threshold, form)
+
+
+@_as_hawk_error
+def key_run(sinks: Sequence[Any], sink: Any, run_max: int, block_run: int) -> KeyRun | None:
+    """Return the key run of one keyed sink of the kernel with these sinks, or ``None`` for none.
+
+    ``run_max`` and ``block_run`` are the target's lane numbers (``lanes.run_max``, ``lanes.block_run``).
+    """
+    sinks = list(sinks)
+    found = sinks[0].ctx.lanes_key_run_in_kernel(sinks, sink, run_max, block_run)
+    return None if found is None else KeyRun(*found)
+
+
+@_as_hawk_error
+def loop_boundary(roots: Sequence[Any], own: Iterable[Any], gates: Iterable[Any] = ()) -> tuple:
+    """Return the maximal loop-invariant values of a loop body's ``roots``, in the library's order.
+
+    ``own`` are the nodes the body changes (its carries and index); a read under a dispatch or select
+    arm that gathers stays in the body unless it is in ``gates``.
+    """
+    roots = list(roots)
+    return tuple(roots[0].ctx.loop_boundary(roots, list(own), list(gates)))
+
+
+@_as_hawk_error
+def quantities(walk: Walk) -> dict:
+    """Return ``{namespace: QuantityRecord}`` of the compound quantities the walk reaches, in walk order.
+
+    The wires are the slot names of the quantity's wires and the slots their numbers among the walk's arguments.
+    """
+    context = walk.context
+    wires = context.walk_quantity_wires(walk.number)
+    slots = context.walk_quantity_slots(walk.number)
+    return {
+        name: QuantityRecord(tuple(names), tuple(numbers))
+        for (name, names), (_, numbers) in zip(wires, slots)
+    }
+
+
+@_as_hawk_error
+def wide_place(
+    sinks: Sequence[Any],
+    *,
+    thread_form: bool,
+    runtime_min: Sequence[int],
+    wide_min: int,
+    rolled_min: int | None,
+    form: str,
+    taken: Iterable[str] = (),
+) -> tuple:
+    """Return ``(sinks, changed)``: the sinks with each wide value that needs a plane placed in one.
+
+    The target's facts are the caller's: ``runtime_min`` (read, slot_read, rotate, write, accum),
+    ``wide_min``, the fold threshold ``rolled_min`` with its ``form``, and the plane names ``taken``.
+    """
+    sinks = list(sinks)
+    placed, changed = sinks[0].ctx.wide_place(
+        sinks, int(thread_form), tuple(runtime_min), wide_min, rolled_min, form, "\n".join(taken)
+    )
+    return tuple(placed), changed
+
+
+@_as_hawk_error
+def wide_record(nodes: Sequence[Any]) -> tuple:
+    """Return the placements of the nodes (loop bodies included): ``(plane leaf, layout, width)`` sorted by plane name."""
+    nodes = list(nodes)
+    return tuple(nodes[0].ctx.wide_record(nodes)) if nodes else ()
+
+
+@_as_hawk_error
+def wide_is_resident(node: Any) -> bool:
+    """Whether the node places a value in a plane."""
+    return node.ctx.wide_is_resident(node)
+
+
+@_as_hawk_error
+def wide_is_tiled(node: Any) -> bool:
+    """Whether the node names a scratch plane the runtime makes, not a mutable's own."""
+    return node.ctx.wide_is_tiled(node)
+
+
+@_as_hawk_error
+def accum_companions(walk: Walk) -> dict:
+    """Return ``{companion plane: target plane}`` of the compensated keyed sums of the walk, in walk order."""
+    return dict(walk.context.walk_accum_companions(walk.number))
+
+
+@_as_hawk_error
+def gather_mats(walk: Walk) -> tuple:
+    """Return the sorted names of the matrix input planes the walk reads only through a gather."""
+    return tuple(walk.context.walk_gather_mats(walk.number))
+
+
+@_as_hawk_error
+def compensated_target(
+    sink_id: str,
+    compensation: str | None,
+    returned_slot: str | None,
+    output_names: Sequence[str],
+    sinks: Sequence[Any],
+) -> tuple[str, bool] | None:
+    """Return ``(target name, own_column)`` of a compensated sink, or ``None`` for another sink contract.
+
+    The target is the one output besides the companion ``compensation``: ``returned_slot`` when the
+    kernel returns a typed value, else ``output_names``, else every committed sink. ``own_column`` is
+    true when a sink commits into the lane's own column. Refuses when no single target resolves or
+    the target is a wide output.
+    """
+    sinks = list(sinks)
+    context = sinks[0].ctx if sinks else _osprey.Ctx()
+    return context.split_compensated_target(
+        sink_id, compensation or "", returned_slot, "\n".join(output_names), sinks
+    )

@@ -15,7 +15,7 @@ from _eval import evaluate
 
 import hawk
 import hawk.math as m
-from raptor.ir import Loop
+from hawk import _ir
 
 T = 6
 W = 3
@@ -44,7 +44,7 @@ def per_iteration_guard(x: hawk.Scalar, n: hawk.Scalar, a: hawk.Table["k":T],
 
 
 def _loop(kernel):
-    return next(n for n in kernel.walk.order if isinstance(n, Loop))
+    return next(n for n in _ir.walk_order(kernel.walk) if _ir.is_a(n, "loop"))
 
 
 @hawk.kernel

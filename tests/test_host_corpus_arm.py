@@ -22,9 +22,7 @@ import hawk
 import hawk.math as m
 from hawk import Index, Mutable, Vector
 from hawk.artifact import build_bundle
-from raptor.ir.nodes import AccumWrite, Leaf
-from raptor.ir.ops import make
-from raptor.ir.types import TensorType
+from hawk import _ir
 from hawk.trace.kernel import Kernel
 from hawk import Terminated
 
@@ -214,8 +212,8 @@ def test_a_finishing_kernel_under_two_masks_keeps_a_flagged_samples_value(tmp_pa
 
 def _gp() -> Kernel:
     """Own-column partials under the default mask guard, built as IR (the ``AccumWrite`` a sum sink makes)."""
-    x = Leaf("vocab_read", "per_sample", "x", TensorType((), "f64"))
-    return Kernel("gp", (AccumWrite("acc", make("mul", (x, x))),), {"terminated": Terminated})
+    x = _ir.leaf(_ir.new_context(), "vocab_read", "per_sample", "x", _ir.TensorType((), "f64"))
+    return Kernel("gp", (_ir.accum_write("acc", _ir.make("mul", (x, x))),), {"terminated": Terminated})
 
 
 def test_an_own_column_partial_is_written_where_live_and_kept_where_masked(tmp_path, cache_dir):

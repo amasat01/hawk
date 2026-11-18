@@ -59,7 +59,7 @@ def test_eagles_reader_refuses_notes_for_a_plane_the_kernel_lacks():
 def test_a_declaration_is_a_valid_first_argument_of_annotated_on_every_python():
     """Before Python 3.11 ``typing.Annotated`` wants a callable first argument; a declaration
     is callable only to say it is not to be called."""
-    from raptor.ir import TensorType
+    from hawk import _ir
 
     for declaration in (Vector[3], hawk.Table[Scalar], Mutable[Scalar]):
         assert callable(declaration)
@@ -68,4 +68,4 @@ def test_a_declaration_is_a_valid_first_argument_of_annotated_on_every_python():
         Vector[3]()
     with pytest.raises(HawkError, match="annotated, not called"):
         Mutable[Scalar]()
-    assert isinstance(Vector[3], TensorType)
+    assert isinstance(Vector[3], _ir.TensorType)

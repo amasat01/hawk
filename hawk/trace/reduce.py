@@ -15,13 +15,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from .. import wings as _wings
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir import make as _make
-from raptor.ir.nodes import CONTRACTS, SCATTER_CONTRACTS, Leaf, ReduceSamples
 from .value import Value, _op, _operands, index_node, n_samples, node_of, real, select, vec
 
-_block = _wings.view("raptor", "base", "block")      # the block-shaped keyed sum is a kind of the base wing
+
+def _block_sum(value: Any, key: Any, count: Any, contract: str, kept: tuple = ()) -> Any:
+    """The sum of ``value`` over the lanes of ``key`` (``count`` keys), as the block-shaped kind the library lowers whole."""
+    return _ir.make_node("BlockSum", _ir.type_of(value), [value, key, count], contract=contract, kept=kept)
 
 
 def _axis(value: Value, axis: Any, op: str):
@@ -53,14 +54,14 @@ def _axis(value: Value, axis: Any, op: str):
 
 def _entry(value: Value, index: tuple) -> Value:
     """The entry of a matrix at the static ``(row, column)``."""
-    return Value(_make("component", (value.node,), index))
+    return Value(_ir.make("component", (value.node,), index))
 
 
 def _fold(op: str, items: list) -> Value:
     out = items[0]
     for item in items[1:]:
         out = out + item if op == "sum" else (
-            Value(_make("max" if op == "max" else "min", (out.node, node_of(item)))))
+            Value(_ir.make("max" if op == "max" else "min", (out.node, node_of(item)))))
     return out
 
 
@@ -71,7 +72,7 @@ def reduce_own(value: Value, op: str, axis: Any = None) -> Value:
     base = "sum" if op == "mean" else op
     if ax is None:
         if len(shape) == 1 or base == "sum":
-            out = Value(_make("sum", (value.node,))) if base == "sum" else _fold(
+            out = Value(_ir.make("sum", (value.node,))) if base == "sum" else _fold(
                 base, [value[k] for k in range(shape[0])])
         else:
             out = _fold(base, [_entry(value, (r, c)) for r in range(shape[0])
@@ -168,7 +169,7 @@ def _own_view(value: Value, axis: str, k: Any) -> Value:
     return vec(*out)
 
 
-def _contract(contract: Any, where: str, allowed: tuple = CONTRACTS) -> str:
+def _contract(contract: Any, where: str, allowed: tuple = _ir.CONTRACTS) -> str:
     if contract not in allowed:
         raise HawkError(f"{where}: contract={contract!r} is not one of {allowed}")
     return contract
@@ -267,9 +268,9 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, contract: Any) -> Any:
         value = select(mask, value, _identity(base))
     if not kept:
         term = value / real(n_samples()) if op == "mean" else value
-        if base == "sum" and _block.block_shaped(node_of(term)):       # one key, every lane
-            return Value(_block.BlockSum(node_of(term), key=index_node(0), count=index_node(1), contract=contract))
-        return Value(ReduceSamples(base, node_of(term), contract=contract))
+        if base == "sum" and _ir.block_shaped(node_of(term), "auto"):       # one key, every lane
+            return Value(_block_sum(node_of(term), index_node(0), index_node(1), contract))
+        return Value(_ir.reduce_samples(base, node_of(term), contract=contract))
     if op == "mean":
         value = value / real(_product([_extent(axes, i) for i in gone]))
     lane = LaneAxes(axes)
@@ -281,10 +282,13 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, contract: Any) -> Any:
     count = _product([_extent(axes, i) for i in kept])
     count = Value(index_node(count)) if isinstance(count, int) else count
     kept_axes = tuple(axes[i] for i in kept)
-    if _block.block_shaped(node_of(value), contract):
-        reduced = _block.BlockSum(node_of(value), key=node_of(key), count=node_of(count), contract=contract, kept=kept_axes)
+    if _ir.block_shaped(node_of(value), contract):
+        reduced = _block_sum(node_of(value), node_of(key), node_of(count), contract, kept_axes)
     else:
-        reduced = ReduceSamples("sum", node_of(value), key=node_of(key), count=node_of(count), contract=contract, kept=kept_axes)
+        reduced = _ir.reduce_samples(
+            "sum", node_of(value), key=node_of(key), count=node_of(count),
+            contract=contract, kept=kept_axes,
+        )  # fmt: skip
     return Reduced(reduced, kept_axes)
 
 
@@ -326,13 +330,13 @@ class Reduced:
 
     __slots__ = ("node", "kept")
 
-    def __init__(self, node: ReduceSamples, kept: tuple) -> None:
+    def __init__(self, node: Any, kept: tuple) -> None:
         self.node = node
         self.kept = kept
 
     @property
     def ttype(self) -> Any:
-        return self.node.ttype
+        return _ir.type_of(self.node)
 
     def __bool__(self) -> bool:
         raise HawkError(
@@ -439,7 +443,7 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
                         "Mutable[...])")
     if contract == "or":
         raise HawkError(f"{where}: contract='or' is gone: write hawk.scatter({name})[key] |= bits")
-    contract = _contract(contract, where, SCATTER_CONTRACTS)
+    contract = _contract(contract, where, _ir.SCATTER_CONTRACTS)
     if isinstance(key, Value) and key.ttype.dtype == "bool":
         raise HawkError(f"{where}: {_MASK_STORE}")
     if op != "+=" and contract != "auto":
@@ -449,7 +453,7 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
     if contract == "ordered" and op == "+=" and len(ref.ttype.shape) > 1:
         raise HawkError(f"{where}: contract='ordered' adds a scalar or a vector payload")
     if isinstance(ref, MutableRef) and isinstance(current, Value) and not (
-            isinstance(current.node, Leaf) and current.node.kind == "prior_read"):
+            _ir.is_a(current.node, "leaf") and current.node.field_text("kind") == "prior_read"):
         raise HawkError(
             f"{name!r} is written per lane (locked) and by key "
             f"(hawk.scatter({name})[key]): one plane has one extent")
@@ -471,7 +475,7 @@ def logic(which: str, *args: Any) -> Any:
             result = a
         return result
     for a in args:
-        if node_of(a).ttype.dtype != "bool":
+        if _ir.type_of(node_of(a)).dtype != "bool":
             raise HawkError(f"`{which}` of a traced value needs conditions (bool); compare it first, e.g. `x != 0.0`")
     if which == "not":
         return _op("lnot", args[0])
@@ -502,5 +506,5 @@ def maxmin(which: str, *args: Any, **kwargs: Any) -> Any:
         raise HawkError(f"{which}({', '.join(kwargs)}=...) is not a HAWK form")
     out = args[0]
     for a in args[1:]:
-        out = Value(_make(which, _operands((out, a))))
+        out = Value(_ir.make(which, _operands((out, a))))
     return out

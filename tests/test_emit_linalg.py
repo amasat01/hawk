@@ -12,10 +12,7 @@ not feel it. The tolerances are ``K n eps cond`` for solves and determinants,
 
 from __future__ import annotations
 
-from raptor.wings.base.dispatch import dispatch as _dispatch
-from _specs import spec_for, default_kind
 import pathlib
-import re
 
 import numpy as np
 import pytest
@@ -26,16 +23,15 @@ from scipy.linalg import lapack
 
 from hawk import runtime as rt
 from hawk.artifact import build_bundle, emit_source
-from raptor.ir import Assign, Dispatch, Leaf, make
+from hawk import _ir
+from hawk.trace.value import dispatch_node
 from hawk.trace.kernel import Kernel
-from raptor.ir.types import TensorType
-from aether.wings.base.wrapper import scalar_mode
-from hawk.artifact.layout import exports
-from hawk.targets import TARGETS
 
 SIZES = (1, 5, 22, 32)
 MODES = ("float64", "float32")
 LANES = 8
+#: The context of the shared kernel builders.
+CTX = _ir.new_context()
 #: The lane every kernel is given a failing input in.
 BAD = 3
 FACTOR = 100.0
@@ -141,7 +137,7 @@ def _symmetric(rng, n, lane):
 def test_lu_solve_det_and_info_match_numpy_and_lapack(build, n, mode):
     mats, vecs, rhs = _inputs(n, mode, _general)
     planes, _ = _planes(mats, vecs, rhs, mode)
-    out = _run(build(lu_kernel(n), mode), planes,
+    out = _run(build(lu_kernel(CTX, n), mode), planes,
                {"x": n, "X": n * RHS_COLUMNS, "det": 1, "info": 1}, mode)
     for lane in range(LANES):
         a = mats[lane]
@@ -170,7 +166,7 @@ def test_lu_solve_det_and_info_match_numpy_and_lapack(build, n, mode):
 def test_cholesky_factor_solve_and_info_match_numpy_and_lapack(build, n, mode):
     mats, vecs, rhs = _inputs(n, mode, _spd)
     planes, _ = _planes(mats, vecs, rhs, mode)
-    out = _run(build(chol_kernel(n), mode), planes,
+    out = _run(build(chol_kernel(CTX, n), mode), planes,
                {"x": n, "X": n * RHS_COLUMNS, "L": n * n, "info": 1}, mode)
     for lane in range(LANES):
         a = mats[lane]
@@ -201,7 +197,7 @@ def test_cholesky_factor_solve_and_info_match_numpy_and_lapack(build, n, mode):
 def test_a_built_factor_solves_and_fails_on_its_diagonal(build, n, mode):
     mats, vecs, rhs = _inputs(n, mode, _built_factor)
     planes, _ = _planes(mats, vecs, rhs, mode)
-    out = _run(build(chol_from_kernel(n), mode), planes,
+    out = _run(build(chol_from_kernel(CTX, n), mode), planes,
                {"x": n, "X": n * RHS_COLUMNS, "L": n * n, "info": 1}, mode)
     first_bad = {BAD: n // 2 + 1, BAD + 1: 1, BAD + 2: n, BAD + 3: n}
     for lane in range(LANES):
@@ -230,7 +226,7 @@ def test_a_built_factor_solves_and_fails_on_its_diagonal(build, n, mode):
 def test_eigh_values_vectors_and_info_match_numpy(build, n, mode):
     mats, vecs, rhs = _inputs(n, mode, _symmetric)
     planes, _ = _planes(mats, vecs, rhs, mode)
-    out = _run(build(eigh_kernel(n), mode), planes, {"w": n, "V": n * n, "info": 1}, mode)
+    out = _run(build(eigh_kernel(CTX, n), mode), planes, {"w": n, "V": n * n, "info": 1}, mode)
     for lane in range(LANES):
         s = (mats[lane] + mats[lane].T) / 2        # what eigh reads, whatever the input
         w, v = out["w"][lane].astype(np.float64), out["V"][lane].reshape(n, n).astype(np.float64)
@@ -257,12 +253,12 @@ def test_eigh_values_vectors_and_info_match_numpy(build, n, mode):
 def test_eigh_without_eigenvectors_is_bit_identical_and_never_builds_them(build, n, mode):
     mats, vecs, rhs = _inputs(n, mode, _symmetric)
     planes, _ = _planes(mats, vecs, rhs, mode)
-    full = _run(build(eigh_kernel(n), mode), planes, {"w": n, "V": n * n, "info": 1}, mode)
-    only = _run(build(eigh_values_kernel(n), mode), planes, {"w": n, "info": 1}, mode)
+    full = _run(build(eigh_kernel(CTX, n), mode), planes, {"w": n, "V": n * n, "info": 1}, mode)
+    only = _run(build(eigh_values_kernel(CTX, n), mode), planes, {"w": n, "info": 1}, mode)
     assert np.array_equal(only["w"], full["w"]) and np.array_equal(only["info"], full["info"])
-    text = emit_source(eigh_values_kernel(n), targets=("host",)).sources["host"].text
+    text = emit_source(eigh_values_kernel(CTX, n), targets=("host",)).sources["host"].text
     assert f"aether::linalg::EighValues<Real, {n}>" in text and "aether::linalg::Eigh<" not in text
-    assert "aether::linalg::Eigh<" in emit_source(eigh_kernel(n), targets=("host",)).sources["host"].text
+    assert "aether::linalg::Eigh<" in emit_source(eigh_kernel(CTX, n), targets=("host",)).sources["host"].text
 
 
 # --- inside a dispatch -------------------------------------------------------------
@@ -271,14 +267,16 @@ def test_eigh_without_eigenvectors_is_bit_identical_and_never_builds_them(build,
 def test_factorisations_inside_the_arms_of_a_dispatch_run_per_case(build, strategy):
     n = 4
     f64 = "f64"
-    a = Leaf("vocab_read", "mat_in", "A", TensorType((n, n), f64))
-    b = Leaf("vocab_read", "vec_in", "b", TensorType((n,), f64))
-    k = Leaf("vocab_read", "per_sample", "k", TensorType((), "i32"))
-    lu, chol = make("lu", (a,)), make("chol", (a,))
-    arms = (make("lu_solve", (lu, b)), make("cho_solve", (chol, b)),
-            make("mul", (b, make("lu_det", (lu,)))))
-    kernel = Kernel(f"la_dispatch_{strategy}", (
-        Assign("x", _dispatch(k, arms, strategy, TensorType((n,), f64)), TensorType((n,), f64)),))
+    context = _ir.new_context()
+    vector = _ir.TensorType((n,), f64)
+    a = _ir.leaf(context, "vocab_read", "mat_in", "A", _ir.TensorType((n, n), f64))
+    b = _ir.leaf(context, "vocab_read", "vec_in", "b", vector)
+    k = _ir.leaf(context, "vocab_read", "per_sample", "k", _ir.TensorType((), "i32"))
+    lu, chol = _ir.make("lu", (a,)), _ir.make("chol", (a,))
+    arms = (_ir.make("lu_solve", (lu, b)), _ir.make("cho_solve", (chol, b)),
+            _ir.make("mul", (b, _ir.make("lu_det", (lu,)))))
+    chosen = dispatch_node(k, arms, strategy, vector)
+    kernel = Kernel(f"la_dispatch_{strategy}", (_ir.make_node("Assign", vector, (chosen,), name="x"),))
     rng = np.random.default_rng(7)
     g = rng.standard_normal((LANES, n, n))
     mats = np.einsum("lij,lkj->lik", g, g) + n * np.eye(n)
@@ -298,7 +296,7 @@ def test_factorisations_inside_the_arms_of_a_dispatch_run_per_case(build, strate
 @pytest.mark.parametrize("make,n", [(lu_kernel, 5), (chol_kernel, 22), (eigh_kernel, 32),
                                     (chol_from_kernel, 22)])
 def test_the_device_source_compiles_to_ptx(make, n, tmp_path, cache_dir):
-    kernel = make(n)
+    kernel = make(CTX, n)
     bundle = build_bundle([kernel], tmp_path / kernel.name, targets=("cuda",), cache_dir=cache_dir)
     entry = bundle.artifacts[0].entries["cuda"]
     assert entry.artifact.stat().st_size > 0 and "aether::linalg::" in entry.source.read_text()

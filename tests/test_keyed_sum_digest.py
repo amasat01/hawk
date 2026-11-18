@@ -3,6 +3,7 @@ import pytest
 
 import hawk
 from hawk import Grid, Scalar, kernel
+from hawk import _ir
 
 
 def make(over, contract):
@@ -17,4 +18,4 @@ def make(over, contract):
 # the strict mark turns this row red the day the refusal goes, so the row comes back with the fix.
 @pytest.mark.parametrize("contract", ["auto", pytest.param("ordered", marks=pytest.mark.xfail(strict=True, raises=hawk.HawkError))])
 def test_keyed_sums_that_differ_only_in_their_key_have_two_digests(contract):
-    assert make("a", contract).walk.digest != make("b", contract).walk.digest
+    assert _ir.digest(make("a", contract).walk) != _ir.digest(make("b", contract).walk)

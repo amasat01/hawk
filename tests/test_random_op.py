@@ -40,17 +40,30 @@ import hawk.math as m
 import hawk.trace.decl as _decl
 from hawk.artifact import build, build_bundle
 from hawk.diff import jvp, vjp
-from raptor.ir import Assign, Leaf
-from raptor.errors import RaptorError as HawkError
-from raptor.ir import make as mk
-from raptor.ir.ops import OP_KINDS, RANDOM_OPS
-from raptor.ir.walk import canonical_nodes
-from raptor.ir.types import TensorType
+from hawk import _ir
+from hawk._errors import HawkError
+
+OP_KINDS, RANDOM_OPS = _ir.OP_KINDS, _ir.RANDOM_OPS
+#: One context holds every node these rows build.
+CTX = _ir.new_context()
+TensorType = _ir.TensorType
+mk = _ir.make
+canonical_nodes = _ir.canonical_nodes
 
 F64 = TensorType((), "f64")
 I32 = TensorType((), "i32")
 I64 = TensorType((), "i64")
 V3 = TensorType((3,), "f64")
+
+
+def Leaf(kind, role, name, ttype):
+    """Make a leaf in this module's context."""
+    return _ir.leaf(CTX, kind, role, name, ttype)
+
+
+def Assign(name, value, ttype):
+    """Make an assign of ``value`` to the plane ``name``."""
+    return _ir.make_node("Assign", ttype, (value,), name=name)
 
 _AETHER_ROOT = os.environ.get("HAWK_AETHER_SOURCE", "")
 
@@ -170,14 +183,19 @@ def test_i64_operands_are_accepted_and_the_result_is_rank0_f64(kind):
     seed = Leaf("vocab_read", "per_sample", "seed", I64)
     counter = Leaf("vocab_read", "per_sample", "counter", I64)
     node = mk(kind, (seed, counter))
-    assert node.ttype == F64, (
+    assert _ir.type_of(node) == F64, (
         "a random draw is typed the way a float literal is, so it "
         "composes with the rest of the promotion ladder")
 
 
 def test_math_random_uniform_refuses_a_literal_float_seed_by_name():
     with pytest.raises(HawkError, match="random_uniform: seed"):
-        m.random_uniform(1.5, 0)
+
+        @hawk.kernel
+        def literal_seed(y: hawk.Mutable[hawk.Scalar]):
+            y = m.random_uniform(1.5, 0)
+
+        literal_seed.sinks
 
 
 # --------------------------------------------------------------------------- #
@@ -415,7 +433,7 @@ def test_diff_no_adjoint_term_for_seed_or_counter_and_matches_fd():
     # them (the closed world, read honestly rather than merely absent).
     seq, _ = canonical_nodes(tuple(derived))
     touching = [n for n in seq
-               if any(o is seed or o is counter for o in getattr(n, "operands", ()))]
+               if any(o == seed or o == counter for o in n.operands)]
     assert touching == [draw], (
         f"R5: something besides the draw itself depends on seed/counter in "
         f"the derived IR: {touching}")

@@ -5,7 +5,7 @@
 
 A namespace, not a layer: every name here either is one of
 :mod:`hawk.trace`'s free functions, re-exported unchanged, or a
-two-line composition of them, so ``hawk.math`` and ``raptor.ir.ops``
+two-line composition of them, so ``hawk.math`` and ``hawk._ir.OP_KINDS``
 declare the same vocabulary by construction
 (``tests/test_math_namespace.py`` traces and emits every name in
 :data:`__all__`).
@@ -88,6 +88,7 @@ import math as _stdmath
 from types import SimpleNamespace
 from typing import Any
 
+from . import _ir
 from ._errors import HawkError
 from .trace.value import (
     Value,
@@ -291,7 +292,7 @@ def random_multivariate_normal(seed: Any, counter: Any, mean: Any,
     ``LowerTriangular`` composition, through the ``mv`` op. Like
     :func:`random_poisson1`'s stride 16: two compositions sharing a seed
     and overlapping sub-counter windows would share uniforms."""
-    n_dim = int(node_of(cholesky).ttype.shape[0])
+    n_dim = int(_ir.type_of(node_of(cholesky)).shape[0])
     base = counter * n_dim
     z = _vec(*[_normal01(seed, base + k) for k in range(n_dim)])
     return cholesky @ z + mean
@@ -343,7 +344,7 @@ def vec(*components: Any) -> Value:
         components = tuple(components[0])
     flat = []
     for c in components:
-        shape = node_of(c).ttype.shape
+        shape = _ir.type_of(node_of(c)).shape
         if len(shape) > 1:
             raise HawkError(f"vec: a component is a scalar or a vector, got shape {shape}")
         if shape:
@@ -361,7 +362,7 @@ def where(cond: Any, a: Any, b: Any) -> Value:
 
 def _pair(z: Any, name: str) -> tuple:
     """The (re, im) components of a ``Vector[2]``."""
-    shape = node_of(z).ttype.shape
+    shape = _ir.type_of(node_of(z)).shape
     if shape != (2,):
         raise HawkError(f"{name}: a complex value is a Vector[2] (re, im), got shape {shape}")
     value = Value(node_of(z))
@@ -408,10 +409,11 @@ def argmax(v: Any, /, *components: Any) -> Value:
         comps = tuple(v)
     else:
         node = node_of(v)
-        if len(node.ttype.shape) != 1:
+        node_type = _ir.type_of(node)
+        if len(node_type.shape) != 1:
             raise HawkError(
-                f"argmax takes a rank-1 value or rank-0 components, got {node.ttype!r}")
-        comps = tuple(Value(node)[j] for j in range(node.ttype.shape[0]))
+                f"argmax takes a rank-1 value or rank-0 components, got {node_type!r}")
+        comps = tuple(Value(node)[j] for j in range(node_type.shape[0]))
     if not comps:
         raise HawkError("argmax of no components")
     best = Value(index_node(0))

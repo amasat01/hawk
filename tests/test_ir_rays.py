@@ -25,8 +25,6 @@ import hawk
 import hawk.math as m
 from hawk import HawkError, Mutable, Scalar, Vector
 from hawk.artifact import build_bundle
-from raptor.ir import canonical
-from raptor.ir.types import TensorType
 
 V3 = Vector[3]
 

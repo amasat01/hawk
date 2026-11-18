@@ -33,6 +33,8 @@ import pytest
 
 import hawk
 import hawk.math as m
+from hawk import _ir
+from hawk.trace.lane_axes import trace_context
 from hawk import Index, Int32, Kernel, Mutable, Param, Scalar, Terminated, UInt32
 from hawk.diff import jvp, vjp
 
@@ -266,26 +268,33 @@ def test_concurrent_runs_of_one_integer_plan_are_independent(host_plans):
 # --------------------------------------------------------------------------- #
 # Refusals.
 # --------------------------------------------------------------------------- #
-def _leaf(dtype, name="a"):
-    from raptor.ir import Leaf
-    from raptor.ir.types import TensorType
+CTX = _ir.new_context()
 
-    return hawk.Value(Leaf("vocab_read", "per_sample", name, TensorType((), dtype)))
+
+@pytest.fixture(autouse=True)
+def _traced_context():
+    """Literals met while a value is built are made in the context the leaves live in."""
+    with trace_context(CTX):
+        yield
+
+
+def _leaf(dtype, name="a"):
+    return hawk.Value(_ir.leaf(CTX, "vocab_read", "per_sample", name, _ir.TensorType((), dtype)))
 
 
 @pytest.mark.parametrize("spell,match", [
-    (lambda: _leaf("int32") + _leaf("f64", "x"), r"int32 value does not mix with f64.*hawk\.math\.real"),
+    (lambda: _leaf("int32") + _leaf("f64", "x"), r"\[mixed scalar types\] an int32 value does not mix with f64 without a cast"),
     (lambda: _leaf("int32") * 1.5, r"does not mix with f64"),
-    (lambda: _leaf("int32") + _leaf("uint32", "u"), r"does not mix with uint32.*hawk\.math\.uint32"),
+    (lambda: _leaf("int32") + _leaf("uint32", "u"), r"\[mixed scalar types\] an int32 value does not mix with uint32 without a cast"),
     (lambda: _leaf("uint32") + _leaf("i32", "k"), r"uint32 value does not mix with i32"),
-    (lambda: _leaf("int32") / _leaf("int32", "b"), r"'div' is not defined.*integer division is `//`"),
+    (lambda: _leaf("int32") / _leaf("int32", "b"), r"\[integer plane value\] op 'div' is not defined on an int32 value"),
     (lambda: m.sqrt(_leaf("int32")), r"'sqrt' is not defined on an int32"),
     (lambda: _leaf("int32") ** 2, r"'pow' is not defined"),
-    (lambda: _leaf("f64") // _leaf("f64", "b"), r"integer operator.*hawk\.math\.floor"),
+    (lambda: _leaf("f64") // _leaf("f64", "b"), r"\[integer operator operands\] op 'floordiv' is an integer operator"),
     (lambda: _leaf("f64") & _leaf("f64", "b"), r"integer operator"),
     (lambda: _leaf("uint32") + (-1), r"outside the uint32 range"),
     (lambda: _leaf("int32") + 2**31, r"outside the int32 range"),
-    (lambda: m.int32(_leaf("bool")), r"a bool picks a value"),
+    (lambda: m.int32(_leaf("bool")), r"\[cast operand\] .*a bool is not a number"),
 ], ids=["float", "float_literal", "other_int", "index", "true_div", "sqrt", "pow",
         "float_floordiv", "float_bitand", "uint_negative_literal", "int_range",
         "bool_cast"])
@@ -312,8 +321,8 @@ def scaled(n: Int32, x: Scalar, a: Param, y: Mutable[Scalar], c: Mutable[Int32])
 def test_an_integer_plane_takes_no_adjoint_and_no_tangent():
     rev, fwd = vjp(scaled), jvp(scaled)
     assert set(rev.wrt) == set(fwd.wrt) == {"x", "a"}
-    rev_names = Kernel("scaled_vjp", rev).walk.arg_spec
-    fwd_names = Kernel("scaled_jvp", fwd).walk.arg_spec
+    rev_names = _ir.arg_spec(Kernel("scaled_vjp", rev).walk)
+    fwd_names = _ir.arg_spec(Kernel("scaled_jvp", fwd).walk)
     assert not [nm for _, nm in rev_names if nm in ("bar_n", "bar_c")]
     assert not [nm for _, nm in fwd_names if nm in ("dot_n", "dot_c")]
     assert ("per_sample", "n") in rev_names       # read as a primal input, never seeded
@@ -377,9 +386,9 @@ def mixing(k: Index, terminated: Terminated, y: Mutable[Scalar]):
 
 
 def _sidecar(kernel):
-    from hawk.artifact.sidecar import sidecar_meta
+    from _unit_sidecar import sidecar_of_kernel
 
-    return sidecar_meta(kernel.name, kernel.walk, fmt="host", scalar_type="float64")
+    return sidecar_of_kernel(kernel, fmt="host", scalar_type="float64")
 
 
 def test_every_integer_plane_is_labelled_with_its_own_dtype():
@@ -401,7 +410,7 @@ def test_a_deployed_sidecar_describes_its_integer_mutables():
     from hawk.runtime import descriptor_for_sidecar
 
     kinds = descriptor_for_sidecar(_sidecar(casts))
-    spec = dict(zip((nm for _, nm in casts.walk.arg_spec), kinds))
+    spec = dict(zip((nm for _, nm in _ir.arg_spec(casts.walk)), kinds))
     assert spec["to_i"] == spec["n"] == "int_handle" and spec["s"] == "int"
 
 

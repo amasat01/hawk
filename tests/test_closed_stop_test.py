@@ -103,7 +103,7 @@ def test_spacing_carries_a_zero_derivative():
 def _stops(twin, x_next, a):
     """The twin's stop test at a state whose post-step ``x`` is ``x_next``
     and post-step time 1.5 (``t_0 = 1``, ``k = 0``, ``dt = 0.5``, ``v = 0``)."""
-    finish = next(s for s in twin.sinks if type(s).__name__ == "Finish")
+    finish = next(s for s in twin.sinks if s.cls == "Finish")
     env = {"x": x_next, "v": 0.0, "t": 1.0, "dt": 0.5, "t_0": 1.0,
            "applied_steps": 0, "a": a, "terminated": False}
     return bool(evaluate((finish,), env)["terminated"])

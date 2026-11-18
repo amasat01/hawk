@@ -30,9 +30,6 @@ Rows:
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import spec_for
-from _specs import HOST, for_targets
 
 import math
 
@@ -52,9 +49,10 @@ from hawk import (
     kernel,
 )
 from hawk.artifact import build_bundle
-from hawk.artifact.sidecar import sidecar_meta
+from _unit_sidecar import finish_mask, sidecar_of_kernel
 from hawk.diff import jvp, vjp
 from raptor.errors import RaptorError as HawkError
+from hawk import _ir
 
 N = 48
 DT = 0.0625
@@ -62,8 +60,14 @@ CAP = 400
 
 
 @kernel(steps=1)
-def osc(dt: Param, t_final: Scalar, terminated: Terminated,
-        x: Mutable[Scalar], v: Mutable[Scalar], t: Mutable[Scalar]):
+def osc(
+    dt: Param,
+    t_final: Scalar,
+    terminated: Terminated,
+    x: Mutable[Scalar],
+    v: Mutable[Scalar],
+    t: Mutable[Scalar],
+):
     v_start = v
     a = -x
     v = v_start + dt * a
@@ -74,8 +78,13 @@ def osc(dt: Param, t_final: Scalar, terminated: Terminated,
 
 
 @kernel(steps=1)
-def spin3(dt: Param, limit: Scalar, terminated: Terminated,
-          r: Mutable[Vector[3]], s: Mutable[Scalar]):
+def spin3(
+    dt: Param,
+    limit: Scalar,
+    terminated: Terminated,
+    r: Mutable[Vector[3]],
+    s: Mutable[Scalar],
+):
     """A rank-1 carry beside a scalar one, finishing on the carried state."""
     w = hawk.math.vec(0.3, -0.2, 0.7)
     rn = r + hawk.math.cross(w, r) * dt
@@ -92,18 +101,25 @@ def test_the_derived_kernel_is_named_and_records_its_steps():
     for k in KS:
         derived = hawk.steps(osc, k)
         assert derived.name == f"osc_x{k}"
-        assert (derived.walk.finish, derived.steps) == ("terminated", k)
+        assert (finish_mask(derived), derived.steps) == ("terminated", k)
         assert derived.arg_spec == osc.arg_spec
-        meta = sidecar_meta(derived.name, derived.walk, steps=derived.steps, fmt="ptx",
-                            scalar_type="float64")
-        assert meta["finish"] == {"mask": "terminated",
-                                  "counter": "finished_count", "steps": k}
+        meta = sidecar_of_kernel(derived,
+            steps=derived.steps,
+            fmt="ptx",
+            scalar_type="float64",
+        )
+        assert meta["finish"] == {
+            "mask": "terminated",
+            "counter": "finished_count",
+            "steps": k,
+        }
 
 
 def test_a_kernel_without_a_finish_refuses():
     @kernel
     def plain(x: Scalar, y: Mutable[Scalar]):
         y = y + x
+
     with pytest.raises(HawkError, match=r"'plain'.*never finishes"):
         hawk.steps(plain, 4)
 
@@ -111,18 +127,22 @@ def test_a_kernel_without_a_finish_refuses():
 def test_a_reduce_or_out_sink_refuses():
     """A sum over samples beside a finish and a by-key store both trace and
     are refused here."""
+
     @kernel
     def reducing(x: Scalar, terminated: Terminated, total: Mutable[Scalar]):
         total = hawk.sum(x)
         terminated = x > 1.0
+
     with pytest.raises(HawkError, match=r"'reducing'.*not a step kernel"):
         hawk.steps(reducing, 4)
 
     @kernel
-    def scattering(x: Scalar, lane: Index, terminated: Terminated,
-                   acc: Mutable[Scalar]):
+    def scattering(
+        x: Scalar, lane: Index, terminated: Terminated, acc: Mutable[Scalar]
+    ):
         hawk.scatter(acc)[lane] += x
         terminated = x > 1.0
+
     with pytest.raises(HawkError, match=r"'scattering'.*not a step kernel"):
         hawk.steps(scattering, 4)
 
@@ -136,8 +156,14 @@ def test_a_bad_k_refuses():
 # --------------------------------------------------------------------------- #
 # -- the decorator form: @kernel(steps=K) == hawk.steps(kernel(fn), K).
 # --------------------------------------------------------------------------- #
-def _osc_body(dt: Param, t_final: Scalar, terminated: Terminated,
-              x: Mutable[Scalar], v: Mutable[Scalar], t: Mutable[Scalar]):
+def _osc_body(
+    dt: Param,
+    t_final: Scalar,
+    terminated: Terminated,
+    x: Mutable[Scalar],
+    v: Mutable[Scalar],
+    t: Mutable[Scalar],
+):
     v_start = v
     a = -x
     v = v_start + dt * a
@@ -147,21 +173,19 @@ def _osc_body(dt: Param, t_final: Scalar, terminated: Terminated,
     terminated = tn >= t_final
 
 
-
-
 def test_the_decorator_form_reaches_a_defining_scope_local():
     t_cap = Scalar
 
     @kernel(steps=4)
-    def local_osc(dt: Param, t_final: t_cap, terminated: Terminated,
-                  t: Mutable[Scalar]):
+    def local_osc(
+        dt: Param, t_final: t_cap, terminated: Terminated, t: Mutable[Scalar]
+    ):
         tn = t + dt
         t = tn
         terminated = tn >= t_final
+
     assert local_osc.name == "local_osc_x4"
-    assert (local_osc.walk.finish, local_osc.steps) == ("terminated", 4)
-
-
+    assert (finish_mask(local_osc), local_osc.steps) == ("terminated", 4)
 
 
 def test_the_decorator_form_keeps_the_kind():
@@ -170,7 +194,9 @@ def test_the_decorator_form_keeps_the_kind():
     kind = Kind("steps_active", guard=Guard(active_set=True))
     decorated = kernel(kind=kind, steps=4)(_osc_body)
     assert decorated.kind is kind
-    assert decorated.walk.digest == hawk.steps(kernel(_osc_body, kind=kind), 4).walk.digest
+    assert (
+        _ir.digest(decorated.walk) == _ir.digest(hawk.steps(kernel(_osc_body, kind=kind), 4).walk)
+    )
 
 
 def test_a_bad_steps_refuses_at_decoration_naming_the_kernel():
@@ -190,13 +216,16 @@ def test_steps_auto_misspellings_refuse_naming_the_kernel():
 def test_the_decorator_form_refuses_what_hawk_steps_refuses():
     def plain(x: Scalar, y: Mutable[Scalar]):
         y = y + x
+
     with pytest.raises(HawkError, match=r"'plain'.*never finishes"):
         kernel(steps=4)(plain)
 
-    def scattering(x: Scalar, lane: Index, terminated: Terminated,
-                   acc: Mutable[Scalar]):
+    def scattering(
+        x: Scalar, lane: Index, terminated: Terminated, acc: Mutable[Scalar]
+    ):
         hawk.scatter(acc)[lane] += x
         terminated = x > 1.0
+
     with pytest.raises(HawkError, match=r"'scattering'.*not a step kernel"):
         kernel(steps=4)(scattering)
 
@@ -229,33 +258,51 @@ osc_active_auto = hawk.steps(kernel(_osc_body, kind=_active_kind()), "auto")
 @pytest.fixture(scope="module")
 def bundles(tmp_path_factory, cache_dir):
     root = tmp_path_factory.mktemp("steps")
-    kernels = ([osc, spin3] + [hawk.steps(k, n) for k in (osc, spin3) for n in KS]
-               + [hawk.steps(osc, "auto"), hawk.steps(spin3, "auto")])
+    kernels = (
+        [osc, spin3]
+        + [hawk.steps(k, n) for k in (osc, spin3) for n in KS]
+        + [hawk.steps(osc, "auto"), hawk.steps(spin3, "auto")]
+    )
     # Host under the EXACT profile: K fused steps against K = 1 bit for bit
     # (the default fast profile may fuse the two loop shapes differently).
-    return build_bundle(kernels, root / "steps", targets=("cuda", "host"),
-                        cache_dir=cache_dir, host_profile="native")
+    return build_bundle(
+        kernels,
+        root / "steps",
+        targets=("cuda", "host"),
+        cache_dir=cache_dir,
+        host_profile="native",
+    )
 
 
 @pytest.fixture(scope="module")
 def active_bundle(tmp_path_factory, cache_dir):
     """The active-set kind's auto kernel: a bundle has ONE kind."""
     root = tmp_path_factory.mktemp("steps_active")
-    return build_bundle([osc_active_auto], root / "steps_active",
-                        targets=("cuda", "host"), cache_dir=cache_dir,
-                        host_profile="native")
+    return build_bundle(
+        [osc_active_auto],
+        root / "steps_active",
+        targets=("cuda", "host"),
+        cache_dir=cache_dir,
+        host_profile="native",
+    )
 
 
 def _planes(which, xp):
     rng = np.random.default_rng(11)
     if which == "osc":
         stop = rng.integers(5, 70, N)
-        return {"t_final": xp.array(DT * stop.astype(float)),
-                "x": xp.array(rng.uniform(-1, 1, N)),
-                "v": xp.array(rng.uniform(-1, 1, N)), "t": xp.zeros(N)}, int(stop.max())
+        return {
+            "t_final": xp.array(DT * stop.astype(float)),
+            "x": xp.array(rng.uniform(-1, 1, N)),
+            "v": xp.array(rng.uniform(-1, 1, N)),
+            "t": xp.zeros(N),
+        }, int(stop.max())
     r = rng.uniform(-1, 1, (3, N))
-    return {"limit": xp.array(rng.uniform(0.2, 3.0, N)), "r": xp.array(r),
-            "s": xp.zeros(N)}, None
+    return {
+        "limit": xp.array(rng.uniform(0.2, 3.0, N)),
+        "r": xp.array(r),
+        "s": xp.zeros(N),
+    }, None
 
 
 def _run(bundle, name, which, target):
@@ -264,29 +311,39 @@ def _run(bundle, name, which, target):
 
     sidecar = sidecar_of(bundle, name)
     if target == "host":
-        plugin, structure, xp = (L.host_plugin(bundle.directory, name, sidecar),
-                                 eexec.HostTeam, np)
+        plugin, structure, xp = (
+            L.host_plugin(bundle.directory, name, sidecar),
+            eexec.HostTeam,
+            np,
+        )
     else:
         import cupy as cp
 
-        plugin, structure, xp = (L.device_plugin(bundle.directory, name, sidecar),
-                                 eexec.DeviceKernel, cp)
+        plugin, structure, xp = (
+            L.device_plugin(bundle.directory, name, sidecar),
+            eexec.DeviceKernel,
+            cp,
+        )
     planes, stop = _planes(which, xp)
     planes["terminated"] = xp.zeros(N, dtype=bool)
     counter = xp.zeros(1, dtype=xp.uint32)
     bound = eplan.plan(plugin, structure=structure).bind(
-        dt=DT, finished_count=counter, **planes)
+        dt=DT, finished_count=counter, **planes
+    )
     launches = 0
     while int(counter[0]) < N and launches < CAP:
         bound.launch()
         launches += 1
-    got = {k: np.asarray(a.get() if hasattr(a, "get") else a)
-           for k, a in planes.items()}
+    got = {
+        k: np.asarray(a.get() if hasattr(a, "get") else a) for k, a in planes.items()
+    }
     return got, int(counter[0]), launches, stop
 
 
 @pytest.mark.parametrize("which", ["osc", "spin3"])
-@pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
+@pytest.mark.parametrize(
+    "target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
+)
 def test_k_steps_per_launch_are_bit_identical_to_one(bundles, which, target):
     one, counted, launches, stop = _run(bundles, which, which, target)
     assert counted == N and one["terminated"].all() and launches < CAP
@@ -310,38 +367,43 @@ def test_the_auto_kernel_is_named_and_records_auto_steps():
     for base in (osc, spin3):
         auto = hawk.steps(base, "auto")
         assert auto.name == f"{base.name}_xauto"
-        assert (auto.walk.finish, auto.steps) == ("terminated", "auto")
+        assert (finish_mask(auto), auto.steps) == ("terminated", "auto")
         spec = set(auto.arg_spec)
         assert {("lookup", "fused_steps"), ("lookup", "finished_count")} <= spec
         assert spec - set(base.arg_spec) == {("lookup", "fused_steps")}
-        assert auto.walk.slot_types[("lookup", "fused_steps")].dtype == "i32"
-        meta = sidecar_meta(auto.name, auto.walk, steps=auto.steps, fmt="ptx", scalar_type="float64")
-        assert meta["finish"] == {"mask": "terminated", "counter": "finished_count",
-                                  "steps": "auto", "steps_max": AUTO_K_MAX}
+        assert _ir.slot_type(auto.walk, "lookup", "fused_steps").dtype == "i32"
+        meta = sidecar_of_kernel(auto, steps=auto.steps, fmt="ptx", scalar_type="float64"
+        )
+        assert meta["finish"] == {
+            "mask": "terminated",
+            "counter": "finished_count",
+            "steps": "auto",
+            "steps_max": AUTO_K_MAX,
+        }
         # the word is the runner's seam, not a cross-sample read of the body
-        plain = sidecar_meta(base.name, base.walk, steps=base.steps, fmt="ptx", scalar_type="float64")
+        plain = sidecar_of_kernel(base, steps=base.steps, fmt="ptx", scalar_type="float64"
+        )
         assert meta["exec_access"] == plain["exec_access"] == "sample_local"
         assert meta["arg_dtypes"]["fused_steps"] == "int64"
-    fixed = sidecar_meta("osc_x16", hawk.steps(osc, 16).walk, steps=16, fmt="ptx",
-                         scalar_type="float64")
+    fixed = sidecar_of_kernel(hawk.steps(osc, 16), steps=16, fmt="ptx", scalar_type="float64"
+    )
     assert "steps_max" not in fixed["finish"]
-
-
-
-
 
 
 def test_auto_refuses_what_hawk_steps_refuses():
     @kernel
     def plain(x: Scalar, y: Mutable[Scalar]):
         y = y + x
+
     with pytest.raises(HawkError, match=r"'plain'.*never finishes"):
         hawk.steps(plain, "auto")
 
-    def scattering(x: Scalar, lane: Index, terminated: Terminated,
-                   acc: Mutable[Scalar]):
+    def scattering(
+        x: Scalar, lane: Index, terminated: Terminated, acc: Mutable[Scalar]
+    ):
         hawk.scatter(acc)[lane] += x
         terminated = x > 1.0
+
     with pytest.raises(HawkError, match=r"'scattering'.*not a step kernel"):
         kernel(steps="auto")(scattering)
     with pytest.raises(HawkError, match=r"'osc_xauto'.*already takes"):
@@ -353,6 +415,7 @@ def test_auto_refuses_a_plane_named_like_the_word():
         x_start = x
         x = x_start + fused_steps
         terminated = x_start > 1.0
+
     with pytest.raises(HawkError, match=r"'clash'.*'fused_steps' is reserved"):
         kernel(steps="auto")(clash)
 
@@ -374,13 +437,19 @@ def _driver(bundle, name, which, target, *, active=False, never=False):
 
     sidecar = sidecar_of(bundle, name)
     if target == "host":
-        plugin, structure, xp = (L.host_plugin(bundle.directory, name, sidecar),
-                                 eexec.HostTeam, np)
+        plugin, structure, xp = (
+            L.host_plugin(bundle.directory, name, sidecar),
+            eexec.HostTeam,
+            np,
+        )
     else:
         import cupy as cp
 
-        plugin, structure, xp = (L.device_plugin(bundle.directory, name, sidecar),
-                                 eexec.DeviceKernel, cp)
+        plugin, structure, xp = (
+            L.device_plugin(bundle.directory, name, sidecar),
+            eexec.DeviceKernel,
+            cp,
+        )
     planes, _ = _planes(which, xp)
     if never:
         planes["t_final"] = xp.full(N, np.inf)
@@ -394,25 +463,30 @@ def _driver(bundle, name, which, target, *, active=False, never=False):
         extra["active_map"] = xp.arange(N, dtype=xp.int32)
         extra["active_count"] = xp.full(1, N, dtype=xp.uint32)
     bound = eplan.plan(plugin, structure=structure).bind(
-        dt=DT, finished_count=counter, **planes, **extra)
+        dt=DT, finished_count=counter, **planes, **extra
+    )
     return bound, planes, counter, extra, xp
 
 
 def _host(planes):
-    return {k: np.array(a.get() if hasattr(a, "get") else a, copy=True)
-            for k, a in planes.items()}
+    return {
+        k: np.array(a.get() if hasattr(a, "get") else a, copy=True)
+        for k, a in planes.items()
+    }
 
 
-def _one_step_snapshots(bundle, name, which, target, *, never=False,
-                        upto=None, active=False):
+def _one_step_snapshots(
+    bundle, name, which, target, *, never=False, upto=None, active=False
+):
     """One step per launch, the planes after every launch: ``snaps[s]`` =
     after ``s`` steps (``snaps[0]`` the initial planes), until all finished or
     ``upto``. ``name`` is the K = 1 kernel, or an auto kernel driven with
     ``fused_steps = 1`` (the device oracle: the same compiled loop body)."""
-    bound, planes, counter, extra, xp = _driver(bundle, name, which, target,
-                                                never=never, active=active)
+    bound, planes, counter, extra, xp = _driver(
+        bundle, name, which, target, never=never, active=active
+    )
     snaps = [_host(planes)]
-    while (int(counter[0]) < N if upto is None else len(snaps) <= upto):
+    while int(counter[0]) < N if upto is None else len(snaps) <= upto:
         assert len(snaps) < CAP
         if "fused_steps" in extra:
             extra["fused_steps"][0] = 1
@@ -448,20 +522,29 @@ def _compact(extra, planes, xp):
     extra["active_count"][0] = live.size
 
 
-@pytest.mark.parametrize("which,name,active", [
-    ("osc", "osc_xauto", False), ("spin3", "spin3_xauto", False),
-    ("osc", "_osc_body_xauto", True)], ids=["osc", "spin3", "osc-active-set"])
-@pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
-def test_auto_takes_exactly_the_word_s_steps_per_launch(bundles, active_bundle,
-                                                        which, name, active,
-                                                        target):
+@pytest.mark.parametrize(
+    "which,name,active",
+    [
+        ("osc", "osc_xauto", False),
+        ("spin3", "spin3_xauto", False),
+        ("osc", "_osc_body_xauto", True),
+    ],
+    ids=["osc", "spin3", "osc-active-set"],
+)
+@pytest.mark.parametrize(
+    "target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
+)
+def test_auto_takes_exactly_the_word_s_steps_per_launch(
+    bundles, active_bundle, which, name, active, target
+):
     """After every launch of the ``K_SEQ`` cycle every plane, the mask and the
     counter equal the step-by-step reference (:func:`_oracle`) after the same
     total number of steps."""
     bundle = active_bundle if active else bundles
     snaps = _oracle(bundles, bundle, name, which, target, active=active)
-    bound, planes, counter, extra, xp = _driver(bundle, name, which, target,
-                                                active=active)
+    bound, planes, counter, extra, xp = _driver(
+        bundle, name, which, target, active=active
+    )
     total, launches = 0, 0
     while int(counter[0]) < N:
         k = K_SEQ[launches % len(K_SEQ)]
@@ -481,23 +564,27 @@ def test_auto_takes_exactly_the_word_s_steps_per_launch(bundles, active_bundle,
     assert got["terminated"].all() and total >= len(snaps) - 1
 
 
-@pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
+@pytest.mark.parametrize(
+    "target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
+)
 def test_auto_caps_exactly_where_the_fixed_artifact_overshoots(bundles, target):
     """Samples that never finish: launches of 16, 16, 5 leave every sample at
     exactly step 37 (equal to 37 one-step launches, unlike 36 or 38); the
     fixed ``steps=16`` artifact run to the same cap lands on 48."""
-    snaps = _oracle(bundles, bundles, "osc_xauto", "osc", target, never=True,
-                    upto=48)
-    fixed_snaps = _one_step_snapshots(bundles, "osc", "osc", target, never=True,
-                                      upto=48)
-    bound, planes, _, extra, _ = _driver(bundles, "osc_xauto", "osc", target,
-                                         never=True)
+    snaps = _oracle(bundles, bundles, "osc_xauto", "osc", target, never=True, upto=48)
+    fixed_snaps = _one_step_snapshots(
+        bundles, "osc", "osc", target, never=True, upto=48
+    )
+    bound, planes, _, extra, _ = _driver(
+        bundles, "osc_xauto", "osc", target, never=True
+    )
     for k in (16, 16, 5):
         extra["fused_steps"][0] = k
         bound.launch()
     auto = _host(planes)
-    fixed_bound, fixed_planes, _, _, _ = _driver(bundles, "osc_x16", "osc",
-                                                 target, never=True)
+    fixed_bound, fixed_planes, _, _, _ = _driver(
+        bundles, "osc_x16", "osc", target, never=True
+    )
     for _ in range(math.ceil(37 / 16)):
         fixed_bound.launch()
     fixed = _host(fixed_planes)
@@ -509,17 +596,19 @@ def test_auto_caps_exactly_where_the_fixed_artifact_overshoots(bundles, target):
     assert not auto["terminated"].any()
 
 
-@pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
+@pytest.mark.parametrize(
+    "target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
+)
 def test_the_word_is_a_runtime_bound_clamped_below_at_zero(bundles, target):
     """Samples that never finish: a word of 100 runs exactly 100 steps (the
     bound is the word, not ``AUTO_K_MAX``: a runner may ask one launch for
     every step left), and a word of 0 or -5 runs none (every plane
     untouched)."""
-    snaps = _oracle(bundles, bundles, "osc_xauto", "osc", target, never=True,
-                    upto=100)
+    snaps = _oracle(bundles, bundles, "osc_xauto", "osc", target, never=True, upto=100)
     for word, want in ((100, 100), (0, 0), (-5, 0)):
-        bound, planes, _, extra, _ = _driver(bundles, "osc_xauto", "osc",
-                                             target, never=True)
+        bound, planes, _, extra, _ = _driver(
+            bundles, "osc_xauto", "osc", target, never=True
+        )
         extra["fused_steps"][0] = word
         bound.launch()
         got = _host(planes)
@@ -531,9 +620,10 @@ def test_the_word_is_a_runtime_bound_clamped_below_at_zero(bundles, target):
 
 
 @pytest.mark.parametrize("which,name", [("osc", "osc_xauto"), ("spin3", "spin3_xauto")])
-@pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
-def test_a_one_step_launch_is_the_single_step_bit_for_bit(bundles, which, name,
-                                                          target):
+@pytest.mark.parametrize(
+    "target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
+)
+def test_a_one_step_launch_is_the_single_step_bit_for_bit(bundles, which, name, target):
     """A launch whose word is 1 runs the single step's straight-line body, so
     one step per launch of the auto artifact is the K = 1 kernel bit for bit,
     after every launch until every sample finished."""
@@ -564,14 +654,12 @@ def test_a_derivative_of_the_default_kernel_is_its_single_step_s(transform):
     the plain kernel's derivative, tagged with the same primal name. The
     explicit ``steps="auto"`` kernel (``<name>_xauto``) keeps refusing — the
     non-vacuity: without the delegation the default kernel would refuse too."""
-    from raptor.ir.walk import canonical
-
     default = kernel(_finish_on_input)
     plain = kernel(_finish_on_input, steps=1)
     assert default.step is not None
     got, want = transform(default, wrt=("a",)), transform(plain, wrt=("a",))
     assert got.primal == want.primal == "_finish_on_input"
-    assert canonical(tuple(got)).digest == canonical(tuple(want)).digest
+    assert got[0].ctx.dump(list(got)) == want[0].ctx.dump(list(want))
     with pytest.raises(HawkError, match=r"is read before it is assigned"):
         transform(hawk.steps(plain, "auto"), wrt=("a",))
     with pytest.raises(HawkError, match=r"is read before it is assigned"):
@@ -585,21 +673,25 @@ def test_hawk_steps_of_the_default_kernel_derives_from_its_step():
     plain = kernel(_osc_body, steps=1)
     default = kernel(_osc_body)
     for k in (4, "auto"):
-        assert (hawk.steps(default, k).walk.digest
-                == hawk.steps(plain, k).walk.digest)
+        assert _ir.digest(hawk.steps(default, k).walk) == _ir.digest(hawk.steps(plain, k).walk)
         assert hawk.steps(default, k).name == f"_osc_body_x{k}"
 
 
-def test_the_hawk_host_runtime_takes_one_step_without_the_word(tmp_path_factory,
-                                                               cache_dir):
+def test_the_hawk_host_runtime_takes_one_step_without_the_word(
+    tmp_path_factory, cache_dir
+):
     """``hawk.runtime.run`` of the default kernel with no ``fused_steps``:
     one step per launch (``t`` advances by ``dt`` per launch). Non-vacuity: a
     caller's word of 5 takes five."""
     from hawk import runtime
 
     default = kernel(_osc_body)
-    bundle = build_bundle([default], tmp_path_factory.mktemp("default") / "b",
-                          targets=("host",), cache_dir=cache_dir)
+    bundle = build_bundle(
+        [default],
+        tmp_path_factory.mktemp("default") / "b",
+        targets=("host",),
+        cache_dir=cache_dir,
+    )
     sidecar = sidecar_of(bundle, "_osc_body")
     assert sidecar["finish"]["steps"] == "auto"
     host = runtime.load(bundle.directory, "_osc_body", sidecar)
@@ -609,9 +701,14 @@ def test_the_hawk_host_runtime_takes_one_step_without_the_word(tmp_path_factory,
         planes, _ = _planes("osc", np)
         planes["t_final"] = np.full(N, np.inf)
         for _ in range(count):
-            runtime.run(host, dt=DT, terminated=np.zeros(N, dtype=bool),
-                        finished_count=np.zeros(1, dtype=count_dtype),
-                        **planes, **word)
+            runtime.run(
+                host,
+                dt=DT,
+                terminated=np.zeros(N, dtype=bool),
+                finished_count=np.zeros(1, dtype=count_dtype),
+                **planes,
+                **word,
+            )
         return planes
 
     np.testing.assert_array_equal(launches(3)["t"], 3 * DT)

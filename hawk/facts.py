@@ -17,7 +17,7 @@ the schema is refused by name, with the file.
 
 REQUIRED BY NAME (the contract for a backend's facts): a number a lowering or a writer reads is stated by the wing it runs on or by one
 of its parents, and a missing one is refused by name where it is read: the fold threshold ``form.rolled_fold_min``
-(``raptor.ir.fold.exceeds``), ``linalg.max_dim``, ``launch.warp_size``, ``host_wide``. There is no silent default ("nothing exceeds it"),
+(read by the lowering library), ``linalg.max_dim``, ``launch.warp_size``, ``host_wide``. There is no silent default ("nothing exceeds it"),
 no empty wing that stands for one, and no other backend's number is borrowed. A backend that has no such number builds with
 ``emit_form='static'`` or ``'rolled'``, which read none."""
 

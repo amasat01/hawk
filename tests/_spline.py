@@ -4,8 +4,7 @@
 """The spline edge cell, at HAWK's own authoring surface — TEST SCAFFOLD.
 
 ONE definition of the shape and were both ruled over, shared by the
-memory row (``tests/test_ir_loop_digest_memory.py``) and the compile card
-(``tests/test_loop_lowering_card.py``) so the two can never drift into
+compile card (``tests/test_loop_lowering_card.py``) and the scale entry point below, so the two can never drift into
 measuring different subjects and reporting them under one name.
 
 WHY IT IS COPIED AND NOT IMPORTED. The real subject is a downstream
@@ -221,7 +220,7 @@ def main(argv=None) -> int:
     from _toolchain import device_command, host_command
     from ospreys.cuda.toolchain import resolve_arch
     from hawk.artifact import emit_source
-    from raptor.ir import Loop
+    from hawk import _ir
 
     args = sys.argv[1:] if argv is None else list(argv)
     n_in, G, k = int(args[0]), int(args[1]), int(args[2])
@@ -231,13 +230,14 @@ def main(argv=None) -> int:
     start = time.perf_counter()
     cell = spline_edge_cell(n_in, G, k)          # traces AND canonicalises
     trace_wall = time.perf_counter() - start
-    loops = [n for n in cell.walk.order if isinstance(n, Loop)]
+    order, _positions = _ir.canonical_nodes(cell.sinks)
+    loops = [n for n in order if _ir.is_a(n, "loop")]
     row = {
         "n_in": n_in, "G": G, "k": k, "n_basis": G + k,
         "trace_canonicalise_wall_s": round(trace_wall, 4),
         "trace_canonicalise_peak_rss_kib": _own_peak_kib(),
-        "walk_nodes": len(cell.walk.order),
-        "loop_body_nodes": sum(len(lp.body_nodes()) for lp in loops),
+        "walk_nodes": len(order),
+        "loop_body_nodes": sum(len(_ir.body_nodes(lp)) for lp in loops),
         "top_level_loops": len(loops),
         "device_arch": resolve_arch(),
     }

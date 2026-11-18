@@ -11,6 +11,7 @@ from __future__ import annotations
 from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk.diff import tape, vjp
 from hawk.diff.event import state_guard
+from hawk import _ir
 
 
 @kernel(steps=1, time="t", time_step="dt")
@@ -35,9 +36,9 @@ def drop(dt: Param, terminated: Terminated, y: Mutable[Scalar], t: Mutable[Scala
 def test_the_guard_reads_the_state_after_the_step():
     sg = state_guard(surf)
     assert sg.name == "surf_state_guard"
-    reads = {name for _role, name in sg.walk.arg_spec}
+    reads = {name for _role, name in _ir.arg_spec(sg.walk)}
     assert reads == {"event_g0", "x", "t", "a"}       # no dt: x and t are read back
-    grads = {s.name for s in vjp(sg)}
+    grads = {s.field_text("name") for s in vjp(sg)}
     assert {"bar_x", "bar_t", "bar_a"} <= grads
 
 

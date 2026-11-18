@@ -17,7 +17,7 @@ from raptor.ir import nodes as old_nodes
 from raptor.ir import types as old_types
 from raptor.rules import core as old_core
 from raptor.rules import primitive as old_prim
-from test_ir_module import OLD_F64, new_shape, old_shape
+from test_ir_module import I32, OLD_F64, OLD_I32, new_shape, old_shape
 
 from hawk import _ir
 from hawk._errors import HawkError
@@ -193,7 +193,7 @@ def test_a_primitive_with_a_registered_rule_instantiates_as_the_old_one_does(ctx
     (ox, oprim), (nx, nprim) = primitive_pair(ctx)
     oreg, nreg = old_kinds.Registry(), prim.PrimitiveRegistry()
     old_prim.declare_primitive(oreg, "sq", ext="user", directions=("vjp", "jvp"))
-    prim.declare_primitive(nreg, "sq", ext="user", directions=("vjp", "jvp"))
+    prim.declare_primitive(nreg, ctx, "sq", ext="user", directions=("vjp", "jvp"))
     oin, ocot = old_prim.placeholder("in0", OLD_F64), old_prim.placeholder("cot", OLD_F64)
     nin, ncot = prim.placeholder(ctx, "in0", F64), prim.placeholder(ctx, "cot", F64)
     odot, ndot = old_prim.placeholder("dot0", OLD_F64), prim.placeholder(ctx, "dot0", F64)
@@ -226,7 +226,7 @@ def test_a_primitive_without_the_asked_rule_or_with_a_free_leaf_is_refused_alike
     (ox, oprim), (nx, nprim) = primitive_pair(ctx)
     oreg, nreg = old_kinds.Registry(), prim.PrimitiveRegistry()
     old_prim.declare_primitive(oreg, "sq", ext="user", directions=("jvp",))
-    prim.declare_primitive(nreg, "sq", ext="user", directions=("jvp",))
+    prim.declare_primitive(nreg, ctx, "sq", ext="user", directions=("jvp",))
     og, ng = leaves(ctx, ["g"])[0][0], leaves(ctx, ["g"])[1][0]
     with pytest.raises(HawkError) as old_refusal:
         old_prim.vjp_contributions(oreg, oprim, og)
@@ -256,3 +256,61 @@ def test_substitute_replaces_placeholders_by_name_and_leaves_the_rest(ctx):
     got = prim.substitute(ntemplate, {"$in0": nx, "$unused": nx})
     assert new_shape(got) == old_shape(old_prim.substitute(otemplate, {"$in0": ox}))
     assert prim.substitute(nx, {"$in0": nx}) == nx
+
+
+@pytest.mark.parametrize("name", ["primitive", "add", "assign", "leaf", "sq", "my_primitive", ""])
+def test_a_reserved_primitive_name_is_refused_as_the_old_registry_did(ctx, name):
+    """Core kind names are refused with the old words; a free name is accepted, on both sides."""
+    results = []
+    for declare in (
+        lambda: old_prim.declare_primitive(
+            old_kinds.Registry(), name, ext="u", directions=("vjp",)
+        ),
+        lambda: prim.declare_primitive(
+            prim.PrimitiveRegistry(), ctx, name, ext="u", directions=("vjp",)
+        ),
+    ):
+        try:
+            declare()
+            results.append(None)
+        except HawkError as refusal:
+            results.append(str(refusal))
+    assert results[0] == results[1]
+
+
+def test_a_template_that_writes_a_plane_is_refused_by_the_library_check(ctx):
+    """The closed-template check refuses, by name, a template that writes a plane."""
+    nx = _ir.leaf(ctx, "vocab_read", "vec_in", "x", F64)
+    write = _ir.make_node("Assign", F64, [nx], name="y")
+    with pytest.raises(HawkError, match="primitive 'p'"):
+        _ir.rule_template_check("p", [write], ["$in0"])
+
+
+def test_the_rule_of_a_node_is_found_by_the_kind_the_library_states(ctx):
+    """``rule_of`` equals the old ``rule_for(node.kind, rank)`` on an op, a select, a reduction."""
+    (ox,), (nx,) = leaves(ctx, ["x"])[0], leaves(ctx, ["x"])[1]
+    one = old.Const(1.0, OLD_F64), _ir.const(ctx, 1.0, F64)
+    pairs = [
+        (old.make("sin", [ox]), _ir.make("sin", [nx])),
+        (
+            old.Select(old.make("lt", [ox, one[0]]), ox, one[0], OLD_F64),
+            _ir.make_node("Select", F64, [_ir.make("lt", [nx, one[1]]), nx, one[1]]),
+        ),
+        (
+            old_nodes.ReduceSamples("sum", ox),
+            ctx.new("ReduceSamples", "(('op', 'sum'), ('value', #0))", [nx]),
+        ),
+        (
+            old.At(
+                old.Leaf("table_read", "lookup", "t", vec(4)[0]), old.Const(0, OLD_I32), OLD_F64
+            ),
+            None,
+        ),
+    ]
+    for old_node, new_node in pairs[:3]:
+        got, want = rules.rule_of(new_node), old_core.rule_for(old_node.kind, 0)
+        assert (got.mode, got.vjp is None) == (want.mode, want.vjp is None)
+        assert new_node.field_text("kind") == old_node.kind
+    plane = _ir.leaf(ctx, "table_read", "lookup", "t", ((4,), "f64", None))
+    at = _ir.make_node("At", F64, [plane, _ir.const(ctx, 0, I32)])
+    assert rules.rule_of(at).mode == old_core.rule_for(pairs[3][0].kind, 0).mode == "walker"

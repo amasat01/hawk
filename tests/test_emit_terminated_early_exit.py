@@ -53,7 +53,7 @@ from hawk import Index, Kernel, Mutable, Scalar, Table, Terminated, kernel
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk.ext import Guard, Kind
-from raptor.ir import canonical
+from hawk import _ir
 
 N = 16
 GUARD = "if (!trm_terminated[i].eval()) {"
@@ -104,7 +104,7 @@ def _derived(primal, transform, wrt, name):
 
 
 def _sinks_walk(sinks):
-    return sinks, canonical(sinks)
+    return sinks, _ir.canonical(sinks)
 
 
 # --------------------------------------------------------------------------- #

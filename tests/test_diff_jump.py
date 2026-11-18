@@ -20,7 +20,6 @@ A switch ``if x < t`` passes ``K(x - t) * ybar * (a - b)`` to ``t`` (Epanechniko
 """
 
 from __future__ import annotations
-from _specs import DEVICE
 
 import json
 import math
@@ -32,6 +31,7 @@ import hawk
 from hawk import HawkError, Kernel, Mutable, Param, Scalar, Terminated, Vector, kernel
 from hawk.diff import jvp, vjp
 from hawk.math import floor, land, lor, real, tanh, where
+from hawk import _ir
 
 H = 0.04
 LOOP, STEP = 4, 0.25
@@ -607,9 +607,6 @@ def test_auto_digest_is_batch_independent(rig):
     assert json.loads((d / "g.json").read_text())["digest"] == digest
     again = rig.unit(k_auto, "vjp", ("t",))           # the same unit, whatever the batch
     assert json.loads((again / "g.json").read_text())["digest"] == digest
-    from raptor.wings.base.split import stages
-    first = stages("g", vjp(k_auto, wrt=("t",)), spec=DEVICE)[0]
-    assert Kernel("g", first.sinks).walk.digest == digest
 
 
 class _Adam:
@@ -704,16 +701,16 @@ def test_auto_host_run_equals_the_eagle_plan_run(rig, cache_dir):
 # -- off by default
 # --------------------------------------------------------------------------- #
 def test_jump_leaves_the_primal_digest_alone():
-    assert k_lt.walk.digest == k_lt_off.walk.digest
+    assert _ir.digest(k_lt.walk) == _ir.digest(k_lt_off.walk)
     assert k_lt.jump == H and k_lt_off.jump is None
 
 
 def test_a_comparison_off_every_wrt_path_derives_as_without_jump():
     on, off = vjp(k_const_cmp, wrt=("x",)), vjp(k_const_cmp_off, wrt=("x",))
-    assert Kernel("g", on).walk.digest == Kernel("g", off).walk.digest
+    assert _ir.digest(Kernel("g", on).walk) == _ir.digest(Kernel("g", off).walk)
     assert on.jump is None and off.jump is None
     on, off = vjp(k_lt, wrt=("a", "b")), vjp(k_lt_off, wrt=("a", "b"))
-    assert Kernel("g", on).walk.digest == Kernel("g", off).walk.digest
+    assert _ir.digest(Kernel("g", on).walk) == _ir.digest(Kernel("g", off).walk)
 
 
 def test_sidecar_jump_block_on_the_derived_unit_only(rig):

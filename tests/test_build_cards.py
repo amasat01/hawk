@@ -19,18 +19,19 @@ from test_team_linalg import ROWS
 from aether.wings.base.wrapper import scalar_mode
 import hawk
 import hawk.math as m
-from hawk import Grid, HawkError, Matrix, Vector, kernel
+from hawk import Grid, HawkError, Matrix, Vector, _ir, kernel
 from hawk.artifact import bundle, request, unit_cache
 from hawk.targets import build_spec, shipped_card
 
 pytest.importorskip("_osprey")
 
+CTX = _ir.new_context()  # the context of the shared kernel builders
 NAMES = ("build.json", "cuda_build.json", "cuda.json", "arm.json", "x86.json")
 
 
 def _plan(spec, targets=("host",), kernel=None):
     """``(request, dump, dialects)`` of ``kernel`` (default: the 40 x 40 Cholesky kernel, a team kernel) for ``targets`` under ``spec``."""
-    kernel = kernel or chol_kernel(40)
+    kernel = kernel or chol_kernel(CTX, 40)
     spec = spec.with_settings(scalar="float64", linalg_form="team")
     return bundle._plans([kernel], [kernel.name], [None], smode=scalar_mode("float64"), targets=targets, spec=spec, options={})[0]
 

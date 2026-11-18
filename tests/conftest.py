@@ -142,8 +142,12 @@ def _launch(bundle, name, target, planes):
 def _xp(target):
     if target == "host":
         return np
-    import cupy
-
+    try:
+        import cupy
+    except ModuleNotFoundError as absent:
+        if absent.name != "cupy":
+            raise
+        raise ToolchainAbsent(f"a device row needs cupy: {absent}", toolchain="cupy") from absent
     return cupy
 
 

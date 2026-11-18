@@ -40,11 +40,11 @@ from hawk import (
 )
 from hawk.ext import DATA_ONLY, Guard, Kind, sink_policy
 from hawk.math import dot, maximum, minimum, n_samples, norm, quat_rotate, tanh
-from raptor.ir.types import Wire
+from hawk import _ir
 
 ORIENTATION = Quantity(
     slug="earth", name="orientation",
-    wires=[Wire("q", "vec_in", (4,), tag="quaternion"), Wire("w", "per_sample", ())]
+    wires=[_ir.Wire("q", "vec_in", (4,), tag="quaternion"), _ir.Wire("w", "per_sample", ())]
 )
 
 

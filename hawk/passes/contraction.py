@@ -9,14 +9,14 @@ DUCK-TYPED attribute access — the seam between HAWK and eagle, neither of
 which imports the other.
 
 WHAT IT MATCHES: a bounded ``for`` lowers to a
-:class:`~raptor.ir.nodes.Loop`; the matched shape is ONE loop, one
+``loop`` node; the matched shape is ONE loop, one
 additive carry, and a reduce VARIABLE that is a real symbolic index, its
 header giving ``reduce_start``/``reduce_step``/``reduce_extent`` directly
 rather than by counting emitted terms. Each operand's reduce-axis stride is
 the loop index's COEFFICIENT in its flat index — ANONYMOUS and not
 derivable when built from a bare literal (``t.at(r * cols + c)`` folds
-``cols`` into Python) rather than a declared
-:class:`~raptor.ir.nodes.RoleConst` (``t.at(row=r, col=c)``). An index that
+``cols`` into Python) rather than a declared ``role_const``
+(``t.at(row=r, col=c)``). An index that
 READS data (``t.at(other.at(k))``) walks a runtime-chosen row — a banded
 gather, not a matrix. ``term_form`` is eagle's VALUE vocabulary
 (``bare_read``/``product_of_reads``/``transformed``), matched against
@@ -33,10 +33,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from raptor.ir.access import IndexForm, index_form
-from raptor.ir.nodes import Loop, LoopIndex, LoopValue
-from raptor.ir.loops import addends as _addends
-from raptor.ir.nodes import AccumWrite, Assign, At, Const, Leaf, Node, Op, SampleIndex, Sink, WideWrite
+from .. import _ir
 
 #: The rank -> declared-element spelling a committed output reports.
 _OUTPUT_KIND = {0: "scalar", 1: "vector", 2: "matrix"}
@@ -101,51 +98,58 @@ class RecognizedContraction:
 # --------------------------------------------------------------------------- #
 # The reduce-axis stride: the loop index's coefficient (``index_form``).
 # --------------------------------------------------------------------------- #
-def _stride_form(index: Node, loop_index: LoopIndex) -> IndexForm | None:
+def _stride_form(index: Any, loop_index: Any) -> _ir.IndexForm | None:
     """The loop index's coefficient in one flat index expression, or
     ``None`` when the expression is not affine in it.
 
-    Read through :func:`raptor.ir.access.index_form` with quotient forms OFF:
+    Read through :func:`hawk._ir.index_form` with quotient forms OFF:
     a reduce-axis stride is an exact affine walk, and a dividing index walks
     no matrix axis. An index free of the loop index has coefficient ``0``."""
-    return index_form(index, loop_index, quotients=False)
+    return _ir.index_form(index, loop_index, quotients=False)
 
 
-def _walk(node: Node):
+def _walk(node: Any):
     """Every node of one expression, this one included (order-insensitive uses)."""
     yield node
     for child in node.operands:
         yield from _walk(child)
 
 
-def _reads_data(index: Node) -> bool:
+def _reads_data(index: Any) -> bool:
     """Whether an index expression depends on a value READ from a plane — the
     gather that makes the walk's base a runtime choice."""
-    return any(isinstance(n, At) for n in _walk(index))
+    return any(_ir.is_a(n, "at") for n in _walk(index))
+
+
+def _op_kind(node: Any) -> str | None:
+    """The operation of an ``op`` node, ``None`` for any other node."""
+    return node.field_text("kind") if _ir.is_a(node, "op") else None
 
 
 # --------------------------------------------------------------------------- #
 # The addend family.
 # --------------------------------------------------------------------------- #
-def _is_zero(node: Node) -> bool:
+def _is_zero(node: Any) -> bool:
     """A literal zero — the identity Python's own ``sum(...)`` seeds a generator
     fold with, and therefore an addend every unrolled contraction carries."""
-    return isinstance(node, Const) and node.ttype.shape == ()\
-        and float(node.literal) == 0.0
+    if not _ir.is_a(node, "const"):
+        return False
+    ttype = _ir.type_of(node)
+    return ttype.shape == () and ttype.dtype != "bool" and node.field_real("literal") == 0.0
 
 
-def _is_component(node: Node) -> bool:
+def _is_component(node: Any) -> bool:
     """A runtime component read of a wide value: ``bf[j]`` with ``j`` traced."""
-    return isinstance(node, Op) and node.kind == "component_at"
+    return _op_kind(node) == "component_at"
 
 
-def _is_read(node: Node) -> bool:
+def _is_read(node: Any) -> bool:
     """A plane read (``at``) or a wide value's component read — the two
     shapes one term of a contraction multiplies."""
-    return isinstance(node, At) or _is_component(node)
+    return _ir.is_a(node, "at") or _is_component(node)
 
 
-def _reads_of(term: Node) -> list:
+def _reads_of(term: Any) -> list:
     """Every read in one term, in first-seen order: plane reads and
     component reads of a wide value.
 
@@ -154,12 +158,12 @@ def _reads_of(term: Node) -> list:
     only the index is, since a gather in the index is still a gather."""
     out: list = []
 
-    def visit(node: Node) -> None:
+    def visit(node: Any) -> None:
         if _is_component(node):
             out.append(node)
             visit(node.operands[1])
             return
-        if isinstance(node, At):
+        if _ir.is_a(node, "at"):
             out.append(node)
         for child in node.operands:
             visit(child)
@@ -168,24 +172,28 @@ def _reads_of(term: Node) -> list:
     return out
 
 
-def _read_name(read: Node, names: dict) -> str:
+def _read_name(read: Any, names: dict) -> str:
     """The operand a read belongs to: the plane's declared name, the wide
     input's own name, or ``computed#k`` (first-seen order) for a wide value
-    built in the kernel. ``names`` is the call's ``{id(value): name}`` memo."""
-    if isinstance(read, At):
-        return read.plane.name
+    built in the kernel. ``names`` is the call's ``{value: name}`` memo."""
+    if _ir.is_a(read, "at"):
+        return read.operands[0].field_text("name")
     source = read.operands[0]
-    if isinstance(source, Leaf):
-        return source.name
-    return names.setdefault(id(source), f"computed#{len(names)}")
+    if _ir.is_a(source, "leaf"):
+        return source.field_text("name")
+    return names.setdefault(source, f"computed#{len(names)}")
 
 
-def _read_index(read: Node) -> Node:
-    """The flat index a read walks: ``at``'s index, or a component's."""
-    return read.raw_index if isinstance(read, At) else read.operands[1]
+def _read_index(read: Any) -> Any:
+    """The flat index a read walks: ``at``'s index without the clamp a table read holds it in, or a
+    component's."""
+    index = read.operands[1]
+    if _ir.is_a(read, "at") and _op_kind(index) == "clamp_index":
+        return index.operands[0]
+    return index
 
 
-def _term_form(terms: Sequence[Node], operands: tuple, names: dict) -> str:
+def _term_form(terms: Sequence, operands: tuple, names: dict) -> str:
     """Which of eagle's three term shapes every term is.
 
     Density says the operands can be WALKED as matrices; this says a matmul
@@ -197,7 +205,7 @@ def _term_form(terms: Sequence[Node], operands: tuple, names: dict) -> str:
     if len(operands) != 2:
         return "transformed"
     for term in terms:
-        if not (isinstance(term, Op) and term.kind == "mul"):
+        if _op_kind(term) != "mul":
             return "transformed"
         factors = term.operands
         if not all(_is_read(f) for f in factors):
@@ -232,7 +240,7 @@ def _staged_names(kernel: Any) -> frozenset:
     )
 
 
-def _fanin(indices: Sequence[Node]) -> int | None:
+def _fanin(indices: Sequence) -> int | None:
     """How many lanes read ONE slot of a staged plane, or ``None``.
 
     Derived only from the address, and only when it is a fact rather than a
@@ -244,25 +252,24 @@ def _fanin(indices: Sequence[Node]) -> int | None:
     divisors, covered, reached = set(), set(), set()
     for index in indices:
         for node in _walk(index):
-            if isinstance(node, SampleIndex):
-                reached.add(id(node))
-            if isinstance(node, Op) and node.kind == "div"\
-                    and isinstance(node.operands[0], SampleIndex):
+            if _ir.is_a(node, "sample_index"):
+                reached.add(node)
+            if _op_kind(node) == "div" and _ir.is_a(node.operands[0], "sample_index"):
                 # a divisor free of the lane index reads back as a constant
                 # form whose offset is its value when it is a compile-time int
-                divisor = index_form(node.operands[1])
+                divisor = _ir.index_form(node.operands[1])
                 if divisor is None or divisor.coefficient != 0\
                         or divisor.offset is None:
                     continue
                 divisors.add(int(divisor.offset))
-                covered.add(id(node.operands[0]))
+                covered.add(node.operands[0])
     if not reached or reached - covered or len(divisors) != 1:
         return None
     return divisors.pop()
 
 
 def _describe(name: str, indices: list, dims: tuple, staged: bool,
-              loop_index: LoopIndex, trip: int, wide: str | None = None,
+              loop_index: Any, trip: int, wide: str | None = None,
               width: int = 0) -> ContractionOperand:
     """One operand's record: its declared layout, how its reads walk the
     reduce axis, and every reason that walk is not dense.
@@ -369,7 +376,8 @@ def _sinks_of(obj: Any) -> tuple:
         sinks = tuple(candidate or ())
     except TypeError:
         return ()
-    return sinks if sinks and all(isinstance(s, Sink) for s in sinks) else ()
+    is_sink = all(isinstance(s, _ir.Node) and _ir.is_a(s, "sink") for s in sinks)
+    return sinks if sinks and is_sink else ()
 
 
 def _accumulates(obj: Any) -> tuple:
@@ -381,51 +389,53 @@ def _accumulates(obj: Any) -> tuple:
     out: list = []
     pending = list(getattr(obj, "sinks", obj) or ())
     for node in pending:
-        if isinstance(node, Loop):
-            out.extend(s for s in node.body_sinks if isinstance(s, AccumWrite))
-        elif isinstance(node, AccumWrite):
+        if _ir.is_a(node, "loop"):
+            out.extend(s for s in node.field_nodes("body_sinks") if _ir.is_a(s, "accum_write"))
+        elif _ir.is_a(node, "accum_write"):
             out.append(node)
     return tuple(out)
 
 
-def _fold(sink: Sink) -> tuple:
+def _fold(sink: Any) -> tuple:
     """``(loop, slot, per-iteration addends)`` for a sink that commits ONE
     lowered additive fold, or ``None``: a carried slot seeded with a
     literal zero (the sum's identity), advanced as ``acc = acc + <terms>``
     with the carry appearing exactly once as a bare addend. A max fold, a
     product recurrence or a carry read twice is not recognised."""
-    value = sink.value
-    if isinstance(value, Op) and value.kind == "vec":
+    value = sink.operands[0]
+    if _op_kind(value) == "vec":
         # one live component of a vector output padded with literal zeros
         # (a banded spline stage); two live components are not this family.
         live = [c for c in value.operands if not _is_zero(c)]
         if len(live) != 1:
             return None
         value = live[0]
-    if not isinstance(value, LoopValue):
+    if not _ir.is_a(value, "loop_value"):
         return None
-    loop, slot = value.loop, value.slot
-    if loop.trip < 2 or loop.exit_cond is not None or loop.count is not None:
+    loop, slot = _ir.loop_value_of(value)
+    exits = _ir.exit_kwargs(loop)
+    if loop.field_int("trip") < 2 or exits["exit_cond"] is not None or exits["count"] is not None:
         return None
-    if not _is_zero(loop.inits[slot]):
+    if not _is_zero(loop.operands[slot]):      # the first operands are the carries' initial values
         return None
-    carry = loop.carries[slot]
-    terms = _addends(loop.nexts[slot])
-    if sum(1 for t in terms if t is carry) != 1:
+    carries = loop.field_nodes("carries")
+    carry = carries[slot]
+    terms = _ir.addends(loop.field_nodes("nexts")[slot])
+    if sum(1 for t in terms if t == carry) != 1:
         return None
-    rest = [t for t in terms if t is not carry]
+    rest = [t for t in terms if t != carry]
     if not rest or any(_touches(t, carry) for t in rest):
         return None
     # no OTHER carried slot may feed this one: a two-slot recurrence whose
     # second slot happens to accumulate is not a contraction over one axis.
-    for other in loop.carries:
-        if other is not carry and any(_touches(t, other) for t in rest):
+    for other in carries:
+        if other != carry and any(_touches(t, other) for t in rest):
             return None
     return loop, slot, rest
 
 
-def _touches(node: Node, carry: Node) -> bool:
-    return any(n is carry for n in _walk(node))
+def _touches(node: Any, carry: Any) -> bool:
+    return any(n == carry for n in _walk(node))
 
 
 def recognize(kernel: Any, vjp: Any = None, *, mapping: dict | None = None
@@ -447,7 +457,7 @@ def recognize(kernel: Any, vjp: Any = None, *, mapping: dict | None = None
     if mapping is not None and mapping.get("contraction") == "direct":
         return None
     sinks = _sinks_of(kernel)
-    if not sinks or not all(isinstance(s, (Assign, WideWrite)) for s in sinks):
+    if not sinks or not all(_ir.is_a(s, "assign", "wide_write") for s in sinks):
         return None
     folds = [_fold(sink) for sink in sinks]
     if any(fold is None for fold in folds):
@@ -455,7 +465,7 @@ def recognize(kernel: Any, vjp: Any = None, *, mapping: dict | None = None
     # several sinks are ONE contraction only when they fold over the SAME
     # loop (one reduce axis, one header); two loops are two contractions.
     loop = folds[0][0]
-    if any(fold[0] is not loop for fold in folds):
+    if any(fold[0] != loop for fold in folds):
         return None
     terms = [t for _loop, _slot, rest in folds for t in rest]
 
@@ -471,31 +481,36 @@ def recognize(kernel: Any, vjp: Any = None, *, mapping: dict | None = None
                 per_plane[name] = []
             per_plane[name].append(_read_index(read))
             if _is_component(read):
-                wide[name] = ("wide" if isinstance(read.operands[0], Leaf)
-                              else "computed", read.operands[0].ttype.shape[0])
+                source = read.operands[0]
+                wide[name] = ("wide" if _ir.is_a(source, "leaf") else "computed",
+                              _ir.type_of(source).shape[0])
     if not 1 <= len(order) <= 2:
         return None
 
     dims = _declarations(kernel)
     staged = _staged_names(kernel)
+    loop_index = loop.field_nodes("index")[0]
+    trip = loop.field_int("trip")
     operands = tuple(
         _describe(name, per_plane[name], dims.get(name, ()), name in staged,
-                  loop.index, loop.trip, *wide.get(name, (None, 0)))
+                  loop_index, trip, *wide.get(name, (None, 0)))
         for name in order
     )
     fanin = tuple((name, _fanin(per_plane[name]))
                   for name in order if name in staged)
-    adjoint = tuple((s.name, False) for s in _accumulates(vjp))
+    adjoint = tuple((s.field_text("name"), False) for s in _accumulates(vjp))
     return RecognizedContraction(
-        carry=sinks[0].name,
-        reduce_var=loop.index.name,
-        reduce_extent=loop.trip,
-        reduce_start=loop.start,
-        reduce_step=loop.step,
+        carry=sinks[0].field_text("name"),
+        reduce_var=loop_index.field_text("name"),
+        reduce_extent=trip,
+        reduce_start=loop.field_int("start"),
+        reduce_step=loop.field_int("step"),
         operands=operands,
         operand_class="gemv" if len(operands) == 1 else "gemm",
         term_form=_term_form(terms, tuple(order), names),
-        outputs=tuple((s.name, _OUTPUT_KIND[len(s.ttype.shape)]) for s in sinks),
+        outputs=tuple(
+            (s.field_text("name"), _OUTPUT_KIND[len(_ir.type_of(s).shape)]) for s in sinks
+        ),
         dense=all(op.dense for op in operands),
         refusals=tuple(r for op in operands for r in op.refusals),
         staged_fanin=fanin,

@@ -24,6 +24,7 @@ from hawk import Matrix, Mutable, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from raptor.errors import RaptorError as HawkError
+from hawk import _ir
 
 LANES = 6
 
@@ -96,8 +97,8 @@ def test_rows_of_scalars_of_vectors_and_columns_agree():
     rows = _trace(lambda a, b, s: m.mat([[a[0], a[1], a[2]], [b[0], b[1], s]]))
     vecs = _trace(lambda a, b, s: m.mat([a, m.vec(b[0], b[1], s)]))
     cols = _trace(lambda a, b, s: m.mat([m.vec(a[0], b[0]), m.vec(a[1], b[1]), m.vec(a[2], s)], columns=True))
-    assert {rows.sinks[0].value.ttype.shape, vecs.sinks[0].value.ttype.shape,
-            cols.sinks[0].value.ttype.shape} == {(2, 3)}
+    assert {_ir.type_of(rows.sinks[0].operands[0]).shape, _ir.type_of(vecs.sinks[0].operands[0]).shape,
+            _ir.type_of(cols.sinks[0].operands[0]).shape} == {(2, 3)}
 
 
 @pytest.mark.parametrize("bad,why", [
@@ -117,7 +118,7 @@ def test_vec_concatenates_vectors_and_a_matrix_entry_reads_by_index():
     def k(a: Vector[2], B: Matrix[2, 2], y: Mutable[Vector[4]], z: Mutable[hawk.Scalar]):
         y = m.vec(a, B[0, 1], B[1, 0])
         z = B[1, 1]
-    assert k.sinks[0].value.ttype.shape == (4,)
+    assert _ir.type_of(k.sinks[0].operands[0]).shape == (4,)
 
 
 # --- values ----------------------------------------------------------------------

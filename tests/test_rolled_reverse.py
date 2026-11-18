@@ -23,7 +23,6 @@ from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from raptor.errors import RaptorError as HawkError
-from raptor.ir import canonical
 
 WRT = ("x", "theta")
 

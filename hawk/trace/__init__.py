@@ -6,7 +6,7 @@
 ``@kernel`` traces a decorated function whose PARAMETERS are its declared
 vocabulary and whose body is rewritten by the ``ast`` pass into ``select``
 nodes; ``@raw_device`` is the bounded escape hatch for opaque text.
-Importing this package imports :mod:`raptor.ir`, so :mod:`hawk` itself binds
+Importing this package loads the binding (:mod:`hawk._ir`), so :mod:`hawk` itself binds
 these names LAZILY and a light consumer keeps paying only for
 :mod:`hawk.types`.
 
@@ -51,7 +51,7 @@ launch — see :mod:`hawk.trace.steps` for the loop, bit-identity and
 # path is the top level, never `hawk.trace.<name>` (hence absent from
 # `__all__`). The self-alias is the standard "yes, this is unused by this
 # file, on purpose" static-analysis idiom.
-from raptor.ir import Quantity as Quantity
+from .. import _ir
 from .decl import Grid as Grid
 from .decl import Index as Index
 from .decl import Int32 as Int32
@@ -70,6 +70,7 @@ from .decl import Vector as Vector
 from .decl import Wide as Wide
 from .decl import WideOut as WideOut
 from .kernel import Kernel as Kernel
+from .lane_axes import current_context as current_context
 from .kernel import kernel as kernel
 from .kernel import resolve_dispatch as resolve_dispatch
 from .kernel import trace_value as trace_value
@@ -84,6 +85,8 @@ from .value import Value as Value
 from .value import random_normal as random_normal
 from .value import random_uniform as random_uniform
 from .value import vec as vec
+
+Quantity = _ir.Quantity
 
 # Nothing here is public: the authoring names live at the top level
 # (`hawk.<name>`) and the math functions at `hawk.math`.

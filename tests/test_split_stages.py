@@ -16,7 +16,6 @@
 """
 
 from __future__ import annotations
-from _specs import DEVICE
 
 import json
 import math
@@ -28,8 +27,8 @@ import hawk
 import hawk.diff
 import hawk.math
 from hawk import HawkError, Kernel, Mutable, Param, Scalar, Vector, kernel, runtime
+from conftest import assert_within, sidecar_of, sum_bound
 from hawk.artifact import build, build_bundle
-from raptor.wings.base.split import stages
 
 SIZES = (1, 31, 33, 1000, 65536)
 RUN = 4096
@@ -119,11 +118,10 @@ def _tol(mode):
 
 # -- two stages -------------------------------------------------------------
 
-def test_a_read_reduction_is_two_stages():
-    found = stages("share", share.sinks, spec=DEVICE)
-    assert [s.name for s in found] == ["share", "share_2"]
-    assert found[0].cells_out == ("cut0",) and found[0].cells_in == ()
-    assert found[1].cells_in == ("cut0",) and found[1].cells_out == ()
+def test_a_read_reduction_is_two_stages(tmp_path, cache_dir):
+    bundle = _bundle([share], tmp_path, "float64", cache_dir)
+    found = sidecar_of(bundle, "share")["stages"]
+    assert [(st["cells_in"], st["cells_out"]) for st in found] == [([], ["cut0"]), (["cut0"], [])]
 
 
 @pytest.mark.parametrize("n", SIZES)
@@ -179,9 +177,9 @@ def test_two_stages_through_hawk_run_are_eagles_ordered_bits(built, n):
 
 @pytest.mark.parametrize("n", (1, 33, 1000))
 def test_a_stored_and_read_vector_sum_reuses_its_cell(tmp_path, cache_dir, n):
-    found = stages("stored_vec", stored_vec.sinks, spec=DEVICE)
-    assert [c for st in found for c in st.cells_out] == ["tot"]
     bundle = _bundle([stored_vec], tmp_path, "float64", cache_dir)
+    found = sidecar_of(bundle, "stored_vec")["stages"]
+    assert [c for st in found for c in st["cells_out"]] == ["tot"]
     side = json.loads((bundle.directory / "stored_vec.json").read_text())
     assert set(side["cells"]) == {"tot"}
     x = _x(n, "float64")
@@ -230,10 +228,9 @@ def test_a_vector_reduction_is_read_back_column_by_column(built):
 
 def test_a_store_waits_for_the_last_stage_reading_the_planes_earlier_value(
         tmp_path, cache_dir):
-    found = stages("rescale", rescale.sinks, spec=DEVICE)
-    assert [[getattr(s, "name", None) for s in st.sinks] for st in found] == [
-        ["cut0"], ["y", "z"]]
     bundle = _bundle([rescale], tmp_path, "float64", cache_dir)
+    first = sidecar_of(bundle, "rescale")["stages"]
+    assert [(st["cells_in"], st["cells_out"]) for st in first] == [([], ["cut0"]), (["cut0"], [])]
     y0 = _x(100, "float64")
     y, z = y0.copy(), np.zeros(100)
     runtime.run(runtime.load(bundle.directory, "rescale"), y=y, z=z)
@@ -263,8 +260,14 @@ def test_a_cut_inside_a_for_is_still_refused():
             z = x / acc
 
 
-def test_a_cut_read_inside_a_for_is_refused_by_the_split():
-    """A cut taken outside a ``for`` and read inside it traces; the split that would lower it refuses, before any text."""
+@pytest.mark.parametrize("mode", ["float64", "float32"])
+def test_a_cut_read_inside_a_for_runs_and_matches_numpy(tmp_path, cache_dir, mode):
+    """A cut taken outside a ``for`` and read inside it builds, and every lane gets ``x + 3 * sum(x)``.
+
+    Oracle: NumPy in float64. The cut's gap to the exact sum is ``sum_bound(x)`` (n - 1 roundings of
+    the sum); the loop then costs 5 more roundings (two products, three adds) of at most
+    ``|x| + 3 * sum(x)`` each, with ``eps / 2`` per rounding. The cut is read three times.
+    """
     @kernel
     def with_index(x: Scalar, z: Mutable[Scalar]):
         s = hawk.sum(x)
@@ -281,9 +284,16 @@ def test_a_cut_read_inside_a_for_is_refused_by_the_split():
             acc = acc + s
         z = acc
 
+    x = _x(1000, mode)
+    total = float(np.sum(x, dtype=np.float64))
+    want = x.astype(np.float64) + 3.0 * total
+    eps = np.finfo(mode).eps
+    bound = 3.0 * sum_bound(x, mode) + 5 * eps / 2 * (np.abs(x) + 3.0 * total)
     for looped in (with_index, alone):
-        with pytest.raises(HawkError, match="a cut inside a `for` is not in this release.*one launch per iteration"):
-            stages("looped", looped.sinks, spec=DEVICE)
+        bundle = _bundle([looped], tmp_path / looped.name, mode, cache_dir)
+        z = np.full(x.size, np.nan, dtype=mode)
+        runtime.run(runtime.load(bundle.directory, looped.name), x=x, z=z)
+        assert_within(z, want, bound)
 
 
 def test_a_max_over_samples_read_in_the_body_has_no_derivative():
@@ -301,8 +311,8 @@ def test_the_vjp_is_split_and_matches_central_differences(tmp_path, cache_dir, p
     primal = hawk.diff.param_planes(wave) if promoted else wave
     fwd = _bundle([wave], tmp_path / "f", "float64", cache_dir)
     grad = Kernel(primal.name + "_vjp", hawk.diff.vjp(primal, primal_unit=fwd.digest))
-    assert len(stages(grad.name, grad.sinks, spec=DEVICE)) == 3
     bundle = _bundle([grad], tmp_path / "g", "float64", cache_dir)
+    assert len(sidecar_of(bundle, grad.name)["stages"]) == 3
     n, k = 1000, 0.7
     x = _x(n, "float64", lo=-2.0)
     w = np.random.default_rng(7).uniform(-1.0, 1.0, n)
@@ -323,7 +333,6 @@ def test_the_vjp_is_split_and_matches_central_differences(tmp_path, cache_dir, p
 # -- one stage --------------------------------------------------------------
 
 def test_a_kernel_reading_no_reduction_is_one_unchanged_kernel(tmp_path, cache_dir):
-    assert stages("plain", plain.sinks, spec=DEVICE) is None
     bundle = _bundle([plain], tmp_path, "float64", cache_dir)
     assert [a.name for a in bundle.artifacts] == ["plain"]
     assert "stages" not in bundle.artifacts[0].sidecar

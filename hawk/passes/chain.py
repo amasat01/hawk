@@ -11,15 +11,11 @@ holds each intermediate as one value, read by any number of members, and stores 
 
 from __future__ import annotations
 
-import copy
-
-from raptor.ir.nodes import replace
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from raptor.ir.nodes import At, Leaf
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir.walk import substitute
 
 #: The roles a member may read an intermediate as: its own lane's element.
 BOUND_LEAF_ROLES = ("per_sample", "vec_in", "mat_in", "mutable")
@@ -40,26 +36,22 @@ class ChainIR:
 
 
 def _walk_sinks(sinks) -> tuple[list, set]:
-    """The leaves under ``sinks`` and the ids of the leaves an ``At`` reads at a computed index."""
-    leaves, gathered, seen, stack = [], set(), set(), list(sinks)
-    while stack:
-        n = stack.pop()
-        if id(n) in seen:
-            continue
-        seen.add(id(n))
-        if isinstance(n, Leaf):
-            leaves.append(n)
-        elif isinstance(n, At):
-            gathered.add(id(n.operands[0]))
-        stack.extend(n.operands)
+    """The leaves under ``sinks`` and the leaves an ``At`` reads at a computed index."""
+    nodes = _ir.post_order(sinks)
+    leaves = [n for n in nodes if _ir.is_a(n, "leaf")]
+    gathered = {n.operands[0] for n in nodes if _ir.is_a(n, "at")}
     return leaves, gathered
 
 
-def _elements(ttype) -> int:
-    count = 1
-    for d in ttype.shape:
-        count *= d
-    return count
+def _rebuilt(sinks, mapping) -> list:
+    """``sinks`` with each node that is a key of ``mapping`` replaced by its value in the values they read."""
+    flat = [o for s in sinks for o in s.operands]
+    new = list(_ir.substitute(flat, mapping))
+    rebuilt = []
+    for s in sinks:
+        rebuilt.append(_ir.replace(s, operands=tuple(new[:len(s.operands)])))
+        del new[:len(s.operands)]
+    return rebuilt
 
 
 def check_members(members: Sequence) -> None:
@@ -80,48 +72,48 @@ def bind(members: Sequence, keep: Sequence[str] = ()) -> ChainIR:
     too. Refuses, naming both members and the name: R1 a name with two types or two input roles, R2 a second writer
     of a name that does not read it first, R5 an intermediate read at another sample or committed off its own lane."""
     check_members(members)
+    context = members[0].context     # members come from their own contexts; the chain is one graph
     latest: dict = {}           # name -> (member, rebuilt sink)
     inputs: dict = {}           # name -> (member, role, ttype) of an unbound read
     reads: list = []            # per member: the names it reads
     for k in members:
-        leaves, gathered = _walk_sinks(k.sinks)
-        reads.append({lf.name for lf in leaves})
+        sinks = _ir.adopt(context, k.sinks)
+        leaves, gathered = _walk_sinks(sinks)
+        reads.append({lf.field_text("name") for lf in leaves})
         mapping = {}
         for lf in leaves:
-            if lf.name not in latest:
-                held = inputs.setdefault(lf.name, (k.name, lf.role, lf.ttype))
-                if held[1:] != (lf.role, lf.ttype):
-                    raise HawkError(f"chain: {held[0]!r} reads {lf.name!r} as (role={held[1]!r}, {held[2]!r}) but "
-                                    f"{k.name!r} reads it as (role={lf.role!r}, {lf.ttype!r}); rename one")
+            name, role, ttype = lf.field_text("name"), lf.field_text("role"), _ir.type_of(lf)
+            if name not in latest:
+                held = inputs.setdefault(name, (k.name, role, ttype))
+                if held[1:] != (role, ttype):
+                    raise HawkError(f"chain: {held[0]!r} reads {name!r} as (role={held[1]!r}, {held[2]!r}) but "
+                                    f"{k.name!r} reads it as (role={role!r}, {ttype!r}); rename one")
                 continue
-            writer, sink = latest[lf.name]
-            if lf.ttype != sink.ttype:
-                raise HawkError(f"chain: {writer!r} commits {lf.name!r} as {sink.ttype!r} but {k.name!r} reads it as "
-                                f"{lf.ttype!r}; one name is one value")
-            if lf.role not in BOUND_LEAF_ROLES or id(lf) in gathered or sink.index is not None \
-                    or sink.role not in BOUND_SINK_ROLES:
-                raise HawkError(f"chain: {k.name!r} reads {lf.name!r}, which {writer!r} commits, at another sample "
+            writer, sink = latest[name]
+            if ttype != _ir.type_of(sink):
+                raise HawkError(f"chain: {writer!r} commits {name!r} as {_ir.type_of(sink)!r} but {k.name!r} reads it as "
+                                f"{ttype!r}; one name is one value")
+            if role not in BOUND_LEAF_ROLES or lf in gathered or len(sink.operands) > 1 \
+                    or sink.field_text("role") not in BOUND_SINK_ROLES:
+                raise HawkError(f"chain: {k.name!r} reads {name!r}, which {writer!r} commits, at another sample "
                                 f"(or {writer!r} commits it off its own lane); an intermediate is the lane's own "
                                 "value: end the chain at that name and read the plane in a second chain")
-            mapping[id(lf)] = sink.value
-        for s in k.sinks:
-            if s.name in latest and s.name not in reads[-1]:
-                raise HawkError(f"chain: {latest[s.name][0]!r} and {k.name!r} both commit {s.name!r} and "
+            mapping[lf] = sink.operands[0]
+        for s in sinks:
+            name = s.field_text("name")
+            if name in latest and name not in reads[-1]:
+                raise HawkError(f"chain: {latest[name][0]!r} and {k.name!r} both commit {name!r} and "
                                 f"{k.name!r} does not read it first; the order would decide the value")
-            if s.name in inputs and inputs[s.name][1] != "mutable":
-                held = inputs[s.name]
-                raise HawkError(f"chain: {held[0]!r} reads {s.name!r} as an input (role={held[1]!r}) but {k.name!r} "
+            if name in inputs and inputs[name][1] != "mutable":
+                held = inputs[name]
+                raise HawkError(f"chain: {held[0]!r} reads {name!r} as an input (role={held[1]!r}) but {k.name!r} "
                                 f"commits it; rename one")
-        flat = [o for s in k.sinks for o in s.operands]
-        new = list(substitute(flat, mapping)) if mapping else flat
-        for s in k.sinks:
-            rebuilt = replace(s, operands=tuple(new[:len(s.operands)]))
-            del new[:len(s.operands)]
-            latest[s.name] = (k.name, rebuilt)
+        for s in (_rebuilt(sinks, mapping) if mapping else sinks):
+            latest[s.field_text("name")] = (k.name, s)
     writer_at = {}
     for j, k in enumerate(members):
         for s in k.sinks:
-            writer_at[s.name] = j
+            writer_at[s.field_text("name")] = j
     outputs = tuple(n for n, j in writer_at.items()
                     if n in keep or not any(n in r for r in reads[j + 1:]))
     consumed = set(writer_at) - set(outputs) - set(inputs)
@@ -134,9 +126,9 @@ def bind(members: Sequence, keep: Sequence[str] = ()) -> ChainIR:
     crossing = []
     for b in range(1, len(members)):
         for s in members[b - 1].sinks:
-            produced[s.name] = s.ttype
+            produced[s.field_text("name")] = _ir.type_of(s)
         later = set().union(*reads[b:])
-        crossing.append(sum(_elements(t) for n, t in produced.items() if n in later))
+        crossing.append(sum(_ir.element_count(t) for n, t in produced.items() if n in later))
     return ChainIR(tuple(latest[n][1] for n in outputs), planes, outputs, tuple(crossing))
 
 
@@ -151,38 +143,31 @@ def segments(members: Sequence, cuts: Sequence[int]) -> list:
     segment computes and a later one reads crosses in a plane the runtime makes per lane, shaped as a caller's plane of
     its width (``planes``: ``(name, dtype, elements)`` of those a segment writes): the writer commits the value there and
     the reader reads its own lane's, as any per-lane input."""
-    from raptor.ir.nodes import Assign
-
     bounds = [0, *cuts, len(members)]
     crossed: dict = {}                      # name -> ttype of a value an earlier segment stored
     out = []
     for a, b in zip(bounds, bounds[1:]):
-        later = set().union(*({lf.name for lf in _walk_sinks(k.sinks)[0]} for k in members[b:]))
+        later = set().union(*({lf.field_text("name") for lf in _walk_sinks(k.sinks)[0]} for k in members[b:]))
         sinks = bind(members[a:b], keep=tuple(later)).sinks
         mapping = {}
         for lf in _walk_sinks(sinks)[0]:
-            if lf.name in crossed:
-                mapping[id(lf)] = Leaf("vocab_read", "vec_in" if lf.ttype.shape else "per_sample",
-                                       CROSS_PREFIX + lf.name, lf.ttype)
+            name, ttype = lf.field_text("name"), _ir.type_of(lf)
+            if name in crossed:
+                mapping[lf] = _ir.leaf(lf.ctx, "vocab_read", "vec_in" if ttype.shape else "per_sample",
+                                       CROSS_PREFIX + name, ttype)
         if mapping:
-            flat = [o for s in sinks for o in s.operands]
-            new = list(substitute(flat, mapping))
-            rebuilt = []
-            for s in sinks:
-                twin = replace(s, operands=tuple(new[:len(s.operands)]))
-                del new[:len(s.operands)]
-                rebuilt.append(twin)
-            sinks = rebuilt
+            sinks = _rebuilt(sinks, mapping)
         kept, planes = [], []
         for s in sinks:
-            if s.name not in later:
+            name, ttype = s.field_text("name"), _ir.type_of(s)
+            if name not in later:
                 kept.append(s)
                 continue
-            if len(s.ttype.shape) > 1 or s.ttype.dtype not in ("f64", "f32", "i32"):
-                raise HawkError(f"chain: {s.name!r} would cross a cut as {s.ttype!r}; only scalars and vectors of "
+            if len(ttype.shape) > 1 or ttype.dtype not in ("f64", "f32", "i32"):
+                raise HawkError(f"chain: {name!r} would cross a cut as {ttype!r}; only scalars and vectors of "
                                 "reals or Index cross")
-            kept.append(Assign(CROSS_PREFIX + s.name, s.value, s.ttype))
-            planes.append((CROSS_PREFIX + s.name, "int32" if s.ttype.dtype == "i32" else "real", _elements(s.ttype)))
-            crossed[s.name] = s.ttype
+            kept.append(_ir.make_node("Assign", ttype, (s.operands[0],), name=CROSS_PREFIX + name))
+            planes.append((CROSS_PREFIX + name, "int32" if ttype.dtype == "i32" else "real", _ir.element_count(ttype)))
+            crossed[name] = ttype
         out.append((tuple(kept), tuple(planes)))
     return out

@@ -32,17 +32,9 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
-from raptor.ir import Const, Dispatch, Leaf, Node, Select
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir import make as _mk
-from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from raptor.ir.nodes import AccumWrite, PlaneExtent, ReduceSamples, SampleIndex, WideWrite
-from raptor.ir.types import TensorType
-from .tape import _reachable
-from .. import wings as _wings
-_dispatch_kind = _wings.view("raptor", "base", "dispatch")
-
-_cells = _wings.view("raptor", "base", "cells")
+from .loops import _select
 
 #: The derivative kernel's uniform input keying the alternate path's draw
 #: (:mod:`hawk.diff.altpath`).
@@ -58,8 +50,8 @@ _ORDERED = {"lt": -1.0, "le": -1.0, "gt": 1.0, "ge": 1.0}
 _EQUALITY = ("eq", "ne")
 _LOGIC = ("land", "lor", "lnot")
 _FLOAT = ("f64", "f32")
-_F64 = TensorType((), "f64")
-_I32 = TensorType((), "i32")
+_F64 = _ir.TensorType((), "f64")
+_I32 = _ir.TensorType((), "i32")
 _SQRT5 = math.sqrt(5.0)
 
 
@@ -69,28 +61,38 @@ _SQRT5 = math.sqrt(5.0)
 
 def check_jump(name: str, jump: Any, planes: dict) -> Any:
     """Refuse a ``jump=`` the kernel cannot honour, at decoration; returns it."""
-    if any(p == AUTO and getattr(plane, "form", None) == "uniform"
-           for p, plane in planes.items()):
+    if any(p == AUTO and getattr(plane, "form", None) == "uniform" for p, plane in planes.items()):
         raise HawkError(
             f"kernel {name!r}: a Param named 'auto' collides with jump=\"auto\"; "
-            "rename the parameter")
+            "rename the parameter"
+        )
     if isinstance(jump, str):
         if jump == AUTO:
             return jump
         plane = planes.get(jump)
-        if (plane is None or getattr(plane, "form", None) != "uniform"
-                or plane.ttype.shape != () or plane.ttype.dtype not in _FLOAT):
+        if (
+            plane is None
+            or getattr(plane, "form", None) != "uniform"
+            or plane.ttype.shape != ()
+            or plane.ttype.dtype not in _FLOAT
+        ):
             raise HawkError(
                 f"kernel {name!r}: jump={jump!r} names no declared Param[Scalar]; "
-                "jump= is a positive number, \"auto\" or the name of a "
-                "Param[Scalar] holding the width")
+                'jump= is a positive number, "auto" or the name of a '
+                "Param[Scalar] holding the width"
+            )
         return jump
-    if (isinstance(jump, bool) or not isinstance(jump, (int, float))
-            or not math.isfinite(jump) or jump <= 0):
+    if (
+        isinstance(jump, bool)
+        or not isinstance(jump, (int, float))
+        or not math.isfinite(jump)
+        or jump <= 0
+    ):
         raise HawkError(
             f"kernel {name!r}: jump={jump!r} must be a finite positive number "
-            "(the width, in the units of the compared values), \"auto\" or the "
-            "name of a Param[Scalar]")
+            '(the width, in the units of the compared values), "auto" or the '
+            "name of a Param[Scalar]"
+        )
     return float(jump)
 
 
@@ -99,7 +101,8 @@ def jump_of(primal: Any) -> Any:
     if getattr(getattr(primal, "sinks", primal), "jump", None) is not None:
         raise HawkError(
             "this kernel is a jump= derivative: differentiating it again (a "
-            "second order through a smoothed switch) is not built")
+            "second order through a smoothed switch) is not built"
+        )
     return getattr(primal, "jump", None)
 
 
@@ -115,9 +118,9 @@ def drop_width(inputs: tuple, wrt: Sequence[str] | None, jump: Any) -> tuple:
         return inputs
     if wrt is not None and param in tuple(wrt):
         raise HawkError(
-            f"wrt names {param!r}: the jump width is not differentiable; drop "
-            "it from wrt=")
-    return tuple(leaf for leaf in inputs if leaf.name != param)
+            f"wrt names {param!r}: the jump width is not differentiable; drop it from wrt="
+        )
+    return tuple(leaf for leaf in inputs if leaf.field_text("name") != param)
 
 
 # --------------------------------------------------------------------------
@@ -129,92 +132,117 @@ class JumpPlan:
 
     ``sites`` are the ordered comparisons with an operand on a ``wrt`` path
     that a select's condition reaches through ``and``/``or``/``not``;
-    ``live`` holds the keys of every condition node that reaches one. The
-    plan of a loop body (:meth:`body`) is keyed on node identity and records
-    its sites into the kernel's plan, so one sidecar lists them all."""
+    ``live`` holds the keys of every condition node that reaches one. ``key``
+    names a node's table slot: the kernel's plan keys by the walk's position, so
+    structurally equal nodes share one entry; the plan of a loop body
+    (:meth:`body`) is keyed on node identity and records its sites into the
+    kernel's plan, so one sidecar lists them all."""
 
-    def __init__(self, seq: Sequence[Node], key, inputs: Sequence[Leaf],
-                 jump: Any, kernel: str | None, *, root: JumpPlan | None = None,
-                 external=None, loop: str | None = None,
-                 record: bool = True) -> None:
+    def __init__(
+        self,
+        seq: Sequence[Any],
+        key,
+        inputs: Sequence[Any],
+        jump: Any,
+        kernel: str | None,
+        *,
+        root: JumpPlan | None = None,
+        external=None,
+        loop: str | None = None,
+        record: bool = True,
+    ) -> None:
         self.key, self.jump, self.kernel = key, jump, kernel or "<sinks>"
         self.root, self.loop, self.record_sites = root or self, loop, record
         self.engaged = False
         if root is None:
-            self.names = {leaf.name for leaf in inputs}
-            self.sites: list[Node] = []
+            self.names = {leaf.field_text("name") for leaf in inputs}
+            self.sites: list[Any] = []
             self.info: list[dict] = []
         wanted = {key(leaf) for leaf in inputs} if root is None else None
         self.reach: dict = {}
         for node in seq:
             got = external(node) if external is not None else None
-            self.reach[key(node)] = (got if got is not None else _reach_of(
-                node, lambda o: self.reach.get(key(o), 0),
-                lambda leaf: self._leaf(leaf, wanted)))
+            self.reach[key(node)] = (
+                got
+                if got is not None
+                else _reach_of(
+                    node,
+                    lambda o: self.reach.get(key(o), 0),
+                    lambda leaf: self._leaf(leaf, wanted),
+                )
+            )
         self.live: set = set()
         self._seen: set = set()
         if root is None:
             self.rounded: list = []
         self.root.rounded.extend(
-            idx for idx in map(_runtime_index, seq)
-            if idx is not None and self.reach.get(key(idx), 0) == 2
-            and self._from_input(idx))
+            idx
+            for idx in map(_runtime_index, seq)
+            if idx is not None and self.reach.get(key(idx), 0) == 2 and self._from_input(idx)
+        )
         for node in seq:
-            if isinstance(node, Select):
+            if _ir.is_a(node, "select"):
                 self._classify(node.operands[0], None)
         if root is None:
             self.width = None if jump == AUTO else self._width(seq)
             for node in seq:
-                if isinstance(node, Loop):
+                if _ir.is_a(node, "loop"):
                     self._refuse_exit(node)
-                    self.body(node, tuple(node.nexts) + tuple(node.exit_values),
-                              record=True)
+                    exits = _ir.exit_kwargs(node)
+                    self.body(
+                        node, (*node.field_nodes("nexts"), *exits["exit_values"]), record=True
+                    )
             if jump == AUTO:
                 self._refuse_auto()
             if self.sites and self.rounded:
                 raise self._refuse(
-                    self.rounded[0], "a rounding, sign or integer cast of a "
+                    self.rounded[0],
+                    "a rounding, sign or integer cast of a "
                     "differentiated input picks a row or a bin: its crossings are "
                     "switches the jump does not see, so the derivative would "
                     "silently leave them out. Key the row by a value that does not "
-                    "depend on the differentiated input")
+                    "depend on the differentiated input",
+                )
 
-    def _leaf(self, leaf: Leaf, wanted: set | None) -> int:
+    def _leaf(self, leaf: Any, wanted: set | None) -> int:
         if wanted is not None:
             return 1 if self.key(leaf) in wanted else 0
-        return 1 if (leaf.name in self.root.names
-                     and leaf.ttype.dtype in _FLOAT) else 0
+        return (
+            1
+            if (leaf.field_text("name") in self.root.names and _ir.type_of(leaf).dtype in _FLOAT)
+            else 0
+        )
 
-    def _from_input(self, node: Node) -> bool:
+    def _from_input(self, node: Any) -> bool:
         """Whether a differentiated input (or a carry on its path) reaches
         ``node`` without crossing a loop's result, whose reach is the loop's
         as a whole."""
         stack, seen = [node], set()
         while stack:
             n = stack.pop()
-            if id(n) in seen or isinstance(n, (Loop, LoopValue)):
+            if n in seen or _ir.is_a(n, "loop", "loop_value"):
                 continue
-            seen.add(id(n))
+            seen.add(n)
             if not n.operands:
                 if self.reach.get(self.key(n), 0):
                     return True
                 continue
-            stack.extend(n.operands[1:] if isinstance(n, Select) else n.operands)
+            stack.extend(n.operands[1:] if _ir.is_a(n, "select") else n.operands)
         return False
 
-    def _refuse(self, cond: Node, why: str) -> HawkError:
+    def _refuse(self, cond: Any, why: str) -> HawkError:
         return HawkError(f"jump= in kernel {self.kernel!r}: {spell(cond)}: {why}")
 
-    def _classify(self, cond: Node, group: int | None) -> bool:
+    def _classify(self, cond: Any, group: int | None) -> bool:
         """Whether ``cond`` reaches a switching comparison (recording it).
         ``group`` is the original comparison a scalarised vector comparison's
         entries share."""
         k = self.key(cond)
         if k in self.live:
             return True
-        kind = getattr(cond, "kind", "")
+        kind = cond.field_text("kind")
         hit = False
-        if kind == "vec" and cond.ttype.dtype == "bool":
+        if kind == "vec" and _ir.type_of(cond).dtype == "bool":
             group = self.root._next_group() if group is None else group
             for o in cond.operands:
                 hit = self._classify(o, group) or hit
@@ -225,30 +253,34 @@ class JumpPlan:
             reach = [self.reach.get(self.key(o), 0) for o in cond.operands]
             if 2 in reach:
                 raise self._refuse(
-                    cond, "a rounding, sign or integer cast sits between a "
+                    cond,
+                    "a rounding, sign or integer cast sits between a "
                     "differentiated input and this comparison; a jump needs the "
-                    "compared values to move smoothly")
-            floats = all(o.ttype.dtype in _FLOAT for o in cond.operands)
+                    "compared values to move smoothly",
+                )
+            floats = all(_ir.type_of(o).dtype in _FLOAT for o in cond.operands)
             if 1 in reach and floats:
                 if kind in _EQUALITY:
                     raise self._refuse(
-                        cond, "a jump needs an ordered comparison; `==` has no "
-                        "side to cross")
+                        cond, "a jump needs an ordered comparison; `==` has no side to cross"
+                    )
                 hit = True
                 if k not in self._seen and self.record_sites:
                     self._seen.add(k)
                     self.root.sites.append(cond)
-                    self.root.info.append({
-                        "group": self.root._next_group() if group is None else group,
-                        "loop": self.loop})
+                    self.root.info.append(
+                        {
+                            "group": self.root._next_group() if group is None else group,
+                            "loop": self.loop,
+                        }
+                    )
         if hit:
             self.live.add(k)
         return hit
 
-    def _group_of(self, site: Node) -> int:
+    def _group_of(self, site: Any) -> int:
         k = self.key(site)
-        return next(i["group"] for s, i in zip(self.sites, self.info)
-                    if self.key(s) == k)
+        return next(i["group"] for s, i in zip(self.sites, self.info) if self.key(s) == k)
 
     def _next_group(self) -> int:
         self._groups = getattr(self, "_groups", -1) + 1
@@ -259,8 +291,10 @@ class JumpPlan:
         inside = [s for s, i in zip(self.sites, self.info) if i["loop"] is not None]
         if inside:
             raise self._refuse(
-                inside[0], "'auto' needs a width from statistics over samples; "
-                "switches inside a `for` take a number in this release")
+                inside[0],
+                "'auto' needs a width from statistics over samples; "
+                "switches inside a `for` take a number in this release",
+            )
 
     # -- the spread of each comparison over the batch ----------------------
     def _spreads(self) -> dict:
@@ -272,80 +306,90 @@ class JumpPlan:
             got = self._spread = {}
             for site, info in zip(self.sites, self.info):
                 if info["loop"] is not None:
-                    continue           # a value per iteration: no per-sample cell
+                    continue  # a value per iteration: no per-sample cell
                 d = self._d(site)
-                if d.ttype.shape:
-                    terms = (_mk("sum", (d,)), _mk("dot", (d, d)),
-                             float(d.ttype.shape[0]))
+                shape = _ir.type_of(d).shape
+                if shape:
+                    terms = (_ir.make("sum", (d,)), _ir.make("dot", (d, d)), float(shape[0]))
                 else:
-                    terms = (d, _mk("mul", (d, d)), 1.0)
+                    terms = (d, _ir.make("mul", (d, d)), 1.0)
                 held = got.get(info["group"])
-                got[info["group"]] = terms if held is None else (
-                    _mk("add", (held[0], terms[0])), _mk("add", (held[1], terms[1])),
-                    held[2] + terms[2])
+                got[info["group"]] = (
+                    terms
+                    if held is None
+                    else (
+                        _ir.make("add", (held[0], terms[0])),
+                        _ir.make("add", (held[1], terms[1])),
+                        held[2] + terms[2],
+                    )
+                )
             for g, (s1, s2, n) in got.items():
-                got[g] = (s1, s2, Const(n, _F64))
+                got[g] = (s1, s2, _ir.const(s1.ctx, n, _F64))
         return got
 
-    def _auto_width(self, group: int) -> Node:
+    def _auto_width(self, group: int) -> Any:
         """``w_g = sqrt(5) * SPREAD * sd_g``: ``sd_g`` from the batch's sums,
         each a reduction over samples the split computes in its own stage."""
         cached = self._widths = getattr(self, "_widths", {})
         if group not in cached:
-            s1, s2, n = (ReduceSamples("sum", v) for v in self._spreads()[group])
-            mean = _mk("div", (s1, n))
-            var = _mk("sub", (_mk("div", (s2, n)), _mk("mul", (mean, mean))))
-            h = _mk("mul", (Const(SPREAD, _F64), _mk("sqrt", (var,))))
-            cached[group] = (h, _mk("mul", (Const(_SQRT5, _F64), h)), n)
+            s1, s2, n = (_reduce_samples(v) for v in self._spreads()[group])
+            mean = _ir.make("div", (s1, n))
+            var = _ir.make("sub", (_ir.make("div", (s2, n)), _ir.make("mul", (mean, mean))))
+            h = _ir.make("mul", (_ir.const(n.ctx, SPREAD, _F64), _ir.make("sqrt", (var,))))
+            cached[group] = (h, _ir.make("mul", (_ir.const(n.ctx, _SQRT5, _F64), h)), n)
         return cached[group]
 
-    def _outer(self, node: Node) -> int:
-        """The reach of a node of the kernel's own walk (a loop's operand)."""
+    def _outer(self, node: Any) -> int:
+        """The reach of a node of the kernel's own walk (a loop's operand); a node outside the
+        walk, such as a loop's own index, has none."""
         try:
             return self.root.reach.get(self.root.key(node), 0)
         except KeyError:
             return 0
 
-    def _carried(self, loop: Loop) -> tuple:
-        """``(reach per carried slot, reach by id over the body)``: a carry is
+    def _carried(self, loop: Any) -> tuple:
+        """``(reach per carried slot, reach over the body)``: a carry is
         on a ``wrt`` path when its initial value or its update is."""
         from .loops import _post_order
 
-        slot = {id(c): j for j, c in enumerate(loop.carries)}
-        stop = {id(o) for o in loop.operands} | {id(loop.index)}
-        roots = tuple(loop.nexts) + tuple(loop.exit_values) + (
-            (loop.exit_cond,) if loop.exit_cond is not None else ())
+        nexts = loop.field_nodes("nexts")
+        slot = {c: j for j, c in enumerate(loop.field_nodes("carries"))}
+        stop = {*loop.operands, loop.field_nodes("index")[0]}
+        exits = _ir.exit_kwargs(loop)
+        roots = (*nexts, *exits["exit_values"])
+        if exits["exit_cond"] is not None:
+            roots += (exits["exit_cond"],)
         order = _post_order(roots, stop)
-        carry = [self._outer(i) for i in loop.inits]
+        carry = [self._outer(i) for i in loop.field_nodes("inits")]
         for _ in range(len(carry) + 1):
             reach: dict = {}
             for node in order:
-                if id(node) in slot:
-                    reach[id(node)] = carry[slot[id(node)]]
-                elif id(node) in stop:
-                    reach[id(node)] = self._outer(node)
+                if node in slot:
+                    reach[node] = carry[slot[node]]
+                elif node in stop:
+                    reach[node] = self._outer(node)
                 else:
-                    reach[id(node)] = _reach_of(
-                        node, lambda o: reach.get(id(o), 0),
-                        lambda leaf: self._leaf(leaf, None))
-            new = [max(c, reach.get(id(n), 0)) for c, n in zip(carry, loop.nexts)]
+                    reach[node] = _reach_of(
+                        node, lambda o: reach.get(o, 0), lambda leaf: self._leaf(leaf, None)
+                    )
+            new = [max(c, reach.get(n, 0)) for c, n in zip(carry, nexts)]
             if new == carry:
                 break
             carry = new
         return carry, reach
 
-    def _refuse_exit(self, loop: Loop) -> None:
+    def _refuse_exit(self, loop: Any) -> None:
         """A ``break`` whose condition depends on a differentiated input."""
-        if loop.exit_cond is None:
+        exit_cond = _ir.exit_kwargs(loop)["exit_cond"]
+        if exit_cond is None:
             return
         _, reach = self._carried(loop)
-        if any(reach.get(id(o), 0) for o in _comparison_operands(loop.exit_cond)):
+        if any(reach.get(o, 0) for o in _comparison_operands(exit_cond)):
             raise self._refuse(
-                loop.exit_cond, "a loop exit through a differentiated input "
-                "is an event, not a jump")
+                exit_cond, "a loop exit through a differentiated input is an event, not a jump"
+            )
 
-    def body(self, loop: Loop, roots: Sequence[Node],
-             record: bool = False) -> JumpPlan | None:
+    def body(self, loop: Any, roots: Sequence[Any], record: bool = False) -> JumpPlan | None:
         """The plan of one loop body, over ``roots`` (the body as the
         derivative walks it: the forward ``nexts``, or the reverse body whose
         carries read the forward loop's tape); ``None`` when no switch in it
@@ -354,40 +398,49 @@ class JumpPlan:
         from .loops import _post_order
 
         carry, _ = self._carried(loop)
-        slot = {id(c): j for j, c in enumerate(loop.carries)}
-        operands = {id(o) for o in loop.operands}
+        slot = {c: j for j, c in enumerate(loop.field_nodes("carries"))}
+        operands = set(loop.operands)
+        index = loop.field_nodes("index")[0]
 
-        def external(node: Node) -> int | None:
-            if id(node) in slot:
-                return carry[slot[id(node)]]
-            if getattr(node, "loop", None) is loop and hasattr(node, "slot"):
-                return carry[node.slot]          # a tape read of a carried slot
-            if id(node) in operands:
+        def external(node: Any) -> int | None:
+            if node in slot:
+                return carry[slot[node]]
+            if _ir.is_a(node, "tape_read", "loop_value") and node.operands[0] == loop:
+                return carry[node.field_int("slot")]  # a tape read of a carried slot
+            if node in operands:
                 return self._outer(node)
             return None
 
-        stop = operands | {id(loop.index)}
-        plan = JumpPlan(_post_order(roots, stop), id, (), self.jump, self.kernel,
-                        root=self.root, external=external, loop=loop.index.name,
-                        record=record)
+        stop = operands | {index}
+        plan = JumpPlan(
+            _post_order(roots, stop),
+            lambda node: node,
+            (),
+            self.jump,
+            self.kernel,
+            root=self.root,
+            external=external,
+            loop=index.field_text("name"),
+            record=record,
+        )
         plan.width = self.root.width
         return plan if plan.live else None
 
-    def _width(self, seq: Sequence[Node]) -> Node:
+    def _width(self, seq: Sequence[Any]) -> Any:
+        context = seq[0].ctx
         param = width_param(self.jump)
         if param is None:
-            return Const(_SQRT5 * self.jump, _F64)
-        leaf = next((n for n in seq if isinstance(n, Leaf) and n.name == param),
-                    None)
+            return _ir.const(context, _SQRT5 * self.jump, _F64)
+        leaf = next((n for n in seq if _ir.is_a(n, "leaf") and n.field_text("name") == param), None)
         if leaf is None:
-            leaf = Leaf("uniform", "uniform", param, _F64)
-        return _mk("mul", (Const(_SQRT5, _F64), leaf))
+            leaf = _ir.leaf(context, "uniform", "uniform", param, _F64)
+        return _ir.make("mul", (_ir.const(context, _SQRT5, _F64), leaf))
 
     # -- applying the rules inside a pass ---------------------------------
-    def apply_vjp(self, node: Node, g: Node, accumulate) -> bool:
+    def apply_vjp(self, node: Any, g: Any, accumulate) -> bool:
         """Add ``node``'s jump contributions through ``accumulate(child,
         adjoint)``; ``True`` when they replace the ordinary rule."""
-        if isinstance(node, Select):
+        if _ir.is_a(node, "select"):
             if self.is_live(node.operands[0]):
                 accumulate(node.operands[0], self.select_cond_vjp(node, g))
             return False
@@ -397,10 +450,10 @@ class JumpPlan:
             accumulate(child, contribution)
         return True
 
-    def apply_jvp(self, node: Node, t, plain) -> tuple:
+    def apply_jvp(self, node: Any, t, plain) -> tuple:
         """``(handled, tangent)`` for ``node``; ``plain(node)`` is the
         ordinary rule's tangent of a select."""
-        if isinstance(node, Select):
+        if _ir.is_a(node, "select"):
             tc = t(node.operands[0]) if self.is_live(node.operands[0]) else None
             if tc is None:
                 return False, None
@@ -412,141 +465,150 @@ class JumpPlan:
         return True, self.jvp(node, t)
 
     # -- the boolean-op rules ---------------------------------------------
-    def is_live(self, node: Node) -> bool:
+    def is_live(self, node: Any) -> bool:
         return self.key(node) in self.live
 
-    def select_cond_vjp(self, node: Select, g: Node) -> Node:
+    def select_cond_vjp(self, node: Any, g: Any) -> Any:
         """``select``'s pseudo-adjoint to its condition: ``sum(g (a - b))``."""
         cond, a, b = node.operands
-        part = _mk("mul", (g, _mk("sub", (a, b))))
-        if cond.ttype.shape == () and part.ttype.shape != ():
-            part = _mk("sum", (part,))
+        part = _ir.make("mul", (g, _ir.make("sub", (a, b))))
+        if _ir.type_of(cond).shape == () and _ir.type_of(part).shape != ():
+            part = _ir.make("sum", (part,))
         return part
 
-    def vjp(self, node: Node, g: Node) -> tuple:
+    def vjp(self, node: Any, g: Any) -> tuple:
         """A live boolean node's reverse contributions."""
-        if node.kind in _ORDERED:
+        kind = node.field_text("kind")
+        if kind in _ORDERED:
             return self.compare_vjp(node, g)
-        if node.kind == "vec":        # a vector condition, one entry per comparison
-            return tuple((o, _mk("component", (g,), i))
-                         for i, o in enumerate(node.operands) if self.is_live(o))
+        if kind == "vec":  # a vector condition, one entry per comparison
+            return tuple(
+                (o, _ir.make("component", (g,), i))
+                for i, o in enumerate(node.operands)
+                if self.is_live(o)
+            )
         return self.logic_vjp(node, g)
 
-    def jvp(self, node: Node, t) -> Node | None:
+    def jvp(self, node: Any, t) -> Any:
         """A live boolean node's tangent."""
-        if node.kind in _ORDERED:
+        kind = node.field_text("kind")
+        if kind in _ORDERED:
             return self.compare_jvp(node, t)
-        if node.kind == "vec":
+        if kind == "vec":
             parts = [t(o) for o in node.operands]
             if all(p is None for p in parts):
                 return None
-            return _mk("vec", tuple(p if p is not None else Const(0.0, _F64)
-                                    for p in parts))
+            zero = _ir.const(node.ctx, 0.0, _F64)
+            return _ir.make("vec", tuple(p if p is not None else zero for p in parts))
         return self.logic_jvp(node, t)
 
-    def logic_vjp(self, node: Node, g: Node) -> tuple:
+    def logic_vjp(self, node: Any, g: Any) -> tuple:
         ops = node.operands
-        if node.kind == "lnot":
-            return ((ops[0], _mk("neg", (g,))),)
-        zero = _zero(g.ttype)
+        kind = node.field_text("kind")
+        if kind == "lnot":
+            return ((ops[0], _ir.make("neg", (g,))),)
+        zero = _zero(g)
         out = []
         for i, o in enumerate(ops):
             if not self.is_live(o):
                 continue
             other = ops[1 - i]
-            if node.kind == "land":
-                out.append((o, Select(other, g, zero, g.ttype)))
+            if kind == "land":
+                out.append((o, _select(other, g, zero)))
             else:
-                out.append((o, Select(other, zero, g, g.ttype)))
+                out.append((o, _select(other, zero, g)))
         return tuple(out)
 
-    def compare_vjp(self, node: Node, g: Node) -> tuple:
+    def compare_vjp(self, node: Any, g: Any) -> tuple:
         lhs, rhs = node.operands
-        sign = _ORDERED[node.kind]       # bar_l += sign * K bar_c
+        sign = _ORDERED[node.field_text("kind")]  # bar_l += sign * K bar_c
         out = []
         for operand, s in ((lhs, sign), (rhs, -sign)):
             if self.reach.get(self.key(operand), 0):
-                out.append((operand, self._supported(
-                    node, lambda kern: _mk("mul", (kern, g)), s)))
+                out.append(
+                    (operand, self._supported(node, lambda kern: _ir.make("mul", (kern, g)), s))
+                )
         return tuple(out)
 
-    def compare_jvp(self, node: Node, t) -> Node | None:
+    def compare_jvp(self, node: Any, t) -> Any:
         lhs, rhs = node.operands
         tl, tr = t(lhs), t(rhs)
         if tl is None and tr is None:
             return None
-        sign = _ORDERED[node.kind]       # c' = sign * K (l' - r')
+        sign = _ORDERED[node.field_text("kind")]  # c' = sign * K (l' - r')
         if tl is None:
             diff, sign = tr, -sign
         else:
-            diff = tl if tr is None else _mk("sub", (tl, tr))
-        return self._supported(node, lambda kern: _mk("mul", (kern, diff)), sign)
+            diff = tl if tr is None else _ir.make("sub", (tl, tr))
+        return self._supported(node, lambda kern: _ir.make("mul", (kern, diff)), sign)
 
-    def logic_jvp(self, node: Node, t) -> Node | None:
+    def logic_jvp(self, node: Any, t) -> Any:
         ops = node.operands
-        if node.kind == "lnot":
+        kind = node.field_text("kind")
+        if kind == "lnot":
             got = t(ops[0])
-            return None if got is None else _mk("neg", (got,))
+            return None if got is None else _ir.make("neg", (got,))
         terms = []
         for i, o in enumerate(ops):
             to = t(o)
             if to is None:
                 continue
-            zero = _zero(to.ttype)
+            zero = _zero(to)
             other = ops[1 - i]
-            terms.append(Select(other, to, zero, to.ttype) if node.kind == "land"
-                         else Select(other, zero, to, to.ttype))
+            terms.append(_select(other, to, zero) if kind == "land" else _select(other, zero, to))
         if not terms:
             return None
-        return terms[0] if len(terms) == 1 else _mk("add", tuple(terms))
+        return terms[0] if len(terms) == 1 else _ir.make("add", tuple(terms))
 
-    def select_jvp(self, node: Select, plain: Node | None, tc: Node) -> Node:
+    def select_jvp(self, node: Any, plain: Any, tc: Any) -> Any:
         """``today's select of tangents + (a - b) c'``."""
         cond, a, b = node.operands
-        jumped = _mk("mul", (_mk("sub", (a, b)), tc))
+        jumped = _ir.make("mul", (_ir.make("sub", (a, b)), tc))
         if plain is None:
             return jumped
-        return _mk("add", (plain, jumped))
+        return _ir.make("add", (plain, jumped))
 
     # -- K(d) under the |d| < w switch -------------------------------------
-    def _d(self, node: Node) -> Node:
+    def _d(self, node: Any) -> Any:
         lhs, rhs = node.operands
-        return _mk("sub", (lhs, rhs))
+        return _ir.make("sub", (lhs, rhs))
 
-    def _supported(self, node: Node, product, sign: float) -> Node:
+    def _supported(self, node: Any, product, sign: float) -> Any:
         """``product(sign * K(d))`` under the ``switch`` on ``d^2 < w^2``.
 
         ``K = 3/(4w) - 3/(4w^3) d^2``; the sign is folded into the
         subtraction's order, so no negation is emitted."""
         d = self._d(node)
-        dd = _mk("mul", (d, d))
+        dd = _ir.make("mul", (d, d))
         w = self.width
-        if w is None:                      # "auto": the width of this site's group
+        if w is None:  # "auto": the width of this site's group
             group = self.root._group_of(node)
             w = self.root._auto_width(group)[1]
-        if isinstance(w, Const):
-            scale = 0.75 / w.literal
-            w2 = Const(w.literal * w.literal, _F64)
-            c2, scale = Const(scale / w2.literal, _F64), Const(scale, _F64)
+        if _ir.is_a(w, "const"):
+            width = w.field_real("literal")
+            scale = 0.75 / width
+            w2_value = width * width
+            w2 = _ir.const(d.ctx, w2_value, _F64)
+            c2, scale = _ir.const(d.ctx, scale / w2_value, _F64), _ir.const(d.ctx, scale, _F64)
         else:
-            w2 = _mk("mul", (w, w))
-            scale = _mk("div", (Const(0.75, _F64), w))
-            c2 = _mk("div", (scale, w2))
-        shape = d.ttype.shape
+            w2 = _ir.make("mul", (w, w))
+            scale = _ir.make("div", (_ir.const(d.ctx, 0.75, _F64), w))
+            c2 = _ir.make("div", (scale, w2))
+        shape = _ir.type_of(d).shape
         if shape:
-            w2, scale = _mk("splat", (w2,), shape), _mk("splat", (scale,), shape)
-        drop = _mk("mul", (c2, dd))
-        kern = _mk("sub", (scale, drop) if sign > 0 else (drop, scale))
-        inside = _mk("lt", (dd, w2))
+            w2, scale = _ir.make("splat", (w2,), shape), _ir.make("splat", (scale,), shape)
+        drop = _ir.make("mul", (c2, dd))
+        kern = _ir.make("sub", (scale, drop) if sign > 0 else (drop, scale))
+        inside = _ir.make("lt", (dd, w2))
         value = product(kern)
-        zero = _zero(value.ttype)
+        zero = _zero(value)
         if shape:
-            value = Select(inside, value, zero, value.ttype)
-            ones = _mk("splat", (Const(1.0, _F64),), shape)
-            count = _mk("sum", (Select(inside, ones, _zero(ones.ttype), ones.ttype),))
-            inside = _mk("gt", (count, Const(0.5, _F64)))
-        selector = Select(inside, Const(0, _I32), Const(1, _I32), _I32)
-        return _dispatch_kind.dispatch(selector, (value, zero), "switch", value.ttype)
+            value = _select(inside, value, zero)
+            ones = _ir.make("splat", (_ir.const(d.ctx, 1.0, _F64),), shape)
+            count = _ir.make("sum", (_select(inside, ones, _zero(ones)),))
+            inside = _ir.make("gt", (count, _ir.const(d.ctx, 0.5, _F64)))
+        selector = _select(inside, _ir.const(d.ctx, 0, _I32), _ir.const(d.ctx, 1, _I32))
+        return _switch(selector, (value, zero))
 
     # -- the record ---------------------------------------------------------
     def spread_cells(self) -> tuple:
@@ -559,14 +621,14 @@ class JumpPlan:
         out: list = []
         for g, terms in self._spreads().items():
             for j, term in enumerate(terms):
-                out.extend(_cells.stored(ReduceSamples("sum", term), f"jump_sd{g}_{j}"))
+                out.extend(_ir.cells_stored(_reduce_samples(term), f"jump_sd{g}_{j}"))
             if self.jump == AUTO:
                 # the mean of the one width every sample holds, as a sum cell
                 # (the op a gradient's own cells use, so one stage stores
                 # both): each sample adds h * its count / the count cell
                 h, _, count = self._auto_width(g)
-                share = _mk("div", (_mk("mul", (h, self._spreads()[g][2])), count))
-                out.extend(_cells.stored(ReduceSamples("sum", share), f"jump_h{g}"))
+                share = _ir.make("div", (_ir.make("mul", (h, self._spreads()[g][2])), count))
+                out.extend(_ir.cells_stored(_reduce_samples(share), f"jump_h{g}"))
         return tuple(out)
 
     def record(self, wrt: Sequence[str]) -> dict | None:
@@ -576,50 +638,72 @@ class JumpPlan:
         sites = []
         wanted = set(wrt)
         for i, (site, info) in enumerate(zip(self.sites, self.info)):
-            names = sorted({n.name for n in _reachable((site,))
-                            if isinstance(n, Leaf) and n.name in wanted})
-            entry = {"name": f"jump{i}", "cond": spell(site), "reaches": names,
-                     "group": info["group"]}
+            names = sorted(
+                {
+                    n.field_text("name")
+                    for n in _ir.post_order((site,))
+                    if _ir.is_a(n, "leaf") and n.field_text("name") in wanted
+                }
+            )
+            entry = {
+                "name": f"jump{i}",
+                "cond": spell(site),
+                "reaches": names,
+                "group": info["group"],
+            }
             if info["loop"] is not None:
                 entry["loop"] = info["loop"]
             sites.append(entry)
         auto = self.jump == AUTO
         rule = "spread_v1" if auto else "param" if param else "fixed"
-        record = {"kernel": KERNEL, "rule": rule,
-                  "h": None if param or auto else self.jump,
-                  "constant": SPREAD if auto else None,
-                  "param": param, "sites": sites}
+        record = {
+            "kernel": KERNEL,
+            "rule": rule,
+            "h": None if param or auto else self.jump,
+            "constant": SPREAD if auto else None,
+            "param": param,
+            "sites": sites,
+        }
         if self.engaged:
-            record.update(rule="altpath_v1", seed_param=SEED, engaged=True,
-                          width_rule=rule)
+            record.update(rule="altpath_v1", seed_param=SEED, engaged=True, width_rule=rule)
         return record
 
 
-def _runtime_index(node: Node) -> Node | None:
+def _runtime_index(node: Any) -> Any:
     """The runtime row or key ``node`` reads or commits at, else ``None``."""
-    if isinstance(node, (AccumWrite, WideWrite)):
-        return node.index
-    if getattr(node, "kind", "") in ("at", "component_at", "set_component_at", "add_at"):
+    if _ir.is_a(node, "accum_write", "wide_write"):
+        return node.operands[1] if len(node.operands) > 1 else None
+    if node.field_text("kind") in ("at", "component_at", "set_component_at", "add_at"):
         return node.operands[1]
     return None
 
 
-def _reach_of(node: Node, get, leaf) -> int:
+def _reach_of(node: Any, get, leaf) -> int:
     """0: no ``wrt`` input reaches ``node``; 1: one does, smoothly; 2: one does
     through a piecewise-constant op (a rounding, a sign, an integer cast)."""
-    if isinstance(node, Leaf):
+    if _ir.is_a(node, "leaf"):
         return leaf(node)
-    if isinstance(node, (Const, SampleIndex, PlaneExtent, LoopIndex, LoopCarry)):
+    if _ir.is_a(node, "const", "sample_index", "plane_extent", "loop_index", "loop_carry"):
         return 0
-    kind = getattr(node, "kind", "")
-    if kind in ("lt", "le", "gt", "ge", "eq", "ne", "land", "lor", "lnot",
-                "isnan", "isinf", "isfinite"):
+    kind = node.field_text("kind")
+    if kind in (
+        "lt",
+        "le",
+        "gt",
+        "ge",
+        "eq",
+        "ne",
+        "land",
+        "lor",
+        "lnot",
+        "isnan",
+        "isinf",
+        "isfinite",
+    ):
         return 0
     ops = node.operands
-    if isinstance(node, Select):
+    if _ir.is_a(node, "select", "dispatch"):
         ops = ops[1:]
-    elif isinstance(node, Dispatch):
-        ops = node.branches
     got = max((get(o) for o in ops), default=0)
     from .event import _STEPWISE
 
@@ -628,21 +712,40 @@ def _reach_of(node: Node, get, leaf) -> int:
     return got
 
 
-def spell(node: Node) -> str:
+def spell(node: Any) -> str:
     """A comparison's spelling in a refusal or the sidecar."""
     from .event import spell as spelled
 
     return spelled(node)
 
 
-def _zero(t: TensorType) -> Node:
-    from raptor.rules.core import zero_like
+def _switch(selector: Any, branches: Sequence[Any]) -> Any:
+    """Make the dispatch of ``selector`` over ``branches``, typed as the first."""
+    return _ir.make_node("Dispatch", _ir.type_of(branches[0]), [selector, *branches])
 
-    return zero_like(TensorType(t.shape, "f64" if t.dtype not in _FLOAT else t.dtype))
+
+def _reduce_samples(value: Any) -> Any:
+    """Make the sum of ``value`` over the samples of a launch."""
+    return _ir.make_node(
+        "ReduceSamples",
+        _ir.type_of(value),
+        [value],
+        op="sum",
+        contract="auto",
+        key=None,
+        count=None,
+        kept=None,
+    )
 
 
-def _comparison_operands(cond: Node) -> list:
-    kind = getattr(cond, "kind", "")
+def _zero(like: Any) -> Any:
+    """A structural zero shaped like ``like`` (float64 when ``like`` is not floating)."""
+    shape, dtype, tag = _ir.type_of(like)
+    return _ir.zero_like(like.ctx, _ir.TensorType(shape, dtype if dtype in _FLOAT else "f64", tag))
+
+
+def _comparison_operands(cond: Any) -> list:
+    kind = cond.field_text("kind")
     if kind in _LOGIC:
         return [x for o in cond.operands for x in _comparison_operands(o)]
     if kind in _ORDERED or kind in _EQUALITY:

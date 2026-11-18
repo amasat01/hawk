@@ -47,8 +47,7 @@ from ..compile.cache import ClosureWatch, publish_atomic, tmp_sibling
 from aether.wings.base.wrapper import scalar_mode
 from ..ext import DEFAULT_KIND
 from .._errors import EMBEDDED_C, HawkError
-from .. import wings as _wings
-_wt = _wings.view("raptor", "base", "wrapper_text")
+from .. import _ir
 from .. import options as _options_mod
 from ..build_settings import BuildSettings, apply as _apply_settings, check as _check_settings, default_settings, refuse_choice, settings_of as _settings_of
 from ..backends import default_backends
@@ -56,7 +55,6 @@ from ..registry import check, denial, missing, traits
 from ..targets import DEFAULT_TARGETS, DISTRIBUTIONS, TARGETS, build_spec
 from . import manifest as _manifest
 from .derivative import _per_kernel_derivative
-from . import bridge as _bridge
 from . import request as _request
 from .sidecar import sidecar_of_unit
 from .unit_cache import (
@@ -285,13 +283,6 @@ def _lead(entries) -> str:
     return next((t for t in native if _trait(t, "device", False)), native[0])
 
 
-def _refuse_cells_off_device(name: str, smode, targets) -> None:
-    """Refuse a banded build with a target that is not a device, before anything is emitted."""
-    for t in targets:
-        if t in TARGETS:
-            _wt.refuse_cells_off_device(name, smode, t, SimpleNamespace(device=_trait(t, "device", False)))
-
-
 def _refuse_libc_names(kernels, targets) -> None:
     """Refuse an authored kernel that takes a name a row of the build reserves, with the reason that row gives. The names are a
     machine fact of the build's rows (``reserved_names``: name -> reason); a chain or a derivative carries no source digest and
@@ -309,7 +300,8 @@ def _refuse_segmented_position(kernels, names) -> None:
     """Refuse a kernel with a segmented dispatch that reads the launch slot: the units of a segmented kernel address their lanes through
     the run's offsets."""
     for kernel, name in zip(kernels, names):
-        if kernel.walk.reads_sample_position and any(d.strategy == "segmented" for d in kernel.walk.dispatches):
+        reads_position = any(_ir.is_a(n, "sample_position") for n in _ir.walk_order(kernel.walk))
+        if reads_position and any(d.strategy == "segmented" for d in _ir.dispatch_groups(kernel.walk)):
             raise HawkError(f"{name!r}: hawk.sample_position() is the launch slot, and a segmented unit addresses its lanes through the "
                             "run's offsets; use sample_index() there")
 
@@ -348,11 +340,17 @@ def _served_id() -> dict:
 
 def _plans(kernels, names, kinds, *, smode, targets, spec, options, exports_block: bool = False) -> list:
     """``(request, dump, dialects)`` of each kernel: the request the lowering library is asked, the text of the nodes it names and the
-    text of their dialects. The nodes are read here and nowhere else (:mod:`hawk.artifact.bridge`). A build asks for texts without the
+    text of their dialects (empty: the lowering context declares the dialect kinds itself). A build asks for texts without the
     self-check block, which the text of its set carries once; a text that is compiled alone (:func:`emit_source`) asks for it."""
     out = []
     for kernel, name, kind in zip(kernels, names, kinds):
-        dump, dialects, position = _bridge.dump(_request.sinks_of(kernel))
+        roots = _request.sinks_of(kernel)
+        # the lowering library loads the text into an empty context, where a node's handle is its position in the text: so the
+        # roots are copied into one first, and the request names the copies' numbers
+        copies = _ir.adopt(_ir.new_context(), roots)
+        dump = _ir.dump_text(copies)
+        dialects = ""        # the library declares the wing kinds itself, so no dialect text is passed
+        position = dict(zip(roots, _ir.dump_numbers(copies)))
         out.append((_request.request(kernel, name=name, scalar=smode.id, kind=kind, targets=targets, spec=spec, position=position,
                                      options=options, exports_block=exports_block), dump, dialects))
     return out
@@ -382,7 +380,8 @@ def _prepared(unit, lowered, kernel, targets) -> tuple:
     found = {served[text["target"]]: text for text in unit["texts"]}
     if absent := [t for t in targets if t not in found]:
         raise HawkError(f"the lowering library wrote no {absent[0]} text for {name!r}")
-    lowered = SimpleNamespace(kernel=kernel, name=name, smode=lowered.smode, kind=lowered.kind, spec=lowered.spec)
+    lowered = SimpleNamespace(kernel=kernel, name=name, smode=lowered.smode, kind=lowered.kind, spec=lowered.spec,
+                              working_set_bytes=lowered.working_set_bytes)
     return lowered, {t: SimpleNamespace(**text) for t, text in found.items()}
 
 
@@ -733,13 +732,12 @@ def _emitted(kernel, name, mode, kind, targets, device_arch, does, instead, spec
     emit_arch = _emit_arch(targets, device_arch)
     spec = build_spec(tuple(targets), emit_arch) if spec is None else spec
     spec = _apply_settings(spec, settings, targets).with_settings(route_to_ordered=scalar_mode(mode).cells)
-    if any(d.strategy == "segmented" for d in kernel.walk.dispatches):
+    if any(d.strategy == "segmented" for d in _ir.dispatch_groups(kernel.walk)):
         raise HawkError(f"{name!r} carries a segmented dispatch: {does} ONE artifact, and a segmented kernel needs K "
                         f"— call {instead}([kernel], ...) instead")
     kind = resolve_kind(name, getattr(kernel, "kind", None), kind)
     smode = scalar_mode(mode)
     _refuse_libc_names((kernel,), targets)
-    _refuse_cells_off_device(name, smode, targets)
     options = _options(device_arch=emit_arch, **inputs)
     answer = _request.lower(*_plans([kernel], [name], [kind], smode=smode, targets=targets, spec=spec, options=options,
                                     exports_block=exports_block)[0])
@@ -750,7 +748,8 @@ def _emitted(kernel, name, mode, kind, targets, device_arch, does, instead, spec
         cause = ("is worked by a team per lane, so it runs as several stages, one launch each" if teams
                  else "reads a value reduced over samples, so it runs as several launches")
         raise HawkError(f"{name!r} {cause}: {does} ONE artifact — call {instead}([kernel], ...) instead")
-    return SimpleNamespace(smode=smode, kind=kind, spec=spec), answer, written[0], options
+    lowered = SimpleNamespace(smode=smode, kind=kind, spec=spec, working_set_bytes=answer["working_set_bytes"])
+    return lowered, answer, written[0], options
 
 
 @dataclass(frozen=True)
@@ -858,8 +857,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                  settings: BuildSettings | None = None) -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json``
     over them. An ``emit_form``/``linalg_form``/``wide_form``/``launch_bounds`` left unset is the value of ``settings``
-    (a :class:`hawk.build_settings.BuildSettings`; the default: ``"auto"``, no bound); an explicit argument wins. ``emit_form`` is how a product, dot, sum or norm is spelled
-    (:mod:`raptor.ir.fold`): ``"auto"`` unrolls a site of at most 16 elements and
+    (a :class:`hawk.build_settings.BuildSettings`; the default: ``"auto"``, no bound); an explicit argument wins. ``emit_form`` is how a product, dot, sum or norm is spelled: ``"auto"`` unrolls a site of at most 16 elements and
     writes a longer one as a loop, ``"static"`` unrolls every site, ``"rolled"`` writes
     every site as a loop, the fast-compile mode (the compiler does no per-element work).
     ``linalg_form`` is how per-lane linear algebra is worked: ``"auto"`` keeps one thread per
@@ -928,7 +926,6 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     _refuse_targets(names[0] if names else "", targets)
     _refuse_libc_names(kernels, targets)
     _refuse_segmented_position(kernels, names)
-    _refuse_cells_off_device(names[0] if names else "", smode, targets)
     native = _native(targets)
     if native and not kernels:
         raise HawkError("no kernel to build: a bundle holds at least one")
@@ -1015,7 +1012,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     # every target compile of every unit of the call runs in ONE pool (compile_jobs at most at once); the drafts are assembled in order
     with ThreadPoolExecutor(max_workers=compile_jobs(), thread_name_prefix="hawk-compile") as pool:
         try:
-            started = [[(k, unit, answer["units"], d, _prepared(unit, SimpleNamespace(smode=smode, kind=kd, spec=spec), k, targets))
+            started = [[(k, unit, answer["units"], d, _prepared(unit, SimpleNamespace(smode=smode, kind=kd, spec=spec, working_set_bytes=answer["working_set_bytes"]), k, targets))
                         for unit in answer["units"] if unit["texts"]]
                        for k, kd, d, answer in zip(kernels, kinds, per_kernel_derivative, answers)]
             submitted = [[(*one, _submit_targets(pool, one[4][0], one[4][1], inputs, targets)) for one in family] for family in started]

@@ -33,6 +33,7 @@ from hawk.artifact import build_bundle
 from hawk.diff import param_planes, vjp
 from raptor.errors import RaptorError as HawkError
 from hawk.targets import TARGETS
+from hawk import _ir
 
 SIZES = (1, 31, 32, 33, 1000, 65536)
 #: Row tolerance, relative to the run's sum of |term|.
@@ -330,4 +331,4 @@ def test_the_companion_plane_is_a_slot_of_the_walk():
     @hawk.kernel
     def one(x: Scalar, t: Mutable[Scalar]):
         t = hawk.sum(x * x)
-    assert ("accum_out", "t_comp") in one.walk.arg_spec
+    assert ("accum_out", "t_comp") in _ir.arg_spec(one.walk)

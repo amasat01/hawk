@@ -65,7 +65,7 @@ from hawk.compile.drivers import ADDRESS_SPACE_CAP_BYTES
 from hawk.compile.toolchain import subprocess_env
 from ospreys.cuda.toolchain import resolve_arch
 from aether.wings.base.wrapper import FLOAT64
-from raptor.ir import Loop
+from hawk import _ir
 from hawk.targets import TARGETS
 
 CARD = card_path("CARD_LOOP_LOWERING.md")
@@ -136,7 +136,7 @@ def _capped(argv: list) -> tuple:
 
 def _grid_row(n_in: int, basis: int, tmp: Path) -> dict:
     kernel = spline_cell(n_in, basis)
-    loops = [n for n in kernel.walk.order if isinstance(n, Loop)]
+    loops = [n for n in _ir.walk_order(kernel.walk) if _ir.is_a(n, "loop")]
     device = _source(kernel, "cuda", tmp)
     host = _source(kernel, "host", tmp)
     d_rc, d_wall, d_rss, d_err = _capped(device_command(device, tmp / f"{kernel.name}.ptx", arch=resolve_arch()))
@@ -148,7 +148,7 @@ def _grid_row(n_in: int, basis: int, tmp: Path) -> dict:
     return {
         "edges": n_in,
         "basis": basis,
-        "walk_nodes": len(kernel.walk.order),
+        "walk_nodes": len(_ir.walk_order(kernel.walk)),
         "top_level_loops": len(loops),
         "device_wall_s": round(d_wall, 3),
         "device_peak_rss_kib": d_rss,
@@ -403,7 +403,7 @@ def test_the_ir_does_not_grow_with_the_grid():
     track its trip count, so the 64x23 cell has the same node count as the 8x5
     one. Under the old unroll-by-execution the largest point's chain was ~37x
     the smallest's, which is what reached ptxas as one function."""
-    counts = {(n, b): len(spline_cell(n, b).walk.order) for n, b in GRID}
+    counts = {(n, b): len(_ir.walk_order(spline_cell(n, b).walk)) for n, b in GRID}
     assert len(set(counts.values())) == 1, counts
 
 

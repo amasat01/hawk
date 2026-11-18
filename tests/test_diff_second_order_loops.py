@@ -18,7 +18,7 @@ backward loop that reads the forward loop's tape ((b)). Forward mode carries
 tangents through either of those exactly as it carries them through a primal —
 so the refusal that used to sit in ``hawk/diff/loops.forward_loop`` was never a
 statement about the mathematics, only about the ONE node with no tangent rule:
-:class:`~raptor.ir.nodes.TapeRead`. Its rule is that the tangent of
+``TapeRead``. Its rule is that the tangent of
 ``TapeRead(F, j, k)`` is ``TapeRead(F', m + j, k)`` — the same iteration of the
 AUGMENTED forward loop, whose slot ``m + j`` already carries the tangent of slot
 ``j``. In the emitted code the tape becomes a tape of PAIRS, which
@@ -65,8 +65,7 @@ import hawk.math as m
 from hawk.artifact.layout import exports
 from hawk.diff import jvp, vjp
 from aether.wings.base.wrapper import FLOAT64
-from raptor.ir import Loop, canonical
-from hawk import HawkError
+from hawk import HawkError, _ir
 from hawk.targets import TARGETS
 
 #: The central-difference step for the SECOND derivative row. It differences the
@@ -172,7 +171,7 @@ def test_forward_over_reverse_matches_a_difference_of_the_gradient(case):
     Hessian-vector product, which must reproduce a central difference of the
     analytic gradient, for both accumulator and recurrence subjects."""
     _id, kernel, env, wrt, tangent = case
-    sink = kernel.sinks[0].name
+    sink = kernel.sinks[0].field_text("name")
     want = _hessian_vector_reference(kernel, env, wrt, sink, tangent)
     derived = jvp(vjp(kernel, wrt=wrt), wrt=wrt)
     got = evaluate(derived, {**env, f"bar_{sink}": 1.0,
@@ -199,7 +198,7 @@ def test_reverse_over_forward_matches_a_difference_of_the_gradient(case):
     number (2.108e+01 and 1.467e+00 against this same reference) because the
     reverse of a recurrence pulled back only its SEEDED slots."""
     _id, kernel, env, wrt, tangent = case
-    sink = kernel.sinks[0].name
+    sink = kernel.sinks[0].field_text("name")
     want = _hessian_vector_reference(kernel, env, wrt, sink, tangent)
     plain = _gradient(kernel, env, wrt, sink)
     derived = vjp(jvp(kernel, wrt=wrt))
@@ -223,7 +222,7 @@ def test_the_two_second_order_routes_agree_with_each_other():
     finite-difference rows above would not always say which. Cheap, and it is
     the only row here whose reference is analytic on both sides."""
     for _id, kernel, env, wrt, tangent in SECOND_ORDER_CASES:
-        sink = kernel.sinks[0].name
+        sink = kernel.sinks[0].field_text("name")
         fwd_rev = evaluate(jvp(vjp(kernel, wrt=wrt), wrt=wrt),
                            {**env, f"bar_{sink}": 1.0,
                             **{f"dot_{n}": tangent[n] for n in wrt}})
@@ -255,7 +254,7 @@ def test_reverse_over_reverse_through_an_accumulator_matches_a_difference_of_the
     so ``vjp(vjp(k))`` is built there: seeded with ``v`` on the two gradient
     outputs it returns ``H v``. A recurrence (``chebyshev`` below) still refuses."""
     _id, kernel, env, wrt, tangent = case
-    sink = kernel.sinks[0].name
+    sink = kernel.sinks[0].field_text("name")
     want = _hessian_vector_reference(kernel, env, wrt, sink, tangent)
     got = evaluate(vjp(vjp(kernel, wrt=wrt), wrt=wrt),
                    {**env, f"bar_{sink}": 1.0,
@@ -279,7 +278,7 @@ def test_differentiating_a_loop_that_COMMITS_is_still_refused_in_both_directions
     not its value; differentiating it again is not the second derivative of
     anything the author asked for, and stays refused in both directions."""
     derived = vjp(gathering)
-    assert len(derived) == 1 and isinstance(derived[0], Loop)
+    assert len(derived) == 1 and _ir.is_a(derived[0], "loop")
     with pytest.raises(HawkError, match="second-order"):
         vjp(derived)
     with pytest.raises(HawkError, match="second-order"):

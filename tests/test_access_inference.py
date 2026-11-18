@@ -18,64 +18,64 @@ This file also pins the canonical role order for ``arg_spec``.
 
 from __future__ import annotations
 
-from _dags import F64, IDX, V3, drag_dag
+from _dags import IDX, V3, drag_dag
 
-from raptor.ir import AccumWrite, Assign, At, Const, Leaf, Op, WideWrite, canonical, infer
-from raptor.ir.nodes import ROLE_ORDER
+from hawk import _ir
 
-_X = Leaf("vocab_read", "vec_in", "x", V3)
-_TABLE = Leaf("table_read", "lookup", "grav", V3)
+CTX = _ir.new_context()
+_X = _ir.leaf(CTX, "vocab_read", "vec_in", "x", V3)
+_TABLE = _ir.leaf(CTX, "table_read", "lookup", "grav", V3)
+_THREE = _ir.const(CTX, 3, IDX)
 
 
 def test_own_column_only_is_sample_local():
-    walk = canonical((Assign("acc", Op("neg", (_X,), V3), V3),))
-    assert walk.access == ("sample_local", None)
-    assert infer(walk) == walk.access
+    walk = _ir.canonical((_ir.make_node("Assign", V3, (_ir.make("neg", (_X,)),), name="acc"),))
+    assert _ir.access_class(walk) == "sample_local"
 
 
 def test_lookup_at_read_is_cross_sample_read():
-    walk = canonical((Assign("acc", At(_TABLE, Const(3, IDX), V3), V3),))
-    assert walk.access.cls == "cross_sample_read"
+    walk = _ir.canonical((_ir.make_node("Assign", V3, (_ir.make_node("At", V3, (_TABLE, _THREE)),), name="acc"),))
+    assert _ir.access_class(walk) == "cross_sample_read"
 
 
 def test_scattered_accum_write_is_cross_sample_write():
-    walk = canonical((AccumWrite("e", Op("norm", (_X,), F64), Const(3, IDX), F64),))
-    assert walk.access.cls == "cross_sample_write"
+    walk = _ir.canonical((_ir.accum_write("e", _ir.make("norm", (_X,)), index=_THREE),))
+    assert _ir.access_class(walk) == "cross_sample_write"
 
 
 def test_own_column_accum_write_is_not_cross_sample():
     """ classifies on the FORM: an accum whose target lane is ``i`` is not
     a scatter."""
-    walk = canonical((AccumWrite("e", Op("norm", (_X,), F64), None, F64),))
-    assert walk.access.cls == "sample_local"
+    walk = _ir.canonical((_ir.accum_write("e", _ir.make("norm", (_X,))),))
+    assert _ir.access_class(walk) == "sample_local"
 
 
 def test_own_column_wide_write_is_not_cross_sample():
-    walk = canonical((WideWrite("g", Op("neg", (_X,), V3), None, V3),))
-    assert walk.access.cls == "sample_local"
+    walk = _ir.canonical((_ir.make_node("WideWrite", V3, (_ir.make("neg", (_X,)),), name="g"),))
+    assert _ir.access_class(walk) == "sample_local"
 
 
 def test_the_most_restrictive_class_wins():
     """A DAG carrying BOTH a lookup read and a scatter declares the write class
     (the soundness-directed ranking)."""
-    walk = canonical(drag_dag())
-    assert walk.access == ("cross_sample_write", None)
+    walk = _ir.canonical(drag_dag(CTX))
+    assert _ir.access_class(walk) == "cross_sample_write"
 
 
 def test_arg_spec_follows_hawks_canonical_role_order():
-    walk = canonical(drag_dag())
-    ranks = [ROLE_ORDER.index(role) for role, _ in walk.arg_spec]
-    assert ranks == sorted(ranks), walk.arg_spec
-    assert walk.arg_spec == (
+    walk = _ir.canonical(drag_dag(CTX))
+    ranks = [_ir.ROLE_ORDER.index(role) for role, _ in _ir.arg_spec(walk)]
+    assert ranks == sorted(ranks), _ir.arg_spec(walk)
+    assert _ir.arg_spec(walk) == (
         ("mutable", "acc"),
         ("accum_out", "energy"),
         ("vec_in", "sc__state__pos"),
         ("vec_in", "sc__state__vel"),
         ("lookup", "grav"),
         ("uniform", "rho"),
-    ), walk.arg_spec
+    ), _ir.arg_spec(walk)
 
 
 def test_slot_of_is_the_inverse_of_arg_spec():
-    walk = canonical(drag_dag())
-    assert all(walk.arg_spec[i] == key for key, i in walk.slot_of.items())
+    walk = _ir.canonical(drag_dag(CTX))
+    assert all(_ir.arg_spec(walk)[i] == key for key, i in _ir.slot_of(walk).items())

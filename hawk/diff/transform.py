@@ -22,59 +22,26 @@ import functools
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from ..ext.primitive import jvp_tangent, vjp_contributions
-from raptor.ir import (
-    AccumWrite,
-    Assign,
-    At,
-    Const,
-    Dispatch,
-    Leaf,
-    Loop,
-    LoopCarry,
-    LoopIndex,
-    LoopValue,
-    Node,
-    Primitive,
-    PlaneExtent,
-    SampleIndex,
-    Select,
-    Sink,
-    WideWrite,
-    build_loop,
-    canonical_nodes,
-)
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir import make as _mk
-from raptor.ir.loops import exit_kwargs
-from raptor.ir.nodes import (
-    ADJOINT_PREFIX,
-    COMPANION_SUFFIX,
-    NAMESPACE_SEP,
-    RAW_KIND,
-    Finish,
-    Op,
-    ReduceSamples,
-    SampleSum,
-    param_cell_names,
-)
-from .. import wings as _wings
-
-_slotwise = _wings.view("raptor", "base", "slotwise")
-from raptor.ir.walk import dispatch_groups
-from raptor.ir.types import INT_PLANE_DTYPES, TensorType
+from ..ext.primitive import jvp_tangent, vjp_contributions
+from ..trace.value import DISPATCH_STRATEGIES, dispatch_node, dispatch_strategy
+from . import rules
 from .altpath import AltPath
-from .ordered import kept_of, order
 from .jump import JumpPlan, drop_width, jump_of
-from .loops import _taken_row, forward_loop, guarded_select, reverse_loop
-from raptor.rules.core import rule_for, zero_like
-_dispatch_kind = _wings.view("raptor", "base", "dispatch")
+from .loops import (
+    _reduce_to,
+    _taken_row,
+    forward_loop,
+    guarded_select,
+    reverse_loop,
+)
+from .ordered import kept_of, order
 
-_block = _wings.view("raptor", "base", "block")
-_cells = _wings.view("raptor", "base", "cells")
 
 #: Prefixes of the planes a derivative declares (never a wire namespace).
 TANGENT_PREFIX = "dot"
+ADJOINT_PREFIX = _ir.ADJOINT_PREFIX
 
 
 class Derived(tuple):
@@ -95,8 +62,16 @@ class Derived(tuple):
     cross-sample read are different execution axes and cannot share a bundle.
     """
 
-    def __new__(cls, sinks, *, primal: str | None, kind: str, wrt: tuple[str, ...],
-                primal_unit: str | None = None, jump: dict | None = None):
+    def __new__(
+        cls,
+        sinks,
+        *,
+        primal: str | None,
+        kind: str,
+        wrt: tuple[str, ...],
+        primal_unit: str | None = None,
+        jump: dict | None = None,
+    ):
         self = super().__new__(cls, sinks)
         #: The sidecar ``jump`` record of a derivative smoothed through its
         #: switches (``@kernel(jump=...)``), else ``None``.
@@ -112,7 +87,7 @@ class Derived(tuple):
         return self
 
 
-def _termination_mask(primal: Any) -> Node | None:
+def _termination_mask(primal: Any, context: Any) -> Any:
     """The OR of every guard mask ``primal`` binds, as a fresh
     ``terminated``-kind leaf — ``None`` when ``primal`` carries none.
 
@@ -131,50 +106,76 @@ def _termination_mask(primal: Any) -> Node | None:
     guard = getattr(kind, "guard", None) if kind is not None else None
     if guard is None:
         return None
-    names = [m for m in guard.names if ("terminated", m) in walk.slot_of]
+    names = [m for m in guard.names if ("terminated", m) in _ir.slot_of(walk)]
     if not names:
         return None
-    mask: Node = Leaf("terminated", "terminated", names[0],
-                      walk.slot_types[("terminated", names[0])])
+    mask = _ir.leaf(
+        context,
+        "terminated",
+        "terminated",
+        names[0],
+        _ir.slot_type(walk, "terminated", names[0]),
+    )
     for extra in names[1:]:
-        other = Leaf("terminated", "terminated", extra,
-                     walk.slot_types[("terminated", extra)])
-        mask = _mk("lor", (mask, other))
+        other = _ir.leaf(
+            context,
+            "terminated",
+            "terminated",
+            extra,
+            _ir.slot_type(walk, "terminated", extra),
+        )
+        mask = _ir.make("lor", (mask, other))
     return mask
 
 
-def _masked_sink(sink: Node, mask: Node) -> Node:
+def _masked_sink(sink: Any, mask: Any) -> Any:
     """``sink``, its value replaced by ``terminated ? 0 : value`` — the
-    structural zero :func:`~raptor.rules.core.zero_like` gives any missing
+    structural zero :func:`~hawk._ir.zero_like` gives any missing
     contribution, so every sink shape alike stores or accumulates nothing for
     a terminated sample.
 
-    A ``sink`` may be a :class:`~raptor.ir.nodes.Loop` (a reverse-mode
-    loop's own scatter commit): only its per-iteration commits are masked,
-    not its header/carries/``nexts``. Rebuilt through
-    :func:`~raptor.ir.build_loop` rather than :class:`Loop` directly so the
+    A ``sink`` may be a lowered loop (a reverse-mode loop's own scatter
+    commit): only its per-iteration commits are masked, not its
+    header/carries/``nexts``. Rebuilt through :func:`~hawk._ir.loop` so the
     loop's boundary is recomputed by the same code every other loop producer
     uses."""
-    if isinstance(sink, Loop):
-        masked_body = _slotwise.slotwise(tuple(_masked_sink(s, mask) for s in sink.body_sinks))
-        return build_loop(sink.index, sink.carries, sink.inits, sink.nexts,
-                          start=sink.start, stop=sink.stop, step=sink.step,
-                          body_sinks=masked_body, **exit_kwargs(sink))
-    value = Select(mask, zero_like(sink.value.ttype), sink.value, sink.value.ttype)
-    return sink.rebuilt((value, *sink.operands[1:]), {})
+    if _ir.is_a(sink, "loop"):
+        masked_body = _ir.slotwise(
+            tuple(_masked_sink(s, mask) for s in sink.field_nodes("body_sinks"))
+        )
+        return _ir.loop(
+            sink.field_nodes("index")[0],
+            sink.field_nodes("carries"),
+            sink.field_nodes("inits"),
+            sink.field_nodes("nexts"),
+            start=sink.field_int("start"),
+            stop=sink.field_int("stop"),
+            step=sink.field_int("step"),
+            body_sinks=masked_body,
+            **_ir.exit_kwargs(sink),
+        )
+    committed = sink.operands[0]
+    value_type = _ir.type_of(committed)
+    value = _ir.make_node(
+        "Select", value_type, [mask, _ir.zero_like(mask.ctx, value_type), committed]
+    )
+    return _ir.unreduced(sink, (value, *sink.operands[1:]))
 
 
-def _mask_termination(sinks: Sequence[Node], primal: Any) -> tuple[Node, ...]:
+def _mask_termination(
+    sinks: Sequence[Any], primal: Any, context: Any
+) -> tuple[Any, ...]:
     """``sinks`` gated by :func:`_termination_mask` when ``primal`` declares
     one. The single call both :func:`vjp` and :func:`jvp` make before
-    tagging their result, masking every sink shape uniformly."""
-    mask = _termination_mask(primal)
+    tagging their result, masking every sink shape uniformly. ``context`` is
+    the one the primal's nodes live in."""
+    mask = _termination_mask(primal, context)
     if mask is None:
         return tuple(sinks)
     return tuple(_masked_sink(s, mask) for s in sinks)
 
 
-def _refuse_prior_read(seq: Sequence[Node]) -> None:
+def _refuse_prior_read(seq: Sequence[Any]) -> None:
     """Refuses a primal containing a ``prior_read`` leaf (a Mutable read
     before its first store), naming the plane.
 
@@ -185,9 +186,9 @@ def _refuse_prior_read(seq: Sequence[Node]) -> None:
     would bind the same adjoint plane twice — plausible wrong answers, not
     crashes, so this must raise instead."""
     for node in seq:
-        if isinstance(node, Leaf) and node.kind == "prior_read":
+        if _ir.is_a(node, "leaf") and node.field_text("kind") == "prior_read":
             raise HawkError(
-                f"{node.name!r} is read before it is assigned: a plane's "
+                f"{node.field_text('name')!r} is read before it is assigned: a plane's "
                 "launch-start value is a recurrence across launches; its "
                 "derivative needs the value the primal launch overwrites, "
                 "and hawk keeps no tape inside a launch. Across launches, "
@@ -215,10 +216,41 @@ def _primal_name(primal: Any) -> str | None:
     name = getattr(primal, "name", None)
     return name if isinstance(name, str) else None
 
-#: Node families a transform never pushes through: a bound plane, a literal,
+
+#: Node kinds a transform never pushes through: a bound plane, a literal,
 #: a sink (seeded, not traversed), and the lane index (an address, not a
-#: differentiable quantity).
-_TERMINALS = (Sink, Leaf, Const, SampleIndex, PlaneExtent, LoopIndex, LoopCarry)
+#: differentiable quantity). The loop-body walk keeps its own list (``loops._TERMINALS``): it has no
+#: ``plane_extent`` and it stops at a nested loop, which this transform handles itself.
+_TERMINALS = (
+    "sink",
+    "leaf",
+    "const",
+    "sample_index",
+    "plane_extent",
+    "loop_index",
+    "loop_carry",
+)
+
+
+def _is_terminal(node: Any) -> bool:
+    """Whether ``node`` is of a kind in :data:`_TERMINALS`."""
+    return _ir.is_a(node, *_TERMINALS)
+
+
+def _index_of(sink: Any) -> Any:
+    """The key a scattering ``sink`` commits at, ``None`` for a commit at the lane's own cell."""
+    return sink.operands[1] if len(sink.operands) > 1 else None
+
+
+def _scatter(
+    name: str, value: Any, index: Any, ttype: Any, contract: str = "auto"
+) -> Any:
+    """An accumulating commit of ``value`` into plane ``name`` at ``index`` (``None``: the lane's own cell)."""
+    operands = [value] if index is None else [value, index]
+    return _ir.make_node(
+        "AccumWrite", ttype, operands, name=name, contract=contract, reduced=None
+    )
+
 
 #: dtypes a derivative flows through; everything else is a structural constant.
 _DIFFERENTIABLE = ("f64", "f32")
@@ -233,6 +265,7 @@ def _rederivable(derive):
     group, so a kernel built from it launches over the same lanes and the
     broadcast door can differentiate a broadcast twin of the primal instead
     (:mod:`hawk._broadcast`)."""
+
     @functools.wraps(derive)
     def wrapped(primal, **kw):
         out = derive(primal, **kw)
@@ -246,9 +279,13 @@ def _rederivable(derive):
 
 
 @_rederivable
-def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
-        primal_unit: str | None = None,
-        strategy: Mapping[str, str] | None = None) -> Derived:
+def vjp(
+    primal: Any,
+    *,
+    wrt: Sequence[str] | None = None,
+    primal_unit: str | None = None,
+    strategy: Mapping[str, str] | None = None,
+) -> Derived:
     """The reverse-mode derivative IR of ``primal``: one adjoint plane per
     primal sink in, one gradient plane per ``wrt`` input out. Returned as
     :class:`Derived`, tagging ``primal``'s name and the resolved ``wrt``.
@@ -266,95 +303,138 @@ def vjp(primal: Any, *, wrt: Sequence[str] | None = None,
     of the primal's dispatch GROUP ``group`` (the sidecar's positional
     ``dispatch<i>`` name), which otherwise inherit the primal's strategy: the
     reverse takes its own structure. Any of
-    :data:`raptor.wings.base.dispatch.DISPATCH_STRATEGIES` is accepted; an unknown group
+    the dispatch strategies of the library is accepted; an unknown group
     or strategy refuses by name."""
     if getattr(primal, "members", None):
         from .chain import vjp_chain
+
         return vjp_chain(primal, wrt, primal_unit, strategy)
     primal = _single_step(primal)
     sinks = _sinks_of(primal)
-    cells = param_cell_names(canonical_nodes(sinks)[0])
+    cells = _ir.param_cell_names(_ir.canonical_nodes(sinks)[0])
     if cells:
         return _vjp_param_cells(primal, cells, wrt, primal_unit, strategy)
-    return _vjp(primal, sinks, wrt, primal_unit, strategy, summed=(), kept=kept_of(tuple(getattr(primal, "sinks", primal))))
+    return _vjp(
+        primal,
+        sinks,
+        wrt,
+        primal_unit,
+        strategy,
+        summed=(),
+        kept=kept_of(tuple(getattr(primal, "sinks", primal))),
+    )
 
 
-def _vjp(primal: Any, sinks: tuple, wrt: Sequence[str] | None,
-         primal_unit: str | None, strategy: Mapping[str, str] | None,
-         summed: tuple, kept: tuple | None = None) -> Derived:
+def _vjp(
+    primal: Any,
+    sinks: tuple,
+    wrt: Sequence[str] | None,
+    primal_unit: str | None,
+    strategy: Mapping[str, str] | None,
+    summed: tuple,
+    kept: tuple | None = None,
+) -> Derived:
     """:func:`vjp` proper; the gradient of each input named in ``summed``
-    is summed over samples (:class:`~raptor.ir.nodes.SampleSum`). ``kept`` is set when the primal
+    is summed over samples (a ``SampleSum`` sink). ``kept`` is set when the primal
     stores an ordered keyed sum: its scatters become an ordered log (:mod:`hawk.diff.ordered`)."""
     overrides = _strategy_overrides(primal, strategy)
     jump = jump_of(primal)
     drop_width((), wrt, jump)
-    seq, position = canonical_nodes(sinks)
+    seq, position = _ir.canonical_nodes(sinks)
     _refuse_prior_read(seq)
+    context = sinks[0].ctx
     inputs = drop_width(_wrt(seq, wrt), None, jump)
-    name = _Namer(ADJOINT_PREFIX, _taken(seq),
-                  _named(sinks, inputs))
-    name.counts = _compact_counts(primal)
+    name = _Namer(ADJOINT_PREFIX, _taken(seq), _named(sinks, inputs))
+    name.counts = _compact_counts(primal, context)
     key = _keyer(position)
     plan = _plan(seq, key, inputs, jump, primal)
     alt = AltPath.of(plan, seq, reverse=True)
     if alt is not None:
         for node in seq:
-            if not isinstance(node, _TERMINALS):
+            if not _is_terminal(node):
                 alt.visit(node, None)
-    adjoint: dict[Any, Node] = {}
+    adjoint: dict[Any, Any] = {}
     for sink in sinks:
-        if isinstance(sink, Loop):
+        if _ir.is_a(sink, "loop"):
             raise HawkError(
                 "this IR's root set contains a lowered loop that COMMITS once per "
                 "iteration, which only a DERIVED kernel does: second-order reverse "
                 "mode through a `for` is not built. Publish the first "
-                "derivative and differentiate that kernel")
-        if sink.ttype.dtype in INT_PLANE_DTYPES:
-            continue                # an integer plane takes no adjoint
-        _accumulate(adjoint, key, sink.value, _seed(sink, name))
+                "derivative and differentiate that kernel"
+            )
+        if _ir.type_of(sink).dtype in _ir.INT_PLANE_DTYPES:
+            continue  # an integer plane takes no adjoint
+        _accumulate(adjoint, key, sink.operands[0], _seed(sink, name))
     if alt is not None:
         alt.g = alt.seed_gain(sinks, lambda s: _seed(s, name))
         for site, weight in alt.injections():
             lhs, rhs = site.operands
             _accumulate(adjoint, key, lhs, weight)
-            _accumulate(adjoint, key, rhs, _mk("neg", (weight,)))
-    scatters: list[Node] = []
+            _accumulate(adjoint, key, rhs, _ir.make("neg", (weight,)))
+    scatters: list[Any] = []
     scattered: set[str] = set()
     accumulated: set[str] = set()
-    _reverse_pass(seq, key, adjoint, inputs, name, scatters, scattered,
-                  overrides=overrides, jump=None if alt is not None else plan,
-                  accumulated=accumulated, exclusive=_loop_exclusive(seq, inputs),
-                  alt=alt)
+    _reverse_pass(
+        seq,
+        key,
+        adjoint,
+        inputs,
+        name,
+        scatters,
+        scattered,
+        overrides=overrides,
+        jump=None if alt is not None else plan,
+        accumulated=accumulated,
+        exclusive=_loop_exclusive(seq, inputs),
+        alt=alt,
+    )
     for leaf in inputs:
-        if name(leaf.name) not in accumulated:
+        if name(leaf.field_text("name")) not in accumulated:
             continue
-        if adjoint.get(key(leaf)) is not None:   # pragma: no cover - by the pre-scan
+        if adjoint.get(key(leaf)) is not None:  # pragma: no cover - by the pre-scan
             raise HawkError(
-                f"the gradient of {leaf.name!r} is accumulated at runtime indices "
-                "inside a loop AND reaches a contribution outside that loop")
+                f"the gradient of {leaf.field_text('name')!r} is accumulated at runtime indices "
+                "inside a loop AND reaches a contribution outside that loop"
+            )
     gradients = [
-        _gradient_sink(leaf, name(leaf.name), summed,
-                       adjoint.get(key(leaf)) or zero_like(leaf.ttype))
+        _gradient_sink(
+            leaf,
+            name(leaf.field_text("name")),
+            summed,
+            adjoint.get(key(leaf)) or _ir.zero_like(context, _ir.type_of(leaf)),
+        )
         for leaf in inputs
-        if leaf.role != "lookup" and leaf.name not in scattered
-        and name(leaf.name) not in accumulated
+        if leaf.field_text("role") != "lookup"
+        and leaf.field_text("name") not in scattered
+        and name(leaf.field_text("name")) not in accumulated
     ]
     held = getattr(primal, "broadcast", ())
-    scatters = _compensated(scatters, {name(leaf.name) for leaf in inputs if leaf.name in held})
-    out = _slotwise.slotwise(_mask_termination(gradients + list(scatters), primal))
+    scatters = _compensated(
+        scatters,
+        {
+            name(leaf.field_text("name"))
+            for leaf in inputs
+            if leaf.field_text("name") in held
+        },
+    )
+    out = _ir.slotwise(_mask_termination(gradients + list(scatters), primal, context))
     if kept is not None:
         out = order(out, kept)
-    names = tuple(leaf.name for leaf in inputs)
+    names = tuple(leaf.field_text("name") for leaf in inputs)
     if plan is not None:
         out += plan.spread_cells()
-    return Derived(out, primal=_primal_name(primal), kind="vjp", wrt=names,
-                   primal_unit=primal_unit,
-                   jump=None if plan is None else plan.record(names))
+    return Derived(
+        out,
+        primal=_primal_name(primal),
+        kind="vjp",
+        wrt=names,
+        primal_unit=primal_unit,
+        jump=None if plan is None else plan.record(names),
+    )
 
 
-
-def _compact_counts(primal: Any) -> dict:
-    """``{plane: the column count of its compact plane}`` (an ``i32`` node) for each
+def _compact_counts(primal: Any, context: Any) -> dict:
+    """``{plane: the column count of its compact plane}`` (an ``i32`` node of ``context``) for each
     plane a broadcast twin reads at the axes it varies along: the product of the
     kept axes' extents, a kept runtime first axis through the lane count."""
     held = getattr(primal, "broadcast", None) or {}
@@ -363,7 +443,7 @@ def _compact_counts(primal: Any) -> dict:
     for plane, kept in held.items():
         if axes is None or kept is None:
             continue
-        t = TensorType((), "i32")
+        t = _ir.TensorType((), "i32")
         fixed = 1
         for (_label, extent), k in zip(axes, kept):
             fixed *= extent if k and extent is not None else 1
@@ -371,64 +451,79 @@ def _compact_counts(primal: Any) -> dict:
             rest = 1
             for (_label, extent), k in zip(axes, kept):
                 rest *= 1 if k else extent
-            lanes = Leaf("nsamples", "nsamples", "n_samples", t)
-            out[plane] = lanes if rest == 1 else _mk("floordiv", (lanes, Const(rest, t)))
+            lanes = _ir.leaf(context, "nsamples", "nsamples", "n_samples", t)
+            out[plane] = (
+                lanes
+                if rest == 1
+                else _ir.make("floordiv", (lanes, _ir.const(context, rest, t)))
+            )
         else:
-            out[plane] = Const(fixed, t)
+            out[plane] = _ir.const(context, fixed, t)
     return out
 
 
-def _scatter_payload(name: _Namer, plane: str, g: Node, index: Node) -> list:
+def _scatter_payload(name: _Namer, plane: str, g: Any, index: Any) -> list:
     """The scattered accumulate of ``g`` into the adjoint of ``plane`` at ``index``:
     a rank-0 value as it is; a vector or matrix one scalar accumulate per entry
     ``k`` (row-major) at ``index + k * count`` of ONE component-major plane, so the
     gradient has the layout of the compact plane it is the gradient of. Only a
     broadcast twin knows its column count (:func:`_compact_counts`); any other
     rank >= 1 scatter is left whole, which the emitter refuses by name."""
-    shape = g.ttype.shape
-    if not shape:
-        return [AccumWrite(name(plane), g, index, g.ttype)]
+    g_type = _ir.type_of(g)
+    shape = g_type.shape
     count = name.counts.get(plane)
-    if count is None:       # not a broadcast twin: the emitter refuses a rank >= 1 scatter by name
-        return [AccumWrite(name(plane), g, index, g.ttype)]
-    t, scalar = index.ttype, TensorType((), g.ttype.dtype)
+    if (
+        not shape or count is None
+    ):  # not a broadcast twin: the emitter refuses a rank >= 1 scatter by name
+        return [_scatter(name(plane), g, index, g_type)]
+    t, scalar = _ir.type_of(index), _ir.TensorType((), g_type.dtype)
     out = []
-    for k in range(g.ttype.shape[0] * (g.ttype.shape[1] if len(shape) == 2 else 1)):
+    for k in range(shape[0] * (shape[1] if len(shape) == 2 else 1)):
         at = (k // shape[1], k % shape[1]) if len(shape) == 2 else k
-        key = index if k == 0 else _mk("add", (index, _mk("mul", (count, Const(k, t)))))
-        out.append(AccumWrite(name(plane), _mk("component", (g,), literal=at), key, scalar))
+        key = (
+            index
+            if k == 0
+            else _ir.make(
+                "add", (index, _ir.make("mul", (count, _ir.const(index.ctx, k, t))))
+            )
+        )
+        out.append(
+            _scatter(name(plane), _ir.make("component", (g,), literal=at), key, scalar)
+        )
     return out
 
-def _compensated(scatters: Sequence[Node], planes: set) -> list:
+
+def _compensated(scatters: Sequence[Any], planes: set) -> list:
     """``scatters`` with each accumulate into a plane of ``planes`` compensated,
     its companion bound by a zero commit at the same key. A gradient plane summed
     over the lane axes a broadcast input does not vary along."""
     out: list = []
     for s in scatters:
-        if isinstance(s, AccumWrite) and s.name in planes:
-            s = AccumWrite(s.name, s.value, s.index, s.ttype, "compensated")
-            out.append(s)
-            out.append(AccumWrite(s.name + COMPANION_SUFFIX, Const(0.0, TensorType((), s.ttype.dtype)),
-                                  s.index, s.ttype))
+        if _ir.is_a(s, "accum_write") and s.field_text("name") in planes:
+            name, ttype, index = s.field_text("name"), _ir.type_of(s), _index_of(s)
+            out.append(_scatter(name, s.operands[0], index, ttype, "compensated"))
+            zero = _ir.const(s.ctx, 0.0, _ir.TensorType((), ttype.dtype))
+            out.append(_scatter(name + _ir.COMPANION_SUFFIX, zero, index, ttype))
         else:
             out.append(s)
     return out
 
 
-def _loop_exclusive(seq: Sequence[Node], inputs: Sequence[Leaf]) -> frozenset:
-    """The ids of the ``wrt`` leaves read ONLY inside lowered-loop bodies: no
+def _loop_exclusive(seq: Sequence[Any], inputs: Sequence[Any]) -> frozenset:
+    """The ``wrt`` leaves read ONLY inside lowered-loop bodies: no
     top-level node (a sink included) reads one, and none is a carried slot's
     initial value. Such a leaf's gradient can be committed by the loops alone
     (:func:`hawk.diff.loops.reverse_loop`, the per-iteration accumulate)."""
     dense: set = set()
     for n in seq:
-        held = n.inits if isinstance(n, Loop) else n.operands
-        dense.update(id(c) for c in held if isinstance(c, Leaf))
-    return frozenset(id(leaf) for leaf in inputs if id(leaf) not in dense)
+        held = n.field_nodes("inits") if _ir.is_a(n, "loop") else n.operands
+        dense.update(c for c in held if _ir.is_a(c, "leaf"))
+    return frozenset(leaf for leaf in inputs if leaf not in dense)
 
 
-def _plan(seq: Sequence[Node], key, inputs: Sequence[Leaf], jump: Any,
-          primal: Any) -> JumpPlan | None:
+def _plan(
+    seq: Sequence[Any], key, inputs: Sequence[Any], jump: Any, primal: Any
+) -> JumpPlan | None:
     """The switching comparisons of a ``jump=`` primal, ``None`` when it
     declares none or none of its comparisons switches."""
     if jump is None:
@@ -437,31 +532,54 @@ def _plan(seq: Sequence[Node], key, inputs: Sequence[Leaf], jump: Any,
     return plan if plan.sites else None
 
 
-def _gradient_sink(leaf: Node, name: str, summed: tuple, value: Node) -> Node:
+def _gradient_sink(leaf: Any, name: str, summed: tuple, value: Any) -> Any:
     """The sink of one input's gradient: the sum over samples of the per-sample
     adjoint for a promoted parameter, else the adjoint plane itself."""
-    if leaf.name in summed:
-        if leaf.ttype.shape:
-            raise HawkError(f"the gradient of {leaf.name!r} cannot be summed over samples: "
-                            f"only a scalar leaf is, and it has shape {leaf.ttype.shape}")
-        return _cells.stored(ReduceSamples("sum", value), name, leaf.ttype)[0]
-    return Assign(name, value, leaf.ttype)
+    ttype = _ir.type_of(leaf)
+    if leaf.field_text("name") in summed:
+        if ttype.shape:
+            raise HawkError(
+                f"the gradient of {leaf.field_text('name')!r} cannot be summed over "
+                f"samples: only a scalar leaf is, and it has shape {ttype.shape}"
+            )
+        reduction = _ir.make_node(
+            "ReduceSamples",
+            _ir.type_of(value),
+            [value],
+            op="sum",
+            contract="auto",
+            key=None,
+            count=None,
+            kept=None,
+        )
+        return _ir.cells_stored(reduction, name)[0]
+    return _ir.make_node("Assign", ttype, [value], name=name)
 
 
-def _vjp_param_cells(primal: Any, cells: tuple, wrt: Sequence[str] | None,
-                     primal_unit: str | None,
-                     strategy: Mapping[str, str] | None) -> Derived:
+def _vjp_param_cells(
+    primal: Any,
+    cells: tuple,
+    wrt: Sequence[str] | None,
+    primal_unit: str | None,
+    strategy: Mapping[str, str] | None,
+) -> Derived:
     """The reverse of a kernel reading parameter cells (see
     :func:`hawk.diff.param_planes`): differentiate the form that reads each
     cell as a per-sample plane, sum each cell's gradient over every 32
-    samples (``bar_<name>`` rows, :class:`~raptor.ir.nodes.SampleSum`), then
+    samples (``bar_<name>`` rows, ``SampleSum`` sinks), then
     read the cells again in the derived kernel."""
     from .params import demote, promote
 
     per_sample = _Demoted(primal, demote(_sinks_of(primal)))
     d = _vjp(per_sample, per_sample.sinks, wrt, primal_unit, strategy, summed=cells)
-    return Derived(promote(d, cells), primal=_primal_name(primal), kind="vjp",
-                   wrt=d.wrt, primal_unit=primal_unit, jump=d.jump)
+    return Derived(
+        promote(d, cells),
+        primal=_primal_name(primal),
+        kind="vjp",
+        wrt=d.wrt,
+        primal_unit=primal_unit,
+        jump=d.jump,
+    )
 
 
 class _Demoted:
@@ -474,8 +592,9 @@ class _Demoted:
         self.jump = getattr(primal, "jump", None)
 
 
-def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
-        primal_unit: str | None = None) -> Derived:
+def jvp(
+    primal: Any, *, wrt: Sequence[str] | None = None, primal_unit: str | None = None
+) -> Derived:
     """The forward-mode derivative IR of ``primal``: one tangent plane
     per ``wrt`` input in, one directional-derivative sink per primal sink out.
     Returned as :class:`Derived`, tagging ``primal``'s name and the resolved
@@ -489,11 +608,14 @@ def jvp(primal: Any, *, wrt: Sequence[str] | None = None,
     if fused is not None:
         from ..trace.steps import steps
         from .tape import step_jvp
+
         return steps(step_jvp(fused[0], wrt=wrt), fused[1])
     return _jvp(primal, wrt=wrt, primal_unit=primal_unit)
 
 
-def with_derivative(primal: Any, *, wrt: Sequence[str] | None = None, name: str | None = None) -> Any:
+def with_derivative(
+    primal: Any, *, wrt: Sequence[str] | None = None, name: str | None = None
+) -> Any:
     """ONE kernel that computes ``primal``'s outputs and their forward-mode tangents along ``wrt``: the sinks of
     ``primal`` followed by the sinks of :func:`jvp`. The result is a plain :class:`hawk.Kernel` (not a derivative
     kernel), so it runs anywhere a kernel runs, as a step of an ``eagle.Graph`` builder included. Its planes are
@@ -506,133 +628,181 @@ def with_derivative(primal: Any, *, wrt: Sequence[str] | None = None, name: str 
     if _fused_steps_of(primal) is not None:
         raise HawkError(
             "hawk.diff.with_derivative: this is a hawk.steps(k, K) kernel; its tangent is carried across the steps, "
-            "so take jvp(k) (one kernel) or with_derivative of the single step")
+            "so take jvp(k) (one kernel) or with_derivative of the single step"
+        )
     one = _single_step(primal)
     tangent = _jvp(primal, wrt=wrt)
     sinks = (*_sinks_of(one), *tangent)
     label = name or f"{_primal_name(one) or 'kernel'}_with_derivative"
     declared = dict(getattr(one, "planes", None) or {})
-    if declared:     # a tangent plane is declared like the plane it is the tangent of, so calls bind and size it
-        names = [nm for _role, nm in Kernel(label, sinks, kind=getattr(one, "kind", None)).arg_spec]
+    if declared:  # a tangent plane is declared like the plane it is the tangent of, so calls bind and size it
+        names = [
+            nm
+            for _role, nm in Kernel(
+                label, sinks, kind=getattr(one, "kind", None)
+            ).arg_spec
+        ]
         lead = TANGENT_PREFIX + "_"
-        extra = [(nm, declared[nm[len(lead):]]) for nm in names
-                 if nm not in declared and nm.startswith(lead) and nm[len(lead):] in declared]
+        extra = [
+            (nm, declared[nm[len(lead) :]])
+            for nm in names
+            if nm not in declared
+            and nm.startswith(lead)
+            and nm[len(lead) :] in declared
+        ]
         # input tangents first, then output tangents, each in the primal's own order
         order = list(declared)
-        extra.sort(key=lambda e: (getattr(e[1], "form", "") == "mutable", order.index(e[0][len(lead):])))
+        extra.sort(
+            key=lambda e: (
+                getattr(e[1], "form", "") == "mutable",
+                order.index(e[0][len(lead) :]),
+            )
+        )
         declared.update(extra)
     return Kernel(label, sinks, declared or None, kind=getattr(one, "kind", None))
 
 
 @_rederivable
-def _jvp(primal: Any, *, wrt: Sequence[str] | None = None,
-         primal_unit: str | None = None) -> Derived:
+def _jvp(
+    primal: Any, *, wrt: Sequence[str] | None = None, primal_unit: str | None = None
+) -> Derived:
     if getattr(primal, "members", None):
         from .chain import jvp_chain
+
         return jvp_chain(primal, wrt, primal_unit)
     primal = _single_step(primal)
     sinks = _sinks_of(primal)
     for sink in sinks:
-        if isinstance(sink, Loop):
+        if _ir.is_a(sink, "loop"):
             raise HawkError(
                 "this IR's root set contains a lowered loop that COMMITS once per "
                 "iteration, which only a DERIVED kernel does: second-order forward "
-                "mode through a `for` is not built")
+                "mode through a `for` is not built"
+            )
     jump = jump_of(primal)
     drop_width((), wrt, jump)
-    seq, position = canonical_nodes(sinks)
+    seq, position = _ir.canonical_nodes(sinks)
     _refuse_prior_read(seq)
+    context = sinks[0].ctx
     inputs = drop_width(_wrt(seq, wrt), None, jump)
-    name = _Namer(TANGENT_PREFIX, _taken(seq),
-                  _named(sinks, inputs))
+    name = _Namer(TANGENT_PREFIX, _taken(seq), _named(sinks, inputs))
     key = _keyer(position)
     plan = _plan(seq, key, inputs, jump, primal)
     alt = AltPath.of(plan, seq)
-    tangent: dict[Any, Node] = {
-        key(leaf): Leaf(leaf.kind, leaf.role, name(leaf.name), leaf.ttype,
-                        sorted=leaf.sorted)
+    tangent: dict[Any, Any] = {
+        key(leaf): _ir.leaf(
+            context,
+            leaf.field_text("kind"),
+            leaf.field_text("role"),
+            name(leaf.field_text("name")),
+            _ir.type_of(leaf),
+            sorted=leaf.field_flag("sorted"),
+        )
         for leaf in inputs
     }
     #: The AUGMENTED loop a lowered `for` becomes in forward mode — one loop
     #: carrying the primal slots and their tangents side by side; slot `m + j`
     #: is the tangent of the primal's slot `j` (hawk/diff/loops.py).
-    loop_tangent: dict[Any, Node] = {}
+    loop_tangent: dict[Any, Any] = {}
     for node in seq:
-        if isinstance(node, _TERMINALS):
+        if _is_terminal(node):
             continue
         if alt is not None:
             alt.visit(node, lambda c: tangent.get(key(c)))
-        elif plan is not None and _jump_jvp(node, plan, tangent, key):
+        elif plan is not None and _jump_jvp(node, plan, key, tangent):
             continue
-        if isinstance(node, Loop):
+        if _ir.is_a(node, "loop"):
             # `loop_tangent` is also consulted by the LoopValue arm below: a
             # reverse loop's body reads the forward loop's tape, and the
             # tangent of that read is the same row of this augmented twin
             # (hawk/diff/loops._tape_tangent). The walk visits the taped
             # forward loop before the reverse loop that reads it, so the
             # twin is always already in this table when needed.
-            got = forward_loop(node, lambda c: tangent.get(key(c)), name,
-                               lambda lp: loop_tangent.get(key(lp)),
-                               jump=None if alt is not None else plan, alt=alt)
+            got = forward_loop(
+                node,
+                lambda c: tangent.get(key(c)),
+                name,
+                lambda lp: loop_tangent.get(key(lp)),
+                jump=None if alt is not None else plan,
+                alt=alt,
+            )
             if got is not None:
                 loop_tangent[key(node)] = got
             continue
-        if isinstance(node, LoopValue):
-            augmented = loop_tangent.get(key(node.loop))
+        if _ir.is_a(node, "loop_value"):
+            loop, slot = _ir.loop_value_of(node)
+            augmented = loop_tangent.get(key(loop))
             if augmented is not None:
-                tangent[key(node)] = LoopValue(
-                    augmented, node.loop.carry_count + node.slot)
+                tangent[key(node)] = _ir.loop_value(
+                    augmented, len(loop.field_nodes("carries")) + slot
+                )
             continue
-        if isinstance(node, Primitive):
-            supplied = [tangent.get(key(c)) for c in node.inputs]
+        if _ir.is_a(node, "primitive"):
+            supplied = [tangent.get(key(c)) for c in node.operands[1:]]
             if any(t is not None for t in supplied):
                 got = jvp_tangent(node, supplied)
                 if got is not None:
                     tangent[key(node)] = got
             continue
-        if isinstance(node, At):
-            plane = tangent.get(key(node.plane))
+        if _ir.is_a(node, "at"):
+            plane, index = node.operands
+            plane = tangent.get(key(plane))
             if plane is not None:
-                tangent[key(node)] = At(plane, node.index, node.ttype)
+                tangent[key(node)] = _ir.make_node("At", _ir.type_of(node), [plane, index])
             continue
-        if isinstance(node, Dispatch):
+        if _ir.is_a(node, "dispatch"):
             # `t_out = dispatch(kind, [t_e0, ..., t_eK])`, same strategy and
             # selector (`kind` carries no tangent of its own). A branch with
             # no tangent contributes the structural zero — select's own
             # missing-tangent rule — and branch tangents are used only
             # inside this node, so the emitter inlines each in its own
             # case/select arm.
-            branch_tangents = [tangent.get(key(b)) for b in node.branches]
+            selector, *branches = node.operands
+            branch_tangents = [tangent.get(key(b)) for b in branches]
             if any(t is not None for t in branch_tangents):
-                filled = [t if t is not None else zero_like(b.ttype)
-                         for t, b in zip(branch_tangents, node.branches)]
-                tangent[key(node)] = _dispatch_kind.dispatch(node.selector, filled, _dispatch_kind.strategy(node),
-                                              node.ttype)
+                filled = [
+                    t if t is not None else _ir.zero_like(context, _ir.type_of(b))
+                    for t, b in zip(branch_tangents, branches)
+                ]
+                tangent[key(node)] = dispatch_node(
+                    selector, filled, dispatch_strategy(node), _ir.type_of(node)
+                )
             continue
         if any(tangent.get(key(c)) is not None for c in node.operands):
             got = _rule(node).jvp(node, lambda c: tangent.get(key(c)))
             if got is not None:
                 tangent[key(node)] = got
     if alt is not None:
-        made = alt.sinks(sinks, lambda v: tangent.get(key(v)),
-                         lambda s, v, index=None: _tangent_sink(s, v, name, index))
+        made = alt.sinks(
+            sinks,
+            lambda v: tangent.get(key(v)),
+            lambda s, v, index=None: _tangent_sink(s, v, name, index),
+        )
     else:
-        made = tuple(_tangent_sink(s, tangent.get(key(s.value)), name) for s in sinks
-                     if s.ttype.dtype not in INT_PLANE_DTYPES)
-    out = _slotwise.slotwise(_mask_termination(made, primal))
-    names = tuple(leaf.name for leaf in inputs)
+        made = tuple(
+            _tangent_sink(s, tangent.get(key(s.operands[0])), name)
+            for s in sinks
+            if _ir.type_of(s).dtype not in _ir.INT_PLANE_DTYPES
+        )
+    out = _ir.slotwise(_mask_termination(made, primal, context))
+    names = tuple(leaf.field_text("name") for leaf in inputs)
     if plan is not None:
         out += plan.spread_cells()
     return Derived(
-        out, primal=_primal_name(primal), kind="jvp", wrt=names,
+        out,
+        primal=_primal_name(primal),
+        kind="jvp",
+        wrt=names,
         primal_unit=primal_unit,
-        jump=None if plan is None else plan.record(names))
+        jump=None if plan is None else plan.record(names),
+    )
 
 
-def _jump_jvp(node: Node, plan: JumpPlan, tangent: dict, key) -> bool:
+def _jump_jvp(node: Any, plan: JumpPlan, key, tangent: dict) -> bool:
     """Forward mode's boolean-op rules of a ``jump=`` primal: whether
     ``node`` was one (its tangent, if any, recorded)."""
-    def t(c: Node) -> Node | None:
+
+    def t(c: Any) -> Any:
         return tangent.get(key(c))
 
     handled, got = plan.apply_jvp(node, t, lambda n: _rule(n).jvp(n, t))
@@ -645,27 +815,36 @@ def _jump_jvp(node: Node, plan: JumpPlan, tangent: dict, key) -> bool:
 # the reverse-mode dispatch rule
 
 
-def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
-                  inputs: Sequence[Leaf], name: _Namer, scatters: list[Node],
-                  scattered: set[str], *, local_pass: bool = False,
-                  overrides: Mapping[int, str] | None = None,
-                  cut: frozenset = frozenset(),
-                  jump: JumpPlan | None = None,
-                  accumulated: set | None = None,
-                  exclusive: frozenset = frozenset(), alt=None) -> None:
+def _reverse_pass(
+    seq: Sequence[Any],
+    key,
+    adjoint: dict[Any, Any],
+    inputs: Sequence[Any],
+    name: _Namer,
+    scatters: list[Any],
+    scattered: set[str],
+    *,
+    local_pass: bool = False,
+    overrides: Mapping[Any, str] | None = None,
+    cut: frozenset = frozenset(),
+    jump: JumpPlan | None = None,
+    accumulated: set | None = None,
+    exclusive: frozenset = frozenset(),
+    alt=None,
+) -> None:
     """One reverse-accumulation pass over ``seq``, given an already-seeded
     ``adjoint`` — the core step :func:`vjp` runs once over the whole walk,
     seeded at every primal sink.
 
     :func:`_dispatch_vjp` reuses this in isolation over one
-    :class:`~raptor.ir.nodes.Dispatch` branch's exclusive sub-DAG, with
+    dispatch branch's exclusive sub-DAG, with
     ``local_pass=True``: a fresh ``adjoint`` seeded at only that branch's
     root. A node reachable from branch j alone keeps exactly that seed's
     contribution; one also reachable elsewhere accumulates a second
     contribution the ordinary way, via the same ``_accumulate`` fan-in any
     shared subexpression uses.
 
-    ``local_pass`` changes one thing: an :class:`~raptor.ir.nodes.At`'s reverse
+    ``local_pass`` changes one thing: a gather's (``at``) reverse
     (gather -> scatter) is a real sink, not a value, so it cannot be masked
     in place. A local pass records its contribution into ``adjoint`` instead
     and leaves the scatter itself to :func:`_dispatch_vjp`'s merge step,
@@ -677,17 +856,24 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
     for node in reversed(seq):
         g = adjoint.get(key(node))
         if cut and key(node) in cut:
-            continue        # a shared node: :func:`_dispatch_vjp` seeds it once
-        if isinstance(node, LoopValue):
+            continue  # a shared node: :func:`_dispatch_vjp` seeds it once
+        if _ir.is_a(node, "loop_value"):
             if g is not None:
-                loop_seeds.setdefault(key(node.loop), {})[node.slot] = g
+                owner, slot = _ir.loop_value_of(node)
+                loop_seeds.setdefault(key(owner), {})[slot] = g
             continue
-        if isinstance(node, Loop):
-            derived = reverse_loop(node, loop_seeds.get(key(node), {}), inputs,
-                                   name, jump=jump, exclusive=exclusive, alt=alt)
+        if _ir.is_a(node, "loop"):
+            derived = reverse_loop(
+                node,
+                loop_seeds.get(key(node), {}),
+                inputs,
+                name,
+                jump=jump,
+                exclusive=exclusive,
+                alt=alt,
+            )
             for child, contribution in derived.contributions:
-                _accumulate(adjoint, key, child,
-                            _reduce_to(contribution, child.ttype))
+                _accumulate(adjoint, key, child, _reduce_to(contribution, child))
             scatters.extend(derived.roots)
             scattered |= set(derived.scattered)
             if derived.accumulated:
@@ -695,52 +881,85 @@ def _reverse_pass(seq: Sequence[Node], key, adjoint: dict[Any, Node],
                     raise HawkError(
                         "a loop that accumulates a gradient plane per iteration "
                         "reached a reverse pass that cannot own it (a dispatch "
-                        "branch): not built")
+                        "branch): not built"
+                    )
                 accumulated |= set(derived.accumulated)
             continue
-        if g is None or isinstance(node, _TERMINALS):
+        if g is None or _is_terminal(node):
             continue
-        if isinstance(node, At):
+        if _ir.is_a(node, "at"):
+            plane, index = node.operands
             if local_pass:
                 # `g` already holds this node's fully-accumulated local
                 # contribution — from consumers reached within this pass, or
                 # as the branch's own seed. Folding it in again here would
                 # double every scatter this local pass reaches.
                 continue
-            if node.plane in inputs:
-                scattered.add(node.plane.name)
-                scatters.extend(_scatter_payload(name, node.plane.name, g, node.index))
+            if plane in inputs:
+                scattered.add(plane.field_text("name"))
+                scatters.extend(
+                    _scatter_payload(name, plane.field_text("name"), g, index)
+                )
             continue
-        if isinstance(node, Primitive):
+        if _ir.is_a(node, "primitive"):
             # Operand 0 (the forward subgraph) is deliberately skipped: the
             # supplied rule already is this primitive's derivative.
             for child, contribution in vjp_contributions(node, g):
-                _accumulate(adjoint, key, child,
-                            _reduce_to(contribution, child.ttype))
+                _accumulate(adjoint, key, child, _reduce_to(contribution, child))
             continue
-        if isinstance(node, Dispatch):
-            _dispatch_vjp(node, g, seq, key, inputs, name, adjoint, scatters,
-                         scattered, overrides, jump)
+        if _ir.is_a(node, "dispatch"):
+            _dispatch_vjp(
+                node,
+                g,
+                seq,
+                key,
+                inputs,
+                name,
+                adjoint,
+                scatters,
+                scattered,
+                overrides,
+                jump,
+            )
             continue
         if jump is not None and jump.apply_vjp(
-                node, g, lambda child, c: _accumulate(adjoint, key, child,
-                                                      _reduce_to(c, child.ttype))):
+            node, g, lambda child, c: _accumulate(adjoint, key, child, _reduce_to(c, child))
+        ):
             continue
         if jump is None:
             guarded = guarded_select(node)
             if guarded is not None:
-                _dispatch_vjp(guarded, g, seq, key, inputs, name, adjoint, scatters,
-                              scattered, overrides, jump)
+                _dispatch_vjp(
+                    guarded,
+                    g,
+                    seq,
+                    key,
+                    inputs,
+                    name,
+                    adjoint,
+                    scatters,
+                    scattered,
+                    overrides,
+                    jump,
+                )
                 continue
         for child, contribution in _rule(node).vjp(node, g):
-            _accumulate(adjoint, key, child, _reduce_to(contribution, child.ttype))
+            _accumulate(adjoint, key, child, _reduce_to(contribution, child))
 
 
-def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
-                  inputs: Sequence[Leaf], name: _Namer, adjoint: dict[Any, Node],
-                  scatters: list[Node], scattered: set[str],
-                  overrides: Mapping[int, str] | None = None,
-                  jump: JumpPlan | None = None) -> None:
+def _dispatch_vjp(
+    node: Any,
+    g: Any,
+    seq: Sequence[Any],
+    key,
+    inputs: Sequence[Any],
+    name: _Namer,
+    adjoint: dict[Any, Any],
+    scatters: list[Any],
+    scattered: set[str],
+    overrides: Mapping[Any, str] | None = None,
+    jump: JumpPlan | None = None,
+) -> None:
     """K independent reverse passes, one per branch, each seeded only at that
     branch's own root with the dispatch's incoming adjoint ``g`` — never a
     per-node masked seed pushed through the ordinary chain rule, which would
@@ -752,7 +971,7 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
     accumulated into the enclosing pass like any other contribution (under
     ``overrides``' strategy for this node when :func:`vjp` was given one), so a
     node reached through multiple paths sums correctly. A reached
-    :class:`~raptor.ir.nodes.At` is the one exception: its combined value
+    gather (``at``) is the one exception: its combined value
     becomes one scattered ``AccumWrite`` here, since a scatter is a sink, not
     something a downstream node could read further. ``kind`` itself is never
     seeded and receives no adjoint.
@@ -763,18 +982,28 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
     seeds its own reverse ONCE in the enclosing pass (the adjoint is linear in
     the seed). Every case contributes a real term, so no chain ever runs on a
     zero seed; a node only some branches read keeps the per-branch path."""
-    strategy = (overrides or {}).get(id(node), _dispatch_kind.strategy(node))
+    strategy = (overrides or {}).get(node, dispatch_strategy(node))
+    selector, *branches = node.operands
     shared = _shared_by_all(node, key)
-    reached: dict[int, dict[int, Node]] = {}
-    for j, branch in enumerate(node.branches):
-        seed_slot = key(branch)
-        local: dict[Any, Node] = {seed_slot: g}
-        _reverse_pass(seq, key, local, inputs, name, scatters, scattered,
-                      local_pass=True, overrides=overrides, cut=shared,
-                      jump=jump)
+    reached: dict[int, dict[int, Any]] = {}
+    for j, branch in enumerate(branches):
+        local: dict[int, Any] = {key(branch): g}
+        _reverse_pass(
+            seq,
+            key,
+            local,
+            inputs,
+            name,
+            scatters,
+            scattered,
+            local_pass=True,
+            overrides=overrides,
+            cut=shared,
+            jump=jump,
+        )
         for slot, contribution in local.items():
             target = seq[slot]
-            if not isinstance(target, (Leaf, At)) and slot not in shared:
+            if not _ir.is_a(target, "leaf", "at") and slot not in shared:
                 # Not a leaf of the sub-transform: every other node this
                 # isolated pass reached was already differentiated through,
                 # down to its own leaves, within this one pass. Reporting it
@@ -786,23 +1015,35 @@ def _dispatch_vjp(node: Dispatch, g: Node, seq: Sequence[Node], key,
             reached.setdefault(slot, {})[j] = contribution
     for slot, per_branch in reached.items():
         target = seq[slot]
-        branch_terms = [per_branch.get(j) if per_branch.get(j) is not None
-                        else zero_like(target.ttype) for j in range(node.K)]
-        combined = _dispatch_kind.dispatch(node.selector, branch_terms, strategy, target.ttype)
-        if isinstance(target, At):
-            if target.plane in inputs:
-                scattered.add(target.plane.name)
-                scatters.extend(_scatter_payload(name, target.plane.name, combined,
-                                                 _taken_row(node, target, per_branch)))
+        target_type = _ir.type_of(target)
+        branch_terms = [
+            per_branch.get(j)
+            if per_branch.get(j) is not None
+            else _ir.zero_like(node.ctx, target_type)
+            for j in range(len(branches))
+        ]
+        combined = dispatch_node(selector, branch_terms, strategy, target_type)
+        if _ir.is_a(target, "at"):
+            plane = target.operands[0]
+            if plane in inputs:
+                scattered.add(plane.field_text("name"))
+                scatters.extend(
+                    _scatter_payload(
+                        name,
+                        plane.field_text("name"),
+                        combined,
+                        _taken_row(node, target, per_branch),
+                    )
+                )
             continue
         _accumulate(adjoint, key, target, combined)
 
 
-def _shared_by_all(node: Dispatch, key) -> frozenset:
+def _shared_by_all(node: Any, key) -> frozenset:
     """The keys of the compute nodes (operators, selects, dispatches) read, at any
     depth, by EVERY branch of ``node`` that is not a literal constant — empty
     unless two or more branches are live."""
-    live = [b for b in node.branches if not isinstance(b, Const)]
+    live = [b for b in node.operands[1:] if not _ir.is_a(b, "const")]
     if len(live) < 2:
         return frozenset()
     common: set | None = None
@@ -814,34 +1055,37 @@ def _shared_by_all(node: Dispatch, key) -> frozenset:
             if key(n) not in seen:
                 seen[key(n)] = n
                 stack.extend(n.operands)
-        mine = {k for k, n in seen.items() if isinstance(n, (Op, Dispatch, Select))}
+        mine = {k for k, n in seen.items() if _ir.is_a(n, "op", "dispatch", "select")}
         common = mine if common is None else common & mine
     return frozenset(common)
 
 
-def _strategy_overrides(primal: Any, strategy: Mapping[str, str] | None
-                      ) -> dict[int, str]:
-    """``{id(dispatch node): strategy}`` for :func:`vjp`'s ``strategy=``,
+def _strategy_overrides(
+    primal: Any, strategy: Mapping[str, str] | None
+) -> dict[Any, str]:
+    """``{dispatch node: strategy}`` for :func:`vjp`'s ``strategy=``,
     resolving each group name through the primal's own walk (the numbering
     its sidecar publishes). Refuses an unknown group or strategy by name."""
     if not strategy:
         return {}
     walk = getattr(primal, "walk", None)
     if walk is None:
-        walk = _cells.walk(tuple(getattr(primal, "sinks", primal)))
-    groups = dispatch_groups(walk)
-    out: dict[int, str] = {}
+        walk = _ir.cells_walk(tuple(getattr(primal, "sinks", primal)))
+    groups = {found.name: found.node for found in _ir.dispatch_groups(walk)}
+    out: dict[Any, str] = {}
     for group, chosen in strategy.items():
         if group not in groups:
             raise HawkError(
                 f"vjp(strategy=...): {group!r} is not a dispatch group of "
                 f"{_primal_name(primal) or 'this IR'}; its groups are "
-                f"{sorted(groups)}")
-        if chosen not in _dispatch_kind.DISPATCH_STRATEGIES:
+                f"{sorted(groups)}"
+            )
+        if chosen not in DISPATCH_STRATEGIES:
             raise HawkError(
                 f"vjp(strategy=...): unknown strategy {chosen!r} for {group!r}; "
-                f"declared are {_dispatch_kind.DISPATCH_STRATEGIES}")
-        out[id(groups[group])] = chosen
+                f"declared are {DISPATCH_STRATEGIES}"
+            )
+        out[groups[group]] = chosen
     return out
 
 
@@ -849,15 +1093,34 @@ def _strategy_overrides(primal: Any, strategy: Mapping[str, str] | None
 # the traversal and its keys
 
 
-def _sets_bits(node: Node) -> bool:
+def _keyer(position: Mapping[Any, int]):
+    """The walk's own structural identity, used as the derivative's table key: two equal
+    nodes made apart share one position, so a duplicated subexpression accumulates ONE
+    adjoint (or tangent) like a shared one. A node outside the walk has no key."""
+
+    def key(node: Any) -> int:
+        return position[node]
+
+    return key
+
+
+def _accumulate(store: dict, key: Any, node: Any, contribution: Any) -> None:
+    """Add ``contribution`` to the adjoint ``store`` holds for ``node``'s slot."""
+    slot = key(node)
+    held = store.get(slot)
+    store[slot] = contribution if held is None else _ir.make("add", (held, contribution))
+
+
+def _sets_bits(node: Any) -> bool:
     """Whether ``node`` is an OR-scatter, or a loop whose body holds one."""
-    return (isinstance(node, AccumWrite) and node.contract == "or") or any(
-        _sets_bits(s) for s in getattr(node, "body_sinks", ()))
+    if _ir.is_a(node, "loop"):
+        return any(_sets_bits(s) for s in node.field_nodes("body_sinks"))
+    return _ir.is_a(node, "accum_write") and node.field_text("contract") == "or"
 
 
-def _sinks_of(primal: Any) -> tuple[Sink, ...]:
+def _sinks_of(primal: Any) -> tuple[Any, ...]:
     sinks = tuple(getattr(primal, "sinks", primal))
-    if not sinks or not all(isinstance(s, (Sink, Loop)) for s in sinks):
+    if not sinks or not all(_ir.is_a(s, "sink", "loop") for s in sinks):
         raise HawkError(
             f"{primal!r} is not a kernel or a sink set — a transform differentiates "
             "an IR whose roots are its sinks"
@@ -865,33 +1128,26 @@ def _sinks_of(primal: Any) -> tuple[Sink, ...]:
     # Termination is DISCRETE: a primal's finish statement has no derivative,
     # so the derived kernel binds no counter, writes no mask and carries no
     # sidecar ``finish``; it keeps the primal's mask READ (``_mask_termination``).
-    kept = _block.expand_stores(s for s in sinks if not isinstance(s, Finish))
+    kept = _ir.expand_stores([s for s in sinks if not _ir.is_a(s, "finish")])
     if any(_sets_bits(s) for s in kept):
         raise HawkError(
             f"{primal!r} sets bits by key (`|=`): a bit mask is "
             "discrete and has no derivative; differentiate a kernel that does not "
-            "write it")
+            "write it"
+        )
     if not kept:
         raise HawkError(
-            f"{primal!r} only finishes its sample — it commits no plane to "
-            "differentiate")
+            f"{primal!r} only finishes its sample — it commits no plane to differentiate"
+        )
     return kept
 
 
-def _keyer(position: Mapping[int, int]):
-    """The walk's own structural identity, used as the derivative's memo key:
-    two leaf OBJECTS sharing ``(role, name)`` never split a gradient, and
-    a duplicated subexpression accumulates ONE adjoint."""
-    def key(node: Node) -> int:
-        return position[id(node)]
-    return key
-
-
-def _rule(node: Node):
-    rule = rule_for(node.kind, len(node.ttype.shape))
+def _rule(node: Any):
+    kind = node.field_text("kind")
+    rule = rules.rule_for(kind, len(_ir.type_of(node).shape))
     if rule.vjp is None and rule.jvp is None:
         raise HawkError(
-            f"node kind {node.kind!r} carries no derivative rule ({rule.mode}); "
+            f"node kind {kind!r} carries no derivative rule ({rule.mode}); "
             "it is differentiated by the transform itself, not by the table"
         )
     return rule
@@ -901,43 +1157,59 @@ def _rule(node: Node):
 # inputs, seeds and derived names
 
 
-def _wrt(seq: Iterable[Node], wrt: Sequence[str] | None) -> tuple[Leaf, ...]:
+def _wrt(seq: Iterable[Any], wrt: Sequence[str] | None) -> tuple[Any, ...]:
     """The leaves a derivative is taken with respect to, in traversal order."""
     for node in seq:
-        if getattr(node, "kind", None) == RAW_KIND:
+        if node.field_text("kind") == _ir.RAW_KIND:
             raise HawkError(
                 "a spliced @raw_device block cannot be differentiated: its "
                 "text is opaque to the IR, so no rule can exist for it"
             )
-    leaves = [n for n in seq
-              if isinstance(n, Leaf) and n.ttype.dtype in _DIFFERENTIABLE]
+    leaves = [
+        n
+        for n in seq
+        if _ir.is_a(n, "leaf") and _ir.type_of(n).dtype in _DIFFERENTIABLE
+    ]
     if wrt is None:
         return tuple(leaves)
     wanted = tuple(wrt)
-    integers = sorted({n.name for n in seq if isinstance(n, Leaf) and n.name in wanted
-                       and n.ttype.dtype in INT_PLANE_DTYPES})
+    integers = sorted(
+        {
+            n.field_text("name")
+            for n in seq
+            if _ir.is_a(n, "leaf")
+            and n.field_text("name") in wanted
+            and _ir.type_of(n).dtype in _ir.INT_PLANE_DTYPES
+        }
+    )
     if integers:
         raise HawkError(
             f"wrt names {integers}: an integer plane (int32/uint32) carries no "
             "derivative; drop it from wrt= (a float computed from it through "
-            "hawk.math.real is differentiated with respect to its float inputs)")
-    unknown = [w for w in wanted if not any(leaf.name == w for leaf in leaves)]
+            "hawk.math.real is differentiated with respect to its float inputs)"
+        )
+    unknown = [
+        w for w in wanted if not any(leaf.field_text("name") == w for leaf in leaves)
+    ]
     if unknown:
         raise HawkError(
             f"wrt names {unknown} are not differentiable inputs of this kernel; its "
-            f"inputs are {[leaf.name for leaf in leaves]}"
+            f"inputs are {[leaf.field_text('name') for leaf in leaves]}"
         )
-    return tuple(leaf for leaf in leaves if leaf.name in wanted)
+    return tuple(leaf for leaf in leaves if leaf.field_text("name") in wanted)
 
 
-def _taken(seq: Iterable[Node]) -> set[str]:
-    return {n.binding.name for n in seq if n.binding is not None}
+def _taken(seq: Iterable[Any]) -> set[str]:
+    """The names of the planes ``seq`` binds: its leaves and its sinks."""
+    return {n.field_text("name") for n in seq if _ir.is_a(n, "leaf", "sink")}
 
 
-def _named(sinks: Iterable[Node], inputs: Iterable[Leaf]) -> list[str]:
+def _named(sinks: Iterable[Any], inputs: Iterable[Any]) -> list[str]:
     """The primal planes a derivative will name: its sinks (a lowered loop has none
     and is refused later) and its inputs."""
-    return [n.name for n in (*sinks, *inputs) if hasattr(n, "name")]
+    return [
+        n.field_text("name") for n in (*sinks, *inputs) if _ir.is_a(n, "leaf", "sink")
+    ]
 
 
 class _Namer:
@@ -954,15 +1226,14 @@ class _Namer:
     derivative will name; a kernel that never collides keeps ``<prefix>_<name>``
     exactly. Every name is a pure function of the primal's planes."""
 
-    def __init__(self, prefix: str, taken: set[str],
-                 names: Iterable[str] = ()) -> None:
+    def __init__(self, prefix: str, taken: set[str], names: Iterable[str] = ()) -> None:
         self.prefix = prefix
         self.taken = taken
         #: ``{plane: column count}`` of the compact planes of a broadcast kernel
         #: (:func:`_compact_counts`)
         self.counts: dict = {}
         self.source: dict[str, str] = {}
-        flat = [n.replace(NAMESPACE_SEP, "_") for n in names]
+        flat = [n.replace(_ir.NAMESPACE_SEP, "_") for n in names]
         self.level = 1
         while any(self._spell(self.level, f) in taken for f in flat):
             self.level += 1
@@ -972,9 +1243,9 @@ class _Namer:
 
     def __call__(self, name: str) -> str:
         """The derived plane name for one primal plane."""
-        flat = name.replace(NAMESPACE_SEP, "_")
+        flat = name.replace(_ir.NAMESPACE_SEP, "_")
         derived = self._spell(self.level, flat)
-        while derived in self.taken:        # a plane this derivative was not told of
+        while derived in self.taken:  # a plane this derivative was not told of
             self.level += 1
             derived = self._spell(self.level, flat)
         held = self.source.setdefault(derived, name)
@@ -991,60 +1262,51 @@ _TIE_TEXT = (
     "no derivative for the {op} over samples stored to {name!r}: its subgradient "
     "is ambiguous at a tie, so differentiating it would return one of several "
     "answers with nothing recording which. Differentiate the per-sample value "
-    "and take the {op} on the host, or reduce with a sum")
+    "and take the {op} on the host, or reduce with a sum"
+)
 
 
-def _seed(sink: Sink, name: _Namer) -> Node:
+def _seed(sink: Any, name: _Namer) -> Any:
     """The incoming adjoint plane of one primal sink (the four sink kinds)."""
-    derived, t = name(sink.name), sink.ttype
-    if isinstance(sink, SampleSum):
-        if sink.op != "sum":
-            raise HawkError(_TIE_TEXT.format(name=sink.name, op=sink.op))
+    derived, t = name(sink.field_text("name")), _ir.type_of(sink)
+    context = sink.ctx
+    if _ir.is_a(sink, "sample_sum"):
+        if sink.field_text("op") != "sum":
+            raise HawkError(
+                _TIE_TEXT.format(name=sink.field_text("name"), op=sink.field_text("op"))
+            )
         # the reverse of a sum over samples is a broadcast of its adjoint
-        return Leaf("uniform", "uniform", derived, t)
-    if isinstance(sink, (AccumWrite, WideWrite)) and sink.index is not None:
+        return _ir.leaf(context, "uniform", "uniform", derived, t)
+    index = _index_of(sink)
+    if _ir.is_a(sink, "accum_write", "wide_write") and index is not None:
         # the transpose of a scatter-add is a gather of the adjoint plane
-        return At(Leaf("table_read", "lookup", derived, t), sink.index, t)
-    return Leaf("vocab_read", _READ_ROLE[len(t.shape)], derived, t)
+        plane = _ir.leaf(context, "table_read", "lookup", derived, t)
+        return _ir.make_node("At", t, [plane, index])
+    return _ir.leaf(context, "vocab_read", _READ_ROLE[len(t.shape)], derived, t)
 
 
-def _tangent_sink(sink: Sink, tangent: Node | None, name: _Namer,
-                  index: Node | None = None) -> Node:
+def _tangent_sink(sink: Any, tangent: Any, name: _Namer, index: Any = None) -> Any:
     """The forward-mode twin of one primal sink, same kind and same lane
     (at ``index`` when the alternate path moved the key)."""
-    value = tangent if tangent is not None else zero_like(sink.ttype)
-    derived = name(sink.name)
-    index = sink.index if index is None else index
-    if isinstance(sink, AccumWrite):
-        return AccumWrite(derived, value, index, sink.ttype, sink.contract)
-    if isinstance(sink, WideWrite):
-        return WideWrite(derived, value, index, sink.ttype)
-    if isinstance(sink, SampleSum):
-        if sink.op != "sum":
-            raise HawkError(_TIE_TEXT.format(name=sink.name, op=sink.op))
-        return SampleSum(derived, value, sink.ttype)
-    return Assign(derived, value, sink.ttype)
+    ttype = _ir.type_of(sink)
+    value = tangent if tangent is not None else _ir.zero_like(sink.ctx, ttype)
+    derived = name(sink.field_text("name"))
+    index = _index_of(sink) if index is None else index
+    if _ir.is_a(sink, "accum_write"):
+        return _scatter(derived, value, index, ttype, sink.field_text("contract"))
+    if _ir.is_a(sink, "wide_write"):
+        operands = [value] if index is None else [value, index]
+        return _ir.make_node("WideWrite", ttype, operands, name=derived)
+    if _ir.is_a(sink, "sample_sum"):
+        if sink.field_text("op") != "sum":
+            raise HawkError(
+                _TIE_TEXT.format(name=sink.field_text("name"), op=sink.field_text("op"))
+            )
+        return _ir.make_node(
+            "SampleSum", ttype, [value], name=derived, op="sum", cell=derived, columns=1
+        )
+    return _ir.make_node("Assign", ttype, [value], name=derived)
 
 
 # --------------------------------------------------------------------------
 # accumulation and un-broadcasting
-
-
-def _accumulate(store: dict[Any, Node], key: Any, node: Node,
-                contribution: Node) -> None:
-    slot = key(node)
-    held = store.get(slot)
-    store[slot] = contribution if held is None else _mk("add", (held, contribution))
-
-
-def _reduce_to(contribution: Node, target: TensorType) -> Node:
-    """Un-broadcast: a rank-0 operand's adjoint is the SUM of the contributions
-    its broadcast produced (the transpose of a broadcast)."""
-    if contribution.ttype.shape == target.shape:
-        return contribution
-    if target.shape == ():
-        return _mk("sum", (contribution,))
-    raise HawkError(
-        f"an adjoint typed {contribution.ttype!r} cannot flow into an operand typed "
-        f"{target!r} — only a rank-0 operand un-broadcasts"
-    )

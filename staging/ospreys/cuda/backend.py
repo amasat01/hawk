@@ -17,12 +17,8 @@ from hawk.backends import Backend
 from hawk.compile import toolchain as tc
 from hawk.compile.host import fill_argv
 from hawk.facts import IncludeFlag, include_dir, include_flags
-from math import prod
 
 from raptor.errors import RaptorError
-from raptor.ir.fold import exceeds, rolled
-from raptor.ir.linalg import LINALG_OPS, op_bytes
-from raptor.ir.nodes import Op
 
 import ospreys.cuda
 
@@ -56,30 +52,11 @@ def _sniff_device_format(path: Path) -> str:
     return "cubin" if magic == b"\x7fELF" else "ptx"
 
 
-def working_set_bytes(sinks, rolled_fold_min: int, form: str = "auto") -> int:
-    """Bytes of per-lane storage the unit declares for its library results: every linear-algebra node at
-    :func:`raptor.ir.linalg.op_bytes`, and each product or built matrix past the fold threshold ``rolled_fold_min`` as the item it is
-    written into. Values the kernel may keep in registers are not counted. A figure to read a kernel's local memory against: a
-    kernel whose frame is much larger is copying a matrix it need not."""
-    from raptor.ir.walk import canonical_nodes
-
-    width = {"f64": 8, "f32": 4}
-    total = 0
-    for node in canonical_nodes(tuple(sinks))[0]:
-        if not isinstance(node, Op):
-            continue
-        if node.kind in LINALG_OPS and node.ttype.shape:
-            total += op_bytes(node)
-        elif node.ttype.shape and (rolled(node, rolled_fold_min, form) or (
-                node.kind == "vec" and len(node.ttype.shape) == 2
-                and exceeds(prod(node.ttype.shape), rolled_fold_min))):
-            total += prod(node.ttype.shape) * width.get(node.ttype.dtype, 8)
-    return total
-
-
-def _resource_report(kernel, ptxas: dict | None, spec, scalar_type: str = "float64", arch: str = "") -> dict | None:
+def _resource_report(kernel, ptxas: dict | None, spec, scalar_type: str = "float64", arch: str = "",
+                     *, working_set_bytes: int) -> dict | None:
     """The sidecar's ptxas figures with the kernel's estimated registers beside them (:func:`hawk.passes.fusion.estimate`,
-    plus a quarter of the declared working set, :func:`working_set_bytes`, as words) and a ``spills`` flag:
+    plus a quarter of the declared working set as words: ``working_set_bytes``, the per-lane bytes the lowering answer states for
+    the kernel's library results) and a ``spills`` flag:
     registers spilled, or registers and frame words past the fence (:func:`hawk.passes.fusion.fence`). A flagged kernel
     warns; a flagged chain (:func:`hawk.chain`) is refused, naming its members and the boundary where to cut it."""
     if not ptxas:
@@ -87,16 +64,15 @@ def _resource_report(kernel, ptxas: dict | None, spec, scalar_type: str = "float
     from hawk.passes import fusion
     from raptor.wings.simt.wide_class import select, tables
 
-    working = working_set_bytes(kernel.sinks, spec.need("form", "rolled_fold_min"), spec.settings.form)
     real = 4 if scalar_type in ("float32", "banded") else 8
     card = fusion.row(scalar_type, spec)
     est = fusion.estimate(kernel.walk, card, scalar_type,
-                          tables(select(arch, spec.primary), spec.primary).wide_min.get(real)) + working // 4
+                          tables(select(arch, spec.primary), spec.primary).wide_min.get(real)) + working_set_bytes // 4
     report = {}
     for entry, row in ptxas.items():
         inside = fusion.fence(row["regs"], row["stack_B"], est)
         spills = (row["spill_store_B"] or 0) > 0 or (row["stack_B"] > 0 and not inside)
-        report[entry] = {**row, "working_set_B": working, "est_regs": est, "spills": spills}
+        report[entry] = {**row, "working_set_B": working_set_bytes, "est_regs": est, "spills": spills}
         members = getattr(kernel, "members", None)
         if not spills and (members is None or inside):
             continue
@@ -291,10 +267,10 @@ class Cuda(Backend):
         if smode.cells:
             _refuse_fp64(name, self.id, artifact, fmt)
 
-    def facts(self, kernel, *, name, smode, block, spec, built=None, arch=""):
+    def facts(self, kernel, *, name, smode, block, spec, working_set_bytes, built=None, arch=""):
         out = {"block": block, "ptxas": None, "local": None}
         if built is not None:
-            out["ptxas"] = _resource_report(kernel, built[0].ptxas, spec, smode.id, arch)
+            out["ptxas"] = _resource_report(kernel, built[0].ptxas, spec, smode.id, arch, working_set_bytes=working_set_bytes)
             out["local"] = _local_memory(name, {self.id: built}, self.id)
         return out
 

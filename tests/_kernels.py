@@ -26,7 +26,7 @@ from hawk import (
 )
 from hawk.diff import vjp
 from hawk.math import as_vec3, dot, exp, norm, quat_rotate, sqrt
-from raptor.ir.types import Wire
+from hawk import _ir
 
 
 @kernel
@@ -43,7 +43,7 @@ def drag(state: Vector[3], rho: Param, out: Mutable[Vector[3]]):
 #: per-sample scalar wire, namespaced by the DECLARATION (``earth__orientation__q``).
 ORIENTATION = Quantity(
     slug="earth", name="orientation",
-    wires=[Wire("q", "vec_in", (4,), tag="quaternion"), Wire("w", "per_sample", ())]
+    wires=[_ir.Wire("q", "vec_in", (4,), tag="quaternion"), _ir.Wire("w", "per_sample", ())]
 )
 
 

@@ -16,6 +16,7 @@ import hawk
 import hawk.math
 from hawk import Matrix, Mutable, Param, Scalar, Vector, kernel
 from raptor.errors import RaptorError as HawkError
+from hawk import _ir
 
 _ids = itertools.count()
 
@@ -81,7 +82,7 @@ def slots(k):
 def test_return_single_is_the_mutable_twin():
     assert ret_single.returns == "y"
     assert slots(ret_single) == ["y"]
-    assert ret_single.walk.digest == mut_single.walk.digest
+    assert _ir.digest(ret_single.walk) == _ir.digest(mut_single.walk)
     assert mut_single.returns is None
 
 
@@ -97,7 +98,7 @@ def test_return_dict_keys_are_the_slot_names():
 
 def test_return_nested_keeps_the_tree_and_equals_its_mutable_twin():
     assert ret_nested.returns == ("a", {"w": "w"}, ["out2", "out3"])
-    assert ret_nested.walk.digest == mut_nested.walk.digest
+    assert _ir.digest(ret_nested.walk) == _ir.digest(mut_nested.walk)
 
 
 def test_return_a_single_unnamed_expression_is_out():

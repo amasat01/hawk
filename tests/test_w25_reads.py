@@ -96,15 +96,16 @@ def test_a_manifest_that_declares_an_unknown_settings_key_or_a_malformed_option_
 
 def test_a_third_party_cannot_declare_kinds_under_a_first_party_name_or_another_namespace():
     from hawk import HawkError
+    from hawk import _ir
     from hawk.dialects import declare_kinds
 
     row = {"name": "raptor.wings.simt.mine", "family": "expr", "operands": {"min": 1, "max": 1}, "result": ["same_as", 0],
            "spelling": {"dialect": "simt", "name": "x", "args": ["ref0"]}}
     for name in ("simt", "base", "cuda"):
         with pytest.raises(HawkError, match="belongs to a first-party piece"):
-            declare_kinds({"name": name, "dialect": "simt", "kinds": [row]})
-    with pytest.raises(HawkError, match="with the name of the manifest that declares it"):
-        declare_kinds({"name": "toy", "dialect": "toy", "kinds": [{**row, "name": "other.mine"}]})
+            declare_kinds(_ir.new_context(), {"name": name, "dialect": "simt", "kinds": [row]})
+    with pytest.raises(HawkError, match=r"a third-party kind is spelled 'toy\.<name>'"):
+        declare_kinds(_ir.new_context(), {"name": "toy", "dialect": "toy", "kinds": [{**row, "name": "other.mine"}]})
 
 
 def test_a_backend_row_that_states_no_reads_is_refused_by_name(tmp_path):

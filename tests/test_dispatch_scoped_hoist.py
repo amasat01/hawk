@@ -13,26 +13,14 @@ one numeric row at the bottom, which builds and runs the host artifact only
 (no GPU)."""
 
 from __future__ import annotations
-from raptor.wings.base.dispatch import dispatch as _dispatch
-from _specs import HOST, default_kind
 
-import re
 
 import numpy as np
 import pytest
 
 import hawk
 import hawk.math as M
-from raptor.ir import Assign, Dispatch, Leaf, canonical
-from raptor.ir.types import TensorType
-
-S = TensorType((), "f64")
-
-
-def _leaf(name: str, t: TensorType, role: str | None = None) -> Leaf:
-    role = role or {0: "per_sample"}[len(t.shape)]
-    return Leaf("vocab_read", role, name, t)
-
+from hawk import _ir
 
 @hawk.kernel
 def _dk_switch(k: hawk.Index, a: hawk.Scalar, x: hawk.Scalar, b: hawk.Scalar,
@@ -265,7 +253,7 @@ def test_the_reverse_of_a_ladder_is_scoped_and_matches_a_finite_difference():
         y = v
 
     derived = vjp(ladder.sinks)
-    kernel = SimpleNamespace(name="ladder_vjp", sinks=tuple(derived), walk=canonical(derived))
+    kernel = SimpleNamespace(name="ladder_vjp", sinks=tuple(derived), walk=_ir.canonical(derived))
     text = emit_source(kernel, targets=("host",)).sources["host"].text
     assert "aether::math::" not in text[:text.index("switch (")]
     h = 1e-6

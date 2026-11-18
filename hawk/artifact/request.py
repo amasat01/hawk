@@ -6,7 +6,7 @@
 Every member is read from the objects the build holds; nothing is guessed from a record and nothing is retried. The members the
 library defaults (a group of one, no planes, settings at their defaults) are left out, as the
 library's own writer leaves them out. :func:`sinks_of` lists the nodes a request names; their positions in the dump come from
-:func:`hawk.artifact.bridge.dump`."""
+:func:`hawk._ir.dump_numbers`."""
 
 from __future__ import annotations
 
@@ -18,11 +18,9 @@ import sys
 from pathlib import Path
 from types import MappingProxyType
 
-from raptor.ir.nodes import LEAF_ROLES
-from raptor.ir.types import Slot
 from raptor.wings.base.exchange import ToolchainAbsent
 
-from .. import wings as _wings
+from .. import _ir
 from .._errors import HawkError
 from ..backends import default_backends
 from ..compile import toolchain as _tc
@@ -32,8 +30,6 @@ from ..trace import steps as _steps
 from ..trace.decl import Plane
 from ..targets import HOST_TARGET, TARGETS
 from ..trace.kernel import _declared, derived_axes
-
-_cells = _wings.view("raptor", "base", "cells")
 
 _SCALARS = MappingProxyType({"float64": "Float64", "float32": "Float32", "banded": "Banded"})
 
@@ -305,8 +301,9 @@ def _slot(slot) -> dict:
 
 def _mixes(body) -> tuple:
     """The branch-mix plane of each ``auto`` dispatch the body's walk binds."""
-    found = ((("lookup", _cells.mix_name(info.name))) for info in body.walk.dispatches)
-    return tuple(Slot(role, name, body.walk.slot_types[role, name]) for role, name in found if (role, name) in body.walk.slot_types)
+    bound = _ir.slot_of(body.walk)
+    found = (("lookup", name) for name in _ir.mix_slots(body.walk).values())
+    return tuple(_ir.Slot(role, name, _ir.slot_type(body.walk, role, name)) for role, name in found if (role, name) in bound)
 
 
 def _member(body, name: str, position: dict) -> dict:
@@ -318,12 +315,12 @@ def _member(body, name: str, position: dict) -> dict:
         declared = [_slot(slot) for slot in _declared(planes)]
         declared += [_slot(slot) for slot in _mixes(body)]
     else:
-        declared = [_slot(Slot(role, slot, body.walk.slot_types[role, slot])) for role, slot in body.walk.arg_spec if role in LEAF_ROLES]
+        declared = [_slot(_ir.Slot(role, slot, _ir.slot_type(body.walk, role, slot))) for role, slot in _ir.arg_spec(body.walk) if role in _ir.LEAF_ROLES]
     return {
         "name": name,
-        "sinks": [position[id(sink)] for sink in body.sinks],
+        "sinks": [position[sink] for sink in body.sinks],
         "declared": declared,
-        "exempt": [_cells.FUSED_STEPS_PLANE],
+        "exempt": [_ir.FUSED_STEPS_PLANE],
     }
 
 
@@ -392,7 +389,7 @@ def sinks_of(kernel) -> list:
 def request(kernel, *, name: str, scalar: str, kind, targets, spec, position: dict, options: dict, exports_block: bool = True) -> dict:
     """The request of ``kernel`` for ``targets`` as a dict: ``name`` the unit name wanted, ``scalar`` the scalar mode's id, ``kind``
     the kind the kernel is built under, ``spec`` the build spec with the settings resolved, ``position`` the handle of each node
-    (:func:`hawk.artifact.bridge.dump`), ``options`` the build inputs (:func:`hawk.artifact.bundle._options`). The texts carry the
+    (:func:`hawk._ir.dump_numbers`), ``options`` the build inputs (:func:`hawk.artifact.bundle._options`). The texts carry the
     self-check block of a library unless ``exports_block`` is false, which a build asks: its units are linked with the text of the
     set (:func:`set_text`), which carries the block once."""
     names = served()
@@ -445,7 +442,7 @@ def request(kernel, *, name: str, scalar: str, kind, targets, spec, position: di
     shared = [n for n, p in planes.items() if isinstance(p, Plane) and p.shared]
     if shared:
         out["shared"] = shared
-    bound = {name for _, name in kernel.walk.arg_spec}
+    bound = {name for _, name in _ir.arg_spec(kernel.walk)}
     broadcast = [{"plane": n, "axes": [flag is True for flag in pattern]}
                  for plane, pattern in (getattr(kernel, "broadcast", None) or {}).items()
                  for n in (plane, "dot_" + plane) if n in bound]

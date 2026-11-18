@@ -37,6 +37,7 @@ from hawk import Kernel, Mutable, Param, Scalar, Terminated, kernel
 from hawk.diff import jvp, tape
 from hawk.diff.tape import refine_entry, taped_planes
 from raptor.errors import RaptorError as HawkError
+from hawk import _ir
 
 N = 29
 
@@ -65,8 +66,8 @@ def fall(h: Param, terminated: Terminated, y: Mutable[Scalar], v: Mutable[Scalar
 
 
 def test_the_declaration_leaves_the_plain_kernel_unchanged():
-    assert osc.walk.digest == osc_plain.walk.digest
-    assert osc.walk.arg_spec == osc_plain.walk.arg_spec
+    assert _ir.digest(osc.walk) == _ir.digest(osc_plain.walk)
+    assert _ir.arg_spec(osc.walk) == _ir.arg_spec(osc_plain.walk)
     assert (osc.time, osc.time_step) == ("t", "dt")
     assert osc_plain.time is None
 
@@ -98,14 +99,14 @@ def test_the_structural_check_refuses_other_updates():
 
 def test_the_twin_promotes_the_step_and_writes_index_form_time():
     tw = tape(osc, 8)
-    slots = dict(tw.walk.arg_spec)
-    spec = set(tw.walk.arg_spec)
+    slots = dict(_ir.arg_spec(tw.walk))
+    spec = set(_ir.arg_spec(tw.walk))
     assert ("per_sample", "dt") in spec and ("uniform", "dt") not in spec
     assert ("per_sample", "t_0") in spec
     assert [n for n, _ in taped_planes(tw.step or tw)] == ["t", "v", "x"]
     del slots
     minted = tape(fall, 4)
-    assert ("mutable", "t") in set(minted.walk.arg_spec)
+    assert ("mutable", "t") in set(_ir.arg_spec(minted.walk))
     assert "t" in [n for n, _ in taped_planes(minted.step or minted)]
 
 

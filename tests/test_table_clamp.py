@@ -17,7 +17,7 @@ import hawk
 from hawk import Index, Mutable, Scalar, Table
 from hawk import math as hm
 from hawk.diff import jvp
-from raptor.ir import PlaneExtent
+from hawk import _ir
 from hawk.trace.kernel import Kernel
 
 eagle = pytest.importorskip("eagle")
@@ -123,7 +123,7 @@ def test_reads_at_one_base_and_static_offsets_share_one_range_test_on_the_device
 
 def test_the_derivative_reads_through_the_same_clamp():
     tangent = Kernel("pick_jvp", jvp(pick))
-    assert any(isinstance(n, PlaneExtent) for n in tangent.walk.order)
+    assert any(_ir.is_a(n, "plane_extent") for n in _ir.walk_order(tangent.walk))
 
 
 def test_the_hawk_runtime_binds_a_lookup_with_its_own_length(tmp_path, private_cache):

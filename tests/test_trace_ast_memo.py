@@ -24,6 +24,7 @@ import pytest
 from hawk import Mutable, Param, Scalar, kernel
 from raptor.errors import RaptorError as HawkError
 from hawk.trace import astpass
+from hawk import _ir
 
 
 def _defn(source: str, name: str, filename: str):
@@ -66,7 +67,7 @@ def test_a_second_trace_of_the_same_function_skips_the_ast_transform():
         assert spy.call_count == 1, (
             "a second kernel(fn) on the identical function object must not "
             "re-run astpass.transform")
-    assert k1.walk.digest == k2.walk.digest, "the walk a memo hit produces "\
+    assert _ir.digest(k1.walk) == _ir.digest(k2.walk), "the walk a memo hit produces "\
         "must digest identically to the walk the first, cold trace produced"
 
 
@@ -81,7 +82,7 @@ def test_a_different_function_with_the_same_name_does_not_share_the_memo():
             "a DIFFERENT function that happens to share fn_a's __name__ "
             "('scale') must still run its own transform, not reuse fn_a's "
             "cached one")
-    assert k_a.walk.digest != k_b.walk.digest
+    assert _ir.digest(k_a.walk) != _ir.digest(k_b.walk)
 
 
 def test_a_refused_body_refuses_on_every_call():

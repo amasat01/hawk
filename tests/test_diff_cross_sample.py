@@ -20,31 +20,39 @@ import numpy as np
 from _eval import evaluate
 
 from hawk.diff import jvp, vjp
-from raptor.ir import AccumWrite, Assign, At, Const, Leaf, canonical
-from raptor.ir import make as mk
-from raptor.ir.types import TensorType
+from hawk import _ir
 
-F64 = TensorType((), "f64")
-I32 = TensorType((), "i32")
+F64 = _ir.TensorType((), "f64")
+I32 = _ir.TensorType((), "i32")
+#: One context holds every node these rows build.
+CTX = _ir.new_context()
 LANES = 4
 H = 1e-5
 
 
+def _leaf(kind, role, name, ttype):
+    return _ir.leaf(CTX, kind, role, name, ttype)
+
+
+def _assign(name, value):
+    return _ir.make_node("Assign", _ir.type_of(value), (value,), name=name)
+
+
 def _gather_primal():
     """``out = tab.at(k) ** 3`` -- one gather, one sample-local write."""
-    idx = Leaf("vocab_read", "per_sample", "idx", I32)
-    tab = Leaf("table_read", "lookup", "tab", F64)
-    read = At(tab, idx, F64)
-    return (idx, tab), (Assign("out", mk("mul", (read, mk("mul", (read, read)))), F64),)
+    idx = _leaf("vocab_read", "per_sample", "idx", I32)
+    tab = _leaf("table_read", "lookup", "tab", F64)
+    read = _ir.make_node("At", F64, (tab, idx))
+    return (idx, tab), (_assign("out", _ir.make("mul", (read, _ir.make("mul", (read, read))))),)
 
 
 def test_the_reverse_of_a_gather_is_a_scatter_add_classified_cross_sample_write():
     _, sinks = _gather_primal()
     derived = vjp(sinks)
-    scatter = [s for s in derived if isinstance(s, AccumWrite)]
-    assert len(scatter) == 1 and scatter[0].name == "bar_tab"
-    assert scatter[0].index is not None, "the scatter targets the gathered lane"
-    assert canonical(derived).access.cls == "cross_sample_write", (
+    scatter = [s for s in derived if _ir.is_a(s, "accum_write")]
+    assert len(scatter) == 1 and scatter[0].field_text("name") == "bar_tab"
+    assert scatter[0].field_kind("index"), "the scatter targets the gathered lane"
+    assert _ir.access_class(_ir.canonical(derived)) == "cross_sample_write", (
         "a write whose target lane is not `i` is cross_sample_write -- the "
         "class eagle checks the placement against"
     )
@@ -68,9 +76,9 @@ def test_the_gather_vjp_matches_a_finite_difference_on_the_table_entry():
 def test_the_gather_jvp_reads_a_tangent_lookup_plane():
     _, sinks = _gather_primal()
     derived = jvp(sinks)
-    walk = canonical(derived)
-    assert ("lookup", "dot_tab") in walk.slot_of
-    assert walk.access.cls == "cross_sample_read"
+    walk = _ir.canonical(derived)
+    assert ("lookup", "dot_tab") in _ir.slot_of(walk)
+    assert _ir.access_class(walk) == "cross_sample_read"
     table = np.array([0.7, -1.3, 2.1, 0.4])
     tangent = np.array([0.0, 0.0, 1.0, 0.0])
     env = {"idx": 2, "tab": table}
@@ -81,23 +89,23 @@ def test_the_gather_jvp_reads_a_tangent_lookup_plane():
 
 
 def test_the_reverse_of_a_scattered_accumulate_is_a_gather():
-    idx = Leaf("vocab_read", "per_sample", "idx", I32)
-    x = Leaf("vocab_read", "per_sample", "x", F64)
-    sinks = (AccumWrite("energy", mk("mul", (x, x)), idx, F64),)
+    idx = _leaf("vocab_read", "per_sample", "idx", I32)
+    x = _leaf("vocab_read", "per_sample", "x", F64)
+    sinks = (_ir.accum_write("energy", _ir.make("mul", (x, x)), index=idx),)
     derived = vjp(sinks)
-    walk = canonical(derived)
-    assert ("lookup", "bar_energy") in walk.slot_of, (
+    walk = _ir.canonical(derived)
+    assert ("lookup", "bar_energy") in _ir.slot_of(walk), (
         "the transpose of a scatter-add is a GATHER of its adjoint plane"
     )
-    assert walk.access.cls == "cross_sample_read"
+    assert _ir.access_class(walk) == "cross_sample_read"
     table = np.array([0.0, 0.0, 3.0, 0.0])
     got = evaluate(derived, {"idx": 2, "x": 1.7, "bar_energy": table})["bar_x"]
     assert abs(got - 2 * 1.7 * 3.0) < 1e-9
 
 
 def test_the_seed_of_an_own_column_accumulate_is_a_plain_read():
-    x = Leaf("vocab_read", "per_sample", "x", F64)
-    sinks = (AccumWrite("energy", mk("mul", (x, Const(3.0, F64))), None, F64),)
-    walk = canonical(vjp(sinks))
-    assert ("per_sample", "bar_energy") in walk.slot_of
-    assert walk.access.cls == "sample_local"
+    x = _leaf("vocab_read", "per_sample", "x", F64)
+    sinks = (_ir.accum_write("energy", _ir.make("mul", (x, _ir.const(CTX, 3.0, F64)))),)
+    walk = _ir.canonical(vjp(sinks))
+    assert ("per_sample", "bar_energy") in _ir.slot_of(walk)
+    assert _ir.access_class(walk) == "sample_local"

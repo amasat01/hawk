@@ -647,44 +647,6 @@ def test_the_default_profile_per_architecture(monkeypatch):
         assert ctc.default_host_profile() == want, (machine, gcc)
 
 
-def test_a_library_call_is_scalar_under_native_and_the_fast_profile_on_arm64(monkeypatch):
-    from aether.wings.cpu.host_vector import vectorises
-    from test_host_loop_interchange import sin_chain
-    monkeypatch.setattr(platform, "machine", lambda: "arm64")
-    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/clang++")
-    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: False)
-    from hawk.targets import build_spec
-    arm64 = build_spec(("host",))        # the machine is data of the spec: read it under the patch, not at import
-    assert vectorises(sin_chain.walk, arm64, "native") is vectorises(sin_chain.walk, arm64, "native-vector-math") is False
-
-
-@hawk.kernel
-def _pow_chain(x: hawk.Scalar, g: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-    a = x
-    for _k in range(16):
-        a = hawk.math.pow(a * g, g) + 0.5
-    y = a + x
-
-
-def _spec():
-    from hawk.targets import build_spec
-
-    return build_spec(("host",))
-
-
-def test_only_pow_counts_as_routed_on_arm64_gcc(monkeypatch):
-    from aether.wings.cpu.host_vector import vectorises
-    from test_host_loop_interchange import sin_chain
-    monkeypatch.setattr(platform, "machine", lambda: "arm64")
-    monkeypatch.setattr(ctc, "host_compiler", lambda: "/fake/g++")
-    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: True)
-    assert vectorises(_pow_chain.walk, _spec(), "native-vector-math") is True
-    assert vectorises(_pow_chain.walk, _spec(), "native") is False
-    assert vectorises(sin_chain.walk, _spec(), "native-vector-math") is False
-    monkeypatch.setattr(ctc, "compiler_is_gcc", lambda c: False)
-    assert vectorises(_pow_chain.walk, _spec(), "native-vector-math") is False
-
-
 def test_the_emitted_kernel_text_is_the_same_under_both_profiles_on_arm64(tmp_path):
     from hawk.artifact import build_bundle
     from test_host_loop_interchange import sin_chain

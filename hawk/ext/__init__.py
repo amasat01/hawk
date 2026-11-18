@@ -47,8 +47,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from typing import Any
 
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir.types import TensorType
 from .primitive import PrimitiveDef, primitive, primitives
 
 __all__ = ["Guard", "IndexSet", "Kind", "Output", "PLAIN", "ATOMIC", "DEFAULT_GUARD",
@@ -261,7 +261,7 @@ class Output:
     #: ``Output.named`` form. Named ``returned_ttype`` rather than
     #: ``returned`` — the FIELD may not share the classmethod's own name, or
     #: the method definition below would overwrite the field's default.
-    returned_ttype: TensorType | None = None
+    returned_ttype: _ir.TensorType | None = None
     slot: str | None = None
 
     @classmethod
@@ -271,7 +271,7 @@ class Output:
         return cls(names=tuple(names))
 
     @classmethod
-    def returned(cls, ttype: TensorType, *, slot: str) -> Output:
+    def returned(cls, ttype: _ir.TensorType, *, slot: str) -> Output:
         """The body ends ``return <expr>``; ``slot`` names the synthesised
         Mutable the returned value commits to."""
         if not slot:
@@ -543,6 +543,16 @@ __all__.append("KernelKind")
 
 
 def compensated_target(kind: Kind, sinks: Sequence[Any]) -> tuple[str, bool] | None:
-    """The compensated sink's resolved target (the base wing's rule, :func:`raptor.wings.base.split.compensated_target`)."""
-    from .. import wings
-    return wings.view("raptor", "base", "split").compensated_target(kind, sinks)
+    """The compensated sink's resolved target, out of ``kind.output`` and the kernel's committed ``sinks``.
+
+    ``None`` when the kind's sink contract is not ``compensated``; otherwise ``(name, own_column)``
+    (the library's rule, shared by the tracer and the writer).
+    """
+    output = kind.output
+    return _ir.compensated_target(
+        kind.sink.id,
+        kind.sink.compensation,
+        output.slot if output.returned_ttype is not None else None,
+        output.names,
+        sinks,
+    )

@@ -89,7 +89,7 @@ class Backend:
             result = compile_source(source.text, lowered.name, opts)
         entry, files, report = self.package(source, result, name=lowered.name, smode=lowered.smode, profile=own.get("profile"))
         facts = self.facts(lowered.kernel, name=lowered.name, smode=lowered.smode, block=options.get("block"), spec=lowered.spec.for_target(self),
-                           built=entry, arch=arch)
+                           working_set_bytes=lowered.working_set_bytes, built=entry, arch=arch)
         return Part(entry, files, report, self.report_file(lowered.name), facts)
 
     def _compile_options(self, lowered, options):
@@ -226,9 +226,9 @@ class Backend:
     def check(self, name: str, smode, artifact, fmt: str) -> None:
         """Refuse a compiled object this backend cannot ship in ``smode``; the default accepts every one."""
 
-    def facts(self, kernel, *, name: str, smode, block, spec, built=None, arch: str = "") -> dict:
+    def facts(self, kernel, *, name: str, smode, block, spec, working_set_bytes: int, built=None, arch: str = "") -> dict:
         """The sidecar parts only this backend knows, for the unit it leads: ``block`` (launch block), ``ptxas``
-        (resource figures) and ``local`` (local memory). ``built`` is the lead's draft entry
+        (resource figures) and ``local`` (local memory). ``working_set_bytes`` is the per-lane storage the lowering answer states for the kernel. ``built`` is the lead's draft entry
         ``(result, artifact name, source name, format)`` once compiled, ``None`` when only the source was emitted."""
         return {"block": None, "ptxas": None, "local": None}
 

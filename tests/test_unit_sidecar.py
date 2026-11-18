@@ -12,12 +12,10 @@ from __future__ import annotations
 import pytest
 
 import hawk
-import hawk.math as m
 from hawk import Grid, Mutable, Param, Scalar, Terminated, Vector, kernel
-from hawk.artifact import bridge, request
-from hawk.artifact.sidecar import sidecar_of_unit
+from _unit_sidecar import lowered, sidecar_of_kernel
+from hawk.artifact import request
 from hawk.ext import Guard, Kind
-from hawk.targets import build_spec
 
 pytest.importorskip("_osprey")
 try:
@@ -61,6 +59,7 @@ def ordered_sum(lane: Grid["key", "row":ROWS], j: Vector[N], r: Scalar) -> Vecto
 EXPECTED = {'active_set': {'accum_outputs': [],
                 'aether_abi': 'aether-abi/2',
                 'arg_dtypes': {'active_count': 'uint32', 'active_map': 'int32', 'terminated': 'bool', 'x': 'float64', 'y': 'float64'},
+                'arg_mirrors': {'y': 'ScalarHandle', 'x': 'ScalarHandle', 'active_count': 'ScalarHandle', 'active_map': 'ScalarHandle', 'terminated': 'ScalarHandle'},
                 'arg_shapes': {'active_count': None, 'active_map': None, 'terminated': 1, 'x': 1, 'y': 1},
                 'arg_spec': [['mutable', 'y'],
                              ['per_sample', 'x'],
@@ -84,7 +83,6 @@ EXPECTED = {'active_set': {'accum_outputs': [],
                 'params_schema': 2,
                 'pattern': 'pure',
                 'per_sample': ['x'],
-                'quantities': {},
                 'scalar_type': 'float64',
                 'schema_version': 3,
                 'terminated_readonly': True,
@@ -95,6 +93,7 @@ EXPECTED = {'active_set': {'accum_outputs': [],
  'finishing': {'accum_outputs': [],
                'aether_abi': 'aether-abi/2',
                'arg_dtypes': {'finished_count': 'uint32', 't': 'float64', 't_final': 'float64', 'terminated': 'bool', 'v': 'float64', 'x': 'float64'},
+               'arg_mirrors': {'t': 'ScalarHandle', 'v': 'ScalarHandle', 'x': 'ScalarHandle', 't_final': 'ScalarHandle', 'finished_count': 'ScalarHandle', 'terminated': 'ScalarHandle', 'dt': 'value'},
                'arg_shapes': {'finished_count': None, 't': 1, 't_final': 1, 'terminated': 1, 'v': 1, 'x': 1},
                'arg_spec': [['mutable', 't'],
                             ['mutable', 'v'],
@@ -123,7 +122,6 @@ EXPECTED = {'active_set': {'accum_outputs': [],
                'params_schema': 2,
                'pattern': 'pure',
                'per_sample': ['t_final'],
-               'quantities': {},
                'scalar_type': 'float64',
                'schema_version': 3,
                'terminated_readonly': False,
@@ -134,6 +132,7 @@ EXPECTED = {'active_set': {'accum_outputs': [],
  'plain': {'accum_outputs': [],
            'aether_abi': 'aether-abi/2',
            'arg_dtypes': {'x': 'float64', 'y': 'float64'},
+           'arg_mirrors': {'y': 'ScalarHandle', 'x': 'ScalarHandle'},
            'arg_shapes': {'x': 1, 'y': 1},
            'arg_spec': [['mutable', 'y'], ['per_sample', 'x']],
            'arg_widths': {'x': 1, 'y': 1},
@@ -153,7 +152,6 @@ EXPECTED = {'active_set': {'accum_outputs': [],
            'params_schema': 2,
            'pattern': 'pure',
            'per_sample': ['x'],
-           'quantities': {},
            'scalar_type': 'float64',
            'schema_version': 3,
            'terminated_readonly': True,
@@ -164,6 +162,7 @@ EXPECTED = {'active_set': {'accum_outputs': [],
  'segment_branch': {'accum_outputs': [],
                     'aether_abi': 'aether-abi/2',
                     'arg_dtypes': {'bs': 'float64', 'dispatch0_offsets': 'int64', 'finished_count': 'uint32', 'terminated': 'bool', 'x': 'float64'},
+                    'arg_mirrors': {'x': 'ScalarHandle', 'bs': 'GRefMirror', 'dispatch0_offsets': 'ScalarHandle', 'finished_count': 'ScalarHandle', 'terminated': 'ScalarHandle'},
                     'arg_shapes': {'bs': 3, 'dispatch0_offsets': None, 'finished_count': None, 'terminated': 1, 'x': 1},
                     'arg_spec': [['mutable', 'x'],
                                  ['vec_in', 'bs'],
@@ -197,7 +196,6 @@ EXPECTED = {'active_set': {'accum_outputs': [],
                     'params_schema': 2,
                     'pattern': 'pure',
                     'per_sample': [],
-                    'quantities': {},
                     'scalar_type': 'float64',
                     'schema_version': 3,
                     'terminated_readonly': False,
@@ -208,6 +206,7 @@ EXPECTED = {'active_set': {'accum_outputs': [],
  'segment_classify': {'accum_outputs': [],
                       'aether_abi': 'aether-abi/2',
                       'arg_dtypes': {'dispatch0_class': 'int64', 'k': 'int32'},
+                      'arg_mirrors': {'dispatch0_class': 'ScalarHandle', 'k': 'ScalarHandle'},
                       'arg_shapes': {'dispatch0_class': 1, 'k': 1},
                       'arg_spec': [['mutable', 'dispatch0_class'], ['per_sample', 'k']],
                       'arg_widths': {'dispatch0_class': 1, 'k': 1},
@@ -228,7 +227,6 @@ EXPECTED = {'active_set': {'accum_outputs': [],
                       'params_schema': 2,
                       'pattern': 'pure',
                       'per_sample': ['k'],
-                      'quantities': {},
                       'scalar_type': 'float64',
                       'schema_version': 3,
                       'terminated_readonly': True,
@@ -239,6 +237,7 @@ EXPECTED = {'active_set': {'accum_outputs': [],
  'split_stage': {'accum_outputs': ['mu', 'mu_comp'],
                  'aether_abi': 'aether-abi/2',
                  'arg_dtypes': {'mu': 'float64', 'mu_comp': 'float64', 'x': 'float64'},
+                 'arg_mirrors': {'mu': 'ScalarHandle', 'mu_comp': 'ScalarHandle', 'x': 'ScalarHandle', 'n_samples': 'value'},
                  'arg_shapes': {'mu': None, 'mu_comp': None, 'x': 1},
                  'arg_spec': [['accum_out', 'mu'], ['accum_out', 'mu_comp'], ['per_sample', 'x'], ['nsamples', 'n_samples']],
                  'arg_widths': {'x': 1},
@@ -262,7 +261,6 @@ EXPECTED = {'active_set': {'accum_outputs': [],
                  'params_schema': 2,
                  'pattern': 'pure',
                  'per_sample': ['x'],
-                 'quantities': {},
                  'scalar_type': 'float64',
                  'schema_version': 3,
                  'stages': [{'cells_in': [], 'cells_out': ['mu'], 'kernel': 'standard'},
@@ -277,6 +275,7 @@ EXPECTED = {'active_set': {'accum_outputs': [],
  'team_stage': {'accum_outputs': [],
                 'aether_abi': 'aether-abi/2',
                 'arg_dtypes': {'tms_out_m': 'int32', 'tms_out_p': 'float64'},
+                'arg_mirrors': {'tms_out_m': 'ScalarHandle', 'tms_out_p': 'ScalarHandle'},
                 'arg_shapes': {'tms_out_m': None, 'tms_out_p': None},
                 'arg_spec': [['wide_out', 'tms_out_m'], ['wide_out', 'tms_out_p']],
                 'arg_widths': {},
@@ -296,7 +295,6 @@ EXPECTED = {'active_set': {'accum_outputs': [],
                 'params_schema': 2,
                 'pattern': 'pure',
                 'per_sample': [],
-                'quantities': {},
                 'scalar_type': 'float64',
                 'scatter_chunks': 256,
                 'schema_version': 3,
@@ -309,16 +307,7 @@ EXPECTED = {'active_set': {'accum_outputs': [],
 
 def written_by_the_library(target_kernel, unit_name, kind=None):
     """The sidecar of unit unit_name of the kernel's answer."""
-    spec = build_spec(("host",), "").with_settings(scalar="float64")
-    dump, dialects, position = bridge.dump(request.sinks_of(target_kernel))
-    asked = request.request(target_kernel, name=target_kernel.name, scalar="float64", kind=kind or target_kernel.kind, targets=("host",),
-                            spec=spec, position=position, options={})
-    answer = request.lower(asked, dump, dialects)
-    unit = next(u for u in answer["units"] if u["meta"]["name"] == unit_name)
-    found = sidecar_of_unit(target_kernel, unit, lead_device=False, fmt="host", scalar_type="float64", exec_targets=["host"], family=answer["units"])
-    found.pop("aether_include")
-    found.pop("eagle_include")
-    return found
+    return sidecar_of_kernel(target_kernel, unit_name, kind=kind)
 
 
 def test_a_plain_unit():
@@ -364,10 +353,6 @@ def add_one(key: hawk.Index, x: hawk.Scalar, acc: hawk.Mutable[hawk.Scalar, "bin
 @pytest.mark.parametrize("target_kernel, shape", [(add_vec, [3]), (add_one, [])], ids=["vector", "scalar"])
 def test_the_record_of_a_sink_with_named_axes_states_the_payload_as_the_slots_shape(target_kernel, shape):
     """The runtime binds the plane (payload, then named axes) from the record alone."""
-    spec = build_spec(("host",), "").with_settings(scalar="float64")
-    dump, dialects, position = bridge.dump(request.sinks_of(target_kernel))
-    asked = request.request(target_kernel, name=target_kernel.name, scalar="float64", kind=target_kernel.kind, targets=("host",),
-                            spec=spec, position=position, options={})
-    slots = [s for unit in request.lower(asked, dump, dialects)["units"] for s in unit["meta"]["body"]["slots"] if s["name"] == "acc"]
+    slots = [s for unit in lowered(target_kernel)["units"] for s in unit["meta"]["body"]["slots"] if s["name"] == "acc"]
     assert slots and all(s["shape"] == shape for s in slots)
 

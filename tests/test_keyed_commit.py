@@ -50,6 +50,7 @@ from aether.wings.base.wrapper import FLOAT64
 from hawk.ext import Kind, sink_policy
 from hawk.targets import TARGETS
 from hawk.trace.kernel import Kernel
+from hawk import _ir
 
 NS = 8192
 RUN = "aether::accum::run::"
@@ -318,7 +319,7 @@ def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, contr
     planes = {"x": xp.asarray(x), "acc": xp.zeros(slots, mode)}
     if contract == "compensated":
         planes["acc_c"] = xp.zeros(slots, mode)
-    if any(name == "seg" for _, name in kernel.walk.arg_spec):
+    if any(name == "seg" for _, name in _ir.arg_spec(kernel.walk)):
         planes["seg"] = xp.asarray(key)
     run, lane = _launch(built[kernel.name], kernel.name, target, planes)
     if target == "cuda":
@@ -401,8 +402,8 @@ def test_a_default_keyed_sum_is_delivered_in_the_target_alone(target, keys, mode
     kernel = BIG_AUTO[keys]
     xp = np if target == "host" else __import__("cupy")
     key, x, planes = _big_planes(keys, mode, xp)
-    names = [nm for _, nm in kernel.walk.arg_spec if nm != "acc_c"]
-    assert ("accum_out", "acc_c") in kernel.walk.arg_spec
+    names = [nm for _, nm in _ir.arg_spec(kernel.walk) if nm != "acc_c"]
+    assert ("accum_out", "acc_c") in _ir.arg_spec(kernel.walk)
     plan = _plan(kernel, target, mode, tmp_path, cache_dir)
     plan.bind(**{k: planes[k] for k in names}).launch()
     if target == "cuda":
@@ -531,7 +532,7 @@ def test_a_companion_the_caller_binds_keeps_target_plus_companion(target, keys, 
     else:
         plugin, structure = (L.device_plugin(bundle.directory, kernel.name, sidecar),
                              eexec.DeviceKernel)
-    names = [nm for _, nm in kernel.walk.arg_spec]
+    names = [nm for _, nm in _ir.arg_spec(kernel.walk)]
     eplan.plan(plugin, structure=structure).bind(**{k: planes[k] for k in names}).launch()
     if target == "cuda":
         xp.cuda.Device().synchronize()
@@ -544,8 +545,8 @@ def test_a_companion_the_caller_binds_keeps_target_plus_companion(target, keys, 
 
 
 def test_a_compensated_reverse_declares_its_companion():
-    assert ("accum_out", "bar_th_c") in VREAD_C.walk.arg_spec
-    assert ("accum_out", "bar_th_c") not in VREAD.walk.arg_spec
+    assert ("accum_out", "bar_th_c") in _ir.arg_spec(VREAD_C.walk)
+    assert ("accum_out", "bar_th_c") not in _ir.arg_spec(VREAD.walk)
     assert type(VREAD_C.sinks).__name__ == "Derived" and VREAD_C.sinks.wrt == ("th",)
 
 
@@ -566,7 +567,7 @@ def test_the_reverse_of_a_sorted_read_commits_once_per_run(target, compensated, 
     x, by = rng.uniform(0.5, 1.5, N), rng.uniform(0.5, 1.5, N)   # positive terms: no cancellation
     planes = {"x": xp.asarray(x), "seg": xp.asarray(key), "bar_y": xp.asarray(by), "th": xp.zeros(slots),
               "bar_th": xp.zeros(slots), "bar_th_c": xp.zeros(slots)}     # th: the clamp of the read reads its length
-    names = [nm for _, nm in kernel.walk.arg_spec]
+    names = [nm for _, nm in _ir.arg_spec(kernel.walk)]
     run, lane = _launch(bundle, kernel.name, target, {k: planes[k] for k in names})
     if target == "cuda":
         xp.cuda.Device().synchronize()

@@ -26,8 +26,9 @@ from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from raptor.errors import RaptorError as HawkError
-from raptor.ir import Loop
+from hawk import _ir
 from hawk.trace.kernel import Kernel
+from hawk import _ir
 
 K = 6
 
@@ -56,7 +57,7 @@ def _ref(x, n, top=K):
 
 
 def _loop(kernel):
-    return next(n for n in kernel.walk.order if isinstance(n, Loop))
+    return next(n for n in _ir.walk_order(kernel.walk) if _ir.is_a(n, "loop"))
 
 
 @pytest.mark.parametrize("n", [-3, 0, 1, 4, K, K + 5])
@@ -73,7 +74,7 @@ def test_max_enters_the_walk_digest():
             s = s * x + 0.5
         y = s
 
-    assert powers7.walk.digest != powers.walk.digest != powers_open.walk.digest
+    assert _ir.digest(powers7.walk) != _ir.digest(powers.walk) != _ir.digest(powers_open.walk)
 
 
 def test_the_jvp_of_a_loop_without_max_builds_and_matches_central_differences(tmp_path, cache_dir):

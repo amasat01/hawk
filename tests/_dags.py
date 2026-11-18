@@ -9,55 +9,66 @@ node constructors directly, which is how tracer will build it later.
 
 from __future__ import annotations
 
-from hawk import Quantity
-from raptor.ir import AccumWrite, Assign, At, Const, Leaf, Op
-from raptor.ir.types import TensorType, Wire
+from hawk import _ir
 
-F64 = TensorType((), "f64")
-V3 = TensorType((3,), "f64")
-QUAT = TensorType((4,), "f64", "quaternion")
-IDX = TensorType((), "i32")
+F64 = _ir.TensorType((), "f64")
+V3 = _ir.TensorType((3,), "f64")
+QUAT = _ir.TensorType((4,), "f64", "quaternion")
+IDX = _ir.TensorType((), "i32")
+Wire = _ir.Wire
 
 
-def state_quantity() -> Quantity:
+def _accumulate(name, value, lane, ttype):
+    """A keyed accumulate of ``value`` into ``name`` at ``lane``."""
+    return _ir.make_node(
+        "AccumWrite", ttype, (value, lane), name=name, contract="auto", reduced=None
+    )
+
+
+def state_quantity() -> _ir.Quantity:
     """The second worked example: ``sc__state__pos`` / ``sc__state__vel``."""
-    return Quantity(slug="sc", name="state",
-                    wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))])
+    return _ir.Quantity(
+        slug="sc", name="state", wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))]
+    )
 
 
-def orientation_quantity() -> Quantity:
+def orientation_quantity() -> _ir.Quantity:
     """The first worked example, and the two-wire compound-quantity shape: one
     ACCESS lowering to a quaternion wire plus a per-sample scalar wire."""
-    return Quantity(slug="earth", name="orientation",
-                    wires=[Wire("q", "vec_in", (4,), tag="quaternion"),
-                           Wire("w", "per_sample", ())])
+    return _ir.Quantity(
+        slug="earth",
+        name="orientation",
+        wires=[Wire("q", "vec_in", (4,), tag="quaternion"), Wire("w", "per_sample", ())],
+    )
 
 
-def drag_dag(*, permuted: bool = False):
+def drag_dag(context, *, permuted: bool = False):
     """A sink set exercising every surface: a two-wire quantity read (one
     wire unread), a free leaf, a uniform, a shared subexpression at fan-out 2,
-    a lookup ``at()`` read and a scattered accumulate.
+    a lookup ``at()`` read and a scattered accumulate, all in ``context``.
 
     ``permuted=True`` builds the SAME DAG in a different construction order and
     duplicates the shared subexpression instead of sharing it — structurally
     equal, so the dedup must fold it back."""
-    pos, _vel = state_quantity().read()          # vel is bound but never read
-    rho = Leaf("uniform", "uniform", "rho", F64)
-    table = Leaf("table_read", "lookup", "grav", V3)
-    idx = Const(7, IDX)
-    lane = Const(3, IDX)
+    pos, _vel = state_quantity().read(context)  # vel is bound but never read
+    rho = _ir.leaf(context, "uniform", "uniform", "rho", F64)
+    table = _ir.leaf(context, "table_read", "lookup", "grav", V3)
+    idx = _ir.const(context, 7, IDX)
+    lane = _ir.const(context, 3, IDX)
 
     if not permuted:
-        shared = Op("mul", (pos, rho), V3)
-        pulled = At(table, idx, V3)
-        body = Op("add", (shared, pulled), V3)
-        total = Op("add", (body, shared), V3)
-        return (Assign("acc", total, V3),
-                AccumWrite("energy", Op("dot", (shared, shared), F64), lane, F64))
+        shared = _ir.make("mul", (pos, rho))
+        pulled = _ir.make_node("At", V3, (table, idx))
+        body = _ir.make("add", (shared, pulled))
+        total = _ir.make("add", (body, shared))
+        return (
+            _ir.make_node("Assign", V3, (total,), name="acc"),
+            _accumulate("energy", _ir.make("dot", (shared, shared)), lane, F64),
+        )
 
-    scatter_val = Op("dot", (Op("mul", (pos, rho), V3), Op("mul", (pos, rho), V3)), F64)
-    scattered = AccumWrite("energy", scatter_val, lane, F64)
-    dup_shared = Op("mul", (pos, rho), V3)
-    total = Op("add", (Op("add", (dup_shared, At(table, Const(7, IDX), V3)), V3),
-                       Op("mul", (pos, rho), V3)), V3)
-    return (Assign("acc", total, V3), scattered)
+    scatter_val = _ir.make("dot", (_ir.make("mul", (pos, rho)), _ir.make("mul", (pos, rho))))
+    scattered = _accumulate("energy", scatter_val, lane, F64)
+    dup_shared = _ir.make("mul", (pos, rho))
+    pulled = _ir.make_node("At", V3, (table, _ir.const(context, 7, IDX)))
+    total = _ir.make("add", (_ir.make("add", (dup_shared, pulled)), _ir.make("mul", (pos, rho))))
+    return (_ir.make_node("Assign", V3, (total,), name="acc"), scattered)

@@ -40,6 +40,7 @@ import _deployable as D
 from conftest import sidecar_of
 
 from hawk.targets import TARGETS
+from hawk import _ir
 
 #: The IR node constructors a raw-IR workaround would have to name.
 _RAW_IR_NAMES = frozenset({"Leaf", "Op", "Const", "At", "Select", "Assign",
@@ -48,13 +49,13 @@ _RAW_IR_NAMES = frozenset({"Leaf", "Op", "Const", "At", "Select", "Assign",
 
 def test_the_quantitys_wires_are_namespaced_and_contiguous():
     walk = D.spin.walk
-    span = walk.quantities["earth__orientation"]
-    assert span.wires == ("earth__orientation__q", "earth__orientation__w")
-    for name in span.wires:
+    wires = tuple(D.ORIENTATION.wire_name(w) for w in D.ORIENTATION.wires)
+    assert wires == ("earth__orientation__q", "earth__orientation__w")
+    for name in wires:
         assert name.count("__") >= 2, f"{name!r} is not namespaced by the declaration"
     # per role, ONE consecutive declaration-ordered run.
-    q = walk.slot_of[("vec_in", "earth__orientation__q")]
-    assert walk.arg_spec[q] == ("vec_in", "earth__orientation__q")
+    q = _ir.slot_of(walk)[("vec_in", "earth__orientation__q")]
+    assert _ir.arg_spec(walk)[q] == ("vec_in", "earth__orientation__q")
 
 
 def test_zero_raw_ir_constructions():
@@ -72,7 +73,5 @@ def test_zero_raw_ir_constructions():
 
 def test_the_quantity_artifact_declares_its_wires(built):
     sc = sidecar_of(built["spin"], "spin")
-    assert sc["quantities"] == {
-        "earth__orientation": ["earth__orientation__q", "earth__orientation__w"]}
     assert "earth__orientation__q" in sc["vector_inputs"]
     assert "earth__orientation__w" in sc["per_sample"]

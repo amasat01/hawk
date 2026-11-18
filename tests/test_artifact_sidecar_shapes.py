@@ -101,6 +101,7 @@ import _deployable as D
 import numpy as np
 import pytest
 from conftest import sidecar_of
+from hawk import _ir
 
 N = 8
 
@@ -169,7 +170,7 @@ def test_every_plane_bound_slot_declares_its_shape_and_dtype(built, bundle_name,
         assert role in _PLANE_ROLES, f"unrecognised plane role {role!r}"
         assert name in shapes, f"{kernel}: slot ({role}, {name!r}) has no arg_shapes entry"
         assert name in dtypes, f"{kernel}: slot ({role}, {name!r}) has no arg_dtypes entry"
-        ttype = walk.slot_types[(role, name)]
+        ttype = _ir.slot_type(walk, role, name)
         if role in _RUNTIME_LENGTH_ROLES:
             assert shapes[name] is None, (
                 f"{kernel}: {role} {name!r}'s plane length is a runtime "
@@ -343,21 +344,20 @@ def test_a_fixed_block_and_a_thread_box_are_written_to_launch():
     from raptor.schema.manifest import check_lane_space
 
     import hawk
-    from hawk.artifact.sidecar import sidecar_meta
-    from raptor.wings.base.box import Box
+    from _unit_sidecar import sidecar_of_kernel
 
     @hawk.kernel
     def k(a: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
         y = a * 2.0
 
     kw = dict(fmt="host", scalar_type="float64")
-    assert "block" not in sidecar_meta("k", k.walk, **kw)["launch"]
-    meta = sidecar_meta("k", k.walk, box=Box(0, 8, 256), block=128, **kw)
-    assert meta["launch"]["block"] == 128 and meta["launch"]["box"] == {"axis": 0, "T": 8, "stride": 256}
+    assert "block" not in sidecar_of_kernel(k, **kw)["launch"]
+    meta = sidecar_of_kernel(k, block=128, **kw)
+    assert meta["launch"]["block"] == 128
     check_lane_space(meta, name="k")
     for bad in (0, -4, "128", 64.0, True):
         with pytest.raises(ValueError, match=r"launch\.block"):
-            sidecar_meta("k", k.walk, block=bad, **kw)
+            sidecar_of_kernel(k, block=bad, **kw)
     schema = Path(raptor.__file__).parents[1] / "docs/schemas/sidecar-v1.schema.json"
     jsonschema = pytest.importorskip("jsonschema")
     if schema.exists():

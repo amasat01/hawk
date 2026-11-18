@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from math import prod
 
+from . import _ir
 from ._errors import HawkError
 
 #: The roles of a read-only per-lane input; the ones that broadcast.
@@ -183,34 +184,38 @@ def twin(kernel, patterns: dict, reverse: tuple = ()):
 
 
 def _build(kernel, patterns: dict, reverse: tuple):
-    from .diff.tape import _reachable
-    from raptor.ir.nodes import At
     from .trace.kernel import Kernel
+    from .trace.lane_axes import trace_context
     from .trace.steps import default_step, default_steps
-    from raptor.ir import Leaf
 
     step = default_step(kernel)
     if step is not kernel and step.name != kernel.name:
         raise HawkError(f"{kernel.name!r} takes several steps per launch; broadcast "
                         "inputs bind to a plain or automatic kernel")
-    nodes = _reachable(step.sinks)
-    crossed = {id(n.operands[0]) for n in nodes if isinstance(n, At)}
+    context = step.context
+    nodes = _ir.post_order(step.sinks)
+    crossed = {n.operands[0] for n in nodes if _ir.is_a(n, "at")}
     leaves: dict = {}
     for n in nodes:
-        if isinstance(n, Leaf) and n.role in READ_ROLES and n.name in patterns:
-            if id(n) in crossed:
+        name = n.field_text("name") if _ir.is_a(n, "leaf") else None
+        if name in patterns and n.field_text("role") in READ_ROLES:
+            if n in crossed:
                 raise HawkError(
-                    f"{kernel.name!r} reads {n.name!r} at another lane (.at), so it "
+                    f"{kernel.name!r} reads {name!r} at another lane (.at), so it "
                     "needs the exact lane shape")
-            leaves.setdefault(n.name, []).append(n)
+            leaves.setdefault(name, []).append(n)
     planes, mapping = dict(step.planes), {}
-    for name, found in leaves.items():
-        if len(found[0].ttype.shape) > 1:       # a Matrix: the caller's compact plane, read at its index
-            read = At(found[0], _index(patterns[name], step.lane_space), found[0].ttype)
-        else:
-            planes[name], read = _read(name, found[0].ttype, patterns[name], step.lane_space,
-                                        name in reverse)
-        mapping.update({id(leaf): read for leaf in found})
+    # the lane indices and table reads below are made from nothing, in the kernel's own context
+    with trace_context(context):
+        for name, found in leaves.items():
+            ttype = _ir.type_of(found[0])
+            if len(ttype.shape) > 1:       # a Matrix: the caller's compact plane, read at its index
+                index = _index(patterns[name], step.lane_space, context)
+                read = _ir.make_node("At", ttype, (found[0], index))
+            else:
+                planes[name], read = _read(name, ttype, patterns[name], step.lane_space,
+                                            name in reverse, context)
+            mapping.update({leaf: read for leaf in found})
     out = Kernel(step.name, _swap(step.sinks, mapping), planes, kind=step.kind,
                  source_digest=step.source_digest, returns=step.returns)
     out.time, out.time_step, out.jump, out.group = step.time, step.time_step, step.jump, step.group
@@ -224,17 +229,15 @@ def _build(kernel, patterns: dict, reverse: tuple):
     return fused
 
 
-def _index(kept: tuple, axes):
+def _index(kept: tuple, axes, context):
     """The flat index of a lane in the compact plane of pattern ``kept``: row-major
     over the kept axes, the last fastest (a runtime axis is never in the C), ``0``
-    when it varies along none."""
-    from raptor.ir import Const
+    when it varies along none. Made in ``context``."""
     from .trace.lane_axes import LaneAxes
-    from raptor.ir.types import TensorType
 
     held = [i for i, k in enumerate(kept) if k]
     if not held:
-        return Const(0, TensorType((), "i32"))
+        return _ir.const(context, 0, _ir.TensorType((), "i32"))
     lane, flat, stride = LaneAxes(axes), None, 1
     for i in reversed(held):
         term = lane[i] * stride
@@ -243,24 +246,22 @@ def _index(kept: tuple, axes):
     return flat.node
 
 
-def _read(name: str, ttype, kept: tuple, axes, cell: bool) -> tuple:
+def _read(name: str, ttype, kept: tuple, axes, cell: bool, context) -> tuple:
     """``(declaration, node)``: the plane ``name`` read where it varies, the
     caller's compact buffer: a uniform when it varies along no lane axis (a
     one-cell table when ``cell``), else a lookup. A flat table when it varies along the runtime axis (a runtime
-    extent is never in the C), else a table named by its kept axes."""
-    from raptor.ir import Leaf, make
+    extent is never in the C), else a table named by its kept axes. Made in ``context``."""
     from .trace.decl import Plane, _axes
     from .trace.lane_axes import LaneAxes
     from .trace.value import TableRef
-    from raptor.ir.types import TensorType
 
     width = ttype.shape[0] if ttype.shape else 0
-    element = TensorType((), ttype.dtype)
+    element = _ir.TensorType((), ttype.dtype)
     held = [i for i, k in enumerate(kept) if k]
     if not held and not width:
         if cell:
             return Plane("table", element), TableRef(name, element).at(0).node
-        return Plane("uniform", ttype), Leaf("uniform", "uniform", name, ttype)
+        return Plane("uniform", ttype), _ir.leaf(context, "uniform", "uniform", name, ttype)
     lane = LaneAxes(axes)
     if kept[0] and axes[0][1] is None:
         if width:
@@ -284,21 +285,19 @@ def _read(name: str, ttype, kept: tuple, axes, cell: bool) -> tuple:
     if not width:
         return Plane("table", element, dims=dims), table.at(**at).node
     parts = tuple(table.at(**at, **{comp: k}).node for k in range(width))
-    return Plane("table", element, dims=dims), make("vec", parts)
+    return Plane("table", element, dims=dims), _ir.make("vec", parts)
 
 
 def _swap(sinks, mapping: dict) -> tuple:
-    """``sinks`` with the nodes in ``mapping`` (by ``id``) replaced, in value and key."""
-    from raptor.ir.cells import with_value
-    from raptor.ir import AccumWrite
-    from raptor.ir.walk import substitute
-
-    roots = substitute(tuple(o for s in sinks for o in s.operands), mapping)
+    """``sinks`` with the nodes in ``mapping`` replaced, in value and key."""
+    roots = _ir.substitute(tuple(o for s in sinks for o in s.operands), mapping)
     out, at = [], 0
     for s in sinks:
         part = roots[at:at + len(s.operands)]
         at += len(s.operands)
-        out.append(s.rebuilt(part, {}) if isinstance(s, AccumWrite) else with_value(s, part[0]))
+        out.append(
+            _ir.replace(s, operands=part) if _ir.is_a(s, "accum_write") else _ir.with_value(s, part[0])
+        )
     return tuple(out)
 
 
@@ -322,9 +321,9 @@ def route(kernel, args: tuple, kwargs: dict) -> tuple:
         return kernel, args, kwargs
     given.update(kwargs)
     roles = {n: r for r, n in kernel.arg_spec}
-    types = kernel.walk.slot_types
+    walk = kernel.walk
     where = f"{kernel.name}(...)"
-    heads = {n: _head(types[(r, n)], r) for n, r in roles.items() if r in READ_ROLES + EXACT_ROLES}
+    heads = {n: _head(_ir.slot_type(walk, r, n), r) for n, r in roles.items() if r in READ_ROLES + EXACT_ROLES}
     named = {n for n in given if getattr(kernel.planes.get(n), "dims", ())}
     shaped = [(shape_of(given[n]), heads[n]) for n in heads if n in given and n not in named]
     extent = runtime_extent(shaped, axes, kwargs.get(axes[0][0]))
@@ -353,8 +352,8 @@ def _route_derived(kernel, source, args: tuple, kwargs: dict) -> tuple:
     if args:
         return kernel, args, kwargs
     roles = {n: r for r, n in source.arg_spec}
-    types = source.walk.slot_types
-    heads = {n: _head(types[(r, n)], r) for n, r in roles.items() if r in READ_ROLES + EXACT_ROLES}
+    walk = source.walk
+    heads = {n: _head(_ir.slot_type(walk, r, n), r) for n, r in roles.items() if r in READ_ROLES + EXACT_ROLES}
     shaped = [(shape_of(kwargs[n]), h) for n, h in heads.items() if n in kwargs]
     extent = runtime_extent(shaped, axes, kwargs.get(axes[0][0]))
     patterns = {}

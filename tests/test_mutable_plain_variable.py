@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import pytest
 
+from hawk import _ir
 from hawk import Mutable, Param, Scalar, Terminated, Vector, WideOut, kernel
 from hawk.diff import jvp, vjp
 from hawk import HawkError
@@ -46,7 +47,7 @@ def test_a_tuple_target_reads_every_name_s_old_value():
     def tupled(dt: Param, w2: Param, x: Mutable[Scalar], v: Mutable[Scalar]):
         x, v = x + dt * v, v - dt * w2 * x
 
-    assert sorted(tupled.walk.prior_reads) == ["v", "x"]
+    assert sorted(_ir.prior_reads(tupled.walk)) == ["v", "x"]
 
 
 def test_a_sequential_pair_reads_the_first_statement_s_new_value():
@@ -63,10 +64,10 @@ def test_a_sequential_pair_reads_the_first_statement_s_new_value():
     def tupled(dt: Param, w2: Param, x: Mutable[Scalar], v: Mutable[Scalar]):
         x, v = x + dt * v, v - dt * w2 * x
 
-    assert sequential.walk.digest != tupled.walk.digest
+    assert _ir.digest(sequential.walk) != _ir.digest(tupled.walk)
     # `v`'s term in the sequential form reads `x`'s NEW value -- a single
     # `prior_read` leaf for `x` (the FIRST statement's read), not two.
-    assert sorted(sequential.walk.prior_reads) == ["v", "x"]
+    assert sorted(_ir.prior_reads(sequential.walk)) == ["v", "x"]
 
 
 def test_an_augmented_assignment_reads_then_stores():
@@ -76,7 +77,7 @@ def test_an_augmented_assignment_reads_then_stores():
     def ticked(dt: Param, t: Mutable[Scalar]):
         t += dt
 
-    assert sorted(ticked.walk.prior_reads) == ["t"]
+    assert sorted(_ir.prior_reads(ticked.walk)) == ["t"]
 
 
 # --------------------------------------------------------------------------- #
@@ -88,9 +89,8 @@ def test_a_one_sided_if_keeps_the_launch_start_value_on_the_other_path():
         if c > 0.0:
             x = c
 
-    assert sorted(clamp_up.walk.prior_reads) == ["x"]
-    from raptor.ir import Select
-    assert any(isinstance(n, Select) for n in clamp_up.walk.order), (
+    assert sorted(_ir.prior_reads(clamp_up.walk)) == ["x"]
+    assert any(_ir.is_a(n, "select") for n in _ir.canonical_nodes(clamp_up.sinks)[0]), (
         "a one-sided `if` on a Mutable's own name must still fold to a select "
         "against its launch-start value on the path that does not store it")
 
@@ -103,8 +103,8 @@ def test_a_write_only_plane_has_no_prior_read_leaf():
     def energy(v: Vector[3], out: Mutable[Scalar]):
         out = 0.5 * dot(v, v)
 
-    assert energy.walk.prior_reads == frozenset()
-    assert not any(n.kind == "prior_read" for n in energy.walk.order)
+    assert _ir.prior_reads(energy.walk) == ()
+    assert not any(_ir.is_a(n, "prior_read") for n in _ir.walk_order(energy.walk))
 
 
 def test_a_mutable_read_before_it_is_ever_committed_refuses():
@@ -122,10 +122,9 @@ def test_a_component_store_on_the_plane_s_own_name_updates_one_entry():
     def bump_z(dt: Param, x: Mutable[Vector[3]]):
         x[2] = x[2] + dt
 
-    assert sorted(bump_z.walk.prior_reads) == ["x"]
-    from raptor.ir.nodes import Assign
-    sinks = [s for s in bump_z.sinks if isinstance(s, Assign) and s.name == "x"]
-    assert len(sinks) == 1 and sinks[0].value.kind == "set_component_at"
+    assert sorted(_ir.prior_reads(bump_z.walk)) == ["x"]
+    sinks = [s for s in bump_z.sinks if _ir.is_a(s, "assign") and s.field_text("name") == "x"]
+    assert len(sinks) == 1 and sinks[0].operands[0].field_text("kind") == "set_component_at"
 
 
 # --------------------------------------------------------------------------- #
@@ -185,7 +184,7 @@ def test_a_write_only_wideout_plane_traces_inside_an_if():
         else:
             y = 2.0
 
-    assert wo_if.walk.prior_reads == frozenset()
+    assert _ir.prior_reads(wo_if.walk) == ()
 
 
 def test_a_write_only_wideout_plane_assigned_only_inside_a_for_is_refused():
@@ -208,4 +207,4 @@ def test_a_wideout_plane_stored_only_by_key_traces():
     def wo_key(x: Scalar, k: Index, y: WideOut[Scalar]):
         hawk.scatter(y)[k] = 2.0 * x
 
-    assert wo_key.walk.prior_reads == frozenset()
+    assert _ir.prior_reads(wo_key.walk) == ()

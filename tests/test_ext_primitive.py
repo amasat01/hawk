@@ -27,8 +27,6 @@ sound, and the emitted-body row says the forward paid nothing for it.
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import HOST
 
 import _oracle as O
 import numpy as np
@@ -40,7 +38,7 @@ import hawk.math as hm
 from hawk.artifact import build
 from hawk.diff import jvp, vjp
 from hawk.ext import primitive, primitives
-from raptor.ir import Primitive
+from hawk import _ir
 from hawk import HawkError
 from hawk.math import dot, exp, log, vec, vsum
 
@@ -105,11 +103,13 @@ def wrong_kernel(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
 def test_the_boundary_node_is_recorded_in_the_dag():
     """The trace carries a Primitive node whose operands are the forward and the
     declared inputs — without it there is nothing for a rule to attach to."""
-    found = [n for n in primitive_kernel.walk.order if isinstance(n, Primitive)]
+    found = [n for n in _ir.canonical_nodes(primitive_kernel.sinks)[0] if _ir.is_a(n, "primitive")]
     assert len(found) == 1, f"expected ONE primitive boundary, got {found}"
-    assert found[0].name == "hw7a_softplus"
-    assert found[0].input_count == 1
-    assert not any(isinstance(n, Primitive) for n in longhand_kernel.walk.order)
+    assert found[0].field_text("name") == "hw7a_softplus"
+    assert found[0].field_int("input_count") == 1
+    assert not any(
+        _ir.is_a(n, "primitive") for n in _ir.canonical_nodes(longhand_kernel.sinks)[0]
+    )
 
 
 def test_the_forward_runs_bit_identically_on_the_host_path(tmp_path, cache_dir):
@@ -172,11 +172,9 @@ def test_the_derived_reverse_ir_deploys_and_runs(tmp_path, cache_dir):
     toolchain — walk, emitter, compiler — not merely the interpreter."""
     from types import SimpleNamespace
 
-    from raptor.ir import canonical
-
     sinks = vjp(primitive_kernel)
     derived = SimpleNamespace(name="primitive_kernel_vjp", sinks=sinks,
-                              walk=canonical(sinks))
+                              walk=_ir.canonical(sinks))
     x = RNG.uniform(-2.0, 2.0, size=N)
     bar = RNG.uniform(0.2, 1.4, size=N)
     got = _run(derived, tmp_path / "vjp", cache_dir, x=x, bar_y=bar)

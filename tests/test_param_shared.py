@@ -182,12 +182,12 @@ def test_a_scalar_param_is_unchanged():
 
 
 def test_unsupported_shared_types_are_refused_with_the_fix():
-    from raptor.ir.types import TensorType
+    from hawk import _ir
 
     with pytest.raises(HawkError, match=r"rank 1 or 2.*separate Scalar/Int32 Params"):
-        Param[TensorType((2, 2, 2), "f64")]
+        Param[_ir.TensorType((2, 2, 2), "f64")]
     with pytest.raises(HawkError, match=r"rank 1 or 2.*separate Scalar/Int32 Params"):
-        Param[TensorType((3,), "int32")]                       # an integer vector
+        Param[_ir.TensorType((3,), "int32")]                       # an integer vector
     with pytest.raises(HawkError, match=r"rank 1 or 2"):
         Param[hawk.Quat]
     with pytest.raises(HawkError, match=r"static extents.*already one plane shared"):

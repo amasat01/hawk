@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hawk
 import hawk.math as M
-from hawk.artifact.sidecar import sidecar_meta
+from _unit_sidecar import sidecar_of_kernel
 from hawk.compile import toolchain as tc
 from ospreys.cuda.driver import parse_ptxas_info
 
@@ -53,5 +53,5 @@ def test_ptxas_is_asked_to_report_only_when_it_runs():
 
 def test_sidecar_carries_the_ptxas_figures_when_given():
     kw = dict(fmt="cubin", scalar_type="float64")
-    assert sidecar_meta("k", _k.walk, ptxas=parse_ptxas_info(_STDERR), **kw)["ptxas"] == _WANT
-    assert "ptxas" not in sidecar_meta("k", _k.walk, **kw)
+    assert sidecar_of_kernel(_k, ptxas=parse_ptxas_info(_STDERR), **kw)["ptxas"] == _WANT
+    assert "ptxas" not in sidecar_of_kernel(_k, **kw)

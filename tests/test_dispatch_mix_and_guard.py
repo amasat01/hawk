@@ -37,12 +37,14 @@ import pathlib
 import _oracle as O
 import numpy as np
 import pytest
+from _unit_sidecar import finish_mask
 
 import hawk
 import hawk.math as M
 from hawk import Index, Mutable, Scalar, Terminated, Vector
 from hawk.artifact import build_bundle
 from raptor.errors import RaptorError as HawkError
+from hawk import _ir
 
 N = 61
 K = 3
@@ -181,7 +183,7 @@ def test_an_automatic_kernel_resolves_on_its_single_step():
     assert walker.step is not None
     resolved = hawk.resolve_dispatch(walker, {"dispatch0": "predicated"})
     assert resolved.name == "walker" and resolved.step is not None
-    assert [d.strategy for d in resolved.step.walk.dispatches] == ["predicated"]
+    assert [d.strategy for d in _ir.dispatch_groups(resolved.step.walk)] == ["predicated"]
 
 
 def test_the_host_runtime_counts_into_scratch_when_the_mix_is_left_out(built):
@@ -267,9 +269,9 @@ def test_a_carried_selector_inside_the_fused_loop_is_not_static():
         c = M.select(x > 1.0, c, c + 1)
         terminated = x > 1e9
 
-    (entry,) = drifter.walk.dispatches
-    assert ("mutable", "c") in entry.selector_reads
-    assert entry.static_selector is False
+    (_group,) = _ir.dispatch_groups(drifter.walk)
+    assert ("mutable", "c") in _ir.selector_reads(drifter.walk, 0)
+    assert _ir.static_selector(drifter.walk, 0) is False
 
 
 def test_auto_segmented_runs_unfused(tmp_path, cache_dir):
@@ -277,7 +279,7 @@ def test_auto_segmented_runs_unfused(tmp_path, cache_dir):
     split into units: K=1 launches of the units over a sorted class equal the
     switch step, step after step."""
     split = hawk.resolve_dispatch(walker, {"dispatch0": "segmented"})
-    assert split.step is None and (split.walk.finish, split.steps) == ("terminated", 1)
+    assert split.step is None and (finish_mask(split), split.steps) == ("terminated", 1)
     ref = hawk.resolve_dispatch(walker, {"dispatch0": "switch"}).step
     # exact profile: the unit and the switch step contract no multiply-add
     # differently, so they agree bit for bit

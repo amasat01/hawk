@@ -12,17 +12,13 @@ most-restrictive-wins fold. The emitter splices the text verbatim."""
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Sequence
 from typing import Any
 
-from raptor.ir import key_text
-from raptor.ir import Op
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir.access import ACCESS_CLASSES
-from raptor.ir.nodes import RAW_KIND, RAW_LANGUAGE
-from raptor.ir.types import TensorType
 from .decl import Scalar
+from .lane_axes import current_context
 from .value import Value, node_of
 
 
@@ -32,8 +28,8 @@ class RawBlock:
     __slots__ = ("text", "access", "reads", "writes", "returns", "name", "language")
 
     def __init__(self, text: str, access: str, reads: tuple[str, ...],
-                 writes: tuple[str, ...], returns: TensorType,
-                 language: str = RAW_LANGUAGE) -> None:
+                 writes: tuple[str, ...], returns: _ir.TensorType,
+                 language: str = _ir.RAW_LANGUAGE) -> None:
         self.text = text
         self.language = language
         self.access = access
@@ -48,23 +44,18 @@ class RawBlock:
         if len(operands) == 1 and callable(operands[0]):
             self.name = getattr(operands[0], "__name__", self.name)
             return self
-        return Value(Op(RAW_KIND, tuple(node_of(o) for o in operands),
-                        self.returns, literal=self))
+        literal = _ir.RawBlock(self.name, self.access, self.text, self.language, self.reads, self.writes, self.returns)
+        return Value(_ir.make_node("Op", self.returns, [node_of(o) for o in operands],
+                                   context=None if operands else current_context(),
+                                   kind=_ir.RAW_KIND, literal=literal))
 
     def __repr__(self) -> str:
         return f"<RawBlock {self.name} access={self.access!r}>"
 
-    def __key_text__(self) -> str:
-        """The text this block contributes to a walk's key: its name and access, and a digest of everything the walk cannot see inside
-        (the spliced text, its language, the slots it reads and writes, the type it returns), so two blocks that differ in any of them
-        are two nodes and two units."""
-        digest = hashlib.sha256(repr((self.text, self.language, self.reads, self.writes, repr(self.returns))).encode("utf-8")).hexdigest()
-        return f"<RawBlock {self.name} access={key_text(self.access)} digest={digest}>"
-
 
 def raw_device(text: str, *, access: str | None = None, reads: Sequence[str] = (),
-               writes: Sequence[str] = (), returns: TensorType = Scalar,
-               language: str = RAW_LANGUAGE) -> RawBlock:
+               writes: Sequence[str] = (), returns: _ir.TensorType = Scalar,
+               language: str = _ir.RAW_LANGUAGE) -> RawBlock:
     """Declare a raw device block (the escape hatch for code the
     vocabulary cannot spell): ``text`` spliced verbatim, with ``access=``
     required (the walk can't see inside text), ``reads``/``writes`` naming
@@ -74,11 +65,11 @@ def raw_device(text: str, *, access: str | None = None, reads: Sequence[str] = (
         raise HawkError(
             "@raw_device requires an explicit access= annotation: the walk "
             "cannot see inside spliced text, so its access class cannot be inferred "
-            f" — declare one of {ACCESS_CLASSES}"
+            f" — declare one of {_ir.ACCESS_CLASSES}"
         )
-    if access not in ACCESS_CLASSES:
+    if access not in _ir.ACCESS_CLASSES:
         raise HawkError(
             f"@raw_device: access={access!r} is not an access class; declare one of "
-            f"{ACCESS_CLASSES}"
+            f"{_ir.ACCESS_CLASSES}"
         )
     return RawBlock(text, access, tuple(reads), tuple(writes), returns, language)

@@ -37,9 +37,7 @@ from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 import eagle
 from hawk.diff.transform import _masked_sink
-from raptor.ir import AccumWrite, Leaf
-from raptor.ir.nodes import Assign
-from raptor.ir.types import TensorType
+from hawk import _ir
 from hawk.trace.kernel import Kernel
 
 A, NB, NC = 3, 4, 6
@@ -244,7 +242,7 @@ def test_vjp_broadcast_input_sums_broadcast_axes(tmp_path_factory, cache_dir, rn
     kept = B.kept_axes((A, 1, NC), (), axes, A)
     var = B.twin(square, {"x": kept})
     d = Kernel("square_vjp", vjp(var, wrt=("x",)))
-    assert [s.contract for s in d.sinks if isinstance(s, AccumWrite) and s.name == "bar_x"] == ["compensated"]
+    assert [s.field_text("contract") for s in d.sinks if _ir.is_a(s, "accum_write") and s.field_text("name") == "bar_x"] == ["compensated"]
     root = tmp_path_factory.mktemp("bc_vjp")
     art = _derived(var, vjp, "x", root, cache_dir)
     assert art.sidecar["companions"] == {"bar_x_c": "bar_x"}
@@ -425,12 +423,15 @@ def test_vjp_called_directly_with_a_broadcast_vector(run_cache, rng, shape):
 
 
 def test_a_compensated_scatter_stays_compensated_under_a_terminated_mask():
-    mask = Leaf("terminated", "terminated", "terminated", TensorType((), "bool"))
-    value = Leaf("vocab_read", "per_sample", "v", TensorType((), "f64"))
-    index = Leaf("vocab_read", "per_sample", "k", TensorType((), "i32"))
-    masked = _masked_sink(AccumWrite("acc", value, index, value.ttype, "compensated"), mask)
-    assert masked.contract == "compensated"
-    assert isinstance(_masked_sink(Assign("y", value, value.ttype), mask), Assign)
+    ctx = _ir.new_context()
+    mask = _ir.leaf(ctx, "terminated", "terminated", "terminated", ((), "bool", None))
+    value = _ir.leaf(ctx, "vocab_read", "per_sample", "v", ((), "f64", None))
+    index = _ir.leaf(ctx, "vocab_read", "per_sample", "k", ((), "i32", None))
+    scatter = _ir.accum_write("acc", value, index=index, contract="compensated")
+    masked = _masked_sink(scatter, mask)
+    assert masked.field_text("contract") == "compensated"
+    plain = _ir.make_node("Assign", ((), "f64", None), (value,), name="y")
+    assert _ir.is_a(_masked_sink(plain, mask), "assign")
 
 
 def test_rebinding_a_plan_to_another_pattern_is_refused(run_cache, rng):

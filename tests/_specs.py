@@ -61,3 +61,11 @@ def pin_caches(monkeypatch):
     import ospreys.cpu.toolchain as toolchain
 
     monkeypatch.setattr(toolchain, "host_caches", lambda *a, **k: PINNED_CACHES)
+
+
+def host_vectorised(kernel, profile: str, spec=None, mode: str = "float64") -> bool:
+    """Whether the host text emitted for ``kernel`` under host ``profile`` states its lane loop vectorised (``Source.vectorised``)."""
+    from hawk.artifact import emit_source
+
+    (source,) = emit_source(kernel, mode=mode, targets=("host",), spec=spec, options={"host.profile": profile}).sources.values()
+    return source.vectorised

@@ -5,7 +5,7 @@
 
 The facts answers and the compiler identity are stood in for (they come from the library and the compile driver); every other
 member is read from the kernel and the build spec by the builder under test. A sink is the position of its node in the dump the
-bridge writes, so each test also checks the handles it states are nodes of that dump."""
+dump writes, so each test also checks the handles it states are nodes of that dump."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ import pytest
 import hawk
 import hawk.math as m
 from hawk import Mutable, Param, Scalar, Terminated, Vector, kernel
-from hawk.artifact import bridge, request
+from hawk import _ir
+from hawk.artifact import request
 from hawk.ext import Guard, Kind
 from hawk.targets import build_spec
 
@@ -89,14 +90,28 @@ def stood_in(monkeypatch):
     monkeypatch.setattr(request, "_compile_plan", lambda target, spec, options: {"identity": "cc||line||digest", "meta": {"device_target": "cubin"}})
 
 
+def dump_of(target_kernel):
+    """``(dump text, {node: position})`` of the nodes the request of the kernel can name, copied into one context as a build does
+    (the members of a chain live in contexts of their own)."""
+    roots = request.sinks_of(target_kernel)
+    copies = _ir.adopt(_ir.new_context(), roots)
+    return _ir.dump_text(copies), dict(zip(roots, _ir.dump_numbers(copies)))
+
+
 def built(target_kernel, *, kind=None, targets=("host",), spec=None, name=None, **options):
     """``(request, handles)`` of the kernel: the request the builder makes and the position of each of the kernel's sinks."""
     spec = (spec or build_spec(targets, "")).with_settings(scalar="float64")
-    dump, _, position = bridge.dump(request.sinks_of(target_kernel))
+    dump, position = dump_of(target_kernel)
     out = request.request(target_kernel, name=name or target_kernel.name, scalar="float64", kind=kind or target_kernel.kind,
                           targets=targets, spec=spec, position=position, options=options)
     assert all(0 <= at < len(dump.splitlines()) for at in position.values())
     return out
+
+
+def sinks_at(target_kernel, member):
+    """The positions, in the dump of the request of ``target_kernel``, of the sinks of ``member`` in the kernel's own sink order."""
+    position = dump_of(target_kernel)[1]
+    return [position[sink] for sink in member.sinks]
 
 
 def test_a_plain_kernel():
@@ -108,10 +123,11 @@ def test_a_plain_kernel():
 
 
 def test_a_chain_names_each_member_as_a_body():
-    assert built(hawk.chain(first, second, name="c12")) == {
+    chained = hawk.chain(first, second, name="c12")
+    assert built(chained) == {
         "v": 1, "name": "c12", "scalar": "Float64", "targets": ["Host"], "kind": KIND,
-        "body": {"Chain": [{"name": "first", "sinks": [12], "declared": [], **BODY},
-                           {"name": "second", "sinks": [18], "declared": [], **BODY}]},
+        "body": {"Chain": [{"name": "first", "sinks": sinks_at(chained, chained.members[0]), "declared": [], **BODY},
+                           {"name": "second", "sinks": sinks_at(chained, chained.members[1]), "declared": [], **BODY}]},
         "planes": ["x", "b"], "steps": 1, "lane_space": [{}], "facts": {"Host": "FACTS-host"},
     }
 
@@ -120,7 +136,7 @@ def test_a_kernel_with_compensated_sums_states_no_companion_plane_and_no_compens
     """The library derives the companion plane of a compensated sum from the walk: the request declares nothing for it."""
     assert built(standard) == {
         "v": 1, "name": "standard", "scalar": "Float64", "targets": ["Host"], "kind": KIND,
-        "body": {"Plain": {"name": "standard", "sinks": [4, 16, 18], "exempt": ["fused_steps"], "declared": []}},
+        "body": {"Plain": {"name": "standard", "sinks": sinks_at(standard, standard), "exempt": ["fused_steps"], "declared": []}},
         "planes": ["x", "mu", "z", "t"], "steps": 1, "lane_space": [{}], "facts": {"Host": "FACTS-host"},
     }
 
@@ -155,14 +171,14 @@ def test_an_active_set_kind_names_its_masks_and_the_map():
 
 def test_a_two_path_kernel_sends_its_single_step_as_a_second_body():
     got = built(stepping)
-    assert got["body"] == {"Plain": {"name": "stepping", "sinks": [28, 30, 32, 36], "declared": [TERMINATED], **BODY}}
-    assert got["one_step"] == {"name": "stepping", "sinks": [41, 44, 47, 49], "declared": [TERMINATED], **BODY}
+    assert got["body"] == {"Plain": {"name": "stepping", "sinks": sinks_at(stepping, stepping), "declared": [TERMINATED], **BODY}}
+    assert got["one_step"] == {"name": "stepping", "sinks": sinks_at(stepping, stepping.one_step), "declared": [TERMINATED], **BODY}
     assert (got["steps"], got["steps_max"]) == ("auto", hawk.trace.steps.AUTO_K_MAX)
 
 
 def test_a_finishing_kernel_leaves_the_finished_count_plane_to_the_library():
     got = built(stepping_one)
-    assert got["body"] == {"Plain": {"name": "stepping_one", "sinks": [5, 8, 11, 14], "declared": [TERMINATED], **BODY}}
+    assert got["body"] == {"Plain": {"name": "stepping_one", "sinks": sinks_at(stepping_one, stepping_one), "declared": [TERMINATED], **BODY}}
     assert got["steps"] == 1 and "one_step" not in got and got["lane_space"] == [{}]
 
 

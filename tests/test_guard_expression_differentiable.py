@@ -83,7 +83,7 @@ def _env(rng, names):
 def test_g_is_nonpositive_exactly_where_the_sample_stops(k, inputs):
     eg = event_guard(k)
     assert len(eg.guards) == 1 and eg.mask == "terminated"
-    finish = next(s for s in k.sinks if type(s).__name__ == "Finish")
+    finish = next(s for s in k.sinks if s.cls == "Finish")
     gk = guard_kernel(k)
     rng = np.random.default_rng(7)
     flips = set()

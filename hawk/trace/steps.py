@@ -4,8 +4,8 @@
 """``hawk.steps(kernel, K)`` — K steps of a finishing step kernel per launch.
 
 An IR transform, no build option and no new user code: the step body
-becomes ONE lowered :class:`~raptor.ir.nodes.Loop` of ``K`` trips
-(:func:`build_loop`) whose carries are the kernel's Mutable planes — every
+becomes ONE lowered loop of ``K`` trips
+(:func:`hawk._ir.loop`) whose carries are the kernel's Mutable planes — every
 read of a plane's launch-start value becomes the carry, every commit the
 carry's next value — and whose ``break`` is the finish condition, evaluated
 AFTER the step's
@@ -31,7 +31,7 @@ step, or ``step_vjp(..., steps_reverse="fused")`` for all K in one launch.
 ``steps="auto"`` derives ONE kernel, ``<name>_xauto``, by the same
 transform: the loop's static range is :data:`AUTO_K_MAX` trips, and its
 runtime trip count is read once per launch from the reserved ``lookup``
-word :data:`~raptor.wings.base.cells.FUSED_STEPS_PLANE` (set by the runner, never
+word :data:`~hawk._ir.FUSED_STEPS_PLANE` (set by the runner, never
 bound by the host, clamped below at 0, any word above ``AUTO_K_MAX``
 running that many steps). The sidecar records
 the sidecar's ``finish.steps == "auto"`` and ``finish.steps_max == AUTO_K_MAX``. The
@@ -50,24 +50,40 @@ from __future__ import annotations
 
 from typing import Any
 
-from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from raptor.ir.loops import build_loop
-from raptor.ir.nodes import Assign, At, Const, Finish, Leaf, Node, Select
-from raptor.wings.base.cells import FUSED_STEPS_PLANE
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir.ops import make
-from raptor.ir.walk import substitute
-from raptor.ir.types import TensorType
 
 #: The static bound of a ``steps="auto"`` loop: the most steps any launch
 #: can take (the sidecar's ``finish.steps_max``).
 AUTO_K_MAX = 64
 
 #: The type of the ``fused_steps`` word and of the loop's runtime trip count.
-_COUNT = TensorType((), "i32")
+_COUNT = _ir.TensorType((), "i32")
 
 #: The carried exit flag's type: a ``Real`` register (the loop emitter's rule).
-_FLAG = TensorType((), "f64")
+_FLAG = _ir.TensorType((), "f64")
+
+
+def _loop_index(context: Any, depth: int, name: str) -> Any:
+    """The index variable of a lowered loop at nesting ``depth``."""
+    return _ir.make_node(
+        "LoopIndex", _COUNT, context=context, depth=depth, name=name, bounds=None
+    )
+
+
+def _loop_carry(context: Any, depth: int, slot: int, name: str, ttype: Any) -> Any:
+    """The placeholder of carry ``slot`` inside a loop body at nesting ``depth``."""
+    return _ir.make_node("LoopCarry", ttype, context=context, depth=depth, slot=slot, name=name)
+
+
+def _assign(name: str, value: Any, ttype: Any) -> Any:
+    """The plain commit of ``value`` to the plane ``name``."""
+    return _ir.make_node("Assign", ttype, (value,), name=name)
+
+
+def _prior_read(context: Any, name: str, ttype: Any) -> Any:
+    """The launch-start value of the ``Mutable`` plane ``name``."""
+    return _ir.leaf(context, "prior_read", "mutable", name, ttype)
 
 
 def steps(kernel: Any, K: int | str) -> Any:
@@ -104,7 +120,7 @@ def _fused_steps_of(kernel: Any) -> tuple | None:
     ``K``, else ``None`` (a single step, or an ``"auto"`` kernel whose trip
     count is a launch-time word)."""
     step = getattr(kernel, "step", None)
-    finishes = [s for s in getattr(kernel, "sinks", ()) if isinstance(s, Finish)]
+    finishes = [s for s in getattr(kernel, "sinks", ()) if _ir.is_a(s, "finish")]
     if step is None or step is kernel or not finishes:
         return None
     k = getattr(kernel, "steps", 1)
@@ -116,13 +132,13 @@ def admits_auto(kernel: Any) -> bool:
     step finishing its own sample, committing at least one ``Mutable``
     plane and nothing else, with no plane named ``fused_steps``."""
     sinks = tuple(kernel.sinks)
-    finishes = [s for s in sinks if isinstance(s, Finish)]
+    finishes = [s for s in sinks if _ir.is_a(s, "finish")]
     if len(finishes) != 1 or kernel.steps != 1:
         return False
-    commits = [s for s in sinks if s is not finishes[0]]
-    if not commits or not all(isinstance(s, Assign) for s in commits):
+    commits = [s for s in sinks if s != finishes[0]]
+    if not commits or not all(_ir.is_a(s, "assign") for s in commits):
         return False
-    return not any(n == FUSED_STEPS_PLANE for _, n in kernel.walk.arg_spec)
+    return not any(n == _ir.FUSED_STEPS_PLANE for _, n in _ir.arg_spec(kernel.walk))
 
 
 def default_steps(kernel: Any) -> Any:
@@ -141,7 +157,7 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
     name = kernel.name
     check_steps(name, K, where="hawk.steps")
     sinks = tuple(kernel.sinks)
-    finishes = [s for s in sinks if isinstance(s, Finish)]
+    finishes = [s for s in sinks if _ir.is_a(s, "finish")]
     if not finishes:
         raise HawkError(
             f"hawk.steps({name!r}): the kernel never finishes its sample — K "
@@ -152,12 +168,12 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
         raise HawkError(
             f"hawk.steps({name!r}): the kernel already takes {kernel.steps} "
             "steps per launch; derive from the single step")
-    commits = [s for s in sinks if s is not finish]
+    commits = [s for s in sinks if s != finish]
     for sink in commits:
-        if not isinstance(sink, Assign):
-            what = ("a loop committing per iteration" if isinstance(sink, Loop)
-                    else f"a {getattr(sink, 'role', '?')} sink "
-                         f"({sink.kind} {getattr(sink, 'name', '?')!r})")
+        if not _ir.is_a(sink, "assign"):
+            what = ("a loop committing per iteration" if _ir.is_a(sink, "loop")
+                    else f"a {sink.field_text('role')} sink "
+                         f"({sink.field_text('kind')} {sink.field_text('name')!r})")
             raise HawkError(
                 f"hawk.steps({name!r}): {what} is not a step kernel's commit; a "
                 "step kernel commits Mutable planes and finishes — an "
@@ -168,40 +184,57 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
             f"hawk.steps({name!r}): the kernel commits no Mutable plane, so "
             "there is no state to step")
 
+    context = kernel.context
     depth = 0
-    carries = [LoopCarry(depth, j, s.name, s.ttype) for j, s in enumerate(commits)]
-    flag = LoopCarry(depth, len(commits), "finished", _FLAG)
-    by_name = {s.name: c for s, c in zip(commits, carries)}
-    mapping = {id(leaf): by_name[leaf.name] for leaf in _prior_reads(sinks)}
+    names = [s.field_text("name") for s in commits]
+    types = [_ir.type_of(s) for s in commits]
+    carries = [
+        _loop_carry(context, depth, j, name, ttype)
+        for j, (name, ttype) in enumerate(zip(names, types))
+    ]
+    flag = _loop_carry(context, depth, len(commits), "finished", _FLAG)
+    by_name = dict(zip(names, carries))
+    mapping = {leaf: by_name[leaf.field_text("name")] for leaf in _prior_reads(sinks)}
 
     auto = K == "auto"
-    if auto and any(n == FUSED_STEPS_PLANE for _, n in kernel.walk.arg_spec):
+    if auto and any(n == _ir.FUSED_STEPS_PLANE for _, n in _ir.arg_spec(kernel.walk)):
         raise HawkError(
-            f"hawk.steps({name!r}, 'auto'): {FUSED_STEPS_PLANE!r} is reserved "
+            f"hawk.steps({name!r}, 'auto'): {_ir.FUSED_STEPS_PLANE!r} is reserved "
             "for the trip count of an automatic kernel; rename that parameter")
 
-    roots = tuple(s.value for s in commits) + (finish.value,)
+    roots = tuple(s.operands[0] for s in commits) + (finish.operands[0],)
     try:
-        new = substitute(roots, mapping)
+        new = _ir.substitute(roots, mapping)
     except HawkError as exc:
         raise HawkError(
             f"hawk.steps({name!r}): the step body cannot be carried — {exc}"
         ) from None
     cond = new[-1]
-    nexts = tuple(new[:-1]) + (
-        Select(cond, Const(1.0, _FLAG), Const(0.0, _FLAG), _FLAG),)
-    inits = tuple(Leaf("prior_read", "mutable", s.name, s.ttype)
-                  for s in commits) + (Const(0.0, _FLAG),)
-    count = None
-    if auto:
-        count = _clamped_word()
-    loop = build_loop(LoopIndex(depth, "step"), (*carries, flag), inits, nexts,
-                      start=0, stop=AUTO_K_MAX if auto else K, step=1,
-                      exit_cond=cond, exit_values=nexts, count=count)
-    out: list[Node] = [Assign(s.name, LoopValue(loop, j), s.ttype)
-                       for j, s in enumerate(commits)]
-    done = make("gt", (LoopValue(loop, len(commits)), Const(0.5, _FLAG)))
-    out.append(Finish(finish.name, done))
+    flagged = _ir.make_node(
+        "Select",
+        _FLAG,
+        (cond, _ir.const(context, 1.0, _FLAG), _ir.const(context, 0.0, _FLAG)),
+    )
+    nexts = tuple(new[:-1]) + (flagged,)
+    inits = tuple(_prior_read(context, name, ttype) for name, ttype in zip(names, types)) + (
+        _ir.const(context, 0.0, _FLAG),
+    )
+    count = _clamped_word(context) if auto else None
+    loop = _ir.loop(
+        _loop_index(context, depth, "step"), (*carries, flag), inits, nexts,
+        start=0, stop=AUTO_K_MAX if auto else K, step=1,
+        exit_cond=cond, exit_values=nexts, count=count,
+    )  # fmt: skip
+    out = [
+        _assign(name, _ir.loop_value(loop, j), ttype)
+        for j, (name, ttype) in enumerate(zip(names, types))
+    ]
+    done = _ir.make("gt", (_ir.loop_value(loop, len(commits)), _ir.const(context, 0.5, _FLAG)))
+    out.append(
+        _ir.make_node(
+            "Finish", _ir.TensorType((), "bool"), (done,), name=finish.field_text("name")
+        )
+    )
     return Kernel(out_name, tuple(out), kernel.planes, kind=kernel.kind,
                   step=step, steps=K, one_step=kernel if auto else None,
                   source_digest=getattr(kernel, "source_digest", None),
@@ -229,43 +262,61 @@ def _fused_function(step: Any, K: int) -> Any:
     if timed:
         step, _ = _promoted(step)
     sinks = tuple(step.sinks)
-    finish = next(s for s in sinks if isinstance(s, Finish))
-    commits = [s for s in sinks if s is not finish]
-    carries = [LoopCarry(0, j, s.name, s.ttype) for j, s in enumerate(commits)]
-    by_name = {s.name: c for s, c in zip(commits, carries)}
-    counter = LoopCarry(0, len(commits), "trip", _FLAG)
+    context = step.context
+    finish = next(s for s in sinks if _ir.is_a(s, "finish"))
+    commits = [s for s in sinks if s != finish]
+    names = [s.field_text("name") for s in commits]
+    types = [_ir.type_of(s) for s in commits]
+    carries = [
+        _loop_carry(context, 0, j, name, ttype)
+        for j, (name, ttype) in enumerate(zip(names, types))
+    ]
+    by_name = dict(zip(names, carries))
+    counter = _loop_carry(context, 0, len(commits), "trip", _FLAG)
     if timed:
-        by_name[APPLIED_STEPS] = make("cast", (counter,), "i32")
-    mapping = {id(leaf): by_name[leaf.name] for leaf in _prior_reads(sinks)}
-    new = substitute(tuple(s.value for s in commits) + (finish.value,), mapping)
+        by_name[APPLIED_STEPS] = _ir.make("cast", (counter,), "i32")
+    mapping = {leaf: by_name[leaf.field_text("name")] for leaf in _prior_reads(sinks)}
+    new = _ir.substitute(tuple(s.operands[0] for s in commits) + (finish.operands[0],), mapping)
     nexts = tuple(new[:-1])
-    inits = as_plain_reads(tuple(Leaf("prior_read", "mutable", s.name, s.ttype)
-                                 for s in commits))
+    inits = as_plain_reads(
+        tuple(_prior_read(context, name, ttype) for name, ttype in zip(names, types))
+    )
     if timed:
-        start = as_plain_reads((Leaf("prior_read", "mutable", APPLIED_STEPS, _COUNT),))[0]
+        start = as_plain_reads((_prior_read(context, APPLIED_STEPS, _COUNT),))[0]
         carries.append(counter)
-        inits += (make("cast", (start,), "f64"),)
-        nexts += (make("add", (counter, Const(1.0, _FLAG))),)
-    loop = build_loop(LoopIndex(0, "step"), tuple(carries), inits, nexts,
-                      start=0, stop=K, step=1, exit_cond=new[-1], exit_values=nexts)
-    entry = Leaf("terminated", "terminated", finish.name, finish.value.ttype)
-    out = [Assign(s.name + NEXT_SUFFIX, Select(entry, inits[j], LoopValue(loop, j), s.ttype),
-                  s.ttype) for j, s in enumerate(commits)]
+        inits += (_ir.make("cast", (start,), "f64"),)
+        nexts += (_ir.make("add", (counter, _ir.const(context, 1.0, _FLAG))),)
+    loop = _ir.loop(
+        _loop_index(context, 0, "step"), tuple(carries), inits, nexts,
+        start=0, stop=K, step=1, exit_cond=new[-1], exit_values=nexts,
+    )  # fmt: skip
+    entry = _ir.leaf(
+        context, "terminated", "terminated", finish.field_text("name"),
+        _ir.type_of(finish.operands[0]),
+    )  # fmt: skip
+    out = [
+        _assign(
+            name + NEXT_SUFFIX,
+            _ir.make_node("Select", ttype, (entry, inits[j], _ir.loop_value(loop, j))),
+            ttype,
+        )
+        for j, (name, ttype) in enumerate(zip(names, types))
+    ]
     # the Select above is the skip: no guard of the kind, so a derivative neither
     # masks nor wraps it a second time (a standalone C unit would flag the repeat)
     return Kernel(f"{step.name}_x{K}_function", tuple(out), {}, kind=Kind("fused_steps", guard=DATA_ONLY))
 
 
-def _clamped_word() -> Node:
+def _clamped_word(context: Any) -> Any:
     """The trip count of a ``steps="auto"`` loop: the ``fused_steps`` word,
     clamped below at 0 so a negative word runs no step. The bound above is
     the word itself, a runtime value: a runner may ask one launch for every
     step left in its run (``AUTO_K_MAX`` stays the static range a host
     tile is sized for and the policy's largest band word)."""
-    word = At(Leaf("table_read", "lookup", FUSED_STEPS_PLANE, _COUNT),
-              Const(0, _COUNT), _COUNT)
-    zero = Const(0, _COUNT)
-    return Select(make("lt", (word, zero)), zero, word, _COUNT)
+    lookup = _ir.leaf(context, "table_read", "lookup", _ir.FUSED_STEPS_PLANE, _COUNT)
+    zero = _ir.const(context, 0, _COUNT)
+    word = _ir.make_node("At", _COUNT, (lookup, zero))  # the gather class: a plain op named "at" is not a table read
+    return _ir.make_node("Select", _COUNT, (_ir.make("lt", (word, zero)), zero, word))
 
 
 def check_steps(name: str, K: Any, *, where: str = "@hawk.kernel(steps=...)") -> None:
@@ -281,16 +332,10 @@ def check_steps(name: str, K: Any, *, where: str = "@hawk.kernel(steps=...)") ->
 
 
 def _prior_reads(sinks: tuple) -> list:
-    """Every launch-start-read leaf OBJECT the sinks reach (by identity:
-    each read before a plane's first store mints its own leaf, and every
-    one becomes the carry)."""
-    out, seen, stack = [], set(), list(sinks)
-    while stack:
-        node = stack.pop()
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        if isinstance(node, Leaf) and node.kind == "prior_read":
-            out.append(node)
-        stack.extend(node.operands)
-    return out
+    """Every launch-start-read leaf the sinks reach (each read before a plane's
+    first store is one, and every one becomes the carry)."""
+    return [
+        node
+        for node in _ir.post_order(sinks)
+        if _ir.is_a(node, "leaf") and node.field_text("kind") == "prior_read"
+    ]

@@ -12,22 +12,25 @@ import numpy as np
 from _eval import evaluate
 
 from hawk.diff import jvp, vjp
-from raptor.ir import Assign, At, Const, Leaf
-from raptor.ir import make as mk
-from raptor.ir.types import TensorType
+from hawk import _ir
 
-F64 = TensorType((), "f64")
+F64 = _ir.TensorType((), "f64")
+I32 = _ir.TensorType((), "i32")
 LANES = 5
 H = 1e-6
 
 
 def _primal():
     """``y = w[0] * x + w[1] * x * x`` over per-lane ``x`` and ONE two-cell ``w``."""
-    x = Leaf("vocab_read", "per_sample", "x", F64)
-    w = Leaf("table_read", "lookup", "w", F64)
-    w0, w1 = (At(w, Const(k, TensorType((), "i32")), F64) for k in (0, 1))
-    y = mk("add", (mk("mul", (w0, x)), mk("mul", (w1, mk("mul", (x, x))))))
-    return (Assign("y", y, F64),)
+    context = _ir.new_context()
+    x = _ir.leaf(context, "vocab_read", "per_sample", "x", F64)
+    w = _ir.leaf(context, "table_read", "lookup", "w", F64)
+    w0, w1 = (_ir.make_node("At", F64, [w, _ir.const(context, k, I32)]) for k in (0, 1))
+    y = _ir.make(
+        "add",
+        (_ir.make("mul", (w0, x)), _ir.make("mul", (w1, _ir.make("mul", (x, x))))),
+    )
+    return (_ir.make_node("Assign", F64, [y], name="y"),)
 
 
 def test_the_reverse_pass_sums_a_broadcast_parameter_over_the_lanes():
@@ -37,8 +40,10 @@ def test_the_reverse_pass_sums_a_broadcast_parameter_over_the_lanes():
     cot = np.linspace(1.0, 2.0, LANES)
     derived = vjp(sinks)
     # one lane at a time, each scatter-adding into the ONE shared plane
-    got = sum(evaluate(derived, {"x": x[i], "w": w, "bar_y": cot[i]}, lanes=2)["bar_w"]
-              for i in range(LANES))
+    got = sum(
+        evaluate(derived, {"x": x[i], "w": w, "bar_y": cot[i]}, lanes=2)["bar_w"]
+        for i in range(LANES)
+    )
 
     def y(wv):
         return wv[0] * x + wv[1] * x * x
@@ -59,7 +64,13 @@ def test_the_forward_pass_reads_one_tangent_plane_for_all_lanes():
     w = np.array([1.5, -0.7])
     tangent = np.array([0.3, 1.1])
     derived = jvp(sinks)
-    got = np.array([evaluate(derived, {"x": x[i], "w": w, "dot_w": tangent, "dot_x": 0.0},
-                             lanes=2)["dot_y"] for i in range(LANES)])
+    got = np.array(
+        [
+            evaluate(
+                derived, {"x": x[i], "w": w, "dot_w": tangent, "dot_x": 0.0}, lanes=2
+            )["dot_y"]
+            for i in range(LANES)
+        ]
+    )
     expect = tangent[0] * x + tangent[1] * x * x
     assert np.allclose(got, expect, rtol=1e-12)

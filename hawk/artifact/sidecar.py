@@ -45,6 +45,9 @@ consumer:
   statically-shaped role, ``None`` for a runtime-length one; kept
   separate so completing it can never poison a caller that assumes every
   ``arg_widths`` value is an int.
+* ``arg_mirrors`` — ``{slot name: "GRefMirror" | "ScalarHandle" | "value"}``, the by-value
+  shape the entry takes each argument in, as the lowering answer states it for the slot; a
+  runner binds from it and refuses a sidecar that lacks it.
 * ``arg_dtypes`` — the plane's wire dtype, for every role including the
   runtime-length ones: the compiled ``scalar_type`` for an ``f64``/``f32``
   leaf (the compiled MODE decides the wire width, not the IR's own static
@@ -64,14 +67,10 @@ from __future__ import annotations
 import re
 from types import MappingProxyType, SimpleNamespace
 
-from .. import _contracts
+from .. import _contracts, _ir
 from ..compile.toolchain import _strict_aether_include, _strict_eagle_include
 from .._errors import HawkError
-from raptor.ir.cells import CELL_PLANE
-from raptor.wings.base.cells import FUSED_STEPS_PLANE
-from raptor.wings.base.cells import class_name, mix_name, offsets_name, stale_name
 from ..targets import ENTRY_KINDS
-from raptor.ir.types import INT_PLANE_DTYPES
 
 
 def _root_or_sealed_marker(resolver) -> str:
@@ -105,7 +104,7 @@ def _names(walk, role) -> list:
 def _mutable_dtype(ttype) -> str:
     if not ttype.shape and ttype.dtype in ("i32", "i64"):
         return "int"
-    if ttype.dtype in INT_PLANE_DTYPES:
+    if ttype.dtype in _ir.INT_PLANE_DTYPES:
         return ttype.dtype
     return MUTABLE_DTYPES[len(ttype.shape)]
 
@@ -211,7 +210,7 @@ def _width(ttype) -> int:
 def _params(walk) -> list:
     return [{"name": name,
              "dtype": ("int" if walk.slot_types[(role, name)].dtype
-                       in ("i32", "i64", *INT_PLANE_DTYPES) else "float")}
+                       in ("i32", "i64", *_ir.INT_PLANE_DTYPES) else "float")}
             for role, name in walk.arg_spec if role == "uniform"]
 
 
@@ -296,22 +295,17 @@ def _dispatches(infos) -> list:
     """The per-kernel dispatch listing: ``{name, K, strategy,
     static_selector, selector_reads}`` (the kernel-scoped classification and
     the selector's read slots a launching runtime re-scopes to a whole
-    step), straight off
-    an iterable of :class:`~hawk.ir.walk.DispatchInfo` — ordinarily
-    :attr:`~hawk.ir.walk.Walk.dispatches` itself. A SEGMENTED unit's walk
-    carries no Dispatch node at all (the per-unit split already replaced
-    it), so :func:`sidecar_meta`'s ``dispatch_override`` supplies the
-    original group's record instead, K ``units`` names included."""
+    step), straight off the dispatch records of :func:`_unit_walk`. A SEGMENTED unit's own walk
+    carries no Dispatch node (the per-unit split replaced it), which is why the records come from the kernel's walk."""
     out = []
     for d in infos:
-        entry = {"name": d.name, "K": d.K, "strategy": d.strategy,
-                 "static_selector": d.static_selector,
+        entry = {"name": d.name, "K": d.K, "strategy": d.strategy, "static_selector": d.static_selector,
                  "selector_reads": [list(pair) for pair in d.selector_reads]}
         if d.strategy == "auto":
-            entry["mix"] = mix_name(d.name)
+            entry["mix"] = d.mix
         if d.strategy == "segmented":
-            entry["class"], entry["stale"] = class_name(d.name), stale_name(d.name)
-            entry["offsets"] = offsets_name(d.name)
+            planes = _ir.group_plane_names(d.name)
+            entry["class"], entry["stale"], entry["offsets"] = planes.cls, planes.stale, planes.offsets
             if d.classify is not None:
                 entry["classify"] = d.classify
         if d.units:
@@ -329,9 +323,7 @@ def _finish(walk, steps) -> dict:
     finish = getattr(walk, "finish", None)
     if finish is None:
         return {}
-    from raptor.wings.base.cells import FINISHED_PLANE
-
-    out = {"mask": finish, "counter": FINISHED_PLANE, "steps": steps}
+    out = {"mask": finish, "counter": _ir.FINISHED_PLANE, "steps": steps}
     if steps == "auto":
         from ..trace.steps import AUTO_K_MAX
 
@@ -360,7 +352,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
                  lane_space=((None, None),), group: int = 1, box=None, block: int | None = None,
                  index_set: dict | None = None,
                  planes: dict | None = None, broadcast: dict | None = None,
-                 dispatch_override=None, step_ops: int | None = None,
+                 step_ops: int | None = None,
                  fp64_ops_ir: int | None = None,
                  entry_counts_finished: bool = False,
                  ptxas: dict | None = None, local: tuple | None = None,
@@ -392,10 +384,6 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
     ``plane_axes`` the sinks declared with named axes, and ``unused_planes`` the
     declared planes the body never touches (pruned from the compiled kernel), ``plane_meta`` the opaque notes of an annotated plane, and ``param_shapes`` the natural
     shape of each ``Param[Vector/Matrix/Table]`` plane, each only when present.
-
-    ``dispatch_override`` (the per-unit split) replaces ``walk.dispatches``
-    as the ``dispatch`` block's source when given, since a segmented
-    unit's own walk carries no Dispatch node.
 
     ``step_ops`` (one step's operation count) is present only for a kernel
     whose body steps; the launching runtime reads it, the body does not.
@@ -444,16 +432,16 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         "wide_inputs": _names(walk, "wide_in"),
         "wide_outputs": _names(walk, "wide_out"),
         "accum_outputs": _names(walk, "accum_out"),
-        "dispatch": _dispatches(
-            dispatch_override if dispatch_override is not None else walk.dispatches),
+        "dispatch": _dispatches(walk.dispatches),
         "buffers": [],
         "arg_spec": [list(pair) for pair in walk.arg_spec],
+        "arg_mirrors": dict(walk.mirrors),
         "terminated_readonly": getattr(walk, "finish", None) is None,
         **_finish(walk, steps),
         **({"param_planes": list(walk.param_planes)} if walk.param_planes else {}),
         # the reserved planes of the kernel's own, by name: the runtime binds them and the caller never passes them
-        **({"steps_plane": FUSED_STEPS_PLANE} if ("lookup", FUSED_STEPS_PLANE) in walk.arg_spec else {}),
-        **({"cell_plane": CELL_PLANE} if ("per_sample", CELL_PLANE) in walk.arg_spec else {}),
+        **({"steps_plane": _ir.FUSED_STEPS_PLANE} if ("lookup", _ir.FUSED_STEPS_PLANE) in walk.arg_spec else {}),
+        **({"cell_plane": _ir.CELL_PLANE} if ("per_sample", _ir.CELL_PLANE) in walk.arg_spec else {}),
         # every reduction over samples, with its op: the rows it writes (one
         # per 32 samples) are the runtime's scratch, finished into the cell
         **({"cells": walk.cells} if walk.cells else {}),
@@ -483,7 +471,6 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         # declared but never read or written: the compiled kernel has no slot for them
         **({"unused_planes": unused} if unused else {}),
         "digest": walk.digest,
-        "quantities": {p: list(span.wires) for p, span in walk.quantities.items()},
         "aether_include": _root_or_sealed_marker(_strict_aether_include),
         "eagle_include": _root_or_sealed_marker(_strict_eagle_include),
     }
@@ -521,25 +508,26 @@ def _is_classify_record(dispatch: dict) -> bool:
 
 def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespace:
     """What :func:`sidecar_meta` reads off a walk, rebuilt from the record of a unit and the declarations of its kernel."""
-    from raptor.ir.types import TensorType
-
     meta = unit["meta"]
     body = meta["body"]
     slots = body["slots"]
     names = [s["name"] for s in slots]
     arg_spec = tuple((_snake(s["role"]), s["name"]) for s in slots)
-    held_types = kernel.walk.slot_types
-    slot_types = {(_snake(s["role"]), s["name"]): TensorType(tuple(s["shape"]), _RECORD_DTYPES[s["dtype"]],
-                                                              getattr(held_types.get((_snake(s["role"]), s["name"])), "tag", None))
+    held_slots = _ir.slot_of(kernel.walk)
+    # the record has dtype and shape but not the tag (an index plane's): the kernel's own walk states it
+    slot_types = {(_snake(s["role"]), s["name"]): _ir.TensorType(
+                      tuple(s["shape"]), _RECORD_DTYPES[s["dtype"]],
+                      _ir.slot_type(kernel.walk, _snake(s["role"]), s["name"]).tag if (_snake(s["role"]), s["name"]) in held_slots else None)
                   for s in slots}
     reads = {n for r, n in arg_spec if r in ("lookup", "wide_in")}
     finish = meta.get("finish")
-    quantities = kernel.walk.quantities
-    held = {d.name: d for d in kernel.walk.dispatches}
+    held = {group.name: (index, group) for index, group in enumerate(_ir.dispatch_groups(kernel.walk))}
+    mixes = _ir.mix_slots(kernel.walk)
     listed = [d for d in body["dispatches"] if not _is_classify_record(d)]
 
     return SimpleNamespace(
-        arg_spec=arg_spec, slot_types=slot_types, digest=meta["digest"], quantities={p: q for p, q in quantities.items() if any(w in names for w in q.wires)},
+        arg_spec=arg_spec, slot_types=slot_types, digest=meta["digest"],
+        mirrors={s["name"]: s["mirror"] for s in slots},
         access=SimpleNamespace(cls=_snake(body["access"]), op=None),
         cells={c["name"]: {"op": _snake(c["op"]), "columns": c["columns"]} for c in body["cells"]},
         companions={names[c["slot"]]: names[c["target_slot"]] for c in body["companions"]},
@@ -548,8 +536,9 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
         param_planes=tuple(s["name"] for s in slots if s["flags"] & _SLOT_PARAM_PLANE),
         prior_reads=frozenset(s["name"] for s in slots if s["flags"] & _SLOT_PRIOR),
         finish=None if finish is None else names[finish["mask_slot"]],
-        dispatches=tuple(SimpleNamespace(name=d["name"], K=held[d["name"]].K, strategy=_snake(d["strategy"]),
-                                         static_selector=held[d["name"]].static_selector, selector_reads=held[d["name"]].selector_reads,
+        dispatches=tuple(SimpleNamespace(name=d["name"], K=held[d["name"]][1].branches, strategy=_snake(d["strategy"]),
+                                         static_selector=_ir.static_selector(kernel.walk, held[d["name"]][0]), mix=mixes.get(d["name"]),
+                                         selector_reads=_ir.selector_reads(kernel.walk, held[d["name"]][0]),
                                          units=tuple(ref["name"] for ref in d["branches"]),       # the record lists a segmented group's branch units in order
                                          classify=None if d["classify"] is None else d["classify"]["name"])
                          for d in listed),

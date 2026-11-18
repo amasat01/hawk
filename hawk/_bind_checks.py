@@ -19,12 +19,11 @@ from ._plane_layout import (
     number_refusal,
 )
 from ._errors import HawkError
-from raptor.ir import nodes as _ir_nodes
-from raptor.ir.types import PER_SAMPLE_ROLES
+from . import _ir
 
 #: The roles whose plane's trailing extent is n_samples by construction
-#: (:data:`raptor.ir.types.PER_SAMPLE_ROLES`).
-_PER_SAMPLE_ROLES = PER_SAMPLE_ROLES
+#: (:data:`hawk._ir.PER_SAMPLE_ROLES`).
+_PER_SAMPLE_ROLES = _ir.PER_SAMPLE_ROLES
 
 #: Roles that NEVER vote on n_samples, whatever their trailing extent
 #: happens to be. A ``lookup``/``wide_in`` plane's length is cross-sample
@@ -37,10 +36,10 @@ _PER_SAMPLE_ROLES = PER_SAMPLE_ROLES
 _NEVER_VOTES = ("lookup", "wide_in", "wide_out", "accum_out")
 
 assert set(_PER_SAMPLE_ROLES) | set(_NEVER_VOTES) | {"uniform", "nsamples"}\
-    == set(_ir_nodes.ROLE_ORDER), (
+    == set(_ir.ROLE_ORDER), (
     "hawk.runtime's n_samples-inference vocabulary must classify EVERY "
     "role exactly once (vote, never-vote, or by-value/no-plane): "
-    f"{sorted(_ir_nodes.ROLE_ORDER)}"
+    f"{sorted(_ir.ROLE_ORDER)}"
 )
 
 
@@ -209,7 +208,7 @@ def _check_plane_arg(role: str, name: str, value, arg_dtypes: dict,
             f"buffer — pass np.ascontiguousarray({name})"
         )
 
-    if role in _ir_nodes.SINK_ROLES and mv.readonly:
+    if role in _ir.SINK_ROLES and mv.readonly:
         errors.append(
             f"argument {name!r}: role {role!r} is written by the kernel, so "
             f"it must be writable, got a read-only array — pass a writable "

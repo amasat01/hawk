@@ -27,6 +27,7 @@ from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk import math as hm
 from raptor.errors import RaptorError as HawkError
 from hawk.diff import step_vjp, vjp
+from hawk import _ir
 
 
 def _pend(dt: Param, c: Param, t_final: Scalar, terminated: Terminated,
@@ -66,7 +67,7 @@ def test_matches_central_differences():
 
 def test_naming_contract():
     back = hawk.Kernel("pend_step_vjp", step_vjp(pend))
-    names = {n for _role, n in back.walk.arg_spec}
+    names = {n for _role, n in _ir.arg_spec(back.walk)}
     # reads only the values its derivative needs (t enters linearly, so it is not read)
     assert {"x", "v", "dt", "c", "bar_x_next", "bar_v_next", "bar_t_next"} <= names
     assert {"bar_x", "bar_v", "bar_t", "bar_dt", "bar_c"} <= names
@@ -75,9 +76,9 @@ def test_naming_contract():
     assert tag.kind == "vjp" and tag.primal == "_pend"
     for other in (hawk.steps(pend, 4), kernel(_pend)):
         again = hawk.Kernel("other_step_vjp", step_vjp(other))
-        assert again.walk.arg_spec == back.walk.arg_spec
+        assert _ir.arg_spec(again.walk) == _ir.arg_spec(back.walk)
     timed = kernel(_pend, steps=1, time="t", time_step="dt")
-    names = {n for _r, n in hawk.Kernel("timed_step_vjp", step_vjp(timed)).walk.arg_spec}
+    names = {n for _r, n in _ir.arg_spec(hawk.Kernel("timed_step_vjp", step_vjp(timed)).walk)}
     assert {"applied_steps", "bar_t_0"} <= names       # the index form t_0 + k dt
 
 

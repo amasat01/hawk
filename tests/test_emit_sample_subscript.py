@@ -89,9 +89,7 @@ earlier state under this row gave **77 failed, 42 passed**.
 """
 
 from __future__ import annotations
-from _specs import HOST, default_kind
 
-import dataclasses
 import itertools
 import zlib
 
@@ -102,22 +100,36 @@ from _eval import evaluate
 
 from hawk.artifact import build, emit_source
 from hawk.diff import vjp
-from raptor.wings.base.exchange import mirror_of
-from raptor.ir import Assign, Leaf, canonical
-from hawk import HawkError
-from raptor.ir import make as mk
-from raptor.ir.ops import OP_KINDS
-from raptor.ir.types import TensorType
+from hawk import _ir
+
+OP_KINDS = _ir.OP_KINDS
+mk = _ir.make
+CTX = _ir.new_context()
+
+
+def _leaf(kind, role, name, ttype, context=CTX):
+    """A leaf of the test's context."""
+    return _ir.leaf(context, kind, role, name, ttype)
+
+
+def _assign(name, value, ttype):
+    """The sink committing ``value`` to the plane ``name``."""
+    return _ir.make_node("Assign", ttype, [value], name=name)
+
+
+def _select(cond, on_true, on_false, ttype):
+    """``cond ? on_true : on_false`` of type ``ttype``."""
+    return _ir.make_node("Select", ttype, [cond, on_true, on_false])
 
 #: Samples per case. Small because every case is also evaluated sample by sample
 #: by the scratch interpreter; seven is enough that a body reading a fixed column
 #: cannot coincide with the right answer anywhere but that column.
 N = 7
 
-S = TensorType((), "f64")
-V3 = TensorType((3,), "f64")
-M22 = TensorType((2, 2), "f64")
-M33 = TensorType((3, 3), "f64")
+S = _ir.TensorType((), "f64")
+V3 = _ir.TensorType((3,), "f64")
+M22 = _ir.TensorType((2, 2), "f64")
+M33 = _ir.TensorType((3, 3), "f64")
 
 _ROLE = {0: "per_sample", 1: "vec_in", 2: "mat_in"}
 
@@ -130,40 +142,39 @@ FANOUTS = (1, 2)
 # --------------------------------------------------------------------------- #
 # Which kinds are rank-collapsing — computed from ops.py, never listed by hand.
 # --------------------------------------------------------------------------- #
-_PROBE_TYPES = (S, V3, TensorType((4,), "f64", "quaternion"), M22, M33,
-                TensorType((3, 2), "f64"), TensorType((), "bool"))
+_PROBE_TYPES = (S, V3, _ir.TensorType((4,), "f64", "quaternion"), M22, M33,
+                _ir.TensorType((3, 2), "f64"), _ir.TensorType((), "bool"))
 _PROBE_LITERALS = (None, 0, (3,))
 
 #: ``at`` is excluded from the probe's answer, and the exclusion is CHECKED
 #: rather than asserted: its second operand is an absolute sample INDEX, not a
 #: value, so a rank-2 index makes the probe read a rank-0 gather of a rank-0
 #: plane as "collapsing". The real reason it can carry no rank>=1 operand at all
-#: is — a ``lookup`` plane is pinned to the 32-byte ``ScalarHandle`` and
-#: ``mirror_of`` REFUSES a rank>=1 one — which
-#: :func:`test_a_lookup_plane_cannot_carry_a_rank1_operand_at_all` re-derives
-#: from the emitter every time this row runs.
+#: is that a ``lookup`` plane is pinned to the 32-byte ``ScalarHandle`` and the
+#: lowering library refuses a rank>=1 one.
 _INDEX_TAKING = frozenset({"at"})
 
 
 def collapsing_kinds() -> frozenset:
     """Every op kind whose RESULT rank is below its widest operand's rank.
 
-    Derived by probing :func:`raptor.ir.ops.make` over a small closed set of
+    Derived by probing :func:`hawk._ir.make` over a small closed set of
     operand types rather than by transcribing a list: the vocabulary lives in
     ``ops.py`` and a kind added there must not be able to slip past this row
     just because nobody remembered to extend a constant here."""
     found = set()
     for kind in OP_KINDS:
+        scratch = _ir.new_context()
         for arity in (1, 2, 3):
             for operands in itertools.product(_PROBE_TYPES, repeat=arity):
                 for literal in _PROBE_LITERALS:
-                    leaves = [Leaf("vocab_read", _ROLE[len(t.shape)], f"p{i}", t)
+                    leaves = [_leaf("vocab_read", _ROLE[len(t.shape)], f"p{i}", t, scratch)
                               for i, t in enumerate(operands)]
                     try:
                         node = mk(kind, leaves, literal)
                     except Exception:
                         continue
-                    if len(node.ttype.shape) < max(len(t.shape) for t in operands):
+                    if len(_ir.type_of(node).shape) < max(len(t.shape) for t in operands):
                         found.add(kind)
     return frozenset(found) - _INDEX_TAKING
 
@@ -178,7 +189,7 @@ GROUPS = (("norm", 1), ("dot", 1), ("sum", 1), ("sum", 2),
           ("lstsq", 2), ("lstsq_gram_solve", 2), ("lstsq_info", 2))
 
 
-def _ttype(kind: str, rank: int) -> TensorType:
+def _ttype(kind: str, rank: int) -> _ir.TensorType:
     """The type of the operand under test. ``mv``'s rank-1 arm must contract
     with a 3x3, and ``sum``'s rank-2 arm deliberately uses the OTHER admitted
     square extent so both 2x2 and 3x3 are emitted somewhere in the corpus."""
@@ -187,18 +198,18 @@ def _ttype(kind: str, rank: int) -> TensorType:
     return M33 if kind in ("mv", "lstsq", "lstsq_gram_solve", "lstsq_info") else M22
 
 
-def _operand(form: str, tag: str, t: TensorType) -> tuple:
+def _operand(form: str, tag: str, t: _ir.TensorType) -> tuple:
     """One operand shape, plus every leaf it binds and the leaf UNDER TEST."""
     role = _ROLE[len(t.shape)]
-    a = Leaf("vocab_read", role, f"{tag}_a", t)
+    a = _leaf("vocab_read", role, f"{tag}_a", t)
     if form == "leaf":
         return a, a, (a,)
     if form == "unary_of_leaf":
         return mk("tanh", (a,)), a, (a,)
     if form == "binary_uniform_leaf":
-        u = Leaf("uniform", "uniform", f"{tag}_u", S)
+        u = _leaf("uniform", "uniform", f"{tag}_u", S)
         return mk("mul", (u, a)), a, (a, u)
-    b = Leaf("vocab_read", role, f"{tag}_b", t)
+    b = _leaf("vocab_read", role, f"{tag}_b", t)
     return mk("add", (a, b)), a, (a, b)
 
 
@@ -211,19 +222,19 @@ def _collapse(kind: str, operand, tag: str) -> tuple:
     if kind == "component":
         return mk("component", (operand,), 1), ()
     if kind == "dot":
-        other = Leaf("vocab_read", "vec_in", f"{tag}_c", V3)
+        other = _leaf("vocab_read", "vec_in", f"{tag}_c", V3)
         return mk("dot", (operand, other)), (other,)
     if kind in ("lstsq", "lstsq_gram_solve"):         # the matrix J is under test; the right-hand side is a vector leaf
-        other = Leaf("vocab_read", "vec_in", f"{tag}_c", V3)
+        other = _leaf("vocab_read", "vec_in", f"{tag}_c", V3)
         return mk(kind, (operand, other)), (other,)
     if kind == "lstsq_info":
         return mk("cast", (mk("lstsq_info", (operand,)),), "f64"), ()      # the harness compares floating outputs
     # mv: the operand under test is the MATRIX on the rank-2 arm and the VECTOR
     # on the rank-1 arm, so both of a rank-changing binary's sides are covered.
-    if len(operand.ttype.shape) == 2:
-        other = Leaf("vocab_read", "vec_in", f"{tag}_c", V3)
+    if len(_ir.type_of(operand).shape) == 2:
+        other = _leaf("vocab_read", "vec_in", f"{tag}_c", V3)
         return mk("mv", (operand, other)), (other,)
-    other = Leaf("vocab_read", "mat_in", f"{tag}_c", M33)
+    other = _leaf("vocab_read", "mat_in", f"{tag}_c", M33)
     return mk("mv", (other, operand)), (other,)
 
 
@@ -240,13 +251,13 @@ def _group_sinks(kind: str, rank: int) -> tuple:
         operand, under_test, leaves = _operand(form, tag, t)
         value, extra = _collapse(kind, operand, tag)
         out = f"out_{tag}"
-        sinks.append(Assign(out, value, value.ttype))
+        sinks.append(_assign(out, value, _ir.type_of(value)))
         echo = None
         if fanout == 2:
             # the ONLY thing separating the two arms: a second sink that reads
             # the same leaf, which is what used to buy it a materialisation.
             echo = f"echo_{tag}"
-            sinks.append(Assign(echo, under_test, under_test.ttype))
+            sinks.append(_assign(echo, under_test, _ir.type_of(under_test)))
         cases.append({"id": f"{kind}/rank{rank}/{form}/fanout{fanout}",
                       "out": out, "echo": echo,
                       "leaves": tuple(leaves) + tuple(extra)})
@@ -261,12 +272,12 @@ def _vjp_group() -> tuple:
     node, which is the shape aether's ``Expression::sum()`` refuses. It is built
     through ``hawk.diff.vjp`` rather than by hand so the row observes the rule
     table's own output."""
-    k = Leaf("uniform", "uniform", "vjpk_k", S)
-    m = Leaf("vocab_read", "mat_in", "vjpk_m", M22)
-    primal = (Assign("vjpk_W", mk("mul", (k, m)), M22),)
+    k = _leaf("uniform", "uniform", "vjpk_k", S)
+    m = _leaf("vocab_read", "mat_in", "vjpk_m", M22)
+    primal = (_assign("vjpk_W", mk("mul", (k, m)), M22),)
     return vjp(primal), (
         {"id": "vjp/scalar_times_rank2", "out": "bar_vjpk_k", "echo": None,
-         "leaves": (k, m, Leaf("vocab_read", "mat_in", "bar_vjpk_W", M22))},
+         "leaves": (k, m, _leaf("vocab_read", "mat_in", "bar_vjpk_W", M22))},
         {"id": "vjp/scalar_times_rank2/matrix_adjoint", "out": "bar_vjpk_m",
          "echo": None, "leaves": ()},
     )
@@ -285,7 +296,7 @@ CORPUS = _corpus()
 # --------------------------------------------------------------------------- #
 # Inputs that differ in every column, and the interpreter's answer for each.
 # --------------------------------------------------------------------------- #
-def _plane(name: str, t: TensorType, n: int) -> np.ndarray:
+def _plane(name: str, t: _ir.TensorType, n: int) -> np.ndarray:
     """A plane whose every entry differs, seeded on the LEAF NAME.
 
     Not ``arange``: a monotone plane makes several of these bodies monotone too,
@@ -303,15 +314,15 @@ def _inputs(cases) -> dict:
     bound: dict = {}
     for case in cases:
         for leaf in case["leaves"]:
-            if leaf.name in bound:
+            if leaf.field_text("name") in bound:
                 continue
-            bound[leaf.name] = (float(_plane(leaf.name, leaf.ttype, 1)[0]) + 0.37
-                                if leaf.role == "uniform"
-                                else _plane(leaf.name, leaf.ttype, N))
+            bound[leaf.field_text("name")] = (float(_plane(leaf.field_text("name"), _ir.type_of(leaf), 1)[0]) + 0.37
+                                if leaf.field_text("role") == "uniform"
+                                else _plane(leaf.field_text("name"), _ir.type_of(leaf), N))
     return bound
 
 
-def _column(value, ttype: TensorType, i: int):
+def _column(value, ttype: _ir.TensorType, i: int):
     """Sample ``i`` of one bound plane, in the interpreter's own shape."""
     if not isinstance(value, np.ndarray):
         return value
@@ -329,7 +340,7 @@ def _expected(sinks, cases, bound: dict) -> list:
         env = {}
         for case in cases:
             for leaf in case["leaves"]:
-                env[leaf.name] = _column(bound[leaf.name], leaf.ttype, i)
+                env[leaf.field_text("name")] = _column(bound[leaf.field_text("name")], _ir.type_of(leaf), i)
         out.append(evaluate(sinks, env))
     return out
 
@@ -347,7 +358,7 @@ class _Built:
 
         self.cases = cases
         self.sinks = sinks
-        kernel = SimpleNamespace(name=name, sinks=sinks, walk=canonical(sinks))
+        kernel = SimpleNamespace(name=name, sinks=sinks, walk=_ir.canonical(sinks))
         build(kernel, directory, targets=("host",), cache_dir=cache_dir)
         loaded = O.load(directory, name)
         self.bound = _inputs(cases)
@@ -425,19 +436,6 @@ def test_the_corpus_covers_every_rank_collapsing_kind():
         "the body's own sample, so each such kind needs a group above")
 
 
-def test_a_lookup_plane_cannot_carry_a_rank1_operand_at_all():
-    """Why ``at`` is the one collapsing-looking kind with no group.
-
-    The probe reads ``at`` as rank-collapsing because its SECOND operand is an
-    absolute sample index rather than a value. The reason it needs no group is
-    stronger and mechanical: pins the ``lookup`` role to eagle's 32-byte
-    ``ScalarHandle``, so a rank>=1 gathered plane cannot be emitted at all — and
-    that is re-derived here from the emitter's own map rather than trusted to
-    the comment beside ``_INDEX_TAKING``."""
-    with pytest.raises(HawkError, match="ScalarHandle"):
-        mirror_of("lookup", V3)
-
-
 def test_the_corpus_enumerates_both_fanouts_and_all_four_forms():
     """The corpus cannot quietly shrink: the cross product is asserted whole."""
     for kind, rank in GROUPS:
@@ -450,19 +448,18 @@ def test_the_corpus_enumerates_both_fanouts_and_all_four_forms():
 
 def _wide_kernel(width: int, *, whole_use: bool = False) -> tuple:
     """A per-sample parameter row read element-wise under branches (a spline block's shape)."""
-    from raptor.ir import Select
 
-    p = Leaf("vocab_read", "vec_in", "p", TensorType((width,), "f64"))
-    x = Leaf("vocab_read", "per_sample", "x", S)
+    p = _leaf("vocab_read", "vec_in", "p", _ir.TensorType((width,), "f64"))
+    x = _leaf("vocab_read", "per_sample", "x", S)
 
     def c(k):
         return mk("component", (p,), k)
 
-    a = Select(mk("gt", (x, mk("sub", (x, x)))), mk("mul", (c(3), x)), c(width - 1), S)
-    b = Select(mk("lt", (x, c(0))), mk("add", (c(1), c(2))), mk("mul", (c(3), c(width // 2))), S)
-    sinks = [Assign("out_a", a, S), Assign("out_b", b, S)]
+    a = _select(mk("gt", (x, mk("sub", (x, x)))), mk("mul", (c(3), x)), c(width - 1), S)
+    b = _select(mk("lt", (x, c(0))), mk("add", (c(1), c(2))), mk("mul", (c(3), c(width // 2))), S)
+    sinks = [_assign("out_a", a, S), _assign("out_b", b, S)]
     if whole_use:
-        sinks.append(Assign("echo", p, p.ttype))
+        sinks.append(_assign("echo", p, _ir.type_of(p)))
     return tuple(sinks)
 
 

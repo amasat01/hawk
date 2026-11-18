@@ -19,11 +19,13 @@ from _block_kernels import gram_kernel
 from _linalg_kernels import chol_kernel, eigh_kernel, lu_kernel
 from conftest import sidecar_of
 
-from hawk import HawkError
+from hawk import HawkError, _ir
 from ospreys.cuda import backend as B
 from hawk.artifact import build_bundle
 from hawk.artifact.sidecar import LOCAL_LIMIT_B
 from hawk.trace.kernel import Kernel
+
+CTX = _ir.new_context()  # the context of the shared kernel builders
 
 
 def _unit(tmp_path, ptx, ptxas=None):
@@ -56,10 +58,10 @@ def test_an_entry_runs_alone_and_its_device_functions_add_to_it(tmp_path):
 
 
 def test_a_128_matrix_in_one_thread_is_refused_by_name_and_as_a_team_it_holds_no_frame(tmp_path, cache_dir):
-    mixed = Kernel("la_mix_128", (*lu_kernel(128).sinks, *chol_kernel(128).sinks, *eigh_kernel(128).sinks))
+    mixed = Kernel("la_mix_128", (*lu_kernel(CTX, 128).sinks, *chol_kernel(CTX, 128).sinks, *eigh_kernel(CTX, 128).sinks))
     with pytest.raises(HawkError, match=r"linalg_form='thread' keeps the matrix in one lane"):
         build_bundle([mixed], tmp_path / "thread", linalg_form="thread", targets=("host",), cache_dir=cache_dir)
-    bundle = build_bundle([lu_kernel(71)], tmp_path / "team", targets=("cuda", "host"), cache_dir=cache_dir)
+    bundle = build_bundle([lu_kernel(CTX, 71)], tmp_path / "team", targets=("cuda", "host"), cache_dir=cache_dir)
     launch = sidecar_of(bundle, "la_lu_71")["launch"]
     assert launch["local_limit"] == LOCAL_LIMIT_B and launch["local_source"] in ("ptx", "ptxas")
     assert 0 <= launch["local_bytes"] < LOCAL_LIMIT_B // 8       # the matrix lives in team scratch

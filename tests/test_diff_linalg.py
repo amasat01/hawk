@@ -24,27 +24,29 @@ from conftest import sidecar_of
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-from raptor.ir import Assign, Leaf
-from raptor.ir import make as mk
-from raptor.ir.linalg import FACTORISATIONS, as_matrix
-from raptor.ir.walk import canonical_nodes
 from hawk.trace.kernel import Kernel
-from raptor.ir.types import TensorType
+from hawk import _ir
 
 # A failed or degenerate lane still evaluates the branch its mask discards.
 pytestmark = pytest.mark.filterwarnings("ignore::RuntimeWarning")
 
 F64 = "f64"
 RNG = np.random.default_rng(20261025)
+#: One context holds every node these rows build, so a row's leaves meet in one graph.
+CTX = _ir.new_context()
 
 
 def _t(*shape):
-    return TensorType(shape, F64)
+    return _ir.TensorType(shape, F64)
 
 
 def _leaf(name, *shape):
-    return Leaf("vocab_read", {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(shape)], name,
-                _t(*shape))
+    role = {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(shape)]
+    return _ir.leaf(CTX, "vocab_read", role, name, _t(*shape))
+
+
+def _assign(name, value, ttype):
+    return _ir.make_node("Assign", ttype, (value,), name=name)
 
 
 def _sym(m):
@@ -59,7 +61,7 @@ def _spd(n, eigs, rng=RNG):
 def _factor_kernel(n):
     """``L = chol(A)`` as the only output."""
     a = _leaf("A", n, n)
-    return Kernel(f"la_chol_factor_{n}", (Assign("L", as_matrix(mk("chol", (a,))), _t(n, n)),))
+    return Kernel(f"la_chol_factor_{n}", (_assign("L", _ir.as_matrix(_ir.make("chol", (a,))), _t(n, n)),))
 
 
 def _inputs(kernel, n, a):
@@ -72,7 +74,7 @@ def _general(n):
 
 
 def _outputs(kernel):
-    return [(s.name, s.ttype.shape) for s in kernel.sinks if s.ttype.dtype not in ("int32",)]
+    return [(s.field_text("name"), _ir.type_of(s).shape) for s in kernel.sinks if _ir.type_of(s).dtype not in ("int32",)]
 
 
 def _random_like(shape):
@@ -110,7 +112,7 @@ def test_the_cholesky_factor_vjp_is_the_adjoint_of_its_jvp(n):
 @pytest.mark.parametrize("n", [1, 3, 5])
 def test_every_kernels_vjp_is_the_adjoint_of_its_jvp(which, n):
     make, matrix = KERNELS[which]
-    kernel = make(n)
+    kernel = make(CTX, n)
     inputs, env = _inputs(kernel, n, matrix(n))
     tangents = {f"dot_{k}": _random_like(np.shape(v)) for k, v in inputs.items()}
     cotangents = {f"bar_{name}": _random_like(shape) for name, shape in _outputs(kernel)}
@@ -127,7 +129,7 @@ def test_every_kernels_vjp_is_the_adjoint_of_its_jvp(which, n):
 @pytest.mark.parametrize("n", [1, 2, 5])
 def test_every_kernels_jvp_matches_central_differences(which, n):
     make, matrix = KERNELS[which]
-    kernel = make(n)
+    kernel = make(CTX, n)
     inputs, env = _inputs(kernel, n, matrix(n))
     tangents = {k: _random_like(np.shape(v)) for k, v in inputs.items()}
     got = evaluate(jvp(kernel), {**env, **{f"dot_{k}": t for k, t in tangents.items()}})
@@ -221,7 +223,7 @@ def test_the_derivative_grows_as_the_boundary_is_approached_and_stays_finite(k):
     got = evaluate(jvp(kernel), {"A": a, "dot_A": np.array([[0.0, 0.0], [0.0, 1.0]])})["dot_L"]
     assert np.isfinite(got).all()
     assert got[1, 1] == pytest.approx(0.5 / np.sqrt(d), rel=1e-9)
-    assert evaluate(chol_kernel(2).sinks, {"A": a, "b": np.zeros(2), "B": np.zeros((2, 2))})["info"] == 0
+    assert evaluate(chol_kernel(CTX, 2).sinks, {"A": a, "b": np.zeros(2), "B": np.zeros((2, 2))})["info"] == 0
 
 
 def test_a_non_symmetric_input_is_the_factor_of_its_symmetric_part():
@@ -240,7 +242,7 @@ def _all_zero(values):
 
 def test_a_failed_cholesky_lane_has_zero_tangents_and_adjoints():
     n = 3
-    kernel = chol_kernel(n)
+    kernel = chol_kernel(CTX, n)
     a = np.diag([1.0, -1.0, 1.0])
     env = {"A": a, "b": RNG.standard_normal(n), "B": RNG.standard_normal((n, 2))}
     assert evaluate(kernel.sinks, env)["info"] == 2
@@ -257,7 +259,7 @@ def test_a_failed_cholesky_lane_has_zero_tangents_and_adjoints():
 @pytest.mark.parametrize("bad", [0.0, -1.0, np.nan, np.inf])
 def test_a_failed_built_factor_lane_has_zero_tangents_and_adjoints(bad):
     n = 3
-    kernel = chol_from_kernel(n)
+    kernel = chol_from_kernel(CTX, n)
     low = _built_factor(n)
     low[1, 1] = bad
     env = {"A": low, "b": RNG.standard_normal(n), "B": RNG.standard_normal((n, 2))}
@@ -277,7 +279,7 @@ def test_a_built_factor_solves_with_its_product_and_ignores_above_the_diagonal()
     n = 5
     low = _built_factor(n)
     b = RNG.standard_normal(n)
-    got = evaluate(chol_from_kernel(n).sinks, {"A": low, "b": b, "B": np.zeros((n, 2))})
+    got = evaluate(chol_from_kernel(CTX, n).sinks, {"A": low, "b": b, "B": np.zeros((n, 2))})
     tril = np.tril(low)
     np.testing.assert_allclose(got["x"], np.linalg.solve(tril @ tril.T, b), rtol=1e-12)
     np.testing.assert_array_equal(got["L"], tril)
@@ -286,7 +288,7 @@ def test_a_built_factor_solves_with_its_product_and_ignores_above_the_diagonal()
 
 def test_a_failed_lu_lane_has_zero_tangents_and_adjoints():
     n = 3
-    kernel = lu_kernel(n)
+    kernel = lu_kernel(CTX, n)
     a = RNG.standard_normal((n, n))
     a[1] = 0.0
     env = {"A": a, "b": RNG.standard_normal(n), "B": RNG.standard_normal((n, 2))}
@@ -302,7 +304,7 @@ def test_a_failed_lu_lane_has_zero_tangents_and_adjoints():
 
 def test_a_degenerate_eigh_lane_sets_bit_two_and_zeroes_only_the_vector_derivatives():
     n = 3
-    kernel = eigh_kernel(n)
+    kernel = eigh_kernel(CTX, n)
     a = np.diag([1.0, 1.0, 2.0])
     e = RNG.standard_normal((n, n))
     assert evaluate(kernel.sinks, {"A": a})["info"] & 2
@@ -317,15 +319,18 @@ def test_a_degenerate_eigh_lane_sets_bit_two_and_zeroes_only_the_vector_derivati
 # --- one factorisation per call site --------------------------------------------
 
 def _factorisations(sinks):
-    nodes, _ = canonical_nodes(tuple(sinks))
-    return sorted(n.kind for n in nodes if getattr(n, "kind", None) in FACTORISATIONS)
+    return sorted(
+        n.field_text("kind")
+        for n in _ir.post_order(sinks)
+        if _ir.is_a(n, "op") and n.field_text("kind") in _ir.LINALG_FACTORISATIONS
+    )
 
 
 @pytest.mark.parametrize("which,kind", [("lu", "lu"), ("chol", "chol"), ("eigh", "eigh"),
                                         ("chol_from", "chol_from")])
 @pytest.mark.parametrize("derive", [vjp, jvp])
 def test_a_derivative_never_refactors(which, kind, derive):
-    kernel = KERNELS[which][0](4)
+    kernel = KERNELS[which][0](CTX, 4)
     assert _factorisations(kernel.sinks) == [kind]
     assert _factorisations(derive(kernel)) == [kind]
 
@@ -333,8 +338,8 @@ def test_a_derivative_never_refactors(which, kind, derive):
 @pytest.mark.parametrize("derive", [vjp, jvp])
 def test_two_call_sites_hold_two_factorisations(derive):
     a, c, b = _leaf("A", 3, 3), _leaf("C", 3, 3), _leaf("b", 3)
-    out = mk("add", (mk("lu_solve", (mk("lu", (a,)), b)), mk("cho_solve", (mk("chol", (c,)), b))))
-    sinks = (Assign("out", out, _t(3)),)
+    out = _ir.make("add", (_ir.make("lu_solve", (_ir.make("lu", (a,)), b)), _ir.make("cho_solve", (_ir.make("chol", (c,)), b))))
+    sinks = (_assign("out", out, _t(3)),)
     assert _factorisations(sinks) == ["chol", "lu"]
     assert _factorisations(derive(sinks)) == ["chol", "lu"]
 
@@ -346,7 +351,7 @@ def _mvn(n):
     a plane standing for the counter generator's draws (independent of every
     differentiated input, so it carries no derivative)."""
     mean, cov, z = _leaf("mu", n), _leaf("S", n, n), _leaf("z", n)
-    return (Assign("x", mk("add", (mean, mk("mv", (mk("chol", (cov,)), z)))), _t(n)),)
+    return (_assign("x", _ir.make("add", (mean, _ir.make("mv", (_ir.make("chol", (cov,)), z)))), _t(n)),)
 
 
 def test_the_pathwise_sample_differentiates_both_ways_to_the_closed_forms():
@@ -430,7 +435,7 @@ def _run(compiled, planes, outs):
 @pytest.mark.parametrize("n", [1, 5])
 def test_the_compiled_derivative_matches_the_interpreter_and_zeroes_failed_lanes(
         host, which, n, derive):
-    primal = KERNELS[which][0](n)
+    primal = KERNELS[which][0](CTX, n)
     derived = derive(primal)
     kernel, compiled = host(primal, derived, derive.__name__)
     mats = _lanes(which, n)
@@ -440,7 +445,7 @@ def test_the_compiled_derivative_matches_the_interpreter_and_zeroes_failed_lanes
                  for name, shape in _outputs(primal)}
     else:
         seeds = {f"dot_{k}": RNG.standard_normal(v.shape) for k, v in inputs.items()}
-    outs = {s.name: int(np.prod(s.ttype.shape or (1,))) for s in kernel.sinks}
+    outs = {s.field_text("name"): int(np.prod(_ir.type_of(s).shape or (1,))) for s in kernel.sinks}
     got = _run(compiled, {**inputs, **seeds}, outs)
     for lane in range(LANES):
         env = {k: v[lane] for k, v in {**inputs, **seeds}.items()}

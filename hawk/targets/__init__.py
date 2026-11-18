@@ -40,7 +40,7 @@ def distribution(target_id: str) -> str:
 from .. import registry  # noqa: E402
 
 if TYPE_CHECKING:
-    from raptor.wings.base.settings import Settings
+    from ..build_settings import Settings
 
 #: How eagle enters a built kernel (the manifest's ``exec_targets`` words).
 ENTRY_KINDS = ("device", "host")
@@ -140,7 +140,7 @@ class BuildSpec:
     host row and of the device row (``None``: no such target; a backend whose manifest names no wing has none: its own text
     gets an EMPTY wing, never another target's), the machine as data, the class the device's thresholds come from, the
     documents the build states in place of the lowering library's (``cards``). Holds no callable, no backend and no
-    per-build setting of its own: those are :attr:`settings`, a frozen :class:`raptor.wings.base.settings.Settings` set by the entry."""
+    per-build setting of its own: those are :attr:`settings`, a frozen :class:`hawk.build_settings.Settings` set by the entry."""
 
     host: dict | None
     device: dict | None
@@ -164,7 +164,7 @@ class BuildSpec:
             object.__setattr__(self, "settings", default_settings())
 
     def with_settings(self, **changes) -> "BuildSpec":
-        """A new spec with these per-build settings changed (:class:`raptor.wings.base.settings.Settings`); this one is unchanged."""
+        """A new spec with these per-build settings changed (:class:`hawk.build_settings.Settings`); this one is unchanged."""
         from dataclasses import replace
 
         return replace(self, settings=replace(self.settings, **changes))

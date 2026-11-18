@@ -27,15 +27,12 @@ and the refusals.
 ENUMERATION, NOT SAMPLING. A loop is one of exactly two differentiable classes
 (``accumulator``, ``recurrence``) or it is REFUSED by name; :data:`LOOP_CASES`
 carries one kernel per class and :func:`test_every_loop_class_is_covered` fails
-if a class in :data:`raptor.ir.loops.LOOP_CLASSES` has no case. A refusal without
+if a class in the loop classes of :mod:`hawk._ir` has no case. A refusal without
 a row is the same hole one class further out, so :data:`REFUSALS` enumerates
 those too.
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import spec_for
-from _specs import HOST
 
 import linecache
 from types import SimpleNamespace
@@ -49,9 +46,7 @@ import hawk.math as m
 from hawk.artifact import emit_source
 from hawk.diff import jvp, vjp
 from raptor.errors import RaptorError as HawkError
-from raptor.ir import Loop, LoopValue, canonical
-from raptor.ir.loops import ACCUMULATOR, LOOP_CLASSES, RECURRENCE, classify_loop
-from hawk.targets import TARGETS
+from hawk import _ir
 
 H = 1e-5
 ROWS, COLS = 4, 5
@@ -62,7 +57,7 @@ ROWS, COLS = 4, 5
 # --------------------------------------------------------------------------- #
 @hawk.kernel
 def additive(x: hawk.Scalar, g: hawk.Param, y: hawk.Mutable[hawk.Scalar]):
-    """ACCUMULATOR, one carry — the additive-loop rows' own shape, and the one every
+    """_ir.ACCUMULATOR, one carry — the additive-loop rows' own shape, and the one every
     contraction has: the body only adds into the carry."""
     acc = 0.0
     for k in range(8):
@@ -72,7 +67,7 @@ def additive(x: hawk.Scalar, g: hawk.Param, y: hawk.Mutable[hawk.Scalar]):
 
 @hawk.kernel
 def two_accumulators(x: hawk.Scalar, g: hawk.Param, y: hawk.Mutable[hawk.Scalar]):
-    """ACCUMULATOR, two carries — a sum and a sum of squares in one pass, which
+    """_ir.ACCUMULATOR, two carries — a sum and a sum of squares in one pass, which
     is what makes "no carry may be read outside its own additive slot" a rule
     with something to say rather than a restatement of "one carry"."""
     total = 0.0
@@ -86,7 +81,7 @@ def two_accumulators(x: hawk.Scalar, g: hawk.Param, y: hawk.Mutable[hawk.Scalar]
 
 @hawk.kernel
 def chebyshev(z: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-    """RECURRENCE, two carries — ``T_{n+1} = 2 z T_n - T_{n-1}``.
+    """_ir.RECURRENCE, two carries — ``T_{n+1} = 2 z T_n - T_{n-1}``.
 
     The exemplar names, and the reason the recurrence class needs the
     forward loop's per-iteration values at all: the adjoint at iteration ``k``
@@ -100,7 +95,7 @@ def chebyshev(z: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
 
 @hawk.kernel
 def saturating(x: hawk.Scalar, g: hawk.Param, y: hawk.Mutable[hawk.Scalar]):
-    """RECURRENCE, one carry — ``acc = tanh(g*acc + x)``, the recurrence benchmark's own
+    """_ir.RECURRENCE, one carry — ``acc = tanh(g*acc + x)``, the recurrence benchmark's own
     ``edge64`` body at a size a finite difference can check."""
     acc = 0.0
     for _k in range(6):
@@ -133,16 +128,16 @@ def gathering(t: hawk.Table["row":ROWS, "col":COLS], y: hawk.Mutable[hawk.Scalar
 #: shapes inside each class that behave differently (a second carry; a fold
 #: whose carry is read by arithmetic rather than by an addition).
 LOOP_CASES = [
-    ("additive", additive, ACCUMULATOR, {"x": 0.7, "g": 1.3}, ("x", "g")),
-    ("two_accumulators", two_accumulators, ACCUMULATOR, {"x": 0.4, "g": 0.9},
+    ("additive", additive, _ir.ACCUMULATOR, {"x": 0.7, "g": 1.3}, ("x", "g")),
+    ("two_accumulators", two_accumulators, _ir.ACCUMULATOR, {"x": 0.4, "g": 0.9},
      ("x", "g")),
-    ("chebyshev", chebyshev, RECURRENCE, {"z": 0.6}, ("z",)),
-    ("saturating", saturating, RECURRENCE, {"x": 0.35, "g": 0.8}, ("x", "g")),
+    ("chebyshev", chebyshev, _ir.RECURRENCE, {"z": 0.6}, ("z",)),
+    ("saturating", saturating, _ir.RECURRENCE, {"x": 0.35, "g": 0.8}, ("x", "g")),
 ]
 
 
 def _loops(kernel) -> list:
-    return [n for n in kernel.walk.order if isinstance(n, Loop)]
+    return [n for n in _ir.canonical_nodes(kernel.sinks)[0] if _ir.is_a(n, "loop")]
 
 
 # --------------------------------------------------------------------------- #
@@ -164,10 +159,11 @@ def test_a_bounded_for_is_ONE_node_whose_size_does_not_track_its_bound():
         return k
 
     small, large = cell(8), cell(64)
-    assert len(small.walk.order) == len(large.walk.order)
+    assert (len(_ir.canonical_nodes(small.sinks)[0])
+            == len(_ir.canonical_nodes(large.sinks)[0]))
     assert len(_loops(small)) == len(_loops(large)) == 1
-    assert (_loops(small)[0].trip, _loops(large)[0].trip) == (8, 64)
-    assert isinstance(small.sinks[0].value, LoopValue)
+    assert (_loops(small)[0].field_int("trip"), _loops(large)[0].field_int("trip")) == (8, 64)
+    assert _ir.is_a(small.sinks[0].operands[0], "loop_value")
 
 
 def test_the_walk_visits_the_loop_once_and_the_bodys_leaves_are_its_leaves():
@@ -176,9 +172,9 @@ def test_the_walk_visits_the_loop_once_and_the_bodys_leaves_are_its_leaves():
     every plane it reads must still bind a slot, or the entry signature would
     not carry the table the loop reads and the kernel could not be called."""
     assert ("lookup", "t") in gathering.arg_spec
-    order = gathering.walk.order
-    assert sum(1 for n in order if isinstance(n, Loop)) == 1
-    body = _loops(gathering)[0].body_nodes()
+    order = _ir.canonical_nodes(gathering.sinks)[0]
+    assert sum(1 for n in order if _ir.is_a(n, "loop")) == 1
+    body = _ir.body_nodes(_loops(gathering)[0])
     assert body and not any(n in order for n in body), (
         "a loop body's own nodes are the emitter's to render inside the scope; "
         "hoisting them into the flat order would be the unroll again")
@@ -197,9 +193,9 @@ def test_the_digest_covers_the_body_and_the_bound():
             y = acc
         return k
 
-    assert cell(8, 1.0).walk.digest == cell(8, 1.0).walk.digest
-    assert cell(8, 1.0).walk.digest != cell(9, 1.0).walk.digest
-    assert cell(8, 1.0).walk.digest != cell(8, 2.0).walk.digest
+    assert _ir.digest(cell(8, 1.0).walk) == _ir.digest(cell(8, 1.0).walk)
+    assert _ir.digest(cell(8, 1.0).walk) != _ir.digest(cell(9, 1.0).walk)
+    assert _ir.digest(cell(8, 1.0).walk) != _ir.digest(cell(8, 2.0).walk)
 
 
 def test_a_gather_inside_a_loop_is_still_cross_sample_read():
@@ -207,7 +203,7 @@ def test_a_gather_inside_a_loop_is_still_cross_sample_read():
     scope: a kernel declared ``sample_local`` may be placed under a
     ``RankPartition`` that splits the plane it reads, which is a wrong answer
     rather than a placement cost."""
-    assert gathering.walk.access.cls == "cross_sample_read"
+    assert _ir.access_class(gathering.walk) == "cross_sample_read"
 
 
 # --------------------------------------------------------------------------- #
@@ -237,20 +233,20 @@ def test_a_zero_trip_for_collapses_to_the_values_it_started_with():
 def test_the_classifier_names_the_class_from_the_bodys_structure(case):
     _id, kernel, expected, _env, _wrt = case
     loop = _loops(kernel)[0]
-    assert classify_loop(loop).name == expected
+    assert _ir.classify_loop(loop).name == expected
 
 
 def test_every_loop_class_is_covered():
     """Enumeration, not sampling: a class with no case is a class nothing
     checks, which is the hole this whole file exists to close."""
     covered = {expected for _id, _k, expected, _e, _w in LOOP_CASES}
-    assert covered == set(LOOP_CLASSES), (
-        f"loop classes with no case: {set(LOOP_CLASSES) - covered}")
+    classes = {_ir.ACCUMULATOR, _ir.RECURRENCE}
+    assert covered == classes, f"loop classes with no case: {classes - covered}"
 
 
 def _derived(kernel):
     sinks = vjp(kernel)
-    return sinks, canonical(sinks)
+    return sinks, _ir.canonical(sinks)
 
 
 @pytest.mark.parametrize("case", LOOP_CASES, ids=[c[0] for c in LOOP_CASES])
@@ -260,7 +256,7 @@ def test_the_reverse_of_a_loop_matches_a_central_difference(case):
     that forgot the carry — so the rules are EVALUATED against the primal, not
     inspected."""
     _id, kernel, _cls, env, wrt = case
-    sink = kernel.sinks[0].name
+    sink = kernel.sinks[0].field_text("name")
     derived = vjp(kernel, wrt=wrt)
     got = evaluate(derived, {**env, f"bar_{sink}": 1.0})
     for held in wrt:
@@ -274,7 +270,7 @@ def test_the_forward_of_a_loop_matches_a_central_difference(case):
     directional derivative along each input in turn must reproduce the same
     central difference the reverse row checks."""
     _id, kernel, _cls, env, wrt = case
-    sink = kernel.sinks[0].name
+    sink = kernel.sinks[0].field_text("name")
     derived = jvp(kernel, wrt=wrt)
     for held in wrt:
         seeds = {f"dot_{n}": (1.0 if n == held else 0.0) for n in wrt}
@@ -349,11 +345,11 @@ def test_a_gather_loops_reverse_scatters_once_per_iteration_in_the_same_scope():
     own row. There is no way to say that with a sink at the top level, so the
     derived loop COMMITS, and the walk admits it as a statement root."""
     derived = vjp(gathering)
-    assert len(derived) == 1 and isinstance(derived[0], Loop)
-    assert [s.name for s in derived[0].body_sinks] == ["bar_t"]
-    walk = canonical(derived)
-    assert ("accum_out", "bar_t") in walk.arg_spec
-    assert walk.access.cls == "cross_sample_write"
+    assert len(derived) == 1 and _ir.is_a(derived[0], "loop")
+    assert [s.field_text("name") for s in derived[0].field_nodes("body_sinks")] == ["bar_t"]
+    walk = _ir.canonical(derived)
+    assert ("accum_out", "bar_t") in _ir.arg_spec(walk)
+    assert _ir.access_class(walk) == "cross_sample_write"
     table = np.arange(ROWS * COLS, dtype=float) * 0.5 + 1.0
     got = evaluate(derived, {"t": table, "bar_y": 1.0}, lanes=ROWS * COLS)["bar_t"]
     want = np.zeros(ROWS * COLS)
@@ -402,7 +398,7 @@ def test_a_mutable_committed_only_inside_the_loop_is_carried_not_refused():
     def k(x: hawk.Scalar, out: hawk.Mutable[hawk.Scalar]):
         for j in range(3):
             out = x + j
-    assert sorted(k.walk.prior_reads) == ["out"]
+    assert sorted(_ir.prior_reads(k.walk)) == ["out"]
     assert k.arg_spec == (("mutable", "out"), ("per_sample", "x"))
 
 

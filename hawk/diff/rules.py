@@ -104,6 +104,11 @@ _ZERO = DiffRule(lambda node, adjoint: (), lambda node, tangent_of: None, mode="
 _WALKER = DiffRule(mode="walker")
 
 
+def rule_of(node: Any) -> DiffRule:
+    """Return the rule of a node: the library states every node's kind, in the field ``kind``."""
+    return rule_for(node.field_text("kind"), len(_ir.type_of(node).shape))
+
+
 def rule_for(kind: str, rank: int) -> DiffRule:
     """Return the rule of a node kind (``rank`` is passed as the builder does, no rule uses it).
 

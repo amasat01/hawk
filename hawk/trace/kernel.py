@@ -10,7 +10,7 @@ so the DAG builds through :class:`~hawk.trace.value.Value`'s operator
 overloads. The sinks a body commits, in PARAMETER order, are handed to
 ``canonical()``, whose products (``arg_spec``, ``slot_of``, ``access``,
 ``digest``) are the only thing any consumer reads. A ``Quantity`` parameter
-binds through :meth:`~raptor.ir.compound.Quantity.read_with`, binding every
+binds through :meth:`~hawk._ir.Quantity.read_with`, binding every
 wire of that quantity at once.
 """
 
@@ -26,15 +26,19 @@ import typing
 from collections.abc import Callable
 from typing import Any
 
+from .. import _ir
 from .._broadcast import route
-from .. import wings as _wings
-from raptor.ir import Const, Leaf, Node, Quantity, Walk, make
 from .._errors import HawkError
-from raptor.ir.nodes import COMPANION_SUFFIX, AccumWrite, Assign, compensates
-from raptor.ir.types import Slot, TensorType
 from . import astpass, helpers, reduce
 from .decl import Plane, resolve, role_of, spell
-from .lane_axes import LaneAxes, check_group, lane_space, tracing
+from .lane_axes import (
+    LaneAxes,
+    check_group,
+    current_context,
+    lane_space,
+    trace_context,
+    tracing,
+)
 from .value import (
     INDEX,
     INDEX32,
@@ -42,6 +46,7 @@ from .value import (
     MutableRef,
     SharedValue,
     TableRef,
+    DISPATCH_STRATEGIES,
     TerminatedRef,
     Value,
     WideOutRef,
@@ -71,7 +76,7 @@ class Kernel:
                  "time", "time_step", "source_digest", "jump", "returns",
                  "lane_space", "group", "members", "steps", "broadcast", "team", "_twins", "_plan", "_lock")
 
-    def __init__(self, name: str, sinks: tuple[Node, ...],
+    def __init__(self, name: str, sinks: tuple[Any, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
                  step: Kernel | None = None,
                  one_step: Kernel | None = None,
@@ -86,7 +91,7 @@ class Kernel:
         sinks = _scattered_companion(self.kind, sinks)
         self.sinks = sinks
         self.planes = {} if planes is None else planes
-        self.walk: Walk = _wings.view("raptor", "base", "cells").walk(sinks, _declared(self.planes))
+        self.walk: _ir.Walk = _ir.cells_walk(sinks, _declared(self.planes))
         #: The launch shape, ``((label|None, extent|None), ...)`` row-major with the
         #: fastest axis last: the ``Grid[...]`` declared, else one unlabelled
         #: runtime axis. Read by the sidecar and the bind doors.
@@ -135,9 +140,14 @@ class Kernel:
         self._lock = threading.Lock()
 
     @property
+    def context(self) -> Any:
+        """The context every sink of this kernel lives in (the first sink's: a kernel's sinks share one)."""
+        return self.sinks[0].ctx
+
+    @property
     def arg_spec(self) -> tuple[tuple[str, str], ...]:
         """The walk's ``(role, name)`` slot order — every consumer's source."""
-        return self.walk.arg_spec
+        return _ir.arg_spec(self.walk)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Run one launch where the arrays live, through the plan eagle
@@ -271,37 +281,34 @@ def resolve_dispatch(kernel: Kernel, strategies: dict[str, str]) -> Kernel:
     resolved on its single step and re-derived, under the same name — except
     to ``"segmented"``, which splits the step into one kernel per branch and
     so returns the single step itself: its units run one step per launch."""
-    from raptor.ir.nodes import has_feather
-    dispatch = _wings.view("raptor", "base", "dispatch")
     from ..passes.segment import with_strategies
-    from raptor.ir.walk import dispatch_groups, loop_body_groups
     from .steps import default_steps
 
     step = kernel.step if kernel.step is not None else kernel
-    groups = dispatch_groups(step.walk)
-    in_loops = loop_body_groups(step.walk)
+    groups = {found.name: found for found in _ir.dispatch_groups(step.walk)}
     chosen = {}
     for group, strategy in strategies.items():
-        node = groups.get(group)
-        if node is None:
+        found = groups.get(group)
+        if found is None:
             raise HawkError(
                 f"resolve_dispatch({kernel.name!r}): {group!r} is not a dispatch "
                 f"group of this kernel; its groups are {sorted(groups)}")
-        if not has_feather(node, "counts_branch_mix"):
+        node = found.node
+        if found.strategy != "auto":
             raise HawkError(
                 f"resolve_dispatch({kernel.name!r}): {group!r} was declared "
-                f"strategy={dispatch.strategy(node)!r}; only an 'auto' group is resolved — the "
+                f"strategy={found.strategy!r}; only an 'auto' group is resolved — the "
                 "author's strategy is kept")
-        if group in in_loops:
+        if _ir.in_loop_body(step.walk, node):
             raise HawkError(
                 f"resolve_dispatch({kernel.name!r}): {group!r} sits inside a loop "
                 "body, where a strategy cannot be swapped yet; declare its strategy "
                 "in the kernel instead")
-        if strategy == "auto" or strategy not in dispatch.DISPATCH_STRATEGIES:
+        if strategy == "auto" or strategy not in DISPATCH_STRATEGIES:
             raise HawkError(
                 f"resolve_dispatch({kernel.name!r}): {group!r} resolves to one of "
                 f"'switch', 'segmented', 'predicated', got {strategy!r}")
-        chosen[id(node)] = strategy
+        chosen[node] = strategy
     resolved = Kernel(step.name, with_strategies(step.sinks, chosen), step.planes,
                       kind=step.kind, source_digest=step.source_digest,
                       returns=step.returns)
@@ -333,49 +340,50 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
     """The trace :func:`kernel` runs: ``fn`` under ``kind`` (or the default
     kind) into one :class:`Kernel`. A body ending ``return <expr>`` is traced
     as a VALUE tree whose leaves commit into synthesised ``Mutable`` slots."""
-    from ..ext import DEFAULT_KIND
+    with trace_context(_ir.new_context()):
+        from ..ext import DEFAULT_KIND
 
-    resolved_kind = kind if kind is not None else DEFAULT_KIND
-    forced = resolved_kind.output.returned_ttype
-    vocab, scope, own, params = _declarations(fn, resolved_kind)
-    if forced is not None:
-        slot = resolved_kind.output.slot
-        if slot in params:
-            raise HawkError(
-                f"kernel {fn.__name__!r}: Output.returned's synthesised slot "
-                f"{slot!r} may not also be a parameter name"
-            )
-        if slot in vocab:
-            raise HawkError(
-                f"kernel {fn.__name__!r}: Output.returned's synthesised slot "
-                f"{slot!r} collides with kind {resolved_kind.slug!r}'s own vocabulary"
-            )
-    planes, args, sink_names, mutables, finishes = _bound_planes(
-        fn, params, own, vocab, resolved_kind)
-    scope[astpass.REFS] = args
-    traced, returning, shape = _retrace(
-        fn, scope, sink_names, mutables, finishes=finishes,
-        returns_value=True if forced is not None else None)
-    with tracing(lane_space(planes), fn.__name__):
-        out = _call_finishing(traced, fn, args)
-    _retag_by_key(planes, args)
-    _check_axis_sinks(fn.__name__, planes, args)
-    finished = _finished(fn.__name__, params, args, finishes, resolved_kind)
-    if returning:
-        refs, returns = _commit_returns(fn, out, shape, forced, resolved_kind,
-                                        planes, vocab, scope)
-        named = _collect(fn.__name__, params, args, sink_names) if sink_names else ()
-        sinks = named + tuple(s for r in refs for s in r.sinks) + finished
-    else:
-        returns = None
-        sinks = _collect(fn.__name__, params, args, sink_names,
-                         finishing=bool(finished)) + finished
-    extra = _compensated_companion(resolved_kind, planes, vocab, sinks)
-    if extra is not None:
-        sinks = sinks + (extra,)
-    sinks = sinks + _contract_companions(fn.__name__, planes, sinks)
-    return Kernel(fn.__name__, sinks, planes, kind=resolved_kind,
-                  source_digest=source_digest(fn), returns=returns)
+        resolved_kind = kind if kind is not None else DEFAULT_KIND
+        forced = resolved_kind.output.returned_ttype
+        vocab, scope, own, params = _declarations(fn, resolved_kind)
+        if forced is not None:
+            slot = resolved_kind.output.slot
+            if slot in params:
+                raise HawkError(
+                    f"kernel {fn.__name__!r}: Output.returned's synthesised slot "
+                    f"{slot!r} may not also be a parameter name"
+                )
+            if slot in vocab:
+                raise HawkError(
+                    f"kernel {fn.__name__!r}: Output.returned's synthesised slot "
+                    f"{slot!r} collides with kind {resolved_kind.slug!r}'s own vocabulary"
+                )
+        planes, args, sink_names, mutables, finishes = _bound_planes(
+            fn, params, own, vocab, resolved_kind)
+        scope[astpass.REFS] = args
+        traced, returning, shape = _retrace(
+            fn, scope, sink_names, mutables, finishes=finishes,
+            returns_value=True if forced is not None else None)
+        with tracing(lane_space(planes), fn.__name__):
+            out = _call_finishing(traced, fn, args)
+        _retag_by_key(planes, args)
+        _check_axis_sinks(fn.__name__, planes, args)
+        finished = _finished(fn.__name__, params, args, finishes, resolved_kind)
+        if returning:
+            refs, returns = _commit_returns(fn, out, shape, forced, resolved_kind,
+                                            planes, vocab, scope)
+            named = _collect(fn.__name__, params, args, sink_names) if sink_names else ()
+            sinks = named + tuple(s for r in refs for s in r.sinks) + finished
+        else:
+            returns = None
+            sinks = _collect(fn.__name__, params, args, sink_names,
+                             finishing=bool(finished)) + finished
+        extra = _compensated_companion(resolved_kind, planes, vocab, sinks)
+        if extra is not None:
+            sinks = sinks + (extra,)
+        sinks = sinks + _contract_companions(fn.__name__, planes, sinks)
+        return Kernel(fn.__name__, sinks, planes, kind=resolved_kind,
+                      source_digest=source_digest(fn), returns=returns)
 
 
 def source_digest(fn: Callable[..., Any]) -> str | None:
@@ -404,7 +412,7 @@ def _check_axis_sinks(name: str, planes: dict[str, Any], args: dict[str, Any]) -
     lane: a body that assigns it on its own column is refused."""
     for p, plane in planes.items():
         if (isinstance(plane, Plane) and plane.form == "mutable" and plane.dims
-                and p in args and any(isinstance(s, Assign) for s in args[p].sinks)):
+                and p in args and any(_ir.is_a(s, "assign") for s in args[p].sinks)):
             axes = ", ".join(f'"{label}"' if size is None else f'"{label}":{size}'
                              for label, size, _stride in plane.dims)
             raise HawkError(
@@ -588,7 +596,7 @@ def _return_annotation(fn: Callable[..., Any], scope: dict[str, Any]) -> Any:
 def _spelled(ann: Any) -> str:
     """A return annotation as the author wrote it: payload types by name
     (``Scalar``, ``Vector[3]``), containers around them."""
-    if isinstance(ann, TensorType):
+    if isinstance(ann, _ir.TensorType):
         return spell(ann)
     org, args = typing.get_origin(ann), typing.get_args(ann)
     if org in (tuple, list, dict) and args:
@@ -604,7 +612,7 @@ def _check_annotation(where: str, ann: Any, tree: Any, at: str) -> None:
     got = (spell(tree.value.ttype) if isinstance(tree, _Leaf)
            else f"a {type(tree).__name__}")
     if org is None:
-        if not isinstance(ann, TensorType):
+        if not isinstance(ann, _ir.TensorType):
             raise HawkError(f"{where}: `-> {_spelled(ann)}` is not a payload type "
                             "(Scalar, Vector[W], ...) or a tuple/list/dict of them")
         if not isinstance(tree, _Leaf) or tree.value.ttype != ann:
@@ -673,10 +681,10 @@ def _resolve_planes(fn: Callable[..., None], params: list[str],
 
 
 def _compensated_companion(kind: Any, planes: dict[str, Any],
-                           vocab: dict[str, Any], sinks: tuple[Node, ...]
-                          ) -> tuple[Slot, ...]:
-    """The ``Slot`` a compensated own-column target's companion is declared
-    under (:func:`hawk.ext.compensated_target`'s own-column case), or ``()``
+                           vocab: dict[str, Any], sinks: tuple[Any, ...]
+                          ) -> Any:
+    """The sink that declares a compensated own-column target's companion plane
+    (:func:`hawk.ext.compensated_target`'s own-column case), or ``None``
     for a non-compensated kind or the SCATTERED form.
 
     Refuses if the companion name collides with a parameter or vocabulary
@@ -697,33 +705,39 @@ def _compensated_companion(kind: Any, planes: dict[str, Any],
             "by the KIND for the own-column form and may not be declared by the "
             "author"
         )
-    target_sink = next(s for s in sinks if s.name == name)
+    target_sink = next(s for s in sinks if s.field_text("name") == name)
     # A real Assign sink, shaped like an author's own Mutable commit (never
     # rendered: `_sink` in staging/aether/wings/base/render.py skips `kind.sink.compensation`).
     # The dummy value is a structural zero of the target's rank — a bare
     # rank>=1 `Const` has no aether spelling, so it is splatted instead.
-    ttype = target_sink.ttype
-    zero = Const(0.0, TensorType((), ttype.dtype))
-    value = zero if not ttype.shape else make("splat", (zero,), ttype.shape)
-    return Assign(comp, value, ttype)
+    ttype = _ir.type_of(target_sink)
+    zero = _ir.const(target_sink.ctx, 0.0, _ir.TensorType((), ttype.dtype))
+    value = zero if not ttype.shape else _ir.make("splat", (zero,), ttype.shape)
+    return _ir.make_node("Assign", ttype, [value], name=comp)
 
 
-def _scattered_companion(kind: Any, sinks: tuple[Node, ...]) -> tuple[Node, ...]:
+def _zero_accumulate(name: str, like: Any) -> Any:
+    """An accumulate of a zero into the plane ``name``, at the key and of the type of the sink ``like``."""
+    ttype = _ir.type_of(like)
+    zero = _ir.const(like.ctx, 0.0, _ir.TensorType((), ttype.dtype))
+    return _ir.make_node("AccumWrite", ttype, [zero, *like.operands[1:2]], name=name, contract="auto",
+                          reduced=None)
+
+
+def _scattered_companion(kind: Any, sinks: tuple[Any, ...]) -> tuple[Any, ...]:
     """``sinks`` plus the companion of a compensated SCATTERED target when no
     sink commits it yet: ``kind.sink.compensation`` accumulated at the target's
     own key, a zero never rendered (`_sink` in staging/aether/wings/base/render.py skips it), so
     the kernel declares and binds the plane. How a ``vjp``'s ``bar_<p>`` scatter
     gets its ``bar_<p>_c``. A tagged sink tuple (``Derived``) keeps its tags."""
     from ..ext import compensated_target
-    from raptor.ir.nodes import AccumWrite
 
     resolved = compensated_target(kind, sinks)
     if resolved is None or resolved[1] or any(
-            s.name == kind.sink.compensation for s in sinks):
+            s.field_text("name") == kind.sink.compensation for s in sinks):
         return sinks
-    target = next(s for s in sinks if s.name == resolved[0])
-    extra = AccumWrite(kind.sink.compensation, Const(0.0, TensorType((), target.ttype.dtype)),
-                       target.index, target.ttype)
+    target = next(s for s in sinks if s.field_text("name") == resolved[0])
+    extra = _zero_accumulate(kind.sink.compensation, target)
     out = (*sinks, extra)
     if hasattr(sinks, "__dict__"):
         out = tuple.__new__(type(sinks), out)
@@ -731,23 +745,23 @@ def _scattered_companion(kind: Any, sinks: tuple[Node, ...]) -> tuple[Node, ...]
     return out
 
 
-def _contract_companions(name: str, planes: dict[str, Any], sinks: tuple[Node, ...]) -> tuple:
+def _contract_companions(name: str, planes: dict[str, Any], sinks: tuple[Any, ...]) -> tuple:
     """The companion plane ``<plane>_c`` of each ``contract="compensated"``
     accumulate, bound by a zero commit at the same key (the commit's correction
     lands there; the target writes it, not this sink). Declared like its plane."""
     out: dict = {}
     for s in sinks:
-        if isinstance(s, AccumWrite) and compensates(s.contract):
-            comp = s.name + COMPANION_SUFFIX
+        if _ir.is_a(s, "accum_write") and _ir.compensates(s.ctx, s.field_text("contract")):
+            comp = s.field_text("name") + _ir.COMPANION_SUFFIX
             if comp in planes and comp not in out and not any(
-                    isinstance(c, AccumWrite) and c.name == comp for c in sinks):
+                    _ir.is_a(c, "accum_write") and c.field_text("name") == comp for c in sinks):
                 raise HawkError(
-                    f"kernel {name!r}: {s.name!r} is added under contract='compensated', "
+                    f"kernel {name!r}: {s.field_text('name')!r} is added under contract='compensated', "
                     f"whose correction lands in {comp!r}, which names a parameter; "
                     "rename the parameter")
-            zero = Const(0.0, TensorType((), s.ttype.dtype))
-            out.setdefault(comp, []).append(AccumWrite(comp, zero, s.index, s.ttype))
-            planes[comp] = Plane("accum", planes[s.name].ttype, dims=planes[s.name].dims)
+            out.setdefault(comp, []).append(_zero_accumulate(comp, s))
+            planes[comp] = Plane("accum", planes[s.field_text("name")].ttype,
+                                 dims=planes[s.field_text("name")].dims)
     return tuple(c for group in out.values() for c in group)
 
 
@@ -758,30 +772,31 @@ def trace_value(fn: Callable[..., Any], bindings: dict[str, Any]) -> Value:
     ``fn`` to its declaration, so ``fn`` needs no annotations. The body must
     end with ``return <expr>``.
     """
-    params = list(inspect.signature(fn).parameters)
-    missing = [p for p in params if p not in bindings]
-    extra = [n for n in bindings if n not in params]
-    if missing or extra:
-        raise HawkError(
-            f"trace_value({fn.__name__!r}): bindings must name every parameter "
-            f"exactly; missing {missing}, not a parameter {extra}")
-    planes = {name: resolve(name, decl) for name, decl in bindings.items()}
-    sinks = [n for n in params if _is_sink(planes[n])]
-    if sinks:
-        raise HawkError(
-            f"trace_value({fn.__name__!r}): {sinks} declare an output plane; a traced "
-            "value commits nothing — return the value and commit it in the kernel "
-            "that uses it")
-    args = {name: _bind(name, planes[name]) for name in params}
-    traced = _retrace(fn, _scope(fn, {}), frozenset(), frozenset(),
-                      returns_value=True)[0]
-    out = _call(traced, fn, args)
-    if not isinstance(out, Value):
-        raise HawkError(
-            f"trace_value({fn.__name__!r}): the body returned {type(out).__name__} "
-            f"{out!r}, not a traced value; the returned expression must depend on "
-            "at least one parameter")
-    return out
+    with trace_context(_ir.new_context()):
+        params = list(inspect.signature(fn).parameters)
+        missing = [p for p in params if p not in bindings]
+        extra = [n for n in bindings if n not in params]
+        if missing or extra:
+            raise HawkError(
+                f"trace_value({fn.__name__!r}): bindings must name every parameter "
+                f"exactly; missing {missing}, not a parameter {extra}")
+        planes = {name: resolve(name, decl) for name, decl in bindings.items()}
+        sinks = [n for n in params if _is_sink(planes[n])]
+        if sinks:
+            raise HawkError(
+                f"trace_value({fn.__name__!r}): {sinks} declare an output plane; a traced "
+                "value commits nothing — return the value and commit it in the kernel "
+                "that uses it")
+        args = {name: _bind(name, planes[name]) for name in params}
+        traced = _retrace(fn, _scope(fn, {}), frozenset(), frozenset(),
+                          returns_value=True)[0]
+        out = _call(traced, fn, args)
+        if not isinstance(out, Value):
+            raise HawkError(
+                f"trace_value({fn.__name__!r}): the body returned {type(out).__name__} "
+                f"{out!r}, not a traced value; the returned expression must depend on "
+                "at least one parameter")
+        return out
 
 
 def _call(traced: Callable[..., Any], fn: Callable[..., Any],
@@ -819,12 +834,12 @@ def _finish_names(params: list[str], planes: dict[str, Any]) -> frozenset[str]:
 
 
 def _finished(name: str, params: list[str], args: dict[str, Any],
-              finishes: frozenset[str], kind: Any) -> tuple[Node, ...]:
-    """The kernel's :class:`~raptor.ir.nodes.Finish` sinks, refusing a mask its
+              finishes: frozenset[str], kind: Any) -> tuple[Any, ...]:
+    """The kernel's ``Finish`` sinks, refusing a mask its
     kind's guard does not gate on (a finished sample the guard never skips
     would run again on the next launch and count twice) and a second finished
     mask (the counter and the sidecar's ``finish`` name ONE)."""
-    out: list[Node] = []
+    out: list[Any] = []
     for p in params:
         if p not in finishes:
             continue
@@ -841,18 +856,18 @@ def _finished(name: str, params: list[str], args: dict[str, Any],
     if len(out) > 1:
         raise HawkError(
             f"kernel {name!r}: finishes {len(out)} masks "
-            f"({[s.name for s in out]}); a kernel finishes its sample through ONE")
+            f"({[s.field_text('name') for s in out]}); a kernel finishes its sample through ONE")
     return tuple(out)
 
 
-def derived_axes(walk: Walk, primal: Any) -> dict[str, Any]:
+def derived_axes(walk: _ir.Walk, primal: Any) -> dict[str, Any]:
     """The named axes of a derivative's sinks, from its primal's: ``dot_<s>`` (and its
     companion) is bound as ``<s>`` is (``Mutable["node"]`` gives ``node=N``), and the
     gradient ``bar_<t>`` of a one-axis ``Table["node"]`` as that table (the length is the caller's,
     the label its run-time extent). Planes the primal declares no axes for stay undeclared."""
     declared = getattr(primal, "planes", None) or {}
     out: dict[str, Any] = {}
-    for role, name in walk.arg_spec:
+    for role, name in _ir.arg_spec(walk):
         base = name[4:] if name[:4] in ("dot_", "bar_") else None
         plane = declared.get(base) if base else None
         if role in ("mutable", "out", "wide_out", "accum_out") and isinstance(plane, Plane) \
@@ -869,12 +884,12 @@ def _declared(planes: dict[str, Any]) -> tuple:
     Today exactly one form: the reserved ``terminated`` MASK. The guard seam
     gates on it, so it must be a slot of the kernel's ``arg_spec`` even in a
     body that never names it."""
-    return tuple(Slot(role_of(p), name, p.ttype)
+    return tuple(_ir.Slot(role_of(p), name, p.ttype)
                  for name, p in planes.items()
                  if isinstance(p, Plane) and p.form == "terminated")
 
 
-def _is_sink(plane: Plane | Quantity) -> bool:
+def _is_sink(plane: Plane | _ir.Quantity) -> bool:
     return isinstance(plane, Plane) and plane.form in _SINK_FORMS
 
 
@@ -931,10 +946,11 @@ def _scope(fn: Callable[..., None], defining: dict[str, Any]) -> dict[str, Any]:
     return scope
 
 
-def _bind(name: str, plane: Plane | Quantity) -> Any:
-    """The traced argument one declaration binds to."""
-    if isinstance(plane, Quantity):
-        return plane.read_with(Value)
+def _bind(name: str, plane: Plane | _ir.Quantity) -> Any:
+    """The traced argument one declaration binds to (its leaves live in the context being traced)."""
+    context = current_context()
+    if isinstance(plane, _ir.Quantity):
+        return plane.read_with(context, Value)
     role = role_of(plane)
     if plane.grid:
         return LaneAxes(plane.grid)
@@ -943,7 +959,7 @@ def _bind(name: str, plane: Plane | Quantity) -> Any:
     if plane.form == "wide_out":
         return WideOutRef(name, plane.ttype, plane.dims)
     if plane.form == "terminated":
-        return TerminatedRef(Leaf("terminated", role, name, plane.ttype))
+        return TerminatedRef(_ir.leaf(context, "terminated", role, name, plane.ttype))
     if plane.shared and plane.ttype.shape:
         # Param[Vector[W]] / Param[Matrix[R,C]]: one value, read cell by cell from its plane
         return SharedValue(name, plane.shared, plane.dims)
@@ -952,8 +968,9 @@ def _bind(name: str, plane: Plane | Quantity) -> Any:
         # same 32-byte ScalarHandle, so the access is the at(expr) either way.
         return TableRef(name, plane.ttype, role=role, dims=plane.dims)
     if plane.ttype == INDEX and role == "per_sample":
-        return Value(widened(Leaf(_LEAF_KIND[role], role, name, INDEX32, sorted=plane.sorted)))
-    return Value(Leaf(_LEAF_KIND[role], role, name, plane.ttype, sorted=plane.sorted))
+        return Value(widened(_ir.leaf(context, _LEAF_KIND[role], role, name, INDEX32,
+                                      sorted=plane.sorted)))
+    return Value(_ir.leaf(context, _LEAF_KIND[role], role, name, plane.ttype, sorted=plane.sorted))
 
 
 def _retrace(fn: Callable[..., None], scope: dict[str, Any],
@@ -1023,9 +1040,9 @@ def _source_lines(fn: Callable[..., None]) -> tuple[list[str], int]:
 
 def _collect(name: str, params: list[str], args: dict[str, Any],
              sink_names: frozenset[str], *,
-             finishing: bool = False) -> tuple[Node, ...]:
+             finishing: bool = False) -> tuple[Any, ...]:
     """The sink set, in PARAMETER order — the walk's declaration order."""
-    sinks: list[Node] = []
+    sinks: list[Any] = []
     for p in params:
         if p not in sink_names:
             continue

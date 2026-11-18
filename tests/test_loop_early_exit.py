@@ -24,8 +24,6 @@ at the break (Python's semantics). Rows:
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import HOST
 
 import linecache
 import math
@@ -43,8 +41,8 @@ from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
 from hawk.ext import Guard, Kind
-from raptor.errors import RaptorError as HawkError
-from raptor.ir import Loop, LoopCount, canonical, canonical_nodes
+from hawk import _ir
+from hawk._errors import HawkError
 
 CAP = 12
 LIM = 3.0
@@ -186,8 +184,9 @@ SUBJECTS = {"head": (head, py_head), "middle": (middle, py_middle),
 POINTS = ((5.0, 0.7), (0.31, 0.7), (0.05, -0.9))
 
 
-def _loop(k) -> Loop:
-    loops = [n for n in canonical_nodes(k.sinks)[0] if isinstance(n, Loop)]
+def _loop(k):
+    """The one loop node of the kernel."""
+    loops = [n for n in _ir.canonical_nodes(k.sinks)[0] if _ir.is_a(n, "loop")]
     assert len(loops) == 1
     return loops[0]
 
@@ -244,9 +243,9 @@ def test_every_early_exit_refusal_names_its_construct(case):
 
 
 def test_the_break_position_is_read_from_the_values():
-    assert _loop(head).exit_form == "head"
-    assert _loop(middle).exit_form == "middle"
-    assert _loop(tail).exit_form == "tail"
+    assert _ir.exit_form(_loop(head)) == "head"
+    assert _ir.exit_form(_loop(middle)) == "middle"
+    assert _ir.exit_form(_loop(tail)) == "tail"
 
 
 # --------------------------------------------------------------------------- #
@@ -274,7 +273,7 @@ def test_the_digest_tells_a_break_apart():
             s = m.sin(g * s) + s * 1.2
         y = s
 
-    assert plain.walk.digest != head.walk.digest
+    assert _ir.digest(plain.walk) != _ir.digest(head.walk)
 
 
 # --------------------------------------------------------------------------- #

@@ -23,7 +23,6 @@ import hawk
 import hawk.math as m
 from hawk.diff import jvp, vjp
 from raptor.errors import RaptorError as HawkError
-from raptor.ir import canonical
 
 S = hawk.Scalar
 OUT = hawk.Mutable[hawk.Scalar]

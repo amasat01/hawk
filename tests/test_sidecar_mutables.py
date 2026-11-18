@@ -19,12 +19,9 @@ Two halves, both load-bearing:
   size of the box eagle then packs, and finally that the kernel computes the
   right answer through it.
 
-This test previously failed. Two plants: ``MIRROR_OF["out"] = "ScalarHandle"`` --
-``AssertionError: : HAWK packs 'out' as 'ScalarHandle' but eagle's
-classify_arg resolves it to GREF_VEC (GRefMirror)`` -- and
-``_mutable_dtype`` collapsed to a constant ``"scalar"`` --
+This test previously failed under a plant: ``_mutable_dtype`` collapsed to a constant ``"scalar"`` --
 ``At index 0 diff: {'name': 'y', 'dtype': 'scalar', ...} != {'name': 'y',
-'dtype': 'vector', ...}``. Both plants were then removed.
+'dtype': 'vector', ...}``. The plant was then removed.
 """
 
 from __future__ import annotations
@@ -36,8 +33,9 @@ import pytest
 from conftest import sidecar_of
 
 from hawk.artifact import plan_view
-from raptor.wings.base.exchange import MIRROR_OF, mirror_of
-from raptor.ir.types import TensorType
+from hawk import _ir
+
+TensorType = _ir.TensorType
 
 _V3 = TensorType((3,), "f64")
 _M33 = TensorType((3, 3), "f64")
@@ -50,31 +48,19 @@ _SHAPE_OF_TAG = {"GREF_VEC": "GRefMirror", "GREF_MAT": "GRefMirror",
                  "UNIFORM": "value", "NSAMPLES": "value"}
 
 
-def test_the_map_equals_eagles_classify_arg_for_all_twelve_roles():
-    from eagle.roles import ROLES, classify_arg
-
-    assert set(ROLES) == set(MIRROR_OF) | {"mutable"}, (
-        "the map must cover the canonical role vocabulary exactly"
-    )
-    for role in sorted(ROLES):
-        if role == "mutable":
-            continue
-        tag = classify_arg(role, role)
-        assert MIRROR_OF[role] == _SHAPE_OF_TAG[tag], (
-            f"HAWK packs {role!r} as {MIRROR_OF[role]!r} but eagle's "
-            f"classify_arg resolves it to {tag} ({_SHAPE_OF_TAG[tag]})"
-        )
-
-
-def test_mutable_resolves_by_context_exactly_as_classify_arg_does():
+@pytest.mark.parametrize("name,kernel", sorted({(c[0], c[1]) for c in D.cases(8)}), ids=lambda p: p)
+def test_the_stated_mirror_of_every_slot_is_what_eagles_classify_arg_resolves(built, name, kernel):
+    """Each slot's ``arg_mirrors`` entry equals the shape eagle's argument class gives that role; a writable slot is
+    classified by the sidecar's vector and matrix declarations, as eagle does."""
     from eagle.roles import classify_arg
 
-    assert mirror_of("mutable", _V3) == "GRefMirror"
-    assert mirror_of("mutable", _M33) == "GRefMirror"
-    assert mirror_of("mutable", _S) == "ScalarHandle"
-    assert classify_arg("mutable", "y", vec_mutables=frozenset({"y"})) == "GREF_VEC"
-    assert classify_arg("mutable", "y", mat_mutables=frozenset({"y"})) == "GREF_MAT"
-    assert classify_arg("mutable", "y") == "HANDLE"
+    sidecar = sidecar_of(built[name], kernel)
+    mutables = {m["name"]: m["dtype"] for m in sidecar["mutables"]}
+    vectors = frozenset(n for n, d in mutables.items() if d == "vector")
+    matrices = frozenset(n for n, d in mutables.items() if d == "matrix")
+    for role, slot in sidecar["arg_spec"]:
+        tag = classify_arg(role, slot, vec_mutables=vectors, mat_mutables=matrices)
+        assert sidecar["arg_mirrors"][slot] == _SHAPE_OF_TAG[tag], (role, slot, tag)
 
 
 def test_a_vector_mutable_carries_its_dtype_declaration(built):
@@ -117,17 +103,6 @@ def test_a_scalar_and_a_matrix_mutable_declare_their_own_dtypes(built):
     assert by_name["s"]["dtype"] == "scalar" and by_name["s"]["width"] == 1
     assert by_name["y"]["dtype"] == "vector" and by_name["y"]["width"] == 3
     assert plan_view(multi)["vec_mutables"] == frozenset({"y"})
-
-
-def test_a_handle_only_role_refuses_a_rank1_plane():
-    """The one shape the map CANNOT express, refused loudly rather than packed
-    at the wrong size."""
-    from raptor.errors import RaptorError as HawkError
-
-    for role in ("per_sample", "lookup", "terminated", "wide_in", "wide_out",
-                 "accum_out"):
-        with pytest.raises(HawkError, match="ScalarHandle"):
-            mirror_of(role, _V3)
 
 
 def test_the_declared_kernel_computes_the_right_answer_through_the_mirror(built):

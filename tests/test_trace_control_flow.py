@@ -22,7 +22,7 @@ import pytest
 from _eval import evaluate
 
 from hawk import Index, Mutable, Param, Scalar, Value, Vector, kernel
-from raptor.ir import Select
+from hawk import _ir
 from hawk import HawkError
 from hawk.math import norm, select
 
@@ -54,7 +54,7 @@ def branchy(x: Scalar, limit: Param, out: Mutable[Scalar]):
 
 
 def test_if_else_merges_both_branches_into_select_and_computes_both_sides():
-    assert any(isinstance(n, Select) for n in branchy.walk.order)
+    assert any(_ir.is_a(n, "select") for n in _ir.canonical_nodes(branchy.sinks)[0])
     for x, limit, expect in ((5.0, 1.0, 5 * 3.0 + (5 * 3.0 + 1.0)),
                              (0.5, 1.0, 0.5 * 2.0 + (0.5 * 2.0 - 1.0))):
         got = evaluate(branchy.sinks, {"x": x, "limit": limit})["out"]
@@ -63,7 +63,7 @@ def test_if_else_merges_both_branches_into_select_and_computes_both_sides():
 
 def test_a_bounded_for_lowers_to_a_loop_that_computes_the_same_number():
     """The body is traced ONCE against a symbolic index and the IR carries
-    a :class:`~raptor.ir.nodes.Loop`, not the unrolled chain the pass used to
+    a loop node, not the unrolled chain the pass used to
     build by executing the Python loop. The NUMBER is the gate — a lowering that
     dropped an iteration, or ran the body once, would pass a node-count check
     and fail here."""
@@ -74,8 +74,7 @@ def test_a_bounded_for_lowers_to_a_loop_that_computes_the_same_number():
             acc = acc * x
         out = acc
 
-    from raptor.ir import Loop
-    assert sum(1 for n in rolled.walk.order if isinstance(n, Loop)) == 1
+    assert sum(1 for n in _ir.canonical_nodes(rolled.sinks)[0] if _ir.is_a(n, "loop")) == 1
     assert float(evaluate(rolled.sinks, {"x": 2.0})["out"]) == pytest.approx(2.0 ** 4)
 
 
@@ -189,7 +188,7 @@ def test_a_traced_value_has_no_truth_value_outside_the_pass():
         out = x
 
     with pytest.raises(HawkError, match="no truth value"):
-        bool(Value(k.sinks[0].value))
+        bool(Value(k.sinks[0].operands[0]))
 
 
 def test_an_undeclared_parameter_and_an_uncommitted_sink_are_refused():

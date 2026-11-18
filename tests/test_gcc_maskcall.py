@@ -7,7 +7,7 @@ vectorisation predicate reports on them. No compiler is run: the macro dicts
 are injected."""
 
 from __future__ import annotations
-from _specs import HOST
+from _specs import HOST, host_vectorised
 from _toolchain import host_template
 
 import platform
@@ -17,7 +17,6 @@ from test_host_loop_interchange import arith, sin_chain
 
 from hawk.compile import toolchain as tc
 import ospreys.cpu.toolchain as ctc
-from aether.wings.cpu.host_vector import kernel_cost, vectorises
 
 VM = "native-vector-math"
 X86 = platform.machine().lower() in ("x86_64", "amd64")
@@ -59,8 +58,7 @@ def test_predicate_does_not_depend_on_the_compiler_release(monkeypatch):
     # the host blend leaves no conditional math call, so no release needs a masked form
     for macros in (gcc(12, 3, 0), gcc(13, 2, 0), gcc(14, 2, 0), gcc(14, 4, 0)):
         _inject(monkeypatch, macros)
-        assert vectorises(sin_chain.walk, HOST, VM) is X86     # the vector math is x86-64 only
-        assert kernel_cost(sin_chain.walk, HOST, VM).vectorised is X86
-        assert vectorises(arith.walk, HOST, VM) is True
+        assert host_vectorised(sin_chain, VM, HOST) is X86     # the vector math is x86-64 only
+        assert host_vectorised(arith, VM, HOST) is True
     # the exact profiles run library math scalar, whatever the compiler
-    assert vectorises(sin_chain.walk, HOST, "native") is False
+    assert host_vectorised(sin_chain, "native", HOST) is False

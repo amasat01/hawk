@@ -14,7 +14,7 @@ same DAG the author would have built by hand, since HAWK's codegen
 contract is one body string per kernel.
 
 **The boundary is recorded anyway.** The inlined subgraph is wrapped in
-a :class:`raptor.ir.nodes.Primitive` node whose operands are that subgraph
+a ``primitive`` node whose operands are that subgraph
 plus the declared inputs. Reverse and forward mode apply the supplied
 rule to those inputs and never push into the subgraph, so the author's
 derivative replaces the table's. A shared subexpression still earns its
@@ -34,16 +34,19 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from raptor.rules import primitive as rules
-from ..dialects import KINDS
-from raptor.ir import Node, Primitive
+from .. import _ir
 from .._errors import HawkError
 from ..trace.helpers import call, call_lowered
+from ..trace.lane_axes import trace_context
 from ..trace.value import Value, node_of
+from . import _primitive_rules as rules
 
 #: Every registered primitive's FRONT END, by name: the Python callables live here, in hawk, only so a rule can be TRACED once
-#: per input signature into a template. What raptor keeps (in :data:`hawk.dialects.KINDS`) is data: the name and the templates.
+#: per input signature into a template. What the rules registry keeps (:data:`_RULES`) is data: the name and the templates.
 _REGISTRY: dict = {}
+
+#: The declared primitives of this process and the rule templates traced for them.
+_RULES = rules.PrimitiveRegistry()
 
 #: Makes the check-and-claim of a name one step: of N threads registering one
 #: name, exactly one wins and the others raise (a bare get-then-set would let
@@ -73,34 +76,58 @@ class PrimitiveDef:
         traced = call(self.forward, *(Value(x) for x in inputs))
         if self.vjp is None and self.jvp is None:
             return traced                # no rule to attach: the table differentiates it
-        return Value(Primitive(self.name, node_of(traced), inputs))
+        forward = node_of(traced)
+        return Value(
+            _ir.make_node(
+                "Primitive", _ir.type_of(forward), (forward, *inputs),
+                name=self.name, input_count=len(inputs),
+            )  # fmt: skip
+        )
 
-    def ensure(self, node: Primitive, direction: str) -> None:
+    def ensure(self, node: Any, direction: str) -> None:
         """Trace the rule of ``direction`` for ``node``'s signature into a template, once, and register it as data."""
         fn = getattr(self, direction)
-        if fn is None or rules.has_rule(KINDS, node, direction):
-            return                       # a missing direction is refused by raptor, by name
-        ins = [rules.placeholder(f"in{i}", x.ttype) for i, x in enumerate(node.inputs)]
-        if direction == "vjp":
-            got = call_lowered(fn, *(Value(x) for x in ins), Value(rules.placeholder("cot", node.ttype)))
-            got = tuple(got) if isinstance(got, (tuple, list)) else (got,)
-            templates = tuple(node_of(v) for v in got)
-        else:
-            dots = [rules.placeholder(f"dot{i}", x.ttype) for i, x in enumerate(node.inputs)]
-            templates = node_of(call_lowered(fn, *(Value(x) for x in ins), *(Value(d) for d in dots)))
-        rules.register_rule(KINDS, self.name, rules.signature_of(node), direction, templates)
+        if fn is None or rules.has_rule(_RULES, node, direction):
+            return                       # a missing direction is refused by the rules registry, by name
+        context = node.ctx
+        inputs = node.operands[1:]
+        ins = [rules.placeholder(context, f"in{i}", _ir.type_of(x)) for i, x in enumerate(inputs)]
+        # the rule's own literals are made from nothing, in the context of the node it is traced for
+        with trace_context(context):
+            if direction == "vjp":
+                cot = rules.placeholder(context, "cot", _ir.type_of(node))
+                got = call_lowered(fn, *(Value(x) for x in ins), Value(cot))
+                got = tuple(got) if isinstance(got, (tuple, list)) else (got,)
+                templates = tuple(node_of(v) for v in got)
+            else:
+                dots = [
+                    rules.placeholder(context, f"dot{i}", _ir.type_of(x))
+                    for i, x in enumerate(inputs)
+                ]
+                templates = node_of(
+                    call_lowered(fn, *(Value(x) for x in ins), *(Value(d) for d in dots))
+                )
+        rules.register_rule(_RULES, self.name, rules.signature_of(node), direction, templates)
 
 
-def vjp_contributions(node: Primitive, g: Node) -> tuple:
+def _ensure_rule(node: Any, direction: str) -> None:
+    """Trace the registered front end's rule for ``node`` when it has one."""
+    name = node.field_text("name")
+    if name in _REGISTRY:
+        _REGISTRY[name].ensure(node, direction)
+
+
+def vjp_contributions(node: Any, g: Any) -> tuple:
     """``((input, adjoint), …)`` for one boundary node, from the registered rule."""
-    _REGISTRY[node.name].ensure(node, "vjp") if node.name in _REGISTRY else None
-    return rules.vjp_contributions(KINDS, node, g)
+    _ensure_rule(node, "vjp")
+    return rules.vjp_contributions(_RULES, node, g)
 
 
-def jvp_tangent(node: Primitive, supplied: Sequence) -> Node:
-    """The output's tangent for one boundary node, from the registered rule."""
-    _REGISTRY[node.name].ensure(node, "jvp") if node.name in _REGISTRY else None
-    return rules.jvp_tangent(KINDS, node, supplied)
+def jvp_tangent(node: Any, supplied: Sequence) -> Any:
+    """The output's tangent for one boundary node from the registered rule; ``supplied`` holds the
+    tangents of ``node.operands[1:]``, ``None`` for an input without one."""
+    _ensure_rule(node, "jvp")
+    return rules.jvp_tangent(_RULES, node, supplied)
 
 
 def primitive(name: Callable | str | None = None, *, vjp: Callable | None = None,
@@ -133,7 +160,8 @@ def primitive(name: Callable | str | None = None, *, vjp: Callable | None = None
             held = _REGISTRY.setdefault(label, definition)
             if held is definition:
                 try:
-                    rules.declare_primitive(KINDS, label, ext="user", directions=tuple(
+                    # the reserved-name check reads the kinds every context declares, so a scratch context serves
+                    rules.declare_primitive(_RULES, _ir.new_context(), label, ext="user", directions=tuple(
                         d for d, f in (("vjp", vjp), ("jvp", jvp)) if f is not None))
                 except HawkError:
                     del _REGISTRY[label]

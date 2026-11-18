@@ -14,7 +14,7 @@ from _specs import HOST, default_kind
 
 import pytest
 
-from hawk import Mutable, Scalar, kernel
+from hawk import Mutable, Scalar, _ir, kernel
 from raptor.errors import RaptorError as HawkError
 from hawk.trace import trace_value
 
@@ -33,7 +33,7 @@ def test_trace_value_binds_keyword_only_parameters_by_name():
 
     a = trace_value(scaled, {"x": Scalar, "scale": Scalar})
     b = trace_value(plain, {"x": Scalar, "scale": Scalar})
-    assert repr(a.node) == repr(b.node)
+    assert _ir.dump_text([a.node]) == _ir.dump_text([b.node])
 
 
 def test_variadic_parameters_are_refused_by_name():

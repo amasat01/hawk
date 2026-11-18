@@ -12,7 +12,7 @@ import pytest
 
 import hawk
 import hawk.math as m
-from hawk import Matrix, Mutable, Scalar, Vector, kernel
+from hawk import Matrix, Mutable, Scalar, Vector, _ir, kernel
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 
@@ -134,7 +134,7 @@ def test_lstsq_in_a_loop_body_runs_against_numpy(tmp_path, cache_dir, k, rows, c
     from hawk.targets import build_spec
 
     assert cols <= _team.max_dim_of(build_spec(("host",)))          # the normal equations: one lane factors it
-    assert k.walk.kinds & {"lstsq"}                      # one lstsq node in the traced IR
+    assert any(n.field_text("kind") == "lstsq" for n in _ir.walk_order(k.walk))                      # one lstsq node in the traced IR
     rng = np.random.default_rng(5)
     J = rng.standard_normal((LANES, rows, cols)) + 3 * np.eye(rows, cols)
     r = rng.standard_normal((LANES, rows))

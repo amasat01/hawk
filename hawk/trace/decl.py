@@ -6,13 +6,13 @@
 A parameter's annotation IS its vocabulary declaration: a payload type
 declares a per-sample input plane whose ROLE follows its rank; a wrapper
 (``Mutable[...]``, ``Table[...]``, ``Param``) declares the
-output/lookup/uniform forms; a :class:`~raptor.ir.compound.Quantity` declares a compound access,
+output/lookup/uniform forms; a :class:`~hawk._ir.Quantity` declares a compound access,
 namespaced and all-or-nothing. Nothing here builds IR; it resolves an
 annotation to the ``(form, ttype)`` pair :mod:`hawk.trace.kernel` binds.
 
 NAMED AXES: ``Table["row":rows, "col":cols]`` and
 ``Staged[Vector[W], count]`` declare a plane's axis LAYOUT as a fact, not a
-convention, with each stride minted as a :class:`~raptor.ir.nodes.RoleConst`
+convention, with each stride minted as a ``RoleConst``
 naming its axis, rather than a hand-written index that re-derives the
 producer's layout uncheckably. Layout is ROW-MAJOR, last axis innermost.
 """
@@ -22,40 +22,83 @@ from __future__ import annotations
 import keyword
 from dataclasses import dataclass, replace
 
-from raptor.ir import Quantity
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir.types import TensorType
 
 #: Payload types. ``Vector``/``Matrix`` are subscripted with static extents —
 #: an extent is a TYPE, never a runtime value.
-Scalar = TensorType((), "f64")
+class PayloadType(_ir.TensorType):
+    """A payload type an author annotates with: a ``TensorType`` that is never called.
+
+    Only ``Index`` can be subscripted, by a width.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        """Write the type as the plain record it equals."""
+        return f"TensorType(shape={self.shape!r}, dtype={self.dtype!r}, tag={self.tag!r})"
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        """Refuse a call: a declaration is only annotated.
+
+        ``typing.Annotated`` wants a callable as its first argument before Python 3.11.
+        """
+        raise TypeError(f"{self!r} is a type declaration: annotate with it, do not call it")
+
+    def __getitem__(self, width: object) -> _ir.TensorType:
+        """Return ``Index[int64]``, the 64-bit index plane (``Index`` alone is the 32-bit one).
+
+        A position or a slice reads the record as the tuple it is; any other type is refused by name.
+        """
+        if isinstance(width, (int, slice)):
+            return tuple(self)[width]
+        if self != Index:
+            raise TypeError(f"{self!r} is not subscriptable; only Index takes a width, Index[int64]")
+        name = getattr(width, "name", None) or getattr(width, "__name__", None) or str(width)
+        if name == "int64":
+            return _INDEX64
+        if name == "int32":
+            return self
+        raise TypeError(f"Index[...] takes int32 (the default) or int64, got {width!r}")
+
+
+Scalar = PayloadType((), "f64")
 #: ``Index``: a 32-bit index plane on the wire (an ``int32`` column), widened to the 64-bit
 #: ``Int`` the body computes in at every read. ``Index[int64]`` is the 64-bit plane (an
 #: ``int64`` column), for values past ``2**31 - 1``.
-Index = TensorType((), "i32")
-_INDEX64 = TensorType((), "i64")
+Index = PayloadType((), "i32")
+_INDEX64 = PayloadType((), "i64")
 #: The 32-bit integer plane payloads: stored at 4 bytes (``np.int32`` /
 #: ``np.uint32``), wrapping ``+ - *``, Python's ``//``/``%`` sign rules, the
 #: bitwise operators and shifts; mixed with a float only through
 #: ``hawk.math.real``/``int32``/``uint32``; never differentiated.
-Int32 = TensorType((), "int32")
-UInt32 = TensorType((), "uint32")
-Quat = TensorType((4,), "f64", "quaternion")
+Int32 = PayloadType((), "int32")
+UInt32 = PayloadType((), "uint32")
+Quat = PayloadType((4,), "f64", "quaternion")
+
+
+def _items(key: object) -> tuple:
+    """The items of a subscript ``Plane[key]``: a tuple key is its items, anything else one item.
+
+    A type is one item although it is a tuple too (a record).
+    """
+    return key if isinstance(key, tuple) and not isinstance(key, _ir.TensorType) else (key,)
 
 
 class Vector:
     """``Vector[W]`` — a rank-1 payload of static width ``W``."""
 
-    def __class_getitem__(cls, w: int) -> TensorType:
-        return TensorType((int(w),), "f64")
+    def __class_getitem__(cls, w: int) -> PayloadType:
+        return PayloadType((int(w),), "f64")
 
 
 class Matrix:
     """``Matrix[R, C]`` — a rank-2 payload of static extents."""
 
-    def __class_getitem__(cls, rc: tuple[int, int]) -> TensorType:
+    def __class_getitem__(cls, rc: tuple[int, int]) -> PayloadType:
         r, c = rc
-        return TensorType((int(r), int(c)), "f64")
+        return PayloadType((int(r), int(c)), "f64")
 
 
 @dataclass(frozen=True)
@@ -66,7 +109,7 @@ class Plane:
     derivable number."""
 
     form: str
-    ttype: TensorType
+    ttype: _ir.TensorType
     dims: tuple = ()
     staged: bool = False
     #: ``Grid[...]``: ``((label, extent|None), ...)``, the launch shape.
@@ -111,7 +154,7 @@ class Mutable:
     ``Grid``: the caller gives it as ``node=N`` or by the plane it passes."""
 
     def __class_getitem__(cls, key: object) -> Plane:
-        items = key if isinstance(key, tuple) else (key,)
+        items = _items(key)
         if isinstance(items[0], (slice, str)):
             return Plane("mutable", Scalar, dims=_axes("Mutable", items))
         dims = _axes("Mutable", items[1:]) if items[1:] else ()
@@ -128,7 +171,7 @@ class Table:
     stride depends on it."""
 
     def __class_getitem__(cls, key: object) -> Plane:
-        if isinstance(key, TensorType):
+        if isinstance(key, _ir.TensorType):
             return Plane("table", _payload("Table", key))
         return Plane("table", Scalar, dims=_axes("Table", key))
 
@@ -145,7 +188,7 @@ class Grid:
     another lane with ``u.at(...)``."""
 
     def __class_getitem__(cls, key: object) -> Plane:
-        items = key if isinstance(key, tuple) else (key,)
+        items = _items(key)
         if not items:
             raise HawkError('Grid[...] needs at least one axis, e.g. Grid["i"]')
         axes = []
@@ -178,7 +221,7 @@ class Sorted:
     along the flat lane (segment ids): a promise the compiler may build on.
     Set ``HAWK_CHECK_SORTED`` to have each bind check it."""
 
-    def __class_getitem__(cls, t: TensorType) -> Plane:
+    def __class_getitem__(cls, t: _ir.TensorType) -> Plane:
         if t not in (Index, _INDEX64):
             raise HawkError(f"Sorted[...] takes Index (a per-sample segment id), got {t!r}")
         return Plane("in", t, sorted=True)
@@ -209,7 +252,7 @@ class Staged:
                 "Staged[Vector[5], 8192]"
             )
         elem, count = key
-        if not isinstance(elem, TensorType) or len(elem.shape) != 1:
+        if not isinstance(elem, _ir.TensorType) or len(elem.shape) != 1:
             raise HawkError(
                 f"Staged[...]: the element type must be a Vector[W], got {elem!r}")
         from .value import n_samples
@@ -240,7 +283,7 @@ class WideOut:
     ``hawk.scatter(buf)[k] = v``, for the same reason :class:`Wide` is here: a
     role an author cannot write is a hole in the language."""
 
-    def __class_getitem__(cls, t: TensorType) -> Plane:
+    def __class_getitem__(cls, t: _ir.TensorType) -> Plane:
         return Plane("wide_out", _payload("WideOut", t))
 
 
@@ -267,7 +310,7 @@ class _ParamPlane(Plane):
         Example: ``def k(x: Scalar, n: Param[Int32], A: Param[Matrix[2, 2]], y: Mutable[Scalar]): ...``"""
         if t in (Scalar, Int32, UInt32):
             return Plane("uniform", t)
-        if isinstance(t, TensorType) and t.shape:
+        if isinstance(t, _ir.TensorType) and t.shape:
             return _shared_value(t)
         if isinstance(t, Plane) and t.form == "table":
             return _shared_table(t)
@@ -276,7 +319,7 @@ class _ParamPlane(Plane):
             f"a Table with static named axes, got {t!r}")
 
 
-def _shared_value(t: TensorType) -> Plane:
+def _shared_value(t: _ir.TensorType) -> Plane:
     """The shared declaration of a vector or matrix payload: its cells, row-major."""
     if t.dtype != "f64" or t.tag is not None or len(t.shape) not in (1, 2):
         raise HawkError(
@@ -305,7 +348,7 @@ Param = _ParamPlane("uniform", Scalar)
 
 #: ``Terminated`` — the reserved per-sample boolean MASK (role
 #: ``terminated``). Declared, never written: HAWK's guard seam gates on it.
-Terminated = Plane("terminated", TensorType((), "bool"))
+Terminated = Plane("terminated", _ir.TensorType((), "bool"))
 
 
 def _extent(what: str, w: object) -> int:
@@ -337,7 +380,7 @@ def _axes(what: str, key: object) -> tuple:
     varies fastest over goes LAST. A ``Mutable``/``Table`` may leave its FIRST
     axis bare (``(label, None)``, a runtime extent): every stride is the
     product of the axes after it, so none depends on that extent."""
-    items = key if isinstance(key, tuple) else (key,)
+    items = _items(key)
     axes = []
     for pos, item in enumerate(items):
         if what in ("Mutable", "Table") and isinstance(item, str) and item:
@@ -369,8 +412,8 @@ def _axes(what: str, key: object) -> tuple:
     return tuple(reversed(out))
 
 
-def _payload(what: str, t: object) -> TensorType:
-    if not isinstance(t, TensorType):
+def _payload(what: str, t: object) -> _ir.TensorType:
+    if not isinstance(t, _ir.TensorType):
         raise HawkError(
             f"{what}[...] takes a payload type (Scalar, Index, Index[int64], Int32, UInt32, Quat, "
             f"Vector[W], Matrix[R,C]), got {t!r}"
@@ -378,7 +421,7 @@ def _payload(what: str, t: object) -> TensorType:
     return t
 
 
-def spell(t: TensorType) -> str:
+def spell(t: _ir.TensorType) -> str:
     """``t`` as an author writes it: ``Scalar``, ``Vector[3]``, ``Matrix[2, 3]``."""
     for name, named in (("Scalar", Scalar), ("Index", Index), ("Index[int64]", _INDEX64), ("Int32", Int32),
                         ("UInt32", UInt32), ("Quat", Quat)):
@@ -407,7 +450,7 @@ class Meta:
         self.notes = tuple(sorted(notes.items()))
 
 
-def resolve(param: str, annotation: object) -> Plane | Quantity:
+def resolve(param: str, annotation: object) -> Plane | _ir.Quantity:
     """The declaration a parameter's annotation names."""
     if getattr(annotation, "__metadata__", None) is not None:        # typing.Annotated
         notes = tuple(n for m in annotation.__metadata__ if isinstance(m, Meta) for n in m.notes)
@@ -417,9 +460,9 @@ def resolve(param: str, annotation: object) -> Plane | Quantity:
         if not isinstance(declared, Plane):
             raise HawkError(f"parameter {param!r}: Meta(...) annotates a plane, not a Quantity")
         return replace(declared, meta=notes)
-    if isinstance(annotation, (Plane, Quantity)):
+    if isinstance(annotation, (Plane, _ir.Quantity)):
         return annotation
-    if isinstance(annotation, TensorType):
+    if isinstance(annotation, _ir.TensorType):
         return Plane("in", annotation)
     raise HawkError(
         f"parameter {param!r}: {annotation!r} is not a HAWK declaration. Annotate "

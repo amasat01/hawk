@@ -14,7 +14,7 @@ or identity comparisons — is refused by a :class:`~hawk.HawkError` naming
 the construct and its line. (3) The ``if`` and ``for`` REWRITES: each ``if``
 branch runs under Python's own evaluator and the names it assigns are merged
 afterwards by ``select``; a bounded ``for`` runs its body ONCE against a
-symbolic index and the names it carries become a :class:`~raptor.ir.Loop`. A
+symbolic index and the names it carries become a loop node. A
 loop's ``if cond: break`` becomes the loop's EXIT (:meth:`_LoopBuilder.exit`),
 lowered to a real per-sample ``break``; ``if cond: S; break`` is sugar for a snapshot of
 ``cond``, ``if snapshot: S`` and the bare form (:func:`_lower_break_blocks`). A sink method call may not sit inside
@@ -33,14 +33,18 @@ import builtins
 import copy
 from typing import Any
 
-from raptor.ir import Const, Dispatch, Node, Select
+from .. import _ir
 from .._errors import HawkError
-from hawk import wings as _wings
-from raptor.ir.nodes import Loop, LoopCarry, LoopIndex, LoopValue
-from raptor.ir.types import TensorType
-from raptor.ir.loops import build_loop
-from .value import Value, index_node, node_of, own_column_rewrite_advice, select
-_dispatch_kind = _wings.view("raptor", "base", "dispatch")
+from .lane_axes import current_context
+from .value import (
+    Value,
+    dispatch_node,
+    index_node,
+    literal_int,
+    node_of,
+    own_column_rewrite_advice,
+    select,
+)
 
 #: The reserved prefix of every name this pass synthesises.
 PREFIX = "__hawk_"
@@ -136,10 +140,10 @@ class _LoopBuilder:
     """The object the rewritten body drives ONE bounded ``for`` through.
 
     Three calls, in order: :attr:`index` binds the loop variable to a symbolic
-    :class:`~raptor.ir.nodes.LoopIndex`, :meth:`carries` swaps each
-    loop-carried name for its :class:`~raptor.ir.nodes.LoopCarry`
+    loop index, :meth:`carries` swaps each
+    loop-carried name for its loop carry
     placeholder, and :meth:`close` reads the body's final values and mints the
-    :class:`~raptor.ir.Loop`. The body runs exactly once, under Python's own
+    loop node. The body runs exactly once, under Python's own
     evaluator, like an ``if`` branch."""
 
     __slots__ = ("start", "stop", "step", "trip", "where", "names", "depth",
@@ -181,7 +185,8 @@ class _LoopBuilder:
         if self.trip and isinstance(self.stop, int):
             first, last = self.start, self.start + (self.trip - 1) * self.step
             bounds = (first, last) if first <= last else (last, first)
-        self.index = Value(LoopIndex(depth, index_name, bounds=bounds))
+        self.index = Value(_ir.make_node("LoopIndex", _I32, context=current_context(),
+                                         depth=depth, name=index_name, bounds=bounds))
         self._inits: tuple = ()
         self._originals: tuple = ()
         self._carries: tuple = ()
@@ -191,25 +196,25 @@ class _LoopBuilder:
         """The static ``(stop,)`` of ``range(n)`` with a traced ``n``, and the loop's
         clamped run-time count: ``n`` held to ``[0, cap]`` (``cap`` the author's
         ``max=``, else the int range, and then the loop has no tape size)."""
-        from raptor.ir import make as _make
-
         if len(bounds) != 1:
             raise HawkError(
                 f"{where}: a run-time `range` takes one bound, `range(n)` (or "
                 "`range(n, max=K)`); a start and a step are compile-time ints")
         node = node_of(bounds[0])
-        if node.ttype.shape != () or node.ttype.dtype != "i32":
+        ttype = _ir.type_of(node)
+        if ttype.shape != () or ttype.dtype != "i32":
             raise HawkError(
                 f"{where}: a run-time `for` bound is a rank-0 integer index "
-                f"(i32), got {node.ttype!r}; build it with hawk.math.index(x, n) "
+                f"(i32), got {ttype!r}; build it with hawk.math.index(x, n) "
                 "or declare the parameter `Index`")
         if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int)
                                 or cap < 1):
             raise HawkError(f"{where}: `max=` is a compile-time int >= 1, got {cap!r}")
         self._dynamic = "open" if cap is None else "max"
         top = 2**31 - 1 if cap is None else cap
-        lowest = _make("max", (node, Const(0, node.ttype)))
-        self._count = lowest if cap is None else _make("min", (lowest, Const(top, node.ttype)))
+        lowest = _ir.make("max", (node, _ir.const(node.ctx, 0, ttype)))
+        self._count = (lowest if cap is None
+                       else _ir.make("min", (lowest, _ir.const(node.ctx, top, ttype))))
         return (top,)
 
     def carries(self, *values: Any) -> tuple:
@@ -225,7 +230,8 @@ class _LoopBuilder:
         self._originals = values
         self._inits = tuple(node_of(v) for v in values)
         self._carries = tuple(
-            LoopCarry(self.depth, j, name, init.ttype)
+            _ir.make_node("LoopCarry", _ir.type_of(init), context=init.ctx,
+                          depth=self.depth, slot=j, name=name)
             for j, (name, init) in enumerate(zip(self.names, self._inits))
         )
         return tuple(Value(c) for c in self._carries)
@@ -240,10 +246,11 @@ class _LoopBuilder:
                 "iteration — it is not a data-dependent exit. Shorten the `range` "
                 "instead")
         node = node_of(cond)
-        if node.ttype.shape != () or node.ttype.dtype != "bool":
+        ttype = _ir.type_of(node)
+        if ttype.shape != () or ttype.dtype != "bool":
             raise HawkError(
                 f"{self.where}: a `break` condition must be a rank-0 bool "
-                f"(a comparison, land / lor / lnot), got {node.ttype!r}")
+                f"(a comparison, land / lor / lnot), got {ttype!r}")
         self._exit = (node, tuple(node_of(v) for v in values))
 
     def close(self, values: tuple) -> tuple:
@@ -263,10 +270,9 @@ class _LoopBuilder:
                 "`break`; fold the exit into the bound (the count is already per sample)")
         if self._count is not None:
             extra.update(count=self._count, dynamic=self._dynamic)
-        loop = build_loop(self.index.node, self._carries, self._inits, nexts,
-                          start=self.start, stop=self.stop, step=self.step,
-                          **extra)
-        return tuple(Value(LoopValue(loop, j)) for j in range(len(self.names)))
+        loop = _ir.loop(self.index.node, self._carries, self._inits, nexts,
+                        start=self.start, stop=self.stop, step=self.step, **extra)
+        return tuple(Value(_ir.loop_value(loop, j)) for j in range(len(self.names)))
 
     def local(self, name: str, what: str = "a loop-local name") -> _LoopLocal:
         """The sentinel a loop-LOCAL name (and the loop variable) is left as."""
@@ -294,24 +300,23 @@ def set_component(vector: Any, index: Any, value: Any, name: str) -> Any:
     A HAWK value is IMMUTABLE, so this becomes a REBINDING:
     ``v = __hawk_setitem__(v, k, e, "v")``. That makes ``v`` an ordinary name,
     so a ``for`` whose body writes its components carries it like a scalar
-    accumulator (:mod:`raptor.ir.loops`).
+    accumulator.
 
     The index may be static or symbolic; folding a static one is the C++
     compiler's decision, not the tracer's."""
-    from raptor.ir import make as _make
     from .decl import Plane
 
     if isinstance(vector, Plane):
         vector[index] = value       # a DECLARATION assigned to: its own refusal
     node = node_of(vector)
-    if not node.ttype.shape:
+    if not _ir.type_of(node).shape:
         raise HawkError(
             f"{name!r}[key] indexes a component; a store by key is "
             f"hawk.scatter({name})[key] += t. {name!r} is a rank-0 value typed "
-            f"{node.ttype!r}, so it has no components to write; `v[k] = …` writes "
+            f"{_ir.type_of(node)!r}, so it has no components to write; `v[k] = …` writes "
             "one component of a rank>=1 value (a Vector, a matrix row is not a HAWK form)")
-    return Value(_make("set_component_at",
-                       (node, index_node(index), node_of(value))))
+    return Value(_ir.make("set_component_at",
+                          (node, index_node(index), node_of(value))))
 
 
 def merge(cond: Any, on_true: Any, on_false: Any, name: str, shared: bool = False) -> Any:
@@ -341,30 +346,26 @@ def merge(cond: Any, on_true: Any, on_false: Any, name: str, shared: bool = Fals
 def _store_under(cond: Any, on_true: Any, on_false: Any) -> Any:
     """``select(c, v, set(v, i, x))`` as ``set(v, i, select(c, v[i], x))`` (and the arms the other way round) for a
     value written at a run-time index: the same value, but the store stays one store of one element, so the
-    vector is neither copied nor selected whole, and what lives in a plane (:mod:`raptor.wings.simt.wide`) is written in place.
+    vector is neither copied nor selected whole, and what lives in a plane is written in place.
 
-    Only a vector written at a run-time index (placed from width 1: :func:`~raptor.wings.simt.wide.runtime_min`); every other
+    Only a vector written at a run-time index (placed from width 1); every other
     ``if`` keeps the select, so a kernel with no such value renders as it did. A build with ``wide_form="thread"``
-    puts the select back (:func:`raptor.wings.simt.wide.unstored`)."""
-    from raptor.ir.nodes import Op
-
+    puts the select back."""
     if not (isinstance(on_true, Value) and isinstance(on_false, Value)):
         return None
     for held, stored, taken in ((on_true, on_false, False), (on_false, on_true, True)):
         node, base = node_of(stored), node_of(held)
-        if (isinstance(node, Op) and node.kind == "set_component_at" and node.operands[0] is base
-                and len(base.ttype.shape) == 1
-                and not isinstance(node.operands[1], Const) and not node_of(cond).ttype.shape):
-            from raptor.ir import make as _make
-
+        if (_ir.is_a(node, "op") and node.field_text("kind") == "set_component_at"
+                and node.operands[0] == base and len(_ir.type_of(base).shape) == 1
+                and not _ir.is_a(node.operands[1], "const") and not _ir.type_of(node_of(cond)).shape):
             index, value = node.operands[1], Value(node.operands[2])
-            current = Value(_make("component_at", (base, index)))
+            current = Value(_ir.make("component_at", (base, index)))
             merged = select(cond, value, current) if taken else select(cond, current, value)
-            return Value(_make("set_component_at", (base, index, node_of(merged))))
+            return Value(_ir.make("set_component_at", (base, index, node_of(merged))))
     return None
 
 
-_I32 = TensorType((), "i32")
+_I32 = _ir.TensorType((), "i32")
 
 
 def _as_switch(value: Value, shared: bool = False) -> Value:
@@ -378,7 +379,7 @@ def _as_switch(value: Value, shared: bool = False) -> Value:
     The selector is ``c0 ? 0 : c1 ? 1 : ... : n`` over the chain's conditions, so
     the dispatch picks exactly the arm the chain picks, whatever the conditions."""
     node = node_of(value)
-    if not isinstance(node, Select) or node.operands[0].ttype.shape:
+    if not _ir.is_a(node, "select") or _ir.type_of(node.operands[0]).shape:
         return value
     conds: list = []
     arms: list = []
@@ -389,51 +390,50 @@ def _as_switch(value: Value, shared: bool = False) -> Value:
             conds += tail[0]
             arms += tail[1]
             break
-        if not isinstance(rest, Select) or rest.operands[0].ttype.shape:
+        if not _ir.is_a(rest, "select") or _ir.type_of(rest.operands[0]).shape:
             arms.append(rest)
-            if not _costly_arm(arms, conds, bool(node.ttype.shape) or shared):
+            if not _costly_arm(arms, conds, bool(_ir.type_of(node).shape) or shared):
                 return value
             break
         conds.append(rest.operands[0])
         arms.append(rest.operands[1])
         rest = rest.operands[2]
-    selector = Const(len(conds), _I32)
+    selector = _ir.const(node.ctx, len(conds), _I32)
     for j in range(len(conds) - 1, -1, -1):
-        selector = Select(conds[j], Const(j, _I32), selector, _I32)
-    return Value(_dispatch_kind.dispatch(selector, _one_node_per_value(arms), "switch", node.ttype))
+        selector = _ir.make_node("Select", _I32, [conds[j], _ir.const(node.ctx, j, _I32), selector])
+    return Value(dispatch_node(selector, _one_node_per_value(arms), "switch", _ir.type_of(node)))
 
 
 def _one_node_per_value(arms: list) -> list:
     """``arms`` with equal-structure nodes merged to one, so a value written twice
     in a case is named once there (a case renders by node, not by structure)."""
-    from raptor.ir.walk import post_order as _post_order, structural_keys as _keys
-    from raptor.ir.walk import substitute
-
     while True:
-        order, key, first, swaps = _post_order(arms), {}, {}, {}
-        _keys(order, key)
+        order = _ir.post_order(arms)
+        key = _ir.structural_keys(order)
+        first, swaps = {}, {}
         for n in order:
-            rep = first.setdefault(key[id(n)], n)
-            if rep is not n:
-                swaps[id(n)] = rep
+            rep = first.setdefault(key[n], n)
+            if rep != n:
+                swaps[n] = rep
         if not swaps:
             return arms
-        arms = list(substitute(arms, swaps))
+        arms = list(_ir.substitute(arms, swaps))
 
 
-def _switch_chain(node: Node) -> tuple | None:
+def _switch_chain(node: Any) -> tuple | None:
     """``(conditions, arms)`` of a dispatch :func:`_as_switch` built, else ``None``."""
-    if not (isinstance(node, Dispatch) and _dispatch_kind.strategy(node) == "switch"):
+    if node.cls != "Dispatch":        # the core kind is the ``switch`` strategy; a pinned one is a kind of its own
         return None
-    conds, sel = [], node.selector
-    while isinstance(sel, Select):
+    selector, *branches = node.operands
+    conds, sel = [], selector
+    while _ir.is_a(sel, "select"):
         cond, pick, sel = sel.operands
-        if not (isinstance(pick, Const) and pick.literal == len(conds)):
+        if literal_int(pick) != len(conds):
             return None
         conds.append(cond)
-    if not (isinstance(sel, Const) and sel.literal == len(conds) == node.K - 1):
+    if literal_int(sel) != len(conds) or len(conds) != len(branches) - 1:
         return None
-    return conds, list(node.branches)
+    return conds, branches
 
 
 def _costly_arm(arms: list, conds: list, shared: bool) -> bool:
@@ -443,10 +443,7 @@ def _costly_arm(arms: list, conds: list, shared: bool) -> bool:
     only while nothing else reads that work, so a named transcendental runs in every lane). Alone, a
     transcendental or division counts when its arm reads it twice, by structure: a value written
     twice is read twice."""
-    from raptor.ir.walk import post_order as _post_order, structural_keys as _keys
-
-    key: dict = {}
-    _keys(_post_order([*arms, *conds]), key)
+    key = _ir.structural_keys(_ir.post_order([*arms, *conds]))
     reach = [_reached(a) for a in arms]
     common = _reached(*conds)
     for j, mine in enumerate(reach):
@@ -455,23 +452,26 @@ def _costly_arm(arms: list, conds: list, shared: bool) -> bool:
         reads: dict = {}
         for n in own.values():
             for o in n.operands:
-                reads[key[id(o)]] = reads.get(key[id(o)], 0) + 1
+                reads[key[o]] = reads.get(key[o], 0) + 1
         for k, n in own.items():
-            if isinstance(n, (Loop, Dispatch)):
+            if _ir.is_a(n, "loop", "dispatch"):
                 return True
-            if (n.kind in _wings.view("raptor", "base", "cost").SPECIAL_KINDS or n.kind == "div") and (shared or reads.get(key[k], 0) >= 2):
+            costly = _ir.is_a(n, "op") and (
+                n.field_text("kind") in _ir.SPECIAL_KINDS
+                or n.field_text("kind") == "div")
+            if costly and (shared or reads.get(key[k], 0) >= 2):
                 return True
     return False
 
 
-def _reached(*roots: Node) -> dict:
-    """``{id: node}`` of every node ``roots`` read, themselves included."""
+def _reached(*roots: Any) -> dict:
+    """``{node: node}`` of every node ``roots`` read, themselves included."""
     seen: dict = {}
     stack = list(roots)
     while stack:
         n = stack.pop()
-        if id(n) not in seen:
-            seen[id(n)] = n
+        if n not in seen:
+            seen[n] = n
             stack.extend(n.operands)
     return seen
 
@@ -1379,7 +1379,7 @@ class _Logic(ast.NodeTransformer):
 
 class _Rewriter:
     """Turns every ``if``/``IfExp`` into ``select`` merges, and every bounded
-    ``for`` into ONE symbolic pass that mints a :class:`~raptor.ir.Loop`."""
+    ``for`` into ONE symbolic pass that mints a loop node."""
 
     def __init__(self, filename: str) -> None:
         self.filename = filename

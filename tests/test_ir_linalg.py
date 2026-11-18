@@ -15,7 +15,7 @@ from raptor.wings.base.dispatch import dispatch as _dispatch
 import pytest
 
 from hawk import runtime
-from raptor.ir import Const, Dispatch, Leaf, Select, make
+from raptor.ir import Const, Leaf, Select, make
 from raptor.errors import RaptorError as HawkError
 from raptor.wings.base.cost import _op_count, _own_cost, _wide, linalg_bytes
 from hawk.facts import load as _load_facts
@@ -234,6 +234,8 @@ def test_the_stack_of_a_kernel_is_the_sum_over_its_nodes():
 def _sidecar(**kw):
     base = {"scalar_type": "float64", "mutables": [], "params": [], "arg_dtypes": {}}
     base.update(kw)
+    # the slots these rows describe are the mirror-shaped ones: outputs, vectors and matrices
+    base["arg_mirrors"] = {name: "GRefMirror" for _role, name in base.get("arg_spec", ())}
     return base
 
 

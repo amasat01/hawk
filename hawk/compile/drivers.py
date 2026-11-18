@@ -214,7 +214,7 @@ class CompileOptions:
     #: (``-O<n>`` / ``-Xptxas -O<n>``); ignored by the NVRTC device compile,
     #: which always optimises and takes no ``-O`` option.
     opt_level: str = ""
-    #: The unit's :class:`~raptor.wings.base.settings.Settings`, for a backend whose compile reads one (``None``: none).
+    #: The unit's :class:`~hawk.build_settings.Settings`, for a backend whose compile reads one (``None``: none).
     settings: object = None
 
 

@@ -21,7 +21,7 @@ import numpy as np
 from scipy import linalg as sla
 from scipy.linalg import lapack
 
-from raptor.ir import PlaneExtent, AccumWrite, At, Const, Dispatch, Leaf, Loop, LoopCount, LoopValue, Node, Primitive, SampleIndex, Select, TapeRead
+from hawk import _ir
 
 _BINARY = {
     "add": lambda a, b: a + b, "sub": lambda a, b: a - b,
@@ -255,20 +255,20 @@ def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0) -> dict:
     """Evaluate ``sinks`` at ``env`` (leaf name -> value); returns sink values.
 
     ``lane`` is the sample this evaluation stands at, and it is what a
-    :class:`~raptor.ir.nodes.SampleIndex` node reads: the interpreter walks ONE
+    ``sample_index`` node reads: the interpreter walks ONE
     sample, so the lane index is a parameter of the walk rather than a plane in
     ``env``."""
-    memo: dict[int, object] = {}
+    memo: dict = {}
     env = {**env, "__lane__": lane}
     out: dict[str, object] = {}
     flat: list = []
     for sink in sinks:
-        if isinstance(sink, Loop):
+        if _ir.is_a(sink, "loop"):
             # a lowered loop that COMMITS once per iteration: the
             # interpreter runs it and REPLAYS its body sinks, one commit per
             # iteration, which is exactly what the emitted scope does.
             for k, bindings in _iterations(sink, env, memo):
-                for inner in sink.body_sinks:
+                for inner in sink.field_nodes("body_sinks"):
                     flat.append((inner, dict(bindings)))
                 del k
             continue
@@ -277,40 +277,55 @@ def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0) -> dict:
         # a loop body sink is evaluated in ITS iteration's memo alone, for the
         # reason :func:`_iterations` states.
         memo_here = memo if bindings is None else dict(bindings)
-        if bindings is not None and sink.kind == "assign" and _links(sink.value):
+        name = sink.field_text("name")
+        value_node = sink.operands[0]
+        if bindings is not None and _ir.is_a(sink, "assign") and _links(value_node):
             # a loop's per-iteration runtime accumulate on the own column:
             # the links in chain order onto the plane, exactly the emitted
             # `bar[i].at(k) += e` statements (the base is a structural zero)
-            target = np.asarray(out.get(sink.name, np.zeros(sink.ttype.shape)),
-                                dtype=float)
-            for k, e in _links(sink.value):
+            target = np.asarray(out.get(name, np.zeros(_ir.type_of(sink).shape)), dtype=float)
+            for k, e in _links(value_node):
                 target[int(_value(k, env, memo_here))] += float(_value(e, env, memo_here))
-            out[sink.name] = target
+            out[name] = target
             continue
-        value = _value(sink.value, env, memo_here)
-        if isinstance(sink, AccumWrite) and sink.index is not None:
-            target = np.asarray(out.get(sink.name, np.zeros(lanes)), dtype=float)
-            target[int(_value(sink.index, env, memo_here))] += value
-            out[sink.name] = target
+        value = _value(value_node, env, memo_here)
+        if _ir.is_a(sink, "accum_write") and len(sink.operands) > 1:
+            target = np.asarray(out.get(name, np.zeros(lanes)), dtype=float)
+            target[int(_value(sink.operands[1], env, memo_here))] += value
+            out[name] = target
         else:
-            out[sink.name] = value
+            out[name] = value
     return out
 
 
-def _links(node: Node) -> list:
+def _op_kind(node):
+    """The operation text of an ``op`` node, ``None`` for any other node."""
+    return node.field_text("kind") if _ir.is_a(node, "op") else None
+
+
+def _literal(node):
+    """The plain literal of a node: none, text, int, float, bool or a tuple of integers."""
+    kind = node.field_kind("literal")
+    if kind == 0:
+        return None
+    reader = {1: node.field_text, 2: node.field_int, 3: node.field_real, 4: node.field_flag}
+    return reader.get(kind, node.field_ints)("literal")
+
+
+def _links(node) -> list:
     """``[(k, e), ...]`` of an ``add_at`` chain, in order (empty: not a chain)."""
     links = []
-    while getattr(node, "kind", None) == "add_at":
+    while _op_kind(node) == "add_at":
         links.append((node.operands[1], node.operands[2]))
         node = node.operands[0]
     return links[::-1]
 
 
-def _value(node: Node, env: dict, memo: dict):
-    hit = memo.get(id(node))
+def _value(node, env: dict, memo: dict):
+    hit = memo.get(node)
     if hit is not None:
         return hit
-    memo[id(node)] = value = _compute(node, env, memo)
+    memo[node] = value = _compute(node, env, memo)
     return value
 
 
@@ -323,29 +338,33 @@ def _iterations(loop, env: dict, memo: dict):
     emitted scope recomputes it."""
     # a Loop OPERAND that is itself a loop is a forward loop this one tapes: it
     # is a statement, not a value, and it is reached through TapeRead instead.
-    outside = {id(operand): _value(operand, env, memo)
-               for operand in loop.operands if not isinstance(operand, Loop)}
+    outside = {operand: _value(operand, env, memo)
+               for operand in loop.operands if not _ir.is_a(operand, "loop")}
     # a Loop operand is a forward loop this one tapes (a statement before it, in the
     # scope that holds both): run it HERE, in the caller's memo, and hand its state
     # across the fresh per-iteration memos (a nested loop's tape source reads values
     # of the enclosing iteration, which only the caller's memo holds)
     for operand in loop.operands:
-        if isinstance(operand, Loop):
-            outside[("loop", id(operand))] = _loop_state(operand, env, memo)
-    carry = [_value(init, env, memo) for init in loop.inits]
-    ks = list(range(loop.start, loop.stop, loop.step))
-    if loop.count is not None:
+        if _ir.is_a(operand, "loop"):
+            outside[("loop", operand)] = _loop_state(operand, env, memo)
+    carry_count = loop.field_int("carry_count")
+    carries = loop.field_nodes("carries")
+    exit_part = _ir.exit_kwargs(loop)
+    carry = [_value(init, env, memo) for init in loop.operands[:carry_count]]
+    start, stop, step = (loop.field_int(name) for name in ("start", "stop", "step"))
+    ks = list(range(start, stop, step))
+    if exit_part["count"] is not None:
         # a derived loop of a loop with a `break`: the first (or, reversed, the
         # last) `count` iterations of the static range.
-        n = int(outside[id(loop.count)])
-        ks = ks[len(ks) - n:] if loop.count_tail else ks[:n]
-    form = loop.exit_form
+        n = int(outside[exit_part["count"]])
+        ks = ks[len(ks) - n:] if exit_part["count_tail"] else ks[:n]
+    form = _ir.exit_form(loop)
     count = 0
     for k in ks:
         bindings = dict(outside)
-        bindings[id(loop.index)] = k
-        for slot, placeholder in enumerate(loop.carries):
-            bindings[id(placeholder)] = carry[slot]
+        bindings[loop.field_nodes("index")[0]] = k
+        for slot, placeholder in enumerate(carries):
+            bindings[placeholder] = carry[slot]
         yield k, bindings
         # a FRESH memo per iteration, seeded ONLY with what crosses the
         # boundary. It may NOT inherit the caller's: a derived loop reuses the
@@ -354,15 +373,15 @@ def _iterations(loop, env: dict, memo: dict):
         # be returned again while the forward loop is being replayed to fill its
         # tape — one scope's answer read in another's, which is a wrong number.
         per_iter = dict(bindings)
-        if form is not None and bool(_value(loop.exit_cond, env, per_iter)):
+        if form is not None and bool(_value(exit_part["exit_cond"], env, per_iter)):
             # Python's own `break`: the carried names keep their values AT it.
-            carry = [_value(v, env, per_iter) for v in loop.exit_values]
+            carry = [_value(v, env, per_iter) for v in exit_part["exit_values"]]
             count += form in ("tail", "middle")
             break
-        carry = [_value(nxt, env, per_iter) for nxt in loop.nexts]
+        carry = [_value(nxt, env, per_iter) for nxt in loop.field_nodes("nexts")]
         count += 1
-    memo[("loop_final", id(loop))] = carry
-    memo[("loop_count", id(loop))] = count
+    memo[("loop_final", loop)] = carry
+    memo[("loop_count", loop)] = count
 
 
 def _loop_state(loop, env: dict, memo: dict):
@@ -370,49 +389,51 @@ def _loop_state(loop, env: dict, memo: dict):
 
     The TAPE is the value each slot held at the START of every iteration — the
     same array the emitted forward loop writes when a reverse loop reads it
-    through a :class:`~raptor.ir.nodes.TapeRead`."""
-    hit = memo.get(("loop", id(loop)))
+    through a ``tape_read``."""
+    hit = memo.get(("loop", loop))
     if hit is not None:
         return hit
-    tape = [[] for _ in loop.carries]
-    carry = None
+    carries = loop.field_nodes("carries")
+    tape = [[] for _ in carries]
     for _k, bindings in _iterations(loop, env, memo):
-        for slot, placeholder in enumerate(loop.carries):
-            tape[slot].append(bindings[id(placeholder)])
-    carry = memo[("loop_final", id(loop))]
-    memo[("loop", id(loop))] = state = (carry, tape)
+        for slot, placeholder in enumerate(carries):
+            tape[slot].append(bindings[placeholder])
+    carry = memo[("loop_final", loop)]
+    memo[("loop", loop)] = state = (carry, tape)
     return state
 
 
-def _compute(node: Node, env: dict, memo: dict):
-    if isinstance(node, Const):
-        return node.literal
-    if isinstance(node, LoopValue):
-        return _loop_state(node.loop, env, memo)[0][node.slot]
-    if isinstance(node, LoopCount):
-        _loop_state(node.loop, env, memo)
-        return memo[("loop_count", id(node.loop))]
-    if isinstance(node, TapeRead):
-        loop = node.loop
-        index = int(_value(node.index, env, memo))
-        ordinal = (index - loop.start) // loop.step
-        return _loop_state(loop, env, memo)[1][node.slot][ordinal]
-    if isinstance(node, SampleIndex):
+def _compute(node, env: dict, memo: dict):
+    if _ir.is_a(node, "const"):
+        return _literal(node)
+    if _ir.is_a(node, "loop_value"):
+        return _loop_state(node.operands[0], env, memo)[0][node.field_int("literal")]
+    if _ir.is_a(node, "loop_count"):
+        loop = node.operands[0]
+        _loop_state(loop, env, memo)
+        return memo[("loop_count", loop)]
+    if _ir.is_a(node, "tape_read"):
+        loop = node.operands[0]
+        index = int(_value(node.operands[1], env, memo))
+        ordinal = (index - loop.field_int("start")) // loop.field_int("step")
+        return _loop_state(loop, env, memo)[1][node.field_int("slot")][ordinal]
+    if _ir.is_a(node, "sample_index"):
         return env["__lane__"]
-    if isinstance(node, Primitive):
+    if _ir.is_a(node, "primitive"):
         # a primitive's FORWARD is its inlined subgraph; the boundary node adds
         # no arithmetic, which is exactly what the emitter renders too.
-        return _value(node.forward, env, memo)
-    if isinstance(node, Leaf):
-        if node.name not in env:
-            raise KeyError(f"no value bound for leaf {node.name!r} ({node.role})")
-        return env[node.name]
-    if isinstance(node, PlaneExtent):
-        return int(np.asarray(env[node.name]).size)
-    if isinstance(node, At):
-        plane = _value(node.plane, env, memo)
-        return np.asarray(plane)[int(_value(node.index, env, memo))]
-    if isinstance(node, Select):
+        return _value(node.operands[0], env, memo)
+    if _ir.is_a(node, "leaf"):
+        name = node.field_text("name")
+        if name not in env:
+            raise KeyError(f"no value bound for leaf {name!r} ({node.field_text('role')})")
+        return env[name]
+    if _ir.is_a(node, "plane_extent"):
+        return int(np.asarray(env[node.operands[0].field_text("name")]).size)
+    if _ir.is_a(node, "at"):
+        plane = _value(node.operands[0], env, memo)
+        return np.asarray(plane)[int(_value(node.operands[1], env, memo))]
+    if _ir.is_a(node, "select"):
         cond = _value(node.operands[0], env, memo)
         if np.ndim(cond) == 0:
             # the emitted `cond ? a : b` runs ONE arm: a gather in the arm the
@@ -420,17 +441,19 @@ def _compute(node: Node, env: dict, memo: dict):
             return _value(node.operands[1 if cond else 2], env, memo)
         a, b = (_value(c, env, memo) for c in node.operands[1:])
         return np.where(cond, a, b)
-    if isinstance(node, Dispatch):
+    if _ir.is_a(node, "dispatch"):
         # The serial oracle: the SAME clamp every emitted strategy shares —
         # this interpreter does not model predicated/switch/segmented at all,
         # exactly as it models neither of `select`'s two aether spellings, so
         # a strategy that lowers the clamp differently is a defect the RENDERED
         # artifact must be compared against, not this scratch evaluator.
-        k = int(_value(node.selector, env, memo))
-        k = min(max(k, 0), node.K - 1)
-        return _value(node.branches[k], env, memo)
+        k = int(_value(node.operands[0], env, memo))
+        branches = node.operands[1:]
+        k = min(max(k, 0), len(branches) - 1)
+        return _value(branches[k], env, memo)
     args = [_value(c, env, memo) for c in node.operands]
-    kind = node.kind
+    kind = node.field_text("kind")
+    literal = _literal(node)
     if kind in _QUAT:
         return _QUAT[kind](*args)
     if kind in _LINALG:
@@ -438,7 +461,7 @@ def _compute(node: Node, env: dict, memo: dict):
     if kind in _RAYS:
         return _RAYS[kind](*args)
     if kind == "component":
-        return args[0][node.literal]
+        return args[0][literal]
     if kind == "set_component_at":
         # `v` with ONE component replaced. A COPY, because the IR node
         # is a value: the vector it was given keeps the value it had.
@@ -456,23 +479,23 @@ def _compute(node: Node, env: dict, memo: dict):
         # back a 0-d array.
         return np.asarray(args[0])[int(args[1])]
     if kind == "vec":
-        conv = bool if node.ttype.dtype == "bool" else float
+        conv = bool if _ir.type_of(node).dtype == "bool" else float
         flat = np.array([conv(a) for a in args])
-        return flat if node.literal is None else flat.reshape(node.literal)
+        return flat if literal is None else flat.reshape(literal)
     if kind == "splat":
-        return np.full(node.literal, float(args[0]))
+        return np.full(literal, float(args[0]))
     if kind == "cast":
         # float -> integer truncates toward zero, saturates, maps NaN to 0
-        if node.literal in ("i32", "int32", "i64", "uint32"):
+        if literal in ("i32", "int32", "i64", "uint32"):
             x = np.asarray(args[0], dtype=float)
-            lo, hi = (0.0, 2.0**32 - 1) if node.literal == "uint32" else (-2.0**31, 2.0**31 - 1)
+            lo, hi = (0.0, 2.0**32 - 1) if literal == "uint32" else (-2.0**31, 2.0**31 - 1)
             return int(np.clip(np.nan_to_num(np.trunc(x), nan=0.0), lo, hi))
         return float(args[0])
     if kind in _UNARY:
         return _UNARY[kind](args[0])
     if kind in _RANDOM:
         return _RANDOM[kind](*args)
-    if kind == "div" and node.ttype.dtype in ("i32", "i64"):
+    if kind == "div" and _ir.type_of(node).dtype in ("i32", "i64"):
         # an integer quotient, because that is what the emitted `Int / Int` is;
         # numpy's `/` would give a float and the split-index identity
         # `lane - (lane / m) * m` would stop being the remainder.

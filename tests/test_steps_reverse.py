@@ -34,6 +34,7 @@ from raptor.errors import RaptorError as HawkError
 from hawk.trace.steps import _fused_function
 
 from _eval import evaluate
+from hawk import _ir
 
 K = 8
 N = 4 * (K + 2)
@@ -200,7 +201,7 @@ def test_jvp_of_a_fused_kernel_is_the_fused_step_jvp():
     want = hawk.steps(step_jvp(pend), 4)
     assert got.name == want.name == f"{pend.name}_jvp_x4"
     assert [type(s) for s in got.sinks] == [type(s) for s in want.sinks]
-    assert got.walk.arg_spec == want.walk.arg_spec
+    assert _ir.arg_spec(got.walk) == _ir.arg_spec(want.walk)
 
 
 

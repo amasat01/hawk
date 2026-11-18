@@ -26,9 +26,7 @@ tile spans eight vector registers of the kernel's ``Real``. The SAME TU built wi
 """
 
 from __future__ import annotations
-from _specs import default_kind
-from _specs import spec_for
-from _specs import HOST
+from _specs import HOST, host_vectorised
 
 import platform
 import re
@@ -39,17 +37,13 @@ from _toolchain import host_library, host_template
 from conftest import avx512, sidecar_of
 
 import hawk
+from hawk import _ir
 import hawk.math as m
 from hawk import Grid, Mutable, Param, Scalar, Terminated, Vector
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
-from hawk.compile import toolchain as tc
 import ospreys.cpu.toolchain as ctc
 from hawk.diff import vjp
-from aether.wings.base.wrapper import scalar_mode
-from aether.wings.cpu.host_vector import kernel_cost, vectorises
-from raptor.wings.cpu.vectorise import interchanged_loops
-from hawk.targets import TARGETS
 
 PLAIN = ("HAWK_HOST_INTERCHANGE=0",)
 INTERCHANGED = ("HAWK_HOST_INTERCHANGE=1",)
@@ -302,7 +296,7 @@ def test_the_flag_matches_the_lane_loop(request, tmp_path, kernel, mode, profile
         request.applymarker(pytest.mark.xfail(
             strict=False, reason="GCC 12 vectorises this lane loop on some AVX-512 CPUs only"))
     lane, wide = _lane_loop_report(tmp_path, kernel, mode, profile)
-    assert vectorises(kernel.walk, HOST, profile, mode) is (lane <= wide), (lane, wide)
+    assert host_vectorised(kernel, profile, HOST, mode) is (lane <= wide), (lane, wide)
 
 
 _VECTOR_MATH = pytest.mark.skipif(
@@ -356,22 +350,12 @@ def _vm_ok():
     return platform.machine().lower() in ("x86_64", "amd64")
 
 
-def test_the_cost_model_reads_the_same_predicate():
-    for kernel in (arith, nested, sin_chain, trajectory):
-        for profile in (EXACT, "native-vector-math"):
-            assert kernel_cost(kernel.walk, HOST, profile).vectorised is vectorises(
-                kernel.walk, HOST, profile)
-    # an interchanged loop's trip count leaves the vectorised flag on
-    assert kernel_cost(arith.walk, HOST, EXACT).vectorised is True
-    # a fixed-count nested loop, however long, is vectorised across the lanes (the flag test pins it against GCC)
-    assert kernel_cost(nested.walk, HOST, EXACT).vectorised is True
-
 
 def test_an_item_select_is_held_in_a_named_local():
     # an Item is a leaf held by const& in the expression that takes it: a select_item prvalue inlined into a later
     # expression dangles after its statement (chol_from vjp read garbage)
     from _linalg_kernels import chol_from_kernel
-    primal = chol_from_kernel(3)
+    primal = chol_from_kernel(_ir.new_context(), 3)
     kernel = hawk.Kernel("la_chol_from_3_vjp", vjp(primal))
     text = hawk.artifact.emit_source(kernel, targets=("host",)).sources["host"].text
     calls = re.findall(r"^.*hawk_abi::select_item<.*$", text, re.M)

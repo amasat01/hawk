@@ -11,8 +11,8 @@ and handing the descriptor to :class:`hawk._core.ArgBlock`. It is not a
 runtime; it is the last mile of the DEFINITION.
 
 The descriptor is derived, never re-tabulated: a slot's kind comes from
-the same role -> mirror map the emitter generated the entry signature
-from (:data:`raptor.wings.base.exchange.MIRROR_OF`), so a slot cannot be described
+the mirror the lowering answer states for the slot (the sidecar's ``arg_mirrors``), the one the
+entry signature was generated from, so a slot cannot be described
 one way to the compiler and another to the marshal — the failure mode
 being a 32-byte handle where the kernel reads a 40-byte mirror, which
 is deterministic garbage, not a crash.
@@ -61,7 +61,6 @@ import threading
 from pathlib import Path
 
 from . import _cells, _core, _lane_bind
-from raptor.ir.cells import planes
 from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, narrow_index, refuse_index_width, widen_index
 from ._plane_layout import (
     LayoutChoice,
@@ -69,11 +68,8 @@ from ._plane_layout import (
     plane_layout,
     split_marks,
 )
-from . import wings as _wings
-_simt_box = _wings.view("raptor", "base", "box")
-from raptor.wings.base.exchange import MIRROR_OF, fold_entry_name, mirror_of
 from ._errors import HawkError
-from raptor.ir.types import TensorType
+from . import _ir
 
 __all__ = ["ArgBlock", "HostKernel", "descriptor_for_sidecar", "DEVICE_CPU",
            "kind_for", "load", "run"]
@@ -86,44 +82,37 @@ DEVICE_CPU = 1
 #: reach into the extension directly.
 ArgBlock = _core.ArgBlock
 
-#: The by-value ABI shape -> ``_core`` descriptor-kind vocabulary
-#: (:data:`raptor.wings.base.exchange.MIRROR_OF` on the left).
+#: The by-value ABI shape the lowering answer states for a slot -> ``_core`` descriptor-kind vocabulary.
 _KIND_OF_MIRROR = {"GRefMirror": "gref", "ScalarHandle": "handle"}
 
 _INT_DTYPES = ("i32", "i64", "int32", "uint32")
 
 
-def kind_for(role: str, ttype: TensorType, *, scalar_type: str = "float64") -> str:
-    """The ``_core`` descriptor kind ONE slot binds as.
+def kind_for(role: str, ttype: _ir.TensorType, mirror: str, *, scalar_type: str = "float64") -> str:
+    """The ``_core`` descriptor kind ONE slot binds as, given the ``mirror`` shape the lowering
+    answer states for it (``"GRefMirror"``, ``"ScalarHandle"`` or ``"value"``).
 
     The mirror-shaped roles by their POD, the by-value ones by the
     element spelling the entry declares them with — the index width for
     ``nsamples``, the emitter's ``Int`` for an integer uniform, and the
     kernel's compiled ``Real`` otherwise."""
-    shape = mirror_of(role, ttype)
-    if shape == "value":
+    if mirror == "value":
         if role == "nsamples":
             return "nsamples"
         if ttype.dtype in _INT_DTYPES:
             return "int"
         return {"float32": "f32", "banded": "banded"}.get(scalar_type, "f64")
-    kind = _KIND_OF_MIRROR[shape]
+    kind = _KIND_OF_MIRROR[mirror]
     if kind == "handle" and ttype.dtype in _INT_DTYPES:
         return "int_handle"
     return kind
-
-
-def descriptor_for_walk(walk, *, scalar_type: str = "float64") -> list:
-    """The per-slot kind list for a traced kernel, in ``arg_spec`` order."""
-    return [kind_for(role, walk.slot_types[(role, name)], scalar_type=scalar_type)
-            for role, name in walk.arg_spec]
 
 
 def descriptor_for_sidecar(sidecar: dict) -> list:
     """The per-slot kind list for a DEPLOYED artifact, from its sidecar
     alone.
 
-    A consumer holds a directory, not a :class:`~raptor.ir.walk.Walk`, so
+    A consumer holds a directory, not a canonical walk, so
     types are reconstructed from the sidecar's own blocks: ``mutables``
     (resolves a ``mutable`` role's shape — without it a
     ``Mutable[Vector[3]]`` packs as a 32-byte handle where the kernel
@@ -135,23 +124,25 @@ def descriptor_for_sidecar(sidecar: dict) -> list:
     scalar_type = sidecar.get("scalar_type", "float64")
     mutables = {m["name"]: m for m in sidecar.get("mutables", ())}
     wire = sidecar.get("arg_dtypes", {})
+    mirrors = sidecar.get("arg_mirrors", {})
     params = {p["name"]: p for p in sidecar.get("params", ())}
     out = []
     for role, name in (tuple(pair) for pair in sidecar["arg_spec"]):
         if role in ("mutable", "out"):
             ttype = _mutable_ttype(name, mutables.get(name, {}))
         elif role == "uniform":
-            ttype = TensorType((), "i64" if params.get(name, {}).get("dtype") == "int"
+            ttype = _ir.TensorType((), "i64" if params.get(name, {}).get("dtype") == "int"
                                else "f64")
         elif role == "vec_in":
-            ttype = TensorType((int(_extent(sidecar.get("vec_widths", {}).get(name),
+            ttype = _ir.TensorType((int(_extent(sidecar.get("vec_widths", {}).get(name),
                                             "vec_widths", name)),), "f64")
         elif role == "mat_in":
             shape = _extent(sidecar.get("mat_shapes", {}).get(name), "mat_shapes", name)
-            ttype = TensorType(tuple(int(e) for e in shape), "f64")
+            ttype = _ir.TensorType(tuple(int(e) for e in shape), "f64")
         else:
-            ttype = TensorType((), _WIRE_TO_DTYPE.get(wire.get(name), "f64"))
-        out.append(kind_for(role, ttype, scalar_type=scalar_type))
+            ttype = _ir.TensorType((), _WIRE_TO_DTYPE.get(wire.get(name), "f64"))
+        mirror = _extent(mirrors.get(name), "arg_mirrors", name)
+        out.append(kind_for(role, ttype, mirror, scalar_type=scalar_type))
     return out
 
 
@@ -160,21 +151,21 @@ def _extent(value, block: str, name: str):
     ``block``; a sidecar that omits it cannot be bound."""
     if value is None:
         raise HawkError(
-            f"the sidecar declares no {block!r} entry for {name!r}, so its shape "
-            "cannot be read; rebuild the artifact")
+            f"the sidecar declares no {block!r} entry for {name!r}, so it "
+            "cannot be bound; rebuild the artifact")
     return value
 
 
-def _mutable_ttype(name: str, decl: dict) -> TensorType:
+def _mutable_ttype(name: str, decl: dict) -> _ir.TensorType:
     """The type of a ``mutables`` entry: ``dtype`` names the rank, ``width`` and
     ``shape`` the extents."""
     dtype = decl.get("dtype", "scalar")
     if dtype == "vector":
-        return TensorType((int(_extent(decl.get("width"), "mutables.width", name)),), "f64")
+        return _ir.TensorType((int(_extent(decl.get("width"), "mutables.width", name)),), "f64")
     if dtype == "matrix":
         shape = _extent(decl.get("shape"), "mutables.shape", name)
-        return TensorType(tuple(int(e) for e in shape), "f64")
-    return TensorType((), _MUTABLE_DTYPE[dtype])
+        return _ir.TensorType(tuple(int(e) for e in shape), "f64")
+    return _ir.TensorType((), _MUTABLE_DTYPE[dtype])
 
 
 #: The IR dtype an integer ``arg_dtypes`` wire label stands for.
@@ -182,12 +173,6 @@ _WIRE_TO_DTYPE = {"int64": "i64", "int32": "int32", "uint32": "uint32"}
 
 #: The IR dtype of each rank-0 ``mutables`` dtype.
 _MUTABLE_DTYPE = {"scalar": "f64", "int": "i64", "int32": "int32", "uint32": "uint32"}
-
-assert set(_KIND_OF_MIRROR) | {"value"} == set(MIRROR_OF.values()), (
-    "hawk.runtime's kind vocabulary must cover every by-value shape the map "
-    f"resolves to: {sorted(set(MIRROR_OF.values()))}"
-)
-
 
 class HostKernel:
     """One HAWK host artifact's entry, self-checked at load and bound once.
@@ -214,7 +199,7 @@ class HostKernel:
         self.entry = self.library.entry(entry_name)
         #: ``{target: entry}``: the fold of each owned companion
         #: (the writer's ``fold_entries``), run after the kernel.
-        self.folds = {target: self.library.entry(fold_entry_name(sidecar["kernel"], target)
+        self.folds = {target: self.library.entry(_cells.fold_entry_name(sidecar["kernel"], target)
                                                  + "_host")
                       for target in (sidecar.get("companions") or {}).values()}
         self.block = _core.ArgBlock(self.descriptor)
@@ -243,15 +228,14 @@ class HostKernel:
         ``<group>_mix`` plane per ``"auto"`` dispatch (its branch counts), and
         a ``jump_seed`` of ``0`` for an alternate-path ``jump=`` derivative."""
         from .diff.jump import SEED
-        from raptor.wings.base.cells import FINISHED_PLANE, FUSED_STEPS_PLANE
 
         extra = {}
         if SEED not in arrays and any(n == SEED for _, n in self.slot_of):
             extra[SEED] = 0
-        for name in (FUSED_STEPS_PLANE, FINISHED_PLANE):
+        for name in (_ir.FUSED_STEPS_PLANE, _ir.FINISHED_PLANE):
             if name in arrays or not any(n == name for _, n in self.slot_of):
                 continue
-            if name == FUSED_STEPS_PLANE:
+            if name == _ir.FUSED_STEPS_PLANE:
                 if self.one_step is None:
                     self.one_step = array.array("q", [1])
                 extra[name] = self.one_step
@@ -462,6 +446,18 @@ def _transposed_address(obj, keepalive: list) -> int:
     return int(export.view.buf)
 
 
+def _launch_threads(box: dict | None, n_samples: int) -> int:
+    """How many threads cover ``n_samples`` lanes under a sidecar ``launch.box``.
+
+    Without a box one thread takes one lane. A box of ``T`` threads per ``stride`` lanes launches
+    whole boxes: ``ceil(n / (T * stride))`` of them, each ``stride`` threads wide.
+    """
+    if not box:
+        return n_samples
+    span = box["T"] * box["stride"]
+    return -(-n_samples // span) * box["stride"]
+
+
 def _box(kind: str, value):
     if kind == "f64":
         return ctypes.c_double(float(value))
@@ -596,7 +592,7 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
                 cells, n_samples, arrays)
         kernel_artifact._bind_all(arrays, n_samples, layout)
         # a thread-box kernel's base and count count threads (sidecar launch.box)
-        count = (_simt_box.threads(sidecar.get("launch", {}).get("box"), n_samples)
+        count = (_launch_threads(sidecar.get("launch", {}).get("box"), n_samples)
                  if count is None else count)
         kernel_artifact._launch(base, count, n_samples)
         _fold_companions(kernel_artifact, arrays, owned)
@@ -732,7 +728,7 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
         bound.update({k: v for k, v in scratch_planes.items() if k in names})
         for cell in record["cells_in"]:
             column = np.asarray(values[cell]).reshape(-1)
-            for k, plane in enumerate(planes(cell, cells[cell]["columns"])):
+            for k, plane in enumerate(_ir.planes(cell, cells[cell]["columns"])):
                 bound[plane] = column[k:k + 1]
         out = {c: cells[c] for c in record["cells_out"]}
         scratch = None

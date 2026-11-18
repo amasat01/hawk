@@ -67,7 +67,7 @@ import pytest
 from conftest import sidecar_of
 from test_serial_oracle import band
 
-from raptor.ir.nodes import AccumWrite, At, WideWrite
+from hawk import _ir
 
 N = 96
 K = 3
@@ -82,14 +82,14 @@ _IDS = [c[0] for c in _CASES]
 def _forms_present(walk) -> set:
     """The access FORMS the walk actually carries, re-derived from its nodes.
 
-    Deliberately NOT ``raptor.ir.access.infer`` — asking the classifier under test
+    Deliberately NOT the library's access classifier — asking the classifier under test
     what to expect is how a soundness row ends up comparing a function to
     itself. This reads the node kinds defines the forms as."""
     forms = set()
-    for node in walk.order:
-        if isinstance(node, At):
+    for node in _ir.walk_order(walk):
+        if node.cls == "At":
             forms.add("cross_sample_read")
-        elif isinstance(node, (WideWrite, AccumWrite)) and node.index is not None:
+        elif node.cls in ("WideWrite", "AccumWrite") and len(node.operands) > 1:
             forms.add("cross_sample_write")
     return forms
 

@@ -116,7 +116,7 @@ def test_the_dfnx_shaped_product_of_two_conditions_is_refused():
     def body(x: Scalar, y: Mutable[Scalar]):
         y = m.select((x >= 0.0) * (x <= 3.0), x * x, -x)
 
-    _refused(body, r"op 'mul' takes numbers.*use & \| \^ ~.*m.select\(cond, x, 0.0\)")
+    _refused(body, r"op 'mul' takes numbers, not a bool condition")
 
 
 def test_a_sum_of_conditions_is_refused():

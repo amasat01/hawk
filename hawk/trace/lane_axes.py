@@ -13,11 +13,16 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
+from typing import Any
 
+from .. import _ir
 from .._errors import HawkError
-from raptor.ir import make as _make
-from raptor.ir.nodes import At, Leaf, RoleConst
-from .value import Value, index_node, sample_index, widened
+from .value import INDEX, Value, index_node, sample_index, widened
+
+
+def _stride_constant(stride: int, label: str) -> Any:
+    """The ``RoleConst`` of the lane stride the axis ``label`` declares, made in the traced body's context."""
+    return _ir.make_node("RoleConst", INDEX, context=current_context(), literal=stride, label=f"lane_{label}_stride")
 
 
 def lane_space(planes: dict) -> tuple:
@@ -82,7 +87,7 @@ class LaneAxes:
         return tuple(label for label, _ in self._axes)
 
     def _divisor(self, i: int) -> Value:
-        return Value(RoleConst(_strides(self._axes)[i], f"lane_{self._axes[i][0]}_stride"))
+        return Value(_stride_constant(_strides(self._axes)[i], self._axes[i][0]))
 
     def _quotient(self, i: int) -> Value:
         """``lane / stride_i`` (the lane itself for the last axis)."""
@@ -147,12 +152,35 @@ def _flat(name: str, axes: tuple, positional: tuple, named: dict):
                if set(named) - set(labels) else ""))
     flat = None
     for (label, _extent), stride in zip(axes, _strides(axes)):
-        term = _make("mul", (index_node(named[label]), RoleConst(stride, f"lane_{label}_stride")))
-        flat = term if flat is None else _make("add", (flat, term))
+        term = _ir.make("mul", (index_node(named[label]), _stride_constant(stride, label)))
+        flat = term if flat is None else _ir.make("add", (flat, term))
     return flat
 
 
 _trace = threading.local()
+
+
+@contextmanager
+def trace_context(context):
+    """While a body is traced, ``context`` is the context every node the tracer makes from nothing (a literal, a
+    leaf, a lane constant) is made in."""
+    before = getattr(_trace, "context", None)
+    _trace.context = context
+    try:
+        yield
+    finally:
+        _trace.context = before
+
+
+def current_context():
+    """The context of the body being traced; refuses outside a trace, where a node (``node.ctx``) or a kernel
+    (``kernel.context``) names it."""
+    context = getattr(_trace, "context", None)
+    if context is None:
+        raise HawkError(
+            "no kernel body is being traced here, so there is no ambient context: take the context "
+            "of a node (node.ctx) or of a kernel (kernel.context)")
+    return context
 
 
 @contextmanager
@@ -171,15 +199,17 @@ def read_at(value: Value, positional: tuple, named: dict) -> Value:
     lane index or by every Grid axis. Only a plane that existed before the launch
     can be read at another lane."""
     node = value.node
-    narrow = (node.kind == "cast" and isinstance(node.operands[0], Leaf)         # an Index plane, widened
-              and node.operands[0].ttype.dtype == "int32" and node.ttype.dtype == "i32")
+    narrow = (_ir.is_a(node, "op") and node.field_text("kind") == "cast"           # an Index plane, widened
+              and _ir.is_a(node.operands[0], "leaf")
+              and _ir.type_of(node.operands[0]).dtype == "int32" and _ir.type_of(node).dtype == "i32")
     if narrow:
         node = node.operands[0]
-    if not (isinstance(node, Leaf) and node.role in ("per_sample", "vec_in", "mat_in")
-            and node.kind != "prior_read"):
+    if not (_ir.is_a(node, "leaf") and node.field_text("role") in ("per_sample", "vec_in", "mat_in")
+            and node.field_text("kind") != "prior_read"):
         raise HawkError(
             "at() reads an input plane at another lane; a value computed in this "
             "launch has no other lane's value here — only a plane that existed before "
             "the launch can be read at another lane (stage it, or pass it as an input)")
-    read = At(node, _flat(node.name, _trace.axes, positional, named), node.ttype)
+    flat = _flat(node.field_text("name"), _trace.axes, positional, named)
+    read = _ir.make_node("At", _ir.type_of(node), [node, flat])
     return Value(widened(read) if narrow else read)
