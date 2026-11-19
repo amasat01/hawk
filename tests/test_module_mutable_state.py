@@ -61,7 +61,6 @@ BASELINE = {
     "ext/__init__.py": ("SINK_POLICIES", "_UNBUILT_SINKS"),
     "ext/primitive.py": ("_REGISTRY",),
     "options.py": ("LEGACY",),
-    "passes/contraction.py": ("_OUTPUT_KIND",),
     "runtime.py": ("_KIND_OF_MIRROR", "_MUTABLE_DTYPE", "_WIRE_TO_DTYPE"),
     "trace/astpass.py": ("_BANNED_EXPR", "_STORE_OPS"),
     "trace/decl.py": ("_FORM_ROLE", "_IN_ROLE"),

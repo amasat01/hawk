@@ -70,7 +70,7 @@ def index_node(x: Any) -> Any:
     separate from :func:`node_of`, which types a bare ``int`` as ``f64``. An
     index is an address: as ``f64`` it would cast to ``std::size_t`` and
     promote any stride multiplied with it, so it is typed ``i32`` instead
-    (:mod:`hawk.passes.contraction`)."""
+    (the library's contraction routing reads the stride)."""
     if isinstance(x, bool):
         raise HawkError(f"{x!r} is not an index — a bool is a mask, not an address")
     if isinstance(x, int):
@@ -83,7 +83,7 @@ def _operands(args: tuple) -> tuple:
     bare ``int`` is ``f64`` alone, but when every traced operand is integral
     it types as an integer instead — otherwise an index like
     ``entry * cols + row`` would promote to ``Real`` and lose its stride
-    derivation (:mod:`hawk.passes.contraction`)."""
+    derivation (the library's contraction routing)."""
     traced = [a for a in args if isinstance(a, (Value, _ir.Node))]
     dtypes = {_ir.type_of(a.node if isinstance(a, Value) else a).dtype for a in traced}
     plane = next((d for d in _ir.INT_PLANE_DTYPES if d in dtypes), None)
@@ -181,7 +181,7 @@ class Value:
         # lever 3: a REAL value divided by a trace-time constant becomes a
         # multiply by the reciprocal (an IEEE division costs a slow-path
         # call; the reciprocal folds into one FFMA). Integral values keep
-        # the division — the contraction recognizer reads it as a stride.
+        # the division — the library's contraction routing reads it as a stride.
         if (isinstance(o, (int, float)) and not isinstance(o, bool)
                 and self.ttype.dtype not in ("i32", "i64", "bool", *_ir.INT_PLANE_DTYPES)
                 and o != 0 and math.isfinite(o) and math.isfinite(1.0 / o)):

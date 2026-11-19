@@ -1,40 +1,23 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Recognising a sum of products as a CONTRACTION, on HAWK's own IR.
+"""The dense contraction a kernel is, as the library states it in ``describe(...)[kernel]["contractions"]``.
 
-The record :func:`hawk.passes.contraction.recognize` produces is the ENTIRE seam between HAWK and
-``eagle.gemm.plan.lower_dense_gemm``: HAWK imports no eagle and
-eagle imports no producer, so nothing else crosses. The rows here therefore split
-in two. Most of them mirror the previous code generator's contraction tests on the four shapes
-that matter — the dense spline ``contract``, the MoE dense block, softmax's
-recognised-but-not-lowerable sum, and the index structures that refuse — and one
-of them, :func:`test_the_record_carries_exactly_the_fields_eagles_lowering_reads`,
-pins the record's FIELD SET, because a field renamed on this side is a
-``AttributeError`` in eagle's lowering that nothing on this side would catch.
-
-WHAT IT MATCHES. HAWK matches a ``ForLoopStmt`` with one additive carry, the
-same way the previous code generator did: a bounded ``for`` LOWERS to
-a ``loop`` node rather than being unrolled by trace-time execution,
-so the reduce variable is a real symbolic index and each operand's stride is the
-COEFFICIENT of that index, rather than a difference between
-unrolled terms. This includes the rule that matters most: a stride built from a bare literal is
-ANONYMOUS and not derivable from the declaration, even when its value happens to
-be right (:func:`test_a_hand_folded_stride_is_not_derivable_from_the_declaration`
-is that rule, and it is the reason ``Table["row":r, "col":c]`` exists at all).
+The library decides which sums of products run as a matrix product and which run as the kernel's own loop; ``describe`` (and the
+sidecar a build writes) carries its answer: the ``unit``, the ``route`` and the ``products`` with their shapes. A kernel that is no
+contraction the library routes states no such member. The kernels here are the shapes that matter: the dense spline contraction,
+the same shape under other axis names, a launch-counted staged buffer, the operand halves of a split lane, and the index
+structures and bodies that state none.
 """
 
 from __future__ import annotations
-
-import dataclasses
 
 import numpy as np
 import pytest
 
 import hawk
 import hawk.math as m
-from hawk.diff import vjp
-from hawk.passes.contraction import ContractionOperand, RecognizedContraction, recognize
+from hawk.artifact import describe
 
 ROWS, N_OUT, BATCH = 4, 3, 5
 COLS = 6
@@ -172,29 +155,6 @@ def max_fold(t: hawk.Table["row":ROWS], y: hawk.Mutable[hawk.Scalar]):
 # --------------------------------------------------------------------------- #
 # The dense, lowerable case.
 # --------------------------------------------------------------------------- #
-@pytest.fixture(scope="module")
-def spline():
-    return recognize(spline_contract, vjp=vjp(spline_contract))
-
-
-def test_the_dense_sum_of_products_is_recognized(spline):
-    """Needs ``_const_factor``'s ``RoleConst`` arm, or a stride a declaration
-    minted is not recognized as a compile-time factor and every operand's
-    walk stops being affine::
-
-        assert spline.dense and not spline.refusals
-        AssertionError: assert (False)
-    """
-    assert spline is not None
-    assert spline.dense and not spline.refusals
-    assert spline.operand_class == "gemm"
-    assert spline.term_form == "product_of_reads"
-    assert (spline.reduce_start, spline.reduce_step, spline.reduce_extent) == (0, 1, ROWS)
-    assert spline.carry == "y"
-    assert spline.outputs == (("y", "scalar"),)
-    assert spline.operand_names == ("w_fold", "feat")
-
-
 def _dot_staged(count):
     """One lane per sample (the lane IS the sample), a dot over the plane axis of a staged buffer of ``count`` samples."""
     @hawk.kernel
@@ -218,17 +178,6 @@ def spline_contract_n(w_fold: hawk.Table["row":ROWS, "neuron":N_OUT],
     y = total
 
 
-def test_a_staged_buffer_counted_by_the_launch_is_recognized_with_a_run_time_stride(spline):
-    n = recognize(spline_contract_n, vjp=vjp(spline_contract_n))
-    feat = n.operands[1]
-    assert n.dense and feat.role == "staged" and feat.dims == (("plane", ROWS, "n_samples"), ("sample", None, 1))
-    assert (feat.reduce_stride, feat.reduce_dim) == ("n_samples", "plane")
-    assert n.operands[0] == spline.operands[0] and n.staged_fanin == spline.staged_fanin and n.fanin_source == spline.fanin_source
-    assert n.adjoint_accumulates == spline.adjoint_accumulates
-
-
-
-
 @pytest.mark.parametrize("n", [7, 64])
 def test_the_launch_counted_form_matches_the_int_form_bitwise(n, tmp_path, cache_dir):
     from conftest import sidecar_of
@@ -247,162 +196,15 @@ def test_the_launch_counted_form_matches_the_int_form_bitwise(n, tmp_path, cache
     np.testing.assert_allclose(got["int"], np.einsum("r,rs->s", w, feat.reshape(ROWS, n)), rtol=1e-13)
 
 
-def test_each_operand_walks_a_DECLARED_axis(spline):
-    """The stride is not merely a number that fits: it must BE the axis's own
-    declared constant, or the lowering has no way to say which axis to contract
-    (``eagle.gemm.plan._resolve_operand`` refuses by name when ``reduce_dim`` is
-    ``None``)."""
-    w_fold, feat = spline.operands
-    assert w_fold.role == "named" and feat.role == "staged"
-    assert w_fold.dims == (("row", ROWS, N_OUT), ("neuron", N_OUT, 1))
-    assert feat.dims == (("plane", ROWS, BATCH), ("sample", BATCH, 1))
-    assert (w_fold.reduce_stride, w_fold.reduce_dim) == (N_OUT, "row")
-    assert (feat.reduce_stride, feat.reduce_dim) == (BATCH, "plane")
-    assert w_fold.stride_labels == ("w_fold_row_stride",)
-    assert feat.stride_labels == ("feat_plane_stride",)
-    assert w_fold.dense and feat.dense
-    # every gate `_check_lowerable` applies, checked here so the record's
-    # lowerability is a property of the record and not of eagle being present.
-    assert spline.reduce_extent == w_fold.dims[0][1] == feat.dims[0][1]
-
-
-def test_the_staged_fan_in_is_derived_from_the_major_half_of_the_split(spline):
-    """The staged plane is addressed by the MAJOR half of ``split_index(N_OUT)``,
-    so ``N_OUT`` lanes share each slot and the reverse pass accumulates exactly
-    that many contributions into it. ``eagle.gemm.plan.verify_staged_fanin``
-    checks this against the adjoint GEMM's contracted extent — the OTHER
-    operand's free extent, which is ``w_fold``'s ``neuron`` axis, ``N_OUT``."""
-    assert spline.staged_fanin == (("feat", N_OUT),)
-    assert spline.fanin_source == "primal_walk"
-    free_extent_of_the_other_operand = spline.operands[0].dims[1][1]
-    assert free_extent_of_the_other_operand == N_OUT
-
-
-def test_the_adjoint_record_comes_from_the_vjp_walk(spline):
-    """``adjoint_accumulates`` is what tells a consumer the reverse direction
-    lands in SHARED slots. Empty is not the same as absent, which is why the
-    record carries it only when a derived IR was supplied."""
-    names = {name for name, _atomic in spline.adjoint_accumulates}
-    assert names == {"bar_w_fold", "bar_feat"}, spline.adjoint_accumulates
-    assert all(atomic is False for _n, atomic in spline.adjoint_accumulates), (
-        "hawk.ext names an `atomic` sink policy but does not build it, so no "
-        "derived kernel of HAWK's accumulates atomically")
-    without = recognize(spline_contract)
-    assert without.adjoint_accumulates == ()
-    assert without.dense and without.staged_fanin == (("feat", N_OUT),)
-
-
-def test_a_second_basis_family_recognizes_identically():
-    """The point, and the MoE exhibit's: a different family under different
-    axis names is the SAME record shape, so one route serves both."""
-    moe = recognize(moe_contract)
-    assert moe.dense and moe.term_form == "product_of_reads"
-    assert moe.operands[0].reduce_dim == "hidden"
-    assert moe.operands[1].reduce_dim == "plane"
-    assert moe.reduce_extent == ROWS
-
-
 # --------------------------------------------------------------------------- #
 # Recognised, NOT lowerable.
 # --------------------------------------------------------------------------- #
-def test_a_transformed_term_is_recognized_but_not_lowerable():
-    """``sum(x[s,c])`` and ``sum(exp(x[s,c] - shift))`` walk the same indices at
-    the same stride and are equally DENSE; only the first is a row sum. Without
-    ``term_form`` their records would compare equal and a lowering would compute
-    the first one's answer for both."""
-    record = recognize(row_sum_exp)
-    assert record is not None
-    assert record.dense and not record.refusals
-    assert record.term_form == "transformed"
-    shift = next(op for op in record.operands if op.name == "peak")
-    assert shift.reduce_stride == 0, (
-        "the shift is read once per term at the SAME address: it is a "
-        "coefficient of the contraction, not a second thing being summed")
-    walked = next(op for op in record.operands if op.name == "scores")
-    assert (walked.reduce_stride, walked.reduce_dim) == (1, "col")
-
-
 # --------------------------------------------------------------------------- #
 # The index structures that refuse.
 # --------------------------------------------------------------------------- #
-def test_a_data_dependent_base_is_recognized_and_refused_by_name():
-    record = recognize(gathered)
-    assert record is not None and not record.dense
-    assert any("chosen at runtime" in r for r in record.refusals), record.refusals
-
-
-def test_a_hand_folded_stride_is_not_derivable_from_the_declaration():
-    """Needs the base case of ``_step`` to distinguish the two: if it
-    returns ``anonymous=False`` unconditionally, a stride folded into a
-    literal by Python reads exactly like a declared one::
-
-        assert record is not None and not record.dense
-        AssertionError: assert (RecognizedContraction(carry='y', ...,
-        term_form='bare_read', outputs=(('y', 'scalar')), dense=True,
-        refusals=, ...) is not None and not True)
-
-    The value is right in both spellings; only one of them is a declaration, and
-    reading the other would be reading a coincidence."""
-    record = recognize(hand_folded)
-    assert record is not None and not record.dense
-    assert any("anonymous integer literal" in r for r in record.refusals), (
-        record.refusals)
-    assert record.operands[0].reduce_stride == COLS
-    assert record.operands[0].reduce_dim is None
-
-
-def test_two_axes_advancing_together_name_no_single_reduce_axis():
-    record = recognize(diagonal)
-    assert record is not None
-    assert record.operands[0].reduce_dim is None, (
-        "the walk is affine but no SINGLE declared axis is the contracted one; "
-        "attaching a label the arithmetic does not support is what the "
-        "stride_labels check is there to prevent")
-    assert len(record.operands[0].stride_labels) == 2
-
-
-@pytest.mark.parametrize("kernel,why", [
-    (one_term, "one term is not a reduce"),
-    (three_planes, "three distinct planes is outside the family"),
-    (offset_sum, "a non-zero constant addend is a bias, not a term"),
-    (max_fold, "a max fold is not an additive chain"),
-], ids=["one_term", "three_planes", "offset_sum", "max_fold"])
-def test_a_body_outside_the_family_is_not_recognized(kernel, why):
-    assert recognize(kernel) is None, why
-
-
-def test_a_derivative_ir_and_a_non_kernel_are_not_recognized():
-    """``recognize`` reads a PRIMAL; handed a reverse IR (many sinks, gradients
-    and scatters) or something that is not a kernel at all, it says ``None``
-    rather than describing whatever it found."""
-    assert recognize(vjp(spline_contract)) is None
-    assert recognize(object()) is None
-
-
 # --------------------------------------------------------------------------- #
 # The record's shape — the whole seam.
 # --------------------------------------------------------------------------- #
-def test_the_record_carries_exactly_the_fields_eagles_lowering_reads(spline):
-    """A field renamed here is an ``AttributeError`` inside eagle's lowering,
-    which nothing on this side of the line would otherwise catch (HAWK
-    cannot import eagle to compare)."""
-    assert tuple(f.name for f in dataclasses.fields(RecognizedContraction))\
-        == _RECORD_FIELDS
-    assert tuple(f.name for f in dataclasses.fields(ContractionOperand))\
-        == _OPERAND_FIELDS
-    for field in _RECORD_FIELDS:
-        assert hasattr(spline, field), field
-    for operand in spline.operands:
-        for field in _OPERAND_FIELDS:
-            assert hasattr(operand, field), field
-    assert spline.operand_count == 2
-    assert isinstance(spline.reduce_extent, int)
-    assert all(isinstance(part, (str, int)) for dim in spline.operands[0].dims
-               for part in dim)
-
-
-
-
 # --------------------------------------------------------------------------- #
 # A fold committed as ONE live component of a vector output.
 # --------------------------------------------------------------------------- #
@@ -423,19 +225,6 @@ def vec_committed_twice(t: hawk.Table["row":ROWS], y: hawk.Mutable[hawk.Vector[2
     for r in range(ROWS):
         acc = acc + t.at(row=r)
     y = m.vec(acc, acc)
-
-
-def test_a_fold_committed_through_a_vector_constructor_is_recognized():
-    """A prior gap: ``_fold`` required the
-    sink's value to BE the carried slot, so ``y = vec(total, 0.0)`` went
-    unrecognised (``None``) and the consumer's routing record had nothing to
-    read for a declaration that IS one additive fold."""
-    rec = recognize(vec_committed)
-    assert rec is not None
-    assert rec.carry == "y" and rec.outputs == (("y", "vector"),)
-    assert (rec.reduce_start, rec.reduce_step, rec.reduce_extent) == (0, 1, ROWS)
-    assert rec.operand_class == "gemv"
-    assert recognize(vec_committed_twice) is None
 
 
 def test_the_launch_counted_kernel_is_one_build_for_every_size():
@@ -489,13 +278,52 @@ def major_for_both(
     y = total
 
 
-def test_lane_major_names_the_operand_read_through_the_major_half_of_the_lane():
-    assert recognize(major_is_second).lane_major == "b"
+# --------------------------------------------------------------------------- #
+# What the library states.
+# --------------------------------------------------------------------------- #
+def _stated(kernel):
+    """The ``contractions`` member of the description of ``kernel`` for the host, or None when it states none."""
+    return describe([kernel], targets=("host",))[kernel.name].get("contractions")
 
 
-def test_the_mirrored_kernel_names_the_other_operand():
-    assert recognize(major_is_first).lane_major == "a"
+def _shape(call):
+    """``(a_rows, a_cols, b_rows, b_cols, c_rows, c_cols)`` of one product call."""
+    return tuple(call[k] for k in ("a_rows", "a_cols", "b_rows", "b_cols", "c_rows", "c_cols"))
 
 
-def test_lane_major_is_none_when_no_operand_is_read_through_the_minor_half():
-    assert recognize(major_for_both).lane_major is None
+def test_the_dense_sum_of_products_states_a_matrix_product_route_and_its_shapes():
+    [found] = _stated(spline_contract)
+    assert (found["unit"], found["route"]) == ("spline_contract", "gemm")
+    [call] = found["products"]["calls"]
+    assert _shape(call) == (ROWS, BATCH, ROWS, N_OUT, BATCH, N_OUT)     # the reduce extent is the shared row count
+
+
+def test_a_staged_buffer_counted_by_the_launch_states_run_time_extents_and_the_lane_fan_in():
+    [found] = _stated(spline_contract_n)
+    [call] = found["products"]["calls"]
+    assert found["route"] == "gemm"
+    assert _shape(call) == (ROWS, -1, ROWS, N_OUT, -1, N_OUT)           # -1: counted by the launch
+    assert found["products"]["lane_fanin"] == N_OUT
+
+
+def test_a_second_basis_family_states_the_same_route_and_products():
+    [moe] = _stated(moe_contract)
+    [spline] = _stated(spline_contract)
+    assert moe["route"] == spline["route"] and moe["products"] == spline["products"]
+
+
+@pytest.mark.parametrize("kernel", [
+    row_sum_exp, gathered, hand_folded, diagonal, one_term, three_planes, offset_sum, max_fold, vec_committed_twice,
+], ids=lambda k: k.name)
+def test_a_body_that_is_no_matrix_product_states_no_contraction(kernel):
+    assert _stated(kernel) is None
+
+
+def test_the_operand_slots_follow_the_half_of_the_lane_each_operand_is_read_through():
+    [second] = _stated(major_is_second)
+    [first] = _stated(major_is_first)
+    second_call, = second["products"]["calls"]
+    first_call, = first["products"]["calls"]
+    assert (second_call["a_slot"], second_call["b_slot"]) == (2, 1)
+    assert (first_call["a_slot"], first_call["b_slot"]) == (1, 2)
+    assert _stated(major_for_both) is None      # no operand is the minor one: no product

@@ -1,23 +1,21 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The contraction recognizer on the ATMOSPHERIC shapes: component reads of a
-wide value (``bf[j]``) and several sinks folding over one loop.
+"""Sums over the components of a wide value (``bf[j]``) and several sinks folding over one loop: the shapes that state no
+``contractions`` member.
 
-One record shape serves both consumers (a team fold and a dense-GEMM route):
-a component-read operand is a plane of ONE declared axis, ``component``, of
-the value's width, role ``wide`` (a ``Vector`` input) or ``computed`` (a value
-built in the kernel, named ``computed#k`` in first-read order). Several sinks
-put every output in ``outputs`` (first one is ``carry``), and ``operands``
-unions what all the folds read. Recognition reads only: nothing here changes
-a rendered kernel.
+The library decides which sums of products run as a matrix product. A sum that reads components of a vector, a masked sum, or
+several outputs sharing an operand is not one it routes as a matrix product today, so its description carries no member; the
+kernels that must state none are the ones below.
 """
 
 from __future__ import annotations
 
+import pytest
+
 import hawk
 import hawk.math as m
-from hawk.passes.contraction import recognize
+from hawk.artifact import describe
 
 NF, NC, NM = 512, 24, 384
 
@@ -112,68 +110,7 @@ def three_operands(bf: hawk.Vector[NF], w: hawk.Table["row":2, "col":NF],
     y = acc
 
 
-def _wide(rec):
-    return next(op for op in rec.operands if op.role in ("wide", "computed"))
-
-
-def test_a_matvec_over_the_components_of_a_vector_input():
-    rec = recognize(matvec_input)
-    assert rec is not None and rec.dense and not rec.refusals
-    assert (rec.reduce_start, rec.reduce_step, rec.reduce_extent) == (0, 1, NF)
-    assert rec.operand_names == ("w", "bf")
-    assert rec.operand_class == "gemm" and rec.term_form == "product_of_reads"
-    assert rec.outputs == (("y", "scalar"),)
-    w, bf = rec.operands
-    assert (w.reduce_stride, w.reduce_dim) == (1, "col")
-    assert (bf.role, bf.dims, bf.bound) == ("wide", (("component", NF, 1),), NF)
-    assert (bf.reduce_stride, bf.reduce_dim, bf.dense) == (1, "component", True)
-
-
-def test_the_same_matvec_over_a_computed_value():
-    rec = recognize(matvec_computed)
-    assert rec is not None and rec.dense and not rec.refusals
-    assert rec.operand_names == ("w", "computed#0")
-    assert rec.term_form == "product_of_reads"
-    value = _wide(rec)
-    assert (value.role, value.dims) == ("computed", (("component", NF, 1),))
-    assert (value.reduce_stride, value.reduce_dim) == (1, "component")
-
-
-def test_a_masked_384_term_sum():
-    rec = recognize(masked_sum)
-    assert rec is not None and rec.dense and not rec.refusals
-    assert rec.reduce_extent == NM
-    assert rec.operand_names == ("bf", "w")
-    # the select makes each term a transformed one: not a plain product
-    assert rec.term_form == "transformed"
-    bf = _wide(rec)
-    assert bf.dims == (("component", NM, 1),) and bf.reads == 2 * NM
-
-
-def test_two_sinks_sharing_an_operand_are_one_contraction():
-    rec = recognize(two_sinks)
-    assert rec is not None and rec.dense and not rec.refusals
-    assert rec.outputs == (("u", "scalar"), ("v", "scalar"))
-    assert rec.carry == "u"
-    assert rec.operand_names == ("w", "bf")
-    assert rec.term_form == "product_of_reads"
-    assert (rec.reduce_start, rec.reduce_step, rec.reduce_extent) == (0, 1, NF)
-    # the shared operand is read by both folds, every iteration
-    assert _wide(rec).reads == 2 * NF
-
-
-def test_a_literal_component_stride_is_not_derivable():
-    rec = recognize(strided_by_literal)
-    assert rec is not None and not rec.dense
-    bf = _wide(rec)
-    assert bf.reduce_stride == 2 and bf.reduce_dim is None
-    assert any("anonymous integer literal" in r for r in bf.refusals)
-
-
-def test_shapes_outside_the_family_stay_unrecognised():
-    # two loops: two reduce headers, so no single contraction
-    assert recognize(two_loops) is None
-    # a sink that is not a fold: the set is not all contraction
-    assert recognize(fold_and_plain) is None
-    # three operands (w, g, bf): outside the one-or-two-operand family
-    assert recognize(three_operands) is None
+@pytest.mark.parametrize("kernel", [strided_by_literal, two_loops, fold_and_plain, three_operands], ids=lambda k: k.name)
+def test_a_shape_outside_the_family_states_no_contraction(kernel):
+    # a stride that is a bare literal, two loops, a sink that is no fold, three operands: no single dense contraction
+    assert "contractions" not in describe([kernel], targets=("host",))[kernel.name]

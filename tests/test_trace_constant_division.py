@@ -6,8 +6,8 @@ multiply by the reciprocal. Every knot-span division in a spline evaluator is
 one, and each compiles to an IEEE division check plus a call into the slow
 path. The fold moves
 a result by at most one ulp, inside the twin bands. It is REAL-only: an index
-divided by an integer stays a division, which the contraction recognizer reads
-as a stride; a constant divided BY a value, and a value divided by a value, are
+divided by an integer stays a division, which the library's contraction routing
+reads as a stride; a constant divided BY a value, and a value divided by a value, are
 not folds at all."""
 import pytest
 
