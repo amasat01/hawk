@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import uuid
@@ -374,9 +375,13 @@ def _build_one(target: str, texts: dict, unit: dict, *, machines, options, defin
     request = {"v": 1, "name": unit["meta"]["name"], "target": TARGETS[target].target, "text": texts[target]["text"], "meta": unit["meta"],
                "machine": machines[target], "options": _options_mod.of_target(options, target),
                # the defines the user gave, then the ones the library states its text for this target needs
-               "defines": [*defines, *unit.get("defines", {}).get(TARGETS[target].target, [])],
+               "defines": [*defines, *unit.get("defines", {}).get(target, [])],
                "opt_level": opt_level, "block": block}
-    return ospreys.serving(target).build(kind.apply(request), root)
+    answer = ospreys.serving(target).build(kind.apply(request), root)
+    if not answer["hit"]:  # the OSPREY states whether the store answered; only a build that ran a tool is announced
+        logging.getLogger("hawk").info(
+            "building %s (%s) in %s — delete the directory to rebuild", request["name"], target, root)
+    return answer
 
 
 def _built(answer: dict) -> tuple:

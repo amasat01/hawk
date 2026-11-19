@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """A team-form factorisation's operands reach its scratch through a copy stage of their own: a block per lane whose
-threads copy the lane's slice together, not one thread per lane walking it. The copy is exact; a stage that holds
-anything besides operand copies keeps the per-lane launch."""
+threads copy the lane's slice together, not one thread per lane walking it. The copy is exact, the solve through it has
+NumPy's values, and the sidecar a build would write (``describe``) states the copy stage before the team stage."""
 
 from __future__ import annotations
 
@@ -14,9 +14,11 @@ from conftest import sidecar_of
 import hawk
 import hawk.math as m
 from hawk import Int32, Matrix, Mutable, Vector
-from hawk.artifact import build_bundle
+from hawk.artifact import build_bundle, describe
 
 N, LANES = 40, 5
+#: The shipped number of copy threads per block, in the ``lanes`` facts of both libraries.
+COPY_THREADS = 256
 
 
 @hawk.kernel
@@ -35,8 +37,6 @@ def _case():
 def bundle(tmp_path_factory, cache_dir):
     return build_bundle([solve], tmp_path_factory.mktemp("copy"), targets=("cuda", "host"), cache_dir=cache_dir,
                         host_profile="native")
-
-
 
 
 def test_host_solves_through_the_copy_stage(bundle):
@@ -62,3 +62,15 @@ def test_device_copy_is_exact(bundle):
     name = next(k for k in scratch if k.endswith("_a"))
     assert np.array_equal(cp.asnumpy(scratch[name]).reshape(LANES, N * N), a.reshape(LANES, N * N))
     assert np.array_equal(cp.asnumpy(scratch[next(k for k in scratch if k.endswith("_x0"))]).reshape(LANES, N), b)
+
+
+@pytest.mark.parametrize("target", ["host", "cuda"])
+def test_the_first_stage_of_a_team_solve_is_a_block_per_lane_copy_and_the_next_is_a_team_stage(
+    target,
+):
+    """The copy stage has ``copy_threads`` threads and no grid of its own; the stage after it is a team stage."""
+    stages = describe([solve], targets=(target,))["solve"]["stages"]
+    assert (
+        stages[0]["team"]["threads"] == COPY_THREADS and "grid" not in stages[0]["team"]
+    )
+    assert "team" in stages[1]
