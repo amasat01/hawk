@@ -5,7 +5,7 @@
 //! and a builder that was killed leaves nothing a reader trusts. The first asker of a missing key takes the slot's lock file
 //! (`flock`, held by the open file, so threads and processes exclude each other alike and a dead holder frees it); the others
 //! wait on the lock and then find the record.
-use crate::refusal::{Done, Refusal};
+use crate::refusal::{Done, Kind, Refusal};
 use crate::wire;
 use rcore::json::J;
 use std::fs::{self, File};
@@ -43,7 +43,8 @@ pub fn reset_stats() {
     }
 }
 
-/// What a builder hands over: the files it wrote in its scratch folder (by name) and a record of the build.
+/// What a builder hands over: the files it wrote in its scratch folder (by name) and a record of the build. By the builders'
+/// shared convention the first file is the unit's output and a kept source, when there is one, is the second.
 #[derive(Debug)]
 pub struct Built {
     /// File names inside the scratch folder.
@@ -70,6 +71,29 @@ impl Entry {
     #[must_use]
     pub fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
+    }
+
+    /// The path of the unit's output as the slot records it. A hit may hold the file of a unit built under another name (the key does
+    /// not cover the name), so a consumer takes the path from here and never composes it from the name it asked with.
+    ///
+    /// # Errors
+    /// Refuses when the slot records no file.
+    pub fn output(&self) -> Done<PathBuf> {
+        self.files
+            .first()
+            .map(|name| self.path(name))
+            .ok_or_else(|| {
+                Refusal::new(
+                    Kind::ToolFailed,
+                    format!("the slot {} records no output file", self.dir.display()),
+                )
+            })
+    }
+
+    /// The path of the kept source as the slot records it, when the build kept one.
+    #[must_use]
+    pub fn source(&self) -> Option<PathBuf> {
+        self.files.get(1).map(|name| self.path(name))
     }
 }
 

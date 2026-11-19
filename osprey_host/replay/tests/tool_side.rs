@@ -227,10 +227,12 @@ fn a_device_unit_is_built_through_the_door_with_the_found_compiler_and_a_second_
         &format!(
             "#!/bin/sh\ncase \"$1\" in --version) echo 'Cuda compilation tools, release 12.6, V12.6.77'; exit 0;; \
              --list-gpu-arch) printf 'compute_61\\ncompute_75\\n'; exit 0;; esac\necho run >> {runs}\n\
-             out=\"\"; prev=\"\"; for a in \"$@\"; do [ \"$prev\" = \"-o\" ] && out=\"$a\"; prev=\"$a\"; done\n\
+             out=\"\"; src=\"\"; prev=\"\"; for a in \"$@\"; do [ \"$prev\" = \"-o\" ] && out=\"$a\"; \
+             case \"$a\" in *.cu) src=\"$a\";; esac; prev=\"$a\"; done\n\
+             frame=8; grep -q HUGE_FRAME \"$src\" && frame=600000\n\
              printf '\\177ELFimage' > \"$out\"\n\
              echo \"ptxas info    : Compiling entry function 'k' for 'sm_61'\" >&2\n\
-             echo '    8 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads' >&2\n\
+             echo \"    $frame bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\" >&2\n\
              echo 'ptxas info    : Used 32 registers, 360 bytes cmem[0]' >&2\n",
             runs = runs.display()
         ),
@@ -259,6 +261,11 @@ fn a_device_unit_is_built_through_the_door_with_the_found_compiler_and_a_second_
     assert!(std::fs::read(image).unwrap().starts_with(b"\x7fELF"));
     let figures = answer.get("figures").unwrap().get("k").unwrap();
     assert_eq!(figures.get("regs").map(J::int), Some(32));
+    // the unit states the local memory one thread holds, how it was measured and the card's limit
+    let launch = answer.get("figures").unwrap().get("launch").unwrap();
+    assert_eq!(launch.get("local_bytes").map(J::int), Some(8));
+    assert_eq!(launch.get("local_source").and_then(J::str), Some("ptxas"));
+    assert_eq!(launch.get("local_limit").map(J::int), Some(524_288));
     let embed = answer.get("embed").unwrap();
     assert_eq!(embed.get("symbol").and_then(J::str), Some("k__image"));
     assert!(answer
@@ -272,6 +279,19 @@ fn a_device_unit_is_built_through_the_door_with_the_found_compiler_and_a_second_
         json::parse(&tool::build(&osprey_cuda_lib::Cuda, &request, &root).unwrap()).unwrap();
     assert!(matches!(again.get("hit"), Some(J::Bool(true))));
     assert_eq!(std::fs::read_to_string(&runs).unwrap().lines().count(), 1);
+    // a unit whose frame is past the card's limit is refused by name, with the number, the limit and the way out
+    let huge = request.replace(
+        "__global__ void k() {}",
+        "__global__ void k() {} // HUGE_FRAME",
+    );
+    let why = tool::build(&osprey_cuda_lib::Cuda, &huge, &root).unwrap_err();
+    assert!(
+        why.message.starts_with(
+            "kernel 'k': 600,000 bytes of local memory per thread (ptxas), past the device limit of 524,288; the launch would fail."
+        ) && why.message.ends_with("or use a smaller n"),
+        "{}",
+        why.message
+    );
     // a request that names the other format is refused by name
     let other = request.replace(r#""defines""#, r#""image_format": "Ptx", "defines""#);
     let why = tool::build(&osprey_cuda_lib::Cuda, &other, &root).unwrap_err();

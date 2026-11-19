@@ -5,6 +5,7 @@
 use crate::backend::{target_name, unserved, Backend};
 use crate::device_build;
 use crate::facts::{self, CardSet, Failed};
+use crate::local_memory;
 use aether_writers::contract::{Contract, Json};
 use aether_writers::refuse::{bad, Refusal};
 use std::path::Path;
@@ -53,6 +54,8 @@ pub fn machine<B: Backend>(backend: &B, ask: &str) -> Result<String, toolkit::Re
         }
     }
     let toolkit = backend.toolkit()?;
+    let from_env = text(&ask, "opt_level").unwrap_or("").is_empty()
+        && toolkit.ask_from_env("opt_level").is_some();
     let (level, options) = effective_ask(
         text(&ask, "opt_level").unwrap_or(""),
         ask.get("options").cloned().unwrap_or(Json::Obj(vec![])),
@@ -62,6 +65,7 @@ pub fn machine<B: Backend>(backend: &B, ask: &str) -> Result<String, toolkit::Re
             .filter(|_| backend.host_card_wanted()),
     );
     let (level, options) = resolved_ask(backend, toolkit, &ask, level, options)?;
+    known_level(backend, toolkit, &level, from_env)?;
     let level = level.as_str();
     let terms = vec![
         Json::Str(backend.identity().into()),
@@ -99,6 +103,30 @@ fn exact_profile<B: Backend>(backend: &B, asked: &Json) -> Result<Option<Json>, 
     let exact =
         facts::profile_is_exact(&cards, profile).map_err(|why| refuse(why.refusal().reason))?;
     Ok(Some(Json::Bool(exact)))
+}
+
+/// Refuses a level the card does not list, by name: the text says where the level came from (the variable, when the ask stated
+/// none) and which levels the card knows.
+fn known_level<B: Backend>(
+    backend: &B,
+    toolkit: &Toolkit,
+    level: &str,
+    from_env: bool,
+) -> Result<(), toolkit::Refusal> {
+    let dir = facts::facts_dir(None).map_err(refuse)?;
+    let cards = CardSet::new(&dir, &[], backend.card_names());
+    let known = facts::opt_levels(&cards, backend.host_card_wanted())
+        .map_err(|why| refuse(why.refusal().reason))?;
+    if known.iter().any(|k| k == level) {
+        return Ok(());
+    }
+    let source = match toolkit.ask_env_name("opt_level").filter(|_| from_env) {
+        Some(variable) => format!("${variable}"),
+        None => "the build's opt_level".to_string(),
+    };
+    Err(refuse(format!(
+        "unknown opt level {level:?} (from {source}); the levels are {known:?}"
+    )))
 }
 
 /// The ask the toolkit answers: the key's `terms` beyond what the machine states, whether the host's facts are wanted, the cache
@@ -703,6 +731,46 @@ fn device_unit(
     ))
 }
 
+/// The figures of a device build with the unit's `launch` record added: the local memory one thread holds (`local_bytes`), how that
+/// was measured (`local_source`) and the device's per-thread limit (`local_limit`, a fact of the card). A unit that holds more than
+/// the limit is refused by name. An image that states no frame and has no text to read states no `launch`.
+fn launch_figures(
+    facts: &Json,
+    name: &str,
+    answer: &rcore::json::J,
+) -> Result<rcore::json::J, toolkit::Refusal> {
+    use rcore::json::J;
+    let figures = answer.get("figures").cloned().unwrap_or(J::Null);
+    let limit = facts
+        .get("device_build")
+        .and_then(|b| b.get("local_limit_B"))
+        .and_then(Json::int)
+        .and_then(|l| u64::try_from(l).ok())
+        .ok_or_else(|| refuse("device_build states no local_limit_B"))?;
+    let read_ptx = || {
+        let output = answer.get("files")?.get("output")?.str()?.to_string();
+        std::fs::read(output)
+            .ok()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    };
+    let Some(held) = local_memory::held(&figures, read_ptx) else {
+        return Ok(figures);
+    };
+    if held.0 > limit {
+        return Err(refuse(local_memory::refusal(name, held, limit)));
+    }
+    let mut members = figures.obj().to_vec();
+    members.push((
+        "launch".to_string(),
+        wire::obj(vec![
+            ("local_bytes", wire::n(held.0)),
+            ("local_source", wire::s(held.1)),
+            ("local_limit", wire::n(limit)),
+        ]),
+    ));
+    Ok(J::Obj(members))
+}
+
 /// The build of a device unit through the toolkit (see [`device_unit`]).
 fn build_device<B: Backend>(
     backend: &B,
@@ -726,6 +794,7 @@ fn build_device<B: Backend>(
     let source = format!("{name}.cu");
     let file = |member: &str| answer.get("files").and_then(|f| f.get(member)).cloned();
     let null = || rcore::json::J::Null;
+    let figures = launch_figures(&facts, &name, &answer)?;
     let recipe = facts
         .get("device_build")
         .and_then(|b| b.get("embed"))
@@ -767,10 +836,7 @@ fn build_device<B: Backend>(
                 (source.as_str(), file("source").unwrap_or_else(null)),
             ]),
         ),
-        (
-            "figures",
-            answer.get("figures").cloned().unwrap_or_else(null),
-        ),
+        ("figures", figures),
         ("report", answer.get("report").cloned().unwrap_or_else(null)),
         ("embed", answer.get("embed").cloned().unwrap_or_else(null)),
         (

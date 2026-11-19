@@ -236,6 +236,16 @@ impl Toolkit {
         discover::child_env(&self.spec, &self.env.fresh(), machine)
     }
 
+    /// The name of the variable the table's `asks` gives for the ask `name`, when it names one.
+    #[must_use]
+    pub fn ask_env_name(&self, name: &str) -> Option<&str> {
+        self.spec
+            .get("asks")
+            .and_then(|asks| asks.get(name))
+            .and_then(|rule| rule.get("env"))
+            .and_then(J::str)
+    }
+
     /// What the environment says for the ask `name` (`opt_level`, `host_profile`) when the caller states none: the value of the
     /// variable the table's `asks` names, trimmed; `None` when the table names none, the variable is unset or it is empty.
     #[must_use]

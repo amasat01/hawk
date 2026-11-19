@@ -501,6 +501,20 @@ pub fn profile_is_exact(cards: &CardSet, profile: &str) -> Result<bool, Failed> 
     Ok(cpu.exact_profiles.iter().any(|exact| exact == profile))
 }
 
+/// The optimisation levels the document that states the compile of the host (`host_build.json`) or of the device
+/// (`cuda_image.json`) lists.
+///
+/// # Errors
+/// Refuses a document that does not list them.
+pub fn opt_levels(cards: &CardSet, host: bool) -> Result<Vec<String>, Failed> {
+    let file = if host {
+        "host_build.json"
+    } else {
+        "cuda_image.json"
+    };
+    Ok(names_of(&cards.json(file)?, file, "opt_levels")?)
+}
+
 /// The profile a host build gets when none is asked, for the instruction set `isa_name` and the compiler `compiler` (its
 /// identity): the instruction set card's default for GCC or for another compiler.
 ///
@@ -985,6 +999,7 @@ fn device_build(
             "runtime",
             "image_format",
             "embed",
+            "local_limit_B",
         ],
     )?;
     let isa = match member(&card, file, "ptx_isa")?.get(&release).and_then(Json::int) {
@@ -1039,6 +1054,10 @@ fn device_build(
         let record = device_build::runtime_record(&card, file)?;
         members.push(("headers".into(), flags_of_names(record, file, "headers")?));
     }
+    members.push((
+        "local_limit_B".into(),
+        member(&card, file, "local_limit_B")?.clone(),
+    ));
     Ok(Json::Obj(members))
 }
 

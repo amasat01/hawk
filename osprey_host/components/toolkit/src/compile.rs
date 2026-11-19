@@ -260,10 +260,9 @@ impl Toolkit {
 
     /// The answer of a build of `job` published as `entry`.
     fn answer(job: &Job, req: &J, entry: &Entry) -> Done<J> {
-        let output = entry.path(&format!("{}{}", job.name, job.output_suffix));
+        let output = entry.output()?;
         let mut files = vec![("output", wire::s(&output.display().to_string()))];
-        if job.keep_source {
-            let source = entry.path(&format!("{}{}", job.name, job.source_suffix));
+        if let Some(source) = entry.source().filter(|_| job.keep_source) {
             files.push(("source", wire::s(&source.display().to_string())));
         }
         let files = wire::obj(files);

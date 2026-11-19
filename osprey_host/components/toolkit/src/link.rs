@@ -61,16 +61,12 @@ impl Toolkit {
         }
         for image in &images {
             let entry = self.embed_object(&req, image, root)?;
-            objects.push(entry.path(&format!("{}__image.o", wire::text(image, "name", "embed")?)));
+            objects.push(entry.output()?);
             keys.push(crate::compile::key_of(&entry));
         }
         if let Some(set) = req.get("set") {
             let entry = self.run_job(&Job::from_request(set)?, root)?;
-            objects.push(entry.path(&format!(
-                "{}{}",
-                wire::text(set, "name", "set")?,
-                wire::text_or(set, "output_suffix", ".o")
-            )));
+            objects.push(entry.output()?);
             keys.push(crate::compile::key_of(&entry));
         }
         let template = wire::texts(wire::need(&req, "link", "link request")?, system()?, "link")?;
@@ -80,7 +76,7 @@ impl Toolkit {
             self.link_into(&job, &machine, root, scratch, &name)
         })?;
         Ok(wire::render(&wire::obj(vec![
-            ("library", wire::s(&entry.path(&name).display().to_string())),
+            ("library", wire::s(&entry.output()?.display().to_string())),
             ("key", wire::s(&crate::compile::key_of(&entry))),
             ("hit", J::Bool(entry.hit)),
             ("report", crate::compile::report_of(&entry.meta)),

@@ -259,3 +259,63 @@ fn a_request_with_no_template_is_refused_by_name_and_a_tool_that_writes_no_outpu
         silent_run.message
     );
 }
+
+/// A fake compiler that, like a real linker, fails when an object it is given does not exist.
+fn fake_linker(dir: &std::path::Path) -> PathBuf {
+    let path = dir.join("ld");
+    script(
+        &path,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"fakeld 1.0\"; exit 0; fi\n\
+         out=\"\"; prev=\"\"\n\
+         for a in \"$@\"; do [ \"$prev\" = \"-o\" ] && out=\"$a\"; \
+         case \"$a\" in *.o) [ -f \"$a\" ] || { echo \"cannot find $a\" >&2; exit 1; };; esac; prev=\"$a\"; done\n\
+         echo linked > \"$out\"\n",
+    );
+    path
+}
+
+/// A link request of the library `name` over the set text `text` built under the unit name `set_name`.
+fn set_link(name: &str, set_name: &str, text: &str) -> String {
+    let set = unit(set_name, text);
+    format!(
+        "{{\"name\":\"{name}\",\"parts\":[],\"set\":{set},\"link\":{{\"linux\":[\"{{linker}}\",\"-shared\",\"-o\",\"{{output}}\",\"{{objects}}\"],\
+         \"macos\":[\"{{linker}}\",\"-shared\",\"-o\",\"{{output}}\",\"{{objects}}\"]}}}}"
+    )
+}
+
+#[test]
+fn a_hit_on_an_object_built_under_another_unit_name_links_the_file_the_store_holds() {
+    let dir = scratch("other_name");
+    let (compiler, linker) = (fake_compiler(&dir, "cc"), fake_linker(&dir));
+    let env = Env::from_pairs(&[
+        ("FAKE_NVCC", compiler.to_str().unwrap()),
+        ("FAKE_HOST", linker.to_str().unwrap()),
+        ("PATH", "/bin:/usr/bin"),
+    ]);
+    let table = r#"{"tools":{
+      "compiler":{"rules":[{"env":"FAKE_NVCC","required":true}]},
+      "linker":{"rules":[{"env":"FAKE_HOST","required":true}]}}}"#;
+    let tk = Toolkit::new(table, &[], env).unwrap();
+    let store = dir.join("store");
+    let (first_unit, second_unit) = (
+        tk.build(&unit("first_set", "int helper;"), &store).unwrap(),
+        tk.build(&unit("second_set", "int helper;"), &store)
+            .unwrap(),
+    );
+    // the same job under two names is one slot, and the second answer names the file the slot holds
+    assert_eq!(output_of(&second_unit), output_of(&first_unit));
+    assert!(output_of(&second_unit).is_file());
+    let first = tk
+        .link(&set_link("one.so", "one__set", "int set_text;"), &store)
+        .unwrap();
+    let second = tk
+        .link(&set_link("two.so", "two__set", "int set_text;"), &store)
+        .unwrap();
+    // the second link finds the first set object and the first library; neither path is composed from the second names
+    let (first_library, second_library) = (
+        PathBuf::from(member(&first, "library").str().unwrap()),
+        PathBuf::from(member(&second, "library").str().unwrap()),
+    );
+    assert!(second_library.is_file());
+    assert_eq!(second_library, first_library);
+}

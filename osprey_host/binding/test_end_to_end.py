@@ -142,6 +142,23 @@ def run(done, o, raises, folders, header_abi, make_nodes):
     e = raises(o.BadRequest, lambda: c.backend_merge(lib, "[]"), "merge: no answers")
     assert "a merge of no answers" in str(e), str(e)
     done.append("end to end: merge refuses an empty list of answers by name")
+    # a refusal of the tool side reaches the caller as NotWritten, whatever its kind
+    unknown = json.dumps({**ask, "opt_level": "O9"})
+    e = raises(o.NotWritten, lambda: c.backend_machine(lib, unknown), "machine: unknown level")
+    assert "unknown opt level" in str(e) and "the build's opt_level" in str(e), str(e)
+    assert "O3" in str(e), str(e)
+    os.environ["HAWK_OPT_LEVEL"] = "O9"
+    try:
+        e = raises(
+            o.NotWritten,
+            lambda: c.backend_machine(lib, json.dumps(ask)),
+            "machine: unknown level from the variable",
+        )
+    finally:
+        del os.environ["HAWK_OPT_LEVEL"]
+    assert "unknown opt level" in str(e) and "$HAWK_OPT_LEVEL" in str(e), str(e)
+    assert "O3" in str(e), str(e)
+    done.append("end to end: machine refuses an unknown level by name, from either source")
     neither = {k: v for k, v in request.items() if k != "machine"}
     e = raises(
         o.BadRequest,

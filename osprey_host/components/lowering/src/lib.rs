@@ -12,6 +12,7 @@ pub mod door;
 pub mod facts;
 mod host_build;
 pub mod index_width;
+mod local_memory;
 pub mod lower;
 #[cfg(test)]
 mod testing;

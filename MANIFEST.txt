@@ -18,7 +18,7 @@ Every file with its line count (this file excluded):
     116  osprey_host/binding/template/types.c
     989  osprey_host/binding/test_binding.py
    1246  osprey_host/binding/test_door.py
-    197  osprey_host/binding/test_end_to_end.py
+    214  osprey_host/binding/test_end_to_end.py
      96  osprey_host/binding/test_sideways.py
      19  osprey_host/check_exports.sh
      19  osprey_host/ci/dist.sh
@@ -32,10 +32,11 @@ Every file with its line count (this file excluded):
      92  osprey_host/components/lowering/src/backend.rs
     156  osprey_host/components/lowering/src/device_build.rs
     651  osprey_host/components/lowering/src/door.rs
-   1297  osprey_host/components/lowering/src/facts.rs
+   1316  osprey_host/components/lowering/src/facts.rs
     285  osprey_host/components/lowering/src/host_build.rs
     120  osprey_host/components/lowering/src/index_width.rs
-     20  osprey_host/components/lowering/src/lib.rs
+     21  osprey_host/components/lowering/src/lib.rs
+    146  osprey_host/components/lowering/src/local_memory.rs
     162  osprey_host/components/lowering/src/lower/active.rs
      51  osprey_host/components/lowering/src/lower/blocks.rs
      35  osprey_host/components/lowering/src/lower/boxed.rs
@@ -59,7 +60,7 @@ Every file with its line count (this file excluded):
     932  osprey_host/components/lowering/src/lower/unit_meta.rs
     247  osprey_host/components/lowering/src/lower/warp.rs
     153  osprey_host/components/lowering/src/testing.rs
-    955  osprey_host/components/lowering/src/tool.rs
+   1021  osprey_host/components/lowering/src/tool.rs
      15  osprey_host/components/lowering/tests/data/gemm_kernels.json
      23  osprey_host/components/lowering/tests/data/two_groups.dump
      14  osprey_host/components/toolkit/Cargo.lock
@@ -68,7 +69,7 @@ Every file with its line count (this file excluded):
       3  osprey_host/components/toolkit/clippy.toml
       2  osprey_host/components/toolkit/rustfmt.toml
     248  osprey_host/components/toolkit/src/argv_tests.rs
-    536  osprey_host/components/toolkit/src/compile.rs
+    535  osprey_host/components/toolkit/src/compile.rs
     311  osprey_host/components/toolkit/src/device.rs
     625  osprey_host/components/toolkit/src/discover.rs
     100  osprey_host/components/toolkit/src/dl.rs
@@ -78,18 +79,18 @@ Every file with its line count (this file excluded):
     187  osprey_host/components/toolkit/src/host.rs
      53  osprey_host/components/toolkit/src/jobs.rs
      30  osprey_host/components/toolkit/src/lib.rs
-    145  osprey_host/components/toolkit/src/link.rs
+    141  osprey_host/components/toolkit/src/link.rs
      79  osprey_host/components/toolkit/src/refusal.rs
     312  osprey_host/components/toolkit/src/reserved.rs
     186  osprey_host/components/toolkit/src/run.rs
     298  osprey_host/components/toolkit/src/runtime.rs
     158  osprey_host/components/toolkit/src/runtime_job.rs
     120  osprey_host/components/toolkit/src/shellwords.rs
-    312  osprey_host/components/toolkit/src/store.rs
-    377  osprey_host/components/toolkit/src/toolkit.rs
+    336  osprey_host/components/toolkit/src/store.rs
+    387  osprey_host/components/toolkit/src/toolkit.rs
     174  osprey_host/components/toolkit/src/wire.rs
     183  osprey_host/components/toolkit/src/witness.rs
-    261  osprey_host/components/toolkit/tests/build_paths.rs
+    321  osprey_host/components/toolkit/tests/build_paths.rs
     210  osprey_host/components/toolkit/tests/cache_key.rs
     167  osprey_host/components/toolkit/tests/common/mod.rs
      70  osprey_host/components/toolkit/tests/data/gcc_masked_call.cpp
@@ -123,7 +124,7 @@ Every file with its line count (this file excluded):
      10  osprey_host/osprey_cuda/door/src/lib.rs
       9  osprey_host/osprey_cuda/facts/cuda.json
      49  osprey_host/osprey_cuda/facts/cuda_build.json
-     65  osprey_host/osprey_cuda/facts/cuda_image.json
+     66  osprey_host/osprey_cuda/facts/cuda_image.json
      88  osprey_host/osprey_cuda/facts/tools.json
      15  osprey_host/osprey_cuda/osprey.json
     169  osprey_host/osprey_cuda/src/lib.rs
@@ -173,7 +174,7 @@ Every file with its line count (this file excluded):
     290  osprey_host/replay/tests/stage_records.rs
      72  osprey_host/replay/tests/structural_keys.rs
     251  osprey_host/replay/tests/table.rs
-    283  osprey_host/replay/tests/tool_side.rs
+    303  osprey_host/replay/tests/tool_side.rs
      47  osprey_host/replay/tests/treplay.rs
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
