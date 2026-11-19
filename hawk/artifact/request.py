@@ -89,8 +89,8 @@ def _settings(settings, sizes) -> dict:
             out[key] = _camel(value)
     if settings.launch_bounds is not None:
         out["launch_bounds"] = [int(n) for n in settings.launch_bounds]
-    if settings.fold_k:
-        out["fold_k"] = settings.fold_k
+    if settings.fold_rows:
+        out["fold_rows"] = settings.fold_rows
     if settings.warps != 1:
         out["warps"] = settings.warps
     if settings.team_threads:

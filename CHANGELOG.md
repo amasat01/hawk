@@ -11,6 +11,7 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 - **Build options are declared by each library.** `options={"<target>.<key>": value}` reaches the library, which refuses a key it does not declare, naming the ones it does. `host_profile=`, `device_arch=` and `literal_table=` still work but warn, and name the option that replaces them (`host.profile`, `cuda.arch`, `cuda.literal_table`).
 - **`stated.asked`** in a library's account of the machine (`hawk.targets.stated`) shows the level and the options as the build resolved them, so a default you state and a default you leave out are one build key.
 - **The `contraction` build setting is refused by name.** The library's device card chooses, per scalar type and architecture, between a matrix product and the kernel's own loop; no setting selects it.
+- **The fold setting is `fold_rows` everywhere.** It was spelled `fold_k` in the request a build sends to a backend library and in a refusal that names it; the request key, the library's account of its settings and the refusal now say `fold_rows`, as `BuildSettings` does. There is no alias.
 - **`HAWK_COMPILE_JOBS=0` means no cap** on compiles that run at once. It used to be refused.
 - **The embedded C target is refused by name** (`targets=("c",)`, `embedded_profile=`, any `c.<key>` option): `hawk.embedded` and its documentation are gone.
 - **`HAWK_AETHER_INCLUDE` and `HAWK_EAGLE_INCLUDE` apply only to building hawk from source.** They no longer change what a kernel compiles against: each library carries its own headers.

@@ -23,7 +23,7 @@ class Settings:
 
     ``form`` the ``emit_form``; ``linalg_form``, ``wide_form`` as the build option of that name;
     ``launch_bounds`` ``(threads, blocks_per_sm)`` or ``None``; ``warps`` the warps of a block of the warp-per-lane kernel;
-    ``fold_k`` the rows per warp forced in every cell-sum kernel (0: the library's own value); ``fast_entries`` whether a
+    ``fold_rows`` the rows per warp forced in every cell-sum kernel (0: the library's own value); ``fast_entries`` whether a
     device unit builds its fast entry points; ``team_threads`` the threads of every team stage when forced (0: the stage's own
     size). The library refuses a value outside what its target allows."""
 
@@ -32,7 +32,7 @@ class Settings:
     wide_form: str = "auto"
     launch_bounds: tuple | None = None
     warps: int = 1
-    fold_k: int = 0
+    fold_rows: int = 0
     fast_entries: bool = False
     team_threads: int = 0
 
@@ -122,7 +122,7 @@ class BuildSettings:
 
 #: field -> the :class:`Settings` field it becomes.
 _SETTING = MappingProxyType({"emit_form": "form", "linalg_form": "linalg_form", "wide_form": "wide_form",
-                             "launch_bounds": "launch_bounds", "fold_rows": "fold_k",
+                             "launch_bounds": "launch_bounds", "fold_rows": "fold_rows",
                              "fast_entries": "fast_entries"})
 
 

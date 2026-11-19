@@ -179,10 +179,10 @@ def test_a_sink_with_named_axes_states_its_payload():
 
 def test_a_placed_build_states_the_settings_that_differ_from_the_defaults_and_the_layout_sizes():
     settings = dataclasses.replace(
-        default_settings(), wide_form="thread", fold_k=4, warps=2, team_threads=64
+        default_settings(), wide_form="thread", fold_rows=4, warps=2, team_threads=64
     )
     assert built(axpb, settings=settings, sizes=(1, 2, 3, 4, 5))["settings"] == {
-        "wide_form": "Thread", "fold_k": 4, "warps": 2, "team_threads": 64, "exports": [1, 2, 3, 4, 5],
+        "wide_form": "Thread", "fold_rows": 4, "warps": 2, "team_threads": 64, "exports": [1, 2, 3, 4, 5],
     }  # fmt: skip
     assert "settings" not in built(axpb)
 

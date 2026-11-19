@@ -17,6 +17,10 @@ What each row proves:
   called ONCE with the manifest path and every plugin carries a
   ``device_function`` that runs under ``DeviceKernel`` within one ULP of the
   host entry per multiply-add the device may contract.
+* STAGES: a plugin carries its sidecar (read-only) and the plugins of its
+  bundle, so a kernel built in stages runs through ``plugins`` and
+  ``eagle.plan.auto`` as it does through a deploy: on the host equal bit for
+  bit to the same chain built whole, on the device (a team stage) equal to NumPy.
 """
 
 from __future__ import annotations
