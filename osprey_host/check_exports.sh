@@ -16,6 +16,8 @@ for name in osprey_cpu osprey_cuda; do
   if grep -q '"runtime": "eagle-door/1"' "$name/osprey.json"; then want=$(printf 'osprey_v1\n%s\n' "$(door_functions)" | sort); fi
   [ "$got" = "$(echo "$want" | sort)" ] || { echo "$name: the exported symbols differ from the manifest's runtime; extra or missing:" >&2; printf '%s\n%s\n' "$got" "$want" | sort | uniq -u >&2; exit 1; }
   echo "$name: $(echo "$got" | wc -l | tr -d ' ') exported symbols: osprey_v1$(echo "$got" | grep -q '^eg_' && echo " and the $(echo "$got" | grep -c '^eg_') functions of eagle-door/1")"
+  # a backend library brings no threading runtime into the process that loads it: none of its undefined symbols is OpenMP's
+  if nm -u "$lib" | grep -E 'GOMP_|omp_|__kmpc_' >&2; then echo "$name: the library needs an OpenMP runtime (the symbols above)" >&2; exit 1; fi
 done
 # the rlibs other crates link define no entry symbol: two libraries then link into one test binary
 for name in osprey_cpu osprey_cuda; do

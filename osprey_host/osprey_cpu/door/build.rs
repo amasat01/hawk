@@ -3,8 +3,8 @@
 //! the door's `eg_` functions beside `osprey_v1`. The device group of the door is not built; its host-only refusals are.
 //!
 //! The inputs, each refused by name when absent: `OSPREY_EAGLE_SRC` (the eagle source root, which holds `eagle/door/` and
-//! `plugin/`), `OSPREY_AETHER_SRC` (the aether source root, whose headers the door includes), `CXX` (a C++23 compiler with
-//! OpenMP) and the raptor sibling (`RAPTOR`, default the sibling folder), which holds the cpu wing's facts header and the door's
+//! `plugin/`), `OSPREY_AETHER_SRC` (the aether source root, whose headers the door includes), `CXX` (a C++23
+//! compiler) and the raptor sibling (`RAPTOR`, default the sibling folder), which holds the cpu wing's facts header and the door's
 //! row header for a host-only door.
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -60,7 +60,7 @@ fn compiler_runtime(cxx: &str, library: &str) -> PathBuf {
     let found = PathBuf::from(String::from_utf8_lossy(&asked.stdout).trim());
     assert!(
         found.is_absolute() && found.exists(),
-        "CXX {cxx} names no {library}: it must be a C++ compiler with OpenMP"
+        "CXX {cxx} names no {library}"
     );
     found
 }
@@ -68,7 +68,7 @@ fn compiler_runtime(cxx: &str, library: &str) -> PathBuf {
 fn main() {
     let eagle = PathBuf::from(input("OSPREY_EAGLE_SRC", "the eagle source root"));
     let aether = PathBuf::from(input("OSPREY_AETHER_SRC", "the aether source root"));
-    let cxx = input("CXX", "a C++23 compiler with OpenMP");
+    let cxx = input("CXX", "a C++23 compiler");
     let here = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let raptor =
         std::env::var("RAPTOR").map_or_else(|_| here.join("../../../raptor"), PathBuf::from);
@@ -94,7 +94,6 @@ fn main() {
         "-fvisibility=hidden",
         "-fvisibility-inlines-hidden",
         "-ffp-contract=off",
-        "-fopenmp",
         "-DAETHER_CPP_MODE=1",
         "-DEAGLE_CPU_ONLY=1",
     ]
@@ -141,17 +140,9 @@ fn main() {
         println!("cargo:rustc-link-arg-cdylib={}", object.display());
     }
     if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") {
-        println!(
-            "cargo:rustc-link-arg-cdylib={}",
-            compiler_runtime(&cxx, "libomp.dylib").display()
-        );
         println!("cargo:rustc-link-arg-cdylib=-lc++");
         return;
     }
-    println!(
-        "cargo:rustc-link-arg-cdylib={}",
-        compiler_runtime(&cxx, "libgomp.so").display()
-    );
     // The objects need the C++ runtime of the compiler that made them, which may be newer than the
     // system's: the file CXX names can be a linker script that adds an archive beside it, so its
     // folder is searched too.

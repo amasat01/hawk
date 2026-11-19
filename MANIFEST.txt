@@ -20,7 +20,7 @@ Every file with its line count (this file excluded):
    1264  osprey_host/binding/test_door.py
     263  osprey_host/binding/test_end_to_end.py
      96  osprey_host/binding/test_sideways.py
-     25  osprey_host/check_exports.sh
+     27  osprey_host/check_exports.sh
      19  osprey_host/ci/dist.sh
     246  osprey_host/ci/gate.sh
      40  osprey_host/ci/headers.sh
@@ -118,7 +118,7 @@ Every file with its line count (this file excluded):
      22  osprey_host/osprey_cpu/Cargo.toml
      18  osprey_host/osprey_cpu/build.rs
      15  osprey_host/osprey_cpu/door/Cargo.toml
-    162  osprey_host/osprey_cpu/door/build.rs
+    153  osprey_host/osprey_cpu/door/build.rs
      10  osprey_host/osprey_cpu/door/src/lib.rs
      20  osprey_host/osprey_cpu/facts/arm.json
      29  osprey_host/osprey_cpu/facts/build.json

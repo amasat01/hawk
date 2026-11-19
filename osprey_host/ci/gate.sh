@@ -8,8 +8,8 @@
 # Eagle source root (OSPREY_EAGLE_SRC), the one input of the runtime: a checkout of eagle that holds eagle/door/ (the door's header, its source
 # list sources.txt and its sources) and plugin/ (the DLPack header). The cpu library is built from its host group, the binding is compiled against its header,
 # and the libraries embed the headers it holds. The binding and tidy legs refuse by name a root that lacks one of eagle/door/eg_door.h, eagle/door/sources.txt
-# and plugin/dlpack.h. The build also needs CXX (a C++23 compiler with OpenMP: the cpu library links the OpenMP runtime that compiler names, as the file it
-# finds, so which runtime a process shares is decided by that compiler) and the raptor sibling's cpu facts and host door rows (RAPTOR);
+# and plugin/dlpack.h. The build also needs CXX (a C++23 compiler; the cpu library links no threading runtime: the exports leg refuses one)
+# and the raptor sibling's cpu facts and host door rows (RAPTOR);
 # no prebuilt door library is an input.
 # Each leg prints what it examined and is RED when it examined nothing. The exit status is non-zero when any leg is red.
 cd "$(dirname "$0")/.." || exit 2
