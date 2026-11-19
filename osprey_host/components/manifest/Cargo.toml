@@ -1,0 +1,24 @@
+[package]
+name = "osprey_manifest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "What a valid OSPREY manifest is: its checks, the one spelling of a target id, and the answer to which folder serves a target."
+
+[lib]
+# the staticlib is linked into the binding module (its loader answers three calls with it); the rlib is for the unit tests
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# the JSON reader the other crates of the tree already use; nothing is added to the tree
+rcore = { path = "../../../raptor/rs/core" }
+
+[lints.rust]
+missing_docs = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+missing_docs_in_private_items = "deny"
+unwrap_used = "deny"
+expect_used = "deny"

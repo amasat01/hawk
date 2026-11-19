@@ -177,6 +177,34 @@ int ob_state(rx_ctx* ctx, ob_backend* lib, const char* op, const char* root, cha
 int ob_merge(rx_ctx* ctx, ob_backend* lib, const char* answers, size_t n_answers, char* buf,
     size_t cap, size_t* len);
 
+/* The manifest side. These three calls need no opened library: they say what a valid manifest is,
+   so that a caller passes folder paths and raw target names and gets back checked facts. Each
+   writes its text into buf as ob_facts writes its text (RX_TRUNC when cap is too small, len filled
+   in); a refusal is RX_REFUSED and rx_last_error(ctx) is the whole sentence (no stage prefix),
+   which names the folder or the target id and the rule. */
+
+/* The canonical spelling of a target name: lowercase, whitespace, dashes and underscores removed
+   ("Cu-Da" is "cuda"); the result must be a letter followed by letters and digits, else the name is
+   refused. */
+int ob_target_id(rx_ctx* ctx, const char* name, char* buf, size_t cap, size_t* len);
+
+/* The roster of the OSPREY folders of a search. folders is a JSON list of paths; each holds a
+   manifest osprey.json (members name, version, door, targets; every target row states request,
+   target, about, device, entry and format). The answer is {"ospreys":
+   [{"folder", "name", "version", "door", "targets": [<rows, request in its canonical spelling>]},
+   ...], "refused": {<folder>: <sentence>}, "searched": [<the folders given>]}: a folder whose
+   manifest is refused is listed in "refused" and the others are kept; a folder whose OSPREY has the
+   name of an earlier one is skipped. Two OSPREYs serving one canonical target id are refused by
+   name. */
+int ob_roster(rx_ctx* ctx, const char* folders, char* buf, size_t cap, size_t* len);
+
+/* The OSPREY that serves a target, over a roster as ob_roster answered it: {"id": <canonical id>,
+   "osprey": <its name>}. target is any spelling of the id; a name that is no target id, and an id
+   nobody serves, are refused (the second names the served ids, the folders searched and every
+   refused folder with its reason). */
+int ob_serving(
+    rx_ctx* ctx, const char* roster, const char* target, char* buf, size_t cap, size_t* len);
+
 /* The code of the last refusal of ob_machine, ob_build, ob_link or ob_state on this library (the
    kind names above); empty when the last such call succeeded. */
 const char* ob_last_code(ob_backend* lib);

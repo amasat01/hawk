@@ -358,6 +358,36 @@ int ob_merge(rx_ctx* ctx, ob_backend* lib, const char* answers, size_t n_answers
     return status;
 }
 
+/* The three manifest calls are answered by components/manifest (Rust), linked into the binding with
+   this file. Its status is OK with the answer, TRUNC with the size needed, or REFUSED with the
+   sentence as the text, which becomes the last error of ctx as it stands. */
+int omf_target_id(const char* name, char* buf, size_t cap, size_t* len);
+int omf_roster(const char* folders, char* buf, size_t cap, size_t* len);
+int omf_serving(const char* roster, const char* target, char* buf, size_t cap, size_t* len);
+
+static int manifest_status(rx_ctx* ctx, int status, const char* text, size_t len)
+{
+    if (status == RX_REFUSED)
+        rx_set_error(ctx, text, len);
+    return status;
+}
+
+int ob_target_id(rx_ctx* ctx, const char* name, char* buf, size_t cap, size_t* len)
+{
+    return manifest_status(ctx, omf_target_id(name, buf, cap, len), buf, *len);
+}
+
+int ob_roster(rx_ctx* ctx, const char* folders, char* buf, size_t cap, size_t* len)
+{
+    return manifest_status(ctx, omf_roster(folders, buf, cap, len), buf, *len);
+}
+
+int ob_serving(
+    rx_ctx* ctx, const char* roster, const char* target, char* buf, size_t cap, size_t* len)
+{
+    return manifest_status(ctx, omf_serving(roster, target, buf, cap, len), buf, *len);
+}
+
 const char* ob_last_code(ob_backend* lib)
 {
     return lib->code;

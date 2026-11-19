@@ -4,10 +4,10 @@ Every file with its line count (this file excluded):
      12  osprey_host/.clang-format
       8  osprey_host/.clang-tidy
       5  osprey_host/.gitignore
-    111  osprey_host/Cargo.lock
+    118  osprey_host/Cargo.lock
       8  osprey_host/Cargo.toml
      12  osprey_host/Makefile
-     71  osprey_host/binding/build.sh
+     74  osprey_host/binding/build.sh
      11  osprey_host/binding/fixture/abi1.c
      95  osprey_host/binding/fixture/auto_set_meta.c
       8  osprey_host/binding/fixture/contract0.c
@@ -16,7 +16,7 @@ Every file with its line count (this file excluded):
    1584  osprey_host/binding/template/door.c
      45  osprey_host/binding/template/module.h
     116  osprey_host/binding/template/types.c
-    989  osprey_host/binding/test_binding.py
+   1044  osprey_host/binding/test_binding.py
    1246  osprey_host/binding/test_door.py
     214  osprey_host/binding/test_end_to_end.py
      96  osprey_host/binding/test_sideways.py
@@ -64,6 +64,14 @@ Every file with its line count (this file excluded):
    1021  osprey_host/components/lowering/src/tool.rs
      15  osprey_host/components/lowering/tests/data/gemm_kernels.json
      23  osprey_host/components/lowering/tests/data/two_groups.dump
+     24  osprey_host/components/manifest/Cargo.toml
+     94  osprey_host/components/manifest/src/abi.rs
+     97  osprey_host/components/manifest/src/json.rs
+     11  osprey_host/components/manifest/src/lib.rs
+    134  osprey_host/components/manifest/src/manifest.rs
+    118  osprey_host/components/manifest/src/roster.rs
+     31  osprey_host/components/manifest/src/target.rs
+    188  osprey_host/components/manifest/tests/manifest.rs
      14  osprey_host/components/toolkit/Cargo.lock
      20  osprey_host/components/toolkit/Cargo.toml
     235  osprey_host/components/toolkit/DOOR_ADDITIONS.md
@@ -105,8 +113,8 @@ Every file with its line count (this file excluded):
      30  osprey_host/components/toolkit/tests/state.rs
     219  osprey_host/components/toolkit/tests/store_races.rs
      33  osprey_host/corpus_accepted.tsv
-    190  osprey_host/include/osprey.h
-    373  osprey_host/loader/loader.c
+    218  osprey_host/include/osprey.h
+    403  osprey_host/loader/loader.c
      22  osprey_host/osprey_cpu/Cargo.toml
      18  osprey_host/osprey_cpu/build.rs
      14  osprey_host/osprey_cpu/door/Cargo.toml

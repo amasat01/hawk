@@ -9,6 +9,7 @@ import gc
 import json
 import os
 import sys
+import tempfile
 
 import _osprey as o
 
@@ -973,6 +974,60 @@ raises(
     "split_compensated_target: two candidate outputs",
 )
 done.append("split_compensated_target: the output besides the companion, None for another sink")
+
+# ---- the manifest calls: what a valid manifest is, from folder paths and raw target names ----
+ROW = {
+    "request": "host",
+    "target": "Host",
+    "about": "a",
+    "device": False,
+    "entry": "host",
+    "format": "host",
+}
+
+
+def osprey_folder(root, name, rows, **extra):
+    """A folder under root holding a manifest of the OSPREY name."""
+    folder = os.path.join(root, name)
+    os.makedirs(folder)
+    manifest = {"name": name, "version": "0", "door": 11, "targets": rows, **extra}
+    with open(os.path.join(folder, "osprey.json"), "w") as out:
+        out.write(json.dumps(manifest))
+    return folder
+
+
+assert c.backend_target_id(" Cu-Da ") == "cuda"
+done.append("backend_target_id: one spelling of a target id")
+e = raises(
+    ValueError,
+    lambda: c.backend_target_id("9x"),
+    "backend_target_id: a name outside the grammar is refused",
+)
+assert str(e).startswith("the target id '9x' is not a target id"), str(e)
+with tempfile.TemporaryDirectory() as root:
+    good = osprey_folder(root, "cpu", [ROW])
+    twin = osprey_folder(root, "twin", [{**ROW, "request": "Ho-st"}])
+    wings = osprey_folder(root, "wings", [ROW], wings={})
+    answer = json.loads(c.backend_roster(json.dumps([good, wings])))
+    assert [m["name"] for m in answer["ospreys"]] == ["cpu"], answer
+    assert answer["refused"][wings].endswith("a Python wing is refused"), answer
+    done.append("backend_roster: the checked manifests and the folders refused with their reason")
+    e = raises(
+        ValueError,
+        lambda: c.backend_roster(json.dumps([good, twin])),
+        "backend_roster: two ospreys serving one id are refused",
+    )
+    assert str(e) == "target 'host' is served by both 'cpu' and 'twin'; keep one", str(e)
+    made = c.backend_roster(json.dumps([good, wings]))
+    assert json.loads(c.backend_serving(made, "HOST")) == {"id": "host", "osprey": "cpu"}
+    done.append("backend_serving: the OSPREY that serves a target in any spelling")
+    e = raises(
+        ValueError,
+        lambda: c.backend_serving(made, "tpu"),
+        "backend_serving: a target nobody serves is refused naming the served and the refused",
+    )
+    head = "target 'tpu' is served by no OSPREY found; the served targets are ('host',) "
+    assert str(e).startswith(head + f"(searched: {good}, {wings}); refused: "), str(e)
 
 try:
     import numpy  # noqa: F401

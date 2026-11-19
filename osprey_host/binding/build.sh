@@ -21,6 +21,9 @@ hdrs="--header $inc/raptor_ir.h --header $inc/raptor_ir_front.h --header $inc/ra
 py=${PY_INCLUDE:-$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_paths()["include"])')}
 cargo build -j 2 --release --manifest-path "$here/gen/Cargo.toml" 2>&1 | tail -1
 gen=$repo/target/release/gen
+# the manifest checks the loader answers three calls with (components/manifest)
+cargo build -j 2 --release --manifest-path "$repo/Cargo.toml" -p osprey_manifest 2>&1 | tail -1
+manifest_lib=$repo/target/release/libosprey_manifest.a
 mkdir -p "$here/build"
 "$gen" $hdrs --header "$repo/include/osprey.h" --generated "$here/build/_osprey.c"
 for f in "$here/build/_osprey.c" "$here/template/types.c" "$here/template/door.c" "$repo/loader/loader.c"; do
@@ -50,12 +53,12 @@ case $(uname -s) in
   *) shared=-shared; ext=so ;;
 esac
 if [ "$ext" = dylib ]; then
-  clang $shared -o "$here/build/_osprey.abi3.so" "$here/build/_osprey.o" "$here/build/types.o" "$here/build/door.o" "$here/build/loader.o" "$lib" \
+  clang $shared -o "$here/build/_osprey.abi3.so" "$here/build/_osprey.o" "$here/build/types.o" "$here/build/door.o" "$here/build/loader.o" "$manifest_lib" "$lib" \
     -Wl,-exported_symbol,_PyInit__osprey -Wl,-dead_strip -Wl,-undefined,dynamic_lookup
   codesign -v "$here/build/_osprey.abi3.so" && echo "codesign -v ok"
 else
   printf '{\n  global:\n    PyInit__osprey;\n  local:\n    *;\n};\n' > "$here/build/osprey.map"
-  clang $shared -o "$here/build/_osprey.abi3.so" "$here/build/_osprey.o" "$here/build/types.o" "$here/build/door.o" "$here/build/loader.o" "$lib" \
+  clang $shared -o "$here/build/_osprey.abi3.so" "$here/build/_osprey.o" "$here/build/types.o" "$here/build/door.o" "$here/build/loader.o" "$manifest_lib" "$lib" \
     -Wl,--version-script="$here/build/osprey.map" -Wl,--gc-sections -lm -ldl
 fi
 # a library with the wrong abi number, for the entry's refusal test
