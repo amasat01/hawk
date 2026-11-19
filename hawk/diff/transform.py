@@ -74,6 +74,7 @@ class Derived(tuple):
         gradients: dict | None = None,
         cotangents: dict | None = None,
         next_values: dict | None = None,
+        tangents: dict | None = None,
     ):
         self = super().__new__(cls, sinks)
         #: A reverse derivative's planes as the transform named them: ``gradients`` maps each gradient plane to the
@@ -84,6 +85,9 @@ class Derived(tuple):
         #: A step derivative's next-value planes: each plane holding a carried plane's value after the step (the transform
         #: named it), mapped to the carried plane. Empty when the derivative is not of a step.
         self.next_values = {} if next_values is None else next_values
+        #: A forward derivative's tangent planes as the transform named them, inputs and outputs alike: each tangent
+        #: plane mapped to the primal plane it is the tangent of. Empty for a reverse derivative.
+        self.tangents = {} if tangents is None else tangents
         #: The sidecar ``jump`` record of a derivative smoothed through its
         #: switches (``@kernel(jump=...)``), else ``None``.
         self.jump = jump
@@ -661,24 +665,23 @@ def with_derivative(
                 label, sinks, kind=getattr(one, "kind", None)
             ).arg_spec
         ]
-        lead = TANGENT_PREFIX + "_"
         extra = [
-            (nm, declared[nm[len(lead) :]])
-            for nm in names
-            if nm not in declared
-            and nm.startswith(lead)
-            and nm[len(lead) :] in declared
+            (nm, primal_plane)
+            for nm, primal_plane in tangent.tangents.items()
+            if nm in names and nm not in declared and primal_plane in declared
         ]
         # input tangents first, then output tangents, each in the primal's own order
         order = list(declared)
         extra.sort(
             key=lambda e: (
-                getattr(e[1], "form", "") == "mutable",
-                order.index(e[0][len(lead) :]),
+                getattr(declared[e[1]], "form", "") == "mutable",
+                order.index(e[1]),
             )
         )
-        declared.update(extra)
-    return Kernel(label, sinks, declared or None, kind=getattr(one, "kind", None))
+        declared.update((nm, declared[primal_plane]) for nm, primal_plane in extra)
+    out = Kernel(label, sinks, declared or None, kind=getattr(one, "kind", None))
+    out.tangents = tangent.tangents
+    return out
 
 
 @_rederivable
@@ -814,6 +817,7 @@ def _jvp(
         wrt=names,
         primal_unit=primal_unit,
         jump=None if plan is None else plan.record(names),
+        tangents=dict(name.source),
     )
 
 

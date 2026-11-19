@@ -106,6 +106,7 @@ def plan_view(sidecar: dict) -> dict:
         **({"adjoint_like": dict(sidecar["adjoint_like"])} if sidecar.get("adjoint_like") else {}),
         **({"cotangent_of": dict(sidecar["cotangent_of"])} if sidecar.get("cotangent_of") else {}),
         **({"next_of": dict(sidecar["next_of"])} if sidecar.get("next_of") else {}),
+        **({"tangent_of": dict(sidecar["tangent_of"])} if sidecar.get("tangent_of") else {}),
         **({"gather_mats": dict(sidecar["gather_mats"])} if sidecar.get("gather_mats") else {}),
         "host_entry": sidecar.get("host_entry"),
         # A finishing kernel's ``{mask, counter, steps}``, if present.

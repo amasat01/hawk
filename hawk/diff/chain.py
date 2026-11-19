@@ -29,13 +29,14 @@ def _inputs(kernel, names) -> list:
 
 
 def _member(kernel, sinks, label, derivative=None):
-    """The unit of ``kernel`` that runs ``sinks``; ``derivative`` is the reverse derivative they come from, whose planes it states."""
+    """The unit of ``kernel`` that runs ``sinks``; ``derivative`` is the derivative they come from, whose planes it states."""
     from ..trace.kernel import Kernel
 
     out = Kernel(f"{kernel.name}_{label}", tuple(sinks), kind=kernel.kind)
     out.lane_space, out.group, out.jump = kernel.lane_space, kernel.group, kernel.jump
-    if derivative is not None:
+    if derivative:
         out.gradients, out.cotangents = derivative.gradients, derivative.cotangents
+        out.tangents = derivative.tangents
     return out
 
 
@@ -43,7 +44,7 @@ def _prune(kernel, own, needed: set, label, derived=()):
     """The member of ``kernel`` that keeps its ``own`` sinks read in ``needed``, and ``derived`` in full."""
     kept = [s for s in own if s.field_text("name") in needed] + list(derived)
     needed.update(lf.field_text("name") for lf in _walk_sinks(kept)[0])
-    return _member(kernel, kept, label) if kept else None
+    return _member(kernel, kept, label, derived) if kept else None
 
 
 def _derived(chain, members, kind, wrt, primal_unit, jump=None) -> Derived:
@@ -82,7 +83,7 @@ def jvp_chain(chain, wrt, primal_unit) -> Derived:
         w = _inputs(k, tangent_of)
         d = _jvp(k, wrt=w, primal_unit=primal_unit) if w else ()
         jump = jump or getattr(d, "jump", None)
-        tangents.append(tuple(d))
+        tangents.append(d)
         tangent_of.update(
             s.field_text("name")
             for s in _sinks_of(k)

@@ -74,7 +74,7 @@ class Kernel:
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
                  "time", "time_step", "source_digest", "jump", "returns",
-                 "lane_space", "group", "members", "gradients", "cotangents", "next_values", "steps", "broadcast", "team", "_twins", "_plan", "_lock")
+                 "lane_space", "group", "members", "gradients", "cotangents", "next_values", "tangents", "steps", "broadcast", "team", "_twins", "_plan", "_lock")
 
     def __init__(self, name: str, sinks: tuple[Any, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
@@ -110,6 +110,9 @@ class Kernel:
         #: For a step as a pure map (:func:`hawk.diff.step_function`) and the derivative of one: ``{next-value plane: the
         #: carried plane it holds the value of after the step}``; empty otherwise.
         self.next_values: dict[str, str] = getattr(sinks, "next_values", {})
+        #: For a forward derivative: ``{tangent plane: the primal plane it is the tangent of}``, inputs and outputs
+        #: alike, as the transform named them; empty otherwise.
+        self.tangents: dict[str, str] = getattr(sinks, "tangents", {})
         #: The planes this kernel reads broadcast, with their patterns (a twin, see
         #: :mod:`hawk._broadcast`), and the twins made of it by pattern.
         self.broadcast: dict[str, tuple] = {}
@@ -871,17 +874,17 @@ def _finished(name: str, params: list[str], args: dict[str, Any],
     return tuple(out)
 
 
-def derived_axes(walk: _ir.Walk, primal: Any, gradients: dict[str, str]) -> dict[str, Any]:
-    """The named axes of a derivative's sinks, from its primal's: ``dot_<s>`` (and its
-    companion) is bound as ``<s>`` is (``Mutable["node"]`` gives ``node=N``), and the
+def derived_axes(walk: _ir.Walk, primal: Any, gradients: dict[str, str], tangents: dict[str, str]) -> dict[str, Any]:
+    """The named axes of a derivative's sinks, from its primal's: a tangent plane (``tangents`` maps
+    each to its primal plane) is bound as that plane is (``Mutable["node"]`` gives ``node=N``), and the
     gradient of a one-axis ``Table["node"]`` (``gradients`` maps each gradient plane to its input) as that
     table (the length is the caller's, the label its run-time extent). Planes the primal declares no axes
     for stay undeclared."""
     declared = getattr(primal, "planes", None) or {}
     out: dict[str, Any] = {}
     for role, name in _ir.arg_spec(walk):
-        tangent = name[:4] == "dot_"
-        base = gradients.get(name) or (name[4:] if tangent else None)
+        tangent = name in tangents
+        base = tangents.get(name) or gradients.get(name)
         plane = declared.get(base) if base else None
         if role in ("mutable", "out", "wide_out", "accum_out") and isinstance(plane, Plane) \
                 and plane.dims and (tangent or (len(plane.dims) == 1

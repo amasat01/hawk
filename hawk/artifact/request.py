@@ -152,7 +152,7 @@ def request(kernel, *, name: str, scalar: str, kind, targets, settings, position
         out["lane_space"] = lanes
     sinks = [(n, p) for n, p in planes.items() if isinstance(p, Plane) and p.form == "accum"]
     if type(kernel.sinks).__name__ == "Derived" and not planes:
-        sinks += derived_axes(kernel.walk, getattr(kernel.sinks, "source", None), kernel.gradients).items()
+        sinks += derived_axes(kernel.walk, getattr(kernel.sinks, "source", None), kernel.gradients, kernel.tangents).items()
     # A sink with named axes is bound (payload, then the named axes): the payload is the plane's own per-sample component,
     # which only the declaration knows (empty for a scalar plane).
     axes = [{"name": n, "axes": _axes(p.dims), "payload": list(p.ttype.shape)} for n, p in sinks if p.dims]
@@ -164,7 +164,7 @@ def request(kernel, *, name: str, scalar: str, kind, targets, settings, position
     bound = {name for _, name in _ir.arg_spec(kernel.walk)}
     broadcast = [{"plane": n, "axes": [flag is True for flag in pattern]}
                  for plane, pattern in (getattr(kernel, "broadcast", None) or {}).items()
-                 for n in (plane, "dot_" + plane) if n in bound]
+                 for n in (plane, *(t for t, p in kernel.tangents.items() if p == plane)) if n in bound]
     if broadcast:
         out["broadcast"] = broadcast
     out["machine"] = {row.target: machines[t] for t, row in rows.items()}

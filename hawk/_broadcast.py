@@ -346,7 +346,7 @@ def _route_derived(kernel, source, args: tuple, kwargs: dict) -> tuple:
     primal's twin (the reverse scatters into the compact shape, summing the
     axes the input does not vary along, compensated). A tangent takes its
     input's pattern; an omitted gradient is allocated in the input's own shape."""
-    from .diff.transform import ADJOINT_PREFIX, TANGENT_PREFIX
+    from .diff.transform import ADJOINT_PREFIX
 
     derived, axes, where = kernel.sinks, kernel.lane_space, f"{kernel.name}(...)"
     if args:
@@ -373,9 +373,10 @@ def _route_derived(kernel, source, args: tuple, kwargs: dict) -> tuple:
                 kernel.name, derived.rebuild(twin(source, patterns, reverse)))
             run.broadcast = dict(patterns)      # a twin: eagle's plan of it does not route again
     given = dict(kwargs)
+    tangent_names = {primal: t for t, primal in derived.tangents.items()}
     for name, kept in patterns.items():
         given[name] = compact(name, kwargs[name], kept, heads[name], where, cell=name in reverse)
-        tangent = f"{TANGENT_PREFIX}_{name}"
+        tangent = tangent_names.get(name)
         if tangent in kwargs:
             got = of(name, "per_sample", kwargs[tangent], heads[name], axes, extent, where)
             if got != kept:

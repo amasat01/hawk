@@ -24,7 +24,7 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 
 ### Added
 
-- The sidecar and `describe` of a reverse derivative state `gradient_of` (every gradient plane and its input), and those of a step as a pure map and of its derivative state `next_of` (each next-value plane and the carried plane it continues).
+- The sidecar and `describe` of a reverse derivative state `gradient_of` (every gradient plane and its input), and those of a step as a pure map and of its derivative state `next_of` (each next-value plane and the carried plane it continues); those of a forward derivative state `tangent_of` (each tangent plane and the plane it is the tangent of).
 - The sidecar and `describe` of a reverse derivative state `cotangent_of`: each cotangent plane and the forward output it seeds. `adjoint_like` now comes from the names the transform gave, not from a prefix.
 - `hawk.artifact.describe(kernels, ...)` answers, with no compiler run, the sidecar a build would write, including for each unit of a kernel that splits into several (`stages[i]["sidecar"]`), a dtype for every slot, `planes_written`, `slot_shapes` and the `group` and `wire` of each joined plane name.
 - `hawk.targets.machine(target)` returns what the library says about the machine it builds on for that target.

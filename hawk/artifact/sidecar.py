@@ -328,13 +328,10 @@ def _gather_mats(walk, broadcast: dict | None) -> dict:
     """``{compact Matrix plane: the lane axes it varies along (one bool per axis of
     the lane space), or None when the kernel is not a broadcast twin}``: what the
     binder checks its column count against. A tangent plane takes its input's pattern."""
-    from ..diff.transform import TANGENT_PREFIX
-
     held = broadcast or {}
     out = {}
     for name in walk.gather_mats:
-        base = name[len(TANGENT_PREFIX) + 1:] if name.startswith(TANGENT_PREFIX + "_") else name
-        kept = held.get(name) or held.get(base)
+        kept = held.get(name) or held.get(walk.tangent_of.get(name))
         out[name] = None if kept is None else [bool(k) for k in kept]
     return out
 
@@ -451,6 +448,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         **({"cotangent_of": walk.cotangent_of} if walk.cotangent_of else {}),
         # a step's next-value plane: the carried plane it holds the value of after the step
         **({"next_of": walk.next_of} if walk.next_of else {}),
+        # a forward derivative's tangent plane: the plane it is the tangent of
+        **({"tangent_of": walk.tangent_of} if walk.tangent_of else {}),
         # a Matrix read only at lane indices is the caller's compact plane: its
         # column count is not the lane count (a broadcast input)
         **({"gather_mats": _gather_mats(walk, broadcast)} if walk.gather_mats else {}),
@@ -538,6 +537,7 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
         adjoint_like={g: x for g, x in kernel.gradients.items() if ("accum_out", g) in arg_spec and x in reads},
         cotangent_of=cotangent_of,
         next_of=next_of,
+        tangent_of={t: x for t, x in kernel.tangents.items() if t in names},
         gather_mats=tuple(sorted(s["name"] for s in slots if s["flags"] & _SLOT_GATHER)),
         param_planes=tuple(s["name"] for s in slots if s["flags"] & _SLOT_PARAM_PLANE),
         prior_reads=frozenset(s["name"] for s in slots if s["flags"] & _SLOT_PRIOR),
@@ -640,7 +640,7 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
     body, launch = meta["body"], meta["launch"]
     from ..trace.kernel import derived_axes
 
-    planes = getattr(kernel, "planes", None) or derived_axes(kernel.walk, getattr(kernel.sinks, "source", None), kernel.gradients)
+    planes = getattr(kernel, "planes", None) or derived_axes(kernel.walk, getattr(kernel.sinks, "source", None), kernel.gradients, kernel.tangents)
     # the unit that lists the stages this unit is one of: the kernel's entry-less source unit or its first stage; each branch
     # unit of a segmented split lists itself alone, so a family may hold several lists
     source = next((u for u in family if any(st["unit"]["name"] == meta["name"] for st in u["meta"]["stages"])), None)

@@ -355,7 +355,7 @@ def matvocab_run(tmp_path_factory) -> dict:
     planes = _planes(np.random.default_rng(20260905))
     sinks = vjp(matvocab)
     derived = SimpleNamespace(name="matvocab_vjp", sinks=sinks,
-                              walk=_ir.canonical(sinks), gradients=sinks.gradients, cotangents=sinks.cotangents, next_values=sinks.next_values)
+                              walk=_ir.canonical(sinks), gradients=sinks.gradients, cotangents=sinks.cotangents, next_values=sinks.next_values, tangents=sinks.tangents)
     return {"planes": planes,
             "primal": (matvocab.sinks,
                        _run(matvocab, root / "primal", cache, planes)),

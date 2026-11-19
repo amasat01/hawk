@@ -68,6 +68,8 @@ Among its members:
 - A step as a pure map (`hawk.diff.step_function`) and the derivative of one (`hawk.diff.step_vjp`) state `next_of`, which
   maps each plane that holds a carried plane's value after the step to that carried plane, e.g. `{"x_next": "x"}`. With
   `cotangent_of`, `{"bar_x_next": "x_next"}`, a reader reaches the carried plane `x` of a seed without reading a name.
+- A forward derivative (`hawk.diff.jvp`, `step_jvp`, `with_derivative`) states `tangent_of`, which maps each tangent plane, inputs
+  and outputs alike, to the plane it is the tangent of, e.g. `{"dot_x": "x", "dot_y": "y"}`.
 - A kernel declaring `time_step=` has `refine_planes`: `{"t0": ..., "tau": ...}`, the names of the two extra planes its
   refine entry reads.
 - A kernel that runs as several units answers with its first unit. Its `stages` list the others, and each stage

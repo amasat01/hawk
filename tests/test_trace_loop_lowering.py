@@ -357,7 +357,7 @@ def test_a_gather_loops_reverse_scatters_once_per_iteration_in_the_same_scope():
         want[r * COLS + 2] += 1.5
     np.testing.assert_allclose(got, want, rtol=1e-14, atol=1e-14)
     kernel = SimpleNamespace(name="gather_vjp", sinks=derived, walk=walk, gradients=derived.gradients,
-                             cotangents=derived.cotangents, next_values=derived.next_values)
+                             cotangents=derived.cotangents, next_values=derived.next_values, tangents=derived.tangents)
     text = emit_source(kernel, targets=("host",)).sources["host"].text
     commits = (text.count("hawk_abi::accum_add(aout_bar_t, ")
                + text.count("aether::accum::run::add<32>(aout_bar_t, "))

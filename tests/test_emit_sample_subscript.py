@@ -358,7 +358,7 @@ class _Built:
 
         self.cases = cases
         self.sinks = sinks
-        kernel = SimpleNamespace(name=name, sinks=sinks, walk=_ir.canonical(sinks), gradients={}, cotangents={}, next_values={})
+        kernel = SimpleNamespace(name=name, sinks=sinks, walk=_ir.canonical(sinks), gradients={}, cotangents={}, next_values={}, tangents={})
         build(kernel, directory, targets=("host",), cache_dir=cache_dir)
         loaded = O.load(directory, name)
         self.bound = _inputs(cases)

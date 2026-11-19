@@ -84,7 +84,7 @@ def test_an_untaken_branchs_row_is_never_committed_out_of_range():
                       "bar_out": 1.0}, lanes=N)
     assert ok["bar_tab"][4] != 0.0 and not np.any(ok["bar_tab"][:4])
     derived = SimpleNamespace(name="far_row_vjp", sinks=tuple(d), walk=_ir.canonical(tuple(d)),
-                              gradients=d.gradients, cotangents=d.cotangents, next_values=d.next_values)
+                              gradients=d.gradients, cotangents=d.cotangents, next_values=d.next_values, tangents=d.tangents)
     assert "bar_tab" in emit_source(derived, targets=("host",)).sources["host"].text
 
 

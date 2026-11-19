@@ -24,7 +24,7 @@ import hawk.math as M
 from hawk import HawkError, Index, Matrix, Mutable, Scalar, Terminated, Vector, runtime
 from hawk.artifact import build_bundle, describe
 from hawk.artifact.bundle import digest_bytes
-from hawk.diff import vjp
+from hawk.diff import jvp, vjp
 
 #: The sidecar members that exist only after a compile.
 AFTER_A_COMPILE = ("tool",)
@@ -587,3 +587,39 @@ def test_a_step_as_a_pure_map_states_the_carried_plane_of_each_next_value_plane(
     sidecar = describe([pure], targets=("host",))[pure.name]
     assert sidecar["next_of"] == {"x_next": "x", "v_next": "v"}
     assert "gradient_of" not in sidecar
+
+
+# -- a forward derivative states tangent_of for every tangent plane, inputs and outputs
+
+@hawk.kernel
+def _scaled(x: Scalar, a: Scalar, y: Mutable[Scalar]):
+    y = a * x
+
+def test_a_forward_derivative_states_the_plane_each_tangent_plane_is_the_tangent_of():
+    derived = hawk.Kernel("scaled_jvp", jvp(_scaled))
+    sidecar = describe([_scaled, derived], targets=("host",))[derived.name]
+    assert sidecar["tangent_of"] == {"dot_x": "x", "dot_a": "a", "dot_y": "y"}
+    assert "tangent_of" not in describe([_scaled], targets=("host",))[_scaled.name]
+
+
+def test_a_step_forward_derivative_states_the_tangent_of_each_carried_plane():
+    derived = hawk.diff.step_jvp(_two_carried)
+    sidecar = describe([_two_carried, derived], targets=("host",))[derived.name]
+    assert sidecar["tangent_of"] == {"dot_a": "a", "dot_x": "x", "dot_v": "v"}
+
+
+def test_a_fused_steps_forward_derivative_states_the_tangent_of_each_carried_plane():
+    fused = hawk.steps(hawk.diff.step_jvp(_two_carried), 4)
+    sidecar = describe([fused], targets=("host",))[fused.name]
+    assert sidecar["tangent_of"] == {"dot_a": "a", "dot_x": "x", "dot_v": "v"}
+
+
+def test_a_derivative_with_its_primal_in_one_kernel_states_the_tangent_planes():
+    both = hawk.diff.with_derivative(_scaled)
+    sidecar = describe([both], targets=("host",))[both.name]
+    assert sidecar["tangent_of"] == {"dot_x": "x", "dot_a": "a", "dot_y": "y"}
+
+
+def test_a_reverse_derivative_states_no_tangent_of():
+    derived = hawk.Kernel("two_step_vjp", hawk.diff.step_vjp(_two_carried))
+    assert "tangent_of" not in describe([_two_carried, derived], targets=("host",))[derived.name]

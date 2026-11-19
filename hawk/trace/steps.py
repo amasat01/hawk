@@ -235,10 +235,12 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
             "Finish", _ir.TensorType((), "bool"), (done,), name=finish.field_text("name")
         )
     )
-    return Kernel(out_name, tuple(out), kernel.planes, kind=kernel.kind,
-                  step=step, steps=K, one_step=kernel if auto else None,
-                  source_digest=getattr(kernel, "source_digest", None),
-                  returns=getattr(kernel, "returns", None))
+    fused = Kernel(out_name, tuple(out), kernel.planes, kind=kernel.kind,
+                   step=step, steps=K, one_step=kernel if auto else None,
+                   source_digest=getattr(kernel, "source_digest", None),
+                   returns=getattr(kernel, "returns", None))
+    fused.tangents = kernel.tangents  # the fused kernel has the step's planes, tangent planes included
+    return fused
 
 
 def _fused_function(step: Any, K: int) -> Any:

@@ -734,7 +734,7 @@ def step_jvp(kernel: Any, *, wrt=None) -> Any:
     """
     from ..trace.kernel import Kernel
     from .event import as_plain_reads
-    from .transform import TANGENT_PREFIX, jvp
+    from .transform import jvp
 
     step = getattr(kernel, "step", None) or getattr(kernel, "one_step", None) or kernel
     if getattr(step, "jump", None) is not None:
@@ -764,7 +764,7 @@ def step_jvp(kernel: Any, *, wrt=None) -> Any:
     tangent = jvp(
         plain, wrt=None if wrt is None else tuple(dict.fromkeys((*wrt, *state)))
     )
-    carried = set(state) | {f"{TANGENT_PREFIX}_{name}" for name in state}
+    carried = set(state) | {t for t, plane in tangent.tangents.items() if plane in state}
     values = tuple(s.operands[0] for s in tangent)
     start = {
         n: _ir.leaf(
@@ -784,4 +784,5 @@ def step_jvp(kernel: Any, *, wrt=None) -> Any:
         kind=step.kind,
     )
     out.time, out.time_step = step.time, step.time_step
+    out.tangents = tangent.tangents
     return out
