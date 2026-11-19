@@ -51,8 +51,8 @@ fn compile(cxx: &str, flags: &[String], door: &Path, source: &str, out: &Path) -
     object
 }
 
-/// The OpenMP runtime the compiler `cxx` links against: the file it names for `library`.
-fn openmp_runtime(cxx: &str, library: &str) -> PathBuf {
+/// The runtime library the compiler `cxx` links against: the file it names for `library`.
+fn compiler_runtime(cxx: &str, library: &str) -> PathBuf {
     let asked = Command::new(cxx)
         .arg(format!("-print-file-name={library}"))
         .output()
@@ -60,7 +60,7 @@ fn openmp_runtime(cxx: &str, library: &str) -> PathBuf {
     let found = PathBuf::from(String::from_utf8_lossy(&asked.stdout).trim());
     assert!(
         found.is_absolute() && found.exists(),
-        "CXX {cxx} has no {library}: it must be a compiler with OpenMP"
+        "CXX {cxx} names no {library}: it must be a C++ compiler with OpenMP"
     );
     found
 }
@@ -140,15 +140,23 @@ fn main() {
     for object in &objects {
         println!("cargo:rustc-link-arg-cdylib={}", object.display());
     }
-    let (runtime, cxx_runtime) =
-        if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") {
-            ("libomp.dylib", "-lc++")
-        } else {
-            ("libgomp.so", "-lstdc++")
-        };
+    if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") {
+        println!(
+            "cargo:rustc-link-arg-cdylib={}",
+            compiler_runtime(&cxx, "libomp.dylib").display()
+        );
+        println!("cargo:rustc-link-arg-cdylib=-lc++");
+        return;
+    }
     println!(
         "cargo:rustc-link-arg-cdylib={}",
-        openmp_runtime(&cxx, runtime).display()
+        compiler_runtime(&cxx, "libgomp.so").display()
     );
-    println!("cargo:rustc-link-arg-cdylib={cxx_runtime}");
+    // The objects need the C++ runtime of the compiler that made them, which may be newer than the
+    // system's: the file CXX names can be a linker script that adds an archive beside it, so its
+    // folder is searched too.
+    let cxx_runtime = compiler_runtime(&cxx, "libstdc++.so");
+    let beside = cxx_runtime.parent().expect("an absolute file has a folder");
+    println!("cargo:rustc-link-arg-cdylib=-L{}", beside.display());
+    println!("cargo:rustc-link-arg-cdylib={}", cxx_runtime.display());
 }

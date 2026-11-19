@@ -118,7 +118,7 @@ Every file with its line count (this file excluded):
      22  osprey_host/osprey_cpu/Cargo.toml
      18  osprey_host/osprey_cpu/build.rs
      15  osprey_host/osprey_cpu/door/Cargo.toml
-    154  osprey_host/osprey_cpu/door/build.rs
+    162  osprey_host/osprey_cpu/door/build.rs
      10  osprey_host/osprey_cpu/door/src/lib.rs
      20  osprey_host/osprey_cpu/facts/arm.json
      29  osprey_host/osprey_cpu/facts/build.json
