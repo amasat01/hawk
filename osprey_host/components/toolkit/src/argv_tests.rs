@@ -100,7 +100,7 @@ fn a_served_unit_template_fills_to_the_hand_written_argv() {
     let argv = tk
         .argv_of(
             &job(&template, &["-g"]),
-            &tk.tools().unwrap(),
+            &tk.tools(None).unwrap(),
             &root,
             Path::new("/s"),
         )
@@ -141,7 +141,7 @@ fn a_roots_unit_template_puts_both_roots_before_the_defines_and_the_facts_includ
     let argv = tk
         .argv_of(
             &job(&template, &[]),
-            &tk.tools().unwrap(),
+            &tk.tools(None).unwrap(),
             &root,
             Path::new("/s"),
         )
@@ -190,7 +190,7 @@ fn a_link_template_fills_one_element_for_each_object() {
     let argv = tk
         .argv_of(
             &link,
-            &tk.tools().unwrap(),
+            &tk.tools(None).unwrap(),
             Path::new("/r"),
             Path::new("/s"),
         )
@@ -215,7 +215,7 @@ fn a_place_nobody_fills_is_refused_by_name() {
     let refused = tk
         .argv_of(
             &job(&template, &[]),
-            &tk.tools().unwrap(),
+            &tk.tools(None).unwrap(),
             Path::new("/r"),
             Path::new("/s"),
         )
@@ -230,7 +230,7 @@ fn a_place_nobody_fills_is_refused_by_name() {
 #[test]
 fn a_define_in_a_list_moves_the_key_of_the_build() {
     let tk = toolkit(&[FACTS, SERVED]);
-    let machine = tk.tools().unwrap();
+    let machine = tk.tools(None).unwrap();
     let with = |defines: &[&str]| {
         let request = wire::obj(vec![
             ("name", wire::s("u")),

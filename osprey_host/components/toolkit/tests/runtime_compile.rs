@@ -305,3 +305,28 @@ fn an_include_folder_of_the_table_is_found_beside_the_loaded_library_and_named_i
         "{image}"
     );
 }
+
+/// Oracle: the answer's own list of files: a build that keeps its source lists it, and every file the answer lists is in the store.
+#[test]
+fn a_runtime_build_that_keeps_its_source_publishes_it_with_the_image() {
+    let f = fixture("rt-source");
+    let tk = toolkit(&f, &[]);
+    let store = f.dir.join("store");
+    let kept = request("__global__ void k() {}", "ptx").replacen(
+        "{\"name\"",
+        "{\"keep_source\":true,\"name\"",
+        1,
+    );
+    let answer = tk.build(&kept, &store).unwrap();
+    let files = member(&answer, "files");
+    let paths: Vec<_> = ["output", "source"]
+        .iter()
+        .map(|name| std::path::PathBuf::from(files.get(name).and_then(J::str).unwrap()))
+        .collect();
+    assert!(paths.iter().all(|p| p.is_file()), "{paths:?}");
+    assert_eq!(
+        fs::read_to_string(&paths[1]).unwrap(),
+        "__global__ void k() {}"
+    );
+    assert!(paths[1].ends_with("k.cu"));
+}

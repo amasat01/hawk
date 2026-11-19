@@ -136,3 +136,24 @@ fn the_masked_call_witness_runs_on_the_real_compiler_and_its_verdict_is_kept() {
     assert!(hit(&second, "masked_call") && hit(&second, "wrong"));
     assert!(!hit(&second, "does_not_build") && !hit(&second, "odd_exit"));
 }
+
+/// Oracle: two programs under one witness name and one store give their own verdicts, `fixed` for the one that exits 0 and
+/// `miscompile` for the one that exits 1; the second is not answered with the first's kept verdict.
+#[test]
+fn a_verdict_kept_for_one_witness_text_is_not_read_for_another() {
+    let dir = scratch("witness_text");
+    let tk = Toolkit::new(&table(), &[OWN], Env::process()).unwrap();
+    let verdict_of = |source: &str| {
+        let ask = format!(
+            "{{\"root\":\"{}\",\"witnesses\":[{}]}}",
+            dir.display(),
+            witness("masked_call", source, &["-O1"])
+        );
+        let answer = stated(&tk, &ask);
+        let found = answer.get("witnesses").unwrap().get("masked_call").unwrap();
+        found.get("verdict").and_then(J::str).unwrap().to_string()
+    };
+    assert_eq!(verdict_of("int main() { return 0; }"), "fixed");
+    assert_eq!(verdict_of("int main() { return 1; }"), "miscompile");
+    assert_eq!(verdict_of("int main() { return 0; }"), "fixed");
+}

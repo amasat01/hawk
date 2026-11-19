@@ -92,6 +92,7 @@ impl Toolkit {
             job.text.clone(),
             job.name.clone(),
             job.output_suffix.clone(),
+            format!("keep_source {} {}", job.keep_source, job.source_suffix),
         ];
         parts.extend([
             runtime.target.clone(),
@@ -136,7 +137,14 @@ impl Toolkit {
                 ("elf", J::Bool(image.starts_with(b"\x7fELF"))),
                 ("figures", figures::parse(job.figures.as_deref(), &done.log, &image)?),
             ]);
-            Ok(Built { files: vec![output], meta })
+            let mut files = vec![output];
+            if job.keep_source {
+                // the offline path publishes the source it compiled; the answer lists it for either path
+                let source = format!("{}{}", job.name, job.source_suffix);
+                fs::write(scratch.join(&source), &job.text).map_err(|e| Refusal::io("cannot write", &scratch.join(&source), &e))?;
+                files.push(source);
+            }
+            Ok(Built { files, meta })
         })
     }
 }

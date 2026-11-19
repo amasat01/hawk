@@ -1439,7 +1439,13 @@ impl KernelAnswer {
             let mut defines = vec![];
             if let Some(Json::Obj(by_target)) = k.opt("defines") {
                 for (name, list) in by_target {
-                    let target = member_of(&TARGETS, &Json::Str(name.clone()), "defines")?;
+                    // the writer names a target as the libraries do (`host`, `cuda`)
+                    let target = TARGETS
+                        .into_iter()
+                        .find(|t| crate::backend::target_name(*t) == name)
+                        .ok_or_else(|| {
+                            wrong("defines", &format!("{name:?} is no target of this build"))
+                        })?;
                     for define in list_of(list, "defines", |d| text_of(d, "defines"))? {
                         defines.push((target, define));
                     }

@@ -302,12 +302,13 @@ impl Toolkit {
         let budget = self.limit("source_budget", SOURCE_BUDGET_BYTES)?;
         let size = job.text.len() as u64;
         if budget > 0 && size > budget {
+            let note = self.limit_note("source_budget");
             return Err(Refusal::new(
                 Kind::OverBudget,
-                format!("the translation unit of {:?} is {size} bytes, over the compile budget of {budget} bytes: a source this large is too wide for one compile; narrow the kernel or raise the budget for one build", job.name),
+                format!("the translation unit of {:?} is {size} bytes, over the compile budget of {budget} bytes{note}: a source this large is too wide for one compile; narrow the kernel or raise the budget for one build", job.name),
             ));
         }
-        let machine = self.tools()?;
+        let machine = self.tools(Some(root))?;
         if let (Some(runtime), false) = (&job.runtime, machine.replaced.is_empty()) {
             return self.run_runtime_job(job, runtime, &machine, root);
         }
@@ -481,9 +482,10 @@ impl Toolkit {
             .unwrap_or("");
         let lower = done.stderr.to_lowercase();
         if cap > 0 && ALLOCATION_FAILURES.iter().any(|m| lower.contains(m)) {
+            let note = self.limit_note("address_cap");
             return Refusal::new(
                 Kind::OutOfMemory,
-                format!("{label} ran under a {cap}-byte address-space cap, so an allocation failure here means this translation unit is too large for one compile and not that the machine is out of memory"),
+                format!("{label} ran under a {cap}-byte address-space cap{note}, so an allocation failure here means this translation unit is too large for one compile and not that the machine is out of memory"),
             );
         }
         if matches!(done.code, Some(126 | 127)) {

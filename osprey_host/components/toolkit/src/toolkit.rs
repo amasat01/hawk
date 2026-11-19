@@ -3,7 +3,7 @@
 use crate::device;
 use crate::discover::{self, Env, Machine};
 use crate::headers::HeaderTree;
-use crate::refusal::{Done, Refusal};
+use crate::refusal::{Done, Kind, Refusal};
 use crate::runtime::Runtime;
 use crate::store;
 use crate::wire;
@@ -53,7 +53,11 @@ impl Toolkit {
     /// Refuses a malformed ask or table, a pinned arch the toolkit cannot serve, and a probe whose tool fails.
     pub fn machine(&self, ask: &str) -> Done<String> {
         let ask = wire::parse("the machine ask", ask)?;
-        let found = discover::find(&self.spec, &self.env)?;
+        let found = discover::find(
+            &self.spec,
+            &self.env.fresh(),
+            ask.get("root").and_then(J::str).map(Path::new),
+        )?;
         let (runtime, absent) = self.runtime_for(&found)?;
         let tools = J::Obj(
             found
@@ -152,6 +156,7 @@ impl Toolkit {
             Some(spec) => device::probe_driver(spec)?.unwrap_or_default(),
             None => device::Driver::default(),
         };
+        let env = self.env.fresh();
         let policy = wire::need(device, "arch", "device")?;
         let toolkit = match runtime {
             Some(runtime) => runtime.archs(),
@@ -160,7 +165,7 @@ impl Toolkit {
         let env_pin = policy
             .get("pin_env")
             .and_then(J::str)
-            .and_then(|var| self.env.get(var).map(|v| (var, v)));
+            .and_then(|var| env.get(var).map(|v| (var, v)));
         let inputs = device::Inputs {
             asked: ask.get("device_arch").and_then(J::str),
             env_pin,
@@ -215,8 +220,8 @@ impl Toolkit {
     }
 
     /// The tools of the table, found, or the refusal that names what is missing.
-    pub(crate) fn tools(&self) -> Done<Machine> {
-        let machine = discover::find(&self.spec, &self.env)?;
+    pub(crate) fn tools(&self, root: Option<&Path>) -> Done<Machine> {
+        let machine = discover::find(&self.spec, &self.env.fresh(), root)?;
         match &machine.absent {
             Some(reason) => Err(Refusal::new(
                 crate::refusal::Kind::ToolAbsent,
@@ -228,7 +233,7 @@ impl Toolkit {
 
     /// The environment a tool runs under.
     pub(crate) fn child_env(&self, machine: &Machine) -> Done<HashMap<String, String>> {
-        discover::child_env(&self.spec, &self.env, machine)
+        discover::child_env(&self.spec, &self.env.fresh(), machine)
     }
 
     /// What the environment says for the ask `name` (`opt_level`, `host_profile`) when the caller states none: the value of the
@@ -241,8 +246,8 @@ impl Toolkit {
             .and_then(|asks| asks.get(name))
             .and_then(|rule| rule.get("env"))
             .and_then(J::str)?;
-        let value = self.env.get(var)?.trim();
-        (!value.is_empty()).then(|| value.to_string())
+        let value = self.env.fresh().get(var)?.trim().to_string();
+        (!value.is_empty()).then_some(value)
     }
 
     /// The limit `name` of the table: its environment variable's value when set, else its default; 0 disables it.
@@ -258,7 +263,8 @@ impl Toolkit {
         let Some(var) = rule.get("env").and_then(J::str) else {
             return Ok(default);
         };
-        match self.env.get(var).map(str::trim) {
+        let env = self.env.fresh();
+        match env.get(var).map(str::trim) {
             None => Ok(default),
             Some(raw) => raw.parse::<u64>().map_err(|_| {
                 Refusal::bad(format!(
@@ -266,6 +272,17 @@ impl Toolkit {
                 ))
             }),
         }
+    }
+
+    /// The words that tell a reader which variable changes the limit `name`, as `" ($VAR, 0 disables it)"`; empty when the table
+    /// gives that limit no variable.
+    pub(crate) fn limit_note(&self, name: &str) -> String {
+        self.spec
+            .get("limits")
+            .and_then(|l| l.get(name))
+            .and_then(|rule| rule.get("env"))
+            .and_then(J::str)
+            .map_or(String::new(), |var| format!(" (${var}, 0 disables it)"))
     }
 
     /// Runs a command of this toolkit under its limits, once it holds one of the `jobs` permits of the store `root` (the request's
@@ -285,7 +302,13 @@ impl Toolkit {
         };
         let _permit = crate::jobs::acquire(root, jobs)?;
         store::note_run();
-        run::run(argv, &self.child_env(machine)?, cap, seconds)
+        let env = self.child_env(machine)?;
+        run::run(argv, &env, cap, seconds).map_err(|mut refused| {
+            if refused.kind == Kind::TimedOut {
+                refused.message.push_str(&self.limit_note("timeout"));
+            }
+            refused
+        })
     }
 }
 

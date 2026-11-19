@@ -2,9 +2,10 @@
 //! `PATH`, a flag inside another variable, another tool), then the probes that state its identity and facts. Nothing here names a
 //! tool: the table does. A rule that cannot be satisfied falls through to the next, except an environment variable marked
 //! `required`, which is an explicit override and refuses when it does not resolve.
-use crate::refusal::{Done, Refusal};
+use crate::refusal::{Done, Kind, Refusal};
 use crate::run;
 use crate::shellwords;
+use crate::store::{Built, Store};
 use crate::wire;
 use rcore::json::J;
 use rcore::sha256;
@@ -14,11 +15,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 
-/// The environment variables of a discovery, a snapshot so a test can state its own.
+/// The environment variables of a discovery, a snapshot so a test can state its own. The snapshot of the process environment is
+/// [`fresh`](Env::fresh)ed by whoever asks, so a variable changed between two asks is read as it then is.
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     /// Variable name to value.
     vars: HashMap<String, String>,
+    /// Whether this is the environment of the process, to be read again when asked for.
+    live: bool,
 }
 
 impl Env {
@@ -27,6 +31,17 @@ impl Env {
     pub fn process() -> Self {
         Env {
             vars: std::env::vars().collect(),
+            live: true,
+        }
+    }
+
+    /// The environment as it is now: read again for the process environment, the same snapshot for a stated one.
+    #[must_use]
+    pub fn fresh(&self) -> Env {
+        if self.live {
+            Env::process()
+        } else {
+            self.clone()
         }
     }
 
@@ -38,6 +53,7 @@ impl Env {
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
+            live: false,
         }
     }
 
@@ -146,7 +162,7 @@ fn swap_of(spec: &J, env: &Env, name: &str) -> Done<Option<Swap>> {
 ///
 /// # Errors
 /// Refuses a table that is malformed.
-pub fn find(spec: &J, env: &Env) -> Done<Machine> {
+pub fn find(spec: &J, env: &Env, root: Option<&Path>) -> Done<Machine> {
     let mut machine = Machine::default();
     let mut missing: Vec<String> = vec![];
     for (name, tool_spec) in wire::need(spec, "tools", "tool table")?.obj() {
@@ -159,7 +175,7 @@ pub fn find(spec: &J, env: &Env) -> Done<Machine> {
             continue;
         }
         let found = match locate(name, tool_spec, env, &machine)? {
-            Ok(path) => describe(&path, tool_spec, env)?,
+            Ok(path) => describe(&path, tool_spec, env, root)?,
             Err(reason) => Err(reason),
         };
         match (found, swap) {
@@ -320,8 +336,10 @@ pub fn forget_probes() {
 }
 
 /// The standard output of `<path> <args>`, or why it did not run: the operating system's error when it could not be started,
-/// else the exit code and the tool's own complaint. A success is memoised per executable.
-fn probe(path: &Path, args: &[String], env: &Env) -> Result<String, String> {
+/// else the exit code and the tool's own complaint. A success is memoised per executable for this process and, when `root` is
+/// given, kept in the store under it, keyed on the executable's path, size and modification time and the arguments, so a fresh
+/// process and a second process do not ask the tool again and a replaced executable never reads the old answer.
+fn probe(path: &Path, args: &[String], env: &Env, root: Option<&Path>) -> Result<String, String> {
     let unreadable = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let meta = std::fs::metadata(path).map_err(|e| unreadable(&e))?;
     let mtime = meta
@@ -338,29 +356,74 @@ fn probe(path: &Path, args: &[String], env: &Env) -> Result<String, String> {
     if let Some(hit) = remembered {
         return Ok(hit);
     }
-    let mut command = vec![path.display().to_string()];
-    command.extend_from_slice(args);
-    let done = run::run(&command, env.vars(), 0, run::PROBE_SECONDS).map_err(|r| r.message)?;
-    if done.code != Some(0) {
+    let ask = || {
+        let mut command = vec![path.display().to_string()];
+        command.extend_from_slice(args);
+        let done = run::run(&command, env.vars(), 0, run::PROBE_SECONDS).map_err(|r| r.message)?;
+        if done.code == Some(0) {
+            return Ok(done.stdout);
+        }
         let code = done
             .code
             .map_or("no exit code".to_string(), |c| format!("exit {c}"));
-        return Err(format!("{code}: {}", done.stderr.trim()));
-    }
+        Err(format!("{code}: {}", done.stderr.trim()))
+    };
+    let answer = match root {
+        Some(root) => kept(root, &key, ask)?,
+        None => ask()?,
+    };
     if let Ok(mut memo) = PROBES.lock() {
         memo.get_or_insert_with(HashMap::new)
-            .insert(key, done.stdout.clone());
+            .insert(key, answer.clone());
     }
-    Ok(done.stdout)
+    Ok(answer)
+}
+
+/// The answer of `ask` for the probe `key`, kept as a slot of the store under `root/probes`: built once however many processes
+/// ask, published whole. A failed probe leaves no slot. A store that cannot be used (a read-only root) costs only the keeping.
+fn kept(
+    root: &Path,
+    key: &(PathBuf, u64, u128, Vec<String>),
+    ask: impl Fn() -> Result<String, String>,
+) -> Result<String, String> {
+    let (path, size, mtime, args) = key;
+    let mut terms = vec![
+        path.display().to_string(),
+        size.to_string(),
+        mtime.to_string(),
+    ];
+    terms.extend_from_slice(args);
+    let slot = sha256::hex(terms.join("\0").as_bytes());
+    let failed = std::cell::RefCell::new(None);
+    let entry = Store::new(&root.join("probes")).keep(&slot, |_| {
+        ask()
+            .map_err(|why| {
+                *failed.borrow_mut() = Some(why);
+                Refusal::new(Kind::ToolFailed, "the probe failed")
+            })
+            .map(|text| Built {
+                files: vec![],
+                meta: wire::s(&text),
+            })
+    });
+    match (entry, failed.into_inner()) {
+        (Ok(slot), _) => slot
+            .meta
+            .str()
+            .map(String::from)
+            .ok_or_else(|| "a kept probe answer is not text".to_string()),
+        (Err(_), Some(why)) => Err(why),
+        (Err(_), None) => ask(),
+    }
 }
 
 /// The identity of the tool at `path` and the facts of its probes, or the reason it cannot be asked.
-fn describe(path: &Path, spec: &J, env: &Env) -> Done<Result<Tool, String>> {
+fn describe(path: &Path, spec: &J, env: &Env, root: Option<&Path>) -> Done<Result<Tool, String>> {
     let args = match spec.get("identity_args") {
         Some(_) => wire::texts(spec, "identity_args", "tool")?,
         None => vec!["--version".to_string()],
     };
-    let text = match probe(path, &args, env) {
+    let text = match probe(path, &args, env, root) {
         Ok(text) => text,
         Err(why) => {
             return Ok(Err(format!(
@@ -376,7 +439,7 @@ fn describe(path: &Path, spec: &J, env: &Env) -> Done<Result<Tool, String>> {
     let mut facts = vec![];
     for p in spec.get("probes").map_or(&[][..], J::arr) {
         let name = wire::text(p, "name", "probe")?;
-        let answer = probe(path, &wire::texts(p, "args", "probe")?, env).ok();
+        let answer = probe(path, &wire::texts(p, "args", "probe")?, env, root).ok();
         facts.push((name.to_string(), read_probe(p, answer.as_deref())?));
     }
     Ok(Ok(Tool {

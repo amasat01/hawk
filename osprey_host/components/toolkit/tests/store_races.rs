@@ -129,15 +129,19 @@ fn a_writer_killed_mid_compile_leaves_no_slot_and_the_next_build_completes() {
     assert_eq!(runs(&dir), 2);
 }
 
-/// Whether a file or folder whose name starts with `prefix` is anywhere under `dir`.
+/// Whether a file or folder whose name starts with `prefix` is anywhere under `dir`, outside the folder of kept probe answers
+/// (a build's slots are what the callers ask about).
 fn files_named(dir: &Path, prefix: &str) -> bool {
     let Ok(entries) = fs::read_dir(dir) else {
         return false;
     };
-    entries.flatten().any(|e| {
-        let found = e.file_name().to_string_lossy().starts_with(prefix);
-        found || (e.path().is_dir() && files_named(&e.path(), prefix))
-    })
+    entries
+        .flatten()
+        .filter(|e| e.file_name() != "probes")
+        .any(|e| {
+            let found = e.file_name().to_string_lossy().starts_with(prefix);
+            found || (e.path().is_dir() && files_named(&e.path(), prefix))
+        })
 }
 
 /// The largest number of fake compiler runs that overlapped, from the start and end lines the fake appends to `dir/log`.

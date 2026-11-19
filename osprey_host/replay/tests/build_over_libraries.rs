@@ -292,3 +292,102 @@ fn a_companion_takes_a_setting_the_leader_declares_and_refuses_one_that_neither_
     // SAFETY: the context is not used again.
     unsafe { rx_ctx_free(ctx) };
 }
+
+/// The device answer `lead` with the define the leader states for a text that gates its fast entry points behind a macro (the plain
+/// kernel's text has no gate, so its answer states none of its own).
+fn with_device_define(lead: &str) -> String {
+    let mut answer = KernelAnswer::from_json(lead).unwrap();
+    answer.units[0]
+        .defines
+        .push((Target::Device, "HAWK_FAST_ENTRIES=1".into()));
+    answer.to_json()
+}
+
+/// Oracle: the define the answer of the device library states, as the writer wrote it; a merge over answers that state it keeps it
+/// for the device only and one over answers that state none has no `defines` member.
+#[test]
+fn a_two_library_merge_keeps_the_defines_of_the_device_and_states_none_for_the_host() {
+    let (ctx, sink) = plain_kernel();
+    let (lead, beside) = both(ctx, sink);
+    let defines = |answer: &str| {
+        KernelAnswer::from_json(answer).unwrap().units[0]
+            .defines
+            .clone()
+    };
+    let stating = with_device_define(&lead);
+    assert!(
+        stating.contains("\"defines\":{\"cuda\":[\"HAWK_FAST_ENTRIES=1\"]}"),
+        "{stating}"
+    );
+    let merged = osprey_lowering::lower::merge(&format!("[{stating},{beside}]")).unwrap();
+    assert_eq!(
+        defines(&merged),
+        [(Target::Device, "HAWK_FAST_ENTRIES=1".to_string())]
+    );
+    let plain = osprey_lowering::lower::merge(&format!("[{lead},{beside}]")).unwrap();
+    assert!(
+        !plain.contains("\"defines\""),
+        "an answer with no define has no member"
+    );
+    // SAFETY: the context is not used again.
+    unsafe { rx_ctx_free(ctx) };
+}
+
+/// Oracle: each library's own answer. Every text with its facts (the written planes, their elements and shapes), the steps table, the
+/// dispatch costs and the per-target members of the unit's meta in the merged answer are those the library of the target stated.
+#[test]
+fn a_merged_pair_states_each_member_of_a_target_as_the_library_of_that_target_did() {
+    let (ctx, sink) = plain_kernel();
+    let (lead, beside) = both(ctx, sink);
+    let merged = KernelAnswer::from_json(
+        &osprey_lowering::lower::merge(&format!("[{lead},{beside}]")).unwrap(),
+    )
+    .unwrap();
+    let (device, host) = (
+        KernelAnswer::from_json(&lead).unwrap(),
+        KernelAnswer::from_json(&beside).unwrap(),
+    );
+    let of = |answer: &KernelAnswer, target: Target| {
+        let texts = answer.units.iter().flat_map(|u| &u.texts);
+        texts
+            .filter(|t| t.target == target)
+            .map(|t| format!("{t:?}"))
+            .collect::<Vec<_>>()
+    };
+    for (alone, target) in [(&host, Target::Host), (&device, Target::Device)] {
+        assert!(!of(alone, target).is_empty());
+        assert_eq!(
+            of(&merged, target),
+            of(alone, target),
+            "{target:?} texts and facts"
+        );
+    }
+    assert_eq!(merged.dispatch_costs, device.dispatch_costs);
+    assert_eq!(merged.steps_reverse.host, host.steps_reverse.host);
+    assert_eq!(merged.steps_reverse.device, device.steps_reverse.device);
+    let (m, d, h) = (
+        &merged.units[0].meta,
+        &device.units[0].meta,
+        &host.units[0].meta,
+    );
+    assert_eq!(
+        (
+            &m.device_function,
+            &m.device_image_format,
+            &m.device_flags,
+            &m.launch.device_box
+        ),
+        (
+            &d.device_function,
+            &d.device_image_format,
+            &d.device_flags,
+            &d.launch.device_box
+        )
+    );
+    assert_eq!(
+        (&m.host_entry, &m.launch.host_box),
+        (&h.host_entry, &h.launch.host_box)
+    );
+    // SAFETY: the context is not used again.
+    unsafe { rx_ctx_free(ctx) };
+}

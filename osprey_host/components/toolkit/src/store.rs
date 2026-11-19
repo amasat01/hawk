@@ -131,9 +131,29 @@ impl Store {
     /// # Errors
     /// Refuses with a [`Refusal`](crate::refusal::Refusal) that names what is wrong with the request or the tool.
     pub fn get_or_build(&self, key: &str, build: impl FnOnce(&Path) -> Done<Built>) -> Done<Entry> {
+        self.slot_built(key, build, true)
+    }
+
+    /// As [`Store::get_or_build`], for a slot that is no build (a kept probe answer): the hit and miss counters do not count it.
+    pub(crate) fn keep(&self, key: &str, build: impl FnOnce(&Path) -> Done<Built>) -> Done<Entry> {
+        self.slot_built(key, build, false)
+    }
+
+    /// The slot of `key`, built when no asker has built it; `counted` says whether the hit and miss counters see it.
+    fn slot_built(
+        &self,
+        key: &str,
+        build: impl FnOnce(&Path) -> Done<Built>,
+        counted: bool,
+    ) -> Done<Entry> {
+        let count = |counter: &AtomicU64| {
+            if counted {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        };
         let slot = self.slot(key)?;
         if let Some(entry) = Self::find(&slot) {
-            HITS.fetch_add(1, Ordering::Relaxed);
+            count(&HITS);
             return Ok(entry);
         }
         let parent = slot.parent().unwrap_or(&self.root);
@@ -144,10 +164,10 @@ impl Store {
         lock.lock()
             .map_err(|e| Refusal::io("cannot lock", &lock_path, &e))?;
         if let Some(entry) = Self::find(&slot) {
-            HITS.fetch_add(1, Ordering::Relaxed);
+            count(&HITS);
             return Ok(entry);
         }
-        MISSES.fetch_add(1, Ordering::Relaxed);
+        count(&MISSES);
         publish(&slot, build)
     }
 }

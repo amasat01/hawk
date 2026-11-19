@@ -47,7 +47,7 @@ impl Toolkit {
     pub fn link(&self, request: &str, root: &Path) -> Done<String> {
         let req = wire::parse("the link request", request)?;
         let name = wire::text(&req, "name", "link request")?.to_string();
-        let machine = self.tools()?;
+        let machine = self.tools(Some(root))?;
         let store = Store::new(root);
         let (mut objects, mut keys) = (vec![], vec![]);
         let mut images = vec![];
