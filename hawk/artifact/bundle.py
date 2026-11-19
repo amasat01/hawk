@@ -263,8 +263,8 @@ def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | Non
     """One opaque text naming everything a build of ``kernels`` for ``targets`` is made of.
 
     Per kernel: its name, the text of its traced nodes, the request the lowering is asked (declarations, kind, sinks, settings)
-    and its derivative tag; per target: the ``key`` the serving OSPREY states for the machine; and ``mode``, ``options`` and
-    ``opt_level``. Equal requests give equal texts, and a change in any of these gives another. A caller that has choices of its
+    and its derivative tag; per target: the ``key`` the serving OSPREY states for the machine, which covers the level and the options
+    as it resolves them (a default stated and a default left out are one key); and ``mode``. Equal requests give equal texts, and a change in any of these gives another. A caller that has choices of its
     own (a folder name, say) hashes this text together with them.
     """
     options = _user_options(options, False, None, "", "")
@@ -279,7 +279,7 @@ def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | Non
     keyed = {t: {"key": machines[t]["key"]} for t in targets}
     plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, machines=keyed, sizes=None)
     derivative = _per_kernel_derivative(kernels, names, None)
-    return hashlib.sha256(json.dumps([plans, derivative, opt_level], sort_keys=True, default=repr).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([plans, derivative], sort_keys=True, default=repr).encode()).hexdigest()
 
 
 # -- The calls to the OSPREYs. ------------------------------------------------------------------------------------------------ #
@@ -362,7 +362,10 @@ def _require_tools(machines: dict) -> None:
 
 
 def _texts(unit: dict, targets) -> dict:
-    """``{target: the text record the OSPREYs wrote for it}`` of one answered unit; a target with no text is refused by name."""
+    """``{target: the text record the OSPREYs wrote for it}`` of one answered unit; a target with no text is refused by name, and
+    so is a define the library states for a target this build does not have: it would be dropped, never built."""
+    if stray := [t for t in unit.get("defines", {}) if t not in targets]:
+        raise HawkError(f"the lowering states defines for {stray[0]!r}, which is not a target of this build {tuple(targets)}")
     by_request = {TARGETS[t].target: t for t in targets}
     found = {by_request[text["target"]]: text for text in unit["texts"] if text["target"] in by_request}
     if absent := [t for t in targets if t not in found]:
@@ -488,13 +491,28 @@ def _artifact_of(draft: _Draft, directory: Path, library: "_Library | None") -> 
                     None if library is None else directory / library.name)
 
 
+def _holds_unit(directory: Path, digest: str, files) -> bool:
+    """Whether ``directory`` already holds the unit of ``digest``: its stamp states that digest and every file of the unit is there
+    with the digest the unit gives it. By content, never by modification time: a file altered in place is not the unit."""
+    try:
+        if json.loads((directory / STAMP_NAME).read_text()).get("unit") != digest:
+            return False
+        return all(_digest_file(directory / f.name) == f.digest for f in files)
+    except (OSError, ValueError):
+        return False
+
+
 def _publish(files, directory: Path) -> None:
     """Lay ``files`` down in ``directory``, each whole to a private sibling and then renamed into place: a concurrent reader (or a
-    second builder of the same unit) sees the old file or the new one, never a partial write."""
+    second builder of the same unit) sees the old file or the new one, never a partial write. A directory that already holds the
+    unit is left alone."""
+    digest = _unit_digest(files)
+    if _holds_unit(directory, digest, files):
+        return
     directory.mkdir(parents=True, exist_ok=True)
     for f in files:
         f.write(directory)
-    blob = text_blob(json.dumps({"unit": _unit_digest(files), "aether_abi": _contracts.AETHER_ABI_VERSION,
+    blob = text_blob(json.dumps({"unit": digest, "aether_abi": _contracts.AETHER_ABI_VERSION,
                                  "files": {f.name: f.digest for f in sorted(files, key=lambda f: f.name)}}, indent=2) + "\n")
     UnitFile(STAMP_NAME, digest_bytes(blob), blob=blob).write(directory)
 

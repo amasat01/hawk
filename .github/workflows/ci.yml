@@ -340,6 +340,8 @@ jobs:
         run: |
           cd hawk
           python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
+          # the siblings given are what the environment ends with: a release of the index never stands in for one
+          python tools/check_siblings.py --source "$GITHUB_WORKSPACE/eagle/python" --wheels "$GITHUB_WORKSPACE/osprey-wheels"
         if: steps.memo.outputs.run == 'true'
 
       - name: Witness that the masked-call avoidance is needed (the miscompile on exactly the affected compilers)
@@ -634,6 +636,8 @@ jobs:
           cd hawk
           # SciPy ships no free-threaded wheel for the newest tags: take the newest wheel over an sdist build
           python -m pip install --quiet --no-build-isolation --only-binary=:all: -e '.[test]' "numpy>=1.26"
+          # the siblings given are what the environment ends with: a release of the index never stands in for one
+          python tools/check_siblings.py --source "$GITHUB_WORKSPACE/eagle/python" --wheels "$GITHUB_WORKSPACE/osprey-wheels"
         if: steps.memo.outputs.run == 'true'
 
       # An ft leg is vacuous on a GIL interpreter (every ft row skips) and the

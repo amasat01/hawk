@@ -4,14 +4,12 @@
 """Publishing a deployment unit is content-addressed and idempotent.
 
 A repeat build of an unchanged unit is served by the OSPREY's store (no tool runs) and gives the same unit digest; into
-another directory it lays down the same bytes; into the directory that already holds it, it should leave the files alone.
+another directory it lays down the same bytes; into the directory that already holds it, it leaves the files alone; a directory whose file was altered is laid down again.
 """
 
 from __future__ import annotations
 
 import logging
-
-import pytest
 
 import hawk
 from hawk import Scalar
@@ -47,11 +45,6 @@ def test_a_repeat_build_into_another_directory_holds_the_same_bytes_and_digest_a
     assert [r for r in caplog.records if "building" in r.getMessage()] == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the publisher writes every file of the unit again, through a new private file renamed into place, even "
-    "when the directory already holds the same bytes (hawk/artifact/bundle.py _publish writes unconditionally)",
-)
 def test_a_repeat_build_into_the_directory_that_already_holds_the_unit_leaves_every_file_untouched(
     tmp_path,
 ):
@@ -62,6 +55,16 @@ def test_a_repeat_build_into_the_directory_that_already_holds_the_unit_leaves_ev
     assert {
         p.name: p.stat().st_mtime_ns for p in (tmp_path / "unit").iterdir()
     } == before
+
+
+def test_a_directory_whose_file_was_altered_is_rewritten_to_the_unit(tmp_path):
+    """A file whose bytes differ from the unit's is not the unit: the publish lays every file down again."""
+    unit = build_into(tmp_path, "unit").directory
+    whole = bytes_of(unit)
+    victim = next(p for p in unit.iterdir() if p.name.endswith(".json") and not p.name.startswith("."))
+    victim.write_bytes(b"altered")
+    build_into(tmp_path, "unit")
+    assert bytes_of(unit) == whole
 
 
 def test_a_reader_of_a_unit_file_that_is_being_rewritten_sees_the_old_bytes_or_the_whole_new_ones(

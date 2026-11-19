@@ -113,6 +113,9 @@ gate-venv: gate-tools
 	    $(VPY) -m pip install --quiet --no-build-isolation --config-settings=build-dir=$(GATE_ABS)/build/eagle "$(abspath $(EAGLE_SRC))/python" -c ci/constraints.txt; fi
 	CMAKE_PREFIX_PATH=$(GATE_ABS)/prefix $(VPY) -m pip install --quiet --no-build-isolation --config-settings=build-dir=$(GATE_ABS)/build/hawk \
 	    -e ".[$(EXTRAS)]" -c ci/constraints.txt
+	# installing hawk re-resolves its requirements on our packages and would replace a sibling below the floor by the index's release: the
+	# environment ends with the siblings that were given, or the gate stops (raptor and eagle are installed only when EAGLE_SRC is given)
+	$(VPY) tools/check_siblings.py $(if $(EAGLE_SRC),--source "$(abspath $(RAPTOR_SRC))" --source "$(abspath $(EAGLE_SRC))/python") --wheels "$(OSPREY_WHEELS)"
 
 # -- the CPU legs CI runs -----------------------------------------------------------------------------------------------------
 # lint: ruff (the repo's config), the manifesto copy (raptor main, or MANIFESTO_SOURCE), and the documented numbers and capability
