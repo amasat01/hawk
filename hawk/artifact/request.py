@@ -152,7 +152,7 @@ def request(kernel, *, name: str, scalar: str, kind, targets, settings, position
         out["lane_space"] = lanes
     sinks = [(n, p) for n, p in planes.items() if isinstance(p, Plane) and p.form == "accum"]
     if type(kernel.sinks).__name__ == "Derived" and not planes:
-        sinks += derived_axes(kernel.walk, getattr(kernel.sinks, "source", None)).items()
+        sinks += derived_axes(kernel.walk, getattr(kernel.sinks, "source", None), kernel.gradients).items()
     # A sink with named axes is bound (payload, then the named axes): the payload is the plane's own per-sample component,
     # which only the declaration knows (empty for a scalar plane).
     axes = [{"name": n, "axes": _axes(p.dims), "payload": list(p.ttype.shape)} for n, p in sinks if p.dims]

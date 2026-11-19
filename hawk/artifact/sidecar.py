@@ -443,10 +443,14 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         # the companion planes of the compensated keyed sums: the runtime
         # makes them with the bind and the caller never passes them
         **({"companions": walk.companions} if walk.companions else {}),
-        # an adjoint plane is its lookup plane's size, not the lane count
+        # a reverse derivative's gradient planes, each with the input it is the gradient of
+        **({"gradient_of": walk.gradient_of} if walk.gradient_of else {}),
+        # the gradients accumulated at lookup indices: an adjoint plane is its lookup plane's size, not the lane count
         **({"adjoint_like": walk.adjoint_like} if walk.adjoint_like else {}),
         # a reverse derivative's cotangent plane: the forward output it seeds
         **({"cotangent_of": walk.cotangent_of} if walk.cotangent_of else {}),
+        # a step's next-value plane: the carried plane it holds the value of after the step
+        **({"next_of": walk.next_of} if walk.next_of else {}),
         # a Matrix read only at lane indices is the caller's compact plane: its
         # column count is not the lane count (a broadcast input)
         **({"gather_mats": _gather_mats(walk, broadcast)} if walk.gather_mats else {}),
@@ -519,6 +523,9 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
     held = {group.name: (index, group) for index, group in enumerate(_ir.dispatch_groups(kernel.walk))}
     mixes = _ir.mix_slots(kernel.walk)
     listed = [d for d in body["dispatches"] if not _is_classify_record(d)]
+    cotangent_of = {c: out for c, out in kernel.cotangents.items() if c in names}
+    # a step derivative reads its seeds, not the next-value planes: those are named by the seeds' targets
+    next_of = {n: carried for n, carried in kernel.next_values.items() if n in names or n in cotangent_of.values()}
 
     return SimpleNamespace(
         arg_spec=arg_spec, slot_types=slot_types, digest=meta["digest"],
@@ -527,8 +534,10 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
         access=SimpleNamespace(cls=_snake(body["access"]), op=None),
         cells={c["name"]: {"op": _snake(c["op"]), "columns": c["columns"]} for c in body["cells"]},
         companions={names[c["slot"]]: names[c["target_slot"]] for c in body["companions"]},
+        gradient_of={g: x for g, x in kernel.gradients.items() if g in names},
         adjoint_like={g: x for g, x in kernel.gradients.items() if ("accum_out", g) in arg_spec and x in reads},
-        cotangent_of={c: out for c, out in kernel.cotangents.items() if c in names},
+        cotangent_of=cotangent_of,
+        next_of=next_of,
         gather_mats=tuple(sorted(s["name"] for s in slots if s["flags"] & _SLOT_GATHER)),
         param_planes=tuple(s["name"] for s in slots if s["flags"] & _SLOT_PARAM_PLANE),
         prior_reads=frozenset(s["name"] for s in slots if s["flags"] & _SLOT_PRIOR),
@@ -631,7 +640,7 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
     body, launch = meta["body"], meta["launch"]
     from ..trace.kernel import derived_axes
 
-    planes = getattr(kernel, "planes", None) or derived_axes(kernel.walk, getattr(kernel.sinks, "source", None))
+    planes = getattr(kernel, "planes", None) or derived_axes(kernel.walk, getattr(kernel.sinks, "source", None), kernel.gradients)
     # the unit that lists the stages this unit is one of: the kernel's entry-less source unit or its first stage; each branch
     # unit of a segmented split lists itself alone, so a family may hold several lists
     source = next((u for u in family if any(st["unit"]["name"] == meta["name"] for st in u["meta"]["stages"])), None)

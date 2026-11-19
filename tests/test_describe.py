@@ -545,3 +545,45 @@ def test_a_reverse_derivative_states_the_output_each_cotangent_plane_seeds(prima
     assert sidecar_of(bundle, derived.name)["cotangent_of"] == seeds
     assert "cotangent_of" not in sidecar_of(bundle, primal.name)
 
+
+
+# -- the planes a transform names: gradient_of for every gradient, next_of for a step's next values
+
+@hawk.kernel(steps=1)
+def _two_carried(a: hawk.Param, terminated: Terminated, x: Mutable[Scalar], v: Mutable[Scalar]):
+    v = v + a * x
+    x = x * a
+    terminated = x < 0.0
+
+
+def test_a_reverse_derivative_states_every_gradient_and_adjoint_like_only_the_lookup_ones():
+    from _autodiff_kernels import node_gather
+
+    derived = hawk.Kernel("ng_vjp", vjp(node_gather, wrt=("x", "w")))
+    sidecar = describe([node_gather, derived], targets=("host",))[derived.name]
+    assert sidecar["gradient_of"] == {"bar_w": "w", "bar_x": "x"}
+    assert sidecar["adjoint_like"] == {"bar_w": "w"}
+    assert "gradient_of" not in describe([node_gather], targets=("host",))[node_gather.name]
+
+
+def test_a_step_derivative_states_its_gradients_seeds_and_next_value_planes():
+    derived = hawk.Kernel("two_step_vjp", hawk.diff.step_vjp(_two_carried))
+    sidecar = describe([_two_carried, derived], targets=("host",))[derived.name]
+    assert sidecar["gradient_of"] == {"bar_a": "a", "bar_x": "x", "bar_v": "v"}
+    assert sidecar["cotangent_of"] == {"bar_x_next": "x_next", "bar_v_next": "v_next"}
+    assert sidecar["next_of"] == {"x_next": "x", "v_next": "v"}
+
+
+def test_a_fused_steps_derivative_states_its_gradients_and_next_value_planes():
+    four = hawk.steps(_two_carried, 4)
+    fused = hawk.Kernel("two_fused_vjp", hawk.diff.step_vjp(four, steps_reverse="fused"))
+    sidecar = describe([four, fused], targets=("host",))[fused.name]
+    assert sidecar["gradient_of"] == {"bar_a": "a", "bar_x": "x", "bar_v": "v"}
+    assert sidecar["next_of"] == {"x_next": "x", "v_next": "v"}
+
+
+def test_a_step_as_a_pure_map_states_the_carried_plane_of_each_next_value_plane():
+    pure = hawk.diff.step_function(_two_carried)
+    sidecar = describe([pure], targets=("host",))[pure.name]
+    assert sidecar["next_of"] == {"x_next": "x", "v_next": "v"}
+    assert "gradient_of" not in sidecar

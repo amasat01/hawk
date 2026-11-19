@@ -73,6 +73,7 @@ class Derived(tuple):
         jump: dict | None = None,
         gradients: dict | None = None,
         cotangents: dict | None = None,
+        next_values: dict | None = None,
     ):
         self = super().__new__(cls, sinks)
         #: A reverse derivative's planes as the transform named them: ``gradients`` maps each gradient plane to the
@@ -80,6 +81,9 @@ class Derived(tuple):
         #: Empty for a forward derivative.
         self.gradients = {} if gradients is None else gradients
         self.cotangents = {} if cotangents is None else cotangents
+        #: A step derivative's next-value planes: each plane holding a carried plane's value after the step (the transform
+        #: named it), mapped to the carried plane. Empty when the derivative is not of a step.
+        self.next_values = {} if next_values is None else next_values
         #: The sidecar ``jump`` record of a derivative smoothed through its
         #: switches (``@kernel(jump=...)``), else ``None``.
         self.jump = jump

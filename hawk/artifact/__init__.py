@@ -102,8 +102,10 @@ def plan_view(sidecar: dict) -> dict:
         **({"plane_axes": dict(sidecar["plane_axes"])} if sidecar.get("plane_axes") else {}),
         # the companion planes the runtime owns (compensated keyed sums)
         **({"companions": dict(sidecar["companions"])} if sidecar.get("companions") else {}),
+        **({"gradient_of": dict(sidecar["gradient_of"])} if sidecar.get("gradient_of") else {}),
         **({"adjoint_like": dict(sidecar["adjoint_like"])} if sidecar.get("adjoint_like") else {}),
         **({"cotangent_of": dict(sidecar["cotangent_of"])} if sidecar.get("cotangent_of") else {}),
+        **({"next_of": dict(sidecar["next_of"])} if sidecar.get("next_of") else {}),
         **({"gather_mats": dict(sidecar["gather_mats"])} if sidecar.get("gather_mats") else {}),
         "host_entry": sidecar.get("host_entry"),
         # A finishing kernel's ``{mask, counter, steps}``, if present.

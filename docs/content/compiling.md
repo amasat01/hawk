@@ -61,9 +61,13 @@ Among its members:
 - `contractions` lists each dense contraction a unit is: the `unit`, the `route` the library chose (`gemm` for matrix
   products beside the kernel, `direct` for the kernel's own loop) and the `products` with their shapes. A kernel that is
   none has no such member.
-- A reverse derivative (`hawk.diff.vjp`) states `adjoint_like`, which maps each gradient plane that is accumulated at
-  lookup indices to the input it is the gradient of, and `cotangent_of`, which maps each cotangent (seed) plane to the
-  forward output it seeds, e.g. `{"bar_out": "out"}`. Neither is stated for a kernel that is not a derivative.
+- A reverse derivative (`hawk.diff.vjp`) states `gradient_of`, which maps each gradient plane to the input it is the
+  gradient of, e.g. `{"bar_x": "x"}`; `adjoint_like`, the part of it whose planes are accumulated at lookup indices (each
+  is the size of its lookup plane, not the lane count); and `cotangent_of`, which maps each cotangent (seed) plane to the
+  forward output it seeds, e.g. `{"bar_out": "out"}`. None is stated for a kernel that is not a derivative.
+- A step as a pure map (`hawk.diff.step_function`) and the derivative of one (`hawk.diff.step_vjp`) state `next_of`, which
+  maps each plane that holds a carried plane's value after the step to that carried plane, e.g. `{"x_next": "x"}`. With
+  `cotangent_of`, `{"bar_x_next": "x_next"}`, a reader reaches the carried plane `x` of a seed without reading a name.
 - A kernel declaring `time_step=` has `refine_planes`: `{"t0": ..., "tau": ...}`, the names of the two extra planes its
   refine entry reads.
 - A kernel that runs as several units answers with its first unit. Its `stages` list the others, and each stage

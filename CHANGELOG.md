@@ -6,6 +6,7 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 
 ### Breaking
 
+- **Keyword renames.** `policy=` is gone from the kernel language. `hawk.sum`, `max`, `min`, `mean` and `hawk.scatter` take `contract=` (`contract="ordered"`, `"compensated"`, ...); a bit-mask scatter needs no keyword, `|=` alone states it. `dispatch(...)` and the per-group override of `vjp(...)` take `strategy=`. `build_policy=BuildPolicy(...)` is `settings=BuildSettings(...)`. The old spellings are refused; no alias is kept.
 - **Kernels are now compiled by backend libraries, not by Python code in hawk.** One compiled library per backend lowers a kernel, finds its compiler, builds and caches the result; hawk asks it. `pip install raptor-hawk` pulls `raptor-osprey` (the module hawk talks to them through) and `raptor-osprey-cpu`; the new `cuda` extra adds `raptor-osprey-cuda` (alongside `cuda12` or `cuda13`, which still bring the NVIDIA packages). `aether-dsc` and `raptor-core` are no longer dependencies, and `import aether`, `import eagle` and `import raptor` are not needed by hawk's build path.
 - **Where hawk looks for a backend library.** In the folders that installed distributions declare under the entry-point group `hawk.ospreys` and in those of the environment variable `HAWK_OSPREY_PATH`. A folder whose manifest has a key other than `name`, `version`, `door` and `targets` (a `wings` key included), lacks a member, or states a target id that is not a lowercase identifier is refused with the reason, and the other folders still load; `hawk.ospreys.refused()` lists them. A target no library found serves is refused by name, with the refused folders.
 - **Build options are declared by each library.** `options={"<target>.<key>": value}` reaches the library, which refuses a key it does not declare, naming the ones it does. `host_profile=`, `device_arch=` and `literal_table=` still work but warn, and name the option that replaces them (`host.profile`, `cuda.arch`, `cuda.literal_table`).
@@ -23,6 +24,7 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 
 ### Added
 
+- The sidecar and `describe` of a reverse derivative state `gradient_of` (every gradient plane and its input), and those of a step as a pure map and of its derivative state `next_of` (each next-value plane and the carried plane it continues).
 - The sidecar and `describe` of a reverse derivative state `cotangent_of`: each cotangent plane and the forward output it seeds. `adjoint_like` now comes from the names the transform gave, not from a prefix.
 - `hawk.artifact.describe(kernels, ...)` answers, with no compiler run, the sidecar a build would write, including for each unit of a kernel that splits into several (`stages[i]["sidecar"]`), a dtype for every slot, `planes_written`, `slot_shapes` and the `group` and `wire` of each joined plane name.
 - `hawk.targets.machine(target)` returns what the library says about the machine it builds on for that target.

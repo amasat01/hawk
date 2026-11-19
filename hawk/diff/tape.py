@@ -664,6 +664,7 @@ def step_function(kernel: Any) -> Any:
         {},
     )
     function.jump = getattr(step, "jump", None)
+    function.next_values = {s.field_text("name") + NEXT_SUFFIX: s.field_text("name") for s in commits}
     return function
 
 
@@ -695,6 +696,7 @@ def _step_vjp(kernel: Any, *, wrt, primal_unit, steps_reverse) -> Any:
         jump=out.jump,
         gradients=out.gradients,
         cotangents=out.cotangents,
+        next_values=function.next_values,
     )
     if fused:
         result._fused_steps = fused[1]
