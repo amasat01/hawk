@@ -41,7 +41,7 @@ def _names(sinks):
 
 def test_a_step_function_is_named_for_its_kernel_and_writes_one_next_plane_per_carried_state_plane():
     function = step_function(pend)
-    assert function.name == "pend_function"
+    assert function.name == "pend_step"
     assert _names(function.sinks) == ["v_next", "x_next"]
 
 

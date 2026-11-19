@@ -48,8 +48,7 @@ def check(options) -> None:
 
 def of_target(options, target: str) -> dict:
     """The options under the prefix ``target``, prefix dropped."""
-    prefix = target + "."
-    return {k[len(prefix):]: v for k, v in options.items() if k.startswith(prefix)}
+    return {key: v for k, v in options.items() for prefix, _, key in [k.partition(".")] if ospreys.target_id(prefix) == target}
 
 
 def canon(name: str, value) -> str:

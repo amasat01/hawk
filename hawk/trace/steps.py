@@ -304,7 +304,7 @@ def _fused_function(step: Any, K: int) -> Any:
     ]
     # the Select above is the skip: no guard of the kind, so a derivative neither
     # masks nor wraps it a second time (a standalone C unit would flag the repeat)
-    return Kernel(f"{step.name}_x{K}_function", tuple(out), {}, kind=Kind("fused_steps", guard=DATA_ONLY))
+    return Kernel(f"{step.name}_x{K}_step", tuple(out), {}, kind=Kind("fused_steps", guard=DATA_ONLY))
 
 
 def _clamped_word(context: Any) -> Any:

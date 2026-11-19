@@ -74,7 +74,7 @@ refused. `nvcc` is found from `HAWK_NVCC`, else `nvcc` on `PATH`, and it compile
 running; `HAWK_CUDA_ARCH` (for example `sm_80`) pins another. There is no
 `aether`/`eagle` source checkout to make: the library carries what it compiles
 against. `hawk.targets.buildable("cuda")` says whether the library finds its tools, and
-`hawk.targets.stated("cuda")` says what it found (see [Compiling](compiling)).
+`hawk.targets.machine("cuda")` says what it found (see [Compiling](compiling)).
 
 That compiles a device artifact. To *run* one, you also need `eagle`
 installed (see [eagle's installation page](https://amasat01.github.io/eagle/content/userguide/installation.html)) — hawk compiles it, eagle

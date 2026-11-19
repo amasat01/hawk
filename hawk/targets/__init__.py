@@ -44,6 +44,10 @@ class _Targets(Mapping):
     """The served targets by id, in the order the OSPREYs were found."""
 
     def __getitem__(self, key) -> Target:
+        try:
+            key = ospreys.target_id(key)
+        except HawkError:
+            raise KeyError(key) from None
         for osprey in ospreys.found().values():
             if key in osprey.targets:
                 return Target(key, osprey.name, **{k: osprey.targets[key][k] for k in ("request", "target", "about", "device", "entry", "format")})
@@ -88,11 +92,12 @@ def buildable(target: str) -> bool:
     """
     from ..artifact import default_cache_dir    # the artifact package imports this one: a module-level import would be a cycle
 
+    target = ospreys.target_id(target)
     ask = {"target": target, "options": {}, "opt_level": "", "root": str(default_cache_dir())}
     return ospreys.serving(target).machine(ask)["tools_absent"] is None
 
 
-def stated(target: str, *, options=None, opt_level: str = "") -> dict:
+def machine(target: str, *, options=None, opt_level: str = "") -> dict:
     """What the library says about this machine for ``target``: the ``stated`` record of its machine answer, as given (compiler
     path and identity, profile, flags, device architecture). The keys are the library's; hawk reads none of them.
 
@@ -102,6 +107,7 @@ def stated(target: str, *, options=None, opt_level: str = "") -> dict:
     """
     from ..artifact.bundle import _machines, _user_options, default_cache_dir    # the artifact package imports this one: a cycle
 
+    target = ospreys.target_id(target)
     machine = _machines((target,), _user_options(options, False, None, "", ""), opt_level, default_cache_dir())[target]
     ospreys.serving(target).require_tools(machine)
     return machine["stated"]

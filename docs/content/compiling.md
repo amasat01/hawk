@@ -30,7 +30,7 @@ source small and the gradient cheap.
 ## The tools a build uses
 
 `hawk.targets.buildable("host")` says whether the library finds what it needs on this machine, and
-`hawk.targets.stated("host")` returns what it says about it: the compiler and its identity, the profile, the flags, and for
+`hawk.targets.machine("host")` returns what it says about it: the compiler and its identity, the profile, the flags, and for
 the GPU the device architecture. The keys are the library's own. It raises `ToolchainAbsent` with the library's reason
 when the tools are missing. The same options you give `hawk.build` (`options=`, `opt_level=`) can be given to it.
 
@@ -47,8 +47,7 @@ before and after its build. It refuses what `build` refuses.
 
 Among its members:
 
-- `arg_dtypes` has the dtype of every slot, uniform and lookup slots included, and `element_counts` the number of
-  elements of each slot's type.
+- `arg_dtypes` has the dtype of every slot, uniform and lookup slots included, and `slot_shapes` the static shape of each.
 - `planes_written` lists the planes the kernel writes, sorted.
 - For an `auto` dispatch, `dispatches[].cost` states the operation counts of each branch.
 - `plane_names` gives the `group` and `wire` name of every plane whose name joins the two, so you never split a name
@@ -68,7 +67,7 @@ library: read nothing from them.
 `hawk.artifact.cache_stats()` returns each library's counters and `hawk.artifact.reset()` empties the cache. Deleting the
 folder does the same.
 
-A unit published to a folder holds a stamp file, `.hawk_unit` (its name is `hawk.artifact.STAMP_NAME`). It is JSON: the
+A unit published to a folder holds a stamp file, `.hawk_stamp` (its name is `hawk.artifact.STAMP_NAME`). It is JSON: the
 unit's digest (`Bundle.digest`) and the digest of each published file, so you can check the files against what hawk
 published. Building the same unit again into a folder that already holds it leaves the folder alone.
 

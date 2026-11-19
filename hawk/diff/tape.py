@@ -625,7 +625,7 @@ def step_vjp(
 def step_function(kernel: Any) -> Any:
     """ONE step of an in-place step kernel as a pure map: a kernel that reads every carried (``Mutable``) plane as it was
     before the step, writes each new value to the separate plane ``<plane>_next`` and leaves its inputs untouched. The
-    kernel is named ``<kernel>_function`` and keeps the jump of the step. It is an ordinary kernel, so :func:`~hawk.diff.jvp`
+    kernel is named ``<kernel>_step`` and keeps the jump of the step. It is an ordinary kernel, so :func:`~hawk.diff.jvp`
     and :func:`~hawk.diff.vjp` differentiate it, and :func:`step_vjp` is the vjp of it.
 
     A kernel that carries no floating-point state plane is refused by name (the taping of its single step refuses it).
@@ -648,7 +648,7 @@ def step_function(kernel: Any) -> Any:
     commits = [s for s in single.sinks if _ir.is_a(s, "assign") and s.field_text("name") != APPLIED_STEPS]
     values = as_plain_reads(tuple(s.operands[0] for s in commits))
     function = Kernel(
-        f"{step.name}_function",
+        f"{step.name}_step",
         tuple(_assign(s.field_text("name") + NEXT_SUFFIX, v, _ir.type_of(s)) for s, v in zip(commits, values)),
         {},
     )

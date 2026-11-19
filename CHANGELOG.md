@@ -15,13 +15,15 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 - **`HAWK_COMPILE_JOBS=0` means no cap** on compiles that run at once. It used to be refused.
 - **The embedded C target is refused by name** (`targets=("c",)`, `embedded_profile=`, any `c.<key>` option): `hawk.embedded` and its documentation are gone.
 - **`HAWK_AETHER_INCLUDE` and `HAWK_EAGLE_INCLUDE` apply only to building hawk from source.** They no longer change what a kernel compiles against: each library carries its own headers.
+- **Target ids have one spelling.** An id a library states and a target name you pass (`targets=`, `hawk.targets.machine`, the prefix of an option such as `cuda.arch`) is lowercased with whitespace, dashes and underscores removed, so `"CUDA"`, `"Cu-Da"` and `" c u_da "` are `cuda`; what is left must be a letter followed by letters and digits, or it is refused by name. Two folders whose ids have the same spelling serve one target and stop the search with an error naming both, as two folders with the same id did.
+- **The stamp file of a published unit is `.hawk_stamp`** (it was `.hawk_unit`); its members are unchanged. The sidecar has no `element_counts` member: `slot_shapes` states the same fact.
 
 ### Added
 
-- `hawk.artifact.describe(kernels, ...)` answers, with no compiler run, the sidecar a build would write, including for each unit of a kernel that splits into several (`stages[i]["sidecar"]`), a dtype for every slot, `planes_written`, `element_counts` and the `group` and `wire` of each joined plane name.
-- `hawk.targets.stated(target)` returns what the library says about the machine it builds on for that target.
+- `hawk.artifact.describe(kernels, ...)` answers, with no compiler run, the sidecar a build would write, including for each unit of a kernel that splits into several (`stages[i]["sidecar"]`), a dtype for every slot, `planes_written`, `slot_shapes` and the `group` and `wire` of each joined plane name.
+- `hawk.targets.machine(target)` returns what the library says about the machine it builds on for that target.
 - `hawk.ospreys.refused()` and `hawk.ospreys.forget()`.
-- `hawk.diff.step_function(kernel)`: one step of a time-stepping kernel as a pure map, which `jvp` and `vjp` differentiate.
+- `hawk.diff.step_function(kernel)`: one step of a time-stepping kernel as a pure map, named `<kernel>_step`, which `jvp` and `vjp` differentiate.
 
 ### Removed
 

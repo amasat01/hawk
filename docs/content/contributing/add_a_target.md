@@ -29,11 +29,10 @@ A folder is refused, by name and with the reason, when:
 - its manifest is missing or unreadable, or lacks `name`, `version`, `door` or `targets`;
 - its manifest has any other key (a misspelt key is refused, never ignored), including `wings`: an OSPREY keeps its wings
   inside its library;
-- a target row lacks one of its members, or its `request` is not a lowercase identifier (`[a-z][a-z0-9_]*`).
+- a target row lacks one of its members, or its `request` is not a target id. An id is spelled one way: lowercased, with whitespace, dashes and underscores removed (`Cu-Da` is `cuda`), and what is left must be a letter followed by letters and digits. The same spelling applies to every target name you pass to hawk.
 
 A refused folder does not stop the others: the rest load. A library that is found but cannot be opened (its file is
-missing, or it speaks another door) is refused by name when a call first needs it. Two libraries that serve one target
-stop the search with an error that names both, since a target has one library. `hawk.ospreys.refused()` returns `{folder: reason}` for every folder that could not
+missing, or it speaks another door) is refused by name when a call first needs it. Two libraries that serve one target (ids compared by their one spelling) stop the search with an error that names both, since a target has one library. `hawk.ospreys.refused()` returns `{folder: reason}` for every folder that could not
 be used, and a build that asks for a target only such a folder would serve says which folder and why. Call
 `hawk.ospreys.forget()` after you change the environment or install a distribution, and the next call searches again.
 

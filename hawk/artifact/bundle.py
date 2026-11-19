@@ -182,7 +182,7 @@ def _unit_digest(files) -> str:
 
 #: The stamp a published unit folder holds: the unit digest and the digest of each published file, so a reader of the folder can
 #: check the files against the publisher. Dot-prefixed, so it is no member of the unit and not part of the digest it records.
-STAMP_NAME = ".hawk_unit"
+STAMP_NAME = ".hawk_stamp"
 
 
 def _lane_set(kind):
@@ -224,6 +224,11 @@ def _refuse_segmented_position(kernels, names) -> None:
         if reads_position and any(d.strategy == "segmented" for d in _ir.dispatch_groups(kernel.walk)):
             raise HawkError(f"{name!r}: hawk.sample_position() is the launch slot, and a segmented unit addresses its lanes through the "
                             "run's offsets; use sample_index() there")
+
+
+def _target_ids(targets) -> tuple:
+    """``targets`` as a tuple of canonical target ids (:func:`hawk.ospreys.target_id`): the spelling every lookup below uses."""
+    return tuple(ospreys.target_id(target) for target in targets)
 
 
 def _refuse_targets(name: str, targets) -> None:
@@ -268,7 +273,7 @@ def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | Non
     own (a folder name, say) hashes this text together with them.
     """
     options = _user_options(options, False, None, "", "")
-    kernels, targets = list(kernels), tuple(targets)
+    kernels, targets = list(kernels), _target_ids(targets)
     names = [k.name for k in kernels]
     _refuse_targets(names[0] if names else "", targets)
     explicit = False
@@ -646,7 +651,7 @@ def _resolved_settings(settings, targets, *, emit_form=None, linalg_form=None, w
 
 def _user_options(options, literal_table, embedded_profile, device_arch, host_profile) -> dict:
     """The user's ``options`` with the old keywords folded in, checked (:mod:`hawk.options`)."""
-    if embedded_profile is not None or any(str(key).partition(".")[0] == "c" for key in options or ()):
+    if embedded_profile is not None or any(ospreys.target_id(str(key).partition(".")[0]) == "c" for key in options or ()):
         raise HawkError(EMBEDDED_C)
     merged = _options_mod.merge(options, literal_table=literal_table, device_arch=device_arch, host_profile=host_profile)
     _options_mod.check(merged)
@@ -733,7 +738,7 @@ def build(kernel, directory, *, mode: str = "float64", targets=DEFAULT_TARGETS,
 
     Refuses a ``segmented`` dispatch, which needs K artifacts: call :func:`build_bundle` with ``[kernel]`` instead."""
     name = name or kernel.name
-    targets = tuple(targets)
+    targets = _target_ids(targets)
     options = _user_options(options, literal_table, embedded_profile, device_arch, host_profile)
     cfg = _resolved_settings(settings, targets)
     root = Path(cache_dir) if cache_dir else default_cache_dir()
@@ -772,7 +777,7 @@ def describe(kernels, *, targets=None, mode: str = "float64", options: Mapping |
     carries ``sidecar``, the document of its own unit, the one :func:`build` writes beside that unit.
     """
     kernels = list(kernels)
-    targets = tuple(DEFAULT_TARGETS if targets is None else targets)
+    targets = _target_ids(DEFAULT_TARGETS if targets is None else targets)
     names = [k.name for k in kernels]
     _refuse_targets(names[0] if names else "", targets)
     _refuse_segmented_position(kernels, names)
@@ -811,7 +816,7 @@ def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targe
     build alone. Honours ``settings`` (:class:`hawk.build_settings.BuildSettings`). Refuses what :func:`build` refuses; a machine that
     with no tools raises ``ToolchainAbsent`` only for a build."""
     name = name or kernel.name
-    targets = tuple(targets)
+    targets = _target_ids(targets)
     options = _user_options(options, literal_table, None, device_arch, "")
     cfg = _resolved_settings(settings, targets)
     answer, unit, kind, machines = _emitted(kernel, name, mode, kind, targets, "emit_source returns", "build_bundle", cfg, options, "",
@@ -859,7 +864,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
     options = _user_options(options, literal_table, embedded_profile, device_arch, host_profile)
     kernels = list(kernels)
     directory = Path(directory)
-    targets = tuple(targets)
+    targets = _target_ids(targets)
     names = [name or k.name for k in kernels]
     _refuse_targets(names[0] if names else "", targets)
     _refuse_segmented_position(kernels, names)

@@ -119,16 +119,16 @@ def test_an_auto_group_states_the_cost_of_each_branch():
     )
 
 
-def test_the_planes_a_kernel_writes_and_the_element_count_of_each_value_are_stated():
+def test_the_planes_a_kernel_writes_and_the_shape_of_each_slot_are_stated():
     document = describe([osc], targets=("host",))["osc"]
     assert document["planes_written"] == ["terminated", "v", "x"]
-    assert document["element_counts"] == {
-        "dt": 1,
-        "limit": 1,
-        "terminated": 1,
-        "x": 1,
-        "v": 1,
-        "finished_count": 1,
+    assert document["slot_shapes"] == {
+        "dt": [],
+        "limit": [],
+        "terminated": [],
+        "x": [],
+        "v": [],
+        "finished_count": [],
     }
 
 
@@ -238,9 +238,9 @@ def test_a_kernel_that_does_not_split_has_no_stage_documents():
 def test_the_stated_machine_of_a_target_is_the_one_the_sidecar_of_a_build_carries(
     tmp_path, cache_dir
 ):
-    from hawk.targets import stated
+    from hawk.targets import machine
 
-    document = stated("host")
+    document = machine("host")
     bundle = build_bundle(
         [square], tmp_path / "out", targets=("host",), cache_dir=cache_dir
     )
@@ -250,10 +250,10 @@ def test_the_stated_machine_of_a_target_is_the_one_the_sidecar_of_a_build_carrie
 
 
 def test_asking_the_machine_of_a_target_no_library_serves_is_refused_by_name():
-    from hawk.targets import stated
+    from hawk.targets import machine
 
     with pytest.raises(HawkError, match="served by no OSPREY"):
-        stated("nowhere")
+        machine("nowhere")
 
 
 def test_asking_the_machine_with_every_tool_hidden_raises_toolchain_absent(tmp_path):
@@ -261,10 +261,10 @@ def test_asking_the_machine_with_every_tool_hidden_raises_toolchain_absent(tmp_p
     code = textwrap.dedent(
         """
         from hawk.errors import ToolchainAbsent
-        from hawk.targets import stated
+        from hawk.targets import machine
 
         try:
-            stated("host")
+            machine("host")
         except ToolchainAbsent as absent:
             print("absent", bool(str(absent)))
         else:

@@ -34,11 +34,28 @@ SEARCH_ENV = "HAWK_OSPREY_PATH"
 _MANIFEST = "osprey.json"
 _MEMBERS = ("name", "version", "door", "targets")
 _TARGET_MEMBERS = ("request", "target", "about", "device", "entry", "format")
-#: The grammar of a target id (``request``): a lowercase identifier.
-_ID = re.compile(r"[a-z][a-z0-9_]*\Z")
+#: The grammar of a target id once spelled canonically: a lowercase letter, then lowercase letters and digits.
+_ID = re.compile(r"[a-z][a-z0-9]*\Z")
+#: What the canonical spelling of a target id drops: whitespace, dashes and underscores.
+_SEPARATORS = re.compile(r"[\s_-]+")
 #: ``{folder: why it was refused}`` of the folders the last search could not use; kept so that a caller asking for a target only
 #: such a folder would serve is told which folder and why (:func:`refused`, :func:`serving`).
 _REFUSED: dict = {}
+
+
+def target_id(name: str) -> str:
+    """The one spelling of a target id: lowercase, with whitespace, dashes and underscores removed (``" Cu-Da "`` is ``cuda``).
+
+    Every target id a manifest states and every target name a caller passes goes through here. A name that is not a string, or
+    whose canonical form is not a lowercase letter followed by lowercase letters and digits, is refused by name.
+    """
+    spelled = _SEPARATORS.sub("", name).lower() if isinstance(name, str) else ""
+    if not _ID.match(spelled):
+        raise HawkError(
+            f"the target id {name!r} is not a target id: lowercased, with whitespace, dashes and underscores removed, "
+            "it must be a letter followed by letters and digits"
+        )
+    return spelled
 
 
 class Osprey:
@@ -185,23 +202,27 @@ def _read(folder: Path) -> Osprey:
         raise HawkError(
             f"{path}: unknown manifest key {key!r} (the keys are {list(_MEMBERS)}); a misspelt key is refused, never ignored"
         )
+    rows = []
     for row in manifest["targets"]:
         if missing := [m for m in _TARGET_MEMBERS if m not in row]:
             raise HawkError(
                 f"{path}: target {row.get('request')!r} lacks {', '.join(missing)}"
             )
-        if not isinstance(row["request"], str) or not _ID.match(row["request"]):
-            raise HawkError(
-                f"{path}: the target request {row['request']!r} is not a lowercase identifier [a-z][a-z0-9_]*"
-            )
-    return Osprey(folder, manifest)
+        try:
+            rows.append({**row, "request": target_id(row["request"])})
+        except HawkError as why:
+            raise HawkError(f"{path}: the target request: {why}") from why
+    ids = [row["request"] for row in rows]
+    if twice := sorted({i for i in ids if ids.count(i) > 1}):
+        raise HawkError(f"{path}: the manifest states the target id {twice[0]!r} in more than one row (ids are compared in their one spelling)")
+    return Osprey(folder, {**manifest, "targets": rows})
 
 
 @functools.lru_cache(maxsize=None)
 def found() -> dict:
     """Return ``{OSPREY name: Osprey}`` of every OSPREY the search list holds.
 
-    Two OSPREYs that serve one target are refused by name. A folder that cannot be used (a manifest refused, none readable) is
+    Two OSPREYs that serve one target (one canonical id) are refused by name. A folder that cannot be used (a manifest refused, none readable) is
     isolated: the others load, and the folder with its reason is kept in :func:`refused`.
     """
     out, owner = {}, {}
@@ -243,6 +264,7 @@ def targets() -> dict:
 
 def serving(target: str) -> Osprey:
     """Return the OSPREY that serves ``target``; a target nobody serves is refused by name."""
+    target = target_id(target)
     for osprey in found().values():
         if target in osprey.targets:
             return osprey

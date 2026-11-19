@@ -265,14 +265,62 @@ def test_an_unknown_manifest_key_is_refused_naming_the_key_and_the_file(
     )
 
 
-@pytest.mark.parametrize("bad", ["Toy-X!", "", "Host", "x y", "9lives"])
+@pytest.mark.parametrize("bad", ["Toy-X!", "", "9lives", "9x", "_-_", "x.y"])
 def test_a_target_id_outside_the_grammar_is_refused_naming_it(tmp_path, searched, bad):
+    """The id rule: an id is lowercased with whitespace, dashes and underscores removed, and must then be a letter followed by
+    letters and digits; anything else is refused naming the member."""
     folder = copied(tmp_path, "oddid")
     manifest = json.loads((folder / "osprey.json").read_text())
     manifest["targets"][0]["request"] = bad
     (folder / "osprey.json").write_text(json.dumps(manifest))
     searched(folder)
     assert re.search("request", next(iter(ospreys.refused().values()), ""))
+
+
+@pytest.mark.parametrize("spelled", ["CUDA", "Cu-Da", " c u_da ", "cuda"])
+def test_a_target_id_in_any_spelling_resolves_to_its_canonical_id(tmp_path, searched, spelled):
+    folder = copied(tmp_path, "spelt")
+    manifest = json.loads((folder / "osprey.json").read_text())
+    manifest["targets"] = [{**manifest["targets"][0], "request": spelled}]
+    (folder / "osprey.json").write_text(json.dumps(manifest))
+    searched(folder)
+    assert list(ospreys.targets()) == ["cuda"]
+    assert ospreys.serving(spelled).name == "spelt"
+    assert ospreys.serving("CUDA") is ospreys.serving("c-u_d a")
+
+
+def test_a_caller_names_a_target_in_any_spelling_and_a_bad_name_is_refused_by_name(searched):
+    searched(real_folders()["cpu"])
+    assert ospreys.target_id(" Ho-st ") == "host"
+    from hawk.targets import TARGETS, machine
+
+    assert TARGETS["HOST"].id == "host" and "H o s t" in TARGETS
+    assert machine("Host") == machine("host")
+    with pytest.raises(HawkError, match="'9x' is not a target id"):
+        ospreys.target_id("9x")
+
+
+@pytest.mark.parametrize("second", ["cuda", "Cu-Da"])
+def test_a_manifest_stating_one_target_id_in_two_rows_is_refused_naming_the_id_and_the_folder(tmp_path, searched, second):
+    folder = copied(tmp_path, "twice")
+    manifest = json.loads((folder / "osprey.json").read_text())
+    manifest["targets"] = [{**manifest["targets"][0], "request": "cuda"}, {**manifest["targets"][0], "request": second}]
+    (folder / "osprey.json").write_text(json.dumps(manifest))
+    searched(folder)
+    assert not ospreys.found()
+    assert re.search(r"twice/osprey\.json.*'cuda'.*more than one row", ospreys.refused()[str(folder)])
+
+
+def test_two_folders_whose_ids_share_a_canonical_form_are_refused_by_name(tmp_path, searched):
+    first = copied(tmp_path, "first")
+    second = copied(tmp_path, "second")
+    for folder, spelled in ((first, "cuda"), (second, "Cu-Da")):
+        manifest = json.loads((folder / "osprey.json").read_text())
+        manifest["targets"][0]["request"] = spelled
+        (folder / "osprey.json").write_text(json.dumps(manifest))
+    searched(first, second)
+    with pytest.raises(HawkError, match=r"target 'cuda' is served by both 'first' and 'second'"):
+        ospreys.found()
 
 
 def test_a_folder_that_is_refused_is_listed_with_its_reason_and_named_when_a_target_it_would_serve_is_asked_for(
