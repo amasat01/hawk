@@ -214,6 +214,22 @@ mod tests {
         );
     }
 
+    /// Oracle: the two entry names written by hand in the report; the figures of each are the ones under its own name.
+    #[test]
+    fn each_entry_of_a_report_has_its_own_figures_the_fast_entries_included() {
+        let report = "ptxas info    : Compiling entry function 'k' for 'sm_61'\n\
+            \x20   0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\n\
+            ptxas info    : Used 24 registers, 360 bytes cmem[0]\n\
+            ptxas info    : Compiling entry function 'k_fast' for 'sm_61'\n\
+            \x20   16 bytes stack frame, 8 bytes spill stores, 8 bytes spill loads\n\
+            ptxas info    : Used 48 registers, 360 bytes cmem[0]\n";
+        assert_eq!(
+            wire::render(&ptxas_info(report)),
+            "{\"k\":{\"regs\":24,\"stack_B\":0,\"spill_store_B\":0,\"spill_load_B\":0},\
+             \"k_fast\":{\"regs\":48,\"stack_B\":16,\"spill_store_B\":8,\"spill_load_B\":8}}"
+        );
+    }
+
     #[test]
     fn an_image_that_is_not_elf_or_is_cut_short_states_nothing() {
         assert_eq!(wire::render(&image_resources(b"// ptx text")), "{}");

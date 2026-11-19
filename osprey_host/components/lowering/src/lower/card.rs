@@ -396,6 +396,16 @@ pub enum ContractionRoute {
     Direct,
 }
 
+impl ContractionRoute {
+    /// The route's word in an answer.
+    pub fn word(self) -> &'static str {
+        match self {
+            ContractionRoute::Gemm => "gemm",
+            ContractionRoute::Direct => "direct",
+        }
+    }
+}
+
 impl DeviceCard {
     /// The route of a contraction of the scalar type `scalar` (`float32` or `float64`) on the architecture `arch`: the row of the
     /// card's thread box rows for that architecture and type that states a route, else the card's route for the type, else

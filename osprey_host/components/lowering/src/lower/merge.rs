@@ -111,6 +111,7 @@ fn join(first: KernelAnswer, second: KernelAnswer) -> Result<KernelAnswer, Refus
             "dispatch costs",
         )?,
         peer: None,
+        index_bytes: either(first.index_bytes, second.index_bytes, "index widths")?,
     })
 }
 
@@ -133,10 +134,13 @@ fn join_unit(first: UnitAnswer, second: UnitAnswer) -> Result<UnitAnswer, Refusa
     texts.extend(second.texts);
     let mut defines = first.defines;
     defines.extend(second.defines);
+    // the device card chooses the route of a contraction, so the later (device) answer's record wins over the host default
+    let contraction = second.contraction.or(first.contraction);
     Ok(UnitAnswer {
         texts,
         meta: merged,
         defines,
+        contraction,
     })
 }
 

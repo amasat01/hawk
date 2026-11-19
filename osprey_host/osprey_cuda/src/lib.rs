@@ -65,6 +65,9 @@ impl Backend for Cuda {
     fn device_card(&self, docs: &CardSet) -> Result<Option<DeviceCard>, Refusal> {
         device_build_of(docs).map(Some)
     }
+    fn index_bytes(&self, defines: &[String]) -> Result<Option<i64>, Refusal> {
+        osprey_lowering::index_width::of_trees(trees::TREES, defines).map(Some)
+    }
     fn toolkit(&self) -> Result<&'static Toolkit, toolkit::Refusal> {
         /// The tool side, made on first use from the table, the trees and the process environment.
         static TOOLKIT: OnceLock<Result<Toolkit, toolkit::Refusal>> = OnceLock::new();
@@ -98,6 +101,17 @@ mod tests {
 
     fn file(tree: &toolkit::HeaderTree, name: &str) -> Option<&'static [u8]> {
         tree.files.iter().find(|f| f.0 == name).map(|f| f.1)
+    }
+
+    /// Oracle: the widths written by hand (`std::uint32_t` is 4 bytes, `std::uint64_t` 8): the library states the index width of
+    /// its units from its own embedded header and the build's defines.
+    #[test]
+    fn the_index_width_is_stated_from_the_embedded_header_and_the_defines() {
+        use super::Cuda;
+        use osprey_lowering::backend::Backend;
+        assert_eq!(Cuda.index_bytes(&[]).unwrap(), Some(4));
+        let wide = ["AETHER_INDEX_T=std::uint64_t".to_string()];
+        assert_eq!(Cuda.index_bytes(&wide).unwrap(), Some(8));
     }
 
     /// Oracle: the runtime compiler has no system C++ headers, so its served tree holds aether's seven shims under the bare standard

@@ -58,6 +58,14 @@ pub trait Backend: Default + Sync + 'static {
     }
     /// The writer that renders a unit for the served target.
     fn render(&self) -> Renderer;
+    /// The width in bytes of the index type of a unit this library compiles with the build's `defines` (`NAME=value`), from the
+    /// header it embeds; none for a library whose units have no host index type.
+    ///
+    /// # Errors
+    /// Refuses a header that states no default or a type whose width the library does not know.
+    fn index_bytes(&self, _defines: &[String]) -> Result<Option<i64>, Refusal> {
+        Ok(None)
+    }
     /// The tool side of the library: its tool table and embedded header trees, made once; the one failure to make it (a table that
     /// does not parse) is the answer of every call.
     fn toolkit(&self) -> Result<&'static Toolkit, toolkit::Refusal>;

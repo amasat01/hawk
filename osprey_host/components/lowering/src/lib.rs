@@ -11,6 +11,7 @@ mod device_build;
 pub mod door;
 pub mod facts;
 mod host_build;
+pub mod index_width;
 pub mod lower;
 #[cfg(test)]
 mod testing;

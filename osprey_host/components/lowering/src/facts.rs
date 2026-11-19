@@ -491,6 +491,16 @@ pub fn default_opt_level(cards: &CardSet, host: bool) -> Result<String, Failed> 
     Ok(text_of(&cards.json(file)?, file, "default_opt_level")?)
 }
 
+/// Whether the host profile `profile` gives bit-exact values: the cpu card lists the profiles whose results are correctly
+/// rounded. The set itself is not handed out; a caller asks about the profile it was given.
+///
+/// # Errors
+/// Refuses a cpu card that cannot be read.
+pub fn profile_is_exact(cards: &CardSet, profile: &str) -> Result<bool, Failed> {
+    let cpu = load_cpu(cards).map_err(|reason| cards.defect("cpu.json", reason))?;
+    Ok(cpu.exact_profiles.iter().any(|exact| exact == profile))
+}
+
 /// The profile a host build gets when none is asked, for the instruction set `isa_name` and the compiler `compiler` (its
 /// identity): the instruction set card's default for GCC or for another compiler.
 ///

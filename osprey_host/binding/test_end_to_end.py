@@ -87,6 +87,11 @@ def run(done, o, raises, folders, header_abi, make_nodes):
     profile = asked["options"]["profile"]
     assert set(asked["options"]) == {"profile"}, asked
     done.append("end to end: an unset ask is stated with the default level and profile")
+    for named, expected in (("native", True), ("native-vector-math", False)):
+        ask_named = {**ask, "options": {"profile": named}}
+        stated_named = json.loads(c.backend_machine(lib, json.dumps(ask_named)))["stated"]
+        assert stated_named["exact"] is expected, (named, stated_named)
+    done.append("end to end: the machine states whether the resolved profile is exact")
     same_build_asked_otherwise(c, lib, ask, machine, profile)
     done.append("end to end: the default stated or set in the environment is one key and record")
     compiler = machine["stated"]["tools"]["compiler"]

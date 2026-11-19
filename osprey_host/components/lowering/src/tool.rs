@@ -77,12 +77,28 @@ pub fn machine<B: Backend>(backend: &B, ask: &str) -> Result<String, toolkit::Re
         ("opt_level".into(), Json::Str(level.into())),
         ("options".into(), options),
     ]);
+    let exact = exact_profile(backend, &asked)?;
     for (name, value) in &mut parts {
         if let (Json::Obj(stated), "stated") = (value, name.as_str()) {
             stated.push(("asked".into(), asked.clone()));
+            stated.extend(exact.clone().map(|flag| ("exact".to_string(), flag)));
         }
     }
     Ok(Json::Obj(parts).to_text())
+}
+
+/// The `exact` member of a host machine's `stated`: whether the resolved profile gives bit-exact values, by the cpu card's own
+/// list. A device machine has no profile and states none.
+fn exact_profile<B: Backend>(backend: &B, asked: &Json) -> Result<Option<Json>, toolkit::Refusal> {
+    let profile = asked.get("options").and_then(|o| text(o, "profile"));
+    let Some(profile) = profile.filter(|_| backend.host_card_wanted()) else {
+        return Ok(None);
+    };
+    let dir = facts::facts_dir(None).map_err(refuse)?;
+    let cards = CardSet::new(&dir, &[], backend.card_names());
+    let exact =
+        facts::profile_is_exact(&cards, profile).map_err(|why| refuse(why.refusal().reason))?;
+    Ok(Some(Json::Bool(exact)))
 }
 
 /// The ask the toolkit answers: the key's `terms` beyond what the machine states, whether the host's facts are wanted, the cache
@@ -443,6 +459,9 @@ pub fn build<B: Backend>(
         .map(|d| format!("-D{d}"))
         .collect();
     let key = text(machine, "key").unwrap_or("");
+    let index_bytes = backend
+        .index_bytes(&strings(req.get("defines")))
+        .map_err(|why| refuse(why.reason))?;
     let unit = wire::obj(vec![
         ("name", wire::s(name)),
         (
@@ -485,6 +504,10 @@ pub fn build<B: Backend>(
         ("artifact", wire::s(&object)),
         ("source", wire::s(&source)),
         ("format", wire::s(backend.format())),
+        (
+            "index_bytes",
+            index_bytes.map_or(rcore::json::J::Null, |bytes| wire::n(bytes.unsigned_abs())),
+        ),
         (
             "key",
             answer.get("key").cloned().unwrap_or(rcore::json::J::Null),
@@ -692,6 +715,9 @@ fn build_device<B: Backend>(
         &facts_for(backend, machine).map_err(|f| refuse(String::from(f)))?,
     )?;
     let (name, unit, defines, form) = device_unit(req, machine, &facts)?;
+    let index_bytes = backend
+        .index_bytes(&strings(req.get("defines")))
+        .map_err(|why| refuse(why.reason))?;
     let answer = wire::parse(
         "the toolkit's answer",
         &backend.toolkit()?.build(&wire::render(&unit), root)?,
@@ -720,6 +746,10 @@ fn build_device<B: Backend>(
         ("artifact", wire::s(&image)),
         ("source", wire::s(&source)),
         ("format", wire::s(&form)),
+        (
+            "index_bytes",
+            index_bytes.map_or(rcore::json::J::Null, |bytes| wire::n(bytes.unsigned_abs())),
+        ),
         ("key", answer.get("key").cloned().unwrap_or_else(null)),
         ("hit", answer.get("hit").cloned().unwrap_or_else(null)),
         (
@@ -883,6 +913,15 @@ mod tests {
         assert_eq!(default(gcc, "x86_64"), "native-vector-math");
         assert_eq!(default(clang, "x86_64"), "native");
         assert!(facts::default_host_profile(&docs, gcc, "riscv").is_err());
+    }
+
+    /// Oracle: the cpu card shipped in `osprey_cpu/facts/cpu.json`, which lists `native` and `portable` as exact.
+    #[test]
+    fn a_profile_is_exact_when_the_cpu_card_lists_it() {
+        let docs = CardSet::new(&crate::testing::shipped(), &[], crate::testing::ALL_CARDS);
+        assert!(facts::profile_is_exact(&docs, "native").unwrap());
+        assert!(facts::profile_is_exact(&docs, "portable").unwrap());
+        assert!(!facts::profile_is_exact(&docs, "native-vector-math").unwrap());
     }
 
     #[test]

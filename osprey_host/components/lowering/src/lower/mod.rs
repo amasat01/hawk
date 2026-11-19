@@ -451,6 +451,7 @@ pub fn lower<B: Backend>(
         wide_class: cards.wide_class.clone(),
         steps_reverse: cards.steps_reverse(),
         dispatch_costs: cards.dispatch_costs(&request, docs)?,
+        index_bytes: backend.index_bytes(&[])?,
         peer: Some(peer),
         units,
         library,
@@ -671,7 +672,7 @@ fn write(
     for &target in &request.targets {
         texts.push(write_target(ctx, request, cards, &pending, (walk, target))?);
     }
-    let meta = meta_fill::unit(&meta_fill::Parts {
+    let (meta, contraction) = meta_fill::unit(&meta_fill::Parts {
         ctx,
         request,
         card: &cards.deciding,
@@ -691,6 +692,7 @@ fn write(
         texts,
         meta,
         defines,
+        contraction,
     })
 }
 

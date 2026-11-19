@@ -407,11 +407,10 @@ fn branch_cost(cost: &BranchCost) -> m::BranchCost {
     }
 }
 
-/// The matrix products of a unit that is one dense contraction the card routes, or none. The unit keeps its full kernel in either
-/// case: a host plan runs the loop, a device plan the products. A banded unit and a contraction whose shapes the strides do not state
-/// have none, as have the units the old route did not take.
-fn gemm(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Gemm>, Refusal> {
-    if parts.route == ContractionRoute::Direct || parts.request.scalar == Scalar::Banded {
+/// The matrix products of a unit that is one dense contraction, whatever route the card chooses for it, or none. A banded unit
+/// and a contraction whose shapes the strides do not state have none.
+fn recognised_products(parts: &Parts, slots: &[m::Slot]) -> Result<Option<m::Gemm>, Refusal> {
+    if parts.request.scalar == Scalar::Banded {
         return Ok(None);
     }
     // SAFETY: `ctx` is the live context the caller holds; the recogniser only reads it.
@@ -574,8 +573,11 @@ pub(super) fn unit_digests(units: &mut [UnitAnswer]) {
     }
 }
 
-/// The meta of one unit, without what only its kernel's stages tell (see `stages`).
-pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
+/// The meta of one unit, without what only its kernel's stages tell (see `stages`), and the contraction the unit is when it is
+/// one dense contraction: its products and the route word the card chose. The meta keeps the products only when the route runs
+/// them as matrix products; the unit keeps its full kernel in either case, so a host plan runs the loop and a device plan the
+/// products.
+pub(super) fn unit(parts: &Parts) -> Result<(m::UnitMeta, Option<m::Contraction>), Refusal> {
     let slots = slots(parts.ctx, parts.walk, parts.typed, parts.request)?;
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let stored = stored_cells(unsafe { &*parts.ctx }, &parts.pending.member.sinks).map_err(wing)?;
@@ -621,7 +623,14 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
             .map(|h| h.fold_entry.clone())
     };
     let dispatches = dispatches(parts, &slots)?;
-    let gemm = gemm(parts, &slots)?;
+    let products = recognised_products(parts, &slots)?;
+    let gemm = products
+        .clone()
+        .filter(|_| parts.route == ContractionRoute::Gemm);
+    let contraction = products.map(|products| m::Contraction {
+        route: parts.route.word().into(),
+        products,
+    });
     let companions = facts
         .companions
         .iter()
@@ -643,7 +652,7 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
     let made =
         raptor_wings::cells::walk_companions(unsafe { &*parts.ctx }, parts.walk).map_err(wing)?;
     let cells = compensated(cells, &companions, &slots, &made)?;
-    Ok(m::UnitMeta {
+    let meta = m::UnitMeta {
         flags: if parts.request.cards.is_empty() {
             0
         } else {
@@ -673,7 +682,8 @@ pub(super) fn unit(parts: &Parts) -> Result<m::UnitMeta, Refusal> {
             ..m::Body::default()
         },
         ..m::UnitMeta::default()
-    })
+    };
+    Ok((meta, contraction))
 }
 
 /// The cells with the compensation slots of their sums: each row plane of a sum cell names the companion slot that compensates it,
@@ -882,6 +892,7 @@ pub(super) fn stages(
                     texts: vec![],
                     meta: source.clone(),
                     defines: vec![],
+                    contraction: None,
                 },
             );
             0

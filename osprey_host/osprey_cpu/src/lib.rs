@@ -68,6 +68,9 @@ impl Backend for Cpu {
     fn host_card(&self, docs: &CardSet) -> Result<Option<BuildCard>, Refusal> {
         host_build_of(docs).map(Some)
     }
+    fn index_bytes(&self, defines: &[String]) -> Result<Option<i64>, Refusal> {
+        osprey_lowering::index_width::of_trees(trees::TREES, defines).map(Some)
+    }
     fn toolkit(&self) -> Result<&'static Toolkit, toolkit::Refusal> {
         /// The tool side, made on first use from the table, the trees and the process environment.
         static TOOLKIT: OnceLock<Result<Toolkit, toolkit::Refusal>> = OnceLock::new();

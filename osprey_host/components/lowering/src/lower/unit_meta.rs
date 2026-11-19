@@ -750,6 +750,15 @@ record! {
     }
 }
 record! {
+    /// A dense contraction a unit is: the products it states and the way the library's card runs it, stated whatever the route.
+    pub struct Contraction {
+        /// The route word: `gemm` (matrix products beside the kernel) or `direct` (the kernel's own loop).
+        pub route: String,
+        /// The products, over the unit's slots.
+        pub products: Gemm,
+    }
+}
+record! {
     /// What a derived unit is to its primal.
     pub struct Derived {
         /// The unit's role.

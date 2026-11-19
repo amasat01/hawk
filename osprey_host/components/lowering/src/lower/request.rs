@@ -4,7 +4,7 @@
 //! records its kernels.
 use super::derived::DerivedKernel;
 use super::unit_meta::{
-    DispatchCosts, ImageFormat, LibraryMeta, PeerRecord, StepsPair, UnitMeta, Wire,
+    Contraction, DispatchCosts, ImageFormat, LibraryMeta, PeerRecord, StepsPair, UnitMeta, Wire,
 };
 use crate::facts;
 use aether_writers::contract::types::{
@@ -410,6 +410,8 @@ pub struct UnitAnswer {
     /// The defines the unit's compile for a target needs, as `(target, define)` pairs: a text that gates code behind a macro the
     /// request's settings turn on. The caller hands them to that target's build.
     pub defines: Vec<(Target, String)>,
+    /// The dense contraction the unit is, with the route the card chose; none for a unit that is not one.
+    pub contraction: Option<Contraction>,
 }
 
 /// The answer: the units the kernel lowers to, in order, the library record, and the C source of the meta of all the units (the
@@ -434,6 +436,9 @@ pub struct KernelAnswer {
     pub dispatch_costs: Option<DispatchCosts>,
     /// What a library that lowers the same build beside this one must match.
     pub peer: Option<PeerRecord>,
+    /// The width in bytes of the index type the units are compiled with (the library's embedded default; a build's own defines
+    /// can change it, and its build answer states the result); none for a target without a host index type.
+    pub index_bytes: Option<i64>,
 }
 
 /// The input of the set text: the unit records of one or several answers, and the five layout sizes the exports block states.
@@ -1374,6 +1379,9 @@ impl KernelAnswer {
                 }
                 o.push(("defines".into(), Json::Obj(by_target)));
             }
+            if let Some(found) = &u.contraction {
+                o.push(("contraction".into(), found.put()));
+            }
             Json::Obj(o)
         };
         Json::Obj(vec![
@@ -1395,6 +1403,7 @@ impl KernelAnswer {
             ("steps_reverse".into(), self.steps_reverse.put()),
             ("dispatch_costs".into(), self.dispatch_costs.put()),
             ("peer".into(), self.peer.put()),
+            ("index_bytes".into(), self.index_bytes.put()),
         ])
         .to_text()
     }
@@ -1457,6 +1466,7 @@ impl KernelAnswer {
                 texts: list_of(k.req("texts")?, "texts", read_text)?,
                 meta: UnitMeta::get(k.opt("meta"), "meta")?,
                 defines,
+                contraction: Option::<Contraction>::get(k.opt("contraction"), "contraction")?,
             };
             k.done()?;
             Ok(unit)
@@ -1473,6 +1483,7 @@ impl KernelAnswer {
         let dispatch_costs =
             Option::<DispatchCosts>::get(keys.opt("dispatch_costs"), "dispatch_costs")?;
         let peer = Option::<PeerRecord>::get(keys.opt("peer"), "peer")?;
+        let index_bytes = Option::<i64>::get(keys.opt("index_bytes"), "index_bytes")?;
         keys.done()?;
         Ok(KernelAnswer {
             units,
@@ -1483,6 +1494,7 @@ impl KernelAnswer {
             steps_reverse,
             dispatch_costs,
             peer,
+            index_bytes,
         })
     }
 }
@@ -1802,10 +1814,54 @@ mod tests {
                     launch_us: Some(2.7),
                     ..Default::default()
                 }),
+                index_bytes: None,
                 peer: Some(PeerRecord {
                     units: vec!["k".into()],
                     ..Default::default()
                 }),
+            };
+            assert_eq!(KernelAnswer::from_json(&answer.to_json()).unwrap(), answer);
+        }
+    }
+
+    /// Oracle: the record written by hand below, the shape the answer's reader documents.
+    #[test]
+    fn a_unit_answer_carries_its_contraction_through_its_text() {
+        use super::super::card::ContractionRoute;
+        use super::super::unit_meta::{Gemm, GemmCall};
+        let contraction = |route: ContractionRoute| Contraction {
+            route: route.word().into(),
+            products: Gemm {
+                lane_fanin: 0,
+                calls: vec![GemmCall {
+                    a_rows: 8,
+                    a_cols: 5,
+                    b_rows: 8,
+                    b_cols: 6,
+                    c_rows: 5,
+                    c_cols: 6,
+                    ..Default::default()
+                }],
+            },
+        };
+        assert_eq!(ContractionRoute::Gemm.word(), "gemm");
+        assert_eq!(ContractionRoute::Direct.word(), "direct");
+        for route in [ContractionRoute::Gemm, ContractionRoute::Direct] {
+            let answer = KernelAnswer {
+                units: vec![UnitAnswer {
+                    texts: vec![],
+                    meta: UnitMeta::default(),
+                    defines: vec![],
+                    contraction: Some(contraction(route)),
+                }],
+                library: super::super::unit_meta::LibraryMeta::current(),
+                meta_source: String::new(),
+                working_set_bytes: 0,
+                wide_class: None,
+                steps_reverse: Default::default(),
+                dispatch_costs: None,
+                peer: None,
+                index_bytes: Some(4),
             };
             assert_eq!(KernelAnswer::from_json(&answer.to_json()).unwrap(), answer);
         }
