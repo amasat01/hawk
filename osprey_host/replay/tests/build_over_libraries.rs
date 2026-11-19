@@ -2,10 +2,13 @@
 //! `merge` joins the two answers. A library's texts do not change with the other's presence, a companion refuses a cut it cannot
 //! meet, the answer states the steps table and the dispatch costs of its target, and a reserved kernel name is refused.
 #![cfg(feature = "old-contract")]
+mod fakes;
 use aether_writers::contract::types::Target;
+use fakes::{script, store};
 use osprey_lowering::facts::{probe, Stated};
 use osprey_lowering::lower::request::{KernelAnswer, KernelRequest};
 use osprey_lowering::lower::unit_meta::ImageFormat;
+use osprey_lowering::tool;
 use raptor_ir::door::{rx_ctx_free, rx_ctx_new, RX_OK};
 use raptor_ir::dump::rx_load;
 use raptor_ir::record::Ctx;
@@ -18,8 +21,8 @@ const DEVICE_COMPILER: &str =
 /// The host compiler identity the host facts are asked with.
 const HOST_COMPILER: &str = "/usr/bin/c++ || Apple clang version 21.0.0 || 0";
 
-/// A context holding the kernel `plain` of the working-set oracle, and the handle of its one sink.
-fn plain_kernel() -> (*mut Ctx, u32) {
+/// The kernel `name` of the working-set oracle in a fresh context, and the handle of its first sink.
+fn kernel_named(name: &str) -> (*mut Ctx, u32) {
     let oracle = json::parse(
         &std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -28,8 +31,13 @@ fn plain_kernel() -> (*mut Ctx, u32) {
         .unwrap(),
     )
     .unwrap();
-    let case = &oracle.get("cases").unwrap().arr()[0];
-    assert_eq!(case.get("name").and_then(J::str), Some("plain"));
+    let case = oracle
+        .get("cases")
+        .unwrap()
+        .arr()
+        .iter()
+        .find(|case| case.get("name").and_then(J::str) == Some(name))
+        .unwrap();
     let text = case.get("dump").and_then(J::str).unwrap();
     let ctx = rx_ctx_new();
     // SAFETY: `ctx` is the live context just made.
@@ -52,6 +60,11 @@ fn plain_kernel() -> (*mut Ctx, u32) {
     assert_eq!(status, RX_OK);
     let sink = handles[case.get("sinks").unwrap().arr()[0].int() as usize];
     (ctx, sink)
+}
+
+/// A context holding the kernel `plain` of the working-set oracle, and the handle of its one sink.
+fn plain_kernel() -> (*mut Ctx, u32) {
+    kernel_named("plain")
 }
 
 /// The request of the kernel for one target, with the facts that target's library states.
@@ -387,6 +400,64 @@ fn a_merged_pair_states_each_member_of_a_target_as_the_library_of_that_target_di
     assert_eq!(
         (&m.host_entry, &m.launch.host_box),
         (&h.host_entry, &h.launch.host_box)
+    );
+    // SAFETY: the context is not used again.
+    unsafe { rx_ctx_free(ctx) };
+}
+
+/// Oracle: the argv the fake device compiler recorded (a script that appends its arguments to a file). The device build request is
+/// filled the way a caller fills it from the merged answer: the unit's device text and the defines the answer states for the
+/// device. The plain kernel's text has no fast-entry gate and no kernel of the working-set oracle gates its entry points, so the
+/// define is the injected member of `with_device_define`; the step proved is the one from the merged answer to the compile.
+#[test]
+fn the_device_build_request_filled_from_the_merged_answer_carries_the_define_in_the_compiler_argv()
+{
+    let (ctx, sink) = plain_kernel();
+    let (lead, beside) = both(ctx, sink);
+    let merged =
+        osprey_lowering::lower::merge(&format!("[{},{beside}]", with_device_define(&lead)))
+            .unwrap();
+    let answer = KernelAnswer::from_json(&merged).unwrap();
+    let defines: Vec<String> = answer.units[0]
+        .defines
+        .iter()
+        .filter(|(target, _)| *target == Target::Device)
+        .map(|(_, define)| format!("{define:?}"))
+        .collect();
+    assert_eq!(defines, ["\"HAWK_FAST_ENTRIES=1\""]);
+    let text = texts_of(&merged)
+        .into_iter()
+        .find(|(target, _)| *target == Target::Device)
+        .unwrap()
+        .1;
+    let root = store("merged_define_argv");
+    let tools = root.join("tools");
+    let argv = tools.join("argv");
+    script(
+        &tools.join("nvcc"),
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in --version) echo 'Cuda compilation tools, release 12.6, V12.6.77'; exit 0;; \
+             --list-gpu-arch) printf 'compute_61\\ncompute_75\\n'; exit 0;; esac\necho \"$@\" >> {argv}\n\
+             out=\"\"; prev=\"\"; for a in \"$@\"; do [ \"$prev\" = \"-o\" ] && out=\"$a\"; prev=\"$a\"; done\n\
+             printf '\\177ELFimage' > \"$out\"\n",
+            argv = argv.display()
+        ),
+    );
+    script(&tools.join("host/g++"), "#!/bin/sh\necho 'g++ fake'\n");
+    // the library reads the process environment once, when its tool side is first used
+    std::env::set_var("HAWK_NVCC", tools.join("nvcc"));
+    std::env::set_var("HAWK_NVCC_CCBIN", tools.join("host"));
+    let ask = r#"{"target": "cuda", "options": {"arch": "sm_61"}, "opt_level": ""}"#;
+    let machine = tool::machine(&osprey_cuda_lib::Cuda, ask).unwrap();
+    let request = format!(
+        r#"{{"name": "k", "text": {text:?}, "machine": {machine}, "defines": [{}]}}"#,
+        defines.join(", ")
+    );
+    tool::build(&osprey_cuda_lib::Cuda, &request, &root).unwrap();
+    let recorded = std::fs::read_to_string(&argv).unwrap();
+    assert!(
+        recorded.contains("-DHAWK_FAST_ENTRIES=1"),
+        "the compiler ran with: {recorded}"
     );
     // SAFETY: the context is not used again.
     unsafe { rx_ctx_free(ctx) };
