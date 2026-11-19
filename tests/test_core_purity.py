@@ -1,80 +1,19 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Two claims: HAWK launches nothing, and the oracle never threads.
+"""The serial oracle never threads, and the audit reads what ships.
 
-TWO CLAIMS, TWO INSTRUMENTS, ONE SUBJECT.
+``hawk/_core`` runs the whole range in ONE call and is the correctness arm every partitioned, tiled or ranked run is compared
+against. An oracle that quietly threaded would be comparing a structure against itself, so the audit is on BOTH sides of the
+compiler: the sources may name no OpenMP pragma, no ``<thread>``, no pthread call (comments are stripped first, because the
+files explain why they do not thread by naming what they do not do); and the BUILT object may reference no OpenMP runtime
+symbol, must not reference ``pthread_create`` at all, and must link no OpenMP or pthread library. Weak (``w``) pthread
+references are the ONE thing allowed, and only because a statically-linked libstdc++ emits them as inert placeholders: the
+object's own strong reference to ``__libc_single_threaded`` is the corroborating evidence.
 
-1 — HAWK HOLDS NO PRIVATE LAUNCH PATH. This forbids HAWK to hold a launch
-path, choose a grid or block, open a thread team, call MPI/NCCL, or decide
-residency: a device artifact is loaded and launched by ``eagle.registry.
-load_manifest`` -> ``eagle.plan``, a host one by ``eagle.exec.HostTeam`` or by
-the serial oracle below. The audit is over what SHIPS — the package
-``hawk/hawk/``, the ``_core`` sources ``hawk/src/`` and the build file that turns
-them into a binary. It deliberately does NOT scan ``hawk/tests/``: the tests
-launch through eagle and run the rank bed under ``mpirun``, which is the
-contract being kept, not broken — and a scanner that scanned its own token table
-would report itself (the proxy-measures-itself failure).
-
-The token rule is the repo's SINGLE spelling of it
-(``aether.wings.base.spelling.GEOMETRY_TOKENS`` / ``geometry_hits``), extended with the two
-launch entry points this audit adds. It matches at a WORD BOUNDARY and not as a bare
-substring, for the reason that module already documents: ``omp`` is a substring
-of the ABI mirror's own ``compStride_`` field and of the word ``comp``, so a
-naive ``in`` reports the view reconstruction — and a local variable called
-``comp`` — as launch geometry.
-
-The audit reads CODE, not prose: comments and docstrings are stripped first.
-That is not a softening, it is what makes the instrument mean anything in this
-repo — every file here explains WHY it does not thread, and it explains it by
-NAMING the thing it does not do ("there is no ``#pragma omp`` anywhere and there
-never will be", ``staging/aether/wings/cpu/host.py``). A comment cannot launch a kernel; a
-``#pragma`` is not a comment and survives the strip; a string literal survives
-it too, so an ``os.system("mpirun ...")`` is still caught.
-:func:`test_the_auditor_catches_a_planted_launch` calibrates exactly that, by
-planting the same token twice — once as code, once as a comment — and requiring
-one hit and not two (an instrument needs a known answer).
-
-Two spans are excised before matching, each named and each asserted to have
-actually been removed, so neither exception can silently become a hole:
-
-* each wrapper's ``index_prologue()`` string — the ONE place a launch-geometry
-  token may appear as plain wording, not real code (warp-level spelling is a
-  second, separate seam: the CUDA wrapper's persistent and fast entries use
-  ``%laneid``/``__activemask``/shuffle reductions, which this list does not audit);
-* the ``GEOMETRY_TOKENS`` assignment in ``staging/aether/wings/base/spelling.py`` — the audit's own
-  vocabulary, which contains ``MPI_`` and ``nccl`` because it is what looks for
-  them.
-
-2 — THE ORACLE DOES NOT THREAD. ``hawk/_core`` runs the whole range in ONE
-call and is the correctness arm every partitioned/tiled/ranked run is compared
-against. An oracle that quietly threaded would be
-comparing a structure against itself, so the audit is on BOTH sides of the
-compiler: the sources may name no OpenMP pragma, no ``<thread>``, no pthread
-call; and the BUILT object may reference no OpenMP runtime symbol, must not
-reference ``pthread_create`` at all, and must link no OpenMP or pthread library.
-Weak (``w``) pthread references are the ONE thing allowed, and only because a
-statically-linked libstdc++ emits them as inert placeholders — the object's own
-strong reference to ``__libc_single_threaded`` is the corroborating evidence.
-
-This test previously failed via three plants, all then removed.
-
-(a) ``#pragma omp parallel for`` added above ``hawk._core``'s serial call, with
-``-fopenmp`` on the target::
-
-    AssertionError: hawk/src/hawk_core.cpp: the serial oracle names an OpenMP /
-    threading token: ['#pragma omp parallel for']
-    AssertionError: hawk._core links an OpenMP runtime: ['libgomp.so.1']
-
-(b) a ``std::thread`` spawned around the same call — the source grep caught
-``<thread>``, and with the grep's token list emptied the SYMBOL arm still fired::
-
-    AssertionError: hawk._core references pthread_create: the serial oracle
-    spawns a thread
-
-(c) the excision of ``GEOMETRY_TOKENS`` widened to excise the whole of
-``staging/aether/wings/base/spelling.py`` — ``AssertionError: the audit excised a file it was
-supposed to scan``, i.e. the exception cannot be widened into a hole.
+The audit covers what SHIPS (the package, the ``_core`` sources and the build file) and deliberately not ``tests/``: the tests
+launch through the library and run the rank bed under ``mpirun``, which is the contract being kept. The set is asserted before
+any verdict is read off it.
 """
 
 from __future__ import annotations
@@ -98,22 +37,13 @@ REPO = Path(hawk.__file__).resolve().parent.parent
 PACKAGE = REPO / "hawk"
 SOURCES = REPO / "src"
 
-#: The tokens: the two launch entry points plus the launch-geometry set the
-#: emitter already pins ONE spelling of. Matched at a word boundary (see above).
-
 #: What SHIPS, and therefore what is a claim about. A wheel install has no
 #: src/ beside the package; the tests that read this list are repo_local.
 _SHIPPED = (
     [p for p in sorted(PACKAGE.rglob("*.py"))]
-    + [p for p in sorted((REPO / "staging" / "ospreys").glob("*/*.py"))]       # every shipped OSPREY: the device emitter lives there
-    + [p for p in sorted((REPO / "staging").glob("raptor/wings/*/*.py"))]   # the raptor wings
-    + [p for p in sorted((REPO / "staging").glob("aether/wings/*/*.py"))]   # the aether wings: the shared writer's text lives there
     + [p for p in (sorted(SOURCES.iterdir()) if SOURCES.is_dir() else []) if p.is_file()]
     + [REPO / "CMakeLists.txt"]
 )
-
-#: The two wrapper emitters whose index prologue is a named exception, pinned by path (the device emitter moved to its extension).
-_EMITTERS = {"cuda": REPO / "staging" / "ospreys" / "cuda" / "emit.py", "host": REPO / "staging" / "aether" / "wings" / "cpu" / "host.py"}
 
 #: The source-side vocabulary: what a threading `_core` would have to name.
 _THREAD_TOKENS = ("#pragma omp", "<omp.h>", "omp_set_num_threads", "<thread>",

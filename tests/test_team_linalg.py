@@ -997,3 +997,17 @@ def test_a_team_stage_chain_is_captured_and_replayed_through_eagle_bitwise(cache
         jk, rk = j[k * rows:(k + 1) * rows], r[k * rows:(k + 1) * rows]
         want = np.linalg.solve(jk.T @ jk, jk.T @ rk)
         assert np.abs(fresh[0][:, k, 0] - want).max() <= 100 * p * EPS * np.abs(want).max() * np.linalg.cond(jk.T @ jk)
+
+
+def test_a_matrix_in_one_lane_is_not_split_unless_the_build_asks_for_a_team(cache):
+    kernel = chol_kernel(CTX, 32)
+    assert _team_stages(kernel, cache / "lane_auto") == []
+    assert len(_team_stages(kernel, cache / "lane_team", "team")) >= 1
+
+
+def test_the_dimension_bound_of_a_device_factor_is_the_team_limit_the_target_states():
+    from hawk.artifact import describe
+
+    assert describe([lu_kernel(CTX, 4096)], targets=("cuda",))
+    with pytest.raises(HawkError, match=r"n <= 4096 \(the target's team limit\), got n=4097"):
+        describe([lu_kernel(CTX, 4097)], targets=("cuda",))

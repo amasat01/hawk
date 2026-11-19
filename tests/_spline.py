@@ -31,7 +31,7 @@ import hawk
 import hawk.math as m
 
 __all__ = ["knots", "basis_levels", "edge_phi", "spline_edge_cell",
-           "shallow_spline_cell", "reference", "main"]
+           "shallow_spline_cell", "reference"]
 
 
 def knots(G: int, k: int) -> tuple:

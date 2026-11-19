@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 from ..targets import TARGETS
 from .bundle import (
+    STAMP_NAME,
     Artifact,
     Bundle,
     Entry,
@@ -41,7 +42,7 @@ from .manifest import (
 from .sidecar import PARAMS_SCHEMA
 
 __all__ = ["Artifact", "Bundle", "EXEC_ACCESS_CLASSES", "EXEC_OPS", "EXEC_TARGETS", "Entry", "LAYOUT_FIELDS",
-           "PARAMS_SCHEMA", "TOP_LEVEL_KEY_ORDER_V2", "build", "build_bundle", "build_key", "cache_stats", "default_cache_dir",
+           "PARAMS_SCHEMA", "STAMP_NAME", "TOP_LEVEL_KEY_ORDER_V2", "build", "build_bundle", "build_key", "cache_stats", "default_cache_dir",
            "describe", "emit_source", "plan_view", "plugins", "reset", "write_manifest"]
 
 

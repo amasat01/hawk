@@ -141,7 +141,7 @@ def check(label, sources, tree=HERE, first_party=FIRST_PARTY, out=print):
         return 1000, [], []
     uniq = sorted({tuple(n) for n in names}, key=lambda t: (t[0], t[1] or "", t[2]))
     tree = Path(tree)
-    paths = [str(tree), str(tree / "staging")]
+    paths = [str(tree)]
     paths += [os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else []
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join(paths))
     flags = ["-P"] if sys.version_info >= (3, 11) else []

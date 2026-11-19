@@ -694,7 +694,7 @@ def _compensated_companion(kind: Any, planes: dict[str, Any],
         )
     target_sink = next(s for s in sinks if s.field_text("name") == name)
     # A real Assign sink, shaped like an author's own Mutable commit (never
-    # rendered: `_sink` in staging/aether/wings/base/render.py skips `kind.sink.compensation`).
+    # rendered: the library's writer skips `kind.sink.compensation`).
     # The dummy value is a structural zero of the target's rank — a bare
     # rank>=1 `Const` has no aether spelling, so it is splatted instead.
     ttype = _ir.type_of(target_sink)
@@ -714,7 +714,7 @@ def _zero_accumulate(name: str, like: Any) -> Any:
 def _scattered_companion(kind: Any, sinks: tuple[Any, ...]) -> tuple[Any, ...]:
     """``sinks`` plus the companion of a compensated SCATTERED target when no
     sink commits it yet: ``kind.sink.compensation`` accumulated at the target's
-    own key, a zero never rendered (`_sink` in staging/aether/wings/base/render.py skips it), so
+    own key, a zero never rendered (the library's writer skips it), so
     the kernel declares and binds the plane. How a ``vjp``'s ``bar_<p>`` scatter
     gets its ``bar_<p>_c``. A tagged sink tuple (``Derived``) keeps its tags."""
     from ..ext import compensated_target

@@ -4,7 +4,7 @@ Every kernel gets forward (`jvp`) and reverse (`vjp`) derivatives from `hawk.dif
 
 ## step_jvp and step_vjp
 
-A kernel that updates its planes in place is one step of a rollout. `hawk.diff.step_vjp` is the `vjp` of one such step: it reads each plane's value before the step, takes `bar_<plane>_next` (the gradient with respect to the value after the step) and returns `bar_<plane>` (the gradient with respect to the value before it). `step_jvp` is the forward counterpart. To record a whole rollout and reverse it, see [tapes and stop rules](vocabulary/05_tapes_and_events).
+A kernel that updates its planes in place is one step of a rollout. `hawk.diff.step_vjp` is the `vjp` of one such step: it reads each plane's value before the step, takes `bar_<plane>_next` (the gradient with respect to the value after the step) and returns `bar_<plane>` (the gradient with respect to the value before it). `step_jvp` is the forward counterpart. `hawk.diff.step_function(k)` is the step itself as a pure map: an ordinary kernel `<k>_function` that reads every carried plane as it was before the step and writes `<plane>_next`, so `jvp` and `vjp` differentiate it like any other kernel. To record a whole rollout and reverse it, see [tapes and stop rules](vocabulary/05_tapes_and_events).
 
 `step_vjp(hawk.steps(k, K), steps_reverse="fused")` reverses all `K` steps of a launch in one launch. It re-runs the `K` steps from the state before the launch, so it needs no tape; state gradients match `K` calls of the per-step form bit for bit, parameter gradients to a few ULP. `"per_step"` is the default, and `jvp` of a `hawk.steps(k, K)` kernel is `hawk.steps(step_jvp(k), K)`.
 

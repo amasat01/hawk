@@ -306,13 +306,14 @@ jobs:
           out: osprey-wheels
         if: steps.memo.outputs.run == 'true'
 
-      # the test-only eagle: from PyPI when
+      # the test-only eagle, and raptor-core beside it because eagle's Python declares it (an entry that goes with that
+      # declaration): each from PyPI when
       # its checkout's version is released, else built from the checkout. The exact version matters: an
       # older eagle on PyPI cannot load what this hawk emits during a release.
       - id: sib
         uses: ./hawk/.github/actions/install-siblings
         with:
-          siblings: raptor-eagle=eagle/python
+          siblings: raptor-core=raptor raptor-eagle=eagle/python
         if: steps.memo.outputs.run == 'true'
 
       # The siblings first (PyPI or built above; eagle builds from its sdist here), then raptor-hawk from
@@ -456,7 +457,7 @@ jobs:
       - id: sib
         uses: ./hawk/.github/actions/install-siblings
         with:
-          siblings: raptor-eagle=eagle/python
+          siblings: raptor-core=raptor raptor-eagle=eagle/python
         if: steps.memo.outputs.run == 'true'
       - name: Fresh venv, install the aarch64 wheel, pip check
         env:

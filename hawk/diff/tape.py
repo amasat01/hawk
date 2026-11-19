@@ -622,10 +622,42 @@ def step_vjp(
     )
 
 
-def _step_vjp(kernel: Any, *, wrt, primal_unit, steps_reverse) -> Any:
+def step_function(kernel: Any) -> Any:
+    """ONE step of an in-place step kernel as a pure map: a kernel that reads every carried (``Mutable``) plane as it was
+    before the step, writes each new value to the separate plane ``<plane>_next`` and leaves its inputs untouched. The
+    kernel is named ``<kernel>_function`` and keeps the jump of the step. It is an ordinary kernel, so :func:`~hawk.diff.jvp`
+    and :func:`~hawk.diff.vjp` differentiate it, and :func:`step_vjp` is the vjp of it.
+
+    A kernel that carries no floating-point state plane is refused by name (the taping of its single step refuses it).
+
+    Example::
+
+        @hawk.kernel(steps=1)
+        def decay(a: Param, terminated: Terminated, x: Mutable[Scalar]):
+            x = x * a
+            terminated = x < 0.5
+
+        pure = hawk.diff.step_function(decay)    # reads a, x; writes x_next
+    """
     from ..trace.kernel import Kernel
-    from ..trace.steps import _fused_function, _fused_steps_of
     from .event import as_plain_reads
+
+    step = getattr(kernel, "step", None) or getattr(kernel, "one_step", None) or kernel
+    twin = tape(kernel, 1)
+    single = getattr(twin, "one_step", None) or twin
+    commits = [s for s in single.sinks if _ir.is_a(s, "assign") and s.field_text("name") != APPLIED_STEPS]
+    values = as_plain_reads(tuple(s.operands[0] for s in commits))
+    function = Kernel(
+        f"{step.name}_function",
+        tuple(_assign(s.field_text("name") + NEXT_SUFFIX, v, _ir.type_of(s)) for s, v in zip(commits, values)),
+        {},
+    )
+    function.jump = getattr(step, "jump", None)
+    return function
+
+
+def _step_vjp(kernel: Any, *, wrt, primal_unit, steps_reverse) -> Any:
+    from ..trace.steps import _fused_function, _fused_steps_of
     from .transform import Derived, vjp
 
     fused = _fused_steps_of(kernel) if steps_reverse == "fused" else None
@@ -633,22 +665,7 @@ def _step_vjp(kernel: Any, *, wrt, primal_unit, steps_reverse) -> Any:
     if fused is not None:
         function = _fused_function(*fused)
     else:
-        twin = tape(kernel, 1)
-        single = getattr(twin, "one_step", None) or twin
-        commits = [
-            s
-            for s in single.sinks
-            if _ir.is_a(s, "assign") and s.field_text("name") != APPLIED_STEPS
-        ]
-        values = as_plain_reads(tuple(s.operands[0] for s in commits))
-        function = Kernel(
-            f"{step.name}_function",
-            tuple(
-                _assign(s.field_text("name") + NEXT_SUFFIX, v, _ir.type_of(s))
-                for s, v in zip(commits, values)
-            ),
-            {},
-        )
+        function = step_function(kernel)
     function.jump = getattr(step, "jump", None)
     out = vjp(function, wrt=wrt)
     if (out.jump or {}).get("engaged"):

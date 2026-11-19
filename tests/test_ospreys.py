@@ -69,8 +69,7 @@ def test_two_ospreys_serving_one_target_are_refused_by_name(tmp_path, searched):
 
 def test_a_manifest_that_names_python_wings_is_refused(tmp_path, searched):
     searched(write_osprey(tmp_path / "w", "w", {"host": HOST_ROW}, wings={"raptor": "x"}))
-    with pytest.raises(HawkError, match="Python wing is refused"):
-        ospreys.found()
+    assert "Python wing is refused" in next(iter(ospreys.refused().values()), "")
 
 
 @pytest.mark.parametrize("drop", ["name", "version", "door", "targets"])
@@ -80,8 +79,7 @@ def test_a_manifest_missing_a_member_is_refused_naming_it(tmp_path, searched, dr
     del manifest[drop]
     (folder / "osprey.json").write_text(json.dumps(manifest))
     searched(folder)
-    with pytest.raises(HawkError, match=f"lacks {drop}"):
-        ospreys.found()
+    assert f"lacks {drop}" in next(iter(ospreys.refused().values()), "")
 
 
 def test_the_targets_table_is_what_the_found_ospreys_serve(tmp_path, searched):

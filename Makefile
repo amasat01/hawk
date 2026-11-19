@@ -19,7 +19,7 @@
 #   raptor-osprey-cuda; the library repository's `ci/wheels.py build` writes them to dist/wheels): they are installed first, then hawk.
 #   Siblings come from PyPI (the declared dependencies) unless a source directory is given:
 #   AETHER_SRC (the headers hawk._core and eagle build against), EAGLE_SRC (built against the headers of AETHER_SRC and its own),
-#   RAPTOR_SRC (read in place, never installed: the checkout whose public-name checker gate-names runs).
+#   RAPTOR_SRC (the checkout whose public-name checker gate-names runs; its Python package is installed before eagle's, which declares it).
 #   SITE_SRC is the checkout of amasat01.github.io (the docs skin and the freshness generator): gate-lint and gate-docs need it.
 #   Toolchains come from the environment, never guessed: a C++ compiler (CXX), nvcc on PATH (or CUDACXX), cppcheck on PATH
 #   (or HAWK_CPPCHECK). A missing one stops the gate before it starts. GATE_JOBS (default 2) is the build parallelism;
@@ -96,7 +96,8 @@ gate-venv: gate-tools
 	$(VPY) -m pip install --quiet "scikit-build-core>=0.10" "setuptools-scm>=8" "nanobind>=3.1,<4" cmake ninja -c ci/constraints.txt
 	# the OSPREY wheels and no other package of ours: hawk's requirements on them are then already met (the builds go to GATE_DIR, never into a sibling checkout)
 	$(VPY) -m pip install --quiet --no-index --no-deps "$(OSPREY_WHEELS)"/*.whl
-	# eagle: both header sets into a prefix of the gate's own, then its binding built against it
+	# eagle: both header sets into a prefix of the gate's own, then its binding built against it; the raptor Python package goes in
+	# first because eagle's Python declares it (this install goes when eagle's Python stops declaring it)
 	if [ -n "$(EAGLE_SRC)" ]; then \
 	  test -n "$(AETHER_SRC)" || { echo "gate: EAGLE_SRC needs AETHER_SRC (eagle builds against its headers)" >&2; exit 2; }; \
 	  test -n "$(RAPTOR_SRC)" || { echo "gate: EAGLE_SRC needs RAPTOR_SRC (aether's headers are configured against the facts header generated in raptor's cards)" >&2; exit 2; }; \
@@ -107,6 +108,7 @@ gate-venv: gate-tools
 	  cmake -DCMAKE_CUDA_COMPILER=$(NVCC) -DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH) -DCMAKE_PREFIX_PATH=$(GATE_ABS)/prefix \
 	      -DCMAKE_INSTALL_PREFIX=$(GATE_ABS)/prefix -B $(GATE_ABS)/eagle-hdr -S "$(abspath $(EAGLE_SRC))" >/dev/null && \
 	  cmake --install $(GATE_ABS)/eagle-hdr >/dev/null && \
+	  $(VPY) -m pip install --quiet "$(abspath $(RAPTOR_SRC))" -c ci/constraints.txt && \
 	  CMAKE_PREFIX_PATH=$(GATE_ABS)/prefix SKBUILD_CMAKE_ARGS="-DCMAKE_CUDA_COMPILER=$(NVCC);-DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH)" \
 	    $(VPY) -m pip install --quiet --no-build-isolation --config-settings=build-dir=$(GATE_ABS)/build/eagle "$(abspath $(EAGLE_SRC))/python" -c ci/constraints.txt; fi
 	CMAKE_PREFIX_PATH=$(GATE_ABS)/prefix $(VPY) -m pip install --quiet --no-build-isolation --config-settings=build-dir=$(GATE_ABS)/build/hawk \

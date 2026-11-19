@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from .. import _ir
+from .. import _contracts, _ir
 from .. import options as _options_mod
 from .. import ospreys
 from ..build_settings import BuildSettings, check as _check_settings, default_settings, refuse_choice, settings_of as _settings_of
@@ -75,7 +75,7 @@ class Bundle:
     """A deployment unit: one ``manifest.json`` over one or more artifacts.
 
     ``digest`` is the unit's own content identity — the same value
-    :func:`_unit_digest` computes, exposed
+    :func:`_unit_digest` computes and the stamp file :data:`STAMP_NAME` records, exposed
     here because a second unit's derivative can name this one as its
     primal's home (:func:`_per_kernel_derivative`'s cross-unit reference).
 
@@ -177,6 +177,11 @@ def _unit_digest(files) -> str:
         h.update(f.digest.encode("ascii"))
         h.update(b"\0")
     return h.hexdigest()
+
+
+#: The stamp a published unit folder holds: the unit digest and the digest of each published file, so a reader of the folder can
+#: check the files against the publisher. Dot-prefixed, so it is no member of the unit and not part of the digest it records.
+STAMP_NAME = ".hawk_unit"
 
 
 def _lane_set(kind):
@@ -484,6 +489,9 @@ def _publish(files, directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     for f in files:
         f.write(directory)
+    blob = text_blob(json.dumps({"unit": _unit_digest(files), "aether_abi": _contracts.AETHER_ABI_VERSION,
+                                 "files": {f.name: f.digest for f in sorted(files, key=lambda f: f.name)}}, indent=2) + "\n")
+    UnitFile(STAMP_NAME, digest_bytes(blob), blob=blob).write(directory)
 
 
 def resolve_kind(name: str, kernel_kind, explicit_kind):
@@ -737,7 +745,8 @@ def describe(kernels, *, targets=None, mode: str = "float64", options: Mapping |
     figures and the unit's measured launch figures), so one reader serves a kernel before and after its build. It asks each target's
     OSPREY for its machine and the lowering and nothing more, so it answers on a machine whose tools are absent. ``targets`` left
     unset is every target an OSPREY serves, as :func:`build` chooses; the refusals are :func:`build`'s up to the compile. A kernel
-    that splits into several units answers with its first unit, which lists the stages (``stages``) of the others.
+    that splits into several units answers with its first unit, which lists the stages (``stages``) of the others: each stage
+    carries ``sidecar``, the document of its own unit, the one :func:`build` writes beside that unit.
     """
     kernels = list(kernels)
     targets = tuple(DEFAULT_TARGETS if targets is None else targets)
@@ -751,10 +760,22 @@ def describe(kernels, *, targets=None, mode: str = "float64", options: Mapping |
     derivative = _per_kernel_derivative(kernels, names, None)
     _kinds, machines, answers = _lowered(kernels, names, None, mode=mode, targets=targets, cfg=cfg, options=options, opt_level=opt_level,
                                          root=default_cache_dir(), sizes=None, tools_needed=False)
-    return {k.name: _sidecar(k, unit, answer["units"], mode=mode, targets=targets, machines=machines, derivative=d, block=None,
-                             records=answer)
-            for k, answer, d in zip(kernels, answers, derivative)
-            for unit in [next(u for u in answer["units"] if u["texts"])]}
+    return {k.name: _with_stage_documents(k, answer, mode=mode, targets=targets, machines=machines, derivative=d)
+            for k, answer, d in zip(kernels, answers, derivative)}
+
+
+def _with_stage_documents(kernel, answer, *, mode, targets, machines, derivative) -> dict:
+    """The sidecar of the first unit of ``kernel`` with, in each of its ``stages``, the document of that stage's own unit
+    (``sidecar``): the one :func:`build` writes beside the unit, made by the same :func:`_sidecar`. The first stage's own
+    document is the first unit's, so it states the stages without a ``sidecar`` in them: the nesting ends there."""
+    documents = {u["meta"]["name"]: _sidecar(kernel, u, answer["units"], mode=mode, targets=targets, machines=machines,
+                                             derivative=derivative, block=None, records=answer)
+                 for u in answer["units"] if u["texts"]}
+    first = next(u for u in answer["units"] if u["texts"])["meta"]["name"]
+    document = documents[first]
+    if "stages" not in document:
+        return document
+    return {**document, "stages": [{**stage, "sidecar": documents[stage["kernel"]]} for stage in document["stages"]]}
 
 
 def emit_source(kernel, *, name: str | None = None, mode: str = "float64", targets=DEFAULT_TARGETS, kind=None,

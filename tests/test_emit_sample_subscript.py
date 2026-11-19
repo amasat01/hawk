@@ -54,7 +54,7 @@ nobody could emit. It is checked here beside the first half because it is the
 same question (how does a rank>=1 value reach a rank-0 aether result) and the
 same fix site.
 
-This test previously failed: restoring ``staging/aether/wings/base/render.py`` to an
+This test previously failed: restoring the library's writer to an
 earlier state under this row gave **77 failed, 42 passed**.
 
   * the NUMERIC row failed on 28 cases — every fan-out-1 case of ``norm``,

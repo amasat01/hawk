@@ -48,8 +48,8 @@ consumer:
 * ``arg_mirrors`` — ``{slot name: "GRefMirror" | "ScalarHandle" | "value"}``, the by-value
   shape the entry takes each argument in, as the lowering answer states it for the slot; a
   runner binds from it and refuses a sidecar that lacks it.
-* ``arg_dtypes`` — the plane's wire dtype, for every role including the
-  runtime-length ones: the compiled ``scalar_type`` for an ``f64``/``f32``
+* ``arg_dtypes`` — the slot's wire dtype, for EVERY slot (uniform slots and the
+  runtime-length planes included): the compiled ``scalar_type`` for an ``f64``/``f32``
   leaf (the compiled MODE decides the wire width, not the IR's own static
   ``f64``), always ``int64`` for an ``i32``/``i64`` index leaf (HAWK's
   emitted entry spells every index integer ``Int`` regardless of declared
@@ -207,11 +207,6 @@ _RUNTIME_LENGTH_ROLES = ("lookup", "wide_in", "wide_out", "accum_out")
 #: The roles a body writes.
 _SINK_ROLES = ("mutable", "out", "wide_out", "accum_out")
 
-#: Every role that binds a memory plane at all — the domain ``arg_widths``
-#: and ``arg_dtypes`` are complete over. ``uniform``/``nsamples`` are
-#: excluded: neither carries a plane, so neither has a width or dtype.
-_PLANE_ROLES = _SAMPLE_SHAPED_ROLES + _RUNTIME_LENGTH_ROLES
-
 #: The wire dtype an ``i32``/``i64`` or ``bool`` leaf carries, fixed
 #: regardless of the compiled scalar mode; ``None`` for ``f64``/``f32``
 #: marks "look at ``scalar_type`` instead" — see :func:`_wire_dtype`.
@@ -267,11 +262,9 @@ def _slot_shapes(walk) -> dict:
 
 
 def _arg_dtypes(walk, scalar_type: str) -> dict:
-    """The per-slot wire dtype block — every plane-bound role, inputs
-    included, so a consumer can tell an integer-valued handle from a Real
-    one without guessing."""
-    return {name: _wire_dtype(walk.slot_types[(role, name)], scalar_type)
-            for role, name in walk.arg_spec if role in _PLANE_ROLES}
+    """The per-slot wire dtype block — EVERY slot the unit binds, uniform and lookup slots included, from the
+    same slot record as :func:`_slot_shapes`, so a consumer can tell an integer-valued handle from a Real one without guessing."""
+    return {name: _wire_dtype(walk.slot_types[(role, name)], scalar_type) for role, name in walk.arg_spec}
 
 
 def _branch_cost(record: dict) -> dict:
@@ -370,9 +363,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
     composed the group can tell, from the deployed artifact alone, which
     lanes are inside it and whether any moved since.
 
-    ``arg_shapes``/``arg_dtypes`` are complete over every plane-bound
-    slot, inputs included — the width (or ``None`` for a runtime-length
-    role) and wire dtype the body was compiled for. ``arg_widths`` is
+    ``arg_shapes`` is complete over every plane-bound slot, inputs included (the width, or ``None`` for a runtime-length
+    role), and ``arg_dtypes`` over every slot, uniforms included — the wire dtype the body was compiled for. ``arg_widths`` is
     their int-only, backward-compatible subset (see the module docstring).
 
     ``lane_space`` and ``group`` are the kernel's launch shape and compaction

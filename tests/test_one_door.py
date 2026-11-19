@@ -1,9 +1,9 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""One door to the canonical form: hawk, the wings and the backends obtain the walk of a set of sinks through
-``raptor.wings.base.cells.walk``, which declares the compensation planes of the summing sample sums. A direct call of raptor's
-``canonical`` there would silently lose a plane and move a digest."""
+"""One door to the canonical form: hawk obtains the walk of a set of sinks through the library's walk, which declares the
+compensation planes of the summing sample sums, and only ``hawk/_ir.py`` calls it. Any other call of a ``canonical`` would
+silently lose a plane and move a digest."""
 
 from __future__ import annotations
 
@@ -11,10 +11,9 @@ import ast
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-ROOTS = ("hawk", "components", "staging", "extensions")
+ROOTS = ("hawk",)
 #: the door itself; every other module is refused
-ALLOWED = {"staging/raptor/wings/base/cells.py": "the door",
-           "hawk/_ir.py": "hawk's IR module: its canonical is the binding's walk, with the declared slots stated"}
+ALLOWED = {"hawk/_ir.py": "hawk's IR module: its canonical is the binding's walk, with the declared slots stated"}
 
 
 def _direct_calls(path: Path) -> list:
@@ -37,4 +36,4 @@ def test_no_module_takes_the_canonical_form_but_through_the_door():
                 continue
             if rel not in ALLOWED:
                 bad += [f"{rel}:{line}" for line in _direct_calls(path)]
-    assert not bad, "raptor's canonical called directly, use raptor.wings.base.cells.walk:\n  " + "\n  ".join(bad)
+    assert not bad, "canonical called outside hawk/_ir.py, use the walk it states:\n  " + "\n  ".join(bad)

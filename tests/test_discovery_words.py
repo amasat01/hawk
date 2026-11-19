@@ -53,10 +53,6 @@ def test_every_wing_manifest_starts_with_family_name_parent_and_has_no_component
             bad.append(f"{p.relative_to(REPO)}: starts with {list(m)[:3]}")
         if "components" in m:
             bad.append(f"{p.relative_to(REPO)}: has the key 'components'")
-    # every wing folder has one
-    for d in [*REPO.glob("staging/*/wings/*/")]:
-        if (d / "__init__.py").is_file() and not (d / "wing.json").is_file():
-            bad.append(f"{d.relative_to(REPO)}: no wing.json")
     _fail("wing manifests", bad)
 
 
@@ -68,7 +64,7 @@ def test_every_osprey_row_names_its_wings_and_no_retired_key():
             if not isinstance(row.get("wings"), dict) or not row["wings"] or set(row["wings"]) - {"raptor", "aether", "eagle"}:
                 bad.append(f"{where}: no 'wings' with keys within raptor, aether, eagle")
             bad += [f"{where}: has the key {k!r}" for k in ("vari" + "ant", "components") if k in row]
-    for d in [*REPO.glob("staging/ospreys/*/"), *REPO.glob("tests/plugins/*/*/")]:
+    for d in [*REPO.glob("tests/plugins/*/*/")]:
         if (d / "__init__.py").is_file() and not (d / "osprey.json").is_file():
             bad.append(f"{d.relative_to(REPO)}: no osprey.json")
     _fail("OSPREY manifests", bad)
@@ -123,8 +119,8 @@ def test_no_dotted_module_string_names_an_old_top_level_package():
 
 
 def test_the_old_folders_do_not_exist():
-    prefixes = ("components/", "extensions/", "staging/osprey_cpu/")
-    _fail("a tracked file under components/, extensions/ or staging/osprey_cpu", [p for p in _tracked() if p.startswith(prefixes)])
+    prefixes = ("components/", "extensions/", "staging/")
+    _fail("a tracked file under components/, extensions/ or staging/", [p for p in _tracked() if p.startswith(prefixes)])
 
 
 def test_no_manifest_or_spelling_row_names_the_dialect_of_the_old_base_wing():
@@ -169,26 +165,13 @@ def test_the_old_unit_word_occurs_in_no_tracked_text_file():
           [f"{p}: {len(v)} lines, first {v[0]}" for p, v in sorted(hits.items())])
 
 
-def _wing_folders():
-    return sorted(d for d in REPO.glob("staging/raptor/wings/*/") if (d / "wing.json").is_file())
-
-
-def test_the_facts_live_in_the_wings_under_their_final_names():
-    bad = [p for p in _tracked() if p.startswith(OLD_UNIT + "s/") or p.startswith("staging/raptor/wings/") and p.rsplit("/", 1)[-1] in ("data.py", OLD_HEADER)]
+def test_the_facts_carry_none_of_the_old_unit_names():
+    bad = [p for p in _tracked() if p.startswith(OLD_UNIT + "s/") or p.rsplit("/", 1)[-1] == OLD_HEADER]
     bad += [f"{p}: group raptor.{OLD_UNIT}s" for p, g in _groups() if g == f"raptor.{OLD_UNIT}s"]
-    for d in _wing_folders():
-        facts = d / "facts.py"
-        if facts.is_file():
-            import ast
-
-            literal = ast.literal_eval(facts.read_text())
-            bad += [f"{facts.relative_to(REPO)}: the key {k!r} is stated by wing.json" for k in ("name", "extends") if k in literal]
     for p in _tracked():
         if p.endswith(("wing.json", "facts.py")) and '"extends"' in (REPO / p).read_text():
             bad.append(f"{p}: the key 'extends'")
     _fail("the facts of a raptor wing", bad)
-
-
 
 
 def test_no_writer_includes_the_old_header_name():

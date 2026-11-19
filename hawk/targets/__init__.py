@@ -90,3 +90,18 @@ def buildable(target: str) -> bool:
 
     ask = {"target": target, "options": {}, "opt_level": "", "root": str(default_cache_dir())}
     return ospreys.serving(target).machine(ask)["tools_absent"] is None
+
+
+def stated(target: str, *, options=None, opt_level: str = "") -> dict:
+    """What the library says about this machine for ``target``: the ``stated`` record of its machine answer, as given (compiler
+    path and identity, profile, flags, device architecture). The keys are the library's; hawk reads none of them.
+
+    ``options`` and ``opt_level`` are those of :func:`hawk.artifact.build`. Raises :class:`~hawk.errors.ToolchainAbsent` with the
+    library's reason when the machine lacks the tools the target is built with, and :class:`~hawk.errors.HawkError` for a target
+    no library serves.
+    """
+    from ..artifact.bundle import _machines, _user_options, default_cache_dir    # the artifact package imports this one: a cycle
+
+    machine = _machines((target,), _user_options(options, False, None, "", ""), opt_level, default_cache_dir())[target]
+    ospreys.serving(target).require_tools(machine)
+    return machine["stated"]

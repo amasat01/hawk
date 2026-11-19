@@ -10,6 +10,7 @@ measured launch figures) are absent from it. One row runs ``describe`` with ever
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -22,6 +23,7 @@ import hawk
 import hawk.math as M
 from hawk import HawkError, Index, Matrix, Mutable, Scalar, Terminated, Vector, runtime
 from hawk.artifact import build_bundle, describe
+from hawk.artifact.bundle import digest_bytes
 from hawk.diff import vjp
 
 #: The sidecar members that exist only after a compile.
@@ -72,10 +74,19 @@ SUBJECTS = {
 }
 
 
+def _without_stage_documents(value):
+    """``stages`` as the sidecar file states them: ``describe`` adds each stage's own unit document, a build writes it as its own file."""
+    if isinstance(value, list) and all(
+        isinstance(v, dict) and "sidecar" in v for v in value
+    ):
+        return [{k: v for k, v in stage.items() if k != "sidecar"} for stage in value]
+    return value
+
+
 def _same_where_both_have(described: dict, built: dict) -> None:
     for member, value in described.items():
         if member in built:
-            assert built[member] == value, member
+            assert built[member] == _without_stage_documents(value), member
     for member in built:
         assert member in described or member in AFTER_A_COMPILE or member == "launch", (
             member
@@ -98,7 +109,9 @@ def test_describe_equals_the_built_sidecar_on_every_member_both_have(
 def test_an_auto_group_states_the_cost_of_each_branch():
     (group,) = describe([branchy], targets=("host",))["branchy"]["dispatch"]
     cost = group["cost"]
-    assert "fused_vectorised" not in cost  # stated only together with each branch's own verdict
+    assert (
+        "fused_vectorised" not in cost
+    )  # stated only together with each branch's own verdict
     assert len(cost["branches"]) == 3
     assert all(
         branch["arith32"] >= 0 and branch["stores"] is not None
@@ -191,3 +204,119 @@ def test_describe_answers_with_every_tool_hidden(tmp_path):
         cwd=tmp_path,
     )
     assert done.returncode == 0, done.stderr[-1500:]
+
+
+def test_every_slot_states_its_wire_dtype_uniforms_and_lookup_planes_included():
+    document = describe([osc], targets=("host",))["osc"]
+    slots = [name for _role, name in document["arg_spec"]]
+    assert (
+        sorted(document["arg_dtypes"])
+        == sorted(slots)
+        == sorted(document["slot_shapes"])
+    )
+    assert document["arg_dtypes"]["dt"] == "float64"  # a uniform
+
+
+def test_every_stage_of_a_split_kernel_carries_the_document_of_its_own_unit(
+    tmp_path, cache_dir
+):
+    document = describe([share], targets=("host",))["share"]
+    bundle = build_bundle(
+        [share], tmp_path / "out", targets=("host",), cache_dir=cache_dir
+    )
+    built = {artifact.name: artifact.sidecar for artifact in bundle.artifacts}
+    assert len(document["stages"]) > 1
+    for stage in document["stages"]:
+        assert stage["sidecar"]["kernel"] == stage["kernel"]
+        _same_where_both_have(stage["sidecar"], built[stage["kernel"]])
+
+
+def test_a_kernel_that_does_not_split_has_no_stage_documents():
+    assert "stages" not in describe([square], targets=("host",))["square"]
+
+
+def test_the_stated_machine_of_a_target_is_the_one_the_sidecar_of_a_build_carries(
+    tmp_path, cache_dir
+):
+    from hawk.targets import stated
+
+    document = stated("host")
+    bundle = build_bundle(
+        [square], tmp_path / "out", targets=("host",), cache_dir=cache_dir
+    )
+    assert document and list(sidecar_of(bundle, "square")["stated"].values()) == [
+        document
+    ]
+
+
+def test_asking_the_machine_of_a_target_no_library_serves_is_refused_by_name():
+    from hawk.targets import stated
+
+    with pytest.raises(HawkError, match="served by no OSPREY"):
+        stated("nowhere")
+
+
+def test_asking_the_machine_with_every_tool_hidden_raises_toolchain_absent(tmp_path):
+    """A machine that lacks the tools of a target says so by the library's reason, as ``build`` does."""
+    code = textwrap.dedent(
+        """
+        from hawk.errors import ToolchainAbsent
+        from hawk.targets import stated
+
+        try:
+            stated("host")
+        except ToolchainAbsent as absent:
+            print("absent", bool(str(absent)))
+        else:
+            print("present")
+        """
+    )
+    root = os.path.dirname(os.path.dirname(os.path.abspath(hawk.__file__)))
+    env = {
+        **os.environ,
+        "PATH": str(tmp_path),
+        "HAWK_CACHE_DIR": str(tmp_path / "cache"),
+        "PYTHONPATH": os.pathsep.join(
+            filter(None, [root, os.environ.get("PYTHONPATH")])
+        ),
+    }
+    for tool in ("CXX", "HAWK_CXX", "CC", "CUDACXX", "CUDA_PATH"):
+        env.pop(tool, None)
+    done = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+    )
+    assert done.returncode == 0, done.stderr[-1500:]
+    assert done.stdout.split() == ["absent", "True"]
+
+
+def _published_unit(tmp_path, cache_dir):
+    from hawk.artifact import STAMP_NAME
+
+    bundle = build_bundle(
+        [square], tmp_path / "out", targets=("host",), cache_dir=cache_dir
+    )
+    return bundle, json.loads((bundle.directory / STAMP_NAME).read_text())
+
+
+def test_every_file_of_a_published_unit_digests_to_its_stamped_value(
+    tmp_path, cache_dir
+):
+    bundle, stamp = _published_unit(tmp_path, cache_dir)
+    assert stamp["unit"] == bundle.digest
+    published = {path.name for path in bundle.files()}
+    assert published == set(stamp["files"])
+    for name, digest in stamp["files"].items():
+        assert digest_bytes((bundle.directory / name).read_bytes()) == digest, name
+
+
+def test_a_changed_byte_of_a_published_file_no_longer_digests_to_its_stamp(
+    tmp_path, cache_dir
+):
+    bundle, stamp = _published_unit(tmp_path, cache_dir)
+    sidecar = bundle.artifacts[0].sidecar_path
+    sidecar.write_bytes(sidecar.read_bytes() + b" ")
+    assert digest_bytes(sidecar.read_bytes()) != stamp["files"][sidecar.name]

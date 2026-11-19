@@ -124,7 +124,7 @@ def _expected_width(ttype) -> int:
 def _expected_dtype(ttype, scalar_type: str) -> str:
     """The wire dtype string INDEPENDENTLY re-derived from the role→mirror
     map's own vocabulary (``tests/test_emit_role_mirror_map.py``,
-    ``staging/aether/wings/base/render.element_spelling``): an ``f64``/``f32`` leaf always
+    the library's element spelling): an ``f64``/``f32`` leaf always
     resolves through the compiled ``Real`` (so it tracks ``scalar_type``, never
     its own IR literal); an ``i32``/``i64`` leaf always resolves through the
     emitted ``Int`` (``long long``, unconditionally 64-bit); ``bool`` passes
@@ -163,10 +163,11 @@ def test_every_plane_bound_slot_declares_its_shape_and_dtype(built, bundle_name,
     widths, shapes, dtypes = sc["arg_widths"], sc["arg_shapes"], sc["arg_dtypes"]
     for role, name in spec:
         if role in ("uniform", "nsamples"):
-            assert name not in widths and name not in shapes and name not in dtypes, (
+            assert name not in widths and name not in shapes, (
                 f"{kernel}: {role} {name!r} carries no plane; it must not "
-                "appear in arg_widths/arg_shapes/arg_dtypes"
+                "appear in arg_widths/arg_shapes"
             )
+            assert name in dtypes, f"{kernel}: slot ({role}, {name!r}) has no arg_dtypes entry"
             continue
         assert role in _PLANE_ROLES, f"unrecognised plane role {role!r}"
         assert name in shapes, f"{kernel}: slot ({role}, {name!r}) has no arg_shapes entry"

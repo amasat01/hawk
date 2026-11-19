@@ -11,8 +11,8 @@ Two tiers: an IR-level check (:mod:`_eval`, the same scratch interpreter
 scattered-accumulate shape cheaply, then a COMPILED host+device run of a
 published bundle (``_deployable.diagnostic``'s vjp/jvp, the kind every other
 terminated-mask row in ``test_ext_seams.py`` already exercises) — the body
-text is shared between HAWK's two wrappers (``staging/aether/wings/cpu/host.py``'s own
-docstring), so one compiled check pinned on both targets is what "host and
+text is shared between HAWK's two wrappers (the library's
+host writer states it), so one compiled check pinned on both targets is what "host and
 device emitters both" means in practice.
 """
 

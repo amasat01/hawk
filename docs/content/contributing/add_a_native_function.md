@@ -29,11 +29,11 @@ without scalarising first (see `CWISE_UNARY` in step 3).
 `OP_KINDS`, the vocabulary the walk and the derivative-rule table both key
 on).
 
-## 3. hawk: the aether spelling
+## 3. The library: the aether spelling
 
-`staging/aether/wings/base/spelling.py` — add a `"foo": "foo"` entry to `MATH_UNARY` (the
-rank-0 `aether::math::foo` spelling), and to `CWISE_UNARY` too if step 1 added
-a `cwiseFoo`.
+The library's aether wing states the spelling of every function: add a `"foo": "foo"` entry to its unary math
+table (the rank-0 `aether::math::foo` spelling), and to its coefficient-wise unary table too if step 1 added a
+`cwiseFoo`.
 
 ## 4. hawk: the derivative rule
 

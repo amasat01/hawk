@@ -20,26 +20,15 @@ ALLOWED: dict[tuple[str, str], str] = {}
 NAMES = ("cuda", "host", "x86", "arm", "cpu", "simt")
 
 
-def _roots():
-    hawk_root = Path(hawk.__file__).parent
-    yield "hawk", hawk_root
-    wings = sorted((hawk_root.parent / "staging" / "raptor" / "wings").glob("*/__init__.py"))
-    assert wings, "no raptor wing found: this guard would read hawk alone"
-    for pkg in wings:
-        yield f"staging/raptor/wings/{pkg.parent.name}", pkg.parent
-
-
 def _hits():
-    for label, root in _roots():
-        for path in sorted(root.rglob("*.py")):
-            rel = path.relative_to(root)
-            if label == "hawk" and rel.parts[0] == "targets":
-                continue
-            if label != "hawk" and path.name in ("facts.py", "cards.py"):       # a wing's facts are its data: the row itself
-                continue
-            for node in ast.walk(ast.parse(path.read_text())):
-                if isinstance(node, ast.Constant) and node.value in NAMES:
-                    yield f"{label}/{rel}:{node.lineno}", (f"{label}/{rel}", node.value)
+    root = Path(hawk.__file__).parent
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root)
+        if rel.parts[0] == "targets":
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Constant) and node.value in NAMES:
+                yield f"hawk/{rel}:{node.lineno}", (f"hawk/{rel}", node.value)
 
 
 def test_no_target_or_facts_name_is_spelled_outside_the_targets_package():

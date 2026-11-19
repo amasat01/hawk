@@ -15,7 +15,7 @@ from _linalg_kernels import eigh_kernel, eigh_values_kernel
 from conftest import sidecar_of
 
 from hawk import _ir
-from hawk.artifact import build_bundle
+from hawk.artifact import build_bundle, describe
 
 #: The context of the shared kernel builders.
 CTX = _ir.new_context()
@@ -43,9 +43,14 @@ def test_a_matrix_of_at_most_32_rows_keeps_the_per_lane_form(case, target, tmp_p
     assert _team_stages(kernel, tmp_path, target, mode=mode, form=form) == []
 
 
-@DEVICE
-def test_a_float32_values_only_eigen_solve_of_at_most_32_rows_on_a_device_is_a_team_of_32_threads(tmp_path):
-    assert _team_stages(eigh_values_kernel(CTX, 32), tmp_path, "cuda") == [{"threads": 32}]
+def test_a_float32_values_only_eigen_solve_of_at_most_32_rows_on_a_device_is_a_copy_team_then_a_solve_team_of_32_threads():
+    """The sidecar a device build would write, read before any build, so it holds on every machine. The copy stage's team is wider
+    than the solve's: its thread count is the device card's, which hawk does not expose, so the row pins its shape and not its value."""
+    kernel = eigh_values_kernel(CTX, 32)
+    stages = describe([kernel], targets=("cuda",), mode="float32")[kernel.name]["stages"]
+    teams = [stage["team"] for stage in stages if "team" in stage]
+    assert len(teams) == 2 and teams[1] == {"threads": 32}, teams
+    assert set(teams[0]) == {"threads"} and teams[0]["threads"] > 32, teams
 
 
 @pytest.mark.parametrize("target", TARGETS)

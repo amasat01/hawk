@@ -4,7 +4,7 @@
 """The authoring surface spells EVERY op the IR carries.
 
 WHY THIS ROW EXISTS. the library's op kinds is the vocabulary, the rule
-table is keyed on it and ``staging/aether/wings/base/render.py`` renders it — three consumers
+table is keyed on it and the library's writer renders it — three consumers
 that a row already checks against each other. Nobody was checking the FOURTH:
 the surface an author writes a kernel through. ``outer`` was in ``MATRIX_OPS``,
 carried a derivative rule, and rendered as ``aether::outer(...)``, but

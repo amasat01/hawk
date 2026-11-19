@@ -21,6 +21,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import re
 import sys
 import threading
 from importlib import metadata
@@ -33,6 +34,11 @@ SEARCH_ENV = "HAWK_OSPREY_PATH"
 _MANIFEST = "osprey.json"
 _MEMBERS = ("name", "version", "door", "targets")
 _TARGET_MEMBERS = ("request", "target", "about", "device", "entry", "format")
+#: The grammar of a target id (``request``): a lowercase identifier.
+_ID = re.compile(r"[a-z][a-z0-9_]*\Z")
+#: ``{folder: why it was refused}`` of the folders the last search could not use; kept so that a caller asking for a target only
+#: such a folder would serve is told which folder and why (:func:`refused`, :func:`serving`).
+_REFUSED: dict = {}
 
 
 class Osprey:
@@ -61,9 +67,16 @@ class Osprey:
                 suffix = "dylib" if sys.platform == "darwin" else "so"
                 library = self.folder / f"libosprey_{self.name}.{suffix}"
                 if not library.is_file():
-                    raise HawkError(f"the OSPREY {self.name!r} at {self.folder} holds no {library.name}")
+                    raise HawkError(
+                        f"the OSPREY {self.name!r} at {self.folder} holds no {library.name}"
+                    )
                 context = _osprey.Ctx()
-                self._open = (_osprey, context, context.backend_open(str(library)))
+                try:
+                    self._open = (_osprey, context, context.backend_open(str(library)))
+                except (ValueError, _osprey.Fault) as refusal:
+                    raise HawkError(
+                        f"the OSPREY {self.name!r} at {self.folder} cannot be opened: {refusal}"
+                    ) from refusal
             return self._open
 
     def _refused(self, what: str, refusal: Exception) -> HawkError:
@@ -94,7 +107,9 @@ class Osprey:
     def require_tools(self, machine: dict) -> None:
         """Raise :class:`~hawk.errors.ToolchainAbsent` with the library's reason when ``machine`` says its tools are absent."""
         if machine.get("tools_absent"):
-            raise ToolchainAbsent(f"{self.name}: {machine['tools_absent']}", toolchain=self.name)
+            raise ToolchainAbsent(
+                f"{self.name}: {machine['tools_absent']}", toolchain=self.name
+            )
 
     def lower(self, request: dict, dump: str, dialects: str) -> dict:
         """Return the library's answer to ``request`` over the nodes of ``dump``.
@@ -103,7 +118,9 @@ class Osprey:
         """
         module, context, library = self._opened()
         try:
-            return json.loads(context.backend_lower(library, dump, dialects, json.dumps(request)))
+            return json.loads(
+                context.backend_lower(library, dump, dialects, json.dumps(request))
+            )
         except (ValueError, module.Fault) as refusal:
             raise self._refused(repr(request["name"]), refusal) from refusal
 
@@ -141,14 +158,17 @@ class Osprey:
 
 def _declared_folders() -> list:
     """Return the folders distributions declare under the entry-point group, then those of the variable."""
-    folders = [Path(point.dist.locate_file(point.value))
-               for point in metadata.entry_points(group=ENTRY_POINT_GROUP)]
+    folders = [
+        Path(point.dist.locate_file(point.value))
+        for point in metadata.entry_points(group=ENTRY_POINT_GROUP)
+    ]
     folders += [Path(p) for p in os.environ.get(SEARCH_ENV, "").split(os.pathsep) if p]
     return folders
 
 
 def _read(folder: Path) -> Osprey:
-    """Return the OSPREY in ``folder``, its manifest checked: a missing member or a Python wing is refused."""
+    """Return the OSPREY in ``folder``, its manifest checked: a missing or unknown member, a target id outside the grammar or a
+    Python wing is refused."""
     path = folder / _MANIFEST
     try:
         manifest = json.loads(path.read_text())
@@ -157,11 +177,23 @@ def _read(folder: Path) -> Osprey:
     if missing := [m for m in _MEMBERS if m not in manifest]:
         raise HawkError(f"{path}: the manifest lacks {', '.join(missing)}")
     if "wings" in manifest:
-        raise HawkError(f"{path}: an OSPREY keeps its wings inside its library; a Python wing "
-                        "is refused")
+        raise HawkError(
+            f"{path}: an OSPREY keeps its wings inside its library; a Python wing "
+            "is refused"
+        )
+    for key in sorted(set(manifest) - set(_MEMBERS)):
+        raise HawkError(
+            f"{path}: unknown manifest key {key!r} (the keys are {list(_MEMBERS)}); a misspelt key is refused, never ignored"
+        )
     for row in manifest["targets"]:
         if missing := [m for m in _TARGET_MEMBERS if m not in row]:
-            raise HawkError(f"{path}: target {row.get('request')!r} lacks {', '.join(missing)}")
+            raise HawkError(
+                f"{path}: target {row.get('request')!r} lacks {', '.join(missing)}"
+            )
+        if not isinstance(row["request"], str) or not _ID.match(row["request"]):
+            raise HawkError(
+                f"{path}: the target request {row['request']!r} is not a lowercase identifier [a-z][a-z0-9_]*"
+            )
     return Osprey(folder, manifest)
 
 
@@ -169,20 +201,34 @@ def _read(folder: Path) -> Osprey:
 def found() -> dict:
     """Return ``{OSPREY name: Osprey}`` of every OSPREY the search list holds.
 
-    Two OSPREYs that serve one target are refused by name.
+    Two OSPREYs that serve one target are refused by name. A folder that cannot be used (a manifest refused, none readable) is
+    isolated: the others load, and the folder with its reason is kept in :func:`refused`.
     """
     out, owner = {}, {}
+    _REFUSED.clear()
     for folder in _declared_folders():
-        osprey = _read(folder)
+        try:
+            osprey = _read(folder)
+        except HawkError as why:
+            _REFUSED[str(folder)] = str(why)
+            continue
         if osprey.name in out:
             continue
         for target in osprey.targets:
             if target in owner:
-                raise HawkError(f"target {target!r} is served by both {owner[target]!r} and "
-                                f"{osprey.name!r}; keep one")
+                raise HawkError(
+                    f"target {target!r} is served by both {owner[target]!r} and "
+                    f"{osprey.name!r}; keep one"
+                )
             owner[target] = osprey.name
         out[osprey.name] = osprey
     return out
+
+
+def refused() -> dict:
+    """Return ``{folder: why}`` of every folder of the search list that cannot be used, each with its refusal sentence."""
+    found()
+    return dict(_REFUSED)
 
 
 def forget() -> None:
@@ -200,6 +246,9 @@ def serving(target: str) -> Osprey:
     for osprey in found().values():
         if target in osprey.targets:
             return osprey
-    raise HawkError(f"target {target!r} is served by no OSPREY found; the served targets are "
-                    f"{tuple(targets()) or 'none'} (searched: the {ENTRY_POINT_GROUP} entry "
-                    f"points and ${SEARCH_ENV})")
+    unusable = "".join(f"; refused: {why}" for why in refused().values())
+    raise HawkError(
+        f"target {target!r} is served by no OSPREY found; the served targets are "
+        f"{tuple(targets()) or 'none'} (searched: the {ENTRY_POINT_GROUP} entry "
+        f"points and ${SEARCH_ENV}){unusable}"
+    )
