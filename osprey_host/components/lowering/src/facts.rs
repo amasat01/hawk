@@ -466,6 +466,50 @@ pub(crate) const ISA_CARDS: [(&str, &str, &str); 2] = [
     ("x86_64", "x86.json", "X86_64"),
 ];
 
+impl IsaCard {
+    /// The profile a host build gets when none is asked, for a GCC compiler or another.
+    fn default_profile(&self, gcc: bool) -> &String {
+        if gcc {
+            &self.default_gcc
+        } else {
+            &self.default_other
+        }
+    }
+}
+
+/// The optimisation level a build gets when none is asked: the `default_opt_level` of the document that states the compile of the
+/// host (`host_build.json`) or of the device (`cuda_image.json`).
+///
+/// # Errors
+/// Refuses a document that does not state it.
+pub fn default_opt_level(cards: &CardSet, host: bool) -> Result<String, Failed> {
+    let file = if host {
+        "host_build.json"
+    } else {
+        "cuda_image.json"
+    };
+    Ok(text_of(&cards.json(file)?, file, "default_opt_level")?)
+}
+
+/// The profile a host build gets when none is asked, for the instruction set `isa_name` and the compiler `compiler` (its
+/// identity): the instruction set card's default for GCC or for another compiler.
+///
+/// # Errors
+/// Refuses an instruction set without a card and a compiler identity that is not `<path> || <version line> || <digest>`.
+pub fn default_host_profile(
+    cards: &CardSet,
+    compiler: &str,
+    isa_name: &str,
+) -> Result<String, Failed> {
+    let Some(&(_, file, _)) = ISA_CARDS.iter().find(|card| card.0 == isa_name) else {
+        return Err(Failed::Bad(format!(
+            "no card for the instruction set {isa_name}"
+        )));
+    };
+    let isa = load_isa(cards, file, isa_name).map_err(|reason| cards.defect(file, reason))?;
+    Ok(isa.default_profile(identity_is_gcc(compiler)?).clone())
+}
+
 /// Loads the card of an instruction set, and checks that it names that instruction set.
 fn load_isa(cards: &CardSet, file: &str, isa: &str) -> Result<IsaCard, String> {
     let card = cards.json(file)?;
@@ -723,8 +767,7 @@ pub fn host_machine(
             return Err(Failed::Bad(format!("unknown host profile {asked}")));
         }
         Some(asked) => asked,
-        None if gcc => &isa.default_gcc,
-        None => &isa.default_other,
+        None => isa.default_profile(gcc),
     };
     if stated.host_profile.is_some()
         && isa.vector_math_needs_gcc

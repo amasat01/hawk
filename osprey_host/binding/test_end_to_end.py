@@ -47,6 +47,27 @@ def exported(path):
     return {line.split()[-1].lstrip("_") for line in shown.stdout.splitlines() if line.strip()}
 
 
+def same_build_asked_otherwise(c, lib, ask, unset, profile):
+    """Check that the stated or environment default is the unset ask, and another level is not."""
+
+    def machine_of(level, options):
+        stated_ask = {**ask, "opt_level": level, "options": options}
+        return json.loads(c.backend_machine(lib, json.dumps(stated_ask)))
+
+    stated = machine_of("O3", {"profile": profile})
+    assert (stated["key"], stated["stated"]["asked"]) == (unset["key"], unset["stated"]["asked"])
+    os.environ["HAWK_OPT_LEVEL"] = "O3"
+    try:
+        from_env = machine_of("", {})
+        os.environ["HAWK_OPT_LEVEL"] = "O1"
+        lower = machine_of("", {})
+    finally:
+        del os.environ["HAWK_OPT_LEVEL"]
+    assert from_env["key"] == unset["key"]
+    assert from_env["stated"]["asked"] == unset["stated"]["asked"]
+    assert lower["key"] != unset["key"] and lower["stated"]["asked"]["opt_level"] == "O1"
+
+
 def run(done, o, raises, folders, header_abi, make_nodes):
     """Check the cpu folder end to end and the cuda folder's refusals; folders maps name to path."""
     work = tempfile.mkdtemp(prefix="osprey_e2e_")
@@ -62,7 +83,12 @@ def run(done, o, raises, folders, header_abi, make_nodes):
     machine = json.loads(c.backend_machine(lib, json.dumps(ask)))
     assert machine["tools_absent"] is None, machine["tools_absent"]
     asked = machine["stated"]["asked"]
-    assert asked == {"opt_level": "", "options": {}}, asked
+    assert asked["opt_level"] == "O3", asked
+    profile = asked["options"]["profile"]
+    assert set(asked["options"]) == {"profile"}, asked
+    done.append("end to end: an unset ask is stated with the default level and profile")
+    same_build_asked_otherwise(c, lib, ask, machine, profile)
+    done.append("end to end: the default stated or set in the environment is one key and record")
     compiler = machine["stated"]["tools"]["compiler"]
     done.append("end to end: machine states the host compiler " + compiler["path"])
     # the kernel: y = a + b

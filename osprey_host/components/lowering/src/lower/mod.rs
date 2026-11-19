@@ -230,6 +230,9 @@ impl Cards {
         if let (Some(device), Some(bounds)) = (&device, request.settings.launch_bounds) {
             device.check_launch_bounds(bounds)?;
         }
+        if let Some(device) = &device {
+            device.check_block_settings(request.settings.warps, request.settings.team_threads)?;
+        }
         let (deciding, wide_class) = match (&device, &host) {
             (Some(device), _) => {
                 let arch = device_arch(request)?;
@@ -1077,10 +1080,37 @@ mod tests {
         assert!(shipped_card.check_launch_bounds((128, 16)).is_ok());
         assert!(small.check_launch_bounds((128, 16)).is_err());
         assert!(small.check_launch_bounds((128, 8)).is_ok());
-        for bad_bounds in [(100, 1), (16, 1), (128, 17)] {
+        for bad_bounds in [(100, 1), (16, 1), (128, 17), (2048, 1)] {
             let why = shipped_card.check_launch_bounds(bad_bounds).unwrap_err();
             assert!(why.reason.contains("launch_bounds"), "{}", why.reason);
         }
+    }
+
+    /// Oracle: a block holds at most the threads the shipped card states (1024) of 32 lanes a warp, so 32 warps are the most and a
+    /// team of 2048 threads is refused; the same card stating 512 refuses 17 warps.
+    #[test]
+    fn the_threads_of_a_block_of_the_device_card_decide_which_block_settings_are_refused() {
+        let shipped_card = device_card_with("\"warp_size\": 32", "\"warp_size\": 32");
+        assert!(shipped_card.check_block_settings(32, 1024).is_ok());
+        assert!(shipped_card.check_block_settings(0, 0).is_err());
+        assert!(shipped_card.check_block_settings(33, 0).is_err());
+        assert!(shipped_card.check_block_settings(4, 2048).is_err());
+        let small = device_card_with(
+            "\"max_threads_per_block\": 1024",
+            "\"max_threads_per_block\": 512",
+        );
+        assert!(small.check_block_settings(16, 512).is_ok());
+        let why = small.check_block_settings(17, 0).unwrap_err();
+        assert!(why.reason.contains("warps 17"), "{}", why.reason);
+    }
+
+    /// Oracle: a card without the matrix dimension a thread holds is refused by the name of the number, never read as zero.
+    #[test]
+    fn a_device_card_without_the_linalg_dimension_is_refused_by_name() {
+        let text = std::fs::read_to_string(shipped().join("cuda_build.json")).unwrap();
+        assert!(text.contains("\"linalg_max_dim\": 32,"));
+        let why = card::device_build(&text.replacen("\"linalg_max_dim\": 32,", "", 1)).unwrap_err();
+        assert!(why.reason.contains("linalg_max_dim"), "{}", why.reason);
     }
 
     /// Oracle: the shipped build card states a lean width of 4.

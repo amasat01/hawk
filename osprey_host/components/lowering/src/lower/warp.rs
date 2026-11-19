@@ -13,7 +13,8 @@ use raptor_ir::record::Ctx;
 use raptor_wings::lanes::slice::{slice_sinks, SliceSpec};
 use raptor_wings::stages::{stages, Stages};
 
-/// The rows a block of the warp form serves, from the largest the tile allows.
+/// The rows a block of the warp form serves, from the largest the tile allows; the device enters through its tile bytes.
+/// Not a machine number: the ladder the form's text is written for, halving from eight lanes a block.
 const TILE_ROWS: [i64; 3] = [8, 4, 2];
 
 /// A unit written as a warp per lane.

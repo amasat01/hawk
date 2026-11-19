@@ -47,6 +47,16 @@ fn the_device_cell_row_is_one_warp_and_the_host_row_a_power_of_two() {
 }
 
 #[test]
+fn a_device_block_holds_whole_warps_and_at_least_one() {
+    let device = facts("osprey_cuda", "cuda_build.json");
+    let (block, warp) = (
+        number(&device, None, "max_threads_per_block"),
+        number(&device, None, "warp_size"),
+    );
+    assert!(block >= warp && block % warp == 0, "{block} of {warp}");
+}
+
+#[test]
 fn the_scatter_chunk_cap_of_both_libraries_is_at_least_one() {
     assert!(
         number(

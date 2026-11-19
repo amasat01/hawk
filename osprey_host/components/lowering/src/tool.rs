@@ -8,7 +8,7 @@ use crate::facts::{self, CardSet, Failed};
 use aether_writers::contract::{Contract, Json};
 use aether_writers::refuse::{bad, Refusal};
 use std::path::Path;
-use toolkit::wire;
+use toolkit::{wire, Toolkit};
 
 /// The text of the member `key` of `j`.
 fn text<'a>(j: &'a Json, key: &str) -> Option<&'a str> {
@@ -61,29 +61,15 @@ pub fn machine<B: Backend>(backend: &B, ask: &str) -> Result<String, toolkit::Re
             .ask_from_env("host_profile")
             .filter(|_| backend.host_card_wanted()),
     );
+    let (level, options) = resolved_ask(backend, toolkit, &ask, level, options)?;
     let level = level.as_str();
-    let mut tool_ask = vec![
-        (
-            "key_terms".to_string(),
-            Json::Arr(vec![
-                Json::Str(backend.identity().into()),
-                Json::Str(format!("opt_level:{level}")),
-                Json::Str(format!("options:{}", options.to_text())),
-            ]),
-        ),
-        ("host".into(), Json::Bool(backend.host_card_wanted())),
+    let terms = vec![
+        Json::Str(backend.identity().into()),
+        Json::Str(format!("opt_level:{level}")),
+        Json::Str(format!("options:{}", options.to_text())),
     ];
-    if let Some(root) = text(&ask, "root") {
-        tool_ask.push(("root".into(), Json::Str(root.into())));
-        if let Some(prelude) = backend.reserved_names_prelude() {
-            let record = Json::Obj(vec![("prelude".into(), Json::Str(prelude.into()))]);
-            tool_ask.push(("reserved_names".into(), record));
-        }
-    }
-    if let Some(arch) = text(&options, "arch") {
-        tool_ask.push(("device_arch".into(), Json::Str(arch.into())));
-    }
-    let answer = toolkit.machine(&Json::Obj(tool_ask).to_text())?;
+    let tool_ask = tool_ask(backend, &ask, &options, terms);
+    let answer = toolkit.machine(&tool_ask.to_text())?;
     let Json::Obj(mut parts) = parse("the toolkit's machine answer", &answer)? else {
         return Err(refuse("the toolkit's machine answer is not an object"));
     };
@@ -97,6 +83,64 @@ pub fn machine<B: Backend>(backend: &B, ask: &str) -> Result<String, toolkit::Re
         }
     }
     Ok(Json::Obj(parts).to_text())
+}
+
+/// The ask the toolkit answers: the key's `terms` beyond what the machine states, whether the host's facts are wanted, the cache
+/// root with the reserved names, and the device arch the options pin.
+fn tool_ask<B: Backend>(backend: &B, ask: &Json, options: &Json, terms: Vec<Json>) -> Json {
+    let mut members = vec![
+        ("key_terms".to_string(), Json::Arr(terms)),
+        ("host".into(), Json::Bool(backend.host_card_wanted())),
+    ];
+    if let Some(root) = text(ask, "root") {
+        members.push(("root".into(), Json::Str(root.into())));
+        if let Some(prelude) = backend.reserved_names_prelude() {
+            let record = Json::Obj(vec![("prelude".into(), Json::Str(prelude.into()))]);
+            members.push(("reserved_names".into(), record));
+        }
+    }
+    if let Some(arch) = text(options, "arch") {
+        members.push(("device_arch".into(), Json::Str(arch.into())));
+    }
+    Json::Obj(members)
+}
+
+/// The level and the options of an ask with the defaults the library's documents state put in, so that a build asked for nothing
+/// and a build asked for the default are one ask: the key and the `stated.asked` record are made from the result. The level
+/// default is the compile document's own; the profile default of a host build is its instruction set card's for the compiler the
+/// machine finds, so the machine is asked once for the compiler before the key is made.
+fn resolved_ask<B: Backend>(
+    backend: &B,
+    toolkit: &Toolkit,
+    ask: &Json,
+    level: String,
+    options: Json,
+) -> Result<(String, Json), toolkit::Refusal> {
+    let dir = facts::facts_dir(None).map_err(refuse)?;
+    let cards = CardSet::new(&dir, &[], backend.card_names());
+    let failed = |why: Failed| refuse(why.refusal().reason);
+    let level = if level.is_empty() {
+        facts::default_opt_level(&cards, backend.host_card_wanted()).map_err(failed)?
+    } else {
+        level
+    };
+    let Json::Obj(mut members) = options else {
+        return Ok((level, options));
+    };
+    if backend.host_card_wanted()
+        && backend.option_names().contains(&"profile")
+        && text_in(&members, "profile").is_none()
+    {
+        let found = toolkit
+            .machine(&tool_ask(backend, ask, &Json::Obj(members.clone()), vec![]).to_text())?;
+        let found = parse("the toolkit's machine answer", &found)?;
+        let (compiler, stated) = stated_of(backend, &cards, &found).map_err(failed)?;
+        let stated = facts::stated_from_json(&stated).map_err(failed)?;
+        let isa = stated.isa.unwrap_or_else(|| facts::probe().isa);
+        let profile = facts::default_host_profile(&cards, &compiler, &isa).map_err(failed)?;
+        members.push(("profile".into(), Json::Str(profile)));
+    }
+    Ok((level, in_name_order(Json::Obj(members))))
 }
 
 /// The level and the options a machine is stated for: what the ask states, else what the environment says (`env_level`,
@@ -823,6 +867,22 @@ mod tests {
         assert_eq!(on(&declared, "{\"literal_table\":false}", None), "{}");
         assert_eq!(on(&declared, "{\"arch\":\"sm_61\"}", None), "{}");
         assert_eq!(on(&["profile"], "{\"literal_table\":true}", None), "{}");
+    }
+
+    /// Oracle: the default level and the default profile the shipped documents state (`default_opt_level`, `default_profile`).
+    #[test]
+    fn the_defaults_of_an_unset_ask_are_the_ones_the_documents_state() {
+        let docs = CardSet::new(&crate::testing::shipped(), &[], crate::testing::ALL_CARDS);
+        assert_eq!(facts::default_opt_level(&docs, true).unwrap(), "O3");
+        assert_eq!(facts::default_opt_level(&docs, false).unwrap(), "O3");
+        let gcc = "/usr/bin/g++ || g++ (GCC) 13.2.0 || 0";
+        let clang = "/usr/bin/c++ || Apple clang version 21.0.0 || 0";
+        let default = |compiler, isa| facts::default_host_profile(&docs, compiler, isa).unwrap();
+        assert_eq!(default(gcc, "arm64"), "native-vector-math");
+        assert_eq!(default(clang, "arm64"), "native-vector-math");
+        assert_eq!(default(gcc, "x86_64"), "native-vector-math");
+        assert_eq!(default(clang, "x86_64"), "native");
+        assert!(facts::default_host_profile(&docs, gcc, "riscv").is_err());
     }
 
     #[test]

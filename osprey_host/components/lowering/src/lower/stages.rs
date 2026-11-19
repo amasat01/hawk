@@ -88,6 +88,7 @@ pub(super) fn stage_facts(request: &KernelRequest, card: &BuildCard) -> StageFac
             team_threads: card.team_threads,
             team_threads_large: card.team_threads_large,
             forced: request.settings.team_threads,
+            warp_threads: card.warp_size,
             warp_eigh: warp_rows(request, card),
         },
         in_place: !request.kind.active_set && request.kind.lanes.is_none(),

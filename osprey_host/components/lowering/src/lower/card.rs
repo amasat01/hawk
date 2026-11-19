@@ -39,6 +39,8 @@ pub struct BuildCard {
     /// The factorisations a warp takes per lane at the architecture the build is for: empty for the host's own card; the device's
     /// rows with a double row kept only where the architecture's FP64 rate is at least `1 / linalg_fast_fp64` of its FP32 rate.
     pub warp_entries: Vec<WarpEntry>,
+    /// The lanes of a warp, for a build that has a device target; none for the host's own card.
+    pub warp_size: Option<i64>,
     /// The samples one row of a reduction over samples stands for.
     pub cells_row: i64,
     /// The most chunks of an ordered scatter a launch splits the lanes into.
@@ -79,7 +81,8 @@ const WIDE_PATTERNS: [&str; 5] = ["read", "slot_read", "rotate", "write", "accum
 /// The scalar widths a wide table has an entry for.
 const WIDE_WIDTHS: [i64; 2] = [4, 8];
 
-/// The most lanes a thread box holds.
+/// The most lanes a card may state for a thread box: a number of the text writer, which unrolls a box's lanes one by one, and of the
+/// card's schema, not a property of any device. Not a machine number: the card states the lanes a device's box takes, below it.
 const BOX_LANES_MAX: i64 = 16;
 
 impl BuildCard {
@@ -291,6 +294,7 @@ pub fn host_build(text: &str) -> Result<BuildCard, Refusal> {
         cells_row: number(&mut top, "cells_row")?,
         scatter_max_chunks: number(&mut top, "scatter_max_chunks")?,
         scatter_threads: number(&mut top, "scatter_threads")?,
+        warp_size: None,
         copy_threads: number(&mut lanes, "copy_threads")?,
         team_threads,
         team_threads_large,
@@ -353,6 +357,8 @@ pub struct DeviceCard {
     pub warp_size: i64,
     /// The resident threads of one multiprocessor: the most a launch's threads times blocks may come to.
     pub max_threads_per_sm: i64,
+    /// The most threads one block of a launch holds.
+    pub max_threads_per_block: i64,
     /// The wide thresholds measured for one architecture and scalar type, which replace the card's own for that type.
     pub wide_rows: Vec<WideRow>,
     /// The build settings the device declares, by the names a request states them under.
@@ -419,13 +425,37 @@ impl DeviceCard {
         blame(self.stated, "cuda_build.json", reason.into()).refusal()
     }
 
-    /// Refuses launch bounds `(threads, blocks)` that the device cannot run: threads must be a multiple of the warp size and
-    /// threads times blocks at most the resident threads of a multiprocessor.
+    /// Refuses launch bounds `(threads, blocks)` that the device cannot run: threads must be a multiple of the warp size and at most
+    /// a block holds, and threads times blocks at most the resident threads of a multiprocessor.
     pub fn check_launch_bounds(&self, (threads, blocks): (i64, i64)) -> Result<(), Refusal> {
         let (warp, cap) = (self.warp_size, self.max_threads_per_sm);
-        if threads < warp || threads % warp != 0 || blocks < 1 || threads * blocks > cap {
+        let block = self.max_threads_per_block;
+        if threads < warp
+            || threads % warp != 0
+            || threads > block
+            || blocks < 1
+            || threads * blocks > cap
+        {
             return Err(bad(format!(
-                "launch_bounds ({threads}, {blocks}) needs threads a multiple of {warp} and threads times blocks at most {cap}"
+                "launch_bounds ({threads}, {blocks}) needs threads a multiple of {warp} and at most {block}, and threads times blocks at most {cap}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Refuses a team size of `team_threads` threads (0 leaves it to the card) or a block of `warps` warps that the device cannot
+    /// run: a block holds at most `max_threads_per_block` threads.
+    pub fn check_block_settings(&self, warps: i64, team_threads: i64) -> Result<(), Refusal> {
+        let (warp, block) = (self.warp_size, self.max_threads_per_block);
+        if !(1..=block / warp).contains(&warps) {
+            return Err(bad(format!(
+                "warps {warps} is outside 1 to {}: a block holds at most {block} threads of {warp} lanes a warp",
+                block / warp
+            )));
+        }
+        if !(0..=block).contains(&team_threads) {
+            return Err(bad(format!(
+                "team_threads {team_threads} is outside 0 to {block}: a block holds at most {block} threads"
             )));
         }
         Ok(())
@@ -801,6 +831,7 @@ impl DeviceCard {
                 .filter(|row| row.scalar == "float32" || fast)
                 .cloned()
                 .collect(),
+            warp_size: Some(self.warp_size),
             cells_row: self.cells_row,
             scatter_max_chunks: self.scatter_max_chunks,
             scatter_threads: self.scatter_threads,
@@ -986,6 +1017,10 @@ pub fn device_build(text: &str) -> Result<DeviceCard, Refusal> {
         max_threads_per_sm: positive(
             number(&mut top, "max_threads_per_sm")?,
             "max_threads_per_sm",
+        )?,
+        max_threads_per_block: positive(
+            number(&mut top, "max_threads_per_block")?,
+            "max_threads_per_block",
         )?,
         wide_rows: wide_rows(&rows)?,
         settings: setting_names(

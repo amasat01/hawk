@@ -574,3 +574,55 @@ fn the_card_decides_the_route_of_a_contraction_per_scalar_type_and_architecture(
         device_card_stating("\"float64\": \"gemm\"", "\"float64\": \"direct\"").unwrap();
     assert_eq!(direct_default.contraction_route("sm_61", "float64"), Direct);
 }
+
+/// The compile argv of the host answer for the profile `profile` under the compiler `line` on `isa`.
+fn contraction_flags(isa: &str, line: &str, profile: Option<&str>) -> Vec<String> {
+    let stated = Stated {
+        host_profile: profile.map(Into::into),
+        ..roots()
+    };
+    // the whole answer, build commands included: `answer` above cuts them off
+    let text = ask_facts(&shipped(), "host", &identity(line), &machine(isa), &stated).unwrap();
+    // the unit and the set commands state it once each: one value is what they agree on
+    let mut flags: Vec<String> = text
+        .split('"')
+        .filter(|word| word.starts_with("-ffp-contract="))
+        .map(String::from)
+        .collect();
+    flags.dedup();
+    flags
+}
+
+/// Oracle: the exact profiles contract nothing (`-ffp-contract=off`) and the shipped default lets the compiler fuse
+/// (`-ffp-contract=fast`); flipping an exact entry would make the bit-for-bit profiles differ from a plain IEEE evaluation.
+#[test]
+fn the_exact_profiles_compile_with_contraction_off_and_the_default_with_it_fast() {
+    for profile in ["native", "portable"] {
+        assert_eq!(
+            contraction_flags("arm64", "Apple clang version 21.0.0", Some(profile)),
+            ["-ffp-contract=off"]
+        );
+    }
+    assert_eq!(
+        contraction_flags(
+            "x86_64",
+            "g++ (Ubuntu 11.4.0) 11.4.0",
+            Some("native-vector-math-nofma")
+        ),
+        ["-ffp-contract=off"]
+    );
+    assert_eq!(
+        contraction_flags("arm64", "Apple clang version 21.0.0", None),
+        ["-ffp-contract=fast"]
+    );
+}
+
+/// Oracle: the machine the library runs on states a level 1 data cache, a level 2 cache at least as large, and where it read them.
+#[test]
+fn the_probe_of_this_machine_states_its_caches() {
+    let caches = osprey_lowering::facts::probe()
+        .caches
+        .expect("this machine states its cache sizes");
+    assert!(caches.l1d_bytes > 0 && caches.l2_bytes >= caches.l1d_bytes);
+    assert!(!caches.source.is_empty());
+}

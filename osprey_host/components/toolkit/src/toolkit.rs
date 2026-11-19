@@ -343,3 +343,35 @@ fn runtime_stated(runtime: &Runtime) -> Done<J> {
         ),
     ]))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discover::Env;
+
+    /// The host library's shipped tool table with the environment `pairs`.
+    fn host_toolkit(pairs: &[(&str, &str)]) -> Toolkit {
+        let table = include_str!("../../../osprey_cpu/facts/tools.json");
+        Toolkit::new(table, &[], Env::from_pairs(pairs)).unwrap()
+    }
+
+    /// Oracle: the shipped table's `jobs` limit states a default of 2 and the variable `HAWK_COMPILE_JOBS`.
+    #[test]
+    fn the_job_count_is_two_unless_the_variable_says_another() {
+        assert_eq!(host_toolkit(&[]).limit("jobs", 99).unwrap(), 2);
+        let three = host_toolkit(&[("HAWK_COMPILE_JOBS", "3")]);
+        assert_eq!(three.limit("jobs", 99).unwrap(), 3);
+        // the table states that 0 disables a limit: no cap on the compiles that run at once
+        let none = host_toolkit(&[("HAWK_COMPILE_JOBS", "0")]);
+        assert_eq!(none.limit("jobs", 99).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_job_count_that_is_not_a_number_is_refused_naming_the_variable() {
+        for raw in ["two", "1.5", "-1"] {
+            let toolkit = host_toolkit(&[("HAWK_COMPILE_JOBS", raw)]);
+            let why = toolkit.limit("jobs", 2).unwrap_err();
+            assert!(why.to_string().contains("HAWK_COMPILE_JOBS"), "{why}");
+        }
+    }
+}

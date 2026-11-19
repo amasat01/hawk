@@ -2,6 +2,10 @@
 //! card or facts file, never an UPPER_CASE number constant in code. The scan reads each crate's sources and judges names only: an
 //! item `const NAME: <integer type or array of integers> = <numbers>;` whose name carries a machine word is a hit, and the message
 //! lists each `file:line`. Arithmetic inside a function cannot be judged statically and is not checked here.
+//!
+//! A number of the algorithm or of a contract (the ladder a text is written for, the bound of a schema) is no machine number and
+//! says so in its own doc comment, in a line that starts `Not a machine number:` and gives the reason. The scan reads that line
+//! and requires a reason after it; a constant that does not carry the line is a hit whatever it is called.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a panic is the failure
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,6 +35,22 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+}
+
+/// The words a doc comment opens its statement that the constant is a number of the algorithm or contract with.
+const NOT_A_MACHINE_NUMBER: &str = "Not a machine number:";
+
+/// Whether the doc comment lines before line `n` (counting from 0) of `lines` state that the constant is a number of the algorithm
+/// or contract, and why.
+fn states_its_kind(lines: &[&str], n: usize) -> bool {
+    lines[..n]
+        .iter()
+        .rev()
+        .take_while(|line| line.trim_start().starts_with("///"))
+        .any(|line| {
+            line.split_once(NOT_A_MACHINE_NUMBER)
+                .is_some_and(|(_, reason)| !reason.trim().is_empty())
+        })
 }
 
 /// Whether `line` is an item that names a number constant: `const NAME: <integer type or [integer; n]> = <digits>...`.
@@ -65,8 +85,10 @@ fn hits(piece: &str) -> Vec<String> {
     assert!(!files.is_empty(), "no sources under {}", root.display());
     let mut out = vec![];
     for file in files {
-        for (n, line) in fs::read_to_string(&file).unwrap().lines().enumerate() {
-            if let Some(item) = machine_constant(line) {
+        let text = fs::read_to_string(&file).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if let Some(item) = machine_constant(line).filter(|_| !states_its_kind(&lines, n)) {
                 out.push(format!("{}:{}: {item}", file.display(), n + 1));
             }
         }
@@ -86,7 +108,27 @@ fn the_scan_sees_a_number_constant_with_a_machine_word_and_not_a_text_or_a_plain
 }
 
 #[test]
-#[ignore = "the compiled pieces hold machine number constants (lowering warp.rs TILE_ROWS, card.rs BOX_LANES_MAX, request.rs MAX_THREADS, raptor wings team.rs WARP_THREADS)"]
+fn a_constant_is_a_number_of_the_algorithm_only_when_its_doc_comment_says_so_with_a_reason() {
+    let said = [
+        "/// The rows.",
+        "/// Not a machine number: the ladder of the text.",
+        "const TILE_ROWS: [i64; 1] = [8];",
+    ];
+    assert!(states_its_kind(&said, 2));
+    let bare = [
+        "/// Not a machine number:",
+        "const TILE_ROWS: [i64; 1] = [8];",
+    ];
+    assert!(!states_its_kind(&bare, 1));
+    let apart = [
+        "/// Not a machine number: the ladder.",
+        "",
+        "const TILE_ROWS: [i64; 1] = [8];",
+    ];
+    assert!(!states_its_kind(&apart, 2));
+}
+
+#[test]
 fn no_compiled_piece_holds_a_machine_number_constant() {
     let all: Vec<String> = PIECES.iter().flat_map(|p| hits(p)).collect();
     assert!(

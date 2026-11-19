@@ -1017,9 +1017,6 @@ fn sink_of(json: &Json) -> Result<SinkPolicy, Refusal> {
     }
 }
 
-/// The most threads a block of a launch holds.
-const MAX_THREADS: i64 = 1024;
-
 /// The value of a setting, refused by name and value when it lies outside `low..=high`.
 fn in_range(key: &str, value: i64, low: i64, high: i64) -> Result<i64, Refusal> {
     if (low..=high).contains(&value) {
@@ -1060,7 +1057,7 @@ impl Settings {
                 .transpose()?
                 .map(|(threads, blocks)| {
                     Ok((
-                        in_range("launch_bounds threads", threads, 1, MAX_THREADS)?,
+                        in_range("launch_bounds threads", threads, 1, i64::from(i32::MAX))?,
                         in_range("launch_bounds blocks", blocks, 1, i64::from(i32::MAX))?,
                     ))
                 })
@@ -1070,11 +1067,16 @@ impl Settings {
                 .map(|k| in_range("fold_k", int_of(k, "fold_k")?, 1, i64::from(i32::MAX)))
                 .transpose()?,
             warps: match keys.opt("warps") {
-                Some(w) => in_range("warps", int_of(w, "warps")?, 1, MAX_THREADS / 32)?,
+                Some(w) => in_range("warps", int_of(w, "warps")?, 1, i64::from(i32::MAX))?,
                 None => aether_writers::contract::types::DEFAULT_WARPS,
             },
             team_threads: match keys.opt("team_threads") {
-                Some(t) => in_range("team_threads", int_of(t, "team_threads")?, 0, MAX_THREADS)?,
+                Some(t) => in_range(
+                    "team_threads",
+                    int_of(t, "team_threads")?,
+                    0,
+                    i64::from(i32::MAX),
+                )?,
                 None => 0,
             },
             exports: keys.opt("exports").map(layout_sizes).transpose()?,
@@ -1636,11 +1638,9 @@ mod tests {
     fn a_setting_out_of_range_is_a_bad_request_naming_the_member_and_the_value() {
         /// A setting set out of range, the member the refusal names and the value it quotes.
         type Case<'a> = (&'a dyn Fn(&mut Settings), &'a str, &'a str);
-        let cases: [Case; 7] = [
+        let cases: [Case; 5] = [
             (&|s| s.warps = 0, "warps", "0"),
-            (&|s| s.warps = 33, "warps", "33"),
             (&|s| s.team_threads = -4, "team_threads", "-4"),
-            (&|s| s.team_threads = 2048, "team_threads", "2048"),
             (
                 &|s| s.launch_bounds = Some((0, 1)),
                 "launch_bounds threads",
