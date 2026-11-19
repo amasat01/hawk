@@ -1,7 +1,7 @@
 //! The set text: one C++ text for the units of one or several answers built into one library. The answers come from the recorded calls
 //! of `tests/data/meta_calls.jsonl`, lowered by `kreplay --emit-meta`, once asking for the texts of a single kernel (the exports block
 //! in the first text) and once for the texts of a set (no block anywhere). The compile and link legs need the aether tree beside the
-//! clones, `EAGLE_ROOT` and `EAGLE_DOOR_DIR`, and a system C++ compiler; each prints that it skipped when one is absent.
+//! clones, `EAGLE_ROOT` and `OSPREY_EAGLE_SRC`, and a system C++ compiler; each prints that it skipped when one is absent.
 #![cfg(feature = "old-contract")]
 mod common;
 use aether_writers::contract::types::Exports;
@@ -183,11 +183,11 @@ impl Tools {
     /// The trees and the build instructions, when the environment names the trees; a line says what is missing.
     fn found() -> Option<Tools> {
         let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
-        let (Some(eagle), Some(door)) = (var("EAGLE_ROOT"), var("EAGLE_DOOR_DIR")) else {
+        let (Some(eagle), Some(door)) = (var("EAGLE_ROOT"), var("OSPREY_EAGLE_SRC")) else {
             let missing = if var("EAGLE_ROOT").is_none() {
                 "EAGLE_ROOT"
             } else {
-                "EAGLE_DOOR_DIR"
+                "OSPREY_EAGLE_SRC"
             };
             common::skipped(Some(missing), &format!("{missing} is not set"));
             return None;

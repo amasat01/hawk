@@ -209,6 +209,13 @@ int ob_serving(
    kind names above); empty when the last such call succeeded. */
 const char* ob_last_code(ob_backend* lib);
 
+/* The runtime side. A library whose manifest states a runtime exports that runtime's door functions
+   beside osprey_v1 (the manifest member "runtime" names the door, for example "eagle-door/1"; the
+   functions are named eg_*). This returns the address of one of them, or NULL when the library does
+   not export it: a library that states no runtime exports none, and a name outside the prefix eg_
+   is never looked up. The address is valid until ob_close(lib). */
+void* ob_runtime_symbol(ob_backend* lib, const char* name);
+
 /* Closes the library and frees the parts of its last render. */
 int ob_close(rx_ctx* ctx, ob_backend* lib);
 

@@ -1,6 +1,6 @@
 //! The C source of the unit meta compiles against the runtime's headers as C11 and as C++17, follows the headers' member order, and
 //! builds a shared object whose only exported symbol is the meta function and whose data is read-only. The headers are found through
-//! EAGLE_DOOR_DIR, which names the include root that holds `eagle/door/eg_door.h` and `eagle/door/eg_unit_meta.h` (the tree's and the
+//! OSPREY_EAGLE_SRC, which names the include root that holds `eagle/door/eg_door.h` and `eagle/door/eg_unit_meta.h` (the tree's and the
 //! installed form); without it each test prints that it skipped and passes.
 mod common;
 use osprey_lowering::lower::meta_c;
@@ -10,9 +10,9 @@ use std::process::Command;
 
 /// The include root that holds `eagle/door/eg_door.h` and `eagle/door/eg_unit_meta.h`, when the environment names it.
 fn door_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("EAGLE_DOOR_DIR").map(PathBuf::from);
+    let dir = std::env::var_os("OSPREY_EAGLE_SRC").map(PathBuf::from);
     if dir.is_none() {
-        common::skipped(Some("EAGLE_DOOR_DIR"), "EAGLE_DOOR_DIR is not set");
+        common::skipped(Some("OSPREY_EAGLE_SRC"), "OSPREY_EAGLE_SRC is not set");
     }
     dir
 }

@@ -8,6 +8,8 @@ use std::path::Path;
 pub const FILE: &str = "osprey.json";
 /// The members a manifest states, in the order the checked manifest keeps them.
 const MEMBERS: [&str; 4] = ["name", "version", "door", "targets"];
+/// The member an OSPREY that carries a runtime states: the name and version of the door its library exports the runtime through.
+const RUNTIME: &str = "runtime";
 /// The members every row of `targets` states.
 const ROW_MEMBERS: [&str; 6] = ["request", "target", "about", "device", "entry", "format"];
 
@@ -71,7 +73,7 @@ fn shape_refusal(path: &str, manifest: &J) -> Option<String> {
     let mut unknown: Vec<&str> = pairs
         .iter()
         .map(|(k, _)| k.as_str())
-        .filter(|k| !MEMBERS.contains(k))
+        .filter(|k| !MEMBERS.contains(k) && *k != RUNTIME)
         .collect();
     unknown.sort_unstable();
     unknown.first().map(|key| {
@@ -83,12 +85,12 @@ fn shape_refusal(path: &str, manifest: &J) -> Option<String> {
     })
 }
 
-/// The manifest of `folder`, checked, as the object `{"folder", "name", "version", "door", "targets"}` whose target requests
-/// are in their canonical spelling.
+/// The manifest of `folder`, checked, as the object `{"folder", "name", "version", "door", "targets"}` (and `"runtime"` when the
+/// OSPREY states one) whose target requests are in their canonical spelling.
 ///
 /// # Errors
 /// The sentence that names the manifest file and the rule broken: the file is not readable JSON, a member is missing or
-/// unknown, a Python wing is stated, a row lacks a member, a target id is outside the grammar, or one id is stated in more
+/// unknown, a Python wing is stated, the runtime is not text, a row lacks a member, a target id is outside the grammar, or one id is stated in more
 /// than one row.
 pub fn read(folder: &Path) -> Result<J, String> {
     let file = folder.join(FILE);
@@ -98,6 +100,14 @@ pub fn read(folder: &Path) -> Result<J, String> {
     let manifest = parse(&text).map_err(|why| format!("{path}: no readable {FILE} ({why})"))?;
     if let Some(refusal) = shape_refusal(&path, &manifest) {
         return Err(refusal);
+    }
+    if manifest
+        .get(RUNTIME)
+        .is_some_and(|runtime| runtime.str().is_none())
+    {
+        return Err(format!(
+            "{path}: the manifest member {RUNTIME} is not text (it names the runtime door, such as \"eagle-door/1\")"
+        ));
     }
     let J::Arr(rows) = manifest.get("targets").cloned().unwrap_or(J::Null) else {
         return Err(format!("{path}: the manifest member targets is not a list"));
@@ -129,6 +139,9 @@ pub fn read(folder: &Path) -> Result<J, String> {
             manifest.get(member).cloned().unwrap_or(J::Null)
         };
         checked.push((member.to_string(), value));
+    }
+    if let Some(runtime) = manifest.get(RUNTIME) {
+        checked.push((RUNTIME.to_string(), runtime.clone()));
     }
     Ok(J::Obj(checked))
 }

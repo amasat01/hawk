@@ -3,6 +3,7 @@ name = "osprey_cpu_door"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [lib]
 # the loadable object of the cpu OSPREY: libosprey_cpu.dylib / .so

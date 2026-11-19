@@ -40,8 +40,8 @@ const NODE_SURFACE: [(&str, &str, bool); 13] = [
     ("field_names", "rx_field_names", false),
     ("field_pairs", "rx_field_pairs", false),
 ];
-// Prototypes of the headers the binding does not wrap: none. Every shape has a rule, and a prototype without one is refused.
-const NOT_WRAPPED: [&str; 0] = [];
+// Prototypes of the headers the binding does not wrap: the runtime lookup, which the door module of the template calls. Every other shape has a rule, and a prototype without one is refused.
+const NOT_WRAPPED: [&str; 1] = ["ob_runtime_symbol"];
 // the entries of the tool side: a refusal of theirs carries a code (the refusal kind's name), read from the library handle
 const CODED: [&str; 4] = ["ob_machine", "ob_build", "ob_link", "ob_state"];
 // The `int*` outputs that are codes, not flags (a flag answers a Python bool).

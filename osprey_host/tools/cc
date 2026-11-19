@@ -1,14 +1,16 @@
 #!/bin/sh
 # Linker wrapper: rustc exports every C-level symbol of the Rust crates it links, so the door's own functions would leave
-# through the library. The export list rustc hands to the linker is cut to the one entry point before linking.
-#   macOS: the list is the file named by -exported_symbols_list; it keeps only the line `_osprey_v1`.
-#   Linux: the list is the GNU ld version script named by --version-script=; it is rewritten to export `osprey_v1` alone, or
-#   nothing when the build does not define it (a cdylib linked without the door feature): lld refuses a global it cannot find.
-# To check the exported list of a Linux build:  nm -g --defined-only target/debug/libosprey_cpu.so   (one line: osprey_v1)
+# through the library. The export list rustc hands to the linker is cut to the entry point and the runtime door's names
+# before linking: `osprey_v1` and the pattern `eg_*` (eagle's door functions, which only a library that carries a runtime defines).
+#   macOS: the list is the file named by -exported_symbols_list; it keeps the line `_osprey_v1` and adds `_eg_*`.
+#   Linux: the list is the GNU ld version script named by --version-script=; it is rewritten to export `osprey_v1` and `eg_*`,
+#   or nothing when the build does not define osprey_v1 (a cdylib linked without the door feature): lld refuses a global it
+#   cannot find.
+# To check the exported list of a Linux build:  nm -g --defined-only target/debug/libosprey_cpu.so
 for a in "$@"; do
-  case "$prev" in -Wl,-exported_symbols_list) f=${a#-Wl,}; grep -x '_osprey_v1' "$f" > "$f.cut" && mv "$f.cut" "$f" ;; esac
+  case "$prev" in -Wl,-exported_symbols_list) f=${a#-Wl,}; { grep -x '_osprey_v1' "$f"; echo '_eg_*'; } > "$f.cut" && mv "$f.cut" "$f" ;; esac
   case "$a" in -Wl,--version-script=*) f=${a#-Wl,--version-script=}
-    if grep -q osprey_v1 "$f"; then keep='global: osprey_v1; '; else keep=''; fi
+    if grep -q osprey_v1 "$f"; then keep='global: osprey_v1; eg_*; '; else keep=''; fi
     printf '{ %slocal: *; };\n' "$keep" > "$f" ;; esac
   prev=$a
 done

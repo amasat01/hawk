@@ -4,7 +4,10 @@
 ``dist/wheels/`` ``raptor-osprey`` (the binding module ``_osprey`` with the base OSPREY inside,
 tagged for the stable ABI), ``raptor-osprey-cpu`` and ``raptor-osprey-cuda``. The two backend
 wheels hold their folder as package data and an entry point of the group ``hawk.ospreys`` whose
-value is that folder; they hold no importable module.
+value is that folder; they hold no importable module. A backend library may carry a runtime beside
+its entry (the cpu library carries the host runtime): its manifest then states it as ``runtime``
+(``"eagle-door/1"``), the library exports that door's functions, and the binding's ``Door`` is made
+from the opened backend; a library whose manifest states none carries none.
 ``python ci/wheels.py check <version>``: run by the interpreter of an environment holding only
 these wheels, from outside the tree; asserts that each of the three is installed once, at
 ``<version>``, and brings no module but ``_osprey``; imports ``_osprey``, opens every folder the

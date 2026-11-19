@@ -47,6 +47,53 @@ def exported(path):
     return {line.split()[-1].lstrip("_") for line in shown.stdout.splitlines() if line.strip()}
 
 
+class ManagedTensor(ctypes.Structure):
+    """The leading members of a DLPack 1.0 managed tensor, up to its data pointer."""
+
+    _fields_ = [
+        ("version", ctypes.c_uint32 * 2),
+        ("manager_ctx", ctypes.c_void_p),
+        ("deleter", ctypes.c_void_p),
+        ("flags", ctypes.c_uint64),
+        ("data", ctypes.c_void_p),
+    ]
+
+
+def lanes(capsule, count):
+    """Return the float64 memory of a plane's DLPack capsule as a ctypes array of `count` lanes.
+
+    The array reads and writes the plane's own memory and is valid while the capsule is alive.
+    """
+    get = ctypes.pythonapi.PyCapsule_GetPointer
+    get.restype = ctypes.c_void_p
+    get.argtypes = [ctypes.py_object, ctypes.c_char_p]
+    tensor = ManagedTensor.from_address(get(capsule, b"dltensor_versioned"))
+    return (ctypes.c_double * count).from_address(tensor.data)
+
+
+def run_through_runtime(o, lib, library, unit):
+    """Load the linked unit through the cpu library's runtime, run it on planes, compare with a + b.
+
+    The oracle is plain Python: the sum of two floats, which is the one rounding the unit does.
+    """
+    count = 8
+    a_values = [0.5 * i for i in range(count)]
+    b_values = [3.0 * i - 1.25 for i in range(count)]
+    door = o.Door(lib)
+    loaded = door.unit_load(library, unit["meta"]["name"], bytes.fromhex(unit["meta"]["digest"]))
+    # the unit's slots in its meta order: y (written), a, b
+    planes = [door.plane_new([count], 2, 64, flags=o.EG_PLANE_ZERO) for _ in range(3)]
+    capsules = [door.plane_dlpack(plane) for plane in planes]
+    y_lanes, a_lanes, b_lanes = (lanes(capsule, count) for capsule in capsules)
+    for i in range(count):
+        a_lanes[i], b_lanes[i] = a_values[i], b_values[i]
+    plan = door.plan_new(loaded, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, count)
+    door.bind(plan, [0, 1, 2], planes)
+    assert door.launch(plan) >= 1
+    assert list(y_lanes) == [a + b for a, b in zip(a_values, b_values)], list(y_lanes)
+    door.ctx_free()
+
+
 def same_build_asked_otherwise(c, lib, ask, unset, profile):
     """Check that the stated or environment default is the unset ask, and another level is not."""
 
@@ -136,6 +183,8 @@ def run(done, o, raises, folders, header_abi, make_nodes):
         f"end to end: link made {os.path.basename(library)}; it loads and exports "
         f"{len(entries)} entry(ies) (nm: calling one needs the runtime)"
     )
+    run_through_runtime(o, lib, library, units[0])
+    done.append("end to end: the linked unit runs through the cpu library's runtime: y = a + b")
     stats = json.loads(c.backend_state(lib, "stats", root))
     assert stats["tool_runs"] >= len(units) + 2 and stats["hits"] >= len(units), stats
     done.append("end to end: state counts the tool runs and the hits")

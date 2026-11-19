@@ -1,7 +1,7 @@
 //! The derived sets of recorded calls (a primal, its taping twin and its reverse unit) answered as one table: the emitted derived
 //! records against the records the runtime's owner loaded for the same set, the meta compiled as C and as C++17, and the texts and the
 //! meta linked into one library. Runs only where the recordings (`OSPREY_CORPUS`, else the folder beside the clones) and the runtime's
-//! tree (`EAGLE_DOOR_DIR`, which holds `eagle/door/test/derived/*.c`) are found; the link leg also needs `EAGLE_ROOT`.
+//! tree (`OSPREY_EAGLE_SRC`, which holds `eagle/door/test/derived/*.c`) are found; the link leg also needs `EAGLE_ROOT`.
 #![cfg(feature = "old-contract")]
 mod common;
 use std::collections::BTreeMap;
@@ -105,8 +105,8 @@ fn replay(file: &str, call: &str, name: &str) -> Option<(PathBuf, String, PathBu
         PathBuf::from,
     );
     let calls = corpus.join("k7e_record").join(file);
-    let Some(door) = std::env::var_os("EAGLE_DOOR_DIR").map(PathBuf::from) else {
-        common::skipped(Some("EAGLE_DOOR_DIR"), "EAGLE_DOOR_DIR is not set");
+    let Some(door) = std::env::var_os("OSPREY_EAGLE_SRC").map(PathBuf::from) else {
+        common::skipped(Some("OSPREY_EAGLE_SRC"), "OSPREY_EAGLE_SRC is not set");
         return None;
     };
     if !calls.is_file() {

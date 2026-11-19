@@ -1036,7 +1036,14 @@ except ImportError:
 else:
     import test_door
 
-    test_door.run(done, raises, not_run)
+    # the door is the runtime of the cpu library: two opened handles of it, and the cuda
+    # library's, which has none
+    backends = {"cpu": c.backend_open(lib_path), "second": c.backend_open(lib_path)}
+    if os.environ.get("CUDA_LIB"):
+        backends["cuda"] = c.backend_open(os.environ["CUDA_LIB"])
+    test_door.run(done, raises, not_run, backends)
+    for opened in backends.values():
+        c.backend_close(opened)
 print("\n".join("ok: " + d for d in done))
 if not_run:
     print("\n".join("not run: " + r for r in not_run))

@@ -1,7 +1,8 @@
 """Checks of the binding's door calls, run from test_binding.py on a host context.
 
-The door library is EAGLE_DOOR_DIR/libeagle_door.<dylib or so>; the units come from the door's own
-fixture, built beside the extension as libfixture_unit.<dylib or so>. numpy is the oracle.
+The door is the runtime of the opened cpu library: every Door is made from a backend handle the
+caller opened. The units come from the door's own fixture, built beside the extension as
+libfixture_unit.<dylib or so>. numpy is the oracle.
 """
 
 import gc
@@ -18,13 +19,13 @@ import _osprey as o
 
 EXT = "dylib" if sys.platform == "darwin" else "so"
 HERE = os.path.dirname(os.path.abspath(__file__))
-DOOR_LIB = os.path.join(os.environ["EAGLE_DOOR_DIR"], f"libeagle_door.{EXT}")
 FIXTURE = os.path.join(HERE, "build", f"libfixture_unit.{EXT}")
 REVERSE = os.path.join(HERE, "build", f"libfixture_reverse.{EXT}")
 GEMM = os.path.join(HERE, "build", f"libfixture_gemm.{EXT}")
-# the unit libraries with device images are built by the door's own device build, beside its library
-DEVICE_FIXTURE = os.path.join(os.environ["EAGLE_DOOR_DIR"], f"libfixture_device.{EXT}")
-DEVICE_GEMM = os.path.join(os.environ["EAGLE_DOOR_DIR"], f"libfixture_gemm.{EXT}")
+# the unit libraries with device images are built by the door's own device build; they are
+# read only on a device context, which a library without a device group never makes
+DEVICE_FIXTURE = os.path.join(HERE, "build", f"libfixture_device.{EXT}")
+DEVICE_GEMM = os.path.join(HERE, "build", f"libfixture_gemm.{EXT}")
 N = 1000
 
 
@@ -438,7 +439,7 @@ def check_auto_set(door, done, raises):
 
     source = open(os.path.join(HERE, "fixture", "auto_set_meta.c")).read()
     entries = re.findall(r'M\(host_entry, "([^"]+)"\)', source)
-    root = os.environ["EAGLE_DOOR_DIR"]
+    root = os.environ["OSPREY_EAGLE_SRC"]
     # the meta carries no code: the entries are empty functions, and the size block is the one every
     # unit library exports (GRefMirror, ScalarHandle, IntHandle, the index type, the triple)
     stubs = "".join(f"void {name}(void) {{}}\n" for name in entries) + (
@@ -640,10 +641,10 @@ def check_fft(door, done, raises):
     done.append("fft_new refused while recording; a recorded run replays after fft_free")
 
 
-def device_door():
+def device_door(backend):
     """A context on device 0, or None when the door was built without a device group."""
     try:
-        return o.Door(DOOR_LIB, device=0)
+        return o.Door(backend, device=0)
     except o.NotWritten:
         return None
 
@@ -723,20 +724,26 @@ def check_device(door, done, raises):
     )
 
 
-def run(done, raises, not_run):
+def run(done, raises, not_run, backends):
     """Run every row; `done` collects the passed rows, `not_run` the rows the door cannot run.
 
-    `raises` is the harness's check.
+    `raises` is the harness's check. `backends` holds the opened backend handles the doors are
+    made from: "cpu" and "second" (a second open of the cpu library), and "cuda" when given.
     """
+    cpu = backends["cpu"]
     # ---- the context: opening, refusals of the library, information ----
-    e = raises(
-        o.Fault, lambda: o.Door("/nonexistent/libnothing"), "Door: a path that is no library"
-    )
-    assert "nonexistent" in str(e), str(e)
-    e = raises(o.Fault, lambda: o.Door(FIXTURE), "Door: a library without the door's functions")
-    assert "no function eg_" in str(e), str(e)
-    door = o.Door(DOOR_LIB)
-    device = device_door()
+    e = raises(ValueError, lambda: o.Door(0), "Door: a handle that is no opened backend")
+    assert "not an opened backend" in str(e), str(e)
+    if "cuda" in backends:
+        e = raises(
+            o.NotWritten, lambda: o.Door(backends["cuda"]), "Door: a library that states no runtime"
+        )
+        assert "states no runtime" in str(e), str(e)
+        done.append("Door: the cuda library, which states no runtime, refuses by name")
+    else:
+        not_run.append("Door: the cuda library refuses by name: no CUDA_LIB")
+    door = o.Door(cpu)
+    device = device_door(cpu)
     info = door.ctx_info()
     assert info["abi_major"] == 1 and info["device"] == -1 and info["stream"] == -1, info
     assert info["capabilities"] & o.EG_CAP_HOST, info
@@ -842,7 +849,7 @@ def run(done, raises, not_run):
         "bind: a uniform of 9 bytes",
     )
     raises(TypeError, lambda: door.bind(plan, [0], [plan]), "bind: a handle of another kind")
-    raises(TypeError, lambda: o.Door(DOOR_LIB).launch(plan), "launch: a handle of another Door")
+    raises(TypeError, lambda: o.Door(cpu).launch(plan), "launch: a handle of another Door")
     done.append("bind and launch refusals: the door's reasons, and the binding's argument checks")
 
     # ---- clear and set_count ----
@@ -986,7 +993,7 @@ def run(done, raises, not_run):
         assert door.sync() is None
         e = raises(
             o.NotWritten,
-            lambda: o.Door(DOOR_LIB, device=0),
+            lambda: o.Door(cpu, device=0),
             "Door: a device context without a device",
         )
         assert "EG_CTX_DEVICE" in str(e), str(e)
@@ -1192,13 +1199,24 @@ def run(done, raises, not_run):
     assert not plane.live
     raises(ValueError, lambda: door.plane_free(plane), "plane_free: a second free of one handle")
     raises(TypeError, lambda: o.Handle(), "Handle(): handles are made by the door")
-    other = o.Door(DOOR_LIB)
+    other = o.Door(cpu)
     raises(
         TypeError,
         lambda: other.plane_free(door.plane_wrap(np.zeros(2))),
         "free: a handle of another Door",
     )
     done.append("handles: freed once, never made by the caller, never crossing Doors")
+
+    # two opened handles of one cpu library are two contexts: a handle of one is refused by the
+    # other, and freeing the first context leaves the second one working
+    first, second = o.Door(cpu), o.Door(backends["second"])
+    mine = first.plane_new([2], 2, 64)
+    raises(TypeError, lambda: second.plane_free(mine), "free: a handle of the other opened backend")
+    first.ctx_free()
+    raises(ValueError, first.ctx_info, "a call on the first context, freed")
+    assert second.ctx_info()["abi_major"] == 1
+    second.ctx_free()
+    done.append("two opened handles of the cpu library: two contexts, no shared door state")
 
     if hasattr(os, "fork"):
         child = os.fork()
@@ -1213,7 +1231,7 @@ def run(done, raises, not_run):
         done.append("fork: a call on the context in a forked child is refused")
     # a Door dropped, and a context freed, while an export is outstanding: the array stays readable
     for _ in range(50):
-        owner = o.Door(DOOR_LIB)
+        owner = o.Door(cpu)
         plane = owner.plane_new([4], 2, 64, flags=o.EG_PLANE_ZERO)
         outstanding = np.from_dlpack(Export(owner.plane_dlpack(plane)))
         owner.plane_free(plane)
@@ -1223,8 +1241,8 @@ def run(done, raises, not_run):
         assert (outstanding == 7.0).all()
         del owner
         outstanding = None
-    kept = o.Door(DOOR_LIB).plane_new([2], 2, 64)  # the Handle keeps its Door alive
-    dropped = o.Door(DOOR_LIB)
+    kept = o.Door(cpu).plane_new([2], 2, 64)  # the Handle keeps its Door alive
+    dropped = o.Door(cpu)
     held = np.from_dlpack(Export(dropped.plane_dlpack(dropped.plane_new([3], 2, 64, flags=1))))
     del dropped
     gc.collect()

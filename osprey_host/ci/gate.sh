@@ -1,17 +1,16 @@
 #!/bin/sh
 # The gate of the OSPREY libraries (components/lowering, osprey_cpu, osprey_cuda) and the tools that prove them. Usage: sh ci/gate.sh [leg ...]   (no argument: every leg, in this order)
 #   fmt clippy test exports binding py39 abi wheels ruff cformat tidy replay
-# Environment: PYTHON (the interpreter the binding is built for; the binding leg is red without it), EAGLE_DOOR_DIR (the include root of eagle/door/eg_door.h and the folder of libeagle_door; the binding and tidy legs are red without it), CLANG_TIDY (the clang-tidy
+# Environment: PYTHON (the interpreter the binding is built for; the binding leg is red without it), OSPREY_EAGLE_SRC (the eagle source root; every leg that builds is red without it), CXX (the C++ compiler of the cpu library's runtime), CLANG_TIDY (the clang-tidy
 # program; the tidy leg is RED without it), the cformat leg skips, saying so, unless clang-format is major version 23, PYTHON39 and PY39_INCLUDE (a Python 3.9 interpreter and its headers; the py39 leg
 # skips, saying so, when the interpreter is absent; the default is the macOS command line tools' one). The siblings ../raptor and ../aether are inputs (RAPTOR names the first);
 # the binding legs build the contract's static libraries in it (raptor_ir, raptor_wings, raptor_support; a no-op when current), so they need no prior build.
-# Door root (EAGLE_DOOR_DIR): ONE directory that holds three entries, which the binding and tidy legs refuse by name when one is missing:
-#   eagle/door/eg_door.h   a symlink `eagle` to the `eagle` folder of an eagle checkout (the door's headers)
-#   plugin/dlpack.h        a symlink `plugin` to the `plugin` folder of the same checkout
-#   libeagle_door.dylib    (.so on Linux) a symlink to the door library built from that checkout
-# Make it: (cd <eagle checkout>/eagle/door && make -j3 OUT=<root>/build CXX=<clang++> CC=clang AETHER_INCLUDE=<aether checkout> \
-#   WING_FACTS=<raptor_facts.h> lib); ln -s <eagle checkout>/eagle <root>/eagle; ln -s <eagle checkout>/plugin <root>/plugin;
-#   ln -s <root>/build/libeagle_door.dylib <root>/libeagle_door.dylib
+# Eagle source root (OSPREY_EAGLE_SRC), the one input of the runtime: a checkout of eagle that holds eagle/door/ (the door's header, its source
+# list sources.txt and its sources) and plugin/ (the DLPack header). The cpu library is built from its host group, the binding is compiled against its header,
+# and the libraries embed the headers it holds. The binding and tidy legs refuse by name a root that lacks one of eagle/door/eg_door.h, eagle/door/sources.txt
+# and plugin/dlpack.h. The build also needs CXX (a C++23 compiler with OpenMP: the cpu library links the OpenMP runtime that compiler names, as the file it
+# finds, so which runtime a process shares is decided by that compiler) and the raptor sibling's cpu facts and host door rows (RAPTOR);
+# no prebuilt door library is an input.
 # Each leg prints what it examined and is RED when it examined nothing. The exit status is non-zero when any leg is red.
 cd "$(dirname "$0")/.." || exit 2
 JOBS=${JOBS:-2}
@@ -82,21 +81,19 @@ leg_test() {
   need test "$n"
 }
 
-# each built library exports exactly one symbol (check_exports.sh prints it once per library)
+# each built library exports its entry and, when its manifest states a runtime, exactly the door functions of that runtime (check_exports.sh prints one line per library)
 leg_exports() {
   build_env || return 1
   sh check_exports.sh >"$out" 2>"$out.err" || { tail -3 "$out" "$out.err"; echo "RED: check_exports.sh"; return 1; }
-  n=$(grep -c . "$out"); echo "examined: $n libraries, each exporting: $(head -1 "$out")"
+  n=$(grep -c . "$out"); echo "examined: $n libraries: $(tr '\n' ';' < "$out")"
   [ "$n" -eq 2 ] || { echo "RED: expected one symbol line for each of the two libraries, got $n"; return 1; }
 }
 
-# refuses, by name, a door root that lacks one of its three entries (see "Door root" in the header of this file, which says how to make it)
+# refuses, by name, an eagle source root that lacks one of its entries (see "Eagle source root" in the header of this file)
 door_root() {
-  [ -n "$EAGLE_DOOR_DIR" ] || { echo "RED: EAGLE_DOOR_DIR is not set; the \"Door root\" lines in the header of ci/gate.sh say what it must hold"; return 1; }
-  case $(uname -s) in Darwin) door_ext=dylib ;; *) door_ext=so ;; esac
-  for entry in eagle/door/eg_door.h plugin/dlpack.h "libeagle_door.$door_ext"; do
-    [ -e "$EAGLE_DOOR_DIR/$entry" ] || {
-      echo "RED: EAGLE_DOOR_DIR $EAGLE_DOOR_DIR lacks $entry; the \"Door root\" lines in the header of ci/gate.sh say how to make it"
+  for entry in eagle/door/eg_door.h eagle/door/sources.txt plugin/dlpack.h; do
+    [ -e "$OSPREY_EAGLE_SRC/$entry" ] || {
+      echo "RED: OSPREY_EAGLE_SRC $OSPREY_EAGLE_SRC lacks $entry; the \"Eagle source root\" lines in the header of ci/gate.sh say what it holds"
       return 1
     }
   done
@@ -209,7 +206,7 @@ leg_tidy() {
   tfiles=$(git ls-files loader binding/template | grep '\.c$')
   n=$(echo "$tfiles" | grep -c .); echo "examined: $n C files of loader/ and binding/template/ with .clang-tidy"; need tidy "$n" || return 1
   # shellcheck disable=SC2086
-  "$CLANG_TIDY" $tfiles -- -std=c11 -Iinclude -Ibinding/template -I"$pyinc" -I"$EAGLE_DOOR_DIR" -I"$EAGLE_DOOR_DIR/eagle/door/test/c_shim" -I../raptor/rs/ir/include >"$out" 2>&1 \
+  "$CLANG_TIDY" $tfiles -- -std=c11 -Iinclude -Ibinding/template -I"$pyinc" -I"$OSPREY_EAGLE_SRC" -I"$OSPREY_EAGLE_SRC/eagle/door/test/c_shim" -I../raptor/rs/ir/include >"$out" 2>&1 \
     || { grep -E "error|warning" "$out" | head -5; echo "RED: clang-tidy"; return 1; }
 }
 

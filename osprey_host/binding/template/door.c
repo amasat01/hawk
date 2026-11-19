@@ -6,14 +6,16 @@
  * the caller frees every handle (a context frees what is left), a plane's DLPack tensor belongs
  * to the door once a wrap succeeded, and a forked child may only free the context.
  *
- * The door library is opened by path when a Door is made and its functions are looked up by name,
- * so this extension links no runtime. The interpreter lock stays held during every call: the
- * deleter of a DLPack tensor, which the door runs on the calling thread, may need it. */
+ * A Door is made from an opened backend library (the handle backend_open answers): the door's
+ * functions are looked up by name in that library, so this extension links no runtime, and a
+ * library that states no runtime (it exports no eg_ function) refuses with NotWritten. The backend
+ * must stay open while its Doors and their handles live. The interpreter lock stays held during
+ * every call: the deleter of a DLPack tensor, which the door runs on the calling thread, may need
+ * it. */
 #include "module.h"
 
 #include "eagle/door/eg_door.h"
 #include "plugin/dlpack.h"
-#include <dlfcn.h>
 #include <string.h>
 
 /* Every function of eg_door.h, once: the check of the generator counts them against the header. */
@@ -418,23 +420,29 @@ fail:
 
 static PyObject* Door_new(PyTypeObject* type, PyObject* args, PyObject* kw)
 {
-    static char* names[] = { "library", "device", NULL };
-    const char* path;
+    static char* names[] = { "backend", "device", NULL };
+    unsigned long long handle;
     PyObject* device = Py_None;
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "s|O", names, &path, &device))
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "K|O", names, &handle, &device))
         return NULL;
+    if (handle == 0) {
+        PyErr_SetString(PyExc_ValueError, "Door: the backend handle is 0, not an opened backend");
+        return NULL;
+    }
+    ob_backend* lib = (ob_backend*)(uintptr_t)handle;
+    /* The first function tells a library without a runtime (nothing exported) from a broken one. */
+    if (!ob_runtime_symbol(lib, "eg_ctx_new")) {
+        PyErr_SetString(door_errors[EG_NOT_WRITTEN - 1],
+            "Door: the backend library states no runtime (it exports no eg_ctx_new)");
+        return NULL;
+    }
     Door* d = (Door*)PyType_GenericAlloc(type, 0);
     if (!d)
         return NULL;
-    void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    if (!lib) {
-        PyErr_SetString(door_errors[EG_FAULT - 1], dlerror());
-        goto fail;
-    }
 #define X(name)                                                                                    \
-    d->fn.name = (__typeof__(&name))dlsym(lib, #name);                                             \
+    d->fn.name = (__typeof__(&name))ob_runtime_symbol(lib, #name);                                 \
     if (!d->fn.name) {                                                                             \
-        PyErr_Format(door_errors[EG_FAULT - 1], "%s: no function " #name, path);                   \
+        PyErr_SetString(door_errors[EG_FAULT - 1], "Door: the runtime lacks the function " #name); \
         goto fail;                                                                                 \
     }
     DOOR_CALLS(X)
@@ -464,8 +472,8 @@ fail:
 }
 
 /* A context frees itself, and what is left of its handles, with its Door; in a forked child
- * that frees host memory only, which is the one call the door allows there. The library is never
- * closed: the host worker team of the process may still run code in it. */
+ * that frees host memory only, which is the one call the door allows there. A Door never closes
+ * the backend library: its handle belongs to the caller of backend_open. */
 static void Door_dealloc(PyObject* o)
 {
     PyTypeObject* t = Py_TYPE(o);

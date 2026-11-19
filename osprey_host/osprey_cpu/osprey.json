@@ -2,6 +2,7 @@
   "name": "cpu",
   "version": "@VERSION@",
   "door": @DOOR@,
+  "runtime": "eagle-door/1",
   "targets": [
     {
       "request": "host",

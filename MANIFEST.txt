@@ -7,26 +7,26 @@ Every file with its line count (this file excluded):
     118  osprey_host/Cargo.lock
       8  osprey_host/Cargo.toml
      12  osprey_host/Makefile
-     74  osprey_host/binding/build.sh
+     75  osprey_host/binding/build.sh
      11  osprey_host/binding/fixture/abi1.c
      95  osprey_host/binding/fixture/auto_set_meta.c
       8  osprey_host/binding/fixture/contract0.c
      11  osprey_host/binding/gen/Cargo.toml
    1408  osprey_host/binding/gen/src/main.rs
-   1584  osprey_host/binding/template/door.c
+   1592  osprey_host/binding/template/door.c
      45  osprey_host/binding/template/module.h
     116  osprey_host/binding/template/types.c
-   1044  osprey_host/binding/test_binding.py
-   1246  osprey_host/binding/test_door.py
-    214  osprey_host/binding/test_end_to_end.py
+   1051  osprey_host/binding/test_binding.py
+   1264  osprey_host/binding/test_door.py
+    263  osprey_host/binding/test_end_to_end.py
      96  osprey_host/binding/test_sideways.py
-     19  osprey_host/check_exports.sh
+     25  osprey_host/check_exports.sh
      19  osprey_host/ci/dist.sh
-    249  osprey_host/ci/gate.sh
+    246  osprey_host/ci/gate.sh
      40  osprey_host/ci/headers.sh
      22  osprey_host/ci/prepare_headers.sh
      25  osprey_host/ci/version.sh
-    211  osprey_host/ci/wheels.py
+    214  osprey_host/ci/wheels.py
       1  osprey_host/clippy.toml
      12  osprey_host/components/lowering/Cargo.toml
      55  osprey_host/components/lowering/build_support.rs
@@ -68,10 +68,10 @@ Every file with its line count (this file excluded):
      94  osprey_host/components/manifest/src/abi.rs
      97  osprey_host/components/manifest/src/json.rs
      11  osprey_host/components/manifest/src/lib.rs
-    134  osprey_host/components/manifest/src/manifest.rs
+    147  osprey_host/components/manifest/src/manifest.rs
     118  osprey_host/components/manifest/src/roster.rs
      31  osprey_host/components/manifest/src/target.rs
-    188  osprey_host/components/manifest/tests/manifest.rs
+    206  osprey_host/components/manifest/tests/manifest.rs
      14  osprey_host/components/toolkit/Cargo.lock
      20  osprey_host/components/toolkit/Cargo.toml
     235  osprey_host/components/toolkit/DOOR_ADDITIONS.md
@@ -113,11 +113,12 @@ Every file with its line count (this file excluded):
      30  osprey_host/components/toolkit/tests/state.rs
     219  osprey_host/components/toolkit/tests/store_races.rs
      33  osprey_host/corpus_accepted.tsv
-    218  osprey_host/include/osprey.h
-    403  osprey_host/loader/loader.c
+    225  osprey_host/include/osprey.h
+    410  osprey_host/loader/loader.c
      22  osprey_host/osprey_cpu/Cargo.toml
      18  osprey_host/osprey_cpu/build.rs
-     14  osprey_host/osprey_cpu/door/Cargo.toml
+     15  osprey_host/osprey_cpu/door/Cargo.toml
+    154  osprey_host/osprey_cpu/door/build.rs
      10  osprey_host/osprey_cpu/door/src/lib.rs
      20  osprey_host/osprey_cpu/facts/arm.json
      29  osprey_host/osprey_cpu/facts/build.json
@@ -125,7 +126,7 @@ Every file with its line count (this file excluded):
      27  osprey_host/osprey_cpu/facts/host_build.json
      31  osprey_host/osprey_cpu/facts/tools.json
      28  osprey_host/osprey_cpu/facts/x86.json
-     15  osprey_host/osprey_cpu/osprey.json
+     16  osprey_host/osprey_cpu/osprey.json
     110  osprey_host/osprey_cpu/src/lib.rs
      22  osprey_host/osprey_cuda/Cargo.toml
      18  osprey_host/osprey_cuda/build.rs
@@ -187,7 +188,7 @@ Every file with its line count (this file excluded):
      47  osprey_host/replay/tests/treplay.rs
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
-     15  osprey_host/tools/cc
+     17  osprey_host/tools/cc
     134  osprey_host/tools/cost_host.py
     138  osprey_host/tools/device_argv_old.py
     254  osprey_host/tools/host_argv_old.py

@@ -79,9 +79,9 @@ fn meta_source(recording: &str, test: &str, units: &[&str], kernel: &str) -> Opt
 
 /// The include root of the runtime's door headers, when the environment names it.
 fn door_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("EAGLE_DOOR_DIR").map(PathBuf::from);
+    let dir = std::env::var_os("OSPREY_EAGLE_SRC").map(PathBuf::from);
     if dir.is_none() {
-        common::skipped(Some("EAGLE_DOOR_DIR"), "EAGLE_DOOR_DIR is not set");
+        common::skipped(Some("OSPREY_EAGLE_SRC"), "OSPREY_EAGLE_SRC is not set");
     }
     dir
 }

@@ -122,6 +122,24 @@ fn a_checked_manifest_keeps_its_rows_with_the_request_in_its_canonical_spelling(
 }
 
 #[test]
+fn a_manifest_may_state_the_runtime_its_library_carries_and_it_must_be_text() {
+    let stated = manifest_of("m", &[&row("host")])
+        .replace(r#""door":11,"#, r#""door":11,"runtime":"eagle-door/1","#);
+    let checked = manifest::read(&folder_with(&stated)).unwrap();
+    assert_eq!(
+        checked.get("runtime").and_then(J::str),
+        Some("eagle-door/1")
+    );
+    let plain = manifest::read(&folder_with(&manifest_of("m", &[&row("host")]))).unwrap();
+    assert!(
+        plain.get("runtime").is_none(),
+        "a library without a runtime states none"
+    );
+    let number = stated.replace(r#""eagle-door/1""#, "1");
+    assert!(refusal(&number).contains("the manifest member runtime is not text"));
+}
+
+#[test]
 fn a_roster_isolates_a_refused_folder_and_refuses_two_ospreys_serving_one_id() {
     let good = folder_with(&manifest_of("a", &[&row("host")]));
     let broken = folder_with("{not json");

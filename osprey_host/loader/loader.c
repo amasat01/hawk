@@ -393,6 +393,13 @@ const char* ob_last_code(ob_backend* lib)
     return lib->code;
 }
 
+void* ob_runtime_symbol(ob_backend* lib, const char* name)
+{
+    if (strncmp(name, "eg_", 3) != 0)
+        return NULL;
+    return dlsym(lib->handle, name);
+}
+
 int ob_close(rx_ctx* ctx, ob_backend* lib)
 {
     (void)ctx;
