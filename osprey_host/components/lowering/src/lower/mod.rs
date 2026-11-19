@@ -979,7 +979,7 @@ fn build_of(settings: &Settings, cards: &Cards, target: Target) -> Result<Build,
         fold_form: settings.fold_form,
         warps: settings.warps,
         launch_bounds: settings.launch_bounds,
-        fold_k: settings.fold_k.filter(|k| *k != 0),
+        fold_k: settings.fold_rows.filter(|k| *k != 0),
         ..cards.numbers(target)?
     })
 }

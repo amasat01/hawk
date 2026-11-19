@@ -415,7 +415,7 @@ def _settings(spec, split):
     if len(bounds) == 2:
         out["launch_bounds"] = [_num(bounds[0]) or 0, _num(bounds[1]) or 0]
     if _num(s.get("fold_k")):
-        out["fold_k"] = _num(s["fold_k"])
+        out["fold_rows"] = _num(s["fold_k"])
     out["warps"] = _num(s.get("warps")) or 1
     out["team_threads"] = _num(s.get("team_threads")) or 0
     return out

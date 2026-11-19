@@ -1,5 +1,5 @@
 {
-  "settings": ["fold_form", "wide_form", "linalg_form", "route_to_ordered", "exports", "literal_table", "auto_segmented_set", "team_threads", "launch_bounds", "fold_k", "warps", "fast_entries"],
+  "settings": ["fold_form", "wide_form", "linalg_form", "route_to_ordered", "exports", "literal_table", "auto_segmented_set", "team_threads", "launch_bounds", "fold_rows", "warps", "fast_entries"],
   "form": {"lazy_leaf_width": 32, "rolled_fold_min": 16, "lean_width": 4},
   "lanes": {"run_max": 32, "block_run": 1024, "copy_threads": 256, "team_threads": 128, "team_threads_large": 256, "tile_min": 64, "tile_max": 1024},
   "uniform_run": 32,

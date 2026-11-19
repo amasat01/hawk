@@ -276,7 +276,7 @@ fn settings_of(spec: &J) -> Result<Settings, String> {
             })
             .ok_or("a linalg form")?,
         route_to_ordered: matches!(s.get("route_to_ordered"), Some(J::Bool(true))),
-        fold_k: num(s.get("fold_k")).filter(|k| *k != 0),
+        fold_rows: num(s.get("fold_k")).filter(|k| *k != 0),
         warps: num(s.get("warps")).unwrap_or(1),
         team_threads: num(s.get("team_threads")).unwrap_or(0),
         exports: None,

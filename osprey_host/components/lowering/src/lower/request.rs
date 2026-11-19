@@ -115,7 +115,7 @@ pub struct Settings {
     /// The launch bounds a device kernel states.
     pub launch_bounds: Option<(i64, i64)>,
     /// The fold's step count, when stated.
-    pub fold_k: Option<i64>,
+    pub fold_rows: Option<i64>,
     /// The warps of a team, and of a build.
     pub warps: i64,
     /// The threads a team is forced to; zero leaves it to the lowering.
@@ -1062,9 +1062,9 @@ impl Settings {
                     ))
                 })
                 .transpose()?,
-            fold_k: keys
-                .opt("fold_k")
-                .map(|k| in_range("fold_k", int_of(k, "fold_k")?, 1, i64::from(i32::MAX)))
+            fold_rows: keys
+                .opt("fold_rows")
+                .map(|k| in_range("fold_rows", int_of(k, "fold_rows")?, 1, i64::from(i32::MAX)))
                 .transpose()?,
             warps: match keys.opt("warps") {
                 Some(w) => in_range("warps", int_of(w, "warps")?, 1, i64::from(i32::MAX))?,
@@ -1114,8 +1114,8 @@ impl Settings {
         if let Some((a, b)) = self.launch_bounds {
             o.push(("launch_bounds".into(), ints(&[a, b])))
         }
-        if let Some(k) = self.fold_k {
-            o.push(("fold_k".into(), Json::Num(k.to_string())))
+        if let Some(k) = self.fold_rows {
+            o.push(("fold_rows".into(), Json::Num(k.to_string())))
         }
         if self.warps != aether_writers::contract::types::DEFAULT_WARPS {
             o.push(("warps".into(), Json::Num(self.warps.to_string())))
@@ -1651,7 +1651,7 @@ mod tests {
                 "launch_bounds blocks",
                 "0",
             ),
-            (&|s| s.fold_k = Some(0), "fold_k", "0"),
+            (&|s| s.fold_rows = Some(0), "fold_rows", "0"),
         ];
         for (set, member, value) in cases {
             let mut bad = request();

@@ -246,14 +246,14 @@ fn a_setting_the_target_does_not_declare_is_refused_by_name_and_the_target_that_
 ) {
     let (ctx, sink) = plain_kernel();
     let mut host = request_for(Target::Host, sink);
-    host.settings.fold_k = Some(2);
+    host.settings.fold_rows = Some(2);
     let why = lowered(ctx, &host).unwrap_err();
     assert!(
-        why.contains("\"fold_k\"") && why.contains("declared by none"),
+        why.contains("\"fold_rows\"") && why.contains("declared by none"),
         "{why}"
     );
     let mut device = request_for(Target::Device, sink);
-    device.settings.fold_k = Some(2);
+    device.settings.fold_rows = Some(2);
     lowered(ctx, &device).unwrap();
     // SAFETY: the context is not used again.
     unsafe { rx_ctx_free(ctx) };
@@ -282,24 +282,24 @@ fn a_companion_takes_a_setting_the_leader_declares_and_refuses_one_that_neither_
     let (ctx, sink) = plain_kernel();
     let mut lead = request_for(Target::Device, sink);
     lead.companions = vec![Target::Host];
-    lead.settings.fold_k = Some(2);
+    lead.settings.fold_rows = Some(2);
     let record = KernelAnswer::from_json(&lowered(ctx, &lead).unwrap())
         .unwrap()
         .peer
         .unwrap();
-    assert!(record.settings.contains(&"fold_k".to_string()));
-    // the host card does not name fold_k; the leader's record does
+    assert!(record.settings.contains(&"fold_rows".to_string()));
+    // the host card does not name fold_rows; the leader's record does
     let mut beside = request_for(Target::Host, sink);
-    beside.settings.fold_k = Some(2);
+    beside.settings.fold_rows = Some(2);
     beside.peer = Some((Target::Device, record.clone()));
     lowered(ctx, &beside).unwrap();
     // a record that does not list it leaves the companion to its own card
     let mut silent = record;
-    silent.settings.retain(|key| key != "fold_k");
+    silent.settings.retain(|key| key != "fold_rows");
     beside.peer = Some((Target::Device, silent));
     let why = lowered(ctx, &beside).unwrap_err();
     assert!(
-        why.contains("\"fold_k\"") && why.contains("declared by none"),
+        why.contains("\"fold_rows\"") && why.contains("declared by none"),
         "{why}"
     );
     // SAFETY: the context is not used again.
