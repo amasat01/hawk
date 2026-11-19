@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 import hawk
-from hawk import HawkError, Scalar, _ir, errors
+from hawk import HawkError, Scalar, _ir, errors, ospreys
 from hawk.artifact import build_bundle
 
 
@@ -88,7 +88,8 @@ def test_a_build_for_no_target_is_refused_naming_the_served_targets_and_publishe
 def test_a_target_no_osprey_serves_is_refused_naming_it_and_where_the_search_looked(
     tmp_path,
 ):
-    """The refusal quotes the unknown target, lists the served ones and names the two places OSPREYs are found."""
+    """The refusal quotes the unknown target, lists the served ones and names the two places OSPREYs are found and the folders
+    that were searched."""
 
     @hawk.kernel
     def scaled(x: Scalar) -> Scalar:
@@ -104,4 +105,6 @@ def test_a_target_no_osprey_serves_is_refused_naming_it_and_where_the_search_loo
             cache_dir=tmp_path / "cache",
         )
     assert "the hawk.ospreys entry points and $HAWK_OSPREY_PATH" in str(refused.value)
+    assert "(searched: " in str(refused.value)
+    assert all(str(osprey.folder) in str(refused.value) for osprey in ospreys.found().values())
     assert not (tmp_path / "bundle").exists()

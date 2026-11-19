@@ -8,7 +8,8 @@ An OSPREY is a folder ``osprey_<name>/`` holding ``osprey.json``, its facts and 
 the library speaks) and ``targets``: a list of rows ``{"request": what users write (the target's id: host, cuda), "target": the library's own name for
 it (the name its requests and answers spell it by), "about": a phrase, "device": whether it builds for a
 device, "entry": "host" or "device" (how a runtime enters it), "format": the manifest's word for
-its object}``.
+its object}``. Which manifests are valid and how a target id is spelled are decided by the binding; hawk passes it folder paths
+and raw names and takes its checked answers and refusals as they are.
 
 hawk looks in the folders that installed distributions declare under the entry-point group
 ``hawk.ospreys`` (the value is a data path, nothing is imported) and in the folders of the
@@ -21,7 +22,6 @@ from __future__ import annotations
 import functools
 import json
 import os
-import re
 import sys
 import threading
 from importlib import metadata
@@ -31,31 +31,31 @@ from .errors import HawkError, ToolchainAbsent
 
 ENTRY_POINT_GROUP = "hawk.ospreys"
 SEARCH_ENV = "HAWK_OSPREY_PATH"
-_MANIFEST = "osprey.json"
-_MEMBERS = ("name", "version", "door", "targets")
-_TARGET_MEMBERS = ("request", "target", "about", "device", "entry", "format")
-#: The grammar of a target id once spelled canonically: a lowercase letter, then lowercase letters and digits.
-_ID = re.compile(r"[a-z][a-z0-9]*\Z")
-#: What the canonical spelling of a target id drops: whitespace, dashes and underscores.
-_SEPARATORS = re.compile(r"[\s_-]+")
-#: ``{folder: why it was refused}`` of the folders the last search could not use; kept so that a caller asking for a target only
-#: such a folder would serve is told which folder and why (:func:`refused`, :func:`serving`).
-_REFUSED: dict = {}
+
+
+def _ask(call: str, *args) -> str:
+    """Return the text answer of the binding's manifest call ``backend_<call>``; its refusal is raised as ``HawkError``.
+
+    The binding decides what a valid manifest is and what a target id is; its refusal sentence names the folder or the id and the
+    rule, and is passed on as it is.
+    """
+    import _osprey
+
+    try:
+        return getattr(_osprey.Ctx(), "backend_" + call)(*args)
+    except (ValueError, _osprey.Fault) as refusal:
+        raise HawkError(str(refusal)) from refusal
 
 
 def target_id(name: str) -> str:
-    """The one spelling of a target id: lowercase, with whitespace, dashes and underscores removed (``" Cu-Da "`` is ``cuda``).
-
-    Every target id a manifest states and every target name a caller passes goes through here. A name that is not a string, or
-    whose canonical form is not a lowercase letter followed by lowercase letters and digits, is refused by name.
+    """The one spelling of a target id, as the binding states it: lowercase, with whitespace, dashes and underscores removed
+    (``" Cu-Da "`` is ``cuda``). A name that is no target id is refused by name.
     """
-    spelled = _SEPARATORS.sub("", name).lower() if isinstance(name, str) else ""
-    if not _ID.match(spelled):
+    if not isinstance(name, str):
         raise HawkError(
-            f"the target id {name!r} is not a target id: lowercased, with whitespace, dashes and underscores removed, "
-            "it must be a letter followed by letters and digits"
+            f"the target id {name!r} is not a target id: a string is required"
         )
-    return spelled
+    return _ask("target_id", name)
 
 
 class Osprey:
@@ -183,77 +183,31 @@ def _declared_folders() -> list:
     return folders
 
 
-def _read(folder: Path) -> Osprey:
-    """Return the OSPREY in ``folder``, its manifest checked: a missing or unknown member, a target id outside the grammar or a
-    Python wing is refused."""
-    path = folder / _MANIFEST
-    try:
-        manifest = json.loads(path.read_text())
-    except (OSError, ValueError) as why:
-        raise HawkError(f"{path}: no readable {_MANIFEST} ({why})") from why
-    if missing := [m for m in _MEMBERS if m not in manifest]:
-        raise HawkError(f"{path}: the manifest lacks {', '.join(missing)}")
-    if "wings" in manifest:
-        raise HawkError(
-            f"{path}: an OSPREY keeps its wings inside its library; a Python wing "
-            "is refused"
-        )
-    for key in sorted(set(manifest) - set(_MEMBERS)):
-        raise HawkError(
-            f"{path}: unknown manifest key {key!r} (the keys are {list(_MEMBERS)}); a misspelt key is refused, never ignored"
-        )
-    rows = []
-    for row in manifest["targets"]:
-        if missing := [m for m in _TARGET_MEMBERS if m not in row]:
-            raise HawkError(
-                f"{path}: target {row.get('request')!r} lacks {', '.join(missing)}"
-            )
-        try:
-            rows.append({**row, "request": target_id(row["request"])})
-        except HawkError as why:
-            raise HawkError(f"{path}: the target request: {why}") from why
-    ids = [row["request"] for row in rows]
-    if twice := sorted({i for i in ids if ids.count(i) > 1}):
-        raise HawkError(f"{path}: the manifest states the target id {twice[0]!r} in more than one row (ids are compared in their one spelling)")
-    return Osprey(folder, {**manifest, "targets": rows})
+@functools.lru_cache(maxsize=None)
+def _roster() -> tuple:
+    """Return ``(the binding's roster text, the same parsed)`` of the folders the search list holds.
+
+    Two OSPREYs that serve one target are refused by name; a folder whose manifest is refused is listed with its reason and the
+    others are kept.
+    """
+    text = _ask("roster", json.dumps([str(folder) for folder in _declared_folders()]))
+    return text, json.loads(text)
 
 
 @functools.lru_cache(maxsize=None)
 def found() -> dict:
-    """Return ``{OSPREY name: Osprey}`` of every OSPREY the search list holds.
-
-    Two OSPREYs that serve one target (one canonical id) are refused by name. A folder that cannot be used (a manifest refused, none readable) is
-    isolated: the others load, and the folder with its reason is kept in :func:`refused`.
-    """
-    out, owner = {}, {}
-    _REFUSED.clear()
-    for folder in _declared_folders():
-        try:
-            osprey = _read(folder)
-        except HawkError as why:
-            _REFUSED[str(folder)] = str(why)
-            continue
-        if osprey.name in out:
-            continue
-        for target in osprey.targets:
-            if target in owner:
-                raise HawkError(
-                    f"target {target!r} is served by both {owner[target]!r} and "
-                    f"{osprey.name!r}; keep one"
-                )
-            owner[target] = osprey.name
-        out[osprey.name] = osprey
-    return out
+    """Return ``{OSPREY name: Osprey}`` of every OSPREY the search list holds, each manifest as the binding checked it."""
+    return {m["name"]: Osprey(Path(m["folder"]), m) for m in _roster()[1]["ospreys"]}
 
 
 def refused() -> dict:
     """Return ``{folder: why}`` of every folder of the search list that cannot be used, each with its refusal sentence."""
-    found()
-    return dict(_REFUSED)
+    return dict(_roster()[1]["refused"])
 
 
 def forget() -> None:
     """Search again on the next call (the environment or the installed distributions changed)."""
+    _roster.cache_clear()
     found.cache_clear()
 
 
@@ -263,14 +217,14 @@ def targets() -> dict:
 
 
 def serving(target: str) -> Osprey:
-    """Return the OSPREY that serves ``target``; a target nobody serves is refused by name."""
-    target = target_id(target)
-    for osprey in found().values():
-        if target in osprey.targets:
-            return osprey
-    unusable = "".join(f"; refused: {why}" for why in refused().values())
-    raise HawkError(
-        f"target {target!r} is served by no OSPREY found; the served targets are "
-        f"{tuple(targets()) or 'none'} (searched: the {ENTRY_POINT_GROUP} entry "
-        f"points and ${SEARCH_ENV}){unusable}"
-    )
+    """Return the OSPREY that serves ``target``, in any spelling of its id; a target nobody serves is refused by name.
+
+    The binding states the folders that were searched; where those folders come from is what this module decides, so the
+    refusal ends with it: a reader with no OSPREY installed learns how one is found.
+    """
+    try:
+        answer = _ask("serving", _roster()[0], target)
+    except HawkError as refusal:
+        places = f"the {ENTRY_POINT_GROUP} entry points and ${SEARCH_ENV}"
+        raise HawkError(f"{refusal}; OSPREY folders are found through {places}") from refusal
+    return found()[json.loads(answer)["osprey"]]

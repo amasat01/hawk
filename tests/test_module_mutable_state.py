@@ -71,10 +71,6 @@ BASELINE = {
 }
 ALLOWED = {
     (
-        "ospreys.py",
-        "_REFUSED",
-    ): "the refused folders of the last scan, cleared and refilled by each scan",
-    (
         "ext/primitive.py",
         "_RULES",
     ): "the rule templates of declared primitives; a name is claimed under one lock",
