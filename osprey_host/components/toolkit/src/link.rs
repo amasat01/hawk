@@ -101,7 +101,7 @@ impl Toolkit {
         let done = self.run(&argv, machine, root, job.jobs)?;
         let label = format!("link of {name:?}");
         if done.code != Some(0) {
-            return Err(self.refuse(&argv, &done, &label, machine));
+            return Err(self.refuse(&argv, &done, &label, machine, scratch));
         }
         if !scratch.join(name).is_file() {
             return Err(Refusal::new(

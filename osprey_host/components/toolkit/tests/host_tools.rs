@@ -220,3 +220,32 @@ fn the_budget_and_timeout_refusals_name_the_variable_that_changes_them() {
         late.message
     );
 }
+
+/// Oracle: the command and the compiler's own complaint, then the folder the compile ran in, then the `fix` text of the shipped table
+/// (read from the table here, so a change of its wording is not a failure and a refusal that lost it is).
+#[test]
+fn a_failed_compile_ends_with_the_folder_it_ran_in_and_the_way_out_the_tool_table_states() {
+    let dir = scratch("failed_compile");
+    common::script(
+        &dir.join("fakecc"),
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"fakecc 1.0\"; exit 0; fi\necho 'error: boom' >&2\nexit 1\n",
+    );
+    let refused = limited(&dir, &[])
+        .build(&unit("u", "int x;"), &dir.join("s"))
+        .unwrap_err();
+    assert_eq!(refused.kind, Kind::ToolFailed);
+    let table = wire::parse("table", &shipped()).unwrap();
+    let fix = table
+        .get("tools")
+        .and_then(|t| t.get("compiler"))
+        .and_then(|c| c.get("fix"))
+        .and_then(J::str)
+        .unwrap();
+    let message = &refused.message;
+    assert!(
+        message.contains("$ ") && message.contains("error: boom"),
+        "{message}"
+    );
+    let tail = message.rsplit_once("ran in ").map_or("", |(_, tail)| tail);
+    assert!(tail.ends_with(fix) && tail.contains("; "), "{message}");
+}

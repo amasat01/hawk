@@ -58,7 +58,7 @@ Every file with its line count (this file excluded):
     923  osprey_host/components/lowering/src/lower/unit_meta.rs
     246  osprey_host/components/lowering/src/lower/warp.rs
     153  osprey_host/components/lowering/src/testing.rs
-    820  osprey_host/components/lowering/src/tool.rs
+    856  osprey_host/components/lowering/src/tool.rs
      15  osprey_host/components/lowering/tests/data/gemm_kernels.json
      23  osprey_host/components/lowering/tests/data/two_groups.dump
      14  osprey_host/components/toolkit/Cargo.lock
@@ -67,7 +67,7 @@ Every file with its line count (this file excluded):
       3  osprey_host/components/toolkit/clippy.toml
       2  osprey_host/components/toolkit/rustfmt.toml
     248  osprey_host/components/toolkit/src/argv_tests.rs
-    528  osprey_host/components/toolkit/src/compile.rs
+    536  osprey_host/components/toolkit/src/compile.rs
     311  osprey_host/components/toolkit/src/device.rs
     625  osprey_host/components/toolkit/src/discover.rs
     100  osprey_host/components/toolkit/src/dl.rs
@@ -79,7 +79,7 @@ Every file with its line count (this file excluded):
      30  osprey_host/components/toolkit/src/lib.rs
     145  osprey_host/components/toolkit/src/link.rs
      79  osprey_host/components/toolkit/src/refusal.rs
-    310  osprey_host/components/toolkit/src/reserved.rs
+    312  osprey_host/components/toolkit/src/reserved.rs
     186  osprey_host/components/toolkit/src/run.rs
     298  osprey_host/components/toolkit/src/runtime.rs
     158  osprey_host/components/toolkit/src/runtime_job.rs
@@ -95,7 +95,7 @@ Every file with its line count (this file excluded):
     127  osprey_host/components/toolkit/tests/device_policy.rs
     314  osprey_host/components/toolkit/tests/discovery.rs
     111  osprey_host/components/toolkit/tests/end_to_end.rs
-    222  osprey_host/components/toolkit/tests/host_tools.rs
+    251  osprey_host/components/toolkit/tests/host_tools.rs
      72  osprey_host/components/toolkit/tests/live_environment.rs
     159  osprey_host/components/toolkit/tests/probes.rs
     332  osprey_host/components/toolkit/tests/runtime_compile.rs
@@ -153,10 +153,12 @@ Every file with its line count (this file excluded):
     193  osprey_host/replay/tests/dispatch_k.rs
      76  osprey_host/replay/tests/events.rs
     576  osprey_host/replay/tests/facts.rs
+     65  osprey_host/replay/tests/facts_numbers.rs
      49  osprey_host/replay/tests/facts_oracle.rs
      48  osprey_host/replay/tests/fakes/mod.rs
      62  osprey_host/replay/tests/feathers.rs
      47  osprey_host/replay/tests/gemm_corpus.rs
+     98  osprey_host/replay/tests/hardware_free.rs
     212  osprey_host/replay/tests/host_build.rs
      77  osprey_host/replay/tests/index_form.rs
      87  osprey_host/replay/tests/link_rules.rs

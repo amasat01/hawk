@@ -438,7 +438,7 @@ impl Toolkit {
         let done = self.run(&argv, machine, root, job.jobs)?;
         let label = format!("compile of {:?}", job.name);
         if done.code != Some(0) {
-            return Err(self.refuse(&argv, &done, &label, machine));
+            return Err(self.refuse(&argv, &done, &label, machine, scratch));
         }
         let output = format!("{}{}", job.name, job.output_suffix);
         let produced = scratch.join(&output);
@@ -465,21 +465,28 @@ impl Toolkit {
         Ok(Built { files, meta })
     }
 
-    /// The refusal of a tool that failed: out of memory under the cap, not runnable, or its complaint.
+    /// The way out the tool table states for the tool found at `program` (empty when the table states none).
+    pub(crate) fn fix_of(&self, machine: &Machine, program: &str) -> &str {
+        machine
+            .tools
+            .iter()
+            .find(|(_, t)| t.path.display().to_string() == program)
+            .and_then(|(name, _)| self.spec.get("tools")?.get(name)?.get("fix")?.str())
+            .unwrap_or("")
+    }
+
+    /// The refusal of a tool that failed: out of memory under the cap, not runnable, or its complaint, then the directory it ran in
+    /// and the way out of the tool.
     pub(crate) fn refuse(
         &self,
         argv: &[String],
         done: &crate::run::Output,
         label: &str,
         machine: &Machine,
+        dir: &Path,
     ) -> Refusal {
         let cap = self.limit("address_cap", ADDRESS_CAP_BYTES).unwrap_or(0);
-        let fix = machine
-            .tools
-            .iter()
-            .find(|(_, t)| t.path.display().to_string() == argv[0])
-            .and_then(|(name, _)| self.spec.get("tools")?.get(name)?.get("fix")?.str())
-            .unwrap_or("");
+        let fix = self.fix_of(machine, &argv[0]);
         let lower = done.stderr.to_lowercase();
         if cap > 0 && ALLOCATION_FAILURES.iter().any(|m| lower.contains(m)) {
             let note = self.limit_note("address_cap");
@@ -505,8 +512,9 @@ impl Toolkit {
         Refusal::new(
             Kind::ToolFailed,
             format!(
-                "{label} failed ({rc}).\n$ {}\n{complaint}\n{fix}",
-                argv.join(" ")
+                "{label} failed ({rc}).\n$ {}\n{complaint}\nran in {}; {fix}",
+                argv.join(" "),
+                dir.display()
             ),
         )
     }

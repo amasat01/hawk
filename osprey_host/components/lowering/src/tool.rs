@@ -121,7 +121,25 @@ fn effective_ask(
         }
         (options, _) => options,
     };
-    (level, options)
+    (level, in_name_order(options))
+}
+
+/// `value` with the members of every object in name order, so the same options stated in another order are one ask: the key text
+/// and the stated record are made from the result.
+fn in_name_order(value: Json) -> Json {
+    match value {
+        Json::Obj(mut members) => {
+            members.sort_by(|a, b| a.0.cmp(&b.0));
+            Json::Obj(
+                members
+                    .into_iter()
+                    .map(|(name, member)| (name, in_name_order(member)))
+                    .collect(),
+            )
+        }
+        Json::Arr(items) => Json::Arr(items.into_iter().map(in_name_order).collect()),
+        other => other,
+    }
 }
 
 /// The text member `key` of an object's members.
@@ -816,5 +834,23 @@ mod tests {
         };
         assert_ne!(terms("O1", "native"), terms("O3", "native"));
         assert_ne!(terms("O1", "native"), terms("O1", "portable"));
+    }
+
+    /// Oracle: the options of an ask as the key text and the stated record are made from them (`effective_ask`'s result).
+    #[test]
+    fn the_same_options_in_another_order_are_one_ask_and_a_changed_value_is_another() {
+        let ask = |members: &[(&str, &str)]| {
+            let options = Json::Obj(
+                members
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), Json::Str((*v).into())))
+                    .collect(),
+            );
+            effective_ask("", options, None, None).1.to_text()
+        };
+        let forward = ask(&[("arch", "sm_61"), ("profile", "native")]);
+        assert_eq!(forward, ask(&[("profile", "native"), ("arch", "sm_61")]));
+        assert_eq!(forward, "{\"arch\":\"sm_61\",\"profile\":\"native\"}");
+        assert_ne!(forward, ask(&[("arch", "sm_89"), ("profile", "native")]));
     }
 }

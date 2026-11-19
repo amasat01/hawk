@@ -248,9 +248,11 @@ impl Toolkit {
             return Err(Refusal::new(
                 Kind::ToolFailed,
                 format!(
-                    "the preprocess for reserved names failed\n$ {}\n{}",
+                    "the preprocess for reserved names failed\n$ {}\n{}\nran in {}; {}",
                     command.join(" "),
-                    done.stderr
+                    done.stderr,
+                    dir.display(),
+                    self.fix_of(machine, &command[0])
                 ),
             ));
         }
