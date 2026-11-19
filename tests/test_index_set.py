@@ -51,10 +51,10 @@ def test_a_lane_set_reads_the_map_prologue_without_a_mask():
     assert src["cuda"].body == _sources(hawk.kernel(_square), DEFAULT_KIND)["cuda"].body
 
 
-def _exports_block(kernel) -> str:
+def _exports_block(kernel, root) -> str:
     """The exports block the library states in the text of a set of the one unit of ``kernel``: from its comment line to the
-    closing of its sizes."""
-    _, unit, _, _ = B._emitted(kernel, kernel.name, "float64", None, ("host",), "", "", default_settings(), {}, "", None,
+    closing of its sizes. ``root`` is the folder the library keeps what it finds out about the machine in."""
+    _, unit, _, _ = B._emitted(kernel, kernel.name, "float64", None, ("host",), "", "", default_settings(), {}, "", None, root,
                                exports_block=False)
     text = ospreys.serving("host").set_text([unit["meta"]])
     start = text.index("// The self-check exports")
@@ -70,9 +70,9 @@ def test_emit_source_is_the_text_build_publishes_with_the_exports_block_and_the_
     assert emitted.sources["cuda"].text == (tmp_path / f"{k.name}.cu").read_text()
     # a build links the set text, which states the exports block once; emit_source's host text states it itself, followed by
     # one blank line, so taking the block out of it leaves the text the build publishes
-    before, after = emitted.sources["host"].text.split(_exports_block(k) + "\n")
+    before, after = emitted.sources["host"].text.split(_exports_block(k, cache_dir) + "\n")
     assert before + after == (tmp_path / f"{k.name}.cpp").read_text()
-    sidecar = {key: v for key, v in built.sidecar.items() if key not in ("ptxas", "format")}
+    sidecar = {key: v for key, v in built.sidecar.items() if key not in ("tool", "format")}
     sidecar["launch"] = {key: v for key, v in sidecar["launch"].items() if not key.startswith("local_") and key != "wide"}
     assert {key: v for key, v in emitted.sidecar.items() if key != "format"} == sidecar     # format: the row's, not the object's
     assert "launch_bounds" not in emitted.sources["cuda"].text

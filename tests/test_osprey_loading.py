@@ -3,7 +3,7 @@
 
 """A library folder is found, loaded or refused by name, and the libraries are isolated from one another.
 
-The rows use the real library folders the search list names (``HAWK_OSPREY_PATH``) and folders written under ``tmp_path``: a
+The rows use the real library folders the machine finds (installed entry points or ``HAWK_OSPREY_PATH``) and folders written under ``tmp_path``: a
 third-party folder, a folder with a malformed or incomplete manifest, a library of another door version, a file that is no
 library. A refusal names the folder and the member. The libraries' own isolation (each one's facts, in a folder holding only
 itself) is the binding's ``test_sideways.py``; these rows are the same property read through hawk's search list.
@@ -36,12 +36,24 @@ TPU_ROW = {
 }
 
 
-def real_folders() -> dict:
-    """``{name: folder}`` of the library folders the search list names, read from their manifests."""
-    folders = [
-        Path(p) for p in os.environ.get(ospreys.SEARCH_ENV, "").split(os.pathsep) if p
+def _installed_folders() -> list:
+    """The library folders this machine finds: those distributions declare as entry points, then those of the search variable."""
+    declared = [
+        Path(point.dist.locate_file(point.value))
+        for point in ospreys.metadata.entry_points(group=ospreys.ENTRY_POINT_GROUP)
     ]
-    return {json.loads((f / "osprey.json").read_text())["name"]: f for f in folders}
+    named = [Path(p) for p in os.environ.get(ospreys.SEARCH_ENV, "").split(os.pathsep) if p]
+    return declared + named
+
+
+#: ``{name: folder}`` of the real libraries, read once at import: the ``searched`` fixture hides the entry points from hawk for
+#: the length of a test, and a machine may find its libraries either way.
+REAL_FOLDERS = {json.loads((f / "osprey.json").read_text())["name"]: f for f in _installed_folders()}
+
+
+def real_folders() -> dict:
+    """``{name: folder}`` of the real library folders, however this machine finds them."""
+    return REAL_FOLDERS
 
 
 @pytest.fixture

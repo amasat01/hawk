@@ -735,7 +735,7 @@ def resources(bundle, name: str) -> dict:
     rows = []
     for unit in unit_names(name):
         side = json.loads((pathlib.Path(bundle.directory) / f"{unit}.json").read_text())
-        row = side["ptxas"][unit]
+        row = side["tool"]["cuda"][unit]
         rows.append({"regs": row["regs"], "stack_B": row["stack_B"], "spill_store_B": row["spill_store_B"],
                      "spill_load_B": row["spill_load_B"], "local_bytes": side["launch"]["local_bytes"]})
     return {k: max(r[k] for r in rows) for k in rows[0]}

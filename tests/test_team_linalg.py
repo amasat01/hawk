@@ -28,6 +28,7 @@ import hawk
 from hawk import HawkError
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
+from hawk.build_settings import BuildSettings
 from hawk.trace.kernel import Kernel
 from hawk import _ir
 
@@ -886,9 +887,22 @@ def test_a_product_sum_over_every_lane_at_p71_lowers_to_one_block_sum_of_one_key
     assert team["keyed"]["axes"] == []                    # the sum is over every lane: one key
 
 
-def test_a_small_or_thread_form_sum_over_every_lane_keeps_the_per_entry_path(cache):
-    assert _team_stages(total_kernel("outer", 4), cache / "total4") == []
-    assert _team_stages(total_kernel("gram", 71, TOTAL_ROWS, "thread"), cache / "total71_thread", "thread") == []
+def _planned_team_stages(kernel, form="auto"):
+    """The ``team`` records of the stages the plan of ``kernel`` states for the host, in launch order: the sidecar of
+    ``emit_source``, which compiles nothing (the stages are a fact of the plan, not of a compile)."""
+    side = hawk.artifact.emit_source(kernel, targets=("host",), settings=BuildSettings(linalg_form=form)).sidecar
+    return [s["team"] for s in side.get("stages", []) if "team" in s]
+
+
+def test_a_small_or_thread_form_sum_over_every_lane_keeps_the_per_entry_path():
+    assert _planned_team_stages(total_kernel("outer", 4)) == []
+    assert _planned_team_stages(total_kernel("gram", 71, TOTAL_ROWS, "thread"), "thread") == []
+
+
+def test_the_plan_states_the_team_stage_the_per_entry_cases_lack():
+    kernel = total_kernel("gram", 71, TOTAL_ROWS)
+    (team,) = [s["team"] for s in hawk.artifact.describe([kernel], targets=("host",))[kernel.name]["stages"] if "team" in s]
+    assert team["grid"] == "keys"
 
 
 @pytest.mark.parametrize("spelling", SPELLINGS)

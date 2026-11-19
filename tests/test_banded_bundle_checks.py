@@ -40,12 +40,13 @@ def stepping(x: hawk.Scalar, out: hawk.Mutable[hawk.Scalar]):
 @pytest.mark.gpu
 @pytest.mark.parametrize("kernel", (kq, stepping), ids=lambda k: k.name)
 def test_a_banded_device_build_has_no_fp64_and_no_spills(kernel, tmp_path):
-    """The build itself refuses an FP64 instruction; the sidecar's ptxas record says the frame does not spill."""
+    """The build itself refuses an FP64 instruction; the sidecar's figures of the device library say the frame does not spill."""
     bundle = build_bundle([kernel], tmp_path / kernel.name, mode="banded", targets=("cuda",), host_profile="native")
-    ptxas = sidecar_of(bundle, kernel.name).get("ptxas")
+    figures = sidecar_of(bundle, kernel.name).get("tool", {}).get("cuda", {})
+    ptxas = {entry: row for entry, row in figures.items() if "spill_store_B" in row}    # the unit's ``launch`` record is no kernel
     if ptxas:
         for entry, row in ptxas.items():
-            assert row["spill_store_B"] == 0 and not row["spills"], (entry, row)
+            assert row["spill_store_B"] == 0, (entry, row)
         return
     # the device compile returned PTX: ptxas gives the frame the driver would build
     tool, ptx = shutil.which("ptxas"), next((tmp_path / kernel.name).rglob("*.ptx"))

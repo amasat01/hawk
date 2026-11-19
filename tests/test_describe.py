@@ -493,3 +493,24 @@ def test_a_kind_changes_the_lowered_unit_digest_and_not_the_body_digest():
         described["_plain_body"]["slot_shapes"]
     )
     assert described["_plain_body"]["digest"] != described["_same_body_again"]["digest"]
+
+
+def test_an_unknown_opt_level_is_refused_by_name_from_the_call_and_from_the_variable(
+    monkeypatch,
+):
+    """Restates the old resolution test: the call's level and ``$HAWK_OPT_LEVEL`` both name an unknown level, the variable by
+    its name, and the text lists the levels the library knows."""
+    from hawk.targets import machine
+
+    with pytest.raises(
+        HawkError, match=r"unknown opt level .*the build's opt_level.*O3"
+    ):
+        machine("host", opt_level="Ofast")
+    monkeypatch.setenv("HAWK_OPT_LEVEL", "Ofast")
+    with pytest.raises(HawkError, match=r"unknown opt level .*\$HAWK_OPT_LEVEL.*O3"):
+        machine("host")
+    with pytest.raises(HawkError, match=r"unknown opt level .*\$HAWK_OPT_LEVEL"):
+        describe([square], targets=("host",))
+    monkeypatch.setenv("HAWK_OPT_LEVEL", "O0")
+    assert machine("host")["asked"]["opt_level"] == "O0"
+    assert machine("host", opt_level="O2")["asked"]["opt_level"] == "O2"

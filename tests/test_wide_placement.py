@@ -415,7 +415,7 @@ def _gate(root: pathlib.Path) -> int:
             kernel = W.lane_set_kernel(kind)
             bundle = build_bundle([kernel], root / f"c8_{bits}_{arch}", mode="float32", targets=("cuda",), device_arch=arch,
                                   cache_dir=CACHE / "tree", kind=kind)
-            regs[arch, bits] = json.loads((pathlib.Path(bundle.directory) / f"{kernel.name}.json").read_text())["ptxas"][kernel.name]["regs"]
+            regs[arch, bits] = json.loads((pathlib.Path(bundle.directory) / f"{kernel.name}.json").read_text())["tool"]["cuda"][kernel.name]["regs"]
     ok &= _line("C8", regs[ARCH, 32] <= 124 and regs[ARCH, 32] <= regs[ARCH, 64] and regs["sm_80", 32] <= regs["sm_80", 64],
                 f"index set regs {ARCH} {regs[ARCH, 64]} -> {regs[ARCH, 32]} (<= 124), sm_80 {regs['sm_80', 64]} -> {regs['sm_80', 32]} (no increase)")
     # A3: the corpus against NumPy's bits
