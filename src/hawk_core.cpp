@@ -639,7 +639,12 @@ NB_MODULE(_core, m) {
              "range and the TRUE `n_samples`. SERIAL by construction — this is the "
              "reference oracle every partitioned/tiled/ranked run is compared against "
              "so it must never grow a schedule.")
-        .def_ro("name", &HostEntry::name, "The exported symbol this entry resolved.");
+        .def_ro("name", &HostEntry::name, "The exported symbol this entry resolved.")
+        .def_prop_ro("address", [](const HostEntry& self) {
+                return reinterpret_cast<std::uintptr_t>(self.fn);
+             }, "The address of the entry function, for a caller that assembles a plugin "
+             "by hand. Valid while this entry or its library object is alive: the entry "
+             "holds a share of the library, which is unloaded with the last one.");
 
     // -- HostLibrary ---------------------------------------------------
     nb::class_<HostLibrary>(m, "HostLibrary",

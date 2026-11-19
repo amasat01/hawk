@@ -253,7 +253,8 @@ def test_the_reverse_of_a_ladder_is_scoped_and_matches_a_finite_difference():
         y = v
 
     derived = vjp(ladder.sinks)
-    kernel = SimpleNamespace(name="ladder_vjp", sinks=tuple(derived), walk=_ir.canonical(derived))
+    kernel = SimpleNamespace(name="ladder_vjp", sinks=tuple(derived), walk=_ir.canonical(derived),
+                             gradients=derived.gradients, cotangents=derived.cotangents)
     text = emit_source(kernel, targets=("host",)).sources["host"].text
     assert "aether::math::" not in text[:text.index("switch (")]
     h = 1e-6

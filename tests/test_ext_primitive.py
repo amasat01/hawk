@@ -174,7 +174,7 @@ def test_the_derived_reverse_ir_deploys_and_runs(tmp_path, cache_dir):
 
     sinks = vjp(primitive_kernel)
     derived = SimpleNamespace(name="primitive_kernel_vjp", sinks=sinks,
-                              walk=_ir.canonical(sinks))
+                              walk=_ir.canonical(sinks), gradients=sinks.gradients, cotangents=sinks.cotangents)
     x = RNG.uniform(-2.0, 2.0, size=N)
     bar = RNG.uniform(0.2, 1.4, size=N)
     got = _run(derived, tmp_path / "vjp", cache_dir, x=x, bar_y=bar)

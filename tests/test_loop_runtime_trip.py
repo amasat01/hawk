@@ -19,6 +19,7 @@ from _eval import evaluate
 from conftest import sidecar_of
 
 import hawk
+import hawk.math
 from hawk import Index, Mutable, Scalar
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
@@ -169,3 +170,27 @@ def test_the_reverse_loop_runs_the_last_n_iterations_of_the_tape_on_the_device(r
     eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**planes).launch()
     cp.cuda.Device().synchronize()
     np.testing.assert_allclose(bar.get(), _want(), rtol=1e-6, atol=1e-7)
+
+
+@hawk.kernel
+def _counted_growth(q: Scalar, out: Mutable[Scalar]):
+    """A float carry multiplied each trip beside an integer carry that counts them."""
+    p = q
+    n = hawk.math.int32(0)
+    for _ in range(4):
+        n = n + hawk.math.int32(1)
+        p = p * 1.5
+    out = p
+
+
+def test_the_reverse_of_a_loop_with_an_integer_carry_beside_a_float_one_matches_the_closed_form(tmp_path, cache_dir):
+    """``out = 1.5**4 * q``, so the gradient is ``1.5**4 * bar_out`` for every sample. The integer carry takes no adjoint, and its
+    zero is an integer literal. Oracle: NumPy; the one product chain rounds at most four times, so 4 half-ulps of the result."""
+    derived = hawk.Kernel("counted_growth_vjp", vjp(_counted_growth, wrt=("q",)))
+    bundle = build_bundle([_counted_growth, derived], tmp_path, targets=("host",), cache_dir=cache_dir)
+    run = rt.load(bundle.directory, derived.name, sidecar_of(bundle, derived.name))
+    # the kernel is linear in ``q``, so its reverse reads no primal plane: it declares the seed and the gradient only
+    bar_out, bar_q = np.linspace(1.0, 3.0, 7), np.zeros(7)
+    rt.run(run, bar_out=bar_out, bar_q=bar_q)
+    want = 1.5**4 * bar_out
+    np.testing.assert_allclose(bar_q, want, rtol=4 * np.finfo(np.float64).eps / 2, atol=0)

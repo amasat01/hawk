@@ -431,7 +431,7 @@ def _sidecar(kernel, unit, family, *, mode, targets, machines, derivative, block
     host = next((t for t in targets if TARGETS[t].host_entry), None)
     measured = tool = None
     if built is not None:
-        measured = built[lead]["figures"].get("launch")
+        measured = built[lead].get("launch")
         tool = {ospreys.serving(t).name: built[t]["figures"] for t in targets}
         if host is not None:    # the build states the width under the defines it compiled with; the lowering states the default
             records = {**records, "index_bytes": built[host]["index_bytes"]}

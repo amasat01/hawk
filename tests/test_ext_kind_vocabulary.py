@@ -19,7 +19,7 @@ import linecache
 import pytest
 
 from hawk import Mutable, Scalar, Terminated, Vector, kernel
-from hawk.ext import DEFAULT_KIND, KernelKind, Kind, Output
+from hawk.ext import DATA_ONLY, DEFAULT_KIND, KernelKind, Kind, Output
 from hawk.errors import HawkError
 from hawk import _ir
 
@@ -224,3 +224,18 @@ def test_a_kernel_kind_class_takes_them_too():
         y = x + 1.0
 
     assert body.group == 4 and body.kind is Launched.kind
+
+
+def test_a_class_form_kind_declares_its_annotated_names_as_vocabulary():
+    """The names a ``KernelKind`` class annotates are the parameters its kernels may leave undeclared, whatever the Python
+    version stores the class annotations the way."""
+
+    class Channel(KernelKind, slug="vocab_channel"):
+        scale: Scalar
+        guard = DATA_ONLY
+
+    @Channel
+    def scaled(scale, x: Scalar, y: Mutable[Scalar]):
+        y = x * scale
+
+    assert ("per_sample", "scale") in scaled.arg_spec

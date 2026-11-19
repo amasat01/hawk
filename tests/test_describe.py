@@ -514,3 +514,34 @@ def test_an_unknown_opt_level_is_refused_by_name_from_the_call_and_from_the_vari
     monkeypatch.setenv("HAWK_OPT_LEVEL", "O0")
     assert machine("host")["asked"]["opt_level"] == "O0"
     assert machine("host", opt_level="O2")["asked"]["opt_level"] == "O2"
+
+
+# -- the planes of a reverse derivative: gradient -> input, cotangent -> forward output
+
+@hawk.kernel
+def _scalar_out(x: Scalar, y: Mutable[Scalar]):
+    y = x * x
+
+
+@hawk.kernel
+def _vector_out(x: Vector[3], y: Mutable[Vector[3]]):
+    y = x * 2.0
+
+
+@hawk.kernel
+def _two_out(x: Scalar, a: Mutable[Scalar], b: Mutable[Scalar]):
+    a = x * 2.0
+    b = x * x
+
+
+@pytest.mark.parametrize("primal, seeds", [(_scalar_out, {"bar_y": "y"}), (_vector_out, {"bar_y": "y"}),
+                                            (_two_out, {"bar_a": "a", "bar_b": "b"})])
+def test_a_reverse_derivative_states_the_output_each_cotangent_plane_seeds(primal, seeds, tmp_path, cache_dir):
+    derived = hawk.Kernel(f"{primal.name}_vjp", vjp(primal))
+    described = describe([primal, derived], targets=("host",))
+    assert described[derived.name]["cotangent_of"] == seeds
+    assert "cotangent_of" not in described[primal.name]
+    bundle = build_bundle([primal, derived], tmp_path, targets=("host",), cache_dir=cache_dir)
+    assert sidecar_of(bundle, derived.name)["cotangent_of"] == seeds
+    assert "cotangent_of" not in sidecar_of(bundle, primal.name)
+

@@ -71,8 +71,15 @@ class Derived(tuple):
         wrt: tuple[str, ...],
         primal_unit: str | None = None,
         jump: dict | None = None,
+        gradients: dict | None = None,
+        cotangents: dict | None = None,
     ):
         self = super().__new__(cls, sinks)
+        #: A reverse derivative's planes as the transform named them: ``gradients`` maps each gradient plane to the
+        #: input it is the gradient of, ``cotangents`` each cotangent (seed) plane to the forward output it seeds.
+        #: Empty for a forward derivative.
+        self.gradients = {} if gradients is None else gradients
+        self.cotangents = {} if cotangents is None else cotangents
         #: The sidecar ``jump`` record of a derivative smoothed through its
         #: switches (``@kernel(jump=...)``), else ``None``.
         self.jump = jump
@@ -430,6 +437,12 @@ def _vjp(
         wrt=names,
         primal_unit=primal_unit,
         jump=None if plan is None else plan.record(names),
+        gradients={name(n): n for n in names},
+        cotangents={
+            name(sink.field_text("name")): sink.field_text("name")
+            for sink in sinks
+            if _ir.type_of(sink).dtype not in _ir.INT_PLANE_DTYPES
+        },
     )
 
 
@@ -579,6 +592,8 @@ def _vjp_param_cells(
         wrt=d.wrt,
         primal_unit=primal_unit,
         jump=d.jump,
+        gradients=d.gradients,
+        cotangents=d.cotangents,
     )
 
 

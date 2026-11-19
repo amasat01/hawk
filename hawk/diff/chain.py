@@ -28,11 +28,14 @@ def _inputs(kernel, names) -> list:
     )
 
 
-def _member(kernel, sinks, label):
+def _member(kernel, sinks, label, derivative=None):
+    """The unit of ``kernel`` that runs ``sinks``; ``derivative`` is the reverse derivative they come from, whose planes it states."""
     from ..trace.kernel import Kernel
 
     out = Kernel(f"{kernel.name}_{label}", tuple(sinks), kind=kernel.kind)
     out.lane_space, out.group, out.jump = kernel.lane_space, kernel.group, kernel.jump
+    if derivative is not None:
+        out.gradients, out.cotangents = derivative.gradients, derivative.cotangents
     return out
 
 
@@ -113,7 +116,7 @@ def vjp_chain(chain, wrt, primal_unit, strategy) -> Derived:
                 s = _added_to_held(s)
             sinks.append(s)
         written.update(s.field_text("name") for s in sinks)
-        adjoints.append(_member(k, sinks, "vjp"))
+        adjoints.append(_member(k, sinks, "vjp", d))
     needed = {lf.field_text("name") for m in adjoints for lf in _walk_sinks(m.sinks)[0]}
     forward = []
     for k in reversed(chain.members[:-1]):

@@ -445,6 +445,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         **({"companions": walk.companions} if walk.companions else {}),
         # an adjoint plane is its lookup plane's size, not the lane count
         **({"adjoint_like": walk.adjoint_like} if walk.adjoint_like else {}),
+        # a reverse derivative's cotangent plane: the forward output it seeds
+        **({"cotangent_of": walk.cotangent_of} if walk.cotangent_of else {}),
         # a Matrix read only at lane indices is the caller's compact plane: its
         # column count is not the lane count (a broadcast input)
         **({"gather_mats": _gather_mats(walk, broadcast)} if walk.gather_mats else {}),
@@ -525,7 +527,8 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
         access=SimpleNamespace(cls=_snake(body["access"]), op=None),
         cells={c["name"]: {"op": _snake(c["op"]), "columns": c["columns"]} for c in body["cells"]},
         companions={names[c["slot"]]: names[c["target_slot"]] for c in body["companions"]},
-        adjoint_like={n: n[len("bar_"):] for r, n in arg_spec if r == "accum_out" and n.startswith("bar_") and n[len("bar_"):] in reads},
+        adjoint_like={g: x for g, x in kernel.gradients.items() if ("accum_out", g) in arg_spec and x in reads},
+        cotangent_of={c: out for c, out in kernel.cotangents.items() if c in names},
         gather_mats=tuple(sorted(s["name"] for s in slots if s["flags"] & _SLOT_GATHER)),
         param_planes=tuple(s["name"] for s in slots if s["flags"] & _SLOT_PARAM_PLANE),
         prior_reads=frozenset(s["name"] for s in slots if s["flags"] & _SLOT_PRIOR),

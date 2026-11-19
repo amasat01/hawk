@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import ctypes
 import pathlib
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 from hawk import _core
 from hawk.artifact import fold_entries, plan_view
@@ -155,7 +155,9 @@ def device_plugin(bundle_dir, name, sidecar):
     device_selfcheck(cp.RawModule(path=loaded.image_path))
     view = plan_view(sidecar)
     view.pop("host_entry", None)
-    return SimpleNamespace(device_function=loaded.fn.kernel.ptr,
+    # the sidecar travels with the view, read-only, as it does on a plugin of ``hawk.artifact.plugins``: the runtime reads from
+    # it the facts the view does not repeat (the row width of a kernel that reduces over samples)
+    return SimpleNamespace(device_function=loaded.fn.kernel.ptr, sidecar=MappingProxyType(sidecar),
                            _keepalive=(reg, loaded), **view)
 
 
@@ -170,8 +172,9 @@ def host_plugin(bundle_dir, name, sidecar):
     _tag, _sizes, lib = host_selfcheck(so)
     view = plan_view(sidecar)
     entry = getattr(lib, view.pop("host_entry"))
-    return SimpleNamespace(host_entry=ctypes.cast(entry, ctypes.c_void_p).value,
-                           _keepalive=lib, **fold_entries(lib, sidecar), **view)
+    library = _core.HostLibrary(str(so))
+    return SimpleNamespace(host_entry=ctypes.cast(entry, ctypes.c_void_p).value, sidecar=MappingProxyType(sidecar),
+                           _keepalive=(lib, library), **fold_entries(library, sidecar), **view)
 
 
 #: The sidecar's ``arg_dtypes`` string -> the numpy dtype a caller-bound array

@@ -42,6 +42,7 @@ merging rather than shadowing — see :class:`KernelKind` for the rules.
 
 from __future__ import annotations
 
+import inspect
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
@@ -494,7 +495,7 @@ class KernelKind:
                 "form needs slug=..., the same NAME the instance form's "
                 "Kind(slug=...) takes"
             )
-        own_annotations = cls.__dict__.get("__annotations__", {})
+        own_annotations = inspect.get_annotations(cls)   # the class's own; Python 3.14 evaluates them lazily, not in its __dict__
         scope = _class_scope()
         own_vocabulary = {name: _resolve_annotation(cls, name, ann, scope)
                          for name, ann in own_annotations.items()

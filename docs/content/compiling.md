@@ -61,6 +61,9 @@ Among its members:
 - `contractions` lists each dense contraction a unit is: the `unit`, the `route` the library chose (`gemm` for matrix
   products beside the kernel, `direct` for the kernel's own loop) and the `products` with their shapes. A kernel that is
   none has no such member.
+- A reverse derivative (`hawk.diff.vjp`) states `adjoint_like`, which maps each gradient plane that is accumulated at
+  lookup indices to the input it is the gradient of, and `cotangent_of`, which maps each cotangent (seed) plane to the
+  forward output it seeds, e.g. `{"bar_out": "out"}`. Neither is stated for a kernel that is not a derivative.
 - A kernel declaring `time_step=` has `refine_planes`: `{"t0": ..., "tau": ...}`, the names of the two extra planes its
   refine entry reads.
 - A kernel that runs as several units answers with its first unit. Its `stages` list the others, and each stage

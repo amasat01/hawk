@@ -65,8 +65,11 @@ def _exports_block(kernel, root) -> str:
                          ids=["map", "prefix", "width64"])
 def test_emit_source_is_the_text_build_publishes_with_the_exports_block_and_the_same_sidecar(kind, tmp_path, cache_dir):
     k = hawk.kernel(_square, kind=kind)
-    emitted = hawk.artifact.emit_source(k)
-    built = hawk.artifact.build(k, tmp_path, targets=("cuda", "host"), cache_dir=cache_dir, host_profile="native")
+    # both ask the same machines: the sidecar's ``stated`` records the options asked, so a build and its emit state alike only when
+    # they are given the same ones
+    asked = {"host.profile": "native"}
+    emitted = hawk.artifact.emit_source(k, options=asked)
+    built = hawk.artifact.build(k, tmp_path, targets=("cuda", "host"), cache_dir=cache_dir, options=asked)
     assert emitted.sources["cuda"].text == (tmp_path / f"{k.name}.cu").read_text()
     # a build links the set text, which states the exports block once; emit_source's host text states it itself, followed by
     # one blank line, so taking the block out of it leaves the text the build publishes

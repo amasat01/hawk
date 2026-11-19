@@ -13,7 +13,6 @@ loader rather than an eagle import.
 
 from __future__ import annotations
 
-import ctypes
 from types import MappingProxyType, SimpleNamespace
 
 from ..targets import TARGETS
@@ -104,6 +103,7 @@ def plan_view(sidecar: dict) -> dict:
         # the companion planes the runtime owns (compensated keyed sums)
         **({"companions": dict(sidecar["companions"])} if sidecar.get("companions") else {}),
         **({"adjoint_like": dict(sidecar["adjoint_like"])} if sidecar.get("adjoint_like") else {}),
+        **({"cotangent_of": dict(sidecar["cotangent_of"])} if sidecar.get("cotangent_of") else {}),
         **({"gather_mats": dict(sidecar["gather_mats"])} if sidecar.get("gather_mats") else {}),
         "host_entry": sidecar.get("host_entry"),
         # A finishing kernel's ``{mask, counter, steps}``, if present.
@@ -125,14 +125,13 @@ def plan_view(sidecar: dict) -> dict:
     }
 
 
-def fold_entries(cdll, sidecar: dict) -> dict:
+def fold_entries(library, sidecar: dict) -> dict:
     """``{"fold_entries": {target: address}}``: the host entry that folds each
     owned companion into its target (),
     for a kernel that has any; else ``{}``."""
     from .._cells import fold_entry_name
 
-    found = {target: ctypes.cast(getattr(cdll, fold_entry_name(sidecar["kernel"], target)
-                                         + "_host"), ctypes.c_void_p).value
+    found = {target: library.entry(fold_entry_name(sidecar["kernel"], target) + "_host").address
              for target in (sidecar.get("companions") or {}).values()}
     return {"fold_entries": found} if found else {}
 
@@ -180,11 +179,9 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
         host = entry_of(art, True)
         if host is not None and symbol:
             library = _core.HostLibrary(str(host.artifact))   # refuses a mismatch
-            cdll = ctypes.CDLL(str(host.artifact))
-            entries["host_entry"] = ctypes.cast(getattr(cdll, symbol),
-                                                ctypes.c_void_p).value
-            entries.update(fold_entries(cdll, art.sidecar))
-            keep += [library, cdll]
+            entries["host_entry"] = library.entry(symbol).address
+            entries.update(fold_entries(library, art.sidecar))
+            keep.append(library)
         if registry is not None and entry_of(art, False):
             loaded = registry[art.name]
             entries["device_function"] = loaded.fn.kernel.ptr

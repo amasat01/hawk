@@ -99,7 +99,7 @@ def _artifact(kernel, root, cache_dir):
 
 def test_scalar_binds_as_uniform(run_cache):
     for given in (0.5, np.float64(0.5), np.array(0.5)):
-        run, args, kw = B.route(affine, (), {"x": given, "a": A})
+        run, args, kw = affine.broadcast_call((), {"x": given, "a": A})
         assert run.planes["x"].form == "uniform"
         assert isinstance(kw["x"], float) and kw["x"] == 0.5
     np.testing.assert_array_equal(affine(0.5, a=A), np.full(LANE, 2.0))
@@ -130,9 +130,9 @@ def test_a_device_cell_stays_on_the_device():
 def test_size1_middle_axis_broadcasts(run_cache, rng):
     x = rng.random((A, 1, NC))
     np.testing.assert_array_equal(affine(x, a=A), 2.0 * _full(x) + 1.0)
-    run, _args, _kw = B.route(affine, (x,), {"a": A})
+    run, _args, _kw = affine.broadcast_call((x,), {"a": A})
     assert run.planes["x"].form == "table" and run.planes["x"].dims == ()   # the runtime axis is kept
-    named, _a, _k = B.route(affine, (rng.random((1, NB, NC)),), {"a": A})
+    named, _a, _k = affine.broadcast_call((rng.random((1, NB, NC)),), {"a": A})
     assert [d[0] for d in named.planes["x"].dims] == ["b", "c"]
 
 
@@ -150,7 +150,7 @@ def test_column_view_keeps_runtime_axis(run_cache, rng):
     col = rng.random(A)
     x = col[:, None, None]
     np.testing.assert_array_equal(affine(x, a=A), 2.0 * _full(x) + 1.0)
-    run, _args, _kw = B.route(affine, (x,), {"a": A})
+    run, _args, _kw = affine.broadcast_call((x,), {"a": A})
     assert run.planes["x"].form == "table" and run.planes["x"].dims == ()
 
 
@@ -158,7 +158,7 @@ def test_column_view_keeps_runtime_axis(run_cache, rng):
 
 def test_all_size1_is_uniform(run_cache):
     x = np.array([[[0.25]]])
-    run, _args, kw = B.route(affine, (x,), {"a": A})
+    run, _args, kw = affine.broadcast_call((x,), {"a": A})
     assert run.planes["x"].form == "uniform" and kw["x"] == 0.25
     np.testing.assert_array_equal(affine(x, a=A), np.full(LANE, 1.5))
 
@@ -204,23 +204,23 @@ def test_mutable_and_output_refuse_broadcast(run_cache, rng, tmp_path_factory, c
 
 def test_broadcast_binds_caller_buffer(run_cache, rng):
     x = rng.random((A, 1, NC))
-    _run, _args, kw = B.route(affine, (x,), {"a": A})
+    _run, _args, kw = affine.broadcast_call((x,), {"a": A})
     assert kw["x"].__array_interface__["data"][0] == x.__array_interface__["data"][0]
     assert np.shares_memory(kw["x"], x)
     strided = rng.random((A, 2, NC))[:, :1, :]
     with pytest.raises(HawkError, match="C-contiguous"):
-        B.route(affine, (strided,), {"a": A})
+        affine.broadcast_call((strided,), {"a": A})
 
 
 # 10. one twin per pattern; the exact shape is the kernel itself
 
 def test_one_twin_per_pattern(run_cache, rng):
     before = len(affine._twins)
-    first, _a, _k = B.route(affine, (rng.random((A, 1, NC)),), {"a": A})
-    again, _a, _k = B.route(affine, (rng.random((A, 1, NC)),), {"a": A})
-    other, _a, _k = B.route(affine, (rng.random(NC),), {"a": A})
+    first, _a, _k = affine.broadcast_call((rng.random((A, 1, NC)),), {"a": A})
+    again, _a, _k = affine.broadcast_call((rng.random((A, 1, NC)),), {"a": A})
+    other, _a, _k = affine.broadcast_call((rng.random(NC),), {"a": A})
     assert first is again and first is not other and first is not affine
-    exact, _a, _k = B.route(affine, (rng.random(LANE),), {"a": A})
+    exact, _a, _k = affine.broadcast_call((rng.random(LANE),), {"a": A})
     assert exact is affine
     assert len(affine._twins) - before <= 2
 
@@ -440,3 +440,28 @@ def test_rebinding_a_plan_to_another_pattern_is_refused(run_cache, rng):
     bound.rebind(x=rng.random(A * NC))
     with pytest.raises(HawkError, match=r"varying along \[a, c\].*rebound varying along \[c\]"):
         bound.rebind(x=rng.random(NC))
+
+
+# 11. the public door of the routing: Kernel.broadcast_call
+
+def test_a_kernel_without_a_grid_comes_back_unchanged():
+    @hawk.kernel
+    def plain(x: Scalar) -> Scalar:
+        return x + 1.0
+
+    args, kwargs = (0.5,), {}
+    assert plain.broadcast_call(args, kwargs) == (plain, args, kwargs)
+
+
+def test_the_exact_shapes_come_back_unchanged(run_cache, rng):
+    x = rng.random(LANE)
+    run, args, kwargs = affine.broadcast_call((x,), {"a": A})
+    assert run is affine and args == (x,) and kwargs == {"a": A}
+
+
+def test_a_broadcast_input_returns_its_twin_and_the_compacted_arguments(run_cache, rng):
+    x = rng.random((A, 1, NC))
+    run, args, kwargs = affine.broadcast_call((x,), {"a": A})
+    assert run is not affine and run.planes["x"].form == "table"
+    assert args == () and kwargs["a"] == A
+    assert np.shares_memory(kwargs["x"], x)

@@ -8,6 +8,8 @@ A per-lane input you only read may be given broadcast, as in NumPy: a scalar, an
 
 The same holds for a deployed kernel: `eagle.deploy(k)(...)`, `.run` and `.bind` take the broadcast shape as `k(...)` does, and build the kernel for that shape once. A bound plane is rebound with the compact buffer of the same shape; a different shape is a new bind. The gradient of a broadcast input through a recorded graph is the same sum, in the input's own shape. A kernel loaded from a saved artifact has no source to rebuild, so it refuses a broadcast shape by name.
 
+A program that launches kernels itself asks which kernel a call runs with `k.broadcast_call(args, kwargs)`. It returns `(kernel, args, kwargs)`: the same kernel and arguments when the kernel has no `Grid` or every input has the exact lane shape, and otherwise the twin for the broadcast pattern with the inputs compacted to your buffers. A shape that does not broadcast raises `HawkError` naming it.
+
 ## One value for every lane: `Param`
 
 `Param` in front of a type makes it one value that all lanes share; the bare type is one value per lane. `Param` alone is a number passed by value. `Param[Vector[6]]`, `Param[Matrix[2, 2]]` and `Param[Table["row":R, "col":C]]` are passed as an array of their own shape (`(6,)`, `(2, 2)`, `(R, C)`; any other shape is refused by name) and read as `p[j]`, `p[i, j]` or `t.at(row=i, col=j)`, or whole (`A @ x`). A cell is read from memory where you index it, so a `Param[Vector[512]]` indexed in a loop is never copied into registers. Integer or tagged vectors, and rank above 2, are refused: pass separate `Scalar`/`Int32` `Param`s, or a `Table`.

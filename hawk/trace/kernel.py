@@ -74,7 +74,7 @@ class Kernel:
 
     __slots__ = ("name", "sinks", "walk", "planes", "kind", "step", "one_step",
                  "time", "time_step", "source_digest", "jump", "returns",
-                 "lane_space", "group", "members", "steps", "broadcast", "team", "_twins", "_plan", "_lock")
+                 "lane_space", "group", "members", "gradients", "cotangents", "steps", "broadcast", "team", "_twins", "_plan", "_lock")
 
     def __init__(self, name: str, sinks: tuple[Any, ...],
                  planes: dict[str, Any] | None = None, *, kind: Any = None,
@@ -103,6 +103,10 @@ class Kernel:
         self.group = getattr(sinks, "group", 1)
         #: The kernels a chain (:func:`hawk.chain`) or the derivative of one runs in sequence; ``None`` otherwise.
         self.members = getattr(sinks, "members", None)
+        #: For a reverse derivative: its gradient planes (``{plane: the input it is the gradient of}``) and its cotangent
+        #: planes (``{plane: the forward output it seeds}``), as the transform named them; empty otherwise.
+        self.gradients: dict[str, str] = getattr(sinks, "gradients", {})
+        self.cotangents: dict[str, str] = getattr(sinks, "cotangents", {})
         #: The planes this kernel reads broadcast, with their patterns (a twin, see
         #: :mod:`hawk._broadcast`), and the twins made of it by pattern.
         self.broadcast: dict[str, tuple] = {}
@@ -156,12 +160,22 @@ class Kernel:
         """The walk's ``(role, name)`` slot order — every consumer's source."""
         return _ir.arg_spec(self.walk)
 
+    def broadcast_call(self, args: tuple, kwargs: dict) -> tuple[Kernel, tuple, dict]:
+        """``(kernel to run, args, kwargs)`` for a call of this kernel.
+
+        A kernel that declares no ``Grid``, or a call whose per-lane inputs all have the
+        exact lane shape, comes back unchanged. When a read-only per-lane input is given
+        broadcast (:mod:`hawk._broadcast`), the kernel returned is the twin of that
+        pattern and the arguments are the same inputs, compacted to the caller's
+        buffers. A shape that does not broadcast raises ``HawkError`` naming it."""
+        return route(self, args, kwargs)
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Run one launch where the arrays live, through the plan eagle
         deploys for this kernel (built on the first call, cached on disk). A
         per-lane input of a ``Grid`` kernel may be given broadcast
         (:mod:`hawk._broadcast`): the call then runs that pattern's twin."""
-        run, args, kwargs = route(self, args, kwargs)
+        run, args, kwargs = self.broadcast_call(args, kwargs)
         plan = run._plan
         if plan is None:
             plan = run._deploy()

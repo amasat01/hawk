@@ -693,6 +693,8 @@ def _step_vjp(kernel: Any, *, wrt, primal_unit, steps_reverse) -> Any:
         wrt=out.wrt,
         primal_unit=primal_unit,
         jump=out.jump,
+        gradients=out.gradients,
+        cotangents=out.cotangents,
     )
     if fused:
         result._fused_steps = fused[1]
