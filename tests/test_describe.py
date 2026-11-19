@@ -320,3 +320,176 @@ def test_a_changed_byte_of_a_published_file_no_longer_digests_to_its_stamp(
     sidecar = bundle.artifacts[0].sidecar_path
     sidecar.write_bytes(sidecar.read_bytes() + b" ")
     assert digest_bytes(sidecar.read_bytes()) != stamp["files"][sidecar.name]
+
+
+def test_every_stage_names_an_artifact_of_the_one_bundle_and_states_that_artifacts_document(
+    tmp_path, cache_dir
+):
+    document = describe([share], targets=("host",))["share"]
+    bundle = build_bundle(
+        [share], tmp_path / "out", targets=("host",), cache_dir=cache_dir
+    )
+    names = {artifact.name for artifact in bundle.artifacts}
+    assert {stage["kernel"] for stage in document["stages"]} <= names
+
+
+#: The host profiles the cpu card of the library lists as exact (its `exact_profiles`).
+EXACT_PROFILES = {"native", "portable"}
+
+
+@pytest.mark.parametrize("profile", ["native", "portable", "native-vector-math"])
+def test_the_machine_states_whether_the_resolved_profile_is_exact(
+    profile, tmp_path, cache_dir
+):
+    """Oracle: the cpu card's exact list, written out above."""
+    from hawk.targets import machine
+
+    stated = machine("host", options={"host.profile": profile})
+    assert stated["asked"]["options"]["profile"] == profile
+    assert stated["exact"] is (profile in EXACT_PROFILES)
+
+
+def test_the_stated_machine_of_a_build_carries_the_exact_word_of_its_resolved_profile(
+    tmp_path, cache_dir
+):
+    from hawk.targets import machine
+
+    stated = machine("host")
+    bundle = build_bundle(
+        [square], tmp_path / "out", targets=("host",), cache_dir=cache_dir
+    )
+    assert isinstance(stated["exact"], bool)
+    assert list(sidecar_of(bundle, "square")["stated"].values()) == [stated]
+
+
+@hawk.kernel
+def contract(
+    w: hawk.Table["row":8, "neuron":6],
+    f: hawk.Table["row":8, "sample":5],
+    y: Mutable[Scalar],
+):
+    j, n = M.split_index(6)
+    acc = 0.0
+    for r in range(8):
+        acc = acc + w.at(row=r, neuron=n) * f.at(row=r, sample=j)
+    y = acc
+
+
+def test_a_dense_contraction_states_its_route_and_products_before_and_after_a_build(
+    tmp_path, cache_dir
+):
+    """Oracle: the product the library's own contraction test states for the same planes (A 8x5, B 8x6, C 5x6)."""
+    document = describe([contract], targets=("host",))["contract"]
+    [found] = document["contractions"]
+    assert (found["unit"], found["route"]) == ("contract", "gemm")
+    [call] = found["products"]["calls"]
+    shape = [
+        call[k] for k in ("a_rows", "a_cols", "b_rows", "b_cols", "c_rows", "c_cols")
+    ]
+    assert shape == [8, 5, 8, 6, 5, 6]
+    bundle = build_bundle(
+        [contract], tmp_path / "out", targets=("host",), cache_dir=cache_dir
+    )
+    assert sidecar_of(bundle, "contract")["contractions"] == document["contractions"]
+
+
+def test_a_kernel_that_is_no_contraction_states_none():
+    assert "contractions" not in describe([square], targets=("host",))["square"]
+
+
+@hawk.kernel(steps=1, time="t", time_step="dt")
+def falling(
+    dt: hawk.Param, terminated: Terminated, y: Mutable[Scalar], t: Mutable[Scalar]
+):
+    yn = y - dt
+    y = yn
+    t = t + dt
+    terminated = yn < 0.0
+
+
+def test_a_kernel_with_a_time_step_states_the_planes_its_refine_entry_reads():
+    """Oracle: the planes ``hawk.diff.refine_entry`` reads, taken from its own arg list."""
+    from hawk import _ir
+    from hawk.diff import refine_entry
+
+    stated = describe([falling], targets=("host",))["falling"]["refine_planes"]
+    assert stated == {"t0": "t_0", "tau": "dt_tau"}
+    reads = {name for _role, name in _ir.arg_spec(refine_entry(falling).walk)}
+    assert set(stated.values()) <= reads
+
+
+def test_a_kernel_without_a_time_step_states_no_refine_planes():
+    assert "refine_planes" not in describe([square], targets=("host",))["square"]
+
+
+def test_a_dropped_ordered_scatter_key_is_refused_by_name_and_a_clean_status_passes():
+    team = {"of": "acc", "status": "acc_status"}
+    runtime.check_scatter_status("k", team, [0, 0, 0], 4)
+    with pytest.raises(
+        HawkError,
+        match=r"k: hawk.scatter\(acc, contract='ordered'\) got a key outside \[0, 4\)",
+    ):
+        runtime.check_scatter_status("k", team, [0, 0, 1], 4)
+
+
+def test_the_name_of_the_per_cell_parameter_plane_is_a_public_name_of_the_derivative_transforms():
+    from hawk import _ir
+    from hawk.diff import CELL_PLANE
+
+    assert CELL_PLANE == _ir.CELL_PLANE
+
+
+@hawk.kernel
+def square_again(x: Scalar, y: Mutable[Scalar]):
+    y = x * x
+
+
+@hawk.kernel
+def cube(x: Scalar, y: Mutable[Scalar]):
+    y = x * x * x
+
+
+def test_the_body_digest_is_the_identity_of_the_traced_body_alone(tmp_path, cache_dir):
+    """Same body under two names: equal body digests and different unit digests (the built bundle's, which covers the files'
+    names); a changed operation changes the body digest."""
+    assert square.body_digest == square_again.body_digest
+    assert len(square.body_digest) == 64
+    assert cube.body_digest != square.body_digest
+    first = build_bundle(
+        [square], tmp_path / "a", targets=("host",), cache_dir=cache_dir
+    )
+    second = build_bundle(
+        [square_again], tmp_path / "b", targets=("host",), cache_dir=cache_dir
+    )
+    assert first.digest != second.digest
+    with pytest.raises(AttributeError):
+        square.body_digest = "x"
+
+
+def _plain_body(x: Scalar, terminated: Terminated, y: Mutable[Scalar]):
+    y = x * 2.0
+
+
+def _same_body_again(x: Scalar, terminated: Terminated, y: Mutable[Scalar]):
+    y = x * 2.0
+
+
+def test_a_kind_changes_the_lowered_unit_digest_and_not_the_body_digest():
+    """Same body under the default kind and an active-set kind: the traced body is the same, the lowered unit also reads the map."""
+    from hawk.ext import Guard, Kind
+
+    plain = hawk.kernel(_plain_body)
+    active = hawk.kernel(
+        _same_body_again,
+        kind=Kind("act", guard=Guard(mask="terminated", active_set=True)),
+    )
+    assert plain.body_digest == active.body_digest
+    assert plain.arg_spec == active.arg_spec
+    described = describe([plain, active], targets=("host",))
+    assert {"active_count", "active_map"} <= set(
+        described["_same_body_again"]["slot_shapes"]
+    )
+    assert not {"active_count", "active_map"} & set(
+        described["_plain_body"]["slot_shapes"]
+    )
+    assert described["_plain_body"]["digest"] != described["_same_body_again"]["digest"]

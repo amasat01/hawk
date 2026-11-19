@@ -16,6 +16,7 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 - **The embedded C target is refused by name** (`targets=("c",)`, `embedded_profile=`, any `c.<key>` option): `hawk.embedded` and its documentation are gone.
 - **`HAWK_AETHER_INCLUDE` and `HAWK_EAGLE_INCLUDE` apply only to building hawk from source.** They no longer change what a kernel compiles against: each library carries its own headers.
 - **Target ids have one spelling.** An id a library states and a target name you pass (`targets=`, `hawk.targets.machine`, the prefix of an option such as `cuda.arch`) is lowercased with whitespace, dashes and underscores removed, so `"CUDA"`, `"Cu-Da"` and `" c u_da "` are `cuda`; what is left must be a letter followed by letters and digits, or it is refused by name. Two folders whose ids have the same spelling serve one target and stop the search with an error naming both, as two folders with the same id did.
+- **The sidecar and `describe` member `digest` identifies the lowered unit.** It covers what a kind adds when the unit is lowered, so a kernel under an active-set kind and the same body under the default kind differ in it. It was the digest of the traced body in 0.7.x; that identity is now `Kernel.body_digest`.
 - **The stamp file of a published unit is `.hawk_stamp`** (it was `.hawk_unit`); its members are unchanged. The sidecar has no `element_counts` member: `slot_shapes` states the same fact.
 
 ### Added
@@ -23,6 +24,10 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 - `hawk.artifact.describe(kernels, ...)` answers, with no compiler run, the sidecar a build would write, including for each unit of a kernel that splits into several (`stages[i]["sidecar"]`), a dtype for every slot, `planes_written`, `slot_shapes` and the `group` and `wire` of each joined plane name.
 - `hawk.targets.machine(target)` returns what the library says about the machine it builds on for that target.
 - `hawk.ospreys.refused()` and `hawk.ospreys.forget()`.
+- The sidecar states `contractions` (each dense contraction a unit is, with its products and the `route` the library chose) and, for a kernel with `time_step=`, `refine_planes`. `hawk.targets.machine("host")` states `exact`: whether the resolved profile gives bit-exact values.
+- The sidecar of a host build states `index_bytes`, the width in bytes of the index type its unit was compiled with; `describe` states the library's default. It is the width the unit's own layout table exports.
+- `Kernel.body_digest`: a read-only property, the digest of the traced body alone (no name, kind or guard).
+- `hawk.runtime.check_scatter_status` and `hawk.diff.CELL_PLANE`.
 - `hawk.diff.step_function(kernel)`: one step of a time-stepping kernel as a pure map, named `<kernel>_step`, which `jvp` and `vjp` differentiate.
 
 ### Removed

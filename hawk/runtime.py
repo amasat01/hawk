@@ -73,7 +73,7 @@ from .targets import ENTRY_KINDS
 from . import _ir
 
 __all__ = ["ArgBlock", "HostKernel", "descriptor_for_sidecar", "DEVICE_CPU",
-           "dispatch_costs", "kind_for", "load", "run", "steps_reverse_table"]
+           "check_scatter_status", "dispatch_costs", "kind_for", "load", "run", "steps_reverse_table"]
 
 #: The DLPack CPU device code every host plane's mirror carries. Spelled
 #: here rather than imported, to sever the runtime.
@@ -474,6 +474,18 @@ def _box(kind: str, value):
     raise HawkError(f"slot kind {kind!r} is not a by-value slot")
 
 
+def check_scatter_status(kernel: str, team: dict, status, cells: int) -> None:
+    """Refuse, by name, a run whose ordered scatter met a key outside ``[0, cells)`` that was not the skip key -1.
+
+    ``kernel`` names the kernel in the refusal, ``team`` is the sidecar's team record of the scatter (its ``of`` names the
+    plane the scatter adds into), ``status`` the plane ``team["status"]`` after the run (flags from element 1) and ``cells``
+    the extent of the plane ``team["of"]``. Raises :class:`~hawk.errors.HawkError`; returns ``None`` when no key was dropped."""
+    if any(int(f) for f in status[1:]):
+        raise HawkError(
+            f"{kernel}: hawk.scatter({team['of']}, contract='ordered') got a key outside [0, {cells}) "
+            f"that is not the skip key -1; those adds were dropped, the rest are in {team['of']}")
+
+
 def _index_ctype():
     """The ctype of ``EAGLE_ABI_INDEX_T``, read off the binding rather
     than assumed: a hard-coded ``c_uint32`` would shift the whole
@@ -750,5 +762,5 @@ def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
         if scratch is not None:
             scratch.finish(outputs, 0, -(-n_samples // _cells.row_of(first.sidecar)))
     for team in checks:
-        _lane_bind.check_scatter_status(first.path.stem, team, scratch_planes[team["status"]],
-                                        _lane_bind.target_size(arrays, team["of"]))
+        check_scatter_status(first.path.stem, team, scratch_planes[team["status"]],
+                             _lane_bind.target_size(arrays, team["of"]))

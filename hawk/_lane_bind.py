@@ -148,15 +148,6 @@ def team_units(sidecar: dict, spec: dict, n: int, arrays: dict) -> int:
     return n if "keys" not in spec else key_count(sidecar, spec["keys"], n)
 
 
-def check_scatter_status(kernel: str, team: dict, status, cells: int) -> None:
-    """Refuse, by name, a run whose ordered scatter into ``team["of"]`` met a key outside ``[0, cells)`` that
-    was not the skip key -1 (``status`` is the plane ``team["status"]`` after the run: flags from element 1)."""
-    if any(int(f) for f in status[1:]):
-        raise HawkError(
-            f"{kernel}: hawk.scatter({team['of']}, contract='ordered') got a key outside [0, {cells}) "
-            f"that is not the skip key -1; those adds were dropped, the rest are in {team['of']}")
-
-
 def check_total(sidecar: dict, n: int) -> None:
     """Refuse a flat lane count ``n`` that is not a whole number of rows of a
     ``Grid``'s static axes."""

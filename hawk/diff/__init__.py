@@ -16,9 +16,9 @@ kernel and to refine its stop time; :mod:`hawk.diff.event` reads a stop rule
 as a smooth guard.
 """
 
-from .params import param_planes
+from .params import CELL_PLANE, param_planes
 from .tape import refine_entry, step_function, step_jvp, step_vjp, tape
 from .transform import ADJOINT_PREFIX, TANGENT_PREFIX, Derived, jvp, vjp, with_derivative
 
 __all__ = ["vjp", "jvp", "with_derivative", "tape", "step_vjp", "step_jvp", "step_function", "refine_entry", "param_planes", "ADJOINT_PREFIX",
-           "TANGENT_PREFIX", "Derived"]
+           "CELL_PLANE", "TANGENT_PREFIX", "Derived"]

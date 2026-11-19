@@ -145,6 +145,13 @@ class Kernel:
         return self.sinks[0].ctx
 
     @property
+    def body_digest(self) -> str:
+        """The identity of the traced body alone, 64 hex digits: the same operations in the same order give the same digest
+        whatever the kernel is called or its kind, and a changed operation changes it. What a kind adds when the unit is lowered
+        is not in it; the ``digest`` that ``hawk.artifact.describe`` and the sidecar state identifies the lowered unit."""
+        return _ir.digest(self.walk)
+
+    @property
     def arg_spec(self) -> tuple[tuple[str, str], ...]:
         """The walk's ``(role, name)`` slot order — every consumer's source."""
         return _ir.arg_spec(self.walk)

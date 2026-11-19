@@ -17,7 +17,8 @@ import ctypes
 import _deploy as L
 import numpy as np
 from conftest import sidecar_of
-from hawk._lane_bind import check_scatter_status, target_size, team_grid, team_units
+from hawk._lane_bind import target_size, team_grid, team_units
+from hawk.runtime import check_scatter_status
 
 
 def _cudart():

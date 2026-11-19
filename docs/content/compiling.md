@@ -31,7 +31,8 @@ source small and the gradient cheap.
 
 `hawk.targets.buildable("host")` says whether the library finds what it needs on this machine, and
 `hawk.targets.machine("host")` returns what it says about it: the compiler and its identity, the profile, the flags, and for
-the GPU the device architecture. The keys are the library's own. It raises `ToolchainAbsent` with the library's reason
+the GPU the device architecture. For the host, `exact` says whether the resolved profile gives bit-exact values, and
+`asked["options"]["profile"]` is that profile. The keys are the library's own. It raises `ToolchainAbsent` with the library's reason
 when the tools are missing. The same options you give `hawk.build` (`options=`, `opt_level=`) can be given to it.
 
 Which variables a library reads is in [Installation](installation): `HAWK_CXX`, `CXX`, `HAWK_OPT_LEVEL` and
@@ -48,10 +49,20 @@ before and after its build. It refuses what `build` refuses.
 Among its members:
 
 - `arg_dtypes` has the dtype of every slot, uniform and lookup slots included, and `slot_shapes` the static shape of each.
+- `digest` identifies the lowered unit: it covers what a kind adds when the unit is lowered (an active-set kind's two
+  lookup reads, for one). The identity of the traced body alone is `Kernel.body_digest`, which two kernels with the same
+  body share whatever their names and kinds.
 - `planes_written` lists the planes the kernel writes, sorted.
 - For an `auto` dispatch, `dispatches[].cost` states the operation counts of each branch.
 - `plane_names` gives the `group` and `wire` name of every plane whose name joins the two, so you never split a name
   yourself.
+- `index_bytes` is the width in bytes of the index type of a host unit. A build states the width it compiled with; `describe`
+  states the library's default.
+- `contractions` lists each dense contraction a unit is: the `unit`, the `route` the library chose (`gemm` for matrix
+  products beside the kernel, `direct` for the kernel's own loop) and the `products` with their shapes. A kernel that is
+  none has no such member.
+- A kernel declaring `time_step=` has `refine_planes`: `{"t0": ..., "tau": ...}`, the names of the two extra planes its
+  refine entry reads.
 - A kernel that runs as several units answers with its first unit. Its `stages` list the others, and each stage
   carries `sidecar`: the document of its own unit.
 

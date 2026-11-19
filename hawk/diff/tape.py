@@ -363,6 +363,17 @@ def _time(step: Any) -> tuple | None:
     return None if dt is None else (step.time or "t", dt)
 
 
+def refine_plane_names(kernel: Any) -> dict | None:
+    """The extra per-sample planes the refine entry of ``kernel`` reads, ``{"t0": <time plane at launch start>, "tau":
+    <partial step>}``, or ``None`` for a kernel that declares no ``time_step=``. The sidecar states them, so a consumer
+    never spells the suffixes."""
+    got = _time(kernel)
+    if got is None:
+        return None
+    t, dt = got
+    return {"t0": t + T0_SUFFIX, "tau": dt + TAU_SUFFIX}
+
+
 def _index_time(t: str, h: Any, k: Any) -> Any:
     """``t_0 + k*h``: ONE multiply, ONE add (the index form)."""
     t0 = _ir.leaf(h.ctx, "vocab_read", "per_sample", t + T0_SUFFIX, _ir.type_of(h))

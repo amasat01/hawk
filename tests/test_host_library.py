@@ -20,8 +20,9 @@ import ctypes
 
 import _deployable as D
 import pytest
+from conftest import sidecar_of
 
-from hawk.artifact import build, build_bundle, emit_source
+from hawk.artifact import build, build_bundle, describe, emit_source
 from hawk import _ir
 from hawk.errors import HawkError
 
@@ -183,6 +184,12 @@ def test_the_index_width_a_host_library_exports_is_the_width_its_units_were_comp
     wide = build_bundle([D.fraction], tmp_path / "wide", targets=("host",), cache_dir=cache_dir, defines=WIDE_INDEX)
     assert _exported_index_width(narrow.directory / "units.so") == 4
     assert _exported_index_width(wide.directory / "units.so") == 8
+    # the sidecar states the same width, by the library, so no reader opens the binary
+    assert sidecar_of(narrow, "fraction")["index_bytes"] == 4
+    assert sidecar_of(wide, "fraction")["index_bytes"] == 8
+    assert describe([D.fraction], targets=("host",))["fraction"]["index_bytes"] == 4
+    # a device-only description states it too: the device library states it from its own embedded header, with every tool hidden
+    assert describe([D.fraction], targets=("cuda",))["fraction"]["index_bytes"] == 4
 
 
 

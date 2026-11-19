@@ -15,7 +15,7 @@ plus the pattern-specific blocks every consumer actually iterates —
 declarations ``eagle.roles.classify_arg`` resolves a ``mutable`` role by
 (without them a ``Mutable[Vector[3]]`` packs as a 32-byte handle where the
 kernel expects a 40-byte mirror) — plus the execution axis, the resolved
-header roots and ``Walk.digest``, which live here because the manifest's
+header roots and the unit ``digest`` (the library's, of the lowered unit), which live here because the manifest's
 key order is contractual.
 
 ``arg_widths`` covers input planes too, and two fields — ``arg_dtypes``,
@@ -654,10 +654,21 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
         block=block, index_set=index_set, planes=planes, broadcast=getattr(kernel, "broadcast", None),
         step_ops=_counted(finish, "step_ops"), wide={p["name"]: {"layout": "warp_tiled"} for p in body["team_planes"] if p["wide"] == "WarpTiled"} or None, fp64_ops_ir=_counted(finish, "fp64_ops_ir"),
         entry_counts_finished=bool(finish and finish["flags"] & _FINISH_ENTRY_COUNTS), measured=measured, tool=tool, stated=stated)
-    # the records of the lowering answer the runtime reads, kept as given: the steps table and the dispatch costs
+    # the records of the lowering answer the runtime reads, kept as given: the steps table and the dispatch costs; the
+    # contractions the family's units are, each with the route word the library chose (``contractions`` below)
     for key, member in (("steps_reverse_table", "steps_reverse"), ("dispatch_costs", "dispatch_costs")):
         if records and records.get(member) is not None:
             out[key] = records[member]
+    from ..diff.tape import refine_plane_names
+
+    refine = refine_plane_names(kernel)
+    if refine is not None:
+        out["refine_planes"] = refine
+    if records and records.get("index_bytes") is not None:
+        out["index_bytes"] = records["index_bytes"]
+    contractions = [{"unit": u["meta"]["name"], **u["contraction"]} for u in family if u.get("contraction")]
+    if contractions:
+        out["contractions"] = contractions
     if stages and stages[0]["unit"]["name"] == meta["name"]:
         out.update(_split_block(source, family))
     if body["cell_row"]:

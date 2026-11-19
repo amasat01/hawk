@@ -79,7 +79,7 @@ _EXPECTED_MANIFEST = {
     ],
     "hawk.runtime": [
         "ArgBlock", "DEVICE_CPU", "HostKernel",
-        "descriptor_for_sidecar", "dispatch_costs", "kind_for", "load", "run", "steps_reverse_table",
+        "check_scatter_status", "descriptor_for_sidecar", "dispatch_costs", "kind_for", "load", "run", "steps_reverse_table",
     ],
     "hawk.ext": [
         "ATOMIC", "DEFAULT_GUARD", "DEFAULT_KIND", "Guard", "IndexSet",
@@ -87,7 +87,7 @@ _EXPECTED_MANIFEST = {
         "compensated", "primitive", "primitives", "sink_policy",
     ],
     "hawk.diff": [
-        "ADJOINT_PREFIX", "Derived", "TANGENT_PREFIX", "jvp", "param_planes",
+        "ADJOINT_PREFIX", "CELL_PLANE", "Derived", "TANGENT_PREFIX", "jvp", "param_planes",
         "refine_entry", "step_function", "step_jvp", "step_vjp", "tape",
         "vjp", "with_derivative",
     ],
