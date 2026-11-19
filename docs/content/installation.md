@@ -4,11 +4,13 @@
 
 ```bash
 pip install raptor-hawk raptor-eagle matplotlib             # CPU, no extras (eagle and matplotlib: the tutorials import them)
-pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # GPU route; [cuda13] on both for CUDA 13
+pip install "raptor-hawk[cuda,cuda12]" "raptor-eagle[cuda12]"    # GPU route; [cuda,cuda13] and [cuda13] for CUDA 13
 ```
 
 Linux x86_64 or aarch64, or macOS arm64 (with Homebrew's LLVM clang: `brew install llvm` and `export HAWK_CXX=$(brew --prefix llvm)/bin/clang++`; Apple's clang 15 does not accept C++23 yet), CPython 3.9-3.15 (including free-threaded 3.14t and 3.15t), and on Linux a host `g++` 11 or newer (check with `g++ --version`). `raptor-hawk` pulls
-`aether-dsc` (the sealed C++ headers hawk compiles against) in automatically. No
+in the compiled libraries that build your kernels, as two more wheels: `raptor-osprey` (the module hawk talks to them
+through) and `raptor-osprey-cpu` (the host backend). The `cuda` extra adds `raptor-osprey-cuda`, the GPU backend. Each
+library carries the headers it compiles against, so there is no source checkout to make. No
 `nvcc` or CUDA toolkit is needed.
 
 ```{admonition} NVIDIA packages come only through the extras
@@ -21,7 +23,7 @@ suffix); `raptor-eagle[cuda12]` / `[cuda13]` pull CuPy (`cupy-cuda12x` /
 matching the CUDA version your driver reports (`nvidia-smi`, top right).
 ```
 
-**Platforms:** the wheels are Linux x86_64 and aarch64 and macOS arm64 (CPython 3.9–3.15, including free-threaded 3.14t and 3.15t; the exact versions are in `pyproject.toml`). The GPUs and CPUs hawk + eagle are measured on are listed on [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html). There are no wheels for Windows, and WSL2 is untested. `raptor-core` and `aether-dsc` are pure Python and install anywhere. On free-threaded 3.14t and 3.15t, `hawk` runs GIL-free.
+**Platforms:** the wheels are Linux x86_64 and aarch64 and macOS arm64 (CPython 3.9–3.15, including free-threaded 3.14t and 3.15t; the exact versions are in `pyproject.toml`). The GPUs and CPUs hawk + eagle are measured on are listed on [eagle's performance page](https://amasat01.github.io/eagle/content/performance.html). There are no wheels for Windows, and WSL2 is untested. On free-threaded 3.14t and 3.15t, `hawk` runs GIL-free.
 
 To build from source, and for the supported-version table, see [build from source](https://amasat01.github.io/build_from_source.html).
 
@@ -32,7 +34,7 @@ the *machine* has, and on which extra you ask pip for:
 
 - **CPU-only, no GPU anywhere** — see [](project:#cpu-only) right below.
   Authoring, compiling and running a kernel on the host needs nothing
-  more than this and a host `g++`.
+  more than this and a host C++ compiler.
 - **With a GPU** — see [](project:#with-a-gpu) below. Compiling
   and running a *device* artifact additionally needs a GPU driver and the
   `[cuda12]` / `[cuda13]` extras, and `eagle` to launch it.
@@ -49,37 +51,30 @@ print(hawk.__version__)
 
 Nothing about authoring, compiling for the **host**, or running through
 `hawk.runtime` needs a GPU, a driver, NVRTC, `nvcc`, or `eagle` — only
-`pip install raptor-hawk` (see above) and a host `g++`.
+`pip install raptor-hawk` (see above) and a host C++ compiler.
 `hawk.artifact.build(kernel, dir, targets=("host",))` compiles the host
-target alone (the default is both targets; naming `"host"` is what skips
+target alone (the default is every target the installed libraries serve; naming `"host"` is what skips
 the GPU side entirely), and `hawk.load`/`hawk.run` execute it directly
 — no `eagle` import anywhere on that path, exactly as
 [Your first kernel](tutorials/01_your_first_kernel)'s host cell shows.
 Calling the kernel, `k(...)`, builds it on first use and runs it in one step; the other notebooks do that.
 
-```{dropdown} How the CPU route was verified
-Verified: a clean venv built from this project's own wheels
-(`raptor-hawk`, `aether-dsc`, `numpy`; `eagle` and `cupy` not installed),
-run with `$PATH` stripped to the system's own `/usr/bin:/bin` (no `nvcc`,
-no CUDA toolkit), `$LD_LIBRARY_PATH` unset and no GPU selected
-(`$CUDA_VISIBLE_DEVICES` unset) — the first tutorial's `scale` kernel built
-and ran, computing the right answer, with `eagle` and `cupy` both absent
-and unneeded. The GPU route below is for compiling and *running* a device
-artifact; it changes nothing about this one.
-```
-
 (with-a-gpu)=
 ## With a GPU (no `nvcc` needed)
 
 ```bash
-pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # or [cuda13] on both
+pip install "raptor-hawk[cuda,cuda12]" "raptor-eagle[cuda12]"    # or [cuda,cuda13] and [cuda13]
 ```
 
-Compiling a device artifact needs a GPU driver, a host `g++`, and the device
-toolchain the `cuda` OSPREY library finds on the machine; the `[cuda12]` /
-`[cuda13]` extra above brings the packages it can use from pip. There is no
+Compiling a device artifact needs a GPU driver and the device
+toolchain the `cuda` library finds on the machine: `nvcc` if it is there, otherwise NVRTC, which the `[cuda12]` /
+`[cuda13]` extra brings from pip. Set `HAWK_DEVICE_COMPILER` to `nvcc` or `nvrtc` to choose one; any other value is
+refused. `nvcc` is found from `HAWK_NVCC`, else `nvcc` on `PATH`, and it compiles with the host compiler named by
+`HAWK_NVCC_CCBIN`, `CUDAHOSTCXX` or `CXX`, else `g++` on `PATH`. The device architecture is the one of the GPU that is
+running; `HAWK_CUDA_ARCH` (for example `sm_80`) pins another. There is no
 `aether`/`eagle` source checkout to make: the library carries what it compiles
-against. `hawk.targets.buildable("cuda")` says whether the library finds its tools.
+against. `hawk.targets.buildable("cuda")` says whether the library finds its tools, and
+`hawk.targets.stated("cuda")` says what it found (see [Compiling](compiling)).
 
 That compiles a device artifact. To *run* one, you also need `eagle`
 installed (see [eagle's installation page](https://amasat01.github.io/eagle/content/userguide/installation.html)) — hawk compiles it, eagle
@@ -109,9 +104,10 @@ whether a kernel runs.
 <details>
 <summary>SIMD and the host profiles</summary>
 
-The host target is compiled at run time by the host `g++` (or `$HAWK_CXX`;
-hawk also honours the standard `$CXX`, with the precedence `$HAWK_CXX`, then `$CXX`, then `g++` on `PATH`, then zig)
-under one of three profiles. On x86-64 with a GCC host compiler the default is `native-vector-math`
+The host target is compiled at run time by the host compiler. The `cpu` library finds it from `$HAWK_CXX`, then
+`$CXX`, then `g++` on `PATH`; a `$HAWK_CXX` that does not resolve is an error, not a reason to try the next one, and a
+machine with none of them gets a refusal that names these three. The optimisation level is `-O3`; `opt_level="O0"`
+to `"O3"` on `hawk.build`, or `$HAWK_OPT_LEVEL`, changes it. The compile runs under one of the host profiles. On x86-64 with a GCC host compiler the default is `native-vector-math`
 (below), which vectorises transcendental math with aether's own functions,
 faithfully rounded (error < 1 ULP), and lets the compiler fuse `a*b + c`
 into one FMA instruction; on other architectures, or with a non-GCC host compiler such as clang, the
@@ -130,8 +126,8 @@ keep results bit-identical to libm and to a scalar build:
   x86-64-v2 (SSE4.2, POPCNT) runs on every x86-64 CPU still in service and is
   the baseline RHEL 9 itself targets.
 
-Choose with `build_bundle(..., host_profile="portable")`,
-`CompileOptions(host_profile=...)` or `$HAWK_HOST_PROFILE`.
+Choose with `options={"host.profile": "portable"}` on a build, or `$HAWK_HOST_PROFILE`. A build that names a profile wins
+over the variable. An option the library does not declare is refused by name, with the ones it does.
 
 Neither of these two profiles changes a result: FMA contraction is off and
 nothing enables fast-math or reassociation, so host results are
@@ -171,7 +167,7 @@ iteration.
 floating-point value, only how floating-point exceptions may be raised.
 
 One caveat on GCC: on GCC 13.1-13.3 and 14.1-14.2 a masked call to a vector
-math function can be miscompiled, so aether-dsc 0.2.3 and newer declare no masked
+math function can be miscompiled, so the headers the library carries declare no masked
 forms there, and a loop with a conditional math call runs scalar (the rule is `AETHER_HVM_MASKED`: off on GCC 13 before 13.4 and on
 GCC 14 before 14.3, on elsewhere). hawk reports those loops as not
 `vectorised`, and results stay correct; other loops stay vectorised, and GCC 13.4,
@@ -182,8 +178,10 @@ use it unless a profile is named; it is part of the compile-cache key (with
 the CPU's identity, as for `native`), so entries compiled under another
 profile, including those cached when `native` was the default, are not
 served for it. For results bit-identical to libm, request `native`:
-`build_bundle(..., host_profile="native")`,
-`CompileOptions(host_profile="native")` or `HAWK_HOST_PROFILE=native`.
+`options={"host.profile": "native"}` on a build or `HAWK_HOST_PROFILE=native`.
+
+**`native-vector-math-nofma`** (x86-64) is `native-vector-math` with `-ffp-contract=off`: aether's vector math without the
+fused multiply-add.
 
 **On arm64** `native-vector-math` is the default with any host compiler. It is
 `native` with `-ffp-contract=fast` in place of `-ffp-contract=off`, so the

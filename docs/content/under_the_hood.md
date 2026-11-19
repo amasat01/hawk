@@ -36,17 +36,17 @@ only launch.
 
 ## The build and the cache
 
-For the side chosen, hawk turns the description into C++ (host) or CUDA (device)
-source, writes it with a small manifest, and compiles it with the host compiler (or the CUDA compiler for the GPU). The first build of a kernel logs one line saying where it goes:
+For the side chosen, hawk asks the backend library for that side to turn the description into C++ (host) or CUDA (device)
+source and to compile it with the host compiler (or the CUDA compiler for the GPU); hawk writes the result with a small manifest. The first build of a kernel logs one line saying where it goes:
 
 ```text
-hawk: building scale (host) in ~/.cache/hawk — delete the directory to rebuild
+building scale (host) in ~/.cache/hawk — delete the directory to rebuild
 ```
 
-(the line is at INFO level of the `hawk` logger; the folder is `$HAWK_CACHE_DIR`, else
+(the line is at INFO level of the `hawk` logger, and a build the cache answers logs nothing; the folder is `$HAWK_CACHE_DIR`, else
 `$XDG_CACHE_HOME/hawk`, else `~/.cache/hawk`). The compiled library is stored under a key made from the
-generated source, the backend, and the compiler with its flags, and it is reused only
-while the files it was compiled against still have the same content. So a second run of your
+generated source, the compile command with its flags, the compiler's identity, the headers the backend library carries, the
+optimisation level and the options; a change in any of them is another entry. The entries live under `<folder>/<two hex digits>/<key>/`; see [Compiling](compiling) for the rest of the cache. So a second run of your
 program, or a second kernel that generates the same code, does not compile again. Delete the
 folder to start fresh; it is only a cache.
 

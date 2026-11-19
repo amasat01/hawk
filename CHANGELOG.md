@@ -4,9 +4,32 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 
 ## Unreleased (0.8.x)
 
+### Breaking
+
+- **Kernels are now compiled by backend libraries, not by Python code in hawk.** One compiled library per backend lowers a kernel, finds its compiler, builds and caches the result; hawk asks it. `pip install raptor-hawk` pulls `raptor-osprey` (the module hawk talks to them through) and `raptor-osprey-cpu`; the new `cuda` extra adds `raptor-osprey-cuda` (alongside `cuda12` or `cuda13`, which still bring the NVIDIA packages). `aether-dsc` and `raptor-core` are no longer dependencies, and `import aether`, `import eagle` and `import raptor` are not needed by hawk's build path.
+- **Where hawk looks for a backend library.** In the folders that installed distributions declare under the entry-point group `hawk.ospreys` and in those of the environment variable `HAWK_OSPREY_PATH`. A folder whose manifest has a key other than `name`, `version`, `door` and `targets` (a `wings` key included), lacks a member, or states a target id that is not a lowercase identifier is refused with the reason, and the other folders still load; `hawk.ospreys.refused()` lists them. A target no library found serves is refused by name, with the refused folders.
+- **Build options are declared by each library.** `options={"<target>.<key>": value}` reaches the library, which refuses a key it does not declare, naming the ones it does. `host_profile=`, `device_arch=` and `literal_table=` still work but warn, and name the option that replaces them (`host.profile`, `cuda.arch`, `cuda.literal_table`).
+- **`stated.asked`** in a library's account of the machine (`hawk.targets.stated`) shows the level and the options as the build resolved them, so a default you state and a default you leave out are one build key.
+- **The `contraction` build setting is refused by name.** The library's device card chooses, per scalar type and architecture, between a matrix product and the kernel's own loop; no setting selects it.
+- **`HAWK_COMPILE_JOBS=0` means no cap** on compiles that run at once. It used to be refused.
+- **The embedded C target is refused by name** (`targets=("c",)`, `embedded_profile=`, any `c.<key>` option): `hawk.embedded` and its documentation are gone.
+- **`HAWK_AETHER_INCLUDE` and `HAWK_EAGLE_INCLUDE` apply only to building hawk from source.** They no longer change what a kernel compiles against: each library carries its own headers.
+
+### Added
+
+- `hawk.artifact.describe(kernels, ...)` answers, with no compiler run, the sidecar a build would write, including for each unit of a kernel that splits into several (`stages[i]["sidecar"]`), a dtype for every slot, `planes_written`, `element_counts` and the `group` and `wire` of each joined plane name.
+- `hawk.targets.stated(target)` returns what the library says about the machine it builds on for that target.
+- `hawk.ospreys.refused()` and `hawk.ospreys.forget()`.
+- `hawk.diff.step_function(kernel)`: one step of a time-stepping kernel as a pure map, which `jvp` and `vjp` differentiate.
+
 ### Removed
 
-- **Breaking:** the ambient `with policy.using(...)` and `policy.fold_rows(k)` blocks are gone. Build settings are one explicit value, `hawk.build_policy.BuildPolicy(emit_form=, linalg_form=, wide_form=, contraction=, launch_bounds=, fold_rows=)`, passed as `build_policy=` to `build`, `emit_source`, `build_bundle`, `render_source` and `ospreys.c.render`; a key that no target of the build declares in its manifest is refused by name.
+- **Breaking:** `hawk.compile` and every submodule of it (the host and device compile drivers, the toolchain finder, the NVRTC path, the payload server, the compile cache, the miscompile witness). The compiler is found, run and cached by the backend library; there is no replacement in Python. `hawk.compile.CompileOptions` is gone with them: pass `opt_level=`, `defines=`, `cache_dir=` and `options=` to `hawk.build` or `hawk.build_bundle`. Extra compiler flags (`CompileOptions.extra`) have no replacement.
+- **Breaking:** the Python wing folders: `hawk.emit`, `hawk.ir` (the IR is internal), `hawk.embedded`, `hawk.targets.cards` and `hawk.targets.features`. What they held lives in the libraries.
+- **Breaking:** the `cards=` argument of `build_spec`, with `build_spec`, `shipped_card` and the `spec=` argument of `build` and `emit_source`. The numbers a build decides on are the library's; no replacement.
+- **Breaking:** the box switch, `HAWK_BOX=0` (it built device kernels without a thread box). The device card of the library chooses; no replacement.
+- **Breaking:** the zig fallback for a host compiler through the `ziglang` pip wheel. A host compiler is `$HAWK_CXX`, else `$CXX`, else `g++` on `PATH`; with none of them the build is refused with a sentence that names these three.
+- **Breaking:** the ambient `with policy.using(...)` and `policy.fold_rows(k)` blocks. Build settings are one explicit value, `hawk.build_settings.BuildSettings(emit_form=, linalg_form=, wide_form=, launch_bounds=, fold_rows=, fast_entries=)`, passed as `settings=` to `build`, `emit_source` and `build_bundle`; a key that no target of the build declares in its manifest is refused by name.
 
 ## 0.7.6 (2026-11-10)
 

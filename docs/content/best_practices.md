@@ -65,7 +65,7 @@ hawk.build([step], "out/", targets=TARGETS)     # in the program: a cache hit
 
 ## Let hawk pick the host compiler
 
-- Leave `HAWK_CXX` unset. hawk finds a suitable compiler on its own.
+- Leave `HAWK_CXX` unset. The host library uses `$CXX`, else `g++` on `PATH`.
 - Set `HAWK_CXX=/path/to/c++` only for a real alternative, such as Homebrew's clang on macOS or a newer `g++`.
 - Do not generate or commit wrapper scripts that stand in for the compiler; set the variable to the compiler itself.
 

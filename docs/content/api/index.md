@@ -7,12 +7,9 @@ distributions, at `hawk.math`. `hawk.raw_device` / `hawk.RawBlock` are the
 escape hatch: splice a block of device code the vocabulary cannot spell,
 with its access class declared by hand.
 
-The compiled `hawk._core` extension and the IR/emitter internals
-(`hawk.emit`) are implementation detail and not documented here.
-Their `__all__` is a small "IR access" surface for a downstream package
-that builds or renders sink sets by hand (`raptor.ir.canonical`,
-`hawk.passes.contraction.recognize`, `hawk.emit.render_source`, …); everything else in
-them may change between releases.
+The compiled `hawk._core` extension and the IR internals are implementation detail and not documented here; they may
+change between releases. The compiled backend libraries are reached only through `hawk.ospreys`, `hawk.targets` and
+`hawk.artifact`.
 
 ```{eval-rst}
 .. autosummary::
@@ -25,9 +22,9 @@ them may change between releases.
    hawk.diff
    hawk.diff.event
    hawk.ospreys
+   hawk.targets
    hawk.runtime
    hawk.artifact
-   hawk.embedded
 ```
 
 ## The authoring names

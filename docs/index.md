@@ -58,7 +58,7 @@ which plane it fills (`Scalar` a per-sample input, `Param` a uniform
 constant, `Mutable[...]` an output plane; defined in full in the first
 tutorial, next), plus an ordinary arithmetic body.
 `hawk.build` compiles it for host and device in one call —
-`pip install raptor-hawk` (the CPU route; for a GPU add the `[cuda12]` or `[cuda13]` extra, see the
+`pip install raptor-hawk` (the CPU route; for a GPU add the `[cuda]` extra and `[cuda12]` or `[cuda13]`, see the
 [full install guide](content/installation)) is all it takes to try it.
 
 ::::{grid} 2
@@ -89,7 +89,7 @@ forward, lookups and sums.
 :link: content/api/index
 :link-type: doc
 Every public name in `hawk`, `hawk.math`, `hawk.ext`, `hawk.diff`,
-`hawk.ospreys` and `hawk.runtime`.
+`hawk.ospreys`, `hawk.targets` and `hawk.runtime`.
 :::
 ::::
 

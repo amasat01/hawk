@@ -108,8 +108,8 @@ derived
   taping twin.
 
 compile cache
-  The store of compiled kernels. Building the same kernel again copies it
-  from the cache instead of recompiling.
+  The store of compiled kernels, one folder shared by the backend libraries. Building the same kernel again copies it
+  from the cache instead of recompiling; see [Compiling](compiling).
 
 device image
   The compiled GPU code (`DeviceImage`, PTX or SASS) hawk produces for a
@@ -128,9 +128,4 @@ integer plane
   `Index` is the separate index type for addresses and selectors: an `Index` plane is bound as an `int32`
   column (an `int64` array whose values fit is converted; one that does not is refused) and the body computes with it in 64 bits; `Index[int64]` is the plane bound as `int64`, for an extent
   past `2**31 - 1`.
-
-payload
-  The sealed bundle of aether's C++ headers that hawk's runtime GPU
-  compiles build against. It ships in the `aether-dsc` package, so a GPU
-  build needs no aether checkout.
 ```

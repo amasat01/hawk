@@ -101,7 +101,7 @@ print(bar_v)
 `energy = 0.5 |v|^2`, so `d(energy)/dv = v` exactly — the printed gradient above *is* the input `v`. Output above
 is the notebook's own: [`docs/content/tutorials/04_gradients_backward.ipynb`](https://github.com/amasat01/hawk/blob/main/docs/content/tutorials/04_gradients_backward.ipynb). `hawk.diff.jvp` derives the forward-mode (tangent) twin the same way.
 
-**[Five-minute quickstart](https://amasat01.github.io/hawk/content/quickstart.html)** · install: `pip install raptor-hawk raptor-eagle matplotlib` (CPU route, no extras), or `pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"` for the GPU route
+**[Five-minute quickstart](https://amasat01.github.io/hawk/content/quickstart.html)** · install: `pip install raptor-hawk raptor-eagle matplotlib` (CPU route, no extras), or `pip install "raptor-hawk[cuda,cuda12]" "raptor-eagle[cuda12]"` for the GPU route
 
 ## Writing kernels
 
@@ -218,7 +218,7 @@ Free-threaded CPython (3.14t/3.15t) is supported: the compiled modules declare G
 
 ```bash
 pip install raptor-hawk raptor-eagle matplotlib          # CPU: no GPU, driver or CUDA packages (matplotlib is for the tutorials' plots)
-pip install "raptor-hawk[cuda12]" "raptor-eagle[cuda12]"    # GPU: hawk compiles, eagle runs; [cuda13] on both for CUDA 13
+pip install "raptor-hawk[cuda,cuda12]" "raptor-eagle[cuda12]"    # GPU: hawk compiles, eagle runs; [cuda,cuda13] and [cuda13] for CUDA 13
 ```
 
 Extras, platforms, requirements and the CPU-only route: [installation](https://amasat01.github.io/hawk/content/installation.html).
@@ -253,11 +253,11 @@ The same hawk kernel also runs on a CPU alone, through eagle's host team: on an 
 <summary>Build and test from a source checkout (development)</summary>
 
 Clone `aether` and `eagle` next to this checkout (so `../aether`
-and `../eagle` sit beside `hawk/`), then install aether's sealed header
-payload before hawk itself:
+and `../eagle` sit beside `hawk/`), then install the compiled backend
+libraries (the wheels `raptor-osprey`, `raptor-osprey-cpu` and, for a GPU, `raptor-osprey-cuda`) before hawk itself:
 
 ```bash
-pip install ../aether/dsc
+pip install <wheels>/*.whl
 pip install -e .[test]
 pytest -m "not gpu"
 ```
@@ -265,7 +265,7 @@ pytest -m "not gpu"
 The compiled half (`hawk._core`) is a nanobind extension built through
 `scikit-build-core`; `pip install -e .` builds it via `CMakeLists.txt`,
 resolving the `aether`/`eagle` C++ header roots from those sibling checkouts
-(or `$HAWK_AETHER_INCLUDE`/`$HAWK_EAGLE_INCLUDE`). `-m "not gpu"` deselects
+(or `$HAWK_AETHER_INCLUDE`/`$HAWK_EAGLE_INCLUDE`; they apply to this build only, not to the kernels you compile later). `-m "not gpu"` deselects
 the tests that need a CUDA GPU and `cupy`; most of the rest additionally
 need `eagle` installed as a Python package to execute traced kernels on host
 or device (see the "Python package" section of

@@ -16,7 +16,7 @@ def newton_step(J: Matrix[3, 3], f: Vector[3], x: Vector[3],
 
 The matrices are square, their size is fixed at trace time, and one lane owns
 all of its matrices. Nothing is allocated, and the same kernel runs on the host,
-on CUDA and, as plain C, on the embedded target.
+on CUDA.
 
 ## The names
 
@@ -145,14 +145,6 @@ answers are only as good as the conditioning allows: a Cholesky factor or its
 gradient of a nearly singular matrix can be far off, or fail outright. Compare a
 `float32` gradient against the `float64` one before trusting it, and note that
 `m.lstsq` squares the conditioning.
-
-## On the embedded C target
-
-The C unit spells each of these as a looped helper in the same order of operations,
-so a lane's values and `info` are bit-identical to the host build. The helpers
-follow the MISRA C:2012 rules the rest of the target does, and the profile's
-`max_stack_bytes` counts each factor at its true size, so a matrix that does not
-fit is refused rather than overflowed. See {doc}`Embedded C target <embedded>`.
 
 ## Limits
 

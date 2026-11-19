@@ -15,16 +15,6 @@ compiling
 composition
 ```
 
-## Embedded C
-
-The same kernel as standalone C.
-
-```{toctree}
-:maxdepth: 1
-
-embedded
-```
-
 ## Interoperability
 
 How hawk kernels meet other tools, and how they compare with low-level control in NVIDIA Warp.

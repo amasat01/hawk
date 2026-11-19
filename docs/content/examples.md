@@ -78,22 +78,3 @@ howto_wide_values
 best_practices
 ```
 
-## Other numbers
-
-Build under other thresholds and sizes than the shipped ones.
-
-```{toctree}
-:maxdepth: 1
-
-howto_cards
-```
-
-## Embedded C
-
-Emit a kernel as standalone C for a target without a runtime.
-
-```{toctree}
-:maxdepth: 1
-
-examples/05_embedded_c_target
-```
