@@ -146,21 +146,40 @@ leg_abi() {
   [ $rc -eq 0 ] || { grep -E "FAILED|panicked|^error" "$out" | head -3; echo "RED: table test"; return 1; }; need abi "$n"
 }
 
-# the binding and the libraries are built, then the three wheels are written from them, installed with no other package of ours into a fresh
-# environment, and there the binding imports and both backend folders are found through the entry points
+# the binding and the libraries are built, then the three wheels are written from them and installed by name from the wheel folder into a fresh
+# environment under a temporary folder (no network, no other package of ours); there, from outside the tree, the versions, the modules and the
+# opened backends are checked. A second set of wheels one version newer is then installed over the first with plain pip: it must replace it.
+# The newer set is built with OSPREY_TEST_DEV_NUMBER, which only this leg sets; dist/ is rebuilt at the real version afterwards.
 leg_wheels() {
   build_env || return 1
   [ -n "$PYTHON" ] || { echo "RED: PYTHON is not set"; return 1; }
   build_and_test_binding "$PYTHON" "" || return 1
-  rm -rf dist/wheels target/wheels_venv
+  rm -rf dist/wheels dist/wheels_next
   "$PYTHON" ci/wheels.py build >"$out" 2>&1 || { tail -3 "$out"; echo "RED: ci/wheels.py build"; return 1; }
   cat "$out"; n=$(ls dist/wheels/*.whl | wc -l | tr -d ' '); need wheels "$n" || return 1
   [ "$n" -eq 3 ] || { echo "RED: expected three wheels, got $n"; return 1; }
-  "$PYTHON" -m venv target/wheels_venv >"$out" 2>&1 || { tail -3 "$out"; echo "RED: venv"; return 1; }
-  target/wheels_venv/bin/python -m pip install --quiet --no-index --no-deps dist/wheels/*.whl >"$out" 2>&1 \
+  version=$(sh ci/version.sh) || return 1
+  newer=${version%%.dev*}.dev$((${version##*.dev} + 1))
+  scratch=$(mktemp -d "${TMPDIR:-/tmp}/wheels_venv.XXXXXX")
+  "$PYTHON" -m venv "$scratch/venv" >"$out" 2>&1 || { tail -3 "$out"; echo "RED: venv"; return 1; }
+  names="raptor-osprey raptor-osprey-cpu raptor-osprey-cuda"
+  wheels_dir=$PWD/dist/wheels; next_dir=$PWD/dist/wheels_next
+  # shellcheck disable=SC2086
+  "$scratch/venv/bin/python" -m pip install --quiet --no-index --find-links "$wheels_dir" $names >"$out" 2>&1 \
     || { tail -3 "$out"; echo "RED: pip install of the wheels"; return 1; }
-  target/wheels_venv/bin/python -I ci/wheels.py check >"$out" 2>&1 || { tail -3 "$out"; echo "RED: wheels check"; return 1; }
+  (cd "$scratch" && PYTHONPATH= "$scratch/venv/bin/python" -I "$OLDPWD/ci/wheels.py" check "$version") >"$out" 2>&1 \
+    || { tail -3 "$out"; echo "RED: wheels check"; return 1; }
   echo "examined: $(cat "$out")"
+  OSPREY_TEST_DEV_NUMBER=${newer##*.dev} JOBS=$JOBS sh ci/dist.sh >"$out" 2>&1 || { tail -3 "$out"; echo "RED: ci/dist.sh for the newer version"; return 1; }
+  OSPREY_TEST_DEV_NUMBER=${newer##*.dev} "$PYTHON" ci/wheels.py build "$next_dir" >"$out" 2>&1 || { tail -3 "$out"; echo "RED: newer wheels build"; return 1; }
+  JOBS=$JOBS sh ci/dist.sh >"$out" 2>&1 || { tail -3 "$out"; echo "RED: ci/dist.sh back at the real version"; return 1; }
+  # shellcheck disable=SC2086
+  "$scratch/venv/bin/python" -m pip install --quiet --upgrade --no-index --find-links "$next_dir" $names >"$out" 2>&1 \
+    || { tail -3 "$out"; echo "RED: pip install of the newer wheels"; return 1; }
+  (cd "$scratch" && PYTHONPATH= "$scratch/venv/bin/python" -I "$OLDPWD/ci/wheels.py" check "$newer") >"$out" 2>&1 \
+    || { tail -3 "$out"; echo "RED: the newer wheels did not replace the older ones"; return 1; }
+  echo "examined: $version replaced by $newer: $(cat "$out")"
+  rm -rf "$scratch" dist/wheels_next
 }
 
 leg_ruff() {

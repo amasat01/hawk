@@ -3,7 +3,7 @@ Every file with its line count (this file excluded):
       8  osprey_host/.cargo/config.toml
      12  osprey_host/.clang-format
       8  osprey_host/.clang-tidy
-      4  osprey_host/.gitignore
+      5  osprey_host/.gitignore
     111  osprey_host/Cargo.lock
       8  osprey_host/Cargo.toml
      12  osprey_host/Makefile
@@ -22,10 +22,11 @@ Every file with its line count (this file excluded):
      96  osprey_host/binding/test_sideways.py
      19  osprey_host/check_exports.sh
      19  osprey_host/ci/dist.sh
-    230  osprey_host/ci/gate.sh
+    249  osprey_host/ci/gate.sh
      40  osprey_host/ci/headers.sh
      22  osprey_host/ci/prepare_headers.sh
-    154  osprey_host/ci/wheels.py
+     25  osprey_host/ci/version.sh
+    211  osprey_host/ci/wheels.py
       1  osprey_host/clippy.toml
      12  osprey_host/components/lowering/Cargo.toml
      55  osprey_host/components/lowering/build_support.rs
