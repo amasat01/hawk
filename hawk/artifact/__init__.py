@@ -14,7 +14,7 @@ loader rather than an eagle import.
 from __future__ import annotations
 
 import ctypes
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 from ..targets import TARGETS
 from .bundle import (
@@ -156,6 +156,11 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
     Everything an entry point points into is held on the plugin's
     ``_keepalive``, so it stays valid as long as the caller holds it.
 
+    Each plugin also carries its kernel's ``sidecar`` (read-only) and
+    ``bundle_plugins``, this same mapping: a kernel built in stages (sidecar
+    ``stages``) runs as one only with the plugins of its other stages, which
+    a plan attaches from these two.
+
     """
     from .. import _core
 
@@ -184,6 +189,6 @@ def plugins(bundle: Bundle, *, device_loader=None) -> dict:
             loaded = registry[art.name]
             entries["device_function"] = loaded.fn.kernel.ptr
             keep += [registry, loaded]
-        out[art.name] = SimpleNamespace(name=art.name, sidecar=art.sidecar, _keepalive=tuple(keep),
-                                        **entries, **view)
+        out[art.name] = SimpleNamespace(name=art.name, sidecar=MappingProxyType(art.sidecar),
+                                        bundle_plugins=out, _keepalive=tuple(keep), **entries, **view)
     return out

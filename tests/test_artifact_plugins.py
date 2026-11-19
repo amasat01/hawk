@@ -26,7 +26,8 @@ import numpy as np
 import pytest
 
 import hawk
-from hawk import Mutable, Param, Scalar, Vector
+import hawk.math as m
+from hawk import Int32, Matrix, Mutable, Param, Scalar, Vector
 from hawk.artifact import build_bundle, plan_view, plugins
 from hawk.math import dot
 
@@ -139,3 +140,20 @@ def test_a_derivative_plugin_carries_its_tag_and_a_primal_carries_none(tmp_path)
                    "primal_unit": None}
     sidecar = next(a.sidecar for a in bundle.artifacts if a.name == "pl_affine_vjp")
     assert plan_view(sidecar)["derivative"]["primal"] == sidecar["derivative"]["primal"]
+
+
+def test_a_plugin_carries_its_sidecar_and_the_plugins_of_its_bundle(tmp_path):
+    """A kernel built in stages runs as one only with the plugins of its other stages: every plugin carries the whole
+    mapping and its own sidecar, read-only."""
+    @hawk.kernel
+    def pl_solve(A: Matrix[40, 40], b: Vector[40], x: Mutable[Vector[40]], info: Mutable[Int32]):
+        x, info = m.solve(A, b)
+
+    bundle = build_bundle([pl_solve], tmp_path, targets=("host",), host_profile="native")
+    got = plugins(bundle)
+    stages = next(a.sidecar for a in bundle.artifacts if a.name == "pl_solve")["stages"]
+    assert len(stages) > 1 and {st["kernel"] for st in stages} <= set(got)
+    for art in bundle.artifacts:
+        assert got[art.name].sidecar == art.sidecar and got[art.name].bundle_plugins is got
+    with pytest.raises(TypeError):
+        got["pl_solve"].sidecar["stages"] = []
