@@ -262,10 +262,19 @@ fn a_device_unit_is_built_through_the_door_with_the_found_compiler_and_a_second_
     let figures = answer.get("figures").unwrap().get("k").unwrap();
     assert_eq!(figures.get("regs").map(J::int), Some(32));
     // the unit states the local memory one thread holds, how it was measured and the card's limit
-    let launch = answer.get("figures").unwrap().get("launch").unwrap();
+    let launch = answer.get("launch").unwrap();
     assert_eq!(launch.get("local_bytes").map(J::int), Some(8));
     assert_eq!(launch.get("local_source").and_then(J::str), Some("ptxas"));
     assert_eq!(launch.get("local_limit").map(J::int), Some(524_288));
+    // `figures` holds the entries of the unit and nothing else: the launch record is a member of its own
+    let entries: Vec<&str> = answer
+        .get("figures")
+        .unwrap()
+        .obj()
+        .iter()
+        .map(|(k, _)| k.as_str())
+        .collect();
+    assert_eq!(entries, ["k"]);
     let embed = answer.get("embed").unwrap();
     assert_eq!(embed.get("symbol").and_then(J::str), Some("k__image"));
     assert!(answer

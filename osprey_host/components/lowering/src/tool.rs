@@ -731,14 +731,15 @@ fn device_unit(
     ))
 }
 
-/// The figures of a device build with the unit's `launch` record added: the local memory one thread holds (`local_bytes`), how that
-/// was measured (`local_source`) and the device's per-thread limit (`local_limit`, a fact of the card). A unit that holds more than
-/// the limit is refused by name. An image that states no frame and has no text to read states no `launch`.
-fn launch_figures(
+/// The unit's `launch` record of a device build: the local memory one thread holds (`local_bytes`), how that was measured
+/// (`local_source`) and the device's per-thread limit (`local_limit`, a fact of the card). A unit that holds more than the limit is
+/// refused by name. An image that states no frame and has no text to read states no `launch` (`None`). The record is a member of the
+/// build answer of its own: `figures` keeps only the entries of the unit.
+fn launch_record(
     facts: &Json,
     name: &str,
     answer: &rcore::json::J,
-) -> Result<rcore::json::J, toolkit::Refusal> {
+) -> Result<Option<rcore::json::J>, toolkit::Refusal> {
     use rcore::json::J;
     let figures = answer.get("figures").cloned().unwrap_or(J::Null);
     let limit = facts
@@ -754,21 +755,16 @@ fn launch_figures(
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
     };
     let Some(held) = local_memory::held(&figures, read_ptx) else {
-        return Ok(figures);
+        return Ok(None);
     };
     if held.0 > limit {
         return Err(refuse(local_memory::refusal(name, held, limit)));
     }
-    let mut members = figures.obj().to_vec();
-    members.push((
-        "launch".to_string(),
-        wire::obj(vec![
-            ("local_bytes", wire::n(held.0)),
-            ("local_source", wire::s(held.1)),
-            ("local_limit", wire::n(limit)),
-        ]),
-    ));
-    Ok(J::Obj(members))
+    Ok(Some(wire::obj(vec![
+        ("local_bytes", wire::n(held.0)),
+        ("local_source", wire::s(held.1)),
+        ("local_limit", wire::n(limit)),
+    ])))
 }
 
 /// The build of a device unit through the toolkit (see [`device_unit`]).
@@ -794,7 +790,7 @@ fn build_device<B: Backend>(
     let source = format!("{name}.cu");
     let file = |member: &str| answer.get("files").and_then(|f| f.get(member)).cloned();
     let null = || rcore::json::J::Null;
-    let figures = launch_figures(&facts, &name, &answer)?;
+    let launch = launch_record(&facts, &name, &answer)?;
     let recipe = facts
         .get("device_build")
         .and_then(|b| b.get("embed"))
@@ -836,7 +832,11 @@ fn build_device<B: Backend>(
                 (source.as_str(), file("source").unwrap_or_else(null)),
             ]),
         ),
-        ("figures", figures),
+        (
+            "figures",
+            answer.get("figures").cloned().unwrap_or_else(null),
+        ),
+        ("launch", launch.unwrap_or_else(null)),
         ("report", answer.get("report").cloned().unwrap_or_else(null)),
         ("embed", answer.get("embed").cloned().unwrap_or_else(null)),
         (

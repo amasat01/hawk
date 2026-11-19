@@ -104,7 +104,7 @@ Every file with its line count (this file excluded):
      30  osprey_host/components/toolkit/tests/state.rs
     219  osprey_host/components/toolkit/tests/store_races.rs
      33  osprey_host/corpus_accepted.tsv
-    189  osprey_host/include/osprey.h
+    190  osprey_host/include/osprey.h
     373  osprey_host/loader/loader.c
      22  osprey_host/osprey_cpu/Cargo.toml
      18  osprey_host/osprey_cpu/build.rs
@@ -174,7 +174,7 @@ Every file with its line count (this file excluded):
     290  osprey_host/replay/tests/stage_records.rs
      72  osprey_host/replay/tests/structural_keys.rs
     251  osprey_host/replay/tests/table.rs
-    303  osprey_host/replay/tests/tool_side.rs
+    312  osprey_host/replay/tests/tool_side.rs
      47  osprey_host/replay/tests/treplay.rs
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml

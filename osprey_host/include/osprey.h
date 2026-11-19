@@ -155,7 +155,8 @@ int ob_machine(rx_ctx* ctx, ob_backend* lib, const char* ask, char* buf, size_t 
    missing). unit is JSON: {"name", "text", "machine": <the answer of ob_machine>, "defines":
    [...]?}. The library reads its own build card. The answer is {"artifact": <file name of the
    object>, "source": <file name of the text>, "format", "key", "hit", "seconds", "files": {<file
-   name>: <path>}, "figures", "report", "link_recipe": <opaque>}; a second call for the same unit on
+   name>: <path>}, "figures": {<entry name>: {...}}, "launch": {"local_bytes", "local_source",
+   "local_limit"} or null, "report", "link_recipe": <opaque>}; a second call for the same unit on
    the same machine runs no tool and answers "hit": true. A tool the machine lacks is refused with
    the code tool_absent. */
 int ob_build(rx_ctx* ctx, ob_backend* lib, const char* unit, size_t n_unit, const char* root,
