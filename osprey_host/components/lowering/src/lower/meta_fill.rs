@@ -149,7 +149,6 @@ pub(super) fn slots(
                     .contains(&s.name)
                     .then(|| pattern_of(patterns, &s.name))
                     .flatten(),
-                elements: shape.iter().product(),
                 written: is_written(s.role, &s.name, typed.finish.as_deref()),
                 shape,
                 name: s.name.clone(),

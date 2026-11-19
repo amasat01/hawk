@@ -1637,7 +1637,7 @@ mod tests {
     /// Oracle: the kernel's own source, read by hand: `y` is the mutable output, `x`, `v` and `m` are only read. A slot's element count
     /// is the product of its shape, 1 for a scalar.
     #[test]
-    fn every_slot_states_its_element_count_and_whether_the_kernel_writes_it() {
+    fn every_slot_states_whether_the_kernel_writes_it_and_no_element_count() {
         let answer = lowered_two_groups();
         let slots: Vec<_> = answer
             .units
@@ -1650,15 +1650,16 @@ mod tests {
                 .find(|s| s.name == name)
                 .unwrap_or_else(|| panic!("slot {name}"))
         };
-        assert_eq!((found("x").elements, found("x").written), (1, false));
-        assert_eq!((found("y").elements, found("y").written), (1, true));
+        assert!(!found("x").written && found("y").written);
         for name in ["v", "m"] {
             let slot = found(name);
-            assert_eq!(slot.elements, slot.shape.iter().product::<i64>());
-            assert!(slot.elements > 1 && !slot.written, "{name}");
+            assert!(
+                slot.shape.iter().product::<i64>() > 1 && !slot.written,
+                "{name}"
+            );
         }
         let json = answer.to_json();
-        assert_eq!(json.matches("\"elements\":").count(), slots.len());
+        assert_eq!(json.matches("\"elements\":").count(), 0);
         assert_eq!(json.matches("\"written\":").count(), slots.len());
     }
 

@@ -49,15 +49,15 @@ Every file with its line count (this file excluded):
     334  osprey_host/components/lowering/src/lower/links.rs
     178  osprey_host/components/lowering/src/lower/merge.rs
     871  osprey_host/components/lowering/src/lower/meta_c.rs
-   1190  osprey_host/components/lowering/src/lower/meta_fill.rs
-   1777  osprey_host/components/lowering/src/lower/mod.rs
+   1189  osprey_host/components/lowering/src/lower/meta_fill.rs
+   1778  osprey_host/components/lowering/src/lower/mod.rs
      89  osprey_host/components/lowering/src/lower/peer.rs
     121  osprey_host/components/lowering/src/lower/placed.rs
    2032  osprey_host/components/lowering/src/lower/request.rs
     377  osprey_host/components/lowering/src/lower/segment.rs
     116  osprey_host/components/lowering/src/lower/stage_block.rs
     556  osprey_host/components/lowering/src/lower/stages.rs
-    932  osprey_host/components/lowering/src/lower/unit_meta.rs
+    929  osprey_host/components/lowering/src/lower/unit_meta.rs
     247  osprey_host/components/lowering/src/lower/warp.rs
     153  osprey_host/components/lowering/src/testing.rs
    1021  osprey_host/components/lowering/src/tool.rs
@@ -166,7 +166,7 @@ Every file with its line count (this file excluded):
      87  osprey_host/replay/tests/link_rules.rs
      55  osprey_host/replay/tests/live_environment.rs
     189  osprey_host/replay/tests/loop_rules.rs
-    645  osprey_host/replay/tests/meta_c.rs
+    644  osprey_host/replay/tests/meta_c.rs
     632  osprey_host/replay/tests/own_cards.rs
      49  osprey_host/replay/tests/param_cell.rs
      41  osprey_host/replay/tests/quantity.rs
