@@ -22,6 +22,7 @@ import math
 from math import prod
 
 from . import _broadcast, _place
+from ._plane_layout import describe
 from .errors import HawkError
 
 
@@ -256,7 +257,7 @@ def _flat_extent(arg_spec, arrays: dict, per_sample_roles) -> int | None:
     for role, name in arg_spec:
         if role in per_sample_roles and role != "mat_in" and name in arrays:
             try:
-                return int(memoryview(arrays[name]).shape[-1])
+                return int(describe(arrays[name]).shape[-1])
             except TypeError:
                 return None
     return None
@@ -321,7 +322,7 @@ def _bind_grid(sidecar: dict, arg_spec, arrays: dict, n_samples, per_sample_role
         if role not in per_sample_roles or role == "mat_in" or name not in out or len(axes) < 2:
             continue
         try:
-            mv = memoryview(out[name])
+            mv = describe(out[name])                  # a NumPy array's own view, another library's array as its DLPack states
         except TypeError:
             continue                                  # a marked array: the layout rules read it
         width = int(shapes.get(name) or 1)

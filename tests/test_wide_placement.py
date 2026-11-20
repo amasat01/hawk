@@ -14,6 +14,7 @@ Run as a script, this file is the wide gate (``make gate-wide``): it builds and 
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import time
@@ -384,6 +385,12 @@ def _resources(root: pathlib.Path, cache: pathlib.Path, arch: str = ARCH) -> dic
 
 
 
+def _run_memory(python: str, mode: str) -> subprocess.CompletedProcess:
+    """The memory row of the corpus script under ``python``, in a process of its own: a first launch is measured only in a
+    process that has made no other."""
+    return subprocess.run([python, str(HERE / "_wide_kernels.py"), "--memory", mode], capture_output=True, text=True)
+
+
 def gate(which: str = "gpu") -> int:
     """``gpu``: the correctness checks (A1, C8, A3-numpy, A3-fd, A5); ``compare``: the checks against the published 0.7.2
     release (A3-twin, SPEED), which need ``HAWK_TWIN_VENV``."""
@@ -439,7 +446,7 @@ def _gate(root: pathlib.Path) -> int:
     # A5: a fresh process each
     deltas = {}
     for mode in ("float32", "float64"):
-        out = _run_memory(sys.executable, mode, None)
+        out = _run_memory(sys.executable, mode)
         deltas[mode] = float(out.stdout.strip().splitlines()[-1]) if out.returncode == 0 and out.stdout.strip() else float("inf")
     ok &= _line("A5", all(d <= 4.0 for d in deltas.values()),
                 f"first launch of a trivial Vector[512] kernel, device MB: f32 {deltas['float32']:.1f}, f64 {deltas['float64']:.1f} (<= 4)")
@@ -487,7 +494,7 @@ def _compare(root: pathlib.Path) -> int:
         f"{e}/{m_[-2:]} {r:.2f}x" for (e, m_), r in ratios.items()))
     control = {}
     for mode in ("float32", "float64"):
-        out = _run_memory(str(TWIN / "bin" / "python"), mode, "twin")
+        out = _run_memory(str(TWIN / "bin" / "python"), mode)
         control[mode] = float(out.stdout.strip().splitlines()[-1]) if out.returncode == 0 and out.stdout.strip() else float("inf")
     ok &= _line("A5-ctl", all(c > 4.0 for c in control.values()),
                 f"the 0.7.2 wheel's first launch of the trivial kernel takes f32 {control['float32']:.1f}, f64 {control['float64']:.1f} MB (> 4)")

@@ -207,3 +207,14 @@ def test_a_matrix_plane_of_another_library_given_component_major_is_viewed_by_it
     a, y = np.random.default_rng(5).uniform(-2.0, 2.0, (6, N)), np.zeros((6, N))
     hawk.deploy(matrix_doubled, targets=("host",), cache_dir=cache_dir).run(a=_Viewable(a), y=_Viewable(y))
     np.testing.assert_array_equal(y, 2.0 * a)
+
+
+@hawk.kernel
+def lane_doubled(lane: hawk.Grid["u", "v":4], x: Scalar) -> Scalar:
+    return x + x
+
+
+def test_a_lane_shaped_plane_of_another_library_is_flattened_by_its_own_reshape(cache_dir):
+    x, out = np.random.default_rng(9).uniform(-2.0, 2.0, (3, 4)), np.zeros((3, 4))
+    hawk.deploy(lane_doubled, targets=("host",), cache_dir=cache_dir).run(x=_Viewable(x), out=_Viewable(out))
+    np.testing.assert_array_equal(out, 2.0 * x)
