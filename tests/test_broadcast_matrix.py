@@ -215,6 +215,23 @@ def test_vjp_is_the_fsum_of_the_dense_adjoints_in_the_inputs_shape(run_cache, rn
     np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-13)
 
 
+@hawk.kernel
+def clash(lane: Grid["a", "b":4, "c":6], M: Matrix[2, 2], bar_M: Scalar) -> Scalar:
+    return M[0, 0] * bar_M
+
+
+def test_a_gradient_whose_name_does_not_follow_the_bar_spelling_is_still_allocated(run_cache, rng):
+    # the input named bar_M takes that name, so the gradient of M is named otherwise
+    derived = vjp(clash, wrt=("M",))
+    assert "bar_M" not in derived.gradients
+    m, x, g = rng.standard_normal(SHAPES[3]), rng.random(LANE), rng.standard_normal(LANE)
+    (seed,) = derived.cotangents
+    got = np.asarray(Kernel("clash_vjp", derived)(M=m, bar_M=x, **{seed: g}, a=A))
+    assert got.shape == SHAPES[3]
+    np.testing.assert_allclose(got[0, 0], np.sum(g * x), rtol=1e-12)
+    assert not got[0, 1] and not got[1, 0] and not got[1, 1]
+
+
 def test_vjp_equals_central_differences(run_cache, rng):
     shape = SHAPES[0]
     m, x, g = rng.standard_normal(shape), rng.random(LANE), rng.standard_normal(LANE)

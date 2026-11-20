@@ -489,9 +489,8 @@ def _d_dt(g: Any, t_value: Any) -> Any:
         return _ir.const(
             g.ctx, 0.0, _ir.type_of(g)
         )  # a guard that does not read the time
-    (sink,) = jvp(
-        (_assign("hawk_event_g", plain, _ir.type_of(plain)),), wrt=(probe_name,)
-    )
+    derived = jvp((_assign("hawk_event_g", plain, _ir.type_of(plain)),), wrt=(probe_name,))
+    (sink,) = derived
     back = {}
     for n in _ir.post_order((sink.operands[0],)):
         if not _ir.is_a(n, "leaf"):
@@ -499,7 +498,7 @@ def _d_dt(g: Any, t_value: Any) -> Any:
         name = n.field_text("name")
         if name == probe_name:
             back[n] = t_value
-        elif name.endswith(probe_name):
+        elif derived.tangents.get(name) == probe_name:
             back[n] = _ir.const(n.ctx, 1.0, _ir.type_of(n))
         elif name in prior:
             back[n] = prior[name]

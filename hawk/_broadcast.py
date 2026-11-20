@@ -346,8 +346,6 @@ def _route_derived(kernel, source, args: tuple, kwargs: dict) -> tuple:
     primal's twin (the reverse scatters into the compact shape, summing the
     axes the input does not vary along, compensated). A tangent takes its
     input's pattern; an omitted gradient is allocated in the input's own shape."""
-    from .diff.transform import ADJOINT_PREFIX
-
     derived, axes, where = kernel.sinks, kernel.lane_space, f"{kernel.name}(...)"
     if args:
         return kernel, args, kwargs
@@ -374,6 +372,7 @@ def _route_derived(kernel, source, args: tuple, kwargs: dict) -> tuple:
             run.broadcast = dict(patterns)      # a twin: eagle's plan of it does not route again
     given = dict(kwargs)
     tangent_names = {primal: t for t, primal in derived.tangents.items()}
+    gradient_names = {x: g for g, x in derived.gradients.items()}
     for name, kept in patterns.items():
         given[name] = compact(name, kwargs[name], kept, heads[name], where, cell=name in reverse)
         tangent = tangent_names.get(name)
@@ -384,8 +383,8 @@ def _route_derived(kernel, source, args: tuple, kwargs: dict) -> tuple:
                     f"{where}: argument {tangent!r} must vary along the axes of {name!r}, "
                     f"{pattern_text(kept, axes)}, got {pattern_text(got, axes) if got else 'the exact shape'}")
             given[tangent] = compact(tangent, kwargs[tangent], kept, heads[name], where)
-        bar = f"{ADJOINT_PREFIX}_{name}"
-        if name in reverse and bar not in kwargs:
+        bar = gradient_names.get(name)
+        if name in reverse and bar is not None and bar not in kwargs:
             given[bar] = _zeros(kwargs[name], np_shape(kwargs[name]))
     slots = {n for _role, n in run.arg_spec}    # a derivative linear in an input does not take it
     return run, (), {n: v for n, v in given.items() if n in slots or n not in patterns}
