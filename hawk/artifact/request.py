@@ -83,6 +83,19 @@ def _axes(pairs) -> list:
     return [{**({} if label is None else {"label": label}), **({} if extent is None else {"extent": extent})} for label, extent, *_ in pairs]
 
 
+def _table_payload(plane, pattern) -> dict:
+    """The ``payload`` member of a broadcast row whose plane is a table: the extents of the table's own leading dimensions.
+
+    A broadcast table is stored as (its own components, then the lane axes it varies along), so its dimensions beyond those
+    lane axes are the payload: empty for a table of scalars. A plane that is not a table states none.
+    """
+    if not isinstance(plane, Plane) or plane.form != "table":
+        return {}
+    kept = sum(flag is True for flag in pattern)
+    own = plane.dims[:max(len(plane.dims) - kept, 0)]
+    return {"payload": [extent for _, extent, *_ in own]}
+
+
 def _settings(settings, sizes) -> dict:
     """The settings of the build that differ from the library's defaults; ``sizes`` are the layout sizes a test states."""
     out = {}
@@ -156,7 +169,7 @@ def _part(kernel, *, settings, sizes, position: dict) -> dict:
     if shared:
         out["shared"] = shared
     bound = {name for _, name in _ir.arg_spec(kernel.walk)}
-    broadcast = [{"plane": n, "axes": [flag is True for flag in pattern]}
+    broadcast = [{"plane": n, "axes": [flag is True for flag in pattern], **_table_payload(planes.get(n), pattern)}
                  for plane, pattern in (getattr(kernel, "broadcast", None) or {}).items()
                  for n in (plane, *(t for t, p in kernel.tangents.items() if p == plane)) if n in bound]
     if broadcast:

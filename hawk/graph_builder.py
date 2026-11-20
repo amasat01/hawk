@@ -76,6 +76,14 @@ class Recorder:
         bound.join(graph._store_over(bound.door))
         graph._append(_Launch(bound, kernel if count == 1 else f"{kernel}#{count}"))
 
+    def record_step(self, bound) -> None:
+        """Record the call of the host step ``bound`` into the scope being written."""
+        graph = self._graph()
+        from .graph import _HostCall  # graph imports this module first
+
+        graph._store_over(bound.door)
+        graph._append(_HostCall(bound))
+
     def store(self, door):
         """The plane store of the graph being written, which the plans of its launches are bound through, over ``door``: the
         door of the memory the launch's planes live in, which becomes the graph's door at the first launch."""
@@ -273,11 +281,12 @@ class _MatchControl(_Control):
         self.device = getattr(value, "ndim", 0) > 0
         if self.device:
             _check_cell(value, where, 0, one=True)
-            if has_default or tuple(labels) != tuple(range(len(labels))):
-                raise HawkError(f"{where}: a graph match on a cell takes the cases 0, 1, 2, ... in order and no `case _`: the "
-                                "library selects the arm by the cell's value")
             self._cell = value
-            self._arms = [[] for _ in labels]
+            self._labels = tuple(labels)
+            #: the cases 0, 1, 2, ... in order and no default are one SWITCH, which selects the arm by the cell's value
+            self._switch = not has_default and self._labels == tuple(range(len(labels)))
+            self._has_default = has_default
+            self._arms = [[] for _ in range(len(labels) + (has_default and not self._switch))]
         else:
             self._chosen = next((position for position, label in enumerate(labels) if value == label),
                                 len(labels) if has_default else None)
@@ -291,14 +300,34 @@ class _MatchControl(_Control):
         return self._scope(self._arms[arm]) if self.device else contextlib.nullcontext()
 
     def end(self) -> None:
-        """Close the match: a recorded one is one SWITCH of the graph."""
+        """Close the match: a recorded one is one SWITCH of the graph, or, with a default arm or other labels, a chain of
+        conditionals each testing the cell for equality with a one-element plane that holds a label."""
         if not self.device:
             return
         from .graph import _SWITCH, _Cond
 
         self._refuse_leaks()
-        if any(self._arms):
+        if not any(self._arms):
+            return
+        if self._switch:
             self.graph._append(_Cond(_SWITCH, self._cell, self._arms))
+            return
+        tests = [_Test(self._cell, 0, self._label_plane(label), 0, True) for label in self._labels]
+        item = _chain(tests, self._arms, self._has_default)
+        if item is not None:
+            self.graph._append(item)
+
+    def _label_plane(self, label: int):
+        """A one-element plane, in the memory and dtype of the cell, holding ``label``: what the library compares the cell with.
+        The conditional keeps it alive."""
+        import numpy as np
+
+        dtype = np.dtype(str(self._cell.dtype))
+        if not np.can_cast(np.min_scalar_type(label), dtype, casting="safe"):
+            raise HawkError(f"{self.where}: the case {label} does not fit the {dtype} cell it is matched against")
+        from . import _place
+
+        return _place.Maker.at(_place.device_of(self._cell), self._cell).copy_of(np.array([label], dtype=dtype))
 
 
 class _LoopControl(_Control):

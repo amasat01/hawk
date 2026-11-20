@@ -88,7 +88,9 @@ def place_of(arrays: dict, where: str) -> tuple | None:
         (first, (a, _)), (second, (b, _)) = list(found.items())[:2]
         raise HawkError(f"{where}: the planes of one launch live in one place; {a!r} is on the DLPack device {first} and "
                         f"{b!r} is on {second}")
-    return next(iter(found.items())) if found else None
+    for device, (_, array) in found.items():
+        return device, array
+    return None
 
 
 def open_door(target: str, ordinal: int):
@@ -132,19 +134,22 @@ def stream_of(door) -> int | None:
 
 
 def wrap(door, array):
-    """The plane over ``array``, the caller's memory, made by ``door`` and ordered behind the producer's pending work."""
-    stream = stream_of(door)
+    """The plane over ``array``, the caller's memory, made by ``door`` and ordered behind the producer's pending work.
+
+    Only an array in device memory has pending work on a stream: the DLPack protocol takes no stream for host memory.
+    """
+    stream = None if device_of(array) == HOST else stream_of(door)
     return door.plane_wrap(array) if stream is None else door.plane_wrap(array, stream=stream)
 
 
-def _reader(like):
+def reader(like):
     """The ``from_dlpack`` of the array library ``like`` comes from."""
     library = sys.modules.get(type(like).__module__.partition(".")[0])
-    reader = getattr(library, "from_dlpack", None)
-    if reader is None:
-        raise HawkError(f"{type(like).__name__} comes from a library with no from_dlpack, so an output left out cannot be made "
-                        "for it; pass the output")
-    return reader
+    from_dlpack = getattr(library, "from_dlpack", None)
+    if from_dlpack is None:
+        raise HawkError(f"{type(like).__name__} comes from a library with no from_dlpack, so arrays cannot be made for it from the "
+                        "library's memory; pass arrays of a library that has one")
+    return from_dlpack
 
 
 class Maker:
@@ -210,7 +215,7 @@ def read(door, plane, device: tuple, like=None):
         import numpy
 
         return numpy.from_dlpack(exported)
-    return exported if like is None else _reader(like)(exported)
+    return exported if like is None else reader(like)(exported)
 
 
 def to_host(array):

@@ -82,6 +82,34 @@ def test_planes_of_one_launch_in_two_places_are_refused_naming_both(plan):
 
 
 @pytest.mark.skipif(not _no_device_runs_here(), reason="a device runs here")
+def test_the_place_of_a_launch_is_its_device_and_the_first_array_there():
+    here, there = np.zeros(3), _Elsewhere(np.zeros(3))
+    assert place.place_of({"a": 1.0, "x": here}, "k") == (place.HOST, here)
+    device, array = place.place_of({"x": there}, "k")
+    assert device == (2, 0) and array is there
+    assert place.place_of({"a": 1.0}, "k") is None
+
+
+class _StreamDoor:
+    """A door that states a stream and keeps what ``plane_wrap`` was given."""
+
+    def __init__(self):
+        self.wrapped = []
+
+    def ctx_info(self):
+        return {"stream": 7}
+
+    def plane_wrap(self, array, **keywords):
+        self.wrapped.append(keywords)
+
+
+def test_only_an_array_in_device_memory_is_wrapped_behind_the_doors_stream():
+    door = _StreamDoor()
+    place.wrap(door, np.zeros(3))
+    place.wrap(door, _Elsewhere(np.zeros(3)))
+    assert door.wrapped == [{}, {"stream": 7}]
+
+
 def test_an_array_on_a_device_no_library_runs_on_is_refused_with_each_librarys_reason(plan):
     with pytest.raises(HawkError, match=r"no installed OSPREY runs on the DLPack device \(2, 0\): .*does not run here"):
         plan.run(x=_Elsewhere(np.arange(N, dtype=np.float64)), a=1.0, b=0.0)
@@ -126,3 +154,45 @@ def test_asarray_onto_a_device_that_does_not_run_here_carries_the_reason():
 def test_asarray_names_the_form_of_a_device(device):
     with pytest.raises(HawkError, match="is not '<target>:<ordinal>' of a device target"):
         hawk.asarray(np.arange(3.0), device=device)
+
+
+class _Viewable:
+    """An array of another library, over host memory: it exports DLPack, is no NumPy array, and has the ``reshape`` and slicing
+    every array library has, each giving another such array over the same memory (a view)."""
+
+    def __init__(self, array):
+        self._array = array
+        self.shape, self.dtype = array.shape, array.dtype
+
+    def __dlpack__(self, **kwargs):
+        return self._array.__dlpack__(**kwargs)
+
+    def __dlpack_device__(self):
+        return self._array.__dlpack_device__()
+
+    def reshape(self, *shape):
+        return _Viewable(self._array.reshape(*shape))
+
+    def __getitem__(self, key):
+        return _Viewable(self._array[key])
+
+
+@hawk.kernel
+def column_sums(v: hawk.Vector[6], t: Mutable[hawk.Vector[6]]):
+    t = hawk.sum(v)
+
+
+def test_a_cell_of_several_columns_in_another_library_is_viewed_per_column_by_its_own_slicing(cache_dir):
+    v = np.random.default_rng(3).uniform(-2.0, 2.0, (6, N))
+    cell = np.full(6, np.nan)
+    hawk.deploy(column_sums, targets=("host",), cache_dir=cache_dir).run(v=v, t=_Viewable(cell))
+    np.testing.assert_allclose(cell, v.sum(axis=1), rtol=1e-13)
+
+
+def test_a_cell_with_the_wrong_number_of_values_or_no_slicing_is_refused_by_name(cache_dir):
+    v = np.random.default_rng(3).uniform(-2.0, 2.0, (6, N))
+    plan = hawk.deploy(column_sums, targets=("host",), cache_dir=cache_dir)
+    with pytest.raises(HawkError, match=r"the cell 't' holds 3 value\(s\); it is one value per column, 6 here"):
+        plan.run(v=v, t=_Viewable(np.zeros(3)))
+    with pytest.raises(HawkError, match=r"the cell 't' \(_Elsewhere\) cannot be viewed per column"):
+        plan.run(v=v, t=_Elsewhere(np.zeros(6), device=(1, 0)))

@@ -481,15 +481,6 @@ def switch(x, c, y) -> hawk.Graph:
 
 
 @hawk.Graph.builder
-def labels(x, c) -> hawk.Graph:
-    g = hawk.Graph()
-    match c:
-        case 3:
-            axpb(x, a=1.0, b=0.0)
-    return g
-
-
-@hawk.Graph.builder
 def python_match(x, mode) -> hawk.Graph:
     g = hawk.Graph()
     match mode:
@@ -514,8 +505,6 @@ def test_a_match_on_a_cell_is_one_switch_and_takes_the_arm_of_its_value(tmp_path
     for value in (2, 0, 1):
         c[0] = value
         close(graph(), (value + 1.0) * X)
-    with pytest.raises(HawkError, match="cases 0, 1, 2, ... in order and no `case _`"):
-        module.labels(X, cell(3))
     assert repr(module.python_match(X, 0)).count("axpb") == 1
     assert repr(module.python_match(X, 5)).count("axpb") == 2
 

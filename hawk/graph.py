@@ -6,8 +6,9 @@
 
 A graph is a tree of plan launches, conditionals and forks recorded once by the host library and replayed as one. What the
 library records is what it can replay: launches of plans bound with :meth:`hawk.plans.Plan.bind`, a conditional that tests one
-element of an integer cell, and a fork whose branches it orders by the planes they touch. Python is never recorded, so a step that
-is a function is refused by name; the planes are the caller's memory and a replay sees what they hold at that time.
+element of an integer cell, and a fork whose branches it orders by the planes they touch. Python is recorded only as a
+:func:`hawk.host_step`, which the library calls where a launch would run; any other function is refused by name. The planes are the
+caller's memory and a replay sees what they hold at that time.
 
 A graph is written two ways. By hand, ``g.add(bound)`` and ``with g.parallel() as p`` (the exit of the ``with`` is the join; no
 edge is ever declared, and two branches that touch one plane with a writer among them are refused by the library, ``wait`` being
@@ -27,6 +28,7 @@ import _osprey
 from . import graph_builder
 from .errors import HawkError
 from .runner import GradientReport, Gradients, RunRecord, check_reverse_options
+from .host_steps import BoundHostStep
 from .runtime import BoundPlan, PlaneStore, through_door
 
 __all__ = ["Edge", "Graph", "GraphPipeline", "GraphRecord", "RepeatWhile", "SkipGuard", "Skippable", "repeat_while", "reverse",
@@ -43,6 +45,18 @@ class _Launch:
 
     bound: BoundPlan
     name: str | None = None
+
+
+@dataclass
+class _HostCall:
+    """One call of a host step, which the library runs where a launch would run."""
+
+    bound: BoundHostStep
+
+    @property
+    def name(self) -> str:
+        """The step's function name, which is also the library's name for the node."""
+        return self.bound.step.name
 
 
 @dataclass
@@ -206,6 +220,8 @@ class GraphPipeline:
         self._door = None
         self._store: PlaneStore | None = None
         self._launches: list[_Launch] = []
+        #: every launch and host step, in recording order
+        self._recorded: list = []
         self._counting: list[BoundPlan] = []
         self._params: dict | None = None
         self._handles: list = []
@@ -235,7 +251,8 @@ class GraphPipeline:
         """Append the launch of ``step``, a :class:`~hawk.runtime.BoundPlan`, and return the pipeline.
 
         A function is refused: the library records launches, not Python, so a function would run once at build time and
-        never again at a replay. Write the step as a kernel and add its bound plan.
+        never again at a replay. Write the step as a kernel and add its bound plan; a :class:`hawk.Graph` also takes a bound
+        :func:`hawk.host_step`.
         """
         self._check_open("add")
         if not isinstance(step, BoundPlan):
@@ -252,8 +269,12 @@ class GraphPipeline:
             if isinstance(item, _Launch):
                 item.bound.enqueue()
                 self._launches.append(item)
+                self._recorded.append(item)
                 if not under_condition:
                     self._counting.append(item.bound)
+            elif isinstance(item, _HostCall):
+                item.bound.record(door, self._store)
+                self._recorded.append(item)
             elif isinstance(item, _Cond):
                 self._emit_cond(item)
             elif isinstance(item, _Fork):
@@ -281,23 +302,23 @@ class GraphPipeline:
 
     def _plane_of(self, array):
         """The plane the graph holds over the caller's ``array``: the one a launch bound it with, else one made for it."""
-        for launch in self._launches_everywhere():
+        for launch in self._leaves_everywhere():
             for name, given in launch.bound.planes.items():
                 if given is array and name in launch.bound.views:
                     return self._store.plane(launch.bound.views[name])
         return self._store.plane(array)
 
-    def _launches_everywhere(self, items: list | None = None):
-        """Every launch item of the tree, in recording order."""
+    def _leaves_everywhere(self, items: list | None = None):
+        """Every launch and host step of the tree, in recording order."""
         for item in self._items if items is None else items:
-            if isinstance(item, _Launch):
+            if isinstance(item, (_Launch, _HostCall)):
                 yield item
             elif isinstance(item, _Cond):
                 for arm in item.arms:
-                    yield from self._launches_everywhere(arm)
+                    yield from self._leaves_everywhere(arm)
             elif isinstance(item, _Fork):
                 for branch in item.branches:
-                    yield from self._launches_everywhere(branch)
+                    yield from self._leaves_everywhere(branch)
 
     def _described(self) -> tuple:
         """``(description, names)`` of the built graph as the library gives it: its nodes and edges with planes as indices into
@@ -308,7 +329,7 @@ class GraphPipeline:
         entries = self._store.entries()
         description = through_door(self._door.graph_describe, self._handles[0], [plane for plane, _view in entries])
         first = {}
-        for launch in self._launches:
+        for launch in self._recorded:
             for name, view in launch.bound.views.items():
                 first.setdefault(PlaneStore.region(view), name)
         for name, array in (self._params or {}).items():
@@ -407,6 +428,7 @@ class GraphPipeline:
         """Discard the recording a refusal interrupted, whatever was left open in it, so the next graph of the process can
         record: a refused recording call changes nothing, so the library keeps the recording until it is told to drop it."""
         self._launches.clear()
+        self._recorded.clear()
         self._counting.clear()
         through_door(self._door.record_abort)
 
@@ -459,6 +481,8 @@ def _node_label(node: dict, names: list, labels: list, nodes: list) -> str:
     detail = node["arm"]   # the kind of a conditional, or the place of an arm in its conditional
     if kind == _osprey.EG_GNODE_LAUNCH:
         return labels[node["launch"]]
+    if kind == _osprey.EG_GNODE_HOST:
+        return node["unit"]
     touched = [names[plane] for plane in node["planes"] if plane >= 0]
     if kind == _osprey.EG_GNODE_COND:
         if detail == _SWITCH:
@@ -593,8 +617,9 @@ class Graph(GraphPipeline):
 
     def add(self, step, *, name: str | None = None) -> Graph:
         """Append ``step`` and return the graph. A step is a :class:`~hawk.runtime.BoundPlan`, a built :class:`Graph` (its
-        launches run here, as they were recorded), a :func:`skippable` or :func:`repeat_while`, or a list of these in order.
-        ``name`` labels the launch of a bound plan. A function is refused: the library records launches, never Python."""
+        launches run here, as they were recorded), a bound :func:`hawk.host_step`, a :func:`skippable` or :func:`repeat_while`, or a
+        list of these in order. ``name`` labels the launch of a bound plan. Any other function is refused: the library records
+        launches, never Python."""
         self._check_handle(self, "add")
         self._add_step(step, name)
         return self
@@ -609,6 +634,11 @@ class Graph(GraphPipeline):
         if isinstance(step, BoundPlan):
             step.join(self._store_over(step.door))
             return [_Launch(step, name)]
+        if isinstance(step, BoundHostStep):
+            if name is not None:
+                raise HawkError(f"Graph.add: a host step is named by its function ({step.step.name}); name= labels a launch")
+            self._store_over(step.door)
+            return [_HostCall(step)]
         if isinstance(step, (list, tuple)):
             return [item for part in step for item in self._items_of(part)]
         if isinstance(step, Skippable):
@@ -618,6 +648,7 @@ class Graph(GraphPipeline):
         if isinstance(step, Graph):
             if step._finalizer is None:
                 raise HawkError("Graph.add: a graph added as a step is built first (g.build())")
+            self._store_over(step._door)
             return list(step._items)
         if callable(step) and graph_builder.current() is not None:
             scope: list = []
@@ -703,14 +734,51 @@ class Graph(GraphPipeline):
         for name, (old, _new) in swaps.items():
             if any(old is cell for cell in self._cells()):
                 raise HawkError(f"Graph.bind: {name!r} is a condition cell, recorded at build: call the builder again")
+            if any(isinstance(leaf, _HostCall) and any(old is array for array in leaf.bound.planes.values())
+                   for leaf in self._leaves_everywhere()):
+                raise HawkError(f"Graph.bind: {name!r} is an argument of a host step, recorded at build: call the builder again")
         for old, new in swaps.values():
-            for launch in self._launches_everywhere():
+            for launch in self._leaves_everywhere():
                 held = {key: new for key, value in launch.bound.planes.items() if value is old}
                 if held:
                     launch.bound.rebind(**held)
             self._result = _swapped(self._result, old, new)
         self._params.update({name: new for name, (_old, new) in swaps.items()})
         return self
+
+    def update(self, values: dict | None = None, /, **named) -> Graph:
+        """Change values of a built graph's launches between replays: ``g.update(a=0.3)`` sets ``a`` in every launch that binds
+        it by value, ``g.update({"scale#2.a": 0.3})`` in one launch (its label, as :meth:`node_labels` shows it, then the name). Nothing is
+        recorded again: the library reads the values at the next replay. An array plane is the caller's own memory (write it, or
+        :meth:`bind` a new one), a name no launch binds by value is refused, and so is a graph made with ``record=True``: the
+        library refuses to replay a recorded graph whose plans were rebound, so build it again with the new value."""
+        self._check_built("update")
+        if self._records:
+            raise HawkError("Graph.update: a graph kept for reverse holds the values it was recorded with (the library refuses "
+                            "to replay it once a plan is rebound: a plan of an EG_RECORD_DIFF graph was rebound since "
+                            "eg_record_end); build the graph again with the new value")
+        given = {**(values or {}), **named}
+        found: dict = {}
+        by_value = set()
+        for label, launch in zip(self._labels(), self._launches):
+            for name in launch.bound.planes:
+                if name in launch.bound.views:
+                    continue
+                by_value.add(name)
+                found.update({(key, id(launch.bound)): (launch.bound, name) for key in (name, f"{label}.{name}")})
+        for key in given:
+            if not any(key == hit_key for hit_key, _ in found):
+                raise HawkError(f"Graph.update: {key!r} is not a value any launch binds by value; they are "
+                                f"{sorted(by_value)}, or <launch label>.<name>; an array plane is written by the caller")
+        for (key, _), (bound, name) in found.items():
+            if key in given:
+                bound.rebind(**{name: given[key]})
+        return self
+
+    def _check_built(self, verb: str) -> None:
+        """Refuse ``verb`` on a graph that is not built, or is closed."""
+        if self._finalizer is None or not self._finalizer.alive:
+            raise HawkError(f"Graph.{verb}: the graph is not built, or is closed; build it first")
 
     def _cells(self, items: list | None = None):
         """The condition cells and baselines of the tree."""
@@ -727,7 +795,7 @@ class Graph(GraphPipeline):
 
     def __repr__(self) -> str:
         """The launches, by name where one is given."""
-        launches = list(self._launches_everywhere())
+        launches = list(self._leaves_everywhere())
         named = ", ".join(launch.name or f"#{i}" for i, launch in enumerate(launches))
         return f"<hawk.Graph {'built' if self._finalizer is not None else 'unbuilt'}: {named or 'empty'}>"
 
@@ -785,7 +853,9 @@ def _planes_of(graph: Graph) -> tuple:
     """``(planes, values)`` of the graph's launches: every array plane bound (:class:`_Plane`) and every plane bound by value
     (``(label, name)``), in launch order."""
     planes, values = [], []
-    for ordinal, (launch, label) in enumerate(zip(graph._launches, graph._labels())):
+    launch_labels = iter(graph._labels())
+    for ordinal, launch in enumerate(graph._recorded):
+        label = launch.name if isinstance(launch, _HostCall) else next(launch_labels)
         bound = launch.bound
         for name, given in bound.planes.items():
             if name in bound.views:
@@ -841,14 +911,22 @@ def _inputs(graph: Graph, planes: list) -> dict:
     """``{memory key: plane}`` of the planes the graph reads before it writes them and differentiates: the inputs a gradient can
     be asked of, by the first launch that reads each."""
     written, inputs = set(), {}
-    for ordinal, launch in enumerate(graph._launches):
-        kernel, mine = launch.bound.kernel, {p.name: p for p in planes if p.launch == ordinal}
-        if kernel.graph_vjp(graph._door) is not None:
-            for name in kernel.gradient_names():
-                plane = mine.get(name)
-                if plane is not None and PlaneStore.region(plane.view) not in written:
-                    inputs.setdefault(PlaneStore.region(plane.view), plane)
-        written |= {PlaneStore.region(mine[name].view) for name in kernel.output_names() if name in mine}
+    for ordinal, launch in enumerate(graph._recorded):
+        mine = {p.name: p for p in planes if p.launch == ordinal}
+        if isinstance(launch, _HostCall):
+            step = launch.bound.step
+            # a step with a reverse may read every float argument, and may write the Mutable ones
+            reads = [name for name, plane in mine.items() if plane.view.dtype.kind == "f"] if step.reverses else []
+            writes = [argument.name for argument in step.arguments if argument.writes]
+        else:
+            kernel = launch.bound.kernel
+            reads = kernel.gradient_names() if kernel.graph_vjp(graph._door) is not None else []
+            writes = kernel.output_names()
+        for name in reads:
+            plane = mine.get(name)
+            if plane is not None and PlaneStore.region(plane.view) not in written:
+                inputs.setdefault(PlaneStore.region(plane.view), plane)
+        written |= {PlaneStore.region(mine[name].view) for name in writes if name in mine}
     return inputs
 
 

@@ -463,8 +463,8 @@ class _Library:
 
 
 def _link_set(drafts, answers, built, *, targets, stem: str, exports, root: Path) -> "_Library | None":
-    """Link the units of ``drafts`` into one library with the OSPREY that serves the host: each unit's host part with the
-    text of the set. The set lists every unit of every answer in the answers' order: a unit with no text (the source unit of a split
+    """Link the units of ``drafts`` into one library with the OSPREY that serves the host: each unit's part for every target,
+    the host's first, with the text of the set. The set lists every unit of every answer in the answers' order: a unit with no text (the source unit of a split
     kernel, which names its stages) has a record in the library and no part. Each host unit also gets a link ``<unit>.<ext>`` to the
     library, which the runtime still opens by the unit's name. ``None`` for a build of no host target: its units are the device
     artifacts themselves, and a library links host objects only."""
@@ -477,7 +477,11 @@ def _link_set(drafts, answers, built, *, targets, stem: str, exports, root: Path
     for unit in (u for answer in answers for u in answer["units"]):
         metas.append(unit["meta"])
         if unit["texts"]:
-            parts.append(next(written)[host])
+            row = next(written)
+            # the host part first, then the unit's part for every other target, as given: the linking library tells an
+            # object from an image it embeds in the unit
+            parts.append(row[host])
+            parts.extend(row[target] for target in targets if target != host)
     name = f"{stem}.so"
     # The store keys a link by what it links, never by the name asked: another build's name may be the one its file carries, so the
     # published file is named here, from the name this call asked for.

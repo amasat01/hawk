@@ -67,6 +67,16 @@ Test a ray against a sphere, a box or a triangle, and find the nearest hit in a 
 howto_rays_and_meshes
 ```
 
+## Your own Python step
+
+Run a Python function inside a graph, and give it a gradient.
+
+```{toctree}
+:maxdepth: 1
+
+howto_host_step
+```
+
 ## Wide values
 
 Vectors with hundreds of components, and wide input and output planes.

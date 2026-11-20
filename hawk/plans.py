@@ -34,7 +34,8 @@ from .runtime import BoundPlan, LoadedKernel, load, through_door
 from .targets import TARGETS, host_target, runs_here
 from .trace.kernel import Kernel
 
-__all__ = ["DeviceKernel", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy", "plan", "synchronize", "to_numpy"]
+__all__ = ["DeviceKernel", "DeviceProps", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy", "device_props", "host_threads", "plan",
+           "set_host_threads", "synchronize", "to_numpy"]
 
 
 @dataclass(frozen=True)
@@ -233,8 +234,7 @@ class Plan:
         ``returns="numpy"`` hands every output back as a NumPy array; ``None`` leaves each as it is. Other arguments as in
         :meth:`bind`.
         """
-        if returns not in (None, "numpy"):
-            raise HawkError(f"returns={returns!r}: 'numpy' is the one conversion this build has")
+        check_returns(returns)
         if not self.kernel.output_names():
             raise HawkError(f"{self.kernel.path.name}: this kernel declares no output plane, so run() has nothing to return")
         outputs = self._outputs(planes, n_samples, layout)
@@ -245,6 +245,8 @@ class Plan:
     def __call__(self, /, *args, **kwargs):
         """Run the kernel once as a call to it, where the arrays live: ``plan(x, y, a=3)`` takes the planes in the order the
         kernel declares them (a ``Grid`` declaration is no plane), the rest by name, and a runtime extent by its label.
+        ``returns="numpy"`` hands every array of the result back as a NumPy array (as in :meth:`run`; a kernel with a plane
+        named ``returns`` keeps it as a plane).
 
         Returns what the kernel body returns, lane-shaped; a kernel that returns nothing gives its one output plane, or a
         ``dict`` of them by name. An output left out is made, zeroed; an argument the kernel reads before it writes needs a
@@ -255,11 +257,15 @@ class Plan:
         if deployed is None:
             raise HawkError(f"{self.kernel.path.name}: this plan was made from a loaded artifact, which carries no call "
                             "signature; bind its planes by name with plan.bind(...) or plan.run(...)")
+        returns = None if "returns" in deployed.kernel.planes else kwargs.pop("returns", None)
+        check_returns(returns)
         outputs = self._outputs(self._named(deployed.kernel, args, kwargs), None, None)
         tree = deployed.kernel.returns
         if tree is not None:
-            return _filled(tree, outputs)
-        return next(iter(outputs.values())) if len(outputs) == 1 else (outputs or None)
+            result = _filled(tree, outputs)
+        else:
+            result = next(iter(outputs.values())) if len(outputs) == 1 else (outputs or None)
+        return numpy_tree(result) if returns == "numpy" else result
 
     def _named(self, kernel: Kernel, args: tuple, kwargs: dict) -> dict:
         """``{plane: value}`` of a call ``kernel(*args, **kwargs)``: ``args`` in the order the kernel declares its planes."""
@@ -277,6 +283,22 @@ class Plan:
             raise HawkError(f"{kernel.name}(): {prior[0]!r} is updated from its previous value, so it needs an initial "
                             f"value: pass {prior[0]}=...")
         return planes
+
+
+def check_returns(returns: str | None) -> None:
+    """Refuse a ``returns=`` that is not ``None`` or ``"numpy"``, the one conversion hawk makes."""
+    if returns not in (None, "numpy"):
+        raise HawkError(f"returns={returns!r}: 'numpy' is the one conversion this build has")
+
+
+def numpy_tree(result):
+    """``result`` with every array in it (an array, or nested tuples, lists and dicts of them) as a NumPy array, by
+    :func:`to_numpy`; anything else as it is."""
+    if isinstance(result, dict):
+        return {key: numpy_tree(value) for key, value in result.items()}
+    if isinstance(result, (tuple, list)):
+        return type(result)(numpy_tree(value) for value in result)
+    return to_numpy(result) if hasattr(result, "__dlpack__") else result
 
 
 def _filled(tree, outputs: dict):
@@ -404,6 +426,67 @@ def to_numpy(x):
     return through_door(_place.to_host, x)
 
 
+def _device_target(device: str, where: str) -> tuple:
+    """``(target, ordinal)`` of ``device``, ``"<target>:<ordinal>"`` of a device target the OSPREYs serve, or a refusal by name."""
+    target, _, ordinal = device.partition(":")
+    served = TARGETS.get(target)
+    if served is None or not served.device or not (ordinal or "0").isdigit():
+        raise HawkError(f"{where}: device={device!r} is not '<target>:<ordinal>' of a device target "
+                        f"({', '.join(t.id for t in TARGETS.values() if t.device) or 'none is served'})")
+    return served, int(ordinal or 0)
+
+
+@dataclass(frozen=True)
+class DeviceProps:
+    """What the device library states of one device, member by member as its door gives them: the raw properties and the
+    peaks and ridge points the library derives from them. Nothing here is computed by hawk."""
+
+    name: str
+    cc_major: int
+    cc_minor: int
+    sm_count: int
+    clock_rate_khz: int
+    memory_clock_rate_khz: int
+    memory_bus_width_bits: int
+    shared_mem_per_block: int
+    shared_mem_per_sm: int
+    regs_per_block: int
+    regs_per_sm: int
+    warp_size: int
+    peak_bytes_per_s: float
+    peak_flops_sp: float
+    peak_flops_dp: float
+    fp64_ratio: float
+    ridge_flops_per_byte_sp: float
+    ridge_flops_per_byte_dp: float
+
+    def ridge_flops_per_byte(self, dtype: str) -> float:
+        """The flops per byte the device balances at for ``dtype``: the library's single-precision figure for ``"float32"``,
+        its double-precision figure otherwise."""
+        return self.ridge_flops_per_byte_sp if dtype == "float32" else self.ridge_flops_per_byte_dp
+
+
+def device_props(device: str) -> DeviceProps:
+    """The properties of ``device``, ``"<target>:<ordinal>"`` of a device target (the form :func:`asarray` takes), as the
+    device library's door states them. A device the library does not see is refused by its reason."""
+    served, ordinal = _device_target(device, "hawk.device_props")
+    door = through_door(_place.open_door, served.id, ordinal)
+    return DeviceProps(**through_door(door.device_props, ordinal))
+
+
+def host_threads() -> int:
+    """The most threads a host launch of this process uses, as the host library states it."""
+    return through_door(_place.door_of(_place.HOST).ctx_info)["host_threads"]
+
+
+def set_host_threads(threads: int | None) -> None:
+    """Set the most threads a host launch uses (``None``: the library's default). A count the library refuses, such as a
+    negative one, is refused by its reason."""
+    if threads is not None and (isinstance(threads, bool) or not isinstance(threads, int)):
+        raise HawkError(f"hawk.set_host_threads takes a whole number of threads or None, got {threads!r}")
+    through_door(_place.door_of(_place.HOST).host_threads, 0 if threads is None else threads)
+
+
 def asarray(x, device: str | None = None):
     """``x`` as an array. ``device=None`` gives a NumPy array on the host: an array or DLPack producer shares its memory, a
     sequence or a number is copied.
@@ -416,12 +499,7 @@ def asarray(x, device: str | None = None):
 
     if device is None:
         return to_numpy(x) if hasattr(x, "__dlpack__") and not isinstance(x, np.ndarray) else np.asarray(x)
-    target, _, ordinal = device.partition(":")
-    served = TARGETS.get(target)
-    if served is None or not served.device or not (ordinal or "0").isdigit():
-        raise HawkError(f"hawk.asarray: device={device!r} is not '<target>:<ordinal>' of a device target "
-                        f"({', '.join(t.id for t in TARGETS.values() if t.device) or 'none is served'})")
-    ordinal = int(ordinal or 0)
+    served, ordinal = _device_target(device, "hawk.asarray")
     here = _place.device_of(x)
     if here not in (None, _place.HOST):
         if through_door(_place.door_of, here) is through_door(_place.open_door, served.id, ordinal):

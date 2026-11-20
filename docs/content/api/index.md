@@ -86,6 +86,10 @@ The declarations a kernel is written in, and the top-level functions. Each has i
    hawk.Partition
    hawk.asarray
    hawk.to_numpy
+   hawk.device_props
+   hawk.DeviceProps
+   hawk.host_threads
+   hawk.set_host_threads
    hawk.synchronize
    hawk.banded_pack
    hawk.banded_unpack
@@ -107,7 +111,7 @@ The declarations a kernel is written in, and the top-level functions. Each has i
 
 ## Recording launches into a graph
 
-A graph records launches, conditionals and forks once and replays them as one; Python is never recorded. Write one by hand (`g.add(bound)`, `with g.parallel() as p`, `with p.branch() as b`) or with `@hawk.Graph.builder`, which runs a function once: a kernel call inside it is recorded and returns its output arrays, and `g.result` declares what `g(n)` gives back after replaying `n` times. In a builder, `if`, `elif`, `else`, `while`, `for _ in range(cap)` that opens with `if not c: break`, and `match` on a one-element `int32` or `uint32` array (or a `hawk.SkipGuard`) become conditionals of the graph, read at every replay; any other condition is a Python value, decided once at build. `hawk.skippable(step, guard)` and `hawk.repeat_while(step, guard, max_iters)` are the same conditionals over a step you add by hand. Leaving a `with g.parallel()` is the join: no edge is ever declared, the library orders the branches by the planes they touch and refuses two that race, and `b.wait(array)` orders a branch after the earlier branches that write the array. `g.bind(**arrays)` takes new arrays of the same shape and dtype for a builder's parameters with no new record.
+A graph records launches, conditionals and forks once and replays them as one; Python is recorded only as a `hawk.host_step`. Write one by hand (`g.add(bound)`, `with g.parallel() as p`, `with p.branch() as b`) or with `@hawk.Graph.builder`, which runs a function once: a kernel call inside it is recorded and returns its output arrays, and `g.result` declares what `g(n)` gives back after replaying `n` times. In a builder, `if`, `elif`, `else`, `while`, `for _ in range(cap)` that opens with `if not c: break`, and `match` on a one-element `int32` or `uint32` array (or a `hawk.SkipGuard`) become conditionals of the graph, read at every replay; any other condition is a Python value, decided once at build. `hawk.skippable(step, guard)` and `hawk.repeat_while(step, guard, max_iters)` are the same conditionals over a step you add by hand. Leaving a `with g.parallel()` is the join: no edge is ever declared, the library orders the branches by the planes they touch and refuses two that race, and `b.wait(array)` orders a branch after the earlier branches that write the array. `match` on a cell takes integer cases and an optional `case _`; `g.update(a=0.3)` or `g.update({"label.a": 0.3})` changes a value a launch binds by value, between replays, with no new record (not on a graph made with `record=True`). `g.bind(**arrays)` takes new arrays of the same shape and dtype for a builder's parameters with no new record.
 
 `hawk.reverse(graph.record, cotangents, wrt=None)` over a graph made with `record=True` (a builder's kernel calls are built with their vjp; a plan added by hand is made with `hawk.deploy(kernel, reverse=True)`) returns the gradients of the cotangents, by plane name, through forks, conditionals and `while` loops as they ran at the last replay. `wrt` selects inputs; a plane bound by a Python number has no gradient and is refused by name (pass a one-element array). A built graph is drawn from what the library describes: `str(g)` and `g.show()`, `g.to_mermaid()`, `g.to_dot()`, `g.edges()`, `g.schedule()`, `g.node_labels()` and `g.num_nodes()`.
 
@@ -120,4 +124,5 @@ A graph records launches, conditionals and forks once and replays them as one; P
    hawk.SkipGuard
    hawk.skippable
    hawk.repeat_while
+   hawk.host_step
 ```

@@ -20,16 +20,18 @@ from __future__ import annotations
 import time
 import weakref
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import NamedTuple
 
 import _osprey
 
 from .errors import HawkError
+from .host_steps import BoundHostStep
 from ._plane_layout import describe
-from .plans import Plan, deploy
+from .plans import Plan, check_returns, deploy, numpy_tree
 from .runtime import BoundPlan, LoadedKernel, through_door
+from .trace import Kernel
 
 __all__ = ["ActiveSet", "GradientReport", "Gradients", "RunRecord", "RunReport", "Runner", "SimResult", "simulate", "until_done"]
 
@@ -224,10 +226,11 @@ class Runner:
 
     def __init__(self, plans: list[Plan], bounds: list[BoundPlan], max_steps: int, active: ActiveSet | None, *,
                  layout: str | None = None, record: bool = False, window: int | None = None,
-                 memory_budget: int | None = None, steps_reverse: str = "per_step") -> None:
+                 memory_budget: int | None = None, steps_reverse: str = "per_step", step_graph=None) -> None:
         """Make the library's runner over ``bounds``, the plans of one step in order, bound from ``plans``; ``layout`` is the
         call's, which a reverse reads its planes by; ``record``, ``window``, ``memory_budget`` and ``steps_reverse`` are those
-        of :func:`until_done`."""
+        of :func:`until_done`. ``step_graph`` is a built :class:`~hawk.graph.Graph` the library runs once per step, ahead of the
+        plans."""
         self._plans = plans
         self._bounds = bounds
         self._layout = layout
@@ -256,10 +259,21 @@ class Runner:
             options["derived_roles"] = [role for role, _ in self._derived]
             options["derived_units"] = [unit for _, unit in self._derived]
         self._recorded = record
+        self._step_graph = step_graph
+        if step_graph is not None:
+            if step_graph._door is not self._door:
+                raise HawkError("Runner: the host steps and the plans of one model run on one door, and their arrays are in "
+                                "more than one memory; bind them all in the same place")
+            options["step_graph"] = step_graph._handles[0]
         self._handle = through_door(self._door.runner_new, [bound.handle for bound in bounds], max_steps, **options)
         #: the handle in a list the finalizer frees without holding this object
         self._handles = [self._handle]
         self._finalizer = weakref.finalize(self, _release, self._door, self._handles)
+
+    def _check_open(self, verb: str) -> None:
+        """Refuse ``verb`` on a runner that was closed: the library's handle is gone."""
+        if not self._finalizer.alive:
+            raise HawkError(f"Runner.{verb}: the runner is closed; make another")
 
     @property
     def outputs(self) -> tuple:
@@ -274,6 +288,7 @@ class Runner:
     def run(self) -> RunReport:
         """Run until every sample is done or ``max_steps`` is reached and report what the library counted. A second run
         continues from where the first stopped; :meth:`reset` starts the batch over."""
+        self._check_open("run")
         started = time.perf_counter()
         report = through_door(self._door.run, self._handle)
         through_door(self._door.sync)
@@ -290,11 +305,13 @@ class Runner:
     def reset(self) -> None:
         """Put the loop back as the library made it: the done mask and the counters cleared, every sample live. The caller rewrites
         the state planes it wants run again."""
+        self._check_open("reset")
         through_door(self._door.runner_reset, self._handle)
         self._counted = [{"finished": 0, "steps": None, "mix": ()} for _ in self._bounds]
 
     def figures(self) -> dict:
         """The library's figures of the loop: its ``mode`` and, where the loop has one, the launch it resolved."""
+        self._check_open("figures")
         return through_door(self._door.runner_figures, self._handle)
 
     @property
@@ -313,6 +330,7 @@ class Runner:
         refuses nothing here.
         """
         strict = check_reverse_options(strict, "compensated", "Runner.reverse")
+        self._check_open("reverse")
         if not self._recorded:
             raise HawkError("Runner.reverse: this runner records nothing; make it with record=True")
         import numpy as np
@@ -367,18 +385,95 @@ class RunRecord:
         self.runner = runner
 
 
-def _plans_of(model, record: bool = False, window: int | None = None) -> list[Plan]:
-    """The plans of ``model`` in order: a :class:`~hawk.plans.Plan` as it is, a kernel deployed with the others in one
-    bundle (recordable, with ``window`` steps, when ``record``)."""
-    items = list(model) if isinstance(model, (list, tuple)) else [model]
+def _items_of(model) -> list:
+    """The items of ``model`` in order: an iterable (a list, a tuple, a generator) as its items, anything else as one item alone."""
+    if isinstance(model, (Plan, Kernel, BoundHostStep, LoadedKernel)) or not hasattr(model, "__iter__"):
+        return [model]
+    return list(model)
+
+
+def _checked_items(model) -> list:
+    """The items of ``model`` once each is of a kind a run takes: a plan, a kernel, a bound host step or a built graph. An
+    unknown kind, an unbuilt graph, a loaded kernel and an empty model are refused by name."""
+    from .graph import Graph  # graph imports this module
+
+    items = _items_of(model)
     if not items:
-        raise HawkError("the model is empty; pass a plan, a kernel, or a list of them")
+        raise HawkError("the model is empty; pass a plan, a kernel, a bound host step, a built graph, or an iterable of them")
     for item in items:
         if isinstance(item, LoadedKernel):
             raise HawkError("the model is a loaded kernel; plan it first (hawk.plan(loaded)) or pass the kernel itself")
-    kernels = [item for item in items if not isinstance(item, Plan)]
-    deployed = iter(deploy(kernels, record=record, window=window if record else None) if kernels else ())
-    return [item if isinstance(item, Plan) else next(deployed) for item in items]
+        if isinstance(item, Graph) and item._finalizer is None:
+            raise HawkError("the model holds a graph that is not built; build it first (g.build())")
+        if not isinstance(item, (Plan, Kernel, BoundHostStep, Graph)):
+            raise HawkError(f"the model holds a {type(item).__name__}: a run takes plans, kernels, bound host steps "
+                            "(step(x=a, y=b)) and built graphs, alone or in an iterable")
+    return items
+
+
+def _split_model(model) -> tuple:
+    """``(steps, kernels)`` of ``model`` for a stepping run: what the library runs once per step ahead of the plans (a bound host
+    step, a built graph) and the plans and kernels it runs as the step. A host step or graph after a plan is refused: the library
+    runs them ahead of the plans, so it would run in another order than the one written."""
+    steps, kernels = [], []
+    for item in _checked_items(model):
+        if isinstance(item, (Plan, Kernel)):
+            kernels.append(item)
+        elif kernels:
+            raise HawkError(f"the model lists a {type(item).__name__} after a plan: the library runs host steps and graphs "
+                            "once per step ahead of the plans, so list them first")
+        else:
+            steps.append(item)
+    if not kernels:
+        raise HawkError("the model has no plan or kernel: a stepping run needs one to count its steps")
+    return steps, kernels
+
+
+def _plans_of(kernels: list, record: bool = False, window: int | None = None) -> list[Plan]:
+    """The plans of ``kernels`` in order: a :class:`~hawk.plans.Plan` as it is, a kernel deployed with the others in one
+    bundle (recordable, with ``window`` steps, when ``record``)."""
+    unbuilt = [item for item in kernels if not isinstance(item, Plan)]
+    deployed = iter(deploy(unbuilt, record=record, window=window if record else None) if unbuilt else ())
+    return [item if isinstance(item, Plan) else next(deployed) for item in kernels]
+
+
+def run_once(model, arrays: dict, n_samples: int | None, layout: str | None) -> None:
+    """Run ``model`` once, in the order written, and wait: what :func:`hawk.run` does for anything but a loaded kernel. The
+    plans and kernels are bound over the one namespace ``arrays``; the items are recorded into a graph and replayed once."""
+    from .graph import Graph  # graph imports this module
+
+    items = _checked_items(model)
+    unbuilt = list({id(item): item for item in items if isinstance(item, Kernel)}.values())   # a kernel listed twice is built once
+    deployed = dict(zip(map(id, unbuilt), _plans_of(unbuilt)))
+    graph, bounds = Graph(), []
+    try:
+        for item in items:
+            if isinstance(item, (Plan, Kernel)):
+                plan = item if isinstance(item, Plan) else deployed[id(item)]
+                names = plan.kernel.declared_names()
+                item = plan.bound({k: v for k, v in arrays.items() if k in names}, n_samples=n_samples, layout=layout,
+                                  keep=False, outputs=True)
+                bounds.append(item)
+            graph.add(item)
+        graph.build().launch().synchronize()
+    finally:
+        graph.close()
+        for bound in bounds:
+            bound.close()
+
+
+def _step_graph(steps: list, record: bool, bounds: list[BoundPlan]):
+    """The graph of ``steps`` in order, built; recorded for the reverse when the run is. The plans of the run are bound through
+    the graph's planes, so that a step and a plan over one array share one plane and a reverse follows the array from one to the
+    other."""
+    from .graph import Graph  # graph imports this module
+
+    graph = Graph(record=record)
+    for step in steps:
+        graph.add(step)
+    for bound in bounds:
+        bound.join(graph._store)
+    return graph.build()
 
 
 def _bind_model(plans: list[Plan], planes: dict, n_samples, layout) -> list[BoundPlan]:
@@ -418,7 +513,9 @@ def until_done(model, *, max_steps: int, active: ActiveSet | None = None, n_samp
                memory_budget: int | None = None, steps_reverse: str = "per_step", **planes) -> Runner:
     """Bind ``model`` and make the loop that runs it until every sample is done; ``.run()`` of the result runs it.
 
-    ``model`` is a plan, a kernel or a list of them run as one step in order (see the module). ``planes`` are bound by
+    ``model`` is a plan, a kernel, a bound :func:`hawk.host_step` or a built :class:`hawk.Graph`, alone or in any iterable of them
+    (a list, a tuple, a generator), run as one step in order (see the module): the host steps and graphs, which come first,
+    run once per step ahead of the plans. ``planes`` are bound by
     the rules of :meth:`hawk.plans.Plan.bind`, except the finished counter and the active set, which the library makes; an
     omitted ``terminated`` mask starts all-false and an omitted output is made, zeroed. ``max_steps`` caps the steps a
     sample may take. ``active`` states the compaction of a kernel built under ``Guard(active_set=True)``.
@@ -434,11 +531,13 @@ def until_done(model, *, max_steps: int, active: ActiveSet | None = None, n_samp
     if active is not None and (active.mask is not None or active.positions is not None):
         raise HawkError("until_done: a runner makes its own active set; pass ActiveSet(every=, reorder=), or bind "
                         "ActiveSet(mask=...).planes(kernel) to a plain plan")
-    plans = _plans_of(model, record, window)
+    steps, kernels = _split_model(model)
+    plans = _plans_of(kernels, record, window)
     bounds = _bind_model(plans, planes, n_samples, layout)
     try:
         return Runner(plans, bounds, max_steps, active, layout=layout, record=record, window=window,
-                      memory_budget=memory_budget, steps_reverse=steps_reverse)
+                      memory_budget=memory_budget, steps_reverse=steps_reverse,
+                      step_graph=_step_graph(steps, record, bounds) if steps else None)
     except BaseException:
         for bound in bounds:
             bound.close()
@@ -469,6 +568,12 @@ class SimResult:
             return self.__dict__["state"][name]
         except KeyError:
             raise AttributeError(name) from None
+
+    def returned(self, returns: str | None):
+        """This result with its state arrays as ``returns`` states: ``"numpy"`` gives NumPy arrays (as :func:`hawk.to_numpy`
+        does), ``None`` keeps them as they are."""
+        check_returns(returns)
+        return self if returns is None else replace(self, state=numpy_tree(self.state))
 
     @property
     def n(self) -> int:
@@ -503,14 +608,16 @@ class SimResult:
 
 def simulate(model, *, max_steps: int, active: ActiveSet | None = None, n_samples: int | None = None,
              layout: str | None = None, record: bool = False, window: int | None = None,
-             memory_budget: int | None = None, steps_reverse: str = "per_step", **planes) -> SimResult:
+             memory_budget: int | None = None, steps_reverse: str = "per_step", returns: str | None = None,
+             **planes) -> SimResult:
     """Run ``model`` until every sample is done or ``max_steps`` is reached and return the state.
 
     The model, the planes, ``active`` and the recording options are those of :func:`until_done`. The state is every output
     plane of the model, the caller's own array where it bound one and a zeroed one where it left one out. With
     ``record=True`` the result's ``record`` goes to :func:`hawk.reverse` and keeps the library's runner alive until the
-    result is collected.
+    result is collected. ``returns="numpy"`` hands the state back as NumPy arrays (:meth:`SimResult.returned`).
     """
+    check_returns(returns)
     runner = until_done(model, max_steps=max_steps, active=active, n_samples=n_samples, layout=layout, record=record,
                         window=window, memory_budget=memory_budget, steps_reverse=steps_reverse, **planes)
     try:
@@ -525,4 +632,4 @@ def simulate(model, *, max_steps: int, active: ActiveSet | None = None, n_sample
         runner.close()
     if clash:
         raise HawkError(f"hawk.simulate: the planes {clash} are names of the result; read them from the arrays you bound")
-    return SimResult(state=state, report=report, record=runner.record)
+    return SimResult(state=state, report=report, record=runner.record).returned(returns)

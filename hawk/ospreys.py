@@ -44,7 +44,7 @@ def _ask(call: str, *args) -> str:
 
     try:
         return getattr(_osprey.Ctx(), "backend_" + call)(*args)
-    except (ValueError, _osprey.Fault) as refusal:
+    except (_osprey.NotWritten, _osprey.BadRequest, _osprey.Fault) as refusal:
         raise HawkError(str(refusal)) from refusal
 
 
@@ -92,7 +92,7 @@ class Osprey:
                 context = _osprey.Ctx()
                 try:
                     self._open = (_osprey, context, context.backend_open(str(library)))
-                except (ValueError, _osprey.Fault) as refusal:
+                except (_osprey.NotWritten, _osprey.BadRequest, _osprey.Fault) as refusal:
                     raise HawkError(
                         f"the OSPREY {self.name!r} at {self.folder} cannot be opened: {refusal}"
                     ) from refusal
@@ -110,7 +110,7 @@ class Osprey:
             if device not in self._doors:
                 try:
                     self._doors[device] = module.Door(library) if device is None else module.Door(library, device=device)
-                except (ValueError, module.Fault) as refusal:
+                except (module.NotWritten, module.BadRequest, module.Fault) as refusal:
                     place = "" if device is None else f" for device {device}"
                     raise HawkError(
                         f"the OSPREY {self.name!r} at {self.folder} has no runtime door{place}: {refusal}"
@@ -136,7 +136,7 @@ class Osprey:
         module, context, library = self._opened()
         try:
             return json.loads(getattr(context, "backend_" + door)(library, *args))
-        except (ValueError, module.Fault) as refusal:
+        except (module.NotWritten, module.BadRequest, module.Fault) as refusal:
             raise self._refused(door, refusal) from refusal
 
     def machine(self, ask: dict) -> dict:
@@ -164,7 +164,7 @@ class Osprey:
             return json.loads(
                 context.backend_lower(library, dump, dialects, json.dumps(request))
             )
-        except (ValueError, module.Fault) as refusal:
+        except (module.NotWritten, module.BadRequest, module.Fault) as refusal:
             raise self._refused(repr(request["name"]), refusal) from refusal
 
     def build(self, unit: dict, root: Path) -> dict:
@@ -190,7 +190,7 @@ class Osprey:
             asked["exports"] = [int(n) for n in exports]
         try:
             return context.backend_set_text(library, json.dumps(asked))
-        except (ValueError, module.Fault) as refusal:
+        except (module.NotWritten, module.BadRequest, module.Fault) as refusal:
             names = [u["name"] for u in units]
             raise self._refused(f"the set of units {names}", refusal) from refusal
 

@@ -57,12 +57,12 @@ _SURFACES = {
 #: the SAME commit, same as any other committed manifest in this repo.
 _EXPECTED_MANIFEST = {
     "hawk": [
-        "ActiveSet", "DeviceKernel", "Graph", "GraphPipeline", "Grid", "HawkError", "HostSerial", "HostTeam", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
+        "ActiveSet", "DeviceKernel", "DeviceProps", "Graph", "GraphPipeline", "Grid", "HawkError", "HostSerial", "HostTeam", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
         "Param", "Partition", "Quantity", "Quat", "RawBlock", "Scalar", "SkipGuard", "Sorted",
         "Staged", "Table", "Terminated", "ToolchainAbsent", "UInt32", "Value", "Vector", "Wide",
-        "WideOut", "__version__", "asarray", "banded_pack", "banded_unpack", "build", "chain", "deploy", "geometry",
-        "kernel", "load", "max", "mean", "min", "plan", "primitive", "raw_device", "repeat_while", "resolve_dispatch", "reverse", "run",
-        "sample_position", "samples_first", "samples_last", "scatter", "simulate", "skippable", "steps", "sum", "synchronize",
+        "WideOut", "__version__", "asarray", "banded_pack", "banded_unpack", "build", "chain", "deploy", "device_props", "geometry",
+        "host_step", "host_threads", "kernel", "load", "max", "mean", "min", "plan", "primitive", "raw_device", "repeat_while", "resolve_dispatch", "reverse", "run",
+        "sample_position", "samples_first", "samples_last", "scatter", "set_host_threads", "simulate", "skippable", "steps", "sum", "synchronize",
         "to_numpy", "until_done",
     ],
     "hawk.trace": [],
@@ -90,8 +90,8 @@ _EXPECTED_MANIFEST = {
         "BoundPlan", "LoadedKernel", "PlaneStore", "check_scatter_status", "dispatch_costs", "load", "run", "steps_reverse_table",
     ],
     "hawk.plans": [
-        "DeviceKernel", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy",
-        "plan", "synchronize", "to_numpy",
+        "DeviceKernel", "DeviceProps", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy",
+        "device_props", "host_threads", "plan", "set_host_threads", "synchronize", "to_numpy",
     ],
     "hawk.graph_builder": ["Recorder", "attach", "current", "make_builder"],
     "hawk.runner": ["ActiveSet", "GradientReport", "Gradients", "RunRecord", "RunReport", "Runner", "SimResult", "simulate", "until_done"],
@@ -141,7 +141,8 @@ def test_the_public_manifest_is_exactly_this():
 _TOP_LEVEL_DOOR_NAMES = frozenset({
     "build", "load", "run", "primitive", "plan", "deploy", "Partition", "HostTeam", "HostSerial", "DeviceKernel", "asarray",
     "to_numpy", "synchronize", "banded_pack", "banded_unpack", "ActiveSet", "until_done", "simulate", "Graph",
-    "GraphPipeline", "reverse", "SkipGuard", "skippable", "repeat_while"})
+    "GraphPipeline", "reverse", "SkipGuard", "skippable", "repeat_while", "DeviceProps", "device_props",
+    "host_threads", "set_host_threads"})
 
 #: The reductions named twice ON PURPOSE: ``hawk.<op>`` reduces across lanes
 #: (``over=``), ``hawk.math.<op>`` within one value (``np.sum`` over its own

@@ -58,6 +58,7 @@ inside the door is refused by the door, with its reason.
 from __future__ import annotations
 
 import json
+import math
 import struct
 import weakref
 from pathlib import Path
@@ -94,10 +95,12 @@ _UNIFORM_FORMAT = MappingProxyType({"float64": "<d", "float32": "<f", "int64": "
 
 
 def through_door(call, *args, **kwargs):
-    """Return ``call(*args, **kwargs)``; a refusal of the door is raised as :class:`~hawk.errors.HawkError`, its reason as given."""
+    """Return ``call(*args, **kwargs)``; a refusal of the runtime (its own exception types) is raised as
+    :class:`~hawk.errors.HawkError`, its reason as given. Any other exception, one a step of the user's raised included, passes
+    unchanged."""
     try:
         return call(*args, **kwargs)
-    except (ValueError, _osprey.Fault) as refusal:
+    except (_osprey.NotWritten, _osprey.BadRequest, _osprey.Fault) as refusal:
         raise HawkError(str(refusal)) from refusal
 
 
@@ -483,17 +486,24 @@ class LoadedKernel:
         for cell, spec in cells.items():
             if cell not in arrays:
                 continue
-            if not is_ndarray(arrays[cell]):
-                if spec["columns"] != 1 or tuple(describe(arrays[cell]).shape) != (1,):
-                    raise HawkError(
-                        f"kernel {self.declared.get('kernel', '?')!r}: the cell {cell!r} exports DLPack and is not a NumPy array, so "
-                        f"hawk cannot slice it per column; pass shape ({spec['columns']},) as a one-cell array of one "
-                        f"column, or wrap it with numpy.asarray({cell})")
-                out[cell] = arrays[cell]
+            value, columns = arrays[cell], spec["columns"]
+            held = math.prod(describe(value).shape)
+            if held != columns:
+                raise HawkError(f"kernel {self.declared.get('kernel', '?')!r}: the cell {cell!r} holds {held} value(s); it is one "
+                                f"value per column, {columns} here")
+            if columns == 1 and not is_ndarray(value) and tuple(describe(value).shape) == (1,):
+                out[cell] = value         # the one-column cell of any array is its own one-element view
                 continue
-            column = arrays[cell].reshape(-1)
-            for k, plane in enumerate(_ir.planes(cell, spec["columns"])):
-                out[plane] = column[k : k + 1]
+            # the runtime binds one one-element plane per column and takes no offset, so each column is the array's own view of
+            # that element: its indexing, whatever library the array comes from
+            try:
+                column = value.reshape(-1)
+                views = [column[k : k + 1] for k in range(columns)]
+            except (AttributeError, TypeError) as failure:
+                raise HawkError(f"kernel {self.declared.get('kernel', '?')!r}: the cell {cell!r} ({type(value).__name__}) cannot "
+                                f"be viewed per column: hawk reshapes it to one dimension and slices it, and its library "
+                                f"refuses ({failure})") from failure
+            out.update(zip(_ir.planes(cell, columns), views))
         return out
 
     def _uniform_bytes(self, name: str, value) -> bytes:
@@ -719,6 +729,16 @@ class BoundPlan:
             self._wire(self._arguments)
 
     @property
+    def names(self) -> tuple:
+        """The names of the kernel's planes and values, in the order the kernel declares them."""
+        return tuple(name for _role, name in self._kernel.arg_spec)
+
+    @property
+    def n(self) -> int:
+        """The sample count this plan was bound for."""
+        return self._n
+
+    @property
     def planes(self) -> MappingProxyType:
         """The arrays bound, by name, as the caller gave them (a plane made for an output left out included), read-only."""
         return MappingProxyType({name: getattr(value, "array", value) for name, value in self._arguments.given.items()})
@@ -894,6 +914,10 @@ def run(kernel_artifact: LoadedKernel, *, base: int = 0, count: int | None = Non
         **arrays) -> None:
     """Bind ``arrays`` and run the WHOLE range in ONE serial launch (one device launch over arrays in device memory) and wait for it.
 
+    Anything but a loaded kernel is run once in the order written and waited for: a kernel or a plan, a bound
+    :func:`hawk.host_step`, a built :class:`hawk.Graph`, or an iterable of them, whose kernels and plans bind the ``arrays`` by
+    name (``base=`` and ``count=`` are a loaded kernel's).
+
     ``count`` defaults to ``n_samples``, and ``n_samples`` to the count
     every bound per-sample plane agrees on (:func:`_n_from`). Output
     planes are the caller's, written in place; this returns nothing. A
@@ -913,6 +937,13 @@ def run(kernel_artifact: LoadedKernel, *, base: int = 0, count: int | None = Non
     ``n_samples=``."""
     from .plans import DeviceKernel, HostSerial, Plan    # plans builds on this module
 
+    if not isinstance(kernel_artifact, LoadedKernel):
+        if base != 0 or count is not None:
+            raise HawkError("hawk.run: base= and count= are the range of a loaded kernel; a plan, a host step, a graph or a list "
+                            "of them runs whole")
+        from .runner import run_once    # runner builds on this module
+
+        return run_once(kernel_artifact, arrays, n_samples, layout)
     found = _place.place_of(arrays, kernel_artifact.path.name)
     structure = HostSerial if found is None or found[0] == _place.HOST else DeviceKernel
     bound = Plan(kernel_artifact, structure, None, None).bound(
