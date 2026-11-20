@@ -48,6 +48,7 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
+import hawk
 from hawk import Mutable as _Mutable
 from hawk import Param as _Param
 from hawk import Scalar as _Scalar
@@ -65,15 +66,17 @@ N = 16
 
 
 def _run_host(bundle, kernel, **kw):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
+    """``kernel`` of ``bundle`` run once over ``kw`` in ONE serial call over the whole range: its fixtures share a lane
+    / a mask, so a tiled run would observe the library's schedule, not the seam."""
+    return hawk.plan(hawk.load(bundle.directory, kernel), hawk.HostSerial).run(**kw)
 
-    assert eexec.HostTeam.tile_count(eexec.Partition.whole(N), 0) == 1, (
-        "this row must run in ONE tile: its fixtures share a lane / a mask, so a "
-        "tiled run would observe eagle's schedule, not the seam"
-    )
-    plugin = L.host_plugin(bundle.directory, kernel, sidecar_of(bundle, kernel))
-    return eplan.plan(plugin, structure=eexec.HostTeam).run(**kw)
+
+@pytest.mark.parametrize("structure", [hawk.HostSerial, hawk.HostTeam], ids=["serial", "team"])
+def test_the_seam_fixtures_size_runs_in_one_tile(cache_dir, structure):
+    """The rows that share a lane or a mask are only meaningful in one tile: a launch of ``N`` samples reports one."""
+    kernel = hawk.deploy(D.diagnostic, cache_dir=cache_dir).kernel
+    planes = {"x": np.arange(N, dtype=float), "terminated": np.zeros(N, dtype=bool), "y": np.zeros(N)}
+    assert hawk.plan(kernel, structure).bind(**planes).launch() == 1
 
 
 def _cancelling():
@@ -354,11 +357,7 @@ def _sequential_launch(bundle, name, terms, *, terminated=None,
     can legitimately drive back through zero (see
     ``test_own_column_compensated_recovers_the_exact_sum``/
     ``test_matches_the_neumaier_reference_bit_for_bit`` below)."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    plugin = L.host_plugin(bundle.directory, name, sidecar_of(bundle, name))
-    plan = eplan.plan(plugin, structure=eexec.HostTeam)
+    plan = hawk.plan(hawk.load(bundle.directory, name))
     y = np.zeros(N)
     c = np.zeros(N) if companion else None
     mask = terminated if terminated is not None else np.zeros(N, dtype=bool)
@@ -493,13 +492,8 @@ def test_returned_output_plus_compensated_accumulates_onto_a_prior_sum(
         "the returned value must commit through the compensated sink, not a "
         "plain store:\n" + text)
 
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
     prior = 42.0
-    plugin = L.host_plugin(bundle.directory, "own_column_compensated_returns",
-                           sidecar_of(bundle, "own_column_compensated_returns"))
-    plan = eplan.plan(plugin, structure=eexec.HostTeam)
+    plan = hawk.plan(hawk.load(bundle.directory, "own_column_compensated_returns"))
     y, c = np.full(N, prior), np.zeros(N)
     bound = plan.bind(x=np.full(N, _COMPENSATED_TERMS[0]), y=y, c=c)
     bound.launch()
@@ -555,11 +549,7 @@ def _vector_sequential_launch(bundle, name, terms, prior, *, mask_param=True):
     the SAME per-component term/prior at each launch, so a mismatch between
     components would show up identically at every sample -- component
     ``k`` is where this row's "per component" claim is actually checked."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    plugin = L.host_plugin(bundle.directory, name, sidecar_of(bundle, name))
-    plan = eplan.plan(plugin, structure=eexec.HostTeam)
+    plan = hawk.plan(hawk.load(bundle.directory, name))
     y = np.tile(prior[:, None], (1, N)).astype(float)
     c = np.zeros((3, N))
     kw = {"x": np.tile(terms[0][:, None], (1, N)), "y": y, "c": c}
@@ -674,9 +664,6 @@ def test_compensation_stays_exact_under_fma_contraction(tmp_path, cache_dir):
     exact, so the companion must stay 0. Fused, the residual would see the
     2^-60 tail . The probe kernel shows this very build
     does contract (non-vacuity)."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
     bundle, probed = (
         _build_bundle([k], tmp_path / sub, targets=("host",),
                       cache_dir=cache_dir, options={"host.profile": "native-vector-math"})
@@ -684,9 +671,7 @@ def test_compensation_stays_exact_under_fma_contraction(tmp_path, cache_dir):
                        (contraction_probe, "fma_probe")))
     a = np.full(N, 1.0 + 2.0 ** -30)
 
-    probe = eplan.plan(L.host_plugin(probed.directory, "contraction_probe",
-                                     sidecar_of(probed, "contraction_probe")),
-                       structure=eexec.HostTeam)
+    probe = hawk.plan(hawk.load(probed.directory, "contraction_probe"))
     z = np.zeros(N)
     probe.bind(a=a, b=a, z=z).launch()
     if z[0] != 2.0 ** -29 + 2.0 ** -60:
@@ -694,8 +679,7 @@ def test_compensation_stays_exact_under_fma_contraction(tmp_path, cache_dir):
                     "no FMA on this CPU, nothing to guard")
 
     name = "own_column_compensated_product"
-    plan = eplan.plan(L.host_plugin(bundle.directory, name, sidecar_of(bundle, name)),
-                      structure=eexec.HostTeam)
+    plan = hawk.plan(hawk.load(bundle.directory, name))
     y, c = np.zeros(N), np.zeros(N)
     bound = plan.bind(a=np.ones(N), b=np.ones(N), terminated=np.zeros(N, dtype=bool),
                       y=y, c=c)

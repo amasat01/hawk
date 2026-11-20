@@ -73,10 +73,24 @@ _FROM_STEPS = ("steps",)
 #: stays at :func:`hawk.artifact.build` under its own name, not re-exported
 #: here). ``load`` opens a built unit's kernel back into a runnable object
 #: (:func:`hawk.runtime.load`). ``run`` binds arguments and runs a loaded
-#: kernel once, in place (:func:`hawk.runtime.run`).
+#: kernel once, in place (:func:`hawk.runtime.run`). ``plan`` plans a loaded kernel under a structure
+#: (``HostTeam``, ``HostSerial``, ``DeviceKernel``) and ``deploy`` builds a kernel into a plan
+#: (:mod:`hawk.plans`, which also holds ``Partition`` and the array verbs ``asarray``, ``to_numpy``, ``synchronize``,
+#: ``banded_pack``, ``banded_unpack``).
 _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "load": ("runtime", "load"),
                     "run": ("runtime", "run"),
+                    "plan": ("plans", "plan"),
+                    "deploy": ("plans", "deploy"),
+                    "Partition": ("plans", "Partition"),
+                    "HostTeam": ("plans", "HostTeam"),
+                    "HostSerial": ("plans", "HostSerial"),
+                    "DeviceKernel": ("plans", "DeviceKernel"),
+                    "asarray": ("plans", "asarray"),
+                    "to_numpy": ("plans", "to_numpy"),
+                    "synchronize": ("plans", "synchronize"),
+                    "banded_pack": ("plans", "banded_pack"),
+                    "banded_unpack": ("plans", "banded_unpack"),
                     "samples_first": ("_plane_layout", "samples_first"),
                     "samples_last": ("_plane_layout", "samples_last"),
                     "sample_position": ("trace.value", "sample_position"),

@@ -121,14 +121,14 @@ def test_a_bad_layout_value_is_refused(built):
                layout="rows")
 
 
-def test_the_host_kernel_bind_path_takes_the_same_choices(built):
+def test_the_plan_bind_path_takes_the_same_choices(built):
     k = _vec3(built)
     x = np.arange(9, dtype=float).reshape(3, 3) + 1.0
     y = np.zeros((3, 3))
+    plan = hawk.plan(k, hawk.HostSerial)
     with pytest.raises(HawkError, match="samples_first"):
-        k.bind_all({"x": x, "a": 2.0, "y": y}, 3)
-    k.bind_all({"x": x, "a": 2.0, "y": y}, 3, layout="samples_last")
-    k.launch(0, 3, 3)
+        plan.bind(x=x, a=2.0, y=y, n_samples=3)
+    plan.bind(x=x, a=2.0, y=y, n_samples=3, layout="samples_last").launch()
     np.testing.assert_array_equal(y, 2.0 * x)
 
 

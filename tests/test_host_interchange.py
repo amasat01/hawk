@@ -226,11 +226,7 @@ def _planes(name, n, case, seed):
 def _launches(bundle, name, planes, words):
     """Launch ``name`` with each word of ``words``; the planes, mask and
     counter after every launch."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
     sidecar = sidecar_of(bundle, name)
-    plugin = L.host_plugin(bundle.directory, name, sidecar)
     planes = {key: value.copy() for key, value in planes.items()}
     counter = np.zeros(1, dtype=np.uint32)
     counter[0] = np.count_nonzero(planes["terminated"])
@@ -240,7 +236,7 @@ def _launches(bundle, name, planes, words):
         extra["fused_steps"] = np.zeros(1, dtype=np.int64)
     names = {n for _, n in sidecar["arg_spec"]}
     kw = {p: v for p, v in (("dt", DT), ("g", 0.3), ("goal", 100.0)) if p in names}
-    bound = eplan.plan(plugin, structure=eexec.HostTeam).bind(
+    bound = hawk.plan(hawk.load(bundle.directory, name)).bind(
         finished_count=counter, **kw, **planes, **extra)
     snaps = []
     for word in words:

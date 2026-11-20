@@ -24,6 +24,7 @@ change between releases. The compiled backend libraries are reached only through
    hawk.ospreys
    hawk.targets
    hawk.runtime
+   hawk.plans
    hawk.artifact
 ```
 
@@ -67,4 +68,25 @@ The declarations a kernel is written in, and the top-level functions. Each has i
    hawk.WideOut
    hawk.Terminated
    hawk.HawkError
+```
+
+## Running a kernel on the host
+
+`hawk.load` opens a built kernel, `hawk.run` runs it once, and the verbs below plan it, bind its planes and launch it as often as needed.
+
+```{eval-rst}
+.. autosummary::
+   :toctree: generated
+
+   hawk.plan
+   hawk.deploy
+   hawk.HostTeam
+   hawk.HostSerial
+   hawk.DeviceKernel
+   hawk.Partition
+   hawk.asarray
+   hawk.to_numpy
+   hawk.synchronize
+   hawk.banded_pack
+   hawk.banded_unpack
 ```

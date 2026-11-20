@@ -87,7 +87,7 @@ changes a shape that is not ambiguous:
 
 - Per call: `hawk.run(k, ..., layout="samples_first")` (planes are `(N, 3)`) or
   `layout="samples_last"` (planes are `(3, N)`, native) resolves every ambiguous
-  plane of that call. `HostKernel.bind_all` takes the same `layout=`.
+  plane of that call. `hawk.plan(k).bind(..., layout=...)` and `Plan.run` take the same `layout=`.
 - Per array: `hawk.samples_first(x)` or `hawk.samples_last(x)` wraps one
   argument. It is honoured for any shape, a marker that contradicts the shape
   is refused naming the argument, and it wins over the call's `layout=`.

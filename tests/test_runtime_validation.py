@@ -3,7 +3,7 @@
 
 """``hawk.runtime`` validates every bound argument against the kernel's OWN
 declaration before any address is taken (``hawk/_bind_checks.py``'s
-``_check_bind``, wired into ``HostKernel.bind_all`` and hence ``run``).
+``_check_bind``, wired into ``HostKernel.arguments``, which ``run`` and ``Plan.bind`` call).
 
 Two REAL defects motivate this row, each one a wrong binding that used to
 run silently and return garbage or segfault (an out-of-bounds read) rather

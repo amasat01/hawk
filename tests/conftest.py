@@ -21,6 +21,7 @@ import _deployable as D
 import numpy as np
 import pytest
 
+import hawk
 from hawk.artifact import build_bundle
 from hawk.errors import ToolchainAbsent
 
@@ -106,16 +107,15 @@ def declared(kernel, arrays: dict) -> dict:
 
 
 def _launch(bundle, name, target, planes):
+    """The plan of ``name`` bound over ``planes``: a host row through hawk's own verbs, a device row through eagle's."""
+    if target == "host":
+        return hawk.plan(hawk.load(bundle.directory, name)).bind(**planes)
     import _deploy as L
     import eagle.exec as eexec
     from eagle import plan as eplan
 
-    sidecar = sidecar_of(bundle, name)
-    if target == "host":
-        plugin, structure = L.host_plugin(bundle.directory, name, sidecar), eexec.HostTeam
-    else:
-        plugin, structure = L.device_plugin(bundle.directory, name, sidecar), eexec.DeviceKernel
-    return eplan.plan(plugin, structure=structure).bind(**planes)
+    plugin = L.device_plugin(bundle.directory, name, sidecar_of(bundle, name))
+    return eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**planes)
 
 
 def _xp(target):

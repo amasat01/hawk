@@ -82,3 +82,12 @@ def test_a_banded_kernel_on_the_gpu_is_within_the_bound_of_its_float64_build(tmp
     got, _ = _run("banded", "cuda", tmp_path)
     want, _ = _run("float64", "cuda", tmp_path)
     assert _ulp53(got, want).max() <= CHAIN_ULP53
+
+
+def test_the_float32_exact_inputs_of_the_chain_survive_a_banded_round_trip_on_the_host():
+    """The inputs of the device rows above are float32-exact, so packing them into banded cells loses nothing: the
+    unpacked values are the inputs, bit for bit."""
+    for values in _inputs():
+        cells = hawk.banded_pack(values)
+        assert cells.dtype == np.uint64 and cells.shape == values.shape
+        np.testing.assert_array_equal(hawk.banded_unpack(cells), values)
