@@ -411,11 +411,10 @@ def routed(kernel, given: dict, where: str) -> tuple:
 
 
 def _zeros_like(value):
-    """A zeroed array of the shape and dtype of the host array ``value``."""
-    import numpy as np
+    """A zeroed array of the shape and dtype of ``value``, in the memory ``value`` lives in."""
+    from . import _place  # _place loads the backend libraries, which this module's importers need not
 
-    host = value if isinstance(value, np.ndarray) else np.from_dlpack(value)
-    return np.zeros(host.shape, dtype=host.dtype)
+    return _place.Maker.at(_place.device_of(value), value).like(value)
 
 
 def rebound(kernel, patterns: dict, held: dict, planes: dict, lanes: int, where: str) -> tuple:

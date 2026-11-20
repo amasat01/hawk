@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 from conftest import _launch, _xp, sidecar_of
 
+import hawk
 from hawk import Kernel
 from hawk.artifact import build_bundle
 from hawk.diff import vjp
@@ -85,6 +86,8 @@ def _planes(target, w, x, y, mask):
 
 
 def _host(a):
+    """``a`` on the host, once every queued launch has run: a launch over device memory is queued."""
+    hawk.synchronize()
     return np.array(a.get() if hasattr(a, "get") else a)
 
 

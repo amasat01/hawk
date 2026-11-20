@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 from math import prod
 
-from . import _broadcast
+from . import _broadcast, _place
 from .errors import HawkError
 
 
@@ -205,15 +205,22 @@ def index_width(extent: int, *, scalar_type: str = "float64", forced: int | str 
     return bits
 
 
+def _on_host(array):
+    """``array`` where the bind checks can read its values: a host array as it is, a device array read back."""
+    return array if _place.device_of(array) in (None, _place.HOST) else _place.to_host(array)
+
+
 def check_index_set(sidecar: dict, arrays: dict, extent: int | None) -> None:
     """The bind checks of a kernel that declares ``lanes=IndexSet()``: the map
     holds ``active_count[0]`` lanes, each in ``[0, extent)`` and none twice, and
     its word is the unit's. Refuses naming the FIRST offending position. A
-    kernel without a lane set is returned as it came."""
+    kernel without a lane set is returned as it came. A map and a count in
+    device memory are read back for the check."""
     spec = (sidecar.get("launch") or {}).get("index_set")
     lanes, live = arrays.get("active_map"), arrays.get(spec.get("count", "active_count") if spec else "active_count")
     if spec is None or live is None or (lanes is None and not spec.get("prefix")):
         return
+    live, lanes = _on_host(live), None if lanes is None else _on_host(lanes)
     where = f"kernel {sidecar.get('kernel', '?')!r}: the index set"
     if spec.get("prefix"):
         held = int(memoryview(live).cast("B").cast("I")[0])

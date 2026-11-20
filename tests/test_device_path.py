@@ -196,3 +196,14 @@ def test_a_cell_with_the_wrong_number_of_values_or_no_slicing_is_refused_by_name
         plan.run(v=v, t=_Viewable(np.zeros(3)))
     with pytest.raises(HawkError, match=r"the cell 't' \(_Elsewhere\) cannot be viewed per column"):
         plan.run(v=v, t=_Elsewhere(np.zeros(6), device=(1, 0)))
+
+
+@hawk.kernel
+def matrix_doubled(a: hawk.Matrix[2, 3], y: Mutable[hawk.Matrix[2, 3]]):
+    y = a + a
+
+
+def test_a_matrix_plane_of_another_library_given_component_major_is_viewed_by_its_own_reshape(cache_dir):
+    a, y = np.random.default_rng(5).uniform(-2.0, 2.0, (6, N)), np.zeros((6, N))
+    hawk.deploy(matrix_doubled, targets=("host",), cache_dir=cache_dir).run(a=_Viewable(a), y=_Viewable(y))
+    np.testing.assert_array_equal(y, 2.0 * a)

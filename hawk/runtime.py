@@ -520,8 +520,9 @@ class LoadedKernel:
 
         A sample-major plane whose transpose is contiguous is bound as that transpose, one sample as a batch of one,
         and a plane of per-sample payload axes (a vector, a matrix) as ``(*payload, samples)``. Any other role is
-        handed over as the caller passed it. An array that exports DLPack and is not a NumPy array (whether or not it also exports a buffer) is always handed over as
-        passed: hawk has no array library to make a view of it with, so one that needs a view is refused by name.
+        handed over as the caller passed it. An array that exports DLPack and is not a NumPy array (whether or not it also exports a buffer) is handed over as
+        passed, or as its own reshape to the payload axes when only those differ: hawk has no array library to make another
+        view of it with, so one that needs a transpose is refused by name.
         """
         if role not in _PER_SAMPLE_ROLES:
             return value
@@ -533,6 +534,10 @@ class LoadedKernel:
         shape = tuple(view.shape)
         native = (*payload, shape[0] if kind == "view" else shape[-1]) if shape else ()
         if not is_ndarray(value):
+            reshaped = shape != native and shape[-1:] == native[-1:] and math.prod(shape) == math.prod(native)
+            if kind == "native" and payload and reshaped and hasattr(value, "reshape"):
+                # component-major memory in another shape: the array's own reshape views it, as NumPy's does below
+                return value.reshape(native)
             if kind != "native" or (payload and shape != native):
                 want = (*payload, "N") if payload else ("N",)
                 raise HawkError(
